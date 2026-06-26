@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -33,11 +34,22 @@ type Stopper interface {
 	Stop(ctx context.Context) error
 }
 
+// Migrator is an OPTIONAL capability. A module that persists data implements it
+// to create/upgrade its OWN schema — and only its own (full logical isolation:
+// no cross-module tables, no cross-module foreign keys). Run after Init, before
+// Start, in dependency order. Must be idempotent (CREATE ... IF NOT EXISTS).
+type Migrator interface {
+	Migrate(ctx context.Context, db *sql.DB) error
+}
+
 // Context is the slice of the core handed to each module at Init. It exposes
 // only primitives: the event bus, a service registry, an HTTP mux and a logger.
 type Context struct {
-	Bus      *Bus
-	Mux      *http.ServeMux
+	Bus *Bus
+	Mux *http.ServeMux
+	// DB is the shared Postgres pool. It is OFFERED, not mandated: a module may
+	// use it (owning its own schema), or ignore it and bring its own store.
+	DB       *sql.DB
 	Log      *slog.Logger
 	services map[string]any
 }
@@ -103,6 +115,23 @@ func (r *Registry) Build() error {
 			return fmt.Errorf("init %q: %w", name, err)
 		}
 		r.ctx.Log.Info("module ready", "module", name)
+	}
+	return nil
+}
+
+// Migrate runs Migrate on every module that implements Migrator, in dependency
+// order, so a module always migrates after the modules it depends on. Call it
+// after Build and before Start.
+func (r *Registry) Migrate(ctx context.Context, db *sql.DB) error {
+	for _, name := range r.sorted {
+		m, ok := r.modules[name].(Migrator)
+		if !ok {
+			continue
+		}
+		if err := m.Migrate(ctx, db); err != nil {
+			return fmt.Errorf("migrate %q: %w", name, err)
+		}
+		r.ctx.Log.Info("module migrated", "module", name)
 	}
 	return nil
 }

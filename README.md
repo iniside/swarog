@@ -36,7 +36,20 @@ services, subscribe, mount routes; no I/O. `Start` and `Stop` are optional
 capabilities (implement `core.Starter` / `core.Stopper` only if you need them):
 `Start` kicks off background work in dependency order, `Stop` tears down in
 reverse so a module's dependencies outlive it. Shutdown is: stop HTTP, drain the
-bus, then `Stop` modules.
+bus, then `Stop` modules. A fourth optional capability, `core.Migrator`, runs
+between Init and Start to create a module's own schema.
+
+## Persistence — full logical isolation
+
+One shared Postgres database, exposed by the core as `ctx.DB` (offered, not
+mandated — a module may ignore it and bring its own store). Isolation is
+**logical, not physical**: there is a single Postgres, but each module owns its
+own schema and touches no other module's tables. No cross-module foreign keys.
+A relation to another module is just that module's id stored as a plain column,
+resolved via its interface or kept in sync via events (eventually consistent).
+This keeps every module's schema private and independently extractable later.
+
+- `leaderboard` owns schema `leaderboard`; its win counts persist across restarts.
 
 ## Dependency rules
 
@@ -57,10 +70,13 @@ modules/
     matchevents/              # published events of the match domain (pure data)
     match.go                  # impl: depends on "rating", emits match.finished
   rating/rating.go            # impl: provides the "rating" service, reacts to matches
-  leaderboard/leaderboard.go  # impl: pure listener, zero dependencies
+  leaderboard/leaderboard.go  # impl: Postgres-backed listener, owns schema "leaderboard"
 ```
 
 ## Run
+
+Needs a reachable Postgres. Connection comes from `DATABASE_URL`, falling back to
+`postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable`.
 
 ```
 go run ./cmd/server
