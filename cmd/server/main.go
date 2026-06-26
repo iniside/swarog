@@ -31,6 +31,14 @@ func main() {
 		os.Exit(1)
 	}
 
+	startCtx, cancelStart := context.WithTimeout(context.Background(), 10*time.Second)
+	if err := reg.Start(startCtx); err != nil {
+		cancelStart()
+		log.Error("start failed", "err", err)
+		os.Exit(1)
+	}
+	cancelStart()
+
 	srv := &http.Server{Addr: ":8080", Handler: ctx.Mux}
 	go func() {
 		log.Info("listening", "addr", srv.Addr)
@@ -40,8 +48,10 @@ func main() {
 		}
 	}()
 
-	// Graceful shutdown: stop accepting HTTP first (so no new events are
-	// published), then drain the bus so no in-flight event is lost.
+	// Graceful shutdown, in order:
+	//   1. stop accepting HTTP (no new events get published),
+	//   2. drain the bus (in-flight events finish while module resources are up),
+	//   3. stop modules in reverse dependency order (close goroutines/resources).
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt)
 	<-stop
@@ -53,5 +63,6 @@ func main() {
 		log.Error("http shutdown", "err", err)
 	}
 	ctx.Bus.Close()
+	reg.Stop(shutdownCtx)
 	log.Info("bye")
 }

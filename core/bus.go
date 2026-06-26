@@ -59,7 +59,39 @@ func (b *Bus) Subscribe(topic string, h Handler) {
 	}()
 }
 
+// EventType binds a topic to its payload type T in ONE place. Publishers and
+// subscribers reference the same EventType value, so they cannot disagree on
+// topic-vs-payload: a mismatch is a compile error, not a runtime panic. This is
+// the most compile-time safety achievable over an untyped (any-carrying) bus.
+type EventType[T any] struct{ topic string }
+
+// Define declares an event: a topic plus the payload type it always carries.
+// Call it once, at package level, in the owning <module>events package.
+func Define[T any](topic string) EventType[T] { return EventType[T]{topic: topic} }
+
+func (e EventType[T]) Topic() string { return e.topic }
+
+// On subscribes a typed handler. The handler signature is checked at compile
+// time against the EventType's T. The internal assertion can't fail, because
+// every value on this topic was put there by Emit with the same T.
+func On[T any](b *Bus, et EventType[T], h func(T)) {
+	b.Subscribe(et.topic, func(e Event) {
+		v, ok := e.Data.(T)
+		if !ok {
+			b.log.Error("event payload type mismatch", "topic", e.Topic)
+			return
+		}
+		h(v)
+	})
+}
+
+// Emit publishes a typed event. Non-blocking, like Publish.
+func Emit[T any](b *Bus, et EventType[T], v T) {
+	b.Publish(Event{Topic: et.topic, Data: v})
+}
+
 // Publish hands the event to each subscriber's mailbox and returns immediately.
+// Prefer the typed Emit; Publish is the lower-level primitive On/Emit build on.
 func (b *Bus) Publish(e Event) {
 	b.mu.RLock()
 	boxes := b.subs[e.Topic]

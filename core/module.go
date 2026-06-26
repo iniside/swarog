@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -8,10 +9,28 @@ import (
 
 // Module is the contract every plugin implements. The core NEVER imports a
 // module; modules import the core. Dependency points one way only.
+//
+// Init only WIRES the module up: register services, subscribe to events, mount
+// routes. No background work and no I/O yet — that belongs in Start.
 type Module interface {
 	Name() string
 	DependsOn() []string // modules that must Init first — the registry enforces it
 	Init(ctx *Context) error
+}
+
+// Starter is an OPTIONAL capability. A module that runs background work (a
+// ticker, a worker pool, an outbound connection) implements it. Started in
+// dependency order, after every module's Init.
+type Starter interface {
+	Start(ctx context.Context) error
+}
+
+// Stopper is an OPTIONAL capability. A module that holds resources implements it
+// to clean up. Stopped in REVERSE dependency order, so a module's dependencies
+// are still alive while it tears itself down. Don't emit events from Stop — by
+// then the bus has already drained.
+type Stopper interface {
+	Stop(ctx context.Context) error
 }
 
 // Context is the slice of the core handed to each module at Init. It exposes
@@ -55,6 +74,7 @@ func (c *Context) Require(name string) any {
 type Registry struct {
 	modules map[string]Module
 	order   []string // registration order, for stable tie-breaking
+	sorted  []string // dependency order, set by Build; drives Start/Stop
 	ctx     *Context
 }
 
@@ -77,6 +97,7 @@ func (r *Registry) Build() error {
 	if err != nil {
 		return err
 	}
+	r.sorted = sorted
 	for _, name := range sorted {
 		if err := r.modules[name].Init(r.ctx); err != nil {
 			return fmt.Errorf("init %q: %w", name, err)
@@ -84,6 +105,40 @@ func (r *Registry) Build() error {
 		r.ctx.Log.Info("module ready", "module", name)
 	}
 	return nil
+}
+
+// Start runs Start on every module that implements Starter, in dependency order
+// (a module's dependencies start before it). Fails fast.
+func (r *Registry) Start(ctx context.Context) error {
+	for _, name := range r.sorted {
+		s, ok := r.modules[name].(Starter)
+		if !ok {
+			continue
+		}
+		if err := s.Start(ctx); err != nil {
+			return fmt.Errorf("start %q: %w", name, err)
+		}
+		r.ctx.Log.Info("module started", "module", name)
+	}
+	return nil
+}
+
+// Stop runs Stop on every module that implements Stopper, in REVERSE dependency
+// order. Best-effort: it logs and continues on error so one stuck module can't
+// strand the rest.
+func (r *Registry) Stop(ctx context.Context) {
+	for i := len(r.sorted) - 1; i >= 0; i-- {
+		name := r.sorted[i]
+		s, ok := r.modules[name].(Stopper)
+		if !ok {
+			continue
+		}
+		if err := s.Stop(ctx); err != nil {
+			r.ctx.Log.Error("module stop failed", "module", name, "err", err)
+		} else {
+			r.ctx.Log.Info("module stopped", "module", name)
+		}
+	}
 }
 
 func (r *Registry) topoSort() ([]string, error) {

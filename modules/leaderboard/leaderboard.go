@@ -19,8 +19,7 @@ func (Module) Init(ctx *core.Context) error {
 	var mu sync.Mutex
 	wins := map[string]int{}
 
-	ctx.Bus.Subscribe(matchevents.TopicFinished, func(e core.Event) {
-		r := e.Data.(matchevents.Finished)
+	core.On(ctx.Bus, matchevents.FinishedEvent, func(r matchevents.Finished) {
 		mu.Lock()
 		wins[r.Winner]++
 		mu.Unlock()

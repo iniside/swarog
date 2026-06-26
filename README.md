@@ -24,8 +24,19 @@ Three seams, and nothing else, carry all extensibility:
    FIFO mailbox: per-subscriber order is preserved, a slow/panicking subscriber
    is isolated, and `Close` drains in-flight events on shutdown. State built from
    events is therefore **eventually consistent**. Each publishing domain owns a
-   `<module>events` package (pure data, depends on nothing) that holds its topic
-   constants and payload types — the only deliberately shared surface.
+   `<module>events` package (depends only on the core foundation) that declares
+   its events with `core.Define[Payload]("topic")`. Publish and subscribe go
+   through the typed `core.Emit` / `core.On`, so topic-vs-payload mismatches are
+   compile errors — the only deliberately shared surface is that descriptor.
+
+## Lifecycle
+
+Modules have three phases. `Init` (required) only wires things up — register
+services, subscribe, mount routes; no I/O. `Start` and `Stop` are optional
+capabilities (implement `core.Starter` / `core.Stopper` only if you need them):
+`Start` kicks off background work in dependency order, `Stop` tears down in
+reverse so a module's dependencies outlive it. Shutdown is: stop HTTP, drain the
+bus, then `Stop` modules.
 
 ## Dependency rules
 

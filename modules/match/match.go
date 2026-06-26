@@ -33,10 +33,8 @@ func (Module) Init(ctx *core.Context) error {
 			"winner", in.Winner, "winnerMMR", rs.MMR(in.Winner), "loser", in.Loser)
 
 		// Fire-and-forget: announce it happened — whoever cares subscribes.
-		ctx.Bus.Publish(core.Event{
-			Topic: matchevents.TopicFinished,
-			Data:  matchevents.Finished{Winner: in.Winner, Loser: in.Loser},
-		})
+		core.Emit(ctx.Bus, matchevents.FinishedEvent,
+			matchevents.Finished{Winner: in.Winner, Loser: in.Loser})
 		w.WriteHeader(http.StatusAccepted)
 	})
 	return nil

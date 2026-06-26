@@ -27,8 +27,7 @@ func (Module) Init(ctx *core.Context) error {
 
 	// rating ALSO reacts to match results — but via the bus, so "match" has
 	// zero knowledge that "rating" exists.
-	ctx.Bus.Subscribe(matchevents.TopicFinished, func(e core.Event) {
-		r := e.Data.(matchevents.Finished)
+	core.On(ctx.Bus, matchevents.FinishedEvent, func(r matchevents.Finished) {
 		svc.setMMR(r.Winner, svc.MMR(r.Winner)+15)
 		svc.setMMR(r.Loser, svc.MMR(r.Loser)-15)
 	})
