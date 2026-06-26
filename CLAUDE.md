@@ -19,6 +19,11 @@ Three seams carry all extensibility; almost everything else follows from them:
    Reacting to something = subscribe. Each publishing domain owns a
    `<module>events` package declaring events via `core.Define[T]("topic")`.
 
+Plus a minor seam: **`Context.Contribute(slot, v)` / `Contributions(slot)`** — a
+multi-value registry (unlike single-value `Provide`) for cross-cutting collections
+where many modules contribute and one consumer reads them all (e.g. admin sections).
+A new contributor appears without the consumer being edited.
+
 ## Hard constraints (do not violate without discussing)
 
 1. Core never imports a module. Dependency only ever points module → core.
@@ -122,4 +127,18 @@ modules/
   rating/rating.go            # impl: provides "rating" service, reacts to matches (in-memory)
   leaderboard/leaderboard.go  # impl: Postgres-backed listener, owns schema "leaderboard"
   webui/                      # UI-only module: serves the SPA demo at "/" (embedded index.html)
+  admin/                      # GameOps admin portal at "/admin" (theme + shell); renders contributed sections
+    adminapi/                 #   contract: Section/Content/KPI/Table/Cell + the "admin.section" slot
 ```
+
+## Admin portal
+
+The `admin` module serves the GameOps console at `/admin`. It owns the LOOK (the
+dark GameOps theme in `theme.css` + the sidebar/header shell in `admin.html.tmpl`,
+both embedded) and composes the dashboard from sections modules **contribute** to
+the `adminapi.Slot` — it never imports a module's implementation or touches another
+schema. A module appears by contributing `adminapi.Section{Title, Render}` whose
+`Render` returns declarative widgets (`KPI`s + a `Table` of `Cell`s with badges/mono);
+the admin owns rendering. Visual direction comes from `UILayout/` (a Claude Design
+mockup — a spec, not runnable). Gate with `ADMIN_USER`/`ADMIN_PASS` (HTTP Basic);
+unset = open + loud warning (local only).

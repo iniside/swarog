@@ -49,17 +49,19 @@ type Context struct {
 	Mux *http.ServeMux
 	// DB is the shared Postgres pool. It is OFFERED, not mandated: a module may
 	// use it (owning its own schema), or ignore it and bring its own store.
-	DB       *sql.DB
-	Log      *slog.Logger
-	services map[string]any
+	DB            *sql.DB
+	Log           *slog.Logger
+	services      map[string]any
+	contributions map[string][]any
 }
 
 func NewContext(log *slog.Logger) *Context {
 	return &Context{
-		Bus:      NewBus(log),
-		Mux:      http.NewServeMux(),
-		Log:      log,
-		services: map[string]any{},
+		Bus:           NewBus(log),
+		Mux:           http.NewServeMux(),
+		Log:           log,
+		services:      map[string]any{},
+		contributions: map[string][]any{},
 	}
 }
 
@@ -80,6 +82,20 @@ func (c *Context) Require(name string) any {
 		panic(fmt.Sprintf("required service %q not found", name))
 	}
 	return svc
+}
+
+// Contribute adds a value to a named slot. Unlike Provide (one service per
+// name), a slot collects MANY contributors — for cross-cutting collections like
+// admin sections, health checks or nav entries. A consumer reads them all via
+// Contributions, so a new module lights up without the consumer being edited.
+func (c *Context) Contribute(slot string, v any) {
+	c.contributions[slot] = append(c.contributions[slot], v)
+}
+
+// Contributions returns everything contributed to a slot, in registration order.
+// Read it lazily (e.g. per request), after all modules have initialized.
+func (c *Context) Contributions(slot string) []any {
+	return c.contributions[slot]
 }
 
 // Registry collects modules and initializes them in dependency order.

@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
@@ -219,6 +220,55 @@ func insertPlayerWithIdentity(ctx context.Context, tx *sql.Tx, provider, subject
 func isUniqueViolation(err error) bool {
 	var pg *pgconn.PgError
 	return errors.As(err, &pg) && pg.Code == "23505"
+}
+
+// PlayerRow is a player plus the read-only bits the admin portal shows.
+type PlayerRow struct {
+	ID          string
+	DisplayName string
+	Providers   []string
+	Online      bool // has a non-expired session
+	CreatedAt   time.Time
+}
+
+func (s *store) stats(ctx context.Context) (players, identities, sessions int, err error) {
+	err = s.db.QueryRowContext(ctx, `
+		SELECT (SELECT count(*) FROM accounts.players),
+		       (SELECT count(*) FROM accounts.identities),
+		       (SELECT count(*) FROM accounts.sessions WHERE expires_at > now())`).
+		Scan(&players, &identities, &sessions)
+	return
+}
+
+func (s *store) listPlayers(ctx context.Context, limit int) ([]PlayerRow, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT p.id::text, p.display_name, p.created_at,
+		       coalesce(string_agg(DISTINCT i.provider, ','), '') AS providers,
+		       EXISTS(SELECT 1 FROM accounts.sessions s
+		               WHERE s.player_id = p.id AND s.expires_at > now()) AS online
+		  FROM accounts.players p
+		  LEFT JOIN accounts.identities i ON i.player_id = p.id
+		 GROUP BY p.id, p.display_name, p.created_at
+		 ORDER BY p.created_at DESC
+		 LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []PlayerRow
+	for rows.Next() {
+		var pr PlayerRow
+		var providers string
+		if err := rows.Scan(&pr.ID, &pr.DisplayName, &pr.CreatedAt, &providers, &pr.Online); err != nil {
+			return nil, err
+		}
+		if providers != "" {
+			pr.Providers = strings.Split(providers, ",")
+		}
+		out = append(out, pr)
+	}
+	return out, rows.Err()
 }
 
 func newToken() (string, error) {

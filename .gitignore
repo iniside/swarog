@@ -13,6 +13,11 @@ coverage.*
 .env.local
 .env*.local
 
+# Design assets — large binaries (keep the GameOps spec html/js as reference)
+/Admin portal game backend.zip
+UILayout/uploads/
+UILayout/.thumbnail
+
 # Editor / OS
 .idea/
 .vscode/

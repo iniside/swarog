@@ -14,6 +14,7 @@ import (
 
 	"gamebackend/core"
 	"gamebackend/modules/accounts"
+	"gamebackend/modules/admin"
 	"gamebackend/modules/leaderboard"
 	"gamebackend/modules/match"
 	"gamebackend/modules/rating"
@@ -54,6 +55,7 @@ func main() {
 	reg.Add(&leaderboard.Module{}) // pointer: holds db + logger
 	reg.Add(match.Module{})        // order is free — topo-sort settles it
 	reg.Add(webui.Module{})        // serves the account-linking demo page at "/"
+	reg.Add(&admin.Module{})       // serves the GameOps admin portal at "/admin"
 
 	if err := reg.Build(); err != nil {
 		log.Error("startup failed", "err", err)

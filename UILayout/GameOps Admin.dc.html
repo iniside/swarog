@@ -1,0 +1,494 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Public+Sans:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  *{box-sizing:border-box;}
+  body{margin:0;background:#0f1116;font-family:'Public Sans',system-ui,sans-serif;-webkit-font-smoothing:antialiased;}
+  ::-webkit-scrollbar{width:9px;height:9px;}
+  ::-webkit-scrollbar-thumb{background:#2b303a;border-radius:6px;}
+  ::-webkit-scrollbar-track{background:transparent;}
+  @keyframes livepulse{0%,100%{opacity:1;}50%{opacity:.3;}}
+</style>
+</helmet>
+<div style="display:flex;height:100vh;width:100%;background:#0f1116;color:#e7e9ee;font-family:'Public Sans',sans-serif;overflow:hidden;">
+
+  <svg width="0" height="0" style="position:absolute;"><defs>
+    <linearGradient id="gA" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#f5a524" stop-opacity="0.32"/><stop offset="1" stop-color="#f5a524" stop-opacity="0"/></linearGradient>
+    <linearGradient id="gG" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#34d399" stop-opacity="0.30"/><stop offset="1" stop-color="#34d399" stop-opacity="0"/></linearGradient>
+    <linearGradient id="gR" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#f5604d" stop-opacity="0.30"/><stop offset="1" stop-color="#f5604d" stop-opacity="0"/></linearGradient>
+  </defs></svg>
+
+  <!-- SIDEBAR -->
+  <div style="width:256px;flex-shrink:0;background:#13151b;border-right:1px solid #20242c;display:flex;flex-direction:column;">
+    <div style="display:flex;align-items:center;gap:11px;padding:20px 20px 18px;">
+      <div style="width:34px;height:34px;border-radius:9px;background:linear-gradient(135deg,#f5a524,#d97706);display:flex;align-items:center;justify-content:center;flex-shrink:0;">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#10131a" stroke-width="2.2" stroke-linejoin="round"><path d="M12 3 21 8v8l-9 5-9-5V8z"/><path d="M12 3v18M3 8l9 5 9-5"/></svg>
+      </div>
+      <div>
+        <div style="font-size:16px;font-weight:800;letter-spacing:-0.3px;">GameOps</div>
+        <div style="font-size:10.5px;color:#6b7180;font-weight:600;letter-spacing:0.5px;text-transform:uppercase;">Backend Console</div>
+      </div>
+    </div>
+
+    <div style="flex:1;overflow-y:auto;padding:6px 14px 24px;">
+      <div style="font-size:10.5px;font-weight:700;color:#5c626d;letter-spacing:1px;padding:10px 12px 7px;">MAIN</div>
+      <div style="display:flex;flex-direction:column;gap:2px;">
+        <div onClick="{{ goDash }}" style="{{ navDash }}" style-hover="{{ navHover }}">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" style="flex-shrink:0;"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
+          <span>Dashboard</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:12px;padding:9px 12px;border-radius:8px;cursor:pointer;font-size:13.5px;font-weight:500;color:#9aa0ac;" style-hover="{{ navHover }}">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" style="flex-shrink:0;"><path d="M4 20V12M10 20V4M16 20V9M21 20H3"/></svg>
+          <span>Analytics</span>
+        </div>
+      </div>
+
+      <div style="font-size:10.5px;font-weight:700;color:#5c626d;letter-spacing:1px;padding:16px 12px 7px;">OPERATIONS</div>
+      <div style="display:flex;flex-direction:column;gap:2px;">
+        <div onClick="{{ goPlayers }}" style="{{ navPlayers }}" style-hover="{{ navHover }}">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" style="flex-shrink:0;"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 4-6 8-6s8 2 8 6"/></svg>
+          <span>Players</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:12px;padding:9px 12px;border-radius:8px;cursor:pointer;font-size:13.5px;font-weight:500;color:#9aa0ac;" style-hover="{{ navHover }}">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" style="flex-shrink:0;"><path d="M13 3 4 14h6l-1 7 9-11h-6z"/></svg>
+          <span>Live Ops &amp; Events</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:12px;padding:9px 12px;border-radius:8px;cursor:pointer;font-size:13.5px;font-weight:500;color:#9aa0ac;" style-hover="{{ navHover }}">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" style="flex-shrink:0;"><ellipse cx="12" cy="6" rx="7" ry="3"/><path d="M5 6v6c0 1.7 3 3 7 3s7-1.3 7-3V6"/><path d="M5 12c0 1.7 3 3 7 3s7-1.3 7-3"/></svg>
+          <span>Economy &amp; Store</span>
+        </div>
+        <div onClick="{{ goServers }}" style="{{ navServers }}" style-hover="{{ navHover }}">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" style="flex-shrink:0;"><rect x="3" y="4" width="18" height="7" rx="1.5"/><rect x="3" y="13" width="18" height="7" rx="1.5"/><circle cx="7" cy="7.5" r="0.9" fill="currentColor" stroke="none"/><circle cx="7" cy="16.5" r="0.9" fill="currentColor" stroke="none"/></svg>
+          <span>Matchmaking &amp; Servers</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:12px;padding:9px 12px;border-radius:8px;cursor:pointer;font-size:13.5px;font-weight:500;color:#9aa0ac;" style-hover="{{ navHover }}">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" style="flex-shrink:0;"><rect x="4" y="11" width="4" height="9" rx="1"/><rect x="10" y="5" width="4" height="15" rx="1"/><rect x="16" y="14" width="4" height="6" rx="1"/></svg>
+          <span>Leaderboards</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:12px;padding:9px 12px;border-radius:8px;cursor:pointer;font-size:13.5px;font-weight:500;color:#9aa0ac;" style-hover="{{ navHover }}">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" style="flex-shrink:0;"><path d="M12 3 5 6v5c0 4 3 7 7 9 4-2 7-5 7-9V6z"/><path d="M9 12l2 2 4-4"/></svg>
+          <span>Moderation</span>
+        </div>
+      </div>
+
+      <div style="font-size:10.5px;font-weight:700;color:#5c626d;letter-spacing:1px;padding:16px 12px 7px;">SYSTEM</div>
+      <div style="display:flex;flex-direction:column;gap:2px;">
+        <div style="display:flex;align-items:center;gap:12px;padding:9px 12px;border-radius:8px;cursor:pointer;font-size:13.5px;font-weight:500;color:#9aa0ac;" style-hover="{{ navHover }}">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" style="flex-shrink:0;"><path d="M5 4v16"/><path d="M5 5h12l-2.5 3.5L17 12H5"/></svg>
+          <span>Game Config &amp; Flags</span>
+        </div>
+      </div>
+    </div>
+
+    <div style="border-top:1px solid #20242c;padding:14px 16px;display:flex;align-items:center;gap:11px;">
+      <div style="width:36px;height:36px;border-radius:10px;background:#3d8be0;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:14px;color:#0c1118;flex-shrink:0;">AR</div>
+      <div style="flex:1;min-width:0;">
+        <div style="font-size:13px;font-weight:700;">A. Reyes</div>
+        <div style="font-size:11.5px;color:#6b7180;">Backend Admin</div>
+      </div>
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#6b7180" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>
+    </div>
+  </div>
+
+  <!-- MAIN -->
+  <div style="flex:1;display:flex;flex-direction:column;min-width:0;">
+    <!-- HEADER -->
+    <div style="height:64px;flex-shrink:0;border-bottom:1px solid #20242c;display:flex;align-items:center;gap:18px;padding:0 28px;background:#111319;">
+      <div style="min-width:0;">
+        <div style="font-size:11px;color:#6b7180;font-weight:600;letter-spacing:0.4px;">{{ pageCrumb }}</div>
+        <div style="font-size:17px;font-weight:700;letter-spacing:-0.3px;margin-top:1px;">{{ pageTitle }}</div>
+      </div>
+      <div style="flex:1;"></div>
+      <div style="display:flex;align-items:center;gap:9px;background:#181b22;border:1px solid #262b35;border-radius:9px;padding:8px 12px;width:300px;">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#6b7180" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg>
+        <span style="font-size:13px;color:#6b7180;flex:1;">Search players, matches, IDs…</span>
+        <span style="font-family:'IBM Plex Mono';font-size:11px;color:#6b7180;border:1px solid #2b303a;border-radius:5px;padding:1px 6px;">⌘K</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:7px;background:rgba(52,211,153,0.10);border:1px solid rgba(52,211,153,0.25);border-radius:8px;padding:7px 12px;">
+        <span style="width:7px;height:7px;border-radius:999px;background:#34d399;animation:livepulse 2s ease-in-out infinite;"></span>
+        <span style="font-size:12.5px;font-weight:700;color:#34d399;">Production</span>
+      </div>
+      <div style="position:relative;width:38px;height:38px;border-radius:9px;background:#181b22;border:1px solid #262b35;display:flex;align-items:center;justify-content:center;cursor:pointer;">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#aeb3bd" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>
+        <span style="position:absolute;top:-5px;right:-5px;min-width:17px;height:17px;border-radius:999px;background:#f5604d;color:#fff;font-size:10px;font-weight:700;display:flex;align-items:center;justify-content:center;padding:0 4px;border:2px solid #111319;">4</span>
+      </div>
+      <div style="width:38px;height:38px;border-radius:10px;background:#3d8be0;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:14px;color:#0c1118;cursor:pointer;">AR</div>
+    </div>
+
+    <!-- SCROLL AREA -->
+    <div style="flex:1;overflow-y:auto;padding:26px 28px 40px;">
+
+      <!-- ========== DASHBOARD ========== -->
+      <sc-if value="{{ isDash }}" hint-placeholder-val="{{ true }}">
+      <div style="display:flex;flex-direction:column;gap:20px;">
+
+        <!-- Banner -->
+        <div style="position:relative;border-radius:14px;padding:26px 30px;background:linear-gradient(115deg,#1a1d25 0%,#21242d 55%,#2b261d 100%);border:1px solid #2b303a;overflow:hidden;display:flex;justify-content:space-between;align-items:center;gap:24px;">
+          <div style="position:absolute;right:-60px;top:-80px;width:300px;height:300px;border-radius:999px;background:radial-gradient(circle,rgba(245,165,36,0.16),transparent 70%);"></div>
+          <div style="position:relative;max-width:560px;">
+            <div style="display:inline-flex;align-items:center;gap:7px;background:rgba(52,211,153,0.12);border:1px solid rgba(52,211,153,0.25);border-radius:999px;padding:4px 11px;margin-bottom:14px;">
+              <span style="width:7px;height:7px;border-radius:999px;background:#34d399;animation:livepulse 2s ease-in-out infinite;"></span>
+              <span style="font-size:12px;font-weight:700;color:#34d399;">All systems operational</span>
+            </div>
+            <div style="font-size:25px;font-weight:800;letter-spacing:-0.5px;">Live infrastructure is healthy</div>
+            <div style="font-size:14px;color:#9aa0ac;margin-top:8px;line-height:1.55;max-width:480px;">6 of 6 regions online · global uptime holding at 99.98% over the last 30 days. No critical incidents in the active window.</div>
+            <div style="display:flex;gap:10px;margin-top:18px;">
+              <div style="background:#f5a524;color:#10131a;font-size:13.5px;font-weight:700;padding:10px 18px;border-radius:9px;cursor:pointer;" style-hover="{{ btnHover }}">Open Live Ops Console</div>
+              <div style="background:rgba(255,255,255,0.05);border:1px solid #353b46;color:#dfe2e8;font-size:13.5px;font-weight:600;padding:10px 18px;border-radius:9px;cursor:pointer;">View incidents</div>
+            </div>
+          </div>
+          <div style="position:relative;display:flex;gap:30px;padding-right:14px;">
+            <div style="text-align:right;">
+              <div style="font-size:34px;font-weight:800;letter-spacing:-1px;color:#34d399;">99.98%</div>
+              <div style="font-size:12px;color:#9aa0ac;margin-top:2px;">30-day uptime</div>
+            </div>
+            <div style="text-align:right;">
+              <div style="font-size:34px;font-weight:800;letter-spacing:-1px;">6/6</div>
+              <div style="font-size:12px;color:#9aa0ac;margin-top:2px;">regions online</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- KPI row -->
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:16px;">
+          <div style="background:#161920;border:1px solid #232832;border-radius:12px;padding:16px 18px;">
+            <div style="display:flex;justify-content:space-between;align-items:flex-start;">
+              <div><div style="font-size:13px;color:#8a909c;font-weight:500;">Concurrent Players</div><div style="font-size:25px;font-weight:700;margin-top:5px;letter-spacing:-0.5px;">98,240</div></div>
+              <div style="display:inline-flex;align-items:center;gap:3px;padding:3px 7px;border-radius:6px;font-size:11.5px;font-weight:700;color:#34d399;background:rgba(52,211,153,0.12);">▲ 6.2%</div>
+            </div>
+            <svg viewBox="0 0 100 50" preserveAspectRatio="none" style="width:100%;height:42px;margin-top:10px;display:block;"><path d="{{ kCCU.area }}" fill="url(#gA)"/><path d="{{ kCCU.line }}" fill="none" stroke="#f5a524" stroke-width="2" vector-effect="non-scaling-stroke" stroke-linejoin="round"/></svg>
+          </div>
+          <div style="background:#161920;border:1px solid #232832;border-radius:12px;padding:16px 18px;">
+            <div style="display:flex;justify-content:space-between;align-items:flex-start;">
+              <div><div style="font-size:13px;color:#8a909c;font-weight:500;">Matches (24h)</div><div style="font-size:25px;font-weight:700;margin-top:5px;letter-spacing:-0.5px;">482.3K</div></div>
+              <div style="display:inline-flex;align-items:center;gap:3px;padding:3px 7px;border-radius:6px;font-size:11.5px;font-weight:700;color:#34d399;background:rgba(52,211,153,0.12);">▲ 3.1%</div>
+            </div>
+            <svg viewBox="0 0 100 50" preserveAspectRatio="none" style="width:100%;height:42px;margin-top:10px;display:block;"><path d="{{ kMatch.area }}" fill="url(#gG)"/><path d="{{ kMatch.line }}" fill="none" stroke="#34d399" stroke-width="2" vector-effect="non-scaling-stroke" stroke-linejoin="round"/></svg>
+          </div>
+          <div style="background:#161920;border:1px solid #232832;border-radius:12px;padding:16px 18px;">
+            <div style="display:flex;justify-content:space-between;align-items:flex-start;">
+              <div><div style="font-size:13px;color:#8a909c;font-weight:500;">Server Uptime</div><div style="font-size:25px;font-weight:700;margin-top:5px;letter-spacing:-0.5px;">99.98%</div></div>
+              <div style="display:inline-flex;align-items:center;gap:3px;padding:3px 7px;border-radius:6px;font-size:11.5px;font-weight:700;color:#34d399;background:rgba(52,211,153,0.12);">▲ 0.02</div>
+            </div>
+            <svg viewBox="0 0 100 50" preserveAspectRatio="none" style="width:100%;height:42px;margin-top:10px;display:block;"><path d="{{ kUp.area }}" fill="url(#gG)"/><path d="{{ kUp.line }}" fill="none" stroke="#34d399" stroke-width="2" vector-effect="non-scaling-stroke" stroke-linejoin="round"/></svg>
+          </div>
+          <div style="background:#161920;border:1px solid #232832;border-radius:12px;padding:16px 18px;">
+            <div style="display:flex;justify-content:space-between;align-items:flex-start;">
+              <div><div style="font-size:13px;color:#8a909c;font-weight:500;">Active Incidents</div><div style="font-size:25px;font-weight:700;margin-top:5px;letter-spacing:-0.5px;">2</div></div>
+              <div style="display:inline-flex;align-items:center;gap:3px;padding:3px 7px;border-radius:6px;font-size:11.5px;font-weight:700;color:#34d399;background:rgba(52,211,153,0.12);">▼ 1</div>
+            </div>
+            <svg viewBox="0 0 100 50" preserveAspectRatio="none" style="width:100%;height:42px;margin-top:10px;display:block;"><path d="{{ kInc.area }}" fill="url(#gR)"/><path d="{{ kInc.line }}" fill="none" stroke="#f5604d" stroke-width="2" vector-effect="non-scaling-stroke" stroke-linejoin="round"/></svg>
+          </div>
+        </div>
+
+        <!-- CCU chart + region health -->
+        <div style="display:grid;grid-template-columns:2fr 1fr;gap:16px;">
+          <div style="background:#161920;border:1px solid #232832;border-radius:12px;padding:20px 22px;">
+            <div style="display:flex;justify-content:space-between;align-items:flex-start;">
+              <div>
+                <div style="font-size:15.5px;font-weight:700;">Player Activity</div>
+                <div style="font-size:12.5px;color:#8a909c;margin-top:3px;">Concurrent players · last 24 hours</div>
+              </div>
+              <div style="display:flex;gap:4px;background:#11141a;border:1px solid #262b35;border-radius:8px;padding:3px;">
+                <span style="font-size:12px;font-weight:600;color:#10131a;background:#f5a524;border-radius:6px;padding:4px 12px;">Day</span>
+                <span style="font-size:12px;font-weight:600;color:#9aa0ac;padding:4px 12px;cursor:pointer;">Week</span>
+                <span style="font-size:12px;font-weight:600;color:#9aa0ac;padding:4px 12px;cursor:pointer;">Month</span>
+              </div>
+            </div>
+            <svg viewBox="0 0 1000 270" preserveAspectRatio="none" style="width:100%;height:280px;margin-top:16px;display:block;">
+              <line x1="46" y1="250" x2="1000" y2="250" stroke="#232832" stroke-width="1"/>
+              <line x1="46" y1="173" x2="1000" y2="173" stroke="#1c2028" stroke-width="1"/>
+              <line x1="46" y1="95" x2="1000" y2="95" stroke="#1c2028" stroke-width="1"/>
+              <line x1="46" y1="18" x2="1000" y2="18" stroke="#1c2028" stroke-width="1"/>
+              <text x="8" y="253" fill="#5c626d" font-size="11" font-family="IBM Plex Mono">0</text>
+              <text x="8" y="176" fill="#5c626d" font-size="11" font-family="IBM Plex Mono">40k</text>
+              <text x="8" y="98" fill="#5c626d" font-size="11" font-family="IBM Plex Mono">80k</text>
+              <text x="8" y="22" fill="#5c626d" font-size="11" font-family="IBM Plex Mono">120k</text>
+              <path d="{{ ccuArea }}" fill="url(#gA)"/>
+              <path d="{{ ccuLine }}" fill="none" stroke="#f5a524" stroke-width="2.5" vector-effect="non-scaling-stroke" stroke-linejoin="round" stroke-linecap="round"/>
+            </svg>
+            <div style="display:flex;justify-content:space-between;margin-top:8px;padding-left:46px;font-size:11px;color:#5c626d;font-family:'IBM Plex Mono';">
+              <span>00:00</span><span>04:00</span><span>08:00</span><span>12:00</span><span>16:00</span><span>20:00</span><span>23:59</span>
+            </div>
+          </div>
+
+          <div style="background:#161920;border:1px solid #232832;border-radius:12px;padding:18px 20px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+              <div style="font-size:15.5px;font-weight:700;">Region Health</div>
+              <div style="font-size:12px;color:#6b7180;">6 regions</div>
+            </div>
+            <sc-for list="{{ regionsView }}" as="r" hint-placeholder-count="6">
+              <div style="display:flex;align-items:center;gap:12px;padding:10px 0;border-top:1px solid #1d2129;">
+                <span style="{{ r.dotStyle }}"></span>
+                <div style="flex:1;min-width:0;">
+                  <div style="font-size:13.5px;font-weight:600;">{{ r.name }}</div>
+                  <div style="font-size:11.5px;color:#7a808b;margin-top:2px;">{{ r.latency }} · {{ r.ccu }} CCU</div>
+                </div>
+                <div style="width:78px;">
+                  <div style="font-size:11px;color:#7a808b;text-align:right;margin-bottom:5px;">{{ r.loadLabel }}</div>
+                  <div style="height:5px;background:#232832;border-radius:999px;overflow:hidden;"><div style="{{ r.barStyle }}"></div></div>
+                </div>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+
+        <!-- Recent matches + live ops -->
+        <div style="display:grid;grid-template-columns:2fr 1fr;gap:16px;">
+          <div style="background:#161920;border:1px solid #232832;border-radius:12px;padding:20px 22px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+              <div style="font-size:15.5px;font-weight:700;">Recent Matches</div>
+              <div style="font-size:12.5px;font-weight:600;color:#f5a524;cursor:pointer;">View all</div>
+            </div>
+            <div style="display:grid;grid-template-columns:1.1fr 1.1fr 1fr 0.75fr 0.65fr 0.95fr;padding:12px 0 4px;font-size:10.5px;font-weight:700;color:#5c626d;letter-spacing:0.6px;">
+              <span>MATCH ID</span><span>MODE</span><span>REGION</span><span>PLAYERS</span><span>TIME</span><span>STATUS</span>
+            </div>
+            <sc-for list="{{ matches }}" as="m" hint-placeholder-count="6">
+              <div style="display:grid;grid-template-columns:1.1fr 1.1fr 1fr 0.75fr 0.65fr 0.95fr;align-items:center;padding:12px 0;border-top:1px solid #1d2129;font-size:13.5px;">
+                <span style="font-family:'IBM Plex Mono';color:#f5a524;font-size:12.5px;">#{{ m.id }}</span>
+                <span style="font-weight:500;">{{ m.mode }}</span>
+                <span style="color:#aeb3bd;">{{ m.region }}</span>
+                <span style="color:#aeb3bd;">{{ m.players }}</span>
+                <span style="color:#aeb3bd;">{{ m.duration }}</span>
+                <span><span style="{{ m.statusStyle }}"><span style="{{ m.dotStyle }}"></span>{{ m.statusLabel }}</span></span>
+              </div>
+            </sc-for>
+          </div>
+
+          <div style="background:#161920;border:1px solid #232832;border-radius:12px;padding:18px 20px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+              <div style="font-size:15.5px;font-weight:700;">Live Ops Events</div>
+              <div style="font-size:12.5px;font-weight:600;color:#f5a524;cursor:pointer;">Manage</div>
+            </div>
+            <sc-for list="{{ events }}" as="e" hint-placeholder-count="4">
+              <div style="padding:14px 0;border-top:1px solid #1d2129;">
+                <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;">
+                  <span style="font-size:13.5px;font-weight:600;">{{ e.name }}</span>
+                  <span style="{{ e.statusStyle }}">{{ e.statusLabel }}</span>
+                </div>
+                <div style="font-size:11.5px;color:#7a808b;margin:6px 0 9px;">{{ e.window }}</div>
+                <div style="display:flex;align-items:center;gap:10px;">
+                  <div style="flex:1;height:6px;background:#232832;border-radius:999px;overflow:hidden;"><div style="{{ e.barStyle }}"></div></div>
+                  <span style="font-size:11.5px;font-weight:600;color:#9aa0ac;width:34px;text-align:right;">{{ e.pctLabel }}</span>
+                </div>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+      </div>
+      </sc-if>
+
+      <!-- ========== PLAYERS ========== -->
+      <sc-if value="{{ isPlayers }}">
+      <div style="display:flex;flex-direction:column;gap:20px;">
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:16px;">
+          <div style="background:#161920;border:1px solid #232832;border-radius:12px;padding:18px 20px;"><div style="font-size:13px;color:#8a909c;">Total Players</div><div style="font-size:27px;font-weight:700;margin-top:6px;letter-spacing:-0.5px;">2.84M</div><div style="font-size:12px;color:#34d399;font-weight:600;margin-top:5px;">▲ 4.2% this month</div></div>
+          <div style="background:#161920;border:1px solid #232832;border-radius:12px;padding:18px 20px;"><div style="font-size:13px;color:#8a909c;">Online Now</div><div style="font-size:27px;font-weight:700;margin-top:6px;letter-spacing:-0.5px;">98,240</div><div style="font-size:12px;color:#34d399;font-weight:600;margin-top:5px;">▲ 6.2% vs avg</div></div>
+          <div style="background:#161920;border:1px solid #232832;border-radius:12px;padding:18px 20px;"><div style="font-size:13px;color:#8a909c;">New (24h)</div><div style="font-size:27px;font-weight:700;margin-top:6px;letter-spacing:-0.5px;">12,470</div><div style="font-size:12px;color:#34d399;font-weight:600;margin-top:5px;">▲ 1.8% vs avg</div></div>
+          <div style="background:#161920;border:1px solid #232832;border-radius:12px;padding:18px 20px;"><div style="font-size:13px;color:#8a909c;">Banned</div><div style="font-size:27px;font-weight:700;margin-top:6px;letter-spacing:-0.5px;">1,204</div><div style="font-size:12px;color:#f5604d;font-weight:600;margin-top:5px;">▲ 38 today</div></div>
+        </div>
+
+        <div style="background:#161920;border:1px solid #232832;border-radius:12px;padding:18px 20px;">
+          <div style="display:flex;align-items:center;gap:12px;margin-bottom:18px;">
+            <div style="flex:1;display:flex;align-items:center;gap:9px;background:#11141a;border:1px solid #262b35;border-radius:9px;padding:9px 13px;max-width:380px;">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#6b7180" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg>
+              <span style="font-size:13px;color:#6b7180;">Search username or UID…</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:7px;background:#11141a;border:1px solid #262b35;border-radius:9px;padding:9px 14px;font-size:13px;color:#aeb3bd;cursor:pointer;">Status: All <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg></div>
+            <div style="display:flex;align-items:center;gap:7px;background:#11141a;border:1px solid #262b35;border-radius:9px;padding:9px 14px;font-size:13px;color:#aeb3bd;cursor:pointer;">Region: All <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg></div>
+            <div style="background:#f5a524;color:#10131a;font-size:13px;font-weight:700;padding:9px 18px;border-radius:9px;cursor:pointer;">Export</div>
+          </div>
+
+          <div style="display:grid;grid-template-columns:1.8fr 0.6fr 1fr 0.95fr 0.85fr 0.85fr 0.7fr;padding:0 0 4px;font-size:10.5px;font-weight:700;color:#5c626d;letter-spacing:0.6px;">
+            <span>PLAYER</span><span>LEVEL</span><span>REGION</span><span>STATUS</span><span>PLAYTIME</span><span>LAST SEEN</span><span style="text-align:right;">ACTIONS</span>
+          </div>
+          <sc-for list="{{ players }}" as="p" hint-placeholder-count="8">
+            <div style="display:grid;grid-template-columns:1.8fr 0.6fr 1fr 0.95fr 0.85fr 0.85fr 0.7fr;align-items:center;padding:11px 0;border-top:1px solid #1d2129;font-size:13.5px;">
+              <div style="display:flex;align-items:center;gap:11px;min-width:0;">
+                <div style="{{ p.avatarStyle }}">{{ p.ini }}</div>
+                <div style="min-width:0;"><div style="font-weight:600;">{{ p.name }}</div><div style="font-family:'IBM Plex Mono';font-size:11px;color:#6b7180;margin-top:1px;">#{{ p.uid }}</div></div>
+              </div>
+              <span style="font-weight:600;color:#f5a524;">{{ p.level }}</span>
+              <span style="color:#aeb3bd;">{{ p.region }}</span>
+              <span><span style="{{ p.statusStyle }}"><span style="{{ p.statusDot }}"></span>{{ p.statusLabel }}</span></span>
+              <span style="color:#aeb3bd;">{{ p.pt }}</span>
+              <span style="color:#aeb3bd;">{{ p.seen }}</span>
+              <div style="display:flex;gap:7px;justify-content:flex-end;">
+                <span style="font-size:12px;font-weight:600;color:#aeb3bd;border:1px solid #2b303a;border-radius:7px;padding:5px 11px;cursor:pointer;">View</span>
+                <span style="display:flex;align-items:center;justify-content:center;width:29px;border:1px solid #2b303a;border-radius:7px;cursor:pointer;"><svg width="15" height="15" viewBox="0 0 24 24" fill="#6b7180"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg></span>
+              </div>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+      </sc-if>
+
+      <!-- ========== SERVERS ========== -->
+      <sc-if value="{{ isServers }}">
+      <div style="display:flex;flex-direction:column;gap:20px;">
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:16px;">
+          <div style="background:#161920;border:1px solid #232832;border-radius:12px;padding:18px 20px;"><div style="font-size:13px;color:#8a909c;">Players in Queue</div><div style="font-size:27px;font-weight:700;margin-top:6px;letter-spacing:-0.5px;">3,180</div><div style="font-size:12px;color:#8a909c;margin-top:5px;">across all playlists</div></div>
+          <div style="background:#161920;border:1px solid #232832;border-radius:12px;padding:18px 20px;"><div style="font-size:13px;color:#8a909c;">Avg Wait Time</div><div style="font-size:27px;font-weight:700;margin-top:6px;letter-spacing:-0.5px;">42s</div><div style="font-size:12px;color:#34d399;font-weight:600;margin-top:5px;">▼ 8s vs avg</div></div>
+          <div style="background:#161920;border:1px solid #232832;border-radius:12px;padding:18px 20px;"><div style="font-size:13px;color:#8a909c;">Match Success</div><div style="font-size:27px;font-weight:700;margin-top:6px;letter-spacing:-0.5px;">97.4%</div><div style="font-size:12px;color:#34d399;font-weight:600;margin-top:5px;">▲ 0.6%</div></div>
+          <div style="background:#161920;border:1px solid #232832;border-radius:12px;padding:18px 20px;"><div style="font-size:13px;color:#8a909c;">Active Sessions</div><div style="font-size:27px;font-weight:700;margin-top:6px;letter-spacing:-0.5px;">1,420</div><div style="font-size:12px;color:#8a909c;margin-top:5px;">540 instances</div></div>
+        </div>
+
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px;">
+          <sc-for list="{{ regionCards }}" as="r" hint-placeholder-count="6">
+            <div style="background:#161920;border:1px solid #232832;border-radius:12px;padding:18px 20px;">
+              <div style="display:flex;justify-content:space-between;align-items:center;">
+                <div style="display:flex;align-items:center;gap:9px;"><span style="{{ r.dotStyle }}"></span><span style="font-size:14.5px;font-weight:700;">{{ r.name }}</span></div>
+                <span style="{{ r.statusStyle }}">{{ r.statusLabel }}</span>
+              </div>
+              <div style="font-size:28px;font-weight:800;letter-spacing:-0.8px;margin-top:14px;">{{ r.ccu }}</div>
+              <div style="font-size:12px;color:#8a909c;">concurrent players</div>
+              <div style="display:flex;gap:22px;margin-top:14px;">
+                <div><div style="font-size:11px;color:#6b7180;">LATENCY</div><div style="font-size:14px;font-weight:600;margin-top:2px;">{{ r.latency }}</div></div>
+                <div><div style="font-size:11px;color:#6b7180;">INSTANCES</div><div style="font-size:14px;font-weight:600;margin-top:2px;">{{ r.instances }}</div></div>
+              </div>
+              <div style="margin-top:14px;">
+                <div style="display:flex;justify-content:space-between;font-size:11.5px;color:#7a808b;margin-bottom:5px;"><span>Server load</span><span>{{ r.loadLabel }}</span></div>
+                <div style="height:6px;background:#232832;border-radius:999px;overflow:hidden;"><div style="{{ r.barStyle }}"></div></div>
+              </div>
+              <div style="margin-top:14px;padding-top:12px;border-top:1px solid #1d2129;font-family:'IBM Plex Mono';font-size:11.5px;color:#6b7180;">{{ r.tag }}</div>
+            </div>
+          </sc-for>
+        </div>
+
+        <div style="background:#161920;border:1px solid #232832;border-radius:12px;padding:20px 22px;">
+          <div style="font-size:15.5px;font-weight:700;margin-bottom:6px;">Incident Timeline</div>
+          <sc-for list="{{ incidents }}" as="i" hint-placeholder-count="3">
+            <div style="display:flex;align-items:center;gap:14px;padding:13px 0;border-top:1px solid #1d2129;">
+              <span style="{{ i.dotStyle }}"></span>
+              <div style="flex:1;min-width:0;font-size:13.5px;font-weight:500;">{{ i.title }}</div>
+              <span style="{{ i.statusStyle }}">{{ i.statusLabel }}</span>
+              <span style="font-size:12px;color:#6b7180;width:64px;text-align:right;">{{ i.time }}</span>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+      </sc-if>
+
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script>
+class Component extends DCLogic {
+  state = { page: 'dashboard' };
+
+  renderVals() {
+    const S = this.state;
+    const set = (p) => () => this.setState({ page: p });
+
+    const navBase = { display:'flex', alignItems:'center', gap:'12px', padding:'9px 12px', borderRadius:'8px', cursor:'pointer', fontSize:'13.5px', fontWeight:500, color:'#9aa0ac' };
+    const navOn = { ...navBase, color:'#f5a524', background:'rgba(245,165,36,0.10)', fontWeight:700 };
+    const navOf = (p) => (S.page === p ? navOn : navBase);
+
+    function spark(vals, x0, x1, yTop, yBot, min, max) {
+      const n = vals.length;
+      const pts = vals.map((v, i) => {
+        const x = x0 + (i / (n - 1)) * (x1 - x0);
+        const y = yBot - ((v - min) / (max - min)) * (yBot - yTop);
+        return [x, y];
+      });
+      const line = 'M' + pts.map(p => p[0].toFixed(1) + ',' + p[1].toFixed(1)).join(' L');
+      const area = line + ' L' + x1 + ',' + yBot + ' L' + x0 + ',' + yBot + ' Z';
+      return { line, area };
+    }
+    const mini = (vals) => {
+      const mn = Math.min(...vals), mx = Math.max(...vals);
+      const pad = (mx - mn) * 0.25 || 1;
+      return spark(vals, 2, 98, 8, 44, mn - pad, mx + pad);
+    };
+
+    const ccu24 = [44,41,38,36,34,37,46,60,74,82,88,92,90,86,84,88,94,99,106,112,109,100,86,68];
+    const ccuBig = spark(ccu24, 46, 1000, 18, 250, 0, 120);
+
+    const badge = (c, bg) => ({ display:'inline-flex', alignItems:'center', gap:'6px', padding:'3px 9px', borderRadius:'6px', fontSize:'12px', fontWeight:600, color:c, background:bg, whiteSpace:'nowrap' });
+    const C = { green:['#34d399','rgba(52,211,153,0.12)'], amber:['#f5a524','rgba(245,165,36,0.12)'], red:['#f5604d','rgba(245,96,77,0.12)'], blue:['#7aa2f7','rgba(122,162,247,0.12)'], grey:['#9aa0ac','rgba(138,144,156,0.12)'] };
+    const B = (k) => badge(C[k][0], C[k][1]);
+    const dot = (col) => ({ width:'7px', height:'7px', borderRadius:'999px', background:col, flexShrink:0 });
+    const loadStyle = (load) => {
+      const col = load < 70 ? '#34d399' : load < 85 ? '#f5a524' : '#f5604d';
+      return { width: load + '%', height:'100%', borderRadius:'999px', background:col };
+    };
+
+    const mStat = { 'In Progress':'amber', 'Completed':'green', 'Starting':'blue' };
+    const matches = [
+      { id:'M-4F9A2C', mode:'Ranked 5v5', region:'EU-Central', players:'10 / 10', duration:'24m', st:'In Progress' },
+      { id:'M-7B12E0', mode:'Battle Royale', region:'NA-East', players:'96 / 100', duration:'12m', st:'In Progress' },
+      { id:'M-2C88A1', mode:'Co-op Raid', region:'Asia-Pacific', players:'4 / 4', duration:'38m', st:'Completed' },
+      { id:'M-9D40FF', mode:'Ranked 5v5', region:'NA-West', players:'9 / 10', duration:'02m', st:'Starting' },
+      { id:'M-1A77B3', mode:'Arena 3v3', region:'EU-West', players:'6 / 6', duration:'17m', st:'Completed' },
+      { id:'M-6E5521', mode:'Battle Royale', region:'NA-East', players:'100 / 100', duration:'19m', st:'In Progress' },
+    ].map(m => ({ ...m, statusStyle: B(mStat[m.st]), statusLabel: m.st, dotStyle: dot(C[mStat[m.st]][0]) }));
+
+    const rStat = { 'Healthy':'green', 'Degraded':'amber' };
+    const regions = [
+      { name:'NA-East', ccu:'28.4k', latency:'24 ms', load:62, st:'Healthy', instances:'142', tag:'na-east-1' },
+      { name:'EU-Central', ccu:'22.1k', latency:'31 ms', load:58, st:'Healthy', instances:'118', tag:'eu-central-1' },
+      { name:'Asia-Pacific', ccu:'19.7k', latency:'48 ms', load:81, st:'Degraded', instances:'96', tag:'ap-southeast-1' },
+      { name:'NA-West', ccu:'14.2k', latency:'27 ms', load:45, st:'Healthy', instances:'88', tag:'na-west-2' },
+      { name:'EU-West', ccu:'9.8k', latency:'35 ms', load:39, st:'Healthy', instances:'64', tag:'eu-west-1' },
+      { name:'S. America', ccu:'4.0k', latency:'66 ms', load:28, st:'Healthy', instances:'32', tag:'sa-east-1' },
+    ].map(r => ({ ...r, statusStyle: B(rStat[r.st]), statusLabel: r.st, barStyle: loadStyle(r.load), dotStyle: dot(C[rStat[r.st]][0]), loadLabel: r.load + '%' }));
+
+    const events = [
+      { name:'Frostfall Festival', window:'Ends in 3d 4h', pct:64, st:'Live' },
+      { name:'Double XP Weekend', window:'Starts in 18h', pct:0, st:'Scheduled' },
+      { name:'Ranked Season 12', window:'41 days remaining', pct:23, st:'Live' },
+      { name:'Vault Heist · LTM', window:'Ends in 6h', pct:88, st:'Live' },
+    ].map(e => ({ ...e, statusStyle: B(e.st === 'Live' ? 'green' : 'blue'), statusLabel: e.st, barStyle: { width: e.pct + '%', height:'100%', borderRadius:'999px', background: e.st === 'Live' ? '#f5a524' : '#7aa2f7' }, pctLabel: e.pct + '%' }));
+
+    const pStat = { 'Online':'green', 'Idle':'amber', 'Offline':'grey', 'Banned':'red', 'Flagged':'red' };
+    const av = ['#e0823d','#3d8be0','#4caf8e','#a563d6','#d6635f','#5fa8d6'];
+    const players = [
+      { ini:'VR', name:'VoidR4nger', uid:'UID-882104', level:'248', region:'NA-East', pt:'1,204 h', seen:'now', st:'Online' },
+      { ini:'fb', name:'frost_byte', uid:'UID-771043', level:'187', region:'EU-Central', pt:'842 h', seen:'now', st:'Online' },
+      { ini:'NS', name:'Nyx_Shadow', uid:'UID-553820', level:'312', region:'Asia-Pacific', pt:'2,108 h', seen:'4m ago', st:'Idle' },
+      { ini:'Pf', name:'Pulsefire', uid:'UID-220194', level:'96', region:'NA-West', pt:'318 h', seen:'2h ago', st:'Offline' },
+      { ini:'ic', name:'ironcladd', uid:'UID-940027', level:'421', region:'EU-West', pt:'3,442 h', seen:'1d ago', st:'Banned' },
+      { ini:'mo', name:'mochi_77', uid:'UID-118765', level:'54', region:'Asia-Pacific', pt:'142 h', seen:'now', st:'Online' },
+      { ini:'St', name:'Starcaller', uid:'UID-660931', level:'203', region:'S. America', pt:'977 h', seen:'5h ago', st:'Offline' },
+      { ini:'gh', name:'ghost.exe', uid:'UID-409218', level:'134', region:'NA-East', pt:'511 h', seen:'12m ago', st:'Flagged' },
+    ].map((p, i) => ({ ...p, statusStyle: B(pStat[p.st]), statusLabel: p.st, statusDot: dot(C[pStat[p.st]][0]), avatarStyle: { width:'34px', height:'34px', borderRadius:'9px', background: av[i % av.length], display:'flex', alignItems:'center', justifyContent:'center', fontSize:'13px', fontWeight:700, color:'#10131a', flexShrink:0 } }));
+
+    const incidents = [
+      { title:'Asia-Pacific · elevated match latency', st:'Investigating', time:'23m ago', k:'amber' },
+      { title:'EU-Central · patch 4.12 rollout', st:'Monitoring', time:'1h ago', k:'blue' },
+      { title:'NA-East · resolved login spike', st:'Resolved', time:'3h ago', k:'green' },
+    ].map(x => ({ ...x, statusStyle: B(x.k), statusLabel: x.st, dotStyle: dot(C[x.k][0]) }));
+
+    const titles = { dashboard:['Operations','Operations Overview'], players:['Players','Player Management'], servers:['Infrastructure','Matchmaking & Servers'] };
+    const t = titles[S.page];
+
+    return {
+      navDash: navOf('dashboard'), navPlayers: navOf('players'), navServers: navOf('servers'),
+      navHover: { background:'rgba(255,255,255,0.04)', color:'#cfd3da' },
+      btnHover: { filter:'brightness(1.07)' },
+      goDash: set('dashboard'), goPlayers: set('players'), goServers: set('servers'),
+      isDash: S.page === 'dashboard', isPlayers: S.page === 'players', isServers: S.page === 'servers',
+      pageCrumb: t[0], pageTitle: t[1],
+      ccuArea: ccuBig.area, ccuLine: ccuBig.line,
+      kCCU: mini(ccu24.slice(8)),
+      kMatch: mini([320,360,340,400,420,410,460,480,470,510]),
+      kUp: mini([99.90,99.96,100,99.98,99.97,100,99.99,99.98,100,99.98]),
+      kInc: mini([4,3,5,3,2,3,2,1,2,2]),
+      matches, regionsView: regions, regionCards: regions, events, players, incidents,
+    };
+  }
+}
+</script>
+</body>
+</html>

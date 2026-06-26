@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GameOps — Admin</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Public+Sans:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/admin/theme.css">
+</head>
+<body>
+<div class="app">
+
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-logo">G</div>
+      <div>
+        <div class="brand-title">GameOps</div>
+        <div class="brand-sub">Backend Console</div>
+      </div>
+    </div>
+    <nav class="nav">
+      <div class="nav-group">MAIN</div>
+      <a class="nav-item active">Dashboard</a>
+      <span class="nav-item muted">Analytics</span>
+      <div class="nav-group">OPERATIONS</div>
+      <span class="nav-item muted">Players</span>
+      <span class="nav-item muted">Live Ops &amp; Events</span>
+      <span class="nav-item muted">Economy &amp; Store</span>
+      <span class="nav-item muted">Matchmaking &amp; Servers</span>
+      <span class="nav-item muted">Leaderboards</span>
+      <span class="nav-item muted">Moderation</span>
+      <div class="nav-group">SYSTEM</div>
+      <span class="nav-item muted">Game Config &amp; Flags</span>
+    </nav>
+    <div class="sidebar-foot">
+      <div class="avatar">{{.User.Initials}}</div>
+      <div style="flex:1;min-width:0;">
+        <div class="foot-name">{{.User.Name}}</div>
+        <div class="foot-role">Backend Admin</div>
+      </div>
+    </div>
+  </aside>
+
+  <div class="main">
+    <div class="header">
+      <div>
+        <div class="crumb">{{.Crumb}}</div>
+        <div class="title">{{.Title}}</div>
+      </div>
+      <div class="spacer"></div>
+      <div class="search">Search players, IDs… <span class="kbd">⌘K</span></div>
+      <div class="env"><span style="width:7px;height:7px;border-radius:999px;background:var(--green);"></span>{{.Env}}</div>
+    </div>
+
+    <div class="content">
+      <div class="stack">
+        {{range .Sections}}
+          {{if .KPIs}}
+          <div class="kpi-grid">
+            {{range .KPIs}}
+            <div class="kpi">
+              <div class="kpi-label">{{.Label}}</div>
+              <div class="kpi-value">{{.Value}}</div>
+              {{if .Sub}}<div class="kpi-sub">{{.Sub}}</div>{{end}}
+            </div>
+            {{end}}
+          </div>
+          {{end}}
+          {{if .Table}}
+          <div class="panel">
+            <div class="panel-title">{{.Title}}</div>
+            {{if .Table.Rows}}
+            <table class="table">
+              <thead><tr>{{range .Table.Columns}}<th>{{.}}</th>{{end}}</tr></thead>
+              <tbody>
+                {{range .Table.Rows}}<tr>{{range .}}<td>{{template "cell" .}}</td>{{end}}</tr>{{end}}
+              </tbody>
+            </table>
+            {{else}}<div class="empty">No rows yet.</div>{{end}}
+          </div>
+          {{end}}
+        {{else}}
+          <div class="panel"><div class="empty">No sections contributed yet.</div></div>
+        {{end}}
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>
+{{define "cell"}}{{if .Badge}}<span class="badge {{.Badge}}"><span class="dot"></span>{{.Text}}</span>{{else if .Mono}}<span class="mono dim">{{.Text}}</span>{{else}}{{.Text}}{{end}}{{end}}

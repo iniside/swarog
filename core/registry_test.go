@@ -70,6 +70,21 @@ func TestMissingDependencyFails(t *testing.T) {
 	}
 }
 
+func TestContributions(t *testing.T) {
+	ctx := testCtx()
+	ctx.Contribute("s", "a")
+	ctx.Contribute("s", "b")
+	ctx.Contribute("other", "x")
+
+	got := ctx.Contributions("s")
+	if len(got) != 2 || got[0] != "a" || got[1] != "b" {
+		t.Fatalf("contributions out of order or wrong: %v", got)
+	}
+	if len(ctx.Contributions("missing")) != 0 {
+		t.Fatalf("empty slot should return nothing, got %v", ctx.Contributions("missing"))
+	}
+}
+
 func TestCycleFails(t *testing.T) {
 	var rec []string
 	reg := NewRegistry(testCtx())

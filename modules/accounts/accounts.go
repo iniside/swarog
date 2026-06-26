@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"gamebackend/core"
+	"gamebackend/modules/admin/adminapi"
 )
 
 // Module owns the "accounts" schema and the player-identity surface. It is a
@@ -112,6 +113,9 @@ func (m *Module) Init(ctx *core.Context) error {
 
 	// Offered to other modules; they assert it to their own local interface.
 	ctx.Provide("accounts", &service{store: m.store})
+
+	// Appear in the admin portal (it renders whatever is contributed).
+	ctx.Contribute(adminapi.Slot, adminapi.Section{Title: "Players", Render: m.adminSection})
 	return nil
 }
 
