@@ -57,6 +57,22 @@ Three seams carry all extensibility; almost everything else follows from them:
    `core.Stopper`.
 5. Register it with one line in `cmd/server/main.go`. Touch nothing else.
 
+## Accounts & identity
+
+The `accounts` module owns player identity. The **production model is federation**:
+the backend is a *trusted verifier* of an external IdP's token (EOS Connect model),
+never a password holder. One product-scoped `player_id`, many credential providers
+over it (`identities(provider, subject) → player_id`), opaque DB-backed `sessions`.
+
+- **dev / password** — local-only self-registration for testing. Gated by
+  `ACCOUNTS_DEV_AUTH` (default ON locally, logs a loud warning; turn OFF in prod).
+- **epic** — real OIDC verifier. Enabled only when `EPIC_CLIENT_ID` is set. Verifies
+  an EOS Connect ID Token against Epic's JWKS (`EPIC_JWKS_URL`,
+  `EPIC_ISSUER_PREFIX`), `sub` = PUID. New external identities auto-provision a
+  player. Adding Google later = another configured OIDC verifier, same shape.
+
+Emits `accountsevents.PlayerRegistered`. Not yet wired into match/rating.
+
 ## Commands
 
 ```
@@ -89,6 +105,9 @@ PGPASSWORD=gamebackend "/c/Program Files/PostgreSQL/18/bin/psql.exe" -U gameback
 cmd/server/main.go            # the only place that lists all modules
 core/                         # Module, Context, Registry, Bus, typed events — no game knowledge
 modules/
+  accounts/                   # player identity: dev(password) + epic(OIDC) providers, owns schema "accounts"
+    accountsevents/           #   published events (PlayerRegistered)
+    store.go password.go epic.go
   match/matchevents/          # published events of the match domain (descriptor + payload)
   match/match.go              # impl: depends on "rating" (sync), emits match.finished
   rating/rating.go            # impl: provides "rating" service, reacts to matches (in-memory)

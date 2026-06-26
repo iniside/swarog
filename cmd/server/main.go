@@ -13,6 +13,7 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib" // registers the "pgx" database/sql driver
 
 	"gamebackend/core"
+	"gamebackend/modules/accounts"
 	"gamebackend/modules/leaderboard"
 	"gamebackend/modules/match"
 	"gamebackend/modules/rating"
@@ -47,6 +48,7 @@ func main() {
 
 	// The ONLY place that knows the full module list. Adding a feature =
 	// one line here + one new folder. Nothing else in the codebase changes.
+	reg.Add(&accounts.Module{})    // pointer: holds db + verifiers
 	reg.Add(rating.Module{})
 	reg.Add(&leaderboard.Module{}) // pointer: holds db + logger
 	reg.Add(match.Module{})        // order is free — topo-sort settles it

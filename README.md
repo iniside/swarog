@@ -50,6 +50,25 @@ resolved via its interface or kept in sync via events (eventually consistent).
 This keeps every module's schema private and independently extractable later.
 
 - `leaderboard` owns schema `leaderboard`; its win counts persist across restarts.
+- `accounts` owns schema `accounts` (players, identities, sessions).
+
+## Accounts & identity
+
+The backend is a **trusted verifier**, not an identity provider (the EOS Connect
+model): one product-scoped `player_id`, many credential providers mapping
+`(provider, subject) → player_id`, with opaque DB-backed sessions.
+
+- **dev / password** — local self-registration for testing, gated by
+  `ACCOUNTS_DEV_AUTH` (default ON locally, logs a warning; OFF in production).
+- **epic** — verifies an EOS Connect ID Token against Epic's JWKS; enabled only
+  when `EPIC_CLIENT_ID` is set (`EPIC_JWKS_URL`, `EPIC_ISSUER_PREFIX` configurable).
+  First verified token auto-provisions a player. Google would be the same shape.
+
+```
+curl -X POST localhost:8080/accounts/register -d '{"email":"a@b.c","password":"pw","displayName":"Al"}'
+curl localhost:8080/accounts/me -H "Authorization: Bearer <token>"
+curl -X POST localhost:8080/accounts/login/epic -d '{"id_token":"<EOS Connect ID token>"}'
+```
 
 ## Dependency rules
 
