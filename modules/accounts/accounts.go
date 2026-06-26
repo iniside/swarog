@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"gamebackend/core"
 )
@@ -19,9 +20,10 @@ type Module struct {
 	db      *sql.DB
 	log     *slog.Logger
 	bus     *core.Bus
-	store   *store
-	devAuth bool
-	epic    *oidcVerifier
+	store     *store
+	devAuth   bool
+	epic      *oidcVerifier
+	epicOAuth *epicOAuth
 }
 
 func (*Module) Name() string        { return "accounts" }
@@ -73,10 +75,12 @@ func (m *Module) Init(ctx *core.Context) error {
 		ctx.Mux.HandleFunc("POST /accounts/login", m.handleLogin)
 	}
 
-	// epic provider — the real federated path. Enabled only when configured.
+	// epic provider — the real federated path via Epic Account Services (OIDC).
+	// Enabled only when configured. Defaults point at EAS endpoints (web OAuth);
+	// sub is the Epic Account ID.
 	if clientID := os.Getenv("EPIC_CLIENT_ID"); clientID != "" {
-		jwksURL := envOr("EPIC_JWKS_URL", "https://api.epicgames.dev/auth/v1/oauth/jwks")
-		issuer := envOr("EPIC_ISSUER_PREFIX", "https://api.epicgames.dev")
+		jwksURL := envOr("EPIC_JWKS_URL", "https://api.epicgames.dev/epic/oauth/v1/.well-known/jwks.json")
+		issuer := envOr("EPIC_ISSUER_PREFIX", "https://api.epicgames.dev/epic/oauth/v1")
 		v, err := newOIDCVerifier(jwksURL, issuer, clientID)
 		if err != nil {
 			ctx.Log.Error("epic provider disabled: jwks unavailable", "err", err)
@@ -84,6 +88,23 @@ func (m *Module) Init(ctx *core.Context) error {
 			m.epic = v
 			ctx.Mux.HandleFunc("POST /accounts/login/epic", m.handleEpicLogin)
 			ctx.Log.Info("epic provider enabled", "jwks", jwksURL, "aud", clientID)
+
+			// Web OAuth (authorize-code) needs the confidential client secret.
+			if secret := os.Getenv("EPIC_CLIENT_SECRET"); secret != "" {
+				m.epicOAuth = &epicOAuth{
+					clientID:     clientID,
+					clientSecret: secret,
+					redirectURI:  envOr("EPIC_REDIRECT_URI", "http://localhost:8080/accounts/epic/callback"),
+					authorizeURL: envOr("EPIC_AUTHORIZE_URL", "https://www.epicgames.com/id/authorize"),
+					tokenURL:     envOr("EPIC_TOKEN_URL", "https://api.epicgames.dev/epic/oauth/v1/token"),
+					verifier:     v,
+					httpc:        &http.Client{Timeout: 10 * time.Second},
+					states:       map[string]oauthState{},
+				}
+				ctx.Mux.HandleFunc("POST /accounts/epic/start", m.handleEpicStart)
+				ctx.Mux.HandleFunc("GET /accounts/epic/callback", m.handleEpicCallback)
+				ctx.Log.Info("epic OAuth enabled", "redirect", m.epicOAuth.redirectURI)
+			}
 		}
 	}
 

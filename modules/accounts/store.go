@@ -17,6 +17,7 @@ const sessionTTL = 30 * 24 * time.Hour
 var (
 	ErrEmailTaken         = errors.New("email already registered")
 	ErrInvalidCredentials = errors.New("invalid credentials")
+	ErrIdentityLinked     = errors.New("identity already linked")
 )
 
 // Player is our product-scoped identity (the EOS PUID analogue).
@@ -109,6 +110,18 @@ func (s *store) findOrCreateExternal(ctx context.Context, provider, subject, dis
 		return Player{}, false, err
 	}
 	return p, true, nil
+}
+
+// linkIdentity attaches an already-verified external identity to an existing
+// player. Returns ErrIdentityLinked if that (provider, subject) is taken.
+func (s *store) linkIdentity(ctx context.Context, playerID, provider, subject string) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO accounts.identities (provider, subject, player_id) VALUES ($1, $2, $3::uuid)`,
+		provider, subject, playerID)
+	if isUniqueViolation(err) {
+		return ErrIdentityLinked
+	}
+	return err
 }
 
 func (s *store) playerByIdentity(ctx context.Context, provider, subject string) (Player, bool, error) {

@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GameBackend — account linking</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; display: grid; place-items: center;
+    font: 15px/1.5 ui-sans-serif, system-ui, sans-serif;
+    background: #0e1116; color: #e6edf3;
+  }
+  .card {
+    width: min(480px, 92vw); background: #161b22; border: 1px solid #30363d;
+    border-radius: 14px; padding: 28px; box-shadow: 0 8px 40px rgba(0,0,0,.4);
+  }
+  h1 { font-size: 19px; margin: 0 0 4px; }
+  .sub { color: #8b949e; margin: 0 0 22px; font-size: 13px; }
+  label { display: block; font-size: 12px; color: #8b949e; margin: 12px 0 4px; }
+  input {
+    width: 100%; padding: 9px 11px; border-radius: 8px;
+    border: 1px solid #30363d; background: #0d1117; color: #e6edf3; font-size: 14px;
+  }
+  .row { display: flex; gap: 8px; margin-top: 16px; }
+  button {
+    flex: 1; padding: 10px 12px; border-radius: 8px; border: 1px solid #30363d;
+    background: #21262d; color: #e6edf3; font-size: 14px; cursor: pointer;
+  }
+  button:hover { background: #2a313a; }
+  button.primary { background: #1f6feb; border-color: #1f6feb; }
+  button.primary:hover { background: #388bfd; }
+  button.epic { background: #2ea043; border-color: #2ea043; }
+  button.epic:hover { background: #3fb950; }
+  .muted { color: #8b949e; font-size: 12px; }
+  .kv { display: grid; grid-template-columns: 110px 1fr; gap: 6px 12px; margin: 8px 0 0; }
+  .kv div:nth-child(odd) { color: #8b949e; font-size: 13px; }
+  code { background: #0d1117; padding: 1px 6px; border-radius: 5px; font-size: 12px; word-break: break-all; }
+  .id { display: inline-block; background: #0d1117; border: 1px solid #30363d; border-radius: 999px;
+        padding: 2px 10px; font-size: 12px; margin: 4px 6px 0 0; }
+  .toast { padding: 9px 12px; border-radius: 8px; font-size: 13px; margin-bottom: 16px; display: none; }
+  .toast.ok  { display: block; background: #15321d; border: 1px solid #2ea043; color: #7ee787; }
+  .toast.err { display: block; background: #3a1518; border: 1px solid #f85149; color: #ffa198; }
+  hr { border: none; border-top: 1px solid #21262d; margin: 22px 0; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>GameBackend</h1>
+  <p class="sub">account linking demo — dev login, then link your Epic account</p>
+
+  <div id="toast" class="toast"></div>
+
+  <!-- logged out -->
+  <section id="auth">
+    <label>Email</label>
+    <input id="email" type="email" placeholder="you@example.com" autocomplete="username">
+    <label>Password</label>
+    <input id="password" type="password" placeholder="••••••••" autocomplete="current-password">
+    <div class="row">
+      <button class="primary" onclick="register()">Register</button>
+      <button onclick="login()">Log in</button>
+    </div>
+    <p class="muted" style="margin-top:14px">Dev auth is for local testing only.</p>
+  </section>
+
+  <!-- logged in -->
+  <section id="account" style="display:none">
+    <div class="kv">
+      <div>player_id</div><div><code id="pid"></code></div>
+      <div>display name</div><div id="dname"></div>
+    </div>
+    <label style="margin-top:18px">Linked identities</label>
+    <div id="identities"></div>
+    <hr>
+    <button class="epic" onclick="linkEpic()">Link Epic account</button>
+    <div class="row">
+      <button onclick="logout()">Log out</button>
+    </div>
+  </section>
+</div>
+
+<script>
+const TOKEN = "gb_token";
+const $ = (id) => document.getElementById(id);
+const token = () => localStorage.getItem(TOKEN);
+
+function toast(msg, ok) {
+  const t = $("toast");
+  t.textContent = msg;
+  t.className = "toast " + (ok ? "ok" : "err");
+}
+
+async function api(path, opts = {}) {
+  opts.headers = Object.assign({ "Content-Type": "application/json" }, opts.headers || {});
+  const t = token();
+  if (t) opts.headers["Authorization"] = "Bearer " + t;
+  return fetch(path, opts);
+}
+
+async function register() {
+  const r = await api("/accounts/register", { method: "POST", body: JSON.stringify({
+    email: $("email").value, password: $("password").value, displayName: $("email").value.split("@")[0],
+  })});
+  if (!r.ok) return toast("Register failed: " + (await r.text()).trim(), false);
+  const j = await r.json();
+  localStorage.setItem(TOKEN, j.token);
+  await refresh();
+}
+
+async function login() {
+  const r = await api("/accounts/login", { method: "POST", body: JSON.stringify({
+    email: $("email").value, password: $("password").value,
+  })});
+  if (!r.ok) return toast("Login failed: " + (await r.text()).trim(), false);
+  const j = await r.json();
+  localStorage.setItem(TOKEN, j.token);
+  await refresh();
+}
+
+function logout() { localStorage.removeItem(TOKEN); refresh(); }
+
+async function linkEpic() {
+  const r = await api("/accounts/epic/start", { method: "POST" });
+  if (!r.ok) return toast("Could not start Epic flow: " + (await r.text()).trim(), false);
+  const j = await r.json();
+  window.location = j.authorize_url; // off to Epic; comes back to /accounts/epic/callback
+}
+
+async function refresh() {
+  const t = token();
+  if (!t) {
+    $("auth").style.display = "";
+    $("account").style.display = "none";
+    return;
+  }
+  const r = await api("/accounts/me");
+  if (!r.ok) { localStorage.removeItem(TOKEN); return refresh(); }
+  const me = await r.json();
+  $("pid").textContent = me.player_id;
+  $("dname").textContent = me.display_name;
+  $("identities").innerHTML = (me.identities || [])
+    .map(i => `<span class="id"><b>${i.provider}</b> · ${i.subject}</span>`).join("") || '<span class="muted">none</span>';
+  $("auth").style.display = "none";
+  $("account").style.display = "";
+}
+
+// Pick up a token handed back by the Epic login flow (#token=...), and show
+// link-result messages from the callback redirect (?epic=linked|error).
+(function init() {
+  if (location.hash.startsWith("#token=")) {
+    localStorage.setItem(TOKEN, decodeURIComponent(location.hash.slice(7)));
+    history.replaceState(null, "", location.pathname);
+  }
+  const params = new URLSearchParams(location.search);
+  if (params.get("epic") === "linked") toast("Epic account linked ✓", true);
+  if (params.get("epic") === "error") toast("Epic linking failed — check server logs", false);
+  if (params.has("epic")) history.replaceState(null, "", location.pathname);
+  refresh();
+})();
+</script>
+</body>
+</html>

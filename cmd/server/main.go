@@ -17,6 +17,7 @@ import (
 	"gamebackend/modules/leaderboard"
 	"gamebackend/modules/match"
 	"gamebackend/modules/rating"
+	"gamebackend/modules/webui"
 )
 
 const defaultDSN = "postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable"
@@ -52,6 +53,7 @@ func main() {
 	reg.Add(rating.Module{})
 	reg.Add(&leaderboard.Module{}) // pointer: holds db + logger
 	reg.Add(match.Module{})        // order is free — topo-sort settles it
+	reg.Add(webui.Module{})        // serves the account-linking demo page at "/"
 
 	if err := reg.Build(); err != nil {
 		log.Error("startup failed", "err", err)

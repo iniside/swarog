@@ -19,6 +19,8 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 	_ "github.com/jackc/pgx/v5/stdlib"
+
+	"gamebackend/core"
 )
 
 func testLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
@@ -211,5 +213,88 @@ func TestStoreFindOrCreateExternal(t *testing.T) {
 	}
 	if again.ID != p.ID {
 		t.Fatalf("same identity mapped to different players: %q vs %q", again.ID, p.ID)
+	}
+}
+
+// TestEpicOAuthLinkFlow drives the whole link flow against a mock Epic (local
+// JWKS + token endpoint), proving the callback exchanges the code, verifies the
+// id_token and links the Epic identity to the session's player — no real Epic.
+func TestEpicOAuthLinkFlow(t *testing.T) {
+	db := testDB(t)
+	defer db.Close()
+	s := &store{db: db, log: testLogger()}
+	ctx := context.Background()
+
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const kid, clientID, issuer = "k1", "client-xyz", "https://eas.example"
+	epicAcct := "epicacct-" + suffix(t)
+
+	jwks := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Write(buildJWKS(kid, &key.PublicKey))
+	}))
+	defer jwks.Close()
+
+	tok := jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.MapClaims{
+		"iss": issuer + "/x", "aud": clientID, "sub": epicAcct, "exp": time.Now().Add(time.Hour).Unix(),
+	})
+	tok.Header["kid"] = kid
+	idToken, err := tok.SignedString(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"id_token": idToken})
+	}))
+	defer tokenSrv.Close()
+
+	v, err := newOIDCVerifier(jwks.URL, issuer, clientID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := &epicOAuth{
+		clientID: clientID, clientSecret: "secret", redirectURI: "http://localhost/cb",
+		authorizeURL: "http://localhost/authorize", tokenURL: tokenSrv.URL,
+		verifier: v, httpc: tokenSrv.Client(), states: map[string]oauthState{},
+	}
+	m := &Module{store: s, log: testLogger(), bus: core.NewBus(testLogger()), epic: v, epicOAuth: o}
+
+	// a logged-in dev player to link onto
+	hash, _ := hashPassword("pw")
+	p, err := s.registerPassword(ctx, "link-"+suffix(t)+"@test.local", hash, "Linker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := s.newSession(ctx, p.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := o.newState(sess) // link flow bound to that session
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/accounts/epic/callback?code=abc&state="+state, nil)
+	rec := httptest.NewRecorder()
+	m.handleEpicCallback(rec, req)
+
+	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/?epic=linked" {
+		t.Fatalf("callback: code=%d loc=%q body=%s", rec.Code, rec.Header().Get("Location"), rec.Body.String())
+	}
+	ids, err := s.identitiesOf(ctx, p.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	linked := false
+	for _, id := range ids {
+		if id.Provider == "epic" && id.Subject == epicAcct {
+			linked = true
+		}
+	}
+	if !linked {
+		t.Fatalf("epic identity not linked to player; got %+v", ids)
 	}
 }

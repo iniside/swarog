@@ -66,10 +66,19 @@ over it (`identities(provider, subject) → player_id`), opaque DB-backed `sessi
 
 - **dev / password** — local-only self-registration for testing. Gated by
   `ACCOUNTS_DEV_AUTH` (default ON locally, logs a loud warning; turn OFF in prod).
-- **epic** — real OIDC verifier. Enabled only when `EPIC_CLIENT_ID` is set. Verifies
-  an EOS Connect ID Token against Epic's JWKS (`EPIC_JWKS_URL`,
-  `EPIC_ISSUER_PREFIX`), `sub` = PUID. New external identities auto-provision a
-  player. Adding Google later = another configured OIDC verifier, same shape.
+- **epic** — real OIDC verifier (defaults to Epic Account Services endpoints,
+  `sub` = Epic Account ID). Enabled when `EPIC_CLIENT_ID` is set. Adding Google
+  later = another configured OIDC verifier, same shape.
+- **epic web OAuth** — when `EPIC_CLIENT_SECRET` is also set, the backend runs the
+  EAS authorization-code flow: `POST /accounts/epic/start` (returns the authorize
+  URL; if called with a bearer it binds a LINK to that session) and
+  `GET /accounts/epic/callback` (exchanges the code, verifies the id_token, then
+  links to the session's player or logs in). State→session is held in memory.
+
+The `webui` module serves a single-page demo at `/` (dev login, then "Link Epic")
+so the linking flow is visible in a browser. Config env: `EPIC_CLIENT_SECRET`,
+`EPIC_REDIRECT_URI` (default `http://localhost:8080/accounts/epic/callback`),
+`EPIC_AUTHORIZE_URL`, `EPIC_TOKEN_URL`.
 
 Emits `accountsevents.PlayerRegistered`. Not yet wired into match/rating.
 
@@ -112,4 +121,5 @@ modules/
   match/match.go              # impl: depends on "rating" (sync), emits match.finished
   rating/rating.go            # impl: provides "rating" service, reacts to matches (in-memory)
   leaderboard/leaderboard.go  # impl: Postgres-backed listener, owns schema "leaderboard"
+  webui/                      # UI-only module: serves the SPA demo at "/" (embedded index.html)
 ```

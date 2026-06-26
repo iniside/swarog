@@ -67,8 +67,20 @@ model): one product-scoped `player_id`, many credential providers mapping
 ```
 curl -X POST localhost:8080/accounts/register -d '{"email":"a@b.c","password":"pw","displayName":"Al"}'
 curl localhost:8080/accounts/me -H "Authorization: Bearer <token>"
-curl -X POST localhost:8080/accounts/login/epic -d '{"id_token":"<EOS Connect ID token>"}'
 ```
+
+### Web demo (account linking)
+
+The `webui` module serves a one-page demo at `http://localhost:8080/`: register or
+log in with the dev provider, then **Link Epic account** runs the real Epic Account
+Services OAuth flow and attaches the Epic identity to your player. Enable it with:
+
+```
+EPIC_CLIENT_ID=...  EPIC_CLIENT_SECRET=...  go run ./cmd/server
+```
+
+Register `http://localhost:8080/accounts/epic/callback` as a redirect URI on the
+Epic app, with the `openid` and `basic_profile` scopes enabled.
 
 ## Dependency rules
 
