@@ -1,0 +1,96 @@
+# CLAUDE.md
+
+Guidance for working in this repo. A for-fun game backend, built as a **modular
+monolith**: one repo, one binary, but features are added by *writing new code,
+not modifying existing code* (Open/Closed at the architecture level).
+
+## The point of this codebase
+
+Three seams carry all extensibility; almost everything else follows from them:
+
+1. **Module registry** (`core`) — every feature is a `core.Module` and self-
+   registers. The core never imports a module; modules import the core.
+   Inter-module dependencies are declared (`DependsOn`) and topologically ordered;
+   cycles and missing deps fail loudly at startup.
+2. **Service registry** (`Context.Provide` / `Require`) — for *synchronous* needs
+   ("ask B now, get an answer"). The consumer asserts the service to its OWN local
+   interface, so it depends on a capability, not a package.
+3. **Event bus** (`Context.Bus`) — the default glue, **async + fire-and-forget**.
+   Reacting to something = subscribe. Each publishing domain owns a
+   `<module>events` package declaring events via `core.Define[T]("topic")`.
+
+## Hard constraints (do not violate without discussing)
+
+1. Core never imports a module. Dependency only ever points module → core.
+2. Module implementations never import each other. Cross-module comms go through
+   the bus (async) or a service interface from the registry (sync).
+3. Synchronous dependency only "downward", toward foundations. Sideways reactions
+   go through the bus. Declared `DependsOn` must match real sync dependencies.
+4. Depend on an interface/capability, not a package (consumer-defined interface).
+5. The only deliberately shared surface between modules is each domain's
+   `<module>events` package (payload types + the `core.Define` descriptor).
+6. Evolve events additively (new field / `FinishedV2`); never mutate a published
+   payload shape — a structural change breaks consumers at compile time.
+7. **The bus is async.** `Publish`/`Emit` never block and return nothing, so they
+   can't be used for a synchronous answer — that's a service interface's job.
+   State projected from events is eventually consistent.
+8. Lifecycle: `Init` only wires up (no I/O) → optional `Migrate` (own schema) →
+   optional `Start` (background work). Teardown is reverse order via optional
+   `Stop`. Shutdown: stop HTTP → drain bus → `Stop` modules.
+9. Events are typed: declare with `core.Define`, publish/subscribe with
+   `core.Emit` / `core.On`. No raw `e.Data.(T)` asserts in module code.
+10. **Persistence = one shared Postgres, full *logical* isolation.** Each module
+    owns its own schema and touches no other module's tables. **No cross-module
+    foreign keys.** A relation to another module is its id stored as a plain
+    column, resolved via interface or synced via events. `ctx.DB` is offered, not
+    mandated — a module may bring its own store instead.
+
+## Adding a module (the recipe)
+
+1. New folder `modules/<name>/`. Implement `core.Module` (`Name`, `DependsOn`,
+   `Init`). Use a pointer receiver if it holds state (db, logger, caches).
+2. If it persists data: implement `core.Migrator` and create ONLY your own schema
+   (`CREATE SCHEMA IF NOT EXISTS <name>; CREATE TABLE IF NOT EXISTS <name>....`).
+3. If it publishes events: add `modules/<name>/<name>events/` with
+   `var XEvent = core.Define[XPayload]("<name>.x")`. Emit with `core.Emit`.
+4. If it runs background work or holds resources: implement `core.Starter` /
+   `core.Stopper`.
+5. Register it with one line in `cmd/server/main.go`. Touch nothing else.
+
+## Commands
+
+```
+go build ./...          # build everything
+go vet ./...            # vet
+go test ./...           # unit tests (core registry/lifecycle order, cycle detection)
+go run ./cmd/server     # run (needs a reachable Postgres)
+```
+
+Smoke test:
+```
+curl -X POST localhost:8080/match/report -d '{"Winner":"alice","Loser":"bob"}'
+curl localhost:8080/leaderboard
+```
+
+## Database
+
+Connection from `DATABASE_URL`, default
+`postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable`.
+(Admin/superuser credentials for provisioning are kept in the local agent memory,
+not committed.) psql:
+
+```
+PGPASSWORD=gamebackend "/c/Program Files/PostgreSQL/18/bin/psql.exe" -U gamebackend -h localhost -d gamebackend
+```
+
+## Layout
+
+```
+cmd/server/main.go            # the only place that lists all modules
+core/                         # Module, Context, Registry, Bus, typed events — no game knowledge
+modules/
+  match/matchevents/          # published events of the match domain (descriptor + payload)
+  match/match.go              # impl: depends on "rating" (sync), emits match.finished
+  rating/rating.go            # impl: provides "rating" service, reacts to matches (in-memory)
+  leaderboard/leaderboard.go  # impl: Postgres-backed listener, owns schema "leaderboard"
+```
