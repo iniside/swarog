@@ -1,9 +1,13 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"os"
+	"os/signal"
+	"time"
 
 	"gamebackend/core"
 	"gamebackend/modules/leaderboard"
@@ -27,9 +31,27 @@ func main() {
 		os.Exit(1)
 	}
 
-	log.Info("listening", "addr", ":8080")
-	if err := http.ListenAndServe(":8080", ctx.Mux); err != nil {
-		log.Error("server stopped", "err", err)
-		os.Exit(1)
+	srv := &http.Server{Addr: ":8080", Handler: ctx.Mux}
+	go func() {
+		log.Info("listening", "addr", srv.Addr)
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Error("server stopped", "err", err)
+			os.Exit(1)
+		}
+	}()
+
+	// Graceful shutdown: stop accepting HTTP first (so no new events are
+	// published), then drain the bus so no in-flight event is lost.
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, os.Interrupt)
+	<-stop
+	log.Info("shutting down")
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		log.Error("http shutdown", "err", err)
 	}
+	ctx.Bus.Close()
+	log.Info("bye")
 }

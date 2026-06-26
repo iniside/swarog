@@ -17,8 +17,13 @@ Three seams, and nothing else, carry all extensibility:
    ask B right now and get an answer"). The consumer asserts the service to its
    own local interface, so it depends on a capability, not on a package.
 
-3. **Event bus** (`Bus`) — the default glue. "I want to react when X happens" =>
-   subscribe. Publishers don't know who listens. Each publishing domain owns a
+3. **Event bus** (`Bus`) — the default glue, **asynchronous and fire-and-forget**.
+   "I want to react when X happens" => subscribe. `Publish` never blocks and
+   returns nothing, so it structurally cannot be used for a synchronous answer
+   (use a service interface for that). Each subscriber has its own goroutine and
+   FIFO mailbox: per-subscriber order is preserved, a slow/panicking subscriber
+   is isolated, and `Close` drains in-flight events on shutdown. State built from
+   events is therefore **eventually consistent**. Each publishing domain owns a
    `<module>events` package (pure data, depends on nothing) that holds its topic
    constants and payload types — the only deliberately shared surface.
 

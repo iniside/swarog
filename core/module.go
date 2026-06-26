@@ -25,7 +25,7 @@ type Context struct {
 
 func NewContext(log *slog.Logger) *Context {
 	return &Context{
-		Bus:      NewBus(),
+		Bus:      NewBus(log),
 		Mux:      http.NewServeMux(),
 		Log:      log,
 		services: map[string]any{},
