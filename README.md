@@ -91,6 +91,22 @@ up by contributing an `adminapi.Section`; the admin owns the theme and never rea
 another module's schema. The visual direction lives in `UILayout/` (a design spec).
 Gate it with `ADMIN_USER`/`ADMIN_PASS` (HTTP Basic); unset = open + warning (local).
 
+### Characters & inventory
+
+A player has N **characters** (`/characters`), and **inventory** is owner-scoped —
+a player's own inventory (e.g. IAP) or a character's. It shows off cross-module
+relations under logical isolation: `inventory` references owners by id (no FK),
+asks `characters` who owns a character (sync), and **reacts to character events**
+— granting a starter item on create and wiping holdings on delete, so integrity
+comes from an event rather than an FK cascade. `characters` never knows `inventory`
+exists. Both appear in the admin portal automatically.
+
+```
+curl -X POST localhost:8080/characters -H "Authorization: Bearer <t>" -d '{"name":"Aria","class":"mage"}'
+curl localhost:8080/inventory/character/<id> -H "Authorization: Bearer <t>"   # has the starter item
+curl -X POST localhost:8080/inventory/me/grant -H "Authorization: Bearer <t>" -d '{"item_id":"coin","qty":100}'
+```
+
 ## Dependency rules
 
 - Implementations never import each other.
