@@ -9,6 +9,10 @@
 *.out
 coverage.*
 
+# Local secrets / env
+.env.local
+.env*.local
+
 # Editor / OS
 .idea/
 .vscode/
