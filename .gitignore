@@ -1,0 +1,16 @@
+# Binaries
+/server
+*.exe
+*.exe~
+/bin/
+/dist/
+
+# Test / coverage
+*.out
+coverage.*
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store
+*.swp
