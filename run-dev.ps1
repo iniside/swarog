@@ -1,4 +1,4 @@
-# run-dev.ps1 — load .env.local and start the backend.
+# run-dev.ps1 - load .env.local and start the backend.
 # Serves the account-linking web UI at http://localhost:8080
 #
 # Usage:  .\run-dev.ps1
@@ -22,7 +22,7 @@ if (Test-Path $envFile) {
         Write-Host ("Epic OAuth: client {0}, redirect {1}" -f $env:EPIC_CLIENT_ID, $env:EPIC_REDIRECT_URI) -ForegroundColor Cyan
     }
 } else {
-    Write-Host "No .env.local — running without Epic OAuth" -ForegroundColor Yellow
+    Write-Host "No .env.local found - running without Epic OAuth" -ForegroundColor Yellow
 }
 
 Write-Host "Open http://localhost:8080" -ForegroundColor Green
