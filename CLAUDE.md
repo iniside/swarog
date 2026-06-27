@@ -186,6 +186,14 @@ hallucinated behavior, false claim of work done):
 
 For repeat offenses, also save/update the relevant feedback memory.
 
+**Resignation letter for MANDATORY violations.** When caught violating any `## … —
+MANDATORY` rule, before the fix write a short (≤8-line) resignation letter addressed
+to the user: name the exact section, **state explicitly what error was committed**
+(one sentence: what I did vs what the rule required), the impact, and the corrective
+action. This is *in addition to* the four steps above — a visible named admission, no
+theatrical self-flagellation, then the fix. **Then update memory** — save/update the
+relevant feedback memory for the violated rule (not only for repeat offenses).
+
 ## Research before planning — MANDATORY
 
 This is a modular monolith built on Open/Closed — new features are *new code*, not
@@ -203,27 +211,17 @@ enthusiasm for new code.
 Before any non-trivial research/search, ask the user **"how should I research
 this?"** Don't default to grep — one grep pass is lossy (misses interface
 satisfaction, embedded methods, generated code, event subscribers wired by string
-topic, reflection/registry-driven surface). Treat any single grep sweep as a **lower
-bound, not the answer**, and say which method you used.
+topic, the registry/reflection-driven surface). Treat any single grep sweep as a
+**lower bound, not the answer**, and say which method you used. "Non-trivial" =
+mapping an API surface, finding all callers, understanding data flow, locating
+wiring, surveying overlap; one-shot lookups with a known file+symbol proceed without
+asking.
 
-Offer the fitting subset:
-
-- **LSP / gopls** — Go symbol nav with a file+line anchor (definition, references,
-  implementations). Preferred for "where is X defined / who calls Y / what satisfies
-  this interface".
-- **Parallel research subagents** — fan out cheap subagents, each a distinct
-  **non-overlapping** angle (e.g. API surface / callers+consumers / event
-  publishers+subscribers / config+env wiring). Pass `model:` explicitly. If picked,
-  ask **"how many?"** → **2–4** narrow / **4–8** multi-module / **8–12** whole-repo
-  survey. A subagent does not inherit this fallback chain — paste "LSP/gopls first,
-  grep is a labelled lower bound" into each prompt, and require each to report which
-  method it used.
-- **Targeted main-model read** — small surface, one file end-to-end.
-- **Grep/Glob** — only when nothing else fits; acknowledge it's a lower bound.
-
-"Non-trivial" = mapping an API surface, finding all callers, understanding data
-flow, locating wiring, surveying overlap. One-shot lookups with a known file+symbol
-can proceed without asking.
+**Method menu (gopls/LSP, parallel subagents, targeted read, grep) + subagent-count
+bands: [docs/reference/research-mode.md](docs/reference/research-mode.md); shared
+Agent-call invariants: [docs/reference/subagent-dispatch.md](docs/reference/subagent-dispatch.md).**
+Any code-touching subagent gets the nav guidance pasted into its prompt — it does not
+inherit.
 
 ## Plans & Status Docs — MANDATORY
 
@@ -240,76 +238,69 @@ plan/status files at repo root or in a temp dir.
 ## Plan Writing Workflow — MANDATORY
 
 Front-load the thinking. For any plan (plan mode / "write me a plan" / a
-`docs/plans/…-plan.md`), in order, no skipping for "it's small":
+`docs/plans/…-plan.md`), in order — no skipping for "it's small":
 
-1. **Ask how many research subagents** (2–4 / 4–8 / 8–12). Ask **every time**, even
-   mid-session — count is task-specific. Pass `model:` explicitly.
-2. **Research subagents on 3 non-overlapping angles:** *API surface* (every public
-   function / type / interface with full signatures), *API usages* (concrete call
-   sites — who constructs, who consumes, how args are filled), *patterns* (idioms to
-   reuse — how existing modules register, migrate, subscribe). Synthesize in the main
-   model — never write off one subagent.
-3. **Write concrete specifics:** exact files (repo-relative paths), exact
-   function/type signatures, exact API calls drawn from step 2, sequencing + what
-   each step compiles/tests against. **Banned phrases:** "figure out as we go",
-   "TBD", "investigate during implementation", "may need to", "something like",
-   "we'll see what shape this takes" — any of these = research gap; go back to step 2.
-4. **Structure the plan as an ordered step sequence, NOT a catalog.** A catalog
-   (files-to-create table + a list of call-sites + one big "build at the end") leaves
-   implementation order and dependency topology as "figure as you go" — that is the
-   failure mode and it is **banned**. The plan body must be `Step 1 → Step 2 → …`
-   where each step spells out: **(a) what** is touched (exact files/symbols), **(b)
-   why now / in what order** — the dependency that forces this step before the next,
-   **(c) how** — the concrete actions, **(d) dispatch tag** — `[inline]`, `[session]`,
-   or `[sonnet]` (see Implementation Mode). Steps do NOT each have to compile in
-   isolation, but every step MUST be written out: a reader follows them top-to-bottom
-   without inventing the order. Reference material (Context, file tables) is fine as
-   supporting sections, but it does not replace the ordered steps.
-5. **Dispatch one grumpy senior-engineer reviewer on the session model** (omit
-   `model` so it inherits the session model — the independent-reviewer boundary is
-   the point). It hunts logical holes, missing pieces (migration? test? a declared
-   `DependsOn` that doesn't match the real sync dependency? an event mutated instead
-   of evolved additively?), ambiguity, "figure-it-out-later" smell. It produces a
-   punch list, does **not** rewrite. Address the list before showing the user (or
-   note deferred items with rationale).
+1. **Ask how many research subagents** (2–4 / 4–8 / 8–12 bands). Ask **every time**,
+   even mid-session — count is task-specific. Pass `model:` explicitly.
+2. **Research subagents on 3 non-overlapping angles:** API surface / API usages /
+   patterns. Synthesize in the main model — never write off one subagent.
+3. **Write concrete specifics:** exact files, signatures, API calls from step 2,
+   sequencing. **Banned phrases** ("figure out as we go", "TBD", "investigate during
+   implementation", "may need to", "something like", …) = research gap → back to step 2.
+4. **Structure as an ordered `Step 1 → Step 2 → …` sequence, NOT a catalog.** Each
+   step states **(a) what** is touched (exact files/symbols), **(b) why now / order** —
+   the dependency forcing it before the next, **(c) how** — non-mechanical moves
+   spelled out, **(d) dispatch tag** — `[inline]`/`[fable]`/`[opus]`/`[sonnet]`. A
+   catalog that leaves order/topology/per-step actions to "figure as you go" is
+   **banned**; steps need not each compile, but every step MUST be written out.
+5. **Dispatch one grumpy senior-engineer reviewer** at session tier (separate context
+   = the independent-reviewer boundary). **Ask the user the think-effort level first**
+   (default / think / think hard / ultrathink) — effort does NOT inherit, so embed it
+   in the reviewer's prompt. It produces a punch list, does **not** rewrite. Address
+   it before showing the user (or note deferred items with rationale).
+
+**Full detail (catalog-vs-sequence failure mode, step-4 a/b/c/d examples, reviewer
+checklist): [docs/reference/plan-writing-workflow.md](docs/reference/plan-writing-workflow.md).**
 
 ## Implementation Mode — MANDATORY
 
-**Mixed dispatch — decided per plan step, not per session.** Three lanes:
-`[inline]` (main model writes in this context), `[session]` (a subagent on the
-**session model**, separate context), `[sonnet]` (a subagent on Sonnet). Every plan
-step carries a dispatch tag set at plan-writing time:
+**Mixed dispatch — decided per plan step, not per session. Tags name a CONCRETE
+model, not a tier alias.** Four lanes, each set at plan-writing time (Plan Writing
+step 4d):
 
-- `[session]` — **the default for complex/correctness-critical work** (new API
-  design, the bus/registry seams, lifecycle ordering, cross-module context). A
-  subagent runs on the session model but in a **separate context**, so the main model
-  reviews its diff from the outside instead of grading its own homework. The review
-  boundary is the whole point.
-- `[inline]` — reserved for genuine mid-edit judgment that **can't be handed off**:
-  the decision depends on context the main model is holding live. Default complex
-  work to `[session]`, not `[inline]`. Accept that inline work gets no independent
-  review.
-- `[sonnet]` — mechanical work: rename sweeps, scaffolding, N-similar edits, applying
-  a fully-specified plan step, compile fixes, tests from an existing pattern,
-  config. **Never burn main-model tokens on a rename** — if a step is mechanical, it
-  is `[sonnet]` even when surrounding steps are `[session]`/`[inline]`.
+- `[inline]` — main model writes in this context. **No independent review** —
+  reserved for mid-edit judgment that can't be handed off. Default complex work to a
+  subagent lane, not `[inline]`.
+- `[fable]` — Fable 5 subagent. Top tier; for complex/correctness-critical work (new
+  API design, the bus/registry seams, lifecycle ordering, cross-module context) **when
+  Fable is the session model**.
+- `[opus]` — Opus 4.8 subagent. Substantive implementation. **While the session is
+  Opus, `[opus]` is also the top-tier lane** — same tier as inline but a separate
+  context, the independent-reviewer boundary.
+- `[sonnet]` — Sonnet subagent. Mechanical: rename sweeps, scaffolding, N-similar
+  edits, applying a fully-specified step, compile fixes, tests from a pattern,
+  config. **Never burn a higher tier on a rename.** Visual/UI design is never
+  `[sonnet]`.
 
-The user approves the tags together with the plan. Subagent dispatch rules:
+**Every code-writing Agent call passes an explicit `model:` matching its lane —
+NON-NEGOTIABLE** (there is no "inherit" path): `[fable]`→`model:"fable"`,
+`[opus]`→`model:"opus"`, `[sonnet]`→`model:"sonnet"` (listing-only research →
+`model:"haiku"`). Pre-flight every Agent call for the field. After a multi-subagent
+rollout, before "done": `git log -<N> --format="%h %B" | grep "Co-Authored"` and
+confirm trailers match each lane (`[fable]`→Fable 5, `[opus]`→Opus 4.8,
+`[sonnet]`→Sonnet 4.6) — surface mismatches immediately.
 
-1. **Every code-writing Agent call carries a deliberate model decision.** A
-   `[sonnet]` step **MUST** pass `model:"sonnet"` explicitly (omitting silently runs
-   on the session model — a bug); a `[session]` step **MUST** omit `model` so the
-   subagent inherits the session model. If a mechanical step lacks `model:"sonnet"`,
-   STOP and add it.
-2. **Review between tasks.** Main model reviews each diff against the plan step (did
-   what the plan said? touched out-of-scope files? introduced conflicting patterns —
-   e.g. a module importing another module's package, a cross-module foreign key?)
-   before dispatching the next. No parallel fan-out for sequential plan steps.
-3. **Trust but verify.** Read the actual edits — self-reports describe intent, not
-   result.
-4. **Commit after each task.** Granular history beats per-commit-compiling — commit
-   right after a task verifies. A bad subagent commit is fixed with a follow-up
-   commit, never by discarding history.
+The user approves the tags with the plan (called out at ExitPlanMode). Ask only for
+untagged/ad-hoc work, and if any step is a subagent lane also ask **"what effort
+level?"** (effort does NOT inherit — embed it in the prompt). Review each diff against
+its plan step before dispatching the next; commit after each task (subagents may
+commit their own work). Mid-rollout, don't silently flip a tag — ask.
+
+**Cross-cutting Agent-call invariants (explicit `model:`, effort/nav-guidance don't
+inherit, trailer, concise prompts) — shared by research + implementation:
+[docs/reference/subagent-dispatch.md](docs/reference/subagent-dispatch.md). Lane
+heuristic, dispatch rules, refactor safety:
+[docs/reference/implementation-mode.md](docs/reference/implementation-mode.md).**
 
 ## Git Safety — MANDATORY
 
@@ -323,18 +314,15 @@ branch, branch first.
 
 ## Commit Message Format — MANDATORY
 
-Use **Conventional Commits**: `<type>(<scope>): <imperative description>`.
+Use **Conventional Commits**: `<type>(<scope>): <imperative description>` — `type` ∈
+feat/fix/refactor/test/docs/chore; `scope` = lowercased module/package, comma-separate
+multiples (`fix(match,rating): …`). NOT bracketed `[Module]` scopes. Multi-step
+rollouts may note `(Step N — …)`.
 
-- `type` ∈ `feat`, `fix`, `refactor`, `test`, `docs`, `chore`.
-- `scope` is the lowercased module/package (`accounts`, `match`, `rating`,
-  `leaderboard`, `admin`, `core`). Multiple scopes comma-separated:
-  `fix(match,rating): …`.
-- Multi-step rollouts may note the step in the description: `(Step 1 — A+B+C)`.
+**`Co-Authored-By` trailer reflects the EXECUTING model**, overriding the harness
+default (which hardcodes Opus 4.8): Opus → `Claude Opus 4.8`, Fable → `Claude Fable
+5`, Sonnet subagent → `Claude Sonnet 4.6` (all `<noreply@anthropic.com>`). When
+dispatching a code-writing subagent, put **its model's** trailer in the prompt — this
+is what the trailer audit (Implementation Mode) checks.
 
-```text
-feat(accounts): add Epic OIDC verifier behind EPIC_CLIENT_ID
-fix(leaderboard): create schema in Migrate, not Init
-test(core): cover cycle detection in the module registry
-```
-
-Do **NOT** use bracketed `[Module]` scopes — that is the wrong format.
+**Examples + scope conventions: [docs/reference/commit-format.md](docs/reference/commit-format.md).**
