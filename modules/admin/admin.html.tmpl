@@ -23,19 +23,14 @@
       </div>
     </div>
     <nav class="nav">
-      <div class="nav-group">MAIN</div>
-      <a class="nav-item active">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
-        <span>Dashboard</span>
-      </a>
+      {{range .Groups}}
+      <div class="nav-group">{{.Section}}</div>
+      {{range .Items}}<a class="nav-item{{if .Active}} active{{end}}" href="/admin/{{.Slug}}"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg><span>{{.Label}}</span></a>{{end}}
+      {{end}}
+      <div class="nav-group">COMING SOON</div>
       <span class="nav-item muted">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 20V12M10 20V4M16 20V9M21 20H3"/></svg>
         <span>Analytics</span>
-      </span>
-      <div class="nav-group">OPERATIONS</div>
-      <span class="nav-item muted">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 4-6 8-6s8 2 8 6"/></svg>
-        <span>Players</span>
       </span>
       <span class="nav-item muted">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M13 3 4 14h6l-1 7 9-11h-6z"/></svg>
@@ -57,7 +52,6 @@
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M12 3 5 6v5c0 4 3 7 7 9 4-2 7-5 7-9V6z"/><path d="M9 12l2 2 4-4"/></svg>
         <span>Moderation</span>
       </span>
-      <div class="nav-group">SYSTEM</div>
       <span class="nav-item muted">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M5 4v16"/><path d="M5 5h12l-2.5 3.5L17 12H5"/></svg>
         <span>Game Config &amp; Flags</span>
@@ -94,30 +88,11 @@
 
     <div class="content">
       <div class="stack">
-        {{range .Sections}}
-          {{if .KPIs}}
-          <div class="kpi-grid">
-            {{range .KPIs}}
-            <div class="kpi">
-              <div class="kpi-label">{{.Label}}</div>
-              <div class="kpi-value">{{.Value}}</div>
-              {{if .Sub}}<div class="kpi-sub">{{.Sub}}</div>{{end}}
-            </div>
-            {{end}}
-          </div>
-          {{end}}
-          {{if .Table}}
-          <div class="panel">
-            <div class="panel-title">{{.Title}}</div>
-            {{if .Table.Rows}}
-            <table class="table">
-              <thead><tr>{{range .Table.Columns}}<th>{{.}}</th>{{end}}</tr></thead>
-              <tbody>
-                {{range .Table.Rows}}<tr>{{range .}}<td>{{template "cell" .}}</td>{{end}}</tr>{{end}}
-              </tbody>
-            </table>
-            {{else}}<div class="empty">No rows yet.</div>{{end}}
-          </div>
+        {{with .Page}}
+          {{if .Err}}<div class="panel"><div class="empty">{{.Err}}</div></div>
+          {{else}}
+            {{if .KPIs}}<div class="kpi-grid">{{range .KPIs}}<div class="kpi"><div class="kpi-label">{{.Label}}</div><div class="kpi-value">{{.Value}}</div>{{if .Sub}}<div class="kpi-sub">{{.Sub}}</div>{{end}}</div>{{end}}</div>{{end}}
+            {{if .Table}}<div class="panel"><div class="panel-title">{{.Title}}</div>{{if .Table.Rows}}<table class="table"><thead><tr>{{range .Table.Columns}}<th>{{.}}</th>{{end}}</tr></thead><tbody>{{range .Table.Rows}}<tr>{{range .}}<td>{{template "cell" .}}</td>{{end}}</tr>{{end}}</tbody></table>{{else}}<div class="empty">No rows yet.</div>{{end}}</div>{{end}}
           {{end}}
         {{else}}
           <div class="panel"><div class="empty">No sections contributed yet.</div></div>

@@ -1,16 +1,19 @@
 // Package admin serves the GameOps admin portal. It owns the look (theme +
-// shell) and composes the dashboard from sections that modules CONTRIBUTE via
-// the core "admin.section" slot — so a new module appears here without the admin
-// being edited. It reads contributions (not module implementations).
+// shell) and builds a navigable model from items that modules CONTRIBUTE via the
+// core "admin.item" slot: items are grouped by Section into the sidebar, and each
+// item opens its own page (GET /admin/{slug}). A new module appears here without
+// the admin being edited. It reads contributions (not module implementations).
 package admin
 
 import (
+	"context"
 	"crypto/subtle"
 	_ "embed"
 	"html/template"
 	"log/slog"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 
 	"gamebackend/core"
@@ -49,44 +52,143 @@ func (m *Module) Init(ctx *core.Context) error {
 
 	ctx.Mux.HandleFunc("GET /admin/theme.css", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/css; charset=utf-8")
-		w.Write(themeCSS)
+		if _, err := w.Write(themeCSS); err != nil {
+			m.log.Error("theme.css write failed", "err", err)
+		}
 	})
-	ctx.Mux.HandleFunc("GET /admin", m.gate(m.handleDashboard))
+	ctx.Mux.HandleFunc("GET /admin", m.gate(m.handleIndex))
+	ctx.Mux.HandleFunc("GET /admin/{slug}", m.gate(m.handleItem))
 	return nil
 }
 
 type pageData struct {
-	Crumb    string
-	Title    string
-	Env      string
-	User     userView
-	Sections []sectionView
+	Crumb, Title, Env string
+	User              userView
+	Groups            []navGroup
+	Page              *pageView
 }
 
-type sectionView struct {
-	Title string
-	KPIs  []adminapi.KPI
-	Table *adminapi.Table
+type navGroup struct {
+	Section string
+	Items   []navItem
 }
 
-func (m *Module) handleDashboard(w http.ResponseWriter, r *http.Request) {
-	var sections []sectionView
+type navItem struct {
+	Label, Slug string
+	Active      bool
+}
+
+type pageView struct {
+	Title, Err string
+	KPIs       []adminapi.KPI
+	Table      *adminapi.Table
+}
+
+type resolvedItem struct {
+	section, label, slug string
+	render               func(ctx context.Context) (adminapi.Content, error)
+}
+
+// slugify lowercases s, keeps [a-z0-9], maps space/-/_ to "-", drops other runes,
+// and trims leading/trailing "-".
+func slugify(s string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(s) {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r == ' ' || r == '-' || r == '_':
+			b.WriteByte('-')
+		}
+	}
+	return strings.Trim(b.String(), "-")
+}
+
+// items resolves the contributed admin items into ordered resolvedItems with
+// unique slugs (first-seen order preserved; collisions get a -2, -3, … suffix).
+func (m *Module) items() []resolvedItem {
+	seen := map[string]bool{}
+	var out []resolvedItem
 	for _, c := range m.ctx.Contributions(adminapi.Slot) {
-		sec, ok := c.(adminapi.Section)
+		it, ok := c.(adminapi.Item)
 		if !ok {
 			continue
 		}
-		content, err := sec.Render(r.Context())
-		if err != nil {
-			m.log.Error("admin section render failed", "section", sec.Title, "err", err)
-			continue
+		base := slugify(it.Label)
+		if base == "" {
+			base = "item"
 		}
-		sections = append(sections, sectionView{Title: sec.Title, KPIs: content.KPIs, Table: content.Table})
+		slug := base
+		for n := 2; seen[slug]; n++ {
+			slug = base + "-" + strconv.Itoa(n)
+		}
+		seen[slug] = true
+		out = append(out, resolvedItem{it.Section, it.Label, slug, it.Render})
+	}
+	return out
+}
+
+// buildGroups groups items by Section preserving first-seen Section order,
+// marking the item matching activeSlug.
+func (m *Module) buildGroups(items []resolvedItem, activeSlug string) []navGroup {
+	var groups []navGroup
+	idx := map[string]int{}
+	for _, it := range items {
+		i, ok := idx[it.section]
+		if !ok {
+			i = len(groups)
+			idx[it.section] = i
+			groups = append(groups, navGroup{Section: it.section})
+		}
+		groups[i].Items = append(groups[i].Items, navItem{
+			Label: it.label, Slug: it.slug, Active: it.slug == activeSlug,
+		})
+	}
+	return groups
+}
+
+func (m *Module) handleIndex(w http.ResponseWriter, r *http.Request) {
+	items := m.items()
+	if len(items) == 0 {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		if err := m.tmpl.Execute(w, pageData{
+			Crumb: "Admin", Title: "Admin", Env: "Local", User: m.user, Groups: nil, Page: nil,
+		}); err != nil {
+			m.log.Error("admin render failed", "err", err)
+		}
+		return
+	}
+	http.Redirect(w, r, "/admin/"+items[0].slug, http.StatusFound)
+}
+
+func (m *Module) handleItem(w http.ResponseWriter, r *http.Request) {
+	slug := r.PathValue("slug")
+	items := m.items()
+	var cur *resolvedItem
+	for i := range items {
+		if items[i].slug == slug {
+			cur = &items[i]
+			break
+		}
+	}
+	if cur == nil {
+		http.NotFound(w, r)
+		return
 	}
 
+	var page *pageView
+	content, err := cur.render(r.Context())
+	if err != nil {
+		m.log.Error("admin item render failed", "item", cur.label, "err", err)
+		page = &pageView{Title: cur.label, Err: "failed to load: " + err.Error()}
+	} else {
+		page = &pageView{Title: cur.label, KPIs: content.KPIs, Table: content.Table}
+	}
+
+	groups := m.buildGroups(items, slug)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := m.tmpl.Execute(w, pageData{
-		Crumb: "Operations", Title: "Dashboard", Env: "Local", User: m.user, Sections: sections,
+		Crumb: cur.section, Title: cur.label, Env: "Local", User: m.user, Groups: groups, Page: page,
 	}); err != nil {
 		m.log.Error("admin render failed", "err", err)
 	}
