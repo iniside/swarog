@@ -115,7 +115,7 @@ func (m *Module) Init(ctx *core.Context) error {
 	ctx.Provide("accounts", &service{store: m.store})
 
 	// Appear in the admin portal (it renders whatever is contributed).
-	ctx.Contribute(adminapi.Slot, adminapi.Section{Title: "Players", Render: m.adminSection})
+	ctx.Contribute(adminapi.Slot, adminapi.Item{Section: "Identity", Label: "Players", Render: m.adminSection})
 	return nil
 }
 

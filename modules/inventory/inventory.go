@@ -85,7 +85,7 @@ func (m *Module) Init(ctx *core.Context) error {
 	}
 
 	ctx.Provide("inventory", &service{store: m.store})
-	ctx.Contribute(adminapi.Slot, adminapi.Section{Title: "Inventory", Render: m.adminSection})
+	ctx.Contribute(adminapi.Slot, adminapi.Item{Section: "Game Content", Label: "Inventory", Render: m.adminSection})
 	return nil
 }
 

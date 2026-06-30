@@ -59,7 +59,7 @@ func (m *Module) Init(ctx *core.Context) error {
 	ctx.Mux.HandleFunc("DELETE /characters/{id}", m.handleDelete)
 
 	ctx.Provide("characters", &service{store: m.store})
-	ctx.Contribute(adminapi.Slot, adminapi.Section{Title: "Characters", Render: m.adminSection})
+	ctx.Contribute(adminapi.Slot, adminapi.Item{Section: "Game Content", Label: "Characters", Render: m.adminSection})
 	return nil
 }
 
