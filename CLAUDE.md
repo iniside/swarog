@@ -110,7 +110,19 @@ go build ./...          # build everything
 go vet ./...            # vet
 go test ./...           # unit tests (core registry/lifecycle order, cycle detection)
 go run ./cmd/server     # run (needs a reachable Postgres)
+go-arch-lint check      # enforce the module boundaries (see docs/reference/architecture-enforcement.md)
+golangci-lint run ./... # correctness/leak/security lint (.golangci.yml)
 ```
+
+Two complementary gates:
+- **`go-arch-lint`** (`go install github.com/fe3dback/go-arch-lint@latest`) checks *architecture*
+  against `.go-arch-lint.yml`: core imports no module, a module's impl is reachable only from
+  `cmd`, modules talk only through the `<module>events`/`adminapi` contracts. (Cycles need no rule
+  — the Go compiler rejects them.)
+- **`golangci-lint`** (v2; `go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest`)
+  checks *correctness/leaks/security* via `.golangci.yml` — a curated high-signal set (errcheck,
+  staticcheck, gosec, bodyclose, sqlclosecheck, rowserrcheck, errorlint, exhaustive, …), not a
+  style gate.
 
 Smoke test:
 ```

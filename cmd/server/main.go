@@ -82,7 +82,7 @@ func main() {
 	}
 	cancelStart()
 
-	srv := &http.Server{Addr: ":8080", Handler: ctx.Mux}
+	srv := &http.Server{Addr: ":8080", Handler: ctx.Mux, ReadHeaderTimeout: 10 * time.Second}
 	go func() {
 		log.Info("listening", "addr", srv.Addr)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {

@@ -1,0 +1,28 @@
+version: "2"
+
+# Curated for CORRECTNESS / RESOURCE LEAKS / SECURITY — the guardrail for machine-written code.
+# Deliberately NOT a style/formatting gate (that's noise here). Pairs with `.go-arch-lint.yml`,
+# which guards the architecture; this guards whether the code is correct, leak-free, and safe.
+linters:
+  default: standard      # errcheck, govet, ineffassign, staticcheck, unused
+  enable:
+    - errorlint          # correct error wrapping (%w, errors.Is/As vs ==)
+    - nilerr             # returning nil after a non-nil error check (silent bug)
+    - contextcheck       # context not propagated (lost cancel/timeout)
+    - exhaustive         # non-exhaustive enum switches (e.g. inventory OwnerType)
+    - bodyclose          # http.Response.Body not closed (goroutine/socket leak)
+    - sqlclosecheck      # sql.Rows/Stmt not closed (connection leak)
+    - rowserrcheck       # sql.Rows.Err() not checked after iterating
+    - gosec              # security: SQLi, weak crypto, hardcoded creds
+  settings:
+    exhaustive:
+      default-signifies-exhaustive: true   # a `default:` case counts as exhaustive
+    gosec:
+      excludes:
+        - G101   # false positive: the flagged "credentials" are the local dev/test DSN, not a secret
+        - G115   # false positive: uint32(len(hash)) can't overflow — argon2 outputs are tiny
+
+run:
+  timeout: 5m
+  tests: true
+  go: "1.26"

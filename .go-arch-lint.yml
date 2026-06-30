@@ -1,0 +1,72 @@
+# Architecture rules for the modular monolith — the same boundaries we enforce conceptually,
+# now machine-checked in CI. Run: go-arch-lint check
+#
+# The point: a module's IMPLEMENTATION is private. Cross-module communication goes only through
+# the shared CONTRACT surface (each domain's `<module>events` package + `admin/adminapi`) or a
+# service interface from the registry (which, thanks to Go's structural typing, needs no shared
+# package at all). The core has no game knowledge. Only `cmd` (the composition root) wires modules.
+#
+# (Import CYCLES need no rule here — the Go compiler already rejects them.)
+
+version: 3
+workdir: .
+
+# We enforce INTERNAL architecture only; third-party (vendor) imports are a module's own business.
+allow:
+  depOnAnyVendor: true
+
+components:
+  core:        { in: core }
+  # The only deliberately-shared surface between modules: published event descriptors + adminapi.
+  # (Enumerated explicitly — go-arch-lint's `*` matches a whole path segment, not an `*events` suffix.)
+  contracts:
+    in:
+      - modules/accounts/accountsevents
+      - modules/characters/charactersevents
+      - modules/match/matchevents
+      - modules/admin/adminapi
+
+  # Each module IMPLEMENTATION is its own component, so the linter can forbid cross-impl imports.
+  accounts:    { in: modules/accounts }
+  admin:       { in: modules/admin }
+  characters:  { in: modules/characters }
+  inventory:   { in: modules/inventory }
+  leaderboard: { in: modules/leaderboard }
+  match:       { in: modules/match }
+  rating:      { in: modules/rating }
+  webui:       { in: modules/webui }
+
+  # The composition root — the only place allowed to see every module implementation.
+  cmd:         { in: cmd/** }
+
+commonComponents:
+  - core   # foundation: importable by everyone; depends on nothing internal (enforced below)
+
+deps:
+  # NOTE: `core` and `contracts` are intentionally ABSENT here. A component with no deps entry may
+  # use only commonComponents (i.e. `core`). So:
+  #   - core      -> may use core (itself) = nothing internal  => never imports a module.
+  #   - contracts -> may use core only (for core.Define)        => never imports a module impl.
+
+  # Each module impl may use core (common) + the shared contracts — never another module's impl.
+  accounts:    { mayDependOn: [ contracts ] }
+  admin:       { mayDependOn: [ contracts ] }
+  characters:  { mayDependOn: [ contracts ] }
+  inventory:   { mayDependOn: [ contracts ] }
+  leaderboard: { mayDependOn: [ contracts ] }
+  match:       { mayDependOn: [ contracts ] }
+  rating:      { mayDependOn: [ contracts ] }
+  webui:       { mayDependOn: [ contracts ] }
+
+  # Only the composition root may depend on concrete module implementations.
+  cmd:
+    mayDependOn:
+      - accounts
+      - admin
+      - characters
+      - inventory
+      - leaderboard
+      - match
+      - rating
+      - webui
+      - contracts
