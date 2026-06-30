@@ -21,7 +21,7 @@ Three seams carry all extensibility; almost everything else follows from them:
 
 Plus a minor seam: **`Context.Contribute(slot, v)` / `Contributions(slot)`** — a
 multi-value registry (unlike single-value `Provide`) for cross-cutting collections
-where many modules contribute and one consumer reads them all (e.g. admin sections).
+where many modules contribute and one consumer reads them all (e.g. admin items).
 A new contributor appears without the consumer being edited.
 
 ## Hard constraints (do not violate without discussing)
@@ -100,7 +100,7 @@ A worked example of cross-module relations under logical isolation:
 
 The deletion-cleanup is the point: integrity across modules comes from an event,
 not an FK cascade (verified — no orphan holdings remain). Both modules contribute
-an admin section, so they appear at `/admin` with no change to the admin module.
+admin items, so they appear at `/admin` with no change to the admin module.
 The same listener will handle `player.deleted` once that exists.
 
 ## Commands
@@ -158,17 +158,18 @@ modules/
     charactersevents/         #   published events (Created/Deleted)
   inventory/                  # owner-scoped inventories (player|character); depends on accounts+characters
   webui/                      # UI-only module: serves the SPA demo at "/" (embedded index.html)
-  admin/                      # GameOps admin portal at "/admin" (theme + shell); renders contributed sections
-    adminapi/                 #   contract: Section/Content/KPI/Table/Cell + the "admin.section" slot
+  admin/                      # GameOps admin portal at "/admin" (theme + shell); renders contributed items
+    adminapi/                 #   contract: Item/Content/KPI/Table/Cell + the "admin.item" slot
 ```
 
 ## Admin portal
 
 The `admin` module serves the GameOps console at `/admin`. It owns the LOOK (the
 dark GameOps theme in `theme.css` + the sidebar/header shell in `admin.html.tmpl`,
-both embedded) and composes the dashboard from sections modules **contribute** to
+both embedded) and composes a navigable sidebar from items modules **contribute** to
 the `adminapi.Slot` — it never imports a module's implementation or touches another
-schema. A module appears by contributing `adminapi.Section{Title, Render}` whose
+schema. A module appears by contributing `adminapi.Item{Section, Label, Render}`;
+items are grouped by Section in the sidebar and each opens a dedicated page whose
 `Render` returns declarative widgets (`KPI`s + a `Table` of `Cell`s with badges/mono);
 the admin owns rendering. Visual direction comes from `UILayout/` (a Claude Design
 mockup — a spec, not runnable). Gate with `ADMIN_USER`/`ADMIN_PASS` (HTTP Basic);

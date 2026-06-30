@@ -85,11 +85,13 @@ Epic app, with the `openid` and `basic_profile` scopes enabled.
 ### Admin portal
 
 The `admin` module serves the GameOps console at `http://localhost:8080/admin` —
-a dark sidebar/header shell whose dashboard is composed from sections that modules
-**contribute** (`accounts` contributes a live Players table + KPIs). A module shows
-up by contributing an `adminapi.Section`; the admin owns the theme and never reads
-another module's schema. The visual direction lives in `UILayout/` (a design spec).
-Gate it with `ADMIN_USER`/`ADMIN_PASS` (HTTP Basic); unset = open + warning (local).
+a dark sidebar/header shell whose sidebar is composed from items that modules
+**contribute** into the `"admin.item"` slot (`accounts` contributes a live Players
+table + KPIs). A module shows up by contributing an `adminapi.Item{Section, Label,
+Render}`; items are grouped by Section in the sidebar and each opens a dedicated
+page. The admin owns the theme and never reads another module's schema. The visual
+direction lives in `UILayout/` (a design spec). Gate it with `ADMIN_USER`/`ADMIN_PASS`
+(HTTP Basic); unset = open + warning (local).
 
 ### Characters & inventory
 
