@@ -14,8 +14,8 @@ import java.util.UUID
  * Jackson serde working under native-image.
  */
 @RegisterForReflection
-data class PlayerRegistered(val playerId: UUID, val provider: String) {
-    companion object {
-        const val TOPIC = "accounts.registered"
+public data class PlayerRegistered(val playerId: UUID, val provider: String) {
+    public companion object {
+        public const val TOPIC: String = "accounts.registered"
     }
 }

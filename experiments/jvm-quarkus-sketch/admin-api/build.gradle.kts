@@ -2,3 +2,9 @@
 plugins {
     kotlin("jvm")
 }
+
+// Contract module — explicitApi() forces explicit visibility + return types on the shared surface
+// so the admin seam can't drift implicitly (verification Layer 0).
+kotlin {
+    explicitApi()
+}

@@ -9,15 +9,15 @@ import java.util.UUID
  * native-image.
  */
 @RegisterForReflection
-data class CharacterCreated(val characterId: Long, val playerId: UUID, val name: String) {
-    companion object {
-        const val TOPIC = "characters.created"
+public data class CharacterCreated(val characterId: Long, val playerId: UUID, val name: String) {
+    public companion object {
+        public const val TOPIC: String = "characters.created"
     }
 }
 
 @RegisterForReflection
-data class CharacterDeleted(val characterId: Long, val playerId: UUID) {
-    companion object {
-        const val TOPIC = "characters.deleted"
+public data class CharacterDeleted(val characterId: Long, val playerId: UUID) {
+    public companion object {
+        public const val TOPIC: String = "characters.deleted"
     }
 }

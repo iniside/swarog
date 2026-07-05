@@ -17,26 +17,26 @@ package admin.adminapi
  */
 
 /** A single headline number. */
-data class Kpi(val label: String, val value: String)
+public data class Kpi(val label: String, val value: String)
 
 /** One table cell. `mono` = monospace (ids), `badge` = pill styling. */
-data class Cell(val text: String, val mono: Boolean = false, val badge: Boolean = false)
+public data class Cell(val text: String, val mono: Boolean = false, val badge: Boolean = false)
 
-data class Table(val headers: List<String>, val rows: List<List<Cell>>)
+public data class Table(val headers: List<String>, val rows: List<List<Cell>>)
 
 /** The live dashboard payload for one module — serializable, so it crosses the wire unchanged. */
-data class SectionData(val kpis: List<Kpi> = emptyList(), val table: Table? = null)
+public data class SectionData(val kpis: List<Kpi> = emptyList(), val table: Table? = null)
 
 /**
  * A module's admin dashboard, produced as a CDI bean in the SAME process as the module. Admin
  * injects `@All List<AdminDataProvider>` and, for a locally-hosted module, calls [data] in-process.
  * The bean TYPE is the contribution slot — a new local contributor appears with zero edits to admin.
  */
-interface AdminDataProvider {
-    val id: String
-    val section: String
-    val label: String
-    fun data(): SectionData
+public interface AdminDataProvider {
+    public val id: String
+    public val section: String
+    public val label: String
+    public fun data(): SectionData
 }
 
 /**
@@ -44,7 +44,7 @@ interface AdminDataProvider {
  * A module publishes it at `/admin-data/<id>`; admin fetches it over REST when the module is remote,
  * or builds it from the local provider when co-located. Either way the admin renders this same DTO.
  */
-data class AdminItemDto(
+public data class AdminItemDto(
     val id: String,
     val section: String,
     val label: String,

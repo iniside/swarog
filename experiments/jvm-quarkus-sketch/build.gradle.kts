@@ -19,7 +19,16 @@ subprojects {
 
     plugins.withId("org.jetbrains.kotlin.jvm") {
         extensions.configure<KotlinJvmProjectExtension> {
-            compilerOptions { jvmTarget = JvmTarget.JVM_26 }
+            compilerOptions {
+                jvmTarget = JvmTarget.JVM_26
+                // Strict-compile canaries (verification Layer 0): every warning is a build
+                // failure, progressive mode opts into the newest deprecation/resolution rules,
+                // and -Xjsr305=strict treats JSR-305 nullability as hard (cheap, low-yield here —
+                // Jakarta/Panache carry no JSR-305 annotations, so it is not a null-interop fix).
+                allWarningsAsErrors.set(true)
+                progressiveMode.set(true)
+                freeCompilerArgs.add("-Xjsr305=strict")
+            }
         }
         extensions.configure<JavaPluginExtension> {
             toolchain { languageVersion = JavaLanguageVersion.of(26) }

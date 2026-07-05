@@ -13,3 +13,9 @@ dependencies {
     api(enforcedPlatform("$quarkusPlatformGroupId:$quarkusPlatformArtifactId:$quarkusPlatformVersion"))
     api("io.quarkus:quarkus-core")   // @RegisterForReflection (part of the public payload API)
 }
+
+// Contract module — explicitApi() forces explicit visibility + return types on the published
+// payload surface so the event contract can't drift implicitly (verification Layer 0).
+kotlin {
+    explicitApi()
+}

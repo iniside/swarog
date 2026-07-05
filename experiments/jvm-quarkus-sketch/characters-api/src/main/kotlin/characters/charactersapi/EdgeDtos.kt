@@ -8,6 +8,6 @@ package characters.charactersapi
  * `inventory` (client caller) already depend on `characters-api`, while `edge` does NOT depend on
  * `characters-api`, so there is no dependency cycle. `edge` stays a transport-agnostic leaf.
  */
-data class OwnerOfRequest(val characterId: Long)
+public data class OwnerOfRequest(val characterId: Long)
 
-data class OwnerOfReply(val found: Boolean, val ownerId: String?)
+public data class OwnerOfReply(val found: Boolean, val ownerId: String?)

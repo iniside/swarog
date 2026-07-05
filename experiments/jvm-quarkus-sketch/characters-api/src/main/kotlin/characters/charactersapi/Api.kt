@@ -10,14 +10,14 @@ import java.util.UUID
  * vs the framework-free sketch: `ctx.provide/require` is gone — CDI resolves this BY TYPE.
  * `CharactersModule` implements it, `inventory` constructor-injects it; neither names the other.
  */
-interface PlayerCharacters {
+public interface PlayerCharacters {
     /**
      * @return the owning player's id, or null if no such character exists.
      * @throws CharactersUnavailableException if a REMOTE provider cannot be reached — a transport
      *   failure is NOT the same answer as null ("no such character"). The in-process implementation
      *   never throws it.
      */
-    fun ownerOf(characterId: Long): UUID?
+    public fun ownerOf(characterId: Long): UUID?
 }
 
 /**
@@ -27,5 +27,5 @@ interface PlayerCharacters {
  * throws it, so the monolith never takes this path. This mirrors the Go seam widening `ownerOf`
  * with an `error` so a dead provider is not indistinguishable from "not owned".
  */
-class CharactersUnavailableException(message: String, cause: Throwable? = null) :
+public class CharactersUnavailableException(message: String, cause: Throwable? = null) :
     RuntimeException(message, cause)
