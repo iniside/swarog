@@ -40,7 +40,9 @@ class Seed(
         if (!roleConfig.isActive("all")) return   // demo seed runs only in the full monolith
         // demo-only: start clean so the admin view is deterministic across runs
         db.connection.use { c ->
-            c.createStatement().use { s -> s.execute("TRUNCATE accounts.players, characters.characters, inventory.holdings") }
+            // Also truncate the outbox/inbox so a rerun doesn't re-drive last run's events (dedup would
+            // catch them, but the demo state should be pristine and deterministic).
+            c.createStatement().use { s -> s.execute("TRUNCATE accounts.players, characters.characters, inventory.holdings, accounts.outbox, characters.outbox, inventory.inbox") }
         }
 
         val player = accounts.register("dev")

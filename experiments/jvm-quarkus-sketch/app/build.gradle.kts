@@ -16,6 +16,11 @@ dependencies {
     implementation("io.quarkus:quarkus-kotlin")
     implementation("io.quarkus:quarkus-arc")   // Seed: StartupEvent, @Observes, @Priority
     implementation("io.quarkus:quarkus-jackson")   // JSON serde for event payloads (additive-evolution config)
+    // Jackson can serialize a Kotlin data class via getters, but DESERIALIZING one (constructor-based,
+    // no no-arg ctor) needs the Kotlin module. quarkus-jackson does NOT pull it in; without it the outbox
+    // relay's readValue(payload, CharacterCreated) fails at runtime (InvalidDefinitionException: no Creators).
+    // Present on the classpath, Quarkus auto-registers KotlinModule on the single ObjectMapper bean.
+    implementation("com.fasterxml.jackson.module:jackson-module-kotlin")
     implementation("io.quarkus:quarkus-smallrye-health")   // /q/health/ready readiness probe (install.ps1 polls it)
 
     implementation(project(":accounts"))
