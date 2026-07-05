@@ -1,20 +1,13 @@
 package inventory
 
-import admin.adminapi.Cell
-import admin.adminapi.Item
-import admin.adminapi.Kpi
-import admin.adminapi.SectionData
-import admin.adminapi.Table
 import characters.charactersapi.PlayerCharacters
 import characters.charactersevents.CharacterCreated
 import characters.charactersevents.CharacterDeleted
-import io.quarkus.panache.common.Page
 import io.quarkus.panache.common.Sort
 import io.quarkus.runtime.StartupEvent
 import io.smallrye.common.annotation.Blocking
 import jakarta.enterprise.context.ApplicationScoped
 import jakarta.enterprise.event.Observes
-import jakarta.enterprise.inject.Produces
 import jakarta.persistence.EntityManager
 import jakarta.transaction.Transactional
 import javax.sql.DataSource
@@ -103,29 +96,6 @@ class InventoryModule(
             .setParameter(1, eventId)
             .executeUpdate() > 0
 
-    /** Second contributor to the same Item "slot" — admin merges both, still without knowing us. */
-    @Produces
-    @ApplicationScoped
-    fun inventoryAdminItem(): Item = Item(section = "Game Content", label = "Inventory") {
-        SectionData(
-            kpis = listOf(
-                Kpi("Holdings", Holding.count().toString()),
-                Kpi("Owners", distinctOwners().toString()),
-            ),
-            table = Table(
-                headers = listOf("Owner", "ID", "Item", "Qty"),
-                rows = recentRows(20).map { h ->
-                    listOf(
-                        Cell(h.id.ownerType.lowercase(), badge = true),
-                        Cell(h.id.ownerId, mono = true),
-                        Cell(h.id.item),
-                        Cell(h.qty.toString(), mono = true),
-                    )
-                },
-            ),
-        )
-    }
-
     /** Authorizes a character inventory by SYNC-asking the capability — not the package. */
     @Transactional
     fun add(owner: Owner, item: String, qty: Int) {
@@ -148,12 +118,4 @@ class InventoryModule(
 
     private fun wipe(owner: Owner): Long =
         Holding.delete("id.ownerType = ?1 and id.ownerId = ?2", owner.type.name, owner.id)
-
-    /** count(distinct composite-key-prefix) has no JPQL spelling — the one query that stayed SQL. */
-    private fun distinctOwners(): Long =
-        (em.createNativeQuery("SELECT count(*) FROM (SELECT DISTINCT owner_type, owner_id FROM inventory.holdings) t")
-            .singleResult as Number).toLong()
-
-    private fun recentRows(limit: Int): List<Holding> =
-        Holding.findAll(Sort.by("id.ownerId").and("id.item")).page(Page.ofSize(limit)).list()
 }

@@ -1,19 +1,11 @@
 package characters
 
-import admin.adminapi.Cell
-import admin.adminapi.Item
-import admin.adminapi.Kpi
-import admin.adminapi.SectionData
-import admin.adminapi.Table
 import characters.charactersevents.CharacterCreated
 import characters.charactersevents.CharacterDeleted
 import com.fasterxml.jackson.databind.ObjectMapper
-import io.quarkus.panache.common.Page
-import io.quarkus.panache.common.Sort
 import io.quarkus.runtime.StartupEvent
 import jakarta.enterprise.context.ApplicationScoped
 import jakarta.enterprise.event.Observes
-import jakarta.enterprise.inject.Produces
 import jakarta.persistence.EntityManager
 import jakarta.transaction.Transactional
 import java.util.UUID
@@ -63,23 +55,6 @@ class CharactersModule(
         println("[characters] schema ready")
     }
 
-    /** The contribution seam, now spelled CDI: producing an Item bean IS `contribute(AdminSection, …)`.
-     *  No ordering here — `@All` discovery order is the container's business; the ADMIN sorts,
-     *  because presentation order is the renderer's concern, not the contributors'. */
-    @Produces
-    @ApplicationScoped
-    fun charactersAdminItem(): Item = Item(section = "Game Content", label = "Characters") {
-        SectionData(
-            kpis = listOf(Kpi("Characters", Character.count().toString())),
-            table = Table(
-                headers = listOf("ID", "Player", "Name"),
-                rows = recent(10).map { ch ->
-                    listOf(Cell(ch.id.toString(), mono = true), Cell(ch.playerId.toString(), mono = true), Cell(ch.name))
-                },
-            ),
-        )
-    }
-
     /** Domain row + outbox row commit in ONE transaction. `flush()` forces the INSERT so the
      *  BIGSERIAL id is assigned before it goes into the event payload; the relay
      *  ([CharactersOutboxRelay]) drains the outbox onto the bus. */
@@ -109,7 +84,4 @@ class CharactersModule(
             .setParameter(2, objectMapper.writeValueAsString(payload))
             .executeUpdate()
     }
-
-    private fun recent(limit: Int): List<Character> =
-        Character.findAll(Sort.descending("id")).page(Page.ofSize(limit)).list()
 }

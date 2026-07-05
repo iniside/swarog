@@ -3,10 +3,17 @@ package admin.adminapi
 /**
  * The admin contract — the ONLY thing a module imports to appear in the admin portal.
  *
- * vs the framework-free sketch: the `Slot<Item>("admin.item")` key is gone. The contribution
- * seam is now CDI itself — a module `@Produces` an [Item] bean, and the admin injects
- * `@All List<Item>` (every Item bean in the container). The bean TYPE is the slot.
- * A new contributor still appears with zero edits to admin.
+ * vs the CDI-closure design (Step 1–5): admin used to aggregate `@All List<Item>` where each
+ * [Item] carried a NON-serializable `render: () -> SectionData` closure — fundamentally in-process,
+ * so a module living in another JVM could never contribute. Step 6 splits that seam into two halves
+ * so admin can fan out over HTTP:
+ *  - [AdminDataProvider] — a LOCAL, CDI-discovered capability (`@All List<AdminDataProvider>`). A
+ *    module in THIS process implements it; `data()` reads its live DB.
+ *  - [AdminItemDto] — the WIRE shape. A module also exposes `/admin-data/<id>` returning this DTO,
+ *    so admin can fetch a REMOTE module's dashboard over REST/JSON exactly as if it were local.
+ *
+ * [SectionData]/[Kpi]/[Table]/[Cell] are plain serializable data classes (Jackson-friendly: no
+ * functions, all fields concrete with defaults) shared by both halves.
  */
 
 /** A single headline number. */
@@ -17,12 +24,29 @@ data class Cell(val text: String, val mono: Boolean = false, val badge: Boolean 
 
 data class Table(val headers: List<String>, val rows: List<List<Cell>>)
 
-/** What an item renders at request time (live data). */
+/** The live dashboard payload for one module — serializable, so it crosses the wire unchanged. */
 data class SectionData(val kpis: List<Kpi> = emptyList(), val table: Table? = null)
 
 /**
- * A clickable entry in the admin sidebar, contributed by a module as a CDI bean. The admin
- * groups items by [section]; opening an item renders [render] into the content area.
- * `render` runs per request, so the numbers are always live.
+ * A module's admin dashboard, produced as a CDI bean in the SAME process as the module. Admin
+ * injects `@All List<AdminDataProvider>` and, for a locally-hosted module, calls [data] in-process.
+ * The bean TYPE is the contribution slot — a new local contributor appears with zero edits to admin.
  */
-class Item(val section: String, val label: String, val render: () -> SectionData)
+interface AdminDataProvider {
+    val id: String
+    val section: String
+    val label: String
+    fun data(): SectionData
+}
+
+/**
+ * The wire shape of one module's dashboard: the [AdminDataProvider] fields plus its [SectionData].
+ * A module publishes it at `/admin-data/<id>`; admin fetches it over REST when the module is remote,
+ * or builds it from the local provider when co-located. Either way the admin renders this same DTO.
+ */
+data class AdminItemDto(
+    val id: String,
+    val section: String,
+    val label: String,
+    val data: SectionData,
+)

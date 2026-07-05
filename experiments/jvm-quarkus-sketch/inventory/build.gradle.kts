@@ -20,7 +20,8 @@ dependencies {
     implementation("io.quarkus:quarkus-scheduler")       // shares the messaging/scheduler runtime with the publishers
     implementation("io.quarkus:quarkus-jackson")         // ObjectMapper bean on the compile classpath
     implementation("io.quarkus:quarkus-grpc")            // gRPC client runtime (ownerOf goes remote in the split)
-    implementation("io.quarkus:quarkus-rest")            // InventoryResource: HTTP surface to exercise the gRPC seam
+    implementation("io.quarkus:quarkus-rest")            // InventoryResource + GET /admin-data/inventory
+    implementation("io.quarkus:quarkus-rest-jackson")    // JSON serialization of AdminItemDto
 
     api(project(":characters-api"))      // injects PlayerCharacters (public ctor)
     api(project(":characters-events"))   // @ObservesAsync CharacterCreated/Deleted (public params)

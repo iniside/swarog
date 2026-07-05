@@ -20,6 +20,8 @@ dependencies {
     implementation("io.quarkus:quarkus-scheduler")       // @Scheduled outbox relay
     implementation("io.quarkus:quarkus-jackson")         // ObjectMapper bean for payload (de)serialization
     implementation("io.quarkus:quarkus-grpc")            // @GrpcService server + @GrpcClient in the produced adapter
+    implementation("io.quarkus:quarkus-rest")            // GET /admin-data/characters
+    implementation("io.quarkus:quarkus-rest-jackson")    // JSON serialization of AdminItemDto
 
     api(project(":characters-api"))      // @Produces PlayerCharacters (the produced capability bean)
     api(project(":characters-events"))   // CharacterCreated/Deleted payloads (emitted via outbox relay)
