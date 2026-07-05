@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Empty marker so Quarkus indexes this jar (Jandex). The generated gRPC/Mutiny stubs here are
+     NOT CDI beans (annotated discovery-mode ignores them), but the gRPC SERVER build step needs
+     the generated PlayerCharactersGrpcImplBase supertype in the index to recognize the
+     @GrpcService in the `characters` module as a service. Without this, grpc-server never starts. -->
+<beans xmlns="https://jakarta.ee/xml/ns/jakartaee"
+       xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+       xsi:schemaLocation="https://jakarta.ee/xml/ns/jakartaee https://jakarta.ee/xml/ns/jakartaee/beans_4_0.xsd"
+       version="4.0" bean-discovery-mode="annotated"/>
