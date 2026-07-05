@@ -15,7 +15,7 @@ import java.util.UUID
  * The DRIVER surface for the characters domain: create/delete a character over HTTP so split
  * process A (the `characters` role) can be exercised end-to-end. The demo [Seed] is gated to the
  * monolith (`roles=all`), so in microservices mode this REST endpoint is the ONLY way to drive the
- * create → Kafka → inventory-grant flow.
+ * create → outbox HTTP fanout → inventory-grant flow.
  *
  * Deliberately tiny: it just forwards to [CharactersModule]. `@Blocking` because create/delete do
  * JPA writes (Panache is blocking — illegal on the Vert.x event loop, so this hops to a worker).

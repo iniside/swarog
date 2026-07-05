@@ -3,14 +3,12 @@ package accounts
 import accounts.accountsevents.PlayerRegistered
 import com.fasterxml.jackson.databind.ObjectMapper
 import io.quarkus.runtime.StartupEvent
-import io.smallrye.common.annotation.Blocking
 import jakarta.enterprise.context.ApplicationScoped
 import jakarta.enterprise.event.Observes
 import jakarta.persistence.EntityManager
 import jakarta.transaction.Transactional
 import java.util.UUID
 import javax.sql.DataSource
-import org.eclipse.microprofile.reactive.messaging.Incoming
 import platform.RoleConfig
 
 /** Owns player identity. Foundation module — depends on nothing but the container. */
@@ -62,14 +60,5 @@ class AccountsModule(
             .setParameter(2, objectMapper.writeValueAsString(PlayerRegistered(id, provider)))
             .executeUpdate()
         return id
-    }
-
-    /** No consumer for PlayerRegistered yet. An internal channel with a producer but no consumer
-     *  fails at boot (SRMSG00019), so this no-op sink closes the graph; a real consumer replaces it
-     *  later. accounts.registered stays an INTERNAL channel (no Kafka connector in Step 7). */
-    @Incoming(PlayerRegistered.TOPIC)
-    @Blocking
-    fun drainRegistered(ev: PlayerRegistered) {
-        // no consumer yet
     }
 }

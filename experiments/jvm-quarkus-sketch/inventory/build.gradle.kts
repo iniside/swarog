@@ -16,8 +16,6 @@ dependencies {
     implementation("io.quarkus:quarkus-hibernate-orm-panache-kotlin")
     implementation("io.quarkus:quarkus-jdbc-postgresql")
     implementation("io.quarkus:quarkus-narayana-jta")   // @Transactional write paths
-    implementation("io.quarkus:quarkus-messaging-kafka") // SmallRye Reactive Messaging (@Incoming consumers)
-    implementation("io.quarkus:quarkus-scheduler")       // shares the messaging/scheduler runtime with the publishers
     implementation("io.quarkus:quarkus-jackson")         // ObjectMapper bean on the compile classpath
     implementation("io.quarkus:quarkus-grpc")            // gRPC client runtime (ownerOf goes remote in the split)
     implementation("io.quarkus:quarkus-smallrye-stork")  // Stork name-resolver for the gRPC client (characters-service)

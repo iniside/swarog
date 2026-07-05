@@ -16,9 +16,8 @@ dependencies {
     implementation("io.quarkus:quarkus-hibernate-orm-panache-kotlin")
     implementation("io.quarkus:quarkus-jdbc-postgresql")
     implementation("io.quarkus:quarkus-narayana-jta")   // @Transactional domain-write + outbox-append
-    implementation("io.quarkus:quarkus-messaging-kafka") // SmallRye Reactive Messaging (internal channel until Step 7 connectors)
-    implementation("io.quarkus:quarkus-scheduler")       // @Scheduled outbox relay
-    implementation("io.quarkus:quarkus-jackson")         // ObjectMapper bean for payload (de)serialization
+    implementation("io.quarkus:quarkus-scheduler")       // @Scheduled outbox relay (broker-less HTTP fanout)
+    implementation("io.quarkus:quarkus-jackson")         // ObjectMapper bean for payload serialization
     implementation("io.quarkus:quarkus-grpc")            // @GrpcService server + @GrpcClient in the produced adapter
     implementation("io.quarkus:quarkus-rest")            // GET /admin-data/characters
     implementation("io.quarkus:quarkus-rest-jackson")    // JSON serialization of AdminItemDto

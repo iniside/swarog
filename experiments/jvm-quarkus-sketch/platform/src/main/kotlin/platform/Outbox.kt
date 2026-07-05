@@ -6,10 +6,9 @@ import javax.sql.DataSource
 data class OutboxRow(val id: Long, val topic: String, val payload: String)
 
 /**
- * Shared drain plumbing for the transactional outbox. The relay ITSELF lives per-module — a
- * [io.smallrye.reactive.messaging.MutinyEmitter] is statically bound to its channel name, so a
- * generic relay is impossible — but the "read unsent / mark sent" SQL is identical across every
- * owning schema and homes here (JDBC only, no feature or JPA knowledge).
+ * Shared drain plumbing for the transactional outbox. The relay ITSELF lives per-module — each owns
+ * the mapping from its topics to subscriber URLs it POSTs to — but the "read unsent / mark sent" SQL
+ * is identical across every owning schema and homes here (JDBC only, no feature or JPA knowledge).
  *
  * `schema` is always a module-owned literal (never external input), so interpolating it into the
  * statement is safe.

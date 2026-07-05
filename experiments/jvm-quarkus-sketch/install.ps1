@@ -8,16 +8,17 @@
     The whole point of the sketch: ONE artifact (app/build/quarkus-app/quarkus-run.jar), two
     topologies chosen purely by environment at launch. The monolith runs with NO Quarkus profile
     (base config, roles=all); each split process runs QUARKUS_PROFILE=<role> (Step 7 profiles),
-    which flips channel ends between internal and Kafka and points Stork at process A.
+    which sets the roles subset and points Stork at process A. Async events are broker-less HTTP
+    fanout (the characters relay POSTs to the inventory sink), redirected by the INVENTORY_ADDR env.
 
-    Nothing here rebuilds per mode. All topology knobs are env vars fed to `java -jar`.
+    Nothing here rebuilds per mode. All topology knobs are env vars fed to `java -jar`. No broker.
 
 .PARAMETER Mode
     'monolith' (default) = 1 JVM, roles=all, port 8090.
-    'microservices'      = 2 JVMs per $topology below (A on 8090, B on 8091) + Redpanda broker.
+    'microservices'      = 2 JVMs per $topology below (A on 8090, B on 8091). No broker.
 
 .PARAMETER SkipBuild   Reuse the existing quarkus-run.jar (skip `gradlew quarkusBuild`).
-.PARAMETER SkipInfra   Do not touch docker compose (assume Postgres / Redpanda already up).
+.PARAMETER SkipInfra   Do not touch docker compose (assume Postgres already up).
 .PARAMETER Teardown    Stop everything launched by a previous run (from run/pids.json) and `compose down`.
 .PARAMETER WithPostgres  Also start the compose `postgres` service. Opt-in: the sketch normally assumes a
                          LOCAL Postgres already listening on 5432 (its dev DB); starting the compose one
@@ -26,7 +27,7 @@
 
 .EXAMPLE
     ./install.ps1                         # monolith on localhost:8090
-    ./install.ps1 -Mode microservices     # A=8090 (characters) + B=8091 (inventory/admin) + Redpanda
+    ./install.ps1 -Mode microservices     # A=8090 (characters) + B=8091 (inventory/admin), no broker
     ./install.ps1 -Teardown               # stop whatever a prior run started
 #>
 [CmdletBinding()]
@@ -53,11 +54,11 @@ $compose = Join-Path $root 'infra/docker-compose.yml'
 $jarArg = 'app/build/quarkus-app/quarkus-run.jar'
 
 # --- Topology: role -> process (split mode only). Matches the Step 7 %<profile> config and the
-#     plan's "Mapa role->proces" table. The profile sets `roles` + which channel ends are Kafka;
-#     here we only supply the runtime coordinates (port + Stork target for process A). ---------------
+#     plan's "Mapa role->proces" table. The profile sets `roles` + the Stork/admin-data targets;
+#     here we only supply the runtime coordinates (ports + INVENTORY_ADDR/CHARACTERS_ADDR). ---------
 $topology = @(
-    @{ name = 'characters'; profile = 'characters'; httpPort = 8090 }  # A: gRPC server + Kafka producer + admin-data REST
-    @{ name = 'inventory';  profile = 'inventory';  httpPort = 8091 }  # B: Kafka consumer + gRPC client -> A + admin fan-out
+    @{ name = 'characters'; profile = 'characters'; httpPort = 8090 }  # A: gRPC server + outbox HTTP fanout -> B + admin-data REST
+    @{ name = 'inventory';  profile = 'inventory';  httpPort = 8091 }  # B: event-sink consumer + gRPC client -> A + admin fan-out
 )
 
 # ---------------------------------------------------------------------------------------------------
@@ -79,32 +80,6 @@ function Resolve-JavaExe {
         if ($match) { return (Join-Path $match.FullName 'bin/java.exe') }
     }
     throw "No JDK 26 found. Set JAVA_HOME, or install one (winget install EclipseAdoptium.Temurin.26.JDK)."
-}
-
-# Block until a TCP port accepts a connection, or $timeoutSec elapses. Used to gate JVM launch on the
-# broker being reachable (Redpanda on 9092). Returns $true on success, $false on timeout.
-function Wait-ForTcp {
-    param(
-        [string]$TargetHost,
-        [int]$Port,
-        [int]$TimeoutSec = 60
-    )
-    $deadline = (Get-Date).AddSeconds($TimeoutSec)
-    while ((Get-Date) -lt $deadline) {
-        $client = [System.Net.Sockets.TcpClient]::new()
-        try {
-            $client.Connect($TargetHost, $Port)
-            if ($client.Connected) { return $true }
-        }
-        catch {
-            # Not up yet — swallow and retry after a short pause.
-        }
-        finally {
-            $client.Dispose()
-        }
-        Start-Sleep -Seconds 1
-    }
-    return $false
 }
 
 # Launch one Quarkus JVM. PowerShell 7 has no per-invocation env dict for Start-Process, so we set the
@@ -188,8 +163,8 @@ if ($Teardown) {
         }
     }
     if (Test-Path $compose) {
-        # `down` with the profile so the profiled `redpanda` service is included; harmless in monolith.
-        docker compose -f $compose --profile microservices down 2>&1 | Out-Host
+        # Only Postgres remains in compose (broker-less); `down` stops it if -WithPostgres started it.
+        docker compose -f $compose down 2>&1 | Out-Host
     }
     if (Test-Path $pidsFile) { Remove-Item $pidsFile -Force }
     Write-Host "Teardown complete." -ForegroundColor Green
@@ -229,20 +204,11 @@ if (-not (Test-Path $jar)) {
 # The sketch assumes a LOCAL Postgres on 5432 (its dev DB). -WithPostgres opts into the compose one
 # (for machines lacking a local 5432; it would otherwise clash on that port).
 if (-not $SkipInfra) {
-    if ($Mode -eq 'microservices') {
-        Write-Host "-- Infra: Redpanda broker (+Postgres if -WithPostgres) --" -ForegroundColor Cyan
-        $svc = @('redpanda')
-        if ($WithPostgres) { $svc += 'postgres' }
-        docker compose -f $compose --profile microservices up -d @svc
-        if ($LASTEXITCODE -ne 0) { throw "docker compose up failed (exit $LASTEXITCODE)." }
-        Write-Host "  waiting for Redpanda (localhost:9092)..."
-        if (-not (Wait-ForTcp -TargetHost 'localhost' -Port 9092 -TimeoutSec 60)) {
-            throw "Redpanda did not come up on localhost:9092 within 60s."
-        }
-        Write-Host "  Redpanda is up." -ForegroundColor Green
-    }
-    elseif ($WithPostgres) {
-        Write-Host "-- Infra: Postgres (monolith) --" -ForegroundColor Cyan
+    # No broker in either mode — async is broker-less HTTP fanout. The only backing service is
+    # Postgres, which the sketch assumes is already local on 5432; -WithPostgres opts into the
+    # compose one (for machines lacking a local 5432).
+    if ($WithPostgres) {
+        Write-Host "-- Infra: Postgres (compose) --" -ForegroundColor Cyan
         docker compose -f $compose up -d postgres
         if ($LASTEXITCODE -ne 0) { throw "docker compose up postgres failed (exit $LASTEXITCODE)." }
     }
@@ -267,11 +233,13 @@ else {
     Write-Host "-- Launching microservices split --" -ForegroundColor Cyan
     foreach ($spec in $topology) {
         $envHash = @{
-            QUARKUS_PROFILE         = $spec.profile
-            QUARKUS_HTTP_PORT       = "$($spec.httpPort)"
-            DATABASE_URL            = $DatabaseUrl
-            KAFKA_BOOTSTRAP_SERVERS = 'localhost:9092'
+            QUARKUS_PROFILE   = $spec.profile
+            QUARKUS_HTTP_PORT = "$($spec.httpPort)"
+            DATABASE_URL      = $DatabaseUrl
         }
+        # Process A (characters) POSTs its outbox events to process B's inventory sink; INVENTORY_ADDR
+        # redirects the base events.subscribers.* URLs from self to B (:8091).
+        if ($spec.name -eq 'characters') { $envHash['INVENTORY_ADDR'] = 'localhost:8091' }
         # Process B (inventory) reaches process A (characters) over Stork for gRPC ownerOf AND admin
         # fan-out REST; CHARACTERS_ADDR feeds the static Stork address-list (%inventory profile).
         if ($spec.name -eq 'inventory') { $envHash['CHARACTERS_ADDR'] = 'localhost:8090' }
@@ -308,9 +276,9 @@ if ($Mode -eq 'monolith') {
     Write-Host "  Characters: POST http://localhost:8090/characters?name=Aria"
 }
 else {
-    Write-Host "  Process A (characters/accounts): http://localhost:8090   (POST /characters, gRPC ownerOf, /admin-data/characters)"
-    Write-Host "  Process B (inventory/admin):     http://localhost:8091   (/admin fans out to A)"
-    Write-Host "  Drive the flow: POST http://localhost:8090/characters?name=Aria  -> inventory in B grants a starter"
+    Write-Host "  Process A (characters/accounts): http://localhost:8090   (POST /characters, gRPC ownerOf, /admin-data/characters, outbox POSTs to B)"
+    Write-Host "  Process B (inventory/admin):     http://localhost:8091   (/events sink, /admin fans out to A)"
+    Write-Host "  Drive the flow: POST http://localhost:8090/characters?name=Aria  -> A POSTs the event to B's sink, which grants a starter"
 }
 Write-Host "  Logs:       run/*.out.log / run/*.err.log"
 Write-Host "  Tear down:  ./install.ps1 -Teardown"

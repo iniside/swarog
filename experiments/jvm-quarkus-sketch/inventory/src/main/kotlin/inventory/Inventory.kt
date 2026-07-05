@@ -5,13 +5,11 @@ import characters.charactersevents.CharacterCreated
 import characters.charactersevents.CharacterDeleted
 import io.quarkus.panache.common.Sort
 import io.quarkus.runtime.StartupEvent
-import io.smallrye.common.annotation.Blocking
 import jakarta.enterprise.context.ApplicationScoped
 import jakarta.enterprise.event.Observes
 import jakarta.persistence.EntityManager
 import jakarta.transaction.Transactional
 import javax.sql.DataSource
-import org.eclipse.microprofile.reactive.messaging.Incoming
 import platform.RoleConfig
 
 enum class OwnerType { PLAYER, CHARACTER }
@@ -23,8 +21,9 @@ data class Owner(val type: OwnerType, val id: String)
  * Owner-scoped holdings. Depends on accounts + characters.
  *  - SYNC-asks [PlayerCharacters.ownerOf] to authorize a character's inventory — the capability
  *    interface is constructor-injected BY TYPE; no provide/require, no package dependency on impl.
- *  - REACTS to character events via `@Incoming` off the bus: grant a starter item on create, wipe
- *    holdings on delete (idempotent via the inbox). `characters` has no idea this module exists.
+ *  - REACTS to character events delivered by DIRECT HTTP POST to [InventoryEventSink]: grant a starter
+ *    item on create, wipe holdings on delete (idempotent via the inbox). `characters` has no idea this
+ *    module exists — it only knows the subscriber URL from config.
  *
  * Persistence: Panache over the [Holding] entity. The JDBC ladder collapsed to one-liners;
  * the new costs are `@Transactional` on every write path and one query that stayed native
@@ -66,12 +65,10 @@ class InventoryModule(
         println("[inventory] schema ready")
     }
 
-    /** Sideways reactions — bus deliveries via `@Incoming`, run blocking on a worker thread (the
-     *  channel is internal in the monolith, Kafka once Step 7 adds a connector). Delivery is
-     *  at-least-once, so each handler dedups on the inbox FIRST: a redelivered event is a no-op —
-     *  critical because `grant` (`qty += qty`) is NOT idempotent and would double the starter. */
-    @Incoming(CharacterCreated.TOPIC)
-    @Blocking
+    /** Sideways reactions — invoked by [InventoryEventSink] when the characters relay POSTs an event.
+     *  Delivery is at-least-once (the outbox retries on any non-2xx), so each handler dedups on the
+     *  inbox FIRST: a redelivered event is a no-op — critical because `grant` (`qty += qty`) is NOT
+     *  idempotent and would double the starter. The dedup + effect are one @Transactional unit. */
     @Transactional
     fun onCharacterCreated(ev: CharacterCreated) {
         if (!firstSeen("${CharacterCreated.TOPIC}:${ev.characterId}")) return
@@ -79,8 +76,6 @@ class InventoryModule(
         println("  [inventory] granted starter_sword to character ${ev.characterId}")
     }
 
-    @Incoming(CharacterDeleted.TOPIC)
-    @Blocking
     @Transactional
     fun onCharacterDeleted(ev: CharacterDeleted) {
         if (!firstSeen("${CharacterDeleted.TOPIC}:${ev.characterId}")) return
