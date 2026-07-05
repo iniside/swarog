@@ -36,6 +36,10 @@ object Constants {
     const val QUIC_STREAM_START_FLAG_NONE: Int = 0
     const val QUIC_SEND_FLAG_NONE: Int = 0
 
+    // --- QUIC_STREAM_SHUTDOWN_FLAGS (msquic.h:221) / QUIC_CONNECTION_SHUTDOWN_FLAGS (msquic.h:170) --
+    const val QUIC_STREAM_SHUTDOWN_FLAG_GRACEFUL: Int = 0x0001 // cleanly closes the send path
+    const val QUIC_CONNECTION_SHUTDOWN_FLAG_NONE: Int = 0x0000
+
     // --- QUIC_ADDRESS_FAMILY (msquic_winuser.h:159) ------------------------------------------------
     const val QUIC_ADDRESS_FAMILY_UNSPEC: Short = 0
     const val QUIC_ADDRESS_FAMILY_INET: Short = 2   // AF_INET
