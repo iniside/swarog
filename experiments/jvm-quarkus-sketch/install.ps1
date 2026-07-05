@@ -57,8 +57,8 @@ $jarArg = 'app/build/quarkus-app/quarkus-run.jar'
 #     plan's "Mapa role->proces" table. The profile sets `roles` + the Stork/admin-data targets;
 #     here we only supply the runtime coordinates (ports + INVENTORY_ADDR/CHARACTERS_ADDR). ---------
 $topology = @(
-    @{ name = 'characters'; profile = 'characters'; httpPort = 8090 }  # A: gRPC server + outbox HTTP fanout -> B + admin-data REST
-    @{ name = 'inventory';  profile = 'inventory';  httpPort = 8091 }  # B: event-sink consumer + gRPC client -> A + admin fan-out
+    @{ name = 'characters'; profile = 'characters'; httpPort = 8090 }  # A: edge QUIC server (characters.ownerOf, :9100) + outbox HTTP fanout -> B + admin-data REST
+    @{ name = 'inventory';  profile = 'inventory';  httpPort = 8091 }  # B: event-sink consumer + edge QUIC client -> A (:9100) + admin fan-out
 )
 
 # ---------------------------------------------------------------------------------------------------
@@ -103,7 +103,7 @@ function Start-Jvm {
         $outLog = Join-Path $runDir "$LogName.out.log"
         $errLog = Join-Path $runDir "$LogName.err.log"
         return Start-Process -FilePath $JavaExe `
-            -ArgumentList '-jar', $jarArg `
+            -ArgumentList '--enable-native-access=ALL-UNNAMED', '-jar', $jarArg `
             -WorkingDirectory $root `
             -PassThru `
             -RedirectStandardOutput $outLog `
@@ -231,6 +231,13 @@ if ($Mode -eq 'monolith') {
 }
 else {
     Write-Host "-- Launching microservices split --" -ForegroundColor Cyan
+    # The edge QUIC server (process A, characters.ownerOf on :9100) needs a CurrentUser-store cert;
+    # ensure-cert.ps1 is idempotent (reuses "GameBackend-Edge" if present) and prints ONLY the
+    # thumbprint as its last stdout line (status goes to Write-Host).
+    Write-Host "-- Ensuring edge QUIC cert --" -ForegroundColor Cyan
+    $thumb = (& (Join-Path $root 'scripts/ensure-cert.ps1') | Select-Object -Last 1)
+    Write-Host "  cert thumbprint: $thumb"
+
     foreach ($spec in $topology) {
         $envHash = @{
             QUARKUS_PROFILE   = $spec.profile
@@ -238,11 +245,20 @@ else {
             DATABASE_URL      = $DatabaseUrl
         }
         # Process A (characters) POSTs its outbox events to process B's inventory sink; INVENTORY_ADDR
-        # redirects the base events.subscribers.* URLs from self to B (:8091).
-        if ($spec.name -eq 'characters') { $envHash['INVENTORY_ADDR'] = 'localhost:8091' }
-        # Process B (inventory) reaches process A (characters) over Stork for gRPC ownerOf AND admin
-        # fan-out REST; CHARACTERS_ADDR feeds the static Stork address-list (%inventory profile).
-        if ($spec.name -eq 'inventory') { $envHash['CHARACTERS_ADDR'] = 'localhost:8090' }
+        # redirects the base events.subscribers.* URLs from self to B (:8091). It also runs the edge
+        # QUIC server for characters.ownerOf on :9100, secured by the cert whose thumbprint is
+        # EDGE_CERT_THUMBPRINT.
+        if ($spec.name -eq 'characters') {
+            $envHash['INVENTORY_ADDR'] = 'localhost:8091'
+            $envHash['EDGE_CERT_THUMBPRINT'] = $thumb
+        }
+        # Process B (inventory) reaches process A (characters) over Stork for admin fan-out REST
+        # (CHARACTERS_ADDR feeds the static Stork address-list, %inventory profile) AND dials A's edge
+        # QUIC server directly for the sync characters.ownerOf capability (CHARACTERS_EDGE_ADDR, :9100).
+        if ($spec.name -eq 'inventory') {
+            $envHash['CHARACTERS_ADDR'] = 'localhost:8090'
+            $envHash['CHARACTERS_EDGE_ADDR'] = 'localhost:9100'
+        }
 
         $proc = Start-Jvm -JavaExe $javaExe -LogName $spec.name -EnvHash $envHash
         $launched += @{ name = $spec.name; Process = $proc; httpPort = $spec.httpPort }
@@ -255,7 +271,7 @@ $pidRecords = $launched | ForEach-Object { @{ name = $_.name; pid = $_.Process.I
 $pidRecords | ConvertTo-Json -AsArray | Set-Content -Path $pidsFile -Encoding utf8
 
 # --- Readiness phase -------------------------------------------------------------------------------
-# In split mode process B depends on A (gRPC/admin), so poll A first — the $launched order already
+# In split mode process B depends on A (edge QUIC/admin), so poll A first — the $launched order already
 # has A ('characters') before B ('inventory'), matching $topology.
 Write-Host "-- Readiness (/q/health/ready) --" -ForegroundColor Cyan
 foreach ($entry in $launched) {
@@ -276,8 +292,8 @@ if ($Mode -eq 'monolith') {
     Write-Host "  Characters: POST http://localhost:8090/characters?name=Aria"
 }
 else {
-    Write-Host "  Process A (characters/accounts): http://localhost:8090   (POST /characters, gRPC ownerOf, /admin-data/characters, outbox POSTs to B)"
-    Write-Host "  Process B (inventory/admin):     http://localhost:8091   (/events sink, /admin fans out to A)"
+    Write-Host "  Process A (characters/accounts): http://localhost:8090   (POST /characters, edge QUIC ownerOf server :9100, /admin-data/characters, outbox POSTs to B)"
+    Write-Host "  Process B (inventory/admin):     http://localhost:8091   (/events sink, edge QUIC ownerOf client -> A:9100, /admin fans out to A)"
     Write-Host "  Drive the flow: POST http://localhost:8090/characters?name=Aria  -> A POSTs the event to B's sink, which grants a starter"
 }
 Write-Host "  Logs:       run/*.out.log / run/*.err.log"

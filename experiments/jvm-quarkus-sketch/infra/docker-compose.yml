@@ -1,8 +1,9 @@
 # Backing services for jvm-quarkus-sketch, both deploy modes.
 #
 # There is NO broker in either mode: async events are broker-less HTTP fanout (the characters
-# outbox relay POSTs each event directly to the inventory event-sink endpoints — the same
-# cross-process transport as the sync gRPC ownerOf and the admin-data REST fan-out).
+# outbox relay POSTs each event directly to the inventory event-sink endpoints), while the sync
+# characters.ownerOf capability rides the edge/QUIC transport (msquic) and the admin-data fan-out
+# is plain REST over Stork.
 #
 # `postgres` is the only backing service, shared (schema-isolated) by both the monolith and the
 # microservices split, matching app/src/main/resources/application.properties (db=jvmsketch,
