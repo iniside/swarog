@@ -59,7 +59,7 @@ func TestCharactersClient_OwnerOf(t *testing.T) {
 	defer stop()
 
 	cc := &charactersClient{conn: &edgeConn{peerAddr: addr}}
-	defer cc.conn.close()
+	defer func() { _ = cc.conn.close() }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -87,7 +87,7 @@ func TestAccountsClient_VerifySession(t *testing.T) {
 	defer stop()
 
 	ac := &accountsClient{conn: &edgeConn{peerAddr: addr}}
-	defer ac.conn.close()
+	defer func() { _ = ac.conn.close() }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -110,7 +110,7 @@ func TestPeerDown_Errors(t *testing.T) {
 	addr, stop := startFakeProvider(t)
 
 	cc := &charactersClient{conn: &edgeConn{peerAddr: addr}}
-	defer cc.conn.close()
+	defer func() { _ = cc.conn.close() }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

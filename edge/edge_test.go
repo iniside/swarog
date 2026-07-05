@@ -33,7 +33,7 @@ func startTestServer(t *testing.T) (addr string, cleanup func()) {
 		if err := srv.codec.Decode(reqPayload, &in); err != nil {
 			return nil, err
 		}
-		return srv.codec.Encode(echoResp{Msg: in.Msg})
+		return srv.codec.Encode(echoResp(in))
 	})
 
 	srv.Handle("boom", func([]byte) ([]byte, error) {
