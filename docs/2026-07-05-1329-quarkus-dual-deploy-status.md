@@ -1,7 +1,27 @@
-# Status: quarkus-dual-deploy — monolit zweryfikowany, split zablokowany na projekcie messagingu
+# Status: quarkus-dual-deploy — OBA tryby zweryfikowane (split odblokowany Opcją E)
 
 Branch `quarkus-dual-deploy`. Plan: `docs/plans/2026-07-05-1153-quarkus-dual-deploy-plan.md`.
-Data: 2026-07-05 13:29.
+Data: 2026-07-05 13:29 (aktualizacja 14:xx).
+
+## ROZWIĄZANE — Opcja E (broker-less HTTP fanout) — split ZWERYFIKOWANY ✅
+
+Decyzja użytkownika: **async = tylko fanout; log/buforowanie/kolejność = sync (gRPC), nie async.** Porzucono
+broker i SmallRye. Outbox daje trwałość+retry, więc relay POST-uje event bezpośrednio HTTP-em na endpoint
+subskrybenta (jak `ownerOf`/admin już robią). Commity 1ed6d8f (rewrite) + fa9d384 (fix `grpc-server` discovery
+przez `beans.xml` w `characters-grpc` — `@GrpcService` nie był rejestrowany, monolit brał gałąź local więc nikt
+nie zauważył). **Zero Kafki/Redpandy/Dockera — tylko JVM-y + Postgres (footprint Pragmy).**
+
+**Weryfikacja splitu (2 JVM-y, bez Dockera):** A(characters/accounts):8090, B(inventory/admin):8091, oba UP,
+zero SRMSG. `POST /characters` na A → event HTTP→B → `starter_sword` (async fanout ✅). `POST /inventory/{id}/grant`
+na B → B pyta A po **gRPC ownerOf** → real=200, nieistniejąca=„refusing" 400 (sync ✅). `/admin` na B fan-outuje
+REST/Stork do A (Characters z A + Inventory local ✅). Grantów w logu A=0, B=1 → prawdziwa separacja procesów.
+
+Monolit też dalej działa (relay POST-uje na self:8090). Bug `jackson-module-kotlin` (deserializacja Kotlin
+data-class) naprawiony wcześniej (d59e435).
+
+---
+
+## Historia (przed Opcją E — zachowane dla kontekstu)
 
 ## Co zrobione (Kroki 0–9 zacommitowane)
 
