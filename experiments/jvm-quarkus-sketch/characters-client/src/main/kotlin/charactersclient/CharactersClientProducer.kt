@@ -1,5 +1,6 @@
 package charactersclient
 
+import characters.charactersapi.CharactersUnavailableException
 import characters.charactersapi.OwnerOfReply
 import characters.charactersapi.OwnerOfRequest
 import characters.charactersapi.PlayerCharacters
@@ -42,7 +43,8 @@ class CharactersClientProducer(
  * stream). If a call fails because the connection died (peer restarted, stream closed → the reader
  * unblocks and pending calls time out, or a send fails), the cached client is dropped and one
  * reconnect + retry is attempted. Bounded: exactly one retry per call, so a dead peer cannot cause a
- * reconnect storm — the second failure propagates and surfaces as a 400 at the inventory write.
+ * reconnect storm — a second failure means the provider is unreachable, surfaced as a distinct
+ * [CharactersUnavailableException] (→ 503 at the inventory write), NOT null and NOT a false 400.
  */
 internal class EdgeRemotePlayerCharacters(target: String) : PlayerCharacters {
 
@@ -64,15 +66,24 @@ internal class EdgeRemotePlayerCharacters(target: String) : PlayerCharacters {
 
     override fun ownerOf(characterId: Long): UUID? {
         val reply = try {
-            ensureClient().call("characters.ownerOf", OwnerOfRequest(characterId), OwnerOfReply::class.java)
+            callOnce(characterId)
         } catch (e: Exception) {
             // The connection is likely dead (peer restarted / stream closed / call timed out). Drop the
-            // cached client and reconnect ONCE, then retry. A second failure propagates to the caller.
+            // cached client and reconnect ONCE, then retry.
             invalidate()
-            ensureClient().call("characters.ownerOf", OwnerOfRequest(characterId), OwnerOfReply::class.java)
+            try {
+                callOnce(characterId)
+            } catch (retry: Exception) {
+                // Both attempts failed → the provider is unreachable. Signal that DISTINCTLY (not null,
+                // which means "no such character"), so the consumer maps it to 503, never a false 400.
+                throw CharactersUnavailableException("characters.ownerOf unreachable at $host:$port", retry)
+            }
         }
         return reply.ownerId?.let(UUID::fromString)
     }
+
+    private fun callOnce(characterId: Long): OwnerOfReply =
+        ensureClient().call("characters.ownerOf", OwnerOfRequest(characterId), OwnerOfReply::class.java)
 
     /** Lazily establishes (and caches) the QUIC connection + [EdgeClient]. Synchronized double-check. */
     private fun ensureClient(): EdgeClient {
