@@ -34,12 +34,24 @@ layers; only the transport is QUIC:
   `EdgeRouter` (method→handler, throws/unknown → error response), `EdgeServer` + `EdgeTransport`/`EdgeConnection`
   interfaces, `LoopbackTransport` + `EdgeClient`. 4 tests green over real in-JVM round-trips (req/resp with cid
   match, handler error, unknown method, server push). Transport-agnostic — QUIC drops in as an `EdgeTransport`.
-- **Increment B — next: `MsQuicTransport : EdgeTransport`.** Bind QUIC into the JVM (start on Netty QUIC codec
-  for a fastest working server; keep msquic-via-Panama as the parity upgrade). Connection accept loop, per-stream
-  frame read/write, TLS. The `edge` core above is unchanged.
-- **Increment C — client shim** per engine (UE C++ / Unity C#): msgpack (reflection) + the QUIC transport +
-  the same `cid` request/response + push loop. Written once.
-- **Wiring:** real handlers dispatching into the modules (e.g. `characters.list` → characters capability) replace
-  the current canned demo handler.
+- **Increment B — DONE, verified over REAL QUIC.** Chose **msquic via Panama/FFM** (not Netty/quiche) —
+  feasibility proven then built out. `edge/src/main/kotlin/edge/msquic/`: `MsQuicLibrary` (load vendored dll),
+  `MsQuicApi` (api-table downcalls), `Layouts`/`Constants` (verified ABI), `CallbackRegistry`/`Upcalls`,
+  `FrameReassembler`, `MsQuicConnection` (EdgeConnection), `MsQuicServerTransport`/`MsQuicClientTransport`
+  (EdgeTransport). One persistent bidi stream/connection, 4-byte-BE length framing, schannel cert
+  (`CERTIFICATE_HASH`). `MsQuicEchoTest` proves a live QUIC/UDP round-trip; the `edge` core is unchanged.
+  ABI/FFM specifics recorded in [[msquic-ffm-probe]]. Plan: `docs/plans/2026-07-05-1520-quic-msquic-migration-plan.md`.
+- **gRPC REPLACED (real dogfood).** The internal `PlayerCharacters.ownerOf` seam (inventory→characters) now
+  runs over this edge/QUIC transport; the whole gRPC stack (`characters-grpc` module, proto, `@GrpcService`,
+  quarkus-grpc) is deleted. Verified in the split: `ownerOf` over QUIC authorizes a real character (200) /
+  refuses a nonexistent one (400); monolith takes the in-process local branch (no QUIC/cert). Two runtime-only
+  bugs found & fixed during verification: `Optional<String>` cert-thumbprint injection (bean instantiated in
+  every process), and `QuarkusTransaction.requiringNew()` around the handler's Panache read (runs on the
+  EdgeServer worker thread, no ambient tx/CDI context). msquic clean-shutdown = `RegistrationShutdown` before the
+  blocking `RegistrationClose` (per-connection force-close use-after-frees against the async SHUTDOWN_COMPLETE).
+- **Increment C — next: client shim** per engine (UE C++ / Unity C#): msgpack (reflection) + a QUIC client +
+  the same `cid` request/response + push loop. Written once. (This is the actual player-edge use; the ownerOf
+  seam was the internal dogfood proving the stack.)
 
-See also memory [[async-fanout-sync-grpc-brokerless]] (internal comms are HTTP/gRPC-now-REST; this is the edge).
+See also memory [[async-fanout-sync-grpc-brokerless]] (internal async comms are broker-less HTTP; the sync
+ownerOf seam is now edge/QUIC) and [[msquic-ffm-probe]] (the FFM binding facts).
