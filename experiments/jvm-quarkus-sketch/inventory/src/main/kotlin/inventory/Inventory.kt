@@ -18,6 +18,7 @@ import jakarta.enterprise.inject.Produces
 import jakarta.persistence.EntityManager
 import jakarta.transaction.Transactional
 import javax.sql.DataSource
+import platform.RoleConfig
 
 enum class OwnerType { PLAYER, CHARACTER }
 
@@ -40,12 +41,14 @@ class InventoryModule(
     private val db: DataSource,
     private val em: EntityManager,
     private val characters: PlayerCharacters,
+    private val roleConfig: RoleConfig,
 ) {
 
     /** Own schema only, raw DDL — migrations stay the module's property, the ORM just maps the
      *  result (`quarkus.hibernate-orm` schema management is off). Default priority:
      *  order-independent by construction (own schema, no cross-module FKs). */
     fun migrate(@Observes ev: StartupEvent) {
+        if (!roleConfig.isActive("inventory")) return
         db.connection.use { c ->
             c.createStatement().use { s ->
                 s.execute("CREATE SCHEMA IF NOT EXISTS inventory")

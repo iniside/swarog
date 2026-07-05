@@ -20,6 +20,7 @@ dependencies {
     implementation(project(":characters"))
     implementation(project(":inventory"))
     implementation(project(":admin"))
+    implementation(project(":platform"))   // Seed injects RoleConfig to gate the demo seed
 
     // Same architecture rules as the framework-free sketch — constraints outlive the framework.
     testImplementation("com.tngtech.archunit:archunit:1.4.2")

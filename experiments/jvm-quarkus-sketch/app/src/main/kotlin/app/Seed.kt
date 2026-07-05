@@ -10,6 +10,7 @@ import jakarta.annotation.Priority
 import jakarta.enterprise.context.ApplicationScoped
 import jakarta.enterprise.event.Observes
 import javax.sql.DataSource
+import platform.RoleConfig
 
 /**
  * Demo data so the dashboard isn't empty. Also re-runs the cross-module event-cleanup proof.
@@ -32,9 +33,11 @@ class Seed(
     private val accounts: AccountsModule,
     private val characters: CharactersModule,
     private val inventory: InventoryModule,
+    private val roleConfig: RoleConfig,
 ) {
 
     fun seed(@Observes @Priority(AFTER_ALL_MODULES) ev: StartupEvent) {
+        if (!roleConfig.isActive("all")) return   // demo seed runs only in the full monolith
         // demo-only: start clean so the admin view is deterministic across runs
         db.connection.use { c ->
             c.createStatement().use { s -> s.execute("TRUNCATE accounts.players, characters.characters, inventory.holdings") }

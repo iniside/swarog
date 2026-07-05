@@ -18,6 +18,7 @@ import jakarta.enterprise.event.Observes
 import jakarta.enterprise.inject.Produces
 import java.util.UUID
 import javax.sql.DataSource
+import platform.RoleConfig
 
 /**
  * A player has N characters. `player_id` is a PLAIN column — no cross-module FK to accounts.
@@ -29,10 +30,12 @@ class CharactersModule(
     private val db: DataSource,
     private val created: Event<CharacterCreated>,
     private val deleted: Event<CharacterDeleted>,
+    private val roleConfig: RoleConfig,
 ) : PlayerCharacters {
 
     /** Default priority — order-independent by construction (own schema, no cross-module FKs). */
     fun migrate(@Observes ev: StartupEvent) {
+        if (!roleConfig.isActive("characters")) return
         db.connection.use { c ->
             c.createStatement().use { s ->
                 s.execute("CREATE SCHEMA IF NOT EXISTS characters")

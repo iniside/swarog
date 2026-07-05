@@ -8,17 +8,20 @@ import jakarta.enterprise.event.Event
 import jakarta.enterprise.event.Observes
 import java.util.UUID
 import javax.sql.DataSource
+import platform.RoleConfig
 
 /** Owns player identity. Foundation module — depends on nothing but the container. */
 @ApplicationScoped
 class AccountsModule(
     private val db: DataSource,
     private val registered: Event<PlayerRegistered>,
+    private val roleConfig: RoleConfig,
 ) {
 
     /** Own schema only, raw DDL — migrations stay the module's property; the ORM maps the result.
      *  Default observer priority: order-independent by construction (no cross-module FKs). */
     fun migrate(@Observes ev: StartupEvent) {
+        if (!roleConfig.isActive("accounts")) return
         db.connection.use { c ->
             c.createStatement().use { s ->
                 s.execute("CREATE SCHEMA IF NOT EXISTS accounts")
