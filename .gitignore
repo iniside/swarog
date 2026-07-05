@@ -23,3 +23,7 @@ UILayout/.thumbnail
 .vscode/
 .DS_Store
 *.swp
+
+# runtime logs / pids and built binaries
+/run/
+/bin/
