@@ -9,12 +9,14 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"os"
 	"strings"
 
 	"gamebackend/core"
 	"gamebackend/edge"
 	"gamebackend/modules/admin/adminapi"
 	"gamebackend/modules/characters/charactersevents"
+	"gamebackend/outbox"
 )
 
 // accountsSvc is the slice of the accounts service we need (consumer-defined
@@ -37,6 +39,12 @@ type Module struct {
 	// the "characters.ownerOf" handler on it so a peer's inventory can resolve
 	// ownership over the wire. nil in the monolith — no edge exposure.
 	Edge *edge.Server
+
+	// relay drains the transactional outbox and delivers character events to any
+	// remote subscribers (EVENTS_SUBSCRIBERS). It runs in EVERY process that hosts
+	// this real module: in the monolith no subscribers are configured, so it just
+	// marks rows sent (drained to nobody); in a split it POSTs to the peer's sink.
+	relay *outbox.Relay
 }
 
 func (*Module) Name() string        { return "characters" }
@@ -51,7 +59,19 @@ CREATE TABLE IF NOT EXISTS characters.characters (
 	class      text        NOT NULL DEFAULT 'novice',
 	created_at timestamptz NOT NULL DEFAULT now()
 );
-CREATE INDEX IF NOT EXISTS characters_player_idx ON characters.characters(player_id);`
+CREATE INDEX IF NOT EXISTS characters_player_idx ON characters.characters(player_id);
+
+-- Transactional outbox: an event row is written in the SAME tx as the domain
+-- change, so it is durable iff the change committed. The relay drains it to
+-- remote subscribers; sent_at NULL = not yet delivered.
+CREATE TABLE IF NOT EXISTS characters.outbox (
+	id         bigserial   PRIMARY KEY,
+	topic      text        NOT NULL,
+	payload    jsonb       NOT NULL,
+	created_at timestamptz NOT NULL DEFAULT now(),
+	sent_at    timestamptz
+);
+CREATE INDEX IF NOT EXISTS outbox_unsent_idx ON characters.outbox(id) WHERE sent_at IS NULL;`
 
 func (*Module) Migrate(_ context.Context, db *sql.DB) error {
 	_, err := db.Exec(schemaDDL)
@@ -72,6 +92,11 @@ func (m *Module) Init(ctx *core.Context) error {
 	ctx.Provide("characters", m.svc)
 	ctx.Contribute(adminapi.Slot, adminapi.Item{Section: "Game Content", Label: "Characters", Render: m.adminSection})
 
+	// Construct (no I/O — Init only wires) the outbox relay. Subscribers come from
+	// EVENTS_SUBSCRIBERS (empty in the monolith). Start launches its drain loop.
+	m.relay = outbox.NewRelay(m.store.db, "characters",
+		outbox.ParseSubscribers(os.Getenv("EVENTS_SUBSCRIBERS")), m.log)
+
 	// Split topology: expose OwnerOf over the shared QUIC edge server so a peer
 	// process's inventory can resolve character ownership. Registering a handler
 	// is pure wiring (no I/O); main() starts the listener after all Inits.
@@ -80,6 +105,22 @@ func (m *Module) Init(ctx *core.Context) error {
 		m.log.Info("edge handler registered", "method", "characters.ownerOf")
 	}
 	return nil
+}
+
+// Start launches the outbox relay's background drain loop (Starter).
+func (m *Module) Start(ctx context.Context) error {
+	if m.relay == nil {
+		return nil
+	}
+	return m.relay.Start(ctx)
+}
+
+// Stop halts the outbox relay (Stopper), reverse of Start.
+func (m *Module) Stop(ctx context.Context) error {
+	if m.relay == nil {
+		return nil
+	}
+	return m.relay.Stop(ctx)
 }
 
 // ownerOfReq/ownerOfResp are the wire DTOs for the "characters.ownerOf" edge
@@ -134,15 +175,43 @@ func (m *Module) handleCreate(w http.ResponseWriter, r *http.Request) {
 		class = "novice"
 	}
 
-	c, err := m.store.create(r.Context(), pid, in.Name, class)
+	// Domain write + outbox row in ONE tx: the event is durable iff the character
+	// is. The character id (needed in the payload) comes from the INSERT RETURNING.
+	tx, err := m.store.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		m.log.Error("create character: begin tx", "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	defer func() { _ = tx.Rollback() }() // no-op after a successful Commit
+
+	c, err := m.store.createTx(r.Context(), tx, pid, in.Name, class)
 	if err != nil {
 		m.log.Error("create character failed", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	core.Emit(m.bus, charactersevents.CreatedEvent, charactersevents.Created{
-		CharacterID: c.ID, PlayerID: c.PlayerID, Name: c.Name, Class: c.Class,
-	})
+	evt := charactersevents.Created{CharacterID: c.ID, PlayerID: c.PlayerID, Name: c.Name, Class: c.Class}
+	payload, err := json.Marshal(evt)
+	if err != nil {
+		m.log.Error("create character: marshal event", "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if err := m.store.insertOutbox(r.Context(), tx, charactersevents.CreatedEvent.Topic(), payload); err != nil {
+		m.log.Error("create character: outbox insert", "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		m.log.Error("create character: commit", "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	// S4: a crash HERE (after commit, before Emit) loses only the LOCAL co-located
+	// delivery — the outbox row is already durable, so a remote subscriber still
+	// gets it via the relay. This matches the bus's existing best-effort semantics.
+	core.Emit(m.bus, charactersevents.CreatedEvent, evt)
 	writeJSON(w, http.StatusCreated, c)
 }
 
@@ -166,17 +235,45 @@ func (m *Module) handleDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
-	deleted, err := m.store.deleteOwned(r.Context(), id, pid)
+
+	tx, err := m.store.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		m.log.Error("delete character: begin tx", "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	defer func() { _ = tx.Rollback() }() // no-op after a successful Commit
+
+	deleted, err := m.store.deleteOwnedTx(r.Context(), tx, id, pid)
 	if err != nil {
 		m.log.Error("delete character failed", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 	if !deleted {
+		// Nothing deleted → no event. Rollback (deferred) and 404.
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
-	core.Emit(m.bus, charactersevents.DeletedEvent, charactersevents.Deleted{CharacterID: id, PlayerID: pid})
+	evt := charactersevents.Deleted{CharacterID: id, PlayerID: pid}
+	payload, err := json.Marshal(evt)
+	if err != nil {
+		m.log.Error("delete character: marshal event", "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if err := m.store.insertOutbox(r.Context(), tx, charactersevents.DeletedEvent.Topic(), payload); err != nil {
+		m.log.Error("delete character: outbox insert", "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		m.log.Error("delete character: commit", "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	// S4: crash after commit before Emit loses only the local delivery (see create).
+	core.Emit(m.bus, charactersevents.DeletedEvent, evt)
 	w.WriteHeader(http.StatusNoContent)
 }
 
