@@ -5,17 +5,20 @@
     microservices split (process A = characters/accounts, process B = inventory/admin).
 
 .DESCRIPTION
-    The whole point of the sketch: ONE artifact (app/build/quarkus-app/quarkus-run.jar), two
-    topologies chosen purely by environment at launch. The monolith runs with NO Quarkus profile
-    (base config, roles=all); each split process runs QUARKUS_PROFILE=<role> (Step 7 profiles),
-    which sets the roles subset and points Stork at process A. Async events are broker-less HTTP
-    fanout (the characters relay POSTs to the inventory sink), redirected by the INVENTORY_ADDR env.
-
-    Nothing here rebuilds per mode. All topology knobs are env vars fed to `java -jar`. No broker.
+    Per-service split is now PACKAGING, not profiles: each topology is its OWN fast-jar that links only
+    its own modules (mirroring the Go backend's cmd/<svc> entrypoints).
+      * monolith      = app/build/quarkus-app/quarkus-run.jar                 (all impls, local producers, roles=all)
+      * characters-service/build/quarkus-app/quarkus-run.jar   = split process A (accounts+characters, edge QUIC server)
+      * inventory-service/build/quarkus-app/quarkus-run.jar    = split process B (inventory+admin, characters-client remote producer)
+    Each service jar carries its OWN baked-in application.properties (the old %characters / %inventory
+    profiles). Runtime coordinates (ports + INVENTORY_ADDR/CHARACTERS_ADDR/CHARACTERS_EDGE_ADDR/
+    EDGE_CERT_THUMBPRINT) are still env vars fed to `java -jar`. Async events are broker-less HTTP
+    fanout (the characters relay POSTs to the inventory sink). No broker.
 
 .PARAMETER Mode
-    'monolith' (default) = 1 JVM, roles=all, port 8090.
-    'microservices'      = 2 JVMs per $topology below (A on 8090, B on 8091). No broker.
+    'monolith' (default) = 1 JVM (app jar), roles=all, port 8090.
+    'microservices'      = 2 JVMs per $topology below (A=characters-service on 8080 + QUIC 9100,
+                           B=inventory-service on 8081). No broker.
 
 .PARAMETER SkipBuild   Reuse the existing quarkus-run.jar (skip `gradlew quarkusBuild`).
 .PARAMETER SkipInfra   Do not touch docker compose (assume Postgres already up).
@@ -47,18 +50,19 @@ $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
 $runDir = Join-Path $root 'run'
 $pidsFile = Join-Path $runDir 'pids.json'
-$jar = Join-Path $root 'app/build/quarkus-app/quarkus-run.jar'
 $compose = Join-Path $root 'infra/docker-compose.yml'
 
-# The runnable artifact is identical for both modes — env alone selects the topology.
-$jarArg = 'app/build/quarkus-app/quarkus-run.jar'
+# Per-mode fast-jars. The monolith is app; each split process is its OWN service jar linking only its
+# own modules (proven by :inventory-service:dependencies excluding the characters/accounts impl).
+$monolithJar = 'app/build/quarkus-app/quarkus-run.jar'
+$jar = Join-Path $root $monolithJar   # readiness/existence check for monolith mode
 
-# --- Topology: role -> process (split mode only). Matches the Step 7 %<profile> config and the
-#     plan's "Mapa role->proces" table. The profile sets `roles` + the Stork/admin-data targets;
-#     here we only supply the runtime coordinates (ports + INVENTORY_ADDR/CHARACTERS_ADDR). ---------
+# --- Topology: process -> its OWN fast-jar (split mode only). Each service jar bakes in its roles +
+#     Stork/admin-data/edge config; here we only supply the runtime coordinates (ports +
+#     INVENTORY_ADDR/CHARACTERS_ADDR/CHARACTERS_EDGE_ADDR/EDGE_CERT_THUMBPRINT). No QUARKUS_PROFILE. ---
 $topology = @(
-    @{ name = 'characters'; profile = 'characters'; httpPort = 8090 }  # A: edge QUIC server (characters.ownerOf, :9100) + outbox HTTP fanout -> B + admin-data REST
-    @{ name = 'inventory';  profile = 'inventory';  httpPort = 8091 }  # B: event-sink consumer + edge QUIC client -> A (:9100) + admin fan-out
+    @{ name = 'characters'; jar = 'characters-service/build/quarkus-app/quarkus-run.jar'; httpPort = 8080 }  # A: edge QUIC server (characters.ownerOf, :9100) + outbox HTTP fanout -> B + admin-data REST
+    @{ name = 'inventory';  jar = 'inventory-service/build/quarkus-app/quarkus-run.jar';  httpPort = 8081 }  # B: event-sink consumer + edge QUIC client -> A (:9100) + admin fan-out
 )
 
 # ---------------------------------------------------------------------------------------------------
@@ -89,7 +93,8 @@ function Start-Jvm {
     param(
         [hashtable]$EnvHash,
         [string]$LogName,
-        [string]$JavaExe
+        [string]$JavaExe,
+        [string]$JarPath   # per-process fast-jar: monolith=app, split=characters-service/inventory-service
     )
     if (-not (Test-Path $runDir)) { New-Item -ItemType Directory -Path $runDir | Out-Null }
 
@@ -103,7 +108,7 @@ function Start-Jvm {
         $outLog = Join-Path $runDir "$LogName.out.log"
         $errLog = Join-Path $runDir "$LogName.err.log"
         return Start-Process -FilePath $JavaExe `
-            -ArgumentList '--enable-native-access=ALL-UNNAMED', '-jar', $jarArg `
+            -ArgumentList '--enable-native-access=ALL-UNNAMED', '-jar', $JarPath `
             -WorkingDirectory $root `
             -PassThru `
             -RedirectStandardOutput $outLog `
@@ -189,15 +194,29 @@ Write-Host "== jvm-quarkus-sketch install ($Mode) ==" -ForegroundColor Cyan
 $javaExe = Resolve-JavaExe
 Write-Host "Using JDK: $javaExe"
 
-# --- Build phase (one artifact for BOTH modes) -----------------------------------------------------
+# --- Build phase (per-mode: monolith builds `app`; split builds the TWO service jars) --------------
 if (-not $SkipBuild) {
-    Write-Host "-- Building (gradlew quarkusBuild) --" -ForegroundColor Cyan
     $env:JAVA_HOME = Split-Path (Split-Path $javaExe -Parent) -Parent
-    & (Join-Path $root 'gradlew.bat') quarkusBuild
-    if ($LASTEXITCODE -ne 0) { throw "gradlew quarkusBuild failed (exit $LASTEXITCODE)." }
+    if ($Mode -eq 'monolith') {
+        Write-Host "-- Building monolith (gradlew :app:quarkusBuild) --" -ForegroundColor Cyan
+        & (Join-Path $root 'gradlew.bat') ':app:quarkusBuild'
+        if ($LASTEXITCODE -ne 0) { throw "gradlew :app:quarkusBuild failed (exit $LASTEXITCODE)." }
+    }
+    else {
+        Write-Host "-- Building services (gradlew :characters-service:quarkusBuild :inventory-service:quarkusBuild) --" -ForegroundColor Cyan
+        & (Join-Path $root 'gradlew.bat') ':characters-service:quarkusBuild' ':inventory-service:quarkusBuild'
+        if ($LASTEXITCODE -ne 0) { throw "gradlew service quarkusBuild failed (exit $LASTEXITCODE)." }
+    }
 }
-if (-not (Test-Path $jar)) {
-    throw "Runnable jar not found at $jar. Run without -SkipBuild first."
+# Verify the jar(s) the chosen mode needs actually exist.
+if ($Mode -eq 'monolith') {
+    if (-not (Test-Path $jar)) { throw "Runnable jar not found at $jar. Run without -SkipBuild first." }
+}
+else {
+    foreach ($spec in $topology) {
+        $svcJar = Join-Path $root $spec.jar
+        if (-not (Test-Path $svcJar)) { throw "Runnable jar not found at $svcJar. Run without -SkipBuild first." }
+    }
 }
 
 # --- Infra phase -----------------------------------------------------------------------------------
@@ -221,9 +240,9 @@ if (-not $SkipInfra) {
 if (-not (Test-Path $runDir)) { New-Item -ItemType Directory -Path $runDir | Out-Null }
 
 if ($Mode -eq 'monolith') {
-    Write-Host "-- Launching monolith (roles=all, port 8090) --" -ForegroundColor Cyan
-    # No QUARKUS_PROFILE => base config: roles=all, internal channels, local PlayerCharacters branch.
-    $proc = Start-Jvm -JavaExe $javaExe -LogName 'monolith' -EnvHash @{
+    Write-Host "-- Launching monolith (app jar, roles=all, port 8090) --" -ForegroundColor Cyan
+    # The app jar bakes roles=all: local PlayerCharacters producer, in-process fanout, local admin.
+    $proc = Start-Jvm -JavaExe $javaExe -LogName 'monolith' -JarPath $monolithJar -EnvHash @{
         DATABASE_URL      = $DatabaseUrl
         QUARKUS_HTTP_PORT = '8090'
     }
@@ -239,30 +258,29 @@ else {
     Write-Host "  cert thumbprint: $thumb"
 
     foreach ($spec in $topology) {
+        # No QUARKUS_PROFILE — each service jar bakes in its own roles/config. Only runtime coordinates here.
         $envHash = @{
-            QUARKUS_PROFILE   = $spec.profile
             QUARKUS_HTTP_PORT = "$($spec.httpPort)"
             DATABASE_URL      = $DatabaseUrl
         }
-        # Process A (characters) POSTs its outbox events to process B's inventory sink; INVENTORY_ADDR
-        # redirects the base events.subscribers.* URLs from self to B (:8091). It also runs the edge
-        # QUIC server for characters.ownerOf on :9100, secured by the cert whose thumbprint is
-        # EDGE_CERT_THUMBPRINT.
+        # Process A (characters-service) POSTs its outbox events to process B's inventory sink;
+        # INVENTORY_ADDR redirects the baked events.subscribers.* URLs from the default to B (:8081). It
+        # also runs the edge QUIC server for characters.ownerOf on :9100, secured by EDGE_CERT_THUMBPRINT.
         if ($spec.name -eq 'characters') {
-            $envHash['INVENTORY_ADDR'] = 'localhost:8091'
+            $envHash['INVENTORY_ADDR'] = 'localhost:8081'
             $envHash['EDGE_CERT_THUMBPRINT'] = $thumb
         }
-        # Process B (inventory) reaches process A (characters) over Stork for admin fan-out REST
-        # (CHARACTERS_ADDR feeds the static Stork address-list, %inventory profile) AND dials A's edge
-        # QUIC server directly for the sync characters.ownerOf capability (CHARACTERS_EDGE_ADDR, :9100).
+        # Process B (inventory-service) reaches process A over Stork for admin fan-out REST
+        # (CHARACTERS_ADDR feeds the static Stork address-list) AND dials A's edge QUIC server directly
+        # for the sync characters.ownerOf capability (CHARACTERS_EDGE_ADDR, :9100).
         if ($spec.name -eq 'inventory') {
-            $envHash['CHARACTERS_ADDR'] = 'localhost:8090'
+            $envHash['CHARACTERS_ADDR'] = 'localhost:8080'
             $envHash['CHARACTERS_EDGE_ADDR'] = 'localhost:9100'
         }
 
-        $proc = Start-Jvm -JavaExe $javaExe -LogName $spec.name -EnvHash $envHash
+        $proc = Start-Jvm -JavaExe $javaExe -LogName $spec.name -JarPath $spec.jar -EnvHash $envHash
         $launched += @{ name = $spec.name; Process = $proc; httpPort = $spec.httpPort }
-        Write-Host "  launched $($spec.name) (profile=$($spec.profile), port=$($spec.httpPort), pid=$($proc.Id))"
+        Write-Host "  launched $($spec.name) (jar=$($spec.jar), port=$($spec.httpPort), pid=$($proc.Id))"
     }
 }
 
@@ -292,9 +310,9 @@ if ($Mode -eq 'monolith') {
     Write-Host "  Characters: POST http://localhost:8090/characters?name=Aria"
 }
 else {
-    Write-Host "  Process A (characters/accounts): http://localhost:8090   (POST /characters, edge QUIC ownerOf server :9100, /admin-data/characters, outbox POSTs to B)"
-    Write-Host "  Process B (inventory/admin):     http://localhost:8091   (/events sink, edge QUIC ownerOf client -> A:9100, /admin fans out to A)"
-    Write-Host "  Drive the flow: POST http://localhost:8090/characters?name=Aria  -> A POSTs the event to B's sink, which grants a starter"
+    Write-Host "  Process A (characters-service): http://localhost:8080   (POST /characters, edge QUIC ownerOf server :9100, /admin-data/characters, outbox POSTs to B)"
+    Write-Host "  Process B (inventory-service):  http://localhost:8081   (/events sink, edge QUIC ownerOf client -> A:9100, /admin fans out to A)"
+    Write-Host "  Drive the flow: POST http://localhost:8080/characters?name=Aria  -> A POSTs the event to B's sink, which grants a starter"
 }
 Write-Host "  Logs:       run/*.out.log / run/*.err.log"
 Write-Host "  Tear down:  ./install.ps1 -Teardown"

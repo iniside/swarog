@@ -1,4 +1,4 @@
-package characters
+package charactersclient
 
 import characters.charactersapi.OwnerOfReply
 import characters.charactersapi.OwnerOfRequest
@@ -10,43 +10,33 @@ import jakarta.enterprise.context.ApplicationScoped
 import jakarta.enterprise.inject.Produces
 import java.util.UUID
 import org.eclipse.microprofile.config.inject.ConfigProperty
-import platform.RoleConfig
 
 /**
- * The ONE place a [PlayerCharacters] bean comes from — transport-transparent by construction:
- *  - a process that HOSTS `characters` gets a local delegate straight to [LocalPlayerCharacters];
- *  - a process that does NOT gets an edge-RPC adapter dialing the remote QUIC server → [CharactersEdgeServer].
+ * The REMOTE [PlayerCharacters] producer. Lives in `characters-client` — a module that imports ONLY
+ * `characters-api` + `edge`, NEVER the `characters` impl — so a service can depend on the remote
+ * capability WITHOUT linking the characters implementation. This is the CDI crux of the per-service
+ * split: previously one provider in the `characters` impl branched local-vs-remote on RoleConfig at
+ * runtime; now bean PRESENCE decides. A process that includes `characters-client` (and NOT `characters`)
+ * gets exactly this remote producer; a process that includes `characters` gets the LOCAL producer
+ * ([characters.LocalPlayerCharactersProducer]); the monolith includes `characters` only. So each of the
+ * three topologies has EXACTLY ONE `PlayerCharacters` producer — no ambiguous/unsatisfied resolution.
  *
- * Living in the `characters` impl (not `platform`/`inventory`) is deliberate: it keeps the choice next
- * to the capability it fronts and avoids an impl-on-impl / Gradle cycle. Exactly one bean of type
- * [PlayerCharacters] exists in every role combination — [LocalPlayerCharacters] is a concrete type
- * (not a `PlayerCharacters`), so no ambiguous resolution. The remote adapter connects lazily on first
- * call, so it is constructed but inert in the monolith, where the local branch is taken.
+ * The remote adapter connects lazily on first call, so it is constructed but inert until an inventory
+ * write actually reaches a character-owned holding.
  */
 @ApplicationScoped
-class PlayerCharactersProvider(
-    private val roleConfig: RoleConfig,
-    private val local: LocalPlayerCharacters,
+class CharactersClientProducer(
     @param:ConfigProperty(name = "edge.client.characters.target") private val target: String,
 ) {
     @Produces
     @ApplicationScoped
-    fun playerCharacters(): PlayerCharacters =
-        if (roleConfig.isActive("characters")) LocalPlayerCharactersAdapter(local)
-        else EdgeRemotePlayerCharacters(target)
-}
-
-/** In-process: delegate straight to the concrete local capability. */
-private class LocalPlayerCharactersAdapter(
-    private val local: LocalPlayerCharacters,
-) : PlayerCharacters {
-    override fun ownerOf(characterId: Long): UUID? = local.ownerOf(characterId)
+    fun playerCharacters(): PlayerCharacters = EdgeRemotePlayerCharacters(target)
 }
 
 /**
  * Cross-process: call `characters.ownerOf` over the edge RPC core on REAL QUIC to the remote
- * [CharactersEdgeServer] at `host:port` ([target]). The [EdgeClient] blocks on the round-trip, so
- * callers that reach a character inventory write must be `@Blocking` (e.g. [inventory.InventoryResource]).
+ * `CharactersEdgeServer` at `host:port` ([target]). The [EdgeClient] blocks on the round-trip, so
+ * callers that reach a character inventory write must be `@Blocking` (e.g. inventory's REST resource).
  *
  * The QUIC connection + [EdgeClient] are established lazily and CACHED (a single persistent bidi
  * stream). If a call fails because the connection died (peer restarted, stream closed → the reader
@@ -54,7 +44,7 @@ private class LocalPlayerCharactersAdapter(
  * reconnect + retry is attempted. Bounded: exactly one retry per call, so a dead peer cannot cause a
  * reconnect storm — the second failure propagates and surfaces as a 400 at the inventory write.
  */
-private class EdgeRemotePlayerCharacters(target: String) : PlayerCharacters {
+internal class EdgeRemotePlayerCharacters(target: String) : PlayerCharacters {
 
     private val host: String
     private val port: Int
