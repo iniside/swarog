@@ -17,4 +17,7 @@ class RoleConfig(
     @ConfigProperty(name = "roles", defaultValue = "all") private val roles: Set<String>,
 ) {
     fun isActive(module: String): Boolean = "all" in roles || module in roles
+
+    /** True for the monolith (roles=all, everything co-located) — no split process. */
+    fun isMonolith(): Boolean = "all" in roles
 }
