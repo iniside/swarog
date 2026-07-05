@@ -16,6 +16,7 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib" // registers the "pgx" database/sql driver
 
 	"gamebackend/core"
+	"gamebackend/edge"
 	"gamebackend/modules/accounts"
 	"gamebackend/modules/admin"
 	"gamebackend/modules/characters"
@@ -134,6 +135,17 @@ func sortedKeys[V any](m map[string]V) []string {
 	return keys
 }
 
+// peerAddrFor returns the QUIC edge address a remote stub for module `name`
+// should dial: env <NAME>_EDGE_ADDR (e.g. CHARACTERS_EDGE_ADDR), else the shared
+// default. In the split, both providers live behind process A's single edge
+// server, so both default to the same host:port.
+func peerAddrFor(name string) string {
+	if v := os.Getenv(strings.ToUpper(name) + "_EDGE_ADDR"); strings.TrimSpace(v) != "" {
+		return v
+	}
+	return "localhost:9000"
+}
+
 // normalizeAddr accepts both ":8080" and "8080" forms and returns ":8080".
 func normalizeAddr(port string) string {
 	port = strings.TrimSpace(port)
@@ -191,15 +203,30 @@ func main() {
 		log.Error("role gating failed", "err", err)
 		os.Exit(1)
 	}
-	peerAddr := os.Getenv("EDGE_ADDR") // where remote stubs will dial (wired in Krok 3)
 	log.Info("topology", "monolith", roles.all, "hosted", hosted, "remote", needed)
+
+	// Split topology: if this process hosts an edge-exposed provider (accounts or
+	// characters) and is NOT the monolith, stand up ONE shared QUIC edge server.
+	// Both providers register their handlers on it (in their Init), so a single
+	// UDP port (EDGE_ADDR, default :9000) serves every edge method — no per-module
+	// port juggling. The monolith runs everything in-process and needs no edge.
+	var edgeServer *edge.Server
+	if !roles.all && (roles.Has("accounts") || roles.Has("characters")) {
+		edgeServer = edge.NewServer()
+		if am, ok := all["accounts"].(*accounts.Module); ok && roles.Has("accounts") {
+			am.Edge = edgeServer
+		}
+		if cm, ok := all["characters"].(*characters.Module); ok && roles.Has("characters") {
+			cm.Edge = edgeServer
+		}
+	}
 
 	reg := core.NewRegistry(ctx)
 	for _, name := range hosted {
 		reg.Add(all[name])
 	}
 	for _, name := range needed {
-		reg.Add(remote.NewStub(name, peerAddr))
+		reg.Add(remote.NewStub(name, peerAddrFor(name)))
 	}
 
 	if err := reg.Build(); err != nil {
@@ -223,6 +250,25 @@ func main() {
 	}
 	cancelStart()
 
+	// Bring up the shared edge server AFTER every module Init has registered its
+	// handlers (Init ran in reg.Build). One listener, all edge methods.
+	if edgeServer != nil {
+		tlsConf, err := edge.SelfSignedTLS()
+		if err != nil {
+			log.Error("edge tls", "err", err)
+			os.Exit(1)
+		}
+		edgeAddr := os.Getenv("EDGE_ADDR")
+		if strings.TrimSpace(edgeAddr) == "" {
+			edgeAddr = ":9000"
+		}
+		if err := edgeServer.ListenAddr(edgeAddr, tlsConf); err != nil {
+			log.Error("edge listen", "err", err)
+			os.Exit(1)
+		}
+		log.Info("edge listening", "addr", edgeServer.Addr())
+	}
+
 	srv := &http.Server{Addr: normalizeAddr(os.Getenv("PORT")), Handler: ctx.Mux, ReadHeaderTimeout: 10 * time.Second}
 	go func() {
 		log.Info("listening", "addr", srv.Addr)
@@ -245,6 +291,11 @@ func main() {
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		log.Error("http shutdown", "err", err)
+	}
+	if edgeServer != nil {
+		if err := edgeServer.Close(); err != nil {
+			log.Error("edge shutdown", "err", err)
+		}
 	}
 	ctx.Bus.Close()
 	reg.Stop(shutdownCtx)

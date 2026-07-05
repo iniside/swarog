@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"gamebackend/core"
+	"gamebackend/edge"
 	"gamebackend/modules/admin/adminapi"
 )
 
@@ -18,13 +19,20 @@ import (
 // trusted verifier of external identities (epic) with a gated local password
 // provider (dev) for testing. One product-scoped player_id, many providers.
 type Module struct {
-	db      *sql.DB
-	log     *slog.Logger
-	bus     *core.Bus
+	db        *sql.DB
+	log       *slog.Logger
+	bus       *core.Bus
 	store     *store
+	svc       *service
 	devAuth   bool
 	epic      *oidcVerifier
 	epicOAuth *epicOAuth
+
+	// Edge, when non-nil, is the process-wide QUIC RPC server (constructed and
+	// started by main() only in a split that hosts this module). Init registers
+	// the "accounts.verifySession" handler on it so a peer process can verify
+	// session tokens over the wire. nil in the monolith — no edge exposure.
+	Edge *edge.Server
 }
 
 func (*Module) Name() string        { return "accounts" }
@@ -112,11 +120,49 @@ func (m *Module) Init(ctx *core.Context) error {
 	ctx.Mux.HandleFunc("GET /accounts/me", m.handleMe)
 
 	// Offered to other modules; they assert it to their own local interface.
-	ctx.Provide("accounts", &service{store: m.store})
+	m.svc = &service{store: m.store}
+	ctx.Provide("accounts", m.svc)
+
+	// Split topology: expose VerifySession over the shared QUIC edge server so a
+	// peer process can authenticate bearer tokens. Registering a handler is pure
+	// wiring (no I/O); main() starts the listener after all Inits.
+	if m.Edge != nil {
+		m.Edge.Handle("accounts.verifySession", verifySessionEdgeHandler(m.svc))
+		m.log.Info("edge handler registered", "method", "accounts.verifySession")
+	}
 
 	// Appear in the admin portal (it renders whatever is contributed).
 	ctx.Contribute(adminapi.Slot, adminapi.Item{Section: "Identity", Label: "Players", Render: m.adminSection})
 	return nil
+}
+
+// verifySessionReq/verifySessionResp are the wire DTOs for the
+// "accounts.verifySession" edge RPC. The remote client in modules/remote mirrors
+// these field tags — the only coupling is this JSON shape + the method name.
+type verifySessionReq struct {
+	Token string `json:"token"`
+}
+
+type verifySessionResp struct {
+	PlayerID string `json:"player_id"`
+	Ok       bool   `json:"ok"`
+}
+
+// verifySessionEdgeHandler adapts the local VerifySession capability to an
+// edge.Handler. A store error is returned as the handler error (→ 503 at the
+// consumer) rather than a false "invalid session".
+func verifySessionEdgeHandler(svc *service) edge.Handler {
+	return func(reqPayload []byte) ([]byte, error) {
+		var req verifySessionReq
+		if err := json.Unmarshal(reqPayload, &req); err != nil {
+			return nil, err
+		}
+		pid, ok, err := svc.VerifySession(context.Background(), req.Token)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(verifySessionResp{PlayerID: pid, Ok: ok})
+	}
 }
 
 func (m *Module) handleMe(w http.ResponseWriter, r *http.Request) {
@@ -170,12 +216,19 @@ func (m *Module) authedPlayer(r *http.Request) (Player, bool) {
 // service is what other modules receive from Require("accounts").
 type service struct{ store *store }
 
-func (s *service) VerifySession(ctx context.Context, token string) (playerID string, ok bool) {
+// VerifySession resolves a bearer token to its player. An unknown/expired token
+// is ("", false, nil); a store failure now propagates as a non-nil error (B2)
+// instead of masquerading as an invalid session, so a consumer can answer 503
+// on infrastructure failure rather than 401.
+func (s *service) VerifySession(ctx context.Context, token string) (playerID string, ok bool, err error) {
 	p, ok, err := s.store.playerBySession(ctx, token)
-	if err != nil || !ok {
-		return "", false
+	if err != nil {
+		return "", false, err
 	}
-	return p.ID, true
+	if !ok {
+		return "", false, nil
+	}
+	return p.ID, true, nil
 }
 
 func (s *service) GetPlayer(ctx context.Context, id string) (Player, bool) {

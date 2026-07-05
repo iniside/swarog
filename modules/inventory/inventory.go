@@ -20,12 +20,16 @@ import (
 
 const starterItem = "starter_sword"
 
+// accountsSvc and charactersSvc are the consumer-defined slices we depend on.
+// Both return an error so a transport failure (the provider hosted in a peer
+// process, reached over the QUIC edge) surfaces as 503 rather than a false 401
+// or 404. The local, co-hosted implementations return a nil error.
 type accountsSvc interface {
-	VerifySession(ctx context.Context, token string) (playerID string, ok bool)
+	VerifySession(ctx context.Context, token string) (playerID string, ok bool, err error)
 }
 
 type charactersSvc interface {
-	OwnerOf(ctx context.Context, characterID string) (playerID string, ok bool)
+	OwnerOf(ctx context.Context, characterID string) (playerID string, ok bool, err error)
 }
 
 type Module struct {
@@ -104,22 +108,27 @@ func (m *Module) onCharacterDeleted(e charactersevents.Deleted) {
 }
 
 func (m *Module) handleMine(w http.ResponseWriter, r *http.Request) {
-	pid, ok := m.auth(r)
+	pid, ok := m.authed(w, r)
 	if !ok {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 	m.respondList(w, r, Owner{Type: "player", ID: pid})
 }
 
 func (m *Module) handleCharacter(w http.ResponseWriter, r *http.Request) {
-	pid, ok := m.auth(r)
+	pid, ok := m.authed(w, r)
 	if !ok {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 	id := r.PathValue("id")
-	owner, found := m.characters.OwnerOf(r.Context(), id)
+	owner, found, err := m.characters.OwnerOf(r.Context(), id)
+	if err != nil {
+		// Characters may be hosted in a peer process; a transport failure is an
+		// infrastructure problem, not a missing character (B2).
+		m.log.Error("ownership lookup failed", "character", id, "err", err)
+		http.Error(w, "characters service unavailable", http.StatusServiceUnavailable)
+		return
+	}
 	if !found {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
@@ -132,9 +141,8 @@ func (m *Module) handleCharacter(w http.ResponseWriter, r *http.Request) {
 }
 
 func (m *Module) handleGrant(w http.ResponseWriter, r *http.Request) {
-	pid, ok := m.auth(r)
+	pid, ok := m.authed(w, r)
 	if !ok {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 	var in struct {
@@ -195,12 +203,29 @@ func (s *service) List(ctx context.Context, owner Owner) ([]Holding, error) {
 	return s.store.list(ctx, owner)
 }
 
-func (m *Module) auth(r *http.Request) (playerID string, ok bool) {
+func (m *Module) auth(r *http.Request) (playerID string, ok bool, err error) {
 	token := bearer(r)
 	if token == "" {
-		return "", false
+		return "", false, nil
 	}
 	return m.accounts.VerifySession(r.Context(), token)
+}
+
+// authed verifies the bearer token and writes the right failure response: 503 if
+// the accounts service (possibly a peer reached over the edge) is unreachable,
+// 401 if the token is missing or invalid. Returns ok=false once it responds.
+func (m *Module) authed(w http.ResponseWriter, r *http.Request) (playerID string, ok bool) {
+	pid, ok, err := m.auth(r)
+	if err != nil {
+		m.log.Error("session verify failed", "err", err)
+		http.Error(w, "auth service unavailable", http.StatusServiceUnavailable)
+		return "", false
+	}
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return "", false
+	}
+	return pid, true
 }
 
 func bearer(r *http.Request) string {
