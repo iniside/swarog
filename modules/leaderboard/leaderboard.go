@@ -7,7 +7,8 @@ import (
 	"log/slog"
 	"net/http"
 
-	"gamebackend/core"
+	"gamebackend/bus"
+	"gamebackend/lifecycle"
 	"gamebackend/modules/match/matchevents"
 )
 
@@ -19,8 +20,8 @@ type Module struct {
 	db  *sql.DB
 }
 
-func (*Module) Name() string        { return "leaderboard" }
-func (*Module) DependsOn() []string { return nil } // reacts via the bus — depends on nobody
+func (*Module) Name() string       { return "leaderboard" }
+func (*Module) Requires() []string { return nil } // reacts via the bus — depends on nobody
 
 const schemaDDL = `
 CREATE SCHEMA IF NOT EXISTS leaderboard;
@@ -35,12 +36,12 @@ func (*Module) Migrate(_ context.Context, db *sql.DB) error {
 	return err
 }
 
-func (m *Module) Init(ctx *core.Context) error {
+func (m *Module) Init(ctx *lifecycle.Context) error {
 	m.db = ctx.DB
 	m.log = ctx.Log
 
 	// Persist a win per finished match. Async (event), so eventually consistent.
-	core.On(ctx.Bus, matchevents.FinishedEvent, func(r matchevents.Finished) {
+	bus.On(ctx.Bus, matchevents.FinishedEvent, func(r matchevents.Finished) {
 		_, err := m.db.Exec(
 			`INSERT INTO leaderboard.scores (player, wins) VALUES ($1, 1)
 			 ON CONFLICT (player) DO UPDATE SET wins = leaderboard.scores.wins + 1`,

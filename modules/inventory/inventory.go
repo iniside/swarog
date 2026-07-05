@@ -13,9 +13,11 @@ import (
 	"os"
 	"strings"
 
-	"gamebackend/core"
+	"gamebackend/bus"
+	"gamebackend/lifecycle"
 	"gamebackend/modules/admin/adminapi"
 	"gamebackend/modules/characters/charactersevents"
+	"gamebackend/registry"
 )
 
 const starterItem = "starter_sword"
@@ -39,8 +41,8 @@ type Module struct {
 	characters charactersSvc
 }
 
-func (*Module) Name() string        { return "inventory" }
-func (*Module) DependsOn() []string { return []string{"accounts", "characters"} }
+func (*Module) Name() string       { return "inventory" }
+func (*Module) Requires() []string { return []string{"accounts", "characters"} }
 
 const schemaDDL = `
 CREATE SCHEMA IF NOT EXISTS inventory;
@@ -78,18 +80,27 @@ func (*Module) Migrate(_ context.Context, db *sql.DB) error {
 	return err
 }
 
-func (m *Module) Init(ctx *core.Context) error {
-	m.log = ctx.Log
+// Register constructs the store-backed service and offers it to other modules.
+// It runs in Build's phase 1, before any Init, so a dependent's Require resolves
+// regardless of registration order. It touches only ctx.DB (available now); the
+// service closes over m.store alone, never a Required dependency.
+func (m *Module) Register(ctx *lifecycle.Context) error {
 	m.store = &store{db: ctx.DB, log: ctx.Log}
-	m.accounts = ctx.Require("accounts").(accountsSvc)
-	m.characters = ctx.Require("characters").(charactersSvc)
+	registry.Provide(ctx.Registry, "inventory", &service{store: m.store})
+	return nil
+}
+
+func (m *Module) Init(ctx *lifecycle.Context) error {
+	m.log = ctx.Log
+	m.accounts = registry.Require[accountsSvc](ctx.Registry, "accounts")
+	m.characters = registry.Require[charactersSvc](ctx.Registry, "characters")
 
 	// React to character lifecycle — integrity without a cross-module FK. In the
 	// monolith/co-located topology characters emits on the in-process bus and
 	// these fire; in a split there is no local publisher, so the synchronous sink
 	// (/events/*) drives the same effects instead. Exactly one path per topology.
-	core.On(ctx.Bus, charactersevents.CreatedEvent, m.onCharacterCreated)
-	core.On(ctx.Bus, charactersevents.DeletedEvent, m.onCharacterDeleted)
+	bus.On(ctx.Bus, charactersevents.CreatedEvent, m.onCharacterCreated)
+	bus.On(ctx.Bus, charactersevents.DeletedEvent, m.onCharacterDeleted)
 
 	// Synchronous event sink — the cross-process path. The relay in the peer that
 	// hosts characters POSTs here; the handler dedups (inbox) and runs the effect
@@ -106,7 +117,7 @@ func (m *Module) Init(ctx *core.Context) error {
 		ctx.Mux.HandleFunc("POST /inventory/me/grant", m.handleGrant)
 	}
 
-	ctx.Provide("inventory", &service{store: m.store})
+	// The inventory service was Provided in Register (phase 1); m.store is set.
 	ctx.Contribute(adminapi.Slot, adminapi.Item{ID: adminItemID, Section: adminSectionName, Label: adminLabel, Render: m.adminSection})
 	// GET /admin-data/inventory: the same content over HTTP for a remote admin.
 	ctx.Mux.HandleFunc("GET /admin-data/"+adminItemID, m.handleAdminData)

@@ -1,4 +1,7 @@
-package core
+// Package bus is the asynchronous, fire-and-forget in-process pub/sub — the
+// default glue between modules. It's a leaf: it imports only stdlib and is
+// importable by everyone (a foundation).
+package bus
 
 import (
 	"log/slog"
@@ -46,9 +49,7 @@ func (b *Bus) Subscribe(topic string, h Handler) {
 	b.boxes = append(b.boxes, box)
 	b.mu.Unlock()
 
-	b.wg.Add(1)
-	go func() {
-		defer b.wg.Done()
+	b.wg.Go(func() {
 		for {
 			e, ok := box.pop() // blocks until an event arrives or the box is closed+drained
 			if !ok {
@@ -56,7 +57,7 @@ func (b *Bus) Subscribe(topic string, h Handler) {
 			}
 			b.deliver(h, e)
 		}
-	}()
+	})
 }
 
 // EventType binds a topic to its payload type T in ONE place. Publishers and

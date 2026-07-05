@@ -12,11 +12,13 @@ import (
 	"os"
 	"strings"
 
-	"gamebackend/core"
+	"gamebackend/bus"
 	"gamebackend/edge"
+	"gamebackend/lifecycle"
 	"gamebackend/modules/admin/adminapi"
 	"gamebackend/modules/characters/charactersevents"
 	"gamebackend/outbox"
+	"gamebackend/registry"
 )
 
 // accountsSvc is the slice of the accounts service we need (consumer-defined
@@ -29,7 +31,7 @@ type accountsSvc interface {
 
 type Module struct {
 	log      *slog.Logger
-	bus      *core.Bus
+	bus      *bus.Bus
 	store    *store
 	svc      *service
 	accounts accountsSvc
@@ -47,8 +49,8 @@ type Module struct {
 	relay *outbox.Relay
 }
 
-func (*Module) Name() string        { return "characters" }
-func (*Module) DependsOn() []string { return []string{"accounts"} }
+func (*Module) Name() string       { return "characters" }
+func (*Module) Requires() []string { return []string{"accounts"} }
 
 const schemaDDL = `
 CREATE SCHEMA IF NOT EXISTS characters;
@@ -78,18 +80,27 @@ func (*Module) Migrate(_ context.Context, db *sql.DB) error {
 	return err
 }
 
-func (m *Module) Init(ctx *core.Context) error {
+// Register constructs the store-backed service and offers it to other modules.
+// It runs in Build's phase 1, before any Init, so a dependent's Require resolves
+// regardless of registration order. It touches only ctx.DB (available now); the
+// service closes over m.store alone, never a Required dependency.
+func (m *Module) Register(ctx *lifecycle.Context) error {
+	m.store = &store{db: ctx.DB, log: ctx.Log}
+	m.svc = &service{store: m.store}
+	registry.Provide(ctx.Registry, "characters", m.svc)
+	return nil
+}
+
+func (m *Module) Init(ctx *lifecycle.Context) error {
 	m.log = ctx.Log
 	m.bus = ctx.Bus
-	m.store = &store{db: ctx.DB, log: ctx.Log}
-	m.accounts = ctx.Require("accounts").(accountsSvc)
+	m.accounts = registry.Require[accountsSvc](ctx.Registry, "accounts")
 
 	ctx.Mux.HandleFunc("POST /characters", m.handleCreate)
 	ctx.Mux.HandleFunc("GET /characters", m.handleList)
 	ctx.Mux.HandleFunc("DELETE /characters/{id}", m.handleDelete)
 
-	m.svc = &service{store: m.store}
-	ctx.Provide("characters", m.svc)
+	// The characters service was Provided in Register (phase 1); m.store/m.svc are set.
 	ctx.Contribute(adminapi.Slot, adminapi.Item{ID: adminItemID, Section: adminSectionName, Label: adminLabel, Render: m.adminSection})
 	// GET /admin-data/characters: the same content, served over HTTP so a remote
 	// admin process can fetch it. In the monolith the admin uses the closure above.
@@ -214,7 +225,7 @@ func (m *Module) handleCreate(w http.ResponseWriter, r *http.Request) {
 	// S4: a crash HERE (after commit, before Emit) loses only the LOCAL co-located
 	// delivery — the outbox row is already durable, so a remote subscriber still
 	// gets it via the relay. This matches the bus's existing best-effort semantics.
-	core.Emit(m.bus, charactersevents.CreatedEvent, evt)
+	bus.Emit(m.bus, charactersevents.CreatedEvent, evt)
 	writeJSON(w, http.StatusCreated, c)
 }
 
@@ -276,7 +287,7 @@ func (m *Module) handleDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// S4: crash after commit before Emit loses only the local delivery (see create).
-	core.Emit(m.bus, charactersevents.DeletedEvent, evt)
+	bus.Emit(m.bus, charactersevents.DeletedEvent, evt)
 	w.WriteHeader(http.StatusNoContent)
 }
 

@@ -4,7 +4,8 @@
 # The point: a module's IMPLEMENTATION is private. Cross-module communication goes only through
 # the shared CONTRACT surface (each domain's `<module>events` package + `admin/adminapi`) or a
 # service interface from the registry (which, thanks to Go's structural typing, needs no shared
-# package at all). The core has no game knowledge. Only `cmd` (the composition root) wires modules.
+# package at all). The core foundations have no game knowledge. Only `cmd` (the composition root)
+# wires modules.
 #
 # (Import CYCLES need no rule here — the Go compiler already rejects them.)
 
@@ -16,7 +17,13 @@ allow:
   depOnAnyVendor: true
 
 components:
-  core:        { in: core }
+  # The core foundations, split from the old monolithic `core`:
+  #   bus/registry/contrib are LEAVES (stdlib only), importable by everyone (commonComponents);
+  #   lifecycle wires them into Context + the App orchestrator, and modules import it.
+  bus:         { in: bus }
+  registry:    { in: registry }
+  contrib:     { in: contrib }
+  lifecycle:   { in: lifecycle }
   # The only deliberately-shared surface between modules: published event descriptors + adminapi.
   # (Enumerated explicitly — go-arch-lint's `*` matches a whole path segment, not an `*events` suffix.)
   contracts:
@@ -51,29 +58,36 @@ components:
   cmd:         { in: cmd/** }
 
 commonComponents:
-  - core   # foundation: importable by everyone; depends on nothing internal (enforced below)
+  # The three LEAVES are importable by everyone and depend on nothing internal. lifecycle is
+  # deliberately NOT common: a leaf importing lifecycle would be an import cycle.
+  - bus
+  - registry
+  - contrib
 
 deps:
-  # NOTE: `core` and `contracts` are intentionally ABSENT here. A component with no deps entry may
-  # use only commonComponents (i.e. `core`). So:
-  #   - core      -> may use core (itself) = nothing internal  => never imports a module.
-  #   - contracts -> may use core only (for core.Define)        => never imports a module impl.
+  # NOTE: `bus`/`registry`/`contrib`/`contracts` are intentionally ABSENT here. A component with no
+  # deps entry may use only commonComponents (bus/registry/contrib). So:
+  #   - the three leaves -> may use the leaves = nothing but each other/themselves => never a module.
+  #   - contracts        -> may use the leaves only (for bus.Define)               => never a module impl.
 
-  # Each module impl may use core (common) + the shared contracts — never another module's impl.
-  # accounts/characters additionally register handlers on the shared QUIC edge server
+  # lifecycle aggregates the three leaves into Context + the App orchestrator.
+  lifecycle:   { mayDependOn: [ bus, registry, contrib ] }
+
+  # Each module impl may use the leaves (common) + lifecycle + the shared contracts — never another
+  # module's impl. accounts/characters additionally register handlers on the shared QUIC edge server
   # (edge); characters also drives the transactional-outbox relay (outbox).
-  accounts:    { mayDependOn: [ contracts, edge ] }
-  admin:       { mayDependOn: [ contracts ] }
-  characters:  { mayDependOn: [ contracts, edge, outbox ] }
-  inventory:   { mayDependOn: [ contracts ] }
-  leaderboard: { mayDependOn: [ contracts ] }
-  match:       { mayDependOn: [ contracts ] }
-  rating:      { mayDependOn: [ contracts ] }
-  webui:       { mayDependOn: [ contracts ] }
+  accounts:    { mayDependOn: [ lifecycle, contracts, edge ] }
+  admin:       { mayDependOn: [ lifecycle, contracts ] }
+  characters:  { mayDependOn: [ lifecycle, contracts, edge, outbox ] }
+  inventory:   { mayDependOn: [ lifecycle, contracts ] }
+  leaderboard: { mayDependOn: [ lifecycle, contracts ] }
+  match:       { mayDependOn: [ lifecycle, contracts ] }
+  rating:      { mayDependOn: [ lifecycle, contracts ] }
+  webui:       { mayDependOn: [ lifecycle ] }
 
   # The remote stub is composition-time plumbing: it wraps edge clients + the
   # admin contract, never a module implementation.
-  remote:      { mayDependOn: [ contracts, edge ] }
+  remote:      { mayDependOn: [ lifecycle, contracts, edge ] }
 
   # Only the composition root may depend on concrete module implementations
   # (plus the transport/relay/stub foundations it wires together).
@@ -87,6 +101,7 @@ deps:
       - match
       - rating
       - webui
+      - lifecycle
       - contracts
       - edge
       - outbox

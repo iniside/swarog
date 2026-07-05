@@ -1,10 +1,10 @@
-// Package remote provides a stand-in core.Module for a dependency that is hosted
-// in ANOTHER process. When ROLES gates a module out of this process but a hosted
-// module still Requires its service, main() registers a remote.Stub for that
-// name so the service registry resolves — the call crosses the process boundary
-// over the QUIC edge instead of running in-process.
+// Package remote provides a stand-in lifecycle.Module for a dependency that is
+// hosted in ANOTHER process. When ROLES gates a module out of this process but a
+// hosted module still Requires its service, main() registers a remote.Stub for
+// that name so the service registry resolves — the call crosses the process
+// boundary over the QUIC edge instead of running in-process.
 //
-// It imports only core + edge: the edge-backed clients satisfy the consumer-
+// It imports only the core foundations + edge: the edge-backed clients satisfy the consumer-
 // defined interfaces (characters.OwnerOf / accounts.VerifySession) by structural
 // typing, so it never imports the real characters/accounts implementation
 // packages (CLAUDE.md #2 — modules never import each other's impl). The only
@@ -16,9 +16,10 @@ import (
 	"fmt"
 	"sync"
 
-	"gamebackend/core"
 	"gamebackend/edge"
+	"gamebackend/lifecycle"
 	"gamebackend/modules/admin/adminapi"
+	"gamebackend/registry"
 )
 
 // Stub stands in for a module hosted in a peer process. Init Provides an edge-
@@ -52,17 +53,23 @@ func NewStub(name, peerAddr, adminURL string) *Stub {
 	return s
 }
 
-func (s *Stub) Name() string        { return s.name }
-func (s *Stub) DependsOn() []string { return nil } // a peer's foundations live in the peer
+func (s *Stub) Name() string       { return s.name }
+func (s *Stub) Requires() []string { return nil } // a peer's foundations live in the peer
 
-// Init registers the edge-backed client so a co-hosted dependent can Require it,
-// and (when an admin peer URL is configured) contributes a remote admin item so
-// this module still appears in the local /admin — its Section/Label/Content are
-// fetched from adminURL, not carried here.
-func (s *Stub) Init(ctx *core.Context) error {
-	ctx.Provide(s.name, s.client)
+// Register offers the edge-backed client under the module's Name in Build's
+// phase 1, so a co-hosted dependent's Require resolves to a real QUIC caller.
+// The client was already built in NewStub; here it only enters the registry.
+func (s *Stub) Register(ctx *lifecycle.Context) error {
+	registry.Provide(ctx.Registry, s.name, s.client)
 	ctx.Log.Info("remote stub registered — service resolves over the QUIC edge",
 		"module", s.name, "peer", s.conn.peerAddr)
+	return nil
+}
+
+// Init contributes a remote admin item (when an admin peer URL is configured) so
+// this module still appears in the local /admin — its Section/Label/Content are
+// fetched from adminURL, not carried here.
+func (s *Stub) Init(ctx *lifecycle.Context) error {
 	if s.adminURL != "" {
 		ctx.Contribute(adminapi.Slot, adminapi.Item{ID: s.name, RemoteURL: s.adminURL})
 		ctx.Log.Info("remote stub contributed admin item — page fetched over HTTP",

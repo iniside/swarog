@@ -15,8 +15,8 @@ import (
 
 	_ "github.com/jackc/pgx/v5/stdlib" // registers the "pgx" database/sql driver
 
-	"gamebackend/core"
 	"gamebackend/edge"
+	"gamebackend/lifecycle"
 	"gamebackend/modules/accounts"
 	"gamebackend/modules/admin"
 	"gamebackend/modules/characters"
@@ -33,14 +33,14 @@ const defaultDSN = "postgres://gamebackend:gamebackend@localhost:5432/gamebacken
 // realModules is the ONLY place that knows the full module list. Keyed by
 // Name(), it preserves the pointer-vs-value shape each module needs (stateful
 // modules use a pointer receiver). ROLES selects which of these this process
-// hosts; anything a hosted module DependsOn but that isn't hosted is filled by
+// hosts; anything a hosted module Requires but that isn't hosted is filled by
 // a remote.Stub instead.
-func realModules() map[string]core.Module {
-	return map[string]core.Module{
+func realModules() map[string]lifecycle.Module {
+	return map[string]lifecycle.Module{
 		"accounts":    &accounts.Module{},    // pointer: holds db + verifiers
 		"characters":  &characters.Module{},  // depends on accounts
 		"inventory":   &inventory.Module{},   // depends on accounts + characters
-		"rating":      rating.Module{},       // value receiver
+		"rating":      &rating.Module{},      // pointer: holds the provided Service
 		"leaderboard": &leaderboard.Module{}, // pointer: holds db + logger
 		"match":       match.Module{},        // value receiver; depends on rating
 		"webui":       webui.Module{},        // value receiver
@@ -87,10 +87,10 @@ func parseRoles(raw string) roleSet {
 
 // planModules decides which modules this process hosts (real) and which of
 // their dependencies must be filled by remote stubs. hosted = role names that
-// are real module names; needed = union of hosted modules' DependsOn, minus
+// are real module names; needed = union of hosted modules' Requires, minus
 // hosted. It fails loudly on an unknown role or a real∩stub overlap rather than
-// letting core's Add panic be the error surface.
-func planModules(rs roleSet, all map[string]core.Module) (hosted, needed []string, err error) {
+// letting the App's Add panic be the error surface.
+func planModules(rs roleSet, all map[string]lifecycle.Module) (hosted, needed []string, err error) {
 	// hosted: sorted for deterministic ordering.
 	hostedSet := map[string]struct{}{}
 	for name := range all {
@@ -109,7 +109,7 @@ func planModules(rs roleSet, all map[string]core.Module) (hosted, needed []strin
 
 	neededSet := map[string]struct{}{}
 	for name := range hostedSet {
-		for _, dep := range all[name].DependsOn() {
+		for _, dep := range all[name].Requires() {
 			if _, isHosted := hostedSet[dep]; !isHosted {
 				neededSet[dep] = struct{}{}
 			}
@@ -175,7 +175,7 @@ func normalizeAddr(port string) string {
 
 func main() {
 	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
-	ctx := core.NewContext(log)
+	ctx := lifecycle.NewContext(log)
 
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
@@ -236,21 +236,21 @@ func main() {
 		}
 	}
 
-	reg := core.NewRegistry(ctx)
+	app := lifecycle.NewApp(ctx)
 	for _, name := range hosted {
-		reg.Add(all[name])
+		app.Add(all[name])
 	}
 	for _, name := range needed {
-		reg.Add(remote.NewStub(name, peerAddrFor(name), peerAdminURLFor(name)))
+		app.Add(remote.NewStub(name, peerAddrFor(name), peerAdminURLFor(name)))
 	}
 
-	if err := reg.Build(); err != nil {
+	if err := app.Build(); err != nil {
 		log.Error("startup failed", "err", err)
 		os.Exit(1)
 	}
 
 	migCtx, cancelMig := context.WithTimeout(context.Background(), 30*time.Second)
-	if err := reg.Migrate(migCtx, db); err != nil {
+	if err := app.Migrate(migCtx, db); err != nil {
 		cancelMig()
 		log.Error("migrate failed", "err", err)
 		os.Exit(1)
@@ -258,7 +258,7 @@ func main() {
 	cancelMig()
 
 	startCtx, cancelStart := context.WithTimeout(context.Background(), 10*time.Second)
-	if err := reg.Start(startCtx); err != nil {
+	if err := app.Start(startCtx); err != nil {
 		cancelStart()
 		log.Error("start failed", "err", err)
 		os.Exit(1)
@@ -266,7 +266,7 @@ func main() {
 	cancelStart()
 
 	// Bring up the shared edge server AFTER every module Init has registered its
-	// handlers (Init ran in reg.Build). One listener, all edge methods.
+	// handlers (Init ran in app.Build). One listener, all edge methods.
 	if edgeServer != nil {
 		tlsConf, err := edge.SelfSignedTLS()
 		if err != nil {
@@ -313,6 +313,6 @@ func main() {
 		}
 	}
 	ctx.Bus.Close()
-	reg.Stop(shutdownCtx)
+	app.Stop(shutdownCtx)
 	log.Info("bye")
 }

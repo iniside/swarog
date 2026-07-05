@@ -3,7 +3,7 @@
 // characters implementation. Depends only on the core foundation.
 package charactersevents
 
-import "gamebackend/core"
+import "gamebackend/bus"
 
 // Created fires when a player creates a character.
 type Created struct {
@@ -21,6 +21,6 @@ type Deleted struct {
 }
 
 var (
-	CreatedEvent = core.Define[Created]("character.created")
-	DeletedEvent = core.Define[Deleted]("character.deleted")
+	CreatedEvent = bus.Define[Created]("character.created")
+	DeletedEvent = bus.Define[Deleted]("character.deleted")
 )

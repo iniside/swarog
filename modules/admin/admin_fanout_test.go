@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"gamebackend/core"
+	"gamebackend/lifecycle"
 	"gamebackend/modules/admin/adminapi"
 )
 
@@ -21,7 +21,7 @@ import (
 // ready for items() without any database.
 func newFanoutModule() *Module {
 	return &Module{
-		ctx:  core.NewContext(slog.Default()),
+		ctx:  lifecycle.NewContext(slog.Default()),
 		log:  slog.Default(),
 		http: &http.Client{Timeout: 2 * time.Second},
 	}

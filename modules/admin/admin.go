@@ -20,7 +20,7 @@ import (
 	"strings"
 	"time"
 
-	"gamebackend/core"
+	"gamebackend/lifecycle"
 	"gamebackend/modules/admin/adminapi"
 )
 
@@ -31,7 +31,7 @@ var themeCSS []byte
 var tmplText string
 
 type Module struct {
-	ctx   *core.Context
+	ctx   *lifecycle.Context
 	log   *slog.Logger
 	tmpl  *template.Template
 	user  userView
@@ -42,10 +42,10 @@ type Module struct {
 	http *http.Client
 }
 
-func (*Module) Name() string        { return "admin" }
-func (*Module) DependsOn() []string { return nil }
+func (*Module) Name() string       { return "admin" }
+func (*Module) Requires() []string { return nil }
 
-func (m *Module) Init(ctx *core.Context) error {
+func (m *Module) Init(ctx *lifecycle.Context) error {
 	m.ctx = ctx
 	m.log = ctx.Log
 	m.tmpl = template.Must(template.New("admin").Parse(tmplText))

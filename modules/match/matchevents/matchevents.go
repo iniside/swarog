@@ -4,7 +4,7 @@
 // core foundation (for the EventType descriptor).
 package matchevents
 
-import "gamebackend/core"
+import "gamebackend/bus"
 
 // Finished is the payload of the match-finished event. Treat it as published
 // API: evolve it additively (new field / FinishedV2), never mutate the existing
@@ -16,6 +16,6 @@ type Finished struct {
 }
 
 // FinishedEvent binds the topic to the Finished payload in one place. Publishers
-// (core.Emit) and subscribers (core.On) both reference it, so topic and type
+// (bus.Emit) and subscribers (bus.On) both reference it, so topic and type
 // can never drift apart.
-var FinishedEvent = core.Define[Finished]("match.finished")
+var FinishedEvent = bus.Define[Finished]("match.finished")

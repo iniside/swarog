@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"gamebackend/core"
+	"gamebackend/bus"
+	"gamebackend/lifecycle"
 	"gamebackend/modules/match/matchevents"
+	"gamebackend/registry"
 )
 
 // ratingService is the SLICE of "rating" this module actually needs. Declaring
@@ -16,11 +18,11 @@ type ratingService interface {
 
 type Module struct{}
 
-func (Module) Name() string        { return "match" }
-func (Module) DependsOn() []string { return []string{"rating"} } // needs a synchronous answer
+func (Module) Name() string       { return "match" }
+func (Module) Requires() []string { return []string{"rating"} } // needs a synchronous answer
 
-func (Module) Init(ctx *core.Context) error {
-	rs := ctx.Require("rating").(ratingService) // assert to our local interface
+func (Module) Init(ctx *lifecycle.Context) error {
+	rs := registry.Require[ratingService](ctx.Registry, "rating") // assert to our local interface
 
 	ctx.Mux.HandleFunc("POST /match/report", func(w http.ResponseWriter, r *http.Request) {
 		var in struct{ Winner, Loser string }
@@ -33,7 +35,7 @@ func (Module) Init(ctx *core.Context) error {
 			"winner", in.Winner, "winnerMMR", rs.MMR(in.Winner), "loser", in.Loser)
 
 		// Fire-and-forget: announce it happened — whoever cares subscribes.
-		core.Emit(ctx.Bus, matchevents.FinishedEvent,
+		bus.Emit(ctx.Bus, matchevents.FinishedEvent,
 			matchevents.Finished{Winner: in.Winner, Loser: in.Loser})
 		w.WriteHeader(http.StatusAccepted)
 	})

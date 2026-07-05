@@ -9,7 +9,7 @@ import (
 	"github.com/MicahParks/keyfunc/v3"
 	"github.com/golang-jwt/jwt/v5"
 
-	"gamebackend/core"
+	"gamebackend/bus"
 	"gamebackend/modules/accounts/accountsevents"
 )
 
@@ -86,7 +86,7 @@ func (m *Module) handleEpicLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if created {
-		core.Emit(m.bus, accountsevents.PlayerRegisteredEvent, accountsevents.PlayerRegistered{
+		bus.Emit(m.bus, accountsevents.PlayerRegisteredEvent, accountsevents.PlayerRegistered{
 			PlayerID: p.ID, DisplayName: p.DisplayName, Provider: "epic",
 		})
 	}

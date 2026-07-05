@@ -10,9 +10,11 @@ import (
 	"strings"
 	"time"
 
-	"gamebackend/core"
+	"gamebackend/bus"
 	"gamebackend/edge"
+	"gamebackend/lifecycle"
 	"gamebackend/modules/admin/adminapi"
+	"gamebackend/registry"
 )
 
 // Module owns the "accounts" schema and the player-identity surface. It is a
@@ -21,7 +23,7 @@ import (
 type Module struct {
 	db        *sql.DB
 	log       *slog.Logger
-	bus       *core.Bus
+	bus       *bus.Bus
 	store     *store
 	svc       *service
 	devAuth   bool
@@ -35,8 +37,8 @@ type Module struct {
 	Edge *edge.Server
 }
 
-func (*Module) Name() string        { return "accounts" }
-func (*Module) DependsOn() []string { return nil }
+func (*Module) Name() string       { return "accounts" }
+func (*Module) Requires() []string { return nil }
 
 const schemaDDL = `
 CREATE SCHEMA IF NOT EXISTS accounts;
@@ -70,11 +72,21 @@ func (*Module) Migrate(_ context.Context, db *sql.DB) error {
 	return err
 }
 
-func (m *Module) Init(ctx *core.Context) error {
+// Register constructs the store-backed service and offers it to other modules.
+// It runs in Build's phase 1, before any Init, so a dependent's Require resolves
+// regardless of registration order. It touches only ctx.DB (available now); the
+// service closes over m.store alone, never a Required dependency.
+func (m *Module) Register(ctx *lifecycle.Context) error {
+	m.store = &store{db: ctx.DB, log: ctx.Log}
+	m.svc = &service{store: m.store}
+	registry.Provide(ctx.Registry, "accounts", m.svc)
+	return nil
+}
+
+func (m *Module) Init(ctx *lifecycle.Context) error {
 	m.db = ctx.DB
 	m.log = ctx.Log
 	m.bus = ctx.Bus
-	m.store = &store{db: ctx.DB, log: ctx.Log}
 
 	// dev/password provider — local testing convenience, gated off for prod.
 	m.devAuth = envBool("ACCOUNTS_DEV_AUTH", true)
@@ -119,10 +131,7 @@ func (m *Module) Init(ctx *core.Context) error {
 
 	ctx.Mux.HandleFunc("GET /accounts/me", m.handleMe)
 
-	// Offered to other modules; they assert it to their own local interface.
-	m.svc = &service{store: m.store}
-	ctx.Provide("accounts", m.svc)
-
+	// The accounts service was Provided in Register (phase 1); m.svc is set.
 	// Split topology: expose VerifySession over the shared QUIC edge server so a
 	// peer process can authenticate bearer tokens. Registering a handler is pure
 	// wiring (no I/O); main() starts the listener after all Inits.

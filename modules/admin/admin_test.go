@@ -8,7 +8,7 @@ import (
 	"log/slog"
 	"testing"
 
-	"gamebackend/core"
+	"gamebackend/lifecycle"
 	"gamebackend/modules/admin/adminapi"
 )
 
@@ -47,7 +47,6 @@ func TestSlugify(t *testing.T) {
 		{"Zone42", "zone42"},
 	}
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.in, func(t *testing.T) {
 			got := slugify(tc.in)
 			if got != tc.want {
@@ -63,7 +62,7 @@ func TestSlugify(t *testing.T) {
 // in registration order, with collision disambiguation (-2, -3, …) and the
 // empty-slug fallback to "item".
 func TestItems_SlugDedupe(t *testing.T) {
-	ctx := core.NewContext(slog.Default())
+	ctx := lifecycle.NewContext(slog.Default())
 
 	// Duplicate label → first keeps base slug, second gets "-2".
 	ctx.Contribute(adminapi.Slot, adminapi.Item{Section: "S", Label: "Players"})
@@ -100,7 +99,7 @@ func TestItems_SlugDedupe(t *testing.T) {
 // TestItems_SkipsNonItemContributions verifies that non-Item values contributed
 // to the slot are silently ignored (the type-assertion guard in items()).
 func TestItems_SkipsNonItemContributions(t *testing.T) {
-	ctx := core.NewContext(slog.Default())
+	ctx := lifecycle.NewContext(slog.Default())
 	ctx.Contribute(adminapi.Slot, "not an adminapi.Item")
 	ctx.Contribute(adminapi.Slot, 42)
 	ctx.Contribute(adminapi.Slot, adminapi.Item{Section: "S", Label: "Valid"})
@@ -119,7 +118,7 @@ func TestItems_SkipsNonItemContributions(t *testing.T) {
 // TestItems_EmptySlot verifies that items() returns nil when nothing has been
 // contributed.
 func TestItems_EmptySlot(t *testing.T) {
-	ctx := core.NewContext(slog.Default())
+	ctx := lifecycle.NewContext(slog.Default())
 	m := &Module{ctx: ctx}
 	if got := m.items(context.Background()); got != nil {
 		t.Errorf("items() on empty slot = %v; want nil", got)
