@@ -1,9 +1,10 @@
-# run.ps1 - build the server once, then run it as a monolith or as the
-# accounts+characters / inventory+admin microservices split.
+# run.ps1 - build the per-service binaries, then run either the monolith (one
+# binary hosting every module) or the two-process microservices split, where
+# EACH service is its OWN binary linking only its own modules.
 #
 # Usage:
-#   .\run.ps1                              # monolith, default DB
-#   .\run.ps1 -Mode microservices           # A (accounts,characters) + B (inventory,admin)
+#   .\run.ps1                              # monolith (bin/server.exe), default DB
+#   .\run.ps1 -Mode microservices           # characters-svc + inventory-svc (two binaries)
 #   .\run.ps1 -DatabaseUrl "postgres://..." # override DATABASE_URL
 #   .\run.ps1 -Teardown                     # stop whatever run.ps1 started last
 #
@@ -22,7 +23,9 @@ $root = $PSScriptRoot
 $runDir = Join-Path $root 'run'
 $pidsFile = Join-Path $runDir 'pids.json'
 $binDir = Join-Path $root 'bin'
-$binPath = Join-Path $binDir 'server.exe'
+$serverBin = Join-Path $binDir 'server.exe'
+$charactersBin = Join-Path $binDir 'characters-svc.exe'
+$inventoryBin = Join-Path $binDir 'inventory-svc.exe'
 
 $defaultDSN = 'postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable'
 if ([string]::IsNullOrWhiteSpace($DatabaseUrl)) {
@@ -49,24 +52,38 @@ if ($Teardown) {
     return
 }
 
-# --- Build once ---------------------------------------------------------------
+# --- Build --------------------------------------------------------------------
 New-Item -ItemType Directory -Force -Path $binDir | Out-Null
 New-Item -ItemType Directory -Force -Path $runDir | Out-Null
 
-Write-Host "Building ./cmd/server -> $binPath ..." -ForegroundColor Cyan
-& go build -o $binPath ./cmd/server
-if ($LASTEXITCODE -ne 0) {
-    Write-Error "go build failed — aborting."
-    exit 1
+# Build only the binaries this mode needs. Each `go build` links ONLY the
+# packages its entrypoint imports — the microservice binaries do not carry the
+# other service's modules.
+function Build-Bin {
+    param([string]$Pkg, [string]$Out)
+    Write-Host "Building $Pkg -> $Out ..." -ForegroundColor Cyan
+    & go build -o $Out $Pkg
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "go build $Pkg failed — aborting."
+        exit 1
+    }
+}
+
+if ($Mode -eq 'monolith') {
+    Build-Bin './cmd/server' $serverBin
+} else {
+    Build-Bin './cmd/characters-svc' $charactersBin
+    Build-Bin './cmd/inventory-svc' $inventoryBin
 }
 Write-Host "Build OK." -ForegroundColor Green
 
 # --- Helpers ---------------------------------------------------------------
 
-# Start-Server launches bin/server.exe with the given env hash, redirecting
+# Start-Server launches the given binary with the given env hash, redirecting
 # stdout/stderr to run/<logName>.{out,err}.log. Returns the Process object.
 function Start-Server {
     param(
+        [string]$BinPath,
         [hashtable]$EnvHash,
         [string]$LogName
     )
@@ -82,7 +99,7 @@ function Start-Server {
         [Environment]::SetEnvironmentVariable($key, $EnvHash[$key])
     }
     try {
-        $proc = Start-Process -FilePath $binPath `
+        $proc = Start-Process -FilePath $BinPath `
             -RedirectStandardOutput $outLog `
             -RedirectStandardError $errLog `
             -PassThru -NoNewWindow
@@ -139,11 +156,10 @@ trap {
 
 if ($Mode -eq 'monolith') {
     $env1 = @{
-        ROLES        = ''
         PORT         = '8080'
         DATABASE_URL = $DatabaseUrl
     }
-    $proc = Start-Server -EnvHash $env1 -LogName 'monolith'
+    $proc = Start-Server -BinPath $serverBin -EnvHash $env1 -LogName 'monolith'
     $started += @{ name = 'monolith'; proc = $proc }
     Wait-Healthy -Port 8080 -Name 'monolith'
 
@@ -159,11 +175,11 @@ if ($Mode -eq 'monolith') {
 }
 
 # --- microservices ---------------------------------------------------------
-# Process A: accounts + characters. Hosts the QUIC edge server (:9000) and
-# the outbox relay for character.* events. Started FIRST — B's remote stubs
-# and the shared accounts schema migration must not race A's first boot (S7).
+# Process A: characters-svc (accounts + characters, its OWN binary). Hosts the
+# QUIC edge server (:9000) and the outbox relay for character.* events. Started
+# FIRST — B's remote stubs and the shared accounts schema migration must not
+# race A's first boot (S7).
 $envA = @{
-    ROLES              = 'accounts,characters'
     PORT               = '8080'
     DATABASE_URL       = $DatabaseUrl
     EDGE_ADDR          = ':9000'
@@ -173,34 +189,33 @@ $envA = @{
     # points at B's synchronous sink endpoints (character-created/-deleted).
     EVENTS_SUBSCRIBERS = 'character.created=http://localhost:8081/events/character-created;character.deleted=http://localhost:8081/events/character-deleted'
 }
-Write-Host "Starting A (accounts,characters) on :8080, edge :9000 ..." -ForegroundColor Cyan
-$procA = Start-Server -EnvHash $envA -LogName 'characters'
+Write-Host "Starting A (characters-svc: accounts,characters) on :8080, edge :9000 ..." -ForegroundColor Cyan
+$procA = Start-Server -BinPath $charactersBin -EnvHash $envA -LogName 'characters'
 $started += @{ name = 'characters'; proc = $procA }
-Wait-Healthy -Port 8080 -Name 'A (accounts,characters)'
+Wait-Healthy -Port 8080 -Name 'A (characters-svc)'
 
-# Process B: inventory + admin. Its accounts/characters dependencies resolve
-# via remote stubs dialing A's edge server; admin fan-out reaches A's
-# /admin-data/characters over PEER_HTTP_ADDR.
+# Process B: inventory-svc (inventory + admin, its OWN binary). Its accounts/
+# characters dependencies resolve via remote stubs dialing A's edge server;
+# admin fan-out reaches A's /admin-data/characters over PEER_HTTP_ADDR.
 $envB = @{
-    ROLES                = 'inventory,admin'
     PORT                 = '8081'
     DATABASE_URL         = $DatabaseUrl
     CHARACTERS_EDGE_ADDR = 'localhost:9000'
     ACCOUNTS_EDGE_ADDR   = 'localhost:9000'
     PEER_HTTP_ADDR       = 'localhost:8080'
 }
-Write-Host "Starting B (inventory,admin) on :8081 ..." -ForegroundColor Cyan
-$procB = Start-Server -EnvHash $envB -LogName 'inventory'
+Write-Host "Starting B (inventory-svc: inventory,admin) on :8081 ..." -ForegroundColor Cyan
+$procB = Start-Server -BinPath $inventoryBin -EnvHash $envB -LogName 'inventory'
 $started += @{ name = 'inventory'; proc = $procB }
-Wait-Healthy -Port 8081 -Name 'B (inventory,admin)'
+Wait-Healthy -Port 8081 -Name 'B (inventory-svc)'
 
 $pidEntries = $started | ForEach-Object { @{ name = $_.name; pid = $_.proc.Id } }
 $pidEntries | ConvertTo-Json | Set-Content -Path $pidsFile
 
 Write-Host ""
 Write-Host "=== microservices running ===" -ForegroundColor Cyan
-Write-Host "  A (accounts,characters): http://localhost:8080  (edge :9000)"
-Write-Host "  B (inventory,admin):     http://localhost:8081"
-Write-Host "  admin UI (B):            http://localhost:8081/admin"
+Write-Host "  A (characters-svc: accounts,characters): http://localhost:8080  (edge :9000)"
+Write-Host "  B (inventory-svc: inventory,admin):      http://localhost:8081"
+Write-Host "  admin UI (B):                            http://localhost:8081/admin"
 Write-Host "  logs: run/characters.{out,err}.log, run/inventory.{out,err}.log"
 Write-Host "  teardown: .\run.ps1 -Teardown"

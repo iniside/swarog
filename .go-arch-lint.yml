@@ -54,8 +54,19 @@ components:
   # consumer interfaces structurally, so it never imports a module's impl.
   remote:      { in: modules/remote }
 
-  # The composition root — the only place allowed to see every module implementation.
-  cmd:         { in: cmd/** }
+  # The reusable boot sequence: open DB, wire Context, two-phase Build, Migrate,
+  # Start, HTTP + optional edge listener, graceful shutdown. It is topology-blind
+  # — it takes a module list from an entrypoint and never names a module.
+  app:         { in: internal/app }
+
+  # The composition roots — one per binary. Each is the ONLY place that sees the
+  # concrete module implementations it wires, and the per-service lists below are
+  # the machine-checked isolation: characters-svc may not see inventory/admin;
+  # inventory-svc may not see the accounts/characters IMPL (only their contracts,
+  # via the remote stub + charactersevents).
+  cmdServer:         { in: cmd/server }
+  cmdCharactersSvc:  { in: cmd/characters-svc }
+  cmdInventorySvc:   { in: cmd/inventory-svc }
 
 commonComponents:
   # The three LEAVES are importable by everyone and depend on nothing internal. lifecycle is
@@ -89,9 +100,19 @@ deps:
   # admin contract, never a module implementation.
   remote:      { mayDependOn: [ lifecycle, contracts, edge ] }
 
-  # Only the composition root may depend on concrete module implementations
-  # (plus the transport/relay/stub foundations it wires together).
-  cmd:
+  # The boot sequence wires whatever module list it is handed; it only knows the
+  # lifecycle contract and the edge server type it may start.
+  app:         { mayDependOn: [ lifecycle, edge ] }
+
+  # Each composition root may depend ONLY on the modules ITS binary hosts (plus
+  # the boot package + the transport/stub foundations it wires). This is the real
+  # per-service isolation, machine-checked:
+  #
+  #   - the monolith sees every module (one fat binary, all local, no edge/stub);
+  #   - characters-svc sees ONLY accounts + characters (+ edge to expose them);
+  #   - inventory-svc sees inventory + admin + the remote stub — NOT the
+  #     accounts/characters impl, whose capabilities arrive over the edge.
+  cmdServer:
     mayDependOn:
       - accounts
       - admin
@@ -102,7 +123,18 @@ deps:
       - rating
       - webui
       - lifecycle
-      - contracts
+      - app
+  cmdCharactersSvc:
+    mayDependOn:
+      - accounts
+      - characters
+      - lifecycle
       - edge
-      - outbox
+      - app
+  cmdInventorySvc:
+    mayDependOn:
+      - inventory
+      - admin
       - remote
+      - lifecycle
+      - app

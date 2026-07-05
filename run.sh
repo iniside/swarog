@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# run.sh - build the server once, then run it as a monolith or as the
-# accounts+characters / inventory+admin microservices split.
+# run.sh - build the per-service binaries, then run either the monolith (one
+# binary hosting every module) or the two-process microservices split, where
+# EACH service is its OWN binary linking only its own modules.
 #
 # Usage:
-#   ./run.sh                       # monolith, default DB
-#   ./run.sh microservices         # A (accounts,characters) + B (inventory,admin)
+#   ./run.sh                       # monolith (bin/server), default DB
+#   ./run.sh microservices         # characters-svc + inventory-svc (two binaries)
 #   ./run.sh --teardown            # stop whatever run.sh started last
 #   DATABASE_URL=postgres://... ./run.sh
 #
@@ -25,7 +26,9 @@ done
 RUN_DIR="run"
 PIDS_FILE="$RUN_DIR/pids"
 BIN_DIR="bin"
-BIN_PATH="$BIN_DIR/server"
+SERVER_BIN="$BIN_DIR/server"
+CHARACTERS_BIN="$BIN_DIR/characters-svc"
+INVENTORY_BIN="$BIN_DIR/inventory-svc"
 
 DEFAULT_DSN="postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable"
 DATABASE_URL="${DATABASE_URL:-$DEFAULT_DSN}"
@@ -51,8 +54,18 @@ fi
 
 mkdir -p "$BIN_DIR" "$RUN_DIR"
 
-echo "Building ./cmd/server -> $BIN_PATH ..."
-go build -o "$BIN_PATH" ./cmd/server
+# Build only the binaries this mode needs. Each `go build` links ONLY the
+# packages its entrypoint imports — the microservice binaries do not carry the
+# other service's modules.
+if [ "$MODE" = "monolith" ]; then
+    echo "Building ./cmd/server -> $SERVER_BIN ..."
+    go build -o "$SERVER_BIN" ./cmd/server
+else
+    echo "Building ./cmd/characters-svc -> $CHARACTERS_BIN ..."
+    go build -o "$CHARACTERS_BIN" ./cmd/characters-svc
+    echo "Building ./cmd/inventory-svc -> $INVENTORY_BIN ..."
+    go build -o "$INVENTORY_BIN" ./cmd/inventory-svc
+fi
 echo "Build OK."
 
 STARTED_PIDS=()
@@ -66,14 +79,15 @@ cleanup_on_failure() {
 }
 trap cleanup_on_failure ERR
 
-# start_server NAME PORT VAR=val VAR=val ... — launches bin/server in the
-# background with the given env vars set, redirecting stdout/stderr to
+# start_server NAME BIN VAR=val VAR=val ... — launches BIN in the background
+# with the given env vars set, redirecting stdout/stderr to
 # run/<name>.{out,err}.log. Appends the pid to STARTED_PIDS/STARTED_NAMES.
 start_server() {
     local name="$1"; shift
+    local bin="$1"; shift
     local out="$RUN_DIR/$name.out.log"
     local err="$RUN_DIR/$name.err.log"
-    env "$@" "$BIN_PATH" >"$out" 2>"$err" &
+    env "$@" "$bin" >"$out" 2>"$err" &
     local pid=$!
     STARTED_PIDS+=("$pid")
     STARTED_NAMES+=("$name")
@@ -105,8 +119,7 @@ write_pids_file() {
 }
 
 if [ "$MODE" = "monolith" ]; then
-    start_server monolith \
-        ROLES= \
+    start_server monolith "$SERVER_BIN" \
         PORT=8080 \
         DATABASE_URL="$DATABASE_URL"
     wait_healthy 8080 monolith
@@ -121,12 +134,12 @@ if [ "$MODE" = "monolith" ]; then
 fi
 
 # --- microservices ---------------------------------------------------------
-# Process A: accounts + characters. Hosts the QUIC edge server (:9000) and the
-# outbox relay for character.* events. Started FIRST — B's remote stubs and
-# the shared accounts schema migration must not race A's first boot (S7).
-echo "Starting A (accounts,characters) on :8080, edge :9000 ..."
-start_server characters \
-    ROLES=accounts,characters \
+# Process A: characters-svc (accounts + characters, its OWN binary). Hosts the
+# QUIC edge server (:9000) and the outbox relay for character.* events. Started
+# FIRST — B's remote stubs and the shared accounts schema migration must not
+# race A's first boot (S7).
+echo "Starting A (characters-svc: accounts,characters) on :8080, edge :9000 ..."
+start_server characters "$CHARACTERS_BIN" \
     PORT=8080 \
     DATABASE_URL="$DATABASE_URL" \
     EDGE_ADDR=:9000 \
@@ -135,27 +148,26 @@ start_server characters \
     # process hosting `characters` — i.e. THIS process (A) — because the
     # relay drains A's own characters.outbox table to remote sinks. It points
     # at B's synchronous sink endpoints, not the other way around.
-wait_healthy 8080 "A (accounts,characters)"
+wait_healthy 8080 "A (characters-svc)"
 
-# Process B: inventory + admin. accounts/characters resolve via remote stubs
-# dialing A's edge server; admin fan-out reaches A's /admin-data/characters
-# over PEER_HTTP_ADDR.
-echo "Starting B (inventory,admin) on :8081 ..."
-start_server inventory \
-    ROLES=inventory,admin \
+# Process B: inventory-svc (inventory + admin, its OWN binary). accounts/
+# characters resolve via remote stubs dialing A's edge server; admin fan-out
+# reaches A's /admin-data/characters over PEER_HTTP_ADDR.
+echo "Starting B (inventory-svc: inventory,admin) on :8081 ..."
+start_server inventory "$INVENTORY_BIN" \
     PORT=8081 \
     DATABASE_URL="$DATABASE_URL" \
     CHARACTERS_EDGE_ADDR=localhost:9000 \
     ACCOUNTS_EDGE_ADDR=localhost:9000 \
     PEER_HTTP_ADDR=localhost:8080
-wait_healthy 8081 "B (inventory,admin)"
+wait_healthy 8081 "B (inventory-svc)"
 
 write_pids_file
 
 echo ""
 echo "=== microservices running ==="
-echo "  A (accounts,characters): http://localhost:8080  (edge :9000)"
-echo "  B (inventory,admin):     http://localhost:8081"
-echo "  admin UI (B):            http://localhost:8081/admin"
+echo "  A (characters-svc: accounts,characters): http://localhost:8080  (edge :9000)"
+echo "  B (inventory-svc: inventory,admin):      http://localhost:8081"
+echo "  admin UI (B):                            http://localhost:8081/admin"
 echo "  logs: $RUN_DIR/characters.{out,err}.log, $RUN_DIR/inventory.{out,err}.log"
 echo "  teardown: ./run.sh --teardown"
