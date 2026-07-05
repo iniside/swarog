@@ -36,6 +36,17 @@ components:
   rating:      { in: modules/rating }
   webui:       { in: modules/webui }
 
+  # Transport-agnostic leaf: QUIC RPC framing/codec/TLS. Imports stdlib + quic-go
+  # only (no gamebackend package) — a foundation, same tier as core.
+  edge:        { in: edge }
+  # Generic transactional-outbox relay (drain+POST+ack). Imports stdlib only —
+  # a foundation; a module (characters) brings its own DB handle in.
+  outbox:      { in: outbox }
+  # Composition-time remote stub: Provides an edge-backed client under a
+  # dependency's name and contributes a RemoteURL admin item. It satisfies
+  # consumer interfaces structurally, so it never imports a module's impl.
+  remote:      { in: modules/remote }
+
   # The composition root — the only place allowed to see every module implementation.
   cmd:         { in: cmd/** }
 
@@ -49,16 +60,23 @@ deps:
   #   - contracts -> may use core only (for core.Define)        => never imports a module impl.
 
   # Each module impl may use core (common) + the shared contracts — never another module's impl.
-  accounts:    { mayDependOn: [ contracts ] }
+  # accounts/characters additionally register handlers on the shared QUIC edge server
+  # (edge); characters also drives the transactional-outbox relay (outbox).
+  accounts:    { mayDependOn: [ contracts, edge ] }
   admin:       { mayDependOn: [ contracts ] }
-  characters:  { mayDependOn: [ contracts ] }
+  characters:  { mayDependOn: [ contracts, edge, outbox ] }
   inventory:   { mayDependOn: [ contracts ] }
   leaderboard: { mayDependOn: [ contracts ] }
   match:       { mayDependOn: [ contracts ] }
   rating:      { mayDependOn: [ contracts ] }
   webui:       { mayDependOn: [ contracts ] }
 
-  # Only the composition root may depend on concrete module implementations.
+  # The remote stub is composition-time plumbing: it wraps edge clients + the
+  # admin contract, never a module implementation.
+  remote:      { mayDependOn: [ contracts, edge ] }
+
+  # Only the composition root may depend on concrete module implementations
+  # (plus the transport/relay/stub foundations it wires together).
   cmd:
     mayDependOn:
       - accounts
@@ -70,3 +88,6 @@ deps:
       - rating
       - webui
       - contracts
+      - edge
+      - outbox
+      - remote

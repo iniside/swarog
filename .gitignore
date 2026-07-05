@@ -23,3 +23,7 @@ UILayout/.thumbnail
 .vscode/
 .DS_Store
 *.swp
+
+# Go parity dual-mode run
+/bin/
+/run/
