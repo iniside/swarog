@@ -35,3 +35,10 @@ dependencies {
 allOpen {
     annotation("jakarta.enterprise.context.ApplicationScoped")
 }
+
+// The msquic FFM layer (edge.msquic) uses restricted native-access APIs (SymbolLookup.libraryLookup,
+// Linker downcall/upcall). JDK 22+ requires the module to be granted native access explicitly, or the
+// restricted calls throw at runtime. The unit tests exercise the real msquic.dll, so grant it here.
+tasks.test {
+    jvmArgs("--enable-native-access=ALL-UNNAMED")
+}
