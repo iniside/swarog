@@ -45,6 +45,16 @@ class CharactersModule(
                         player_id UUID NOT NULL,   -- plain ref to accounts' player; NO cross-module FK
                         name      TEXT NOT NULL)"""
                 )
+                // Transactional outbox: domain writes + the event row commit atomically; a relay
+                // drains `sent_at IS NULL` onto the bus (wired in Step 4).
+                s.execute(
+                    """CREATE TABLE IF NOT EXISTS characters.outbox(
+                        id         BIGSERIAL PRIMARY KEY,
+                        topic      TEXT NOT NULL,
+                        payload    JSONB NOT NULL,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                        sent_at    TIMESTAMPTZ NULL)"""
+                )
             }
         }
         println("[characters] schema ready")

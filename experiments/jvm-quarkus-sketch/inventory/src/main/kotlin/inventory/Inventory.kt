@@ -60,6 +60,13 @@ class InventoryModule(
                         qty        INT  NOT NULL,
                         PRIMARY KEY (owner_type, owner_id, item))"""
                 )
+                // Idempotency inbox: a consumed event's id is recorded here so a redelivery is a
+                // no-op (grant is not naturally idempotent — `qty += qty` would double). Wired in Step 4.
+                s.execute(
+                    """CREATE TABLE IF NOT EXISTS inventory.inbox(
+                        event_id     TEXT PRIMARY KEY,
+                        processed_at TIMESTAMPTZ NOT NULL DEFAULT now())"""
+                )
             }
         }
         println("[inventory] schema ready")

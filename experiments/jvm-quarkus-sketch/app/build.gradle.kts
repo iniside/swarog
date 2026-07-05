@@ -15,6 +15,7 @@ dependencies {
     implementation(enforcedPlatform("$quarkusPlatformGroupId:$quarkusPlatformArtifactId:$quarkusPlatformVersion"))
     implementation("io.quarkus:quarkus-kotlin")
     implementation("io.quarkus:quarkus-arc")   // Seed: StartupEvent, @Observes, @Priority
+    implementation("io.quarkus:quarkus-jackson")   // JSON serde for event payloads (additive-evolution config)
 
     implementation(project(":accounts"))
     implementation(project(":characters"))

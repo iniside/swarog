@@ -31,6 +31,16 @@ class AccountsModule(
                         provider   TEXT NOT NULL,
                         created_at TIMESTAMPTZ NOT NULL DEFAULT now())"""
                 )
+                // Transactional outbox: domain writes + the event row commit atomically; a relay
+                // drains `sent_at IS NULL` onto the bus (wired in Step 4).
+                s.execute(
+                    """CREATE TABLE IF NOT EXISTS accounts.outbox(
+                        id         BIGSERIAL PRIMARY KEY,
+                        topic      TEXT NOT NULL,
+                        payload    JSONB NOT NULL,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                        sent_at    TIMESTAMPTZ NULL)"""
+                )
             }
         }
         println("[accounts] schema ready")
