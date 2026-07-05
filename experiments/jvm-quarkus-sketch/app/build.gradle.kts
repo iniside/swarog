@@ -33,6 +33,14 @@ dependencies {
     testImplementation("com.tngtech.archunit:archunit:1.4.2")
     testImplementation("org.junit.jupiter:junit-jupiter:5.11.0")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
+    // Layer 2 (Konsist) rules: `KonsistArchitectureTest` inspects `@Path` (JAX-RS) directly, so
+    // the JAX-RS API needs to be on app's OWN test classpath — `characters`/`inventory`/`admin`
+    // declare quarkus-rest as `implementation`, which Gradle does NOT expose transitively to a
+    // consumer's (app's) classpath. De-risked first: Konsist embeds a K2 front-end
+    // (kotlin-compiler-embeddable); its JDK-26-toolchain compatibility was unproven before a
+    // trivial `Konsist.scopeFromProject().classes().assertTrue { true }` ran green.
+    testImplementation("com.lemonappdev:konsist:0.17.3")
+    testImplementation("io.quarkus:quarkus-rest")
 }
 
 allOpen {
