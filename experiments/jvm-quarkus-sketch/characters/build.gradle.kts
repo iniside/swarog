@@ -19,9 +19,11 @@ dependencies {
     implementation("io.quarkus:quarkus-messaging-kafka") // SmallRye Reactive Messaging (internal channel until Step 7 connectors)
     implementation("io.quarkus:quarkus-scheduler")       // @Scheduled outbox relay
     implementation("io.quarkus:quarkus-jackson")         // ObjectMapper bean for payload (de)serialization
+    implementation("io.quarkus:quarkus-grpc")            // @GrpcService server + @GrpcClient in the produced adapter
 
-    api(project(":characters-api"))      // implements PlayerCharacters (supertype)
+    api(project(":characters-api"))      // @Produces PlayerCharacters (the produced capability bean)
     api(project(":characters-events"))   // CharacterCreated/Deleted payloads (emitted via outbox relay)
+    implementation(project(":characters-grpc"))   // generated PlayerCharacters gRPC/Mutiny stubs (server + client)
     api(project(":admin-api"))           // @Produces Item (public return type)
     implementation(project(":platform"))
 }
@@ -29,4 +31,5 @@ dependencies {
 allOpen {
     annotation("jakarta.enterprise.context.ApplicationScoped")
     annotation("jakarta.persistence.Entity")
+    annotation("io.quarkus.grpc.GrpcService")   // @GrpcService bean must be proxyable/open
 }

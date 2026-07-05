@@ -1,0 +1,19 @@
+syntax = "proto3";
+
+option java_package = "characters.grpc";
+option java_multiple_files = true;
+
+package characters;
+
+service PlayerCharactersGrpc {
+  rpc OwnerOf (OwnerOfRequest) returns (OwnerOfReply);
+}
+
+message OwnerOfRequest {
+  string character_id = 1;
+}
+
+message OwnerOfReply {
+  bool found = 1;
+  string owner_id = 2;
+}

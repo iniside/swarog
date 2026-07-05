@@ -5,7 +5,6 @@ import admin.adminapi.Item
 import admin.adminapi.Kpi
 import admin.adminapi.SectionData
 import admin.adminapi.Table
-import characters.charactersapi.PlayerCharacters
 import characters.charactersevents.CharacterCreated
 import characters.charactersevents.CharacterDeleted
 import com.fasterxml.jackson.databind.ObjectMapper
@@ -23,8 +22,10 @@ import platform.RoleConfig
 
 /**
  * A player has N characters. `player_id` is a PLAIN column — no cross-module FK to accounts.
- * Provides [PlayerCharacters] by implementing it (CDI resolves by type — no provide/require),
- * and emits Created/Deleted (async). Has no idea `inventory` exists.
+ * The synchronous `PlayerCharacters` capability is no longer implemented here: the `ownerOf` lookup
+ * moved to [LocalPlayerCharacters] and the single capability bean is PRODUCED (transport-transparent
+ * local/gRPC) by [PlayerCharactersProvider]. This module still emits Created/Deleted (async) and has
+ * no idea `inventory` exists.
  */
 @ApplicationScoped
 class CharactersModule(
@@ -32,7 +33,8 @@ class CharactersModule(
     private val em: EntityManager,
     private val objectMapper: ObjectMapper,
     private val roleConfig: RoleConfig,
-) : PlayerCharacters {
+    private val local: LocalPlayerCharacters,
+) {
 
     /** Default priority — order-independent by construction (own schema, no cross-module FKs). */
     fun migrate(@Observes ev: StartupEvent) {
@@ -93,7 +95,7 @@ class CharactersModule(
 
     @Transactional
     fun delete(id: Long) {
-        val playerId = ownerOf(id) ?: return
+        val playerId = local.ownerOf(id) ?: return
         Character.deleteById(id)
         // Integrity across modules comes from THIS event, not an FK cascade.
         appendOutbox(CharacterDeleted.TOPIC, CharacterDeleted(id, playerId))
@@ -107,8 +109,6 @@ class CharactersModule(
             .setParameter(2, objectMapper.writeValueAsString(payload))
             .executeUpdate()
     }
-
-    override fun ownerOf(characterId: Long): UUID? = Character.findById(characterId)?.playerId
 
     private fun recent(limit: Int): List<Character> =
         Character.findAll(Sort.descending("id")).page(Page.ofSize(limit)).list()
