@@ -28,6 +28,7 @@ dependencies {
     implementation(project(":inventory"))
     implementation(project(":admin"))
     implementation(project(":platform"))   // Seed injects RoleConfig to gate the demo seed
+    implementation(project(":arch-rules"))  // Layer 3 (opt-in demo): build-time architecture-validation extension
 
     // Same architecture rules as the framework-free sketch — constraints outlive the framework.
     testImplementation("com.tngtech.archunit:archunit:1.4.2")

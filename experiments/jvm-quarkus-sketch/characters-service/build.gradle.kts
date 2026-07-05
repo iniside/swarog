@@ -23,4 +23,5 @@ dependencies {
     implementation(project(":accounts"))     // accounts migrations + PlayerRegistered outbox
     implementation(project(":characters"))   // LOCAL PlayerCharacters producer + edge QUIC server + outbox relay
     implementation(project(":platform"))     // RoleConfig
+    implementation(project(":arch-rules"))    // Layer 3 (opt-in demo): build-time architecture-validation extension
 }

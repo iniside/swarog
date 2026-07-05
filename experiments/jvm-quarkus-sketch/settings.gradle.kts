@@ -10,6 +10,7 @@ pluginManagement {
         kotlin("plugin.allopen") version kotlinVersion
         kotlin("plugin.jpa") version kotlinVersion
         id("io.quarkus") version quarkusPluginVersion
+        id("io.quarkus.extension") version quarkusPluginVersion
     }
 }
 rootProject.name = "jvm-quarkus-sketch"
@@ -42,6 +43,21 @@ include("characters-client")
 include("app")
 include("characters-service")
 include("inventory-service")
+
+// Verification Layer 3 (OPT-IN demo) — a Quarkus build-time extension that re-implements Layer-1's
+// architecture checks against ArC's AUGMENTED bean graph + Jandex, failing `quarkusBuild`. Two modules:
+//   arch-rules            = the (empty) RUNTIME; its generated quarkus-extension.properties descriptor is
+//                           what makes discovery flow — app-shells put THIS on their classpath.
+//   arch-rules-deployment = the DEPLOYMENT half (JAVA sources only — quarkus-extension-processor does NOT
+//                           index Kotlin @BuildStep classes, #35110, so the build-steps.list would be empty
+//                           and validation would SILENTLY never run).
+// The project NAME must EXACTLY equal the `deploymentModule.set(...)` string in arch-rules/runtime — the
+// extension plugin resolves the deployment half by local project name (ToolingUtils.findLocalProject), so a
+// mismatch is a silent no-op.
+include("arch-rules")
+project(":arch-rules").projectDir = file("arch-rules/runtime")
+include("arch-rules-deployment")
+project(":arch-rules-deployment").projectDir = file("arch-rules/deployment")
 
 // Client-edge RPC core — transport-agnostic request/response + server-push over a bidirectional
 // byte-stream (the "missing element" QUIC lacks). Schema-less MessagePack via Jackson. A future

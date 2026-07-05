@@ -26,5 +26,6 @@ dependencies {
     implementation(project(":admin"))              // /admin console + REST fan-out to remote characters
     implementation(project(":characters-client"))  // REMOTE PlayerCharacters producer (edge/QUIC client)
     implementation(project(":platform"))           // RoleConfig
+    implementation(project(":arch-rules"))          // Layer 3 (opt-in demo): build-time architecture-validation extension
     // NOTE: no :characters or :accounts impl — proven by :inventory-service:dependencies.
 }
