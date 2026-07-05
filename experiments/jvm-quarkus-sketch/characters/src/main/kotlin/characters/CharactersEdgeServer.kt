@@ -7,10 +7,12 @@ import edge.EdgeRouter
 import edge.EdgeServer
 import edge.msquic.MsQuicServerTransport
 import edge.typedHandler
+import io.quarkus.narayana.jta.QuarkusTransaction
 import io.quarkus.runtime.ShutdownEvent
 import io.quarkus.runtime.StartupEvent
 import jakarta.enterprise.context.ApplicationScoped
 import jakarta.enterprise.event.Observes
+import java.util.Optional
 import org.eclipse.microprofile.config.inject.ConfigProperty
 import platform.RoleConfig
 
@@ -35,14 +37,19 @@ class CharactersEdgeServer(
     private val roleConfig: RoleConfig,
     private val local: LocalPlayerCharacters,
     @param:ConfigProperty(name = "edge.server.characters.port") private val port: Int,
-    @param:ConfigProperty(name = "edge.server.cert-thumbprint") private val certThumbprint: String,
+    // Optional: EVERY process instantiates this bean (single artifact), but only a split characters
+    // process sets EDGE_CERT_THUMBPRINT. `${EDGE_CERT_THUMBPRINT:}` resolves to empty in the others,
+    // which SmallRye rejects for a plain String injection — Optional maps absent/empty to empty().
+    @param:ConfigProperty(name = "edge.server.cert-thumbprint") private val certThumbprint: Optional<String>,
 ) {
     @Volatile private var transport: MsQuicServerTransport? = null
 
     fun start(@Observes ev: StartupEvent) {
         if (roleConfig.isMonolith() || !roleConfig.isActive("characters")) return
-        require(certThumbprint.isNotBlank()) {
-            "edge.server.cert-thumbprint (EDGE_CERT_THUMBPRINT) is required to host the characters QUIC server"
+        val thumbprint = certThumbprint.filter { it.isNotBlank() }.orElseThrow {
+            IllegalStateException(
+                "edge.server.cert-thumbprint (EDGE_CERT_THUMBPRINT) is required to host the characters QUIC server",
+            )
         }
 
         val codec = EdgeCodec()
@@ -50,13 +57,16 @@ class CharactersEdgeServer(
             register(
                 "characters.ownerOf",
                 codec.typedHandler<OwnerOfRequest, OwnerOfReply> { req ->
-                    val owner = local.ownerOf(req.characterId)
+                    // The handler runs on the EdgeServer's per-connection worker thread, which has no
+                    // ambient transaction/CDI request context — Panache (Character.findById) needs an
+                    // active Hibernate session, so wrap the read in a programmatic transaction.
+                    val owner = QuarkusTransaction.requiringNew().call { local.ownerOf(req.characterId) }
                     OwnerOfReply(found = owner != null, ownerId = owner?.toString())
                 },
             )
         }
 
-        val t = MsQuicServerTransport(port, certThumbprint)
+        val t = MsQuicServerTransport(port, thumbprint)
         EdgeServer(router, t, codec).start()
         transport = t
         println("[characters] edge QUIC server for characters.ownerOf listening on port $port")
