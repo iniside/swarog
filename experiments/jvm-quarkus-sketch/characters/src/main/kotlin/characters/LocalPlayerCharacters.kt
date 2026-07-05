@@ -7,7 +7,7 @@ import java.util.UUID
  * The in-process `ownerOf` lookup, extracted out of [CharactersModule]. Deliberately a CONCRETE bean
  * that does NOT implement [characters.charactersapi.PlayerCharacters]: the single capability bean is
  * PRODUCED (see [PlayerCharactersProvider]) so there is exactly one `PlayerCharacters` in every role
- * combination. Both the local delegate and the gRPC service ([PlayerCharactersGrpcService]) fan in here.
+ * combination. Both the local delegate and the edge-RPC QUIC server ([CharactersEdgeServer]) fan in here.
  */
 @ApplicationScoped
 class LocalPlayerCharacters {

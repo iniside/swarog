@@ -13,7 +13,7 @@ import jakarta.ws.rs.core.Response
 /**
  * Async event subscriber, broker-less: character events arrive as a DIRECT HTTP POST from the
  * characters outbox relay (JSON body = the published payload). This is the SAME cross-process
- * transport already used by the sync gRPC ownerOf and the admin-data REST fan-out — one HTTP hop,
+ * transport already used by the sync edge ownerOf and the admin-data REST fan-out — one HTTP hop,
  * no broker, no messaging channel.
  *
  * @Blocking: the delegated handlers do JPA writes, so they must run on a worker thread, not the I/O

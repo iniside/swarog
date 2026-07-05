@@ -11,9 +11,9 @@ import jakarta.ws.rs.core.Response
 /**
  * Minimal HTTP surface that drives [InventoryModule.add] for a character owner — the ONLY caller today
  * is `Seed` (monolith, plain thread), so in a split `inventory` process there is otherwise no way to
- * exercise the gRPC `ownerOf` authorization. `@Blocking` is REQUIRED: `add` calls `PlayerCharacters.
- * ownerOf`, whose gRPC adapter blocks on `.await().indefinitely()` — illegal on the Vert.x event loop,
- * so this hops to a worker thread. A rejected write (unknown character) surfaces as 400.
+ * exercise the edge `ownerOf` authorization. `@Blocking` is REQUIRED: `add` calls `PlayerCharacters.
+ * ownerOf`, whose edge-RPC client adapter blocks on the QUIC round-trip — illegal on the Vert.x event
+ * loop, so this hops to a worker thread. A rejected write (unknown character) surfaces as 400.
  */
 @Path("/inventory")
 @ApplicationScoped

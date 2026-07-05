@@ -125,6 +125,17 @@ class MsQuicServerTransport(
     }
 
     override fun close() {
+        // Shut down all connections owned by the registration FIRST, then close it: RegistrationClose
+        // blocks until every connection has drained, so without an active shutdown a still-connected
+        // peer would hang teardown until the idle timeout (~90s). RegistrationShutdown operates on the
+        // registration handle (never the per-connection handles the callbacks may be concurrently
+        // freeing), so it is safe here regardless of how far along any connection's shutdown is —
+        // avoiding the use-after-free of touching individual connection handles from close().
+        runCatching {
+            if (registration.address() != 0L) {
+                api.registrationShutdown(registration, Constants.QUIC_CONNECTION_SHUTDOWN_FLAG_NONE, 0L)
+            }
+        }
         runCatching { if (listener.address() != 0L) api.listenerClose(listener) }
         runCatching { if (configuration.address() != 0L) api.configurationClose(configuration) }
         runCatching { if (registration.address() != 0L) api.registrationClose(registration) }

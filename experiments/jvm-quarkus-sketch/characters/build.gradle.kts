@@ -18,13 +18,12 @@ dependencies {
     implementation("io.quarkus:quarkus-narayana-jta")   // @Transactional domain-write + outbox-append
     implementation("io.quarkus:quarkus-scheduler")       // @Scheduled outbox relay (broker-less HTTP fanout)
     implementation("io.quarkus:quarkus-jackson")         // ObjectMapper bean for payload serialization
-    implementation("io.quarkus:quarkus-grpc")            // @GrpcService server + @GrpcClient in the produced adapter
     implementation("io.quarkus:quarkus-rest")            // GET /admin-data/characters
     implementation("io.quarkus:quarkus-rest-jackson")    // JSON serialization of AdminItemDto
 
     api(project(":characters-api"))      // @Produces PlayerCharacters (the produced capability bean)
     api(project(":characters-events"))   // CharacterCreated/Deleted payloads (emitted via outbox relay)
-    implementation(project(":characters-grpc"))   // generated PlayerCharacters gRPC/Mutiny stubs (server + client)
+    implementation(project(":edge"))     // edge RPC core + MsQuicServerTransport (ownerOf over QUIC)
     api(project(":admin-api"))           // @Produces Item (public return type)
     implementation(project(":platform"))
 }
@@ -32,5 +31,4 @@ dependencies {
 allOpen {
     annotation("jakarta.enterprise.context.ApplicationScoped")
     annotation("jakarta.persistence.Entity")
-    annotation("io.quarkus.grpc.GrpcService")   // @GrpcService bean must be proxyable/open
 }

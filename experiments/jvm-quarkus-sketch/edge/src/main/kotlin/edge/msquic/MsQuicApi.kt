@@ -52,6 +52,10 @@ class MsQuicApi(private val linker: Linker, private val apiTable: MemorySegment)
     // index 6 — void RegistrationClose(HQUIC)
     private val registrationCloseH = handleAt(6, FunctionDescriptor.ofVoid(ADDRESS))
 
+    // index 7 — void RegistrationShutdown(HQUIC, QUIC_CONNECTION_SHUTDOWN_FLAGS, QUIC_UINT62 err)
+    private val registrationShutdownH =
+        handleAt(7, FunctionDescriptor.ofVoid(ADDRESS, JAVA_INT, JAVA_LONG))
+
     // index 8 — QUIC_STATUS ConfigurationOpen(HQUIC reg, const QUIC_BUFFER* alpn, uint32 alpnCount,
     //           const QUIC_SETTINGS* settings, uint32 settingsSize, void* ctx, HQUIC* out)
     private val configurationOpenH = handleAt(
@@ -130,6 +134,17 @@ class MsQuicApi(private val linker: Linker, private val apiTable: MemorySegment)
 
     fun registrationClose(registration: MemorySegment) {
         registrationCloseH.invoke(registration)
+    }
+
+    /**
+     * Initiates shutdown of ALL connections owned by this registration, operating on the (still-valid)
+     * registration handle rather than per-connection handles — so it is safe to call before
+     * [registrationClose] even while connection callbacks are concurrently freeing individual handles.
+     * This makes the subsequent (blocking) [registrationClose] drain quickly instead of waiting on the
+     * idle timeout.
+     */
+    fun registrationShutdown(registration: MemorySegment, flags: Int, errorCode: Long) {
+        registrationShutdownH.invoke(registration, flags, errorCode)
     }
 
     fun configurationOpen(

@@ -17,15 +17,14 @@ dependencies {
     implementation("io.quarkus:quarkus-jdbc-postgresql")
     implementation("io.quarkus:quarkus-narayana-jta")   // @Transactional write paths
     implementation("io.quarkus:quarkus-jackson")         // ObjectMapper bean on the compile classpath
-    implementation("io.quarkus:quarkus-grpc")            // gRPC client runtime (ownerOf goes remote in the split)
-    implementation("io.quarkus:quarkus-smallrye-stork")  // Stork name-resolver for the gRPC client (characters-service)
+    implementation("io.quarkus:quarkus-smallrye-stork")  // Stork name-resolver for the admin REST fan-out (characters-service)
     implementation("io.smallrye.stork:stork-service-discovery-static-list") // static address-list discovery (BOM-managed version)
     implementation("io.quarkus:quarkus-rest")            // InventoryResource + GET /admin-data/inventory
     implementation("io.quarkus:quarkus-rest-jackson")    // JSON serialization of AdminItemDto
 
     api(project(":characters-api"))      // injects PlayerCharacters (public ctor)
     api(project(":characters-events"))   // @ObservesAsync CharacterCreated/Deleted (public params)
-    implementation(project(":characters-grpc"))   // gRPC stubs shared with the characters server
+    implementation(project(":edge"))     // edge RPC core + MsQuicClientTransport (ownerOf over QUIC)
     api(project(":admin-api"))           // @Produces Item
     implementation(project(":platform"))
 }

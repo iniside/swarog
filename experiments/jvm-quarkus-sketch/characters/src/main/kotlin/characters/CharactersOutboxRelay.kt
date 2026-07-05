@@ -18,7 +18,7 @@ import platform.RoleConfig
  * Drains `characters.outbox` by DIRECT HTTP POST to each topic's subscriber endpoints — no broker,
  * no SmallRye Reactive Messaging. Async events are fire-and-forget fanout: the outbox already gives
  * durability + at-least-once retry, so the relay just re-POSTs the (already-JSON) payload to every
- * subscriber URL, exactly like the sync gRPC ownerOf and the admin-data REST fan-out cross process
+ * subscriber URL, exactly like the sync edge ownerOf and the admin-data REST fan-out cross process
  * boundaries. Transport is identical in both topologies — only INVENTORY_ADDR differs (self in the
  * monolith, process B in the split).
  *

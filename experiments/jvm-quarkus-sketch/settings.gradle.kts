@@ -18,7 +18,6 @@ rootProject.name = "jvm-quarkus-sketch"
 include("accounts-events")
 include("characters-events")
 include("characters-api")
-include("characters-grpc")   // proto + generated gRPC/Mutiny stubs (shared by characters server + inventory client)
 include("admin-api")
 
 // Cross-cutting infra shell (RoleConfig + outbox helper land here in later steps).

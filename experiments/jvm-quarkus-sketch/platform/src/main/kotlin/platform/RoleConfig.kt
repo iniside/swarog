@@ -10,7 +10,7 @@ import org.eclipse.microprofile.config.inject.ConfigProperty
  * active, exactly as before.
  *
  * Gates ONLY module startup/migrations (and, later, the produced-bean local/remote branch).
- * Channel/gRPC-server/endpoint gating is a config-profile concern, not this bean's.
+ * Channel/edge-server/endpoint gating is a config-profile concern, not this bean's.
  */
 @ApplicationScoped
 class RoleConfig(

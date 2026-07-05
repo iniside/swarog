@@ -16,7 +16,7 @@ import platform.RoleConfig
  * A player has N characters. `player_id` is a PLAIN column — no cross-module FK to accounts.
  * The synchronous `PlayerCharacters` capability is no longer implemented here: the `ownerOf` lookup
  * moved to [LocalPlayerCharacters] and the single capability bean is PRODUCED (transport-transparent
- * local/gRPC) by [PlayerCharactersProvider]. This module still emits Created/Deleted (async) and has
+ * local/edge-over-QUIC) by [PlayerCharactersProvider]. This module still emits Created/Deleted (async) and has
  * no idea `inventory` exists.
  */
 @ApplicationScoped
