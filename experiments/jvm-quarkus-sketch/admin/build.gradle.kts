@@ -14,6 +14,8 @@ dependencies {
     implementation("io.quarkus:quarkus-kotlin")
     implementation("io.quarkus:quarkus-rest")                  // JAX-RS endpoints (the /admin resource)
     implementation("io.quarkus:quarkus-rest-client-jackson")   // REST fan-out to remote /admin-data/<id>
+    implementation("io.quarkus:quarkus-smallrye-stork")        // resolve stork://<id>-service in the REST fan-out
+    implementation("io.smallrye.stork:stork-service-discovery-static-list") // static address-list discovery (BOM-managed version)
     implementation("io.quarkus:quarkus-qute")   // HTML templating
     implementation("io.quarkus:quarkus-arc")    // io.quarkus.arc.All (@All List<AdminDataProvider>)
 

@@ -20,6 +20,8 @@ dependencies {
     implementation("io.quarkus:quarkus-scheduler")       // shares the messaging/scheduler runtime with the publishers
     implementation("io.quarkus:quarkus-jackson")         // ObjectMapper bean on the compile classpath
     implementation("io.quarkus:quarkus-grpc")            // gRPC client runtime (ownerOf goes remote in the split)
+    implementation("io.quarkus:quarkus-smallrye-stork")  // Stork name-resolver for the gRPC client (characters-service)
+    implementation("io.smallrye.stork:stork-service-discovery-static-list") // static address-list discovery (BOM-managed version)
     implementation("io.quarkus:quarkus-rest")            // InventoryResource + GET /admin-data/inventory
     implementation("io.quarkus:quarkus-rest-jackson")    // JSON serialization of AdminItemDto
 
