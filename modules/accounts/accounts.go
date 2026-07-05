@@ -132,7 +132,9 @@ func (m *Module) Init(ctx *core.Context) error {
 	}
 
 	// Appear in the admin portal (it renders whatever is contributed).
-	ctx.Contribute(adminapi.Slot, adminapi.Item{Section: "Identity", Label: "Players", Render: m.adminSection})
+	ctx.Contribute(adminapi.Slot, adminapi.Item{ID: adminItemID, Section: adminSectionName, Label: adminLabel, Render: m.adminSection})
+	// GET /admin-data/accounts: the same content over HTTP for a remote admin.
+	ctx.Mux.HandleFunc("GET /admin-data/"+adminItemID, m.handleAdminData)
 	return nil
 }
 

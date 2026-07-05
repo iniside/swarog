@@ -146,6 +146,21 @@ func peerAddrFor(name string) string {
 	return "localhost:9000"
 }
 
+// peerAdminURLFor returns the peer's /admin-data/<name> HTTP URL a remote stub
+// should fetch its admin page from: env <NAME>_ADMIN_URL (e.g. CHARACTERS_ADMIN_URL),
+// else derived from the shared PEER_HTTP_ADDR base (host:port → http://host:port/
+// admin-data/<name>), else empty. Empty ⇒ the stub contributes no admin item (the
+// module simply doesn't appear in this process's /admin) — the monolith default.
+func peerAdminURLFor(name string) string {
+	if v := os.Getenv(strings.ToUpper(name) + "_ADMIN_URL"); strings.TrimSpace(v) != "" {
+		return strings.TrimSpace(v)
+	}
+	if base := strings.TrimSpace(os.Getenv("PEER_HTTP_ADDR")); base != "" {
+		return "http://" + base + "/admin-data/" + name
+	}
+	return ""
+}
+
 // normalizeAddr accepts both ":8080" and "8080" forms and returns ":8080".
 func normalizeAddr(port string) string {
 	port = strings.TrimSpace(port)
@@ -226,7 +241,7 @@ func main() {
 		reg.Add(all[name])
 	}
 	for _, name := range needed {
-		reg.Add(remote.NewStub(name, peerAddrFor(name)))
+		reg.Add(remote.NewStub(name, peerAddrFor(name), peerAdminURLFor(name)))
 	}
 
 	if err := reg.Build(); err != nil {

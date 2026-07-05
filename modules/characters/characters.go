@@ -90,7 +90,10 @@ func (m *Module) Init(ctx *core.Context) error {
 
 	m.svc = &service{store: m.store}
 	ctx.Provide("characters", m.svc)
-	ctx.Contribute(adminapi.Slot, adminapi.Item{Section: "Game Content", Label: "Characters", Render: m.adminSection})
+	ctx.Contribute(adminapi.Slot, adminapi.Item{ID: adminItemID, Section: adminSectionName, Label: adminLabel, Render: m.adminSection})
+	// GET /admin-data/characters: the same content, served over HTTP so a remote
+	// admin process can fetch it. In the monolith the admin uses the closure above.
+	ctx.Mux.HandleFunc("GET /admin-data/"+adminItemID, m.handleAdminData)
 
 	// Construct (no I/O — Init only wires) the outbox relay. Subscribers come from
 	// EVENTS_SUBSCRIBERS (empty in the monolith). Start launches its drain loop.

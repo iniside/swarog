@@ -4,6 +4,7 @@
 package admin
 
 import (
+	"context"
 	"log/slog"
 	"testing"
 
@@ -73,7 +74,7 @@ func TestItems_SlugDedupe(t *testing.T) {
 	ctx.Contribute(adminapi.Slot, adminapi.Item{Section: "S", Label: "Leaderboard"})
 
 	m := &Module{ctx: ctx}
-	items := m.items()
+	items := m.items(context.Background())
 
 	if len(items) != 4 {
 		t.Fatalf("items() len = %d; want 4", len(items))
@@ -105,7 +106,7 @@ func TestItems_SkipsNonItemContributions(t *testing.T) {
 	ctx.Contribute(adminapi.Slot, adminapi.Item{Section: "S", Label: "Valid"})
 
 	m := &Module{ctx: ctx}
-	items := m.items()
+	items := m.items(context.Background())
 
 	if len(items) != 1 {
 		t.Fatalf("items() len = %d; want 1 (non-Item contributions skipped)", len(items))
@@ -120,7 +121,7 @@ func TestItems_SkipsNonItemContributions(t *testing.T) {
 func TestItems_EmptySlot(t *testing.T) {
 	ctx := core.NewContext(slog.Default())
 	m := &Module{ctx: ctx}
-	if got := m.items(); got != nil {
+	if got := m.items(context.Background()); got != nil {
 		t.Errorf("items() on empty slot = %v; want nil", got)
 	}
 }

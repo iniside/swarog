@@ -107,7 +107,9 @@ func (m *Module) Init(ctx *core.Context) error {
 	}
 
 	ctx.Provide("inventory", &service{store: m.store})
-	ctx.Contribute(adminapi.Slot, adminapi.Item{Section: "Game Content", Label: "Inventory", Render: m.adminSection})
+	ctx.Contribute(adminapi.Slot, adminapi.Item{ID: adminItemID, Section: adminSectionName, Label: adminLabel, Render: m.adminSection})
+	// GET /admin-data/inventory: the same content over HTTP for a remote admin.
+	ctx.Mux.HandleFunc("GET /admin-data/"+adminItemID, m.handleAdminData)
 	return nil
 }
 

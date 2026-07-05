@@ -18,6 +18,7 @@ import (
 
 	"gamebackend/core"
 	"gamebackend/edge"
+	"gamebackend/modules/admin/adminapi"
 )
 
 // Stub stands in for a module hosted in a peer process. Init Provides an edge-
@@ -25,17 +26,21 @@ import (
 // resolves to a real QUIC caller. It never migrates a schema and mounts no
 // routes; as a Stopper it closes the underlying edge connection on shutdown.
 type Stub struct {
-	name   string
-	conn   *edgeConn
-	client any // the typed client Provided under name; satisfies the consumer iface
+	name     string
+	conn     *edgeConn
+	client   any    // the typed client Provided under name; satisfies the consumer iface
+	adminURL string // peer's .../admin-data/<name> URL; empty ⇒ no admin surface exposed
 }
 
 // NewStub builds a stub for the given dependency name, dialing peerAddr lazily.
+// adminURL, when non-empty, is the peer's /admin-data/<name> URL — the stub then
+// contributes a remote admin.Item so the co-hosted admin fetches this module's
+// page over HTTP (keeping the sidebar sourced uniformly from Contributions, S2).
 // Only "characters" and "accounts" are edge-exposed in this topology; any other
 // name is a wiring bug and fails loudly rather than Providing a dead client.
-func NewStub(name, peerAddr string) *Stub {
+func NewStub(name, peerAddr, adminURL string) *Stub {
 	conn := &edgeConn{peerAddr: peerAddr}
-	s := &Stub{name: name, conn: conn}
+	s := &Stub{name: name, conn: conn, adminURL: adminURL}
 	switch name {
 	case "characters":
 		s.client = &charactersClient{conn: conn}
@@ -50,11 +55,19 @@ func NewStub(name, peerAddr string) *Stub {
 func (s *Stub) Name() string        { return s.name }
 func (s *Stub) DependsOn() []string { return nil } // a peer's foundations live in the peer
 
-// Init registers the edge-backed client so a co-hosted dependent can Require it.
+// Init registers the edge-backed client so a co-hosted dependent can Require it,
+// and (when an admin peer URL is configured) contributes a remote admin item so
+// this module still appears in the local /admin — its Section/Label/Content are
+// fetched from adminURL, not carried here.
 func (s *Stub) Init(ctx *core.Context) error {
 	ctx.Provide(s.name, s.client)
 	ctx.Log.Info("remote stub registered — service resolves over the QUIC edge",
 		"module", s.name, "peer", s.conn.peerAddr)
+	if s.adminURL != "" {
+		ctx.Contribute(adminapi.Slot, adminapi.Item{ID: s.name, RemoteURL: s.adminURL})
+		ctx.Log.Info("remote stub contributed admin item — page fetched over HTTP",
+			"module", s.name, "adminURL", s.adminURL)
+	}
 	return nil
 }
 
