@@ -16,6 +16,7 @@ dependencies {
     implementation("io.quarkus:quarkus-kotlin")
     implementation("io.quarkus:quarkus-arc")   // Seed: StartupEvent, @Observes, @Priority
     implementation("io.quarkus:quarkus-jackson")   // JSON serde for event payloads (additive-evolution config)
+    implementation("io.quarkus:quarkus-smallrye-health")   // /q/health/ready readiness probe (install.ps1 polls it)
 
     implementation(project(":accounts"))
     implementation(project(":characters"))
