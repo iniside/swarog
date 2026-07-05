@@ -33,3 +33,8 @@ include("admin")
 // The ONLY io.quarkus module: aggregates impls, holds the seed + application.properties,
 // runs quarkusBuild.
 include("app")
+
+// Client-edge RPC core — transport-agnostic request/response + server-push over a bidirectional
+// byte-stream (the "missing element" QUIC lacks). Schema-less MessagePack via Jackson. A future
+// MsQuicTransport : EdgeTransport drops in unchanged. Standalone slice; no feature dependencies.
+include("edge")
