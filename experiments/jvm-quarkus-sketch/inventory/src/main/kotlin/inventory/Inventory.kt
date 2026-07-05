@@ -11,13 +11,14 @@ import characters.charactersevents.CharacterDeleted
 import io.quarkus.panache.common.Page
 import io.quarkus.panache.common.Sort
 import io.quarkus.runtime.StartupEvent
+import io.smallrye.common.annotation.Blocking
 import jakarta.enterprise.context.ApplicationScoped
 import jakarta.enterprise.event.Observes
-import jakarta.enterprise.event.ObservesAsync
 import jakarta.enterprise.inject.Produces
 import jakarta.persistence.EntityManager
 import jakarta.transaction.Transactional
 import javax.sql.DataSource
+import org.eclipse.microprofile.reactive.messaging.Incoming
 import platform.RoleConfig
 
 enum class OwnerType { PLAYER, CHARACTER }
@@ -29,8 +30,8 @@ data class Owner(val type: OwnerType, val id: String)
  * Owner-scoped holdings. Depends on accounts + characters.
  *  - SYNC-asks [PlayerCharacters.ownerOf] to authorize a character's inventory — the capability
  *    interface is constructor-injected BY TYPE; no provide/require, no package dependency on impl.
- *  - REACTS to character events via `@ObservesAsync`: grant a starter item on create, wipe
- *    holdings on delete. `characters` has no idea this module exists.
+ *  - REACTS to character events via `@Incoming` off the bus: grant a starter item on create, wipe
+ *    holdings on delete (idempotent via the inbox). `characters` has no idea this module exists.
  *
  * Persistence: Panache over the [Holding] entity. The JDBC ladder collapsed to one-liners;
  * the new costs are `@Transactional` on every write path and one query that stayed native
@@ -72,18 +73,35 @@ class InventoryModule(
         println("[inventory] schema ready")
     }
 
-    /** Sideways reactions — `@ObservesAsync` receives `fireAsync` deliveries off the caller's thread. */
+    /** Sideways reactions — bus deliveries via `@Incoming`, run blocking on a worker thread (the
+     *  channel is internal in the monolith, Kafka once Step 7 adds a connector). Delivery is
+     *  at-least-once, so each handler dedups on the inbox FIRST: a redelivered event is a no-op —
+     *  critical because `grant` (`qty += qty`) is NOT idempotent and would double the starter. */
+    @Incoming(CharacterCreated.TOPIC)
+    @Blocking
     @Transactional
-    fun onCharacterCreated(@ObservesAsync ev: CharacterCreated) {
+    fun onCharacterCreated(ev: CharacterCreated) {
+        if (!firstSeen("${CharacterCreated.TOPIC}:${ev.characterId}")) return
         grant(Owner(OwnerType.CHARACTER, ev.characterId.toString()), "starter_sword", 1)
         println("  [inventory] granted starter_sword to character ${ev.characterId}")
     }
 
+    @Incoming(CharacterDeleted.TOPIC)
+    @Blocking
     @Transactional
-    fun onCharacterDeleted(@ObservesAsync ev: CharacterDeleted) {
+    fun onCharacterDeleted(ev: CharacterDeleted) {
+        if (!firstSeen("${CharacterDeleted.TOPIC}:${ev.characterId}")) return
         val wiped = wipe(Owner(OwnerType.CHARACTER, ev.characterId.toString()))
         println("  [inventory] wiped $wiped holding(s) for deleted character ${ev.characterId}")
     }
+
+    /** Records `eventId` in the inbox within the CURRENT transaction; returns false if it was
+     *  already there (a redelivery). The dedup and the grant/wipe thus commit atomically — if the
+     *  effect rolls back, so does the inbox row, and the next redelivery reprocesses. */
+    private fun firstSeen(eventId: String): Boolean =
+        em.createNativeQuery("INSERT INTO inventory.inbox(event_id) VALUES (?1) ON CONFLICT DO NOTHING")
+            .setParameter(1, eventId)
+            .executeUpdate() > 0
 
     /** Second contributor to the same Item "slot" — admin merges both, still without knowing us. */
     @Produces

@@ -1,20 +1,24 @@
 package accounts
 
 import accounts.accountsevents.PlayerRegistered
-import io.quarkus.narayana.jta.QuarkusTransaction
+import com.fasterxml.jackson.databind.ObjectMapper
 import io.quarkus.runtime.StartupEvent
+import io.smallrye.common.annotation.Blocking
 import jakarta.enterprise.context.ApplicationScoped
-import jakarta.enterprise.event.Event
 import jakarta.enterprise.event.Observes
+import jakarta.persistence.EntityManager
+import jakarta.transaction.Transactional
 import java.util.UUID
 import javax.sql.DataSource
+import org.eclipse.microprofile.reactive.messaging.Incoming
 import platform.RoleConfig
 
 /** Owns player identity. Foundation module — depends on nothing but the container. */
 @ApplicationScoped
 class AccountsModule(
     private val db: DataSource,
-    private val registered: Event<PlayerRegistered>,
+    private val em: EntityManager,
+    private val objectMapper: ObjectMapper,
     private val roleConfig: RoleConfig,
 ) {
 
@@ -46,17 +50,26 @@ class AccountsModule(
         println("[accounts] schema ready")
     }
 
-    /** dev-only self-registration. Emits PlayerRegistered — async, fire-and-forget.
-     *
-     *  The write runs in a PROGRAMMATIC transaction so the event fires AFTER commit — with plain
-     *  `@Transactional` on this method, `fireAsync` would leak the event to observers before the
-     *  row is durable (and a rollback would leave a phantom event). The raw-JDBC version got this
-     *  ordering for free from autocommit. */
+    /** dev-only self-registration. The player row and the outbox row commit in ONE transaction —
+     *  the event can neither escape before the write is durable nor survive a rollback. The relay
+     *  ([AccountsOutboxRelay]) drains the outbox onto the bus; delivery is async and at-least-once. */
+    @Transactional
     fun register(provider: String): UUID {
         val id = UUID.randomUUID()
-        QuarkusTransaction.requiringNew().run { Player(id, provider).persist() }
-        registered.fireAsync(PlayerRegistered(id, provider))
-            .whenComplete { _, e -> if (e != null) System.err.println("event handler failed for PlayerRegistered: $e") }
+        Player(id, provider).persist()
+        em.createNativeQuery("INSERT INTO accounts.outbox(topic, payload) VALUES (?1, cast(?2 as jsonb))")
+            .setParameter(1, PlayerRegistered.TOPIC)
+            .setParameter(2, objectMapper.writeValueAsString(PlayerRegistered(id, provider)))
+            .executeUpdate()
         return id
+    }
+
+    /** No consumer for PlayerRegistered yet. An internal channel with a producer but no consumer
+     *  fails at boot (SRMSG00019), so this no-op sink closes the graph; a real consumer replaces it
+     *  later. accounts.registered stays an INTERNAL channel (no Kafka connector in Step 7). */
+    @Incoming(PlayerRegistered.TOPIC)
+    @Blocking
+    fun drainRegistered(ev: PlayerRegistered) {
+        // no consumer yet
     }
 }

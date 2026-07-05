@@ -15,10 +15,13 @@ dependencies {
     implementation("io.quarkus:quarkus-kotlin")
     implementation("io.quarkus:quarkus-hibernate-orm-panache-kotlin")
     implementation("io.quarkus:quarkus-jdbc-postgresql")
-    implementation("io.quarkus:quarkus-narayana-jta")
+    implementation("io.quarkus:quarkus-narayana-jta")   // @Transactional domain-write + outbox-append
+    implementation("io.quarkus:quarkus-messaging-kafka") // SmallRye Reactive Messaging (internal channel until Step 7 connectors)
+    implementation("io.quarkus:quarkus-scheduler")       // @Scheduled outbox relay
+    implementation("io.quarkus:quarkus-jackson")         // ObjectMapper bean for payload (de)serialization
 
     api(project(":characters-api"))      // implements PlayerCharacters (supertype)
-    api(project(":characters-events"))   // Event<CharacterCreated/Deleted> in public API
+    api(project(":characters-events"))   // CharacterCreated/Deleted payloads (emitted via outbox relay)
     api(project(":admin-api"))           // @Produces Item (public return type)
     implementation(project(":platform"))
 }

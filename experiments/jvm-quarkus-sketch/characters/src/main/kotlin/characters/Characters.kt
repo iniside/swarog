@@ -8,14 +8,15 @@ import admin.adminapi.Table
 import characters.charactersapi.PlayerCharacters
 import characters.charactersevents.CharacterCreated
 import characters.charactersevents.CharacterDeleted
-import io.quarkus.narayana.jta.QuarkusTransaction
+import com.fasterxml.jackson.databind.ObjectMapper
 import io.quarkus.panache.common.Page
 import io.quarkus.panache.common.Sort
 import io.quarkus.runtime.StartupEvent
 import jakarta.enterprise.context.ApplicationScoped
-import jakarta.enterprise.event.Event
 import jakarta.enterprise.event.Observes
 import jakarta.enterprise.inject.Produces
+import jakarta.persistence.EntityManager
+import jakarta.transaction.Transactional
 import java.util.UUID
 import javax.sql.DataSource
 import platform.RoleConfig
@@ -28,8 +29,8 @@ import platform.RoleConfig
 @ApplicationScoped
 class CharactersModule(
     private val db: DataSource,
-    private val created: Event<CharacterCreated>,
-    private val deleted: Event<CharacterDeleted>,
+    private val em: EntityManager,
+    private val objectMapper: ObjectMapper,
     private val roleConfig: RoleConfig,
 ) : PlayerCharacters {
 
@@ -77,22 +78,34 @@ class CharactersModule(
         )
     }
 
-    /** Write committed first, event fired after — see AccountsModule.register for why programmatic tx. */
+    /** Domain row + outbox row commit in ONE transaction. `flush()` forces the INSERT so the
+     *  BIGSERIAL id is assigned before it goes into the event payload; the relay
+     *  ([CharactersOutboxRelay]) drains the outbox onto the bus. */
+    @Transactional
     fun create(playerId: UUID, name: String): Long {
         val ch = Character(playerId = playerId, name = name)
-        QuarkusTransaction.requiringNew().run { ch.persist() }
-        val id = ch.id!!   // IDENTITY id assigned by the INSERT during the transaction
-        created.fireAsync(CharacterCreated(id, playerId, name))
-            .whenComplete { _, e -> if (e != null) System.err.println("event handler failed for CharacterCreated: $e") }
+        ch.persist()
+        em.flush()   // assign the IDENTITY id before it enters the outbox payload
+        val id = ch.id!!
+        appendOutbox(CharacterCreated.TOPIC, CharacterCreated(id, playerId, name))
         return id
     }
 
+    @Transactional
     fun delete(id: Long) {
         val playerId = ownerOf(id) ?: return
-        QuarkusTransaction.requiringNew().run { Character.deleteById(id) }
+        Character.deleteById(id)
         // Integrity across modules comes from THIS event, not an FK cascade.
-        deleted.fireAsync(CharacterDeleted(id, playerId))
-            .whenComplete { _, e -> if (e != null) System.err.println("event handler failed for CharacterDeleted: $e") }
+        appendOutbox(CharacterDeleted.TOPIC, CharacterDeleted(id, playerId))
+    }
+
+    /** Insert one outbox row in the CURRENT transaction (same EntityManager, hence atomic with the
+     *  domain write). Payload is the event serialized to JSON. */
+    private fun appendOutbox(topic: String, payload: Any) {
+        em.createNativeQuery("INSERT INTO characters.outbox(topic, payload) VALUES (?1, cast(?2 as jsonb))")
+            .setParameter(1, topic)
+            .setParameter(2, objectMapper.writeValueAsString(payload))
+            .executeUpdate()
     }
 
     override fun ownerOf(characterId: Long): UUID? = Character.findById(characterId)?.playerId
