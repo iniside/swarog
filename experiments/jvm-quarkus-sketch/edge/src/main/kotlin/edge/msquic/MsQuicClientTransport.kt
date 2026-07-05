@@ -56,8 +56,12 @@ class MsQuicClientTransport(private val alpn: String = "edge") : AutoCloseable {
 
         // serverName lives on the per-connection arena (referenced through the handshake).
         val serverName = connArena.allocateFrom(host)
+        // Force IPv4 resolution: the server binds the IPv4 loopback (127.0.0.1) via a QUIC_ADDR, so a
+        // hostname like "localhost" MUST resolve to IPv4. Under UNSPEC, Windows resolves "localhost" to
+        // IPv6 (::1) first and the datagrams never reach the IPv4-only listener (fast ALPN/handshake
+        // failure). INET pins getaddrinfo to the A record, matching the server bind.
         val start = api.connectionStart(
-            clientConn.connection, configuration, Constants.QUIC_ADDRESS_FAMILY_UNSPEC, serverName, port.toShort(),
+            clientConn.connection, configuration, Constants.QUIC_ADDRESS_FAMILY_INET, serverName, port.toShort(),
         )
         check(Constants.succeeded(start)) { "ConnectionStart failed: 0x%08x".format(start) }
 

@@ -41,4 +41,11 @@ allOpen {
 // restricted calls throw at runtime. The unit tests exercise the real msquic.dll, so grant it here.
 tasks.test {
     jvmArgs("--enable-native-access=ALL-UNNAMED")
+    // The live QUIC echo test (Krok 5) needs a schannel server cert identified by thumbprint. Default
+    // to the provisioned GameBackend-Edge cert so it runs locally; a CI without a cert can override
+    // this to blank (the test then self-skips via Assumptions.assumeTrue).
+    systemProperty(
+        "edge.test.cert-thumbprint",
+        System.getProperty("edge.test.cert-thumbprint", "B41F85DE72AEBD6F2BB3BD3F0DFD7C0BCEBA7D50"),
+    )
 }
