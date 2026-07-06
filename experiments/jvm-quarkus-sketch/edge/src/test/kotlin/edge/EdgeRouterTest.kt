@@ -70,4 +70,51 @@ class EdgeRouterTest {
 
         assertArrayEquals(byteArrayOf(2), resp.payload)
     }
+
+    @Test
+    fun `a prefix handler serves any method starting with the prefix`() {
+        val router = EdgeRouter()
+        router.registerPrefix("characters.") { _ -> byteArrayOf(1) }
+
+        val resp = router.dispatch(Request(1L, "characters.list", ByteArray(0)))
+
+        assertTrue(resp.ok)
+        assertArrayEquals(byteArrayOf(1), resp.payload)
+    }
+
+    @Test
+    fun `an exact registration wins over a matching prefix`() {
+        val router = EdgeRouter()
+        router.registerPrefix("characters.") { _ -> byteArrayOf(9) }
+        router.register("characters.list") { _ -> byteArrayOf(1) }
+
+        val resp = router.dispatch(Request(1L, "characters.list", ByteArray(0)))
+
+        assertArrayEquals(byteArrayOf(1), resp.payload, "exact must shadow the prefix")
+    }
+
+    @Test
+    fun `the longest matching prefix wins`() {
+        val router = EdgeRouter()
+        router.registerPrefix("characters.") { _ -> byteArrayOf(1) }
+        router.registerPrefix("characters.admin.") { _ -> byteArrayOf(2) }
+
+        val resp = router.dispatch(Request(1L, "characters.admin.purge", ByteArray(0)))
+
+        assertArrayEquals(byteArrayOf(2), resp.payload, "the more specific (longer) prefix must win")
+    }
+
+    @Test
+    fun `a method matching no exact entry and no prefix still yields the no-such-method error`() {
+        val router = EdgeRouter()
+        router.registerPrefix("characters.") { _ -> byteArrayOf(1) }
+
+        val resp = router.dispatch(Request(1L, "inventory.list", ByteArray(0)))
+
+        assertFalse(resp.ok)
+        assertTrue(
+            resp.error?.contains("no such method: inventory.list") == true,
+            "was: ${resp.error ?: "<none>"}",
+        )
+    }
 }

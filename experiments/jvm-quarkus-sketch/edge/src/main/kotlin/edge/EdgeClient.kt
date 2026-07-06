@@ -28,8 +28,13 @@ class ConnectionClosedException(message: String, cause: Throwable? = null) : Run
  * closed with a single [lifecycleLock]: BOTH the terminal transition (set [closedCause] + snapshot &
  * clear [pending]) AND every insert (check [closedCause] + put) run inside that lock, so the lock's
  * total order over the two critical sections leaves no interleaving in between. See [onClosed] /
- * [requestWithCid] for the happens-before argument.
+ * [requestRawWithCid] (the primitive both [requestWithCid] and [requestRaw] funnel through) for the
+ * happens-before argument.
  */
+@Suppress("TooManyFunctions") // the client's surface is the protocol's surface: two request paths
+// (typed [request]/[requestWithCid] + raw byte-relay [requestRaw]/[requestRawWithCid]), plus [call],
+// [decode], [nextPush], [start], [close]. Each is a distinct, minimal protocol verb — collapsing any
+// pair would hide the typed-vs-raw distinction that is the whole point of the byte-relay addition.
 class EdgeClient(
     private val connection: EdgeConnection,
     private val codec: EdgeCodec = EdgeCodec(),
@@ -118,7 +123,26 @@ class EdgeClient(
         requestWithCid(cidGen.getAndIncrement(), method, payloadObj, timeoutMs)
 
     /** As [request] but with a caller-chosen cid — lets a test assert Response.cid == the sent cid. */
-    fun requestWithCid(cid: Long, method: String, payloadObj: Any, timeoutMs: Long = 2_000): Response {
+    fun requestWithCid(cid: Long, method: String, payloadObj: Any, timeoutMs: Long = 2_000): Response =
+        requestRawWithCid(cid, method, codec.encodePayload(payloadObj), timeoutMs)
+
+    /**
+     * The byte-relay path: sends a Request whose wire payload is [payloadBytes] VERBATIM, WITHOUT
+     * running them through [EdgeCodec.encodePayload]. Everything else (fresh cid, pending correlation,
+     * timeout, [ConnectionClosedException] on a dead link) is identical to [request].
+     *
+     * Why a distinct method: [request]/[requestWithCid] call `codec.encodePayload(payloadObj)`, which
+     * msgpack-encodes the object. Handing them an already-encoded `ByteArray` would emit a msgpack
+     * **bin** (a length-prefixed byte blob), NOT the raw bytes — so a gateway relaying an inbound
+     * payload blob through [request] would DOUBLE-encode it and the downstream `typedHandler` decode
+     * would fail. [requestRaw] puts the exact bytes on the wire so the downstream typed decoder sees
+     * the same blob the original caller produced.
+     */
+    fun requestRaw(method: String, payloadBytes: ByteArray, timeoutMs: Long = 2_000): Response =
+        requestRawWithCid(cidGen.getAndIncrement(), method, payloadBytes, timeoutMs)
+
+    /** As [requestRaw] but with a caller-chosen cid. This is the primitive both request paths funnel through. */
+    fun requestRawWithCid(cid: Long, method: String, payloadBytes: ByteArray, timeoutMs: Long = 2_000): Response {
         val future = CompletableFuture<Response>()
         // Insert under the lock and RE-CHECK the terminal state in the same critical section. If a
         // close already committed, we never add F and fail fast here; otherwise F is in [pending]
@@ -128,7 +152,7 @@ class EdgeClient(
             closedCause?.let { throw ConnectionClosedException("edge connection closed", it) }
             pending[cid] = future
         }
-        connection.send(codec.encode(Request(cid, method, codec.encodePayload(payloadObj))))
+        connection.send(codec.encode(Request(cid, method, payloadBytes)))
         return try {
             future.get(timeoutMs, TimeUnit.MILLISECONDS)
         } catch (e: ExecutionException) {

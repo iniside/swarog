@@ -1,5 +1,7 @@
 package edge
 
+import org.junit.jupiter.api.Assertions.assertArrayEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -9,6 +11,7 @@ import java.util.concurrent.CyclicBarrier
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Pure-unit tests of [EdgeClient] over a fake in-JVM [EdgeConnection] (no loopback server, no native).
@@ -90,6 +93,57 @@ class EdgeClientTest {
             assertTrue(r2.isSuccess, "the current (second) future should complete")
             assertTrue(r1.isFailure, "the overwritten (first) future never completes")
             assertTrue(r1.exceptionOrNull() is TimeoutException, "current behavior: overwritten future times out")
+        }
+    }
+
+    /** Answers the next outbound Request with an ok Response and records the Request it saw. */
+    private fun captureRequest(conn: FakeConnection): AtomicReference<Request> {
+        val captured = AtomicReference<Request>()
+        Thread {
+            val req = codec.decode(conn.sent.take()) as Request
+            captured.set(req)
+            conn.deliver(codec.encode(Response(req.cid, ok = true, payload = ByteArray(0))))
+        }.apply {
+            isDaemon = true
+            start()
+        }
+        return captured
+    }
+
+    @Test
+    fun `requestRaw puts the payload bytes on the wire byte-identically (the byte-relay path)`() {
+        val conn = FakeConnection()
+        EdgeClient(conn, codec).also { it.start() }.let { client ->
+            val raw = codec.encodePayload(ListCharactersRequest("player-7")) // an already-encoded blob
+            val captured = captureRequest(conn)
+
+            client.requestRaw("characters.list", raw, timeoutMs = 2_000)
+
+            assertArrayEquals(
+                raw,
+                captured.get().payload,
+                "requestRaw must send the payload VERBATIM so a downstream typed decoder accepts it",
+            )
+        }
+    }
+
+    @Test
+    fun `request bin-wraps a ByteArray payload — the double-encode source requestRaw avoids`() {
+        val conn = FakeConnection()
+        EdgeClient(conn, codec).also { it.start() }.let { client ->
+            val raw = codec.encodePayload(ListCharactersRequest("player-7"))
+            val captured = captureRequest(conn)
+
+            // Route the SAME already-encoded blob through request(...) — it runs encodePayload again.
+            client.request("characters.list", raw, timeoutMs = 2_000)
+
+            val onWire = captured.get().payload
+            assertFalse(raw.contentEquals(onWire), "request must NOT send a ByteArray verbatim (it re-encodes)")
+            assertArrayEquals(
+                codec.encodePayload(raw),
+                onWire,
+                "request emits msgpack-bin(raw): a length-prefixed blob, not the raw bytes — the double-encode",
+            )
         }
     }
 
