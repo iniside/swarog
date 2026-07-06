@@ -1,5 +1,7 @@
 package characters
 
+import characters.charactersapi.ListCharactersReply
+import characters.charactersapi.ListCharactersRequest
 import characters.charactersapi.OwnerOfReply
 import characters.charactersapi.OwnerOfRequest
 import edge.EdgeCodec
@@ -13,6 +15,7 @@ import io.quarkus.runtime.StartupEvent
 import jakarta.enterprise.context.ApplicationScoped
 import jakarta.enterprise.event.Observes
 import java.util.Optional
+import java.util.UUID
 import org.eclipse.microprofile.config.inject.ConfigProperty
 import platform.RoleConfig
 
@@ -64,12 +67,23 @@ class CharactersEdgeServer(
                     OwnerOfReply(found = owner != null, ownerId = owner?.toString())
                 },
             )
+            // Player-facing read (what a game client, via the gateway, actually calls). Same
+            // per-connection-worker transaction wrap as ownerOf.
+            register(
+                "characters.list",
+                codec.typedHandler<ListCharactersRequest, ListCharactersReply> { req ->
+                    val characters = QuarkusTransaction.requiringNew().call {
+                        local.charactersOf(UUID.fromString(req.playerId))
+                    }
+                    ListCharactersReply(characters)
+                },
+            )
         }
 
         val t = MsQuicServerTransport(port, thumbprint)
         EdgeServer(router, t, codec).start()
         transport = t
-        println("[characters] edge QUIC server for characters.ownerOf listening on port $port")
+        println("[characters] edge QUIC server (characters.ownerOf, characters.list) listening on port $port")
     }
 
     fun stop(@Observes ev: ShutdownEvent) {
