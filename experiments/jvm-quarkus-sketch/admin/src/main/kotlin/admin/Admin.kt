@@ -99,16 +99,8 @@ class AdminResource(
 
     /** Fan out, sort by (section, label), then slugify + DEDUPE (inventory, inventory-2, …). Ordering
      *  is the ADMIN's job — remote/local discovery order must not leak into presentation. */
-    private fun resolve(): List<Resolved> {
-        val seen = HashSet<String>()
-        return fanOut().sortedWith(compareBy({ it.section }, { it.label })).map { dto ->
-            val base = dto.label.lowercase().replace(" ", "-").ifEmpty { "item" }
-            var s = base
-            var n = 2
-            while (!seen.add(s)) { s = "$base-$n"; n++ }
-            Resolved(dto, s)
-        }
-    }
+    private fun resolve(): List<Resolved> =
+        slugify(fanOut().sortedWith(compareBy({ it.section }, { it.label })))
 
     @GET
     fun root(@Context headers: HttpHeaders): Response {
@@ -141,15 +133,16 @@ class AdminResource(
     private fun html(instance: io.quarkus.qute.TemplateInstance): Response =
         Response.ok(instance.render(), "text/html; charset=utf-8").build()
 
-    /** HTTP Basic gate. Unset ADMIN_USER = open (local only). Returns a 401 response or null. */
+    /** HTTP Basic gate. Unset ADMIN_USER = open (local only). Returns a 401 response or null. The
+     *  env-read is kept a thin wrapper over the pure [checkBasicAuth] so the decode/validate logic is
+     *  unit-testable without setting a JVM env var. */
     private fun unauthorized(headers: HttpHeaders): Response? {
-        val user = System.getenv("ADMIN_USER") ?: return null
-        val pass = System.getenv("ADMIN_PASS") ?: ""
-        val header = headers.getHeaderString("Authorization")
-        if (header != null && header.startsWith("Basic ")) {
-            val decoded = String(Base64.getDecoder().decode(header.removePrefix("Basic ")))
-            if (decoded == "$user:$pass") return null
-        }
+        val ok = checkBasicAuth(
+            authHeader = headers.getHeaderString("Authorization"),
+            expectedUser = System.getenv("ADMIN_USER"),
+            expectedPass = System.getenv("ADMIN_PASS"),
+        )
+        if (ok) return null
         return Response.status(401).header("WWW-Authenticate", "Basic realm=\"admin\"").build()
     }
 
@@ -157,4 +150,38 @@ class AdminResource(
         /** Base-URI → client cache. Class-level so it survives per-request resource instantiation. */
         private val clients = ConcurrentHashMap<String, AdminDataClient>()
     }
+}
+
+/**
+ * Slug + DEDUPE over the ALREADY-SORTED item list (lowercase, space→`-`, empty→`item`, collisions get
+ * `-2`/`-3`/…). Extracted as a pure WHOLE-LIST function — dedupe is stateful ACROSS the sorted list (the
+ * `seen` set), so a per-label helper would silently break collision numbering — so it is unit-testable
+ * without a Qute Template or CDI. Output is byte-identical to the previous inline `resolve()` loop.
+ */
+internal fun slugify(sortedItems: List<AdminItemDto>): List<AdminResource.Resolved> {
+    val seen = HashSet<String>()
+    return sortedItems.map { dto ->
+        val base = dto.label.lowercase().replace(" ", "-").ifEmpty { "item" }
+        var s = base
+        var n = 2
+        while (!seen.add(s)) { s = "$base-$n"; n++ }
+        AdminResource.Resolved(dto, s)
+    }
+}
+
+/**
+ * Pure Basic-auth decode/validate, extracted from [AdminResource.unauthorized] for testability (a unit
+ * test can exercise the malformed-header path without setting a JVM env var). Returns true when the
+ * request is authorized; `expectedUser == null` ⇒ the gate is unset ⇒ open. NOTE: faithfully preserves
+ * today's behavior — a malformed Base64 header still throws from [Base64.getDecoder]; the malformed→401
+ * fix is a later step, this seam only pins the current logic so a test can lock it before the fix.
+ */
+internal fun checkBasicAuth(authHeader: String?, expectedUser: String?, expectedPass: String?): Boolean {
+    if (expectedUser == null) return true
+    val pass = expectedPass ?: ""
+    if (authHeader != null && authHeader.startsWith("Basic ")) {
+        val decoded = String(Base64.getDecoder().decode(authHeader.removePrefix("Basic ")))
+        if (decoded == "$expectedUser:$pass") return true
+    }
+    return false
 }

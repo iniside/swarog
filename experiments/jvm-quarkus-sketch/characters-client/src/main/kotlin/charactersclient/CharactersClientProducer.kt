@@ -47,7 +47,10 @@ class CharactersClientProducer(
  * reconnect storm — a second failure means the provider is unreachable, surfaced as a distinct
  * [CharactersUnavailableException] (→ 503 at the inventory write), NOT null and NOT a false 400.
  */
-internal class EdgeRemotePlayerCharacters(target: String) : PlayerCharacters {
+internal class EdgeRemotePlayerCharacters(
+    target: String,
+    connect: ((String, Int) -> EdgeConnection)? = null,
+) : PlayerCharacters {
 
     private val host: String
     private val port: Int
@@ -59,7 +62,20 @@ internal class EdgeRemotePlayerCharacters(target: String) : PlayerCharacters {
         port = target.substring(idx + 1).toInt()
     }
 
+    // The retained native transport: constructed EXACTLY ONCE and reused across reconnects. A fresh
+    // MsQuicClientTransport per reconnect would build a new native registration each time (a leak), so
+    // the transport is a stable field and only the CONNECTION is invalidated/re-dialed on failure.
     private val transport = MsQuicClientTransport()
+
+    /**
+     * The dial boundary, injected for testability. Production leaves it null and binds it to the
+     * retained [transport] (`transport::connect`) — one transport, reused, so the native lifecycle is
+     * byte-for-byte what it was before this seam existed; a unit test passes a fake that returns an
+     * in-memory [EdgeConnection]. A nullable param (not a `= transport::connect` default) because a
+     * primary-constructor default value cannot reference the body-declared [transport] before it is
+     * initialized.
+     */
+    private val connect: (String, Int) -> EdgeConnection = connect ?: transport::connect
 
     // The lazy, invalidatable connection cache. The double-checked-locking + invalidation that used to
     // live inline here is now [CachedResource] (in `edge`), so the tricky concurrency is one small
@@ -69,7 +85,7 @@ internal class EdgeRemotePlayerCharacters(target: String) : PlayerCharacters {
     // CONNECTION (as before), which unblocks the client's reader.
     private val cache = CachedResource<EdgeSession>(
         create = {
-            val conn = transport.connect(host, port)
+            val conn = connect(host, port)
             EdgeSession(conn, EdgeClient(conn).apply { start() })
         },
         close = { it.connection.close() },
