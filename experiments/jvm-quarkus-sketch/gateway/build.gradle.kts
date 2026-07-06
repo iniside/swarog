@@ -17,6 +17,20 @@ dependencies {
     implementation(enforcedPlatform("$quarkusPlatformGroupId:$quarkusPlatformArtifactId:$quarkusPlatformVersion"))
     implementation("io.quarkus:quarkus-kotlin")
     implementation("io.quarkus:quarkus-arc")   // @ApplicationScoped + @Observes StartupEvent + @ConfigProperty
+    // @Route (reactive routes; io.quarkus.vertx.web.Route) + the injectable Vertx bean. NOT
+    // `quarkus-vertx-http` — that artifact hosts the HTTP server internals but does not carry the
+    // `io.quarkus.vertx.web` annotation package; the older `quarkus-vertx-web` artifact id was renamed
+    // to `quarkus-reactive-routes` for Quarkus 3.x (verified against the resolved 3.37.1 jars — neither
+    // `quarkus-vertx-http` nor its deployment-spi contains an `io/quarkus/vertx/web/` package).
+    implementation("io.quarkus:quarkus-reactive-routes")
+
+    // HTTP reverse-proxy side (Step 4). PINNED to 4.5.28 EXACTLY — the Vert.x line Quarkus 3.37.1
+    // bundles as its core (`quarkus-vertx-http` -> `quarkus-vertx` -> vertx-core 4.5.x); this artifact
+    // is NOT in the Quarkus BOM (the enforcedPlatform above cannot see/override it), and vertx-http-proxy
+    // 5.x is built against Vert.x 5 core, which clashes with Quarkus's bundled Vert.x 4.5 core at
+    // augmentation time — the exact mismatch class this repo hit before. Do not bump without re-checking
+    // the Quarkus 3.37.1 BOM's vertx-core version.
+    implementation("io.vertx:vertx-http-proxy:4.5.28")
 
     implementation(project(":edge"))      // EdgeRouter/EdgeServer/EdgeClient/ForwardFailedException + msquic transports
     implementation(project(":platform"))  // RoleConfig (role-gate the gateway start)
