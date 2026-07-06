@@ -2,23 +2,29 @@
 <#
 .SYNOPSIS
     Build ONCE, deploy the jvm-quarkus-sketch either as a single-process monolith or as the
-    microservices split (process A = characters/accounts, process B = inventory/admin).
+    microservices split (process A = characters/accounts, process B = inventory/admin, process C =
+    gateway — the external QUIC router + HTTP reverse-proxy front door).
 
 .DESCRIPTION
     Per-service split is now PACKAGING, not profiles: each topology is its OWN fast-jar that links only
     its own modules (mirroring the Go backend's cmd/<svc> entrypoints).
       * monolith      = app/build/quarkus-app/quarkus-run.jar                 (all impls, local producers, roles=all)
-      * characters-service/build/quarkus-app/quarkus-run.jar   = split process A (accounts+characters, edge QUIC server)
-      * inventory-service/build/quarkus-app/quarkus-run.jar    = split process B (inventory+admin, characters-client remote producer)
+      * characters-service/build/quarkus-app/quarkus-run.jar   = split process A (accounts+characters, edge QUIC server :9100)
+      * inventory-service/build/quarkus-app/quarkus-run.jar    = split process B (inventory+admin, characters-client remote
+        producer, ALSO an edge QUIC server for inventory.list on :9101)
+      * gateway-service/build/quarkus-app/quarkus-run.jar      = split process C, the EXTERNAL front door: a pure QUIC
+        prefix router (characters.* -> A:9100, inventory.* -> B:9101) + HTTP reverse-proxy (/admin,/characters,/inventory
+        -> the owning service's HTTP port). No feature impls, no Stork.
     Each service jar carries its OWN baked-in application.properties (the old %characters / %inventory
     profiles). Runtime coordinates (ports + INVENTORY_ADDR/CHARACTERS_ADDR/CHARACTERS_EDGE_ADDR/
-    EDGE_CERT_THUMBPRINT) are still env vars fed to `java -jar`. Async events are broker-less HTTP
-    fanout (the characters relay POSTs to the inventory sink). No broker.
+    INVENTORY_EDGE_ADDR/ADMIN_ADDR/EDGE_CERT_THUMBPRINT) are still env vars fed to `java -jar`. Async
+    events are broker-less HTTP fanout (the characters relay POSTs to the inventory sink). No broker.
 
 .PARAMETER Mode
     'monolith' (default) = 1 JVM (app jar), roles=all, port 8090.
-    'microservices'      = 2 JVMs per $topology below (A=characters-service on 8080 + QUIC 9100,
-                           B=inventory-service on 8081). No broker.
+    'microservices'      = 3 JVMs per $topology below (A=characters-service on 8080 + QUIC 9100,
+                           B=inventory-service on 8081 + QUIC 9101, C=gateway-service on 8082 + QUIC
+                           9200, the external front door). No broker.
 
 .PARAMETER SkipBuild   Reuse the existing quarkus-run.jar (skip `gradlew quarkusBuild`).
 .PARAMETER SkipInfra   Do not touch docker compose (assume Postgres already up).
@@ -30,7 +36,7 @@
 
 .EXAMPLE
     ./install.ps1                         # monolith on localhost:8090
-    ./install.ps1 -Mode microservices     # A=8090 (characters) + B=8091 (inventory/admin), no broker
+    ./install.ps1 -Mode microservices     # A=8080 (characters) + B=8081 (inventory/admin) + C=8082 (gateway), no broker
     ./install.ps1 -Teardown               # stop whatever a prior run started
 #>
 [CmdletBinding()]
@@ -59,10 +65,12 @@ $jar = Join-Path $root $monolithJar   # readiness/existence check for monolith m
 
 # --- Topology: process -> its OWN fast-jar (split mode only). Each service jar bakes in its roles +
 #     Stork/admin-data/edge config; here we only supply the runtime coordinates (ports +
-#     INVENTORY_ADDR/CHARACTERS_ADDR/CHARACTERS_EDGE_ADDR/EDGE_CERT_THUMBPRINT). No QUARKUS_PROFILE. ---
+#     INVENTORY_ADDR/CHARACTERS_ADDR/CHARACTERS_EDGE_ADDR/INVENTORY_EDGE_ADDR/ADMIN_ADDR/
+#     EDGE_CERT_THUMBPRINT). No QUARKUS_PROFILE. ---
 $topology = @(
-    @{ name = 'characters'; jar = 'characters-service/build/quarkus-app/quarkus-run.jar'; httpPort = 8080 }  # A: edge QUIC server (characters.ownerOf, :9100) + outbox HTTP fanout -> B + admin-data REST
-    @{ name = 'inventory';  jar = 'inventory-service/build/quarkus-app/quarkus-run.jar';  httpPort = 8081 }  # B: event-sink consumer + edge QUIC client -> A (:9100) + admin fan-out
+    @{ name = 'characters'; jar = 'characters-service/build/quarkus-app/quarkus-run.jar'; httpPort = 8080 }  # A: edge QUIC server (characters.ownerOf + characters.list, :9100) + outbox HTTP fanout -> B + admin-data REST
+    @{ name = 'inventory';  jar = 'inventory-service/build/quarkus-app/quarkus-run.jar';  httpPort = 8081 }  # B: event-sink consumer + edge QUIC client -> A (:9100) + edge QUIC server (inventory.list, :9101) + admin fan-out
+    @{ name = 'gateway';    jar = 'gateway-service/build/quarkus-app/quarkus-run.jar';    httpPort = 8082 }  # C: external front door — QUIC prefix router (characters.*->A:9100, inventory.*->B:9101, :9200) + HTTP reverse-proxy (/admin,/characters,/inventory -> A/B)
 )
 
 # ---------------------------------------------------------------------------------------------------
@@ -203,8 +211,8 @@ if (-not $SkipBuild) {
         if ($LASTEXITCODE -ne 0) { throw "gradlew :app:quarkusBuild failed (exit $LASTEXITCODE)." }
     }
     else {
-        Write-Host "-- Building services (gradlew :characters-service:quarkusBuild :inventory-service:quarkusBuild) --" -ForegroundColor Cyan
-        & (Join-Path $root 'gradlew.bat') ':characters-service:quarkusBuild' ':inventory-service:quarkusBuild'
+        Write-Host "-- Building services (gradlew :characters-service:quarkusBuild :inventory-service:quarkusBuild :gateway-service:quarkusBuild) --" -ForegroundColor Cyan
+        & (Join-Path $root 'gradlew.bat') ':characters-service:quarkusBuild' ':inventory-service:quarkusBuild' ':gateway-service:quarkusBuild'
         if ($LASTEXITCODE -ne 0) { throw "gradlew service quarkusBuild failed (exit $LASTEXITCODE)." }
     }
 }
@@ -250,9 +258,10 @@ if ($Mode -eq 'monolith') {
 }
 else {
     Write-Host "-- Launching microservices split --" -ForegroundColor Cyan
-    # The edge QUIC server (process A, characters.ownerOf on :9100) needs a CurrentUser-store cert;
-    # ensure-cert.ps1 is idempotent (reuses "GameBackend-Edge" if present) and prints ONLY the
-    # thumbprint as its last stdout line (status goes to Write-Host).
+    # The edge QUIC servers (process A characters.ownerOf/characters.list :9100, process B
+    # inventory.list :9101, process C the gateway's own external QUIC front door :9200) all need a
+    # CurrentUser-store cert; ensure-cert.ps1 is idempotent (reuses "GameBackend-Edge" if present) and
+    # prints ONLY the thumbprint as its last stdout line (status goes to Write-Host).
     Write-Host "-- Ensuring edge QUIC cert --" -ForegroundColor Cyan
     $thumb = (& (Join-Path $root 'scripts/ensure-cert.ps1') | Select-Object -Last 1)
     Write-Host "  cert thumbprint: $thumb"
@@ -265,17 +274,34 @@ else {
         }
         # Process A (characters-service) POSTs its outbox events to process B's inventory sink;
         # INVENTORY_ADDR redirects the baked events.subscribers.* URLs from the default to B (:8081). It
-        # also runs the edge QUIC server for characters.ownerOf on :9100, secured by EDGE_CERT_THUMBPRINT.
+        # also runs the edge QUIC server for characters.ownerOf/characters.list on :9100, secured by
+        # EDGE_CERT_THUMBPRINT.
         if ($spec.name -eq 'characters') {
             $envHash['INVENTORY_ADDR'] = 'localhost:8081'
             $envHash['EDGE_CERT_THUMBPRINT'] = $thumb
         }
         # Process B (inventory-service) reaches process A over Stork for admin fan-out REST
         # (CHARACTERS_ADDR feeds the static Stork address-list) AND dials A's edge QUIC server directly
-        # for the sync characters.ownerOf capability (CHARACTERS_EDGE_ADDR, :9100).
+        # for the sync characters.ownerOf capability (CHARACTERS_EDGE_ADDR, :9100). It is ALSO now an
+        # edge QUIC SERVER itself (InventoryEdgeServer, inventory.list on :9101), so it needs the same
+        # EDGE_CERT_THUMBPRINT process A uses (it was not previously required here, pre-gateway).
         if ($spec.name -eq 'inventory') {
             $envHash['CHARACTERS_ADDR'] = 'localhost:8080'
             $envHash['CHARACTERS_EDGE_ADDR'] = 'localhost:9100'
+            $envHash['EDGE_CERT_THUMBPRINT'] = $thumb
+        }
+        # Process C (gateway-service) is the external front door: its OWN QUIC listener (players dial
+        # this, :9200) needs EDGE_CERT_THUMBPRINT; it byte-relays characters.*/inventory.* to A/B's edge
+        # QUIC servers (CHARACTERS_EDGE_ADDR/INVENTORY_EDGE_ADDR) and reverse-proxies HTTP to A/B's HTTP
+        # ports (CHARACTERS_ADDR/INVENTORY_ADDR/ADMIN_ADDR — admin is hosted on B, so ADMIN_ADDR = B's
+        # HTTP address).
+        if ($spec.name -eq 'gateway') {
+            $envHash['EDGE_CERT_THUMBPRINT'] = $thumb
+            $envHash['CHARACTERS_EDGE_ADDR'] = 'localhost:9100'
+            $envHash['INVENTORY_EDGE_ADDR'] = 'localhost:9101'
+            $envHash['CHARACTERS_ADDR'] = 'localhost:8080'
+            $envHash['INVENTORY_ADDR'] = 'localhost:8081'
+            $envHash['ADMIN_ADDR'] = 'localhost:8081'
         }
 
         $proc = Start-Jvm -JavaExe $javaExe -LogName $spec.name -JarPath $spec.jar -EnvHash $envHash
@@ -289,8 +315,9 @@ $pidRecords = $launched | ForEach-Object { @{ name = $_.name; pid = $_.Process.I
 $pidRecords | ConvertTo-Json -AsArray | Set-Content -Path $pidsFile -Encoding utf8
 
 # --- Readiness phase -------------------------------------------------------------------------------
-# In split mode process B depends on A (edge QUIC/admin), so poll A first — the $launched order already
-# has A ('characters') before B ('inventory'), matching $topology.
+# In split mode process B depends on A (edge QUIC/admin) and process C (gateway) depends on both A and
+# B being reachable to route to, so poll in dependency order — the $launched order already has A
+# ('characters') before B ('inventory') before C ('gateway'), matching $topology.
 Write-Host "-- Readiness (/q/health/ready) --" -ForegroundColor Cyan
 foreach ($entry in $launched) {
     Write-Host "  waiting for $($entry.name) on :$($entry.httpPort)..."
@@ -310,9 +337,11 @@ if ($Mode -eq 'monolith') {
     Write-Host "  Characters: POST http://localhost:8090/characters?name=Aria"
 }
 else {
-    Write-Host "  Process A (characters-service): http://localhost:8080   (POST /characters, edge QUIC ownerOf server :9100, /admin-data/characters, outbox POSTs to B)"
-    Write-Host "  Process B (inventory-service):  http://localhost:8081   (/events sink, edge QUIC ownerOf client -> A:9100, /admin fans out to A)"
+    Write-Host "  Process A (characters-service): http://localhost:8080   (POST /characters, edge QUIC ownerOf+list server :9100, /admin-data/characters, outbox POSTs to B)"
+    Write-Host "  Process B (inventory-service):  http://localhost:8081   (/events sink, edge QUIC ownerOf client -> A:9100, edge QUIC list server :9101, /admin fans out to A)"
+    Write-Host "  Process C (gateway-service):    http://localhost:8082   (external front door — QUIC router :9200 for characters.*/inventory.*, HTTP reverse-proxy /admin,/characters,/inventory -> A/B)"
     Write-Host "  Drive the flow: POST http://localhost:8080/characters?name=Aria  -> A POSTs the event to B's sink, which grants a starter"
+    Write-Host "  Player gateway smoke: dial QUIC localhost:9200 and call characters.list / inventory.list -> routed to A / B respectively"
 }
 Write-Host "  Logs:       run/*.out.log / run/*.err.log"
 Write-Host "  Tear down:  ./install.ps1 -Teardown"
