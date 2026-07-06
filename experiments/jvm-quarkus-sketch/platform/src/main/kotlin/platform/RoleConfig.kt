@@ -14,10 +14,16 @@ import org.eclipse.microprofile.config.inject.ConfigProperty
  */
 @ApplicationScoped
 class RoleConfig(
-    @ConfigProperty(name = "roles", defaultValue = "all") private val roles: Set<String>,
+    @ConfigProperty(name = "roles", defaultValue = "all") roles: Set<String>,
 ) {
-    fun isActive(module: String): Boolean = "all" in roles || module in roles
+    // Case-insensitive: `ROLES=ALL`, `All`, and `all` must all mean the monolith, and `Inventory`
+    // must gate the same module as `inventory`. Normalizing the configured set (and lowercasing the
+    // queried module below) removes the silent ops footgun where an upper/mixed-case value activated
+    // NOTHING because membership was compared case-sensitively.
+    private val normalized: Set<String> = roles.mapTo(HashSet(roles.size)) { it.lowercase() }
+
+    fun isActive(module: String): Boolean = "all" in normalized || module.lowercase() in normalized
 
     /** True for the monolith (roles=all, everything co-located) — no split process. */
-    fun isMonolith(): Boolean = "all" in roles
+    fun isMonolith(): Boolean = "all" in normalized
 }

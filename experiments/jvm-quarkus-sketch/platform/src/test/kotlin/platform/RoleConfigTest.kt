@@ -24,4 +24,26 @@ class RoleConfigTest {
         assertFalse(cfg.isActive("inventory"))
         assertFalse(cfg.isMonolith())
     }
+
+    @Test
+    fun `roles=ALL uppercase activates every module and is still the monolith`() {
+        // §Bugs #6 regression: a case-sensitive membership check made `ROLES=ALL` (or any non-lowercase
+        // spelling) activate NOTHING — a silent ops footgun. Normalization must treat it as the monolith.
+        val cfg = RoleConfig(setOf("ALL"))
+        assertTrue(cfg.isActive("inventory"))
+        assertTrue(cfg.isActive("characters"))
+        assertTrue(cfg.isMonolith())
+    }
+
+    @Test
+    fun `a mixed-case scoped set is matched case-insensitively`() {
+        val cfg = RoleConfig(setOf("Characters", "ACCOUNTS"))
+        // Configured value case does not matter...
+        assertTrue(cfg.isActive("characters"))
+        assertTrue(cfg.isActive("accounts"))
+        // ...nor does the queried module's case.
+        assertTrue(cfg.isActive("CHARACTERS"))
+        assertFalse(cfg.isActive("inventory"))
+        assertFalse(cfg.isMonolith())
+    }
 }

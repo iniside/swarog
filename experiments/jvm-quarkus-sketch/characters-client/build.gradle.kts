@@ -29,3 +29,12 @@ dependencies {
 allOpen {
     annotation("jakarta.enterprise.context.ApplicationScoped")
 }
+
+// EdgeRemotePlayerCharacters eagerly constructs the retained `MsQuicClientTransport` field (native
+// msquic load + FFM upcall stubs) even when the seam-#1 `connect` boundary is a test fake and the
+// native transport is never dialed. Those restricted native-access calls throw on JDK 22+ unless the
+// module is granted access — so the unit tests that construct the remote adapter need this flag. The
+// vendored msquic.dll rides transitively from the `:edge` dependency's resources; no extra dep needed.
+tasks.test {
+    jvmArgs("--enable-native-access=ALL-UNNAMED")
+}

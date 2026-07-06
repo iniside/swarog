@@ -38,7 +38,7 @@ class InventoryAdminData(
         ),
         table = Table(
             headers = listOf("Owner", "ID", "Item", "Qty"),
-            rows = recentRows(20).map { h ->
+            rows = rowsByOwner(20).map { h ->
                 listOf(
                     Cell(h.id.ownerType.lowercase(), badge = true),
                     Cell(h.id.ownerId, mono = true),
@@ -54,7 +54,10 @@ class InventoryAdminData(
         (em.createNativeQuery("SELECT count(*) FROM (SELECT DISTINCT owner_type, owner_id FROM inventory.holdings) t")
             .singleResult as Number).toLong()
 
-    private fun recentRows(limit: Int): List<Holding> =
+    /** The first [limit] holdings ordered by (owner_id, item) — NOT temporal. There is no timestamp
+     *  column on `holdings`, so this is a deterministic owner-grouped slice for the dashboard, not a
+     *  "most recent" feed (the previous `recentRows` name was a misnomer). */
+    private fun rowsByOwner(limit: Int): List<Holding> =
         Holding.findAll(Sort.by("id.ownerId").and("id.item")).page(Page.ofSize(limit)).list()
 }
 
