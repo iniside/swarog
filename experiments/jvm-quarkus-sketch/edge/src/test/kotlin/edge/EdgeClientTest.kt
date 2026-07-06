@@ -5,15 +5,18 @@ import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.CyclicBarrier
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
 
 /**
  * Pure-unit tests of [EdgeClient] over a fake in-JVM [EdgeConnection] (no loopback server, no native).
- * Locks the CURRENT behavior of the demux/correlation core, including two known-buggy edges that the
- * deferred concurrency fix (§Bugs #2) will later change: a duplicate cid overwrites the first pending
- * future (which then never completes), and closing the connection does NOT unblock an in-flight request.
+ * Locks the demux/correlation core AND the §Bugs #2 connection-death fix: a call in flight when the
+ * connection dies now fails FAST with a [ConnectionClosedException] (not a slow [TimeoutException]),
+ * and a `requestWithCid` racing a concurrent `close()` always resolves — never orphaned. One remaining
+ * known edge is still pinned: a duplicate cid overwrites the first pending future (that overwritten
+ * future is no longer in the map, so the death-drain can't reach it, and it times out as before).
  */
 class EdgeClientTest {
 
@@ -121,30 +124,92 @@ class EdgeClientTest {
     }
 
     @Test
-    fun `closing the connection does NOT unblock a pending request today (locks buggy behavior)`() {
-        // §Bugs #2 (DEFERRED FIX): a request in flight when the connection dies SHOULD fail fast. Today
-        // the reader thread just sees receive()==null and exits WITHOUT failing pending futures, so the
-        // call hangs until its own timeout. This test pins that current behavior; the fix is a separate
-        // reviewed step (do NOT "fix" it here).
+    fun `a pending request fails FAST with ConnectionClosedException when the peer closes`() {
+        // §Bugs #2 (FIXED): a request in flight when the connection dies must fail fast, NOT hang until
+        // its own timeout. The reader sees receive()==null, sets the terminal state and drains pending,
+        // so the call unblocks within milliseconds of the close — well under the 2s call timeout.
         val conn = FakeConnection()
         EdgeClient(conn, codec).also { it.start() }.let { client ->
-            val timeoutMs = 300L
+            val timeoutMs = 2_000L
             val started = System.nanoTime()
             val call = CompletableFuture.supplyAsync {
                 runCatching { client.request("slow.method", ListCharactersRequest("p"), timeoutMs) }
             }
             waitUntilSentCount(conn, 1)
-            Thread.sleep(50) // close ~50ms in — a would-be fix should unblock here; today it does not
+            Thread.sleep(50) // close ~50ms in — the fix must unblock here, long before the 2s timeout
             conn.close()
 
             val result = call.get(2, TimeUnit.SECONDS)
             val elapsedMs = (System.nanoTime() - started) / 1_000_000
-            assertTrue(result.isFailure)
+            assertTrue(result.isFailure, "a call in flight at close must fail, not return a Response")
             assertTrue(
-                result.exceptionOrNull() is TimeoutException,
-                "current behavior: the pending call times out rather than failing on close",
+                result.exceptionOrNull() is ConnectionClosedException,
+                "must fail with ConnectionClosedException, not ${result.exceptionOrNull()}",
             )
-            assertTrue(elapsedMs >= timeoutMs - 60, "close at ~50ms must NOT unblock early; elapsed=$elapsedMs ms")
+            assertTrue(
+                elapsedMs < 500,
+                "close at ~50ms must unblock the call FAST (not wait out the 2s timeout); elapsed=$elapsedMs ms",
+            )
+        }
+    }
+
+    @Test
+    fun `close() fails an in-flight request FAST with ConnectionClosedException`() {
+        val conn = FakeConnection()
+        EdgeClient(conn, codec).also { it.start() }.let { client ->
+            val started = System.nanoTime()
+            val call = CompletableFuture.supplyAsync {
+                runCatching { client.request("slow.method", ListCharactersRequest("p"), timeoutMs = 2_000) }
+            }
+            waitUntilSentCount(conn, 1)
+            client.close()
+
+            val result = call.get(2, TimeUnit.SECONDS)
+            val elapsedMs = (System.nanoTime() - started) / 1_000_000
+            assertTrue(result.isFailure)
+            assertTrue(result.exceptionOrNull() is ConnectionClosedException, "was ${result.exceptionOrNull()}")
+            assertTrue(elapsedMs < 500, "close() must unblock the pending call fast; elapsed=$elapsedMs ms")
+        }
+    }
+
+    @Test
+    fun `a request racing a concurrent close ALWAYS resolves and never hangs`() {
+        // The add-after-drain guard's proof. Each iteration races a requestWithCid against close() from
+        // two threads released together. A correct client fails the call FAST with
+        // ConnectionClosedException; the orphan bug (insert slips past the drain unfailed) would instead
+        // let the call sit until its own timeout — which we treat as FAILURE here. The per-call timeout
+        // is generous (1.5s) precisely so that under the fix it is NEVER reached (close fails the call in
+        // microseconds); a regression therefore either times out (→ TimeoutException, asserted-against)
+        // or hangs past the 4s join (→ test fails). No inbound reply is ever delivered, so the ONLY
+        // correct outcome is the connection-closed failure.
+        val iterations = 300
+        repeat(iterations) { i ->
+            val conn = FakeConnection()
+            val client = EdgeClient(conn, codec).also { it.start() }
+            val barrier = CyclicBarrier(2)
+            val outcome = CompletableFuture<Result<Response>>()
+
+            val caller = Thread {
+                barrier.await()
+                outcome.complete(runCatching { client.request("m", ListCharactersRequest("p"), timeoutMs = 1_500) })
+            }.apply { isDaemon = true }
+            val closer = Thread {
+                barrier.await()
+                client.close()
+            }.apply { isDaemon = true }
+            caller.start()
+            closer.start()
+
+            val result = try {
+                outcome.get(4, TimeUnit.SECONDS)
+            } catch (e: TimeoutException) {
+                throw AssertionError("iteration $i HUNG: the racing call never resolved within 4s", e)
+            }
+            val err = result.exceptionOrNull()
+            assertTrue(
+                result.isFailure && err is ConnectionClosedException,
+                "iteration $i must fail with ConnectionClosedException (orphaned call would time out); was $err",
+            )
         }
     }
 }

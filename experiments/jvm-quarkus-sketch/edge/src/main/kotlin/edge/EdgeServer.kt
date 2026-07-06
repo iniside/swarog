@@ -37,7 +37,8 @@ class EdgeServer(
             Thread {
                 while (true) {
                     val frame = connection.receive() ?: break
-                    when (val msg = codec.decode(frame)) {
+                    val msg = decodeOrDrop(frame) ?: continue
+                    when (msg) {
                         is Request -> connection.send(codec.encode(router.dispatch(msg)))
                         is Response, is Push -> Unit // server does not act on peer responses/pushes
                     }
@@ -49,4 +50,19 @@ class EdgeServer(
             }
         }
     }
+
+    @Suppress("TooGenericExceptionCaught") // deliberate frame-boundary guard: codec.decode over a
+    // malformed/corrupt frame from a client throws various Jackson/IO/IAE types. Previously that
+    // escaped UNCAUGHT into the daemon reader thread, silently killing this connection's whole
+    // service loop with zero diagnostics. Frames are independent (the transport hands whole messages),
+    // so we LOG the bad frame and CONTINUE serving the connection rather than tear it down over one
+    // corrupt message — a single garbage frame must not become a per-connection DoS. Logging (not a
+    // silent swallow) keeps the failure observable.
+    private fun decodeOrDrop(frame: ByteArray): EdgeMessage? =
+        try {
+            codec.decode(frame)
+        } catch (e: Exception) {
+            System.err.println("[edge-server-conn] dropping undecodable frame (${frame.size} bytes): $e")
+            null
+        }
 }
