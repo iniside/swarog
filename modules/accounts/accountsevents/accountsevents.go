@@ -3,7 +3,7 @@
 // accounts implementation. Depends only on the core foundation.
 package accountsevents
 
-import "gamebackend/core"
+import "gamebackend/bus"
 
 // PlayerRegistered fires the first time an identity provisions a new player —
 // for any provider (dev today, epic/steam later). It carries our product-scoped
@@ -15,4 +15,4 @@ type PlayerRegistered struct {
 }
 
 // PlayerRegisteredEvent binds the topic to its payload in one place.
-var PlayerRegisteredEvent = core.Define[PlayerRegistered]("player.registered")
+var PlayerRegisteredEvent = bus.Define[PlayerRegistered]("player.registered")

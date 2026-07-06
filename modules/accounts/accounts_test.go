@@ -20,7 +20,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	_ "github.com/jackc/pgx/v5/stdlib"
 
-	"gamebackend/core"
+	"gamebackend/bus"
 )
 
 func testLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
@@ -260,7 +260,7 @@ func TestEpicOAuthLinkFlow(t *testing.T) {
 		authorizeURL: "http://localhost/authorize", tokenURL: tokenSrv.URL,
 		verifier: v, httpc: tokenSrv.Client(), states: map[string]oauthState{},
 	}
-	m := &Module{store: s, log: testLogger(), bus: core.NewBus(testLogger()), epic: v, epicOAuth: o}
+	m := &Module{store: s, log: testLogger(), bus: bus.NewBus(testLogger()), epic: v, epicOAuth: o}
 
 	// a logged-in dev player to link onto
 	hash, _ := hashPassword("pw")

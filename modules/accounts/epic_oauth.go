@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"gamebackend/core"
+	"gamebackend/bus"
 	"gamebackend/modules/accounts/accountsevents"
 )
 
@@ -185,7 +185,7 @@ func (m *Module) handleEpicCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if created {
-		core.Emit(m.bus, accountsevents.PlayerRegisteredEvent, accountsevents.PlayerRegistered{
+		bus.Emit(m.bus, accountsevents.PlayerRegisteredEvent, accountsevents.PlayerRegistered{
 			PlayerID: p.ID, DisplayName: p.DisplayName, Provider: "epic",
 		})
 	}

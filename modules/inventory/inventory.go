@@ -13,19 +13,25 @@ import (
 	"os"
 	"strings"
 
-	"gamebackend/core"
+	"gamebackend/bus"
+	"gamebackend/lifecycle"
 	"gamebackend/modules/admin/adminapi"
 	"gamebackend/modules/characters/charactersevents"
+	"gamebackend/registry"
 )
 
 const starterItem = "starter_sword"
 
+// accountsSvc and charactersSvc are the consumer-defined slices we depend on.
+// Both return an error so a transport failure (the provider hosted in a peer
+// process, reached over the QUIC edge) surfaces as 503 rather than a false 401
+// or 404. The local, co-hosted implementations return a nil error.
 type accountsSvc interface {
-	VerifySession(ctx context.Context, token string) (playerID string, ok bool)
+	VerifySession(ctx context.Context, token string) (playerID string, ok bool, err error)
 }
 
 type charactersSvc interface {
-	OwnerOf(ctx context.Context, characterID string) (playerID string, ok bool)
+	OwnerOf(ctx context.Context, characterID string) (playerID string, ok bool, err error)
 }
 
 type Module struct {
@@ -35,8 +41,8 @@ type Module struct {
 	characters charactersSvc
 }
 
-func (*Module) Name() string        { return "inventory" }
-func (*Module) DependsOn() []string { return []string{"accounts", "characters"} }
+func (*Module) Name() string       { return "inventory" }
+func (*Module) Requires() []string { return []string{"accounts", "characters"} }
 
 const schemaDDL = `
 CREATE SCHEMA IF NOT EXISTS inventory;
@@ -59,22 +65,49 @@ CREATE TABLE IF NOT EXISTS inventory.holdings (
 	quantity   int  NOT NULL CHECK (quantity >= 0),
 	PRIMARY KEY (owner_type, owner_id, item_id)
 );
-CREATE INDEX IF NOT EXISTS holdings_owner_idx ON inventory.holdings(owner_type, owner_id);`
+CREATE INDEX IF NOT EXISTS holdings_owner_idx ON inventory.holdings(owner_type, owner_id);
+
+-- Inbox: idempotency ledger for the synchronous event sink. event_id is the
+-- relay's stable key (<schema>:<outbox.id>); a duplicate delivery conflicts and
+-- is a committed no-op, so the effect runs at most once.
+CREATE TABLE IF NOT EXISTS inventory.inbox (
+	event_id     text        PRIMARY KEY,
+	processed_at timestamptz NOT NULL DEFAULT now()
+);`
 
 func (*Module) Migrate(_ context.Context, db *sql.DB) error {
 	_, err := db.Exec(schemaDDL)
 	return err
 }
 
-func (m *Module) Init(ctx *core.Context) error {
-	m.log = ctx.Log
+// Register constructs the store-backed service and offers it to other modules.
+// It runs in Build's phase 1, before any Init, so a dependent's Require resolves
+// regardless of registration order. It touches only ctx.DB (available now); the
+// service closes over m.store alone, never a Required dependency.
+func (m *Module) Register(ctx *lifecycle.Context) error {
 	m.store = &store{db: ctx.DB, log: ctx.Log}
-	m.accounts = ctx.Require("accounts").(accountsSvc)
-	m.characters = ctx.Require("characters").(charactersSvc)
+	registry.Provide(ctx.Registry, "inventory", &service{store: m.store})
+	return nil
+}
 
-	// React to character lifecycle — integrity without a cross-module FK.
-	core.On(ctx.Bus, charactersevents.CreatedEvent, m.onCharacterCreated)
-	core.On(ctx.Bus, charactersevents.DeletedEvent, m.onCharacterDeleted)
+func (m *Module) Init(ctx *lifecycle.Context) error {
+	m.log = ctx.Log
+	m.accounts = registry.Require[accountsSvc](ctx.Registry, "accounts")
+	m.characters = registry.Require[charactersSvc](ctx.Registry, "characters")
+
+	// React to character lifecycle — integrity without a cross-module FK. In the
+	// monolith/co-located topology characters emits on the in-process bus and
+	// these fire; in a split there is no local publisher, so the synchronous sink
+	// (/events/*) drives the same effects instead. Exactly one path per topology.
+	bus.On(ctx.Bus, charactersevents.CreatedEvent, m.onCharacterCreated)
+	bus.On(ctx.Bus, charactersevents.DeletedEvent, m.onCharacterDeleted)
+
+	// Synchronous event sink — the cross-process path. The relay in the peer that
+	// hosts characters POSTs here; the handler dedups (inbox) and runs the effect
+	// INSIDE its tx, returning 200 only AFTER the effect commits (B1). Registered
+	// always (harmless in the monolith: nothing POSTs to it there).
+	ctx.Mux.HandleFunc("POST /events/character-created", m.handleCharacterCreatedEvent)
+	ctx.Mux.HandleFunc("POST /events/character-deleted", m.handleCharacterDeletedEvent)
 
 	ctx.Mux.HandleFunc("GET /inventory/me", m.handleMine)
 	ctx.Mux.HandleFunc("GET /inventory/character/{id}", m.handleCharacter)
@@ -84,42 +117,136 @@ func (m *Module) Init(ctx *core.Context) error {
 		ctx.Mux.HandleFunc("POST /inventory/me/grant", m.handleGrant)
 	}
 
-	ctx.Provide("inventory", &service{store: m.store})
-	ctx.Contribute(adminapi.Slot, adminapi.Item{Section: "Game Content", Label: "Inventory", Render: m.adminSection})
+	// The inventory service was Provided in Register (phase 1); m.store is set.
+	ctx.Contribute(adminapi.Slot, adminapi.Item{ID: adminItemID, Section: adminSectionName, Label: adminLabel, Render: m.adminSection})
+	// GET /admin-data/inventory: the same content over HTTP for a remote admin.
+	ctx.Mux.HandleFunc("GET /admin-data/"+adminItemID, m.handleAdminData)
 	return nil
 }
 
-// onCharacterCreated gives a brand-new character a starter item.
+// grantStarter gives a brand-new character its starter item. q is either the DB
+// pool (bus path, best-effort) or the sink's tx (atomic with inbox dedup).
+func (m *Module) grantStarter(ctx context.Context, q rowQuerier, characterID string) error {
+	return m.store.grantExec(ctx, q, Owner{Type: "character", ID: characterID}, starterItem, 1)
+}
+
+// wipeCharacter removes a deleted character's holdings. Same querier contract as
+// grantStarter — shared by the bus handler and the synchronous sink.
+func (m *Module) wipeCharacter(ctx context.Context, q rowQuerier, characterID string) error {
+	_, err := m.store.clearOwnerExec(ctx, q, Owner{Type: "character", ID: characterID})
+	return err
+}
+
+// onCharacterCreated (in-process bus path) grants the starter item best-effort.
 func (m *Module) onCharacterCreated(e charactersevents.Created) {
-	if err := m.store.grant(context.Background(), Owner{Type: "character", ID: e.CharacterID}, starterItem, 1); err != nil {
+	if err := m.grantStarter(context.Background(), m.store.db, e.CharacterID); err != nil {
 		m.log.Error("starter grant failed", "character", e.CharacterID, "err", err)
 	}
 }
 
-// onCharacterDeleted wipes a deleted character's inventory.
+// onCharacterDeleted (in-process bus path) wipes the character's inventory.
 func (m *Module) onCharacterDeleted(e charactersevents.Deleted) {
-	if _, err := m.store.clearOwner(context.Background(), Owner{Type: "character", ID: e.CharacterID}); err != nil {
+	if err := m.wipeCharacter(context.Background(), m.store.db, e.CharacterID); err != nil {
 		m.log.Error("inventory cleanup failed", "character", e.CharacterID, "err", err)
 	}
 }
 
+// handleCharacterCreatedEvent is the synchronous sink for character.created. It
+// decodes the event, then runs the grant exactly-once under inbox dedup, and
+// returns 200 only after the grant commits — never re-emitting on the bus (an
+// async ack would lie about the effect having happened, B1).
+func (m *Module) handleCharacterCreatedEvent(w http.ResponseWriter, r *http.Request) {
+	eventID := r.Header.Get("X-Event-Id")
+	if eventID == "" {
+		http.Error(w, "missing event id", http.StatusBadRequest)
+		return
+	}
+	var e charactersevents.Created
+	if err := json.NewDecoder(r.Body).Decode(&e); err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+	if err := m.consume(r.Context(), eventID, func(ctx context.Context, tx *sql.Tx) error {
+		return m.grantStarter(ctx, tx, e.CharacterID)
+	}); err != nil {
+		m.log.Error("sink grant failed", "event_id", eventID, "character", e.CharacterID, "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+// handleCharacterDeletedEvent is the synchronous sink for character.deleted —
+// same idempotent, transactional contract as the created sink.
+func (m *Module) handleCharacterDeletedEvent(w http.ResponseWriter, r *http.Request) {
+	eventID := r.Header.Get("X-Event-Id")
+	if eventID == "" {
+		http.Error(w, "missing event id", http.StatusBadRequest)
+		return
+	}
+	var e charactersevents.Deleted
+	if err := json.NewDecoder(r.Body).Decode(&e); err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+	if err := m.consume(r.Context(), eventID, func(ctx context.Context, tx *sql.Tx) error {
+		return m.wipeCharacter(ctx, tx, e.CharacterID)
+	}); err != nil {
+		m.log.Error("sink wipe failed", "event_id", eventID, "character", e.CharacterID, "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+// consume runs effect exactly once for eventID. In one tx it claims the event in
+// the inbox (ON CONFLICT DO NOTHING); a first delivery (1 row) runs effect within
+// the SAME tx before commit, a duplicate (0 rows) is a committed no-op. Any error
+// rolls back and propagates → the caller replies 500 → the relay retries (the
+// outbox row stays unsent). The effect is thus atomic with its dedup marker.
+func (m *Module) consume(ctx context.Context, eventID string, effect func(context.Context, *sql.Tx) error) error {
+	tx, err := m.store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }() // no-op after a successful Commit
+
+	res, err := tx.ExecContext(ctx,
+		`INSERT INTO inventory.inbox (event_id) VALUES ($1) ON CONFLICT DO NOTHING`, eventID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return tx.Commit() // already processed — idempotent no-op
+	}
+	if err := effect(ctx, tx); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 func (m *Module) handleMine(w http.ResponseWriter, r *http.Request) {
-	pid, ok := m.auth(r)
+	pid, ok := m.authed(w, r)
 	if !ok {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 	m.respondList(w, r, Owner{Type: "player", ID: pid})
 }
 
 func (m *Module) handleCharacter(w http.ResponseWriter, r *http.Request) {
-	pid, ok := m.auth(r)
+	pid, ok := m.authed(w, r)
 	if !ok {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 	id := r.PathValue("id")
-	owner, found := m.characters.OwnerOf(r.Context(), id)
+	owner, found, err := m.characters.OwnerOf(r.Context(), id)
+	if err != nil {
+		// Characters may be hosted in a peer process; a transport failure is an
+		// infrastructure problem, not a missing character (B2).
+		m.log.Error("ownership lookup failed", "character", id, "err", err)
+		http.Error(w, "characters service unavailable", http.StatusServiceUnavailable)
+		return
+	}
 	if !found {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
@@ -132,9 +259,8 @@ func (m *Module) handleCharacter(w http.ResponseWriter, r *http.Request) {
 }
 
 func (m *Module) handleGrant(w http.ResponseWriter, r *http.Request) {
-	pid, ok := m.auth(r)
+	pid, ok := m.authed(w, r)
 	if !ok {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 	var in struct {
@@ -195,12 +321,29 @@ func (s *service) List(ctx context.Context, owner Owner) ([]Holding, error) {
 	return s.store.list(ctx, owner)
 }
 
-func (m *Module) auth(r *http.Request) (playerID string, ok bool) {
+func (m *Module) auth(r *http.Request) (playerID string, ok bool, err error) {
 	token := bearer(r)
 	if token == "" {
-		return "", false
+		return "", false, nil
 	}
 	return m.accounts.VerifySession(r.Context(), token)
+}
+
+// authed verifies the bearer token and writes the right failure response: 503 if
+// the accounts service (possibly a peer reached over the edge) is unreachable,
+// 401 if the token is missing or invalid. Returns ok=false once it responds.
+func (m *Module) authed(w http.ResponseWriter, r *http.Request) (playerID string, ok bool) {
+	pid, ok, err := m.auth(r)
+	if err != nil {
+		m.log.Error("session verify failed", "err", err)
+		http.Error(w, "auth service unavailable", http.StatusServiceUnavailable)
+		return "", false
+	}
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return "", false
+	}
+	return pid, true
 }
 
 func bearer(r *http.Request) string {

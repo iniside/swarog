@@ -30,8 +30,19 @@ type store struct {
 	log *slog.Logger
 }
 
+// rowQuerier is the subset of *sql.DB / *sql.Tx the event-effect writes use, so
+// the same grant/clear logic runs either against the pool (the best-effort bus
+// path) OR inside the sink's transaction (atomic with the inbox dedup row).
+type rowQuerier interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
 func (s *store) grant(ctx context.Context, owner Owner, itemID string, qty int) error {
-	_, err := s.db.ExecContext(ctx,
+	return s.grantExec(ctx, s.db, owner, itemID, qty)
+}
+
+func (s *store) grantExec(ctx context.Context, q rowQuerier, owner Owner, itemID string, qty int) error {
+	_, err := q.ExecContext(ctx,
 		`INSERT INTO inventory.holdings (owner_type, owner_id, item_id, quantity)
 		 VALUES ($1, $2::uuid, $3, $4)
 		 ON CONFLICT (owner_type, owner_id, item_id)
@@ -53,10 +64,11 @@ func (s *store) list(ctx context.Context, owner Owner) ([]Holding, error) {
 	return scanHoldings(rows)
 }
 
-// clearOwner removes every holding of an owner — the event-driven cleanup when a
-// character (or later a player) is deleted.
-func (s *store) clearOwner(ctx context.Context, owner Owner) (int64, error) {
-	res, err := s.db.ExecContext(ctx,
+// clearOwnerExec removes every holding of an owner — the event-driven cleanup
+// when a character (or later a player) is deleted. Runs against the pool (bus
+// path) or the sink's tx.
+func (s *store) clearOwnerExec(ctx context.Context, q rowQuerier, owner Owner) (int64, error) {
+	res, err := q.ExecContext(ctx,
 		`DELETE FROM inventory.holdings WHERE owner_type = $1 AND owner_id = $2::uuid`,
 		owner.Type, owner.ID)
 	if err != nil {

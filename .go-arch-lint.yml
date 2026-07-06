@@ -4,7 +4,8 @@
 # The point: a module's IMPLEMENTATION is private. Cross-module communication goes only through
 # the shared CONTRACT surface (each domain's `<module>events` package + `admin/adminapi`) or a
 # service interface from the registry (which, thanks to Go's structural typing, needs no shared
-# package at all). The core has no game knowledge. Only `cmd` (the composition root) wires modules.
+# package at all). The core foundations have no game knowledge. Only `cmd` (the composition root)
+# wires modules.
 #
 # (Import CYCLES need no rule here — the Go compiler already rejects them.)
 
@@ -16,7 +17,13 @@ allow:
   depOnAnyVendor: true
 
 components:
-  core:        { in: core }
+  # The core foundations, split from the old monolithic `core`:
+  #   bus/registry/contrib are LEAVES (stdlib only), importable by everyone (commonComponents);
+  #   lifecycle wires them into Context + the App orchestrator, and modules import it.
+  bus:         { in: bus }
+  registry:    { in: registry }
+  contrib:     { in: contrib }
+  lifecycle:   { in: lifecycle }
   # The only deliberately-shared surface between modules: published event descriptors + adminapi.
   # (Enumerated explicitly — go-arch-lint's `*` matches a whole path segment, not an `*events` suffix.)
   contracts:
@@ -36,30 +43,76 @@ components:
   rating:      { in: modules/rating }
   webui:       { in: modules/webui }
 
-  # The composition root — the only place allowed to see every module implementation.
-  cmd:         { in: cmd/** }
+  # Transport-agnostic leaf: QUIC RPC framing/codec/TLS. Imports stdlib + quic-go
+  # only (no gamebackend package) — a foundation, same tier as core.
+  edge:        { in: edge }
+  # Generic transactional-outbox relay (drain+POST+ack). Imports stdlib only —
+  # a foundation; a module (characters) brings its own DB handle in.
+  outbox:      { in: outbox }
+  # Composition-time remote stub: Provides an edge-backed client under a
+  # dependency's name and contributes a RemoteURL admin item. It satisfies
+  # consumer interfaces structurally, so it never imports a module's impl.
+  remote:      { in: modules/remote }
+
+  # The reusable boot sequence: open DB, wire Context, two-phase Build, Migrate,
+  # Start, HTTP + optional edge listener, graceful shutdown. It is topology-blind
+  # — it takes a module list from an entrypoint and never names a module.
+  app:         { in: internal/app }
+
+  # The composition roots — one per binary. Each is the ONLY place that sees the
+  # concrete module implementations it wires, and the per-service lists below are
+  # the machine-checked isolation: characters-svc may not see inventory/admin;
+  # inventory-svc may not see the accounts/characters IMPL (only their contracts,
+  # via the remote stub + charactersevents).
+  cmdServer:         { in: cmd/server }
+  cmdCharactersSvc:  { in: cmd/characters-svc }
+  cmdInventorySvc:   { in: cmd/inventory-svc }
 
 commonComponents:
-  - core   # foundation: importable by everyone; depends on nothing internal (enforced below)
+  # The three LEAVES are importable by everyone and depend on nothing internal. lifecycle is
+  # deliberately NOT common: a leaf importing lifecycle would be an import cycle.
+  - bus
+  - registry
+  - contrib
 
 deps:
-  # NOTE: `core` and `contracts` are intentionally ABSENT here. A component with no deps entry may
-  # use only commonComponents (i.e. `core`). So:
-  #   - core      -> may use core (itself) = nothing internal  => never imports a module.
-  #   - contracts -> may use core only (for core.Define)        => never imports a module impl.
+  # NOTE: `bus`/`registry`/`contrib`/`contracts` are intentionally ABSENT here. A component with no
+  # deps entry may use only commonComponents (bus/registry/contrib). So:
+  #   - the three leaves -> may use the leaves = nothing but each other/themselves => never a module.
+  #   - contracts        -> may use the leaves only (for bus.Define)               => never a module impl.
 
-  # Each module impl may use core (common) + the shared contracts — never another module's impl.
-  accounts:    { mayDependOn: [ contracts ] }
-  admin:       { mayDependOn: [ contracts ] }
-  characters:  { mayDependOn: [ contracts ] }
-  inventory:   { mayDependOn: [ contracts ] }
-  leaderboard: { mayDependOn: [ contracts ] }
-  match:       { mayDependOn: [ contracts ] }
-  rating:      { mayDependOn: [ contracts ] }
-  webui:       { mayDependOn: [ contracts ] }
+  # lifecycle aggregates the three leaves into Context + the App orchestrator.
+  lifecycle:   { mayDependOn: [ bus, registry, contrib ] }
 
-  # Only the composition root may depend on concrete module implementations.
-  cmd:
+  # Each module impl may use the leaves (common) + lifecycle + the shared contracts — never another
+  # module's impl. accounts/characters additionally register handlers on the shared QUIC edge server
+  # (edge); characters also drives the transactional-outbox relay (outbox).
+  accounts:    { mayDependOn: [ lifecycle, contracts, edge ] }
+  admin:       { mayDependOn: [ lifecycle, contracts ] }
+  characters:  { mayDependOn: [ lifecycle, contracts, edge, outbox ] }
+  inventory:   { mayDependOn: [ lifecycle, contracts ] }
+  leaderboard: { mayDependOn: [ lifecycle, contracts ] }
+  match:       { mayDependOn: [ lifecycle, contracts ] }
+  rating:      { mayDependOn: [ lifecycle, contracts ] }
+  webui:       { mayDependOn: [ lifecycle ] }
+
+  # The remote stub is composition-time plumbing: it wraps edge clients + the
+  # admin contract, never a module implementation.
+  remote:      { mayDependOn: [ lifecycle, contracts, edge ] }
+
+  # The boot sequence wires whatever module list it is handed; it only knows the
+  # lifecycle contract and the edge server type it may start.
+  app:         { mayDependOn: [ lifecycle, edge ] }
+
+  # Each composition root may depend ONLY on the modules ITS binary hosts (plus
+  # the boot package + the transport/stub foundations it wires). This is the real
+  # per-service isolation, machine-checked:
+  #
+  #   - the monolith sees every module (one fat binary, all local, no edge/stub);
+  #   - characters-svc sees ONLY accounts + characters (+ edge to expose them);
+  #   - inventory-svc sees inventory + admin + the remote stub — NOT the
+  #     accounts/characters impl, whose capabilities arrive over the edge.
+  cmdServer:
     mayDependOn:
       - accounts
       - admin
@@ -69,4 +122,19 @@ deps:
       - match
       - rating
       - webui
-      - contracts
+      - lifecycle
+      - app
+  cmdCharactersSvc:
+    mayDependOn:
+      - accounts
+      - characters
+      - lifecycle
+      - edge
+      - app
+  cmdInventorySvc:
+    mayDependOn:
+      - inventory
+      - admin
+      - remote
+      - lifecycle
+      - app

@@ -24,6 +24,5 @@ UILayout/.thumbnail
 .DS_Store
 *.swp
 
-# runtime logs / pids and built binaries
+# runtime logs / pids and built binaries (Go dual-mode run/ + Quarkus sketch run/)
 /run/
-/bin/

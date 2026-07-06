@@ -1,18 +1,19 @@
+// Command server is the MONOLITH entrypoint: it imports and hosts every module
+// in ONE binary. There is no ROLES gating and no remote stubs — everything runs
+// in-process, so every cross-module dependency resolves locally (inventory's
+// PlayerCharactersProvider takes the in-process branch, no edge server needed).
+//
+// The microservice entrypoints (cmd/characters-svc, cmd/inventory-svc) each
+// import only their OWN modules, so `go build ./cmd/<svc>` links only that
+// service's code path. This binary is the opposite end: the full set.
 package main
 
 import (
-	"context"
-	"database/sql"
-	"errors"
 	"log/slog"
-	"net/http"
 	"os"
-	"os/signal"
-	"time"
 
-	_ "github.com/jackc/pgx/v5/stdlib" // registers the "pgx" database/sql driver
-
-	"gamebackend/core"
+	"gamebackend/internal/app"
+	"gamebackend/lifecycle"
 	"gamebackend/modules/accounts"
 	"gamebackend/modules/admin"
 	"gamebackend/modules/characters"
@@ -23,89 +24,24 @@ import (
 	"gamebackend/modules/webui"
 )
 
-const defaultDSN = "postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable"
-
 func main() {
-	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
-	ctx := core.NewContext(log)
-
-	dsn := os.Getenv("DATABASE_URL")
-	if dsn == "" {
-		dsn = defaultDSN
+	// All 8 modules, hosted locally. Pointer receivers for the stateful ones
+	// (db/verifiers/caches); value receivers for the stateless ones.
+	mods := []lifecycle.Module{
+		&accounts.Module{},    // player identity; owns schema "accounts"
+		&characters.Module{},  // depends on accounts
+		&inventory.Module{},   // depends on accounts + characters
+		&rating.Module{},      // provides the "rating" service
+		&leaderboard.Module{}, // Postgres-backed match listener
+		match.Module{},        // depends on rating
+		webui.Module{},        // serves the SPA demo at "/"
+		&admin.Module{},       // GameOps portal at "/admin"
 	}
-	db, err := sql.Open("pgx", dsn)
-	if err != nil {
-		log.Error("open db", "err", err)
+
+	// No edge server: every provider is in-process, so nothing crosses a QUIC
+	// boundary in the monolith.
+	if err := app.Run(app.ConfigFromEnv(), mods, nil); err != nil {
+		slog.New(slog.NewTextHandler(os.Stdout, nil)).Error("monolith exited", "err", err)
 		os.Exit(1)
 	}
-	defer db.Close()
-	pingCtx, cancelPing := context.WithTimeout(context.Background(), 5*time.Second)
-	if err := db.PingContext(pingCtx); err != nil {
-		cancelPing()
-		log.Error("db unreachable", "err", err)
-		os.Exit(1)
-	}
-	cancelPing()
-	ctx.DB = db
-
-	reg := core.NewRegistry(ctx)
-
-	// The ONLY place that knows the full module list. Adding a feature =
-	// one line here + one new folder. Nothing else in the codebase changes.
-	reg.Add(&accounts.Module{})     // pointer: holds db + verifiers
-	reg.Add(&characters.Module{})   // player characters; depends on accounts
-	reg.Add(&inventory.Module{})    // owner-scoped inventories; depends on accounts + characters
-	reg.Add(rating.Module{})
-	reg.Add(&leaderboard.Module{}) // pointer: holds db + logger
-	reg.Add(match.Module{})        // order is free — topo-sort settles it
-	reg.Add(webui.Module{})        // serves the account-linking demo page at "/"
-	reg.Add(&admin.Module{})       // serves the GameOps admin portal at "/admin"
-
-	if err := reg.Build(); err != nil {
-		log.Error("startup failed", "err", err)
-		os.Exit(1)
-	}
-
-	migCtx, cancelMig := context.WithTimeout(context.Background(), 30*time.Second)
-	if err := reg.Migrate(migCtx, db); err != nil {
-		cancelMig()
-		log.Error("migrate failed", "err", err)
-		os.Exit(1)
-	}
-	cancelMig()
-
-	startCtx, cancelStart := context.WithTimeout(context.Background(), 10*time.Second)
-	if err := reg.Start(startCtx); err != nil {
-		cancelStart()
-		log.Error("start failed", "err", err)
-		os.Exit(1)
-	}
-	cancelStart()
-
-	srv := &http.Server{Addr: ":8080", Handler: ctx.Mux, ReadHeaderTimeout: 10 * time.Second}
-	go func() {
-		log.Info("listening", "addr", srv.Addr)
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Error("server stopped", "err", err)
-			os.Exit(1)
-		}
-	}()
-
-	// Graceful shutdown, in order:
-	//   1. stop accepting HTTP (no new events get published),
-	//   2. drain the bus (in-flight events finish while module resources are up),
-	//   3. stop modules in reverse dependency order (close goroutines/resources).
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, os.Interrupt)
-	<-stop
-	log.Info("shutting down")
-
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := srv.Shutdown(shutdownCtx); err != nil {
-		log.Error("http shutdown", "err", err)
-	}
-	ctx.Bus.Close()
-	reg.Stop(shutdownCtx)
-	log.Info("bye")
 }

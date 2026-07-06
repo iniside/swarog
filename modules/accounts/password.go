@@ -11,7 +11,7 @@ import (
 
 	"golang.org/x/crypto/argon2"
 
-	"gamebackend/core"
+	"gamebackend/bus"
 	"gamebackend/modules/accounts/accountsevents"
 )
 
@@ -93,7 +93,7 @@ func (m *Module) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	core.Emit(m.bus, accountsevents.PlayerRegisteredEvent, accountsevents.PlayerRegistered{
+	bus.Emit(m.bus, accountsevents.PlayerRegisteredEvent, accountsevents.PlayerRegistered{
 		PlayerID: p.ID, DisplayName: p.DisplayName, Provider: "dev",
 	})
 	m.issueSession(w, r, p, http.StatusCreated)

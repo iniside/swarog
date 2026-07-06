@@ -25,16 +25,39 @@ type store struct {
 	log *slog.Logger
 }
 
+// rowQuerier is the subset of *sql.DB / *sql.Tx the write paths use, so the same
+// method can run either directly against the pool OR inside a transaction (the
+// create+outbox and delete+outbox writes commit atomically — a *sql.Tx is passed).
+type rowQuerier interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
 const cols = `id::text, player_id::text, name, class, created_at`
 
 func (s *store) create(ctx context.Context, playerID, name, class string) (Character, error) {
+	return s.createTx(ctx, s.db, playerID, name, class)
+}
+
+// createTx inserts a character using the given querier (the pool or a tx). The
+// handler passes a tx so the character row and its outbox row commit together.
+func (s *store) createTx(ctx context.Context, q rowQuerier, playerID, name, class string) (Character, error) {
 	var c Character
-	err := s.db.QueryRowContext(ctx,
+	err := q.QueryRowContext(ctx,
 		`INSERT INTO characters.characters (player_id, name, class)
 		 VALUES ($1::uuid, $2, $3) RETURNING `+cols,
 		playerID, name, class).
 		Scan(&c.ID, &c.PlayerID, &c.Name, &c.Class, &c.CreatedAt)
 	return c, err
+}
+
+// insertOutbox appends one event row to the transactional outbox using the given
+// querier. Called with the SAME tx as the domain write so the event is durable
+// iff the domain change committed (no lost events, no phantom events).
+func (s *store) insertOutbox(ctx context.Context, q rowQuerier, topic string, payload []byte) error {
+	_, err := q.ExecContext(ctx,
+		`INSERT INTO characters.outbox (topic, payload) VALUES ($1, $2::jsonb)`, topic, payload)
+	return err
 }
 
 func (s *store) listByPlayer(ctx context.Context, playerID string) ([]Character, error) {
@@ -59,7 +82,13 @@ func (s *store) get(ctx context.Context, id string) (Character, bool, error) {
 // deleteOwned removes a character only if it belongs to playerID; returns whether
 // a row was deleted.
 func (s *store) deleteOwned(ctx context.Context, id, playerID string) (bool, error) {
-	res, err := s.db.ExecContext(ctx,
+	return s.deleteOwnedTx(ctx, s.db, id, playerID)
+}
+
+// deleteOwnedTx is deleteOwned against the given querier (the pool or a tx), so
+// the delete and its outbox row commit atomically.
+func (s *store) deleteOwnedTx(ctx context.Context, q rowQuerier, id, playerID string) (bool, error) {
+	res, err := q.ExecContext(ctx,
 		`DELETE FROM characters.characters WHERE id = $1::uuid AND player_id = $2::uuid`, id, playerID)
 	if invalidUUID(err) {
 		return false, nil
