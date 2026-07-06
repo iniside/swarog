@@ -116,9 +116,11 @@ risk — each tool was de-risked before adoption (like Konsist).
 - **Behavioral domain tests** (JUnit5). Crown jewels as `@QuarkusTest` integration: `onCharacterDeleted` wipes
   holdings (no orphans — the CLAUDE.md "point"), starter grant on create, inbox idempotency (redelivery = no-op),
   `add()` authz (unowned → `IllegalStateException`→400). Plus pure-unit: authz short-circuits before persistence
-  (dynamic-proxy fakes), `RoleConfig` parsing, `host:port` validation. **DB caveat:** Docker was unavailable, so
-  integration tests hit the local `jvmsketch` Postgres with `@AfterEach` cleanup — meaning `./gradlew build`
-  REQUIRES a running Postgres (no Dev Services/Testcontainers fallback). A CI without that DB fails those tests.
+  (dynamic-proxy fakes), `RoleConfig` parsing, `host:port` validation. Integration tests run against the
+  project's local `jvmsketch` Postgres — the same dev DB the app uses (CLAUDE.md / local memory) — with
+  `@AfterEach` cleanup for isolation. That is the right target for integration tests: they exercise the real
+  Postgres-specific schema/DDL the app actually runs, not a dialect-substitute. They need Postgres reachable,
+  which is normal for integration tests against a real DB (no Docker/Testcontainers involved or needed).
   Deferred with rationale: admin slug/dedupe (private method behind Qute injection). A found-and-fixed flake:
   async starter-grant landing after `@AfterEach` leaked orphans across runs → tests now await the async grant.
 - **Lincheck** (`2.39`) — model-checking of the one genuinely hand-rolled concurrent structure: the
