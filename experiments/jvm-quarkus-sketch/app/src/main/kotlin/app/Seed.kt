@@ -10,6 +10,7 @@ import jakarta.annotation.Priority
 import jakarta.enterprise.context.ApplicationScoped
 import jakarta.enterprise.event.Observes
 import javax.sql.DataSource
+import org.eclipse.microprofile.config.inject.ConfigProperty
 import platform.RoleConfig
 
 /**
@@ -34,9 +35,15 @@ class Seed(
     private val characters: CharactersModule,
     private val inventory: InventoryModule,
     private val roleConfig: RoleConfig,
+    @param:ConfigProperty(name = "app.seed.enabled", defaultValue = "true")
+    private val seedEnabled: Boolean,
 ) {
 
     fun seed(@Observes @Priority(AFTER_ALL_MODULES) ev: StartupEvent) {
+        // Demo seeding is destructive (TRUNCATEs every module's tables below) — it must NOT run under
+        // @QuarkusTest, which sets app.seed.enabled=false. Otherwise `./gradlew test` would wipe the
+        // dev DB and leave seed data behind. Tests create + clean their own rows.
+        if (!seedEnabled) return
         if (!roleConfig.isActive("all")) return   // demo seed runs only in the full monolith
         // demo-only: start clean so the admin view is deterministic across runs
         db.connection.use { c ->

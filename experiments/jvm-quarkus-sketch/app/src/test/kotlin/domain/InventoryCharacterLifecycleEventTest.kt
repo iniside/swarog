@@ -50,8 +50,8 @@ class InventoryCharacterLifecycleEventTest {
                 ps.setLong(1, id)
                 ps.executeUpdate()
             }
-            c.prepareStatement("DELETE FROM characters.outbox WHERE payload::text LIKE ?").use { ps ->
-                ps.setString(1, "%\"characterId\":$id%")
+            c.prepareStatement("DELETE FROM characters.outbox WHERE payload->>'characterId' = ?").use { ps ->
+                ps.setString(1, id.toString())
                 ps.executeUpdate()
             }
             c.prepareStatement("DELETE FROM inventory.holdings WHERE owner_type = 'CHARACTER' AND owner_id = ?").use { ps ->
@@ -75,9 +75,9 @@ class InventoryCharacterLifecycleEventTest {
     private fun unsentOutboxRows(id: Long): Int =
         db.connection.use { c ->
             c.prepareStatement(
-                "SELECT count(*) FROM characters.outbox WHERE payload::text LIKE ? AND sent_at IS NULL",
+                "SELECT count(*) FROM characters.outbox WHERE payload->>'characterId' = ? AND sent_at IS NULL",
             ).use { ps ->
-                ps.setString(1, "%\"characterId\":$id%")
+                ps.setString(1, id.toString())
                 ps.executeQuery().use { rs -> rs.next(); rs.getInt(1) }
             }
         }
