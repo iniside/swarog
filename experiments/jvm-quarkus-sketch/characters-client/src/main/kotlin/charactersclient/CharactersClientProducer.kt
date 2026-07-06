@@ -64,6 +64,9 @@ internal class EdgeRemotePlayerCharacters(target: String) : PlayerCharacters {
     @Volatile private var connection: EdgeConnection? = null
     @Volatile private var client: EdgeClient? = null
 
+    @Suppress("TooGenericExceptionCaught") // deliberately broad: the edge-RPC client's failure modes
+    // (dead connection, timed-out call, native-transport error) are all unchecked and untyped by
+    // design — the bounded-retry contract must trigger on ANY of them, not an enumerated subset.
     override fun ownerOf(characterId: Long): UUID? {
         val reply = try {
             callOnce(characterId)
@@ -76,6 +79,10 @@ internal class EdgeRemotePlayerCharacters(target: String) : PlayerCharacters {
             } catch (retry: Exception) {
                 // Both attempts failed → the provider is unreachable. Signal that DISTINCTLY (not null,
                 // which means "no such character"), so the consumer maps it to 503, never a false 400.
+                // Keep the FIRST attempt's exception too (as suppressed) — without it, the original
+                // failure reason is lost and only the post-reconnect retry's (often different) failure
+                // is visible, which is misleading when debugging the actual root cause.
+                retry.addSuppressed(e)
                 throw CharactersUnavailableException("characters.ownerOf unreachable at $host:$port", retry)
             }
         }

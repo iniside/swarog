@@ -1,0 +1,105 @@
+# Verification Layer 5 — detekt static analysis. Curated to be a CORRECTNESS/BUG gate, not a style
+# gate: `potential-bugs`, `exceptions`, and `coroutines` are the emphasized rule sets (per-service
+# split + the bus/event-driven code in this sketch make swallowed exceptions and coroutine-context
+# mistakes the highest-value catches). `style`/`formatting`/`comments`/`naming` are turned OFF wholesale
+# so the gate never fails a build over cosmetics — that's ktlint's job elsewhere, not detekt's here.
+#
+# buildUponDefaultConfig=true (set in build.gradle.kts) means this file only needs to STATE
+# deviations from detekt's own defaults, not repeat every rule.
+
+build:
+  maxIssues: 0   # fail on ANY non-baselined finding — see build.gradle.kts DetektExtension.baseline
+                 # for how pre-existing findings are grandfathered instead of silently ignored.
+
+config:
+  validation: true
+  warningsAsErrors: false
+
+# --- Emphasized: correctness / bug-shaped rules -------------------------------------------------
+
+potential-bugs:
+  active: true
+  UnsafeCallOnNullableType:
+    active: true
+  UnreachableCatchBlock:
+    active: true
+  UnreachableCode:
+    active: true
+  Deprecation:
+    active: false   # tracked separately by the strict-compile-flags layer (allWarningsAsErrors)
+  ImplicitDefaultLocale:
+    active: true
+  ImplicitUnitReturnType:
+    active: true
+  InvalidRange:
+    active: true
+  IteratorNotThrowingNoSuchElementException:
+    active: true
+  MissingPackageDeclaration:
+    active: false   # false-positives on Gradle build-source (buildSrc-less root script)
+  NullableToStringCall:
+    active: true
+
+exceptions:
+  active: true
+  TooGenericExceptionCaught:
+    active: true
+  SwallowedException:
+    active: true
+  TooGenericExceptionThrown:
+    active: true
+  ThrowingExceptionFromFinally:
+    active: true
+  ThrowingExceptionsWithoutMessageOrCause:
+    active: true
+  RethrowCaughtException:
+    active: true
+  PrintStackTrace:
+    active: true
+  ExceptionRaisedInUnexpectedLocation:
+    active: true
+  InstanceOfCheckForException:
+    active: true
+  ObjectExtendsThrowable:
+    active: true
+  ReturnFromFinally:
+    active: true
+
+coroutines:
+  active: true
+  GlobalCoroutineUsage:
+    active: true
+  InjectDispatcher:
+    active: true
+  RedundantSuspendModifier:
+    active: true
+  SleepInsteadOfDelay:
+    active: true
+  SuspendFunSwallowedCancellation:
+    active: true
+  SuspendFunWithCoroutineScopeReceiver:
+    active: true
+  SuspendFunWithFlowReturnType:
+    active: true
+
+performance:
+  active: true
+
+# --- Everything cosmetic: OFF, so this stays a correctness gate, not a style gate ---------------
+
+style:
+  active: false
+
+# `formatting` (ktlint-backed) is intentionally NOT enabled here at all — it needs the separate
+# `detekt-formatting` plugin artifact, and this gate is scoped to correctness, not formatting/style.
+
+comments:
+  active: false
+
+naming:
+  active: false
+
+# Complexity thresholds are useful but easily noisy on a from-scratch sketch; leave detekt's own
+# defaults (buildUponDefaultConfig) rather than tightening or disabling wholesale.
+complexity:
+  active: true

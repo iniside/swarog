@@ -33,6 +33,9 @@ import java.lang.invoke.MethodHandle
  * control-plane calls, and `invoke` avoids Kotlin's signature-polymorphic pitfalls while preserving
  * the exact carrier types.
  */
+@Suppress("TooManyFunctions") // one method per QUIC_API_TABLE entry this binding uses — the function
+// count mirrors the native C API surface it wraps 1:1; splitting it would fragment one cohesive ABI
+// table into arbitrary pieces with no natural seam.
 class MsQuicApi(private val linker: Linker, private val apiTable: MemorySegment) {
 
     private fun handleAt(index: Int, descriptor: FunctionDescriptor): MethodHandle {
@@ -147,6 +150,9 @@ class MsQuicApi(private val linker: Linker, private val apiTable: MemorySegment)
         registrationShutdownH.invoke(registration, flags, errorCode)
     }
 
+    @Suppress("LongParameterList") // mirrors msquic's native `ConfigurationOpen(HQUIC, const QUIC_BUFFER*,
+    // uint32, const QUIC_SETTINGS*, uint32, void*, HQUIC*)` 1:1 — the parameter list IS the ABI, not a
+    // design choice to bundle into a parameter object (that would just move the same 7 fields elsewhere).
     fun configurationOpen(
         registration: MemorySegment,
         alpnBuffers: MemorySegment,

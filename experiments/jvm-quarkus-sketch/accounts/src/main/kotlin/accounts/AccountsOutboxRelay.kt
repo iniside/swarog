@@ -76,8 +76,12 @@ class AccountsOutboxRelay(
                     System.err.println("[accounts] outbox: $url returned ${response.statusCode()}")
                     allOk = false
                 }
-            } catch (e: Exception) {
+            } catch (e: java.io.IOException) {
                 System.err.println("[accounts] outbox: POST to $url failed: $e")
+                allOk = false
+            } catch (e: InterruptedException) {
+                Thread.currentThread().interrupt()
+                System.err.println("[accounts] outbox: POST to $url interrupted: $e")
                 allOk = false
             }
         }

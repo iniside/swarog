@@ -59,6 +59,9 @@ class AdminResource(
      * `admin.<id>.url` (default `stork://<id>-service`). Each fetch is isolated in try/catch → a
      * single unreachable remote becomes an error card, the rest of /admin still renders.
      */
+    @Suppress("TooGenericExceptionCaught") // deliberate isolation boundary: `p.data()` is arbitrary
+    // module code and `remoteClient(id).fetch(id)` is an arbitrary-failure-mode network call — any
+    // single module's failure must degrade to an error card, never blank the whole /admin page.
     private fun fanOut(): List<AdminItemDto> {
         val locals = localsById()
         return modules.map { id ->

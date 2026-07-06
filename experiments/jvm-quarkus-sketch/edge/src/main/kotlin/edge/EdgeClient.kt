@@ -51,7 +51,7 @@ class EdgeClient(
     /** Typed convenience: [request] then msgpack-decode the reply. Throws on `ok=false`. */
     fun <Resp> call(method: String, payloadObj: Any, respType: Class<Resp>): Resp {
         val resp = request(method, payloadObj)
-        require(resp.ok) { "edge call '$method' failed: ${resp.error}" }
+        require(resp.ok) { "edge call '$method' failed: ${resp.error ?: "<no error message>"}" }
         return codec.decodePayload(resp.payload, respType)
     }
 

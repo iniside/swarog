@@ -23,6 +23,9 @@ class EdgeRouter {
         handlers[method] = handler
     }
 
+    @Suppress("TooGenericExceptionCaught") // deliberate: `handler` is arbitrary caller-registered
+    // code (see class doc — "a handler throw ... becomes Response(ok=false...)"), so the dispatch
+    // loop must convert ANY handler failure to an error Response rather than propagating it.
     fun dispatch(req: Request): Response {
         val handler = handlers[req.method]
             ?: return Response(req.cid, ok = false, payload = ByteArray(0), error = "no such method: ${req.method}")

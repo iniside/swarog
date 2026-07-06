@@ -35,13 +35,18 @@ class EdgeLoopbackTest {
         val cid = 42L
         val resp = client.requestWithCid(cid, "characters.list", ListCharactersRequest("player-1"))
 
-        assertTrue(resp.ok, "expected ok response, got error=${resp.error}")
+        assertTrue(resp.ok, "expected ok response, got error=${resp.error ?: "<none>"}")
         assertEquals(cid, resp.cid, "Response cid must match the Request cid")
 
         val reply = codec.decodePayload(resp.payload, CharactersReply::class.java)
         assertEquals(listOf("Aria", "Borin", "Cael"), reply.names)
     }
 
+    @Suppress("NullableToStringCall") // false positive: `resp.error` is `String?`, but by this point
+    // in the statement it has already been forced non-null (via `assertNotNull` / the preceding
+    // `resp.error!!` in the same expression) — K2 smart-casts the re-read to non-null for this
+    // stable `val` property, so the interpolation can never actually print "null". Detekt's own
+    // (older, separately embedded) resolution doesn't see that smart-cast.
     @Test
     fun `handler exception becomes an error response`() {
         val resp = client.request("characters.boom", ListCharactersRequest("player-1"))
@@ -54,6 +59,8 @@ class EdgeLoopbackTest {
         )
     }
 
+    @Suppress("NullableToStringCall") // same detekt/K2 smart-cast mismatch as the test above —
+    // `resp.error!!` earlier in the same statement already forces it non-null.
     @Test
     fun `unknown method yields an error response`() {
         val resp = client.request("does.not.exist", ListCharactersRequest("player-1"))

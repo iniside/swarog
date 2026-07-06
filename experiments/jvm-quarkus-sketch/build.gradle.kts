@@ -1,3 +1,5 @@
+import io.gitlab.arturbosch.detekt.Detekt
+import io.gitlab.arturbosch.detekt.extensions.DetektExtension
 import org.gradle.api.artifacts.component.ComponentIdentifier
 import org.gradle.api.artifacts.component.ProjectComponentIdentifier
 import org.gradle.api.artifacts.result.ResolvedComponentResult
@@ -26,6 +28,7 @@ plugins {
     kotlin("plugin.allopen") apply false
     kotlin("plugin.jpa") apply false
     id("io.quarkus") apply false
+    id("io.gitlab.arturbosch.detekt") apply false
 }
 
 // Common config for every Kotlin module — repositories, jvmTarget=JVM_26, java toolchain 26,
@@ -50,6 +53,50 @@ subprojects {
             toolchain { languageVersion = JavaLanguageVersion.of(26) }
         }
         tasks.withType<Test>().configureEach { useJUnitPlatform() }
+
+        // Verification Layer 5 — detekt static analysis (bugs/smells), complementing the strict
+        // compile flags above (Layer 0) rather than duplicating them. Applied to every Kotlin
+        // subproject via the same "apply reactively on the kotlin-jvm plugin id" pattern used
+        // for compilerOptions/toolchain, so a new module gets the gate for free.
+        apply(plugin = "io.gitlab.arturbosch.detekt")
+        extensions.configure<DetektExtension> {
+            buildUponDefaultConfig = true
+            config.setFrom(rootProject.file("config/detekt/detekt.yml"))
+            baseline = file("detekt-baseline.xml")
+            parallel = true
+        }
+        tasks.withType<Detekt>().configureEach {
+            // Detekt 1.23.8 (latest stable; verified 1.23.7 too) embeds its own (older) Kotlin
+            // compiler front-end for PSI parsing, which caps --jvm-target at 22 — it does not yet
+            // know about JVM_26. This is purely the internal parser target for detekt's own
+            // analysis and is independent of the project's real compile target (JvmTarget.JVM_26,
+            // set above via compilerOptions); it does not relax anything this project compiles/runs
+            // with.
+            jvmTarget = "21"
+            reports {
+                html.required.set(true)
+                xml.required.set(false)
+                txt.required.set(false)
+                sarif.required.set(false)
+                md.required.set(false)
+            }
+            // Detekt 1.23.8's bundled `org.jetbrains.kotlin.com.intellij.util.lang.JavaVersion`
+            // (a vendored, very old IntelliJ util shipped alongside its own embedded Kotlin
+            // compiler front-end) throws IllegalArgumentException("26.0.1") parsing the HOST JVM's
+            // `java.version` at analysis start — that parser predates JDK feature releases in the
+            // 20s and was never patched upstream (still true in the latest 1.23.8; there is no 2.x
+            // detekt release yet). Detekt runs THIS task in-process (a cached URLClassLoader, not a
+            // forked worker — confirmed from the stacktrace), and the task exposes no javaLauncher/
+            // jdkHome hook that changes which JVM the analysis runs in. Spoofing `java.version` for
+            // the duration of the task action is the narrowest fix: it only affects what detekt's
+            // vendored parser reads (nothing this project compiles, runs, or tests reads this
+            // property), and detekt's own PSI parsing is JDK-feature-agnostic (jvmTarget above
+            // already pins its target release independently).
+            doFirst { System.setProperty("java.version", "21.0.1") }
+        }
+        // Real gate: `check` (and therefore `build`) fails on a detekt finding, same as the
+        // composition/admin-parity verification tasks below.
+        tasks.named("check") { dependsOn(tasks.withType<Detekt>()) }
     }
 }
 

@@ -37,7 +37,11 @@ class InventoryResource(
         } catch (e: CharactersUnavailableException) {
             // Upstream characters provider unreachable — surface it as 503, NOT a false 400.
             Response.status(Response.Status.SERVICE_UNAVAILABLE).entity(e.message).build()
-        } catch (e: Exception) {
+        } catch (e: IllegalStateException) {
+            // The only other expected failure: InventoryModule.add()'s `error(...)` guard for an
+            // unknown/unauthorized character. Narrowed from a blanket `catch (e: Exception)` — that
+            // previously also swallowed unrelated failures (e.g. a persistence exception) and
+            // misreported them as a client 400 instead of letting them surface as a genuine 500.
             Response.status(Response.Status.BAD_REQUEST).entity(e.message).build()
         }
 }

@@ -1,5 +1,6 @@
 package platform
 
+import java.sql.ResultSet
 import javax.sql.DataSource
 
 /** A single transactional-outbox entry, drained by a per-module relay. */
@@ -20,14 +21,17 @@ object Outbox {
         db.connection.use { c ->
             c.prepareStatement(
                 "SELECT id, topic, payload FROM $schema.outbox WHERE sent_at IS NULL ORDER BY id"
-            ).use { ps ->
-                ps.executeQuery().use { rs ->
-                    val rows = ArrayList<OutboxRow>()
-                    while (rs.next()) rows.add(OutboxRow(rs.getLong(1), rs.getString(2), rs.getString(3)))
-                    rows
-                }
-            }
+            ).use { ps -> ps.executeQuery().use(::readRows) }
         }
+
+    /** Row-mapping extracted to its own function — the JDBC try-with-resources chain above (three
+     *  nested `.use{}`) plus an inline while-loop tripped detekt's NestedBlockDepth; the loop body
+     *  belongs in its own function anyway. */
+    private fun readRows(rs: ResultSet): List<OutboxRow> {
+        val rows = ArrayList<OutboxRow>()
+        while (rs.next()) rows.add(OutboxRow(rs.getLong(1), rs.getString(2), rs.getString(3)))
+        return rows
+    }
 
     /** Mark a row delivered. Called only AFTER a successful emit — a failed emit leaves it NULL
      *  so the next tick retries (at-least-once). */

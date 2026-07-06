@@ -40,6 +40,11 @@ class KonsistArchitectureTest {
      * `project(...)` dependency, instead of a wall of "unresolved reference" compiler errors
      * scattered across whichever files happened to add the import first.
      */
+    @Suppress("UnreachableCode") // detekt false-positive: its control-flow analysis treats the
+    // labeled `return@flatMap emptyList()` inside the outer lambda as exiting the whole function,
+    // so it marks every statement after it (in the SAME lambda body, on later iterations) as
+    // unreachable. It is not — `return@flatMap` only short-circuits that one element's mapping; the
+    // test passes and the surrounding `flatMap` genuinely runs across all `scope.files`.
     @Test
     fun `impl module files do not import another impl module`() {
         val scope = Konsist.scopeFromProject()

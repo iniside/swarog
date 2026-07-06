@@ -63,7 +63,7 @@ class CharactersModule(
         val ch = Character(playerId = playerId, name = name)
         ch.persist()
         em.flush()   // assign the IDENTITY id before it enters the outbox payload
-        val id = ch.id!!
+        val id = checkNotNull(ch.id) { "IDENTITY id was not assigned after flush() for character '$name'" }
         appendOutbox(CharacterCreated.TOPIC, CharacterCreated(id, playerId, name))
         return id
     }

@@ -38,10 +38,18 @@ object Upcalls {
      * guard — never throw into native code.
      */
     class Target(private val handler: Handler) {
+        @Suppress("TooGenericExceptionCaught") // deliberate: this IS the native boundary guard —
+        // it must catch Throwable (not just Exception), since ANYTHING escaping here unwinds into
+        // native msquic code, which is undefined behavior / a JVM crash, not a recoverable failure.
         fun invoke(handle: MemorySegment, context: MemorySegment, event: MemorySegment): Int =
             try {
                 handler.handle(handle, context, event)
             } catch (t: Throwable) {
+                // Previously silent (SwallowedException): a bug in a Handler vanished with zero
+                // diagnostics, surfacing only as an opaque QUIC_STATUS_INTERNAL_ERROR to msquic. Log
+                // it — still never rethrows across the native boundary, but the failure is now
+                // observable instead of lost.
+                System.err.println("[msquic] upcall handler threw, returning QUIC_STATUS_INTERNAL_ERROR: $t")
                 Constants.QUIC_STATUS_INTERNAL_ERROR
             }
     }
