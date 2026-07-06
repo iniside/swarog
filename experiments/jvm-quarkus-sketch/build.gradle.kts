@@ -1,5 +1,6 @@
 import io.gitlab.arturbosch.detekt.Detekt
 import io.gitlab.arturbosch.detekt.extensions.DetektExtension
+import kotlinx.kover.gradle.plugin.dsl.KoverProjectExtension
 import org.gradle.api.artifacts.component.ComponentIdentifier
 import org.gradle.api.artifacts.component.ProjectComponentIdentifier
 import org.gradle.api.artifacts.result.ResolvedComponentResult
@@ -29,6 +30,7 @@ plugins {
     kotlin("plugin.jpa") apply false
     id("io.quarkus") apply false
     id("io.gitlab.arturbosch.detekt") apply false
+    id("org.jetbrains.kotlinx.kover") apply false
 }
 
 // Common config for every Kotlin module — repositories, jvmTarget=JVM_26, java toolchain 26,
@@ -97,6 +99,58 @@ subprojects {
         // Real gate: `check` (and therefore `build`) fails on a detekt finding, same as the
         // composition/admin-parity verification tasks below.
         tasks.named("check") { dependsOn(tasks.withType<Detekt>()) }
+
+        // Kover 0.9.8 — coverage REPORTING ONLY at this step. Applied reactively per Kotlin
+        // subproject, exactly like detekt above, so a new module gets a PER-MODULE HTML/XML report
+        // for free (`./gradlew :inventory:koverHtmlReport`, etc.) with zero per-module wiring.
+        //
+        // PER-MODULE ALONE IS NOT ENOUGH here: `:inventory`'s own report only reflects coverage from
+        // `:inventory:test` (the pure-unit `InventoryAuthorizationUnitTest`) — it does NOT see the
+        // production code exercised by the cross-module `@QuarkusTest`s that live in
+        // `app/src/test/kotlin/domain/` (per the test-infra invariant), even though those tests DO
+        // execute `inventory`'s REST/entity/event-listener code as part of the wired monolith. That
+        // is exactly the Kover×Quarkus classloading risk this step is meant to smoke — verified below
+        // by the ROOT aggregate report added directly under (see `merge { allProjects() }`), which
+        // combines every subproject's coverage into one number and DID show inventory/characters
+        // production classes at non-zero coverage where the per-module report alone showed 0%.
+        //
+        // NO `koverVerify` here and NOT wired into `check` — `accounts`, `characters`, and `admin`
+        // have zero tests today, so a threshold gate now would immediately red-line `check` before
+        // Steps 2-5 land any tests. The gate is added in a later step once real coverage exists.
+        apply(plugin = "org.jetbrains.kotlinx.kover")
+        extensions.configure<KoverProjectExtension> {
+            reports {
+                filters {
+                    excludes {
+                        classes("*.*Dto", "*.*Payload", "*edge.msquic.*")
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Root aggregate report — merges every subproject's coverage (including cross-module @QuarkusTest
+// runs that live in `app/src/test/kotlin/domain/` but execute `inventory`/`characters` production
+// code) into one `:koverHtmlReport`/`:koverXmlReport`. This is what actually answers "does the
+// cross-module @QuarkusTest suite cover inventory's production classes" — a PER-MODULE report can't,
+// because `:inventory:test` never runs those tests. Root carries no `io.quarkus`/`kotlin.jvm` plugin
+// itself, so this is a plain (non-reactive) `apply` at the bottom of the script, after every
+// subproject's `kover` config above has had a chance to register. Needs its own `repositories {}`
+// (the `mavenCentral()` above is declared inside `subprojects {}` and doesn't apply to root) so the
+// koverJvmReporter/koverJvmAgent configurations Kover creates on root can resolve.
+repositories { mavenCentral() }
+apply(plugin = "org.jetbrains.kotlinx.kover")
+extensions.configure<KoverProjectExtension> {
+    merge {
+        allProjects()
+    }
+    reports {
+        filters {
+            excludes {
+                classes("*.*Dto", "*.*Payload", "*edge.msquic.*")
+            }
+        }
     }
 }
 

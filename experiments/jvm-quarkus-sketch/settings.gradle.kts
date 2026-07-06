@@ -2,6 +2,7 @@ pluginManagement {
     val quarkusPluginVersion: String by settings
     val kotlinVersion: String by settings
     val detektVersion: String by settings
+    val koverVersion: String by settings
     repositories {
         mavenCentral()
         gradlePluginPortal()
@@ -13,6 +14,7 @@ pluginManagement {
         id("io.quarkus") version quarkusPluginVersion
         id("io.quarkus.extension") version quarkusPluginVersion
         id("io.gitlab.arturbosch.detekt") version detektVersion
+        id("org.jetbrains.kotlinx.kover") version koverVersion
     }
 }
 rootProject.name = "jvm-quarkus-sketch"

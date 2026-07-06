@@ -47,6 +47,11 @@ dependencies {
     // dedup, and the authorization seam, exercised against the wired monolith with a real Postgres
     // (DB strategy: local `jvmsketch` DB — Docker/Dev Services are unavailable on this box).
     testImplementation("io.quarkus:quarkus-junit5")
+    // HTTP-assertion DSL for @QuarkusTest REST tests (P0-GRANT-REST, P0-ADMIN-DEGRADE) + CDI
+    // mock/spy support for substituting a bean in @QuarkusTest (P0-ROLES, QuarkusMock smoke).
+    // Versions come from the Quarkus BOM (enforcedPlatform above) — no explicit version here.
+    testImplementation("io.rest-assured:rest-assured")
+    testImplementation("io.quarkus:quarkus-junit5-mockito")
 }
 
 allOpen {

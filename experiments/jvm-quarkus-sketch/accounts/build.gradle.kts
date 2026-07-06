@@ -21,6 +21,12 @@ dependencies {
 
     api(project(":accounts-events"))   // PlayerRegistered appears in this module's public API
     implementation(project(":platform"))
+
+    // `accounts` had no test source set before this. Pure-unit + module-level tests only (matches
+    // the `inventory`/`platform` pattern) — cross-module @QuarkusTest still lives in
+    // `app/src/test/kotlin/domain/`, since only app-shells apply `io.quarkus`.
+    testImplementation("org.junit.jupiter:junit-jupiter:5.11.0")
+    testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 
 // CDI normal-scoped beans get client proxies; Hibernate proxies need open entities.

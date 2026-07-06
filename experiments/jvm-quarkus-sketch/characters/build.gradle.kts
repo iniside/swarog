@@ -26,6 +26,12 @@ dependencies {
     implementation(project(":edge"))     // edge RPC core + MsQuicServerTransport (ownerOf over QUIC)
     api(project(":admin-api"))           // @Produces Item (public return type)
     implementation(project(":platform"))
+
+    // `characters` had no test source set before this. Pure-unit + module-level tests only (matches
+    // the `inventory`/`platform` pattern) — cross-module @QuarkusTest still lives in
+    // `app/src/test/kotlin/domain/`, since only app-shells apply `io.quarkus`.
+    testImplementation("org.junit.jupiter:junit-jupiter:5.11.0")
+    testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 
 allOpen {
