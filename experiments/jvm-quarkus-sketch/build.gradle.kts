@@ -339,6 +339,12 @@ data class CompositionRule(val forbidden: Set<String>, val forbidContracts: Bool
 val compositionRules = mapOf(
     ":inventory-service" to CompositionRule(setOf(":characters", ":accounts"), forbidContracts = false),
     ":characters-service" to CompositionRule(setOf(":inventory", ":admin", ":characters-client"), forbidContracts = false),
+    // gateway-service is a PURE prefix router: it byte-relays and hosts NO feature module, so none of
+    // the feature impls may be on its resolved runtime classpath (directly or transitively).
+    ":gateway-service" to CompositionRule(
+        setOf(":characters", ":inventory", ":accounts", ":admin", ":characters-client"),
+        forbidContracts = false,
+    ),
     ":edge" to CompositionRule(emptySet(), forbidContracts = true),
 )
 

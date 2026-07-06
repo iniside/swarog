@@ -50,6 +50,12 @@ include("app")
 include("characters-service")
 include("inventory-service")
 
+// gateway = the external front-door process: a QUIC prefix router (characters.* / inventory.* -> the
+// owning service). Impl module `gateway` (plain lib, recomposes `edge`) + its app-shell `gateway-service`
+// (io.quarkus, roles=gateway, NO feature impls).
+include("gateway")
+include("gateway-service")
+
 // Verification Layer 3 (OPT-IN demo) — a Quarkus build-time extension that re-implements Layer-1's
 // architecture checks against ArC's AUGMENTED bean graph + Jandex, failing `quarkusBuild`. Two modules:
 //   arch-rules            = the (empty) RUNTIME; its generated quarkus-extension.properties descriptor is
