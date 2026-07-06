@@ -75,4 +75,8 @@ class CharactersEdgeServer(
     fun stop(@Observes ev: ShutdownEvent) {
         transport?.let { runCatching { it.close() } }
     }
+
+    /** Test-only view of the QUIC transport: null until [start] actually stands up the listener, so a
+     *  role-gating test can assert the monolith/non-hosting skip returned before any native setup. */
+    internal fun transportForTest(): MsQuicServerTransport? = transport
 }
