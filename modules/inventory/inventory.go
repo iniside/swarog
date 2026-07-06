@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"gamebackend/bus"
+	"gamebackend/edge"
 	"gamebackend/lifecycle"
 	"gamebackend/modules/admin/adminapi"
 	"gamebackend/modules/characters/charactersevents"
@@ -37,8 +38,15 @@ type charactersSvc interface {
 type Module struct {
 	log        *slog.Logger
 	store      *store
+	svc        *service
 	accounts   accountsSvc
 	characters charactersSvc
+
+	// Edge, when non-nil, is the process-wide QUIC RPC server (constructed and
+	// started by main() only in a split that hosts this module). Init registers
+	// the "inventory.list" handler on it so a gateway can route player-facing
+	// inventory reads to this peer. nil in the monolith — no edge exposure.
+	Edge *edge.Server
 }
 
 func (*Module) Name() string       { return "inventory" }
@@ -86,7 +94,8 @@ func (*Module) Migrate(_ context.Context, db *sql.DB) error {
 // service closes over m.store alone, never a Required dependency.
 func (m *Module) Register(ctx *lifecycle.Context) error {
 	m.store = &store{db: ctx.DB, log: ctx.Log}
-	registry.Provide(ctx.Registry, "inventory", &service{store: m.store})
+	m.svc = &service{store: m.store}
+	registry.Provide(ctx.Registry, "inventory", m.svc)
 	return nil
 }
 
@@ -121,6 +130,14 @@ func (m *Module) Init(ctx *lifecycle.Context) error {
 	ctx.Contribute(adminapi.Slot, adminapi.Item{ID: adminItemID, Section: adminSectionName, Label: adminLabel, Render: m.adminSection})
 	// GET /admin-data/inventory: the same content over HTTP for a remote admin.
 	ctx.Mux.HandleFunc("GET /admin-data/"+adminItemID, m.handleAdminData)
+
+	// Split topology: expose List over the shared QUIC edge server so a gateway
+	// can route player-facing inventory reads to this peer. Registering a handler
+	// is pure wiring (no I/O); main() starts the listener after all Inits.
+	if m.Edge != nil {
+		m.Edge.Handle("inventory.list", inventoryListEdgeHandler(m.svc))
+		m.log.Info("edge handler registered", "method", "inventory.list")
+	}
 	return nil
 }
 
@@ -319,6 +336,36 @@ func (s *service) Grant(ctx context.Context, owner Owner, itemID string, qty int
 
 func (s *service) List(ctx context.Context, owner Owner) ([]Holding, error) {
 	return s.store.list(ctx, owner)
+}
+
+// listReq/listResp are the wire DTOs for the "inventory.list" edge RPC. A
+// gateway routes a player's inventory read here; the only coupling to a
+// caller is this JSON shape + the method name.
+type listReq struct {
+	PlayerID string `json:"player_id"`
+}
+
+type listResp struct {
+	Items []Holding `json:"items"`
+}
+
+// inventoryListEdgeHandler adapts the local List capability to an
+// edge.Handler: it decodes the request, calls the service for the player's
+// own holdings, and encodes the reply. A store error is returned as the
+// handler error, which the client surfaces as a transport-level err rather
+// than a false empty list.
+func inventoryListEdgeHandler(svc *service) edge.Handler {
+	return func(reqPayload []byte) ([]byte, error) {
+		var req listReq
+		if err := json.Unmarshal(reqPayload, &req); err != nil {
+			return nil, err
+		}
+		items, err := svc.List(context.Background(), Owner{Type: "player", ID: req.PlayerID})
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(listResp{Items: items})
+	}
 }
 
 func (m *Module) auth(r *http.Request) (playerID string, ok bool, err error) {

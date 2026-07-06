@@ -90,7 +90,7 @@ deps:
   accounts:    { mayDependOn: [ lifecycle, contracts, edge ] }
   admin:       { mayDependOn: [ lifecycle, contracts ] }
   characters:  { mayDependOn: [ lifecycle, contracts, edge, outbox ] }
-  inventory:   { mayDependOn: [ lifecycle, contracts ] }
+  inventory:   { mayDependOn: [ lifecycle, contracts, edge ] }
   leaderboard: { mayDependOn: [ lifecycle, contracts ] }
   match:       { mayDependOn: [ lifecycle, contracts ] }
   rating:      { mayDependOn: [ lifecycle, contracts ] }
@@ -137,4 +137,5 @@ deps:
       - admin
       - remote
       - lifecycle
+      - edge
       - app
