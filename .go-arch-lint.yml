@@ -16,6 +16,11 @@ workdir: .
 allow:
   depOnAnyVendor: true
 
+# Test fixtures are not architecture: topiccheck's testdata packages import bus and
+# each other only to exercise the analyzer, so exclude them from the boundary check.
+exclude:
+  - tools/topiccheck/testdata
+
 components:
   # The core foundations, split from the old monolithic `core`:
   #   bus/registry/contrib are LEAVES (stdlib only), importable by everyone (commonComponents);
@@ -56,6 +61,11 @@ components:
   # Transport-level front door: a QUIC prefix router + HTTP reverse proxy. Imports
   # edge + stdlib only, never a module impl — the player-facing edge of the mesh.
   gateway:     { in: gateway }
+
+  # Bespoke whole-module static analyzer: flags event topics defined via
+  # bus.Define but never subscribed via bus.On. Imports ONLY x/tools + stdlib
+  # (never a gamebackend package) — a standalone dev tool, not part of any binary.
+  topiccheck:  { in: tools/topiccheck }
 
   # The reusable boot sequence: open DB, wire Context, two-phase Build, Migrate,
   # Start, HTTP + optional edge listener, graceful shutdown. It is topology-blind
@@ -107,6 +117,11 @@ deps:
   # The gateway is a transport-level front door: it relays raw edge calls and
   # reverse-proxies HTTP, so it needs only the edge transport (+ stdlib).
   gateway:     { mayDependOn: [ edge ] }
+
+  # NOTE: `topiccheck` is intentionally ABSENT from `deps` (like the leaves and
+  # `contracts` above): with no entry it may use only commonComponents + vendor.
+  # It imports ONLY x/tools (covered by depOnAnyVendor) + stdlib, never a
+  # gamebackend package — a dev tool that inspects source, not linked into a binary.
 
   # The boot sequence wires whatever module list it is handed; it only knows the
   # lifecycle contract and the edge server type it may start.
