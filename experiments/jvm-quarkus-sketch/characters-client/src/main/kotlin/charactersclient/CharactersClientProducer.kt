@@ -4,6 +4,7 @@ import characters.charactersapi.CharactersUnavailableException
 import characters.charactersapi.OwnerOfReply
 import characters.charactersapi.OwnerOfRequest
 import characters.charactersapi.PlayerCharacters
+import edge.CachedResource
 import edge.EdgeClient
 import edge.EdgeConnection
 import edge.msquic.MsQuicClientTransport
@@ -59,10 +60,20 @@ internal class EdgeRemotePlayerCharacters(target: String) : PlayerCharacters {
     }
 
     private val transport = MsQuicClientTransport()
-    private val lock = Any()
 
-    @Volatile private var connection: EdgeConnection? = null
-    @Volatile private var client: EdgeClient? = null
+    // The lazy, invalidatable connection cache. The double-checked-locking + invalidation that used to
+    // live inline here is now [CachedResource] (in `edge`), so the tricky concurrency is one small
+    // type that Lincheck model-checks in isolation. Behaviour is unchanged: dial+start once on first
+    // call, reuse the same [EdgeClient], and on failure [invalidate] closes the connection so the next
+    // call reconnects. The cached value bundles the connection + its client — [invalidate] closes the
+    // CONNECTION (as before), which unblocks the client's reader.
+    private val cache = CachedResource<EdgeSession>(
+        create = {
+            val conn = transport.connect(host, port)
+            EdgeSession(conn, EdgeClient(conn).apply { start() })
+        },
+        close = { it.connection.close() },
+    )
 
     @Suppress("TooGenericExceptionCaught") // deliberately broad: the edge-RPC client's failure modes
     // (dead connection, timed-out call, native-transport error) are all unchecked and untyped by
@@ -92,25 +103,14 @@ internal class EdgeRemotePlayerCharacters(target: String) : PlayerCharacters {
     private fun callOnce(characterId: Long): OwnerOfReply =
         ensureClient().call("characters.ownerOf", OwnerOfRequest(characterId), OwnerOfReply::class.java)
 
-    /** Lazily establishes (and caches) the QUIC connection + [EdgeClient]. Synchronized double-check. */
-    private fun ensureClient(): EdgeClient {
-        client?.let { return it }
-        synchronized(lock) {
-            client?.let { return it }
-            val conn = transport.connect(host, port)
-            val c = EdgeClient(conn).apply { start() }
-            connection = conn
-            client = c
-            return c
-        }
-    }
+    /** Lazily establishes (and caches) the QUIC connection + [EdgeClient] via the double-checked [cache]. */
+    private fun ensureClient(): EdgeClient = cache.get().client
 
     /** Drops the cached connection so the next [ensureClient] reconnects. Best-effort close of the old one. */
     private fun invalidate() {
-        synchronized(lock) {
-            connection?.let { runCatching { it.close() } }
-            connection = null
-            client = null
-        }
+        cache.invalidate()
     }
 }
+
+/** The cached unit: one QUIC [EdgeConnection] and the [EdgeClient] driving it. Invalidation closes the connection. */
+internal class EdgeSession(val connection: EdgeConnection, val client: EdgeClient)

@@ -30,6 +30,10 @@ dependencies {
     // Pure JVM unit test over the loopback transport — plain JUnit5, no Quarkus boot.
     testImplementation("org.junit.jupiter:junit-jupiter:5.11.0")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
+
+    // Lincheck (JetBrains concurrency framework): model-checking of the hand-rolled double-checked
+    // connection cache (CachedResource) — it explores thread interleavings exhaustively, not by luck.
+    testImplementation("org.jetbrains.kotlinx:lincheck:2.39")
 }
 
 allOpen {
@@ -40,7 +44,12 @@ allOpen {
 // Linker downcall/upcall). JDK 22+ requires the module to be granted native access explicitly, or the
 // restricted calls throw at runtime. The unit tests exercise the real msquic.dll, so grant it here.
 tasks.test {
-    jvmArgs("--enable-native-access=ALL-UNNAMED")
+    // Lincheck (model-checking of CachedResource) self-attaches a byte-buddy instrumentation agent at
+    // runtime. Under JDK 26 that dynamic attach WORKS with no --add-opens/--add-exports at all (verified
+    // — the model checker ran green without them); this flag only opts into the dynamic agent load
+    // explicitly, silencing the "agents will be disallowed by default in a future release" warning and
+    // future-proofing the gate. No other Lincheck-specific JVM args are required on this JVM.
+    jvmArgs("--enable-native-access=ALL-UNNAMED", "-XX:+EnableDynamicAgentLoading")
     // The live QUIC echo test (Krok 5) needs a schannel server cert identified by thumbprint. Default
     // to the provisioned GameBackend-Edge cert so it runs locally; a CI without a cert can override
     // this to blank (the test then self-skips via Assumptions.assumeTrue).
