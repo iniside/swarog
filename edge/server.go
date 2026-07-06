@@ -186,18 +186,20 @@ func (s *Server) serveStream(stream *quic.Stream) {
 // dispatch decodes the request envelope, invokes the handler, and builds the
 // response envelope. Unknown methods and handler errors/panics become OK:false.
 func (s *Server) dispatch(reqBytes []byte) (resp response) {
-	var req request
-	if err := s.codec.Decode(reqBytes, &req); err != nil {
-		return response{OK: false, Error: "edge: malformed request envelope"}
-	}
-
-	// Recover a panicking handler into an error response so one bad call cannot
-	// take down the stream goroutine silently. Covers the forward path too.
+	// Recover a panicking handler — or a panicking codec Decode (a future custom
+	// Codec could panic on adversarial bytes) — into an error response so one bad
+	// call cannot take down the stream goroutine silently. Installed before Decode
+	// so it covers the decode too; also covers the forward path.
 	defer func() {
 		if r := recover(); r != nil {
 			resp = response{OK: false, Error: fmt.Sprintf("edge: handler panic: %v", r)}
 		}
 	}()
+
+	var req request
+	if err := s.codec.Decode(reqBytes, &req); err != nil {
+		return response{OK: false, Error: "edge: malformed request envelope"}
+	}
 
 	// Exact registration always wins.
 	if h, ok := s.handlers[req.Method]; ok {

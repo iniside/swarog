@@ -8,6 +8,7 @@ require (
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/quic-go/quic-go v0.60.0
 	golang.org/x/crypto v0.53.0
+	pgregory.net/rapid v1.3.0
 )
 
 require (
