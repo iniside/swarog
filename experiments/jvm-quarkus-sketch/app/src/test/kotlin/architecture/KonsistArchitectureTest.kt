@@ -70,12 +70,17 @@ class KonsistArchitectureTest {
      * NOT the converse: other `@Path`-annotated classes exist under distinct, intentional names
      * (`InventoryEventSink`, the REST-client interface `AdminDataClient`), so checking "every
      * `@Path` class ends in Resource" would be false today and this only checks one direction.
+     *
+     * Scoped to the HTTP-serving impl packages: `Resource` is a generic suffix, so it legitimately
+     * names non-web utilities elsewhere (`edge.CachedResource` is a concurrency cache, not an
+     * endpoint). The JAX-RS convention only holds where JAX-RS resources actually live.
      */
     @Test
     fun `classes named Resource are JAX-RS resources`() {
-        Konsist.scopeFromProject().classes().withNameEndingWith("Resource").assertTrue {
-            it.hasAnnotationOf(Path::class)
-        }
+        Konsist.scopeFromProject().classes()
+            .withNameEndingWith("Resource")
+            .filter { klass -> implPackages.any { klass.resideInPackage("$it..") } }
+            .assertTrue { it.hasAnnotationOf(Path::class) }
     }
 
     /**
