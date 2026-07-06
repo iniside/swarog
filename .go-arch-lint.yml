@@ -53,6 +53,9 @@ components:
   # dependency's name and contributes a RemoteURL admin item. It satisfies
   # consumer interfaces structurally, so it never imports a module's impl.
   remote:      { in: modules/remote }
+  # Transport-level front door: a QUIC prefix router + HTTP reverse proxy. Imports
+  # edge + stdlib only, never a module impl — the player-facing edge of the mesh.
+  gateway:     { in: gateway }
 
   # The reusable boot sequence: open DB, wire Context, two-phase Build, Migrate,
   # Start, HTTP + optional edge listener, graceful shutdown. It is topology-blind
@@ -67,6 +70,7 @@ components:
   cmdServer:         { in: cmd/server }
   cmdCharactersSvc:  { in: cmd/characters-svc }
   cmdInventorySvc:   { in: cmd/inventory-svc }
+  cmdGatewaySvc:     { in: cmd/gateway-svc }
 
 commonComponents:
   # The three LEAVES are importable by everyone and depend on nothing internal. lifecycle is
@@ -99,6 +103,10 @@ deps:
   # The remote stub is composition-time plumbing: it wraps edge clients + the
   # admin contract, never a module implementation.
   remote:      { mayDependOn: [ lifecycle, contracts, edge ] }
+
+  # The gateway is a transport-level front door: it relays raw edge calls and
+  # reverse-proxies HTTP, so it needs only the edge transport (+ stdlib).
+  gateway:     { mayDependOn: [ edge ] }
 
   # The boot sequence wires whatever module list it is handed; it only knows the
   # lifecycle contract and the edge server type it may start.
@@ -139,3 +147,7 @@ deps:
       - lifecycle
       - edge
       - app
+  cmdGatewaySvc:
+    mayDependOn:
+      - gateway
+      - edge
