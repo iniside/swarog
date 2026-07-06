@@ -88,7 +88,7 @@ func (o *epicOAuth) exchangeCode(ctx context.Context, code string) (string, erro
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
 		return "", fmt.Errorf("token endpoint returned %d: %s", resp.StatusCode, body)

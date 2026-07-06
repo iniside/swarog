@@ -106,7 +106,7 @@ func (s *store) listAll(ctx context.Context, limit int) ([]Holding, error) {
 }
 
 func scanHoldings(rows *sql.Rows) ([]Holding, error) {
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	out := []Holding{}
 	for rows.Next() {
 		var h Holding

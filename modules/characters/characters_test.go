@@ -25,7 +25,7 @@ func testDB(t *testing.T) *sql.DB {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	if err := db.PingContext(ctx); err != nil {
-		db.Close()
+		_ = db.Close()
 		t.Skipf("postgres unreachable: %v", err)
 	}
 	if _, err := db.Exec(schemaDDL); err != nil {
@@ -45,7 +45,7 @@ func newUUID(t *testing.T, db *sql.DB) string {
 
 func TestCharactersStore(t *testing.T) {
 	db := testDB(t)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	s := &store{db: db, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	ctx := context.Background()
 
