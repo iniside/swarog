@@ -2,6 +2,7 @@ package characters
 
 import io.smallrye.common.annotation.Blocking
 import jakarta.enterprise.context.ApplicationScoped
+import jakarta.ws.rs.BadRequestException
 import jakarta.ws.rs.DELETE
 import jakarta.ws.rs.POST
 import jakarta.ws.rs.Path
@@ -39,7 +40,14 @@ class CharactersResource(
         @QueryParam("playerId") playerId: String?,
     ): String {
         val resolvedName = name ?: "unnamed"
-        val owner = playerId?.let(UUID::fromString) ?: UUID.randomUUID()
+        // `player_id` is a plain column (no cross-module FK), but it must still be a well-formed UUID.
+        // A malformed value is a client error, not a server fault: map the JDK's IllegalArgumentException
+        // to 400 instead of letting it bubble to a 500 (§Bugs #4).
+        val owner = try {
+            playerId?.let(UUID::fromString) ?: UUID.randomUUID()
+        } catch (e: IllegalArgumentException) {
+            throw BadRequestException("playerId must be a valid UUID", e)
+        }
         return characters.create(owner, resolvedName).toString()
     }
 

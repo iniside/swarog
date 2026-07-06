@@ -47,6 +47,12 @@ dependencies {
     // dedup, and the authorization seam, exercised against the wired monolith with a real Postgres
     // (DB strategy: local `jvmsketch` DB — Docker/Dev Services are unavailable on this box).
     testImplementation("io.quarkus:quarkus-junit5")
+    // The P1 behavioral tests drive transactions and Panache reads directly (QuarkusTransaction to wrap
+    // out-of-request Panache lookups, EntityManager to force a mid-tx failure, Character.count() for the
+    // admin KPI). `characters`/`accounts` declare these as `implementation`, which Gradle does NOT expose
+    // transitively to app's test classpath — same reason quarkus-rest is repeated above. BOM-versioned.
+    testImplementation("io.quarkus:quarkus-narayana-jta")
+    testImplementation("io.quarkus:quarkus-hibernate-orm-panache-kotlin")
     // HTTP-assertion DSL for @QuarkusTest REST tests (P0-GRANT-REST, P0-ADMIN-DEGRADE) + CDI
     // mock/spy support for substituting a bean in @QuarkusTest (P0-ROLES, QuarkusMock smoke).
     // Versions come from the Quarkus BOM (enforcedPlatform above) — no explicit version here.

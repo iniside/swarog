@@ -27,6 +27,10 @@ dependencies {
     // `app/src/test/kotlin/domain/`, since only app-shells apply `io.quarkus`.
     testImplementation("org.junit.jupiter:junit-jupiter:5.11.0")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
+    // Deserializing the Kotlin data-class payload back to its type (JSON round-trip) needs the Kotlin
+    // module's constructor introspection — plain jackson-databind can't find the creator. Version is
+    // BOM-managed. Mirrors the Quarkus ObjectMapper (which registers this module) used in production.
+    testImplementation("com.fasterxml.jackson.module:jackson-module-kotlin")
 }
 
 // CDI normal-scoped beans get client proxies; Hibernate proxies need open entities.
