@@ -48,7 +48,7 @@ class AdminResource(
     /** view models for the template */
     class NavItem(val label: String, val slug: String, val active: Boolean)
     class NavGroup(val section: String, val items: List<NavItem>)
-    class Page(val title: String, val kpis: List<Kpi> = emptyList(), val table: Table? = null, val err: String? = null)
+    class Page(val title: String, val kpis: List<Kpi> = emptyList(), val table: Table? = null)
 
     /** Local providers indexed by id — the co-located modules this process can render in-process. */
     private fun localsById(): Map<String, AdminDataProvider> = localProviders.associateBy { it.id }
@@ -153,20 +153,41 @@ class AdminResource(
 }
 
 /**
- * Slug + DEDUPE over the ALREADY-SORTED item list (lowercase, space→`-`, empty→`item`, collisions get
- * `-2`/`-3`/…). Extracted as a pure WHOLE-LIST function — dedupe is stateful ACROSS the sorted list (the
- * `seen` set), so a per-label helper would silently break collision numbering — so it is unit-testable
- * without a Qute Template or CDI. Output is byte-identical to the previous inline `resolve()` loop.
+ * Slug + DEDUPE over the ALREADY-SORTED item list (empty→`item`, collisions get `-2`/`-3`/…).
+ * Extracted as a pure WHOLE-LIST function — dedupe is stateful ACROSS the sorted list (the `seen`
+ * set), so a per-label helper would silently break collision numbering — so it is unit-testable
+ * without a Qute Template or CDI.
+ *
+ * Per-label rule mirrors Go's `modules/admin/admin.go#slugify` EXACTLY so the two implementations
+ * agree: lowercase, keep `[a-z0-9]`, map space/`-`/`_`→`-`, DROP every other rune, then trim
+ * leading/trailing `-`. The earlier Kotlin port only replaced the literal space, so a label like
+ * `Foo/Bar` kept its `/` and produced a slug that broke `/admin/{slug}` routing (§Bugs #5).
  */
 internal fun slugify(sortedItems: List<AdminItemDto>): List<AdminResource.Resolved> {
     val seen = HashSet<String>()
     return sortedItems.map { dto ->
-        val base = dto.label.lowercase().replace(" ", "-").ifEmpty { "item" }
+        val base = slugBase(dto.label).ifEmpty { "item" }
         var s = base
         var n = 2
         while (!seen.add(s)) { s = "$base-$n"; n++ }
         AdminResource.Resolved(dto, s)
     }
+}
+
+/**
+ * The per-label slug rule, mirrored 1:1 from Go's `slugify`: lowercase, keep `[a-z0-9]`, map
+ * space/`-`/`_`→`-`, drop all other runes, trim leading/trailing `-`. Returns `""` for an all-
+ * dropped label; the [slugify] caller applies the `item` fallback (matching Go's `items()`).
+ */
+private fun slugBase(label: String): String {
+    val b = StringBuilder()
+    for (c in label.lowercase()) {
+        when {
+            c in 'a'..'z' || c in '0'..'9' -> b.append(c)
+            c == ' ' || c == '-' || c == '_' -> b.append('-')
+        }
+    }
+    return b.toString().trim('-')
 }
 
 /**
