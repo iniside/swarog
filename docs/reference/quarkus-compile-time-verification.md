@@ -138,3 +138,16 @@ risk — each tool was de-risked before adoption (like Konsist).
 **Cross-layer catch:** the Konsist `*Resource ⟹ @Path` rule false-flagged the new `edge.CachedResource`
 (a concurrency util, not an endpoint); the rule was too broad and got scoped to the HTTP-serving impl packages
 (`a71a296`). The verification ladder caught its own naming collision — which is the point.
+
+**Auditing the DB tests found three more real defects — "green build ≠ correct" in the flesh** (`69b2d8e`,
+`ae381f3`). The domain `@QuarkusTest`s were green, but inspecting actual `jvmsketch` rows before/after runs
+revealed: (1) `app.Seed` ran under test (monolith boot) and `TRUNCATE`s every table first — so `./gradlew test`
+WIPED the dev DB and left seed rows behind; gated behind `app.seed.enabled=false` in the test profile. (2) The
+outbox cleanup used `payload::text LIKE '%"characterId":ID%'` but the jsonb serializes `"characterId": ID` (a
+space) — so it never matched: outbox rows leaked and ACCUMULATED every run; replaced with the jsonb operator
+`payload->>'characterId' = ID`. (3) The Layer-0 ArC flags were written with INLINE `.properties` comments
+(`=true # …`) — which have no such thing, so the value parsed as a non-`true` string → Boolean `false`
+(SRCFG01008): both ArC canaries were silently OFF. **Lesson: a passing test/green build proves nothing until you
+verify the effect it claims — inspect the rows, watch for `SRCFG01008`, and remember `.properties` has no inline
+comments.** Proof of isolation now standing: from a truncated baseline, two consecutive test runs leave every
+table at 0, and the crown-jewel test goes RED when the wipe is mutated.
