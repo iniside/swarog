@@ -3,6 +3,7 @@ package edge
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"errors"
 
 	quic "github.com/quic-go/quic-go"
@@ -73,6 +74,48 @@ func (c *Client) Call(ctx context.Context, method string, req any, resp any) err
 		return c.codec.Decode(env.Payload, resp)
 	}
 	return nil
+}
+
+// CallRaw performs one RPC relaying raw payload bytes verbatim: payload is
+// already-encoded request bytes (assigned straight into the envelope, never run
+// through the codec again) and the returned bytes are the response payload
+// exactly as the server sent them (no decode). This is the gateway relay path —
+// it neither knows nor cares about the payload's shape. Stream lifecycle matches
+// Call: fresh stream, write, close write side, read, decode only the envelope.
+func (c *Client) CallRaw(ctx context.Context, method string, payload []byte) ([]byte, error) {
+	envBytes, err := c.codec.Encode(request{Method: method, Payload: json.RawMessage(payload)})
+	if err != nil {
+		return nil, err
+	}
+
+	stream, err := c.conn.OpenStreamSync(ctx)
+	if err != nil {
+		return nil, err
+	}
+	// Ensure the stream is not leaked if we return before a clean close.
+	defer stream.CancelRead(0)
+
+	if err := writeFrame(stream, envBytes); err != nil {
+		return nil, err
+	}
+	// Close the write side: signals EOF so the server can read the full frame.
+	if err := stream.Close(); err != nil {
+		return nil, err
+	}
+
+	respBytes, err := readFrame(stream)
+	if err != nil {
+		return nil, err
+	}
+
+	var env response
+	if err := c.codec.Decode(respBytes, &env); err != nil {
+		return nil, err
+	}
+	if !env.OK {
+		return nil, errors.New(env.Error)
+	}
+	return env.Payload, nil
 }
 
 // Close tears down the persistent connection.
