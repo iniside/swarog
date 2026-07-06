@@ -29,6 +29,7 @@ BIN_DIR="bin"
 SERVER_BIN="$BIN_DIR/server"
 CHARACTERS_BIN="$BIN_DIR/characters-svc"
 INVENTORY_BIN="$BIN_DIR/inventory-svc"
+GATEWAY_BIN="$BIN_DIR/gateway-svc"
 
 DEFAULT_DSN="postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable"
 DATABASE_URL="${DATABASE_URL:-$DEFAULT_DSN}"
@@ -65,6 +66,8 @@ else
     go build -o "$CHARACTERS_BIN" ./cmd/characters-svc
     echo "Building ./cmd/inventory-svc -> $INVENTORY_BIN ..."
     go build -o "$INVENTORY_BIN" ./cmd/inventory-svc
+    echo "Building ./cmd/gateway-svc -> $GATEWAY_BIN ..."
+    go build -o "$GATEWAY_BIN" ./cmd/gateway-svc
 fi
 echo "Build OK."
 
@@ -153,21 +156,35 @@ wait_healthy 8080 "A (characters-svc)"
 # Process B: inventory-svc (inventory + admin, its OWN binary). accounts/
 # characters resolve via remote stubs dialing A's edge server; admin fan-out
 # reaches A's /admin-data/characters over PEER_HTTP_ADDR.
-echo "Starting B (inventory-svc: inventory,admin) on :8081 ..."
+echo "Starting B (inventory-svc: inventory,admin) on :8081, edge :9001 ..."
 start_server inventory "$INVENTORY_BIN" \
     PORT=8081 \
     DATABASE_URL="$DATABASE_URL" \
+    EDGE_ADDR=:9001 \
     CHARACTERS_EDGE_ADDR=localhost:9000 \
     ACCOUNTS_EDGE_ADDR=localhost:9000 \
     PEER_HTTP_ADDR=localhost:8080
 wait_healthy 8081 "B (inventory-svc)"
+
+# Process C: gateway-svc (stateless QUIC prefix router + HTTP reverse proxy
+# front door). Fronts both A and B, so it starts LAST, once both are healthy.
+echo "Starting C (gateway-svc: player front door) on :8082, edge :9100 ..."
+start_server gateway "$GATEWAY_BIN" \
+    PORT=8082 \
+    GATEWAY_EDGE_ADDR=:9100 \
+    CHARACTERS_EDGE_ADDR=localhost:9000 \
+    INVENTORY_EDGE_ADDR=localhost:9001 \
+    CHARACTERS_HTTP_ADDR=localhost:8080 \
+    INVENTORY_HTTP_ADDR=localhost:8081
+wait_healthy 8082 "C (gateway-svc)"
 
 write_pids_file
 
 echo ""
 echo "=== microservices running ==="
 echo "  A (characters-svc: accounts,characters): http://localhost:8080  (edge :9000)"
-echo "  B (inventory-svc: inventory,admin):      http://localhost:8081"
+echo "  B (inventory-svc: inventory,admin):      http://localhost:8081  (edge :9001)"
 echo "  admin UI (B):                            http://localhost:8081/admin"
-echo "  logs: $RUN_DIR/characters.{out,err}.log, $RUN_DIR/inventory.{out,err}.log"
+echo "  player front door (gateway):              quic localhost:9100 / http http://localhost:8082"
+echo "  logs: $RUN_DIR/characters.{out,err}.log, $RUN_DIR/inventory.{out,err}.log, $RUN_DIR/gateway.{out,err}.log"
 echo "  teardown: ./run.sh --teardown"

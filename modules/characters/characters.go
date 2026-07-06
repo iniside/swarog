@@ -117,6 +117,8 @@ func (m *Module) Init(ctx *lifecycle.Context) error {
 	if m.Edge != nil {
 		m.Edge.Handle("characters.ownerOf", ownerOfEdgeHandler(m.svc))
 		m.log.Info("edge handler registered", "method", "characters.ownerOf")
+		m.Edge.Handle("characters.list", charactersListEdgeHandler(m.svc))
+		m.log.Info("edge handler registered", "method", "characters.list")
 	}
 	return nil
 }
@@ -164,6 +166,35 @@ func ownerOfEdgeHandler(svc *service) edge.Handler {
 			return nil, err
 		}
 		return json.Marshal(ownerOfResp{PlayerID: pid, Ok: ok})
+	}
+}
+
+// listReq/listResp are the wire DTOs for the "characters.list" edge RPC. A
+// gateway routes a player's character list here; the only coupling to a
+// caller is this JSON shape + the method name.
+type listReq struct {
+	PlayerID string `json:"player_id"`
+}
+
+type listResp struct {
+	Characters []Character `json:"characters"`
+}
+
+// charactersListEdgeHandler adapts the local ListByPlayer capability to an
+// edge.Handler: it decodes the request, calls the service, and encodes the
+// reply. A store error is returned as the handler error, which the client
+// surfaces as a transport-level err rather than a false empty list.
+func charactersListEdgeHandler(svc *service) edge.Handler {
+	return func(reqPayload []byte) ([]byte, error) {
+		var req listReq
+		if err := json.Unmarshal(reqPayload, &req); err != nil {
+			return nil, err
+		}
+		list, err := svc.ListByPlayer(context.Background(), req.PlayerID)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(listResp{Characters: list})
 	}
 }
 

@@ -8,6 +8,8 @@ import (
 	"sync"
 	"time"
 
+	"strings"
+
 	quic "github.com/quic-go/quic-go"
 )
 
@@ -16,12 +18,25 @@ import (
 // concern (a typed helper can wrap this); the server only frames and dispatches.
 type Handler func(reqPayload []byte) (respPayload []byte, err error)
 
+// ForwardHandler is like Handler but also receives the method name, so a single
+// prefix registration can serve a whole family of methods under their original
+// names — the natural shape for a gateway that relays to a backend.
+type ForwardHandler func(method string, payload []byte) (respPayload []byte, err error)
+
+// prefixEntry pairs a method-name prefix with the ForwardHandler that serves any
+// method matching it.
+type prefixEntry struct {
+	prefix string
+	fwd    ForwardHandler
+}
+
 // Server is a QUIC RPC server. It accepts connections, then streams, and
 // dispatches one framed request per stream to a Handler registered by method
 // name. It knows nothing about the application domain — it is pure transport.
 type Server struct {
 	codec    Codec
 	handlers map[string]Handler
+	prefixes []prefixEntry
 
 	mu    sync.Mutex
 	ln    *quic.Listener
@@ -47,6 +62,14 @@ func NewServer() *Server {
 // with Serve; register all handlers before listening.
 func (s *Server) Handle(method string, h Handler) {
 	s.handlers[method] = h
+}
+
+// HandlePrefix registers a ForwardHandler for every method whose name starts
+// with prefix. An exact Handle registration always wins over any prefix; among
+// competing prefixes the longest match wins. Not safe to call concurrently with
+// Serve; register all handlers before listening.
+func (s *Server) HandlePrefix(prefix string, fwd ForwardHandler) {
+	s.prefixes = append(s.prefixes, prefixEntry{prefix: prefix, fwd: fwd})
 }
 
 // defaultConfig is the shared QUIC config: a keep-alive holds the connection
@@ -168,24 +191,49 @@ func (s *Server) dispatch(reqBytes []byte) (resp response) {
 		return response{OK: false, Error: "edge: malformed request envelope"}
 	}
 
-	h, ok := s.handlers[req.Method]
-	if !ok {
-		return response{OK: false, Error: fmt.Sprintf("edge: unknown method %q", req.Method)}
-	}
-
 	// Recover a panicking handler into an error response so one bad call cannot
-	// take down the stream goroutine silently.
+	// take down the stream goroutine silently. Covers the forward path too.
 	defer func() {
 		if r := recover(); r != nil {
 			resp = response{OK: false, Error: fmt.Sprintf("edge: handler panic: %v", r)}
 		}
 	}()
 
-	respPayload, err := h(req.Payload)
-	if err != nil {
-		return response{OK: false, Error: err.Error()}
+	// Exact registration always wins.
+	if h, ok := s.handlers[req.Method]; ok {
+		respPayload, err := h(req.Payload)
+		if err != nil {
+			return response{OK: false, Error: err.Error()}
+		}
+		return response{OK: true, Payload: respPayload}
 	}
-	return response{OK: true, Payload: respPayload}
+
+	// Otherwise, forward via the longest matching prefix registration.
+	if fwd, ok := s.longestPrefix(req.Method); ok {
+		respPayload, err := fwd(req.Method, req.Payload)
+		if err != nil {
+			return response{OK: false, Error: err.Error()}
+		}
+		return response{OK: true, Payload: respPayload}
+	}
+
+	return response{OK: false, Error: fmt.Sprintf("edge: unknown method %q", req.Method)}
+}
+
+// longestPrefix returns the ForwardHandler whose prefix is the longest one that
+// method starts with, or ok=false if none match.
+func (s *Server) longestPrefix(method string) (ForwardHandler, bool) {
+	var (
+		best    ForwardHandler
+		bestLen = -1
+	)
+	for _, e := range s.prefixes {
+		if strings.HasPrefix(method, e.prefix) && len(e.prefix) > bestLen {
+			best = e.fwd
+			bestLen = len(e.prefix)
+		}
+	}
+	return best, bestLen >= 0
 }
 
 // Close stops the accept loop, closes the listener and all live connections,

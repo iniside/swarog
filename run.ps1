@@ -26,6 +26,7 @@ $binDir = Join-Path $root 'bin'
 $serverBin = Join-Path $binDir 'server.exe'
 $charactersBin = Join-Path $binDir 'characters-svc.exe'
 $inventoryBin = Join-Path $binDir 'inventory-svc.exe'
+$gatewayBin = Join-Path $binDir 'gateway-svc.exe'
 
 $defaultDSN = 'postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable'
 if ([string]::IsNullOrWhiteSpace($DatabaseUrl)) {
@@ -74,6 +75,7 @@ if ($Mode -eq 'monolith') {
 } else {
     Build-Bin './cmd/characters-svc' $charactersBin
     Build-Bin './cmd/inventory-svc' $inventoryBin
+    Build-Bin './cmd/gateway-svc' $gatewayBin
 }
 Write-Host "Build OK." -ForegroundColor Green
 
@@ -200,14 +202,30 @@ Wait-Healthy -Port 8080 -Name 'A (characters-svc)'
 $envB = @{
     PORT                 = '8081'
     DATABASE_URL         = $DatabaseUrl
+    EDGE_ADDR            = ':9001'
     CHARACTERS_EDGE_ADDR = 'localhost:9000'
     ACCOUNTS_EDGE_ADDR   = 'localhost:9000'
     PEER_HTTP_ADDR       = 'localhost:8080'
 }
-Write-Host "Starting B (inventory-svc: inventory,admin) on :8081 ..." -ForegroundColor Cyan
+Write-Host "Starting B (inventory-svc: inventory,admin) on :8081, edge :9001 ..." -ForegroundColor Cyan
 $procB = Start-Server -BinPath $inventoryBin -EnvHash $envB -LogName 'inventory'
 $started += @{ name = 'inventory'; proc = $procB }
 Wait-Healthy -Port 8081 -Name 'B (inventory-svc)'
+
+# Process C: gateway-svc (stateless QUIC prefix router + HTTP reverse proxy
+# front door). Fronts both A and B, so it starts LAST, once both are healthy.
+$envC = @{
+    PORT                  = '8082'
+    GATEWAY_EDGE_ADDR     = ':9100'
+    CHARACTERS_EDGE_ADDR  = 'localhost:9000'
+    INVENTORY_EDGE_ADDR   = 'localhost:9001'
+    CHARACTERS_HTTP_ADDR  = 'localhost:8080'
+    INVENTORY_HTTP_ADDR   = 'localhost:8081'
+}
+Write-Host "Starting C (gateway-svc: player front door) on :8082, edge :9100 ..." -ForegroundColor Cyan
+$procC = Start-Server -BinPath $gatewayBin -EnvHash $envC -LogName 'gateway'
+$started += @{ name = 'gateway'; proc = $procC }
+Wait-Healthy -Port 8082 -Name 'C (gateway-svc)'
 
 $pidEntries = $started | ForEach-Object { @{ name = $_.name; pid = $_.proc.Id } }
 $pidEntries | ConvertTo-Json | Set-Content -Path $pidsFile
@@ -215,7 +233,8 @@ $pidEntries | ConvertTo-Json | Set-Content -Path $pidsFile
 Write-Host ""
 Write-Host "=== microservices running ===" -ForegroundColor Cyan
 Write-Host "  A (characters-svc: accounts,characters): http://localhost:8080  (edge :9000)"
-Write-Host "  B (inventory-svc: inventory,admin):      http://localhost:8081"
+Write-Host "  B (inventory-svc: inventory,admin):      http://localhost:8081  (edge :9001)"
 Write-Host "  admin UI (B):                            http://localhost:8081/admin"
-Write-Host "  logs: run/characters.{out,err}.log, run/inventory.{out,err}.log"
+Write-Host "  player front door (gateway):              quic localhost:9100 / http http://localhost:8082"
+Write-Host "  logs: run/characters.{out,err}.log, run/inventory.{out,err}.log, run/gateway.{out,err}.log"
 Write-Host "  teardown: .\run.ps1 -Teardown"

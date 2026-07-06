@@ -12,6 +12,7 @@ import (
 	"os"
 	"strings"
 
+	"gamebackend/edge"
 	"gamebackend/internal/app"
 	"gamebackend/lifecycle"
 	"gamebackend/modules/admin"
@@ -52,15 +53,18 @@ func main() {
 	accStub := remote.NewStub("accounts", peerEdgeAddr("accounts"), peerAdminURL("accounts"))
 	charStub := remote.NewStub("characters", peerEdgeAddr("characters"), peerAdminURL("characters"))
 
+	// This process hosts its own QUIC edge server so a gateway can route
+	// player-facing inventory reads ("inventory.list") to it.
+	srv := edge.NewServer()
+
 	mods := []lifecycle.Module{
-		&inventory.Module{},
+		&inventory.Module{Edge: srv},
 		&admin.Module{},
 		accStub,
 		charStub,
 	}
 
-	// No edge server: this process is a client of the peer's edge, not a host.
-	if err := app.Run(app.ConfigFromEnv(), mods, nil); err != nil {
+	if err := app.Run(app.ConfigFromEnv(), mods, srv); err != nil {
 		slog.New(slog.NewTextHandler(os.Stdout, nil)).Error("inventory-svc exited", "err", err)
 		os.Exit(1)
 	}
