@@ -175,8 +175,10 @@ if ($Teardown) {
             Write-Host "  $($entry.name) (pid $procId) already gone"
         }
     }
-    if (Test-Path $compose) {
-        # Only Postgres remains in compose (broker-less); `down` stops it if -WithPostgres started it.
+    # Only Postgres remains in compose (broker-less); `down` stops it if -WithPostgres started it. Skip
+    # entirely when docker is not on PATH: the sketch's DEFAULT mode assumes a LOCAL Postgres (no compose),
+    # so a docker-less machine must still be able to tear the JVMs down without a "docker not recognized" fault.
+    if ((Test-Path $compose) -and (Get-Command docker -ErrorAction SilentlyContinue)) {
         docker compose -f $compose down 2>&1 | Out-Host
     }
     if (Test-Path $pidsFile) { Remove-Item $pidsFile -Force }

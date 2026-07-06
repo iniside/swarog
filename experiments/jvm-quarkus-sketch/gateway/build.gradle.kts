@@ -51,4 +51,16 @@ allOpen {
 // rides transitively from the `:edge` dependency's resources; no extra dep needed.
 tasks.test {
     jvmArgs("--enable-native-access=ALL-UNNAMED")
+    // Forward the LivePlayerClientSmokeTest coordinates to the forked test JVM. Unset => the live smoke
+    // self-skips (Assumptions.assumeTrue on gateway.smoke.host), so the normal `test` sweep is unaffected;
+    // the Step-6 driver passes them (-Dgateway.smoke.host=localhost -Dgateway.smoke.playerId=... etc.)
+    // against a running install.ps1 -Mode microservices split.
+    listOf(
+        "gateway.smoke.host",
+        "gateway.smoke.port",
+        "gateway.smoke.playerId",
+        "gateway.smoke.characterName",
+        "gateway.smoke.characterId",
+        "gateway.smoke.charactersDown",
+    ).forEach { key -> System.getProperty(key)?.let { systemProperty(key, it) } }
 }
