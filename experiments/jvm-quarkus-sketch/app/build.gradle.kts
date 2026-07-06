@@ -42,6 +42,11 @@ dependencies {
     // trivial `Konsist.scopeFromProject().classes().assertTrue { true }` ran green.
     testImplementation("com.lemonappdev:konsist:0.17.3")
     testImplementation("io.quarkus:quarkus-rest")
+
+    // Behavioral domain tests (@QuarkusTest): the crown-jewel cross-module event cleanup, inbox
+    // dedup, and the authorization seam, exercised against the wired monolith with a real Postgres
+    // (DB strategy: local `jvmsketch` DB — Docker/Dev Services are unavailable on this box).
+    testImplementation("io.quarkus:quarkus-junit5")
 }
 
 allOpen {

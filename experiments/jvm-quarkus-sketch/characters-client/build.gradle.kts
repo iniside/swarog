@@ -21,6 +21,9 @@ dependencies {
     api(project(":characters-api"))       // the PlayerCharacters interface + OwnerOf DTOs (produced type)
     implementation(project(":edge"))      // edge RPC core + MsQuicClientTransport (ownerOf over QUIC)
     implementation(project(":platform"))  // shared infra slice (parity with the other modules)
+
+    testImplementation("org.junit.jupiter:junit-jupiter:5.11.0")
+    testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 
 allOpen {
