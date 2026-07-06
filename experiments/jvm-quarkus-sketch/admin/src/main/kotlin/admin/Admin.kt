@@ -172,15 +172,21 @@ internal fun slugify(sortedItems: List<AdminItemDto>): List<AdminResource.Resolv
 /**
  * Pure Basic-auth decode/validate, extracted from [AdminResource.unauthorized] for testability (a unit
  * test can exercise the malformed-header path without setting a JVM env var). Returns true when the
- * request is authorized; `expectedUser == null` ⇒ the gate is unset ⇒ open. NOTE: faithfully preserves
- * today's behavior — a malformed Base64 header still throws from [Base64.getDecoder]; the malformed→401
- * fix is a later step, this seam only pins the current logic so a test can lock it before the fix.
+ * request is authorized; `expectedUser == null` ⇒ the gate is unset ⇒ open. A malformed Base64 header
+ * ([Base64.getDecoder] throws [IllegalArgumentException]) is treated as UNauthorized (→ 401 at the
+ * caller), not a crash (→ 500): a garbage `Authorization` header is a bad credential, not a server
+ * fault (§Bugs #1).
  */
 internal fun checkBasicAuth(authHeader: String?, expectedUser: String?, expectedPass: String?): Boolean {
     if (expectedUser == null) return true
     val pass = expectedPass ?: ""
     if (authHeader != null && authHeader.startsWith("Basic ")) {
-        val decoded = String(Base64.getDecoder().decode(authHeader.removePrefix("Basic ")))
+        val decoded = try {
+            String(Base64.getDecoder().decode(authHeader.removePrefix("Basic ")))
+        } catch (_: IllegalArgumentException) {
+            // Malformed Base64 in the header → a bad credential, not a 500. Fall through to reject.
+            return false
+        }
         if (decoded == "$expectedUser:$pass") return true
     }
     return false
