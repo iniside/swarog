@@ -135,7 +135,7 @@ class LivePlayerClientSmokeTest {
             val down = client.requestRaw(
                 "characters.list", codec.encodePayload(ListCharactersRequest(playerId)), DEGRADED_TIMEOUT_MS,
             )
-            println("[live-smoke] characters.list with characters-service DOWN -> ok=${down.ok} err=${down.error}")
+            println("[live-smoke] characters.list with characters-service DOWN -> ok=${down.ok} err=${down.error ?: "<none>"}")
             assertFalse(down.ok, "a killed characters-service must surface as ok=false, not a hang")
 
             // The gateway itself stays UP and only the killed prefix fails: inventory.* still works.
