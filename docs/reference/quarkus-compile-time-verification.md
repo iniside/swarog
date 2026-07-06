@@ -97,3 +97,42 @@ earns its keep on naming + readable source-level failures. First to cut for lean
 
 Plan: `docs/plans/2026-07-05-2249-quarkus-aggressive-build-verification-plan.md` (v2, reworked after a
 grumpy-reviewer pass that killed the v1 boot-smoke/declared-dep/impl-reference designs).
+
+## Correctness-supervision tooling (behavioral, added on top of the architecture ladder)
+
+The ladder above guards *architecture*. A second pass added tools that supervise *behavioral* correctness
+(commits `26fd9db`, `194d986`, `6f8289a`, `a71a296`). Compatibility on JDK 26 / Kotlin 2.4 was the recurring
+risk — each tool was de-risked before adoption (like Konsist).
+
+- **detekt** (`1.23.8`, Gradle-task variant — NOT the compiler-plugin, which has K2 gaps) wired into `check`,
+  `maxIssues: 0`, curated to `potential-bugs`/`exceptions`/`coroutines` (style/naming off — a correctness gate,
+  not a linter). JDK-26 needed two narrow workarounds in the detekt task only: cap its PSI `--jvm-target` at 21,
+  and `System.setProperty("java.version","21.0.1")` in a `doFirst` (its vendored Kotlin's `JavaVersion.parse`
+  throws on `"26.0.1"`). **It immediately found real bugs**: a swallowed first-reconnect exception in
+  `characters-client` (now `addSuppressed`), a swallowed `Handler` error in the msquic native upcall, and a
+  blanket `catch (Exception)→400` in `InventoryResource` that mis-reported DB failures as client 400 (narrowed
+  to `IllegalStateException`→400, so persistence errors now surface as 500). Static analysis earned its keep on
+  day one.
+- **Behavioral domain tests** (JUnit5). Crown jewels as `@QuarkusTest` integration: `onCharacterDeleted` wipes
+  holdings (no orphans — the CLAUDE.md "point"), starter grant on create, inbox idempotency (redelivery = no-op),
+  `add()` authz (unowned → `IllegalStateException`→400). Plus pure-unit: authz short-circuits before persistence
+  (dynamic-proxy fakes), `RoleConfig` parsing, `host:port` validation. **DB caveat:** Docker was unavailable, so
+  integration tests hit the local `jvmsketch` Postgres with `@AfterEach` cleanup — meaning `./gradlew build`
+  REQUIRES a running Postgres (no Dev Services/Testcontainers fallback). A CI without that DB fails those tests.
+  Deferred with rationale: admin slug/dedupe (private method behind Qute injection). A found-and-fixed flake:
+  async starter-grant landing after `@AfterEach` leaked orphans across runs → tests now await the async grant.
+- **Lincheck** (`2.39`) — model-checking of the one genuinely hand-rolled concurrent structure: the
+  double-checked-locking connection cache in `EdgeRemotePlayerCharacters`. **Runs on JDK 26 with zero extra
+  JVM args** (only `-XX:+EnableDynamicAgentLoading` to opt into its self-attached byte-buddy agent). To test the
+  real logic (not a copy), the DCL cache was extracted into `edge/CachedResource<T>` (production path
+  byte-identical, default factory = real `MsQuicClientTransport`; also a genuine testability win).
+  `ModelCheckingOptions` asserts: ≤1 live resource at any instant, linearizable get/invalidate, no NPE/deadlock.
+  Correctly ruled OUT `EdgeClient`'s `ConcurrentHashMap` correlation map (delegates to JDK primitives) and the
+  outbox/inbox (DB-coupled) as non-Lincheck targets. Deliberate-break (drop the inner double-check) → Lincheck
+  printed the classic "two builds race → 2 live resources" interleaving. That trace is the proof it explores races.
+- **NOT adopted:** Kover coverage-gate (meaningful only once a broad suite exists — deferred), PITest mutation
+  (needs a suite first + known Quarkus friction), supply-chain SCA (not this project's risk).
+
+**Cross-layer catch:** the Konsist `*Resource ⟹ @Path` rule false-flagged the new `edge.CachedResource`
+(a concurrency util, not an endpoint); the rule was too broad and got scoped to the HTTP-serving impl packages
+(`a71a296`). The verification ladder caught its own naming collision — which is the point.
