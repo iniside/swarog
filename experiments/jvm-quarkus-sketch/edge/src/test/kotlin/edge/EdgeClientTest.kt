@@ -208,7 +208,8 @@ class EdgeClientTest {
             val err = result.exceptionOrNull()
             assertTrue(
                 result.isFailure && err is ConnectionClosedException,
-                "iteration $i must fail with ConnectionClosedException (orphaned call would time out); was $err",
+                "iteration $i must fail with ConnectionClosedException (orphaned call would time out); " +
+                    "was ${err?.toString() ?: "null"}",
             )
         }
     }

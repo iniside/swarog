@@ -122,7 +122,12 @@ subprojects {
             reports {
                 filters {
                     excludes {
-                        classes("*.*Dto", "*.*Payload", "*edge.msquic.*")
+                        // `app.Seed` is dev/prod-only demo seeding, deliberately disabled under test
+                        // (`app.seed.enabled=false` — see the test-infra invariants; it TRUNCATEs) and
+                        // its disablement is itself asserted behaviorally (P0.5 seed-off test). It can
+                        // never be exercised without violating that invariant, so it is excluded here
+                        // exactly like the native/DTO carve-outs below, not because it lacks effort.
+                        classes("*.*Dto", "*.*Payload", "*edge.msquic.*", "app.Seed")
                     }
                 }
             }
@@ -148,7 +153,22 @@ extensions.configure<KoverProjectExtension> {
     reports {
         filters {
             excludes {
-                classes("*.*Dto", "*.*Payload", "*edge.msquic.*")
+                classes("*.*Dto", "*.*Payload", "*edge.msquic.*", "app.Seed")
+            }
+        }
+        // Step 6 — the GATE. Measured on 2026-07-06 with the full P0-P3 suite (Steps 1-5b + P3,
+        // commit f58d5ff): the root aggregate (merge { allProjects() }, which is what actually sees
+        // the cross-module @QuarkusTest coverage of inventory/characters production code — the
+        // per-module reports alone are misleading, e.g. `:inventory` standalone shows ~12% because
+        // its behavioral tests live in `app/src/test/kotlin/domain/`, not `:inventory:test`) was
+        // 520/572 = 90.9% line coverage (after the `app.Seed` exclude above; 528/605 = 87.3% before
+        // it). Floored well below that measured number (~6 points) so the gate is a RATCHET against
+        // regression, not a number tuned to just barely pass today — a few points of headroom absorbs
+        // ordinary test-suite churn without the gate itself becoming a nuisance, while still failing
+        // hard if coverage actually drops (verified: raising this to 95 fails `check`; reverted after).
+        verify {
+            rule("aggregate line coverage floor") {
+                minBound(85)
             }
         }
     }
@@ -346,4 +366,14 @@ project(":app").plugins.withId("org.jetbrains.kotlin.jvm") {
         classpath.from(project(":app").configurations.named("runtimeClasspath"))
     }
     project(":app").tasks.named("check") { dependsOn(parityTask) }
+}
+
+// Step 6 — wire the ROOT aggregate `koverVerify` (the coverage-floor gate configured above) into
+// `check` so `./gradlew build`/`check` actually enforces it, not just report it. Root itself has no
+// `check` task (no base/lifecycle plugin applied there), so — same shape as admin parity above — the
+// gate rides on `app`'s `check`, which is always part of a full build. Lazy `tasks.named(...)` avoids
+// forcing eager creation/ordering; `koverVerify` is registered synchronously by the `apply(plugin =
+// "org.jetbrains.kotlinx.kover")` call above, so the lazy reference always resolves.
+project(":app").plugins.withId("org.jetbrains.kotlin.jvm") {
+    project(":app").tasks.named("check") { dependsOn(tasks.named("koverVerify")) }
 }

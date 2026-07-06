@@ -42,6 +42,7 @@ class InventoryEventSinkFaultTest {
     /** Registers Mockito's `any()` matcher but returns a non-null placeholder, so Kotlin's non-null
      *  parameter check does not NPE while stubbing (`Mockito.any()` itself returns null). Mockito uses
      *  the registered matcher, not the returned value. */
+    @Suppress("IgnoredReturnValue") // Mockito.any()'s return value is unused by design — see doc above
     private fun anyCreated(): CharacterCreated {
         Mockito.any(CharacterCreated::class.java)
         return CharacterCreated(0L, UUID(0L, 0L), "")
