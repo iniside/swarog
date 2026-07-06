@@ -182,36 +182,40 @@ func TestLiveSmokeHTTPReverseProxy(t *testing.T) {
 	}))
 	defer invOrigin.Close()
 
-	// NewHTTPProxy expects host:port and prepends the http scheme itself.
+	// NewHTTPProxy expects host:port and prepends the http scheme itself; keys
+	// are BARE prefixes (registered at both exact + subtree).
 	invHost := strings.TrimPrefix(invOrigin.URL, "http://")
-	proxy := NewHTTPProxy(map[string]string{"/admin/": invHost})
+	proxy := NewHTTPProxy(map[string]string{"/admin": invHost})
 
 	front := httptest.NewServer(proxy)
 	defer front.Close()
 
-	resp, err := http.Get(front.URL + "/admin/whatever")
-	if err != nil {
-		t.Fatalf("GET /admin/whatever: %v", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("read body: %v", err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want 200", resp.StatusCode)
-	}
-	if string(body) != "inventory-origin-body" {
-		t.Fatalf("body = %q, want it from the inventory origin", string(body))
-	}
-
-	select {
-	case p := <-sawPath:
-		if p != "/admin/whatever" {
-			t.Fatalf("origin saw path %q, want verbatim %q", p, "/admin/whatever")
+	// Both the bare prefix (exact "/admin" — the backend serves "GET /admin", so
+	// a trailing-slash rewrite/redirect would 404 it) AND a subtree path must
+	// reach the origin verbatim. The bare case is the regression a live run caught.
+	for _, path := range []string{"/admin", "/admin/whatever"} {
+		resp, err := http.Get(front.URL + path)
+		if err != nil {
+			t.Fatalf("GET %s: %v", path, err)
 		}
-	default:
-		t.Fatal("inventory origin never received the request")
+		body, err := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("GET %s: status = %d, want 200 (no trailing-slash redirect)", path, resp.StatusCode)
+		}
+		if string(body) != "inventory-origin-body" {
+			t.Fatalf("GET %s: body = %q, want it from the inventory origin", path, string(body))
+		}
+		select {
+		case p := <-sawPath:
+			if p != path {
+				t.Fatalf("origin saw path %q, want verbatim %q", p, path)
+			}
+		default:
+			t.Fatalf("GET %s: inventory origin never received the request", path)
+		}
 	}
 }

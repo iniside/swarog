@@ -73,18 +73,18 @@ func main() {
 	// HTTP front door: /healthz here, everything else reverse-proxied to the
 	// backend that serves its prefix. /admin lives in inventory-svc.
 	proxy := gateway.NewHTTPProxy(map[string]string{
-		"/admin/":      invHTTP,
-		"/characters/": charsHTTP,
-		"/inventory/":  invHTTP,
+		"/admin":      invHTTP,
+		"/characters": charsHTTP,
+		"/inventory":  invHTTP,
 	})
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
-	mux.Handle("/admin/", proxy)
-	mux.Handle("/characters/", proxy)
-	mux.Handle("/inventory/", proxy)
+	// Everything else falls through to the reverse proxy (which knows the
+	// per-prefix origins). "GET /healthz" is more specific, so it still wins.
+	mux.Handle("/", proxy)
 
 	httpSrv := &http.Server{Addr: httpAddr, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 	go func() {
