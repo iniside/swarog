@@ -81,7 +81,7 @@ type Module struct {
 }
 
 func (*Module) Name() string       { return "inventory" }
-func (*Module) Requires() []string { return []string{"accounts", "characters", "config"} }
+func (*Module) Requires() []string { return []string{"accounts", "characters", "config", "messaging"} }
 
 const schemaDDL = `
 CREATE SCHEMA IF NOT EXISTS inventory;
@@ -104,15 +104,7 @@ CREATE TABLE IF NOT EXISTS inventory.holdings (
 	quantity   int  NOT NULL CHECK (quantity >= 0),
 	PRIMARY KEY (owner_type, owner_id, item_id)
 );
-CREATE INDEX IF NOT EXISTS holdings_owner_idx ON inventory.holdings(owner_type, owner_id);
-
--- Inbox: idempotency ledger for the synchronous event sink. event_id is the
--- relay's stable key (<schema>:<outbox.id>); a duplicate delivery conflicts and
--- is a committed no-op, so the effect runs at most once.
-CREATE TABLE IF NOT EXISTS inventory.inbox (
-	event_id     text        PRIMARY KEY,
-	processed_at timestamptz NOT NULL DEFAULT now()
-);`
+CREATE INDEX IF NOT EXISTS holdings_owner_idx ON inventory.holdings(owner_type, owner_id);`
 
 func (*Module) Migrate(_ context.Context, db *sql.DB) error {
 	_, err := db.Exec(schemaDDL)
@@ -135,12 +127,19 @@ func (m *Module) Init(ctx *lifecycle.Context) error {
 	m.accounts = registry.Require[accountsSvc](ctx.Registry, "accounts")
 	m.characters = registry.Require[charactersSvc](ctx.Registry, "characters")
 
-	// React to character lifecycle — integrity without a cross-module FK. In the
-	// monolith/co-located topology characters emits on the in-process bus and
-	// these fire; in a split there is no local publisher, so the synchronous sink
-	// (/events/*) drives the same effects instead. Exactly one path per topology.
-	bus.On(ctx.Bus, charactersevents.CreatedEvent, m.onCharacterCreated)
-	bus.On(ctx.Bus, charactersevents.DeletedEvent, m.onCharacterDeleted)
+	// React to character lifecycle — integrity without a cross-module FK. These
+	// are DURABLE subscriptions on the messaging plane: the transport runs each
+	// effect inside a per-(event_id,"inventory") inbox-dedup tx, in BOTH
+	// topologies (monolith = local in-tx delivery, split = HTTP POST /events).
+	// messaging owns the inbox, the dedup, and the HTTP receive — inventory just
+	// declares the handler and runs the effect on the HANDED tx (never m.store.db)
+	// so the grant/wipe commits atomically with the dedup row.
+	bus.OnTx(ctx.Bus, charactersevents.CreatedEvent, "inventory", func(ctx context.Context, tx *sql.Tx, e charactersevents.Created) error {
+		return m.grantStarter(ctx, tx, e.CharacterID)
+	})
+	bus.OnTx(ctx.Bus, charactersevents.DeletedEvent, "inventory", func(ctx context.Context, tx *sql.Tx, e charactersevents.Deleted) error {
+		return m.wipeCharacter(ctx, tx, e.CharacterID)
+	})
 
 	// HARD dependency on config (declared in Requires()): every binary that
 	// hosts inventory also hosts config, so this fails loud at boot (via
@@ -150,13 +149,6 @@ func (m *Module) Init(ctx *lifecycle.Context) error {
 	// rebuilds the materialized starter spec, so editing inventory/starter_item
 	// in /admin flows config.changed -> here -> the next grant uses the new item.
 	bus.On(ctx.Bus, configevents.ChangedEvent, m.onConfigChanged)
-
-	// Synchronous event sink — the cross-process path. The relay in the peer that
-	// hosts characters POSTs here; the handler dedups (inbox) and runs the effect
-	// INSIDE its tx, returning 200 only AFTER the effect commits (B1). Registered
-	// always (harmless in the monolith: nothing POSTs to it there).
-	ctx.Mux.HandleFunc("POST /events/character-created", m.handleCharacterCreatedEvent)
-	ctx.Mux.HandleFunc("POST /events/character-deleted", m.handleCharacterDeletedEvent)
 
 	ctx.Mux.HandleFunc("GET /inventory/me", m.handleMine)
 	ctx.Mux.HandleFunc("GET /inventory/character/{id}", m.handleCharacter)
@@ -226,107 +218,20 @@ func (m *Module) onConfigChanged(e configevents.Changed) {
 	m.log.Info("inventory starter reloaded from config", "item", item, "qty", qty)
 }
 
-// grantStarter gives a brand-new character its starter item. q is either the DB
-// pool (bus path, best-effort) or the sink's tx (atomic with inbox dedup). The
-// item + quantity come from the materialized spec (config-sourced, live-reloaded).
+// grantStarter gives a brand-new character its starter item. q is the messaging
+// transport's per-subscriber inbox-dedup tx (never m.store.db), so the grant
+// commits atomically with the (event_id,"inventory") dedup row. The item +
+// quantity come from the materialized spec (config-sourced, live-reloaded).
 func (m *Module) grantStarter(ctx context.Context, q rowQuerier, characterID string) error {
 	item, qty := m.starterSpec()
 	return m.store.grantExec(ctx, q, Owner{Type: "character", ID: characterID}, item, qty)
 }
 
 // wipeCharacter removes a deleted character's holdings. Same querier contract as
-// grantStarter — shared by the bus handler and the synchronous sink.
+// grantStarter — the messaging inbox-dedup tx, so the wipe is atomic with dedup.
 func (m *Module) wipeCharacter(ctx context.Context, q rowQuerier, characterID string) error {
 	_, err := m.store.clearOwnerExec(ctx, q, Owner{Type: "character", ID: characterID})
 	return err
-}
-
-// onCharacterCreated (in-process bus path) grants the starter item best-effort.
-func (m *Module) onCharacterCreated(e charactersevents.Created) {
-	if err := m.grantStarter(context.Background(), m.store.db, e.CharacterID); err != nil {
-		m.log.Error("starter grant failed", "character", e.CharacterID, "err", err)
-	}
-}
-
-// onCharacterDeleted (in-process bus path) wipes the character's inventory.
-func (m *Module) onCharacterDeleted(e charactersevents.Deleted) {
-	if err := m.wipeCharacter(context.Background(), m.store.db, e.CharacterID); err != nil {
-		m.log.Error("inventory cleanup failed", "character", e.CharacterID, "err", err)
-	}
-}
-
-// handleCharacterCreatedEvent is the synchronous sink for character.created. It
-// decodes the event, then runs the grant exactly-once under inbox dedup, and
-// returns 200 only after the grant commits — never re-emitting on the bus (an
-// async ack would lie about the effect having happened, B1).
-func (m *Module) handleCharacterCreatedEvent(w http.ResponseWriter, r *http.Request) {
-	eventID := r.Header.Get("X-Event-Id")
-	if eventID == "" {
-		http.Error(w, "missing event id", http.StatusBadRequest)
-		return
-	}
-	var e charactersevents.Created
-	if err := json.NewDecoder(r.Body).Decode(&e); err != nil {
-		http.Error(w, "invalid json", http.StatusBadRequest)
-		return
-	}
-	if err := m.consume(r.Context(), eventID, func(ctx context.Context, tx *sql.Tx) error {
-		return m.grantStarter(ctx, tx, e.CharacterID)
-	}); err != nil {
-		m.log.Error("sink grant failed", "event_id", eventID, "character", e.CharacterID, "err", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-	w.WriteHeader(http.StatusOK)
-}
-
-// handleCharacterDeletedEvent is the synchronous sink for character.deleted —
-// same idempotent, transactional contract as the created sink.
-func (m *Module) handleCharacterDeletedEvent(w http.ResponseWriter, r *http.Request) {
-	eventID := r.Header.Get("X-Event-Id")
-	if eventID == "" {
-		http.Error(w, "missing event id", http.StatusBadRequest)
-		return
-	}
-	var e charactersevents.Deleted
-	if err := json.NewDecoder(r.Body).Decode(&e); err != nil {
-		http.Error(w, "invalid json", http.StatusBadRequest)
-		return
-	}
-	if err := m.consume(r.Context(), eventID, func(ctx context.Context, tx *sql.Tx) error {
-		return m.wipeCharacter(ctx, tx, e.CharacterID)
-	}); err != nil {
-		m.log.Error("sink wipe failed", "event_id", eventID, "character", e.CharacterID, "err", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-	w.WriteHeader(http.StatusOK)
-}
-
-// consume runs effect exactly once for eventID. In one tx it claims the event in
-// the inbox (ON CONFLICT DO NOTHING); a first delivery (1 row) runs effect within
-// the SAME tx before commit, a duplicate (0 rows) is a committed no-op. Any error
-// rolls back and propagates → the caller replies 500 → the relay retries (the
-// outbox row stays unsent). The effect is thus atomic with its dedup marker.
-func (m *Module) consume(ctx context.Context, eventID string, effect func(context.Context, *sql.Tx) error) error {
-	tx, err := m.store.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback() }() // no-op after a successful Commit
-
-	res, err := tx.ExecContext(ctx,
-		`INSERT INTO inventory.inbox (event_id) VALUES ($1) ON CONFLICT DO NOTHING`, eventID)
-	if err != nil {
-		return err
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return tx.Commit() // already processed — idempotent no-op
-	}
-	if err := effect(ctx, tx); err != nil {
-		return err
-	}
-	return tx.Commit()
 }
 
 func (m *Module) handleMine(w http.ResponseWriter, r *http.Request) {

@@ -3,6 +3,7 @@ package inventory
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"os"
@@ -17,6 +18,54 @@ import (
 	"gamebackend/modules/characters/charactersevents"
 	"gamebackend/modules/config/configevents"
 )
+
+// fakeTransport is a minimal in-memory bus.Transport standing in for the
+// messaging module: it captures the durable handlers inventory registers via
+// bus.OnTx (SubscribeTx) and lets a test drive delivery by invoking the handler
+// inside a REAL *sql.Tx — mirroring messaging's per-subscriber inbox-dedup
+// consume tx (minus the dedup, which is messaging's concern and covered by
+// messaging's own tests). This keeps inventory's unit tests inside its
+// architectural boundary: they exercise the OnTx handler + effect atomicity, not
+// the transport internals. EnqueueTx is unused here (inventory is a consumer).
+type fakeTransport struct {
+	db   *sql.DB
+	subs map[string]func(context.Context, *sql.Tx, []byte) error
+}
+
+func (f *fakeTransport) EnqueueTx(*sql.Tx, string, []byte) error { return nil }
+
+func (f *fakeTransport) SubscribeTx(topic, _ string, h func(context.Context, *sql.Tx, []byte) error) {
+	if f.subs == nil {
+		f.subs = map[string]func(context.Context, *sql.Tx, []byte) error{}
+	}
+	f.subs[topic] = h
+}
+
+// deliver runs the durable handler for topic inside a real tx and commits — the
+// same shape as messaging's consume, so the grant/wipe effect commits atomically
+// with the (would-be) inbox row.
+func (f *fakeTransport) deliver(t *testing.T, topic string, v any) {
+	t.Helper()
+	h, ok := f.subs[topic]
+	if !ok {
+		t.Fatalf("no durable subscriber registered for topic %q", topic)
+	}
+	payload, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := f.db.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h(context.Background(), tx, payload); err != nil {
+		_ = tx.Rollback()
+		t.Fatalf("durable handler for %q: %v", topic, err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func testDB(t *testing.T) *sql.DB {
 	t.Helper()
@@ -80,21 +129,40 @@ func TestInventoryGrantStacks(t *testing.T) {
 	}
 }
 
+// wireDurable registers m's durable character-lifecycle handlers on a bus backed
+// by a fakeTransport (mirroring what Init does via bus.OnTx), and returns the
+// transport so a test can drive delivery. This is the durable-plane equivalent of
+// the old in-process bus.On wiring.
+func wireDurable(m *Module, db *sql.DB) *fakeTransport {
+	b := bus.NewBus(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	ft := &fakeTransport{db: db}
+	b.SetTransport(ft)
+	bus.OnTx(b, charactersevents.CreatedEvent, "inventory", func(ctx context.Context, tx *sql.Tx, e charactersevents.Created) error {
+		return m.grantStarter(ctx, tx, e.CharacterID)
+	})
+	bus.OnTx(b, charactersevents.DeletedEvent, "inventory", func(ctx context.Context, tx *sql.Tx, e charactersevents.Deleted) error {
+		return m.wipeCharacter(ctx, tx, e.CharacterID)
+	})
+	return ft
+}
+
 // TestInventoryReactsToCharacterLifecycle is the modularity payoff: inventory
 // grants a starter item on character.created and wipes holdings on
-// character.deleted, driven only by the event handlers — characters never calls
-// inventory and there is no cross-module foreign key.
+// character.deleted, driven only by the durable OnTx handlers — characters never
+// calls inventory and there is no cross-module foreign key. The effect runs on
+// the transport-handed tx (messaging's inbox-dedup tx), atomic with the dedup.
 func TestInventoryReactsToCharacterLifecycle(t *testing.T) {
 	db := testDB(t)
 	defer func() { _ = db.Close() }()
 	s := &store{db: db, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	m := &Module{store: s, log: slog.New(slog.NewTextHandler(io.Discard, nil)), cfg: &fakeConfig{}}
 	ctx := context.Background()
+	ft := wireDurable(m, db)
 
 	charID := newUUID(t, db)
 	owner := Owner{Type: "character", ID: charID}
 
-	m.onCharacterCreated(charactersevents.Created{CharacterID: charID, Name: "Test", Class: "novice"})
+	ft.deliver(t, "character.created", charactersevents.Created{CharacterID: charID, Name: "Test", Class: "novice"})
 	list, err := s.list(ctx, owner)
 	if err != nil {
 		t.Fatal(err)
@@ -103,7 +171,7 @@ func TestInventoryReactsToCharacterLifecycle(t *testing.T) {
 		t.Fatalf("after create: starter item not granted; holdings=%+v", list)
 	}
 
-	m.onCharacterDeleted(charactersevents.Deleted{CharacterID: charID})
+	ft.deliver(t, "character.deleted", charactersevents.Deleted{CharacterID: charID})
 	list, err = s.list(ctx, owner)
 	if err != nil {
 		t.Fatal(err)
@@ -204,7 +272,8 @@ func TestInventoryStarterLiveReloadFromConfig(t *testing.T) {
 
 	charID := newUUID(t, db)
 	owner := Owner{Type: "character", ID: charID}
-	m.onCharacterCreated(charactersevents.Created{CharacterID: charID, Name: "Reload", Class: "novice"})
+	ft := wireDurable(m, db)
+	ft.deliver(t, "character.created", charactersevents.Created{CharacterID: charID, Name: "Reload", Class: "novice"})
 	list, err := s.list(context.Background(), owner)
 	if err != nil {
 		t.Fatal(err)
