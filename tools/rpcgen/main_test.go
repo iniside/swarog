@@ -47,7 +47,8 @@ func TestCheckDetectsDrift(t *testing.T) {
 	}
 
 	tmp := filepath.Join(t.TempDir(), "mutated_gen.go")
-	if err := os.WriteFile(tmp, []byte(mutated), 0o644); err != nil {
+	// #nosec G304 G703 -- tmp is under t.TempDir(), test-owned, not user input.
+	if err := os.WriteFile(tmp, []byte(mutated), 0o600); err != nil {
 		t.Fatalf("write mutated: %v", err)
 	}
 	if err := checkAgainst(tmp, src); err == nil {

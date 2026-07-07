@@ -110,7 +110,7 @@ func main() {
 		return
 	}
 
-	if err := os.WriteFile(*out, src, 0o644); err != nil {
+	if err := os.WriteFile(*out, src, 0o600); err != nil {
 		fmt.Fprintf(os.Stderr, "rpcgen: write %s: %v\n", *out, err)
 		os.Exit(1)
 	}
@@ -540,6 +540,7 @@ func exportName(s string) string {
 // path, format-normalizing BOTH sides identically so the diff is stable across
 // gofmt patch-version changes.
 func checkAgainst(path string, src []byte) error {
+	// #nosec G304 -- path is the codegen -out target, a trusted build-time flag, not user input.
 	committed, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("read committed %s: %w (run rpcgen to create it)", path, err)
