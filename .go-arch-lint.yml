@@ -18,8 +18,11 @@ allow:
 
 # Test fixtures are not architecture: topiccheck's testdata packages import bus and
 # each other only to exercise the analyzer, so exclude them from the boundary check.
+# rpcgen's testdata is the same shape: an <name>api + generated <name>rpc golden that
+# import edge/opsapi/adminapi purely to exercise the generator — not real architecture.
 exclude:
   - tools/topiccheck/testdata
+  - tools/rpcgen/testdata
 
 components:
   # The core foundations, split from the old monolithic `core`:
@@ -66,6 +69,11 @@ components:
   scheduler:   { in: modules/scheduler }
   webui:       { in: modules/webui }
 
+  # Unified-operation leaf: the Caller transport seam a generated RPC client dials
+  # through + the Operation/Slot declaration the gateway reads. Imports stdlib only
+  # (context/errors) — a leaf, same tier as bus/registry/contrib (commonComponents),
+  # importable by the generated <module>rpc glue, remote and the gateway.
+  opsapi:      { in: opsapi }
   # Transport-agnostic leaf: QUIC RPC framing/codec/TLS. Imports stdlib + quic-go
   # only (no gamebackend package) — a foundation, same tier as core.
   edge:        { in: edge }
@@ -84,6 +92,30 @@ components:
   # bus.Define but never subscribed via bus.On. Imports ONLY x/tools + stdlib
   # (never a gamebackend package) — a standalone dev tool, not part of any binary.
   topiccheck:  { in: tools/topiccheck }
+
+  # RPC glue generator: reads a capability interface in a <module>api package
+  # (go/packages + go/types, topiccheck's toolkit) and emits the transport glue in
+  # <module>rpc. Imports ONLY x/tools + stdlib (edge/opsapi are referenced as path
+  # STRINGS, never imported) — a standalone dev tool, not linked into any binary,
+  # modeled exactly like topiccheck (component + absent from deps + testdata excluded).
+  rpcgen:      { in: tools/rpcgen }
+
+  # --- rpcglue tier: DEFERRED to Step A1 (do not add until a real <module>rpc exists) ---
+  # The generated transport glue (<module>rpc) is the impl tier that MAY import edge;
+  # it is kept OUT of `contracts`. Its arch-lint component + deps land in A1 alongside
+  # the first real rpc package (charactersrpc/accountsrpc), NOT now, because:
+  #   * go-arch-lint FAILS a component whose `in:` glob matches zero directories
+  #     ("not found directories for '<pattern>'") — an empty rpcglue breaks the check.
+  #   * a suffix glob like `modules/**/**rpc` does NOT match a `*rpc` suffix anyway:
+  #     go-arch-lint's `*` matches a WHOLE path segment (same reason `contracts` below
+  #     ENUMERATES each *events package). So A1 enumerates each <module>rpc explicitly.
+  # A1 adds, mirroring `contracts`:
+  #   rpcglue:
+  #     in:
+  #       - modules/characters/charactersrpc
+  #       - modules/accounts/accountsrpc
+  # and a deps entry `rpcglue: { mayDependOn: [ edge, opsapi, contracts ] }` — the api
+  # packages it reads live in `contracts` (A1 adds each <module>api to contracts.in).
 
   # The reusable boot sequence: open DB, wire Context, two-phase Build, Migrate,
   # Start, HTTP + optional edge listener, graceful shutdown. It is topology-blind
@@ -108,6 +140,9 @@ commonComponents:
   - registry
   - contrib
   - httpmw
+  # opsapi is a stdlib-only leaf (the Caller seam + Operation/Slot declaration),
+  # imported by the generated <module>rpc glue, remote and the gateway alike.
+  - opsapi
 
 deps:
   # NOTE: `bus`/`registry`/`contrib`/`contracts` are intentionally ABSENT here. A component with no

@@ -5,14 +5,14 @@
 # Usage:
 #   .\verify.ps1                 # -Fast: blocking stages only (default)
 #   .\verify.ps1 -Fast           # same as default
-#   .\verify.ps1 -All            # + advisory: test-race, fuzz, apidiff, topiccheck
+#   .\verify.ps1 -All            # + advisory: test-race, fuzz, apidiff, topiccheck, rpcgen
 #   .\verify.ps1 -Slow           # + gremlins mutation testing (very slow)
 #   .\verify.ps1 -All -Strict    # advisory failures ALSO flip the exit code
 #   .\verify.ps1 -All -NoInstall # never auto-install a missing CLI (it SKIPs)
 #
 # Behavioural twin of verify.sh. Blocking stages: build, vet, golangci-lint,
 # go-arch-lint, test, govulncheck. Advisory (-All): test-race, fuzz, apidiff,
-# topiccheck. Slow (-Slow): gremlins. Per-stage output goes to run/verify/<name>.log.
+# topiccheck, rpcgen. Slow (-Slow): gremlins. Per-stage output -> run/verify/<name>.log.
 
 param(
     [switch]$Fast,
@@ -206,6 +206,46 @@ function Invoke-TopiccheckStage {
     }
 }
 
+# --- Advisory stage: rpcgen -check (regen-diff the generated <module>rpc glue) ---
+# Discovers every `//go:generate ... rpcgen ...` directive and re-runs each with
+# -check (regenerate to memory, gofmt-normalize, diff — never write). Drift FAILs.
+# Advisory by default, blocking under -Strict (via the generic summary rule). With
+# no real <module>api packages yet (they land in Phase A1), the only directive is
+# rpcgen's own testdata golden, so this is a live no-op-safe pass.
+function Invoke-RpcgenStage {
+    $log = Join-Path $verifyDir 'rpcgen.log'
+    '' | Out-File $log
+    Write-Host "== rpcgen ==" -ForegroundColor Cyan
+    $found = $false
+    $anyfail = $false
+    foreach ($f in Get-ChildItem -Path $root -Recurse -Filter '*.go') {
+        foreach ($m in (Select-String -Path $f.FullName -Pattern '//go:generate\s+(.*rpcgen.*)$')) {
+            $found = $true
+            # insert -check as the first rpcgen flag so it diffs instead of writing
+            $cmd = $m.Matches[0].Groups[1].Value -replace 'rpcgen ', 'rpcgen -check '
+            "--- $($f.Directory.FullName): $cmd ---" | Out-File -Append $log
+            Push-Location $f.Directory.FullName
+            Invoke-Expression $cmd *>> $log
+            $ec = $LASTEXITCODE
+            Pop-Location
+            if ($ec -ne 0) {
+                Write-Host "  $($f.Directory.FullName): FAIL" -ForegroundColor Red
+                $anyfail = $true
+            } else {
+                Write-Host "  $($f.Directory.FullName): ok"
+            }
+        }
+    }
+    if (-not $found) {
+        Write-Host "  SKIP (no rpcgen directives)" -ForegroundColor Yellow; Add-Result 'rpcgen' 'SKIP' $false; return
+    }
+    if (-not $anyfail) {
+        Write-Host "  PASS" -ForegroundColor Green; Add-Result 'rpcgen' 'PASS' $false
+    } else {
+        Write-Host "  FAIL (see run/verify/rpcgen.log)" -ForegroundColor Red; Add-Result 'rpcgen' 'FAIL' $false
+    }
+}
+
 # --- Slow stage: gremlins mutation testing ----------------------------------
 function Invoke-GremlinsStage {
     $log = Join-Path $verifyDir 'gremlins.log'
@@ -240,6 +280,7 @@ if ($RunAdvisory) {
     Invoke-FuzzStage
     Invoke-ApidiffStage
     Invoke-TopiccheckStage
+    Invoke-RpcgenStage
 }
 if ($RunGremlins) {
     Invoke-GremlinsStage

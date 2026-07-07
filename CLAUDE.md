@@ -37,7 +37,14 @@ A new contributor appears without the consumer being edited.
    go through the bus. Declared `Requires()` must match real sync dependencies.
 4. Depend on an interface/capability, not a package (consumer-defined interface).
 5. The only deliberately shared surface between modules is each domain's
-   `<module>events` package (payload types + the `bus.Define` descriptor).
+   `<module>events` package (payload types + the `bus.Define` descriptor). Two
+   provider-owned adjuncts are likewise sanctioned for the *sync* path: `<module>api`
+   — the provider's canonical capability interface + method-name constants,
+   transport-free (the codegen input for `tools/rpcgen`), reached ONLY by the
+   generated glue and `remote`, **never imported by domain consumers** (they keep
+   their own local interface, rule 4) — and `<module>rpc`, the generated transport
+   glue (impl-tier, may import `edge`). Neither introduces a consumer→provider
+   dependency; the registry swap still resolves a local interface.
 6. Evolve events additively (new field / `FinishedV2`); never mutate a published
    payload shape — a structural change breaks consumers at compile time.
 7. **The bus is async.** `Publish`/`Emit` never block and return nothing, so they
@@ -141,8 +148,9 @@ No CI — this script IS the automated safety net. Flags: `--fast`(default, bloc
 Two complementary gates:
 - **`go-arch-lint`** (`go install github.com/fe3dback/go-arch-lint@latest`) checks *architecture*
   against `.go-arch-lint.yml`: core imports no module, a module's impl is reachable only from
-  `cmd`, modules talk only through the `<module>events`/`adminapi` contracts. (Cycles need no rule
-  — the Go compiler rejects them.)
+  `cmd`, modules talk only through the `<module>events`/`adminapi` contracts (plus the
+  provider-owned `<module>api` interface + its generated `<module>rpc` glue for the sync
+  path). (Cycles need no rule — the Go compiler rejects them.)
 - **`golangci-lint`** (v2; `go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest`)
   checks *correctness/leaks/security* via `.golangci.yml` — a curated high-signal set (errcheck,
   staticcheck, gosec, bodyclose, sqlclosecheck, rowserrcheck, errorlint, exhaustive, …), not a

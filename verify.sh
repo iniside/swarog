@@ -6,14 +6,14 @@
 # Usage:
 #   ./verify.sh                # --fast: blocking stages only (default)
 #   ./verify.sh --fast         # same as default
-#   ./verify.sh --all          # + advisory: test-race, fuzz, apidiff, topiccheck
+#   ./verify.sh --all          # + advisory: test-race, fuzz, apidiff, topiccheck, rpcgen
 #   ./verify.sh --slow         # + gremlins mutation testing (very slow)
 #   ./verify.sh --all --strict # advisory failures ALSO flip the exit code
 #   ./verify.sh --all --no-install  # never auto-install a missing CLI (it SKIPs)
 #
 # Behavioural twin of verify.ps1. Blocking stages: build, vet, golangci-lint,
 # go-arch-lint, test, govulncheck. Advisory (--all): test-race, fuzz, apidiff,
-# topiccheck. Slow (--slow): gremlins. Per-stage output goes to run/verify/<name>.log.
+# topiccheck, rpcgen. Slow (--slow): gremlins. Per-stage output -> run/verify/<name>.log.
 #
 # Deliberately NOT `set -e` in the run phase: a failing stage must not abort the
 # runner. Each stage records PASS/FAIL/SKIP and the summary decides the exit code.
@@ -205,6 +205,43 @@ topiccheck_stage() {
     fi
 }
 
+# --- Advisory stage: rpcgen -check (regen-diff the generated <module>rpc glue) ---
+# Discovers every `//go:generate ... rpcgen ...` directive and re-runs each with
+# -check (regenerate to memory, gofmt-normalize, diff — never write). Drift FAILs.
+# Advisory by default, blocking under --strict (via the generic summary rule). With
+# no real <module>api packages yet (they land in Phase A1), the only directive is
+# rpcgen's own testdata golden, so this is a live no-op-safe pass.
+rpcgen_stage() {
+    local log="$VERIFY_DIR/rpcgen.log"; : >"$log"
+    echo "== rpcgen =="
+    local found=0 anyfail=0 files f dir line cmd
+    files="$(grep -rlE '//go:generate .*rpcgen' --include='*.go' . 2>/dev/null || true)"
+    for f in $files; do
+        dir="$(dirname "$f")"
+        while IFS= read -r line; do
+            found=1
+            cmd="${line#*//go:generate }"
+            # insert -check as the first rpcgen flag so it diffs instead of writing
+            cmd="${cmd/rpcgen /rpcgen -check }"
+            echo "--- $dir: $cmd ---" >>"$log"
+            if ( cd "$dir" && eval "$cmd" ) >>"$log" 2>&1; then
+                echo "  $dir: ok"
+            else
+                echo "  $dir: FAIL"
+                anyfail=1
+            fi
+        done < <(grep -E '//go:generate .*rpcgen' "$f")
+    done
+    if [ "$found" -eq 0 ]; then
+        echo "  SKIP (no rpcgen directives)"; add_result rpcgen SKIP false; return
+    fi
+    if [ "$anyfail" -eq 0 ]; then
+        echo "  PASS"; add_result rpcgen PASS false
+    else
+        echo "  FAIL (see run/verify/rpcgen.log)"; add_result rpcgen FAIL false
+    fi
+}
+
 # --- Slow stage: gremlins mutation testing ----------------------------------
 gremlins_stage() {
     local log="$VERIFY_DIR/gremlins.log"; : >"$log"
@@ -237,6 +274,7 @@ if [ "$RUN_ADVISORY" -eq 1 ]; then
     fuzz_stage
     apidiff_stage
     topiccheck_stage
+    rpcgen_stage
 fi
 if [ "$RUN_GREMLINS" -eq 1 ]; then
     gremlins_stage
