@@ -2,6 +2,7 @@
 
 - [Memory is git-backed via repo mirror](memory-git-backup-workflow.md) — run scripts/memory-sync.sh push after any memory change, pull after git sync; repo memory/ mirrors the per-machine live dir
 - [Verify the at-risk path, not the safe one](verify-the-at-risk-path-not-the-safe-one.md) — exercise the topology a change actually affects (split, not just monolith) with a committed repeatable proof; don't pass off easy-path testing as coverage
+- [Scope claims to what was verified](scope-claims-to-what-was-verified.md) — don't generalize a plane-specific result into a global claim (said "modules never branch on topology" while sync-provider if m.Edge!=nil still does); scope every "done" to what changed + find the counterexample first
 - [Work on master, no branches](work-on-master-no-branches.md) — commit directly on master for this repo; overrides CLAUDE.md's "branch-first" (solo for-fun project, history is enough)
 
 - [DECISION: Go vs Kotlin (in flux)](decision-quarkus-as-final.md) — back UNSETTLED (2026-07-07), now leaning GO again (admin list-free via runtime slot + linker split-build); 2026-07-05 "Quarkus final" downgraded — don't assert either as settled
