@@ -41,6 +41,12 @@ func testDB(t *testing.T) *sql.DB {
 	if _, err := db.Exec(schemaDDL); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
+	// Close via Cleanup, NOT the caller's defer: t.Cleanup runs registered funcs
+	// LIFO, and this is registered before any seedSchedule cleanup, so it runs
+	// LAST — the per-test DELETE cleanups still see an OPEN db. A plain
+	// `defer db.Close()` in the test would close it first and the DELETEs
+	// (error-ignored) would silently no-op, leaking rows on the shared Postgres.
+	t.Cleanup(func() { _ = db.Close() })
 	return db
 }
 
@@ -90,8 +96,7 @@ func newModule(db *sql.DB) *Module {
 // scheduler). The advisory lock + double-check must yield exactly ONE outbox row
 // and one last_fired bump.
 func TestFireExactlyOnceUnderConcurrency(t *testing.T) {
-	db := testDB(t)
-	defer func() { _ = db.Close() }()
+	db := testDB(t) // closed via testDB's t.Cleanup, after per-test DELETE cleanups
 
 	name := uniqueName(t, db)
 	seedSchedule(t, db, name, 3600) // due (epoch), won't re-arm within the test
@@ -130,8 +135,7 @@ func TestFireExactlyOnceUnderConcurrency(t *testing.T) {
 // TestFiresAgainAfterInterval verifies a schedule re-arms: an immediate second
 // fire is a no-op (not due), but after the interval elapses it fires again.
 func TestFiresAgainAfterInterval(t *testing.T) {
-	db := testDB(t)
-	defer func() { _ = db.Close() }()
+	db := testDB(t) // closed via testDB's t.Cleanup, after per-test DELETE cleanups
 
 	name := uniqueName(t, db)
 	seedSchedule(t, db, name, 1) // 1s interval
@@ -168,8 +172,7 @@ func TestFiresAgainAfterInterval(t *testing.T) {
 // and asserts a fired event is POSTed with the correct scheduler.fired payload —
 // the split delivery path (scheduler-svc → audit sink).
 func TestRelayDeliversFiredToSink(t *testing.T) {
-	db := testDB(t)
-	defer func() { _ = db.Close() }()
+	db := testDB(t) // closed via testDB's t.Cleanup, after per-test DELETE cleanups
 
 	name := uniqueName(t, db)
 	seedSchedule(t, db, name, 3600)

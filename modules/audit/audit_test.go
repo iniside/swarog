@@ -44,6 +44,11 @@ func testDB(t *testing.T) *sql.DB {
 	if _, err := db.Exec(schemaDDL); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
+	// Close via Cleanup, NOT the caller's defer: t.Cleanup runs LIFO, so this
+	// (registered first) runs LAST — after the per-test DELETE cleanups, which
+	// therefore still see an OPEN db. A plain defer would close first and the
+	// error-ignored DELETEs would silently leak rows on the shared Postgres.
+	t.Cleanup(func() { _ = db.Close() })
 	return db
 }
 
@@ -85,8 +90,7 @@ func countByTopic(t *testing.T, db *sql.DB, topic string) int {
 // TestBusEventIsLogged emits a real typed event and asserts the generic bus
 // subscription writes a row with the right topic and a JSON payload.
 func TestBusEventIsLogged(t *testing.T) {
-	db := testDB(t)
-	defer func() { _ = db.Close() }()
+	db := testDB(t) // closed via testDB's t.Cleanup, after per-test DELETE cleanups
 
 	m, ctx := initModule(t, db)
 	matchID := uniqueRun(t, db)
@@ -115,8 +119,7 @@ func TestBusEventIsLogged(t *testing.T) {
 // TestPruneViaBus reacts to scheduler.fired{audit-prune} on the bus and deletes
 // rows past the retention window, keeping fresh ones.
 func TestPruneViaBus(t *testing.T) {
-	db := testDB(t)
-	defer func() { _ = db.Close() }()
+	db := testDB(t) // closed via testDB's t.Cleanup, after per-test DELETE cleanups
 
 	_, ctx := initModule(t, db)
 	oldTopic := uniqueTopic(t, db)
@@ -139,8 +142,7 @@ func TestPruneViaBus(t *testing.T) {
 // /events/scheduler-fired prunes; a second POST with the same X-Event-Id is an
 // inbox-deduped no-op (so a freshly-aged row inserted between the two survives).
 func TestSchedulerFiredSinkPrunesAndDedups(t *testing.T) {
-	db := testDB(t)
-	defer func() { _ = db.Close() }()
+	db := testDB(t) // closed via testDB's t.Cleanup, after per-test DELETE cleanups
 
 	m, _ := initModule(t, db)
 	eventID := "test-evt-" + uniqueRun(t, db)
