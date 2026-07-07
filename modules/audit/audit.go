@@ -30,7 +30,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"log/slog"
-	"net/http"
 	"os"
 	"strconv"
 	"time"
@@ -140,7 +139,6 @@ func (m *Module) Init(ctx *lifecycle.Context) error {
 	})
 
 	ctx.Contribute(adminapi.Slot, adminapi.Item{ID: adminItemID, Section: "Platform", Label: adminLabel, Render: m.adminRender})
-	ctx.Mux.HandleFunc("GET /admin-data/"+adminItemID, m.handleAdminData)
 	return nil
 }
 
@@ -177,21 +175,6 @@ func (m *Module) prune(ctx context.Context, tx *sql.Tx) error {
 	_, err := tx.ExecContext(ctx,
 		`DELETE FROM audit.log WHERE at < now() - make_interval(days => $1)`, m.retention)
 	return err
-}
-
-// handleAdminData serves the admin content over HTTP as adminapi.ItemData so a
-// remote admin process can render it, using the SAME adminRender logic.
-func (m *Module) handleAdminData(w http.ResponseWriter, r *http.Request) {
-	content, err := m.adminRender(r.Context())
-	if err != nil {
-		m.log.Error("admin-data render failed", "err", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(adminapi.ItemData{
-		ID: adminItemID, Section: "Platform", Label: adminLabel, Content: content,
-	})
 }
 
 // adminRender is the read-only "Audit Log" admin view: the most recent 100 entries.

@@ -7,9 +7,7 @@ package inventory
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"log/slog"
-	"net/http"
 	"os"
 	"strings"
 	"sync"
@@ -167,8 +165,6 @@ func (m *Module) Init(ctx *lifecycle.Context) error {
 
 	// The inventory service was Provided in Register (phase 1); m.store is set.
 	ctx.Contribute(adminapi.Slot, adminapi.Item{ID: adminItemID, Section: adminSectionName, Label: adminLabel, Render: m.adminSection})
-	// GET /admin-data/inventory: the same content over HTTP for a remote admin.
-	ctx.Mux.HandleFunc("GET /admin-data/"+adminItemID, m.handleAdminData)
 
 	// Split topology: expose the inventory player capabilities over the shared QUIC
 	// edge server so a front gateway in a peer can route player-facing inventory
@@ -321,12 +317,6 @@ func (s *service) Grant(ctx context.Context, itemID string, qty int) ([]Holding,
 		return nil, err
 	}
 	return s.store.list(ctx, owner)
-}
-
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
 }
 
 func envBool(key string, def bool) bool {

@@ -9,16 +9,13 @@ import (
 	"context"
 	"crypto/subtle"
 	_ "embed"
-	"encoding/json"
 	"errors"
-	"fmt"
 	"html/template"
 	"log/slog"
 	"net/http"
 	"os"
 	"strconv"
 	"strings"
-	"time"
 
 	"gamebackend/lifecycle"
 	"gamebackend/modules/admin/adminapi"
@@ -37,9 +34,6 @@ type Module struct {
 	user  userView
 	authU string
 	authP string
-	// http fetches remote items' ItemData over HTTP (a peer process's /admin-data/
-	// <id>). Shared, with a sane timeout so a slow/down peer never blocks /admin.
-	http *http.Client
 }
 
 func (*Module) Name() string       { return "admin" }
@@ -49,7 +43,6 @@ func (m *Module) Init(ctx *lifecycle.Context) error {
 	m.ctx = ctx
 	m.log = ctx.Log
 	m.tmpl = template.Must(template.New("admin").Parse(tmplText))
-	m.http = &http.Client{Timeout: 3 * time.Second}
 
 	m.authU = os.Getenv("ADMIN_USER")
 	m.authP = os.Getenv("ADMIN_PASS")
@@ -106,42 +99,12 @@ type resolvedItem struct {
 	remote                   *remoteResult
 }
 
-// remoteResult is the outcome of fetching a remote item's ItemData: on success
-// content is populated; on a transport error / non-2xx / timeout err is set and
+// remoteResult is the outcome of a remote item's RemoteFetch (an edge hop under
+// the hood): on success content is populated; on a transport error err is set and
 // the page shows an "unavailable" error card (a down peer never blanks /admin).
 type remoteResult struct {
 	content adminapi.Content
 	err     error
-}
-
-// errRemoteNotFound signals a 404 from a peer's /admin-data/<id>: the remote
-// module has no admin surface, so the item is skipped silently (not an error card).
-var errRemoteNotFound = errors.New("remote admin item not found (404)")
-
-// fetchRemote GETs a peer's /admin-data/<id> and decodes the ItemData. A 404 maps
-// to errRemoteNotFound (skip); any other non-2xx, a transport failure, or a decode
-// error is returned so the caller renders an error card.
-func (m *Module) fetchRemote(ctx context.Context, url string) (adminapi.ItemData, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return adminapi.ItemData{}, err
-	}
-	resp, err := m.http.Do(req)
-	if err != nil {
-		return adminapi.ItemData{}, err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode == http.StatusNotFound {
-		return adminapi.ItemData{}, errRemoteNotFound
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return adminapi.ItemData{}, fmt.Errorf("remote admin returned %s", resp.Status)
-	}
-	var data adminapi.ItemData
-	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
-		return adminapi.ItemData{}, err
-	}
-	return data, nil
 }
 
 // slugify lowercases s, keeps [a-z0-9], maps space/-/_ to "-", drops other runes,
@@ -162,11 +125,12 @@ func slugify(s string) string {
 // items resolves the contributed admin items into ordered resolvedItems with
 // unique slugs (first-seen order preserved; collisions get a -2, -3, … suffix).
 //
-// A LOCAL item (RemoteURL empty) uses its own Section/Label and keeps the render
-// closure for lazy in-process rendering. A REMOTE item (RemoteURL set) is fetched
-// now — Section/Label/Content all come from the peer's ItemData; a 404 drops the
-// item silently, any other failure keeps it as an error card (Label falls back to
-// ID). Fetching per request is acceptable: /admin is low-traffic.
+// A LOCAL item (RemoteFetch nil) uses its own Section/Label and keeps the render
+// closure for lazy in-process rendering. A REMOTE item (RemoteFetch set) is fetched
+// now over the edge — Section/Label/Content all come from the peer's ItemData; an
+// ErrItemAbsent (the peer has no admin surface) drops the item silently, any other
+// failure keeps it as an error card (Label falls back to ID). Fetching per request
+// is acceptable: /admin is low-traffic.
 func (m *Module) items(ctx context.Context) []resolvedItem {
 	seen := map[string]bool{}
 	var out []resolvedItem
@@ -177,17 +141,17 @@ func (m *Module) items(ctx context.Context) []resolvedItem {
 		}
 
 		ri := resolvedItem{id: it.ID}
-		if it.RemoteURL == "" {
+		if it.RemoteFetch == nil {
 			// LOCAL — in-process closure, metadata carried on the Item.
 			ri.section, ri.label, ri.render = it.Section, it.Label, it.Render
 		} else {
-			// REMOTE — fetch ItemData for Section/Label/Content in one round-trip.
-			data, err := m.fetchRemote(ctx, it.RemoteURL)
+			// REMOTE — fetch ItemData (Section/Label/Content) over the edge in one hop.
+			data, err := it.RemoteFetch(ctx)
 			switch {
-			case errors.Is(err, errRemoteNotFound):
+			case errors.Is(err, adminapi.ErrItemAbsent):
 				continue // no admin surface on the peer → skip silently
 			case err != nil:
-				m.log.Error("remote admin item unavailable", "item", it.ID, "url", it.RemoteURL, "err", err)
+				m.log.Error("remote admin item unavailable", "item", it.ID, "err", err)
 				ri.section, ri.label = it.ID, it.ID // no metadata to trust — key off ID
 				ri.remote = &remoteResult{err: err}
 			default:

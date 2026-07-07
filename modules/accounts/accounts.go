@@ -13,6 +13,7 @@ import (
 	"gamebackend/bus"
 	"gamebackend/edge"
 	"gamebackend/lifecycle"
+	"gamebackend/modules/accounts/accountsadminrpc"
 	"gamebackend/modules/accounts/accountsapi"
 	"gamebackend/modules/accounts/accountsauthrpc"
 	"gamebackend/modules/accounts/accountsrpc"
@@ -113,6 +114,9 @@ type service struct {
 var (
 	_ accountsapi.Sessions = (*service)(nil)
 	_ accountsapi.Auth     = (*service)(nil)
+	// The admin fan-out capability is implemented by the Module (it wraps
+	// adminSection, which reads m.store) — the source of truth for the edge glue.
+	_ accountsapi.Admin = (*Module)(nil)
 )
 
 func (m *Module) Init(ctx *lifecycle.Context) error {
@@ -192,14 +196,15 @@ func (m *Module) Init(ctx *lifecycle.Context) error {
 		accountsrpc.RegisterServer(m.Edge, sess)
 		var auth accountsapi.Auth = m.svc
 		accountsauthrpc.RegisterServer(m.Edge, auth)
+		// adminData carries no identity — it is the admin fan-out, not a player op.
+		var adminSvc accountsapi.Admin = m
+		accountsadminrpc.RegisterServer(m.Edge, adminSvc)
 		m.log.Info("edge handlers registered", "methods",
-			[]string{accountsrpc.MethodVerifySession, accountsauthrpc.MethodRegister, accountsauthrpc.MethodLogin, accountsauthrpc.MethodLoginEpic, accountsauthrpc.MethodMe})
+			[]string{accountsrpc.MethodVerifySession, accountsauthrpc.MethodRegister, accountsauthrpc.MethodLogin, accountsauthrpc.MethodLoginEpic, accountsauthrpc.MethodMe, accountsadminrpc.MethodAdminData})
 	}
 
 	// Appear in the admin portal (it renders whatever is contributed).
 	ctx.Contribute(adminapi.Slot, adminapi.Item{ID: adminItemID, Section: adminSectionName, Label: adminLabel, Render: m.adminSection})
-	// GET /admin-data/accounts: the same content over HTTP for a remote admin.
-	ctx.Mux.HandleFunc("GET /admin-data/"+adminItemID, m.handleAdminData)
 	return nil
 }
 

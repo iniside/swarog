@@ -6,10 +6,19 @@
 // contract (like the <module>events packages).
 package adminapi
 
-import "context"
+import (
+	"context"
+	"errors"
+)
 
 // Slot is the core contribution slot admin reads.
 const Slot = "admin.item"
+
+// ErrItemAbsent signals that a remote item's provider has no admin surface: a
+// RemoteFetch returns it (wrapping the edge's "unknown method" outcome) so the
+// admin drops the item silently instead of showing an error card. It is the
+// RemoteFetch analogue of the old HTTP 404-skip semantics.
+var ErrItemAbsent = errors.New("adminapi: remote item has no admin surface")
 
 // Item is one clickable entry in the admin sidebar, contributed by a module. The admin groups
 // items by Section into the menu; opening an item renders its Content into the content area.
@@ -17,20 +26,22 @@ const Slot = "admin.item"
 // An item is either LOCAL or REMOTE:
 //   - LOCAL (co-located module): Render is set and the admin calls it in-process
 //     (an opaque closure passed through the contribution slot — no cross-module import).
-//   - REMOTE (a stub standing in for a module hosted in a peer process): RemoteURL
-//     is set (the peer's .../admin-data/<ID> URL). Section/Label/Render are left
-//     zero — the admin fetches ItemData over HTTP to learn them.
+//   - REMOTE (a stub standing in for a module hosted in a peer process): RemoteFetch
+//     is set — an in-process closure that hops the unified edge transport (the same
+//     mTLS QUIC edge as characters.ownerOf) to fetch the peer's ItemData. Section/
+//     Label/Render are left zero; the admin learns them from the fetched ItemData.
 type Item struct {
-	ID        string                                     // stable id, e.g. "characters"; the /admin-data/<id> path segment + remote-match key
-	Section   string                                     // sidebar group label, e.g. "Game Content". First item creates it; rest append.
-	Label     string                                     // the clickable menu entry + page title, e.g. "Characters"
-	Render    func(ctx context.Context) (Content, error) // LOCAL: in-process render; nil for a remote stub item
-	RemoteURL string                                     // REMOTE: the peer's .../admin-data/<id> URL; empty for local items
+	ID          string                                       // stable id, e.g. "characters"; the remote-match key
+	Section     string                                       // sidebar group label, e.g. "Game Content". First item creates it; rest append.
+	Label       string                                       // the clickable menu entry + page title, e.g. "Characters"
+	Render      func(ctx context.Context) (Content, error)   // LOCAL: in-process render; nil for a remote stub item
+	RemoteFetch func(ctx context.Context) (ItemData, error)  // REMOTE: fetches ItemData over the edge; nil for local items. ErrItemAbsent ⇒ skip.
 }
 
-// ItemData is the wire form GET /admin-data/<id> returns as JSON. A remote admin
-// process fetches it to learn a remote item's Section/Label AND its Content in a
-// single round-trip, so the sidebar and page render from one fetch.
+// ItemData is the wire form the module's adminData edge operation returns. A
+// remote admin process fetches it (over the QUIC edge, via the generated glue) to
+// learn a remote item's Section/Label AND its Content in a single round-trip, so
+// the sidebar and page render from one fetch.
 type ItemData struct {
 	ID      string  `json:"id"`
 	Section string  `json:"section"`

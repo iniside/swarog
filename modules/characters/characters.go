@@ -10,15 +10,14 @@ package characters
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"log/slog"
-	"net/http"
 	"strings"
 
 	"gamebackend/bus"
 	"gamebackend/edge"
 	"gamebackend/lifecycle"
 	"gamebackend/modules/admin/adminapi"
+	"gamebackend/modules/characters/charactersadminrpc"
 	"gamebackend/modules/characters/charactersapi"
 	"gamebackend/modules/characters/charactersevents"
 	"gamebackend/modules/characters/charactersplayerrpc"
@@ -90,24 +89,25 @@ func (m *Module) Init(ctx *lifecycle.Context) error {
 
 	// The characters service was Provided in Register (phase 1); m.store/m.svc are set.
 	ctx.Contribute(adminapi.Slot, adminapi.Item{ID: adminItemID, Section: adminSectionName, Label: adminLabel, Render: m.adminSection})
-	// GET /admin-data/characters: the same content, served over HTTP so a remote
-	// admin process can fetch it. In the monolith the admin uses the closure above.
-	ctx.Mux.HandleFunc("GET /admin-data/"+adminItemID, m.handleAdminData)
 
 	// Split topology: expose the characters capabilities over the shared QUIC edge
-	// server so a peer process can resolve ownership (inventory) or front the player
-	// operations (a gateway). Registering handlers is pure wiring (no I/O); main()
-	// starts the listener after all Inits.
+	// server so a peer process can resolve ownership (inventory), front the player
+	// operations (a gateway), or fan out this module's admin page (a peer's admin).
+	// Registering handlers is pure wiring (no I/O); main() starts the listener after
+	// all Inits.
 	if m.Edge != nil {
-		// Both edge faces are rpcgen-generated from the pure charactersapi contracts:
+		// Every edge face is rpcgen-generated from the pure charactersapi contracts:
 		// one RegisterServer per interface installs identity-aware adapters (they read
 		// the request envelope's Identity into ctx via opsapi.WithPlayerID).
 		var own charactersapi.Ownership = m.svc
 		charactersrpc.RegisterServer(m.Edge, own)
 		var player charactersapi.Player = m.svc
 		charactersplayerrpc.RegisterServer(m.Edge, player)
+		// adminData carries no identity — it is the admin fan-out, not a player op.
+		var adminSvc charactersapi.Admin = m
+		charactersadminrpc.RegisterServer(m.Edge, adminSvc)
 		m.log.Info("edge handlers registered", "methods",
-			[]string{charactersrpc.MethodOwnerOf, charactersplayerrpc.MethodCreate, charactersplayerrpc.MethodList, charactersplayerrpc.MethodDelete})
+			[]string{charactersrpc.MethodOwnerOf, charactersplayerrpc.MethodCreate, charactersplayerrpc.MethodList, charactersplayerrpc.MethodDelete, charactersadminrpc.MethodAdminData})
 	}
 	return nil
 }
@@ -127,6 +127,10 @@ var (
 	_ charactersapi.Ownership = (*service)(nil)
 	_ charactersapi.Player    = (*service)(nil)
 )
+
+// The admin fan-out capability is implemented by the Module (it wraps adminSection,
+// which reads m.store) — the single source of truth for the generated edge glue.
+var _ charactersapi.Admin = (*Module)(nil)
 
 // OwnerOf returns the owning player of a character. A genuine "no such
 // character" is ("", false, nil); a store failure propagates as a non-nil error
@@ -232,10 +236,4 @@ func (s *service) Delete(ctx context.Context, characterID string) error {
 		return err
 	}
 	return nil
-}
-
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
 }

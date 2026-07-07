@@ -35,27 +35,14 @@ func peerEdgeAddr(name string) string {
 	return "localhost:9000"
 }
 
-// peerAdminURL returns the peer's /admin-data/<name> HTTP URL a remote stub
-// fetches its admin page from: env <NAME>_ADMIN_URL, else derived from the
-// shared PEER_HTTP_ADDR base, else empty (⇒ the module contributes no admin
-// item and simply doesn't appear in this process's /admin).
-func peerAdminURL(name string) string {
-	if v := strings.TrimSpace(os.Getenv(strings.ToUpper(name) + "_ADMIN_URL")); v != "" {
-		return v
-	}
-	if base := strings.TrimSpace(os.Getenv("PEER_HTTP_ADDR")); base != "" {
-		return "http://" + base + "/admin-data/" + name
-	}
-	return ""
-}
-
 func main() {
 	// Remote stubs stand in for the peer-hosted providers: each Provides an
 	// edge-backed client under the dependency name, so inventory's Require
-	// resolves to a real QUIC caller across the process boundary. The admin URL
-	// (when set) lets this process's /admin fan out to the peer's admin page.
-	accStub := remote.NewStub("accounts", peerEdgeAddr("accounts"), peerAdminURL("accounts"))
-	charStub := remote.NewStub("characters", peerEdgeAddr("characters"), peerAdminURL("characters"))
+	// resolves to a real QUIC caller across the process boundary. Each stub also
+	// carries an adminData edge client, so this process's /admin fans out the
+	// peer's admin page over the SAME QUIC edge — no PEER_HTTP_ADDR / HTTP hop.
+	accStub := remote.NewStub("accounts", peerEdgeAddr("accounts"))
+	charStub := remote.NewStub("characters", peerEdgeAddr("characters"))
 
 	// This process hosts its own QUIC edge server so a gateway can route
 	// player-facing inventory reads ("inventory.list") to it.

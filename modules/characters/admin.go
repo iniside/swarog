@@ -2,14 +2,13 @@ package characters
 
 import (
 	"context"
-	"net/http"
 	"strconv"
 
 	"gamebackend/modules/admin/adminapi"
 )
 
 // adminItemID/adminSectionName/adminLabel identify this module's admin surface —
-// shared by the contributed Item, the /admin-data endpoint, and its ItemData reply
+// shared by the contributed Item and the adminData edge operation's ItemData reply
 // so a remote admin fetches the same Section/Label the local closure carries.
 const (
 	adminItemID      = "characters"
@@ -17,19 +16,18 @@ const (
 	adminLabel       = "Characters"
 )
 
-// handleAdminData serves this module's admin content over HTTP as adminapi.ItemData
-// so a remote admin process can render it. It runs the SAME adminSection logic the
-// in-process closure uses.
-func (m *Module) handleAdminData(w http.ResponseWriter, r *http.Request) {
-	content, err := m.adminSection(r.Context())
+// AdminData is the characters module's adminData edge operation (charactersapi.Admin):
+// it returns this module's admin content as adminapi.ItemData so a peer's admin
+// portal can render it over the unified QUIC edge. It runs the SAME adminSection
+// logic the in-process closure uses. No player identity is involved.
+func (m *Module) AdminData(ctx context.Context) (adminapi.ItemData, error) {
+	content, err := m.adminSection(ctx)
 	if err != nil {
-		m.log.Error("admin-data render failed", "err", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
+		return adminapi.ItemData{}, err
 	}
-	writeJSON(w, http.StatusOK, adminapi.ItemData{
+	return adminapi.ItemData{
 		ID: adminItemID, Section: adminSectionName, Label: adminLabel, Content: content,
-	})
+	}, nil
 }
 
 // adminSection is the live "Characters" block this module contributes to the

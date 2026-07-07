@@ -16,9 +16,14 @@
 //
 //go:generate go run gamebackend/tools/rpcgen -iface Sessions -prefix accounts -out ../accountsrpc/accountsrpc_gen.go
 //go:generate go run gamebackend/tools/rpcgen -iface Auth -prefix accounts -out ../accountsauthrpc/accountsauthrpc_gen.go
+//go:generate go run gamebackend/tools/rpcgen -iface Admin -prefix accounts -out ../accountsadminrpc/accountsadminrpc_gen.go
 package accountsapi
 
-import "context"
+import (
+	"context"
+
+	"gamebackend/modules/admin/adminapi"
+)
 
 // Player is the product-scoped identity (the EOS PUID analogue). Its JSON tags are
 // the public HTTP response shape the gateway encodes.
@@ -62,4 +67,13 @@ type Auth interface {
 	Login(ctx context.Context, email, password string) (session Session, err error)
 	LoginEpic(ctx context.Context, idToken string) (session Session, err error)
 	Me(ctx context.Context) (player Player, identities []Identity, err error)
+}
+
+// Admin is the accounts module's admin fan-out capability: a peer's admin portal
+// calls AdminData to render this module's "Players" page over the unified edge
+// transport, exactly like verifySession — no player identity, no bespoke HTTP
+// endpoint. It returns the same adminapi.ItemData the in-process closure produces.
+// The accounts service implements it; the edge glue is generated.
+type Admin interface {
+	AdminData(ctx context.Context) (data adminapi.ItemData, err error)
 }

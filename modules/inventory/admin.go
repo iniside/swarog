@@ -2,33 +2,19 @@ package inventory
 
 import (
 	"context"
-	"net/http"
 	"strconv"
 
 	"gamebackend/modules/admin/adminapi"
 )
 
-// adminItemID/adminSectionName/adminLabel identify this module's admin surface —
-// shared by the contributed Item, the /admin-data endpoint, and its ItemData reply.
+// adminItemID/adminSectionName/adminLabel identify this module's admin surface.
+// inventory is always co-hosted with the admin portal (LOCAL render closure), so
+// it needs no adminData edge operation — only accounts/characters are fanned out.
 const (
 	adminItemID      = "inventory"
 	adminSectionName = "Game Content"
 	adminLabel       = "Inventory"
 )
-
-// handleAdminData serves this module's admin content over HTTP as adminapi.ItemData
-// so a remote admin process can render it, using the SAME adminSection logic.
-func (m *Module) handleAdminData(w http.ResponseWriter, r *http.Request) {
-	content, err := m.adminSection(r.Context())
-	if err != nil {
-		m.log.Error("admin-data render failed", "err", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-	writeJSON(w, http.StatusOK, adminapi.ItemData{
-		ID: adminItemID, Section: adminSectionName, Label: adminLabel, Content: content,
-	})
-}
 
 func (m *Module) adminSection(ctx context.Context) (adminapi.Content, error) {
 	holdings, owners, err := m.store.stats(ctx)

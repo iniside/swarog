@@ -1,48 +1,45 @@
 // White-box tests for the admin fan-out: items() dispatches LOCAL items to their
-// in-process closure and REMOTE items to an HTTP fetch of the peer's ItemData.
-// These use httptest servers (no Postgres, no real peer) to exercise the success,
-// 404-skip, and transport-failure (error-card) paths.
+// in-process closure and REMOTE items to their RemoteFetch closure (which, in a
+// real split, hops the QUIC edge to the peer's adminData operation). These use
+// plain closures (no Postgres, no real peer) to exercise the success,
+// absent-skip, and transport-failure (error-card) paths.
 package admin
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
 	"log/slog"
-	"net/http"
-	"net/http/httptest"
 	"testing"
-	"time"
 
 	"gamebackend/lifecycle"
 	"gamebackend/modules/admin/adminapi"
 )
 
-// newFanoutModule builds a Module wired with a context and a short-timeout client,
-// ready for items() without any database.
+// newFanoutModule builds a Module wired with a context, ready for items() without
+// any database.
 func newFanoutModule() *Module {
 	return &Module{
-		ctx:  lifecycle.NewContext(slog.Default()),
-		log:  slog.Default(),
-		http: &http.Client{Timeout: 2 * time.Second},
+		ctx: lifecycle.NewContext(slog.Default()),
+		log: slog.Default(),
 	}
+}
+
+// remoteFetch returns a RemoteFetch closure that yields the given ItemData/err —
+// the in-process stand-in for the generated adminData edge client.
+func remoteFetch(data adminapi.ItemData, err error) func(context.Context) (adminapi.ItemData, error) {
+	return func(context.Context) (adminapi.ItemData, error) { return data, err }
 }
 
 // TestItems_RemoteSuccess: a remote item is fetched and its Section/Label/Content
 // come from the peer's ItemData, not from the (empty) contributed Item.
 func TestItems_RemoteSuccess(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(adminapi.ItemData{
-			ID:      "characters",
-			Section: "Game Content",
-			Label:   "Characters",
-			Content: adminapi.Content{KPIs: []adminapi.KPI{{Label: "Characters", Value: "7"}}},
-		})
-	}))
-	defer srv.Close()
-
 	m := newFanoutModule()
-	m.ctx.Contribute(adminapi.Slot, adminapi.Item{ID: "characters", RemoteURL: srv.URL})
+	m.ctx.Contribute(adminapi.Slot, adminapi.Item{ID: "characters", RemoteFetch: remoteFetch(adminapi.ItemData{
+		ID:      "characters",
+		Section: "Game Content",
+		Label:   "Characters",
+		Content: adminapi.Content{KPIs: []adminapi.KPI{{Label: "Characters", Value: "7"}}},
+	}, nil)})
 
 	items := m.items(context.Background())
 	if len(items) != 1 {
@@ -66,40 +63,32 @@ func TestItems_RemoteSuccess(t *testing.T) {
 	}
 }
 
-// TestItems_Remote404Skipped: a 404 from the peer means the module has no admin
-// surface — the item is dropped silently, not shown as an error.
-func TestItems_Remote404Skipped(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		http.NotFound(w, nil)
-	}))
-	defer srv.Close()
-
+// TestItems_RemoteAbsentSkipped: ErrItemAbsent (the peer has no admin surface)
+// means the item is dropped silently, not shown as an error.
+func TestItems_RemoteAbsentSkipped(t *testing.T) {
 	m := newFanoutModule()
-	m.ctx.Contribute(adminapi.Slot, adminapi.Item{ID: "ghost", RemoteURL: srv.URL})
-	// A local item alongside it to prove only the 404 one is dropped.
+	m.ctx.Contribute(adminapi.Slot, adminapi.Item{ID: "ghost",
+		RemoteFetch: remoteFetch(adminapi.ItemData{}, adminapi.ErrItemAbsent)})
+	// A local item alongside it to prove only the absent one is dropped.
 	m.ctx.Contribute(adminapi.Slot, adminapi.Item{ID: "inventory", Section: "Game Content", Label: "Inventory",
 		Render: func(context.Context) (adminapi.Content, error) { return adminapi.Content{}, nil }})
 
 	items := m.items(context.Background())
 	if len(items) != 1 {
-		t.Fatalf("items() len = %d; want 1 (404 item skipped)", len(items))
+		t.Fatalf("items() len = %d; want 1 (absent item skipped)", len(items))
 	}
 	if items[0].label != "Inventory" {
 		t.Errorf("surviving item = %q; want Inventory", items[0].label)
 	}
 }
 
-// TestItems_RemoteErrorCard: a non-2xx (or transport failure) keeps the item as an
-// error card — visible in the sidebar, Label falls back to ID, remote.err set — so
-// a down peer never blanks /admin.
+// TestItems_RemoteErrorCard: any non-absent fetch error keeps the item as an error
+// card — visible in the sidebar, Label falls back to ID, remote.err set — so a down
+// peer never blanks /admin.
 func TestItems_RemoteErrorCard(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		http.Error(w, "boom", http.StatusInternalServerError)
-	}))
-	defer srv.Close()
-
 	m := newFanoutModule()
-	m.ctx.Contribute(adminapi.Slot, adminapi.Item{ID: "characters", RemoteURL: srv.URL})
+	m.ctx.Contribute(adminapi.Slot, adminapi.Item{ID: "characters",
+		RemoteFetch: remoteFetch(adminapi.ItemData{}, errors.New("boom"))})
 
 	items := m.items(context.Background())
 	if len(items) != 1 {
@@ -117,17 +106,11 @@ func TestItems_RemoteErrorCard(t *testing.T) {
 // TestItems_LocalVsRemoteDispatch: a mix of a local closure item and a remote item
 // resolves each on its own path in one items() call.
 func TestItems_LocalVsRemoteDispatch(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode(adminapi.ItemData{
-			ID: "characters", Section: "Game Content", Label: "Characters",
-		})
-	}))
-	defer srv.Close()
-
 	m := newFanoutModule()
 	m.ctx.Contribute(adminapi.Slot, adminapi.Item{ID: "inventory", Section: "Game Content", Label: "Inventory",
 		Render: func(context.Context) (adminapi.Content, error) { return adminapi.Content{}, nil }})
-	m.ctx.Contribute(adminapi.Slot, adminapi.Item{ID: "characters", RemoteURL: srv.URL})
+	m.ctx.Contribute(adminapi.Slot, adminapi.Item{ID: "characters",
+		RemoteFetch: remoteFetch(adminapi.ItemData{ID: "characters", Section: "Game Content", Label: "Characters"}, nil)})
 
 	items := m.items(context.Background())
 	if len(items) != 2 {

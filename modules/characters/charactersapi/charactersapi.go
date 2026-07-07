@@ -11,11 +11,14 @@
 //
 //go:generate go run gamebackend/tools/rpcgen -iface Ownership -prefix characters -out ../charactersrpc/charactersrpc_gen.go
 //go:generate go run gamebackend/tools/rpcgen -iface Player -prefix characters -out ../charactersplayerrpc/charactersplayerrpc_gen.go
+//go:generate go run gamebackend/tools/rpcgen -iface Admin -prefix characters -out ../charactersadminrpc/charactersadminrpc_gen.go
 package charactersapi
 
 import (
 	"context"
 	"time"
+
+	"gamebackend/modules/admin/adminapi"
 )
 
 // Character is a player-owned character. PlayerID is a plain reference to
@@ -50,4 +53,13 @@ type Player interface {
 	Create(ctx context.Context, name, class string) (character Character, err error)
 	List(ctx context.Context) (characters []Character, err error)
 	Delete(ctx context.Context, characterID string) (err error)
+}
+
+// Admin is the characters module's admin fan-out capability: a peer's admin
+// portal calls AdminData to render this module's page (KPIs + table) over the
+// unified edge transport, exactly like ownerOf — no player identity, no bespoke
+// HTTP endpoint. It returns the same adminapi.ItemData the in-process closure
+// produces. The characters service implements it; the edge glue is generated.
+type Admin interface {
+	AdminData(ctx context.Context) (data adminapi.ItemData, err error)
 }

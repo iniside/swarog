@@ -71,12 +71,18 @@ components:
   charactersplayerrpc:
     in:
       - modules/characters/charactersplayerrpc
+  charactersadminrpc:
+    in:
+      - modules/characters/charactersadminrpc
   accountsrpc:
     in:
       - modules/accounts/accountsrpc
   accountsauthrpc:
     in:
       - modules/accounts/accountsauthrpc
+  accountsadminrpc:
+    in:
+      - modules/accounts/accountsadminrpc
   inventoryrpc:
     in:
       - modules/inventory/inventoryrpc
@@ -125,8 +131,9 @@ components:
   # a foundation; a module (characters) brings its own DB handle in.
   outbox:      { in: outbox }
   # Composition-time remote stub: Provides an edge-backed client under a
-  # dependency's name and contributes a RemoteURL admin item. It satisfies
-  # consumer interfaces structurally, so it never imports a module's impl.
+  # dependency's name and contributes a RemoteFetch admin item (adminData over the
+  # edge). It satisfies consumer interfaces structurally, so it never imports a
+  # module's impl.
   remote:      { in: modules/remote }
   # Transport-level front door: a QUIC prefix router + HTTP reverse proxy. Imports
   # edge + stdlib only, never a module impl — the player-facing edge of the mesh.
@@ -178,10 +185,16 @@ commonComponents:
   - opsapi
 
 deps:
-  # NOTE: `bus`/`registry`/`contrib`/`contracts` are intentionally ABSENT here. A component with no
+  # NOTE: `bus`/`registry`/`contrib` are intentionally ABSENT here. A component with no
   # deps entry may use only commonComponents (bus/registry/contrib). So:
   #   - the three leaves -> may use the leaves = nothing but each other/themselves => never a module.
-  #   - contracts        -> may use the leaves only (for bus.Define)               => never a module impl.
+
+  # contracts may ALSO depend on itself: a provider's <module>api that exposes an
+  # admin fan-out capability (charactersapi/accountsapi) imports adminapi to name
+  # its ItemData return type. Both sides are transport-free contract packages in this
+  # SAME tier, so this stays within the shared-contract surface (never edge, never a
+  # module impl) — it only sanctions <module>api <-> adminapi, the rule-5 surface.
+  contracts:   { mayDependOn: [ contracts ] }
 
   # lifecycle aggregates the three leaves into Context + the App orchestrator.
   lifecycle:   { mayDependOn: [ bus, registry, contrib ] }
@@ -189,14 +202,14 @@ deps:
   # Each module impl may use the leaves (common) + lifecycle + the shared contracts — never another
   # module's impl. accounts/characters additionally register handlers on the shared QUIC edge server
   # (edge); characters also drives the transactional-outbox relay (outbox).
-  accounts:    { mayDependOn: [ lifecycle, contracts, edge, accountsrpc, accountsauthrpc ] }
+  accounts:    { mayDependOn: [ lifecycle, contracts, edge, accountsrpc, accountsauthrpc, accountsadminrpc ] }
   admin:       { mayDependOn: [ lifecycle, contracts ] }
   # audit imports the schedulerevents contract (reacts to scheduler.fired) + adminapi;
   # it logs domain events GENERICALLY by topic string, so it imports no domain payload
   # types in impl. (The anti-drift test imports them, allowed since they are all in the
   # `contracts` component.)
   audit:       { mayDependOn: [ lifecycle, contracts ] }
-  characters:  { mayDependOn: [ lifecycle, contracts, edge, outbox, charactersrpc, charactersplayerrpc ] }
+  characters:  { mayDependOn: [ lifecycle, contracts, edge, outbox, charactersrpc, charactersplayerrpc, charactersadminrpc ] }
   config:      { mayDependOn: [ lifecycle, contracts ] }
   # The gateway MODULE contributes a front-handler to the httpmw leaf slot and, from
   # Step B2, builds the operation-dispatch substrate: it reads opsapi (Operation/Slot
@@ -227,15 +240,18 @@ deps:
   # (in contracts). It never imports a module impl.
   charactersrpc:       { mayDependOn: [ edge, contracts ] }
   charactersplayerrpc: { mayDependOn: [ edge, contracts ] }
+  charactersadminrpc:  { mayDependOn: [ edge, contracts ] }
   accountsrpc:         { mayDependOn: [ edge, contracts ] }
   accountsauthrpc:     { mayDependOn: [ edge, contracts ] }
+  accountsadminrpc:    { mayDependOn: [ edge, contracts ] }
   inventoryrpc:        { mayDependOn: [ edge, contracts ] }
   leaderboardrpc:      { mayDependOn: [ edge, contracts ] }
   matchrpc:            { mayDependOn: [ edge, contracts ] }
 
   # The remote stub is composition-time plumbing: it wraps the generated edge
-  # clients (charactersrpc/accountsrpc) + the admin contract, never a module impl.
-  remote:      { mayDependOn: [ lifecycle, contracts, edge, charactersrpc, accountsrpc ] }
+  # clients (characters*/accounts* rpc, incl. the adminData glue) + the admin
+  # contract, never a module impl.
+  remote:      { mayDependOn: [ lifecycle, contracts, edge, charactersrpc, charactersadminrpc, accountsrpc, accountsadminrpc ] }
 
   # The gateway is a transport-level front door: it relays raw edge calls and
   # reverse-proxies HTTP, so it needs only the edge transport (+ stdlib).

@@ -176,7 +176,7 @@ wait_healthy 8080 "A (characters-svc)"
 
 # Process B: inventory-svc (inventory + admin, its OWN binary). accounts/
 # characters resolve via remote stubs dialing A's edge server; admin fan-out
-# reaches A's /admin-data/characters over PEER_HTTP_ADDR.
+# reaches A's adminData operation over that SAME QUIC edge (no HTTP endpoint).
 echo "Starting B (inventory-svc: inventory,admin) on :8081, edge :9001 ..."
 start_server inventory "$INVENTORY_BIN" \
     PORT=8081 \
@@ -186,7 +186,6 @@ start_server inventory "$INVENTORY_BIN" \
     EDGE_CA_KEY="$EDGE_CA_KEY" \
     CHARACTERS_EDGE_ADDR=localhost:9000 \
     ACCOUNTS_EDGE_ADDR=localhost:9000 \
-    PEER_HTTP_ADDR=localhost:8080 \
     MESSAGING_ORIGIN=inventory-svc
 wait_healthy 8081 "B (inventory-svc)"
 

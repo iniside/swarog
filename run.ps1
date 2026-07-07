@@ -222,7 +222,7 @@ Wait-Healthy -Port 8080 -Name 'A (characters-svc)'
 
 # Process B: inventory-svc (inventory + admin, its OWN binary). Its accounts/
 # characters dependencies resolve via remote stubs dialing A's edge server;
-# admin fan-out reaches A's /admin-data/characters over PEER_HTTP_ADDR.
+# admin fan-out reaches A's adminData operation over that SAME QUIC edge (no HTTP).
 $envB = @{
     PORT                 = '8081'
     DATABASE_URL         = $DatabaseUrl
@@ -231,7 +231,6 @@ $envB = @{
     EDGE_CA_KEY          = $edgeCaKey
     CHARACTERS_EDGE_ADDR = 'localhost:9000'
     ACCOUNTS_EDGE_ADDR   = 'localhost:9000'
-    PEER_HTTP_ADDR       = 'localhost:8080'
     MESSAGING_ORIGIN     = 'inventory-svc'
 }
 Write-Host "Starting B (inventory-svc: inventory,admin) on :8081, edge :9001 ..." -ForegroundColor Cyan
