@@ -6,12 +6,25 @@
 // exactly this ("Publish never blocks and returns nothing… that's a service
 // interface's job").
 //
-// STEP 1 STATUS: this file is the harness only — whole-module loading, the
-// exit/print contract, and the helpers the CFG-based detector will need. analyze
-// does not detect anything yet; it always returns zero findings. The detector
-// pass (go/cfg reachability from an Emit/Publish call to a sleep+read loop, with
-// an emit-in-loop guard for legitimate periodic publishers) lands in a follow-up
-// step.
+// How it works: for every function body AND every nested func literal body in the
+// module, build a per-body control-flow graph (golang.org/x/tools/go/cfg), locate
+// each gamebackend/bus.Emit/Publish call, and flag it when a loop body that is
+// forward-reachable from the Emit contains BOTH a sleep/backoff (time.Sleep /
+// time.After / a *time.Ticker|Timer.C receive) and a DB/store read (database/sql
+// or pgx Query/QueryRow/Exec, or a configured store package). An Emit that is
+// itself lexically inside the candidate loop is a periodic PUBLISHER, not a poll,
+// and is spared by the emit-in-loop guard (this is what keeps config/listen.go
+// silent).
+//
+// Deliberate blind spots (documented, not bugs — same honesty as topiccheck's
+// string-topic note):
+//   - Cross-body join is OUT OF SCOPE. go/cfg does not descend into a *ast.GoStmt
+//     or *ast.FuncLit body, so an Emit in an outer body whose poll lives in a
+//     spawned `go func(){ for{sleep;read} }()` lands in a disjoint CFG and is NOT
+//     joined. Each body is analyzed independently.
+//   - The read predicate is scoped to DB/store reads ONLY. An in-memory projection
+//     getter poll is intentionally NOT matched — broadening to "any method call"
+//     would fire on nearly every loop and destroy precision.
 //
 // Why a whole-module driver and not a go/analysis singlechecker+Facts: the same
 // rationale as topiccheck — resolving gamebackend/bus.Emit/Publish/On call sites
@@ -41,16 +54,17 @@ import (
 	"flag"
 	"fmt"
 	"go/ast"
-	"go/constant"
 	"go/token"
 	"go/types"
 	"os"
 	"regexp"
+	"sort"
+	"strings"
 
+	"golang.org/x/tools/go/cfg"
 	"golang.org/x/tools/go/packages"
 )
 
-//nolint:unused // reused by isBusFunc, which is reused by the Step 2 CFG detector (not yet wired in Step 1).
 const busPkgPath = "gamebackend/bus"
 
 // loadMode is the packages.Load mode: names + full type info + syntax for every
@@ -110,31 +124,372 @@ func main() {
 	}
 }
 
-// analyze runs the detector passes over every loaded package and returns the
-// findings deterministically. It is the testable core: given loaded packages
-// it returns findings without touching flag/os.
-//
-// STEP 1 STUB: no detector is wired yet, so this always returns zero findings.
-// The CFG-based emit-then-poll pass (walking every *ast.FuncDecl and *ast.FuncLit
-// body, locating Emit/Publish calls via isBusFunc, and checking forward-reachable
-// loop bodies for both a sleep/backoff call and a DB/store read) is added in a
-// follow-up step, along with its testdata fixtures.
+// analyze runs the emit-then-poll detector over every loaded package and returns
+// the findings deterministically. It is the testable core: given loaded packages
+// it returns findings without touching flag/os. It walks every *ast.FuncDecl and
+// *ast.FuncLit body (each gets its own CFG — go/cfg does not descend into nested
+// bodies), and flags an Emit/Publish whose effect is awaited by a reachable
+// sleep+read loop.
 func analyze(pkgs []*packages.Package, _ config) []Finding {
 	var findings []Finding
 	for _, pkg := range pkgs {
 		if pkg.TypesInfo == nil {
 			continue
 		}
-		// Detector pass not yet wired (Step 1 stub) — nothing to do per package.
+		for _, file := range pkg.Syntax {
+			ast.Inspect(file, func(n ast.Node) bool {
+				switch fn := n.(type) {
+				case *ast.FuncDecl:
+					if fn.Body != nil {
+						findings = append(findings, detectBody(pkg, file, fn.Body, fn.Doc)...)
+					}
+				case *ast.FuncLit:
+					findings = append(findings, detectBody(pkg, file, fn.Body, nil)...)
+				}
+				return true // descend so nested func literals get their own CFG
+			})
+		}
 	}
-	return findings
+	sort.Slice(findings, func(i, j int) bool {
+		return findings[i].Pos.String() < findings[j].Pos.String()
+	})
+	return dedup(findings)
+}
+
+// dedup drops findings sharing a source position (an Emit can only be reported
+// once even if two loop bodies qualify).
+func dedup(in []Finding) []Finding {
+	if len(in) == 0 {
+		return nil
+	}
+	out := in[:0:0]
+	seen := map[string]bool{}
+	for _, f := range in {
+		if seen[f.Pos.String()] {
+			continue
+		}
+		seen[f.Pos.String()] = true
+		out = append(out, f)
+	}
+	return out
+}
+
+// detectBody builds the CFG for one function/closure body and reports every
+// Emit/Publish in it whose effect is awaited by a forward-reachable sleep+read
+// loop. doc is the enclosing FuncDecl's doc comment (nil for a func literal),
+// consulted by the allowlist.
+func detectBody(pkg *packages.Package, file *ast.File, body *ast.BlockStmt, doc *ast.CommentGroup) []Finding {
+	if body == nil {
+		return nil
+	}
+	graph := cfg.New(body, mayReturnFn(pkg))
+
+	// Locate every Emit/Publish call and the block it lives in. Scanning stops at
+	// nested func-literal boundaries: those bodies own their own CFG, so an Emit
+	// inside a closure is not attributed to this outer body.
+	type emitSite struct {
+		call  *ast.CallExpr
+		block *cfg.Block
+	}
+	var emits []emitSite
+	for _, block := range graph.Blocks {
+		for _, node := range block.Nodes {
+			walkNoFuncLit(node, func(x ast.Node) {
+				call, ok := x.(*ast.CallExpr)
+				if !ok {
+					return
+				}
+				if isBusFunc(pkg, call, "Emit") || isBusFunc(pkg, call, "Publish") {
+					emits = append(emits, emitSite{call: call, block: block})
+				}
+			})
+		}
+	}
+	if len(emits) == 0 {
+		return nil
+	}
+
+	var out []Finding
+	for _, e := range emits {
+		reachable := forwardReachable(e.block)
+		for _, block := range graph.Blocks {
+			if !reachable[block] {
+				continue
+			}
+			if block.Kind != cfg.KindForBody && block.Kind != cfg.KindRangeBody {
+				continue
+			}
+			loopBody := loopBodyOf(block.Stmt)
+			if loopBody == nil {
+				continue
+			}
+			// Emit-in-loop guard: an Emit lexically inside the candidate loop body
+			// is a periodic publisher, not a poll of the emit's effect.
+			if within(loopBody, e.call.Pos()) {
+				continue
+			}
+			if !blockHasSleep(pkg, block) || !blockHasDBRead(pkg, block) {
+				continue
+			}
+			if _, ok := allowlisted(pkg, file, block.Stmt.Pos(), doc); ok {
+				continue
+			}
+			out = append(out, Finding{
+				Pos:  pkg.Fset.Position(e.call.Pos()),
+				Kind: "emit-then-poll",
+				Msg:  emitMsg(pkg, e.call),
+			})
+			break // one finding per Emit site
+		}
+	}
+	return out
+}
+
+// emitMsg builds the finding message, naming the emitted EventType var when the
+// call carries one (bus.Emit(b, XEvent, v)).
+func emitMsg(pkg *packages.Package, call *ast.CallExpr) string {
+	ev := "an event"
+	if len(call.Args) >= 2 {
+		if o := objectOf(pkg, call.Args[1]); o != nil {
+			ev = o.Name()
+		}
+	}
+	return fmt.Sprintf("bus emit of %s is followed by a sleep+read poll loop; "+
+		"await the event's effect via a service interface, not by polling (CLAUDE.md #7)", ev)
+}
+
+// forwardReachable returns the set of live blocks reachable from start (inclusive)
+// by following successor edges — the blocks whose code runs after the Emit.
+func forwardReachable(start *cfg.Block) map[*cfg.Block]bool {
+	seen := map[*cfg.Block]bool{}
+	queue := []*cfg.Block{start}
+	for len(queue) > 0 {
+		b := queue[len(queue)-1]
+		queue = queue[:len(queue)-1]
+		if b == nil || seen[b] || !b.Live {
+			continue
+		}
+		seen[b] = true
+		queue = append(queue, b.Succs...)
+	}
+	return seen
+}
+
+// loopBodyOf returns the body block statement of a for/range loop, or nil.
+func loopBodyOf(stmt ast.Stmt) *ast.BlockStmt {
+	switch s := stmt.(type) {
+	case *ast.ForStmt:
+		return s.Body
+	case *ast.RangeStmt:
+		return s.Body
+	}
+	return nil
+}
+
+// within reports whether pos falls inside the block statement's source extent.
+func within(body *ast.BlockStmt, pos token.Pos) bool {
+	return body.Pos() <= pos && pos <= body.End()
+}
+
+// blockHasSleep reports whether any node in block (excluding nested closures) is a
+// sleep/backoff: time.Sleep, time.After, time.Tick, or a *time.Ticker|Timer.C
+// channel receive.
+func blockHasSleep(pkg *packages.Package, block *cfg.Block) bool {
+	found := false
+	for _, node := range block.Nodes {
+		walkNoFuncLit(node, func(x ast.Node) {
+			if found {
+				return
+			}
+			switch e := x.(type) {
+			case *ast.CallExpr:
+				if fn := funcOf(pkg, e.Fun); fn != nil && fn.Pkg() != nil && fn.Pkg().Path() == "time" {
+					switch fn.Name() {
+					case "Sleep", "After", "Tick":
+						found = true
+					}
+				}
+			case *ast.UnaryExpr:
+				if e.Op == token.ARROW && isTimerChanRecv(pkg, e.X) {
+					found = true
+				}
+			}
+		})
+		if found {
+			break
+		}
+	}
+	return found
+}
+
+// isTimerChanRecv reports whether e is `t.C` where t is a *time.Ticker or
+// *time.Timer (the operand of a <-t.C receive).
+func isTimerChanRecv(pkg *packages.Package, e ast.Expr) bool {
+	sel, ok := e.(*ast.SelectorExpr)
+	if !ok || sel.Sel.Name != "C" {
+		return false
+	}
+	named := namedOf(pkg.TypesInfo.TypeOf(sel.X))
+	if named == nil || named.Obj().Pkg() == nil {
+		return false
+	}
+	if named.Obj().Pkg().Path() != "time" {
+		return false
+	}
+	return named.Obj().Name() == "Ticker" || named.Obj().Name() == "Timer"
+}
+
+// blockHasDBRead reports whether any node in block (excluding nested closures) is
+// a DB/store read call.
+func blockHasDBRead(pkg *packages.Package, block *cfg.Block) bool {
+	found := false
+	for _, node := range block.Nodes {
+		walkNoFuncLit(node, func(x ast.Node) {
+			if found {
+				return
+			}
+			if call, ok := x.(*ast.CallExpr); ok && isDBRead(pkg, call) {
+				found = true
+			}
+		})
+		if found {
+			break
+		}
+	}
+	return found
+}
+
+// readMethods are the receiver method names treated as a DB/store read/poll.
+var readMethods = map[string]bool{
+	"Query":           true,
+	"QueryRow":        true,
+	"QueryContext":    true,
+	"QueryRowContext": true,
+	"Exec":            true,
+	"ExecContext":     true,
+}
+
+// storeReadPkgPrefixes is the configurable extension point (empty by default):
+// receiver-package path prefixes whose read methods also count as a poll, for
+// module store/repo packages. Left empty so only true DB clients match and
+// in-memory getters never do — see the package doc's blind-spot note.
+var storeReadPkgPrefixes []string
+
+// isDBRead reports whether call is a read method on a database/sql or pgx type
+// (or a configured store package): the "read" half of a poll.
+func isDBRead(pkg *packages.Package, call *ast.CallExpr) bool {
+	fn := funcOf(pkg, call.Fun)
+	if fn == nil || !readMethods[fn.Name()] {
+		return false
+	}
+	sig, ok := fn.Type().(*types.Signature)
+	if !ok || sig.Recv() == nil {
+		return false
+	}
+	named := namedOf(sig.Recv().Type())
+	if named == nil || named.Obj().Pkg() == nil {
+		return false
+	}
+	return isDBReadPkg(named.Obj().Pkg().Path())
+}
+
+// isDBReadPkg reports whether path is a database client package (database/sql or
+// the pgx family) or a configured store package prefix.
+func isDBReadPkg(path string) bool {
+	if path == "database/sql" || strings.HasPrefix(path, "github.com/jackc/pgx") {
+		return true
+	}
+	for _, p := range storeReadPkgPrefixes {
+		if p != "" && strings.HasPrefix(path, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// funcOf resolves a call's function expression to its *types.Func (unwrapping a
+// generic instantiation), or nil for builtins/values.
+func funcOf(pkg *packages.Package, e ast.Expr) *types.Func {
+	switch x := e.(type) {
+	case *ast.IndexExpr:
+		e = x.X
+	case *ast.IndexListExpr:
+		e = x.X
+	}
+	var id *ast.Ident
+	switch x := e.(type) {
+	case *ast.SelectorExpr:
+		id = x.Sel
+	case *ast.Ident:
+		id = x
+	default:
+		return nil
+	}
+	fn, _ := pkg.TypesInfo.Uses[id].(*types.Func)
+	return fn
+}
+
+// namedOf returns the *types.Named underlying t, dereferencing one pointer level,
+// or nil.
+func namedOf(t types.Type) *types.Named {
+	if t == nil {
+		return nil
+	}
+	if ptr, ok := t.(*types.Pointer); ok {
+		t = ptr.Elem()
+	}
+	named, _ := t.(*types.Named)
+	return named
+}
+
+// mayReturnFn builds the go/cfg mayReturn predicate: false for calls that never
+// return (panic / os.Exit / log.Fatal-family), so the builder prunes infeasible
+// edges after them.
+func mayReturnFn(pkg *packages.Package) func(*ast.CallExpr) bool {
+	return func(call *ast.CallExpr) bool {
+		if id, ok := call.Fun.(*ast.Ident); ok {
+			if _, isBuiltin := pkg.TypesInfo.Uses[id].(*types.Builtin); isBuiltin && id.Name == "panic" {
+				return false
+			}
+		}
+		fn := funcOf(pkg, call.Fun)
+		if fn == nil || fn.Pkg() == nil {
+			return true
+		}
+		switch fn.Pkg().Path() {
+		case "os":
+			if fn.Name() == "Exit" {
+				return false
+			}
+		case "log":
+			switch fn.Name() {
+			case "Fatal", "Fatalf", "Fatalln":
+				return false
+			}
+		}
+		return true
+	}
+}
+
+// walkNoFuncLit visits node and its descendants, calling visit for each, but does
+// NOT descend into nested *ast.FuncLit bodies — those are analyzed as their own
+// CFG, so a call inside a closure is never attributed to the enclosing body.
+func walkNoFuncLit(root ast.Node, visit func(ast.Node)) {
+	ast.Inspect(root, func(n ast.Node) bool {
+		if n == nil {
+			return false
+		}
+		if _, ok := n.(*ast.FuncLit); ok && n != root {
+			return false
+		}
+		visit(n)
+		return true
+	})
 }
 
 // isBusFunc reports whether call invokes gamebackend/bus.<name>, unwrapping the
 // generic instantiation (bus.Emit[T] / bus.On[T] / bus.Define[T]) that wraps the
 // selector in an IndexExpr / IndexListExpr. Lifted verbatim from topiccheck.
-//
-//nolint:unused // reused by the Step 2 CFG detector (not yet wired in Step 1).
 func isBusFunc(pkg *packages.Package, call *ast.CallExpr, name string) bool {
 	fun := call.Fun
 	switch f := fun.(type) {
@@ -161,8 +516,6 @@ func isBusFunc(pkg *packages.Package, call *ast.CallExpr, name string) bool {
 
 // objectOf resolves an identifier or selector expression to the types.Object it
 // refers to. Lifted verbatim from topiccheck.
-//
-//nolint:unused // reused by the Step 2 CFG detector (not yet wired in Step 1).
 func objectOf(pkg *packages.Package, e ast.Expr) types.Object {
 	switch x := e.(type) {
 	case *ast.Ident:
@@ -173,19 +526,6 @@ func objectOf(pkg *packages.Package, e ast.Expr) types.Object {
 	return nil
 }
 
-// stringConst extracts a constant string value from an expression via type
-// info. Lifted verbatim from topiccheck.
-//
-//nolint:unused // reused by the Step 2 CFG detector (not yet wired in Step 1).
-func stringConst(pkg *packages.Package, e ast.Expr) (string, bool) {
-	tv, ok := pkg.TypesInfo.Types[e]
-	if !ok || tv.Value == nil || tv.Value.Kind() != constant.String {
-		return "", false
-	}
-	return constant.StringVal(tv.Value), true
-}
-
-//nolint:unused // reused by allowlisted, which is reused by the Step 2 CFG detector (not yet wired in Step 1).
 var (
 	allowRe  = regexp.MustCompile(`//\s*synccheck:allow`)
 	reasonRe = regexp.MustCompile(`reason="([^"]*)"`)
@@ -200,8 +540,6 @@ var (
 //  1. each *ast.CommentGroup in docs (a declaration's own .Doc, if any),
 //  2. a line-adjacency fallback: any free-floating comment in file whose last
 //     line is immediately above pos's line.
-//
-//nolint:unused // reused by the Step 2 CFG detector (not yet wired in Step 1).
 func allowlisted(pkg *packages.Package, file *ast.File, pos token.Pos, docs ...*ast.CommentGroup) (string, bool) {
 	line := pkg.Fset.Position(pos).Line
 
