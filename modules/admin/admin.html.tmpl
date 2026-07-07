@@ -104,4 +104,5 @@
 </div>
 </body>
 </html>
-{{define "cell"}}{{if .Badge}}<span class="badge {{.Badge}}"><span class="dot"></span>{{.Text}}</span>{{else if .Mono}}<span class="mono dim">{{.Text}}</span>{{else}}{{.Text}}{{end}}{{end}}
+{{define "cellinner"}}{{if .Badge}}<span class="badge {{.Badge}}"><span class="dot"></span>{{.Text}}</span>{{else if .Mono}}<span class="mono dim">{{.Text}}</span>{{else}}{{.Text}}{{end}}{{end}}
+{{define "cell"}}{{if .Link}}<a class="cell-link" href="/admin/{{.Link}}">{{template "cellinner" .}}</a>{{else}}{{template "cellinner" .}}{{end}}{{end}}

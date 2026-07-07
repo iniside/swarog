@@ -88,17 +88,37 @@ func (s *store) stats(ctx context.Context) (holdings, owners int, err error) {
 	return
 }
 
-func (s *store) listAll(ctx context.Context, limit int) ([]Holding, error) {
+// ownerStat is one row of the owners list: an owner (type + id) with its holding
+// count and total quantity, aggregated across that owner's items.
+type ownerStat struct {
+	OwnerType string
+	OwnerID   string
+	Items     int
+	Qty       int
+}
+
+// listOwners returns the distinct owners with per-owner holding counts and total
+// quantities, for the admin owners list (each drills into its own items page).
+func (s *store) listOwners(ctx context.Context, limit int) ([]ownerStat, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT h.owner_type, h.owner_id::text, h.item_id, i.name, h.quantity
-		   FROM inventory.holdings h
-		   JOIN inventory.items i ON i.id = h.item_id
-		  ORDER BY h.owner_type, h.owner_id
+		`SELECT owner_type, owner_id::text, count(*), coalesce(sum(quantity),0)
+		   FROM inventory.holdings
+		  GROUP BY owner_type, owner_id
+		  ORDER BY owner_type, owner_id
 		  LIMIT $1`, limit)
 	if err != nil {
 		return nil, err
 	}
-	return scanHoldings(rows)
+	defer func() { _ = rows.Close() }()
+	out := []ownerStat{}
+	for rows.Next() {
+		var o ownerStat
+		if err := rows.Scan(&o.OwnerType, &o.OwnerID, &o.Items, &o.Qty); err != nil {
+			return nil, err
+		}
+		out = append(out, o)
+	}
+	return out, rows.Err()
 }
 
 func scanHoldings(rows *sql.Rows) ([]Holding, error) {

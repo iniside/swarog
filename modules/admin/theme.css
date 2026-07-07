@@ -81,6 +81,10 @@ body { margin:0; background:var(--bg); color:var(--text);
 .table tbody tr:first-child td { border-top:none; }
 .table .mono { font-size:11px; }
 .dim { color:var(--muted3); }
+.cell-link { text-decoration:none; color:inherit; cursor:pointer; border-radius:6px;
+  transition:color .12s ease; }
+.cell-link:hover { color:var(--blue); }
+.cell-link:hover .mono.dim { color:var(--blue); }
 
 /* badges */
 .badge { display:inline-flex; align-items:center; gap:6px; padding:3px 9px; border-radius:6px;

@@ -88,8 +88,40 @@ type Table struct {
 
 // Cell is one table value. Badge (one of "green","amber","red","blue","grey")
 // renders a status pill; Mono renders monospaced (IDs); otherwise plain text.
+//
+// Link, when set, makes the admin render the cell text as a drill-down anchor to
+// /admin/<Link>, where Link is a page slug plus an optional query string, e.g.
+// "inventory?owner=character:123". Badge/Mono still style the inner text; the
+// anchor merely wraps it. Link is module-authored (never client input) and Go's
+// html/template auto-escapes the href, so it carries no injection risk.
 type Cell struct {
 	Text  string
 	Badge string
 	Mono  bool
+	Link  string // optional drill-down target: admin renders text as <a href="/admin/{Link}">
+}
+
+// paramsKey is the private context key under which the admin shell carries a
+// request's flattened query parameters (first value per key) into a LOCAL item's
+// Render. It is unexported so the only way to set or read it is via WithParams /
+// Params below — mirroring opsapi.WithPlayerID/PlayerID.
+type paramsKey struct{}
+
+// WithParams returns a child context carrying p as the request's query
+// parameters. The admin shell calls it before invoking an item's Render, so a
+// Render can switch on a drill-down parameter (e.g. ?owner=…) without any change
+// to the Render signature. Purely additive: an item that ignores params is
+// unaffected.
+func WithParams(ctx context.Context, p map[string]string) context.Context {
+	return context.WithValue(ctx, paramsKey{}, p)
+}
+
+// Params returns the request's query parameters carried by WithParams, or an
+// empty (non-nil) map when none were set — so callers can index it safely without
+// a nil check.
+func Params(ctx context.Context) map[string]string {
+	if p, ok := ctx.Value(paramsKey{}).(map[string]string); ok && p != nil {
+		return p
+	}
+	return map[string]string{}
 }

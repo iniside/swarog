@@ -107,6 +107,20 @@ type remoteResult struct {
 	err     error
 }
 
+// flattenQuery reduces a request's URL query (a url.Values, one key → many
+// values) to a single-value map (first value per key), the shape adminapi.Params
+// exposes to a LOCAL item's Render for drill-down switching (e.g. ?owner=…).
+func flattenQuery(r *http.Request) map[string]string {
+	q := r.URL.Query()
+	flat := make(map[string]string, len(q))
+	for k, v := range q {
+		if len(v) > 0 {
+			flat[k] = v[0]
+		}
+	}
+	return flat
+}
+
 // slugify lowercases s, keeps [a-z0-9], maps space/-/_ to "-", drops other runes,
 // and trims leading/trailing "-".
 func slugify(s string) string {
@@ -233,8 +247,9 @@ func (m *Module) handleItem(w http.ResponseWriter, r *http.Request) {
 			page = &pageView{Title: cur.label, KPIs: cur.remote.content.KPIs, Table: cur.remote.content.Table}
 		}
 	case cur.render != nil:
-		// LOCAL — call the contributed closure in-process at render time.
-		content, err := cur.render(r.Context())
+		// LOCAL — call the contributed closure in-process at render time, carrying
+		// the request's query params so a Render can switch on a drill-down key.
+		content, err := cur.render(adminapi.WithParams(r.Context(), flattenQuery(r)))
 		if err != nil {
 			m.log.Error("admin item render failed", "item", cur.label, "err", err)
 			page = &pageView{Title: cur.label, Err: "failed to load: " + err.Error()}
@@ -295,7 +310,7 @@ func (m *Module) handleItemPost(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	content, err := cur.render(r.Context())
+	content, err := cur.render(adminapi.WithParams(r.Context(), flattenQuery(r)))
 	if err != nil {
 		m.log.Error("admin item render failed", "item", cur.label, "err", err)
 		renderError("failed to load: " + err.Error())
