@@ -4,11 +4,12 @@
 // that name so the service registry resolves — the call crosses the process
 // boundary over the QUIC edge instead of running in-process.
 //
-// It imports only the core foundations + edge: the edge-backed clients satisfy the consumer-
-// defined interfaces (characters.OwnerOf / accounts.VerifySession) by structural
-// typing, so it never imports the real characters/accounts implementation
-// packages (CLAUDE.md #2 — modules never import each other's impl). The only
-// coupling to the provider is the method name + JSON DTO shape, mirrored below.
+// It imports only the core foundations + edge + the generated <module>rpc glue:
+// each rpc package's Client implements the provider's capability interface over an
+// opsapi.Caller (satisfied by edgeConn below), so remote never imports the real
+// characters/accounts implementation packages (CLAUDE.md #2 — modules never import
+// each other's impl). The wire shape + method name are OWNED by the generated
+// glue, not hand-mirrored here — so wire drift between the two sides is impossible.
 package remote
 
 import (
@@ -18,7 +19,10 @@ import (
 
 	"gamebackend/edge"
 	"gamebackend/lifecycle"
+	"gamebackend/modules/accounts/accountsrpc"
 	"gamebackend/modules/admin/adminapi"
+	"gamebackend/modules/characters/charactersrpc"
+	"gamebackend/opsapi"
 	"gamebackend/registry"
 )
 
@@ -42,11 +46,19 @@ type Stub struct {
 func NewStub(name, peerAddr, adminURL string) *Stub {
 	conn := &edgeConn{peerAddr: peerAddr}
 	s := &Stub{name: name, conn: conn, adminURL: adminURL}
+	// The generated clients dial through an opsapi.Caller; hand them conn AS that
+	// interface so the glue depends on the transport seam, never remote's concrete
+	// edgeConn type (mirrors how app receives modules as lifecycle.Module).
+	var caller opsapi.Caller = conn
 	switch name {
 	case "characters":
-		s.client = &charactersClient{conn: conn}
+		// The generated Client implements charactersapi.Ownership over the Caller;
+		// it structurally satisfies inventory's charactersSvc.
+		s.client = charactersrpc.NewClient(caller)
 	case "accounts":
-		s.client = &accountsClient{conn: conn}
+		// The generated Client implements accountsapi.Sessions over the Caller;
+		// it structurally satisfies the consumers' accountsSvc.
+		s.client = accountsrpc.NewClient(caller)
 	default:
 		panic(fmt.Sprintf("remote: no edge client for module %q", name))
 	}
@@ -131,11 +143,12 @@ func (e *edgeConn) close() error {
 	return err
 }
 
-// call performs one RPC with a single reconnect-and-retry on failure. The first
+// Call performs one RPC with a single reconnect-and-retry on failure. The first
 // error may be a stale/dead connection (peer restarted); we drop it, re-dial,
 // and retry once. If the re-dial fails or the retry also errors, the error
-// propagates so the consumer answers 503.
-func (e *edgeConn) call(ctx context.Context, method string, req, resp any) error {
+// propagates so the consumer answers 503. Its signature matches opsapi.Caller,
+// so *edgeConn is the transport a generated <module>rpc.Client dials through.
+func (e *edgeConn) Call(ctx context.Context, method string, req, resp any) error {
 	c, err := e.get(ctx)
 	if err != nil {
 		return err
@@ -150,48 +163,4 @@ func (e *edgeConn) call(ctx context.Context, method string, req, resp any) error
 		return err2
 	}
 	return c2.Call(ctx, method, req, resp)
-}
-
-// --- characters.OwnerOf over the edge --------------------------------------
-
-type ownerOfReq struct {
-	ID string `json:"id"`
-}
-
-type ownerOfResp struct {
-	PlayerID string `json:"player_id"`
-	Ok       bool   `json:"ok"`
-}
-
-// charactersClient satisfies inventory's charactersSvc structurally.
-type charactersClient struct{ conn *edgeConn }
-
-func (c *charactersClient) OwnerOf(ctx context.Context, characterID string) (playerID string, ok bool, err error) {
-	var out ownerOfResp
-	if err := c.conn.call(ctx, "characters.ownerOf", ownerOfReq{ID: characterID}, &out); err != nil {
-		return "", false, err
-	}
-	return out.PlayerID, out.Ok, nil
-}
-
-// --- accounts.VerifySession over the edge -----------------------------------
-
-type verifySessionReq struct {
-	Token string `json:"token"`
-}
-
-type verifySessionResp struct {
-	PlayerID string `json:"player_id"`
-	Ok       bool   `json:"ok"`
-}
-
-// accountsClient satisfies the accountsSvc consumer interfaces structurally.
-type accountsClient struct{ conn *edgeConn }
-
-func (c *accountsClient) VerifySession(ctx context.Context, token string) (playerID string, ok bool, err error) {
-	var out verifySessionResp
-	if err := c.conn.call(ctx, "accounts.verifySession", verifySessionReq{Token: token}, &out); err != nil {
-		return "", false, err
-	}
-	return out.PlayerID, out.Ok, nil
 }

@@ -13,6 +13,8 @@ import (
 	"gamebackend/bus"
 	"gamebackend/edge"
 	"gamebackend/lifecycle"
+	"gamebackend/modules/accounts/accountsapi"
+	"gamebackend/modules/accounts/accountsrpc"
 	"gamebackend/modules/admin/adminapi"
 	"gamebackend/registry"
 )
@@ -136,8 +138,14 @@ func (m *Module) Init(ctx *lifecycle.Context) error {
 	// peer process can authenticate bearer tokens. Registering a handler is pure
 	// wiring (no I/O); main() starts the listener after all Inits.
 	if m.Edge != nil {
-		m.Edge.Handle("accounts.verifySession", verifySessionEdgeHandler(m.svc))
-		m.log.Info("edge handler registered", "method", "accounts.verifySession")
+		// The VerifySession edge glue (envelope + adapter) is rpcgen-generated
+		// from accountsapi.Sessions — one RegisterServer call replaces the hand
+		// adapter + mirrored DTOs + wire_contract_test that used to live here.
+		// Hand the service to the glue AS the pure contract interface (not the
+		// concrete *service): the glue depends on the capability, never the impl.
+		var sess accountsapi.Sessions = m.svc
+		accountsrpc.RegisterServer(m.Edge, sess)
+		m.log.Info("edge handler registered", "method", accountsrpc.MethodVerifySession)
 	}
 
 	// Appear in the admin portal (it renders whatever is contributed).
@@ -145,35 +153,6 @@ func (m *Module) Init(ctx *lifecycle.Context) error {
 	// GET /admin-data/accounts: the same content over HTTP for a remote admin.
 	ctx.Mux.HandleFunc("GET /admin-data/"+adminItemID, m.handleAdminData)
 	return nil
-}
-
-// verifySessionReq/verifySessionResp are the wire DTOs for the
-// "accounts.verifySession" edge RPC. The remote client in modules/remote mirrors
-// these field tags — the only coupling is this JSON shape + the method name.
-type verifySessionReq struct {
-	Token string `json:"token"`
-}
-
-type verifySessionResp struct {
-	PlayerID string `json:"player_id"`
-	Ok       bool   `json:"ok"`
-}
-
-// verifySessionEdgeHandler adapts the local VerifySession capability to an
-// edge.Handler. A store error is returned as the handler error (→ 503 at the
-// consumer) rather than a false "invalid session".
-func verifySessionEdgeHandler(svc *service) edge.Handler {
-	return func(reqPayload []byte) ([]byte, error) {
-		var req verifySessionReq
-		if err := json.Unmarshal(reqPayload, &req); err != nil {
-			return nil, err
-		}
-		pid, ok, err := svc.VerifySession(context.Background(), req.Token)
-		if err != nil {
-			return nil, err
-		}
-		return json.Marshal(verifySessionResp{PlayerID: pid, Ok: ok})
-	}
 }
 
 func (m *Module) handleMe(w http.ResponseWriter, r *http.Request) {
@@ -226,6 +205,11 @@ func (m *Module) authedPlayer(r *http.Request) (Player, bool) {
 
 // service is what other modules receive from Require("accounts").
 type service struct{ store *store }
+
+// service is the impl behind the generated VerifySession edge glue: it satisfies
+// the pure accountsapi.Sessions contract rpcgen reads. This assertion fails to
+// compile if the service's VerifySession drifts from the generated server adapter.
+var _ accountsapi.Sessions = (*service)(nil)
 
 // VerifySession resolves a bearer token to its player. An unknown/expired token
 // is ("", false, nil); a store failure now propagates as a non-nil error (B2)

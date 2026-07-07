@@ -44,11 +44,30 @@ components:
   contracts:
     in:
       - modules/accounts/accountsevents
+      - modules/accounts/accountsapi
       - modules/characters/charactersevents
+      - modules/characters/charactersapi
       - modules/config/configevents
       - modules/match/matchevents
       - modules/scheduler/schedulerevents
       - modules/admin/adminapi
+
+  # --- rpcglue tier: the rpcgen-GENERATED transport glue (<module>rpc) ---
+  # The impl tier that MAY import edge; kept OUT of `contracts` (which stays
+  # transport-free). Each <module>rpc is its own component so a module may depend
+  # ONLY on its own glue (characters -> charactersrpc, accounts -> accountsrpc,
+  # remote -> both). ENUMERATED, not a `modules/**/**rpc` glob, because
+  # go-arch-lint's `*` matches a WHOLE path segment. DECLARED BEFORE the parent
+  # `characters`/`accounts` components below: go-arch-lint assigns a package to the
+  # FIRST declared component whose `in` prefix matches, so these must precede
+  # `modules/characters`/`modules/accounts` to win the more-specific subpath (the
+  # same reason `contracts` is declared above the module impls).
+  charactersrpc:
+    in:
+      - modules/characters/charactersrpc
+  accountsrpc:
+    in:
+      - modules/accounts/accountsrpc
 
   # Each module IMPLEMENTATION is its own component, so the linter can forbid cross-impl imports.
   accounts:    { in: modules/accounts }
@@ -100,23 +119,6 @@ components:
   # modeled exactly like topiccheck (component + absent from deps + testdata excluded).
   rpcgen:      { in: tools/rpcgen }
 
-  # --- rpcglue tier: DEFERRED to Step A1 (do not add until a real <module>rpc exists) ---
-  # The generated transport glue (<module>rpc) is the impl tier that MAY import edge;
-  # it is kept OUT of `contracts`. Its arch-lint component + deps land in A1 alongside
-  # the first real rpc package (charactersrpc/accountsrpc), NOT now, because:
-  #   * go-arch-lint FAILS a component whose `in:` glob matches zero directories
-  #     ("not found directories for '<pattern>'") — an empty rpcglue breaks the check.
-  #   * a suffix glob like `modules/**/**rpc` does NOT match a `*rpc` suffix anyway:
-  #     go-arch-lint's `*` matches a WHOLE path segment (same reason `contracts` below
-  #     ENUMERATES each *events package). So A1 enumerates each <module>rpc explicitly.
-  # A1 adds, mirroring `contracts`:
-  #   rpcglue:
-  #     in:
-  #       - modules/characters/charactersrpc
-  #       - modules/accounts/accountsrpc
-  # and a deps entry `rpcglue: { mayDependOn: [ edge, opsapi, contracts ] }` — the api
-  # packages it reads live in `contracts` (A1 adds each <module>api to contracts.in).
-
   # The reusable boot sequence: open DB, wire Context, two-phase Build, Migrate,
   # Start, HTTP + optional edge listener, graceful shutdown. It is topology-blind
   # — it takes a module list from an entrypoint and never names a module.
@@ -156,14 +158,14 @@ deps:
   # Each module impl may use the leaves (common) + lifecycle + the shared contracts — never another
   # module's impl. accounts/characters additionally register handlers on the shared QUIC edge server
   # (edge); characters also drives the transactional-outbox relay (outbox).
-  accounts:    { mayDependOn: [ lifecycle, contracts, edge ] }
+  accounts:    { mayDependOn: [ lifecycle, contracts, edge, accountsrpc ] }
   admin:       { mayDependOn: [ lifecycle, contracts ] }
   # audit imports the schedulerevents contract (reacts to scheduler.fired) + adminapi;
   # it logs domain events GENERICALLY by topic string, so it imports no domain payload
   # types in impl. (The anti-drift test imports them, allowed since they are all in the
   # `contracts` component.)
   audit:       { mayDependOn: [ lifecycle, contracts ] }
-  characters:  { mayDependOn: [ lifecycle, contracts, edge, outbox ] }
+  characters:  { mayDependOn: [ lifecycle, contracts, edge, outbox, charactersrpc ] }
   config:      { mayDependOn: [ lifecycle, contracts ] }
   inventory:   { mayDependOn: [ lifecycle, contracts, edge ] }
   leaderboard: { mayDependOn: [ lifecycle, contracts ] }
@@ -178,9 +180,16 @@ deps:
   scheduler:   { mayDependOn: [ lifecycle, contracts, outbox ] }
   webui:       { mayDependOn: [ lifecycle ] }
 
-  # The remote stub is composition-time plumbing: it wraps edge clients + the
-  # admin contract, never a module implementation.
-  remote:      { mayDependOn: [ lifecycle, contracts, edge ] }
+  # The rpcgen-generated glue: a Client over an opsapi.Caller (split path) + a
+  # RegisterServer edge adapter (provider path). It MAY import edge (the transport)
+  # + opsapi (the Caller/Status seam, a commonComponent) + its own <module>api
+  # (in contracts). It never imports a module impl.
+  charactersrpc: { mayDependOn: [ edge, contracts ] }
+  accountsrpc:   { mayDependOn: [ edge, contracts ] }
+
+  # The remote stub is composition-time plumbing: it wraps the generated edge
+  # clients (charactersrpc/accountsrpc) + the admin contract, never a module impl.
+  remote:      { mayDependOn: [ lifecycle, contracts, edge, charactersrpc, accountsrpc ] }
 
   # The gateway is a transport-level front door: it relays raw edge calls and
   # reverse-proxies HTTP, so it needs only the edge transport (+ stdlib).

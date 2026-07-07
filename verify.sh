@@ -48,7 +48,9 @@ mkdir -p "$VERIFY_DIR"
 
 CONTRACT_PKGS=(
     gamebackend/modules/accounts/accountsevents
+    gamebackend/modules/accounts/accountsapi
     gamebackend/modules/characters/charactersevents
+    gamebackend/modules/characters/charactersapi
     gamebackend/modules/match/matchevents
     gamebackend/modules/scheduler/schedulerevents
     gamebackend/modules/admin/adminapi

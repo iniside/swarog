@@ -2,47 +2,52 @@ package remote
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"testing"
 	"time"
 
 	"gamebackend/edge"
+	"gamebackend/modules/accounts/accountsrpc"
+	"gamebackend/modules/characters/charactersrpc"
 )
 
+// fakeOwnership is an in-memory charactersapi.Ownership: a real owner, a genuine
+// not-found, and a store failure — the three OwnerOf outcomes the client maps.
+type fakeOwnership struct{}
+
+func (fakeOwnership) OwnerOf(_ context.Context, characterID string) (string, bool, error) {
+	switch characterID {
+	case "char-1":
+		return "player-1", true, nil
+	case "boom":
+		return "", false, errors.New("store exploded") // provider-side failure → client err
+	default:
+		return "", false, nil // genuine not-found
+	}
+}
+
+// fakeSessions is an in-memory accountsapi.Sessions: one valid token, everything
+// else an (unknown/expired) invalid session.
+type fakeSessions struct{}
+
+func (fakeSessions) VerifySession(_ context.Context, token string) (string, bool, error) {
+	if token == "good-token" {
+		return "player-9", true, nil
+	}
+	return "", false, nil
+}
+
 // startFakeProvider stands up a loopback QUIC edge server that mimics process A:
-// it serves "characters.ownerOf" and "accounts.verifySession" from an in-memory
-// fake (no Postgres). It returns the dial address and a stop func.
+// it serves "characters.ownerOf" and "accounts.verifySession" via the SAME
+// rpcgen-generated RegisterServer the real providers use (no Postgres). It
+// returns the dial address and a stop func — proving client and server glue,
+// both generated from the one interface, interoperate over a real edge hop.
 func startFakeProvider(t *testing.T) (addr string, stop func()) {
 	t.Helper()
 
 	srv := edge.NewServer()
-
-	srv.Handle("characters.ownerOf", func(reqPayload []byte) ([]byte, error) {
-		var req ownerOfReq
-		if err := json.Unmarshal(reqPayload, &req); err != nil {
-			return nil, err
-		}
-		switch req.ID {
-		case "char-1":
-			return json.Marshal(ownerOfResp{PlayerID: "player-1", Ok: true})
-		case "boom":
-			return nil, errors.New("store exploded") // provider-side failure → client err
-		default:
-			return json.Marshal(ownerOfResp{Ok: false}) // genuine not-found
-		}
-	})
-
-	srv.Handle("accounts.verifySession", func(reqPayload []byte) ([]byte, error) {
-		var req verifySessionReq
-		if err := json.Unmarshal(reqPayload, &req); err != nil {
-			return nil, err
-		}
-		if req.Token == "good-token" {
-			return json.Marshal(verifySessionResp{PlayerID: "player-9", Ok: true})
-		}
-		return json.Marshal(verifySessionResp{Ok: false})
-	})
+	charactersrpc.RegisterServer(srv, fakeOwnership{})
+	accountsrpc.RegisterServer(srv, fakeSessions{})
 
 	tlsConf, err := edge.SelfSignedTLS()
 	if err != nil {
@@ -58,8 +63,9 @@ func TestCharactersClient_OwnerOf(t *testing.T) {
 	addr, stop := startFakeProvider(t)
 	defer stop()
 
-	cc := &charactersClient{conn: &edgeConn{peerAddr: addr}}
-	defer func() { _ = cc.conn.close() }()
+	conn := &edgeConn{peerAddr: addr}
+	cc := charactersrpc.NewClient(conn)
+	defer func() { _ = conn.close() }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -86,8 +92,9 @@ func TestAccountsClient_VerifySession(t *testing.T) {
 	addr, stop := startFakeProvider(t)
 	defer stop()
 
-	ac := &accountsClient{conn: &edgeConn{peerAddr: addr}}
-	defer func() { _ = ac.conn.close() }()
+	conn := &edgeConn{peerAddr: addr}
+	ac := accountsrpc.NewClient(conn)
+	defer func() { _ = conn.close() }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -109,8 +116,9 @@ func TestAccountsClient_VerifySession(t *testing.T) {
 func TestPeerDown_Errors(t *testing.T) {
 	addr, stop := startFakeProvider(t)
 
-	cc := &charactersClient{conn: &edgeConn{peerAddr: addr}}
-	defer func() { _ = cc.conn.close() }()
+	conn := &edgeConn{peerAddr: addr}
+	cc := charactersrpc.NewClient(conn)
+	defer func() { _ = conn.close() }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

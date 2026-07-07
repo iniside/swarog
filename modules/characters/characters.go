@@ -15,7 +15,9 @@ import (
 	"gamebackend/edge"
 	"gamebackend/lifecycle"
 	"gamebackend/modules/admin/adminapi"
+	"gamebackend/modules/characters/charactersapi"
 	"gamebackend/modules/characters/charactersevents"
+	"gamebackend/modules/characters/charactersrpc"
 	"gamebackend/registry"
 )
 
@@ -90,42 +92,18 @@ func (m *Module) Init(ctx *lifecycle.Context) error {
 	// process's inventory can resolve character ownership. Registering a handler
 	// is pure wiring (no I/O); main() starts the listener after all Inits.
 	if m.Edge != nil {
-		m.Edge.Handle("characters.ownerOf", ownerOfEdgeHandler(m.svc))
-		m.log.Info("edge handler registered", "method", "characters.ownerOf")
+		// The OwnerOf edge glue (envelope + adapter) is rpcgen-generated from
+		// charactersapi.Ownership — one RegisterServer call replaces the hand
+		// adapter + mirrored DTOs + wire_contract_test that used to live here.
+		// Hand the service to the glue AS the pure contract interface (not the
+		// concrete *service): the glue depends on the capability, never the impl.
+		var own charactersapi.Ownership = m.svc
+		charactersrpc.RegisterServer(m.Edge, own)
+		m.log.Info("edge handler registered", "method", charactersrpc.MethodOwnerOf)
 		m.Edge.Handle("characters.list", charactersListEdgeHandler(m.svc))
 		m.log.Info("edge handler registered", "method", "characters.list")
 	}
 	return nil
-}
-
-// ownerOfReq/ownerOfResp are the wire DTOs for the "characters.ownerOf" edge
-// RPC. The remote client in modules/remote mirrors these field tags — the only
-// coupling between the two sides is this JSON shape + the method name.
-type ownerOfReq struct {
-	ID string `json:"id"`
-}
-
-type ownerOfResp struct {
-	PlayerID string `json:"player_id"`
-	Ok       bool   `json:"ok"`
-}
-
-// ownerOfEdgeHandler adapts the local OwnerOf capability to an edge.Handler: it
-// decodes the request, calls the service, and encodes the reply. A store error
-// is returned as the handler error, which the client surfaces as a transport-
-// level err (→ 503 at the consumer) rather than a false "not found".
-func ownerOfEdgeHandler(svc *service) edge.Handler {
-	return func(reqPayload []byte) ([]byte, error) {
-		var req ownerOfReq
-		if err := json.Unmarshal(reqPayload, &req); err != nil {
-			return nil, err
-		}
-		pid, ok, err := svc.OwnerOf(context.Background(), req.ID)
-		if err != nil {
-			return nil, err
-		}
-		return json.Marshal(ownerOfResp{PlayerID: pid, Ok: ok})
-	}
 }
 
 // listReq/listResp are the wire DTOs for the "characters.list" edge RPC. A
@@ -265,6 +243,11 @@ func (m *Module) handleDelete(w http.ResponseWriter, r *http.Request) {
 
 // service is what other modules get from Require("characters").
 type service struct{ store *store }
+
+// service is the impl behind the generated OwnerOf edge glue: it satisfies the
+// pure charactersapi.Ownership contract rpcgen reads. This assertion fails to
+// compile if the service's OwnerOf drifts from the generated server adapter.
+var _ charactersapi.Ownership = (*service)(nil)
 
 // OwnerOf returns the owning player of a character. A genuine "no such
 // character" is ("", false, nil); a store failure now propagates as a non-nil
