@@ -20,7 +20,7 @@ const (
 
 // grantRequest is the wire request envelope for Grant.
 type grantRequest struct {
-	ItemID string `json:"itemID"`
+	ItemID string `json:"item_id"`
 	Qty    int    `json:"qty"`
 }
 
@@ -175,4 +175,117 @@ func RegisterServer(reg Registrar, impl inventoryapi.Holdings) {
 		}
 		return json.Marshal(resp)
 	})
+}
+
+// decodeGrant builds the inventory.grant wire request envelope from the HTTP body and path.
+func decodeGrant(body []byte, path map[string]string) (any, error) {
+	var req grantRequest
+	if len(body) > 0 {
+		if err := json.Unmarshal(body, &req); err != nil {
+			return nil, &opsapi.Error{Status: opsapi.StatusInvalid, Msg: "invalid json"}
+		}
+	}
+	return &req, nil
+}
+
+// encodeGrant reduces the inventory.grant wire response envelope to the external HTTP body + Status.
+func encodeGrant(resp any) ([]byte, opsapi.Status, error) {
+	r := resp.(*grantResponse)
+	if r.Status != opsapi.StatusOK {
+		return nil, r.Status, &opsapi.Error{Status: r.Status, Msg: r.Err}
+	}
+	body, err := json.Marshal(r.Holdings)
+	return body, opsapi.StatusOK, err
+}
+
+// decodeListCharacter builds the inventory.listCharacter wire request envelope from the HTTP body and path.
+func decodeListCharacter(body []byte, path map[string]string) (any, error) {
+	var req listCharacterRequest
+	req.CharacterID = path["id"]
+	return &req, nil
+}
+
+// encodeListCharacter reduces the inventory.listCharacter wire response envelope to the external HTTP body + Status.
+func encodeListCharacter(resp any) ([]byte, opsapi.Status, error) {
+	r := resp.(*listCharacterResponse)
+	if r.Status != opsapi.StatusOK {
+		return nil, r.Status, &opsapi.Error{Status: r.Status, Msg: r.Err}
+	}
+	body, err := json.Marshal(r.Holdings)
+	return body, opsapi.StatusOK, err
+}
+
+// decodeListMine builds the inventory.listMine wire request envelope from the HTTP body and path.
+func decodeListMine(body []byte, path map[string]string) (any, error) {
+	var req listMineRequest
+	return &req, nil
+}
+
+// encodeListMine reduces the inventory.listMine wire response envelope to the external HTTP body + Status.
+func encodeListMine(resp any) ([]byte, opsapi.Status, error) {
+	r := resp.(*listMineResponse)
+	if r.Status != opsapi.StatusOK {
+		return nil, r.Status, &opsapi.Error{Status: r.Status, Msg: r.Err}
+	}
+	body, err := json.Marshal(r.Holdings)
+	return body, opsapi.StatusOK, err
+}
+
+// Operations returns the gateway contributions for each HTTP-bound method of
+// impl, keyed by wire method name. A module contributes each OpSet to the
+// opsapi Slot/BindingSlot/LocalSlot; LocalBackend and RemoteBackend then share
+// the SAME wire envelopes, so remote dispatch is correct for every op shape.
+func Operations(impl inventoryapi.Holdings) map[string]opsapi.OpSet {
+	return map[string]opsapi.OpSet{
+		MethodGrant: {
+			Operation: opsapi.Operation{Method: MethodGrant, Verb: "POST", Path: "/inventory/me/grant", Auth: opsapi.AuthPlayer, Success: 200},
+			Binding:   opsapi.OpBinding{Method: MethodGrant, Decode: decodeGrant, NewResp: func() any { return &grantResponse{} }, Encode: encodeGrant},
+			Local: opsapi.LocalOp{Method: MethodGrant, Invoke: func(ctx context.Context, req, resp any) error {
+				rq := req.(*grantRequest)
+				r0, err := impl.Grant(ctx, rq.ItemID, rq.Qty)
+				out := resp.(*grantResponse)
+				if err != nil {
+					out.Status = opsapi.StatusOf(err)
+					out.Err = err.Error()
+				} else {
+					out.Status = opsapi.StatusOK
+					out.Holdings = r0
+				}
+				return nil
+			}},
+		},
+		MethodListCharacter: {
+			Operation: opsapi.Operation{Method: MethodListCharacter, Verb: "GET", Path: "/inventory/character/{id}", Auth: opsapi.AuthPlayer, Success: 200},
+			Binding:   opsapi.OpBinding{Method: MethodListCharacter, Decode: decodeListCharacter, NewResp: func() any { return &listCharacterResponse{} }, Encode: encodeListCharacter},
+			Local: opsapi.LocalOp{Method: MethodListCharacter, Invoke: func(ctx context.Context, req, resp any) error {
+				rq := req.(*listCharacterRequest)
+				r0, err := impl.ListCharacter(ctx, rq.CharacterID)
+				out := resp.(*listCharacterResponse)
+				if err != nil {
+					out.Status = opsapi.StatusOf(err)
+					out.Err = err.Error()
+				} else {
+					out.Status = opsapi.StatusOK
+					out.Holdings = r0
+				}
+				return nil
+			}},
+		},
+		MethodListMine: {
+			Operation: opsapi.Operation{Method: MethodListMine, Verb: "GET", Path: "/inventory/me", Auth: opsapi.AuthPlayer, Success: 200},
+			Binding:   opsapi.OpBinding{Method: MethodListMine, Decode: decodeListMine, NewResp: func() any { return &listMineResponse{} }, Encode: encodeListMine},
+			Local: opsapi.LocalOp{Method: MethodListMine, Invoke: func(ctx context.Context, req, resp any) error {
+				r0, err := impl.ListMine(ctx)
+				out := resp.(*listMineResponse)
+				if err != nil {
+					out.Status = opsapi.StatusOf(err)
+					out.Err = err.Error()
+				} else {
+					out.Status = opsapi.StatusOK
+					out.Holdings = r0
+				}
+				return nil
+			}},
+		},
+	}
 }

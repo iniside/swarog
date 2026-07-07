@@ -12,7 +12,17 @@
 //go:generate go run gamebackend/tools/rpcgen -iface Leaderboard -prefix leaderboard -out ../leaderboardrpc/leaderboardrpc_gen.go
 package leaderboardapi
 
-import "context"
+import (
+	"context"
+
+	"gamebackend/opsapi"
+)
+
+// HTTPBindings declares the HTTP surface of the Leaderboard operation for rpcgen.
+// Keyed by Go method name. TopScores is a public (AuthNone) read with no args.
+var HTTPBindings = map[string]opsapi.HTTPBind{
+	"TopScores": {Verb: "GET", Path: "/leaderboard", Auth: opsapi.AuthNone, Success: 200},
+}
 
 // Score is one player's standing. Its JSON tags are the public wire shape the
 // pre-migration handleList wrote (player/wins), unchanged.

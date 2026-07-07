@@ -23,7 +23,19 @@ import (
 	"context"
 
 	"gamebackend/modules/admin/adminapi"
+	"gamebackend/opsapi"
 )
+
+// HTTPBindings declares the HTTP surface of the Auth operations for rpcgen. Keyed
+// by Go method name. register/login/loginEpic are AuthNone (they create a
+// session); me is AuthPlayer. LoginEpic keeps the pre-migration public body key
+// "id_token" (BodyNames override) so the external body is unchanged.
+var HTTPBindings = map[string]opsapi.HTTPBind{
+	"Register":  {Verb: "POST", Path: "/accounts/register", Auth: opsapi.AuthNone, Success: 201},
+	"Login":     {Verb: "POST", Path: "/accounts/login", Auth: opsapi.AuthNone, Success: 200},
+	"LoginEpic": {Verb: "POST", Path: "/accounts/login/epic", Auth: opsapi.AuthNone, Success: 200, BodyNames: map[string]string{"idToken": "id_token"}},
+	"Me":        {Verb: "GET", Path: "/accounts/me", Auth: opsapi.AuthPlayer, Success: 200},
+}
 
 // Player is the product-scoped identity (the EOS PUID analogue). Its JSON tags are
 // the public HTTP response shape the gateway encodes.
@@ -46,6 +58,16 @@ type Session struct {
 	Token    string `json:"token"`
 }
 
+// MeView is the single return of Me: the caller's own Player (embedded so its
+// player_id/display_name flatten to the top level) plus the identities list. It
+// is a struct return (not a Go multi-return) so rpcgen marshals it BARE as the
+// external HTTP body — exactly the {player_id, display_name, identities} shape the
+// pre-migration handleMe wrote, unchanged.
+type MeView struct {
+	Player
+	Identities []Identity `json:"identities"`
+}
+
 // Sessions resolves a bearer token to its player. VerifySession returns an error
 // so a transport failure (the provider hosted in a peer process, reached over the
 // QUIC edge) surfaces distinctly from a genuine invalid/expired session
@@ -66,7 +88,7 @@ type Auth interface {
 	Register(ctx context.Context, email, password, displayName string) (session Session, err error)
 	Login(ctx context.Context, email, password string) (session Session, err error)
 	LoginEpic(ctx context.Context, idToken string) (session Session, err error)
-	Me(ctx context.Context) (player Player, identities []Identity, err error)
+	Me(ctx context.Context) (view MeView, err error)
 }
 
 // Admin is the accounts module's admin fan-out capability: a peer's admin portal

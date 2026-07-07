@@ -19,7 +19,19 @@ import (
 	"time"
 
 	"gamebackend/modules/admin/adminapi"
+	"gamebackend/opsapi"
 )
+
+// HTTPBindings declares the HTTP surface of the Player operations for rpcgen: it
+// generates the gateway binding (route + Decode/Encode + invoker) for each method
+// from this single source, so LocalBackend and RemoteBackend share one wire shape.
+// Keyed by Go method name. Delete's id rides the {id} path wildcard into the
+// wire field CharacterID; create/list carry a JSON body / no args.
+var HTTPBindings = map[string]opsapi.HTTPBind{
+	"Create": {Verb: "POST", Path: "/characters", Auth: opsapi.AuthPlayer, Success: 201},
+	"List":   {Verb: "GET", Path: "/characters", Auth: opsapi.AuthPlayer, Success: 200},
+	"Delete": {Verb: "DELETE", Path: "/characters/{id}", Auth: opsapi.AuthPlayer, Success: 204, PathArgs: map[string]string{"characterID": "id"}},
+}
 
 // Character is a player-owned character. PlayerID is a plain reference to
 // accounts.players — no cross-module foreign key (logical isolation). It lives

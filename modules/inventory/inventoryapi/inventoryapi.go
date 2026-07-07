@@ -12,7 +12,21 @@
 //go:generate go run gamebackend/tools/rpcgen -iface Holdings -prefix inventory -out ../inventoryrpc/inventoryrpc_gen.go
 package inventoryapi
 
-import "context"
+import (
+	"context"
+
+	"gamebackend/opsapi"
+)
+
+// HTTPBindings declares the HTTP surface of the Holdings operations for rpcgen.
+// Keyed by Go method name. ListCharacter's id rides the {id} path wildcard into
+// the wire field CharacterID; Grant's itemID keeps the pre-migration public body
+// key "item_id" (BodyNames override) so the external body is unchanged.
+var HTTPBindings = map[string]opsapi.HTTPBind{
+	"ListMine":      {Verb: "GET", Path: "/inventory/me", Auth: opsapi.AuthPlayer, Success: 200},
+	"ListCharacter": {Verb: "GET", Path: "/inventory/character/{id}", Auth: opsapi.AuthPlayer, Success: 200, PathArgs: map[string]string{"characterID": "id"}},
+	"Grant":         {Verb: "POST", Path: "/inventory/me/grant", Auth: opsapi.AuthPlayer, Success: 200, BodyNames: map[string]string{"itemID": "item_id"}},
+}
 
 // Holding is one item stack an owner holds. It lives here (not in the impl
 // package) because it is a return type of the Holdings capability, so the

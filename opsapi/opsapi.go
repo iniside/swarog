@@ -152,6 +152,33 @@ type Operation struct {
 	Success int     // HTTP status the gateway writes on a StatusOK outcome (e.g. 201/200/204)
 }
 
+// HTTPBind is the per-method HTTP-surface declaration rpcgen reads (from a
+// `var HTTPBindings map[string]HTTPBind` in a provider's <module>api package,
+// keyed by Go METHOD name) to GENERATE the gateway binding for that method. It is
+// the single source that tells the generator how a capability method maps onto an
+// HTTP route: the verb/path/auth/success (which become the Operation) plus where
+// each method argument is sourced from — a path wildcard or the request body — so
+// the generated Decode builds the SAME wire request envelope both LocalBackend and
+// RemoteBackend consume. Declaring it in the transport-free api package keeps ONE
+// source of truth; the generated glue makes Local == Remote by construction.
+type HTTPBind struct {
+	Verb    string  // HTTP verb, e.g. "POST"
+	Path    string  // HTTP path pattern, e.g. "/characters/{id}"
+	Auth    AuthReq // AuthNone or AuthPlayer
+	Success int     // HTTP status on a StatusOK outcome — a plain int literal (201/200/204/202)
+	// PathArgs maps an interface method PARAM NAME to the path-wildcard name it is
+	// taken from, e.g. {"characterID": "id"} for Delete(ctx, characterID) bound to
+	// "/characters/{id}". A param not listed here is a BODY arg.
+	PathArgs map[string]string
+	// BodyNames overrides the external JSON key of a BODY arg where it differs from
+	// the param name, e.g. {"itemID": "item_id"} to keep the pre-migration public
+	// body shape. An unlisted body arg uses its param name as the JSON key. This
+	// key becomes the wire request envelope field's JSON tag, so a plain
+	// json.Unmarshal of the external body populates it and a RemoteBackend
+	// re-marshal reaches the peer in the identical shape.
+	BodyNames map[string]string
+}
+
 // Slot is the contribution slot the gateway reads to build its route table. A
 // module contributes with ctx.Contribute(opsapi.Slot, op); the gateway reads
 // ctx.Contributions(opsapi.Slot). Same multi-value seam as adminapi.Slot.
@@ -197,17 +224,29 @@ const LocalSlot = "ops.local"
 // (marshaled over the edge) — the decode happens once at the HTTP boundary.
 type OpBinding struct {
 	Method string
-	// Decode builds the operation's typed request from the raw HTTP body and the
-	// matched path-wildcard values (e.g. {"id": "..."} for "/characters/{id}").
+	// Decode builds the operation's WIRE REQUEST ENVELOPE from the raw HTTP body and
+	// the matched path-wildcard values (e.g. {"id": "..."} for "/characters/{id}").
 	// body is nil for a request with no body. A malformed body should be returned
 	// as an *Error{Status: StatusInvalid}, which the gateway maps to HTTP 400. The
-	// returned req is the concrete pointer the LocalInvoker type-asserts (decision
-	// D3: on the local path this exact pointer reaches the provider, no re-marshal).
+	// returned req is the concrete pointer the LocalInvoker type-asserts AND the
+	// exact value RemoteBackend marshals over the edge — the SAME wire envelope both
+	// topologies use, so a RemoteBackend re-marshal reaches the peer unchanged.
 	Decode func(body []byte, path map[string]string) (req any, err error)
-	// NewResp allocates a pointer to the operation's typed response for the backend
-	// to fill, or returns nil for an operation with no response body (e.g. a DELETE
-	// answering 204). The gateway JSON-encodes a non-nil resp on a StatusOK outcome.
+	// NewResp allocates a pointer to the operation's WIRE RESPONSE ENVELOPE (the
+	// {status, err, <domain fields>} shape rpcgen generates) for the backend to
+	// fill. It is ALWAYS non-nil — every operation, even a 204, has an envelope
+	// carrying at least Status/Err. LocalBackend fills it via a typed call;
+	// RemoteBackend unmarshals the peer's reply into it; both leave the SAME
+	// envelope for Encode to read.
 	NewResp func() any
+	// Encode reduces a filled wire response envelope to the EXTERNAL HTTP body and
+	// the operation Status. On a StatusOK outcome it returns the DOMAIN-ONLY body
+	// bytes (dropping status/err — e.g. the bare Character, the []Character, or a
+	// {player_id, token}) so the external HTTP contract is unchanged; body is nil
+	// for a no-return op (204). On a non-OK outcome it returns (nil, status,
+	// *Error{status}) so the gateway maps it to the right HTTP status. The Status
+	// return lets a test assert the outcome without re-deriving it from err.
+	Encode func(resp any) (body []byte, status Status, err error)
 }
 
 // BindingSlot is the contribution slot the gateway reads to pair each Operation
@@ -216,3 +255,16 @@ type OpBinding struct {
 // ctx.Contributions(opsapi.BindingSlot). Contributed by the module in the SAME
 // process as the Operation, so it is always present wherever the route is bound.
 const BindingSlot = "ops.binding"
+
+// OpSet bundles the three per-operation contributions rpcgen generates for a
+// bound method — the Operation (route/auth/success), its OpBinding (Decode/
+// NewResp/Encode), and the LocalOp (in-process invoker) — so a module's ops.go
+// contributes them in one loop instead of hand-writing each. rpcgen emits a
+// `func Operations(impl I) map[string]OpSet` (keyed by wire method name) in the
+// <module>rpc package; the module reads it and contributes each set to the three
+// slots, selecting which methods to expose when they are conditionally enabled.
+type OpSet struct {
+	Operation Operation
+	Binding   OpBinding
+	Local     LocalOp
+}

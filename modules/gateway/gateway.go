@@ -26,7 +26,6 @@ package gateway
 
 import (
 	"context"
-	"encoding/json"
 	"io"
 	"net/http"
 	"strings"
@@ -199,22 +198,31 @@ func newOpHandler(op opsapi.Operation, binding opsapi.OpBinding, backend Operati
 			}
 		}
 
-		// (3) Dispatch through the topology-correct backend.
-		var resp any
-		if binding.NewResp != nil {
-			resp = binding.NewResp()
-		}
+		// (3) Dispatch through the topology-correct backend. resp is the WIRE response
+		// envelope (always non-nil): LocalBackend fills it via a direct typed call,
+		// RemoteBackend unmarshals the peer's reply into it. Both leave the SAME filled
+		// envelope, so the two topologies are equal by construction.
+		resp := binding.NewResp()
 		if err := backend.Invoke(ctx, op, req, resp); err != nil {
+			// Transport / wiring failure (peer down, unknown method) → 503 / 500.
 			writeOpError(w, err)
 			return
 		}
 
-		// (4) Encode the success outcome: the op's success code, plus the typed
-		// response body when the op has one (a 204 op contributes a nil NewResp).
-		if resp != nil {
+		// (4) Reduce the wire envelope to the EXTERNAL HTTP body + Status via the
+		// generated Encode: a non-OK Status (a domain outcome carried in the envelope)
+		// maps to its HTTP status; otherwise write the op's success code with the
+		// domain-only body (status/err dropped), so the external HTTP contract is
+		// unchanged. A 204-style op returns an empty body.
+		body, _, err = binding.Encode(resp)
+		if err != nil {
+			writeOpError(w, err)
+			return
+		}
+		if len(body) > 0 {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(op.Success)
-			_ = json.NewEncoder(w).Encode(resp)
+			_, _ = w.Write(body)
 			return
 		}
 		w.WriteHeader(op.Success)

@@ -213,25 +213,25 @@ func (m *Module) Init(ctx *lifecycle.Context) error {
 // boundary; the service never reads a client-supplied identity). A missing
 // identity is a StatusInvalid (→ 400); the gateway rejects an unauthenticated
 // request with 401 before Me is ever called.
-func (s *service) Me(ctx context.Context) (accountsapi.Player, []accountsapi.Identity, error) {
+func (s *service) Me(ctx context.Context) (accountsapi.MeView, error) {
 	pid, ok := opsapi.PlayerID(ctx)
 	if !ok {
-		return Player{}, nil, &opsapi.Error{Status: opsapi.StatusInvalid, Msg: "missing player identity"}
+		return accountsapi.MeView{}, &opsapi.Error{Status: opsapi.StatusInvalid, Msg: "missing player identity"}
 	}
 	p, found, err := s.store.getPlayer(ctx, pid)
 	if err != nil {
 		s.log.Error("player lookup failed", "err", err)
-		return Player{}, nil, err
+		return accountsapi.MeView{}, err
 	}
 	if !found {
-		return Player{}, nil, &opsapi.Error{Status: opsapi.StatusNotFound, Msg: "player not found"}
+		return accountsapi.MeView{}, &opsapi.Error{Status: opsapi.StatusNotFound, Msg: "player not found"}
 	}
 	ids, err := s.store.identitiesOf(ctx, pid)
 	if err != nil {
 		s.log.Error("identities lookup failed", "err", err)
-		return Player{}, nil, err
+		return accountsapi.MeView{}, err
 	}
-	return p, ids, nil
+	return accountsapi.MeView{Player: p, Identities: ids}, nil
 }
 
 // VerifySession resolves a bearer token to its player. An unknown/expired token

@@ -18,8 +18,8 @@ const (
 
 // reportRequest is the wire request envelope for Report.
 type reportRequest struct {
-	Winner string `json:"winner"`
-	Loser  string `json:"loser"`
+	Winner string `json:"Winner"`
+	Loser  string `json:"Loser"`
 }
 
 // reportResponse is the wire response envelope for Report. Status/Err carry the
@@ -83,4 +83,49 @@ func RegisterServer(reg Registrar, impl matchapi.Match) {
 		}
 		return json.Marshal(resp)
 	})
+}
+
+// decodeReport builds the match.report wire request envelope from the HTTP body and path.
+func decodeReport(body []byte, path map[string]string) (any, error) {
+	var req reportRequest
+	if len(body) > 0 {
+		if err := json.Unmarshal(body, &req); err != nil {
+			return nil, &opsapi.Error{Status: opsapi.StatusInvalid, Msg: "invalid json"}
+		}
+	}
+	return &req, nil
+}
+
+// encodeReport reduces the match.report wire response envelope to the external HTTP body + Status.
+func encodeReport(resp any) ([]byte, opsapi.Status, error) {
+	r := resp.(*reportResponse)
+	if r.Status != opsapi.StatusOK {
+		return nil, r.Status, &opsapi.Error{Status: r.Status, Msg: r.Err}
+	}
+	return nil, opsapi.StatusOK, nil
+}
+
+// Operations returns the gateway contributions for each HTTP-bound method of
+// impl, keyed by wire method name. A module contributes each OpSet to the
+// opsapi Slot/BindingSlot/LocalSlot; LocalBackend and RemoteBackend then share
+// the SAME wire envelopes, so remote dispatch is correct for every op shape.
+func Operations(impl matchapi.Match) map[string]opsapi.OpSet {
+	return map[string]opsapi.OpSet{
+		MethodReport: {
+			Operation: opsapi.Operation{Method: MethodReport, Verb: "POST", Path: "/match/report", Auth: opsapi.AuthNone, Success: 202},
+			Binding:   opsapi.OpBinding{Method: MethodReport, Decode: decodeReport, NewResp: func() any { return &reportResponse{} }, Encode: encodeReport},
+			Local: opsapi.LocalOp{Method: MethodReport, Invoke: func(ctx context.Context, req, resp any) error {
+				rq := req.(*reportRequest)
+				err := impl.Report(ctx, rq.Winner, rq.Loser)
+				out := resp.(*reportResponse)
+				if err != nil {
+					out.Status = opsapi.StatusOf(err)
+					out.Err = err.Error()
+				} else {
+					out.Status = opsapi.StatusOK
+				}
+				return nil
+			}},
+		},
+	}
 }

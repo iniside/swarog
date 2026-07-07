@@ -35,7 +35,7 @@ type loginResponse struct {
 
 // loginEpicRequest is the wire request envelope for LoginEpic.
 type loginEpicRequest struct {
-	IdToken string `json:"idToken"`
+	IdToken string `json:"id_token"`
 }
 
 // loginEpicResponse is the wire response envelope for LoginEpic. Status/Err carry the
@@ -53,10 +53,9 @@ type meRequest struct {
 // meResponse is the wire response envelope for Me. Status/Err carry the
 // operation outcome (opsapi taxonomy); the fields carry the return values.
 type meResponse struct {
-	Status     opsapi.Status          `json:"status"`
-	Err        string                 `json:"err,omitempty"`
-	Player     accountsapi.Player     `json:"player"`
-	Identities []accountsapi.Identity `json:"identities"`
+	Status opsapi.Status      `json:"status"`
+	Err    string             `json:"err,omitempty"`
+	View   accountsapi.MeView `json:"view"`
 }
 
 // registerRequest is the wire request envelope for Register.
@@ -117,7 +116,7 @@ func (c *Client) LoginEpic(ctx context.Context, a0 string) (r0 accountsapi.Sessi
 }
 
 // Me implements the capability by calling accounts.me over the transport.
-func (c *Client) Me(ctx context.Context) (r0 accountsapi.Player, r1 []accountsapi.Identity, err error) {
+func (c *Client) Me(ctx context.Context) (r0 accountsapi.MeView, err error) {
 	req := meRequest{}
 	var resp meResponse
 	if err = c.caller.Call(ctx, MethodMe, &req, &resp); err != nil {
@@ -127,8 +126,7 @@ func (c *Client) Me(ctx context.Context) (r0 accountsapi.Player, r1 []accountsap
 		err = &opsapi.Error{Status: resp.Status, Msg: resp.Err}
 		return
 	}
-	r0 = resp.Player
-	r1 = resp.Identities
+	r0 = resp.View
 	return
 }
 
@@ -197,15 +195,14 @@ func RegisterServer(reg Registrar, impl accountsapi.Auth) {
 		if err := json.Unmarshal(reqPayload, &req); err != nil {
 			return nil, err
 		}
-		r0, r1, err := impl.Me(opsapi.WithPlayerID(context.Background(), identity))
+		r0, err := impl.Me(opsapi.WithPlayerID(context.Background(), identity))
 		resp := meResponse{}
 		if err != nil {
 			resp.Status = opsapi.StatusOf(err)
 			resp.Err = err.Error()
 		} else {
 			resp.Status = opsapi.StatusOK
-			resp.Player = r0
-			resp.Identities = r1
+			resp.View = r0
 		}
 		return json.Marshal(resp)
 	})
@@ -225,4 +222,159 @@ func RegisterServer(reg Registrar, impl accountsapi.Auth) {
 		}
 		return json.Marshal(resp)
 	})
+}
+
+// decodeLogin builds the accounts.login wire request envelope from the HTTP body and path.
+func decodeLogin(body []byte, path map[string]string) (any, error) {
+	var req loginRequest
+	if len(body) > 0 {
+		if err := json.Unmarshal(body, &req); err != nil {
+			return nil, &opsapi.Error{Status: opsapi.StatusInvalid, Msg: "invalid json"}
+		}
+	}
+	return &req, nil
+}
+
+// encodeLogin reduces the accounts.login wire response envelope to the external HTTP body + Status.
+func encodeLogin(resp any) ([]byte, opsapi.Status, error) {
+	r := resp.(*loginResponse)
+	if r.Status != opsapi.StatusOK {
+		return nil, r.Status, &opsapi.Error{Status: r.Status, Msg: r.Err}
+	}
+	body, err := json.Marshal(r.Session)
+	return body, opsapi.StatusOK, err
+}
+
+// decodeLoginEpic builds the accounts.loginEpic wire request envelope from the HTTP body and path.
+func decodeLoginEpic(body []byte, path map[string]string) (any, error) {
+	var req loginEpicRequest
+	if len(body) > 0 {
+		if err := json.Unmarshal(body, &req); err != nil {
+			return nil, &opsapi.Error{Status: opsapi.StatusInvalid, Msg: "invalid json"}
+		}
+	}
+	return &req, nil
+}
+
+// encodeLoginEpic reduces the accounts.loginEpic wire response envelope to the external HTTP body + Status.
+func encodeLoginEpic(resp any) ([]byte, opsapi.Status, error) {
+	r := resp.(*loginEpicResponse)
+	if r.Status != opsapi.StatusOK {
+		return nil, r.Status, &opsapi.Error{Status: r.Status, Msg: r.Err}
+	}
+	body, err := json.Marshal(r.Session)
+	return body, opsapi.StatusOK, err
+}
+
+// decodeMe builds the accounts.me wire request envelope from the HTTP body and path.
+func decodeMe(body []byte, path map[string]string) (any, error) {
+	var req meRequest
+	return &req, nil
+}
+
+// encodeMe reduces the accounts.me wire response envelope to the external HTTP body + Status.
+func encodeMe(resp any) ([]byte, opsapi.Status, error) {
+	r := resp.(*meResponse)
+	if r.Status != opsapi.StatusOK {
+		return nil, r.Status, &opsapi.Error{Status: r.Status, Msg: r.Err}
+	}
+	body, err := json.Marshal(r.View)
+	return body, opsapi.StatusOK, err
+}
+
+// decodeRegister builds the accounts.register wire request envelope from the HTTP body and path.
+func decodeRegister(body []byte, path map[string]string) (any, error) {
+	var req registerRequest
+	if len(body) > 0 {
+		if err := json.Unmarshal(body, &req); err != nil {
+			return nil, &opsapi.Error{Status: opsapi.StatusInvalid, Msg: "invalid json"}
+		}
+	}
+	return &req, nil
+}
+
+// encodeRegister reduces the accounts.register wire response envelope to the external HTTP body + Status.
+func encodeRegister(resp any) ([]byte, opsapi.Status, error) {
+	r := resp.(*registerResponse)
+	if r.Status != opsapi.StatusOK {
+		return nil, r.Status, &opsapi.Error{Status: r.Status, Msg: r.Err}
+	}
+	body, err := json.Marshal(r.Session)
+	return body, opsapi.StatusOK, err
+}
+
+// Operations returns the gateway contributions for each HTTP-bound method of
+// impl, keyed by wire method name. A module contributes each OpSet to the
+// opsapi Slot/BindingSlot/LocalSlot; LocalBackend and RemoteBackend then share
+// the SAME wire envelopes, so remote dispatch is correct for every op shape.
+func Operations(impl accountsapi.Auth) map[string]opsapi.OpSet {
+	return map[string]opsapi.OpSet{
+		MethodLogin: {
+			Operation: opsapi.Operation{Method: MethodLogin, Verb: "POST", Path: "/accounts/login", Auth: opsapi.AuthNone, Success: 200},
+			Binding:   opsapi.OpBinding{Method: MethodLogin, Decode: decodeLogin, NewResp: func() any { return &loginResponse{} }, Encode: encodeLogin},
+			Local: opsapi.LocalOp{Method: MethodLogin, Invoke: func(ctx context.Context, req, resp any) error {
+				rq := req.(*loginRequest)
+				r0, err := impl.Login(ctx, rq.Email, rq.Password)
+				out := resp.(*loginResponse)
+				if err != nil {
+					out.Status = opsapi.StatusOf(err)
+					out.Err = err.Error()
+				} else {
+					out.Status = opsapi.StatusOK
+					out.Session = r0
+				}
+				return nil
+			}},
+		},
+		MethodLoginEpic: {
+			Operation: opsapi.Operation{Method: MethodLoginEpic, Verb: "POST", Path: "/accounts/login/epic", Auth: opsapi.AuthNone, Success: 200},
+			Binding:   opsapi.OpBinding{Method: MethodLoginEpic, Decode: decodeLoginEpic, NewResp: func() any { return &loginEpicResponse{} }, Encode: encodeLoginEpic},
+			Local: opsapi.LocalOp{Method: MethodLoginEpic, Invoke: func(ctx context.Context, req, resp any) error {
+				rq := req.(*loginEpicRequest)
+				r0, err := impl.LoginEpic(ctx, rq.IdToken)
+				out := resp.(*loginEpicResponse)
+				if err != nil {
+					out.Status = opsapi.StatusOf(err)
+					out.Err = err.Error()
+				} else {
+					out.Status = opsapi.StatusOK
+					out.Session = r0
+				}
+				return nil
+			}},
+		},
+		MethodMe: {
+			Operation: opsapi.Operation{Method: MethodMe, Verb: "GET", Path: "/accounts/me", Auth: opsapi.AuthPlayer, Success: 200},
+			Binding:   opsapi.OpBinding{Method: MethodMe, Decode: decodeMe, NewResp: func() any { return &meResponse{} }, Encode: encodeMe},
+			Local: opsapi.LocalOp{Method: MethodMe, Invoke: func(ctx context.Context, req, resp any) error {
+				r0, err := impl.Me(ctx)
+				out := resp.(*meResponse)
+				if err != nil {
+					out.Status = opsapi.StatusOf(err)
+					out.Err = err.Error()
+				} else {
+					out.Status = opsapi.StatusOK
+					out.View = r0
+				}
+				return nil
+			}},
+		},
+		MethodRegister: {
+			Operation: opsapi.Operation{Method: MethodRegister, Verb: "POST", Path: "/accounts/register", Auth: opsapi.AuthNone, Success: 201},
+			Binding:   opsapi.OpBinding{Method: MethodRegister, Decode: decodeRegister, NewResp: func() any { return &registerResponse{} }, Encode: encodeRegister},
+			Local: opsapi.LocalOp{Method: MethodRegister, Invoke: func(ctx context.Context, req, resp any) error {
+				rq := req.(*registerRequest)
+				r0, err := impl.Register(ctx, rq.Email, rq.Password, rq.DisplayName)
+				out := resp.(*registerResponse)
+				if err != nil {
+					out.Status = opsapi.StatusOf(err)
+					out.Err = err.Error()
+				} else {
+					out.Status = opsapi.StatusOK
+					out.Session = r0
+				}
+				return nil
+			}},
+		},
+	}
 }

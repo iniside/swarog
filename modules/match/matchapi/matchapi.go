@@ -11,7 +11,19 @@
 //go:generate go run gamebackend/tools/rpcgen -iface Match -prefix match -out ../matchrpc/matchrpc_gen.go
 package matchapi
 
-import "context"
+import (
+	"context"
+
+	"gamebackend/opsapi"
+)
+
+// HTTPBindings declares the HTTP surface of the Match operation for rpcgen. Keyed
+// by Go method name. Report is a public (AuthNone) op whose pre-migration public
+// body keys are the Go-default capitalized "Winner"/"Loser" (BodyNames overrides),
+// answered 202 with no body — the external contract is unchanged.
+var HTTPBindings = map[string]opsapi.HTTPBind{
+	"Report": {Verb: "POST", Path: "/match/report", Auth: opsapi.AuthNone, Success: 202, BodyNames: map[string]string{"winner": "Winner", "loser": "Loser"}},
+}
 
 // Match is the match module's public capability: reporting a match result. It
 // takes no caller identity — the operation is AuthNone, exactly as

@@ -85,3 +85,44 @@ func RegisterServer(reg Registrar, impl leaderboardapi.Leaderboard) {
 		return json.Marshal(resp)
 	})
 }
+
+// decodeTopScores builds the leaderboard.topScores wire request envelope from the HTTP body and path.
+func decodeTopScores(body []byte, path map[string]string) (any, error) {
+	var req topScoresRequest
+	return &req, nil
+}
+
+// encodeTopScores reduces the leaderboard.topScores wire response envelope to the external HTTP body + Status.
+func encodeTopScores(resp any) ([]byte, opsapi.Status, error) {
+	r := resp.(*topScoresResponse)
+	if r.Status != opsapi.StatusOK {
+		return nil, r.Status, &opsapi.Error{Status: r.Status, Msg: r.Err}
+	}
+	body, err := json.Marshal(r.Scores)
+	return body, opsapi.StatusOK, err
+}
+
+// Operations returns the gateway contributions for each HTTP-bound method of
+// impl, keyed by wire method name. A module contributes each OpSet to the
+// opsapi Slot/BindingSlot/LocalSlot; LocalBackend and RemoteBackend then share
+// the SAME wire envelopes, so remote dispatch is correct for every op shape.
+func Operations(impl leaderboardapi.Leaderboard) map[string]opsapi.OpSet {
+	return map[string]opsapi.OpSet{
+		MethodTopScores: {
+			Operation: opsapi.Operation{Method: MethodTopScores, Verb: "GET", Path: "/leaderboard", Auth: opsapi.AuthNone, Success: 200},
+			Binding:   opsapi.OpBinding{Method: MethodTopScores, Decode: decodeTopScores, NewResp: func() any { return &topScoresResponse{} }, Encode: encodeTopScores},
+			Local: opsapi.LocalOp{Method: MethodTopScores, Invoke: func(ctx context.Context, req, resp any) error {
+				r0, err := impl.TopScores(ctx)
+				out := resp.(*topScoresResponse)
+				if err != nil {
+					out.Status = opsapi.StatusOf(err)
+					out.Err = err.Error()
+				} else {
+					out.Status = opsapi.StatusOK
+					out.Scores = r0
+				}
+				return nil
+			}},
+		},
+	}
+}

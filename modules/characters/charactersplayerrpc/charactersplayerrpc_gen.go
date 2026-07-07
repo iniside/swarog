@@ -173,3 +173,114 @@ func RegisterServer(reg Registrar, impl charactersapi.Player) {
 		return json.Marshal(resp)
 	})
 }
+
+// decodeCreate builds the characters.create wire request envelope from the HTTP body and path.
+func decodeCreate(body []byte, path map[string]string) (any, error) {
+	var req createRequest
+	if len(body) > 0 {
+		if err := json.Unmarshal(body, &req); err != nil {
+			return nil, &opsapi.Error{Status: opsapi.StatusInvalid, Msg: "invalid json"}
+		}
+	}
+	return &req, nil
+}
+
+// encodeCreate reduces the characters.create wire response envelope to the external HTTP body + Status.
+func encodeCreate(resp any) ([]byte, opsapi.Status, error) {
+	r := resp.(*createResponse)
+	if r.Status != opsapi.StatusOK {
+		return nil, r.Status, &opsapi.Error{Status: r.Status, Msg: r.Err}
+	}
+	body, err := json.Marshal(r.Character)
+	return body, opsapi.StatusOK, err
+}
+
+// decodeDelete builds the characters.delete wire request envelope from the HTTP body and path.
+func decodeDelete(body []byte, path map[string]string) (any, error) {
+	var req deleteRequest
+	req.CharacterID = path["id"]
+	return &req, nil
+}
+
+// encodeDelete reduces the characters.delete wire response envelope to the external HTTP body + Status.
+func encodeDelete(resp any) ([]byte, opsapi.Status, error) {
+	r := resp.(*deleteResponse)
+	if r.Status != opsapi.StatusOK {
+		return nil, r.Status, &opsapi.Error{Status: r.Status, Msg: r.Err}
+	}
+	return nil, opsapi.StatusOK, nil
+}
+
+// decodeList builds the characters.list wire request envelope from the HTTP body and path.
+func decodeList(body []byte, path map[string]string) (any, error) {
+	var req listRequest
+	return &req, nil
+}
+
+// encodeList reduces the characters.list wire response envelope to the external HTTP body + Status.
+func encodeList(resp any) ([]byte, opsapi.Status, error) {
+	r := resp.(*listResponse)
+	if r.Status != opsapi.StatusOK {
+		return nil, r.Status, &opsapi.Error{Status: r.Status, Msg: r.Err}
+	}
+	body, err := json.Marshal(r.Characters)
+	return body, opsapi.StatusOK, err
+}
+
+// Operations returns the gateway contributions for each HTTP-bound method of
+// impl, keyed by wire method name. A module contributes each OpSet to the
+// opsapi Slot/BindingSlot/LocalSlot; LocalBackend and RemoteBackend then share
+// the SAME wire envelopes, so remote dispatch is correct for every op shape.
+func Operations(impl charactersapi.Player) map[string]opsapi.OpSet {
+	return map[string]opsapi.OpSet{
+		MethodCreate: {
+			Operation: opsapi.Operation{Method: MethodCreate, Verb: "POST", Path: "/characters", Auth: opsapi.AuthPlayer, Success: 201},
+			Binding:   opsapi.OpBinding{Method: MethodCreate, Decode: decodeCreate, NewResp: func() any { return &createResponse{} }, Encode: encodeCreate},
+			Local: opsapi.LocalOp{Method: MethodCreate, Invoke: func(ctx context.Context, req, resp any) error {
+				rq := req.(*createRequest)
+				r0, err := impl.Create(ctx, rq.Name, rq.Class)
+				out := resp.(*createResponse)
+				if err != nil {
+					out.Status = opsapi.StatusOf(err)
+					out.Err = err.Error()
+				} else {
+					out.Status = opsapi.StatusOK
+					out.Character = r0
+				}
+				return nil
+			}},
+		},
+		MethodDelete: {
+			Operation: opsapi.Operation{Method: MethodDelete, Verb: "DELETE", Path: "/characters/{id}", Auth: opsapi.AuthPlayer, Success: 204},
+			Binding:   opsapi.OpBinding{Method: MethodDelete, Decode: decodeDelete, NewResp: func() any { return &deleteResponse{} }, Encode: encodeDelete},
+			Local: opsapi.LocalOp{Method: MethodDelete, Invoke: func(ctx context.Context, req, resp any) error {
+				rq := req.(*deleteRequest)
+				err := impl.Delete(ctx, rq.CharacterID)
+				out := resp.(*deleteResponse)
+				if err != nil {
+					out.Status = opsapi.StatusOf(err)
+					out.Err = err.Error()
+				} else {
+					out.Status = opsapi.StatusOK
+				}
+				return nil
+			}},
+		},
+		MethodList: {
+			Operation: opsapi.Operation{Method: MethodList, Verb: "GET", Path: "/characters", Auth: opsapi.AuthPlayer, Success: 200},
+			Binding:   opsapi.OpBinding{Method: MethodList, Decode: decodeList, NewResp: func() any { return &listResponse{} }, Encode: encodeList},
+			Local: opsapi.LocalOp{Method: MethodList, Invoke: func(ctx context.Context, req, resp any) error {
+				r0, err := impl.List(ctx)
+				out := resp.(*listResponse)
+				if err != nil {
+					out.Status = opsapi.StatusOf(err)
+					out.Err = err.Error()
+				} else {
+					out.Status = opsapi.StatusOK
+					out.Characters = r0
+				}
+				return nil
+			}},
+		},
+	}
+}

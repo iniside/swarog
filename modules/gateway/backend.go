@@ -74,10 +74,12 @@ func (b *LocalBackend) Invoke(ctx context.Context, op opsapi.Operation, req, res
 }
 
 // RemoteBackend dispatches an operation to a provider hosted in a PEER process
-// over the QUIC edge. It marshals req into the wire request payload, relays it by
-// method name, and unmarshals the reply — following the rpcgen response-envelope
-// convention (the payload carries a flat "status"/"err" pair alongside the domain
-// fields, mirroring the generated <module>rpc client).
+// over the QUIC edge. req and resp are the SAME rpcgen wire envelopes the provider's
+// generated RegisterServer adapter consumes/produces: it marshals req into the wire
+// request payload, relays it by method name, and unmarshals the reply straight into
+// resp (the wire response envelope, carrying Status/Err + the domain fields). No
+// per-op knowledge is needed — the gateway's Encode reads the outcome off resp —
+// so RemoteBackend is correct for every op shape, identical to LocalBackend.
 type RemoteBackend struct {
 	// relay sends an already-encoded request payload for method to the owning peer,
 	// stamping identity into the wire envelope, and returns the response payload
@@ -107,21 +109,12 @@ func NewRemoteBackend(peerAddr string) *RemoteBackend {
 
 var _ OperationBackend = (*RemoteBackend)(nil)
 
-// opStatusEnvelope probes the rpcgen response-envelope status/err pair without
-// binding to any particular operation's domain fields. RemoteBackend reads it to
-// decide success-vs-error generically, then unmarshals the SAME bytes into the
-// caller's resp for the domain fields (ignoring status/err) — one relay, two
-// cheap decodes of the reply, matching how the generated client splits outcome
-// from payload.
-type opStatusEnvelope struct {
-	Status opsapi.Status `json:"status"`
-	Err    string        `json:"err"`
-}
-
-// Invoke marshals req, relays it to the peer, and reconstitutes the outcome. A
-// transport failure (peer down / unknown method) maps to StatusUnavailable so the
-// gateway answers 503; a domain failure carried in the envelope maps to its
-// Status; success unmarshals the domain fields into resp.
+// Invoke marshals the wire request envelope, relays it to the peer, and unmarshals
+// the reply straight into resp (the wire response envelope). A transport failure
+// (peer down / unknown method) maps to StatusUnavailable so the gateway answers
+// 503; otherwise resp carries the peer's Status/Err + domain fields, which the
+// gateway's Encode reads — so a domain outcome (404/403/…) rides the envelope
+// exactly as it does on the LocalBackend path, no per-op knowledge here.
 func (b *RemoteBackend) Invoke(ctx context.Context, op opsapi.Operation, req, resp any) error {
 	reqBytes, err := json.Marshal(req) // +1 wire marshal (the split cost)
 	if err != nil {
@@ -137,15 +130,5 @@ func (b *RemoteBackend) Invoke(ctx context.Context, op opsapi.Operation, req, re
 		// Transport-level failure: the peer is unreachable or rejected the call.
 		return &opsapi.Error{Status: opsapi.StatusUnavailable, Msg: err.Error()}
 	}
-	var env opStatusEnvelope
-	if err := json.Unmarshal(respBytes, &env); err != nil {
-		return err
-	}
-	if env.Status != opsapi.StatusOK {
-		return &opsapi.Error{Status: env.Status, Msg: env.Err}
-	}
-	if resp != nil {
-		return json.Unmarshal(respBytes, resp) // +1 wire unmarshal (domain fields)
-	}
-	return nil
+	return json.Unmarshal(respBytes, resp) // +1 wire unmarshal (the whole envelope)
 }
