@@ -12,16 +12,32 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 
 	"gamebackend/bus"
 	"gamebackend/edge"
 	"gamebackend/lifecycle"
 	"gamebackend/modules/admin/adminapi"
 	"gamebackend/modules/characters/charactersevents"
+	"gamebackend/modules/config/configevents"
 	"gamebackend/registry"
 )
 
-const starterItem = "starter_sword"
+// starterItem / starterQty are the code-default starter spec — the fallback used
+// when config isn't hosted (split builds) or a key is absent from config.settings.
+const (
+	starterItem = "starter_sword"
+	starterQty  = 1
+)
+
+// configReader is the consumer-defined slice of the "config" service inventory
+// needs: just the two getters used to resolve the starter spec. Depending on a
+// capability (not the config package's concrete type) keeps the coupling to a
+// pair of method signatures.
+type configReader interface {
+	GetString(namespace, key, def string) string
+	GetInt(namespace, key string, def int) int
+}
 
 // accountsSvc and charactersSvc are the consumer-defined slices we depend on.
 // Both return an error so a transport failure (the provider hosted in a peer
@@ -41,6 +57,19 @@ type Module struct {
 	svc        *service
 	accounts   accountsSvc
 	characters charactersSvc
+
+	// cfg is the optional "config" service, resolved via registry.TryRequire in
+	// Init. It is nil when config isn't hosted (e.g. cmd/inventory-svc split), in
+	// which case the starter spec falls back to the starterItem/starterQty consts.
+	cfg configReader
+
+	// The starter spec is MATERIALIZED: resolved once (lazily under starterMu) and
+	// rebuilt ONLY by onConfigChanged on a config.changed event — the push/live-
+	// reload path. Grants read this cached spec rather than re-pulling from config.
+	starterMu     sync.RWMutex
+	starterName   string // resolved starter item id
+	starterAmount int    // resolved starter quantity
+	starterLoaded bool
 
 	// Edge, when non-nil, is the process-wide QUIC RPC server (constructed and
 	// started by main() only in a split that hosts this module). Init registers
@@ -111,6 +140,19 @@ func (m *Module) Init(ctx *lifecycle.Context) error {
 	bus.On(ctx.Bus, charactersevents.CreatedEvent, m.onCharacterCreated)
 	bus.On(ctx.Bus, charactersevents.DeletedEvent, m.onCharacterDeleted)
 
+	// SOFT dependency on config (decision #3): try to reach the service; if it's
+	// hosted, use it for the starter spec and react to live edits; if not (split
+	// build), cfg stays nil and starterSpec falls back to the consts. This is NOT
+	// declared in Requires() — a hard require would panic cmd/inventory-svc, which
+	// does not host config.
+	if cfg, ok := registry.TryRequire[configReader](ctx.Registry, "config"); ok {
+		m.cfg = cfg
+		// The subscription is load-bearing: onConfigChanged is the ONLY path that
+		// rebuilds the materialized starter spec, so editing inventory/starter_item
+		// in /admin flows config.changed -> here -> the next grant uses the new item.
+		bus.On(ctx.Bus, configevents.ChangedEvent, m.onConfigChanged)
+	}
+
 	// Synchronous event sink — the cross-process path. The relay in the peer that
 	// hosts characters POSTs here; the handler dedups (inbox) and runs the effect
 	// INSIDE its tx, returning 200 only AFTER the effect commits (B1). Registered
@@ -141,10 +183,62 @@ func (m *Module) Init(ctx *lifecycle.Context) error {
 	return nil
 }
 
+// loadStarterLocked resolves the starter spec into the materialized fields. The
+// caller MUST hold starterMu for writing. When config is hosted it reads
+// inventory/starter_item + inventory/starter_qty (falling back to the consts on a
+// miss); otherwise it uses the consts outright.
+func (m *Module) loadStarterLocked() {
+	if m.cfg != nil {
+		m.starterName = m.cfg.GetString("inventory", "starter_item", starterItem)
+		m.starterAmount = m.cfg.GetInt("inventory", "starter_qty", starterQty)
+	} else {
+		m.starterName = starterItem
+		m.starterAmount = starterQty
+	}
+	m.starterLoaded = true
+}
+
+// starterSpec returns the materialized starter item + quantity. It lazily loads
+// on first use under the mutex (order-independent — no reliance on config.Start
+// running before inventory.Start), then serves from the cached fields until
+// onConfigChanged rebuilds them.
+func (m *Module) starterSpec() (item string, qty int) {
+	m.starterMu.RLock()
+	if m.starterLoaded {
+		item, qty = m.starterName, m.starterAmount
+		m.starterMu.RUnlock()
+		return item, qty
+	}
+	m.starterMu.RUnlock()
+
+	m.starterMu.Lock()
+	defer m.starterMu.Unlock()
+	if !m.starterLoaded { // double-check: another goroutine may have loaded it
+		m.loadStarterLocked()
+	}
+	return m.starterName, m.starterAmount
+}
+
+// onConfigChanged rebuilds the materialized starter spec when a relevant config
+// key changes. This is the ONLY spec-refresh path, so the subscription in Init is
+// load-bearing: without this event a running inventory would never see an edit.
+func (m *Module) onConfigChanged(e configevents.Changed) {
+	if e.Namespace != "inventory" || (e.Key != "starter_item" && e.Key != "starter_qty") {
+		return
+	}
+	m.starterMu.Lock()
+	m.loadStarterLocked()
+	item, qty := m.starterName, m.starterAmount
+	m.starterMu.Unlock()
+	m.log.Info("inventory starter reloaded from config", "item", item, "qty", qty)
+}
+
 // grantStarter gives a brand-new character its starter item. q is either the DB
-// pool (bus path, best-effort) or the sink's tx (atomic with inbox dedup).
+// pool (bus path, best-effort) or the sink's tx (atomic with inbox dedup). The
+// item + quantity come from the materialized spec (config-sourced, live-reloaded).
 func (m *Module) grantStarter(ctx context.Context, q rowQuerier, characterID string) error {
-	return m.store.grantExec(ctx, q, Owner{Type: "character", ID: characterID}, starterItem, 1)
+	item, qty := m.starterSpec()
+	return m.store.grantExec(ctx, q, Owner{Type: "character", ID: characterID}, item, qty)
 }
 
 // wipeCharacter removes a deleted character's holdings. Same querier contract as
