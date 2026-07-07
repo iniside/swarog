@@ -342,6 +342,20 @@ inherit, trailer, concise prompts) — shared by research + implementation:
 heuristic, dispatch rules, refactor safety:
 [docs/reference/implementation-mode.md](docs/reference/implementation-mode.md).**
 
+## Agent memory backup — MANDATORY
+
+The Claude Code project memory lives OUTSIDE the repo
+(`$HOME/.claude/projects/<mangled-repo-path>/memory/`, per-machine path). It is
+mirrored into the repo at `memory/` so it survives across machines via git.
+
+- **After ANY change to memory** (write/update/delete a memory file or `MEMORY.md`),
+  run `scripts/memory-sync.sh push` (or `.ps1`) — it mirrors live → `memory/` and
+  commits `chore(memory): …`. Don't hand-copy; the script handles deletions too.
+- **After a `git pull`/sync**, run `scripts/memory-sync.sh pull` — it mirrors the
+  git copy back to this machine's live memory dir. Do this before relying on recall.
+- The live path is derived (repo abspath → non-alnum→`-`), so scripts are portable;
+  override with `CLAUDE_MEMORY_DIR` if detection is ever wrong. `… path` prints it.
+
 ## Git Safety — MANDATORY
 
 **Never `git stash`, `git checkout -- <file>`, `git restore`, or anything that
