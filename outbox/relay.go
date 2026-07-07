@@ -75,6 +75,7 @@ type Relay struct {
 	interval     time.Duration
 	log          *slog.Logger
 
+	kick   chan struct{} // capacity-1 wake signal; Kick coalesces NOTIFY into an immediate drain
 	cancel context.CancelFunc
 	done   chan struct{}
 }
@@ -102,6 +103,20 @@ func NewRelay(db *sql.DB, schema, origin string, subscribers map[string][]string
 		client:       &http.Client{Timeout: 5 * time.Second},
 		interval:     defaultInterval,
 		log:          log,
+		kick:         make(chan struct{}, 1),
+	}
+}
+
+// Kick requests an immediate drain, coalescing bursts: a NOTIFY from the outbox
+// insert trigger calls this so a freshly-written row is delivered promptly rather
+// than waiting up to a full ticker interval. It never blocks (capacity-1 buffer +
+// default), so the LISTEN loop is never stalled by the drain loop, and NOTIFY
+// stays a pure latency optimization on top of the ticker's correctness floor. Safe
+// to call before Start (nil-safe: a nil channel simply takes the default).
+func (r *Relay) Kick() {
+	select {
+	case r.kick <- struct{}{}:
+	default:
 	}
 }
 
@@ -152,6 +167,11 @@ func (r *Relay) run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
+			if err := r.drainOnce(ctx); err != nil && ctx.Err() == nil {
+				r.log.Error("outbox drain failed", "schema", r.schema, "err", err)
+			}
+		case <-r.kick:
+			// A NOTIFY woke us — drain immediately instead of waiting for the tick.
 			if err := r.drainOnce(ctx); err != nil && ctx.Err() == nil {
 				r.log.Error("outbox drain failed", "schema", r.schema, "err", err)
 			}
