@@ -42,6 +42,7 @@ $contractPkgs = @(
     'gamebackend/modules/accounts/accountsapi',
     'gamebackend/modules/characters/charactersevents',
     'gamebackend/modules/characters/charactersapi',
+    'gamebackend/modules/inventory/inventoryapi',
     'gamebackend/modules/match/matchevents',
     'gamebackend/modules/scheduler/schedulerevents',
     'gamebackend/modules/admin/adminapi'

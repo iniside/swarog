@@ -48,6 +48,7 @@ components:
       - modules/characters/charactersevents
       - modules/characters/charactersapi
       - modules/config/configevents
+      - modules/inventory/inventoryapi
       - modules/match/matchevents
       - modules/scheduler/schedulerevents
       - modules/admin/adminapi
@@ -71,6 +72,9 @@ components:
   accountsrpc:
     in:
       - modules/accounts/accountsrpc
+  inventoryrpc:
+    in:
+      - modules/inventory/inventoryrpc
 
   # Each module IMPLEMENTATION is its own component, so the linter can forbid cross-impl imports.
   accounts:    { in: modules/accounts }
@@ -193,7 +197,7 @@ deps:
   # commonComponents, importable without listing; edge + the transport gateway are
   # not, so they are listed here.)
   gatewaymod:  { mayDependOn: [ lifecycle, edge, gateway ] }
-  inventory:   { mayDependOn: [ lifecycle, contracts, edge ] }
+  inventory:   { mayDependOn: [ lifecycle, contracts, edge, inventoryrpc ] }
   leaderboard: { mayDependOn: [ lifecycle, contracts ] }
   match:       { mayDependOn: [ lifecycle, contracts ] }
   # messaging implements bus.Transport and drives the outbox relay — it needs
@@ -213,6 +217,7 @@ deps:
   charactersrpc:       { mayDependOn: [ edge, contracts ] }
   charactersplayerrpc: { mayDependOn: [ edge, contracts ] }
   accountsrpc:         { mayDependOn: [ edge, contracts ] }
+  inventoryrpc:        { mayDependOn: [ edge, contracts ] }
 
   # The remote stub is composition-time plumbing: it wraps the generated edge
   # clients (charactersrpc/accountsrpc) + the admin contract, never a module impl.

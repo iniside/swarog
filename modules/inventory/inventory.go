@@ -20,6 +20,9 @@ import (
 	"gamebackend/modules/admin/adminapi"
 	"gamebackend/modules/characters/charactersevents"
 	"gamebackend/modules/config/configevents"
+	"gamebackend/modules/inventory/inventoryapi"
+	"gamebackend/modules/inventory/inventoryrpc"
+	"gamebackend/opsapi"
 	"gamebackend/registry"
 )
 
@@ -41,24 +44,21 @@ type configReader interface {
 	GetInt(namespace, key string, def int) int
 }
 
-// accountsSvc and charactersSvc are the consumer-defined slices we depend on.
-// Both return an error so a transport failure (the provider hosted in a peer
-// process, reached over the QUIC edge) surfaces as 503 rather than a false 401
-// or 404. The local, co-hosted implementations return a nil error.
-type accountsSvc interface {
-	VerifySession(ctx context.Context, token string) (playerID string, ok bool, err error)
-}
-
+// charactersSvc is the consumer-defined slice we depend on for the ownership
+// check in ListCharacter. It returns an error so a transport failure (characters
+// hosted in a peer process, reached over the QUIC edge) surfaces as 503 rather
+// than a false 404. The local, co-hosted implementation returns a nil error.
+// Bearer verification is no longer inventory's concern — the gateway authenticates
+// once at the front door and injects the player_id into ctx — so the accounts
+// consumer dependency is gone.
 type charactersSvc interface {
 	OwnerOf(ctx context.Context, characterID string) (playerID string, ok bool, err error)
 }
 
 type Module struct {
-	log        *slog.Logger
-	store      *store
-	svc        *service
-	accounts   accountsSvc
-	characters charactersSvc
+	log   *slog.Logger
+	store *store
+	svc   *service
 
 	// cfg is the mandatory "config" service, resolved via registry.Require in
 	// Init. config is hosted in every binary that hosts inventory (a hard
@@ -74,14 +74,15 @@ type Module struct {
 	starterLoaded bool
 
 	// Edge, when non-nil, is the process-wide QUIC RPC server (constructed and
-	// started by main() only in a split that hosts this module). Init registers
-	// the "inventory.list" handler on it so a gateway can route player-facing
-	// inventory reads to this peer. nil in the monolith — no edge exposure.
+	// started by main() only in a split that hosts this module). Init registers the
+	// inventory player-operation handlers (listMine/listCharacter/grant) on it so a
+	// front gateway in a peer can route player-facing inventory operations to this
+	// peer. nil in the monolith — no edge exposure.
 	Edge *edge.Server
 }
 
 func (*Module) Name() string       { return "inventory" }
-func (*Module) Requires() []string { return []string{"accounts", "characters", "config", "messaging"} }
+func (*Module) Requires() []string { return []string{"characters", "config", "messaging"} }
 
 const schemaDDL = `
 CREATE SCHEMA IF NOT EXISTS inventory;
@@ -124,8 +125,11 @@ func (m *Module) Register(ctx *lifecycle.Context) error {
 
 func (m *Module) Init(ctx *lifecycle.Context) error {
 	m.log = ctx.Log
-	m.accounts = registry.Require[accountsSvc](ctx.Registry, "accounts")
-	m.characters = registry.Require[charactersSvc](ctx.Registry, "characters")
+	// The characters ownership capability backs ListCharacter's authorization; it
+	// resolves to the real service (monolith) or the generated edge client (split).
+	// Wire it onto the service Provided in Register — the service, not the Module,
+	// now owns the ownership check.
+	m.svc.characters = registry.Require[charactersSvc](ctx.Registry, "characters")
 
 	// React to character lifecycle — integrity without a cross-module FK. These
 	// are DURABLE subscriptions on the messaging plane: the transport runs each
@@ -150,25 +154,34 @@ func (m *Module) Init(ctx *lifecycle.Context) error {
 	// in /admin flows config.changed -> here -> the next grant uses the new item.
 	bus.On(ctx.Bus, configevents.ChangedEvent, m.onConfigChanged)
 
-	ctx.Mux.HandleFunc("GET /inventory/me", m.handleMine)
-	ctx.Mux.HandleFunc("GET /inventory/character/{id}", m.handleCharacter)
-
-	if envBool("INVENTORY_DEV_GRANT", true) {
+	// Player operations: contribute each op's HTTP binding + in-process invoker so
+	// the gateway fronts GET /inventory/me + GET /inventory/character/{id} (and,
+	// dev-gated, POST /inventory/me/grant), authenticates once, and dispatches to
+	// m.svc with the verified player_id in ctx. This REPLACES the deleted
+	// handleMine/handleCharacter/handleGrant + their inline bearer auth.
+	devGrant := envBool("INVENTORY_DEV_GRANT", true)
+	if devGrant {
 		ctx.Log.Warn("INVENTORY_DEV_GRANT is ON — POST /inventory/me/grant (simulated IAP) is enabled; turn OFF in production")
-		ctx.Mux.HandleFunc("POST /inventory/me/grant", m.handleGrant)
 	}
+	registerPlayerOps(ctx, m.svc, devGrant)
 
 	// The inventory service was Provided in Register (phase 1); m.store is set.
 	ctx.Contribute(adminapi.Slot, adminapi.Item{ID: adminItemID, Section: adminSectionName, Label: adminLabel, Render: m.adminSection})
 	// GET /admin-data/inventory: the same content over HTTP for a remote admin.
 	ctx.Mux.HandleFunc("GET /admin-data/"+adminItemID, m.handleAdminData)
 
-	// Split topology: expose List over the shared QUIC edge server so a gateway
-	// can route player-facing inventory reads to this peer. Registering a handler
-	// is pure wiring (no I/O); main() starts the listener after all Inits.
+	// Split topology: expose the inventory player capabilities over the shared QUIC
+	// edge server so a front gateway in a peer can route player-facing inventory
+	// operations to this peer. The edge face is rpcgen-generated from the pure
+	// inventoryapi contract: RegisterServer installs identity-aware adapters (they
+	// read the request envelope's Identity into ctx via opsapi.WithPlayerID).
+	// Registering handlers is pure wiring (no I/O); main() starts the listener
+	// after all Inits.
 	if m.Edge != nil {
-		m.Edge.Handle("inventory.list", inventoryListEdgeHandler(m.svc))
-		m.log.Info("edge handler registered", "method", "inventory.list")
+		var holdings inventoryapi.Holdings = m.svc
+		inventoryrpc.RegisterServer(m.Edge, holdings)
+		m.log.Info("edge handlers registered", "methods",
+			[]string{inventoryrpc.MethodListMine, inventoryrpc.MethodListCharacter, inventoryrpc.MethodGrant})
 	}
 	return nil
 }
@@ -234,162 +247,80 @@ func (m *Module) wipeCharacter(ctx context.Context, q rowQuerier, characterID st
 	return err
 }
 
-func (m *Module) handleMine(w http.ResponseWriter, r *http.Request) {
-	pid, ok := m.authed(w, r)
-	if !ok {
-		return
-	}
-	m.respondList(w, r, Owner{Type: "player", ID: pid})
+// service backs both the "inventory" registry service AND the player operations
+// (the generated edge face + the gateway's in-process invokers). It reads the
+// caller identity from ctx (opsapi.PlayerID) — NEVER an argument — so a client
+// cannot act on another player's inventory; the gateway established the identity
+// once at the front door.
+type service struct {
+	store *store
+	// characters authorizes ListCharacter (owner-check). Resolved in Init from the
+	// registry to the real service (monolith) or the generated edge client (split).
+	characters charactersSvc
 }
 
-func (m *Module) handleCharacter(w http.ResponseWriter, r *http.Request) {
-	pid, ok := m.authed(w, r)
+// Compile-time proof the service satisfies the generated player contract — the
+// single source of truth for the wire + gateway invoker shapes.
+var _ inventoryapi.Holdings = (*service)(nil)
+
+// ListMine returns the caller's own player-owned holdings (player_id from ctx).
+func (s *service) ListMine(ctx context.Context) ([]Holding, error) {
+	pid, ok := opsapi.PlayerID(ctx)
 	if !ok {
-		return
+		return nil, &opsapi.Error{Status: opsapi.StatusInvalid, Msg: "missing player identity"}
 	}
-	id := r.PathValue("id")
-	owner, found, err := m.characters.OwnerOf(r.Context(), id)
+	return s.store.list(ctx, Owner{Type: "player", ID: pid})
+}
+
+// ListCharacter returns a character's holdings, but only if the caller owns the
+// character. The differentiated outcomes mirror the deleted handler's HTTP
+// statuses, now typed: an ownership-lookup transport failure → StatusUnavailable
+// (503), an unknown character → StatusNotFound (404), a character owned by
+// someone else → StatusForbidden (403).
+func (s *service) ListCharacter(ctx context.Context, characterID string) ([]Holding, error) {
+	pid, ok := opsapi.PlayerID(ctx)
+	if !ok {
+		return nil, &opsapi.Error{Status: opsapi.StatusInvalid, Msg: "missing player identity"}
+	}
+	owner, found, err := s.characters.OwnerOf(ctx, characterID)
 	if err != nil {
-		// Characters may be hosted in a peer process; a transport failure is an
-		// infrastructure problem, not a missing character (B2).
-		m.log.Error("ownership lookup failed", "character", id, "err", err)
-		http.Error(w, "characters service unavailable", http.StatusServiceUnavailable)
-		return
+		// characters may be hosted in a peer process; a transport failure is an
+		// infrastructure problem, not a missing character.
+		return nil, &opsapi.Error{Status: opsapi.StatusUnavailable, Msg: "characters service unavailable"}
 	}
 	if !found {
-		http.Error(w, "not found", http.StatusNotFound)
-		return
+		return nil, &opsapi.Error{Status: opsapi.StatusNotFound, Msg: "not found"}
 	}
 	if owner != pid {
-		http.Error(w, "forbidden", http.StatusForbidden)
-		return
+		return nil, &opsapi.Error{Status: opsapi.StatusForbidden, Msg: "forbidden"}
 	}
-	m.respondList(w, r, Owner{Type: "character", ID: id})
+	return s.store.list(ctx, Owner{Type: "character", ID: characterID})
 }
 
-func (m *Module) handleGrant(w http.ResponseWriter, r *http.Request) {
-	pid, ok := m.authed(w, r)
+// Grant adds qty of itemID to the caller's own inventory (simulated IAP). A
+// non-positive qty or an unknown item is a StatusInvalid (→ 400); a store failure
+// is a plain error (→ StatusInternal → 500). It returns the caller's updated
+// holdings, matching the old handler's respond-with-list behavior.
+func (s *service) Grant(ctx context.Context, itemID string, qty int) ([]Holding, error) {
+	pid, ok := opsapi.PlayerID(ctx)
 	if !ok {
-		return
+		return nil, &opsapi.Error{Status: opsapi.StatusInvalid, Msg: "missing player identity"}
 	}
-	var in struct {
-		ItemID string `json:"item_id"`
-		Qty    int    `json:"qty"`
+	if qty <= 0 {
+		return nil, &opsapi.Error{Status: opsapi.StatusInvalid, Msg: "qty must be positive"}
 	}
-	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
-		http.Error(w, "invalid json", http.StatusBadRequest)
-		return
-	}
-	if in.Qty <= 0 {
-		http.Error(w, "qty must be positive", http.StatusBadRequest)
-		return
-	}
-	exists, err := m.store.itemExists(r.Context(), in.ItemID)
+	exists, err := s.store.itemExists(ctx, itemID)
 	if err != nil {
-		m.log.Error("item check failed", "err", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
+		return nil, err
 	}
 	if !exists {
-		http.Error(w, "unknown item", http.StatusBadRequest)
-		return
+		return nil, &opsapi.Error{Status: opsapi.StatusInvalid, Msg: "unknown item"}
 	}
-	if err := m.store.grant(r.Context(), Owner{Type: "player", ID: pid}, in.ItemID, in.Qty); err != nil {
-		m.log.Error("grant failed", "err", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
+	owner := Owner{Type: "player", ID: pid}
+	if err := s.store.grant(ctx, owner, itemID, qty); err != nil {
+		return nil, err
 	}
-	m.respondList(w, r, Owner{Type: "player", ID: pid})
-}
-
-func (m *Module) respondList(w http.ResponseWriter, r *http.Request, owner Owner) {
-	holdings, err := m.store.list(r.Context(), owner)
-	if err != nil {
-		m.log.Error("list inventory failed", "err", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-	writeJSON(w, http.StatusOK, holdings)
-}
-
-// service is what other modules get from Require("inventory").
-type service struct{ store *store }
-
-func (s *service) Grant(ctx context.Context, owner Owner, itemID string, qty int) error {
-	ok, err := s.store.itemExists(ctx, itemID)
-	if err != nil {
-		return err
-	}
-	if !ok {
-		return ErrUnknownItem
-	}
-	return s.store.grant(ctx, owner, itemID, qty)
-}
-
-func (s *service) List(ctx context.Context, owner Owner) ([]Holding, error) {
 	return s.store.list(ctx, owner)
-}
-
-// listReq/listResp are the wire DTOs for the "inventory.list" edge RPC. A
-// gateway routes a player's inventory read here; the only coupling to a
-// caller is this JSON shape + the method name.
-type listReq struct {
-	PlayerID string `json:"player_id"`
-}
-
-type listResp struct {
-	Items []Holding `json:"items"`
-}
-
-// inventoryListEdgeHandler adapts the local List capability to an
-// edge.Handler: it decodes the request, calls the service for the player's
-// own holdings, and encodes the reply. A store error is returned as the
-// handler error, which the client surfaces as a transport-level err rather
-// than a false empty list.
-func inventoryListEdgeHandler(svc *service) edge.Handler {
-	return func(reqPayload []byte) ([]byte, error) {
-		var req listReq
-		if err := json.Unmarshal(reqPayload, &req); err != nil {
-			return nil, err
-		}
-		items, err := svc.List(context.Background(), Owner{Type: "player", ID: req.PlayerID})
-		if err != nil {
-			return nil, err
-		}
-		return json.Marshal(listResp{Items: items})
-	}
-}
-
-func (m *Module) auth(r *http.Request) (playerID string, ok bool, err error) {
-	token := bearer(r)
-	if token == "" {
-		return "", false, nil
-	}
-	return m.accounts.VerifySession(r.Context(), token)
-}
-
-// authed verifies the bearer token and writes the right failure response: 503 if
-// the accounts service (possibly a peer reached over the edge) is unreachable,
-// 401 if the token is missing or invalid. Returns ok=false once it responds.
-func (m *Module) authed(w http.ResponseWriter, r *http.Request) (playerID string, ok bool) {
-	pid, ok, err := m.auth(r)
-	if err != nil {
-		m.log.Error("session verify failed", "err", err)
-		http.Error(w, "auth service unavailable", http.StatusServiceUnavailable)
-		return "", false
-	}
-	if !ok {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return "", false
-	}
-	return pid, true
-}
-
-func bearer(r *http.Request) string {
-	if after, found := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer "); found {
-		return after
-	}
-	return ""
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

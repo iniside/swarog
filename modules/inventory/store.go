@@ -3,11 +3,10 @@ package inventory
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"log/slog"
-)
 
-var ErrUnknownItem = errors.New("unknown item")
+	"gamebackend/modules/inventory/inventoryapi"
+)
 
 // Owner is who an inventory belongs to. Type is "player" or "character"; ID is
 // the player or character uuid. The polymorphism lives entirely inside this
@@ -17,13 +16,10 @@ type Owner struct {
 	ID   string
 }
 
-type Holding struct {
-	OwnerType string `json:"owner_type"`
-	OwnerID   string `json:"owner_id"`
-	ItemID    string `json:"item_id"`
-	ItemName  string `json:"item_name"`
-	Quantity  int    `json:"quantity"`
-}
+// Holding is aliased from the pure inventoryapi contract so the impl and the
+// generated glue name the SAME type (the response shape of the player
+// operations), the way characters aliases charactersapi.Character.
+type Holding = inventoryapi.Holding
 
 type store struct {
 	db  *sql.DB
