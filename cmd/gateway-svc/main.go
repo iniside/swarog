@@ -89,7 +89,15 @@ func main() {
 	srv.HandlePrefix("characters.", chars.Forward)
 	srv.HandlePrefix("inventory.", inv.Forward)
 
-	tlsConf, err := edge.SelfSignedTLS()
+	// Mutual TLS on the gateway's own edge listener too, from the same process-
+	// shared CA (EDGE_CA_CERT/EDGE_CA_KEY). The RoutedBackends above dial the
+	// backends with a matching CA-signed client leaf (edge.ClientMTLS).
+	ca, err := edge.SharedDevCA(log)
+	if err != nil {
+		log.Error("edge ca", "err", err)
+		os.Exit(1)
+	}
+	tlsConf, err := ca.ServerTLS()
 	if err != nil {
 		log.Error("edge tls", "err", err)
 		os.Exit(1)

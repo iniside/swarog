@@ -16,9 +16,9 @@ func startBackend(t *testing.T, register func(*edge.Server)) (addr string, stop 
 	srv := edge.NewServer()
 	register(srv)
 
-	tlsConf, err := edge.SelfSignedTLS()
+	tlsConf, err := edge.ServerMTLS()
 	if err != nil {
-		t.Fatalf("SelfSignedTLS: %v", err)
+		t.Fatalf("ServerMTLS: %v", err)
 	}
 	if err := srv.ListenAddr("127.0.0.1:0", tlsConf); err != nil {
 		t.Fatalf("ListenAddr: %v", err)

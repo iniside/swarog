@@ -16,9 +16,9 @@ func startServer(t *testing.T, register func(*Server)) (addr string, cleanup fun
 	srv := NewServer()
 	register(srv)
 
-	tlsConf, err := SelfSignedTLS()
+	tlsConf, err := ServerMTLS()
 	if err != nil {
-		t.Fatalf("SelfSignedTLS: %v", err)
+		t.Fatalf("ServerMTLS: %v", err)
 	}
 	if err := srv.ListenAddr("127.0.0.1:0", tlsConf); err != nil {
 		t.Fatalf("ListenAddr: %v", err)
@@ -32,7 +32,11 @@ func startServer(t *testing.T, register func(*Server)) (addr string, cleanup fun
 
 func dial(t *testing.T, ctx context.Context, addr string) *Client {
 	t.Helper()
-	cli, err := Dial(ctx, addr, ClientTLS())
+	tlsConf, err := ClientMTLS()
+	if err != nil {
+		t.Fatalf("ClientMTLS: %v", err)
+	}
+	cli, err := Dial(ctx, addr, tlsConf)
 	if err != nil {
 		t.Fatalf("Dial %s: %v", addr, err)
 	}

@@ -140,6 +140,17 @@ if [ "$MODE" = "monolith" ]; then
 fi
 
 # --- microservices ---------------------------------------------------------
+# Mint ONE shared dev CA for the edge mutual-TLS hop. Every edge process
+# (characters-svc + inventory-svc + gateway-svc) mints its own short-lived leaf
+# under THIS CA, so a backend accepts a stream ONLY from a peer holding a
+# CA-signed client cert (and each client verifies the server against the same
+# anchor). scheduler-svc has NO edge (no server, no client) so it needs no CA;
+# the monolith runs no edge at all and sets nothing.
+EDGE_CA_CERT="$RUN_DIR/edge-ca.crt"
+EDGE_CA_KEY="$RUN_DIR/edge-ca.key"
+echo "Minting shared edge dev CA -> $EDGE_CA_CERT ..."
+go run ./tools/edgeca -cert "$EDGE_CA_CERT" -key "$EDGE_CA_KEY"
+
 # Process A: characters-svc (accounts + characters, its OWN binary). Hosts the
 # QUIC edge server (:9000) and the outbox relay for character.* events. Started
 # FIRST — B's remote stubs and the shared accounts schema migration must not
@@ -149,6 +160,8 @@ start_server characters "$CHARACTERS_BIN" \
     PORT=8080 \
     DATABASE_URL="$DATABASE_URL" \
     EDGE_ADDR=:9000 \
+    EDGE_CA_CERT="$EDGE_CA_CERT" \
+    EDGE_CA_KEY="$EDGE_CA_KEY" \
     MESSAGING_ORIGIN=characters-svc \
     EVENTS_SUBSCRIBERS='character.created=http://localhost:8081/events;character.deleted=http://localhost:8081/events'
     # EVENTS_SUBSCRIBERS is read by messaging's relay, which runs in the
@@ -169,6 +182,8 @@ start_server inventory "$INVENTORY_BIN" \
     PORT=8081 \
     DATABASE_URL="$DATABASE_URL" \
     EDGE_ADDR=:9001 \
+    EDGE_CA_CERT="$EDGE_CA_CERT" \
+    EDGE_CA_KEY="$EDGE_CA_KEY" \
     CHARACTERS_EDGE_ADDR=localhost:9000 \
     ACCOUNTS_EDGE_ADDR=localhost:9000 \
     PEER_HTTP_ADDR=localhost:8080 \
@@ -193,6 +208,8 @@ echo "Starting C (gateway-svc: player front door) on :8082, edge :9100 ..."
 start_server gateway "$GATEWAY_BIN" \
     PORT=8082 \
     GATEWAY_EDGE_ADDR=:9100 \
+    EDGE_CA_CERT="$EDGE_CA_CERT" \
+    EDGE_CA_KEY="$EDGE_CA_KEY" \
     CHARACTERS_EDGE_ADDR=localhost:9000 \
     INVENTORY_EDGE_ADDR=localhost:9001 \
     CHARACTERS_HTTP_ADDR=localhost:8080 \

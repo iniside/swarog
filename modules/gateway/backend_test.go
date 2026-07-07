@@ -103,7 +103,7 @@ func startFakeProvider(t *testing.T) (addr string, stop func()) {
 		return json.Marshal(echoWire{Status: opsapi.StatusForbidden, Err: "not allowed"})
 	})
 
-	tlsConf, err := edge.SelfSignedTLS()
+	tlsConf, err := edge.ServerMTLS()
 	if err != nil {
 		t.Fatalf("tls: %v", err)
 	}

@@ -17,7 +17,11 @@ import (
 // in another package.
 func dialPlayer(t *testing.T, ctx context.Context, addr string) *edge.Client {
 	t.Helper()
-	cli, err := edge.Dial(ctx, addr, edge.ClientTLS())
+	tlsConf, err := edge.ClientMTLS()
+	if err != nil {
+		t.Fatalf("ClientMTLS: %v", err)
+	}
+	cli, err := edge.Dial(ctx, addr, tlsConf)
 	if err != nil {
 		t.Fatalf("Dial %s: %v", addr, err)
 	}

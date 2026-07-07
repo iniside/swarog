@@ -44,9 +44,9 @@ func startTestServer(t *testing.T) (addr string, cleanup func()) {
 		panic("kaboom")
 	})
 
-	tlsConf, err := SelfSignedTLS()
+	tlsConf, err := ServerMTLS()
 	if err != nil {
-		t.Fatalf("SelfSignedTLS: %v", err)
+		t.Fatalf("ServerMTLS: %v", err)
 	}
 	if err := srv.ListenAddr("127.0.0.1:0", tlsConf); err != nil {
 		t.Fatalf("ListenAddr: %v", err)
@@ -66,10 +66,7 @@ func TestEchoRoundTrip(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	cli, err := Dial(ctx, addr, ClientTLS())
-	if err != nil {
-		t.Fatalf("Dial: %v", err)
-	}
+	cli := dial(t, ctx, addr)
 	defer func() { _ = cli.Close() }()
 
 	var resp echoResp
@@ -88,14 +85,11 @@ func TestUnknownMethod(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	cli, err := Dial(ctx, addr, ClientTLS())
-	if err != nil {
-		t.Fatalf("Dial: %v", err)
-	}
+	cli := dial(t, ctx, addr)
 	defer func() { _ = cli.Close() }()
 
 	var resp echoResp
-	err = cli.Call(ctx, "does-not-exist", echoReq{Msg: "x"}, &resp)
+	err := cli.Call(ctx, "does-not-exist", echoReq{Msg: "x"}, &resp)
 	if err == nil {
 		t.Fatal("expected error for unknown method, got nil")
 	}
@@ -111,14 +105,11 @@ func TestHandlerError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	cli, err := Dial(ctx, addr, ClientTLS())
-	if err != nil {
-		t.Fatalf("Dial: %v", err)
-	}
+	cli := dial(t, ctx, addr)
 	defer func() { _ = cli.Close() }()
 
 	var resp echoResp
-	err = cli.Call(ctx, "boom", echoReq{Msg: "x"}, &resp)
+	err := cli.Call(ctx, "boom", echoReq{Msg: "x"}, &resp)
 	if err == nil {
 		t.Fatal("expected error from boom handler, got nil")
 	}
@@ -134,14 +125,11 @@ func TestHandlerPanicSurfacesAsError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	cli, err := Dial(ctx, addr, ClientTLS())
-	if err != nil {
-		t.Fatalf("Dial: %v", err)
-	}
+	cli := dial(t, ctx, addr)
 	defer func() { _ = cli.Close() }()
 
 	var resp echoResp
-	err = cli.Call(ctx, "panic", echoReq{Msg: "x"}, &resp)
+	err := cli.Call(ctx, "panic", echoReq{Msg: "x"}, &resp)
 	if err == nil {
 		t.Fatal("expected error from panicking handler, got nil")
 	}
@@ -160,10 +148,7 @@ func TestConcurrentCallsOneConn(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
-	cli, err := Dial(ctx, addr, ClientTLS())
-	if err != nil {
-		t.Fatalf("Dial: %v", err)
-	}
+	cli := dial(t, ctx, addr)
 	defer func() { _ = cli.Close() }()
 
 	const n = 32

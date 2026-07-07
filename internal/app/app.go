@@ -155,14 +155,22 @@ func Run(cfg Config, mods []lifecycle.Module, edgeServer *edge.Server) error {
 	// Bring up the shared edge server AFTER every module Init has registered its
 	// handlers (Init ran in appl.Build). One listener, all edge methods.
 	if edgeServer != nil {
-		tlsConf, err := edge.SelfSignedTLS()
+		// Mutual TLS: the server presents a CA-signed leaf AND requires the client to
+		// present one too (SharedDevCA resolves the shared anchor from EDGE_CA_CERT/
+		// EDGE_CA_KEY, or generates+warns in dev). This is what makes a later trusted-
+		// identity envelope safe — an unauthenticated peer cannot reach an edge method.
+		ca, err := edge.SharedDevCA(log)
+		if err != nil {
+			return fmt.Errorf("edge ca: %w", err)
+		}
+		tlsConf, err := ca.ServerTLS()
 		if err != nil {
 			return fmt.Errorf("edge tls: %w", err)
 		}
 		if err := edgeServer.ListenAddr(cfg.EdgeAddr, tlsConf); err != nil {
 			return fmt.Errorf("edge listen: %w", err)
 		}
-		log.Info("edge listening", "addr", edgeServer.Addr())
+		log.Info("edge listening (mutual TLS)", "addr", edgeServer.Addr())
 	}
 
 	// Cross-cutting HTTP middleware wraps the WHOLE mux after every module has

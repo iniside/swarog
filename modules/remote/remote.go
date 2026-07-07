@@ -112,7 +112,14 @@ func (e *edgeConn) get(ctx context.Context) (*edge.Client, error) {
 	if e.client != nil {
 		return e.client, nil
 	}
-	c, err := edge.Dial(ctx, e.peerAddr, edge.ClientTLS())
+	// Mutual TLS: present this process's CA-signed client leaf and verify the peer
+	// against the shared CA (no InsecureSkipVerify). ClientMTLS resolves the same
+	// process-shared anchor the peer's edge server trusts.
+	tlsConf, err := edge.ClientMTLS()
+	if err != nil {
+		return nil, err
+	}
+	c, err := edge.Dial(ctx, e.peerAddr, tlsConf)
 	if err != nil {
 		return nil, err
 	}

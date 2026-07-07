@@ -49,7 +49,7 @@ func startFakeProvider(t *testing.T) (addr string, stop func()) {
 	charactersrpc.RegisterServer(srv, fakeOwnership{})
 	accountsrpc.RegisterServer(srv, fakeSessions{})
 
-	tlsConf, err := edge.SelfSignedTLS()
+	tlsConf, err := edge.ServerMTLS()
 	if err != nil {
 		t.Fatalf("tls: %v", err)
 	}

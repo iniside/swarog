@@ -44,7 +44,14 @@ func (r *RoutedBackend) get(ctx context.Context) (*edge.Client, error) {
 	if r.client != nil {
 		return r.client, nil
 	}
-	c, err := edge.Dial(ctx, r.peerAddr, edge.ClientTLS())
+	// Mutual TLS: present this process's CA-signed client leaf and verify the
+	// backend against the shared CA (no InsecureSkipVerify) — ClientMTLS resolves
+	// the same process-shared anchor the backend's edge server requires.
+	tlsConf, err := edge.ClientMTLS()
+	if err != nil {
+		return nil, err
+	}
+	c, err := edge.Dial(ctx, r.peerAddr, tlsConf)
 	if err != nil {
 		return nil, err
 	}

@@ -179,6 +179,21 @@ if ($Mode -eq 'monolith') {
 }
 
 # --- microservices ---------------------------------------------------------
+# Mint ONE shared dev CA for the edge mutual-TLS hop. Every edge process
+# (characters-svc + inventory-svc + gateway-svc) mints its own short-lived leaf
+# under THIS CA, so a backend accepts a stream ONLY from a peer holding a
+# CA-signed client cert (and each client verifies the server against the same
+# anchor). scheduler-svc has NO edge (no server, no client) so it needs no CA;
+# the monolith runs no edge at all and sets nothing.
+$edgeCaCert = Join-Path $runDir 'edge-ca.crt'
+$edgeCaKey = Join-Path $runDir 'edge-ca.key'
+Write-Host "Minting shared edge dev CA -> $edgeCaCert ..." -ForegroundColor Cyan
+& go run ./tools/edgeca -cert $edgeCaCert -key $edgeCaKey
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "minting edge dev CA failed — aborting."
+    exit 1
+}
+
 # Process A: characters-svc (accounts + characters, its OWN binary). Hosts the
 # QUIC edge server (:9000) and the outbox relay for character.* events. Started
 # FIRST — B's remote stubs and the shared accounts schema migration must not
@@ -187,6 +202,8 @@ $envA = @{
     PORT               = '8080'
     DATABASE_URL       = $DatabaseUrl
     EDGE_ADDR          = ':9000'
+    EDGE_CA_CERT       = $edgeCaCert
+    EDGE_CA_KEY        = $edgeCaKey
     MESSAGING_ORIGIN   = 'characters-svc'
     # EVENTS_SUBSCRIBERS is read by messaging's relay, which runs in the
     # process hosting `characters` — i.e. THIS process (A), not B — because
@@ -210,6 +227,8 @@ $envB = @{
     PORT                 = '8081'
     DATABASE_URL         = $DatabaseUrl
     EDGE_ADDR            = ':9001'
+    EDGE_CA_CERT         = $edgeCaCert
+    EDGE_CA_KEY          = $edgeCaKey
     CHARACTERS_EDGE_ADDR = 'localhost:9000'
     ACCOUNTS_EDGE_ADDR   = 'localhost:9000'
     PEER_HTTP_ADDR       = 'localhost:8080'
@@ -240,6 +259,8 @@ Wait-Healthy -Port 8083 -Name 'D (scheduler-svc)'
 $envC = @{
     PORT                  = '8082'
     GATEWAY_EDGE_ADDR     = ':9100'
+    EDGE_CA_CERT          = $edgeCaCert
+    EDGE_CA_KEY           = $edgeCaKey
     CHARACTERS_EDGE_ADDR  = 'localhost:9000'
     INVENTORY_EDGE_ADDR   = 'localhost:9001'
     CHARACTERS_HTTP_ADDR  = 'localhost:8080'

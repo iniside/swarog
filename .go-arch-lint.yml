@@ -126,6 +126,12 @@ components:
   # modeled exactly like topiccheck (component + absent from deps + testdata excluded).
   rpcgen:      { in: tools/rpcgen }
 
+  # Dev-only CLI that mints the shared edge mutual-TLS dev CA cert+key PEM files
+  # (invoked by run.sh/run.ps1 before a split boot). Unlike topiccheck/rpcgen it
+  # DOES import a gamebackend package — edge (GenerateDevCA/WritePEM) — so it has a
+  # deps entry below. Not linked into any shipped binary.
+  edgeca:      { in: tools/edgeca }
+
   # The reusable boot sequence: open DB, wire Context, two-phase Build, Migrate,
   # Start, HTTP + optional edge listener, graceful shutdown. It is topology-blind
   # — it takes a module list from an entrypoint and never names a module.
@@ -211,6 +217,12 @@ deps:
   # The gateway is a transport-level front door: it relays raw edge calls and
   # reverse-proxies HTTP, so it needs only the edge transport (+ stdlib).
   gateway:     { mayDependOn: [ edge ] }
+
+  # edgeca is a dev-only CLI that mints the shared edge mutual-TLS dev CA (run.sh/
+  # run.ps1 invoke it before a split boot). It reuses edge's GenerateDevCA/WritePEM,
+  # so it MAY import edge — but nothing else and no module impl; never linked into
+  # a shipped binary.
+  edgeca:      { mayDependOn: [ edge ] }
 
   # NOTE: `topiccheck` is intentionally ABSENT from `deps` (like the leaves and
   # `contracts` above): with no entry it may use only commonComponents + vendor.
