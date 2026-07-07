@@ -46,7 +46,7 @@ func (s *store) registerPassword(ctx context.Context, email, passwordHash, displ
 	if err != nil {
 		return Player{}, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	p, err := insertPlayerWithIdentity(ctx, tx, "dev", email, displayName,
 		sql.NullString{String: passwordHash, Valid: true})
@@ -95,7 +95,7 @@ func (s *store) findOrCreateExternal(ctx context.Context, provider, subject, dis
 	if err != nil {
 		return Player{}, false, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	p, err := insertPlayerWithIdentity(ctx, tx, provider, subject, displayName, sql.NullString{})
 	if err != nil {
@@ -186,7 +186,7 @@ func (s *store) identitiesOf(ctx context.Context, playerID string) ([]Identity, 
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	out := []Identity{}
 	for rows.Next() {
@@ -254,7 +254,7 @@ func (s *store) listPlayers(ctx context.Context, limit int) ([]PlayerRow, error)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var out []PlayerRow
 	for rows.Next() {

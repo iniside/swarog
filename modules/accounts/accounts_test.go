@@ -63,7 +63,7 @@ func TestOIDCVerifier(t *testing.T) {
 	const kid = "test-key"
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write(buildJWKS(kid, &key.PublicKey))
+		_, _ = w.Write(buildJWKS(kid, &key.PublicKey))
 	}))
 	defer srv.Close()
 
@@ -142,7 +142,7 @@ func testDB(t *testing.T) *sql.DB {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	if err := db.PingContext(ctx); err != nil {
-		db.Close()
+		_ = db.Close()
 		t.Skipf("postgres unreachable: %v", err)
 	}
 	if _, err := db.Exec(schemaDDL); err != nil {
@@ -153,7 +153,7 @@ func testDB(t *testing.T) *sql.DB {
 
 func TestStoreRegisterLoginSession(t *testing.T) {
 	db := testDB(t)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	s := &store{db: db, log: testLogger()}
 	ctx := context.Background()
 
@@ -198,7 +198,7 @@ func TestStoreRegisterLoginSession(t *testing.T) {
 
 func TestStoreFindOrCreateExternal(t *testing.T) {
 	db := testDB(t)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	s := &store{db: db, log: testLogger()}
 	ctx := context.Background()
 
@@ -221,7 +221,7 @@ func TestStoreFindOrCreateExternal(t *testing.T) {
 // id_token and links the Epic identity to the session's player — no real Epic.
 func TestEpicOAuthLinkFlow(t *testing.T) {
 	db := testDB(t)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	s := &store{db: db, log: testLogger()}
 	ctx := context.Background()
 
@@ -233,7 +233,7 @@ func TestEpicOAuthLinkFlow(t *testing.T) {
 	epicAcct := "epicacct-" + suffix(t)
 
 	jwks := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Write(buildJWKS(kid, &key.PublicKey))
+		_, _ = w.Write(buildJWKS(kid, &key.PublicKey))
 	}))
 	defer jwks.Close()
 
@@ -247,7 +247,7 @@ func TestEpicOAuthLinkFlow(t *testing.T) {
 	}
 	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{"id_token": idToken})
+		_ = json.NewEncoder(w).Encode(map[string]string{"id_token": idToken})
 	}))
 	defer tokenSrv.Close()
 

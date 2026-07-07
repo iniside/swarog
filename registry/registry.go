@@ -42,3 +42,20 @@ func Require[T any](r *Registry, name string) T {
 	}
 	return t
 }
+
+// TryRequire is the comma-ok variant of Require: it returns (svc, true) when a
+// service is registered under name AND is assignable to T, and (zero, false)
+// otherwise (name absent, or present but not a T). Unlike Require it never
+// panics — use it for an OPTIONAL dependency that a consumer can run without.
+func TryRequire[T any](r *Registry, name string) (T, bool) {
+	var zero T
+	svc, ok := r.services[name]
+	if !ok {
+		return zero, false
+	}
+	t, ok := svc.(T)
+	if !ok {
+		return zero, false
+	}
+	return t, true
+}

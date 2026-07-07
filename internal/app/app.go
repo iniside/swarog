@@ -85,7 +85,7 @@ func Run(cfg Config, mods []lifecycle.Module, edgeServer *edge.Server) error {
 	if err != nil {
 		return fmt.Errorf("open db: %w", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	pingCtx, cancelPing := context.WithTimeout(context.Background(), 5*time.Second)
 	if err := db.PingContext(pingCtx); err != nil {
 		cancelPing()

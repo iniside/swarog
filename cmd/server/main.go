@@ -17,6 +17,7 @@ import (
 	"gamebackend/modules/accounts"
 	"gamebackend/modules/admin"
 	"gamebackend/modules/characters"
+	"gamebackend/modules/config"
 	"gamebackend/modules/inventory"
 	"gamebackend/modules/leaderboard"
 	"gamebackend/modules/match"
@@ -28,6 +29,7 @@ func main() {
 	// All 8 modules, hosted locally. Pointer receivers for the stateful ones
 	// (db/verifiers/caches); value receivers for the stateless ones.
 	mods := []lifecycle.Module{
+		&config.Module{},      // central DB-backed config: schema "config", provides "config", live-reload via LISTEN/NOTIFY
 		&accounts.Module{},    // player identity; owns schema "accounts"
 		&characters.Module{},  // depends on accounts
 		&inventory.Module{},   // depends on accounts + characters

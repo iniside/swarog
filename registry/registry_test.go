@@ -41,6 +41,46 @@ func TestProvideDuplicatePanics(t *testing.T) {
 	Provide(r, "svc", &svc{})
 }
 
+// TestTryRequire covers the comma-ok variant: present+correct type, absent
+// name, and present-but-wrong-type, none of which should panic.
+func TestTryRequire(t *testing.T) {
+	t.Run("present and correct type", func(t *testing.T) {
+		r := New()
+		Provide(r, "svc", &svc{name: "x"})
+
+		g, ok := TryRequire[greeter](r, "svc")
+		if !ok {
+			t.Fatalf("ok = false, want true")
+		}
+		if g.Greet() != "hi x" {
+			t.Fatalf("Greet() = %q; want %q", g.Greet(), "hi x")
+		}
+	})
+
+	t.Run("absent name", func(t *testing.T) {
+		g, ok := TryRequire[greeter](New(), "absent")
+		if ok {
+			t.Fatalf("ok = true, want false")
+		}
+		if g != nil {
+			t.Fatalf("g = %v, want zero value (nil)", g)
+		}
+	})
+
+	t.Run("present but wrong type", func(t *testing.T) {
+		r := New()
+		Provide(r, "svc", 42) // an int can't satisfy greeter
+
+		g, ok := TryRequire[greeter](r, "svc")
+		if ok {
+			t.Fatalf("ok = true, want false")
+		}
+		if g != nil {
+			t.Fatalf("g = %v, want zero value (nil)", g)
+		}
+	})
+}
+
 func mustPanic(t *testing.T, substr string) {
 	t.Helper()
 	r := recover()

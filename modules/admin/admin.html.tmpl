@@ -93,6 +93,7 @@
           {{else}}
             {{if .KPIs}}<div class="kpi-grid">{{range .KPIs}}<div class="kpi"><div class="kpi-label">{{.Label}}</div><div class="kpi-value">{{.Value}}</div>{{if .Sub}}<div class="kpi-sub">{{.Sub}}</div>{{end}}</div>{{end}}</div>{{end}}
             {{if .Table}}<div class="panel"><div class="panel-title">{{.Title}}</div>{{if .Table.Rows}}<table class="table"><thead><tr>{{range .Table.Columns}}<th>{{.}}</th>{{end}}</tr></thead><tbody>{{range .Table.Rows}}<tr>{{range .}}<td>{{template "cell" .}}</td>{{end}}</tr>{{end}}</tbody></table>{{else}}<div class="empty">No rows yet.</div>{{end}}</div>{{end}}
+            {{if .Form}}<div class="panel"><div class="panel-title">Edit</div><form method="post" action="{{.Form.Action}}">{{range .Form.Fields}}<div class="form-row"><label>{{.Label}}</label><input type="text" name="{{.Name}}" value="{{.Value}}"></div>{{end}}<button type="submit" class="btn">Save</button></form></div>{{end}}
           {{end}}
         {{else}}
           <div class="panel"><div class="empty">No sections contributed yet.</div></div>

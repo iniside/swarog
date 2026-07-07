@@ -116,7 +116,7 @@ func (s *store) listAll(ctx context.Context, limit int) ([]Character, error) {
 }
 
 func scanCharacters(rows *sql.Rows) ([]Character, error) {
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	out := []Character{}
 	for rows.Next() {
 		var c Character

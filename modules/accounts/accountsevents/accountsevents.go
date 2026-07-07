@@ -15,4 +15,6 @@ type PlayerRegistered struct {
 }
 
 // PlayerRegisteredEvent binds the topic to its payload in one place.
+//
+//topiccheck:allow-unsubscribed reason="not yet wired into match/rating, see CLAUDE.md"
 var PlayerRegisteredEvent = bus.Define[PlayerRegistered]("player.registered")

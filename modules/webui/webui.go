@@ -27,7 +27,7 @@ func (Module) Init(ctx *lifecycle.Context) error {
 			return
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Write(indexHTML)
+		_, _ = w.Write(indexHTML)
 	})
 	return nil
 }

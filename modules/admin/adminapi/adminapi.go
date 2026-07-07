@@ -43,6 +43,25 @@ type ItemData struct {
 type Content struct {
 	KPIs  []KPI
 	Table *Table
+	Form  *Form // optional editable form; nil = today's read-only behavior
+}
+
+// Form is an editable widget a LOCAL item can attach to its Content: the admin
+// renders Fields as text inputs and, on POST, invokes Submit in-process with the
+// posted values. It is local-only — a remote item's Form arrives over the wire
+// with Submit nil (a func can't marshal), so remote forms render read-only.
+type Form struct {
+	Action string                                                    // page slug this posts back to; the admin fills it in when rendering
+	Fields []Field                                                   // inputs to render, in order
+	Submit func(ctx context.Context, values map[string]string) error `json:"-"` // LOCAL-only: applies the edit; nil across the remote wire (a func can't marshal)
+}
+
+// Field is one input in a Form: a labelled text box pre-filled with Value, whose
+// Name is both the HTML input name and the key in the Submit values map.
+type Field struct {
+	Name  string // form input name + Submit map key
+	Label string // shown beside the input
+	Value string // current value, pre-filled
 }
 
 type KPI struct {
