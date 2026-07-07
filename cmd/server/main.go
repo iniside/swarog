@@ -22,6 +22,7 @@ import (
 	"gamebackend/modules/inventory"
 	"gamebackend/modules/leaderboard"
 	"gamebackend/modules/match"
+	"gamebackend/modules/messaging"
 	"gamebackend/modules/rating"
 	"gamebackend/modules/scheduler"
 	"gamebackend/modules/webui"
@@ -42,6 +43,11 @@ func main() {
 		&scheduler.Module{},   // data-driven event source: schema "scheduler", emits scheduler.fired
 		&audit.Module{},       // append-only event ledger: schema "audit", generic bus listener + prune
 		&admin.Module{},       // GameOps portal at "/admin"
+		// messaging LAST: Register (phase 1) installs the durable transport before
+		// any consumer's Init, but registration ORDER here governs Stop, which runs
+		// in REVERSE — last-registered stops FIRST, so delivery halts before any
+		// producer/consumer module tears down its resources.
+		&messaging.Module{},
 	}
 
 	// No edge server: every provider is in-process, so nothing crosses a QUIC

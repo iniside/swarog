@@ -20,6 +20,7 @@ import (
 	"gamebackend/lifecycle"
 	"gamebackend/modules/accounts"
 	"gamebackend/modules/characters"
+	"gamebackend/modules/messaging"
 )
 
 func main() {
@@ -30,7 +31,11 @@ func main() {
 	am := &accounts.Module{Edge: srv}
 	cm := &characters.Module{Edge: srv}
 
-	mods := []lifecycle.Module{am, cm}
+	// messaging LAST: Register (phase 1) installs the durable transport before
+	// characters' Init calls EmitTx; registration order also governs Stop, which
+	// runs in REVERSE — last-registered stops FIRST, so the relay halts delivery
+	// before characters tears down.
+	mods := []lifecycle.Module{am, cm, &messaging.Module{}}
 
 	if err := app.Run(app.ConfigFromEnv(), mods, srv); err != nil {
 		slog.New(slog.NewTextHandler(os.Stdout, nil)).Error("characters-svc exited", "err", err)

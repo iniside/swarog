@@ -202,6 +202,11 @@ func Run(cfg Config, mods []lifecycle.Module, edgeServer *edge.Server) error {
 	//   2. close the edge listener (no new cross-process calls),
 	//   3. drain the bus (in-flight events finish while module resources are up),
 	//   4. stop modules in reverse registration order (close goroutines/resources).
+	//      In a process hosting the durable plane, `messaging` is registered LAST
+	//      (cmd/*), so it is the FIRST module to Stop here: its relay + LISTEN
+	//      loop halt delivery, and Stop blocks until any in-flight per-subscriber
+	//      `consume` finishes, before any producer/consumer module's own Stop
+	//      tears down the resources that consume might still be using.
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt)
 	<-stop

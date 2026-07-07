@@ -149,11 +149,16 @@ start_server characters "$CHARACTERS_BIN" \
     PORT=8080 \
     DATABASE_URL="$DATABASE_URL" \
     EDGE_ADDR=:9000 \
-    EVENTS_SUBSCRIBERS='character.created=http://localhost:8081/events/character-created;character.deleted=http://localhost:8081/events/character-deleted'
-    # EVENTS_SUBSCRIBERS is read by the outbox relay, which runs in the
+    MESSAGING_ORIGIN=characters-svc \
+    EVENTS_SUBSCRIBERS='character.created=http://localhost:8081/events;character.deleted=http://localhost:8081/events'
+    # EVENTS_SUBSCRIBERS is read by messaging's relay, which runs in the
     # process hosting `characters` — i.e. THIS process (A) — because the
-    # relay drains A's own characters.outbox table to remote sinks. It points
-    # at B's synchronous sink endpoints, not the other way around.
+    # relay drains only ITS OWN origin's rows in messaging.outbox (origin=
+    # characters-svc) and delivers them to remote peers. Both topics point at
+    # B's single consolidated inbound route (POST /events, topic in the
+    # X-Event-Topic header) — there is no more per-topic sink path.
+    # MESSAGING_ORIGIN must be stable across restarts (never a pid/hostname)
+    # so a crashed process resumes draining its own unsent outbox rows.
 wait_healthy 8080 "A (characters-svc)"
 
 # Process B: inventory-svc (inventory + admin, its OWN binary). accounts/
@@ -166,19 +171,20 @@ start_server inventory "$INVENTORY_BIN" \
     EDGE_ADDR=:9001 \
     CHARACTERS_EDGE_ADDR=localhost:9000 \
     ACCOUNTS_EDGE_ADDR=localhost:9000 \
-    PEER_HTTP_ADDR=localhost:8080
+    PEER_HTTP_ADDR=localhost:8080 \
+    MESSAGING_ORIGIN=inventory-svc
 wait_healthy 8081 "B (inventory-svc)"
 
 # Process D: scheduler-svc (scheduler ONLY, its OWN binary, no edge). A pure
-# event producer: its outbox relay POSTs scheduler.fired to the audit sink hosted
-# in B (inventory-svc). Started after B so the sink exists; the relay retries
-# regardless. (The /events/scheduler-fired sink lands with the audit module in
-# Step 5; until then the relay POSTs and retries against a 404, harmlessly.)
+# event producer: its messaging relay POSTs scheduler.fired to B's consolidated
+# POST /events route, where audit (hosted in B) durably consumes it via OnTx.
+# Started after B so the sink exists; the relay retries regardless.
 echo "Starting D (scheduler-svc: scheduler) on :8083 ..."
 start_server scheduler "$SCHEDULER_BIN" \
     PORT=8083 \
     DATABASE_URL="$DATABASE_URL" \
-    EVENTS_SUBSCRIBERS='scheduler.fired=http://localhost:8081/events/scheduler-fired'
+    MESSAGING_ORIGIN=scheduler-svc \
+    EVENTS_SUBSCRIBERS='scheduler.fired=http://localhost:8081/events'
 wait_healthy 8083 "D (scheduler-svc)"
 
 # Process C: gateway-svc (stateless QUIC prefix router + HTTP reverse proxy

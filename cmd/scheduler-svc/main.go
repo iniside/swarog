@@ -16,11 +16,16 @@ import (
 
 	"gamebackend/internal/app"
 	"gamebackend/lifecycle"
+	"gamebackend/modules/messaging"
 	"gamebackend/modules/scheduler"
 )
 
 func main() {
-	mods := []lifecycle.Module{&scheduler.Module{}}
+	// messaging LAST: Register (phase 1) installs the durable transport before
+	// scheduler's Init calls EmitTx; registration order also governs Stop, which
+	// runs in REVERSE — last-registered stops FIRST, so the relay halts delivery
+	// before scheduler tears down.
+	mods := []lifecycle.Module{&scheduler.Module{}, &messaging.Module{}}
 
 	// nil edge server: this process exposes no edge-backed services, only events.
 	if err := app.Run(app.ConfigFromEnv(), mods, nil); err != nil {

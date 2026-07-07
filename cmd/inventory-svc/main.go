@@ -19,6 +19,7 @@ import (
 	"gamebackend/modules/audit"
 	"gamebackend/modules/config"
 	"gamebackend/modules/inventory"
+	"gamebackend/modules/messaging"
 	"gamebackend/modules/remote"
 )
 
@@ -67,6 +68,11 @@ func main() {
 		&admin.Module{},
 		accStub,
 		charStub,
+		// messaging LAST: Register (phase 1) installs the durable transport before
+		// inventory/audit's Init calls OnTx/OnTxRaw; registration order also
+		// governs Stop, which runs in REVERSE — last-registered stops FIRST, so
+		// delivery (and in-flight consume) halts before inventory/audit tear down.
+		&messaging.Module{},
 	}
 
 	if err := app.Run(app.ConfigFromEnv(), mods, srv); err != nil {

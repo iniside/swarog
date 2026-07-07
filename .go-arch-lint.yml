@@ -56,6 +56,12 @@ components:
   inventory:   { in: modules/inventory }
   leaderboard: { in: modules/leaderboard }
   match:       { in: modules/match }
+  # The durable async plane's one and only module: owns schema "messaging",
+  # implements bus.Transport (installed via ctx.Bus.SetTransport), imports
+  # outbox to drive the relay. No other module imports messaging's impl —
+  # producers/consumers reach it only via bus.EmitTx/OnTx/OnTxRaw + the
+  # "messaging" registry marker.
+  messaging:   { in: modules/messaging }
   rating:      { in: modules/rating }
   scheduler:   { in: modules/scheduler }
   webui:       { in: modules/webui }
@@ -127,6 +133,11 @@ deps:
   inventory:   { mayDependOn: [ lifecycle, contracts, edge ] }
   leaderboard: { mayDependOn: [ lifecycle, contracts ] }
   match:       { mayDependOn: [ lifecycle, contracts ] }
+  # messaging implements bus.Transport and drives the outbox relay — it needs
+  # the leaves (bus for the Transport interface + SetTransport, registry for
+  # the "messaging" marker, both via commonComponents) + lifecycle + outbox.
+  # It imports no *events contract (topic-agnostic; payloads are opaque bytes).
+  messaging:   { mayDependOn: [ lifecycle, contracts, bus, outbox ] }
   rating:      { mayDependOn: [ lifecycle, contracts ] }
   # scheduler drives the transactional-outbox relay (outbox), like characters.
   scheduler:   { mayDependOn: [ lifecycle, contracts, outbox ] }
@@ -167,6 +178,7 @@ deps:
       - inventory
       - leaderboard
       - match
+      - messaging
       - rating
       - scheduler
       - webui
@@ -176,6 +188,7 @@ deps:
     mayDependOn:
       - accounts
       - characters
+      - messaging
       - lifecycle
       - edge
       - app
@@ -185,6 +198,7 @@ deps:
       - admin
       - audit
       - config
+      - messaging
       - remote
       - lifecycle
       - edge
@@ -193,6 +207,7 @@ deps:
   cmdSchedulerSvc:
     mayDependOn:
       - scheduler
+      - messaging
       - lifecycle
       - app
   cmdGatewaySvc:
