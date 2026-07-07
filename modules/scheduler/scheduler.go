@@ -15,7 +15,6 @@ package scheduler
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"hash/fnv"
 	"log/slog"
@@ -27,7 +26,6 @@ import (
 	"gamebackend/lifecycle"
 	"gamebackend/modules/admin/adminapi"
 	"gamebackend/modules/scheduler/schedulerevents"
-	"gamebackend/outbox"
 )
 
 // tickInterval is how often the emission loop scans for due schedules. It bounds
@@ -44,12 +42,6 @@ type Module struct {
 	bus *bus.Bus
 	db  *sql.DB
 
-	// relay drains the transactional outbox and delivers scheduler.fired to any
-	// remote subscribers (EVENTS_SUBSCRIBERS). It runs in EVERY process that hosts
-	// this module: the monolith configures no subscribers (rows drain to nobody),
-	// a split (cmd/scheduler-svc) POSTs to the audit sink.
-	relay *outbox.Relay
-
 	enabled bool
 
 	cancel context.CancelFunc
@@ -57,7 +49,7 @@ type Module struct {
 }
 
 func (*Module) Name() string       { return "scheduler" }
-func (*Module) Requires() []string { return nil } // pure event source — depends on nobody
+func (*Module) Requires() []string { return []string{"messaging"} } // durable emitter — needs the transport
 
 const schemaDDL = `
 CREATE SCHEMA IF NOT EXISTS scheduler;
@@ -69,17 +61,6 @@ CREATE TABLE IF NOT EXISTS scheduler.schedules (
 	interval_seconds int         NOT NULL,
 	last_fired       timestamptz NOT NULL DEFAULT to_timestamp(0)
 );
-
--- Transactional outbox (same shape as characters.outbox): a fired row is written
--- in the SAME tx as the last_fired bump, so it is durable iff the fire committed.
-CREATE TABLE IF NOT EXISTS scheduler.outbox (
-	id         bigserial   PRIMARY KEY,
-	topic      text        NOT NULL,
-	payload    jsonb       NOT NULL,
-	created_at timestamptz NOT NULL DEFAULT now(),
-	sent_at    timestamptz
-);
-CREATE INDEX IF NOT EXISTS outbox_unsent_idx ON scheduler.outbox(id) WHERE sent_at IS NULL;
 
 -- Minimal bootstrap seed. Adding a schedule is normally a runtime data INSERT,
 -- not a code change; this one row (the audit prune cadence) lets the wired-up
@@ -96,8 +77,8 @@ func (*Module) Migrate(_ context.Context, db *sql.DB) error {
 }
 
 // Init only wires up — no DB I/O (constraint #8). It stores handles, reads the
-// enable gate, contributes a read-only admin view, and constructs (does not
-// start) the outbox relay. The emission loop and relay start in Start.
+// enable gate, and contributes a read-only admin view. The emission loop starts
+// in Start.
 func (m *Module) Init(ctx *lifecycle.Context) error {
 	m.log = ctx.Log
 	m.bus = ctx.Bus
@@ -115,22 +96,15 @@ func (m *Module) Init(ctx *lifecycle.Context) error {
 		Render:  m.adminRender,
 	})
 
-	m.relay = outbox.NewRelay(m.db, "scheduler",
-		outbox.ParseSubscribers(os.Getenv("EVENTS_SUBSCRIBERS")), m.log)
 	return nil
 }
 
-// Start launches the outbox relay's drain loop and (unless disabled) the emission
-// loop. Like outbox.Relay/config it roots a fresh background context so a short
-// Start deadline can't kill the loop; Stop cancels it.
+// Start launches (unless disabled) the emission loop. Like config it roots a
+// fresh background context so a short Start deadline can't kill the loop; Stop
+// cancels it.
 //
 //nolint:contextcheck // intentional: the emission loop's lifetime is bounded by Stop, not Start's ctx.
-func (m *Module) Start(ctx context.Context) error {
-	if m.relay != nil {
-		if err := m.relay.Start(ctx); err != nil {
-			return err
-		}
-	}
+func (m *Module) Start(_ context.Context) error {
 	if !m.enabled {
 		return nil
 	}
@@ -144,8 +118,7 @@ func (m *Module) Start(ctx context.Context) error {
 	return nil
 }
 
-// Stop cancels the emission loop, waits for it (bounded by ctx), then stops the
-// relay — reverse of Start.
+// Stop cancels the emission loop and waits for it (bounded by ctx).
 func (m *Module) Stop(ctx context.Context) error {
 	if m.cancel != nil {
 		m.cancel()
@@ -155,9 +128,6 @@ func (m *Module) Stop(ctx context.Context) error {
 		case <-m.done:
 		case <-ctx.Done():
 		}
-	}
-	if m.relay != nil {
-		return m.relay.Stop(ctx)
 	}
 	return nil
 }
@@ -218,7 +188,8 @@ func (m *Module) dueSchedules(ctx context.Context) ([]string, error) {
 
 // fire emits scheduler.fired for one due schedule exactly once across horizontal
 // replicas of this module. The whole sequence — advisory lock, re-check, UPDATE
-// last_fired, outbox INSERT, commit, unlock — runs on ONE short-lived connection
+// last_fired, bus.EmitTx (durable outbox write), commit, unlock — runs on ONE
+// short-lived connection
 // taken from the pool, because a session-level advisory lock is held only by the
 // connection that took it, and the transaction that relies on the lock must share
 // that session. Commit happens BEFORE unlock so the next replica to win the lock
@@ -272,7 +243,7 @@ func (m *Module) fire(ctx context.Context, name string) error {
 		return nil
 	}
 
-	// last_fired bump + outbox row commit together, on the locked connection.
+	// last_fired bump + durable outbox write commit together, on the locked connection.
 	tx, err := conn.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -283,27 +254,10 @@ func (m *Module) fire(ctx context.Context, name string) error {
 		`UPDATE scheduler.schedules SET last_fired = now() WHERE name = $1`, name); err != nil {
 		return err
 	}
-	payload, err := json.Marshal(schedulerevents.Fired{Name: name})
-	if err != nil {
+	if err := bus.EmitTx(m.bus, tx, schedulerevents.FiredEvent, schedulerevents.Fired{Name: name}); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO scheduler.outbox (topic, payload) VALUES ($1, $2::jsonb)`,
-		schedulerevents.FiredEvent.Topic(), payload); err != nil {
-		return err
-	}
-	if err := tx.Commit(); err != nil {
-		return err
-	}
-
-	// Best-effort in-process delivery (the monolith path). A crash HERE (after
-	// commit, before Emit) loses only the local bus delivery — the outbox row is
-	// durable, so a split's relay still delivers it at-least-once. Because the bus
-	// path is best-effort AND last_fired already moved (so a lost tick is NOT
-	// retried until the next interval), consumers of scheduler.fired MUST be
-	// idempotent. Do not route non-idempotent scheduled work through this seam.
-	bus.Emit(m.bus, schedulerevents.FiredEvent, schedulerevents.Fired{Name: name})
-	return nil
+	return tx.Commit()
 }
 
 // lockKey derives a stable 64-bit advisory-lock key from a schedule name via
