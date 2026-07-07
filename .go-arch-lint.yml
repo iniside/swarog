@@ -326,7 +326,20 @@ deps:
       - messaging
       - lifecycle
       - app
+  #   - gateway-svc is the SINGLE front door: it dispatches player ops over the
+  #     edge (gatewaymod.RemoteBackend) instead of HTTP-proxying to the backends'
+  #     own front-handlers. So it depends on the gateway MODULE (NewOpsMux /
+  #     RemoteBackend / SessionVerifier), the transport gateway (RoutedBackend /
+  #     HTTP proxy), edge, and each split-hosted player module's IMPL-FREE rpc glue
+  #     (RouteBindings + the accounts session client) — NOT the module impls. opsapi
+  #     is a commonComponent (leaf), importable without listing. leaderboard/match
+  #     rpc are absent: those ops are monolith-only.
   cmdGatewaySvc:
     mayDependOn:
+      - gatewaymod
       - gateway
       - edge
+      - charactersplayerrpc
+      - accountsauthrpc
+      - accountsrpc
+      - inventoryrpc

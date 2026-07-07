@@ -50,10 +50,13 @@ type Module struct{}
 func (*Module) Name() string       { return "gateway" }
 func (*Module) Requires() []string { return nil }
 
-// sessionVerifier is the slice of the accounts capability the gateway needs to
+// SessionVerifier is the slice of the accounts capability the gateway needs to
 // authenticate a bearer (consumer-defined interface — CLAUDE.md rule 4; it does
-// not import accountsapi).
-type sessionVerifier interface {
+// not import accountsapi). It is exported so the dedicated split front-door
+// process (cmd/gateway-svc), which builds its op route table via NewOpsMux, can
+// supply an edge-backed verifier (accountsrpc.Client over the QUIC edge to the
+// accounts peer) that satisfies it structurally.
+type SessionVerifier interface {
 	VerifySession(ctx context.Context, token string) (playerID string, ok bool, err error)
 }
 
@@ -109,7 +112,7 @@ func opBindings(ctx *lifecycle.Context) map[string]opsapi.OpBinding {
 // behind it would. Each route is paired with its OpBinding (HTTP translation) and
 // the topology-correct backend; an Operation with no binding is a provider wiring
 // bug and is skipped rather than bound to an undecodable route.
-func buildOpsMux(ctx *lifecycle.Context, local *LocalBackend, sessions sessionVerifier) *http.ServeMux {
+func buildOpsMux(ctx *lifecycle.Context, local *LocalBackend, sessions SessionVerifier) *http.ServeMux {
 	bindings := opBindings(ctx)
 	mux := http.NewServeMux()
 	for _, c := range ctx.Contributions(opsapi.Slot) {
@@ -123,6 +126,34 @@ func buildOpsMux(ctx *lifecycle.Context, local *LocalBackend, sessions sessionVe
 		}
 		backend := selectBackend(ctx, op, local)
 		mux.Handle(op.Verb+" "+op.Path, newOpHandler(op, binding, backend, sessions))
+	}
+	return mux
+}
+
+// NewOpsMux builds an operation route table from an IMPL-FREE set of route
+// bindings (opsapi.RouteBinding, as the generated <module>rpc.RouteBindings()
+// emits), selecting the backend for each operation via backendFor and
+// authenticating AuthPlayer ops via sessions. It is the entry point the dedicated
+// split front-door process (cmd/gateway-svc) uses: that process hosts no module,
+// so it cannot read ctx.Contributions(opsapi.Slot) and has no LocalBackend — it
+// collects RouteBindings from the split-hosted player modules' rpc packages and
+// dispatches every op over a RemoteBackend to the owning peer. In-process hosts
+// keep using the lazy contribution-fed path (frontHandler → buildOpsMux); both
+// share the SAME newOpHandler (decode → auth → dispatch → status→HTTP), so the
+// two front doors behave identically.
+//
+// Each route is keyed by its "VERB /path" pattern, exactly as buildOpsMux, so an
+// http.ServeMux gives {id}-style path params for free. An operation whose
+// backendFor returns nil is a wiring bug and is skipped rather than bound to a
+// nil-dispatching route.
+func NewOpsMux(routes []opsapi.RouteBinding, backendFor func(op opsapi.Operation) OperationBackend, sessions SessionVerifier) *http.ServeMux {
+	mux := http.NewServeMux()
+	for _, rb := range routes {
+		backend := backendFor(rb.Operation)
+		if backend == nil {
+			continue
+		}
+		mux.Handle(rb.Operation.Verb+" "+rb.Operation.Path, newOpHandler(rb.Operation, rb.Binding, backend, sessions))
 	}
 	return mux
 }
@@ -163,7 +194,7 @@ func peerAddrFor(_ string) string { return "" }
 // authenticates (for AuthPlayer), decodes the request, dispatches through the
 // backend, and encodes the outcome — the integration point that turns a typed
 // operation into an HTTP endpoint.
-func newOpHandler(op opsapi.Operation, binding opsapi.OpBinding, backend OperationBackend, sessions sessionVerifier) http.Handler {
+func newOpHandler(op opsapi.Operation, binding opsapi.OpBinding, backend OperationBackend, sessions SessionVerifier) http.Handler {
 	wildcards := pathWildcards(op.Path)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
@@ -233,7 +264,7 @@ func newOpHandler(op opsapi.Operation, binding opsapi.OpBinding, backend Operati
 // returning the resolved player_id. It writes the failure response itself (503 if
 // the verifier is absent/unreachable, 401 if the token is missing or invalid) and
 // returns ok=false once it has responded.
-func authenticate(w http.ResponseWriter, r *http.Request, sessions sessionVerifier) (string, bool) {
+func authenticate(w http.ResponseWriter, r *http.Request, sessions SessionVerifier) (string, bool) {
 	if sessions == nil {
 		http.Error(w, "auth service unavailable", http.StatusServiceUnavailable)
 		return "", false
@@ -329,7 +360,7 @@ func frontHandler(ctx *lifecycle.Context) func(http.Handler) http.Handler {
 		ops  *http.ServeMux
 	)
 	build := func() {
-		sessions, _ := registry.TryRequire[sessionVerifier](ctx.Registry, "accounts")
+		sessions, _ := registry.TryRequire[SessionVerifier](ctx.Registry, "accounts")
 		local := NewLocalBackend(localInvokers(ctx))
 		ops = buildOpsMux(ctx, local, sessions)
 	}

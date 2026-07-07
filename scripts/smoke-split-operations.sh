@@ -1,40 +1,34 @@
 #!/usr/bin/env bash
 # smoke-split-operations.sh — end-to-end proof that the SYNC OPERATION TRANSPORT
-# (the unified typed-operation plane: gateway front-handler → OperationBackend →
-# op) works in the MICROSERVICES SPLIT, cross-process, through the gateway path,
-# with auth done ONCE at the front door over the mutually-authenticated QUIC edge.
+# (the unified typed-operation plane) works in the MICROSERVICES SPLIT with
+# gateway-svc as the SINGLE front door: every player request enters :8082 and is
+# dispatched to the owning backend over the mutually-authenticated QUIC edge as a
+# typed OPERATION (gateway.RemoteBackend), NOT HTTP-reverse-proxied to the
+# backend's own front-handler. The former double-layer (gateway-svc HTTP proxy →
+# backend front-handler → op) is collapsed into ONE hop: gateway-svc → backend
+# edge op.
 #
-# This is the at-risk topology for the unified-operation-transport work (the
-# monolith path is a same-process direct call; the split is where the gateway
-# front, the mTLS edge hop, and the remote auth actually have to compose). Boots
-# the full split (characters-svc A, inventory-svc B, scheduler-svc, gateway-svc C)
-# via run.sh, then asserts, driving EVERY player request through the gateway-svc
-# player front door (:8082) — never the backends' own ports:
+# This is the at-risk topology (the monolith path is a same-process direct call;
+# the split is where the gateway front, the mTLS edge hop, and the remote auth
+# actually have to compose). Boots the full split (characters-svc A, inventory-svc
+# B, scheduler-svc, gateway-svc C) via run.sh, then asserts, driving EVERY player
+# request through gateway-svc :8082 — never the backends' own ports:
 #
-#   1. GATEWAY DOUBLE-LAYER for player ops: create a character via POST
-#      :8082/characters. gateway-svc HTTP-reverse-proxies /characters → A:8080,
-#      where A's OWN gateway front-handler (the leaf-slot front, present in every
-#      app.Run process) matches the "POST /characters" operation, authenticates
-#      the bearer once, and dispatches characters.create via its LocalBackend
-#      (accounts + characters are co-hosted in A). 201 + a character id proves the
-#      op plane serves a player operation through the gateway front, cross-process.
-#   2. The op is real state: GET :8082/characters lists it back (200).
-#   3. CROSS-PROCESS mTLS-EDGE AUTH + SYNC op: GET
-#      :8082/inventory/character/{id}. gateway-svc proxies /inventory → B:8081,
-#      where B has NO local accounts and NO local characters — B's gateway
-#      front-handler must VerifySession the bearer over the QUIC edge to A
-#      (remote accounts), and the inventory op then SYNC-asks characters.OwnerOf
-#      over that SAME mTLS edge to authorize the character's inventory. A starter
-#      grant (starter_sword) coming back proves auth-once + the sync op both
-#      traversed the mutually-authenticated edge to a DIFFERENT process.
-#   4. DELETE :8082/characters/{id} → 204 (the delete op through the gateway).
-#   5. BOUNDARY: POST :8082/accounts/register → 404. gateway-svc's proxy map
-#      fronts /characters,/inventory,/admin only — /accounts is NOT proxied, so
-#      accounts is reachable only on A's own port. This documents the HONEST
-#      remaining shape: gateway-svc still HTTP-proxies to the backends' own
-#      front-handlers (a functional double-layer), it does NOT yet dispatch ops to
-#      backends via a RemoteBackend edge path itself. That unification is the
-#      documented remaining work (see the unified-operation-transport status doc).
+#   1. REGISTER over the edge: POST :8082/accounts/register. /accounts is NOT in
+#      gateway-svc's HTTP proxy map — the ONLY way this returns 201 is the op table
+#      dispatching accounts.register over the edge to A's accounts edge server. This
+#      is the decisive single-hop proof: the double-layer is gone (previously :8082
+#      /accounts/register was 404 because accounts was un-proxied).
+#   2. CREATE over the edge: POST :8082/characters → 201 + a character id
+#      (characters.create dispatched to A's edge, auth verified once at the front).
+#   3. LIST over the edge: GET :8082/characters → 200 lists it back.
+#   4. CROSS-PROCESS mTLS-EDGE AUTH + SYNC op: GET :8082/inventory/character/{id}.
+#      gateway-svc verifies the bearer over the edge to A (accounts), then dispatches
+#      inventory.listCharacter to B's edge; the inventory op SYNC-asks
+#      characters.OwnerOf over the edge to A to authorize the character. A starter
+#      grant coming back proves auth-once + the sync op both traversed the mTLS edge
+#      to DIFFERENT processes — all fronted by the single gateway.
+#   5. DELETE over the edge: DELETE :8082/characters/{id} → 204.
 #
 # Exits NON-ZERO on any failed assertion. Repeatable, committed artifact — the
 # proof that replaces "trust me, I ran it" for the at-risk (split) topology
@@ -45,8 +39,7 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
-G=http://localhost:8082     # gateway-svc  (player front door: proxies /characters,/inventory,/admin)
-A=http://localhost:8080     # characters-svc (accounts + characters)  — accounts' only HTTP home
+G=http://localhost:8082     # gateway-svc — the SINGLE player front door (edge op dispatch)
 
 pass() { echo "PASS: $1"; }
 fail() { echo "FAIL: $1" >&2; exit 1; }
@@ -62,34 +55,37 @@ trap cleanup EXIT
 echo "--- booting microservices split (A + B + scheduler-svc + gateway) ---"
 ./run.sh microservices || fail "split did not boot"
 
-# --- register on A (accounts is NOT fronted by gateway-svc) -----------------
+# --- assertion 1: register THROUGH the gateway as an edge op ----------------
+# /accounts is NOT proxied by gateway-svc (only /admin, /accounts/epic are HTTP
+# passthrough). A 201 here can ONLY come from the op table dispatching
+# accounts.register over the edge to A — the single-gateway path, double-layer gone.
 EMAIL="op-smoke-$(date +%s)@test.local"
-REG=$(curl -fsS -X POST "$A/accounts/register" -H 'Content-Type: application/json' \
+REG=$(curl -fsS -X POST "$G/accounts/register" -H 'Content-Type: application/json' \
     -d "{\"email\":\"$EMAIL\",\"password\":\"pw12345678\",\"displayName\":\"OpSmoke\"}") \
-    || fail "register on A failed"
+    || fail "register through gateway-svc (:8082) failed — accounts edge op path broken"
 TOKEN=$(echo "$REG" | sed -E 's/.*"token":"([^"]+)".*/\1/')
 [ -n "$TOKEN" ] || fail "no token in register response: $REG"
-pass "registered a player on A (accounts) — token acquired"
+pass "registered a player via POST :8082/accounts/register (edge op → A accounts edge; NOT proxied) — token acquired"
 
-# --- assertion 1: create a character THROUGH the gateway front door ---------
+# --- assertion 2: create a character THROUGH the gateway as an edge op -------
 CH=$(curl -fsS -X POST "$G/characters" -H "Authorization: Bearer $TOKEN" \
     -H 'Content-Type: application/json' -d '{"name":"OpSmoke","class":"novice"}') \
     || fail "character create through gateway-svc (:8082) failed — op plane broken in split"
 CID=$(echo "$CH" | sed -E 's/.*"id":"([^"]+)".*/\1/')
 [ -n "$CID" ] || fail "no character id in gateway response: $CH"
-pass "created character $CID via POST :8082/characters (gateway front → A front-handler op → LocalBackend)"
+pass "created character $CID via POST :8082/characters (gateway → characters.create edge op on A)"
 
-# --- assertion 2: list it back through the gateway --------------------------
+# --- assertion 3: list it back through the gateway --------------------------
 LIST=$(curl -fsS "$G/characters" -H "Authorization: Bearer $TOKEN") \
     || fail "character list through gateway-svc failed"
 echo "$LIST" | grep -q "\"$CID\"" \
     || fail "created character $CID not in list via :8082 — op state not visible: $LIST"
-pass "listed character $CID via GET :8082/characters"
+pass "listed character $CID via GET :8082/characters (gateway → characters.list edge op)"
 
-# --- assertion 3: cross-process mTLS-edge auth + sync op (the at-risk hop) ---
-# GET :8082/inventory/character/{id} → gateway-svc proxies to B, whose front-handler
-# has NO local accounts (verifies the bearer over the mTLS edge to A) and whose
-# inventory op sync-asks characters.OwnerOf over that same edge. A starter grant
+# --- assertion 4: cross-process mTLS-edge auth + sync op (the at-risk hop) ---
+# GET :8082/inventory/character/{id} → gateway-svc verifies the bearer over the
+# edge to A (accounts), then dispatches inventory.listCharacter to B's edge, whose
+# op sync-asks characters.OwnerOf over that same mTLS edge to A. A starter grant
 # lands via the async plane after create, so poll.
 GRANTED=""
 t=40
@@ -102,22 +98,12 @@ while [ "$t" -gt 0 ]; do
     t=$((t - 1)); sleep 0.25
 done
 [ -n "$GRANTED" ] || fail "inventory for $CID never returned a holding via :8082 — cross-process mTLS-edge auth/op path broken"
-pass "cross-process mTLS-edge auth+op: GET :8082/inventory/character/$CID → '$GRANTED' (B verified bearer + OwnerOf over the edge to A)"
+pass "cross-process mTLS-edge auth+op: GET :8082/inventory/character/$CID → '$GRANTED' (gateway verified bearer + dispatched inventory op + OwnerOf over the edge)"
 
-# --- assertion 4: delete it through the gateway -----------------------------
+# --- assertion 5: delete it through the gateway -----------------------------
 DCODE=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE "$G/characters/$CID" -H "Authorization: Bearer $TOKEN")
 [ "$DCODE" = "204" ] || fail "delete through gateway-svc returned $DCODE, expected 204"
-pass "deleted character $CID via DELETE :8082/characters/$CID (204)"
-
-# --- assertion 5: boundary — accounts is NOT fronted by gateway-svc ---------
-# Documents the honest remaining shape: gateway-svc HTTP-proxies /characters,
-# /inventory, /admin to the backends' OWN front-handlers (double-layer); it does
-# not itself dispatch every op via a RemoteBackend edge path, and /accounts is not
-# in its proxy map at all.
-RCODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$G/accounts/register" \
-    -H 'Content-Type: application/json' -d '{"email":"x@y.z","password":"pw12345678","displayName":"X"}')
-[ "$RCODE" = "404" ] || fail "POST :8082/accounts/register returned $RCODE, expected 404 (accounts not in gateway-svc proxy map)"
-pass "boundary: POST :8082/accounts/register → 404 (gateway-svc fronts /characters,/inventory,/admin only)"
+pass "deleted character $CID via DELETE :8082/characters/$CID (204, gateway → characters.delete edge op)"
 
 echo ""
-echo "=== SMOKE PASSED: sync operation transport works in the split through the gateway path; auth-once over the mTLS edge holds cross-process ==="
+echo "=== SMOKE PASSED: gateway-svc is the SINGLE front door — every player op dispatched over the mTLS edge (single hop), the double-layer is gone ==="

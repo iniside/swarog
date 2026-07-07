@@ -262,6 +262,12 @@ $envC = @{
     EDGE_CA_KEY           = $edgeCaKey
     CHARACTERS_EDGE_ADDR  = 'localhost:9000'
     INVENTORY_EDGE_ADDR   = 'localhost:9001'
+    # accounts.* ops (register/login/me + verifySession for auth-once) are served by
+    # A's edge — accounts is co-hosted in characters-svc, so this equals
+    # CHARACTERS_EDGE_ADDR; kept explicit so the front-door op routing self-documents.
+    # EDGE_CA_CERT/KEY (above) let gateway-svc dial the backends' mutually-
+    # authenticated edge and dispatch each op as a single hop.
+    ACCOUNTS_EDGE_ADDR    = 'localhost:9000'
     CHARACTERS_HTTP_ADDR  = 'localhost:8080'
     INVENTORY_HTTP_ADDR   = 'localhost:8081'
 }

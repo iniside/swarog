@@ -378,3 +378,28 @@ func Operations(impl accountsapi.Auth) map[string]opsapi.OpSet {
 		},
 	}
 }
+
+// RouteBindings returns the impl-free route table for each HTTP-bound method:
+// the Operation (route/auth/success) + its OpBinding (Decode/NewResp/Encode),
+// with NO LocalOp. A remote-only front door (cmd/gateway-svc) builds its route
+// table from this and dispatches each op over the edge — no provider impl needed.
+func RouteBindings() []opsapi.RouteBinding {
+	return []opsapi.RouteBinding{
+		{
+			Operation: opsapi.Operation{Method: MethodLogin, Verb: "POST", Path: "/accounts/login", Auth: opsapi.AuthNone, Success: 200},
+			Binding:   opsapi.OpBinding{Method: MethodLogin, Decode: decodeLogin, NewResp: func() any { return &loginResponse{} }, Encode: encodeLogin},
+		},
+		{
+			Operation: opsapi.Operation{Method: MethodLoginEpic, Verb: "POST", Path: "/accounts/login/epic", Auth: opsapi.AuthNone, Success: 200},
+			Binding:   opsapi.OpBinding{Method: MethodLoginEpic, Decode: decodeLoginEpic, NewResp: func() any { return &loginEpicResponse{} }, Encode: encodeLoginEpic},
+		},
+		{
+			Operation: opsapi.Operation{Method: MethodMe, Verb: "GET", Path: "/accounts/me", Auth: opsapi.AuthPlayer, Success: 200},
+			Binding:   opsapi.OpBinding{Method: MethodMe, Decode: decodeMe, NewResp: func() any { return &meResponse{} }, Encode: encodeMe},
+		},
+		{
+			Operation: opsapi.Operation{Method: MethodRegister, Verb: "POST", Path: "/accounts/register", Auth: opsapi.AuthNone, Success: 201},
+			Binding:   opsapi.OpBinding{Method: MethodRegister, Decode: decodeRegister, NewResp: func() any { return &registerResponse{} }, Encode: encodeRegister},
+		},
+	}
+}

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"gamebackend/edge"
+	"gamebackend/opsapi"
 )
 
 // forwardBudget bounds a single relay attempt (dial + one CallRaw). Each attempt
@@ -114,6 +115,33 @@ func (r *RoutedBackend) ForwardID(method, identity string, payload []byte) ([]by
 		return nil, err2
 	}
 	return out, nil
+}
+
+var _ opsapi.Caller = (*RoutedBackend)(nil)
+
+// Call implements opsapi.Caller: a TYPED round-trip to the peer (encode req →
+// edge.Client.Call → decode resp), self-healing with a single reconnect-and-retry
+// exactly like remote.edgeConn. Unlike Forward/ForwardID (raw payload bytes for
+// the gateway relay), Call marshals req/resp through the edge codec, so a generated
+// <module>rpc.Client can dial straight through a RoutedBackend. cmd/gateway-svc
+// uses this to VerifySession a bearer over the edge to the accounts peer (an
+// accountsrpc.Client built on a RoutedBackend) — the auth-once hop of the unified
+// front door. A dial or retry failure propagates so the caller maps it to 503.
+func (r *RoutedBackend) Call(ctx context.Context, method string, req, resp any) error {
+	c, err := r.get(ctx)
+	if err != nil {
+		return err
+	}
+	if err = c.Call(ctx, method, req, resp); err == nil {
+		return nil
+	}
+	// Possible stale/dead connection (peer restarted): drop it and retry once.
+	r.reset(c)
+	c2, err2 := r.get(ctx)
+	if err2 != nil {
+		return err2
+	}
+	return c2.Call(ctx, method, req, resp)
 }
 
 // Close best-effort closes the cached client (if one was ever dialed).

@@ -211,8 +211,14 @@ start_server gateway "$GATEWAY_BIN" \
     EDGE_CA_KEY="$EDGE_CA_KEY" \
     CHARACTERS_EDGE_ADDR=localhost:9000 \
     INVENTORY_EDGE_ADDR=localhost:9001 \
+    ACCOUNTS_EDGE_ADDR=localhost:9000 \
     CHARACTERS_HTTP_ADDR=localhost:8080 \
     INVENTORY_HTTP_ADDR=localhost:8081
+    # ACCOUNTS_EDGE_ADDR = the peer whose edge serves accounts.* ops (register/
+    # login/me + verifySession for auth-once). accounts is co-hosted in A, so it
+    # equals CHARACTERS_EDGE_ADDR; kept explicit so the front-door op routing is
+    # self-documenting. EDGE_CA_CERT/KEY (above) let gateway-svc dial the backends'
+    # mutually-authenticated edge and dispatch each op as a single hop.
 wait_healthy 8082 "C (gateway-svc)"
 
 write_pids_file

@@ -6,6 +6,12 @@
 This is the honest close-out: what the program actually delivered, the gate evidence, and — precisely
 — what is **not** yet unified. It deliberately does not claim "full parity."
 
+> **UPDATE 2026-07-07 21:45 — the "HONEST remaining gap" below (the `cmd/gateway-svc` double-layer) is
+> now CLOSED.** gateway-svc dispatches every player op over the mTLS edge as a single hop
+> (`gateway.RemoteBackend`); the HTTP-proxy → backend front-handler double-layer is gone. See
+> `docs/2026-07-07-2145-gateway-svc-single-front-door-status.md`. The section below is retained as the
+> historical record of the gap at F1.
+
 ---
 
 ## What the program delivered

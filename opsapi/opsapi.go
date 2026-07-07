@@ -268,3 +268,21 @@ type OpSet struct {
 	Binding   OpBinding
 	Local     LocalOp
 }
+
+// RouteBinding is the IMPL-FREE subset of an operation's gateway wiring: the
+// static Operation (route/auth/success) paired with its OpBinding (the HTTP↔wire
+// Decode/NewResp/Encode). Unlike OpSet it carries NO LocalOp — so it needs no
+// provider impl to construct, because it only ever dispatches an operation
+// REMOTELY (over a RemoteBackend to the owning peer's edge).
+//
+// This is what cmd/gateway-svc — the dedicated split front-door process that
+// hosts NO module and therefore has no ctx.Contributions(opsapi.Slot) to read and
+// no service to bind a LocalOp to — builds its route table from. rpcgen emits a
+// `func RouteBindings() []RouteBinding` per <module>rpc package (the impl-free
+// twin of Operations(impl)); gateway-svc collects them across the split-hosted
+// player modules and dispatches each over the edge. In-process hosts keep using
+// Operations(impl) (which additionally carries the LocalOp for LocalBackend).
+type RouteBinding struct {
+	Operation Operation
+	Binding   OpBinding
+}

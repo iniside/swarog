@@ -129,3 +129,16 @@ func Operations(impl matchapi.Match) map[string]opsapi.OpSet {
 		},
 	}
 }
+
+// RouteBindings returns the impl-free route table for each HTTP-bound method:
+// the Operation (route/auth/success) + its OpBinding (Decode/NewResp/Encode),
+// with NO LocalOp. A remote-only front door (cmd/gateway-svc) builds its route
+// table from this and dispatches each op over the edge — no provider impl needed.
+func RouteBindings() []opsapi.RouteBinding {
+	return []opsapi.RouteBinding{
+		{
+			Operation: opsapi.Operation{Method: MethodReport, Verb: "POST", Path: "/match/report", Auth: opsapi.AuthNone, Success: 202},
+			Binding:   opsapi.OpBinding{Method: MethodReport, Decode: decodeReport, NewResp: func() any { return &reportResponse{} }, Encode: encodeReport},
+		},
+	}
+}

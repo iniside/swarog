@@ -597,6 +597,37 @@ func writeGatewayBinding(b *strings.Builder, methods []method, apiName, ifaceNam
 		}
 		writeOpSet(b, m, opsName)
 	}
+	b.WriteString("\t}\n}\n\n")
+
+	writeRouteBindings(b, methods, opsName)
+}
+
+// writeRouteBindings emits the IMPL-FREE `func RouteBindings() []opsapi.RouteBinding`
+// — the static route + HTTP↔wire binding for each bound method, WITHOUT the LocalOp
+// (which needs a provider impl). A remote-only front door (cmd/gateway-svc), which
+// hosts no module and has no service to bind a LocalOp to, builds its route table
+// from this and dispatches each op over a RemoteBackend to the owning peer. The
+// Operation/OpBinding literals are byte-identical to the Operations(impl) entries,
+// so both tables describe the same route — one source of truth.
+func writeRouteBindings(b *strings.Builder, methods []method, opsName string) {
+	fmt.Fprintf(b, "// RouteBindings returns the impl-free route table for each HTTP-bound method:\n")
+	fmt.Fprintf(b, "// the Operation (route/auth/success) + its OpBinding (Decode/NewResp/Encode),\n")
+	fmt.Fprintf(b, "// with NO LocalOp. A remote-only front door (cmd/gateway-svc) builds its route\n")
+	fmt.Fprintf(b, "// table from this and dispatches each op over the edge — no provider impl needed.\n")
+	fmt.Fprintf(b, "func RouteBindings() []%s.RouteBinding {\n", opsName)
+	fmt.Fprintf(b, "\treturn []%s.RouteBinding{\n", opsName)
+	for _, m := range methods {
+		if !m.Bound {
+			continue
+		}
+		lc := lowerFirst(m.Name)
+		fmt.Fprintf(b, "\t\t{\n")
+		fmt.Fprintf(b, "\t\t\tOperation: %s.Operation{Method: Method%s, Verb: %q, Path: %q, Auth: %s.%s, Success: %s},\n",
+			opsName, m.Name, m.Verb, m.Path, opsName, m.AuthName, m.Success)
+		fmt.Fprintf(b, "\t\t\tBinding: %s.OpBinding{Method: Method%s, Decode: decode%s, NewResp: func() any { return &%sResponse{} }, Encode: encode%s},\n",
+			opsName, m.Name, m.Name, lc, m.Name)
+		fmt.Fprintf(b, "\t\t},\n")
+	}
 	b.WriteString("\t}\n}\n")
 }
 

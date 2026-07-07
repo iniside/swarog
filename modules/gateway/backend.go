@@ -95,14 +95,22 @@ type RemoteBackend struct {
 // NewRemoteBackend returns a RemoteBackend relaying to peerAddr over a
 // self-healing RoutedBackend (reusing gateway/routed_backend.go's dial/retry).
 func NewRemoteBackend(peerAddr string) *RemoteBackend {
-	rb := transport.NewRoutedBackend(peerAddr)
+	return NewRemoteBackendRelay(transport.NewRoutedBackend(peerAddr).ForwardID)
+}
+
+// NewRemoteBackendRelay returns a RemoteBackend dispatching through relay — the
+// raw, identity-carrying edge relay (a *gateway.RoutedBackend.ForwardID). It lets
+// the dedicated split front door (cmd/gateway-svc) SHARE one self-healing
+// RoutedBackend per peer between op dispatch (this RemoteBackend) and the typed
+// auth Caller (an accountsrpc.Client verifying the bearer over the SAME edge conn
+// to the accounts peer), instead of opening a second connection. The relay's ctx
+// is unused — RoutedBackend owns its own per-attempt budget (no false ctx
+// propagation) — but the parameter is kept so the signature is a drop-in for any
+// ctx-aware relay a test might supply.
+func NewRemoteBackendRelay(relay func(method, identity string, payload []byte) ([]byte, error)) *RemoteBackend {
 	return &RemoteBackend{
 		relay: func(_ context.Context, method, identity string, payload []byte) ([]byte, error) {
-			// RoutedBackend.ForwardID owns its own per-attempt timeout (forwardBudget),
-			// exactly as the existing transport-gateway relay does, so the caller's
-			// ctx is deliberately not threaded through — no false ctx propagation. The
-			// identity DOES ride the wire (envelope.Identity) via CallRawID.
-			return rb.ForwardID(method, identity, payload) //nolint:contextcheck // RoutedBackend uses its own per-attempt budget (documented)
+			return relay(method, identity, payload) //nolint:contextcheck // RoutedBackend uses its own per-attempt budget (documented)
 		},
 	}
 }

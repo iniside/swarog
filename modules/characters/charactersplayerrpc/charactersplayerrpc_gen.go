@@ -284,3 +284,24 @@ func Operations(impl charactersapi.Player) map[string]opsapi.OpSet {
 		},
 	}
 }
+
+// RouteBindings returns the impl-free route table for each HTTP-bound method:
+// the Operation (route/auth/success) + its OpBinding (Decode/NewResp/Encode),
+// with NO LocalOp. A remote-only front door (cmd/gateway-svc) builds its route
+// table from this and dispatches each op over the edge — no provider impl needed.
+func RouteBindings() []opsapi.RouteBinding {
+	return []opsapi.RouteBinding{
+		{
+			Operation: opsapi.Operation{Method: MethodCreate, Verb: "POST", Path: "/characters", Auth: opsapi.AuthPlayer, Success: 201},
+			Binding:   opsapi.OpBinding{Method: MethodCreate, Decode: decodeCreate, NewResp: func() any { return &createResponse{} }, Encode: encodeCreate},
+		},
+		{
+			Operation: opsapi.Operation{Method: MethodDelete, Verb: "DELETE", Path: "/characters/{id}", Auth: opsapi.AuthPlayer, Success: 204},
+			Binding:   opsapi.OpBinding{Method: MethodDelete, Decode: decodeDelete, NewResp: func() any { return &deleteResponse{} }, Encode: encodeDelete},
+		},
+		{
+			Operation: opsapi.Operation{Method: MethodList, Verb: "GET", Path: "/characters", Auth: opsapi.AuthPlayer, Success: 200},
+			Binding:   opsapi.OpBinding{Method: MethodList, Decode: decodeList, NewResp: func() any { return &listResponse{} }, Encode: encodeList},
+		},
+	}
+}
