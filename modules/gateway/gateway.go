@@ -268,6 +268,10 @@ func httpStatus(s opsapi.Status) int {
 		return http.StatusServiceUnavailable
 	case opsapi.StatusInternal:
 		return http.StatusInternalServerError
+	case opsapi.StatusUnauthorized:
+		return http.StatusUnauthorized
+	case opsapi.StatusConflict:
+		return http.StatusConflict
 	default:
 		return http.StatusInternalServerError
 	}

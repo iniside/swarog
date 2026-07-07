@@ -1,16 +1,18 @@
 package accounts
 
 import (
+	"context"
 	"errors"
 	"fmt"
-	"net/http"
 	"strings"
 
 	"github.com/MicahParks/keyfunc/v3"
 	"github.com/golang-jwt/jwt/v5"
 
 	"gamebackend/bus"
+	"gamebackend/modules/accounts/accountsapi"
 	"gamebackend/modules/accounts/accountsevents"
+	"gamebackend/opsapi"
 )
 
 // oidcVerifier verifies an OpenID-Connect ID token against a provider's JWKS.
@@ -58,39 +60,33 @@ func (v *oidcVerifier) verify(tokenStr string) (string, error) {
 	return sub, nil
 }
 
-// handleEpicLogin verifies an EOS Connect ID token and logs the player in,
-// provisioning them on first sight (implicit registration).
-func (m *Module) handleEpicLogin(w http.ResponseWriter, r *http.Request) {
-	var in struct {
-		IDToken string `json:"id_token"`
+// LoginEpic is the epic (EOS Connect / OIDC) login operation (AuthNone): it
+// verifies an id_token and logs the player in, provisioning them on first sight
+// (implicit registration) and emitting PlayerRegistered then. A missing id_token
+// is StatusInvalid (→ 400); a rejected token is StatusUnauthorized (→ 401) — the
+// same 400/401 the deleted handleEpicLogin returned. It is contributed as an
+// operation only when the epic provider is configured, so s.epic is non-nil here.
+func (s *service) LoginEpic(ctx context.Context, idToken string) (accountsapi.Session, error) {
+	if idToken == "" {
+		return accountsapi.Session{}, &opsapi.Error{Status: opsapi.StatusInvalid, Msg: "id_token is required"}
 	}
-	if !decodeJSON(w, r, &in) {
-		return
-	}
-	if in.IDToken == "" {
-		http.Error(w, "id_token is required", http.StatusBadRequest)
-		return
+	subject, err := s.epic.verify(idToken)
+	if err != nil {
+		s.log.Warn("epic token rejected", "err", err)
+		return accountsapi.Session{}, &opsapi.Error{Status: opsapi.StatusUnauthorized, Msg: "invalid id_token"}
 	}
 
-	subject, err := m.epic.verify(in.IDToken)
+	p, created, err := s.store.findOrCreateExternal(ctx, "epic", subject, "epic:"+shortID(subject))
 	if err != nil {
-		m.log.Warn("epic token rejected", "err", err)
-		http.Error(w, "invalid id_token", http.StatusUnauthorized)
-		return
-	}
-
-	p, created, err := m.store.findOrCreateExternal(r.Context(), "epic", subject, "epic:"+shortID(subject))
-	if err != nil {
-		m.log.Error("epic login failed", "err", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
+		s.log.Error("epic login failed", "err", err)
+		return accountsapi.Session{}, err
 	}
 	if created {
-		bus.Emit(m.bus, accountsevents.PlayerRegisteredEvent, accountsevents.PlayerRegistered{
+		bus.Emit(s.bus, accountsevents.PlayerRegisteredEvent, accountsevents.PlayerRegistered{
 			PlayerID: p.ID, DisplayName: p.DisplayName, Provider: "epic",
 		})
 	}
-	m.issueSession(w, r, p, http.StatusOK)
+	return s.issueSession(ctx, p)
 }
 
 func shortID(s string) string {

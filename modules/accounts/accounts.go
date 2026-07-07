@@ -14,9 +14,20 @@ import (
 	"gamebackend/edge"
 	"gamebackend/lifecycle"
 	"gamebackend/modules/accounts/accountsapi"
+	"gamebackend/modules/accounts/accountsauthrpc"
 	"gamebackend/modules/accounts/accountsrpc"
 	"gamebackend/modules/admin/adminapi"
+	"gamebackend/opsapi"
 	"gamebackend/registry"
+)
+
+// Player and Identity are the accounts module's value types. Their canonical
+// definitions live in accountsapi (the pure contract package) so the generated
+// Auth glue can name them; the module aliases them so existing impl code
+// (store methods, admin) refers to them unchanged.
+type (
+	Player   = accountsapi.Player
+	Identity = accountsapi.Identity
 )
 
 // Module owns the "accounts" schema and the player-identity surface. It is a
@@ -85,17 +96,43 @@ func (m *Module) Register(ctx *lifecycle.Context) error {
 	return nil
 }
 
+// service is what other modules receive from Require("accounts"). It also backs
+// both generated edge faces (Sessions + Auth) and the gateway's in-process
+// operation invokers. store is set in Register (phase 1); bus/log/epic are wired in
+// Init (before any request can arrive) — epic only when the epic provider is
+// configured, so LoginEpic is contributed as an operation only in that case.
+type service struct {
+	store *store
+	bus   *bus.Bus
+	log   *slog.Logger
+	epic  *oidcVerifier
+}
+
+// These assertions fail to compile if the service drifts from either generated
+// contract — the single source of truth for the wire + gateway shapes.
+var (
+	_ accountsapi.Sessions = (*service)(nil)
+	_ accountsapi.Auth     = (*service)(nil)
+)
+
 func (m *Module) Init(ctx *lifecycle.Context) error {
 	m.db = ctx.DB
 	m.log = ctx.Log
 	m.bus = ctx.Bus
 
-	// dev/password provider — local testing convenience, gated off for prod.
+	// Finish wiring the service Provided in Register: it needs the bus + logger to
+	// mint sessions, emit PlayerRegistered, and (when configured below) the epic
+	// verifier — the logic that used to live in the deleted HTTP handlers, now
+	// behind the gateway-fronted operations.
+	m.svc.bus = m.bus
+	m.svc.log = m.log
+
+	// dev/password provider — local testing convenience, gated off for prod. The
+	// register/login OPERATIONS are contributed below only when this gate is ON,
+	// mirroring the old conditional route registration.
 	m.devAuth = envBool("ACCOUNTS_DEV_AUTH", true)
 	if m.devAuth {
 		ctx.Log.Warn("ACCOUNTS_DEV_AUTH is ON — /accounts/register and /accounts/login are enabled; turn OFF in production")
-		ctx.Mux.HandleFunc("POST /accounts/register", m.handleRegister)
-		ctx.Mux.HandleFunc("POST /accounts/login", m.handleLogin)
 	}
 
 	// epic provider — the real federated path via Epic Account Services (OIDC).
@@ -109,10 +146,12 @@ func (m *Module) Init(ctx *lifecycle.Context) error {
 			ctx.Log.Error("epic provider disabled: jwks unavailable", "err", err)
 		} else {
 			m.epic = v
-			ctx.Mux.HandleFunc("POST /accounts/login/epic", m.handleEpicLogin)
+			m.svc.epic = v // service.LoginEpic verifies id_tokens through it
 			ctx.Log.Info("epic provider enabled", "jwks", jwksURL, "aud", clientID)
 
-			// Web OAuth (authorize-code) needs the confidential client secret.
+			// Web OAuth (authorize-code) needs the confidential client secret. These
+			// two routes stay HTTP-NATIVE (a browser redirect flow with an external
+			// contract) — they are NOT operations and remain on ctx.Mux (plan Phase F).
 			if secret := os.Getenv("EPIC_CLIENT_SECRET"); secret != "" {
 				m.epicOAuth = &epicOAuth{
 					clientID:     clientID,
@@ -131,21 +170,30 @@ func (m *Module) Init(ctx *lifecycle.Context) error {
 		}
 	}
 
-	ctx.Mux.HandleFunc("GET /accounts/me", m.handleMe)
+	// Player operations: contribute each op's HTTP binding + in-process invoker so
+	// the gateway fronts POST /accounts/register|login|login/epic and GET
+	// /accounts/me, authenticates the AuthPlayer route (me) once, and dispatches to
+	// m.svc. This REPLACES the deleted handleRegister/handleLogin/handleEpicLogin/
+	// handleMe + their inline authedPlayer/bearerToken auth. register/login are
+	// contributed only under devAuth; login/epic only when the epic provider is up.
+	registerPlayerOps(ctx, m.svc, m.devAuth, m.epic != nil)
 
 	// The accounts service was Provided in Register (phase 1); m.svc is set.
-	// Split topology: expose VerifySession over the shared QUIC edge server so a
-	// peer process can authenticate bearer tokens. Registering a handler is pure
-	// wiring (no I/O); main() starts the listener after all Inits.
+	// Split topology: expose Sessions (peer bearer verification) AND Auth (a front
+	// gateway in a peer fronting the auth operations) over the shared QUIC edge
+	// server. Registering handlers is pure wiring (no I/O); main() starts the
+	// listener after all Inits.
 	if m.Edge != nil {
-		// The VerifySession edge glue (envelope + adapter) is rpcgen-generated
-		// from accountsapi.Sessions — one RegisterServer call replaces the hand
-		// adapter + mirrored DTOs + wire_contract_test that used to live here.
-		// Hand the service to the glue AS the pure contract interface (not the
-		// concrete *service): the glue depends on the capability, never the impl.
+		// Both edge faces are rpcgen-generated from the pure accountsapi contracts;
+		// one RegisterServer per interface installs identity-aware adapters. Hand the
+		// service to each glue AS the pure contract interface (not the concrete
+		// *service): the glue depends on the capability, never the impl.
 		var sess accountsapi.Sessions = m.svc
 		accountsrpc.RegisterServer(m.Edge, sess)
-		m.log.Info("edge handler registered", "method", accountsrpc.MethodVerifySession)
+		var auth accountsapi.Auth = m.svc
+		accountsauthrpc.RegisterServer(m.Edge, auth)
+		m.log.Info("edge handlers registered", "methods",
+			[]string{accountsrpc.MethodVerifySession, accountsauthrpc.MethodRegister, accountsauthrpc.MethodLogin, accountsauthrpc.MethodLoginEpic, accountsauthrpc.MethodMe})
 	}
 
 	// Appear in the admin portal (it renders whatever is contributed).
@@ -155,61 +203,31 @@ func (m *Module) Init(ctx *lifecycle.Context) error {
 	return nil
 }
 
-func (m *Module) handleMe(w http.ResponseWriter, r *http.Request) {
-	p, ok := m.authedPlayer(r)
+// Me returns the caller's own player + identities (player_id read from ctx,
+// injected by the gateway after bearer verification — the AuthPlayer trust
+// boundary; the service never reads a client-supplied identity). A missing
+// identity is a StatusInvalid (→ 400); the gateway rejects an unauthenticated
+// request with 401 before Me is ever called.
+func (s *service) Me(ctx context.Context) (accountsapi.Player, []accountsapi.Identity, error) {
+	pid, ok := opsapi.PlayerID(ctx)
 	if !ok {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return
+		return Player{}, nil, &opsapi.Error{Status: opsapi.StatusInvalid, Msg: "missing player identity"}
 	}
-	ids, err := m.store.identitiesOf(r.Context(), p.ID)
+	p, found, err := s.store.getPlayer(ctx, pid)
 	if err != nil {
-		m.log.Error("identities lookup failed", "err", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
+		s.log.Error("player lookup failed", "err", err)
+		return Player{}, nil, err
 	}
-	writeJSON(w, http.StatusOK, meResponse{Player: p, Identities: ids})
-}
-
-type meResponse struct {
-	Player
-	Identities []Identity `json:"identities"`
-}
-
-type authResponse struct {
-	PlayerID string `json:"player_id"`
-	Token    string `json:"token"`
-}
-
-func (m *Module) issueSession(w http.ResponseWriter, r *http.Request, p Player, status int) {
-	token, err := m.store.newSession(r.Context(), p.ID)
+	if !found {
+		return Player{}, nil, &opsapi.Error{Status: opsapi.StatusNotFound, Msg: "player not found"}
+	}
+	ids, err := s.store.identitiesOf(ctx, pid)
 	if err != nil {
-		m.log.Error("session create failed", "err", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
+		s.log.Error("identities lookup failed", "err", err)
+		return Player{}, nil, err
 	}
-	writeJSON(w, status, authResponse{PlayerID: p.ID, Token: token})
+	return p, ids, nil
 }
-
-func (m *Module) authedPlayer(r *http.Request) (Player, bool) {
-	token := bearerToken(r)
-	if token == "" {
-		return Player{}, false
-	}
-	p, ok, err := m.store.playerBySession(r.Context(), token)
-	if err != nil {
-		m.log.Error("session lookup failed", "err", err)
-		return Player{}, false
-	}
-	return p, ok
-}
-
-// service is what other modules receive from Require("accounts").
-type service struct{ store *store }
-
-// service is the impl behind the generated VerifySession edge glue: it satisfies
-// the pure accountsapi.Sessions contract rpcgen reads. This assertion fails to
-// compile if the service's VerifySession drifts from the generated server adapter.
-var _ accountsapi.Sessions = (*service)(nil)
 
 // VerifySession resolves a bearer token to its player. An unknown/expired token
 // is ("", false, nil); a store failure now propagates as a non-nil error (B2)
@@ -239,14 +257,6 @@ func bearerToken(r *http.Request) string {
 		return after
 	}
 	return ""
-}
-
-func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
-	if err := json.NewDecoder(r.Body).Decode(dst); err != nil {
-		http.Error(w, "invalid json", http.StatusBadRequest)
-		return false
-	}
-	return true
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

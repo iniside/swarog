@@ -21,18 +21,6 @@ var (
 	ErrIdentityLinked     = errors.New("identity already linked")
 )
 
-// Player is our product-scoped identity (the EOS PUID analogue).
-type Player struct {
-	ID          string `json:"player_id"`
-	DisplayName string `json:"display_name"`
-}
-
-// Identity is one credential mapping (provider, subject) -> player.
-type Identity struct {
-	Provider string `json:"provider"`
-	Subject  string `json:"subject"`
-}
-
 // store is pure persistence for the accounts schema. No event/bus knowledge —
 // the module emits PlayerRegistered based on the bool these methods return.
 type store struct {

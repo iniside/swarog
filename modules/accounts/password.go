@@ -1,18 +1,20 @@
 package accounts
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"net/http"
 	"strings"
 
 	"golang.org/x/crypto/argon2"
 
 	"gamebackend/bus"
+	"gamebackend/modules/accounts/accountsapi"
 	"gamebackend/modules/accounts/accountsevents"
+	"gamebackend/opsapi"
 )
 
 // argon2id parameters (OWASP-ish defaults).
@@ -58,69 +60,66 @@ func verifyPassword(encoded, pw string) bool {
 	return subtle.ConstantTimeCompare(want, got) == 1
 }
 
-// handleRegister: dev-only self-registration. Creates a player + dev identity.
-func (m *Module) handleRegister(w http.ResponseWriter, r *http.Request) {
-	var in struct {
-		Email       string `json:"email"`
-		Password    string `json:"password"`
-		DisplayName string `json:"displayName"`
+// Register is the dev/password self-registration operation (AuthNone): it creates
+// a player + dev identity, emits PlayerRegistered, and mints a session. A missing
+// email/password is StatusInvalid (→ 400); a duplicate email is StatusConflict
+// (→ 409) — the same 400/409 the deleted handleRegister returned, now typed.
+func (s *service) Register(ctx context.Context, email, password, displayName string) (accountsapi.Session, error) {
+	if email == "" || password == "" {
+		return accountsapi.Session{}, &opsapi.Error{Status: opsapi.StatusInvalid, Msg: "email and password are required"}
 	}
-	if !decodeJSON(w, r, &in) {
-		return
-	}
-	if in.Email == "" || in.Password == "" {
-		http.Error(w, "email and password are required", http.StatusBadRequest)
-		return
-	}
-	display := in.DisplayName
+	display := displayName
 	if display == "" {
-		display = in.Email
+		display = email
 	}
 
-	hash, err := hashPassword(in.Password)
+	hash, err := hashPassword(password)
 	if err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
+		s.log.Error("register: hash failed", "err", err)
+		return accountsapi.Session{}, err
 	}
-	p, err := m.store.registerPassword(r.Context(), in.Email, hash, display)
+	p, err := s.store.registerPassword(ctx, email, hash, display)
 	if errors.Is(err, ErrEmailTaken) {
-		http.Error(w, "email already registered", http.StatusConflict)
-		return
+		return accountsapi.Session{}, &opsapi.Error{Status: opsapi.StatusConflict, Msg: "email already registered"}
 	}
 	if err != nil {
-		m.log.Error("register failed", "err", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
+		s.log.Error("register failed", "err", err)
+		return accountsapi.Session{}, err
 	}
 
-	bus.Emit(m.bus, accountsevents.PlayerRegisteredEvent, accountsevents.PlayerRegistered{
+	bus.Emit(s.bus, accountsevents.PlayerRegisteredEvent, accountsevents.PlayerRegistered{
 		PlayerID: p.ID, DisplayName: p.DisplayName, Provider: "dev",
 	})
-	m.issueSession(w, r, p, http.StatusCreated)
+	return s.issueSession(ctx, p)
 }
 
-// handleLogin: dev-only password login.
-func (m *Module) handleLogin(w http.ResponseWriter, r *http.Request) {
-	var in struct {
-		Email    string `json:"email"`
-		Password string `json:"password"`
-	}
-	if !decodeJSON(w, r, &in) {
-		return
-	}
-	p, hash, err := m.store.passwordIdentity(r.Context(), in.Email)
+// Login is the dev/password login operation (AuthNone). Bad credentials — an
+// unknown email or a wrong password, deliberately indistinguishable so the
+// endpoint does not leak which emails exist — are StatusUnauthorized (→ 401),
+// exactly the 401 the deleted handleLogin returned.
+func (s *service) Login(ctx context.Context, email, password string) (accountsapi.Session, error) {
+	p, hash, err := s.store.passwordIdentity(ctx, email)
 	if err != nil {
 		if errors.Is(err, ErrInvalidCredentials) {
-			http.Error(w, "invalid credentials", http.StatusUnauthorized)
-			return
+			return accountsapi.Session{}, &opsapi.Error{Status: opsapi.StatusUnauthorized, Msg: "invalid credentials"}
 		}
-		m.log.Error("login failed", "err", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
+		s.log.Error("login failed", "err", err)
+		return accountsapi.Session{}, err
 	}
-	if !verifyPassword(hash, in.Password) {
-		http.Error(w, "invalid credentials", http.StatusUnauthorized)
-		return
+	if !verifyPassword(hash, password) {
+		return accountsapi.Session{}, &opsapi.Error{Status: opsapi.StatusUnauthorized, Msg: "invalid credentials"}
 	}
-	m.issueSession(w, r, p, http.StatusOK)
+	return s.issueSession(ctx, p)
+}
+
+// issueSession mints a fresh bearer token for p and returns it as a Session (the
+// {player_id, token} the gateway JSON-encodes). A session-store failure propagates
+// as a plain error → StatusInternal (→ 500).
+func (s *service) issueSession(ctx context.Context, p Player) (accountsapi.Session, error) {
+	token, err := s.store.newSession(ctx, p.ID)
+	if err != nil {
+		s.log.Error("session create failed", "err", err)
+		return accountsapi.Session{}, err
+	}
+	return accountsapi.Session{PlayerID: p.ID, Token: token}, nil
 }

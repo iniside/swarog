@@ -91,6 +91,16 @@ const (
 	// StatusInternal — an unclassified server failure (→ HTTP 500). This is the
 	// fallback StatusOf assigns to any error that is not an *Error.
 	StatusInternal
+	// StatusUnauthorized — the request lacked valid credentials (→ HTTP 401). It is
+	// distinct from StatusForbidden (403, an AUTHENTICATED caller lacking permission)
+	// and StatusInvalid (400, a malformed request): it is the outcome an AuthNone
+	// auth operation returns when a password is wrong or a token is rejected, so the
+	// gateway answers 401 exactly as the pre-migration inline handlers did.
+	StatusUnauthorized
+	// StatusConflict — the request conflicts with existing durable state (→ HTTP
+	// 409), e.g. registering an email already taken. Preserves the 409 the accounts
+	// register handler returned before it became an operation.
+	StatusConflict
 )
 
 // Error is a typed operation error a handler returns to select the Status that

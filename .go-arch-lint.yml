@@ -72,6 +72,9 @@ components:
   accountsrpc:
     in:
       - modules/accounts/accountsrpc
+  accountsauthrpc:
+    in:
+      - modules/accounts/accountsauthrpc
   inventoryrpc:
     in:
       - modules/inventory/inventoryrpc
@@ -178,7 +181,7 @@ deps:
   # Each module impl may use the leaves (common) + lifecycle + the shared contracts — never another
   # module's impl. accounts/characters additionally register handlers on the shared QUIC edge server
   # (edge); characters also drives the transactional-outbox relay (outbox).
-  accounts:    { mayDependOn: [ lifecycle, contracts, edge, accountsrpc ] }
+  accounts:    { mayDependOn: [ lifecycle, contracts, edge, accountsrpc, accountsauthrpc ] }
   admin:       { mayDependOn: [ lifecycle, contracts ] }
   # audit imports the schedulerevents contract (reacts to scheduler.fired) + adminapi;
   # it logs domain events GENERICALLY by topic string, so it imports no domain payload
@@ -217,6 +220,7 @@ deps:
   charactersrpc:       { mayDependOn: [ edge, contracts ] }
   charactersplayerrpc: { mayDependOn: [ edge, contracts ] }
   accountsrpc:         { mayDependOn: [ edge, contracts ] }
+  accountsauthrpc:     { mayDependOn: [ edge, contracts ] }
   inventoryrpc:        { mayDependOn: [ edge, contracts ] }
 
   # The remote stub is composition-time plumbing: it wraps the generated edge
