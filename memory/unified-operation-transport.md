@@ -19,9 +19,11 @@ per-handler bearer auth, or per-module player HTTP routes.
   (OK/NotFound/Forbidden/Invalid/Unauthorized/Conflict/Unavailable/Internal → HTTP), and
   `WithPlayerID(ctx)/PlayerID(ctx)` — identity is set ONLY by the gateway, read ONLY from ctx.
 - **`tools/rpcgen`:** go/types generator (mirrors topiccheck). A provider declares a pure
-  capability interface in `modules/<name>/<name>api/` (codegen input, transport-free, in the
-  `contracts` tier); rpcgen emits `modules/<name>/<name>rpc/` (client-over-`Caller` + edge
-  server adapter + envelopes). `//go:generate` + a `verify` `rpcgen -check` drift gate
+  capability interface in `api/<name>/<name>api/` (codegen input, transport-free, in the
+  `contracts` tier); rpcgen emits `api/<name>/<name>rpc/` (client-over-`Caller` + edge
+  server adapter + envelopes). NOTE (2026-07-07): the public contract surface (`<name>api` +
+  `<name>events` + generated `<name>rpc`) was hoisted from `modules/<name>/` to a top-level
+  `api/<name>/` tree; `modules/<name>/` is impl-only. See [[separate-public-surface-from-impl]]. `//go:generate` + a `verify` `rpcgen -check` drift gate
   (gofmt-normalized) replaces the old byte-pinned wire tests. Consumers KEEP their own local
   interfaces (rule 4) — the generated client structurally satisfies them.
 - **Gateway = a lifecycle module in EVERY process**, fronting `ctx.Mux` via the leaf

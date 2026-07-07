@@ -27,7 +27,9 @@ autopilot — the multiplication was the signal to stop and re-question, and I m
 2. When you find yourself creating the Nth instance of a convention (here: the Nth
    co-located sub-package), STOP and question the convention itself before multiplying it.
    Don't extend a smell just because a precedent exists.
-3. This is a layout the user wants restructured. Map it (Research-before-planning) before
-   proposing: separate truly-public (api/events, consumed cross-module) from private
-   impl + generated server-side glue. See [[unified-operation-transport]],
-   [[scope-claims-to-what-was-verified]].
+3. RESOLVED 2026-07-07: hoisted the public surface to a top-level `api/<name>/` tree
+   (`<name>api` + `<name>events` + `<name>rpc*`) next to `modules/<name>/` (impl-only), plan
+   `docs/plans/2026-07-07-2324-public-api-hoist-plan.md`, verified (build+arch-lint+both split
+   smokes green). Package names stayed lowercase-descriptive (no renames). The lesson stands
+   for future work — separate public from impl from the start; question a convention when you
+   catch yourself multiplying it. See [[unified-operation-transport]], [[scope-claims-to-what-was-verified]].
