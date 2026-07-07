@@ -13,11 +13,15 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"time"
 
+	"golang.org/x/time/rate"
+
 	"gamebackend/edge"
 	"gamebackend/gateway"
+	"gamebackend/httpmw"
 )
 
 // env returns the trimmed value of key, or def when unset/blank.
@@ -26,6 +30,32 @@ func env(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// envFloat reads key as a float64, returning def when unset or unparseable.
+func envFloat(key string, def float64) float64 {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return def
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		return def
+	}
+	return f
+}
+
+// envInt reads key as an int, returning def when unset or unparseable.
+func envInt(key string, def int) int {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return def
+	}
+	return n
 }
 
 // normalizeAddr accepts both ":8082" and "8082" forms and returns ":8082".
@@ -86,7 +116,21 @@ func main() {
 	// per-prefix origins). "GET /healthz" is more specific, so it still wins.
 	mux.Handle("/", proxy)
 
-	httpSrv := &http.Server{Addr: httpAddr, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+	// The gateway is the player-facing front door: it ALWAYS rate limits (default
+	// 20 rps, burst 40), unlike internal/app where it is opt-in. Same SkipInfra so
+	// /healthz is never throttled. Honors X-Forwarded-For only from trusted proxies.
+	trusted, err := httpmw.ParseCIDRs(os.Getenv("TRUSTED_PROXY_CIDRS"))
+	if err != nil {
+		log.Error("parse TRUSTED_PROXY_CIDRS", "err", err)
+		os.Exit(1)
+	}
+	rps := envFloat("RATE_LIMIT_RPS", 20)
+	burst := envInt("RATE_LIMIT_BURST", 40)
+	lim := httpmw.NewIPLimiter(rate.Limit(rps), burst)
+	handler := httpmw.RateLimit(lim, httpmw.ClientIP(trusted), httpmw.SkipInfra, mux)
+	log.Info("gateway rate limiting enabled", "rps", rps, "burst", burst, "trusted_cidrs", len(trusted))
+
+	httpSrv := &http.Server{Addr: httpAddr, Handler: handler, ReadHeaderTimeout: 10 * time.Second}
 	go func() {
 		log.Info("gateway http listening", "addr", httpSrv.Addr)
 		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {

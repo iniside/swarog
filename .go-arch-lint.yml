@@ -28,6 +28,9 @@ components:
   bus:         { in: bus }
   registry:    { in: registry }
   contrib:     { in: contrib }
+  # Cross-cutting HTTP middleware (rate limit, trusted-proxy client IP). A LEAF —
+  # stdlib + x/time/rate only, no gamebackend package — mounted in the boot layer.
+  httpmw:      { in: httpmw }
   lifecycle:   { in: lifecycle }
   # The only deliberately-shared surface between modules: published event descriptors + adminapi.
   # (Enumerated explicitly — go-arch-lint's `*` matches a whole path segment, not an `*events` suffix.)
@@ -85,11 +88,12 @@ components:
   cmdGatewaySvc:     { in: cmd/gateway-svc }
 
 commonComponents:
-  # The three LEAVES are importable by everyone and depend on nothing internal. lifecycle is
+  # The LEAVES are importable by everyone and depend on nothing internal. lifecycle is
   # deliberately NOT common: a leaf importing lifecycle would be an import cycle.
   - bus
   - registry
   - contrib
+  - httpmw
 
 deps:
   # NOTE: `bus`/`registry`/`contrib`/`contracts` are intentionally ABSENT here. A component with no

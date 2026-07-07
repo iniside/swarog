@@ -17,12 +17,16 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib" // registers the "pgx" database/sql driver
 
+	"golang.org/x/time/rate"
+
 	"gamebackend/edge"
+	"gamebackend/httpmw"
 	"gamebackend/lifecycle"
 )
 
@@ -150,7 +154,26 @@ func Run(cfg Config, mods []lifecycle.Module, edgeServer *edge.Server) error {
 		log.Info("edge listening", "addr", edgeServer.Addr())
 	}
 
-	srv := &http.Server{Addr: cfg.ListenAddr, Handler: ctx.Mux, ReadHeaderTimeout: 10 * time.Second}
+	// Cross-cutting HTTP middleware wraps the WHOLE mux after every module has
+	// mounted. Rate limiting here is OPT-IN (default OFF): a split deployment runs
+	// characters-svc/inventory-svc BEHIND the gateway, so limiting there would
+	// double-count and collapse every client into the gateway's single bucket. The
+	// gateway (front door) always limits; the monolith turns this on via env.
+	var handler http.Handler = ctx.Mux
+	if rps := envFloat("RATE_LIMIT_RPS", 0); rps > 0 {
+		trusted, err := httpmw.ParseCIDRs(os.Getenv("TRUSTED_PROXY_CIDRS"))
+		if err != nil {
+			return fmt.Errorf("parse TRUSTED_PROXY_CIDRS: %w", err)
+		}
+		burst := envInt("RATE_LIMIT_BURST", 40)
+		lim := httpmw.NewIPLimiter(rate.Limit(rps), burst)
+		handler = httpmw.RateLimit(lim, httpmw.ClientIP(trusted), httpmw.SkipInfra, handler)
+		log.Info("http rate limiting enabled", "rps", rps, "burst", burst, "trusted_cidrs", len(trusted))
+	} else {
+		log.Warn("http rate limiting disabled (RATE_LIMIT_RPS<=0) — expected for a service behind the gateway; set >0 on the monolith")
+	}
+
+	srv := &http.Server{Addr: cfg.ListenAddr, Handler: handler, ReadHeaderTimeout: 10 * time.Second}
 	go func() {
 		log.Info("listening", "addr", srv.Addr)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -183,6 +206,34 @@ func Run(cfg Config, mods []lifecycle.Module, edgeServer *edge.Server) error {
 	appl.Stop(shutdownCtx)
 	log.Info("bye")
 	return nil
+}
+
+// envFloat reads key as a float64, returning def when unset or unparseable.
+// Local to app per the repo convention of duplicating env helpers per package
+// (no shared envutil).
+func envFloat(key string, def float64) float64 {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return def
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		return def
+	}
+	return f
+}
+
+// envInt reads key as an int, returning def when unset or unparseable.
+func envInt(key string, def int) int {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return def
+	}
+	return n
 }
 
 // validateRequires asserts every module's declared Requires() is satisfied by a
