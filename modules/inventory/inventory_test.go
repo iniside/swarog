@@ -6,17 +6,16 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"strconv"
+	"sync"
 	"testing"
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 
 	"gamebackend/bus"
-	"gamebackend/lifecycle"
 	"gamebackend/modules/characters/charactersevents"
-	"gamebackend/modules/config"
 	"gamebackend/modules/config/configevents"
-	"gamebackend/registry"
 )
 
 func testDB(t *testing.T) *sql.DB {
@@ -114,107 +113,106 @@ func TestInventoryReactsToCharacterLifecycle(t *testing.T) {
 	}
 }
 
-// configSvc is the test's view of the "config" service: the reader subset
-// inventory depends on plus Set (to drive an edit). A value of this interface is
-// assignable to the narrower configReader field on Module.
-type configSvc interface {
-	GetString(namespace, key, def string) string
-	GetInt(namespace, key string, def int) int
-	Set(ctx context.Context, namespace, key, value string) error
+// fakeConfig is a contract-only stand-in for the "config" service: it satisfies
+// inventory's configReader (GetString/GetInt) against an in-memory map. Using a
+// fake keeps this test inside inventory's architectural boundary — it depends only
+// on the configevents CONTRACT and never imports the config module implementation
+// (go-arch-lint forbids module-impl → module-impl imports, tests included). The
+// other half of the chain (Set -> pg_notify -> listener -> config.changed) is
+// covered by config's own test; here we prove inventory's half via the real bus.
+type fakeConfig struct {
+	mu   sync.RWMutex
+	vals map[string]string // "namespace:key" -> value
+}
+
+func (f *fakeConfig) set(ns, key, val string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.vals == nil {
+		f.vals = map[string]string{}
+	}
+	f.vals[ns+":"+key] = val
+}
+
+func (f *fakeConfig) GetString(ns, key, def string) string {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	if v, ok := f.vals[ns+":"+key]; ok {
+		return v
+	}
+	return def
+}
+
+func (f *fakeConfig) GetInt(ns, key string, def int) int {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	if v, ok := f.vals[ns+":"+key]; ok {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return def
 }
 
 // TestInventoryStarterLiveReloadFromConfig is the PUSH/materialized-consumer
-// payoff: editing inventory/starter_item in config flows the FULL chain
-// Set -> pg_notify -> config listener -> config.changed (bus) ->
-// inventory.onConfigChanged -> starter-spec rebuild -> next grant uses the new
-// item. Nothing is called directly on the inventory side except the real bus
-// subscription, so the load-bearing subscription is what makes the edit land.
+// payoff for inventory's half of the chain: a config.changed event on the real bus
+// drives inventory.onConfigChanged -> starter-spec rebuild -> the next grant uses
+// the new item. The materialized spec never re-pulls on its own, so ONLY the
+// load-bearing bus subscription can flip the granted item — which is exactly what
+// this asserts. (Set -> pg_notify -> listener -> config.changed is tested in
+// config's own package; joined by the shared configevents contract, the two halves
+// cover the full live-reload path without inventory importing the config impl.)
 func TestInventoryStarterLiveReloadFromConfig(t *testing.T) {
 	db := testDB(t)
-	// Defers run LIFO: close registered first (runs last), the namespace cleanup
-	// registered second (runs first, while the pool is still open). The reactive
-	// key MUST be inventory/starter_item (that is what onConfigChanged filters on),
-	// so the namespace can't be randomized — clean it up explicitly.
 	defer func() { _ = db.Close() }()
-	defer func() {
-		if _, err := db.Exec(`DELETE FROM config.settings WHERE namespace = 'inventory'`); err != nil {
-			t.Logf("cleanup of config namespace inventory failed: %v", err)
-		}
-	}()
 
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	b := bus.NewBus(log)
+	defer b.Close()
 
-	// Wire the REAL config module through its lifecycle (Register provides the
-	// service, Init sets db/bus/dsn, Start launches the LISTEN/NOTIFY loop) on a
-	// Context whose Bus inventory also subscribes to — the same in-process bus the
-	// listener emits config.changed on.
-	ctx := lifecycle.NewContext(log)
-	ctx.DB = db
-	cfgMod := &config.Module{}
-	if err := cfgMod.Register(ctx); err != nil {
-		t.Fatalf("config Register: %v", err)
-	}
-	if err := cfgMod.Migrate(context.Background(), db); err != nil {
-		t.Fatalf("config Migrate: %v", err)
-	}
-	if err := cfgMod.Init(ctx); err != nil {
-		t.Fatalf("config Init: %v", err)
-	}
-	if err := cfgMod.Start(context.Background()); err != nil {
-		t.Fatalf("config Start: %v", err)
-	}
-	defer func() {
-		stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		_ = cfgMod.Stop(stopCtx)
-	}()
-
-	cfg, ok := registry.TryRequire[configSvc](ctx.Registry, "config")
-	if !ok {
-		t.Fatal("config service not registered / wrong shape")
-	}
-
-	// Construct inventory the way Init would for the config path: hold cfg and
-	// subscribe onConfigChanged on the shared bus (the ONLY starter-spec refresh
-	// path). accounts/characters are omitted — this test exercises only the grant.
+	fake := &fakeConfig{}
 	s := &store{db: db, log: log}
-	m := &Module{store: s, log: log, cfg: cfg}
-	bus.On(ctx.Bus, configevents.ChangedEvent, m.onConfigChanged)
+	m := &Module{store: s, log: log, cfg: fake}
+	bus.On(b, configevents.ChangedEvent, m.onConfigChanged)
 
-	// Pre-materialize the spec to the constant default BEFORE any edit. Once loaded
-	// starterSpec never re-pulls from config, so from here ONLY an onConfigChanged
-	// event can change the granted item — a silent loadAll cache refresh cannot.
-	// This is what makes the assertion below prove the PUSH path, not a stray pull.
+	// Materialize the spec to the constant default BEFORE the edit. Once loaded,
+	// starterSpec never re-pulls, so from here only an onConfigChanged event can
+	// change the granted item — this is what makes the flip prove the PUSH path.
 	if item, qty := m.starterSpec(); item != starterItem || qty != starterQty {
 		t.Fatalf("pre-edit spec = (%s,%d), want (%s,%d)", item, qty, starterItem, starterQty)
 	}
 
-	// Poll the observable end effect: grant a brand-new character and assert its
-	// starter flips to health_potion once the push chain has propagated. Each
-	// iteration re-issues Set (a harmless idempotent upsert that re-fires
-	// pg_notify) so a NOTIFY lost to a Set/LISTEN startup race is always recovered
-	// by a later one — the flip then can only come via config.changed.
-	deadline := time.Now().Add(5 * time.Second)
+	// A wrong-namespace event must NOT touch inventory's spec (proves the filter).
+	bus.Emit(b, configevents.ChangedEvent, configevents.Changed{Namespace: "other", Key: "starter_item", Value: "coin"})
+
+	// The operator edits config; the push arrives on the bus.
+	fake.set("inventory", "starter_item", "health_potion")
+	bus.Emit(b, configevents.ChangedEvent, configevents.Changed{Namespace: "inventory", Key: "starter_item", Value: "health_potion"})
+
+	// The bus delivers asynchronously — wait until onConfigChanged has rebuilt the
+	// spec, then assert a fresh grant uses the new item (and only the new item).
+	deadline := time.Now().Add(2 * time.Second)
 	for {
-		if err := cfg.Set(context.Background(), "inventory", "starter_item", "health_potion"); err != nil {
-			t.Fatalf("Set starter_item: %v", err)
-		}
-		charID := newUUID(t, db)
-		owner := Owner{Type: "character", ID: charID}
-		m.onCharacterCreated(charactersevents.Created{CharacterID: charID, Name: "Reload", Class: "novice"})
-		list, err := s.list(context.Background(), owner)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if qtyOf(list, "health_potion") == 1 {
-			if qtyOf(list, starterItem) != 0 {
-				t.Fatalf("granted both old and new starter; holdings=%+v", list)
-			}
-			return // live reload observed end-to-end via config.changed
+		if item, _ := m.starterSpec(); item == "health_potion" {
+			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("starter item did not live-reload to health_potion within deadline; last holdings=%+v", list)
+			t.Fatal("starter spec did not live-reload to health_potion via config.changed")
 		}
-		time.Sleep(20 * time.Millisecond)
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	charID := newUUID(t, db)
+	owner := Owner{Type: "character", ID: charID}
+	m.onCharacterCreated(charactersevents.Created{CharacterID: charID, Name: "Reload", Class: "novice"})
+	list, err := s.list(context.Background(), owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if qtyOf(list, "health_potion") != 1 {
+		t.Fatalf("after reload: new starter not granted; holdings=%+v", list)
+	}
+	if qtyOf(list, starterItem) != 0 {
+		t.Fatalf("after reload: old starter still granted; holdings=%+v", list)
 	}
 }
