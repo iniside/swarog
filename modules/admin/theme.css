@@ -93,3 +93,12 @@ body { margin:0; background:var(--bg); color:var(--text);
 .badge.grey  { color:var(--muted); background:rgba(138,144,156,0.12); }
 
 .empty { color:var(--muted3); font-size:13.5px; padding:8px 0; }
+
+.form-row { display:flex; flex-direction:column; gap:6px; margin-bottom:14px; }
+.form-row label { font-size:11px; font-weight:700; color:var(--muted4); letter-spacing:0.4px; text-transform:uppercase; }
+.form-row input { background:var(--bg); border:1px solid var(--border2); border-radius:8px;
+  padding:9px 12px; color:var(--text); font-size:13.5px; font-family:inherit; }
+.form-row input:focus { outline:none; border-color:var(--blue); }
+.btn { background:var(--green); color:#0f1116; border:none; border-radius:8px;
+  padding:9px 18px; font-size:13px; font-weight:700; font-family:inherit; cursor:pointer; }
+.btn:hover { filter:brightness(1.05); }

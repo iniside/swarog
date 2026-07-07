@@ -66,6 +66,7 @@ func (m *Module) Init(ctx *lifecycle.Context) error {
 	})
 	ctx.Mux.HandleFunc("GET /admin", m.gate(m.handleIndex))
 	ctx.Mux.HandleFunc("GET /admin/{slug}", m.gate(m.handleItem))
+	ctx.Mux.HandleFunc("POST /admin/{slug}", m.gate(m.handleItemPost))
 	return nil
 }
 
@@ -90,6 +91,7 @@ type pageView struct {
 	Title, Err string
 	KPIs       []adminapi.KPI
 	Table      *adminapi.Table
+	Form       *adminapi.Form
 }
 
 // resolvedItem is one sidebar entry ready to render. Exactly one of render /
@@ -273,7 +275,10 @@ func (m *Module) handleItem(w http.ResponseWriter, r *http.Request) {
 			m.log.Error("admin item render failed", "item", cur.label, "err", err)
 			page = &pageView{Title: cur.label, Err: "failed to load: " + err.Error()}
 		} else {
-			page = &pageView{Title: cur.label, KPIs: content.KPIs, Table: content.Table}
+			if content.Form != nil {
+				content.Form.Action = "/admin/" + slug
+			}
+			page = &pageView{Title: cur.label, KPIs: content.KPIs, Table: content.Table, Form: content.Form}
 		}
 	default:
 		// Neither a closure nor a remote result (a metadata-only local item).
@@ -287,6 +292,71 @@ func (m *Module) handleItem(w http.ResponseWriter, r *http.Request) {
 	}); err != nil {
 		m.log.Error("admin render failed", "err", err)
 	}
+}
+
+// handleItemPost applies an editable Form's Submit for a LOCAL item. It resolves
+// the item, obtains its Content via the (idempotent) render closure to reach the
+// Form, parses the posted fields, and invokes Submit in-process. Success redirects
+// (303) back to the GET so fresh values render; a Submit/render error re-renders the
+// page with an error card. Remote and non-form items are 405 (not editable).
+func (m *Module) handleItemPost(w http.ResponseWriter, r *http.Request) {
+	slug := r.PathValue("slug")
+	items := m.items(r.Context())
+	var cur *resolvedItem
+	for i := range items {
+		if items[i].slug == slug {
+			cur = &items[i]
+			break
+		}
+	}
+	if cur == nil {
+		http.NotFound(w, r)
+		return
+	}
+
+	// Only LOCAL items with a render closure can be edited.
+	if cur.render == nil {
+		http.Error(w, "not editable", http.StatusMethodNotAllowed)
+		return
+	}
+
+	renderError := func(msg string) {
+		page := &pageView{Title: cur.label, Err: msg}
+		groups := m.buildGroups(items, slug)
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		if err := m.tmpl.Execute(w, pageData{
+			Crumb: cur.section, Title: cur.label, Env: "Local", User: m.user, Groups: groups, Page: page,
+		}); err != nil {
+			m.log.Error("admin render failed", "err", err)
+		}
+	}
+
+	content, err := cur.render(r.Context())
+	if err != nil {
+		m.log.Error("admin item render failed", "item", cur.label, "err", err)
+		renderError("failed to load: " + err.Error())
+		return
+	}
+	if content.Form == nil || content.Form.Submit == nil {
+		http.Error(w, "not editable", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if err := r.ParseForm(); err != nil {
+		renderError("save failed: " + err.Error())
+		return
+	}
+	values := map[string]string{}
+	for _, f := range content.Form.Fields {
+		values[f.Name] = r.PostFormValue(f.Name)
+	}
+
+	if err := content.Form.Submit(r.Context(), values); err != nil {
+		m.log.Error("admin item submit failed", "item", cur.label, "err", err)
+		renderError("save failed: " + err.Error())
+		return
+	}
+	http.Redirect(w, r, "/admin/"+slug, http.StatusSeeOther)
 }
 
 // gate applies HTTP Basic auth when ADMIN_USER is configured; otherwise open
