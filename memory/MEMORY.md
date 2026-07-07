@@ -1,5 +1,6 @@
 # Memory Index
 
+- [Memory is git-backed via repo mirror](memory-git-backup-workflow.md) — run scripts/memory-sync.sh push after any memory change, pull after git sync; repo memory/ mirrors the per-machine live dir
 - [Verify the at-risk path, not the safe one](verify-the-at-risk-path-not-the-safe-one.md) — exercise the topology a change actually affects (split, not just monolith) with a committed repeatable proof; don't pass off easy-path testing as coverage
 - [Work on master, no branches](work-on-master-no-branches.md) — commit directly on master for this repo; overrides CLAUDE.md's "branch-first" (solo for-fun project, history is enough)
 
