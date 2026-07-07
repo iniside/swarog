@@ -6,14 +6,14 @@
 # Usage:
 #   ./verify.sh                # --fast: blocking stages only (default)
 #   ./verify.sh --fast         # same as default
-#   ./verify.sh --all          # + advisory: test-race, fuzz, apidiff, topiccheck
+#   ./verify.sh --all          # + advisory: test-race, fuzz, apidiff, topiccheck, synccheck
 #   ./verify.sh --slow         # + gremlins mutation testing (very slow)
 #   ./verify.sh --all --strict # advisory failures ALSO flip the exit code
 #   ./verify.sh --all --no-install  # never auto-install a missing CLI (it SKIPs)
 #
 # Behavioural twin of verify.ps1. Blocking stages: build, vet, golangci-lint,
 # go-arch-lint, test, govulncheck. Advisory (--all): test-race, fuzz, apidiff,
-# topiccheck. Slow (--slow): gremlins. Per-stage output goes to run/verify/<name>.log.
+# topiccheck, synccheck. Slow (--slow): gremlins. Per-stage output goes to run/verify/<name>.log.
 #
 # Deliberately NOT `set -e` in the run phase: a failing stage must not abort the
 # runner. Each stage records PASS/FAIL/SKIP and the summary decides the exit code.
@@ -204,6 +204,23 @@ topiccheck_stage() {
     fi
 }
 
+# --- Advisory stage: synccheck (--strict makes it able to FAIL) -------------
+synccheck_stage() {
+    local log="$VERIFY_DIR/synccheck.log"
+    echo "== synccheck =="
+    local ok=0
+    if [ "$STRICT" -eq 1 ]; then
+        go run ./tools/synccheck ./... --strict >"$log" 2>&1 && ok=1
+    else
+        go run ./tools/synccheck ./... >"$log" 2>&1 && ok=1
+    fi
+    if [ "$ok" -eq 1 ]; then
+        echo "  PASS"; add_result synccheck PASS false
+    else
+        echo "  FAIL (see run/verify/synccheck.log)"; add_result synccheck FAIL false
+    fi
+}
+
 # --- Slow stage: gremlins mutation testing ----------------------------------
 gremlins_stage() {
     local log="$VERIFY_DIR/gremlins.log"; : >"$log"
@@ -236,6 +253,7 @@ if [ "$RUN_ADVISORY" -eq 1 ]; then
     fuzz_stage
     apidiff_stage
     topiccheck_stage
+    synccheck_stage
 fi
 if [ "$RUN_GREMLINS" -eq 1 ]; then
     gremlins_stage

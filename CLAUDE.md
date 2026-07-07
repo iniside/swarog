@@ -120,7 +120,7 @@ No CI — this script IS the automated safety net. Flags: `--fast`(default, bloc
 /`--slow`(+mutation)/`--strict`(advisory failures also fail exit)/`--no-install`.
 - BLOCKING: build, vet, golangci-lint, go-arch-lint, `go test ./...`, `govulncheck ./...`.
 - ADVISORY (`--all`): `go test -race` (SKIPs without cgo/gcc), fuzz (`-fuzztime` per `Fuzz*`),
-  apidiff vs HEAD on the `*events`/`adminapi` contracts (additive-only guard), topiccheck.
+  apidiff vs HEAD on the `*events`/`adminapi` contracts (additive-only guard), topiccheck, synccheck.
 - SLOW (`--slow`): gremlins mutation on the pure pkgs (edge/gateway/outbox/registry/bus).
 - Auto-installs pinned CLIs if missing: `govulncheck@v1.5.0`, `apidiff@latest`, `gremlins@v0.6.0`
   (`--no-install` to skip → those stages SKIP). Extra checks:
@@ -129,6 +129,10 @@ No CI — this script IS the automated safety net. Flags: `--fast`(default, bloc
     outbox `deliver` ordering, registry Provide/Require.
   - **topiccheck** (`go run ./tools/topiccheck ./...`) — flags a `bus.Define` topic with no `bus.On`
     subscriber; allowlist via `//topiccheck:allow-unsubscribed` comment above the `var`.
+  - **synccheck** (`go run ./tools/synccheck`) — flags an async `bus.Emit`/`Publish` whose effect is
+    then awaited by a `for{ sleep; DB-read }` poll loop (CLAUDE.md #7); regression guard, finds
+    nothing on the current tree. Allowlist via `//synccheck:allow reason="..."`. Known non-targets:
+    in-memory-getter polls, emit/poll split across a goroutine boundary; test files out of scope.
   - **apidiff** — fails if a published event payload changed non-additively (rule 6).
 
 Two complementary gates:

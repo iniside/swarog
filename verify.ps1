@@ -5,14 +5,14 @@
 # Usage:
 #   .\verify.ps1                 # -Fast: blocking stages only (default)
 #   .\verify.ps1 -Fast           # same as default
-#   .\verify.ps1 -All            # + advisory: test-race, fuzz, apidiff, topiccheck
+#   .\verify.ps1 -All            # + advisory: test-race, fuzz, apidiff, topiccheck, synccheck
 #   .\verify.ps1 -Slow           # + gremlins mutation testing (very slow)
 #   .\verify.ps1 -All -Strict    # advisory failures ALSO flip the exit code
 #   .\verify.ps1 -All -NoInstall # never auto-install a missing CLI (it SKIPs)
 #
 # Behavioural twin of verify.sh. Blocking stages: build, vet, golangci-lint,
 # go-arch-lint, test, govulncheck. Advisory (-All): test-race, fuzz, apidiff,
-# topiccheck. Slow (-Slow): gremlins. Per-stage output goes to run/verify/<name>.log.
+# topiccheck, synccheck. Slow (-Slow): gremlins. Per-stage output goes to run/verify/<name>.log.
 
 param(
     [switch]$Fast,
@@ -205,6 +205,22 @@ function Invoke-TopiccheckStage {
     }
 }
 
+# --- Advisory stage: synccheck (-Strict makes it able to FAIL) --------------
+function Invoke-SynccheckStage {
+    $log = Join-Path $verifyDir 'synccheck.log'
+    Write-Host "== synccheck ==" -ForegroundColor Cyan
+    if ($StrictOn) {
+        & go run ./tools/synccheck ./... --strict *> $log
+    } else {
+        & go run ./tools/synccheck ./... *> $log
+    }
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "  PASS" -ForegroundColor Green; Add-Result 'synccheck' 'PASS' $false
+    } else {
+        Write-Host "  FAIL (see run/verify/synccheck.log)" -ForegroundColor Red; Add-Result 'synccheck' 'FAIL' $false
+    }
+}
+
 # --- Slow stage: gremlins mutation testing ----------------------------------
 function Invoke-GremlinsStage {
     $log = Join-Path $verifyDir 'gremlins.log'
@@ -239,6 +255,7 @@ if ($RunAdvisory) {
     Invoke-FuzzStage
     Invoke-ApidiffStage
     Invoke-TopiccheckStage
+    Invoke-SynccheckStage
 }
 if ($RunGremlins) {
     Invoke-GremlinsStage

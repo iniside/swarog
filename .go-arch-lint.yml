@@ -16,10 +16,12 @@ workdir: .
 allow:
   depOnAnyVendor: true
 
-# Test fixtures are not architecture: topiccheck's testdata packages import bus and
-# each other only to exercise the analyzer, so exclude them from the boundary check.
+# Test fixtures are not architecture: topiccheck's/synccheck's testdata packages
+# import bus and each other only to exercise the analyzer, so exclude them from
+# the boundary check.
 exclude:
   - tools/topiccheck/testdata
+  - tools/synccheck/testdata
 
 components:
   # The core foundations, split from the old monolithic `core`:
@@ -68,6 +70,11 @@ components:
   # bus.Define but never subscribed via bus.On. Imports ONLY x/tools + stdlib
   # (never a gamebackend package) — a standalone dev tool, not part of any binary.
   topiccheck:  { in: tools/topiccheck }
+
+  # Bespoke whole-module static analyzer: flags an async bus.Emit/Publish whose
+  # effect is then awaited by a for{ sleep; DB-read } poll loop. Same shape as
+  # topiccheck — imports ONLY x/tools + stdlib, never a gamebackend package.
+  synccheck:   { in: tools/synccheck }
 
   # The reusable boot sequence: open DB, wire Context, two-phase Build, Migrate,
   # Start, HTTP + optional edge listener, graceful shutdown. It is topology-blind
@@ -121,10 +128,11 @@ deps:
   # reverse-proxies HTTP, so it needs only the edge transport (+ stdlib).
   gateway:     { mayDependOn: [ edge ] }
 
-  # NOTE: `topiccheck` is intentionally ABSENT from `deps` (like the leaves and
-  # `contracts` above): with no entry it may use only commonComponents + vendor.
-  # It imports ONLY x/tools (covered by depOnAnyVendor) + stdlib, never a
-  # gamebackend package — a dev tool that inspects source, not linked into a binary.
+  # NOTE: `topiccheck` and `synccheck` are intentionally ABSENT from `deps` (like
+  # the leaves and `contracts` above): with no entry they may use only
+  # commonComponents + vendor. They import ONLY x/tools (covered by
+  # depOnAnyVendor) + stdlib, never a gamebackend package — dev tools that
+  # inspect source, not linked into a binary.
 
   # The boot sequence wires whatever module list it is handed; it only knows the
   # lifecycle contract and the edge server type it may start.
