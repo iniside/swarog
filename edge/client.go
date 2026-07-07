@@ -83,7 +83,16 @@ func (c *Client) Call(ctx context.Context, method string, req any, resp any) err
 // it neither knows nor cares about the payload's shape. Stream lifecycle matches
 // Call: fresh stream, write, close write side, read, decode only the envelope.
 func (c *Client) CallRaw(ctx context.Context, method string, payload []byte) ([]byte, error) {
-	envBytes, err := c.codec.Encode(request{Method: method, Payload: json.RawMessage(payload)})
+	return c.CallRawID(ctx, method, "", payload)
+}
+
+// CallRawID is CallRaw plus a caller identity stamped into the request envelope's
+// Identity field. The gateway's RemoteBackend uses this to carry the verified
+// player_id to a backend over the (mutually authenticated, Phase C) edge, so the
+// backend's generated server adapter can read it from ctx instead of re-verifying
+// a bearer. identity is empty for a call that carries no identity (CallRaw).
+func (c *Client) CallRawID(ctx context.Context, method, identity string, payload []byte) ([]byte, error) {
+	envBytes, err := c.codec.Encode(request{Method: method, Identity: identity, Payload: json.RawMessage(payload)})
 	if err != nil {
 		return nil, err
 	}

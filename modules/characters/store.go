@@ -5,20 +5,17 @@ import (
 	"database/sql"
 	"errors"
 	"log/slog"
-	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
+
+	"gamebackend/modules/characters/charactersapi"
 )
 
 // Character is a player-owned character. PlayerID is a plain reference to
-// accounts.players — no cross-module foreign key (logical isolation).
-type Character struct {
-	ID        string    `json:"id"`
-	PlayerID  string    `json:"player_id"`
-	Name      string    `json:"name"`
-	Class     string    `json:"class"`
-	CreatedAt time.Time `json:"created_at"`
-}
+// accounts.players — no cross-module foreign key (logical isolation). It is an
+// alias of charactersapi.Character (the shape the Player capability returns), so
+// the impl and the generated glue name the exact same type.
+type Character = charactersapi.Character
 
 type store struct {
 	db  *sql.DB

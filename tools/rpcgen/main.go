@@ -14,9 +14,10 @@
 //
 // Scope. It handles ONLY the signature shapes this repo actually uses:
 //
-//   - first param must be context.Context (not marshaled; the server adapter uses
-//     context.Background() exactly as today's hand adapters do — NO ctx
-//     propagation is claimed),
+//   - first param must be context.Context (not marshaled; the server adapter
+//     calls impl with opsapi.WithPlayerID(context.Background(), envelope.Identity)
+//     so the caller's verified player_id — stamped by the gateway into the edge
+//     envelope — is the ONLY identity a remote op sees, read from ctx),
 //   - last result must be error (stripped from the wire; carried as an opsapi
 //     Status in the response envelope),
 //   - remaining params/results may be basic types, strings, bools, structs,
@@ -259,12 +260,14 @@ func generate(apiPkg *types.Package, iface *types.Interface, ifaceName, prefix, 
 
 	// Server.
 	fmt.Fprintf(&b, "// Registrar is the subset of *%s.Server the generated adapters install onto:\n", imports[edgePkgPath])
-	fmt.Fprintf(&b, "// one handler per method. *%s.Server satisfies it.\n", imports[edgePkgPath])
-	fmt.Fprintf(&b, "type Registrar interface {\n\tHandle(method string, h %s.Handler)\n}\n\n", imports[edgePkgPath])
+	fmt.Fprintf(&b, "// one identity-aware handler per method. *%s.Server satisfies it.\n", imports[edgePkgPath])
+	fmt.Fprintf(&b, "type Registrar interface {\n\tHandleIdentity(method string, h %s.IdentityHandler)\n}\n\n", imports[edgePkgPath])
 	fmt.Fprintf(&b, "// RegisterServer installs one edge adapter per method of impl onto reg. Each\n")
-	fmt.Fprintf(&b, "// adapter unmarshals the request, calls impl with context.Background() (matching\n")
-	fmt.Fprintf(&b, "// the hand-written adapters — NO ctx propagation), and marshals the response\n")
-	fmt.Fprintf(&b, "// envelope, folding a returned error into Status/Err via %s.StatusOf.\n", opsName)
+	fmt.Fprintf(&b, "// adapter unmarshals the request, calls impl with a context carrying the request\n")
+	fmt.Fprintf(&b, "// envelope's Identity as the verified caller player_id (%s.WithPlayerID) — the\n", opsName)
+	fmt.Fprintf(&b, "// trust boundary: identity is read ONLY from the (mutually authenticated) envelope,\n")
+	fmt.Fprintf(&b, "// never a client-supplied field — and marshals the response envelope, folding a\n")
+	fmt.Fprintf(&b, "// returned error into Status/Err via %s.StatusOf.\n", opsName)
 	fmt.Fprintf(&b, "func RegisterServer(reg Registrar, impl %s.%s) {\n", apiName, ifaceName)
 	for _, m := range methods {
 		writeServerAdapter(&b, m, opsName)
@@ -318,11 +321,11 @@ func writeClientMethod(b *strings.Builder, m method, opsName string) {
 // writeServerAdapter emits one reg.Handle(...) block inside RegisterServer.
 func writeServerAdapter(b *strings.Builder, m method, opsName string) {
 	lc := lowerFirst(m.Name)
-	fmt.Fprintf(b, "\treg.Handle(Method%s, func(reqPayload []byte) ([]byte, error) {\n", m.Name)
+	fmt.Fprintf(b, "\treg.HandleIdentity(Method%s, func(identity string, reqPayload []byte) ([]byte, error) {\n", m.Name)
 	fmt.Fprintf(b, "\t\tvar req %sRequest\n", lc)
 	b.WriteString("\t\tif err := json.Unmarshal(reqPayload, &req); err != nil {\n\t\t\treturn nil, err\n\t\t}\n")
 
-	// Call impl.
+	// Call impl with the caller identity injected into ctx (from the envelope).
 	var lhs []string
 	for i := range m.Rets {
 		lhs = append(lhs, fmt.Sprintf("r%d", i))
@@ -336,7 +339,7 @@ func writeServerAdapter(b *strings.Builder, m method, opsName string) {
 	if len(callArgs) > 0 {
 		callArgList = ", " + strings.Join(callArgs, ", ")
 	}
-	fmt.Fprintf(b, "\t\t%s := impl.%s(context.Background()%s)\n", strings.Join(lhs, ", "), m.Name, callArgList)
+	fmt.Fprintf(b, "\t\t%s := impl.%s(%s.WithPlayerID(context.Background(), identity)%s)\n", strings.Join(lhs, ", "), m.Name, opsName, callArgList)
 
 	fmt.Fprintf(b, "\t\tresp := %sResponse{}\n", lc)
 	b.WriteString("\t\tif err != nil {\n")

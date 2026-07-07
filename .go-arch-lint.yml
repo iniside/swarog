@@ -65,6 +65,9 @@ components:
   charactersrpc:
     in:
       - modules/characters/charactersrpc
+  charactersplayerrpc:
+    in:
+      - modules/characters/charactersplayerrpc
   accountsrpc:
     in:
       - modules/accounts/accountsrpc
@@ -178,7 +181,7 @@ deps:
   # types in impl. (The anti-drift test imports them, allowed since they are all in the
   # `contracts` component.)
   audit:       { mayDependOn: [ lifecycle, contracts ] }
-  characters:  { mayDependOn: [ lifecycle, contracts, edge, outbox, charactersrpc ] }
+  characters:  { mayDependOn: [ lifecycle, contracts, edge, outbox, charactersrpc, charactersplayerrpc ] }
   config:      { mayDependOn: [ lifecycle, contracts ] }
   # The gateway MODULE contributes a front-handler to the httpmw leaf slot and, from
   # Step B2, builds the operation-dispatch substrate: it reads opsapi (Operation/Slot
@@ -207,8 +210,9 @@ deps:
   # RegisterServer edge adapter (provider path). It MAY import edge (the transport)
   # + opsapi (the Caller/Status seam, a commonComponent) + its own <module>api
   # (in contracts). It never imports a module impl.
-  charactersrpc: { mayDependOn: [ edge, contracts ] }
-  accountsrpc:   { mayDependOn: [ edge, contracts ] }
+  charactersrpc:       { mayDependOn: [ edge, contracts ] }
+  charactersplayerrpc: { mayDependOn: [ edge, contracts ] }
+  accountsrpc:         { mayDependOn: [ edge, contracts ] }
 
   # The remote stub is composition-time plumbing: it wraps the generated edge
   # clients (charactersrpc/accountsrpc) + the admin contract, never a module impl.

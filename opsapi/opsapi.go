@@ -24,6 +24,42 @@ import (
 	"errors"
 )
 
+// playerIDKey is the private context key under which a caller's VERIFIED
+// player_id is carried. It is unexported so the ONLY way to set or read it is
+// via WithPlayerID / PlayerID below — a domain operation cannot fabricate an
+// identity, and cannot accidentally read one from an untrusted place.
+type playerIDKey struct{}
+
+// WithPlayerID returns a child context carrying pid as the caller's verified
+// player identity. It is set in exactly TWO trusted places and NOWHERE else:
+//
+//   - the gateway front-handler, AFTER it has verified the bearer token for an
+//     AuthPlayer route (the in-process / LocalBackend path); and
+//   - the generated RPC server adapter, from the mTLS-authenticated edge request
+//     envelope's Identity field (the cross-process / RemoteBackend path).
+//
+// A domain operation reads it back with PlayerID. This is the whole trust
+// boundary: identity is established ONCE at the edge of the system and flows
+// inward through ctx, never re-derived from a client-supplied field mid-stack.
+func WithPlayerID(ctx context.Context, pid string) context.Context {
+	return context.WithValue(ctx, playerIDKey{}, pid)
+}
+
+// PlayerID returns the caller's verified player_id and whether one is present.
+//
+// TRUST BOUNDARY — a domain operation MUST take its caller identity ONLY from
+// here. It must NEVER read a player_id from an HTTP header, a query param, a
+// request body field, or any other client-supplied value: those are attacker-
+// controlled. The value returned here was set by WithPlayerID at a trusted seam
+// (gateway-after-bearer-verify, or a generated adapter from the mTLS-authed edge
+// envelope). ok=false means no identity was established — an operation that
+// requires one should return &Error{Status: StatusInvalid}, never proceed with
+// an empty player_id.
+func PlayerID(ctx context.Context) (string, bool) {
+	pid, ok := ctx.Value(playerIDKey{}).(string)
+	return pid, ok && pid != ""
+}
+
 // Caller is the minimal transport a generated RPC client calls through. Both
 // *edge.Client and (after Step A1) modules/remote's reconnecting edge conn
 // satisfy it structurally — the signature mirrors edge.Client.Call exactly, so
@@ -99,10 +135,11 @@ const (
 // contribution the gateway reads to bind an HTTP route to an RPC method. A
 // module Contributes one per operation; nothing else is wired.
 type Operation struct {
-	Method string  // the rpc method name, e.g. "characters.create"
-	Verb   string  // HTTP verb the gateway binds, e.g. "POST"
-	Path   string  // HTTP path pattern, e.g. "/characters" or "/characters/{id}"
-	Auth   AuthReq // identity the gateway must establish before dispatch
+	Method  string  // the rpc method name, e.g. "characters.create"
+	Verb    string  // HTTP verb the gateway binds, e.g. "POST"
+	Path    string  // HTTP path pattern, e.g. "/characters" or "/characters/{id}"
+	Auth    AuthReq // identity the gateway must establish before dispatch
+	Success int     // HTTP status the gateway writes on a StatusOK outcome (e.g. 201/200/204)
 }
 
 // Slot is the contribution slot the gateway reads to build its route table. A
@@ -135,3 +172,37 @@ type LocalOp struct {
 // ctx.Contribute(opsapi.LocalSlot, LocalOp{...}); the gateway reads
 // ctx.Contributions(opsapi.LocalSlot). Empty until Phase D wires the first op.
 const LocalSlot = "ops.local"
+
+// OpBinding carries the per-operation, topology-independent glue the gateway
+// needs to translate an HTTP request into the operation's typed request and to
+// allocate its typed response. The provider module contributes one per op; the
+// gateway pairs it with the Operation (matched by Method) and the selected
+// backend.
+//
+// It is deliberately transport-free (no net/http): the gateway extracts the raw
+// request body and the matched path-wildcard values and hands them here, so the
+// module owns ONLY the typed-shape knowledge (its request/response structs),
+// never HTTP mechanics. This is what keeps the SAME binding usable whether the
+// gateway then dispatches over LocalBackend (typed, in-process) or RemoteBackend
+// (marshaled over the edge) — the decode happens once at the HTTP boundary.
+type OpBinding struct {
+	Method string
+	// Decode builds the operation's typed request from the raw HTTP body and the
+	// matched path-wildcard values (e.g. {"id": "..."} for "/characters/{id}").
+	// body is nil for a request with no body. A malformed body should be returned
+	// as an *Error{Status: StatusInvalid}, which the gateway maps to HTTP 400. The
+	// returned req is the concrete pointer the LocalInvoker type-asserts (decision
+	// D3: on the local path this exact pointer reaches the provider, no re-marshal).
+	Decode func(body []byte, path map[string]string) (req any, err error)
+	// NewResp allocates a pointer to the operation's typed response for the backend
+	// to fill, or returns nil for an operation with no response body (e.g. a DELETE
+	// answering 204). The gateway JSON-encodes a non-nil resp on a StatusOK outcome.
+	NewResp func() any
+}
+
+// BindingSlot is the contribution slot the gateway reads to pair each Operation
+// with its HTTP↔typed translation. A provider contributes with
+// ctx.Contribute(opsapi.BindingSlot, OpBinding{...}); the gateway reads
+// ctx.Contributions(opsapi.BindingSlot). Contributed by the module in the SAME
+// process as the Operation, so it is always present wherever the route is bound.
+const BindingSlot = "ops.binding"

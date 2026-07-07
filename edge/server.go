@@ -23,6 +23,13 @@ type Handler func(reqPayload []byte) (respPayload []byte, err error)
 // names — the natural shape for a gateway that relays to a backend.
 type ForwardHandler func(method string, payload []byte) (respPayload []byte, err error)
 
+// IdentityHandler is like Handler but also receives the caller identity the
+// sender stamped into the request envelope (empty when none was set). The
+// generated RPC server adapters register through this so a remote operation's
+// impl can see the gateway-verified player_id (edge is domain-agnostic — it
+// forwards the raw string; the adapter is what turns it into a ctx value).
+type IdentityHandler func(identity string, reqPayload []byte) (respPayload []byte, err error)
+
 // prefixEntry pairs a method-name prefix with the ForwardHandler that serves any
 // method matching it.
 type prefixEntry struct {
@@ -34,9 +41,10 @@ type prefixEntry struct {
 // dispatches one framed request per stream to a Handler registered by method
 // name. It knows nothing about the application domain — it is pure transport.
 type Server struct {
-	codec    Codec
-	handlers map[string]Handler
-	prefixes []prefixEntry
+	codec      Codec
+	handlers   map[string]Handler
+	idHandlers map[string]IdentityHandler
+	prefixes   []prefixEntry
 
 	mu    sync.Mutex
 	ln    *quic.Listener
@@ -50,11 +58,12 @@ type Server struct {
 func NewServer() *Server {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Server{
-		codec:    defaultCodec,
-		handlers: make(map[string]Handler),
-		conns:    make(map[*quic.Conn]struct{}),
-		ctx:      ctx,
-		stop:     cancel,
+		codec:      defaultCodec,
+		handlers:   make(map[string]Handler),
+		idHandlers: make(map[string]IdentityHandler),
+		conns:      make(map[*quic.Conn]struct{}),
+		ctx:        ctx,
+		stop:       cancel,
 	}
 }
 
@@ -62,6 +71,13 @@ func NewServer() *Server {
 // with Serve; register all handlers before listening.
 func (s *Server) Handle(method string, h Handler) {
 	s.handlers[method] = h
+}
+
+// HandleIdentity registers an IdentityHandler under a method name — like Handle,
+// but the handler also receives the request envelope's Identity string. Not safe
+// to call concurrently with Serve; register all handlers before listening.
+func (s *Server) HandleIdentity(method string, h IdentityHandler) {
+	s.idHandlers[method] = h
 }
 
 // HandlePrefix registers a ForwardHandler for every method whose name starts
@@ -204,6 +220,17 @@ func (s *Server) dispatch(reqBytes []byte) (resp response) {
 	// Exact registration always wins.
 	if h, ok := s.handlers[req.Method]; ok {
 		respPayload, err := h(req.Payload)
+		if err != nil {
+			return response{OK: false, Error: err.Error()}
+		}
+		return response{OK: true, Payload: respPayload}
+	}
+
+	// An exact identity-aware registration also wins over prefixes: pass the
+	// envelope's Identity through so the handler (a generated adapter) can carry
+	// it into ctx. Kept separate from handlers so a plain Handle stays identity-free.
+	if h, ok := s.idHandlers[req.Method]; ok {
+		respPayload, err := h(req.Identity, req.Payload)
 		if err != nil {
 			return response{OK: false, Error: err.Error()}
 		}

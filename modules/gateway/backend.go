@@ -79,14 +79,15 @@ func (b *LocalBackend) Invoke(ctx context.Context, op opsapi.Operation, req, res
 // convention (the payload carries a flat "status"/"err" pair alongside the domain
 // fields, mirroring the generated <module>rpc client).
 type RemoteBackend struct {
-	// relay sends an already-encoded request payload for method to the owning peer
-	// and returns the response payload bytes. Production wires
-	// gateway.RoutedBackend.Forward (lazy dial + self-healing retry + 1s budget);
-	// the fake-op test wires the same against a loopback edge server. The ctx is
-	// NOT threaded into the QUIC call: RoutedBackend owns its own per-attempt
-	// timeout, exactly as the existing gateway relay does — no false ctx
-	// propagation is claimed.
-	relay func(ctx context.Context, method string, payload []byte) ([]byte, error)
+	// relay sends an already-encoded request payload for method to the owning peer,
+	// stamping identity into the wire envelope, and returns the response payload
+	// bytes. Production wires gateway.RoutedBackend.ForwardID (lazy dial +
+	// self-healing retry + 1s budget); a test wires the same against a loopback
+	// edge server. The ctx is NOT threaded into the QUIC call: RoutedBackend owns
+	// its own per-attempt timeout, exactly as the existing gateway relay does — no
+	// false ctx propagation is claimed. identity IS extracted from ctx (below) and
+	// passed explicitly so it rides the envelope's Identity field to the backend.
+	relay func(ctx context.Context, method, identity string, payload []byte) ([]byte, error)
 }
 
 // NewRemoteBackend returns a RemoteBackend relaying to peerAddr over a
@@ -94,11 +95,12 @@ type RemoteBackend struct {
 func NewRemoteBackend(peerAddr string) *RemoteBackend {
 	rb := transport.NewRoutedBackend(peerAddr)
 	return &RemoteBackend{
-		relay: func(_ context.Context, method string, payload []byte) ([]byte, error) {
-			// RoutedBackend.Forward owns its own per-attempt timeout (forwardBudget),
+		relay: func(_ context.Context, method, identity string, payload []byte) ([]byte, error) {
+			// RoutedBackend.ForwardID owns its own per-attempt timeout (forwardBudget),
 			// exactly as the existing transport-gateway relay does, so the caller's
-			// ctx is deliberately not threaded through — no false ctx propagation.
-			return rb.Forward(method, payload) //nolint:contextcheck // RoutedBackend uses its own per-attempt budget (documented)
+			// ctx is deliberately not threaded through — no false ctx propagation. The
+			// identity DOES ride the wire (envelope.Identity) via CallRawID.
+			return rb.ForwardID(method, identity, payload) //nolint:contextcheck // RoutedBackend uses its own per-attempt budget (documented)
 		},
 	}
 }
@@ -125,7 +127,12 @@ func (b *RemoteBackend) Invoke(ctx context.Context, op opsapi.Operation, req, re
 	if err != nil {
 		return err
 	}
-	respBytes, err := b.relay(ctx, op.Method, reqBytes)
+	// Identity travels via ctx on the gateway side (WithPlayerID, set by the front-
+	// handler after bearer verification) and via the envelope on the wire: extract
+	// it here and hand it to the relay, which stamps envelope.Identity. Empty when
+	// the op is AuthNone (no identity was established).
+	identity, _ := opsapi.PlayerID(ctx)
+	respBytes, err := b.relay(ctx, op.Method, identity, reqBytes)
 	if err != nil {
 		// Transport-level failure: the peer is unreachable or rejected the call.
 		return &opsapi.Error{Status: opsapi.StatusUnavailable, Msg: err.Error()}

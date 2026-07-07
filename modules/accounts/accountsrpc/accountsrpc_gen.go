@@ -59,22 +59,24 @@ func (c *Client) VerifySession(ctx context.Context, a0 string) (r0 string, r1 bo
 }
 
 // Registrar is the subset of *edge.Server the generated adapters install onto:
-// one handler per method. *edge.Server satisfies it.
+// one identity-aware handler per method. *edge.Server satisfies it.
 type Registrar interface {
-	Handle(method string, h edge.Handler)
+	HandleIdentity(method string, h edge.IdentityHandler)
 }
 
 // RegisterServer installs one edge adapter per method of impl onto reg. Each
-// adapter unmarshals the request, calls impl with context.Background() (matching
-// the hand-written adapters — NO ctx propagation), and marshals the response
-// envelope, folding a returned error into Status/Err via opsapi.StatusOf.
+// adapter unmarshals the request, calls impl with a context carrying the request
+// envelope's Identity as the verified caller player_id (opsapi.WithPlayerID) — the
+// trust boundary: identity is read ONLY from the (mutually authenticated) envelope,
+// never a client-supplied field — and marshals the response envelope, folding a
+// returned error into Status/Err via opsapi.StatusOf.
 func RegisterServer(reg Registrar, impl accountsapi.Sessions) {
-	reg.Handle(MethodVerifySession, func(reqPayload []byte) ([]byte, error) {
+	reg.HandleIdentity(MethodVerifySession, func(identity string, reqPayload []byte) ([]byte, error) {
 		var req verifySessionRequest
 		if err := json.Unmarshal(reqPayload, &req); err != nil {
 			return nil, err
 		}
-		r0, r1, err := impl.VerifySession(context.Background(), req.Token)
+		r0, r1, err := impl.VerifySession(opsapi.WithPlayerID(context.Background(), identity), req.Token)
 		resp := verifySessionResponse{}
 		if err != nil {
 			resp.Status = opsapi.StatusOf(err)

@@ -78,13 +78,22 @@ func (r *RoutedBackend) reset(failed *edge.Client) {
 // retry also errors that error propagates so the edge dispatch turns it into
 // ok=false upstream (the player sees a failed call, not a hung one).
 func (r *RoutedBackend) Forward(method string, payload []byte) ([]byte, error) {
+	return r.ForwardID(method, "", payload)
+}
+
+// ForwardID is Forward carrying a caller identity: it stamps identity into each
+// attempt's request envelope (via edge.Client.CallRawID) so the backend's
+// generated server adapter can read the gateway-verified player_id from ctx. The
+// retry/budget behaviour is identical to Forward. identity is empty for an
+// unauthenticated relay (Forward).
+func (r *RoutedBackend) ForwardID(method, identity string, payload []byte) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), forwardBudget)
 	defer cancel()
 
 	c, err := r.get(ctx)
 	if err == nil {
 		var out []byte
-		if out, err = c.CallRaw(ctx, method, payload); err == nil {
+		if out, err = c.CallRawID(ctx, method, identity, payload); err == nil {
 			return out, nil
 		}
 		// Possible stale/dead connection (peer restarted): drop it and retry.
@@ -99,7 +108,7 @@ func (r *RoutedBackend) Forward(method string, payload []byte) ([]byte, error) {
 	if err2 != nil {
 		return nil, err2
 	}
-	out, err2 := c2.CallRaw(ctx2, method, payload)
+	out, err2 := c2.CallRawID(ctx2, method, identity, payload)
 	if err2 != nil {
 		r.reset(c2)
 		return nil, err2
