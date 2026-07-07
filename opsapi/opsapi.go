@@ -19,7 +19,10 @@
 //     lights up a route by contributing, never by the gateway importing it.
 package opsapi
 
-import "context"
+import (
+	"context"
+	"errors"
+)
 
 // Caller is the minimal transport a generated RPC client calls through. Both
 // *edge.Client and (after Step A1) modules/remote's reconnecting edge conn
@@ -27,6 +30,55 @@ import "context"
 // no adapter is needed on the edge client side.
 type Caller interface {
 	Call(ctx context.Context, method string, req, resp any) error
+}
+
+// Status is the operation error taxonomy carried through a generated RPC
+// response envelope. edge's transport carries only a bare error string, which
+// cannot distinguish a 404 from a 403 from a 503; a generated response envelope
+// carries a Status so the gateway (later phase) can map a domain failure onto
+// the right HTTP status instead of collapsing everything to 500. A handler
+// returns a typed *Error; the generated server adapter records its Status in the
+// envelope and the generated client reconstitutes an *Error from a non-OK Status.
+type Status int
+
+const (
+	// StatusOK is the success status; a response carrying it has no error.
+	StatusOK Status = iota
+	// StatusNotFound — the addressed entity does not exist (→ HTTP 404).
+	StatusNotFound
+	// StatusForbidden — the caller is not permitted (→ HTTP 403).
+	StatusForbidden
+	// StatusInvalid — the request was malformed or failed validation (→ HTTP 400).
+	StatusInvalid
+	// StatusUnavailable — a dependency was unreachable; retry may succeed (→ HTTP 503).
+	StatusUnavailable
+	// StatusInternal — an unclassified server failure (→ HTTP 500). This is the
+	// fallback StatusOf assigns to any error that is not an *Error.
+	StatusInternal
+)
+
+// Error is a typed operation error a handler returns to select the Status that
+// rides the response envelope. A plain (untyped) error maps to StatusInternal
+// via StatusOf, so a handler opts into a specific status only when it wants one.
+type Error struct {
+	Status Status
+	Msg    string
+}
+
+func (e *Error) Error() string { return e.Msg }
+
+// StatusOf extracts the operation Status an error should map to: StatusOK for a
+// nil error, the carried Status for an *Error, and StatusInternal for any other
+// (plain) error. The generated server adapter calls it to fill the envelope.
+func StatusOf(err error) Status {
+	if err == nil {
+		return StatusOK
+	}
+	var opErr *Error
+	if errors.As(err, &opErr) {
+		return opErr.Status
+	}
+	return StatusInternal
 }
 
 // AuthReq states what identity guarantee an operation needs the gateway to
