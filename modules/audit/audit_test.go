@@ -3,12 +3,10 @@ package audit
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"io"
 	"log/slog"
-	"net/http"
-	"net/http/httptest"
 	"os"
-	"strings"
 	"testing"
 	"time"
 
@@ -24,6 +22,55 @@ import (
 )
 
 func discardLog() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
+
+// fakeTransport is a minimal in-memory bus.Transport standing in for the
+// messaging module: it captures the durable handlers audit registers via
+// bus.OnTxRaw / bus.OnTx (SubscribeTx) and lets a test drive delivery by invoking
+// the handler inside a REAL *sql.Tx — mirroring messaging's per-subscriber
+// inbox-dedup consume tx (minus the dedup, which is messaging's concern and
+// covered by messaging's own tests). This keeps audit's unit tests inside its
+// architectural boundary: they exercise the OnTx/OnTxRaw handler + ledger
+// atomicity, not the transport internals. EnqueueTx is unused here (audit is a
+// pure consumer).
+type fakeTransport struct {
+	db   *sql.DB
+	subs map[string]func(context.Context, *sql.Tx, []byte) error
+}
+
+func (f *fakeTransport) EnqueueTx(*sql.Tx, string, []byte) error { return nil }
+
+func (f *fakeTransport) SubscribeTx(topic, _ string, h func(context.Context, *sql.Tx, []byte) error) {
+	if f.subs == nil {
+		f.subs = map[string]func(context.Context, *sql.Tx, []byte) error{}
+	}
+	f.subs[topic] = h
+}
+
+// deliver runs the durable handler for topic inside a real tx and commits — the
+// same shape as messaging's consume, so the ledger insert / prune commits
+// atomically with the (would-be) inbox row.
+func (f *fakeTransport) deliver(t *testing.T, topic string, v any) {
+	t.Helper()
+	h, ok := f.subs[topic]
+	if !ok {
+		t.Fatalf("no durable subscriber registered for topic %q", topic)
+	}
+	payload, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := f.db.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h(context.Background(), tx, payload); err != nil {
+		_ = tx.Rollback()
+		t.Fatalf("durable handler for %q: %v", topic, err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func testDB(t *testing.T) *sql.DB {
 	t.Helper()
@@ -52,18 +99,23 @@ func testDB(t *testing.T) *sql.DB {
 	return db
 }
 
-// initModule wires an audit Module against db via a real lifecycle.Context, so the
-// generic bus subscriptions and the scheduler.fired bus.On are registered exactly
-// as in production. Returns the module and the context (its Bus drives the events).
-func initModule(t *testing.T, db *sql.DB) (*Module, *lifecycle.Context) {
+// initModule wires an audit Module against db via a real lifecycle.Context with a
+// fakeTransport installed BEFORE Init, so the durable subscriptions (bus.OnTxRaw
+// for domain topics, bus.OnTx for scheduler.fired) and the best-effort
+// ctx.Bus.Subscribe handlers are registered exactly as in production. Returns the
+// module, the context (its Bus drives best-effort events) and the transport (drive
+// durable delivery via ft.deliver).
+func initModule(t *testing.T, db *sql.DB) (*Module, *lifecycle.Context, *fakeTransport) {
 	t.Helper()
 	ctx := lifecycle.NewContext(discardLog())
 	ctx.DB = db
+	ft := &fakeTransport{db: db}
+	ctx.Bus.SetTransport(ft)
 	m := &Module{}
 	if err := m.Init(ctx); err != nil {
 		t.Fatalf("init: %v", err)
 	}
-	return m, ctx
+	return m, ctx, ft
 }
 
 // uniqueTopic returns a marker topic unique to this test run so assertions and
@@ -87,12 +139,13 @@ func countByTopic(t *testing.T, db *sql.DB, topic string) int {
 	return n
 }
 
-// TestBusEventIsLogged emits a real typed event and asserts the generic bus
-// subscription writes a row with the right topic and a JSON payload.
-func TestBusEventIsLogged(t *testing.T) {
+// TestBestEffortEventIsLogged emits a real typed best-effort event (match.finished)
+// and asserts the in-process ctx.Bus.Subscribe handler writes a row with the right
+// topic and a JSON payload.
+func TestBestEffortEventIsLogged(t *testing.T) {
 	db := testDB(t) // closed via testDB's t.Cleanup, after per-test DELETE cleanups
 
-	m, ctx := initModule(t, db)
+	_, ctx, _ := initModule(t, db)
 	matchID := uniqueRun(t, db)
 	t.Cleanup(func() { _, _ = db.Exec(`DELETE FROM audit.log WHERE payload->>'MatchID' = $1`, matchID) })
 
@@ -113,23 +166,58 @@ func TestBusEventIsLogged(t *testing.T) {
 	if winner != "alice" {
 		t.Fatalf("payload Winner = %q, want alice (payload not JSON-marshalled?)", winner)
 	}
-	_ = m
 }
 
-// TestPruneViaBus reacts to scheduler.fired{audit-prune} on the bus and deletes
-// rows past the retention window, keeping fresh ones.
-func TestPruneViaBus(t *testing.T) {
+// TestDurableCharacterEventsAreLogged drives the durable plane: a character.created
+// and a character.deleted delivered through the fakeTransport (as messaging would)
+// are recorded to the ledger verbatim, on the handed tx — no producer *events
+// import needed by audit (OnTxRaw hands raw JSON).
+func TestDurableCharacterEventsAreLogged(t *testing.T) {
 	db := testDB(t) // closed via testDB's t.Cleanup, after per-test DELETE cleanups
 
-	_, ctx := initModule(t, db)
+	_, _, ft := initModule(t, db)
+	charID := uniqueRun(t, db)
+	t.Cleanup(func() { _, _ = db.Exec(`DELETE FROM audit.log WHERE payload->>'CharacterID' = $1`, charID) })
+
+	ft.deliver(t, charactersevents.CreatedEvent.Topic(),
+		charactersevents.Created{CharacterID: charID, Name: "Test", Class: "novice"})
+	ft.deliver(t, charactersevents.DeletedEvent.Topic(),
+		charactersevents.Deleted{CharacterID: charID})
+
+	var created, deleted int
+	if err := db.QueryRow(
+		`SELECT
+			count(*) FILTER (WHERE topic = $2),
+			count(*) FILTER (WHERE topic = $3)
+		 FROM audit.log WHERE payload->>'CharacterID' = $1`,
+		charID, charactersevents.CreatedEvent.Topic(), charactersevents.DeletedEvent.Topic()).
+		Scan(&created, &deleted); err != nil {
+		t.Fatalf("count character rows: %v", err)
+	}
+	if created != 1 || deleted != 1 {
+		t.Fatalf("durable character events not recorded: created=%d deleted=%d (want 1,1)", created, deleted)
+	}
+}
+
+// TestPruneViaDurable reacts to scheduler.fired{audit-prune} on the durable plane
+// (bus.OnTx, driven via the fakeTransport) and deletes rows past the retention
+// window, keeping fresh ones. A non-prune schedule name is a no-op.
+func TestPruneViaDurable(t *testing.T) {
+	db := testDB(t) // closed via testDB's t.Cleanup, after per-test DELETE cleanups
+
+	_, _, ft := initModule(t, db)
 	oldTopic := uniqueTopic(t, db)
 	freshTopic := uniqueTopic(t, db)
 	insertAgedRow(t, db, oldTopic, 60)  // 60 days old — past default 30d retention
 	insertAgedRow(t, db, freshTopic, 0) // now — safe
 
-	bus.Emit(ctx.Bus, schedulerevents.FiredEvent, schedulerevents.Fired{Name: pruneScheduleName})
-	ctx.Bus.Close()
+	// A non-prune schedule name must NOT prune (proves the Name filter).
+	ft.deliver(t, schedulerevents.FiredEvent.Topic(), schedulerevents.Fired{Name: "some-other-job"})
+	if n := countByTopic(t, db, oldTopic); n != 1 {
+		t.Fatalf("non-prune schedule name pruned rows, got %d old rows", n)
+	}
 
+	ft.deliver(t, schedulerevents.FiredEvent.Topic(), schedulerevents.Fired{Name: pruneScheduleName})
 	if n := countByTopic(t, db, oldTopic); n != 0 {
 		t.Fatalf("old row survived prune, got %d rows", n)
 	}
@@ -138,75 +226,62 @@ func TestPruneViaBus(t *testing.T) {
 	}
 }
 
-// TestSchedulerFiredSinkPrunesAndDedups exercises the split path: a POST to
-// /events/scheduler-fired prunes; a second POST with the same X-Event-Id is an
-// inbox-deduped no-op (so a freshly-aged row inserted between the two survives).
-func TestSchedulerFiredSinkPrunesAndDedups(t *testing.T) {
-	db := testDB(t) // closed via testDB's t.Cleanup, after per-test DELETE cleanups
-
-	m, _ := initModule(t, db)
-	eventID := "test-evt-" + uniqueRun(t, db)
-	t.Cleanup(func() { _, _ = db.Exec(`DELETE FROM audit.inbox WHERE event_id = $1`, eventID) })
-
-	firstOld := uniqueTopic(t, db)
-	insertAgedRow(t, db, firstOld, 60)
-
-	post := func() *httptest.ResponseRecorder {
-		w := httptest.NewRecorder()
-		r := httptest.NewRequest(http.MethodPost, "/events/scheduler-fired",
-			strings.NewReader(`{"Name":"`+pruneScheduleName+`"}`))
-		r.Header.Set("X-Event-Id", eventID)
-		m.handleSchedulerFired(w, r)
-		return w
-	}
-
-	if w := post(); w.Code != http.StatusOK {
-		t.Fatalf("first POST status = %d, want 200", w.Code)
-	}
-	if n := countByTopic(t, db, firstOld); n != 0 {
-		t.Fatalf("first sink POST did not prune, got %d rows", n)
-	}
-
-	// Age a second row, then replay the SAME event id — inbox dedup means prune
-	// must NOT run again, so the new old row survives.
-	secondOld := uniqueTopic(t, db)
-	insertAgedRow(t, db, secondOld, 60)
-	if w := post(); w.Code != http.StatusOK {
-		t.Fatalf("replay POST status = %d, want 200", w.Code)
-	}
-	if n := countByTopic(t, db, secondOld); n != 1 {
-		t.Fatalf("replay (same X-Event-Id) re-ran prune — dedup failed, got %d rows", n)
-	}
-}
-
-// TestDomainTopicsMatchEvents is the anti-drift guard: the audit topic list must
-// equal exactly the domain events' declared topics. It imports the DOMAIN events
-// packages (NOT schedulerevents — that is consumed via bus.On, not logged) and
-// diffs the sets, so a topic rename on either side fails the build (topiccheck
-// cannot see generic Subscribe).
-func TestDomainTopicsMatchEvents(t *testing.T) {
-	want := map[string]bool{
-		accountsevents.PlayerRegisteredEvent.Topic(): true,
-		charactersevents.CreatedEvent.Topic():        true,
-		charactersevents.DeletedEvent.Topic():        true,
-		configevents.ChangedEvent.Topic():            true,
-		matchevents.FinishedEvent.Topic():            true,
-	}
+// assertTopicSet is the anti-drift diff: got must equal want exactly, with no
+// duplicates. Shared by the durable and best-effort set guards.
+func assertTopicSet(t *testing.T, name string, list []string, want map[string]bool) {
+	t.Helper()
 	got := map[string]bool{}
-	for _, tp := range domainTopics {
+	for _, tp := range list {
 		if got[tp] {
-			t.Fatalf("duplicate topic %q in domainTopics", tp)
+			t.Fatalf("duplicate topic %q in %s", tp, name)
 		}
 		got[tp] = true
 	}
 	for tp := range want {
 		if !got[tp] {
-			t.Errorf("domainTopics missing declared event topic %q", tp)
+			t.Errorf("%s missing declared event topic %q", name, tp)
 		}
 	}
 	for tp := range got {
 		if !want[tp] {
-			t.Errorf("domainTopics has %q with no matching domain event (rename? stray topic?)", tp)
+			t.Errorf("%s has %q with no matching domain event (rename? stray topic?)", name, tp)
+		}
+	}
+}
+
+// TestDurableTopicsMatchEvents is the anti-drift guard for the durable set: it must
+// equal exactly the durable producers' declared topics (character create/delete).
+// It imports the domain events packages and diffs the sets, so a topic rename on
+// either side fails the build.
+func TestDurableTopicsMatchEvents(t *testing.T) {
+	assertTopicSet(t, "durableTopics", durableTopics, map[string]bool{
+		charactersevents.CreatedEvent.Topic(): true,
+		charactersevents.DeletedEvent.Topic(): true,
+	})
+}
+
+// TestBestEffortTopicsMatchEvents is the anti-drift guard for the best-effort set:
+// it must equal exactly the best-effort producers' declared topics (player
+// registered, config changed, match finished) — the producers that emit plain
+// bus.Emit with no outbox.
+func TestBestEffortTopicsMatchEvents(t *testing.T) {
+	assertTopicSet(t, "bestEffortTopics", bestEffortTopics, map[string]bool{
+		accountsevents.PlayerRegisteredEvent.Topic(): true,
+		configevents.ChangedEvent.Topic():            true,
+		matchevents.FinishedEvent.Topic():            true,
+	})
+}
+
+// TestTopicSetsAreDisjoint guards that no topic is both durable and best-effort —
+// a topic must be logged through exactly one plane.
+func TestTopicSetsAreDisjoint(t *testing.T) {
+	durable := map[string]bool{}
+	for _, tp := range durableTopics {
+		durable[tp] = true
+	}
+	for _, tp := range bestEffortTopics {
+		if durable[tp] {
+			t.Errorf("topic %q is in BOTH durableTopics and bestEffortTopics", tp)
 		}
 	}
 }
