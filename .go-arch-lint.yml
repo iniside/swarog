@@ -43,55 +43,54 @@ components:
   # (Enumerated explicitly — go-arch-lint's `*` matches a whole path segment, not an `*events` suffix.)
   contracts:
     in:
-      - modules/accounts/accountsevents
-      - modules/accounts/accountsapi
-      - modules/characters/charactersevents
-      - modules/characters/charactersapi
-      - modules/config/configevents
-      - modules/inventory/inventoryapi
-      - modules/leaderboard/leaderboardapi
-      - modules/match/matchevents
-      - modules/match/matchapi
-      - modules/scheduler/schedulerevents
-      - modules/admin/adminapi
+      - api/accounts/accountsevents
+      - api/accounts/accountsapi
+      - api/characters/charactersevents
+      - api/characters/charactersapi
+      - api/config/configevents
+      - api/inventory/inventoryapi
+      - api/leaderboard/leaderboardapi
+      - api/match/matchevents
+      - api/match/matchapi
+      - api/scheduler/schedulerevents
+      - api/admin/adminapi
 
   # --- rpcglue tier: the rpcgen-GENERATED transport glue (<module>rpc) ---
   # The impl tier that MAY import edge; kept OUT of `contracts` (which stays
   # transport-free). Each <module>rpc is its own component so a module may depend
   # ONLY on its own glue (characters -> charactersrpc, accounts -> accountsrpc,
-  # remote -> both). ENUMERATED, not a `modules/**/**rpc` glob, because
-  # go-arch-lint's `*` matches a WHOLE path segment. DECLARED BEFORE the parent
-  # `characters`/`accounts` components below: go-arch-lint assigns a package to the
-  # FIRST declared component whose `in` prefix matches, so these must precede
-  # `modules/characters`/`modules/accounts` to win the more-specific subpath (the
-  # same reason `contracts` is declared above the module impls).
+  # remote -> both). ENUMERATED, not an `api/**/**rpc` glob, because go-arch-lint's
+  # `*` matches a WHOLE path segment. These now live under `api/<name>/…` — a tree
+  # DISJOINT from `modules/<name>/` — so there is no prefix overlap with the module
+  # impl components below and no ordering requirement: each rpc glue is simply its
+  # own component.
   charactersrpc:
     in:
-      - modules/characters/charactersrpc
+      - api/characters/charactersrpc
   charactersplayerrpc:
     in:
-      - modules/characters/charactersplayerrpc
+      - api/characters/charactersplayerrpc
   charactersadminrpc:
     in:
-      - modules/characters/charactersadminrpc
+      - api/characters/charactersadminrpc
   accountsrpc:
     in:
-      - modules/accounts/accountsrpc
+      - api/accounts/accountsrpc
   accountsauthrpc:
     in:
-      - modules/accounts/accountsauthrpc
+      - api/accounts/accountsauthrpc
   accountsadminrpc:
     in:
-      - modules/accounts/accountsadminrpc
+      - api/accounts/accountsadminrpc
   inventoryrpc:
     in:
-      - modules/inventory/inventoryrpc
+      - api/inventory/inventoryrpc
   leaderboardrpc:
     in:
-      - modules/leaderboard/leaderboardrpc
+      - api/leaderboard/leaderboardrpc
   matchrpc:
     in:
-      - modules/match/matchrpc
+      - api/match/matchrpc
 
   # Each module IMPLEMENTATION is its own component, so the linter can forbid cross-impl imports.
   accounts:    { in: modules/accounts }
