@@ -75,6 +75,13 @@ components:
   audit:       { in: modules/audit }
   characters:  { in: modules/characters }
   config:      { in: modules/config }
+  # The gateway front-door MODULE (modules/gateway): present in every app.Run
+  # process, it Contributes a front-handler to httpmw.FrontHandlerSlot so
+  # internal/app fronts ctx.Mux with it WITHOUT app importing this module (D4).
+  # DISTINCT from the `gateway` transport component below (the /gateway QUIC prefix
+  # router + HTTP reverse proxy). Named `gatewaymod` to disambiguate; `modules/gateway`
+  # does not overlap the transport `gateway` (in: gateway), so no prefix conflict.
+  gatewaymod:  { in: modules/gateway }
   inventory:   { in: modules/inventory }
   leaderboard: { in: modules/leaderboard }
   match:       { in: modules/match }
@@ -167,6 +174,10 @@ deps:
   audit:       { mayDependOn: [ lifecycle, contracts ] }
   characters:  { mayDependOn: [ lifecycle, contracts, edge, outbox, charactersrpc ] }
   config:      { mayDependOn: [ lifecycle, contracts ] }
+  # The gateway MODULE contributes a front-handler to the httpmw leaf slot; it needs
+  # lifecycle (Module/Context) + httpmw (the slot const, a commonComponent) + stdlib
+  # net/http. It imports NO module impl — the whole point of the leaf-slot seam (D4).
+  gatewaymod:  { mayDependOn: [ lifecycle, httpmw ] }
   inventory:   { mayDependOn: [ lifecycle, contracts, edge ] }
   leaderboard: { mayDependOn: [ lifecycle, contracts ] }
   match:       { mayDependOn: [ lifecycle, contracts ] }
@@ -219,6 +230,7 @@ deps:
       - audit
       - characters
       - config
+      - gatewaymod
       - inventory
       - leaderboard
       - match
@@ -232,6 +244,7 @@ deps:
     mayDependOn:
       - accounts
       - characters
+      - gatewaymod
       - messaging
       - lifecycle
       - edge
@@ -242,6 +255,7 @@ deps:
       - admin
       - audit
       - config
+      - gatewaymod
       - messaging
       - remote
       - lifecycle
@@ -251,6 +265,7 @@ deps:
   cmdSchedulerSvc:
     mayDependOn:
       - scheduler
+      - gatewaymod
       - messaging
       - lifecycle
       - app

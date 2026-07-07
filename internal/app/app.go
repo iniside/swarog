@@ -170,7 +170,28 @@ func Run(cfg Config, mods []lifecycle.Module, edgeServer *edge.Server) error {
 	// characters-svc/inventory-svc BEHIND the gateway, so limiting there would
 	// double-count and collapse every client into the gateway's single bucket. The
 	// gateway (front door) always limits; the monolith turns this on via env.
+	// Front-handler slot: a module (the gateway) contributes a
+	// func(http.Handler) http.Handler to httpmw.FrontHandlerSlot; each is composed
+	// around ctx.Mux HERE, so the gateway fronts the process's HTTP surface WITHOUT
+	// this package importing the gateway module — app reads only the leaf slot name
+	// (mirrors the ReadinessSlot read in /readyz). Read lazily after Build, so every
+	// module's Init (where Contribute happens) has run. Contributions are asserted to
+	// the bare func type (stdlib-only slot value); a bad assertion is skipped, not
+	// fatal — a misregistered contribution is that module's bug, not grounds to boot
+	// without a front. The front is composed INNERMOST of the three wraps (front →
+	// rate-limit → metrics, below): it wraps ctx.Mux directly, so once the gateway
+	// intercepts routes (later phases) they are still rate-limited and metrics-counted
+	// like any other request — metrics stays the outermost wrap counting final status,
+	// consistent with today. On Step B1 the contributed front is pure passthrough, so
+	// this is a byte-for-byte no-op.
 	var handler http.Handler = ctx.Mux
+	for _, contribution := range ctx.Contributions(httpmw.FrontHandlerSlot) {
+		front, ok := contribution.(func(http.Handler) http.Handler)
+		if !ok {
+			continue
+		}
+		handler = front(handler)
+	}
 	if rps := envFloat("RATE_LIMIT_RPS", 0); rps > 0 {
 		trusted, err := httpmw.ParseCIDRs(os.Getenv("TRUSTED_PROXY_CIDRS"))
 		if err != nil {

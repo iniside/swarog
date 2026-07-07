@@ -19,6 +19,7 @@ import (
 	"gamebackend/modules/audit"
 	"gamebackend/modules/characters"
 	"gamebackend/modules/config"
+	"gamebackend/modules/gateway"
 	"gamebackend/modules/inventory"
 	"gamebackend/modules/leaderboard"
 	"gamebackend/modules/match"
@@ -32,6 +33,7 @@ func main() {
 	// All modules, hosted locally. Pointer receivers for the stateful ones
 	// (db/verifiers/caches); value receivers for the stateless ones.
 	mods := []lifecycle.Module{
+		&gateway.Module{},     // front door: contributes the HTTP front-handler (passthrough today) via httpmw.FrontHandlerSlot
 		&config.Module{},      // central DB-backed config: schema "config", provides "config", live-reload via LISTEN/NOTIFY
 		&accounts.Module{},    // player identity; owns schema "accounts"
 		&characters.Module{},  // depends on accounts

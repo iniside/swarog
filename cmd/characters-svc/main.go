@@ -20,6 +20,7 @@ import (
 	"gamebackend/lifecycle"
 	"gamebackend/modules/accounts"
 	"gamebackend/modules/characters"
+	"gamebackend/modules/gateway"
 	"gamebackend/modules/messaging"
 )
 
@@ -35,7 +36,10 @@ func main() {
 	// characters' Init calls EmitTx; registration order also governs Stop, which
 	// runs in REVERSE — last-registered stops FIRST, so the relay halts delivery
 	// before characters tears down.
-	mods := []lifecycle.Module{am, cm, &messaging.Module{}}
+	// gateway FIRST: it only Contributes the HTTP front-handler (passthrough
+	// today) and has no Stop, so its position is immaterial to teardown; messaging
+	// must stay LAST for Stop ordering.
+	mods := []lifecycle.Module{&gateway.Module{}, am, cm, &messaging.Module{}}
 
 	if err := app.Run(app.ConfigFromEnv(), mods, srv); err != nil {
 		slog.New(slog.NewTextHandler(os.Stdout, nil)).Error("characters-svc exited", "err", err)

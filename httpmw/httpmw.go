@@ -192,6 +192,17 @@ func ParseCIDRs(csv string) ([]*net.IPNet, error) {
 // name any future module can target without creating an import cycle.
 const ReadinessSlot = "readiness.check"
 
+// FrontHandlerSlot is the contrib slot the boot layer (internal/app) reads to
+// front the WHOLE mux. A module (the gateway) contributes a
+// `func(http.Handler) http.Handler` middleware to it; app.Run composes each
+// contributed wrapper around ctx.Mux, so the gateway becomes the process's HTTP
+// front WITHOUT internal/app importing the gateway module — app depends only on
+// this leaf slot name (mirrors ReadinessSlot above). The slot value is stdlib-only
+// (`func(http.Handler) http.Handler`) so a contributor need not import httpmw for
+// the type. Defined here (not in a module) so it's a stable, dependency-free name
+// any module can target without an import cycle.
+const FrontHandlerSlot = "httpmw.front"
+
 // SkipInfra reports whether r targets an infra endpoint that must never be rate
 // limited: k8s liveness/readiness probes and the Prometheus scrape all arrive
 // from one IP and a 429 there means a restart loop or scrape gaps.

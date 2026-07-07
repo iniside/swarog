@@ -18,6 +18,7 @@ import (
 	"gamebackend/modules/admin"
 	"gamebackend/modules/audit"
 	"gamebackend/modules/config"
+	"gamebackend/modules/gateway"
 	"gamebackend/modules/inventory"
 	"gamebackend/modules/messaging"
 	"gamebackend/modules/remote"
@@ -61,6 +62,8 @@ func main() {
 	srv := edge.NewServer()
 
 	mods := []lifecycle.Module{
+		// front door: contributes the HTTP front-handler (passthrough today) via httpmw.FrontHandlerSlot
+		&gateway.Module{},
 		// central config: schema "config", provides "config", live-reload via LISTEN/NOTIFY
 		&config.Module{},
 		&inventory.Module{Edge: srv},
