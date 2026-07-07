@@ -51,15 +51,6 @@ func (s *store) createTx(ctx context.Context, q rowQuerier, playerID, name, clas
 	return c, err
 }
 
-// insertOutbox appends one event row to the transactional outbox using the given
-// querier. Called with the SAME tx as the domain write so the event is durable
-// iff the domain change committed (no lost events, no phantom events).
-func (s *store) insertOutbox(ctx context.Context, q rowQuerier, topic string, payload []byte) error {
-	_, err := q.ExecContext(ctx,
-		`INSERT INTO characters.outbox (topic, payload) VALUES ($1, $2::jsonb)`, topic, payload)
-	return err
-}
-
 func (s *store) listByPlayer(ctx context.Context, playerID string) ([]Character, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT `+cols+` FROM characters.characters WHERE player_id = $1::uuid ORDER BY created_at`, playerID)
