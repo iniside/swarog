@@ -4,6 +4,10 @@
 package bus
 
 import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
 	"log/slog"
 	"sync"
 )
@@ -30,11 +34,12 @@ type Handler func(Event)
 // after a Publish may not see its effect yet. Anything needing immediate
 // consistency must go through a service interface instead.
 type Bus struct {
-	mu    sync.RWMutex
-	subs  map[string][]*mailbox
-	boxes []*mailbox // every mailbox, for draining on Close
-	wg    sync.WaitGroup
-	log   *slog.Logger
+	mu        sync.RWMutex
+	subs      map[string][]*mailbox
+	boxes     []*mailbox // every mailbox, for draining on Close
+	wg        sync.WaitGroup
+	log       *slog.Logger
+	transport Transport // nil-able durable-plane hook; see SetTransport
 }
 
 func NewBus(log *slog.Logger) *Bus {
@@ -89,6 +94,86 @@ func On[T any](b *Bus, et EventType[T], h func(T)) {
 // Emit publishes a typed event. Non-blocking, like Publish.
 func Emit[T any](b *Bus, et EventType[T], v T) {
 	b.Publish(Event{Topic: et.topic, Data: v})
+}
+
+// ErrNoTransport is returned by EmitTx when no durable transport is installed,
+// so a durable event is never silently dropped — a caller that meant to persist
+// an event learns that this process has no durable plane.
+var ErrNoTransport = errors.New("bus: no durable transport installed")
+
+// Transport is the durable plane's hook: a nil-able seam this leaf package
+// defines but never implements. modules/messaging implements it (outbox log +
+// inbox dedup + relay) and installs it via SetTransport, so the dependency
+// points module → leaf and bus stays free of any module import (hard constraint
+// #1). It deals only in topic strings and []byte — the generic payload T is
+// collapsed to bytes at the EmitTx/OnTx/OnTxRaw boundary, so the transport never
+// sees a type parameter.
+type Transport interface {
+	// EnqueueTx writes the encoded event to the durable log inside the caller's
+	// transaction, so persisting the event is atomic with the domain change.
+	EnqueueTx(tx *sql.Tx, topic string, payload []byte) error
+	// SubscribeTx registers a durable handler for topic. subscriber is a stable
+	// name identifying this subscription for inbox dedup ((event_id, subscriber)).
+	SubscribeTx(topic, subscriber string, h func(ctx context.Context, tx *sql.Tx, payload []byte) error)
+}
+
+// SetTransport installs the durable transport. It panics on a double-set, so a
+// second installer is a loud programmer error rather than a silent override
+// (mirroring registry.Provide's duplicate-provide panic).
+func (b *Bus) SetTransport(t Transport) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.transport != nil {
+		panic("bus: transport already set")
+	}
+	b.transport = t
+}
+
+// EmitTx publishes a typed event on the durable plane, inside the caller's
+// transaction. Unlike Emit it returns an error: ErrNoTransport if no durable
+// transport is installed (so the event is never silently lost), or the marshal /
+// enqueue error otherwise. The generic payload is marshalled to JSON here — the
+// exact point where T collapses to bytes for the transport.
+func EmitTx[T any](b *Bus, tx *sql.Tx, et EventType[T], v T) error {
+	if b.transport == nil {
+		return ErrNoTransport
+	}
+	payload, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	return b.transport.EnqueueTx(tx, et.topic, payload)
+}
+
+// OnTx subscribes a typed durable handler. subscriber is the stable dedup name.
+// It is a no-op when no transport is installed, so a best-effort-only process
+// (one that hosts no durable plane) is legal and simply skips durable wiring.
+// The closure is the boundary where the transport's bytes are unmarshalled back
+// into T before the typed handler runs.
+func OnTx[T any](b *Bus, et EventType[T], subscriber string, h func(context.Context, *sql.Tx, T) error) {
+	if b.transport == nil {
+		return
+	}
+	b.transport.SubscribeTx(et.topic, subscriber, func(ctx context.Context, tx *sql.Tx, payload []byte) error {
+		var v T
+		if err := json.Unmarshal(payload, &v); err != nil {
+			return err
+		}
+		return h(ctx, tx, v)
+	})
+}
+
+// OnTxRaw is the untyped durable subscribe: it hands the handler the raw JSON
+// payload, for a subscriber that reacts to a topic string without importing the
+// producer's <module>events package (audit's cross-domain ledger). Like OnTx it
+// is a no-op when no transport is installed.
+func OnTxRaw(b *Bus, topic, subscriber string, h func(context.Context, *sql.Tx, json.RawMessage) error) {
+	if b.transport == nil {
+		return
+	}
+	b.transport.SubscribeTx(topic, subscriber, func(ctx context.Context, tx *sql.Tx, payload []byte) error {
+		return h(ctx, tx, json.RawMessage(payload))
+	})
 }
 
 // Publish hands the event to each subscriber's mailbox and returns immediately.
