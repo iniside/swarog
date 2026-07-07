@@ -26,6 +26,7 @@ $binDir = Join-Path $root 'bin'
 $serverBin = Join-Path $binDir 'server.exe'
 $charactersBin = Join-Path $binDir 'characters-svc.exe'
 $inventoryBin = Join-Path $binDir 'inventory-svc.exe'
+$schedulerBin = Join-Path $binDir 'scheduler-svc.exe'
 $gatewayBin = Join-Path $binDir 'gateway-svc.exe'
 
 $defaultDSN = 'postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable'
@@ -75,6 +76,7 @@ if ($Mode -eq 'monolith') {
 } else {
     Build-Bin './cmd/characters-svc' $charactersBin
     Build-Bin './cmd/inventory-svc' $inventoryBin
+    Build-Bin './cmd/scheduler-svc' $schedulerBin
     Build-Bin './cmd/gateway-svc' $gatewayBin
 }
 Write-Host "Build OK." -ForegroundColor Green
@@ -212,6 +214,21 @@ $procB = Start-Server -BinPath $inventoryBin -EnvHash $envB -LogName 'inventory'
 $started += @{ name = 'inventory'; proc = $procB }
 Wait-Healthy -Port 8081 -Name 'B (inventory-svc)'
 
+# Process D: scheduler-svc (scheduler ONLY, its OWN binary, no edge). A pure
+# event producer: its outbox relay POSTs scheduler.fired to the audit sink hosted
+# in B (inventory-svc). Started after B so the sink exists; the relay retries
+# anyway. (The /events/scheduler-fired sink lands with the audit module — Step 5;
+# until then the relay POSTs and retries against a 404, harmlessly.)
+$envD = @{
+    PORT               = '8083'
+    DATABASE_URL       = $DatabaseUrl
+    EVENTS_SUBSCRIBERS = 'scheduler.fired=http://localhost:8081/events/scheduler-fired'
+}
+Write-Host "Starting D (scheduler-svc: scheduler) on :8083 ..." -ForegroundColor Cyan
+$procD = Start-Server -BinPath $schedulerBin -EnvHash $envD -LogName 'scheduler'
+$started += @{ name = 'scheduler'; proc = $procD }
+Wait-Healthy -Port 8083 -Name 'D (scheduler-svc)'
+
 # Process C: gateway-svc (stateless QUIC prefix router + HTTP reverse proxy
 # front door). Fronts both A and B, so it starts LAST, once both are healthy.
 $envC = @{
@@ -234,7 +251,8 @@ Write-Host ""
 Write-Host "=== microservices running ===" -ForegroundColor Cyan
 Write-Host "  A (characters-svc: accounts,characters): http://localhost:8080  (edge :9000)"
 Write-Host "  B (inventory-svc: inventory,admin):      http://localhost:8081  (edge :9001)"
+Write-Host "  D (scheduler-svc: scheduler):            http://localhost:8083  (event producer, no edge)"
 Write-Host "  admin UI (B):                            http://localhost:8081/admin"
 Write-Host "  player front door (gateway):              quic localhost:9100 / http http://localhost:8082"
-Write-Host "  logs: run/characters.{out,err}.log, run/inventory.{out,err}.log, run/gateway.{out,err}.log"
+Write-Host "  logs: run/characters.{out,err}.log, run/inventory.{out,err}.log, run/scheduler.{out,err}.log, run/gateway.{out,err}.log"
 Write-Host "  teardown: .\run.ps1 -Teardown"

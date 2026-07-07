@@ -44,6 +44,7 @@ components:
       - modules/characters/charactersevents
       - modules/config/configevents
       - modules/match/matchevents
+      - modules/scheduler/schedulerevents
       - modules/admin/adminapi
 
   # Each module IMPLEMENTATION is its own component, so the linter can forbid cross-impl imports.
@@ -55,6 +56,7 @@ components:
   leaderboard: { in: modules/leaderboard }
   match:       { in: modules/match }
   rating:      { in: modules/rating }
+  scheduler:   { in: modules/scheduler }
   webui:       { in: modules/webui }
 
   # Transport-agnostic leaf: QUIC RPC framing/codec/TLS. Imports stdlib + quic-go
@@ -89,6 +91,7 @@ components:
   cmdServer:         { in: cmd/server }
   cmdCharactersSvc:  { in: cmd/characters-svc }
   cmdInventorySvc:   { in: cmd/inventory-svc }
+  cmdSchedulerSvc:   { in: cmd/scheduler-svc }
   cmdGatewaySvc:     { in: cmd/gateway-svc }
 
 commonComponents:
@@ -119,6 +122,8 @@ deps:
   leaderboard: { mayDependOn: [ lifecycle, contracts ] }
   match:       { mayDependOn: [ lifecycle, contracts ] }
   rating:      { mayDependOn: [ lifecycle, contracts ] }
+  # scheduler drives the transactional-outbox relay (outbox), like characters.
+  scheduler:   { mayDependOn: [ lifecycle, contracts, outbox ] }
   webui:       { mayDependOn: [ lifecycle ] }
 
   # The remote stub is composition-time plumbing: it wraps edge clients + the
@@ -156,6 +161,7 @@ deps:
       - leaderboard
       - match
       - rating
+      - scheduler
       - webui
       - lifecycle
       - app
@@ -174,6 +180,12 @@ deps:
       - remote
       - lifecycle
       - edge
+      - app
+  #   - scheduler-svc hosts ONLY scheduler (a pure event producer, no edge).
+  cmdSchedulerSvc:
+    mayDependOn:
+      - scheduler
+      - lifecycle
       - app
   cmdGatewaySvc:
     mayDependOn:

@@ -22,11 +22,12 @@ import (
 	"gamebackend/modules/leaderboard"
 	"gamebackend/modules/match"
 	"gamebackend/modules/rating"
+	"gamebackend/modules/scheduler"
 	"gamebackend/modules/webui"
 )
 
 func main() {
-	// All 8 modules, hosted locally. Pointer receivers for the stateful ones
+	// All modules, hosted locally. Pointer receivers for the stateful ones
 	// (db/verifiers/caches); value receivers for the stateless ones.
 	mods := []lifecycle.Module{
 		&config.Module{},      // central DB-backed config: schema "config", provides "config", live-reload via LISTEN/NOTIFY
@@ -37,6 +38,7 @@ func main() {
 		&leaderboard.Module{}, // Postgres-backed match listener
 		match.Module{},        // depends on rating
 		webui.Module{},        // serves the SPA demo at "/"
+		&scheduler.Module{},   // data-driven event source: schema "scheduler", emits scheduler.fired
 		&admin.Module{},       // GameOps portal at "/admin"
 	}
 

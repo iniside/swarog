@@ -29,6 +29,7 @@ BIN_DIR="bin"
 SERVER_BIN="$BIN_DIR/server"
 CHARACTERS_BIN="$BIN_DIR/characters-svc"
 INVENTORY_BIN="$BIN_DIR/inventory-svc"
+SCHEDULER_BIN="$BIN_DIR/scheduler-svc"
 GATEWAY_BIN="$BIN_DIR/gateway-svc"
 
 DEFAULT_DSN="postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable"
@@ -66,6 +67,8 @@ else
     go build -o "$CHARACTERS_BIN" ./cmd/characters-svc
     echo "Building ./cmd/inventory-svc -> $INVENTORY_BIN ..."
     go build -o "$INVENTORY_BIN" ./cmd/inventory-svc
+    echo "Building ./cmd/scheduler-svc -> $SCHEDULER_BIN ..."
+    go build -o "$SCHEDULER_BIN" ./cmd/scheduler-svc
     echo "Building ./cmd/gateway-svc -> $GATEWAY_BIN ..."
     go build -o "$GATEWAY_BIN" ./cmd/gateway-svc
 fi
@@ -166,6 +169,18 @@ start_server inventory "$INVENTORY_BIN" \
     PEER_HTTP_ADDR=localhost:8080
 wait_healthy 8081 "B (inventory-svc)"
 
+# Process D: scheduler-svc (scheduler ONLY, its OWN binary, no edge). A pure
+# event producer: its outbox relay POSTs scheduler.fired to the audit sink hosted
+# in B (inventory-svc). Started after B so the sink exists; the relay retries
+# regardless. (The /events/scheduler-fired sink lands with the audit module in
+# Step 5; until then the relay POSTs and retries against a 404, harmlessly.)
+echo "Starting D (scheduler-svc: scheduler) on :8083 ..."
+start_server scheduler "$SCHEDULER_BIN" \
+    PORT=8083 \
+    DATABASE_URL="$DATABASE_URL" \
+    EVENTS_SUBSCRIBERS='scheduler.fired=http://localhost:8081/events/scheduler-fired'
+wait_healthy 8083 "D (scheduler-svc)"
+
 # Process C: gateway-svc (stateless QUIC prefix router + HTTP reverse proxy
 # front door). Fronts both A and B, so it starts LAST, once both are healthy.
 echo "Starting C (gateway-svc: player front door) on :8082, edge :9100 ..."
@@ -184,7 +199,8 @@ echo ""
 echo "=== microservices running ==="
 echo "  A (characters-svc: accounts,characters): http://localhost:8080  (edge :9000)"
 echo "  B (inventory-svc: inventory,admin):      http://localhost:8081  (edge :9001)"
+echo "  D (scheduler-svc: scheduler):            http://localhost:8083  (event producer, no edge)"
 echo "  admin UI (B):                            http://localhost:8081/admin"
 echo "  player front door (gateway):              quic localhost:9100 / http http://localhost:8082"
-echo "  logs: $RUN_DIR/characters.{out,err}.log, $RUN_DIR/inventory.{out,err}.log, $RUN_DIR/gateway.{out,err}.log"
+echo "  logs: $RUN_DIR/characters.{out,err}.log, $RUN_DIR/inventory.{out,err}.log, $RUN_DIR/scheduler.{out,err}.log, $RUN_DIR/gateway.{out,err}.log"
 echo "  teardown: ./run.sh --teardown"
