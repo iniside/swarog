@@ -8,16 +8,19 @@ not modifying existing code* (Open/Closed at the architecture level).
 
 Three seams carry all extensibility; almost everything else follows from them:
 
-1. **Module registry** (`core`) — every feature is a `core.Module` and self-
-   registers. The core never imports a module; modules import the core.
-   Inter-module dependencies are declared (`DependsOn`) and topologically ordered;
-   cycles and missing deps fail loudly at startup.
-2. **Service registry** (`Context.Provide` / `Require`) — for *synchronous* needs
-   ("ask B now, get an answer"). The consumer asserts the service to its OWN local
-   interface, so it depends on a capability, not a package.
-3. **Event bus** (`Context.Bus`) — the default glue, **async + fire-and-forget**.
+1. **Module registry** (`lifecycle`) — every feature is a `lifecycle.Module` and
+   self-registers. The foundations never import a module; modules import them.
+   Dependencies are declared as a manifest (`Requires()`) and are **NOT**
+   topologically sorted: a two-phase build (every provider's `Register` runs before
+   any module's `Init`) makes init order commutative, so no sort is needed. Import
+   cycles are rejected by the Go compiler; a missing required service in a process's
+   module set fails loudly at startup (`validateRequires`).
+2. **Service registry** (`registry.Provide` / `Require`, over `ctx.Registry`) — for
+   *synchronous* needs ("ask B now, get an answer"). The consumer asserts the service
+   to its OWN local interface, so it depends on a capability, not a package.
+3. **Event bus** (`ctx.Bus`) — the default glue, **async + fire-and-forget**.
    Reacting to something = subscribe. Each publishing domain owns a
-   `<module>events` package declaring events via `core.Define[T]("topic")`.
+   `<module>events` package declaring events via `bus.Define[T]("topic")`.
 
 Plus a minor seam: **`Context.Contribute(slot, v)` / `Contributions(slot)`** — a
 multi-value registry (unlike single-value `Provide`) for cross-cutting collections
@@ -26,24 +29,26 @@ A new contributor appears without the consumer being edited.
 
 ## Hard constraints (do not violate without discussing)
 
-1. Core never imports a module. Dependency only ever points module → core.
+1. The foundations (`lifecycle`/`bus`/`registry`/`contrib`) never import a module.
+   Dependency only ever points module → foundations.
 2. Module implementations never import each other. Cross-module comms go through
    the bus (async) or a service interface from the registry (sync).
 3. Synchronous dependency only "downward", toward foundations. Sideways reactions
-   go through the bus. Declared `DependsOn` must match real sync dependencies.
+   go through the bus. Declared `Requires()` must match real sync dependencies.
 4. Depend on an interface/capability, not a package (consumer-defined interface).
 5. The only deliberately shared surface between modules is each domain's
-   `<module>events` package (payload types + the `core.Define` descriptor).
+   `<module>events` package (payload types + the `bus.Define` descriptor).
 6. Evolve events additively (new field / `FinishedV2`); never mutate a published
    payload shape — a structural change breaks consumers at compile time.
 7. **The bus is async.** `Publish`/`Emit` never block and return nothing, so they
    can't be used for a synchronous answer — that's a service interface's job.
    State projected from events is eventually consistent.
-8. Lifecycle: `Init` only wires up (no I/O) → optional `Migrate` (own schema) →
-   optional `Start` (background work). Teardown is reverse order via optional
-   `Stop`. Shutdown: stop HTTP → drain bus → `Stop` modules.
-9. Events are typed: declare with `core.Define`, publish/subscribe with
-   `core.Emit` / `core.On`. No raw `e.Data.(T)` asserts in module code.
+8. Lifecycle: providers construct services in optional `Register` (phase 1, before
+   any `Init`) → `Init` only wires up (no I/O) → optional `Migrate` (own schema) →
+   optional `Start` (background work). Teardown is reverse registration order via
+   optional `Stop`. Shutdown: stop HTTP → drain bus → `Stop` modules.
+9. Events are typed: declare with `bus.Define`, publish/subscribe with
+   `bus.Emit` / `bus.On`. No raw `e.Data.(T)` asserts in module code.
 10. **Persistence = one shared Postgres, full *logical* isolation.** Each module
     owns its own schema and touches no other module's tables. **No cross-module
     foreign keys.** A relation to another module is its id stored as a plain
@@ -52,14 +57,16 @@ A new contributor appears without the consumer being edited.
 
 ## Adding a module (the recipe)
 
-1. New folder `modules/<name>/`. Implement `core.Module` (`Name`, `DependsOn`,
-   `Init`). Use a pointer receiver if it holds state (db, logger, caches).
-2. If it persists data: implement `core.Migrator` and create ONLY your own schema
-   (`CREATE SCHEMA IF NOT EXISTS <name>; CREATE TABLE IF NOT EXISTS <name>....`).
+1. New folder `modules/<name>/`. Implement `lifecycle.Module` (`Name`, `Requires`,
+   `Init`). Use a pointer receiver if it holds state (db, logger, caches). If it
+   PROVIDES a service, also implement `lifecycle.Registrar` (`Register`) so the
+   service is registered before any module's `Init`.
+2. If it persists data: implement `lifecycle.Migrator` and create ONLY your own
+   schema (`CREATE SCHEMA IF NOT EXISTS <name>; CREATE TABLE IF NOT EXISTS <name>....`).
 3. If it publishes events: add `modules/<name>/<name>events/` with
-   `var XEvent = core.Define[XPayload]("<name>.x")`. Emit with `core.Emit`.
-4. If it runs background work or holds resources: implement `core.Starter` /
-   `core.Stopper`.
+   `var XEvent = bus.Define[XPayload]("<name>.x")`. Emit with `bus.Emit`.
+4. If it runs background work or holds resources: implement `lifecycle.Starter` /
+   `lifecycle.Stopper`.
 5. Register it with one line in `cmd/server/main.go`. Touch nothing else.
 
 ## Accounts & identity
@@ -162,8 +169,11 @@ PGPASSWORD=gamebackend "/c/Program Files/PostgreSQL/18/bin/psql.exe" -U gameback
 
 ```
 cmd/server/main.go            # the only place that lists all modules
-core/                         # Module, Context, Registry, Bus, typed events — no game knowledge
+lifecycle/                    # Module/Context/App: builds, migrates, starts, stops modules
+bus/ registry/ contrib/       # leaf foundations: async event bus, sync service registry, multi-value slots
+
 modules/
+  config/                     # DB-backed operational knobs (schema "config"); LISTEN/NOTIFY live-reload, emits config.changed
   accounts/                   # player identity: dev(password) + epic(OIDC) providers, owns schema "accounts"
     accountsevents/           #   published events (PlayerRegistered)
     store.go password.go epic.go
