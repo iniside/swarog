@@ -37,7 +37,7 @@ if ([string]::IsNullOrWhiteSpace($DatabaseUrl)) {
 # --- Teardown ---------------------------------------------------------------
 if ($Teardown) {
     if (-not (Test-Path $pidsFile)) {
-        Write-Host "No run/pids.json found — nothing to tear down." -ForegroundColor Yellow
+        Write-Host "No run/pids.json found -- nothing to tear down." -ForegroundColor Yellow
         return
     }
     $entries = Get-Content $pidsFile -Raw | ConvertFrom-Json
@@ -59,14 +59,14 @@ New-Item -ItemType Directory -Force -Path $binDir | Out-Null
 New-Item -ItemType Directory -Force -Path $runDir | Out-Null
 
 # Build only the binaries this mode needs. Each `go build` links ONLY the
-# packages its entrypoint imports — the microservice binaries do not carry the
+# packages its entrypoint imports -- the microservice binaries do not carry the
 # other service's modules.
 function Build-Bin {
     param([string]$Pkg, [string]$Out)
     Write-Host "Building $Pkg -> $Out ..." -ForegroundColor Cyan
     & go build -o $Out $Pkg
     if ($LASTEXITCODE -ne 0) {
-        Write-Error "go build $Pkg failed — aborting."
+        Write-Error "go build $Pkg failed -- aborting."
         exit 1
     }
 }
@@ -95,7 +95,7 @@ function Start-Server {
     $outLog = Join-Path $runDir "$LogName.out.log"
     $errLog = Join-Path $runDir "$LogName.err.log"
 
-    # Set process-scoped env vars, launch, then restore — the child process
+    # Set process-scoped env vars, launch, then restore -- the child process
     # inherits the modified environment at creation time.
     $saved = @{}
     foreach ($key in $EnvHash.Keys) {
@@ -133,7 +133,7 @@ function Wait-Healthy {
                 return
             }
         } catch {
-            # not up yet — keep polling
+            # not up yet -- keep polling
         }
         Start-Sleep -Milliseconds 500
     }
@@ -153,7 +153,7 @@ function Stop-Started {
 }
 
 trap {
-    Write-Host "Launch failed — stopping already-started processes." -ForegroundColor Red
+    Write-Host "Launch failed -- stopping already-started processes." -ForegroundColor Red
     Stop-Started
     throw
 }
@@ -190,13 +190,13 @@ $edgeCaKey = Join-Path $runDir 'edge-ca.key'
 Write-Host "Minting shared edge dev CA -> $edgeCaCert ..." -ForegroundColor Cyan
 & go run ./tools/edgeca -cert $edgeCaCert -key $edgeCaKey
 if ($LASTEXITCODE -ne 0) {
-    Write-Error "minting edge dev CA failed — aborting."
+    Write-Error "minting edge dev CA failed -- aborting."
     exit 1
 }
 
 # Process A: characters-svc (accounts + characters, its OWN binary). Hosts the
 # QUIC edge server (:9000) and the outbox relay for character.* events. Started
-# FIRST — B's remote stubs and the shared accounts schema migration must not
+# FIRST -- B's remote stubs and the shared accounts schema migration must not
 # race A's first boot (S7).
 $envA = @{
     PORT               = '8080'
@@ -206,11 +206,11 @@ $envA = @{
     EDGE_CA_KEY        = $edgeCaKey
     MESSAGING_ORIGIN   = 'characters-svc'
     # EVENTS_SUBSCRIBERS is read by messaging's relay, which runs in the
-    # process hosting `characters` — i.e. THIS process (A), not B — because
+    # process hosting `characters` -- i.e. THIS process (A), not B -- because
     # the relay drains only ITS OWN origin's rows in messaging.outbox (origin=
     # characters-svc) and delivers them to remote peers. Both topics point at
     # B's single consolidated inbound route (POST /events, topic in the
-    # X-Event-Topic header) — there is no more per-topic sink path.
+    # X-Event-Topic header) -- there is no more per-topic sink path.
     # MESSAGING_ORIGIN must be stable across restarts (never a pid/hostname)
     # so a crashed process resumes draining its own unsent outbox rows.
     EVENTS_SUBSCRIBERS = 'character.created=http://localhost:8081/events;character.deleted=http://localhost:8081/events'
@@ -263,7 +263,7 @@ $envC = @{
     CHARACTERS_EDGE_ADDR  = 'localhost:9000'
     INVENTORY_EDGE_ADDR   = 'localhost:9001'
     # accounts.* ops (register/login/me + verifySession for auth-once) are served by
-    # A's edge — accounts is co-hosted in characters-svc, so this equals
+    # A's edge -- accounts is co-hosted in characters-svc, so this equals
     # CHARACTERS_EDGE_ADDR; kept explicit so the front-door op routing self-documents.
     # EDGE_CA_CERT/KEY (above) let gateway-svc dial the backends' mutually-
     # authenticated edge and dispatch each op as a single hop.

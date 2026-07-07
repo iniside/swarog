@@ -55,7 +55,7 @@ function Add-Result {
     $script:results += [pscustomobject]@{ Name = $Name; Status = $Status; Blocking = $Blocking }
 }
 
-# Ensure-Tool BIN SPEC — $true if the tool is available (installing it if missing
+# Ensure-Tool BIN SPEC -- $true if the tool is available (installing it if missing
 # and installs are enabled), $false if unavailable (stage SKIPs).
 function Ensure-Tool {
     param([string]$Bin, [string]$Spec)
@@ -66,7 +66,7 @@ function Ensure-Tool {
     return [bool](Get-Command $Bin -ErrorAction SilentlyContinue)
 }
 
-# Invoke-SimpleStage NAME BLOCKING EXE ARGS — runs EXE, logging to
+# Invoke-SimpleStage NAME BLOCKING EXE ARGS -- runs EXE, logging to
 # run/verify/NAME.log, recording PASS on exit 0 else FAIL.
 function Invoke-SimpleStage {
     param([string]$Name, [bool]$Blocking, [string]$Exe, [string[]]$Arguments)
@@ -211,7 +211,7 @@ function Invoke-TopiccheckStage {
 
 # --- Advisory stage: rpcgen -check (regen-diff the generated <module>rpc glue) ---
 # Discovers every `//go:generate ... rpcgen ...` directive and re-runs each with
-# -check (regenerate to memory, gofmt-normalize, diff — never write). Drift FAILs.
+# -check (regenerate to memory, gofmt-normalize, diff -- never write). Drift FAILs.
 # Advisory by default, blocking under -Strict (via the generic summary rule). With
 # no real <module>api packages yet (they land in Phase A1), the only directive is
 # rpcgen's own testdata golden, so this is a live no-op-safe pass.
