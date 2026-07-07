@@ -47,14 +47,14 @@ VERIFY_DIR="$RUN_DIR/verify"
 mkdir -p "$VERIFY_DIR"
 
 CONTRACT_PKGS=(
-    gamebackend/modules/accounts/accountsevents
-    gamebackend/modules/accounts/accountsapi
-    gamebackend/modules/characters/charactersevents
-    gamebackend/modules/characters/charactersapi
-    gamebackend/modules/inventory/inventoryapi
-    gamebackend/modules/match/matchevents
-    gamebackend/modules/scheduler/schedulerevents
-    gamebackend/modules/admin/adminapi
+    gamebackend/api/accounts/accountsevents
+    gamebackend/api/accounts/accountsapi
+    gamebackend/api/characters/charactersevents
+    gamebackend/api/characters/charactersapi
+    gamebackend/api/inventory/inventoryapi
+    gamebackend/api/match/matchevents
+    gamebackend/api/scheduler/schedulerevents
+    gamebackend/api/admin/adminapi
 )
 
 # --- Result accumulation ----------------------------------------------------

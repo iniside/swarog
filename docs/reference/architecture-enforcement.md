@@ -3,9 +3,9 @@
 The three seams (module registry, service registry, event bus) plus the contribution slot are
 only as good as the boundaries around them. The hard constraints in `CLAUDE.md` — *core never
 imports a module*, *modules never import each other's impl*, *cross-module comms go through the
-`<module>events`/`adminapi` contract or a registry interface* — were, until now, **discipline**:
-nothing stopped a careless `import "gamebackend/modules/characters"` from another module. A single
-Go module compiles them all together, so the compiler won't catch it.
+`<name>events`/`adminapi` contract (under `api/<name>/`) or a registry interface* — were, until
+now, **discipline**: nothing stopped a careless `import "gamebackend/modules/characters"` from
+another module. A single Go module compiles them all together, so the compiler won't catch it.
 
 `.go-arch-lint.yml` makes those constraints **machine-checked**.
 
@@ -21,12 +21,15 @@ Wire it into CI next to `go vet` / `go test`.
 ## What the config encodes
 
 - **Components.** Each module impl (`modules/<name>`) is its own component, so cross-impl imports
-  can be forbidden. The shared contract surface — every `<module>events` package + `admin/adminapi`
-  — is one `contracts` component. `core` is a `commonComponent` (importable by all). `cmd` is the
-  composition root.
+  can be forbidden. The shared contract surface — every `<name>events` package + `admin/adminapi`,
+  now living under the top-level `api/<name>/` tree (disjoint from `modules/<name>/`, which holds
+  impl only) — is one `contracts` component, plus one component per generated `<name>rpc` glue
+  package (`api/<name>/<name>rpc`, impl-tier, may import `edge`). `core` is a `commonComponent`
+  (importable by all). `cmd` is the composition root.
 - **Rules.** `core` and `contracts` have no `deps` entry, so they may use only commons (`core`) —
   i.e. they never import a module impl. Each module impl `mayDependOn: [contracts]` (plus `core`,
-  free as a common) — never another module's impl. Only `cmd` may depend on the concrete modules.
+  free as a common, and its own `<name>rpc` glue where applicable) — never another module's impl.
+  Only `cmd` may depend on the concrete modules.
 - **Vendor imports are ignored** (`allow.depOnAnyVendor: true`) — we enforce *internal* architecture
   only; which third-party libs a module uses is its own business.
 
