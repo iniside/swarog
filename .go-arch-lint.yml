@@ -174,10 +174,16 @@ deps:
   audit:       { mayDependOn: [ lifecycle, contracts ] }
   characters:  { mayDependOn: [ lifecycle, contracts, edge, outbox, charactersrpc ] }
   config:      { mayDependOn: [ lifecycle, contracts ] }
-  # The gateway MODULE contributes a front-handler to the httpmw leaf slot; it needs
-  # lifecycle (Module/Context) + httpmw (the slot const, a commonComponent) + stdlib
-  # net/http. It imports NO module impl — the whole point of the leaf-slot seam (D4).
-  gatewaymod:  { mayDependOn: [ lifecycle, httpmw ] }
+  # The gateway MODULE contributes a front-handler to the httpmw leaf slot and, from
+  # Step B2, builds the operation-dispatch substrate: it reads opsapi (Operation/Slot
+  # + Caller/Status/LocalOp — a commonComponent leaf), selects an in-process
+  # (LocalBackend) or QUIC (RemoteBackend) backend via registry.TryRequire (registry
+  # is common), and RemoteBackend reuses the transport-level `gateway` package's
+  # RoutedBackend (dial/retry) over the `edge` transport. It imports NO module impl —
+  # the whole point of the leaf-slot seam (D4). (httpmw/opsapi/registry are
+  # commonComponents, importable without listing; edge + the transport gateway are
+  # not, so they are listed here.)
+  gatewaymod:  { mayDependOn: [ lifecycle, edge, gateway ] }
   inventory:   { mayDependOn: [ lifecycle, contracts, edge ] }
   leaderboard: { mayDependOn: [ lifecycle, contracts ] }
   match:       { mayDependOn: [ lifecycle, contracts ] }

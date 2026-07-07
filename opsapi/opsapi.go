@@ -109,3 +109,29 @@ type Operation struct {
 // module contributes with ctx.Contribute(opsapi.Slot, op); the gateway reads
 // ctx.Contributions(opsapi.Slot). Same multi-value seam as adminapi.Slot.
 const Slot = "ops.operation"
+
+// LocalInvoker calls an operation's provider IN-PROCESS: it type-asserts req to
+// the operation's concrete request type, invokes the provider (which the invoker
+// has already resolved from the registry), and fills resp — a pointer to the
+// concrete response type — with the result. NO serialization happens on this
+// path (the monolith path, decision D3): req and resp cross the call as the
+// exact decoded/allocated structs, never bytes. A domain failure is returned as
+// an *Error carrying the Status; a nil error means StatusOK.
+type LocalInvoker func(ctx context.Context, req, resp any) error
+
+// LocalOp pairs an operation's method name with its in-process invoker. In Phase
+// D the rpcgen-generated glue Contributes one to LocalSlot (the invoker closes
+// over the provider service it resolved from ctx.Registry); the gateway's
+// LocalBackend dispatches on Method. It is kept SEPARATE from Operation (the
+// HTTP binding, contributed to Slot) so Operation stays pure, comparable data
+// while the invoker — a func, non-comparable — rides its own slot.
+type LocalOp struct {
+	Method string
+	Invoke LocalInvoker
+}
+
+// LocalSlot is the contribution slot the gateway reads to build its in-process
+// dispatch table for LocalBackend. A provider contributes with
+// ctx.Contribute(opsapi.LocalSlot, LocalOp{...}); the gateway reads
+// ctx.Contributions(opsapi.LocalSlot). Empty until Phase D wires the first op.
+const LocalSlot = "ops.local"
