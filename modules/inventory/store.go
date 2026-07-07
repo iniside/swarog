@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"log/slog"
 
-	"gamebackend/modules/inventory/inventoryapi"
+	"gamebackend/api/inventory/inventoryapi"
 )
 
 // Owner is who an inventory belongs to. Type is "player" or "character"; ID is

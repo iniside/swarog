@@ -5,8 +5,8 @@ package inventoryrpc
 import (
 	"context"
 	"encoding/json"
+	"gamebackend/api/inventory/inventoryapi"
 	"gamebackend/edge"
-	"gamebackend/modules/inventory/inventoryapi"
 	"gamebackend/opsapi"
 )
 

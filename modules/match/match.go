@@ -4,9 +4,9 @@ import (
 	"context"
 	"log/slog"
 
+	"gamebackend/api/match/matchevents"
 	"gamebackend/bus"
 	"gamebackend/lifecycle"
-	"gamebackend/modules/match/matchevents"
 	"gamebackend/registry"
 )
 

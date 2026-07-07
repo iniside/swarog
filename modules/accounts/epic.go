@@ -9,9 +9,9 @@ import (
 	"github.com/MicahParks/keyfunc/v3"
 	"github.com/golang-jwt/jwt/v5"
 
+	"gamebackend/api/accounts/accountsapi"
+	"gamebackend/api/accounts/accountsevents"
 	"gamebackend/bus"
-	"gamebackend/modules/accounts/accountsapi"
-	"gamebackend/modules/accounts/accountsevents"
 	"gamebackend/opsapi"
 )
 

@@ -31,11 +31,11 @@ var ErrItemAbsent = errors.New("adminapi: remote item has no admin surface")
 //     mTLS QUIC edge as characters.ownerOf) to fetch the peer's ItemData. Section/
 //     Label/Render are left zero; the admin learns them from the fetched ItemData.
 type Item struct {
-	ID          string                                       // stable id, e.g. "characters"; the remote-match key
-	Section     string                                       // sidebar group label, e.g. "Game Content". First item creates it; rest append.
-	Label       string                                       // the clickable menu entry + page title, e.g. "Characters"
-	Render      func(ctx context.Context) (Content, error)   // LOCAL: in-process render; nil for a remote stub item
-	RemoteFetch func(ctx context.Context) (ItemData, error)  // REMOTE: fetches ItemData over the edge; nil for local items. ErrItemAbsent ⇒ skip.
+	ID          string                                      // stable id, e.g. "characters"; the remote-match key
+	Section     string                                      // sidebar group label, e.g. "Game Content". First item creates it; rest append.
+	Label       string                                      // the clickable menu entry + page title, e.g. "Characters"
+	Render      func(ctx context.Context) (Content, error)  // LOCAL: in-process render; nil for a remote stub item
+	RemoteFetch func(ctx context.Context) (ItemData, error) // REMOTE: fetches ItemData over the edge; nil for local items. ErrItemAbsent ⇒ skip.
 }
 
 // ItemData is the wire form the module's adminData edge operation returns. A

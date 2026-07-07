@@ -22,10 +22,10 @@ import (
 	"strconv"
 	"time"
 
+	"gamebackend/api/admin/adminapi"
+	"gamebackend/api/scheduler/schedulerevents"
 	"gamebackend/bus"
 	"gamebackend/lifecycle"
-	"gamebackend/modules/admin/adminapi"
-	"gamebackend/modules/scheduler/schedulerevents"
 )
 
 // tickInterval is how often the emission loop scans for due schedules. It bounds

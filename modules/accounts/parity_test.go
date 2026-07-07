@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
+	"gamebackend/api/accounts/accountsapi"
+	"gamebackend/api/accounts/accountsauthrpc"
 	"gamebackend/edge"
-	"gamebackend/modules/accounts/accountsapi"
-	"gamebackend/modules/accounts/accountsauthrpc"
 	"gamebackend/opsapi"
 )
 

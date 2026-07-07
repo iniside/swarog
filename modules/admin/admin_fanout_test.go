@@ -11,8 +11,8 @@ import (
 	"log/slog"
 	"testing"
 
+	"gamebackend/api/admin/adminapi"
 	"gamebackend/lifecycle"
-	"gamebackend/modules/admin/adminapi"
 )
 
 // newFanoutModule builds a Module wired with a context, ready for items() without

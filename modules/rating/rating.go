@@ -1,9 +1,9 @@
 package rating
 
 import (
+	"gamebackend/api/match/matchevents"
 	"gamebackend/bus"
 	"gamebackend/lifecycle"
-	"gamebackend/modules/match/matchevents"
 	"gamebackend/registry"
 )
 

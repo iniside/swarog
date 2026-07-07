@@ -39,14 +39,14 @@ import (
 
 	"golang.org/x/time/rate"
 
+	"gamebackend/api/accounts/accountsauthrpc"
+	"gamebackend/api/accounts/accountsrpc"
+	"gamebackend/api/characters/charactersplayerrpc"
+	"gamebackend/api/inventory/inventoryrpc"
 	"gamebackend/edge"
 	transport "gamebackend/gateway"
 	"gamebackend/httpmw"
-	"gamebackend/modules/accounts/accountsauthrpc"
-	"gamebackend/modules/accounts/accountsrpc"
-	"gamebackend/modules/characters/charactersplayerrpc"
 	gwmod "gamebackend/modules/gateway"
-	"gamebackend/modules/inventory/inventoryrpc"
 	"gamebackend/opsapi"
 )
 

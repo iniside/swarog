@@ -1,9 +1,9 @@
 package accounts
 
 import (
+	"gamebackend/api/accounts/accountsapi"
+	"gamebackend/api/accounts/accountsauthrpc"
 	"gamebackend/lifecycle"
-	"gamebackend/modules/accounts/accountsapi"
-	"gamebackend/modules/accounts/accountsauthrpc"
 	"gamebackend/opsapi"
 )
 

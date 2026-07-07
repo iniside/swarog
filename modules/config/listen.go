@@ -7,8 +7,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"gamebackend/api/config/configevents"
 	"gamebackend/bus"
-	"gamebackend/modules/config/configevents"
 )
 
 // listen keeps a dedicated pgx connection LISTENing for config_changed and

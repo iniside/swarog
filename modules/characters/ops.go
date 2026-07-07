@@ -1,9 +1,9 @@
 package characters
 
 import (
+	"gamebackend/api/characters/charactersapi"
+	"gamebackend/api/characters/charactersplayerrpc"
 	"gamebackend/lifecycle"
-	"gamebackend/modules/characters/charactersapi"
-	"gamebackend/modules/characters/charactersplayerrpc"
 	"gamebackend/opsapi"
 )
 

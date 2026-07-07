@@ -12,9 +12,9 @@ import (
 	"log/slog"
 	"os"
 
+	"gamebackend/api/admin/adminapi"
 	"gamebackend/bus"
 	"gamebackend/lifecycle"
-	"gamebackend/modules/admin/adminapi"
 	"gamebackend/registry"
 )
 

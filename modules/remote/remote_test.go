@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
+	"gamebackend/api/accounts/accountsrpc"
+	"gamebackend/api/characters/charactersrpc"
 	"gamebackend/edge"
-	"gamebackend/modules/accounts/accountsrpc"
-	"gamebackend/modules/characters/charactersrpc"
 )
 
 // fakeOwnership is an in-memory charactersapi.Ownership: a real owner, a genuine

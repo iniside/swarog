@@ -22,7 +22,7 @@ package accountsapi
 import (
 	"context"
 
-	"gamebackend/modules/admin/adminapi"
+	"gamebackend/api/admin/adminapi"
 	"gamebackend/opsapi"
 )
 

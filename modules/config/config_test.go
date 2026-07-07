@@ -11,8 +11,8 @@ import (
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 
+	"gamebackend/api/config/configevents"
 	"gamebackend/bus"
-	"gamebackend/modules/config/configevents"
 )
 
 func discardLog() *slog.Logger {

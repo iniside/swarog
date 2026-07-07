@@ -5,8 +5,8 @@ package accountsauthrpc
 import (
 	"context"
 	"encoding/json"
+	"gamebackend/api/accounts/accountsapi"
 	"gamebackend/edge"
-	"gamebackend/modules/accounts/accountsapi"
 	"gamebackend/opsapi"
 )
 

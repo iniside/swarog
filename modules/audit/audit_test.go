@@ -12,13 +12,13 @@ import (
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 
+	"gamebackend/api/accounts/accountsevents"
+	"gamebackend/api/characters/charactersevents"
+	"gamebackend/api/config/configevents"
+	"gamebackend/api/match/matchevents"
+	"gamebackend/api/scheduler/schedulerevents"
 	"gamebackend/bus"
 	"gamebackend/lifecycle"
-	"gamebackend/modules/accounts/accountsevents"
-	"gamebackend/modules/characters/charactersevents"
-	"gamebackend/modules/config/configevents"
-	"gamebackend/modules/match/matchevents"
-	"gamebackend/modules/scheduler/schedulerevents"
 )
 
 func discardLog() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }

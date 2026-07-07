@@ -14,9 +14,9 @@ import (
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 
+	"gamebackend/api/characters/charactersevents"
+	"gamebackend/api/config/configevents"
 	"gamebackend/bus"
-	"gamebackend/modules/characters/charactersevents"
-	"gamebackend/modules/config/configevents"
 )
 
 // fakeTransport is a minimal in-memory bus.Transport standing in for the

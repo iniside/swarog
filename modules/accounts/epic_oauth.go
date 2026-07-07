@@ -12,8 +12,8 @@ import (
 	"sync"
 	"time"
 
+	"gamebackend/api/accounts/accountsevents"
 	"gamebackend/bus"
-	"gamebackend/modules/accounts/accountsevents"
 )
 
 const stateTTL = 10 * time.Minute

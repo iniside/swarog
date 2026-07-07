@@ -18,13 +18,13 @@ import (
 	"strings"
 	"sync"
 
+	"gamebackend/api/accounts/accountsadminrpc"
+	"gamebackend/api/accounts/accountsrpc"
+	"gamebackend/api/admin/adminapi"
+	"gamebackend/api/characters/charactersadminrpc"
+	"gamebackend/api/characters/charactersrpc"
 	"gamebackend/edge"
 	"gamebackend/lifecycle"
-	"gamebackend/modules/accounts/accountsadminrpc"
-	"gamebackend/modules/accounts/accountsrpc"
-	"gamebackend/modules/admin/adminapi"
-	"gamebackend/modules/characters/charactersadminrpc"
-	"gamebackend/modules/characters/charactersrpc"
 	"gamebackend/opsapi"
 	"gamebackend/registry"
 )

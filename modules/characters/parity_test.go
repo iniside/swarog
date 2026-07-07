@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
+	"gamebackend/api/characters/charactersapi"
+	"gamebackend/api/characters/charactersplayerrpc"
 	"gamebackend/edge"
-	"gamebackend/modules/characters/charactersapi"
-	"gamebackend/modules/characters/charactersplayerrpc"
 	"gamebackend/opsapi"
 )
 

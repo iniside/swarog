@@ -5,10 +5,10 @@ import (
 	"database/sql"
 	"log/slog"
 
+	"gamebackend/api/leaderboard/leaderboardapi"
+	"gamebackend/api/match/matchevents"
 	"gamebackend/bus"
 	"gamebackend/lifecycle"
-	"gamebackend/modules/leaderboard/leaderboardapi"
-	"gamebackend/modules/match/matchevents"
 	"gamebackend/registry"
 )
 

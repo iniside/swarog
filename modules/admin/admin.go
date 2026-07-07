@@ -17,8 +17,8 @@ import (
 	"strconv"
 	"strings"
 
+	"gamebackend/api/admin/adminapi"
 	"gamebackend/lifecycle"
-	"gamebackend/modules/admin/adminapi"
 )
 
 //go:embed theme.css

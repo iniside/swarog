@@ -34,10 +34,10 @@ import (
 	"strconv"
 	"time"
 
+	"gamebackend/api/admin/adminapi"
+	"gamebackend/api/scheduler/schedulerevents"
 	"gamebackend/bus"
 	"gamebackend/lifecycle"
-	"gamebackend/modules/admin/adminapi"
-	"gamebackend/modules/scheduler/schedulerevents"
 )
 
 // durableTopics are the domain events that traverse the messaging durable plane

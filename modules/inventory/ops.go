@@ -1,9 +1,9 @@
 package inventory
 
 import (
+	"gamebackend/api/inventory/inventoryapi"
+	"gamebackend/api/inventory/inventoryrpc"
 	"gamebackend/lifecycle"
-	"gamebackend/modules/inventory/inventoryapi"
-	"gamebackend/modules/inventory/inventoryrpc"
 	"gamebackend/opsapi"
 )
 

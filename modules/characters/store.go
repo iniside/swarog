@@ -8,7 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 
-	"gamebackend/modules/characters/charactersapi"
+	"gamebackend/api/characters/charactersapi"
 )
 
 // Character is a player-owned character. PlayerID is a plain reference to

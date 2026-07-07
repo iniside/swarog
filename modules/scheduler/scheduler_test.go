@@ -13,8 +13,8 @@ import (
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 
+	"gamebackend/api/scheduler/schedulerevents"
 	"gamebackend/bus"
-	"gamebackend/modules/scheduler/schedulerevents"
 )
 
 func discardLog() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }

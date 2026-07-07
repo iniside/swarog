@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"strings"
 
-	"gamebackend/modules/admin/adminapi"
+	"gamebackend/api/admin/adminapi"
 )
 
 // adminItemID/adminSectionName/adminLabel identify this module's admin surface —

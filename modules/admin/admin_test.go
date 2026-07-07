@@ -8,8 +8,8 @@ import (
 	"log/slog"
 	"testing"
 
+	"gamebackend/api/admin/adminapi"
 	"gamebackend/lifecycle"
-	"gamebackend/modules/admin/adminapi"
 )
 
 // ---- slugify ----------------------------------------------------------------

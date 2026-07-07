@@ -4,7 +4,7 @@ import (
 	"context"
 	"strconv"
 
-	"gamebackend/modules/admin/adminapi"
+	"gamebackend/api/admin/adminapi"
 )
 
 // adminRender is the config editor page: KPIs, a read-only table of the current

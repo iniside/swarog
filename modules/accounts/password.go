@@ -11,9 +11,9 @@ import (
 
 	"golang.org/x/crypto/argon2"
 
+	"gamebackend/api/accounts/accountsapi"
+	"gamebackend/api/accounts/accountsevents"
 	"gamebackend/bus"
-	"gamebackend/modules/accounts/accountsapi"
-	"gamebackend/modules/accounts/accountsevents"
 	"gamebackend/opsapi"
 )
 

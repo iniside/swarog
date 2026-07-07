@@ -1,9 +1,9 @@
 package leaderboard
 
 import (
+	"gamebackend/api/leaderboard/leaderboardapi"
+	"gamebackend/api/leaderboard/leaderboardrpc"
 	"gamebackend/lifecycle"
-	"gamebackend/modules/leaderboard/leaderboardapi"
-	"gamebackend/modules/leaderboard/leaderboardrpc"
 	"gamebackend/opsapi"
 )
 

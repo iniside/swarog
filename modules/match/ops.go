@@ -1,9 +1,9 @@
 package match
 
 import (
+	"gamebackend/api/match/matchapi"
+	"gamebackend/api/match/matchrpc"
 	"gamebackend/lifecycle"
-	"gamebackend/modules/match/matchapi"
-	"gamebackend/modules/match/matchrpc"
 	"gamebackend/opsapi"
 )
 

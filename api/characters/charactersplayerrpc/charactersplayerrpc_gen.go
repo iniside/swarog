@@ -5,8 +5,8 @@ package charactersplayerrpc
 import (
 	"context"
 	"encoding/json"
+	"gamebackend/api/characters/charactersapi"
 	"gamebackend/edge"
-	"gamebackend/modules/characters/charactersapi"
 	"gamebackend/opsapi"
 )
 

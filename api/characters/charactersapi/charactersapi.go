@@ -18,7 +18,7 @@ import (
 	"context"
 	"time"
 
-	"gamebackend/modules/admin/adminapi"
+	"gamebackend/api/admin/adminapi"
 	"gamebackend/opsapi"
 )
 
