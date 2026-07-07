@@ -70,11 +70,12 @@ func (s *service) Get(ns, key string) (string, bool) {
 	return v, ok
 }
 
-// Set validates the ids, then in ONE transaction upserts the row AND fires
-// pg_notify('config_changed', "ns:key"). The tx makes the two atomic — two
-// Execs on the pool could commit the write yet never notify. Set does NOT touch
-// the cache: the listener is the single refresh path (decision #8), so a local
-// write and an external psql edit are handled identically.
+// Set validates the ids, then upserts the row in a single autocommit statement.
+// The config.settings AFTER-write trigger fires pg_notify('config_changed',
+// "ns:key") on the same statement (delivered on commit), so no explicit NOTIFY is
+// needed and one statement is atomic on its own — no tx. Set does NOT touch the
+// cache: the listener is the single refresh path (decision #8), so a local write
+// and an external psql edit are handled identically.
 func (s *service) Set(ctx context.Context, ns, key, value string) error {
 	if !identRe.MatchString(ns) {
 		return fmt.Errorf("config: invalid namespace %q (must match %s)", ns, identRe.String())
@@ -83,19 +84,11 @@ func (s *service) Set(ctx context.Context, ns, key, value string) error {
 		return fmt.Errorf("config: invalid key %q (must match %s)", key, identRe.String())
 	}
 
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback() }() // no-op after a successful Commit
-
-	if err := upsert(ctx, tx, ns, key, value); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `SELECT pg_notify('config_changed', $1)`, ns+":"+key); err != nil {
-		return err
-	}
-	return tx.Commit()
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO config.settings (namespace, key, value) VALUES ($1, $2, $3)
+		 ON CONFLICT (namespace, key) DO UPDATE SET value = excluded.value, updated_at = now()`,
+		ns, key, value)
+	return err
 }
 
 // all snapshots the cache as a slice sorted by (namespace, key) for a stable
@@ -117,15 +110,27 @@ func (s *service) all() []setting {
 	return out
 }
 
-// replaceCache swaps in a fresh cache from a full load (listener (re)connect).
-func (s *service) replaceCache(settings []setting) {
+// replaceCache swaps in a fresh cache from a full load (listener (re)connect) and
+// returns the settings whose value changed vs the prior snapshot — a new key or a
+// changed value counts as changed; removed keys are ignored (deletes are out of
+// scope, decision #8). The diff is computed under the write lock while swapping so
+// it reflects exactly the snapshot installed. The listener emits config.changed
+// for each returned setting after a RECONNECT so materialized push consumers heal.
+func (s *service) replaceCache(settings []setting) []setting {
 	m := make(map[cacheKey]string, len(settings))
 	for _, st := range settings {
 		m[cacheKey{st.Namespace, st.Key}] = st.Value
 	}
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	var changed []setting
+	for _, st := range settings {
+		if prev, ok := s.cache[cacheKey{st.Namespace, st.Key}]; !ok || prev != st.Value {
+			changed = append(changed, st)
+		}
+	}
 	s.cache = m
-	s.mu.Unlock()
+	return changed
 }
 
 // setCacheOne updates a single cached key (listener applying one notification).

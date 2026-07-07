@@ -12,6 +12,7 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 
 	"gamebackend/bus"
+	"gamebackend/modules/config/configevents"
 )
 
 func discardLog() *slog.Logger {
@@ -175,5 +176,117 @@ func TestLiveReload(t *testing.T) {
 			t.Fatal("listener did not refresh cache within deadline")
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// TestRawWriteLiveReload proves the DB TRIGGER — not service.Set — drives
+// propagation: a raw INSERT straight into config.settings (the psql path, never
+// touching app code) fires config_changed via the AFTER trigger, and the running
+// listener refreshes the cache. Observed by polling Get.
+func TestRawWriteLiveReload(t *testing.T) {
+	db := testDB(t)
+	defer func() { _ = db.Close() }()
+
+	log := discardLog()
+	m := &Module{
+		db:  db,
+		log: log,
+		bus: bus.NewBus(log),
+		svc: &service{db: db, log: log, cache: map[cacheKey]string{}},
+		dsn: dsn(),
+	}
+	ns := newNS(t, db)
+
+	if err := m.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = m.Stop(ctx)
+	}()
+
+	// A raw write that BYPASSES service.Set entirely — no app-code pg_notify here.
+	if _, err := db.ExecContext(context.Background(),
+		`INSERT INTO config.settings (namespace, key, value) VALUES ($1, $2, $3)`,
+		ns, "raw", "psql"); err != nil {
+		t.Fatalf("raw insert: %v", err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if v, ok := m.svc.Get(ns, "raw"); ok && v == "psql" {
+			return // trigger fired NOTIFY on the raw write; listener refreshed
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("trigger did not propagate the raw write within deadline")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// TestReconnectSelfHeal proves the reconnect self-heal: after a disconnect PG does
+// not replay missed NOTIFYs, so the listener reloads AND emits config.changed for
+// keys that changed while it was gone, letting materialized push consumers rebuild.
+// It drives the SAME reloadAndHeal path the listener uses, with reconnect=true.
+func TestReconnectSelfHeal(t *testing.T) {
+	db := testDB(t)
+	defer func() { _ = db.Close() }()
+
+	log := discardLog()
+	m := &Module{
+		db:  db,
+		log: log,
+		bus: bus.NewBus(log),
+		svc: &service{db: db, log: log, cache: map[cacheKey]string{}},
+		dsn: dsn(),
+	}
+	ns := newNS(t, db)
+	ctx := context.Background()
+
+	// Seed a key and boot-load the cache (reconnect=false emits nothing).
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO config.settings (namespace, key, value) VALUES ($1, $2, $3)`,
+		ns, "level", "1"); err != nil {
+		t.Fatalf("seed insert: %v", err)
+	}
+	if err := m.reloadAndHeal(ctx, false); err != nil {
+		t.Fatalf("boot reloadAndHeal: %v", err)
+	}
+	if v, ok := m.svc.Get(ns, "level"); !ok || v != "1" {
+		t.Fatalf("boot cache Get = %q,%v; want 1,true", v, ok)
+	}
+
+	// Change the value directly in the DB — simulating a write missed during a
+	// disconnect (no NOTIFY delivered to a dead session).
+	if _, err := db.ExecContext(ctx,
+		`UPDATE config.settings SET value = $3 WHERE namespace = $1 AND key = $2`,
+		ns, "level", "2"); err != nil {
+		t.Fatalf("gap update: %v", err)
+	}
+
+	got := make(chan configevents.Changed, 16)
+	bus.On(m.bus, configevents.ChangedEvent, func(c configevents.Changed) {
+		if c.Namespace == ns && c.Key == "level" {
+			got <- c
+		}
+	})
+
+	// The reconnect reload heals: it emits config.changed for the gap-changed key.
+	if err := m.reloadAndHeal(ctx, true); err != nil {
+		t.Fatalf("reconnect reloadAndHeal: %v", err)
+	}
+
+	select {
+	case c := <-got:
+		if c.Value != "2" {
+			t.Fatalf("emitted config.changed value = %q, want 2", c.Value)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no config.changed emitted for the gap-changed key on reconnect")
+	}
+
+	if v, ok := m.svc.Get(ns, "level"); !ok || v != "2" {
+		t.Fatalf("cache after reconnect Get = %q,%v; want 2,true", v, ok)
 	}
 }
