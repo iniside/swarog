@@ -1,6 +1,7 @@
 package outbox
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"testing"
@@ -9,7 +10,7 @@ import (
 )
 
 // TestPropDeliverOrdering exercises deliver's documented contract (see the
-// package doc comment on deliver): per-subscriber stop-on-first-failure,
+// package doc comment on deliver): per-(topic, url) stop-on-first-failure,
 // all-or-nothing per row, no-subscriber rows always sent, and sent is a
 // strictly-ascending subsequence of the input ids — never reordered.
 func TestPropDeliverOrdering(t *testing.T) {
@@ -43,42 +44,49 @@ func TestPropDeliverOrdering(t *testing.T) {
 			}
 		}
 
-		// Precompute a deterministic failure pattern: for each (url) draw whether
-		// it fails, and on which call-index (per url) it starts failing forever
-		// after (so failures are a pure function of call count, not test state).
-		failFromCall := map[string]int{} // url -> call index (0-based) at which it starts failing; -1 = never
-		for _, url := range urlPool {
-			if rapid.Bool().Draw(t, "fails_"+url) {
-				failFromCall[url] = rapid.IntRange(0, n+1).Draw(t, "failat_"+url)
-			} else {
-				failFromCall[url] = -1
+		// Precompute a deterministic failure pattern keyed per (topic, url): for
+		// each pair draw whether it fails, and on which call-index (per pair) it
+		// starts failing forever after (failures are a pure function of the
+		// per-pair call count, not test state). Blocking is now per-(topic, url),
+		// so a url failing on one topic must not affect a different topic.
+		key := func(topic, url string) string { return topic + "\x00" + url }
+		failFromCall := map[string]int{} // (topic,url) -> call index at which it starts failing; -1 = never
+		for _, topic := range topics {
+			for _, url := range urlPool {
+				k := key(topic, url)
+				if rapid.Bool().Draw(t, "fails_"+k) {
+					failFromCall[k] = rapid.IntRange(0, n+1).Draw(t, "failat_"+k)
+				} else {
+					failFromCall[k] = -1
+				}
 			}
 		}
 		callCount := map[string]int{}
 
 		r := testRelay(subscribers)
 
-		var postedByURL = map[string][]int64{}
-		post := func(url, eventID string, _ []byte) error {
-			idx := callCount[url]
-			callCount[url]++
+		var postedByKey = map[string][]int64{}
+		post := func(_ context.Context, url, topic, eventID string, _ []byte) error {
+			k := key(topic, url)
+			idx := callCount[k]
+			callCount[k]++
 			// Recover the row id from eventID ("<schema>:<id>").
 			var rowID int64
 			_, _ = fmt.Sscanf(eventID, r.schema+":%d", &rowID)
-			postedByURL[url] = append(postedByURL[url], rowID)
-			if from := failFromCall[url]; from >= 0 && idx >= from {
+			postedByKey[k] = append(postedByKey[k], rowID)
+			if from := failFromCall[k]; from >= 0 && idx >= from {
 				return fmt.Errorf("injected failure")
 			}
 			return nil
 		}
 
-		sent := r.deliver(pending, post)
+		sent := r.deliver(context.Background(), pending, post)
 
-		// (a) per-subscriber stop-on-first-failure: find, per url, the row id
-		// whose call to that url failed; assert no later row id was ever posted
-		// to that same url in this batch.
-		for url, posts := range postedByURL {
-			from := failFromCall[url]
+		// (a) per-(topic, url) stop-on-first-failure: find, per pair, the row id
+		// whose call to that pair failed; assert no later row id was ever posted
+		// to that same pair in this batch.
+		for k, posts := range postedByKey {
+			from := failFromCall[k]
 			if from < 0 {
 				continue
 			}
@@ -88,19 +96,19 @@ func TestPropDeliverOrdering(t *testing.T) {
 			failedRowID := posts[from]
 			for _, rowID := range posts[from+1:] {
 				if rowID > failedRowID {
-					t.Fatalf("url %s: row %d posted to a blocked subscriber after row %d failed", url, rowID, failedRowID)
+					t.Fatalf("pair %q: row %d posted to a blocked subscriber after row %d failed", k, rowID, failedRowID)
 				}
 			}
 		}
 
 		// (b) all-or-nothing: row id in sent iff every subscriber URL for its
-		// topic returned nil for that row AND none of those URLs had already
+		// topic returned nil for that row AND that (topic, url) had not already
 		// failed on an earlier row in this batch.
 		sentSet := map[int64]bool{}
 		for _, id := range sent {
 			sentSet[id] = true
 		}
-		blocked := map[string]bool{}
+		blocked := map[string]bool{} // (topic, url) keys
 		for _, row := range pending {
 			urls := subscribers[row.topic]
 			if len(urls) == 0 {
@@ -111,15 +119,16 @@ func TestPropDeliverOrdering(t *testing.T) {
 			}
 			expectOK := true
 			for _, url := range urls {
-				if blocked[url] {
+				k := key(row.topic, url)
+				if blocked[k] {
 					expectOK = false
 					continue
 				}
-				from := failFromCall[url]
-				idx := indexOf(postedByURL[url], row.id)
+				from := failFromCall[k]
+				idx := indexOf(postedByKey[k], row.id)
 				failedThisCall := idx >= 0 && from >= 0 && idx >= from
 				if failedThisCall {
-					blocked[url] = true
+					blocked[k] = true
 					expectOK = false
 				}
 			}

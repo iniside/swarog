@@ -1,18 +1,34 @@
 // Package outbox is a transactional-outbox relay: a generic, domain-agnostic
 // helper that drains rows a publishing module wrote (in the same DB transaction
-// as its domain change) and POSTs them to remote subscribers over HTTP. It is
-// NOT part of core and imports no module implementation — it works purely off a
-// schema name plus a topic→URLs config, so the same relay serves any producer.
+// as its domain change) and delivers them to in-process local targets and to
+// remote subscribers over HTTP. It is NOT part of core and imports no module
+// implementation — it works purely off a schema name, an origin string, a
+// topic→URLs config, and function-typed local targets, so the same relay serves
+// any producer.
+//
+// Single-owner drain (BLOCKER-1 fix). Every process that shares one outbox table
+// stamps its rows with a stable `origin`, and each relay drains ONLY its own
+// origin's rows (`WHERE origin = $1 … FOR UPDATE SKIP LOCKED`). So a foreign
+// process's relay can never mark-sent (and thus silently swallow) a row it does
+// not subscribe to; the producing process alone owns delivery of its events.
 //
 // Delivery contract:
 //   - At-least-once. A stable event id (`<schema>:<outbox.id>`) is sent with each
-//     POST so an idempotent subscriber (an inbox keyed on that id) dedups retries.
-//   - Per-subscriber ordering. Rows are POSTed in ascending outbox id; on the
-//     first failure to a given subscriber URL the relay stops advancing for THAT
-//     url this tick (a later event can't overtake an earlier one — no
-//     delete-before-create). A row is marked sent only once ALL its subscribers
-//     accepted it (2xx). Zero configured subscribers for a topic = delivered to
-//     nobody = success, marked sent immediately (the monolith path).
+//     delivery (X-Event-Id header for remote, eventID arg for local) so an
+//     idempotent subscriber (an inbox keyed on that id) dedups retries.
+//   - Local delivery is unconditional. Local targets are always attempted,
+//     independently of whether any remote URLs exist — the monolith (empty
+//     EVENTS_SUBSCRIBERS) still delivers to its in-process subscribers.
+//   - Per-(topic, target) ordering. Rows are delivered in ascending outbox id; on
+//     the first failure to a given (topic, url) or (topic, local subscriber) the
+//     relay stops advancing for THAT (topic, target) this tick (a later event of
+//     the same topic can't overtake an earlier one — no delete-before-create). A
+//     poison event of one topic therefore can't stall a different topic to the
+//     same peer. A row is marked sent only once EVERY target — each local
+//     subscriber and each remote URL — accepted it. A row with no local targets
+//     and no subscribers is delivered to nobody = success, marked sent at once.
+//   - The remote POST carries the topic in an X-Event-Topic header so the
+//     receiver can route from a single `POST /events` endpoint.
 package outbox
 
 import (
@@ -36,24 +52,41 @@ const defaultInterval = 500 * time.Millisecond
 // interpolation below can never carry attacker-controlled input.
 var identRe = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
 
-// Relay drains a schema's outbox table and delivers rows to HTTP subscribers.
+// LocalTarget is an in-process delivery target. Deliver is invoked (with the
+// stable eventID) for every drained row whose delivery this target owns; it must
+// be idempotent (dedup on eventID) since delivery is at-least-once. Subscriber is
+// a stable name used only to key the per-(topic, subscriber) block gate so one
+// failing local subscriber cannot stall another. The relay stays domain-agnostic:
+// LocalTarget is a plain function type, no module import.
+type LocalTarget struct {
+	Subscriber string
+	Deliver    func(ctx context.Context, topic string, payload []byte, eventID string) error
+}
+
+// Relay drains a schema's outbox table (only rows of its own origin) and delivers
+// each row to every local target and every remote HTTP subscriber.
 type Relay struct {
-	db          *sql.DB
-	schema      string
-	subscribers map[string][]string // topic -> subscriber URLs
-	client      *http.Client
-	interval    time.Duration
-	log         *slog.Logger
+	db           *sql.DB
+	schema       string
+	origin       string // this process's stable identity; drains only rows stamped with it
+	subscribers  map[string][]string // topic -> subscriber URLs
+	localTargets []LocalTarget       // in-process delivery targets, always attempted
+	client       *http.Client
+	interval     time.Duration
+	log          *slog.Logger
 
 	cancel context.CancelFunc
 	done   chan struct{}
 }
 
-// NewRelay builds a relay for the given schema's outbox table. subscribers maps
-// each event topic to the URLs to POST it to (empty/nil = no remote subscribers,
-// i.e. the monolith, where rows drain to nobody and are marked sent at once). It
-// panics on a non-identifier schema — a wiring bug, loud at startup.
-func NewRelay(db *sql.DB, schema string, subscribers map[string][]string, log *slog.Logger) *Relay {
+// NewRelay builds a relay for the given schema's outbox table. It drains only
+// rows stamped with origin (the writing process's stable identity), so processes
+// sharing one outbox never mark-sent each other's rows. subscribers maps each
+// event topic to the URLs to POST it to; localTargets are in-process delivery
+// targets attempted unconditionally (empty subscribers + empty localTargets =
+// delivered to nobody = marked sent at once). It panics on a non-identifier
+// schema — a wiring bug, loud at startup.
+func NewRelay(db *sql.DB, schema, origin string, subscribers map[string][]string, localTargets []LocalTarget, log *slog.Logger) *Relay {
 	if !identRe.MatchString(schema) {
 		panic(fmt.Sprintf("outbox: invalid schema name %q", schema))
 	}
@@ -61,12 +94,14 @@ func NewRelay(db *sql.DB, schema string, subscribers map[string][]string, log *s
 		subscribers = map[string][]string{}
 	}
 	return &Relay{
-		db:          db,
-		schema:      schema,
-		subscribers: subscribers,
-		client:      &http.Client{Timeout: 5 * time.Second},
-		interval:    defaultInterval,
-		log:         log,
+		db:           db,
+		schema:       schema,
+		origin:       origin,
+		subscribers:  subscribers,
+		localTargets: localTargets,
+		client:       &http.Client{Timeout: 5 * time.Second},
+		interval:     defaultInterval,
+		log:          log,
 	}
 }
 
@@ -131,53 +166,83 @@ type outRow struct {
 	payload []byte
 }
 
-// drainOnce reads every unsent row in id order, delivers them (per-subscriber
-// ordering enforced by deliver), and marks the fully-delivered ones sent.
+// drainOnce reads every unsent row of this relay's origin in id order, delivers
+// them (per-(topic, target) ordering enforced by deliver), and marks the
+// fully-delivered ones sent.
+//
+// Tx boundary: the locking SELECT (FOR UPDATE SKIP LOCKED in pending) and the
+// markSent UPDATEs run in ONE transaction per drain. Postgres releases row locks
+// only at commit/rollback, so markSent MUST share the tx that took the locks —
+// otherwise the FOR UPDATE lock would already be gone and offer no protection.
+// Holding the locks across the batch (including the delivery I/O) is deliberate
+// belt-and-suspenders: SKIP LOCKED means any concurrent same-origin drainer skips
+// these rows rather than double-delivering them. A markSent failure poisons the
+// tx, so we abort and let the next tick redeliver (at-least-once; the inbox dedups).
 func (r *Relay) drainOnce(ctx context.Context) error {
-	pending, err := r.pending(ctx)
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }() // no-op after a successful Commit
+	pending, err := r.pending(ctx, tx)
 	if err != nil {
 		return err
 	}
 	if len(pending) == 0 {
-		return nil
+		return tx.Commit() // nothing locked; release cleanly
 	}
-	sent := r.deliver(pending, func(url, eventID string, payload []byte) error {
-		return r.post(ctx, url, eventID, payload)
+	sent := r.deliver(ctx, pending, func(ctx context.Context, url, topic, eventID string, payload []byte) error {
+		return r.post(ctx, url, topic, eventID, payload)
 	})
 	for _, id := range sent {
-		if err := r.markSent(ctx, id); err != nil {
-			r.log.Error("outbox mark sent failed", "schema", r.schema, "id", id, "err", err)
+		if err := r.markSent(ctx, tx, id); err != nil {
+			// The tx is now poisoned; abort and redeliver next tick.
+			return fmt.Errorf("outbox mark sent id %d: %w", id, err)
 		}
 	}
-	return nil
+	return tx.Commit()
 }
 
 // deliver decides which rows are fully delivered given a batch of unsent rows in
-// ascending id order and a post function. It enforces per-subscriber ordering:
-// once a POST to a subscriber URL fails, no further row is POSTed to THAT url in
-// this batch, so an earlier event is never overtaken by a later one for the same
-// subscriber. A row is returned (to be marked sent) only when all its
-// subscribers accepted it; a topic with no subscribers is delivered to nobody
-// and counts as sent. Pure over post — unit-tested without Postgres or HTTP.
-func (r *Relay) deliver(pending []outRow, post func(url, eventID string, payload []byte) error) []int64 {
-	blocked := map[string]bool{} // subscriber URLs that failed this batch
+// ascending id order. Each row is delivered to EVERY local target (unconditional,
+// independent of remote URLs — the monolith path) AND every remote URL for its
+// topic; post handles the remote leg. It enforces per-(topic, target) ordering:
+// once delivery to a (topic, url) or (topic, local subscriber) fails, no further
+// row of THAT topic is delivered to THAT target this batch, so an earlier event is
+// never overtaken by a later one — and a poison event of one topic can't stall a
+// different topic to the same peer. A row is returned (to be marked sent) only
+// when every target accepted it; a row with no targets at all is delivered to
+// nobody and counts as sent. Pure over post + the LocalTarget Deliver funcs —
+// unit-tested without Postgres or HTTP.
+func (r *Relay) deliver(ctx context.Context, pending []outRow, post func(ctx context.Context, url, topic, eventID string, payload []byte) error) []int64 {
+	blocked := map[string]bool{} // (topic, target) keys that failed this batch
 	var sent []int64
 	for _, row := range pending {
-		urls := r.subscribers[row.topic]
-		if len(urls) == 0 {
-			sent = append(sent, row.id) // delivered to nobody = success
-			continue
-		}
 		eventID := fmt.Sprintf("%s:%d", r.schema, row.id)
 		allOK := true
-		for _, url := range urls {
-			if blocked[url] {
+		// Local targets first, unconditionally (independent of remote URLs).
+		for _, lt := range r.localTargets {
+			key := "L\x00" + lt.Subscriber + "\x00" + row.topic
+			if blocked[key] {
 				allOK = false // can't skip ahead of an earlier undelivered row
 				continue
 			}
-			if err := post(url, eventID, row.payload); err != nil {
-				r.log.Warn("outbox delivery failed", "url", url, "event_id", eventID, "err", err)
-				blocked[url] = true
+			if err := lt.Deliver(ctx, row.topic, row.payload, eventID); err != nil {
+				r.log.Warn("outbox local delivery failed", "subscriber", lt.Subscriber, "topic", row.topic, "event_id", eventID, "err", err)
+				blocked[key] = true
+				allOK = false
+			}
+		}
+		// Then remote subscribers for this topic.
+		for _, url := range r.subscribers[row.topic] {
+			key := "R\x00" + url + "\x00" + row.topic
+			if blocked[key] {
+				allOK = false
+				continue
+			}
+			if err := post(ctx, url, row.topic, eventID, row.payload); err != nil {
+				r.log.Warn("outbox delivery failed", "url", url, "topic", row.topic, "event_id", eventID, "err", err)
+				blocked[key] = true
 				allOK = false
 			}
 		}
@@ -188,10 +253,13 @@ func (r *Relay) deliver(pending []outRow, post func(url, eventID string, payload
 	return sent
 }
 
-func (r *Relay) pending(ctx context.Context) ([]outRow, error) {
+// pending reads this relay's own unsent rows, locking them FOR UPDATE SKIP LOCKED
+// so a concurrent same-origin drainer skips (never double-drains) them. The lock
+// is held until the caller's tx commits/rolls back — see drainOnce's tx boundary.
+func (r *Relay) pending(ctx context.Context, tx *sql.Tx) ([]outRow, error) {
 	// #nosec G201 -- schema is validated as a bare SQL identifier in NewRelay.
-	q := fmt.Sprintf(`SELECT id, topic, payload FROM %s.outbox WHERE sent_at IS NULL ORDER BY id`, r.schema)
-	rows, err := r.db.QueryContext(ctx, q)
+	q := fmt.Sprintf(`SELECT id, topic, payload FROM %s.outbox WHERE sent_at IS NULL AND origin = $1 ORDER BY id FOR UPDATE SKIP LOCKED`, r.schema)
+	rows, err := tx.QueryContext(ctx, q, r.origin)
 	if err != nil {
 		return nil, err
 	}
@@ -207,24 +275,28 @@ func (r *Relay) pending(ctx context.Context) ([]outRow, error) {
 	return out, rows.Err()
 }
 
-func (r *Relay) markSent(ctx context.Context, id int64) error {
+// markSent must run in the SAME tx as pending's locking SELECT (see drainOnce).
+func (r *Relay) markSent(ctx context.Context, tx *sql.Tx, id int64) error {
 	// #nosec G201 -- schema is validated as a bare SQL identifier in NewRelay.
 	q := fmt.Sprintf(`UPDATE %s.outbox SET sent_at = now() WHERE id = $1`, r.schema)
-	_, err := r.db.ExecContext(ctx, q, id)
+	_, err := tx.ExecContext(ctx, q, id)
 	return err
 }
 
 // post delivers one row to one subscriber. The stable event id rides in the
-// X-Event-Id header so the subscriber can dedup; the body is the raw event JSON
-// exactly as the producer stored it. Any non-2xx (or transport error) is a
-// failure, which stops advancing for this subscriber (retried next tick).
-func (r *Relay) post(ctx context.Context, url, eventID string, payload []byte) error {
+// X-Event-Id header so the subscriber can dedup, and the topic rides in the
+// X-Event-Topic header so the receiver can route from a single POST /events
+// endpoint; the body is the raw event JSON exactly as the producer stored it. Any
+// non-2xx (or transport error) is a failure, which stops advancing for this
+// (topic, subscriber) (retried next tick).
+func (r *Relay) post(ctx context.Context, url, topic, eventID string, payload []byte) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Event-Id", eventID)
+	req.Header.Set("X-Event-Topic", topic)
 	resp, err := r.client.Do(req)
 	if err != nil {
 		return err
