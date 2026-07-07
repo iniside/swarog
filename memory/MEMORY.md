@@ -4,6 +4,7 @@
 - [Verify the at-risk path, not the safe one](verify-the-at-risk-path-not-the-safe-one.md) — exercise the topology a change actually affects (split, not just monolith) with a committed repeatable proof; don't pass off easy-path testing as coverage
 - [Scope claims to what was verified](scope-claims-to-what-was-verified.md) — don't generalize a plane-specific result into a global claim (said "modules never branch on topology" while sync-provider if m.Edge!=nil still does); scope every "done" to what changed + find the counterexample first
 - [Separate public surface from impl](separate-public-surface-from-impl.md) — a module's public/consumed-by-others packages (api/events/glue) must live where they READ as public, NOT nested in modules/<name>/; and when multiplying a convention (Nth co-located sub-package) STOP and question the convention itself
+- [Team = solo + agents, never humans](team-is-solo-plus-agents-forever.md) — scaling means more AI agents (Codex/Claude), don't hedge advice on "if a human joins"
 - [Work on master, no branches](work-on-master-no-branches.md) — commit directly on master for this repo; overrides CLAUDE.md's "branch-first" (solo for-fun project, history is enough)
 
 - [DECISION: Go vs Kotlin (in flux)](decision-quarkus-as-final.md) — back UNSETTLED (2026-07-07), now leaning GO again (admin list-free via runtime slot + linker split-build); 2026-07-05 "Quarkus final" downgraded — don't assert either as settled
