@@ -35,6 +35,7 @@ components:
     in:
       - modules/accounts/accountsevents
       - modules/characters/charactersevents
+      - modules/config/configevents
       - modules/match/matchevents
       - modules/admin/adminapi
 
@@ -42,6 +43,7 @@ components:
   accounts:    { in: modules/accounts }
   admin:       { in: modules/admin }
   characters:  { in: modules/characters }
+  config:      { in: modules/config }
   inventory:   { in: modules/inventory }
   leaderboard: { in: modules/leaderboard }
   match:       { in: modules/match }
@@ -104,6 +106,7 @@ deps:
   accounts:    { mayDependOn: [ lifecycle, contracts, edge ] }
   admin:       { mayDependOn: [ lifecycle, contracts ] }
   characters:  { mayDependOn: [ lifecycle, contracts, edge, outbox ] }
+  config:      { mayDependOn: [ lifecycle, contracts ] }
   inventory:   { mayDependOn: [ lifecycle, contracts, edge ] }
   leaderboard: { mayDependOn: [ lifecycle, contracts ] }
   match:       { mayDependOn: [ lifecycle, contracts ] }
@@ -140,6 +143,7 @@ deps:
       - accounts
       - admin
       - characters
+      - config
       - inventory
       - leaderboard
       - match
