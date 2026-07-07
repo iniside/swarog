@@ -37,10 +37,19 @@ per-handler bearer auth, or per-module player HTTP routes.
 - **`/events` (async plane) BYPASSES the gateway** by design — peer→backend direct, on ctx.Mux.
 - Proof: `scripts/smoke-split-operations.sh` (committed, split op path over mTLS edge).
 
-**HONEST remaining gap (do NOT claim "full parity" is done):** `cmd/gateway-svc` (the split
-front-door :8082) still HTTP-reverse-proxies `/characters,/inventory,/admin` to backends,
-which serve the ops via their OWN gateway front-handler — a functional DOUBLE-LAYER, not the
-single-gateway end-state where gateway-svc dispatches ops via `RemoteBackend` over the edge
-(`selectBackend`'s remote branch + `peerAddrFor` are shape-only stubs). The generic
-gateway-svc→backend-op wire path + player-facing :9100 QUIC auth are the remaining unification.
-See [[durable-event-plane-bus-owned]], [[scope-claims-to-what-was-verified]].
+**Gateway-svc single-front-door: DONE (2026-07-07, steps G1+G2).** The double-layer is gone.
+rpcgen generates gateway bindings from a `<module>api.HTTPBindings` table (Decode HTTP→wire-req,
+EncodeHTTP wire-resp→domain-only body, `Operations(impl)` for in-process hosts + impl-free
+`RouteBindings()` for a module-less process). So `RemoteBackend` round-trips EVERY op shape
+(delete's path-arg, list's array, multi-return) — proven by per-module `parity_test.go`
+(Local==Remote same HTTP body+Status). `cmd/gateway-svc` (:8082) now builds its op mux from the
+rpc pkgs' `RouteBindings()`, verifies AuthPlayer bearers over the edge to accounts, and
+dispatches each op via `RemoteBackend` (single hop, method-prefix→peer edge addr) — no more
+HTTP-proxy-to-backend-front-handler. HTTP-native (`/admin*`, `/accounts/epic/*`) stays reverse
+-proxy. Proof: `scripts/smoke-split-operations.sh` drives register/create/list/inventory/delete
+through :8082 (POST :8082/accounts/register→201, un-proxied, only reachable via the edge op).
+Status: `docs/2026-07-07-2145-gateway-svc-single-front-door-status.md`.
+
+**Still future (honest):** the player-facing `:9100` QUIC front is an unauthenticated
+native-client prefix relay (no bearer→identity at the QUIC edge) — the authenticated single
+gateway is the :8082 HTTP front door. See [[durable-event-plane-bus-owned]], [[scope-claims-to-what-was-verified]].
