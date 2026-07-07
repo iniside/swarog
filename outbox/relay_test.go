@@ -2,10 +2,16 @@ package outbox
 
 import (
 	"context"
+	"database/sql"
 	"io"
 	"log/slog"
+	"os"
 	"reflect"
+	"strconv"
 	"testing"
+	"time"
+
+	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
 func testRelay(subs map[string][]string) *Relay {
@@ -259,5 +265,117 @@ func TestDeliverPartialFanoutNotSent(t *testing.T) {
 		})
 	if len(sent) != 0 {
 		t.Fatalf("sent = %v, want none (one of two subscribers failed)", sent)
+	}
+}
+
+// outboxDDL is the minimal messaging.outbox shape drainOnce touches (id/origin/
+// topic/payload/sent_at). Idempotent — coexists with messaging's fuller schema.
+const outboxDDL = `
+CREATE SCHEMA IF NOT EXISTS messaging;
+CREATE TABLE IF NOT EXISTS messaging.outbox (
+	id         bigserial   PRIMARY KEY,
+	origin     text        NOT NULL,
+	topic      text        NOT NULL,
+	payload    jsonb       NOT NULL,
+	created_at timestamptz NOT NULL DEFAULT now(),
+	sent_at    timestamptz
+);`
+
+// testOutboxDB opens the local Postgres, ensures the messaging.outbox table exists,
+// and skips gracefully when Postgres is unreachable (repo test-DB convention).
+func testOutboxDB(t *testing.T) *sql.DB {
+	t.Helper()
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		dsn = "postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable"
+	}
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Skipf("no postgres: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := db.PingContext(ctx); err != nil {
+		_ = db.Close()
+		t.Skipf("postgres unreachable: %v", err)
+	}
+	if _, err := db.Exec(outboxDDL); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	return db
+}
+
+// TestRelayDrainsOnlyOwnOrigin is the BLOCKER-1 regression: two processes share one
+// messaging.outbox, one row per origin. A relay running as origin "B" must drain
+// ONLY B's row — never mark-sent (and thus swallow) A's row, which A's own relay
+// owns. This is the exact scenario the review caught (scheduler-svc's relay eating
+// characters-svc's character.created). Without the `WHERE origin = $self ... FOR
+// UPDATE SKIP LOCKED` filter, B's drain would deliver-nowhere and mark A's row sent,
+// silently dropping A's event.
+func TestRelayDrainsOnlyOwnOrigin(t *testing.T) {
+	db := testOutboxDB(t)
+	defer func() { _ = db.Close() }()
+	ctx := context.Background()
+
+	// Unique origins per run so this relay's pending() never sees a prior run's rows.
+	var suffix string
+	if err := db.QueryRow(`SELECT gen_random_uuid()::text`).Scan(&suffix); err != nil {
+		t.Fatal(err)
+	}
+	originA, originB := "A-"+suffix, "B-"+suffix
+
+	var idA, idB int64
+	if err := db.QueryRow(
+		`INSERT INTO messaging.outbox (origin, topic, payload) VALUES ($1, 'a.topic', '{}'::jsonb) RETURNING id`,
+		originA).Scan(&idA); err != nil {
+		t.Fatalf("insert A: %v", err)
+	}
+	if err := db.QueryRow(
+		`INSERT INTO messaging.outbox (origin, topic, payload) VALUES ($1, 'b.topic', '{}'::jsonb) RETURNING id`,
+		originB).Scan(&idB); err != nil {
+		t.Fatalf("insert B: %v", err)
+	}
+
+	// A relay owned by origin B, with a local target that records what it delivers.
+	var delivered []string
+	r := &Relay{
+		db:          db,
+		schema:      "messaging",
+		origin:      originB,
+		subscribers: map[string][]string{},
+		localTargets: []LocalTarget{{
+			Subscriber: "recorder",
+			Deliver: func(_ context.Context, _ string, _ []byte, eventID string) error {
+				delivered = append(delivered, eventID)
+				return nil
+			},
+		}},
+		log: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	if err := r.drainOnce(ctx); err != nil {
+		t.Fatalf("drainOnce: %v", err)
+	}
+
+	// B's relay delivered exactly B's row (event id messaging:<idB>) and nothing else.
+	wantEventID := "messaging:" + strconv.FormatInt(idB, 10)
+	if !reflect.DeepEqual(delivered, []string{wantEventID}) {
+		t.Fatalf("delivered = %v, want [%s] (B must drain only its own origin's row)", delivered, wantEventID)
+	}
+
+	// B's row is now marked sent...
+	var bSent sql.NullTime
+	if err := db.QueryRow(`SELECT sent_at FROM messaging.outbox WHERE id=$1`, idB).Scan(&bSent); err != nil {
+		t.Fatal(err)
+	}
+	if !bSent.Valid {
+		t.Fatal("origin-B row not marked sent by B's own relay")
+	}
+	// ...and A's row is UNTOUCHED (sent_at IS NULL) — B's relay did not swallow it.
+	var aSent sql.NullTime
+	if err := db.QueryRow(`SELECT sent_at FROM messaging.outbox WHERE id=$1`, idA).Scan(&aSent); err != nil {
+		t.Fatal(err)
+	}
+	if aSent.Valid {
+		t.Fatalf("origin-A row was marked sent by B's relay (sent_at=%v) — a foreign relay swallowed another origin's event", aSent.Time)
 	}
 }

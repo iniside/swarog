@@ -39,6 +39,12 @@ func TestAnalyze(t *testing.T) {
 	if got["testdata.subscribed"] {
 		t.Error("testdata.subscribed must NOT be reported (it is subscribed via bus.On)")
 	}
+	if got["testdata.ontx"] {
+		t.Error("testdata.ontx must NOT be reported (subscribed via bus.OnTx, EventType var object identity)")
+	}
+	if got["testdata.ontxraw"] {
+		t.Error("testdata.ontxraw must NOT be reported (subscribed via bus.OnTxRaw, string-literal topic match)")
+	}
 	if got["testdata.allowlisted"] {
 		t.Error("testdata.allowlisted must NOT be reported (allowlist directive)")
 	}

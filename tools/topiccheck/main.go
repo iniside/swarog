@@ -1,8 +1,10 @@
 // Command topiccheck is a bespoke, whole-module static analyzer that flags every
-// event topic DECLARED via bus.Define[T]("topic") but never SUBSCRIBED via
-// bus.On(b, ...Event, h) anywhere in the module. A defined-but-unsubscribed topic
-// is usually dead vocabulary — an event nobody reacts to — so surfacing it keeps
-// the published-event surface honest as the modular monolith grows.
+// event topic DECLARED via bus.Define[T]("topic") but never SUBSCRIBED anywhere in
+// the module — via the in-process bus.On(b, ...Event, h), the durable
+// bus.OnTx(b, ...Event, subscriber, h), or the raw-topic durable
+// bus.OnTxRaw(b, "topic", subscriber, h). A defined-but-unsubscribed topic is
+// usually dead vocabulary — an event nobody reacts to — so surfacing it keeps the
+// published-event surface honest as the modular monolith grows.
 //
 // Why a whole-module driver and not a go/analysis singlechecker+Facts: analysis
 // Facts flow definer→importer, i.e. downstream. Here the relationship runs the
@@ -21,10 +23,14 @@
 // The one known-intentional case today is accountsevents.PlayerRegisteredEvent,
 // which is emitted but not yet wired into match/rating (see CLAUDE.md).
 //
-// LIMITATION: subscriptions are detected ONLY through bus.On(b, eventTypeVar, h)
-// by object identity of the EventType var. A raw Bus.Subscribe("topic", handler)
-// with a string-literal topic would be invisible to this tool (there is no such
-// usage in the repo today; every subscription goes through the typed bus.On).
+// LIMITATION: subscriptions are detected through three funcs. bus.On and bus.OnTx
+// both pass the EventType var as arg[1], matched by OBJECT IDENTITY (the shared
+// go/types object recorded at the Define site). bus.OnTxRaw passes a STRING-LITERAL
+// topic as arg[1], matched by TOPIC STRING against every Define's topic literal. The
+// only remaining invisible path is a raw b.Bus.Subscribe("topic", handler) with a
+// string literal (audit's best-effort in-process sinks use it) — but every topic so
+// consumed (config.changed, match.finished) is ALSO covered by a typed bus.On
+// subscriber elsewhere, and player.registered is allowlisted, so none go red.
 package main
 
 import (
@@ -103,19 +109,20 @@ func main() {
 // core: given loaded packages it returns the findings deterministically.
 func analyze(pkgs []*packages.Package) []Finding {
 	defs := map[types.Object]*defined{}
-	subscribed := map[types.Object]bool{}
+	subscribed := map[types.Object]bool{} // EventType var objects (On, OnTx)
+	subscribedTopics := map[string]bool{} // string-literal topics (OnTxRaw)
 
 	for _, pkg := range pkgs {
 		if pkg.TypesInfo == nil {
 			continue
 		}
 		collectDefines(pkg, defs)
-		collectSubscribes(pkg, subscribed)
+		collectSubscribes(pkg, subscribed, subscribedTopics)
 	}
 
 	var findings []Finding
 	for obj, d := range defs {
-		if subscribed[obj] || d.allowed {
+		if subscribed[obj] || subscribedTopics[d.topic] || d.allowed {
 			continue
 		}
 		findings = append(findings, Finding{Pos: d.pos, Topic: d.topic})
@@ -175,17 +182,26 @@ func collectDefines(pkg *packages.Package, defs map[types.Object]*defined) {
 	}
 }
 
-// collectSubscribes marks the EventType var object passed as the 2nd argument to
-// every bus.On call as subscribed.
-func collectSubscribes(pkg *packages.Package, subscribed map[types.Object]bool) {
+// collectSubscribes marks every subscription's target topic. bus.On and bus.OnTx
+// both take the EventType var as arg[1] — matched by object identity into
+// subscribed. bus.OnTxRaw takes a string-literal topic as arg[1] — matched by topic
+// string into subscribedTopics (the raw-topic durable subscribe used by audit).
+func collectSubscribes(pkg *packages.Package, subscribed map[types.Object]bool, subscribedTopics map[string]bool) {
 	for _, file := range pkg.Syntax {
 		ast.Inspect(file, func(n ast.Node) bool {
 			call, ok := n.(*ast.CallExpr)
-			if !ok || !isBusFunc(pkg, call, "On") || len(call.Args) < 2 {
+			if !ok || len(call.Args) < 2 {
 				return true
 			}
-			if obj := objectOf(pkg, call.Args[1]); obj != nil {
-				subscribed[obj] = true
+			switch {
+			case isBusFunc(pkg, call, "On"), isBusFunc(pkg, call, "OnTx"):
+				if obj := objectOf(pkg, call.Args[1]); obj != nil {
+					subscribed[obj] = true
+				}
+			case isBusFunc(pkg, call, "OnTxRaw"):
+				if topic, ok := stringConst(pkg, call.Args[1]); ok {
+					subscribedTopics[topic] = true
+				}
 			}
 			return true
 		})
