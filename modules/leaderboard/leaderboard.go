@@ -3,13 +3,13 @@ package leaderboard
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"log/slog"
-	"net/http"
 
 	"gamebackend/bus"
 	"gamebackend/lifecycle"
+	"gamebackend/modules/leaderboard/leaderboardapi"
 	"gamebackend/modules/match/matchevents"
+	"gamebackend/registry"
 )
 
 // Module is Postgres-backed. It owns the "leaderboard" schema and nothing else —
@@ -36,6 +36,16 @@ func (*Module) Migrate(_ context.Context, db *sql.DB) error {
 	return err
 }
 
+// Register offers this module under its own name so the gateway's selectBackend
+// (providerOf("leaderboard.topScores") == "leaderboard") resolves it to the
+// LocalBackend in-process — the same registry-presence check every
+// operation-migrated provider uses. It runs in Build's phase 1, before any
+// Init; m.db is set in Init but TopScores is only called after Init completes.
+func (m *Module) Register(ctx *lifecycle.Context) error {
+	registry.Provide(ctx.Registry, "leaderboard", m)
+	return nil
+}
+
 func (m *Module) Init(ctx *lifecycle.Context) error {
 	m.db = ctx.DB
 	m.log = ctx.Log
@@ -51,36 +61,31 @@ func (m *Module) Init(ctx *lifecycle.Context) error {
 		}
 	})
 
-	ctx.Mux.HandleFunc("GET /leaderboard", m.handleList)
+	registerOps(ctx, m)
 	return nil
 }
 
-func (m *Module) handleList(w http.ResponseWriter, req *http.Request) {
-	rows, err := m.db.QueryContext(req.Context(),
+// TopScores implements leaderboardapi.Leaderboard: the top-ranked players
+// (wins desc, player asc), capped at 100 — the same query and shape as the
+// pre-migration handleList.
+func (m *Module) TopScores(ctx context.Context) ([]leaderboardapi.Score, error) {
+	rows, err := m.db.QueryContext(ctx,
 		`SELECT player, wins FROM leaderboard.scores ORDER BY wins DESC, player ASC LIMIT 100`)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+		return nil, err
 	}
 	defer func() { _ = rows.Close() }()
 
-	type row struct {
-		Player string `json:"player"`
-		Wins   int64  `json:"wins"`
-	}
-	out := []row{}
+	out := []leaderboardapi.Score{}
 	for rows.Next() {
-		var r row
-		if err := rows.Scan(&r.Player, &r.Wins); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
+		var s leaderboardapi.Score
+		if err := rows.Scan(&s.Player, &s.Wins); err != nil {
+			return nil, err
 		}
-		out = append(out, r)
+		out = append(out, s)
 	}
 	if err := rows.Err(); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+		return nil, err
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(out)
+	return out, nil
 }

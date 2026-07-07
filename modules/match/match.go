@@ -1,8 +1,8 @@
 package match
 
 import (
-	"encoding/json"
-	"net/http"
+	"context"
+	"log/slog"
 
 	"gamebackend/bus"
 	"gamebackend/lifecycle"
@@ -16,28 +16,47 @@ type ratingService interface {
 	MMR(playerID string) int
 }
 
-type Module struct{}
+// Module is a POINTER receiver: it holds the resolved rating service + bus +
+// logger so Report (an operation invoked by the gateway's LocalOp) can reach
+// them without a closure captured in Init.
+type Module struct {
+	rs  ratingService
+	bus *bus.Bus
+	log *slog.Logger
+}
 
-func (Module) Name() string       { return "match" }
-func (Module) Requires() []string { return []string{"rating"} } // needs a synchronous answer
+func (*Module) Name() string       { return "match" }
+func (*Module) Requires() []string { return []string{"rating"} } // needs a synchronous answer
 
-func (Module) Init(ctx *lifecycle.Context) error {
-	rs := registry.Require[ratingService](ctx.Registry, "rating") // assert to our local interface
+// Register offers this module under its own name so the gateway's
+// selectBackend (providerOf("match.report") == "match") resolves it to the
+// LocalBackend in-process — the same registry-presence check every
+// operation-migrated provider uses. It runs in Build's phase 1, before any
+// Init; m.rs/m.bus/m.log are set in Init but Report is only called after Init
+// completes.
+func (m *Module) Register(ctx *lifecycle.Context) error {
+	registry.Provide(ctx.Registry, "match", m)
+	return nil
+}
 
-	ctx.Mux.HandleFunc("POST /match/report", func(w http.ResponseWriter, r *http.Request) {
-		var in struct{ Winner, Loser string }
-		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		// Synchronous use of a dependency: query MMR right now.
-		ctx.Log.Info("match reported",
-			"winner", in.Winner, "winnerMMR", rs.MMR(in.Winner), "loser", in.Loser)
+func (m *Module) Init(ctx *lifecycle.Context) error {
+	m.rs = registry.Require[ratingService](ctx.Registry, "rating") // assert to our local interface
+	m.bus = ctx.Bus
+	m.log = ctx.Log
 
-		// Fire-and-forget: announce it happened — whoever cares subscribes.
-		bus.Emit(ctx.Bus, matchevents.FinishedEvent,
-			matchevents.Finished{Winner: in.Winner, Loser: in.Loser})
-		w.WriteHeader(http.StatusAccepted)
-	})
+	registerOps(ctx, m)
+	return nil
+}
+
+// Report implements matchapi.Match: it records the result. The MMR read is
+// SYNCHRONOUS (query rating right now, for the log line); the announcement is
+// fire-and-forget (bus.Emit) — whoever cares about a finished match
+// subscribes, match/rating never gets edited to add a listener.
+func (m *Module) Report(_ context.Context, winner, loser string) error {
+	m.log.Info("match reported",
+		"winner", winner, "winnerMMR", m.rs.MMR(winner), "loser", loser)
+
+	bus.Emit(m.bus, matchevents.FinishedEvent,
+		matchevents.Finished{Winner: winner, Loser: loser})
 	return nil
 }

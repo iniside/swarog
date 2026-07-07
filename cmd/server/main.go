@@ -40,7 +40,7 @@ func main() {
 		&inventory.Module{},   // depends on accounts + characters
 		&rating.Module{},      // provides the "rating" service
 		&leaderboard.Module{}, // Postgres-backed match listener
-		match.Module{},        // depends on rating
+		&match.Module{},       // depends on rating
 		webui.Module{},        // serves the SPA demo at "/"
 		&scheduler.Module{},   // data-driven event source: schema "scheduler", emits scheduler.fired
 		&audit.Module{},       // append-only event ledger: schema "audit", generic bus listener + prune
