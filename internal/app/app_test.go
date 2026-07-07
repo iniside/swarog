@@ -1,6 +1,7 @@
 package app
 
 import (
+	"strings"
 	"testing"
 
 	"gamebackend/lifecycle"
@@ -75,6 +76,35 @@ func TestValidateRequires(t *testing.T) {
 			if !tc.wantErr && err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
+			if tc.wantErr && err != nil && !strings.Contains(err.Error(), "characters") {
+				t.Fatalf("error %q does not mention the missing dependency %q", err.Error(), "characters")
+			}
 		})
+	}
+}
+
+// TestValidateRequires_HardRequireConfig is the fail-loud guarantee that
+// justifies moving inventory's config dependency from soft (TryRequire) to
+// hard (Require + Requires()): a process that hosts inventory but forgets to
+// host config must refuse to boot, with an error naming "config", rather than
+// silently degrading or panicking deep inside Build.
+func TestValidateRequires_HardRequireConfig(t *testing.T) {
+	mods := []lifecycle.Module{
+		fakeModule{name: "accounts"},
+		fakeModule{name: "characters", deps: []string{"accounts"}},
+		fakeModule{name: "inventory", deps: []string{"accounts", "characters", "config"}},
+		// config is deliberately absent from this process's module set.
+	}
+	err := validateRequires(mods)
+	if err == nil {
+		t.Fatal("expected an error when config is not hosted, got nil")
+	}
+	if !strings.Contains(err.Error(), "config") {
+		t.Fatalf("error %q does not mention the missing dependency %q", err.Error(), "config")
+	}
+
+	mods = append(mods, fakeModule{name: "config"})
+	if err := validateRequires(mods); err != nil {
+		t.Fatalf("unexpected error once config is hosted: %v", err)
 	}
 }

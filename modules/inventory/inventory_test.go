@@ -88,7 +88,7 @@ func TestInventoryReactsToCharacterLifecycle(t *testing.T) {
 	db := testDB(t)
 	defer func() { _ = db.Close() }()
 	s := &store{db: db, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
-	m := &Module{store: s, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	m := &Module{store: s, log: slog.New(slog.NewTextHandler(io.Discard, nil)), cfg: &fakeConfig{}}
 	ctx := context.Background()
 
 	charID := newUUID(t, db)

@@ -23,8 +23,10 @@ import (
 	"gamebackend/registry"
 )
 
-// starterItem / starterQty are the code-default starter spec — the fallback used
-// when config isn't hosted (split builds) or a key is absent from config.settings.
+// starterItem / starterQty are the per-key default starter spec, used when
+// inventory/starter_item or inventory/starter_qty is absent from
+// config.settings. config itself is a mandatory dependency (Requires), so
+// there is no "config isn't hosted" case to fall back for.
 const (
 	starterItem = "starter_sword"
 	starterQty  = 1
@@ -58,9 +60,9 @@ type Module struct {
 	accounts   accountsSvc
 	characters charactersSvc
 
-	// cfg is the optional "config" service, resolved via registry.TryRequire in
-	// Init. It is nil when config isn't hosted (e.g. cmd/inventory-svc split), in
-	// which case the starter spec falls back to the starterItem/starterQty consts.
+	// cfg is the mandatory "config" service, resolved via registry.Require in
+	// Init. config is hosted in every binary that hosts inventory (a hard
+	// dependency, declared in Requires()) — never nil once Init has run.
 	cfg configReader
 
 	// The starter spec is MATERIALIZED: resolved once (lazily under starterMu) and
@@ -79,7 +81,7 @@ type Module struct {
 }
 
 func (*Module) Name() string       { return "inventory" }
-func (*Module) Requires() []string { return []string{"accounts", "characters"} }
+func (*Module) Requires() []string { return []string{"accounts", "characters", "config"} }
 
 const schemaDDL = `
 CREATE SCHEMA IF NOT EXISTS inventory;
@@ -140,18 +142,14 @@ func (m *Module) Init(ctx *lifecycle.Context) error {
 	bus.On(ctx.Bus, charactersevents.CreatedEvent, m.onCharacterCreated)
 	bus.On(ctx.Bus, charactersevents.DeletedEvent, m.onCharacterDeleted)
 
-	// SOFT dependency on config (decision #3): try to reach the service; if it's
-	// hosted, use it for the starter spec and react to live edits; if not (split
-	// build), cfg stays nil and starterSpec falls back to the consts. This is NOT
-	// declared in Requires() — a hard require would panic cmd/inventory-svc, which
-	// does not host config.
-	if cfg, ok := registry.TryRequire[configReader](ctx.Registry, "config"); ok {
-		m.cfg = cfg
-		// The subscription is load-bearing: onConfigChanged is the ONLY path that
-		// rebuilds the materialized starter spec, so editing inventory/starter_item
-		// in /admin flows config.changed -> here -> the next grant uses the new item.
-		bus.On(ctx.Bus, configevents.ChangedEvent, m.onConfigChanged)
-	}
+	// HARD dependency on config (declared in Requires()): every binary that
+	// hosts inventory also hosts config, so this fails loud at boot (via
+	// validateRequires) rather than silently degrading to the starter consts.
+	m.cfg = registry.Require[configReader](ctx.Registry, "config")
+	// The subscription is load-bearing: onConfigChanged is the ONLY path that
+	// rebuilds the materialized starter spec, so editing inventory/starter_item
+	// in /admin flows config.changed -> here -> the next grant uses the new item.
+	bus.On(ctx.Bus, configevents.ChangedEvent, m.onConfigChanged)
 
 	// Synchronous event sink — the cross-process path. The relay in the peer that
 	// hosts characters POSTs here; the handler dedups (inbox) and runs the effect
@@ -184,17 +182,12 @@ func (m *Module) Init(ctx *lifecycle.Context) error {
 }
 
 // loadStarterLocked resolves the starter spec into the materialized fields. The
-// caller MUST hold starterMu for writing. When config is hosted it reads
-// inventory/starter_item + inventory/starter_qty (falling back to the consts on a
-// miss); otherwise it uses the consts outright.
+// caller MUST hold starterMu for writing. config is a mandatory dependency, so
+// this always reads inventory/starter_item + inventory/starter_qty, falling
+// back to the starterItem/starterQty consts only when a key is absent.
 func (m *Module) loadStarterLocked() {
-	if m.cfg != nil {
-		m.starterName = m.cfg.GetString("inventory", "starter_item", starterItem)
-		m.starterAmount = m.cfg.GetInt("inventory", "starter_qty", starterQty)
-	} else {
-		m.starterName = starterItem
-		m.starterAmount = starterQty
-	}
+	m.starterName = m.cfg.GetString("inventory", "starter_item", starterItem)
+	m.starterAmount = m.cfg.GetInt("inventory", "starter_qty", starterQty)
 	m.starterLoaded = true
 }
 
