@@ -29,6 +29,7 @@ import (
 	"gamebackend/edge"
 	"gamebackend/httpmw"
 	"gamebackend/lifecycle"
+	"gamebackend/metrics"
 )
 
 const defaultDSN = "postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable"
@@ -115,6 +116,12 @@ func Run(cfg Config, mods []lifecycle.Module, edgeServer *edge.Server) error {
 	// module's Init (where Contribute calls happen) has already run in Build.
 	ctx.Mux.HandleFunc("GET /readyz", readyzHandler(ctx, db))
 
+	// /metrics exposes this process's own Prometheus registry (metrics.Handler),
+	// isolated from other processes' — mounted on ctx.Mux like /healthz/readyz so
+	// it goes through metrics.Middleware below (counts its own scrape, benign) but
+	// is exempted from rate limiting by httpmw.SkipInfra.
+	ctx.Mux.Handle("GET /metrics", metrics.Handler())
+
 	// Fail loud if this process's module set is internally incoherent: every
 	// module's Requires() must be satisfied by a provider (a real module OR a
 	// remote stub) also present in mods. This replaces the old ROLES stub-planner
@@ -176,6 +183,10 @@ func Run(cfg Config, mods []lifecycle.Module, edgeServer *edge.Server) error {
 	} else {
 		log.Warn("http rate limiting disabled (RATE_LIMIT_RPS<=0) — expected for a service behind the gateway; set >0 on the monolith")
 	}
+	// Metrics wrap the OUTSIDE of the rate limiter — metrics(ratelimit(mux)) — so a
+	// 429 the limiter issues is still counted as a request with that status. The
+	// gateway does NOT get this middleware (stays lean, no prometheus import).
+	handler = metrics.Middleware(handler)
 
 	srv := &http.Server{Addr: cfg.ListenAddr, Handler: handler, ReadHeaderTimeout: 10 * time.Second}
 	go func() {

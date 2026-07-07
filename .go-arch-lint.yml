@@ -31,6 +31,10 @@ components:
   # Cross-cutting HTTP middleware (rate limit, trusted-proxy client IP). A LEAF —
   # stdlib + x/time/rate only, no gamebackend package — mounted in the boot layer.
   httpmw:      { in: httpmw }
+  # HTTP-metrics middleware (prometheus). NOT a leaf/commonComponent — it imports
+  # a vendor package (prometheus/client_golang) beyond stdlib+x/time, and only the
+  # boot layer (internal/app) mounts it; the gateway deliberately does not.
+  metrics:     { in: metrics }
   lifecycle:   { in: lifecycle }
   # The only deliberately-shared surface between modules: published event descriptors + adminapi.
   # (Enumerated explicitly — go-arch-lint's `*` matches a whole path segment, not an `*events` suffix.)
@@ -132,7 +136,7 @@ deps:
 
   # The boot sequence wires whatever module list it is handed; it only knows the
   # lifecycle contract and the edge server type it may start.
-  app:         { mayDependOn: [ lifecycle, edge ] }
+  app:         { mayDependOn: [ lifecycle, edge, metrics ] }
 
   # Each composition root may depend ONLY on the modules ITS binary hosts (plus
   # the boot package + the transport/stub foundations it wires). This is the real
