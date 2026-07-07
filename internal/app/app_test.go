@@ -1,9 +1,21 @@
 package app
 
 import (
+	"context"
+	"database/sql"
+	"errors"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
+	"time"
 
+	_ "github.com/jackc/pgx/v5/stdlib"
+
+	"gamebackend/httpmw"
 	"gamebackend/lifecycle"
 )
 
@@ -106,5 +118,86 @@ func TestValidateRequires_HardRequireConfig(t *testing.T) {
 	mods = append(mods, fakeModule{name: "config"})
 	if err := validateRequires(mods); err != nil {
 		t.Fatalf("unexpected error once config is hosted: %v", err)
+	}
+}
+
+// testDB opens a real connection to the local Postgres (per the repo's "local
+// Postgres is the test DB" convention) and skips the test if it's unreachable,
+// rather than faking a *sql.DB (an untestable concrete type).
+func testDB(t *testing.T) *sql.DB {
+	t.Helper()
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		dsn = defaultDSN
+	}
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Skipf("no postgres: %v", err)
+	}
+	pingCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := db.PingContext(pingCtx); err != nil {
+		_ = db.Close()
+		t.Skipf("postgres unreachable: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	return db
+}
+
+func TestHealthzAlwaysOK(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	rec := httptest.NewRecorder()
+	healthzHandler(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("healthz status = %d, want 200", rec.Code)
+	}
+	if rec.Body.String() != "ok" {
+		t.Fatalf("healthz body = %q, want %q", rec.Body.String(), "ok")
+	}
+}
+
+func TestReadyzHealthyNoContributors(t *testing.T) {
+	db := testDB(t)
+	ctx := lifecycle.NewContext(slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	rec := httptest.NewRecorder()
+	readyzHandler(ctx, db)(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("readyz status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestReadyzFailingContributorReturns503(t *testing.T) {
+	db := testDB(t)
+	ctx := lifecycle.NewContext(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	ctx.Contribute(httpmw.ReadinessSlot, func(context.Context) error {
+		return errors.New("dependency down")
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	rec := httptest.NewRecorder()
+	readyzHandler(ctx, db)(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("readyz status = %d, want 503; body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "dependency down") {
+		t.Fatalf("readyz body %q does not mention the contributor's error", rec.Body.String())
+	}
+}
+
+func TestReadyzHealthyContributorReturns200(t *testing.T) {
+	db := testDB(t)
+	ctx := lifecycle.NewContext(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	ctx.Contribute(httpmw.ReadinessSlot, func(context.Context) error { return nil })
+
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	rec := httptest.NewRecorder()
+	readyzHandler(ctx, db)(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("readyz status = %d, want 200; body=%s", rec.Code, rec.Body.String())
 	}
 }

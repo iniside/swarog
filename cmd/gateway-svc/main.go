@@ -112,6 +112,14 @@ func main() {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
+	// The gateway has no DB and hosts no module, so readiness here just means
+	// "the process is up and serving" — the same as liveness. Checking that the
+	// backends it proxies to are reachable is a real readiness question but is
+	// out of scope for this step (see plan Open Points).
+	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	})
 	// Everything else falls through to the reverse proxy (which knows the
 	// per-prefix origins). "GET /healthz" is more specific, so it still wins.
 	mux.Handle("/", proxy)

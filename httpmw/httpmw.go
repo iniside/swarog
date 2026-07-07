@@ -183,6 +183,15 @@ func ParseCIDRs(csv string) ([]*net.IPNet, error) {
 	return out, nil
 }
 
+// ReadinessSlot is the contrib slot name /readyz reads (internal/app). A module
+// with its own dependency (a cache, a downstream API, ...) can report its own
+// readiness by contributing a bare `func(context.Context) error` to this slot —
+// stdlib only, so a contributor need not import httpmw for the type. Nothing in
+// this repo contributes to it yet; the baseline DB ping in /readyz is enough
+// today. It is defined here (not in a module) so it's a stable, dependency-free
+// name any future module can target without creating an import cycle.
+const ReadinessSlot = "readiness.check"
+
 // SkipInfra reports whether r targets an infra endpoint that must never be rate
 // limited: k8s liveness/readiness probes and the Prometheus scrape all arrive
 // from one IP and a 429 there means a restart loop or scrape gaps.

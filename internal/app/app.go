@@ -11,6 +11,7 @@ package app
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -98,18 +99,21 @@ func Run(cfg Config, mods []lifecycle.Module, edgeServer *edge.Server) error {
 	cancelPing()
 	ctx.DB = db
 
-	// /healthz is infra — always mounted, in every service. 200 once the DB
-	// pings, 503 if it's down. Registered before anything else so it's always up.
-	ctx.Mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
-		pingCtx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
-		defer cancel()
-		if err := db.PingContext(pingCtx); err != nil {
-			http.Error(w, "db unreachable", http.StatusServiceUnavailable)
-			return
-		}
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok"))
-	})
+	// /healthz is pure liveness — infra, always mounted, in every service. It
+	// answers 200 unconditionally with NO dependency check: a k8s liveness probe
+	// restarts the process on failure, and restarting the process cannot fix a
+	// down database, so pinging it here only causes a needless restart loop.
+	// Registered before anything else so it's always up.
+	ctx.Mux.HandleFunc("GET /healthz", healthzHandler)
+
+	// /readyz is readiness — it DOES check dependencies, because readiness
+	// controls whether a load balancer sends traffic here, not whether the
+	// process is restarted. Baseline check is the DB ping; any module with its
+	// own dependency can contribute a func(context.Context) error to
+	// httpmw.ReadinessSlot and it's picked up here with no edit to this file.
+	// Contributions are read lazily, per request — by request time every
+	// module's Init (where Contribute calls happen) has already run in Build.
+	ctx.Mux.HandleFunc("GET /readyz", readyzHandler(ctx, db))
 
 	// Fail loud if this process's module set is internally incoherent: every
 	// module's Requires() must be satisfied by a provider (a real module OR a
@@ -206,6 +210,52 @@ func Run(cfg Config, mods []lifecycle.Module, edgeServer *edge.Server) error {
 	appl.Stop(shutdownCtx)
 	log.Info("bye")
 	return nil
+}
+
+// healthzHandler answers liveness: always 200, no dependency check (see the
+// call site's comment for why a restart can't fix a down DB).
+func healthzHandler(w http.ResponseWriter, _ *http.Request) {
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte("ok"))
+}
+
+// readyzHandler builds the /readyz handler: a 2s-budgeted DB ping (baseline,
+// always run) plus every func(context.Context) error contributed to
+// httpmw.ReadinessSlot. Any failure — the ping or any contributed check —
+// yields 503 with a JSON body mapping a check name to its error; all green
+// yields 200. Contributions are asserted to the bare func type per the plan
+// (stdlib-only slot value, no httpmw import required of contributors); a
+// contribution that fails the assertion is skipped rather than panicking, since
+// a misregistered contribution is a bug in that module, not grounds to crash
+// every request to this endpoint.
+func readyzHandler(ctx *lifecycle.Context, db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		checkCtx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		defer cancel()
+
+		failures := map[string]string{}
+		if err := db.PingContext(checkCtx); err != nil {
+			failures["db"] = err.Error()
+		}
+		for i, contribution := range ctx.Contributions(httpmw.ReadinessSlot) {
+			check, ok := contribution.(func(context.Context) error)
+			if !ok {
+				continue
+			}
+			if err := check(checkCtx); err != nil {
+				failures[fmt.Sprintf("readiness[%d]", i)] = err.Error()
+			}
+		}
+
+		if len(failures) > 0 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_ = json.NewEncoder(w).Encode(failures)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	}
 }
 
 // envFloat reads key as a float64, returning def when unset or unparseable.
