@@ -50,6 +50,7 @@ components:
   # Each module IMPLEMENTATION is its own component, so the linter can forbid cross-impl imports.
   accounts:    { in: modules/accounts }
   admin:       { in: modules/admin }
+  audit:       { in: modules/audit }
   characters:  { in: modules/characters }
   config:      { in: modules/config }
   inventory:   { in: modules/inventory }
@@ -116,6 +117,11 @@ deps:
   # (edge); characters also drives the transactional-outbox relay (outbox).
   accounts:    { mayDependOn: [ lifecycle, contracts, edge ] }
   admin:       { mayDependOn: [ lifecycle, contracts ] }
+  # audit imports the schedulerevents contract (reacts to scheduler.fired) + adminapi;
+  # it logs domain events GENERICALLY by topic string, so it imports no domain payload
+  # types in impl. (The anti-drift test imports them, allowed since they are all in the
+  # `contracts` component.)
+  audit:       { mayDependOn: [ lifecycle, contracts ] }
   characters:  { mayDependOn: [ lifecycle, contracts, edge, outbox ] }
   config:      { mayDependOn: [ lifecycle, contracts ] }
   inventory:   { mayDependOn: [ lifecycle, contracts, edge ] }
@@ -155,6 +161,7 @@ deps:
     mayDependOn:
       - accounts
       - admin
+      - audit
       - characters
       - config
       - inventory
@@ -176,6 +183,7 @@ deps:
     mayDependOn:
       - inventory
       - admin
+      - audit
       - config
       - remote
       - lifecycle

@@ -21,9 +21,6 @@ type Fired struct {
 // at-least-once over the outbox relay in a split. Consumers MUST therefore be
 // idempotent — see modules/scheduler/scheduler.go for the full rationale.
 //
-// The allow-unsubscribed comment is temporary: Step 5 (audit) subscribes to this
-// topic via bus.On for its prune job, at which point the comment comes out. Until
-// then topiccheck would otherwise flag a Define with no On.
-//
-//topiccheck:allow-unsubscribed reason="audit subscribes via bus.On in Step 5 (audit module); temporary"
+// The audit module subscribes to this topic via bus.On for its prune job, so
+// topiccheck sees a subscriber and no allow-unsubscribed directive is needed.
 var FiredEvent = bus.Define[Fired]("scheduler.fired")

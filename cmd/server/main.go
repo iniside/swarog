@@ -16,6 +16,7 @@ import (
 	"gamebackend/lifecycle"
 	"gamebackend/modules/accounts"
 	"gamebackend/modules/admin"
+	"gamebackend/modules/audit"
 	"gamebackend/modules/characters"
 	"gamebackend/modules/config"
 	"gamebackend/modules/inventory"
@@ -39,6 +40,7 @@ func main() {
 		match.Module{},        // depends on rating
 		webui.Module{},        // serves the SPA demo at "/"
 		&scheduler.Module{},   // data-driven event source: schema "scheduler", emits scheduler.fired
+		&audit.Module{},       // append-only event ledger: schema "audit", generic bus listener + prune
 		&admin.Module{},       // GameOps portal at "/admin"
 	}
 

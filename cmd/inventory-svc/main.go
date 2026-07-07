@@ -16,6 +16,7 @@ import (
 	"gamebackend/internal/app"
 	"gamebackend/lifecycle"
 	"gamebackend/modules/admin"
+	"gamebackend/modules/audit"
 	"gamebackend/modules/config"
 	"gamebackend/modules/inventory"
 	"gamebackend/modules/remote"
@@ -62,6 +63,7 @@ func main() {
 		// central config: schema "config", provides "config", live-reload via LISTEN/NOTIFY
 		&config.Module{},
 		&inventory.Module{Edge: srv},
+		&audit.Module{}, // event ledger + prune sink; scheduler-svc POSTs scheduler.fired here
 		&admin.Module{},
 		accStub,
 		charStub,
