@@ -170,6 +170,7 @@ deps:
     mayDependOn:
       - inventory
       - admin
+      - config
       - remote
       - lifecycle
       - edge

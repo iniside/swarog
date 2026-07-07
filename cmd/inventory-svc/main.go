@@ -16,6 +16,7 @@ import (
 	"gamebackend/internal/app"
 	"gamebackend/lifecycle"
 	"gamebackend/modules/admin"
+	"gamebackend/modules/config"
 	"gamebackend/modules/inventory"
 	"gamebackend/modules/remote"
 )
@@ -58,6 +59,8 @@ func main() {
 	srv := edge.NewServer()
 
 	mods := []lifecycle.Module{
+		// central config: schema "config", provides "config", live-reload via LISTEN/NOTIFY
+		&config.Module{},
 		&inventory.Module{Edge: srv},
 		&admin.Module{},
 		accStub,
