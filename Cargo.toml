@@ -15,9 +15,13 @@ members = [
     "tools/rpc-macro-tests",
     "tools/edgeca",
     "tools/playercli",
-    # Contract surfaces, grouped by domain (Go's api/<name>/ tree). Types-only; import no module.
+    # Contract surfaces, grouped by domain (Go's api/<name>/ tree); import no module.
+    # `<name>api` = pure trait + wire surface (transport-free); `<name>rpc` = the
+    # generated edge glue (impl-tier, may import edge).
+    "api/characters/api",
     "api/characters/rpc",
     "api/characters/events",
+    "api/inventory/api",
     "api/inventory/rpc",
     "api/config/api",
     "api/config/events",
@@ -88,12 +92,16 @@ app = { path = "core/app" }
 # ---- Tooling (tools/): the #[rpc] codegen. ----
 rpc-macro = { path = "tools/rpc-macro" }
 
-# ---- Contract surfaces (api/<name>/): types-only, shared by modules, import no module. ----
+# ---- Contract surfaces (api/<name>/): shared by modules, import no module.
+# `<name>api` is the PURE contract a domain consumer may import (rule 4);
+# `<name>rpc` is the generated transport glue (own module + remote + cmd only). ----
 adminapi = { path = "api/admin/api" }
 configapi = { path = "api/config/api" }
 configevents = { path = "api/config/events" }
 charactersevents = { path = "api/characters/events" }
+charactersapi = { path = "api/characters/api" }
 charactersrpc = { path = "api/characters/rpc" }
+inventoryapi = { path = "api/inventory/api" }
 inventoryrpc = { path = "api/inventory/rpc" }
 
 # ---- Module implementations (modules/): private impl, reachable only from cmd/. ----

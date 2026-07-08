@@ -1,76 +1,46 @@
-//! `inventoryrpc` — the inventory module's pure, transport-free capability contract
-//! (port of Go's `api/inventory/inventoryapi`). It declares the `Holdings`
-//! capability — the three operations a player performs against their OWN inventory —
-//! and applies `#[rpc(prefix = "inventory")]` so the transport glue (per-method wire
-//! envelopes, `Method*` consts, a `Client` over `opsapi::Caller`, `register_server`,
-//! and — for `#[http]` methods — `operations()`/`route_bindings()`) is GENERATED into
-//! the child `holdings_rpc` module rather than hand-written.
+//! `inventoryrpc` — the inventory domain's GENERATED transport glue (port of Go's
+//! `api/inventory/inventoryrpc`): the edge-dependent half of the `#[rpc]` codegen,
+//! split out of the pure `inventoryapi` contract in the Step-2 fortress refactor.
 //!
-//! The identity convention (see `rpc_macro`): every `Holdings` method needs the
-//! caller's VERIFIED player identity, so each declares a leading `opsapi::Identity`
-//! parameter — the macro strips it from the wire body and reconstructs it from the
-//! mutually-authenticated envelope on the server side, so a client can NEVER read or
-//! mutate another player's inventory. All three methods are HTTP-bound.
+//! The `holdings_rpc` module below is expanded from `inventoryapi`'s
+//! metadata-callback macro through [`rpc_macro::generate_glue`] and contains the
+//! `Client` (the split-topology edge client implementing [`Holdings`] over an
+//! [`opsapi::Caller`]), `register_server` (installs one `edge::IdentityHandler`
+//! adapter per method), and `provide_remote` (provides the `Client` under
+//! `inventory.holdings`). It also `pub use`s the api crate's pure module, so
+//! `inventoryrpc::holdings_rpc::*` is a drop-in superset of the old fused module.
 //!
-//! Domain CONSUMERS do not import this crate (rule 4's nominal-typing note): it is
-//! reached only by the generated glue and the `remote` stub — the provider-owned
-//! contract surface, same precedent as each domain's `<module>events` crate.
+//! Rule 5: this crate is reached ONLY by the `inventory` module itself (a module
+//! importing its OWN glue is sanctioned), `remote`, and `cmd/*` binaries — never by
+//! a domain consumer (they import `inventoryapi`, rule 4).
 
-use async_trait::async_trait;
+use std::sync::Arc;
+
+// The glue's method signatures re-resolve at THIS invocation site (the metadata
+// travels as tokens), so the api crate's domain types + the identity/error types
+// must be in scope here exactly as they are in `inventoryapi`'s lib.rs.
+use inventoryapi::*;
 use opsapi::{Error, Identity};
-use rpc_macro::rpc;
-use serde::{Deserialize, Serialize};
 
-/// One item stack an owner holds. It lives here (not in the impl crate) because it is
-/// the return type of the `Holdings` capability, so the generated glue must be able
-/// to name it; the `inventory` module uses it directly. The serde field names
-/// (`owner_type`/`owner_id`/`item_id`/`item_name`/`quantity`) are the player-facing
-/// wire shape — matching Go's JSON tags exactly.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Holding {
-    pub owner_type: String,
-    pub owner_id: String,
-    pub item_id: String,
-    pub item_name: String,
-    pub quantity: i64,
-}
+inventoryapi::inventory_holdings_meta!(rpc_macro::generate_glue);
 
-/// The inventory module's player-facing capability: the three operations a player
-/// performs against their OWN inventory. Each takes its caller `Identity` as the
-/// leading parameter (injected by the gateway after bearer verification), NEVER a
-/// body field — so a client cannot act on another player's inventory. The `#[http]`
-/// bindings are the single source the gateway route table + both backends read;
-/// verbs/paths/success/body-keys mirror Go's `inventoryapi.HTTPBindings` verbatim.
-#[rpc(prefix = "inventory")]
-#[async_trait]
-pub trait Holdings: Send + Sync {
-    /// The caller's own (player-owned) holdings. 200.
-    #[http(verb = "GET", path = "/inventory/me", auth = "player", success = 200)]
-    async fn list_mine(&self, identity: Identity) -> Result<Vec<Holding>, Error>;
+/// One provider-swap action (the Step-4 generic-`remote` seam): applied to the
+/// process [`lifecycle::Context`] and the stub's edge-backed [`opsapi::Caller`], it
+/// provides a generated capability `Client` and/or contributes front-door route
+/// bindings — exactly what `remote`'s per-provider match arm used to hand-write.
+pub type RemoteFactory = Box<dyn Fn(&lifecycle::Context, Arc<dyn opsapi::Caller>) + Send + Sync>;
 
-    /// A character's holdings, but only if the caller OWNS the character — otherwise
-    /// a Forbidden outcome (never another player's inventory). A genuinely unknown
-    /// character is NotFound; an ownership-lookup transport failure is Unavailable.
-    /// The `{id}` path wildcard rides into the wire field `character_id`. 200.
-    #[http(
-        verb = "GET",
-        path = "/inventory/character/{id}",
-        auth = "player",
-        success = 200,
-        path_args(character_id = "id")
-    )]
-    async fn list_character(&self, identity: Identity, character_id: String) -> Result<Vec<Holding>, Error>;
-
-    /// Adds `qty` of `item_id` to the caller's own inventory (the simulated-IAP path,
-    /// gated by `INVENTORY_DEV_GRANT`). A non-positive qty or an unknown item is an
-    /// Invalid outcome. The body key stays `item_id` (matching Go's `BodyNames`
-    /// override). Returns the caller's updated holdings. 200.
-    #[http(
-        verb = "POST",
-        path = "/inventory/me/grant",
-        auth = "player",
-        success = 200,
-        body_names(item_id = "item_id")
-    )]
-    async fn grant(&self, identity: Identity, item_id: String, qty: i64) -> Result<Vec<Holding>, Error>;
+/// The inventory provider's client-registration closures for a process where the
+/// provider lives in a PEER process (consumed by `remote::Stub`; Step 4 will pass
+/// them in from `cmd/*`). Inventory is a LEAF — no peer `require`s an inventory
+/// capability — so this contributes the holdings `route_bindings()` ONLY (front-door
+/// routing; no `LOCAL_SLOT`, the gateway dispatches remotely) and deliberately makes
+/// no capability provide: a dead provide is noise, add one when a consumer appears.
+pub fn remote_factories() -> Vec<RemoteFactory> {
+    vec![Box::new(|ctx, _caller| {
+        for rb in holdings_rpc::route_bindings() {
+            ctx.contribute(opsapi::SLOT, rb.operation);
+            ctx.contribute(opsapi::BINDING_SLOT, rb.binding);
+        }
+    })]
 }

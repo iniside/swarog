@@ -246,6 +246,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "bus",
+ "charactersapi",
  "charactersevents",
  "charactersrpc",
  "edge",
@@ -277,6 +278,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "charactersapi"
+version = "0.1.0"
+dependencies = [
+ "adminapi",
+ "async-trait",
+ "opsapi",
+ "rpc-macro",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "charactersevents"
 version = "0.1.0"
 dependencies = [
@@ -288,13 +301,13 @@ dependencies = [
 name = "charactersrpc"
 version = "0.1.0"
 dependencies = [
- "adminapi",
  "async-trait",
+ "charactersapi",
  "edge",
- "futures",
+ "lifecycle",
  "opsapi",
+ "registry",
  "rpc-macro",
- "serde",
  "serde_json",
 ]
 
@@ -1084,11 +1097,12 @@ dependencies = [
  "anyhow",
  "async-trait",
  "bus",
+ "charactersapi",
  "charactersevents",
- "charactersrpc",
  "configapi",
  "configevents",
  "edge",
+ "inventoryapi",
  "inventoryrpc",
  "lifecycle",
  "messaging",
@@ -1120,15 +1134,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "inventoryapi"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "opsapi",
+ "rpc-macro",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "inventoryrpc"
 version = "0.1.0"
 dependencies = [
  "async-trait",
  "edge",
- "futures",
+ "inventoryapi",
+ "lifecycle",
  "opsapi",
+ "registry",
  "rpc-macro",
- "serde",
  "serde_json",
 ]
 
@@ -1839,8 +1865,10 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "charactersapi",
  "charactersrpc",
  "edge",
+ "inventoryapi",
  "inventoryrpc",
  "lifecycle",
  "opsapi",
@@ -1917,7 +1945,9 @@ dependencies = [
  "async-trait",
  "edge",
  "futures",
+ "lifecycle",
  "opsapi",
+ "registry",
  "rpc-macro",
  "serde",
  "serde_json",

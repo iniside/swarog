@@ -6,18 +6,22 @@ license.workspace = true
 publish = false
 
 # A behavioural harness for the `#[rpc]` proc-macro: a proc-macro crate cannot test
-# its own expansion, so this sibling applies `#[rpc]` to a sample trait and exercises
-# the generated Client / register_server / operations end-to-end (over real edge QUIC
-# and via the gateway decode/invoke/encode glue).
+# its own expansion, so this sibling applies `#[rpc]` to a sample trait (lib target =
+# the `<name>api` role: pure surface + metadata-callback macro) and expands the glue
+# in `tests/roundtrip.rs` (the `<name>rpc` role — a separate crate, so the two-crate
+# metadata handoff is real), exercising Client / register_server / operations
+# end-to-end (over real edge QUIC and via the gateway decode/invoke/encode glue).
 
 [dependencies]
-
-[dev-dependencies]
 rpc-macro = { workspace = true }
 opsapi = { workspace = true }
-edge = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 async-trait = { workspace = true }
+
+[dev-dependencies]
+edge = { workspace = true }
+registry = { workspace = true }
+lifecycle = { workspace = true }
 futures = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }

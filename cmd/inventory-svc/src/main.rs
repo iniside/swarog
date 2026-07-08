@@ -3,8 +3,8 @@
 //! dependency with a `remote::Stub`: the stub `provide`s an edge-backed
 //! `characters.ownership` client (dialing A), so inventory's
 //! `require::<dyn Ownership>` resolves REMOTELY — the registry SWAP, with inventory's
-//! code unchanged. It imports the `charactersrpc` CONTRACT (transitively, via the
-//! stub) but NOT the characters IMPL. B now ALSO stands up its OWN shared QUIC edge
+//! code unchanged. It reaches the `charactersapi` contract + `charactersrpc` glue
+//! only transitively (via the stub / inventory), and NOT the characters IMPL. B now ALSO stands up its OWN shared QUIC edge
 //! server (`EDGE_ADDR`, default `:9001`) and wires `Inventory::with_edge` onto it, so
 //! it SERVES `inventory.*` ops for a peer — gateway-svc hosts no providers, so it
 //! resolves `inventory.*` as Remote and dials this edge (Step 6 of the QUIC

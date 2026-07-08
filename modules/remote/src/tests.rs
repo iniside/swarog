@@ -110,13 +110,13 @@ fn stub_provides_characters_capability_keys() {
 
     assert!(
         ctx.registry()
-            .try_require::<dyn charactersrpc::Ownership>(&registry::key("characters", "ownership"))
+            .try_require::<dyn charactersapi::Ownership>(&registry::key("characters", "ownership"))
             .is_some(),
         "characters.ownership must resolve to an Arc<dyn Ownership> (inventory's authz dep)"
     );
     assert!(
         ctx.registry()
-            .try_require::<dyn charactersrpc::Player>(&registry::key("characters", "player"))
+            .try_require::<dyn charactersapi::Player>(&registry::key("characters", "player"))
             .is_some(),
         "characters.player must resolve to an Arc<dyn Player> (front-door dep)"
     );
@@ -132,7 +132,7 @@ fn stub_contributes_characters_route_bindings_but_no_local() {
     let ctx = Context::new();
     Stub::new("characters", "127.0.0.1:9000").register(&ctx).unwrap();
 
-    let expected: Vec<String> = charactersrpc::player_rpc::route_bindings()
+    let expected: Vec<String> = charactersapi::player_rpc::route_bindings()
         .into_iter()
         .map(|rb| rb.operation.method)
         .collect();
@@ -163,7 +163,7 @@ fn stub_inventory_is_routes_only_no_capability() {
     let ctx = Context::new();
     Stub::new("inventory", "127.0.0.1:9001").register(&ctx).unwrap();
 
-    let expected: Vec<String> = inventoryrpc::holdings_rpc::route_bindings()
+    let expected: Vec<String> = inventoryapi::holdings_rpc::route_bindings()
         .into_iter()
         .map(|rb| rb.operation.method)
         .collect();

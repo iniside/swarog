@@ -8,12 +8,13 @@ publish = false
 # `remote` — the registry SWAP. A `Stub` module stands in for a provider hosted in a
 # PEER process: in phase-1 `register` it `provide`s a generated edge CLIENT under the
 # SAME capability keys the local impl would, so a co-hosted consumer's `require` is
-# topology-blind. It imports only foundations + edge + the provider's `*api` contract
-# (its generated rpc glue) — NEVER the provider's impl crate (CLAUDE.md #2).
+# topology-blind. It imports only foundations + edge + each provider's `<name>rpc`
+# glue crate (whose `remote_factories()` owns the swap actions) — NEVER the
+# provider's impl crate (CLAUDE.md #2). Step 4 makes it generic: the glue deps move
+# to `cmd/*`, which will pass the factories into `Stub::new`.
 [dependencies]
 edge = { workspace = true }
 opsapi = { workspace = true }
-registry = { workspace = true }
 lifecycle = { workspace = true }
 charactersrpc = { workspace = true }
 inventoryrpc = { workspace = true }
@@ -23,4 +24,8 @@ anyhow = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+# The PURE api crates: tests name the capability traits + expected route bindings.
+charactersapi = { workspace = true }
+inventoryapi = { workspace = true }
+registry = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync"] }

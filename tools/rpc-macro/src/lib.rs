@@ -1,20 +1,47 @@
 //! `rpc-macro` — the `#[rpc]` codegen (the Rust port of Go's `tools/rpcgen`).
 //!
-//! `#[rpc(prefix = "...")]` is an attribute macro applied to a **capability trait**.
-//! It emits, into a child module `<snake(trait)>_rpc`, the transport glue that would
-//! otherwise be hand-written per method — the debt the project explicitly forbids:
+//! Since the Step-2 fortress refactor the codegen is SPLIT across two macros so a
+//! domain's contract crate stays pure (no `edge` dependency) while its transport
+//! glue lives in a sibling crate:
+//!
+//! ## `#[rpc(prefix = "...")]` — applied in the `<name>api` crate
+//!
+//! An attribute macro applied to a **capability trait**. It emits, into a child
+//! module `<snake(trait)>_rpc`, the TRANSPORT-FREE half:
 //!
 //!   - a wire **request** struct per method (one field per non-identity arg),
 //!   - a wire **response** struct per method carrying `{ status, err, value? }` where
 //!     `status: opsapi::Status` is the DOMAIN outcome riding INSIDE the payload
 //!     envelope (an edge-level `ok:false` is a separate *transport* failure),
 //!   - `METHOD_<NAME>: &str = "<prefix>.<lowerCamel(name)>"` consts,
+//!   - for `#[http(...)]`-annotated methods only, `operations(impl) ->
+//!     Vec<opsapi::OpSet>` and `route_bindings() -> Vec<opsapi::RouteBinding>` (the
+//!     decode/encode/local glue the gateway routes over).
+//!
+//! It ALSO emits a `#[macro_export] macro_rules! <prefix>_<snake(trait)>_meta`
+//! **metadata-callback macro**: a proc macro cannot re-parse another crate (and the
+//! re-emitted trait has its `#[http]` attrs stripped), so the full pre-strip method
+//! metadata is carried as a token tree that the callback macro hands to a
+//! caller-supplied macro — the standard token-tree callback pattern.
+//!
+//! ## `generate_glue!` — invoked in the `<name>rpc` crate
+//!
+//! The glue crate contains one line per trait:
+//! `charactersapi::characters_ownership_meta!(rpc_macro::generate_glue);`
+//! which expands to the EDGE-DEPENDENT half, in a module of the same
+//! `<snake(trait)>_rpc` name (which also re-exports the pure module's contents, so
+//! `<name>rpc::<snake>_rpc::*` is a superset of the api crate's module):
+//!
 //!   - a `Client` over `Arc<dyn opsapi::Caller>` implementing the source trait,
 //!   - `register_server(&mut edge::Server, Arc<dyn Trait>)` installing one
 //!     `handle_identity` adapter per method,
-//!   - and, for `#[http(...)]`-annotated methods only, `operations(impl) ->
-//!     Vec<opsapi::OpSet>` and `route_bindings() -> Vec<opsapi::RouteBinding>` (the
-//!     decode/encode/local glue the gateway routes over).
+//!   - `provide_remote(&registry::Registry, Arc<dyn opsapi::Caller>)` — provides the
+//!     generated `Client` under the capability's canonical key
+//!     (`registry::key(prefix, snake_trait)`); the building block for each glue
+//!     crate's hand-written `remote_factories()` (the Step-4 generic-`remote` seam).
+//!
+//! The glue crate's `lib.rs` must `use <name>api::*;` (plus `opsapi::{Error,
+//! Identity}`) so the signatures' domain types resolve at the invocation site.
 //!
 //! # THE IDENTITY CONVENTION (set here; Steps 8–10 depend on it — do not change)
 //!
@@ -73,12 +100,31 @@ use syn::{
     Signature, Token, TraitItem, Type,
 };
 
-/// The `#[rpc(prefix = "...")]` attribute.
+/// The `#[rpc(prefix = "...")]` attribute (the pure, transport-free half — see the
+/// crate docs).
 #[proc_macro_attribute]
 pub fn rpc(attr: TokenStream, item: TokenStream) -> TokenStream {
     let args = syn::parse_macro_input!(attr as RpcArgs);
+    // Snapshot the ORIGINAL tokens (with `#[http]` still attached) before parsing:
+    // this is the metadata the callback macro carries to `generate_glue!`.
+    let original: TokenStream2 = TokenStream2::from(item.clone());
     let item_trait = syn::parse_macro_input!(item as ItemTrait);
-    match expand(args, item_trait) {
+    match expand(args, original, item_trait) {
+        Ok(ts) => ts.into(),
+        Err(e) => e.to_compile_error().into(),
+    }
+}
+
+/// `generate_glue!` — the edge-dependent half, expanded in the `<name>rpc` crate via
+/// a `<name>api` metadata-callback macro (see the crate docs). Input shape:
+///
+/// ```ignore
+/// prefix = "characters", api = charactersapi, #[...] pub trait Ownership { ... }
+/// ```
+#[proc_macro]
+pub fn generate_glue(input: TokenStream) -> TokenStream {
+    let glue = syn::parse_macro_input!(input as GlueInput);
+    match expand_glue(glue) {
         Ok(ts) => ts.into(),
         Err(e) => e.to_compile_error().into(),
     }
@@ -351,10 +397,17 @@ fn result_ok_type(output: &ReturnType) -> syn::Result<Option<Type>> {
 // Expansion
 // ---------------------------------------------------------------------------
 
-fn expand(args: RpcArgs, mut item_trait: ItemTrait) -> syn::Result<TokenStream2> {
+/// The `#[rpc]` expansion: the cleaned trait, the pure `<snake>_rpc` module, and the
+/// metadata-callback macro carrying the pre-strip tokens to `generate_glue!`.
+fn expand(
+    args: RpcArgs,
+    original: TokenStream2,
+    mut item_trait: ItemTrait,
+) -> syn::Result<TokenStream2> {
     let trait_ident = item_trait.ident.clone();
     let vis = item_trait.vis.clone();
-    let module_ident = format_ident!("{}_rpc", to_snake(&trait_ident.to_string()));
+    let snake = to_snake(&trait_ident.to_string());
+    let module_ident = format_ident!("{}_rpc", snake);
 
     // Build a model per method, stripping `#[http]` from the trait as we go.
     let mut methods = Vec::new();
@@ -369,17 +422,28 @@ fn expand(args: RpcArgs, mut item_trait: ItemTrait) -> syn::Result<TokenStream2>
     let consts = methods.iter().map(gen_const);
     let req_structs = methods.iter().map(gen_request_struct);
     let resp_structs = methods.iter().map(gen_response_struct);
-    let client_methods = methods.iter().map(gen_client_method).collect::<Vec<_>>();
-    let adapters = methods.iter().map(gen_server_adapter).collect::<Vec<_>>();
 
     let bound: Vec<&MethodModel> = methods.iter().filter(|m| m.http.is_some()).collect();
     let opset_pushes = bound.iter().map(|m| gen_opset_push(m)).collect::<Vec<_>>();
     let route_pushes = bound.iter().map(|m| gen_route_push(m)).collect::<Vec<_>>();
 
+    // The metadata-callback macro. `$crate` cannot name this crate from a proc
+    // macro, so the api crate's name comes from the build env (Cargo sets
+    // CARGO_PKG_NAME for the crate currently compiling — i.e. the api crate).
+    let meta_ident = format_ident!("{}_{}_meta", sanitize_ident(&args.prefix), snake);
+    let api_name = std::env::var("CARGO_PKG_NAME")
+        .map_err(|_| syn::Error::new(trait_ident.span(), "CARGO_PKG_NAME not set"))?
+        .replace('-', "_");
+    let api_ident = format_ident!("{}", api_name);
+    let prefix_lit = &args.prefix;
+    // A literal `$` token for the macro_rules matcher/transcriber (quote! cannot
+    // spell `$` directly).
+    let d = proc_macro2::Punct::new('$', proc_macro2::Spacing::Alone);
+
     let expanded = quote! {
         #item_trait
 
-        #[doc = "Generated RPC glue (see `rpc_macro`). One module per `#[rpc]` trait."]
+        #[doc = "Generated transport-free RPC surface (see `rpc_macro`). One module per `#[rpc]` trait."]
         #vis mod #module_ident {
             #![allow(
                 clippy::all,
@@ -399,38 +463,6 @@ fn expand(args: RpcArgs, mut item_trait: ItemTrait) -> syn::Result<TokenStream2>
             // Per-method wire envelopes.
             #(#req_structs)*
             #(#resp_structs)*
-
-            /// Implements the source trait over an `opsapi::Caller`, marshalling each
-            /// call into its wire envelope. The split-topology client; in the
-            /// monolith the real service is called directly.
-            pub struct Client {
-                caller: ::std::sync::Arc<dyn ::opsapi::Caller>,
-            }
-
-            impl Client {
-                /// Returns a `Client` that calls through `caller`.
-                pub fn new(caller: ::std::sync::Arc<dyn ::opsapi::Caller>) -> Self {
-                    Client { caller }
-                }
-            }
-
-            #[::async_trait::async_trait]
-            impl #trait_ident for Client {
-                #(#client_methods)*
-            }
-
-            /// Installs one edge identity-adapter per method of `impl_` onto `server`.
-            /// Each adapter deserialises the request, reconstructs the caller identity
-            /// from the (mutually authenticated) envelope — the trust boundary,
-            /// identity is read ONLY from the envelope, never a client-supplied body
-            /// field — calls the impl, and marshals the `{status, err, value}`
-            /// response envelope (folding an `opsapi::Error` into `status`/`err`).
-            pub fn register_server(
-                server: &mut ::edge::Server,
-                impl_: ::std::sync::Arc<dyn #trait_ident + ::core::marker::Send + ::core::marker::Sync>,
-            ) {
-                #(#adapters)*
-            }
 
             /// The gateway contributions for each `#[http]`-bound method of `impl_`:
             /// each `OpSet` pairs the static `Operation` (route/auth/success) with its
@@ -454,6 +486,162 @@ fn expand(args: RpcArgs, mut item_trait: ItemTrait) -> syn::Result<TokenStream2>
                 let mut __rb: ::std::vec::Vec<::opsapi::RouteBinding> = ::std::vec::Vec::new();
                 #(#route_pushes)*
                 __rb
+            }
+        }
+
+        /// Metadata-callback macro (see `rpc_macro`): hands this trait's FULL
+        /// pre-strip metadata token tree (names, signatures, `#[http]` attrs) to a
+        /// caller-supplied macro. The `<name>rpc` glue crate invokes it as
+        /// `<api>::<this>!(rpc_macro::generate_glue);` — a proc macro cannot re-parse
+        /// another crate, so the tokens travel by macro expansion instead.
+        #[doc(hidden)]
+        #[macro_export]
+        macro_rules! #meta_ident {
+            ( #d ( #d cb:tt )* ) => {
+                #d ( #d cb )* ! {
+                    prefix = #prefix_lit,
+                    api = #api_ident,
+                    #original
+                }
+            };
+        }
+    };
+    Ok(expanded)
+}
+
+// ---------------------------------------------------------------------------
+// The glue half (`generate_glue!`), expanded in the `<name>rpc` crate.
+// ---------------------------------------------------------------------------
+
+/// Parsed `generate_glue!` input: `prefix = "...", api = <crate ident>, <trait>`.
+struct GlueInput {
+    prefix: String,
+    api: Ident,
+    item_trait: ItemTrait,
+}
+
+impl Parse for GlueInput {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let key: Ident = input.parse()?;
+        if key != "prefix" {
+            return Err(syn::Error::new(key.span(), "expected `prefix = \"...\"`"));
+        }
+        input.parse::<Token![=]>()?;
+        let prefix: LitStr = input.parse()?;
+        input.parse::<Token![,]>()?;
+        let key: Ident = input.parse()?;
+        if key != "api" {
+            return Err(syn::Error::new(key.span(), "expected `api = <crate ident>`"));
+        }
+        input.parse::<Token![=]>()?;
+        let api: Ident = input.parse()?;
+        input.parse::<Token![,]>()?;
+        let item_trait: ItemTrait = input.parse()?;
+        Ok(GlueInput {
+            prefix: prefix.value(),
+            api,
+            item_trait,
+        })
+    }
+}
+
+/// Emits the edge-dependent glue module: `Client`, `register_server`,
+/// `provide_remote` — plus a `pub use` of the api crate's pure module so
+/// `<name>rpc::<snake>_rpc::*` is a superset of `<name>api::<snake>_rpc::*`.
+fn expand_glue(glue: GlueInput) -> syn::Result<TokenStream2> {
+    let mut item_trait = glue.item_trait;
+    let trait_ident = item_trait.ident.clone();
+    let snake = to_snake(&trait_ident.to_string());
+    let module_ident = format_ident!("{}_rpc", snake);
+    let api = &glue.api;
+    // Fully-qualified paths into the api crate: the trait itself and the pure module
+    // holding the wire envelopes + consts (`#qual #name` concatenates into a path).
+    let trait_path = quote! { ::#api::#trait_ident };
+    let qual = quote! { ::#api::#module_ident:: };
+
+    let mut methods = Vec::new();
+    for it in item_trait.items.iter_mut() {
+        if let TraitItem::Fn(f) = it {
+            methods.push(build_method(&glue.prefix, f)?);
+        }
+    }
+    methods.sort_by(|a, b| a.pascal.cmp(&b.pascal));
+
+    let client_methods = methods
+        .iter()
+        .map(|m| gen_client_method(m, &qual))
+        .collect::<Vec<_>>();
+    let adapters = methods
+        .iter()
+        .map(|m| gen_server_adapter(m, &qual))
+        .collect::<Vec<_>>();
+
+    let prefix_lit = &glue.prefix;
+    let snake_lit = &snake;
+
+    let expanded = quote! {
+        #[doc = "Generated transport glue (see `rpc_macro`). One module per `#[rpc]` trait; re-exports the api crate's pure module."]
+        pub mod #module_ident {
+            #![allow(
+                clippy::all,
+                clippy::pedantic,
+                clippy::nursery,
+                dead_code,
+                unused_imports,
+                unused_variables,
+                non_snake_case,
+                non_upper_case_globals
+            )]
+            use super::*;
+
+            // The transport-free surface (consts, wire envelopes, operations,
+            // route_bindings) stays generated in the api crate; re-export it so this
+            // glue module remains a drop-in superset of the old fused module.
+            pub use #qual *;
+
+            /// Implements the source trait over an `opsapi::Caller`, marshalling each
+            /// call into its wire envelope. The split-topology client; in the
+            /// monolith the real service is called directly.
+            pub struct Client {
+                caller: ::std::sync::Arc<dyn ::opsapi::Caller>,
+            }
+
+            impl Client {
+                /// Returns a `Client` that calls through `caller`.
+                pub fn new(caller: ::std::sync::Arc<dyn ::opsapi::Caller>) -> Self {
+                    Client { caller }
+                }
+            }
+
+            #[::async_trait::async_trait]
+            impl #trait_path for Client {
+                #(#client_methods)*
+            }
+
+            /// Installs one edge identity-adapter per method of `impl_` onto `server`.
+            /// Each adapter deserialises the request, reconstructs the caller identity
+            /// from the (mutually authenticated) envelope — the trust boundary,
+            /// identity is read ONLY from the envelope, never a client-supplied body
+            /// field — calls the impl, and marshals the `{status, err, value}`
+            /// response envelope (folding an `opsapi::Error` into `status`/`err`).
+            pub fn register_server(
+                server: &mut ::edge::Server,
+                impl_: ::std::sync::Arc<dyn #trait_path + ::core::marker::Send + ::core::marker::Sync>,
+            ) {
+                #(#adapters)*
+            }
+
+            /// Provides the generated [`Client`] under this capability's canonical
+            /// registry key (`registry::key(prefix, snake_trait)`), so a co-hosted
+            /// consumer's `require::<dyn Trait>` resolves to the edge-backed client.
+            /// The building block for the glue crate's `remote_factories()`.
+            pub fn provide_remote(
+                reg: &::registry::Registry,
+                caller: ::std::sync::Arc<dyn ::opsapi::Caller>,
+            ) {
+                let __client: ::std::sync::Arc<dyn #trait_path> =
+                    ::std::sync::Arc::new(Client::new(caller));
+                reg.provide::<dyn #trait_path>(::registry::key(#prefix_lit, #snake_lit), __client);
             }
         }
     };
@@ -525,14 +713,16 @@ fn gen_response_struct(m: &MethodModel) -> TokenStream2 {
     }
 }
 
-fn gen_client_method(m: &MethodModel) -> TokenStream2 {
+/// `qual` is the path prefix for the wire envelopes + consts: empty when they are
+/// module-local (the pure emission), `::<api>::<snake>_rpc::` in the glue emission.
+fn gen_client_method(m: &MethodModel, qual: &TokenStream2) -> TokenStream2 {
     let sig = &m.sig;
     let const_ident = method_const_ident(m);
     let req_name = format_ident!("{}Request", m.pascal);
     let resp_name = format_ident!("{}Response", m.pascal);
 
     let field_idents: Vec<&Ident> = m.args.iter().map(|a| &a.ident).collect();
-    let build_req = quote! { #req_name { #(#field_idents: #field_idents),* } };
+    let build_req = quote! { #qual #req_name { #(#field_idents: #field_idents),* } };
 
     let identity_expr = match &m.id_ident {
         Some(id) => quote! { #id.player_id() },
@@ -557,8 +747,8 @@ fn gen_client_method(m: &MethodModel) -> TokenStream2 {
             let __req = #build_req;
             let __payload = ::serde_json::to_vec(&__req)
                 .map_err(|__e| ::opsapi::Error::internal(__e.to_string()))?;
-            let __resp_bytes = self.caller.call(#const_ident, #identity_expr, &__payload).await?;
-            let resp: #resp_name = ::serde_json::from_slice(&__resp_bytes)
+            let __resp_bytes = self.caller.call(#qual #const_ident, #identity_expr, &__payload).await?;
+            let resp: #qual #resp_name = ::serde_json::from_slice(&__resp_bytes)
                 .map_err(|__e| ::opsapi::Error::internal(__e.to_string()))?;
             if resp.status != ::opsapi::Status::Ok {
                 return ::core::result::Result::Err(::opsapi::Error::new(resp.status, resp.err));
@@ -569,9 +759,11 @@ fn gen_client_method(m: &MethodModel) -> TokenStream2 {
 }
 
 /// The `Ok`/`Err` match arms building the response envelope from the impl's
-/// `Result`, shared by the server adapter and the local invoker.
-fn response_arms(m: &MethodModel) -> TokenStream2 {
+/// `Result`, shared by the server adapter and the local invoker. `qual` as in
+/// [`gen_client_method`].
+fn response_arms(m: &MethodModel, qual: &TokenStream2) -> TokenStream2 {
     let resp_name = format_ident!("{}Response", m.pascal);
+    let resp_name = quote! { #qual #resp_name };
     if m.value_ty.is_some() {
         quote! {
             ::core::result::Result::Ok(__v) => #resp_name {
@@ -604,7 +796,8 @@ fn response_arms(m: &MethodModel) -> TokenStream2 {
     }
 }
 
-fn gen_server_adapter(m: &MethodModel) -> TokenStream2 {
+/// `qual` as in [`gen_client_method`].
+fn gen_server_adapter(m: &MethodModel, qual: &TokenStream2) -> TokenStream2 {
     let const_ident = method_const_ident(m);
     let req_name = format_ident!("{}Request", m.pascal);
     let method = &m.method_ident;
@@ -615,7 +808,7 @@ fn gen_server_adapter(m: &MethodModel) -> TokenStream2 {
     } else {
         quote! { __impl.#method(#(__req.#field_idents),*).await }
     };
-    let arms = response_arms(m);
+    let arms = response_arms(m, qual);
 
     quote! {
         {
@@ -624,7 +817,7 @@ fn gen_server_adapter(m: &MethodModel) -> TokenStream2 {
                 move |__identity: ::core::option::Option<::std::string::String>, __payload: ::std::vec::Vec<u8>| {
                     let __impl = __impl.clone();
                     ::std::boxed::Box::pin(async move {
-                        let __req: #req_name = ::serde_json::from_slice(&__payload)?;
+                        let __req: #qual #req_name = ::serde_json::from_slice(&__payload)?;
                         let __id = ::opsapi::Identity::player(__identity.unwrap_or_default());
                         let __result = #call;
                         let __resp = match __result { #arms };
@@ -632,7 +825,7 @@ fn gen_server_adapter(m: &MethodModel) -> TokenStream2 {
                     })
                 },
             );
-            server.handle_identity(#const_ident, __h);
+            server.handle_identity(#qual #const_ident, __h);
         }
     }
 }
@@ -730,7 +923,8 @@ fn gen_opset_push(m: &MethodModel) -> TokenStream2 {
     } else {
         quote! { __impl.#method(#(__req.#field_idents),*).await }
     };
-    let arms = response_arms(m);
+    // Pure emission: the envelopes are module-local, no path qualifier.
+    let arms = response_arms(m, &TokenStream2::new());
 
     quote! {
         {
@@ -817,6 +1011,14 @@ fn to_lower_camel(snake: &str) -> String {
 /// `owner_of` -> `OWNER_OF`.
 fn to_upper_snake(snake: &str) -> String {
     snake.to_uppercase()
+}
+
+/// A wire prefix rendered as an identifier fragment for the metadata macro's name
+/// (`characters` stays `characters`; any non-alphanumeric becomes `_`).
+fn sanitize_ident(s: &str) -> String {
+    s.chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect()
 }
 
 /// `OwnerOf` (Pascal) -> `owner_of` (snake). Used for the module name.

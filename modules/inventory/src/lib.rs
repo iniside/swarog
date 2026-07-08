@@ -16,9 +16,9 @@
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 use async_trait::async_trait;
-use charactersrpc::Ownership;
+use charactersapi::Ownership;
 use configapi::Config;
-use inventoryrpc::{holdings_rpc, Holding, Holdings};
+use inventoryapi::{holdings_rpc, Holding, Holdings};
 use lifecycle::{Caps, Context, Module};
 use opsapi::{Error, Identity};
 use registry::key;
@@ -692,7 +692,9 @@ impl Module for Inventory {
         // edge server. Pure wiring; main() starts the listener after all Inits.
         if let Some(edge) = &self.edge {
             let mut server = edge.lock().unwrap();
-            holdings_rpc::register_server(&mut server, inner);
+            // Own glue (sanctioned): the edge-facing register_server lives in the
+            // `inventoryrpc` glue crate since the api/rpc split.
+            inventoryrpc::holdings_rpc::register_server(&mut server, inner);
         }
         Ok(())
     }

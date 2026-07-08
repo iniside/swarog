@@ -5,8 +5,9 @@
 //! would, so the consumer's `require::<dyn Trait>(key)` resolves to a real QUIC caller
 //! across the process boundary — the consumer code is unchanged, unaware which it got.
 //!
-//! It imports only the foundations + `edge` + the provider's `*api` contract (its
-//! generated `*_rpc` glue). It NEVER imports the provider's impl crate (CLAUDE.md #2):
+//! It imports only the foundations + `edge` + each provider's `<name>rpc` GLUE crate
+//! (whose `remote_factories()` owns the swap actions — capability `Client` provides +
+//! front-door route bindings). It NEVER imports the provider's impl crate (CLAUDE.md #2):
 //! the generated `Client` implements the capability trait over an [`opsapi::Caller`],
 //! and the wire shape + method names are OWNED by that generated glue, so wire drift
 //! between the two sides is impossible.
@@ -206,18 +207,6 @@ impl Stub {
     }
 }
 
-/// Contributes a provider's front-door route bindings into the two ops slots the
-/// gateway route table reads — [`opsapi::SLOT`] (the [`opsapi::Operation`]) and
-/// [`opsapi::BINDING_SLOT`] (its [`opsapi::OpBinding`]). It deliberately contributes
-/// NOTHING to [`opsapi::LOCAL_SLOT`]: a stub has no in-process invoker, so the gateway
-/// `select_kind`s each op as `Remote` and dispatches it over the edge.
-fn contribute_route_bindings(ctx: &Context, bindings: Vec<opsapi::RouteBinding>) {
-    for rb in bindings {
-        ctx.contribute(opsapi::SLOT, rb.operation);
-        ctx.contribute(opsapi::BINDING_SLOT, rb.binding);
-    }
-}
-
 #[async_trait]
 impl Module for Stub {
     /// The PROVIDER name, so `validate_requires` treats the stub as the provider a
@@ -250,40 +239,27 @@ impl Module for Stub {
     fn register(&self, ctx: &Context) -> anyhow::Result<()> {
         // Hand each generated client the reconnecting conn AS an `opsapi::Caller`, so
         // the glue depends on the transport seam, never remote's concrete type.
+        //
+        // Each glue crate owns its provider-swap actions (`remote_factories()`): for
+        // "characters" they provide the ownership + player edge clients under the
+        // provider's capability keys AND contribute the player ops' route bindings
+        // (Operation+OpBinding, no LocalOp — `select_kind` resolves them Remote); for
+        // "inventory" (a leaf — nothing `require`s an inventory capability) route
+        // bindings ONLY. Step 4 moves this match into `cmd/*`, which will pass the
+        // factories straight to a generic `Stub::new`.
         let caller: Arc<dyn Caller> = self.conn.clone();
-        match self.provider.as_str() {
-            "characters" => {
-                let ownership: Arc<dyn charactersrpc::Ownership> =
-                    Arc::new(charactersrpc::ownership_rpc::Client::new(caller.clone()));
-                ctx.registry()
-                    .provide::<dyn charactersrpc::Ownership>(registry::key("characters", "ownership"), ownership);
-
-                let player: Arc<dyn charactersrpc::Player> =
-                    Arc::new(charactersrpc::player_rpc::Client::new(caller));
-                ctx.registry()
-                    .provide::<dyn charactersrpc::Player>(registry::key("characters", "player"), player);
-
-                // Front-door routes: the player ops' Operation+OpBinding, no LocalOp —
-                // `select_kind` resolves them Remote and the front dispatches to A's edge.
-                contribute_route_bindings(ctx, charactersrpc::player_rpc::route_bindings());
-
-                tracing::info!(
-                    provider = %self.provider,
-                    "remote stub registered — characters.ownership + characters.player resolve over the QUIC edge; player routes contributed"
-                );
-            }
-            "inventory" => {
-                // Route bindings ONLY — inventory is a leaf, nothing `require`s an
-                // inventory capability, so no client provide (a dead provide is noise).
-                contribute_route_bindings(ctx, inventoryrpc::holdings_rpc::route_bindings());
-
-                tracing::info!(
-                    provider = %self.provider,
-                    "remote stub registered — inventory holdings routes contributed (front-door only)"
-                );
-            }
+        let factories = match self.provider.as_str() {
+            "characters" => charactersrpc::remote_factories(),
+            "inventory" => inventoryrpc::remote_factories(),
             other => anyhow::bail!("remote: no edge client for provider {other:?}"),
+        };
+        for f in &factories {
+            f(ctx, caller.clone());
         }
+        tracing::info!(
+            provider = %self.provider,
+            "remote stub registered — capability clients + front-door routes via the provider's rpc glue"
+        );
         Ok(())
     }
 

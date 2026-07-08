@@ -5,17 +5,20 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
-# The inventory module's pure, transport-free capability contract (port of Go's
-# api/inventory/inventoryapi): the Holdings trait + the Holding wire type. `#[rpc]`
-# is applied to Holdings to GENERATE the transport glue (Client / register_server /
-# operations) into the child `holdings_rpc` module — the debt the project forbids
-# hand-writing. Domain consumers do NOT import this (rule 4); it is reached only by
-# the generated glue + the remote stub + the module that provides it.
+# The inventory domain's GENERATED transport glue (port of Go's
+# api/inventory/inventoryrpc): the edge-dependent half of the `#[rpc]` codegen. It
+# expands `inventoryapi`'s metadata-callback macro through
+# `rpc_macro::generate_glue` into `Client` / `register_server` / `provide_remote`,
+# plus the hand-written `remote_factories()` aggregator (the Step-4 generic-`remote`
+# seam). Impl-tier: may import `edge`; reached ONLY by the `inventory` module itself
+# (its own glue is sanctioned), `remote`, and `cmd/*` — NEVER by a domain consumer
+# (they import `inventoryapi`, rule 4).
 [dependencies]
+inventoryapi = { workspace = true }
 opsapi = { workspace = true }
 edge = { workspace = true }
+registry = { workspace = true }
+lifecycle = { workspace = true }
 rpc-macro = { workspace = true }
 async-trait = { workspace = true }
-serde = { workspace = true }
 serde_json = { workspace = true }
-futures = { workspace = true }

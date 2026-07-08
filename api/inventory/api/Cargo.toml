@@ -1,0 +1,20 @@
+[package]
+name = "inventoryapi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The inventory module's PURE, transport-free capability contract (port of Go's
+# api/inventory/inventoryapi): the Holdings trait + the Holding wire type. `#[rpc]`
+# generates the transport-FREE surface (wire envelopes, METHOD_* consts,
+# operations()/route_bindings()) into the child `holdings_rpc` module, plus a
+# metadata-callback macro the sibling `inventoryrpc` glue crate expands into the
+# edge-dependent glue. NO `edge` dependency. Domain consumers do NOT import the glue
+# crate (rule 4); this contract is the only shared surface.
+[dependencies]
+opsapi = { workspace = true }
+rpc-macro = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

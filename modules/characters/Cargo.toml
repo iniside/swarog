@@ -8,14 +8,16 @@ publish = false
 # The characters impl module (port of Go's modules/characters): owns schema
 # `characters`, provides the Ownership + Player capabilities, and emits
 # Created/Deleted on the DURABLE plane atomic with the domain write. An impl crate —
-# no OTHER module imports it; consumers use `charactersrpc` (traits) +
-# `charactersevents` (events).
+# no OTHER module imports it; consumers use `charactersapi` (traits) +
+# `charactersevents` (events). `charactersrpc` is its OWN glue (sanctioned): the
+# edge register_server faces.
 [dependencies]
 bus = { workspace = true }
 lifecycle = { workspace = true }
 registry = { workspace = true }
 opsapi = { workspace = true }
 edge = { workspace = true }
+charactersapi = { workspace = true }
 charactersrpc = { workspace = true }
 charactersevents = { workspace = true }
 adminapi = { workspace = true }

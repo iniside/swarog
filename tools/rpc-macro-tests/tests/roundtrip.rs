@@ -1,4 +1,5 @@
-//! End-to-end proofs for the `#[rpc]` codegen:
+//! End-to-end proofs for the `#[rpc]` codegen (this test crate plays the
+//! `<name>rpc` GLUE role of the Step-2 split — see `src/lib.rs` for the api role):
 //!   1. `client_server_roundtrip_over_edge` — the generated `Client` marshals a call
 //!      through a real edge QUIC `Caller` to the generated `register_server`
 //!      handlers, threading identity and folding an `Err` into a non-OK domain status
@@ -14,61 +15,16 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use opsapi::{AuthReq, Caller, Error, Identity, PathArgs, Status};
-use serde::{Deserialize, Serialize};
 
-// --- Domain types the sample capability exchanges ---------------------------
+// The glue's signatures re-resolve here (the metadata travels as tokens), so the
+// api crate's domain types must be in scope — exactly like a real `<name>rpc` crate.
+use rpc_macro_tests::{Holding, Owner, Sample};
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Holding {
-    pub item_id: String,
-    pub qty: i64,
-    pub owner: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Owner {
-    pub player_id: String,
-    pub ok: bool,
-}
-
-// --- The sample capability trait --------------------------------------------
-//
-// `#[rpc]` sits ABOVE `#[async_trait]` so it parses the `async fn`s first, then
-// re-emits the trait for async_trait to desugar.
-
-#[rpc_macro::rpc(prefix = "sample")]
-#[async_trait]
-pub trait Sample: Send + Sync {
-    /// HTTP-bound, needs identity, returns a Vec (a body arg + identity).
-    #[http(verb = "POST", path = "/sample/grant", auth = "player", success = 200)]
-    async fn grant(&self, caller: Identity, item_id: String, qty: i64)
-        -> Result<Vec<Holding>, Error>;
-
-    /// HTTP-bound with a PATH arg + identity; a good Err-branch probe.
-    #[http(
-        verb = "GET",
-        path = "/sample/character/{id}",
-        auth = "player",
-        success = 200,
-        path_args(character_id = "id")
-    )]
-    async fn list_character(
-        &self,
-        caller: Identity,
-        character_id: String,
-    ) -> Result<Vec<Holding>, Error>;
-
-    /// Wire-only (no `#[http]`), unauthenticated: no identity param, marshals all
-    /// args. Mirrors characters' `OwnerOf`.
-    async fn owner_of(&self, character_id: String) -> Result<Owner, Error>;
-
-    /// Wire-only method returning an `Option<T>` — the exact shape of characters'
-    /// real `Ownership::owner_of` (`Result<Option<String>, Error>`). This is the
-    /// regression probe for the response-envelope `Option<Option<T>>` collapse: an
-    /// `Ok(None)` MUST round-trip as a genuine `None`, NOT surface as a transport /
-    /// internal error.
-    async fn find_owner(&self, character_id: String) -> Result<Option<String>, Error>;
-}
+// Expand the api crate's metadata-callback macro into the edge-dependent glue:
+// a local `sample_rpc` module with Client / register_server / provide_remote that
+// re-exports the pure `rpc_macro_tests::sample_rpc` surface. This is the real
+// two-crate handoff (an integration test IS a separate crate).
+rpc_macro_tests::sample_sample_meta!(rpc_macro::generate_glue);
 
 // --- A concrete impl --------------------------------------------------------
 
