@@ -7,9 +7,10 @@
 //!
 //! ```text
 //! csharp-client-gen --emit-manifest [path]   # dump the manifest as pretty JSON
-//! csharp-client-gen --out <dir>              # emit C# (NOT yet implemented — Step 3)
+//! csharp-client-gen --out <dir>              # emit the typed C# client into <dir>
 //! ```
 
+mod emit;
 mod model;
 mod scrape;
 
@@ -60,15 +61,15 @@ fn run() -> Result<()> {
         i += 1;
     }
 
-    if out_dir.is_some() {
-        return Err(anyhow!(
-            "emit (--out) is not yet implemented in Step 2 — the C# emitter arrives in Step 3"
-        ));
+    // The scrape runs both gates; a gate failure surfaces as an `Err` → nonzero exit.
+    let manifest = scrape::scrape()?;
+
+    if let Some(dir) = out_dir {
+        emit::emit(&manifest, std::path::Path::new(&dir))?;
+        return Ok(());
     }
 
-    // Default action (and the only Step-2 action): scrape + emit the manifest. The
-    // scrape runs both gates; a gate failure surfaces as an `Err` → nonzero exit.
-    let manifest = scrape::scrape()?;
+    // Default action: dump the manifest as pretty JSON.
     let json = serde_json::to_string_pretty(&manifest)?;
     match manifest_path {
         Some(path) => std::fs::write(&path, json)?,
@@ -83,7 +84,7 @@ fn print_usage() {
          \n\
          USAGE:\n\
          \x20 csharp-client-gen --emit-manifest [path]   dump the scraped manifest as pretty JSON\n\
-         \x20 csharp-client-gen --out <dir>              emit C# (NOT yet implemented — Step 3)\n\
+         \x20 csharp-client-gen --out <dir>              emit the typed C# client into <dir>\n\
          \n\
          With no arguments, behaves like --emit-manifest to stdout."
     );

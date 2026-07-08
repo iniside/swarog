@@ -13,12 +13,21 @@
 
 use std::collections::BTreeSet;
 
+use crate::emit::{emit_client, emit_dtos, emit_status};
 use crate::model::{Manifest, TypeRef};
 use crate::scrape::{check_completeness, check_drift, scrape};
 
 /// The committed golden manifest — regenerate with
 /// `cargo run -p csharp-client-gen -- --emit-manifest testdata/manifest.golden.json`.
 const GOLDEN: &str = include_str!("../testdata/manifest.golden.json");
+
+/// The committed golden C# — regenerate with
+/// `cargo run -p csharp-client-gen -- --out clients/csharp/Generated`, then copy the three
+/// files into `testdata/*.golden.cs`. Byte-equality here is what makes Step 5's freshness
+/// gate (`git diff --exit-code`) meaningful.
+const STATUS_GOLDEN: &str = include_str!("../testdata/Status.golden.cs");
+const DTOS_GOLDEN: &str = include_str!("../testdata/Dtos.golden.cs");
+const CLIENT_GOLDEN: &str = include_str!("../testdata/Client.golden.cs");
 
 #[test]
 fn manifest_matches_golden() {
@@ -88,6 +97,38 @@ fn body_name_rename_applied_to_wire_name() {
     let report = m.methods.iter().find(|x| x.wire_method == "match.report").unwrap();
     let winner = report.args.iter().find(|a| a.name == "winner").unwrap();
     assert_eq!(winner.wire_name, "Winner");
+}
+
+// --- Emit: golden C# -------------------------------------------------------
+
+#[test]
+fn emitted_status_matches_golden() {
+    let m = scrape().expect("scrape must succeed on a healthy tree");
+    assert_eq!(
+        emit_status(&m),
+        STATUS_GOLDEN,
+        "Status.cs drifted from the committed golden — regenerate with --out"
+    );
+}
+
+#[test]
+fn emitted_dtos_matches_golden() {
+    let m = scrape().expect("scrape must succeed on a healthy tree");
+    assert_eq!(
+        emit_dtos(&m),
+        DTOS_GOLDEN,
+        "Dtos.cs drifted from the committed golden — regenerate with --out"
+    );
+}
+
+#[test]
+fn emitted_client_matches_golden() {
+    let m = scrape().expect("scrape must succeed on a healthy tree");
+    assert_eq!(
+        emit_client(&m),
+        CLIENT_GOLDEN,
+        "Client.cs drifted from the committed golden — regenerate with --out"
+    );
 }
 
 // --- Gate 1: drift ---------------------------------------------------------
