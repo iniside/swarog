@@ -15,6 +15,9 @@ members = [
     # in core/ and the fortress rule applies to a clean modules/ (Step 4).
     "core/messaging",
     "core/remote",
+    # Cross-cutting HTTP infra (Go's metrics/): a PRIVATE Prometheus registry + the
+    # /metrics scrape, mounted by core/app in every module-hosting process (Step 12).
+    "core/metrics",
     # Tooling — codegen + the dev-CA minter (Go's tools/).
     "tools/rpc-macro",
     "tools/rpc-macro-tests",
@@ -61,6 +64,7 @@ members = [
     "modules/match",
     "modules/rating",
     "modules/leaderboard",
+    "modules/webui",
     # Process entrypoints (Go's cmd/).
     "cmd/server",
     "cmd/characters-svc",
@@ -130,6 +134,12 @@ tracing-subscriber = "0.3"
 # rendered over serde view models, auto-escaping on the `.html` template name.
 minijinja = "2"
 
+# HTTP metrics (Go used prometheus/client_golang): a PRIVATE registry + the two labeled
+# collectors + text exposition. `default-features = false` drops the `process` collector
+# (procfs/libc — unavailable/awkward on Windows); the registry, vecs and TextEncoder we
+# use are always available. Default histogram buckets match Go's prometheus.DefBuckets.
+prometheus = { version = "0.13", default-features = false }
+
 # ---- Foundations (core/): leaves import only each other, never a module. ----
 registry = { path = "core/registry" }
 contrib = { path = "core/contrib" }
@@ -143,6 +153,7 @@ app = { path = "core/app" }
 # and remote (the topology-blind registry SWAP; generic — imports no api/ crate).
 messaging = { path = "core/messaging" }
 remote = { path = "core/remote" }
+metrics = { path = "core/metrics" }
 
 # ---- Tooling (tools/): the #[rpc] codegen. ----
 rpc-macro = { path = "tools/rpc-macro" }
@@ -186,3 +197,4 @@ scheduler = { path = "modules/scheduler" }
 match_module = { path = "modules/match" }
 rating = { path = "modules/rating" }
 leaderboard = { path = "modules/leaderboard" }
+webui = { path = "modules/webui" }

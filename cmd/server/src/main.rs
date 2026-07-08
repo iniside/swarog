@@ -36,6 +36,7 @@ async fn main() -> anyhow::Result<()> {
         Box::new(rating::Rating::new()),         // in-memory MMR; provides "rating.mmr_reader", reacts to match.finished (+15/-15)
         Box::new(match_module::MatchModule::new()), // records matches (schema "match"); reads rating sync, emits match.finished durably
         Box::new(leaderboard::LeaderboardModule::new()), // win tally; owns schema "leaderboard", reacts to match.finished, serves GET /leaderboard
+        Box::new(webui::WebUi::new()), // dev demo SPA at GET /; monolith-only (the one sanctioned fortress-svc exception)
         Box::new(gateway::Gateway::new().with_player_edge(player.clone())), // HTTP + player QUIC front, auth-once (real accounts sessions)
         Box::new(messaging::Messaging::new()),   // the durable async plane (transport + relay + inbox)
     ];

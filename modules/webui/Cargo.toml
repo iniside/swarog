@@ -1,0 +1,25 @@
+[package]
+name = "webui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# `webui` (port of Go's modules/webui) — a UI-ONLY dev demo module: an embedded
+# single-page account-linking demo (dev login, then "Link Epic") served at the
+# EXACT path `/`. No state, no `Requires`, no schema, no events — it exercises the
+# accounts HTTP surface (/accounts/register|login|me|epic/start|epic/callback) from
+# a browser so the linking flow is visible without a separate client. This is the
+# ONE sanctioned exception to the fortress-svc rule: a dev demo SPA has no
+# independent deployment story, so it is monolith-only (registered in cmd/server
+# only, no cmd/webui-svc) — see docs/plans/2026-07-08-1517-go-to-rust-full-port-plan.md
+# Step 11.
+[dependencies]
+lifecycle = { workspace = true }
+axum = { workspace = true }
+async-trait = { workspace = true }
+anyhow = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+tower = { version = "0.5", features = ["util"] }
