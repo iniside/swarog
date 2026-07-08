@@ -1,14 +1,21 @@
 #!/usr/bin/env bash
 # run.sh -- build the rust-sketch binaries, then run either the monolith (one process
-# hosting every module) or the two-process split (characters-svc = A, inventory-svc =
-# B), where each service is its own binary linking only its own modules.
+# hosting every module) or the FULL split (the 11-service microservice topology, each
+# service a binary linking only its own modules and talking to peers over the mTLS QUIC
+# edge). The split boot order + per-process env are transcribed from split-proof.sh
+# (the source of truth); unlike that proof this script runs NO assertions and leaves
+# every process RUNNING -- teardown is the explicit --teardown flag.
 #
 # Usage:
-#   ./run.sh                 # monolith (server) on :8080
-#   ./run.sh microservices   # A (characters-svc) + B (inventory-svc)
+#   ./run.sh                 # monolith (server) on :8080  (DEFAULT)
+#   ./run.sh split           # the full 11-service split (front door on :8082)
+#   ./run.sh microservices   # deprecated alias for `split`
 #   ./run.sh --teardown      # stop whatever run.sh started last
 #
 # Assumes a local Postgres is already running (DATABASE_URL or the default DSN).
+# Env passthrough: DATABASE_URL, ADMIN_USER/ADMIN_PASS (admin portal + monolith),
+# ACCOUNTS_DEV_AUTH, etc. are inherited by every child process; unset ADMIN_USER =
+# the admin portal is OPEN (each service logs its own loud warning).
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -16,7 +23,9 @@ MODE="monolith"
 TEARDOWN=0
 for arg in "$@"; do
     case "$arg" in
-        monolith|microservices) MODE="$arg" ;;
+        monolith) MODE="monolith" ;;
+        split) MODE="split" ;;
+        microservices) MODE="split"; echo "NOTE: 'microservices' is a deprecated alias for 'split'." >&2 ;;
         --teardown) TEARDOWN=1 ;;
         *) echo "unknown arg: $arg" >&2; exit 1 ;;
     esac
@@ -67,21 +76,33 @@ write_pids_file() {
     for i in "${!STARTED_NAMES[@]}"; do echo "${STARTED_NAMES[$i]}=${STARTED_PIDS[$i]}" >> "$PIDS_FILE"; done
 }
 
+# admin_note -- one-liner about the admin Basic-auth gate (open when unset).
+admin_note() {
+    if [ -n "${ADMIN_USER:-}" ]; then
+        echo "    (Basic auth: ADMIN_USER/ADMIN_PASS are set)"
+    else
+        echo "    (ADMIN_USER/ADMIN_PASS unset -> the admin portal is OPEN; set them to gate it)"
+    fi
+}
+
 # --- Build ------------------------------------------------------------------
-# Both modes build edgeca + playercli: the monolith ALSO fronts players over QUIC
-# (PLAYER_EDGE_ADDR), so it needs the shared dev CA (edgeca) and a client (playercli).
+# Both modes build edgeca + playercli: each topology fronts players over QUIC
+# (PLAYER_EDGE_ADDR), so both need the shared dev CA (edgeca) and a client (playercli).
 if [ "$MODE" = "monolith" ]; then
     echo "Building server (monolith) + edgeca + playercli ..."
     cargo build -p server -p edgeca -p playercli
 else
-    echo "Building edgeca + characters-svc + inventory-svc + gateway-svc + playercli ..."
-    cargo build -p edgeca -p characters-svc -p inventory-svc -p gateway-svc -p playercli
+    echo "Building edgeca + the 11 split services + playercli ..."
+    cargo build -p edgeca -p playercli \
+        -p accounts-svc -p audit-svc -p scheduler-svc -p rating-svc -p leaderboard-svc \
+        -p match-svc -p characters-svc -p config-svc -p inventory-svc -p gateway-svc -p admin-svc
 fi
 echo "Build OK."
 
 # Windows Git Bash: the cargo binaries carry a .exe suffix; plain Linux does not.
 EXE=""
 [ -f "$BIN_DIR/server.exe" ] && EXE=".exe"
+[ -f "$BIN_DIR/gateway-svc.exe" ] && EXE=".exe"
 
 # --- Monolith ---------------------------------------------------------------
 if [ "$MODE" = "monolith" ]; then
@@ -93,6 +114,7 @@ if [ "$MODE" = "monolith" ]; then
     echo "Minting edge dev CA (player front) -> $EDGE_CA_CERT ..."
     "$BIN_DIR/edgeca$EXE" --cert "$EDGE_CA_CERT" --key "$EDGE_CA_KEY"
     # default MESSAGING_ORIGIN ("monolith") is fine -- one process, one origin.
+    # ADMIN_USER/ADMIN_PASS + ACCOUNTS_DEV_AUTH inherit from the environment (not set here).
     start_server monolith "$BIN_DIR/server$EXE" \
         PORT=:8080 \
         DATABASE_URL="$DATABASE_URL" \
@@ -102,69 +124,183 @@ if [ "$MODE" = "monolith" ]; then
     wait_healthy 8080 monolith
     write_pids_file
     echo ""
-    echo "=== monolith running ==="
-    echo "  http://localhost:8080  (player QUIC :9100)"
-    echo "  teardown: ./run.sh --teardown"
+    echo "======================= monolith running ======================="
+    echo "  Web UI (SPA demo): http://localhost:8080/"
+    echo "  Admin panel:       http://localhost:8080/admin"
+    admin_note
+    echo "  Player QUIC front: :9100   (drive it with target/debug/playercli$EXE)"
+    echo "  Metrics:           http://localhost:8080/metrics"
+    echo "  Logs:              $RUN_DIR/monolith.{out,err}.log"
+    echo "  Teardown:          ./run.sh --teardown"
+    echo "================================================================"
     exit 0
 fi
 
-# --- Microservices ----------------------------------------------------------
-# Mint ONE shared dev CA for the edge mutual-TLS hop. Both A and B load it via
-# EDGE_CA_CERT / EDGE_CA_KEY, so a backend accepts a stream ONLY from a peer holding a
-# CA-signed client cert (and each client verifies the server against the same root).
+# --- Split (the full 11-service microservice topology) ----------------------
+# Boot ORDER + per-process env are transcribed from split-proof.sh. Ordering notes:
+#   - config-svc (C) MUST be up before inventory-svc (B): B's config stub boot-fills a
+#     snapshot from C in `start` and fails loud if C is unreachable.
+#   - accounts-svc (D) first: every gateway verifies bearers against it (lazy dial, so
+#     not strictly required, but we mirror the proof's order).
+#   - admin-svc (E) last: it dials A/B/C/D/F/H edges to fan out their admin pages.
+# MESSAGING_ORIGIN is DISTINCT per process (never the "monolith" default): each relay
+# drains ONLY its own origin's outbox rows. Peer *_EDGE_ADDR values are NUMERIC
+# host:port (Rust's SocketAddr needs a literal IP). All peers share ONE dev CA.
+
+# HTTP ports 8080-8090, internal mTLS edge ports 9000-9008, player QUIC :9100.
+A_PORT=8080; B_PORT=8081; G_PORT=8082; C_PORT=8083; D_PORT=8084; E_PORT=8085
+F_PORT=8086; H_PORT=8087; I_PORT=8088; J_PORT=8089; K_PORT=8090
+A_EDGE=9000; B_EDGE=9001; C_EDGE=9002; D_EDGE=9003; F_EDGE=9004
+H_EDGE=9005; I_EDGE=9006; J_EDGE=9007; K_EDGE=9008; PLAYER_PORT=9100
+
 EDGE_CA_CERT="$RUN_DIR/edge-ca.crt"
 EDGE_CA_KEY="$RUN_DIR/edge-ca.key"
 echo "Minting shared edge dev CA -> $EDGE_CA_CERT ..."
 "$BIN_DIR/edgeca$EXE" --cert "$EDGE_CA_CERT" --key "$EDGE_CA_KEY"
 
-# Process A: characters-svc. Hosts the QUIC edge server (:9000) and the outbox relay
-# for character.* events. MESSAGING_ORIGIN MUST be distinct per process (never the
-# "monolith" default): the relay drains ONLY its own origin's outbox rows, so a shared
-# origin would have B's relay drain A's rows -- the async-split correctness lynchpin.
-echo "Starting A (characters-svc: gateway,characters,messaging) on :8080, edge :9000 ..."
+# D: accounts-svc -- owns the accounts schema; serves accounts.verifySession on its edge
+# (every other process verifies bearers against it). player.registered rides D's outbox
+# to audit-svc (F).
+echo "Starting D (accounts-svc) on :$D_PORT, edge :$D_EDGE ..."
+start_server accounts "$BIN_DIR/accounts-svc$EXE" \
+    PORT=":$D_PORT" DATABASE_URL="$DATABASE_URL" EDGE_ADDR=":$D_EDGE" \
+    EDGE_CA_CERT="$EDGE_CA_CERT" EDGE_CA_KEY="$EDGE_CA_KEY" \
+    MESSAGING_ORIGIN=accounts-svc \
+    EVENTS_SUBSCRIBERS="player.registered=http://localhost:$F_PORT/events"
+wait_healthy "$D_PORT" "D (accounts-svc)"
+
+# F: audit-svc -- append-only ledger. PURE SINK (no EVENTS_SUBSCRIBERS): every producer's
+# relay POSTs to F's /events. Serves admin.adminData ("Audit Log") on its edge.
+echo "Starting F (audit-svc) on :$F_PORT, edge :$F_EDGE ..."
+start_server audit "$BIN_DIR/audit-svc$EXE" \
+    PORT=":$F_PORT" DATABASE_URL="$DATABASE_URL" EDGE_ADDR=":$F_EDGE" \
+    EDGE_CA_CERT="$EDGE_CA_CERT" EDGE_CA_KEY="$EDGE_CA_KEY" \
+    MESSAGING_ORIGIN=audit-svc
+wait_healthy "$F_PORT" "F (audit-svc)"
+
+# H: scheduler-svc -- DURABLE PRODUCER (1s loop fires scheduler.fired via advisory lock),
+# relays scheduler.fired to audit-svc (F). Serves admin.adminData ("Schedules").
+echo "Starting H (scheduler-svc) on :$H_PORT, edge :$H_EDGE ..."
+start_server scheduler "$BIN_DIR/scheduler-svc$EXE" \
+    PORT=":$H_PORT" DATABASE_URL="$DATABASE_URL" EDGE_ADDR=":$H_EDGE" \
+    EDGE_CA_CERT="$EDGE_CA_CERT" EDGE_CA_KEY="$EDGE_CA_KEY" \
+    MESSAGING_ORIGIN=scheduler-svc \
+    EVENTS_SUBSCRIBERS="scheduler.fired=http://localhost:$F_PORT/events"
+wait_healthy "$H_PORT" "H (scheduler-svc)"
+
+# J: rating-svc -- provides rating.mmr on its edge (match-svc reads it sync) and REACTS to
+# match.finished (+15/-15). In-memory MMR but owns an inbox. Pure sink (no subscribers).
+echo "Starting J (rating-svc) on :$J_PORT, edge :$J_EDGE ..."
+start_server rating "$BIN_DIR/rating-svc$EXE" \
+    PORT=":$J_PORT" DATABASE_URL="$DATABASE_URL" EDGE_ADDR=":$J_EDGE" \
+    EDGE_CA_CERT="$EDGE_CA_CERT" EDGE_CA_KEY="$EDGE_CA_KEY" \
+    MESSAGING_ORIGIN=rating-svc
+wait_healthy "$J_PORT" "J (rating-svc)"
+
+# K: leaderboard-svc -- owns schema leaderboard + an inbox; REACTS to match.finished
+# (upsert wins+1); serves GET /leaderboard (gateway routes it Remote here). Pure sink.
+echo "Starting K (leaderboard-svc) on :$K_PORT, edge :$K_EDGE ..."
+start_server leaderboard "$BIN_DIR/leaderboard-svc$EXE" \
+    PORT=":$K_PORT" DATABASE_URL="$DATABASE_URL" EDGE_ADDR=":$K_EDGE" \
+    EDGE_CA_CERT="$EDGE_CA_CERT" EDGE_CA_KEY="$EDGE_CA_KEY" \
+    ACCOUNTS_EDGE_ADDR="127.0.0.1:$D_EDGE" \
+    MESSAGING_ORIGIN=leaderboard-svc
+wait_healthy "$K_PORT" "K (leaderboard-svc)"
+
+# I: match-svc -- records matches (schema match); DURABLE PRODUCER: `report` SYNC-reads
+# both players' MMR from rating-svc (J) over the edge, INSERTs + emit_tx's match.finished
+# in one tx; relays match.finished to J, K and F.
+echo "Starting I (match-svc) on :$I_PORT, edge :$I_EDGE ..."
+start_server match "$BIN_DIR/match-svc$EXE" \
+    PORT=":$I_PORT" DATABASE_URL="$DATABASE_URL" EDGE_ADDR=":$I_EDGE" \
+    EDGE_CA_CERT="$EDGE_CA_CERT" EDGE_CA_KEY="$EDGE_CA_KEY" \
+    RATING_EDGE_ADDR="127.0.0.1:$J_EDGE" \
+    ACCOUNTS_EDGE_ADDR="127.0.0.1:$D_EDGE" \
+    MESSAGING_ORIGIN=match-svc \
+    EVENTS_SUBSCRIBERS="match.finished=http://localhost:$J_PORT/events,http://localhost:$K_PORT/events,http://localhost:$F_PORT/events"
+wait_healthy "$I_PORT" "I (match-svc)"
+
+# A: characters-svc -- owns schema characters; emits character.created/.deleted, relayed
+# to inventory-svc (B) and audit-svc (F).
+echo "Starting A (characters-svc) on :$A_PORT, edge :$A_EDGE ..."
 start_server characters "$BIN_DIR/characters-svc$EXE" \
-    PORT=:8080 \
-    DATABASE_URL="$DATABASE_URL" \
-    EDGE_ADDR=:9000 \
-    EDGE_CA_CERT="$EDGE_CA_CERT" \
-    EDGE_CA_KEY="$EDGE_CA_KEY" \
+    PORT=":$A_PORT" DATABASE_URL="$DATABASE_URL" EDGE_ADDR=":$A_EDGE" \
+    EDGE_CA_CERT="$EDGE_CA_CERT" EDGE_CA_KEY="$EDGE_CA_KEY" \
+    ACCOUNTS_EDGE_ADDR="127.0.0.1:$D_EDGE" \
     MESSAGING_ORIGIN=characters-svc \
-    EVENTS_SUBSCRIBERS='character.created=http://localhost:8081/events;character.deleted=http://localhost:8081/events'
-wait_healthy 8080 "A (characters-svc)"
+    EVENTS_SUBSCRIBERS="character.created=http://localhost:$B_PORT/events,http://localhost:$F_PORT/events;character.deleted=http://localhost:$B_PORT/events,http://localhost:$F_PORT/events"
+wait_healthy "$A_PORT" "A (characters-svc)"
 
-# Process B: inventory-svc. characters resolves via a remote::Stub dialing A's edge
-# server. B ALSO serves its OWN mTLS edge (EDGE_ADDR=:9001) so gateway-svc can dispatch
-# inventory.* Remote to it. CHARACTERS_EDGE_ADDR is a NUMERIC host:port (Rust's
-# SocketAddr needs a literal IP, unlike Go's dialer).
-echo "Starting B (inventory-svc: gateway,config,inventory,messaging,remote) on :8081, edge :9001 ..."
+# C: config-svc -- owns the config schema + LISTEN/NOTIFY listener; serves config.snapshot
+# on its edge; relays config.changed durably to B. MUST be up before B (B boot-fills from C).
+echo "Starting C (config-svc) on :$C_PORT, edge :$C_EDGE ..."
+start_server config "$BIN_DIR/config-svc$EXE" \
+    PORT=":$C_PORT" DATABASE_URL="$DATABASE_URL" EDGE_ADDR=":$C_EDGE" \
+    EDGE_CA_CERT="$EDGE_CA_CERT" EDGE_CA_KEY="$EDGE_CA_KEY" \
+    ACCOUNTS_EDGE_ADDR="127.0.0.1:$D_EDGE" \
+    MESSAGING_ORIGIN=config-svc \
+    EVENTS_SUBSCRIBERS="config.changed=http://localhost:$B_PORT/events,http://localhost:$F_PORT/events"
+wait_healthy "$C_PORT" "C (config-svc)"
+
+# B: inventory-svc -- owns schema inventory; serves its OWN edge (:9001) so gateway can
+# dispatch inventory.* Remote to it; dials A (owner_of), C (CachedConfig), D (verify).
+echo "Starting B (inventory-svc) on :$B_PORT, edge :$B_EDGE ..."
 start_server inventory "$BIN_DIR/inventory-svc$EXE" \
-    PORT=:8081 \
-    DATABASE_URL="$DATABASE_URL" \
-    EDGE_ADDR=:9001 \
-    EDGE_CA_CERT="$EDGE_CA_CERT" \
-    EDGE_CA_KEY="$EDGE_CA_KEY" \
-    CHARACTERS_EDGE_ADDR=127.0.0.1:9000 \
+    PORT=":$B_PORT" DATABASE_URL="$DATABASE_URL" EDGE_ADDR=":$B_EDGE" \
+    EDGE_CA_CERT="$EDGE_CA_CERT" EDGE_CA_KEY="$EDGE_CA_KEY" \
+    CHARACTERS_EDGE_ADDR="127.0.0.1:$A_EDGE" \
+    CONFIG_EDGE_ADDR="127.0.0.1:$C_EDGE" \
+    ACCOUNTS_EDGE_ADDR="127.0.0.1:$D_EDGE" \
     MESSAGING_ORIGIN=inventory-svc
-wait_healthy 8081 "B (inventory-svc)"
+wait_healthy "$B_PORT" "B (inventory-svc)"
 
-# Process G: gateway-svc. The dedicated front door -- HTTP :8082 + player QUIC :9100.
-# No DB, no provider modules: only remote::Stubs, so EVERY op it fronts resolves Remote
-# and is dialed over the mTLS edge to A (:9000) / B (:9001). It needs the shared CA to
-# dial peers AND to derive the player-front server cert.
-echo "Starting G (gateway-svc: gateway + characters/inventory stubs) on :8082, player QUIC :9100 ..."
+# G: gateway-svc -- the dedicated front door: HTTP :8082 + player QUIC :9100. No DB, no
+# provider modules: only remote::Stubs, so EVERY op resolves Remote over the edge. Also
+# reverse-proxies /admin -> admin-svc (E) and /accounts/epic -> accounts-svc (D).
+echo "Starting G (gateway-svc) on :$G_PORT, player QUIC :$PLAYER_PORT ..."
 start_server gateway "$BIN_DIR/gateway-svc$EXE" \
-    PORT=:8082 \
-    PLAYER_EDGE_ADDR=:9100 \
-    EDGE_CA_CERT="$EDGE_CA_CERT" \
-    EDGE_CA_KEY="$EDGE_CA_KEY" \
-    CHARACTERS_EDGE_ADDR=127.0.0.1:9000 \
-    INVENTORY_EDGE_ADDR=127.0.0.1:9001
-wait_healthy 8082 "G (gateway-svc)"
+    PORT=":$G_PORT" PLAYER_EDGE_ADDR=":$PLAYER_PORT" \
+    EDGE_CA_CERT="$EDGE_CA_CERT" EDGE_CA_KEY="$EDGE_CA_KEY" \
+    CHARACTERS_EDGE_ADDR="127.0.0.1:$A_EDGE" \
+    INVENTORY_EDGE_ADDR="127.0.0.1:$B_EDGE" \
+    ACCOUNTS_EDGE_ADDR="127.0.0.1:$D_EDGE" \
+    MATCH_EDGE_ADDR="127.0.0.1:$I_EDGE" \
+    LEADERBOARD_EDGE_ADDR="127.0.0.1:$K_EDGE" \
+    ADMIN_HTTP_ADDR="127.0.0.1:$E_PORT" \
+    ACCOUNTS_HTTP_ADDR="127.0.0.1:$D_PORT"
+wait_healthy "$G_PORT" "G (gateway-svc)"
+
+# E: admin-svc -- the admin portal (HTTP :8085, no DB, no edge server). It DIALS the
+# provider edges (A/B/C/D/F/H) to fan their admin pages out over QUIC. ADMIN_USER/
+# ADMIN_PASS inherit from the environment (unset -> open portal + loud warning).
+echo "Starting E (admin-svc) on :$E_PORT ..."
+start_server admin "$BIN_DIR/admin-svc$EXE" \
+    PORT=":$E_PORT" \
+    EDGE_CA_CERT="$EDGE_CA_CERT" EDGE_CA_KEY="$EDGE_CA_KEY" \
+    CHARACTERS_EDGE_ADDR="127.0.0.1:$A_EDGE" \
+    INVENTORY_EDGE_ADDR="127.0.0.1:$B_EDGE" \
+    CONFIG_EDGE_ADDR="127.0.0.1:$C_EDGE" \
+    ACCOUNTS_EDGE_ADDR="127.0.0.1:$D_EDGE" \
+    AUDIT_EDGE_ADDR="127.0.0.1:$F_EDGE" \
+    SCHEDULER_EDGE_ADDR="127.0.0.1:$H_EDGE"
+wait_healthy "$E_PORT" "E (admin-svc)"
 
 write_pids_file
 echo ""
-echo "=== microservices running ==="
-echo "  A (characters-svc): http://localhost:8080  (edge :9000)"
-echo "  B (inventory-svc):  http://localhost:8081  (edge :9001)"
-echo "  G (gateway-svc):    http://localhost:8082  (player QUIC :9100)"
-echo "  teardown: ./run.sh --teardown"
+echo "==================== split running (11 services) ===================="
+echo "  Front door (gateway-svc): http://localhost:$G_PORT   (player QUIC :$PLAYER_PORT)"
+echo "  Admin panel:              http://localhost:$G_PORT/admin   (through the gateway front)"
+admin_note
+echo "  Metrics (front door):     http://localhost:$G_PORT/metrics"
+echo ""
+echo "  Peers (direct HTTP, normally reached THROUGH the front door):"
+echo "    A characters-svc :$A_PORT (edge :$A_EDGE)   B inventory-svc :$B_PORT (edge :$B_EDGE)"
+echo "    C config-svc     :$C_PORT (edge :$C_EDGE)   D accounts-svc  :$D_PORT (edge :$D_EDGE)"
+echo "    E admin-svc      :$E_PORT               F audit-svc     :$F_PORT (edge :$F_EDGE)"
+echo "    H scheduler-svc  :$H_PORT (edge :$H_EDGE)   I match-svc     :$I_PORT (edge :$I_EDGE)"
+echo "    J rating-svc     :$J_PORT (edge :$J_EDGE)   K leaderboard-svc :$K_PORT (edge :$K_EDGE)"
+echo ""
+echo "  Drive the player QUIC front: target/debug/playercli$EXE --addr 127.0.0.1:$PLAYER_PORT --ca $EDGE_CA_CERT ..."
+echo "  Logs:     $RUN_DIR/<service>.{out,err}.log"
+echo "  Teardown: ./run.sh --teardown"
+echo "====================================================================="
