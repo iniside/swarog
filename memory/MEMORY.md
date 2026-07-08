@@ -7,6 +7,7 @@
 - [Team = solo + agents, never humans](team-is-solo-plus-agents-forever.md) — scaling means more AI agents (Codex/Claude), don't hedge advice on "if a human joins"
 - [Work on master, no branches](work-on-master-no-branches.md) — commit directly on master for this repo; overrides CLAUDE.md's "branch-first" (solo for-fun project, history is enough)
 
+- [Refactor churn was Opus remediation](refactor-churn-was-opus-remediation.md) — big stranglers were cleanup after agent mistakes, not an iteration style; don't cite churn speed as a Go advantage
 - [DECISION: Go vs Kotlin (in flux)](decision-quarkus-as-final.md) — back UNSETTLED (2026-07-07), now leaning GO again (admin list-free via runtime slot + linker split-build); 2026-07-05 "Quarkus final" downgraded — don't assert either as settled
 - [Local Postgres is the test DB](local-postgres-is-the-test-db.md) — integration tests target the local Postgres directly; NOT a Docker/Testcontainers fallback, don't frame it as one
 - [Local Postgres](reference_local_postgres.md) — role/db/DSN for GameBackend + superuser password (postgres/qwerty)
