@@ -17,6 +17,9 @@ members = [
     "crates/configapi",
     "crates/configevents",
     "crates/config",
+    "crates/charactersevents",
+    "crates/charactersapi",
+    "crates/characters",
 ]
 
 [workspace.package]
@@ -73,3 +76,9 @@ adminapi = { path = "crates/adminapi" }
 configapi = { path = "crates/configapi" }
 configevents = { path = "crates/configevents" }
 config = { path = "crates/config" }
+
+# The characters domain: published events, the pure capability contract (traits +
+# generated rpc glue), and the impl module.
+charactersevents = { path = "crates/charactersevents" }
+charactersapi = { path = "crates/charactersapi" }
+characters = { path = "crates/characters" }

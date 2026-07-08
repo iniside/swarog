@@ -1,0 +1,32 @@
+[package]
+name = "characters"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The characters impl module (port of Go's modules/characters): owns schema
+# `characters`, provides the Ownership + Player capabilities, and emits
+# Created/Deleted on the DURABLE plane atomic with the domain write. An impl crate —
+# no OTHER module imports it; consumers use `charactersapi` (traits) +
+# `charactersevents` (events).
+[dependencies]
+bus = { workspace = true }
+lifecycle = { workspace = true }
+registry = { workspace = true }
+opsapi = { workspace = true }
+edge = { workspace = true }
+charactersapi = { workspace = true }
+charactersevents = { workspace = true }
+adminapi = { workspace = true }
+sqlx = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+messaging = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }

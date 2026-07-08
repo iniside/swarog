@@ -1,0 +1,15 @@
+[package]
+name = "charactersevents"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The published event vocabulary of the characters domain (port of Go's
+# api/characters/charactersevents): the Created / Deleted payloads + their topic
+# descriptors. The ONLY surface consumers (e.g. inventory) share with characters.
+# These ride the DURABLE plane (bus::emit_tx), so payloads are serde. Imports only
+# the `bus` leaf.
+[dependencies]
+bus = { workspace = true }
+serde = { workspace = true }
