@@ -24,6 +24,7 @@ async fn main() -> anyhow::Result<()> {
         Box::new(messaging::Messaging::new()),   // the durable async plane (transport + relay + inbox)
     ];
 
-    // No edge server: every provider is in-process in the monolith.
-    app::run(app::Config::from_env(), mods, None).await
+    // No edge server: every provider is in-process in the monolith. No player front
+    // yet either — the monolith gains its QUIC player front in Step 5.
+    app::run(app::Config::from_env(), mods, None, None).await
 }

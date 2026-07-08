@@ -24,36 +24,58 @@ const DEFAULT_DSN: &str =
     "postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable";
 const DEFAULT_LISTEN_ADDR: &str = ":8080";
 const DEFAULT_EDGE_ADDR: &str = ":9000";
+const DEFAULT_PLAYER_EDGE_ADDR: &str = ":9100";
 
 /// The process-level configuration [`run`] needs. Deliberately tiny: everything
 /// module-specific (event subscribers, peer edge addrs, admin URLs, …) is read by
 /// the module that owns it, not here.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
-    /// Postgres DSN (`DATABASE_URL`).
-    pub database_url: String,
+    /// Postgres DSN (`DATABASE_URL`), or `None` for a persistence-free process (e.g.
+    /// the pure-transport `gateway-svc`, which hosts no schema). [`Config::from_env`]
+    /// always yields `Some`; [`Config::without_db`] is the explicit opt-out.
+    pub database_url: Option<String>,
     /// HTTP listen address, e.g. `:8080` (`PORT`).
     pub listen_addr: String,
     /// QUIC edge listen address, e.g. `:9000` (`EDGE_ADDR`) — only used when an edge
     /// server is passed to [`run`].
     pub edge_addr: String,
+    /// Player-facing QUIC listen address, e.g. `:9100` (`PLAYER_EDGE_ADDR`) — only
+    /// used when a player server is passed to [`run`].
+    pub player_edge_addr: String,
 }
 
 impl Config {
-    /// Reads the standard process env (`DATABASE_URL`, `PORT`, `EDGE_ADDR`) into a
-    /// [`Config`], applying the same defaults the Go monolith used. Both `:8080` and
-    /// `8080` forms of `PORT` are accepted.
+    /// Reads the standard process env (`DATABASE_URL`, `PORT`, `EDGE_ADDR`,
+    /// `PLAYER_EDGE_ADDR`) into a [`Config`], applying the same defaults the Go
+    /// monolith used. Both `:8080` and `8080` forms of `PORT` are accepted. The DSN
+    /// is always `Some` here — a process that wants no DB calls [`Config::without_db`].
     pub fn from_env() -> Config {
         Config::from_values(
             std::env::var("DATABASE_URL").ok(),
             std::env::var("PORT").ok(),
             std::env::var("EDGE_ADDR").ok(),
+            std::env::var("PLAYER_EDGE_ADDR").ok(),
         )
+    }
+
+    /// Drops the DB requirement, leaving everything else intact — the pure-transport
+    /// `gateway-svc` uses this so [`run`] opens no pool and `/readyz` skips the DB ping.
+    pub fn without_db(self) -> Config {
+        Config {
+            database_url: None,
+            ..self
+        }
     }
 
     /// The pure core of [`Config::from_env`] — env values in, config out. Split out so
     /// the default/override logic is unit-testable without mutating process-global env.
-    fn from_values(dsn: Option<String>, port: Option<String>, edge: Option<String>) -> Config {
+    fn from_values(
+        dsn: Option<String>,
+        port: Option<String>,
+        edge: Option<String>,
+        player_edge: Option<String>,
+    ) -> Config {
         let database_url = match dsn {
             Some(v) if !v.trim().is_empty() => v,
             _ => DEFAULT_DSN.to_string(),
@@ -62,10 +84,15 @@ impl Config {
             Some(v) if !v.trim().is_empty() => v.trim().to_string(),
             _ => DEFAULT_EDGE_ADDR.to_string(),
         };
+        let player_edge_addr = match player_edge {
+            Some(v) if !v.trim().is_empty() => v.trim().to_string(),
+            _ => DEFAULT_PLAYER_EDGE_ADDR.to_string(),
+        };
         Config {
-            database_url,
+            database_url: Some(database_url),
             listen_addr: normalize_addr(port.as_deref().unwrap_or_default()),
             edge_addr,
+            player_edge_addr,
         }
     }
 }
@@ -114,49 +141,67 @@ pub fn validate_requires(modules: &[Box<dyn Module>]) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Boots a service from a static list of modules. Opens the DB, wires the lifecycle
-/// [`Context`], then, in EXACTLY this order (port of Go's `app.Run`):
+/// Boots a service from a static list of modules. Opens the DB (when configured),
+/// wires the lifecycle [`Context`], then, in EXACTLY this order (port of Go's
+/// `app.Run`):
 ///
-/// 1. open a [`PgPool`] from `cfg.database_url`,
-/// 2. build the [`Context`] backed by that pool,
+/// 1. open a [`PgPool`] from `cfg.database_url` — SKIPPED when it is `None` (a
+///    pure-transport process like `gateway-svc` owns no schema),
+/// 2. build the [`Context`] backed by that pool (or a DB-less one when there is none),
 /// 3. [`validate_requires`] — fail loud on an incomplete module set,
 /// 4. [`App::build`] (two-phase register → init),
 /// 5. [`App::migrate`],
 /// 6. [`App::start`],
-/// 7. if `edge_server` is `Some`, bind the QUIC listener AFTER build (so every
-///    handler a module registered during init exists) using the shared dev CA,
+/// 7. if `edge_server` is `Some`, bind the internal mutual-TLS QUIC listener, and if
+///    `player_server` is `Some`, bind the player-facing server-cert-only QUIC listener
+///    — both AFTER build (so every handler a module registered during init exists),
+///    sharing the same dev CA,
 /// 8. serve HTTP (the router the modules merged into the [`Context`], plus
-///    `/healthz`/`/readyz`) on `cfg.listen_addr`,
+///    `/healthz`/`/readyz`) on `cfg.listen_addr` — `/readyz` pings the DB only when a
+///    pool exists, else answers a plain 200,
 /// 9. block until SIGINT (Ctrl-C — cross-platform),
-/// 10. graceful shutdown in Go's order: stop accepting HTTP → close the edge
-///     listener → drain the bus → [`App::stop`] (reverse registration order). The bus
-///     drains BEFORE any module `stop`, so a stopping module never emits.
+/// 10. graceful shutdown in Go's order: stop accepting HTTP → close the player
+///     listener (players drain first) → close the internal edge listener → drain the
+///     bus → [`App::stop`] (reverse registration order). The bus drains BEFORE any
+///     module `stop`, so a stopping module never emits.
 ///
 /// `modules` is the WHOLE topology of this process — real modules plus any remote
 /// stubs standing in for peers. `edge_server` is `None` for an all-local process and
-/// `Some` only when this process exposes edge-backed services.
+/// `Some` only when this process exposes edge-backed services; `player_server` is
+/// `Some` only when this process fronts external players over QUIC (the gateway).
 ///
-/// The edge server is passed as an `Arc<Mutex<edge::Server>>` — the SAME handle the
-/// edge-hosting modules (`characters::with_edge`, …) were constructed with, so their
-/// `init` can register RPC handlers onto it during Build. After Build completes, `run`
+/// Each server is passed as an `Arc<Mutex<…>>` — the SAME handle the hosting module
+/// (`characters::with_edge`, `gateway::with_player_edge`, …) was constructed with, so
+/// its `init` can register handlers onto it during Build. After Build completes, `run`
 /// takes the fully-wired server out of the shared handle (via `std::mem::take`, the
-/// modules never touch it again) and `listen`s it. This is why the param is the shared
-/// handle rather than an owned `edge::Server`: registration happens during Build,
+/// modules never touch it again) and `listen`s it. This is why the params are the
+/// shared handles rather than owned servers: registration happens during Build,
 /// `listen` after — both need to reach the same object.
 pub async fn run(
     cfg: Config,
     modules: Vec<Box<dyn Module>>,
     edge_server: Option<Arc<Mutex<edge::Server>>>,
+    player_server: Option<Arc<Mutex<edge::PlayerServer>>>,
 ) -> anyhow::Result<()> {
-    // 1. Open the pool. `PgPool::connect` establishes an initial connection, so an
+    // 1. Open the pool when a DSN is configured; a pure-transport process (no DSN)
+    //    skips it. `PgPool::connect` establishes an initial connection, so an
     //    unreachable DB fails here (Go's explicit ping equivalent).
-    let pool = PgPool::connect(&cfg.database_url)
-        .await
-        .with_context(|| format!("open db {}", cfg.database_url))?;
+    let pool = match &cfg.database_url {
+        Some(dsn) => Some(
+            PgPool::connect(dsn)
+                .await
+                .with_context(|| format!("open db {dsn}"))?,
+        ),
+        None => None,
+    };
 
     // 2. Wire the shared context; the same Arc is handed to App (which drives the
-    //    modules) and kept here for the router + bus drain.
-    let ctx = Arc::new(Context::with_db(pool.clone()));
+    //    modules) and kept here for the router + bus drain. DB-backed when a pool was
+    //    opened, DB-less otherwise (`lifecycle::Context` supports both).
+    let ctx = Arc::new(match pool.clone() {
+        Some(p) => Context::with_db(p),
+        None => Context::new(),
+    });
 
     // 3. Fail loud if this process's module set is internally incoherent.
     validate_requires(&modules)?;
@@ -192,11 +237,31 @@ pub async fn run(
         None => None,
     };
 
+    // 7b. Bring up the player-facing QUIC front, same lifecycle as the internal edge:
+    //     the gateway registered its dispatch handler onto this shared handle during
+    //     Build, so `mem::take` hands `listen` the fully-wired server. Server-cert-only
+    //     TLS (no client cert) off the SAME dev CA — `server_tls_public` derives from
+    //     it — so external players can handshake; per-call auth is the front's job.
+    let running_player = match player_server {
+        Some(shared) => {
+            let player = std::mem::take(&mut *shared.lock().unwrap());
+            let ca = edge::shared_dev_ca().context("edge ca")?;
+            let player_bind: SocketAddr = to_bind_addr(&cfg.player_edge_addr)
+                .parse()
+                .with_context(|| format!("parse player edge addr {:?}", cfg.player_edge_addr))?;
+            let running = player.listen(player_bind, &ca).context("player edge listen")?;
+            tracing::info!(addr = %running.local_addr(), "player edge listening (server-cert-only TLS)");
+            Some(running)
+        }
+        None => None,
+    };
+
     // 8. Serve HTTP: the router the modules merged into the Context, plus liveness
     //    (`/healthz`, always 200 — a restart can't fix a down DB) and readiness
-    //    (`/readyz`, DB-ping gated — controls whether a load balancer sends traffic).
-    //    Modules must not themselves mount these two routes (axum `merge`/`route`
-    //    panics on a duplicate, exactly like Go's ServeMux).
+    //    (`/readyz`). Readiness pings the DB when a pool exists (controls whether a
+    //    load balancer sends traffic); a DB-less process has nothing to ping, so it
+    //    answers a plain 200. Modules must not themselves mount these two routes (axum
+    //    `merge`/`route` panics on a duplicate, exactly like Go's ServeMux).
     let ready_pool = pool.clone();
     let router = ctx
         .take_router()
@@ -206,6 +271,9 @@ pub async fn run(
             get(move || {
                 let pool = ready_pool.clone();
                 async move {
+                    let Some(pool) = pool else {
+                        return (StatusCode::OK, "ok");
+                    };
                     match sqlx::query("SELECT 1").execute(&pool).await {
                         Ok(_) => (StatusCode::OK, "ok"),
                         Err(err) => {
@@ -230,9 +298,13 @@ pub async fn run(
         .await
         .context("http serve")?;
 
-    // 10. Ordered teardown: HTTP already stopped → close edge → drain bus → stop
-    //     modules (reverse registration order, inside App::stop).
+    // 10. Ordered teardown: HTTP already stopped → close the player front (external
+    //     players drain first) → close the internal edge → drain bus → stop modules
+    //     (reverse registration order, inside App::stop).
     tracing::info!("shutting down");
+    if let Some(running) = running_player {
+        running.close();
+    }
     if let Some(running) = running_edge {
         running.close();
     }
@@ -316,18 +388,25 @@ mod tests {
 
     #[test]
     fn config_defaults_when_env_absent() {
-        let cfg = Config::from_values(None, None, None);
-        assert_eq!(cfg.database_url, DEFAULT_DSN);
+        let cfg = Config::from_values(None, None, None, None);
+        assert_eq!(cfg.database_url.as_deref(), Some(DEFAULT_DSN));
         assert_eq!(cfg.listen_addr, ":8080");
         assert_eq!(cfg.edge_addr, ":9000");
+        assert_eq!(cfg.player_edge_addr, ":9100");
     }
 
     #[test]
     fn config_defaults_when_env_blank() {
-        let cfg = Config::from_values(Some("  ".into()), Some("".into()), Some("   ".into()));
-        assert_eq!(cfg.database_url, DEFAULT_DSN);
+        let cfg = Config::from_values(
+            Some("  ".into()),
+            Some("".into()),
+            Some("   ".into()),
+            Some(" ".into()),
+        );
+        assert_eq!(cfg.database_url.as_deref(), Some(DEFAULT_DSN));
         assert_eq!(cfg.listen_addr, ":8080");
         assert_eq!(cfg.edge_addr, ":9000");
+        assert_eq!(cfg.player_edge_addr, ":9100");
     }
 
     #[test]
@@ -336,17 +415,35 @@ mod tests {
             Some("postgres://u:p@db:5432/x".into()),
             Some("9090".into()),
             Some(":9001".into()),
+            Some(":9101".into()),
         );
-        assert_eq!(cfg.database_url, "postgres://u:p@db:5432/x");
+        assert_eq!(cfg.database_url.as_deref(), Some("postgres://u:p@db:5432/x"));
         // Bare port gets the leading colon (Go's normalizeAddr).
         assert_eq!(cfg.listen_addr, ":9090");
         assert_eq!(cfg.edge_addr, ":9001");
+        assert_eq!(cfg.player_edge_addr, ":9101");
     }
 
     #[test]
     fn config_accepts_colon_port_form() {
-        let cfg = Config::from_values(None, Some(":8081".into()), None);
+        let cfg = Config::from_values(None, Some(":8081".into()), None, None);
         assert_eq!(cfg.listen_addr, ":8081");
+    }
+
+    #[test]
+    fn without_db_clears_dsn_and_keeps_the_rest() {
+        let cfg = Config::from_values(
+            Some("postgres://u:p@db:5432/x".into()),
+            Some("9090".into()),
+            Some(":9001".into()),
+            Some(":9101".into()),
+        )
+        .without_db();
+        assert_eq!(cfg.database_url, None);
+        // Everything else survives the opt-out.
+        assert_eq!(cfg.listen_addr, ":9090");
+        assert_eq!(cfg.edge_addr, ":9001");
+        assert_eq!(cfg.player_edge_addr, ":9101");
     }
 
     #[test]

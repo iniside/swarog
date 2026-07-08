@@ -35,6 +35,7 @@ async fn main() -> anyhow::Result<()> {
         Box::new(remote::Stub::new("characters", &characters_edge_addr())),
     ];
 
-    // No edge server: B is a pure edge CLIENT of A in the 2-process proof.
-    app::run(app::Config::from_env(), mods, None).await
+    // No edge server: B is a pure edge CLIENT of A in the 2-process proof. No player
+    // front either — B is fronted by gateway-svc, not directly by players.
+    app::run(app::Config::from_env(), mods, None, None).await
 }

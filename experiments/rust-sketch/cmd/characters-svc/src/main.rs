@@ -27,5 +27,6 @@ async fn main() -> anyhow::Result<()> {
         Box::new(messaging::Messaging::new()),
     ];
 
-    app::run(app::Config::from_env(), mods, Some(edge_server)).await
+    // No player front: A serves peers over the internal mutual-TLS edge, not players.
+    app::run(app::Config::from_env(), mods, Some(edge_server), None).await
 }
