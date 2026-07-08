@@ -5,6 +5,9 @@ members = [
     "crates/contrib",
     "crates/bus",
     "crates/lifecycle",
+    "crates/opsapi",
+    "crates/edge",
+    "crates/edgeca",
 ]
 
 [workspace.package]
@@ -24,12 +27,21 @@ tracing = "0.1"
 axum = "0.7"
 sqlx = { version = "0.8", features = ["postgres", "runtime-tokio", "tls-rustls"] }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["raw_value"] }
 futures = "0.3"
 proptest = "1"
+
+# QUIC + mutual TLS stack for the edge transport (Step 4). Pinned once here.
+quinn = "0.11"
+# TLS 1.3 only: the `tls12` feature is deliberately NOT enabled (mTLS point 5).
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+rustls-pemfile = "2"
+rcgen = "0.13"
 
 # Internal foundation crates (leaves import only each other, never a module).
 registry = { path = "crates/registry" }
 contrib = { path = "crates/contrib" }
 bus = { path = "crates/bus" }
 lifecycle = { path = "crates/lifecycle" }
+opsapi = { path = "crates/opsapi" }
+edge = { path = "crates/edge" }
