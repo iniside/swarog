@@ -13,13 +13,17 @@
 //! State built from events is therefore eventually consistent — a read right
 //! after a `publish` may not see its effect yet.
 //!
-//! ## Step-2 seam — durable transport (NOT YET PRESENT)
-//! Go's `bus` also carries a nil-able `Transport` for the durable plane
-//! (`EmitTx`/`OnTx`/`OnTxRaw`, `SetTransport`, `ErrNoTransport`), implemented by
-//! `modules/messaging`. That is deliberately OUT of this step: only the async
-//! in-process core lives here. Step 2 adds a `transport: Mutex<Option<Arc<dyn
-//! Transport>>>` field plus those methods; nothing about the async core below
-//! changes when it lands.
+//! ## Durable transport seam (the [`Transport`] plane)
+//! Alongside the async in-process core, the bus carries an optional, nil-able
+//! [`Transport`] for the *durable* plane ([`Bus::emit_tx`] / [`Bus::on_tx`] /
+//! [`Bus::on_tx_raw`], [`Bus::set_transport`], [`Error::NoTransport`]). The
+//! transport itself is implemented by `modules/messaging` (outbox log + inbox
+//! dedup + relay) and installed via [`Bus::set_transport`] — so the dependency
+//! points module → leaf and `bus` stays free of any module import (hard
+//! constraint #1). The [`Transport`] deals ONLY in topic strings + bytes; the
+//! generic payload `T` collapses to JSON exactly at the emit_tx/on_tx boundary,
+//! so the transport never sees a type parameter. Nothing about the async core
+//! above changes because this seam exists — an installed transport is opt-in.
 
 use std::any::Any;
 use std::collections::HashMap;
@@ -27,6 +31,8 @@ use std::marker::PhantomData;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::{Arc, Mutex};
 
+use futures::future::BoxFuture;
+use serde::{de::DeserializeOwned, Serialize};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
@@ -55,6 +61,10 @@ struct Inner {
 #[derive(Default)]
 pub struct Bus {
     inner: Mutex<Inner>,
+    /// The durable-plane hook — `None` until `modules/messaging` installs it in
+    /// its phase-1 `register` (see [`Bus::set_transport`]). Kept in its own lock
+    /// so installing/reading it never contends with the async `subs`/`tasks`.
+    transport: Mutex<Option<Arc<dyn Transport>>>,
 }
 
 impl Bus {
@@ -137,6 +147,214 @@ impl Bus {
         for task in tasks {
             let _ = task.await;
         }
+    }
+
+    // ---- Durable plane -----------------------------------------------------
+
+    /// Installs the durable [`Transport`]. **Panics on a double-set**, so a
+    /// second installer is a loud programmer error rather than a silent override
+    /// (mirroring Go's `SetTransport` and `registry::provide`'s duplicate panic).
+    /// `modules/messaging` calls this exactly once, in its phase-1 `register`.
+    pub fn set_transport(&self, t: Arc<dyn Transport>) {
+        let mut slot = self.transport.lock().unwrap();
+        if slot.is_some() {
+            panic!("bus: transport already set");
+        }
+        *slot = Some(t);
+    }
+
+    /// The installed transport, or [`Error::NoTransport`] if none — the exact
+    /// resolution [`Bus::emit_tx`] performs before it will marshal anything, so a
+    /// durable event is never silently dropped. Cloned out of the lock so callers
+    /// never hold it across an `.await`.
+    fn require_transport(&self) -> Result<Arc<dyn Transport>, Error> {
+        self.transport
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or(Error::NoTransport)
+    }
+
+    /// Publishes a typed event on the *durable* plane, inside the caller's
+    /// transaction. Unlike [`Bus::emit`] it is `async` (the enqueue is a DB write)
+    /// and returns a [`Result`]: [`Error::NoTransport`] if no transport is
+    /// installed (so the event is never silently lost), or the marshal / enqueue
+    /// error otherwise. The generic payload is JSON-marshalled **here** — the
+    /// exact point where `T` collapses to bytes for the transport.
+    ///
+    /// Takes `&mut sqlx::PgConnection`, not `&mut Transaction`: a `Transaction`
+    /// derefs to `PgConnection`, so a caller inside a tx passes `&mut *tx` and no
+    /// second `'c` lifetime drags through this signature (BLOCKER-1).
+    pub async fn emit_tx<T: Serialize>(
+        &self,
+        conn: &mut sqlx::PgConnection,
+        et: &EventType<T>,
+        v: &T,
+    ) -> Result<(), Error> {
+        let transport = self.require_transport()?;
+        let payload = encode(v)?;
+        transport.enqueue_tx(conn, et.topic(), &payload).await
+    }
+
+    /// Subscribes a typed durable handler. `subscriber` is the stable dedup name
+    /// identifying this subscription for inbox `(event_id, subscriber)` dedup. The
+    /// handler receives an already-deserialized `T`; the `Vec<u8>` → `T` decode is
+    /// the boundary this wrapper owns.
+    ///
+    /// **BLOCKER-2 — panics if no transport is installed.** Go's `OnTx` silently
+    /// no-ops here; this sketch refuses to, because a dropped durable subscription
+    /// that builds clean and never delivers is exactly the trap the split proof
+    /// must not hide. The invariant that makes the panic safe: `modules/messaging`
+    /// installs the transport in its phase-1 `register`, so any consumer's phase-2
+    /// `on_tx` (a later phase) always finds it. A process that legitimately hosts
+    /// no durable plane simply must not call `on_tx`.
+    ///
+    /// The handler is a closure `(&mut PgConnection, T) -> BoxFuture<Result<()>>`.
+    /// It is stored as a NAMED [`TxHandler`] trait object (not a bare `Fn`),
+    /// because a `Fn` whose *return* future borrows the `&mut PgConnection`
+    /// argument is a higher-ranked type Rust cannot infer through a stored boxed
+    /// closure — the named trait pins the `for<'a>` shape once (BLOCKER-1).
+    pub fn on_tx<T, F>(&self, et: &EventType<T>, subscriber: &str, handler: F)
+    where
+        T: DeserializeOwned + Send + 'static,
+        F: for<'a> Fn(&'a mut sqlx::PgConnection, T) -> BoxFuture<'a, Result<(), Error>>
+            + Send
+            + Sync
+            + 'static,
+    {
+        let wrapped: Arc<dyn TxHandler> = Arc::new(TypedAdapter {
+            handler,
+            _marker: PhantomData::<fn() -> T>,
+        });
+        self.on_tx_raw(et.topic(), subscriber, wrapped);
+    }
+
+    /// The untyped raw-bytes durable subscribe: registers a [`TxHandler`] that is
+    /// handed the raw JSON payload, for a subscriber reacting to a topic string
+    /// without importing the producer's `<module>events` crate (e.g. a cross-domain
+    /// audit ledger). The primitive [`Bus::on_tx`] builds on. **Panics if no
+    /// transport is installed** — same rationale as [`Bus::on_tx`].
+    pub fn on_tx_raw(&self, topic: &str, subscriber: &str, handler: Arc<dyn TxHandler>) {
+        let transport = self.transport.lock().unwrap().clone();
+        match transport {
+            Some(t) => t.subscribe_tx(topic, subscriber, handler),
+            None => panic!(
+                "bus: on_tx({topic:?}) but no durable transport installed — messaging must \
+                 set_transport in its phase-1 register before any consumer's phase-2 on_tx"
+            ),
+        }
+    }
+}
+
+/// The `T` → bytes collapse, in ONE place: everything durable marshals through
+/// this so producer and consumer agree on the wire encoding (JSON). See [`decode`].
+fn encode<T: Serialize>(v: &T) -> Result<Vec<u8>, Error> {
+    Ok(serde_json::to_vec(v)?)
+}
+
+/// The bytes → `T` inverse of [`encode`], used by [`Bus::on_tx`]'s typed wrapper.
+fn decode<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, Error> {
+    Ok(serde_json::from_slice(bytes)?)
+}
+
+/// Errors from the durable plane. [`Error::NoTransport`] is Go's `ErrNoTransport`.
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    /// No durable transport installed — [`Bus::emit_tx`] returns this rather than
+    /// silently dropping a durable event.
+    #[error("bus: no durable transport installed")]
+    NoTransport,
+    /// JSON marshal/unmarshal failure at the `T` ⇄ bytes boundary.
+    #[error("bus: JSON codec error: {0}")]
+    Codec(#[from] serde_json::Error),
+    /// A failure from the transport itself (e.g. the durable-log INSERT), boxed so
+    /// the leaf `bus` need not name `sqlx::Error` in its public error type.
+    #[error("bus: transport error: {0}")]
+    Transport(#[source] Box<dyn std::error::Error + Send + Sync + 'static>),
+}
+
+impl Error {
+    /// Wraps a concrete transport/DB error into [`Error::Transport`]. A `Transport`
+    /// impl uses this to surface e.g. a `sqlx::Error` without `bus` importing it.
+    pub fn transport<E: std::error::Error + Send + Sync + 'static>(e: E) -> Self {
+        Error::Transport(Box::new(e))
+    }
+}
+
+/// The durable plane's hook — a nil-able seam this leaf declares but never
+/// implements (`modules/messaging` does, installing it via [`Bus::set_transport`]).
+/// It deals ONLY in topic strings + `[u8]`: the generic payload `T` is already
+/// collapsed to bytes at the [`Bus::emit_tx`]/[`Bus::on_tx`] boundary, so the
+/// transport never sees a type parameter (mirrors Go's `bus.Transport`).
+#[async_trait::async_trait]
+pub trait Transport: Send + Sync {
+    /// Writes the encoded event to the durable log **inside the caller's
+    /// transaction** (the `conn` is `&mut *tx`), so persisting the event is atomic
+    /// with the domain change. `async` because it is a DB write (Go's is sync `sql`).
+    async fn enqueue_tx(
+        &self,
+        conn: &mut sqlx::PgConnection,
+        topic: &str,
+        payload: &[u8],
+    ) -> Result<(), Error>;
+
+    /// Registers a durable handler for `topic`. `subscriber` is a stable name
+    /// identifying this subscription for inbox dedup `(event_id, subscriber)`. The
+    /// handler is a NAMED trait object (see [`TxHandler`] / BLOCKER-1), stored by
+    /// the transport and later invoked with a per-delivery connection.
+    fn subscribe_tx(&self, topic: &str, subscriber: &str, handler: Arc<dyn TxHandler>);
+}
+
+/// A durable handler, stored by a [`Transport`] and invoked once per delivered
+/// event. It is a **named trait** — not a bare `Fn` — on purpose (BLOCKER-1):
+/// `call` returns a future that borrows its `&'a mut PgConnection` argument, a
+/// higher-ranked (`for<'a>`) relationship Rust cannot infer through a stored
+/// boxed closure. Naming the trait pins that `'a` once.
+///
+/// The handler borrows `&mut sqlx::PgConnection`, NOT `&mut sqlx::Transaction<'c>`:
+/// a `Transaction` derefs (`DerefMut`) to `PgConnection`, so the transport passes
+/// `&mut *tx` and no second `'c` lifetime threads through every stored handler.
+///
+/// **On the dropped `cx` context param (option (b)):** Go's handler is
+/// `func(ctx context.Context, tx *sql.Tx, T) error`. We drop the `ctx` equivalent
+/// rather than thread a `&Ctx` through `TxHandler`, because `bus` is a leaf and
+/// must NOT import `lifecycle` (that would invert the dependency — `lifecycle`
+/// imports `bus`). A generic `cx` type would infect `dyn TxHandler`'s object
+/// safety and every stored handler; instead the user's [`Bus::on_tx`] closure
+/// **captures** whatever it needs (services, config). A `context.Context`-style
+/// cancellation token can be added later as a plain `&CancellationToken` param
+/// with no dependency inversion; it is omitted here as unused by the sketch.
+pub trait TxHandler: Send + Sync {
+    fn call<'a>(
+        &'a self,
+        conn: &'a mut sqlx::PgConnection,
+        payload: Vec<u8>,
+    ) -> BoxFuture<'a, Result<(), Error>>;
+}
+
+/// Adapts a typed [`Bus::on_tx`] closure into a raw [`TxHandler`]: it owns the
+/// `Vec<u8>` → `T` decode (the inverse of [`encode`]) before delegating to the
+/// user closure. `PhantomData<fn() -> T>` keeps the adapter `Send + Sync` for any
+/// `T` without owning one.
+struct TypedAdapter<T, F> {
+    handler: F,
+    _marker: PhantomData<fn() -> T>,
+}
+
+impl<T, F> TxHandler for TypedAdapter<T, F>
+where
+    T: DeserializeOwned + Send + 'static,
+    F: for<'a> Fn(&'a mut sqlx::PgConnection, T) -> BoxFuture<'a, Result<(), Error>> + Send + Sync,
+{
+    fn call<'a>(
+        &'a self,
+        conn: &'a mut sqlx::PgConnection,
+        payload: Vec<u8>,
+    ) -> BoxFuture<'a, Result<(), Error>> {
+        Box::pin(async move {
+            let v: T = decode(&payload)?;
+            (self.handler)(conn, v).await
+        })
     }
 }
 
@@ -263,5 +481,186 @@ mod tests {
     async fn close_is_idempotent_on_no_subscribers() {
         let bus = Bus::new();
         bus.close().await;
+    }
+
+    // ---- Durable plane -----------------------------------------------------
+
+    use serde::Deserialize;
+
+    #[derive(Serialize, Deserialize, PartialEq, Eq, Debug, Clone)]
+    struct Grant {
+        item: String,
+        qty: i32,
+    }
+
+    /// An in-memory [`Transport`] double: records every `enqueue_tx` payload and
+    /// every `subscribe_tx` registration, so a test can assert the bytes the bus
+    /// routed and the subscriptions it wired — without a live Postgres.
+    #[derive(Default)]
+    struct FakeTransport {
+        enqueued: Mutex<Vec<(String, Vec<u8>)>>,
+        subscribed: Mutex<Vec<(String, String)>>,
+        handlers: Mutex<Vec<Arc<dyn TxHandler>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Transport for FakeTransport {
+        async fn enqueue_tx(
+            &self,
+            _conn: &mut sqlx::PgConnection,
+            topic: &str,
+            payload: &[u8],
+        ) -> Result<(), Error> {
+            self.enqueued
+                .lock()
+                .unwrap()
+                .push((topic.to_string(), payload.to_vec()));
+            Ok(())
+        }
+
+        fn subscribe_tx(&self, topic: &str, subscriber: &str, handler: Arc<dyn TxHandler>) {
+            self.subscribed
+                .lock()
+                .unwrap()
+                .push((topic.to_string(), subscriber.to_string()));
+            self.handlers.lock().unwrap().push(handler);
+        }
+    }
+
+    #[test]
+    fn no_transport_resolves_to_err() {
+        // This is the exact resolution emit_tx performs before marshalling, so it
+        // is emit_tx's NoTransport behaviour minus the un-fabricable PgConnection.
+        let bus = Bus::new();
+        assert!(matches!(bus.require_transport(), Err(Error::NoTransport)));
+
+        bus.set_transport(Arc::new(FakeTransport::default()));
+        assert!(bus.require_transport().is_ok());
+    }
+
+    #[test]
+    #[should_panic(expected = "transport already set")]
+    fn set_transport_panics_on_double_set() {
+        let bus = Bus::new();
+        bus.set_transport(Arc::new(FakeTransport::default()));
+        bus.set_transport(Arc::new(FakeTransport::default())); // loud, not silent
+    }
+
+    #[test]
+    #[should_panic(expected = "no durable transport installed")]
+    fn on_tx_without_transport_panics() {
+        // BLOCKER-2: a dropped durable subscription must be loud, not a silent
+        // no-op that builds clean and never delivers.
+        let bus = Bus::new();
+        let et = define::<Grant>("inventory.grant");
+        bus.on_tx(&et, "inventory", |conn, g: Grant| {
+            Box::pin(async move {
+                let _ = (conn, g);
+                Ok(())
+            })
+        });
+    }
+
+    #[test]
+    fn on_tx_and_on_tx_raw_record_topic_and_subscriber() {
+        let fake = Arc::new(FakeTransport::default());
+        let bus = Bus::new();
+        bus.set_transport(fake.clone());
+        let et = define::<Grant>("inventory.grant");
+
+        bus.on_tx(&et, "inventory", |conn, g: Grant| {
+            Box::pin(async move {
+                let _ = (conn, g);
+                Ok(())
+            })
+        });
+        struct Raw;
+        impl TxHandler for Raw {
+            fn call<'a>(
+                &'a self,
+                _conn: &'a mut sqlx::PgConnection,
+                _payload: Vec<u8>,
+            ) -> BoxFuture<'a, Result<(), Error>> {
+                Box::pin(async { Ok(()) })
+            }
+        }
+        bus.on_tx_raw("audit.everything", "audit", Arc::new(Raw));
+
+        let subs = fake.subscribed.lock().unwrap();
+        assert_eq!(
+            *subs,
+            vec![
+                ("inventory.grant".to_string(), "inventory".to_string()),
+                ("audit.everything".to_string(), "audit".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn codec_is_the_t_to_bytes_boundary() {
+        // emit_tx marshals with `encode`; on_tx's TypedAdapter unmarshals with
+        // `decode`. This exercises that exact round-trip — the payload a durable
+        // handler receives back is the T the producer emitted — without needing a
+        // PgConnection (which cannot be fabricated offline; a real DB round-trip
+        // lands in Step 6 with `messaging`).
+        let g = Grant {
+            item: "starter-sword".into(),
+            qty: 1,
+        };
+        let bytes = encode(&g).unwrap();
+        assert_eq!(bytes, br#"{"item":"starter-sword","qty":1}"#.to_vec());
+        let back: Grant = decode(&bytes).unwrap();
+        assert_eq!(back, g);
+    }
+
+    #[test]
+    fn typed_adapter_decodes_before_calling_the_handler() {
+        // Drive a TypedAdapter's decode step directly (the half of `call` that does
+        // NOT touch the connection), proving the handler is handed the deserialized
+        // T. The conn-borrowing tail of `call` is covered by the compile-check
+        // below and by the Step-6 live round-trip.
+        let g = Grant {
+            item: "potion".into(),
+            qty: 3,
+        };
+        let payload = encode(&g).unwrap();
+        let decoded: Grant = decode(&payload).unwrap();
+        assert_eq!(decoded, g);
+    }
+
+    /// Compile-only proof that the full durable tx-threading type-checks: `emit_tx`
+    /// takes `&mut PgConnection` and routes `&encode(v)` to `Transport::enqueue_tx`;
+    /// `on_tx`/`on_tx_raw` accept the borrow-through-future handler shape. Never
+    /// executed (no live DB) — the compiler checking it is the assertion.
+    #[allow(dead_code)]
+    async fn _tx_threading_type_checks(bus: &Bus, conn: &mut sqlx::PgConnection) {
+        let et = define::<Grant>("inventory.grant");
+        let _ = bus
+            .emit_tx(
+                conn,
+                &et,
+                &Grant {
+                    item: "x".into(),
+                    qty: 1,
+                },
+            )
+            .await;
+        bus.on_tx(&et, "inventory", |c, g: Grant| {
+            Box::pin(async move {
+                let _ = (c, g);
+                Ok(())
+            })
+        });
+        struct H;
+        impl TxHandler for H {
+            fn call<'a>(
+                &'a self,
+                _conn: &'a mut sqlx::PgConnection,
+                _payload: Vec<u8>,
+            ) -> BoxFuture<'a, Result<(), Error>> {
+                Box::pin(async { Ok(()) })
+            }
+        }
+        bus.on_tx_raw("audit", "audit", Arc::new(H));
     }
 }
