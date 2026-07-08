@@ -7,10 +7,10 @@
 - [Team = solo + agents, never humans](team-is-solo-plus-agents-forever.md) — scaling means more AI agents (Codex/Claude), don't hedge advice on "if a human joins"
 - [Work on master, no branches](work-on-master-no-branches.md) — commit directly on master for this repo; overrides CLAUDE.md's "branch-first" (solo for-fun project, history is enough)
 
-- [Rust sketch: split-verified M1](rust-sketch-split-verified-m1.md) — Rust port at experiments/rust-sketch/, M1 done + split proven live (foundations+gateway+durable messaging+characters/inventory); QUIC player front + gateway-svc single front door landed 2026-07-08 (authenticated, allow-listed — closes Go's :9100 gap); accounts/admin-portal/audit are M2
+- [Rust backend: full port COMPLETE](rust-sketch-split-verified-m1.md) — Go port finished 2026-07-08 (fortress refactor + all modules + infra + tiered verify net); 11-process split-proof + monolith parity live; go-sketch archived as reference
 - [Don't descope transport for simplicity](dont-descope-transport-for-simplicity.md) — never cut gateway/durable-messaging/RPC-codegen to "minimum viable"; it produces per-module hacks + debt, port the full seam in milestone 1
 - [Refactor churn was Opus remediation](refactor-churn-was-opus-remediation.md) — big stranglers were cleanup after agent mistakes, not an iteration style; don't cite churn speed as a Go advantage
-- [DECIDED: migrate everything to Rust](decision-migrate-everything-to-rust.md) — 2026-07-08 the whole backend moves to Rust (supersedes Quarkus/Go flux); split-verified M1 sketch + bounded rule-4 cost + crate-per-module separation. Don't re-litigate or assert Go/Quarkus.
+- [DECIDED: migrate everything to Rust — DONE](decision-migrate-everything-to-rust.md) — decided AND completed 2026-07-08; Rust workspace at repo root is the only developed project. Don't re-litigate or assert Go/Quarkus.
 - [Local Postgres is the test DB](local-postgres-is-the-test-db.md) — integration tests target the local Postgres directly; NOT a Docker/Testcontainers fallback, don't frame it as one
 - [Local Postgres](reference_local_postgres.md) — role/db/DSN for GameBackend + superuser password (postgres/qwerty)
 - [Store-launch auth deferred to SDK](store-launch-auth-deferred-to-sdk.md) — backend stays a verifier; web=EAS(account id), native/store=Connect(PUID) needs a 2nd verifier later
