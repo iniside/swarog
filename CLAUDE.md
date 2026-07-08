@@ -93,10 +93,14 @@ module never knows the topology.
 3. In `init`: contribute ops to the `opsapi` slots, edge faces to `edge::EDGE_SLOT`
    (own glue), admin item to `adminapi::SLOT`; subscribe with `on_tx`. Emit with
    `emit_tx` inside your store tx.
-4. New `cmd/<name>-svc` (copy an existing svc main: module + messaging + gateway if
-   it serves HTTP ops + accounts stub if it hosts a gateway), register the module in
-   `cmd/server`, add stubs where consumers live, extend `split-proof.sh`/`.ps1`
-   (new process + a named assertion) and the `fortress` stage port list.
+4. New `cmd/<name>-svc` (copy an existing domain svc main: module + messaging + a
+   `remote::Stub` per capability it consumes). It hosts NO gateway (FrontDoor) — the
+   single public front door lives only in `cmd/gateway-svc` + `cmd/server` (monolith);
+   the svc serves its ops ONLY over the internal mTLS edge and gateway-svc dispatches to
+   it Remote (so it needs no accounts stub for a verifier). Register the module in
+   `cmd/server`, add stubs where consumers live, extend `split-proof.sh`/`.ps1` (new
+   process + a named assertion, HTTP ops asserted THROUGH gateway-svc) and the `fortress`
+   stage port list.
 5. Wire `EVENTS_SUBSCRIBERS` for any topic it produces/consumes across processes;
    give the svc a distinct `MESSAGING_ORIGIN`.
 
@@ -134,7 +138,10 @@ module never knows the topology.
 - **gateway** — the front-door module: HTTP ops routing (Local vs Remote purely by
   slot presence), player-QUIC plane (bearer-in-envelope, exact-method allow-list),
   HTTP passthrough (`/admin`, `/accounts/epic` → env-addressed peers), always-on
-  rate limit in gateway-svc (20 rps/burst 40).
+  rate limit in gateway-svc (20 rps/burst 40). The FrontDoor is hosted ONLY by the front
+  processes (`cmd/gateway-svc`, the monolith `cmd/server`); a domain svc NEVER hosts it —
+  it serves ops over the internal mTLS edge and gateway-svc dispatches Remote. Enforced by
+  `archcheck` (only gateway-svc + server may depend on the `gateway` crate).
 
 ## Commands
 

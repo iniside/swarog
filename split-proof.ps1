@@ -441,9 +441,11 @@ try {
     Write-Host ''
     Write-Host '================ SPLIT PROOF ================'
 
-    # --- 1. CREATE on A ---
-    Write-Host "[1] POST http://127.0.0.1:$APort/characters (Bearer `$Token)"
-    $c = Invoke-Curl @('-X', 'POST', "http://127.0.0.1:$APort/characters",
+    # --- 1. CREATE through G (front-door HTTP op -> Remote -> characters-svc) ---
+    # characters-svc no longer hosts a FrontDoor, so create is fronted by gateway-svc
+    # (:8082) which dispatches characters.create Remote over the mTLS edge to A.
+    Write-Host "[1] POST http://127.0.0.1:$GPort/characters (through G -> A, Bearer `$Token)"
+    $c = Invoke-Curl @('-X', 'POST', "http://127.0.0.1:$GPort/characters",
         '-H', "Authorization: Bearer $Token", '-H', 'Content-Type: application/json',
         '-d', '{"name":"Aria","class":"mage"}')
     Write-Host "    -> HTTP $($c.Code)  $($c.Body)"
@@ -452,10 +454,10 @@ try {
     if ($c.Code -eq '201' -and $cid) { Pass "create -> 201, id=$cid" } else { Fail 'create expected 201 with id' }
 
     # --- 2. ASYNC event A->B + SYNC authz B->A over QUIC ---
-    Write-Host "[2] poll GET http://127.0.0.1:$BPort/inventory/character/$cid until starter appears"
+    Write-Host "[2] poll GET http://127.0.0.1:$GPort/inventory/character/$cid until starter appears (through G -> B)"
     $starterOk = $false
     for ($i = 1; $i -le 30; $i++) {
-        $r = Invoke-Curl @("http://127.0.0.1:$BPort/inventory/character/$cid", '-H', "Authorization: Bearer $Token")
+        $r = Invoke-Curl @("http://127.0.0.1:$GPort/inventory/character/$cid", '-H', "Authorization: Bearer $Token")
         if ($r.Code -eq '200' -and $r.Body -match 'starter_sword') {
             Write-Host "    attempt $i -> HTTP 200 $($r.Body)"
             Pass 'starter_sword materialized in B (async event A->B) AND 200 proves owner_of over QUIC/mTLS B->A'
@@ -466,14 +468,14 @@ try {
     if (-not $starterOk) { Fail 'starter never appeared in B (async cross-process grant / QUIC authz)' }
 
     # --- 3. NEGATIVE authz ---
-    Write-Host "[3] GET /inventory/character/$cid as a DIFFERENT player (Bearer `$OtherToken)"
-    $n = Invoke-Curl @("http://127.0.0.1:$BPort/inventory/character/$cid", '-H', "Authorization: Bearer $OtherToken")
+    Write-Host "[3] GET /inventory/character/$cid through G as a DIFFERENT player (Bearer `$OtherToken)"
+    $n = Invoke-Curl @("http://127.0.0.1:$GPort/inventory/character/$cid", '-H', "Authorization: Bearer $OtherToken")
     Write-Host "    -> HTTP $($n.Code)  $($n.Body)"
     if ($n.Code -eq '403' -or $n.Code -eq '404') { Pass "other player -> $($n.Code) (owner_of over QUIC gates)" } else { Fail "negative authz expected 403/404, got $($n.Code)" }
 
-    # --- 4. DELETE on A ---
-    Write-Host "[4] DELETE http://127.0.0.1:$APort/characters/$cid (Bearer `$Token)"
-    $d = Invoke-Curl @('-X', 'DELETE', "http://127.0.0.1:$APort/characters/$cid", '-H', "Authorization: Bearer $Token")
+    # --- 4. DELETE through G -> A ---
+    Write-Host "[4] DELETE http://127.0.0.1:$GPort/characters/$cid (through G -> A, Bearer `$Token)"
+    $d = Invoke-Curl @('-X', 'DELETE', "http://127.0.0.1:$GPort/characters/$cid", '-H', "Authorization: Bearer $Token")
     Write-Host "    -> HTTP $($d.Code)"
     if ($d.Code -eq '204') { Pass 'delete -> 204' } else { Fail "delete expected 204, got $($d.Code)" }
 
@@ -493,13 +495,13 @@ try {
         if (-not $wiped) { Fail 'holdings never wiped in B (wipe on_tx handler did not run)' }
     } else {
         Note 'psql not found -- falling back to HTTP 404 as a WEAKER wipe signal'
-        $w = Invoke-Curl @("http://127.0.0.1:$BPort/inventory/character/$cid", '-H', "Authorization: Bearer $Token")
+        $w = Invoke-Curl @("http://127.0.0.1:$GPort/inventory/character/$cid", '-H', "Authorization: Bearer $Token")
         Write-Host "    -> HTTP $($w.Code)"
         if ($w.Code -eq '404') { Pass 'post-delete GET -> 404 (character gone; DB wipe unverified, psql missing)' } else { Fail "post-delete expected 404, got $($w.Code)" }
     }
 
-    Write-Host "[5b] post-delete GET /inventory/character/$cid (Bearer `$Token)"
-    $w2 = Invoke-Curl @("http://127.0.0.1:$BPort/inventory/character/$cid", '-H', "Authorization: Bearer $Token")
+    Write-Host "[5b] post-delete GET /inventory/character/$cid through G (Bearer `$Token)"
+    $w2 = Invoke-Curl @("http://127.0.0.1:$GPort/inventory/character/$cid", '-H', "Authorization: Bearer $Token")
     Write-Host "    -> HTTP $($w2.Code)  $($w2.Body)"
 
     Write-Host ''
@@ -512,15 +514,15 @@ try {
         Note 'psql not found -- SKIPPING the config live-reload assertion'
     } else {
         # [C1] baseline: B booted with the default starter (no config row) -> starter_sword.
-        Write-Host '[C1] baseline: create a character -> starter should be the DEFAULT starter_sword'
-        $bc = Invoke-Curl @('-X', 'POST', "http://127.0.0.1:$APort/characters",
+        Write-Host '[C1] baseline: create a character through G -> starter should be the DEFAULT starter_sword'
+        $bc = Invoke-Curl @('-X', 'POST', "http://127.0.0.1:$GPort/characters",
             '-H', "Authorization: Bearer $Token", '-H', 'Content-Type: application/json',
             '-d', '{"name":"Baseline","class":"mage"}')
         $bcid = $null
         if ($bc.Body -match '"id":"([^"]+)"') { $bcid = $Matches[1] }
         $baseOk = $false
         for ($i = 1; $i -le 30; $i++) {
-            $r = Invoke-Curl @("http://127.0.0.1:$BPort/inventory/character/$bcid", '-H', "Authorization: Bearer $Token")
+            $r = Invoke-Curl @("http://127.0.0.1:$GPort/inventory/character/$bcid", '-H', "Authorization: Bearer $Token")
             if ($r.Body -match 'starter_sword') { $baseOk = $true; break }
             if ($r.Body -match 'health_potion') { break }
             Start-Sleep -Milliseconds 500
@@ -537,14 +539,14 @@ try {
         Write-Host '[C3] create fresh characters until one is granted health_potion (live reload C->B)'
         $reloadOk = $false
         for ($i = 1; $i -le 30; $i++) {
-            $nc = Invoke-Curl @('-X', 'POST', "http://127.0.0.1:$APort/characters",
+            $nc = Invoke-Curl @('-X', 'POST', "http://127.0.0.1:$GPort/characters",
                 '-H', "Authorization: Bearer $Token", '-H', 'Content-Type: application/json',
                 '-d', '{"name":"Reloaded","class":"mage"}')
             $ncid = $null
             if ($nc.Body -match '"id":"([^"]+)"') { $ncid = $Matches[1] }
             $r = $null
             for ($j = 1; $j -le 10; $j++) {
-                $r = Invoke-Curl @("http://127.0.0.1:$BPort/inventory/character/$ncid", '-H', "Authorization: Bearer $Token")
+                $r = Invoke-Curl @("http://127.0.0.1:$GPort/inventory/character/$ncid", '-H', "Authorization: Bearer $Token")
                 if ($r.Body -match 'starter_sword|health_potion') { break }
                 Start-Sleep -Milliseconds 300
             }
@@ -567,8 +569,8 @@ try {
     # admin page over the mTLS QUIC edge. The characters page must render a character
     # CREATED on characters-svc -- proving the data crossed TWO process hops.
     $aproof = "AdminProof-$RunSuffix"
-    Write-Host "[AD0] create a character named $aproof on A (for the admin table assertion)"
-    $acr = Invoke-Curl @('-X', 'POST', "http://127.0.0.1:$APort/characters",
+    Write-Host "[AD0] create a character named $aproof through G -> A (for the admin table assertion)"
+    $acr = Invoke-Curl @('-X', 'POST', "http://127.0.0.1:$GPort/characters",
         '-H', "Authorization: Bearer $Token", '-H', 'Content-Type: application/json',
         '-d', "{`"name`":`"$aproof`",`"class`":`"ranger`"}")
     if ($acr.Body -match '"id":"([^"]*)"') { Pass "admin-proof character created (id=$($Matches[1]))" } else { Fail 'admin-proof character not created' }
@@ -787,9 +789,15 @@ try {
     Write-Host ''
     Write-Host '========= HTTP METRICS (Step 12: private Prometheus registry + /metrics) ========='
     # The Prometheus scrape end-to-end on the split: characters-svc (A) mounted the metrics
-    # middleware + GET /metrics (a module host), so after the /characters ops above ran through
-    # A its private registry holds http_requests_total series. gateway-svc (G) opts out
-    # (without_metrics, Go parity: the front door carries no prometheus), so /metrics is 404.
+    # middleware + GET /metrics (a module host). Under the single front door the /characters
+    # ops now route THROUGH gateway-svc over the mTLS QUIC edge, NOT A's HTTP port, so A's
+    # HTTP surface sees only infra (skip-recorded) + unmatched paths. We fire ONE recorded
+    # non-infra request directly at A (a 404, labeled path="unmatched") so its private
+    # registry has an http_requests_total child to render -- proving the domain-svc middleware
+    # + private registry + scrape all work. gateway-svc (G) opts out (without_metrics, Go
+    # parity: the front door carries no prometheus), so its /metrics is 404.
+    Write-Host '[MX0] fire one recorded non-infra request at characters-svc to populate its counter'
+    Invoke-Curl @("http://127.0.0.1:$APort/__metrics_probe") | Out-Null
     Write-Host "[MX1] GET http://127.0.0.1:$APort/metrics on characters-svc -> 200 + http_requests_total present"
     $mx1 = Invoke-Curl @("http://127.0.0.1:$APort/metrics")
     Write-Host "    -> HTTP $($mx1.Code)  (body $($mx1.Body.Length) chars)"

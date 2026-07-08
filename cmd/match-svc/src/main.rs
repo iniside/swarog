@@ -1,13 +1,18 @@
-//! `match-svc` — the match fortress process (Step 10). It hosts gateway + match +
-//! messaging and stands up one shared QUIC edge server; `match` contributes its
-//! `match.report` face to `edge::EDGE_SLOT` (topology-blind), and `app::run` installs it
-//! so gateway-svc can dispatch `POST /match/report` Remote to this process. match fills
+//! `match-svc` — the match fortress process (Step 10). It hosts match + messaging and
+//! stands up one shared QUIC edge server; `match` contributes its `match.report` face to
+//! `edge::EDGE_SLOT` (topology-blind), and `app::run` installs it so gateway-svc can
+//! dispatch `POST /match/report` Remote to this process. match fills
 //! its `rating` dependency with a `remote::Stub`: the stub `provide`s the edge-backed
 //! `MmrReader` client under the SAME registry key the local `rating` module would, so
 //! `match`'s `require::<dyn MmrReader>` resolves REMOTELY over mTLS to rating-svc — the
 //! registry SWAP, with match's code unchanged. The match outbox relay runs HERE (it
 //! drains match's own `match.finished` rows) and POSTs them to rating-svc / leaderboard-
 //! svc / audit-svc via EVENTS_SUBSCRIBERS. Mirrors `characters-svc`'s shape exactly.
+//!
+//! It hosts NO gateway (FrontDoor) module: the single public front door lives only in
+//! gateway-svc + the monolith, so match needs no accounts stub for a bearer verifier. It
+//! serves `match.report` ONLY over the internal mTLS edge; HTTP here is just the infra
+//! surface (`/healthz`, `/readyz`, `/metrics`, `/events`), no typed ops.
 
 use std::sync::{Arc, Mutex};
 
@@ -34,7 +39,6 @@ async fn main() -> anyhow::Result<()> {
     // tears down. The `rating` stub's `register` provides the remote MmrReader before
     // match's `init` requires it (two-phase Build).
     let mods: Vec<Box<dyn Module>> = vec![
-        Box::new(gateway::Gateway::new()),
         Box::new(match_module::MatchModule::new()),
         Box::new(messaging::Messaging::new()),
         // `rating` lives in rating-svc: this stub swaps in the edge-backed MmrReader so
@@ -43,12 +47,6 @@ async fn main() -> anyhow::Result<()> {
             "rating",
             &env_addr("RATING_EDGE_ADDR", "127.0.0.1:9007"),
             ratingrpc::remote_factories(),
-        )),
-        // Real session verification: the accounts stub fills the gateway's verifier.
-        Box::new(remote::Stub::new(
-            "accounts",
-            &env_addr("ACCOUNTS_EDGE_ADDR", "127.0.0.1:9003"),
-            accountsrpc::remote_factories(),
         )),
     ];
 

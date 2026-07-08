@@ -1,12 +1,16 @@
-//! `config-svc` — the config fortress process (Step 5). It hosts gateway + config +
-//! messaging and stands up one shared QUIC edge server; `config` contributes its
-//! wire-only `ConfigSnapshot` face to `edge::EDGE_SLOT` (topology-blind), and
-//! `app::run` installs it on this server so a peer's `CachedConfig` (inventory-svc)
-//! resolves `config.snapshot` over the mutually-authenticated edge. config's
-//! LISTEN/NOTIFY listener publishes `config.changed` on the DURABLE plane; this
-//! process's messaging relay drains its own outbox rows and POSTs them to the peers
-//! named in `EVENTS_SUBSCRIBERS` (the run scripts point `config.changed` at
-//! inventory-svc's `/events`).
+//! `config-svc` — the config fortress process (Step 5). It hosts config + messaging and
+//! stands up one shared QUIC edge server; `config` contributes its wire-only
+//! `ConfigSnapshot` face to `edge::EDGE_SLOT` (topology-blind), and `app::run` installs
+//! it on this server so a peer's `CachedConfig` (inventory-svc) resolves `config.snapshot`
+//! over the mutually-authenticated edge. config's LISTEN/NOTIFY listener publishes
+//! `config.changed` on the DURABLE plane; this process's messaging relay drains its own
+//! outbox rows and POSTs them to the peers named in `EVENTS_SUBSCRIBERS` (the run scripts
+//! point `config.changed` at inventory-svc's `/events`).
+//!
+//! It hosts NO gateway (FrontDoor) module: the single public front door lives only in
+//! gateway-svc + the monolith, so config needs no accounts stub for a bearer verifier.
+//! config serves `config.snapshot` ONLY over the internal mTLS edge; HTTP here is just
+//! the infra surface (`/healthz`, `/readyz`, `/metrics`, `/events`), no typed ops.
 //!
 //! MESSAGING_ORIGIN MUST be distinct per process (never the `"monolith"` default):
 //! the relay drains ONLY its own origin's outbox rows, and messaging's start-time
@@ -17,15 +21,6 @@ use std::sync::{Arc, Mutex};
 
 use lifecycle::Module;
 
-/// Reads `env_key`, falling back to `default` when unset or blank — a NUMERIC
-/// `host:port` (Rust's `SocketAddr` needs a literal IP, unlike Go's dialer).
-fn env_addr(env_key: &str, default: &str) -> String {
-    std::env::var(env_key)
-        .ok()
-        .filter(|v| !v.trim().is_empty())
-        .unwrap_or_else(|| default.to_string())
-}
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt().init();
@@ -35,21 +30,11 @@ async fn main() -> anyhow::Result<()> {
     // contributions onto this server after Build, then `listen`s it.
     let edge_server = Arc::new(Mutex::new(edge::Server::new()));
 
-    // gateway (front-door plumbing) + config (the provider) + messaging (the durable
-    // relay). messaging LAST for Stop ordering (reverse) — delivery halts before config
-    // tears down.
+    // config (the provider) + messaging (the durable relay). messaging LAST for Stop
+    // ordering (reverse) — delivery halts before config tears down.
     let mods: Vec<Box<dyn Module>> = vec![
-        Box::new(gateway::Gateway::new()),
         Box::new(config::Config::new()),
         Box::new(messaging::Messaging::new()),
-        // Real session verification (Step 6): the accounts stub's factory provides
-        // the `accounts.sessions` edge client this process's gateway resolves at
-        // init (lazy dial; no startup ordering dependency).
-        Box::new(remote::Stub::new(
-            "accounts",
-            &env_addr("ACCOUNTS_EDGE_ADDR", "127.0.0.1:9003"),
-            accountsrpc::remote_factories(),
-        )),
     ];
 
     // Serves config.snapshot on its own mTLS edge (EDGE_ADDR); no player front — config

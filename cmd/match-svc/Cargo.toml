@@ -5,13 +5,13 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
-# The match fortress process (Step 10). Hosts gateway + match + messaging and stands up
-# one shared QUIC edge server (EDGE_ADDR, :9006 in the run scripts). match SYNC-reads
-# `rating.mmr` via a `remote::Stub` over the mTLS edge to rating-svc, records the match +
-# `emit_tx`s `match.finished` in one tx, and its relay POSTs that event to rating-svc,
-# leaderboard-svc and audit-svc (multi-sink EVENTS_SUBSCRIBERS). The accounts stub fills
-# the gateway's verifier (match.report is AuthNone, but the gateway resolves the verifier
-# at init like every gateway-hosting process).
+# The match fortress process (Step 10). Hosts match + messaging and stands up one shared
+# QUIC edge server (EDGE_ADDR, :9006 in the run scripts). match SYNC-reads `rating.mmr`
+# via a `remote::Stub` over the mTLS edge to rating-svc, records the match + `emit_tx`s
+# `match.finished` in one tx, and its relay POSTs that event to rating-svc, leaderboard-svc
+# and audit-svc (multi-sink EVENTS_SUBSCRIBERS). It hosts NO gateway (FrontDoor) — the
+# single public front door lives only in gateway-svc + the monolith, so no accounts stub is
+# needed; gateway-svc dispatches match.report Remote to this process's edge.
 [[bin]]
 name = "match-svc"
 path = "src/main.rs"
@@ -20,12 +20,10 @@ path = "src/main.rs"
 app = { workspace = true }
 edge = { workspace = true }
 lifecycle = { workspace = true }
-gateway = { workspace = true }
 match_module = { workspace = true }
 messaging = { workspace = true }
 remote = { workspace = true }
 ratingrpc = { workspace = true }
-accountsrpc = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync"] }
 anyhow = { workspace = true }
 tracing = { workspace = true }

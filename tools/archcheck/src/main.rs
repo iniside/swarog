@@ -4,7 +4,11 @@
 //!   1. **no `modules/X → modules/Y`** — a domain module never imports another
 //!      module's impl crate (cross-module comms go through the bus or a contract),
 //!   2. **no `modules/X → <foreign>rpc`** — a module may import its OWN `<name>rpc`
-//!      glue (sanctioned, rule 5) but NEVER another domain's generated glue.
+//!      glue (sanctioned, rule 5) but NEVER another domain's generated glue,
+//!   3. **single front door** — only `cmd/gateway-svc` and `cmd/server` (the monolith)
+//!      may depend on the `gateway` crate (the FrontDoor). A domain `*-svc` never hosts
+//!      the front door; it serves its ops ONLY over the internal mTLS edge, and
+//!      gateway-svc dispatches to it Remote.
 //!
 //! "Own" is defined by path prefix: `modules/<name>/` owns `api/<name>/rpc/`. It also
 //! greps `modules/` for a resurrected `Option<… edge::Server>` — the topology-leak
@@ -17,6 +21,16 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::process::Command;
 
+#[cfg(test)]
+mod tests;
+
+/// The crate that IS the public front door (FrontDoor module). Only the two front
+/// processes below may depend on it.
+const GATEWAY_CRATE: &str = "gateway";
+/// The `cmd/<dir>` crates permitted to host the front door: the dedicated front process
+/// and the monolith. Every other `cmd/*-svc` serves ops only over the internal edge.
+const FRONT_DOOR_HOSTS: [&str; 2] = ["gateway-svc", "server"];
+
 /// A workspace package's classification, derived from its manifest path.
 #[derive(Debug, Clone)]
 enum Kind {
@@ -24,7 +38,9 @@ enum Kind {
     Module(String),
     /// `api/<name>/rpc/` — a domain's generated transport glue.
     Rpc(String),
-    /// Anything else (foundations, contract crates, cmd, tools).
+    /// `cmd/<name>/` — a composition-root binary (its dir name, e.g. `characters-svc`).
+    Cmd(String),
+    /// Anything else (foundations, contract crates, tools).
     Other,
 }
 
@@ -34,6 +50,10 @@ fn classify(manifest_path: &str) -> Kind {
     if let Some(name) = segment_after(&p, "/modules/") {
         // modules/<name>/Cargo.toml
         return Kind::Module(name);
+    }
+    if let Some(name) = segment_after(&p, "/cmd/") {
+        // cmd/<name>/Cargo.toml
+        return Kind::Cmd(name);
     }
     if let Some(rest) = p.split("/api/").nth(1) {
         // api/<name>/rpc/Cargo.toml  ->  rest = "<name>/rpc/Cargo.toml"
@@ -101,14 +121,41 @@ fn main() {
         }
     }
 
-    // --- 3: regression tripwire — Option<… edge::Server> under modules/ ------
+    // --- 3: single front door — only the front processes may host the gateway ---
+    // Every `cmd/*-svc` other than gateway-svc + the monolith must serve its ops ONLY
+    // over the internal mTLS edge, so it must NOT depend on the `gateway` crate. Hosting
+    // the FrontDoor in a domain svc duplicates the public front door and drags an accounts
+    // stub in solely to feed the bearer verifier (post-port hardening, 2026-07-08).
+    for pkg in packages {
+        let manifest = pkg["manifest_path"].as_str().unwrap_or_default();
+        let Kind::Cmd(cmd) = classify(manifest) else {
+            continue; // only cmd/* binaries are constrained here
+        };
+        if FRONT_DOOR_HOSTS.contains(&cmd.as_str()) {
+            continue; // gateway-svc + server (monolith) are the sanctioned front doors
+        }
+        for dep in pkg["dependencies"].as_array().into_iter().flatten() {
+            if dep["kind"].as_str() == Some("dev") {
+                continue; // a dev-dependency (tests) is not the runtime front door
+            }
+            if dep["name"].as_str() == Some(GATEWAY_CRATE) {
+                violations.push(format!(
+                    "cmd/{cmd} depends on `{GATEWAY_CRATE}` — the FrontDoor is hosted ONLY by \
+                     the front processes (cmd/gateway-svc, cmd/server); a domain svc never hosts \
+                     it (serve ops over the internal mTLS edge, gateway-svc dispatches Remote)"
+                ));
+            }
+        }
+    }
+
+    // --- 4: regression tripwire — Option<… edge::Server> under modules/ ------
     let modules_dir = workspace_root(meta.clone()).join("modules");
     for line in grep_option_edge_server(&modules_dir) {
         violations.push(line);
     }
 
     if violations.is_empty() {
-        println!("archcheck: OK — no module→module / module→foreign-rpc edges, no Option<edge::Server> in modules/");
+        println!("archcheck: OK — no module→module / module→foreign-rpc edges, single front door (only gateway-svc + server host `gateway`), no Option<edge::Server> in modules/");
         return;
     }
     eprintln!("archcheck: FAIL — {} violation(s):", violations.len());

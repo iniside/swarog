@@ -1,9 +1,15 @@
 //! `inventory-svc` — process B of the split (port of Go's `cmd/inventory-svc`). It
-//! hosts gateway + inventory + messaging and fills inventory's `characters` AND
-//! `config` dependencies with `remote::Stub`s: each stub `provide`s an edge-backed
-//! client under the SAME registry key the local impl would, so inventory's
+//! hosts inventory + messaging and fills inventory's `characters` AND `config`
+//! dependencies with `remote::Stub`s: each stub `provide`s an edge-backed client under
+//! the SAME registry key the local impl would, so inventory's
 //! `require::<dyn Ownership>` / `require::<dyn Config>` resolve REMOTELY — the registry
 //! SWAP, with inventory's code unchanged.
+//!
+//! It hosts NO gateway (FrontDoor) module: the single public front door lives only in
+//! gateway-svc + the monolith, so B needs no accounts stub for a bearer verifier. B
+//! serves `inventory.*` ONLY over the internal mTLS edge; gateway-svc dispatches Remote
+//! to it. HTTP here is just the infra surface (`/healthz`, `/readyz`, `/metrics`,
+//! `/events`), no typed ops.
 //!
 //! Since Step 5 config is its OWN fortress process (config-svc): the `config` stub's
 //! `configrpc` factory swaps in a snapshot-backed `CachedConfig` (boot-filled by one
@@ -44,7 +50,6 @@ async fn main() -> anyhow::Result<()> {
     // `config` stub also runs a boot-fill snapshot in `start` — config-svc must already
     // be up (the run scripts start it first).
     let mods: Vec<Box<dyn Module>> = vec![
-        Box::new(gateway::Gateway::new()),
         Box::new(inventory::Inventory::new()),
         Box::new(messaging::Messaging::new()),
         // `remote` is generic (Steps 4–5): this composition root injects each provider's
@@ -58,14 +63,6 @@ async fn main() -> anyhow::Result<()> {
             "config",
             &env_addr("CONFIG_EDGE_ADDR", "127.0.0.1:9002"),
             configrpc::remote_factories(),
-        )),
-        // Real session verification (Step 6): the accounts stub's factory provides
-        // the `accounts.sessions` edge client this process's gateway resolves at
-        // init (lazy dial; no startup ordering dependency).
-        Box::new(remote::Stub::new(
-            "accounts",
-            &env_addr("ACCOUNTS_EDGE_ADDR", "127.0.0.1:9003"),
-            accountsrpc::remote_factories(),
         )),
     ];
 

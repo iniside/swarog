@@ -479,9 +479,11 @@ fi
 echo ""
 echo "================ SPLIT PROOF ================"
 
-# --- 1. CREATE on A (gateway HTTP op -> characters) --------------------------
-echo "[1] POST http://localhost:$A_PORT/characters (Bearer \$TOKEN)"
-CREATE="$(curl -s -w $'\n%{http_code}' -X POST "http://localhost:$A_PORT/characters" \
+# --- 1. CREATE through G (front-door HTTP op -> Remote -> characters-svc) -----
+# characters-svc no longer hosts a FrontDoor, so the create op is fronted by gateway-svc
+# (:8082) which dispatches characters.create Remote over the mTLS edge to A.
+echo "[1] POST http://localhost:$G_PORT/characters (through G -> A, Bearer \$TOKEN)"
+CREATE="$(curl -s -w $'\n%{http_code}' -X POST "http://localhost:$G_PORT/characters" \
     -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
     -d '{"name":"Aria","class":"mage"}')"
 CBODY="$(echo "$CREATE" | sed '$d')"; CCODE="$(echo "$CREATE" | tail -1)"
@@ -490,10 +492,10 @@ CID="$(echo "$CBODY" | grep -o '"id":"[^"]*"' | head -1 | sed 's/"id":"//;s/"//'
 if [ "$CCODE" = "201" ] && [ -n "$CID" ]; then pass "create -> 201, id=$CID"; else fail "create expected 201 with id"; fi
 
 # --- 2. ASYNC event A->B + SYNC authz B->A over QUIC -------------------------
-echo "[2] poll GET http://localhost:$B_PORT/inventory/character/$CID until starter appears"
+echo "[2] poll GET http://localhost:$G_PORT/inventory/character/$CID until starter appears (through G -> B)"
 STARTER_OK=0
 for i in $(seq 1 30); do
-    R="$(curl -s -w $'\n%{http_code}' "http://localhost:$B_PORT/inventory/character/$CID" \
+    R="$(curl -s -w $'\n%{http_code}' "http://localhost:$G_PORT/inventory/character/$CID" \
         -H "Authorization: Bearer $TOKEN")"
     BODY="$(echo "$R" | sed '$d')"; CODE="$(echo "$R" | tail -1)"
     if [ "$CODE" = "200" ] && echo "$BODY" | grep -q 'starter_sword'; then
@@ -506,8 +508,8 @@ done
 [ "$STARTER_OK" = "1" ] || fail "starter never appeared in B (async cross-process grant / QUIC authz)"
 
 # --- 3. NEGATIVE authz: a different player is forbidden ----------------------
-echo "[3] GET /inventory/character/$CID as a DIFFERENT player (Bearer \$OTHER_TOKEN)"
-NEG="$(curl -s -w $'\n%{http_code}' "http://localhost:$B_PORT/inventory/character/$CID" \
+echo "[3] GET /inventory/character/$CID through G as a DIFFERENT player (Bearer \$OTHER_TOKEN)"
+NEG="$(curl -s -w $'\n%{http_code}' "http://localhost:$G_PORT/inventory/character/$CID" \
     -H "Authorization: Bearer $OTHER_TOKEN")"
 NBODY="$(echo "$NEG" | sed '$d')"; NCODE="$(echo "$NEG" | tail -1)"
 echo "    -> HTTP $NCODE  $NBODY"
@@ -518,8 +520,8 @@ else
 fi
 
 # --- 4. DELETE on A ----------------------------------------------------------
-echo "[4] DELETE http://localhost:$A_PORT/characters/$CID (Bearer \$TOKEN)"
-DEL="$(curl -s -w $'\n%{http_code}' -X DELETE "http://localhost:$A_PORT/characters/$CID" \
+echo "[4] DELETE http://localhost:$G_PORT/characters/$CID (through G -> A, Bearer \$TOKEN)"
+DEL="$(curl -s -w $'\n%{http_code}' -X DELETE "http://localhost:$G_PORT/characters/$CID" \
     -H "Authorization: Bearer $TOKEN")"
 DCODE="$(echo "$DEL" | tail -1)"
 echo "    -> HTTP $DCODE"
@@ -542,14 +544,14 @@ if [ -n "$PSQL" ]; then
     [ "$WIPED" = "1" ] || fail "holdings never wiped in B (wipe on_tx handler did not run)"
 else
     note "psql not found -- falling back to HTTP 404 as a WEAKER wipe signal"
-    W="$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:$B_PORT/inventory/character/$CID" -H "Authorization: Bearer $TOKEN")"
+    W="$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:$G_PORT/inventory/character/$CID" -H "Authorization: Bearer $TOKEN")"
     echo "    -> HTTP $W"
     if [ "$W" = "404" ]; then pass "post-delete GET -> 404 (character gone; DB wipe unverified, psql missing)"; else fail "post-delete expected 404, got $W"; fi
 fi
 
 # Also record the HTTP 404 (character gone via owner_of over QUIC) for the evidence doc.
-echo "[5b] post-delete GET /inventory/character/$CID (Bearer \$TOKEN)"
-W2="$(curl -s -w $'\n%{http_code}' "http://localhost:$B_PORT/inventory/character/$CID" -H "Authorization: Bearer $TOKEN")"
+echo "[5b] post-delete GET /inventory/character/$CID through G (Bearer \$TOKEN)"
+W2="$(curl -s -w $'\n%{http_code}' "http://localhost:$G_PORT/inventory/character/$CID" -H "Authorization: Bearer $TOKEN")"
 echo "    -> HTTP $(echo "$W2" | tail -1)  $(echo "$W2" | sed '$d')"
 
 echo ""
@@ -562,13 +564,13 @@ if [ -z "$PSQL" ]; then
     note "psql not found -- SKIPPING the config live-reload assertion"
 else
     # [C1] baseline: B booted with the default starter (no config row) -> starter_sword.
-    echo "[C1] baseline: create a character -> starter should be the DEFAULT starter_sword"
-    BCID="$(curl -s -X POST "http://localhost:$A_PORT/characters" \
+    echo "[C1] baseline: create a character through G -> starter should be the DEFAULT starter_sword"
+    BCID="$(curl -s -X POST "http://localhost:$G_PORT/characters" \
         -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
         -d '{"name":"Baseline","class":"mage"}' | grep -o '"id":"[^"]*"' | head -1 | sed 's/"id":"//;s/"//')"
     BASE_OK=0
     for i in $(seq 1 30); do
-        R="$(curl -s "http://localhost:$B_PORT/inventory/character/$BCID" -H "Authorization: Bearer $TOKEN")"
+        R="$(curl -s "http://localhost:$G_PORT/inventory/character/$BCID" -H "Authorization: Bearer $TOKEN")"
         if echo "$R" | grep -q 'starter_sword'; then BASE_OK=1; break; fi
         if echo "$R" | grep -q 'health_potion'; then break; fi
         sleep 0.5
@@ -590,11 +592,11 @@ else
     echo "[C3] create fresh characters until one is granted health_potion (live reload C->B)"
     RELOAD_OK=0
     for i in $(seq 1 30); do
-        NCID="$(curl -s -X POST "http://localhost:$A_PORT/characters" \
+        NCID="$(curl -s -X POST "http://localhost:$G_PORT/characters" \
             -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
             -d '{"name":"Reloaded","class":"mage"}' | grep -o '"id":"[^"]*"' | head -1 | sed 's/"id":"//;s/"//')"
         for j in $(seq 1 10); do
-            R="$(curl -s "http://localhost:$B_PORT/inventory/character/$NCID" -H "Authorization: Bearer $TOKEN")"
+            R="$(curl -s "http://localhost:$G_PORT/inventory/character/$NCID" -H "Authorization: Bearer $TOKEN")"
             echo "$R" | grep -qE 'starter_sword|health_potion' && break
             sleep 0.3
         done
@@ -622,8 +624,8 @@ echo "========= ADMIN PORTAL (gateway-svc passthrough -> admin-svc -> providers 
 # character CREATED on characters-svc -- proving the data crossed TWO process hops
 # (G's HTTP passthrough -> E, then E's admin.adminData -> A over QUIC).
 APROOF="AdminProof-$RUN_SUFFIX"
-echo "[AD0] create a character named $APROOF on A (for the admin table assertion)"
-ACID="$(curl -s -X POST "http://localhost:$A_PORT/characters" \
+echo "[AD0] create a character named $APROOF through G -> A (for the admin table assertion)"
+ACID="$(curl -s -X POST "http://localhost:$G_PORT/characters" \
     -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
     -d "{\"name\":\"$APROOF\",\"class\":\"ranger\"}" | grep -o '"id":"[^"]*"' | head -1 | sed 's/"id":"//;s/"//')"
 [ -n "$ACID" ] && pass "admin-proof character created (id=$ACID)" || fail "admin-proof character not created"
@@ -899,10 +901,16 @@ echo "============================================"
 
 echo ""
 echo "========= HTTP METRICS (Step 12: private Prometheus registry + /metrics) ========="
-# The Prometheus scrape end-to-end on the split: characters-svc (A) mounted metrics.Middleware
-# + GET /metrics (Config::from_env, a module host), so after ALL the /characters ops above
-# ran through A its private registry holds http_requests_total series. gateway-svc (G) opts
-# out (without_metrics, Go parity: the front door carries no prometheus), so /metrics is 404.
+# The Prometheus scrape end-to-end on the split: characters-svc (A) mounted the metrics
+# middleware + GET /metrics (Config::from_env, a module host). Under the single front door
+# the /characters ops now route THROUGH gateway-svc over the mTLS QUIC edge, NOT A's HTTP
+# port, so A's HTTP surface sees only infra (skip-recorded) + unmatched paths. We fire ONE
+# recorded non-infra request directly at A (a 404, labeled path="unmatched") so its private
+# registry has an http_requests_total child to render -- proving the domain-svc middleware +
+# private registry + scrape all work. gateway-svc (G) opts out (without_metrics, Go parity:
+# the front door carries no prometheus), so its /metrics is 404.
+echo "[MX0] fire one recorded non-infra request at characters-svc to populate its counter"
+curl -s -o /dev/null "http://localhost:$A_PORT/__metrics_probe" || true
 echo "[MX1] GET http://localhost:$A_PORT/metrics on characters-svc -> 200 + http_requests_total present"
 MX1="$(curl -s -w $'\n%{http_code}' "http://localhost:$A_PORT/metrics")"
 MX1BODY="$(echo "$MX1" | sed '$d')"; MX1CODE="$(echo "$MX1" | tail -1)"

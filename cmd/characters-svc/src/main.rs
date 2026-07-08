@@ -1,23 +1,19 @@
 //! `characters-svc` — process A of the split (port of Go's `cmd/characters-svc`). It
-//! hosts ONLY gateway + characters + messaging and stands up one shared QUIC edge
-//! server; `characters` contributes its `characters.ownerOf` + player-op faces to
-//! `edge::EDGE_SLOT` (topology-blind), and `app::run` installs them on this server
-//! so a peer's inventory can resolve ownership over the mutually-authenticated edge.
-//! The characters outbox relay runs in THIS process because it drains characters'
-//! own outbox rows.
+//! hosts ONLY characters + messaging and stands up one shared QUIC edge server;
+//! `characters` contributes its `characters.ownerOf` + player-op faces to
+//! `edge::EDGE_SLOT` (topology-blind), and `app::run` installs them on this server so a
+//! peer's inventory can resolve ownership over the mutually-authenticated edge. The
+//! characters outbox relay runs in THIS process because it drains characters' own outbox
+//! rows.
+//!
+//! It hosts NO gateway (FrontDoor) module: the single public front door lives only in
+//! gateway-svc and the monolith (`cmd/server`). A serves its ops ONLY over the internal
+//! mTLS edge — gateway-svc dispatches `characters.*` Remote to it. HTTP here is just the
+//! infra surface (`/healthz`, `/readyz`, `/metrics`, `/events`), no typed ops.
 
 use std::sync::{Arc, Mutex};
 
 use lifecycle::Module;
-
-/// Reads `env_key`, falling back to `default` when unset or blank — a NUMERIC
-/// `host:port` (Rust's `SocketAddr` needs a literal IP, unlike Go's dialer).
-fn env_addr(env_key: &str, default: &str) -> String {
-    std::env::var(env_key)
-        .ok()
-        .filter(|v| !v.trim().is_empty())
-        .unwrap_or_else(|| default.to_string())
-}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -31,21 +27,11 @@ async fn main() -> anyhow::Result<()> {
     let edge_server = Arc::new(Mutex::new(edge::Server::new()));
 
     // messaging LAST for Stop ordering (reverse) — the relay halts delivery before
-    // characters tears down. gateway only contributes the HTTP front-handler and has
-    // no Stop, so its position is immaterial.
+    // characters tears down. No accounts stub: without a gateway there is no bearer
+    // verifier to feed, so this process never dials accounts-svc.
     let mods: Vec<Box<dyn Module>> = vec![
-        Box::new(gateway::Gateway::new()),
         Box::new(characters::Characters::new()),
         Box::new(messaging::Messaging::new()),
-        // Real session verification (Step 6): the accounts stub's factory provides
-        // the `accounts.sessions` edge client this process's gateway resolves at
-        // init — bearer tokens on A's own HTTP front verify against accounts-svc
-        // over mTLS (lazy dial; no startup ordering dependency).
-        Box::new(remote::Stub::new(
-            "accounts",
-            &env_addr("ACCOUNTS_EDGE_ADDR", "127.0.0.1:9003"),
-            accountsrpc::remote_factories(),
-        )),
     ];
 
     // No player front: A serves peers over the internal mutual-TLS edge, not players.

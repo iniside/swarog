@@ -5,10 +5,11 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
-# Process A of the split: hosts ONLY gateway + characters + messaging, and stands up a
-# single shared QUIC edge server so a peer's inventory can resolve `characters.ownerOf`
-# over the mutually-authenticated edge. It imports neither inventory nor config — so
-# the linker drops every package this binary never names.
+# Process A of the split: hosts ONLY characters + messaging, and stands up a single
+# shared QUIC edge server so a peer's inventory can resolve `characters.ownerOf` over the
+# mutually-authenticated edge. It hosts NO gateway (FrontDoor) — the single public front
+# door lives only in gateway-svc + the monolith, so no accounts stub is needed either. It
+# imports neither inventory nor config — so the linker drops every package it never names.
 [[bin]]
 name = "characters-svc"
 path = "src/main.rs"
@@ -17,11 +18,8 @@ path = "src/main.rs"
 app = { workspace = true }
 edge = { workspace = true }
 lifecycle = { workspace = true }
-gateway = { workspace = true }
 characters = { workspace = true }
 messaging = { workspace = true }
-remote = { workspace = true }
-accountsrpc = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync"] }
 anyhow = { workspace = true }
 tracing = { workspace = true }

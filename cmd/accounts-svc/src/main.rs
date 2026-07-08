@@ -1,15 +1,18 @@
-//! `accounts-svc` — the accounts fortress process (Step 6). It hosts gateway +
-//! accounts + messaging and stands up one shared QUIC edge server (`EDGE_ADDR`,
-//! `:9003` in the run scripts); `accounts` contributes its Sessions + Auth faces to
-//! `edge::EDGE_SLOT` (topology-blind), and `app::run` installs them on this server
-//! so every peer process's gateway verifies bearer tokens (`accounts.verifySession`)
-//! and fronts the auth ops over the mutually-authenticated edge.
+//! `accounts-svc` — the accounts fortress process (Step 6). It hosts accounts +
+//! messaging and stands up one shared QUIC edge server (`EDGE_ADDR`, `:9003` in the run
+//! scripts); `accounts` contributes its Sessions + Auth faces to `edge::EDGE_SLOT`
+//! (topology-blind), and `app::run` installs them on this server so every front process's
+//! gateway verifies bearer tokens (`accounts.verifySession`) and fronts the auth ops over
+//! the mutually-authenticated edge.
 //!
-//! The gateway here resolves the LOCAL `accounts.sessions` capability (the accounts
-//! module provides it in phase-1 register), so this process fronts
-//! `/accounts/register|login|login/epic|me` on its own HTTP port with REAL session
-//! auth. MESSAGING_ORIGIN must be distinct per process (never the `"monolith"`
-//! default); `player.registered` rides this process's outbox.
+//! It hosts NO gateway (FrontDoor) module: the single public front door lives only in
+//! gateway-svc + the monolith. The typed auth ops (`/accounts/register|login|me`) are
+//! fronted by gateway-svc, which dispatches them Remote to this process's edge. What this
+//! process DOES serve on its own HTTP port are the Epic web-OAuth browser routes
+//! (`POST /accounts/epic/start`, `GET /accounts/epic/callback`) — the accounts module
+//! mounts those via `ctx.mount`, independent of any gateway — plus the infra surface
+//! (`/healthz`, `/readyz`, `/metrics`, `/events`). MESSAGING_ORIGIN must be distinct per
+//! process (never the `"monolith"` default); `player.registered` rides this outbox.
 
 use std::sync::{Arc, Mutex};
 
@@ -27,12 +30,11 @@ async fn main() -> anyhow::Result<()> {
     // messaging LAST for Stop ordering (reverse) — delivery halts before accounts
     // tears down.
     let mods: Vec<Box<dyn Module>> = vec![
-        Box::new(gateway::Gateway::new()),
         Box::new(accounts::Accounts::new()),
         Box::new(messaging::Messaging::new()),
     ];
 
     // Serves accounts.* on its own mTLS edge (EDGE_ADDR); no player front — accounts
-    // is fronted by peers' gateways (HTTP/QUIC), and by its own HTTP port.
+    // is fronted by front processes' gateways (HTTP/QUIC), plus its own Epic OAuth routes.
     app::run(app::Config::from_env(), mods, Some(edge_server), None).await
 }
