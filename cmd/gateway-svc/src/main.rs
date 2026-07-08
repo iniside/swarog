@@ -85,8 +85,16 @@ async fn main() -> anyhow::Result<()> {
     // `without_metrics`: the front door carries no Prometheus scrape (Go parity — the
     // gateway binary was the one process that never imported the metrics package), so
     // `GET /metrics` is a 404 here while every module-hosting peer serves it.
+    // `with_rate_limit_default(20.0, 40)`: the front door ALWAYS rate limits (Go's
+    // `cmd/gateway-svc` values), unlike a module host where it is opt-in. `RATE_LIMIT_RPS`
+    // / `RATE_LIMIT_BURST` / `TRUSTED_PROXY_CIDRS` env still override. The limiter fronts
+    // the HTTP plane (ops + `/admin`+`/accounts/epic` passthrough alike); the player QUIC
+    // front is not rate limited (HTTP-plane concern, Go parity).
     app::run(
-        app::Config::from_env().without_db().without_metrics(),
+        app::Config::from_env()
+            .without_db()
+            .without_metrics()
+            .with_rate_limit_default(20.0, 40),
         mods,
         None,
         Some(player),

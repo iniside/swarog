@@ -146,6 +146,55 @@ fn without_metrics_opts_out_and_keeps_the_rest() {
 }
 
 #[test]
+fn rate_limit_default_off_unless_set() {
+    // Module hosts leave it unset (opt-in); the gateway builder turns it always-on.
+    let cfg = Config::from_values(None, None, None, None);
+    assert_eq!(cfg.rate_limit_default, None);
+    let gw = cfg.without_db().without_metrics().with_rate_limit_default(20.0, 40);
+    assert_eq!(gw.rate_limit_default, Some((20.0, 40)));
+    // The other opt-outs survive alongside it.
+    assert_eq!(gw.database_url, None);
+    assert!(!gw.metrics_enabled);
+}
+
+// ============================================================================
+// /readyz fold-in (Step 13): baseline DB ping + contributed ReadyChecks, 503 with a
+// per-failed-check JSON body. Exercised without a DB by passing `None` for the pool.
+// ============================================================================
+
+/// Reads a Response's status + body into (StatusCode, String).
+async fn read_response(resp: axum::response::Response) -> (StatusCode, String) {
+    let status = resp.status();
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    (status, String::from_utf8(bytes.to_vec()).unwrap())
+}
+
+#[tokio::test]
+async fn readyz_all_green_is_200() {
+    // No pool (nothing to ping) + a passing check → 200 "ok".
+    let checks = vec![httpmw::ReadyCheck::new("cache", || async { Ok(()) })];
+    let (status, body) = read_response(readyz_response(None, checks).await).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, "ok");
+}
+
+#[tokio::test]
+async fn readyz_failure_is_503_with_named_json_body() {
+    let checks = vec![
+        httpmw::ReadyCheck::new("cache", || async { Ok(()) }),
+        httpmw::ReadyCheck::new("downstream", || async {
+            Err("peer unreachable".to_string())
+        }),
+    ];
+    let (status, body) = read_response(readyz_response(None, checks).await).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    // The body maps the FAILED check's name to its error; the passing one is absent.
+    assert_eq!(body, r#"{"downstream":"peer unreachable"}"#);
+}
+
+#[test]
 fn to_bind_addr_expands_colon_port() {
     assert_eq!(to_bind_addr(":9000"), "0.0.0.0:9000");
     assert_eq!(to_bind_addr("127.0.0.1:9000"), "127.0.0.1:9000");

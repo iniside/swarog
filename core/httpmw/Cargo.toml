@@ -1,0 +1,19 @@
+[package]
+name = "httpmw"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+axum = { workspace = true }
+ipnet = { workspace = true }
+# tokio for the background idle-bucket eviction loop (spawn + interval) — Go ran a
+# goroutine; we spawn a task. `rt` for spawn, `time` for the interval.
+tokio = { workspace = true, features = ["rt", "time"] }
+tracing = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+tower = { version = "0.5", features = ["util"] }

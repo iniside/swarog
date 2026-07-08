@@ -29,7 +29,7 @@ const DEFAULT_PLAYER_EDGE_ADDR: &str = ":9100";
 /// The process-level configuration [`run`] needs. Deliberately tiny: everything
 /// module-specific (event subscribers, peer edge addrs, admin URLs, …) is read by
 /// the module that owns it, not here.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Config {
     /// Postgres DSN (`DATABASE_URL`), or `None` for a persistence-free process (e.g.
     /// the pure-transport `gateway-svc`, which hosts no schema). [`Config::from_env`]
@@ -50,6 +50,15 @@ pub struct Config {
     /// deliberately INDEPENDENT of `database_url` — a DB-less-but-module-hosting process
     /// like `admin-svc` still serves metrics; only the front door is exempt.
     pub metrics_enabled: bool,
+    /// The DEFAULT per-IP rate limit `(rps, burst)` applied when `RATE_LIMIT_RPS` is
+    /// unset. `None` (the [`Config::from_env`] default) means **opt-in/off** — a
+    /// module-hosting process (the monolith, each `*-svc`) runs behind the gateway, so
+    /// limiting there would double-count and collapse every client into the gateway's
+    /// single bucket; it stays off unless `RATE_LIMIT_RPS` is explicitly set. The
+    /// gateway front door sets `Some((20.0, 40))` via [`Config::with_rate_limit_default`]
+    /// so it is ALWAYS on (Go's `cmd/gateway-svc` values). Either way `RATE_LIMIT_RPS`
+    /// and `RATE_LIMIT_BURST` env override the effective values.
+    pub rate_limit_default: Option<(f64, u32)>,
 }
 
 impl Config {
@@ -85,6 +94,17 @@ impl Config {
         }
     }
 
+    /// Turns per-IP rate limiting ALWAYS on with the given `(rps, burst)` default — the
+    /// gateway front door uses `20.0, 40` (Go's `cmd/gateway-svc`). Module-hosting
+    /// processes leave this unset (opt-in via `RATE_LIMIT_RPS`); `RATE_LIMIT_RPS` /
+    /// `RATE_LIMIT_BURST` env still override the effective values.
+    pub fn with_rate_limit_default(self, rps: f64, burst: u32) -> Config {
+        Config {
+            rate_limit_default: Some((rps, burst)),
+            ..self
+        }
+    }
+
     /// The pure core of [`Config::from_env`] — env values in, config out. Split out so
     /// the default/override logic is unit-testable without mutating process-global env.
     fn from_values(
@@ -111,6 +131,7 @@ impl Config {
             edge_addr,
             player_edge_addr,
             metrics_enabled: true,
+            rate_limit_default: None,
         }
     }
 }
@@ -301,7 +322,12 @@ pub async fn run(
     //    load balancer sends traffic); a DB-less process has nothing to ping, so it
     //    answers a plain 200. Modules must not themselves mount these two routes (axum
     //    `merge`/`route` panics on a duplicate, exactly like Go's ServeMux).
+    // `/readyz` folds in the baseline DB ping (when a pool exists) PLUS every
+    // `httpmw::ReadyCheck` a module contributed to `READINESS_SLOT` — read lazily, per
+    // request, so by request time every module's `init` (where checks are contributed)
+    // has run. Any failure → 503 with a per-failed-check JSON body (Go's readyzHandler).
     let ready_pool = pool.clone();
+    let ready_ctx = ctx.clone();
     let router = ctx
         .take_router()
         .route("/healthz", get(|| async { "ok" }))
@@ -309,17 +335,11 @@ pub async fn run(
             "/readyz",
             get(move || {
                 let pool = ready_pool.clone();
+                let ctx = ready_ctx.clone();
                 async move {
-                    let Some(pool) = pool else {
-                        return (StatusCode::OK, "ok");
-                    };
-                    match sqlx::query("SELECT 1").execute(&pool).await {
-                        Ok(_) => (StatusCode::OK, "ok"),
-                        Err(err) => {
-                            tracing::warn!(%err, "readyz db check failed");
-                            (StatusCode::SERVICE_UNAVAILABLE, "db unavailable")
-                        }
-                    }
+                    let checks =
+                        ctx.contributions::<httpmw::ReadyCheck>(httpmw::READINESS_SLOT);
+                    readyz_response(pool.as_ref(), checks).await
                 }
             }),
         );
@@ -330,6 +350,31 @@ pub async fn run(
     // (`Config::without_metrics`) — the `gateway-svc` front door, Go parity. The layer
     // labels each request by its MATCHED route pattern (cardinality guard) and exempts the
     // infra endpoints from recording (see `core/metrics`).
+    // Rate limiting (Step 13): OPT-IN for module hosts (`RATE_LIMIT_RPS` default 0 = off —
+    // a split peer runs BEHIND the gateway, so limiting here would double-count and
+    // collapse every client into the gateway's single bucket), ALWAYS on for the gateway
+    // front door (`Config::with_rate_limit_default(20, 40)`). Layered UNDER the metrics
+    // layer below so a 429 the limiter issues is still counted (Go's
+    // `metrics(ratelimit(mux))` — the last `.layer` added is the outermost). Skips
+    // `/healthz|/readyz|/metrics` (`httpmw::skip_infra`); keys per resolved client IP
+    // (trust-aware XFF walk over `TRUSTED_PROXY_CIDRS`). The QUIC planes are NOT wrapped —
+    // rate limiting is an HTTP-plane concern (Go parity).
+    let (default_rps, default_burst) = cfg.rate_limit_default.unwrap_or((0.0, 40));
+    let rps = env_f64("RATE_LIMIT_RPS").unwrap_or(default_rps);
+    let burst = env_u32("RATE_LIMIT_BURST").unwrap_or(default_burst);
+    let router = if rps > 0.0 {
+        let trusted =
+            httpmw::parse_cidrs(&std::env::var("TRUSTED_PROXY_CIDRS").unwrap_or_default())
+                .map_err(|e| anyhow::anyhow!("parse TRUSTED_PROXY_CIDRS: {e}"))?;
+        let limiter = httpmw::IpLimiter::new(rps, burst);
+        limiter.spawn_eviction();
+        tracing::info!(rps, burst, trusted_cidrs = trusted.len(), "http rate limiting enabled");
+        httpmw::mount(router, limiter, Arc::new(trusted))
+    } else {
+        tracing::info!("http rate limiting disabled (RATE_LIMIT_RPS<=0; expected behind the gateway)");
+        router
+    };
+
     let router = if cfg.metrics_enabled {
         metrics::mount(router)
     } else {
@@ -368,6 +413,57 @@ pub async fn run(
     app.stop().await;
     tracing::info!("bye");
     Ok(())
+}
+
+/// Builds the `/readyz` response: the baseline DB ping (when a pool exists) plus every
+/// contributed [`httpmw::ReadyCheck`]. All green → `200 ok`; any failure → `503` with a
+/// JSON body mapping each FAILED check's name to its error string (Go's `readyzHandler`
+/// shape, refined to named checks instead of `readiness[i]` indices). Kept as a free
+/// function so it is unit-testable without a live DB (pass `None` + failing checks).
+async fn readyz_response(
+    pool: Option<&PgPool>,
+    checks: Vec<httpmw::ReadyCheck>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let mut failures: std::collections::BTreeMap<String, String> =
+        std::collections::BTreeMap::new();
+    if let Some(pool) = pool {
+        if let Err(err) = sqlx::query("SELECT 1").execute(pool).await {
+            tracing::warn!(%err, "readyz db check failed");
+            failures.insert("db".to_string(), err.to_string());
+        }
+    }
+    for check in checks {
+        if let Err(err) = check.run().await {
+            failures.insert(check.name().to_string(), err);
+        }
+    }
+    if failures.is_empty() {
+        (StatusCode::OK, "ok").into_response()
+    } else {
+        (StatusCode::SERVICE_UNAVAILABLE, axum::Json(failures)).into_response()
+    }
+}
+
+/// Reads `key` as an `f64`, or `None` when unset/blank/unparseable — the caller supplies
+/// the default (Go's `envFloat` shape, split so the default is explicit at each site).
+fn env_f64(key: &str) -> Option<f64> {
+    let v = std::env::var(key).ok()?;
+    let v = v.trim();
+    if v.is_empty() {
+        return None;
+    }
+    v.parse().ok()
+}
+
+/// Reads `key` as a `u32`, or `None` when unset/blank/unparseable (Go's `envInt`).
+fn env_u32(key: &str) -> Option<u32> {
+    let v = std::env::var(key).ok()?;
+    let v = v.trim();
+    if v.is_empty() {
+        return None;
+    }
+    v.parse().ok()
 }
 
 /// Resolves once SIGINT (Ctrl-C) is received. Cross-platform (this repo runs on

@@ -18,6 +18,10 @@ members = [
     # Cross-cutting HTTP infra (Go's metrics/): a PRIVATE Prometheus registry + the
     # /metrics scrape, mounted by core/app in every module-hosting process (Step 12).
     "core/metrics",
+    # Cross-cutting HTTP middleware (Go's httpmw/): per-IP token-bucket rate limiting,
+    # trusted-proxy-aware client-IP resolution, and the readiness contribution slot,
+    # wired by core/app + the gateway front door (Step 13).
+    "core/httpmw",
     # Tooling — codegen + the dev-CA minter (Go's tools/).
     "tools/rpc-macro",
     "tools/rpc-macro-tests",
@@ -115,6 +119,10 @@ rand = "0.8"
 base64 = "0.22"
 url = "2"
 
+# CIDR containment for the httpmw trusted-proxy client-IP walk (Step 13). A tiny,
+# ubiquitous crate; the security-critical XFF walk is ours, only bit-masking is ipnet's.
+ipnet = "2"
+
 # QUIC + mutual TLS stack for the edge transport. Pinned once here.
 quinn = "0.11"
 # TLS 1.3 only: the `tls12` feature is deliberately NOT enabled (mTLS point 5).
@@ -154,6 +162,7 @@ app = { path = "core/app" }
 messaging = { path = "core/messaging" }
 remote = { path = "core/remote" }
 metrics = { path = "core/metrics" }
+httpmw = { path = "core/httpmw" }
 
 # ---- Tooling (tools/): the #[rpc] codegen. ----
 rpc-macro = { path = "tools/rpc-macro" }

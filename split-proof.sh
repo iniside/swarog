@@ -924,6 +924,55 @@ fi
 
 echo "============================================"
 
+echo ""
+echo "========= RATE LIMITING (Step 13: gateway-svc always-on 20 rps / burst 40) ========="
+# The front door ALWAYS rate limits (Config::with_rate_limit_default(20,40)); no env
+# override here, so burst is 40. Hammer a cheap AuthNone op (GET /leaderboard) with 60
+# rapid requests from ONE IP (127.0.0.1, untrusted -> its own bucket): with burst 40 at
+# least one MUST come back 429 (the limiter short-circuits before dispatch). Then a pause
+# lets the bucket refill (20 rps) and a normal request succeeds again. /healthz is
+# SkipInfra: never throttled even under the same hammering.
+# Fire the 60 requests in PARALLEL (curl -Z) from one process: sequential curls spawn
+# slowly enough on Windows that the 20 rps refill outpaces the drain, so we hammer them
+# concurrently — the bucket (burst 40) is then provably exceeded and >=20 get 429.
+lb_urls=(); hz_urls=()
+for i in $(seq 1 60); do
+    lb_urls+=("http://localhost:$G_PORT/leaderboard")
+    hz_urls+=("http://localhost:$G_PORT/healthz")
+done
+
+echo "[RL1] 60 PARALLEL GET /leaderboard through G (:$G_PORT) -> expect >=1 HTTP 429 (burst 40)"
+RL_CODES="$(curl -Z --parallel-max 60 -s -o /dev/null -w '%{http_code}\n' "${lb_urls[@]}")"
+RL_429="$(echo "$RL_CODES" | grep -c '429')"
+echo "    -> $RL_429 of 60 responses were HTTP 429"
+if [ "$RL_429" -ge 1 ]; then
+    pass "gateway-svc rate limited a rapid burst (>=1 429 over 60 parallel requests, burst 40)"
+else
+    fail "gateway-svc never returned 429 over 60 parallel requests (rate limiting inactive?)"
+fi
+
+echo "[RL2] 60 PARALLEL GET /healthz through G -> expect ZERO 429 (SkipInfra)"
+HZ_CODES="$(curl -Z --parallel-max 60 -s -o /dev/null -w '%{http_code}\n' "${hz_urls[@]}")"
+RL_HZ="$(echo "$HZ_CODES" | grep -c '429')"
+echo "    -> $RL_HZ of 60 /healthz responses were HTTP 429"
+if [ "$RL_HZ" = "0" ]; then
+    pass "/healthz never rate limited under 60 rapid probes (SkipInfra holds)"
+else
+    fail "/healthz returned 429 $RL_HZ times (SkipInfra broken)"
+fi
+
+echo "[RL3] pause 2s for the bucket to refill, then GET /leaderboard -> 200"
+sleep 2
+RL_OK="$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:$G_PORT/leaderboard")"
+echo "    -> post-pause GET /leaderboard -> HTTP $RL_OK"
+if [ "$RL_OK" = "200" ]; then
+    pass "token bucket refilled after a pause -> GET /leaderboard 200 (limiter recovers)"
+else
+    fail "post-pause GET /leaderboard expected 200, got $RL_OK"
+fi
+
+echo "============================================"
+
 # ============================================================================
 # MONOLITH PARITY: the SAME player QUIC front, all ops dispatched Local.
 # Per the never-monolith-only-features rule both topologies must serve the feature.
