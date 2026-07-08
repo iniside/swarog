@@ -80,28 +80,41 @@ function Write-Pids {
 }
 
 # --- Build ------------------------------------------------------------------
+# Both modes build edgeca + playercli: the monolith ALSO fronts players over QUIC
+# (PLAYER_EDGE_ADDR), so it needs the shared dev CA (edgeca) and a client (playercli).
 if ($Mode -eq 'monolith') {
-    Write-Host 'Building server (monolith) ...'
-    cargo build -p server
+    Write-Host 'Building server (monolith) + edgeca + playercli ...'
+    cargo build -p server -p edgeca -p playercli
 } else {
-    Write-Host 'Building edgeca + characters-svc + inventory-svc ...'
-    cargo build -p edgeca -p characters-svc -p inventory-svc
+    Write-Host 'Building edgeca + characters-svc + inventory-svc + gateway-svc + playercli ...'
+    cargo build -p edgeca -p characters-svc -p inventory-svc -p gateway-svc -p playercli
 }
 if ($LASTEXITCODE -ne 0) { throw 'cargo build failed' }
 Write-Host 'Build OK.'
 
 # --- Monolith ---------------------------------------------------------------
 if ($Mode -eq 'monolith') {
+    # The monolith ALSO serves the QUIC player front (PLAYER_EDGE_ADDR=:9100, all ops
+    # Local) -- per never-monolith-only-features both topologies serve the feature. It
+    # needs the shared dev CA to derive the player-front server cert, so mint one here.
+    $CaCert = Join-Path $RunDir 'edge-ca.crt'
+    $CaKey = Join-Path $RunDir 'edge-ca.key'
+    Write-Host "Minting edge dev CA (player front) -> $CaCert ..."
+    & (Join-Path $BinDir 'edgeca.exe') --cert $CaCert --key $CaKey
+    if ($LASTEXITCODE -ne 0) { throw 'edgeca failed' }
     Start-Svc 'monolith' (Join-Path $BinDir 'server.exe') @{
-        PORT         = ':8080'
-        DATABASE_URL = $env:DATABASE_URL
+        PORT             = ':8080'
+        DATABASE_URL     = $env:DATABASE_URL
+        PLAYER_EDGE_ADDR = ':9100'
+        EDGE_CA_CERT     = $CaCert
+        EDGE_CA_KEY      = $CaKey
         # default MESSAGING_ORIGIN ("monolith") is fine -- one process, one origin.
     } | Out-Null
     Wait-Healthy 8080 'monolith'
     Write-Pids
     Write-Host ''
     Write-Host '=== monolith running ==='
-    Write-Host '  http://localhost:8080'
+    Write-Host '  http://localhost:8080  (player QUIC :9100)'
     Write-Host "  logs: $RunDir\monolith.out.log, $RunDir\monolith.err.log"
     Write-Host '  teardown: .\run.ps1 -Teardown'
     return
@@ -135,12 +148,14 @@ Start-Svc 'characters' (Join-Path $BinDir 'characters-svc.exe') @{
 Wait-Healthy 8080 'A (characters-svc)'
 
 # Process B: inventory-svc. characters resolves via a remote::Stub dialing A's edge
-# server. No edge server of its own (B dials OUT). CHARACTERS_EDGE_ADDR is a NUMERIC
-# host:port (Rust's SocketAddr needs a literal IP, unlike Go's dialer).
-Write-Host 'Starting B (inventory-svc: gateway,config,inventory,messaging,remote) on :8081 ...'
+# server. B ALSO serves its OWN mTLS edge (EDGE_ADDR=:9001) so gateway-svc can dispatch
+# inventory.* Remote to it. CHARACTERS_EDGE_ADDR is a NUMERIC host:port (Rust's
+# SocketAddr needs a literal IP, unlike Go's dialer).
+Write-Host 'Starting B (inventory-svc: gateway,config,inventory,messaging,remote) on :8081, edge :9001 ...'
 Start-Svc 'inventory' (Join-Path $BinDir 'inventory-svc.exe') @{
     PORT                 = ':8081'
     DATABASE_URL         = $env:DATABASE_URL
+    EDGE_ADDR            = ':9001'
     EDGE_CA_CERT         = $CaCert
     EDGE_CA_KEY          = $CaKey
     CHARACTERS_EDGE_ADDR = '127.0.0.1:9000'
@@ -148,10 +163,26 @@ Start-Svc 'inventory' (Join-Path $BinDir 'inventory-svc.exe') @{
 } | Out-Null
 Wait-Healthy 8081 'B (inventory-svc)'
 
+# Process G: gateway-svc. The dedicated front door -- HTTP :8082 + player QUIC :9100.
+# No DB, no provider modules: only remote::Stubs, so EVERY op it fronts resolves Remote
+# and is dialed over the mTLS edge to A (:9000) / B (:9001). It needs the shared CA to
+# dial peers AND to derive the player-front server cert.
+Write-Host 'Starting G (gateway-svc: gateway + characters/inventory stubs) on :8082, player QUIC :9100 ...'
+Start-Svc 'gateway' (Join-Path $BinDir 'gateway-svc.exe') @{
+    PORT                 = ':8082'
+    PLAYER_EDGE_ADDR     = ':9100'
+    EDGE_CA_CERT         = $CaCert
+    EDGE_CA_KEY          = $CaKey
+    CHARACTERS_EDGE_ADDR = '127.0.0.1:9000'
+    INVENTORY_EDGE_ADDR  = '127.0.0.1:9001'
+} | Out-Null
+Wait-Healthy 8082 'G (gateway-svc)'
+
 Write-Pids
 Write-Host ''
 Write-Host '=== microservices running ==='
 Write-Host '  A (characters-svc): http://localhost:8080  (edge :9000)'
-Write-Host '  B (inventory-svc):  http://localhost:8081'
-Write-Host "  logs: $RunDir\characters.{out,err}.log, $RunDir\inventory.{out,err}.log"
+Write-Host '  B (inventory-svc):  http://localhost:8081  (edge :9001)'
+Write-Host '  G (gateway-svc):    http://localhost:8082  (player QUIC :9100)'
+Write-Host "  logs: $RunDir\characters.{out,err}.log, $RunDir\inventory.{out,err}.log, $RunDir\gateway.{out,err}.log"
 Write-Host '  teardown: .\run.ps1 -Teardown'

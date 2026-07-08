@@ -1,15 +1,22 @@
 #!/usr/bin/env bash
-# split-proof.sh -- the SPLIT-topology proof for the rust-sketch (Step 12).
+# split-proof.sh -- the SPLIT-topology proof for the rust-sketch (Steps 12 + 8).
 #
-# This is the whole point of the milestone: it exercises the TWO-PROCESS split
-# (characters-svc = A on :8080 / edge :9000, inventory-svc = B on :8081), NOT the
-# monolith, driving the real player flows over HTTP (through the gateway front-door
-# with a dev-<uuid> bearer) and the sync authz over QUIC/mTLS. It:
+# This is the whole point of the milestone: it exercises the THREE-PROCESS split
+# (characters-svc = A on :8080 / edge :9000, inventory-svc = B on :8081 / edge :9001,
+# gateway-svc = G on :8082 / player QUIC :9100), NOT the monolith, driving the real
+# player flows over HTTP (through the gateway front-door with a dev-<uuid> bearer),
+# the sync authz over QUIC/mTLS, AND the NEW dedicated QUIC player front (Step 8 of
+# the QUIC player-front plan): external players connect to gateway-svc over QUIC
+# (server-cert-only TLS), the front auth-verifies the bearer-in-envelope once and
+# dispatches the method through the route table (allow-list gate) to the owning peer
+# over the internal mTLS edge. It:
 #
 #   1. mints the shared dev CA via `edgeca`,
-#   2. starts A then B in the background, gating each on /healthz,
-#   3. runs the assertions below, tearing BOTH down on exit (even on failure),
-#   4. exits non-zero if ANY assertion fails.
+#   2. starts A, B, then G in the background, gating each on /healthz,
+#   3. runs the assertions below, tearing ALL down on exit (even on failure),
+#   4. as a final stage boots the monolith (cmd/server) with the SAME player QUIC
+#      front and proves parity (never-monolith-only-features), and
+#   5. exits non-zero if ANY assertion fails.
 #
 # THE PROOF (all against the SPLIT, over real HTTP/QUIC):
 #   - Async event, cross-process A->B: POST /characters on A -> 201; A emits
@@ -27,6 +34,18 @@
 #     after delete alone only proves the character is gone via owner_of, which would
 #     mask an un-wiped row, so the DB check is the real integrity assertion.
 #
+# THE QUIC PLAYER FRONT (Step 8, all through gateway-svc's :9100 QUIC front via the
+# playercli tool -- exit 0 iff transport ok AND payload status=="Ok"):
+#   - P1 characters.create over QUIC -> exit 0 (player QUIC -> G -> mTLS edge -> A).
+#   - P2 inventory.listCharacter over QUIC -> exit 0 (player QUIC -> G -> Remote ->
+#     B's NEW :9001 edge -> owner_of over QUIC -> A): the newest composition.
+#   - P3 GET /inventory/character/<id> through G's HTTP :8082 -> 200 (the HTTP front
+#     still routes cross-provider inventory.* -> B remote).
+#   - P4 no token / bad token on an auth op -> exit 1 + {status:"Unauthorized"}
+#     (bearer verified once at the front against the op's AuthReq).
+#   - P5 characters.ownerOf (wire-only, absent from the route table) -> exit 1 +
+#     {status:"NotFound"} (the method allow-list gate, live -- not a blind relay).
+#
 # ASCII only (no em-dashes): PowerShell 5.1 chokes on them; keep the sibling .ps1
 # and this in lockstep.
 #
@@ -40,7 +59,10 @@ CA_CERT="$RUN_DIR/edge-ca.crt"
 CA_KEY="$RUN_DIR/edge-ca.key"
 A_PORT=8080
 B_PORT=8081
+G_PORT=8082
 EDGE_PORT=9000
+B_EDGE_PORT=9001
+PLAYER_PORT=9100
 
 DEFAULT_DSN="postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable"
 DATABASE_URL="${DATABASE_URL:-$DEFAULT_DSN}"
@@ -48,6 +70,8 @@ DATABASE_URL="${DATABASE_URL:-$DEFAULT_DSN}"
 FAILS=0
 A_PID=""
 B_PID=""
+G_PID=""
+M_PID=""
 
 note()  { echo "[proof] $*"; }
 pass()  { echo "  PASS  $*"; }
@@ -80,11 +104,13 @@ find_psql() {
 }
 PSQL="$(find_psql)"
 
-# --- teardown: kill both processes on ANY exit -------------------------------
+# --- teardown: kill all processes on ANY exit --------------------------------
 teardown() {
     [ -n "$A_PID" ] && kill "$A_PID" 2>/dev/null && note "stopped A (pid $A_PID)"
     [ -n "$B_PID" ] && kill "$B_PID" 2>/dev/null && note "stopped B (pid $B_PID)"
-    A_PID=""; B_PID=""
+    [ -n "$G_PID" ] && kill "$G_PID" 2>/dev/null && note "stopped G (pid $G_PID)"
+    [ -n "$M_PID" ] && kill "$M_PID" 2>/dev/null && note "stopped monolith (pid $M_PID)"
+    A_PID=""; B_PID=""; G_PID=""; M_PID=""
 }
 trap teardown EXIT INT TERM
 
@@ -94,9 +120,13 @@ kill_stragglers() {
     if command -v taskkill >/dev/null 2>&1; then
         taskkill //F //IM characters-svc.exe >/dev/null 2>&1 || true
         taskkill //F //IM inventory-svc.exe >/dev/null 2>&1 || true
+        taskkill //F //IM gateway-svc.exe >/dev/null 2>&1 || true
+        taskkill //F //IM server.exe >/dev/null 2>&1 || true
     fi
     pkill -f "characters-svc" 2>/dev/null || true
     pkill -f "inventory-svc"  2>/dev/null || true
+    pkill -f "gateway-svc"    2>/dev/null || true
+    pkill -f "target/debug/server" 2>/dev/null || true
 }
 
 wait_healthy() {
@@ -111,10 +141,11 @@ wait_healthy() {
 }
 
 # ============================================================================
-note "building edgeca + characters-svc + inventory-svc ..."
-if ! cargo build -p edgeca -p characters-svc -p inventory-svc; then
+note "building edgeca + characters-svc + inventory-svc + gateway-svc + playercli + server ..."
+if ! cargo build -p edgeca -p characters-svc -p inventory-svc -p gateway-svc -p playercli -p server; then
     echo "build failed"; exit 1
 fi
+PLAYERCLI="$BIN_DIR/playercli$EXE"
 
 mkdir -p "$RUN_DIR"
 kill_stragglers
@@ -136,14 +167,31 @@ A_PID=$!
 wait_healthy "$A_PORT" "A (characters-svc)" || { echo "A failed to start"; exit 1; }
 
 # --- start B (inventory-svc): gateway + config + inventory + messaging + stub -
-note "starting B (inventory-svc) on :$B_PORT ..."
+# B now ALSO serves its OWN mTLS edge (EDGE_ADDR=:9001) so gateway-svc can dispatch
+# inventory.* Remote to it; it still dials A over CHARACTERS_EDGE_ADDR for owner_of.
+note "starting B (inventory-svc) on :$B_PORT, edge :$B_EDGE_PORT ..."
 env PORT=":$B_PORT" DATABASE_URL="$DATABASE_URL" \
+    EDGE_ADDR=":$B_EDGE_PORT" \
     EDGE_CA_CERT="$CA_CERT" EDGE_CA_KEY="$CA_KEY" \
     CHARACTERS_EDGE_ADDR="127.0.0.1:$EDGE_PORT" \
     MESSAGING_ORIGIN=inventory-svc \
     "$BIN_DIR/inventory-svc$EXE" >"$RUN_DIR/inventory.out.log" 2>"$RUN_DIR/inventory.err.log" &
 B_PID=$!
 wait_healthy "$B_PORT" "B (inventory-svc)" || { echo "B failed to start"; exit 1; }
+
+# --- start G (gateway-svc): the dedicated front door -- HTTP :8082 + player QUIC --
+# :9100. No DB (without_db), no provider modules: only remote::Stubs, so EVERY op it
+# fronts resolves Remote and is dialed over the mTLS edge to A (:9000) / B (:9001). It
+# needs the shared CA to dial peers AND to derive the player-front server cert.
+note "starting G (gateway-svc) on :$G_PORT, player QUIC :$PLAYER_PORT ..."
+env PORT=":$G_PORT" \
+    PLAYER_EDGE_ADDR=":$PLAYER_PORT" \
+    EDGE_CA_CERT="$CA_CERT" EDGE_CA_KEY="$CA_KEY" \
+    CHARACTERS_EDGE_ADDR="127.0.0.1:$EDGE_PORT" \
+    INVENTORY_EDGE_ADDR="127.0.0.1:$B_EDGE_PORT" \
+    "$BIN_DIR/gateway-svc$EXE" >"$RUN_DIR/gateway.out.log" 2>"$RUN_DIR/gateway.err.log" &
+G_PID=$!
+wait_healthy "$G_PORT" "G (gateway-svc)" || { echo "G failed to start"; exit 1; }
 
 PID="$(new_uuid)"
 OTHER="$(new_uuid)"
@@ -225,9 +273,130 @@ echo "[5b] post-delete GET /inventory/character/$CID (Bearer dev-\$PID)"
 W2="$(curl -s -w $'\n%{http_code}' "http://localhost:$B_PORT/inventory/character/$CID" -H "Authorization: Bearer dev-$PID")"
 echo "    -> HTTP $(echo "$W2" | tail -1)  $(echo "$W2" | sed '$d')"
 
+echo ""
+echo "========= PLAYER QUIC FRONT (via gateway-svc :$PLAYER_PORT) ========="
+
+# --- P1. player QUIC create -> G -> mTLS edge -> A ---------------------------
+# A FRESH character owned by dev-$PID, created THROUGH the QUIC player front (the
+# original CID from [1] was deleted in [4]). playercli exits 0 iff transport ok AND
+# the payload's status=="Ok".
+echo "[P1] playercli characters.create over QUIC :$PLAYER_PORT (--token dev-\$PID)"
+P1_OUT="$("$PLAYERCLI" --addr "127.0.0.1:$PLAYER_PORT" --ca "$CA_CERT" --token "dev-$PID" \
+    characters.create '{"name":"hero","class":""}' 2>/dev/null)"
+P1_RC=$?
+echo "    -> rc=$P1_RC  $P1_OUT"
+PCID="$(echo "$P1_OUT" | grep -o '"id":"[^"]*"' | head -1 | sed 's/"id":"//;s/"//')"
+if [ "$P1_RC" -eq 0 ] && [ -n "$PCID" ]; then
+    pass "player create -> exit 0, id=$PCID (player QUIC -> G -> mTLS edge -> A)"
+else
+    fail "player create expected exit 0 with id, got rc=$P1_RC"
+fi
+
+# --- P2. player QUIC inventory list -> G -> Remote -> B's NEW :9001 edge ------
+# The newest composition: assertion P1 alone only proves the G->A leg; this proves
+# player QUIC -> G -> Remote -> B, and B in turn calls owner_of over QUIC/mTLS to A.
+echo "[P2] playercli inventory.listCharacter over QUIC :$PLAYER_PORT (player QUIC -> G -> Remote -> B :$B_EDGE_PORT)"
+P2_OUT="$("$PLAYERCLI" --addr "127.0.0.1:$PLAYER_PORT" --ca "$CA_CERT" --token "dev-$PID" \
+    inventory.listCharacter "{\"character_id\":\"$PCID\"}" 2>/dev/null)"
+P2_RC=$?
+echo "    -> rc=$P2_RC  $P2_OUT"
+if [ "$P2_RC" -eq 0 ]; then
+    pass "player inventory list -> exit 0 (player QUIC -> G -> Remote -> B :$B_EDGE_PORT -> owner_of QUIC -> A)"
+else
+    fail "player inventory list expected exit 0, got rc=$P2_RC"
+fi
+
+# --- P3. gateway-svc HTTP front still routes cross-provider inventory.* -> B --
+echo "[P3] GET http://localhost:$G_PORT/inventory/character/$PCID through gateway-svc HTTP front (Bearer dev-\$PID)"
+P3="$(curl -s -w $'\n%{http_code}' "http://localhost:$G_PORT/inventory/character/$PCID" -H "Authorization: Bearer dev-$PID")"
+P3BODY="$(echo "$P3" | sed '$d')"; P3CODE="$(echo "$P3" | tail -1)"
+echo "    -> HTTP $P3CODE  $P3BODY"
+if [ "$P3CODE" = "200" ]; then
+    pass "gateway-svc HTTP front routes inventory.* -> B remote -> 200"
+else
+    fail "gateway-svc HTTP inventory expected 200, got $P3CODE"
+fi
+
+# --- P4. auth gate: no token / bad token on an auth op -> Unauthorized --------
+# Per the pinned grammar an auth failure arrives as transport ok:true +
+# {status:"Unauthorized"}, so playercli exits 1 and the envelope names it.
+echo "[P4] playercli characters.create with NO token -> exit 1 + Unauthorized"
+P4_OUT="$("$PLAYERCLI" --addr "127.0.0.1:$PLAYER_PORT" --ca "$CA_CERT" \
+    characters.create '{"name":"x","class":""}' 2>/dev/null)"
+P4_RC=$?
+echo "    -> rc=$P4_RC  $P4_OUT"
+if [ "$P4_RC" -ne 0 ] && echo "$P4_OUT" | grep -q 'Unauthorized'; then
+    pass "no-token auth op -> exit 1 + Unauthorized (bearer required at the front)"
+else
+    fail "no-token expected exit 1 + Unauthorized, got rc=$P4_RC $P4_OUT"
+fi
+
+echo "[P4b] playercli characters.create with BAD token (nope-x) -> exit 1 + Unauthorized"
+P4B_OUT="$("$PLAYERCLI" --addr "127.0.0.1:$PLAYER_PORT" --ca "$CA_CERT" --token "nope-x" \
+    characters.create '{"name":"x","class":""}' 2>/dev/null)"
+P4B_RC=$?
+echo "    -> rc=$P4B_RC  $P4B_OUT"
+if [ "$P4B_RC" -ne 0 ] && echo "$P4B_OUT" | grep -q 'Unauthorized'; then
+    pass "bad-token auth op -> exit 1 + Unauthorized (token verified, not just presence)"
+else
+    fail "bad-token expected exit 1 + Unauthorized, got rc=$P4B_RC $P4B_OUT"
+fi
+
+# --- P5. allow-list gate: wire-only method absent from the route table -------
+# characters.ownerOf has no #[http] binding, so it is NOT in the front's route table
+# -> NotFound. Proves dispatch is method-allow-listed, never a blind prefix relay.
+echo "[P5] playercli characters.ownerOf (wire-only, not routable) -> exit 1 + NotFound"
+P5_OUT="$("$PLAYERCLI" --addr "127.0.0.1:$PLAYER_PORT" --ca "$CA_CERT" --token "dev-$PID" \
+    characters.ownerOf "{\"character_id\":\"$PCID\"}" 2>/dev/null)"
+P5_RC=$?
+echo "    -> rc=$P5_RC  $P5_OUT"
+if [ "$P5_RC" -ne 0 ] && echo "$P5_OUT" | grep -q 'NotFound'; then
+    pass "wire-only characters.ownerOf -> exit 1 + NotFound (allow-list gate live)"
+else
+    fail "ownerOf expected exit 1 + NotFound, got rc=$P5_RC $P5_OUT"
+fi
+
+echo "============================================"
+
+# ============================================================================
+# MONOLITH PARITY: the SAME player QUIC front, all ops dispatched Local.
+# Per the never-monolith-only-features rule both topologies must serve the feature.
+# Tear the split down first (frees :8080 and :9100 and the DB), then boot cmd/server
+# with PLAYER_EDGE_ADDR=:9100 + the shared CA and drive one player create.
+# ============================================================================
+echo ""
+echo "================ MONOLITH PARITY ================"
+note "tearing down the split before the monolith stage ..."
+teardown
+kill_stragglers
+sleep 2
+
+note "starting monolith (cmd/server) on :$A_PORT, player QUIC :$PLAYER_PORT ..."
+env PORT=":$A_PORT" DATABASE_URL="$DATABASE_URL" \
+    PLAYER_EDGE_ADDR=":$PLAYER_PORT" \
+    EDGE_CA_CERT="$CA_CERT" EDGE_CA_KEY="$CA_KEY" \
+    "$BIN_DIR/server$EXE" >"$RUN_DIR/monolith.out.log" 2>"$RUN_DIR/monolith.err.log" &
+M_PID=$!
+if wait_healthy "$A_PORT" "monolith (server)"; then
+    MPID="$(new_uuid)"
+    echo "[M1] playercli characters.create over QUIC :$PLAYER_PORT against the monolith (--token dev-\$MPID)"
+    M1_OUT="$("$PLAYERCLI" --addr "127.0.0.1:$PLAYER_PORT" --ca "$CA_CERT" --token "dev-$MPID" \
+        characters.create '{"name":"solo","class":""}' 2>/dev/null)"
+    M1_RC=$?
+    echo "    -> rc=$M1_RC  $M1_OUT"
+    if [ "$M1_RC" -eq 0 ]; then
+        pass "monolith player QUIC front -> exit 0 (all ops Local, parity proven)"
+    else
+        fail "monolith player create expected exit 0, got rc=$M1_RC"
+    fi
+else
+    fail "monolith (server) never became healthy on :$A_PORT"
+fi
+teardown
+
 echo "============================================"
 if [ "$FAILS" -eq 0 ]; then
-    echo "SPLIT PROOF: PASS (all assertions held on the two-process topology)"
+    echo "SPLIT PROOF: PASS (all assertions held on the three-process split + monolith parity)"
     exit 0
 else
     echo "SPLIT PROOF: FAIL ($FAILS assertion(s) failed)"

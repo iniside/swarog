@@ -1,13 +1,19 @@
-# split-proof.ps1 -- the SPLIT-topology proof for the rust-sketch (Step 12).
+# split-proof.ps1 -- the SPLIT-topology proof for the rust-sketch (Steps 12 + 8).
 #
-# The whole point of the milestone: exercises the TWO-PROCESS split (characters-svc =
-# A on :8080 / edge :9000, inventory-svc = B on :8081), NOT the monolith, driving the
-# real player flows over HTTP (through the gateway front-door with a dev-<uuid>
-# bearer) and the sync authz over QUIC/mTLS. It:
+# The whole point of the milestone: exercises the THREE-PROCESS split (characters-svc =
+# A on :8080 / edge :9000, inventory-svc = B on :8081 / edge :9001, gateway-svc = G on
+# :8082 / player QUIC :9100), NOT the monolith, driving the real player flows over HTTP
+# (through the gateway front-door with a dev-<uuid> bearer), the sync authz over
+# QUIC/mTLS, AND the NEW dedicated QUIC player front (Step 8): external players connect
+# to gateway-svc over QUIC (server-cert-only TLS), the front auth-verifies the
+# bearer-in-envelope once and dispatches the method through the route table (allow-list
+# gate) to the owning peer over the internal mTLS edge. It:
 #   1. mints the shared dev CA via edgeca,
-#   2. starts A then B in the background, gating each on /healthz,
-#   3. runs the assertions below, tearing BOTH down on exit (even on failure),
-#   4. exits non-zero if ANY assertion fails.
+#   2. starts A, B, then G in the background, gating each on /healthz,
+#   3. runs the assertions below, tearing ALL down on exit (even on failure),
+#   4. as a final stage boots the monolith (cmd/server) with the SAME player QUIC front
+#      and proves parity (never-monolith-only-features), and
+#   5. exits non-zero if ANY assertion fails.
 #
 # THE PROOF (all against the SPLIT, over real HTTP/QUIC):
 #   - Async event A->B: POST /characters on A -> 201; A emits character.created; its
@@ -21,6 +27,16 @@
 #     row is genuinely gone (the HTTP 404 after delete alone only proves the character
 #     is gone via owner_of and would mask an un-wiped row).
 #
+# THE QUIC PLAYER FRONT (Step 8, all through gateway-svc's :9100 QUIC front via the
+# playercli tool -- exit 0 iff transport ok AND payload status=="Ok"):
+#   - P1 characters.create over QUIC -> exit 0 (player QUIC -> G -> mTLS edge -> A).
+#   - P2 inventory.listCharacter over QUIC -> exit 0 (player QUIC -> G -> Remote ->
+#     B's NEW :9001 edge -> owner_of over QUIC -> A): the newest composition.
+#   - P3 GET /inventory/character/<id> through G's HTTP :8082 -> 200.
+#   - P4 no token / bad token on an auth op -> exit 1 + {status:"Unauthorized"}.
+#   - P5 characters.ownerOf (wire-only, absent from the route table) -> exit 1 +
+#     {status:"NotFound"} (the method allow-list gate, live).
+#
 # Uses curl.exe (ships with Windows 11) for HTTP parity with split-proof.sh.
 # ASCII only -- PowerShell 5.1 chokes on em-dashes.
 
@@ -33,9 +49,13 @@ $RunDir   = Join-Path $PSScriptRoot 'run'
 $BinDir   = Join-Path $PSScriptRoot 'target\debug'
 $CaCert   = Join-Path $RunDir 'edge-ca.crt'
 $CaKey    = Join-Path $RunDir 'edge-ca.key'
-$APort    = 8080
-$BPort    = 8081
-$EdgePort = 9000
+$APort     = 8080
+$BPort     = 8081
+$GPort     = 8082
+$EdgePort  = 9000
+$BEdgePort = 9001
+$PlayerPort = 9100
+$PlayerCli = Join-Path $BinDir 'playercli.exe'
 
 $DefaultDsn = 'postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable'
 if (-not $env:DATABASE_URL -or $env:DATABASE_URL.Trim() -eq '') { $env:DATABASE_URL = $DefaultDsn }
@@ -43,6 +63,8 @@ if (-not $env:DATABASE_URL -or $env:DATABASE_URL.Trim() -eq '') { $env:DATABASE_
 $script:Fails = 0
 $script:AProc = $null
 $script:BProc = $null
+$script:GProc = $null
+$script:MProc = $null
 
 function Note($m) { Write-Host "[proof] $m" }
 function Pass($m) { Write-Host "  PASS  $m" }
@@ -91,18 +113,28 @@ function Start-Svc([string]$Exe, [hashtable]$EnvVars, [string]$LogName) {
 function Teardown {
     if ($script:AProc -and -not $script:AProc.HasExited) { Stop-Process -Id $script:AProc.Id -Force -ErrorAction SilentlyContinue; Note "stopped A (pid $($script:AProc.Id))" }
     if ($script:BProc -and -not $script:BProc.HasExited) { Stop-Process -Id $script:BProc.Id -Force -ErrorAction SilentlyContinue; Note "stopped B (pid $($script:BProc.Id))" }
-    $script:AProc = $null; $script:BProc = $null
+    if ($script:GProc -and -not $script:GProc.HasExited) { Stop-Process -Id $script:GProc.Id -Force -ErrorAction SilentlyContinue; Note "stopped G (pid $($script:GProc.Id))" }
+    if ($script:MProc -and -not $script:MProc.HasExited) { Stop-Process -Id $script:MProc.Id -Force -ErrorAction SilentlyContinue; Note "stopped monolith (pid $($script:MProc.Id))" }
+    $script:AProc = $null; $script:BProc = $null; $script:GProc = $null; $script:MProc = $null
+}
+
+# Runs playercli, capturing stdout (joined) and the process exit code. Returns a
+# pscustomobject { Rc; Out }. playercli exits 0 iff transport ok AND status=="Ok".
+function Invoke-PlayerCli([string[]]$CliArgs) {
+    $out = & $PlayerCli @CliArgs 2>$null
+    $rc = $LASTEXITCODE
+    return [pscustomobject]@{ Rc = $rc; Out = (($out | Out-String)).Trim() }
 }
 
 try {
-    Note 'building edgeca + characters-svc + inventory-svc ...'
-    cargo build -p edgeca -p characters-svc -p inventory-svc
+    Note 'building edgeca + characters-svc + inventory-svc + gateway-svc + playercli + server ...'
+    cargo build -p edgeca -p characters-svc -p inventory-svc -p gateway-svc -p playercli -p server
     if ($LASTEXITCODE -ne 0) { throw 'cargo build failed' }
 
     New-Item -ItemType Directory -Force -Path $RunDir | Out-Null
 
     # Clear stragglers from an aborted prior run so ports are free (idempotent reruns).
-    foreach ($n in 'characters-svc', 'inventory-svc') {
+    foreach ($n in 'characters-svc', 'inventory-svc', 'gateway-svc', 'server') {
         Get-Process -Name $n -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
     }
     Start-Sleep -Milliseconds 500
@@ -123,16 +155,34 @@ try {
     } 'characters'
     if (-not (Wait-Healthy $APort 'A (characters-svc)')) { throw 'A failed to start' }
 
-    Note "starting B (inventory-svc) on :$BPort ..."
+    # B now ALSO serves its OWN mTLS edge (EDGE_ADDR=:9001) so gateway-svc can dispatch
+    # inventory.* Remote to it; it still dials A over CHARACTERS_EDGE_ADDR for owner_of.
+    Note "starting B (inventory-svc) on :$BPort, edge :$BEdgePort ..."
     $script:BProc = Start-Svc (Join-Path $BinDir 'inventory-svc.exe') @{
         PORT                 = ":$BPort"
         DATABASE_URL         = $env:DATABASE_URL
+        EDGE_ADDR            = ":$BEdgePort"
         EDGE_CA_CERT         = $CaCert
         EDGE_CA_KEY          = $CaKey
         CHARACTERS_EDGE_ADDR = "127.0.0.1:$EdgePort"
         MESSAGING_ORIGIN     = 'inventory-svc'
     } 'inventory'
     if (-not (Wait-Healthy $BPort 'B (inventory-svc)')) { throw 'B failed to start' }
+
+    # G (gateway-svc): the dedicated front door -- HTTP :8082 + player QUIC :9100. No DB
+    # (without_db), no provider modules: only remote::Stubs, so EVERY op it fronts
+    # resolves Remote and is dialed over the mTLS edge to A (:9000) / B (:9001). It needs
+    # the shared CA to dial peers AND to derive the player-front server cert.
+    Note "starting G (gateway-svc) on :$GPort, player QUIC :$PlayerPort ..."
+    $script:GProc = Start-Svc (Join-Path $BinDir 'gateway-svc.exe') @{
+        PORT                 = ":$GPort"
+        PLAYER_EDGE_ADDR     = ":$PlayerPort"
+        EDGE_CA_CERT         = $CaCert
+        EDGE_CA_KEY          = $CaKey
+        CHARACTERS_EDGE_ADDR = "127.0.0.1:$EdgePort"
+        INVENTORY_EDGE_ADDR  = "127.0.0.1:$BEdgePort"
+    } 'gateway'
+    if (-not (Wait-Healthy $GPort 'G (gateway-svc)')) { throw 'G failed to start' }
 
     $PID_ = [guid]::NewGuid().ToString()
     $Other = [guid]::NewGuid().ToString()
@@ -201,6 +251,88 @@ try {
     Write-Host "[5b] post-delete GET /inventory/character/$cid (Bearer dev-`$PID)"
     $w2 = Invoke-Curl @("http://127.0.0.1:$BPort/inventory/character/$cid", '-H', "Authorization: Bearer dev-$PID_")
     Write-Host "    -> HTTP $($w2.Code)  $($w2.Body)"
+
+    Write-Host ''
+    Write-Host "========= PLAYER QUIC FRONT (via gateway-svc :$PlayerPort) ========="
+
+    # --- P1. player QUIC create -> G -> mTLS edge -> A ---
+    # A FRESH character owned by dev-$PID, created THROUGH the QUIC player front (the
+    # original cid from [1] was deleted in [4]). playercli exits 0 iff transport ok AND
+    # the payload's status=="Ok".
+    Write-Host "[P1] playercli characters.create over QUIC :$PlayerPort (--token dev-`$PID)"
+    $p1 = Invoke-PlayerCli @('--addr', "127.0.0.1:$PlayerPort", '--ca', $CaCert, '--token', "dev-$PID_", 'characters.create', '{"name":"hero","class":""}')
+    Write-Host "    -> rc=$($p1.Rc)  $($p1.Out)"
+    $pcid = $null
+    if ($p1.Out -match '"id":"([^"]+)"') { $pcid = $Matches[1] }
+    if ($p1.Rc -eq 0 -and $pcid) { Pass "player create -> exit 0, id=$pcid (player QUIC -> G -> mTLS edge -> A)" } else { Fail "player create expected exit 0 with id, got rc=$($p1.Rc)" }
+
+    # --- P2. player QUIC inventory list -> G -> Remote -> B's NEW :9001 edge ---
+    # The newest composition: P1 alone only proves the G->A leg; this proves player QUIC
+    # -> G -> Remote -> B, and B in turn calls owner_of over QUIC/mTLS to A.
+    Write-Host "[P2] playercli inventory.listCharacter over QUIC :$PlayerPort (player QUIC -> G -> Remote -> B :$BEdgePort)"
+    $p2 = Invoke-PlayerCli @('--addr', "127.0.0.1:$PlayerPort", '--ca', $CaCert, '--token', "dev-$PID_", 'inventory.listCharacter', "{`"character_id`":`"$pcid`"}")
+    Write-Host "    -> rc=$($p2.Rc)  $($p2.Out)"
+    if ($p2.Rc -eq 0) { Pass "player inventory list -> exit 0 (player QUIC -> G -> Remote -> B :$BEdgePort -> owner_of QUIC -> A)" } else { Fail "player inventory list expected exit 0, got rc=$($p2.Rc)" }
+
+    # --- P3. gateway-svc HTTP front still routes cross-provider inventory.* -> B ---
+    Write-Host "[P3] GET http://127.0.0.1:$GPort/inventory/character/$pcid through gateway-svc HTTP front (Bearer dev-`$PID)"
+    $p3 = Invoke-Curl @("http://127.0.0.1:$GPort/inventory/character/$pcid", '-H', "Authorization: Bearer dev-$PID_")
+    Write-Host "    -> HTTP $($p3.Code)  $($p3.Body)"
+    if ($p3.Code -eq '200') { Pass 'gateway-svc HTTP front routes inventory.* -> B remote -> 200' } else { Fail "gateway-svc HTTP inventory expected 200, got $($p3.Code)" }
+
+    # --- P4. auth gate: no token / bad token on an auth op -> Unauthorized ---
+    Write-Host "[P4] playercli characters.create with NO token -> exit 1 + Unauthorized"
+    $p4 = Invoke-PlayerCli @('--addr', "127.0.0.1:$PlayerPort", '--ca', $CaCert, 'characters.create', '{"name":"x","class":""}')
+    Write-Host "    -> rc=$($p4.Rc)  $($p4.Out)"
+    if ($p4.Rc -ne 0 -and $p4.Out -match 'Unauthorized') { Pass 'no-token auth op -> exit 1 + Unauthorized (bearer required at the front)' } else { Fail "no-token expected exit 1 + Unauthorized, got rc=$($p4.Rc) $($p4.Out)" }
+
+    Write-Host "[P4b] playercli characters.create with BAD token (nope-x) -> exit 1 + Unauthorized"
+    $p4b = Invoke-PlayerCli @('--addr', "127.0.0.1:$PlayerPort", '--ca', $CaCert, '--token', 'nope-x', 'characters.create', '{"name":"x","class":""}')
+    Write-Host "    -> rc=$($p4b.Rc)  $($p4b.Out)"
+    if ($p4b.Rc -ne 0 -and $p4b.Out -match 'Unauthorized') { Pass 'bad-token auth op -> exit 1 + Unauthorized (token verified, not just presence)' } else { Fail "bad-token expected exit 1 + Unauthorized, got rc=$($p4b.Rc) $($p4b.Out)" }
+
+    # --- P5. allow-list gate: wire-only method absent from the route table ---
+    # characters.ownerOf has no #[http] binding, so it is NOT in the front's route table
+    # -> NotFound. Proves dispatch is method-allow-listed, never a blind prefix relay.
+    Write-Host "[P5] playercli characters.ownerOf (wire-only, not routable) -> exit 1 + NotFound"
+    $p5 = Invoke-PlayerCli @('--addr', "127.0.0.1:$PlayerPort", '--ca', $CaCert, '--token', "dev-$PID_", 'characters.ownerOf', "{`"character_id`":`"$pcid`"}")
+    Write-Host "    -> rc=$($p5.Rc)  $($p5.Out)"
+    if ($p5.Rc -ne 0 -and $p5.Out -match 'NotFound') { Pass 'wire-only characters.ownerOf -> exit 1 + NotFound (allow-list gate live)' } else { Fail "ownerOf expected exit 1 + NotFound, got rc=$($p5.Rc) $($p5.Out)" }
+
+    Write-Host '============================================'
+
+    # ========================================================================
+    # MONOLITH PARITY: the SAME player QUIC front, all ops dispatched Local. Per the
+    # never-monolith-only-features rule both topologies must serve the feature. Tear
+    # the split down first (frees :8080 and :9100 and the DB), then boot cmd/server
+    # with PLAYER_EDGE_ADDR=:9100 + the shared CA and drive one player create.
+    # ========================================================================
+    Write-Host ''
+    Write-Host '================ MONOLITH PARITY ================'
+    Note 'tearing down the split before the monolith stage ...'
+    Teardown
+    foreach ($n in 'characters-svc', 'inventory-svc', 'gateway-svc', 'server') {
+        Get-Process -Name $n -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    }
+    Start-Sleep -Seconds 2
+
+    Note "starting monolith (cmd/server) on :$APort, player QUIC :$PlayerPort ..."
+    $script:MProc = Start-Svc (Join-Path $BinDir 'server.exe') @{
+        PORT             = ":$APort"
+        DATABASE_URL     = $env:DATABASE_URL
+        PLAYER_EDGE_ADDR = ":$PlayerPort"
+        EDGE_CA_CERT     = $CaCert
+        EDGE_CA_KEY      = $CaKey
+    } 'monolith'
+    if (Wait-Healthy $APort 'monolith (server)') {
+        $mpid = [guid]::NewGuid().ToString()
+        Write-Host "[M1] playercli characters.create over QUIC :$PlayerPort against the monolith (--token dev-`$MPID)"
+        $m1 = Invoke-PlayerCli @('--addr', "127.0.0.1:$PlayerPort", '--ca', $CaCert, '--token', "dev-$mpid", 'characters.create', '{"name":"solo","class":""}')
+        Write-Host "    -> rc=$($m1.Rc)  $($m1.Out)"
+        if ($m1.Rc -eq 0) { Pass 'monolith player QUIC front -> exit 0 (all ops Local, parity proven)' } else { Fail "monolith player create expected exit 0, got rc=$($m1.Rc)" }
+    } else {
+        Fail "monolith (server) never became healthy on :$APort"
+    }
 
     Write-Host '============================================'
 }
