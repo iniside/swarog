@@ -11,6 +11,8 @@ members = [
     "crates/app",
     "crates/rpc-macro",
     "crates/rpc-macro-tests",
+    "crates/outbox",
+    "crates/messaging",
 ]
 
 [workspace.package]
@@ -33,6 +35,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }
 futures = "0.3"
 proptest = "1"
+# HTTP client for the outbox relay's remote delivery (POST /events). rustls to align
+# with the edge stack's TLS; default (native-tls) features off.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 
 # QUIC + mutual TLS stack for the edge transport (Step 4). Pinned once here.
 quinn = "0.11"
@@ -55,3 +60,5 @@ opsapi = { path = "crates/opsapi" }
 edge = { path = "crates/edge" }
 app = { path = "crates/app" }
 rpc-macro = { path = "crates/rpc-macro" }
+outbox = { path = "crates/outbox" }
+messaging = { path = "crates/messaging" }
