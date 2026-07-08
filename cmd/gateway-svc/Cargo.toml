@@ -7,9 +7,10 @@ publish = false
 
 # The dedicated front-door process (port of Go's `cmd/gateway-svc`): a PURE transport
 # process. It hosts no provider module and no DB — every op it fronts resolves Remote
-# over a `remote::Stub`. It imports neither `characters` nor `inventory`, only their
-# `remote::Stub`-mediated route bindings, so the linker drops the impl packages this
-# binary never names.
+# over a `remote::Stub`. It imports neither `characters` nor `inventory` IMPL crate,
+# only their `<name>rpc` glue (to pass `remote_factories()` into the generic
+# `remote::Stub`, Step 4 — sanctioned for cmd/*, rule 5), so the linker drops the impl
+# packages this binary never names.
 [[bin]]
 name = "gateway-svc"
 path = "src/main.rs"
@@ -20,7 +21,19 @@ edge = { workspace = true }
 lifecycle = { workspace = true }
 gateway = { workspace = true }
 remote = { workspace = true }
+charactersrpc = { workspace = true }
+inventoryrpc = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync"] }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+# The generic `remote::Stub` swap integration test (`tests/stub_swap.rs`) names the
+# PURE api traits + route bindings and the registry key helper; the glue crates it
+# feeds are already normal deps above. These stay dev-only — the binary itself never
+# needs the api crates.
+charactersapi = { workspace = true }
+inventoryapi = { workspace = true }
+opsapi = { workspace = true }
+registry = { workspace = true }

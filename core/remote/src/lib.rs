@@ -5,12 +5,16 @@
 //! would, so the consumer's `require::<dyn Trait>(key)` resolves to a real QUIC caller
 //! across the process boundary — the consumer code is unchanged, unaware which it got.
 //!
-//! It imports only the foundations + `edge` + each provider's `<name>rpc` GLUE crate
-//! (whose `remote_factories()` owns the swap actions — capability `Client` provides +
-//! front-door route bindings). It NEVER imports the provider's impl crate (CLAUDE.md #2):
-//! the generated `Client` implements the capability trait over an [`opsapi::Caller`],
-//! and the wire shape + method names are OWNED by that generated glue, so wire drift
-//! between the two sides is impossible.
+//! As of Step 4 `remote` is **generic** process infrastructure in `core/`: it imports
+//! only the foundations + `edge`, and NEVER any `api/` crate. The provider-swap
+//! actions arrive as a `Vec<`[`RemoteFactory`]`>` — boxed closures produced by each
+//! domain's `<name>rpc::remote_factories()` and passed into [`Stub::new`] by the
+//! composition root (`cmd/*`). Each closure `provide`s a generated edge `Client` under
+//! the SAME capability key the local impl would, and/or contributes front-door route
+//! bindings. The generated `Client` implements the capability trait over an
+//! [`opsapi::Caller`], and the wire shape + method names are OWNED by that generated
+//! glue, so wire drift between the two sides is impossible — and `remote` never needs
+//! to name the provider (it used to `match` on the provider string; that is gone).
 //!
 //! ## Front-door route bindings (the unified front-door end-state)
 //! Beyond the capability swap, each provider arm ALSO contributes that provider's
@@ -44,6 +48,22 @@ use async_trait::async_trait;
 use lifecycle::{Caps, Context, Module};
 use opsapi::{Caller, Error};
 use tokio::sync::Mutex;
+
+// ---------------------------------------------------------------------------
+// The injected provider-swap action (the Step-4 generic-`remote` seam).
+// ---------------------------------------------------------------------------
+
+/// One provider-swap action handed to a [`Stub`] by the composition root. Applied in
+/// [`Stub::register`] to the process [`Context`] and the stub's edge-backed
+/// [`Caller`], it `provide`s a generated capability `Client` under the provider's
+/// canonical registry key and/or contributes the provider's front-door route bindings.
+///
+/// The canonical type lives HERE (not in any `api/` crate) because `remote` is the
+/// crate that CONSUMES the factories and already depends on both `lifecycle` and
+/// `opsapi`; each domain's `<name>rpc` crate names it as `remote::RemoteFactory` and
+/// its `remote_factories()` returns `Vec<remote::RemoteFactory>`. `remote` imports no
+/// `api/` crate, so there is no cycle: the glue depends on `remote`, never the reverse.
+pub type RemoteFactory = Box<dyn Fn(&Context, Arc<dyn Caller>) + Send + Sync>;
 
 // ---------------------------------------------------------------------------
 // The reconnecting caller (Go's edgeConn) — generic over a dial/conn seam so the
@@ -190,19 +210,24 @@ pub struct Stub {
     provider: String,
     /// The lazily-dialed, self-healing caller shared by every generated client below.
     conn: Arc<Reconnecting<EdgeDialer>>,
+    /// The provider-swap closures this stub applies in `register`. Injected by the
+    /// composition root from the provider's `<name>rpc::remote_factories()` — `remote`
+    /// never names the provider itself.
+    factories: Vec<RemoteFactory>,
 }
 
 impl Stub {
-    /// Builds a stub for `name`, dialing `peer_addr` (a numeric `host:port`, e.g.
-    /// `127.0.0.1:9000`) lazily on first use. Only `"characters"` is edge-exposed in
-    /// M1; any other name fails loudly at `register` rather than providing a dead
-    /// client.
-    pub fn new(name: &str, peer_addr: &str) -> Stub {
+    /// Builds a stub for `provider`, dialing `peer_addr` (a numeric `host:port`, e.g.
+    /// `127.0.0.1:9000`) lazily on first use, applying `factories` (the provider's
+    /// `<name>rpc::remote_factories()`) at `register`. An EMPTY `factories` vec is a
+    /// wiring bug — the stub would provide nothing — and fails loudly at `register`.
+    pub fn new(provider: &str, peer_addr: &str, factories: Vec<RemoteFactory>) -> Stub {
         Stub {
-            provider: name.to_string(),
+            provider: provider.to_string(),
             conn: Arc::new(Reconnecting::new(EdgeDialer {
                 peer: peer_addr.to_string(),
             })),
+            factories,
         }
     }
 }
@@ -237,28 +262,30 @@ impl Module for Stub {
     /// capability), so it contributes route bindings ONLY: a dead capability provide
     /// would be noise, add one only when a consumer appears.
     fn register(&self, ctx: &Context) -> anyhow::Result<()> {
-        // Hand each generated client the reconnecting conn AS an `opsapi::Caller`, so
-        // the glue depends on the transport seam, never remote's concrete type.
-        //
-        // Each glue crate owns its provider-swap actions (`remote_factories()`): for
-        // "characters" they provide the ownership + player edge clients under the
-        // provider's capability keys AND contribute the player ops' route bindings
-        // (Operation+OpBinding, no LocalOp — `select_kind` resolves them Remote); for
-        // "inventory" (a leaf — nothing `require`s an inventory capability) route
-        // bindings ONLY. Step 4 moves this match into `cmd/*`, which will pass the
-        // factories straight to a generic `Stub::new`.
+        // A stub with no factories provides nothing — a wiring bug (the composition
+        // root forgot to pass the provider's `remote_factories()`). Fail loudly rather
+        // than silently registering an inert module (this preserves the fail-loud
+        // guarantee the old per-provider `match`'s unknown-provider arm gave).
+        if self.factories.is_empty() {
+            anyhow::bail!(
+                "remote: Stub for provider {:?} was constructed with zero factories — \
+                 pass `<name>rpc::remote_factories()` into `Stub::new`",
+                self.provider
+            );
+        }
+        // Hand each injected factory the reconnecting conn AS an `opsapi::Caller`, so
+        // the glue depends on the transport seam, never remote's concrete type. Each
+        // factory `provide`s a generated capability `Client` under the provider's
+        // capability key and/or contributes the provider's front-door route bindings
+        // (Operation+OpBinding, no LocalOp — `select_kind` resolves them Remote).
         let caller: Arc<dyn Caller> = self.conn.clone();
-        let factories = match self.provider.as_str() {
-            "characters" => charactersrpc::remote_factories(),
-            "inventory" => inventoryrpc::remote_factories(),
-            other => anyhow::bail!("remote: no edge client for provider {other:?}"),
-        };
-        for f in &factories {
+        for f in &self.factories {
             f(ctx, caller.clone());
         }
         tracing::info!(
             provider = %self.provider,
-            "remote stub registered — capability clients + front-door routes via the provider's rpc glue"
+            factories = self.factories.len(),
+            "remote stub registered — capability clients + front-door routes via injected factories"
         );
         Ok(())
     }
@@ -278,8 +305,10 @@ impl Module for Stub {
 
 // ===========================================================================
 // Tests. The reconnecting caller's redial-once logic is exercised with a fake
-// dial/conn seam (no QUIC); the stub's swap is proven by asserting `register`
-// provides the right capability keys with the right trait types.
+// dial/conn seam (no QUIC); the injected-factory swap is proven with LOCAL fake
+// factories (no `api/` crate — the core-leaf rule), asserting `register` runs every
+// factory and that a zero-factory stub fails loudly. The REAL glue factories
+// (`<name>rpc::remote_factories()`) are covered by their own crates + split-proof.
 // ===========================================================================
 #[cfg(test)]
 mod tests;

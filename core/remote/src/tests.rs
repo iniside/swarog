@@ -95,99 +95,61 @@ async fn close_closes_cached_conn() {
     assert_eq!(closes.load(Ordering::SeqCst), 1);
 }
 
-// ---- The swap: register provides the right keys with the right types ---
+// ---- The injected-factory swap: register runs every factory --------------
+//
+// `remote` is generic and imports no `api/` crate, so these tests use LOCAL fake
+// factories rather than the real `<name>rpc::remote_factories()` (whose correctness
+// is covered by the glue crates + split-proof). A fake factory provides a fake
+// capability under a registry key and bumps a shared counter, so we can assert both
+// that `register` invoked EVERY factory and that the swap reached the registry.
 
-/// The stub for `"characters"` provides BOTH capability keys the local impl would,
-/// downcastable to the exact trait objects a consumer / the gateway `require`s —
-/// proving the registry swap holds without any QUIC dial (register is lazy).
+/// A fake capability — the stand-in for a domain trait like `charactersapi::Ownership`.
+trait FakeCap: Send + Sync {}
+struct FakeImpl;
+impl FakeCap for FakeImpl {}
+
+/// The stub applies EVERY injected factory in `register` (topology-blind, no dial):
+/// both factories run (the counter reaches 2) and the capability one lands in the
+/// registry under its key — exactly what a real provider swap does.
 #[test]
-fn stub_provides_characters_capability_keys() {
+fn stub_runs_every_injected_factory() {
     let ctx = Context::new(); // DB-less: register only touches the registry
-    let stub = Stub::new("characters", "127.0.0.1:9000");
-    assert_eq!(stub.name(), "characters", "name is the PROVIDER name for validate_requires");
+    let hits = Arc::new(AtomicUsize::new(0));
+
+    let h1 = hits.clone();
+    let h2 = hits.clone();
+    let factories: Vec<RemoteFactory> = vec![
+        Box::new(move |ctx: &Context, _caller| {
+            h1.fetch_add(1, Ordering::SeqCst);
+            let cap: Arc<dyn FakeCap> = Arc::new(FakeImpl);
+            ctx.registry().provide::<dyn FakeCap>(registry::key("fake", "cap"), cap);
+        }),
+        Box::new(move |_ctx: &Context, _caller| {
+            h2.fetch_add(1, Ordering::SeqCst);
+        }),
+    ];
+
+    let stub = Stub::new("fake", "127.0.0.1:9000", factories);
+    assert_eq!(stub.name(), "fake", "name is the PROVIDER name for validate_requires");
     assert!(stub.requires().is_empty());
     stub.register(&ctx).unwrap();
 
+    assert_eq!(hits.load(Ordering::SeqCst), 2, "register must run every injected factory");
     assert!(
         ctx.registry()
-            .try_require::<dyn charactersapi::Ownership>(&registry::key("characters", "ownership"))
+            .try_require::<dyn FakeCap>(&registry::key("fake", "cap"))
             .is_some(),
-        "characters.ownership must resolve to an Arc<dyn Ownership> (inventory's authz dep)"
-    );
-    assert!(
-        ctx.registry()
-            .try_require::<dyn charactersapi::Player>(&registry::key("characters", "player"))
-            .is_some(),
-        "characters.player must resolve to an Arc<dyn Player> (front-door dep)"
+        "the capability factory's provide must reach the registry"
     );
 }
 
-// ---- Front-door route bindings: contributed to SLOT/BINDING_SLOT, not LOCAL_SLOT
-
-/// The `"characters"` stub contributes the player ops' `Operation`+`OpBinding` to
-/// the two route-table slots (matching the generated `route_bindings()`), and
-/// NOTHING to `LOCAL_SLOT` — so the gateway resolves them Remote, over the edge.
+/// A stub with ZERO factories is a wiring bug (nothing to provide): `register` fails
+/// loudly rather than registering an inert module — preserving the fail-loud
+/// guarantee the old per-provider `match`'s unknown-provider arm gave.
 #[test]
-fn stub_contributes_characters_route_bindings_but_no_local() {
+fn stub_with_no_factories_fails_loud() {
     let ctx = Context::new();
-    Stub::new("characters", "127.0.0.1:9000").register(&ctx).unwrap();
-
-    let expected: Vec<String> = charactersapi::player_rpc::route_bindings()
-        .into_iter()
-        .map(|rb| rb.operation.method)
-        .collect();
-    assert!(!expected.is_empty(), "player has #[http] ops to contribute");
-
-    let ops: Vec<opsapi::Operation> = ctx.contributions(opsapi::SLOT);
-    let bindings: Vec<opsapi::OpBinding> = ctx.contributions(opsapi::BINDING_SLOT);
-    let locals: Vec<opsapi::LocalOp> = ctx.contributions(opsapi::LOCAL_SLOT);
-
-    assert_eq!(
-        ops.iter().map(|o| o.method.clone()).collect::<Vec<_>>(),
-        expected,
-        "SLOT carries exactly the player route Operations"
-    );
-    assert_eq!(
-        bindings.iter().map(|b| b.method.clone()).collect::<Vec<_>>(),
-        expected,
-        "BINDING_SLOT carries the matching OpBindings"
-    );
-    assert!(locals.is_empty(), "no LocalOp — the stub has no in-process invoker");
-}
-
-/// The `"inventory"` stub contributes route bindings ONLY: SLOT/BINDING_SLOT carry
-/// the holdings ops, LOCAL_SLOT is empty, and — because inventory is a leaf — the
-/// registry has NO inventory capability provide (nothing requires one).
-#[test]
-fn stub_inventory_is_routes_only_no_capability() {
-    let ctx = Context::new();
-    Stub::new("inventory", "127.0.0.1:9001").register(&ctx).unwrap();
-
-    let expected: Vec<String> = inventoryapi::holdings_rpc::route_bindings()
-        .into_iter()
-        .map(|rb| rb.operation.method)
-        .collect();
-    assert!(!expected.is_empty(), "holdings has #[http] ops to contribute");
-
-    let ops: Vec<opsapi::Operation> = ctx.contributions(opsapi::SLOT);
-    let bindings: Vec<opsapi::OpBinding> = ctx.contributions(opsapi::BINDING_SLOT);
-    let locals: Vec<opsapi::LocalOp> = ctx.contributions(opsapi::LOCAL_SLOT);
-
-    assert_eq!(
-        ops.iter().map(|o| o.method.clone()).collect::<Vec<_>>(),
-        expected,
-        "SLOT carries exactly the holdings route Operations"
-    );
-    assert_eq!(bindings.len(), expected.len(), "BINDING_SLOT matches SLOT");
-    assert!(locals.is_empty(), "no LocalOp for a routes-only stub");
-}
-
-/// An unknown provider name is a wiring bug: `register` fails loudly rather than
-/// providing a dead client.
-#[test]
-fn stub_rejects_unknown_provider() {
-    let ctx = Context::new();
-    let stub = Stub::new("accounts", "127.0.0.1:9000");
+    let stub = Stub::new("fake", "127.0.0.1:9000", Vec::new());
     let err = stub.register(&ctx).unwrap_err();
-    assert!(err.to_string().contains("no edge client"), "{err}");
+    assert!(err.to_string().contains("zero factories"), "{err}");
 }

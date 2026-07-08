@@ -23,6 +23,10 @@ config = { workspace = true }
 inventory = { workspace = true }
 messaging = { workspace = true }
 remote = { workspace = true }
+# The characters glue: this cmd/ root passes `charactersrpc::remote_factories()` into
+# the generic `remote::Stub` (Step 4). rule 5 sanctions cmd/* importing the glue; it
+# still never names the characters IMPL crate.
+charactersrpc = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 anyhow = { workspace = true }
 tracing = { workspace = true }

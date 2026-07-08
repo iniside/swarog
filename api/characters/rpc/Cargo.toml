@@ -12,13 +12,16 @@ publish = false
 # per capability, plus the hand-written `remote_factories()` aggregator (the Step-4
 # generic-`remote` seam). Impl-tier: may import `edge`; reached ONLY by the
 # `characters` module itself (its own glue is sanctioned), `remote`, and `cmd/*` —
-# NEVER by a domain consumer (they import `charactersapi`, rule 4).
+# NEVER by a domain consumer (they import `charactersapi`, rule 4). Depends on
+# `remote` only to NAME `remote::RemoteFactory` (the return type of
+# `remote_factories()`); acyclic because `core/remote` imports no glue crate.
 [dependencies]
 charactersapi = { workspace = true }
 opsapi = { workspace = true }
 edge = { workspace = true }
 registry = { workspace = true }
 lifecycle = { workspace = true }
+remote = { workspace = true }
 rpc-macro = { workspace = true }
 async-trait = { workspace = true }
 serde_json = { workspace = true }

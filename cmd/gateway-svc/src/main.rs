@@ -38,15 +38,21 @@ async fn main() -> anyhow::Result<()> {
 
     // No provider modules: `Stub`s stand in for both `characters` and `inventory`, so
     // this process hosts no schema and every op dispatches Remote over the edge.
+    // `remote` is generic (Step 4): this composition root injects each provider's
+    // swap closures (`<name>rpc::remote_factories()`) explicitly, so `remote` names no
+    // provider. It reaches the two `<name>rpc` glue crates (sanctioned for `cmd/*`,
+    // rule 5) but never the provider IMPL crates.
     let mods: Vec<Box<dyn Module>> = vec![
         Box::new(gateway::Gateway::new().with_player_edge(player.clone())),
         Box::new(remote::Stub::new(
             "characters",
             &env_addr("CHARACTERS_EDGE_ADDR", "127.0.0.1:9000"),
+            charactersrpc::remote_factories(),
         )),
         Box::new(remote::Stub::new(
             "inventory",
             &env_addr("INVENTORY_EDGE_ADDR", "127.0.0.1:9001"),
+            inventoryrpc::remote_factories(),
         )),
     ];
 

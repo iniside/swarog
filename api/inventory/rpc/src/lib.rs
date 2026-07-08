@@ -14,8 +14,6 @@
 //! importing its OWN glue is sanctioned), `remote`, and `cmd/*` binaries — never by
 //! a domain consumer (they import `inventoryapi`, rule 4).
 
-use std::sync::Arc;
-
 // The glue's method signatures re-resolve at THIS invocation site (the metadata
 // travels as tokens), so the api crate's domain types + the identity/error types
 // must be in scope here exactly as they are in `inventoryapi`'s lib.rs.
@@ -24,19 +22,16 @@ use opsapi::{Error, Identity};
 
 inventoryapi::inventory_holdings_meta!(rpc_macro::generate_glue);
 
-/// One provider-swap action (the Step-4 generic-`remote` seam): applied to the
-/// process [`lifecycle::Context`] and the stub's edge-backed [`opsapi::Caller`], it
-/// provides a generated capability `Client` and/or contributes front-door route
-/// bindings — exactly what `remote`'s per-provider match arm used to hand-write.
-pub type RemoteFactory = Box<dyn Fn(&lifecycle::Context, Arc<dyn opsapi::Caller>) + Send + Sync>;
-
 /// The inventory provider's client-registration closures for a process where the
-/// provider lives in a PEER process (consumed by `remote::Stub`; Step 4 will pass
-/// them in from `cmd/*`). Inventory is a LEAF — no peer `require`s an inventory
-/// capability — so this contributes the holdings `route_bindings()` ONLY (front-door
-/// routing; no `LOCAL_SLOT`, the gateway dispatches remotely) and deliberately makes
-/// no capability provide: a dead provide is noise, add one when a consumer appears.
-pub fn remote_factories() -> Vec<RemoteFactory> {
+/// provider lives in a PEER process. Consumed by [`remote::Stub`]: the composition
+/// root (`cmd/*`) passes `inventoryrpc::remote_factories()` into `Stub::new`. The
+/// canonical [`remote::RemoteFactory`] type is owned by `core/remote`.
+///
+/// Inventory is a LEAF — no peer `require`s an inventory capability — so this
+/// contributes the holdings `route_bindings()` ONLY (front-door routing; no
+/// `LOCAL_SLOT`, the gateway dispatches remotely) and deliberately makes no capability
+/// provide: a dead provide is noise, add one when a consumer appears.
+pub fn remote_factories() -> Vec<remote::RemoteFactory> {
     vec![Box::new(|ctx, _caller| {
         for rb in holdings_rpc::route_bindings() {
             ctx.contribute(opsapi::SLOT, rb.operation);

@@ -46,7 +46,13 @@ async fn main() -> anyhow::Result<()> {
         Box::new(config::Config::new()),
         Box::new(inventory::Inventory::new()),
         Box::new(messaging::Messaging::new()),
-        Box::new(remote::Stub::new("characters", &characters_edge_addr())),
+        // `remote` is generic (Step 4): this composition root injects the characters
+        // provider-swap closures explicitly, so `remote` never names `characters`.
+        Box::new(remote::Stub::new(
+            "characters",
+            &characters_edge_addr(),
+            charactersrpc::remote_factories(),
+        )),
     ];
 
     // B now SERVES inventory ops on its own edge (`EDGE_ADDR`, default `:9001` in the

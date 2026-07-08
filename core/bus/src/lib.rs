@@ -17,7 +17,7 @@
 //! Alongside the async in-process core, the bus carries an optional, nil-able
 //! [`Transport`] for the *durable* plane ([`Bus::emit_tx`] / [`Bus::on_tx`] /
 //! [`Bus::on_tx_raw`], [`Bus::set_transport`], [`Error::NoTransport`]). The
-//! transport itself is implemented by `modules/messaging` (outbox log + inbox
+//! transport itself is implemented by `core/messaging` (outbox log + inbox
 //! dedup + relay) and installed via [`Bus::set_transport`] — so the dependency
 //! points module → leaf and `bus` stays free of any module import (hard
 //! constraint #1). The [`Transport`] deals ONLY in topic strings + bytes; the
@@ -61,7 +61,7 @@ struct Inner {
 #[derive(Default)]
 pub struct Bus {
     inner: Mutex<Inner>,
-    /// The durable-plane hook — `None` until `modules/messaging` installs it in
+    /// The durable-plane hook — `None` until `core/messaging` installs it in
     /// its phase-1 `register` (see [`Bus::set_transport`]). Kept in its own lock
     /// so installing/reading it never contends with the async `subs`/`tasks`.
     transport: Mutex<Option<Arc<dyn Transport>>>,
@@ -154,7 +154,7 @@ impl Bus {
     /// Installs the durable [`Transport`]. **Panics on a double-set**, so a
     /// second installer is a loud programmer error rather than a silent override
     /// (mirroring Go's `SetTransport` and `registry::provide`'s duplicate panic).
-    /// `modules/messaging` calls this exactly once, in its phase-1 `register`.
+    /// `core/messaging` calls this exactly once, in its phase-1 `register`.
     pub fn set_transport(&self, t: Arc<dyn Transport>) {
         let mut slot = self.transport.lock().unwrap();
         if slot.is_some() {
@@ -204,7 +204,7 @@ impl Bus {
     /// **BLOCKER-2 — panics if no transport is installed.** Go's `OnTx` silently
     /// no-ops here; this sketch refuses to, because a dropped durable subscription
     /// that builds clean and never delivers is exactly the trap the split proof
-    /// must not hide. The invariant that makes the panic safe: `modules/messaging`
+    /// must not hide. The invariant that makes the panic safe: `core/messaging`
     /// installs the transport in its phase-1 `register`, so any consumer's phase-2
     /// `on_tx` (a later phase) always finds it. A process that legitimately hosts
     /// no durable plane simply must not call `on_tx`.
@@ -282,7 +282,7 @@ impl Error {
 }
 
 /// The durable plane's hook — a nil-able seam this leaf declares but never
-/// implements (`modules/messaging` does, installing it via [`Bus::set_transport`]).
+/// implements (`core/messaging` does, installing it via [`Bus::set_transport`]).
 /// It deals ONLY in topic strings + `[u8]`: the generic payload `T` is already
 /// collapsed to bytes at the [`Bus::emit_tx`]/[`Bus::on_tx`] boundary, so the
 /// transport never sees a type parameter (mirrors Go's `bus.Transport`).

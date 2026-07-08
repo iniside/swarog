@@ -10,6 +10,11 @@ members = [
     "core/edge",
     "core/outbox",
     "core/app",
+    # Process infrastructure (Go's modules/messaging + modules/remote): the durable
+    # transport plane and the topology-blind registry SWAP — not domains, so they live
+    # in core/ and the fortress rule applies to a clean modules/ (Step 4).
+    "core/messaging",
+    "core/remote",
     # Tooling — codegen + the dev-CA minter (Go's tools/).
     "tools/rpc-macro",
     "tools/rpc-macro-tests",
@@ -31,8 +36,6 @@ members = [
     "modules/characters",
     "modules/inventory",
     "modules/gateway",
-    "modules/messaging",
-    "modules/remote",
     # Process entrypoints (Go's cmd/).
     "cmd/server",
     "cmd/characters-svc",
@@ -88,6 +91,10 @@ opsapi = { path = "core/opsapi" }
 edge = { path = "core/edge" }
 outbox = { path = "core/outbox" }
 app = { path = "core/app" }
+# Process infrastructure moved into core/ (Step 4): messaging (durable transport plane)
+# and remote (the topology-blind registry SWAP; generic — imports no api/ crate).
+messaging = { path = "core/messaging" }
+remote = { path = "core/remote" }
 
 # ---- Tooling (tools/): the #[rpc] codegen. ----
 rpc-macro = { path = "tools/rpc-macro" }
@@ -109,5 +116,3 @@ config = { path = "modules/config" }
 characters = { path = "modules/characters" }
 inventory = { path = "modules/inventory" }
 gateway = { path = "modules/gateway" }
-messaging = { path = "modules/messaging" }
-remote = { path = "modules/remote" }
