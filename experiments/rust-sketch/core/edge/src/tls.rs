@@ -35,6 +35,13 @@ use crate::Error;
 /// requires ALPN, and it must match on both sides.
 pub const ALPN: &[u8] = b"edge";
 
+/// The ALPN protocol id for the PLAYER-facing plane. Deliberately DIFFERENT from
+/// [`ALPN`] so the two planes can never cross at the handshake: an internal client
+/// dialing a player port (or a player client dialing an internal port) fails ALPN
+/// negotiation before any envelope is read — defence in depth on top of the
+/// client-cert mismatch.
+pub const PLAYER_ALPN: &[u8] = b"edge-player";
+
 const CA_COMMON_NAME: &str = "gamebackend-edge-dev-ca";
 const LEAF_COMMON_NAME: &str = "gamebackend-edge-leaf";
 
@@ -210,6 +217,93 @@ impl DevCA {
     }
 }
 
+// ---------------------------------------------------------------------------
+// The PLAYER plane: server-cert-only TLS on the public front door.
+// ---------------------------------------------------------------------------
+
+impl DevCA {
+    /// Builds the PLAYER-facing server config: presents a CA-signed server leaf but
+    /// requires NO client certificate — a real player cannot hold a CA-signed leaf,
+    /// so the public port authenticates only the SERVER (the client is instead
+    /// authenticated per-call, by the bearer token in the player envelope). ALPN is
+    /// [`PLAYER_ALPN`], never [`ALPN`], so this config can never serve an internal
+    /// peer by accident.
+    pub fn server_tls_public(&self) -> Result<ServerConfig, Error> {
+        let (chain, key) = self.leaf(true)?;
+        let mut cfg = ServerConfig::builder_with_provider(self.provider.clone())
+            .with_protocol_versions(&[&rustls::version::TLS13])
+            .map_err(Error::Rustls)?
+            .with_no_client_auth()
+            .with_single_cert(chain, key)
+            .map_err(Error::Rustls)?;
+        cfg.alpn_protocols = vec![PLAYER_ALPN.to_vec()];
+        Ok(cfg)
+    }
+
+    /// The key-less trust view of this CA — what a player distribution actually
+    /// holds. Handy for in-process tests dialing a [`crate::PlayerServer`] without
+    /// writing the cert to disk first.
+    pub fn trust_anchor(&self) -> TrustAnchor {
+        TrustAnchor { roots: self.roots.clone(), provider: self.provider.clone() }
+    }
+
+    /// [`TrustAnchor::client_tls_public`] via [`DevCA::trust_anchor`] — the player
+    /// CLIENT config for in-process tests that already hold the full CA.
+    pub fn client_tls_public(&self) -> Result<ClientConfig, Error> {
+        self.trust_anchor().client_tls_public()
+    }
+
+    /// Loads ONLY the CA certificate from a PEM file, yielding a [`TrustAnchor`]. A
+    /// real player holds the anchor cert and NOTHING else — never the signing key
+    /// ([`DevCA::load`] demands both because internal peers must mint leaves; a
+    /// player must not be able to). This is the trust path the `playercli` tool uses.
+    pub fn load_cert_only(cert_path: &str) -> Result<TrustAnchor, Error> {
+        let cert_pem = std::fs::read_to_string(cert_path)
+            .map_err(|e| Error::Ca(format!("read CA cert {cert_path:?}: {e}")))?;
+        let ca_der = rustls_pemfile::certs(&mut cert_pem.as_bytes())
+            .next()
+            .ok_or_else(|| Error::Ca(format!("CA cert {cert_path:?} has no PEM CERTIFICATE")))?
+            .map_err(|e| Error::Ca(format!("parse CA cert {cert_path:?}: {e}")))?;
+        let mut roots = RootCertStore::empty();
+        roots
+            .add(ca_der)
+            .map_err(|e| Error::Ca(format!("add CA to root store: {e}")))?;
+        Ok(TrustAnchor {
+            roots: Arc::new(roots),
+            provider: Arc::new(rustls::crypto::ring::default_provider()),
+        })
+    }
+}
+
+/// The trust-anchor-only side of the player plane: the CA CERTIFICATE without the
+/// signing key. It can verify a server that chains to the anchor but cannot mint or
+/// present any certificate itself — exactly the material a shipped player client
+/// holds (a dev stand-in for trusting a real WebPKI cert in production).
+pub struct TrustAnchor {
+    /// One root store containing EXACTLY the anchor cert — no system-roots fallback,
+    /// same rule as the mTLS plane (point 4).
+    roots: Arc<RootCertStore>,
+    /// The explicit ring crypto provider (no process-global default reliance).
+    provider: Arc<rustls::crypto::CryptoProvider>,
+}
+
+impl TrustAnchor {
+    /// Builds the PLAYER-facing client config: verifies the server against the
+    /// anchor, presents NO client certificate (a player has none to present), TLS
+    /// 1.3 only, ALPN [`PLAYER_ALPN`]. Against the internal mTLS server this config
+    /// MUST fail the handshake (no client cert AND wrong ALPN) — the planes don't
+    /// cross.
+    pub fn client_tls_public(&self) -> Result<ClientConfig, Error> {
+        let mut cfg = ClientConfig::builder_with_provider(self.provider.clone())
+            .with_protocol_versions(&[&rustls::version::TLS13])
+            .map_err(Error::Rustls)?
+            .with_root_certificates((*self.roots).clone())
+            .with_no_client_auth();
+        cfg.alpn_protocols = vec![PLAYER_ALPN.to_vec()];
+        Ok(cfg)
+    }
+}
+
 /// Fixed CA parameters (a P-256 ECDSA CA with a stable CN + cert-sign usages).
 fn ca_params() -> Result<CertificateParams, Error> {
     let mut params = CertificateParams::new(Vec::<String>::new()).map_err(Error::Rcgen)?;
@@ -323,5 +417,35 @@ mod tests {
 
         let _ = std::fs::remove_file(cert);
         let _ = std::fs::remove_file(key);
+    }
+
+    #[test]
+    fn public_configs_carry_the_player_alpn() {
+        let ca = DevCA::generate().unwrap();
+        let s = ca.server_tls_public().unwrap();
+        assert_eq!(s.alpn_protocols, vec![PLAYER_ALPN.to_vec()]);
+        let c = ca.client_tls_public().unwrap();
+        assert_eq!(c.alpn_protocols, vec![PLAYER_ALPN.to_vec()]);
+        // The two planes must never share an ALPN id.
+        assert_ne!(ALPN, PLAYER_ALPN);
+    }
+
+    #[test]
+    fn load_cert_only_builds_a_client_config_without_the_key() {
+        let dir = std::env::temp_dir();
+        let cert = dir.join(format!("edgeca-anchor-{}.crt", std::process::id()));
+        let key = dir.join(format!("edgeca-anchor-{}.key", std::process::id()));
+        DevCA::generate()
+            .unwrap()
+            .write_pem(cert.to_str().unwrap(), key.to_str().unwrap())
+            .unwrap();
+        // Delete the key BEFORE loading — proof the anchor path never touches it.
+        std::fs::remove_file(&key).unwrap();
+
+        let anchor = DevCA::load_cert_only(cert.to_str().unwrap()).unwrap();
+        let cfg = anchor.client_tls_public().unwrap();
+        assert_eq!(cfg.alpn_protocols, vec![PLAYER_ALPN.to_vec()]);
+
+        let _ = std::fs::remove_file(cert);
     }
 }

@@ -112,10 +112,12 @@ impl Server {
     }
 }
 
-/// A running edge server. Drop or [`RunningServer::close`] to stop.
+/// A running edge server (either plane — the internal mTLS [`Server`] and the
+/// player-facing [`crate::PlayerServer`] both return one). Drop or
+/// [`RunningServer::close`] to stop.
 pub struct RunningServer {
-    endpoint: quinn::Endpoint,
-    local_addr: SocketAddr,
+    pub(crate) endpoint: quinn::Endpoint,
+    pub(crate) local_addr: SocketAddr,
 }
 
 impl RunningServer {
@@ -210,7 +212,8 @@ async fn serve_stream(mut send: quinn::SendStream, mut recv: quinn::RecvStream, 
 
 /// Runs a handler future, containing a panic (or a panicking codec) into an error
 /// result so one bad call cannot take down the stream task silently (Go's `recover`).
-async fn run_caught(fut: BoxFuture<'static, HandlerResult>) -> HandlerResult {
+/// Shared with the player plane (`player.rs`).
+pub(crate) async fn run_caught(fut: BoxFuture<'static, HandlerResult>) -> HandlerResult {
     match std::panic::AssertUnwindSafe(fut).catch_unwind().await {
         Ok(r) => r,
         Err(p) => Err(format!("edge: handler panic: {}", panic_message(&p)).into()),
@@ -227,7 +230,7 @@ fn panic_message(p: &Box<dyn std::any::Any + Send>) -> String {
     }
 }
 
-fn ok_response(bytes: Vec<u8>) -> Response {
+pub(crate) fn ok_response(bytes: Vec<u8>) -> Response {
     // An empty handler response (a no-return op) omits the payload; otherwise the
     // bytes are the domain response envelope, preserved verbatim as raw JSON.
     let payload = if bytes.is_empty() {
@@ -241,6 +244,6 @@ fn ok_response(bytes: Vec<u8>) -> Response {
     Response { ok: true, payload, error: None }
 }
 
-fn err_response(msg: &str) -> Response {
+pub(crate) fn err_response(msg: &str) -> Response {
     Response { ok: false, payload: None, error: Some(msg.to_string()) }
 }

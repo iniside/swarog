@@ -21,9 +21,13 @@ pub(crate) struct Request {
 }
 
 /// The on-wire envelope for a single reply. `ok` distinguishes a successful
-/// `payload` from a handler/dispatch `error`.
+/// `payload` from a handler/dispatch `error`. Public (unlike [`Request`]) because
+/// BOTH planes share it: the internal mTLS plane and the player plane reply with the
+/// same shape, and a player-side tool needs to decode it. `ok:false` is reserved for
+/// TRANSPORT faults (framing, envelope parse, missing handler/method); a completed
+/// operation is always `ok:true` with its domain status riding INSIDE `payload`.
 #[derive(Debug, Serialize, Deserialize)]
-pub(crate) struct Response {
+pub struct Response {
     pub ok: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub payload: Option<Box<RawValue>>,

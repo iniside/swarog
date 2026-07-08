@@ -11,19 +11,26 @@
 //!   ([`frame`]); one envelope per stream (the stream is the correlation).
 //! - [`DevCA`] is the shared dev trust anchor for the hop's MUTUAL TLS — the
 //!   5-point spec is enforced in [`tls`].
+//! - [`PlayerServer`]/[`PlayerClient`] are the separate PLAYER-facing plane:
+//!   server-cert-only TLS (players hold no CA-signed leaf), its own ALPN
+//!   ([`PLAYER_ALPN`]) and envelope ([`PlayerRequest`], bearer `token` instead of a
+//!   trusted `identity`), and a 1 MiB frame cap ([`MAX_PLAYER_FRAME`]).
 
 mod client;
 mod codec;
 mod frame;
+mod player;
 mod server;
 mod tls;
 mod wire;
 
 pub use client::Client;
 pub use codec::{default_codec, Codec, JsonCodec};
-pub use frame::{frame_bytes, read_frame, write_frame, MAX_FRAME};
+pub use frame::{frame_bytes, read_frame, read_frame_max, write_frame, MAX_FRAME};
+pub use player::{PlayerClient, PlayerHandler, PlayerRequest, PlayerServer, MAX_PLAYER_FRAME};
 pub use server::{ForwardHandler, Handler, HandlerResult, IdentityHandler, RunningServer, Server};
-pub use tls::{dev_ca_from_env, shared_dev_ca, DevCA, ALPN};
+pub use tls::{dev_ca_from_env, shared_dev_ca, DevCA, TrustAnchor, ALPN, PLAYER_ALPN};
+pub use wire::Response;
 
 /// Errors from the edge transport.
 #[derive(Debug, thiserror::Error)]
@@ -259,5 +266,201 @@ mod e2e_tests {
                 assert!(r.is_err(), "an un/mis-certed client must not be served, got {r:?}");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod player_e2e_tests {
+    use super::*;
+    use futures::future::BoxFuture;
+    use std::net::SocketAddr;
+    use std::sync::Arc;
+
+    fn loopback() -> SocketAddr {
+        "127.0.0.1:0".parse().unwrap()
+    }
+
+    fn player_handler<F>(f: F) -> PlayerHandler
+    where
+        F: Fn(String, Option<String>, Vec<u8>) -> BoxFuture<'static, HandlerResult>
+            + Send
+            + Sync
+            + 'static,
+    {
+        Arc::new(f)
+    }
+
+    fn internal_handler<F>(f: F) -> Handler
+    where
+        F: Fn(Vec<u8>) -> BoxFuture<'static, HandlerResult> + Send + Sync + 'static,
+    {
+        Arc::new(f)
+    }
+
+    /// A [`PlayerServer`] whose handler reflects (method, token, payload) back as a
+    /// JSON object — lets one assertion see everything the transport threaded through.
+    fn reflecting_server() -> PlayerServer {
+        let srv = PlayerServer::new();
+        srv.set_handler(player_handler(|method, token, payload| {
+            Box::pin(async move {
+                let token = token.map_or("<none>".into(), |t| t);
+                let payload = String::from_utf8_lossy(&payload).into_owned();
+                Ok(format!(r#"{{"method":"{method}","token":"{token}","payload":{payload}}}"#)
+                    .into_bytes())
+            })
+        }));
+        srv
+    }
+
+    // Player-plane roundtrip WITH and WITHOUT a token: the token is threaded through
+    // verbatim (an unverified claim — verification is the front's job, not the
+    // transport's) and an omitted token still dispatches (the serde(default) proof
+    // over the live wire, not just the envelope unit test).
+    #[tokio::test]
+    async fn player_roundtrip_with_and_without_token() {
+        let ca = DevCA::generate().unwrap();
+        let running = reflecting_server().listen(loopback(), &ca).unwrap();
+
+        let client = PlayerClient::dial(running.local_addr(), &ca.trust_anchor()).await.unwrap();
+
+        let resp = client
+            .call("characters.create", Some("dev-alice"), br#"{"name":"hero"}"#)
+            .await
+            .unwrap();
+        assert_eq!(
+            resp,
+            br#"{"method":"characters.create","token":"dev-alice","payload":{"name":"hero"}}"#
+        );
+
+        // No token: the AuthNone shape — must dispatch, handler sees none.
+        let resp = client.call("leaderboard.top", None, br#"{"n":10}"#).await.unwrap();
+        assert_eq!(resp, br#"{"method":"leaderboard.top","token":"<none>","payload":{"n":10}}"#);
+
+        client.close();
+        running.close();
+    }
+
+    // The playercli trust path: the dialer holds ONLY the CA certificate (the key is
+    // DELETED before loading — a player never has it) and still verifies + reaches a
+    // live PlayerServer whose CA was independently loaded from the same files.
+    #[tokio::test]
+    async fn load_cert_only_trust_anchor_dials_a_live_player_server() {
+        let dir = std::env::temp_dir();
+        let cert = dir.join(format!("edge-player-{}.crt", std::process::id()));
+        let key = dir.join(format!("edge-player-{}.key", std::process::id()));
+        DevCA::generate()
+            .unwrap()
+            .write_pem(cert.to_str().unwrap(), key.to_str().unwrap())
+            .unwrap();
+
+        let server_ca = DevCA::load(cert.to_str().unwrap(), key.to_str().unwrap()).unwrap();
+        let running = reflecting_server().listen(loopback(), &server_ca).unwrap();
+
+        // The player side: cert only, key gone.
+        std::fs::remove_file(&key).unwrap();
+        let anchor = DevCA::load_cert_only(cert.to_str().unwrap()).unwrap();
+        let client = PlayerClient::dial(running.local_addr(), &anchor).await.unwrap();
+        let resp = client.call("echo", None, br#"{"anchor":true}"#).await.unwrap();
+        assert_eq!(resp, br#"{"method":"echo","token":"<none>","payload":{"anchor":true}}"#);
+
+        client.close();
+        running.close();
+        let _ = std::fs::remove_file(cert);
+    }
+
+    // Planes don't cross (direction 1): a PlayerClient — no client cert, player
+    // ALPN — succeeds against the PlayerServer but MUST be rejected by the internal
+    // mTLS Server (ALPN mismatch + missing client cert), even though both chain to
+    // the same CA.
+    #[tokio::test]
+    async fn player_client_is_rejected_by_the_internal_mtls_server() {
+        let ca = DevCA::generate().unwrap();
+
+        // Sanity: the same client shape IS served on the player plane.
+        let player_running = reflecting_server().listen(loopback(), &ca).unwrap();
+        let ok_client =
+            PlayerClient::dial(player_running.local_addr(), &ca.trust_anchor()).await.unwrap();
+        ok_client.call("echo", None, b"null").await.unwrap();
+        ok_client.close();
+        player_running.close();
+
+        // The internal mTLS plane rejects it.
+        let mut srv = Server::new();
+        srv.handle("echo", internal_handler(|p| Box::pin(async move { Ok(p) })));
+        let running = srv.listen(loopback(), &ca).unwrap();
+
+        match PlayerClient::dial(running.local_addr(), &ca.trust_anchor()).await {
+            Err(_) => { /* rejected at handshake — the expected path */ }
+            Ok(client) => {
+                let r = client.call("echo", None, b"null").await;
+                assert!(r.is_err(), "a player client must not be served on the mTLS plane, got {r:?}");
+            }
+        }
+        running.close();
+    }
+
+    // Planes don't cross (direction 2): an internal mTLS Client — full client cert
+    // but internal ALPN — must fail against the PlayerServer.
+    #[tokio::test]
+    async fn internal_client_is_rejected_by_the_player_server() {
+        let ca = DevCA::generate().unwrap();
+        let running = reflecting_server().listen(loopback(), &ca).unwrap();
+        let addr = running.local_addr();
+
+        match Client::dial(addr, &ca).await {
+            Err(_) => { /* rejected at handshake — the expected path */ }
+            Ok(client) => {
+                let r = client.call_raw("echo", b"null").await;
+                assert!(r.is_err(), "an internal client must not be served on the player plane, got {r:?}");
+            }
+        }
+        running.close();
+    }
+
+    // The player frame cap: a > 1 MiB payload is rejected SERVER-side (the length
+    // prefix is checked before any body allocation, and the receive side is stopped
+    // so the blocked sender errors out instead of deadlocking) — and the rejection
+    // is per-stream: the same connection serves a normal call right after.
+    #[tokio::test]
+    async fn oversize_player_frame_is_rejected_without_killing_the_connection() {
+        let ca = DevCA::generate().unwrap();
+        let running = reflecting_server().listen(loopback(), &ca).unwrap();
+        let client = PlayerClient::dial(running.local_addr(), &ca.trust_anchor()).await.unwrap();
+
+        // A 2 MiB JSON string payload — well over MAX_PLAYER_FRAME but under the
+        // internal MAX_FRAME, so only the player-plane cap can be what rejects it.
+        let mut big = Vec::with_capacity((2 << 20) + 2);
+        big.push(b'"');
+        big.resize((2 << 20) + 1, b'x');
+        big.push(b'"');
+        let err = client.call("echo", None, &big).await.unwrap_err();
+        // Depending on timing the client sees the server's ok:false envelope or its
+        // own blocked write failing on the stopped stream — either way, rejected.
+        assert!(
+            !matches!(err, Error::FrameTooLarge { .. }),
+            "the CLIENT must not be what rejects (server-side cap is the boundary), got {err:?}"
+        );
+
+        // The connection survives: a normal call still works.
+        let resp = client.call("echo", None, br#"{"ok":1}"#).await.unwrap();
+        assert_eq!(resp, br#"{"method":"echo","token":"<none>","payload":{"ok":1}}"#);
+
+        client.close();
+        running.close();
+    }
+
+    // A PlayerServer with no handler installed answers every call with a transport
+    // ok:false (front not wired) instead of hanging or crashing.
+    #[tokio::test]
+    async fn unwired_player_server_reports_front_not_wired() {
+        let ca = DevCA::generate().unwrap();
+        let running = PlayerServer::new().listen(loopback(), &ca).unwrap();
+        let client = PlayerClient::dial(running.local_addr(), &ca.trust_anchor()).await.unwrap();
+
+        let err = client.call("anything", None, b"null").await.unwrap_err();
+        assert!(matches!(&err, Error::Remote(msg) if msg.contains("not wired")), "{err:?}");
+
+        client.close();
+        running.close();
     }
 }

@@ -115,13 +115,13 @@ impl opsapi::Caller for Client {
 }
 
 /// Wraps already-encoded JSON payload bytes into a `RawValue` for the envelope. An
-/// empty payload is treated as JSON `null` (a call with no request body). Invalid
-/// JSON is a programmer error surfaced as [`Error::Codec`].
-fn raw_from_bytes(payload: &[u8]) -> Result<Box<RawValue>, Error> {
-    let s = if payload.is_empty() {
-        "null".to_string()
-    } else {
-        String::from_utf8(payload.to_vec()).map_err(|e| Error::Tls(format!("payload not utf-8: {e}")))?
-    };
-    RawValue::from_string(s).map_err(Error::Codec)
+/// empty payload is treated as JSON `null` (a call with no request body). An invalid
+/// payload (non-UTF-8 or non-JSON) is a programmer error surfaced as
+/// [`Error::Codec`] — serde's own parse error, never mislabelled as TLS. Shared with
+/// the player plane (`player.rs`).
+pub(crate) fn raw_from_bytes(payload: &[u8]) -> Result<Box<RawValue>, Error> {
+    if payload.is_empty() {
+        return RawValue::from_string("null".to_string()).map_err(Error::Codec);
+    }
+    serde_json::from_slice::<Box<RawValue>>(payload).map_err(Error::Codec)
 }

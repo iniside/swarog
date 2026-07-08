@@ -37,11 +37,19 @@ pub async fn write_frame<W: AsyncWrite + Unpin>(w: &mut W, b: &[u8]) -> Result<(
 /// length, guarded against [`MAX_FRAME`], then exactly that many payload bytes. A
 /// truncated frame surfaces as an `UnexpectedEof` (Go's `io.ErrUnexpectedEOF`).
 pub async fn read_frame<R: AsyncRead + Unpin>(r: &mut R) -> Result<Vec<u8>, Error> {
+    read_frame_max(r, MAX_FRAME).await
+}
+
+/// [`read_frame`] with an explicit cap — the seam that lets the PLAYER plane read
+/// with its much tighter [`crate::MAX_PLAYER_FRAME`] while the internal plane keeps
+/// [`MAX_FRAME`]. The length prefix is checked BEFORE any body allocation, so an
+/// attacker-claimed huge length costs nothing.
+pub async fn read_frame_max<R: AsyncRead + Unpin>(r: &mut R, max: usize) -> Result<Vec<u8>, Error> {
     let mut len_buf = [0u8; 4];
     r.read_exact(&mut len_buf).await.map_err(Error::Io)?;
     let n = u32::from_be_bytes(len_buf) as usize;
-    if n > MAX_FRAME {
-        return Err(Error::FrameTooLarge { size: n, max: MAX_FRAME });
+    if n > max {
+        return Err(Error::FrameTooLarge { size: n, max });
     }
     let mut b = vec![0u8; n];
     r.read_exact(&mut b).await.map_err(Error::Io)?;
