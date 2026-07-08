@@ -105,11 +105,11 @@ function Admin-Note {
 # Both modes build edgeca + playercli: each topology fronts players over QUIC
 # (PLAYER_EDGE_ADDR), so both need the shared dev CA (edgeca) and a client (playercli).
 if ($Mode -eq 'monolith') {
-    Write-Host 'Building server (monolith) + edgeca + playercli ...'
-    cargo build -p server -p edgeca -p playercli
+    Write-Host 'Building server (monolith) + edgeca + playercli + csharp-client-gen ...'
+    cargo build -p server -p edgeca -p playercli -p csharp-client-gen
 } else {
-    Write-Host 'Building edgeca + the 11 split services + playercli ...'
-    cargo build -p edgeca -p playercli `
+    Write-Host 'Building edgeca + the 11 split services + playercli + csharp-client-gen ...'
+    cargo build -p edgeca -p playercli -p csharp-client-gen `
         -p accounts-svc -p audit-svc -p scheduler-svc -p rating-svc -p leaderboard-svc `
         -p match-svc -p characters-svc -p config-svc -p inventory-svc -p gateway-svc -p admin-svc
 }

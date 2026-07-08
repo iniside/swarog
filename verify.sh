@@ -4,33 +4,41 @@
 # Usage:
 #   ./verify.sh                # --fast: blocking stages only (default)
 #   ./verify.sh --fast         # same as default
-#   ./verify.sh --all          # + advisory: public-api, fuzz, topiccheck
+#   ./verify.sh --all          # + advisory: public-api, fuzz, csharp-client, topiccheck
 #   ./verify.sh --slow         # + cargo-mutants mutation testing (very slow)
 #   ./verify.sh --all --strict # advisory failures ALSO flip the exit code
 #   ./verify.sh --all --no-install  # never auto-install a missing CLI (it SKIPs)
 #
 # BLOCKING (always runs):
-#   1. build       cargo build --workspace
-#   2. clippy      cargo clippy --workspace --all-targets -- -D warnings
-#   3. test        cargo test --workspace (unit + proptest properties, see
-#                  core/outbox/src/tests.rs, core/edge/src/{frame,codec,server}_tests.rs)
-#   4. cargo-audit cargo audit against the RustSec advisory DB (auto-installs
-#                  cargo-audit; SKIPs if the advisory DB fetch fails offline)
-#   5. fortress    every domain module builds as its own -svc + archcheck dependency law
-#   6. split-proof ./split-proof.sh -- the eleven-process topology proof
+#   1. build         cargo build --workspace
+#   2. clippy        cargo clippy --workspace --all-targets -- -D warnings
+#   3. test          cargo test --workspace (unit + proptest properties, see
+#                    core/outbox/src/tests.rs, core/edge/src/{frame,codec,server}_tests.rs)
+#   4. cargo-audit   cargo audit against the RustSec advisory DB (auto-installs
+#                    cargo-audit; SKIPs if the advisory DB fetch fails offline)
+#   5. fortress      every domain module builds as its own -svc + archcheck dependency law
+#   6. codegen-fresh regenerates clients/csharp/Generated via csharp-client-gen and
+#                    diffs against the working tree -- FAILs if a contract changed
+#                    without regenerating. Pure Rust + git, no dotnet/QUIC, runs
+#                    everywhere.
+#   7. split-proof   ./split-proof.sh -- the eleven-process topology proof
 #
 # ADVISORY (--all):
-#   7. public-api  cargo-public-api additive-only diff of the api/*api and
-#                  api/*events contract crates vs HEAD (apidiff parity; needs a
-#                  nightly toolchain for rustdoc JSON -- auto-installed, SKIPs
-#                  cleanly if unavailable)
-#   8. fuzz        cargo-fuzz targets in core/edge/fuzz/ (frame_decode, wire_decode),
-#                  10s each. SKIPs if cargo-fuzz can't execute on this platform
-#                  (Windows lacks the libFuzzer sanitizer runtime as of this writing --
-#                  the targets still build/check and are exercised for real on Linux/CI)
-#   9. topiccheck  builds the monolith module set with a recording bus transport and
-#                  fails (under --strict) on any bus::define'd topic with no subscriber
-#                  (the Rust redesign of Go's whole-program topiccheck)
+#   8. public-api    cargo-public-api additive-only diff of the api/*api and
+#                    api/*events contract crates vs HEAD (apidiff parity; needs a
+#                    nightly toolchain for rustdoc JSON -- auto-installed, SKIPs
+#                    cleanly if unavailable)
+#   9. fuzz          cargo-fuzz targets in core/edge/fuzz/ (frame_decode, wire_decode),
+#                    10s each. SKIPs if cargo-fuzz can't execute on this platform
+#                    (Windows lacks the libFuzzer sanitizer runtime as of this writing --
+#                    the targets still build/check and are exercised for real on Linux/CI)
+#  10. csharp-client builds clients/csharp (gbclient) and drives it over pure QUIC
+#                    against a self-contained monolith: raw Unauthorized/NotFound
+#                    negatives + a typed register->create->list flow. SKIPs if dotnet
+#                    is absent or QuicConnection.IsSupported is false (msquic missing).
+#  11. topiccheck    builds the monolith module set with a recording bus transport and
+#                    fails (under --strict) on any bus::define'd topic with no subscriber
+#                    (the Rust redesign of Go's whole-program topiccheck)
 #
 # SLOW (--slow):
 #   10. mutants    cargo-mutants over the pure foundation crates (edge, gateway,
@@ -290,6 +298,149 @@ mutants_stage() {
     fi
 }
 
+# --- Blocking stage: codegen-fresh (generated C# client drift) ---------------
+# tools/csharp-client-gen scrapes the player-reachable api/*api crates and emits
+# clients/csharp/Generated/*.cs deterministically. If the working tree's generated
+# files disagree with a fresh run, someone changed a contract (or the generator)
+# without regenerating -- FAIL. Pure Rust + git, no dotnet/QUIC, so it runs on every
+# machine regardless of msquic availability (unlike the csharp-client stage below).
+codegen_fresh() {
+    cargo run -q -p csharp-client-gen -- --out clients/csharp/Generated \
+        && git diff --exit-code -- clients/csharp/Generated
+}
+
+# --- Advisory stage: csharp-client (external C# QUIC client, SKIP-aware) -----
+# Builds the hand-written C# transport/CLI (clients/csharp, gbclient) and drives it
+# against a self-contained monolith (NOT split-proof's processes -- those are already
+# torn down by the time this stage runs) over pure QUIC, proving an EXTERNAL client
+# (no Rust linkage) can dial the player plane, get Unauthorized/NotFound where
+# expected, and complete a full register->create->list flow through the generated
+# typed client. SKIPs (not FAILs) when dotnet is absent or when the first scenario's
+# raw exit code is 3 (QuicConnection.IsSupported false -- msquic missing, the
+# documented Linux/CI case; see docs/reference/csharp-client.md).
+CSHARP_PORT=8099
+CSHARP_PLAYER_PORT=9100
+CSHARP_DEFAULT_DSN="postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable"
+
+csharp_kill_stragglers() {
+    if command -v taskkill >/dev/null 2>&1; then
+        taskkill //F //IM server.exe >/dev/null 2>&1 || true
+    fi
+    pkill -f "target/debug/server" 2>/dev/null || true
+}
+
+csharp_stage() {
+    local log="$VERIFY_DIR/csharp-client.log"; : >"$log"
+    echo "== csharp-client =="
+    if ! command -v dotnet >/dev/null 2>&1; then
+        echo "  SKIP (dotnet unavailable)"
+        echo "dotnet unavailable" >"$log"
+        add_result csharp-client SKIP false
+        return
+    fi
+
+    echo "--- dotnet build clients/csharp -c Release ---" >>"$log"
+    if ! dotnet build clients/csharp -c Release >>"$log" 2>&1; then
+        echo "  FAIL (dotnet build, see run/verify/csharp-client.log)"
+        add_result csharp-client FAIL false
+        return
+    fi
+
+    echo "--- cargo build -p server ---" >>"$log"
+    if ! cargo build -p server >>"$log" 2>&1; then
+        echo "  FAIL (cargo build -p server, see run/verify/csharp-client.log)"
+        add_result csharp-client FAIL false
+        return
+    fi
+
+    local dsn="${DATABASE_URL:-$CSHARP_DEFAULT_DSN}"
+    local exe=""
+    [ -f "target/debug/server.exe" ] && exe=".exe"
+
+    csharp_kill_stragglers
+    echo "--- starting self-contained monolith on :$CSHARP_PORT, player QUIC :$CSHARP_PLAYER_PORT (ephemeral CA -> --insecure) ---" >>"$log"
+    env PORT=":$CSHARP_PORT" DATABASE_URL="$dsn" PLAYER_EDGE_ADDR=":$CSHARP_PLAYER_PORT" \
+        "target/debug/server$exe" >>"$log" 2>&1 &
+    local pid=$!
+
+    local tries=60 healthy=0
+    while [ "$tries" -gt 0 ]; do
+        if curl -fsS -o /dev/null "http://localhost:$CSHARP_PORT/healthz" 2>/dev/null; then healthy=1; break; fi
+        tries=$((tries - 1)); sleep 0.5
+    done
+    if [ "$healthy" -ne 1 ]; then
+        echo "  FAIL (monolith never became healthy, see run/verify/csharp-client.log)"
+        kill "$pid" 2>/dev/null || true
+        csharp_kill_stragglers
+        add_result csharp-client FAIL false
+        return
+    fi
+
+    gbclient() {
+        dotnet run --project clients/csharp -c Release --no-build -- "$@"
+    }
+
+    local status=PASS
+
+    echo "--- [C1] QUIC probe: raw --insecure leaderboard.topScores ---" >>"$log"
+    local c1_out c1_rc
+    c1_out="$(gbclient raw --addr "127.0.0.1:$CSHARP_PLAYER_PORT" --insecure leaderboard.topScores 2>>"$log")"
+    c1_rc=$?
+    echo "    -> rc=$c1_rc  $c1_out" >>"$log"
+    if [ "$c1_rc" -eq 3 ]; then
+        echo "  SKIP (QUIC/msquic unsupported on this platform -- QuicConnection.IsSupported false)"
+        kill "$pid" 2>/dev/null || true
+        csharp_kill_stragglers
+        add_result csharp-client SKIP false
+        return
+    fi
+    if [ "$c1_rc" -ne 0 ]; then
+        echo "    C1 FAIL: expected exit 0, got rc=$c1_rc" >>"$log"
+        status=FAIL
+    fi
+
+    echo "--- [C2] raw --insecure characters.create, NO token -> exit 1 + Unauthorized ---" >>"$log"
+    local c2_out c2_rc
+    c2_out="$(gbclient raw --addr "127.0.0.1:$CSHARP_PLAYER_PORT" --insecure characters.create '{"name":"x","class":""}' 2>>"$log")"
+    c2_rc=$?
+    echo "    -> rc=$c2_rc  $c2_out" >>"$log"
+    if [ "$c2_rc" -ne 1 ] || ! echo "$c2_out" | grep -q 'Unauthorized'; then
+        echo "    C2 FAIL: expected exit 1 + Unauthorized, got rc=$c2_rc $c2_out" >>"$log"
+        status=FAIL
+    fi
+
+    echo "--- [C3] raw --insecure --token bogus characters.ownerOf -> exit 1 + NotFound ---" >>"$log"
+    local c3_out c3_rc
+    c3_out="$(gbclient raw --addr "127.0.0.1:$CSHARP_PLAYER_PORT" --insecure --token bogus characters.ownerOf '{"character_id":"z"}' 2>>"$log")"
+    c3_rc=$?
+    echo "    -> rc=$c3_rc  $c3_out" >>"$log"
+    if [ "$c3_rc" -ne 1 ] || ! echo "$c3_out" | grep -q 'NotFound'; then
+        echo "    C3 FAIL: expected exit 1 + NotFound, got rc=$c3_rc $c3_out" >>"$log"
+        status=FAIL
+    fi
+
+    echo "--- [C4] flow --insecure (typed client: register -> create -> list over pure QUIC) ---" >>"$log"
+    local c4_rc
+    gbclient flow --addr "127.0.0.1:$CSHARP_PLAYER_PORT" --insecure >>"$log" 2>&1
+    c4_rc=$?
+    echo "    -> rc=$c4_rc" >>"$log"
+    if [ "$c4_rc" -ne 0 ]; then
+        echo "    C4 FAIL: expected exit 0, got rc=$c4_rc" >>"$log"
+        status=FAIL
+    fi
+
+    kill "$pid" 2>/dev/null || true
+    csharp_kill_stragglers
+
+    if [ "$status" = "PASS" ]; then
+        echo "  PASS"
+        add_result csharp-client PASS false
+    else
+        echo "  FAIL (see run/verify/csharp-client.log)"
+        add_result csharp-client FAIL false
+    fi
+}
+
 # --- Advisory stage: topiccheck (defined-vs-subscribed topic drift) -----------
 # The Rust redesign of Go's whole-program topiccheck: `tools/topiccheck` builds the
 # MONOLITH module set with a recording bus transport, runs the register+init lifecycle
@@ -306,11 +457,13 @@ simple_stage clippy  true cargo clippy --workspace --all-targets -- -D warnings
 simple_stage test    true cargo test --workspace
 cargo_audit_stage
 simple_stage fortress    true fortress
+simple_stage codegen-fresh true codegen_fresh
 simple_stage split-proof true bash ./split-proof.sh
 
 if [ "$RUN_ADVISORY" -eq 1 ]; then
     public_api_stage
     fuzz_stage
+    csharp_stage
     topiccheck_stage
 fi
 if [ "$RUN_SLOW" -eq 1 ]; then

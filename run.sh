@@ -89,11 +89,11 @@ admin_note() {
 # Both modes build edgeca + playercli: each topology fronts players over QUIC
 # (PLAYER_EDGE_ADDR), so both need the shared dev CA (edgeca) and a client (playercli).
 if [ "$MODE" = "monolith" ]; then
-    echo "Building server (monolith) + edgeca + playercli ..."
-    cargo build -p server -p edgeca -p playercli
+    echo "Building server (monolith) + edgeca + playercli + csharp-client-gen ..."
+    cargo build -p server -p edgeca -p playercli -p csharp-client-gen
 else
-    echo "Building edgeca + the 11 split services + playercli ..."
-    cargo build -p edgeca -p playercli \
+    echo "Building edgeca + the 11 split services + playercli + csharp-client-gen ..."
+    cargo build -p edgeca -p playercli -p csharp-client-gen \
         -p accounts-svc -p audit-svc -p scheduler-svc -p rating-svc -p leaderboard-svc \
         -p match-svc -p characters-svc -p config-svc -p inventory-svc -p gateway-svc -p admin-svc
 fi

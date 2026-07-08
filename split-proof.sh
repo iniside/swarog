@@ -217,8 +217,8 @@ wait_healthy() {
 }
 
 # ============================================================================
-note "building edgeca + characters-svc + inventory-svc + gateway-svc + config-svc + accounts-svc + admin-svc + audit-svc + scheduler-svc + match-svc + rating-svc + leaderboard-svc + playercli + server ..."
-if ! cargo build -p edgeca -p characters-svc -p inventory-svc -p gateway-svc -p config-svc -p accounts-svc -p admin-svc -p audit-svc -p scheduler-svc -p match-svc -p rating-svc -p leaderboard-svc -p playercli -p server; then
+note "building edgeca + characters-svc + inventory-svc + gateway-svc + config-svc + accounts-svc + admin-svc + audit-svc + scheduler-svc + match-svc + rating-svc + leaderboard-svc + playercli + csharp-client-gen + server ..."
+if ! cargo build -p edgeca -p characters-svc -p inventory-svc -p gateway-svc -p config-svc -p accounts-svc -p admin-svc -p audit-svc -p scheduler-svc -p match-svc -p rating-svc -p leaderboard-svc -p playercli -p csharp-client-gen -p server; then
     echo "build failed"; exit 1
 fi
 PLAYERCLI="$BIN_DIR/playercli$EXE"

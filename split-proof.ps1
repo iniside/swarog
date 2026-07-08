@@ -182,8 +182,8 @@ function Invoke-PlayerCli([string[]]$CliArgs) {
 }
 
 try {
-    Note 'building edgeca + characters-svc + inventory-svc + gateway-svc + config-svc + accounts-svc + admin-svc + audit-svc + scheduler-svc + match-svc + rating-svc + leaderboard-svc + playercli + server ...'
-    cargo build -p edgeca -p characters-svc -p inventory-svc -p gateway-svc -p config-svc -p accounts-svc -p admin-svc -p audit-svc -p scheduler-svc -p match-svc -p rating-svc -p leaderboard-svc -p playercli -p server
+    Note 'building edgeca + characters-svc + inventory-svc + gateway-svc + config-svc + accounts-svc + admin-svc + audit-svc + scheduler-svc + match-svc + rating-svc + leaderboard-svc + playercli + csharp-client-gen + server ...'
+    cargo build -p edgeca -p characters-svc -p inventory-svc -p gateway-svc -p config-svc -p accounts-svc -p admin-svc -p audit-svc -p scheduler-svc -p match-svc -p rating-svc -p leaderboard-svc -p playercli -p csharp-client-gen -p server
     if ($LASTEXITCODE -ne 0) { throw 'cargo build failed' }
 
     New-Item -ItemType Directory -Force -Path $RunDir | Out-Null

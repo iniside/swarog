@@ -5,7 +5,7 @@
 # Usage:
 #   .\verify.ps1                 # -Fast: blocking stages only (default)
 #   .\verify.ps1 -Fast           # same as default
-#   .\verify.ps1 -All            # + advisory: public-api, fuzz, topiccheck
+#   .\verify.ps1 -All            # + advisory: public-api, fuzz, csharp-client, topiccheck
 #   .\verify.ps1 -Slow           # + cargo-mutants mutation testing (very slow)
 #   .\verify.ps1 -All -Strict    # advisory failures ALSO flip the exit code
 #   .\verify.ps1 -All -NoInstall # never auto-install a missing CLI (it SKIPs)
@@ -266,6 +266,153 @@ function Invoke-MutantsStage {
     }
 }
 
+# --- Blocking stage: codegen-fresh (generated C# client drift) -------------
+function Invoke-CodegenFreshStage {
+    $log = Join-Path $verifyDir 'codegen-fresh.log'
+    Write-Host "== codegen-fresh ==" -ForegroundColor Cyan
+    & cargo run -q -p csharp-client-gen -- --out clients/csharp/Generated *> $log
+    if ($LASTEXITCODE -eq 0) {
+        & git diff --exit-code -- clients/csharp/Generated *>> $log
+    }
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "  PASS" -ForegroundColor Green
+        Add-Result 'codegen-fresh' 'PASS' $true
+    } else {
+        Write-Host "  FAIL (see run/verify/codegen-fresh.log)" -ForegroundColor Red
+        Add-Result 'codegen-fresh' 'FAIL' $true
+    }
+}
+
+# --- Advisory stage: csharp-client (external C# QUIC client, SKIP-aware) ----
+# Builds the hand-written C# transport/CLI (clients\csharp, gbclient) and drives it
+# against a self-contained monolith (NOT split-proof.ps1's processes -- those are
+# already torn down by the time this stage runs) over pure QUIC. SKIPs (not FAILs)
+# when dotnet is absent or the first scenario's raw exit code is 3
+# (QuicConnection.IsSupported false -- msquic missing).
+$CSharpPort = 8099
+$CSharpPlayerPort = 9100
+$CSharpDefaultDsn = 'postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable'
+
+function Stop-CSharpStragglers {
+    try { taskkill /F /IM server.exe *> $null } catch {}
+}
+
+function Invoke-GbClient {
+    param([string[]]$CliArgs)
+    $out = & dotnet run --project clients/csharp -c Release --no-build -- @CliArgs 2>$null
+    $rc = $LASTEXITCODE
+    return [pscustomobject]@{ Rc = $rc; Out = (($out | Out-String)).Trim() }
+}
+
+function Invoke-CSharpStage {
+    $log = Join-Path $verifyDir 'csharp-client.log'
+    '' | Out-File $log
+    Write-Host "== csharp-client ==" -ForegroundColor Cyan
+    if (-not (Get-Command dotnet -ErrorAction SilentlyContinue)) {
+        Write-Host "  SKIP (dotnet unavailable)" -ForegroundColor Yellow
+        'dotnet unavailable' | Out-File $log
+        Add-Result 'csharp-client' 'SKIP' $false
+        return
+    }
+
+    "--- dotnet build clients/csharp -c Release ---" | Out-File -Append $log
+    & dotnet build clients/csharp -c Release *>> $log
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "  FAIL (dotnet build, see run/verify/csharp-client.log)" -ForegroundColor Red
+        Add-Result 'csharp-client' 'FAIL' $false
+        return
+    }
+
+    "--- cargo build -p server ---" | Out-File -Append $log
+    & cargo build -p server *>> $log
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "  FAIL (cargo build -p server, see run/verify/csharp-client.log)" -ForegroundColor Red
+        Add-Result 'csharp-client' 'FAIL' $false
+        return
+    }
+
+    $dsn = if ($env:DATABASE_URL) { $env:DATABASE_URL } else { $CSharpDefaultDsn }
+
+    Stop-CSharpStragglers
+    "--- starting self-contained monolith on :$CSharpPort, player QUIC :$CSharpPlayerPort (ephemeral CA -> --insecure) ---" | Out-File -Append $log
+    $proc = Start-Process -FilePath 'target\debug\server.exe' -PassThru -WindowStyle Hidden `
+        -RedirectStandardOutput (Join-Path $verifyDir 'csharp-client-server.out.log') `
+        -RedirectStandardError (Join-Path $verifyDir 'csharp-client-server.err.log') `
+        -Environment @{
+            PORT = ":$CSharpPort"
+            DATABASE_URL = $dsn
+            PLAYER_EDGE_ADDR = ":$CSharpPlayerPort"
+        }
+
+    # curl.exe (not Invoke-WebRequest -- it hangs to its HttpClient timeout against this
+    # server for reasons unrelated to server health) mirrors verify.sh's wait_healthy.
+    $healthy = $false
+    for ($i = 0; $i -lt 60; $i++) {
+        & curl.exe -sf -o NUL "http://127.0.0.1:$CSharpPort/healthz" 2>$null
+        if ($LASTEXITCODE -eq 0) { $healthy = $true; break }
+        Start-Sleep -Milliseconds 500
+    }
+    if (-not $healthy) {
+        Write-Host "  FAIL (monolith never became healthy, see run/verify/csharp-client.log)" -ForegroundColor Red
+        try { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue } catch {}
+        Stop-CSharpStragglers
+        Add-Result 'csharp-client' 'FAIL' $false
+        return
+    }
+
+    $status = 'PASS'
+
+    "--- [C1] QUIC probe: raw --insecure leaderboard.topScores ---" | Out-File -Append $log
+    $c1 = Invoke-GbClient @('raw', '--addr', "127.0.0.1:$CSharpPlayerPort", '--insecure', 'leaderboard.topScores')
+    "    -> rc=$($c1.Rc)  $($c1.Out)" | Out-File -Append $log
+    if ($c1.Rc -eq 3) {
+        Write-Host "  SKIP (QUIC/msquic unsupported on this platform -- QuicConnection.IsSupported false)" -ForegroundColor Yellow
+        try { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue } catch {}
+        Stop-CSharpStragglers
+        Add-Result 'csharp-client' 'SKIP' $false
+        return
+    }
+    if ($c1.Rc -ne 0) {
+        "    C1 FAIL: expected exit 0, got rc=$($c1.Rc)" | Out-File -Append $log
+        $status = 'FAIL'
+    }
+
+    "--- [C2] raw --insecure characters.create, NO token -> exit 1 + Unauthorized ---" | Out-File -Append $log
+    $c2 = Invoke-GbClient @('raw', '--addr', "127.0.0.1:$CSharpPlayerPort", '--insecure', 'characters.create', '{"name":"x","class":""}')
+    "    -> rc=$($c2.Rc)  $($c2.Out)" | Out-File -Append $log
+    if ($c2.Rc -ne 1 -or $c2.Out -notmatch 'Unauthorized') {
+        "    C2 FAIL: expected exit 1 + Unauthorized, got rc=$($c2.Rc) $($c2.Out)" | Out-File -Append $log
+        $status = 'FAIL'
+    }
+
+    "--- [C3] raw --insecure --token bogus characters.ownerOf -> exit 1 + NotFound ---" | Out-File -Append $log
+    $c3 = Invoke-GbClient @('raw', '--addr', "127.0.0.1:$CSharpPlayerPort", '--insecure', '--token', 'bogus', 'characters.ownerOf', '{"character_id":"z"}')
+    "    -> rc=$($c3.Rc)  $($c3.Out)" | Out-File -Append $log
+    if ($c3.Rc -ne 1 -or $c3.Out -notmatch 'NotFound') {
+        "    C3 FAIL: expected exit 1 + NotFound, got rc=$($c3.Rc) $($c3.Out)" | Out-File -Append $log
+        $status = 'FAIL'
+    }
+
+    "--- [C4] flow --insecure (typed client: register -> create -> list over pure QUIC) ---" | Out-File -Append $log
+    $c4 = Invoke-GbClient @('flow', '--addr', "127.0.0.1:$CSharpPlayerPort", '--insecure')
+    "    -> rc=$($c4.Rc)  $($c4.Out)" | Out-File -Append $log
+    if ($c4.Rc -ne 0) {
+        "    C4 FAIL: expected exit 0, got rc=$($c4.Rc)" | Out-File -Append $log
+        $status = 'FAIL'
+    }
+
+    try { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue } catch {}
+    Stop-CSharpStragglers
+
+    if ($status -eq 'PASS') {
+        Write-Host "  PASS" -ForegroundColor Green
+        Add-Result 'csharp-client' 'PASS' $false
+    } else {
+        Write-Host "  FAIL (see run/verify/csharp-client.log)" -ForegroundColor Red
+        Add-Result 'csharp-client' 'FAIL' $false
+    }
+}
+
 # --- Advisory stage: topiccheck (defined-vs-subscribed topic drift) ----------
 # The Rust redesign of Go's whole-program topiccheck: tools/topiccheck builds the
 # monolith module set with a recording bus transport and diffs subscribed vs
@@ -281,11 +428,13 @@ Invoke-SimpleStage 'clippy'  $true 'cargo' @('clippy', '--workspace', '--all-tar
 Invoke-SimpleStage 'test'    $true 'cargo' @('test', '--workspace')
 Invoke-CargoAuditStage
 Invoke-FortressStage
+Invoke-CodegenFreshStage
 Invoke-SimpleStage 'split-proof' $true 'pwsh' @('-File', (Join-Path $root 'split-proof.ps1'))
 
 if ($RunAdvisory) {
     Invoke-PublicApiStage
     Invoke-FuzzStage
+    Invoke-CSharpStage
     Invoke-TopiccheckStage
 }
 if ($RunSlow) {
