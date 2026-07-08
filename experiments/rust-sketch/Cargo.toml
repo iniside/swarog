@@ -1,0 +1,31 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/registry",
+    "crates/contrib",
+    "crates/bus",
+    "crates/lifecycle",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+# Pinned once here, referenced by `.workspace = true` in each crate. Keeps the
+# leaf foundations on one coherent set of async/DB/serde versions.
+[workspace.dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+async-trait = "0.1"
+anyhow = "1"
+tracing = "0.1"
+axum = "0.7"
+sqlx = { version = "0.8", features = ["postgres", "runtime-tokio", "tls-rustls"] }
+proptest = "1"
+
+# Internal foundation crates (leaves import only each other, never a module).
+registry = { path = "crates/registry" }
+contrib = { path = "crates/contrib" }
+bus = { path = "crates/bus" }
+lifecycle = { path = "crates/lifecycle" }
