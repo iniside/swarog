@@ -1,9 +1,10 @@
 //! `characters-svc` — process A of the split (port of Go's `cmd/characters-svc`). It
 //! hosts ONLY gateway + characters + messaging and stands up one shared QUIC edge
-//! server, injected into `characters` (which registers its `characters.ownerOf` +
-//! player-op handlers on it) so a peer's inventory can resolve ownership over the
-//! mutually-authenticated edge. The characters outbox relay runs in THIS process
-//! because it drains characters' own outbox rows.
+//! server; `characters` contributes its `characters.ownerOf` + player-op faces to
+//! `edge::EDGE_SLOT` (topology-blind), and `app::run` installs them on this server
+//! so a peer's inventory can resolve ownership over the mutually-authenticated edge.
+//! The characters outbox relay runs in THIS process because it drains characters'
+//! own outbox rows.
 
 use std::sync::{Arc, Mutex};
 
@@ -13,9 +14,11 @@ use lifecycle::Module;
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt().init();
 
-    // One shared QUIC edge server for the whole process; `characters::with_edge`
-    // registers its RPC handlers onto it during `init`, and `app::run` `listen`s the
-    // same handle after Build (a single UDP port serves every edge method).
+    // One shared QUIC edge server for the whole process. Modules contribute their
+    // RPC faces to `edge::EDGE_SLOT` during `init`; `app::run` applies the
+    // contributions onto this server after Build, then `listen`s it (a single UDP
+    // port serves every edge method). Standing this up is the composition root's
+    // legitimate topology knowledge — the modules never see it.
     let edge_server = Arc::new(Mutex::new(edge::Server::new()));
 
     // messaging LAST for Stop ordering (reverse) — the relay halts delivery before
@@ -23,7 +26,7 @@ async fn main() -> anyhow::Result<()> {
     // no Stop, so its position is immaterial.
     let mods: Vec<Box<dyn Module>> = vec![
         Box::new(gateway::Gateway::new()),
-        Box::new(characters::Characters::with_edge(edge_server.clone())),
+        Box::new(characters::Characters::new()),
         Box::new(messaging::Messaging::new()),
     ];
 

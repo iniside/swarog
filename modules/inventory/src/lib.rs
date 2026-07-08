@@ -13,7 +13,7 @@
 //! to the service with the verified caller identity threaded in — never a
 //! client-supplied one. An impl crate: no other module imports it.
 
-use std::sync::{Arc, Mutex, OnceLock, RwLock};
+use std::sync::{Arc, OnceLock, RwLock};
 
 use async_trait::async_trait;
 use charactersapi::Ownership;
@@ -517,14 +517,12 @@ fn error_content(msg: &str) -> adminapi::Content {
 // Module — the lifecycle wiring.
 // ============================================================================
 
-/// The inventory module. Holds the constructed shared state and, in a split that
-/// hosts it, the shared QUIC edge server onto which the generated RPC face is installed.
+/// The inventory module. Holds the constructed shared state. Edge exposure is
+/// topology-blind: `init` contributes the generated RPC face to `edge::EDGE_SLOT`
+/// unconditionally, and `app::run` installs it iff this process serves an internal
+/// QUIC edge — the module never knows.
 pub struct Inventory {
     inner: OnceLock<Arc<Inner>>,
-    /// When set, the process-wide QUIC RPC server (built by `main`). `init` installs
-    /// the `inventory.*` player-op handlers on it so a front gateway in a peer can
-    /// route player-facing inventory operations here. `None` in the monolith.
-    edge: Option<Arc<Mutex<edge::Server>>>,
 }
 
 impl Default for Inventory {
@@ -535,13 +533,7 @@ impl Default for Inventory {
 
 impl Inventory {
     pub fn new() -> Inventory {
-        Inventory { inner: OnceLock::new(), edge: None }
-    }
-
-    /// An inventory module that exposes its player capability over the shared edge
-    /// server (a split process that hosts this module).
-    pub fn with_edge(edge: Arc<Mutex<edge::Server>>) -> Inventory {
-        Inventory { inner: OnceLock::new(), edge: Some(edge) }
+        Inventory { inner: OnceLock::new() }
     }
 
     fn inner(&self) -> Arc<Inner> {
@@ -607,7 +599,8 @@ impl Module for Inventory {
     ///   4. resolve `config` (HARD — fail-loud, this is why config is in `requires`),
     ///   5. the SYNC `on(config.changed)` — the only starter-spec refresh path,
     ///   6/7. contribute the player operations (grant dev-gated) + the local admin item,
-    ///   and, if a shared edge server is held, the generated RPC face.
+    ///   and the generated RPC face to the edge slot (applied by `app::run` iff this
+    ///   process serves an internal edge).
     fn init(&self, ctx: &Context) -> anyhow::Result<()> {
         let inner = self.inner();
 
@@ -688,14 +681,17 @@ impl Module for Inventory {
             ),
         );
 
-        // Split topology: expose the inventory player capability over the shared QUIC
-        // edge server. Pure wiring; main() starts the listener after all Inits.
-        if let Some(edge) = &self.edge {
-            let mut server = edge.lock().unwrap();
-            // Own glue (sanctioned): the edge-facing register_server lives in the
-            // `inventoryrpc` glue crate since the api/rpc split.
-            inventoryrpc::holdings_rpc::register_server(&mut server, inner);
-        }
+        // Edge exposure, contributed UNCONDITIONALLY — topology-blind: `app::run`
+        // applies this iff the entrypoint stood up an internal edge server (then a
+        // front gateway in a peer routes `inventory.*` here over QUIC); in the
+        // monolith it is never applied. Own glue (sanctioned): the edge-facing
+        // register_server lives in the `inventoryrpc` glue crate.
+        ctx.contribute(
+            edge::EDGE_SLOT,
+            edge::EdgeReg::new(move |server| {
+                inventoryrpc::holdings_rpc::register_server(server, inner);
+            }),
+        );
         Ok(())
     }
 }

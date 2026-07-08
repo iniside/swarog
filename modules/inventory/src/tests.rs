@@ -1,5 +1,6 @@
 use super::*;
 use opsapi::Status;
+use std::sync::Mutex;
 use std::time::Duration;
 
 const DEFAULT_DSN: &str =

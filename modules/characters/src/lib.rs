@@ -11,7 +11,7 @@
 //! event commit in ONE transaction, via `bus::emit_tx` on the same `&mut *tx` — the
 //! event is durable iff the character is. An impl crate: no other module imports it.
 
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
 use bus::Bus;
@@ -322,16 +322,12 @@ async fn admin_content(store: &Store) -> anyhow::Result<adminapi::Content> {
 // ============================================================================
 
 /// The characters module. Holds the constructed service (shared between `register`,
-/// the operations, and the admin render) and, in a split that hosts this module, the
-/// shared QUIC edge server onto which the generated RPC faces are installed.
+/// the operations, and the admin render). Edge exposure is topology-blind: `init`
+/// contributes the generated RPC faces to `edge::EDGE_SLOT` unconditionally, and
+/// `app::run` installs them iff this process serves an internal QUIC edge — the
+/// module never knows.
 pub struct Characters {
     svc: OnceLock<Arc<Service>>,
-    /// When set, the process-wide QUIC RPC server (built by `main`). `init` installs
-    /// the `characters.ownerOf` + player-op handlers on it so a peer can resolve
-    /// ownership / front the player operations over the mutually-authenticated edge.
-    /// `None` in the monolith — no edge exposure. Behind `Mutex` because
-    /// `register_server` needs `&mut edge::Server` while `init` has only `&self`.
-    edge: Option<Arc<Mutex<edge::Server>>>,
 }
 
 impl Default for Characters {
@@ -344,17 +340,6 @@ impl Characters {
     pub fn new() -> Characters {
         Characters {
             svc: OnceLock::new(),
-            edge: None,
-        }
-    }
-
-    /// A characters module that exposes its capabilities over the shared edge server
-    /// (a split process that hosts this module). `main` (Step 11) builds the server,
-    /// hands it here, then `listen`s it after Build.
-    pub fn with_edge(edge: Arc<Mutex<edge::Server>>) -> Characters {
-        Characters {
-            svc: OnceLock::new(),
-            edge: Some(edge),
         }
     }
 
@@ -415,8 +400,9 @@ impl Module for Characters {
 
     /// Only wires up — no I/O (#8). Contributes (a) the three player operations into
     /// the opsapi slots so the gateway fronts POST/GET/DELETE /characters, (b) the
-    /// local admin `Item`, and (c), if a shared edge server is held, the generated
-    /// Ownership + Player RPC faces so a peer can reach `characters.*` over QUIC.
+    /// local admin `Item`, and (c) the generated Ownership + Player RPC faces to the
+    /// edge slot so a peer can reach `characters.*` over QUIC when this process
+    /// serves an internal edge.
     fn init(&self, ctx: &Context) -> anyhow::Result<()> {
         let svc = self.svc();
 
@@ -448,14 +434,18 @@ impl Module for Characters {
             ),
         );
 
-        // (c) Split topology: expose Ownership + Player over the shared QUIC edge so a
-        // peer resolves ownership or fronts the player ops. Pure wiring; main starts
-        // the listener after all Inits.
-        if let Some(edge) = &self.edge {
-            let mut server = edge.lock().unwrap();
-            charactersrpc::ownership_rpc::register_server(&mut server, svc.clone());
-            charactersrpc::player_rpc::register_server(&mut server, svc);
-        }
+        // (c) Edge exposure, contributed UNCONDITIONALLY — topology-blind: `app::run`
+        // applies this iff the entrypoint stood up an internal edge server (then a
+        // peer resolves ownership / fronts the player ops over QUIC); in the monolith
+        // it is never applied. Own glue (sanctioned): the generated register_server
+        // faces live in `charactersrpc`.
+        ctx.contribute(
+            edge::EDGE_SLOT,
+            edge::EdgeReg::new(move |server| {
+                charactersrpc::ownership_rpc::register_server(server, svc.clone());
+                charactersrpc::player_rpc::register_server(server, svc);
+            }),
+        );
         Ok(())
     }
 }

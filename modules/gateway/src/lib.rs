@@ -80,8 +80,8 @@ const MAX_BODY_BYTES: usize = 1 << 20;
 /// request.
 pub struct Gateway {
     verifier: Arc<dyn SessionVerifier>,
-    /// When set, the process-wide player-facing QUIC server (built by `main`, the
-    /// same shared-handle pattern as `inventory::with_edge`). `init` installs the
+    /// When set, the process-wide player-facing QUIC server (built by `main` and
+    /// passed as a shared handle). `init` installs the
     /// [`FrontDoor::player_handler`] on it so the process fronts players over QUIC
     /// as well as HTTP. `None` for a process with no public player port.
     player_edge: Option<Arc<Mutex<edge::PlayerServer>>>,

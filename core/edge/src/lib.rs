@@ -11,6 +11,9 @@
 //!   ([`frame`]); one envelope per stream (the stream is the correlation).
 //! - [`DevCA`] is the shared dev trust anchor for the hop's MUTUAL TLS — the
 //!   5-point spec is enforced in [`tls`].
+//! - [`EdgeReg`]/[`EDGE_SLOT`] are the topology-blind registration seam: modules
+//!   contribute registrations unconditionally; `app::run` applies them iff this
+//!   process serves an internal edge.
 //! - [`PlayerServer`]/[`PlayerClient`] are the separate PLAYER-facing plane:
 //!   server-cert-only TLS (players hold no CA-signed leaf), its own ALPN
 //!   ([`PLAYER_ALPN`]) and envelope ([`PlayerRequest`], bearer `token` instead of a
@@ -20,11 +23,13 @@ mod client;
 mod codec;
 mod frame;
 mod player;
+mod reg;
 mod server;
 mod tls;
 mod wire;
 
 pub use client::Client;
+pub use reg::{EdgeReg, EDGE_SLOT};
 pub use codec::{default_codec, Codec, JsonCodec};
 pub use frame::{frame_bytes, read_frame, read_frame_max, write_frame, MAX_FRAME};
 pub use player::{PlayerClient, PlayerHandler, PlayerRequest, PlayerServer, MAX_PLAYER_FRAME};

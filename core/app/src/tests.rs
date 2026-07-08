@@ -125,3 +125,61 @@ fn to_bind_addr_expands_colon_port() {
     assert_eq!(to_bind_addr(":9000"), "0.0.0.0:9000");
     assert_eq!(to_bind_addr("127.0.0.1:9000"), "127.0.0.1:9000");
 }
+
+// ============================================================================
+// The EDGE_SLOT drain (Step 3): modules contribute EdgeReg unconditionally in
+// init; `run` applies them only when the process has an internal edge server.
+// ============================================================================
+
+/// The edge-hosting path: everything contributed to EDGE_SLOT is applied to the
+/// process's edge server, in contribution order.
+#[test]
+fn contributed_edge_registrations_are_applied_when_an_edge_server_exists() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    let ctx = Context::new();
+    let calls = Arc::new(AtomicUsize::new(0));
+    for _ in 0..2 {
+        let counted = calls.clone();
+        ctx.contribute(
+            edge::EDGE_SLOT,
+            edge::EdgeReg::new(move |_s: &mut edge::Server| {
+                counted.fetch_add(1, Ordering::SeqCst);
+            }),
+        );
+    }
+
+    let mut server = edge::Server::new();
+    let applied = apply_edge_registrations(&ctx, &mut server);
+    assert_eq!(applied, 2);
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+
+    // A hypothetical re-drain double-registers nothing: each EdgeReg is one-shot.
+    let applied_again = apply_edge_registrations(&ctx, &mut server);
+    assert_eq!(applied_again, 2, "the slot still holds the (spent) contributions");
+    assert_eq!(calls.load(Ordering::SeqCst), 2, "but no closure runs twice");
+}
+
+/// The monolith path: `run` never drains the slot (no edge server), so a
+/// contributed registration is silently skipped — no effect, no error.
+#[test]
+fn contributed_edge_registrations_are_silently_skipped_without_an_edge_server() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    let ctx = Context::new();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let counted = calls.clone();
+    ctx.contribute(
+        edge::EDGE_SLOT,
+        edge::EdgeReg::new(move |_s: &mut edge::Server| {
+            counted.fetch_add(1, Ordering::SeqCst);
+        }),
+    );
+
+    // The monolith simply never calls apply_edge_registrations. Dropping the
+    // context (and with it the unapplied closure) is the whole story.
+    drop(ctx);
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+}

@@ -4,12 +4,14 @@
 //! `characters.ownership` client (dialing A), so inventory's
 //! `require::<dyn Ownership>` resolves REMOTELY — the registry SWAP, with inventory's
 //! code unchanged. It reaches the `charactersapi` contract + `charactersrpc` glue
-//! only transitively (via the stub / inventory), and NOT the characters IMPL. B now ALSO stands up its OWN shared QUIC edge
-//! server (`EDGE_ADDR`, default `:9001`) and wires `Inventory::with_edge` onto it, so
-//! it SERVES `inventory.*` ops for a peer — gateway-svc hosts no providers, so it
-//! resolves `inventory.*` as Remote and dials this edge (Step 6 of the QUIC
-//! player-front plan). B still dials OUT to A over its own edge for ownership checks;
-//! it is client of A and server for the front door at the same time.
+//! only transitively (via the stub / inventory), and NOT the characters IMPL. B now
+//! ALSO stands up its OWN shared QUIC edge server (`EDGE_ADDR`, default `:9001`);
+//! `inventory` contributes its `inventory.*` face to `edge::EDGE_SLOT`
+//! (topology-blind) and `app::run` installs it here, so B SERVES `inventory.*` ops
+//! for a peer — gateway-svc hosts no providers, so it resolves `inventory.*` as
+//! Remote and dials this edge (Step 6 of the QUIC player-front plan). B still dials
+//! OUT to A over its own edge for ownership checks; it is client of A and server for
+//! the front door at the same time.
 
 use std::sync::{Arc, Mutex};
 
@@ -29,9 +31,10 @@ fn characters_edge_addr() -> String {
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt().init();
 
-    // One shared QUIC edge server for this process; `inventory::with_edge` registers
-    // its `inventory.*` handlers onto it during `init`, and `app::run` `listen`s the
-    // same handle after Build — mirrors `characters-svc`'s pattern exactly.
+    // One shared QUIC edge server for this process. `inventory` contributes its
+    // `inventory.*` face to `edge::EDGE_SLOT` during `init`; `app::run` applies the
+    // contributions onto this server after Build, then `listen`s it — mirrors
+    // `characters-svc`'s pattern exactly.
     let edge_server = Arc::new(Mutex::new(edge::Server::new()));
 
     // messaging then the stub last. The stub's phase-1 `register` provides
@@ -41,7 +44,7 @@ async fn main() -> anyhow::Result<()> {
     let mods: Vec<Box<dyn Module>> = vec![
         Box::new(gateway::Gateway::new()),
         Box::new(config::Config::new()),
-        Box::new(inventory::Inventory::with_edge(edge_server.clone())),
+        Box::new(inventory::Inventory::new()),
         Box::new(messaging::Messaging::new()),
         Box::new(remote::Stub::new("characters", &characters_edge_addr())),
     ];

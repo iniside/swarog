@@ -141,6 +141,20 @@ pub fn validate_requires(modules: &[Box<dyn Module>]) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Applies every [`edge::EdgeReg`] contributed to [`edge::EDGE_SLOT`] onto `server`,
+/// returning how many were applied. Called by [`run`] after Build (so every module's
+/// `init` has contributed) and before `listen` — and ONLY when this process actually
+/// has an internal edge server; the monolith never calls it, so the contributions
+/// are silently dropped there. Each registration is one-shot ([`edge::EdgeReg::apply`]
+/// consumes the closure), so a re-drain cannot double-register.
+fn apply_edge_registrations(ctx: &Context, server: &mut edge::Server) -> usize {
+    let regs = ctx.contributions::<edge::EdgeReg>(edge::EDGE_SLOT);
+    for reg in &regs {
+        reg.apply(server);
+    }
+    regs.len()
+}
+
 /// Boots a service from a static list of modules. Opens the DB (when configured),
 /// wires the lifecycle [`Context`], then, in EXACTLY this order (port of Go's
 /// `app.Run`):
@@ -170,13 +184,17 @@ pub fn validate_requires(modules: &[Box<dyn Module>]) -> anyhow::Result<()> {
 /// `Some` only when this process exposes edge-backed services; `player_server` is
 /// `Some` only when this process fronts external players over QUIC (the gateway).
 ///
-/// Each server is passed as an `Arc<Mutex<…>>` — the SAME handle the hosting module
-/// (`characters::with_edge`, `gateway::with_player_edge`, …) was constructed with, so
-/// its `init` can register handlers onto it during Build. After Build completes, `run`
-/// takes the fully-wired server out of the shared handle (via `std::mem::take`, the
-/// modules never touch it again) and `listen`s it. This is why the params are the
-/// shared handles rather than owned servers: registration happens during Build,
-/// `listen` after — both need to reach the same object.
+/// The INTERNAL edge server is wired topology-blind: domain modules contribute
+/// [`edge::EdgeReg`] registrations to [`edge::EDGE_SLOT`] unconditionally during
+/// `init`, and `run` applies them here — after Build, before `listen` — iff the
+/// entrypoint passed an edge server. In the monolith the contributions are simply
+/// never applied; no module holds an `Option<edge::Server>` or knows the topology.
+///
+/// The PLAYER server is still passed as an `Arc<Mutex<…>>` — the SAME handle the
+/// hosting module (`gateway::with_player_edge`) was constructed with, so its `init`
+/// can install the dispatch handler onto it during Build. After Build completes,
+/// `run` takes the fully-wired server out of the shared handle (via
+/// `std::mem::take`, the module never touches it again) and `listen`s it.
 pub async fn run(
     cfg: Config,
     modules: Vec<Box<dyn Module>>,
@@ -217,15 +235,18 @@ pub async fn run(
     app.migrate().await.context("migrate failed")?;
     app.start().await.context("start failed")?;
 
-    // 7. Bring up the shared edge server AFTER every module init has registered its
-    //    handlers. One listener, all edge methods, mutual TLS via the shared dev CA.
+    // 7. Bring up the shared edge server AFTER every module init has contributed its
+    //    registrations. One listener, all edge methods, mutual TLS via the shared dev
+    //    CA. This is where the EDGE_SLOT contributions land: modules contributed
+    //    unconditionally during init; only a process that actually has an edge server
+    //    applies them (the monolith reaches the `None` arm and they are dropped).
     let running_edge = match edge_server {
         Some(shared) => {
-            // Take the fully-wired server out of the shared handle the edge-hosting
-            // modules registered their handlers into during Build — they hold a clone
-            // but never touch it again after `init`, so a `mem::take` (leaving an empty
-            // Server behind) hands `listen` the same object carrying every handler.
-            let server = std::mem::take(&mut *shared.lock().unwrap());
+            // Take the server out of the shared handle (`mem::take` leaves an empty
+            // one behind), then install every contributed registration on it.
+            let mut server = std::mem::take(&mut *shared.lock().unwrap());
+            let applied = apply_edge_registrations(&ctx, &mut server);
+            tracing::info!(applied, "installed contributed edge registrations");
             let ca = edge::shared_dev_ca().context("edge ca")?;
             let edge_bind: SocketAddr = to_bind_addr(&cfg.edge_addr)
                 .parse()
