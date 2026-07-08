@@ -85,6 +85,14 @@ fn internal<E: std::fmt::Display>(e: E) -> Error {
 pub struct Service {
     pub(crate) store: Store,
     bus: Arc<Bus>,
+    /// Whether the dev/password provider is enabled (`ACCOUNTS_DEV_AUTH`, resolved in
+    /// `register`). Gates `register`/`login` at the SERVICE level so the trust model
+    /// is consistent across BOTH exposure paths: the HTTP ops are already withheld
+    /// when this is off (see `ops::register_player_ops`), and this guard withholds the
+    /// same two methods over the internal mTLS edge face — a peer with a dev-CA cert
+    /// cannot self-register/login when dev auth is off. `me` + `verify_session` are
+    /// unaffected (needed by gateway/admin fan-out regardless).
+    dev_auth: bool,
     /// Set in `init` iff `EPIC_CLIENT_ID` is configured; `login_epic` is only
     /// contributed as an operation in that case, but a direct edge call when it is
     /// absent still answers a typed `Unavailable`.
@@ -204,6 +212,9 @@ impl accountsapi::Auth for Service {
         password: String,
         display_name: String,
     ) -> Result<accountsapi::Session, Error> {
+        if !self.dev_auth {
+            return Err(Error::not_found("registration is not enabled"));
+        }
         if email.is_empty() || password.is_empty() {
             return Err(Error::invalid("email and password are required"));
         }
@@ -241,6 +252,9 @@ impl accountsapi::Auth for Service {
     /// dev/password login (AuthNone). Bad credentials — an unknown email or a wrong
     /// password, deliberately indistinguishable — are `Unauthorized` (401).
     async fn login(&self, email: String, password: String) -> Result<accountsapi::Session, Error> {
+        if !self.dev_auth {
+            return Err(Error::not_found("password login is not enabled"));
+        }
         let Some((p, hash)) = self.store.password_identity(&email).await.map_err(|e| {
             tracing::error!(err = %e, "login failed");
             internal(e)
@@ -310,7 +324,10 @@ impl accountsapi::Auth for Service {
 /// the operations, the OAuth routes and the admin render). Edge exposure is
 /// topology-blind: `init` contributes the generated Sessions + Auth faces to
 /// `edge::EDGE_SLOT` unconditionally, and `app::run` installs them iff this process
-/// serves an internal QUIC edge — the module never knows.
+/// serves an internal QUIC edge — the module never knows. The Auth face's
+/// dev-auth-gated methods (`register`/`login`) self-reject at the service level when
+/// `ACCOUNTS_DEV_AUTH` is off, mirroring the HTTP op gating so the mTLS edge honours
+/// the same trust model.
 pub struct Accounts {
     svc: OnceLock<Arc<Service>>,
 }
@@ -364,6 +381,10 @@ impl Module for Accounts {
         let svc = Arc::new(Service {
             store: Store { pool },
             bus: ctx.bus().clone(),
+            // Resolve the dev-auth gate once, here, so it is the single source of
+            // truth for BOTH the (gated) HTTP op contributions and the service-level
+            // guard on the edge Auth face (register/login).
+            dev_auth: env_bool("ACCOUNTS_DEV_AUTH", true),
             epic: OnceLock::new(),
         });
         self.svc
@@ -396,8 +417,10 @@ impl Module for Accounts {
         let svc = self.svc();
 
         // dev/password provider — local testing convenience, gated off for prod. The
-        // register/login OPERATIONS are contributed below only when this gate is ON.
-        let dev_auth = env_bool("ACCOUNTS_DEV_AUTH", true);
+        // register/login OPERATIONS are contributed below only when this gate is ON,
+        // AND the edge Auth face's register/login self-reject when it is off (the
+        // `Service::dev_auth` guard) — same trust model on both exposure paths.
+        let dev_auth = svc.dev_auth;
         if dev_auth {
             tracing::warn!(
                 "ACCOUNTS_DEV_AUTH is ON — /accounts/register and /accounts/login are enabled; \
@@ -481,6 +504,13 @@ impl Module for Accounts {
         // peer gateway verifies sessions / fronts the auth ops over QUIC); in the
         // monolith it is never applied. Own glue (rule 5): the generated
         // register_server faces live in `accountsrpc`.
+        //
+        // The whole Auth trait face is registered (the generated `register_server`
+        // installs all methods at once), but the TRUST GATES live in the impl so the
+        // edge face matches the HTTP ops exactly: `register`/`login` self-reject with
+        // NotFound when `dev_auth` is off, and `login_epic` answers `Unavailable`
+        // until `EPIC_CLIENT_ID` is configured. `me` (+ Sessions `verify_session` and
+        // the admin face) stay unconditional — the gateway/admin fan-out need them.
         ctx.contribute(
             edge::EDGE_SLOT,
             edge::EdgeReg::new(move |server| {

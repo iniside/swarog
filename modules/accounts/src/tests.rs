@@ -1,6 +1,8 @@
 use super::*;
 use accountsapi::{Auth as _, Sessions as _};
 use base64::Engine as _;
+
+mod dev_auth_gate;
 use rsa::pkcs8::EncodePrivateKey as _;
 use rsa::traits::PublicKeyParts as _;
 use sqlx::PgPool;
@@ -179,6 +181,7 @@ fn lazy_service() -> Arc<Service> {
             pool: PgPool::connect_lazy(DEFAULT_DSN).unwrap(),
         },
         bus: Arc::new(Bus::new()),
+        dev_auth: true,
         epic: OnceLock::new(),
     })
 }
