@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # split-proof.sh -- the SPLIT-topology proof for the rust-sketch (Steps 12 + 8).
 #
-# This is the whole point of the milestone: it exercises the FOUR-PROCESS split
+# This is the whole point of the milestone: it exercises the FIVE-PROCESS split
 # (characters-svc = A on :8080 / edge :9000, inventory-svc = B on :8081 / edge :9001,
-# gateway-svc = G on :8082 / player QUIC :9100, config-svc = C on :8083 / edge :9002),
+# gateway-svc = G on :8082 / player QUIC :9100, config-svc = C on :8083 / edge :9002,
+# accounts-svc = D on :8084 / edge :9003),
 # NOT the monolith, driving the real
-# player flows over HTTP (through the gateway front-door with a dev-<uuid> bearer),
+# player flows over HTTP (through the gateway front-door with a REAL bearer minted
+# by register+login through the front -- Step 6 replaced the dev-<uuid> tokens),
 # the sync authz over QUIC/mTLS, AND the NEW dedicated QUIC player front (Step 8 of
 # the QUIC player-front plan): external players connect to gateway-svc over QUIC
 # (server-cert-only TLS), the front auth-verifies the bearer-in-envelope once and
@@ -20,6 +22,12 @@
 #   5. exits non-zero if ANY assertion fails.
 #
 # THE PROOF (all against the SPLIT, over real HTTP/QUIC):
+#   - REAL AUTH (Step 6): register + login through G's front (POST /accounts/register
+#     -> 201, POST /accounts/login -> 200) mint a DB-backed session on D; the bearer
+#     then authorizes ops on every process (each gateway verifies it against D's
+#     accounts.verifySession over QUIC/mTLS). NEGATIVE: a garbage token and a
+#     dev-<uuid> token are both 401 through G -- gateway-svc runs WITHOUT
+#     ACCOUNTS_DEV_AUTH, so no dev- token is ever accepted.
 #   - Async event, cross-process A->B: POST /characters on A -> 201; A emits
 #     character.created; its relay POSTs to B /events; inventory's durable on_tx
 #     grants the starter item. Poll GET /inventory/character/<id> on B until the
@@ -68,9 +76,11 @@ A_PORT=8080
 B_PORT=8081
 G_PORT=8082
 C_PORT=8083
+D_PORT=8084
 EDGE_PORT=9000
 B_EDGE_PORT=9001
 C_EDGE_PORT=9002
+D_EDGE_PORT=9003
 PLAYER_PORT=9100
 
 DEFAULT_DSN="postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable"
@@ -81,6 +91,7 @@ A_PID=""
 B_PID=""
 G_PID=""
 C_PID=""
+D_PID=""
 M_PID=""
 
 note()  { echo "[proof] $*"; }
@@ -126,8 +137,9 @@ teardown() {
     [ -n "$B_PID" ] && kill "$B_PID" 2>/dev/null && note "stopped B (pid $B_PID)"
     [ -n "$G_PID" ] && kill "$G_PID" 2>/dev/null && note "stopped G (pid $G_PID)"
     [ -n "$C_PID" ] && kill "$C_PID" 2>/dev/null && note "stopped C (pid $C_PID)"
+    [ -n "$D_PID" ] && kill "$D_PID" 2>/dev/null && note "stopped D (pid $D_PID)"
     [ -n "$M_PID" ] && kill "$M_PID" 2>/dev/null && note "stopped monolith (pid $M_PID)"
-    A_PID=""; B_PID=""; G_PID=""; C_PID=""; M_PID=""
+    A_PID=""; B_PID=""; G_PID=""; C_PID=""; D_PID=""; M_PID=""
 }
 trap teardown EXIT INT TERM
 
@@ -139,12 +151,14 @@ kill_stragglers() {
         taskkill //F //IM inventory-svc.exe >/dev/null 2>&1 || true
         taskkill //F //IM gateway-svc.exe >/dev/null 2>&1 || true
         taskkill //F //IM config-svc.exe >/dev/null 2>&1 || true
+        taskkill //F //IM accounts-svc.exe >/dev/null 2>&1 || true
         taskkill //F //IM server.exe >/dev/null 2>&1 || true
     fi
     pkill -f "characters-svc" 2>/dev/null || true
     pkill -f "inventory-svc"  2>/dev/null || true
     pkill -f "gateway-svc"    2>/dev/null || true
     pkill -f "config-svc"     2>/dev/null || true
+    pkill -f "accounts-svc"   2>/dev/null || true
     pkill -f "target/debug/server" 2>/dev/null || true
 }
 
@@ -160,8 +174,8 @@ wait_healthy() {
 }
 
 # ============================================================================
-note "building edgeca + characters-svc + inventory-svc + gateway-svc + config-svc + playercli + server ..."
-if ! cargo build -p edgeca -p characters-svc -p inventory-svc -p gateway-svc -p config-svc -p playercli -p server; then
+note "building edgeca + characters-svc + inventory-svc + gateway-svc + config-svc + accounts-svc + playercli + server ..."
+if ! cargo build -p edgeca -p characters-svc -p inventory-svc -p gateway-svc -p config-svc -p accounts-svc -p playercli -p server; then
     echo "build failed"; exit 1
 fi
 PLAYERCLI="$BIN_DIR/playercli$EXE"
@@ -173,12 +187,25 @@ sleep 1
 note "minting shared edge dev CA -> $CA_CERT"
 "$BIN_DIR/edgeca$EXE" --cert "$CA_CERT" --key "$CA_KEY"
 
+# --- start D (accounts-svc): gateway + accounts + messaging, edge :9003 -------
+# D owns the accounts schema and serves accounts.verifySession + the auth op faces
+# on its mTLS edge; EVERY other process's gateway verifies bearers against it.
+# player.registered rides D's outbox (no remote consumer yet, so no subscriber).
+note "starting D (accounts-svc) on :$D_PORT, edge :$D_EDGE_PORT ..."
+env PORT=":$D_PORT" DATABASE_URL="$DATABASE_URL" EDGE_ADDR=":$D_EDGE_PORT" \
+    EDGE_CA_CERT="$CA_CERT" EDGE_CA_KEY="$CA_KEY" \
+    MESSAGING_ORIGIN=accounts-svc \
+    "$BIN_DIR/accounts-svc$EXE" >"$RUN_DIR/accounts.out.log" 2>"$RUN_DIR/accounts.err.log" &
+D_PID=$!
+wait_healthy "$D_PORT" "D (accounts-svc)" || { echo "D failed to start"; exit 1; }
+
 # --- start A (characters-svc): gateway + characters + messaging, edge :9000 --
 # MESSAGING_ORIGIN MUST be distinct per process (never the "monolith" default): the
 # relay drains ONLY its own origin's outbox rows.
 note "starting A (characters-svc) on :$A_PORT, edge :$EDGE_PORT ..."
 env PORT=":$A_PORT" DATABASE_URL="$DATABASE_URL" EDGE_ADDR=":$EDGE_PORT" \
     EDGE_CA_CERT="$CA_CERT" EDGE_CA_KEY="$CA_KEY" \
+    ACCOUNTS_EDGE_ADDR="127.0.0.1:$D_EDGE_PORT" \
     MESSAGING_ORIGIN=characters-svc \
     EVENTS_SUBSCRIBERS="character.created=http://localhost:$B_PORT/events;character.deleted=http://localhost:$B_PORT/events" \
     "$BIN_DIR/characters-svc$EXE" >"$RUN_DIR/characters.out.log" 2>"$RUN_DIR/characters.err.log" &
@@ -202,6 +229,7 @@ fi
 note "starting C (config-svc) on :$C_PORT, edge :$C_EDGE_PORT ..."
 env PORT=":$C_PORT" DATABASE_URL="$DATABASE_URL" EDGE_ADDR=":$C_EDGE_PORT" \
     EDGE_CA_CERT="$CA_CERT" EDGE_CA_KEY="$CA_KEY" \
+    ACCOUNTS_EDGE_ADDR="127.0.0.1:$D_EDGE_PORT" \
     MESSAGING_ORIGIN=config-svc \
     EVENTS_SUBSCRIBERS="config.changed=http://localhost:$B_PORT/events" \
     "$BIN_DIR/config-svc$EXE" >"$RUN_DIR/config.out.log" 2>"$RUN_DIR/config.err.log" &
@@ -218,6 +246,7 @@ env PORT=":$B_PORT" DATABASE_URL="$DATABASE_URL" \
     EDGE_CA_CERT="$CA_CERT" EDGE_CA_KEY="$CA_KEY" \
     CHARACTERS_EDGE_ADDR="127.0.0.1:$EDGE_PORT" \
     CONFIG_EDGE_ADDR="127.0.0.1:$C_EDGE_PORT" \
+    ACCOUNTS_EDGE_ADDR="127.0.0.1:$D_EDGE_PORT" \
     MESSAGING_ORIGIN=inventory-svc \
     "$BIN_DIR/inventory-svc$EXE" >"$RUN_DIR/inventory.out.log" 2>"$RUN_DIR/inventory.err.log" &
 B_PID=$!
@@ -233,21 +262,85 @@ env PORT=":$G_PORT" \
     EDGE_CA_CERT="$CA_CERT" EDGE_CA_KEY="$CA_KEY" \
     CHARACTERS_EDGE_ADDR="127.0.0.1:$EDGE_PORT" \
     INVENTORY_EDGE_ADDR="127.0.0.1:$B_EDGE_PORT" \
+    ACCOUNTS_EDGE_ADDR="127.0.0.1:$D_EDGE_PORT" \
     "$BIN_DIR/gateway-svc$EXE" >"$RUN_DIR/gateway.out.log" 2>"$RUN_DIR/gateway.err.log" &
 G_PID=$!
 wait_healthy "$G_PORT" "G (gateway-svc)" || { echo "G failed to start"; exit 1; }
 
-PID="$(new_uuid)"
-OTHER="$(new_uuid)"
-note "player PID=$PID  (other player=$OTHER)"
+RUN_SUFFIX="$(new_uuid | cut -c1-8)"
+
+echo ""
+echo "================ REAL AUTH (Step 6) ================"
+# Register + login THROUGH the gateway front (G routes /accounts/* Remote to D over
+# the mTLS edge), then use the REAL bearer everywhere below. No dev- tokens.
+
+echo "[A1] POST http://localhost:$G_PORT/accounts/register (through G -> D)"
+REG="$(curl -s -w $'\n%{http_code}' -X POST "http://localhost:$G_PORT/accounts/register" \
+    -H "Content-Type: application/json" \
+    -d "{\"email\":\"proof-$RUN_SUFFIX@test.local\",\"password\":\"pw-$RUN_SUFFIX\",\"displayName\":\"Proof\"}")"
+RBODY="$(echo "$REG" | sed '$d')"; RCODE="$(echo "$REG" | tail -1)"
+echo "    -> HTTP $RCODE  $RBODY"
+PID="$(echo "$RBODY" | grep -o '"player_id":"[^"]*"' | head -1 | sed 's/"player_id":"//;s/"//')"
+if [ "$RCODE" = "201" ] && [ -n "$PID" ]; then
+    pass "register through the front -> 201, player_id=$PID"
+else
+    fail "register expected 201 with player_id, got $RCODE"; exit 1
+fi
+
+echo "[A2] POST http://localhost:$G_PORT/accounts/login (fresh session through G -> D)"
+LOGIN="$(curl -s -w $'\n%{http_code}' -X POST "http://localhost:$G_PORT/accounts/login" \
+    -H "Content-Type: application/json" \
+    -d "{\"email\":\"proof-$RUN_SUFFIX@test.local\",\"password\":\"pw-$RUN_SUFFIX\"}")"
+LBODY="$(echo "$LOGIN" | sed '$d')"; LCODE="$(echo "$LOGIN" | tail -1)"
+TOKEN="$(echo "$LBODY" | grep -o '"token":"[^"]*"' | head -1 | sed 's/"token":"//;s/"//')"
+echo "    -> HTTP $LCODE  token=$(echo "$TOKEN" | cut -c1-12)..."
+if [ "$LCODE" = "200" ] && [ -n "$TOKEN" ]; then
+    pass "login through the front -> 200 with a real bearer"
+else
+    fail "login expected 200 with token, got $LCODE"; exit 1
+fi
+
+echo "[A3] GET http://localhost:$G_PORT/accounts/me (Bearer <real token>)"
+ME="$(curl -s -w $'\n%{http_code}' "http://localhost:$G_PORT/accounts/me" \
+    -H "Authorization: Bearer $TOKEN")"
+MEBODY="$(echo "$ME" | sed '$d')"; MECODE="$(echo "$ME" | tail -1)"
+echo "    -> HTTP $MECODE  $MEBODY"
+if [ "$MECODE" = "200" ] && echo "$MEBODY" | grep -q "$PID"; then
+    pass "me -> 200 with the registered player (auth-once verified the real session)"
+else
+    fail "me expected 200 with player_id, got $MECODE"
+fi
+
+# A second player for the negative authz assertion.
+OREG="$(curl -s -X POST "http://localhost:$G_PORT/accounts/register" \
+    -H "Content-Type: application/json" \
+    -d "{\"email\":\"other-$RUN_SUFFIX@test.local\",\"password\":\"pw2-$RUN_SUFFIX\",\"displayName\":\"Other\"}")"
+OTHER_TOKEN="$(echo "$OREG" | grep -o '"token":"[^"]*"' | head -1 | sed 's/"token":"//;s/"//')"
+[ -n "$OTHER_TOKEN" ] || { fail "second register produced no token"; exit 1; }
+
+echo "[A4] GET /characters through G with a GARBAGE token -> 401"
+G1="$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:$G_PORT/characters" \
+    -H "Authorization: Bearer totally-bogus-token")"
+echo "    -> HTTP $G1"
+if [ "$G1" = "401" ]; then pass "garbage token -> 401"; else fail "garbage token expected 401, got $G1"; fi
+
+echo "[A5] GET /characters through G with a dev-<uuid> token -> 401 (no ACCOUNTS_DEV_AUTH on G)"
+G2="$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:$G_PORT/characters" \
+    -H "Authorization: Bearer dev-$(new_uuid)")"
+echo "    -> HTTP $G2"
+if [ "$G2" = "401" ]; then
+    pass "dev- token -> 401 (gateway-svc verifies REAL sessions only)"
+else
+    fail "dev- token expected 401, got $G2"
+fi
 
 echo ""
 echo "================ SPLIT PROOF ================"
 
 # --- 1. CREATE on A (gateway HTTP op -> characters) --------------------------
-echo "[1] POST http://localhost:$A_PORT/characters (Bearer dev-\$PID)"
+echo "[1] POST http://localhost:$A_PORT/characters (Bearer \$TOKEN)"
 CREATE="$(curl -s -w $'\n%{http_code}' -X POST "http://localhost:$A_PORT/characters" \
-    -H "Authorization: Bearer dev-$PID" -H "Content-Type: application/json" \
+    -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
     -d '{"name":"Aria","class":"mage"}')"
 CBODY="$(echo "$CREATE" | sed '$d')"; CCODE="$(echo "$CREATE" | tail -1)"
 echo "    -> HTTP $CCODE  $CBODY"
@@ -259,7 +352,7 @@ echo "[2] poll GET http://localhost:$B_PORT/inventory/character/$CID until start
 STARTER_OK=0
 for i in $(seq 1 30); do
     R="$(curl -s -w $'\n%{http_code}' "http://localhost:$B_PORT/inventory/character/$CID" \
-        -H "Authorization: Bearer dev-$PID")"
+        -H "Authorization: Bearer $TOKEN")"
     BODY="$(echo "$R" | sed '$d')"; CODE="$(echo "$R" | tail -1)"
     if [ "$CODE" = "200" ] && echo "$BODY" | grep -q 'starter_sword'; then
         echo "    attempt $i -> HTTP 200 $BODY"
@@ -271,9 +364,9 @@ done
 [ "$STARTER_OK" = "1" ] || fail "starter never appeared in B (async cross-process grant / QUIC authz)"
 
 # --- 3. NEGATIVE authz: a different player is forbidden ----------------------
-echo "[3] GET /inventory/character/$CID as a DIFFERENT player (Bearer dev-\$OTHER)"
+echo "[3] GET /inventory/character/$CID as a DIFFERENT player (Bearer \$OTHER_TOKEN)"
 NEG="$(curl -s -w $'\n%{http_code}' "http://localhost:$B_PORT/inventory/character/$CID" \
-    -H "Authorization: Bearer dev-$OTHER")"
+    -H "Authorization: Bearer $OTHER_TOKEN")"
 NBODY="$(echo "$NEG" | sed '$d')"; NCODE="$(echo "$NEG" | tail -1)"
 echo "    -> HTTP $NCODE  $NBODY"
 if [ "$NCODE" = "403" ] || [ "$NCODE" = "404" ]; then
@@ -283,9 +376,9 @@ else
 fi
 
 # --- 4. DELETE on A ----------------------------------------------------------
-echo "[4] DELETE http://localhost:$A_PORT/characters/$CID (Bearer dev-\$PID)"
+echo "[4] DELETE http://localhost:$A_PORT/characters/$CID (Bearer \$TOKEN)"
 DEL="$(curl -s -w $'\n%{http_code}' -X DELETE "http://localhost:$A_PORT/characters/$CID" \
-    -H "Authorization: Bearer dev-$PID")"
+    -H "Authorization: Bearer $TOKEN")"
 DCODE="$(echo "$DEL" | tail -1)"
 echo "    -> HTTP $DCODE"
 if [ "$DCODE" = "204" ]; then pass "delete -> 204"; else fail "delete expected 204, got $DCODE"; fi
@@ -307,14 +400,14 @@ if [ -n "$PSQL" ]; then
     [ "$WIPED" = "1" ] || fail "holdings never wiped in B (wipe on_tx handler did not run)"
 else
     note "psql not found -- falling back to HTTP 404 as a WEAKER wipe signal"
-    W="$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:$B_PORT/inventory/character/$CID" -H "Authorization: Bearer dev-$PID")"
+    W="$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:$B_PORT/inventory/character/$CID" -H "Authorization: Bearer $TOKEN")"
     echo "    -> HTTP $W"
     if [ "$W" = "404" ]; then pass "post-delete GET -> 404 (character gone; DB wipe unverified, psql missing)"; else fail "post-delete expected 404, got $W"; fi
 fi
 
 # Also record the HTTP 404 (character gone via owner_of over QUIC) for the evidence doc.
-echo "[5b] post-delete GET /inventory/character/$CID (Bearer dev-\$PID)"
-W2="$(curl -s -w $'\n%{http_code}' "http://localhost:$B_PORT/inventory/character/$CID" -H "Authorization: Bearer dev-$PID")"
+echo "[5b] post-delete GET /inventory/character/$CID (Bearer \$TOKEN)"
+W2="$(curl -s -w $'\n%{http_code}' "http://localhost:$B_PORT/inventory/character/$CID" -H "Authorization: Bearer $TOKEN")"
 echo "    -> HTTP $(echo "$W2" | tail -1)  $(echo "$W2" | sed '$d')"
 
 echo ""
@@ -329,11 +422,11 @@ else
     # [C1] baseline: B booted with the default starter (no config row) -> starter_sword.
     echo "[C1] baseline: create a character -> starter should be the DEFAULT starter_sword"
     BCID="$(curl -s -X POST "http://localhost:$A_PORT/characters" \
-        -H "Authorization: Bearer dev-$PID" -H "Content-Type: application/json" \
+        -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
         -d '{"name":"Baseline","class":"mage"}' | grep -o '"id":"[^"]*"' | head -1 | sed 's/"id":"//;s/"//')"
     BASE_OK=0
     for i in $(seq 1 30); do
-        R="$(curl -s "http://localhost:$B_PORT/inventory/character/$BCID" -H "Authorization: Bearer dev-$PID")"
+        R="$(curl -s "http://localhost:$B_PORT/inventory/character/$BCID" -H "Authorization: Bearer $TOKEN")"
         if echo "$R" | grep -q 'starter_sword'; then BASE_OK=1; break; fi
         if echo "$R" | grep -q 'health_potion'; then break; fi
         sleep 0.5
@@ -356,10 +449,10 @@ else
     RELOAD_OK=0
     for i in $(seq 1 30); do
         NCID="$(curl -s -X POST "http://localhost:$A_PORT/characters" \
-            -H "Authorization: Bearer dev-$PID" -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
             -d '{"name":"Reloaded","class":"mage"}' | grep -o '"id":"[^"]*"' | head -1 | sed 's/"id":"//;s/"//')"
         for j in $(seq 1 10); do
-            R="$(curl -s "http://localhost:$B_PORT/inventory/character/$NCID" -H "Authorization: Bearer dev-$PID")"
+            R="$(curl -s "http://localhost:$B_PORT/inventory/character/$NCID" -H "Authorization: Bearer $TOKEN")"
             echo "$R" | grep -qE 'starter_sword|health_potion' && break
             sleep 0.3
         done
@@ -383,11 +476,11 @@ echo ""
 echo "========= PLAYER QUIC FRONT (via gateway-svc :$PLAYER_PORT) ========="
 
 # --- P1. player QUIC create -> G -> mTLS edge -> A ---------------------------
-# A FRESH character owned by dev-$PID, created THROUGH the QUIC player front (the
+# A FRESH character owned by the registered player, created THROUGH the QUIC player front (the
 # original CID from [1] was deleted in [4]). playercli exits 0 iff transport ok AND
 # the payload's status=="Ok".
-echo "[P1] playercli characters.create over QUIC :$PLAYER_PORT (--token dev-\$PID)"
-P1_OUT="$("$PLAYERCLI" --addr "127.0.0.1:$PLAYER_PORT" --ca "$CA_CERT" --token "dev-$PID" \
+echo "[P1] playercli characters.create over QUIC :$PLAYER_PORT (--token <real>)"
+P1_OUT="$("$PLAYERCLI" --addr "127.0.0.1:$PLAYER_PORT" --ca "$CA_CERT" --token "$TOKEN" \
     characters.create '{"name":"hero","class":""}' 2>/dev/null)"
 P1_RC=$?
 echo "    -> rc=$P1_RC  $P1_OUT"
@@ -402,7 +495,7 @@ fi
 # The newest composition: assertion P1 alone only proves the G->A leg; this proves
 # player QUIC -> G -> Remote -> B, and B in turn calls owner_of over QUIC/mTLS to A.
 echo "[P2] playercli inventory.listCharacter over QUIC :$PLAYER_PORT (player QUIC -> G -> Remote -> B :$B_EDGE_PORT)"
-P2_OUT="$("$PLAYERCLI" --addr "127.0.0.1:$PLAYER_PORT" --ca "$CA_CERT" --token "dev-$PID" \
+P2_OUT="$("$PLAYERCLI" --addr "127.0.0.1:$PLAYER_PORT" --ca "$CA_CERT" --token "$TOKEN" \
     inventory.listCharacter "{\"character_id\":\"$PCID\"}" 2>/dev/null)"
 P2_RC=$?
 echo "    -> rc=$P2_RC  $P2_OUT"
@@ -413,8 +506,8 @@ else
 fi
 
 # --- P3. gateway-svc HTTP front still routes cross-provider inventory.* -> B --
-echo "[P3] GET http://localhost:$G_PORT/inventory/character/$PCID through gateway-svc HTTP front (Bearer dev-\$PID)"
-P3="$(curl -s -w $'\n%{http_code}' "http://localhost:$G_PORT/inventory/character/$PCID" -H "Authorization: Bearer dev-$PID")"
+echo "[P3] GET http://localhost:$G_PORT/inventory/character/$PCID through gateway-svc HTTP front (Bearer \$TOKEN)"
+P3="$(curl -s -w $'\n%{http_code}' "http://localhost:$G_PORT/inventory/character/$PCID" -H "Authorization: Bearer $TOKEN")"
 P3BODY="$(echo "$P3" | sed '$d')"; P3CODE="$(echo "$P3" | tail -1)"
 echo "    -> HTTP $P3CODE  $P3BODY"
 if [ "$P3CODE" = "200" ]; then
@@ -452,7 +545,7 @@ fi
 # characters.ownerOf has no #[http] binding, so it is NOT in the front's route table
 # -> NotFound. Proves dispatch is method-allow-listed, never a blind prefix relay.
 echo "[P5] playercli characters.ownerOf (wire-only, not routable) -> exit 1 + NotFound"
-P5_OUT="$("$PLAYERCLI" --addr "127.0.0.1:$PLAYER_PORT" --ca "$CA_CERT" --token "dev-$PID" \
+P5_OUT="$("$PLAYERCLI" --addr "127.0.0.1:$PLAYER_PORT" --ca "$CA_CERT" --token "$TOKEN" \
     characters.ownerOf "{\"character_id\":\"$PCID\"}" 2>/dev/null)"
 P5_RC=$?
 echo "    -> rc=$P5_RC  $P5_OUT"
@@ -484,9 +577,19 @@ env PORT=":$A_PORT" DATABASE_URL="$DATABASE_URL" \
     "$BIN_DIR/server$EXE" >"$RUN_DIR/monolith.out.log" 2>"$RUN_DIR/monolith.err.log" &
 M_PID=$!
 if wait_healthy "$A_PORT" "monolith (server)"; then
-    MPID="$(new_uuid)"
-    echo "[M1] playercli characters.create over QUIC :$PLAYER_PORT against the monolith (--token dev-\$MPID)"
-    M1_OUT="$("$PLAYERCLI" --addr "127.0.0.1:$PLAYER_PORT" --ca "$CA_CERT" --token "dev-$MPID" \
+    MSUFFIX="$(new_uuid | cut -c1-8)"
+    echo "[M0] register a player on the monolith (accounts module local, real session)"
+    MREG="$(curl -s -X POST "http://localhost:$A_PORT/accounts/register" \
+        -H "Content-Type: application/json" \
+        -d "{\"email\":\"mono-$MSUFFIX@test.local\",\"password\":\"pw-$MSUFFIX\",\"displayName\":\"Mono\"}")"
+    MTOKEN="$(echo "$MREG" | grep -o '"token":"[^"]*"' | head -1 | sed 's/"token":"//;s/"//')"
+    if [ -n "$MTOKEN" ]; then
+        pass "monolith register -> real bearer (parity: same auth flow, all Local)"
+    else
+        fail "monolith register produced no token -- $MREG"
+    fi
+    echo "[M1] playercli characters.create over QUIC :$PLAYER_PORT against the monolith (--token <real>)"
+    M1_OUT="$("$PLAYERCLI" --addr "127.0.0.1:$PLAYER_PORT" --ca "$CA_CERT" --token "$MTOKEN" \
         characters.create '{"name":"solo","class":""}' 2>/dev/null)"
     M1_RC=$?
     echo "    -> rc=$M1_RC  $M1_OUT"
@@ -495,6 +598,16 @@ if wait_healthy "$A_PORT" "monolith (server)"; then
     else
         fail "monolith player create expected exit 0, got rc=$M1_RC"
     fi
+    echo "[M2] monolith rejects a dev- token (real verifier resolved from the local accounts module)"
+    M2_OUT="$("$PLAYERCLI" --addr "127.0.0.1:$PLAYER_PORT" --ca "$CA_CERT" --token "dev-$MSUFFIX" \
+        characters.create '{"name":"x","class":""}' 2>/dev/null)"
+    M2_RC=$?
+    echo "    -> rc=$M2_RC  $M2_OUT"
+    if [ "$M2_RC" -ne 0 ] && echo "$M2_OUT" | grep -q 'Unauthorized'; then
+        pass "monolith dev- token -> Unauthorized (parity with the split front)"
+    else
+        fail "monolith dev- token expected Unauthorized, got rc=$M2_RC $M2_OUT"
+    fi
 else
     fail "monolith (server) never became healthy on :$A_PORT"
 fi
@@ -502,7 +615,7 @@ teardown
 
 echo "============================================"
 if [ "$FAILS" -eq 0 ]; then
-    echo "SPLIT PROOF: PASS (all assertions held on the four-process split + monolith parity)"
+    echo "SPLIT PROOF: PASS (all assertions held on the five-process split + monolith parity)"
     exit 0
 else
     echo "SPLIT PROOF: FAIL ($FAILS assertion(s) failed)"

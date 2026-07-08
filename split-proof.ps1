@@ -1,10 +1,11 @@
 # split-proof.ps1 -- the SPLIT-topology proof for the rust-sketch (Steps 12 + 8).
 #
-# The whole point of the milestone: exercises the FOUR-PROCESS split (characters-svc =
+# The whole point of the milestone: exercises the FIVE-PROCESS split (characters-svc =
 # A on :8080 / edge :9000, inventory-svc = B on :8081 / edge :9001, gateway-svc = G on
-# :8082 / player QUIC :9100, config-svc = C on :8083 / edge :9002), NOT the monolith,
-# driving the real player flows over HTTP
-# (through the gateway front-door with a dev-<uuid> bearer), the sync authz over
+# :8082 / player QUIC :9100, config-svc = C on :8083 / edge :9002, accounts-svc = D on
+# :8084 / edge :9003), NOT the monolith, driving the real player flows over HTTP
+# (through the gateway front-door with a REAL bearer minted by register+login through
+# the front -- Step 6 replaced the dev-<uuid> tokens), the sync authz over
 # QUIC/mTLS, AND the NEW dedicated QUIC player front (Step 8): external players connect
 # to gateway-svc over QUIC (server-cert-only TLS), the front auth-verifies the
 # bearer-in-envelope once and dispatches the method through the route table (allow-list
@@ -17,6 +18,10 @@
 #   5. exits non-zero if ANY assertion fails.
 #
 # THE PROOF (all against the SPLIT, over real HTTP/QUIC):
+#   - REAL AUTH (Step 6): register + login through G's front mint a DB-backed session
+#     on D; the bearer then authorizes ops on every process (each gateway verifies it
+#     against D's accounts.verifySession over QUIC/mTLS). NEGATIVE: a garbage token
+#     and a dev-<uuid> token are both 401 through G (no ACCOUNTS_DEV_AUTH anywhere).
 #   - Async event A->B: POST /characters on A -> 201; A emits character.created; its
 #     relay POSTs to B /events; inventory's durable on_tx grants the starter item.
 #     Poll GET /inventory/character/<id> on B until starter_sword x1 appears.
@@ -58,9 +63,11 @@ $APort     = 8080
 $BPort     = 8081
 $GPort     = 8082
 $CPort     = 8083
+$DPort     = 8084
 $EdgePort  = 9000
 $BEdgePort = 9001
 $CEdgePort = 9002
+$DEdgePort = 9003
 $PlayerPort = 9100
 $PlayerCli = Join-Path $BinDir 'playercli.exe'
 
@@ -72,6 +79,7 @@ $script:AProc = $null
 $script:BProc = $null
 $script:GProc = $null
 $script:CProc = $null
+$script:DProc = $null
 $script:MProc = $null
 
 function Note($m) { Write-Host "[proof] $m" }
@@ -130,8 +138,9 @@ function Teardown {
     if ($script:BProc -and -not $script:BProc.HasExited) { Stop-Process -Id $script:BProc.Id -Force -ErrorAction SilentlyContinue; Note "stopped B (pid $($script:BProc.Id))" }
     if ($script:GProc -and -not $script:GProc.HasExited) { Stop-Process -Id $script:GProc.Id -Force -ErrorAction SilentlyContinue; Note "stopped G (pid $($script:GProc.Id))" }
     if ($script:CProc -and -not $script:CProc.HasExited) { Stop-Process -Id $script:CProc.Id -Force -ErrorAction SilentlyContinue; Note "stopped C (pid $($script:CProc.Id))" }
+    if ($script:DProc -and -not $script:DProc.HasExited) { Stop-Process -Id $script:DProc.Id -Force -ErrorAction SilentlyContinue; Note "stopped D (pid $($script:DProc.Id))" }
     if ($script:MProc -and -not $script:MProc.HasExited) { Stop-Process -Id $script:MProc.Id -Force -ErrorAction SilentlyContinue; Note "stopped monolith (pid $($script:MProc.Id))" }
-    $script:AProc = $null; $script:BProc = $null; $script:GProc = $null; $script:CProc = $null; $script:MProc = $null
+    $script:AProc = $null; $script:BProc = $null; $script:GProc = $null; $script:CProc = $null; $script:DProc = $null; $script:MProc = $null
 }
 
 # Runs playercli, capturing stdout (joined) and the process exit code. Returns a
@@ -143,14 +152,14 @@ function Invoke-PlayerCli([string[]]$CliArgs) {
 }
 
 try {
-    Note 'building edgeca + characters-svc + inventory-svc + gateway-svc + config-svc + playercli + server ...'
-    cargo build -p edgeca -p characters-svc -p inventory-svc -p gateway-svc -p config-svc -p playercli -p server
+    Note 'building edgeca + characters-svc + inventory-svc + gateway-svc + config-svc + accounts-svc + playercli + server ...'
+    cargo build -p edgeca -p characters-svc -p inventory-svc -p gateway-svc -p config-svc -p accounts-svc -p playercli -p server
     if ($LASTEXITCODE -ne 0) { throw 'cargo build failed' }
 
     New-Item -ItemType Directory -Force -Path $RunDir | Out-Null
 
     # Clear stragglers from an aborted prior run so ports are free (idempotent reruns).
-    foreach ($n in 'characters-svc', 'inventory-svc', 'gateway-svc', 'config-svc', 'server') {
+    foreach ($n in 'characters-svc', 'inventory-svc', 'gateway-svc', 'config-svc', 'accounts-svc', 'server') {
         Get-Process -Name $n -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
     }
     Start-Sleep -Milliseconds 500
@@ -159,15 +168,30 @@ try {
     & (Join-Path $BinDir 'edgeca.exe') --cert $CaCert --key $CaKey
     if ($LASTEXITCODE -ne 0) { throw 'edgeca failed' }
 
-    Note "starting A (characters-svc) on :$APort, edge :$EdgePort ..."
-    $script:AProc = Start-Svc (Join-Path $BinDir 'characters-svc.exe') @{
-        PORT               = ":$APort"
+    # D (accounts-svc) FIRST: owns the accounts schema and serves accounts.verifySession
+    # + the auth op faces on its mTLS edge; every other gateway verifies bearers here.
+    Note "starting D (accounts-svc) on :$DPort, edge :$DEdgePort ..."
+    $script:DProc = Start-Svc (Join-Path $BinDir 'accounts-svc.exe') @{
+        PORT               = ":$DPort"
         DATABASE_URL       = $env:DATABASE_URL
-        EDGE_ADDR          = ":$EdgePort"
+        EDGE_ADDR          = ":$DEdgePort"
         EDGE_CA_CERT       = $CaCert
         EDGE_CA_KEY        = $CaKey
-        MESSAGING_ORIGIN   = 'characters-svc'
-        EVENTS_SUBSCRIBERS = "character.created=http://127.0.0.1:$BPort/events;character.deleted=http://127.0.0.1:$BPort/events"
+        MESSAGING_ORIGIN   = 'accounts-svc'
+        EVENTS_SUBSCRIBERS = ''
+    } 'accounts'
+    if (-not (Wait-Healthy $DPort 'D (accounts-svc)')) { throw 'D failed to start' }
+
+    Note "starting A (characters-svc) on :$APort, edge :$EdgePort ..."
+    $script:AProc = Start-Svc (Join-Path $BinDir 'characters-svc.exe') @{
+        PORT                = ":$APort"
+        DATABASE_URL        = $env:DATABASE_URL
+        EDGE_ADDR           = ":$EdgePort"
+        EDGE_CA_CERT        = $CaCert
+        EDGE_CA_KEY         = $CaKey
+        ACCOUNTS_EDGE_ADDR  = "127.0.0.1:$DEdgePort"
+        MESSAGING_ORIGIN    = 'characters-svc'
+        EVENTS_SUBSCRIBERS  = "character.created=http://127.0.0.1:$BPort/events;character.deleted=http://127.0.0.1:$BPort/events"
     } 'characters'
     if (-not (Wait-Healthy $APort 'A (characters-svc)')) { throw 'A failed to start' }
 
@@ -191,6 +215,7 @@ try {
         EDGE_ADDR          = ":$CEdgePort"
         EDGE_CA_CERT       = $CaCert
         EDGE_CA_KEY        = $CaKey
+        ACCOUNTS_EDGE_ADDR = "127.0.0.1:$DEdgePort"
         MESSAGING_ORIGIN   = 'config-svc'
         EVENTS_SUBSCRIBERS = "config.changed=http://127.0.0.1:$BPort/events"
     } 'config'
@@ -208,6 +233,7 @@ try {
         EDGE_CA_KEY          = $CaKey
         CHARACTERS_EDGE_ADDR = "127.0.0.1:$EdgePort"
         CONFIG_EDGE_ADDR     = "127.0.0.1:$CEdgePort"
+        ACCOUNTS_EDGE_ADDR   = "127.0.0.1:$DEdgePort"
         MESSAGING_ORIGIN     = 'inventory-svc'
     } 'inventory'
     if (-not (Wait-Healthy $BPort 'B (inventory-svc)')) { throw 'B failed to start' }
@@ -224,20 +250,65 @@ try {
         EDGE_CA_KEY          = $CaKey
         CHARACTERS_EDGE_ADDR = "127.0.0.1:$EdgePort"
         INVENTORY_EDGE_ADDR  = "127.0.0.1:$BEdgePort"
+        ACCOUNTS_EDGE_ADDR   = "127.0.0.1:$DEdgePort"
     } 'gateway'
     if (-not (Wait-Healthy $GPort 'G (gateway-svc)')) { throw 'G failed to start' }
 
-    $PID_ = [guid]::NewGuid().ToString()
-    $Other = [guid]::NewGuid().ToString()
-    Note "player PID=$PID_  (other player=$Other)"
+    $RunSuffix = [guid]::NewGuid().ToString().Substring(0, 8)
+
+    Write-Host ''
+    Write-Host '================ REAL AUTH (Step 6) ================'
+    # Register + login THROUGH the gateway front (G routes /accounts/* Remote to D over
+    # the mTLS edge), then use the REAL bearer everywhere below. No dev- tokens.
+
+    Write-Host "[A1] POST http://127.0.0.1:$GPort/accounts/register (through G -> D)"
+    $reg = Invoke-Curl @('-X', 'POST', "http://127.0.0.1:$GPort/accounts/register",
+        '-H', 'Content-Type: application/json',
+        '-d', "{`"email`":`"proof-$RunSuffix@test.local`",`"password`":`"pw-$RunSuffix`",`"displayName`":`"Proof`"}")
+    Write-Host "    -> HTTP $($reg.Code)  $($reg.Body)"
+    $PlayerId = $null
+    if ($reg.Body -match '"player_id":"([^"]+)"') { $PlayerId = $Matches[1] }
+    if ($reg.Code -eq '201' -and $PlayerId) { Pass "register through the front -> 201, player_id=$PlayerId" } else { Fail "register expected 201 with player_id, got $($reg.Code)"; throw 'auth bootstrap failed' }
+
+    Write-Host "[A2] POST http://127.0.0.1:$GPort/accounts/login (fresh session through G -> D)"
+    $login = Invoke-Curl @('-X', 'POST', "http://127.0.0.1:$GPort/accounts/login",
+        '-H', 'Content-Type: application/json',
+        '-d', "{`"email`":`"proof-$RunSuffix@test.local`",`"password`":`"pw-$RunSuffix`"}")
+    $Token = $null
+    if ($login.Body -match '"token":"([^"]+)"') { $Token = $Matches[1] }
+    Write-Host "    -> HTTP $($login.Code)  token=$(if ($Token) { $Token.Substring(0,12) })..."
+    if ($login.Code -eq '200' -and $Token) { Pass 'login through the front -> 200 with a real bearer' } else { Fail "login expected 200 with token, got $($login.Code)"; throw 'auth bootstrap failed' }
+
+    Write-Host "[A3] GET http://127.0.0.1:$GPort/accounts/me (Bearer <real token>)"
+    $me = Invoke-Curl @("http://127.0.0.1:$GPort/accounts/me", '-H', "Authorization: Bearer $Token")
+    Write-Host "    -> HTTP $($me.Code)  $($me.Body)"
+    if ($me.Code -eq '200' -and $me.Body -match [regex]::Escape($PlayerId)) { Pass 'me -> 200 with the registered player (auth-once verified the real session)' } else { Fail "me expected 200 with player_id, got $($me.Code)" }
+
+    # A second player for the negative authz assertion.
+    $oreg = Invoke-Curl @('-X', 'POST', "http://127.0.0.1:$GPort/accounts/register",
+        '-H', 'Content-Type: application/json',
+        '-d', "{`"email`":`"other-$RunSuffix@test.local`",`"password`":`"pw2-$RunSuffix`",`"displayName`":`"Other`"}")
+    $OtherToken = $null
+    if ($oreg.Body -match '"token":"([^"]+)"') { $OtherToken = $Matches[1] }
+    if (-not $OtherToken) { Fail 'second register produced no token'; throw 'auth bootstrap failed' }
+
+    Write-Host '[A4] GET /characters through G with a GARBAGE token -> 401'
+    $g1 = Invoke-Curl @("http://127.0.0.1:$GPort/characters", '-H', 'Authorization: Bearer totally-bogus-token')
+    Write-Host "    -> HTTP $($g1.Code)"
+    if ($g1.Code -eq '401') { Pass 'garbage token -> 401' } else { Fail "garbage token expected 401, got $($g1.Code)" }
+
+    Write-Host '[A5] GET /characters through G with a dev-<uuid> token -> 401 (no ACCOUNTS_DEV_AUTH on G)'
+    $g2 = Invoke-Curl @("http://127.0.0.1:$GPort/characters", '-H', "Authorization: Bearer dev-$([guid]::NewGuid())")
+    Write-Host "    -> HTTP $($g2.Code)"
+    if ($g2.Code -eq '401') { Pass 'dev- token -> 401 (gateway-svc verifies REAL sessions only)' } else { Fail "dev- token expected 401, got $($g2.Code)" }
 
     Write-Host ''
     Write-Host '================ SPLIT PROOF ================'
 
     # --- 1. CREATE on A ---
-    Write-Host "[1] POST http://127.0.0.1:$APort/characters (Bearer dev-`$PID)"
+    Write-Host "[1] POST http://127.0.0.1:$APort/characters (Bearer `$Token)"
     $c = Invoke-Curl @('-X', 'POST', "http://127.0.0.1:$APort/characters",
-        '-H', "Authorization: Bearer dev-$PID_", '-H', 'Content-Type: application/json',
+        '-H', "Authorization: Bearer $Token", '-H', 'Content-Type: application/json',
         '-d', '{"name":"Aria","class":"mage"}')
     Write-Host "    -> HTTP $($c.Code)  $($c.Body)"
     $cid = $null
@@ -248,7 +319,7 @@ try {
     Write-Host "[2] poll GET http://127.0.0.1:$BPort/inventory/character/$cid until starter appears"
     $starterOk = $false
     for ($i = 1; $i -le 30; $i++) {
-        $r = Invoke-Curl @("http://127.0.0.1:$BPort/inventory/character/$cid", '-H', "Authorization: Bearer dev-$PID_")
+        $r = Invoke-Curl @("http://127.0.0.1:$BPort/inventory/character/$cid", '-H', "Authorization: Bearer $Token")
         if ($r.Code -eq '200' -and $r.Body -match 'starter_sword') {
             Write-Host "    attempt $i -> HTTP 200 $($r.Body)"
             Pass 'starter_sword materialized in B (async event A->B) AND 200 proves owner_of over QUIC/mTLS B->A'
@@ -259,14 +330,14 @@ try {
     if (-not $starterOk) { Fail 'starter never appeared in B (async cross-process grant / QUIC authz)' }
 
     # --- 3. NEGATIVE authz ---
-    Write-Host "[3] GET /inventory/character/$cid as a DIFFERENT player (Bearer dev-`$OTHER)"
-    $n = Invoke-Curl @("http://127.0.0.1:$BPort/inventory/character/$cid", '-H', "Authorization: Bearer dev-$Other")
+    Write-Host "[3] GET /inventory/character/$cid as a DIFFERENT player (Bearer `$OtherToken)"
+    $n = Invoke-Curl @("http://127.0.0.1:$BPort/inventory/character/$cid", '-H', "Authorization: Bearer $OtherToken")
     Write-Host "    -> HTTP $($n.Code)  $($n.Body)"
     if ($n.Code -eq '403' -or $n.Code -eq '404') { Pass "other player -> $($n.Code) (owner_of over QUIC gates)" } else { Fail "negative authz expected 403/404, got $($n.Code)" }
 
     # --- 4. DELETE on A ---
-    Write-Host "[4] DELETE http://127.0.0.1:$APort/characters/$cid (Bearer dev-`$PID)"
-    $d = Invoke-Curl @('-X', 'DELETE', "http://127.0.0.1:$APort/characters/$cid", '-H', "Authorization: Bearer dev-$PID_")
+    Write-Host "[4] DELETE http://127.0.0.1:$APort/characters/$cid (Bearer `$Token)"
+    $d = Invoke-Curl @('-X', 'DELETE', "http://127.0.0.1:$APort/characters/$cid", '-H', "Authorization: Bearer $Token")
     Write-Host "    -> HTTP $($d.Code)"
     if ($d.Code -eq '204') { Pass 'delete -> 204' } else { Fail "delete expected 204, got $($d.Code)" }
 
@@ -286,13 +357,13 @@ try {
         if (-not $wiped) { Fail 'holdings never wiped in B (wipe on_tx handler did not run)' }
     } else {
         Note 'psql not found -- falling back to HTTP 404 as a WEAKER wipe signal'
-        $w = Invoke-Curl @("http://127.0.0.1:$BPort/inventory/character/$cid", '-H', "Authorization: Bearer dev-$PID_")
+        $w = Invoke-Curl @("http://127.0.0.1:$BPort/inventory/character/$cid", '-H', "Authorization: Bearer $Token")
         Write-Host "    -> HTTP $($w.Code)"
         if ($w.Code -eq '404') { Pass 'post-delete GET -> 404 (character gone; DB wipe unverified, psql missing)' } else { Fail "post-delete expected 404, got $($w.Code)" }
     }
 
-    Write-Host "[5b] post-delete GET /inventory/character/$cid (Bearer dev-`$PID)"
-    $w2 = Invoke-Curl @("http://127.0.0.1:$BPort/inventory/character/$cid", '-H', "Authorization: Bearer dev-$PID_")
+    Write-Host "[5b] post-delete GET /inventory/character/$cid (Bearer `$Token)"
+    $w2 = Invoke-Curl @("http://127.0.0.1:$BPort/inventory/character/$cid", '-H', "Authorization: Bearer $Token")
     Write-Host "    -> HTTP $($w2.Code)  $($w2.Body)"
 
     Write-Host ''
@@ -307,13 +378,13 @@ try {
         # [C1] baseline: B booted with the default starter (no config row) -> starter_sword.
         Write-Host '[C1] baseline: create a character -> starter should be the DEFAULT starter_sword'
         $bc = Invoke-Curl @('-X', 'POST', "http://127.0.0.1:$APort/characters",
-            '-H', "Authorization: Bearer dev-$PID_", '-H', 'Content-Type: application/json',
+            '-H', "Authorization: Bearer $Token", '-H', 'Content-Type: application/json',
             '-d', '{"name":"Baseline","class":"mage"}')
         $bcid = $null
         if ($bc.Body -match '"id":"([^"]+)"') { $bcid = $Matches[1] }
         $baseOk = $false
         for ($i = 1; $i -le 30; $i++) {
-            $r = Invoke-Curl @("http://127.0.0.1:$BPort/inventory/character/$bcid", '-H', "Authorization: Bearer dev-$PID_")
+            $r = Invoke-Curl @("http://127.0.0.1:$BPort/inventory/character/$bcid", '-H', "Authorization: Bearer $Token")
             if ($r.Body -match 'starter_sword') { $baseOk = $true; break }
             if ($r.Body -match 'health_potion') { break }
             Start-Sleep -Milliseconds 500
@@ -331,13 +402,13 @@ try {
         $reloadOk = $false
         for ($i = 1; $i -le 30; $i++) {
             $nc = Invoke-Curl @('-X', 'POST', "http://127.0.0.1:$APort/characters",
-                '-H', "Authorization: Bearer dev-$PID_", '-H', 'Content-Type: application/json',
+                '-H', "Authorization: Bearer $Token", '-H', 'Content-Type: application/json',
                 '-d', '{"name":"Reloaded","class":"mage"}')
             $ncid = $null
             if ($nc.Body -match '"id":"([^"]+)"') { $ncid = $Matches[1] }
             $r = $null
             for ($j = 1; $j -le 10; $j++) {
-                $r = Invoke-Curl @("http://127.0.0.1:$BPort/inventory/character/$ncid", '-H', "Authorization: Bearer dev-$PID_")
+                $r = Invoke-Curl @("http://127.0.0.1:$BPort/inventory/character/$ncid", '-H', "Authorization: Bearer $Token")
                 if ($r.Body -match 'starter_sword|health_potion') { break }
                 Start-Sleep -Milliseconds 300
             }
@@ -357,11 +428,11 @@ try {
     Write-Host "========= PLAYER QUIC FRONT (via gateway-svc :$PlayerPort) ========="
 
     # --- P1. player QUIC create -> G -> mTLS edge -> A ---
-    # A FRESH character owned by dev-$PID, created THROUGH the QUIC player front (the
+    # A FRESH character owned by the registered player, created THROUGH the QUIC player front (the
     # original cid from [1] was deleted in [4]). playercli exits 0 iff transport ok AND
     # the payload's status=="Ok".
-    Write-Host "[P1] playercli characters.create over QUIC :$PlayerPort (--token dev-`$PID)"
-    $p1 = Invoke-PlayerCli @('--addr', "127.0.0.1:$PlayerPort", '--ca', $CaCert, '--token', "dev-$PID_", 'characters.create', '{"name":"hero","class":""}')
+    Write-Host "[P1] playercli characters.create over QUIC :$PlayerPort (--token <real>)"
+    $p1 = Invoke-PlayerCli @('--addr', "127.0.0.1:$PlayerPort", '--ca', $CaCert, '--token', $Token, 'characters.create', '{"name":"hero","class":""}')
     Write-Host "    -> rc=$($p1.Rc)  $($p1.Out)"
     $pcid = $null
     if ($p1.Out -match '"id":"([^"]+)"') { $pcid = $Matches[1] }
@@ -371,13 +442,13 @@ try {
     # The newest composition: P1 alone only proves the G->A leg; this proves player QUIC
     # -> G -> Remote -> B, and B in turn calls owner_of over QUIC/mTLS to A.
     Write-Host "[P2] playercli inventory.listCharacter over QUIC :$PlayerPort (player QUIC -> G -> Remote -> B :$BEdgePort)"
-    $p2 = Invoke-PlayerCli @('--addr', "127.0.0.1:$PlayerPort", '--ca', $CaCert, '--token', "dev-$PID_", 'inventory.listCharacter', "{`"character_id`":`"$pcid`"}")
+    $p2 = Invoke-PlayerCli @('--addr', "127.0.0.1:$PlayerPort", '--ca', $CaCert, '--token', $Token, 'inventory.listCharacter', "{`"character_id`":`"$pcid`"}")
     Write-Host "    -> rc=$($p2.Rc)  $($p2.Out)"
     if ($p2.Rc -eq 0) { Pass "player inventory list -> exit 0 (player QUIC -> G -> Remote -> B :$BEdgePort -> owner_of QUIC -> A)" } else { Fail "player inventory list expected exit 0, got rc=$($p2.Rc)" }
 
     # --- P3. gateway-svc HTTP front still routes cross-provider inventory.* -> B ---
-    Write-Host "[P3] GET http://127.0.0.1:$GPort/inventory/character/$pcid through gateway-svc HTTP front (Bearer dev-`$PID)"
-    $p3 = Invoke-Curl @("http://127.0.0.1:$GPort/inventory/character/$pcid", '-H', "Authorization: Bearer dev-$PID_")
+    Write-Host "[P3] GET http://127.0.0.1:$GPort/inventory/character/$pcid through gateway-svc HTTP front (Bearer `$Token)"
+    $p3 = Invoke-Curl @("http://127.0.0.1:$GPort/inventory/character/$pcid", '-H', "Authorization: Bearer $Token")
     Write-Host "    -> HTTP $($p3.Code)  $($p3.Body)"
     if ($p3.Code -eq '200') { Pass 'gateway-svc HTTP front routes inventory.* -> B remote -> 200' } else { Fail "gateway-svc HTTP inventory expected 200, got $($p3.Code)" }
 
@@ -396,7 +467,7 @@ try {
     # characters.ownerOf has no #[http] binding, so it is NOT in the front's route table
     # -> NotFound. Proves dispatch is method-allow-listed, never a blind prefix relay.
     Write-Host "[P5] playercli characters.ownerOf (wire-only, not routable) -> exit 1 + NotFound"
-    $p5 = Invoke-PlayerCli @('--addr', "127.0.0.1:$PlayerPort", '--ca', $CaCert, '--token', "dev-$PID_", 'characters.ownerOf', "{`"character_id`":`"$pcid`"}")
+    $p5 = Invoke-PlayerCli @('--addr', "127.0.0.1:$PlayerPort", '--ca', $CaCert, '--token', $Token, 'characters.ownerOf', "{`"character_id`":`"$pcid`"}")
     Write-Host "    -> rc=$($p5.Rc)  $($p5.Out)"
     if ($p5.Rc -ne 0 -and $p5.Out -match 'NotFound') { Pass 'wire-only characters.ownerOf -> exit 1 + NotFound (allow-list gate live)' } else { Fail "ownerOf expected exit 1 + NotFound, got rc=$($p5.Rc) $($p5.Out)" }
 
@@ -412,10 +483,14 @@ try {
     Write-Host '================ MONOLITH PARITY ================'
     Note 'tearing down the split before the monolith stage ...'
     Teardown
-    foreach ($n in 'characters-svc', 'inventory-svc', 'gateway-svc', 'config-svc', 'server') {
+    foreach ($n in 'characters-svc', 'inventory-svc', 'gateway-svc', 'config-svc', 'accounts-svc', 'server') {
         Get-Process -Name $n -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
     }
     Start-Sleep -Seconds 2
+    # Per-process env in this script leaks across Start-Svc calls; neutralize the
+    # split-only knobs so the monolith gets a clean messaging config.
+    $env:EVENTS_SUBSCRIBERS = ''
+    $env:MESSAGING_ORIGIN = ''
 
     Note "starting monolith (cmd/server) on :$APort, player QUIC :$PlayerPort ..."
     $script:MProc = Start-Svc (Join-Path $BinDir 'server.exe') @{
@@ -426,11 +501,22 @@ try {
         EDGE_CA_KEY      = $CaKey
     } 'monolith'
     if (Wait-Healthy $APort 'monolith (server)') {
-        $mpid = [guid]::NewGuid().ToString()
-        Write-Host "[M1] playercli characters.create over QUIC :$PlayerPort against the monolith (--token dev-`$MPID)"
-        $m1 = Invoke-PlayerCli @('--addr', "127.0.0.1:$PlayerPort", '--ca', $CaCert, '--token', "dev-$mpid", 'characters.create', '{"name":"solo","class":""}')
+        $msuffix = [guid]::NewGuid().ToString().Substring(0, 8)
+        Write-Host '[M0] register a player on the monolith (accounts module local, real session)'
+        $mreg = Invoke-Curl @('-X', 'POST', "http://127.0.0.1:$APort/accounts/register",
+            '-H', 'Content-Type: application/json',
+            '-d', "{`"email`":`"mono-$msuffix@test.local`",`"password`":`"pw-$msuffix`",`"displayName`":`"Mono`"}")
+        $mtoken = $null
+        if ($mreg.Body -match '"token":"([^"]+)"') { $mtoken = $Matches[1] }
+        if ($mtoken) { Pass 'monolith register -> real bearer (parity: same auth flow, all Local)' } else { Fail "monolith register produced no token -- $($mreg.Body)" }
+        Write-Host "[M1] playercli characters.create over QUIC :$PlayerPort against the monolith (--token <real>)"
+        $m1 = Invoke-PlayerCli @('--addr', "127.0.0.1:$PlayerPort", '--ca', $CaCert, '--token', $mtoken, 'characters.create', '{"name":"solo","class":""}')
         Write-Host "    -> rc=$($m1.Rc)  $($m1.Out)"
         if ($m1.Rc -eq 0) { Pass 'monolith player QUIC front -> exit 0 (all ops Local, parity proven)' } else { Fail "monolith player create expected exit 0, got rc=$($m1.Rc)" }
+        Write-Host '[M2] monolith rejects a dev- token (real verifier resolved from the local accounts module)'
+        $m2 = Invoke-PlayerCli @('--addr', "127.0.0.1:$PlayerPort", '--ca', $CaCert, '--token', "dev-$msuffix", 'characters.create', '{"name":"x","class":""}')
+        Write-Host "    -> rc=$($m2.Rc)  $($m2.Out)"
+        if ($m2.Rc -ne 0 -and $m2.Out -match 'Unauthorized') { Pass 'monolith dev- token -> Unauthorized (parity with the split front)' } else { Fail "monolith dev- token expected Unauthorized, got rc=$($m2.Rc) $($m2.Out)" }
     } else {
         Fail "monolith (server) never became healthy on :$APort"
     }
@@ -442,7 +528,7 @@ finally {
 }
 
 if ($script:Fails -eq 0) {
-    Write-Host 'SPLIT PROOF: PASS (all assertions held on the four-process split + monolith parity)'
+    Write-Host 'SPLIT PROOF: PASS (all assertions held on the five-process split + monolith parity)'
     exit 0
 } else {
     Write-Host "SPLIT PROOF: FAIL ($($script:Fails) assertion(s) failed)"
