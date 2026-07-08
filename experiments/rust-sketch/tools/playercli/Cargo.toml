@@ -1,0 +1,20 @@
+[package]
+name = "playercli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# A CLI driver for the QUIC player front (port of a Go `playercli`-equivalent, new to
+# this sketch). It dials `edge::PlayerClient` with a key-less `TrustAnchor` (the exact
+# trust a shipped player distribution holds — cert only, never the CA signing key) and
+# fires one call, printing the raw response envelope. The split-proof script drives it
+# to exercise the QUIC player front end-to-end.
+[[bin]]
+name = "playercli"
+path = "src/main.rs"
+
+[dependencies]
+edge = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+serde_json = { workspace = true }
