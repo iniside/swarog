@@ -10,7 +10,7 @@
 - [Rust sketch: split-verified M1](rust-sketch-split-verified-m1.md) — Rust port at experiments/rust-sketch/, M1 done + split proven live (foundations+gateway+durable messaging+characters/inventory); accounts/admin-portal/audit are M2
 - [Don't descope transport for simplicity](dont-descope-transport-for-simplicity.md) — never cut gateway/durable-messaging/RPC-codegen to "minimum viable"; it produces per-module hacks + debt, port the full seam in milestone 1
 - [Refactor churn was Opus remediation](refactor-churn-was-opus-remediation.md) — big stranglers were cleanup after agent mistakes, not an iteration style; don't cite churn speed as a Go advantage
-- [DECISION: Go vs Kotlin (in flux)](decision-quarkus-as-final.md) — back UNSETTLED (2026-07-07), now leaning GO again (admin list-free via runtime slot + linker split-build); 2026-07-05 "Quarkus final" downgraded — don't assert either as settled
+- [DECIDED: migrate everything to Rust](decision-migrate-everything-to-rust.md) — 2026-07-08 the whole backend moves to Rust (supersedes Quarkus/Go flux); split-verified M1 sketch + bounded rule-4 cost + crate-per-module separation. Don't re-litigate or assert Go/Quarkus.
 - [Local Postgres is the test DB](local-postgres-is-the-test-db.md) — integration tests target the local Postgres directly; NOT a Docker/Testcontainers fallback, don't frame it as one
 - [Local Postgres](reference_local_postgres.md) — role/db/DSN for GameBackend + superuser password (postgres/qwerty)
 - [Store-launch auth deferred to SDK](store-launch-auth-deferred-to-sdk.md) — backend stays a verifier; web=EAS(account id), native/store=Connect(PUID) needs a 2nd verifier later
