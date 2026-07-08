@@ -1,166 +1,176 @@
 # CLAUDE.md
 
-Guidance for working in this repo. A for-fun game backend, built as a **modular
-monolith**: one repo, one binary, but features are added by *writing new code,
-not modifying existing code* (Open/Closed at the architecture level).
+Guidance for working in this repo. A for-fun game backend in **Rust** (Cargo
+workspace), built as a **modular monolith with a proven split**: one repo, one
+`cmd/server` binary for the monolith, AND every domain module compiles and boots as
+its own `cmd/<name>-svc` process. Features are added by *writing new code, not
+modifying existing code* (Open/Closed at the architecture level). The retired Go
+original lives at `experiments/go-sketch/` (archived reference — do not evolve it).
 
 ## The point of this codebase
 
 Three seams carry all extensibility; almost everything else follows from them:
 
-1. **Module registry** (`lifecycle`) — every feature is a `lifecycle.Module` and
-   self-registers. The foundations never import a module; modules import them.
-   Dependencies are declared as a manifest (`Requires()`) and are **NOT**
-   topologically sorted: a two-phase build (every provider's `Register` runs before
-   any module's `Init`) makes init order commutative, so no sort is needed. Import
-   cycles are rejected by the Go compiler; a missing required service in a process's
-   module set fails loudly at startup (`validateRequires`).
-2. **Service registry** (`registry.Provide` / `Require`, over `ctx.Registry`) — for
-   *synchronous* needs ("ask B now, get an answer"). The consumer asserts the service
-   to its OWN local interface, so it depends on a capability, not a package.
-3. **Event bus** (`ctx.Bus`) — the default glue, **async + fire-and-forget**.
-   Reacting to something = subscribe. Each publishing domain owns a
-   `<module>events` package declaring events via `bus.Define[T]("topic")`.
+1. **Module registry** (`core/lifecycle`) — every feature is a `lifecycle::Module`
+   and self-registers in a `cmd/*` main. Foundations never import a module.
+   Dependencies are a manifest (`requires()`), **NOT** topologically sorted: the
+   two-phase build (every provider's `register` runs before any module's `init`)
+   makes init order commutative. A missing required capability in a process's module
+   set fails loudly at startup (`app::validate_requires`).
+2. **Service registry** (`registry::provide` / `require`, over `ctx.registry()`) —
+   for *synchronous* needs ("ask B now, get an answer"). The consumer imports the
+   provider's **contract crate** (`<name>api`, a trait — never the impl crate) and
+   `require`s `dyn Trait` under `registry::key(provider, snake_trait)`. In a split
+   process, a `remote::Stub` provides an edge-backed client under the SAME key —
+   the registry swap is the only difference between topologies.
+3. **Event bus** (`ctx.bus()`) — the async glue. Each publishing domain owns
+   `api/<name>/<name>events` declaring events via `bus::define`. **Every
+   cross-module event is DURABLE**: producer `emit_tx` inside a real DB tx,
+   consumer `on_tx`/`on_tx_raw` with a subscriber name (outbox → relay →
+   `POST /events` → inbox dedup, exactly-once). Plain `emit`/`on` is in-process
+   only and reserved for same-module reactions — it never crosses a process.
 
-Plus a minor seam: **`Context.Contribute(slot, v)` / `Contributions(slot)`** — a
-multi-value registry (unlike single-value `Provide`) for cross-cutting collections
-where many modules contribute and one consumer reads them all (e.g. admin items).
-A new contributor appears without the consumer being edited.
+Plus two minor seams: **`ctx.contribute(slot, v)` / `ctx.contributions(slot)`** — a
+multi-value registry for cross-cutting collections (admin items via `adminapi::SLOT`,
+ops via `opsapi::{SLOT,BINDING_SLOT,LOCAL_SLOT}`, readiness checks, remote boot
+hooks) — and **`edge::EDGE_SLOT`**: a module contributes its QUIC edge registrations
+(`edge::EdgeReg` wrapping its own generated `register_server` glue) UNCONDITIONALLY
+in `init`; `app::run` applies them iff the process serves an internal edge. The
+module never knows the topology.
 
 ## Hard constraints (do not violate without discussing)
 
-1. The foundations (`lifecycle`/`bus`/`registry`/`contrib`) never import a module.
-   Dependency only ever points module → foundations.
-2. Module implementations never import each other. Cross-module comms go through
-   the bus (async) or a service interface from the registry (sync).
-3. Synchronous dependency only "downward", toward foundations. Sideways reactions
-   go through the bus. Declared `Requires()` must match real sync dependencies.
-4. Depend on an interface/capability, not a package (consumer-defined interface).
-5. The only deliberately shared surface between modules is each domain's
-   `<name>events` package (payload types + the `bus.Define` descriptor). Two
-   provider-owned adjuncts are likewise sanctioned for the *sync* path: `<name>api`
-   — the provider's canonical capability interface + method-name constants,
-   transport-free (the codegen input for `tools/rpcgen`), reached ONLY by the
-   generated glue and `remote`, **never imported by domain consumers** (they keep
-   their own local interface, rule 4) — and `<name>rpc`, the generated transport
-   glue (impl-tier, may import `edge`). All three live under the top-level
-   `api/<name>/` tree (never nested inside `modules/<name>/`), which is the
-   module's private impl. Neither introduces a consumer→provider dependency; the
-   registry swap still resolves a local interface.
-6. Evolve events additively (new field / `FinishedV2`); never mutate a published
-   payload shape — a structural change breaks consumers at compile time.
-7. **The bus is async.** `Publish`/`Emit` never block and return nothing, so they
-   can't be used for a synchronous answer — that's a service interface's job.
-   State projected from events is eventually consistent.
-8. Lifecycle: providers construct services in optional `Register` (phase 1, before
-   any `Init`) → `Init` only wires up (no I/O) → optional `Migrate` (own schema) →
-   optional `Start` (background work). Teardown is reverse registration order via
-   optional `Stop`. Shutdown: stop HTTP → drain bus → `Stop` modules.
-9. Events are typed: declare with `bus.Define`, publish/subscribe with
-   `bus.Emit` / `bus.On`. No raw `e.Data.(T)` asserts in module code.
-10. **Persistence = one shared Postgres, full *logical* isolation.** Each module
-    owns its own schema and touches no other module's tables. **No cross-module
-    foreign keys.** A relation to another module is its id stored as a plain
-    column, resolved via interface or synced via events. `ctx.DB` is offered, not
-    mandated — a module may bring its own store instead.
+1. **Foundations (`core/*`) never depend on a module or an `api/` crate.**
+   Dependency only ever points module → core. (`core/` = app, bus, contrib, edge,
+   lifecycle, opsapi, outbox, registry, messaging, remote, metrics, httpmw —
+   messaging/remote/metrics/httpmw are process infrastructure, not domains.)
+2. **Fortress rule.** Every folder in `modules/` is a fortress: it never imports
+   another module's impl crate, and every domain module compiles + boots as its own
+   `cmd/<name>-svc`. The only gates are the contract crates under `api/<name>/`.
+   Enforced mechanically: `cargo run -p archcheck` (no module→module edges, no
+   module→foreign-`<name>rpc` edges, no `Option<edge::Server>` in modules/) + the
+   `fortress` verify stage (builds every svc). Sanctioned exception: `webui`
+   (dev demo SPA, monolith-only, no svc).
+3. **Contract surface per domain, under `api/<name>/`:** `<name>api` (pure traits +
+   `#[rpc]`, transport-free — importable by any module), `<name>events` (payloads +
+   `bus::define` descriptors — importable by any module), `<name>rpc` (generated
+   transport glue via the meta-callback macro — importable ONLY by its own module,
+   `cmd/*` roots, and other `api/*/rpc` crates; never by a foreign module).
+4. Depend on a capability trait, not an impl crate. Declared `requires()` must match
+   real sync deps (`messaging` counts — durable emit/subscribe needs the transport).
+5. **Modules are topology-blind.** No `Option<transport>`, no `if split`, no env
+   topology branches in domain code. Edge exposure goes through `EDGE_SLOT`;
+   remote resolution through the registry swap; durable delivery through the bus.
+   `cmd/*` mains differ only in module list + which QUIC planes the process serves.
+6. Evolve events additively; never mutate a published payload shape. Guarded by the
+   `public-api` verify stage (additive-only diff on contract crates) and
+   `cargo run -p topiccheck` (defined-vs-subscribed topic drift).
+7. **The bus is async fire-and-forget** — no request/response through it; that's a
+   registry capability's job. State projected from events is eventually consistent.
+8. Lifecycle: `register` (phase 1, provide services, no I/O) → `init` (wiring only,
+   no I/O — contribute slots, subscribe, mount routes) → `migrate` (own schema
+   only) → `start` (background work, first I/O) → `stop` (reverse registration
+   order). `messaging` registers last in every process so its transport exists
+   before subscribers init and stops first on teardown.
+9. Events are typed at the seam: declare with `bus::define`, publish/subscribe via
+   `emit_tx`/`on_tx`. `on_tx_raw` (untyped JSON) is for deliberately zero-coupling
+   sinks (audit) only.
+10. **Persistence = one shared Postgres, full logical isolation.** Schema-per-module,
+    no cross-module FKs; a relation to another module is a plain id column, resolved
+    via capability or synced via durable events. **Tests live in separate files**
+    (`src/tests.rs` / `src/<file>_tests.rs`), never inline in impl files.
 
 ## Adding a module (the recipe)
 
-1. New folder `modules/<name>/`. Implement `lifecycle.Module` (`Name`, `Requires`,
-   `Init`). Use a pointer receiver if it holds state (db, logger, caches). If it
-   PROVIDES a service, also implement `lifecycle.Registrar` (`Register`) so the
-   service is registered before any module's `Init`.
-2. If it persists data: implement `lifecycle.Migrator` and create ONLY your own
-   schema (`CREATE SCHEMA IF NOT EXISTS <name>; CREATE TABLE IF NOT EXISTS <name>....`).
-3. If it publishes events: add `api/<name>/<name>events/` with
-   `var XEvent = bus.Define[XPayload]("<name>.x")`. Emit with `bus.Emit`. If it
-   exposes a sync capability to other modules, likewise add `api/<name>/<name>api/`
-   (interface + codegen input) and the generated `api/<name>/<name>rpc/` glue.
-4. If it runs background work or holds resources: implement `lifecycle.Starter` /
-   `lifecycle.Stopper`.
-5. Register it with one line in `cmd/server/main.go`. Touch nothing else.
+1. `modules/<name>/`: implement `lifecycle::Module` (`name`, `requires`, `init`; +
+   `register` if it provides a capability, `migrate` if it persists, `start`/`stop`
+   for background work). Tests in `src/tests.rs`.
+2. Contracts in `api/<name>/`: `<name>events` (if it publishes), `<name>api` with
+   `#[rpc]` traits (if it exposes sync capability — `#[http(...)]` for player-facing
+   ops, plain for wire-only), `<name>rpc` containing the one-line
+   `<prefix>_<snake>_meta!(rpc_macro::generate_glue);` invocation (+ re-export
+   `adminrpc::register_admin` if it has an admin page).
+3. In `init`: contribute ops to the `opsapi` slots, edge faces to `edge::EDGE_SLOT`
+   (own glue), admin item to `adminapi::SLOT`; subscribe with `on_tx`. Emit with
+   `emit_tx` inside your store tx.
+4. New `cmd/<name>-svc` (copy an existing svc main: module + messaging + gateway if
+   it serves HTTP ops + accounts stub if it hosts a gateway), register the module in
+   `cmd/server`, add stubs where consumers live, extend `split-proof.sh`/`.ps1`
+   (new process + a named assertion) and the `fortress` stage port list.
+5. Wire `EVENTS_SUBSCRIBERS` for any topic it produces/consumes across processes;
+   give the svc a distinct `MESSAGING_ORIGIN`.
 
-## Accounts & identity
+## Domain modules (11 fortresses + gateway)
 
-The `accounts` module owns player identity. The **production model is federation**:
-the backend is a *trusted verifier* of an external IdP's token (EOS Connect model),
-never a password holder. One product-scoped `player_id`, many credential providers
-over it (`identities(provider, subject) → player_id`), opaque DB-backed `sessions`.
-
-- **dev / password** — local-only self-registration for testing. Gated by
-  `ACCOUNTS_DEV_AUTH` (default ON locally, logs a loud warning; turn OFF in prod).
-- **epic** — real OIDC verifier (defaults to Epic Account Services endpoints,
-  `sub` = Epic Account ID). Enabled when `EPIC_CLIENT_ID` is set. Adding Google
-  later = another configured OIDC verifier, same shape.
-- **epic web OAuth** — when `EPIC_CLIENT_SECRET` is also set, the backend runs the
-  EAS authorization-code flow: `POST /accounts/epic/start` (returns the authorize
-  URL; if called with a bearer it binds a LINK to that session) and
-  `GET /accounts/epic/callback` (exchanges the code, verifies the id_token, then
-  links to the session's player or logs in). State→session is held in memory.
-
-The `webui` module serves a single-page demo at `/` (dev login, then "Link Epic")
-so the linking flow is visible in a browser. Config env: `EPIC_CLIENT_SECRET`,
-`EPIC_REDIRECT_URI` (default `http://localhost:8080/accounts/epic/callback`),
-`EPIC_AUTHORIZE_URL`, `EPIC_TOKEN_URL`.
-
-Emits `accountsevents.PlayerRegistered`. Not yet wired into match/rating.
-
-## Characters & inventory (the modularity reference case)
-
-A worked example of cross-module relations under logical isolation:
-- `characters` (depends on accounts) — a player has N characters; `player_id` is a
-  plain column, no FK. Emits `charactersevents.Created/Deleted`.
-- `inventory` (depends on accounts + characters) — holdings for a polymorphic
-  `Owner{Type: player|character, ID}`; `owner_id` is a plain ref, no cross-module FK.
-  It SYNC-asks `characters.OwnerOf` to authorize a character's inventory, AND
-  REACTS to character events: grant a starter item on create, wipe holdings on
-  delete. `characters` has no idea inventory exists.
-
-The deletion-cleanup is the point: integrity across modules comes from an event,
-not an FK cascade (verified — no orphan holdings remain). Both modules contribute
-admin items, so they appear at `/admin` with no change to the admin module.
-The same listener will handle `player.deleted` once that exists.
+- **accounts** — identity: one `player_id`, many identities (`provider`,`subject`),
+  opaque DB sessions (30-day TTL). Dev/password auth (argon2id, `ACCOUNTS_DEV_AUTH`,
+  default ON + loud warn), Epic OIDC verifier (`EPIC_CLIENT_ID`, JWKS, RS256/ES256),
+  Epic web OAuth link/login (`EPIC_CLIENT_SECRET`, `/accounts/epic/start|callback`).
+  Emits durable `player.registered`. The gateway's session verifier resolves
+  `accountsapi::Sessions` — a process hosting a gateway without the accounts
+  capability FAILS STARTUP unless `ACCOUNTS_DEV_AUTH=1` (dev verifier, loud warn).
+- **characters / inventory** — the modularity reference case: plain-id relations,
+  sync `Ownership` authz over the wire, starter-grant/wipe via durable
+  `character.created/deleted`. `INVENTORY_DEV_GRANT` (default ON) enables the
+  simulated-IAP grant route.
+- **config** — DB-backed knobs, LISTEN/NOTIFY live-reload, durable `config.changed`
+  (emitted ONLY from the listener path). Remote consumers get a `CachedConfig`
+  (snapshot boot-fill + invalidation on `config.changed`) via `configrpc`.
+- **admin** — GameOps portal at `/admin` (minijinja over the embedded Go-era theme;
+  `ADMIN_USER`/`ADMIN_PASS` Basic auth, open + warn when unset). Renders contributed
+  `adminapi::Item`s; remote items fan out over QUIC via `admin.adminData`
+  (`adminrpc::admin_remote_factory`). Remote forms are read-only.
+- **audit** — append-only ledger (`audit.log`), zero-coupling raw durable sinks for
+  all 6 topics, prune reacting to `scheduler.fired{audit-prune}`
+  (`AUDIT_RETENTION_DAYS`, default 30).
+- **scheduler** — data-driven schedules (`scheduler.schedules`), 1s tick, per-name
+  `pg_try_advisory_lock` + still-due re-check + `UPDATE`+`emit_tx` in one tx,
+  commit-before-unlock. `SCHEDULER_ENABLED`.
+- **match / rating / leaderboard** — match records `match.matches` + emits durable
+  `match.finished` (body keys `Winner`/`Loser`); rating is in-memory MMR (±15,
+  restart resets to 1000 — accepted) provided as wire-only `MmrReader`; leaderboard
+  upserts wins in the inbox tx, serves `GET /leaderboard`.
+- **webui** — dev demo SPA at `/` (monolith-only; the sanctioned fortress exception).
+- **gateway** — the front-door module: HTTP ops routing (Local vs Remote purely by
+  slot presence), player-QUIC plane (bearer-in-envelope, exact-method allow-list),
+  HTTP passthrough (`/admin`, `/accounts/epic` → env-addressed peers), always-on
+  rate limit in gateway-svc (20 rps/burst 40).
 
 ## Commands
 
 ```
-go build ./...          # build everything
-go vet ./...            # vet
-go test ./...           # unit tests + rapid property tests + fuzz seed corpus
-go run ./cmd/server     # run (needs a reachable Postgres)
-go-arch-lint check      # enforce the module boundaries (see docs/reference/architecture-enforcement.md)
-golangci-lint run ./... # correctness/leak/security lint (.golangci.yml)
+cargo build --workspace
+cargo test --workspace          # unit + live-Postgres integration + proptests (232+)
+cargo clippy --workspace --all-targets -- -D warnings
+cargo run -p archcheck          # fortress dependency law
+cargo run -p topiccheck         # defined-vs-subscribed topic drift
+./verify.sh                     # the safety net (there is no CI — this IS it)
+./split-proof.sh                # live 11-process split + monolith parity proof
+./run.sh                        # mint dev CA + boot the split locally
 ```
 
-**One-shot verification net — `./verify.sh` (bash) / `./verify.ps1` (PowerShell):** runs every gate,
-keeps going after failures, prints a PASS/FAIL/SKIP table, exits non-zero iff a BLOCKING stage failed.
-No CI — this script IS the automated safety net. Flags: `--fast`(default, blocking only)/`--all`(+advisory)
-/`--slow`(+mutation)/`--strict`(advisory failures also fail exit)/`--no-install`.
-- BLOCKING: build, vet, golangci-lint, go-arch-lint, `go test ./...`, `govulncheck ./...`.
-- ADVISORY (`--all`): `go test -race` (SKIPs without cgo/gcc), fuzz (`-fuzztime` per `Fuzz*`),
-  apidiff vs HEAD on the `*events`/`adminapi` contracts (additive-only guard), topiccheck.
-- SLOW (`--slow`): gremlins mutation on the pure pkgs (edge/gateway/outbox/registry/bus).
-- Auto-installs pinned CLIs if missing: `govulncheck@v1.5.0`, `apidiff@latest`, `gremlins@v0.6.0`
-  (`--no-install` to skip → those stages SKIP). Extra checks:
-  - **fuzz** (`go test -fuzz`) — edge decode paths (`edge/fuzz_test.go`); seed corpus runs in plain `go test`.
-  - **rapid** property tests (`pgregory.net/rapid`) — codec/frame round-trip, prefix longest-match,
-    outbox `deliver` ordering, registry Provide/Require.
-  - **topiccheck** (`go run ./tools/topiccheck ./...`) — flags a `bus.Define` topic with no `bus.On`
-    subscriber; allowlist via `//topiccheck:allow-unsubscribed` comment above the `var`.
-  - **apidiff** — fails if a published event payload changed non-additively (rule 6).
+**`verify.sh` / `verify.ps1` tiers** (PASS/FAIL/SKIP table; non-zero exit iff a
+blocking stage fails; auto-installs pinned CLIs unless `--no-install`):
+- BLOCKING (default / `--fast`): build, clippy `-D warnings`, test, `cargo audit`
+  (pinned 0.22.2; RUSTSEC-2023-0071 ignored — dev-only rsa in accounts test JWTs),
+  fortress (builds every `cmd/*-svc` + archcheck), split-proof.
+- ADVISORY (`--all`, blocking under `--strict`): `public-api` (additive-only diff of
+  contract crates vs HEAD via detached worktree; needs nightly), `fuzz`
+  (`core/edge/fuzz/`, frame+wire decode; SKIPs on this Windows box), `topiccheck`.
+- SLOW (`--slow`): `cargo mutants` over edge/gateway/outbox/registry/bus.
 
-Two complementary gates:
-- **`go-arch-lint`** (`go install github.com/fe3dback/go-arch-lint@latest`) checks *architecture*
-  against `.go-arch-lint.yml`: core imports no module, a module's impl is reachable only from
-  `cmd`, modules talk only through the `<name>events`/`adminapi` contracts under `api/<name>/`
-  (plus the provider-owned `<name>api` interface + its generated `<name>rpc` glue for the sync
-  path). (Cycles need no rule — the Go compiler rejects them.)
-- **`golangci-lint`** (v2; `go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest`)
-  checks *correctness/leaks/security* via `.golangci.yml` — a curated high-signal set (errcheck,
-  staticcheck, gosec, bodyclose, sqlclosecheck, rowserrcheck, errorlint, exhaustive, …), not a
-  style gate.
+**`split-proof.sh` / `.ps1`** boots the real split — characters :8080/:9000,
+inventory :8081/:9001, gateway :8082 + player-QUIC :9100, config :8083/:9002,
+accounts :8084/:9003, admin :8085, audit :8086/:9004, scheduler :8087/:9005,
+match :8088/:9006, rating :8089/:9007, leaderboard :8090/:9008 — and asserts named
+scenarios (register/login → real bearer, authz negatives, allow-list, cross-process
+starter-grant + DB-verified wipe, config live-reload, audit rows, scheduler
+exactly-once, leaderboard accumulation, 429 rate-limit), then re-runs the monolith
+on the same player front for parity. Extend it with a named assertion whenever you
+add a module or cross-process flow. **Never ship a monolith-only feature** — both
+topologies are supported compilation paths.
 
-Smoke test:
+Smoke test (monolith or through gateway-svc):
 ```
 curl -X POST localhost:8080/match/report -d '{"Winner":"alice","Loser":"bob"}'
 curl localhost:8080/leaderboard
@@ -170,8 +180,9 @@ curl localhost:8080/leaderboard
 
 Connection from `DATABASE_URL`, default
 `postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable`.
-(Admin/superuser credentials for provisioning are kept in the local agent memory,
-not committed.) psql:
+Integration tests target this local Postgres directly (no Docker/testcontainers).
+(Admin/superuser credentials for provisioning are in local agent memory, not
+committed.) psql:
 
 ```
 PGPASSWORD=gamebackend "/c/Program Files/PostgreSQL/18/bin/psql.exe" -U gamebackend -h localhost -d gamebackend
@@ -180,51 +191,29 @@ PGPASSWORD=gamebackend "/c/Program Files/PostgreSQL/18/bin/psql.exe" -U gameback
 ## Layout
 
 ```
-cmd/server/main.go            # the only place that lists all modules
-lifecycle/                    # Module/Context/App: builds, migrates, starts, stops modules
-bus/ registry/ contrib/       # leaf foundations: async event bus, sync service registry, multi-value slots
-
-api/                          # the shared contract surface — one tree per domain, importable by any module
-  accounts/
-    accountsevents/           #   published events (PlayerRegistered)
-    accountsapi/               #   provider's canonical capability interface (sync path, codegen input)
-    accountsrpc/ accountsauthrpc/ accountsadminrpc/  # generated transport glue (impl-tier)
-  match/matchevents/          # published events of the match domain (descriptor + payload)
-  match/matchapi/ match/matchrpc/
-  scheduler/schedulerevents/
-  characters/
-    charactersevents/         #   published events (Created/Deleted)
-    charactersapi/ charactersrpc/ charactersplayerrpc/ charactersadminrpc/
-  inventory/inventoryapi/ inventory/inventoryrpc/
-  leaderboard/leaderboardapi/ leaderboard/leaderboardrpc/
-  config/configevents/
-  admin/adminapi/             #   contract: Item/Content/KPI/Table/Cell + the "admin.item" slot
-
-modules/                      # private impl only — never imported by another module, contracts live in api/ above
-  config/                     # DB-backed operational knobs (schema "config"); LISTEN/NOTIFY live-reload, emits config.changed
-  accounts/                   # player identity: dev(password) + epic(OIDC) providers, owns schema "accounts"
-    store.go password.go epic.go
-  match/match.go              # impl: depends on "rating" (sync), emits match.finished
-  rating/rating.go            # impl: provides "rating" service, reacts to matches (in-memory)
-  leaderboard/leaderboard.go  # impl: Postgres-backed listener, owns schema "leaderboard"
-  characters/                 # player characters (N per player); depends on accounts; owns schema "characters"
-  inventory/                  # owner-scoped inventories (player|character); depends on accounts+characters
-  webui/                      # UI-only module: serves the SPA demo at "/" (embedded index.html)
-  admin/                      # GameOps admin portal at "/admin" (theme + shell); renders contributed items
+cmd/                       # composition roots — the ONLY topology-aware code
+  server/                  #   monolith (all modules local)
+  gateway-svc/             #   pure-transport front door (stubs only, no DB)
+  <name>-svc/              #   one per domain module (fortress rule)
+core/                      # foundations — never import modules or api/ crates
+  app/                     #   run(): build, migrate, start, HTTP + edge planes
+  bus/ registry/ contrib/  #   async bus, sync capability registry, slots
+  lifecycle/ opsapi/       #   Module/Context/two-phase build; typed ops + slots
+  edge/                    #   internal mTLS QUIC + player plane + EDGE_SLOT
+  outbox/ messaging/       #   durable plane: outbox relay; transport module
+  remote/                  #   generic Stub (factories injected by cmd roots)
+  metrics/ httpmw/         #   Prometheus /metrics; rate limit + XFF + readyz
+api/<name>/                # contract surface per domain
+  <name>api/               #   pure #[rpc] traits + ops/bindings (transport-free)
+  <name>events/            #   bus::define descriptors + payloads
+  <name>rpc/               #   generated glue (Client/register_server/factories)
+modules/                   # private impls — 11 fortresses + gateway (see above)
+tools/                     # rpc-macro (+tests), archcheck, topiccheck, edgeca,
+                           # playercli
+experiments/               # archived sketches: go-sketch (the ported original),
+                           # jvm-kotlin-sketch, jvm-quarkus-sketch — reference only
+UILayout/                  # Claude Design mockups (spec for admin UI, not runnable)
 ```
-
-## Admin portal
-
-The `admin` module serves the GameOps console at `/admin`. It owns the LOOK (the
-dark GameOps theme in `theme.css` + the sidebar/header shell in `admin.html.tmpl`,
-both embedded) and composes a navigable sidebar from items modules **contribute** to
-the `adminapi.Slot` — it never imports a module's implementation or touches another
-schema. A module appears by contributing `adminapi.Item{Section, Label, Render}`;
-items are grouped by Section in the sidebar and each opens a dedicated page whose
-`Render` returns declarative widgets (`KPI`s + a `Table` of `Cell`s with badges/mono);
-the admin owns rendering. Visual direction comes from `UILayout/` (a Claude Design
-mockup — a spec, not runnable). Gate with `ADMIN_USER`/`ADMIN_PASS` (HTTP Basic);
-unset = open + loud warning (local only).
 
 ---
 
