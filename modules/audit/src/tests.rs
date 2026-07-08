@@ -109,11 +109,13 @@ fn durable_topics_match_events() {
 }
 
 /// `scheduler.fired` is CONSUMED (prune), never LOGGED — it must not be in the audited
-/// set, or the anti-drift test would demand a matching producer event.
+/// set, or the anti-drift test would demand a matching producer event. Uses the
+/// `schedulerevents::FIRED` descriptor's topic const (the same one `init` subscribes
+/// with), so this guard tracks the contract, not a re-pinned literal.
 #[test]
 fn scheduler_fired_is_not_a_logged_topic() {
     assert!(
-        !DURABLE_TOPICS.contains(&SCHEDULER_FIRED_TOPIC),
+        !DURABLE_TOPICS.contains(&schedulerevents::FIRED.topic()),
         "scheduler.fired is reactive (prune), not a logged topic"
     );
 }

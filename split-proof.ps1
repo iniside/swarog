@@ -1,9 +1,10 @@
 # split-proof.ps1 -- the SPLIT-topology proof for the rust-sketch (Steps 12 + 8).
 #
-# The whole point of the milestone: exercises the SEVEN-PROCESS split (characters-svc =
+# The whole point of the milestone: exercises the EIGHT-PROCESS split (characters-svc =
 # A on :8080 / edge :9000, inventory-svc = B on :8081 / edge :9001, gateway-svc = G on
 # :8082 / player QUIC :9100, config-svc = C on :8083 / edge :9002, accounts-svc = D on
-# :8084 / edge :9003, admin-svc = E on :8085, audit-svc = F on :8086 / edge :9004), NOT
+# :8084 / edge :9003, admin-svc = E on :8085, audit-svc = F on :8086 / edge :9004,
+# scheduler-svc = H on :8087 / edge :9005), NOT
 # the monolith, driving the real player flows over HTTP
 # (through the gateway front-door with a REAL bearer minted by register+login through
 # the front -- Step 6 replaced the dev-<uuid> tokens), the sync authz over
@@ -67,11 +68,13 @@ $CPort     = 8083
 $DPort     = 8084
 $EPort     = 8085
 $FPort     = 8086
+$HPort     = 8087
 $EdgePort  = 9000
 $BEdgePort = 9001
 $CEdgePort = 9002
 $DEdgePort = 9003
 $FEdgePort = 9004
+$HEdgePort = 9005
 $PlayerPort = 9100
 $PlayerCli = Join-Path $BinDir 'playercli.exe'
 
@@ -90,6 +93,7 @@ $script:CProc = $null
 $script:DProc = $null
 $script:EProc = $null
 $script:FProc = $null
+$script:HProc = $null
 $script:MProc = $null
 
 function Note($m) { Write-Host "[proof] $m" }
@@ -151,8 +155,9 @@ function Teardown {
     if ($script:DProc -and -not $script:DProc.HasExited) { Stop-Process -Id $script:DProc.Id -Force -ErrorAction SilentlyContinue; Note "stopped D (pid $($script:DProc.Id))" }
     if ($script:EProc -and -not $script:EProc.HasExited) { Stop-Process -Id $script:EProc.Id -Force -ErrorAction SilentlyContinue; Note "stopped E (pid $($script:EProc.Id))" }
     if ($script:FProc -and -not $script:FProc.HasExited) { Stop-Process -Id $script:FProc.Id -Force -ErrorAction SilentlyContinue; Note "stopped F (pid $($script:FProc.Id))" }
+    if ($script:HProc -and -not $script:HProc.HasExited) { Stop-Process -Id $script:HProc.Id -Force -ErrorAction SilentlyContinue; Note "stopped H (pid $($script:HProc.Id))" }
     if ($script:MProc -and -not $script:MProc.HasExited) { Stop-Process -Id $script:MProc.Id -Force -ErrorAction SilentlyContinue; Note "stopped monolith (pid $($script:MProc.Id))" }
-    $script:AProc = $null; $script:BProc = $null; $script:GProc = $null; $script:CProc = $null; $script:DProc = $null; $script:EProc = $null; $script:FProc = $null; $script:MProc = $null
+    $script:AProc = $null; $script:BProc = $null; $script:GProc = $null; $script:CProc = $null; $script:DProc = $null; $script:EProc = $null; $script:FProc = $null; $script:HProc = $null; $script:MProc = $null
 }
 
 # Runs playercli, capturing stdout (joined) and the process exit code. Returns a
@@ -164,14 +169,14 @@ function Invoke-PlayerCli([string[]]$CliArgs) {
 }
 
 try {
-    Note 'building edgeca + characters-svc + inventory-svc + gateway-svc + config-svc + accounts-svc + admin-svc + audit-svc + playercli + server ...'
-    cargo build -p edgeca -p characters-svc -p inventory-svc -p gateway-svc -p config-svc -p accounts-svc -p admin-svc -p audit-svc -p playercli -p server
+    Note 'building edgeca + characters-svc + inventory-svc + gateway-svc + config-svc + accounts-svc + admin-svc + audit-svc + scheduler-svc + playercli + server ...'
+    cargo build -p edgeca -p characters-svc -p inventory-svc -p gateway-svc -p config-svc -p accounts-svc -p admin-svc -p audit-svc -p scheduler-svc -p playercli -p server
     if ($LASTEXITCODE -ne 0) { throw 'cargo build failed' }
 
     New-Item -ItemType Directory -Force -Path $RunDir | Out-Null
 
     # Clear stragglers from an aborted prior run so ports are free (idempotent reruns).
-    foreach ($n in 'characters-svc', 'inventory-svc', 'gateway-svc', 'config-svc', 'accounts-svc', 'admin-svc', 'audit-svc', 'server') {
+    foreach ($n in 'characters-svc', 'inventory-svc', 'gateway-svc', 'config-svc', 'accounts-svc', 'admin-svc', 'audit-svc', 'scheduler-svc', 'server') {
         Get-Process -Name $n -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
     }
     Start-Sleep -Milliseconds 500
@@ -210,6 +215,23 @@ try {
         EVENTS_SUBSCRIBERS = ''
     } 'audit'
     if (-not (Wait-Healthy $FPort 'F (audit-svc)')) { throw 'F failed to start' }
+
+    # H (scheduler-svc): scheduler + messaging, edge :9005. A DURABLE PRODUCER: its 1s
+    # loop fires scheduler.fired for every due schedule (race-safe via a per-schedule
+    # pg_try_advisory_lock) and its relay POSTs scheduler.fired to audit-svc (F). Serves
+    # admin.adminData ("Schedules") on its mTLS edge so admin-svc fans it out. Distinct
+    # MESSAGING_ORIGIN (names a remote sink, so a default origin would be rejected).
+    Note "starting H (scheduler-svc) on :$HPort, edge :$HEdgePort ..."
+    $script:HProc = Start-Svc (Join-Path $BinDir 'scheduler-svc.exe') @{
+        PORT               = ":$HPort"
+        DATABASE_URL       = $env:DATABASE_URL
+        EDGE_ADDR          = ":$HEdgePort"
+        EDGE_CA_CERT       = $CaCert
+        EDGE_CA_KEY        = $CaKey
+        MESSAGING_ORIGIN   = 'scheduler-svc'
+        EVENTS_SUBSCRIBERS = "scheduler.fired=http://127.0.0.1:$FPort/events"
+    } 'scheduler'
+    if (-not (Wait-Healthy $HPort 'H (scheduler-svc)')) { throw 'H failed to start' }
 
     Note "starting A (characters-svc) on :$APort, edge :$EdgePort ..."
     $script:AProc = Start-Svc (Join-Path $BinDir 'characters-svc.exe') @{
@@ -298,6 +320,7 @@ try {
         CONFIG_EDGE_ADDR     = "127.0.0.1:$CEdgePort"
         ACCOUNTS_EDGE_ADDR   = "127.0.0.1:$DEdgePort"
         AUDIT_EDGE_ADDR      = "127.0.0.1:$FEdgePort"
+        SCHEDULER_EDGE_ADDR  = "127.0.0.1:$HEdgePort"
         ADMIN_USER           = $AdminUser
         ADMIN_PASS           = $AdminPass
     } 'admin'
@@ -543,6 +566,35 @@ try {
     }
 
     Write-Host ''
+    Write-Host "========= SCHEDULER (scheduler-svc :$HPort -> audit-svc :$FPort) ========="
+    # The data-driven durable emitter end-to-end: seed a short (2s) schedule on H's shared
+    # DB, immediately due. H's 1s loop acquires the per-schedule advisory lock, re-checks
+    # still-due, bumps last_fired + emit_tx's scheduler.fired IN ONE TX, and its relay
+    # POSTs to audit-svc. Assert on the shared DB: (i) a scheduler.fired outbox row on H's
+    # origin for proof-tick (advisory-lock fire), and (ii) that row RELAYED (sent_at IS
+    # NOT NULL) -- audit-svc (F) accepted it on /events (H -> F cross-process delivery).
+    if (-not $Psql) {
+        Note 'psql not found -- SKIPPING the scheduler assertion'
+    } else {
+        Write-Host "[SC0] seed a 2s schedule 'proof-tick' on the shared DB (immediately due, epoch last_fired)"
+        Invoke-Sql "INSERT INTO scheduler.schedules (name, interval_seconds, last_fired) VALUES ('proof-tick', 2, to_timestamp(0)) ON CONFLICT (name) DO UPDATE SET interval_seconds=2, last_fired=to_timestamp(0);" | Out-Null
+        Write-Host "[SC1] poll messaging.outbox on H's origin for a produced+relayed scheduler.fired{proof-tick}"
+        $scOk = $false
+        for ($i = 1; $i -le 30; $i++) {
+            $scFired = ("" + (Invoke-Sql "SELECT count(*) FROM messaging.outbox WHERE origin='scheduler-svc' AND topic='scheduler.fired' AND payload->>'name'='proof-tick';")).Trim()
+            $scSent = ("" + (Invoke-Sql "SELECT count(*) FROM messaging.outbox WHERE origin='scheduler-svc' AND topic='scheduler.fired' AND payload->>'name'='proof-tick' AND sent_at IS NOT NULL;")).Trim()
+            Write-Host "    attempt $i -> fired=$scFired relayed=$scSent"
+            if ([int]($scFired -as [int]) -ge 1 -and [int]($scSent -as [int]) -ge 1) {
+                Pass 'scheduler-svc fired proof-tick durably (advisory-lock + stillDue re-check) AND relayed it to audit-svc (H->F)'
+                $scOk = $true; break
+            }
+            Start-Sleep -Milliseconds 500
+        }
+        if (-not $scOk) { Fail 'scheduler.fired{proof-tick} never produced+relayed (scheduler H -> audit F)' }
+        Invoke-Sql "DELETE FROM scheduler.schedules WHERE name='proof-tick';" | Out-Null
+    }
+
+    Write-Host ''
     Write-Host "========= PLAYER QUIC FRONT (via gateway-svc :$PlayerPort) ========="
 
     # --- P1. player QUIC create -> G -> mTLS edge -> A ---
@@ -601,7 +653,7 @@ try {
     Write-Host '================ MONOLITH PARITY ================'
     Note 'tearing down the split before the monolith stage ...'
     Teardown
-    foreach ($n in 'characters-svc', 'inventory-svc', 'gateway-svc', 'config-svc', 'accounts-svc', 'admin-svc', 'audit-svc', 'server') {
+    foreach ($n in 'characters-svc', 'inventory-svc', 'gateway-svc', 'config-svc', 'accounts-svc', 'admin-svc', 'audit-svc', 'scheduler-svc', 'server') {
         Get-Process -Name $n -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
     }
     Start-Sleep -Seconds 2
@@ -658,7 +710,7 @@ finally {
 }
 
 if ($script:Fails -eq 0) {
-    Write-Host 'SPLIT PROOF: PASS (all assertions held on the seven-process split + monolith parity)'
+    Write-Host 'SPLIT PROOF: PASS (all assertions held on the eight-process split + monolith parity)'
     exit 0
 } else {
     Write-Host "SPLIT PROOF: FAIL ($($script:Fails) assertion(s) failed)"

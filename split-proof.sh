@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # split-proof.sh -- the SPLIT-topology proof for the rust-sketch (Steps 12 + 8).
 #
-# This is the whole point of the milestone: it exercises the SEVEN-PROCESS split
+# This is the whole point of the milestone: it exercises the EIGHT-PROCESS split
 # (characters-svc = A on :8080 / edge :9000, inventory-svc = B on :8081 / edge :9001,
 # gateway-svc = G on :8082 / player QUIC :9100, config-svc = C on :8083 / edge :9002,
 # accounts-svc = D on :8084 / edge :9003, admin-svc = E on :8085, audit-svc = F on
-# :8086 / edge :9004),
+# :8086 / edge :9004, scheduler-svc = H on :8087 / edge :9005),
 # NOT the monolith, driving the real
 # player flows over HTTP (through the gateway front-door with a REAL bearer minted
 # by register+login through the front -- Step 6 replaced the dev-<uuid> tokens),
@@ -80,11 +80,13 @@ C_PORT=8083
 D_PORT=8084
 E_PORT=8085
 F_PORT=8086
+H_PORT=8087
 EDGE_PORT=9000
 B_EDGE_PORT=9001
 C_EDGE_PORT=9002
 D_EDGE_PORT=9003
 F_EDGE_PORT=9004
+H_EDGE_PORT=9005
 PLAYER_PORT=9100
 
 DEFAULT_DSN="postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable"
@@ -103,6 +105,7 @@ C_PID=""
 D_PID=""
 E_PID=""
 F_PID=""
+H_PID=""
 M_PID=""
 
 note()  { echo "[proof] $*"; }
@@ -151,8 +154,9 @@ teardown() {
     [ -n "$D_PID" ] && kill "$D_PID" 2>/dev/null && note "stopped D (pid $D_PID)"
     [ -n "$E_PID" ] && kill "$E_PID" 2>/dev/null && note "stopped E (pid $E_PID)"
     [ -n "$F_PID" ] && kill "$F_PID" 2>/dev/null && note "stopped F (pid $F_PID)"
+    [ -n "$H_PID" ] && kill "$H_PID" 2>/dev/null && note "stopped H (pid $H_PID)"
     [ -n "$M_PID" ] && kill "$M_PID" 2>/dev/null && note "stopped monolith (pid $M_PID)"
-    A_PID=""; B_PID=""; G_PID=""; C_PID=""; D_PID=""; E_PID=""; F_PID=""; M_PID=""
+    A_PID=""; B_PID=""; G_PID=""; C_PID=""; D_PID=""; E_PID=""; F_PID=""; H_PID=""; M_PID=""
 }
 trap teardown EXIT INT TERM
 
@@ -167,6 +171,7 @@ kill_stragglers() {
         taskkill //F //IM accounts-svc.exe >/dev/null 2>&1 || true
         taskkill //F //IM admin-svc.exe >/dev/null 2>&1 || true
         taskkill //F //IM audit-svc.exe >/dev/null 2>&1 || true
+        taskkill //F //IM scheduler-svc.exe >/dev/null 2>&1 || true
         taskkill //F //IM server.exe >/dev/null 2>&1 || true
     fi
     pkill -f "characters-svc" 2>/dev/null || true
@@ -176,6 +181,7 @@ kill_stragglers() {
     pkill -f "accounts-svc"   2>/dev/null || true
     pkill -f "admin-svc"      2>/dev/null || true
     pkill -f "audit-svc"      2>/dev/null || true
+    pkill -f "scheduler-svc"  2>/dev/null || true
     pkill -f "target/debug/server" 2>/dev/null || true
 }
 
@@ -191,8 +197,8 @@ wait_healthy() {
 }
 
 # ============================================================================
-note "building edgeca + characters-svc + inventory-svc + gateway-svc + config-svc + accounts-svc + admin-svc + audit-svc + playercli + server ..."
-if ! cargo build -p edgeca -p characters-svc -p inventory-svc -p gateway-svc -p config-svc -p accounts-svc -p admin-svc -p audit-svc -p playercli -p server; then
+note "building edgeca + characters-svc + inventory-svc + gateway-svc + config-svc + accounts-svc + admin-svc + audit-svc + scheduler-svc + playercli + server ..."
+if ! cargo build -p edgeca -p characters-svc -p inventory-svc -p gateway-svc -p config-svc -p accounts-svc -p admin-svc -p audit-svc -p scheduler-svc -p playercli -p server; then
     echo "build failed"; exit 1
 fi
 PLAYERCLI="$BIN_DIR/playercli$EXE"
@@ -230,6 +236,22 @@ env PORT=":$F_PORT" DATABASE_URL="$DATABASE_URL" EDGE_ADDR=":$F_EDGE_PORT" \
     "$BIN_DIR/audit-svc$EXE" >"$RUN_DIR/audit.out.log" 2>"$RUN_DIR/audit.err.log" &
 F_PID=$!
 wait_healthy "$F_PORT" "F (audit-svc)" || { echo "F failed to start"; exit 1; }
+
+# --- start H (scheduler-svc): scheduler + messaging, edge :9005 --------------
+# H owns the scheduler schema (a catalogue of named schedules) and is a DURABLE
+# PRODUCER: its 1s loop fires scheduler.fired for every due schedule (race-safe via a
+# per-schedule pg_try_advisory_lock), and its relay POSTs scheduler.fired to audit-svc
+# (F), where audit's prune reacts. It serves admin.adminData ("Schedules") on its mTLS
+# edge so admin-svc (E) fans it out over QUIC. Distinct MESSAGING_ORIGIN for its own
+# outbox identity (names one remote sink, so a default origin would be rejected).
+note "starting H (scheduler-svc) on :$H_PORT, edge :$H_EDGE_PORT ..."
+env PORT=":$H_PORT" DATABASE_URL="$DATABASE_URL" EDGE_ADDR=":$H_EDGE_PORT" \
+    EDGE_CA_CERT="$CA_CERT" EDGE_CA_KEY="$CA_KEY" \
+    MESSAGING_ORIGIN=scheduler-svc \
+    EVENTS_SUBSCRIBERS="scheduler.fired=http://localhost:$F_PORT/events" \
+    "$BIN_DIR/scheduler-svc$EXE" >"$RUN_DIR/scheduler.out.log" 2>"$RUN_DIR/scheduler.err.log" &
+H_PID=$!
+wait_healthy "$H_PORT" "H (scheduler-svc)" || { echo "H failed to start"; exit 1; }
 
 # --- start A (characters-svc): gateway + characters + messaging, edge :9000 --
 # MESSAGING_ORIGIN MUST be distinct per process (never the "monolith" default): the
@@ -316,6 +338,7 @@ env PORT=":$E_PORT" \
     CONFIG_EDGE_ADDR="127.0.0.1:$C_EDGE_PORT" \
     ACCOUNTS_EDGE_ADDR="127.0.0.1:$D_EDGE_PORT" \
     AUDIT_EDGE_ADDR="127.0.0.1:$F_EDGE_PORT" \
+    SCHEDULER_EDGE_ADDR="127.0.0.1:$H_EDGE_PORT" \
     ADMIN_USER="$ADMIN_USER" ADMIN_PASS="$ADMIN_PASS" \
     "$BIN_DIR/admin-svc$EXE" >"$RUN_DIR/admin.out.log" 2>"$RUN_DIR/admin.err.log" &
 E_PID=$!
@@ -611,6 +634,37 @@ else
 fi
 
 echo ""
+echo "========= SCHEDULER (scheduler-svc :$H_PORT -> audit-svc :$F_PORT) ========="
+# The data-driven durable emitter end-to-end: seed a short (2s) schedule on H's shared
+# DB, immediately due. H's 1s loop acquires the per-schedule advisory lock, re-checks
+# still-due, bumps last_fired + emit_tx's scheduler.fired IN ONE TX, and its relay POSTs
+# to audit-svc. We assert on the shared DB (the definitive proof the fire ran + relayed):
+#   (i)  a scheduler.fired outbox row on H's origin for proof-tick (advisory-lock fire),
+#   (ii) that row RELAYED (sent_at IS NOT NULL) -- audit-svc (F) accepted it on /events
+#        (exactly-once via the inbox dedup), i.e. H -> F cross-process delivery worked.
+if [ -z "$PSQL" ]; then
+    note "psql not found -- SKIPPING the scheduler assertion"
+else
+    echo "[SC0] seed a 2s schedule 'proof-tick' on the shared DB (immediately due, epoch last_fired)"
+    pg "INSERT INTO scheduler.schedules (name, interval_seconds, last_fired) VALUES ('proof-tick', 2, to_timestamp(0)) ON CONFLICT (name) DO UPDATE SET interval_seconds=2, last_fired=to_timestamp(0);" >/dev/null
+    echo "[SC1] poll messaging.outbox on H's origin for a produced+relayed scheduler.fired{proof-tick}"
+    SC_OK=0
+    for i in $(seq 1 30); do
+        SC_FIRED="$(pg "SELECT count(*) FROM messaging.outbox WHERE origin='scheduler-svc' AND topic='scheduler.fired' AND payload->>'name'='proof-tick';" | tr -d '[:space:]')"
+        SC_SENT="$(pg "SELECT count(*) FROM messaging.outbox WHERE origin='scheduler-svc' AND topic='scheduler.fired' AND payload->>'name'='proof-tick' AND sent_at IS NOT NULL;" | tr -d '[:space:]')"
+        echo "    attempt $i -> fired=${SC_FIRED:-?} relayed=${SC_SENT:-?}"
+        if [ "${SC_FIRED:-0}" -ge 1 ] && [ "${SC_SENT:-0}" -ge 1 ]; then
+            pass "scheduler-svc fired proof-tick durably (advisory-lock + stillDue re-check) AND relayed it to audit-svc (H->F)"
+            SC_OK=1; break
+        fi
+        sleep 0.5
+    done
+    [ "$SC_OK" = "1" ] || fail "scheduler.fired{proof-tick} never produced+relayed (scheduler H -> audit F)"
+    # Clean up so reruns start fresh (the outbox rows are housekept by messaging).
+    pg "DELETE FROM scheduler.schedules WHERE name='proof-tick';" >/dev/null
+fi
+
+echo ""
 echo "========= PLAYER QUIC FRONT (via gateway-svc :$PLAYER_PORT) ========="
 
 # --- P1. player QUIC create -> G -> mTLS edge -> A ---------------------------
@@ -766,7 +820,7 @@ teardown
 
 echo "============================================"
 if [ "$FAILS" -eq 0 ]; then
-    echo "SPLIT PROOF: PASS (all assertions held on the seven-process split + monolith parity)"
+    echo "SPLIT PROOF: PASS (all assertions held on the eight-process split + monolith parity)"
     exit 0
 else
     echo "SPLIT PROOF: FAIL ($FAILS assertion(s) failed)"

@@ -40,6 +40,8 @@ members = [
     "api/admin/api",
     "api/admin/rpc",
     "api/audit/rpc",
+    "api/scheduler/events",
+    "api/scheduler/rpc",
     # Module implementations — private, reachable only from a cmd/ binary.
     "modules/config",
     "modules/characters",
@@ -48,6 +50,7 @@ members = [
     "modules/accounts",
     "modules/admin",
     "modules/audit",
+    "modules/scheduler",
     # Process entrypoints (Go's cmd/).
     "cmd/server",
     "cmd/characters-svc",
@@ -57,6 +60,7 @@ members = [
     "cmd/accounts-svc",
     "cmd/admin-svc",
     "cmd/audit-svc",
+    "cmd/scheduler-svc",
 ]
 
 [workspace.package]
@@ -136,6 +140,8 @@ rpc-macro = { path = "tools/rpc-macro" }
 adminapi = { path = "api/admin/api" }
 adminrpc = { path = "api/admin/rpc" }
 auditrpc = { path = "api/audit/rpc" }
+schedulerevents = { path = "api/scheduler/events" }
+schedulerrpc = { path = "api/scheduler/rpc" }
 accountsapi = { path = "api/accounts/api" }
 accountsrpc = { path = "api/accounts/rpc" }
 accountsevents = { path = "api/accounts/events" }
@@ -156,3 +162,4 @@ gateway = { path = "modules/gateway" }
 accounts = { path = "modules/accounts" }
 admin = { path = "modules/admin" }
 audit = { path = "modules/audit" }
+scheduler = { path = "modules/scheduler" }

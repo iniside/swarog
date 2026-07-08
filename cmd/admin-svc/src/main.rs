@@ -48,6 +48,7 @@ async fn main() -> anyhow::Result<()> {
         admin_stub("config", "CONFIG_EDGE_ADDR", "127.0.0.1:9002"),
         admin_stub("accounts", "ACCOUNTS_EDGE_ADDR", "127.0.0.1:9003"),
         admin_stub("audit", "AUDIT_EDGE_ADDR", "127.0.0.1:9004"),
+        admin_stub("scheduler", "SCHEDULER_EDGE_ADDR", "127.0.0.1:9005"),
     ];
 
     // No DB (owns no schema) and no edge server (it only DIALS peers via the stubs).

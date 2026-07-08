@@ -237,6 +237,7 @@ dependencies = [
  "futures",
  "lifecycle",
  "opsapi",
+ "schedulerevents",
  "serde",
  "serde_json",
  "sqlx",
@@ -2455,6 +2456,54 @@ dependencies = [
 ]
 
 [[package]]
+name = "scheduler"
+version = "0.1.0"
+dependencies = [
+ "adminapi",
+ "anyhow",
+ "async-trait",
+ "bus",
+ "edge",
+ "lifecycle",
+ "opsapi",
+ "schedulerevents",
+ "schedulerrpc",
+ "serde_json",
+ "sqlx",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "scheduler-svc"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "app",
+ "edge",
+ "lifecycle",
+ "messaging",
+ "scheduler",
+ "tokio",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "schedulerevents"
+version = "0.1.0"
+dependencies = [
+ "bus",
+ "serde",
+]
+
+[[package]]
+name = "schedulerrpc"
+version = "0.1.0"
+dependencies = [
+ "adminrpc",
+]
+
+[[package]]
 name = "scopeguard"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2571,6 +2620,7 @@ dependencies = [
  "inventory",
  "lifecycle",
  "messaging",
+ "scheduler",
  "tokio",
  "tracing",
  "tracing-subscriber",

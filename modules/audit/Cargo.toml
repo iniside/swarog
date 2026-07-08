@@ -18,6 +18,11 @@ edge = { workspace = true }
 opsapi = { workspace = true }
 adminapi = { workspace = true }
 auditrpc = { workspace = true }
+# The scheduler event CONTRACT crate (sanctioned dependency — a contract, not an impl):
+# audit subscribes to `scheduler.fired` by the descriptor's topic const so a rename can
+# never drift the literal. It does NOT import the payload type into its handlers — the
+# raw `on_tx_raw` still parses `name` out of the raw JSON (zero payload coupling).
+schedulerevents = { workspace = true }
 sqlx = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
 anyhow = { workspace = true }

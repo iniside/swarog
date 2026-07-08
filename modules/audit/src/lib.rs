@@ -22,8 +22,10 @@
 //!
 //! Retention is enforced by REACTING to `scheduler.fired{name:"audit-prune"}` on the
 //! durable plane (Step 9 seeds the schedule). audit subscribes to `scheduler.fired`
-//! raw as well (no `schedulerevents` import — that crate does not exist yet), parses
-//! the `name` out of the raw JSON, and prunes in its own schema inside the handed tx.
+//! raw (via the `schedulerevents::FIRED` descriptor's topic const — a sanctioned
+//! CONTRACT import that removes the drift risk of a pinned literal, WITHOUT importing
+//! the payload type: the handler still parses `name` out of the raw JSON), and prunes
+//! in its own schema inside the handed tx.
 
 use std::sync::{Arc, OnceLock};
 
@@ -46,11 +48,6 @@ const DURABLE_TOPICS: &[&str] = &[
     "config.changed",
     "match.finished",
 ];
-
-/// The `scheduler.fired` topic audit REACTS to for retention pruning. Not in
-/// [`DURABLE_TOPICS`]: it is consumed (prune), never logged — listing it there would
-/// fail the anti-drift test.
-const SCHEDULER_FIRED_TOPIC: &str = "scheduler.fired";
 
 /// The `scheduler.fired` `name` audit prunes on. Shared vocabulary (a string, like a
 /// topic): the scheduler seeds this schedule name (Step 9), audit reacts to it.
@@ -126,7 +123,9 @@ struct PruneHandler {
 }
 
 /// Just the `name` field of a `scheduler.fired` payload — audit parses this out of the
-/// raw JSON rather than importing a `schedulerevents` crate (which does not exist yet).
+/// raw JSON rather than importing `schedulerevents::Fired` into the handler (the
+/// zero-coupling design: it subscribes by the descriptor's topic const but never
+/// deserializes through the producer's payload type).
 #[derive(serde::Deserialize)]
 struct FiredName {
     name: String,
@@ -318,10 +317,12 @@ impl Module for Audit {
         }
 
         // Retention prune as a REACTION to scheduler.fired on the durable plane. Raw
-        // subscribe (no schedulerevents crate yet): the handler parses `name` and prunes
-        // only for "audit-prune", inside the handed inbox-dedup tx.
+        // subscribe by the CONTRACT descriptor's topic const (no payload-type import):
+        // the handler parses `name` and prunes only for "audit-prune", inside the handed
+        // inbox-dedup tx.
         let prune: Arc<dyn TxHandler> = Arc::new(PruneHandler { retention_days });
-        ctx.bus().on_tx_raw(SCHEDULER_FIRED_TOPIC, SUBSCRIBER, prune);
+        ctx.bus()
+            .on_tx_raw(schedulerevents::FIRED.topic(), SUBSCRIBER, prune);
 
         // The local admin page. RenderFn is synchronous, but the store read is async;
         // the closure bridges via block_in_place (requires the multi-thread runtime the

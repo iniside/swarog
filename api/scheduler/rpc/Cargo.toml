@@ -1,0 +1,17 @@
+[package]
+name = "schedulerrpc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# `schedulerrpc` — scheduler's minimal <name>rpc glue crate. scheduler exposes no sync
+# capability of its own (no `api/scheduler/api`, mirroring Go's `modules/scheduler` —
+# it's a pure durable event source), so this crate exists for ONE reason: to re-export
+# the cross-cutting admin fan-out's server-side `register_admin`, so the `scheduler`
+# MODULE registers its `admin.adminData` edge handler through its OWN <name>rpc crate
+# rather than importing `adminrpc` directly (archcheck forbids a module->foreign-rpc
+# edge; the module->own-rpc->adminrpc chain is sanctioned, exactly the audit pattern).
+# Impl-tier: reached only by the `scheduler` module + `cmd/*`, never by a consumer.
+[dependencies]
+adminrpc = { workspace = true }

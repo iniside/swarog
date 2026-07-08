@@ -1,0 +1,16 @@
+[package]
+name = "schedulerevents"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The published event vocabulary of the scheduler domain (port of Go's
+# api/scheduler/schedulerevents): the `Fired` payload + its `scheduler.fired` topic
+# descriptor. The scheduler is a data-driven event SOURCE — it emits `scheduler.fired`
+# durably (bus::emit_tx) for every schedule whose interval elapsed; a consumer (e.g.
+# audit's prune) reacts in its OWN process. The ONLY surface consumers share with the
+# scheduler impl; nobody imports the scheduler module. Imports only the `bus` leaf.
+[dependencies]
+bus = { workspace = true }
+serde = { workspace = true }

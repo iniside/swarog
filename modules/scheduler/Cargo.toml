@@ -1,0 +1,34 @@
+[package]
+name = "scheduler"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The scheduler impl module (port of Go's modules/scheduler): a data-driven, durable
+# event SOURCE. It owns schema `scheduler` (a catalogue of named schedules) and, on a
+# 1s tick, emits `scheduler.fired{name}` durably (bus::emit_tx) for every schedule
+# whose interval elapsed — race-safe across replicas via a per-schedule
+# `pg_try_advisory_lock`. Runs NO job closures (a closure can't cross a process
+# boundary), so it is independently deployable as its own -svc. Its OWN glue crate
+# `schedulerrpc` re-exports `register_admin` for the read-only "Schedules" admin face.
+[dependencies]
+bus = { workspace = true }
+lifecycle = { workspace = true }
+edge = { workspace = true }
+opsapi = { workspace = true }
+adminapi = { workspace = true }
+schedulerrpc = { workspace = true }
+schedulerevents = { workspace = true }
+sqlx = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+async-trait = { workspace = true }
+
+[dev-dependencies]
+# The exactly-once concurrency test installs a fake bus transport that records the
+# durable emits, and drives `fire` against the live local Postgres (advisory lock +
+# stillDue re-check). serde_json decodes the recorded `Fired` payloads.
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
+serde_json = { workspace = true }
