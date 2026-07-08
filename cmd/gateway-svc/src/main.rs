@@ -63,6 +63,20 @@ async fn main() -> anyhow::Result<()> {
             &env_addr("ACCOUNTS_EDGE_ADDR", "127.0.0.1:9003"),
             accountsrpc::remote_factories(),
         )),
+        // Step 10: match + leaderboard front-door routing. Their `remote_factories`
+        // contribute only `route_bindings` (no provide), so the front routes
+        // `POST /match/report` -> match-svc (:9006) and `GET /leaderboard` ->
+        // leaderboard-svc (:9008) Remote over the mTLS edge.
+        Box::new(remote::Stub::new(
+            "match",
+            &env_addr("MATCH_EDGE_ADDR", "127.0.0.1:9006"),
+            matchrpc::remote_factories(),
+        )),
+        Box::new(remote::Stub::new(
+            "leaderboard",
+            &env_addr("LEADERBOARD_EDGE_ADDR", "127.0.0.1:9008"),
+            leaderboardrpc::remote_factories(),
+        )),
     ];
 
     // No edge server: this process serves no provider over the internal mTLS edge, it

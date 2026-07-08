@@ -33,6 +33,9 @@ async fn main() -> anyhow::Result<()> {
         Box::new(admin::Admin::new()),           // GameOps portal at /admin; renders LOCAL contributions (all providers in-process)
         Box::new(audit::Audit::new()),           // append-only event ledger; owns schema "audit", records durable events in-process
         Box::new(scheduler::Scheduler::new()),   // data-driven durable event source; owns schema "scheduler", emits scheduler.fired
+        Box::new(rating::Rating::new()),         // in-memory MMR; provides "rating.mmr_reader", reacts to match.finished (+15/-15)
+        Box::new(match_module::MatchModule::new()), // records matches (schema "match"); reads rating sync, emits match.finished durably
+        Box::new(leaderboard::LeaderboardModule::new()), // win tally; owns schema "leaderboard", reacts to match.finished, serves GET /leaderboard
         Box::new(gateway::Gateway::new().with_player_edge(player.clone())), // HTTP + player QUIC front, auth-once (real accounts sessions)
         Box::new(messaging::Messaging::new()),   // the durable async plane (transport + relay + inbox)
     ];

@@ -1,10 +1,11 @@
 # split-proof.ps1 -- the SPLIT-topology proof for the rust-sketch (Steps 12 + 8).
 #
-# The whole point of the milestone: exercises the EIGHT-PROCESS split (characters-svc =
+# The whole point of the milestone: exercises the ELEVEN-PROCESS split (characters-svc =
 # A on :8080 / edge :9000, inventory-svc = B on :8081 / edge :9001, gateway-svc = G on
 # :8082 / player QUIC :9100, config-svc = C on :8083 / edge :9002, accounts-svc = D on
 # :8084 / edge :9003, admin-svc = E on :8085, audit-svc = F on :8086 / edge :9004,
-# scheduler-svc = H on :8087 / edge :9005), NOT
+# scheduler-svc = H on :8087 / edge :9005, match-svc = I on :8088 / edge :9006,
+# rating-svc = J on :8089 / edge :9007, leaderboard-svc = K on :8090 / edge :9008), NOT
 # the monolith, driving the real player flows over HTTP
 # (through the gateway front-door with a REAL bearer minted by register+login through
 # the front -- Step 6 replaced the dev-<uuid> tokens), the sync authz over
@@ -69,12 +70,18 @@ $DPort     = 8084
 $EPort     = 8085
 $FPort     = 8086
 $HPort     = 8087
+$IPort     = 8088
+$JPort     = 8089
+$KPort     = 8090
 $EdgePort  = 9000
 $BEdgePort = 9001
 $CEdgePort = 9002
 $DEdgePort = 9003
 $FEdgePort = 9004
 $HEdgePort = 9005
+$IEdgePort = 9006
+$JEdgePort = 9007
+$KEdgePort = 9008
 $PlayerPort = 9100
 $PlayerCli = Join-Path $BinDir 'playercli.exe'
 
@@ -94,6 +101,9 @@ $script:DProc = $null
 $script:EProc = $null
 $script:FProc = $null
 $script:HProc = $null
+$script:IProc = $null
+$script:JProc = $null
+$script:KProc = $null
 $script:MProc = $null
 
 function Note($m) { Write-Host "[proof] $m" }
@@ -156,8 +166,11 @@ function Teardown {
     if ($script:EProc -and -not $script:EProc.HasExited) { Stop-Process -Id $script:EProc.Id -Force -ErrorAction SilentlyContinue; Note "stopped E (pid $($script:EProc.Id))" }
     if ($script:FProc -and -not $script:FProc.HasExited) { Stop-Process -Id $script:FProc.Id -Force -ErrorAction SilentlyContinue; Note "stopped F (pid $($script:FProc.Id))" }
     if ($script:HProc -and -not $script:HProc.HasExited) { Stop-Process -Id $script:HProc.Id -Force -ErrorAction SilentlyContinue; Note "stopped H (pid $($script:HProc.Id))" }
+    if ($script:IProc -and -not $script:IProc.HasExited) { Stop-Process -Id $script:IProc.Id -Force -ErrorAction SilentlyContinue; Note "stopped I (pid $($script:IProc.Id))" }
+    if ($script:JProc -and -not $script:JProc.HasExited) { Stop-Process -Id $script:JProc.Id -Force -ErrorAction SilentlyContinue; Note "stopped J (pid $($script:JProc.Id))" }
+    if ($script:KProc -and -not $script:KProc.HasExited) { Stop-Process -Id $script:KProc.Id -Force -ErrorAction SilentlyContinue; Note "stopped K (pid $($script:KProc.Id))" }
     if ($script:MProc -and -not $script:MProc.HasExited) { Stop-Process -Id $script:MProc.Id -Force -ErrorAction SilentlyContinue; Note "stopped monolith (pid $($script:MProc.Id))" }
-    $script:AProc = $null; $script:BProc = $null; $script:GProc = $null; $script:CProc = $null; $script:DProc = $null; $script:EProc = $null; $script:FProc = $null; $script:HProc = $null; $script:MProc = $null
+    $script:AProc = $null; $script:BProc = $null; $script:GProc = $null; $script:CProc = $null; $script:DProc = $null; $script:EProc = $null; $script:FProc = $null; $script:HProc = $null; $script:IProc = $null; $script:JProc = $null; $script:KProc = $null; $script:MProc = $null
 }
 
 # Runs playercli, capturing stdout (joined) and the process exit code. Returns a
@@ -169,14 +182,14 @@ function Invoke-PlayerCli([string[]]$CliArgs) {
 }
 
 try {
-    Note 'building edgeca + characters-svc + inventory-svc + gateway-svc + config-svc + accounts-svc + admin-svc + audit-svc + scheduler-svc + playercli + server ...'
-    cargo build -p edgeca -p characters-svc -p inventory-svc -p gateway-svc -p config-svc -p accounts-svc -p admin-svc -p audit-svc -p scheduler-svc -p playercli -p server
+    Note 'building edgeca + characters-svc + inventory-svc + gateway-svc + config-svc + accounts-svc + admin-svc + audit-svc + scheduler-svc + match-svc + rating-svc + leaderboard-svc + playercli + server ...'
+    cargo build -p edgeca -p characters-svc -p inventory-svc -p gateway-svc -p config-svc -p accounts-svc -p admin-svc -p audit-svc -p scheduler-svc -p match-svc -p rating-svc -p leaderboard-svc -p playercli -p server
     if ($LASTEXITCODE -ne 0) { throw 'cargo build failed' }
 
     New-Item -ItemType Directory -Force -Path $RunDir | Out-Null
 
     # Clear stragglers from an aborted prior run so ports are free (idempotent reruns).
-    foreach ($n in 'characters-svc', 'inventory-svc', 'gateway-svc', 'config-svc', 'accounts-svc', 'admin-svc', 'audit-svc', 'scheduler-svc', 'server') {
+    foreach ($n in 'characters-svc', 'inventory-svc', 'gateway-svc', 'config-svc', 'accounts-svc', 'admin-svc', 'audit-svc', 'scheduler-svc', 'match-svc', 'rating-svc', 'leaderboard-svc', 'server') {
         Get-Process -Name $n -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
     }
     Start-Sleep -Milliseconds 500
@@ -232,6 +245,55 @@ try {
         EVENTS_SUBSCRIBERS = "scheduler.fired=http://127.0.0.1:$FPort/events"
     } 'scheduler'
     if (-not (Wait-Healthy $HPort 'H (scheduler-svc)')) { throw 'H failed to start' }
+
+    # J (rating-svc): rating + messaging, edge :9007. Provides rating.mmr on its mTLS
+    # edge (match-svc reads it sync before recording) and REACTS to match.finished
+    # (+15/-15) durably. In-memory MMR (no schema) but OWNS an inbox, so it needs a DB
+    # pool + messaging. Pure sink for match.finished (no EVENTS_SUBSCRIBERS).
+    Note "starting J (rating-svc) on :$JPort, edge :$JEdgePort ..."
+    $script:JProc = Start-Svc (Join-Path $BinDir 'rating-svc.exe') @{
+        PORT             = ":$JPort"
+        DATABASE_URL     = $env:DATABASE_URL
+        EDGE_ADDR        = ":$JEdgePort"
+        EDGE_CA_CERT     = $CaCert
+        EDGE_CA_KEY      = $CaKey
+        MESSAGING_ORIGIN = 'rating-svc'
+    } 'rating'
+    if (-not (Wait-Healthy $JPort 'J (rating-svc)')) { throw 'J failed to start' }
+
+    # K (leaderboard-svc): gateway + leaderboard + messaging, edge :9008. Owns schema
+    # leaderboard + an inbox, REACTS to match.finished (upsert wins+1) durably, and serves
+    # GET /leaderboard (gateway-svc routes it Remote here). Pure sink for match.finished.
+    Note "starting K (leaderboard-svc) on :$KPort, edge :$KEdgePort ..."
+    $script:KProc = Start-Svc (Join-Path $BinDir 'leaderboard-svc.exe') @{
+        PORT               = ":$KPort"
+        DATABASE_URL       = $env:DATABASE_URL
+        EDGE_ADDR          = ":$KEdgePort"
+        EDGE_CA_CERT       = $CaCert
+        EDGE_CA_KEY        = $CaKey
+        ACCOUNTS_EDGE_ADDR = "127.0.0.1:$DEdgePort"
+        MESSAGING_ORIGIN   = 'leaderboard-svc'
+    } 'leaderboard'
+    if (-not (Wait-Healthy $KPort 'K (leaderboard-svc)')) { throw 'K failed to start' }
+
+    # I (match-svc): gateway + match + messaging + rating stub, edge :9006. Records
+    # matches (schema match) and is a DURABLE PRODUCER: report SYNC-reads both players'
+    # MMR from rating-svc (J) over the mTLS edge, INSERTs the match row + emit_tx's
+    # match.finished IN ONE TX, and its relay POSTs match.finished to J, K and audit-svc
+    # (F). Distinct MESSAGING_ORIGIN (names remote sinks).
+    Note "starting I (match-svc) on :$IPort, edge :$IEdgePort ..."
+    $script:IProc = Start-Svc (Join-Path $BinDir 'match-svc.exe') @{
+        PORT               = ":$IPort"
+        DATABASE_URL       = $env:DATABASE_URL
+        EDGE_ADDR          = ":$IEdgePort"
+        EDGE_CA_CERT       = $CaCert
+        EDGE_CA_KEY        = $CaKey
+        RATING_EDGE_ADDR   = "127.0.0.1:$JEdgePort"
+        ACCOUNTS_EDGE_ADDR = "127.0.0.1:$DEdgePort"
+        MESSAGING_ORIGIN   = 'match-svc'
+        EVENTS_SUBSCRIBERS = "match.finished=http://127.0.0.1:$JPort/events,http://127.0.0.1:$KPort/events,http://127.0.0.1:$FPort/events"
+    } 'match'
+    if (-not (Wait-Healthy $IPort 'I (match-svc)')) { throw 'I failed to start' }
 
     Note "starting A (characters-svc) on :$APort, edge :$EdgePort ..."
     $script:AProc = Start-Svc (Join-Path $BinDir 'characters-svc.exe') @{
@@ -302,6 +364,8 @@ try {
         CHARACTERS_EDGE_ADDR = "127.0.0.1:$EdgePort"
         INVENTORY_EDGE_ADDR  = "127.0.0.1:$BEdgePort"
         ACCOUNTS_EDGE_ADDR   = "127.0.0.1:$DEdgePort"
+        MATCH_EDGE_ADDR      = "127.0.0.1:$IEdgePort"
+        LEADERBOARD_EDGE_ADDR = "127.0.0.1:$KEdgePort"
         ADMIN_HTTP_ADDR      = "127.0.0.1:$EPort"
         ACCOUNTS_HTTP_ADDR   = "127.0.0.1:$DPort"
     } 'gateway'
@@ -595,6 +659,83 @@ try {
     }
 
     Write-Host ''
+    Write-Host "========= MATCH TRIO (match-svc :$IPort + rating-svc :$JPort + leaderboard-svc :$KPort) ========="
+    # The match trio end-to-end across processes, all through the gateway front door:
+    #   (i)   POST /match/report through G (AuthNone) -> 202. G routes match.report Remote
+    #         to match-svc (I); I SYNC-reads both players' MMR from rating-svc (J) over QUIC
+    #         (a 202 with J UP proves that sync seam), records the match + emit_tx's
+    #         match.finished in one tx.
+    #   (ii)  GET /leaderboard through G shows the winner with wins=1 (poll -- durable I->K
+    #         delivery is async), proving the on_tx upsert ran AND G routes topScores to K.
+    #   (iii) audit-svc (F) has a match.finished row (durable I->F, exactly-once).
+    #   (iv)  a second report for the SAME winner -> wins=2 (accumulating upsert).
+    #   (v)   rating (in-memory, no public read op): the sync MMR read is proven by (i)
+    #         succeeding with J UP; the +15/-15 handler is covered by rating's unit tests.
+    $Winner = "champ-$RunSuffix"
+    $Loser = "chump-$RunSuffix"
+
+    Write-Host "[MT1] POST http://127.0.0.1:$GPort/match/report (AuthNone, capitalized Winner/Loser body keys)"
+    $mr = Invoke-Curl @('-X', 'POST', "http://127.0.0.1:$GPort/match/report",
+        '-H', 'Content-Type: application/json',
+        '-d', "{`"Winner`":`"$Winner`",`"Loser`":`"$Loser`"}")
+    Write-Host "    -> HTTP $($mr.Code)"
+    if ($mr.Code -eq '202') {
+        Pass 'match.report through G -> 202 (AuthNone; match-svc read rating.mmr from rating-svc over QUIC, recorded + emit_tx match.finished)'
+    } else {
+        Fail "match.report expected 202, got $($mr.Code)"
+    }
+
+    Write-Host "[MT2] poll GET http://127.0.0.1:$GPort/leaderboard through G until $Winner shows wins=1"
+    $lbOk = $false
+    for ($i = 1; $i -le 30; $i++) {
+        $lb = Invoke-Curl @("http://127.0.0.1:$GPort/leaderboard")
+        if ($lb.Body -match "`"player`":`"$Winner`",`"wins`":1") {
+            Write-Host "    attempt $i -> $($lb.Body)"
+            Pass "leaderboard shows $Winner wins=1 (durable match.finished I->K + on_tx upsert; G routes leaderboard.topScores Remote to K)"
+            $lbOk = $true; break
+        }
+        Start-Sleep -Milliseconds 500
+    }
+    if (-not $lbOk) { Fail "leaderboard never showed $Winner wins=1 (durable I->K delivery / upsert / routing)" }
+
+    if (-not $Psql) {
+        Note 'psql not found -- SKIPPING the match.finished audit-ledger assertion'
+    } else {
+        Write-Host "[MT3] poll audit.log on F for a match.finished row (winner=$Winner)"
+        $mt3Ok = $false
+        for ($i = 1; $i -le 30; $i++) {
+            $anMf = ("" + (Invoke-Sql "SELECT count(*) FROM audit.log WHERE topic='match.finished' AND payload->>'winner'='$Winner';")).Trim()
+            Write-Host "    attempt $i -> match.finished=$anMf"
+            if ([int]($anMf -as [int]) -ge 1) {
+                Pass "audit-svc recorded match.finished for $Winner (durable I->F, exactly-once)"
+                $mt3Ok = $true; break
+            }
+            Start-Sleep -Milliseconds 500
+        }
+        if (-not $mt3Ok) { Fail "audit-svc never recorded match.finished for $Winner (durable delivery I->F)" }
+    }
+
+    Write-Host "[MT4] second POST /match/report same winner -> leaderboard wins=2 (accumulating upsert)"
+    $mr2 = Invoke-Curl @('-X', 'POST', "http://127.0.0.1:$GPort/match/report",
+        '-H', 'Content-Type: application/json',
+        '-d', "{`"Winner`":`"$Winner`",`"Loser`":`"$Loser`"}")
+    Write-Host "    -> report#2 HTTP $($mr2.Code)"
+    if ($mr2.Code -ne '202') { Fail "second match.report expected 202, got $($mr2.Code)" }
+    $mt4Ok = $false
+    for ($i = 1; $i -le 30; $i++) {
+        $lb = Invoke-Curl @("http://127.0.0.1:$GPort/leaderboard")
+        if ($lb.Body -match "`"player`":`"$Winner`",`"wins`":2") {
+            Write-Host "    attempt $i -> $Winner wins=2"
+            Pass "second report -> $Winner wins=2 (leaderboard upsert accumulates across durable events)"
+            $mt4Ok = $true; break
+        }
+        Start-Sleep -Milliseconds 500
+    }
+    if (-not $mt4Ok) { Fail "leaderboard never reached wins=2 for $Winner (accumulating upsert)" }
+
+    if ($Psql) { Invoke-Sql "DELETE FROM leaderboard.scores WHERE player IN ('$Winner','$Loser');" | Out-Null }
+
+    Write-Host ''
     Write-Host "========= PLAYER QUIC FRONT (via gateway-svc :$PlayerPort) ========="
 
     # --- P1. player QUIC create -> G -> mTLS edge -> A ---
@@ -653,7 +794,7 @@ try {
     Write-Host '================ MONOLITH PARITY ================'
     Note 'tearing down the split before the monolith stage ...'
     Teardown
-    foreach ($n in 'characters-svc', 'inventory-svc', 'gateway-svc', 'config-svc', 'accounts-svc', 'admin-svc', 'audit-svc', 'scheduler-svc', 'server') {
+    foreach ($n in 'characters-svc', 'inventory-svc', 'gateway-svc', 'config-svc', 'accounts-svc', 'admin-svc', 'audit-svc', 'scheduler-svc', 'match-svc', 'rating-svc', 'leaderboard-svc', 'server') {
         Get-Process -Name $n -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
     }
     Start-Sleep -Seconds 2
@@ -710,7 +851,7 @@ finally {
 }
 
 if ($script:Fails -eq 0) {
-    Write-Host 'SPLIT PROOF: PASS (all assertions held on the eight-process split + monolith parity)'
+    Write-Host 'SPLIT PROOF: PASS (all assertions held on the eleven-process split + monolith parity)'
     exit 0
 } else {
     Write-Host "SPLIT PROOF: FAIL ($($script:Fails) assertion(s) failed)"

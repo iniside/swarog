@@ -12,11 +12,6 @@ use super::*;
 const DEFAULT_DSN: &str =
     "postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable";
 
-/// The `match.finished` topic literal — audit subscribes to it (Step 8) but the
-/// `api/match/events` crate does not exist until Step 10, so the anti-drift test pins
-/// the string here. When that crate lands, swap this for `matchevents::FINISHED.topic()`.
-const MATCH_FINISHED_TOPIC: &str = "match.finished";
-
 /// Connects to the test DB and ensures the schema; `None` (with a printed SKIP) when
 /// Postgres is unreachable, so the live tests early-return instead of failing.
 async fn test_pool() -> Option<PgPool> {
@@ -96,7 +91,7 @@ fn durable_topics_match_events() {
         charactersevents::DELETED.topic(),
         accountsevents::PLAYER_REGISTERED.topic(),
         configevents::CHANGED.topic(),
-        MATCH_FINISHED_TOPIC,
+        matchevents::FINISHED.topic(),
     ]
     .into_iter()
     .collect();

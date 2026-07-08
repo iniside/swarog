@@ -1,0 +1,32 @@
+[package]
+name = "leaderboard-svc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The leaderboard fortress process (Step 10). Hosts gateway + leaderboard + messaging and
+# stands up one shared QUIC edge server (EDGE_ADDR, :9008 in the run scripts) so
+# gateway-svc can dispatch `GET /leaderboard` Remote to it. leaderboard owns schema
+# `leaderboard` + an inbox, so it needs a DB pool + the messaging durable plane (its
+# `POST /events` inbound sink receives `match.finished` from match-svc; its durable
+# `on_tx` upserts wins+1 on the handed inbox-dedup tx). The accounts stub fills the
+# gateway's verifier (top_scores is AuthNone, but the gateway resolves the verifier at
+# init like every gateway-hosting process). Mirrors `characters-svc`'s shape.
+[[bin]]
+name = "leaderboard-svc"
+path = "src/main.rs"
+
+[dependencies]
+app = { workspace = true }
+edge = { workspace = true }
+lifecycle = { workspace = true }
+gateway = { workspace = true }
+leaderboard = { workspace = true }
+messaging = { workspace = true }
+remote = { workspace = true }
+accountsrpc = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync"] }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

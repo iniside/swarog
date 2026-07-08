@@ -26,6 +26,9 @@ inventory = { workspace = true }
 admin = { workspace = true }
 audit = { workspace = true }
 scheduler = { workspace = true }
+rating = { workspace = true }
+match_module = { workspace = true }
+leaderboard = { workspace = true }
 messaging = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 anyhow = { workspace = true }

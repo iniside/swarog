@@ -38,4 +38,5 @@ futures = { workspace = true }
 charactersevents = { workspace = true }
 accountsevents = { workspace = true }
 configevents = { workspace = true }
+matchevents = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }

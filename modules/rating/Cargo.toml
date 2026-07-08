@@ -1,0 +1,31 @@
+[package]
+name = "rating"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The rating impl module (port of Go's modules/rating). Provides the wire-only
+# `MmrReader` capability (registry + a QUIC edge face) and REACTS to `match.finished`
+# (+15 winner / -15 loser). It stays IN-MEMORY as in Go — documented consequence: a
+# rating-svc restart resets every MMR to 1000 while the rest of the system keeps
+# running (acceptable for a for-fun backend). It owns NO schema, but its durable
+# `on_tx` subscription needs the messaging inbox, so a process hosting rating still
+# needs a DB pool + the messaging module. An impl crate — no OTHER module imports it;
+# consumers use `ratingapi` (the trait); `ratingrpc` is its OWN glue (the edge face).
+[dependencies]
+bus = { workspace = true }
+lifecycle = { workspace = true }
+registry = { workspace = true }
+edge = { workspace = true }
+opsapi = { workspace = true }
+ratingapi = { workspace = true }
+ratingrpc = { workspace = true }
+matchevents = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+async-trait = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }

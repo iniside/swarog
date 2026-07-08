@@ -1,0 +1,19 @@
+[package]
+name = "matchapi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The match module's PURE, transport-free capability contract (port of Go's
+# api/match/matchapi): the Match trait (report). `#[rpc]` generates the transport-FREE
+# surface (wire envelopes, METHOD_* consts, operations()/route_bindings()) into the
+# child `match_rpc` module, plus a metadata-callback macro the sibling `matchrpc` glue
+# crate expands into the edge-dependent glue. NO `edge` dependency. The `report` body
+# keys stay the Go-default capitalized `Winner`/`Loser` (a `body_names` override).
+[dependencies]
+opsapi = { workspace = true }
+rpc-macro = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

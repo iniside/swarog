@@ -1,0 +1,19 @@
+[package]
+name = "leaderboardapi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The leaderboard module's PURE, transport-free capability contract (port of Go's
+# api/leaderboard/leaderboardapi): the Leaderboard trait (top_scores) + the Score wire
+# type. `#[rpc]` generates the transport-FREE surface (wire envelopes, METHOD_* consts,
+# operations()/route_bindings()) into the child `leaderboard_rpc` module, plus a
+# metadata-callback macro the sibling `leaderboardrpc` glue crate expands into the
+# edge-dependent glue. NO `edge` dependency. Leaderboard has no domain consumers.
+[dependencies]
+opsapi = { workspace = true }
+rpc-macro = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

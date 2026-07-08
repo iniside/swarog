@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # split-proof.sh -- the SPLIT-topology proof for the rust-sketch (Steps 12 + 8).
 #
-# This is the whole point of the milestone: it exercises the EIGHT-PROCESS split
+# This is the whole point of the milestone: it exercises the ELEVEN-PROCESS split
 # (characters-svc = A on :8080 / edge :9000, inventory-svc = B on :8081 / edge :9001,
 # gateway-svc = G on :8082 / player QUIC :9100, config-svc = C on :8083 / edge :9002,
 # accounts-svc = D on :8084 / edge :9003, admin-svc = E on :8085, audit-svc = F on
-# :8086 / edge :9004, scheduler-svc = H on :8087 / edge :9005),
+# :8086 / edge :9004, scheduler-svc = H on :8087 / edge :9005, match-svc = I on :8088 /
+# edge :9006, rating-svc = J on :8089 / edge :9007, leaderboard-svc = K on :8090 /
+# edge :9008),
 # NOT the monolith, driving the real
 # player flows over HTTP (through the gateway front-door with a REAL bearer minted
 # by register+login through the front -- Step 6 replaced the dev-<uuid> tokens),
@@ -81,12 +83,18 @@ D_PORT=8084
 E_PORT=8085
 F_PORT=8086
 H_PORT=8087
+I_PORT=8088
+J_PORT=8089
+K_PORT=8090
 EDGE_PORT=9000
 B_EDGE_PORT=9001
 C_EDGE_PORT=9002
 D_EDGE_PORT=9003
 F_EDGE_PORT=9004
 H_EDGE_PORT=9005
+I_EDGE_PORT=9006
+J_EDGE_PORT=9007
+K_EDGE_PORT=9008
 PLAYER_PORT=9100
 
 DEFAULT_DSN="postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable"
@@ -106,6 +114,9 @@ D_PID=""
 E_PID=""
 F_PID=""
 H_PID=""
+I_PID=""
+J_PID=""
+K_PID=""
 M_PID=""
 
 note()  { echo "[proof] $*"; }
@@ -155,8 +166,11 @@ teardown() {
     [ -n "$E_PID" ] && kill "$E_PID" 2>/dev/null && note "stopped E (pid $E_PID)"
     [ -n "$F_PID" ] && kill "$F_PID" 2>/dev/null && note "stopped F (pid $F_PID)"
     [ -n "$H_PID" ] && kill "$H_PID" 2>/dev/null && note "stopped H (pid $H_PID)"
+    [ -n "$I_PID" ] && kill "$I_PID" 2>/dev/null && note "stopped I (pid $I_PID)"
+    [ -n "$J_PID" ] && kill "$J_PID" 2>/dev/null && note "stopped J (pid $J_PID)"
+    [ -n "$K_PID" ] && kill "$K_PID" 2>/dev/null && note "stopped K (pid $K_PID)"
     [ -n "$M_PID" ] && kill "$M_PID" 2>/dev/null && note "stopped monolith (pid $M_PID)"
-    A_PID=""; B_PID=""; G_PID=""; C_PID=""; D_PID=""; E_PID=""; F_PID=""; H_PID=""; M_PID=""
+    A_PID=""; B_PID=""; G_PID=""; C_PID=""; D_PID=""; E_PID=""; F_PID=""; H_PID=""; I_PID=""; J_PID=""; K_PID=""; M_PID=""
 }
 trap teardown EXIT INT TERM
 
@@ -172,6 +186,9 @@ kill_stragglers() {
         taskkill //F //IM admin-svc.exe >/dev/null 2>&1 || true
         taskkill //F //IM audit-svc.exe >/dev/null 2>&1 || true
         taskkill //F //IM scheduler-svc.exe >/dev/null 2>&1 || true
+        taskkill //F //IM match-svc.exe >/dev/null 2>&1 || true
+        taskkill //F //IM rating-svc.exe >/dev/null 2>&1 || true
+        taskkill //F //IM leaderboard-svc.exe >/dev/null 2>&1 || true
         taskkill //F //IM server.exe >/dev/null 2>&1 || true
     fi
     pkill -f "characters-svc" 2>/dev/null || true
@@ -182,6 +199,9 @@ kill_stragglers() {
     pkill -f "admin-svc"      2>/dev/null || true
     pkill -f "audit-svc"      2>/dev/null || true
     pkill -f "scheduler-svc"  2>/dev/null || true
+    pkill -f "match-svc"      2>/dev/null || true
+    pkill -f "rating-svc"     2>/dev/null || true
+    pkill -f "leaderboard-svc" 2>/dev/null || true
     pkill -f "target/debug/server" 2>/dev/null || true
 }
 
@@ -197,8 +217,8 @@ wait_healthy() {
 }
 
 # ============================================================================
-note "building edgeca + characters-svc + inventory-svc + gateway-svc + config-svc + accounts-svc + admin-svc + audit-svc + scheduler-svc + playercli + server ..."
-if ! cargo build -p edgeca -p characters-svc -p inventory-svc -p gateway-svc -p config-svc -p accounts-svc -p admin-svc -p audit-svc -p scheduler-svc -p playercli -p server; then
+note "building edgeca + characters-svc + inventory-svc + gateway-svc + config-svc + accounts-svc + admin-svc + audit-svc + scheduler-svc + match-svc + rating-svc + leaderboard-svc + playercli + server ..."
+if ! cargo build -p edgeca -p characters-svc -p inventory-svc -p gateway-svc -p config-svc -p accounts-svc -p admin-svc -p audit-svc -p scheduler-svc -p match-svc -p rating-svc -p leaderboard-svc -p playercli -p server; then
     echo "build failed"; exit 1
 fi
 PLAYERCLI="$BIN_DIR/playercli$EXE"
@@ -252,6 +272,49 @@ env PORT=":$H_PORT" DATABASE_URL="$DATABASE_URL" EDGE_ADDR=":$H_EDGE_PORT" \
     "$BIN_DIR/scheduler-svc$EXE" >"$RUN_DIR/scheduler.out.log" 2>"$RUN_DIR/scheduler.err.log" &
 H_PID=$!
 wait_healthy "$H_PORT" "H (scheduler-svc)" || { echo "H failed to start"; exit 1; }
+
+# --- start J (rating-svc): rating + messaging, edge :9007 --------------------
+# J provides `rating.mmr` on its mTLS edge (match-svc reads it sync before recording a
+# result) and REACTS to match.finished (+15/-15) on the durable plane. In-memory MMR
+# (no schema) but it OWNS an inbox, so it needs a DB pool + messaging. Pure sink for
+# match.finished (no EVENTS_SUBSCRIBERS). Distinct MESSAGING_ORIGIN for its own inbox.
+note "starting J (rating-svc) on :$J_PORT, edge :$J_EDGE_PORT ..."
+env PORT=":$J_PORT" DATABASE_URL="$DATABASE_URL" EDGE_ADDR=":$J_EDGE_PORT" \
+    EDGE_CA_CERT="$CA_CERT" EDGE_CA_KEY="$CA_KEY" \
+    MESSAGING_ORIGIN=rating-svc \
+    "$BIN_DIR/rating-svc$EXE" >"$RUN_DIR/rating.out.log" 2>"$RUN_DIR/rating.err.log" &
+J_PID=$!
+wait_healthy "$J_PORT" "J (rating-svc)" || { echo "J failed to start"; exit 1; }
+
+# --- start K (leaderboard-svc): gateway + leaderboard + messaging, edge :9008 -
+# K owns schema `leaderboard` + an inbox, REACTS to match.finished (upsert wins+1) on
+# the durable plane, and serves GET /leaderboard (gateway-svc routes it Remote here).
+# Pure sink for match.finished (no EVENTS_SUBSCRIBERS). Distinct MESSAGING_ORIGIN.
+note "starting K (leaderboard-svc) on :$K_PORT, edge :$K_EDGE_PORT ..."
+env PORT=":$K_PORT" DATABASE_URL="$DATABASE_URL" EDGE_ADDR=":$K_EDGE_PORT" \
+    EDGE_CA_CERT="$CA_CERT" EDGE_CA_KEY="$CA_KEY" \
+    ACCOUNTS_EDGE_ADDR="127.0.0.1:$D_EDGE_PORT" \
+    MESSAGING_ORIGIN=leaderboard-svc \
+    "$BIN_DIR/leaderboard-svc$EXE" >"$RUN_DIR/leaderboard.out.log" 2>"$RUN_DIR/leaderboard.err.log" &
+K_PID=$!
+wait_healthy "$K_PORT" "K (leaderboard-svc)" || { echo "K failed to start"; exit 1; }
+
+# --- start I (match-svc): gateway + match + messaging + rating stub, edge :9006
+# I records matches (schema `match`) and is a DURABLE PRODUCER: `report` SYNC-reads both
+# players' MMR from rating-svc (J) over the mTLS edge, INSERTs the match row + emit_tx's
+# match.finished IN ONE TX, and its relay POSTs match.finished to rating-svc (J),
+# leaderboard-svc (K) and audit-svc (F). Distinct MESSAGING_ORIGIN (names remote sinks,
+# so a default origin would be rejected).
+note "starting I (match-svc) on :$I_PORT, edge :$I_EDGE_PORT ..."
+env PORT=":$I_PORT" DATABASE_URL="$DATABASE_URL" EDGE_ADDR=":$I_EDGE_PORT" \
+    EDGE_CA_CERT="$CA_CERT" EDGE_CA_KEY="$CA_KEY" \
+    RATING_EDGE_ADDR="127.0.0.1:$J_EDGE_PORT" \
+    ACCOUNTS_EDGE_ADDR="127.0.0.1:$D_EDGE_PORT" \
+    MESSAGING_ORIGIN=match-svc \
+    EVENTS_SUBSCRIBERS="match.finished=http://localhost:$J_PORT/events,http://localhost:$K_PORT/events,http://localhost:$F_PORT/events" \
+    "$BIN_DIR/match-svc$EXE" >"$RUN_DIR/match.out.log" 2>"$RUN_DIR/match.err.log" &
+I_PID=$!
+wait_healthy "$I_PORT" "I (match-svc)" || { echo "I failed to start"; exit 1; }
 
 # --- start A (characters-svc): gateway + characters + messaging, edge :9000 --
 # MESSAGING_ORIGIN MUST be distinct per process (never the "monolith" default): the
@@ -321,6 +384,8 @@ env PORT=":$G_PORT" \
     CHARACTERS_EDGE_ADDR="127.0.0.1:$EDGE_PORT" \
     INVENTORY_EDGE_ADDR="127.0.0.1:$B_EDGE_PORT" \
     ACCOUNTS_EDGE_ADDR="127.0.0.1:$D_EDGE_PORT" \
+    MATCH_EDGE_ADDR="127.0.0.1:$I_EDGE_PORT" \
+    LEADERBOARD_EDGE_ADDR="127.0.0.1:$K_EDGE_PORT" \
     ADMIN_HTTP_ADDR="127.0.0.1:$E_PORT" \
     ACCOUNTS_HTTP_ADDR="127.0.0.1:$D_PORT" \
     "$BIN_DIR/gateway-svc$EXE" >"$RUN_DIR/gateway.out.log" 2>"$RUN_DIR/gateway.err.log" &
@@ -665,6 +730,89 @@ else
 fi
 
 echo ""
+echo "========= MATCH TRIO (match-svc :$I_PORT + rating-svc :$J_PORT + leaderboard-svc :$K_PORT) ========="
+# The match trio end-to-end across processes, all through the gateway front door:
+#   (i)   POST /match/report through G (AuthNone) -> 202. G routes match.report Remote to
+#         match-svc (I) over the mTLS edge; I SYNC-reads both players' MMR from rating-svc
+#         (J) over QUIC (a 202 with J UP proves that sync seam resolved), records the
+#         match + emit_tx's match.finished in one tx.
+#   (ii)  GET /leaderboard through G shows the winner with wins=1 (poll -- durable delivery
+#         I->K is async). Proves match.finished crossed I -> leaderboard-svc (K) and the
+#         durable on_tx upsert ran, AND that G routes leaderboard.topScores Remote to K.
+#   (iii) audit-svc (F) has a match.finished row (durable I->F, exactly-once).
+#   (iv)  a second report for the SAME winner -> wins=2 (accumulating upsert).
+#   (v)   rating (in-memory, no public read endpoint): the sync MMR read is proven by (i)
+#         succeeding with rating-svc UP -- a report cannot return 202 without J answering
+#         rating.mmr over the edge. The +15/-15 typed handler is covered by rating's
+#         in-crate unit tests (no wire read op to assert here by design).
+WINNER="champ-$RUN_SUFFIX"
+LOSER="chump-$RUN_SUFFIX"
+
+echo "[MT1] POST http://localhost:$G_PORT/match/report (AuthNone, capitalized Winner/Loser body keys)"
+MR="$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://localhost:$G_PORT/match/report" \
+    -H "Content-Type: application/json" \
+    -d "{\"Winner\":\"$WINNER\",\"Loser\":\"$LOSER\"}")"
+echo "    -> HTTP $MR"
+if [ "$MR" = "202" ]; then
+    pass "match.report through G -> 202 (AuthNone; match-svc read rating.mmr from rating-svc over QUIC, recorded + emit_tx'd match.finished)"
+else
+    fail "match.report expected 202, got $MR"
+fi
+
+echo "[MT2] poll GET http://localhost:$G_PORT/leaderboard through G until $WINNER shows wins=1"
+LB_OK=0
+for i in $(seq 1 30); do
+    LB="$(curl -s "http://localhost:$G_PORT/leaderboard")"
+    if echo "$LB" | grep -q "\"player\":\"$WINNER\",\"wins\":1"; then
+        echo "    attempt $i -> $LB"
+        pass "leaderboard shows $WINNER wins=1 (durable match.finished I->K + on_tx upsert; G routes leaderboard.topScores Remote to K)"
+        LB_OK=1; break
+    fi
+    sleep 0.5
+done
+[ "$LB_OK" = "1" ] || fail "leaderboard never showed $WINNER wins=1 (durable I->K delivery / upsert / routing)"
+
+if [ -z "$PSQL" ]; then
+    note "psql not found -- SKIPPING the match.finished audit-ledger assertion"
+else
+    echo "[MT3] poll audit.log on F for a match.finished row (winner=$WINNER)"
+    MT3_OK=0
+    for i in $(seq 1 30); do
+        AN_MF="$(pg "SELECT count(*) FROM audit.log WHERE topic='match.finished' AND payload->>'winner'='$WINNER';" | tr -d '[:space:]')"
+        echo "    attempt $i -> match.finished=${AN_MF:-?}"
+        if [ "${AN_MF:-0}" -ge 1 ]; then
+            pass "audit-svc recorded match.finished for $WINNER (durable I->F, exactly-once)"
+            MT3_OK=1; break
+        fi
+        sleep 0.5
+    done
+    [ "$MT3_OK" = "1" ] || fail "audit-svc never recorded match.finished for $WINNER (durable delivery I->F)"
+fi
+
+echo "[MT4] second POST /match/report same winner -> leaderboard wins=2 (accumulating upsert)"
+MR2="$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://localhost:$G_PORT/match/report" \
+    -H "Content-Type: application/json" \
+    -d "{\"Winner\":\"$WINNER\",\"Loser\":\"$LOSER\"}")"
+echo "    -> report#2 HTTP $MR2"
+[ "$MR2" = "202" ] || fail "second match.report expected 202, got $MR2"
+MT4_OK=0
+for i in $(seq 1 30); do
+    LB="$(curl -s "http://localhost:$G_PORT/leaderboard")"
+    if echo "$LB" | grep -q "\"player\":\"$WINNER\",\"wins\":2"; then
+        echo "    attempt $i -> $WINNER wins=2"
+        pass "second report -> $WINNER wins=2 (leaderboard upsert accumulates across durable events)"
+        MT4_OK=1; break
+    fi
+    sleep 0.5
+done
+[ "$MT4_OK" = "1" ] || fail "leaderboard never reached wins=2 for $WINNER (accumulating upsert)"
+
+# Clean up this run's leaderboard rows so reruns start fresh.
+if [ -n "$PSQL" ]; then
+    pg "DELETE FROM leaderboard.scores WHERE player IN ('$WINNER','$LOSER');" >/dev/null
+fi
+
+echo ""
 echo "========= PLAYER QUIC FRONT (via gateway-svc :$PLAYER_PORT) ========="
 
 # --- P1. player QUIC create -> G -> mTLS edge -> A ---------------------------
@@ -820,7 +968,7 @@ teardown
 
 echo "============================================"
 if [ "$FAILS" -eq 0 ]; then
-    echo "SPLIT PROOF: PASS (all assertions held on the eight-process split + monolith parity)"
+    echo "SPLIT PROOF: PASS (all assertions held on the eleven-process split + monolith parity)"
     exit 0
 else
     echo "SPLIT PROOF: FAIL ($FAILS assertion(s) failed)"

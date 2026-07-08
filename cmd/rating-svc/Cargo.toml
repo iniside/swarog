@@ -1,0 +1,27 @@
+[package]
+name = "rating-svc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The rating fortress process (Step 10). Hosts rating + messaging and stands up one
+# shared QUIC edge server (EDGE_ADDR, :9007 in the run scripts) serving `rating.mmr` so
+# match-svc's stub resolves the MMR read over mTLS. rating owns NO schema, but its
+# durable `on_tx("rating")` subscription needs the messaging inbox, so this process still
+# needs a DB pool + the messaging plane (its `POST /events` inbound sink receives
+# `match.finished` from match-svc). No gateway: rating fronts no typed op and no player
+# plane — it is a wire-only provider + a durable event reactor.
+[[bin]]
+name = "rating-svc"
+path = "src/main.rs"
+
+[dependencies]
+app = { workspace = true }
+lifecycle = { workspace = true }
+edge = { workspace = true }
+rating = { workspace = true }
+messaging = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+anyhow = { workspace = true }
+tracing-subscriber = { workspace = true }

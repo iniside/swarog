@@ -1,0 +1,20 @@
+[package]
+name = "ratingapi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The rating module's PURE, transport-free capability contract: the wire-only
+# MmrReader trait (a sync read of a player's MMR). `#[rpc]` generates the transport-FREE
+# surface into the child `mmr_reader_rpc` module, plus a metadata-callback macro the
+# sibling `ratingrpc` glue crate expands into the edge-dependent glue. NO `edge`
+# dependency. The match module (the sole consumer) imports THIS crate to name
+# `dyn MmrReader` for `registry::require` (rule 4's nominal-typing cost), never the
+# `rating` impl crate.
+[dependencies]
+opsapi = { workspace = true }
+rpc-macro = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

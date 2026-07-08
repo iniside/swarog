@@ -1,0 +1,34 @@
+[package]
+name = "leaderboard"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The leaderboard impl module (port of Go's modules/leaderboard). Owns schema
+# `leaderboard`, touches no other module's tables (the link to players is the bare
+# player id carried by the event — no cross-module FK). It REACTS to `match.finished`
+# (upsert wins+1) and serves the top-100 as a public `#[http]` op (GET /leaderboard).
+# PLAN DELTA vs Go: the subscription is DURABLE (`on_tx`, upgraded from Go's plain `On`)
+# so it crosses process boundaries — the "best-effort" framing is retired with the
+# durable rule; the upsert runs INSIDE the handed inbox-dedup tx (exactly-once). An impl
+# crate — no OTHER module imports it; `leaderboardrpc` is its OWN glue.
+[dependencies]
+bus = { workspace = true }
+lifecycle = { workspace = true }
+edge = { workspace = true }
+opsapi = { workspace = true }
+leaderboardapi = { workspace = true }
+leaderboardrpc = { workspace = true }
+matchevents = { workspace = true }
+sqlx = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+messaging = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }

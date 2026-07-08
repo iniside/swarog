@@ -16,9 +16,9 @@
 //! durable), and the transport hands the raw JSON and runs the ledger insert inside its
 //! per-`(event_id,"audit")` inbox-dedup tx — exactly-once in BOTH topologies. The
 //! producers already emit all five durably by their respective steps (characters today;
-//! config Step 5; accounts Step 6; match Step 10 — `match.finished` has no producer
-//! yet, and subscribing to a producerless topic is harmless: messaging only registers a
-//! local handler that never fires until some relay POSTs it).
+//! config Step 5; accounts Step 6; match Step 10 — `match.finished` now has a real
+//! producer: the `match` module emit_tx's it atomic with the `match.matches` insert, and
+//! match-svc's relay POSTs it to audit-svc's `/events`).
 //!
 //! Retention is enforced by REACTING to `scheduler.fired{name:"audit-prune"}` on the
 //! durable plane (Step 9 seeds the schedule). audit subscribes to `scheduler.fired`
@@ -37,10 +37,9 @@ use opsapi::Error;
 use sqlx::{PgConnection, PgPool};
 
 /// The domain events audit records, each on the DURABLE plane via `on_tx_raw`. This is
-/// a conscious edit point (the bus has no wildcard subscribe). `match.finished` has no
-/// producer yet (Step 10) — subscribing early is harmless. The anti-drift test
-/// (`tests.rs`) diffs this set against the producers' declared topics, so a rename on
-/// either side fails the build.
+/// a conscious edit point (the bus has no wildcard subscribe). The anti-drift test
+/// (`tests.rs`) diffs this set against the producers' declared topics (including
+/// `matchevents::FINISHED`, Step 10), so a rename on either side fails the build.
 const DURABLE_TOPICS: &[&str] = &[
     "character.created",
     "character.deleted",

@@ -1,0 +1,39 @@
+[package]
+name = "match_module"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The match impl module (port of Go's modules/match). Records match results and emits
+# `match.finished`. PLAN DELTA vs Go (which kept match monolith-only + persistence-free):
+# match now OWNS schema `match` and, in `report`, INSERTS the match row and `emit_tx`s
+# `match.finished` in the SAME tx — the durable rule's required tx source, so the event
+# crosses process boundaries (rating/leaderboard/audit live elsewhere in the fortress).
+# It SYNC-reads both players' MMR via `dyn MmrReader` (resolved from the registry —
+# local `rating` module or a remote `ratingrpc` stub) before emitting, mirroring Go's
+# pre-emit rating read (a log line, nothing material). An impl crate — no OTHER module
+# imports it; `matchrpc` is its OWN glue (sanctioned).
+[dependencies]
+bus = { workspace = true }
+lifecycle = { workspace = true }
+registry = { workspace = true }
+opsapi = { workspace = true }
+edge = { workspace = true }
+matchapi = { workspace = true }
+matchrpc = { workspace = true }
+matchevents = { workspace = true }
+ratingapi = { workspace = true }
+sqlx = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+app = { workspace = true }
+messaging = { workspace = true }
+rating = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }

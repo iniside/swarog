@@ -34,6 +34,13 @@ members = [
     "api/characters/events",
     "api/inventory/api",
     "api/inventory/rpc",
+    "api/match/api",
+    "api/match/rpc",
+    "api/match/events",
+    "api/rating/api",
+    "api/rating/rpc",
+    "api/leaderboard/api",
+    "api/leaderboard/rpc",
     "api/config/api",
     "api/config/rpc",
     "api/config/events",
@@ -51,6 +58,9 @@ members = [
     "modules/admin",
     "modules/audit",
     "modules/scheduler",
+    "modules/match",
+    "modules/rating",
+    "modules/leaderboard",
     # Process entrypoints (Go's cmd/).
     "cmd/server",
     "cmd/characters-svc",
@@ -61,6 +71,9 @@ members = [
     "cmd/admin-svc",
     "cmd/audit-svc",
     "cmd/scheduler-svc",
+    "cmd/match-svc",
+    "cmd/rating-svc",
+    "cmd/leaderboard-svc",
 ]
 
 [workspace.package]
@@ -153,6 +166,13 @@ charactersapi = { path = "api/characters/api" }
 charactersrpc = { path = "api/characters/rpc" }
 inventoryapi = { path = "api/inventory/api" }
 inventoryrpc = { path = "api/inventory/rpc" }
+matchapi = { path = "api/match/api" }
+matchrpc = { path = "api/match/rpc" }
+matchevents = { path = "api/match/events" }
+ratingapi = { path = "api/rating/api" }
+ratingrpc = { path = "api/rating/rpc" }
+leaderboardapi = { path = "api/leaderboard/api" }
+leaderboardrpc = { path = "api/leaderboard/rpc" }
 
 # ---- Module implementations (modules/): private impl, reachable only from cmd/. ----
 config = { path = "modules/config" }
@@ -163,3 +183,6 @@ accounts = { path = "modules/accounts" }
 admin = { path = "modules/admin" }
 audit = { path = "modules/audit" }
 scheduler = { path = "modules/scheduler" }
+match_module = { path = "modules/match" }
+rating = { path = "modules/rating" }
+leaderboard = { path = "modules/leaderboard" }

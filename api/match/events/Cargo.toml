@@ -1,0 +1,17 @@
+[package]
+name = "matchevents"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The published event vocabulary of the match domain (port of Go's
+# api/match/matchevents): the Finished payload + its topic descriptor. The ONLY
+# surface consumers (rating, leaderboard, audit) share with match; nobody imports the
+# match implementation. Unlike Go's plain in-process `bus.Define`, this rides the
+# DURABLE plane (bus::emit_tx atomic with the match-row insert), so the payload is
+# serde (the transport collapses it to JSON at the emit_tx/on_tx boundary). Imports
+# only the `bus` leaf.
+[dependencies]
+bus = { workspace = true }
+serde = { workspace = true }
