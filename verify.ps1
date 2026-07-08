@@ -5,7 +5,7 @@
 # Usage:
 #   .\verify.ps1                 # -Fast: blocking stages only (default)
 #   .\verify.ps1 -Fast           # same as default
-#   .\verify.ps1 -All            # + advisory: public-api, fuzz
+#   .\verify.ps1 -All            # + advisory: public-api, fuzz, topiccheck
 #   .\verify.ps1 -Slow           # + cargo-mutants mutation testing (very slow)
 #   .\verify.ps1 -All -Strict    # advisory failures ALSO flip the exit code
 #   .\verify.ps1 -All -NoInstall # never auto-install a missing CLI (it SKIPs)
@@ -266,9 +266,14 @@ function Invoke-MutantsStage {
     }
 }
 
-# topiccheck (linkme-based bus.Define/on-subscriber-coverage equivalent): landing in
-# a follow-up step (Step 14, part B) once the module set it audits is final. This
-# comment marks where its stage call slots in, alongside the other advisory stages.
+# --- Advisory stage: topiccheck (defined-vs-subscribed topic drift) ----------
+# The Rust redesign of Go's whole-program topiccheck: tools/topiccheck builds the
+# monolith module set with a recording bus transport and diffs subscribed vs
+# bus::define'd topics. --strict exits non-zero on drift, so this FAILs then; advisory
+# by default, blocking only under the umbrella -Strict.
+function Invoke-TopiccheckStage {
+    Invoke-SimpleStage 'topiccheck' $false 'cargo' @('run', '-q', '-p', 'topiccheck', '--', '--strict')
+}
 
 # --- Run ---------------------------------------------------------------------
 Invoke-SimpleStage 'build'   $true 'cargo' @('build', '--workspace')
@@ -281,7 +286,7 @@ Invoke-SimpleStage 'split-proof' $true 'pwsh' @('-File', (Join-Path $root 'split
 if ($RunAdvisory) {
     Invoke-PublicApiStage
     Invoke-FuzzStage
-    # <-- topiccheck stage slots in here once it lands (Step 14, part B) -->
+    Invoke-TopiccheckStage
 }
 if ($RunSlow) {
     Invoke-MutantsStage

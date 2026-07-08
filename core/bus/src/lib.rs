@@ -134,6 +134,15 @@ impl Bus {
         });
     }
 
+    /// Every topic that currently has at least one in-process subscriber (from
+    /// [`Bus::subscribe`] / [`Bus::on`]). Introspection only — used by the
+    /// `topiccheck` tool to diff defined-vs-subscribed topics across the in-process
+    /// plane (the durable plane is observed at the [`Transport`] instead). The order
+    /// is unspecified.
+    pub fn subscribed_topics(&self) -> Vec<String> {
+        self.inner.lock().unwrap().subs.keys().cloned().collect()
+    }
+
     /// Stops every subscriber once its mailbox has drained, then waits for all
     /// tasks to finish. Dropping the stored senders (by clearing `subs`) is what
     /// lets each `rx.recv()` return `None` after its queue empties. Call after the

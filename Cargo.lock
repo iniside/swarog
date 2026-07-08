@@ -3432,6 +3432,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "topiccheck"
+version = "0.1.0"
+dependencies = [
+ "accounts",
+ "accountsevents",
+ "admin",
+ "anyhow",
+ "async-trait",
+ "audit",
+ "bus",
+ "characters",
+ "charactersevents",
+ "config",
+ "configevents",
+ "gateway",
+ "inventory",
+ "leaderboard",
+ "lifecycle",
+ "match_module",
+ "matchevents",
+ "rating",
+ "scheduler",
+ "schedulerevents",
+ "sqlx",
+ "tokio",
+ "webui",
+]
+
+[[package]]
 name = "tower"
 version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"

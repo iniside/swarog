@@ -1,0 +1,50 @@
+[package]
+name = "topiccheck"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# topiccheck (Step 14b): the Rust redesign of Go's whole-program topiccheck. Go used
+# go/types object identity across one packages.Load to diff every `bus.Define`d topic
+# against every `bus.On` site. Rust has no equivalent whole-program type analysis, so
+# this instead builds the MONOLITH module set (the superset of every process) with a
+# recording bus transport, runs the register+init lifecycle phases, and diffs the
+# topics that were actually SUBSCRIBED against the ones the events crates DEFINE. It is
+# a tool (not a module), so it may depend on every module + events crate — archcheck
+# only constrains `modules/` consumers, and classifies `tools/` as Other (unconstrained).
+[[bin]]
+name = "topiccheck"
+path = "src/main.rs"
+
+[dependencies]
+lifecycle = { workspace = true }
+bus = { workspace = true }
+sqlx = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+anyhow = { workspace = true }
+
+# The DEFINE sites — the canonical `bus::define` statics, referenced directly so a
+# renamed/removed topic breaks THIS tool at compile time (the intended coupling).
+accountsevents = { workspace = true }
+charactersevents = { workspace = true }
+configevents = { workspace = true }
+matchevents = { workspace = true }
+schedulerevents = { workspace = true }
+
+# The SUBSCRIBE sites — the full monolith module set (minus messaging, whose durable
+# transport this tool replaces with a recording one). Instantiating and building them
+# runs every real `on`/`on_tx`/`on_tx_raw` call.
+config = { workspace = true }
+characters = { workspace = true }
+inventory = { workspace = true }
+accounts = { workspace = true }
+admin = { workspace = true }
+audit = { workspace = true }
+scheduler = { workspace = true }
+match_module = { workspace = true }
+rating = { workspace = true }
+leaderboard = { workspace = true }
+webui = { workspace = true }
+gateway = { workspace = true }

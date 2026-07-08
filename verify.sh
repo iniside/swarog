@@ -4,7 +4,7 @@
 # Usage:
 #   ./verify.sh                # --fast: blocking stages only (default)
 #   ./verify.sh --fast         # same as default
-#   ./verify.sh --all          # + advisory: public-api, fuzz
+#   ./verify.sh --all          # + advisory: public-api, fuzz, topiccheck
 #   ./verify.sh --slow         # + cargo-mutants mutation testing (very slow)
 #   ./verify.sh --all --strict # advisory failures ALSO flip the exit code
 #   ./verify.sh --all --no-install  # never auto-install a missing CLI (it SKIPs)
@@ -28,14 +28,13 @@
 #                  10s each. SKIPs if cargo-fuzz can't execute on this platform
 #                  (Windows lacks the libFuzzer sanitizer runtime as of this writing --
 #                  the targets still build/check and are exercised for real on Linux/CI)
+#   9. topiccheck  builds the monolith module set with a recording bus transport and
+#                  fails (under --strict) on any bus::define'd topic with no subscriber
+#                  (the Rust redesign of Go's whole-program topiccheck)
 #
 # SLOW (--slow):
-#   9. mutants     cargo-mutants over the pure foundation crates (edge, gateway,
+#   10. mutants    cargo-mutants over the pure foundation crates (edge, gateway,
 #                  outbox, registry, bus)
-#
-# topiccheck (the linkme-based bus.Define/on-subscriber-coverage equivalent) is a
-# DELIBERATE placeholder -- landing in a follow-up step once the module set it
-# audits is final. See the marked slot below.
 #
 # Prints a PASS/FAIL/SKIP summary and exits non-zero iff a BLOCKING stage failed (or
 # ANY stage failed under --strict). Deliberately NOT `set -e` in the run phase: a
@@ -291,9 +290,15 @@ mutants_stage() {
     fi
 }
 
-# topiccheck (linkme-based bus.Define/on-subscriber-coverage equivalent): landing in
-# a follow-up step (Step 14, part B) once the module set it audits is final. This
-# comment marks where its stage call slots in, alongside the other advisory stages.
+# --- Advisory stage: topiccheck (defined-vs-subscribed topic drift) -----------
+# The Rust redesign of Go's whole-program topiccheck: `tools/topiccheck` builds the
+# MONOLITH module set with a recording bus transport, runs the register+init lifecycle
+# phases, and diffs the topics actually subscribed against the `bus::define`d ones.
+# `--strict` makes it exit non-zero on any unsubscribed topic, so this stage FAILs on
+# drift; advisory by default, blocking only under the umbrella `--strict`.
+topiccheck_stage() {
+    simple_stage topiccheck false cargo run -q -p topiccheck -- --strict
+}
 
 # --- Run -----------------------------------------------------------------------
 simple_stage build   true cargo build --workspace
@@ -306,7 +311,7 @@ simple_stage split-proof true bash ./split-proof.sh
 if [ "$RUN_ADVISORY" -eq 1 ]; then
     public_api_stage
     fuzz_stage
-    # <-- topiccheck_stage slots in here once it lands (Step 14, part B) -->
+    topiccheck_stage
 fi
 if [ "$RUN_SLOW" -eq 1 ]; then
     mutants_stage

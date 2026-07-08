@@ -48,6 +48,21 @@ async fn per_subscriber_fifo_order() {
 }
 
 #[tokio::test]
+async fn subscribed_topics_reports_in_process_subscriptions() {
+    let bus = Bus::new();
+    let a = define::<u32>("alpha");
+    let b = define::<u32>("beta");
+    assert!(bus.subscribed_topics().is_empty());
+    bus.on(&a, |_v| {});
+    bus.on(&b, |_v| {});
+    bus.on(&a, |_v| {}); // a second subscriber on an existing topic — still one key
+    let mut got = bus.subscribed_topics();
+    got.sort();
+    assert_eq!(got, vec!["alpha".to_string(), "beta".to_string()]);
+    settle(&bus).await;
+}
+
+#[tokio::test]
 async fn panicking_handler_does_not_stall_others() {
     let bus = Bus::new();
     let et = define::<u32>("t");
