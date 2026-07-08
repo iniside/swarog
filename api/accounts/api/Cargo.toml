@@ -1,0 +1,23 @@
+[package]
+name = "accountsapi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The accounts module's PURE, transport-free capability contract (port of Go's
+# api/accounts/accountsapi): the Sessions / Auth / Admin traits + the Session /
+# IdentityRef / MeView wire types. `#[rpc]` generates the transport-FREE surface
+# (wire envelopes, METHOD_* consts, operations()/route_bindings()) into child
+# `*_rpc` modules, plus metadata-callback macros the sibling `accountsrpc` glue
+# crate expands into the edge-dependent glue. NO `edge` dependency — a consumer
+# that needs `dyn Sessions` (the gateway's verifier adapter) imports THIS crate to
+# name the trait (rule 4's conscious nominal-typing cost), never the `accounts`
+# impl crate and never the glue crate.
+[dependencies]
+opsapi = { workspace = true }
+adminapi = { workspace = true }
+rpc-macro = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

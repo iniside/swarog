@@ -26,6 +26,9 @@ members = [
     # Contract surfaces, grouped by domain (Go's api/<name>/ tree); import no module.
     # `<name>api` = pure trait + wire surface (transport-free); `<name>rpc` = the
     # generated edge glue (impl-tier, may import edge).
+    "api/accounts/api",
+    "api/accounts/rpc",
+    "api/accounts/events",
     "api/characters/api",
     "api/characters/rpc",
     "api/characters/events",
@@ -40,12 +43,14 @@ members = [
     "modules/characters",
     "modules/inventory",
     "modules/gateway",
+    "modules/accounts",
     # Process entrypoints (Go's cmd/).
     "cmd/server",
     "cmd/characters-svc",
     "cmd/inventory-svc",
     "cmd/gateway-svc",
     "cmd/config-svc",
+    "cmd/accounts-svc",
 ]
 
 [workspace.package]
@@ -69,8 +74,19 @@ serde_json = { version = "1", features = ["raw_value"] }
 futures = "0.3"
 proptest = "1"
 # HTTP client for the outbox relay's remote delivery (POST /events). rustls to align
-# with the edge stack's TLS; default (native-tls) features off.
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+# with the edge stack's TLS; default (native-tls) features off. Also the accounts
+# module's client for the Epic JWKS fetch + OAuth code exchange.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+
+# Identity stack for the accounts module (Step 6): argon2id password hashing (PHC
+# string format — byte-compatible with Go's $argon2id$v=19$m=…,t=…,p=…$salt$hash),
+# OIDC id_token verification against a JWKS, random session tokens, base64url token
+# rendering, and authorize-URL building for the Epic web OAuth flow.
+argon2 = "0.5"
+jsonwebtoken = "9"
+rand = "0.8"
+base64 = "0.22"
+url = "2"
 
 # QUIC + mutual TLS stack for the edge transport. Pinned once here.
 quinn = "0.11"
@@ -108,6 +124,9 @@ rpc-macro = { path = "tools/rpc-macro" }
 # `<name>api` is the PURE contract a domain consumer may import (rule 4);
 # `<name>rpc` is the generated transport glue (own module + remote + cmd only). ----
 adminapi = { path = "api/admin/api" }
+accountsapi = { path = "api/accounts/api" }
+accountsrpc = { path = "api/accounts/rpc" }
+accountsevents = { path = "api/accounts/events" }
 configapi = { path = "api/config/api" }
 configrpc = { path = "api/config/rpc" }
 configevents = { path = "api/config/events" }
@@ -122,3 +141,4 @@ config = { path = "modules/config" }
 characters = { path = "modules/characters" }
 inventory = { path = "modules/inventory" }
 gateway = { path = "modules/gateway" }
+accounts = { path = "modules/accounts" }
