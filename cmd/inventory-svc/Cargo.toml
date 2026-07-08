@@ -23,6 +23,7 @@ gateway = { workspace = true }
 inventory = { workspace = true }
 messaging = { workspace = true }
 remote = { workspace = true }
+accountsrpc = { workspace = true }
 # The characters + config glue: this cmd/ root passes each provider's
 # `remote_factories()` into the generic `remote::Stub` (Steps 4–5). rule 5 sanctions
 # cmd/* importing the glue; it still never names the provider IMPL crates.

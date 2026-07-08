@@ -10,6 +10,15 @@ use std::sync::{Arc, Mutex};
 
 use lifecycle::Module;
 
+/// Reads `env_key`, falling back to `default` when unset or blank — a NUMERIC
+/// `host:port` (Rust's `SocketAddr` needs a literal IP, unlike Go's dialer).
+fn env_addr(env_key: &str, default: &str) -> String {
+    std::env::var(env_key)
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| default.to_string())
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt().init();
@@ -28,6 +37,15 @@ async fn main() -> anyhow::Result<()> {
         Box::new(gateway::Gateway::new()),
         Box::new(characters::Characters::new()),
         Box::new(messaging::Messaging::new()),
+        // Real session verification (Step 6): the accounts stub's factory provides
+        // the `accounts.sessions` edge client this process's gateway resolves at
+        // init — bearer tokens on A's own HTTP front verify against accounts-svc
+        // over mTLS (lazy dial; no startup ordering dependency).
+        Box::new(remote::Stub::new(
+            "accounts",
+            &env_addr("ACCOUNTS_EDGE_ADDR", "127.0.0.1:9003"),
+            accountsrpc::remote_factories(),
+        )),
     ];
 
     // No player front: A serves peers over the internal mutual-TLS edge, not players.

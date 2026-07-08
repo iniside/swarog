@@ -2,15 +2,22 @@
 //! auth-once seam. A consumer-defined interface (CLAUDE.md rule 4): the gateway
 //! depends on the *capability* to verify a session, not on the `accounts` module.
 //!
-//! M1 ships only [`DevSessionVerifier`], a loud stand-in for the real `accounts`
-//! sessions service (deferred to Milestone 2). Milestone 2 swaps in a real verifier
-//! (opaque DB-backed sessions / an edge-backed `accountsrpc.Client` for the split
-//! front-door) that satisfies the SAME [`SessionVerifier`] trait — the gateway is
-//! unchanged.
+//! Since Step 6 the REAL verifier is [`SessionsVerifier`]: an adapter over the
+//! `accounts.sessions` capability (`accountsapi::Sessions`, a CONTRACT crate —
+//! sanctioned like inventory's use of `charactersapi`), resolved from the registry
+//! at gateway `init`. The registry swap keeps it topology-blind: the accounts
+//! module provides it locally in the monolith/accounts-svc, and an `accountsrpc`
+//! edge client (a `remote::Stub` factory) provides it in every other split process.
+//!
+//! Fallback policy (NO silent dev fallback): when the capability is absent at init
+//! the gateway FAILS STARTUP loudly — unless `ACCOUNTS_DEV_AUTH` is EXPLICITLY set
+//! truthy, which enables [`DevSessionVerifier`] with its loud warning. A
+//! mis-configured split gateway can no longer silently accept `dev-` tokens.
 
-use std::sync::Once;
+use std::sync::{Arc, Once};
 
 use async_trait::async_trait;
+use lifecycle::Context;
 
 /// Verifies a bearer token and returns the caller's `player_id`, or `None` when the
 /// token is missing/invalid. The gateway calls this at exactly one place — the front
@@ -53,7 +60,7 @@ impl SessionVerifier for DevSessionVerifier {
         self.warned.call_once(|| {
             tracing::warn!(
                 "DEV SESSION AUTH IS ON: the gateway accepts any `Bearer dev-<player_id>` token \
-                 as a verified player. This is a Milestone-1 stand-in for `accounts` — NEVER run \
+                 as a verified player. This is a dev stand-in for `accounts` — NEVER run \
                  it in production."
             );
         });
@@ -63,4 +70,72 @@ impl SessionVerifier for DevSessionVerifier {
             _ => None,
         }
     }
+}
+
+/// The REAL verifier (Step 6): adapts the `accounts.sessions` capability to the
+/// gateway's consumer-defined [`SessionVerifier`]. `Ok(None)` (unknown/expired
+/// token) and `Err` (accounts store/peer failure) both verify to `None` — the
+/// trait's contract is "verified player or not"; the failure is logged so an
+/// accounts outage is visible rather than silently indistinguishable from bad
+/// credentials.
+pub struct SessionsVerifier {
+    sessions: Arc<dyn accountsapi::Sessions>,
+}
+
+impl SessionsVerifier {
+    pub fn new(sessions: Arc<dyn accountsapi::Sessions>) -> SessionsVerifier {
+        SessionsVerifier { sessions }
+    }
+}
+
+#[async_trait]
+impl SessionVerifier for SessionsVerifier {
+    async fn verify(&self, token: &str) -> Option<String> {
+        match self.sessions.verify_session(token.to_string()).await {
+            Ok(pid) => pid.filter(|p| !p.is_empty()),
+            Err(err) => {
+                tracing::error!(%err, "gateway: session verification failed (accounts unreachable?)");
+                None
+            }
+        }
+    }
+}
+
+/// Resolves the process's [`SessionVerifier`] at gateway `init` (phase 2 — every
+/// provider's phase-1 `register`, module or stub, has already run):
+///
+///   1. the `accounts.sessions` capability, when present → [`SessionsVerifier`];
+///   2. else, `ACCOUNTS_DEV_AUTH` EXPLICITLY truthy (`1`/`true`/`on`) →
+///      [`DevSessionVerifier`] with a loud warning;
+///   3. else → **fail startup loudly** (review item 5: no silent dev fallback).
+pub(crate) fn resolve_verifier(ctx: &Context) -> anyhow::Result<Arc<dyn SessionVerifier>> {
+    if let Some(sessions) = ctx
+        .registry()
+        .try_require::<dyn accountsapi::Sessions>(&registry::key("accounts", "sessions"))
+    {
+        return Ok(Arc::new(SessionsVerifier::new(sessions)));
+    }
+    if dev_auth_explicitly_on() {
+        tracing::warn!(
+            "gateway: no accounts.sessions capability in this process; ACCOUNTS_DEV_AUTH is \
+             explicitly set, so falling back to DevSessionVerifier (dev-<player_id> tokens)"
+        );
+        return Ok(Arc::new(DevSessionVerifier::new()));
+    }
+    anyhow::bail!(
+        "gateway: no accounts.sessions capability is available in this process — add the \
+         accounts module (monolith) or a remote::Stub::new(\"accounts\", ..., \
+         accountsrpc::remote_factories()) (split), or set ACCOUNTS_DEV_AUTH=1 explicitly \
+         for local dev-token auth"
+    )
+}
+
+/// `true` only when `ACCOUNTS_DEV_AUTH` is EXPLICITLY set truthy (`1`/`true`/`on`,
+/// case-insensitive). Unset is `false` here — the accounts module's own default-ON
+/// convenience does NOT extend to the gateway's auth fallback.
+fn dev_auth_explicitly_on() -> bool {
+    matches!(
+        std::env::var("ACCOUNTS_DEV_AUTH"),
+        Ok(v) if v == "1" || v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("on")
+    )
 }

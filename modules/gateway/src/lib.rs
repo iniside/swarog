@@ -62,7 +62,7 @@ use opsapi::{
 use serde_json::value::RawValue;
 
 pub use backend::{LocalBackend, OperationBackend, RemoteBackend};
-pub use verifier::{DevSessionVerifier, SessionVerifier};
+pub use verifier::{DevSessionVerifier, SessionVerifier, SessionsVerifier};
 
 /// Caps the request body the gateway buffers before decoding an operation, so a
 /// hostile client cannot make the front-handler allocate without bound. 1 MiB is
@@ -79,7 +79,12 @@ const MAX_BODY_BYTES: usize = 1 << 20;
 /// plane onto; the route table is read lazily from the `Context` on the first
 /// request.
 pub struct Gateway {
-    verifier: Arc<dyn SessionVerifier>,
+    /// The auth verifier. `None` (the [`Gateway::new`] default) defers resolution
+    /// to `init`: the REAL `accounts.sessions` capability from the registry, or —
+    /// only when `ACCOUNTS_DEV_AUTH` is explicitly set — the dev fallback; absent
+    /// both, startup FAILS loudly (see `verifier::resolve_verifier`). `Some` is a
+    /// caller-supplied override (tests).
+    verifier: Option<Arc<dyn SessionVerifier>>,
     /// When set, the process-wide player-facing QUIC server (built by `main` and
     /// passed as a shared handle). `init` installs the
     /// [`FrontDoor::player_handler`] on it so the process fronts players over QUIC
@@ -88,15 +93,18 @@ pub struct Gateway {
 }
 
 impl Gateway {
-    /// A gateway using the M1 [`DevSessionVerifier`] (accepts `Bearer dev-<player_id>`).
+    /// A gateway that resolves its verifier at `init` (Step 6): the real
+    /// `accounts.sessions` capability — provided locally by the accounts module or
+    /// by an `accountsrpc` remote stub — else a loud startup failure (unless
+    /// `ACCOUNTS_DEV_AUTH=1` explicitly enables the dev fallback).
     pub fn new() -> Self {
-        Gateway::with_verifier(Arc::new(DevSessionVerifier::new()))
+        Gateway { verifier: None, player_edge: None }
     }
 
-    /// A gateway using a caller-supplied verifier — the seam Milestone 2 uses to swap
-    /// in real `accounts` sessions (or an edge-backed verifier for the split front-door).
+    /// A gateway using a caller-supplied verifier — bypasses the `init`-time
+    /// resolution entirely (unit tests construct a [`DevSessionVerifier`] here).
     pub fn with_verifier(verifier: Arc<dyn SessionVerifier>) -> Self {
-        Gateway { verifier, player_edge: None }
+        Gateway { verifier: Some(verifier), player_edge: None }
     }
 
     /// Additionally fronts players over the shared QUIC [`edge::PlayerServer`]
@@ -128,8 +136,18 @@ impl Module for Gateway {
     /// the axum fallback always, and — when `main` handed a shared player server —
     /// the player-QUIC handler too. No I/O. The façade captures the slot registry +
     /// verifier and lazily builds the route table on first request.
+    ///
+    /// The verifier is resolved HERE (phase 2) when none was injected: every
+    /// provider's phase-1 `register` — the accounts module or its remote stub —
+    /// has already run, so `accounts.sessions` is present iff this process was
+    /// wired for real auth. Absent capability + no explicit `ACCOUNTS_DEV_AUTH`
+    /// fails startup loudly (no silent dev fallback).
     fn init(&self, ctx: &Context) -> anyhow::Result<()> {
-        let front_door = Arc::new(FrontDoor::new(ctx.slots().clone(), self.verifier.clone()));
+        let verifier = match &self.verifier {
+            Some(v) => v.clone(),
+            None => verifier::resolve_verifier(ctx)?,
+        };
+        let front_door = Arc::new(FrontDoor::new(ctx.slots().clone(), verifier));
         ctx.mount(front_door.router());
         if let Some(shared) = &self.player_edge {
             shared.lock().unwrap().set_handler(front_door.player_handler());

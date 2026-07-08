@@ -2,9 +2,13 @@
 //! It is a PURE TRANSPORT process: no DB (`Config::without_db`), no messaging module
 //! — the async plane (outbox → `POST /events`) is delivered svc→svc and bypasses the
 //! front door entirely, per the `async-fanout-sync-grpc-brokerless` decision. It hosts
-//! NO provider module, only `remote::Stub`s for `characters` and `inventory`, so EVERY
-//! op it fronts resolves `BackendKind::Remote` and is dialed over the mTLS edge to the
-//! owning peer.
+//! NO provider module, only `remote::Stub`s for `characters`, `inventory` and
+//! `accounts`, so EVERY op it fronts resolves `BackendKind::Remote` and is dialed
+//! over the mTLS edge to the owning peer. The `accounts` stub is MANDATORY (Step 6):
+//! its factory provides the `accounts.sessions` edge client the gateway's verifier
+//! resolves at init — real bearer verification against accounts-svc, no `dev-`
+//! tokens (absent the capability the gateway fails startup unless
+//! `ACCOUNTS_DEV_AUTH=1` is explicitly set).
 //!
 //! Two public planes, one shared `FrontDoor`: HTTP (`PORT`, default `:8082`) and the
 //! player-facing QUIC front (`PLAYER_EDGE_ADDR`, default `:9100`) — server-cert-only
@@ -53,6 +57,11 @@ async fn main() -> anyhow::Result<()> {
             "inventory",
             &env_addr("INVENTORY_EDGE_ADDR", "127.0.0.1:9001"),
             inventoryrpc::remote_factories(),
+        )),
+        Box::new(remote::Stub::new(
+            "accounts",
+            &env_addr("ACCOUNTS_EDGE_ADDR", "127.0.0.1:9003"),
+            accountsrpc::remote_factories(),
         )),
     ];
 

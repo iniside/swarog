@@ -29,7 +29,8 @@ async fn main() -> anyhow::Result<()> {
         Box::new(config::Config::new()),         // DB-backed config: schema "config", provides "config.reader"
         Box::new(characters::Characters::new()), // player characters; owns schema "characters"
         Box::new(inventory::Inventory::new()),   // owner-scoped inventories; depends on characters + config
-        Box::new(gateway::Gateway::new().with_player_edge(player.clone())), // HTTP + player QUIC front, auth-once
+        Box::new(accounts::Accounts::new()),     // player identity: sessions + dev/epic auth; owns schema "accounts"
+        Box::new(gateway::Gateway::new().with_player_edge(player.clone())), // HTTP + player QUIC front, auth-once (real accounts sessions)
         Box::new(messaging::Messaging::new()),   // the durable async plane (transport + relay + inbox)
     ];
 

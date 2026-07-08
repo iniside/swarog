@@ -7,7 +7,12 @@ publish = false
 
 [dependencies]
 lifecycle = { workspace = true }
+registry = { workspace = true }
 opsapi = { workspace = true }
+# The accounts CONTRACT crate (rule 4 / the dependency law: contract crates of any
+# domain are importable by a module) — names `dyn Sessions` for the verifier
+# adapter. NEVER the accounts impl crate, never accountsrpc (archcheck enforces).
+accountsapi = { workspace = true }
 edge = { workspace = true }
 contrib = { workspace = true }
 axum = { workspace = true }

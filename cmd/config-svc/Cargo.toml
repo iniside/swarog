@@ -21,6 +21,8 @@ edge = { workspace = true }
 gateway = { workspace = true }
 config = { workspace = true }
 messaging = { workspace = true }
+remote = { workspace = true }
+accountsrpc = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 anyhow = { workspace = true }
 tracing = { workspace = true }

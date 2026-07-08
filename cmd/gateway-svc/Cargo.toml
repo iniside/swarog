@@ -23,6 +23,7 @@ gateway = { workspace = true }
 remote = { workspace = true }
 charactersrpc = { workspace = true }
 inventoryrpc = { workspace = true }
+accountsrpc = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync"] }
 anyhow = { workspace = true }
 tracing = { workspace = true }

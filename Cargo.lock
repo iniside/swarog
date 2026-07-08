@@ -376,6 +376,7 @@ dependencies = [
 name = "characters-svc"
 version = "0.1.0"
 dependencies = [
+ "accountsrpc",
  "anyhow",
  "app",
  "characters",
@@ -383,6 +384,7 @@ dependencies = [
  "gateway",
  "lifecycle",
  "messaging",
+ "remote",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -467,6 +469,7 @@ dependencies = [
 name = "config-svc"
 version = "0.1.0"
 dependencies = [
+ "accountsrpc",
  "anyhow",
  "app",
  "config",
@@ -474,6 +477,7 @@ dependencies = [
  "gateway",
  "lifecycle",
  "messaging",
+ "remote",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -885,6 +889,7 @@ dependencies = [
 name = "gateway"
 version = "0.1.0"
 dependencies = [
+ "accountsapi",
  "anyhow",
  "async-trait",
  "axum",
@@ -893,6 +898,7 @@ dependencies = [
  "futures",
  "lifecycle",
  "opsapi",
+ "registry",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
@@ -905,6 +911,7 @@ dependencies = [
 name = "gateway-svc"
 version = "0.1.0"
 dependencies = [
+ "accountsrpc",
  "anyhow",
  "app",
  "charactersapi",
@@ -1284,6 +1291,7 @@ dependencies = [
 name = "inventory-svc"
 version = "0.1.0"
 dependencies = [
+ "accountsrpc",
  "anyhow",
  "app",
  "charactersrpc",
@@ -2432,6 +2440,7 @@ dependencies = [
 name = "server"
 version = "0.1.0"
 dependencies = [
+ "accounts",
  "anyhow",
  "app",
  "characters",

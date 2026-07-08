@@ -59,6 +59,14 @@ async fn main() -> anyhow::Result<()> {
             &env_addr("CONFIG_EDGE_ADDR", "127.0.0.1:9002"),
             configrpc::remote_factories(),
         )),
+        // Real session verification (Step 6): the accounts stub's factory provides
+        // the `accounts.sessions` edge client this process's gateway resolves at
+        // init (lazy dial; no startup ordering dependency).
+        Box::new(remote::Stub::new(
+            "accounts",
+            &env_addr("ACCOUNTS_EDGE_ADDR", "127.0.0.1:9003"),
+            accountsrpc::remote_factories(),
+        )),
     ];
 
     // B now SERVES inventory ops on its own edge (`EDGE_ADDR`, default `:9001` in the
