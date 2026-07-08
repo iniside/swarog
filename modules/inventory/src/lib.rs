@@ -384,6 +384,25 @@ impl Holdings for Inner {
 // Admin — two views off the SAME item, switched by the ?owner= drill-down param.
 // ============================================================================
 
+#[async_trait]
+impl adminapi::AdminData for Inner {
+    /// The admin fan-out (`admin.adminData` on the edge): this module's page as
+    /// `adminapi::ItemData`. The REMOTE view is the owners LIST (no `?owner=`
+    /// drill-down — that interactive view is LOCAL-only, driven by the portal's query
+    /// params which do not ride this wire call).
+    async fn admin_data(&self) -> Result<adminapi::ItemData, Error> {
+        let content = admin_content(&self.store, &adminapi::Params::new())
+            .await
+            .map_err(internal)?;
+        Ok(adminapi::ItemData {
+            id: ADMIN_ITEM_ID.into(),
+            section: ADMIN_SECTION.into(),
+            label: ADMIN_LABEL.into(),
+            content,
+        })
+    }
+}
+
 /// Renders the owners list (no `?owner=`) or one owner's items (`?owner=<type>:<id>`).
 async fn admin_content(store: &Store, params: &adminapi::Params) -> anyhow::Result<adminapi::Content> {
     let owner = adminapi::param(params, "owner");
@@ -700,6 +719,9 @@ impl Module for Inventory {
         ctx.contribute(
             edge::EDGE_SLOT,
             edge::EdgeReg::new(move |server| {
+                // The admin fan-out face (`admin.adminData`), via this module's OWN
+                // glue crate's re-export (no foreign rpc import).
+                inventoryrpc::register_admin(server, inner.clone());
                 inventoryrpc::holdings_rpc::register_server(server, inner);
             }),
         );

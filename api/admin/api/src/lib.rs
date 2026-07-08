@@ -19,11 +19,33 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use futures::future::BoxFuture;
+use opsapi::Error;
+use rpc_macro::rpc;
 use serde::{Deserialize, Serialize};
 
 /// The core contribution slot the admin portal reads (Go's `adminapi.Slot`).
 pub const SLOT: &str = "admin.item";
+
+/// The admin fan-out capability EVERY provider module implements: returns the
+/// module's admin page ([`ItemData`]) so a REMOTE admin process can pull it over the
+/// QUIC edge in one round-trip (Go's per-provider `adminData` op). WIRE-ONLY — no
+/// `#[http]` (it rides the internal mTLS edge like `characters.ownerOf`) and no
+/// caller identity (admin is process-authenticated, not player-scoped).
+///
+/// This is a CROSS-CUTTING contract (like [`Item`]/[`ItemData`]), not one domain's
+/// capability, so the single `#[rpc]` trait lives HERE and every provider implements
+/// it. The wire method is `admin.adminData`; because each `<name>-svc` serves it on
+/// its OWN edge server, one method name per process is unambiguous — the admin's stub
+/// dials the specific provider's edge. The generated transport glue (`Client`,
+/// `register_server`) lives in the sibling `adminrpc` crate (which expands this
+/// crate's `admin_admin_data_meta!` callback) — so THIS crate never depends on `edge`.
+#[rpc(prefix = "admin")]
+#[async_trait]
+pub trait AdminData: Send + Sync {
+    async fn admin_data(&self) -> Result<ItemData, Error>;
+}
 
 /// A request's flattened query parameters (first value per key), handed to a LOCAL
 /// item's [`Item::render`]. The Rust stand-in for what Go carries on `context.Context`

@@ -485,6 +485,9 @@ impl Module for Accounts {
             edge::EDGE_SLOT,
             edge::EdgeReg::new(move |server| {
                 accountsrpc::sessions_rpc::register_server(server, svc.clone());
+                // The admin fan-out face (`admin.adminData`), via this module's OWN
+                // glue crate's re-export (no foreign rpc import).
+                accountsrpc::register_admin(server, svc.clone());
                 accountsrpc::auth_rpc::register_server(server, svc);
             }),
         );

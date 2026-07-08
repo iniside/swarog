@@ -17,6 +17,9 @@ publish = false
 # acyclic because `core/remote` imports no glue crate.
 [dependencies]
 accountsapi = { workspace = true }
+# Cross-cutting admin fan-out glue, re-exported (`register_admin`) so the accounts
+# module reaches it through its OWN rpc crate (archcheck-clean).
+adminrpc = { workspace = true }
 opsapi = { workspace = true }
 edge = { workspace = true }
 registry = { workspace = true }

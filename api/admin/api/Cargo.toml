@@ -6,12 +6,16 @@ license.workspace = true
 publish = false
 
 # A pure contract crate (Go's api/admin/adminapi): the widget/Item types the admin
-# portal and the modules that appear in it both depend on. Imports NO module.
+# portal and the modules that appear in it both depend on, PLUS the wire-only
+# `AdminData` #[rpc] capability every provider implements (the edge fan-out contract).
+# Imports NO module and NO `edge` — the `#[rpc]` macro only emits the transport-free
+# surface + a metadata-callback macro here; the edge glue lives in `adminrpc`.
 [dependencies]
 serde = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 futures = { workspace = true }
-
-[dev-dependencies]
+opsapi = { workspace = true }
+rpc-macro = { workspace = true }
+async-trait = { workspace = true }
 serde_json = { workspace = true }

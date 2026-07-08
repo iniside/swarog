@@ -1,0 +1,31 @@
+[package]
+name = "adminrpc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The admin fan-out's GENERATED transport glue: the edge-dependent half of the
+# `#[rpc]` codegen for `adminapi::AdminData`, split out of the pure `adminapi`
+# contract (like `charactersrpc` is split from `charactersapi`). It expands
+# `adminapi`'s `admin_admin_data_meta!` callback through `rpc_macro::generate_glue`
+# into `admin_data_rpc::{Client, register_server, provide_remote}`, plus the
+# hand-written `admin_remote_factory()` that produces the RemoteFetch `Item`
+# contribution a `remote::Stub` applies (the deferred M2 fan-out).
+#
+# It is a CROSS-CUTTING glue crate (the admin contract is not one domain's), reached
+# by: every provider's OWN `<name>rpc` (which re-exports `register_admin` so the
+# provider module never imports a foreign rpc, keeping archcheck green) and
+# `cmd/admin-svc` (for the factory). Depends on `remote` only to NAME
+# `remote::RemoteFactory`; acyclic because `core/remote` imports no glue crate.
+[dependencies]
+adminapi = { workspace = true }
+opsapi = { workspace = true }
+edge = { workspace = true }
+registry = { workspace = true }
+lifecycle = { workspace = true }
+remote = { workspace = true }
+rpc-macro = { workspace = true }
+async-trait = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }

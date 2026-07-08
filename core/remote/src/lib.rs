@@ -333,8 +333,11 @@ impl Module for Stub {
         Ok(())
     }
 
-    /// Nothing to wire in M1: the swap is entirely in `register`. (Go's stub also
-    /// contributes a remote admin item; the admin edge fan-out is Milestone 2.)
+    /// Nothing to wire here: the swap is entirely in `register`. The admin fan-out
+    /// (Go's `Stub.adminFetcher`) is now ALSO a `register`-time factory — a caller
+    /// passes `adminrpc::admin_remote_factory(provider)` into [`Stub::new`], which
+    /// contributes the REMOTE `adminapi::Item` there. `remote` stays `api/`-free: the
+    /// admin closure arrives boxed, this crate never names `adminapi`.
     fn init(&self, _ctx: &Context) -> anyhow::Result<()> {
         Ok(())
     }

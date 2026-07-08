@@ -76,11 +76,7 @@ pub trait Player: Send + Sync {
     async fn delete(&self, identity: Identity, character_id: String) -> Result<(), Error>;
 }
 
-/// The characters module's admin fan-out capability: returns this module's admin
-/// page (KPIs + table) as `adminapi::ItemData`. In Milestone 1 it is a plain
-/// capability the module implements and the LOCAL admin contribution reads — NO
-/// `#[rpc]` (the edge admin fan-out is Milestone 2). No player identity is involved.
-#[async_trait]
-pub trait Admin: Send + Sync {
-    async fn admin_data(&self) -> Result<adminapi::ItemData, Error>;
-}
+// The admin fan-out capability now lives in the cross-cutting `adminapi::AdminData`
+// `#[rpc]` trait (Step 7): the characters `Service` implements it and exposes it on
+// its edge as `admin.adminData`, so a remote admin process pulls this page over the
+// QUIC edge. No per-domain `Admin` trait remains.

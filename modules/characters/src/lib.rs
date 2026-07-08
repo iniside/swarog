@@ -268,9 +268,10 @@ impl Player for Service {
 }
 
 #[async_trait]
-impl charactersapi::Admin for Service {
+impl adminapi::AdminData for Service {
     /// The admin fan-out: this module's page as `adminapi::ItemData` (same
-    /// Section/Label the local `Item` carries).
+    /// Section/Label the local `Item` carries), served on the edge as
+    /// `admin.adminData` so a remote admin process renders it cross-process.
     async fn admin_data(&self) -> Result<adminapi::ItemData, Error> {
         let content = admin_content(&self.store).await.map_err(internal)?;
         Ok(adminapi::ItemData {
@@ -443,6 +444,9 @@ impl Module for Characters {
             edge::EDGE_SLOT,
             edge::EdgeReg::new(move |server| {
                 charactersrpc::ownership_rpc::register_server(server, svc.clone());
+                // The admin fan-out face (`admin.adminData`), registered through this
+                // module's OWN glue crate's re-export so no foreign rpc is imported.
+                charactersrpc::register_admin(server, svc.clone());
                 charactersrpc::player_rpc::register_server(server, svc);
             }),
         );

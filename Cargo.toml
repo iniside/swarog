@@ -38,6 +38,7 @@ members = [
     "api/config/rpc",
     "api/config/events",
     "api/admin/api",
+    "api/admin/rpc",
     # Module implementations — private, reachable only from a cmd/ binary.
     "modules/config",
     "modules/characters",
@@ -52,6 +53,7 @@ members = [
     "cmd/gateway-svc",
     "cmd/config-svc",
     "cmd/accounts-svc",
+    "cmd/admin-svc",
 ]
 
 [workspace.package]
@@ -129,6 +131,7 @@ rpc-macro = { path = "tools/rpc-macro" }
 # `<name>api` is the PURE contract a domain consumer may import (rule 4);
 # `<name>rpc` is the generated transport glue (own module + remote + cmd only). ----
 adminapi = { path = "api/admin/api" }
+adminrpc = { path = "api/admin/rpc" }
 accountsapi = { path = "api/accounts/api" }
 accountsrpc = { path = "api/accounts/rpc" }
 accountsevents = { path = "api/accounts/events" }

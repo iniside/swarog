@@ -19,9 +19,10 @@ pub(crate) const ADMIN_SECTION: &str = "Identity";
 pub(crate) const ADMIN_LABEL: &str = "Players";
 
 #[async_trait]
-impl accountsapi::Admin for Service {
+impl adminapi::AdminData for Service {
     /// The admin fan-out: this module's page as `adminapi::ItemData` (same
-    /// Section/Label the local `Item` carries).
+    /// Section/Label the local `Item` carries), served on the edge as
+    /// `admin.adminData` so a remote admin process renders the Players page.
     async fn admin_data(&self) -> Result<adminapi::ItemData, Error> {
         let content = admin_content(&self.store)
             .await

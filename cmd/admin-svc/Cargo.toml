@@ -1,0 +1,21 @@
+[package]
+name = "admin-svc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The admin portal fortress process (Step 7). Hosts the `admin` module plus one
+# `remote::Stub` per provider (characters/inventory/config/accounts) carrying ONLY
+# that provider's admin fan-out factory, so /admin composes a sidebar of REMOTE items
+# fetched over the mTLS QUIC edge. A pure aggregator: no DB, no edge server of its own
+# (it only DIALS peers), fronted for browsers through gateway-svc's HTTP passthrough.
+[dependencies]
+app = { workspace = true }
+lifecycle = { workspace = true }
+admin = { workspace = true }
+remote = { workspace = true }
+adminrpc = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+anyhow = { workspace = true }
+tracing-subscriber = { workspace = true }

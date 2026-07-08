@@ -75,6 +75,7 @@ name = "accountsrpc"
 version = "0.1.0"
 dependencies = [
  "accountsapi",
+ "adminrpc",
  "async-trait",
  "edge",
  "lifecycle",
@@ -104,14 +105,47 @@ dependencies = [
 ]
 
 [[package]]
+name = "admin-svc"
+version = "0.1.0"
+dependencies = [
+ "admin",
+ "adminrpc",
+ "anyhow",
+ "app",
+ "lifecycle",
+ "remote",
+ "tokio",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "adminapi"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "futures",
+ "opsapi",
+ "rpc-macro",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
+]
+
+[[package]]
+name = "adminrpc"
+version = "0.1.0"
+dependencies = [
+ "adminapi",
+ "anyhow",
+ "async-trait",
+ "edge",
+ "lifecycle",
+ "opsapi",
+ "registry",
+ "remote",
+ "rpc-macro",
+ "serde_json",
 ]
 
 [[package]]
@@ -432,6 +466,7 @@ dependencies = [
 name = "charactersrpc"
 version = "0.1.0"
 dependencies = [
+ "adminrpc",
  "async-trait",
  "charactersapi",
  "edge",
@@ -524,6 +559,7 @@ dependencies = [
 name = "configrpc"
 version = "0.1.0"
 dependencies = [
+ "adminrpc",
  "anyhow",
  "async-trait",
  "bus",
@@ -1340,6 +1376,7 @@ dependencies = [
 name = "inventoryrpc"
 version = "0.1.0"
 dependencies = [
+ "adminrpc",
  "async-trait",
  "edge",
  "inventoryapi",

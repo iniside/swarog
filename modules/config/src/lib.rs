@@ -472,6 +472,48 @@ fn admin_render(svc: &Arc<Service>, _params: &adminapi::Params) -> anyhow::Resul
     })
 }
 
+/// The read-only settings content (KPIs + table, no editable form) — what the REMOTE
+/// admin fan-out returns, since a remote form cannot marshal its `submit` closure.
+fn admin_content_ro(svc: &Service) -> adminapi::Content {
+    let rows = svc.all();
+    let mut namespaces: HashSet<&str> = HashSet::new();
+    let mut table = adminapi::Table {
+        columns: vec!["Namespace".into(), "Key".into(), "Value".into()],
+        rows: Vec::with_capacity(rows.len()),
+    };
+    for r in &rows {
+        namespaces.insert(r.namespace.as_str());
+        table.rows.push(vec![
+            adminapi::Cell::mono(&r.namespace),
+            adminapi::Cell::mono(&r.key),
+            adminapi::Cell::text(&r.value),
+        ]);
+    }
+    adminapi::Content {
+        kpis: vec![
+            adminapi::Kpi { label: "Settings".into(), value: rows.len().to_string(), sub: String::new() },
+            adminapi::Kpi { label: "Namespaces".into(), value: namespaces.len().to_string(), sub: String::new() },
+        ],
+        table: Some(table),
+        form: None,
+    }
+}
+
+#[async_trait::async_trait]
+impl adminapi::AdminData for Service {
+    /// The admin fan-out (`admin.adminData` on the edge): the config page as
+    /// `adminapi::ItemData`. Read-only over the wire (the editable form is LOCAL-only),
+    /// same Section/Label the local `Item` carries.
+    async fn admin_data(&self) -> Result<adminapi::ItemData, opsapi::Error> {
+        Ok(adminapi::ItemData {
+            id: "config".into(),
+            section: "Platform".into(),
+            label: "Game Config & Flags".into(),
+            content: admin_content_ro(self),
+        })
+    }
+}
+
 /// Diffs the posted values against the current cache and `set`s ONLY the keys that
 /// actually changed (each `set` is a NOTIFY + a `config.changed`; rewriting every row
 /// would emit a storm of false "changed" events). It then inserts the add-new row if
@@ -618,6 +660,9 @@ impl Module for Config {
         ctx.contribute(
             edge::EDGE_SLOT,
             edge::EdgeReg::new(move |server| {
+                // The admin fan-out face (`admin.adminData`), via this module's OWN
+                // glue crate's re-export (no foreign rpc import).
+                configrpc::register_admin(server, snap.clone());
                 configrpc::config_snapshot_rpc::register_server(server, snap);
             }),
         );

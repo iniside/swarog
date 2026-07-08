@@ -17,6 +17,9 @@ publish = false
 # because `core/remote` imports no glue crate.
 [dependencies]
 configapi = { workspace = true }
+# Cross-cutting admin fan-out glue, re-exported (`register_admin`) so the config
+# module reaches it through its OWN rpc crate (archcheck-clean).
+adminrpc = { workspace = true }
 configevents = { workspace = true }
 opsapi = { workspace = true }
 edge = { workspace = true }

@@ -22,6 +22,11 @@ use opsapi::{Error, Identity};
 
 inventoryapi::inventory_holdings_meta!(rpc_macro::generate_glue);
 
+/// The admin fan-out's server-side registration, re-exported from `adminrpc` so the
+/// `inventory` module registers `admin.adminData` through its OWN glue crate (never a
+/// foreign rpc import — archcheck-clean).
+pub use adminrpc::register_admin;
+
 /// The inventory provider's client-registration closures for a process where the
 /// provider lives in a PEER process. Consumed by [`remote::Stub`]: the composition
 /// root (`cmd/*`) passes `inventoryrpc::remote_factories()` into `Stub::new`. The

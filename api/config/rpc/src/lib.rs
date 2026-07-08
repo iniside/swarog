@@ -39,6 +39,11 @@ use opsapi::Error;
 
 configapi::config_config_snapshot_meta!(rpc_macro::generate_glue);
 
+/// The admin fan-out's server-side registration, re-exported from `adminrpc` so the
+/// `config` module registers `admin.adminData` through its OWN glue crate (never a
+/// foreign rpc import — archcheck-clean).
+pub use adminrpc::register_admin;
+
 /// A snapshot-backed [`configapi::Config`] reader for a split process: it holds a
 /// generated [`config_snapshot_rpc::Client`] to config-svc and an in-process cache of
 /// the last full snapshot. All getters read the cache (degrading to `default` on a

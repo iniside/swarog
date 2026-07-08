@@ -24,6 +24,11 @@ use opsapi::{Error, Identity};
 accountsapi::accounts_sessions_meta!(rpc_macro::generate_glue);
 accountsapi::accounts_auth_meta!(rpc_macro::generate_glue);
 
+/// The admin fan-out's server-side registration, re-exported from `adminrpc` so the
+/// `accounts` module registers `admin.adminData` through its OWN glue crate (never a
+/// foreign rpc import — archcheck-clean).
+pub use adminrpc::register_admin;
+
 /// The accounts provider's client-registration closures for a process where the
 /// provider lives in a PEER process (accounts-svc). Consumed by [`remote::Stub`]:
 /// the composition root (`cmd/*`) passes `accountsrpc::remote_factories()` into

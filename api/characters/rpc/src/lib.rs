@@ -24,6 +24,12 @@ use opsapi::{Error, Identity};
 charactersapi::characters_ownership_meta!(rpc_macro::generate_glue);
 charactersapi::characters_player_meta!(rpc_macro::generate_glue);
 
+/// The admin fan-out's server-side registration, re-exported from the cross-cutting
+/// `adminrpc` glue so the `characters` MODULE registers its `admin.adminData` edge
+/// handler through its OWN glue crate — never importing `adminrpc` directly (archcheck
+/// forbids a module→foreign-rpc edge; this module→own-rpc→adminrpc chain is fine).
+pub use adminrpc::register_admin;
+
 /// The characters provider's client-registration closures for a process where the
 /// provider lives in a PEER process. Consumed by [`remote::Stub`]: the composition
 /// root (`cmd/*`) passes `charactersrpc::remote_factories()` into `Stub::new`. The
