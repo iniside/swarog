@@ -17,6 +17,7 @@ path = "src/main.rs"
 [dependencies]
 app = { workspace = true }
 lifecycle = { workspace = true }
+edge = { workspace = true }
 gateway = { workspace = true }
 config = { workspace = true }
 inventory = { workspace = true }

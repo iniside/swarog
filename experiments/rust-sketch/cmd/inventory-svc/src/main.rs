@@ -4,8 +4,14 @@
 //! `characters.ownership` client (dialing A), so inventory's
 //! `require::<dyn Ownership>` resolves REMOTELY — the registry SWAP, with inventory's
 //! code unchanged. It imports the `charactersrpc` CONTRACT (transitively, via the
-//! stub) but NOT the characters IMPL. No edge server: B dials OUT to A; nothing calls
-//! B over the edge in the 2-process proof.
+//! stub) but NOT the characters IMPL. B now ALSO stands up its OWN shared QUIC edge
+//! server (`EDGE_ADDR`, default `:9001`) and wires `Inventory::with_edge` onto it, so
+//! it SERVES `inventory.*` ops for a peer — gateway-svc hosts no providers, so it
+//! resolves `inventory.*` as Remote and dials this edge (Step 6 of the QUIC
+//! player-front plan). B still dials OUT to A over its own edge for ownership checks;
+//! it is client of A and server for the front door at the same time.
+
+use std::sync::{Arc, Mutex};
 
 use lifecycle::Module;
 
@@ -23,6 +29,11 @@ fn characters_edge_addr() -> String {
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt().init();
 
+    // One shared QUIC edge server for this process; `inventory::with_edge` registers
+    // its `inventory.*` handlers onto it during `init`, and `app::run` `listen`s the
+    // same handle after Build — mirrors `characters-svc`'s pattern exactly.
+    let edge_server = Arc::new(Mutex::new(edge::Server::new()));
+
     // messaging then the stub last. The stub's phase-1 `register` provides
     // characters.ownership BEFORE inventory's `init` requires it (guaranteed by the
     // two-phase Build regardless of list order); messaging's `register` installs the
@@ -30,12 +41,13 @@ async fn main() -> anyhow::Result<()> {
     let mods: Vec<Box<dyn Module>> = vec![
         Box::new(gateway::Gateway::new()),
         Box::new(config::Config::new()),
-        Box::new(inventory::Inventory::new()),
+        Box::new(inventory::Inventory::with_edge(edge_server.clone())),
         Box::new(messaging::Messaging::new()),
         Box::new(remote::Stub::new("characters", &characters_edge_addr())),
     ];
 
-    // No edge server: B is a pure edge CLIENT of A in the 2-process proof. No player
-    // front either — B is fronted by gateway-svc, not directly by players.
-    app::run(app::Config::from_env(), mods, None, None).await
+    // B now SERVES inventory ops on its own edge (`EDGE_ADDR`, default `:9001` in the
+    // run scripts) so gateway-svc can dispatch `inventory.*` Remote to it. No player
+    // front here either way — B is fronted by gateway-svc, never directly by players.
+    app::run(app::Config::from_env(), mods, Some(edge_server), None).await
 }
