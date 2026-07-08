@@ -1,30 +1,30 @@
 //! `inventory-svc` — process B of the split (port of Go's `cmd/inventory-svc`). It
-//! hosts gateway + config + inventory + messaging and fills inventory's `characters`
-//! dependency with a `remote::Stub`: the stub `provide`s an edge-backed
-//! `characters.ownership` client (dialing A), so inventory's
-//! `require::<dyn Ownership>` resolves REMOTELY — the registry SWAP, with inventory's
-//! code unchanged. It reaches the `charactersapi` contract + `charactersrpc` glue
-//! only transitively (via the stub / inventory), and NOT the characters IMPL. B now
-//! ALSO stands up its OWN shared QUIC edge server (`EDGE_ADDR`, default `:9001`);
-//! `inventory` contributes its `inventory.*` face to `edge::EDGE_SLOT`
-//! (topology-blind) and `app::run` installs it here, so B SERVES `inventory.*` ops
-//! for a peer — gateway-svc hosts no providers, so it resolves `inventory.*` as
-//! Remote and dials this edge (Step 6 of the QUIC player-front plan). B still dials
-//! OUT to A over its own edge for ownership checks; it is client of A and server for
-//! the front door at the same time.
+//! hosts gateway + inventory + messaging and fills inventory's `characters` AND
+//! `config` dependencies with `remote::Stub`s: each stub `provide`s an edge-backed
+//! client under the SAME registry key the local impl would, so inventory's
+//! `require::<dyn Ownership>` / `require::<dyn Config>` resolve REMOTELY — the registry
+//! SWAP, with inventory's code unchanged.
+//!
+//! Since Step 5 config is its OWN fortress process (config-svc): the `config` stub's
+//! `configrpc` factory swaps in a snapshot-backed `CachedConfig` (boot-filled by one
+//! `snapshot()` over the edge, refreshed on the durable `config.changed`). B reaches
+//! the `charactersapi`/`configapi` contracts + the glue crates only via the stubs, NOT
+//! the provider IMPL crates. B ALSO stands up its OWN shared QUIC edge server
+//! (`EDGE_ADDR`, default `:9001`) so gateway-svc can dispatch `inventory.*` Remote to
+//! it; it is client of A + config-svc and server for the front door at the same time.
 
 use std::sync::{Arc, Mutex};
 
 use lifecycle::Module;
 
-/// The peer QUIC edge address a `characters` stub dials: `CHARACTERS_EDGE_ADDR`, else
-/// the shared default. A NUMERIC `host:port` (Rust's `SocketAddr` needs a literal IP,
-/// unlike Go's dialer) — the run scripts set `127.0.0.1:9000`.
-fn characters_edge_addr() -> String {
-    std::env::var("CHARACTERS_EDGE_ADDR")
+/// Reads `env_key`, falling back to `default` when unset or blank — a NUMERIC
+/// `host:port` (Rust's `SocketAddr` needs a literal IP, unlike Go's dialer). The run
+/// scripts set the peer edge addresses.
+fn env_addr(env_key: &str, default: &str) -> String {
+    std::env::var(env_key)
         .ok()
         .filter(|v| !v.trim().is_empty())
-        .unwrap_or_else(|| "127.0.0.1:9000".to_string())
+        .unwrap_or_else(|| default.to_string())
 }
 
 #[tokio::main]
@@ -37,21 +37,27 @@ async fn main() -> anyhow::Result<()> {
     // `characters-svc`'s pattern exactly.
     let edge_server = Arc::new(Mutex::new(edge::Server::new()));
 
-    // messaging then the stub last. The stub's phase-1 `register` provides
-    // characters.ownership BEFORE inventory's `init` requires it (guaranteed by the
-    // two-phase Build regardless of list order); messaging's `register` installs the
-    // durable transport before inventory's `on_tx` subscriptions.
+    // messaging BEFORE the stubs: messaging's phase-1 `register` installs the durable
+    // transport, which the `config` stub's factory needs (its `on_tx("config-cache")`
+    // subscription runs inside the stub's `register`). Each stub's `register` provides
+    // its capability before inventory's `init` requires it (two-phase Build). The
+    // `config` stub also runs a boot-fill snapshot in `start` — config-svc must already
+    // be up (the run scripts start it first).
     let mods: Vec<Box<dyn Module>> = vec![
         Box::new(gateway::Gateway::new()),
-        Box::new(config::Config::new()),
         Box::new(inventory::Inventory::new()),
         Box::new(messaging::Messaging::new()),
-        // `remote` is generic (Step 4): this composition root injects the characters
-        // provider-swap closures explicitly, so `remote` never names `characters`.
+        // `remote` is generic (Steps 4–5): this composition root injects each provider's
+        // swap closures explicitly, so `remote` never names `characters`/`config`.
         Box::new(remote::Stub::new(
             "characters",
-            &characters_edge_addr(),
+            &env_addr("CHARACTERS_EDGE_ADDR", "127.0.0.1:9000"),
             charactersrpc::remote_factories(),
+        )),
+        Box::new(remote::Stub::new(
+            "config",
+            &env_addr("CONFIG_EDGE_ADDR", "127.0.0.1:9002"),
+            configrpc::remote_factories(),
         )),
     ];
 

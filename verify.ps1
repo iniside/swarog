@@ -4,11 +4,13 @@
 #   1. cargo build            (whole workspace)
 #   2. cargo clippy           (--all-targets, -D warnings: any lint FAILS)
 #   3. cargo test             (whole workspace: unit + rpc-macro edge round-trip)
-#   4. split proof            (.\split-proof.ps1 -- the TWO-PROCESS topology proof)
+#   4. fortress               (build every cmd/<name>-svc + archcheck dependency law)
+#   5. split proof            (.\split-proof.ps1 -- the FOUR-PROCESS topology proof)
 #
 # Prints a PASS/FAIL summary and exits non-zero if ANY stage failed. The split proof
 # is the point: it exercises the SPLIT microservices (A=characters-svc, B=inventory-
-# svc) over real HTTP/QUIC, not the monolith.
+# svc, C=config-svc, G=gateway-svc) over real HTTP/QUIC, not the monolith. The fortress
+# stage (Step 5) enforces the dependency law via archcheck.
 #
 # ASCII only -- PowerShell 5.1 chokes on em-dashes.
 
@@ -31,6 +33,7 @@ function Run-Stage([string]$Name, [scriptblock]$Action) {
 Run-Stage 'build'       { cargo build --workspace }
 Run-Stage 'clippy'      { cargo clippy --workspace --all-targets -- -D warnings }
 Run-Stage 'test'        { cargo test --workspace }
+Run-Stage 'fortress'    { cargo build -p server -p characters-svc -p inventory-svc -p gateway-svc -p config-svc; if ($LASTEXITCODE -eq 0) { cargo run -q -p archcheck } }
 Run-Stage 'split-proof' { & (Join-Path $PSScriptRoot 'split-proof.ps1') }
 
 Write-Host ''

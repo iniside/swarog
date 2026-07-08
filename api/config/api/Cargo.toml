@@ -7,5 +7,13 @@ publish = false
 
 # The reader trait config exposes (the interface-crate for rule 4). Nominal Rust
 # traits force a shared trait, so a consumer (e.g. inventory) imports THIS to name
-# `dyn Config` rather than the impl crate. Types-only, no deps.
+# `dyn Config` rather than the impl crate. Besides the sync `Config` reader it also
+# hosts the WIRE-ONLY `ConfigSnapshot` `#[rpc]` trait (the remoting seam, Step 5) —
+# the transport-free surface is generated here; the edge-dependent glue lives in the
+# sibling `configrpc` crate. NO `edge` dependency (rule 4/F2 stays honoured).
 [dependencies]
+opsapi = { workspace = true }
+rpc-macro = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

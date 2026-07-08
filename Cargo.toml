@@ -20,6 +20,9 @@ members = [
     "tools/rpc-macro-tests",
     "tools/edgeca",
     "tools/playercli",
+    # Fortress enforcement (Step 5): a small binary that reads `cargo metadata` and
+    # fails on any module→module or module→foreign-<name>rpc dependency edge.
+    "tools/archcheck",
     # Contract surfaces, grouped by domain (Go's api/<name>/ tree); import no module.
     # `<name>api` = pure trait + wire surface (transport-free); `<name>rpc` = the
     # generated edge glue (impl-tier, may import edge).
@@ -29,6 +32,7 @@ members = [
     "api/inventory/api",
     "api/inventory/rpc",
     "api/config/api",
+    "api/config/rpc",
     "api/config/events",
     "api/admin/api",
     # Module implementations — private, reachable only from a cmd/ binary.
@@ -41,6 +45,7 @@ members = [
     "cmd/characters-svc",
     "cmd/inventory-svc",
     "cmd/gateway-svc",
+    "cmd/config-svc",
 ]
 
 [workspace.package]
@@ -104,6 +109,7 @@ rpc-macro = { path = "tools/rpc-macro" }
 # `<name>rpc` is the generated transport glue (own module + remote + cmd only). ----
 adminapi = { path = "api/admin/api" }
 configapi = { path = "api/config/api" }
+configrpc = { path = "api/config/rpc" }
 configevents = { path = "api/config/events" }
 charactersevents = { path = "api/characters/events" }
 charactersapi = { path = "api/characters/api" }

@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # split-proof.sh -- the SPLIT-topology proof for the rust-sketch (Steps 12 + 8).
 #
-# This is the whole point of the milestone: it exercises the THREE-PROCESS split
+# This is the whole point of the milestone: it exercises the FOUR-PROCESS split
 # (characters-svc = A on :8080 / edge :9000, inventory-svc = B on :8081 / edge :9001,
-# gateway-svc = G on :8082 / player QUIC :9100), NOT the monolith, driving the real
+# gateway-svc = G on :8082 / player QUIC :9100, config-svc = C on :8083 / edge :9002),
+# NOT the monolith, driving the real
 # player flows over HTTP (through the gateway front-door with a dev-<uuid> bearer),
 # the sync authz over QUIC/mTLS, AND the NEW dedicated QUIC player front (Step 8 of
 # the QUIC player-front plan): external players connect to gateway-svc over QUIC
@@ -33,6 +34,12 @@
 #     the DB holdings row is genuinely gone (the wipe handler ran) -- the HTTP 404
 #     after delete alone only proves the character is gone via owner_of, which would
 #     mask an un-wiped row, so the DB check is the real integrity assertion.
+#   - CONFIG live-reload cross-process C->B (Step 5): change inventory/starter_item at
+#     runtime via psql; config-svc's listener publishes config.changed DURABLY; its
+#     relay POSTs to inventory-svc, whose CachedConfig + inventory starter spec both
+#     reload. A NEWLY created character then gets the NEW starter item -- proving the
+#     snapshot-backed remote config reader live-reloads across the process boundary
+#     WITHOUT a restart (B booted with the default starter_sword).
 #
 # THE QUIC PLAYER FRONT (Step 8, all through gateway-svc's :9100 QUIC front via the
 # playercli tool -- exit 0 iff transport ok AND payload status=="Ok"):
@@ -60,8 +67,10 @@ CA_KEY="$RUN_DIR/edge-ca.key"
 A_PORT=8080
 B_PORT=8081
 G_PORT=8082
+C_PORT=8083
 EDGE_PORT=9000
 B_EDGE_PORT=9001
+C_EDGE_PORT=9002
 PLAYER_PORT=9100
 
 DEFAULT_DSN="postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable"
@@ -71,6 +80,7 @@ FAILS=0
 A_PID=""
 B_PID=""
 G_PID=""
+C_PID=""
 M_PID=""
 
 note()  { echo "[proof] $*"; }
@@ -104,13 +114,20 @@ find_psql() {
 }
 PSQL="$(find_psql)"
 
+# Run one SQL statement against the test DB (best-effort; empty PSQL -> no-op).
+pg() {
+    [ -n "$PSQL" ] || return 1
+    PGPASSWORD=gamebackend "$PSQL" -U gamebackend -h localhost -d gamebackend -t -A -c "$1" 2>/dev/null
+}
+
 # --- teardown: kill all processes on ANY exit --------------------------------
 teardown() {
     [ -n "$A_PID" ] && kill "$A_PID" 2>/dev/null && note "stopped A (pid $A_PID)"
     [ -n "$B_PID" ] && kill "$B_PID" 2>/dev/null && note "stopped B (pid $B_PID)"
     [ -n "$G_PID" ] && kill "$G_PID" 2>/dev/null && note "stopped G (pid $G_PID)"
+    [ -n "$C_PID" ] && kill "$C_PID" 2>/dev/null && note "stopped C (pid $C_PID)"
     [ -n "$M_PID" ] && kill "$M_PID" 2>/dev/null && note "stopped monolith (pid $M_PID)"
-    A_PID=""; B_PID=""; G_PID=""; M_PID=""
+    A_PID=""; B_PID=""; G_PID=""; C_PID=""; M_PID=""
 }
 trap teardown EXIT INT TERM
 
@@ -121,11 +138,13 @@ kill_stragglers() {
         taskkill //F //IM characters-svc.exe >/dev/null 2>&1 || true
         taskkill //F //IM inventory-svc.exe >/dev/null 2>&1 || true
         taskkill //F //IM gateway-svc.exe >/dev/null 2>&1 || true
+        taskkill //F //IM config-svc.exe >/dev/null 2>&1 || true
         taskkill //F //IM server.exe >/dev/null 2>&1 || true
     fi
     pkill -f "characters-svc" 2>/dev/null || true
     pkill -f "inventory-svc"  2>/dev/null || true
     pkill -f "gateway-svc"    2>/dev/null || true
+    pkill -f "config-svc"     2>/dev/null || true
     pkill -f "target/debug/server" 2>/dev/null || true
 }
 
@@ -141,8 +160,8 @@ wait_healthy() {
 }
 
 # ============================================================================
-note "building edgeca + characters-svc + inventory-svc + gateway-svc + playercli + server ..."
-if ! cargo build -p edgeca -p characters-svc -p inventory-svc -p gateway-svc -p playercli -p server; then
+note "building edgeca + characters-svc + inventory-svc + gateway-svc + config-svc + playercli + server ..."
+if ! cargo build -p edgeca -p characters-svc -p inventory-svc -p gateway-svc -p config-svc -p playercli -p server; then
     echo "build failed"; exit 1
 fi
 PLAYERCLI="$BIN_DIR/playercli$EXE"
@@ -166,14 +185,39 @@ env PORT=":$A_PORT" DATABASE_URL="$DATABASE_URL" EDGE_ADDR=":$EDGE_PORT" \
 A_PID=$!
 wait_healthy "$A_PORT" "A (characters-svc)" || { echo "A failed to start"; exit 1; }
 
-# --- start B (inventory-svc): gateway + config + inventory + messaging + stub -
+# --- reset the config baseline: B must boot with the DEFAULT starter (starter_sword),
+# so the later runtime change to health_potion is provably a LIVE reload, not a boot
+# value. DELETE fires no NOTIFY, but C/B are not up yet, so their boot loads see no row.
+if [ -n "$PSQL" ]; then
+    pg "DELETE FROM config.settings WHERE namespace='inventory' AND key='starter_item';" >/dev/null
+    note "reset config baseline (deleted inventory/starter_item)"
+else
+    note "psql not found -- the config live-reload assertion will SKIP"
+fi
+
+# --- start C (config-svc): gateway + config + messaging, edge :9002 ----------
+# C owns the config schema + LISTEN/NOTIFY listener and serves config.snapshot on its
+# mTLS edge; its relay POSTs config.changed durably to B. Distinct MESSAGING_ORIGIN
+# (never the "monolith" default) or messaging's origin-collision guard would reject it.
+note "starting C (config-svc) on :$C_PORT, edge :$C_EDGE_PORT ..."
+env PORT=":$C_PORT" DATABASE_URL="$DATABASE_URL" EDGE_ADDR=":$C_EDGE_PORT" \
+    EDGE_CA_CERT="$CA_CERT" EDGE_CA_KEY="$CA_KEY" \
+    MESSAGING_ORIGIN=config-svc \
+    EVENTS_SUBSCRIBERS="config.changed=http://localhost:$B_PORT/events" \
+    "$BIN_DIR/config-svc$EXE" >"$RUN_DIR/config.out.log" 2>"$RUN_DIR/config.err.log" &
+C_PID=$!
+wait_healthy "$C_PORT" "C (config-svc)" || { echo "C failed to start"; exit 1; }
+
+# --- start B (inventory-svc): gateway + inventory + messaging + characters/config stubs
 # B now ALSO serves its OWN mTLS edge (EDGE_ADDR=:9001) so gateway-svc can dispatch
-# inventory.* Remote to it; it still dials A over CHARACTERS_EDGE_ADDR for owner_of.
+# inventory.* Remote to it; it dials A over CHARACTERS_EDGE_ADDR for owner_of and
+# config-svc over CONFIG_EDGE_ADDR for the CachedConfig boot-fill + snapshot refresh.
 note "starting B (inventory-svc) on :$B_PORT, edge :$B_EDGE_PORT ..."
 env PORT=":$B_PORT" DATABASE_URL="$DATABASE_URL" \
     EDGE_ADDR=":$B_EDGE_PORT" \
     EDGE_CA_CERT="$CA_CERT" EDGE_CA_KEY="$CA_KEY" \
     CHARACTERS_EDGE_ADDR="127.0.0.1:$EDGE_PORT" \
+    CONFIG_EDGE_ADDR="127.0.0.1:$C_EDGE_PORT" \
     MESSAGING_ORIGIN=inventory-svc \
     "$BIN_DIR/inventory-svc$EXE" >"$RUN_DIR/inventory.out.log" 2>"$RUN_DIR/inventory.err.log" &
 B_PID=$!
@@ -272,6 +316,68 @@ fi
 echo "[5b] post-delete GET /inventory/character/$CID (Bearer dev-\$PID)"
 W2="$(curl -s -w $'\n%{http_code}' "http://localhost:$B_PORT/inventory/character/$CID" -H "Authorization: Bearer dev-$PID")"
 echo "    -> HTTP $(echo "$W2" | tail -1)  $(echo "$W2" | sed '$d')"
+
+echo ""
+echo "========= CONFIG LIVE-RELOAD (config-svc :$C_PORT -> inventory-svc) ========="
+# Prove the Step-5 snapshot-backed remote config reader live-reloads across processes:
+# change inventory/starter_item at RUNTIME on C's DB, and a NEWLY created character must
+# be granted the NEW starter in B -- config.changed flowed C's outbox -> B's /events ->
+# B's CachedConfig (snapshot refresh) + inventory starter spec, with no restart.
+if [ -z "$PSQL" ]; then
+    note "psql not found -- SKIPPING the config live-reload assertion"
+else
+    # [C1] baseline: B booted with the default starter (no config row) -> starter_sword.
+    echo "[C1] baseline: create a character -> starter should be the DEFAULT starter_sword"
+    BCID="$(curl -s -X POST "http://localhost:$A_PORT/characters" \
+        -H "Authorization: Bearer dev-$PID" -H "Content-Type: application/json" \
+        -d '{"name":"Baseline","class":"mage"}' | grep -o '"id":"[^"]*"' | head -1 | sed 's/"id":"//;s/"//')"
+    BASE_OK=0
+    for i in $(seq 1 30); do
+        R="$(curl -s "http://localhost:$B_PORT/inventory/character/$BCID" -H "Authorization: Bearer dev-$PID")"
+        if echo "$R" | grep -q 'starter_sword'; then BASE_OK=1; break; fi
+        if echo "$R" | grep -q 'health_potion'; then break; fi
+        sleep 0.5
+    done
+    if [ "$BASE_OK" = "1" ]; then
+        pass "baseline character granted starter_sword (B booted on the default via CachedConfig)"
+    else
+        fail "baseline starter_sword not granted (BCID=$BCID) -- $R"
+    fi
+
+    # [C2] runtime change on C's DB: the trigger NOTIFYs -> C's listener emit_tx
+    # (durable) -> C's relay POSTs config.changed -> B refreshes CachedConfig + reloads.
+    echo "[C2] set config inventory/starter_item=health_potion (via psql on C's shared DB)"
+    pg "INSERT INTO config.settings (namespace,key,value) VALUES ('inventory','starter_item','health_potion') ON CONFLICT (namespace,key) DO UPDATE SET value=excluded.value;" >/dev/null
+
+    # [C3] a NEWLY created character must now be granted the NEW starter. The spec is
+    # materialized at grant time, so retry with fresh characters until the live-reloaded
+    # value takes effect (or time out).
+    echo "[C3] create fresh characters until one is granted health_potion (live reload C->B)"
+    RELOAD_OK=0
+    for i in $(seq 1 30); do
+        NCID="$(curl -s -X POST "http://localhost:$A_PORT/characters" \
+            -H "Authorization: Bearer dev-$PID" -H "Content-Type: application/json" \
+            -d '{"name":"Reloaded","class":"mage"}' | grep -o '"id":"[^"]*"' | head -1 | sed 's/"id":"//;s/"//')"
+        for j in $(seq 1 10); do
+            R="$(curl -s "http://localhost:$B_PORT/inventory/character/$NCID" -H "Authorization: Bearer dev-$PID")"
+            echo "$R" | grep -qE 'starter_sword|health_potion' && break
+            sleep 0.3
+        done
+        if echo "$R" | grep -q 'health_potion'; then
+            echo "    attempt $i -> char $NCID granted health_potion"
+            RELOAD_OK=1; break
+        fi
+        sleep 0.5
+    done
+    if [ "$RELOAD_OK" = "1" ]; then
+        pass "new character granted health_potion (config.changed C->B live-reloaded CachedConfig + starter spec)"
+    else
+        fail "starter never changed to health_potion cross-process (config live-reload failed) -- $R"
+    fi
+
+    # Reset to default so reruns start clean.
+    pg "DELETE FROM config.settings WHERE namespace='inventory' AND key='starter_item';" >/dev/null
+fi
 
 echo ""
 echo "========= PLAYER QUIC FRONT (via gateway-svc :$PLAYER_PORT) ========="
@@ -396,7 +502,7 @@ teardown
 
 echo "============================================"
 if [ "$FAILS" -eq 0 ]; then
-    echo "SPLIT PROOF: PASS (all assertions held on the three-process split + monolith parity)"
+    echo "SPLIT PROOF: PASS (all assertions held on the four-process split + monolith parity)"
     exit 0
 else
     echo "SPLIT PROOF: FAIL ($FAILS assertion(s) failed)"

@@ -42,6 +42,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "archcheck"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
 name = "async-trait"
 version = "0.1.89"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -341,7 +348,11 @@ dependencies = [
  "bus",
  "configapi",
  "configevents",
+ "configrpc",
+ "edge",
  "lifecycle",
+ "messaging",
+ "opsapi",
  "registry",
  "sqlx",
  "tokio",
@@ -349,8 +360,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "config-svc"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "app",
+ "config",
+ "edge",
+ "gateway",
+ "lifecycle",
+ "messaging",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "configapi"
 version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "opsapi",
+ "rpc-macro",
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "configevents"
@@ -358,6 +392,26 @@ version = "0.1.0"
 dependencies = [
  "bus",
  "serde",
+]
+
+[[package]]
+name = "configrpc"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "bus",
+ "configapi",
+ "configevents",
+ "edge",
+ "futures",
+ "lifecycle",
+ "opsapi",
+ "registry",
+ "remote",
+ "rpc-macro",
+ "serde_json",
+ "tracing",
 ]
 
 [[package]]
@@ -1129,7 +1183,7 @@ dependencies = [
  "anyhow",
  "app",
  "charactersrpc",
- "config",
+ "configrpc",
  "edge",
  "gateway",
  "inventory",
@@ -1875,6 +1929,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "edge",
+ "futures",
  "lifecycle",
  "opsapi",
  "registry",

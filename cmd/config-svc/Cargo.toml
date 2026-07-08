@@ -1,0 +1,27 @@
+[package]
+name = "config-svc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The config fortress process (Step 5): hosts gateway + config + messaging and stands
+# up one shared QUIC edge server. `config` contributes its wire-only `ConfigSnapshot`
+# face to `edge::EDGE_SLOT` (topology-blind); `app::run` installs it here so a peer's
+# `CachedConfig` (inventory-svc) can pull the snapshot over the mutually-authenticated
+# edge, and config's listener relays `config.changed` durably to that peer.
+[[bin]]
+name = "config-svc"
+path = "src/main.rs"
+
+[dependencies]
+app = { workspace = true }
+lifecycle = { workspace = true }
+edge = { workspace = true }
+gateway = { workspace = true }
+config = { workspace = true }
+messaging = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

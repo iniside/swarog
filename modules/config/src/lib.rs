@@ -234,9 +234,53 @@ impl configapi::Config for Service {
     }
 }
 
+/// The wire-only remoting capability (Step 5): a peer's `CachedConfig` calls this over
+/// the internal edge to (re)build its cache. It reads the authoritative STORE (not the
+/// in-memory cache) so a snapshot answered before the listener's first connect is
+/// still correct.
+#[async_trait::async_trait]
+impl configapi::ConfigSnapshot for Service {
+    async fn snapshot(&self) -> Result<Vec<configapi::Setting>, opsapi::Error> {
+        let settings = self
+            .load_all()
+            .await
+            .map_err(|e| opsapi::Error::internal(e.to_string()))?;
+        Ok(settings
+            .into_iter()
+            .map(|s| configapi::Setting {
+                namespace: s.namespace,
+                key: s.key,
+                value: s.value,
+            })
+            .collect())
+    }
+}
+
 // ============================================================================
 // Live reload — a dedicated PgListener, with boot-vs-reconnect replay.
 // ============================================================================
+
+/// Publishes one `config.changed` on the DURABLE plane (Step 5). The listener owns no
+/// domain write, so it opens its OWN short transaction purely to carry the outbox
+/// insert (`emit_tx` needs a tx), then commits. Mirrors Go, where ONLY the listener
+/// emitted `config.changed` — the admin `set` path stays a plain upsert whose trigger
+/// NOTIFY drives THIS emit, so a change is published exactly once regardless of who
+/// wrote it (no producer-side double-emit to dedup).
+async fn emit_changed(svc: &Service, bus: &Bus, ns: &str, key: &str, value: &str) -> anyhow::Result<()> {
+    let mut tx = svc.pool.begin().await?;
+    bus.emit_tx(
+        &mut tx, // &mut Transaction coerces to the &mut PgConnection emit_tx wants
+        &configevents::CHANGED,
+        &configevents::Changed {
+            namespace: ns.to_string(),
+            key: key.to_string(),
+            value: value.to_string(),
+        },
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(())
+}
 
 /// Does the FULL cache reload every (re)connect performs and, on a RECONNECT (not
 /// the initial boot load), emits `config.changed` for each key whose value differs
@@ -252,14 +296,9 @@ async fn reload_and_heal(svc: &Service, bus: &Bus, reconnect: bool) -> anyhow::R
     let changed = svc.replace_cache(settings);
     if reconnect {
         for st in changed {
-            bus.emit(
-                &configevents::CHANGED,
-                configevents::Changed {
-                    namespace: st.namespace,
-                    key: st.key,
-                    value: st.value,
-                },
-            );
+            // DURABLE replay so a materialized push consumer (e.g. inventory's starter
+            // spec) heals across a listener reconnect even in a split topology.
+            emit_changed(svc, bus, &st.namespace, &st.key, &st.value).await?;
         }
     }
     Ok(())
@@ -325,14 +364,11 @@ async fn listen_once(
                     match svc.get_one(ns, key).await {
                         Ok(Some(v)) => {
                             svc.set_cache_one(ns, key, &v);
-                            bus.emit(
-                                &configevents::CHANGED,
-                                configevents::Changed {
-                                    namespace: ns.to_string(),
-                                    key: key.to_string(),
-                                    value: v,
-                                },
-                            );
+                            // DURABLE publish (Step 5): rides the outbox so a
+                            // cross-process consumer (inventory in a split) sees it.
+                            if let Err(err) = emit_changed(svc, bus, ns, key, &v).await {
+                                tracing::error!(%ns, %key, %err, "config listener emit_tx failed");
+                            }
                         }
                         Ok(None) => continue, // a delete (only upserts exist today) — nothing to cache
                         Err(err) => {
@@ -516,7 +552,10 @@ impl Module for Config {
     }
 
     fn requires(&self) -> Vec<String> {
-        Vec::new() // foundation — depends on nobody
+        // The listener now publishes `config.changed` on the DURABLE plane
+        // (`emit_tx`), so config depends on the messaging transport — fail loud in any
+        // process that hosts config without messaging (Step 5's durable-events rule).
+        vec!["messaging".into()]
     }
 
     fn caps(&self) -> Caps {
@@ -569,6 +608,18 @@ impl Module for Config {
                 "Game Config & Flags",
                 Arc::new(move |params: &adminapi::Params| admin_render(&svc, params)),
             ),
+        );
+
+        // Edge exposure, contributed UNCONDITIONALLY — topology-blind (Step 3 seam):
+        // config's wire-only `ConfigSnapshot` face rides `edge::EDGE_SLOT`; `app::run`
+        // installs it iff this process serves an internal edge (config-svc does; the
+        // monolith never applies it). Own glue (rule 5): `configrpc` register_server.
+        let snap = self.svc();
+        ctx.contribute(
+            edge::EDGE_SLOT,
+            edge::EdgeReg::new(move |server| {
+                configrpc::config_snapshot_rpc::register_server(server, snap);
+            }),
         );
         Ok(())
     }

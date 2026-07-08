@@ -632,12 +632,23 @@ impl Module for Inventory {
         let cfg = ctx.registry().require::<dyn Config>(&key("config", "reader"));
         let _ = inner.cfg.set(cfg);
 
-        // 5. The SYNC config.changed subscription — the ONLY path that rebuilds the
-        // materialized starter spec, so editing inventory/starter_item in /admin flows
-        // config.changed -> here -> the next grant uses the new item.
+        // 5. The DURABLE config.changed subscription — the ONLY path that rebuilds the
+        // materialized starter spec, so editing inventory/starter_item flows
+        // config.changed -> here -> the next grant uses the new item. Durable (`on_tx`,
+        // Step 5) because under the fortress topology config lives in config-svc: the
+        // event crosses the process boundary via the outbox/`POST /events` plane. The
+        // handler owns no domain write (it only rebuilds an in-memory spec by re-reading
+        // the config reader), so it ignores the handed conn. In a split the `config`
+        // Stub's "config-cache" subscriber is registered in phase 1 (before this one),
+        // so the inbound sink refreshes the `CachedConfig` FIRST — this handler then
+        // reads the already-fresh reader.
         let watcher = inner.clone();
-        ctx.bus().on(&configevents::CHANGED, move |e: configevents::Changed| {
-            watcher.on_config_changed(e);
+        ctx.bus().on_tx(&configevents::CHANGED, "inventory", move |_conn, e: configevents::Changed| {
+            let watcher = watcher.clone();
+            Box::pin(async move {
+                watcher.on_config_changed(e);
+                Ok(())
+            })
         });
 
         // 6. Player operations: contribute each generated op (route + HTTP↔wire binding

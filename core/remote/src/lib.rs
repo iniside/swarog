@@ -44,7 +44,9 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use anyhow::Context as _;
 use async_trait::async_trait;
+use futures::future::BoxFuture;
 use lifecycle::{Caps, Context, Module};
 use opsapi::{Caller, Error};
 use tokio::sync::Mutex;
@@ -64,6 +66,47 @@ use tokio::sync::Mutex;
 /// its `remote_factories()` returns `Vec<remote::RemoteFactory>`. `remote` imports no
 /// `api/` crate, so there is no cycle: the glue depends on `remote`, never the reverse.
 pub type RemoteFactory = Box<dyn Fn(&Context, Arc<dyn Caller>) + Send + Sync>;
+
+// ---------------------------------------------------------------------------
+// The boot hook (Step 5) — a start-time async action a factory registers, run by
+// the owning `Stub` in `start`.
+// ---------------------------------------------------------------------------
+
+/// The contrib slot [`RemoteBoot`] boot hooks are contributed to (by a factory in
+/// [`Stub::register`]) and each [`Stub`] drains in `start`.
+pub const BOOT_SLOT: &str = "remote.boot";
+
+/// A start-time async action bound to a provider, produced by a factory that needs a
+/// boot step the pure `register` swap cannot do (a `register` is synchronous + does no
+/// I/O). The canonical case is `configrpc`'s `CachedConfig`: the swap `provide`s the
+/// cache in `register`, but the cache must be BOOT-FILLED by one async `snapshot()`
+/// call, and that must FAIL LOUD if the peer is down. `RemoteBoot` carries that async
+/// fill; the [`Stub`] runs it in `start`.
+///
+/// `provider` scopes the hook: a process can hold several `Stub`s (each drains
+/// [`BOOT_SLOT`]), so each `Stub` runs ONLY the hooks tagged with its OWN provider —
+/// so a hook runs exactly once, in its own provider's stub lifecycle.
+#[derive(Clone)]
+pub struct RemoteBoot {
+    /// The provider this boot belongs to (matches the owning [`Stub::provider`]).
+    provider: String,
+    /// The async boot action, run once by the `Stub` in `start`.
+    boot: Arc<dyn Fn() -> BoxFuture<'static, anyhow::Result<()>> + Send + Sync>,
+}
+
+impl RemoteBoot {
+    /// Binds a boot closure to `provider`. The closure is run once, in that provider's
+    /// [`Stub`] `start`; an `Err` fails the process startup loudly.
+    pub fn new<F>(provider: &str, boot: F) -> RemoteBoot
+    where
+        F: Fn() -> BoxFuture<'static, anyhow::Result<()>> + Send + Sync + 'static,
+    {
+        RemoteBoot {
+            provider: provider.to_string(),
+            boot: Arc::new(boot),
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // The reconnecting caller (Go's edgeConn) — generic over a dial/conn seam so the
@@ -247,7 +290,7 @@ impl Module for Stub {
     }
 
     fn caps(&self) -> Caps {
-        Caps::REGISTER | Caps::STOP
+        Caps::REGISTER | Caps::START | Caps::STOP
     }
 
     /// Phase 1, BEFORE any consumer's `init`: `provide` the edge-backed clients under
@@ -293,6 +336,24 @@ impl Module for Stub {
     /// Nothing to wire in M1: the swap is entirely in `register`. (Go's stub also
     /// contributes a remote admin item; the admin edge fan-out is Milestone 2.)
     fn init(&self, _ctx: &Context) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Runs every [`RemoteBoot`] tagged with THIS stub's provider (Step 5). A factory
+    /// registers a boot hook in `register` for a start-time async action its pure swap
+    /// cannot do — e.g. `configrpc`'s `CachedConfig` boot-fill (one `snapshot()`, fail
+    /// loud if config-svc is down). Filtering by provider keeps a hook to its own
+    /// provider's stub, so it runs exactly once even when a process holds several
+    /// stubs. A boot error fails process startup loudly (config is a hard dependency).
+    async fn start(&self, ctx: &Context) -> anyhow::Result<()> {
+        for b in ctx.contributions::<RemoteBoot>(BOOT_SLOT) {
+            if b.provider == self.provider {
+                (b.boot)()
+                    .await
+                    .with_context(|| format!("remote boot for provider {:?}", self.provider))?;
+                tracing::info!(provider = %self.provider, "remote stub boot hook ran");
+            }
+        }
         Ok(())
     }
 

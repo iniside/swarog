@@ -1,0 +1,17 @@
+[package]
+name = "archcheck"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# Fortress enforcement (Step 5): reads `cargo metadata` and fails on any dependency
+# edge that violates the dependency law — a module importing another module's impl, or
+# a module importing a FOREIGN domain's `<name>rpc` glue. Also greps `modules/` for a
+# resurrected `Option<edge::Server>` (the topology-leak regression Step 3 killed).
+[[bin]]
+name = "archcheck"
+path = "src/main.rs"
+
+[dependencies]
+serde_json = { workspace = true }

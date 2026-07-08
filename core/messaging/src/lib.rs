@@ -365,6 +365,22 @@ impl Module for Messaging {
     /// the watch and awaits every task.
     async fn start(&self, _ctx: &Context) -> anyhow::Result<()> {
         let inner = self.inner();
+
+        // Origin-collision guard (Step 5): a process that names remote sinks
+        // (EVENTS_SUBSCRIBERS) is, by definition, one side of a split — but the relay
+        // drains ONLY its own `origin`'s outbox rows, so a split process left on the
+        // default `"monolith"` origin would share that origin with any OTHER default
+        // process on the same DB and mis-drain (or double-drain) its rows. Fail loud at
+        // start rather than silently swallow another process's events.
+        let subs = outbox::parse_subscribers(&std::env::var("EVENTS_SUBSCRIBERS").unwrap_or_default());
+        if origin_collision(&inner.origin, &subs) {
+            anyhow::bail!(
+                "messaging: MESSAGING_ORIGIN is unset/\"{DEFAULT_ORIGIN}\" but EVENTS_SUBSCRIBERS \
+                 names {} remote sink topic(s) — a shared-DB origin collision would mis-drain \
+                 another process's outbox rows; set a distinct MESSAGING_ORIGIN per split process",
+                subs.len(),
+            );
+        }
         let relay = self
             .relay
             .lock()
@@ -535,6 +551,14 @@ fn env_or(key: &str, def: &str) -> String {
         Ok(v) if !v.is_empty() => v,
         _ => def.to_string(),
     }
+}
+
+/// True when this process is a split participant (it names ≥1 remote HTTP sink) yet is
+/// still stamping the DEFAULT shared `"monolith"` origin — the exact condition under
+/// which two shared-DB processes collide on origin and one mis-drains the other's
+/// outbox rows. Pure so it is unit-testable without a DB (Step 5).
+fn origin_collision(origin: &str, subscribers: &HashMap<String, Vec<String>>) -> bool {
+    origin == DEFAULT_ORIGIN && !subscribers.is_empty()
 }
 
 /// Reads `key` as a Go-style duration (`168h`, `30m`, `500ms`, `10s`), falling back to

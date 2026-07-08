@@ -1,8 +1,9 @@
 # split-proof.ps1 -- the SPLIT-topology proof for the rust-sketch (Steps 12 + 8).
 #
-# The whole point of the milestone: exercises the THREE-PROCESS split (characters-svc =
+# The whole point of the milestone: exercises the FOUR-PROCESS split (characters-svc =
 # A on :8080 / edge :9000, inventory-svc = B on :8081 / edge :9001, gateway-svc = G on
-# :8082 / player QUIC :9100), NOT the monolith, driving the real player flows over HTTP
+# :8082 / player QUIC :9100, config-svc = C on :8083 / edge :9002), NOT the monolith,
+# driving the real player flows over HTTP
 # (through the gateway front-door with a dev-<uuid> bearer), the sync authz over
 # QUIC/mTLS, AND the NEW dedicated QUIC player front (Step 8): external players connect
 # to gateway-svc over QUIC (server-cert-only TLS), the front auth-verifies the
@@ -26,6 +27,10 @@
 #     character.deleted; inventory's on_tx wipes the holdings. Assert the DB holdings
 #     row is genuinely gone (the HTTP 404 after delete alone only proves the character
 #     is gone via owner_of and would mask an un-wiped row).
+#   - CONFIG live-reload C->B (Step 5): change inventory/starter_item at runtime via
+#     psql; config-svc publishes config.changed DURABLY; its relay POSTs to B, whose
+#     CachedConfig + inventory starter spec both reload. A NEWLY created character then
+#     gets the NEW starter -- cross-process live reload with no restart.
 #
 # THE QUIC PLAYER FRONT (Step 8, all through gateway-svc's :9100 QUIC front via the
 # playercli tool -- exit 0 iff transport ok AND payload status=="Ok"):
@@ -52,8 +57,10 @@ $CaKey    = Join-Path $RunDir 'edge-ca.key'
 $APort     = 8080
 $BPort     = 8081
 $GPort     = 8082
+$CPort     = 8083
 $EdgePort  = 9000
 $BEdgePort = 9001
+$CEdgePort = 9002
 $PlayerPort = 9100
 $PlayerCli = Join-Path $BinDir 'playercli.exe'
 
@@ -64,6 +71,7 @@ $script:Fails = 0
 $script:AProc = $null
 $script:BProc = $null
 $script:GProc = $null
+$script:CProc = $null
 $script:MProc = $null
 
 function Note($m) { Write-Host "[proof] $m" }
@@ -88,6 +96,13 @@ function Find-Psql {
     return $null
 }
 $Psql = Find-Psql
+
+# Run one SQL statement against the test DB (best-effort; no psql -> $null).
+function Invoke-Sql([string]$Sql) {
+    if (-not $Psql) { return $null }
+    $env:PGPASSWORD = 'gamebackend'
+    return (& $Psql -U gamebackend -h localhost -d gamebackend -t -A -c $Sql 2>$null)
+}
 
 # Health-check and player HTTP go to 127.0.0.1, NOT localhost: on Windows `localhost`
 # resolves to IPv6 ::1 first, but the services bind IPv4 0.0.0.0, so Invoke-WebRequest
@@ -114,8 +129,9 @@ function Teardown {
     if ($script:AProc -and -not $script:AProc.HasExited) { Stop-Process -Id $script:AProc.Id -Force -ErrorAction SilentlyContinue; Note "stopped A (pid $($script:AProc.Id))" }
     if ($script:BProc -and -not $script:BProc.HasExited) { Stop-Process -Id $script:BProc.Id -Force -ErrorAction SilentlyContinue; Note "stopped B (pid $($script:BProc.Id))" }
     if ($script:GProc -and -not $script:GProc.HasExited) { Stop-Process -Id $script:GProc.Id -Force -ErrorAction SilentlyContinue; Note "stopped G (pid $($script:GProc.Id))" }
+    if ($script:CProc -and -not $script:CProc.HasExited) { Stop-Process -Id $script:CProc.Id -Force -ErrorAction SilentlyContinue; Note "stopped C (pid $($script:CProc.Id))" }
     if ($script:MProc -and -not $script:MProc.HasExited) { Stop-Process -Id $script:MProc.Id -Force -ErrorAction SilentlyContinue; Note "stopped monolith (pid $($script:MProc.Id))" }
-    $script:AProc = $null; $script:BProc = $null; $script:GProc = $null; $script:MProc = $null
+    $script:AProc = $null; $script:BProc = $null; $script:GProc = $null; $script:CProc = $null; $script:MProc = $null
 }
 
 # Runs playercli, capturing stdout (joined) and the process exit code. Returns a
@@ -127,14 +143,14 @@ function Invoke-PlayerCli([string[]]$CliArgs) {
 }
 
 try {
-    Note 'building edgeca + characters-svc + inventory-svc + gateway-svc + playercli + server ...'
-    cargo build -p edgeca -p characters-svc -p inventory-svc -p gateway-svc -p playercli -p server
+    Note 'building edgeca + characters-svc + inventory-svc + gateway-svc + config-svc + playercli + server ...'
+    cargo build -p edgeca -p characters-svc -p inventory-svc -p gateway-svc -p config-svc -p playercli -p server
     if ($LASTEXITCODE -ne 0) { throw 'cargo build failed' }
 
     New-Item -ItemType Directory -Force -Path $RunDir | Out-Null
 
     # Clear stragglers from an aborted prior run so ports are free (idempotent reruns).
-    foreach ($n in 'characters-svc', 'inventory-svc', 'gateway-svc', 'server') {
+    foreach ($n in 'characters-svc', 'inventory-svc', 'gateway-svc', 'config-svc', 'server') {
         Get-Process -Name $n -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
     }
     Start-Sleep -Milliseconds 500
@@ -155,8 +171,34 @@ try {
     } 'characters'
     if (-not (Wait-Healthy $APort 'A (characters-svc)')) { throw 'A failed to start' }
 
+    # Reset the config baseline: B must boot with the DEFAULT starter (starter_sword),
+    # so the later runtime change to health_potion is provably a LIVE reload. C/B are not
+    # up yet, so their boot loads see no row.
+    if ($Psql) {
+        Invoke-Sql "DELETE FROM config.settings WHERE namespace='inventory' AND key='starter_item';" | Out-Null
+        Note 'reset config baseline (deleted inventory/starter_item)'
+    } else {
+        Note 'psql not found -- the config live-reload assertion will SKIP'
+    }
+
+    # C (config-svc): owns the config schema + LISTEN/NOTIFY listener, serves
+    # config.snapshot on its mTLS edge, and relays config.changed durably to B. Distinct
+    # MESSAGING_ORIGIN or messaging's origin-collision guard would reject it.
+    Note "starting C (config-svc) on :$CPort, edge :$CEdgePort ..."
+    $script:CProc = Start-Svc (Join-Path $BinDir 'config-svc.exe') @{
+        PORT               = ":$CPort"
+        DATABASE_URL       = $env:DATABASE_URL
+        EDGE_ADDR          = ":$CEdgePort"
+        EDGE_CA_CERT       = $CaCert
+        EDGE_CA_KEY        = $CaKey
+        MESSAGING_ORIGIN   = 'config-svc'
+        EVENTS_SUBSCRIBERS = "config.changed=http://127.0.0.1:$BPort/events"
+    } 'config'
+    if (-not (Wait-Healthy $CPort 'C (config-svc)')) { throw 'C failed to start' }
+
     # B now ALSO serves its OWN mTLS edge (EDGE_ADDR=:9001) so gateway-svc can dispatch
-    # inventory.* Remote to it; it still dials A over CHARACTERS_EDGE_ADDR for owner_of.
+    # inventory.* Remote to it; it dials A over CHARACTERS_EDGE_ADDR for owner_of and
+    # config-svc over CONFIG_EDGE_ADDR for the CachedConfig boot-fill + snapshot refresh.
     Note "starting B (inventory-svc) on :$BPort, edge :$BEdgePort ..."
     $script:BProc = Start-Svc (Join-Path $BinDir 'inventory-svc.exe') @{
         PORT                 = ":$BPort"
@@ -165,6 +207,7 @@ try {
         EDGE_CA_CERT         = $CaCert
         EDGE_CA_KEY          = $CaKey
         CHARACTERS_EDGE_ADDR = "127.0.0.1:$EdgePort"
+        CONFIG_EDGE_ADDR     = "127.0.0.1:$CEdgePort"
         MESSAGING_ORIGIN     = 'inventory-svc'
     } 'inventory'
     if (-not (Wait-Healthy $BPort 'B (inventory-svc)')) { throw 'B failed to start' }
@@ -253,6 +296,64 @@ try {
     Write-Host "    -> HTTP $($w2.Code)  $($w2.Body)"
 
     Write-Host ''
+    Write-Host "========= CONFIG LIVE-RELOAD (config-svc :$CPort -> inventory-svc) ========="
+    # Prove the Step-5 snapshot-backed remote config reader live-reloads across processes:
+    # change inventory/starter_item at RUNTIME on C's DB, and a NEWLY created character
+    # must be granted the NEW starter in B -- config.changed flowed C's outbox -> B's
+    # /events -> B's CachedConfig (snapshot refresh) + inventory starter spec, no restart.
+    if (-not $Psql) {
+        Note 'psql not found -- SKIPPING the config live-reload assertion'
+    } else {
+        # [C1] baseline: B booted with the default starter (no config row) -> starter_sword.
+        Write-Host '[C1] baseline: create a character -> starter should be the DEFAULT starter_sword'
+        $bc = Invoke-Curl @('-X', 'POST', "http://127.0.0.1:$APort/characters",
+            '-H', "Authorization: Bearer dev-$PID_", '-H', 'Content-Type: application/json',
+            '-d', '{"name":"Baseline","class":"mage"}')
+        $bcid = $null
+        if ($bc.Body -match '"id":"([^"]+)"') { $bcid = $Matches[1] }
+        $baseOk = $false
+        for ($i = 1; $i -le 30; $i++) {
+            $r = Invoke-Curl @("http://127.0.0.1:$BPort/inventory/character/$bcid", '-H', "Authorization: Bearer dev-$PID_")
+            if ($r.Body -match 'starter_sword') { $baseOk = $true; break }
+            if ($r.Body -match 'health_potion') { break }
+            Start-Sleep -Milliseconds 500
+        }
+        if ($baseOk) { Pass 'baseline character granted starter_sword (B booted on the default via CachedConfig)' } else { Fail "baseline starter_sword not granted (bcid=$bcid)" }
+
+        # [C2] runtime change on C's DB: trigger NOTIFYs -> C's listener emit_tx (durable)
+        # -> C's relay POSTs config.changed -> B refreshes CachedConfig + reloads spec.
+        Write-Host '[C2] set config inventory/starter_item=health_potion (via psql on C shared DB)'
+        Invoke-Sql "INSERT INTO config.settings (namespace,key,value) VALUES ('inventory','starter_item','health_potion') ON CONFLICT (namespace,key) DO UPDATE SET value=excluded.value;" | Out-Null
+
+        # [C3] a NEWLY created character must now be granted the NEW starter. The spec is
+        # materialized at grant time, so retry with fresh characters until it takes.
+        Write-Host '[C3] create fresh characters until one is granted health_potion (live reload C->B)'
+        $reloadOk = $false
+        for ($i = 1; $i -le 30; $i++) {
+            $nc = Invoke-Curl @('-X', 'POST', "http://127.0.0.1:$APort/characters",
+                '-H', "Authorization: Bearer dev-$PID_", '-H', 'Content-Type: application/json',
+                '-d', '{"name":"Reloaded","class":"mage"}')
+            $ncid = $null
+            if ($nc.Body -match '"id":"([^"]+)"') { $ncid = $Matches[1] }
+            $r = $null
+            for ($j = 1; $j -le 10; $j++) {
+                $r = Invoke-Curl @("http://127.0.0.1:$BPort/inventory/character/$ncid", '-H', "Authorization: Bearer dev-$PID_")
+                if ($r.Body -match 'starter_sword|health_potion') { break }
+                Start-Sleep -Milliseconds 300
+            }
+            if ($r.Body -match 'health_potion') {
+                Write-Host "    attempt $i -> char $ncid granted health_potion"
+                $reloadOk = $true; break
+            }
+            Start-Sleep -Milliseconds 500
+        }
+        if ($reloadOk) { Pass 'new character granted health_potion (config.changed C->B live-reloaded CachedConfig + starter spec)' } else { Fail 'starter never changed to health_potion cross-process (config live-reload failed)' }
+
+        # Reset to default so reruns start clean.
+        Invoke-Sql "DELETE FROM config.settings WHERE namespace='inventory' AND key='starter_item';" | Out-Null
+    }
+
+    Write-Host ''
     Write-Host "========= PLAYER QUIC FRONT (via gateway-svc :$PlayerPort) ========="
 
     # --- P1. player QUIC create -> G -> mTLS edge -> A ---
@@ -311,7 +412,7 @@ try {
     Write-Host '================ MONOLITH PARITY ================'
     Note 'tearing down the split before the monolith stage ...'
     Teardown
-    foreach ($n in 'characters-svc', 'inventory-svc', 'gateway-svc', 'server') {
+    foreach ($n in 'characters-svc', 'inventory-svc', 'gateway-svc', 'config-svc', 'server') {
         Get-Process -Name $n -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
     }
     Start-Sleep -Seconds 2
@@ -341,7 +442,7 @@ finally {
 }
 
 if ($script:Fails -eq 0) {
-    Write-Host 'SPLIT PROOF: PASS (all assertions held on the two-process topology)'
+    Write-Host 'SPLIT PROOF: PASS (all assertions held on the four-process split + monolith parity)'
     exit 0
 } else {
     Write-Host "SPLIT PROOF: FAIL ($($script:Fails) assertion(s) failed)"

@@ -244,3 +244,21 @@ fn parse_go_duration_units() {
     assert_eq!(parse_go_duration("500ms"), Some(Duration::from_millis(500)));
     assert_eq!(parse_go_duration("nonsense"), None);
 }
+
+/// The Step-5 origin-collision guard: only the DEFAULT origin WITH remote sinks is a
+/// collision. A distinct origin (a real split process) or no subscribers (a monolith)
+/// is fine. No DB needed — the predicate is pure.
+#[test]
+fn origin_collision_only_default_with_remote_sinks() {
+    let none = outbox::parse_subscribers("");
+    let one = outbox::parse_subscribers("config.changed=http://localhost:8081/events");
+
+    // Monolith: default origin, no remote sinks -> OK.
+    assert!(!origin_collision(DEFAULT_ORIGIN, &none));
+    // The bug: default origin AND remote sinks -> collision.
+    assert!(origin_collision(DEFAULT_ORIGIN, &one));
+    // A real split process names a distinct origin -> OK even with remote sinks.
+    assert!(!origin_collision("config-svc", &one));
+    // A distinct origin with no sinks (a leaf producer) -> OK.
+    assert!(!origin_collision("config-svc", &none));
+}

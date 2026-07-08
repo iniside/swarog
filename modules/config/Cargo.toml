@@ -12,7 +12,12 @@ publish = false
 bus = { workspace = true }
 lifecycle = { workspace = true }
 registry = { workspace = true }
+opsapi = { workspace = true }
+edge = { workspace = true }
 configapi = { workspace = true }
+# config's OWN generated glue (rule 5: a module may import its own `<name>rpc`): the
+# ConfigSnapshot `register_server` config exposes on the internal edge (Step 5).
+configrpc = { workspace = true }
 configevents = { workspace = true }
 adminapi = { workspace = true }
 sqlx = { workspace = true }
@@ -22,4 +27,8 @@ tracing = { workspace = true }
 async-trait = { workspace = true }
 
 [dev-dependencies]
+# The durable plane under test: config now publishes `config.changed` via `emit_tx`,
+# so the integration tests install messaging's `bus::Transport` and assert the outbox
+# row (messaging is a core crate, not an api/ crate — no boundary violation).
+messaging = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }

@@ -5,11 +5,14 @@
 #   1. cargo build            (whole workspace)
 #   2. cargo clippy           (--all-targets, -D warnings: any lint FAILS)
 #   3. cargo test             (whole workspace: unit + rpc-macro edge round-trip)
-#   4. split proof            (./split-proof.sh -- the TWO-PROCESS topology proof)
+#   4. fortress               (build every cmd/<name>-svc + archcheck dependency law)
+#   5. split proof            (./split-proof.sh -- the FOUR-PROCESS topology proof)
 #
 # Prints a PASS/FAIL summary and exits non-zero if ANY stage failed. The split proof
 # is the point: it exercises the SPLIT microservices (A=characters-svc, B=inventory-
-# svc) over real HTTP/QUIC, not the monolith.
+# svc, C=config-svc, G=gateway-svc) over real HTTP/QUIC, not the monolith. The
+# fortress stage (Step 5) enforces the dependency law: every domain module boots as
+# its own -svc and no module imports another module's impl or a foreign <name>rpc.
 #
 # ASCII only (no em-dashes) so the sibling verify.ps1 stays byte-parallel and
 # PowerShell 5.1 never chokes.
@@ -30,9 +33,18 @@ run_stage() {
     fi
 }
 
+# The fortress stage: every domain module must compile + boot as its own -svc binary,
+# and archcheck enforces the dependency law (no module->module / module->foreign-rpc
+# edge, no resurrected Option<edge::Server> under modules/).
+fortress() {
+    cargo build -p server -p characters-svc -p inventory-svc -p gateway-svc -p config-svc \
+        && cargo run -q -p archcheck
+}
+
 run_stage "build"       cargo build --workspace
 run_stage "clippy"      cargo clippy --workspace --all-targets -- -D warnings
 run_stage "test"        cargo test --workspace
+run_stage "fortress"    fortress
 run_stage "split-proof" bash ./split-proof.sh
 
 echo ""

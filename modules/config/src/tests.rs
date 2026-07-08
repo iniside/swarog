@@ -147,13 +147,59 @@ async fn cleanup(pool: &PgPool, ns: &str) {
         .bind(ns)
         .execute(pool)
         .await;
+    let _ = sqlx::query("DELETE FROM messaging.outbox WHERE topic = 'config.changed' AND payload->>'namespace' = $1")
+        .bind(ns)
+        .execute(pool)
+        .await;
 }
 
+/// Serializes the tests that RUN a real config listener or ASSERT on the shared
+/// `messaging.outbox`. The `config_changed` NOTIFY channel is process-global, so a
+/// listener running in one test would pick up another test's `config.settings` write
+/// and emit a `config.changed` outbox row for its namespace — contaminating an
+/// outbox-count assertion. Holding this lock for the listener/outbox tests guarantees
+/// no concurrent listener races their assertions (other DB tests run no listener and
+/// never check the outbox, so they don't need it).
+static DB_SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// Migrates the messaging schema (the durable transport's outbox) EXACTLY ONCE per
+/// test binary — its `CREATE INDEX`/`CREATE OR REPLACE TRIGGER` deadlock under
+/// parallel idempotent re-runs, so serialize them (mirrors the characters tests).
+static MESSAGING_READY: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
+
+async fn ensure_messaging_schema(pool: &PgPool) {
+    MESSAGING_READY
+        .get_or_init(|| async {
+            let ctx = Context::with_db(pool.clone());
+            messaging::Messaging::new().migrate(&ctx).await.unwrap();
+        })
+        .await;
+}
+
+/// Builds a config module wired against a LIVE durable plane: messaging's phase-1
+/// `register` installs the `bus::Transport` on this ctx's bus (needed before the
+/// listener's `emit_tx`), then config registers + inits on the same ctx. The caller
+/// must have migrated the messaging schema (`ensure_messaging_schema`).
 fn build_module(ctx: &Context) -> Config {
+    let msg = messaging::Messaging::new();
+    msg.register(ctx).unwrap(); // installs bus::Transport
     let m = Config::new();
     m.register(ctx).unwrap();
     m.init(ctx).unwrap();
     m
+}
+
+/// Counts durable `config.changed` outbox rows for a namespace — the Step-5 durable
+/// publish replaces the old sync-bus assertion.
+async fn changed_outbox_count(pool: &PgPool, ns: &str) -> i64 {
+    let (n,): (i64,) = sqlx::query_as(
+        "SELECT count(*) FROM messaging.outbox WHERE topic = 'config.changed' AND payload->>'namespace' = $1",
+    )
+    .bind(ns)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    n
 }
 
 /// The DB round-trip: `set` persists, a fresh `load_all` + `replace_cache` makes
@@ -175,13 +221,16 @@ async fn set_then_load_reads_back() {
 }
 
 /// The REAL push path end-to-end: a running listener + `set` -> pg_notify ->
-/// listener -> cache refresh AND a `config.changed` on the sync bus. Also proves
-/// the BOOT load is silent (a pre-seeded key emits nothing) while a POST-boot set
-/// does emit. Observed by both polling the cache and receiving the bus event.
+/// listener -> cache refresh AND a DURABLE `config.changed` (Step 5: an outbox row,
+/// not a sync-bus event). Also proves the BOOT load is silent (a pre-seeded key
+/// writes no outbox row) while a POST-boot set does. Observed by polling the cache
+/// and the `messaging.outbox`.
 #[tokio::test]
 async fn live_reload_updates_cache_and_emits_changed() {
     use configapi::Config as _;
     let Some(pool) = test_pool().await else { return };
+    ensure_messaging_schema(&pool).await;
+    let _serial = DB_SERIAL.lock().await;
     let ns = unique_ns(&pool).await;
 
     // Pre-seed a key so the boot load has something to (silently) load.
@@ -192,16 +241,7 @@ async fn live_reload_updates_cache_and_emits_changed() {
         .unwrap();
 
     let ctx = Context::with_db(pool.clone());
-    let m = build_module(&ctx);
-
-    // Subscribe BEFORE start, so any boot-load emission for our ns would be seen.
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<configevents::Changed>();
-    let want = ns.clone();
-    ctx.bus().on(&configevents::CHANGED, move |c: configevents::Changed| {
-        if c.namespace == want {
-            let _ = tx.send(c);
-        }
-    });
+    let m = build_module(&ctx); // installs the durable transport on ctx.bus()
 
     m.start(&ctx).await.unwrap();
 
@@ -209,23 +249,23 @@ async fn live_reload_updates_cache_and_emits_changed() {
     let svc = m.svc();
     wait_until(|| svc.get(&ns, "sentinel").as_deref() == Some("1")).await;
 
-    // Boot load emitted NOTHING (reconnect=false), even though it loaded the
-    // sentinel. Give any stray delivery a chance, then assert the channel empty.
+    // Boot load emitted NOTHING (reconnect=false): no config.changed outbox row.
     tokio::time::sleep(Duration::from_millis(50)).await;
-    assert!(
-        rx.try_recv().is_err(),
-        "boot load must emit no config.changed events"
+    assert_eq!(
+        changed_outbox_count(&pool, &ns).await,
+        0,
+        "boot load must write no config.changed outbox rows"
     );
 
-    // A POST-boot set DOES emit: cache refresh + a config.changed on the bus.
+    // A POST-boot set DOES emit durably: cache refresh + one outbox row.
     svc.set(&ns, "flag", "on").await.unwrap();
 
-    let got = tokio::time::timeout(Duration::from_secs(3), rx.recv())
-        .await
-        .expect("no config.changed emitted for the post-boot set")
-        .expect("bus channel closed");
-    assert_eq!(got.key, "flag");
-    assert_eq!(got.value, "on");
+    wait_until_async(|| {
+        let pool = pool.clone();
+        let ns = ns.clone();
+        async move { changed_outbox_count(&pool, &ns).await == 1 }
+    })
+    .await;
     assert_eq!(svc.get(&ns, "flag").as_deref(), Some("on"));
     assert!(svc.get_bool(&ns, "flag", false));
 
@@ -235,26 +275,19 @@ async fn live_reload_updates_cache_and_emits_changed() {
 }
 
 /// The reconnect self-heal, deterministic (no listener timing): after a disconnect
-/// PG does not replay missed NOTIFYs, so the reload emits `config.changed` for the
-/// gap-changed key. Drives the SAME `reload_and_heal` the listener uses. Also
-/// asserts the boot reload (`reconnect=false`) emits nothing.
+/// PG does not replay missed NOTIFYs, so the reload DURABLY emits `config.changed`
+/// for the gap-changed key. Drives the SAME `reload_and_heal` the listener uses. Also
+/// asserts the boot reload (`reconnect=false`) writes no outbox row.
 #[tokio::test]
 async fn reconnect_reload_heals_gap_changes_boot_is_silent() {
     let Some(pool) = test_pool().await else { return };
+    ensure_messaging_schema(&pool).await;
+    let _serial = DB_SERIAL.lock().await;
     let ns = unique_ns(&pool).await;
     let ctx = Context::with_db(pool.clone());
-    let m = build_module(&ctx);
+    let m = build_module(&ctx); // installs the durable transport on ctx.bus()
     let svc = m.svc();
     let bus = ctx.bus().clone();
-
-    // Subscribe up front so a boot-load emission would be caught.
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<configevents::Changed>();
-    let want = ns.clone();
-    bus.on(&configevents::CHANGED, move |c: configevents::Changed| {
-        if c.namespace == want {
-            let _ = tx.send(c);
-        }
-    });
 
     // Seed a key, then boot-load (reconnect=false emits nothing).
     sqlx::query("INSERT INTO config.settings (namespace, key, value) VALUES ($1, 'level', '1')")
@@ -264,7 +297,11 @@ async fn reconnect_reload_heals_gap_changes_boot_is_silent() {
         .unwrap();
     reload_and_heal(&svc, &bus, false).await.unwrap();
     tokio::time::sleep(Duration::from_millis(50)).await;
-    assert!(rx.try_recv().is_err(), "boot reload must be silent");
+    assert_eq!(
+        changed_outbox_count(&pool, &ns).await,
+        0,
+        "boot reload must write no config.changed outbox rows"
+    );
 
     // A write missed during a disconnect (no NOTIFY to a dead session).
     sqlx::query("UPDATE config.settings SET value = '2' WHERE namespace = $1 AND key = 'level'")
@@ -273,14 +310,13 @@ async fn reconnect_reload_heals_gap_changes_boot_is_silent() {
         .await
         .unwrap();
 
-    // The reconnect reload heals: it emits config.changed for the gap-changed key.
+    // The reconnect reload heals: it durably emits config.changed for the gap key.
     reload_and_heal(&svc, &bus, true).await.unwrap();
-    let got = tokio::time::timeout(Duration::from_secs(3), rx.recv())
-        .await
-        .expect("no config.changed emitted on reconnect")
-        .expect("bus channel closed");
-    assert_eq!(got.key, "level");
-    assert_eq!(got.value, "2");
+    assert_eq!(
+        changed_outbox_count(&pool, &ns).await,
+        1,
+        "reconnect reload must write one config.changed outbox row for the gap key"
+    );
 
     cleanup(&pool, &ns).await;
 }
@@ -292,6 +328,8 @@ async fn reconnect_reload_heals_gap_changes_boot_is_silent() {
 async fn admin_apply_edit_inserts_new_triple() {
     use configapi::Config as _;
     let Some(pool) = test_pool().await else { return };
+    ensure_messaging_schema(&pool).await;
+    let _serial = DB_SERIAL.lock().await;
     let ns = unique_ns(&pool).await;
     let ctx = Context::with_db(pool.clone());
     let m = build_module(&ctx);
@@ -324,6 +362,24 @@ async fn wait_until(mut cond: impl FnMut() -> bool) {
         }
         if std::time::Instant::now() > deadline {
             panic!("condition not met within deadline");
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// Async variant of [`wait_until`]: polls an async predicate (e.g. a DB count) up to
+/// 3s at 20ms intervals; panics on timeout.
+async fn wait_until_async<Fut>(mut cond: impl FnMut() -> Fut)
+where
+    Fut: std::future::Future<Output = bool>,
+{
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    loop {
+        if cond().await {
+            return;
+        }
+        if std::time::Instant::now() > deadline {
+            panic!("async condition not met within deadline");
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
