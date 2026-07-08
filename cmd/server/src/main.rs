@@ -26,6 +26,7 @@ async fn main() -> anyhow::Result<()> {
     // last-registered stops FIRST — delivery halts before any producer/consumer tears
     // down.
     let mods: Vec<Box<dyn Module>> = vec![
+        Box::new(metrics::Metrics::new()), // core-infra: mounts GET /metrics + contributes the record layer
         Box::new(config::Config::new()),         // DB-backed config: schema "config", provides "config.reader"
         Box::new(characters::Characters::new()), // player characters; owns schema "characters"
         Box::new(inventory::Inventory::new()),   // owner-scoped inventories; depends on characters + config

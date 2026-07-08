@@ -12,12 +12,15 @@ use axum::Router;
 use tower::ServiceExt; // for `oneshot`
 
 /// A router that mirrors the real app surface: a parameterized domain route, a healthz
-/// probe, plus the `/metrics` scrape + recording layer that [`mount`] installs.
+/// probe, plus the `/metrics` scrape route + recording layer the [`Metrics`] module wires
+/// (mounted route + `httpmw::LAYER_SLOT` layer). Assembled directly here so the codec
+/// tests exercise `scrape`/`record` without a `lifecycle::Context`.
 fn app() -> Router {
-    let base = Router::new()
+    Router::new()
         .route("/widgets/:id", get(|| async { "ok" }))
-        .route("/healthz", get(|| async { "ok" }));
-    mount(base)
+        .route("/healthz", get(|| async { "ok" }))
+        .route("/metrics", get(scrape))
+        .layer(middleware::from_fn(record))
 }
 
 /// Sends one request through the router and returns the response body as a String.
@@ -95,4 +98,23 @@ async fn healthz_is_not_recorded() {
         !scrape.contains(r#"path="/metrics""#),
         "the scrape itself must not be recorded, got:\n{scrape}"
     );
+}
+
+/// The module wiring: `init` mounts `GET /metrics` on the shared router AND contributes
+/// exactly one `httpmw::HttpLayer` to `LAYER_SLOT`. Applying that layer over the mounted
+/// router yields a live `/metrics` scrape — the same composition `app::run` performs.
+#[tokio::test]
+async fn module_init_mounts_scrape_and_contributes_one_layer() {
+    let ctx = Context::new();
+    Metrics::new().init(&ctx).unwrap();
+
+    // Exactly one layer contributed to the slot the app drains.
+    let layers = ctx.contributions::<httpmw::HttpLayer>(httpmw::LAYER_SLOT);
+    assert_eq!(layers.len(), 1, "init must contribute exactly one HTTP layer");
+
+    // Compose as app::run does: take the mounted router, then apply the layer over it.
+    let router = layers[0].apply(ctx.take_router());
+    let (status, body) = get_body(router, "/metrics").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("http_requests_total"), "got:\n{body}");
 }

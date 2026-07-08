@@ -42,6 +42,7 @@ async fn main() -> anyhow::Result<()> {
     // The admin portal + one admin-only stub per provider. Each stub dials its peer's
     // edge lazily on the first /admin request that fetches its item.
     let mods: Vec<Box<dyn Module>> = vec![
+        Box::new(metrics::Metrics::new()), // core-infra: mounts GET /metrics + contributes the record layer
         Box::new(admin::Admin::new()),
         admin_stub("characters", "CHARACTERS_EDGE_ADDR", "127.0.0.1:9000"),
         admin_stub("inventory", "INVENTORY_EDGE_ADDR", "127.0.0.1:9001"),

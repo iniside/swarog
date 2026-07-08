@@ -13,6 +13,7 @@ publish = false
 [dependencies]
 app = { workspace = true }
 lifecycle = { workspace = true }
+metrics = { workspace = true }
 admin = { workspace = true }
 remote = { workspace = true }
 adminrpc = { workspace = true }

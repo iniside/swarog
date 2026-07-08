@@ -47,6 +47,7 @@ async fn main() -> anyhow::Result<()> {
     // provider. It reaches the two `<name>rpc` glue crates (sanctioned for `cmd/*`,
     // rule 5) but never the provider IMPL crates.
     let mods: Vec<Box<dyn Module>> = vec![
+        Box::new(metrics::Metrics::new()), // core-infra: mounts GET /metrics + contributes the record layer
         Box::new(gateway::Gateway::new().with_player_edge(player.clone())),
         Box::new(remote::Stub::new(
             "characters",
@@ -82,9 +83,10 @@ async fn main() -> anyhow::Result<()> {
     // No edge server: this process serves no provider over the internal mTLS edge, it
     // only DIALS peers (via the stubs). `without_db`: a pure-transport process owns no
     // schema, so `app::run` skips `PgPool::connect` and `/readyz` answers a plain 200.
-    // `without_metrics`: the front door carries no Prometheus scrape (Go parity — the
-    // gateway binary was the one process that never imported the metrics package), so
-    // `GET /metrics` is a 404 here while every module-hosting peer serves it.
+    // The `metrics` module in `mods` gives the front door `GET /metrics` + the record
+    // layer, so its op traffic IS measured now (the old `without_metrics` Go-parity
+    // exemption lost its rationale once peers stopped fronting HTTP; ops dispatch through
+    // the axum fallback, so they record under `path="unmatched"`).
     // `with_rate_limit_default(20.0, 40)`: the front door ALWAYS rate limits (Go's
     // `cmd/gateway-svc` values), unlike a module host where it is opt-in. `RATE_LIMIT_RPS`
     // / `RATE_LIMIT_BURST` / `TRUSTED_PROXY_CIDRS` env still override. The limiter fronts
@@ -93,7 +95,6 @@ async fn main() -> anyhow::Result<()> {
     app::run(
         app::Config::from_env()
             .without_db()
-            .without_metrics()
             .with_rate_limit_default(20.0, 40),
         mods,
         None,

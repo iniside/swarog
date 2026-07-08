@@ -27,6 +27,7 @@ async fn main() -> anyhow::Result<()> {
     // messaging LAST for Stop ordering (reverse) — delivery halts before rating tears
     // down. No gateway (no ops, no player front).
     let mods: Vec<Box<dyn Module>> = vec![
+        Box::new(metrics::Metrics::new()), // core-infra: mounts GET /metrics + contributes the record layer
         Box::new(rating::Rating::new()),
         Box::new(messaging::Messaging::new()),
     ];

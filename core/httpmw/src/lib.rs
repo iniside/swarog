@@ -19,16 +19,21 @@
 //! - **Readiness slot** ([`ReadyCheck`] + [`READINESS_SLOT`]) — a contribution slot
 //!   `/readyz` folds in: `core/app` runs the baseline DB ping plus every contributed
 //!   check and answers `503` with a per-failed-check JSON body on any failure.
+//! - **HTTP layer slot** ([`HttpLayer`] + [`LAYER_SLOT`]) — a contribution slot `core/app`
+//!   drains to wrap the whole rate-limited surface: a core-infra module (`metrics`)
+//!   contributes its recording layer here instead of `app` hard-coding it.
 //!
 //! Leaf rule: this crate imports only `axum` + `ipnet` + `tokio` (+ `tracing`); it never
 //! reaches a module or an `api/` contract crate — same tier as `bus`/`registry`/`metrics`.
 
 mod client_ip;
+mod layer;
 mod limiter;
 mod middleware;
 mod readiness;
 
 pub use client_ip::{client_ip, parse_cidrs};
+pub use layer::{HttpLayer, LAYER_SLOT};
 pub use limiter::IpLimiter;
 pub use middleware::mount;
 pub use readiness::{ReadyCheck, READINESS_SLOT};

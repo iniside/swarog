@@ -39,6 +39,7 @@ async fn main() -> anyhow::Result<()> {
     // tears down. The `rating` stub's `register` provides the remote MmrReader before
     // match's `init` requires it (two-phase Build).
     let mods: Vec<Box<dyn Module>> = vec![
+        Box::new(metrics::Metrics::new()), // core-infra: mounts GET /metrics + contributes the record layer
         Box::new(match_module::MatchModule::new()),
         Box::new(messaging::Messaging::new()),
         // `rating` lives in rating-svc: this stub swaps in the edge-backed MmrReader so

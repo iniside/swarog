@@ -19,6 +19,7 @@ path = "src/main.rs"
 app = { workspace = true }
 edge = { workspace = true }
 lifecycle = { workspace = true }
+metrics = { workspace = true }
 gateway = { workspace = true }
 remote = { workspace = true }
 charactersrpc = { workspace = true }

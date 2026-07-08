@@ -30,6 +30,7 @@ async fn main() -> anyhow::Result<()> {
     // characters tears down. No accounts stub: without a gateway there is no bearer
     // verifier to feed, so this process never dials accounts-svc.
     let mods: Vec<Box<dyn Module>> = vec![
+        Box::new(metrics::Metrics::new()), // core-infra: mounts GET /metrics + contributes the record layer
         Box::new(characters::Characters::new()),
         Box::new(messaging::Messaging::new()),
     ];

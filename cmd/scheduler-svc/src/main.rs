@@ -32,6 +32,7 @@ async fn main() -> anyhow::Result<()> {
     // messaging LAST for Stop ordering (reverse) — the relay halts delivery before the
     // scheduler's emission loop tears down. No gateway (no ops, no player front).
     let mods: Vec<Box<dyn Module>> = vec![
+        Box::new(metrics::Metrics::new()), // core-infra: mounts GET /metrics + contributes the record layer
         Box::new(scheduler::Scheduler::new()),
         Box::new(messaging::Messaging::new()),
     ];

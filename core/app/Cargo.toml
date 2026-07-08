@@ -9,7 +9,6 @@ publish = false
 lifecycle = { workspace = true }
 edge = { workspace = true }
 bus = { workspace = true }
-metrics = { workspace = true }
 httpmw = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time", "net", "signal"] }
 axum = { workspace = true }

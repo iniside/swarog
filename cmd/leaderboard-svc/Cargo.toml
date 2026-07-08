@@ -21,6 +21,7 @@ path = "src/main.rs"
 app = { workspace = true }
 edge = { workspace = true }
 lifecycle = { workspace = true }
+metrics = { workspace = true }
 leaderboard = { workspace = true }
 messaging = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync"] }

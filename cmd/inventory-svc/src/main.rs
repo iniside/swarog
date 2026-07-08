@@ -50,6 +50,7 @@ async fn main() -> anyhow::Result<()> {
     // `config` stub also runs a boot-fill snapshot in `start` — config-svc must already
     // be up (the run scripts start it first).
     let mods: Vec<Box<dyn Module>> = vec![
+        Box::new(metrics::Metrics::new()), // core-infra: mounts GET /metrics + contributes the record layer
         Box::new(inventory::Inventory::new()),
         Box::new(messaging::Messaging::new()),
         // `remote` is generic (Steps 4–5): this composition root injects each provider's

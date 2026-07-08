@@ -121,40 +121,14 @@ fn without_db_clears_dsn_and_keeps_the_rest() {
 }
 
 #[test]
-fn metrics_enabled_by_default_and_survives_without_db() {
-    // Every module-hosting process gets metrics by default; dropping the DB (a DB-less
-    // module host like admin-svc) does NOT drop metrics — the two concerns are separate.
-    let cfg = Config::from_values(None, None, None, None);
-    assert!(cfg.metrics_enabled);
-    assert!(cfg.without_db().metrics_enabled);
-}
-
-#[test]
-fn without_metrics_opts_out_and_keeps_the_rest() {
-    let cfg = Config::from_values(
-        Some("postgres://u:p@db:5432/x".into()),
-        Some("9090".into()),
-        None,
-        None,
-    )
-    .without_db()
-    .without_metrics();
-    assert!(!cfg.metrics_enabled);
-    // The other opt-outs/values survive.
-    assert_eq!(cfg.database_url, None);
-    assert_eq!(cfg.listen_addr, ":9090");
-}
-
-#[test]
 fn rate_limit_default_off_unless_set() {
     // Module hosts leave it unset (opt-in); the gateway builder turns it always-on.
     let cfg = Config::from_values(None, None, None, None);
     assert_eq!(cfg.rate_limit_default, None);
-    let gw = cfg.without_db().without_metrics().with_rate_limit_default(20.0, 40);
+    let gw = cfg.without_db().with_rate_limit_default(20.0, 40);
     assert_eq!(gw.rate_limit_default, Some((20.0, 40)));
     // The other opt-outs survive alongside it.
     assert_eq!(gw.database_url, None);
-    assert!(!gw.metrics_enabled);
 }
 
 // ============================================================================
@@ -233,6 +207,41 @@ fn contributed_edge_registrations_are_applied_when_an_edge_server_exists() {
     let applied_again = apply_edge_registrations(&ctx, &mut server);
     assert_eq!(applied_again, 2, "the slot still holds the (spent) contributions");
     assert_eq!(calls.load(Ordering::SeqCst), 2, "but no closure runs twice");
+}
+
+// ============================================================================
+// The LAYER_SLOT drain: modules contribute httpmw::HttpLayer in init; `run` applies
+// them AFTER rate limiting so the last-contributed layer is the OUTERMOST — the metrics
+// recorder wraps the limiter and records its 429s.
+// ============================================================================
+
+/// Contributions apply in CONTRIBUTION ORDER. Since `run` adds the rate-limit `.layer`
+/// BEFORE this drain, and axum nests a later `.layer` OUTSIDE earlier ones, the (last)
+/// contributed metrics layer ends up outermost — so a 429 the limiter issues still flows
+/// through it and is recorded. This test pins the order the outer-most guarantee rests on.
+#[test]
+fn contributed_http_layers_apply_in_contribution_order() {
+    use std::sync::{Arc, Mutex as StdMutex};
+
+    let ctx = Context::new();
+    let order = Arc::new(StdMutex::new(Vec::<u8>::new()));
+    for id in [1u8, 2, 3] {
+        let sink = order.clone();
+        ctx.contribute(
+            httpmw::LAYER_SLOT,
+            httpmw::HttpLayer::new(move |r: axum::Router| {
+                sink.lock().unwrap().push(id);
+                r
+            }),
+        );
+    }
+
+    let _ = apply_http_layers(&ctx, axum::Router::new());
+    assert_eq!(*order.lock().unwrap(), vec![1, 2, 3]);
+
+    // A re-drain re-runs nothing: each HttpLayer is one-shot (the closure was taken).
+    let _ = apply_http_layers(&ctx, axum::Router::new());
+    assert_eq!(*order.lock().unwrap(), vec![1, 2, 3], "spent layers never re-run");
 }
 
 /// The monolith path: `run` never drains the slot (no edge server), so a

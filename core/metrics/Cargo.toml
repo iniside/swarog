@@ -8,6 +8,13 @@ publish = false
 [dependencies]
 axum = { workspace = true }
 prometheus = { workspace = true }
+# metrics is a core-infra `lifecycle::Module` (the `messaging` precedent): its `init`
+# mounts `GET /metrics` (`ctx.mount`) and contributes the recording layer to
+# `httpmw::LAYER_SLOT`, which `app::run` drains over the whole rate-limited surface.
+lifecycle = { workspace = true }
+httpmw = { workspace = true }
+async-trait = { workspace = true }
+anyhow = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

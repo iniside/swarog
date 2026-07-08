@@ -27,6 +27,7 @@ async fn main() -> anyhow::Result<()> {
     // messaging LAST for Stop ordering (reverse) — the relay/inbound halt before
     // leaderboard tears down.
     let mods: Vec<Box<dyn Module>> = vec![
+        Box::new(metrics::Metrics::new()), // core-infra: mounts GET /metrics + contributes the record layer
         Box::new(leaderboard::LeaderboardModule::new()),
         Box::new(messaging::Messaging::new()),
     ];

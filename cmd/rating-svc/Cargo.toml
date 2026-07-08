@@ -19,6 +19,7 @@ path = "src/main.rs"
 [dependencies]
 app = { workspace = true }
 lifecycle = { workspace = true }
+metrics = { workspace = true }
 edge = { workspace = true }
 rating = { workspace = true }
 messaging = { workspace = true }

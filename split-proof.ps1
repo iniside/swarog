@@ -787,33 +787,33 @@ try {
     Write-Host '============================================'
 
     Write-Host ''
-    Write-Host '========= HTTP METRICS (Step 12: private Prometheus registry + /metrics) ========='
-    # The Prometheus scrape end-to-end on the split: characters-svc (A) mounted the metrics
-    # middleware + GET /metrics (a module host). Under the single front door the /characters
-    # ops now route THROUGH gateway-svc over the mTLS QUIC edge, NOT A's HTTP port, so A's
-    # HTTP surface sees only infra (skip-recorded) + unmatched paths. We fire ONE recorded
-    # non-infra request directly at A (a 404, labeled path="unmatched") so its private
-    # registry has an http_requests_total child to render -- proving the domain-svc middleware
-    # + private registry + scrape all work. gateway-svc (G) opts out (without_metrics, Go
-    # parity: the front door carries no prometheus), so its /metrics is 404.
-    Write-Host '[MX0] fire one recorded non-infra request at characters-svc to populate its counter'
-    Invoke-Curl @("http://127.0.0.1:$APort/__metrics_probe") | Out-Null
-    Write-Host "[MX1] GET http://127.0.0.1:$APort/metrics on characters-svc -> 200 + http_requests_total present"
+    Write-Host '========= HTTP METRICS (private Prometheus registry + /metrics, now a core-infra module) ========='
+    # metrics is now a lifecycle Module listed in EVERY main (Config::without_metrics is gone).
+    #  - MX1 (peer pipeline): characters-svc (A) serves GET /metrics from its private registry.
+    #    Under the single front door the /characters ops route THROUGH gateway-svc over the mTLS
+    #    QUIC edge, NOT A's HTTP port, so we fire ONE recorded non-infra request at A so its own
+    #    counter has an http_requests_total child.
+    #  - MX2 (the point): gateway-svc (G) now lists the metrics module too, so GET /metrics is
+    #    200 (was 404 under without_metrics) AND records the op traffic that flowed through the
+    #    front door above. G dispatches ops via an axum FALLBACK (no per-op route), so they carry
+    #    no MatchedPath and record under path="unmatched" -- but they ARE measured now, 2xx.
+    Write-Host "[MX1] GET http://127.0.0.1:$APort/metrics on characters-svc -> 200 + http_requests_total (peer pipeline)"
+    Invoke-Curl @("http://127.0.0.1:$APort/__metrics_probe") | Out-Null  # one recorded non-infra hit -> a counter child
     $mx1 = Invoke-Curl @("http://127.0.0.1:$APort/metrics")
     Write-Host "    -> HTTP $($mx1.Code)  (body $($mx1.Body.Length) chars)"
     if ($mx1.Code -eq '200' -and $mx1.Body -match 'http_requests_total') {
-        Pass 'characters-svc /metrics -> 200 with http_requests_total (private registry recorded real requests)'
+        Pass 'characters-svc /metrics -> 200 with http_requests_total (peer private registry serves the scrape)'
     } else {
         Fail "characters-svc /metrics expected 200 containing http_requests_total, got $($mx1.Code)"
     }
 
-    Write-Host "[MX2] GET http://127.0.0.1:$GPort/metrics on gateway-svc -> 404 (without_metrics; front door has no scrape)"
+    Write-Host "[MX2] GET http://127.0.0.1:$GPort/metrics on gateway-svc -> 200 + a 2xx op line (front door now MEASURED)"
     $mx2 = Invoke-Curl @("http://127.0.0.1:$GPort/metrics")
-    Write-Host "    -> HTTP $($mx2.Code)"
-    if ($mx2.Code -eq '404') {
-        Pass 'gateway-svc /metrics -> 404 (no prometheus on the front door, Go parity)'
+    Write-Host "    -> HTTP $($mx2.Code)  (body $($mx2.Body.Length) chars)"
+    if ($mx2.Code -eq '200' -and $mx2.Body -match 'http_requests_total' -and $mx2.Body -match 'http_requests_total\{.*status="2\d\d"') {
+        Pass 'gateway-svc /metrics -> 200 recording real op traffic with 2xx statuses (metrics is now a core-infra module; front door measured)'
     } else {
-        Fail "gateway-svc /metrics expected 404, got $($mx2.Code)"
+        Fail "gateway-svc /metrics expected 200 with a 2xx http_requests_total op line, got $($mx2.Code)"
     }
 
     Write-Host '============================================'

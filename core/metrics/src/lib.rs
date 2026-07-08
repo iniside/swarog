@@ -1,10 +1,16 @@
-//! `metrics` — the cross-cutting HTTP-metrics middleware + `/metrics` scrape, mounted
-//! by `core/app` in every module-hosting process (port of Go's `metrics/metrics.go`).
+//! `metrics` — the cross-cutting HTTP-metrics middleware + `/metrics` scrape, packaged as
+//! a core-infra [`lifecycle::Module`] listed in EVERY process main (the `messaging`
+//! precedent — a `core/` crate that is also a `Module`). Its `init` mounts `GET /metrics`
+//! (`ctx.mount`) and contributes the recording layer to [`httpmw::LAYER_SLOT`], which
+//! `app::run` drains over the whole rate-limited surface. (Port of Go's `metrics/metrics.go`,
+//! but self-registering instead of wired by a `Config` flag.)
 //!
 //! It owns a PRIVATE [`prometheus::Registry`] (never `prometheus::default_registry()`),
-//! so scraping this process never picks up anything another library registered globally,
-//! and a process that never mounts this — the pure-transport `gateway-svc` — exposes no
-//! `/metrics` at all (Go parity: the gateway binary carries no prometheus footprint).
+//! so scraping this process never picks up anything another library registered globally.
+//! A process lists this module iff it should serve `/metrics`: every module host does, and
+//! — since the single front door now measures its op traffic — so does `gateway-svc` (the
+//! earlier gateway exemption was Go parity that lost its rationale once peers stopped
+//! fronting HTTP).
 //!
 //! Two collectors, both labeled `{method, path, status}`:
 //! - `http_requests_total` — request count,
@@ -38,6 +44,7 @@ use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::Router;
+use lifecycle::{Context, Module};
 use prometheus::{
     Encoder, HistogramOpts, HistogramVec, IntCounterVec, Opts, Registry, TextEncoder, TEXT_FORMAT,
 };
@@ -51,14 +58,14 @@ const INFRA_PATHS: [&str; 3] = ["/healthz", "/readyz", "/metrics"];
 /// This process's own metrics: a PRIVATE registry plus the two labeled collectors, built
 /// once on first use. Deliberately NOT the global default registry, so nothing another
 /// crate registers globally leaks into our scrape and vice versa.
-struct Metrics {
+struct Collectors {
     registry: Registry,
     requests_total: IntCounterVec,
     request_duration: HistogramVec,
 }
 
-fn metrics() -> &'static Metrics {
-    static M: OnceLock<Metrics> = OnceLock::new();
+fn metrics() -> &'static Collectors {
+    static M: OnceLock<Collectors> = OnceLock::new();
     M.get_or_init(|| {
         let registry = Registry::new();
         let requests_total = IntCounterVec::new(
@@ -84,7 +91,7 @@ fn metrics() -> &'static Metrics {
         registry
             .register(Box::new(request_duration.clone()))
             .expect("register http_request_duration_seconds");
-        Metrics {
+        Collectors {
             registry,
             requests_total,
             request_duration,
@@ -92,14 +99,53 @@ fn metrics() -> &'static Metrics {
     })
 }
 
-/// Mounts the `/metrics` scrape route AND installs the recording middleware onto `router`,
-/// returning the wrapped router. `core/app` calls this once, after every module has merged
-/// its routes and `/healthz`/`/readyz` are added, so the layer wraps the WHOLE surface.
-/// A process that never calls this (the gateway) exposes no `/metrics` and records nothing.
-pub fn mount(router: Router) -> Router {
-    router
-        .route("/metrics", get(scrape))
-        .layer(middleware::from_fn(record))
+/// The metrics module: a core-infra [`Module`] listed in every process main. It requires
+/// nothing, holds no state (the collectors are a process-global built on first use), and
+/// runs only `init`.
+///
+/// `init` (a) mounts `GET /metrics` on the shared router (`ctx.mount`) and (b) contributes
+/// the recording layer to [`httpmw::LAYER_SLOT`]; `app::run` applies that layer over the
+/// whole rate-limited surface (so a `429` the limiter issues is still recorded) and skips
+/// the infra endpoints from recording. A process serves `/metrics` iff it lists this
+/// module — every module host does, and so does the `gateway-svc` front door (its op
+/// traffic is now measured).
+pub struct Metrics;
+
+impl Metrics {
+    pub fn new() -> Metrics {
+        Metrics
+    }
+}
+
+impl Default for Metrics {
+    fn default() -> Self {
+        Metrics::new()
+    }
+}
+
+#[async_trait::async_trait]
+impl Module for Metrics {
+    fn name(&self) -> &str {
+        "metrics"
+    }
+
+    /// Wire-only (default `Caps::NONE`): mount the scrape route and contribute the
+    /// recording layer. No `register`/`migrate`/`start`/`stop` — nothing to persist or run.
+    fn init(&self, ctx: &Context) -> anyhow::Result<()> {
+        // (a) The scrape route lands in the merged router; `app::run` later adds
+        // `/healthz`/`/readyz`, rate-limits, then applies the layer below — which exempts
+        // `/metrics` from recording (see `record`), so the scrape never self-counts.
+        ctx.mount(Router::new().route("/metrics", get(scrape)));
+
+        // (b) The recording layer. `app::run` drains `LAYER_SLOT` AFTER rate limiting, so
+        // this wraps the limiter and a `429` is still recorded. `Router::layer` runs the
+        // middleware AFTER routing, so `MatchedPath` is visible to `record`.
+        ctx.contribute(
+            httpmw::LAYER_SLOT,
+            httpmw::HttpLayer::new(|router: Router| router.layer(middleware::from_fn(record))),
+        );
+        Ok(())
+    }
 }
 
 /// The recording middleware. Reads the matched route pattern (falling back to `"unmatched"`),

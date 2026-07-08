@@ -33,6 +33,7 @@ async fn main() -> anyhow::Result<()> {
     // config (the provider) + messaging (the durable relay). messaging LAST for Stop
     // ordering (reverse) — delivery halts before config tears down.
     let mods: Vec<Box<dyn Module>> = vec![
+        Box::new(metrics::Metrics::new()), // core-infra: mounts GET /metrics + contributes the record layer
         Box::new(config::Config::new()),
         Box::new(messaging::Messaging::new()),
     ];

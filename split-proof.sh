@@ -900,34 +900,40 @@ fi
 echo "============================================"
 
 echo ""
-echo "========= HTTP METRICS (Step 12: private Prometheus registry + /metrics) ========="
-# The Prometheus scrape end-to-end on the split: characters-svc (A) mounted the metrics
-# middleware + GET /metrics (Config::from_env, a module host). Under the single front door
-# the /characters ops now route THROUGH gateway-svc over the mTLS QUIC edge, NOT A's HTTP
-# port, so A's HTTP surface sees only infra (skip-recorded) + unmatched paths. We fire ONE
-# recorded non-infra request directly at A (a 404, labeled path="unmatched") so its private
-# registry has an http_requests_total child to render -- proving the domain-svc middleware +
-# private registry + scrape all work. gateway-svc (G) opts out (without_metrics, Go parity:
-# the front door carries no prometheus), so its /metrics is 404.
-echo "[MX0] fire one recorded non-infra request at characters-svc to populate its counter"
-curl -s -o /dev/null "http://localhost:$A_PORT/__metrics_probe" || true
-echo "[MX1] GET http://localhost:$A_PORT/metrics on characters-svc -> 200 + http_requests_total present"
+echo "========= HTTP METRICS (private Prometheus registry + /metrics, now a core-infra module) ========="
+# metrics is now a lifecycle Module listed in EVERY main (the Config::without_metrics flag
+# is gone). Two proofs:
+#  - MX1 (peer pipeline): characters-svc (A) serves GET /metrics from its private registry.
+#    Under the single front door the /characters ops route THROUGH gateway-svc over the mTLS
+#    QUIC edge, NOT A's HTTP port, so A's HTTP surface sees only infra (skip-recorded). We
+#    fire ONE recorded non-infra request at A (a 404, labeled path="unmatched") so A's own
+#    counter has an http_requests_total child to render.
+#  - MX2 (the point of this change): gateway-svc (G) now lists the metrics module too, so
+#    GET /metrics is 200 (was 404 under without_metrics) AND records the op traffic that
+#    flowed through the front door during the assertions above. G dispatches ops via an axum
+#    FALLBACK (no per-op route), so they carry no MatchedPath and record under
+#    path="unmatched" -- but they ARE measured now, with real 2xx statuses.
+echo "[MX1] GET http://localhost:$A_PORT/metrics on characters-svc -> 200 + http_requests_total (peer pipeline)"
+curl -s -o /dev/null "http://localhost:$A_PORT/__metrics_probe" || true  # one recorded non-infra hit -> a counter child
 MX1="$(curl -s -w $'\n%{http_code}' "http://localhost:$A_PORT/metrics")"
 MX1BODY="$(echo "$MX1" | sed '$d')"; MX1CODE="$(echo "$MX1" | tail -1)"
 echo "    -> HTTP $MX1CODE  (body $(echo -n "$MX1BODY" | wc -c) bytes)"
 if [ "$MX1CODE" = "200" ] && echo "$MX1BODY" | grep -q 'http_requests_total'; then
-    pass "characters-svc /metrics -> 200 with http_requests_total (private registry recorded real requests)"
+    pass "characters-svc /metrics -> 200 with http_requests_total (peer private registry serves the scrape)"
 else
     fail "characters-svc /metrics expected 200 containing http_requests_total, got $MX1CODE"
 fi
 
-echo "[MX2] GET http://localhost:$G_PORT/metrics on gateway-svc -> 404 (without_metrics; front door has no scrape)"
-MX2="$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:$G_PORT/metrics")"
-echo "    -> HTTP $MX2"
-if [ "$MX2" = "404" ]; then
-    pass "gateway-svc /metrics -> 404 (no prometheus on the front door, Go parity)"
+echo "[MX2] GET http://localhost:$G_PORT/metrics on gateway-svc -> 200 + a 2xx op line (front door now MEASURED)"
+MX2="$(curl -s -w $'\n%{http_code}' "http://localhost:$G_PORT/metrics")"
+MX2BODY="$(echo "$MX2" | sed '$d')"; MX2CODE="$(echo "$MX2" | tail -1)"
+echo "    -> HTTP $MX2CODE  (body $(echo -n "$MX2BODY" | wc -c) bytes)"
+if [ "$MX2CODE" = "200" ] \
+   && echo "$MX2BODY" | grep -q 'http_requests_total' \
+   && echo "$MX2BODY" | grep -qE 'http_requests_total\{.*status="2[0-9][0-9]"'; then
+    pass "gateway-svc /metrics -> 200 recording real op traffic with 2xx statuses (metrics is now a core-infra module; front door measured)"
 else
-    fail "gateway-svc /metrics expected 404, got $MX2"
+    fail "gateway-svc /metrics expected 200 with a 2xx http_requests_total op line, got $MX2CODE"
 fi
 
 echo "============================================"

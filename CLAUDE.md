@@ -93,8 +93,10 @@ module never knows the topology.
 3. In `init`: contribute ops to the `opsapi` slots, edge faces to `edge::EDGE_SLOT`
    (own glue), admin item to `adminapi::SLOT`; subscribe with `on_tx`. Emit with
    `emit_tx` inside your store tx.
-4. New `cmd/<name>-svc` (copy an existing domain svc main: module + messaging + a
-   `remote::Stub` per capability it consumes). It hosts NO gateway (FrontDoor) — the
+4. New `cmd/<name>-svc` (copy an existing domain svc main: the `metrics` core-infra
+   module + your module + messaging + a `remote::Stub` per capability it consumes —
+   every main lists `metrics::Metrics::new()` for `GET /metrics`). It hosts NO gateway
+   (FrontDoor) — the
    single public front door lives only in `cmd/gateway-svc` + `cmd/server` (monolith);
    the svc serves its ops ONLY over the internal mTLS edge and gateway-svc dispatches to
    it Remote (so it needs no accounts stub for a verifier). Register the module in
@@ -209,7 +211,8 @@ core/                      # foundations — never import modules or api/ crates
   edge/                    #   internal mTLS QUIC + player plane + EDGE_SLOT
   outbox/ messaging/       #   durable plane: outbox relay; transport module
   remote/                  #   generic Stub (factories injected by cmd roots)
-  metrics/ httpmw/         #   Prometheus /metrics; rate limit + XFF + readyz
+  metrics/                 #   infra Module: GET /metrics + record layer — list in every main
+  httpmw/                  #   rate limit + XFF + readyz + LAYER_SLOT (HTTP layer drain)
 api/<name>/                # contract surface per domain
   <name>api/               #   pure #[rpc] traits + ops/bindings (transport-free)
   <name>events/            #   bus::define descriptors + payloads

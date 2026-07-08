@@ -43,13 +43,6 @@ pub struct Config {
     /// Player-facing QUIC listen address, e.g. `:9100` (`PLAYER_EDGE_ADDR`) — only
     /// used when a player server is passed to [`run`].
     pub player_edge_addr: String,
-    /// Whether [`run`] mounts the Prometheus HTTP metrics middleware + `GET /metrics`
-    /// (Go's `metrics.Middleware` + scrape). Defaults `true`; the pure-transport
-    /// `gateway-svc` opts OUT via [`Config::without_metrics`] so it exposes no `/metrics`
-    /// and records nothing (Go parity: the gateway binary carries no prometheus). This is
-    /// deliberately INDEPENDENT of `database_url` — a DB-less-but-module-hosting process
-    /// like `admin-svc` still serves metrics; only the front door is exempt.
-    pub metrics_enabled: bool,
     /// The DEFAULT per-IP rate limit `(rps, burst)` applied when `RATE_LIMIT_RPS` is
     /// unset. `None` (the [`Config::from_env`] default) means **opt-in/off** — a
     /// module-hosting process (the monolith, each `*-svc`) runs behind the gateway, so
@@ -80,16 +73,6 @@ impl Config {
     pub fn without_db(self) -> Config {
         Config {
             database_url: None,
-            ..self
-        }
-    }
-
-    /// Opts OUT of the Prometheus HTTP metrics: [`run`] mounts neither the recording
-    /// middleware nor `GET /metrics`, so the process exposes no scrape (Go parity — only
-    /// the `gateway-svc` front door uses this).
-    pub fn without_metrics(self) -> Config {
-        Config {
-            metrics_enabled: false,
             ..self
         }
     }
@@ -130,7 +113,6 @@ impl Config {
             listen_addr: normalize_addr(port.as_deref().unwrap_or_default()),
             edge_addr,
             player_edge_addr,
-            metrics_enabled: true,
             rate_limit_default: None,
         }
     }
@@ -192,6 +174,24 @@ fn apply_edge_registrations(ctx: &Context, server: &mut edge::Server) -> usize {
         reg.apply(server);
     }
     regs.len()
+}
+
+/// Applies every [`httpmw::HttpLayer`] contributed to [`httpmw::LAYER_SLOT`] onto `router`,
+/// in CONTRIBUTION ORDER (first contributed = innermost, last = outermost), returning the
+/// wrapped router. Called by [`run`] AFTER the merged router is rate-limited, so a
+/// contributed layer (the `metrics` recorder) wraps the limiter and records the `429`s it
+/// issues. Each contribution is one-shot ([`httpmw::HttpLayer::apply`] consumes the
+/// closure), so a re-drain cannot double-wrap. A process with no contributor (none list the
+/// `metrics` module) gets the router back unchanged.
+fn apply_http_layers(ctx: &Context, mut router: axum::Router) -> axum::Router {
+    let layers = ctx.contributions::<httpmw::HttpLayer>(httpmw::LAYER_SLOT);
+    for layer in &layers {
+        router = layer.apply(router);
+    }
+    if !layers.is_empty() {
+        tracing::info!(applied = layers.len(), "applied contributed HTTP layers");
+    }
+    router
 }
 
 /// Boots a service from a static list of modules. Opens the DB (when configured),
@@ -344,12 +344,6 @@ pub async fn run(
             }),
         );
 
-    // Mount the Prometheus HTTP metrics LAST, over the whole surface (module routes +
-    // healthz/readyz), so the recording layer wraps everything and `GET /metrics` scrapes
-    // this process's private registry. Skipped when a process opts out
-    // (`Config::without_metrics`) — the `gateway-svc` front door, Go parity. The layer
-    // labels each request by its MATCHED route pattern (cardinality guard) and exempts the
-    // infra endpoints from recording (see `core/metrics`).
     // Rate limiting (Step 13): OPT-IN for module hosts (`RATE_LIMIT_RPS` default 0 = off —
     // a split peer runs BEHIND the gateway, so limiting here would double-count and
     // collapse every client into the gateway's single bucket), ALWAYS on for the gateway
@@ -375,11 +369,15 @@ pub async fn run(
         router
     };
 
-    let router = if cfg.metrics_enabled {
-        metrics::mount(router)
-    } else {
-        router
-    };
+    // Apply every contributed HTTP layer (`httpmw::LAYER_SLOT`) LAST, over the whole
+    // rate-limited surface, in contribution order. This is where the `metrics` module's
+    // recording layer lands (it also mounted `GET /metrics` during init): applied AFTER the
+    // rate limiter, it wraps it, so a `429` the limiter issues is still recorded — Go's
+    // `metrics(ratelimit(mux))`. A process serves `/metrics` iff it listed the `metrics`
+    // module (was `Config::without_metrics`, now module presence). The layer labels each
+    // request by its MATCHED route pattern and exempts the infra endpoints (see
+    // `core/metrics`). The QUIC planes are NOT wrapped (HTTP-plane concern).
+    let router = apply_http_layers(&ctx, router);
 
     let bind = to_bind_addr(&cfg.listen_addr);
     let listener = tokio::net::TcpListener::bind(&bind)
