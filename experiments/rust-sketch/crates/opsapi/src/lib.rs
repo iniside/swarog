@@ -115,7 +115,13 @@ pub trait Caller: Send + Sync {
 /// 404 from a 403 from a 503; the generated response envelope carries a `Status` so
 /// the gateway maps a domain failure onto the right HTTP status instead of
 /// collapsing everything to 500.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+///
+/// `Serialize`/`Deserialize` are derived because the generated RPC response
+/// envelope (Step 5's `#[rpc]` macro) carries a `Status` field INSIDE the payload
+/// — the domain outcome rides in the envelope, distinct from an edge-level
+/// transport failure. serde encodes each variant by its name (a self-consistent
+/// Rust-only wire; both ends are macro-generated).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Status {
     /// Success; a response carrying it has no error.
     Ok,

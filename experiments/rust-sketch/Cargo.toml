@@ -9,6 +9,8 @@ members = [
     "crates/edge",
     "crates/edgeca",
     "crates/app",
+    "crates/rpc-macro",
+    "crates/rpc-macro-tests",
 ]
 
 [workspace.package]
@@ -39,6 +41,11 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 rustls-pemfile = "2"
 rcgen = "0.13"
 
+# proc-macro toolchain for the `#[rpc]` codegen crate (Step 5).
+syn = { version = "2", features = ["full", "extra-traits"] }
+quote = "1"
+proc-macro2 = "1"
+
 # Internal foundation crates (leaves import only each other, never a module).
 registry = { path = "crates/registry" }
 contrib = { path = "crates/contrib" }
@@ -47,3 +54,4 @@ lifecycle = { path = "crates/lifecycle" }
 opsapi = { path = "crates/opsapi" }
 edge = { path = "crates/edge" }
 app = { path = "crates/app" }
+rpc-macro = { path = "crates/rpc-macro" }

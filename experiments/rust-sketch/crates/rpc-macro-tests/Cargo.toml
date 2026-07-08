@@ -1,0 +1,23 @@
+[package]
+name = "rpc-macro-tests"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# A behavioural harness for the `#[rpc]` proc-macro: a proc-macro crate cannot test
+# its own expansion, so this sibling applies `#[rpc]` to a sample trait and exercises
+# the generated Client / register_server / operations end-to-end (over real edge QUIC
+# and via the gateway decode/invoke/encode glue).
+
+[dependencies]
+
+[dev-dependencies]
+rpc-macro = { workspace = true }
+opsapi = { workspace = true }
+edge = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
