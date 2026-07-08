@@ -1,0 +1,45 @@
+# verify.ps1 -- the umbrella verification gate for the rust-sketch (Step 12).
+#
+# Runs, in order, keeping going after a failure so the summary is complete:
+#   1. cargo build            (whole workspace)
+#   2. cargo clippy           (--all-targets, -D warnings: any lint FAILS)
+#   3. cargo test             (whole workspace: unit + rpc-macro edge round-trip)
+#   4. split proof            (.\split-proof.ps1 -- the TWO-PROCESS topology proof)
+#
+# Prints a PASS/FAIL summary and exits non-zero if ANY stage failed. The split proof
+# is the point: it exercises the SPLIT microservices (A=characters-svc, B=inventory-
+# svc) over real HTTP/QUIC, not the monolith.
+#
+# ASCII only -- PowerShell 5.1 chokes on em-dashes.
+
+[CmdletBinding()]
+param()
+Set-Location -Path $PSScriptRoot
+
+$names   = @()
+$results = @()
+
+function Run-Stage([string]$Name, [scriptblock]$Action) {
+    Write-Host ''
+    Write-Host ">>> $Name"
+    & $Action
+    $ok = ($LASTEXITCODE -eq 0)
+    $script:names   += $Name
+    $script:results += ($(if ($ok) { 'PASS' } else { 'FAIL' }))
+}
+
+Run-Stage 'build'       { cargo build --workspace }
+Run-Stage 'clippy'      { cargo clippy --workspace --all-targets -- -D warnings }
+Run-Stage 'test'        { cargo test --workspace }
+Run-Stage 'split-proof' { & (Join-Path $PSScriptRoot 'split-proof.ps1') }
+
+Write-Host ''
+Write-Host '==================== VERIFY SUMMARY ===================='
+$overall = 0
+for ($i = 0; $i -lt $names.Count; $i++) {
+    '  {0,-6} {1}' -f $results[$i], $names[$i] | Write-Host
+    if ($results[$i] -eq 'FAIL') { $overall = 1 }
+}
+Write-Host '======================================================='
+if ($overall -eq 0) { Write-Host 'VERIFY: PASS' } else { Write-Host 'VERIFY: FAIL' }
+exit $overall

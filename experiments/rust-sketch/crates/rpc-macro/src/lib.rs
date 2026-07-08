@@ -500,10 +500,18 @@ fn gen_request_struct(m: &MethodModel) -> TokenStream2 {
 
 fn gen_response_struct(m: &MethodModel) -> TokenStream2 {
     let name = format_ident!("{}Response", m.pascal);
-    let value_field = m.value_ty.as_ref().map(|t| {
+    // The value is carried as a raw `serde_json::Value` (defaulting to `null`), NOT a
+    // typed `Option<T>`. A typed `Option<T>` collapses `Some(None)` → `null` → `None`
+    // on the round-trip, so a method returning `Option<U>` (e.g. `owner_of` →
+    // `Ok(None)`) could not be distinguished from a missing value — the client would
+    // mistake a legitimate `None` for a transport/internal error. A raw `Value`
+    // preserves `null` faithfully; the client deserializes it into the method's real
+    // return type (where `null` → `None` for an `Option` return). Wire bytes are
+    // identical to the old typed field for every non-`None` case.
+    let value_field = m.value_ty.as_ref().map(|_| {
         quote! {
             #[serde(default)]
-            pub value: ::core::option::Option<#t>,
+            pub value: ::serde_json::Value,
         }
     });
     quote! {
@@ -531,9 +539,14 @@ fn gen_client_method(m: &MethodModel) -> TokenStream2 {
         None => quote! { ::core::option::Option::None },
     };
 
-    let ret_expr = if m.value_ty.is_some() {
+    let ret_expr = if let Some(vty) = &m.value_ty {
+        // `status == Ok` was already checked above, so `resp.value` carries the real
+        // return value (possibly `null` for an `Option` return). Deserialize the raw
+        // `Value` into the method's declared type — `null` → `None` faithfully.
         quote! {
-            resp.value.ok_or_else(|| ::opsapi::Error::internal("rpc: response missing return value"))
+            let __ret: #vty = ::serde_json::from_value(resp.value)
+                .map_err(|__e| ::opsapi::Error::internal(__e.to_string()))?;
+            ::core::result::Result::Ok(__ret)
         }
     } else {
         quote! { ::core::result::Result::Ok(()) }
@@ -564,12 +577,17 @@ fn response_arms(m: &MethodModel) -> TokenStream2 {
             ::core::result::Result::Ok(__v) => #resp_name {
                 status: ::opsapi::Status::Ok,
                 err: ::std::string::String::new(),
-                value: ::core::option::Option::Some(__v),
+                // Serialize the return value into the envelope's raw `Value`. This
+                // preserves `None` for an `Option` return as JSON `null` (rather than
+                // collapsing it into a missing field). Serialization of a well-formed
+                // `Serialize` domain type is infallible; a `null` fallback is a safe
+                // floor that the client would surface as an internal error.
+                value: ::serde_json::to_value(&__v).unwrap_or(::serde_json::Value::Null),
             },
             ::core::result::Result::Err(__e) => #resp_name {
                 status: __e.status,
                 err: __e.msg,
-                value: ::core::option::Option::None,
+                value: ::serde_json::Value::Null,
             },
         }
     } else {

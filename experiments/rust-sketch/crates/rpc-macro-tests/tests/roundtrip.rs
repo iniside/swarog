@@ -61,6 +61,13 @@ pub trait Sample: Send + Sync {
     /// Wire-only (no `#[http]`), unauthenticated: no identity param, marshals all
     /// args. Mirrors characters' `OwnerOf`.
     async fn owner_of(&self, character_id: String) -> Result<Owner, Error>;
+
+    /// Wire-only method returning an `Option<T>` — the exact shape of characters'
+    /// real `Ownership::owner_of` (`Result<Option<String>, Error>`). This is the
+    /// regression probe for the response-envelope `Option<Option<T>>` collapse: an
+    /// `Ok(None)` MUST round-trip as a genuine `None`, NOT surface as a transport /
+    /// internal error.
+    async fn find_owner(&self, character_id: String) -> Result<Option<String>, Error>;
 }
 
 // --- A concrete impl --------------------------------------------------------
@@ -111,6 +118,13 @@ impl Sample for SampleImpl {
             player_id: format!("owner-of-{character_id}"),
             ok: true,
         })
+    }
+
+    async fn find_owner(&self, character_id: String) -> Result<Option<String>, Error> {
+        if character_id == "absent" {
+            return Ok(None);
+        }
+        Ok(Some(format!("owner-of-{character_id}")))
     }
 }
 
@@ -169,6 +183,14 @@ async fn client_server_roundtrip_over_edge() {
         .await
         .unwrap_err();
     assert_eq!(err.status, Status::Forbidden);
+
+    // Option<T> return round-trip (the response-envelope collapse regression). Both a
+    // present value AND a genuine `None` must survive the QUIC round-trip — the `None`
+    // as `Ok(None)`, never as a transport/internal error.
+    let some = client.find_owner("c1".into()).await.unwrap();
+    assert_eq!(some, Some("owner-of-c1".to_string()));
+    let none = client.find_owner("absent".into()).await.unwrap();
+    assert_eq!(none, None, "Ok(None) must round-trip as None, not an error");
 
     client_close(&client);
     running.close();
