@@ -2,6 +2,7 @@ using System.Buffers.Binary;
 using System.Net;
 using System.Net.Quic;
 using System.Net.Security;
+using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
@@ -28,13 +29,23 @@ public sealed class QuicPlayerClient : IPlayerTransport, IAsyncDisposable
     private QuicPlayerClient(QuicConnection conn) => _conn = conn;
 
     /// <summary>
-    /// Establishes the persistent QUIC connection. <paramref name="insecure"/> = dev
-    /// trust-any (accept any server cert, no CA file needed — pairs with the server's
-    /// ephemeral-CA auto-gen). The prod-like CA-pinning path is added in Step 4.
+    /// Establishes the persistent QUIC connection. Two trust modes, exactly one of
+    /// which applies:
+    /// <list type="bullet">
+    /// <item><paramref name="insecure"/> = <c>true</c> — dev trust-any (accept any
+    /// server cert, no CA file needed; pairs with the server's ephemeral-CA auto-gen).</item>
+    /// <item><paramref name="insecure"/> = <c>false</c> — prod-like CA pinning:
+    /// <paramref name="caCertPath"/> is REQUIRED and the server chain is validated
+    /// against ONLY that CA (custom root trust, no system-roots fallback — mirrors the
+    /// Rust <c>TrustAnchor</c> with exactly one anchor).</item>
+    /// </list>
+    /// Either way the client presents NO client certificate (the player plane is
+    /// server-cert-only; the caller is authenticated per-call by the bearer token).
     /// </summary>
     public static async Task<QuicPlayerClient> ConnectAsync(
         string host,
         int port,
+        string? caCertPath,
         bool insecure,
         CancellationToken ct = default)
     {
@@ -50,7 +61,17 @@ public sealed class QuicPlayerClient : IPlayerTransport, IAsyncDisposable
             TargetHost = "localhost",
         };
         if (insecure)
+        {
             ssl.RemoteCertificateValidationCallback = static (_, _, _, _) => true;
+        }
+        else
+        {
+            if (string.IsNullOrEmpty(caCertPath))
+                throw new ArgumentException(
+                    "prod mode requires a CA certificate path (caCertPath); pass insecure:true for dev trust-any.",
+                    nameof(caCertPath));
+            ssl.RemoteCertificateValidationCallback = PinToCa(caCertPath);
+        }
         // No ClientCertificates: the player plane is server-cert-only.
 
         var opts = new QuicClientConnectionOptions
@@ -63,6 +84,35 @@ public sealed class QuicPlayerClient : IPlayerTransport, IAsyncDisposable
 
         var conn = await QuicConnection.ConnectAsync(opts, ct).ConfigureAwait(false);
         return new QuicPlayerClient(conn);
+    }
+
+    /// <summary>
+    /// Builds a server-cert validation callback that pins to exactly the CA loaded
+    /// from <paramref name="caCertPath"/> (a PEM CERTIFICATE — the same anchor
+    /// <c>edgeca</c> writes and Rust's <c>TrustAnchor::load_cert_only</c> reads). The
+    /// server chain must chain to that one root: <see cref="X509ChainTrustMode.CustomRootTrust"/>
+    /// with a single custom trust anchor and NO system-roots fallback, revocation
+    /// checking off (the ephemeral dev CA publishes no CRL/OCSP).
+    /// </summary>
+    private static RemoteCertificateValidationCallback PinToCa(string caCertPath)
+    {
+        // Load the CA cert once (cert-only PEM; no private key — a player holds only
+        // the anchor). CreateFromPem(certPem) loads the CERTIFICATE alone; the *FromPemFile
+        // and two-arg overloads insist on a matching private key, which an anchor lacks.
+        string pem = File.ReadAllText(caCertPath);
+        X509Certificate2 caCert = X509Certificate2.CreateFromPem(pem);
+
+        return (_, serverCert, _, _) =>
+        {
+            if (serverCert is null)
+                return false;
+            using var leaf = new X509Certificate2(serverCert);
+            using var chain = new X509Chain();
+            chain.ChainPolicy.TrustMode = X509ChainTrustMode.CustomRootTrust;
+            chain.ChainPolicy.CustomTrustStore.Add(caCert);
+            chain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
+            return chain.Build(leaf);
+        };
     }
 
     /// <inheritdoc/>
