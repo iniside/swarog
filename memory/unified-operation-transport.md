@@ -52,6 +52,12 @@ HTTP-proxy-to-backend-front-handler. HTTP-native (`/admin*`, `/accounts/epic/*`)
 through :8082 (POST :8082/accounts/register→201, un-proxied, only reachable via the edge op).
 Status: `docs/2026-07-07-2145-gateway-svc-single-front-door-status.md`.
 
-**Still future (honest):** the player-facing `:9100` QUIC front is an unauthenticated
+**Still future in GO (honest):** the Go `:9100` QUIC front is an unauthenticated
 native-client prefix relay (no bearer→identity at the QUIC edge) — the authenticated single
 gateway is the :8082 HTTP front door. See [[durable-event-plane-bus-owned]], [[scope-claims-to-what-was-verified]].
+
+**The RUST sketch closed this gap 2026-07-08** ([[rust-sketch-split-verified-m1]]): its
+gateway-svc player QUIC front is server-cert-only TLS (players can handshake, no client
+cert), bearer verified at the front against the op's `AuthReq`, and route-table
+allow-listed (no blind prefix relay; wire-only methods unreachable). If the Go `:9100`
+front is ever finished, port that design back rather than re-deriving it.
