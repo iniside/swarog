@@ -9,7 +9,7 @@
 #
 # Prints a PASS/FAIL summary and exits non-zero if ANY stage failed. The split proof
 # is the point: it exercises the SPLIT microservices (A=characters-svc, B=inventory-
-# svc, C=config-svc, D=accounts-svc, G=gateway-svc) over real HTTP/QUIC, not the monolith. The fortress
+# svc, C=config-svc, D=accounts-svc, G=gateway-svc, E=admin-svc) over real HTTP/QUIC, not the monolith. The fortress
 # stage (Step 5) enforces the dependency law via archcheck.
 #
 # ASCII only -- PowerShell 5.1 chokes on em-dashes.
@@ -33,7 +33,7 @@ function Run-Stage([string]$Name, [scriptblock]$Action) {
 Run-Stage 'build'       { cargo build --workspace }
 Run-Stage 'clippy'      { cargo clippy --workspace --all-targets -- -D warnings }
 Run-Stage 'test'        { cargo test --workspace }
-Run-Stage 'fortress'    { cargo build -p server -p characters-svc -p inventory-svc -p gateway-svc -p config-svc -p accounts-svc; if ($LASTEXITCODE -eq 0) { cargo run -q -p archcheck } }
+Run-Stage 'fortress'    { cargo build -p server -p characters-svc -p inventory-svc -p gateway-svc -p config-svc -p accounts-svc -p admin-svc; if ($LASTEXITCODE -eq 0) { cargo run -q -p archcheck } }
 Run-Stage 'split-proof' { & (Join-Path $PSScriptRoot 'split-proof.ps1') }
 
 Write-Host ''

@@ -10,7 +10,7 @@
 #
 # Prints a PASS/FAIL summary and exits non-zero if ANY stage failed. The split proof
 # is the point: it exercises the SPLIT microservices (A=characters-svc, B=inventory-
-# svc, C=config-svc, D=accounts-svc, G=gateway-svc) over real HTTP/QUIC, not the monolith. The
+# svc, C=config-svc, D=accounts-svc, G=gateway-svc, E=admin-svc) over real HTTP/QUIC, not the monolith. The
 # fortress stage (Step 5) enforces the dependency law: every domain module boots as
 # its own -svc and no module imports another module's impl or a foreign <name>rpc.
 #
@@ -37,7 +37,7 @@ run_stage() {
 # and archcheck enforces the dependency law (no module->module / module->foreign-rpc
 # edge, no resurrected Option<edge::Server> under modules/).
 fortress() {
-    cargo build -p server -p characters-svc -p inventory-svc -p gateway-svc -p config-svc -p accounts-svc \
+    cargo build -p server -p characters-svc -p inventory-svc -p gateway-svc -p config-svc -p accounts-svc -p admin-svc \
         && cargo run -q -p archcheck
 }
 

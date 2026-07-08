@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # split-proof.sh -- the SPLIT-topology proof for the rust-sketch (Steps 12 + 8).
 #
-# This is the whole point of the milestone: it exercises the FIVE-PROCESS split
+# This is the whole point of the milestone: it exercises the SIX-PROCESS split
 # (characters-svc = A on :8080 / edge :9000, inventory-svc = B on :8081 / edge :9001,
 # gateway-svc = G on :8082 / player QUIC :9100, config-svc = C on :8083 / edge :9002,
-# accounts-svc = D on :8084 / edge :9003),
+# accounts-svc = D on :8084 / edge :9003, admin-svc = E on :8085),
 # NOT the monolith, driving the real
 # player flows over HTTP (through the gateway front-door with a REAL bearer minted
 # by register+login through the front -- Step 6 replaced the dev-<uuid> tokens),
@@ -77,6 +77,7 @@ B_PORT=8081
 G_PORT=8082
 C_PORT=8083
 D_PORT=8084
+E_PORT=8085
 EDGE_PORT=9000
 B_EDGE_PORT=9001
 C_EDGE_PORT=9002
@@ -86,12 +87,18 @@ PLAYER_PORT=9100
 DEFAULT_DSN="postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable"
 DATABASE_URL="${DATABASE_URL:-$DEFAULT_DSN}"
 
+# Basic-auth creds for the admin portal (admin-svc runs WITH them, so the negative
+# no-auth assertion returns 401 and the positive assertion supplies them).
+ADMIN_USER="proofadmin"
+ADMIN_PASS="proofpass"
+
 FAILS=0
 A_PID=""
 B_PID=""
 G_PID=""
 C_PID=""
 D_PID=""
+E_PID=""
 M_PID=""
 
 note()  { echo "[proof] $*"; }
@@ -138,8 +145,9 @@ teardown() {
     [ -n "$G_PID" ] && kill "$G_PID" 2>/dev/null && note "stopped G (pid $G_PID)"
     [ -n "$C_PID" ] && kill "$C_PID" 2>/dev/null && note "stopped C (pid $C_PID)"
     [ -n "$D_PID" ] && kill "$D_PID" 2>/dev/null && note "stopped D (pid $D_PID)"
+    [ -n "$E_PID" ] && kill "$E_PID" 2>/dev/null && note "stopped E (pid $E_PID)"
     [ -n "$M_PID" ] && kill "$M_PID" 2>/dev/null && note "stopped monolith (pid $M_PID)"
-    A_PID=""; B_PID=""; G_PID=""; C_PID=""; D_PID=""; M_PID=""
+    A_PID=""; B_PID=""; G_PID=""; C_PID=""; D_PID=""; E_PID=""; M_PID=""
 }
 trap teardown EXIT INT TERM
 
@@ -152,6 +160,7 @@ kill_stragglers() {
         taskkill //F //IM gateway-svc.exe >/dev/null 2>&1 || true
         taskkill //F //IM config-svc.exe >/dev/null 2>&1 || true
         taskkill //F //IM accounts-svc.exe >/dev/null 2>&1 || true
+        taskkill //F //IM admin-svc.exe >/dev/null 2>&1 || true
         taskkill //F //IM server.exe >/dev/null 2>&1 || true
     fi
     pkill -f "characters-svc" 2>/dev/null || true
@@ -159,6 +168,7 @@ kill_stragglers() {
     pkill -f "gateway-svc"    2>/dev/null || true
     pkill -f "config-svc"     2>/dev/null || true
     pkill -f "accounts-svc"   2>/dev/null || true
+    pkill -f "admin-svc"      2>/dev/null || true
     pkill -f "target/debug/server" 2>/dev/null || true
 }
 
@@ -174,8 +184,8 @@ wait_healthy() {
 }
 
 # ============================================================================
-note "building edgeca + characters-svc + inventory-svc + gateway-svc + config-svc + accounts-svc + playercli + server ..."
-if ! cargo build -p edgeca -p characters-svc -p inventory-svc -p gateway-svc -p config-svc -p accounts-svc -p playercli -p server; then
+note "building edgeca + characters-svc + inventory-svc + gateway-svc + config-svc + accounts-svc + admin-svc + playercli + server ..."
+if ! cargo build -p edgeca -p characters-svc -p inventory-svc -p gateway-svc -p config-svc -p accounts-svc -p admin-svc -p playercli -p server; then
     echo "build failed"; exit 1
 fi
 PLAYERCLI="$BIN_DIR/playercli$EXE"
@@ -256,6 +266,10 @@ wait_healthy "$B_PORT" "B (inventory-svc)" || { echo "B failed to start"; exit 1
 # :9100. No DB (without_db), no provider modules: only remote::Stubs, so EVERY op it
 # fronts resolves Remote and is dialed over the mTLS edge to A (:9000) / B (:9001). It
 # needs the shared CA to dial peers AND to derive the player-front server cert.
+# G ALSO fronts the browser flows via HTTP passthrough (Step 7): /admin -> admin-svc
+# (E, :8085) and /accounts/epic -> accounts-svc (D). Typed /accounts ops
+# (register/login/me) still route Remote as before; only the non-op /admin +
+# /accounts/epic prefixes hit the reverse proxy.
 note "starting G (gateway-svc) on :$G_PORT, player QUIC :$PLAYER_PORT ..."
 env PORT=":$G_PORT" \
     PLAYER_EDGE_ADDR=":$PLAYER_PORT" \
@@ -263,9 +277,26 @@ env PORT=":$G_PORT" \
     CHARACTERS_EDGE_ADDR="127.0.0.1:$EDGE_PORT" \
     INVENTORY_EDGE_ADDR="127.0.0.1:$B_EDGE_PORT" \
     ACCOUNTS_EDGE_ADDR="127.0.0.1:$D_EDGE_PORT" \
+    ADMIN_HTTP_ADDR="127.0.0.1:$E_PORT" \
+    ACCOUNTS_HTTP_ADDR="127.0.0.1:$D_PORT" \
     "$BIN_DIR/gateway-svc$EXE" >"$RUN_DIR/gateway.out.log" 2>"$RUN_DIR/gateway.err.log" &
 G_PID=$!
 wait_healthy "$G_PORT" "G (gateway-svc)" || { echo "G failed to start"; exit 1; }
+
+# --- start E (admin-svc): the admin portal fortress -- HTTP :8085, no DB, no edge --
+# It DIALS all four provider edges (A/B/C/D) to fan out their admin pages over QUIC;
+# ADMIN_USER/ADMIN_PASS gate the portal so the negative no-auth assertion is 401.
+note "starting E (admin-svc) on :$E_PORT ..."
+env PORT=":$E_PORT" \
+    EDGE_CA_CERT="$CA_CERT" EDGE_CA_KEY="$CA_KEY" \
+    CHARACTERS_EDGE_ADDR="127.0.0.1:$EDGE_PORT" \
+    INVENTORY_EDGE_ADDR="127.0.0.1:$B_EDGE_PORT" \
+    CONFIG_EDGE_ADDR="127.0.0.1:$C_EDGE_PORT" \
+    ACCOUNTS_EDGE_ADDR="127.0.0.1:$D_EDGE_PORT" \
+    ADMIN_USER="$ADMIN_USER" ADMIN_PASS="$ADMIN_PASS" \
+    "$BIN_DIR/admin-svc$EXE" >"$RUN_DIR/admin.out.log" 2>"$RUN_DIR/admin.err.log" &
+E_PID=$!
+wait_healthy "$E_PORT" "E (admin-svc)" || { echo "E failed to start"; exit 1; }
 
 RUN_SUFFIX="$(new_uuid | cut -c1-8)"
 
@@ -473,6 +504,39 @@ else
 fi
 
 echo ""
+echo "========= ADMIN PORTAL (gateway-svc passthrough -> admin-svc -> providers over edge) ========="
+# The admin fan-out end-to-end: a browser hits gateway-svc :8082 /admin, which
+# reverse-proxies (Step 7 passthrough) to admin-svc :8085, which fetches each
+# provider's admin page over the mTLS QUIC edge. The characters page must render a
+# character CREATED on characters-svc -- proving the data crossed TWO process hops
+# (G's HTTP passthrough -> E, then E's admin.adminData -> A over QUIC).
+APROOF="AdminProof-$RUN_SUFFIX"
+echo "[AD0] create a character named $APROOF on A (for the admin table assertion)"
+ACID="$(curl -s -X POST "http://localhost:$A_PORT/characters" \
+    -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+    -d "{\"name\":\"$APROOF\",\"class\":\"ranger\"}" | grep -o '"id":"[^"]*"' | head -1 | sed 's/"id":"//;s/"//')"
+[ -n "$ACID" ] && pass "admin-proof character created (id=$ACID)" || fail "admin-proof character not created"
+
+echo "[AD1] GET http://localhost:$G_PORT/admin WITHOUT Basic auth -> 401 (ADMIN_USER set on E)"
+AN="$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:$G_PORT/admin")"
+echo "    -> HTTP $AN"
+if [ "$AN" = "401" ]; then
+    pass "unauthenticated /admin -> 401 through the passthrough (Basic-auth gate live on admin-svc)"
+else
+    fail "unauthenticated /admin expected 401, got $AN"
+fi
+
+echo "[AD2] GET http://localhost:$G_PORT/admin/characters WITH Basic auth -> 200 + contains $APROOF"
+AD="$(curl -s -w $'\n%{http_code}' -u "$ADMIN_USER:$ADMIN_PASS" "http://localhost:$G_PORT/admin/characters")"
+ADBODY="$(echo "$AD" | sed '$d')"; ADCODE="$(echo "$AD" | tail -1)"
+echo "    -> HTTP $ADCODE  (body $(echo -n "$ADBODY" | wc -c) bytes)"
+if [ "$ADCODE" = "200" ] && echo "$ADBODY" | grep -q "$APROOF"; then
+    pass "admin /admin/characters renders $APROOF cross-process (G passthrough -> E -> A admin.adminData over QUIC)"
+else
+    fail "admin characters page expected 200 containing $APROOF, got $ADCODE"
+fi
+
+echo ""
 echo "========= PLAYER QUIC FRONT (via gateway-svc :$PLAYER_PORT) ========="
 
 # --- P1. player QUIC create -> G -> mTLS edge -> A ---------------------------
@@ -608,6 +672,19 @@ if wait_healthy "$A_PORT" "monolith (server)"; then
     else
         fail "monolith dev- token expected Unauthorized, got rc=$M2_RC $M2_OUT"
     fi
+    # [M3] admin portal parity: the monolith hosts the admin module with all four
+    # providers LOCAL (no fan-out, no ADMIN_USER -> open). The characters page renders
+    # the just-created "solo" character -- proving the same portal serves both
+    # topologies (never-monolith-only-features), all items resolved in-process.
+    echo "[M3] GET http://localhost:$A_PORT/admin/characters on the monolith -> 200 + contains solo"
+    M3="$(curl -s -w $'\n%{http_code}' "http://localhost:$A_PORT/admin/characters")"
+    M3BODY="$(echo "$M3" | sed '$d')"; M3CODE="$(echo "$M3" | tail -1)"
+    echo "    -> HTTP $M3CODE  (body $(echo -n "$M3BODY" | wc -c) bytes)"
+    if [ "$M3CODE" = "200" ] && echo "$M3BODY" | grep -q 'solo'; then
+        pass "monolith /admin/characters renders LOCAL items (admin portal parity)"
+    else
+        fail "monolith admin characters page expected 200 containing solo, got $M3CODE"
+    fi
 else
     fail "monolith (server) never became healthy on :$A_PORT"
 fi
@@ -615,7 +692,7 @@ teardown
 
 echo "============================================"
 if [ "$FAILS" -eq 0 ]; then
-    echo "SPLIT PROOF: PASS (all assertions held on the five-process split + monolith parity)"
+    echo "SPLIT PROOF: PASS (all assertions held on the six-process split + monolith parity)"
     exit 0
 else
     echo "SPLIT PROOF: FAIL ($FAILS assertion(s) failed)"

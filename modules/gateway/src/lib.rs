@@ -43,6 +43,7 @@
 //! after `app::run` finishes Build and starts serving).
 
 mod backend;
+mod proxy;
 mod verifier;
 
 use std::collections::HashMap;
@@ -50,7 +51,7 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use axum::body::Body;
-use axum::extract::Request;
+use axum::extract::{ConnectInfo, Request};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Router;
@@ -170,13 +171,22 @@ pub struct FrontDoor {
     slots: Arc<Slots>,
     verifier: Arc<dyn SessionVerifier>,
     table: OnceLock<Arc<RouteTable>>,
+    /// The HTTP reverse-proxy passthrough for non-operation routes (`/admin`,
+    /// `/accounts/epic`), read from env once. Empty when nothing is configured, so an
+    /// unmatched route stays a 404 (the prior behaviour).
+    proxy: proxy::ProxyTable,
 }
 
 impl FrontDoor {
     /// A façade over `slots` (the contribution registry the route table is built
-    /// from) fronting auth with `verifier`.
+    /// from) fronting auth with `verifier`. The passthrough table is read from env.
     pub fn new(slots: Arc<Slots>, verifier: Arc<dyn SessionVerifier>) -> FrontDoor {
-        FrontDoor { slots, verifier, table: OnceLock::new() }
+        FrontDoor {
+            slots,
+            verifier,
+            table: OnceLock::new(),
+            proxy: proxy::ProxyTable::from_env(),
+        }
     }
 
     /// The route table, built from the slots on first access. By first-request time
@@ -191,10 +201,16 @@ impl FrontDoor {
     /// routers; messaging and `app` add plain routes, so this is the sole fallback.
     pub fn router(self: &Arc<Self>) -> Router {
         let front = self.clone();
-        Router::new().fallback(move |req: Request| {
-            let front = front.clone();
-            async move { handle(front, req).await }
-        })
+        // `Option<ConnectInfo>`: the real server wires connection info
+        // (`into_make_service_with_connect_info` in `app::run`), so the passthrough can
+        // set `X-Forwarded-For`; the unit tests call `oneshot` without it → `None`,
+        // and the proxy simply omits the direct-peer hop.
+        Router::new().fallback(
+            move |peer: Option<ConnectInfo<SocketAddr>>, req: Request| {
+                let front = front.clone();
+                async move { handle(front, peer.map(|c| c.0), req).await }
+            },
+        )
     }
 
     /// The player-plane dispatch handler, installed on an [`edge::PlayerServer`].
@@ -474,17 +490,20 @@ fn provider_of(method: &str) -> &str {
 // The per-request HTTP front handler
 // ---------------------------------------------------------------------------
 
-async fn handle(front: Arc<FrontDoor>, req: Request) -> Response {
+async fn handle(front: Arc<FrontDoor>, peer: Option<SocketAddr>, req: Request) -> Response {
     let (parts, body) = req.into_parts();
     let method = parts.method.as_str();
     let path = parts.uri.path();
 
     let table = front.table().clone();
 
-    // (1) Match — everything unmatched is 404 (the fallback owns only op routes).
+    // (1) Match. A non-operation route is offered to the HTTP passthrough (Go's
+    // reverse proxy: `/admin`, `/accounts/epic` are HTML/browser flows served by
+    // another process) — the body is still unconsumed, so the proxy streams it. When
+    // no prefix is configured the passthrough returns 404, exactly as before.
     let (op, binding, path_args) = match table.find(method, path) {
         Some((route, args)) => (route.op.clone(), route.binding.clone(), args),
-        None => return error_response(StatusCode::NOT_FOUND, "not found"),
+        None => return front.proxy.forward(parts, body, peer).await,
     };
 
     // (2) Auth-once: the single trust boundary. For AuthPlayer verify the bearer and

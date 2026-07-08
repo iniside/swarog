@@ -1,9 +1,9 @@
 # split-proof.ps1 -- the SPLIT-topology proof for the rust-sketch (Steps 12 + 8).
 #
-# The whole point of the milestone: exercises the FIVE-PROCESS split (characters-svc =
+# The whole point of the milestone: exercises the SIX-PROCESS split (characters-svc =
 # A on :8080 / edge :9000, inventory-svc = B on :8081 / edge :9001, gateway-svc = G on
 # :8082 / player QUIC :9100, config-svc = C on :8083 / edge :9002, accounts-svc = D on
-# :8084 / edge :9003), NOT the monolith, driving the real player flows over HTTP
+# :8084 / edge :9003, admin-svc = E on :8085), NOT the monolith, driving the real player flows over HTTP
 # (through the gateway front-door with a REAL bearer minted by register+login through
 # the front -- Step 6 replaced the dev-<uuid> tokens), the sync authz over
 # QUIC/mTLS, AND the NEW dedicated QUIC player front (Step 8): external players connect
@@ -64,6 +64,7 @@ $BPort     = 8081
 $GPort     = 8082
 $CPort     = 8083
 $DPort     = 8084
+$EPort     = 8085
 $EdgePort  = 9000
 $BEdgePort = 9001
 $CEdgePort = 9002
@@ -74,12 +75,17 @@ $PlayerCli = Join-Path $BinDir 'playercli.exe'
 $DefaultDsn = 'postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable'
 if (-not $env:DATABASE_URL -or $env:DATABASE_URL.Trim() -eq '') { $env:DATABASE_URL = $DefaultDsn }
 
+# Basic-auth creds for the admin portal (admin-svc runs WITH them).
+$AdminUser = 'proofadmin'
+$AdminPass = 'proofpass'
+
 $script:Fails = 0
 $script:AProc = $null
 $script:BProc = $null
 $script:GProc = $null
 $script:CProc = $null
 $script:DProc = $null
+$script:EProc = $null
 $script:MProc = $null
 
 function Note($m) { Write-Host "[proof] $m" }
@@ -139,8 +145,9 @@ function Teardown {
     if ($script:GProc -and -not $script:GProc.HasExited) { Stop-Process -Id $script:GProc.Id -Force -ErrorAction SilentlyContinue; Note "stopped G (pid $($script:GProc.Id))" }
     if ($script:CProc -and -not $script:CProc.HasExited) { Stop-Process -Id $script:CProc.Id -Force -ErrorAction SilentlyContinue; Note "stopped C (pid $($script:CProc.Id))" }
     if ($script:DProc -and -not $script:DProc.HasExited) { Stop-Process -Id $script:DProc.Id -Force -ErrorAction SilentlyContinue; Note "stopped D (pid $($script:DProc.Id))" }
+    if ($script:EProc -and -not $script:EProc.HasExited) { Stop-Process -Id $script:EProc.Id -Force -ErrorAction SilentlyContinue; Note "stopped E (pid $($script:EProc.Id))" }
     if ($script:MProc -and -not $script:MProc.HasExited) { Stop-Process -Id $script:MProc.Id -Force -ErrorAction SilentlyContinue; Note "stopped monolith (pid $($script:MProc.Id))" }
-    $script:AProc = $null; $script:BProc = $null; $script:GProc = $null; $script:CProc = $null; $script:DProc = $null; $script:MProc = $null
+    $script:AProc = $null; $script:BProc = $null; $script:GProc = $null; $script:CProc = $null; $script:DProc = $null; $script:EProc = $null; $script:MProc = $null
 }
 
 # Runs playercli, capturing stdout (joined) and the process exit code. Returns a
@@ -152,14 +159,14 @@ function Invoke-PlayerCli([string[]]$CliArgs) {
 }
 
 try {
-    Note 'building edgeca + characters-svc + inventory-svc + gateway-svc + config-svc + accounts-svc + playercli + server ...'
-    cargo build -p edgeca -p characters-svc -p inventory-svc -p gateway-svc -p config-svc -p accounts-svc -p playercli -p server
+    Note 'building edgeca + characters-svc + inventory-svc + gateway-svc + config-svc + accounts-svc + admin-svc + playercli + server ...'
+    cargo build -p edgeca -p characters-svc -p inventory-svc -p gateway-svc -p config-svc -p accounts-svc -p admin-svc -p playercli -p server
     if ($LASTEXITCODE -ne 0) { throw 'cargo build failed' }
 
     New-Item -ItemType Directory -Force -Path $RunDir | Out-Null
 
     # Clear stragglers from an aborted prior run so ports are free (idempotent reruns).
-    foreach ($n in 'characters-svc', 'inventory-svc', 'gateway-svc', 'config-svc', 'accounts-svc', 'server') {
+    foreach ($n in 'characters-svc', 'inventory-svc', 'gateway-svc', 'config-svc', 'accounts-svc', 'admin-svc', 'server') {
         Get-Process -Name $n -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
     }
     Start-Sleep -Milliseconds 500
@@ -251,8 +258,27 @@ try {
         CHARACTERS_EDGE_ADDR = "127.0.0.1:$EdgePort"
         INVENTORY_EDGE_ADDR  = "127.0.0.1:$BEdgePort"
         ACCOUNTS_EDGE_ADDR   = "127.0.0.1:$DEdgePort"
+        ADMIN_HTTP_ADDR      = "127.0.0.1:$EPort"
+        ACCOUNTS_HTTP_ADDR   = "127.0.0.1:$DPort"
     } 'gateway'
     if (-not (Wait-Healthy $GPort 'G (gateway-svc)')) { throw 'G failed to start' }
+
+    # E (admin-svc): the admin portal fortress -- HTTP :8085, no DB, no edge server. It
+    # DIALS all four provider edges to fan out their admin pages over QUIC; ADMIN_USER/
+    # ADMIN_PASS gate the portal so the negative no-auth assertion returns 401.
+    Note "starting E (admin-svc) on :$EPort ..."
+    $script:EProc = Start-Svc (Join-Path $BinDir 'admin-svc.exe') @{
+        PORT                 = ":$EPort"
+        EDGE_CA_CERT         = $CaCert
+        EDGE_CA_KEY          = $CaKey
+        CHARACTERS_EDGE_ADDR = "127.0.0.1:$EdgePort"
+        INVENTORY_EDGE_ADDR  = "127.0.0.1:$BEdgePort"
+        CONFIG_EDGE_ADDR     = "127.0.0.1:$CEdgePort"
+        ACCOUNTS_EDGE_ADDR   = "127.0.0.1:$DEdgePort"
+        ADMIN_USER           = $AdminUser
+        ADMIN_PASS           = $AdminPass
+    } 'admin'
+    if (-not (Wait-Healthy $EPort 'E (admin-svc)')) { throw 'E failed to start' }
 
     $RunSuffix = [guid]::NewGuid().ToString().Substring(0, 8)
 
@@ -425,6 +451,33 @@ try {
     }
 
     Write-Host ''
+    Write-Host '========= ADMIN PORTAL (gateway-svc passthrough -> admin-svc -> providers over edge) ========='
+    # The admin fan-out end-to-end: a browser hits gateway-svc :8082 /admin, reverse-
+    # proxied (Step 7 passthrough) to admin-svc :8085, which fetches each provider's
+    # admin page over the mTLS QUIC edge. The characters page must render a character
+    # CREATED on characters-svc -- proving the data crossed TWO process hops.
+    $aproof = "AdminProof-$RunSuffix"
+    Write-Host "[AD0] create a character named $aproof on A (for the admin table assertion)"
+    $acr = Invoke-Curl @('-X', 'POST', "http://127.0.0.1:$APort/characters",
+        '-H', "Authorization: Bearer $Token", '-H', 'Content-Type: application/json',
+        '-d', "{`"name`":`"$aproof`",`"class`":`"ranger`"}")
+    if ($acr.Body -match '"id":"([^"]*)"') { Pass "admin-proof character created (id=$($Matches[1]))" } else { Fail 'admin-proof character not created' }
+
+    Write-Host "[AD1] GET http://127.0.0.1:$GPort/admin WITHOUT Basic auth -> 401 (ADMIN_USER set on E)"
+    $an = Invoke-Curl @("http://127.0.0.1:$GPort/admin")
+    Write-Host "    -> HTTP $($an.Code)"
+    if ($an.Code -eq '401') { Pass 'unauthenticated /admin -> 401 through the passthrough (Basic-auth gate live on admin-svc)' } else { Fail "unauthenticated /admin expected 401, got $($an.Code)" }
+
+    Write-Host "[AD2] GET http://127.0.0.1:$GPort/admin/characters WITH Basic auth -> 200 + contains $aproof"
+    $ad = Invoke-Curl @('-u', "${AdminUser}:${AdminPass}", "http://127.0.0.1:$GPort/admin/characters")
+    Write-Host "    -> HTTP $($ad.Code)  (body $($ad.Body.Length) chars)"
+    if ($ad.Code -eq '200' -and $ad.Body -match [regex]::Escape($aproof)) {
+        Pass "admin /admin/characters renders $aproof cross-process (G passthrough -> E -> A admin.adminData over QUIC)"
+    } else {
+        Fail "admin characters page expected 200 containing $aproof, got $($ad.Code)"
+    }
+
+    Write-Host ''
     Write-Host "========= PLAYER QUIC FRONT (via gateway-svc :$PlayerPort) ========="
 
     # --- P1. player QUIC create -> G -> mTLS edge -> A ---
@@ -483,14 +536,19 @@ try {
     Write-Host '================ MONOLITH PARITY ================'
     Note 'tearing down the split before the monolith stage ...'
     Teardown
-    foreach ($n in 'characters-svc', 'inventory-svc', 'gateway-svc', 'config-svc', 'accounts-svc', 'server') {
+    foreach ($n in 'characters-svc', 'inventory-svc', 'gateway-svc', 'config-svc', 'accounts-svc', 'admin-svc', 'server') {
         Get-Process -Name $n -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
     }
     Start-Sleep -Seconds 2
     # Per-process env in this script leaks across Start-Svc calls; neutralize the
-    # split-only knobs so the monolith gets a clean messaging config.
+    # split-only knobs so the monolith gets a clean messaging config AND an OPEN admin
+    # portal (no leaked Basic-auth creds; /admin is served locally, not proxied).
     $env:EVENTS_SUBSCRIBERS = ''
     $env:MESSAGING_ORIGIN = ''
+    $env:ADMIN_HTTP_ADDR = ''
+    $env:ACCOUNTS_HTTP_ADDR = ''
+    $env:ADMIN_USER = ''
+    $env:ADMIN_PASS = ''
 
     Note "starting monolith (cmd/server) on :$APort, player QUIC :$PlayerPort ..."
     $script:MProc = Start-Svc (Join-Path $BinDir 'server.exe') @{
@@ -517,6 +575,13 @@ try {
         $m2 = Invoke-PlayerCli @('--addr', "127.0.0.1:$PlayerPort", '--ca', $CaCert, '--token', "dev-$msuffix", 'characters.create', '{"name":"x","class":""}')
         Write-Host "    -> rc=$($m2.Rc)  $($m2.Out)"
         if ($m2.Rc -ne 0 -and $m2.Out -match 'Unauthorized') { Pass 'monolith dev- token -> Unauthorized (parity with the split front)' } else { Fail "monolith dev- token expected Unauthorized, got rc=$($m2.Rc) $($m2.Out)" }
+        # [M3] admin portal parity: the monolith hosts the admin module with all four
+        # providers LOCAL (no fan-out, no ADMIN_USER -> open). The characters page
+        # renders the just-created "solo" character (never-monolith-only-features).
+        Write-Host "[M3] GET http://127.0.0.1:$APort/admin/characters on the monolith -> 200 + contains solo"
+        $m3 = Invoke-Curl @("http://127.0.0.1:$APort/admin/characters")
+        Write-Host "    -> HTTP $($m3.Code)  (body $($m3.Body.Length) chars)"
+        if ($m3.Code -eq '200' -and $m3.Body -match 'solo') { Pass 'monolith /admin/characters renders LOCAL items (admin portal parity)' } else { Fail "monolith admin characters page expected 200 containing solo, got $($m3.Code)" }
     } else {
         Fail "monolith (server) never became healthy on :$APort"
     }
@@ -528,7 +593,7 @@ finally {
 }
 
 if ($script:Fails -eq 0) {
-    Write-Host 'SPLIT PROOF: PASS (all assertions held on the five-process split + monolith parity)'
+    Write-Host 'SPLIT PROOF: PASS (all assertions held on the six-process split + monolith parity)'
     exit 0
 } else {
     Write-Host "SPLIT PROOF: FAIL ($($script:Fails) assertion(s) failed)"

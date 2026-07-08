@@ -16,6 +16,11 @@ accountsapi = { workspace = true }
 edge = { workspace = true }
 contrib = { workspace = true }
 axum = { workspace = true }
+# The HTTP reverse-proxy passthrough (Go's httpproxy): reqwest is the workspace client
+# already used by the outbox relay + accounts; the `stream` feature streams the
+# response body back (`bytes_stream`). The request body streams via `Body::wrap` (axum
+# `Body` is an `http_body::Body`), no extra crate needed.
+reqwest = { workspace = true, features = ["stream"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync"] }
 serde = { workspace = true }
 serde_json = { workspace = true }

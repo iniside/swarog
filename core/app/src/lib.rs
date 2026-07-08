@@ -313,11 +313,16 @@ pub async fn run(
     tracing::info!(addr = %bind, "listening");
 
     // 9. `with_graceful_shutdown` returns once SIGINT fires AND in-flight HTTP has
-    //    drained — so the await below IS "stop accepting HTTP".
-    axum::serve(listener, router)
-        .with_graceful_shutdown(shutdown_signal())
-        .await
-        .context("http serve")?;
+    //    drained — so the await below IS "stop accepting HTTP". Serve WITH connection
+    //    info so the gateway's passthrough can set `X-Forwarded-For` (and Step 13's
+    //    rate limiter can key per client IP); handlers that don't need it ignore it.
+    axum::serve(
+        listener,
+        router.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await
+    .context("http serve")?;
 
     // 10. Ordered teardown: HTTP already stopped → close the player front (external
     //     players drain first) → close the internal edge → drain bus → stop modules
