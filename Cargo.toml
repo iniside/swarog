@@ -33,6 +33,9 @@ members = [
     # Topic drift check (Step 14b): builds the monolith module set with a recording bus
     # transport and flags any `bus::define`d topic that no module subscribes to.
     "tools/topiccheck",
+    # External C# client generator (Step 2): scrapes the player-reachable API (runtime
+    # route_bindings() ∪ syn source parse) into a typed manifest; the C# emitter is Step 3.
+    "tools/csharp-client-gen",
     # Contract surfaces, grouped by domain (Go's api/<name>/ tree); import no module.
     # `<name>api` = pure trait + wire surface (transport-free); `<name>rpc` = the
     # generated edge glue (impl-tier, may import edge).

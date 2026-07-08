@@ -1,0 +1,373 @@
+{
+  "methods": [
+    {
+      "provider": "accounts",
+      "wire_method": "accounts.login",
+      "verb": "POST",
+      "path": "/accounts/login",
+      "auth": "none",
+      "success": 200,
+      "args": [
+        {
+          "name": "email",
+          "wire_name": "email",
+          "ty": "String"
+        },
+        {
+          "name": "password",
+          "wire_name": "password",
+          "ty": "String"
+        }
+      ],
+      "ret": {
+        "Struct": "Session"
+      }
+    },
+    {
+      "provider": "accounts",
+      "wire_method": "accounts.loginEpic",
+      "verb": "POST",
+      "path": "/accounts/login/epic",
+      "auth": "none",
+      "success": 200,
+      "args": [
+        {
+          "name": "id_token",
+          "wire_name": "id_token",
+          "ty": "String"
+        }
+      ],
+      "ret": {
+        "Struct": "Session"
+      }
+    },
+    {
+      "provider": "accounts",
+      "wire_method": "accounts.me",
+      "verb": "GET",
+      "path": "/accounts/me",
+      "auth": "player",
+      "success": 200,
+      "args": [],
+      "ret": {
+        "Struct": "MeView"
+      }
+    },
+    {
+      "provider": "accounts",
+      "wire_method": "accounts.register",
+      "verb": "POST",
+      "path": "/accounts/register",
+      "auth": "none",
+      "success": 201,
+      "args": [
+        {
+          "name": "email",
+          "wire_name": "email",
+          "ty": "String"
+        },
+        {
+          "name": "password",
+          "wire_name": "password",
+          "ty": "String"
+        },
+        {
+          "name": "display_name",
+          "wire_name": "displayName",
+          "ty": "String"
+        }
+      ],
+      "ret": {
+        "Struct": "Session"
+      }
+    },
+    {
+      "provider": "characters",
+      "wire_method": "characters.create",
+      "verb": "POST",
+      "path": "/characters",
+      "auth": "player",
+      "success": 201,
+      "args": [
+        {
+          "name": "name",
+          "wire_name": "name",
+          "ty": "String"
+        },
+        {
+          "name": "class",
+          "wire_name": "class",
+          "ty": "String"
+        }
+      ],
+      "ret": {
+        "Struct": "Character"
+      }
+    },
+    {
+      "provider": "characters",
+      "wire_method": "characters.delete",
+      "verb": "DELETE",
+      "path": "/characters/{id}",
+      "auth": "player",
+      "success": 204,
+      "args": [
+        {
+          "name": "character_id",
+          "wire_name": "character_id",
+          "ty": "String"
+        }
+      ],
+      "ret": "Unit"
+    },
+    {
+      "provider": "characters",
+      "wire_method": "characters.list",
+      "verb": "GET",
+      "path": "/characters",
+      "auth": "player",
+      "success": 200,
+      "args": [],
+      "ret": {
+        "Vec": {
+          "Struct": "Character"
+        }
+      }
+    },
+    {
+      "provider": "inventory",
+      "wire_method": "inventory.grant",
+      "verb": "POST",
+      "path": "/inventory/me/grant",
+      "auth": "player",
+      "success": 200,
+      "args": [
+        {
+          "name": "item_id",
+          "wire_name": "item_id",
+          "ty": "String"
+        },
+        {
+          "name": "qty",
+          "wire_name": "qty",
+          "ty": "I64"
+        }
+      ],
+      "ret": {
+        "Vec": {
+          "Struct": "Holding"
+        }
+      }
+    },
+    {
+      "provider": "inventory",
+      "wire_method": "inventory.listCharacter",
+      "verb": "GET",
+      "path": "/inventory/character/{id}",
+      "auth": "player",
+      "success": 200,
+      "args": [
+        {
+          "name": "character_id",
+          "wire_name": "character_id",
+          "ty": "String"
+        }
+      ],
+      "ret": {
+        "Vec": {
+          "Struct": "Holding"
+        }
+      }
+    },
+    {
+      "provider": "inventory",
+      "wire_method": "inventory.listMine",
+      "verb": "GET",
+      "path": "/inventory/me",
+      "auth": "player",
+      "success": 200,
+      "args": [],
+      "ret": {
+        "Vec": {
+          "Struct": "Holding"
+        }
+      }
+    },
+    {
+      "provider": "leaderboard",
+      "wire_method": "leaderboard.topScores",
+      "verb": "GET",
+      "path": "/leaderboard",
+      "auth": "none",
+      "success": 200,
+      "args": [],
+      "ret": {
+        "Vec": {
+          "Struct": "Score"
+        }
+      }
+    },
+    {
+      "provider": "match",
+      "wire_method": "match.report",
+      "verb": "POST",
+      "path": "/match/report",
+      "auth": "none",
+      "success": 202,
+      "args": [
+        {
+          "name": "winner",
+          "wire_name": "Winner",
+          "ty": "String"
+        },
+        {
+          "name": "loser",
+          "wire_name": "Loser",
+          "ty": "String"
+        }
+      ],
+      "ret": "Unit"
+    }
+  ],
+  "dtos": [
+    {
+      "name": "Character",
+      "fields": [
+        {
+          "name": "id",
+          "wire_name": "id",
+          "ty": "String"
+        },
+        {
+          "name": "player_id",
+          "wire_name": "player_id",
+          "ty": "String"
+        },
+        {
+          "name": "name",
+          "wire_name": "name",
+          "ty": "String"
+        },
+        {
+          "name": "class",
+          "wire_name": "class",
+          "ty": "String"
+        },
+        {
+          "name": "created_at",
+          "wire_name": "created_at",
+          "ty": "String"
+        }
+      ]
+    },
+    {
+      "name": "Holding",
+      "fields": [
+        {
+          "name": "owner_type",
+          "wire_name": "owner_type",
+          "ty": "String"
+        },
+        {
+          "name": "owner_id",
+          "wire_name": "owner_id",
+          "ty": "String"
+        },
+        {
+          "name": "item_id",
+          "wire_name": "item_id",
+          "ty": "String"
+        },
+        {
+          "name": "item_name",
+          "wire_name": "item_name",
+          "ty": "String"
+        },
+        {
+          "name": "quantity",
+          "wire_name": "quantity",
+          "ty": "I64"
+        }
+      ]
+    },
+    {
+      "name": "IdentityRef",
+      "fields": [
+        {
+          "name": "provider",
+          "wire_name": "provider",
+          "ty": "String"
+        },
+        {
+          "name": "subject",
+          "wire_name": "subject",
+          "ty": "String"
+        }
+      ]
+    },
+    {
+      "name": "MeView",
+      "fields": [
+        {
+          "name": "player_id",
+          "wire_name": "player_id",
+          "ty": "String"
+        },
+        {
+          "name": "display_name",
+          "wire_name": "display_name",
+          "ty": "String"
+        },
+        {
+          "name": "identities",
+          "wire_name": "identities",
+          "ty": {
+            "Vec": {
+              "Struct": "IdentityRef"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Score",
+      "fields": [
+        {
+          "name": "player",
+          "wire_name": "player",
+          "ty": "String"
+        },
+        {
+          "name": "wins",
+          "wire_name": "wins",
+          "ty": "I64"
+        }
+      ]
+    },
+    {
+      "name": "Session",
+      "fields": [
+        {
+          "name": "player_id",
+          "wire_name": "player_id",
+          "ty": "String"
+        },
+        {
+          "name": "token",
+          "wire_name": "token",
+          "ty": "String"
+        }
+      ]
+    }
+  ],
+  "statuses": [
+    "Ok",
+    "NotFound",
+    "Forbidden",
+    "Invalid",
+    "Unavailable",
+    "Internal",
+    "Unauthorized",
+    "Conflict"
+  ]
+}

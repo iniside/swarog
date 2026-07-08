@@ -706,6 +706,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "csharp-client-gen"
+version = "0.1.0"
+dependencies = [
+ "accountsapi",
+ "anyhow",
+ "charactersapi",
+ "inventoryapi",
+ "leaderboardapi",
+ "matchapi",
+ "opsapi",
+ "serde",
+ "serde_json",
+ "syn",
+]
+
+[[package]]
 name = "der"
 version = "0.7.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"

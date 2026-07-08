@@ -1,0 +1,24 @@
+[package]
+name = "csharp-client-gen"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The external-client generator (Step 2 = the scraper half). Links the pure `api/*/api`
+# contract crates for the AUTHORITATIVE reachable set (runtime `route_bindings()`) and
+# `syn`-parses the same crates' source for the TYPES `route_bindings()` cannot carry.
+# No `edge`, no DB, no tokio: `route_bindings()` is impl-free and synchronous, and `syn`
+# reads source off disk. `tools/*` is unconstrained by archcheck, so linking many api
+# crates is legal (a tool is not a module).
+[dependencies]
+charactersapi = { workspace = true }
+inventoryapi = { workspace = true }
+accountsapi = { workspace = true }
+matchapi = { workspace = true }
+leaderboardapi = { workspace = true }
+opsapi = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+syn = { workspace = true }
+anyhow = { workspace = true }
