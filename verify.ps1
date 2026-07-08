@@ -33,7 +33,7 @@ function Run-Stage([string]$Name, [scriptblock]$Action) {
 Run-Stage 'build'       { cargo build --workspace }
 Run-Stage 'clippy'      { cargo clippy --workspace --all-targets -- -D warnings }
 Run-Stage 'test'        { cargo test --workspace }
-Run-Stage 'fortress'    { cargo build -p server -p characters-svc -p inventory-svc -p gateway-svc -p config-svc -p accounts-svc -p admin-svc; if ($LASTEXITCODE -eq 0) { cargo run -q -p archcheck } }
+Run-Stage 'fortress'    { cargo build -p server -p characters-svc -p inventory-svc -p gateway-svc -p config-svc -p accounts-svc -p admin-svc -p audit-svc; if ($LASTEXITCODE -eq 0) { cargo run -q -p archcheck } }
 Run-Stage 'split-proof' { & (Join-Path $PSScriptRoot 'split-proof.ps1') }
 
 Write-Host ''

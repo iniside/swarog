@@ -1,9 +1,10 @@
 # split-proof.ps1 -- the SPLIT-topology proof for the rust-sketch (Steps 12 + 8).
 #
-# The whole point of the milestone: exercises the SIX-PROCESS split (characters-svc =
+# The whole point of the milestone: exercises the SEVEN-PROCESS split (characters-svc =
 # A on :8080 / edge :9000, inventory-svc = B on :8081 / edge :9001, gateway-svc = G on
 # :8082 / player QUIC :9100, config-svc = C on :8083 / edge :9002, accounts-svc = D on
-# :8084 / edge :9003, admin-svc = E on :8085), NOT the monolith, driving the real player flows over HTTP
+# :8084 / edge :9003, admin-svc = E on :8085, audit-svc = F on :8086 / edge :9004), NOT
+# the monolith, driving the real player flows over HTTP
 # (through the gateway front-door with a REAL bearer minted by register+login through
 # the front -- Step 6 replaced the dev-<uuid> tokens), the sync authz over
 # QUIC/mTLS, AND the NEW dedicated QUIC player front (Step 8): external players connect
@@ -65,10 +66,12 @@ $GPort     = 8082
 $CPort     = 8083
 $DPort     = 8084
 $EPort     = 8085
+$FPort     = 8086
 $EdgePort  = 9000
 $BEdgePort = 9001
 $CEdgePort = 9002
 $DEdgePort = 9003
+$FEdgePort = 9004
 $PlayerPort = 9100
 $PlayerCli = Join-Path $BinDir 'playercli.exe'
 
@@ -86,6 +89,7 @@ $script:GProc = $null
 $script:CProc = $null
 $script:DProc = $null
 $script:EProc = $null
+$script:FProc = $null
 $script:MProc = $null
 
 function Note($m) { Write-Host "[proof] $m" }
@@ -146,8 +150,9 @@ function Teardown {
     if ($script:CProc -and -not $script:CProc.HasExited) { Stop-Process -Id $script:CProc.Id -Force -ErrorAction SilentlyContinue; Note "stopped C (pid $($script:CProc.Id))" }
     if ($script:DProc -and -not $script:DProc.HasExited) { Stop-Process -Id $script:DProc.Id -Force -ErrorAction SilentlyContinue; Note "stopped D (pid $($script:DProc.Id))" }
     if ($script:EProc -and -not $script:EProc.HasExited) { Stop-Process -Id $script:EProc.Id -Force -ErrorAction SilentlyContinue; Note "stopped E (pid $($script:EProc.Id))" }
+    if ($script:FProc -and -not $script:FProc.HasExited) { Stop-Process -Id $script:FProc.Id -Force -ErrorAction SilentlyContinue; Note "stopped F (pid $($script:FProc.Id))" }
     if ($script:MProc -and -not $script:MProc.HasExited) { Stop-Process -Id $script:MProc.Id -Force -ErrorAction SilentlyContinue; Note "stopped monolith (pid $($script:MProc.Id))" }
-    $script:AProc = $null; $script:BProc = $null; $script:GProc = $null; $script:CProc = $null; $script:DProc = $null; $script:EProc = $null; $script:MProc = $null
+    $script:AProc = $null; $script:BProc = $null; $script:GProc = $null; $script:CProc = $null; $script:DProc = $null; $script:EProc = $null; $script:FProc = $null; $script:MProc = $null
 }
 
 # Runs playercli, capturing stdout (joined) and the process exit code. Returns a
@@ -159,14 +164,14 @@ function Invoke-PlayerCli([string[]]$CliArgs) {
 }
 
 try {
-    Note 'building edgeca + characters-svc + inventory-svc + gateway-svc + config-svc + accounts-svc + admin-svc + playercli + server ...'
-    cargo build -p edgeca -p characters-svc -p inventory-svc -p gateway-svc -p config-svc -p accounts-svc -p admin-svc -p playercli -p server
+    Note 'building edgeca + characters-svc + inventory-svc + gateway-svc + config-svc + accounts-svc + admin-svc + audit-svc + playercli + server ...'
+    cargo build -p edgeca -p characters-svc -p inventory-svc -p gateway-svc -p config-svc -p accounts-svc -p admin-svc -p audit-svc -p playercli -p server
     if ($LASTEXITCODE -ne 0) { throw 'cargo build failed' }
 
     New-Item -ItemType Directory -Force -Path $RunDir | Out-Null
 
     # Clear stragglers from an aborted prior run so ports are free (idempotent reruns).
-    foreach ($n in 'characters-svc', 'inventory-svc', 'gateway-svc', 'config-svc', 'accounts-svc', 'admin-svc', 'server') {
+    foreach ($n in 'characters-svc', 'inventory-svc', 'gateway-svc', 'config-svc', 'accounts-svc', 'admin-svc', 'audit-svc', 'server') {
         Get-Process -Name $n -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
     }
     Start-Sleep -Milliseconds 500
@@ -185,9 +190,26 @@ try {
         EDGE_CA_CERT       = $CaCert
         EDGE_CA_KEY        = $CaKey
         MESSAGING_ORIGIN   = 'accounts-svc'
-        EVENTS_SUBSCRIBERS = ''
+        EVENTS_SUBSCRIBERS = "player.registered=http://127.0.0.1:$FPort/events"
     } 'accounts'
     if (-not (Wait-Healthy $DPort 'D (accounts-svc)')) { throw 'D failed to start' }
+
+    # F (audit-svc): audit + messaging, edge :9004. A PURE SINK (produces nothing, so no
+    # EVENTS_SUBSCRIBERS): every producer peer's relay POSTs to F's /events and audit's
+    # on_tx_raw records each on the handed inbox-dedup tx. Serves admin.adminData on its
+    # mTLS edge so admin-svc fans the "Audit Log" page out over QUIC. Distinct
+    # MESSAGING_ORIGIN for its own outbox identity.
+    Note "starting F (audit-svc) on :$FPort, edge :$FEdgePort ..."
+    $script:FProc = Start-Svc (Join-Path $BinDir 'audit-svc.exe') @{
+        PORT               = ":$FPort"
+        DATABASE_URL       = $env:DATABASE_URL
+        EDGE_ADDR          = ":$FEdgePort"
+        EDGE_CA_CERT       = $CaCert
+        EDGE_CA_KEY        = $CaKey
+        MESSAGING_ORIGIN   = 'audit-svc'
+        EVENTS_SUBSCRIBERS = ''
+    } 'audit'
+    if (-not (Wait-Healthy $FPort 'F (audit-svc)')) { throw 'F failed to start' }
 
     Note "starting A (characters-svc) on :$APort, edge :$EdgePort ..."
     $script:AProc = Start-Svc (Join-Path $BinDir 'characters-svc.exe') @{
@@ -198,7 +220,7 @@ try {
         EDGE_CA_KEY         = $CaKey
         ACCOUNTS_EDGE_ADDR  = "127.0.0.1:$DEdgePort"
         MESSAGING_ORIGIN    = 'characters-svc'
-        EVENTS_SUBSCRIBERS  = "character.created=http://127.0.0.1:$BPort/events;character.deleted=http://127.0.0.1:$BPort/events"
+        EVENTS_SUBSCRIBERS  = "character.created=http://127.0.0.1:$BPort/events,http://127.0.0.1:$FPort/events;character.deleted=http://127.0.0.1:$BPort/events,http://127.0.0.1:$FPort/events"
     } 'characters'
     if (-not (Wait-Healthy $APort 'A (characters-svc)')) { throw 'A failed to start' }
 
@@ -224,7 +246,7 @@ try {
         EDGE_CA_KEY        = $CaKey
         ACCOUNTS_EDGE_ADDR = "127.0.0.1:$DEdgePort"
         MESSAGING_ORIGIN   = 'config-svc'
-        EVENTS_SUBSCRIBERS = "config.changed=http://127.0.0.1:$BPort/events"
+        EVENTS_SUBSCRIBERS = "config.changed=http://127.0.0.1:$BPort/events,http://127.0.0.1:$FPort/events"
     } 'config'
     if (-not (Wait-Healthy $CPort 'C (config-svc)')) { throw 'C failed to start' }
 
@@ -275,6 +297,7 @@ try {
         INVENTORY_EDGE_ADDR  = "127.0.0.1:$BEdgePort"
         CONFIG_EDGE_ADDR     = "127.0.0.1:$CEdgePort"
         ACCOUNTS_EDGE_ADDR   = "127.0.0.1:$DEdgePort"
+        AUDIT_EDGE_ADDR      = "127.0.0.1:$FEdgePort"
         ADMIN_USER           = $AdminUser
         ADMIN_PASS           = $AdminPass
     } 'admin'
@@ -478,6 +501,48 @@ try {
     }
 
     Write-Host ''
+    Write-Host "========= AUDIT LEDGER (durable events -> audit-svc :$FPort) ========="
+    # The append-only ledger end-to-end across processes: each producer's relay POSTs its
+    # durable event to audit-svc's /events, and audit's on_tx_raw records it in schema
+    # `audit` (exactly-once, on the inbox-dedup tx). Assert the ROWS on the shared DB (the
+    # definitive proof the cross-process record handler ran): the character CREATED in [1]
+    # + DELETED in [4], and the player REGISTERED in [A1]. Then the "Audit Log" admin page
+    # renders through the gateway passthrough (G -> E -> F over QUIC).
+    if (-not $Psql) {
+        Note 'psql not found -- SKIPPING the audit ledger DB assertions'
+    } else {
+        Write-Host "[AU1] poll audit.log on F for character.created + character.deleted rows (cid=$cid)"
+        $auOk = $false
+        for ($i = 1; $i -le 30; $i++) {
+            $anC = ("" + (Invoke-Sql "SELECT count(*) FROM audit.log WHERE topic='character.created' AND payload->>'character_id'='$cid';")).Trim()
+            $anD = ("" + (Invoke-Sql "SELECT count(*) FROM audit.log WHERE topic='character.deleted' AND payload->>'character_id'='$cid';")).Trim()
+            Write-Host "    attempt $i -> created=$anC deleted=$anD"
+            if ($anC -eq '1' -and $anD -eq '1') { Pass "audit-svc recorded character.created + character.deleted for $cid (durable A->F, exactly-once)"; $auOk = $true; break }
+            Start-Sleep -Milliseconds 500
+        }
+        if (-not $auOk) { Fail "audit-svc never recorded both character events for $cid (durable delivery A->F)" }
+
+        Write-Host "[AU2] poll audit.log on F for the player.registered row (pid=$PlayerId)"
+        $au2Ok = $false
+        for ($i = 1; $i -le 30; $i++) {
+            $anR = ("" + (Invoke-Sql "SELECT count(*) FROM audit.log WHERE topic='player.registered' AND payload->>'player_id'='$PlayerId';")).Trim()
+            Write-Host "    attempt $i -> player.registered=$anR"
+            if ($anR -eq '1') { Pass "audit-svc recorded player.registered for $PlayerId (durable D->F)"; $au2Ok = $true; break }
+            Start-Sleep -Milliseconds 500
+        }
+        if (-not $au2Ok) { Fail "audit-svc never recorded player.registered for $PlayerId (durable delivery D->F)" }
+    }
+
+    Write-Host "[AU3] GET http://127.0.0.1:$GPort/admin/audit-log WITH Basic auth -> 200 + a logged topic"
+    $aud = Invoke-Curl @('-u', "${AdminUser}:${AdminPass}", "http://127.0.0.1:$GPort/admin/audit-log")
+    Write-Host "    -> HTTP $($aud.Code)  (body $($aud.Body.Length) chars)"
+    if ($aud.Code -eq '200' -and $aud.Body -match 'character\.(created|deleted)|player\.registered') {
+        Pass 'admin /admin/audit-log renders the ledger cross-process (G passthrough -> E -> F admin.adminData over QUIC)'
+    } else {
+        Fail "admin audit-log page expected 200 containing a logged topic, got $($aud.Code)"
+    }
+
+    Write-Host ''
     Write-Host "========= PLAYER QUIC FRONT (via gateway-svc :$PlayerPort) ========="
 
     # --- P1. player QUIC create -> G -> mTLS edge -> A ---
@@ -536,7 +601,7 @@ try {
     Write-Host '================ MONOLITH PARITY ================'
     Note 'tearing down the split before the monolith stage ...'
     Teardown
-    foreach ($n in 'characters-svc', 'inventory-svc', 'gateway-svc', 'config-svc', 'accounts-svc', 'admin-svc', 'server') {
+    foreach ($n in 'characters-svc', 'inventory-svc', 'gateway-svc', 'config-svc', 'accounts-svc', 'admin-svc', 'audit-svc', 'server') {
         Get-Process -Name $n -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
     }
     Start-Sleep -Seconds 2
@@ -593,7 +658,7 @@ finally {
 }
 
 if ($script:Fails -eq 0) {
-    Write-Host 'SPLIT PROOF: PASS (all assertions held on the six-process split + monolith parity)'
+    Write-Host 'SPLIT PROOF: PASS (all assertions held on the seven-process split + monolith parity)'
     exit 0
 } else {
     Write-Host "SPLIT PROOF: FAIL ($($script:Fails) assertion(s) failed)"

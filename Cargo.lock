@@ -222,6 +222,50 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
+name = "audit"
+version = "0.1.0"
+dependencies = [
+ "accountsevents",
+ "adminapi",
+ "anyhow",
+ "async-trait",
+ "auditrpc",
+ "bus",
+ "charactersevents",
+ "configevents",
+ "edge",
+ "futures",
+ "lifecycle",
+ "opsapi",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "audit-svc"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "app",
+ "audit",
+ "edge",
+ "lifecycle",
+ "messaging",
+ "tokio",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "auditrpc"
+version = "0.1.0"
+dependencies = [
+ "adminrpc",
+]
+
+[[package]]
 name = "autocfg"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2519,6 +2563,7 @@ dependencies = [
  "admin",
  "anyhow",
  "app",
+ "audit",
  "characters",
  "config",
  "edge",

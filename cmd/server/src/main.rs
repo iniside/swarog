@@ -31,6 +31,7 @@ async fn main() -> anyhow::Result<()> {
         Box::new(inventory::Inventory::new()),   // owner-scoped inventories; depends on characters + config
         Box::new(accounts::Accounts::new()),     // player identity: sessions + dev/epic auth; owns schema "accounts"
         Box::new(admin::Admin::new()),           // GameOps portal at /admin; renders LOCAL contributions (all providers in-process)
+        Box::new(audit::Audit::new()),           // append-only event ledger; owns schema "audit", records durable events in-process
         Box::new(gateway::Gateway::new().with_player_edge(player.clone())), // HTTP + player QUIC front, auth-once (real accounts sessions)
         Box::new(messaging::Messaging::new()),   // the durable async plane (transport + relay + inbox)
     ];

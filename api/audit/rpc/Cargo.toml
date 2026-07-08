@@ -1,0 +1,17 @@
+[package]
+name = "auditrpc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# `auditrpc` — audit's minimal <name>rpc glue crate. audit is a PURE SINK with no sync
+# capability of its own (no `api/audit/api`, mirroring Go's `modules/audit`), so this
+# crate exists for ONE reason: to re-export the cross-cutting admin fan-out's
+# server-side `register_admin`, so the `audit` MODULE registers its `admin.adminData`
+# edge handler through its OWN <name>rpc crate rather than importing `adminrpc`
+# directly (archcheck forbids a module->foreign-rpc edge; the module->own-rpc->adminrpc
+# chain is sanctioned, exactly the characters/inventory pattern). Impl-tier: reached
+# only by the `audit` module + `cmd/*`, never by a domain consumer.
+[dependencies]
+adminrpc = { workspace = true }

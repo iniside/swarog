@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # split-proof.sh -- the SPLIT-topology proof for the rust-sketch (Steps 12 + 8).
 #
-# This is the whole point of the milestone: it exercises the SIX-PROCESS split
+# This is the whole point of the milestone: it exercises the SEVEN-PROCESS split
 # (characters-svc = A on :8080 / edge :9000, inventory-svc = B on :8081 / edge :9001,
 # gateway-svc = G on :8082 / player QUIC :9100, config-svc = C on :8083 / edge :9002,
-# accounts-svc = D on :8084 / edge :9003, admin-svc = E on :8085),
+# accounts-svc = D on :8084 / edge :9003, admin-svc = E on :8085, audit-svc = F on
+# :8086 / edge :9004),
 # NOT the monolith, driving the real
 # player flows over HTTP (through the gateway front-door with a REAL bearer minted
 # by register+login through the front -- Step 6 replaced the dev-<uuid> tokens),
@@ -78,10 +79,12 @@ G_PORT=8082
 C_PORT=8083
 D_PORT=8084
 E_PORT=8085
+F_PORT=8086
 EDGE_PORT=9000
 B_EDGE_PORT=9001
 C_EDGE_PORT=9002
 D_EDGE_PORT=9003
+F_EDGE_PORT=9004
 PLAYER_PORT=9100
 
 DEFAULT_DSN="postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable"
@@ -99,6 +102,7 @@ G_PID=""
 C_PID=""
 D_PID=""
 E_PID=""
+F_PID=""
 M_PID=""
 
 note()  { echo "[proof] $*"; }
@@ -146,8 +150,9 @@ teardown() {
     [ -n "$C_PID" ] && kill "$C_PID" 2>/dev/null && note "stopped C (pid $C_PID)"
     [ -n "$D_PID" ] && kill "$D_PID" 2>/dev/null && note "stopped D (pid $D_PID)"
     [ -n "$E_PID" ] && kill "$E_PID" 2>/dev/null && note "stopped E (pid $E_PID)"
+    [ -n "$F_PID" ] && kill "$F_PID" 2>/dev/null && note "stopped F (pid $F_PID)"
     [ -n "$M_PID" ] && kill "$M_PID" 2>/dev/null && note "stopped monolith (pid $M_PID)"
-    A_PID=""; B_PID=""; G_PID=""; C_PID=""; D_PID=""; E_PID=""; M_PID=""
+    A_PID=""; B_PID=""; G_PID=""; C_PID=""; D_PID=""; E_PID=""; F_PID=""; M_PID=""
 }
 trap teardown EXIT INT TERM
 
@@ -161,6 +166,7 @@ kill_stragglers() {
         taskkill //F //IM config-svc.exe >/dev/null 2>&1 || true
         taskkill //F //IM accounts-svc.exe >/dev/null 2>&1 || true
         taskkill //F //IM admin-svc.exe >/dev/null 2>&1 || true
+        taskkill //F //IM audit-svc.exe >/dev/null 2>&1 || true
         taskkill //F //IM server.exe >/dev/null 2>&1 || true
     fi
     pkill -f "characters-svc" 2>/dev/null || true
@@ -169,6 +175,7 @@ kill_stragglers() {
     pkill -f "config-svc"     2>/dev/null || true
     pkill -f "accounts-svc"   2>/dev/null || true
     pkill -f "admin-svc"      2>/dev/null || true
+    pkill -f "audit-svc"      2>/dev/null || true
     pkill -f "target/debug/server" 2>/dev/null || true
 }
 
@@ -184,8 +191,8 @@ wait_healthy() {
 }
 
 # ============================================================================
-note "building edgeca + characters-svc + inventory-svc + gateway-svc + config-svc + accounts-svc + admin-svc + playercli + server ..."
-if ! cargo build -p edgeca -p characters-svc -p inventory-svc -p gateway-svc -p config-svc -p accounts-svc -p admin-svc -p playercli -p server; then
+note "building edgeca + characters-svc + inventory-svc + gateway-svc + config-svc + accounts-svc + admin-svc + audit-svc + playercli + server ..."
+if ! cargo build -p edgeca -p characters-svc -p inventory-svc -p gateway-svc -p config-svc -p accounts-svc -p admin-svc -p audit-svc -p playercli -p server; then
     echo "build failed"; exit 1
 fi
 PLAYERCLI="$BIN_DIR/playercli$EXE"
@@ -200,14 +207,29 @@ note "minting shared edge dev CA -> $CA_CERT"
 # --- start D (accounts-svc): gateway + accounts + messaging, edge :9003 -------
 # D owns the accounts schema and serves accounts.verifySession + the auth op faces
 # on its mTLS edge; EVERY other process's gateway verifies bearers against it.
-# player.registered rides D's outbox (no remote consumer yet, so no subscriber).
+# player.registered rides D's outbox and (Step 8) is POSTed durably to audit-svc (F).
 note "starting D (accounts-svc) on :$D_PORT, edge :$D_EDGE_PORT ..."
 env PORT=":$D_PORT" DATABASE_URL="$DATABASE_URL" EDGE_ADDR=":$D_EDGE_PORT" \
     EDGE_CA_CERT="$CA_CERT" EDGE_CA_KEY="$CA_KEY" \
     MESSAGING_ORIGIN=accounts-svc \
+    EVENTS_SUBSCRIBERS="player.registered=http://localhost:$F_PORT/events" \
     "$BIN_DIR/accounts-svc$EXE" >"$RUN_DIR/accounts.out.log" 2>"$RUN_DIR/accounts.err.log" &
 D_PID=$!
 wait_healthy "$D_PORT" "D (accounts-svc)" || { echo "D failed to start"; exit 1; }
+
+# --- start F (audit-svc): audit + messaging, edge :9004 ----------------------
+# F owns the audit schema (append-only ledger). It PRODUCES nothing (pure sink, no
+# EVENTS_SUBSCRIBERS): every producer peer's relay POSTs to F's /events, and audit's
+# on_tx_raw records each on the handed inbox-dedup tx. It serves admin.adminData on its
+# mTLS edge so admin-svc (E) fans its "Audit Log" page out over QUIC. Distinct
+# MESSAGING_ORIGIN for its own outbox identity (no collision — it names no sinks).
+note "starting F (audit-svc) on :$F_PORT, edge :$F_EDGE_PORT ..."
+env PORT=":$F_PORT" DATABASE_URL="$DATABASE_URL" EDGE_ADDR=":$F_EDGE_PORT" \
+    EDGE_CA_CERT="$CA_CERT" EDGE_CA_KEY="$CA_KEY" \
+    MESSAGING_ORIGIN=audit-svc \
+    "$BIN_DIR/audit-svc$EXE" >"$RUN_DIR/audit.out.log" 2>"$RUN_DIR/audit.err.log" &
+F_PID=$!
+wait_healthy "$F_PORT" "F (audit-svc)" || { echo "F failed to start"; exit 1; }
 
 # --- start A (characters-svc): gateway + characters + messaging, edge :9000 --
 # MESSAGING_ORIGIN MUST be distinct per process (never the "monolith" default): the
@@ -217,7 +239,7 @@ env PORT=":$A_PORT" DATABASE_URL="$DATABASE_URL" EDGE_ADDR=":$EDGE_PORT" \
     EDGE_CA_CERT="$CA_CERT" EDGE_CA_KEY="$CA_KEY" \
     ACCOUNTS_EDGE_ADDR="127.0.0.1:$D_EDGE_PORT" \
     MESSAGING_ORIGIN=characters-svc \
-    EVENTS_SUBSCRIBERS="character.created=http://localhost:$B_PORT/events;character.deleted=http://localhost:$B_PORT/events" \
+    EVENTS_SUBSCRIBERS="character.created=http://localhost:$B_PORT/events,http://localhost:$F_PORT/events;character.deleted=http://localhost:$B_PORT/events,http://localhost:$F_PORT/events" \
     "$BIN_DIR/characters-svc$EXE" >"$RUN_DIR/characters.out.log" 2>"$RUN_DIR/characters.err.log" &
 A_PID=$!
 wait_healthy "$A_PORT" "A (characters-svc)" || { echo "A failed to start"; exit 1; }
@@ -241,7 +263,7 @@ env PORT=":$C_PORT" DATABASE_URL="$DATABASE_URL" EDGE_ADDR=":$C_EDGE_PORT" \
     EDGE_CA_CERT="$CA_CERT" EDGE_CA_KEY="$CA_KEY" \
     ACCOUNTS_EDGE_ADDR="127.0.0.1:$D_EDGE_PORT" \
     MESSAGING_ORIGIN=config-svc \
-    EVENTS_SUBSCRIBERS="config.changed=http://localhost:$B_PORT/events" \
+    EVENTS_SUBSCRIBERS="config.changed=http://localhost:$B_PORT/events,http://localhost:$F_PORT/events" \
     "$BIN_DIR/config-svc$EXE" >"$RUN_DIR/config.out.log" 2>"$RUN_DIR/config.err.log" &
 C_PID=$!
 wait_healthy "$C_PORT" "C (config-svc)" || { echo "C failed to start"; exit 1; }
@@ -293,6 +315,7 @@ env PORT=":$E_PORT" \
     INVENTORY_EDGE_ADDR="127.0.0.1:$B_EDGE_PORT" \
     CONFIG_EDGE_ADDR="127.0.0.1:$C_EDGE_PORT" \
     ACCOUNTS_EDGE_ADDR="127.0.0.1:$D_EDGE_PORT" \
+    AUDIT_EDGE_ADDR="127.0.0.1:$F_EDGE_PORT" \
     ADMIN_USER="$ADMIN_USER" ADMIN_PASS="$ADMIN_PASS" \
     "$BIN_DIR/admin-svc$EXE" >"$RUN_DIR/admin.out.log" 2>"$RUN_DIR/admin.err.log" &
 E_PID=$!
@@ -537,6 +560,57 @@ else
 fi
 
 echo ""
+echo "========= AUDIT LEDGER (durable events -> audit-svc :$F_PORT) ========="
+# The append-only ledger end-to-end across processes: each producer's relay POSTs its
+# durable event to audit-svc's /events, and audit's on_tx_raw records it in schema
+# `audit` (exactly-once, on the inbox-dedup tx). We assert the ROWS directly on the
+# shared DB (the definitive check that the cross-process record handler ran):
+#   (i)  the character CREATED in [1] + DELETED in [4] -> character.created/.deleted,
+#   (ii) the player REGISTERED in [A1] -> player.registered,
+#   (iii) the "Audit Log" admin page renders through the gateway passthrough (G -> E ->
+#         F over QUIC).
+if [ -z "$PSQL" ]; then
+    note "psql not found -- SKIPPING the audit ledger DB assertions"
+else
+    echo "[AU1] poll audit.log on F for character.created + character.deleted rows (CID=$CID)"
+    AU_OK=0
+    for i in $(seq 1 30); do
+        AN_CREATED="$(pg "SELECT count(*) FROM audit.log WHERE topic='character.created' AND payload->>'character_id'='$CID';" | tr -d '[:space:]')"
+        AN_DELETED="$(pg "SELECT count(*) FROM audit.log WHERE topic='character.deleted' AND payload->>'character_id'='$CID';" | tr -d '[:space:]')"
+        echo "    attempt $i -> created=${AN_CREATED:-?} deleted=${AN_DELETED:-?}"
+        if [ "$AN_CREATED" = "1" ] && [ "$AN_DELETED" = "1" ]; then
+            pass "audit-svc recorded character.created + character.deleted for $CID (durable A->F, exactly-once)"
+            AU_OK=1; break
+        fi
+        sleep 0.5
+    done
+    [ "$AU_OK" = "1" ] || fail "audit-svc never recorded both character events for $CID (durable delivery A->F)"
+
+    echo "[AU2] poll audit.log on F for the player.registered row (PID=$PID)"
+    AU2_OK=0
+    for i in $(seq 1 30); do
+        AN_REG="$(pg "SELECT count(*) FROM audit.log WHERE topic='player.registered' AND payload->>'player_id'='$PID';" | tr -d '[:space:]')"
+        echo "    attempt $i -> player.registered=${AN_REG:-?}"
+        if [ "$AN_REG" = "1" ]; then
+            pass "audit-svc recorded player.registered for $PID (durable D->F)"
+            AU2_OK=1; break
+        fi
+        sleep 0.5
+    done
+    [ "$AU2_OK" = "1" ] || fail "audit-svc never recorded player.registered for $PID (durable delivery D->F)"
+fi
+
+echo "[AU3] GET http://localhost:$G_PORT/admin/audit-log WITH Basic auth -> 200 + a logged topic"
+AUD="$(curl -s -w $'\n%{http_code}' -u "$ADMIN_USER:$ADMIN_PASS" "http://localhost:$G_PORT/admin/audit-log")"
+AUDBODY="$(echo "$AUD" | sed '$d')"; AUDCODE="$(echo "$AUD" | tail -1)"
+echo "    -> HTTP $AUDCODE  (body $(echo -n "$AUDBODY" | wc -c) bytes)"
+if [ "$AUDCODE" = "200" ] && echo "$AUDBODY" | grep -qE 'character\.(created|deleted)|player\.registered'; then
+    pass "admin /admin/audit-log renders the ledger cross-process (G passthrough -> E -> F admin.adminData over QUIC)"
+else
+    fail "admin audit-log page expected 200 containing a logged topic, got $AUDCODE"
+fi
+
+echo ""
 echo "========= PLAYER QUIC FRONT (via gateway-svc :$PLAYER_PORT) ========="
 
 # --- P1. player QUIC create -> G -> mTLS edge -> A ---------------------------
@@ -692,7 +766,7 @@ teardown
 
 echo "============================================"
 if [ "$FAILS" -eq 0 ]; then
-    echo "SPLIT PROOF: PASS (all assertions held on the six-process split + monolith parity)"
+    echo "SPLIT PROOF: PASS (all assertions held on the seven-process split + monolith parity)"
     exit 0
 else
     echo "SPLIT PROOF: FAIL ($FAILS assertion(s) failed)"
