@@ -199,55 +199,14 @@ impl Relay {
         Ok(())
     }
 
-    /// Decides which rows are fully delivered. Each row goes to EVERY local target
-    /// (unconditional, the monolith path) AND every remote URL for its topic. Enforces
-    /// per-(topic, target) ordering: once delivery to a `(topic, target)` fails, no
-    /// further row of THAT topic reaches THAT target this batch. A row is returned (to
-    /// be marked sent) only when every target accepted it; a row with no targets is
-    /// delivered to nobody and counts as sent.
+    /// Decides which rows are fully delivered, over the real HTTP `post` for remote
+    /// subscribers. Thin wrapper around [`deliver_with`] (the pure, injectable-`post`
+    /// core the property tests drive directly).
     async fn deliver(&self, pending: &[OutRow]) -> Vec<i64> {
-        let mut blocked: HashSet<String> = HashSet::new();
-        let mut sent = Vec::new();
-        for row in pending {
-            let event_id = format!("{}:{}", self.schema, row.id);
-            let mut all_ok = true;
-
-            // Local targets first, unconditionally (independent of remote URLs).
-            for lt in &self.local_targets {
-                let key = format!("L\0{}\0{}", lt.subscriber, row.topic);
-                if blocked.contains(&key) {
-                    all_ok = false; // can't skip ahead of an earlier undelivered row
-                    continue;
-                }
-                let fut = (lt.deliver)(row.topic.clone(), row.payload.clone(), event_id.clone());
-                if let Err(err) = fut.await {
-                    tracing::warn!(subscriber = %lt.subscriber, topic = %row.topic, event_id = %event_id, %err, "outbox local delivery failed");
-                    blocked.insert(key);
-                    all_ok = false;
-                }
-            }
-
-            // Then remote subscribers for this topic.
-            if let Some(urls) = self.subscribers.get(&row.topic) {
-                for url in urls {
-                    let key = format!("R\0{}\0{}", url, row.topic);
-                    if blocked.contains(&key) {
-                        all_ok = false;
-                        continue;
-                    }
-                    if let Err(err) = self.post(url, &row.topic, &event_id, &row.payload).await {
-                        tracing::warn!(%url, topic = %row.topic, event_id = %event_id, %err, "outbox delivery failed");
-                        blocked.insert(key);
-                        all_ok = false;
-                    }
-                }
-            }
-
-            if all_ok {
-                sent.push(row.id);
-            }
-        }
-        sent
+        deliver_with(&self.schema, &self.local_targets, &self.subscribers, pending, move |url, topic, event_id, payload| {
+            Box::pin(async move { self.post(&url, &topic, &event_id, &payload).await })
+        })
+        .await
     }
 
     /// Reads this relay's own unsent rows, locking them `FOR UPDATE SKIP LOCKED`.
@@ -319,6 +278,69 @@ impl Relay {
         }
         Ok(())
     }
+}
+
+/// The pure core of [`Relay::deliver`], factored out so a property test can drive it
+/// against an injected `post` (no real HTTP/DB) — mirrors Go's `deliver(ctx, pending,
+/// post)` taking a function-typed poster. Decides which rows are fully delivered:
+/// each row goes to EVERY local target (unconditional) AND every remote URL for its
+/// topic (`schema:id` is the stable event id). Enforces per-(topic, target) ordering:
+/// once delivery to a `(topic, target)` fails, no further row of THAT topic reaches
+/// THAT target this batch. A row is returned (to be marked sent) only when every
+/// target accepted it; a row with no targets is delivered to nobody and counts as sent.
+async fn deliver_with<'a, F>(
+    schema: &str,
+    local_targets: &[LocalTarget],
+    subscribers: &HashMap<String, Vec<String>>,
+    pending: &[OutRow],
+    post: F,
+) -> Vec<i64>
+where
+    F: Fn(String, String, String, Vec<u8>) -> BoxFuture<'a, anyhow::Result<()>>,
+{
+    let mut blocked: HashSet<String> = HashSet::new();
+    let mut sent = Vec::new();
+    for row in pending {
+        let event_id = format!("{schema}:{}", row.id);
+        let mut all_ok = true;
+
+        // Local targets first, unconditionally (independent of remote URLs).
+        for lt in local_targets {
+            let key = format!("L\0{}\0{}", lt.subscriber, row.topic);
+            if blocked.contains(&key) {
+                all_ok = false; // can't skip ahead of an earlier undelivered row
+                continue;
+            }
+            let fut = (lt.deliver)(row.topic.clone(), row.payload.clone(), event_id.clone());
+            if let Err(err) = fut.await {
+                tracing::warn!(subscriber = %lt.subscriber, topic = %row.topic, event_id = %event_id, %err, "outbox local delivery failed");
+                blocked.insert(key);
+                all_ok = false;
+            }
+        }
+
+        // Then remote subscribers for this topic.
+        if let Some(urls) = subscribers.get(&row.topic) {
+            for url in urls {
+                let key = format!("R\0{url}\0{}", row.topic);
+                if blocked.contains(&key) {
+                    all_ok = false;
+                    continue;
+                }
+                let fut = post(url.clone(), row.topic.clone(), event_id.clone(), row.payload.clone());
+                if let Err(err) = fut.await {
+                    tracing::warn!(%url, topic = %row.topic, event_id = %event_id, %err, "outbox delivery failed");
+                    blocked.insert(key);
+                    all_ok = false;
+                }
+            }
+        }
+
+        if all_ok {
+            sent.push(row.id);
+        }
+    }
+    sent
 }
 
 /// Parses the `EVENTS_SUBSCRIBERS` env value into a topic→URLs map.

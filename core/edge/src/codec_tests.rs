@@ -23,3 +23,18 @@ fn decode_error_is_codec_variant() {
     let err = c.decode::<V>(b"not json").unwrap_err();
     assert!(matches!(err, Error::Codec(_)));
 }
+
+// --- Property test (port of Go's TestPropCodecRoundTrip in edge/prop_test.go) ---
+use proptest::prelude::*;
+
+proptest! {
+    /// `decode(encode(v)) == v` for an arbitrary generated struct.
+    #[test]
+    fn prop_codec_roundtrip(a in any::<i32>(), b in "[a-zA-Z0-9 ]{0,16}") {
+        let c = default_codec();
+        let want = V { a, b };
+        let data = c.encode(&want).unwrap();
+        let got: V = c.decode(&data).unwrap();
+        prop_assert_eq!(got, want);
+    }
+}

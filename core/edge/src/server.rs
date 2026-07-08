@@ -247,3 +247,7 @@ pub(crate) fn ok_response(bytes: Vec<u8>) -> Response {
 pub(crate) fn err_response(msg: &str) -> Response {
     Response { ok: false, payload: None, error: Some(msg.to_string()) }
 }
+
+#[cfg(test)]
+#[path = "server_tests.rs"]
+mod tests;

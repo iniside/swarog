@@ -74,3 +74,24 @@ async fn random_payloads_survive_roundtrip() {
         assert_eq!(got, payload);
     }
 }
+
+// --- Property test (port of Go's TestPropFrameRoundTrip in edge/prop_test.go) ---
+//
+// For any payload up to ~8 KiB, frame_bytes followed by read_frame yields the
+// original bytes exactly. proptest drives generation (with shrinking on failure),
+// unlike the deterministic LCG sweep above.
+use proptest::prelude::*;
+
+proptest! {
+    #[test]
+    fn prop_frame_roundtrip(payload in proptest::collection::vec(any::<u8>(), 0..8usize << 10)) {
+        let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        rt.block_on(async {
+            let framed = frame_bytes(&payload).unwrap();
+            let mut src = &framed[..];
+            let got = read_frame(&mut src).await.unwrap();
+            prop_assert_eq!(got, payload);
+            Ok(())
+        })?;
+    }
+}
