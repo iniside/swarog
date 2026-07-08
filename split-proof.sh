@@ -897,6 +897,33 @@ fi
 
 echo "============================================"
 
+echo ""
+echo "========= HTTP METRICS (Step 12: private Prometheus registry + /metrics) ========="
+# The Prometheus scrape end-to-end on the split: characters-svc (A) mounted metrics.Middleware
+# + GET /metrics (Config::from_env, a module host), so after ALL the /characters ops above
+# ran through A its private registry holds http_requests_total series. gateway-svc (G) opts
+# out (without_metrics, Go parity: the front door carries no prometheus), so /metrics is 404.
+echo "[MX1] GET http://localhost:$A_PORT/metrics on characters-svc -> 200 + http_requests_total present"
+MX1="$(curl -s -w $'\n%{http_code}' "http://localhost:$A_PORT/metrics")"
+MX1BODY="$(echo "$MX1" | sed '$d')"; MX1CODE="$(echo "$MX1" | tail -1)"
+echo "    -> HTTP $MX1CODE  (body $(echo -n "$MX1BODY" | wc -c) bytes)"
+if [ "$MX1CODE" = "200" ] && echo "$MX1BODY" | grep -q 'http_requests_total'; then
+    pass "characters-svc /metrics -> 200 with http_requests_total (private registry recorded real requests)"
+else
+    fail "characters-svc /metrics expected 200 containing http_requests_total, got $MX1CODE"
+fi
+
+echo "[MX2] GET http://localhost:$G_PORT/metrics on gateway-svc -> 404 (without_metrics; front door has no scrape)"
+MX2="$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:$G_PORT/metrics")"
+echo "    -> HTTP $MX2"
+if [ "$MX2" = "404" ]; then
+    pass "gateway-svc /metrics -> 404 (no prometheus on the front door, Go parity)"
+else
+    fail "gateway-svc /metrics expected 404, got $MX2"
+fi
+
+echo "============================================"
+
 # ============================================================================
 # MONOLITH PARITY: the SAME player QUIC front, all ops dispatched Local.
 # Per the never-monolith-only-features rule both topologies must serve the feature.

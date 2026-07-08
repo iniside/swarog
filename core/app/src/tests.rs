@@ -121,6 +121,31 @@ fn without_db_clears_dsn_and_keeps_the_rest() {
 }
 
 #[test]
+fn metrics_enabled_by_default_and_survives_without_db() {
+    // Every module-hosting process gets metrics by default; dropping the DB (a DB-less
+    // module host like admin-svc) does NOT drop metrics — the two concerns are separate.
+    let cfg = Config::from_values(None, None, None, None);
+    assert!(cfg.metrics_enabled);
+    assert!(cfg.without_db().metrics_enabled);
+}
+
+#[test]
+fn without_metrics_opts_out_and_keeps_the_rest() {
+    let cfg = Config::from_values(
+        Some("postgres://u:p@db:5432/x".into()),
+        Some("9090".into()),
+        None,
+        None,
+    )
+    .without_db()
+    .without_metrics();
+    assert!(!cfg.metrics_enabled);
+    // The other opt-outs/values survive.
+    assert_eq!(cfg.database_url, None);
+    assert_eq!(cfg.listen_addr, ":9090");
+}
+
+#[test]
 fn to_bind_addr_expands_colon_port() {
     assert_eq!(to_bind_addr(":9000"), "0.0.0.0:9000");
     assert_eq!(to_bind_addr("127.0.0.1:9000"), "127.0.0.1:9000");

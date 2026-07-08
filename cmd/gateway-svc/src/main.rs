@@ -82,5 +82,14 @@ async fn main() -> anyhow::Result<()> {
     // No edge server: this process serves no provider over the internal mTLS edge, it
     // only DIALS peers (via the stubs). `without_db`: a pure-transport process owns no
     // schema, so `app::run` skips `PgPool::connect` and `/readyz` answers a plain 200.
-    app::run(app::Config::from_env().without_db(), mods, None, Some(player)).await
+    // `without_metrics`: the front door carries no Prometheus scrape (Go parity — the
+    // gateway binary was the one process that never imported the metrics package), so
+    // `GET /metrics` is a 404 here while every module-hosting peer serves it.
+    app::run(
+        app::Config::from_env().without_db().without_metrics(),
+        mods,
+        None,
+        Some(player),
+    )
+    .await
 }

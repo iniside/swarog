@@ -43,6 +43,13 @@ pub struct Config {
     /// Player-facing QUIC listen address, e.g. `:9100` (`PLAYER_EDGE_ADDR`) — only
     /// used when a player server is passed to [`run`].
     pub player_edge_addr: String,
+    /// Whether [`run`] mounts the Prometheus HTTP metrics middleware + `GET /metrics`
+    /// (Go's `metrics.Middleware` + scrape). Defaults `true`; the pure-transport
+    /// `gateway-svc` opts OUT via [`Config::without_metrics`] so it exposes no `/metrics`
+    /// and records nothing (Go parity: the gateway binary carries no prometheus). This is
+    /// deliberately INDEPENDENT of `database_url` — a DB-less-but-module-hosting process
+    /// like `admin-svc` still serves metrics; only the front door is exempt.
+    pub metrics_enabled: bool,
 }
 
 impl Config {
@@ -64,6 +71,16 @@ impl Config {
     pub fn without_db(self) -> Config {
         Config {
             database_url: None,
+            ..self
+        }
+    }
+
+    /// Opts OUT of the Prometheus HTTP metrics: [`run`] mounts neither the recording
+    /// middleware nor `GET /metrics`, so the process exposes no scrape (Go parity — only
+    /// the `gateway-svc` front door uses this).
+    pub fn without_metrics(self) -> Config {
+        Config {
+            metrics_enabled: false,
             ..self
         }
     }
@@ -93,6 +110,7 @@ impl Config {
             listen_addr: normalize_addr(port.as_deref().unwrap_or_default()),
             edge_addr,
             player_edge_addr,
+            metrics_enabled: true,
         }
     }
 }
@@ -305,6 +323,18 @@ pub async fn run(
                 }
             }),
         );
+
+    // Mount the Prometheus HTTP metrics LAST, over the whole surface (module routes +
+    // healthz/readyz), so the recording layer wraps everything and `GET /metrics` scrapes
+    // this process's private registry. Skipped when a process opts out
+    // (`Config::without_metrics`) — the `gateway-svc` front door, Go parity. The layer
+    // labels each request by its MATCHED route pattern (cardinality guard) and exempts the
+    // infra endpoints from recording (see `core/metrics`).
+    let router = if cfg.metrics_enabled {
+        metrics::mount(router)
+    } else {
+        router
+    };
 
     let bind = to_bind_addr(&cfg.listen_addr);
     let listener = tokio::net::TcpListener::bind(&bind)

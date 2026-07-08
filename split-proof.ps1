@@ -784,6 +784,32 @@ try {
 
     Write-Host '============================================'
 
+    Write-Host ''
+    Write-Host '========= HTTP METRICS (Step 12: private Prometheus registry + /metrics) ========='
+    # The Prometheus scrape end-to-end on the split: characters-svc (A) mounted the metrics
+    # middleware + GET /metrics (a module host), so after the /characters ops above ran through
+    # A its private registry holds http_requests_total series. gateway-svc (G) opts out
+    # (without_metrics, Go parity: the front door carries no prometheus), so /metrics is 404.
+    Write-Host "[MX1] GET http://127.0.0.1:$APort/metrics on characters-svc -> 200 + http_requests_total present"
+    $mx1 = Invoke-Curl @("http://127.0.0.1:$APort/metrics")
+    Write-Host "    -> HTTP $($mx1.Code)  (body $($mx1.Body.Length) chars)"
+    if ($mx1.Code -eq '200' -and $mx1.Body -match 'http_requests_total') {
+        Pass 'characters-svc /metrics -> 200 with http_requests_total (private registry recorded real requests)'
+    } else {
+        Fail "characters-svc /metrics expected 200 containing http_requests_total, got $($mx1.Code)"
+    }
+
+    Write-Host "[MX2] GET http://127.0.0.1:$GPort/metrics on gateway-svc -> 404 (without_metrics; front door has no scrape)"
+    $mx2 = Invoke-Curl @("http://127.0.0.1:$GPort/metrics")
+    Write-Host "    -> HTTP $($mx2.Code)"
+    if ($mx2.Code -eq '404') {
+        Pass 'gateway-svc /metrics -> 404 (no prometheus on the front door, Go parity)'
+    } else {
+        Fail "gateway-svc /metrics expected 404, got $($mx2.Code)"
+    }
+
+    Write-Host '============================================'
+
     # ========================================================================
     # MONOLITH PARITY: the SAME player QUIC front, all ops dispatched Local. Per the
     # never-monolith-only-features rule both topologies must serve the feature. Tear
