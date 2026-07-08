@@ -3,7 +3,7 @@
 //! dependency with a `remote::Stub`: the stub `provide`s an edge-backed
 //! `characters.ownership` client (dialing A), so inventory's
 //! `require::<dyn Ownership>` resolves REMOTELY — the registry SWAP, with inventory's
-//! code unchanged. It imports the `charactersapi` CONTRACT (transitively, via the
+//! code unchanged. It imports the `charactersrpc` CONTRACT (transitively, via the
 //! stub) but NOT the characters IMPL. No edge server: B dials OUT to A; nothing calls
 //! B over the edge in the 2-process proof.
 

@@ -15,7 +15,7 @@ edge = { workspace = true }
 opsapi = { workspace = true }
 registry = { workspace = true }
 lifecycle = { workspace = true }
-charactersapi = { workspace = true }
+charactersrpc = { workspace = true }
 tokio = { workspace = true, features = ["sync"] }
 async-trait = { workspace = true }
 anyhow = { workspace = true }

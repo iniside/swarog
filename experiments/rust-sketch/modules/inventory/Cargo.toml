@@ -11,15 +11,15 @@ publish = false
 # authorize a character's inventory, and REACTS to character lifecycle on the
 # DURABLE plane (grant a starter item on create, wipe holdings on delete) —
 # integrity via event, not a foreign key. An impl crate — no OTHER module imports
-# it; consumers use `inventoryapi`.
+# it; consumers use `inventoryrpc`.
 [dependencies]
 bus = { workspace = true }
 lifecycle = { workspace = true }
 registry = { workspace = true }
 opsapi = { workspace = true }
 edge = { workspace = true }
-inventoryapi = { workspace = true }
-charactersapi = { workspace = true }
+inventoryrpc = { workspace = true }
+charactersrpc = { workspace = true }
 charactersevents = { workspace = true }
 configapi = { workspace = true }
 configevents = { workspace = true }

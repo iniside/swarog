@@ -7,7 +7,7 @@ publish = false
 
 # Process B of the split: hosts gateway + config + inventory + messaging and fills
 # inventory's `characters` dependency with a `remote::Stub` that dials A over the QUIC
-# edge. It imports the inventory + remote crates and the `charactersapi` CONTRACT (to
+# edge. It imports the inventory + remote crates and the `charactersrpc` CONTRACT (to
 # name `dyn Ownership`) — but NOT the characters IMPL. No edge server: B dials OUT to
 # A; nothing calls B over the edge in the 2-process proof.
 [[bin]]

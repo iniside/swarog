@@ -15,12 +15,12 @@ members = [
     "tools/rpc-macro-tests",
     "tools/edgeca",
     # Contract surfaces, grouped by domain (Go's api/<name>/ tree). Types-only; import no module.
-    "api/characters/charactersapi",
-    "api/characters/charactersevents",
-    "api/inventory/inventoryapi",
-    "api/config/configapi",
-    "api/config/configevents",
-    "api/admin/adminapi",
+    "api/characters/rpc",
+    "api/characters/events",
+    "api/inventory/rpc",
+    "api/config/api",
+    "api/config/events",
+    "api/admin/api",
     # Module implementations — private, reachable only from a cmd/ binary.
     "modules/config",
     "modules/characters",
@@ -87,12 +87,12 @@ app = { path = "core/app" }
 rpc-macro = { path = "tools/rpc-macro" }
 
 # ---- Contract surfaces (api/<name>/): types-only, shared by modules, import no module. ----
-adminapi = { path = "api/admin/adminapi" }
-configapi = { path = "api/config/configapi" }
-configevents = { path = "api/config/configevents" }
-charactersevents = { path = "api/characters/charactersevents" }
-charactersapi = { path = "api/characters/charactersapi" }
-inventoryapi = { path = "api/inventory/inventoryapi" }
+adminapi = { path = "api/admin/api" }
+configapi = { path = "api/config/api" }
+configevents = { path = "api/config/events" }
+charactersevents = { path = "api/characters/events" }
+charactersrpc = { path = "api/characters/rpc" }
+inventoryrpc = { path = "api/inventory/rpc" }
 
 # ---- Module implementations (modules/): private impl, reachable only from cmd/. ----
 config = { path = "modules/config" }

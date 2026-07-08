@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use async_trait::async_trait;
 use bus::Bus;
-use charactersapi::{Character, Ownership, Player};
+use charactersrpc::{Character, Ownership, Player};
 use lifecycle::{Caps, Context, Module};
 use opsapi::{Error, Identity};
 use sqlx::{PgConnection, PgPool};
@@ -268,7 +268,7 @@ impl Player for Service {
 }
 
 #[async_trait]
-impl charactersapi::Admin for Service {
+impl charactersrpc::Admin for Service {
     /// The admin fan-out: this module's page as `adminapi::ItemData` (same
     /// Section/Label the local `Item` carries).
     async fn admin_data(&self) -> Result<adminapi::ItemData, Error> {
@@ -423,7 +423,7 @@ impl Module for Characters {
         // (a) Player operations: the generated `operations()` yields one OpSet per
         // #[http] method; contribute each half to its slot (LocalBackend + the future
         // RemoteBackend consume the SAME wire envelopes).
-        for op in charactersapi::player_rpc::operations(svc.clone()) {
+        for op in charactersrpc::player_rpc::operations(svc.clone()) {
             ctx.contribute(opsapi::SLOT, op.operation);
             ctx.contribute(opsapi::BINDING_SLOT, op.binding);
             ctx.contribute(opsapi::LOCAL_SLOT, op.local);
@@ -453,8 +453,8 @@ impl Module for Characters {
         // the listener after all Inits.
         if let Some(edge) = &self.edge {
             let mut server = edge.lock().unwrap();
-            charactersapi::ownership_rpc::register_server(&mut server, svc.clone());
-            charactersapi::player_rpc::register_server(&mut server, svc);
+            charactersrpc::ownership_rpc::register_server(&mut server, svc.clone());
+            charactersrpc::player_rpc::register_server(&mut server, svc);
         }
         Ok(())
     }

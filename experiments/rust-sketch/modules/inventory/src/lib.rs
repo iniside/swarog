@@ -16,9 +16,9 @@
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 use async_trait::async_trait;
-use charactersapi::Ownership;
+use charactersrpc::Ownership;
 use configapi::Config;
-use inventoryapi::{holdings_rpc, Holding, Holdings};
+use inventoryrpc::{holdings_rpc, Holding, Holdings};
 use lifecycle::{Caps, Context, Module};
 use opsapi::{Error, Identity};
 use registry::key;

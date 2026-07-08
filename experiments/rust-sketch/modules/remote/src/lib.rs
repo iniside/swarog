@@ -219,15 +219,15 @@ impl Module for Stub {
         let caller: Arc<dyn Caller> = self.conn.clone();
         match self.provider.as_str() {
             "characters" => {
-                let ownership: Arc<dyn charactersapi::Ownership> =
-                    Arc::new(charactersapi::ownership_rpc::Client::new(caller.clone()));
+                let ownership: Arc<dyn charactersrpc::Ownership> =
+                    Arc::new(charactersrpc::ownership_rpc::Client::new(caller.clone()));
                 ctx.registry()
-                    .provide::<dyn charactersapi::Ownership>(registry::key("characters", "ownership"), ownership);
+                    .provide::<dyn charactersrpc::Ownership>(registry::key("characters", "ownership"), ownership);
 
-                let player: Arc<dyn charactersapi::Player> =
-                    Arc::new(charactersapi::player_rpc::Client::new(caller));
+                let player: Arc<dyn charactersrpc::Player> =
+                    Arc::new(charactersrpc::player_rpc::Client::new(caller));
                 ctx.registry()
-                    .provide::<dyn charactersapi::Player>(registry::key("characters", "player"), player);
+                    .provide::<dyn charactersrpc::Player>(registry::key("characters", "player"), player);
 
                 tracing::info!(
                     provider = %self.provider,
@@ -371,13 +371,13 @@ mod tests {
 
         assert!(
             ctx.registry()
-                .try_require::<dyn charactersapi::Ownership>(&registry::key("characters", "ownership"))
+                .try_require::<dyn charactersrpc::Ownership>(&registry::key("characters", "ownership"))
                 .is_some(),
             "characters.ownership must resolve to an Arc<dyn Ownership> (inventory's authz dep)"
         );
         assert!(
             ctx.registry()
-                .try_require::<dyn charactersapi::Player>(&registry::key("characters", "player"))
+                .try_require::<dyn charactersrpc::Player>(&registry::key("characters", "player"))
                 .is_some(),
             "characters.player must resolve to an Arc<dyn Player> (front-door dep)"
         );

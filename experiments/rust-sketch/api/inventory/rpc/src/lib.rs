@@ -1,4 +1,4 @@
-//! `inventoryapi` — the inventory module's pure, transport-free capability contract
+//! `inventoryrpc` — the inventory module's pure, transport-free capability contract
 //! (port of Go's `api/inventory/inventoryapi`). It declares the `Holdings`
 //! capability — the three operations a player performs against their OWN inventory —
 //! and applies `#[rpc(prefix = "inventory")]` so the transport glue (per-method wire

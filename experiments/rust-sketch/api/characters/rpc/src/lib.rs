@@ -1,4 +1,4 @@
-//! `charactersapi` — the characters module's pure, transport-free capability
+//! `charactersrpc` — the characters module's pure, transport-free capability
 //! contract (port of Go's `api/characters/charactersapi`). It declares the three
 //! capabilities characters exposes and applies `#[rpc(prefix = "characters")]` to
 //! the two wire capabilities so the transport glue (per-method wire envelopes,
