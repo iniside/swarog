@@ -1,32 +1,37 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/registry",
-    "crates/contrib",
-    "crates/bus",
-    "crates/lifecycle",
-    "crates/opsapi",
-    "crates/edge",
-    "crates/edgeca",
-    "crates/app",
-    "crates/rpc-macro",
-    "crates/rpc-macro-tests",
-    "crates/outbox",
-    "crates/messaging",
-    "crates/adminapi",
-    "crates/configapi",
-    "crates/configevents",
-    "crates/config",
-    "crates/charactersevents",
-    "crates/charactersapi",
-    "crates/characters",
-    "crates/inventoryapi",
-    "crates/inventory",
-    "crates/gateway",
-    "crates/remote",
-    "crates/server",
-    "crates/characters-svc",
-    "crates/inventory-svc",
+    # Foundations — imported by everyone, import no module (Go's root leaves + opsapi/edge/outbox + internal/app).
+    "core/registry",
+    "core/contrib",
+    "core/bus",
+    "core/lifecycle",
+    "core/opsapi",
+    "core/edge",
+    "core/outbox",
+    "core/app",
+    # Tooling — codegen + the dev-CA minter (Go's tools/).
+    "tools/rpc-macro",
+    "tools/rpc-macro-tests",
+    "tools/edgeca",
+    # Contract surfaces, grouped by domain (Go's api/<name>/ tree). Types-only; import no module.
+    "api/characters/charactersapi",
+    "api/characters/charactersevents",
+    "api/inventory/inventoryapi",
+    "api/config/configapi",
+    "api/config/configevents",
+    "api/admin/adminapi",
+    # Module implementations — private, reachable only from a cmd/ binary.
+    "modules/config",
+    "modules/characters",
+    "modules/inventory",
+    "modules/gateway",
+    "modules/messaging",
+    "modules/remote",
+    # Process entrypoints (Go's cmd/).
+    "cmd/server",
+    "cmd/characters-svc",
+    "cmd/inventory-svc",
 ]
 
 [workspace.package]
@@ -53,14 +58,14 @@ proptest = "1"
 # with the edge stack's TLS; default (native-tls) features off.
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 
-# QUIC + mutual TLS stack for the edge transport (Step 4). Pinned once here.
+# QUIC + mutual TLS stack for the edge transport. Pinned once here.
 quinn = "0.11"
 # TLS 1.3 only: the `tls12` feature is deliberately NOT enabled (mTLS point 5).
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 rustls-pemfile = "2"
 rcgen = "0.13"
 
-# proc-macro toolchain for the `#[rpc]` codegen crate (Step 5).
+# proc-macro toolchain for the `#[rpc]` codegen crate.
 syn = { version = "2", features = ["full", "extra-traits"] }
 quote = "1"
 proc-macro2 = "1"
@@ -68,35 +73,31 @@ proc-macro2 = "1"
 # Structured-logging subscriber for the process entrypoints (server + the two *-svc).
 tracing-subscriber = "0.3"
 
-# Internal foundation crates (leaves import only each other, never a module).
-registry = { path = "crates/registry" }
-contrib = { path = "crates/contrib" }
-bus = { path = "crates/bus" }
-lifecycle = { path = "crates/lifecycle" }
-opsapi = { path = "crates/opsapi" }
-edge = { path = "crates/edge" }
-app = { path = "crates/app" }
-rpc-macro = { path = "crates/rpc-macro" }
-outbox = { path = "crates/outbox" }
-messaging = { path = "crates/messaging" }
-gateway = { path = "crates/gateway" }
-remote = { path = "crates/remote" }
+# ---- Foundations (core/): leaves import only each other, never a module. ----
+registry = { path = "core/registry" }
+contrib = { path = "core/contrib" }
+bus = { path = "core/bus" }
+lifecycle = { path = "core/lifecycle" }
+opsapi = { path = "core/opsapi" }
+edge = { path = "core/edge" }
+outbox = { path = "core/outbox" }
+app = { path = "core/app" }
 
-# Contract crates (types-only surfaces shared by modules, like Go's api/ tree) plus
-# the config impl module. Contracts import no module; config imports only contracts.
-adminapi = { path = "crates/adminapi" }
-configapi = { path = "crates/configapi" }
-configevents = { path = "crates/configevents" }
-config = { path = "crates/config" }
+# ---- Tooling (tools/): the #[rpc] codegen. ----
+rpc-macro = { path = "tools/rpc-macro" }
 
-# The characters domain: published events, the pure capability contract (traits +
-# generated rpc glue), and the impl module.
-charactersevents = { path = "crates/charactersevents" }
-charactersapi = { path = "crates/charactersapi" }
-characters = { path = "crates/characters" }
+# ---- Contract surfaces (api/<name>/): types-only, shared by modules, import no module. ----
+adminapi = { path = "api/admin/adminapi" }
+configapi = { path = "api/config/configapi" }
+configevents = { path = "api/config/configevents" }
+charactersevents = { path = "api/characters/charactersevents" }
+charactersapi = { path = "api/characters/charactersapi" }
+inventoryapi = { path = "api/inventory/inventoryapi" }
 
-# The inventory domain: the pure Holdings capability contract (traits + generated
-# rpc glue) and the impl module (polymorphic Owner, no cross-module FK, on_tx
-# grant-starter/wipe — the integrity-via-event proof).
-inventoryapi = { path = "crates/inventoryapi" }
-inventory = { path = "crates/inventory" }
+# ---- Module implementations (modules/): private impl, reachable only from cmd/. ----
+config = { path = "modules/config" }
+characters = { path = "modules/characters" }
+inventory = { path = "modules/inventory" }
+gateway = { path = "modules/gateway" }
+messaging = { path = "modules/messaging" }
+remote = { path = "modules/remote" }
