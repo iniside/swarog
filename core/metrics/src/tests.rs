@@ -41,6 +41,42 @@ async fn get_body(router: Router, uri: &str) -> (StatusCode, String) {
     (status, String::from_utf8(bytes.to_vec()).unwrap())
 }
 
+/// A router whose fallback (no `MatchedPath`, the gateway front-door shape) stamps a
+/// [`httpmw::RoutePattern`] onto the response — plus the `/metrics` scrape + record layer.
+/// `record` must prefer the stamped pattern over `"unmatched"`.
+fn app_with_route_pattern() -> Router {
+    Router::new()
+        .route("/metrics", get(scrape))
+        .fallback(|| async {
+            let mut resp = Response::new(axum::body::Body::from("ok"));
+            resp.extensions_mut()
+                .insert(httpmw::RoutePattern::new("/gadgets"));
+            resp
+        })
+        .layer(middleware::from_fn(record))
+}
+
+/// A fallback-dispatched request (no `MatchedPath`) whose response carries a
+/// `RoutePattern` records under that PATTERN, never `"unmatched"` and never the raw URL —
+/// the gateway front-door label path.
+#[tokio::test]
+async fn record_prefers_response_route_pattern_over_unmatched() {
+    let (status, _) = get_body(app_with_route_pattern(), "/gadgets/xyz").await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (_, scrape) = get_body(app_with_route_pattern(), "/metrics").await;
+    assert!(
+        scrape.contains(r#"path="/gadgets""#),
+        "expected the response-stamped RoutePattern label, got:\n{scrape}"
+    );
+    assert!(
+        !scrape.contains(r#"path="/gadgets/xyz""#),
+        "raw URL must never become a label, got:\n{scrape}"
+    );
+    // The request had no MatchedPath, so absent the stamp it would have been "unmatched";
+    // presence of the pattern label proves the preference order.
+}
+
 /// A real request through a matched route is counted under the MATCHED PATTERN, not the
 /// raw URL — the cardinality guard. `/widgets/42` must record `path="/widgets/:id"` and
 /// never `path="/widgets/42"`.

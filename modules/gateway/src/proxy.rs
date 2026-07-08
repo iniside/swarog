@@ -78,6 +78,18 @@ impl ProxyTable {
         })
     }
 
+    /// The metrics route-pattern LABEL for a proxied `path`: the matched prefix as a
+    /// wildcard subtree (e.g. `/admin` → `"/admin/*"`), so every proxied request records
+    /// under one bounded series instead of the raw (attacker-controlled) URL. `None` when
+    /// no prefix matches — the request stays a 404 and records under `"unmatched"`. Uses
+    /// the SAME prefix-match semantics as [`origin_for`].
+    pub fn pattern_for(&self, path: &str) -> Option<String> {
+        self.routes.iter().find_map(|(prefix, _)| {
+            let subtree = format!("{prefix}/");
+            (path == prefix || path.starts_with(&subtree)).then(|| format!("{prefix}/*"))
+        })
+    }
+
     /// Proxies an unmatched request to its origin, or returns 404 when no prefix
     /// matches (the prior fallback behaviour). Streams the body both ways, preserves
     /// the method + headers (minus hop-by-hop), and extends `X-Forwarded-For` with the

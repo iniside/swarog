@@ -1012,6 +1012,7 @@ dependencies = [
  "contrib",
  "edge",
  "futures",
+ "httpmw",
  "lifecycle",
  "opsapi",
  "registry",

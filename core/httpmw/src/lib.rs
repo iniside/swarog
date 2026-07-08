@@ -22,6 +22,10 @@
 //! - **HTTP layer slot** ([`HttpLayer`] + [`LAYER_SLOT`]) — a contribution slot `core/app`
 //!   drains to wrap the whole rate-limited surface: a core-infra module (`metrics`)
 //!   contributes its recording layer here instead of `app` hard-coding it.
+//! - **Route-pattern label** ([`RoutePattern`]) — a response-extension the gateway front
+//!   door stamps with an op's route pattern so `metrics::record` labels fallback-dispatched
+//!   op traffic by pattern instead of the fixed `"unmatched"`. The shared seam both the
+//!   gateway and `metrics` import.
 //!
 //! Leaf rule: this crate imports only `axum` + `ipnet` + `tokio` (+ `tracing`); it never
 //! reaches a module or an `api/` contract crate — same tier as `bus`/`registry`/`metrics`.
@@ -31,12 +35,14 @@ mod layer;
 mod limiter;
 mod middleware;
 mod readiness;
+mod route_pattern;
 
 pub use client_ip::{client_ip, parse_cidrs};
 pub use layer::{HttpLayer, LAYER_SLOT};
 pub use limiter::IpLimiter;
 pub use middleware::mount;
 pub use readiness::{ReadyCheck, READINESS_SLOT};
+pub use route_pattern::RoutePattern;
 
 /// The infra endpoints that must NEVER be rate limited: the k8s liveness/readiness
 /// probes and the Prometheus scrape all arrive from one IP and a `429` there means a

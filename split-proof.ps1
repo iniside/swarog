@@ -795,8 +795,10 @@ try {
     #    counter has an http_requests_total child.
     #  - MX2 (the point): gateway-svc (G) now lists the metrics module too, so GET /metrics is
     #    200 (was 404 under without_metrics) AND records the op traffic that flowed through the
-    #    front door above. G dispatches ops via an axum FALLBACK (no per-op route), so they carry
-    #    no MatchedPath and record under path="unmatched" -- but they ARE measured now, 2xx.
+    #    front door above. G dispatches ops via an axum FALLBACK (no per-op MatchedPath), but the
+    #    front door now STAMPS each matched op's route PATTERN onto the response
+    #    (httpmw::RoutePattern), so metrics labels op traffic by pattern -- the POST /characters
+    #    create records path="/characters",status="201" instead of collapsing to "unmatched".
     Write-Host "[MX1] GET http://127.0.0.1:$APort/metrics on characters-svc -> 200 + http_requests_total (peer pipeline)"
     Invoke-Curl @("http://127.0.0.1:$APort/__metrics_probe") | Out-Null  # one recorded non-infra hit -> a counter child
     $mx1 = Invoke-Curl @("http://127.0.0.1:$APort/metrics")
@@ -807,13 +809,16 @@ try {
         Fail "characters-svc /metrics expected 200 containing http_requests_total, got $($mx1.Code)"
     }
 
-    Write-Host "[MX2] GET http://127.0.0.1:$GPort/metrics on gateway-svc -> 200 + a 2xx op line (front door now MEASURED)"
+    Write-Host "[MX2] GET http://127.0.0.1:$GPort/metrics on gateway-svc -> 200 + a REAL op PATTERN label (front door now labelled per-op)"
     $mx2 = Invoke-Curl @("http://127.0.0.1:$GPort/metrics")
     Write-Host "    -> HTTP $($mx2.Code)  (body $($mx2.Body.Length) chars)"
-    if ($mx2.Code -eq '200' -and $mx2.Body -match 'http_requests_total' -and $mx2.Body -match 'http_requests_total\{.*status="2\d\d"') {
-        Pass 'gateway-svc /metrics -> 200 recording real op traffic with 2xx statuses (metrics is now a core-infra module; front door measured)'
+    # The POST /characters create fronted above records under the op's route PATTERN with its
+    # 201 success (label order is alphabetical: method,path,status), proving RoutePattern
+    # labelling replaced the old path="unmatched" collapse.
+    if ($mx2.Code -eq '200' -and $mx2.Body -match 'http_requests_total' -and $mx2.Body -match 'http_requests_total\{[^}]*path="/characters"[^}]*status="2\d\d"') {
+        Pass 'gateway-svc /metrics -> 200 recording real op traffic under path="/characters" with a 2xx status (front door per-op route-pattern labels live)'
     } else {
-        Fail "gateway-svc /metrics expected 200 with a 2xx http_requests_total op line, got $($mx2.Code)"
+        Fail "gateway-svc /metrics expected 200 with an http_requests_total{path=`"/characters`",status=2xx} op-pattern line, got $($mx2.Code)"
     }
 
     Write-Host '============================================'

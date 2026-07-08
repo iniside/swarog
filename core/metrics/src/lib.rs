@@ -22,10 +22,14 @@
 //! guard Go implemented by reading `r.Pattern` after the mux matched. The axum analogue is
 //! the [`axum::extract::MatchedPath`] request extension, which the router inserts during
 //! routing; [`layer`] is applied with [`axum::Router::layer`] so it wraps each route's
-//! service (running AFTER the match), making the extension visible before `next` runs. A
-//! request that matched no route has no `MatchedPath`; like Go's empty-pattern case it is
-//! recorded under the fixed label `"unmatched"` so attacker-supplied paths can never
-//! explode label cardinality.
+//! service (running AFTER the match), making the extension visible before `next` runs.
+//!
+//! The gateway front door is the exception: it dispatches its operations from an axum
+//! FALLBACK, which carries no `MatchedPath`, so its whole op surface would otherwise
+//! record under `"unmatched"`. The front door therefore stamps the op's route pattern into
+//! the response extensions as a [`httpmw::RoutePattern`], and [`record`] reads it in
+//! preference to `MatchedPath`. A request that matched neither is recorded under the fixed
+//! label `"unmatched"` so attacker-supplied paths can never explode label cardinality.
 //!
 //! Infra endpoints (`/healthz`, `/readyz`, `/metrics`) are EXEMPT from recording — the
 //! same set Go's `httpmw.SkipInfra` names — so liveness/readiness probes and the scrape
@@ -148,26 +152,39 @@ impl Module for Metrics {
     }
 }
 
-/// The recording middleware. Reads the matched route pattern (falling back to `"unmatched"`),
-/// skips the infra endpoints, then times `next` and updates both collectors with the final
-/// status. `MatchedPath` is read BEFORE `next.run` consumes the request (the extension is
-/// already present because the layer wraps the post-match route service).
+/// The recording middleware. Resolves the `path` label — the gateway front door's
+/// response-stamped [`httpmw::RoutePattern`] first (its ops dispatch from an axum FALLBACK,
+/// which has no `MatchedPath`), then the request's [`MatchedPath`] (a real routed path),
+/// then the fixed `"unmatched"` — skips the infra endpoints, then times `next` and updates
+/// both collectors with the final status. `MatchedPath` is read BEFORE `next.run` consumes
+/// the request; `RoutePattern` is read AFTER, from the response the front door produced.
 async fn record(req: Request, next: Next) -> Response {
     let method = req.method().as_str().to_owned();
-    let path = req
+    // The routed path (present for a real axum route; ABSENT for the gateway's fallback,
+    // which instead stamps a `RoutePattern` onto the response — preferred below).
+    let matched = req
         .extensions()
         .get::<MatchedPath>()
-        .map(|m| m.as_str().to_owned())
-        .unwrap_or_else(|| UNMATCHED.to_owned());
+        .map(|m| m.as_str().to_owned());
 
-    // Infra endpoints (probes + the scrape) are never recorded — no cardinality, no
-    // self-counting scrape. Still served, just not measured.
-    if INFRA_PATHS.contains(&path.as_str()) {
+    // Infra endpoints (probes + the scrape) are real routes with a `MatchedPath`; never
+    // recorded — no cardinality, no self-counting scrape. Still served, just not measured.
+    if matches!(&matched, Some(p) if INFRA_PATHS.contains(&p.as_str())) {
         return next.run(req).await;
     }
 
     let start = Instant::now();
     let response = next.run(req).await;
+
+    // Prefer the front door's response-stamped route pattern (the fallback carries no
+    // `MatchedPath`), then the request's `MatchedPath`, then the fixed `"unmatched"`.
+    let path = response
+        .extensions()
+        .get::<httpmw::RoutePattern>()
+        .map(|r| r.as_str().to_owned())
+        .or(matched)
+        .unwrap_or_else(|| UNMATCHED.to_owned());
+
     let status = response.status().as_u16().to_string();
 
     let m = metrics();

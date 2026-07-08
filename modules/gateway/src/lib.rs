@@ -500,16 +500,44 @@ async fn handle(front: Arc<FrontDoor>, peer: Option<SocketAddr>, req: Request) -
     // (1) Match. A non-operation route is offered to the HTTP passthrough (Go's
     // reverse proxy: `/admin`, `/accounts/epic` are HTML/browser flows served by
     // another process) — the body is still unconsumed, so the proxy streams it. When
-    // no prefix is configured the passthrough returns 404, exactly as before.
+    // no prefix is configured the passthrough returns 404, exactly as before. A proxied
+    // request is labelled with its prefix pattern (e.g. `/admin/*`) so `metrics` records
+    // it under one bounded series rather than the fixed `"unmatched"`.
     let (op, binding, path_args) = match table.find(method, path) {
         Some((route, args)) => (route.op.clone(), route.binding.clone(), args),
-        None => return front.proxy.forward(parts, body, peer).await,
+        None => {
+            let proxy_pattern = front.proxy.pattern_for(path);
+            let mut resp = front.proxy.forward(parts, body, peer).await;
+            stamp_route_pattern(&mut resp, proxy_pattern);
+            return resp;
+        }
     };
 
+    // Every response past a successful match — success, auth failure, decode/dispatch
+    // error alike — is stamped with the op's route PATTERN (`op.path`, e.g. `/characters`
+    // or `/characters/{id}`), which `metrics::record` reads in place of the absent
+    // `MatchedPath` (the front door dispatches from an axum fallback).
+    let pattern = op.path.clone();
+    let mut resp = dispatch_matched_op(&front, op, binding, path_args, parts.headers, body).await;
+    stamp_route_pattern(&mut resp, Some(pattern));
+    resp
+}
+
+/// Steps (2)–(5) for a matched operation: auth-once → decode → dispatch → encode. Split
+/// out of [`handle`] so the caller can stamp the route-pattern label on EVERY outcome
+/// (including an early auth/decode failure) at one place.
+async fn dispatch_matched_op(
+    front: &FrontDoor,
+    op: Operation,
+    binding: OpBinding,
+    path_args: PathArgs,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
     // (2) Auth-once: the single trust boundary. For AuthPlayer verify the bearer and
     // thread the verified player_id; AuthNone runs with no identity.
     let identity = match op.auth {
-        AuthReq::Player => match authenticate(&parts.headers, &*front.verifier).await {
+        AuthReq::Player => match authenticate(&headers, &*front.verifier).await {
             Ok(id) => id,
             Err(resp) => return resp,
         },
@@ -533,7 +561,7 @@ async fn handle(front: Arc<FrontDoor>, peer: Option<SocketAddr>, req: Request) -
 
     // (4) Dispatch on the topology-correct backend (Local in-process, else the Remote
     // peer; a Remote failure evicts the cached conn so the next request re-dials).
-    let wire_resp = match table.dispatch(&op, identity, wire_req).await {
+    let wire_resp = match front.table().dispatch(&op, identity, wire_req).await {
         Ok(r) => r,
         Err(e) => return op_error_response(&e),
     };
@@ -544,6 +572,15 @@ async fn handle(front: Arc<FrontDoor>, peer: Option<SocketAddr>, req: Request) -
         Err(e) => op_error_response(&e),
         // Ok → the op's declared success code with the domain-only body (may be empty).
         Ok((body, _status)) => success_response(op.success, body),
+    }
+}
+
+/// Inserts the metrics route-pattern label into a response's extensions (a no-op when
+/// `pattern` is `None`, e.g. an unmatched request with no proxy prefix, which stays
+/// `"unmatched"`). Read back by `metrics::record`.
+fn stamp_route_pattern(resp: &mut Response, pattern: Option<String>) {
+    if let Some(p) = pattern {
+        resp.extensions_mut().insert(httpmw::RoutePattern::new(p));
     }
 }
 

@@ -225,6 +225,65 @@ async fn end_to_end_domain_status_maps_to_http() {
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }
 
+// ---- route-pattern label stamped for the metrics layer ----
+
+/// A matched op stamps its route PATTERN (`op.path`) into the response extensions, so
+/// `metrics::record` labels it by pattern instead of the fallback's absent `MatchedPath`.
+#[tokio::test]
+async fn front_door_stamps_route_pattern_on_matched_op() {
+    let router = demo_router();
+    let req = HttpRequest::builder()
+        .method("POST")
+        .uri("/demo/42")
+        .header(header::AUTHORIZATION, "Bearer dev-alice")
+        .body(Body::from("1"))
+        .unwrap();
+    let resp = router.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let pat = resp
+        .extensions()
+        .get::<httpmw::RoutePattern>()
+        .expect("a matched op response must carry its route pattern");
+    assert_eq!(pat.as_str(), "/demo/{id}", "the PATTERN, never the raw /demo/42");
+}
+
+/// The stamp lands on EVERY post-match outcome, including an early auth failure (a 401 on
+/// `/demo/42` must still be labelled `/demo/{id}`, not `unmatched`).
+#[tokio::test]
+async fn front_door_stamps_route_pattern_on_auth_failure() {
+    let router = demo_router();
+    let req = HttpRequest::builder()
+        .method("POST")
+        .uri("/demo/42")
+        .body(Body::from("1"))
+        .unwrap();
+    let resp = router.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    let pat = resp
+        .extensions()
+        .get::<httpmw::RoutePattern>()
+        .expect("an auth-failure response must still carry the op's route pattern");
+    assert_eq!(pat.as_str(), "/demo/{id}");
+}
+
+/// An unmatched route with no proxy prefix configured carries NO pattern → `metrics`
+/// records it under `"unmatched"` (the prior behaviour is preserved).
+#[tokio::test]
+async fn front_door_leaves_unmatched_route_unlabelled() {
+    let router = demo_router();
+    let req = HttpRequest::builder()
+        .method("GET")
+        .uri("/nope")
+        .body(Body::empty())
+        .unwrap();
+    let resp = router.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    assert!(
+        resp.extensions().get::<httpmw::RoutePattern>().is_none(),
+        "an unmatched, unproxied route must not be labelled (stays \"unmatched\")"
+    );
+}
+
 // ---- find_by_method: the player plane's lookup ----
 
 #[test]

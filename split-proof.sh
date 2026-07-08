@@ -911,8 +911,10 @@ echo "========= HTTP METRICS (private Prometheus registry + /metrics, now a core
 #  - MX2 (the point of this change): gateway-svc (G) now lists the metrics module too, so
 #    GET /metrics is 200 (was 404 under without_metrics) AND records the op traffic that
 #    flowed through the front door during the assertions above. G dispatches ops via an axum
-#    FALLBACK (no per-op route), so they carry no MatchedPath and record under
-#    path="unmatched" -- but they ARE measured now, with real 2xx statuses.
+#    FALLBACK (no per-op MatchedPath), but the front door now STAMPS each matched op's route
+#    PATTERN onto the response (httpmw::RoutePattern), so metrics labels op traffic by
+#    pattern -- e.g. the POST /characters create above records path="/characters",status="201"
+#    instead of collapsing to path="unmatched". We assert that REAL op pattern label appears.
 echo "[MX1] GET http://localhost:$A_PORT/metrics on characters-svc -> 200 + http_requests_total (peer pipeline)"
 curl -s -o /dev/null "http://localhost:$A_PORT/__metrics_probe" || true  # one recorded non-infra hit -> a counter child
 MX1="$(curl -s -w $'\n%{http_code}' "http://localhost:$A_PORT/metrics")"
@@ -924,16 +926,19 @@ else
     fail "characters-svc /metrics expected 200 containing http_requests_total, got $MX1CODE"
 fi
 
-echo "[MX2] GET http://localhost:$G_PORT/metrics on gateway-svc -> 200 + a 2xx op line (front door now MEASURED)"
+echo "[MX2] GET http://localhost:$G_PORT/metrics on gateway-svc -> 200 + a REAL op PATTERN label (front door now labelled per-op)"
 MX2="$(curl -s -w $'\n%{http_code}' "http://localhost:$G_PORT/metrics")"
 MX2BODY="$(echo "$MX2" | sed '$d')"; MX2CODE="$(echo "$MX2" | tail -1)"
 echo "    -> HTTP $MX2CODE  (body $(echo -n "$MX2BODY" | wc -c) bytes)"
+# The POST /characters create fronted above records under the op's route PATTERN with its
+# 201 success -- path="/characters",status="201" -- proving RoutePattern labelling replaced
+# the old path="unmatched" collapse. (Label order is alphabetical: method,path,status.)
 if [ "$MX2CODE" = "200" ] \
    && echo "$MX2BODY" | grep -q 'http_requests_total' \
-   && echo "$MX2BODY" | grep -qE 'http_requests_total\{.*status="2[0-9][0-9]"'; then
-    pass "gateway-svc /metrics -> 200 recording real op traffic with 2xx statuses (metrics is now a core-infra module; front door measured)"
+   && echo "$MX2BODY" | grep -qE 'http_requests_total\{[^}]*path="/characters"[^}]*status="2[0-9][0-9]"'; then
+    pass "gateway-svc /metrics -> 200 recording real op traffic under path=\"/characters\" with a 2xx status (front door per-op route-pattern labels live)"
 else
-    fail "gateway-svc /metrics expected 200 with a 2xx http_requests_total op line, got $MX2CODE"
+    fail "gateway-svc /metrics expected 200 with an http_requests_total{path=\"/characters\",status=2xx} op-pattern line, got $MX2CODE"
 fi
 
 echo "============================================"
