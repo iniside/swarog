@@ -4,6 +4,7 @@
 *.exe~
 /bin/
 /dist/
+/target/
 
 # Test / coverage
 *.out

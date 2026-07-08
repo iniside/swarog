@@ -1,290 +1,188 @@
-# run.ps1 - build the per-service binaries, then run either the monolith (one
-# binary hosting every module) or the two-process microservices split, where
-# EACH service is its OWN binary linking only its own modules.
+# run.ps1 -- build the rust-sketch binaries, then run either the monolith (one
+# process hosting every module) or the two-process split (characters-svc = A,
+# inventory-svc = B), where each service is its own binary linking only its own
+# modules. PowerShell 5.1 compatible: ASCII only, no em-dashes.
 #
 # Usage:
-#   .\run.ps1                              # monolith (bin/server.exe), default DB
-#   .\run.ps1 -Mode microservices           # characters-svc + inventory-svc (two binaries)
-#   .\run.ps1 -DatabaseUrl "postgres://..." # override DATABASE_URL
-#   .\run.ps1 -Teardown                     # stop whatever run.ps1 started last
+#   .\run.ps1                    # monolith (server) on :8080
+#   .\run.ps1 microservices      # A (characters-svc) + B (inventory-svc)
+#   .\run.ps1 -Teardown          # stop whatever run.ps1 started last
 #
-# Assumes a local Postgres is already running (same assumption as run-dev.ps1).
+# Assumes a local Postgres is already running (DATABASE_URL or the default DSN).
 
+[CmdletBinding()]
 param(
     [ValidateSet('monolith', 'microservices')]
     [string]$Mode = 'monolith',
-    [switch]$Teardown,
-    [string]$DatabaseUrl = ''
+    [switch]$Teardown
 )
 
 $ErrorActionPreference = 'Stop'
+Set-Location -Path $PSScriptRoot
 
-$root = $PSScriptRoot
-$runDir = Join-Path $root 'run'
-$pidsFile = Join-Path $runDir 'pids.json'
-$binDir = Join-Path $root 'bin'
-$serverBin = Join-Path $binDir 'server.exe'
-$charactersBin = Join-Path $binDir 'characters-svc.exe'
-$inventoryBin = Join-Path $binDir 'inventory-svc.exe'
-$schedulerBin = Join-Path $binDir 'scheduler-svc.exe'
-$gatewayBin = Join-Path $binDir 'gateway-svc.exe'
+$RunDir = Join-Path $PSScriptRoot 'run'
+$PidsFile = Join-Path $RunDir 'pids.txt'
+$BinDir = Join-Path $PSScriptRoot 'target\debug'
 
-$defaultDSN = 'postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable'
-if ([string]::IsNullOrWhiteSpace($DatabaseUrl)) {
-    $DatabaseUrl = $defaultDSN
-}
+$DefaultDsn = 'postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable'
+if (-not $env:DATABASE_URL -or $env:DATABASE_URL.Trim() -eq '') { $env:DATABASE_URL = $DefaultDsn }
 
 # --- Teardown ---------------------------------------------------------------
 if ($Teardown) {
-    if (-not (Test-Path $pidsFile)) {
-        Write-Host "No run/pids.json found -- nothing to tear down." -ForegroundColor Yellow
-        return
+    if (-not (Test-Path $PidsFile)) { Write-Host "No $PidsFile -- nothing to tear down."; return }
+    foreach ($line in Get-Content $PidsFile) {
+        if ($line.Trim() -eq '') { continue }
+        $parts = $line.Split('=', 2)
+        $name = $parts[0]; $procId = [int]$parts[1]
+        $p = Get-Process -Id $procId -ErrorAction SilentlyContinue
+        if ($p) { Stop-Process -Id $procId -Force; Write-Host "Stopped $name (pid $procId)" }
+        else { Write-Host "$name (pid $procId) was not running" }
     }
-    $entries = Get-Content $pidsFile -Raw | ConvertFrom-Json
-    foreach ($entry in $entries) {
-        try {
-            Stop-Process -Id $entry.pid -Force -ErrorAction Stop
-            Write-Host ("Stopped {0} (pid {1})" -f $entry.name, $entry.pid) -ForegroundColor Green
-        } catch {
-            Write-Host ("{0} (pid {1}) was not running" -f $entry.name, $entry.pid) -ForegroundColor Yellow
-        }
-    }
-    Remove-Item $pidsFile -Force
-    Write-Host "Teardown complete." -ForegroundColor Green
+    Remove-Item $PidsFile -Force
+    Write-Host 'Teardown complete.'
     return
 }
 
-# --- Build --------------------------------------------------------------------
-New-Item -ItemType Directory -Force -Path $binDir | Out-Null
-New-Item -ItemType Directory -Force -Path $runDir | Out-Null
+New-Item -ItemType Directory -Force -Path $RunDir | Out-Null
 
-# Build only the binaries this mode needs. Each `go build` links ONLY the
-# packages its entrypoint imports -- the microservice binaries do not carry the
-# other service's modules.
-function Build-Bin {
-    param([string]$Pkg, [string]$Out)
-    Write-Host "Building $Pkg -> $Out ..." -ForegroundColor Cyan
-    & go build -o $Out $Pkg
-    if ($LASTEXITCODE -ne 0) {
-        Write-Error "go build $Pkg failed -- aborting."
-        exit 1
-    }
+# start_server NAME EXE ENV-HASHTABLE -- launches EXE in the background with the
+# given env vars, redirecting stdout/stderr to run\<name>.{out,err}.log. Returns pid.
+$script:StartedPids = @()
+$script:StartedNames = @()
+function Start-Svc([string]$Name, [string]$Exe, [hashtable]$Env) {
+    foreach ($k in $Env.Keys) { Set-Item -Path "Env:$k" -Value $Env[$k] }
+    $out = Join-Path $RunDir "$Name.out.log"
+    $err = Join-Path $RunDir "$Name.err.log"
+    $p = Start-Process -FilePath $Exe -NoNewWindow -PassThru `
+        -RedirectStandardOutput $out -RedirectStandardError $err
+    $script:StartedPids += $p.Id
+    $script:StartedNames += $Name
+    return $p.Id
 }
 
-if ($Mode -eq 'monolith') {
-    Build-Bin './cmd/server' $serverBin
-} else {
-    Build-Bin './cmd/characters-svc' $charactersBin
-    Build-Bin './cmd/inventory-svc' $inventoryBin
-    Build-Bin './cmd/scheduler-svc' $schedulerBin
-    Build-Bin './cmd/gateway-svc' $gatewayBin
-}
-Write-Host "Build OK." -ForegroundColor Green
-
-# --- Helpers ---------------------------------------------------------------
-
-# Start-Server launches the given binary with the given env hash, redirecting
-# stdout/stderr to run/<logName>.{out,err}.log. Returns the Process object.
-function Start-Server {
-    param(
-        [string]$BinPath,
-        [hashtable]$EnvHash,
-        [string]$LogName
-    )
-
-    $outLog = Join-Path $runDir "$LogName.out.log"
-    $errLog = Join-Path $runDir "$LogName.err.log"
-
-    # Set process-scoped env vars, launch, then restore -- the child process
-    # inherits the modified environment at creation time.
-    $saved = @{}
-    foreach ($key in $EnvHash.Keys) {
-        $saved[$key] = [Environment]::GetEnvironmentVariable($key)
-        [Environment]::SetEnvironmentVariable($key, $EnvHash[$key])
-    }
-    try {
-        $proc = Start-Process -FilePath $BinPath `
-            -RedirectStandardOutput $outLog `
-            -RedirectStandardError $errLog `
-            -PassThru -NoNewWindow
-    } finally {
-        foreach ($key in $saved.Keys) {
-            [Environment]::SetEnvironmentVariable($key, $saved[$key])
-        }
-    }
-    return $proc
-}
-
-# Wait-Healthy polls GET http://localhost:<port>/healthz until it returns 200,
-# or throws after ~30s.
-function Wait-Healthy {
-    param(
-        [int]$Port,
-        [string]$Name,
-        [int]$TimeoutSeconds = 30
-    )
+function Wait-Healthy([int]$Port, [string]$Name) {
     $url = "http://localhost:$Port/healthz"
-    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
-    while ((Get-Date) -lt $deadline) {
+    for ($i = 0; $i -lt 60; $i++) {
         try {
-            $resp = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 2
-            if ($resp.StatusCode -eq 200) {
-                Write-Host ("{0} healthy at {1}" -f $Name, $url) -ForegroundColor Green
-                return
-            }
-        } catch {
-            # not up yet -- keep polling
-        }
-        Start-Sleep -Milliseconds 500
+            Invoke-WebRequest -UseBasicParsing -Uri $url -TimeoutSec 2 | Out-Null
+            Write-Host "$Name healthy at $url"
+            return
+        } catch { Start-Sleep -Milliseconds 500 }
     }
-    throw "$Name did not become healthy at $url within ${TimeoutSeconds}s"
+    throw "$Name did not become healthy at $url within ~30s"
 }
 
-# --- Launch ---------------------------------------------------------------
-
-$started = @()   # list of @{ name = ...; pid = ... } for run/pids.json
-
-# Stop-Started kills every process already launched this run, in case a later
-# step fails mid-launch (e.g. B never comes up).
-function Stop-Started {
-    foreach ($s in $started) {
-        try { Stop-Process -Id $s.proc.Id -Force -ErrorAction Stop } catch {}
+function Write-Pids {
+    $lines = for ($i = 0; $i -lt $script:StartedNames.Count; $i++) {
+        "$($script:StartedNames[$i])=$($script:StartedPids[$i])"
     }
+    Set-Content -Path $PidsFile -Value $lines
 }
 
-trap {
-    Write-Host "Launch failed -- stopping already-started processes." -ForegroundColor Red
-    Stop-Started
-    throw
-}
-
+# --- Build ------------------------------------------------------------------
+# Both modes build edgeca + playercli: the monolith ALSO fronts players over QUIC
+# (PLAYER_EDGE_ADDR), so it needs the shared dev CA (edgeca) and a client (playercli).
 if ($Mode -eq 'monolith') {
-    $env1 = @{
-        PORT         = '8080'
-        DATABASE_URL = $DatabaseUrl
-    }
-    $proc = Start-Server -BinPath $serverBin -EnvHash $env1 -LogName 'monolith'
-    $started += @{ name = 'monolith'; proc = $proc }
-    Wait-Healthy -Port 8080 -Name 'monolith'
+    Write-Host 'Building server (monolith) + edgeca + playercli ...'
+    cargo build -p server -p edgeca -p playercli
+} else {
+    Write-Host 'Building edgeca + characters-svc + inventory-svc + gateway-svc + playercli ...'
+    cargo build -p edgeca -p characters-svc -p inventory-svc -p gateway-svc -p playercli
+}
+if ($LASTEXITCODE -ne 0) { throw 'cargo build failed' }
+Write-Host 'Build OK.'
 
-    $pidEntries = $started | ForEach-Object { @{ name = $_.name; pid = $_.proc.Id } }
-    $pidEntries | ConvertTo-Json | Set-Content -Path $pidsFile
-
-    Write-Host ""
-    Write-Host "=== monolith running ===" -ForegroundColor Cyan
-    Write-Host "  http://localhost:8080"
-    Write-Host "  logs: run/monolith.out.log, run/monolith.err.log"
-    Write-Host "  teardown: .\run.ps1 -Teardown"
+# --- Monolith ---------------------------------------------------------------
+if ($Mode -eq 'monolith') {
+    # The monolith ALSO serves the QUIC player front (PLAYER_EDGE_ADDR=:9100, all ops
+    # Local) -- per never-monolith-only-features both topologies serve the feature. It
+    # needs the shared dev CA to derive the player-front server cert, so mint one here.
+    $CaCert = Join-Path $RunDir 'edge-ca.crt'
+    $CaKey = Join-Path $RunDir 'edge-ca.key'
+    Write-Host "Minting edge dev CA (player front) -> $CaCert ..."
+    & (Join-Path $BinDir 'edgeca.exe') --cert $CaCert --key $CaKey
+    if ($LASTEXITCODE -ne 0) { throw 'edgeca failed' }
+    Start-Svc 'monolith' (Join-Path $BinDir 'server.exe') @{
+        PORT             = ':8080'
+        DATABASE_URL     = $env:DATABASE_URL
+        PLAYER_EDGE_ADDR = ':9100'
+        EDGE_CA_CERT     = $CaCert
+        EDGE_CA_KEY      = $CaKey
+        # default MESSAGING_ORIGIN ("monolith") is fine -- one process, one origin.
+    } | Out-Null
+    Wait-Healthy 8080 'monolith'
+    Write-Pids
+    Write-Host ''
+    Write-Host '=== monolith running ==='
+    Write-Host '  http://localhost:8080  (player QUIC :9100)'
+    Write-Host "  logs: $RunDir\monolith.out.log, $RunDir\monolith.err.log"
+    Write-Host '  teardown: .\run.ps1 -Teardown'
     return
 }
 
-# --- microservices ---------------------------------------------------------
-# Mint ONE shared dev CA for the edge mutual-TLS hop. Every edge process
-# (characters-svc + inventory-svc + gateway-svc) mints its own short-lived leaf
-# under THIS CA, so a backend accepts a stream ONLY from a peer holding a
-# CA-signed client cert (and each client verifies the server against the same
-# anchor). scheduler-svc has NO edge (no server, no client) so it needs no CA;
-# the monolith runs no edge at all and sets nothing.
-$edgeCaCert = Join-Path $runDir 'edge-ca.crt'
-$edgeCaKey = Join-Path $runDir 'edge-ca.key'
-Write-Host "Minting shared edge dev CA -> $edgeCaCert ..." -ForegroundColor Cyan
-& go run ./tools/edgeca -cert $edgeCaCert -key $edgeCaKey
-if ($LASTEXITCODE -ne 0) {
-    Write-Error "minting edge dev CA failed -- aborting."
-    exit 1
-}
+# --- Microservices ----------------------------------------------------------
+# Mint ONE shared dev CA for the edge mutual-TLS hop. Both A and B load it via
+# EDGE_CA_CERT / EDGE_CA_KEY, so a backend accepts a stream ONLY from a peer holding
+# a CA-signed client cert (and each client verifies the server against the same root).
+$CaCert = Join-Path $RunDir 'edge-ca.crt'
+$CaKey = Join-Path $RunDir 'edge-ca.key'
+Write-Host "Minting shared edge dev CA -> $CaCert ..."
+& (Join-Path $BinDir 'edgeca.exe') --cert $CaCert --key $CaKey
+if ($LASTEXITCODE -ne 0) { throw 'edgeca failed' }
 
-# Process A: characters-svc (accounts + characters, its OWN binary). Hosts the
-# QUIC edge server (:9000) and the outbox relay for character.* events. Started
-# FIRST -- B's remote stubs and the shared accounts schema migration must not
-# race A's first boot (S7).
-$envA = @{
-    PORT               = '8080'
-    DATABASE_URL       = $DatabaseUrl
+# Process A: characters-svc. Hosts the QUIC edge server (:9000) and the outbox relay
+# for character.* events. MESSAGING_ORIGIN MUST be distinct per process (never the
+# "monolith" default): the relay drains ONLY its own origin's outbox rows, so a shared
+# origin would have B's relay drain A's rows -- the async-split correctness lynchpin.
+# Started FIRST so B's remote stub + the front door can reach it.
+Write-Host 'Starting A (characters-svc: gateway,characters,messaging) on :8080, edge :9000 ...'
+Start-Svc 'characters' (Join-Path $BinDir 'characters-svc.exe') @{
+    PORT               = ':8080'
+    DATABASE_URL       = $env:DATABASE_URL
     EDGE_ADDR          = ':9000'
-    EDGE_CA_CERT       = $edgeCaCert
-    EDGE_CA_KEY        = $edgeCaKey
+    EDGE_CA_CERT       = $CaCert
+    EDGE_CA_KEY        = $CaKey
     MESSAGING_ORIGIN   = 'characters-svc'
-    # EVENTS_SUBSCRIBERS is read by messaging's relay, which runs in the
-    # process hosting `characters` -- i.e. THIS process (A), not B -- because
-    # the relay drains only ITS OWN origin's rows in messaging.outbox (origin=
-    # characters-svc) and delivers them to remote peers. Both topics point at
-    # B's single consolidated inbound route (POST /events, topic in the
-    # X-Event-Topic header) -- there is no more per-topic sink path.
-    # MESSAGING_ORIGIN must be stable across restarts (never a pid/hostname)
-    # so a crashed process resumes draining its own unsent outbox rows.
     EVENTS_SUBSCRIBERS = 'character.created=http://localhost:8081/events;character.deleted=http://localhost:8081/events'
-}
-Write-Host "Starting A (characters-svc: accounts,characters) on :8080, edge :9000 ..." -ForegroundColor Cyan
-$procA = Start-Server -BinPath $charactersBin -EnvHash $envA -LogName 'characters'
-$started += @{ name = 'characters'; proc = $procA }
-Wait-Healthy -Port 8080 -Name 'A (characters-svc)'
+} | Out-Null
+Wait-Healthy 8080 'A (characters-svc)'
 
-# Process B: inventory-svc (inventory + admin, its OWN binary). Its accounts/
-# characters dependencies resolve via remote stubs dialing A's edge server;
-# admin fan-out reaches A's adminData operation over that SAME QUIC edge (no HTTP).
-$envB = @{
-    PORT                 = '8081'
-    DATABASE_URL         = $DatabaseUrl
+# Process B: inventory-svc. characters resolves via a remote::Stub dialing A's edge
+# server. B ALSO serves its OWN mTLS edge (EDGE_ADDR=:9001) so gateway-svc can dispatch
+# inventory.* Remote to it. CHARACTERS_EDGE_ADDR is a NUMERIC host:port (Rust's
+# SocketAddr needs a literal IP, unlike Go's dialer).
+Write-Host 'Starting B (inventory-svc: gateway,config,inventory,messaging,remote) on :8081, edge :9001 ...'
+Start-Svc 'inventory' (Join-Path $BinDir 'inventory-svc.exe') @{
+    PORT                 = ':8081'
+    DATABASE_URL         = $env:DATABASE_URL
     EDGE_ADDR            = ':9001'
-    EDGE_CA_CERT         = $edgeCaCert
-    EDGE_CA_KEY          = $edgeCaKey
-    CHARACTERS_EDGE_ADDR = 'localhost:9000'
-    ACCOUNTS_EDGE_ADDR   = 'localhost:9000'
+    EDGE_CA_CERT         = $CaCert
+    EDGE_CA_KEY          = $CaKey
+    CHARACTERS_EDGE_ADDR = '127.0.0.1:9000'
     MESSAGING_ORIGIN     = 'inventory-svc'
-}
-Write-Host "Starting B (inventory-svc: inventory,admin) on :8081, edge :9001 ..." -ForegroundColor Cyan
-$procB = Start-Server -BinPath $inventoryBin -EnvHash $envB -LogName 'inventory'
-$started += @{ name = 'inventory'; proc = $procB }
-Wait-Healthy -Port 8081 -Name 'B (inventory-svc)'
+} | Out-Null
+Wait-Healthy 8081 'B (inventory-svc)'
 
-# Process D: scheduler-svc (scheduler ONLY, its OWN binary, no edge). A pure
-# event producer: its messaging relay POSTs scheduler.fired to B's consolidated
-# POST /events route, where audit (hosted in B) durably consumes it via OnTx.
-# Started after B so the sink exists; the relay retries anyway.
-$envD = @{
-    PORT               = '8083'
-    DATABASE_URL       = $DatabaseUrl
-    MESSAGING_ORIGIN   = 'scheduler-svc'
-    EVENTS_SUBSCRIBERS = 'scheduler.fired=http://localhost:8081/events'
-}
-Write-Host "Starting D (scheduler-svc: scheduler) on :8083 ..." -ForegroundColor Cyan
-$procD = Start-Server -BinPath $schedulerBin -EnvHash $envD -LogName 'scheduler'
-$started += @{ name = 'scheduler'; proc = $procD }
-Wait-Healthy -Port 8083 -Name 'D (scheduler-svc)'
+# Process G: gateway-svc. The dedicated front door -- HTTP :8082 + player QUIC :9100.
+# No DB, no provider modules: only remote::Stubs, so EVERY op it fronts resolves Remote
+# and is dialed over the mTLS edge to A (:9000) / B (:9001). It needs the shared CA to
+# dial peers AND to derive the player-front server cert.
+Write-Host 'Starting G (gateway-svc: gateway + characters/inventory stubs) on :8082, player QUIC :9100 ...'
+Start-Svc 'gateway' (Join-Path $BinDir 'gateway-svc.exe') @{
+    PORT                 = ':8082'
+    PLAYER_EDGE_ADDR     = ':9100'
+    EDGE_CA_CERT         = $CaCert
+    EDGE_CA_KEY          = $CaKey
+    CHARACTERS_EDGE_ADDR = '127.0.0.1:9000'
+    INVENTORY_EDGE_ADDR  = '127.0.0.1:9001'
+} | Out-Null
+Wait-Healthy 8082 'G (gateway-svc)'
 
-# Process C: gateway-svc (stateless QUIC prefix router + HTTP reverse proxy
-# front door). Fronts both A and B, so it starts LAST, once both are healthy.
-$envC = @{
-    PORT                  = '8082'
-    GATEWAY_EDGE_ADDR     = ':9100'
-    EDGE_CA_CERT          = $edgeCaCert
-    EDGE_CA_KEY           = $edgeCaKey
-    CHARACTERS_EDGE_ADDR  = 'localhost:9000'
-    INVENTORY_EDGE_ADDR   = 'localhost:9001'
-    # accounts.* ops (register/login/me + verifySession for auth-once) are served by
-    # A's edge -- accounts is co-hosted in characters-svc, so this equals
-    # CHARACTERS_EDGE_ADDR; kept explicit so the front-door op routing self-documents.
-    # EDGE_CA_CERT/KEY (above) let gateway-svc dial the backends' mutually-
-    # authenticated edge and dispatch each op as a single hop.
-    ACCOUNTS_EDGE_ADDR    = 'localhost:9000'
-    CHARACTERS_HTTP_ADDR  = 'localhost:8080'
-    INVENTORY_HTTP_ADDR   = 'localhost:8081'
-}
-Write-Host "Starting C (gateway-svc: player front door) on :8082, edge :9100 ..." -ForegroundColor Cyan
-$procC = Start-Server -BinPath $gatewayBin -EnvHash $envC -LogName 'gateway'
-$started += @{ name = 'gateway'; proc = $procC }
-Wait-Healthy -Port 8082 -Name 'C (gateway-svc)'
-
-$pidEntries = $started | ForEach-Object { @{ name = $_.name; pid = $_.proc.Id } }
-$pidEntries | ConvertTo-Json | Set-Content -Path $pidsFile
-
-Write-Host ""
-Write-Host "=== microservices running ===" -ForegroundColor Cyan
-Write-Host "  A (characters-svc: accounts,characters): http://localhost:8080  (edge :9000)"
-Write-Host "  B (inventory-svc: inventory,admin):      http://localhost:8081  (edge :9001)"
-Write-Host "  D (scheduler-svc: scheduler):            http://localhost:8083  (event producer, no edge)"
-Write-Host "  admin UI (B):                            http://localhost:8081/admin"
-Write-Host "  player front door (gateway):              quic localhost:9100 / http http://localhost:8082"
-Write-Host "  logs: run/characters.{out,err}.log, run/inventory.{out,err}.log, run/scheduler.{out,err}.log, run/gateway.{out,err}.log"
-Write-Host "  teardown: .\run.ps1 -Teardown"
+Write-Pids
+Write-Host ''
+Write-Host '=== microservices running ==='
+Write-Host '  A (characters-svc): http://localhost:8080  (edge :9000)'
+Write-Host '  B (inventory-svc):  http://localhost:8081  (edge :9001)'
+Write-Host '  G (gateway-svc):    http://localhost:8082  (player QUIC :9100)'
+Write-Host "  logs: $RunDir\characters.{out,err}.log, $RunDir\inventory.{out,err}.log, $RunDir\gateway.{out,err}.log"
+Write-Host '  teardown: .\run.ps1 -Teardown'
