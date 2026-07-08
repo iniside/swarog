@@ -1,0 +1,26 @@
+[package]
+name = "server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The MONOLITH entrypoint: one binary hosting every module. No edge server — every
+# cross-module dependency resolves locally through the registry, so nothing crosses a
+# QUIC boundary. Cargo/the linker links only what this binary imports.
+[[bin]]
+name = "server"
+path = "src/main.rs"
+
+[dependencies]
+app = { workspace = true }
+lifecycle = { workspace = true }
+gateway = { workspace = true }
+config = { workspace = true }
+characters = { workspace = true }
+inventory = { workspace = true }
+messaging = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

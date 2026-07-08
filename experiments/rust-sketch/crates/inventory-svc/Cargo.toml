@@ -1,0 +1,28 @@
+[package]
+name = "inventory-svc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# Process B of the split: hosts gateway + config + inventory + messaging and fills
+# inventory's `characters` dependency with a `remote::Stub` that dials A over the QUIC
+# edge. It imports the inventory + remote crates and the `charactersapi` CONTRACT (to
+# name `dyn Ownership`) — but NOT the characters IMPL. No edge server: B dials OUT to
+# A; nothing calls B over the edge in the 2-process proof.
+[[bin]]
+name = "inventory-svc"
+path = "src/main.rs"
+
+[dependencies]
+app = { workspace = true }
+lifecycle = { workspace = true }
+gateway = { workspace = true }
+config = { workspace = true }
+inventory = { workspace = true }
+messaging = { workspace = true }
+remote = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

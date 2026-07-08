@@ -12,7 +12,7 @@
 //! — stays here rather than in the foundation.
 
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use anyhow::Context as _;
 use axum::http::StatusCode;
@@ -135,10 +135,18 @@ pub fn validate_requires(modules: &[Box<dyn Module>]) -> anyhow::Result<()> {
 /// `modules` is the WHOLE topology of this process — real modules plus any remote
 /// stubs standing in for peers. `edge_server` is `None` for an all-local process and
 /// `Some` only when this process exposes edge-backed services.
+///
+/// The edge server is passed as an `Arc<Mutex<edge::Server>>` — the SAME handle the
+/// edge-hosting modules (`characters::with_edge`, …) were constructed with, so their
+/// `init` can register RPC handlers onto it during Build. After Build completes, `run`
+/// takes the fully-wired server out of the shared handle (via `std::mem::take`, the
+/// modules never touch it again) and `listen`s it. This is why the param is the shared
+/// handle rather than an owned `edge::Server`: registration happens during Build,
+/// `listen` after — both need to reach the same object.
 pub async fn run(
     cfg: Config,
     modules: Vec<Box<dyn Module>>,
-    edge_server: Option<edge::Server>,
+    edge_server: Option<Arc<Mutex<edge::Server>>>,
 ) -> anyhow::Result<()> {
     // 1. Open the pool. `PgPool::connect` establishes an initial connection, so an
     //    unreachable DB fails here (Go's explicit ping equivalent).
@@ -167,7 +175,12 @@ pub async fn run(
     // 7. Bring up the shared edge server AFTER every module init has registered its
     //    handlers. One listener, all edge methods, mutual TLS via the shared dev CA.
     let running_edge = match edge_server {
-        Some(server) => {
+        Some(shared) => {
+            // Take the fully-wired server out of the shared handle the edge-hosting
+            // modules registered their handlers into during Build — they hold a clone
+            // but never touch it again after `init`, so a `mem::take` (leaving an empty
+            // Server behind) hands `listen` the same object carrying every handler.
+            let server = std::mem::take(&mut *shared.lock().unwrap());
             let ca = edge::shared_dev_ca().context("edge ca")?;
             let edge_bind: SocketAddr = to_bind_addr(&cfg.edge_addr)
                 .parse()
