@@ -8,6 +8,7 @@ members = [
     "crates/opsapi",
     "crates/edge",
     "crates/edgeca",
+    "crates/app",
 ]
 
 [workspace.package]
@@ -45,3 +46,4 @@ bus = { path = "crates/bus" }
 lifecycle = { path = "crates/lifecycle" }
 opsapi = { path = "crates/opsapi" }
 edge = { path = "crates/edge" }
+app = { path = "crates/app" }
