@@ -730,6 +730,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "gateway-svc"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "app",
+ "edge",
+ "gateway",
+ "lifecycle",
+ "remote",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "generic-array"
 version = "0.14.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2182,6 +2197,7 @@ dependencies = [
  "app",
  "characters",
  "config",
+ "edge",
  "gateway",
  "inventory",
  "lifecycle",

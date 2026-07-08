@@ -1,0 +1,26 @@
+[package]
+name = "gateway-svc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The dedicated front-door process (port of Go's `cmd/gateway-svc`): a PURE transport
+# process. It hosts no provider module and no DB — every op it fronts resolves Remote
+# over a `remote::Stub`. It imports neither `characters` nor `inventory`, only their
+# `remote::Stub`-mediated route bindings, so the linker drops the impl packages this
+# binary never names.
+[[bin]]
+name = "gateway-svc"
+path = "src/main.rs"
+
+[dependencies]
+app = { workspace = true }
+edge = { workspace = true }
+lifecycle = { workspace = true }
+gateway = { workspace = true }
+remote = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync"] }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

@@ -5,15 +5,18 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
-# The MONOLITH entrypoint: one binary hosting every module. No edge server — every
-# cross-module dependency resolves locally through the registry, so nothing crosses a
-# QUIC boundary. Cargo/the linker links only what this binary imports.
+# The MONOLITH entrypoint: one binary hosting every module. No INTERNAL edge server —
+# every cross-module dependency resolves locally through the registry, so nothing
+# crosses the mTLS QUIC boundary. It DOES front players over the QUIC player plane
+# (`edge::PlayerServer`), all ops resolving Local. Cargo/the linker links only what
+# this binary imports.
 [[bin]]
 name = "server"
 path = "src/main.rs"
 
 [dependencies]
 app = { workspace = true }
+edge = { workspace = true }
 lifecycle = { workspace = true }
 gateway = { workspace = true }
 config = { workspace = true }
