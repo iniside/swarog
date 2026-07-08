@@ -16,6 +16,7 @@ opsapi = { workspace = true }
 registry = { workspace = true }
 lifecycle = { workspace = true }
 charactersrpc = { workspace = true }
+inventoryrpc = { workspace = true }
 tokio = { workspace = true, features = ["sync"] }
 async-trait = { workspace = true }
 anyhow = { workspace = true }

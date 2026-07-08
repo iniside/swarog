@@ -1816,6 +1816,7 @@ dependencies = [
  "async-trait",
  "charactersrpc",
  "edge",
+ "inventoryrpc",
  "lifecycle",
  "opsapi",
  "registry",

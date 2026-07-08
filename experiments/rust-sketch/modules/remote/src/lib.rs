@@ -11,6 +11,23 @@
 //! and the wire shape + method names are OWNED by that generated glue, so wire drift
 //! between the two sides is impossible.
 //!
+//! ## Front-door route bindings (the unified front-door end-state)
+//! Beyond the capability swap, each provider arm ALSO contributes that provider's
+//! `route_bindings()` — its `#[http]` [`opsapi::Operation`]+[`opsapi::OpBinding`]
+//! pairs — into [`opsapi::SLOT`]/[`opsapi::BINDING_SLOT`] but NEVER [`opsapi::LOCAL_SLOT`]
+//! (no local invoker exists here), so the gateway route table `select_kind`s the op
+//! as `Remote` and dispatches it over the edge. The side effect is deliberate: ANY
+//! process holding a `Stub` becomes front-capable for that provider. inventory-svc
+//! already holds a `characters` stub, so after this it also routes `/characters` ops
+//! remotely from its own front — the unified front-door end-state (a dedicated
+//! `gateway-svc` is just a process whose ONLY modules are stubs).
+//!
+//! **Invariant — a `Stub` and its provider module are mutually exclusive in one
+//! process.** A process holding BOTH `Stub("X")` and the real `X` module would
+//! contribute X's routes twice (the module's own `operations()` + the stub's
+//! `route_bindings()`). Stubs stand in ONLY for absent providers, so no binary does
+//! this today; keep it that way (gateway-svc stays stub-only).
+//!
 //! ## The reconnecting caller
 //! [`Reconnecting`] is a self-healing [`opsapi::Caller`]: it dials the peer LAZILY on
 //! first use, holds the connection for reuse (persistent conn, stream-per-call), and
@@ -189,6 +206,18 @@ impl Stub {
     }
 }
 
+/// Contributes a provider's front-door route bindings into the two ops slots the
+/// gateway route table reads — [`opsapi::SLOT`] (the [`opsapi::Operation`]) and
+/// [`opsapi::BINDING_SLOT`] (its [`opsapi::OpBinding`]). It deliberately contributes
+/// NOTHING to [`opsapi::LOCAL_SLOT`]: a stub has no in-process invoker, so the gateway
+/// `select_kind`s each op as `Remote` and dispatches it over the edge.
+fn contribute_route_bindings(ctx: &Context, bindings: Vec<opsapi::RouteBinding>) {
+    for rb in bindings {
+        ctx.contribute(opsapi::SLOT, rb.operation);
+        ctx.contribute(opsapi::BINDING_SLOT, rb.binding);
+    }
+}
+
 #[async_trait]
 impl Module for Stub {
     /// The PROVIDER name, so `validate_requires` treats the stub as the provider a
@@ -209,10 +238,15 @@ impl Module for Stub {
 
     /// Phase 1, BEFORE any consumer's `init`: `provide` the edge-backed clients under
     /// the provider's capability keys, so a co-hosted dependent's `require` resolves to
-    /// a real QUIC caller. For `"characters"` that is `characters.ownership` (inventory
-    /// resolves it for `list_character`'s authz) and, forward-looking for a unified
-    /// front-door, `characters.player` from the generated player client — both over the
-    /// SAME reconnecting caller.
+    /// a real QUIC caller, AND contribute the provider's front-door `route_bindings()`
+    /// so any stub-holding process can front the provider's `#[http]` ops remotely.
+    ///
+    /// For `"characters"` the capability clients are `characters.ownership` (inventory
+    /// resolves it for `list_character`'s authz) and `characters.player` from the
+    /// generated player client — both over the SAME reconnecting caller — plus the
+    /// player route bindings. `"inventory"` is a LEAF (no peer `require`s an inventory
+    /// capability), so it contributes route bindings ONLY: a dead capability provide
+    /// would be noise, add one only when a consumer appears.
     fn register(&self, ctx: &Context) -> anyhow::Result<()> {
         // Hand each generated client the reconnecting conn AS an `opsapi::Caller`, so
         // the glue depends on the transport seam, never remote's concrete type.
@@ -229,9 +263,23 @@ impl Module for Stub {
                 ctx.registry()
                     .provide::<dyn charactersrpc::Player>(registry::key("characters", "player"), player);
 
+                // Front-door routes: the player ops' Operation+OpBinding, no LocalOp —
+                // `select_kind` resolves them Remote and the front dispatches to A's edge.
+                contribute_route_bindings(ctx, charactersrpc::player_rpc::route_bindings());
+
                 tracing::info!(
                     provider = %self.provider,
-                    "remote stub registered — characters.ownership + characters.player resolve over the QUIC edge"
+                    "remote stub registered — characters.ownership + characters.player resolve over the QUIC edge; player routes contributed"
+                );
+            }
+            "inventory" => {
+                // Route bindings ONLY — inventory is a leaf, nothing `require`s an
+                // inventory capability, so no client provide (a dead provide is noise).
+                contribute_route_bindings(ctx, inventoryrpc::holdings_rpc::route_bindings());
+
+                tracing::info!(
+                    provider = %self.provider,
+                    "remote stub registered — inventory holdings routes contributed (front-door only)"
                 );
             }
             other => anyhow::bail!("remote: no edge client for provider {other:?}"),
@@ -381,6 +429,66 @@ mod tests {
                 .is_some(),
             "characters.player must resolve to an Arc<dyn Player> (front-door dep)"
         );
+    }
+
+    // ---- Front-door route bindings: contributed to SLOT/BINDING_SLOT, not LOCAL_SLOT
+
+    /// The `"characters"` stub contributes the player ops' `Operation`+`OpBinding` to
+    /// the two route-table slots (matching the generated `route_bindings()`), and
+    /// NOTHING to `LOCAL_SLOT` — so the gateway resolves them Remote, over the edge.
+    #[test]
+    fn stub_contributes_characters_route_bindings_but_no_local() {
+        let ctx = Context::new();
+        Stub::new("characters", "127.0.0.1:9000").register(&ctx).unwrap();
+
+        let expected: Vec<String> = charactersrpc::player_rpc::route_bindings()
+            .into_iter()
+            .map(|rb| rb.operation.method)
+            .collect();
+        assert!(!expected.is_empty(), "player has #[http] ops to contribute");
+
+        let ops: Vec<opsapi::Operation> = ctx.contributions(opsapi::SLOT);
+        let bindings: Vec<opsapi::OpBinding> = ctx.contributions(opsapi::BINDING_SLOT);
+        let locals: Vec<opsapi::LocalOp> = ctx.contributions(opsapi::LOCAL_SLOT);
+
+        assert_eq!(
+            ops.iter().map(|o| o.method.clone()).collect::<Vec<_>>(),
+            expected,
+            "SLOT carries exactly the player route Operations"
+        );
+        assert_eq!(
+            bindings.iter().map(|b| b.method.clone()).collect::<Vec<_>>(),
+            expected,
+            "BINDING_SLOT carries the matching OpBindings"
+        );
+        assert!(locals.is_empty(), "no LocalOp — the stub has no in-process invoker");
+    }
+
+    /// The `"inventory"` stub contributes route bindings ONLY: SLOT/BINDING_SLOT carry
+    /// the holdings ops, LOCAL_SLOT is empty, and — because inventory is a leaf — the
+    /// registry has NO inventory capability provide (nothing requires one).
+    #[test]
+    fn stub_inventory_is_routes_only_no_capability() {
+        let ctx = Context::new();
+        Stub::new("inventory", "127.0.0.1:9001").register(&ctx).unwrap();
+
+        let expected: Vec<String> = inventoryrpc::holdings_rpc::route_bindings()
+            .into_iter()
+            .map(|rb| rb.operation.method)
+            .collect();
+        assert!(!expected.is_empty(), "holdings has #[http] ops to contribute");
+
+        let ops: Vec<opsapi::Operation> = ctx.contributions(opsapi::SLOT);
+        let bindings: Vec<opsapi::OpBinding> = ctx.contributions(opsapi::BINDING_SLOT);
+        let locals: Vec<opsapi::LocalOp> = ctx.contributions(opsapi::LOCAL_SLOT);
+
+        assert_eq!(
+            ops.iter().map(|o| o.method.clone()).collect::<Vec<_>>(),
+            expected,
+            "SLOT carries exactly the holdings route Operations"
+        );
+        assert_eq!(bindings.len(), expected.len(), "BINDING_SLOT matches SLOT");
+        assert!(locals.is_empty(), "no LocalOp for a routes-only stub");
     }
 
     /// An unknown provider name is a wiring bug: `register` fails loudly rather than
