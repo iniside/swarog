@@ -1,0 +1,25 @@
+[package]
+name = "config"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The config impl module (port of Go's modules/config): DB-backed operational
+# knobs with LISTEN/NOTIFY live-reload. An impl crate — no OTHER module imports it;
+# consumers use `configapi` (the reader trait) + `configevents` (the event).
+[dependencies]
+bus = { workspace = true }
+lifecycle = { workspace = true }
+registry = { workspace = true }
+configapi = { workspace = true }
+configevents = { workspace = true }
+adminapi = { workspace = true }
+sqlx = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+async-trait = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }

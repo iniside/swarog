@@ -13,6 +13,10 @@ members = [
     "crates/rpc-macro-tests",
     "crates/outbox",
     "crates/messaging",
+    "crates/adminapi",
+    "crates/configapi",
+    "crates/configevents",
+    "crates/config",
 ]
 
 [workspace.package]
@@ -62,3 +66,10 @@ app = { path = "crates/app" }
 rpc-macro = { path = "crates/rpc-macro" }
 outbox = { path = "crates/outbox" }
 messaging = { path = "crates/messaging" }
+
+# Contract crates (types-only surfaces shared by modules, like Go's api/ tree) plus
+# the config impl module. Contracts import no module; config imports only contracts.
+adminapi = { path = "crates/adminapi" }
+configapi = { path = "crates/configapi" }
+configevents = { path = "crates/configevents" }
+config = { path = "crates/config" }

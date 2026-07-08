@@ -1,0 +1,11 @@
+[package]
+name = "configapi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The reader trait config exposes (the interface-crate for rule 4). Nominal Rust
+# traits force a shared trait, so a consumer (e.g. inventory) imports THIS to name
+# `dyn Config` rather than the impl crate. Types-only, no deps.
+[dependencies]

@@ -1,0 +1,13 @@
+[package]
+name = "configevents"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The published contract of the config domain (Go's api/config/configevents): the
+# config.changed event payload + its descriptor. The ONLY surface other modules
+# share with config. Imports only the `bus` leaf.
+[dependencies]
+bus = { workspace = true }
+serde = { workspace = true }

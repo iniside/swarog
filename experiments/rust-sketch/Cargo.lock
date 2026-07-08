@@ -3,6 +3,17 @@
 version = 4
 
 [[package]]
+name = "adminapi"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "futures",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "allocator-api2"
 version = "0.2.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -244,6 +255,35 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4ca0197aee26d1ae37445ee532fefce43251d24cc7c166799f4d46817f1d3973"
 dependencies = [
  "crossbeam-utils",
+]
+
+[[package]]
+name = "config"
+version = "0.1.0"
+dependencies = [
+ "adminapi",
+ "anyhow",
+ "async-trait",
+ "bus",
+ "configapi",
+ "configevents",
+ "lifecycle",
+ "registry",
+ "sqlx",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "configapi"
+version = "0.1.0"
+
+[[package]]
+name = "configevents"
+version = "0.1.0"
+dependencies = [
+ "bus",
+ "serde",
 ]
 
 [[package]]

@@ -1,0 +1,961 @@
+//! `config` — a central, DB-backed configuration store with live reload (port of
+//! Go's `modules/config`). Namespaced `key=value` settings live in schema `config`;
+//! any module reads them via the provided [`configapi::Config`] capability
+//! (`get_string`/`get_bool`/`get_int`/`get` with a code-default fallback), and edits
+//! made in `/admin` (or raw `psql`) propagate to every reader through Postgres
+//! LISTEN/NOTIFY → in-memory cache refresh → `config.changed`. Secrets stay in env;
+//! only non-secret operational knobs go here.
+//!
+//! An impl crate: NO other module imports it. Consumers depend on `configapi` (the
+//! reader trait, resolved via `registry::key("config", "reader")`) and
+//! `configevents` (the `config.changed` event) — never on this crate.
+
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
+use std::time::Duration;
+
+use bus::Bus;
+use lifecycle::{Caps, Context, Module};
+use sqlx::postgres::PgListener;
+use sqlx::PgPool;
+use tokio::sync::watch;
+use tokio::task::JoinHandle;
+
+/// Fallback DSN for the listener's dedicated connection — same default as the
+/// shared pool. config can't store the DSN it needs to reach its own store, so this
+/// bootstrap tier stays in env.
+const DEFAULT_DSN: &str =
+    "postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable";
+
+/// The LISTEN/NOTIFY channel the `config.settings` write trigger fires on.
+const NOTIFY_CHANNEL: &str = "config_changed";
+
+/// Creates this module's OWN schema and nothing else — full logical isolation (#10).
+/// Idempotent (`IF NOT EXISTS` / `OR REPLACE`). Verbatim from Go's `schemaDDL`.
+///
+/// The `AFTER INSERT OR UPDATE` trigger is the single source of the `config_changed`
+/// NOTIFY: ANY writer — this service's `set`, another service's, or a raw `psql`
+/// UPDATE — fires it, so every LISTENing process reloads. The payload
+/// `"namespace:key"` matches the listener's split-on-first-`:` because ids are
+/// `^[a-z0-9_]+$`. DELETE is deliberately not triggered (the listener has no delete
+/// path); `RETURN NULL` is correct for an AFTER trigger.
+const SCHEMA_DDL: &str = r#"
+CREATE SCHEMA IF NOT EXISTS config;
+CREATE TABLE IF NOT EXISTS config.settings (
+	namespace  text NOT NULL,
+	key        text NOT NULL,
+	value      text NOT NULL,
+	updated_at timestamptz NOT NULL DEFAULT now(),
+	PRIMARY KEY (namespace, key)
+);
+CREATE OR REPLACE FUNCTION config.notify_changed() RETURNS trigger
+	LANGUAGE plpgsql AS $$
+BEGIN
+	PERFORM pg_notify('config_changed', NEW.namespace || ':' || NEW.key);
+	RETURN NULL;
+END;
+$$;
+CREATE OR REPLACE TRIGGER settings_notify
+	AFTER INSERT OR UPDATE ON config.settings
+	FOR EACH ROW EXECUTE FUNCTION config.notify_changed();"#;
+
+/// One persisted config row (`updated_at` is intentionally not carried — the getters
+/// and admin render only need the value).
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Setting {
+    namespace: String,
+    key: String,
+    value: String,
+}
+
+/// The composite `(namespace, key)` map key backing the read cache.
+type CacheKey = (String, String);
+
+/// Validates a namespace/key: non-empty and `[a-z0-9_]` only. Restricting ids this
+/// way makes the `:` separator unambiguous everywhere it appears — the `pg_notify`
+/// payload (`namespace:key`) and the admin form field name. (Go's `identRe`.)
+fn valid_ident(s: &str) -> bool {
+    !s.is_empty()
+        && s.bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+}
+
+// ============================================================================
+// Service — the "config" capability: a read-mostly cache + a transactional Set.
+// ============================================================================
+
+/// The config service: a read-mostly in-memory cache of settings (kept fresh by the
+/// listener) plus a validating [`Service::set`]. Readers get it as
+/// `Arc<dyn configapi::Config>`; the concrete `set` is config-private (its own admin
+/// uses it), NOT on the reader trait.
+pub struct Service {
+    pool: PgPool,
+    cache: RwLock<HashMap<CacheKey, String>>,
+}
+
+impl Service {
+    fn new(pool: PgPool) -> Service {
+        Service {
+            pool,
+            cache: RwLock::new(HashMap::new()),
+        }
+    }
+
+    /// Validates the ids, then upserts the row in a single autocommit statement. The
+    /// `config.settings` AFTER-write trigger fires `pg_notify('config_changed',
+    /// "ns:key")` on the same statement (delivered on commit), so no explicit NOTIFY
+    /// is needed. `set` does NOT touch the cache: the listener is the single refresh
+    /// path, so a local write and an external `psql` edit are handled identically.
+    pub async fn set(&self, ns: &str, key: &str, value: &str) -> anyhow::Result<()> {
+        if !valid_ident(ns) {
+            anyhow::bail!("config: invalid namespace {ns:?} (must match ^[a-z0-9_]+$)");
+        }
+        if !valid_ident(key) {
+            anyhow::bail!("config: invalid key {key:?} (must match ^[a-z0-9_]+$)");
+        }
+        sqlx::query(
+            "INSERT INTO config.settings (namespace, key, value) VALUES ($1, $2, $3) \
+             ON CONFLICT (namespace, key) DO UPDATE SET value = excluded.value, updated_at = now()",
+        )
+        .bind(ns)
+        .bind(key)
+        .bind(value)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Reads every setting — the full-reload source used on each listener (re)connect.
+    /// Ordering is irrelevant: the cache is a map.
+    async fn load_all(&self) -> anyhow::Result<Vec<Setting>> {
+        let rows: Vec<(String, String, String)> =
+            sqlx::query_as("SELECT namespace, key, value FROM config.settings")
+                .fetch_all(&self.pool)
+                .await?;
+        Ok(rows
+            .into_iter()
+            .map(|(namespace, key, value)| Setting {
+                namespace,
+                key,
+                value,
+            })
+            .collect())
+    }
+
+    /// Fetches a single setting's value. `Ok(None)` means the row is absent (a
+    /// deleted key); a real DB error is returned as `Err`.
+    async fn get_one(&self, ns: &str, key: &str) -> anyhow::Result<Option<String>> {
+        let row: Option<(String,)> =
+            sqlx::query_as("SELECT value FROM config.settings WHERE namespace = $1 AND key = $2")
+                .bind(ns)
+                .bind(key)
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(row.map(|(v,)| v))
+    }
+
+    /// Swaps in a fresh cache from a full load (listener (re)connect) and returns the
+    /// settings whose value changed vs the prior snapshot — a new key or a changed
+    /// value counts as changed; removed keys are ignored (deletes out of scope). The
+    /// diff is computed under the write lock while swapping, so it reflects exactly
+    /// the snapshot installed. The listener replays these as `config.changed` after a
+    /// RECONNECT so materialized push consumers heal.
+    fn replace_cache(&self, settings: Vec<Setting>) -> Vec<Setting> {
+        let mut new_map: HashMap<CacheKey, String> = HashMap::with_capacity(settings.len());
+        for st in &settings {
+            new_map.insert((st.namespace.clone(), st.key.clone()), st.value.clone());
+        }
+        let mut guard = self.cache.write().unwrap();
+        let mut changed = Vec::new();
+        for st in &settings {
+            match guard.get(&(st.namespace.clone(), st.key.clone())) {
+                Some(prev) if prev == &st.value => {}
+                _ => changed.push(st.clone()),
+            }
+        }
+        *guard = new_map;
+        changed
+    }
+
+    /// Updates a single cached key (listener applying one notification).
+    fn set_cache_one(&self, ns: &str, key: &str, value: &str) {
+        self.cache
+            .write()
+            .unwrap()
+            .insert((ns.to_string(), key.to_string()), value.to_string());
+    }
+
+    /// Snapshots the cache as a slice sorted by `(namespace, key)` for a stable admin
+    /// render.
+    fn all(&self) -> Vec<Setting> {
+        let mut out: Vec<Setting> = {
+            let guard = self.cache.read().unwrap();
+            guard
+                .iter()
+                .map(|((ns, key), value)| Setting {
+                    namespace: ns.clone(),
+                    key: key.clone(),
+                    value: value.clone(),
+                })
+                .collect()
+        };
+        out.sort_by(|a, b| a.namespace.cmp(&b.namespace).then(a.key.cmp(&b.key)));
+        out
+    }
+}
+
+/// The read-side capability config exposes. All getters degrade to `default` on a
+/// cache miss. `set` is deliberately absent (config-private).
+impl configapi::Config for Service {
+    fn get_string(&self, ns: &str, key: &str, default: &str) -> String {
+        self.get(ns, key).unwrap_or_else(|| default.to_string())
+    }
+
+    fn get_bool(&self, ns: &str, key: &str, default: bool) -> bool {
+        match self.get(ns, key) {
+            Some(v) => v == "1" || v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("on"),
+            None => default,
+        }
+    }
+
+    fn get_int(&self, ns: &str, key: &str, default: i64) -> i64 {
+        match self.get(ns, key) {
+            Some(v) => v.parse::<i64>().unwrap_or(default),
+            None => default,
+        }
+    }
+
+    fn get(&self, ns: &str, key: &str) -> Option<String> {
+        self.cache
+            .read()
+            .unwrap()
+            .get(&(ns.to_string(), key.to_string()))
+            .cloned()
+    }
+}
+
+// ============================================================================
+// Live reload — a dedicated PgListener, with boot-vs-reconnect replay.
+// ============================================================================
+
+/// Does the FULL cache reload every (re)connect performs and, on a RECONNECT (not
+/// the initial boot load), emits `config.changed` for each key whose value differs
+/// from the prior snapshot. PG does not queue NOTIFY for a dead session, so a
+/// reconnect that only reloaded the pull cache would leave a materialized push
+/// consumer (e.g. inventory's starter spec) stale for any key changed during the
+/// disconnect — so we replay those changes as events. The boot load emits NOTHING
+/// (that would spam one event per key at startup; pull consumers lazy-load anyway).
+/// This is the single path the listener uses; the `reconnect` flag is the only
+/// difference, so a test can drive healing by calling it with `reconnect = true`.
+async fn reload_and_heal(svc: &Service, bus: &Bus, reconnect: bool) -> anyhow::Result<()> {
+    let settings = svc.load_all().await?;
+    let changed = svc.replace_cache(settings);
+    if reconnect {
+        for st in changed {
+            bus.emit(
+                &configevents::CHANGED,
+                configevents::Changed {
+                    namespace: st.namespace,
+                    key: st.key,
+                    value: st.value,
+                },
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Keeps a dedicated `PgListener` connection LISTENing for `config_changed` and
+/// refreshes the cache until `stop` flips. It never dies on a DB outage: each
+/// (re)connect goes through [`listen_once`], which backs off on failure. `booted`
+/// tracks whether the first successful reload (the boot load) has happened; every
+/// subsequent reload is a reconnect and heals.
+async fn listen(dsn: String, svc: Arc<Service>, bus: Arc<Bus>, mut stop: watch::Receiver<bool>) {
+    let mut booted = false;
+    while !*stop.borrow() {
+        if listen_once(&dsn, &svc, &bus, booted, &mut stop).await {
+            booted = true; // the first successful reload is the boot load; the rest reconnect
+        }
+    }
+}
+
+/// Owns exactly one dedicated connection for its lifetime: connects, LISTENs, does a
+/// FULL cache reload (`reload_and_heal` with `booted` as the reconnect flag), then
+/// blocks on notifications until an error or cancellation. Returns `true` iff it got
+/// as far as installing a fresh cache (a successful reload), so the caller knows the
+/// boot load is done and subsequent reloads should heal. The dedicated `PgListener`
+/// connection is separate from `svc.pool` (which serves the reload/get_one reads),
+/// matching Go's raw-pgx listener conn vs the shared `*sql.DB`.
+async fn listen_once(
+    dsn: &str,
+    svc: &Arc<Service>,
+    bus: &Arc<Bus>,
+    booted: bool,
+    stop: &mut watch::Receiver<bool>,
+) -> bool {
+    let mut listener = match PgListener::connect(dsn).await {
+        Ok(l) => l,
+        Err(err) => {
+            tracing::error!(%err, "config listener connect failed");
+            backoff(stop).await;
+            return false;
+        }
+    };
+    if let Err(err) = listener.listen(NOTIFY_CHANNEL).await {
+        tracing::error!(%err, "config listener LISTEN failed");
+        backoff(stop).await;
+        return false;
+    }
+    if let Err(err) = reload_and_heal(svc, bus, booted).await {
+        tracing::error!(%err, "config listener reload failed");
+        backoff(stop).await;
+        return false;
+    }
+
+    loop {
+        tokio::select! {
+            _ = stop.changed() => return true, // clean shutdown (reload already succeeded)
+            res = listener.recv() => match res {
+                Ok(notif) => {
+                    let payload = notif.payload();
+                    let Some((ns, key)) = payload.split_once(':') else {
+                        tracing::warn!(%payload, "config listener ignoring malformed payload");
+                        continue;
+                    };
+                    match svc.get_one(ns, key).await {
+                        Ok(Some(v)) => {
+                            svc.set_cache_one(ns, key, &v);
+                            bus.emit(
+                                &configevents::CHANGED,
+                                configevents::Changed {
+                                    namespace: ns.to_string(),
+                                    key: key.to_string(),
+                                    value: v,
+                                },
+                            );
+                        }
+                        Ok(None) => continue, // a delete (only upserts exist today) — nothing to cache
+                        Err(err) => {
+                            tracing::error!(%ns, %key, %err, "config listener getOne failed");
+                            continue;
+                        }
+                    }
+                }
+                Err(err) => {
+                    tracing::error!(%err, "config listener wait failed");
+                    backoff(stop).await;
+                    return true; // reconnect via the outer loop (conn dropped on return)
+                }
+            }
+        }
+    }
+}
+
+/// Waits ~1s, returning early if `stop` flips so shutdown stays prompt and a
+/// reconnect storm never tight-spins.
+async fn backoff(stop: &mut watch::Receiver<bool>) {
+    tokio::select! {
+        _ = stop.changed() => {}
+        _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+    }
+}
+
+// ============================================================================
+// Admin — the config editor page (contract only; no portal renders it in M1).
+// ============================================================================
+
+/// The config editor page: KPIs, a read-only table of the current settings, and an
+/// editable [`adminapi::Form`] (one field per setting + an add-new triple). The
+/// admin portal owns the POST route/auth/rendering; config only supplies the
+/// declarative widgets and the `apply_edit` submit closure.
+fn admin_render(svc: &Arc<Service>, _params: &adminapi::Params) -> anyhow::Result<adminapi::Content> {
+    let rows = svc.all();
+
+    let mut namespaces: HashSet<&str> = HashSet::new();
+    let mut table = adminapi::Table {
+        columns: vec!["Namespace".into(), "Key".into(), "Value".into()],
+        rows: Vec::with_capacity(rows.len()),
+    };
+    let mut fields: Vec<adminapi::Field> = Vec::with_capacity(rows.len() + 3);
+    for r in &rows {
+        namespaces.insert(r.namespace.as_str());
+        table.rows.push(vec![
+            adminapi::Cell::mono(&r.namespace),
+            adminapi::Cell::mono(&r.key),
+            adminapi::Cell::text(&r.value),
+        ]);
+        fields.push(adminapi::Field {
+            name: format!("{}:{}", r.namespace, r.key),
+            label: format!("{} / {}", r.namespace, r.key),
+            value: r.value.clone(),
+        });
+    }
+    // Add-new triple: config owns the "" -> insert semantics; the adminapi::Form
+    // contract stays a generic name/value list.
+    fields.push(adminapi::Field {
+        name: "_new_namespace".into(),
+        label: "New namespace".into(),
+        value: String::new(),
+    });
+    fields.push(adminapi::Field {
+        name: "_new_key".into(),
+        label: "New key".into(),
+        value: String::new(),
+    });
+    fields.push(adminapi::Field {
+        name: "_new_value".into(),
+        label: "New value".into(),
+        value: String::new(),
+    });
+
+    let submit_svc = svc.clone();
+    let form = adminapi::Form {
+        action: String::new(),
+        fields,
+        submit: Some(Arc::new(move |values: adminapi::Params| {
+            let svc = submit_svc.clone();
+            Box::pin(async move { apply_edit(&svc, values).await })
+        })),
+    };
+
+    Ok(adminapi::Content {
+        kpis: vec![
+            adminapi::Kpi {
+                label: "Settings".into(),
+                value: rows.len().to_string(),
+                sub: String::new(),
+            },
+            adminapi::Kpi {
+                label: "Namespaces".into(),
+                value: namespaces.len().to_string(),
+                sub: String::new(),
+            },
+        ],
+        table: Some(table),
+        form: Some(form),
+    })
+}
+
+/// Diffs the posted values against the current cache and `set`s ONLY the keys that
+/// actually changed (each `set` is a NOTIFY + a `config.changed`; rewriting every row
+/// would emit a storm of false "changed" events). It then inserts the add-new row if
+/// its triple is fully filled. Returns the first error.
+async fn apply_edit(svc: &Arc<Service>, values: adminapi::Params) -> anyhow::Result<()> {
+    let mut first_err: Option<anyhow::Error> = None;
+
+    for s in svc.all() {
+        if let Some(v) = values.get(&format!("{}:{}", s.namespace, s.key)) {
+            if *v != s.value {
+                if let Err(e) = svc.set(&s.namespace, &s.key, v).await {
+                    first_err.get_or_insert(e);
+                }
+            }
+        }
+    }
+
+    let ns = adminapi::param(&values, "_new_namespace");
+    let key = adminapi::param(&values, "_new_key");
+    let val = adminapi::param(&values, "_new_value");
+    if !ns.is_empty() && !key.is_empty() && !val.is_empty() {
+        if let Err(e) = svc.set(ns, key, val).await {
+            // set validates the ids
+            first_err.get_or_insert(e);
+        }
+    }
+
+    match first_err {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
+}
+
+// ============================================================================
+// Module — the lifecycle wiring.
+// ============================================================================
+
+/// The config module. Holds the constructed service (shared between `register`, the
+/// listener, and the admin render), the bus/dsn captured in `init`, and the
+/// listener's cancel/join handles.
+pub struct Config {
+    svc: OnceLock<Arc<Service>>,
+    bus: OnceLock<Arc<Bus>>,
+    dsn: Mutex<Option<String>>,
+    stop_tx: Mutex<Option<watch::Sender<bool>>>,
+    tasks: Mutex<Vec<JoinHandle<()>>>,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Config::new()
+    }
+}
+
+impl Config {
+    pub fn new() -> Config {
+        Config {
+            svc: OnceLock::new(),
+            bus: OnceLock::new(),
+            dsn: Mutex::new(None),
+            stop_tx: Mutex::new(None),
+            tasks: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn svc(&self) -> Arc<Service> {
+        self.svc
+            .get()
+            .expect("config.register must run before init/start")
+            .clone()
+    }
+}
+
+#[async_trait::async_trait]
+impl Module for Config {
+    fn name(&self) -> &str {
+        "config"
+    }
+
+    fn requires(&self) -> Vec<String> {
+        Vec::new() // foundation — depends on nobody
+    }
+
+    fn caps(&self) -> Caps {
+        Caps::REGISTER | Caps::MIGRATE | Caps::START | Caps::STOP
+    }
+
+    /// Phase 1, BEFORE any `init`: builds the service and offers it under the
+    /// capability key `"config.reader"`, so a dependent's `require`/`try_require`
+    /// resolves regardless of registration order. The cache is filled by the
+    /// listener's first connect (`start`), not here.
+    fn register(&self, ctx: &Context) -> anyhow::Result<()> {
+        let pool = ctx
+            .db()
+            .ok_or_else(|| anyhow::anyhow!("config requires a DB pool"))?
+            .clone();
+        let svc = Arc::new(Service::new(pool));
+        self.svc
+            .set(svc.clone())
+            .map_err(|_| anyhow::anyhow!("config.register ran twice"))?;
+        ctx.registry().provide::<dyn configapi::Config>(
+            registry::key("config", "reader"),
+            svc as Arc<dyn configapi::Config>,
+        );
+        Ok(())
+    }
+
+    /// Creates this module's own schema. Idempotent.
+    async fn migrate(&self, ctx: &Context) -> anyhow::Result<()> {
+        let pool = ctx
+            .db()
+            .ok_or_else(|| anyhow::anyhow!("config requires a DB pool"))?;
+        sqlx::raw_sql(SCHEMA_DDL).execute(pool).await?;
+        Ok(())
+    }
+
+    /// Only wires up — no DB I/O (#8). Captures the bus + listener DSN and contributes
+    /// the admin editor page. The cache is filled by the listener's first connect.
+    fn init(&self, ctx: &Context) -> anyhow::Result<()> {
+        self.bus
+            .set(ctx.bus().clone())
+            .map_err(|_| anyhow::anyhow!("config.init ran twice"))?;
+        *self.dsn.lock().unwrap() = Some(env_or("DATABASE_URL", DEFAULT_DSN));
+
+        let svc = self.svc();
+        ctx.contribute(
+            adminapi::SLOT,
+            adminapi::Item::local(
+                "config",
+                "Platform",
+                "Game Config & Flags",
+                Arc::new(move |params: &adminapi::Params| admin_render(&svc, params)),
+            ),
+        );
+        Ok(())
+    }
+
+    /// Launches the LISTEN/NOTIFY loop on a FRESH `Background`-rooted task (via
+    /// `tokio::spawn`, not tied to the `start` ctx), so a short start deadline can't
+    /// kill the loop; `stop` cancels it. The initial full cache load happens inside
+    /// the loop's first connect, so boot and reconnect share one cache-population
+    /// path.
+    async fn start(&self, _ctx: &Context) -> anyhow::Result<()> {
+        let svc = self.svc();
+        let bus = self
+            .bus
+            .get()
+            .expect("config.init must run before start")
+            .clone();
+        let dsn = self
+            .dsn
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("config.init must run before start");
+
+        let (stop_tx, stop_rx) = watch::channel(false);
+        let task = tokio::spawn(listen(dsn, svc, bus, stop_rx));
+        *self.stop_tx.lock().unwrap() = Some(stop_tx);
+        self.tasks.lock().unwrap().push(task);
+        Ok(())
+    }
+
+    /// Cancels the loop and awaits its exit. It does NOT close the listener conn — the
+    /// loop owns and re-creates it across reconnects, so a permanent outage degrades
+    /// to stale-cache + retry.
+    async fn stop(&self, _ctx: &Context) -> anyhow::Result<()> {
+        if let Some(tx) = self.stop_tx.lock().unwrap().take() {
+            let _ = tx.send(true);
+        }
+        let tasks = std::mem::take(&mut *self.tasks.lock().unwrap());
+        for t in tasks {
+            let _ = t.await;
+        }
+        Ok(())
+    }
+}
+
+fn env_or(key: &str, def: &str) -> String {
+    match std::env::var(key) {
+        Ok(v) if !v.is_empty() => v,
+        _ => def.to_string(),
+    }
+}
+
+// ============================================================================
+// Tests. Unit tests need no DB; integration tests target the local Postgres (the
+// test DB) and SKIP cleanly (early return + message) when it is unreachable. In-crate
+// so they can drive the private `Service`/`reload_and_heal`/`listen` directly.
+// ============================================================================
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A cacheless service over a lazy pool (never connects until a query) — for
+    /// unit tests that only read the cache or validate ids before any DB work.
+    fn lazy_service() -> Arc<Service> {
+        Arc::new(Service::new(PgPool::connect_lazy(DEFAULT_DSN).unwrap()))
+    }
+
+    fn preload(svc: &Service, entries: &[(&str, &str, &str)]) {
+        let mut guard = svc.cache.write().unwrap();
+        for (ns, key, val) in entries {
+            guard.insert((ns.to_string(), key.to_string()), val.to_string());
+        }
+    }
+
+    /// PULL demonstration: typed getters over a preloaded cache, each hitting and
+    /// falling back on a miss. No DB.
+    // `#[tokio::test]`: `PgPool::connect_lazy` needs a Tokio context (it spawns the
+    // pool's background worker), even though these tests never issue a query.
+    #[tokio::test]
+    async fn getters_hit_and_default() {
+        use configapi::Config as _;
+        let svc = lazy_service();
+        preload(
+            &svc,
+            &[
+                ("game", "name", "arena"),
+                ("game", "max_players", "8"),
+                ("game", "hardcore", "true"),
+                ("game", "pvp", "ON"),
+            ],
+        );
+
+        assert_eq!(svc.get_string("game", "name", "def"), "arena");
+        assert_eq!(svc.get_string("game", "missing", "def"), "def");
+        assert!(svc.get_bool("game", "hardcore", false));
+        assert!(svc.get_bool("game", "pvp", false)); // case-insensitive "on"
+        assert!(!svc.get_bool("game", "missing", false));
+        assert!(svc.get_bool("game", "missing", true)); // default honoured
+        assert_eq!(svc.get_int("game", "max_players", 1), 8);
+        assert_eq!(svc.get_int("game", "missing", 3), 3);
+        assert_eq!(svc.get_int("game", "name", 5), 5); // parse-fail -> default
+        assert_eq!(svc.get("game", "name").as_deref(), Some("arena"));
+        assert_eq!(svc.get("game", "missing"), None);
+    }
+
+    /// `set` validates ids BEFORE any DB work, so a bad id errors even over a lazy
+    /// pool that would fail on connect.
+    #[tokio::test]
+    async fn set_rejects_invalid_identifiers() {
+        let svc = lazy_service();
+        assert!(svc.set("bad ns", "k", "v").await.is_err());
+        assert!(svc.set("UPPER", "k", "v").await.is_err());
+        assert!(svc.set("ok", "Bad Key", "v").await.is_err());
+        assert!(svc.set("", "k", "v").await.is_err());
+    }
+
+    #[test]
+    fn valid_ident_matches_go_regex() {
+        assert!(valid_ident("game"));
+        assert!(valid_ident("max_players2"));
+        assert!(!valid_ident(""));
+        assert!(!valid_ident("Bad"));
+        assert!(!valid_ident("a:b"));
+        assert!(!valid_ident("a b"));
+    }
+
+    /// `register` provides the reader capability under `"config.reader"`, downcasting
+    /// back to `Arc<dyn configapi::Config>`. No DB (lazy pool, no query).
+    #[tokio::test]
+    async fn register_provides_reader_capability() {
+        let ctx = Context::with_db(PgPool::connect_lazy(DEFAULT_DSN).unwrap());
+        let m = Config::new();
+        m.register(&ctx).unwrap();
+        let reader = ctx
+            .registry()
+            .try_require::<dyn configapi::Config>(&registry::key("config", "reader"));
+        assert!(reader.is_some(), "config.reader capability not provided");
+        // A miss degrades to the default through the trait object.
+        assert_eq!(reader.unwrap().get_string("x", "y", "def"), "def");
+    }
+
+    /// The admin render builds KPIs (Settings + Namespaces counts), a table row per
+    /// setting, and one form field per setting plus the 3 add-new fields. Exercises
+    /// the render closure without a DB.
+    #[tokio::test]
+    async fn admin_render_builds_widgets_from_cache() {
+        let svc = lazy_service();
+        preload(
+            &svc,
+            &[
+                ("game", "name", "arena"),
+                ("game", "max_players", "8"),
+                ("net", "region", "eu"),
+            ],
+        );
+        let content = admin_render(&svc, &adminapi::Params::new()).unwrap();
+
+        assert_eq!(content.kpis[0].label, "Settings");
+        assert_eq!(content.kpis[0].value, "3");
+        assert_eq!(content.kpis[1].label, "Namespaces");
+        assert_eq!(content.kpis[1].value, "2"); // game, net
+
+        let table = content.table.as_ref().unwrap();
+        assert_eq!(table.columns, vec!["Namespace", "Key", "Value"]);
+        assert_eq!(table.rows.len(), 3);
+        assert!(table.rows[0][0].mono); // namespace cell is mono
+
+        let form = content.form.as_ref().unwrap();
+        assert_eq!(form.fields.len(), 3 + 3); // per-setting + add-new triple
+        assert_eq!(form.fields[3].name, "_new_namespace");
+        assert!(form.submit.is_some());
+    }
+
+    // ---- Live Postgres integration (the local DB is the test DB) ----------
+
+    /// Opens the local Postgres, migrates the config schema, and returns `None`
+    /// (printing a skip line) when it's unreachable.
+    async fn test_pool() -> Option<PgPool> {
+        let dsn = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string());
+        let pool = match tokio::time::timeout(Duration::from_secs(3), PgPool::connect(&dsn)).await {
+            Ok(Ok(p)) => p,
+            _ => {
+                eprintln!("SKIP: postgres unreachable at {dsn} — config DB tests skipped");
+                return None;
+            }
+        };
+        if let Err(err) = sqlx::raw_sql(SCHEMA_DDL).execute(&pool).await {
+            eprintln!("SKIP: config migrate failed: {err}");
+            return None;
+        }
+        Some(pool)
+    }
+
+    /// A fresh, unique namespace that is a VALID identifier (uuid hyphens stripped).
+    async fn unique_ns(pool: &PgPool) -> String {
+        let (ns,): (String,) =
+            sqlx::query_as("SELECT 'test_' || replace(gen_random_uuid()::text, '-', '')")
+                .fetch_one(pool)
+                .await
+                .unwrap();
+        ns
+    }
+
+    async fn cleanup(pool: &PgPool, ns: &str) {
+        let _ = sqlx::query("DELETE FROM config.settings WHERE namespace = $1")
+            .bind(ns)
+            .execute(pool)
+            .await;
+    }
+
+    fn build_module(ctx: &Context) -> Config {
+        let m = Config::new();
+        m.register(ctx).unwrap();
+        m.init(ctx).unwrap();
+        m
+    }
+
+    /// The DB round-trip: `set` persists, a fresh `load_all` + `replace_cache` makes
+    /// the value readable through the getters.
+    #[tokio::test]
+    async fn set_then_load_reads_back() {
+        use configapi::Config as _;
+        let Some(pool) = test_pool().await else { return };
+        let ns = unique_ns(&pool).await;
+        let svc = Arc::new(Service::new(pool.clone()));
+
+        svc.set(&ns, "limit", "42").await.unwrap();
+        let all = svc.load_all().await.unwrap();
+        svc.replace_cache(all);
+
+        assert_eq!(svc.get(&ns, "limit").as_deref(), Some("42"));
+        assert_eq!(svc.get_int(&ns, "limit", 0), 42);
+        cleanup(&pool, &ns).await;
+    }
+
+    /// The REAL push path end-to-end: a running listener + `set` -> pg_notify ->
+    /// listener -> cache refresh AND a `config.changed` on the sync bus. Also proves
+    /// the BOOT load is silent (a pre-seeded key emits nothing) while a POST-boot set
+    /// does emit. Observed by both polling the cache and receiving the bus event.
+    #[tokio::test]
+    async fn live_reload_updates_cache_and_emits_changed() {
+        use configapi::Config as _;
+        let Some(pool) = test_pool().await else { return };
+        let ns = unique_ns(&pool).await;
+
+        // Pre-seed a key so the boot load has something to (silently) load.
+        sqlx::query("INSERT INTO config.settings (namespace, key, value) VALUES ($1, 'sentinel', '1')")
+            .bind(&ns)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let ctx = Context::with_db(pool.clone());
+        let m = build_module(&ctx);
+
+        // Subscribe BEFORE start, so any boot-load emission for our ns would be seen.
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<configevents::Changed>();
+        let want = ns.clone();
+        ctx.bus().on(&configevents::CHANGED, move |c: configevents::Changed| {
+            if c.namespace == want {
+                let _ = tx.send(c);
+            }
+        });
+
+        m.start(&ctx).await.unwrap();
+
+        // Wait for the listener to connect + boot-load (cache reflects the sentinel).
+        let svc = m.svc();
+        wait_until(|| svc.get(&ns, "sentinel").as_deref() == Some("1")).await;
+
+        // Boot load emitted NOTHING (reconnect=false), even though it loaded the
+        // sentinel. Give any stray delivery a chance, then assert the channel empty.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            rx.try_recv().is_err(),
+            "boot load must emit no config.changed events"
+        );
+
+        // A POST-boot set DOES emit: cache refresh + a config.changed on the bus.
+        svc.set(&ns, "flag", "on").await.unwrap();
+
+        let got = tokio::time::timeout(Duration::from_secs(3), rx.recv())
+            .await
+            .expect("no config.changed emitted for the post-boot set")
+            .expect("bus channel closed");
+        assert_eq!(got.key, "flag");
+        assert_eq!(got.value, "on");
+        assert_eq!(svc.get(&ns, "flag").as_deref(), Some("on"));
+        assert!(svc.get_bool(&ns, "flag", false));
+
+        // Clean shutdown, then remove the rows so reruns are stable.
+        m.stop(&ctx).await.unwrap();
+        cleanup(&pool, &ns).await;
+    }
+
+    /// The reconnect self-heal, deterministic (no listener timing): after a disconnect
+    /// PG does not replay missed NOTIFYs, so the reload emits `config.changed` for the
+    /// gap-changed key. Drives the SAME `reload_and_heal` the listener uses. Also
+    /// asserts the boot reload (`reconnect=false`) emits nothing.
+    #[tokio::test]
+    async fn reconnect_reload_heals_gap_changes_boot_is_silent() {
+        let Some(pool) = test_pool().await else { return };
+        let ns = unique_ns(&pool).await;
+        let ctx = Context::with_db(pool.clone());
+        let m = build_module(&ctx);
+        let svc = m.svc();
+        let bus = ctx.bus().clone();
+
+        // Subscribe up front so a boot-load emission would be caught.
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<configevents::Changed>();
+        let want = ns.clone();
+        bus.on(&configevents::CHANGED, move |c: configevents::Changed| {
+            if c.namespace == want {
+                let _ = tx.send(c);
+            }
+        });
+
+        // Seed a key, then boot-load (reconnect=false emits nothing).
+        sqlx::query("INSERT INTO config.settings (namespace, key, value) VALUES ($1, 'level', '1')")
+            .bind(&ns)
+            .execute(&pool)
+            .await
+            .unwrap();
+        reload_and_heal(&svc, &bus, false).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(rx.try_recv().is_err(), "boot reload must be silent");
+
+        // A write missed during a disconnect (no NOTIFY to a dead session).
+        sqlx::query("UPDATE config.settings SET value = '2' WHERE namespace = $1 AND key = 'level'")
+            .bind(&ns)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        // The reconnect reload heals: it emits config.changed for the gap-changed key.
+        reload_and_heal(&svc, &bus, true).await.unwrap();
+        let got = tokio::time::timeout(Duration::from_secs(3), rx.recv())
+            .await
+            .expect("no config.changed emitted on reconnect")
+            .expect("bus channel closed");
+        assert_eq!(got.key, "level");
+        assert_eq!(got.value, "2");
+
+        cleanup(&pool, &ns).await;
+    }
+
+    /// The admin `apply_edit` submit closure end-to-end: rendering yields a Form whose
+    /// submit inserts an add-new triple; with a running listener the new key
+    /// propagates back into the cache via the real push path.
+    #[tokio::test]
+    async fn admin_apply_edit_inserts_new_triple() {
+        use configapi::Config as _;
+        let Some(pool) = test_pool().await else { return };
+        let ns = unique_ns(&pool).await;
+        let ctx = Context::with_db(pool.clone());
+        let m = build_module(&ctx);
+        m.start(&ctx).await.unwrap();
+        let svc = m.svc();
+
+        // Render, then invoke the Form's submit with an add-new triple.
+        let content = admin_render(&svc, &adminapi::Params::new()).unwrap();
+        let submit = content.form.unwrap().submit.unwrap();
+        let mut values = adminapi::Params::new();
+        values.insert("_new_namespace".into(), ns.clone());
+        values.insert("_new_key".into(), "spawned".into());
+        values.insert("_new_value".into(), "yes".into());
+        submit(values).await.unwrap();
+
+        // The listener's push path lands the new key in the cache.
+        wait_until(|| svc.get(&ns, "spawned").as_deref() == Some("yes")).await;
+        assert_eq!(svc.get_string(&ns, "spawned", "def"), "yes");
+
+        m.stop(&ctx).await.unwrap();
+        cleanup(&pool, &ns).await;
+    }
+
+    /// Polls `cond` up to 3s at 20ms intervals; panics on timeout.
+    async fn wait_until(mut cond: impl FnMut() -> bool) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            if cond() {
+                return;
+            }
+            if std::time::Instant::now() > deadline {
+                panic!("condition not met within deadline");
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+}

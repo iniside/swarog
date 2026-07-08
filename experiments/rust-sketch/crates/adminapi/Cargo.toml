@@ -1,0 +1,17 @@
+[package]
+name = "adminapi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# A pure contract crate (Go's api/admin/adminapi): the widget/Item types the admin
+# portal and the modules that appear in it both depend on. Imports NO module.
+[dependencies]
+serde = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+futures = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
