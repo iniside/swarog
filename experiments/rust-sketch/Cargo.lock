@@ -1026,6 +1026,44 @@ dependencies = [
 ]
 
 [[package]]
+name = "inventory"
+version = "0.1.0"
+dependencies = [
+ "adminapi",
+ "anyhow",
+ "async-trait",
+ "bus",
+ "charactersapi",
+ "charactersevents",
+ "configapi",
+ "configevents",
+ "edge",
+ "inventoryapi",
+ "lifecycle",
+ "messaging",
+ "opsapi",
+ "registry",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "inventoryapi"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "edge",
+ "futures",
+ "opsapi",
+ "rpc-macro",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "ipnet"
 version = "2.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

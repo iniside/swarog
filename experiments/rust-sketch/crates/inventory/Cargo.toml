@@ -1,0 +1,37 @@
+[package]
+name = "inventory"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The inventory impl module (port of Go's modules/inventory): owns schema
+# `inventory` (items + polymorphic holdings, NO cross-module FK on owner_id),
+# provides the Holdings player capability, sync-asks characters' Ownership to
+# authorize a character's inventory, and REACTS to character lifecycle on the
+# DURABLE plane (grant a starter item on create, wipe holdings on delete) —
+# integrity via event, not a foreign key. An impl crate — no OTHER module imports
+# it; consumers use `inventoryapi`.
+[dependencies]
+bus = { workspace = true }
+lifecycle = { workspace = true }
+registry = { workspace = true }
+opsapi = { workspace = true }
+edge = { workspace = true }
+inventoryapi = { workspace = true }
+charactersapi = { workspace = true }
+charactersevents = { workspace = true }
+configapi = { workspace = true }
+configevents = { workspace = true }
+adminapi = { workspace = true }
+sqlx = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+messaging = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }

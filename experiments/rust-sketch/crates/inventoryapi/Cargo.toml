@@ -1,0 +1,21 @@
+[package]
+name = "inventoryapi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The inventory module's pure, transport-free capability contract (port of Go's
+# api/inventory/inventoryapi): the Holdings trait + the Holding wire type. `#[rpc]`
+# is applied to Holdings to GENERATE the transport glue (Client / register_server /
+# operations) into the child `holdings_rpc` module — the debt the project forbids
+# hand-writing. Domain consumers do NOT import this (rule 4); it is reached only by
+# the generated glue + the remote stub + the module that provides it.
+[dependencies]
+opsapi = { workspace = true }
+edge = { workspace = true }
+rpc-macro = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+futures = { workspace = true }

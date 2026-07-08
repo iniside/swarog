@@ -20,6 +20,8 @@ members = [
     "crates/charactersevents",
     "crates/charactersapi",
     "crates/characters",
+    "crates/inventoryapi",
+    "crates/inventory",
 ]
 
 [workspace.package]
@@ -82,3 +84,9 @@ config = { path = "crates/config" }
 charactersevents = { path = "crates/charactersevents" }
 charactersapi = { path = "crates/charactersapi" }
 characters = { path = "crates/characters" }
+
+# The inventory domain: the pure Holdings capability contract (traits + generated
+# rpc glue) and the impl module (polymorphic Owner, no cross-module FK, on_tx
+# grant-starter/wipe — the integrity-via-event proof).
+inventoryapi = { path = "crates/inventoryapi" }
+inventory = { path = "crates/inventory" }
