@@ -1,5 +1,9 @@
 # Rust Sketch — Foundations + characters/inventory (split-from-day-one)
 
+**Status: M1 COMPLETE (2026-07-08).** All 12 steps committed (`da75f50`..`1f2c76c`);
+split microservices topology verified live (`verify.ps1` green: build + clippy +
+test + `split-proof`). Evidence: `docs/rust-sketch/2026-07-08-1047-split-proof-status.md`.
+
 **Date:** 2026-07-08 09:37 · Reviewed (think-hard), then **user-corrected: gateway
 and RPC codegen stay in M1** (reviewer's descope rejected — see below).
 **Goal:** A new for-fun experiment at `experiments/rust-sketch/` porting the Go
