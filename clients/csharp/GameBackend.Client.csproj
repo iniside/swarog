@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <!-- net9.0 is the first release where System.Net.Quic is STABLE (not [Experimental]).
+         SDK 9.0.315 + 10.0.301 are both installed on this box; msquic ships in-box on
+         Windows 11, so no extra native dependency here. On Linux CI libmsquic would be
+         required — the verify stage SKIPs when QuicConnection.IsSupported is false. -->
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>GameBackend.Client</RootNamespace>
+    <AssemblyName>gbclient</AssemblyName>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- CA1416: System.Net.Quic is annotated linux/macOS/windows-only. Every call site
+         is behind a runtime QuicConnection.IsSupported guard (and the verify stage SKIPs
+         when unsupported), so the platform-compat analyzer warning is noise here. -->
+    <NoWarn>$(NoWarn);CA1416</NoWarn>
+  </PropertyGroup>
+
+</Project>
