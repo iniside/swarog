@@ -1,0 +1,28 @@
+[package]
+name = "admin"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The GameOps admin PORTAL module (port of Go's modules/admin). It owns the look
+# (the embedded dark theme + shell) and composes a navigable model from the items
+# modules CONTRIBUTE to the `adminapi::SLOT` slot — it never imports a module's
+# impl or another schema. A fortress process reaches its /admin routes through the
+# gateway's HTTP passthrough. Imports only the admin CONTRACT crate + foundations.
+[dependencies]
+adminapi = { workspace = true }
+lifecycle = { workspace = true }
+async-trait = { workspace = true }
+contrib = { workspace = true }
+axum = { workspace = true }
+minijinja = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }
+futures = { workspace = true }
+base64 = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

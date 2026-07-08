@@ -23,6 +23,7 @@ config = { workspace = true }
 characters = { workspace = true }
 accounts = { workspace = true }
 inventory = { workspace = true }
+admin = { workspace = true }
 messaging = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 anyhow = { workspace = true }

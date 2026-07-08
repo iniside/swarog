@@ -44,6 +44,7 @@ members = [
     "modules/inventory",
     "modules/gateway",
     "modules/accounts",
+    "modules/admin",
     # Process entrypoints (Go's cmd/).
     "cmd/server",
     "cmd/characters-svc",
@@ -103,6 +104,10 @@ proc-macro2 = "1"
 # Structured-logging subscriber for the process entrypoints (server + the two *-svc).
 tracing-subscriber = "0.3"
 
+# Templating for the admin portal (Go used html/template): the embedded admin page
+# rendered over serde view models, auto-escaping on the `.html` template name.
+minijinja = "2"
+
 # ---- Foundations (core/): leaves import only each other, never a module. ----
 registry = { path = "core/registry" }
 contrib = { path = "core/contrib" }
@@ -142,3 +147,4 @@ characters = { path = "modules/characters" }
 inventory = { path = "modules/inventory" }
 gateway = { path = "modules/gateway" }
 accounts = { path = "modules/accounts" }
+admin = { path = "modules/admin" }
