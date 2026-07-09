@@ -27,8 +27,11 @@ Three seams carry all extensibility; almost everything else follows from them:
    `api/<name>/<name>events` declaring events via `bus::define`. **Every
    cross-module event is DURABLE**: producer `emit_tx` inside a real DB tx,
    consumer `on_tx`/`on_tx_raw` with a subscriber name (outbox → relay →
-   `POST /events` → inbox dedup, exactly-once). Plain `emit`/`on` is in-process
-   only and reserved for same-module reactions — it never crosses a process.
+   `POST /events` → inbox dedup, exactly-once). The durable transport is installed
+   by `app::run` at `Context` construction (DB ⇒ plane), never by a module; a
+   process without a DB hosts no plane and `cmd/*` never lists it. Plain `emit`/`on`
+   is in-process only and reserved for same-module reactions — it never crosses a
+   process.
 
 Plus two minor seams: **`ctx.contribute(slot, v)` / `ctx.contributions(slot)`** — a
 multi-value registry for cross-cutting collections (admin items via `adminapi::SLOT`,
@@ -42,8 +45,9 @@ module never knows the topology.
 
 1. **Foundations (`core/*`) never depend on a module or an `api/` crate.**
    Dependency only ever points module → core. (`core/` = app, bus, contrib, edge,
-   lifecycle, opsapi, outbox, registry, messaging, remote, metrics, httpmw —
-   messaging/remote/metrics/httpmw are process infrastructure, not domains.)
+   lifecycle, opsapi, outbox, registry, asyncevents, remote, metrics, httpmw —
+   `asyncevents` is the durable async-events plane owned by `app::run` (DB ⇒ plane),
+   NOT a module; remote/metrics/httpmw are process infrastructure, not domains.)
 2. **Fortress rule.** Every folder in `modules/` is a fortress: it never imports
    another module's impl crate, and every domain module compiles + boots as its own
    `cmd/<name>-svc`. The only gates are the contract crates under `api/<name>/`.
@@ -56,8 +60,9 @@ module never knows the topology.
    `bus::define` descriptors — importable by any module), `<name>rpc` (generated
    transport glue via the meta-callback macro — importable ONLY by its own module,
    `cmd/*` roots, and other `api/*/rpc` crates; never by a foreign module).
-4. Depend on a capability trait, not an impl crate. Declared `requires()` must match
-   real sync deps (`messaging` counts — durable emit/subscribe needs the transport).
+4. Depend on a capability trait, not an impl crate. Declared `requires()` names
+   domain capabilities from `modules/` only and must match real sync deps; process
+   infrastructure (the `asyncevents` plane, metrics, the DB, HTTP) is never declared.
 5. **Modules are topology-blind.** No `Option<transport>`, no `if split`, no env
    topology branches in domain code. Edge exposure goes through `EDGE_SLOT`;
    remote resolution through the registry swap; durable delivery through the bus.
@@ -70,8 +75,10 @@ module never knows the topology.
 8. Lifecycle: `register` (phase 1, provide services, no I/O) → `init` (wiring only,
    no I/O — contribute slots, subscribe, mount routes) → `migrate` (own schema
    only) → `start` (background work, first I/O) → `stop` (reverse registration
-   order). `messaging` registers last in every process so its transport exists
-   before subscribers init and stops first on teardown.
+   order). The durable plane's ordering is structural in `app::run`: the transport
+   is injected at `Context` construction, the plane's schema migrates before any
+   module migrates, the plane starts after modules start, and delivery halts before
+   any module stops.
 9. Events are typed at the seam: declare with `bus::define`, publish/subscribe via
    `emit_tx`/`on_tx`. `on_tx_raw` (untyped JSON) is for deliberately zero-coupling
    sinks (audit) only.
@@ -94,8 +101,9 @@ module never knows the topology.
    (own glue), admin item to `adminapi::SLOT`; subscribe with `on_tx`. Emit with
    `emit_tx` inside your store tx.
 4. New `cmd/<name>-svc` (copy an existing domain svc main: the `metrics` core-infra
-   module + your module + messaging + a `remote::Stub` per capability it consumes —
-   every main lists `metrics::Metrics::new()` for `GET /metrics`). It hosts NO gateway
+   module + your module + a `remote::Stub` per capability it consumes — every main
+   lists `metrics::Metrics::new()` for `GET /metrics`; the durable plane is app-owned
+   (DB ⇒ plane), not listed). It hosts NO gateway
    (FrontDoor) — the
    single public front door lives only in `cmd/gateway-svc` + `cmd/server` (monolith);
    the svc serves its ops ONLY over the internal mTLS edge and gateway-svc dispatches to
@@ -104,7 +112,7 @@ module never knows the topology.
    process + a named assertion, HTTP ops asserted THROUGH gateway-svc) and the `fortress`
    stage port list.
 5. Wire `EVENTS_SUBSCRIBERS` for any topic it produces/consumes across processes;
-   give the svc a distinct `MESSAGING_ORIGIN`.
+   give the svc a distinct `EVENTS_ORIGIN`.
 
 ## Domain modules (11 fortresses + gateway)
 
@@ -209,7 +217,7 @@ core/                      # foundations — never import modules or api/ crates
   bus/ registry/ contrib/  #   async bus, sync capability registry, slots
   lifecycle/ opsapi/       #   Module/Context/two-phase build; typed ops + slots
   edge/                    #   internal mTLS QUIC + player plane + EDGE_SLOT
-  outbox/ messaging/       #   durable plane: outbox relay; transport module
+  outbox/ asyncevents/     #   durable plane: relay lib; app-owned events plane
   remote/                  #   generic Stub (factories injected by cmd roots)
   metrics/                 #   infra Module: GET /metrics + record layer — list in every main
   httpmw/                  #   rate limit + XFF + readyz + LAYER_SLOT (HTTP layer drain)
