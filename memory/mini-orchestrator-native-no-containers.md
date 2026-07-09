@@ -58,6 +58,20 @@ later stub re-resolve). Platform-side pieces still land at existing seams:
 multi-peer round-robin in `core/remote`, drain in `core/edge`/`httpmw`,
 replica-safety in modules.
 
+**Manual-vs-automatic split (2026-07-10):** automatic runtime state = ports
+(agent-minted), addresses (agent IP + port), discovery (consumer's stubs declare
+needs, resolve answers), client-side round-robin LB in `core/remote` (resolve
+returns all live instances), process identity (injected at spawn). Manual = the
+MANIFEST only: services, binary/version, replicas, placement, and static env the
+orchestrator doesn't own (`DATABASE_URL`, secrets, feature flags) as literals.
+Source of truth is the git-versioned Rust manifest + `orchestrator plan/apply`
+(Terraform-style diff) — NOT a mutating admin panel (UI-edited topology recreates
+the where-did-this-value-come-from drift, [[config-as-code-anti-magic]]).
+Panel/CLI is read-only observability + imperative ops (status/restart/deploy);
+CLI first, own tiny web UI later at most — never a page in the backend's `admin`
+module (zero-sharing both ways). Only runtime-mutable desired state: future game
+-server `replicas` via API from the server-management module.
+
 **Multi-machine (2026-07-10): master + per-machine agents (the Nomad
 server/client shape), NO overlay network, NO master election.** Overlay exists in
 k8s only for IP-per-pod; our native processes share host networking, so resolve
