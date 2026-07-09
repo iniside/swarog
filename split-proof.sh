@@ -294,7 +294,6 @@ wait_healthy "$J_PORT" "J (rating-svc)" || { echo "J failed to start"; exit 1; }
 note "starting K (leaderboard-svc) on :$K_PORT, edge :$K_EDGE_PORT ..."
 env PORT=":$K_PORT" DATABASE_URL="$DATABASE_URL" EDGE_ADDR=":$K_EDGE_PORT" \
     EDGE_CA_CERT="$CA_CERT" EDGE_CA_KEY="$CA_KEY" \
-    ACCOUNTS_EDGE_ADDR="127.0.0.1:$D_EDGE_PORT" \
     EVENTS_ORIGIN=leaderboard-svc \
     "$BIN_DIR/leaderboard-svc$EXE" >"$RUN_DIR/leaderboard.out.log" 2>"$RUN_DIR/leaderboard.err.log" &
 K_PID=$!
@@ -310,7 +309,6 @@ note "starting I (match-svc) on :$I_PORT, edge :$I_EDGE_PORT ..."
 env PORT=":$I_PORT" DATABASE_URL="$DATABASE_URL" EDGE_ADDR=":$I_EDGE_PORT" \
     EDGE_CA_CERT="$CA_CERT" EDGE_CA_KEY="$CA_KEY" \
     RATING_EDGE_ADDR="127.0.0.1:$J_EDGE_PORT" \
-    ACCOUNTS_EDGE_ADDR="127.0.0.1:$D_EDGE_PORT" \
     EVENTS_ORIGIN=match-svc \
     EVENTS_SUBSCRIBERS="match.finished=http://localhost:$J_PORT/events,http://localhost:$K_PORT/events,http://localhost:$F_PORT/events" \
     "$BIN_DIR/match-svc$EXE" >"$RUN_DIR/match.out.log" 2>"$RUN_DIR/match.err.log" &
@@ -323,7 +321,6 @@ wait_healthy "$I_PORT" "I (match-svc)" || { echo "I failed to start"; exit 1; }
 note "starting A (characters-svc) on :$A_PORT, edge :$EDGE_PORT ..."
 env PORT=":$A_PORT" DATABASE_URL="$DATABASE_URL" EDGE_ADDR=":$EDGE_PORT" \
     EDGE_CA_CERT="$CA_CERT" EDGE_CA_KEY="$CA_KEY" \
-    ACCOUNTS_EDGE_ADDR="127.0.0.1:$D_EDGE_PORT" \
     EVENTS_ORIGIN=characters-svc \
     EVENTS_SUBSCRIBERS="character.created=http://localhost:$B_PORT/events,http://localhost:$F_PORT/events;character.deleted=http://localhost:$B_PORT/events,http://localhost:$F_PORT/events" \
     "$BIN_DIR/characters-svc$EXE" >"$RUN_DIR/characters.out.log" 2>"$RUN_DIR/characters.err.log" &
@@ -348,7 +345,6 @@ fi
 note "starting C (config-svc) on :$C_PORT, edge :$C_EDGE_PORT ..."
 env PORT=":$C_PORT" DATABASE_URL="$DATABASE_URL" EDGE_ADDR=":$C_EDGE_PORT" \
     EDGE_CA_CERT="$CA_CERT" EDGE_CA_KEY="$CA_KEY" \
-    ACCOUNTS_EDGE_ADDR="127.0.0.1:$D_EDGE_PORT" \
     EVENTS_ORIGIN=config-svc \
     EVENTS_SUBSCRIBERS="config.changed=http://localhost:$B_PORT/events,http://localhost:$F_PORT/events" \
     "$BIN_DIR/config-svc$EXE" >"$RUN_DIR/config.out.log" 2>"$RUN_DIR/config.err.log" &
@@ -365,7 +361,6 @@ env PORT=":$B_PORT" DATABASE_URL="$DATABASE_URL" \
     EDGE_CA_CERT="$CA_CERT" EDGE_CA_KEY="$CA_KEY" \
     CHARACTERS_EDGE_ADDR="127.0.0.1:$EDGE_PORT" \
     CONFIG_EDGE_ADDR="127.0.0.1:$C_EDGE_PORT" \
-    ACCOUNTS_EDGE_ADDR="127.0.0.1:$D_EDGE_PORT" \
     EVENTS_ORIGIN=inventory-svc \
     "$BIN_DIR/inventory-svc$EXE" >"$RUN_DIR/inventory.out.log" 2>"$RUN_DIR/inventory.err.log" &
 B_PID=$!
@@ -395,7 +390,7 @@ G_PID=$!
 wait_healthy "$G_PORT" "G (gateway-svc)" || { echo "G failed to start"; exit 1; }
 
 # --- start E (admin-svc): the admin portal fortress -- HTTP :8085, no DB, no edge --
-# It DIALS all four provider edges (A/B/C/D) to fan out their admin pages over QUIC;
+# It DIALS all six peer edges (A/B/C/D + audit + scheduler) to fan out their admin pages over QUIC;
 # ADMIN_USER/ADMIN_PASS gate the portal so the negative no-auth assertion is 401.
 note "starting E (admin-svc) on :$E_PORT ..."
 env PORT=":$E_PORT" \

@@ -53,7 +53,6 @@ dependencies = [
 name = "accountsapi"
 version = "0.1.0"
 dependencies = [
- "adminapi",
  "async-trait",
  "opsapi",
  "rpc-macro",
@@ -509,7 +508,6 @@ dependencies = [
 name = "charactersapi"
 version = "0.1.0"
 dependencies = [
- "adminapi",
  "async-trait",
  "opsapi",
  "rpc-macro",

@@ -16,7 +16,6 @@ publish = false
 # glue crate.
 [dependencies]
 opsapi = { workspace = true }
-adminapi = { workspace = true }
 rpc-macro = { workspace = true }
 async-trait = { workspace = true }
 serde = { workspace = true }

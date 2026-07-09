@@ -239,7 +239,6 @@ Start-Svc 'leaderboard' (Join-Path $BinDir 'leaderboard-svc.exe') @{
     EDGE_ADDR          = ":$KEdge"
     EDGE_CA_CERT       = $CaCert
     EDGE_CA_KEY        = $CaKey
-    ACCOUNTS_EDGE_ADDR = "127.0.0.1:$DEdge"
     EVENTS_ORIGIN      = 'leaderboard-svc'
     EVENTS_SUBSCRIBERS = ''
 } | Out-Null
@@ -256,7 +255,6 @@ Start-Svc 'match' (Join-Path $BinDir 'match-svc.exe') @{
     EDGE_CA_CERT       = $CaCert
     EDGE_CA_KEY        = $CaKey
     RATING_EDGE_ADDR   = "127.0.0.1:$JEdge"
-    ACCOUNTS_EDGE_ADDR = "127.0.0.1:$DEdge"
     EVENTS_ORIGIN      = 'match-svc'
     EVENTS_SUBSCRIBERS = "match.finished=http://127.0.0.1:$JPort/events,http://127.0.0.1:$KPort/events,http://127.0.0.1:$FPort/events"
 } | Out-Null
@@ -271,7 +269,6 @@ Start-Svc 'characters' (Join-Path $BinDir 'characters-svc.exe') @{
     EDGE_ADDR          = ":$AEdge"
     EDGE_CA_CERT       = $CaCert
     EDGE_CA_KEY        = $CaKey
-    ACCOUNTS_EDGE_ADDR = "127.0.0.1:$DEdge"
     EVENTS_ORIGIN      = 'characters-svc'
     EVENTS_SUBSCRIBERS = "character.created=http://127.0.0.1:$BPort/events,http://127.0.0.1:$FPort/events;character.deleted=http://127.0.0.1:$BPort/events,http://127.0.0.1:$FPort/events"
 } | Out-Null
@@ -286,7 +283,6 @@ Start-Svc 'config' (Join-Path $BinDir 'config-svc.exe') @{
     EDGE_ADDR          = ":$CEdge"
     EDGE_CA_CERT       = $CaCert
     EDGE_CA_KEY        = $CaKey
-    ACCOUNTS_EDGE_ADDR = "127.0.0.1:$DEdge"
     EVENTS_ORIGIN      = 'config-svc'
     EVENTS_SUBSCRIBERS = "config.changed=http://127.0.0.1:$BPort/events,http://127.0.0.1:$FPort/events"
 } | Out-Null
@@ -303,7 +299,6 @@ Start-Svc 'inventory' (Join-Path $BinDir 'inventory-svc.exe') @{
     EDGE_CA_KEY          = $CaKey
     CHARACTERS_EDGE_ADDR = "127.0.0.1:$AEdge"
     CONFIG_EDGE_ADDR     = "127.0.0.1:$CEdge"
-    ACCOUNTS_EDGE_ADDR   = "127.0.0.1:$DEdge"
     EVENTS_ORIGIN        = 'inventory-svc'
 } | Out-Null
 Wait-Healthy $BPort 'B (inventory-svc)'

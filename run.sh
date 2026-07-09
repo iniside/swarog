@@ -203,7 +203,6 @@ echo "Starting K (leaderboard-svc) on :$K_PORT, edge :$K_EDGE ..."
 start_server leaderboard "$BIN_DIR/leaderboard-svc$EXE" \
     PORT=":$K_PORT" DATABASE_URL="$DATABASE_URL" EDGE_ADDR=":$K_EDGE" \
     EDGE_CA_CERT="$EDGE_CA_CERT" EDGE_CA_KEY="$EDGE_CA_KEY" \
-    ACCOUNTS_EDGE_ADDR="127.0.0.1:$D_EDGE" \
     EVENTS_ORIGIN=leaderboard-svc
 wait_healthy "$K_PORT" "K (leaderboard-svc)"
 
@@ -215,7 +214,6 @@ start_server match "$BIN_DIR/match-svc$EXE" \
     PORT=":$I_PORT" DATABASE_URL="$DATABASE_URL" EDGE_ADDR=":$I_EDGE" \
     EDGE_CA_CERT="$EDGE_CA_CERT" EDGE_CA_KEY="$EDGE_CA_KEY" \
     RATING_EDGE_ADDR="127.0.0.1:$J_EDGE" \
-    ACCOUNTS_EDGE_ADDR="127.0.0.1:$D_EDGE" \
     EVENTS_ORIGIN=match-svc \
     EVENTS_SUBSCRIBERS="match.finished=http://localhost:$J_PORT/events,http://localhost:$K_PORT/events,http://localhost:$F_PORT/events"
 wait_healthy "$I_PORT" "I (match-svc)"
@@ -226,7 +224,6 @@ echo "Starting A (characters-svc) on :$A_PORT, edge :$A_EDGE ..."
 start_server characters "$BIN_DIR/characters-svc$EXE" \
     PORT=":$A_PORT" DATABASE_URL="$DATABASE_URL" EDGE_ADDR=":$A_EDGE" \
     EDGE_CA_CERT="$EDGE_CA_CERT" EDGE_CA_KEY="$EDGE_CA_KEY" \
-    ACCOUNTS_EDGE_ADDR="127.0.0.1:$D_EDGE" \
     EVENTS_ORIGIN=characters-svc \
     EVENTS_SUBSCRIBERS="character.created=http://localhost:$B_PORT/events,http://localhost:$F_PORT/events;character.deleted=http://localhost:$B_PORT/events,http://localhost:$F_PORT/events"
 wait_healthy "$A_PORT" "A (characters-svc)"
@@ -237,7 +234,6 @@ echo "Starting C (config-svc) on :$C_PORT, edge :$C_EDGE ..."
 start_server config "$BIN_DIR/config-svc$EXE" \
     PORT=":$C_PORT" DATABASE_URL="$DATABASE_URL" EDGE_ADDR=":$C_EDGE" \
     EDGE_CA_CERT="$EDGE_CA_CERT" EDGE_CA_KEY="$EDGE_CA_KEY" \
-    ACCOUNTS_EDGE_ADDR="127.0.0.1:$D_EDGE" \
     EVENTS_ORIGIN=config-svc \
     EVENTS_SUBSCRIBERS="config.changed=http://localhost:$B_PORT/events,http://localhost:$F_PORT/events"
 wait_healthy "$C_PORT" "C (config-svc)"
@@ -250,7 +246,6 @@ start_server inventory "$BIN_DIR/inventory-svc$EXE" \
     EDGE_CA_CERT="$EDGE_CA_CERT" EDGE_CA_KEY="$EDGE_CA_KEY" \
     CHARACTERS_EDGE_ADDR="127.0.0.1:$A_EDGE" \
     CONFIG_EDGE_ADDR="127.0.0.1:$C_EDGE" \
-    ACCOUNTS_EDGE_ADDR="127.0.0.1:$D_EDGE" \
     EVENTS_ORIGIN=inventory-svc
 wait_healthy "$B_PORT" "B (inventory-svc)"
 

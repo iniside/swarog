@@ -272,7 +272,6 @@ try {
         EDGE_ADDR          = ":$KEdgePort"
         EDGE_CA_CERT       = $CaCert
         EDGE_CA_KEY        = $CaKey
-        ACCOUNTS_EDGE_ADDR = "127.0.0.1:$DEdgePort"
         EVENTS_ORIGIN      = 'leaderboard-svc'
     } 'leaderboard'
     if (-not (Wait-Healthy $KPort 'K (leaderboard-svc)')) { throw 'K failed to start' }
@@ -290,7 +289,6 @@ try {
         EDGE_CA_CERT       = $CaCert
         EDGE_CA_KEY        = $CaKey
         RATING_EDGE_ADDR   = "127.0.0.1:$JEdgePort"
-        ACCOUNTS_EDGE_ADDR = "127.0.0.1:$DEdgePort"
         EVENTS_ORIGIN      = 'match-svc'
         EVENTS_SUBSCRIBERS = "match.finished=http://127.0.0.1:$JPort/events,http://127.0.0.1:$KPort/events,http://127.0.0.1:$FPort/events"
     } 'match'
@@ -303,7 +301,6 @@ try {
         EDGE_ADDR           = ":$EdgePort"
         EDGE_CA_CERT        = $CaCert
         EDGE_CA_KEY         = $CaKey
-        ACCOUNTS_EDGE_ADDR  = "127.0.0.1:$DEdgePort"
         EVENTS_ORIGIN       = 'characters-svc'
         EVENTS_SUBSCRIBERS  = "character.created=http://127.0.0.1:$BPort/events,http://127.0.0.1:$FPort/events;character.deleted=http://127.0.0.1:$BPort/events,http://127.0.0.1:$FPort/events"
     } 'characters'
@@ -330,7 +327,6 @@ try {
         EDGE_ADDR          = ":$CEdgePort"
         EDGE_CA_CERT       = $CaCert
         EDGE_CA_KEY        = $CaKey
-        ACCOUNTS_EDGE_ADDR = "127.0.0.1:$DEdgePort"
         EVENTS_ORIGIN      = 'config-svc'
         EVENTS_SUBSCRIBERS = "config.changed=http://127.0.0.1:$BPort/events,http://127.0.0.1:$FPort/events"
     } 'config'
@@ -348,7 +344,6 @@ try {
         EDGE_CA_KEY          = $CaKey
         CHARACTERS_EDGE_ADDR = "127.0.0.1:$EdgePort"
         CONFIG_EDGE_ADDR     = "127.0.0.1:$CEdgePort"
-        ACCOUNTS_EDGE_ADDR   = "127.0.0.1:$DEdgePort"
         EVENTS_ORIGIN        = 'inventory-svc'
     } 'inventory'
     if (-not (Wait-Healthy $BPort 'B (inventory-svc)')) { throw 'B failed to start' }
@@ -374,7 +369,7 @@ try {
     if (-not (Wait-Healthy $GPort 'G (gateway-svc)')) { throw 'G failed to start' }
 
     # E (admin-svc): the admin portal fortress -- HTTP :8085, no DB, no edge server. It
-    # DIALS all four provider edges to fan out their admin pages over QUIC; ADMIN_USER/
+    # DIALS all six peer edges (A/B/C/D + audit + scheduler) to fan out their admin pages over QUIC; ADMIN_USER/
     # ADMIN_PASS gate the portal so the negative no-auth assertion returns 401.
     Note "starting E (admin-svc) on :$EPort ..."
     $script:EProc = Start-Svc (Join-Path $BinDir 'admin-svc.exe') @{

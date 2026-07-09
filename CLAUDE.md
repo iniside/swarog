@@ -89,7 +89,10 @@ module never knows the topology.
 10. **Persistence = one shared Postgres, full logical isolation.** Schema-per-module,
     no cross-module FKs; a relation to another module is a plain id column, resolved
     via capability or synced via durable events. **Tests live in separate files**
-    (`src/tests.rs` / `src/<file>_tests.rs`), never inline in impl files.
+    (`src/tests.rs` / `src/<file>_tests.rs`), never inline in impl files. One shared
+    HTTP framework (axum) is blessed the same way — `ctx.mount(Router)` is the
+    sanctioned surface for the HTTP-surface owners (webui, admin, accounts-OAuth,
+    gateway).
 
 ## Adding a module (the recipe)
 
@@ -144,14 +147,19 @@ module never knows the topology.
 - **scheduler** — data-driven schedules (`scheduler.schedules`), 1s tick, per-name
   `pg_try_advisory_lock` + still-due re-check + `UPDATE`+`emit_tx` in one tx,
   commit-before-unlock. `SCHEDULER_ENABLED`.
-- **match / rating / leaderboard** — match records `match.matches` + emits durable
-  `match.finished` (body keys `Winner`/`Loser`); rating is in-memory MMR (±15,
-  restart resets to 1000 — accepted) provided as wire-only `MmrReader`; leaderboard
-  upserts wins in the inbox tx, serves `GET /leaderboard`.
+- **match / rating / leaderboard** — match records `match.matches` from a
+  `/match/report` HTTP request body (Go-parity keys `Winner`/`Loser`) and emits a
+  durable `match.finished` event (snake_case payload keys `winner`/`loser` — a
+  distinct shape from the HTTP body); rating is in-memory MMR (±15, restart resets
+  to 1000 — accepted) provided as wire-only `MmrReader`; leaderboard upserts wins in
+  the inbox tx, serves `GET /leaderboard`.
 - **webui** — dev demo SPA at `/` (monolith-only; the sanctioned fortress exception).
 - **gateway** — the front-door module: HTTP ops routing (Local vs Remote purely by
-  slot presence), player-QUIC plane (bearer-in-envelope, exact-method allow-list),
-  HTTP passthrough (`/admin`, `/accounts/epic` → env-addressed peers), always-on
+  slot presence; peer addresses are injected by `cmd/*` via `remote::Stub` →
+  `opsapi::PEER_SLOT` contributions — the gateway module itself never reads env),
+  player-QUIC plane (bearer-in-envelope, exact-method allow-list), HTTP passthrough
+  (`/admin`, `/accounts/epic` → origins passed in by `cmd/gateway-svc` via
+  `Gateway::with_passthrough`, env read in the main, not the module), always-on
   rate limit in gateway-svc (20 rps/burst 40). The FrontDoor is hosted ONLY by the front
   processes (`cmd/gateway-svc`, the monolith `cmd/server`); a domain svc NEVER hosts it —
   it serves ops over the internal mTLS edge and gateway-svc dispatches Remote. Enforced by

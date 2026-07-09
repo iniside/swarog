@@ -310,8 +310,9 @@ impl<'a> AnyTx<'a> {
 /// A struct (not bare args) so a later field — e.g. producer `origin` — can be
 /// added without re-breaking every handler signature.
 pub struct Delivery<'a> {
-    /// Stable across redeliveries (`"{schema}:{outbox_id}"`) — the idempotency
-    /// key for effects in a store the plane's tx cannot reach.
+    /// A stable, opaque idempotency key for effects in a store the plane's tx
+    /// cannot reach — stable across redeliveries. Treat it as an opaque string;
+    /// the plane owns its composition.
     pub event_id: &'a str,
     /// The plane's delivery transaction. Downcast it in your store layer if your
     /// store shares the plane's engine; ignore it otherwise.
