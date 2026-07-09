@@ -37,6 +37,11 @@ const GATEWAY_CRATE: &str = "gateway";
 /// and the monolith. Every other `cmd/*-svc` serves ops only over the internal edge.
 const FRONT_DOOR_HOSTS: [&str; 2] = ["gateway-svc", "server"];
 
+/// Modules sanctioned to ship WITHOUT a `cmd/<name>-svc` process. The fortress rule
+/// (CLAUDE.md constraint 2) says every domain module compiles + boots as its own svc;
+/// `webui` is the one sanctioned exception (dev demo SPA, monolith-only, no svc).
+const SVC_EXEMPT_MODULES: &[&str] = &["webui"];
+
 /// Crate names a `<name>api` contract crate must never depend on (non-dev). The
 /// workspace routes transport through the `edge`/`remote` core crates — those are the
 /// realistic regression vector for a contract crate; the raw transport crates are
@@ -284,8 +289,57 @@ fn main() {
         }
     }
 
+    // --- 12: fortress parity — every modules/<name> boots as cmd/<name>-svc ----
+    // Scanned from the FILESYSTEM (dirs holding a Cargo.toml under modules/ and cmd/),
+    // not from workspace metadata — the workspace `members` list is hand-maintained, so
+    // a freshly created modules/<name> not yet registered there would be invisible to
+    // `cargo metadata` but must still fail here. No per-module list to maintain:
+    // `SVC_EXEMPT_MODULES` is the only allow-list, and it holds sanctioned EXCEPTIONS.
+    let root = workspace_root(meta.clone());
+    let fs_modules = crate_dirs(&root.join("modules"));
+    let fs_cmds = crate_dirs(&root.join("cmd"));
+    for line in missing_svc_violations(&fs_modules, &fs_cmds) {
+        violations.push(line);
+    }
+    // The workspace-registered module set, for the "svc actually lists its module" leg.
+    let module_names: Vec<String> = packages
+        .iter()
+        .filter_map(|pkg| match classify(pkg["manifest_path"].as_str().unwrap_or_default()) {
+            Kind::Module(m) => Some(m),
+            _ => None,
+        })
+        .collect();
+    // …and the svc must actually LIST its module (an empty stub svc would otherwise
+    // satisfy the existence check without booting the fortress).
+    for pkg in packages {
+        let manifest = pkg["manifest_path"].as_str().unwrap_or_default();
+        let Kind::Cmd(cmd) = classify(manifest) else {
+            continue;
+        };
+        let Some(module) = cmd.strip_suffix("-svc") else {
+            continue; // the monolith `server` lists all modules by construction
+        };
+        if !module_names.iter().any(|m| m == module) {
+            continue; // a svc with no same-named module (nothing to pair against)
+        }
+        let deps = pkg["dependencies"].as_array().cloned().unwrap_or_default();
+        let boots_its_module = deps.iter().any(|dep| {
+            dep["kind"].as_str() != Some("dev")
+                && matches!(
+                    by_name.get(dep["name"].as_str().unwrap_or_default()),
+                    Some(Kind::Module(m)) if m == module
+                )
+        });
+        if !boots_its_module {
+            violations.push(format!(
+                "cmd/{cmd} does not depend on modules/{module} — a domain svc must boot \
+                 its own module (fortress rule, CLAUDE.md constraint 2)"
+            ));
+        }
+    }
+
     if violations.is_empty() {
-        println!("archcheck: OK — no module→module / module→foreign-rpc edges, single front door (only gateway-svc + server host `gateway`), no Option<edge::Server> in modules/, <name>api/<name>events crates stay transport-free, every cmd/*-svc + server lists `metrics`, no cross-schema FKs in modules/ DDL, no inline test modules in modules/, core/bus stays sqlx-free, no module runtime-deps `asyncevents`, no EVENTS_ env knobs read inside modules/");
+        println!("archcheck: OK — no module→module / module→foreign-rpc edges, single front door (only gateway-svc + server host `gateway`), no Option<edge::Server> in modules/, <name>api/<name>events crates stay transport-free, every cmd/*-svc + server lists `metrics`, no cross-schema FKs in modules/ DDL, no inline test modules in modules/, core/bus stays sqlx-free, no module runtime-deps `asyncevents`, no EVENTS_ env knobs read inside modules/, every modules/<name> boots as cmd/<name>-svc (webui exempt)");
         return;
     }
     eprintln!("archcheck: FAIL — {} violation(s):", violations.len());
@@ -308,6 +362,44 @@ fn workspace_root(meta: serde_json::Value) -> std::path::PathBuf {
 /// used; fall back to `cargo` on `PATH`.
 fn env_cargo() -> String {
     std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string())
+}
+
+/// The names of every immediate subdirectory of `dir` that holds a `Cargo.toml` — the
+/// filesystem's own answer to "which crates live under modules/ (or cmd/)", independent
+/// of whether they're registered as workspace members yet.
+fn crate_dirs(dir: &Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter(|e| e.path().is_dir() && e.path().join("Cargo.toml").is_file())
+        .filter_map(|e| e.file_name().to_str().map(String::from))
+        .collect()
+}
+
+/// Fortress-parity check (rule 12): every `modules/<name>` (minus the sanctioned
+/// [`SVC_EXEMPT_MODULES`]) must have a `cmd/<name>-svc` composition root. Inputs are
+/// the module dir names and cmd dir names from a [`crate_dirs`] filesystem scan, so
+/// the check follows the folders themselves — no per-module list to maintain.
+fn missing_svc_violations(modules: &[String], cmds: &[String]) -> Vec<String> {
+    modules
+        .iter()
+        .filter(|m| !SVC_EXEMPT_MODULES.contains(&m.as_str()))
+        .filter_map(|m| {
+            let svc = format!("{m}-svc");
+            if cmds.iter().any(|c| c == &svc) {
+                None
+            } else {
+                Some(format!(
+                    "modules/{m} has no cmd/{svc} — every domain module must compile + boot \
+                     as its own svc process (fortress rule, CLAUDE.md constraint 2); add \
+                     cmd/{svc} (and wire split-proof + the fortress build list) or discuss \
+                     a sanctioned exemption"
+                ))
+            }
+        })
+        .collect()
 }
 
 /// True if a `cmd/<dir>` crate is a process main subject to the "every main lists

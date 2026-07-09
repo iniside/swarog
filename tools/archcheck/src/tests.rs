@@ -5,8 +5,9 @@
 
 use super::{
     classify, cmd_is_a_main, contains_boundary_checked, cross_schema_fk_violations,
-    forbidden_api_deps, has_non_dev_dep, is_inline_test_mod, mod_test_ident_end, Kind,
-    FORBIDDEN_API_DEPS, FRONT_DOOR_HOSTS, GATEWAY_CRATE,
+    forbidden_api_deps, has_non_dev_dep, is_inline_test_mod, missing_svc_violations,
+    mod_test_ident_end, Kind, FORBIDDEN_API_DEPS, FRONT_DOOR_HOSTS, GATEWAY_CRATE,
+    SVC_EXEMPT_MODULES,
 };
 
 #[test]
@@ -393,4 +394,45 @@ fn grep_events_env_ignores_asyncevents_ready_line() {
     let hits = super::grep_events_env(&dir);
     assert!(hits.is_empty(), "{hits:?}");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+// --- Rule 12: fortress parity — every modules/<name> has a cmd/<name>-svc ----
+
+fn strings(v: &[&str]) -> Vec<String> {
+    v.iter().map(|s| s.to_string()).collect()
+}
+
+#[test]
+fn module_without_matching_svc_is_a_violation() {
+    let v = missing_svc_violations(
+        &strings(&["characters", "newthing"]),
+        &strings(&["characters-svc", "server"]),
+    );
+    assert_eq!(v.len(), 1, "{v:?}");
+    assert!(v[0].contains("modules/newthing"), "{v:?}");
+    assert!(v[0].contains("cmd/newthing-svc"), "{v:?}");
+}
+
+#[test]
+fn module_with_matching_svc_is_clean() {
+    let v = missing_svc_violations(
+        &strings(&["characters", "gateway"]),
+        &strings(&["characters-svc", "gateway-svc", "server"]),
+    );
+    assert!(v.is_empty(), "{v:?}");
+}
+
+#[test]
+fn webui_is_the_only_sanctioned_svc_exemption() {
+    // CLAUDE.md constraint 2: webui (dev demo SPA) is monolith-only — no svc required.
+    assert_eq!(SVC_EXEMPT_MODULES, &["webui"]);
+    let v = missing_svc_violations(&strings(&["webui"]), &strings(&["server"]));
+    assert!(v.is_empty(), "{v:?}");
+}
+
+#[test]
+fn exemption_does_not_leak_to_other_modules() {
+    // A prefix/suffix of an exempt name is NOT exempt — the match is exact.
+    let v = missing_svc_violations(&strings(&["webui2"]), &strings(&["server"]));
+    assert_eq!(v.len(), 1, "{v:?}");
 }
