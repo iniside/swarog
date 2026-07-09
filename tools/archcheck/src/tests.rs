@@ -4,9 +4,9 @@
 //! and WHICH cmd binaries may host the `gateway` crate.
 
 use super::{
-    classify, cmd_is_a_main, cross_schema_fk_violations, forbidden_api_deps, has_non_dev_dep,
-    is_inline_test_mod, mod_test_ident_end, Kind, FORBIDDEN_API_DEPS, FRONT_DOOR_HOSTS,
-    GATEWAY_CRATE,
+    classify, cmd_is_a_main, contains_boundary_checked, cross_schema_fk_violations,
+    forbidden_api_deps, has_non_dev_dep, is_inline_test_mod, mod_test_ident_end, Kind,
+    FORBIDDEN_API_DEPS, FRONT_DOOR_HOSTS, GATEWAY_CRATE,
 };
 
 #[test]
@@ -225,4 +225,172 @@ fn cfg_test_fn_is_not_a_mod_and_never_matches() {
     // `mod`, so the `mod` keyword scan must never fire on it.
     let line = "pub(crate) fn test_router() -> Router {";
     assert!(mod_test_ident_end(line).is_none());
+}
+
+// --- Kind::Events classification (Rule E) -----------------------------------
+
+#[test]
+fn classifies_events_contract_manifest() {
+    assert!(matches!(
+        classify("/repo/api/scheduler/events/Cargo.toml"),
+        Kind::Events(n) if n == "scheduler"
+    ));
+    // Windows backslashes normalize the same way.
+    assert!(matches!(
+        classify(r"C:\repo\api\match\events\Cargo.toml"),
+        Kind::Events(n) if n == "match"
+    ));
+}
+
+// --- Rule C: core/bus stays sqlx-free (no dep kind is skipped) --------------
+
+#[test]
+fn bus_with_normal_sqlx_dep_is_detected() {
+    let deps = serde_json::json!([
+        { "name": "tokio", "kind": null },
+        { "name": "sqlx", "kind": null },
+    ]);
+    let deps = deps.as_array().unwrap();
+    assert!(deps.iter().any(|d| d["name"].as_str() == Some("sqlx")));
+}
+
+#[test]
+fn bus_with_dev_only_sqlx_dep_is_still_detected() {
+    // Rule C deliberately does NOT skip dev deps (unlike has_non_dev_dep) — bus must
+    // stay sqlx-free under every dep kind, including a "just for tests" dev-dep.
+    let deps = serde_json::json!([
+        { "name": "sqlx", "kind": "dev" },
+    ]);
+    let deps = deps.as_array().unwrap();
+    assert!(deps.iter().any(|d| d["name"].as_str() == Some("sqlx")));
+}
+
+#[test]
+fn bus_with_no_sqlx_dep_is_clean() {
+    let deps = serde_json::json!([
+        { "name": "tokio", "kind": null },
+        { "name": "tokio", "kind": "dev" },
+    ]);
+    let deps = deps.as_array().unwrap();
+    assert!(!deps.iter().any(|d| d["name"].as_str() == Some("sqlx")));
+}
+
+// --- Rule D: modules never runtime-dep the durable-events plane -------------
+
+#[test]
+fn module_with_normal_asyncevents_dep_is_a_violation() {
+    let deps = serde_json::json!([
+        { "name": "asyncevents", "kind": null },
+    ]);
+    let deps = deps.as_array().unwrap().clone();
+    assert!(has_non_dev_dep(&deps, "asyncevents"));
+}
+
+#[test]
+fn module_with_dev_only_asyncevents_dep_is_clean() {
+    // The sanctioned test-wiring pattern used by the 5 fortress test suites.
+    let deps = serde_json::json!([
+        { "name": "asyncevents", "kind": "dev" },
+    ]);
+    let deps = deps.as_array().unwrap().clone();
+    assert!(!has_non_dev_dep(&deps, "asyncevents"));
+}
+
+// --- Rule E: <name>events crates stay transport-free -------------------------
+
+#[test]
+fn events_crate_with_tokio_dep_is_a_violation() {
+    // Model the real baseline dep set (bus + serde) plus a regressive tokio dep.
+    let deps = serde_json::json!([
+        { "name": "bus", "kind": null },
+        { "name": "serde", "kind": null },
+        { "name": "tokio", "kind": null },
+    ]);
+    let deps = deps.as_array().unwrap().clone();
+    assert_eq!(forbidden_api_deps(&deps), vec!["tokio".to_string()]);
+}
+
+#[test]
+fn events_crate_with_baseline_deps_only_is_clean() {
+    let deps = serde_json::json!([
+        { "name": "bus", "kind": null },
+        { "name": "serde", "kind": null },
+    ]);
+    let deps = deps.as_array().unwrap().clone();
+    assert!(forbidden_api_deps(&deps).is_empty());
+}
+
+// --- Rule F: EVENTS_ env tripwire (boundary-checked) -------------------------
+
+#[test]
+fn events_env_knob_is_boundary_matched() {
+    assert!(contains_boundary_checked(
+        "std::env::var(\"EVENTS_ORIGIN\")",
+        "EVENTS_"
+    ));
+    assert!(contains_boundary_checked("EVENTS_SUBSCRIBERS", "EVENTS_"));
+}
+
+#[test]
+fn asyncevents_ready_does_not_trip_the_boundary_check() {
+    // The regression case: a naive substring match on "EVENTS_" hits the middle of
+    // "ASYNCEVENTS_READY" (a real, legitimate identifier). The boundary check — the
+    // char right before the match must not be alnum/`_` — must NOT flag it.
+    assert!(!contains_boundary_checked("ASYNCEVENTS_READY", "EVENTS_"));
+    assert!(!contains_boundary_checked(
+        "wait_for(\"ASYNCEVENTS_READY\").await;",
+        "EVENTS_"
+    ));
+}
+
+/// Creates a fresh temp directory under the OS temp dir for a `grep_events_env` walk
+/// test, using the current process id + an atomic counter so parallel `cargo test`
+/// threads never collide on the same path.
+fn unique_temp_dir() -> std::path::PathBuf {
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!(
+        "archcheck_events_env_test_{}_{n}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create temp test dir");
+    dir
+}
+
+#[test]
+fn grep_events_env_flags_env_knob_line() {
+    let dir = unique_temp_dir();
+    std::fs::write(
+        dir.join("a.rs"),
+        "let origin = std::env::var(\"EVENTS_ORIGIN\").unwrap();\n",
+    )
+    .unwrap();
+    let hits = super::grep_events_env(&dir);
+    assert_eq!(hits.len(), 1, "{hits:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn grep_events_env_ignores_comment_line() {
+    let dir = unique_temp_dir();
+    std::fs::write(dir.join("a.rs"), "// std::env::var(\"EVENTS_ORIGIN\")\n").unwrap();
+    let hits = super::grep_events_env(&dir);
+    assert!(hits.is_empty(), "{hits:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn grep_events_env_ignores_asyncevents_ready_line() {
+    // The boundary-check regression case (fact 3 / plan Rule F): this exact shape is
+    // real code in modules/config/src/tests.rs:168,171 and must stay CLEAN.
+    let dir = unique_temp_dir();
+    std::fs::write(
+        dir.join("a.rs"),
+        "wait_for(\"ASYNCEVENTS_READY\").await;\n",
+    )
+    .unwrap();
+    let hits = super::grep_events_env(&dir);
+    assert!(hits.is_empty(), "{hits:?}");
+    let _ = std::fs::remove_dir_all(&dir);
 }

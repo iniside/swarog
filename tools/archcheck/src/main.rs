@@ -54,6 +54,9 @@ enum Kind {
     Rpc(String),
     /// `api/<name>/api/` — a domain's pure `#[rpc]` trait contract crate (transport-free).
     Api(String),
+    /// `api/<name>/events/` — a domain's `bus::define` payload/descriptor crate
+    /// (transport-free, importable by any module).
+    Events(String),
     /// `cmd/<name>/` — a composition-root binary (its dir name, e.g. `characters-svc`).
     Cmd(String),
     /// Anything else (foundations, contract crates, tools).
@@ -84,6 +87,10 @@ fn classify(manifest_path: &str) -> Kind {
         // api/<name>/api/Cargo.toml  ->  rest = "<name>/api/Cargo.toml"
         if parts.len() >= 2 && parts[1] == "api" {
             return Kind::Api(parts[0].to_string());
+        }
+        // api/<name>/events/Cargo.toml  ->  rest = "<name>/events/Cargo.toml"
+        if parts.len() >= 2 && parts[1] == "events" {
+            return Kind::Events(parts[0].to_string());
         }
     }
     Kind::Other
@@ -188,23 +195,72 @@ fn main() {
         violations.push(line);
     }
 
-    // --- 5: <name>api contract crates stay transport-free ---------------------
-    // The contract surface (`<name>api`) must be importable by any module without
-    // dragging in a transport dependency; only `<name>rpc` (its own module's generated
-    // glue) is allowed to touch `edge`/`remote`/raw transport crates.
+    // --- 5: <name>api / <name>events contract crates stay transport-free ------
+    // The contract surface (`<name>api`, `<name>events`) must be importable by any
+    // module without dragging in a transport dependency; only `<name>rpc` (its own
+    // module's generated glue) is allowed to touch `edge`/`remote`/raw transport crates.
     for pkg in packages {
         let manifest = pkg["manifest_path"].as_str().unwrap_or_default();
-        let Kind::Api(domain) = classify(manifest) else {
-            continue; // only <name>api contract crates are constrained here
+        let (label, domain) = match classify(manifest) {
+            Kind::Api(domain) => ("api", domain),
+            Kind::Events(domain) => ("events", domain),
+            _ => continue, // only <name>api / <name>events contract crates are constrained here
         };
         let deps = pkg["dependencies"].as_array().cloned().unwrap_or_default();
         for dep_name in forbidden_api_deps(&deps) {
             violations.push(format!(
-                "api/{domain}/api depends on `{dep_name}` — a <name>api contract crate must \
-                 stay transport-free (pure traits, importable by any module); transport \
-                 belongs in <name>rpc, never <name>api"
+                "api/{domain}/{label} depends on `{dep_name}` — a <name>{label} contract crate \
+                 must stay transport-free (pure traits/payloads, importable by any module); \
+                 transport belongs in <name>rpc, never <name>{label}"
             ));
         }
+    }
+
+    // --- 9: core/bus stays engine-free (AnyTx seam) ----------------------------
+    // bus must never depend on `sqlx` under ANY dep kind (normal/dev/build) — the
+    // AnyTx/Delivery seam is what makes the durable contract engine-neutral, and a
+    // stray dev-dep on sqlx (e.g. a "quick test") would re-couple the bus to one
+    // engine even though nothing in the runtime graph depends on it.
+    for pkg in packages {
+        let manifest = pkg["manifest_path"].as_str().unwrap_or_default();
+        if pkg["name"].as_str() != Some("bus") {
+            continue;
+        }
+        if !matches!(classify(manifest), Kind::Other) {
+            continue; // sanity: only the core/bus package (Kind::Other) is in scope
+        }
+        for dep in pkg["dependencies"].as_array().into_iter().flatten() {
+            if dep["name"].as_str() == Some("sqlx") {
+                violations.push(
+                    "core/bus must stay engine-free (AnyTx seam): found dep `sqlx`".to_string(),
+                );
+            }
+        }
+    }
+
+    // --- 10: modules never runtime-dep the durable-events plane ----------------
+    // The plane (`asyncevents`) is app-owned infrastructure injected at `Context`
+    // construction (DB ⇒ plane), never a module dependency; a module reaching for it
+    // directly would hard-wire a topology assumption. A dev-dependency stays allowed —
+    // the sanctioned test-wiring pattern used across the fortress test suites.
+    for pkg in packages {
+        let manifest = pkg["manifest_path"].as_str().unwrap_or_default();
+        let Kind::Module(dm) = classify(manifest) else {
+            continue;
+        };
+        let deps = pkg["dependencies"].as_array().cloned().unwrap_or_default();
+        if has_non_dev_dep(&deps, "asyncevents") {
+            violations.push(format!(
+                "modules/{dm} depends on `asyncevents` outside dev-dependencies — the durable \
+                 plane is app-owned infrastructure (DB ⇒ plane at Context construction), never \
+                 a module dependency; modules are topology-blind (CLAUDE.md constraint 5)"
+            ));
+        }
+    }
+
+    // --- 11: regression tripwire — EVENTS_ env knobs read inside modules/ ------
+    for line in grep_events_env(&modules_dir) {
+        violations.push(line);
     }
 
     // --- 6: every cmd/*-svc + the monolith main lists `metrics` ---------------
@@ -229,7 +285,7 @@ fn main() {
     }
 
     if violations.is_empty() {
-        println!("archcheck: OK — no module→module / module→foreign-rpc edges, single front door (only gateway-svc + server host `gateway`), no Option<edge::Server> in modules/, <name>api crates stay transport-free, every cmd/*-svc + server lists `metrics`, no cross-schema FKs in modules/ DDL, no inline test modules in modules/");
+        println!("archcheck: OK — no module→module / module→foreign-rpc edges, single front door (only gateway-svc + server host `gateway`), no Option<edge::Server> in modules/, <name>api/<name>events crates stay transport-free, every cmd/*-svc + server lists `metrics`, no cross-schema FKs in modules/ DDL, no inline test modules in modules/, core/bus stays sqlx-free, no module runtime-deps `asyncevents`, no EVENTS_ env knobs read inside modules/");
         return;
     }
     eprintln!("archcheck: FAIL — {} violation(s):", violations.len());
@@ -529,6 +585,62 @@ fn grep_option_edge_server(dir: &Path) -> Vec<String> {
                                 i + 1
                             ));
                         }
+                    }
+                }
+            }
+        }
+    }
+    hits
+}
+
+/// True if `text` contains `pat` at a position whose PRECEDING byte is not an
+/// identifier character (`[A-Za-z0-9_]`) — i.e. `pat` starts a fresh identifier rather
+/// than continuing a longer one (e.g. `EVENTS_` inside `ASYNCEVENTS_READY`). A match at
+/// byte offset 0 always counts (nothing precedes it).
+fn contains_boundary_checked(text: &str, pat: &str) -> bool {
+    find_all(text, pat).into_iter().any(|i| {
+        i == 0 || {
+            let prev = text.as_bytes()[i - 1] as char;
+            !(prev.is_alphanumeric() || prev == '_')
+        }
+    })
+}
+
+/// Walks `dir` for `.rs` files and returns a message per NON-comment line containing a
+/// boundary-checked `EVENTS_` match — an `EVENTS_*` env knob read directly inside
+/// `modules/`. Modules are topology-blind (CLAUDE.md constraint 5): env-addressed
+/// wiring like `EVENTS_ORIGIN`/`EVENTS_SUBSCRIBERS` belongs only in `cmd/*` composition
+/// roots. The boundary check is required because a naive substring match also hits
+/// `ASYNCEVENTS_READY` (a real, legitimate identifier) — see
+/// [`contains_boundary_checked`].
+fn grep_events_env(dir: &Path) -> Vec<String> {
+    let mut hits = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&d) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+                let Ok(text) = std::fs::read_to_string(&path) else {
+                    continue;
+                };
+                for (i, line) in text.lines().enumerate() {
+                    let t = line.trim_start();
+                    if t.starts_with("//") {
+                        continue; // skip comments/doc — code only
+                    }
+                    if contains_boundary_checked(line, "EVENTS_") {
+                        hits.push(format!(
+                            "{}:{}: EVENTS_ env knob read inside modules/ — modules are \
+                             topology-blind (CLAUDE.md constraint 5); env-addressed wiring \
+                             belongs only in cmd/* composition roots",
+                            path.display(),
+                            i + 1
+                        ));
                     }
                 }
             }
