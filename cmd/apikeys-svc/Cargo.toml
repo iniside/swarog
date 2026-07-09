@@ -1,0 +1,28 @@
+[package]
+name = "apikeys-svc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The apikeys fortress process (Step 3): hosts apikeys and stands up one shared
+# QUIC edge server. `apikeys` contributes its wire-only `Keys` face to
+# `edge::EDGE_SLOT` (topology-blind); `app::run` installs it here so a peer's
+# key verifier (gateway-svc, admin-svc) can resolve `apikeys.keys` over the
+# mutually-authenticated edge. It hosts NO gateway (FrontDoor) — the single
+# public front door lives only in gateway-svc + the monolith, so no accounts
+# stub is needed.
+[[bin]]
+name = "apikeys-svc"
+path = "src/main.rs"
+
+[dependencies]
+app = { workspace = true }
+lifecycle = { workspace = true }
+metrics = { workspace = true }
+edge = { workspace = true }
+apikeys = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

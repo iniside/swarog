@@ -25,6 +25,7 @@ remote = { workspace = true }
 charactersrpc = { workspace = true }
 inventoryrpc = { workspace = true }
 accountsrpc = { workspace = true }
+apikeysrpc = { workspace = true }
 matchrpc = { workspace = true }
 leaderboardrpc = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync"] }

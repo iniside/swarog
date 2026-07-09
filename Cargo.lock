@@ -178,6 +178,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "apikeys-svc"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "apikeys",
+ "app",
+ "edge",
+ "lifecycle",
+ "metrics",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "apikeysapi"
 version = "0.1.0"
 dependencies = [
@@ -1110,6 +1125,7 @@ version = "0.1.0"
 dependencies = [
  "accountsrpc",
  "anyhow",
+ "apikeysrpc",
  "app",
  "charactersapi",
  "charactersrpc",

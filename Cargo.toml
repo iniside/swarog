@@ -92,6 +92,7 @@ members = [
     "cmd/inventory-svc",
     "cmd/gateway-svc",
     "cmd/config-svc",
+    "cmd/apikeys-svc",
     "cmd/accounts-svc",
     "cmd/admin-svc",
     "cmd/audit-svc",

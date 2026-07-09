@@ -9,7 +9,11 @@
 //! its factory provides the `accounts.sessions` edge client the gateway's verifier
 //! resolves at init — real bearer verification against accounts-svc, no `dev-`
 //! tokens (absent the capability the gateway fails startup unless
-//! `ACCOUNTS_DEV_AUTH=1` is explicitly set).
+//! `ACCOUNTS_DEV_AUTH=1` is explicitly set). The `apikeys` stub is likewise MANDATORY
+//! (Step 3, api key policy): its factory provides the `apikeys.keys` edge client the
+//! gateway's key verifier resolves at init — real key verification against
+//! apikeys-svc, absent the capability the gateway fails startup unless
+//! `APIKEYS_DEV_ALLOW=1` is explicitly set.
 //!
 //! Two public planes, one shared `FrontDoor`: HTTP (`PORT`, default `:8082`) and the
 //! player-facing QUIC front (`PLAYER_EDGE_ADDR`, default `:9100`) — server-cert-only
@@ -73,6 +77,11 @@ async fn main() -> anyhow::Result<()> {
             "accounts",
             &env_addr("ACCOUNTS_EDGE_ADDR", "127.0.0.1:9003"),
             accountsrpc::remote_factories(),
+        )),
+        Box::new(remote::Stub::new(
+            "apikeys",
+            &env_addr("APIKEYS_EDGE_ADDR", "127.0.0.1:9009"),
+            apikeysrpc::remote_factories(),
         )),
         // Step 10: match + leaderboard front-door routing. Their `remote_factories`
         // contribute only `route_bindings` (no provide), so the front routes

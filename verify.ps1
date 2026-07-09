@@ -95,7 +95,7 @@ function Invoke-SimpleStage {
 function Invoke-FortressStage {
     $log = Join-Path $verifyDir 'fortress.log'
     Write-Host "== fortress ==" -ForegroundColor Cyan
-    & cargo build -p server -p characters-svc -p inventory-svc -p gateway-svc -p config-svc -p accounts-svc -p admin-svc -p audit-svc -p scheduler-svc -p match-svc -p rating-svc -p leaderboard-svc *> $log
+    & cargo build -p server -p characters-svc -p inventory-svc -p gateway-svc -p config-svc -p apikeys-svc -p accounts-svc -p admin-svc -p audit-svc -p scheduler-svc -p match-svc -p rating-svc -p leaderboard-svc *> $log
     if ($LASTEXITCODE -eq 0) {
         & cargo run -q -p archcheck *>> $log
     }

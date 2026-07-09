@@ -137,7 +137,7 @@ simple_stage() {
 # enforces the dependency law (no module->module / module->foreign-rpc edge, no
 # resurrected Option<edge::Server> under modules/).
 fortress() {
-    cargo build -p server -p characters-svc -p inventory-svc -p gateway-svc -p config-svc -p accounts-svc -p admin-svc -p audit-svc -p scheduler-svc -p match-svc -p rating-svc -p leaderboard-svc \
+    cargo build -p server -p characters-svc -p inventory-svc -p gateway-svc -p config-svc -p apikeys-svc -p accounts-svc -p admin-svc -p audit-svc -p scheduler-svc -p match-svc -p rating-svc -p leaderboard-svc \
         && cargo run -q -p archcheck \
         && cargo run -q -p requirecheck -- --strict \
         && cargo run -q -p topiccheck -- --durability-strict
