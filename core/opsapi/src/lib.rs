@@ -281,6 +281,27 @@ pub const BINDING_SLOT: &str = "ops.binding";
 /// Contribution slot for the gateway's in-process dispatch table ([`LocalOp`]).
 pub const LOCAL_SLOT: &str = "ops.local";
 
+/// Contribution slot the gateway reads to resolve a Remote op's peer edge address. A
+/// `remote::Stub` contributes one [`PeerAddr`] per provider it fronts; the gateway's
+/// route table collects them into a provider→address map so its `remote_caller` dials
+/// the owning peer WITHOUT reading any env itself. Peer topology is injected by the
+/// composition root (`cmd/*` wires the stub with the address), the SAME slot idiom
+/// [`SLOT`]/`edge::EDGE_SLOT` use — the module stays topology-blind. Unread in a
+/// process with no gateway, the contributions sit inert.
+pub const PEER_SLOT: &str = "opsapi.peers";
+
+/// One provider's peer edge address, contributed by a `remote::Stub` into [`PEER_SLOT`].
+/// Transport-free: just the provider name and the address as an UNPARSED string — the
+/// gateway parses it lazily in `remote_caller`, so a bad address surfaces as a
+/// per-request [`Status::Unavailable`] (503) rather than a construction-time panic in
+/// every stub-wiring process (mirrors `remote::EdgeDialer`'s lazy-parse contract).
+/// `Clone` is required by [`crate::Caller`]'s slot reader (`contributions<T: Clone>`).
+#[derive(Clone)]
+pub struct PeerAddr {
+    pub provider: String,
+    pub addr: String,
+}
+
 /// The matched path-wildcard values handed to [`OpBinding::decode`], e.g.
 /// `{"id": "..."}` for `"/characters/{id}"`.
 pub type PathArgs = HashMap<String, String>;

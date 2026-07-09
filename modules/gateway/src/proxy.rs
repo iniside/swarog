@@ -8,8 +8,9 @@
 //! [`ProxyTable`]: if its path falls under a configured prefix it is proxied verbatim
 //! to the origin (method, path+query, and headers preserved minus hop-by-hop; body
 //! streamed; `X-Forwarded-For` extended); otherwise it stays a 404. The prefix→origin
-//! table is read from env, so a process with neither var set proxies nothing (every
-//! unmatched route is still 404 — the exact prior behaviour).
+//! table is supplied by the composition root (`Gateway::with_passthrough` → `cmd/*`),
+//! so a process wired with no passthrough proxies nothing (every unmatched route is
+//! still 404 — the exact prior behaviour).
 
 use std::net::SocketAddr;
 
@@ -33,8 +34,8 @@ const HOP_BY_HOP: &[&str] = &[
     "host",
 ];
 
-/// The prefix→origin reverse-proxy table + the shared HTTP client. Built once from env
-/// in the front door; empty when no passthrough is configured.
+/// The prefix→origin reverse-proxy table + the shared HTTP client. Built once from the
+/// routes the composition root wired; empty when no passthrough is configured.
 pub struct ProxyTable {
     /// `(bare_prefix, origin_base)` pairs, e.g. `("/admin", "http://127.0.0.1:8085")`,
     /// sorted longest-prefix-first so `/accounts/epic` wins over a hypothetical
@@ -44,23 +45,22 @@ pub struct ProxyTable {
 }
 
 impl ProxyTable {
-    /// Reads the passthrough table from env: `ADMIN_HTTP_ADDR` serves `/admin`,
-    /// `ACCOUNTS_HTTP_ADDR` serves `/accounts/epic`. An unset/blank var drops that
-    /// prefix (so the route stays a 404). The caller decides the prefixes; the origin
-    /// is a bare `host:port` (an `http://` scheme is added) or a full URL.
-    pub fn from_env() -> ProxyTable {
-        let mut routes = Vec::new();
-        for (prefix, env_key) in [
-            ("/admin", "ADMIN_HTTP_ADDR"),
-            ("/accounts/epic", "ACCOUNTS_HTTP_ADDR"),
-        ] {
-            if let Ok(addr) = std::env::var(env_key) {
-                let addr = addr.trim();
-                if !addr.is_empty() {
-                    routes.push((prefix.to_string(), normalize_origin(addr)));
-                }
-            }
-        }
+    /// Builds the passthrough table from the `(prefix, origin)` routes the composition
+    /// root wired via `Gateway::with_passthrough` — e.g. `("/admin", "127.0.0.1:8085")`,
+    /// `("/accounts/epic", "127.0.0.1:8084")`. A blank origin drops that prefix (so the
+    /// route stays a 404 — the old `from_env` skip-empty semantics, now that the
+    /// address is resolved by `cmd/*` instead of read here). The caller decides the
+    /// prefixes; the origin is a bare `host:port` (an `http://` scheme is added) or a
+    /// full URL. Routes are sorted longest-prefix-first so `/accounts/epic` wins over a
+    /// hypothetical `/accounts`.
+    pub fn from_routes(routes: Vec<(String, String)>) -> ProxyTable {
+        let mut routes: Vec<(String, String)> = routes
+            .into_iter()
+            .filter_map(|(prefix, origin)| {
+                let origin = origin.trim();
+                (!origin.is_empty()).then(|| (prefix, normalize_origin(origin)))
+            })
+            .collect();
         routes.sort_by_key(|(prefix, _)| std::cmp::Reverse(prefix.len()));
         ProxyTable {
             routes,

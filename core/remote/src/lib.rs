@@ -251,6 +251,11 @@ impl Conn for edge::Client {
 pub struct Stub {
     /// The provider name — also the [`Module::name`], so `validate_requires` matches.
     provider: String,
+    /// The peer's edge address as an UNPARSED string (the one [`EdgeDialer`] holds).
+    /// Contributed to [`opsapi::PEER_SLOT`] in `init` so a co-hosted gateway front door
+    /// dials this provider Remote without reading env — the topology this composition
+    /// root injected via [`Stub::new`].
+    peer_addr: String,
     /// The lazily-dialed, self-healing caller shared by every generated client below.
     conn: Arc<Reconnecting<EdgeDialer>>,
     /// The provider-swap closures this stub applies in `register`. Injected by the
@@ -267,6 +272,7 @@ impl Stub {
     pub fn new(provider: &str, peer_addr: &str, factories: Vec<RemoteFactory>) -> Stub {
         Stub {
             provider: provider.to_string(),
+            peer_addr: peer_addr.to_string(),
             conn: Arc::new(Reconnecting::new(EdgeDialer {
                 peer: peer_addr.to_string(),
             })),
@@ -333,12 +339,26 @@ impl Module for Stub {
         Ok(())
     }
 
-    /// Nothing to wire here: the swap is entirely in `register`. The admin fan-out
-    /// (Go's `Stub.adminFetcher`) is now ALSO a `register`-time factory — a caller
-    /// passes `adminrpc::admin_remote_factory(provider)` into [`Stub::new`], which
-    /// contributes the REMOTE `adminapi::Item` there. `remote` stays `api/`-free: the
-    /// admin closure arrives boxed, this crate never names `adminapi`.
-    fn init(&self, _ctx: &Context) -> anyhow::Result<()> {
+    /// The capability swap is entirely in `register`; the one wiring `init` does is
+    /// contribute this provider's peer edge address to [`opsapi::PEER_SLOT`], so a
+    /// co-hosted gateway front door can dial the provider Remote WITHOUT reading env
+    /// itself — the module stays topology-blind, the composition root owns the address
+    /// (via [`Stub::new`]). In a process with no gateway the contribution sits inert
+    /// (unread) — harmless. The address stays an UNPARSED string: the gateway parses it
+    /// lazily, preserving the Unavailable-not-panic taxonomy [`EdgeDialer`] relies on.
+    ///
+    /// The admin fan-out (Go's `Stub.adminFetcher`) is a `register`-time factory — a
+    /// caller passes `adminrpc::admin_remote_factory(provider)` into [`Stub::new`],
+    /// which contributes the REMOTE `adminapi::Item` there. `remote` stays `api/`-free:
+    /// the admin closure arrives boxed, this crate never names `adminapi`.
+    fn init(&self, ctx: &Context) -> anyhow::Result<()> {
+        ctx.contribute(
+            opsapi::PEER_SLOT,
+            opsapi::PeerAddr {
+                provider: self.provider.clone(),
+                addr: self.peer_addr.clone(),
+            },
+        );
         Ok(())
     }
 

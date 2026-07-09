@@ -49,7 +49,16 @@ async fn main() -> anyhow::Result<()> {
     // rule 5) but never the provider IMPL crates.
     let mods: Vec<Box<dyn Module>> = vec![
         Box::new(metrics::Metrics::new()), // core-infra: mounts GET /metrics + contributes the record layer
-        Box::new(gateway::Gateway::new().with_player_edge(player.clone())),
+        // Passthrough origins are resolved HERE (the composition root owns topology),
+        // not read inside the module: `/admin` → admin-svc, `/accounts/epic` → the
+        // Epic web OAuth flow on accounts-svc. A blank default drops the prefix (the
+        // proxy table skips empties), so an unset var leaves that route a 404.
+        Box::new(
+            gateway::Gateway::new()
+                .with_player_edge(player.clone())
+                .with_passthrough("/admin", &env_addr("ADMIN_HTTP_ADDR", ""))
+                .with_passthrough("/accounts/epic", &env_addr("ACCOUNTS_HTTP_ADDR", "")),
+        ),
         Box::new(remote::Stub::new(
             "characters",
             &env_addr("CHARACTERS_EDGE_ADDR", "127.0.0.1:9000"),

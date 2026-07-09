@@ -46,6 +46,27 @@ fn longest_prefix_wins() {
 }
 
 #[test]
+fn from_routes_normalizes_sorts_and_skips_blank() {
+    // Longest-prefix-first ordering + `http://` normalization, and a blank origin
+    // (the composition root's skip-empty case) drops that prefix so it stays a 404.
+    let t = ProxyTable::from_routes(vec![
+        ("/accounts".to_string(), "127.0.0.1:1".to_string()),
+        ("/accounts/epic".to_string(), "127.0.0.1:2".to_string()),
+        ("/admin".to_string(), "   ".to_string()), // blank → dropped
+    ]);
+    assert_eq!(t.origin_for("/accounts/epic/callback"), Some("http://127.0.0.1:2"));
+    assert_eq!(t.origin_for("/accounts/login"), Some("http://127.0.0.1:1"));
+    assert_eq!(t.origin_for("/admin"), None, "a blank origin proxies nothing");
+}
+
+#[test]
+fn from_routes_empty_proxies_nothing() {
+    let t = ProxyTable::from_routes(Vec::new());
+    assert_eq!(t.origin_for("/admin"), None);
+    assert_eq!(t.origin_for("/accounts/epic"), None);
+}
+
+#[test]
 fn normalize_origin_forms() {
     assert_eq!(normalize_origin("127.0.0.1:8085"), "http://127.0.0.1:8085");
     assert_eq!(normalize_origin("http://host:9/"), "http://host:9");

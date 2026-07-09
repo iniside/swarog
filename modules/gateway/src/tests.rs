@@ -135,7 +135,7 @@ fn demo_front_door() -> Arc<FrontDoor> {
     slots.contribute(opsapi::SLOT, op.operation);
     slots.contribute(opsapi::BINDING_SLOT, op.binding);
     slots.contribute(opsapi::LOCAL_SLOT, op.local);
-    Arc::new(FrontDoor::new(slots, Arc::new(DevSessionVerifier::new())))
+    Arc::new(FrontDoor::new(slots, Arc::new(DevSessionVerifier::new()), Vec::new()))
 }
 
 fn demo_router() -> Router {
@@ -217,7 +217,7 @@ async fn end_to_end_domain_status_maps_to_http() {
     );
     slots.contribute(opsapi::BINDING_SLOT, OpBinding { method: "demo.get".into(), decode, encode });
     slots.contribute(opsapi::LOCAL_SLOT, LocalOp { method: "demo.get".into(), invoke });
-    let front = Arc::new(FrontDoor::new(slots, Arc::new(DevSessionVerifier::new())));
+    let front = Arc::new(FrontDoor::new(slots, Arc::new(DevSessionVerifier::new()), Vec::new()));
     let router = front.router();
 
     let req = HttpRequest::builder().method("GET").uri("/demo/7").body(Body::empty()).unwrap();
@@ -392,7 +392,7 @@ async fn player_auth_none_op_runs_with_no_identity() {
         OpBinding { method: "demo.public".into(), decode, encode },
     );
     slots.contribute(opsapi::LOCAL_SLOT, LocalOp { method: "demo.public".into(), invoke });
-    let front = Arc::new(FrontDoor::new(slots, Arc::new(DevSessionVerifier::new())));
+    let front = Arc::new(FrontDoor::new(slots, Arc::new(DevSessionVerifier::new()), Vec::new()));
 
     // No token at all — must dispatch, not 401.
     let body = call_player(&front, "demo.public", None, b"{}").await;
@@ -403,7 +403,7 @@ async fn player_auth_none_op_runs_with_no_identity() {
 async fn player_backend_error_is_reserialized_as_status_err_envelope() {
     // A backend failure (an Err(opsapi::Error), not a status-carrying payload)
     // must still come back in the pinned {status, err} grammar. Drive it with an
-    // op that has no local invoker AND no <PROVIDER>_EDGE_ADDR: dispatch fails
+    // op that has no local invoker AND no PeerAddr contributed: dispatch fails
     // with Unavailable, which the front re-serializes as the envelope.
     let slots = Arc::new(Slots::new());
     let decode: DecodeFn = Arc::new(|_b, _p| Ok(b"null".to_vec()));
@@ -422,11 +422,13 @@ async fn player_backend_error_is_reserialized_as_status_err_envelope() {
         opsapi::BINDING_SLOT,
         OpBinding { method: "ghostprov.op".into(), decode, encode },
     );
-    // NO LOCAL_SLOT contribution → Remote; GHOSTPROV_EDGE_ADDR is unset.
-    let remote_front = Arc::new(FrontDoor::new(slots, Arc::new(DevSessionVerifier::new())));
+    // NO LOCAL_SLOT contribution → Remote; no PeerAddr contributed for ghostprov,
+    // so the front door has no peer address to dial.
+    let remote_front = Arc::new(FrontDoor::new(slots, Arc::new(DevSessionVerifier::new()), Vec::new()));
     let body = call_player(&remote_front, "ghostprov.op", None, b"{}").await;
     assert!(body.starts_with(r#"{"status":"Unavailable","err":""#), "{body}");
-    assert!(body.contains("GHOSTPROV_EDGE_ADDR"), "{body}");
+    assert!(body.contains("no peer contributed"), "{body}");
+    assert!(body.contains("ghostprov"), "{body}");
 }
 
 // ---- RemoteBackend exercised against a fake Caller ----
@@ -535,11 +537,11 @@ async fn remote_dispatch_evicts_failed_caller_so_next_request_redials() {
         "failed caller must be evicted"
     );
 
-    // Second request goes back through remote_caller (re-dial). With no
-    // FAKEPROV_EDGE_ADDR the re-dial path itself errors — and crucially the DEAD
-    // caller was NOT reused (its call count is unchanged).
+    // Second request goes back through remote_caller (re-dial). With no PeerAddr
+    // contributed for `fakeprov` the re-dial path itself errors — and crucially the
+    // DEAD caller was NOT reused (its call count is unchanged).
     let err = table.dispatch(&op, Identity::none(), b"{}".to_vec()).await.unwrap_err();
-    assert!(err.msg.contains("FAKEPROV_EDGE_ADDR"), "{}", err.msg);
+    assert!(err.msg.contains("no peer contributed"), "{}", err.msg);
     assert_eq!(failing.calls.load(Ordering::SeqCst), 1, "dead caller must not be reused");
 
     // And once a re-dial succeeds (simulated: a fresh healthy caller lands in the

@@ -94,3 +94,22 @@ fn inventory_stub_is_routes_only_no_capability() {
     assert_eq!(bindings.len(), expected.len(), "BINDING_SLOT matches SLOT");
     assert!(locals.is_empty(), "no LocalOp for a routes-only stub");
 }
+
+/// After `init`, a stub contributes its peer edge address to `opsapi::PEER_SLOT`, so a
+/// co-hosted gateway front door resolves this provider's Remote ops to that address
+/// WITHOUT reading env — the topology the composition root injected via `Stub::new`.
+/// This is the seam that replaced the module's `{PROVIDER}_EDGE_ADDR` env lookup.
+#[test]
+fn stub_contributes_peer_addr_for_remote_dispatch() {
+    let ctx = Context::new();
+    let stub = remote::Stub::new("characters", "127.0.0.1:9000", charactersrpc::remote_factories());
+    stub.register(&ctx).unwrap();
+    stub.init(&ctx).unwrap();
+
+    let peers: Vec<opsapi::PeerAddr> = ctx.contributions(opsapi::PEER_SLOT);
+    let found = peers
+        .iter()
+        .find(|p| p.provider == "characters")
+        .expect("characters peer address contributed to PEER_SLOT");
+    assert_eq!(found.addr, "127.0.0.1:9000", "the address the gateway dials Remote");
+}

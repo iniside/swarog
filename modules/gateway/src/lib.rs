@@ -92,6 +92,12 @@ pub struct Gateway {
     /// [`FrontDoor::player_handler`] on it so the process fronts players over QUIC
     /// as well as HTTP. `None` for a process with no public player port.
     player_edge: Option<Arc<Mutex<edge::PlayerServer>>>,
+    /// HTTP reverse-proxy passthrough routes `(prefix, origin)` the composition root
+    /// wired via [`Gateway::with_passthrough`] (e.g. `("/admin", "127.0.0.1:8085")`).
+    /// Handed to the [`FrontDoor`]'s [`proxy::ProxyTable`] at `init`. Empty on the
+    /// monolith (no split peers to proxy to), so every unmatched route stays a 404 —
+    /// exactly the prior behaviour. Topology lives in `cmd/*`, never read from env here.
+    passthroughs: Vec<(String, String)>,
 }
 
 impl Gateway {
@@ -100,13 +106,24 @@ impl Gateway {
     /// by an `accountsrpc` remote stub — else a loud startup failure (unless
     /// `ACCOUNTS_DEV_AUTH=1` explicitly enables the dev fallback).
     pub fn new() -> Self {
-        Gateway { verifier: None, player_edge: None }
+        Gateway { verifier: None, player_edge: None, passthroughs: Vec::new() }
     }
 
     /// A gateway using a caller-supplied verifier — bypasses the `init`-time
     /// resolution entirely (unit tests construct a [`DevSessionVerifier`] here).
     pub fn with_verifier(verifier: Arc<dyn SessionVerifier>) -> Self {
-        Gateway { verifier: Some(verifier), player_edge: None }
+        Gateway { verifier: Some(verifier), player_edge: None, passthroughs: Vec::new() }
+    }
+
+    /// Adds one HTTP reverse-proxy passthrough: an unmatched request under `prefix`
+    /// (`/admin`, `/accounts/epic`) is proxied to `origin` (a bare `host:port` or a
+    /// full URL) instead of 404-ing. Builder-style + accumulating, so a composition
+    /// root can wire several. `origin` is resolved by `cmd/*` (typically from env via
+    /// its `env_addr` helper); a blank origin is dropped by [`proxy::ProxyTable`], so
+    /// the prefix stays a 404 — mirroring the old `from_env` skip-empty semantics.
+    pub fn with_passthrough(mut self, prefix: &str, origin: &str) -> Self {
+        self.passthroughs.push((prefix.to_string(), origin.to_string()));
+        self
     }
 
     /// Additionally fronts players over the shared QUIC [`edge::PlayerServer`]
@@ -149,7 +166,8 @@ impl Module for Gateway {
             Some(v) => v.clone(),
             None => verifier::resolve_verifier(ctx)?,
         };
-        let front_door = Arc::new(FrontDoor::new(ctx.slots().clone(), verifier));
+        let front_door =
+            Arc::new(FrontDoor::new(ctx.slots().clone(), verifier, self.passthroughs.clone()));
         ctx.mount(front_door.router());
         if let Some(shared) = &self.player_edge {
             shared.lock().unwrap().set_handler(front_door.player_handler());
@@ -173,20 +191,27 @@ pub struct FrontDoor {
     verifier: Arc<dyn SessionVerifier>,
     table: OnceLock<Arc<RouteTable>>,
     /// The HTTP reverse-proxy passthrough for non-operation routes (`/admin`,
-    /// `/accounts/epic`), read from env once. Empty when nothing is configured, so an
+    /// `/accounts/epic`), built from the routes the composition root wired via
+    /// [`Gateway::with_passthrough`]. Empty when nothing is configured, so an
     /// unmatched route stays a 404 (the prior behaviour).
     proxy: proxy::ProxyTable,
 }
 
 impl FrontDoor {
     /// A façade over `slots` (the contribution registry the route table is built
-    /// from) fronting auth with `verifier`. The passthrough table is read from env.
-    pub fn new(slots: Arc<Slots>, verifier: Arc<dyn SessionVerifier>) -> FrontDoor {
+    /// from) fronting auth with `verifier`. `passthroughs` are the `(prefix, origin)`
+    /// reverse-proxy routes the composition root supplied — empty for a process that
+    /// proxies nothing (every unmatched route stays a 404).
+    pub fn new(
+        slots: Arc<Slots>,
+        verifier: Arc<dyn SessionVerifier>,
+        passthroughs: Vec<(String, String)>,
+    ) -> FrontDoor {
         FrontDoor {
             slots,
             verifier,
             table: OnceLock::new(),
-            proxy: proxy::ProxyTable::from_env(),
+            proxy: proxy::ProxyTable::from_routes(passthroughs),
         }
     }
 
@@ -332,6 +357,12 @@ struct RouteTable {
     routes: Vec<Route>,
     /// In-process invokers (method → invoker). Presence decides Local vs Remote.
     invokers: Arc<HashMap<String, LocalInvoker>>,
+    /// Peer edge addresses per provider (provider → UNPARSED `host:port`), collected
+    /// from `opsapi::PEER_SLOT` — one entry per `remote::Stub` the composition root
+    /// wired. `remote_caller` looks a provider up here (and parses lazily) instead of
+    /// reading a per-provider edge-address env var: topology is injected by the
+    /// composition root, never read inside this module.
+    peers: HashMap<String, String>,
     /// Lazily-dialed edge clients per provider, shared across requests to that peer.
     /// An entry is EVICTED when a call through it fails (see [`RouteTable::dispatch`]).
     remotes: tokio::sync::Mutex<HashMap<String, Arc<dyn Caller>>>,
@@ -345,11 +376,14 @@ impl RouteTable {
         let operations: Vec<Operation> = slots.contributions(opsapi::SLOT);
         let bindings: Vec<OpBinding> = slots.contributions(opsapi::BINDING_SLOT);
         let locals: Vec<opsapi::LocalOp> = slots.contributions(opsapi::LOCAL_SLOT);
+        let peer_addrs: Vec<opsapi::PeerAddr> = slots.contributions(opsapi::PEER_SLOT);
 
         let binding_by_method: HashMap<String, OpBinding> =
             bindings.into_iter().map(|b| (b.method.clone(), b)).collect();
         let invokers: HashMap<String, LocalInvoker> =
             locals.into_iter().map(|l| (l.method.clone(), l.invoke)).collect();
+        let peers: HashMap<String, String> =
+            peer_addrs.into_iter().map(|p| (p.provider, p.addr)).collect();
 
         let mut routes = Vec::new();
         for op in operations {
@@ -364,6 +398,7 @@ impl RouteTable {
         RouteTable {
             routes,
             invokers: Arc::new(invokers),
+            peers,
             remotes: tokio::sync::Mutex::new(HashMap::new()),
         }
     }
@@ -430,24 +465,30 @@ impl RouteTable {
     }
 
     /// Gets (or lazily dials + caches) an edge client to `provider`. The peer's QUIC
-    /// address comes from `<PROVIDER_UPPER>_EDGE_ADDR`; the connection is reused across
-    /// requests (until a failed call evicts it — see [`RouteTable::dispatch`]). In
-    /// M1's per-svc topology every op a process serves is local, so this is the seam
-    /// that lets a unified front-door route cross-provider without any per-module
-    /// HTTP shim — exercised directly in the `RemoteBackend` tests.
+    /// address comes from the `opsapi::PEER_SLOT` contribution the composition root's
+    /// `remote::Stub` wired (collected into [`RouteTable::peers`] at build); the
+    /// connection is reused across requests (until a failed call evicts it — see
+    /// [`RouteTable::dispatch`]). The address is parsed HERE, lazily, so a bad address
+    /// is a per-request `Unavailable` (503), never a startup panic — the `remote::Stub`
+    /// contributes the raw string for exactly this reason. In M1's per-svc topology
+    /// every op a process serves is local, so this is the seam that lets a unified
+    /// front-door route cross-provider without any per-module HTTP shim — exercised
+    /// directly in the `RemoteBackend` tests.
     async fn remote_caller(&self, provider: &str) -> Result<Arc<dyn Caller>, Error> {
         let mut cache = self.remotes.lock().await;
         if let Some(c) = cache.get(provider) {
             return Ok(c.clone());
         }
-        let env_key = format!("{}_EDGE_ADDR", provider.to_uppercase());
-        let addr_str = std::env::var(&env_key).map_err(|_| {
+        let addr_str = self.peers.get(provider).ok_or_else(|| {
             Error::unavailable(format!(
-                "gateway: no peer address for provider {provider:?} (set {env_key})"
+                "gateway: no peer contributed for provider {provider:?} \
+                 (wire a remote::Stub in this process's main)"
             ))
         })?;
         let addr: SocketAddr = addr_str.parse().map_err(|e| {
-            Error::unavailable(format!("gateway: bad {env_key}={addr_str:?}: {e}"))
+            Error::unavailable(format!(
+                "gateway: bad peer addr {addr_str:?} for provider {provider:?}: {e}"
+            ))
         })?;
         let ca = edge::shared_dev_ca()
             .map_err(|e| Error::unavailable(format!("gateway: edge CA: {e}")))?;
