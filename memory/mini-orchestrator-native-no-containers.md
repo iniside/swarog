@@ -28,14 +28,21 @@ crates, **no use of the backend's Postgres** (the earlier registry-table +
 LISTEN/NOTIFY idea is SUPERSEDED — don't re-propose it). It knows the backend only
 via the external process contract: spawn binary with env vars (`*_EDGE_ADDR`,
 `EVENTS_SUBSCRIBERS`, `EVENTS_ORIGIN`, `DATABASE_URL`), poll `GET /readyz`,
-signal/kill + exit codes. Discovery collapses into port assignment: the
-orchestrator mints ports and injects addresses at spawn (what split-proof.ps1 does
-by hand today) — no registration mechanism, zero backend code change. Env-name
-knowledge lives in the MANIFEST, not orchestrator code (2026-07-09, Lukasz's
-"how would it know the module's config surface" objection): the operator-authored
-manifest maps opaque env names to placeholders (`{port:self:edge}`,
-`{addr:characters:edge}`); the orchestrator only substitutes values it owns
-(ports/addrs) — the docker-compose/k8s-yaml division of knowledge. Its own
+signal/kill + exit codes. **Config/discovery model: control-plane PULL, Lukasz's preferred shape
+(2026-07-10, supersedes the env-template-manifest sketch):** each process is
+spawned with ONE bootstrap env (`ORCHESTRATOR_URL` + service/instance identity)
+and phones home ("centrala") with a small wire client — hello/registration +
+`resolve(peer:plane)` for the addresses its stubs need (the kubelet/Envoy-xDS
+pattern). Knowledge of dependencies stays in the consumer (its stubs already
+declare them) — no env-name mapping in any manifest; manifest shrinks to
+services/binaries/replicas. The client is backend-owned code in `core/`
+(likely `core/remote`, so Stub can re-resolve → replicas/address changes without
+consumer restarts); wire-only JSON contract, own types on each side — zero shared
+crates preserved. Registration proper only matters for processes the centrala
+didn't spawn (future game servers). Open point #1 for the plan: centrala becomes
+a boot-time dependency — dev/run.sh/split-proof either also run the orchestrator,
+or the client falls back to plain `*_EDGE_ADDR` env (two config paths = budding
+magic, [[config-as-code-anti-magic]]). Its own
 state (manifest, PIDs, ports) lives locally (file/sqlite/in-memory). Open design
 point: env is read at spawn, so a peer address change = consumer restart (or
 later stub re-resolve). Platform-side pieces still land at existing seams:
