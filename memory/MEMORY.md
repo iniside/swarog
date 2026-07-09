@@ -13,6 +13,7 @@
 - [DECIDED: migrate everything to Rust — DONE](decision-migrate-everything-to-rust.md) — decided AND completed 2026-07-08; Rust workspace at repo root is the only developed project. Don't re-litigate or assert Go/Quarkus.
 - [Local Postgres is the test DB](local-postgres-is-the-test-db.md) — integration tests target the local Postgres directly; NOT a Docker/Testcontainers fallback, don't frame it as one
 - [Local Postgres](reference_local_postgres.md) — role/db/DSN for GameBackend + superuser password (postgres/qwerty)
+- [Server management = domain module, not generic discovery](server-management-is-a-domain-module.md) — future game-server management is a specialized fortress module; never propose Consul/etcd-style generic service discovery (services topology is static, env/DNS at cmd/* suffices)
 - [Store-launch auth deferred to SDK](store-launch-auth-deferred-to-sdk.md) — backend stays a verifier; web=EAS(account id), native/store=Connect(PUID) needs a 2nd verifier later
 - [North star + JVM exploration](gamebackend-north-star-and-jvm-exploration.md) — two goals (pluggable + extractable to microservices); framework-free Kotlin/JDK26 port at experiments/jvm-kotlin-sketch/
 - [Follow UILayout mockup faithfully](follow-uilayout-mockup-faithfully.md) — UI has an exact spec in UILayout/*.dc.html; translate 1:1, don't improvise visuals
