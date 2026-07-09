@@ -199,10 +199,11 @@ on the same player front for parity. Extend it with a named assertion whenever y
 add a module or cross-process flow. **Never ship a monolith-only feature** — both
 topologies are supported compilation paths.
 
-Smoke test (monolith or through gateway-svc):
+Smoke test (monolith or through gateway-svc; the monolith needs `APIKEYS_DEV_SEED=1`
+set so the dev API keys below exist):
 ```
-curl -X POST localhost:8080/match/report -d '{"Winner":"alice","Loser":"bob"}'
-curl localhost:8080/leaderboard
+curl -X POST localhost:8080/match/report -H "X-Api-Key: dev-key-server" -d '{"Winner":"alice","Loser":"bob"}'
+curl localhost:8080/leaderboard -H "X-Api-Key: dev-key-client"
 ```
 
 ## Database

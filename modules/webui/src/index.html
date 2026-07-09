@@ -94,6 +94,7 @@ function toast(msg, ok) {
 
 async function api(path, opts = {}) {
   opts.headers = Object.assign({ "Content-Type": "application/json" }, opts.headers || {});
+  opts.headers["X-Api-Key"] = "dev-key-client";
   const t = token();
   if (t) opts.headers["Authorization"] = "Bearer " + t;
   return fetch(path, opts);
