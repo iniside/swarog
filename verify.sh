@@ -84,6 +84,7 @@ mkdir -p "$VERIFY_DIR"
 PUBLIC_API_CRATES=(
     accountsevents
     accountsapi
+    apikeysapi
     charactersevents
     charactersapi
     inventoryapi

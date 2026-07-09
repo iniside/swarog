@@ -1,0 +1,28 @@
+[package]
+name = "apikeys"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The apikeys impl module: owns schema `apikeys`, stores per-client API keys and their
+# policies (the allowed-method list or `full`), and provides the `apikeys.keys`
+# capability the gateway consults on every op-dispatched request. An impl crate — no
+# OTHER module imports it; consumers use `apikeysapi` (the Keys trait). `apikeysrpc` is
+# its OWN glue (sanctioned): the edge register_server face.
+[dependencies]
+lifecycle = { workspace = true }
+registry = { workspace = true }
+opsapi = { workspace = true }
+edge = { workspace = true }
+apikeysapi = { workspace = true }
+apikeysrpc = { workspace = true }
+sqlx = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+async-trait = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }

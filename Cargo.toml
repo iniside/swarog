@@ -50,6 +50,8 @@ members = [
     "api/accounts/api",
     "api/accounts/rpc",
     "api/accounts/events",
+    "api/apikeys/api",
+    "api/apikeys/rpc",
     "api/characters/api",
     "api/characters/rpc",
     "api/characters/events",
@@ -72,6 +74,7 @@ members = [
     "api/scheduler/rpc",
     # Module implementations — private, reachable only from a cmd/ binary.
     "modules/config",
+    "modules/apikeys",
     "modules/characters",
     "modules/inventory",
     "modules/gateway",
@@ -193,6 +196,8 @@ schedulerrpc = { path = "api/scheduler/rpc" }
 accountsapi = { path = "api/accounts/api" }
 accountsrpc = { path = "api/accounts/rpc" }
 accountsevents = { path = "api/accounts/events" }
+apikeysapi = { path = "api/apikeys/api" }
+apikeysrpc = { path = "api/apikeys/rpc" }
 configapi = { path = "api/config/api" }
 configrpc = { path = "api/config/rpc" }
 configevents = { path = "api/config/events" }
@@ -211,6 +216,7 @@ leaderboardrpc = { path = "api/leaderboard/rpc" }
 
 # ---- Module implementations (modules/): private impl, reachable only from cmd/. ----
 config = { path = "modules/config" }
+apikeys = { path = "modules/apikeys" }
 characters = { path = "modules/characters" }
 inventory = { path = "modules/inventory" }
 gateway = { path = "modules/gateway" }

@@ -40,6 +40,7 @@ $StrictOn = $Strict.IsPresent
 $publicApiCrates = @(
     'accountsevents',
     'accountsapi',
+    'apikeysapi',
     'charactersevents',
     'charactersapi',
     'inventoryapi',

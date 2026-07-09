@@ -160,6 +160,51 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2a4385e2e34eb35d6b3efe798b9eb88096925d87726c0798709bf56d9ed84af3"
 
 [[package]]
+name = "apikeys"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "apikeysapi",
+ "apikeysrpc",
+ "async-trait",
+ "edge",
+ "lifecycle",
+ "opsapi",
+ "registry",
+ "sqlx",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "apikeysapi"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "opsapi",
+ "rpc-macro",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "apikeysrpc"
+version = "0.1.0"
+dependencies = [
+ "adminrpc",
+ "apikeysapi",
+ "async-trait",
+ "edge",
+ "lifecycle",
+ "opsapi",
+ "registry",
+ "remote",
+ "rpc-macro",
+ "serde_json",
+]
+
+[[package]]
 name = "app"
 version = "0.1.0"
 dependencies = [

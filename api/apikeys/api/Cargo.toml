@@ -1,0 +1,20 @@
+[package]
+name = "apikeysapi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The apikeys module's PURE, transport-free capability contract: the Keys trait + the
+# KeyRecord wire type. `#[rpc]` generates the transport-FREE surface (wire envelopes,
+# METHOD_* consts) into the child `*_rpc` module, plus the metadata-callback macro the
+# sibling `apikeysrpc` glue crate expands into the edge-dependent glue. NO `edge`
+# dependency — a consumer that needs `dyn Keys` (the gateway's key verifier adapter)
+# imports THIS crate to name the trait (rule 4), never the `apikeys` impl crate and
+# never the glue crate.
+[dependencies]
+opsapi = { workspace = true }
+rpc-macro = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
