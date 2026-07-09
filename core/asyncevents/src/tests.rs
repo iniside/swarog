@@ -45,6 +45,25 @@ fn inner(pool: PgPool, origin: &str) -> Arc<Inner> {
     })
 }
 
+/// A v1/7-day contract over a test topic — the only fields this push plane
+/// reads from a contract is the topic (Step-1 shim).
+fn contract(topic: &'static str) -> bus::EventContract {
+    bus::EventContract {
+        topic,
+        version: 1,
+        history: bus::HistoryPolicy::MinRetention { days: 7 },
+    }
+}
+
+/// A Genesis subscription spec — the start position is V2 vocabulary this
+/// push plane never reads.
+fn spec(id: &'static str) -> SubscriptionSpec {
+    SubscriptionSpec {
+        id,
+        start: bus::StartPosition::Genesis,
+    }
+}
+
 /// A [`TxHandler`] that counts calls and records each payload AND the delivery
 /// `event_id` it received — so tests can assert the handler saw the same stable
 /// id the plane deduped on (the foreign-store idempotency key).
@@ -83,13 +102,21 @@ async fn plane_transport_is_live_at_context_construction() {
     // A module's init (or a stub factory's register) calls bus.on_tx ->
     // Transport::subscribe_tx. This runs long before Plane::start's snapshot; it
     // must not panic and must land in the plane's subscription table.
-    let et = bus::define::<serde_json::Value>("test.topic");
-    ctx.bus().on_tx(&et, "consumer", |delivery, v: serde_json::Value| {
-        Box::pin(async move {
-            let _ = (delivery, v);
-            Ok(())
-        })
-    });
+    let et = bus::define::<serde_json::Value>(
+        "test.topic",
+        1,
+        bus::HistoryPolicy::MinRetention { days: 7 },
+    );
+    ctx.bus().on_tx(
+        spec("consumer"),
+        &et,
+        |delivery, v: serde_json::Value| {
+            Box::pin(async move {
+                let _ = (delivery, v);
+                Ok(())
+            })
+        },
+    );
 
     assert_eq!(plane.inner.subscribers_for("test.topic").len(), 1);
 }
@@ -103,7 +130,7 @@ async fn enqueue_tx_writes_row_with_origin() {
 
     let mut tx = pool.begin().await.unwrap();
     inner
-        .enqueue_tx(AnyTx::new(&mut *tx), "test.enqueue", br#"{"a":1}"#)
+        .enqueue_tx(AnyTx::new(&mut *tx), &contract("test.enqueue"), br#"{"a":1}"#)
         .await
         .unwrap();
     tx.commit().await.unwrap();
@@ -131,8 +158,8 @@ async fn relay_drains_only_its_own_origin() {
 
     // One row from each origin, both committed.
     let mut tx = pool.begin().await.unwrap();
-    inner_a.enqueue_tx(AnyTx::new(&mut *tx), "t.a", br#"{"n":1}"#).await.unwrap();
-    inner_b.enqueue_tx(AnyTx::new(&mut *tx), "t.b", br#"{"n":2}"#).await.unwrap();
+    inner_a.enqueue_tx(AnyTx::new(&mut *tx), &contract("t.a"), br#"{"n":1}"#).await.unwrap();
+    inner_b.enqueue_tx(AnyTx::new(&mut *tx), &contract("t.b"), br#"{"n":2}"#).await.unwrap();
     tx.commit().await.unwrap();
 
     // Relay A with a local target recording delivered event ids.
@@ -198,7 +225,7 @@ async fn local_target_round_trip() {
     // Producer enqueues one durable event.
     let mut tx = pool.begin().await.unwrap();
     inner
-        .enqueue_tx(AnyTx::new(&mut *tx), "rt.topic", br#"{"item":"starter-sword","qty":1}"#)
+        .enqueue_tx(AnyTx::new(&mut *tx), &contract("rt.topic"), br#"{"item":"starter-sword","qty":1}"#)
         .await
         .unwrap();
     tx.commit().await.unwrap();
@@ -213,7 +240,7 @@ async fn local_target_round_trip() {
         seen: seen.clone(),
         ids: ids.clone(),
     });
-    inner.subscribe_tx("rt.topic", "rt-sub", h);
+    inner.subscribe_tx(spec("rt-sub"), "rt.topic", 1, h);
     let targets = inner.build_local_targets();
 
     let relay = Relay::new(pool.clone(), "asyncevents", origin.clone(), HashMap::new(), targets);

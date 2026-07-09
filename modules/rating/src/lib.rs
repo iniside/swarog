@@ -28,8 +28,12 @@ const DEFAULT_MMR: i64 = 1000;
 const WIN_DELTA: i64 = 15;
 const LOSS_DELTA: i64 = 15;
 
-/// The stable inbox-dedup subscriber name for rating's `match.finished` subscription.
-const SUBSCRIBER: &str = "rating";
+/// The consumer-owned durable subscription for rating's `match.finished`
+/// reaction — the stable checkpoint id (renaming it abandons the checkpoint).
+const MATCH_FINISHED_SUB: bus::SubscriptionSpec = bus::SubscriptionSpec {
+    id: "rating.match-finished.v1",
+    start: bus::StartPosition::Genesis,
+};
 
 // ============================================================================
 // Service — the in-memory MMR store. Backs the `MmrReader` capability (registry +
@@ -147,8 +151,8 @@ impl Module for Rating {
 
         let reactor = svc.clone();
         ctx.bus().on_tx(
+            MATCH_FINISHED_SUB,
             &matchevents::FINISHED,
-            SUBSCRIBER,
             move |_delivery, e: matchevents::Finished| {
                 let reactor = reactor.clone();
                 Box::pin(async move {

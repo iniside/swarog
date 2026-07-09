@@ -12,7 +12,7 @@
 
 use std::sync::LazyLock;
 
-use bus::{define, EventType};
+use bus::{define, EventType, HistoryPolicy};
 use serde::{Deserialize, Serialize};
 
 /// Fires when a player creates a character. Evolve additively (constraint #6): add
@@ -39,8 +39,10 @@ pub struct Deleted {
 /// `bus::define` is not `const`, so the descriptor is a `LazyLock` static; callers
 /// pass it as `&*charactersevents::CREATED` (or just `&charactersevents::CREATED`,
 /// which auto-derefs).
-pub static CREATED: LazyLock<EventType<Created>> = LazyLock::new(|| define("character.created"));
+pub static CREATED: LazyLock<EventType<Created>> =
+    LazyLock::new(|| define("character.created", 1, HistoryPolicy::MinRetention { days: 7 }));
 
 /// The `character.deleted` topic. Emitted (in the same tx as the delete) only when a
 /// row was actually removed — a delete of a non-owned/absent character emits nothing.
-pub static DELETED: LazyLock<EventType<Deleted>> = LazyLock::new(|| define("character.deleted"));
+pub static DELETED: LazyLock<EventType<Deleted>> =
+    LazyLock::new(|| define("character.deleted", 1, HistoryPolicy::MinRetention { days: 7 }));

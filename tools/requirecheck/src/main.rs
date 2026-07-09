@@ -75,13 +75,20 @@ impl Transport for NoopTransport {
     async fn enqueue_tx(
         &self,
         _tx: AnyTx<'_>,
-        _topic: &str,
+        _contract: &bus::EventContract,
         _payload: &[u8],
     ) -> Result<(), Error> {
         Ok(())
     }
 
-    fn subscribe_tx(&self, _topic: &str, _subscriber: &str, _handler: Arc<dyn TxHandler>) {}
+    fn subscribe_tx(
+        &self,
+        _spec: bus::SubscriptionSpec,
+        _topic: &str,
+        _version: u32,
+        _handler: Arc<dyn TxHandler>,
+    ) {
+    }
 }
 
 /// Accumulates observed require calls, attributed to the module whose `init` is running.

@@ -12,7 +12,7 @@
 
 use std::sync::LazyLock;
 
-use bus::{define, EventType};
+use bus::{define, EventType, HistoryPolicy};
 use serde::{Deserialize, Serialize};
 
 /// Carries the namespaced setting that just changed and its new value. Evolve
@@ -33,4 +33,5 @@ pub struct Changed {
 ///
 /// `bus::define` is not `const`, so the descriptor is a `LazyLock` static; callers
 /// pass it as `&*configevents::CHANGED`.
-pub static CHANGED: LazyLock<EventType<Changed>> = LazyLock::new(|| define("config.changed"));
+pub static CHANGED: LazyLock<EventType<Changed>> =
+    LazyLock::new(|| define("config.changed", 1, HistoryPolicy::MinRetention { days: 7 }));

@@ -105,17 +105,24 @@ impl Transport for FakeTransport {
     async fn enqueue_tx(
         &self,
         _tx: AnyTx<'_>,
-        topic: &str,
+        contract: &bus::EventContract,
         payload: &[u8],
     ) -> Result<(), BusError> {
         self.rows
             .lock()
             .unwrap()
-            .push((topic.to_string(), payload.to_vec()));
+            .push((contract.topic.to_string(), payload.to_vec()));
         Ok(())
     }
 
-    fn subscribe_tx(&self, _topic: &str, _subscriber: &str, _handler: Arc<dyn TxHandler>) {}
+    fn subscribe_tx(
+        &self,
+        _spec: bus::SubscriptionSpec,
+        _topic: &str,
+        _version: u32,
+        _handler: Arc<dyn TxHandler>,
+    ) {
+    }
 }
 
 /// A bus with a fake transport installed, plus a handle to that transport for assertions.

@@ -107,6 +107,23 @@ fn durable_topics_match_events() {
     );
 }
 
+/// The zip guard: [`DURABLE_SPEC_IDS`] pairs positionally with [`DURABLE_TOPICS`]
+/// (a length mismatch would silently truncate the zip in `init`), and each id
+/// follows the `audit.<topic-kebab>.v1` checkpoint convention so a topic rename
+/// forces a conscious decision about its checkpoint.
+#[test]
+fn durable_spec_ids_zip_with_topics() {
+    assert_eq!(
+        DURABLE_SPEC_IDS.len(),
+        DURABLE_TOPICS.len(),
+        "DURABLE_SPEC_IDS and DURABLE_TOPICS must pair positionally"
+    );
+    for (topic, id) in DURABLE_TOPICS.iter().zip(DURABLE_SPEC_IDS) {
+        let want = format!("audit.{}.v1", topic.replace('.', "-"));
+        assert_eq!(*id, want, "spec id for {topic:?} broke the naming convention");
+    }
+}
+
 /// `scheduler.fired` is CONSUMED (prune), never LOGGED — it must not be in the audited
 /// set, or the anti-drift test would demand a matching producer event. Uses the
 /// `schedulerevents::FIRED` descriptor's topic const (the same one `init` subscribes

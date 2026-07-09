@@ -21,14 +21,14 @@
 //! injected at construction by the composition root (`core/app` builds
 //! [`Bus::with_transport`] iff the process has a DB) — so the dependency
 //! points module → leaf and `bus` stays free of any module import (hard
-//! constraint #1). The [`Transport`] deals ONLY in topic strings + bytes; the
+//! constraint #1). The [`Transport`] deals ONLY in contracts, topics + bytes; the
 //! generic payload `T` collapses to JSON exactly at the emit_tx/on_tx boundary,
 //! so the transport never sees a type parameter. Nothing about the async core
 //! above changes because this seam exists — a transport is opt-in, and
 //! immutable once the bus exists (no runtime installer, no double-set class).
 
 use std::any::Any;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::{Arc, Mutex};
@@ -59,6 +59,17 @@ struct Inner {
     tasks: Vec<JoinHandle<()>>,
 }
 
+/// The bus-side record of every durable registration. The `ids` set is the
+/// duplicate-`spec.id` guard — it lives HERE (not in a transport) so the
+/// invariant "a subscription id names exactly one checkpoint" holds under ANY
+/// transport, including the checkers' recording doubles. `list` feeds
+/// [`Bus::subscriptions`] (topiccheck's durable-plane view).
+#[derive(Default)]
+struct DurableSubs {
+    ids: HashSet<&'static str>,
+    list: Vec<(&'static str, String)>,
+}
+
 /// The asynchronous, fire-and-forget in-process pub/sub. See the module docs.
 #[derive(Default)]
 pub struct Bus {
@@ -68,6 +79,8 @@ pub struct Bus {
     /// plane) and `None` for a plane-less bus ([`Bus::new`]). Immutable, so no
     /// lock and no double-install class.
     transport: Option<Arc<dyn Transport>>,
+    /// Durable registrations: the duplicate-id guard + the introspection list.
+    durable: Mutex<DurableSubs>,
 }
 
 impl Bus {
@@ -130,7 +143,7 @@ impl Bus {
     /// Publishes a typed event. Non-blocking, like [`Bus::publish`].
     pub fn emit<T: Any + Send + Sync + 'static>(&self, et: &EventType<T>, v: T) {
         self.publish(Event {
-            topic: et.topic.clone(),
+            topic: et.topic().to_string(),
             data: Arc::new(v),
         });
     }
@@ -143,7 +156,7 @@ impl Bus {
         T: Clone + Send + Sync + 'static,
         F: Fn(T) + Send + 'static,
     {
-        self.subscribe(et.topic.clone(), move |e| {
+        self.subscribe(et.topic().to_string(), move |e| {
             match e.data.downcast_ref::<T>() {
                 Some(v) => handler(v.clone()),
                 None => tracing::error!(topic = %e.topic, "bus: event payload type mismatch"),
@@ -158,6 +171,19 @@ impl Bus {
     /// is unspecified.
     pub fn subscribed_topics(&self) -> Vec<String> {
         self.inner.lock().unwrap().subs.keys().cloned().collect()
+    }
+
+    /// Every durable subscription registered on this bus, as `(id, topic)`
+    /// pairs in registration order. Introspection only — the durable-plane
+    /// counterpart of [`Bus::subscribed_topics`], consumed by `topiccheck`.
+    pub fn subscriptions(&self) -> Vec<(String, String)> {
+        self.durable
+            .lock()
+            .unwrap()
+            .list
+            .iter()
+            .map(|(id, topic)| (id.to_string(), topic.clone()))
+            .collect()
     }
 
     /// Stops every subscriber once its mailbox has drained, then waits for all
@@ -208,11 +234,13 @@ impl Bus {
     ) -> Result<(), Error> {
         let transport = self.require_transport()?;
         let payload = encode(v)?;
-        transport.enqueue_tx(tx, et.topic(), &payload).await
+        transport.enqueue_tx(tx, et.contract(), &payload).await
     }
 
-    /// Subscribes a typed durable handler. `subscriber` is the stable dedup name
-    /// identifying this subscription for inbox `(event_id, subscriber)` dedup. The
+    /// Subscribes a typed durable handler. `spec` is the consumer-owned
+    /// subscription descriptor: `spec.id` is the stable, globally-unique
+    /// checkpoint name (convention `<consumer>.<topic-kebab>.v<version>`),
+    /// `spec.start` where a NEW subscription begins reading the log. The
     /// handler receives an already-deserialized `T`; the `Vec<u8>` → `T` decode is
     /// the boundary this wrapper owns.
     ///
@@ -236,7 +264,7 @@ impl Bus {
     /// the effect are atomic in the consumer's OWN store — via the handed
     /// delivery tx (downcast [`Delivery::tx`] to your engine's connection type)
     /// when engines match, via an idempotent `event_id`-keyed write otherwise.
-    pub fn on_tx<T, F>(&self, et: &EventType<T>, subscriber: &str, handler: F)
+    pub fn on_tx<T, F>(&self, spec: SubscriptionSpec, et: &EventType<T>, handler: F)
     where
         T: DeserializeOwned + Send + 'static,
         F: for<'a> Fn(Delivery<'a>, T) -> BoxFuture<'a, Result<(), Error>>
@@ -248,22 +276,47 @@ impl Bus {
             handler,
             _marker: PhantomData::<fn() -> T>,
         });
-        self.on_tx_raw(et.topic(), subscriber, wrapped);
+        self.subscribe_durable(spec, et.topic(), et.contract().version, wrapped);
     }
 
     /// The untyped raw-bytes durable subscribe: registers a [`TxHandler`] that is
     /// handed the raw JSON payload, for a subscriber reacting to a topic string
     /// without importing the producer's `<module>events` crate (e.g. a cross-domain
-    /// audit ledger). The primitive [`Bus::on_tx`] builds on. **Panics if no
+    /// audit ledger). A raw subscription names no [`EventType`], so it pins
+    /// contract version 1 — the only published version today; a raw consumer of a
+    /// later version gets a versioned variant of this method then. **Panics if no
     /// transport is installed** — same rationale as [`Bus::on_tx`].
-    pub fn on_tx_raw(&self, topic: &str, subscriber: &str, handler: Arc<dyn TxHandler>) {
-        match &self.transport {
-            Some(t) => t.subscribe_tx(topic, subscriber, handler),
-            None => panic!(
+    pub fn on_tx_raw(&self, spec: SubscriptionSpec, topic: &str, handler: Arc<dyn TxHandler>) {
+        self.subscribe_durable(spec, topic, 1, handler);
+    }
+
+    /// The one durable-subscribe funnel: transport presence check (loud, see
+    /// [`Bus::on_tx`]), then the duplicate-`spec.id` guard + introspection record
+    /// (bus-owned, so they hold under ANY transport), then the transport handoff.
+    fn subscribe_durable(
+        &self,
+        spec: SubscriptionSpec,
+        topic: &str,
+        version: u32,
+        handler: Arc<dyn TxHandler>,
+    ) {
+        let Some(t) = &self.transport else {
+            panic!(
                 "bus: on_tx({topic:?}) but this process hosts no durable-events plane (no DB) \
                  — a durable subscriber cannot run here"
-            ),
+            );
+        };
+        {
+            let mut durable = self.durable.lock().unwrap();
+            assert!(
+                durable.ids.insert(spec.id),
+                "bus: duplicate durable subscription id {:?} (topic {topic:?}) — a subscription \
+                 id names exactly one consumer-owned checkpoint and must be globally unique",
+                spec.id
+            );
+            durable.list.push((spec.id, topic.to_string()));
         }
+        t.subscribe_tx(spec, topic, version, handler);
     }
 }
 
@@ -368,9 +421,9 @@ impl Error {
 
 /// The durable plane's hook — a seam this leaf declares but never implements
 /// (`core/asyncevents` does; `core/app` injects it via [`Bus::with_transport`]).
-/// It deals ONLY in topic strings + `[u8]`: the generic payload `T` is already
-/// collapsed to bytes at the [`Bus::emit_tx`]/[`Bus::on_tx`] boundary, so the
-/// transport never sees a type parameter (mirrors Go's `bus.Transport`).
+/// It deals ONLY in contracts, topic strings + `[u8]`: the generic payload `T` is
+/// already collapsed to bytes at the [`Bus::emit_tx`]/[`Bus::on_tx`] boundary, so
+/// the transport never sees a type parameter (mirrors Go's `bus.Transport`).
 #[async_trait::async_trait]
 pub trait Transport: Send + Sync {
     /// Writes the encoded event to the durable log **inside the caller's
@@ -379,14 +432,27 @@ pub trait Transport: Send + Sync {
     /// connection type; a caller whose store is a different engine gets
     /// [`Error::TxEngineMismatch`]. `async` because it is a DB write (Go's is
     /// sync `sql`).
-    async fn enqueue_tx(&self, tx: AnyTx<'_>, topic: &str, payload: &[u8]) -> Result<(), Error>;
+    async fn enqueue_tx(
+        &self,
+        tx: AnyTx<'_>,
+        contract: &EventContract,
+        payload: &[u8],
+    ) -> Result<(), Error>;
 
-    /// Registers a durable handler for `topic`. `subscriber` is a stable name
-    /// identifying this subscription for inbox dedup `(event_id, subscriber)`. The
-    /// handler is a NAMED trait object (see [`TxHandler`] / BLOCKER-1), stored by
-    /// the transport and later invoked with a per-delivery [`Delivery`] (the
-    /// stable event id + the transport's erased delivery tx).
-    fn subscribe_tx(&self, topic: &str, subscriber: &str, handler: Arc<dyn TxHandler>);
+    /// Registers a durable handler for `topic` at exactly `version`. `spec` is the
+    /// consumer-owned subscription descriptor — `spec.id` the stable checkpoint
+    /// name, `spec.start` where a NEW subscription begins. The handler is a NAMED
+    /// trait object (see [`TxHandler`] / BLOCKER-1), stored by the transport and
+    /// later invoked with a per-delivery [`Delivery`] (the stable event id + the
+    /// transport's erased delivery tx). Duplicate `spec.id`s never reach a
+    /// transport — [`Bus`] panics first.
+    fn subscribe_tx(
+        &self,
+        spec: SubscriptionSpec,
+        topic: &str,
+        version: u32,
+        handler: Arc<dyn TxHandler>,
+    );
 }
 
 /// A durable handler, stored by a [`Transport`] and invoked once per delivered
@@ -448,29 +514,102 @@ where
     }
 }
 
+/// What the PUBLISHER promises about a topic's history: how long delivered
+/// events stay readable in the durable log. Consumed by the plane's retention
+/// GC — a `StartPosition::Genesis` consumer added later can only replay what
+/// the policy retained ([`HistoryPolicy::KeepForever`] is required before any
+/// replay-from-genesis consumer exists).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HistoryPolicy {
+    /// Events are retained at least `days` days past every subscription's
+    /// checkpoint (checkpoint-coupled: an unconsumed event is never deleted).
+    MinRetention { days: u32 },
+    /// Events on this topic are never deleted.
+    KeepForever,
+}
+
+/// The publisher-owned contract of one durable topic: the topic string, the
+/// payload-shape version (a NEW version is a NEW wire shape — consumers
+/// subscribe to exactly one), and the history promise. Carried by every
+/// [`EventType`] (via [`define`]) and handed whole to the transport at
+/// [`Bus::emit_tx`], so the durable log records version + policy per event
+/// stream without the transport importing any events crate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EventContract {
+    pub topic: &'static str,
+    pub version: u32,
+    pub history: HistoryPolicy,
+}
+
+/// A position in the durable log — the plane's cursor coordinates
+/// `(generation, producer_xid, tie_breaker)`. Opaque to modules; named here so
+/// [`StartPosition::Explicit`] can carry one without the leaf `bus` importing
+/// the plane. `xid` is a `u64` because Postgres `xid8` has no sqlx codec —
+/// it crosses the boundary as text and is compared in SQL, never in Rust.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EventPosition {
+    pub generation: i64,
+    pub xid: u64,
+    pub tie: i64,
+}
+
+/// Where a NEW durable subscription starts reading. No default on purpose:
+/// the consumer must decide whether history matters to it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StartPosition {
+    /// From the beginning of retained history.
+    Genesis,
+    /// Only events appended after this subscription was first registered.
+    AfterRegistration,
+    /// From an explicit log position (operator tooling / recovery).
+    Explicit(EventPosition),
+}
+
+/// The consumer-owned durable subscription descriptor. `id` is the stable,
+/// globally-unique checkpoint name (convention
+/// `<consumer>.<topic-kebab>.v<version>`, e.g. `inventory.character-created.v1`)
+/// — renaming it abandons the old checkpoint. `start` applies only when the
+/// subscription row does not exist yet; an existing checkpoint always wins.
+#[derive(Clone, Copy, Debug)]
+pub struct SubscriptionSpec {
+    pub id: &'static str,
+    pub start: StartPosition,
+}
+
 /// Binds a topic to its payload type `T` in ONE place. Publishers and subscribers
 /// reference the same `EventType`, so they cannot disagree on topic-vs-payload: a
 /// mismatch is a compile error, not a runtime panic. Declared once, at module
-/// scope, in the owning `<module>events` crate.
+/// scope, in the owning `<module>events` crate. Carries the full
+/// [`EventContract`] — topic, version, history — so emit and subscribe agree on
+/// the whole contract, not just the topic string.
 ///
 /// `PhantomData<fn() -> T>` makes `EventType<T>: Send + Sync` for any `T` and
 /// keeps it usable from a `static`/`LazyLock`.
 pub struct EventType<T> {
-    topic: String,
+    contract: EventContract,
     _marker: PhantomData<fn() -> T>,
 }
 
-/// Declares an event: a topic plus the payload type it always carries.
-pub fn define<T>(topic: impl Into<String>) -> EventType<T> {
+/// Declares an event: a topic, the contract version of its payload shape, the
+/// publisher's history promise, and (via `T`) the payload type it always carries.
+pub fn define<T>(topic: &'static str, version: u32, history: HistoryPolicy) -> EventType<T> {
     EventType {
-        topic: topic.into(),
+        contract: EventContract {
+            topic,
+            version,
+            history,
+        },
         _marker: PhantomData,
     }
 }
 
 impl<T> EventType<T> {
     pub fn topic(&self) -> &str {
-        &self.topic
+        self.contract.topic
+    }
+
+    pub fn contract(&self) -> &EventContract {
+        &self.contract
     }
 }
 

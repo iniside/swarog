@@ -635,21 +635,35 @@ impl Module for Inventory {
         // effect runs on the HANDED conn so the grant/wipe commits atomically with the
         // dedup row.
         let granter = inner.clone();
-        ctx.bus().on_tx(&charactersevents::CREATED, "inventory", move |mut delivery, e: charactersevents::Created| {
-            let granter = granter.clone();
-            Box::pin(async move {
-                let conn = delivery.tx.downcast::<sqlx::PgConnection>()?;
-                granter.grant_starter(conn, &e.character_id).await
-            })
-        });
+        ctx.bus().on_tx(
+            bus::SubscriptionSpec {
+                id: "inventory.character-created.v1",
+                start: bus::StartPosition::Genesis,
+            },
+            &charactersevents::CREATED,
+            move |mut delivery, e: charactersevents::Created| {
+                let granter = granter.clone();
+                Box::pin(async move {
+                    let conn = delivery.tx.downcast::<sqlx::PgConnection>()?;
+                    granter.grant_starter(conn, &e.character_id).await
+                })
+            },
+        );
         let wiper = inner.clone();
-        ctx.bus().on_tx(&charactersevents::DELETED, "inventory", move |mut delivery, e: charactersevents::Deleted| {
-            let wiper = wiper.clone();
-            Box::pin(async move {
-                let conn = delivery.tx.downcast::<sqlx::PgConnection>()?;
-                wiper.wipe_character(conn, &e.character_id).await
-            })
-        });
+        ctx.bus().on_tx(
+            bus::SubscriptionSpec {
+                id: "inventory.character-deleted.v1",
+                start: bus::StartPosition::Genesis,
+            },
+            &charactersevents::DELETED,
+            move |mut delivery, e: charactersevents::Deleted| {
+                let wiper = wiper.clone();
+                Box::pin(async move {
+                    let conn = delivery.tx.downcast::<sqlx::PgConnection>()?;
+                    wiper.wipe_character(conn, &e.character_id).await
+                })
+            },
+        );
 
         // 4. HARD dependency on config (declared in requires()): every binary that
         // hosts inventory also hosts config, so this fails loud at boot rather than
@@ -667,14 +681,23 @@ impl Module for Inventory {
         // Stub's "config-cache" subscriber is registered in phase 1 (before this one),
         // so the inbound sink refreshes the `CachedConfig` FIRST — this handler then
         // reads the already-fresh reader.
+        // Slated for removal: this cache-refresh subscription moves to the broadcast
+        // invalidation plane (plan Step 8) — kept functional until then.
         let watcher = inner.clone();
-        ctx.bus().on_tx(&configevents::CHANGED, "inventory", move |_delivery, e: configevents::Changed| {
-            let watcher = watcher.clone();
-            Box::pin(async move {
-                watcher.on_config_changed(e);
-                Ok(())
-            })
-        });
+        ctx.bus().on_tx(
+            bus::SubscriptionSpec {
+                id: "inventory.config-changed.v1",
+                start: bus::StartPosition::Genesis,
+            },
+            &configevents::CHANGED,
+            move |_delivery, e: configevents::Changed| {
+                let watcher = watcher.clone();
+                Box::pin(async move {
+                    watcher.on_config_changed(e);
+                    Ok(())
+                })
+            },
+        );
 
         // 6. Player operations: contribute each generated op (route + HTTP↔wire binding
         // + in-process invoker) so the gateway fronts GET /inventory/me + GET

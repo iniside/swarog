@@ -29,8 +29,12 @@ CREATE TABLE IF NOT EXISTS leaderboard.scores (
 	wins   bigint NOT NULL DEFAULT 0
 );"#;
 
-/// The stable inbox-dedup subscriber name for leaderboard's `match.finished` subscription.
-const SUBSCRIBER: &str = "leaderboard";
+/// The consumer-owned durable subscription for leaderboard's `match.finished`
+/// reaction — the stable checkpoint id (renaming it abandons the checkpoint).
+const MATCH_FINISHED_SUB: bus::SubscriptionSpec = bus::SubscriptionSpec {
+    id: "leaderboard.match-finished.v1",
+    start: bus::StartPosition::Genesis,
+};
 
 /// Folds any lower-level error into an `Internal` operation error.
 fn internal<E: std::fmt::Display>(e: E) -> Error {
@@ -153,8 +157,8 @@ impl Module for LeaderboardModule {
         let svc = self.svc();
 
         ctx.bus().on_tx(
+            MATCH_FINISHED_SUB,
             &matchevents::FINISHED,
-            SUBSCRIBER,
             move |mut delivery, e: matchevents::Finished| {
                 Box::pin(async move {
                     let conn = delivery.tx.downcast::<sqlx::PgConnection>()?;

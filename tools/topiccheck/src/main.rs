@@ -56,7 +56,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
-use bus::{AnyTx, Error, Transport, TxHandler};
+use bus::{AnyTx, Error, EventContract, SubscriptionSpec, Transport, TxHandler};
 use checkmodules::monolith_modules;
 use lifecycle::{App, Context};
 
@@ -102,17 +102,26 @@ impl Transport for RecordingTransport {
     async fn enqueue_tx(
         &self,
         _tx: AnyTx<'_>,
-        _topic: &str,
+        _contract: &EventContract,
         _payload: &[u8],
     ) -> Result<(), Error> {
         Ok(())
     }
 
-    fn subscribe_tx(&self, topic: &str, subscriber: &str, _handler: Arc<dyn TxHandler>) {
+    /// Records `(topic, spec.id)` — the subscription id is the durable-plane
+    /// subscriber label this tool reports. `version`/`spec.start` validations
+    /// arrive with the pull-plane checker rework (plan Step 11).
+    fn subscribe_tx(
+        &self,
+        spec: SubscriptionSpec,
+        topic: &str,
+        _version: u32,
+        _handler: Arc<dyn TxHandler>,
+    ) {
         self.subs
             .lock()
             .unwrap()
-            .push((topic.to_string(), subscriber.to_string()));
+            .push((topic.to_string(), spec.id.to_string()));
     }
 }
 

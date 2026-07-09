@@ -17,7 +17,8 @@
 //!
 //! ## Lifecycle (see [`remote_factories`])
 //! The factory runs in [`remote::Stub`]'s phase-1 `register`: it builds the cache,
-//! provides it, subscribes `on_tx(config.changed, "config-cache")` for refresh, and
+//! provides it, subscribes `on_tx("config-cache.config-changed.v1", config.changed)`
+//! for refresh, and
 //! contributes a provider-tagged [`remote::RemoteBoot`] boot hook. The `Stub` (which
 //! gained `Caps::START` for exactly this) drains [`remote::BOOT_SLOT`] in `start` and
 //! runs the boot hook once — a single `snapshot()` that fails LOUD if config-svc is
@@ -119,7 +120,8 @@ impl configapi::Config for CachedConfig {
 ///   1. builds a [`CachedConfig`] over the generated snapshot `Client`,
 ///   2. `provide`s it under the SAME `config.reader` key the local config module uses,
 ///      so a co-hosted consumer's `require::<dyn Config>` resolves to the cache,
-///   3. subscribes `on_tx(config.changed, "config-cache")` — the DURABLE refresh: a
+///   3. subscribes `on_tx("config-cache.config-changed.v1", config.changed)` — the
+///      DURABLE refresh: a
 ///      cross-process `config.changed` (POSTed to `/events`) re-reads the snapshot,
 ///   4. contributes a provider-tagged [`remote::RemoteBoot`] whose boot the `Stub`
 ///      runs in `start` (one `snapshot()` boot-fill; fails loud if config-svc is down).
@@ -142,11 +144,16 @@ pub fn remote_factories() -> Vec<remote::RemoteFactory> {
         // (3) durable refresh: a cross-process config.changed re-pulls the snapshot.
         // The handler owns no domain write, so it ignores the handed conn and refreshes
         // via the snapshot RPC; a transport failure surfaces as a bus transport error
-        // (the event stays unacked and is redelivered).
+        // (the event stays unacked and is redelivered). Slated for removal: this
+        // cache-refresh subscription moves to the broadcast invalidation plane (plan
+        // Step 7) — kept functional until then.
         let refresh = cached.clone();
         ctx.bus().on_tx(
+            bus::SubscriptionSpec {
+                id: "config-cache.config-changed.v1",
+                start: bus::StartPosition::Genesis,
+            },
             &configevents::CHANGED,
-            "config-cache",
             move |_delivery, _e: configevents::Changed| {
                 let refresh = refresh.clone();
                 Box::pin(async move { refresh.refresh().await.map_err(bus::Error::transport) })

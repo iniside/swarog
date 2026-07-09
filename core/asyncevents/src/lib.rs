@@ -24,7 +24,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::Router;
-use bus::{AnyTx, Delivery, Transport, TxHandler};
+use bus::{AnyTx, Delivery, EventContract, SubscriptionSpec, Transport, TxHandler};
 use outbox::Relay;
 use sqlx::PgPool;
 use tokio::sync::watch;
@@ -128,16 +128,19 @@ impl Transport for Inner {
     async fn enqueue_tx(
         &self,
         mut tx: AnyTx<'_>,
-        topic: &str,
+        contract: &EventContract,
         payload: &[u8],
     ) -> Result<(), bus::Error> {
         let conn = tx.downcast::<sqlx::PgConnection>()?;
+        // Step-1 shim: this push plane predates versioned contracts, so only
+        // `contract.topic` reaches the outbox; version + history land with the
+        // V2 event log (plan Step 2).
         // Bind the payload as text so `::jsonb` parses it (a bytea bind would try to
         // cast raw bytes). The bus already JSON-encoded it, so it is valid UTF-8.
         let text = std::str::from_utf8(payload).map_err(bus::Error::transport)?;
         sqlx::query("INSERT INTO asyncevents.outbox (origin, topic, payload) VALUES ($1, $2, $3::jsonb)")
             .bind(&self.origin)
-            .bind(topic)
+            .bind(contract.topic)
             .bind(text)
             .execute(&mut *conn)
             .await
@@ -148,13 +151,22 @@ impl Transport for Inner {
     /// Records an in-process durable subscription. Called during module wiring
     /// (any phase — the map is live from [`Plane::new`]), so it only appends;
     /// [`Plane::start`] later snapshots these into relay local targets.
-    fn subscribe_tx(&self, topic: &str, subscriber: &str, handler: Arc<dyn TxHandler>) {
+    /// Step-1 shim: `spec.id` becomes the inbox-dedup subscriber string (the
+    /// dedup keys change; irrelevant — the DB is wiped at the Step 3 cutover);
+    /// `spec.start` and `version` are V2 vocabulary this push plane never reads.
+    fn subscribe_tx(
+        &self,
+        spec: SubscriptionSpec,
+        topic: &str,
+        _version: u32,
+        handler: Arc<dyn TxHandler>,
+    ) {
         self.local_handlers
             .lock()
             .unwrap()
             .entry(topic.to_string())
             .or_default()
-            .push((subscriber.to_string(), handler));
+            .push((spec.id.to_string(), handler));
     }
 }
 

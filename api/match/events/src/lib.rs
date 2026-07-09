@@ -11,7 +11,7 @@
 
 use std::sync::LazyLock;
 
-use bus::{define, EventType};
+use bus::{define, EventType, HistoryPolicy};
 use serde::{Deserialize, Serialize};
 
 /// Fires when a match result is reported. Evolve additively (constraint #6): add
@@ -30,4 +30,5 @@ pub struct Finished {
 /// `bus::define` is not `const`, so the descriptor is a `LazyLock` static; callers
 /// pass it as `&*matchevents::FINISHED` (or just `&matchevents::FINISHED`, which
 /// auto-derefs). Its `.topic()` is `"match.finished"` — the string audit subscribes to.
-pub static FINISHED: LazyLock<EventType<Finished>> = LazyLock::new(|| define("match.finished"));
+pub static FINISHED: LazyLock<EventType<Finished>> =
+    LazyLock::new(|| define("match.finished", 1, HistoryPolicy::MinRetention { days: 7 }));

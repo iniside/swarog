@@ -48,12 +48,27 @@ const DURABLE_TOPICS: &[&str] = &[
     "match.finished",
 ];
 
+/// The per-topic subscription ids, zipped positionally with [`DURABLE_TOPICS`]:
+/// six independent consumer-owned checkpoints replace the old single shared
+/// `"audit"` subscriber name, so one topic's delivery failure never stalls
+/// another's cursor. The anti-drift test pins the zip (equal length, id ↔ topic).
+const DURABLE_SPEC_IDS: &[&str] = &[
+    "audit.character-created.v1",
+    "audit.character-deleted.v1",
+    "audit.player-registered.v1",
+    "audit.config-changed.v1",
+    "audit.match-finished.v1",
+];
+
 /// The `scheduler.fired` `name` audit prunes on. Shared vocabulary (a string, like a
 /// topic): the scheduler seeds this schedule name (Step 9), audit reacts to it.
 const PRUNE_SCHEDULE_NAME: &str = schedulerevents::schedule_names::AUDIT_PRUNE;
 
-/// The stable inbox-dedup subscriber name for every audit subscription.
-const SUBSCRIBER: &str = "audit";
+/// The prune reaction's own checkpoint — independent of the ledger subscriptions.
+const PRUNE_SUB: bus::SubscriptionSpec = bus::SubscriptionSpec {
+    id: "audit.prune-on-scheduler.v1",
+    start: bus::StartPosition::Genesis,
+};
 
 const DEFAULT_RETENTION_DAYS: i32 = 30;
 
@@ -323,11 +338,18 @@ impl Module for Audit {
         // through its per-(event_id,"audit") inbox-dedup tx, in BOTH topologies. We
         // subscribe by raw string (no payload-type import) and insert the raw JSON on
         // the HANDED tx, so the ledger row commits atomically with the dedup row.
-        for topic in DURABLE_TOPICS {
+        for (topic, id) in DURABLE_TOPICS.iter().zip(DURABLE_SPEC_IDS) {
             let handler: Arc<dyn TxHandler> = Arc::new(RecordHandler {
                 topic: (*topic).to_string(),
             });
-            ctx.bus().on_tx_raw(topic, SUBSCRIBER, handler);
+            ctx.bus().on_tx_raw(
+                bus::SubscriptionSpec {
+                    id,
+                    start: bus::StartPosition::Genesis,
+                },
+                topic,
+                handler,
+            );
         }
 
         // Retention prune as a REACTION to scheduler.fired on the durable plane. Raw
@@ -336,7 +358,7 @@ impl Module for Audit {
         // inbox-dedup tx.
         let prune: Arc<dyn TxHandler> = Arc::new(PruneHandler { retention_days });
         ctx.bus()
-            .on_tx_raw(schedulerevents::FIRED.topic(), SUBSCRIBER, prune);
+            .on_tx_raw(PRUNE_SUB, schedulerevents::FIRED.topic(), prune);
 
         // The local admin page. RenderFn is synchronous, but the store read is async;
         // the closure bridges via block_in_place (requires the multi-thread runtime the

@@ -10,7 +10,7 @@
 
 use std::sync::LazyLock;
 
-use bus::{define, EventType};
+use bus::{define, EventType, HistoryPolicy};
 use serde::{Deserialize, Serialize};
 
 /// Fires the first time an identity provisions a NEW player — for any provider
@@ -34,4 +34,4 @@ pub struct PlayerRegistered {
 /// `bus::define` is not `const`, so the descriptor is a `LazyLock` static; callers
 /// pass it as `&*accountsevents::PLAYER_REGISTERED`.
 pub static PLAYER_REGISTERED: LazyLock<EventType<PlayerRegistered>> =
-    LazyLock::new(|| define("player.registered"));
+    LazyLock::new(|| define("player.registered", 1, HistoryPolicy::MinRetention { days: 7 }));

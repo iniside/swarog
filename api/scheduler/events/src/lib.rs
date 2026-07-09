@@ -11,7 +11,7 @@
 
 use std::sync::LazyLock;
 
-use bus::{define, EventType};
+use bus::{define, EventType, HistoryPolicy};
 use serde::{Deserialize, Serialize};
 
 /// Fires once per elapsed interval for one named schedule. It carries only the
@@ -29,7 +29,8 @@ pub struct Fired {
 /// `bus::define` is not `const`, so the descriptor is a `LazyLock` static; callers
 /// pass it as `&schedulerevents::FIRED` (auto-deref) and read the topic string with
 /// `schedulerevents::FIRED.topic()`.
-pub static FIRED: LazyLock<EventType<Fired>> = LazyLock::new(|| define("scheduler.fired"));
+pub static FIRED: LazyLock<EventType<Fired>> =
+    LazyLock::new(|| define("scheduler.fired", 1, HistoryPolicy::MinRetention { days: 7 }));
 
 /// Names of schedules the scheduler module SEEDS — not a namespace for names
 /// consumers invent. The producer's seed DDL already ships this string

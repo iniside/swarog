@@ -8,11 +8,25 @@ async fn settle(bus: &Bus) {
     bus.close().await;
 }
 
+/// The one contract shape the in-process tests need — the durable fields
+/// (version/history) are irrelevant to the async core.
+fn def<T>(topic: &'static str) -> EventType<T> {
+    define(topic, 1, HistoryPolicy::MinRetention { days: 7 })
+}
+
+/// A throwaway spec for durable-plane tests.
+fn spec(id: &'static str) -> SubscriptionSpec {
+    SubscriptionSpec {
+        id,
+        start: StartPosition::Genesis,
+    }
+}
+
 #[tokio::test]
 async fn typed_emit_on_roundtrip() {
     let bus = Bus::new();
     let seen = Arc::new(Mutex::new(Vec::<i32>::new()));
-    let et = define::<i32>("nums");
+    let et = def::<i32>("nums");
     {
         let seen = seen.clone();
         bus.on(&et, move |v| seen.lock().unwrap().push(v));
@@ -27,7 +41,7 @@ async fn typed_emit_on_roundtrip() {
 #[tokio::test]
 async fn per_subscriber_fifo_order() {
     let bus = Bus::new();
-    let et = define::<u32>("t");
+    let et = def::<u32>("t");
     let a = Arc::new(Mutex::new(Vec::<u32>::new()));
     let b = Arc::new(Mutex::new(Vec::<u32>::new()));
     {
@@ -50,8 +64,8 @@ async fn per_subscriber_fifo_order() {
 #[tokio::test]
 async fn subscribed_topics_reports_in_process_subscriptions() {
     let bus = Bus::new();
-    let a = define::<u32>("alpha");
-    let b = define::<u32>("beta");
+    let a = def::<u32>("alpha");
+    let b = def::<u32>("beta");
     assert!(bus.subscribed_topics().is_empty());
     bus.on(&a, |_v| {});
     bus.on(&b, |_v| {});
@@ -65,7 +79,7 @@ async fn subscribed_topics_reports_in_process_subscriptions() {
 #[tokio::test]
 async fn panicking_handler_does_not_stall_others() {
     let bus = Bus::new();
-    let et = define::<u32>("t");
+    let et = def::<u32>("t");
     let good = Arc::new(AtomicU32::new(0));
     // A subscriber that panics on every delivery.
     bus.on(&et, |_v| panic!("boom"));
@@ -86,7 +100,7 @@ async fn panicking_handler_does_not_stall_others() {
 #[tokio::test]
 async fn slow_subscriber_does_not_block_publisher() {
     let bus = Bus::new();
-    let et = define::<u32>("t");
+    let et = def::<u32>("t");
     let done = Arc::new(AtomicU32::new(0));
     {
         let done = done.clone();
@@ -132,19 +146,30 @@ struct FakeTransport {
 
 #[async_trait::async_trait]
 impl Transport for FakeTransport {
-    async fn enqueue_tx(&self, _tx: AnyTx<'_>, topic: &str, payload: &[u8]) -> Result<(), Error> {
+    async fn enqueue_tx(
+        &self,
+        _tx: AnyTx<'_>,
+        contract: &EventContract,
+        payload: &[u8],
+    ) -> Result<(), Error> {
         self.enqueued
             .lock()
             .unwrap()
-            .push((topic.to_string(), payload.to_vec()));
+            .push((contract.topic.to_string(), payload.to_vec()));
         Ok(())
     }
 
-    fn subscribe_tx(&self, topic: &str, subscriber: &str, handler: Arc<dyn TxHandler>) {
+    fn subscribe_tx(
+        &self,
+        spec: SubscriptionSpec,
+        topic: &str,
+        _version: u32,
+        handler: Arc<dyn TxHandler>,
+    ) {
         self.subscribed
             .lock()
             .unwrap()
-            .push((topic.to_string(), subscriber.to_string()));
+            .push((topic.to_string(), spec.id.to_string()));
         self.handlers.lock().unwrap().push(handler);
     }
 }
@@ -169,8 +194,8 @@ fn on_tx_without_transport_panics() {
     // no-op that builds clean and never delivers. Bus::new() = a process with
     // no durable-events plane (no DB), where a durable subscriber cannot run.
     let bus = Bus::new();
-    let et = define::<Grant>("inventory.grant");
-    bus.on_tx(&et, "inventory", |delivery, g: Grant| {
+    let et = def::<Grant>("inventory.grant");
+    bus.on_tx(spec("inventory.grant.v1"), &et, |delivery, g: Grant| {
         Box::pin(async move {
             let _ = (delivery, g);
             Ok(())
@@ -179,12 +204,12 @@ fn on_tx_without_transport_panics() {
 }
 
 #[test]
-fn on_tx_and_on_tx_raw_record_topic_and_subscriber() {
+fn on_tx_and_on_tx_raw_record_topic_and_subscription_id() {
     let fake = Arc::new(FakeTransport::default());
     let bus = Bus::with_transport(fake.clone());
-    let et = define::<Grant>("inventory.grant");
+    let et = def::<Grant>("inventory.grant");
 
-    bus.on_tx(&et, "inventory", |delivery, g: Grant| {
+    bus.on_tx(spec("inventory.grant.v1"), &et, |delivery, g: Grant| {
         Box::pin(async move {
             let _ = (delivery, g);
             Ok(())
@@ -200,15 +225,107 @@ fn on_tx_and_on_tx_raw_record_topic_and_subscriber() {
             Box::pin(async { Ok(()) })
         }
     }
-    bus.on_tx_raw("audit.everything", "audit", Arc::new(Raw));
+    bus.on_tx_raw(spec("audit.everything.v1"), "audit.everything", Arc::new(Raw));
 
     let subs = fake.subscribed.lock().unwrap();
     assert_eq!(
         *subs,
         vec![
-            ("inventory.grant".to_string(), "inventory".to_string()),
-            ("audit.everything".to_string(), "audit".to_string()),
+            ("inventory.grant".to_string(), "inventory.grant.v1".to_string()),
+            ("audit.everything".to_string(), "audit.everything.v1".to_string()),
         ]
+    );
+    drop(subs);
+
+    // The bus-side introspection list mirrors the same registrations as
+    // (id, topic) pairs — the durable-plane view topiccheck consumes.
+    assert_eq!(
+        bus.subscriptions(),
+        vec![
+            ("inventory.grant.v1".to_string(), "inventory.grant".to_string()),
+            ("audit.everything.v1".to_string(), "audit.everything".to_string()),
+        ]
+    );
+}
+
+#[test]
+#[should_panic(expected = "duplicate durable subscription id")]
+fn duplicate_subscription_id_panics_under_any_transport() {
+    // The duplicate-id guard is BUS-owned, so it fires even under a transport
+    // double (the checkers' RecordingTransport class) — a second registration
+    // of the same checkpoint name is a wiring bug, never a silent share.
+    let bus = Bus::with_transport(Arc::new(FakeTransport::default()));
+    let et = def::<Grant>("inventory.grant");
+    bus.on_tx(spec("inventory.grant.v1"), &et, |delivery, g: Grant| {
+        Box::pin(async move {
+            let _ = (delivery, g);
+            Ok(())
+        })
+    });
+    bus.on_tx(spec("inventory.grant.v1"), &et, |delivery, g: Grant| {
+        Box::pin(async move {
+            let _ = (delivery, g);
+            Ok(())
+        })
+    });
+}
+
+#[test]
+fn on_tx_forwards_the_contract_version_and_raw_pins_v1() {
+    // The transport must be told which contract version a subscription reads
+    // exactly; a raw subscribe names no EventType, so it pins v1.
+    #[derive(Default)]
+    struct VersionRecorder {
+        versions: Mutex<Vec<(String, u32)>>,
+    }
+    #[async_trait::async_trait]
+    impl Transport for VersionRecorder {
+        async fn enqueue_tx(
+            &self,
+            _tx: AnyTx<'_>,
+            _contract: &EventContract,
+            _payload: &[u8],
+        ) -> Result<(), Error> {
+            Ok(())
+        }
+        fn subscribe_tx(
+            &self,
+            spec: SubscriptionSpec,
+            _topic: &str,
+            version: u32,
+            _handler: Arc<dyn TxHandler>,
+        ) {
+            self.versions
+                .lock()
+                .unwrap()
+                .push((spec.id.to_string(), version));
+        }
+    }
+    struct Raw;
+    impl TxHandler for Raw {
+        fn call<'a>(
+            &'a self,
+            _delivery: Delivery<'a>,
+            _payload: Vec<u8>,
+        ) -> BoxFuture<'a, Result<(), Error>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    let rec = Arc::new(VersionRecorder::default());
+    let bus = Bus::with_transport(rec.clone());
+    let et = define::<Grant>("inventory.grant", 3, HistoryPolicy::KeepForever);
+    bus.on_tx(spec("typed.v3"), &et, |delivery, g: Grant| {
+        Box::pin(async move {
+            let _ = (delivery, g);
+            Ok(())
+        })
+    });
+    bus.on_tx_raw(spec("raw.v1"), "inventory.grant", Arc::new(Raw));
+
+    assert_eq!(
+        *rec.versions.lock().unwrap(),
+        vec![("typed.v3".to_string(), 3), ("raw.v1".to_string(), 1)]
     );
 }
 
@@ -253,7 +370,7 @@ fn typed_adapter_decodes_before_calling_the_handler() {
 /// the compiler checking it is the assertion.
 #[allow(dead_code)]
 async fn _tx_threading_type_checks(bus: &Bus) {
-    let et = define::<Grant>("inventory.grant");
+    let et = def::<Grant>("inventory.grant");
     let mut fake_tx: u32 = 0;
     let _ = bus
         .emit_tx(
@@ -265,7 +382,7 @@ async fn _tx_threading_type_checks(bus: &Bus) {
             },
         )
         .await;
-    bus.on_tx(&et, "inventory", |mut delivery, g: Grant| {
+    bus.on_tx(spec("inventory.grant.v1"), &et, |mut delivery, g: Grant| {
         Box::pin(async move {
             // The future borrows the delivery: both fields usable across an await.
             let _ = delivery.event_id;
@@ -284,7 +401,7 @@ async fn _tx_threading_type_checks(bus: &Bus) {
             Box::pin(async { Ok(()) })
         }
     }
-    bus.on_tx_raw("audit", "audit", Arc::new(H));
+    bus.on_tx_raw(spec("audit.everything.v1"), "audit", Arc::new(H));
 }
 
 /// [`AnyTx::downcast`] hands back the exact borrow for the constructed type and
