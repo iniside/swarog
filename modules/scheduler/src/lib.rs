@@ -67,7 +67,9 @@ const ADMIN_LABEL: &str = "Schedules";
 /// immediately due on the first tick. Adding a schedule is normally a runtime data
 /// INSERT, not a code change; the one seeded row (the audit prune cadence) lets the
 /// wired-up system do something out of the box — the producer knowing the consumer's
-/// name (`audit-prune`) is coupling-through-a-string, pushed to data, not eliminated.
+/// name (`audit-prune`) is coupling-through-a-string, now pushed to a shared contract
+/// constant (`schedulerevents::schedule_names::AUDIT_PRUNE`) rather than eliminated:
+/// `seeded_schedule_names_are_contract` (`tests.rs`) links this literal to that const.
 const SCHEMA_DDL: &str = r#"
 CREATE SCHEMA IF NOT EXISTS scheduler;
 CREATE TABLE IF NOT EXISTS scheduler.schedules (

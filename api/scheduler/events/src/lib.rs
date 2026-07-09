@@ -30,3 +30,11 @@ pub struct Fired {
 /// pass it as `&schedulerevents::FIRED` (auto-deref) and read the topic string with
 /// `schedulerevents::FIRED.topic()`.
 pub static FIRED: LazyLock<EventType<Fired>> = LazyLock::new(|| define("scheduler.fired"));
+
+/// Names of schedules the scheduler module SEEDS — not a namespace for names
+/// consumers invent. The producer's seed DDL already ships this string
+/// (coupling-through-data); the const names that existing fact where both sides can
+/// reference one symbol.
+pub mod schedule_names {
+    pub const AUDIT_PRUNE: &str = "audit-prune";
+}

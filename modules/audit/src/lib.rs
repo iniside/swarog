@@ -50,7 +50,7 @@ const DURABLE_TOPICS: &[&str] = &[
 
 /// The `scheduler.fired` `name` audit prunes on. Shared vocabulary (a string, like a
 /// topic): the scheduler seeds this schedule name (Step 9), audit reacts to it.
-const PRUNE_SCHEDULE_NAME: &str = "audit-prune";
+const PRUNE_SCHEDULE_NAME: &str = schedulerevents::schedule_names::AUDIT_PRUNE;
 
 /// The stable inbox-dedup subscriber name for every audit subscription.
 const SUBSCRIBER: &str = "audit";
