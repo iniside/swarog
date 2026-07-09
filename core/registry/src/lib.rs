@@ -35,6 +35,29 @@ use std::sync::{Arc, Mutex};
 #[derive(Default)]
 pub struct Registry {
     services: Mutex<HashMap<String, Box<dyn Any + Send + Sync>>>,
+    /// An opt-in tool-only hook — `None` until a tool installs it via
+    /// [`Registry::set_require_observer`]. Fired once per `require`/`try_require`
+    /// so a tool (e.g. `requirecheck`) can observe every attempted lookup. Kept in
+    /// its own lock so installing/reading it never contends with `services`, and
+    /// mirrors `Bus`'s `Mutex<Option<Arc<dyn Transport>>>` seam.
+    require_observer: Mutex<Option<RequireObserver>>,
+}
+
+/// The require-observer closure: invoked with the lookup kind and the `&str` key on
+/// every [`require`](Registry::require) / [`try_require`](Registry::try_require).
+/// A shared alias so the field and [`Registry::set_require_observer`] name one type.
+pub type RequireObserver = Arc<dyn Fn(RequireKind, &str) + Send + Sync>;
+
+/// Whether a lookup was a mandatory [`require`](Registry::require) or an optional
+/// [`try_require`](Registry::try_require) — the flag the require-observer receives.
+/// Only mandatory requires must be declared in a module's `requires()`, so a tool
+/// distinguishes the two at the hook.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RequireKind {
+    /// A mandatory `require::<T>` (panics if absent).
+    Mandatory,
+    /// An optional `try_require::<T>` (returns `None` if absent).
+    Optional,
 }
 
 impl Registry {
@@ -61,6 +84,7 @@ impl Registry {
     /// present-but-wrong-type service then fails downcast with a separate message.
     /// Both are wiring bugs — loud at startup rather than a surprise later.
     pub fn require<T: ?Sized + Send + Sync + 'static>(&self, name: &str) -> Arc<T> {
+        self.notify_observer(RequireKind::Mandatory, name);
         let services = self.services.lock().unwrap();
         let Some(svc) = services.get(name) else {
             panic!("required service {name:?} not found");
@@ -76,9 +100,47 @@ impl Registry {
     /// (name absent, or present but not a `T`). Never panics — for an OPTIONAL
     /// dependency a consumer can run without.
     pub fn try_require<T: ?Sized + Send + Sync + 'static>(&self, name: &str) -> Option<Arc<T>> {
+        self.notify_observer(RequireKind::Optional, name);
         let services = self.services.lock().unwrap();
         let arc = services.get(name)?.downcast_ref::<Arc<T>>()?;
         Some(Arc::clone(arc))
+    }
+
+    /// Installs an opt-in observer fired once per [`require`](Registry::require)
+    /// (as [`RequireKind::Mandatory`]) and [`try_require`](Registry::try_require)
+    /// (as [`RequireKind::Optional`]), before the map lookup — so even a missing-key
+    /// panic still records the attempted require. Takes `&self` (interior
+    /// mutability), so a tool installs it via `ctx.registry().set_require_observer(…)`
+    /// without any `Context` change. This is a **tool-only** introspection hook
+    /// (e.g. `requirecheck`), the honest analogue of [`Bus::set_transport`]; the
+    /// closure sees only a `&str` key, keeping this leaf foundation-pure.
+    ///
+    /// Last-write-wins: unlike `Bus::set_transport` there is no double-install
+    /// invariant here (a tool may re-install freely), so a re-set silently replaces
+    /// the previous observer rather than panicking.
+    ///
+    /// **INVARIANT — the observer closure MUST NOT call back into the registry**
+    /// (`require`/`try_require`/`provide`): [`std::sync::Mutex`] is non-reentrant, so
+    /// re-entry from inside the observer would deadlock. The observer is invoked
+    /// while holding NEITHER the `services` lock NOR the observer lock (the `Arc` is
+    /// cloned out and both locks dropped first), but calling back in would still
+    /// re-lock `services` recursively via the outer `require` frame — so keep the
+    /// closure self-contained (touch only its own state).
+    ///
+    /// [`Bus::set_transport`]: ../bus/struct.Bus.html#method.set_transport
+    pub fn set_require_observer(&self, f: RequireObserver) {
+        *self.require_observer.lock().unwrap() = Some(f);
+    }
+
+    /// Fires the require-observer if one is installed. Clones the `Arc` out of its
+    /// lock and drops that lock BEFORE invoking the closure, so the observer never
+    /// runs while holding the observer lock (nor the `services` lock — callers fire
+    /// this before taking it). The no-observer path is a cheap `if let Some` no-op.
+    fn notify_observer(&self, kind: RequireKind, name: &str) {
+        let obs = self.require_observer.lock().unwrap().clone();
+        if let Some(obs) = obs {
+            obs(kind, name);
+        }
     }
 }
 
