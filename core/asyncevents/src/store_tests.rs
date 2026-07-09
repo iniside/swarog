@@ -72,6 +72,14 @@ async fn poll_eligible(pool: &PgPool, topic: &str, want: i64) -> i64 {
     eligible_count(pool, topic).await
 }
 
+async fn count_topic(pool: &PgPool, topic: &str) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM asyncevents.events WHERE topic = $1")
+        .bind(topic)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
 async fn cleanup_topic(pool: &PgPool, topic: &str) {
     let _ = sqlx::query("DELETE FROM asyncevents.events WHERE topic = $1")
         .bind(topic)
@@ -231,6 +239,86 @@ async fn exclusive_bump_blocks_while_shared_writer_in_flight() {
             .unwrap();
     assert!(recorded >= gen_after);
 
+    cleanup_topic(&pool, topic).await;
+}
+
+/// A pre-existing `history_contracts` row with a DIFFERENT policy than the code
+/// contract FAILS the emit loudly — a topic's history promise is immutable and is
+/// never silently adopted. Asserted at both the `ensure_history_contract` seam and
+/// through the transport's native-writer `enqueue_tx` path.
+#[tokio::test]
+async fn history_contract_conflict_fails_emit() {
+    use bus::{AnyTx, Transport};
+
+    let Some(pool) = test_pool().await else { return };
+    let topic = unique_topic("store.histconflict");
+
+    // Pre-seed keep_forever; the code contract below declares min_retention/7.
+    sqlx::query(
+        "INSERT INTO asyncevents.history_contracts (topic, contract_version, policy, min_retention_days) \
+         VALUES ($1, 1, 'keep_forever', 7)",
+    )
+    .bind(topic)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let c = contract(topic); // min_retention / 7 days — a policy mismatch
+    let mut conn = pool.acquire().await.unwrap();
+    let err = ensure_history_contract(&mut conn, c.topic, c.version, c.history)
+        .await
+        .expect_err("a policy conflict must fail loudly");
+    assert!(err.to_string().contains("history_contracts"), "unexpected error: {err}");
+    assert!(err.to_string().contains("immutable"), "must name the immutability rule: {err}");
+
+    // The native-writer emit path surfaces the same failure — and does NOT append.
+    let t = crate::LogTransport::new();
+    let mut tx = pool.begin().await.unwrap();
+    let emit_err = t
+        .enqueue_tx(AnyTx::new(&mut *tx), &c, br#"{"a":1}"#)
+        .await
+        .expect_err("emit must fail on a drifted history policy");
+    assert!(emit_err.to_string().contains("immutable"), "unexpected emit error: {emit_err}");
+    tx.rollback().await.unwrap();
+    assert_eq!(
+        count_topic(&pool, topic).await,
+        0,
+        "a conflict-failed emit must not append an event"
+    );
+
+    let _ = sqlx::query("DELETE FROM asyncevents.history_contracts WHERE topic = $1")
+        .bind(topic)
+        .execute(&pool)
+        .await;
+    cleanup_topic(&pool, topic).await;
+}
+
+/// A matching (or absent) policy lets `ensure_history_contract` succeed and seeds the
+/// row idempotently — the healthy native-writer / reconcile path.
+#[tokio::test]
+async fn history_contract_seeds_and_is_idempotent() {
+    let Some(pool) = test_pool().await else { return };
+    let topic = unique_topic("store.histseed");
+    let c = contract(topic);
+    let mut conn = pool.acquire().await.unwrap();
+
+    ensure_history_contract(&mut conn, c.topic, c.version, c.history).await.unwrap();
+    ensure_history_contract(&mut conn, c.topic, c.version, c.history).await.unwrap(); // idempotent
+
+    let (policy, days): (String, i32) = sqlx::query_as(
+        "SELECT policy, min_retention_days FROM asyncevents.history_contracts \
+         WHERE topic = $1 AND contract_version = 1",
+    )
+    .bind(topic)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!((policy.as_str(), days), ("min_retention", 7));
+
+    let _ = sqlx::query("DELETE FROM asyncevents.history_contracts WHERE topic = $1")
+        .bind(topic)
+        .execute(&pool)
+        .await;
     cleanup_topic(&pool, topic).await;
 }
 

@@ -5,20 +5,26 @@
 //! There is no outbox, no relay, no `POST /events` sink and no per-process origin:
 //! every process reads the one shared log, restricted to its own subscription ids.
 
+use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
-use bus::{AnyTx, EventContract, StartPosition, SubscriptionSpec, Transport, TxHandler};
+use bus::{AnyTx, EventContract, HistoryPolicy, StartPosition, SubscriptionSpec, Transport, TxHandler};
 use sqlx::PgConnection;
 
 use crate::store;
 
 /// One locally-registered durable subscription: the consumer-owned descriptor plus
 /// the topic/version it binds and the handler the worker invokes per delivery.
+/// `history` is the publisher's retention policy carried by a typed `EventType`
+/// (`Some` for `on_tx`), or `None` for a raw `on_tx_raw` subscriber — reconcile
+/// seeds the `history_contracts` row from it when present (the producer owns it
+/// regardless; see [`crate::catalog`]).
 #[derive(Clone)]
 pub(crate) struct SubEntry {
     pub spec: SubscriptionSpec,
     pub topic: String,
     pub version: u32,
+    pub history: Option<HistoryPolicy>,
     pub handler: Arc<dyn TxHandler>,
 }
 
@@ -56,6 +62,11 @@ fn start_desc(start: &StartPosition) -> String {
 #[derive(Default)]
 pub struct LogTransport {
     subs: Mutex<Vec<SubEntry>>,
+    /// The native-writer `history_contracts` seed guard: `(topic, version)` pairs
+    /// whose retention contract this process has already reconciled on a prior
+    /// emit. Purely a per-process round-trip optimization — the DDL is
+    /// `ON CONFLICT DO NOTHING`, so a concurrent double-seed is harmless.
+    contracts_seeded: Mutex<HashSet<(String, u32)>>,
 }
 
 impl LogTransport {
@@ -86,6 +97,23 @@ impl Transport for LogTransport {
         payload: &[u8],
     ) -> Result<(), bus::Error> {
         let conn = tx.downcast::<PgConnection>()?;
+        // Native-writer path (a) for `history_contracts`: on this process's FIRST
+        // emit of a (topic, version), seed its retention contract on the producer's
+        // own tx (atomic with the event) — and FAIL LOUDLY if a stored row already
+        // records a DIFFERENT policy, never silently adopting it.
+        let key = (contract.topic.to_string(), contract.version);
+        let first = self.contracts_seeded.lock().unwrap().insert(key.clone());
+        if first {
+            if let Err(err) =
+                store::ensure_history_contract(conn, contract.topic, contract.version, contract.history)
+                    .await
+            {
+                // Un-mark on failure so a transient error retries next emit (and a
+                // policy conflict stays loud every time until the code is fixed).
+                self.contracts_seeded.lock().unwrap().remove(&key);
+                return Err(err);
+            }
+        }
         store::append(conn, contract, payload).await?;
         Ok(())
     }
@@ -99,12 +127,14 @@ impl Transport for LogTransport {
         spec: SubscriptionSpec,
         topic: &str,
         version: u32,
+        history: Option<HistoryPolicy>,
         handler: Arc<dyn TxHandler>,
     ) {
         self.subs.lock().unwrap().push(SubEntry {
             spec,
             topic: topic.to_string(),
             version,
+            history,
             handler,
         });
     }

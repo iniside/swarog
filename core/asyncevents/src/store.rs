@@ -21,7 +21,7 @@
 //! happens in SQL (row comparison), never in Rust.
 
 use anyhow::Context as _;
-use bus::EventContract;
+use bus::{EventContract, HistoryPolicy};
 use sqlx::{PgConnection, PgPool};
 
 /// The one fixed advisory-lock key of the writer protocol. Shared form: every
@@ -163,6 +163,74 @@ pub async fn append(
             .await
             .map_err(bus::Error::transport)?;
     Ok(event_id)
+}
+
+/// The `(policy, min_retention_days)` column pair for a [`HistoryPolicy`].
+/// `KeepForever` carries no meaningful day count, so it takes the table default
+/// (7) purely to satisfy `NOT NULL` — retention never reads it for that policy.
+pub(crate) fn policy_columns(history: HistoryPolicy) -> (&'static str, i32) {
+    match history {
+        HistoryPolicy::MinRetention { days } => {
+            ("min_retention", i32::try_from(days).unwrap_or(i32::MAX))
+        }
+        HistoryPolicy::KeepForever => ("keep_forever", 7),
+    }
+}
+
+/// Seeds this event stream's row in `asyncevents.history_contracts` — the
+/// retention GC's per-`(topic, version)` policy source — on the CALLER's open
+/// connection, `ON CONFLICT (topic, contract_version) DO NOTHING`. Then reads the
+/// stored row back and FAILS LOUDLY ([`bus::Error`]) if it records a DIFFERENT
+/// policy than this code's contract: a topic's history promise is immutable, so a
+/// drifted code contract must break the emit, never silently adopt the stored one.
+/// Both native producers (via [`crate::transport::LogTransport::enqueue_tx`]) and
+/// typed-subscription reconcile ([`crate::catalog`]) call this so the row appears
+/// as soon as either side touches the topic. Takes primitives (not
+/// `&EventContract`) so the reconcile path need not leak a `&'static str`.
+pub async fn ensure_history_contract(
+    conn: &mut PgConnection,
+    topic: &str,
+    version: u32,
+    history: HistoryPolicy,
+) -> Result<(), bus::Error> {
+    let (policy, days) = policy_columns(history);
+    let version = i32::try_from(version).map_err(bus::Error::transport)?;
+    sqlx::query(
+        "INSERT INTO asyncevents.history_contracts \
+             (topic, contract_version, policy, min_retention_days) \
+         VALUES ($1, $2, $3, $4) ON CONFLICT (topic, contract_version) DO NOTHING",
+    )
+    .bind(topic)
+    .bind(version)
+    .bind(policy)
+    .bind(days)
+    .execute(&mut *conn)
+    .await
+    .map_err(bus::Error::transport)?;
+
+    let (stored_policy, stored_days): (String, i32) = sqlx::query_as(
+        "SELECT policy, min_retention_days FROM asyncevents.history_contracts \
+         WHERE topic = $1 AND contract_version = $2",
+    )
+    .bind(topic)
+    .bind(version)
+    .fetch_one(&mut *conn)
+    .await
+    .map_err(bus::Error::transport)?;
+
+    // Day count only matters under `min_retention`; `keep_forever`'s stored days
+    // are a NOT-NULL placeholder, never compared.
+    let drifted = stored_policy != policy
+        || (policy == "min_retention" && stored_days != days);
+    if drifted {
+        return Err(bus::Error::transport(std::io::Error::other(format!(
+            "asyncevents: history_contracts for ({topic}, v{version}) records policy \
+             {stored_policy}/{stored_days}d, but this process's code contract declares \
+             {policy}/{days}d — a topic's history policy is immutable; reconcile the code \
+             or migrate the row deliberately (never adopt silently)"
+        ))));
+    }
+    Ok(())
 }
 
 /// Bumps the log generation — an offline operator action (`eventctl

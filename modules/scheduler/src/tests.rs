@@ -120,6 +120,7 @@ impl Transport for FakeTransport {
         _spec: bus::SubscriptionSpec,
         _topic: &str,
         _version: u32,
+        _history: Option<bus::HistoryPolicy>,
         _handler: Arc<dyn TxHandler>,
     ) {
     }

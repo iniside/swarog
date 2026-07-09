@@ -20,10 +20,12 @@
 //! `asyncevents.append_event`, startup guards); [`transport`] the
 //! [`bus::Transport`] over it; [`catalog`] materializes `SubscriptionSpec`s into
 //! rows (cursor discipline); [`worker`] the pull loop + failure state machine;
-//! [`wakeup`] the NOTIFY listener; [`plane_metrics`] the lag/frontier gauges.
+//! [`wakeup`] the NOTIFY listener; [`plane_metrics`] the lag/frontier gauges;
+//! [`retention`] the checkpoint-coupled GC task.
 
 mod catalog;
 mod plane_metrics;
+mod retention;
 pub mod store;
 mod transport;
 mod wakeup;
@@ -172,6 +174,14 @@ impl Plane {
                 stop_rx.clone(),
             )));
         }
+        // Checkpoint-coupled retention GC (interval from EVENTS_HOUSEKEEP_INTERVAL).
+        // Runs regardless of whether this process hosts subscriptions — GC is a
+        // DB-global property of the shared log, safe to run redundantly per process.
+        tasks.push(tokio::spawn(retention::run(
+            self.pool.clone(),
+            retention::interval_from_env(),
+            stop_rx.clone(),
+        )));
         tasks.push(tokio::spawn(plane_metrics::refresh_loop(
             self.pool.clone(),
             ids,

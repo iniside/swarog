@@ -164,6 +164,7 @@ impl Transport for FakeTransport {
         spec: SubscriptionSpec,
         topic: &str,
         _version: u32,
+        _history: Option<HistoryPolicy>,
         handler: Arc<dyn TxHandler>,
     ) {
         self.subscribed
@@ -293,6 +294,7 @@ fn on_tx_forwards_the_contract_version_and_raw_pins_v1() {
             spec: SubscriptionSpec,
             _topic: &str,
             version: u32,
+            _history: Option<HistoryPolicy>,
             _handler: Arc<dyn TxHandler>,
         ) {
             self.versions

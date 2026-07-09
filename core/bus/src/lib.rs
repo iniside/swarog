@@ -276,7 +276,14 @@ impl Bus {
             handler,
             _marker: PhantomData::<fn() -> T>,
         });
-        self.subscribe_durable(spec, et.topic(), et.contract().version, wrapped);
+        let contract = *et.contract();
+        self.subscribe_durable(
+            spec,
+            et.topic(),
+            contract.version,
+            Some(contract.history),
+            wrapped,
+        );
     }
 
     /// The untyped raw-bytes durable subscribe: registers a [`TxHandler`] that is
@@ -287,7 +294,10 @@ impl Bus {
     /// later version gets a versioned variant of this method then. **Panics if no
     /// transport is installed** — same rationale as [`Bus::on_tx`].
     pub fn on_tx_raw(&self, spec: SubscriptionSpec, topic: &str, handler: Arc<dyn TxHandler>) {
-        self.subscribe_durable(spec, topic, 1, handler);
+        // A raw subscriber names no `EventType`, so it carries NO history contract:
+        // the PRODUCER owns the `history_contracts` row (native-writer path). `None`
+        // tells the plane's reconcile to leave the retention policy to the producer.
+        self.subscribe_durable(spec, topic, 1, None, handler);
     }
 
     /// The one durable-subscribe funnel: transport presence check (loud, see
@@ -298,6 +308,7 @@ impl Bus {
         spec: SubscriptionSpec,
         topic: &str,
         version: u32,
+        history: Option<HistoryPolicy>,
         handler: Arc<dyn TxHandler>,
     ) {
         let Some(t) = &self.transport else {
@@ -316,7 +327,7 @@ impl Bus {
             );
             durable.list.push((spec.id, topic.to_string()));
         }
-        t.subscribe_tx(spec, topic, version, handler);
+        t.subscribe_tx(spec, topic, version, history, handler);
     }
 }
 
@@ -446,11 +457,17 @@ pub trait Transport: Send + Sync {
     /// later invoked with a per-delivery [`Delivery`] (the stable event id + the
     /// transport's erased delivery tx). Duplicate `spec.id`s never reach a
     /// transport — [`Bus`] panics first.
+    ///
+    /// `history` is the publisher's [`HistoryPolicy`] carried by the subscribed
+    /// [`EventType`] (`Some` for a typed [`Bus::on_tx`]), or `None` for a raw
+    /// [`Bus::on_tx_raw`] subscriber that names no `EventType` — the plane uses it
+    /// only to seed the retention contract; the producer owns that row regardless.
     fn subscribe_tx(
         &self,
         spec: SubscriptionSpec,
         topic: &str,
         version: u32,
+        history: Option<HistoryPolicy>,
         handler: Arc<dyn TxHandler>,
     );
 }

@@ -41,6 +41,10 @@ members = [
     # 12-entry vec both topiccheck and requirecheck build, extracted so a module added
     # to cmd/server can't silently miss one harness's copy but not the other's.
     "tools/checkmodules",
+    # Durable-event-log operator CLI (Step 5): inspects subscriptions/lag and drives the
+    # recovery verbs (retry/pause/resume/skip/retire/bump-generation) over the shared
+    # asyncevents schema; retention GC lives in core/asyncevents.
+    "tools/eventctl",
     # External C# client generator (Step 2): scrapes the player-reachable API (runtime
     # route_bindings() ∪ syn source parse) into a typed manifest; the C# emitter is Step 3.
     "tools/csharp-client-gen",

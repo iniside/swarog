@@ -1,0 +1,28 @@
+[package]
+name = "eventctl"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The durable-event-log operator CLI: inspect subscriptions/lag and drive the
+# recovery verbs (retry/pause/resume/skip/retire/bump-generation) against the shared
+# `asyncevents` schema over `DATABASE_URL`. Hand-rolled arg parsing (like the other
+# tools/ crates); the mutating logic lives in the lib so it is unit-testable, main is
+# a thin dispatcher. Depends on `asyncevents` only for the one shared `bump_generation`
+# writer (there must be exactly one implementation).
+[[bin]]
+name = "eventctl"
+path = "src/main.rs"
+
+[dependencies]
+asyncevents = { workspace = true }
+sqlx = { workspace = true, features = ["json"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+anyhow = { workspace = true }
+
+[dev-dependencies]
+# Tests migrate the plane (Plane::migrate) and append real events to set up
+# skip/retry scenarios against live Postgres.
+bus = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }

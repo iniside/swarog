@@ -82,6 +82,7 @@ fn entry(sub_id: &'static str, topic: &'static str, handler: Arc<dyn TxHandler>)
         spec: SubscriptionSpec { id: sub_id, start: StartPosition::Genesis },
         topic: topic.to_string(),
         version: 1,
+        history: Some(bus::HistoryPolicy::MinRetention { days: 7 }),
         handler,
     }
 }

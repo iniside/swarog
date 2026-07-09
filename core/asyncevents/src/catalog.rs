@@ -33,6 +33,18 @@ async fn reconcile_one(pool: &PgPool, entry: &SubEntry) -> anyhow::Result<()> {
     let version = i32::try_from(entry.version)
         .map_err(|_| anyhow::anyhow!("asyncevents: contract version {} overflows i32", entry.version))?;
 
+    // Consumer path (b) for `history_contracts`: a TYPED subscription carries the
+    // publisher's history policy, so seed the retention row from it (the producer
+    // owns the same row via the native-writer path — either populates it). A raw
+    // `on_tx_raw` sub carries no contract (`history == None`); its topic's row is
+    // left to the producer. A policy conflict FAILS STARTUP loudly.
+    if let Some(history) = entry.history {
+        let mut conn = pool.acquire().await?;
+        crate::store::ensure_history_contract(&mut conn, &entry.topic, entry.version, history)
+            .await
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+    }
+
     // Insert-if-missing and the hash check share ONE tx so AfterRegistration's
     // pg_current_xact_id() is the xid of the tx that actually created the row.
     let mut tx = pool.begin().await?;
