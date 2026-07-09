@@ -10,8 +10,7 @@ metadata:
 Decision (2026-07-09): the future mini-orchestrator for this backend will manage
 **native OS processes — explicitly NO containers, no Docker, no Kubernetes**.
 Scope sketch (not started): supervisor (spawn/restart/backoff off `/readyz`) +
-Postgres-table service registry (heartbeat + LISTEN/NOTIFY, `CachedConfig` pattern)
-+ multi-peer round-robin in `remote::Stub` + rolling deploy with QUIC drain.
+multi-peer round-robin in `remote::Stub` + rolling deploy with QUIC drain.
 Prerequisite before any `replicas: 2`: module replica-safety (rating MMR to DB,
 advisory lock on relay per EVENTS_ORIGIN).
 
@@ -21,13 +20,22 @@ limits, if ever needed, are direct cgroups. Reference point: Guild Wars 1 (2005)
 ran a custom native-process orchestrator with live no-downtime updates — small
 team, no container tooling. Sized at ~10 agent iterations over a few days.
 
-**Separate application, NOT part of the core/ backplane** (decided 2026-07-09):
-own crate + binary (likely top-level `orchestrator/`, not `core/`, not a
-lifecycle::Module — it embodies topology while modules are topology-blind, and it
-outlives the processes it spawns). Shares only Postgres (registry) + the `/readyz`
-convention. Platform-side pieces still land at existing seams: multi-peer
-round-robin in `core/remote`, drain in `core/edge`/`httpmw`, replica-safety in
-modules.
+**Separate application with ZERO sharing** (decided 2026-07-09, Lukasz explicit:
+"zero współdzielenia poza folderem głównym"): own crate + binary (likely top-level
+`orchestrator/`, not `core/`, not a lifecycle::Module — it embodies topology while
+modules are topology-blind, and it outlives the processes it spawns). No shared
+crates, **no use of the backend's Postgres** (the earlier registry-table +
+LISTEN/NOTIFY idea is SUPERSEDED — don't re-propose it). It knows the backend only
+via the external process contract: spawn binary with env vars (`*_EDGE_ADDR`,
+`EVENTS_SUBSCRIBERS`, `EVENTS_ORIGIN`, `DATABASE_URL`), poll `GET /readyz`,
+signal/kill + exit codes. Discovery collapses into port assignment: the
+orchestrator mints ports and injects addresses at spawn (what split-proof.ps1 does
+by hand today) — no registration mechanism, zero backend code change. Its own
+state (manifest, PIDs, ports) lives locally (file/sqlite/in-memory). Open design
+point: env is read at spawn, so a peer address change = consumer restart (or
+later stub re-resolve). Platform-side pieces still land at existing seams:
+multi-peer round-robin in `core/remote`, drain in `core/edge`/`httpmw`,
+replica-safety in modules.
 
 **How to apply:** when the orchestrator work starts, don't propose
 Docker/k8s/containerd anywhere in the design and don't fold the orchestrator into
