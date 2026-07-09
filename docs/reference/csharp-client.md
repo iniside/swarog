@@ -121,8 +121,8 @@ you as its first step.
 `gbclient` (built from `clients/csharp/`, entry point `Program.cs`) has two modes:
 
 ```
-gbclient raw  --addr HOST:PORT (--ca PATH | --insecure) [--token TOK] METHOD [JSON-PAYLOAD]
-gbclient flow --addr HOST:PORT (--ca PATH | --insecure)
+gbclient raw  --addr HOST:PORT (--ca PATH | --insecure) [--token TOK] [--api-key KEY] METHOD [JSON-PAYLOAD]
+gbclient flow --addr HOST:PORT (--ca PATH | --insecure) [--api-key KEY]
 ```
 
 - **`raw`** — drives the untyped `IPlayerTransport` directly with any method
@@ -133,6 +133,12 @@ gbclient flow --addr HOST:PORT (--ca PATH | --insecure)
 - **`flow`** — drives the **generated typed client** (`Generated/Client.cs`)
   end-to-end: register → create character → list characters, asserting the created
   character appears in the list.
+- **`--api-key KEY`** — the connection-scoped API key (gateway's per-key method
+  policy, `X-Api-Key` on HTTP / `api_key` in the player envelope). Bound once at
+  `QuicPlayerClient.ConnectAsync`/`--insecure`|`--ca` connect time (like the trust
+  mode), then stamped into every call's envelope automatically — both `raw` and
+  `flow` honor it. Omit it (or point at a key whose policy forbids the method) to
+  exercise the 401/403 paths.
 
 Exit codes (both modes):
 
@@ -155,14 +161,19 @@ runtime dependency:
 - **`csharp-client` (advisory, SKIP-aware).** Builds `clients/csharp` with
   `dotnet build -c Release`, boots a self-contained monolith
   (`cargo build -p server`, `PORT=:8099`, `PLAYER_EDGE_ADDR=:9100`, ephemeral CA →
-  `--insecure`), and runs four named scenarios through `gbclient`: a raw
-  `leaderboard.topScores` probe (auth=none), `characters.create` with no token
-  (expect exit 1 + `Unauthorized`), `characters.ownerOf` with a bogus token
-  (expect exit 1 + `NotFound` — the wire-only method, only reachable via `raw`),
-  and `gbclient flow` (typed register→create→list). SKIPs — not FAILs — when
-  `dotnet` is absent, or when the first scenario's exit code is `3`
-  (`QuicConnection.IsSupported` false). Both `.sh` and `.ps1` implement this in
-  lockstep per CLAUDE.md.
+  `--insecure`, `APIKEYS_DEV_SEED=1` so the two well-known dev keys exist), and runs
+  six named scenarios through `gbclient`, all carrying `--api-key dev-key-client`
+  except where noted: a raw `leaderboard.topScores` probe (auth=none, C1),
+  `characters.create` with no token (C2, expect exit 1 + `Unauthorized`),
+  `characters.ownerOf` with a bogus token (C3, expect exit 1 + `NotFound` — the
+  wire-only method, only reachable via `raw`, not routable so the key check never
+  even runs), `gbclient flow` (C4, typed register→create→list), `match.report`
+  with `dev-key-client` (C5, expect exit 1 + `Forbidden` — the client-facing dev
+  key's policy deliberately omits `match.report`), and `match.report` with
+  `dev-key-server` (C6, `full` policy, expect exit 0 — the key-policy proof on the
+  external C# client). SKIPs — not FAILs — when `dotnet` is absent, or when the
+  first scenario's exit code is `3` (`QuicConnection.IsSupported` false). Both
+  `.sh` and `.ps1` implement this in lockstep per CLAUDE.md.
 
 ## The msquic / Linux-CI caveat
 

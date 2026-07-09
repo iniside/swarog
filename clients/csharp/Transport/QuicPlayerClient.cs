@@ -25,8 +25,13 @@ public sealed class QuicPlayerClient : IPlayerTransport, IAsyncDisposable
     private const int MaxFrame = 1 << 20;
 
     private readonly QuicConnection _conn;
+    private readonly string? _apiKey;
 
-    private QuicPlayerClient(QuicConnection conn) => _conn = conn;
+    private QuicPlayerClient(QuicConnection conn, string? apiKey)
+    {
+        _conn = conn;
+        _apiKey = apiKey;
+    }
 
     /// <summary>
     /// Establishes the persistent QUIC connection. Two trust modes, exactly one of
@@ -42,11 +47,19 @@ public sealed class QuicPlayerClient : IPlayerTransport, IAsyncDisposable
     /// Either way the client presents NO client certificate (the player plane is
     /// server-cert-only; the caller is authenticated per-call by the bearer token).
     /// </summary>
+    /// <param name="apiKey">
+    /// The connection-scoped API key (mirrors the Rust gateway's <c>X-Api-Key</c>
+    /// policy check), or <c>null</c> to send no key. Stamped into every call's
+    /// envelope by <see cref="CallAsync"/> — the key identifies the CLIENT CLASS for
+    /// the whole connection, not a single call, so it is bound here rather than
+    /// threaded through <see cref="IPlayerTransport.CallAsync"/>.
+    /// </param>
     public static async Task<QuicPlayerClient> ConnectAsync(
         string host,
         int port,
         string? caCertPath,
         bool insecure,
+        string? apiKey = null,
         CancellationToken ct = default)
     {
         if (!QuicConnection.IsSupported)
@@ -83,7 +96,7 @@ public sealed class QuicPlayerClient : IPlayerTransport, IAsyncDisposable
         };
 
         var conn = await QuicConnection.ConnectAsync(opts, ct).ConfigureAwait(false);
-        return new QuicPlayerClient(conn);
+        return new QuicPlayerClient(conn, apiKey);
     }
 
     /// <summary>
@@ -133,6 +146,8 @@ public sealed class QuicPlayerClient : IPlayerTransport, IAsyncDisposable
         };
         if (token is not null)
             env["token"] = token;
+        if (_apiKey is not null)
+            env["api_key"] = _apiKey;
 
         byte[] envBytes = JsonSerializer.SerializeToUtf8Bytes(env);
         if (envBytes.Length > MaxFrame)

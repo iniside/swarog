@@ -341,7 +341,7 @@ function Invoke-CSharpStage {
     $dsn = if ($env:DATABASE_URL) { $env:DATABASE_URL } else { $CSharpDefaultDsn }
 
     Stop-CSharpStragglers
-    "--- starting self-contained monolith on :$CSharpPort, player QUIC :$CSharpPlayerPort (ephemeral CA -> --insecure) ---" | Out-File -Append $log
+    "--- starting self-contained monolith on :$CSharpPort, player QUIC :$CSharpPlayerPort (ephemeral CA -> --insecure, APIKEYS_DEV_SEED=1) ---" | Out-File -Append $log
     $proc = Start-Process -FilePath 'target\debug\server.exe' -PassThru -WindowStyle Hidden `
         -RedirectStandardOutput (Join-Path $verifyDir 'csharp-client-server.out.log') `
         -RedirectStandardError (Join-Path $verifyDir 'csharp-client-server.err.log') `
@@ -349,6 +349,7 @@ function Invoke-CSharpStage {
             PORT = ":$CSharpPort"
             DATABASE_URL = $dsn
             PLAYER_EDGE_ADDR = ":$CSharpPlayerPort"
+            APIKEYS_DEV_SEED = '1'
         }
 
     # curl.exe (not Invoke-WebRequest -- it hangs to its HttpClient timeout against this
@@ -369,8 +370,8 @@ function Invoke-CSharpStage {
 
     $status = 'PASS'
 
-    "--- [C1] QUIC probe: raw --insecure leaderboard.topScores ---" | Out-File -Append $log
-    $c1 = Invoke-GbClient @('raw', '--addr', "127.0.0.1:$CSharpPlayerPort", '--insecure', 'leaderboard.topScores')
+    "--- [C1] QUIC probe: raw --insecure --api-key dev-key-client leaderboard.topScores ---" | Out-File -Append $log
+    $c1 = Invoke-GbClient @('raw', '--addr', "127.0.0.1:$CSharpPlayerPort", '--insecure', '--api-key', 'dev-key-client', 'leaderboard.topScores')
     "    -> rc=$($c1.Rc)  $($c1.Out)" | Out-File -Append $log
     if ($c1.Rc -eq 3) {
         Write-Host "  SKIP (QUIC/msquic unsupported on this platform -- QuicConnection.IsSupported false)" -ForegroundColor Yellow
@@ -384,27 +385,43 @@ function Invoke-CSharpStage {
         $status = 'FAIL'
     }
 
-    "--- [C2] raw --insecure characters.create, NO token -> exit 1 + Unauthorized ---" | Out-File -Append $log
-    $c2 = Invoke-GbClient @('raw', '--addr', "127.0.0.1:$CSharpPlayerPort", '--insecure', 'characters.create', '{"name":"x","class":""}')
+    "--- [C2] raw --insecure --api-key dev-key-client characters.create, NO token -> exit 1 + Unauthorized ---" | Out-File -Append $log
+    $c2 = Invoke-GbClient @('raw', '--addr', "127.0.0.1:$CSharpPlayerPort", '--insecure', '--api-key', 'dev-key-client', 'characters.create', '{"name":"x","class":""}')
     "    -> rc=$($c2.Rc)  $($c2.Out)" | Out-File -Append $log
     if ($c2.Rc -ne 1 -or $c2.Out -notmatch 'Unauthorized') {
         "    C2 FAIL: expected exit 1 + Unauthorized, got rc=$($c2.Rc) $($c2.Out)" | Out-File -Append $log
         $status = 'FAIL'
     }
 
-    "--- [C3] raw --insecure --token bogus characters.ownerOf -> exit 1 + NotFound ---" | Out-File -Append $log
-    $c3 = Invoke-GbClient @('raw', '--addr', "127.0.0.1:$CSharpPlayerPort", '--insecure', '--token', 'bogus', 'characters.ownerOf', '{"character_id":"z"}')
+    "--- [C3] raw --insecure --api-key dev-key-client --token bogus characters.ownerOf -> exit 1 + NotFound ---" | Out-File -Append $log
+    $c3 = Invoke-GbClient @('raw', '--addr', "127.0.0.1:$CSharpPlayerPort", '--insecure', '--api-key', 'dev-key-client', '--token', 'bogus', 'characters.ownerOf', '{"character_id":"z"}')
     "    -> rc=$($c3.Rc)  $($c3.Out)" | Out-File -Append $log
     if ($c3.Rc -ne 1 -or $c3.Out -notmatch 'NotFound') {
         "    C3 FAIL: expected exit 1 + NotFound, got rc=$($c3.Rc) $($c3.Out)" | Out-File -Append $log
         $status = 'FAIL'
     }
 
-    "--- [C4] flow --insecure (typed client: register -> create -> list over pure QUIC) ---" | Out-File -Append $log
-    $c4 = Invoke-GbClient @('flow', '--addr', "127.0.0.1:$CSharpPlayerPort", '--insecure')
+    "--- [C4] flow --insecure --api-key dev-key-client (typed client: register -> create -> list over pure QUIC) ---" | Out-File -Append $log
+    $c4 = Invoke-GbClient @('flow', '--addr', "127.0.0.1:$CSharpPlayerPort", '--insecure', '--api-key', 'dev-key-client')
     "    -> rc=$($c4.Rc)  $($c4.Out)" | Out-File -Append $log
     if ($c4.Rc -ne 0) {
         "    C4 FAIL: expected exit 0, got rc=$($c4.Rc)" | Out-File -Append $log
+        $status = 'FAIL'
+    }
+
+    "--- [C5] raw --insecure --api-key dev-key-client match.report -> exit 1 + Forbidden (client policy lacks match.report) ---" | Out-File -Append $log
+    $c5 = Invoke-GbClient @('raw', '--addr', "127.0.0.1:$CSharpPlayerPort", '--insecure', '--api-key', 'dev-key-client', 'match.report', '{"Winner":"c5-winner","Loser":"c5-loser"}')
+    "    -> rc=$($c5.Rc)  $($c5.Out)" | Out-File -Append $log
+    if ($c5.Rc -ne 1 -or $c5.Out -notmatch 'Forbidden') {
+        "    C5 FAIL: expected exit 1 + Forbidden, got rc=$($c5.Rc) $($c5.Out)" | Out-File -Append $log
+        $status = 'FAIL'
+    }
+
+    "--- [C6] raw --insecure --api-key dev-key-server match.report -> exit 0 (full policy allows it) ---" | Out-File -Append $log
+    $c6 = Invoke-GbClient @('raw', '--addr', "127.0.0.1:$CSharpPlayerPort", '--insecure', '--api-key', 'dev-key-server', 'match.report', '{"Winner":"c6-winner","Loser":"c6-loser"}')
+    "    -> rc=$($c6.Rc)  $($c6.Out)" | Out-File -Append $log
+    if ($c6.Rc -ne 0) {
+        "    C6 FAIL: expected exit 0, got rc=$($c6.Rc) $($c6.Out)" | Out-File -Append $log
         $status = 'FAIL'
     }
 

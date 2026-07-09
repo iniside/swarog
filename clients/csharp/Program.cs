@@ -31,8 +31,8 @@ const int ExitNoQuic = 3;
 
 const string Usage =
     "usage:\n" +
-    "  gbclient raw  --addr HOST:PORT (--ca PATH | --insecure) [--token TOK] METHOD [JSON-PAYLOAD]\n" +
-    "  gbclient flow --addr HOST:PORT (--ca PATH | --insecure)";
+    "  gbclient raw  --addr HOST:PORT (--ca PATH | --insecure) [--token TOK] [--api-key KEY] METHOD [JSON-PAYLOAD]\n" +
+    "  gbclient flow --addr HOST:PORT (--ca PATH | --insecure) [--api-key KEY]";
 
 if (args.Length == 0)
 {
@@ -183,6 +183,7 @@ sealed class CliOptions
     public string? CaCertPath { get; init; }
     public bool Insecure { get; init; }
     public string? Token { get; init; }
+    public string? ApiKey { get; init; }
     public string? Method { get; init; }
     public string? Payload { get; init; }
 
@@ -202,7 +203,7 @@ sealed class CliOptions
     }
 
     public Task<QuicPlayerClient> ConnectAsync() =>
-        QuicPlayerClient.ConnectAsync(Host, Port, CaCertPath, Insecure);
+        QuicPlayerClient.ConnectAsync(Host, Port, CaCertPath, Insecure, ApiKey);
 
     public static CliOptions Parse(string[] args, bool wantMethod)
     {
@@ -210,6 +211,7 @@ sealed class CliOptions
         string? ca = null;
         bool insecure = false;
         string? token = null;
+        string? apiKey = null;
         var positional = new List<string>();
 
         for (int i = 0; i < args.Length; i++)
@@ -228,6 +230,9 @@ sealed class CliOptions
                     break;
                 case "--token" or "-token":
                     token = Next(args, ref i, "--token");
+                    break;
+                case "--api-key" or "-api-key":
+                    apiKey = Next(args, ref i, "--api-key");
                     break;
                 case "--help" or "-h":
                     throw new ArgumentException("help requested");
@@ -262,6 +267,7 @@ sealed class CliOptions
             CaCertPath = ca,
             Insecure = insecure,
             Token = token,
+            ApiKey = apiKey,
             Method = method,
             Payload = payload,
         };

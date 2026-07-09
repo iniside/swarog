@@ -361,8 +361,8 @@ csharp_stage() {
     [ -f "target/debug/server.exe" ] && exe=".exe"
 
     csharp_kill_stragglers
-    echo "--- starting self-contained monolith on :$CSHARP_PORT, player QUIC :$CSHARP_PLAYER_PORT (ephemeral CA -> --insecure) ---" >>"$log"
-    env PORT=":$CSHARP_PORT" DATABASE_URL="$dsn" PLAYER_EDGE_ADDR=":$CSHARP_PLAYER_PORT" \
+    echo "--- starting self-contained monolith on :$CSHARP_PORT, player QUIC :$CSHARP_PLAYER_PORT (ephemeral CA -> --insecure, APIKEYS_DEV_SEED=1) ---" >>"$log"
+    env PORT=":$CSHARP_PORT" DATABASE_URL="$dsn" PLAYER_EDGE_ADDR=":$CSHARP_PLAYER_PORT" APIKEYS_DEV_SEED=1 \
         "target/debug/server$exe" >>"$log" 2>&1 &
     local pid=$!
 
@@ -385,9 +385,9 @@ csharp_stage() {
 
     local status=PASS
 
-    echo "--- [C1] QUIC probe: raw --insecure leaderboard.topScores ---" >>"$log"
+    echo "--- [C1] QUIC probe: raw --insecure --api-key dev-key-client leaderboard.topScores ---" >>"$log"
     local c1_out c1_rc
-    c1_out="$(gbclient raw --addr "127.0.0.1:$CSHARP_PLAYER_PORT" --insecure leaderboard.topScores 2>>"$log")"
+    c1_out="$(gbclient raw --addr "127.0.0.1:$CSHARP_PLAYER_PORT" --insecure --api-key dev-key-client leaderboard.topScores 2>>"$log")"
     c1_rc=$?
     echo "    -> rc=$c1_rc  $c1_out" >>"$log"
     if [ "$c1_rc" -eq 3 ]; then
@@ -402,9 +402,9 @@ csharp_stage() {
         status=FAIL
     fi
 
-    echo "--- [C2] raw --insecure characters.create, NO token -> exit 1 + Unauthorized ---" >>"$log"
+    echo "--- [C2] raw --insecure --api-key dev-key-client characters.create, NO token -> exit 1 + Unauthorized ---" >>"$log"
     local c2_out c2_rc
-    c2_out="$(gbclient raw --addr "127.0.0.1:$CSHARP_PLAYER_PORT" --insecure characters.create '{"name":"x","class":""}' 2>>"$log")"
+    c2_out="$(gbclient raw --addr "127.0.0.1:$CSHARP_PLAYER_PORT" --insecure --api-key dev-key-client characters.create '{"name":"x","class":""}' 2>>"$log")"
     c2_rc=$?
     echo "    -> rc=$c2_rc  $c2_out" >>"$log"
     if [ "$c2_rc" -ne 1 ] || ! echo "$c2_out" | grep -q 'Unauthorized'; then
@@ -412,9 +412,9 @@ csharp_stage() {
         status=FAIL
     fi
 
-    echo "--- [C3] raw --insecure --token bogus characters.ownerOf -> exit 1 + NotFound ---" >>"$log"
+    echo "--- [C3] raw --insecure --api-key dev-key-client --token bogus characters.ownerOf -> exit 1 + NotFound ---" >>"$log"
     local c3_out c3_rc
-    c3_out="$(gbclient raw --addr "127.0.0.1:$CSHARP_PLAYER_PORT" --insecure --token bogus characters.ownerOf '{"character_id":"z"}' 2>>"$log")"
+    c3_out="$(gbclient raw --addr "127.0.0.1:$CSHARP_PLAYER_PORT" --insecure --api-key dev-key-client --token bogus characters.ownerOf '{"character_id":"z"}' 2>>"$log")"
     c3_rc=$?
     echo "    -> rc=$c3_rc  $c3_out" >>"$log"
     if [ "$c3_rc" -ne 1 ] || ! echo "$c3_out" | grep -q 'NotFound'; then
@@ -422,13 +422,33 @@ csharp_stage() {
         status=FAIL
     fi
 
-    echo "--- [C4] flow --insecure (typed client: register -> create -> list over pure QUIC) ---" >>"$log"
+    echo "--- [C4] flow --insecure --api-key dev-key-client (typed client: register -> create -> list over pure QUIC) ---" >>"$log"
     local c4_rc
-    gbclient flow --addr "127.0.0.1:$CSHARP_PLAYER_PORT" --insecure >>"$log" 2>&1
+    gbclient flow --addr "127.0.0.1:$CSHARP_PLAYER_PORT" --insecure --api-key dev-key-client >>"$log" 2>&1
     c4_rc=$?
     echo "    -> rc=$c4_rc" >>"$log"
     if [ "$c4_rc" -ne 0 ]; then
         echo "    C4 FAIL: expected exit 0, got rc=$c4_rc" >>"$log"
+        status=FAIL
+    fi
+
+    echo "--- [C5] raw --insecure --api-key dev-key-client match.report -> exit 1 + Forbidden (client policy lacks match.report) ---" >>"$log"
+    local c5_out c5_rc
+    c5_out="$(gbclient raw --addr "127.0.0.1:$CSHARP_PLAYER_PORT" --insecure --api-key dev-key-client match.report '{"Winner":"c5-winner","Loser":"c5-loser"}' 2>>"$log")"
+    c5_rc=$?
+    echo "    -> rc=$c5_rc  $c5_out" >>"$log"
+    if [ "$c5_rc" -ne 1 ] || ! echo "$c5_out" | grep -q 'Forbidden'; then
+        echo "    C5 FAIL: expected exit 1 + Forbidden, got rc=$c5_rc $c5_out" >>"$log"
+        status=FAIL
+    fi
+
+    echo "--- [C6] raw --insecure --api-key dev-key-server match.report -> exit 0 (full policy allows it) ---" >>"$log"
+    local c6_out c6_rc
+    c6_out="$(gbclient raw --addr "127.0.0.1:$CSHARP_PLAYER_PORT" --insecure --api-key dev-key-server match.report '{"Winner":"c6-winner","Loser":"c6-loser"}' 2>>"$log")"
+    c6_rc=$?
+    echo "    -> rc=$c6_rc  $c6_out" >>"$log"
+    if [ "$c6_rc" -ne 0 ]; then
+        echo "    C6 FAIL: expected exit 0, got rc=$c6_rc $c6_out" >>"$log"
         status=FAIL
     fi
 
