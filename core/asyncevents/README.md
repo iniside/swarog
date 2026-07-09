@@ -48,9 +48,14 @@ semantics live exactly at the transaction boundary the broker cannot enter.
 
 `emit_tx` is "send to the broker": the broker's ingest is a SQL `INSERT`, which —
 unlike a network POST — can join the producer's domain transaction, because the
-broker's storage lives in the same Postgres as the domain data. Everything after
-commit (relay → `POST /events` → inbox) is at-least-once delivery with
-per-subscriber dedup, i.e. exactly-once effects.
+broker's storage lives in the same Postgres as the domain data. The guarantee,
+stated generally: *delivery is at-least-once with a stable `event_id`; effects are
+exactly-once iff the dedup-check and the effect are atomic in the consumer's own
+store — via the handed delivery tx when engines match, via an idempotent
+`event_id`-keyed write otherwise.* Everything after commit (relay → `POST /events`
+→ inbox) is that at-least-once delivery; the per-subscriber inbox is the redelivery
+gate, and for an engine-matched consumer the inbox row and the module effect commit
+in one tx, i.e. exactly-once effects.
 
 ## Why `core/*` compiles into every process
 
@@ -81,6 +86,27 @@ gain a consume loop instead of the `POST /events` sink. The outbox, the inbox,
 and the module-facing API (`emit_tx`/`on_tx`) stay exactly as they are — modules
 never knew what delivery looks like, which is the point of the plane.
 
+## Engine-neutral types, Postgres-typed transport
+
+The module-facing API names no store engine: `emit_tx` takes a `bus::AnyTx` (a
+type-erased `&mut` to the caller's tx) and `on_tx` handlers receive a
+`bus::Delivery { event_id, tx }`. `core/bus` is therefore sqlx-free — the engine
+lives only in the concrete transport and in each module's own store layer.
+
+A **non-Postgres-store consumer** ignores the delivery `tx` and instead keys an
+idempotent write on `Delivery::event_id` (stable `"{schema}:{outbox_id}"` across
+redeliveries) in its own store: that yields exactly-once *effects in that store*,
+while the plane's inbox stays the redelivery gate. An engine-matched consumer
+downcasts `Delivery::tx` to `&mut sqlx::PgConnection` and commits its effect in the
+same tx as the inbox dedup row — nothing changed semantically for it.
+
+Producer-side, the types are engine-neutral but the only production transport
+enlists in a Postgres tx: `enqueue_tx` downcasts the `AnyTx` to
+`&mut sqlx::PgConnection`. A foreign-store producer therefore fails loud with
+`Error::TxEngineMismatch` at its **first emit** (a request-path emit fails on first
+use, not at boot) — a second `Transport` impl in that engine is the day-two path,
+deliberately out of scope while the backplane stays Postgres.
+
 ## Mechanics (quick reference)
 
 - **Lifecycle** (all driven by `app::run`, in this order): `Plane::new(pool, dsn)`
@@ -91,7 +117,9 @@ never knew what delivery looks like, which is the point of the plane.
   module stops (delivery halts first).
 - **Schema** `asyncevents`: `outbox` (origin-stamped log; `AFTER INSERT` trigger
   fires `pg_notify('asyncevents_outbox')`), `inbox` (PK `(event_id, subscriber)`
-  — per-subscriber exactly-once). The DDL includes a guarded
+  — the per-subscriber redelivery gate; for an engine-matched consumer this dedup
+  row commits in the same tx as the effect, so effects are exactly-once). The DDL
+  includes a guarded
   `ALTER SCHEMA messaging RENAME TO asyncevents` + inbox dedup-prefix rewrite
   for databases created before the 2026-07-09 rename.
 - **Single-owner drain:** each relay drains ONLY its own `EVENTS_ORIGIN`'s rows

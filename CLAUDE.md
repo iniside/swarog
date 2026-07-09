@@ -25,9 +25,13 @@ Three seams carry all extensibility; almost everything else follows from them:
    the registry swap is the only difference between topologies.
 3. **Event bus** (`ctx.bus()`) — the async glue. Each publishing domain owns
    `api/<name>/<name>events` declaring events via `bus::define`. **Every
-   cross-module event is DURABLE**: producer `emit_tx` inside a real DB tx,
-   consumer `on_tx`/`on_tx_raw` with a subscriber name (outbox → relay →
-   `POST /events` → inbox dedup, exactly-once). The durable transport is installed
+   cross-module event is DURABLE**: producer `emit_tx(AnyTx::new(&mut *tx), …)`
+   inside a real DB tx, consumer `on_tx`/`on_tx_raw` with a subscriber name (handler
+   receives `Delivery { event_id, tx }`; outbox → relay → `POST /events` → inbox
+   dedup). The contract is engine-neutral: *delivery is at-least-once with a stable
+   `event_id`; effects are exactly-once iff the dedup-check and the effect are atomic
+   in the consumer's own store — via the handed delivery tx when engines match, via
+   an idempotent `event_id`-keyed write otherwise.* The durable transport is installed
    by `app::run` at `Context` construction (DB ⇒ plane), never by a module; a
    process without a DB hosts no plane and `cmd/*` never lists it. Plain `emit`/`on`
    is in-process only and reserved for same-module reactions — it never crosses a
