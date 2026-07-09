@@ -24,6 +24,10 @@ async fn main() -> anyhow::Result<()> {
     // infrastructure (`core/app::run` constructs, migrates, starts and stops it) — it
     // is never listed here; its Stop ordering (delivery halts before any module tears
     // down) is structural in `app::run`, not a list-order convention.
+    //
+    // `tools/checkmodules::monolith_modules()` mirrors this list (minus `metrics`,
+    // which has no requires/topics/schema) for the topiccheck/requirecheck harnesses —
+    // keep it in sync when adding a module here.
     let mods: Vec<Box<dyn Module>> = vec![
         Box::new(metrics::Metrics::new()), // core-infra: mounts GET /metrics + contributes the record layer
         Box::new(config::Config::new()),         // DB-backed config: schema "config", provides "config.reader"

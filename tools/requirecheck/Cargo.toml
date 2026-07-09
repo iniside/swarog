@@ -30,18 +30,8 @@ tokio = { workspace = true }
 async-trait = { workspace = true }
 anyhow = { workspace = true }
 
-# The REQUIRE sites — the full monolith module set. The durable-events plane is not a
-# module here; the harness injects its own no-op plane transport. Instantiating and
-# building them runs every real `require`/`try_require` call through the installed observer.
-config = { workspace = true }
-characters = { workspace = true }
-inventory = { workspace = true }
-accounts = { workspace = true }
-admin = { workspace = true }
-audit = { workspace = true }
-scheduler = { workspace = true }
-match_module = { workspace = true }
-rating = { workspace = true }
-leaderboard = { workspace = true }
-webui = { workspace = true }
-gateway = { workspace = true }
+# The REQUIRE sites — the full monolith module set, single-sourced (Step 3,
+# abstraction-leak closures) so this tool and topiccheck can't silently diverge on
+# which modules they build. Instantiating and building them runs every real
+# `require`/`try_require` call through the installed observer.
+checkmodules = { workspace = true }

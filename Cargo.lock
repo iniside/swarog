@@ -542,6 +542,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "checkmodules"
+version = "0.1.0"
+dependencies = [
+ "accounts",
+ "admin",
+ "audit",
+ "characters",
+ "config",
+ "gateway",
+ "inventory",
+ "leaderboard",
+ "lifecycle",
+ "match_module",
+ "rating",
+ "scheduler",
+ "webui",
+]
+
+[[package]]
 name = "combine"
 version = "4.6.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2457,25 +2476,14 @@ dependencies = [
 name = "requirecheck"
 version = "0.1.0"
 dependencies = [
- "accounts",
- "admin",
  "anyhow",
  "async-trait",
- "audit",
  "bus",
- "characters",
- "config",
- "gateway",
- "inventory",
- "leaderboard",
+ "checkmodules",
  "lifecycle",
- "match_module",
- "rating",
  "registry",
- "scheduler",
  "sqlx",
  "tokio",
- "webui",
 ]
 
 [[package]]
@@ -3467,29 +3475,18 @@ dependencies = [
 name = "topiccheck"
 version = "0.1.0"
 dependencies = [
- "accounts",
  "accountsevents",
- "admin",
  "anyhow",
  "async-trait",
- "audit",
  "bus",
- "characters",
  "charactersevents",
- "config",
+ "checkmodules",
  "configevents",
- "gateway",
- "inventory",
- "leaderboard",
  "lifecycle",
- "match_module",
  "matchevents",
- "rating",
- "scheduler",
  "schedulerevents",
  "sqlx",
  "tokio",
- "webui",
 ]
 
 [[package]]

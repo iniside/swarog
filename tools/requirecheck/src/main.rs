@@ -46,7 +46,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
 use bus::{AnyTx, Error, Transport, TxHandler};
-use lifecycle::{Caps, Context, Module};
+use checkmodules::monolith_modules;
+use lifecycle::{Caps, Context};
 use registry::RequireKind;
 
 /// One observed registry lookup: `(module, kind, key)`.
@@ -92,27 +93,6 @@ struct Recorder {
     current_module: Option<String>,
     /// `(module, kind, key)` — one per observed `require`/`try_require`.
     hits: Vec<Hit>,
-}
-
-/// The monolith module set — the superset of every process, so a `require` in ANY
-/// deployment counts. Mirrors `cmd/server`; there is no messaging module — the harness
-/// injects its own no-op plane transport (a durable dep is never keyed-required anyway)
-/// — and it uses a plain `Gateway::new()`.
-fn monolith_modules() -> Vec<Box<dyn Module>> {
-    vec![
-        Box::new(config::Config::new()),
-        Box::new(characters::Characters::new()),
-        Box::new(inventory::Inventory::new()),
-        Box::new(accounts::Accounts::new()),
-        Box::new(admin::Admin::new()),
-        Box::new(audit::Audit::new()),
-        Box::new(scheduler::Scheduler::new()),
-        Box::new(rating::Rating::new()),
-        Box::new(match_module::MatchModule::new()),
-        Box::new(leaderboard::LeaderboardModule::new()),
-        Box::new(webui::WebUi::new()),
-        Box::new(gateway::Gateway::new()),
-    ]
 }
 
 /// The provider module of a capability key — the prefix before the first `.`, exactly

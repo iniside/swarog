@@ -57,7 +57,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
 use bus::{AnyTx, Error, Transport, TxHandler};
-use lifecycle::{App, Context, Module};
+use checkmodules::monolith_modules;
+use lifecycle::{App, Context};
 
 /// Dev-default DSN (mirrors CLAUDE.md). Only ever used to build a LAZY pool that
 /// never connects — `register`/`init` do no I/O.
@@ -144,27 +145,6 @@ fn defined_topics() -> Vec<(String, &'static str)> {
             schedulerevents::FIRED.topic().to_string(),
             "schedulerevents::FIRED",
         ),
-    ]
-}
-
-/// The monolith module set — the superset of every process, so a subscribe in ANY
-/// deployment counts. Mirrors `cmd/server`; there is no messaging module — this tool
-/// provides its own recording durable-events plane — and it uses a plain `Gateway::new()`
-/// (the player-edge wiring is irrelevant to topic subscriptions).
-fn monolith_modules() -> Vec<Box<dyn Module>> {
-    vec![
-        Box::new(config::Config::new()),
-        Box::new(characters::Characters::new()),
-        Box::new(inventory::Inventory::new()),
-        Box::new(accounts::Accounts::new()),
-        Box::new(admin::Admin::new()),
-        Box::new(audit::Audit::new()),
-        Box::new(scheduler::Scheduler::new()),
-        Box::new(rating::Rating::new()),
-        Box::new(match_module::MatchModule::new()),
-        Box::new(leaderboard::LeaderboardModule::new()),
-        Box::new(webui::WebUi::new()),
-        Box::new(gateway::Gateway::new()),
     ]
 }
 
