@@ -143,6 +143,10 @@ async fn healthz_is_not_recorded() {
 async fn module_init_mounts_scrape_and_contributes_one_layer() {
     let ctx = Context::new();
     Metrics::new().init(&ctx).unwrap();
+    // A recordable domain route: /metrics itself is infra-exempt, so the scrape can
+    // only contain http_requests_total if THIS test drives a measured request —
+    // the shared process-global registry must not be seeded by sibling tests.
+    ctx.mount(Router::new().route("/wiring/:id", get(|| async { "ok" })));
 
     // Exactly one layer contributed to the slot the app drains.
     let layers = ctx.contributions::<httpmw::HttpLayer>(httpmw::LAYER_SLOT);
@@ -150,7 +154,12 @@ async fn module_init_mounts_scrape_and_contributes_one_layer() {
 
     // Compose as app::run does: take the mounted router, then apply the layer over it.
     let router = layers[0].apply(ctx.take_router());
+    let (status, _) = get_body(router.clone(), "/wiring/7").await;
+    assert_eq!(status, StatusCode::OK);
     let (status, body) = get_body(router, "/metrics").await;
     assert_eq!(status, StatusCode::OK);
-    assert!(body.contains("http_requests_total"), "got:\n{body}");
+    assert!(
+        body.contains(r#"path="/wiring/:id""#),
+        "the layer must record the routed request into the scrape, got:\n{body}"
+    );
 }
