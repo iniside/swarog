@@ -4,14 +4,13 @@
 //! `app::run` installs it on this server so admin-svc pulls audit's page over the
 //! mutually-authenticated edge.
 //!
-//! Unlike the pure aggregators (gateway-svc/admin-svc) audit OWNS a schema (`audit`) and
-//! an inbox, so this process needs a DB pool and thus hosts the durable-events plane
-//! (app-owned, DB ⇒ plane). Its `POST /events` inbound sink (mounted by the plane on the
-//! HTTP server) is how every producer peer's relay delivers `character.created` /
-//! `character.deleted` / `player.registered` / `config.changed` here; audit's
-//! `on_tx_raw` subscriptions record each on the handed inbox-dedup tx. It PRODUCES no
-//! events, so it names no `EVENTS_SUBSCRIBERS` (pure sink) — but EVENTS_ORIGIN is still
-//! set distinct per process by the run scripts, for its own outbox identity.
+//! Unlike the pure aggregators (gateway-svc/admin-svc) audit OWNS a schema (`audit`),
+//! so this process needs a DB pool and thus hosts the durable-events plane (app-owned,
+//! DB ⇒ plane). Its pull workers drain audit's six consumer-owned subscriptions
+//! (`audit.<topic-kebab>.v1`) from the shared XID-ordered log; audit's `on_tx_raw`
+//! handlers record each event on the handed delivery tx, atomically with the cursor
+//! advance (exactly-once). It PRODUCES no events. Durable delivery needs NO
+//! per-process env — no origins, no subscriber routing, no `POST /events` sink.
 
 use std::sync::{Arc, Mutex};
 

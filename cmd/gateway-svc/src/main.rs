@@ -1,8 +1,8 @@
 //! `gateway-svc` — the dedicated front-door process (port of Go's `cmd/gateway-svc`).
 //! It is a PURE TRANSPORT process: no DB (`Config::without_db`), so no durable-events
 //! plane — the plane is app-owned and exists only where there is a DB (DB ⇒ plane);
-//! events (outbox → `POST /events`) are delivered svc→svc and bypass the front door
-//! entirely, per the `async-fanout-sync-grpc-brokerless` decision. It hosts
+//! durable events live in the shared Postgres log and are pulled svc-side, bypassing
+//! the front door entirely. It hosts
 //! NO provider module, only `remote::Stub`s for `characters`, `inventory` and
 //! `accounts`, so EVERY op it fronts resolves `BackendKind::Remote` and is dialed
 //! over the mTLS edge to the owning peer. The `accounts` stub is MANDATORY (Step 6):

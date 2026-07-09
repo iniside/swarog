@@ -114,7 +114,6 @@ if [ "$MODE" = "monolith" ]; then
     EDGE_CA_KEY="$RUN_DIR/edge-ca.key"
     echo "Minting edge dev CA (player front) -> $EDGE_CA_CERT ..."
     "$BIN_DIR/edgeca$EXE" --cert "$EDGE_CA_CERT" --key "$EDGE_CA_KEY"
-    # default EVENTS_ORIGIN ("monolith") is fine -- one process, one origin.
     # ADMIN_USER/ADMIN_PASS + ACCOUNTS_DEV_AUTH inherit from the environment (not set here).
     # APIKEYS_DEV_SEED defaults ON for this dev-boot script (still overridable by the
     # caller's environment) so the well-known dev keys exist for local testing.
@@ -148,9 +147,9 @@ fi
 #   - accounts-svc (D) first: every gateway verifies bearers against it (lazy dial, so
 #     not strictly required, but we mirror the proof's order).
 #   - admin-svc (E) last: it dials A/B/C/D/F/H edges to fan out their admin pages.
-# EVENTS_ORIGIN is DISTINCT per process (never the "monolith" default): each relay
-# drains ONLY its own origin's outbox rows. Peer *_EDGE_ADDR values are NUMERIC
-# host:port (Rust's SocketAddr needs a literal IP). All peers share ONE dev CA.
+# Durable events need NO per-process env: every DB process reads the ONE shared
+# asyncevents log and pulls only its own subscriptions. Peer *_EDGE_ADDR values are
+# NUMERIC host:port (Rust's SocketAddr needs a literal IP). All peers share ONE dev CA.
 
 # HTTP ports 8080-8091, internal mTLS edge ports 9000-9009, player QUIC :9100.
 A_PORT=8080; B_PORT=8081; G_PORT=8082; C_PORT=8083; D_PORT=8084; E_PORT=8085
@@ -164,14 +163,12 @@ echo "Minting shared edge dev CA -> $EDGE_CA_CERT ..."
 "$BIN_DIR/edgeca$EXE" --cert "$EDGE_CA_CERT" --key "$EDGE_CA_KEY"
 
 # D: accounts-svc -- owns the accounts schema; serves accounts.verifySession on its edge
-# (every other process verifies bearers against it). player.registered rides D's outbox
-# to audit-svc (F).
+# (every other process verifies bearers against it). player.registered is appended to
+# the shared durable log (audit-svc pulls it).
 echo "Starting D (accounts-svc) on :$D_PORT, edge :$D_EDGE ..."
 start_server accounts "$BIN_DIR/accounts-svc$EXE" \
     PORT=":$D_PORT" DATABASE_URL="$DATABASE_URL" EDGE_ADDR=":$D_EDGE" \
-    EDGE_CA_CERT="$EDGE_CA_CERT" EDGE_CA_KEY="$EDGE_CA_KEY" \
-    EVENTS_ORIGIN=accounts-svc \
-    EVENTS_SUBSCRIBERS="player.registered=http://localhost:$F_PORT/events"
+    EDGE_CA_CERT="$EDGE_CA_CERT" EDGE_CA_KEY="$EDGE_CA_KEY"
 wait_healthy "$D_PORT" "D (accounts-svc)"
 
 # L: apikeys-svc -- owns the apikeys schema (plaintext key -> policy); serves
@@ -182,77 +179,66 @@ echo "Starting L (apikeys-svc) on :$L_PORT, edge :$L_EDGE ..."
 start_server apikeys "$BIN_DIR/apikeys-svc$EXE" \
     PORT=":$L_PORT" DATABASE_URL="$DATABASE_URL" EDGE_ADDR=":$L_EDGE" \
     EDGE_CA_CERT="$EDGE_CA_CERT" EDGE_CA_KEY="$EDGE_CA_KEY" \
-    EVENTS_ORIGIN=apikeys-svc \
     APIKEYS_DEV_SEED="${APIKEYS_DEV_SEED:-1}"
 wait_healthy "$L_PORT" "L (apikeys-svc)"
 
-# F: audit-svc -- append-only ledger. PURE SINK (no EVENTS_SUBSCRIBERS): every producer's
-# relay POSTs to F's /events. Serves admin.adminData ("Audit Log") on its edge.
+# F: audit-svc -- append-only ledger, a pure consumer: its pull workers drain its
+# subscriptions from the shared log. Serves admin.adminData ("Audit Log") on its edge.
 echo "Starting F (audit-svc) on :$F_PORT, edge :$F_EDGE ..."
 start_server audit "$BIN_DIR/audit-svc$EXE" \
     PORT=":$F_PORT" DATABASE_URL="$DATABASE_URL" EDGE_ADDR=":$F_EDGE" \
-    EDGE_CA_CERT="$EDGE_CA_CERT" EDGE_CA_KEY="$EDGE_CA_KEY" \
-    EVENTS_ORIGIN=audit-svc
+    EDGE_CA_CERT="$EDGE_CA_CERT" EDGE_CA_KEY="$EDGE_CA_KEY"
 wait_healthy "$F_PORT" "F (audit-svc)"
 
-# H: scheduler-svc -- DURABLE PRODUCER (1s loop fires scheduler.fired via advisory lock),
-# relays scheduler.fired to audit-svc (F). Serves admin.adminData ("Schedules").
+# H: scheduler-svc -- DURABLE PRODUCER (1s loop fires scheduler.fired via advisory lock)
+# appending to the shared log (audit-svc pulls it). Serves admin.adminData ("Schedules").
 echo "Starting H (scheduler-svc) on :$H_PORT, edge :$H_EDGE ..."
 start_server scheduler "$BIN_DIR/scheduler-svc$EXE" \
     PORT=":$H_PORT" DATABASE_URL="$DATABASE_URL" EDGE_ADDR=":$H_EDGE" \
-    EDGE_CA_CERT="$EDGE_CA_CERT" EDGE_CA_KEY="$EDGE_CA_KEY" \
-    EVENTS_ORIGIN=scheduler-svc \
-    EVENTS_SUBSCRIBERS="scheduler.fired=http://localhost:$F_PORT/events"
+    EDGE_CA_CERT="$EDGE_CA_CERT" EDGE_CA_KEY="$EDGE_CA_KEY"
 wait_healthy "$H_PORT" "H (scheduler-svc)"
 
-# J: rating-svc -- provides rating.mmr on its edge (match-svc reads it sync) and REACTS to
-# match.finished (+15/-15). In-memory MMR but owns an inbox. Pure sink (no subscribers).
+# J: rating-svc -- provides rating.mmr on its edge (match-svc reads it sync) and pulls
+# match.finished (+15/-15) from the shared log. In-memory MMR, DB pool for the plane.
 echo "Starting J (rating-svc) on :$J_PORT, edge :$J_EDGE ..."
 start_server rating "$BIN_DIR/rating-svc$EXE" \
     PORT=":$J_PORT" DATABASE_URL="$DATABASE_URL" EDGE_ADDR=":$J_EDGE" \
-    EDGE_CA_CERT="$EDGE_CA_CERT" EDGE_CA_KEY="$EDGE_CA_KEY" \
-    EVENTS_ORIGIN=rating-svc
+    EDGE_CA_CERT="$EDGE_CA_CERT" EDGE_CA_KEY="$EDGE_CA_KEY"
 wait_healthy "$J_PORT" "J (rating-svc)"
 
-# K: leaderboard-svc -- owns schema leaderboard + an inbox; REACTS to match.finished
-# (upsert wins+1); serves GET /leaderboard (gateway routes it Remote here). Pure sink.
+# K: leaderboard-svc -- owns schema leaderboard; pulls match.finished from the shared
+# log (upsert wins+1); serves GET /leaderboard (gateway routes it Remote here).
 echo "Starting K (leaderboard-svc) on :$K_PORT, edge :$K_EDGE ..."
 start_server leaderboard "$BIN_DIR/leaderboard-svc$EXE" \
     PORT=":$K_PORT" DATABASE_URL="$DATABASE_URL" EDGE_ADDR=":$K_EDGE" \
-    EDGE_CA_CERT="$EDGE_CA_CERT" EDGE_CA_KEY="$EDGE_CA_KEY" \
-    EVENTS_ORIGIN=leaderboard-svc
+    EDGE_CA_CERT="$EDGE_CA_CERT" EDGE_CA_KEY="$EDGE_CA_KEY"
 wait_healthy "$K_PORT" "K (leaderboard-svc)"
 
 # I: match-svc -- records matches (schema match); DURABLE PRODUCER: `report` SYNC-reads
 # both players' MMR from rating-svc (J) over the edge, INSERTs + emit_tx's match.finished
-# in one tx; relays match.finished to J, K and F.
+# in one tx onto the shared log (J, K and F pull it).
 echo "Starting I (match-svc) on :$I_PORT, edge :$I_EDGE ..."
 start_server match "$BIN_DIR/match-svc$EXE" \
     PORT=":$I_PORT" DATABASE_URL="$DATABASE_URL" EDGE_ADDR=":$I_EDGE" \
     EDGE_CA_CERT="$EDGE_CA_CERT" EDGE_CA_KEY="$EDGE_CA_KEY" \
-    RATING_EDGE_ADDR="127.0.0.1:$J_EDGE" \
-    EVENTS_ORIGIN=match-svc \
-    EVENTS_SUBSCRIBERS="match.finished=http://localhost:$J_PORT/events,http://localhost:$K_PORT/events,http://localhost:$F_PORT/events"
+    RATING_EDGE_ADDR="127.0.0.1:$J_EDGE"
 wait_healthy "$I_PORT" "I (match-svc)"
 
-# A: characters-svc -- owns schema characters; emits character.created/.deleted, relayed
-# to inventory-svc (B) and audit-svc (F).
+# A: characters-svc -- owns schema characters; appends character.created/.deleted to
+# the shared log (inventory-svc and audit-svc pull them).
 echo "Starting A (characters-svc) on :$A_PORT, edge :$A_EDGE ..."
 start_server characters "$BIN_DIR/characters-svc$EXE" \
     PORT=":$A_PORT" DATABASE_URL="$DATABASE_URL" EDGE_ADDR=":$A_EDGE" \
-    EDGE_CA_CERT="$EDGE_CA_CERT" EDGE_CA_KEY="$EDGE_CA_KEY" \
-    EVENTS_ORIGIN=characters-svc \
-    EVENTS_SUBSCRIBERS="character.created=http://localhost:$B_PORT/events,http://localhost:$F_PORT/events;character.deleted=http://localhost:$B_PORT/events,http://localhost:$F_PORT/events"
+    EDGE_CA_CERT="$EDGE_CA_CERT" EDGE_CA_KEY="$EDGE_CA_KEY"
 wait_healthy "$A_PORT" "A (characters-svc)"
 
 # C: config-svc -- owns the config schema + LISTEN/NOTIFY listener; serves config.snapshot
-# on its edge; relays config.changed durably to B. MUST be up before B (B boot-fills from C).
+# on its edge; appends config.changed durably (B and F pull it). MUST be up before B
+# (B boot-fills from C).
 echo "Starting C (config-svc) on :$C_PORT, edge :$C_EDGE ..."
 start_server config "$BIN_DIR/config-svc$EXE" \
     PORT=":$C_PORT" DATABASE_URL="$DATABASE_URL" EDGE_ADDR=":$C_EDGE" \
-    EDGE_CA_CERT="$EDGE_CA_CERT" EDGE_CA_KEY="$EDGE_CA_KEY" \
-    EVENTS_ORIGIN=config-svc \
-    EVENTS_SUBSCRIBERS="config.changed=http://localhost:$B_PORT/events,http://localhost:$F_PORT/events"
+    EDGE_CA_CERT="$EDGE_CA_CERT" EDGE_CA_KEY="$EDGE_CA_KEY"
 wait_healthy "$C_PORT" "C (config-svc)"
 
 # B: inventory-svc -- owns schema inventory; serves its OWN edge (:9001) so gateway can
@@ -262,8 +248,7 @@ start_server inventory "$BIN_DIR/inventory-svc$EXE" \
     PORT=":$B_PORT" DATABASE_URL="$DATABASE_URL" EDGE_ADDR=":$B_EDGE" \
     EDGE_CA_CERT="$EDGE_CA_CERT" EDGE_CA_KEY="$EDGE_CA_KEY" \
     CHARACTERS_EDGE_ADDR="127.0.0.1:$A_EDGE" \
-    CONFIG_EDGE_ADDR="127.0.0.1:$C_EDGE" \
-    EVENTS_ORIGIN=inventory-svc
+    CONFIG_EDGE_ADDR="127.0.0.1:$C_EDGE"
 wait_healthy "$B_PORT" "B (inventory-svc)"
 
 # G: gateway-svc -- the dedicated front door: HTTP :8082 + player QUIC :9100. No DB, no

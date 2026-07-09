@@ -7,12 +7,10 @@
 //! It hosts NO gateway (FrontDoor) module: the single public front door lives only in
 //! gateway-svc + the monolith, so apikeys needs no accounts stub for a bearer verifier.
 //! apikeys serves `apikeys.keys` ONLY over the internal mTLS edge; HTTP here is just
-//! the infra surface (`/healthz`, `/readyz`, `/metrics`, `/events`), no typed ops.
-//!
-//! EVENTS_ORIGIN MUST be distinct per process (never the `"monolith"` default): the
-//! relay drains ONLY its own origin's outbox rows, and the plane's start-time
-//! origin-collision guard rejects a default origin alongside remote sinks. Ports/addrs
-//! (PORT, EDGE_ADDR, EVENTS_SUBSCRIBERS, EVENTS_ORIGIN) are set by the run scripts.
+//! the infra surface (`/healthz`, `/readyz`, `/metrics`), no typed ops. It neither
+//! produces nor consumes durable events today; the app-owned plane still boots with
+//! the DB (DB ⇒ plane) and simply hosts no subscriptions. Ports/addrs (PORT,
+//! EDGE_ADDR) are set by the run scripts.
 
 use std::sync::{Arc, Mutex};
 

@@ -9,7 +9,7 @@ publish = false
 # QUIC edge server so a remote admin process pulls audit's `admin.adminData` page over
 # the mTLS edge. audit owns schema `audit` + an inbox, so unlike the pure aggregators
 # (gateway-svc/admin-svc) it needs a DB pool and thus hosts the durable-events plane
-# (app-owned, DB ⇒ plane; its `POST /events` inbound sink receives peers' events). No
+# (app-owned, DB ⇒ plane; its pull workers drain audit's subscriptions from the shared log). No
 # gateway module: audit fronts
 # no typed ops and no player plane — it is a pure event sink.
 [[bin]]

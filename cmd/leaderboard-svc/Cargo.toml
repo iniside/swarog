@@ -8,8 +8,8 @@ publish = false
 # The leaderboard fortress process (Step 10). Hosts leaderboard and stands up
 # one shared QUIC edge server (EDGE_ADDR, :9008 in the run scripts) so gateway-svc can
 # dispatch `GET /leaderboard` Remote to it. leaderboard owns schema `leaderboard` + an
-# inbox, so it needs a DB pool and thus hosts the durable-events plane (app-owned, DB ⇒
-# plane; its `POST /events` inbound sink receives `match.finished` from match-svc; its
+# checkpoint, so it needs a DB pool and thus hosts the durable-events plane (app-owned,
+# DB ⇒ plane; its pull worker drains `match.finished` from the shared log; its
 # durable `on_tx` upserts wins+1 on the
 # handed inbox-dedup tx). It hosts NO gateway (FrontDoor) — the single public front door
 # lives only in gateway-svc + the monolith, so no accounts stub is needed. Mirrors

@@ -11,8 +11,9 @@
 //! process DOES serve on its own HTTP port are the Epic web-OAuth browser routes
 //! (`POST /accounts/epic/start`, `GET /accounts/epic/callback`) — the accounts module
 //! mounts those via `ctx.mount`, independent of any gateway — plus the infra surface
-//! (`/healthz`, `/readyz`, `/metrics`, `/events`). EVENTS_ORIGIN must be distinct per
-//! process (never the `"monolith"` default); `player.registered` rides this outbox.
+//! (`/healthz`, `/readyz`, `/metrics`). `player.registered` is appended to the shared
+//! durable log (app-owned plane, DB ⇒ plane); consumers (audit-svc) pull it with their
+//! own workers — no per-process events env, no relay, no `POST /events` sink.
 
 use std::sync::{Arc, Mutex};
 

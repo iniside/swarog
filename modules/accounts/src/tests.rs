@@ -238,7 +238,7 @@ async fn test_pool() -> Option<PgPool> {
     Some(pool)
 }
 
-/// Migrates BOTH the asyncevents (durable plane's outbox) and accounts schemas
+/// Migrates BOTH the asyncevents (durable plane's event log) and accounts schemas
 /// EXACTLY ONCE per test binary (concurrent idempotent DDL deadlocks on catalog
 /// locks — same serialization as the characters tests).
 static SCHEMA_READY: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
@@ -265,8 +265,8 @@ async fn ensure_schema(pool: &PgPool) {
 /// `emit_tx`), and accounts registers against the same ctx.
 async fn wired(pool: &PgPool) -> (Context, Arc<Service>) {
     ensure_schema(pool).await;
-    let transport = asyncevents::transport(pool.clone(), "test-origin");
-    let ctx = Context::with_db_and_transport(pool.clone(), transport);
+    let transport = asyncevents::testing::transport(pool.clone());
+    let ctx = Context::with_db_and_transport(pool.clone(), transport.handle());
 
     let accounts = Accounts::new();
     accounts.register(&ctx).unwrap();
@@ -287,17 +287,17 @@ async fn cleanup_player(pool: &PgPool, player_id: &str) {
         .bind(player_id)
         .execute(pool)
         .await;
-    let _ = asyncevents::testing::cleanup_outbox(pool, "player_id", player_id).await;
+    let _ = asyncevents::testing::cleanup_events(pool, "player_id", player_id).await;
 }
 
 async fn registered_events(pool: &PgPool, player_id: &str) -> i64 {
-    asyncevents::testing::outbox_count(pool, "player.registered", "player_id", player_id)
+    asyncevents::testing::events_count(pool, "player.registered", "player_id", player_id)
         .await
         .unwrap()
 }
 
 /// THE ATOMIC EMIT PROOF + the register/login/session round-trip: register writes
-/// the player+identity rows AND the `player.registered` outbox row in one tx;
+/// the player+identity rows AND the `player.registered` log event in one tx;
 /// login verifies the stored argon2 hash; the minted session resolves back to the
 /// player; garbage tokens resolve to nobody; a duplicate email is Conflict.
 #[tokio::test]
@@ -313,7 +313,7 @@ async fn register_login_session_roundtrip_with_durable_event() {
     assert!(!sess.player_id.is_empty());
     assert_eq!(sess.token.len(), 43);
 
-    // Durable rule: exactly one player.registered outbox row, provider dev.
+    // Durable rule: exactly one player.registered log event, provider dev.
     assert_eq!(registered_events(&pool, &sess.player_id).await, 1);
 
     // Duplicate email → Conflict, and no second event.

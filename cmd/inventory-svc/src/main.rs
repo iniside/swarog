@@ -8,8 +8,9 @@
 //! It hosts NO gateway (FrontDoor) module: the single public front door lives only in
 //! gateway-svc + the monolith, so B needs no accounts stub for a bearer verifier. B
 //! serves `inventory.*` ONLY over the internal mTLS edge; gateway-svc dispatches Remote
-//! to it. HTTP here is just the infra surface (`/healthz`, `/readyz`, `/metrics`,
-//! `/events`), no typed ops.
+//! to it. HTTP here is just the infra surface (`/healthz`, `/readyz`, `/metrics`), no
+//! typed ops. Its durable subscriptions (`inventory.character-created.v1`, …) are
+//! pulled from the shared log by this process's own workers.
 //!
 //! Since Step 5 config is its OWN fortress process (config-svc): the `config` stub's
 //! `configrpc` factory swaps in a snapshot-backed `CachedConfig` (boot-filled by one

@@ -8,8 +8,8 @@ publish = false
 # The match fortress process (Step 10). Hosts match and stands up one shared
 # QUIC edge server (EDGE_ADDR, :9006 in the run scripts). match SYNC-reads `rating.mmr`
 # via a `remote::Stub` over the mTLS edge to rating-svc, records the match + `emit_tx`s
-# `match.finished` in one tx, and its relay POSTs that event to rating-svc, leaderboard-svc
-# and audit-svc (multi-sink EVENTS_SUBSCRIBERS). It hosts NO gateway (FrontDoor) — the
+# `match.finished` in one tx onto the shared durable log (rating-svc, leaderboard-svc
+# and audit-svc pull it). It hosts NO gateway (FrontDoor) — the
 # single public front door lives only in gateway-svc + the monolith, so no accounts stub is
 # needed; gateway-svc dispatches match.report Remote to this process's edge.
 [[bin]]

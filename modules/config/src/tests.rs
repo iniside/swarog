@@ -147,19 +147,19 @@ async fn cleanup(pool: &PgPool, ns: &str) {
         .bind(ns)
         .execute(pool)
         .await;
-    let _ = asyncevents::testing::cleanup_outbox(pool, "namespace", ns).await;
+    let _ = asyncevents::testing::cleanup_events(pool, "namespace", ns).await;
 }
 
 /// Serializes the tests that RUN a real config listener or ASSERT on the shared
-/// `asyncevents.outbox`. The `config_changed` NOTIFY channel is process-global, so a
-/// listener running in one test would pick up another test's `config.settings` write
-/// and emit a `config.changed` outbox row for its namespace — contaminating an
-/// outbox-count assertion. Holding this lock for the listener/outbox tests guarantees
+/// `asyncevents.events` log. The `config_changed` NOTIFY channel is process-global, so
+/// a listener running in one test would pick up another test's `config.settings` write
+/// and append a `config.changed` event for its namespace — contaminating an
+/// event-count assertion. Holding this lock for the listener/log tests guarantees
 /// no concurrent listener races their assertions (other DB tests run no listener and
-/// never check the outbox, so they don't need it).
+/// never check the log, so they don't need it).
 static DB_SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-/// Migrates the asyncevents schema (the durable plane's outbox) EXACTLY ONCE per
+/// Migrates the asyncevents schema (the durable plane's event log) EXACTLY ONCE per
 /// test binary — its `CREATE INDEX`/`CREATE OR REPLACE TRIGGER` deadlock under
 /// parallel idempotent re-runs, so serialize them (mirrors the characters tests).
 static ASYNCEVENTS_READY: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
@@ -191,14 +191,14 @@ fn build_module(ctx: &Context) -> Config {
 /// A ctx over the live pool with the asyncevents transport injected at construction —
 /// the shape `app::run` builds, and what the durable-listener tests need before `start`.
 fn wired_ctx(pool: &PgPool) -> Context {
-    let transport = asyncevents::transport(pool.clone(), "test-origin");
-    Context::with_db_and_transport(pool.clone(), transport)
+    let transport = asyncevents::testing::transport(pool.clone());
+    Context::with_db_and_transport(pool.clone(), transport.handle())
 }
 
-/// Counts durable `config.changed` outbox rows for a namespace — the Step-5 durable
+/// Counts durable `config.changed` log events for a namespace — the Step-5 durable
 /// publish replaces the old sync-bus assertion.
-async fn changed_outbox_count(pool: &PgPool, ns: &str) -> i64 {
-    asyncevents::testing::outbox_count(pool, "config.changed", "namespace", ns)
+async fn changed_event_count(pool: &PgPool, ns: &str) -> i64 {
+    asyncevents::testing::events_count(pool, "config.changed", "namespace", ns)
         .await
         .unwrap()
 }
@@ -222,10 +222,10 @@ async fn set_then_load_reads_back() {
 }
 
 /// The REAL push path end-to-end: a running listener + `set` -> pg_notify ->
-/// listener -> cache refresh AND a DURABLE `config.changed` (Step 5: an outbox row,
+/// listener -> cache refresh AND a DURABLE `config.changed` (Step 5: a log event,
 /// not a sync-bus event). Also proves the BOOT load is silent (a pre-seeded key
-/// writes no outbox row) while a POST-boot set does. Observed by polling the cache
-/// and the `asyncevents.outbox`.
+/// appends no event) while a POST-boot set does. Observed by polling the cache
+/// and the `asyncevents.events` log.
 #[tokio::test]
 async fn live_reload_updates_cache_and_emits_changed() {
     use configapi::Config as _;
@@ -253,18 +253,18 @@ async fn live_reload_updates_cache_and_emits_changed() {
     // Boot load emitted NOTHING (reconnect=false): no config.changed outbox row.
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert_eq!(
-        changed_outbox_count(&pool, &ns).await,
+        changed_event_count(&pool, &ns).await,
         0,
-        "boot load must write no config.changed outbox rows"
+        "boot load must append no config.changed events"
     );
 
-    // A POST-boot set DOES emit durably: cache refresh + one outbox row.
+    // A POST-boot set DOES emit durably: cache refresh + one log event.
     svc.set(&ns, "flag", "on").await.unwrap();
 
     wait_until_async(|| {
         let pool = pool.clone();
         let ns = ns.clone();
-        async move { changed_outbox_count(&pool, &ns).await == 1 }
+        async move { changed_event_count(&pool, &ns).await == 1 }
     })
     .await;
     assert_eq!(svc.get(&ns, "flag").as_deref(), Some("on"));
@@ -278,7 +278,7 @@ async fn live_reload_updates_cache_and_emits_changed() {
 /// The reconnect self-heal, deterministic (no listener timing): after a disconnect
 /// PG does not replay missed NOTIFYs, so the reload DURABLY emits `config.changed`
 /// for the gap-changed key. Drives the SAME `reload_and_heal` the listener uses. Also
-/// asserts the boot reload (`reconnect=false`) writes no outbox row.
+/// asserts the boot reload (`reconnect=false`) appends no event.
 #[tokio::test]
 async fn reconnect_reload_heals_gap_changes_boot_is_silent() {
     let Some(pool) = test_pool().await else { return };
@@ -299,9 +299,9 @@ async fn reconnect_reload_heals_gap_changes_boot_is_silent() {
     reload_and_heal(&svc, &bus, false).await.unwrap();
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert_eq!(
-        changed_outbox_count(&pool, &ns).await,
+        changed_event_count(&pool, &ns).await,
         0,
-        "boot reload must write no config.changed outbox rows"
+        "boot reload must append no config.changed events"
     );
 
     // A write missed during a disconnect (no NOTIFY to a dead session).
@@ -314,9 +314,9 @@ async fn reconnect_reload_heals_gap_changes_boot_is_silent() {
     // The reconnect reload heals: it durably emits config.changed for the gap key.
     reload_and_heal(&svc, &bus, true).await.unwrap();
     assert_eq!(
-        changed_outbox_count(&pool, &ns).await,
+        changed_event_count(&pool, &ns).await,
         1,
-        "reconnect reload must write one config.changed outbox row for the gap key"
+        "reconnect reload must append one config.changed event for the gap key"
     );
 
     cleanup(&pool, &ns).await;

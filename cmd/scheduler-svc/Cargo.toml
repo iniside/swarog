@@ -8,7 +8,7 @@ publish = false
 # The scheduler fortress process (Step 9). Hosts scheduler and stands up one
 # shared QUIC edge server so a remote admin process pulls scheduler's read-only
 # `admin.adminData` "Schedules" page over the mTLS edge. scheduler owns schema
-# `scheduler` and is a DURABLE PRODUCER (its `scheduler.fired` events ride the outbox),
+# `scheduler` and is a DURABLE PRODUCER (its `scheduler.fired` events ride the shared log),
 # so this process needs a DB pool and thus hosts the durable-events plane (app-owned,
 # DB ⇒ plane). No gateway module: it
 # fronts no typed ops and no player plane — it is a pure event source.

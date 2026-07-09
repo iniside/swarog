@@ -5,14 +5,15 @@
 //! its `rating` dependency with a `remote::Stub`: the stub `provide`s the edge-backed
 //! `MmrReader` client under the SAME registry key the local `rating` module would, so
 //! `match`'s `require::<dyn MmrReader>` resolves REMOTELY over mTLS to rating-svc — the
-//! registry SWAP, with match's code unchanged. The match outbox relay runs HERE (it
-//! drains match's own `match.finished` rows) and POSTs them to rating-svc / leaderboard-
-//! svc / audit-svc via EVENTS_SUBSCRIBERS. Mirrors `characters-svc`'s shape exactly.
+//! registry SWAP, with match's code unchanged. `report` appends `match.finished` onto
+//! the shared durable log in the SAME tx as the match row; rating-svc, leaderboard-svc
+//! and audit-svc pull it with their own workers. Mirrors `characters-svc`'s shape
+//! exactly.
 //!
 //! It hosts NO gateway (FrontDoor) module: the single public front door lives only in
 //! gateway-svc + the monolith, so match needs no accounts stub for a bearer verifier. It
 //! serves `match.report` ONLY over the internal mTLS edge; HTTP here is just the infra
-//! surface (`/healthz`, `/readyz`, `/metrics`, `/events`), no typed ops.
+//! surface (`/healthz`, `/readyz`, `/metrics`), no typed ops.
 
 use std::sync::{Arc, Mutex};
 

@@ -9,7 +9,7 @@ publish = false
 # QUIC edge server. `config` contributes its wire-only `ConfigSnapshot` face to
 # `edge::EDGE_SLOT` (topology-blind); `app::run` installs it here so a peer's
 # `CachedConfig` (inventory-svc) can pull the snapshot over the mutually-authenticated
-# edge, and config's listener relays `config.changed` durably to that peer. It hosts NO
+# edge, and config's listener appends `config.changed` durably to the shared log. It hosts NO
 # gateway (FrontDoor) — the single public front door lives only in gateway-svc + the
 # monolith, so no accounts stub is needed.
 [[bin]]

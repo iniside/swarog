@@ -8,9 +8,9 @@ publish = false
 # The rating fortress process (Step 10). Hosts rating and stands up one
 # shared QUIC edge server (EDGE_ADDR, :9007 in the run scripts) serving `rating.mmr` so
 # match-svc's stub resolves the MMR read over mTLS. rating owns NO schema, but its
-# durable `on_tx("rating")` subscription needs the durable-events inbox, so this process
+# durable `rating.match-finished.v1` subscription needs a pull checkpoint, so this process
 # still needs a DB pool and thus hosts the durable-events plane (app-owned, DB ⇒ plane;
-# its `POST /events` inbound sink receives
+# its pull worker drains
 # `match.finished` from match-svc). No gateway: rating fronts no typed op and no player
 # plane — it is a wire-only provider + a durable event reactor.
 [[bin]]

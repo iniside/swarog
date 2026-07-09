@@ -25,7 +25,7 @@ async fn test_pool() -> Option<PgPool> {
     Some(pool)
 }
 
-/// Migrates BOTH the asyncevents (durable plane's outbox) and match schemas EXACTLY
+/// Migrates BOTH the asyncevents (durable plane's event log) and match schemas EXACTLY
 /// ONCE per test binary — concurrent idempotent DDL across parallel tests can deadlock on
 /// catalog locks.
 static SCHEMA_READY: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
@@ -54,8 +54,8 @@ async fn ensure_schema(pool: &PgPool) {
 /// and the wired match service.
 async fn wired(pool: &PgPool) -> (Context, Arc<Service>) {
     ensure_schema(pool).await;
-    let transport = asyncevents::transport(pool.clone(), "test-origin");
-    let ctx = Context::with_db_and_transport(pool.clone(), transport);
+    let transport = asyncevents::testing::transport(pool.clone());
+    let ctx = Context::with_db_and_transport(pool.clone(), transport.handle());
 
     let rating = Rating::new();
     rating.register(&ctx).unwrap();
@@ -74,7 +74,7 @@ async fn cleanup(pool: &PgPool, match_id: &str) {
         .bind(match_id)
         .execute(pool)
         .await;
-    let _ = asyncevents::testing::cleanup_outbox(pool, "match_id", match_id).await;
+    let _ = asyncevents::testing::cleanup_events(pool, "match_id", match_id).await;
 }
 
 async fn match_count(pool: &PgPool, id: &str) -> i64 {
@@ -86,18 +86,18 @@ async fn match_count(pool: &PgPool, id: &str) -> i64 {
     n
 }
 
-async fn outbox_count(pool: &PgPool, match_id: &str) -> i64 {
-    asyncevents::testing::outbox_count(pool, "match.finished", "match_id", match_id)
+async fn event_count(pool: &PgPool, match_id: &str) -> i64 {
+    asyncevents::testing::events_count(pool, "match.finished", "match_id", match_id)
         .await
         .unwrap()
 }
 
 /// THE ATOMIC EMIT PROOF: `report` writes BOTH a `match.matches` row AND an
-/// `asyncevents.outbox` row (topic `match.finished`) in one tx — proving `emit_tx` rode
+/// `asyncevents.events` row (topic `match.finished`) in one tx — proving `emit_tx` rode
 /// the domain transaction. The sync `rating.mmr` read happened first (a real `rating`
 /// module backs it), so a 200 also proves the sync seam resolved in-process.
 #[tokio::test]
-async fn report_persists_match_and_outbox_event_atomically() {
+async fn report_persists_match_and_durable_event_atomically() {
     let Some(pool) = test_pool().await else { return };
     let (_ctx, svc) = wired(&pool).await;
 
@@ -112,9 +112,9 @@ async fn report_persists_match_and_outbox_event_atomically() {
 
     assert_eq!(match_count(&pool, &id).await, 1, "match row must exist");
     assert_eq!(
-        outbox_count(&pool, &id).await,
+        event_count(&pool, &id).await,
         1,
-        "outbox row (match.finished) must exist — atomic emit_tx"
+        "log event (match.finished) must exist — atomic emit_tx"
     );
 
     cleanup(&pool, &id).await;

@@ -6,15 +6,14 @@
 //!
 //! Like audit-svc it OWNS a schema (`scheduler`) and rides the durable-events plane
 //! (app-owned, DB ⇒ plane) — but it is a PRODUCER: its 1s emission loop `emit_tx`s
-//! `scheduler.fired` for every due schedule, and this process's relay drains its own
-//! outbox rows and POSTs them to the peers named in `EVENTS_SUBSCRIBERS` (the run
-//! scripts point `scheduler.fired` at audit-svc's `/events`, where audit's prune
-//! reacts). It serves NO player front and fronts no typed ops, so no gateway module.
+//! `scheduler.fired` for every due schedule, one append onto the shared XID-ordered
+//! log in the SAME tx as the `last_fired` bump; audit-svc's prune subscription pulls
+//! it with its own worker and checkpoint. It serves NO player front and fronts no
+//! typed ops, so no gateway module.
 //!
-//! EVENTS_ORIGIN MUST be distinct per process (never the `"monolith"` default): the
-//! relay drains ONLY its own origin's outbox rows, and the plane's origin-collision
-//! guard rejects a default origin alongside remote sinks. `SCHEDULER_ENABLED` (default
-//! true) gates the emission loop. Ports/addrs are set by the run scripts.
+//! Durable delivery needs NO per-process env (no origins, no subscriber routing).
+//! `SCHEDULER_ENABLED` (default true) gates the emission loop. Ports/addrs are set by
+//! the run scripts.
 
 use std::sync::{Arc, Mutex};
 

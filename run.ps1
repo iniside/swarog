@@ -133,7 +133,6 @@ if ($Mode -eq 'monolith') {
         PLAYER_EDGE_ADDR = ':9100'
         EDGE_CA_CERT     = $CaCert
         EDGE_CA_KEY      = $CaKey
-        # default EVENTS_ORIGIN ("monolith") is fine -- one process, one origin.
     } | Out-Null
     Wait-Healthy 8080 'monolith'
     Write-Pids
@@ -157,9 +156,9 @@ if ($Mode -eq 'monolith') {
 #   - accounts-svc (D) first: every gateway verifies bearers against it (lazy dial, so
 #     not strictly required, but we mirror the proof's order).
 #   - admin-svc (E) last: it dials A/B/C/D/F/H edges to fan out their admin pages.
-# EVENTS_ORIGIN is DISTINCT per process (never the "monolith" default): each relay
-# drains ONLY its own origin's outbox rows. Peer *_EDGE_ADDR values are NUMERIC
-# host:port (Rust's SocketAddr needs a literal IP). All peers share ONE dev CA.
+# Durable events need NO per-process env: every DB process reads the ONE shared
+# asyncevents log and pulls only its own subscriptions. Peer *_EDGE_ADDR values are
+# NUMERIC host:port (Rust's SocketAddr needs a literal IP). All peers share ONE dev CA.
 
 # HTTP ports 8080-8090, internal mTLS edge ports 9000-9008, player QUIC :9100.
 $APort = 8080; $BPort = 8081; $GPort = 8082; $CPort = 8083; $DPort = 8084; $EPort = 8085
@@ -174,8 +173,8 @@ Write-Host "Minting shared edge dev CA -> $CaCert ..."
 if ($LASTEXITCODE -ne 0) { throw 'edgeca failed' }
 
 # D: accounts-svc -- owns the accounts schema; serves accounts.verifySession on its edge
-# (every other process verifies bearers against it). player.registered rides D's outbox
-# to audit-svc (F).
+# (every other process verifies bearers against it). player.registered is appended to
+# the shared durable log (audit-svc pulls it).
 Write-Host "Starting D (accounts-svc) on :$DPort, edge :$DEdge ..."
 Start-Svc 'accounts' (Join-Path $BinDir 'accounts-svc.exe') @{
     PORT               = ":$DPort"
@@ -183,13 +182,11 @@ Start-Svc 'accounts' (Join-Path $BinDir 'accounts-svc.exe') @{
     EDGE_ADDR          = ":$DEdge"
     EDGE_CA_CERT       = $CaCert
     EDGE_CA_KEY        = $CaKey
-    EVENTS_ORIGIN      = 'accounts-svc'
-    EVENTS_SUBSCRIBERS = "player.registered=http://127.0.0.1:$FPort/events"
 } | Out-Null
 Wait-Healthy $DPort 'D (accounts-svc)'
 
-# F: audit-svc -- append-only ledger. PURE SINK (empty EVENTS_SUBSCRIBERS): every
-# producer's relay POSTs to F's /events. Serves admin.adminData ("Audit Log") on its edge.
+# F: audit-svc -- append-only ledger, a pure consumer: its pull workers drain its
+# subscriptions from the shared log. Serves admin.adminData ("Audit Log") on its edge.
 Write-Host "Starting F (audit-svc) on :$FPort, edge :$FEdge ..."
 Start-Svc 'audit' (Join-Path $BinDir 'audit-svc.exe') @{
     PORT               = ":$FPort"
@@ -197,13 +194,11 @@ Start-Svc 'audit' (Join-Path $BinDir 'audit-svc.exe') @{
     EDGE_ADDR          = ":$FEdge"
     EDGE_CA_CERT       = $CaCert
     EDGE_CA_KEY        = $CaKey
-    EVENTS_ORIGIN      = 'audit-svc'
-    EVENTS_SUBSCRIBERS = ''
 } | Out-Null
 Wait-Healthy $FPort 'F (audit-svc)'
 
-# H: scheduler-svc -- DURABLE PRODUCER (1s loop fires scheduler.fired via advisory lock),
-# relays scheduler.fired to audit-svc (F). Serves admin.adminData ("Schedules").
+# H: scheduler-svc -- DURABLE PRODUCER (1s loop fires scheduler.fired via advisory lock)
+# appending to the shared log (audit-svc pulls it). Serves admin.adminData ("Schedules").
 Write-Host "Starting H (scheduler-svc) on :$HPort, edge :$HEdge ..."
 Start-Svc 'scheduler' (Join-Path $BinDir 'scheduler-svc.exe') @{
     PORT               = ":$HPort"
@@ -211,13 +206,11 @@ Start-Svc 'scheduler' (Join-Path $BinDir 'scheduler-svc.exe') @{
     EDGE_ADDR          = ":$HEdge"
     EDGE_CA_CERT       = $CaCert
     EDGE_CA_KEY        = $CaKey
-    EVENTS_ORIGIN      = 'scheduler-svc'
-    EVENTS_SUBSCRIBERS = "scheduler.fired=http://127.0.0.1:$FPort/events"
 } | Out-Null
 Wait-Healthy $HPort 'H (scheduler-svc)'
 
-# J: rating-svc -- provides rating.mmr on its edge (match-svc reads it sync) and REACTS to
-# match.finished (+15/-15). In-memory MMR but owns an inbox. Pure sink (no subscribers).
+# J: rating-svc -- provides rating.mmr on its edge (match-svc reads it sync) and pulls
+# match.finished (+15/-15) from the shared log. In-memory MMR, DB pool for the plane.
 Write-Host "Starting J (rating-svc) on :$JPort, edge :$JEdge ..."
 Start-Svc 'rating' (Join-Path $BinDir 'rating-svc.exe') @{
     PORT               = ":$JPort"
@@ -225,13 +218,11 @@ Start-Svc 'rating' (Join-Path $BinDir 'rating-svc.exe') @{
     EDGE_ADDR          = ":$JEdge"
     EDGE_CA_CERT       = $CaCert
     EDGE_CA_KEY        = $CaKey
-    EVENTS_ORIGIN      = 'rating-svc'
-    EVENTS_SUBSCRIBERS = ''
 } | Out-Null
 Wait-Healthy $JPort 'J (rating-svc)'
 
-# K: leaderboard-svc -- owns schema leaderboard + an inbox; REACTS to match.finished
-# (upsert wins+1); serves GET /leaderboard (gateway routes it Remote here). Pure sink.
+# K: leaderboard-svc -- owns schema leaderboard; pulls match.finished from the shared
+# log (upsert wins+1); serves GET /leaderboard (gateway routes it Remote here).
 Write-Host "Starting K (leaderboard-svc) on :$KPort, edge :$KEdge ..."
 Start-Svc 'leaderboard' (Join-Path $BinDir 'leaderboard-svc.exe') @{
     PORT               = ":$KPort"
@@ -239,14 +230,12 @@ Start-Svc 'leaderboard' (Join-Path $BinDir 'leaderboard-svc.exe') @{
     EDGE_ADDR          = ":$KEdge"
     EDGE_CA_CERT       = $CaCert
     EDGE_CA_KEY        = $CaKey
-    EVENTS_ORIGIN      = 'leaderboard-svc'
-    EVENTS_SUBSCRIBERS = ''
 } | Out-Null
 Wait-Healthy $KPort 'K (leaderboard-svc)'
 
 # I: match-svc -- records matches (schema match); DURABLE PRODUCER: `report` SYNC-reads
 # both players' MMR from rating-svc (J) over the edge, INSERTs + emit_tx's match.finished
-# in one tx; relays match.finished to J, K and F.
+# in one tx onto the shared log (J, K and F pull it).
 Write-Host "Starting I (match-svc) on :$IPort, edge :$IEdge ..."
 Start-Svc 'match' (Join-Path $BinDir 'match-svc.exe') @{
     PORT               = ":$IPort"
@@ -255,13 +244,11 @@ Start-Svc 'match' (Join-Path $BinDir 'match-svc.exe') @{
     EDGE_CA_CERT       = $CaCert
     EDGE_CA_KEY        = $CaKey
     RATING_EDGE_ADDR   = "127.0.0.1:$JEdge"
-    EVENTS_ORIGIN      = 'match-svc'
-    EVENTS_SUBSCRIBERS = "match.finished=http://127.0.0.1:$JPort/events,http://127.0.0.1:$KPort/events,http://127.0.0.1:$FPort/events"
 } | Out-Null
 Wait-Healthy $IPort 'I (match-svc)'
 
-# A: characters-svc -- owns schema characters; emits character.created/.deleted, relayed
-# to inventory-svc (B) and audit-svc (F).
+# A: characters-svc -- owns schema characters; appends character.created/.deleted to
+# the shared log (inventory-svc and audit-svc pull them).
 Write-Host "Starting A (characters-svc) on :$APort, edge :$AEdge ..."
 Start-Svc 'characters' (Join-Path $BinDir 'characters-svc.exe') @{
     PORT               = ":$APort"
@@ -269,13 +256,12 @@ Start-Svc 'characters' (Join-Path $BinDir 'characters-svc.exe') @{
     EDGE_ADDR          = ":$AEdge"
     EDGE_CA_CERT       = $CaCert
     EDGE_CA_KEY        = $CaKey
-    EVENTS_ORIGIN      = 'characters-svc'
-    EVENTS_SUBSCRIBERS = "character.created=http://127.0.0.1:$BPort/events,http://127.0.0.1:$FPort/events;character.deleted=http://127.0.0.1:$BPort/events,http://127.0.0.1:$FPort/events"
 } | Out-Null
 Wait-Healthy $APort 'A (characters-svc)'
 
 # C: config-svc -- owns the config schema + LISTEN/NOTIFY listener; serves config.snapshot
-# on its edge; relays config.changed durably to B. MUST be up before B (B boot-fills from C).
+# on its edge; appends config.changed durably (B and F pull it). MUST be up before B
+# (B boot-fills from C).
 Write-Host "Starting C (config-svc) on :$CPort, edge :$CEdge ..."
 Start-Svc 'config' (Join-Path $BinDir 'config-svc.exe') @{
     PORT               = ":$CPort"
@@ -283,8 +269,6 @@ Start-Svc 'config' (Join-Path $BinDir 'config-svc.exe') @{
     EDGE_ADDR          = ":$CEdge"
     EDGE_CA_CERT       = $CaCert
     EDGE_CA_KEY        = $CaKey
-    EVENTS_ORIGIN      = 'config-svc'
-    EVENTS_SUBSCRIBERS = "config.changed=http://127.0.0.1:$BPort/events,http://127.0.0.1:$FPort/events"
 } | Out-Null
 Wait-Healthy $CPort 'C (config-svc)'
 
@@ -299,7 +283,6 @@ Start-Svc 'inventory' (Join-Path $BinDir 'inventory-svc.exe') @{
     EDGE_CA_KEY          = $CaKey
     CHARACTERS_EDGE_ADDR = "127.0.0.1:$AEdge"
     CONFIG_EDGE_ADDR     = "127.0.0.1:$CEdge"
-    EVENTS_ORIGIN        = 'inventory-svc'
 } | Out-Null
 Wait-Healthy $BPort 'B (inventory-svc)'
 

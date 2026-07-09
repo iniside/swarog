@@ -197,6 +197,15 @@ async fn record(req: Request, next: Next) -> Response {
     response
 }
 
+/// Registers an additional collector into this process's PRIVATE registry so it is
+/// served by the same `GET /metrics` scrape — the seam other core infrastructure
+/// (the asyncevents plane's subscription-lag gauges) uses to publish its series
+/// without owning a second registry. Returns the prometheus error on a duplicate
+/// registration; callers guard with a `OnceLock` per process.
+pub fn register(c: Box<dyn prometheus::core::Collector>) -> prometheus::Result<()> {
+    metrics().registry.register(c)
+}
+
 /// The `GET /metrics` handler: renders the private registry in the Prometheus text
 /// exposition format. Never recorded in its own counters (see [`record`]).
 async fn scrape() -> impl IntoResponse {

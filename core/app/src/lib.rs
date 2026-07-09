@@ -206,13 +206,13 @@ fn apply_http_layers(ctx: &Context, mut router: axum::Router) -> axum::Router {
 ///    ([`Context::with_db_and_transport`]), or DB-less (no plane; any `on_tx`
 ///    there fails loud at init, `emit_tx` returns `NoTransport`),
 /// 3. [`validate_requires`] — fail loud on an incomplete module set,
-/// 4. [`App::build`] (two-phase register → init), then merge the plane's
-///    `POST /events` inbound sink into the process router,
-/// 5. the plane's own-schema migration, then [`App::migrate`] — the outbox exists
-///    before any module's first `emit_tx`,
-/// 6. [`App::start`], then the plane's start (origin-collision guard, local-target
-///    snapshot — taken AFTER all module inits and stub registers — relay, LISTEN,
-///    housekeeping),
+/// 4. [`App::build`] (two-phase register → init), with the plane's worker-health
+///    probe contributed to `/readyz`,
+/// 5. the plane's own-schema migration, then [`App::migrate`] — the event log
+///    exists before any module's first `emit_tx`,
+/// 6. [`App::start`], then the plane's start (subscription reconcile — the
+///    snapshot is taken AFTER all module inits and stub registers — pull workers,
+///    NOTIFY wake-up, metrics),
 /// 7. if `edge_server` is `Some`, bind the internal mutual-TLS QUIC listener, and if
 ///    `player_server` is `Some`, bind the player-facing server-cert-only QUIC listener
 ///    — both AFTER build (so every handler a module registered during init exists),
@@ -289,15 +289,28 @@ pub async fn run(
     }
     app.build().context("startup failed")?;
 
-    // The plane's one inbound sink (`POST /events`) joins the process router the
-    // same way module routes did during init.
+    // The plane's worker-health probe joins `/readyz`: a process whose pull
+    // workers died (panic) must stop taking traffic that expects their effects.
     if let Some(p) = &plane {
-        ctx.mount(p.router());
+        let liveness = p.liveness();
+        ctx.contribute(
+            httpmw::READINESS_SLOT,
+            httpmw::ReadyCheck::new("asyncevents-worker", move || {
+                let liveness = liveness.clone();
+                async move {
+                    if liveness.dead() {
+                        Err("asyncevents worker task died".to_string())
+                    } else {
+                        Ok(())
+                    }
+                }
+            }),
+        );
     }
 
     // 5. Own-schema migrations — the plane's first (a module's first emit_tx must
-    //    find the outbox), then 6. background work: modules first, then the plane
-    //    (its local-target snapshot must see every wiring-time on_tx).
+    //    find `asyncevents.append_event`), then 6. background work: modules first,
+    //    then the plane (its subscription snapshot must see every wiring-time on_tx).
     if let Some(p) = &plane {
         p.migrate().await.context("asyncevents migrate failed")?;
     }

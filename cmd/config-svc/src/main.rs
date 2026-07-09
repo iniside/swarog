@@ -3,20 +3,16 @@
 //! to `edge::EDGE_SLOT` (topology-blind), and `app::run` installs it on this server so a
 //! peer's `CachedConfig` (inventory-svc) resolves `config.snapshot` over the
 //! mutually-authenticated edge. config's LISTEN/NOTIFY listener publishes
-//! `config.changed` on the DURABLE plane; this process's durable-events relay (app-owned,
-//! DB ⇒ plane) drains its own outbox rows and POSTs them to the peers named in
-//! `EVENTS_SUBSCRIBERS` (the run scripts point `config.changed` at inventory-svc's
-//! `/events`).
+//! `config.changed` on the DURABLE plane (app-owned, DB ⇒ plane): one append onto the
+//! shared XID-ordered log; consumers (inventory-svc, audit-svc) pull it with their own
+//! workers against their own checkpoints.
 //!
 //! It hosts NO gateway (FrontDoor) module: the single public front door lives only in
 //! gateway-svc + the monolith, so config needs no accounts stub for a bearer verifier.
 //! config serves `config.snapshot` ONLY over the internal mTLS edge; HTTP here is just
-//! the infra surface (`/healthz`, `/readyz`, `/metrics`, `/events`), no typed ops.
-//!
-//! EVENTS_ORIGIN MUST be distinct per process (never the `"monolith"` default): the
-//! relay drains ONLY its own origin's outbox rows, and the plane's start-time
-//! origin-collision guard rejects a default origin alongside remote sinks. Ports/addrs
-//! (PORT, EDGE_ADDR, EVENTS_SUBSCRIBERS, EVENTS_ORIGIN) are set by the run scripts.
+//! the infra surface (`/healthz`, `/readyz`, `/metrics`), no typed ops. Durable
+//! delivery needs NO per-process env (no origins, no subscriber routing). Ports/addrs
+//! (PORT, EDGE_ADDR) are set by the run scripts.
 
 use std::sync::{Arc, Mutex};
 

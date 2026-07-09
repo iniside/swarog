@@ -1,25 +1,21 @@
 #!/usr/bin/env bash
 # smoke-split-asyncevents.sh — end-to-end proof that the DURABLE EVENTS PLANE (the
-# app-owned asyncevents transport) works in the MICROSERVICES SPLIT, and that the
-# single-owner relay redesign holds. Boots the full split (characters-svc,
-# inventory-svc, scheduler-svc, gateway-svc) via run.sh, then asserts:
+# app-owned asyncevents V2 log + pull subscriptions) works in the MICROSERVICES
+# SPLIT. Boots the full split via run.sh, then asserts:
 #
 #   1. DURABLE CROSS-PROCESS DELIVERY: a character created on characters-svc (A)
 #      lands a starter grant in inventory on inventory-svc (B) — i.e.
-#      character.created flowed A's domain tx -> asyncevents.outbox(origin=
-#      characters-svc) -> A's relay -> POST /events -> B's inbound sink ->
-#      inventory.grantStarter, all with NO module knowing the topology. (The
-#      plane itself is app-owned infrastructure, constructed unconditionally by
-#      `app::run` whenever the process has a DB pool — there is no per-module
-#      "hosted" gate left to probe; a booted characters-svc/inventory-svc IS the
-#      plane-present proof.)
-#   2. BLOCKER-1 REGRESSION (the whole redesign's reason to exist): with
-#      scheduler-svc (origin=scheduler-svc) running its OWN relay over the SAME
-#      shared asyncevents.outbox, A's character.created row is NOT swallowed by a
-#      foreign-origin relay. Proven two ways: the grant lands (assertion 1), AND
-#      the outbox row is stamped origin=characters-svc and marked sent, with the
-#      inbox carrying (event_id, subscriber='inventory') — the row was consumed
-#      by inventory, not mark-sent-to-nobody by scheduler-svc.
+#      character.created flowed A's domain tx -> asyncevents.append_event (the ONE
+#      shared XID-ordered log) -> B's pull worker -> inventory.grantStarter, with
+#      NO module knowing the topology and NO per-process events env (no
+#      EVENTS_ORIGIN, no EVENTS_SUBSCRIBERS, no relay, no POST /events).
+#   2. THE LOG + CHECKPOINTS: the character.created event EXISTS in
+#      asyncevents.events, and BOTH consumer-owned checkpoints —
+#      inventory.character-created.v1 (B) and audit.character-created.v1
+#      (audit-svc) — have advanced to (or past) that event's position
+#      (generation, producer_xid, tie_breaker). Consumers own their subscriptions;
+#      a foreign process cannot swallow another's delivery by construction (each
+#      worker drains only its own subscription ids).
 #
 # Exits NON-ZERO on any failed assertion. Repeatable, committed artifact — the
 # proof that replaces "trust me, I ran it" for the at-risk (split) topology.
@@ -29,8 +25,11 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
-A=http://localhost:8080     # characters-svc (accounts + characters)  origin=characters-svc
-B=http://localhost:8081     # inventory-svc  (inventory + audit + admin) origin=inventory-svc
+# Ops are driven THROUGH the single front door (gateway-svc): characters-svc (A) and
+# inventory-svc (B) serve their ops only over the internal mTLS edge. The DOMAIN
+# EFFECTS still land in A's and B's processes — that is what the assertions check.
+G=http://localhost:8082     # gateway-svc front door
+KEY='X-Api-Key: dev-key-client'
 PSQL="${PSQL:-psql}"
 if ! command -v "$PSQL" >/dev/null 2>&1; then
     PSQL="/c/Program Files/PostgreSQL/18/bin/psql.exe"
@@ -47,31 +46,31 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# --- boot the full split ---------------------------------------------------
+# --- boot the full split -----------------------------------------------------
 ./run.sh --teardown >/dev/null 2>&1 || true
-echo "--- booting microservices split (A + B + scheduler-svc + gateway) ---"
-./run.sh microservices || fail "split did not boot"
+echo "--- booting the microservices split ---"
+./run.sh split || fail "split did not boot"
 
-# --- register + create a character on A ------------------------------------
+# --- register + create a character (through G, executed on A) -----------------
 EMAIL="msg-smoke-$(date +%s)@test.local"
-REG=$(curl -fsS -X POST "$A/accounts/register" -H 'Content-Type: application/json' \
+REG=$(curl -fsS -X POST "$G/accounts/register" -H "$KEY" -H 'Content-Type: application/json' \
     -d "{\"email\":\"$EMAIL\",\"password\":\"pw12345678\",\"displayName\":\"MsgSmoke\"}") \
-    || fail "register on A failed"
+    || fail "register through G failed"
 TOKEN=$(echo "$REG" | sed -E 's/.*"token":"([^"]+)".*/\1/')
 [ -n "$TOKEN" ] || fail "no token in register response: $REG"
 
-CH=$(curl -fsS -X POST "$A/characters" -H "Authorization: Bearer $TOKEN" \
+CH=$(curl -fsS -X POST "$G/characters" -H "$KEY" -H "Authorization: Bearer $TOKEN" \
     -H 'Content-Type: application/json' -d '{"name":"MsgSmoke","class":"novice"}') \
-    || fail "character create on A failed"
+    || fail "character create through G failed"
 CID=$(echo "$CH" | sed -E 's/.*"id":"([^"]+)".*/\1/')
 [ -n "$CID" ] || fail "no character id in response: $CH"
-echo "created character $CID on A (characters-svc)"
+echo "created character $CID (G front door -> characters-svc)"
 
-# --- assertion 1: the grant lands on B via the durable plane ---------------
+# --- assertion 1: the grant lands on B via the durable pull plane -------------
 GRANTED=""
 t=40
 while [ "$t" -gt 0 ]; do
-    INV=$(curl -fsS "$B/inventory/character/$CID" -H "Authorization: Bearer $TOKEN" 2>/dev/null) || INV=""
+    INV=$(curl -fsS "$G/inventory/character/$CID" -H "$KEY" -H "Authorization: Bearer $TOKEN" 2>/dev/null) || INV=""
     if echo "$INV" | grep -q '"item_id"'; then
         GRANTED=$(echo "$INV" | sed -E 's/.*"item_id":"([^"]+)".*/\1/')
         break
@@ -81,43 +80,32 @@ done
 [ -n "$GRANTED" ] || fail "starter grant never landed in inventory on B within deadline — durable cross-process delivery broken"
 pass "durable cross-process delivery: character.created (A) -> starter grant '$GRANTED' in inventory (B)"
 
-# --- assertion 2: BLOCKER-1 — the row is A's origin, consumed by inventory, not swallowed
-# The outbox row for THIS character's created event: stamped origin=characters-svc.
-OID=$(psql_q "SELECT id FROM asyncevents.outbox WHERE topic='character.created' AND payload->>'CharacterID' = '$CID' LIMIT 1;")
-[ -n "$OID" ] || fail "no asyncevents.outbox row found for character.created of $CID"
-OORIGIN=$(psql_q "SELECT origin FROM asyncevents.outbox WHERE id = $OID;")
-[ "$OORIGIN" = "characters-svc" ] || fail "outbox row origin is '$OORIGIN', expected 'characters-svc' (wrong producer stamped it)"
-pass "outbox row $OID stamped origin=characters-svc (produced by characters-svc, not a foreign origin)"
+# --- assertion 2: the shared log holds the event ------------------------------
+EVROWS=$(psql_q "SELECT count(*) FROM asyncevents.events WHERE topic='character.created' AND payload->>'character_id'='$CID';")
+[ "$EVROWS" = "1" ] || fail "expected exactly 1 asyncevents.events row for character.created of $CID, got '$EVROWS'"
+pass "asyncevents.events holds the character.created event for $CID (single shared XID-ordered log, one append)"
 
-# The own-origin relay marks the row sent — POLL, since markSent commits shortly AFTER
-# B has already made the grant visible (the relay holds its drain tx open across the
-# delivery round-trip), so a single read can race the commit. If a FOREIGN-origin relay
-# had swallowed the row it would be mark-sent-to-nobody with no inbox rows (checked next);
-# if delivery were failing it would never become sent.
-OSENT=""
-t=40
-while [ "$t" -gt 0 ]; do
-    if [ "$(psql_q "SELECT sent_at IS NOT NULL FROM asyncevents.outbox WHERE id = $OID;")" = "t" ]; then
-        OSENT=t; break
-    fi
-    t=$((t - 1)); sleep 0.25
+# --- assertion 3: BOTH consumer checkpoints advanced past the event's position.
+# Cursors advance transactionally with the handler effect, so a cursor >= the
+# event's (generation, producer_xid, tie_breaker) proves that subscription's
+# worker DELIVERED it. Poll: audit's delivery is independent of inventory's.
+cursor_past() {
+    psql_q "SELECT count(*) FROM asyncevents.subscriptions s, asyncevents.events e \
+            WHERE s.subscription_id='$1' \
+              AND e.topic='character.created' AND e.payload->>'character_id'='$CID' \
+              AND (s.cursor_generation, s.cursor_xid, s.cursor_tie) \
+                  >= (e.generation, e.producer_xid, e.tie_breaker);"
+}
+for SUB in inventory.character-created.v1 audit.character-created.v1; do
+    OK=""
+    t=40
+    while [ "$t" -gt 0 ]; do
+        if [ "$(cursor_past "$SUB")" = "1" ]; then OK=1; break; fi
+        t=$((t - 1)); sleep 0.25
+    done
+    [ -n "$OK" ] || fail "subscription $SUB cursor never advanced past the character.created event — its pull worker did not deliver it"
+    pass "checkpoint $SUB advanced past the event's position (transactional cursor = delivered)"
 done
-[ "$OSENT" = "t" ] || fail "outbox row $OID for $CID never marked sent within deadline — stranded or delivery failing"
-pass "outbox row $OID marked sent by its own-origin (characters-svc) relay"
-
-# The inbox proves the receivers on B consumed it — NOT scheduler-svc mark-sent-to-nobody.
-# Both durable subscribers of character.created live in inventory-svc (B): inventory
-# (OnTx) and audit (OnTxRaw). Poll for both (event_id, subscriber) rows.
-EVID="asyncevents:$OID"
-INBOX=""
-t=40
-while [ "$t" -gt 0 ]; do
-    INBOX=$(psql_q "SELECT string_agg(subscriber, ',' ORDER BY subscriber) FROM asyncevents.inbox WHERE event_id='$EVID';")
-    if [ "$INBOX" = "audit,inventory" ]; then break; fi
-    t=$((t - 1)); sleep 0.25
-done
-[ "$INBOX" = "audit,inventory" ] || fail "inbox for $EVID = '[$INBOX]', expected 'audit,inventory' — a subscriber did not durably consume (scheduler-svc may have swallowed it, or a sink is down)"
-pass "BLOCKER-1 regression: event $EVID consumed by BOTH 'audit' and 'inventory' on B — scheduler-svc's relay did NOT swallow characters-svc's event"
 
 echo ""
-echo "=== SMOKE PASSED: durable event plane works in the microservices split; single-owner relay holds ==="
+echo "=== SMOKE PASSED: the V2 durable event log delivers in the microservices split; consumer-owned pull checkpoints hold ==="

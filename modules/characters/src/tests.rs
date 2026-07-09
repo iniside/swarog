@@ -67,7 +67,7 @@ async fn test_pool() -> Option<PgPool> {
     Some(pool)
 }
 
-/// Migrates BOTH the asyncevents (durable plane's outbox) and characters schemas
+/// Migrates BOTH the asyncevents (durable plane's event log) and characters schemas
 /// EXACTLY ONCE per test binary. Concurrent `CREATE INDEX`/`CREATE OR REPLACE
 /// TRIGGER` across parallel tests take catalog locks that cycle into a Postgres
 /// deadlock, so the idempotent DDL must be serialized to a single run.
@@ -96,8 +96,8 @@ async fn ensure_schema(pool: &PgPool) {
 /// the same ctx. Returns the ctx (owns the bus + registry) and the wired service.
 async fn wired(pool: &PgPool) -> (Context, Arc<Service>) {
     ensure_schema(pool).await;
-    let transport = asyncevents::transport(pool.clone(), "test-origin");
-    let ctx = Context::with_db_and_transport(pool.clone(), transport);
+    let transport = asyncevents::testing::transport(pool.clone());
+    let ctx = Context::with_db_and_transport(pool.clone(), transport.handle());
 
     let chars = Characters::new();
     chars.register(&ctx).unwrap();
@@ -122,12 +122,12 @@ async fn cleanup(pool: &PgPool, players: &[&str]) {
             .bind(pid)
             .execute(pool)
             .await;
-        let _ = asyncevents::testing::cleanup_outbox(pool, "player_id", pid).await;
+        let _ = asyncevents::testing::cleanup_events(pool, "player_id", pid).await;
     }
 }
 
-async fn outbox_count(pool: &PgPool, topic: &str, character_id: &str) -> i64 {
-    asyncevents::testing::outbox_count(pool, topic, "character_id", character_id)
+async fn event_count(pool: &PgPool, topic: &str, character_id: &str) -> i64 {
+    asyncevents::testing::events_count(pool, topic, "character_id", character_id)
         .await
         .unwrap()
 }
@@ -142,10 +142,10 @@ async fn char_count(pool: &PgPool, id: &str) -> i64 {
 }
 
 /// THE ATOMIC EMIT PROOF: create writes BOTH a `characters.characters` row AND an
-/// `asyncevents.outbox` row (topic `character.created`) in one tx — proving
+/// `asyncevents.events` row (topic `character.created`) in one tx — proving
 /// `emit_tx` rode the domain transaction. Also proves the class default.
 #[tokio::test]
-async fn create_persists_character_and_outbox_event_atomically() {
+async fn create_persists_character_and_durable_event_atomically() {
     let Some(pool) = test_pool().await else { return };
     let (_ctx, svc) = wired(&pool).await;
     let pid = unique_player(&pool).await;
@@ -160,9 +160,9 @@ async fn create_persists_character_and_outbox_event_atomically() {
 
     assert_eq!(char_count(&pool, &c.id).await, 1, "character row must exist");
     assert_eq!(
-        outbox_count(&pool, "character.created", &c.id).await,
+        event_count(&pool, "character.created", &c.id).await,
         1,
-        "outbox row (character.created) must exist — atomic emit_tx"
+        "log event (character.created) must exist — atomic emit_tx"
     );
 
     cleanup(&pool, &[&pid]).await;
@@ -189,14 +189,14 @@ async fn delete_emits_event_owned_and_is_notfound_unowned() {
         .await
         .unwrap_err();
     assert_eq!(e.status, Status::NotFound);
-    assert_eq!(outbox_count(&pool, "character.deleted", &c.id).await, 0);
+    assert_eq!(event_count(&pool, "character.deleted", &c.id).await, 0);
     assert_eq!(char_count(&pool, &c.id).await, 1);
 
     // Owned delete: succeeds, emits the event, row gone.
     svc.delete(Identity::player(&owner), c.id.clone())
         .await
         .unwrap();
-    assert_eq!(outbox_count(&pool, "character.deleted", &c.id).await, 1);
+    assert_eq!(event_count(&pool, "character.deleted", &c.id).await, 1);
     assert_eq!(char_count(&pool, &c.id).await, 0);
 
     cleanup(&pool, &[&owner, &other]).await;

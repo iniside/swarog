@@ -3,14 +3,14 @@
 //! plane is app-owned (DB ⇒ plane), not a listed module;
 //! `characters` contributes its `characters.ownerOf` + player-op faces to
 //! `edge::EDGE_SLOT` (topology-blind), and `app::run` installs them on this server so a
-//! peer's inventory can resolve ownership over the mutually-authenticated edge. The
-//! characters outbox relay runs in THIS process because it drains characters' own outbox
-//! rows.
+//! peer's inventory can resolve ownership over the mutually-authenticated edge.
+//! `character.created`/`.deleted` are appended onto the shared durable log in the
+//! domain tx; consumers (inventory-svc, audit-svc) pull them with their own workers.
 //!
 //! It hosts NO gateway (FrontDoor) module: the single public front door lives only in
 //! gateway-svc and the monolith (`cmd/server`). A serves its ops ONLY over the internal
 //! mTLS edge — gateway-svc dispatches `characters.*` Remote to it. HTTP here is just the
-//! infra surface (`/healthz`, `/readyz`, `/metrics`, `/events`), no typed ops.
+//! infra surface (`/healthz`, `/readyz`, `/metrics`), no typed ops.
 
 use std::sync::{Arc, Mutex};
 

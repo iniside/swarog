@@ -119,7 +119,7 @@ async fn test_pool() -> Option<PgPool> {
     Some(pool)
 }
 
-/// Migrates asyncevents (durable plane's outbox) + inventory schemas EXACTLY
+/// Migrates asyncevents (durable plane's event log) + inventory schemas EXACTLY
 /// ONCE per test binary — concurrent idempotent DDL across parallel tests can
 /// deadlock on catalog locks, so serialize to a single run.
 static SCHEMA_READY: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
@@ -232,8 +232,9 @@ async fn list_character_authz_mapping() {
 }
 
 /// (c) The on_tx grant-on-Created path IN-PROCESS: inject a real asyncevents
-/// transport (live DB), register inventory's on_tx(CREATED), start the plane's relay,
-/// emit a Created, and assert a starter holding materializes for that character.
+/// transport (live DB), register inventory's on_tx(CREATED), start the plane's pull
+/// workers, emit a Created, and assert a starter holding materializes for that
+/// character.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn grant_on_created_via_on_tx() {
     let Some(pool) = test_pool().await else { return };
@@ -256,8 +257,8 @@ async fn grant_on_created_via_on_tx() {
     inv.register(&ctx).unwrap();
     inv.init(&ctx).unwrap(); // registers on_tx(CREATED/DELETED) -> subscribe_tx
 
-    // Plane::start snapshots inventory's subscription into relay targets, then
-    // launches the relay + LISTEN loop.
+    // Plane::start reconciles inventory's subscriptions into the shared catalog,
+    // then launches the pull workers + NOTIFY wake-up.
     plane.start().await.unwrap();
 
     let cid = unique_uuid(&pool).await;
@@ -293,7 +294,7 @@ async fn grant_on_created_via_on_tx() {
 
     plane.stop().await;
 
-    // Cleanup: the holding + the outbox row for this character.
+    // Cleanup: the holding + the log events for this character.
     cleanup_owner(&pool, &cid).await;
-    let _ = asyncevents::testing::cleanup_outbox(&pool, "character_id", &cid).await;
+    let _ = asyncevents::testing::cleanup_events(&pool, "character_id", &cid).await;
 }
