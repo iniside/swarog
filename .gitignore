@@ -13,6 +13,7 @@ coverage.*
 # Local secrets / env
 .env.local
 .env*.local
+nocommit/
 
 # Design assets — large binaries (keep the GameOps spec html/js as reference)
 /Admin portal game backend.zip
