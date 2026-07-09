@@ -58,6 +58,20 @@ later stub re-resolve). Platform-side pieces still land at existing seams:
 multi-peer round-robin in `core/remote`, drain in `core/edge`/`httpmw`,
 replica-safety in modules.
 
+**Multi-machine (2026-07-10): master + per-machine agents (the Nomad
+server/client shape), NO overlay network, NO master election.** Overlay exists in
+k8s only for IP-per-pod; our native processes share host networking, so resolve
+just returns real `host:port` — plain LAN/VPC routing, and the mTLS QUIC edge
+already assumes an untrusted network (cross-internet fleets at most get a flat
+host-level WireGuard, never per-process overlay). Master holds
+manifest/desired-state/resolve API; agents are dumb spawn/kill/status executors
+connecting outbound to the master; processes still see only `ORCHESTRATOR_URL`
+(contract unchanged). Single master, local-disk state, no Raft — replicated
+consensus is the threshold where you start rewriting Consul; master down =
+running processes keep running (addresses resolved, agents supervise locally),
+only management degrades until restart. Placement = manifest annotation, not
+scheduling.
+
 **How to apply:** when the orchestrator work starts, don't propose
 Docker/k8s/containerd anywhere in the design and don't fold the orchestrator into
 `core/` or the module system; deploy = copy binary + supervisor.
