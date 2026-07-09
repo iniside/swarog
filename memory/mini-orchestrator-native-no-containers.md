@@ -30,7 +30,12 @@ via the external process contract: spawn binary with env vars (`*_EDGE_ADDR`,
 `EVENTS_SUBSCRIBERS`, `EVENTS_ORIGIN`, `DATABASE_URL`), poll `GET /readyz`,
 signal/kill + exit codes. Discovery collapses into port assignment: the
 orchestrator mints ports and injects addresses at spawn (what split-proof.ps1 does
-by hand today) — no registration mechanism, zero backend code change. Its own
+by hand today) — no registration mechanism, zero backend code change. Env-name
+knowledge lives in the MANIFEST, not orchestrator code (2026-07-09, Lukasz's
+"how would it know the module's config surface" objection): the operator-authored
+manifest maps opaque env names to placeholders (`{port:self:edge}`,
+`{addr:characters:edge}`); the orchestrator only substitutes values it owns
+(ports/addrs) — the docker-compose/k8s-yaml division of knowledge. Its own
 state (manifest, PIDs, ports) lives locally (file/sqlite/in-memory). Open design
 point: env is read at spawn, so a peer address change = consumer restart (or
 later stub re-resolve). Platform-side pieces still land at existing seams:
