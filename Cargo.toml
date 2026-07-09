@@ -85,7 +85,8 @@ members = [
     "modules/match",
     "modules/rating",
     "modules/leaderboard",
-    "modules/webui",
+    # Non-shipping demo crates — compiled + runnable, monolith-only by design.
+    "demos/webui",
     # Process entrypoints (Go's cmd/).
     "cmd/server",
     "cmd/characters-svc",
@@ -228,4 +229,5 @@ scheduler = { path = "modules/scheduler" }
 match_module = { path = "modules/match" }
 rating = { path = "modules/rating" }
 leaderboard = { path = "modules/leaderboard" }
-webui = { path = "modules/webui" }
+# ---- Demo crates (demos/): non-shipping, importable ONLY by cmd/server (archcheck). ----
+webui = { path = "demos/webui" }

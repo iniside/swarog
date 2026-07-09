@@ -5,10 +5,10 @@
 //! so the account-linking flow is visible without a separate client.
 //!
 //! No state, no `Requires`, no schema, no events — just one static route mounted on
-//! the shared router (`ctx.mount`, the same seam `accounts::epic_oauth` uses). This
-//! is the ONE sanctioned exception to the fortress-svc rule: a dev demo SPA has no
-//! independent deployment story, so it is registered in `cmd/server` (the monolith)
-//! only — there is no `cmd/webui-svc`.
+//! the shared router (`ctx.mount`, the same seam `accounts::epic_oauth` uses). It
+//! lives under `demos/` (NOT `modules/`) because it is non-shipping: a dev demo SPA
+//! has no independent deployment story, so it is registered in `cmd/server` (the
+//! monolith) only — no `cmd/webui-svc`, and archcheck forbids any other consumer.
 
 use axum::http::header;
 use axum::response::IntoResponse;

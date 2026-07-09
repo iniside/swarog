@@ -30,5 +30,4 @@ rating = { workspace = true }
 match_module = { workspace = true }
 leaderboard = { workspace = true }
 apikeys = { workspace = true }
-webui = { workspace = true }
 gateway = { workspace = true }

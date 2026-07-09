@@ -8,9 +8,11 @@
 use lifecycle::Module;
 
 /// The module set both checker harnesses run. MUST track `cmd/server`'s list
-/// (minus core-infra `metrics`, which has no `requires()`, no topics, and no schema
-/// — it adds nothing to either harness). When adding a module: update `cmd/server`,
-/// the new svc main, `split-proof`, AND this list.
+/// (minus core-infra `metrics` and the `demos/webui` demo, which have no
+/// `requires()`, no topics, and no schema — they add nothing to either harness;
+/// archcheck also forbids any non-`cmd/server` consumer of a `demos/*` crate).
+/// When adding a module: update `cmd/server`, the new svc main, `split-proof`,
+/// AND this list.
 pub fn monolith_modules() -> Vec<Box<dyn Module>> {
     vec![
         Box::new(config::Config::new()),
@@ -24,7 +26,6 @@ pub fn monolith_modules() -> Vec<Box<dyn Module>> {
         Box::new(match_module::MatchModule::new()),
         Box::new(leaderboard::LeaderboardModule::new()),
         Box::new(apikeys::ApiKeys::new()),
-        Box::new(webui::WebUi::new()),
         Box::new(gateway::Gateway::new()),
     ]
 }

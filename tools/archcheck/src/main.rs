@@ -38,9 +38,15 @@ const GATEWAY_CRATE: &str = "gateway";
 const FRONT_DOOR_HOSTS: [&str; 2] = ["gateway-svc", "server"];
 
 /// Modules sanctioned to ship WITHOUT a `cmd/<name>-svc` process. The fortress rule
-/// (CLAUDE.md constraint 2) says every domain module compiles + boots as its own svc;
-/// `webui` is the one sanctioned exception (dev demo SPA, monolith-only, no svc).
-const SVC_EXEMPT_MODULES: &[&str] = &["webui"];
+/// (CLAUDE.md constraint 2) says every domain module compiles + boots as its own svc —
+/// currently with NO exceptions: non-shipping demo crates live under `demos/`, not
+/// `modules/` (webui moved there 2026-07-09), so nothing in `modules/` is exempt.
+const SVC_EXEMPT_MODULES: &[&str] = &[];
+
+/// The only `cmd/<dir>` crate permitted to depend on a `demos/*` crate: the monolith.
+/// A demo is non-shipping by definition — the moment gateway-svc (or any other
+/// process) imports one, it silently becomes production surface.
+const DEMO_HOST: &str = "server";
 
 /// Crate names a `<name>api` contract crate must never depend on (non-dev). The
 /// workspace routes transport through the `edge`/`remote` core crates — those are the
@@ -64,6 +70,8 @@ enum Kind {
     Events(String),
     /// `cmd/<name>/` — a composition-root binary (its dir name, e.g. `characters-svc`).
     Cmd(String),
+    /// `demos/<name>/` — a non-shipping demo crate (monolith-only by definition).
+    Demo(String),
     /// Anything else (foundations, contract crates, tools).
     Other,
 }
@@ -78,6 +86,10 @@ fn classify(manifest_path: &str) -> Kind {
     if let Some(name) = segment_after(&p, "/cmd/") {
         // cmd/<name>/Cargo.toml
         return Kind::Cmd(name);
+    }
+    if let Some(name) = segment_after(&p, "/demos/") {
+        // demos/<name>/Cargo.toml
+        return Kind::Demo(name);
     }
     if let Some((_, rest)) = p.split_once("/api/") {
         // Note: split_once (not `.split("/api/").nth(1)`) is required — the `api`
@@ -338,8 +350,33 @@ fn main() {
         }
     }
 
+    // --- 13: demos stay non-shipping — only cmd/server may import a demos/* crate ---
+    // A demo crate (demos/webui) is compiled + runnable but deliberately monolith-only;
+    // any other consumer (a domain module, gateway-svc, another svc) would promote it
+    // to shipping surface without anyone deciding that.
+    for pkg in packages {
+        let manifest = pkg["manifest_path"].as_str().unwrap_or_default();
+        let consumer = classify(manifest);
+        if matches!(&consumer, Kind::Cmd(c) if c == DEMO_HOST) {
+            continue; // the monolith is the sanctioned demo host
+        }
+        for dep in pkg["dependencies"].as_array().into_iter().flatten() {
+            if dep["kind"].as_str() == Some("dev") {
+                continue;
+            }
+            let dep_name = dep["name"].as_str().unwrap_or_default();
+            if let Some(Kind::Demo(demo)) = by_name.get(dep_name) {
+                violations.push(format!(
+                    "{} depends on demos/{demo} — a demo crate is non-shipping and may be \
+                     hosted ONLY by cmd/{DEMO_HOST} (the monolith)",
+                    pkg["name"].as_str().unwrap_or_default()
+                ));
+            }
+        }
+    }
+
     if violations.is_empty() {
-        println!("archcheck: OK — no module→module / module→foreign-rpc edges, single front door (only gateway-svc + server host `gateway`), no Option<edge::Server> in modules/, <name>api/<name>events crates stay transport-free, every cmd/*-svc + server lists `metrics`, no cross-schema FKs in modules/ DDL, no inline test modules in modules/, core/bus stays sqlx-free, no module runtime-deps `asyncevents`, no EVENTS_ env knobs read inside modules/, every modules/<name> boots as cmd/<name>-svc (webui exempt)");
+        println!("archcheck: OK — no module→module / module→foreign-rpc edges, single front door (only gateway-svc + server host `gateway`), no Option<edge::Server> in modules/, <name>api/<name>events crates stay transport-free, every cmd/*-svc + server lists `metrics`, no cross-schema FKs in modules/ DDL, no inline test modules in modules/, core/bus stays sqlx-free, no module runtime-deps `asyncevents`, no EVENTS_ env knobs read inside modules/, every modules/<name> boots as cmd/<name>-svc, demos/* imported only by cmd/server");
         return;
     }
     eprintln!("archcheck: FAIL — {} violation(s):", violations.len());

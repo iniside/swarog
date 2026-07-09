@@ -56,9 +56,10 @@ module never knows the topology.
    another module's impl crate, and every domain module compiles + boots as its own
    `cmd/<name>-svc`. The only gates are the contract crates under `api/<name>/`.
    Enforced mechanically: `cargo run -p archcheck` (no module→module edges, no
-   module→foreign-`<name>rpc` edges, no `Option<edge::Server>` in modules/) + the
-   `fortress` verify stage (builds every svc). Sanctioned exception: `webui`
-   (dev demo SPA, monolith-only, no svc).
+   module→foreign-`<name>rpc` edges, no `Option<edge::Server>` in modules/, every
+   `modules/<name>` has a `cmd/<name>-svc`) + the `fortress` verify stage (builds
+   every svc). NO exceptions — non-shipping demo crates live under `demos/`
+   (importable ONLY by `cmd/server`, archcheck-enforced), not in `modules/`.
 3. **Contract surface per domain, under `api/<name>/`:** `<name>api` (pure traits +
    `#[rpc]`, transport-free — importable by any module), `<name>events` (payloads +
    `bus::define` descriptors — importable by any module), `<name>rpc` (generated
@@ -165,7 +166,6 @@ module never knows the topology.
   when `APIKEYS_DEV_SEED` is explicitly truthy (self-healing upsert); a gateway
   process without the capability FAILS STARTUP unless `APIKEYS_DEV_ALLOW=1`
   (allow-all, loud warn). Admin page "API Keys" (list/edit/add/revoke).
-- **webui** — dev demo SPA at `/` (monolith-only; the sanctioned fortress exception).
 - **gateway** — the front-door module: HTTP ops routing (Local vs Remote purely by
   slot presence; peer addresses are injected by `cmd/*` via `remote::Stub` →
   `opsapi::PEER_SLOT` contributions — the gateway module itself never reads env),
@@ -176,6 +176,10 @@ module never knows the topology.
   processes (`cmd/gateway-svc`, the monolith `cmd/server`); a domain svc NEVER hosts it —
   it serves ops over the internal mTLS edge and gateway-svc dispatches Remote. Enforced by
   `archcheck` (only gateway-svc + server may depend on the `gateway` crate).
+
+Not a module: **`demos/webui`** — dev demo SPA at `/` exercising the accounts flow
+from a browser. Non-shipping, monolith-only (registered in `cmd/server` only;
+archcheck forbids any other consumer of a `demos/*` crate).
 
 ## Commands
 
@@ -254,6 +258,7 @@ api/<name>/                # contract surface per domain
   <name>events/            #   bus::define descriptors + payloads
   <name>rpc/               #   generated glue (Client/register_server/factories)
 modules/                   # private impls — 12 fortresses + gateway (see above)
+demos/                     # non-shipping demo crates (webui) — cmd/server only
 tools/                     # rpc-macro (+tests), archcheck, topiccheck, edgeca,
                            # playercli
 experiments/               # archived sketches: go-sketch (the ported original),

@@ -618,7 +618,6 @@ dependencies = [
  "match_module",
  "rating",
  "scheduler",
- "webui",
 ]
 
 [[package]]

@@ -6,7 +6,7 @@
 use super::{
     classify, cmd_is_a_main, contains_boundary_checked, cross_schema_fk_violations,
     forbidden_api_deps, has_non_dev_dep, is_inline_test_mod, missing_svc_violations,
-    mod_test_ident_end, Kind, FORBIDDEN_API_DEPS, FRONT_DOOR_HOSTS, GATEWAY_CRATE,
+    mod_test_ident_end, Kind, DEMO_HOST, FORBIDDEN_API_DEPS, FRONT_DOOR_HOSTS, GATEWAY_CRATE,
     SVC_EXEMPT_MODULES,
 };
 
@@ -423,16 +423,30 @@ fn module_with_matching_svc_is_clean() {
 }
 
 #[test]
-fn webui_is_the_only_sanctioned_svc_exemption() {
-    // CLAUDE.md constraint 2: webui (dev demo SPA) is monolith-only — no svc required.
-    assert_eq!(SVC_EXEMPT_MODULES, &["webui"]);
+fn no_module_is_svc_exempt() {
+    // Demos live under demos/ (not modules/), so the exemption list is empty: a
+    // webui-shaped module resurrected under modules/ WITHOUT a svc is a violation.
+    assert!(SVC_EXEMPT_MODULES.is_empty());
     let v = missing_svc_violations(&strings(&["webui"]), &strings(&["server"]));
-    assert!(v.is_empty(), "{v:?}");
+    assert_eq!(v.len(), 1, "{v:?}");
+}
+
+// --- Rule 13: demos/* crates are non-shipping (monolith-only) ----------------
+
+#[test]
+fn classifies_demo_manifest() {
+    assert!(matches!(
+        classify("/repo/demos/webui/Cargo.toml"),
+        Kind::Demo(n) if n == "webui"
+    ));
+    // Windows backslashes normalize the same way.
+    assert!(matches!(
+        classify(r"C:\repo\demos\webui\Cargo.toml"),
+        Kind::Demo(n) if n == "webui"
+    ));
 }
 
 #[test]
-fn exemption_does_not_leak_to_other_modules() {
-    // A prefix/suffix of an exempt name is NOT exempt — the match is exact.
-    let v = missing_svc_violations(&strings(&["webui2"]), &strings(&["server"]));
-    assert_eq!(v.len(), 1, "{v:?}");
+fn only_the_monolith_hosts_demos() {
+    assert_eq!(DEMO_HOST, "server");
 }
