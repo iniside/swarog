@@ -1,8 +1,10 @@
 use super::*;
+use bus::{AnyTx, Delivery, SubscriptionSpec, TxHandler};
 use futures::future::BoxFuture;
 use lifecycle::Context;
 use outbox::LocalTarget;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Mutex;
 
 /// Fallback DSN when `DATABASE_URL` is unset — the same default `core/app` uses.
 const DEFAULT_DSN: &str =
@@ -38,11 +40,7 @@ fn unique() -> String {
 }
 
 fn inner(pool: PgPool, origin: &str) -> Arc<Inner> {
-    Arc::new(Inner {
-        pool,
-        origin: origin.to_string(),
-        local_handlers: Mutex::new(HashMap::new()),
-    })
+    Arc::new(Inner::new(pool, origin.to_string()))
 }
 
 /// A v1/7-day contract over a test topic — the only fields this push plane

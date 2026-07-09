@@ -107,6 +107,36 @@ enlists in a Postgres tx: `enqueue_tx` downcasts the `AnyTx` to
 use, not at boot) — a second `Transport` impl in that engine is the day-two path,
 deliberately out of scope while the backplane stays Postgres.
 
+## V2 event log (additive — plan Step 2)
+
+`Plane::migrate` also creates the V2 storage that replaces the push path at the
+Step-3 cutover (plan: `docs/plans/2026-07-09-2234-durable-event-log-fresh-plan.md`):
+`asyncevents.{plane_meta,events,subscriptions,history_contracts}`, the
+`events_scan` index, an `AFTER INSERT ON events` → `pg_notify('asyncevents_events')`
+wake-up trigger, and `asyncevents.append_event(topic, version, payload) RETURNS
+event_id` — the SINGLE writer implementation (transaction-scoped **shared**
+advisory lock on one fixed key → read `plane_meta.generation` → INSERT stamped
+with `pg_current_xact_id()`). The Rust producer (`store::append`) calls that
+function on the caller's open tx; a generation bump (`store::bump_generation`,
+wired to `eventctl` later) takes the **exclusive** form of the same lock and
+waits every in-flight writer out. A position is `(generation, producer_xid,
+tie_breaker)`; readers only observe current-generation rows with `producer_xid <
+pg_snapshot_xmin(pg_current_snapshot())`, so a slow commit delays the frontier
+but can never be skipped. sqlx has no `xid8` codec: every bind/decode crosses as
+text (`$n::xid8` in, `producer_xid::text` out) and comparisons stay in SQL.
+Nothing is wired into `Transport::enqueue_tx` yet — the outbox path above stays
+the live delivery mechanism.
+
+**First-migrate prerequisite (one-time superuser bootstrap):** the migrate seeds
+`plane_meta` with the cluster's `pg_control_system().system_identifier`, and the
+startup guards re-check it on every boot (plus `max_prepared_transactions = 0`
+and an empty `pg_prepared_xacts`). `pg_control_system()` is not executable by
+ordinary roles by default; grant it once as superuser:
+
+```
+GRANT EXECUTE ON FUNCTION pg_control_system() TO gamebackend;
+```
+
 ## Mechanics (quick reference)
 
 - **Lifecycle** (all driven by `app::run`, in this order): `Plane::new(pool, dsn)`
