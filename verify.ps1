@@ -99,6 +99,12 @@ function Invoke-FortressStage {
         & cargo run -q -p archcheck *>> $log
     }
     if ($LASTEXITCODE -eq 0) {
+        & cargo run -q -p requirecheck -- --strict *>> $log
+    }
+    if ($LASTEXITCODE -eq 0) {
+        & cargo run -q -p topiccheck -- --durability-strict *>> $log
+    }
+    if ($LASTEXITCODE -eq 0) {
         Write-Host "  PASS" -ForegroundColor Green; Add-Result 'fortress' 'PASS' $true
     } else {
         Write-Host "  FAIL (see run/verify/fortress.log)" -ForegroundColor Red; Add-Result 'fortress' 'FAIL' $true
