@@ -287,22 +287,13 @@ async fn cleanup_player(pool: &PgPool, player_id: &str) {
         .bind(player_id)
         .execute(pool)
         .await;
-    let _ = sqlx::query("DELETE FROM asyncevents.outbox WHERE payload->>'player_id' = $1")
-        .bind(player_id)
-        .execute(pool)
-        .await;
+    let _ = asyncevents::testing::cleanup_outbox(pool, "player_id", player_id).await;
 }
 
 async fn registered_events(pool: &PgPool, player_id: &str) -> i64 {
-    let (n,): (i64,) = sqlx::query_as(
-        "SELECT count(*) FROM asyncevents.outbox WHERE topic = 'player.registered' \
-          AND payload->>'player_id' = $1",
-    )
-    .bind(player_id)
-    .fetch_one(pool)
-    .await
-    .unwrap();
-    n
+    asyncevents::testing::outbox_count(pool, "player.registered", "player_id", player_id)
+        .await
+        .unwrap()
 }
 
 /// THE ATOMIC EMIT PROOF + the register/login/session round-trip: register writes

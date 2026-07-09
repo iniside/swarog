@@ -147,10 +147,7 @@ async fn cleanup(pool: &PgPool, ns: &str) {
         .bind(ns)
         .execute(pool)
         .await;
-    let _ = sqlx::query("DELETE FROM asyncevents.outbox WHERE topic = 'config.changed' AND payload->>'namespace' = $1")
-        .bind(ns)
-        .execute(pool)
-        .await;
+    let _ = asyncevents::testing::cleanup_outbox(pool, "namespace", ns).await;
 }
 
 /// Serializes the tests that RUN a real config listener or ASSERT on the shared
@@ -201,14 +198,9 @@ fn wired_ctx(pool: &PgPool) -> Context {
 /// Counts durable `config.changed` outbox rows for a namespace — the Step-5 durable
 /// publish replaces the old sync-bus assertion.
 async fn changed_outbox_count(pool: &PgPool, ns: &str) -> i64 {
-    let (n,): (i64,) = sqlx::query_as(
-        "SELECT count(*) FROM asyncevents.outbox WHERE topic = 'config.changed' AND payload->>'namespace' = $1",
-    )
-    .bind(ns)
-    .fetch_one(pool)
-    .await
-    .unwrap();
-    n
+    asyncevents::testing::outbox_count(pool, "config.changed", "namespace", ns)
+        .await
+        .unwrap()
 }
 
 /// The DB round-trip: `set` persists, a fresh `load_all` + `replace_cache` makes

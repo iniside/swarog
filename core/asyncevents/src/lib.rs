@@ -405,6 +405,50 @@ pub fn transport(pool: PgPool, origin: &str) -> Arc<dyn Transport> {
     })
 }
 
+/// Test-only assertion/cleanup helpers — the single owner of the plane's physical
+/// table name (`asyncevents.outbox`) outside the plane itself. Plain `pub fn`s (NOT
+/// `#[cfg(test)]` — a cross-crate `[dev-dependencies]` consumer can't see
+/// test-gated items), mirroring the `transport()` wiring helper above.
+pub mod testing {
+    use sqlx::PgPool;
+
+    /// Counts durable outbox rows for a topic whose JSON payload has
+    /// `payload_key == payload_value`. The key is a bind param
+    /// (`payload->>$2`), which is valid Postgres — one prepared shape serves
+    /// every caller regardless of which payload field they assert on.
+    pub async fn outbox_count(
+        pool: &PgPool,
+        topic: &str,
+        payload_key: &str,
+        payload_value: &str,
+    ) -> sqlx::Result<i64> {
+        let (n,): (i64,) = sqlx::query_as(
+            "SELECT count(*) FROM asyncevents.outbox WHERE topic = $1 AND payload->>$2 = $3",
+        )
+        .bind(topic)
+        .bind(payload_key)
+        .bind(payload_value)
+        .fetch_one(pool)
+        .await?;
+        Ok(n)
+    }
+
+    /// Deletes outbox rows whose JSON payload has `payload_key == payload_value`,
+    /// returning the number of rows removed. Test teardown only.
+    pub async fn cleanup_outbox(
+        pool: &PgPool,
+        payload_key: &str,
+        payload_value: &str,
+    ) -> sqlx::Result<u64> {
+        let result = sqlx::query("DELETE FROM asyncevents.outbox WHERE payload->>$1 = $2")
+            .bind(payload_key)
+            .bind(payload_value)
+            .execute(pool)
+            .await?;
+        Ok(result.rows_affected())
+    }
+}
+
 /// The receiver side: a peer's relay POSTs a foreign event here. Delivers to EVERY
 /// local subscriber of the topic, each via its own `consume` tx. If ANY subscriber
 /// fails it replies 500 so the sender retries the whole event; the per-subscriber

@@ -295,8 +295,5 @@ async fn grant_on_created_via_on_tx() {
 
     // Cleanup: the holding + the outbox row for this character.
     cleanup_owner(&pool, &cid).await;
-    let _ = sqlx::query("DELETE FROM asyncevents.outbox WHERE payload->>'character_id' = $1")
-        .bind(&cid)
-        .execute(&pool)
-        .await;
+    let _ = asyncevents::testing::cleanup_outbox(&pool, "character_id", &cid).await;
 }

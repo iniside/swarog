@@ -74,10 +74,7 @@ async fn cleanup(pool: &PgPool, match_id: &str) {
         .bind(match_id)
         .execute(pool)
         .await;
-    let _ = sqlx::query("DELETE FROM asyncevents.outbox WHERE payload->>'match_id' = $1")
-        .bind(match_id)
-        .execute(pool)
-        .await;
+    let _ = asyncevents::testing::cleanup_outbox(pool, "match_id", match_id).await;
 }
 
 async fn match_count(pool: &PgPool, id: &str) -> i64 {
@@ -90,14 +87,9 @@ async fn match_count(pool: &PgPool, id: &str) -> i64 {
 }
 
 async fn outbox_count(pool: &PgPool, match_id: &str) -> i64 {
-    let (n,): (i64,) = sqlx::query_as(
-        "SELECT count(*) FROM asyncevents.outbox WHERE topic = 'match.finished' AND payload->>'match_id' = $1",
-    )
-    .bind(match_id)
-    .fetch_one(pool)
-    .await
-    .unwrap();
-    n
+    asyncevents::testing::outbox_count(pool, "match.finished", "match_id", match_id)
+        .await
+        .unwrap()
 }
 
 /// THE ATOMIC EMIT PROOF: `report` writes BOTH a `match.matches` row AND an

@@ -122,23 +122,14 @@ async fn cleanup(pool: &PgPool, players: &[&str]) {
             .bind(pid)
             .execute(pool)
             .await;
-        let _ = sqlx::query("DELETE FROM asyncevents.outbox WHERE payload->>'player_id' = $1")
-            .bind(pid)
-            .execute(pool)
-            .await;
+        let _ = asyncevents::testing::cleanup_outbox(pool, "player_id", pid).await;
     }
 }
 
 async fn outbox_count(pool: &PgPool, topic: &str, character_id: &str) -> i64 {
-    let (n,): (i64,) = sqlx::query_as(
-        "SELECT count(*) FROM asyncevents.outbox WHERE topic = $1 AND payload->>'character_id' = $2",
-    )
-    .bind(topic)
-    .bind(character_id)
-    .fetch_one(pool)
-    .await
-    .unwrap();
-    n
+    asyncevents::testing::outbox_count(pool, topic, "character_id", character_id)
+        .await
+        .unwrap()
 }
 
 async fn char_count(pool: &PgPool, id: &str) -> i64 {
