@@ -121,7 +121,7 @@ module never knows the topology.
 5. Wire `EVENTS_SUBSCRIBERS` for any topic it produces/consumes across processes;
    give the svc a distinct `EVENTS_ORIGIN`.
 
-## Domain modules (11 fortresses + gateway)
+## Domain modules (12 fortresses + gateway)
 
 - **accounts** — identity: one `player_id`, many identities (`provider`,`subject`),
   opaque DB sessions (30-day TTL). Dev/password auth (argon2id, `ACCOUNTS_DEV_AUTH`,
@@ -153,6 +153,18 @@ module never knows the topology.
   distinct shape from the HTTP body); rating is in-memory MMR (±15, restart resets
   to 1000 — accepted) provided as wire-only `MmrReader`; leaderboard upserts wins in
   the inbox tx, serves `GET /leaderboard`.
+- **apikeys** — per-key API access policy (à la Supabase anon/service key): table
+  `apikeys.keys(name, key, policy, revoked_at)`, plaintext keys (sessions-token
+  trust model), policy = `full` or comma-separated wire-method list. Provides
+  `apikeysapi::Keys` (`apikeys.keys`); the gateway REQUIRES an `X-Api-Key` header
+  (HTTP) / `api_key` envelope field (player-QUIC) on every op-dispatched request
+  and enforces the key's policy post-match (401 missing/invalid, 403 denied),
+  behind a 5s TTL cache (never caches infra errors). Non-goals: `/healthz`,
+  `/metrics`, `/events`, passthroughs stay keyless. Dev keys `dev-key-client`
+  (player-facing list, NO `match.report`) + `dev-key-server` (`full`) seed ONLY
+  when `APIKEYS_DEV_SEED` is explicitly truthy (self-healing upsert); a gateway
+  process without the capability FAILS STARTUP unless `APIKEYS_DEV_ALLOW=1`
+  (allow-all, loud warn). Admin page "API Keys" (list/edit/add/revoke).
 - **webui** — dev demo SPA at `/` (monolith-only; the sanctioned fortress exception).
 - **gateway** — the front-door module: HTTP ops routing (Local vs Remote purely by
   slot presence; peer addresses are injected by `cmd/*` via `remote::Stub` →
@@ -174,7 +186,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo run -p archcheck          # fortress dependency law
 cargo run -p topiccheck         # defined-vs-subscribed topic drift
 ./verify.sh                     # the safety net (there is no CI — this IS it)
-./split-proof.sh                # live 11-process split + monolith parity proof
+./split-proof.sh                # live 12-process split + monolith parity proof
 ./run.sh                        # mint dev CA + boot the split locally
 ```
 
@@ -191,10 +203,13 @@ blocking stage fails; auto-installs pinned CLIs unless `--no-install`):
 **`split-proof.sh` / `.ps1`** boots the real split — characters :8080/:9000,
 inventory :8081/:9001, gateway :8082 + player-QUIC :9100, config :8083/:9002,
 accounts :8084/:9003, admin :8085, audit :8086/:9004, scheduler :8087/:9005,
-match :8088/:9006, rating :8089/:9007, leaderboard :8090/:9008 — and asserts named
+match :8088/:9006, rating :8089/:9007, leaderboard :8090/:9008,
+apikeys :8091/:9009 — and asserts named
 scenarios (register/login → real bearer, authz negatives, allow-list, cross-process
 starter-grant + DB-verified wipe, config live-reload, audit rows, scheduler
-exactly-once, leaderboard accumulation, 429 rate-limit), then re-runs the monolith
+exactly-once, leaderboard accumulation, 429 rate-limit, api-key policy
+[K1-K5]: 401 no/bad key, 403 client-key on match.report, 202 server-key, remote
+admin page), then re-runs the monolith
 on the same player front for parity. Extend it with a named assertion whenever you
 add a module or cross-process flow. **Never ship a monolith-only feature** — both
 topologies are supported compilation paths.
@@ -238,7 +253,7 @@ api/<name>/                # contract surface per domain
   <name>api/               #   pure #[rpc] traits + ops/bindings (transport-free)
   <name>events/            #   bus::define descriptors + payloads
   <name>rpc/               #   generated glue (Client/register_server/factories)
-modules/                   # private impls — 11 fortresses + gateway (see above)
+modules/                   # private impls — 12 fortresses + gateway (see above)
 tools/                     # rpc-macro (+tests), archcheck, topiccheck, edgeca,
                            # playercli
 experiments/               # archived sketches: go-sketch (the ported original),
