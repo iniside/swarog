@@ -143,8 +143,9 @@ async fn record_handler_inserts_raw_json() {
     handler.call(delivery, raw).await.unwrap();
     tx.commit().await.unwrap();
 
-    let (n, name): (i64, String) = sqlx::query_as(
-        "SELECT count(*)::int8, coalesce(max(payload->>'name'), '') FROM audit.log WHERE topic = $1",
+    let (n, name, event_id): (i64, String, String) = sqlx::query_as(
+        "SELECT count(*)::int8, coalesce(max(payload->>'name'), ''), \
+         coalesce(max(event_id), '') FROM audit.log WHERE topic = $1",
     )
     .bind(&topic)
     .fetch_one(&pool)
@@ -152,6 +153,10 @@ async fn record_handler_inserts_raw_json() {
     .unwrap();
     assert_eq!(n, 1, "expected exactly one ledger row for the delivered event");
     assert_eq!(name, "Test", "raw JSON payload not recorded verbatim");
+    assert_eq!(
+        event_id, "audit:test",
+        "ledger row did not carry the delivery's event_id"
+    );
 
     sqlx::query("DELETE FROM audit.log WHERE topic = $1")
         .bind(&topic)

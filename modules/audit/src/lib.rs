@@ -73,7 +73,8 @@ CREATE TABLE IF NOT EXISTS audit.log (
 	payload jsonb       NOT NULL,
 	at      timestamptz NOT NULL DEFAULT now()
 );
-CREATE INDEX IF NOT EXISTS log_at_idx ON audit.log(at);"#;
+CREATE INDEX IF NOT EXISTS log_at_idx ON audit.log(at);
+ALTER TABLE audit.log ADD COLUMN IF NOT EXISTS event_id text;"#;
 
 /// Folds any lower-level error into an `Internal` operation error (for the admin face).
 fn internal<E: std::fmt::Display>(e: E) -> Error {
@@ -86,10 +87,11 @@ fn internal<E: std::fmt::Display>(e: E) -> Error {
 // ============================================================================
 
 /// Records one durable event to the ledger: the raw event JSON, verbatim, under its
-/// topic. Effects are exactly-once because the write commits atomically with the inbox
-/// dedup row on the delivery tx (downcast from `Delivery` — audit shares the plane's
-/// Postgres engine). No payload-type import — the untyped `on_tx_raw` hands the bytes
-/// (Go's `record`).
+/// topic, alongside the delivery's `event_id` — a durable cross-reference from the
+/// ledger row back to the inbox dedup key. Effects are exactly-once because the write
+/// commits atomically with the inbox dedup row on the delivery tx (downcast from
+/// `Delivery` — audit shares the plane's Postgres engine). No payload-type import — the
+/// untyped `on_tx_raw` hands the bytes (Go's `record`).
 struct RecordHandler {
     topic: String,
 }
@@ -101,16 +103,21 @@ impl TxHandler for RecordHandler {
         payload: Vec<u8>,
     ) -> BoxFuture<'a, Result<(), BusError>> {
         Box::pin(async move {
+            // Bind event_id before the downcast consumes `delivery.tx` (a &str, cheap).
+            let event_id = delivery.event_id;
             let conn = delivery.tx.downcast::<PgConnection>()?;
             // The bus JSON-encoded the payload, so it is valid UTF-8; bind as text so
             // `::jsonb` parses it (a bytea bind would cast raw bytes).
             let text = std::str::from_utf8(&payload).map_err(BusError::transport)?;
-            sqlx::query("INSERT INTO audit.log (topic, payload) VALUES ($1, $2::jsonb)")
-                .bind(&self.topic)
-                .bind(text)
-                .execute(&mut *conn)
-                .await
-                .map_err(BusError::transport)?;
+            sqlx::query(
+                "INSERT INTO audit.log (topic, payload, event_id) VALUES ($1, $2::jsonb, $3)",
+            )
+            .bind(&self.topic)
+            .bind(text)
+            .bind(event_id)
+            .execute(&mut *conn)
+            .await
+            .map_err(BusError::transport)?;
             Ok(())
         })
     }
