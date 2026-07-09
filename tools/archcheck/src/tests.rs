@@ -4,8 +4,9 @@
 //! and WHICH cmd binaries may host the `gateway` crate.
 
 use super::{
-    classify, cmd_is_a_main, forbidden_api_deps, has_non_dev_dep, Kind, FORBIDDEN_API_DEPS,
-    FRONT_DOOR_HOSTS, GATEWAY_CRATE,
+    classify, cmd_is_a_main, cross_schema_fk_violations, forbidden_api_deps, has_non_dev_dep,
+    is_inline_test_mod, mod_test_ident_end, Kind, FORBIDDEN_API_DEPS, FRONT_DOOR_HOSTS,
+    GATEWAY_CRATE,
 };
 
 #[test]
@@ -136,4 +137,92 @@ fn cmd_with_metrics_dep_is_clean() {
     ]);
     let deps = deps.as_array().unwrap().clone();
     assert!(has_non_dev_dep(&deps, "metrics"));
+}
+
+// --- cross-schema FK tripwire (fact 8) -------------------------------------
+
+#[test]
+fn cross_schema_reference_is_a_violation() {
+    let text = "CREATE SCHEMA IF NOT EXISTS mine;\n\
+                CREATE TABLE mine.widgets (\n\
+                \tother_id uuid NOT NULL REFERENCES otherschema.foo(id)\n\
+                );";
+    let v = cross_schema_fk_violations(text, "mine");
+    assert_eq!(v.len(), 1, "{v:?}");
+    assert!(v[0].contains("otherschema"), "{v:?}");
+}
+
+#[test]
+fn same_schema_reference_is_clean() {
+    let text = "CREATE SCHEMA IF NOT EXISTS mine;\n\
+                CREATE TABLE mine.widgets (\n\
+                \towner_id uuid NOT NULL REFERENCES mine.owners(id)\n\
+                );";
+    assert!(cross_schema_fk_violations(text, "mine").is_empty());
+}
+
+#[test]
+fn file_with_no_ddl_is_clean() {
+    assert!(cross_schema_fk_violations("fn helper() {}", "mine").is_empty());
+}
+
+#[test]
+fn schema_name_not_matching_dir_is_a_checker_assumption_violation() {
+    let text = "CREATE SCHEMA IF NOT EXISTS wrongname;";
+    let v = cross_schema_fk_violations(text, "mine");
+    assert_eq!(v.len(), 1);
+    assert!(v[0].contains("checker assumption violated"), "{v:?}");
+}
+
+#[test]
+fn multiple_create_schema_in_one_file_is_a_checker_assumption_violation() {
+    let text = "CREATE SCHEMA IF NOT EXISTS mine;\nCREATE SCHEMA IF NOT EXISTS other;";
+    let v = cross_schema_fk_violations(text, "mine");
+    assert_eq!(v.len(), 1);
+    assert!(v[0].contains("checker assumption violated"), "{v:?}");
+}
+
+// --- inline test module tripwire (fact 9) -----------------------------------
+
+#[test]
+fn mod_tests_with_inline_body_is_a_violation() {
+    let lines = ["mod tests { fn it_works() {} }"];
+    assert!(mod_test_ident_end(lines[0]).is_some());
+    assert!(is_inline_test_mod(&lines));
+}
+
+#[test]
+fn mod_tests_declaration_is_clean() {
+    let lines = ["mod tests;"];
+    assert!(mod_test_ident_end(lines[0]).is_some());
+    assert!(!is_inline_test_mod(&lines));
+}
+
+#[test]
+fn mod_suffix_tests_declaration_is_clean() {
+    let lines = ["mod proxy_tests;"];
+    assert!(mod_test_ident_end(lines[0]).is_some());
+    assert!(!is_inline_test_mod(&lines));
+}
+
+#[test]
+fn mod_tests_with_brace_on_next_line_is_a_violation() {
+    let lines = ["mod tests", "{", "    fn it_works() {}", "}"];
+    assert!(is_inline_test_mod(&lines));
+}
+
+#[test]
+fn path_attribute_above_mod_tests_declaration_stays_clean() {
+    // A `#[path = "..."]` retarget line above `mod tests;` doesn't change the
+    // discriminator — it only ever looks at the `mod` line itself.
+    let lines = ["mod tests;"];
+    assert!(!is_inline_test_mod(&lines));
+}
+
+#[test]
+fn cfg_test_fn_is_not_a_mod_and_never_matches() {
+    // webui's shape: `#[cfg(test)] pub(crate) fn test_router() -> Router` — `fn`, not
+    // `mod`, so the `mod` keyword scan must never fire on it.
+    let line = "pub(crate) fn test_router() -> Router {";
+    assert!(mod_test_ident_end(line).is_none());
 }

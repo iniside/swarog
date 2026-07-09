@@ -177,6 +177,16 @@ fn main() {
         violations.push(line);
     }
 
+    // --- 7: regression tripwire — cross-schema FK under modules/ --------------
+    for line in grep_cross_schema_fk(&modules_dir) {
+        violations.push(line);
+    }
+
+    // --- 8: regression tripwire — inline test modules under modules/ ----------
+    for line in grep_inline_test_modules(&modules_dir) {
+        violations.push(line);
+    }
+
     // --- 5: <name>api contract crates stay transport-free ---------------------
     // The contract surface (`<name>api`) must be importable by any module without
     // dragging in a transport dependency; only `<name>rpc` (its own module's generated
@@ -217,7 +227,7 @@ fn main() {
     }
 
     if violations.is_empty() {
-        println!("archcheck: OK — no module→module / module→foreign-rpc edges, single front door (only gateway-svc + server host `gateway`), no Option<edge::Server> in modules/, <name>api crates stay transport-free, every cmd/*-svc + server lists `metrics`");
+        println!("archcheck: OK — no module→module / module→foreign-rpc edges, single front door (only gateway-svc + server host `gateway`), no Option<edge::Server> in modules/, <name>api crates stay transport-free, every cmd/*-svc + server lists `metrics`, no cross-schema FKs in modules/ DDL, no inline test modules in modules/");
         return;
     }
     eprintln!("archcheck: FAIL — {} violation(s):", violations.len());
@@ -267,6 +277,223 @@ fn forbidden_api_deps(deps: &[serde_json::Value]) -> Vec<String> {
         .filter(|name| FORBIDDEN_API_DEPS.contains(name))
         .map(String::from)
         .collect()
+}
+
+/// Returns the start byte-index of every non-overlapping occurrence of `pat` in `text`.
+fn find_all(text: &str, pat: &str) -> Vec<usize> {
+    let mut hits = Vec::new();
+    let mut start = 0;
+    while let Some(pos) = text[start..].find(pat) {
+        hits.push(start + pos);
+        start += pos + pat.len();
+    }
+    hits
+}
+
+/// Every schema name declared via `CREATE SCHEMA IF NOT EXISTS <s>;` in `text`.
+fn create_schemas(text: &str) -> Vec<String> {
+    let marker = "CREATE SCHEMA IF NOT EXISTS ";
+    find_all(text, marker)
+        .into_iter()
+        .filter_map(|i| {
+            let rest = &text[i + marker.len()..];
+            let end = rest.find(';')?;
+            Some(rest[..end].trim().to_string())
+        })
+        .collect()
+}
+
+/// Every schema name referenced via `REFERENCES <schema>.<table>` in `text`.
+fn references_schemas(text: &str) -> Vec<String> {
+    let marker = "REFERENCES ";
+    find_all(text, marker)
+        .into_iter()
+        .filter_map(|i| {
+            let rest = &text[i + marker.len()..];
+            let end = rest.find('.')?;
+            Some(rest[..end].trim().to_string())
+        })
+        .collect()
+}
+
+/// Cross-schema FK check for one file's `text` (fact 8). `own_schema_fallback` is the
+/// `modules/<name>` path segment, used both as the sanity-check target for a declared
+/// schema and as the fallback "own schema" for a file with no DDL at all (a REFERENCES
+/// there shouldn't happen, but if it does we still need an "own schema" to compare
+/// against).
+///
+/// Hard-asserts (rather than silently mis-checking) the assumption the whole checker
+/// rests on: a file declares AT MOST ONE schema, and when it does, the schema name
+/// equals the owning module's directory name. Either violation is reported as a
+/// "checker assumption violated" finding instead of a (potentially wrong) FK verdict.
+fn cross_schema_fk_violations(text: &str, own_schema_fallback: &str) -> Vec<String> {
+    let schemas = create_schemas(text);
+    let own = match schemas.as_slice() {
+        [] => own_schema_fallback.to_string(),
+        [only] if only == own_schema_fallback => only.clone(),
+        [only] => {
+            return vec![format!(
+                "checker assumption violated: declares schema `{only}` but lives under \
+                 modules/{own_schema_fallback}/ — archcheck assumes CREATE SCHEMA name == \
+                 the owning module's directory name"
+            )];
+        }
+        many => {
+            return vec![format!(
+                "checker assumption violated: {} CREATE SCHEMA declarations ({many:?}) in one \
+                 file — archcheck assumes exactly one per file",
+                many.len()
+            )];
+        }
+    };
+    references_schemas(text)
+        .into_iter()
+        .filter(|s| s != &own)
+        .map(|s| {
+            format!(
+                "REFERENCES {s}.… crosses from schema `{own}` into schema `{s}` — a relation to \
+                 another module must be a plain id column, never a cross-schema FK \
+                 (CLAUDE.md constraint 10)"
+            )
+        })
+        .collect()
+}
+
+/// The `modules/<name>` path segment owning `file`, given the `modules/` root `dir`.
+fn module_name_from_path(dir: &Path, file: &Path) -> Option<String> {
+    file.strip_prefix(dir)
+        .ok()?
+        .components()
+        .next()
+        .map(|c| c.as_os_str().to_string_lossy().to_string())
+}
+
+/// Walks `dir` for `.rs` files and returns a cross-schema-FK violation per file, using
+/// [`cross_schema_fk_violations`] against the file's owning module directory name.
+fn grep_cross_schema_fk(dir: &Path) -> Vec<String> {
+    let mut hits = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&d) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+                let Ok(text) = std::fs::read_to_string(&path) else {
+                    continue;
+                };
+                let Some(module_name) = module_name_from_path(dir, &path) else {
+                    continue;
+                };
+                for msg in cross_schema_fk_violations(&text, &module_name) {
+                    hits.push(format!("{}: {msg}", path.display()));
+                }
+            }
+        }
+    }
+    hits
+}
+
+/// If `line` contains a `mod` keyword (token-bounded, never a substring of a longer
+/// identifier) immediately followed by the identifier `tests` or `<x>_tests`, returns
+/// the byte offset in `line` right after that identifier. Used to discriminate a real
+/// `mod tests`/`mod foo_tests` declaration from unrelated text (e.g. a `fn test_x()`,
+/// which never matches — there is no `mod` keyword to find).
+fn mod_test_ident_end(line: &str) -> Option<usize> {
+    let idx = line.find("mod ")?;
+    if idx > 0 {
+        let prev = line.as_bytes()[idx - 1] as char;
+        if prev.is_alphanumeric() || prev == '_' {
+            return None; // "mod " is a suffix of a longer identifier, not the keyword
+        }
+    }
+    let rest = &line[idx + 4..];
+    let end = rest
+        .find(|c: char| !(c.is_alphanumeric() || c == '_'))
+        .unwrap_or(rest.len());
+    let ident = &rest[..end];
+    if ident == "tests" || (ident.ends_with("_tests") && ident != "_tests") {
+        Some(idx + 4 + end)
+    } else {
+        None
+    }
+}
+
+/// Given `lines` starting AT a line containing a `mod tests`/`mod <x>_tests` token
+/// (`lines[0]`), decides whether it's an inline test-module body (`{ ... }`, violation)
+/// or a declaration (`;`, pass — routed to `src/tests.rs` / `src/<file>_tests.rs`).
+/// Implements the plan's str algorithm exactly (fact 9): take the substring after the
+/// module identifier, `trim_start()`, and inspect the first byte; if that remainder is
+/// empty (rustfmt-legal brace-on-next-line), peek the next non-blank line instead.
+fn is_inline_test_mod(lines: &[&str]) -> bool {
+    let Some(first) = lines.first() else {
+        return false;
+    };
+    let Some(end) = mod_test_ident_end(first) else {
+        return false;
+    };
+    let remainder = first[end..].trim_start();
+    if let Some(c) = remainder.chars().next() {
+        return c == '{';
+    }
+    for line in lines.iter().skip(1) {
+        let t = line.trim();
+        if t.is_empty() {
+            continue;
+        }
+        return t.starts_with('{');
+    }
+    false // brace never found — don't guess, don't flag
+}
+
+/// Walks `dir` for `.rs` files (skipping `tests.rs` / `*_tests.rs`, which are the
+/// sanctioned homes for test bodies — CLAUDE.md constraint 10) and returns a violation
+/// per inline `mod tests { ... }` / `mod <x>_tests { ... }` body found via
+/// [`is_inline_test_mod`]. Comment lines are skipped, mirroring `grep_option_edge_server`.
+fn grep_inline_test_modules(dir: &Path) -> Vec<String> {
+    let mut hits = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&d) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                continue;
+            }
+            let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if file_name == "tests.rs" || file_name.ends_with("_tests.rs") {
+                continue; // the sanctioned homes for test bodies
+            }
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let lines: Vec<&str> = text.lines().collect();
+            for (i, line) in lines.iter().enumerate() {
+                let t = line.trim_start();
+                if t.starts_with("//") {
+                    continue; // skip comments/doc — code only
+                }
+                if mod_test_ident_end(line).is_some() && is_inline_test_mod(&lines[i..]) {
+                    hits.push(format!(
+                        "{}:{}: inline test module body — tests must live in src/tests.rs or \
+                         src/<file>_tests.rs, never inline (CLAUDE.md constraint 10)",
+                        path.display(),
+                        i + 1
+                    ));
+                }
+            }
+        }
+    }
+    hits
 }
 
 /// Walks `dir` for `.rs` files and returns a message per NON-comment line that pairs
