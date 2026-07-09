@@ -5,8 +5,8 @@
 //! contributes an `adminapi::Item { remote_fetch }` dialing the peer's `admin.adminData`.
 //!
 //! It is a PURE AGGREGATOR (like `gateway-svc`): no DB (`without_db` — it owns no
-//! schema), and NO edge server of its own — it only DIALS the six peers (characters,
-//! inventory, config, accounts, audit, scheduler). It hosts no
+//! schema), and NO edge server of its own — it only DIALS the seven peers (characters,
+//! inventory, config, accounts, audit, scheduler, apikeys). It hosts no
 //! `gateway` module either: it fronts no typed ops (a browser reaches `/admin` through
 //! gateway-svc's HTTP passthrough), so it needs no verifier/auth-once boundary. The
 //! admin module's own Basic-auth gate (`ADMIN_USER`/`ADMIN_PASS`) guards the portal.
@@ -51,6 +51,7 @@ async fn main() -> anyhow::Result<()> {
         admin_stub("accounts", "ACCOUNTS_EDGE_ADDR", "127.0.0.1:9003"),
         admin_stub("audit", "AUDIT_EDGE_ADDR", "127.0.0.1:9004"),
         admin_stub("scheduler", "SCHEDULER_EDGE_ADDR", "127.0.0.1:9005"),
+        admin_stub("apikeys", "APIKEYS_EDGE_ADDR", "127.0.0.1:9009"),
     ];
 
     // No DB (owns no schema) and no edge server (it only DIALS peers via the stubs).

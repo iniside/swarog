@@ -17,6 +17,7 @@ opsapi = { workspace = true }
 edge = { workspace = true }
 apikeysapi = { workspace = true }
 apikeysrpc = { workspace = true }
+adminapi = { workspace = true }
 sqlx = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
 anyhow = { workspace = true }
@@ -25,4 +26,7 @@ tracing = { workspace = true }
 async-trait = { workspace = true }
 
 [dev-dependencies]
+# Round-trip test of the edge admin fan-out: dials this module's own edge faces with
+# the generated admin.adminData Client (adminrpc — a glue crate, allowed in cmd/tests).
+adminrpc = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }

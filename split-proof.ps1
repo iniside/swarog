@@ -652,6 +652,20 @@ try {
         Fail "admin characters page expected 200 containing $aproof, got $($ad.Code)"
     }
 
+    Write-Host "[K5] GET http://127.0.0.1:$GPort/admin/api-keys WITH Basic auth -> 200 + contains dev-client"
+    # The apikeys admin fan-out end-to-end: G's HTTP passthrough -> admin-svc :8085, then
+    # admin-svc's admin.adminData -> apikeys-svc :$LPort over the mTLS QUIC edge. The page
+    # must render the seeded `dev-client` key row (APIKEYS_DEV_SEED=1 on L), proving the
+    # remote apikeys admin item composed across TWO process hops. (The slug is `api-keys`:
+    # the admin portal derives it from the "API Keys" LABEL, like "Audit Log" -> audit-log.)
+    $k5 = Invoke-Curl @('-u', "${AdminUser}:${AdminPass}", "http://127.0.0.1:$GPort/admin/api-keys")
+    Write-Host "    -> HTTP $($k5.Code)  (body $($k5.Body.Length) chars)"
+    if ($k5.Code -eq '200' -and $k5.Body -match 'dev-client') {
+        Pass 'admin /admin/apikeys renders dev-client cross-process (G passthrough -> E -> L admin.adminData over QUIC)'
+    } else {
+        Fail "admin apikeys page expected 200 containing dev-client, got $($k5.Code)"
+    }
+
     Write-Host ''
     Write-Host "========= AUDIT LEDGER (durable events -> audit-svc :$FPort) ========="
     # The append-only ledger end-to-end across processes: each producer's relay POSTs its

@@ -18,6 +18,7 @@
 //! (`ON CONFLICT (name) DO UPDATE`), so a stray revoke on a shared dev DB can't
 //! permanently poison the harness.
 
+mod admin;
 mod store;
 
 use std::sync::{Arc, OnceLock};
@@ -171,16 +172,34 @@ impl Module for ApiKeys {
         Ok(())
     }
 
-    /// Only wires up — no I/O (#8). Contributes the generated Keys RPC face to the edge
-    /// slot UNCONDITIONALLY (topology-blind: `app::run` installs it iff this process
-    /// serves an internal QUIC edge). Own glue (rule 5): the generated `register_server`
-    /// face lives in `apikeysrpc`. The admin face is added in Step 6.
+    /// Only wires up — no I/O (#8). Contributes the local "API Keys" admin item and the
+    /// generated Keys + admin RPC faces to the edge slot UNCONDITIONALLY (topology-blind:
+    /// `app::run` installs the edge faces iff this process serves an internal QUIC edge).
+    /// Own glue (rule 5): the generated `register_server`/`register_admin` faces live in
+    /// `apikeysrpc`.
     fn init(&self, ctx: &Context) -> anyhow::Result<()> {
         let svc = self.svc();
+
+        // Local admin page. The `RenderFn` is synchronous; `admin::admin_render` bridges
+        // to the async store read via `block_in_place` (requires the multi-thread rt).
+        let render_svc = svc.clone();
+        ctx.contribute(
+            adminapi::SLOT,
+            adminapi::Item::local(
+                admin::ADMIN_ITEM_ID,
+                admin::ADMIN_SECTION,
+                admin::ADMIN_LABEL,
+                Arc::new(move |params: &adminapi::Params| admin::admin_render(&render_svc, params)),
+            ),
+        );
+
         ctx.contribute(
             edge::EDGE_SLOT,
             edge::EdgeReg::new(move |server| {
                 apikeysrpc::keys_rpc::register_server(server, svc.clone());
+                // The admin fan-out face (`admin.adminData`), via this module's OWN glue
+                // crate's re-export (no foreign rpc import).
+                apikeysrpc::register_admin(server, svc.clone());
             }),
         );
         Ok(())
@@ -204,6 +223,8 @@ fn dev_seed_explicitly_on() -> bool {
 // their own rows — the shared local Postgres must never have the harness's dev rows
 // poisoned by a test.
 // ============================================================================
+#[cfg(test)]
+mod admin_tests;
 #[cfg(test)]
 mod store_tests;
 #[cfg(test)]

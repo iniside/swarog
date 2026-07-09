@@ -731,6 +731,21 @@ else
     fail "admin characters page expected 200 containing $APROOF, got $ADCODE"
 fi
 
+echo "[K5] GET http://localhost:$G_PORT/admin/api-keys WITH Basic auth -> 200 + contains dev-client"
+# The apikeys admin fan-out end-to-end: G's HTTP passthrough -> admin-svc :8085, then
+# admin-svc's admin.adminData -> apikeys-svc :$L_PORT over the mTLS QUIC edge. The page
+# must render the seeded `dev-client` key row (APIKEYS_DEV_SEED=1 on L), proving the
+# remote apikeys admin item composed across TWO process hops. (The slug is `api-keys`:
+# the admin portal derives it from the "API Keys" LABEL, like "Audit Log" -> audit-log.)
+K5="$(curl -s -w $'\n%{http_code}' -u "$ADMIN_USER:$ADMIN_PASS" "http://localhost:$G_PORT/admin/api-keys")"
+K5BODY="$(echo "$K5" | sed '$d')"; K5CODE="$(echo "$K5" | tail -1)"
+echo "    -> HTTP $K5CODE  (body $(echo -n "$K5BODY" | wc -c) bytes)"
+if [ "$K5CODE" = "200" ] && echo "$K5BODY" | grep -q "dev-client"; then
+    pass "admin /admin/apikeys renders dev-client cross-process (G passthrough -> E -> L admin.adminData over QUIC)"
+else
+    fail "admin apikeys page expected 200 containing dev-client, got $K5CODE"
+fi
+
 echo ""
 echo "========= AUDIT LEDGER (durable events -> audit-svc :$F_PORT) ========="
 # The append-only ledger end-to-end across processes: each producer's relay POSTs its
