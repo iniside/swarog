@@ -264,12 +264,6 @@ impl Module for Audit {
         "audit"
     }
 
-    /// The durable plane (`on_tx_raw`). Best-effort topics need no dep — but there are
-    /// none here (fortress rule: everything durable).
-    fn requires(&self) -> Vec<String> {
-        vec!["messaging".to_string()]
-    }
-
     fn caps(&self) -> Caps {
         Caps::REGISTER | Caps::MIGRATE
     }

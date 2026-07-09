@@ -1,5 +1,5 @@
 //! `inventory-svc` — process B of the split (port of Go's `cmd/inventory-svc`). It
-//! hosts inventory + messaging and fills inventory's `characters` AND `config`
+//! hosts inventory and fills inventory's `characters` AND `config`
 //! dependencies with `remote::Stub`s: each stub `provide`s an edge-backed client under
 //! the SAME registry key the local impl would, so inventory's
 //! `require::<dyn Ownership>` / `require::<dyn Config>` resolve REMOTELY — the registry
@@ -43,16 +43,16 @@ async fn main() -> anyhow::Result<()> {
     // `characters-svc`'s pattern exactly.
     let edge_server = Arc::new(Mutex::new(edge::Server::new()));
 
-    // messaging BEFORE the stubs: messaging's phase-1 `register` installs the durable
-    // transport, which the `config` stub's factory needs (its `on_tx("config-cache")`
-    // subscription runs inside the stub's `register`). Each stub's `register` provides
-    // its capability before inventory's `init` requires it (two-phase Build). The
-    // `config` stub also runs a boot-fill snapshot in `start` — config-svc must already
-    // be up (the run scripts start it first).
+    // The durable-events plane (app-owned, DB ⇒ plane) is constructed and its transport
+    // injected into the bus at Context construction, before any module's `init` — so the
+    // `config` stub's factory (its `on_tx("config-cache")` subscription runs inside the
+    // stub's `register`) always finds it. Each stub's `register` provides its capability
+    // before inventory's `init` requires it (two-phase Build). The `config` stub also
+    // runs a boot-fill snapshot in `start` — config-svc must already be up (the run
+    // scripts start it first).
     let mods: Vec<Box<dyn Module>> = vec![
         Box::new(metrics::Metrics::new()), // core-infra: mounts GET /metrics + contributes the record layer
         Box::new(inventory::Inventory::new()),
-        Box::new(messaging::Messaging::new()),
         // `remote` is generic (Steps 4–5): this composition root injects each provider's
         // swap closures explicitly, so `remote` never names `characters`/`config`.
         Box::new(remote::Stub::new(

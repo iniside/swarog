@@ -593,13 +593,6 @@ impl Module for Config {
         "config"
     }
 
-    fn requires(&self) -> Vec<String> {
-        // The listener now publishes `config.changed` on the DURABLE plane
-        // (`emit_tx`), so config depends on the messaging transport — fail loud in any
-        // process that hosts config without messaging (Step 5's durable-events rule).
-        vec!["messaging".into()]
-    }
-
     fn caps(&self) -> Caps {
         Caps::REGISTER | Caps::MIGRATE | Caps::START | Caps::STOP
     }

@@ -117,12 +117,6 @@ impl Module for LeaderboardModule {
         "leaderboard"
     }
 
-    /// `messaging` provides the durable inbox the `match.finished` `on_tx` upserts on.
-    /// leaderboard reacts via the bus — it depends on no domain module.
-    fn requires(&self) -> Vec<String> {
-        vec!["messaging".to_string()]
-    }
-
     fn caps(&self) -> Caps {
         Caps::REGISTER | Caps::MIGRATE
     }

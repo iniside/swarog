@@ -238,7 +238,7 @@ async fn test_pool() -> Option<PgPool> {
     Some(pool)
 }
 
-/// Migrates BOTH the messaging (durable transport's outbox) and accounts schemas
+/// Migrates BOTH the asyncevents (durable plane's outbox) and accounts schemas
 /// EXACTLY ONCE per test binary (concurrent idempotent DDL deadlocks on catalog
 /// locks — same serialization as the characters tests).
 static SCHEMA_READY: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
@@ -246,10 +246,13 @@ static SCHEMA_READY: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_ne
 async fn ensure_schema(pool: &PgPool) {
     SCHEMA_READY
         .get_or_init(|| async {
+            let dsn = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string());
+            asyncevents::Plane::new(pool.clone(), dsn)
+                .unwrap()
+                .migrate()
+                .await
+                .unwrap();
             let ctx = Context::with_db(pool.clone());
-            let m = messaging::Messaging::new();
-            m.register(&ctx).unwrap();
-            m.migrate(&ctx).await.unwrap();
             let a = Accounts::new();
             a.register(&ctx).unwrap();
             a.migrate(&ctx).await.unwrap();
@@ -257,15 +260,13 @@ async fn ensure_schema(pool: &PgPool) {
         .await;
 }
 
-/// Builds a real durable plane over the live pool: schemas migrated once, then
-/// messaging's phase-1 `register` installs the `bus::Transport` on THIS ctx's bus
-/// (needed before any `emit_tx`), and accounts registers against the same ctx.
+/// Builds a real durable plane over the live pool: schemas migrated once, then the
+/// asyncevents `bus::Transport` is injected at `Context` construction (needed before any
+/// `emit_tx`), and accounts registers against the same ctx.
 async fn wired(pool: &PgPool) -> (Context, Arc<Service>) {
     ensure_schema(pool).await;
-    let ctx = Context::with_db(pool.clone());
-
-    let messaging = messaging::Messaging::new();
-    messaging.register(&ctx).unwrap();
+    let transport = asyncevents::transport(pool.clone(), "test-origin");
+    let ctx = Context::with_db_and_transport(pool.clone(), transport);
 
     let accounts = Accounts::new();
     accounts.register(&ctx).unwrap();
@@ -286,7 +287,7 @@ async fn cleanup_player(pool: &PgPool, player_id: &str) {
         .bind(player_id)
         .execute(pool)
         .await;
-    let _ = sqlx::query("DELETE FROM messaging.outbox WHERE payload->>'player_id' = $1")
+    let _ = sqlx::query("DELETE FROM asyncevents.outbox WHERE payload->>'player_id' = $1")
         .bind(player_id)
         .execute(pool)
         .await;
@@ -294,7 +295,7 @@ async fn cleanup_player(pool: &PgPool, player_id: &str) {
 
 async fn registered_events(pool: &PgPool, player_id: &str) -> i64 {
     let (n,): (i64,) = sqlx::query_as(
-        "SELECT count(*) FROM messaging.outbox WHERE topic = 'player.registered' \
+        "SELECT count(*) FROM asyncevents.outbox WHERE topic = 'player.registered' \
           AND payload->>'player_id' = $1",
     )
     .bind(player_id)

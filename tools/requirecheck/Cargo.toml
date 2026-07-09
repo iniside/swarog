@@ -11,10 +11,10 @@ publish = false
 # OPPOSITE drift — a real mandatory `require()` whose provider is NOT declared in
 # `requires()` (under-declaration), which compiles + passes archcheck and only panics
 # at `init` in a split process where the provider isn't co-hosted and no stub is wired.
-# This tool installs the `core/registry` require-observer (the honest analogue of
-# `Bus::set_transport`), builds the MONOLITH module set, runs the register+init
-# lifecycle phases, attributes each `require`/`try_require` to the calling module, and
-# diffs the MANDATORY require providers against each module's declared `requires()`. It
+# This tool installs the `core/registry` require-observer, builds the MONOLITH module
+# set, runs the register+init lifecycle phases, attributes each `require`/`try_require`
+# to the calling module, and diffs the MANDATORY require providers against each
+# module's declared `requires()`. It
 # is a tool (not a module), so it may depend on every module impl — archcheck classifies
 # `tools/` as Other (unconstrained). NB: `match`'s crate is named `match_module`.
 [[bin]]
@@ -30,9 +30,9 @@ tokio = { workspace = true }
 async-trait = { workspace = true }
 anyhow = { workspace = true }
 
-# The REQUIRE sites — the full monolith module set (minus messaging, whose durable
-# transport this tool replaces with a no-op one). Instantiating and building them runs
-# every real `require`/`try_require` call through the installed observer.
+# The REQUIRE sites — the full monolith module set. The durable-events plane is not a
+# module here; the harness injects its own no-op plane transport. Instantiating and
+# building them runs every real `require`/`try_require` call through the installed observer.
 config = { workspace = true }
 characters = { workspace = true }
 inventory = { workspace = true }

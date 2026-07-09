@@ -1,6 +1,6 @@
-//! `accounts-svc` — the accounts fortress process (Step 6). It hosts accounts +
-//! messaging and stands up one shared QUIC edge server (`EDGE_ADDR`, `:9003` in the run
-//! scripts); `accounts` contributes its Sessions + Auth faces to `edge::EDGE_SLOT`
+//! `accounts-svc` — the accounts fortress process (Step 6). It hosts accounts and
+//! stands up one shared QUIC edge server (`EDGE_ADDR`, `:9003` in the run scripts);
+//! `accounts` contributes its Sessions + Auth faces to `edge::EDGE_SLOT`
 //! (topology-blind), and `app::run` installs them on this server so every front process's
 //! gateway verifies bearer tokens (`accounts.verifySession`) and fronts the auth ops over
 //! the mutually-authenticated edge.
@@ -11,7 +11,7 @@
 //! process DOES serve on its own HTTP port are the Epic web-OAuth browser routes
 //! (`POST /accounts/epic/start`, `GET /accounts/epic/callback`) — the accounts module
 //! mounts those via `ctx.mount`, independent of any gateway — plus the infra surface
-//! (`/healthz`, `/readyz`, `/metrics`, `/events`). MESSAGING_ORIGIN must be distinct per
+//! (`/healthz`, `/readyz`, `/metrics`, `/events`). EVENTS_ORIGIN must be distinct per
 //! process (never the `"monolith"` default); `player.registered` rides this outbox.
 
 use std::sync::{Arc, Mutex};
@@ -27,12 +27,9 @@ async fn main() -> anyhow::Result<()> {
     // contributions onto this server after Build, then `listen`s it.
     let edge_server = Arc::new(Mutex::new(edge::Server::new()));
 
-    // messaging LAST for Stop ordering (reverse) — delivery halts before accounts
-    // tears down.
     let mods: Vec<Box<dyn Module>> = vec![
         Box::new(metrics::Metrics::new()), // core-infra: mounts GET /metrics + contributes the record layer
         Box::new(accounts::Accounts::new()),
-        Box::new(messaging::Messaging::new()),
     ];
 
     // Serves accounts.* on its own mTLS edge (EDGE_ADDR); no player front — accounts

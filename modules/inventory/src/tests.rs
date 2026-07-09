@@ -118,7 +118,7 @@ async fn test_pool() -> Option<PgPool> {
     Some(pool)
 }
 
-/// Migrates messaging (durable transport's outbox) + inventory schemas EXACTLY
+/// Migrates asyncevents (durable plane's outbox) + inventory schemas EXACTLY
 /// ONCE per test binary — concurrent idempotent DDL across parallel tests can
 /// deadlock on catalog locks, so serialize to a single run.
 static SCHEMA_READY: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
@@ -126,10 +126,13 @@ static SCHEMA_READY: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_ne
 async fn ensure_schema(pool: &PgPool) {
     SCHEMA_READY
         .get_or_init(|| async {
+            let dsn = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string());
+            asyncevents::Plane::new(pool.clone(), dsn)
+                .unwrap()
+                .migrate()
+                .await
+                .unwrap();
             let ctx = Context::with_db(pool.clone());
-            let m = messaging::Messaging::new();
-            m.register(&ctx).unwrap();
-            m.migrate(&ctx).await.unwrap();
             let inv = Inventory::new();
             inv.register(&ctx).unwrap();
             inv.migrate(&ctx).await.unwrap();
@@ -227,19 +230,19 @@ async fn list_character_authz_mapping() {
     cleanup_owner(&pool, &cid).await;
 }
 
-/// (c) The on_tx grant-on-Created path IN-PROCESS: install a real messaging
-/// transport (live DB), register inventory's on_tx(CREATED), start the relay, emit
-/// a Created, and assert a starter holding materializes for that character.
+/// (c) The on_tx grant-on-Created path IN-PROCESS: inject a real asyncevents
+/// transport (live DB), register inventory's on_tx(CREATED), start the plane's relay,
+/// emit a Created, and assert a starter holding materializes for that character.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn grant_on_created_via_on_tx() {
     let Some(pool) = test_pool().await else { return };
     ensure_schema(&pool).await;
 
-    let ctx = Context::with_db(pool.clone());
-
-    // messaging.register installs the durable transport BEFORE inventory.init's on_tx.
-    let messaging = messaging::Messaging::new();
-    messaging.register(&ctx).unwrap();
+    // The plane owns the transport; injecting it at Context construction means
+    // inventory.init's on_tx records into THIS plane's subscription table.
+    let dsn = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string());
+    let mut plane = asyncevents::Plane::new(pool.clone(), dsn).unwrap();
+    let ctx = Context::with_db_and_transport(pool.clone(), plane.transport());
 
     // Provide the ownership + config deps inventory.init requires (fakes — no
     // characters/config module needed to exercise the event path).
@@ -252,10 +255,9 @@ async fn grant_on_created_via_on_tx() {
     inv.register(&ctx).unwrap();
     inv.init(&ctx).unwrap(); // registers on_tx(CREATED/DELETED) -> subscribe_tx
 
-    // messaging.init snapshots inventory's subscription into relay targets, then
-    // start launches the relay + LISTEN loop.
-    messaging.init(&ctx).unwrap();
-    messaging.start(&ctx).await.unwrap();
+    // Plane::start snapshots inventory's subscription into relay targets, then
+    // launches the relay + LISTEN loop.
+    plane.start().await.unwrap();
 
     let cid = unique_uuid(&pool).await;
     let pid = unique_uuid(&pool).await;
@@ -288,11 +290,11 @@ async fn grant_on_created_via_on_tx() {
     }
     assert!(granted, "starter item not granted via on_tx within timeout");
 
-    messaging.stop(&ctx).await.unwrap();
+    plane.stop().await;
 
     // Cleanup: the holding + the outbox row for this character.
     cleanup_owner(&pool, &cid).await;
-    let _ = sqlx::query("DELETE FROM messaging.outbox WHERE payload->>'character_id' = $1")
+    let _ = sqlx::query("DELETE FROM asyncevents.outbox WHERE payload->>'character_id' = $1")
         .bind(&cid)
         .execute(&pool)
         .await;

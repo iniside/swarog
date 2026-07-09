@@ -1,6 +1,6 @@
 //! leaderboard tests. The durable upsert is driven directly against a real sqlx tx (the
-//! same shape messaging's `consume` runs the handler in — an upsert inside a tx that then
-//! commits), and the top-scores read against the pool. Live-Postgres tests SKIP cleanly
+//! same shape the asyncevents plane's `consume` runs the handler in — an upsert inside a
+//! tx that then commits), and the top-scores read against the pool. Live-Postgres tests SKIP cleanly
 //! when the local DB is unreachable. In-crate so they drive the private `Service` +
 //! `record_win` directly.
 
@@ -47,7 +47,7 @@ async fn wins_of(pool: &PgPool, player: &str) -> Option<i64> {
     row.map(|(w,)| w)
 }
 
-/// Runs `record_win` inside a committed tx — the same shape messaging's consume uses.
+/// Runs `record_win` inside a committed tx — the same shape the asyncevents plane's consume uses.
 async fn deliver_win(pool: &PgPool, player: &str) {
     let mut tx = pool.begin().await.unwrap();
     record_win(&mut tx, player).await.unwrap();

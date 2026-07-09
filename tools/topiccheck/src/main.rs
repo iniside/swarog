@@ -90,7 +90,7 @@ const IN_PROCESS_SENTINEL: &str = "(in-process)";
 /// A `bus::Transport` that records every durable subscription instead of persisting
 /// anything. `enqueue_tx` is a no-op (nothing is emitted during `register`/`init`);
 /// `subscribe_tx` captures the `(topic, subscriber)` pair each `on_tx`/`on_tx_raw`
-/// registers. Installed in place of `core/messaging`'s real transport, so building
+/// registers. Injected as this tool's own durable-events plane transport, so building
 /// the module set drives real subscribe calls straight into `subs`.
 struct RecordingTransport {
     subs: Arc<Mutex<Vec<(String, String)>>>,
@@ -148,9 +148,9 @@ fn defined_topics() -> Vec<(String, &'static str)> {
 }
 
 /// The monolith module set — the superset of every process, so a subscribe in ANY
-/// deployment counts. Mirrors `cmd/server` MINUS `messaging` (the recording transport
-/// stands in for its durable plane) and with a plain `Gateway::new()` (the player-edge
-/// wiring is irrelevant to topic subscriptions).
+/// deployment counts. Mirrors `cmd/server`; there is no messaging module — this tool
+/// provides its own recording durable-events plane — and it uses a plain `Gateway::new()`
+/// (the player-edge wiring is irrelevant to topic subscriptions).
 fn monolith_modules() -> Vec<Box<dyn Module>> {
     vec![
         Box::new(config::Config::new()),
@@ -216,14 +216,16 @@ fn collect_subscriptions() -> anyhow::Result<BTreeMap<String, BTreeSet<String>>>
     let dsn = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string());
     let pool = sqlx::postgres::PgPool::connect_lazy(&dsn)
         .map_err(|e| anyhow::anyhow!("topiccheck: build lazy pool: {e}"))?;
-    let ctx = Arc::new(Context::with_db(pool));
 
-    // Replace the durable transport with a recording one, then build the set: every
+    // Inject a recording durable-events plane transport, then build the set: every
     // real on_tx/on_tx_raw lands in `durable`, every real in-process `on` in the bus.
     let durable = Arc::new(Mutex::new(Vec::<(String, String)>::new()));
-    ctx.bus().set_transport(Arc::new(RecordingTransport {
-        subs: durable.clone(),
-    }));
+    let ctx = Arc::new(Context::with_db_and_transport(
+        pool,
+        Arc::new(RecordingTransport {
+            subs: durable.clone(),
+        }),
+    ));
 
     let mut app = App::new(ctx.clone());
     for m in monolith_modules() {

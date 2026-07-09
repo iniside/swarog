@@ -570,7 +570,7 @@ impl Module for Inventory {
     }
 
     fn requires(&self) -> Vec<String> {
-        vec!["characters".into(), "config".into(), "messaging".into()]
+        vec!["characters".into(), "config".into()]
     }
 
     fn caps(&self) -> Caps {

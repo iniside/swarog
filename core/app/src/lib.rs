@@ -195,16 +195,24 @@ fn apply_http_layers(ctx: &Context, mut router: axum::Router) -> axum::Router {
 }
 
 /// Boots a service from a static list of modules. Opens the DB (when configured),
-/// wires the lifecycle [`Context`], then, in EXACTLY this order (port of Go's
-/// `app.Run`):
+/// wires the lifecycle [`Context`], then, in EXACTLY this order:
 ///
 /// 1. open a [`PgPool`] from `cfg.database_url` — SKIPPED when it is `None` (a
 ///    pure-transport process like `gateway-svc` owns no schema),
-/// 2. build the [`Context`] backed by that pool (or a DB-less one when there is none),
+/// 2. construct the durable-events plane ([`asyncevents::Plane`]) iff a pool was
+///    opened — the plane is process infrastructure owned HERE, like the HTTP/edge
+///    planes, never a module — then build the [`Context`]: DB-backed with the
+///    plane's transport injected at construction
+///    ([`Context::with_db_and_transport`]), or DB-less (no plane; any `on_tx`
+///    there fails loud at init, `emit_tx` returns `NoTransport`),
 /// 3. [`validate_requires`] — fail loud on an incomplete module set,
-/// 4. [`App::build`] (two-phase register → init),
-/// 5. [`App::migrate`],
-/// 6. [`App::start`],
+/// 4. [`App::build`] (two-phase register → init), then merge the plane's
+///    `POST /events` inbound sink into the process router,
+/// 5. the plane's own-schema migration, then [`App::migrate`] — the outbox exists
+///    before any module's first `emit_tx`,
+/// 6. [`App::start`], then the plane's start (origin-collision guard, local-target
+///    snapshot — taken AFTER all module inits and stub registers — relay, LISTEN,
+///    housekeeping),
 /// 7. if `edge_server` is `Some`, bind the internal mutual-TLS QUIC listener, and if
 ///    `player_server` is `Some`, bind the player-facing server-cert-only QUIC listener
 ///    — both AFTER build (so every handler a module registered during init exists),
@@ -213,10 +221,11 @@ fn apply_http_layers(ctx: &Context, mut router: axum::Router) -> axum::Router {
 ///    `/healthz`/`/readyz`) on `cfg.listen_addr` — `/readyz` pings the DB only when a
 ///    pool exists, else answers a plain 200,
 /// 9. block until SIGINT (Ctrl-C — cross-platform),
-/// 10. graceful shutdown in Go's order: stop accepting HTTP → close the player
-///     listener (players drain first) → close the internal edge listener → drain the
-///     bus → [`App::stop`] (reverse registration order). The bus drains BEFORE any
-///     module `stop`, so a stopping module never emits.
+/// 10. graceful shutdown: stop accepting HTTP → close the player listener (players
+///     drain first) → close the internal edge listener → stop the plane (delivery
+///     halts before anything tears down) → drain the bus → [`App::stop`] (reverse
+///     registration order). The bus drains BEFORE any module `stop`, so a stopping
+///     module never emits.
 ///
 /// `modules` is the WHOLE topology of this process — real modules plus any remote
 /// stubs standing in for peers. `edge_server` is `None` for an all-local process and
@@ -252,12 +261,22 @@ pub async fn run(
         None => None,
     };
 
-    // 2. Wire the shared context; the same Arc is handed to App (which drives the
-    //    modules) and kept here for the router + bus drain. DB-backed when a pool was
-    //    opened, DB-less otherwise (`lifecycle::Context` supports both).
-    let ctx = Arc::new(match pool.clone() {
-        Some(p) => Context::with_db(p),
-        None => Context::new(),
+    // 2. Construct the durable-events plane iff the process has a DB (DB ⇔ plane —
+    //    the transport must share the caller's transaction, so it is constitutively
+    //    co-hosted; a DB-less process hosts none). The plane's LISTEN connection gets
+    //    the SAME authoritative DSN the pool opened — never a second env read.
+    let mut plane = match (&pool, &cfg.database_url) {
+        (Some(p), Some(dsn)) => Some(asyncevents::Plane::new(p.clone(), dsn.clone())?),
+        _ => None,
+    };
+
+    //    Wire the shared context; the same Arc is handed to App (which drives the
+    //    modules) and kept here for the router + bus drain. DB-backed with the
+    //    plane's transport injected AT CONSTRUCTION (so every module's wiring-time
+    //    on_tx finds a live durable plane), DB-less and plane-less otherwise.
+    let ctx = Arc::new(match (pool.clone(), &plane) {
+        (Some(p), Some(pl)) => Context::with_db_and_transport(p, pl.transport()),
+        _ => Context::new(),
     });
 
     // 3. Fail loud if this process's module set is internally incoherent.
@@ -270,9 +289,23 @@ pub async fn run(
     }
     app.build().context("startup failed")?;
 
-    // 5. Own-schema migrations, then 6. background work.
+    // The plane's one inbound sink (`POST /events`) joins the process router the
+    // same way module routes did during init.
+    if let Some(p) = &plane {
+        ctx.mount(p.router());
+    }
+
+    // 5. Own-schema migrations — the plane's first (a module's first emit_tx must
+    //    find the outbox), then 6. background work: modules first, then the plane
+    //    (its local-target snapshot must see every wiring-time on_tx).
+    if let Some(p) = &plane {
+        p.migrate().await.context("asyncevents migrate failed")?;
+    }
     app.migrate().await.context("migrate failed")?;
     app.start().await.context("start failed")?;
+    if let Some(p) = &mut plane {
+        p.start().await.context("asyncevents start failed")?;
+    }
 
     // 7. Bring up the shared edge server AFTER every module init has contributed its
     //    registrations. One listener, all edge methods, mutual TLS via the shared dev
@@ -398,14 +431,19 @@ pub async fn run(
     .context("http serve")?;
 
     // 10. Ordered teardown: HTTP already stopped → close the player front (external
-    //     players drain first) → close the internal edge → drain bus → stop modules
-    //     (reverse registration order, inside App::stop).
+    //     players drain first) → close the internal edge → stop the plane (durable
+    //     delivery halts before ANY module tears down — structurally what the old
+    //     "messaging registers last, stops first" convention hand-ordered) → drain
+    //     bus → stop modules (reverse registration order, inside App::stop).
     tracing::info!("shutting down");
     if let Some(running) = running_player {
         running.close();
     }
     if let Some(running) = running_edge {
         running.close();
+    }
+    if let Some(p) = &mut plane {
+        p.stop().await;
     }
     ctx.bus().close().await;
     app.stop().await;

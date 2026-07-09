@@ -70,10 +70,10 @@ async fn cleanup(pool: &PgPool, name: &str) {
         .await;
 }
 
-/// A minimal in-memory `bus::Transport` standing in for the messaging module: it only
+/// A minimal in-memory `bus::Transport` standing in for the asyncevents plane: it only
 /// RECORDS enqueued durable emits (Go's `fakeTransport`), so `fire`'s `emit_tx` has a
-/// transport to write into without a live messaging module (which would cross a module
-/// boundary these tests shouldn't need). Durable delivery is messaging's own concern.
+/// transport to write into without a live durable plane (which would need a DB these
+/// tests shouldn't need). Durable delivery is the asyncevents plane's own concern.
 struct FakeTransport {
     rows: Mutex<Vec<(String, Vec<u8>)>>,
 }
@@ -122,8 +122,7 @@ impl Transport for FakeTransport {
 /// A bus with a fake transport installed, plus a handle to that transport for assertions.
 fn bus_with_fake() -> (Arc<Bus>, Arc<FakeTransport>) {
     let ft = FakeTransport::new();
-    let bus = Bus::new();
-    bus.set_transport(ft.clone() as Arc<dyn Transport>);
+    let bus = Bus::with_transport(ft.clone() as Arc<dyn Transport>);
     (Arc::new(bus), ft)
 }
 

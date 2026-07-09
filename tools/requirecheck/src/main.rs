@@ -15,7 +15,7 @@
 //! Optional `try_require` calls are recorded but NOT enforced (an optional dependency
 //! is deliberately allowed to be undeclared — e.g. `gateway`'s `accounts.sessions`).
 //!
-//! ## How (the honest analogue of `Bus::set_transport`)
+//! ## How
 //! It installs the opt-in `core/registry` require-observer, builds the MONOLITH module
 //! set (the superset of every process — a `require` in ANY deployment counts), and runs
 //! the two lifecycle wiring phases (`register` → `init`). Unlike `topiccheck`, it does
@@ -61,17 +61,12 @@ type Collected = (Vec<String>, Vec<Hit>, BTreeMap<String, Vec<String>>);
 const DEFAULT_DSN: &str =
     "postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable";
 
-/// Provider names that legitimately appear in a module's `requires()` WITHOUT a
-/// backing registry require-key, so they must never be demanded as a require provider
-/// nor flagged as over-declared. `messaging` is a bus dependency + a boot marker
-/// (`validate_requires` only) — consumed via `ctx.bus()`, never a keyed `require()`.
-const ALLOWLIST: &[&str] = &["messaging"];
-
 /// A `bus::Transport` that does nothing. `inventory::init` and `match::init` subscribe
 /// via `ctx.bus().on_tx(...)`, and `Bus::on_tx_raw` PANICS if no transport is installed
-/// — so a no-op transport MUST be installed before the two-phase loop, else the harness
-/// dies at the first `init` before observing a single `require`. It records nothing;
-/// this tool only cares about the registry seam, not the bus.
+/// — so a no-op transport MUST be injected before the two-phase loop, else the harness
+/// dies at the first `init` before observing a single `require`. It stands in for the
+/// app-owned durable-events plane and records nothing; this tool only cares about the
+/// registry seam, not the bus.
 struct NoopTransport;
 
 #[async_trait::async_trait]
@@ -100,9 +95,9 @@ struct Recorder {
 }
 
 /// The monolith module set — the superset of every process, so a `require` in ANY
-/// deployment counts. Mirrors `cmd/server` MINUS `messaging` (the no-op transport
-/// stands in for its durable plane; messaging is never keyed-required anyway) and with
-/// a plain `Gateway::new()`.
+/// deployment counts. Mirrors `cmd/server`; there is no messaging module — the harness
+/// injects its own no-op plane transport (a durable dep is never keyed-required anyway)
+/// — and it uses a plain `Gateway::new()`.
 fn monolith_modules() -> Vec<Box<dyn Module>> {
     vec![
         Box::new(config::Config::new()),
@@ -172,11 +167,9 @@ fn collect_requires() -> anyhow::Result<Collected> {
     let dsn = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string());
     let pool = sqlx::postgres::PgPool::connect_lazy(&dsn)
         .map_err(|e| anyhow::anyhow!("requirecheck: build lazy pool: {e}"))?;
-    let ctx = Arc::new(Context::with_db(pool));
-
     // A transport MUST exist before init: inventory/match subscribe via on_tx, and
-    // Bus::on_tx_raw panics without one. This no-op stands in for core/messaging.
-    ctx.bus().set_transport(Arc::new(NoopTransport));
+    // Bus::on_tx_raw panics without one. This no-op stands in for the app-owned plane.
+    let ctx = Arc::new(Context::with_db_and_transport(pool, Arc::new(NoopTransport)));
 
     // Install the require-observer; it attributes each require to the module whose init
     // is currently running (the marker set in phase 2 below). The closure touches only
@@ -225,7 +218,7 @@ async fn main() -> anyhow::Result<()> {
     let strict = std::env::args().any(|a| a == "--strict");
 
     let (order, hits, declared) = collect_requires()?;
-    let violations = undeclared(&hits, &declared, ALLOWLIST);
+    let violations = undeclared(&hits, &declared, &[]);
 
     // The report table: every module, its declared requires(), the mandatory require
     // providers it actually called, and a verdict.
@@ -267,7 +260,7 @@ async fn main() -> anyhow::Result<()> {
         println!("{module:<14} | {decl_str:<28} | {obs_str:<24} | {verdict}");
 
         for d in &decl {
-            if !ALLOWLIST.contains(&d.as_str()) && !observed.contains(d) {
+            if !observed.contains(d) {
                 over_declared.push((module.clone(), d.clone()));
             }
         }

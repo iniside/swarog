@@ -1,7 +1,7 @@
 //! audit tests. The durable handlers are driven directly against a real sqlx tx (the
-//! same shape messaging's `consume` uses — an insert/prune inside a tx that commits),
+//! same shape the asyncevents plane's `consume` uses — an insert/prune inside a tx that commits),
 //! so they exercise the ledger SQL + tx atomicity without pulling in the transport
-//! internals (messaging's own tests cover the inbox dedup). The anti-drift topic-set
+//! internals (asyncevents' own tests cover the inbox dedup). The anti-drift topic-set
 //! test needs no DB. Live-Postgres tests SKIP cleanly (early-return) when the local DB
 //! is unreachable, so `cargo test` never hard-fails on a machine without it.
 
@@ -63,7 +63,7 @@ async fn insert_aged(pool: &PgPool, topic: &str, age_days: i32) {
 }
 
 /// Drives the prune handler with a `scheduler.fired{name}` payload inside a committed
-/// tx — the same shape messaging's consume runs the handler in.
+/// tx — the same shape the asyncevents plane's consume runs the handler in.
 async fn deliver_prune(pool: &PgPool, handler: &PruneHandler, name: &str) {
     let payload = serde_json::to_vec(&serde_json::json!({ "name": name })).unwrap();
     let mut tx = pool.begin().await.unwrap();

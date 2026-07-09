@@ -20,11 +20,10 @@ async fn main() -> anyhow::Result<()> {
     // `listen`s the same handle after Build — the monolith serves players over QUIC too.
     let player = Arc::new(Mutex::new(edge::PlayerServer::new()));
 
-    // All modules, hosted locally. Order note: messaging LAST — its phase-1 `register`
-    // installs the durable transport before any consumer's `init` (guaranteed anyway
-    // by the two-phase Build), and registration order governs Stop (reverse), so
-    // last-registered stops FIRST — delivery halts before any producer/consumer tears
-    // down.
+    // All modules, hosted locally. The durable-events plane is app-owned process
+    // infrastructure (`core/app::run` constructs, migrates, starts and stops it) — it
+    // is never listed here; its Stop ordering (delivery halts before any module tears
+    // down) is structural in `app::run`, not a list-order convention.
     let mods: Vec<Box<dyn Module>> = vec![
         Box::new(metrics::Metrics::new()), // core-infra: mounts GET /metrics + contributes the record layer
         Box::new(config::Config::new()),         // DB-backed config: schema "config", provides "config.reader"
@@ -39,7 +38,6 @@ async fn main() -> anyhow::Result<()> {
         Box::new(leaderboard::LeaderboardModule::new()), // win tally; owns schema "leaderboard", reacts to match.finished, serves GET /leaderboard
         Box::new(webui::WebUi::new()), // dev demo SPA at GET /; monolith-only (the one sanctioned fortress-svc exception)
         Box::new(gateway::Gateway::new().with_player_edge(player.clone())), // HTTP + player QUIC front, auth-once (real accounts sessions)
-        Box::new(messaging::Messaging::new()),   // the durable async plane (transport + relay + inbox)
     ];
 
     // No internal edge server: every provider is in-process in the monolith, so no

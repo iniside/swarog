@@ -1,6 +1,6 @@
 //! `metrics` — the cross-cutting HTTP-metrics middleware + `/metrics` scrape, packaged as
-//! a core-infra [`lifecycle::Module`] listed in EVERY process main (the `messaging`
-//! precedent — a `core/` crate that is also a `Module`). Its `init` mounts `GET /metrics`
+//! a core-infra [`lifecycle::Module`] listed in EVERY process main (a `core/` crate that
+//! stands on its own as a `Module`). Its `init` mounts `GET /metrics`
 //! (`ctx.mount`) and contributes the recording layer to [`httpmw::LAYER_SLOT`], which
 //! `app::run` drains over the whole rate-limited surface. (Port of Go's `metrics/metrics.go`,
 //! but self-registering instead of wired by a `Config` flag.)

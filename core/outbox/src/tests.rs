@@ -24,7 +24,7 @@ fn parse_subscribers_empty_is_empty_map() {
 
 #[test]
 fn valid_ident_accepts_and_rejects() {
-    assert!(valid_ident("messaging"));
+    assert!(valid_ident("asyncevents"));
     assert!(valid_ident("_x9"));
     assert!(!valid_ident("9x"));
     assert!(!valid_ident("a.b"));

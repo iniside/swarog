@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
-# The match fortress process (Step 10). Hosts match + messaging and stands up one shared
+# The match fortress process (Step 10). Hosts match and stands up one shared
 # QUIC edge server (EDGE_ADDR, :9006 in the run scripts). match SYNC-reads `rating.mmr`
 # via a `remote::Stub` over the mTLS edge to rating-svc, records the match + `emit_tx`s
 # `match.finished` in one tx, and its relay POSTs that event to rating-svc, leaderboard-svc
@@ -22,7 +22,6 @@ edge = { workspace = true }
 lifecycle = { workspace = true }
 metrics = { workspace = true }
 match_module = { workspace = true }
-messaging = { workspace = true }
 remote = { workspace = true }
 ratingrpc = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync"] }

@@ -1,8 +1,14 @@
 use super::*;
 use futures::future::BoxFuture;
+use lifecycle::Context;
+use outbox::LocalTarget;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-/// Opens the local Postgres, migrates the messaging schema, and returns `None`
+/// Fallback DSN when `DATABASE_URL` is unset — the same default `core/app` uses.
+const DEFAULT_DSN: &str =
+    "postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable";
+
+/// Opens the local Postgres, migrates the asyncevents schema, and returns `None`
 /// (printing a skip line) when it's unreachable — so the suite degrades to a
 /// no-op rather than failing where there's no DB.
 async fn test_pool() -> Option<PgPool> {
@@ -10,12 +16,12 @@ async fn test_pool() -> Option<PgPool> {
     let pool = match tokio::time::timeout(Duration::from_secs(3), PgPool::connect(&dsn)).await {
         Ok(Ok(p)) => p,
         _ => {
-            eprintln!("SKIP: postgres unreachable at {dsn} — messaging DB tests skipped");
+            eprintln!("SKIP: postgres unreachable at {dsn} — asyncevents DB tests skipped");
             return None;
         }
     };
     if let Err(err) = sqlx::raw_sql(SCHEMA_DDL).execute(&pool).await {
-        eprintln!("SKIP: messaging migrate failed: {err}");
+        eprintln!("SKIP: asyncevents migrate failed: {err}");
         return None;
     }
     Some(pool)
@@ -60,17 +66,18 @@ impl TxHandler for RecordHandler {
     }
 }
 
-/// BLOCKER-2 without a DB: `register` installs a live transport and pre-allocates
-/// the handler map, so a consumer's phase-2 `on_tx` records rather than panics.
+/// BLOCKER-2 without a DB: the transport is live from `Plane::new` and injected at
+/// `Context` construction, so any wiring-time `on_tx` records rather than panics —
+/// the exact shape `app::run` builds for a DB-backed process.
 #[tokio::test]
-async fn register_installs_transport_before_init() {
+async fn plane_transport_is_live_at_context_construction() {
     let pool = PgPool::connect_lazy(DEFAULT_DSN).unwrap(); // never touched (no query)
-    let ctx = Context::with_db(pool);
-    let m = Messaging::new();
-    m.register(&ctx).unwrap();
+    let plane = Plane::new(pool.clone(), DEFAULT_DSN.to_string()).unwrap();
+    let ctx = Context::with_db_and_transport(pool, plane.transport());
 
-    // A consumer's init would call bus.on_tx -> Transport::subscribe_tx. This runs
-    // before messaging.init; it must not panic on an absent map.
+    // A module's init (or a stub factory's register) calls bus.on_tx ->
+    // Transport::subscribe_tx. This runs long before Plane::start's snapshot; it
+    // must not panic and must land in the plane's subscription table.
     let et = bus::define::<serde_json::Value>("test.topic");
     ctx.bus().on_tx(&et, "consumer", |conn, v: serde_json::Value| {
         Box::pin(async move {
@@ -79,13 +86,10 @@ async fn register_installs_transport_before_init() {
         })
     });
 
-    let inner = m.inner();
-    assert_eq!(inner.subscribers_for("test.topic").len(), 1);
-    // The marker is provided under "messaging" for validate_requires's boot check.
-    assert!(ctx.registry().try_require::<dyn Service>("messaging").is_some());
+    assert_eq!(plane.inner.subscribers_for("test.topic").len(), 1);
 }
 
-/// `enqueue_tx` writes a row on the caller's tx with the module's origin.
+/// `enqueue_tx` writes a row on the caller's tx with the plane's origin.
 #[tokio::test]
 async fn enqueue_tx_writes_row_with_origin() {
     let Some(pool) = test_pool().await else { return };
@@ -99,7 +103,7 @@ async fn enqueue_tx_writes_row_with_origin() {
         .unwrap();
     tx.commit().await.unwrap();
 
-    let row = sqlx::query("SELECT origin, topic FROM messaging.outbox WHERE origin = $1")
+    let row = sqlx::query("SELECT origin, topic FROM asyncevents.outbox WHERE origin = $1")
         .bind(&origin)
         .fetch_one(&pool)
         .await
@@ -139,7 +143,7 @@ async fn relay_drains_only_its_own_origin() {
             })
         }),
     };
-    let relay = Relay::new(pool.clone(), "messaging", origin_a.clone(), HashMap::new(), vec![target]);
+    let relay = Relay::new(pool.clone(), "asyncevents", origin_a.clone(), HashMap::new(), vec![target]);
     relay.drain_once().await.unwrap();
 
     // A's row delivered + marked sent; B's row untouched (still unsent).
@@ -157,7 +161,7 @@ async fn relay_drains_only_its_own_origin() {
 async fn inbox_dedup_runs_handler_once() {
     let Some(pool) = test_pool().await else { return };
     let inner = inner(pool.clone(), "dedup");
-    let event_id = format!("messaging:test:{}", unique());
+    let event_id = format!("asyncevents:test:{}", unique());
     let calls = Arc::new(AtomicU32::new(0));
     let seen = Arc::new(Mutex::new(Vec::new()));
 
@@ -199,7 +203,7 @@ async fn local_target_round_trip() {
     inner.subscribe_tx("rt.topic", "rt-sub", h);
     let targets = inner.build_local_targets();
 
-    let relay = Relay::new(pool.clone(), "messaging", origin.clone(), HashMap::new(), targets);
+    let relay = Relay::new(pool.clone(), "asyncevents", origin.clone(), HashMap::new(), targets);
     relay.drain_once().await.unwrap();
 
     assert_eq!(calls.load(Ordering::SeqCst), 1, "handler not run exactly once");
@@ -214,7 +218,7 @@ async fn local_target_round_trip() {
 
 async fn unsent_count(pool: &PgPool, origin: &str) -> i64 {
     use sqlx::Row;
-    sqlx::query("SELECT count(*) AS n FROM messaging.outbox WHERE origin = $1 AND sent_at IS NULL")
+    sqlx::query("SELECT count(*) AS n FROM asyncevents.outbox WHERE origin = $1 AND sent_at IS NULL")
         .bind(origin)
         .fetch_one(pool)
         .await
@@ -223,14 +227,14 @@ async fn unsent_count(pool: &PgPool, origin: &str) -> i64 {
 }
 
 async fn cleanup(pool: &PgPool, origin: &str) {
-    let _ = sqlx::query("DELETE FROM messaging.outbox WHERE origin = $1")
+    let _ = sqlx::query("DELETE FROM asyncevents.outbox WHERE origin = $1")
         .bind(origin)
         .execute(pool)
         .await;
 }
 
 async fn cleanup_inbox(pool: &PgPool, event_id: &str) {
-    let _ = sqlx::query("DELETE FROM messaging.inbox WHERE event_id = $1")
+    let _ = sqlx::query("DELETE FROM asyncevents.inbox WHERE event_id = $1")
         .bind(event_id)
         .execute(pool)
         .await;
@@ -245,7 +249,7 @@ fn parse_go_duration_units() {
     assert_eq!(parse_go_duration("nonsense"), None);
 }
 
-/// The Step-5 origin-collision guard: only the DEFAULT origin WITH remote sinks is a
+/// The origin-collision guard: only the DEFAULT origin WITH remote sinks is a
 /// collision. A distinct origin (a real split process) or no subscribers (a monolith)
 /// is fine. No DB needed — the predicate is pure.
 #[test]

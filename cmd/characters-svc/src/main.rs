@@ -1,5 +1,6 @@
 //! `characters-svc` — process A of the split (port of Go's `cmd/characters-svc`). It
-//! hosts ONLY characters + messaging and stands up one shared QUIC edge server;
+//! hosts ONLY characters and stands up one shared QUIC edge server; the durable-events
+//! plane is app-owned (DB ⇒ plane), not a listed module;
 //! `characters` contributes its `characters.ownerOf` + player-op faces to
 //! `edge::EDGE_SLOT` (topology-blind), and `app::run` installs them on this server so a
 //! peer's inventory can resolve ownership over the mutually-authenticated edge. The
@@ -26,13 +27,11 @@ async fn main() -> anyhow::Result<()> {
     // legitimate topology knowledge — the modules never see it.
     let edge_server = Arc::new(Mutex::new(edge::Server::new()));
 
-    // messaging LAST for Stop ordering (reverse) — the relay halts delivery before
-    // characters tears down. No accounts stub: without a gateway there is no bearer
-    // verifier to feed, so this process never dials accounts-svc.
+    // No accounts stub: without a gateway there is no bearer verifier to feed, so this
+    // process never dials accounts-svc.
     let mods: Vec<Box<dyn Module>> = vec![
         Box::new(metrics::Metrics::new()), // core-infra: mounts GET /metrics + contributes the record layer
         Box::new(characters::Characters::new()),
-        Box::new(messaging::Messaging::new()),
     ];
 
     // No player front: A serves peers over the internal mutual-TLS edge, not players.

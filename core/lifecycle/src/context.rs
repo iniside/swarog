@@ -52,6 +52,19 @@ impl Context {
         }
     }
 
+    /// A context backed by a live pool AND a durable-events transport, injected
+    /// at construction so every module's `on_tx`/`emit_tx` finds the plane live
+    /// (there is no later installer). This is the shape `app::run` builds for
+    /// every DB-backed process (DB ⇒ plane); [`Context::new`]/[`Context::with_db`]
+    /// stay plane-less for unit tests and DB-less processes.
+    pub fn with_db_and_transport(db: PgPool, transport: Arc<dyn bus::Transport>) -> Self {
+        Context {
+            bus: Arc::new(Bus::with_transport(transport)),
+            db: Some(db),
+            ..Context::new()
+        }
+    }
+
     pub fn bus(&self) -> &Arc<Bus> {
         &self.bus
     }

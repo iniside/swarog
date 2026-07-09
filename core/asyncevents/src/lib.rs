@@ -1,21 +1,22 @@
-//! `messaging` — the durable async plane's one and only module. It owns schema
-//! `messaging` (a shared outbox log + a per-subscriber inbox dedup ledger),
-//! implements [`bus::Transport`], and installs it via `ctx.bus().set_transport` — so
-//! the `bus` leaf gains a durable plane WITHOUT importing any module (hard
-//! constraint #1: dependency points module → leaf, never the reverse). It is the
-//! ONLY module that implements [`bus::Transport`] and imports `outbox`. (Port of
-//! Go's `modules/messaging`.)
+//! `asyncevents` — the durable async-events plane. It owns schema `asyncevents`
+//! (a shared outbox log + a per-subscriber inbox dedup ledger) and implements
+//! [`bus::Transport`]. It is NOT a `lifecycle::Module`: the plane is process
+//! infrastructure, like the HTTP listener — `core/app::run` constructs a
+//! [`Plane`] iff the process has a DB, injects its transport at `Context`
+//! construction (`Bus::with_transport`), migrates its schema before module
+//! migrations, starts its relay after module starts, and halts delivery before
+//! any module stops. Modules declare nothing: DB ⇒ plane.
 //!
-//! A producer reaches it purely via `bus.emit_tx` (writes one `messaging.outbox` row
-//! in the producer's own domain tx); a consumer via `bus.on_tx`/`on_tx_raw` (a
+//! A producer reaches it purely via `bus.emit_tx` (writes one `asyncevents.outbox`
+//! row in the producer's own domain tx); a consumer via `bus.on_tx`/`on_tx_raw` (a
 //! durable handler run inside a per-subscriber inbox-dedup tx). Neither ever sees the
-//! outbox, the inbox, the relay, `EVENTS_SUBSCRIBERS`, or `MESSAGING_ORIGIN` —
-//! messaging owns the whole envelope. Delivery is topology-transparent: the SAME code
+//! outbox, the inbox, the relay, `EVENTS_SUBSCRIBERS`, or `EVENTS_ORIGIN` — the
+//! plane owns the whole envelope. Delivery is topology-transparent: the SAME code
 //! path serves the monolith (in-process local targets) and a split (HTTP `POST
 //! /events` to a peer), chosen by durability intent, never by topology.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use axum::body::Bytes;
@@ -24,23 +25,18 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::Router;
 use bus::{Transport, TxHandler};
-use lifecycle::{Caps, Context, Module};
-use outbox::{LocalTarget, Relay};
+use outbox::Relay;
 use sqlx::PgPool;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
-/// Fallback DSN for the LISTEN connection — the same default as the shared pool.
-const DEFAULT_DSN: &str =
-    "postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable";
-
-/// The stable identity a monolith stamps on its outbox rows when `MESSAGING_ORIGIN`
+/// The stable identity a monolith stamps on its outbox rows when `EVENTS_ORIGIN`
 /// is unset. It must be stable across restarts so a crashed process resumes draining
 /// its OWN unsent rows — never a pid/hostname.
 const DEFAULT_ORIGIN: &str = "monolith";
 
 /// The LISTEN/NOTIFY channel the outbox insert trigger fires on.
-const NOTIFY_CHANNEL: &str = "messaging_outbox";
+const NOTIFY_CHANNEL: &str = "asyncevents_outbox";
 
 /// Bounds each retention DELETE so a prune never takes a long lock.
 const HOUSEKEEP_BATCH: i64 = 1000;
@@ -50,20 +46,30 @@ type Subscription = (String, Arc<dyn TxHandler>);
 /// topic -> its durable subscriptions.
 type TopicHandlers = HashMap<String, Vec<Subscription>>;
 
-/// The registry marker messaging provides under `"messaging"`. It exists only so a
-/// process hosting a durable producer/consumer (which declares `requires("messaging")`)
-/// fails loud at `validate_requires` when messaging is absent — the REAL wiring is via
-/// `set_transport`, not a method here. No consumer requires it (they use the bus).
-pub trait Service: Send + Sync {}
-
-/// Creates this module's OWN schema — full logical isolation (#10). Idempotent
-/// (`IF NOT EXISTS` / `OR REPLACE`). The `AFTER INSERT` trigger fires the `pg_notify`
-/// the relay's LISTEN loop wakes on; the partial index keeps the unsent scan cheap;
-/// the inbox PK `(event_id, subscriber)` is what makes dedup PER SUBSCRIBER so a
-/// failing subscriber never blocks another's delivery. Verbatim from Go's `schemaDDL`.
+/// Creates this plane's OWN schema — full logical isolation (#10). Idempotent
+/// (`IF NOT EXISTS` / `OR REPLACE`). The leading `DO` block migrates a pre-rename
+/// dev DB in place: `messaging` → `asyncevents` runs exactly once (guarded on both
+/// schema names), and — atomically with the rename — rewrites the inbox dedup-key
+/// prefix, because the relay derives `event_id` as `"{schema}:{row.id}"`
+/// (`core/outbox`): a renamed-in-place row with partial delivery would otherwise
+/// re-deliver under the new prefix and re-run already-succeeded handlers.
+/// The `AFTER INSERT` trigger fires the `pg_notify` the relay's LISTEN loop wakes
+/// on; the partial index keeps the unsent scan cheap; the inbox PK
+/// `(event_id, subscriber)` is what makes dedup PER SUBSCRIBER so a failing
+/// subscriber never blocks another's delivery.
 const SCHEMA_DDL: &str = r#"
-CREATE SCHEMA IF NOT EXISTS messaging;
-CREATE TABLE IF NOT EXISTS messaging.outbox (
+DO $$ BEGIN
+	IF EXISTS (SELECT 1 FROM information_schema.schemata WHERE schema_name = 'messaging')
+	   AND NOT EXISTS (SELECT 1 FROM information_schema.schemata WHERE schema_name = 'asyncevents')
+	THEN
+		ALTER SCHEMA messaging RENAME TO asyncevents;
+		UPDATE asyncevents.inbox
+		   SET event_id = 'asyncevents:' || substr(event_id, length('messaging:') + 1)
+		 WHERE event_id LIKE 'messaging:%';
+	END IF;
+END $$;
+CREATE SCHEMA IF NOT EXISTS asyncevents;
+CREATE TABLE IF NOT EXISTS asyncevents.outbox (
 	id         bigserial   PRIMARY KEY,
 	origin     text        NOT NULL,
 	topic      text        NOT NULL,
@@ -71,43 +77,41 @@ CREATE TABLE IF NOT EXISTS messaging.outbox (
 	created_at timestamptz NOT NULL DEFAULT now(),
 	sent_at    timestamptz
 );
-CREATE INDEX IF NOT EXISTS outbox_unsent_idx ON messaging.outbox (id) WHERE sent_at IS NULL;
-CREATE TABLE IF NOT EXISTS messaging.inbox (
+CREATE INDEX IF NOT EXISTS outbox_unsent_idx ON asyncevents.outbox (id) WHERE sent_at IS NULL;
+CREATE TABLE IF NOT EXISTS asyncevents.inbox (
 	event_id     text        NOT NULL,
 	subscriber   text        NOT NULL,
 	processed_at timestamptz NOT NULL DEFAULT now(),
 	PRIMARY KEY (event_id, subscriber)
 );
-CREATE OR REPLACE FUNCTION messaging.notify_outbox() RETURNS trigger
+CREATE OR REPLACE FUNCTION asyncevents.notify_outbox() RETURNS trigger
 	LANGUAGE plpgsql AS $$
 BEGIN
-	PERFORM pg_notify('messaging_outbox', NEW.topic);
+	PERFORM pg_notify('asyncevents_outbox', NEW.topic);
 	RETURN NULL;
 END;
 $$;
 CREATE OR REPLACE TRIGGER outbox_notify
-	AFTER INSERT ON messaging.outbox
-	FOR EACH ROW EXECUTE FUNCTION messaging.notify_outbox();"#;
+	AFTER INSERT ON asyncevents.outbox
+	FOR EACH ROW EXECUTE FUNCTION asyncevents.notify_outbox();"#;
 
 /// The shared durable-plane state, held behind ONE `Arc` so the [`Transport`] impl,
 /// the `POST /events` sink, and the relay's local targets all see the same
 /// subscription table: a `subscribe_tx` registration is visible to every delivery
-/// path. (Go folds this into `*Module`; Rust splits it out so a single `Arc<Inner>`
-/// can be handed to `set_transport`, the axum handler, and the relay closures.)
+/// path. A single `Arc<Inner>` is handed to `Bus::with_transport`, the axum
+/// handler, and the relay closures.
 pub struct Inner {
     pool: PgPool,
-    /// From `MESSAGING_ORIGIN`, default `"monolith"`. Stamped on every enqueued row.
+    /// From `EVENTS_ORIGIN`, default `"monolith"`. Stamped on every enqueued row.
     origin: String,
     /// topic -> in-process durable subscriptions `(subscriber, handler)`.
     ///
-    /// MUST be allocated in phase-1 `register`, NEVER `init`: a consumer registered
-    /// before messaging calls `subscribe_tx` during its phase-2 `init` (which runs
-    /// BEFORE messaging's `init`, since messaging is registered last). An empty map is
-    /// live from `register`, so that append never touches an absent map.
+    /// Live from [`Plane::new`] — BEFORE the `Context` (and thus any module wiring)
+    /// exists — so every `on_tx`, whether from a module's `init` or a stub factory's
+    /// `register`, appends to a present map. [`Plane::start`] snapshots it after all
+    /// wiring is done.
     local_handlers: Mutex<TopicHandlers>,
 }
-
-impl Service for Inner {}
 
 #[async_trait::async_trait]
 impl Transport for Inner {
@@ -123,7 +127,7 @@ impl Transport for Inner {
         // Bind the payload as text so `::jsonb` parses it (a bytea bind would try to
         // cast raw bytes). The bus already JSON-encoded it, so it is valid UTF-8.
         let text = std::str::from_utf8(payload).map_err(bus::Error::transport)?;
-        sqlx::query("INSERT INTO messaging.outbox (origin, topic, payload) VALUES ($1, $2, $3::jsonb)")
+        sqlx::query("INSERT INTO asyncevents.outbox (origin, topic, payload) VALUES ($1, $2, $3::jsonb)")
             .bind(&self.origin)
             .bind(topic)
             .bind(text)
@@ -133,9 +137,9 @@ impl Transport for Inner {
         Ok(())
     }
 
-    /// Records an in-process durable subscription. Called from a consumer's `init`
-    /// (phase 2, before messaging's `init` builds the relay), so it only appends;
-    /// messaging's `init` later snapshots these into relay local targets.
+    /// Records an in-process durable subscription. Called during module wiring
+    /// (any phase — the map is live from [`Plane::new`]), so it only appends;
+    /// [`Plane::start`] later snapshots these into relay local targets.
     fn subscribe_tx(&self, topic: &str, subscriber: &str, handler: Arc<dyn TxHandler>) {
         self.local_handlers
             .lock()
@@ -163,7 +167,7 @@ impl Inner {
     ) -> anyhow::Result<()> {
         let mut tx = self.pool.begin().await?;
         let res = sqlx::query(
-            "INSERT INTO messaging.inbox (event_id, subscriber) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+            "INSERT INTO asyncevents.inbox (event_id, subscriber) VALUES ($1, $2) ON CONFLICT DO NOTHING",
         )
         .bind(event_id)
         .bind(subscriber)
@@ -193,12 +197,12 @@ impl Inner {
             .unwrap_or_default()
     }
 
-    /// Snapshots `local_handlers` into one relay [`LocalTarget`] per (topic, subscriber).
-    /// The relay delivers EVERY drained row to EVERY local target (it is not
-    /// topic-scoped), so each target filters by topic: a row of a different topic is a
-    /// no-op success, and only a matching row runs `consume`. Per-target =
-    /// per-subscriber isolation.
-    fn build_local_targets(self: &Arc<Self>) -> Vec<LocalTarget> {
+    /// Snapshots `local_handlers` into one relay [`outbox::LocalTarget`] per
+    /// (topic, subscriber). The relay delivers EVERY drained row to EVERY local
+    /// target (it is not topic-scoped), so each target filters by topic: a row of a
+    /// different topic is a no-op success, and only a matching row runs `consume`.
+    /// Per-target = per-subscriber isolation.
+    fn build_local_targets(self: &Arc<Self>) -> Vec<outbox::LocalTarget> {
         let handlers = self.local_handlers.lock().unwrap();
         let mut targets = Vec::new();
         for (topic, subs) in handlers.iter() {
@@ -207,7 +211,7 @@ impl Inner {
                 let want_topic = topic.clone();
                 let subscriber = subscriber.clone();
                 let handler = handler.clone();
-                targets.push(LocalTarget {
+                targets.push(outbox::LocalTarget {
                     subscriber: subscriber.clone(),
                     deliver: Arc::new(move |delivered_topic: String, payload: Vec<u8>, event_id: String| {
                         let inner = inner.clone();
@@ -228,203 +232,155 @@ impl Inner {
     }
 }
 
-/// Runtime config resolved in `init`, consumed in `start`.
+/// Runtime knobs resolved from env in [`Plane::new`], consumed in [`Plane::start`].
 struct StartCfg {
-    dsn: String,
     retention: Duration,
     house_tick: Duration,
 }
 
-/// The durable-plane module. Owns schema `messaging` and installs the transport.
-pub struct Messaging {
-    /// The shared state, built in phase-1 `register` (needs the pool + origin).
-    inner: OnceLock<Arc<Inner>>,
-    /// The relay, constructed in `init`, started in `start`.
-    relay: Mutex<Option<Arc<Relay>>>,
-    /// Config resolved in `init`.
-    cfg: Mutex<Option<StartCfg>>,
-    /// Cancellation for the relay/listen/housekeep loops; flipped by `stop`.
-    stop_tx: Mutex<Option<watch::Sender<bool>>>,
-    /// Every background task, awaited on `stop`.
-    tasks: Mutex<Vec<JoinHandle<()>>>,
+/// The durable async-events plane of ONE process. Owned and driven by `core/app::run`
+/// (never by a module or a `cmd/*` main): constructed when the process has a DB,
+/// [`Plane::transport`] injected at `Context` construction, [`Plane::router`] merged
+/// into the process router, [`Plane::migrate`] before module migrations,
+/// [`Plane::start`] after module starts (the local-target snapshot must see every
+/// wiring-time `on_tx`), [`Plane::stop`] before any module stops (delivery halts
+/// first, so a stopping module never receives).
+pub struct Plane {
+    inner: Arc<Inner>,
+    pool: PgPool,
+    /// The DSN for the dedicated LISTEN connection — passed in by app (its
+    /// authoritative `cfg.database_url`), never re-read from env here: the plane
+    /// must LISTEN on the same DB the pool writes to.
+    listen_dsn: String,
+    cfg: StartCfg,
+    /// topic → remote sink URLs, from `EVENTS_SUBSCRIBERS` (unchanged name).
+    subscribers: HashMap<String, Vec<String>>,
+    /// Cancellation + background tasks, present between `start` and `stop`.
+    stop: Option<(watch::Sender<bool>, Vec<JoinHandle<()>>)>,
 }
 
-impl Default for Messaging {
-    fn default() -> Self {
-        Messaging::new()
-    }
-}
-
-impl Messaging {
-    pub fn new() -> Messaging {
-        Messaging {
-            inner: OnceLock::new(),
-            relay: Mutex::new(None),
-            cfg: Mutex::new(None),
-            stop_tx: Mutex::new(None),
-            tasks: Mutex::new(Vec::new()),
-        }
-    }
-
-    fn inner(&self) -> Arc<Inner> {
-        self.inner
-            .get()
-            .expect("messaging.register must run before init/start")
-            .clone()
-    }
-}
-
-#[async_trait::async_trait]
-impl Module for Messaging {
-    fn name(&self) -> &str {
-        "messaging"
-    }
-
-    fn requires(&self) -> Vec<String> {
-        Vec::new() // foundation-like: depends on nobody
-    }
-
-    fn caps(&self) -> Caps {
-        Caps::REGISTER | Caps::MIGRATE | Caps::START | Caps::STOP
-    }
-
-    /// Phase 1, BEFORE any `init`. It (a) allocates `local_handlers` so a consumer's
-    /// phase-2 `subscribe_tx` cannot touch an absent map, (b) installs the transport
-    /// so every consumer's `on_tx` sees a LIVE durable plane (BLOCKER-2), and (c)
-    /// provides the `"messaging"` registry marker so `validate_requires` can enforce
-    /// `requires("messaging")`. All three must precede any `init` — hence phase 1.
-    fn register(&self, ctx: &Context) -> anyhow::Result<()> {
-        let pool = ctx
-            .db()
-            .ok_or_else(|| anyhow::anyhow!("messaging requires a DB pool"))?
-            .clone();
-        let origin = env_or("MESSAGING_ORIGIN", DEFAULT_ORIGIN);
+impl Plane {
+    /// Reads `EVENTS_ORIGIN` (default `"monolith"`), `EVENTS_SUBSCRIBERS`,
+    /// `EVENTS_RETENTION` (default `168h`), `EVENTS_HOUSEKEEP_INTERVAL` (default
+    /// `1h`). No I/O — construction is wiring-safe; the first DB touch is
+    /// [`Plane::migrate`].
+    pub fn new(pool: PgPool, listen_dsn: String) -> anyhow::Result<Plane> {
+        let origin = env_or("EVENTS_ORIGIN", DEFAULT_ORIGIN);
         let inner = Arc::new(Inner {
-            pool,
+            pool: pool.clone(),
             origin,
             local_handlers: Mutex::new(HashMap::new()),
         });
-        self.inner
-            .set(inner.clone())
-            .map_err(|_| anyhow::anyhow!("messaging.register ran twice"))?;
-
-        // (b) BLOCKER-2: a live transport before any consumer's phase-2 on_tx.
-        ctx.bus().set_transport(inner.clone() as Arc<dyn Transport>);
-        // (c) the registry marker for validate_requires.
-        ctx.registry()
-            .provide::<dyn Service>("messaging", inner as Arc<dyn Service>);
-        Ok(())
+        let subscribers =
+            outbox::parse_subscribers(&std::env::var("EVENTS_SUBSCRIBERS").unwrap_or_default());
+        Ok(Plane {
+            inner,
+            pool,
+            listen_dsn,
+            cfg: StartCfg {
+                retention: env_duration("EVENTS_RETENTION", Duration::from_secs(168 * 3600)),
+                house_tick: env_duration("EVENTS_HOUSEKEEP_INTERVAL", Duration::from_secs(3600)),
+            },
+            subscribers,
+            stop: None,
+        })
     }
 
-    /// Creates schema `messaging`. Idempotent.
-    async fn migrate(&self, ctx: &Context) -> anyhow::Result<()> {
-        let pool = ctx
-            .db()
-            .ok_or_else(|| anyhow::anyhow!("messaging requires a DB pool"))?;
-        sqlx::raw_sql(SCHEMA_DDL).execute(pool).await?;
-        Ok(())
+    /// The [`bus::Transport`] to inject at `Context` construction
+    /// (`Bus::with_transport`) — live from birth, so any wiring-time `on_tx`
+    /// (module `init` or stub-factory `register`) records rather than panics.
+    pub fn transport(&self) -> Arc<dyn Transport> {
+        self.inner.clone()
     }
 
-    /// Only wires up — no I/O (#8). Resolves config, snapshots the local
-    /// subscriptions into relay targets, constructs the single relay, and mounts the
-    /// one inbound sink. The relay does NOT start here (that's `start`).
-    fn init(&self, ctx: &Context) -> anyhow::Result<()> {
-        let inner = self.inner();
-
-        *self.cfg.lock().unwrap() = Some(StartCfg {
-            dsn: env_or("DATABASE_URL", DEFAULT_DSN),
-            retention: env_duration("MESSAGING_RETENTION", Duration::from_secs(168 * 3600)),
-            house_tick: env_duration("MESSAGING_HOUSEKEEP_INTERVAL", Duration::from_secs(3600)),
-        });
-
-        let subs = outbox::parse_subscribers(&std::env::var("EVENTS_SUBSCRIBERS").unwrap_or_default());
-        let local_targets = inner.build_local_targets();
-        let relay = Arc::new(Relay::new(
-            inner.pool.clone(),
-            "messaging",
-            inner.origin.clone(),
-            subs,
-            local_targets,
-        ));
-        *self.relay.lock().unwrap() = Some(relay);
-
-        // One inbound sink for the whole durable plane. A peer relay POSTs a foreign
-        // event here (topic in X-Event-Topic, id in X-Event-Id); the handler dedups
-        // per subscriber and runs each local subscriber's effect in its own tx.
-        let sink = inner.clone();
-        let router = Router::new().route(
+    /// The one inbound sink for the whole durable plane, merged into the process
+    /// router by app. A peer relay POSTs a foreign event here (topic in
+    /// X-Event-Topic, id in X-Event-Id); the handler dedups per subscriber and runs
+    /// each local subscriber's effect in its own tx.
+    pub fn router(&self) -> Router {
+        let sink = self.inner.clone();
+        Router::new().route(
             "/events",
             post(move |headers: HeaderMap, body: Bytes| handle_inbound(sink.clone(), headers, body)),
-        );
-        ctx.mount(router);
+        )
+    }
+
+    /// Creates schema `asyncevents` (migrating a pre-rename `messaging` schema in
+    /// place — see [`SCHEMA_DDL`]). Idempotent. Runs BEFORE module migrations so a
+    /// module's first `emit_tx` always finds the outbox.
+    pub async fn migrate(&self) -> anyhow::Result<()> {
+        sqlx::raw_sql(SCHEMA_DDL).execute(&self.pool).await?;
         Ok(())
     }
 
-    /// Launches the relay, the LISTEN loop, and the housekeeping ticker. Roots each on
-    /// a shared `watch` cancel so a short start deadline can't kill them; `stop` flips
-    /// the watch and awaits every task.
-    async fn start(&self, _ctx: &Context) -> anyhow::Result<()> {
-        let inner = self.inner();
-
-        // Origin-collision guard (Step 5): a process that names remote sinks
+    /// Launches delivery: origin-collision guard, local-target snapshot (all module
+    /// inits AND stub registers have run — app calls this after `App::start`), then
+    /// the relay, the LISTEN loop, and the housekeeping ticker. Roots each on a
+    /// shared `watch` cancel; [`Plane::stop`] flips it and awaits every task.
+    pub async fn start(&mut self) -> anyhow::Result<()> {
+        // Origin-collision guard: a process that names remote sinks
         // (EVENTS_SUBSCRIBERS) is, by definition, one side of a split — but the relay
         // drains ONLY its own `origin`'s outbox rows, so a split process left on the
         // default `"monolith"` origin would share that origin with any OTHER default
         // process on the same DB and mis-drain (or double-drain) its rows. Fail loud at
         // start rather than silently swallow another process's events.
-        let subs = outbox::parse_subscribers(&std::env::var("EVENTS_SUBSCRIBERS").unwrap_or_default());
-        if origin_collision(&inner.origin, &subs) {
+        if origin_collision(&self.inner.origin, &self.subscribers) {
             anyhow::bail!(
-                "messaging: MESSAGING_ORIGIN is unset/\"{DEFAULT_ORIGIN}\" but EVENTS_SUBSCRIBERS \
+                "asyncevents: EVENTS_ORIGIN is unset/\"{DEFAULT_ORIGIN}\" but EVENTS_SUBSCRIBERS \
                  names {} remote sink topic(s) — a shared-DB origin collision would mis-drain \
-                 another process's outbox rows; set a distinct MESSAGING_ORIGIN per split process",
-                subs.len(),
+                 another process's outbox rows; set a distinct EVENTS_ORIGIN per split process",
+                self.subscribers.len(),
             );
         }
-        let relay = self
-            .relay
-            .lock()
-            .unwrap()
-            .clone()
-            .expect("messaging.init must run before start");
-        let cfg = self
-            .cfg
-            .lock()
-            .unwrap()
-            .take()
-            .expect("messaging.init must run before start");
+
+        let local_targets = self.inner.build_local_targets();
+        let relay = Arc::new(Relay::new(
+            self.pool.clone(),
+            "asyncevents",
+            self.inner.origin.clone(),
+            self.subscribers.clone(),
+            local_targets,
+        ));
 
         let (stop_tx, stop_rx) = watch::channel(false);
-
         let tasks = vec![
             relay.clone().spawn(stop_rx.clone()),
-            tokio::spawn(listen(cfg.dsn.clone(), relay.clone(), stop_rx.clone())),
+            tokio::spawn(listen(self.listen_dsn.clone(), relay, stop_rx.clone())),
             tokio::spawn(housekeep(
-                inner.pool.clone(),
-                cfg.retention,
-                cfg.house_tick,
+                self.pool.clone(),
+                self.cfg.retention,
+                self.cfg.house_tick,
                 stop_rx,
             )),
         ];
-
-        *self.stop_tx.lock().unwrap() = Some(stop_tx);
-        *self.tasks.lock().unwrap() = tasks;
+        self.stop = Some((stop_tx, tasks));
         Ok(())
     }
 
-    /// Halts delivery first (messaging is registered last, so reverse-order stop runs
-    /// it before any consumer tears down), then awaits the background loops. Awaiting
-    /// the relay task covers any in-flight local `consume` running inside a drain.
-    async fn stop(&self, _ctx: &Context) -> anyhow::Result<()> {
-        if let Some(tx) = self.stop_tx.lock().unwrap().take() {
-            let _ = tx.send(true);
+    /// Halts delivery FIRST (app calls this before `Bus::close`/`App::stop`, so no
+    /// module receives while tearing down), then awaits the background loops.
+    /// Awaiting the relay task covers any in-flight local `consume` running inside
+    /// a drain. Idempotent — a never-started plane is a no-op.
+    pub async fn stop(&mut self) {
+        if let Some((stop_tx, tasks)) = self.stop.take() {
+            let _ = stop_tx.send(true);
+            for t in tasks {
+                let _ = t.await;
+            }
         }
-        let tasks = std::mem::take(&mut *self.tasks.lock().unwrap());
-        for t in tasks {
-            let _ = t.await;
-        }
-        Ok(())
     }
+}
+
+/// Test helper: a bare durable transport over `(pool, origin)`, with no relay,
+/// LISTEN, or housekeeping behind it. Module integration tests pass this to
+/// `Context::with_db_and_transport` to get real outbox writes + `on_tx` recording
+/// without booting a whole [`Plane`].
+pub fn transport(pool: PgPool, origin: &str) -> Arc<dyn Transport> {
+    Arc::new(Inner {
+        pool,
+        origin: origin.to_string(),
+        local_handlers: Mutex::new(HashMap::new()),
+    })
 }
 
 /// The receiver side: a peer's relay POSTs a foreign event here. Delivers to EVERY
@@ -455,7 +411,7 @@ fn header(headers: &HeaderMap, name: &str) -> String {
         .to_string()
 }
 
-/// Keeps a dedicated `PgListener` on `messaging_outbox` and kicks the relay on every
+/// Keeps a dedicated `PgListener` on `asyncevents_outbox` and kicks the relay on every
 /// NOTIFY so a freshly-written row drains promptly. Never dies on a DB outage: each
 /// (re)connect backs off on failure. NOTIFY is best-effort — a dropped notification
 /// only delays a row until the relay's ticker floor.
@@ -476,7 +432,7 @@ async fn listen(dsn: String, relay: Arc<Relay>, mut stop: watch::Receiver<bool>)
                             res = listener.recv() => match res {
                                 Ok(_) => relay.kick(),
                                 Err(err) => {
-                                    tracing::error!(%err, "messaging listener wait failed");
+                                    tracing::error!(%err, "asyncevents listener wait failed");
                                     break; // reconnect via the outer loop
                                 }
                             }
@@ -484,11 +440,11 @@ async fn listen(dsn: String, relay: Arc<Relay>, mut stop: watch::Receiver<bool>)
                     }
                 }
                 Err(err) => {
-                    tracing::error!(%err, "messaging listener LISTEN failed");
+                    tracing::error!(%err, "asyncevents listener LISTEN failed");
                 }
             },
             Err(err) => {
-                tracing::error!(%err, "messaging listener connect failed");
+                tracing::error!(%err, "asyncevents listener connect failed");
             }
         }
         // Backoff, cancellable.
@@ -523,26 +479,26 @@ async fn housekeep(
 async fn prune_once(pool: &PgPool, retention: Duration) {
     let secs = retention.as_secs_f64();
     if let Err(err) = sqlx::query(
-        "DELETE FROM messaging.inbox WHERE ctid IN (\
-         SELECT ctid FROM messaging.inbox WHERE processed_at < now() - make_interval(secs => $1) LIMIT $2)",
+        "DELETE FROM asyncevents.inbox WHERE ctid IN (\
+         SELECT ctid FROM asyncevents.inbox WHERE processed_at < now() - make_interval(secs => $1) LIMIT $2)",
     )
     .bind(secs)
     .bind(HOUSEKEEP_BATCH)
     .execute(pool)
     .await
     {
-        tracing::error!(%err, "messaging inbox prune failed");
+        tracing::error!(%err, "asyncevents inbox prune failed");
     }
     if let Err(err) = sqlx::query(
-        "DELETE FROM messaging.outbox WHERE ctid IN (\
-         SELECT ctid FROM messaging.outbox WHERE sent_at IS NOT NULL AND sent_at < now() - make_interval(secs => $1) LIMIT $2)",
+        "DELETE FROM asyncevents.outbox WHERE ctid IN (\
+         SELECT ctid FROM asyncevents.outbox WHERE sent_at IS NOT NULL AND sent_at < now() - make_interval(secs => $1) LIMIT $2)",
     )
     .bind(secs)
     .bind(HOUSEKEEP_BATCH)
     .execute(pool)
     .await
     {
-        tracing::error!(%err, "messaging outbox prune failed");
+        tracing::error!(%err, "asyncevents outbox prune failed");
     }
 }
 
@@ -556,7 +512,7 @@ fn env_or(key: &str, def: &str) -> String {
 /// True when this process is a split participant (it names ≥1 remote HTTP sink) yet is
 /// still stamping the DEFAULT shared `"monolith"` origin — the exact condition under
 /// which two shared-DB processes collide on origin and one mis-drains the other's
-/// outbox rows. Pure so it is unit-testable without a DB (Step 5).
+/// outbox rows. Pure so it is unit-testable without a DB.
 fn origin_collision(origin: &str, subscribers: &HashMap<String, Vec<String>>) -> bool {
     origin == DEFAULT_ORIGIN && !subscribers.is_empty()
 }
@@ -593,7 +549,7 @@ fn parse_go_duration(s: &str) -> Option<Duration> {
 // Integration tests — live Postgres (the local DB is the test DB). Each guarded by
 // `test_pool`, which SKIPs (early-returns with a message) when Postgres is down so
 // `cargo test` never hard-fails on a machine without it. In-crate (not `tests/`) so
-// they can drive the private `Inner`/`consume` and the pre-`register` state directly.
+// they can drive the private `Inner`/`consume` and the pre-snapshot state directly.
 // ============================================================================
 #[cfg(test)]
 mod tests;

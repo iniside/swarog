@@ -322,12 +322,6 @@ impl Module for Scheduler {
         "scheduler"
     }
 
-    /// A durable emitter — needs the transport (`emit_tx`). Fails loud in any process
-    /// that hosts scheduler without messaging.
-    fn requires(&self) -> Vec<String> {
-        vec!["messaging".to_string()]
-    }
-
     fn caps(&self) -> Caps {
         Caps::REGISTER | Caps::MIGRATE | Caps::START | Caps::STOP
     }

@@ -67,7 +67,7 @@ async fn test_pool() -> Option<PgPool> {
     Some(pool)
 }
 
-/// Migrates BOTH the messaging (durable transport's outbox) and characters schemas
+/// Migrates BOTH the asyncevents (durable plane's outbox) and characters schemas
 /// EXACTLY ONCE per test binary. Concurrent `CREATE INDEX`/`CREATE OR REPLACE
 /// TRIGGER` across parallel tests take catalog locks that cycle into a Postgres
 /// deadlock, so the idempotent DDL must be serialized to a single run.
@@ -76,10 +76,13 @@ static SCHEMA_READY: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_ne
 async fn ensure_schema(pool: &PgPool) {
     SCHEMA_READY
         .get_or_init(|| async {
+            let dsn = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string());
+            asyncevents::Plane::new(pool.clone(), dsn)
+                .unwrap()
+                .migrate()
+                .await
+                .unwrap();
             let ctx = Context::with_db(pool.clone());
-            let m = messaging::Messaging::new();
-            m.register(&ctx).unwrap();
-            m.migrate(&ctx).await.unwrap();
             let c = Characters::new();
             c.register(&ctx).unwrap();
             c.migrate(&ctx).await.unwrap();
@@ -88,16 +91,13 @@ async fn ensure_schema(pool: &PgPool) {
 }
 
 /// Builds a real durable plane over the live pool: schemas are migrated once
-/// (`ensure_schema`), then messaging's phase-1 `register` installs the
-/// `bus::Transport` on THIS ctx's bus (needed before any `emit_tx`), and
-/// characters registers/inits against the same ctx. Returns the ctx (owns the bus
-/// + registry) and the wired service.
+/// (`ensure_schema`), then the asyncevents `bus::Transport` is injected at `Context`
+/// construction (needed before any `emit_tx`), and characters registers/inits against
+/// the same ctx. Returns the ctx (owns the bus + registry) and the wired service.
 async fn wired(pool: &PgPool) -> (Context, Arc<Service>) {
     ensure_schema(pool).await;
-    let ctx = Context::with_db(pool.clone());
-
-    let messaging = messaging::Messaging::new();
-    messaging.register(&ctx).unwrap();
+    let transport = asyncevents::transport(pool.clone(), "test-origin");
+    let ctx = Context::with_db_and_transport(pool.clone(), transport);
 
     let chars = Characters::new();
     chars.register(&ctx).unwrap();
@@ -122,7 +122,7 @@ async fn cleanup(pool: &PgPool, players: &[&str]) {
             .bind(pid)
             .execute(pool)
             .await;
-        let _ = sqlx::query("DELETE FROM messaging.outbox WHERE payload->>'player_id' = $1")
+        let _ = sqlx::query("DELETE FROM asyncevents.outbox WHERE payload->>'player_id' = $1")
             .bind(pid)
             .execute(pool)
             .await;
@@ -131,7 +131,7 @@ async fn cleanup(pool: &PgPool, players: &[&str]) {
 
 async fn outbox_count(pool: &PgPool, topic: &str, character_id: &str) -> i64 {
     let (n,): (i64,) = sqlx::query_as(
-        "SELECT count(*) FROM messaging.outbox WHERE topic = $1 AND payload->>'character_id' = $2",
+        "SELECT count(*) FROM asyncevents.outbox WHERE topic = $1 AND payload->>'character_id' = $2",
     )
     .bind(topic)
     .bind(character_id)
@@ -150,8 +150,8 @@ async fn char_count(pool: &PgPool, id: &str) -> i64 {
     n
 }
 
-/// THE ATOMIC EMIT PROOF: create writes BOTH a `characters.characters` row AND a
-/// `messaging.outbox` row (topic `character.created`) in one tx — proving
+/// THE ATOMIC EMIT PROOF: create writes BOTH a `characters.characters` row AND an
+/// `asyncevents.outbox` row (topic `character.created`) in one tx — proving
 /// `emit_tx` rode the domain transaction. Also proves the class default.
 #[tokio::test]
 async fn create_persists_character_and_outbox_event_atomically() {

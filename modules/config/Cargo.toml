@@ -28,7 +28,7 @@ async-trait = { workspace = true }
 
 [dev-dependencies]
 # The durable plane under test: config now publishes `config.changed` via `emit_tx`,
-# so the integration tests install messaging's `bus::Transport` and assert the outbox
-# row (messaging is a core crate, not an api/ crate — no boundary violation).
-messaging = { workspace = true }
+# so the integration tests install asyncevents' `bus::Transport` and assert the outbox
+# row (asyncevents is a core crate, not an api/ crate — no boundary violation).
+asyncevents = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }

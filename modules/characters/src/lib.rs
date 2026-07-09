@@ -358,10 +358,6 @@ impl Module for Characters {
         "characters"
     }
 
-    fn requires(&self) -> Vec<String> {
-        vec!["messaging".to_string()]
-    }
-
     fn caps(&self) -> Caps {
         Caps::REGISTER | Caps::MIGRATE
     }

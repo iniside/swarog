@@ -158,26 +158,21 @@ impl Transport for FakeTransport {
 fn no_transport_resolves_to_err() {
     // This is the exact resolution emit_tx performs before marshalling, so it
     // is emit_tx's NoTransport behaviour minus the un-fabricable PgConnection.
+    // Bus::new() is the plane-less constructor (a DB-less process); only
+    // Bus::with_transport carries a durable plane — there is no later installer.
     let bus = Bus::new();
     assert!(matches!(bus.require_transport(), Err(Error::NoTransport)));
 
-    bus.set_transport(Arc::new(FakeTransport::default()));
+    let bus = Bus::with_transport(Arc::new(FakeTransport::default()));
     assert!(bus.require_transport().is_ok());
 }
 
 #[test]
-#[should_panic(expected = "transport already set")]
-fn set_transport_panics_on_double_set() {
-    let bus = Bus::new();
-    bus.set_transport(Arc::new(FakeTransport::default()));
-    bus.set_transport(Arc::new(FakeTransport::default())); // loud, not silent
-}
-
-#[test]
-#[should_panic(expected = "no durable transport installed")]
+#[should_panic(expected = "no durable-events plane")]
 fn on_tx_without_transport_panics() {
     // BLOCKER-2: a dropped durable subscription must be loud, not a silent
-    // no-op that builds clean and never delivers.
+    // no-op that builds clean and never delivers. Bus::new() = a process with
+    // no durable-events plane (no DB), where a durable subscriber cannot run.
     let bus = Bus::new();
     let et = define::<Grant>("inventory.grant");
     bus.on_tx(&et, "inventory", |conn, g: Grant| {
@@ -191,8 +186,7 @@ fn on_tx_without_transport_panics() {
 #[test]
 fn on_tx_and_on_tx_raw_record_topic_and_subscriber() {
     let fake = Arc::new(FakeTransport::default());
-    let bus = Bus::new();
-    bus.set_transport(fake.clone());
+    let bus = Bus::with_transport(fake.clone());
     let et = define::<Grant>("inventory.grant");
 
     bus.on_tx(&et, "inventory", |conn, g: Grant| {
@@ -228,8 +222,8 @@ fn codec_is_the_t_to_bytes_boundary() {
     // emit_tx marshals with `encode`; on_tx's TypedAdapter unmarshals with
     // `decode`. This exercises that exact round-trip — the payload a durable
     // handler receives back is the T the producer emitted — without needing a
-    // PgConnection (which cannot be fabricated offline; a real DB round-trip
-    // lands in Step 6 with `messaging`).
+    // PgConnection (which cannot be fabricated offline; the real DB round-trip
+    // lives in `asyncevents`'s integration tests).
     let g = Grant {
         item: "starter-sword".into(),
         qty: 1,
@@ -245,7 +239,7 @@ fn typed_adapter_decodes_before_calling_the_handler() {
     // Drive a TypedAdapter's decode step directly (the half of `call` that does
     // NOT touch the connection), proving the handler is handed the deserialized
     // T. The conn-borrowing tail of `call` is covered by the compile-check
-    // below and by the Step-6 live round-trip.
+    // below and by the `asyncevents` live round-trip.
     let g = Grant {
         item: "potion".into(),
         qty: 3,

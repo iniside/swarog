@@ -10,10 +10,10 @@ members = [
     "core/edge",
     "core/outbox",
     "core/app",
-    # Process infrastructure (Go's modules/messaging + modules/remote): the durable
-    # transport plane and the topology-blind registry SWAP — not domains, so they live
-    # in core/ and the fortress rule applies to a clean modules/ (Step 4).
-    "core/messaging",
+    # Process infrastructure: the durable async-events plane (owned by core/app —
+    # DB ⇒ plane, not a module) and the topology-blind registry SWAP — not domains,
+    # so they live in core/ and the fortress rule applies to a clean modules/.
+    "core/asyncevents",
     "core/remote",
     # Cross-cutting HTTP infra (Go's metrics/): a PRIVATE Prometheus registry + the
     # /metrics scrape, mounted by core/app in every module-hosting process (Step 12).
@@ -167,9 +167,9 @@ opsapi = { path = "core/opsapi" }
 edge = { path = "core/edge" }
 outbox = { path = "core/outbox" }
 app = { path = "core/app" }
-# Process infrastructure moved into core/ (Step 4): messaging (durable transport plane)
-# and remote (the topology-blind registry SWAP; generic — imports no api/ crate).
-messaging = { path = "core/messaging" }
+# Process infrastructure in core/: asyncevents (the durable-events plane, owned by
+# app::run) and remote (the topology-blind registry SWAP; generic — imports no api/ crate).
+asyncevents = { path = "core/asyncevents" }
 remote = { path = "core/remote" }
 metrics = { path = "core/metrics" }
 httpmw = { path = "core/httpmw" }

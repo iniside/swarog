@@ -33,9 +33,9 @@ configevents = { workspace = true }
 matchevents = { workspace = true }
 schedulerevents = { workspace = true }
 
-# The SUBSCRIBE sites — the full monolith module set (minus messaging, whose durable
-# transport this tool replaces with a recording one). Instantiating and building them
-# runs every real `on`/`on_tx`/`on_tx_raw` call.
+# The SUBSCRIBE sites — the full monolith module set. The durable-events plane is not a
+# module here; this tool injects its own recording plane transport. Instantiating and
+# building them runs every real `on`/`on_tx`/`on_tx_raw` call.
 config = { workspace = true }
 characters = { workspace = true }
 inventory = { workspace = true }

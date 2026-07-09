@@ -359,12 +359,6 @@ impl Module for Accounts {
         "accounts"
     }
 
-    fn requires(&self) -> Vec<String> {
-        // Registration publishes player.registered on the DURABLE plane (emit_tx),
-        // so any process hosting accounts needs the messaging transport.
-        vec!["messaging".to_string()]
-    }
-
     fn caps(&self) -> Caps {
         Caps::REGISTER | Caps::MIGRATE
     }

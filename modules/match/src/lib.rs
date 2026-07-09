@@ -153,10 +153,11 @@ impl Module for MatchModule {
         "match"
     }
 
-    /// `rating` is a SYNC dependency (the pre-emit MMR read); `messaging` provides the
-    /// durable transport for `emit_tx`. Both are resolved downward (registry / bus).
+    /// `rating` is a SYNC dependency (the pre-emit MMR read), resolved downward via
+    /// the registry. The durable plane (`emit_tx`) is app-owned process
+    /// infrastructure, not a declared dependency.
     fn requires(&self) -> Vec<String> {
-        vec!["rating".to_string(), "messaging".to_string()]
+        vec!["rating".to_string()]
     }
 
     fn caps(&self) -> Caps {

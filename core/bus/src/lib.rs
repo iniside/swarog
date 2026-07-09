@@ -14,16 +14,18 @@
 //! after a `publish` may not see its effect yet.
 //!
 //! ## Durable transport seam (the [`Transport`] plane)
-//! Alongside the async in-process core, the bus carries an optional, nil-able
+//! Alongside the async in-process core, the bus carries an optional
 //! [`Transport`] for the *durable* plane ([`Bus::emit_tx`] / [`Bus::on_tx`] /
-//! [`Bus::on_tx_raw`], [`Bus::set_transport`], [`Error::NoTransport`]). The
-//! transport itself is implemented by `core/messaging` (outbox log + inbox
-//! dedup + relay) and installed via [`Bus::set_transport`] — so the dependency
+//! [`Bus::on_tx_raw`], [`Error::NoTransport`]). The transport itself is
+//! implemented by `core/asyncevents` (outbox log + inbox dedup + relay) and
+//! injected at construction by the composition root (`core/app` builds
+//! [`Bus::with_transport`] iff the process has a DB) — so the dependency
 //! points module → leaf and `bus` stays free of any module import (hard
 //! constraint #1). The [`Transport`] deals ONLY in topic strings + bytes; the
 //! generic payload `T` collapses to JSON exactly at the emit_tx/on_tx boundary,
 //! so the transport never sees a type parameter. Nothing about the async core
-//! above changes because this seam exists — an installed transport is opt-in.
+//! above changes because this seam exists — a transport is opt-in, and
+//! immutable once the bus exists (no runtime installer, no double-set class).
 
 use std::any::Any;
 use std::collections::HashMap;
@@ -61,15 +63,30 @@ struct Inner {
 #[derive(Default)]
 pub struct Bus {
     inner: Mutex<Inner>,
-    /// The durable-plane hook — `None` until `core/messaging` installs it in
-    /// its phase-1 `register` (see [`Bus::set_transport`]). Kept in its own lock
-    /// so installing/reading it never contends with the async `subs`/`tasks`.
-    transport: Mutex<Option<Arc<dyn Transport>>>,
+    /// The durable-plane hook — fixed at construction ([`Bus::with_transport`],
+    /// called by the composition root when the process hosts a durable-events
+    /// plane) and `None` for a plane-less bus ([`Bus::new`]). Immutable, so no
+    /// lock and no double-install class.
+    transport: Option<Arc<dyn Transport>>,
 }
 
 impl Bus {
+    /// A bus with NO durable plane (in-process only). [`Bus::emit_tx`] returns
+    /// [`Error::NoTransport`] and [`Bus::on_tx`]/[`Bus::on_tx_raw`] panic — the
+    /// right shape for unit tests and for a DB-less process.
     pub fn new() -> Self {
         Bus::default()
+    }
+
+    /// A bus whose durable plane is live from birth. The composition root
+    /// (`core/app`) builds this iff the process has a DB, passing
+    /// `core/asyncevents`'s transport — so every module's `on_tx` (a later
+    /// wiring phase) always finds it installed.
+    pub fn with_transport(t: Arc<dyn Transport>) -> Self {
+        Bus {
+            transport: Some(t),
+            ..Bus::default()
+        }
     }
 
     /// Subscribes an untyped handler to a topic. Spawns the subscriber's task and
@@ -160,28 +177,11 @@ impl Bus {
 
     // ---- Durable plane -----------------------------------------------------
 
-    /// Installs the durable [`Transport`]. **Panics on a double-set**, so a
-    /// second installer is a loud programmer error rather than a silent override
-    /// (mirroring Go's `SetTransport` and `registry::provide`'s duplicate panic).
-    /// `core/messaging` calls this exactly once, in its phase-1 `register`.
-    pub fn set_transport(&self, t: Arc<dyn Transport>) {
-        let mut slot = self.transport.lock().unwrap();
-        if slot.is_some() {
-            panic!("bus: transport already set");
-        }
-        *slot = Some(t);
-    }
-
     /// The installed transport, or [`Error::NoTransport`] if none — the exact
     /// resolution [`Bus::emit_tx`] performs before it will marshal anything, so a
-    /// durable event is never silently dropped. Cloned out of the lock so callers
-    /// never hold it across an `.await`.
+    /// durable event is never silently dropped.
     fn require_transport(&self) -> Result<Arc<dyn Transport>, Error> {
-        self.transport
-            .lock()
-            .unwrap()
-            .clone()
-            .ok_or(Error::NoTransport)
+        self.transport.clone().ok_or(Error::NoTransport)
     }
 
     /// Publishes a typed event on the *durable* plane, inside the caller's
@@ -213,10 +213,11 @@ impl Bus {
     /// **BLOCKER-2 — panics if no transport is installed.** Go's `OnTx` silently
     /// no-ops here; this sketch refuses to, because a dropped durable subscription
     /// that builds clean and never delivers is exactly the trap the split proof
-    /// must not hide. The invariant that makes the panic safe: `core/messaging`
-    /// installs the transport in its phase-1 `register`, so any consumer's phase-2
-    /// `on_tx` (a later phase) always finds it. A process that legitimately hosts
-    /// no durable plane simply must not call `on_tx`.
+    /// must not hide. The invariant that makes the panic safe: the transport is a
+    /// constructor argument ([`Bus::with_transport`], built by `core/app` iff the
+    /// process has a DB), so it exists before any module wiring runs. A bus
+    /// without one belongs to a process that hosts no durable-events plane (no
+    /// DB) — a durable subscriber simply cannot run there.
     ///
     /// The handler is a closure `(&mut PgConnection, T) -> BoxFuture<Result<()>>`.
     /// It is stored as a NAMED [`TxHandler`] trait object (not a bare `Fn`),
@@ -244,12 +245,11 @@ impl Bus {
     /// audit ledger). The primitive [`Bus::on_tx`] builds on. **Panics if no
     /// transport is installed** — same rationale as [`Bus::on_tx`].
     pub fn on_tx_raw(&self, topic: &str, subscriber: &str, handler: Arc<dyn TxHandler>) {
-        let transport = self.transport.lock().unwrap().clone();
-        match transport {
+        match &self.transport {
             Some(t) => t.subscribe_tx(topic, subscriber, handler),
             None => panic!(
-                "bus: on_tx({topic:?}) but no durable transport installed — messaging must \
-                 set_transport in its phase-1 register before any consumer's phase-2 on_tx"
+                "bus: on_tx({topic:?}) but this process hosts no durable-events plane (no DB) \
+                 — a durable subscriber cannot run here"
             ),
         }
     }
@@ -290,8 +290,8 @@ impl Error {
     }
 }
 
-/// The durable plane's hook — a nil-able seam this leaf declares but never
-/// implements (`core/messaging` does, installing it via [`Bus::set_transport`]).
+/// The durable plane's hook — a seam this leaf declares but never implements
+/// (`core/asyncevents` does; `core/app` injects it via [`Bus::with_transport`]).
 /// It deals ONLY in topic strings + `[u8]`: the generic payload `T` is already
 /// collapsed to bytes at the [`Bus::emit_tx`]/[`Bus::on_tx`] boundary, so the
 /// transport never sees a type parameter (mirrors Go's `bus.Transport`).

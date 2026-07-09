@@ -117,13 +117,6 @@ impl Module for Rating {
         "rating"
     }
 
-    /// `messaging` provides the durable inbox the `match.finished` `on_tx` claims events
-    /// on. rating owns no schema, so there is no `Migrate` — but it still needs the
-    /// messaging plane (and thus a DB pool) in every process that hosts it.
-    fn requires(&self) -> Vec<String> {
-        vec!["messaging".to_string()]
-    }
-
     /// No `MIGRATE`: rating persists nothing (in-memory by design). Only `REGISTER`
     /// (it Provides `MmrReader` in phase 1); `init` wires the subscription + edge face.
     fn caps(&self) -> Caps {

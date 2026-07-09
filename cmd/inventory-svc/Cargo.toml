@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
-# Process B of the split: hosts inventory + messaging and fills inventory's `characters`
+# Process B of the split: hosts inventory and fills inventory's `characters`
 # AND `config` dependencies with `remote::Stub`s that dial A / config-svc over the QUIC
 # edge. Since Step 5 config lives in its OWN process (config-svc): B holds a `config` stub
 # whose `configrpc` factory swaps in a snapshot-backed `CachedConfig`. It hosts NO gateway
@@ -23,7 +23,6 @@ lifecycle = { workspace = true }
 metrics = { workspace = true }
 edge = { workspace = true }
 inventory = { workspace = true }
-messaging = { workspace = true }
 remote = { workspace = true }
 # The characters + config glue: this cmd/ root passes each provider's
 # `remote_factories()` into the generic `remote::Stub` (Steps 4–5). rule 5 sanctions

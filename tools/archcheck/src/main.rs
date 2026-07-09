@@ -12,8 +12,9 @@
 //!   4. **`<name>api` transport-free** — a contract crate never depends on a raw
 //!      transport crate nor on `edge`/`remote`; transport belongs only in `<name>rpc`.
 //!   5. **every main lists `metrics`** — every `cmd/*-svc` and the monolith `cmd/server`
-//!      depends on `metrics` (does NOT require `messaging`; admin-svc/gateway-svc
-//!      intentionally omit it).
+//!      depends on `metrics`. (There is no durable-events plane MODULE — the plane is
+//!      app-owned infrastructure, not a `cmd`-listed module — so nothing analogous is
+//!      required here.)
 //!
 //! "Own" is defined by path prefix: `modules/<name>/` owns `api/<name>/rpc/`. It also
 //! greps `modules/` for a resurrected `Option<… edge::Server>` — the topology-leak
@@ -127,7 +128,7 @@ fn main() {
         };
         for dep in pkg["dependencies"].as_array().into_iter().flatten() {
             // Only normal/build deps carry the runtime import graph; a dev-dependency
-            // (tests) may legitimately reach a core crate like messaging.
+            // (tests) may legitimately reach a core crate like asyncevents.
             if dep["kind"].as_str() == Some("dev") {
                 continue;
             }
@@ -207,8 +208,9 @@ fn main() {
     }
 
     // --- 6: every cmd/*-svc + the monolith main lists `metrics` ---------------
-    // CLAUDE.md: "every main lists metrics::Metrics::new() for GET /metrics." Does NOT
-    // require `messaging` — admin-svc and gateway-svc intentionally omit it (fact 7).
+    // CLAUDE.md: "every main lists metrics::Metrics::new() for GET /metrics." The
+    // durable-events plane is app-owned infrastructure, not a listed module, so there is
+    // no analogous per-main dependency to enforce here.
     for pkg in packages {
         let manifest = pkg["manifest_path"].as_str().unwrap_or_default();
         let Kind::Cmd(cmd) = classify(manifest) else {

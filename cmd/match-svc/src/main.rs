@@ -1,5 +1,5 @@
-//! `match-svc` — the match fortress process (Step 10). It hosts match + messaging and
-//! stands up one shared QUIC edge server; `match` contributes its `match.report` face to
+//! `match-svc` — the match fortress process (Step 10). It hosts match and stands up
+//! one shared QUIC edge server; `match` contributes its `match.report` face to
 //! `edge::EDGE_SLOT` (topology-blind), and `app::run` installs it so gateway-svc can
 //! dispatch `POST /match/report` Remote to this process. match fills
 //! its `rating` dependency with a `remote::Stub`: the stub `provide`s the edge-backed
@@ -35,13 +35,11 @@ async fn main() -> anyhow::Result<()> {
     // `match.report` face during `init`, `app::run` applies + `listen`s it.
     let edge_server = Arc::new(Mutex::new(edge::Server::new()));
 
-    // messaging LAST for Stop ordering (reverse) — the relay halts delivery before match
-    // tears down. The `rating` stub's `register` provides the remote MmrReader before
-    // match's `init` requires it (two-phase Build).
+    // The `rating` stub's `register` provides the remote MmrReader before match's `init`
+    // requires it (two-phase Build).
     let mods: Vec<Box<dyn Module>> = vec![
         Box::new(metrics::Metrics::new()), // core-infra: mounts GET /metrics + contributes the record layer
         Box::new(match_module::MatchModule::new()),
-        Box::new(messaging::Messaging::new()),
         // `rating` lives in rating-svc: this stub swaps in the edge-backed MmrReader so
         // match's sync pre-emit read dials rating-svc over mTLS (lazy dial).
         Box::new(remote::Stub::new(

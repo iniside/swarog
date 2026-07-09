@@ -16,7 +16,8 @@
 //!   1. **Match** the request (verb + path, with `{wild}` path segments) against the
 //!      `Operation`s modules contributed to `opsapi::SLOT`. No match → 404, and the
 //!      fallback is invisible: only otherwise-unmatched routes reach it, so it never
-//!      shadows `/healthz`/`/readyz` (added by `app`) or `POST /events` (messaging).
+//!      shadows `/healthz`/`/readyz` (added by `app`) or `POST /events` (the
+//!      durable-events plane, mounted by `app::run` when the process has a DB).
 //!   2. **Auth-once:** for an `AuthReq::Player` op it verifies the `Authorization:
 //!      Bearer <token>` header via the [`SessionVerifier`] and threads the resolved
 //!      player_id as an `opsapi::Identity`. This is the SINGLE trust boundary —
@@ -198,7 +199,8 @@ impl FrontDoor {
 
     /// Builds the axum router carrying ONLY the gateway's fallback. `Router::merge`
     /// (used by `Context::mount`) tolerates exactly one fallback across all merged
-    /// routers; messaging and `app` add plain routes, so this is the sole fallback.
+    /// routers; the durable-events plane and `app` add plain routes, so this is the
+    /// sole fallback.
     pub fn router(self: &Arc<Self>) -> Router {
         let front = self.clone();
         // `Option<ConnectInfo>`: the real server wires connection info

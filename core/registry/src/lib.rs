@@ -112,12 +112,14 @@ impl Registry {
     /// panic still records the attempted require. Takes `&self` (interior
     /// mutability), so a tool installs it via `ctx.registry().set_require_observer(…)`
     /// without any `Context` change. This is a **tool-only** introspection hook
-    /// (e.g. `requirecheck`), the honest analogue of [`Bus::set_transport`]; the
-    /// closure sees only a `&str` key, keeping this leaf foundation-pure.
+    /// (e.g. `requirecheck`); the closure sees only a `&str` key, keeping this leaf
+    /// foundation-pure.
     ///
-    /// Last-write-wins: unlike `Bus::set_transport` there is no double-install
-    /// invariant here (a tool may re-install freely), so a re-set silently replaces
-    /// the previous observer rather than panicking.
+    /// Last-write-wins: there is no double-install invariant here (a tool may
+    /// re-install freely), so a re-set silently replaces the previous observer
+    /// rather than panicking. (Contrast the bus's durable transport, which is a
+    /// constructor argument — `Bus::with_transport` — precisely so no runtime
+    /// installer exists; a debugging hook can afford to be looser.)
     ///
     /// **INVARIANT — the observer closure MUST NOT call back into the registry**
     /// (`require`/`try_require`/`provide`): [`std::sync::Mutex`] is non-reentrant, so
@@ -126,8 +128,6 @@ impl Registry {
     /// cloned out and both locks dropped first), but calling back in would still
     /// re-lock `services` recursively via the outer `require` frame — so keep the
     /// closure self-contained (touch only its own state).
-    ///
-    /// [`Bus::set_transport`]: ../bus/struct.Bus.html#method.set_transport
     pub fn set_require_observer(&self, f: RequireObserver) {
         *self.require_observer.lock().unwrap() = Some(f);
     }

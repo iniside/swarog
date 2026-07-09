@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
-# The accounts fortress process (Step 6): hosts accounts + messaging and stands up one
+# The accounts fortress process (Step 6): hosts accounts and stands up one
 # shared QUIC edge server. `accounts` contributes its wire-only `accounts.verifySession`
 # face + the auth op faces to `edge::EDGE_SLOT` (topology-blind); `app::run` installs them
 # here so every front gateway's session verifier (an `accountsrpc` Stub client) resolves
@@ -22,7 +22,6 @@ lifecycle = { workspace = true }
 metrics = { workspace = true }
 edge = { workspace = true }
 accounts = { workspace = true }
-messaging = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 anyhow = { workspace = true }
 tracing = { workspace = true }

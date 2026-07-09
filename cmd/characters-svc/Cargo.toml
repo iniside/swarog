@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
-# Process A of the split: hosts ONLY characters + messaging, and stands up a single
+# Process A of the split: hosts ONLY characters, and stands up a single
 # shared QUIC edge server so a peer's inventory can resolve `characters.ownerOf` over the
 # mutually-authenticated edge. It hosts NO gateway (FrontDoor) — the single public front
 # door lives only in gateway-svc + the monolith, so no accounts stub is needed either. It
@@ -20,7 +20,6 @@ edge = { workspace = true }
 lifecycle = { workspace = true }
 metrics = { workspace = true }
 characters = { workspace = true }
-messaging = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync"] }
 anyhow = { workspace = true }
 tracing = { workspace = true }
