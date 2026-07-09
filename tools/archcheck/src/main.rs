@@ -9,6 +9,11 @@
 //!      may depend on the `gateway` crate (the FrontDoor). A domain `*-svc` never hosts
 //!      the front door; it serves its ops ONLY over the internal mTLS edge, and
 //!      gateway-svc dispatches to it Remote.
+//!   4. **`<name>api` transport-free** — a contract crate never depends on a raw
+//!      transport crate nor on `edge`/`remote`; transport belongs only in `<name>rpc`.
+//!   5. **every main lists `metrics`** — every `cmd/*-svc` and the monolith `cmd/server`
+//!      depends on `metrics` (does NOT require `messaging`; admin-svc/gateway-svc
+//!      intentionally omit it).
 //!
 //! "Own" is defined by path prefix: `modules/<name>/` owns `api/<name>/rpc/`. It also
 //! greps `modules/` for a resurrected `Option<… edge::Server>` — the topology-leak
@@ -31,6 +36,14 @@ const GATEWAY_CRATE: &str = "gateway";
 /// and the monolith. Every other `cmd/*-svc` serves ops only over the internal edge.
 const FRONT_DOOR_HOSTS: [&str; 2] = ["gateway-svc", "server"];
 
+/// Crate names a `<name>api` contract crate must never depend on (non-dev). The
+/// workspace routes transport through the `edge`/`remote` core crates — those are the
+/// realistic regression vector for a contract crate; the raw transport crates are
+/// forbidden too as future-proofing (fact 6).
+const FORBIDDEN_API_DEPS: &[&str] = &[
+    "tokio", "quinn", "axum", "hyper", "sqlx", "tonic", "reqwest", "tower", "edge", "remote",
+];
+
 /// A workspace package's classification, derived from its manifest path.
 #[derive(Debug, Clone)]
 enum Kind {
@@ -38,6 +51,8 @@ enum Kind {
     Module(String),
     /// `api/<name>/rpc/` — a domain's generated transport glue.
     Rpc(String),
+    /// `api/<name>/api/` — a domain's pure `#[rpc]` trait contract crate (transport-free).
+    Api(String),
     /// `cmd/<name>/` — a composition-root binary (its dir name, e.g. `characters-svc`).
     Cmd(String),
     /// Anything else (foundations, contract crates, tools).
@@ -55,11 +70,19 @@ fn classify(manifest_path: &str) -> Kind {
         // cmd/<name>/Cargo.toml
         return Kind::Cmd(name);
     }
-    if let Some(rest) = p.split("/api/").nth(1) {
+    if let Some((_, rest)) = p.split_once("/api/") {
+        // Note: split_once (not `.split("/api/").nth(1)`) is required — the `api`
+        // sub-dir itself is literally named "api" (api/<name>/api/Cargo.toml), so a
+        // full `.split()` would see TWO "/api/" occurrences and `nth(1)` would land on
+        // the wrong segment. split_once always takes the tail after the FIRST match.
         // api/<name>/rpc/Cargo.toml  ->  rest = "<name>/rpc/Cargo.toml"
         let parts: Vec<&str> = rest.split('/').collect();
         if parts.len() >= 2 && parts[1] == "rpc" {
             return Kind::Rpc(parts[0].to_string());
+        }
+        // api/<name>/api/Cargo.toml  ->  rest = "<name>/api/Cargo.toml"
+        if parts.len() >= 2 && parts[1] == "api" {
+            return Kind::Api(parts[0].to_string());
         }
     }
     Kind::Other
@@ -154,8 +177,47 @@ fn main() {
         violations.push(line);
     }
 
+    // --- 5: <name>api contract crates stay transport-free ---------------------
+    // The contract surface (`<name>api`) must be importable by any module without
+    // dragging in a transport dependency; only `<name>rpc` (its own module's generated
+    // glue) is allowed to touch `edge`/`remote`/raw transport crates.
+    for pkg in packages {
+        let manifest = pkg["manifest_path"].as_str().unwrap_or_default();
+        let Kind::Api(domain) = classify(manifest) else {
+            continue; // only <name>api contract crates are constrained here
+        };
+        let deps = pkg["dependencies"].as_array().cloned().unwrap_or_default();
+        for dep_name in forbidden_api_deps(&deps) {
+            violations.push(format!(
+                "api/{domain}/api depends on `{dep_name}` — a <name>api contract crate must \
+                 stay transport-free (pure traits, importable by any module); transport \
+                 belongs in <name>rpc, never <name>api"
+            ));
+        }
+    }
+
+    // --- 6: every cmd/*-svc + the monolith main lists `metrics` ---------------
+    // CLAUDE.md: "every main lists metrics::Metrics::new() for GET /metrics." Does NOT
+    // require `messaging` — admin-svc and gateway-svc intentionally omit it (fact 7).
+    for pkg in packages {
+        let manifest = pkg["manifest_path"].as_str().unwrap_or_default();
+        let Kind::Cmd(cmd) = classify(manifest) else {
+            continue; // only cmd/* binaries are constrained here
+        };
+        if !cmd_is_a_main(&cmd) {
+            continue; // not a process main (e.g. a helper cmd/ crate, if any)
+        }
+        let deps = pkg["dependencies"].as_array().cloned().unwrap_or_default();
+        if !has_non_dev_dep(&deps, "metrics") {
+            violations.push(format!(
+                "cmd/{cmd} does not depend on `metrics` — every main lists \
+                 metrics::Metrics::new() for GET /metrics"
+            ));
+        }
+    }
+
     if violations.is_empty() {
-        println!("archcheck: OK — no module→module / module→foreign-rpc edges, single front door (only gateway-svc + server host `gateway`), no Option<edge::Server> in modules/");
+        println!("archcheck: OK — no module→module / module→foreign-rpc edges, single front door (only gateway-svc + server host `gateway`), no Option<edge::Server> in modules/, <name>api crates stay transport-free, every cmd/*-svc + server lists `metrics`");
         return;
     }
     eprintln!("archcheck: FAIL — {} violation(s):", violations.len());
@@ -178,6 +240,33 @@ fn workspace_root(meta: serde_json::Value) -> std::path::PathBuf {
 /// used; fall back to `cargo` on `PATH`.
 fn env_cargo() -> String {
     std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string())
+}
+
+/// True if a `cmd/<dir>` crate is a process main subject to the "every main lists
+/// `metrics`" rule: every `*-svc` plus the monolith `server` (not a helper `cmd/` crate,
+/// if one is ever added).
+fn cmd_is_a_main(dir: &str) -> bool {
+    dir.ends_with("-svc") || dir == "server"
+}
+
+/// Returns whether `deps` (a `cargo metadata` package's `"dependencies"` array) contains
+/// a NON-dev dependency named `name`. A dev-dependency (tests) is not part of the
+/// runtime import graph.
+fn has_non_dev_dep(deps: &[serde_json::Value], name: &str) -> bool {
+    deps.iter()
+        .any(|dep| dep["kind"].as_str() != Some("dev") && dep["name"].as_str() == Some(name))
+}
+
+/// Returns the names of every NON-dev dependency in `deps` that appears in
+/// `FORBIDDEN_API_DEPS` — the transport crates a `<name>api` contract crate must never
+/// import.
+fn forbidden_api_deps(deps: &[serde_json::Value]) -> Vec<String> {
+    deps.iter()
+        .filter(|dep| dep["kind"].as_str() != Some("dev"))
+        .filter_map(|dep| dep["name"].as_str())
+        .filter(|name| FORBIDDEN_API_DEPS.contains(name))
+        .map(String::from)
+        .collect()
 }
 
 /// Walks `dir` for `.rs` files and returns a message per NON-comment line that pairs
