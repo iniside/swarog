@@ -230,100 +230,101 @@ sleep 1
 note "minting shared edge dev CA -> $CA_CERT"
 "$BIN_DIR/edgeca$EXE" --cert "$CA_CERT" --key "$CA_KEY"
 
-# --- start D (accounts-svc): gateway + accounts + messaging, edge :9003 -------
+# --- start D (accounts-svc): gateway + accounts, edge :9003 ------------------
 # D owns the accounts schema and serves accounts.verifySession + the auth op faces
 # on its mTLS edge; EVERY other process's gateway verifies bearers against it.
 # player.registered rides D's outbox and (Step 8) is POSTed durably to audit-svc (F).
 note "starting D (accounts-svc) on :$D_PORT, edge :$D_EDGE_PORT ..."
 env PORT=":$D_PORT" DATABASE_URL="$DATABASE_URL" EDGE_ADDR=":$D_EDGE_PORT" \
     EDGE_CA_CERT="$CA_CERT" EDGE_CA_KEY="$CA_KEY" \
-    MESSAGING_ORIGIN=accounts-svc \
+    EVENTS_ORIGIN=accounts-svc \
     EVENTS_SUBSCRIBERS="player.registered=http://localhost:$F_PORT/events" \
     "$BIN_DIR/accounts-svc$EXE" >"$RUN_DIR/accounts.out.log" 2>"$RUN_DIR/accounts.err.log" &
 D_PID=$!
 wait_healthy "$D_PORT" "D (accounts-svc)" || { echo "D failed to start"; exit 1; }
 
-# --- start F (audit-svc): audit + messaging, edge :9004 ----------------------
+# --- start F (audit-svc): audit, edge :9004 ----------------------------------
 # F owns the audit schema (append-only ledger). It PRODUCES nothing (pure sink, no
 # EVENTS_SUBSCRIBERS): every producer peer's relay POSTs to F's /events, and audit's
 # on_tx_raw records each on the handed inbox-dedup tx. It serves admin.adminData on its
 # mTLS edge so admin-svc (E) fans its "Audit Log" page out over QUIC. Distinct
-# MESSAGING_ORIGIN for its own outbox identity (no collision — it names no sinks).
+# EVENTS_ORIGIN for its own outbox identity (no collision — it names no sinks).
 note "starting F (audit-svc) on :$F_PORT, edge :$F_EDGE_PORT ..."
 env PORT=":$F_PORT" DATABASE_URL="$DATABASE_URL" EDGE_ADDR=":$F_EDGE_PORT" \
     EDGE_CA_CERT="$CA_CERT" EDGE_CA_KEY="$CA_KEY" \
-    MESSAGING_ORIGIN=audit-svc \
+    EVENTS_ORIGIN=audit-svc \
     "$BIN_DIR/audit-svc$EXE" >"$RUN_DIR/audit.out.log" 2>"$RUN_DIR/audit.err.log" &
 F_PID=$!
 wait_healthy "$F_PORT" "F (audit-svc)" || { echo "F failed to start"; exit 1; }
 
-# --- start H (scheduler-svc): scheduler + messaging, edge :9005 --------------
+# --- start H (scheduler-svc): scheduler, edge :9005 --------------------------
 # H owns the scheduler schema (a catalogue of named schedules) and is a DURABLE
 # PRODUCER: its 1s loop fires scheduler.fired for every due schedule (race-safe via a
 # per-schedule pg_try_advisory_lock), and its relay POSTs scheduler.fired to audit-svc
 # (F), where audit's prune reacts. It serves admin.adminData ("Schedules") on its mTLS
-# edge so admin-svc (E) fans it out over QUIC. Distinct MESSAGING_ORIGIN for its own
+# edge so admin-svc (E) fans it out over QUIC. Distinct EVENTS_ORIGIN for its own
 # outbox identity (names one remote sink, so a default origin would be rejected).
 note "starting H (scheduler-svc) on :$H_PORT, edge :$H_EDGE_PORT ..."
 env PORT=":$H_PORT" DATABASE_URL="$DATABASE_URL" EDGE_ADDR=":$H_EDGE_PORT" \
     EDGE_CA_CERT="$CA_CERT" EDGE_CA_KEY="$CA_KEY" \
-    MESSAGING_ORIGIN=scheduler-svc \
+    EVENTS_ORIGIN=scheduler-svc \
     EVENTS_SUBSCRIBERS="scheduler.fired=http://localhost:$F_PORT/events" \
     "$BIN_DIR/scheduler-svc$EXE" >"$RUN_DIR/scheduler.out.log" 2>"$RUN_DIR/scheduler.err.log" &
 H_PID=$!
 wait_healthy "$H_PORT" "H (scheduler-svc)" || { echo "H failed to start"; exit 1; }
 
-# --- start J (rating-svc): rating + messaging, edge :9007 --------------------
+# --- start J (rating-svc): rating, edge :9007 --------------------------------
 # J provides `rating.mmr` on its mTLS edge (match-svc reads it sync before recording a
 # result) and REACTS to match.finished (+15/-15) on the durable plane. In-memory MMR
-# (no schema) but it OWNS an inbox, so it needs a DB pool + messaging. Pure sink for
-# match.finished (no EVENTS_SUBSCRIBERS). Distinct MESSAGING_ORIGIN for its own inbox.
+# (no schema) but it OWNS an inbox, so it needs a DB pool (the durable-events plane is
+# app-owned, not a module dependency). Pure sink for match.finished (no
+# EVENTS_SUBSCRIBERS). Distinct EVENTS_ORIGIN for its own inbox.
 note "starting J (rating-svc) on :$J_PORT, edge :$J_EDGE_PORT ..."
 env PORT=":$J_PORT" DATABASE_URL="$DATABASE_URL" EDGE_ADDR=":$J_EDGE_PORT" \
     EDGE_CA_CERT="$CA_CERT" EDGE_CA_KEY="$CA_KEY" \
-    MESSAGING_ORIGIN=rating-svc \
+    EVENTS_ORIGIN=rating-svc \
     "$BIN_DIR/rating-svc$EXE" >"$RUN_DIR/rating.out.log" 2>"$RUN_DIR/rating.err.log" &
 J_PID=$!
 wait_healthy "$J_PORT" "J (rating-svc)" || { echo "J failed to start"; exit 1; }
 
-# --- start K (leaderboard-svc): gateway + leaderboard + messaging, edge :9008 -
+# --- start K (leaderboard-svc): gateway + leaderboard, edge :9008 ------------
 # K owns schema `leaderboard` + an inbox, REACTS to match.finished (upsert wins+1) on
 # the durable plane, and serves GET /leaderboard (gateway-svc routes it Remote here).
-# Pure sink for match.finished (no EVENTS_SUBSCRIBERS). Distinct MESSAGING_ORIGIN.
+# Pure sink for match.finished (no EVENTS_SUBSCRIBERS). Distinct EVENTS_ORIGIN.
 note "starting K (leaderboard-svc) on :$K_PORT, edge :$K_EDGE_PORT ..."
 env PORT=":$K_PORT" DATABASE_URL="$DATABASE_URL" EDGE_ADDR=":$K_EDGE_PORT" \
     EDGE_CA_CERT="$CA_CERT" EDGE_CA_KEY="$CA_KEY" \
     ACCOUNTS_EDGE_ADDR="127.0.0.1:$D_EDGE_PORT" \
-    MESSAGING_ORIGIN=leaderboard-svc \
+    EVENTS_ORIGIN=leaderboard-svc \
     "$BIN_DIR/leaderboard-svc$EXE" >"$RUN_DIR/leaderboard.out.log" 2>"$RUN_DIR/leaderboard.err.log" &
 K_PID=$!
 wait_healthy "$K_PORT" "K (leaderboard-svc)" || { echo "K failed to start"; exit 1; }
 
-# --- start I (match-svc): gateway + match + messaging + rating stub, edge :9006
+# --- start I (match-svc): gateway + match + rating stub, edge :9006
 # I records matches (schema `match`) and is a DURABLE PRODUCER: `report` SYNC-reads both
 # players' MMR from rating-svc (J) over the mTLS edge, INSERTs the match row + emit_tx's
 # match.finished IN ONE TX, and its relay POSTs match.finished to rating-svc (J),
-# leaderboard-svc (K) and audit-svc (F). Distinct MESSAGING_ORIGIN (names remote sinks,
+# leaderboard-svc (K) and audit-svc (F). Distinct EVENTS_ORIGIN (names remote sinks,
 # so a default origin would be rejected).
 note "starting I (match-svc) on :$I_PORT, edge :$I_EDGE_PORT ..."
 env PORT=":$I_PORT" DATABASE_URL="$DATABASE_URL" EDGE_ADDR=":$I_EDGE_PORT" \
     EDGE_CA_CERT="$CA_CERT" EDGE_CA_KEY="$CA_KEY" \
     RATING_EDGE_ADDR="127.0.0.1:$J_EDGE_PORT" \
     ACCOUNTS_EDGE_ADDR="127.0.0.1:$D_EDGE_PORT" \
-    MESSAGING_ORIGIN=match-svc \
+    EVENTS_ORIGIN=match-svc \
     EVENTS_SUBSCRIBERS="match.finished=http://localhost:$J_PORT/events,http://localhost:$K_PORT/events,http://localhost:$F_PORT/events" \
     "$BIN_DIR/match-svc$EXE" >"$RUN_DIR/match.out.log" 2>"$RUN_DIR/match.err.log" &
 I_PID=$!
 wait_healthy "$I_PORT" "I (match-svc)" || { echo "I failed to start"; exit 1; }
 
-# --- start A (characters-svc): gateway + characters + messaging, edge :9000 --
-# MESSAGING_ORIGIN MUST be distinct per process (never the "monolith" default): the
+# --- start A (characters-svc): gateway + characters, edge :9000 --------------
+# EVENTS_ORIGIN MUST be distinct per process (never the "monolith" default): the
 # relay drains ONLY its own origin's outbox rows.
 note "starting A (characters-svc) on :$A_PORT, edge :$EDGE_PORT ..."
 env PORT=":$A_PORT" DATABASE_URL="$DATABASE_URL" EDGE_ADDR=":$EDGE_PORT" \
     EDGE_CA_CERT="$CA_CERT" EDGE_CA_KEY="$CA_KEY" \
     ACCOUNTS_EDGE_ADDR="127.0.0.1:$D_EDGE_PORT" \
-    MESSAGING_ORIGIN=characters-svc \
+    EVENTS_ORIGIN=characters-svc \
     EVENTS_SUBSCRIBERS="character.created=http://localhost:$B_PORT/events,http://localhost:$F_PORT/events;character.deleted=http://localhost:$B_PORT/events,http://localhost:$F_PORT/events" \
     "$BIN_DIR/characters-svc$EXE" >"$RUN_DIR/characters.out.log" 2>"$RUN_DIR/characters.err.log" &
 A_PID=$!
@@ -339,21 +340,22 @@ else
     note "psql not found -- the config live-reload assertion will SKIP"
 fi
 
-# --- start C (config-svc): gateway + config + messaging, edge :9002 ----------
+# --- start C (config-svc): gateway + config, edge :9002 ----------------------
 # C owns the config schema + LISTEN/NOTIFY listener and serves config.snapshot on its
-# mTLS edge; its relay POSTs config.changed durably to B. Distinct MESSAGING_ORIGIN
-# (never the "monolith" default) or messaging's origin-collision guard would reject it.
+# mTLS edge; its relay POSTs config.changed durably to B. Distinct EVENTS_ORIGIN
+# (never the "monolith" default) or the app-owned durable-events plane's
+# origin-collision guard would reject it.
 note "starting C (config-svc) on :$C_PORT, edge :$C_EDGE_PORT ..."
 env PORT=":$C_PORT" DATABASE_URL="$DATABASE_URL" EDGE_ADDR=":$C_EDGE_PORT" \
     EDGE_CA_CERT="$CA_CERT" EDGE_CA_KEY="$CA_KEY" \
     ACCOUNTS_EDGE_ADDR="127.0.0.1:$D_EDGE_PORT" \
-    MESSAGING_ORIGIN=config-svc \
+    EVENTS_ORIGIN=config-svc \
     EVENTS_SUBSCRIBERS="config.changed=http://localhost:$B_PORT/events,http://localhost:$F_PORT/events" \
     "$BIN_DIR/config-svc$EXE" >"$RUN_DIR/config.out.log" 2>"$RUN_DIR/config.err.log" &
 C_PID=$!
 wait_healthy "$C_PORT" "C (config-svc)" || { echo "C failed to start"; exit 1; }
 
-# --- start B (inventory-svc): gateway + inventory + messaging + characters/config stubs
+# --- start B (inventory-svc): gateway + inventory + characters/config stubs
 # B now ALSO serves its OWN mTLS edge (EDGE_ADDR=:9001) so gateway-svc can dispatch
 # inventory.* Remote to it; it dials A over CHARACTERS_EDGE_ADDR for owner_of and
 # config-svc over CONFIG_EDGE_ADDR for the CachedConfig boot-fill + snapshot refresh.
@@ -364,7 +366,7 @@ env PORT=":$B_PORT" DATABASE_URL="$DATABASE_URL" \
     CHARACTERS_EDGE_ADDR="127.0.0.1:$EDGE_PORT" \
     CONFIG_EDGE_ADDR="127.0.0.1:$C_EDGE_PORT" \
     ACCOUNTS_EDGE_ADDR="127.0.0.1:$D_EDGE_PORT" \
-    MESSAGING_ORIGIN=inventory-svc \
+    EVENTS_ORIGIN=inventory-svc \
     "$BIN_DIR/inventory-svc$EXE" >"$RUN_DIR/inventory.out.log" 2>"$RUN_DIR/inventory.err.log" &
 B_PID=$!
 wait_healthy "$B_PORT" "B (inventory-svc)" || { echo "B failed to start"; exit 1; }
@@ -714,11 +716,11 @@ if [ -z "$PSQL" ]; then
 else
     echo "[SC0] seed a 2s schedule 'proof-tick' on the shared DB (immediately due, epoch last_fired)"
     pg "INSERT INTO scheduler.schedules (name, interval_seconds, last_fired) VALUES ('proof-tick', 2, to_timestamp(0)) ON CONFLICT (name) DO UPDATE SET interval_seconds=2, last_fired=to_timestamp(0);" >/dev/null
-    echo "[SC1] poll messaging.outbox on H's origin for a produced+relayed scheduler.fired{proof-tick}"
+    echo "[SC1] poll asyncevents.outbox on H's origin for a produced+relayed scheduler.fired{proof-tick}"
     SC_OK=0
     for i in $(seq 1 30); do
-        SC_FIRED="$(pg "SELECT count(*) FROM messaging.outbox WHERE origin='scheduler-svc' AND topic='scheduler.fired' AND payload->>'name'='proof-tick';" | tr -d '[:space:]')"
-        SC_SENT="$(pg "SELECT count(*) FROM messaging.outbox WHERE origin='scheduler-svc' AND topic='scheduler.fired' AND payload->>'name'='proof-tick' AND sent_at IS NOT NULL;" | tr -d '[:space:]')"
+        SC_FIRED="$(pg "SELECT count(*) FROM asyncevents.outbox WHERE origin='scheduler-svc' AND topic='scheduler.fired' AND payload->>'name'='proof-tick';" | tr -d '[:space:]')"
+        SC_SENT="$(pg "SELECT count(*) FROM asyncevents.outbox WHERE origin='scheduler-svc' AND topic='scheduler.fired' AND payload->>'name'='proof-tick' AND sent_at IS NOT NULL;" | tr -d '[:space:]')"
         echo "    attempt $i -> fired=${SC_FIRED:-?} relayed=${SC_SENT:-?}"
         if [ "${SC_FIRED:-0}" -ge 1 ] && [ "${SC_SENT:-0}" -ge 1 ]; then
             pass "scheduler-svc fired proof-tick durably (advisory-lock + stillDue re-check) AND relayed it to audit-svc (H->F)"
@@ -727,7 +729,8 @@ else
         sleep 0.5
     done
     [ "$SC_OK" = "1" ] || fail "scheduler.fired{proof-tick} never produced+relayed (scheduler H -> audit F)"
-    # Clean up so reruns start fresh (the outbox rows are housekept by messaging).
+    # Clean up so reruns start fresh (the outbox rows are housekept by the
+    # app-owned durable-events plane).
     pg "DELETE FROM scheduler.schedules WHERE name='proof-tick';" >/dev/null
 fi
 

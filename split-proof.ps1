@@ -207,16 +207,16 @@ try {
         EDGE_ADDR          = ":$DEdgePort"
         EDGE_CA_CERT       = $CaCert
         EDGE_CA_KEY        = $CaKey
-        MESSAGING_ORIGIN   = 'accounts-svc'
+        EVENTS_ORIGIN      = 'accounts-svc'
         EVENTS_SUBSCRIBERS = "player.registered=http://127.0.0.1:$FPort/events"
     } 'accounts'
     if (-not (Wait-Healthy $DPort 'D (accounts-svc)')) { throw 'D failed to start' }
 
-    # F (audit-svc): audit + messaging, edge :9004. A PURE SINK (produces nothing, so no
+    # F (audit-svc): audit, edge :9004. A PURE SINK (produces nothing, so no
     # EVENTS_SUBSCRIBERS): every producer peer's relay POSTs to F's /events and audit's
     # on_tx_raw records each on the handed inbox-dedup tx. Serves admin.adminData on its
     # mTLS edge so admin-svc fans the "Audit Log" page out over QUIC. Distinct
-    # MESSAGING_ORIGIN for its own outbox identity.
+    # EVENTS_ORIGIN for its own outbox identity.
     Note "starting F (audit-svc) on :$FPort, edge :$FEdgePort ..."
     $script:FProc = Start-Svc (Join-Path $BinDir 'audit-svc.exe') @{
         PORT               = ":$FPort"
@@ -224,16 +224,16 @@ try {
         EDGE_ADDR          = ":$FEdgePort"
         EDGE_CA_CERT       = $CaCert
         EDGE_CA_KEY        = $CaKey
-        MESSAGING_ORIGIN   = 'audit-svc'
+        EVENTS_ORIGIN      = 'audit-svc'
         EVENTS_SUBSCRIBERS = ''
     } 'audit'
     if (-not (Wait-Healthy $FPort 'F (audit-svc)')) { throw 'F failed to start' }
 
-    # H (scheduler-svc): scheduler + messaging, edge :9005. A DURABLE PRODUCER: its 1s
+    # H (scheduler-svc): scheduler, edge :9005. A DURABLE PRODUCER: its 1s
     # loop fires scheduler.fired for every due schedule (race-safe via a per-schedule
     # pg_try_advisory_lock) and its relay POSTs scheduler.fired to audit-svc (F). Serves
     # admin.adminData ("Schedules") on its mTLS edge so admin-svc fans it out. Distinct
-    # MESSAGING_ORIGIN (names a remote sink, so a default origin would be rejected).
+    # EVENTS_ORIGIN (names a remote sink, so a default origin would be rejected).
     Note "starting H (scheduler-svc) on :$HPort, edge :$HEdgePort ..."
     $script:HProc = Start-Svc (Join-Path $BinDir 'scheduler-svc.exe') @{
         PORT               = ":$HPort"
@@ -241,15 +241,16 @@ try {
         EDGE_ADDR          = ":$HEdgePort"
         EDGE_CA_CERT       = $CaCert
         EDGE_CA_KEY        = $CaKey
-        MESSAGING_ORIGIN   = 'scheduler-svc'
+        EVENTS_ORIGIN      = 'scheduler-svc'
         EVENTS_SUBSCRIBERS = "scheduler.fired=http://127.0.0.1:$FPort/events"
     } 'scheduler'
     if (-not (Wait-Healthy $HPort 'H (scheduler-svc)')) { throw 'H failed to start' }
 
-    # J (rating-svc): rating + messaging, edge :9007. Provides rating.mmr on its mTLS
+    # J (rating-svc): rating, edge :9007. Provides rating.mmr on its mTLS
     # edge (match-svc reads it sync before recording) and REACTS to match.finished
     # (+15/-15) durably. In-memory MMR (no schema) but OWNS an inbox, so it needs a DB
-    # pool + messaging. Pure sink for match.finished (no EVENTS_SUBSCRIBERS).
+    # pool (the durable-events plane is app-owned, not a module dependency). Pure
+    # sink for match.finished (no EVENTS_SUBSCRIBERS).
     Note "starting J (rating-svc) on :$JPort, edge :$JEdgePort ..."
     $script:JProc = Start-Svc (Join-Path $BinDir 'rating-svc.exe') @{
         PORT             = ":$JPort"
@@ -257,11 +258,11 @@ try {
         EDGE_ADDR        = ":$JEdgePort"
         EDGE_CA_CERT     = $CaCert
         EDGE_CA_KEY      = $CaKey
-        MESSAGING_ORIGIN = 'rating-svc'
+        EVENTS_ORIGIN    = 'rating-svc'
     } 'rating'
     if (-not (Wait-Healthy $JPort 'J (rating-svc)')) { throw 'J failed to start' }
 
-    # K (leaderboard-svc): gateway + leaderboard + messaging, edge :9008. Owns schema
+    # K (leaderboard-svc): gateway + leaderboard, edge :9008. Owns schema
     # leaderboard + an inbox, REACTS to match.finished (upsert wins+1) durably, and serves
     # GET /leaderboard (gateway-svc routes it Remote here). Pure sink for match.finished.
     Note "starting K (leaderboard-svc) on :$KPort, edge :$KEdgePort ..."
@@ -272,15 +273,15 @@ try {
         EDGE_CA_CERT       = $CaCert
         EDGE_CA_KEY        = $CaKey
         ACCOUNTS_EDGE_ADDR = "127.0.0.1:$DEdgePort"
-        MESSAGING_ORIGIN   = 'leaderboard-svc'
+        EVENTS_ORIGIN      = 'leaderboard-svc'
     } 'leaderboard'
     if (-not (Wait-Healthy $KPort 'K (leaderboard-svc)')) { throw 'K failed to start' }
 
-    # I (match-svc): gateway + match + messaging + rating stub, edge :9006. Records
+    # I (match-svc): gateway + match + rating stub, edge :9006. Records
     # matches (schema match) and is a DURABLE PRODUCER: report SYNC-reads both players'
     # MMR from rating-svc (J) over the mTLS edge, INSERTs the match row + emit_tx's
     # match.finished IN ONE TX, and its relay POSTs match.finished to J, K and audit-svc
-    # (F). Distinct MESSAGING_ORIGIN (names remote sinks).
+    # (F). Distinct EVENTS_ORIGIN (names remote sinks).
     Note "starting I (match-svc) on :$IPort, edge :$IEdgePort ..."
     $script:IProc = Start-Svc (Join-Path $BinDir 'match-svc.exe') @{
         PORT               = ":$IPort"
@@ -290,7 +291,7 @@ try {
         EDGE_CA_KEY        = $CaKey
         RATING_EDGE_ADDR   = "127.0.0.1:$JEdgePort"
         ACCOUNTS_EDGE_ADDR = "127.0.0.1:$DEdgePort"
-        MESSAGING_ORIGIN   = 'match-svc'
+        EVENTS_ORIGIN      = 'match-svc'
         EVENTS_SUBSCRIBERS = "match.finished=http://127.0.0.1:$JPort/events,http://127.0.0.1:$KPort/events,http://127.0.0.1:$FPort/events"
     } 'match'
     if (-not (Wait-Healthy $IPort 'I (match-svc)')) { throw 'I failed to start' }
@@ -303,7 +304,7 @@ try {
         EDGE_CA_CERT        = $CaCert
         EDGE_CA_KEY         = $CaKey
         ACCOUNTS_EDGE_ADDR  = "127.0.0.1:$DEdgePort"
-        MESSAGING_ORIGIN    = 'characters-svc'
+        EVENTS_ORIGIN       = 'characters-svc'
         EVENTS_SUBSCRIBERS  = "character.created=http://127.0.0.1:$BPort/events,http://127.0.0.1:$FPort/events;character.deleted=http://127.0.0.1:$BPort/events,http://127.0.0.1:$FPort/events"
     } 'characters'
     if (-not (Wait-Healthy $APort 'A (characters-svc)')) { throw 'A failed to start' }
@@ -320,7 +321,8 @@ try {
 
     # C (config-svc): owns the config schema + LISTEN/NOTIFY listener, serves
     # config.snapshot on its mTLS edge, and relays config.changed durably to B. Distinct
-    # MESSAGING_ORIGIN or messaging's origin-collision guard would reject it.
+    # EVENTS_ORIGIN or the app-owned durable-events plane's origin-collision guard
+    # would reject it.
     Note "starting C (config-svc) on :$CPort, edge :$CEdgePort ..."
     $script:CProc = Start-Svc (Join-Path $BinDir 'config-svc.exe') @{
         PORT               = ":$CPort"
@@ -329,7 +331,7 @@ try {
         EDGE_CA_CERT       = $CaCert
         EDGE_CA_KEY        = $CaKey
         ACCOUNTS_EDGE_ADDR = "127.0.0.1:$DEdgePort"
-        MESSAGING_ORIGIN   = 'config-svc'
+        EVENTS_ORIGIN      = 'config-svc'
         EVENTS_SUBSCRIBERS = "config.changed=http://127.0.0.1:$BPort/events,http://127.0.0.1:$FPort/events"
     } 'config'
     if (-not (Wait-Healthy $CPort 'C (config-svc)')) { throw 'C failed to start' }
@@ -347,7 +349,7 @@ try {
         CHARACTERS_EDGE_ADDR = "127.0.0.1:$EdgePort"
         CONFIG_EDGE_ADDR     = "127.0.0.1:$CEdgePort"
         ACCOUNTS_EDGE_ADDR   = "127.0.0.1:$DEdgePort"
-        MESSAGING_ORIGIN     = 'inventory-svc'
+        EVENTS_ORIGIN        = 'inventory-svc'
     } 'inventory'
     if (-not (Wait-Healthy $BPort 'B (inventory-svc)')) { throw 'B failed to start' }
 
@@ -644,11 +646,11 @@ try {
     } else {
         Write-Host "[SC0] seed a 2s schedule 'proof-tick' on the shared DB (immediately due, epoch last_fired)"
         Invoke-Sql "INSERT INTO scheduler.schedules (name, interval_seconds, last_fired) VALUES ('proof-tick', 2, to_timestamp(0)) ON CONFLICT (name) DO UPDATE SET interval_seconds=2, last_fired=to_timestamp(0);" | Out-Null
-        Write-Host "[SC1] poll messaging.outbox on H's origin for a produced+relayed scheduler.fired{proof-tick}"
+        Write-Host "[SC1] poll asyncevents.outbox on H's origin for a produced+relayed scheduler.fired{proof-tick}"
         $scOk = $false
         for ($i = 1; $i -le 30; $i++) {
-            $scFired = ("" + (Invoke-Sql "SELECT count(*) FROM messaging.outbox WHERE origin='scheduler-svc' AND topic='scheduler.fired' AND payload->>'name'='proof-tick';")).Trim()
-            $scSent = ("" + (Invoke-Sql "SELECT count(*) FROM messaging.outbox WHERE origin='scheduler-svc' AND topic='scheduler.fired' AND payload->>'name'='proof-tick' AND sent_at IS NOT NULL;")).Trim()
+            $scFired = ("" + (Invoke-Sql "SELECT count(*) FROM asyncevents.outbox WHERE origin='scheduler-svc' AND topic='scheduler.fired' AND payload->>'name'='proof-tick';")).Trim()
+            $scSent = ("" + (Invoke-Sql "SELECT count(*) FROM asyncevents.outbox WHERE origin='scheduler-svc' AND topic='scheduler.fired' AND payload->>'name'='proof-tick' AND sent_at IS NOT NULL;")).Trim()
             Write-Host "    attempt $i -> fired=$scFired relayed=$scSent"
             if ([int]($scFired -as [int]) -ge 1 -and [int]($scSent -as [int]) -ge 1) {
                 Pass 'scheduler-svc fired proof-tick durably (advisory-lock + stillDue re-check) AND relayed it to audit-svc (H->F)'
@@ -887,10 +889,10 @@ try {
     }
     Start-Sleep -Seconds 2
     # Per-process env in this script leaks across Start-Svc calls; neutralize the
-    # split-only knobs so the monolith gets a clean messaging config AND an OPEN admin
+    # split-only knobs so the monolith gets a clean events config AND an OPEN admin
     # portal (no leaked Basic-auth creds; /admin is served locally, not proxied).
     $env:EVENTS_SUBSCRIBERS = ''
-    $env:MESSAGING_ORIGIN = ''
+    $env:EVENTS_ORIGIN = ''
     $env:ADMIN_HTTP_ADDR = ''
     $env:ACCOUNTS_HTTP_ADDR = ''
     $env:ADMIN_USER = ''

@@ -133,7 +133,7 @@ if ($Mode -eq 'monolith') {
         PLAYER_EDGE_ADDR = ':9100'
         EDGE_CA_CERT     = $CaCert
         EDGE_CA_KEY      = $CaKey
-        # default MESSAGING_ORIGIN ("monolith") is fine -- one process, one origin.
+        # default EVENTS_ORIGIN ("monolith") is fine -- one process, one origin.
     } | Out-Null
     Wait-Healthy 8080 'monolith'
     Write-Pids
@@ -157,7 +157,7 @@ if ($Mode -eq 'monolith') {
 #   - accounts-svc (D) first: every gateway verifies bearers against it (lazy dial, so
 #     not strictly required, but we mirror the proof's order).
 #   - admin-svc (E) last: it dials A/B/C/D/F/H edges to fan out their admin pages.
-# MESSAGING_ORIGIN is DISTINCT per process (never the "monolith" default): each relay
+# EVENTS_ORIGIN is DISTINCT per process (never the "monolith" default): each relay
 # drains ONLY its own origin's outbox rows. Peer *_EDGE_ADDR values are NUMERIC
 # host:port (Rust's SocketAddr needs a literal IP). All peers share ONE dev CA.
 
@@ -183,7 +183,7 @@ Start-Svc 'accounts' (Join-Path $BinDir 'accounts-svc.exe') @{
     EDGE_ADDR          = ":$DEdge"
     EDGE_CA_CERT       = $CaCert
     EDGE_CA_KEY        = $CaKey
-    MESSAGING_ORIGIN   = 'accounts-svc'
+    EVENTS_ORIGIN      = 'accounts-svc'
     EVENTS_SUBSCRIBERS = "player.registered=http://127.0.0.1:$FPort/events"
 } | Out-Null
 Wait-Healthy $DPort 'D (accounts-svc)'
@@ -197,7 +197,7 @@ Start-Svc 'audit' (Join-Path $BinDir 'audit-svc.exe') @{
     EDGE_ADDR          = ":$FEdge"
     EDGE_CA_CERT       = $CaCert
     EDGE_CA_KEY        = $CaKey
-    MESSAGING_ORIGIN   = 'audit-svc'
+    EVENTS_ORIGIN      = 'audit-svc'
     EVENTS_SUBSCRIBERS = ''
 } | Out-Null
 Wait-Healthy $FPort 'F (audit-svc)'
@@ -211,7 +211,7 @@ Start-Svc 'scheduler' (Join-Path $BinDir 'scheduler-svc.exe') @{
     EDGE_ADDR          = ":$HEdge"
     EDGE_CA_CERT       = $CaCert
     EDGE_CA_KEY        = $CaKey
-    MESSAGING_ORIGIN   = 'scheduler-svc'
+    EVENTS_ORIGIN      = 'scheduler-svc'
     EVENTS_SUBSCRIBERS = "scheduler.fired=http://127.0.0.1:$FPort/events"
 } | Out-Null
 Wait-Healthy $HPort 'H (scheduler-svc)'
@@ -225,7 +225,7 @@ Start-Svc 'rating' (Join-Path $BinDir 'rating-svc.exe') @{
     EDGE_ADDR          = ":$JEdge"
     EDGE_CA_CERT       = $CaCert
     EDGE_CA_KEY        = $CaKey
-    MESSAGING_ORIGIN   = 'rating-svc'
+    EVENTS_ORIGIN      = 'rating-svc'
     EVENTS_SUBSCRIBERS = ''
 } | Out-Null
 Wait-Healthy $JPort 'J (rating-svc)'
@@ -240,7 +240,7 @@ Start-Svc 'leaderboard' (Join-Path $BinDir 'leaderboard-svc.exe') @{
     EDGE_CA_CERT       = $CaCert
     EDGE_CA_KEY        = $CaKey
     ACCOUNTS_EDGE_ADDR = "127.0.0.1:$DEdge"
-    MESSAGING_ORIGIN   = 'leaderboard-svc'
+    EVENTS_ORIGIN      = 'leaderboard-svc'
     EVENTS_SUBSCRIBERS = ''
 } | Out-Null
 Wait-Healthy $KPort 'K (leaderboard-svc)'
@@ -257,7 +257,7 @@ Start-Svc 'match' (Join-Path $BinDir 'match-svc.exe') @{
     EDGE_CA_KEY        = $CaKey
     RATING_EDGE_ADDR   = "127.0.0.1:$JEdge"
     ACCOUNTS_EDGE_ADDR = "127.0.0.1:$DEdge"
-    MESSAGING_ORIGIN   = 'match-svc'
+    EVENTS_ORIGIN      = 'match-svc'
     EVENTS_SUBSCRIBERS = "match.finished=http://127.0.0.1:$JPort/events,http://127.0.0.1:$KPort/events,http://127.0.0.1:$FPort/events"
 } | Out-Null
 Wait-Healthy $IPort 'I (match-svc)'
@@ -272,7 +272,7 @@ Start-Svc 'characters' (Join-Path $BinDir 'characters-svc.exe') @{
     EDGE_CA_CERT       = $CaCert
     EDGE_CA_KEY        = $CaKey
     ACCOUNTS_EDGE_ADDR = "127.0.0.1:$DEdge"
-    MESSAGING_ORIGIN   = 'characters-svc'
+    EVENTS_ORIGIN      = 'characters-svc'
     EVENTS_SUBSCRIBERS = "character.created=http://127.0.0.1:$BPort/events,http://127.0.0.1:$FPort/events;character.deleted=http://127.0.0.1:$BPort/events,http://127.0.0.1:$FPort/events"
 } | Out-Null
 Wait-Healthy $APort 'A (characters-svc)'
@@ -287,7 +287,7 @@ Start-Svc 'config' (Join-Path $BinDir 'config-svc.exe') @{
     EDGE_CA_CERT       = $CaCert
     EDGE_CA_KEY        = $CaKey
     ACCOUNTS_EDGE_ADDR = "127.0.0.1:$DEdge"
-    MESSAGING_ORIGIN   = 'config-svc'
+    EVENTS_ORIGIN      = 'config-svc'
     EVENTS_SUBSCRIBERS = "config.changed=http://127.0.0.1:$BPort/events,http://127.0.0.1:$FPort/events"
 } | Out-Null
 Wait-Healthy $CPort 'C (config-svc)'
@@ -304,7 +304,7 @@ Start-Svc 'inventory' (Join-Path $BinDir 'inventory-svc.exe') @{
     CHARACTERS_EDGE_ADDR = "127.0.0.1:$AEdge"
     CONFIG_EDGE_ADDR     = "127.0.0.1:$CEdge"
     ACCOUNTS_EDGE_ADDR   = "127.0.0.1:$DEdge"
-    MESSAGING_ORIGIN     = 'inventory-svc'
+    EVENTS_ORIGIN        = 'inventory-svc'
 } | Out-Null
 Wait-Healthy $BPort 'B (inventory-svc)'
 
