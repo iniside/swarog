@@ -39,10 +39,16 @@ services/binaries/replicas. The client is backend-owned code in `core/`
 (likely `core/remote`, so Stub can re-resolve → replicas/address changes without
 consumer restarts); wire-only JSON contract, own types on each side — zero shared
 crates preserved. Registration proper only matters for processes the centrala
-didn't spawn (future game servers). Open point #1 for the plan: centrala becomes
-a boot-time dependency — dev/run.sh/split-proof either also run the orchestrator,
-or the client falls back to plain `*_EDGE_ADDR` env (two config paths = budding
-magic, [[config-as-code-anti-magic]]). Its own
+didn't spawn (future game servers). **Convention over configuration — RESOLVED
+(2026-07-10, Lukasz): NO env fallback, single path, orchestrator always runs
+(dev too).** The convention is a tiny language-neutral process contract: (1) read
+`ORCHESTRATOR_URL` + identity from env, (2) hello + resolve peers, (3) expose
+`/readyz`, (4) drain on SIGTERM. Any-language service (e.g. future Go svc) just
+implements the contract — the orchestrator supports nothing per-service;
+`core/remote` is merely our Rust client for it. Consequences: `run.sh` collapses
+into "start orchestrator with dev manifest" (CA mint, ports, boot order move into
+it); split-proof boots the fleet via the orchestrator and only asserts scenarios;
+`cmd/server` (monolith) satisfies the contract trivially (no peers to resolve). Its own
 state (manifest, PIDs, ports) lives locally (file/sqlite/in-memory). Open design
 point: env is read at spawn, so a peer address change = consumer restart (or
 later stub re-resolve). Platform-side pieces still land at existing seams:
