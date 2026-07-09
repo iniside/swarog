@@ -13,6 +13,9 @@ opsapi = { workspace = true }
 # domain are importable by a module) — names `dyn Sessions` for the verifier
 # adapter. NEVER the accounts impl crate, never accountsrpc (archcheck enforces).
 accountsapi = { workspace = true }
+# The apikeys CONTRACT crate (same rule) — names `dyn Keys` for the key-verifier
+# adapter. NEVER the apikeys impl crate, never apikeysrpc (archcheck enforces).
+apikeysapi = { workspace = true }
 edge = { workspace = true }
 contrib = { workspace = true }
 # The shared route-pattern label seam (`httpmw::RoutePattern`): the front door stamps a

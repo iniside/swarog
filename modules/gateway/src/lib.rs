@@ -18,18 +18,23 @@
 //!      fallback is invisible: only otherwise-unmatched routes reach it, so it never
 //!      shadows `/healthz`/`/readyz` (added by `app`) or `POST /events` (the
 //!      durable-events plane, mounted by `app::run` when the process has a DB).
-//!   2. **Auth-once:** for an `AuthReq::Player` op it verifies the `Authorization:
+//!   2. **API-key check** (post-match, pre-auth): every op-dispatched request must
+//!      carry an `X-Api-Key` header naming a known, unrevoked key whose policy allows
+//!      the matched method (see [`KeyVerifier`]) — missing → 401, unknown/revoked →
+//!      401, policy miss → 403. Non-op routes (`/healthz`, `/metrics`, `POST /events`,
+//!      the passthroughs) never reach this check by construction.
+//!   3. **Auth-once:** for an `AuthReq::Player` op it verifies the `Authorization:
 //!      Bearer <token>` header via the [`SessionVerifier`] and threads the resolved
 //!      player_id as an `opsapi::Identity`. This is the SINGLE trust boundary —
 //!      downstream (local invoker or peer over the edge) never re-verifies. An
 //!      `AuthReq::None` op runs with `Identity::none()`.
-//!   3. **Decode** the HTTP body + matched path wildcards into the wire request via
+//!   4. **Decode** the HTTP body + matched path wildcards into the wire request via
 //!      the op's `OpBinding::decode`.
-//!   4. **Dispatch** on the topology-correct backend (`RouteTable::dispatch`): a
+//!   5. **Dispatch** on the topology-correct backend (`RouteTable::dispatch`): a
 //!      [`LocalBackend`] when this process holds the op's `LocalInvoker`, else a
 //!      [`RemoteBackend`] dialing the owning peer (a Remote failure evicts the cached
 //!      connection so the next request re-dials).
-//!   5. Reduce the wire response via `OpBinding::encode` — an encode-`Err` carries the
+//!   6. Reduce the wire response via `OpBinding::encode` — an encode-`Err` carries the
 //!      domain `Status` (→ its HTTP code); an `Ok` writes the op's declared `success`
 //!      code with the domain body.
 //!
@@ -44,6 +49,7 @@
 //! after `app::run` finishes Build and starts serving).
 
 mod backend;
+mod keys;
 mod proxy;
 mod verifier;
 
@@ -64,7 +70,10 @@ use opsapi::{
 use serde_json::value::RawValue;
 
 pub use backend::{LocalBackend, OperationBackend, RemoteBackend};
+pub use keys::{AllowAllKeyVerifier, KeyVerifier, RealKeyVerifier};
 pub use verifier::{DevSessionVerifier, SessionVerifier, SessionsVerifier};
+
+use keys::{check_api_key, KeyDenial};
 
 /// Caps the request body the gateway buffers before decoding an operation, so a
 /// hostile client cannot make the front-handler allocate without bound. 1 MiB is
@@ -87,6 +96,12 @@ pub struct Gateway {
     /// both, startup FAILS loudly (see `verifier::resolve_verifier`). `Some` is a
     /// caller-supplied override (tests).
     verifier: Option<Arc<dyn SessionVerifier>>,
+    /// The API-key verifier. `None` (the [`Gateway::new`] default) defers resolution
+    /// to `init`: the REAL `apikeys.keys` capability from the registry (TTL-cached),
+    /// or — only when `APIKEYS_DEV_ALLOW` is explicitly set — the allow-all dev
+    /// fallback; absent both, startup FAILS loudly (see `keys::resolve_key_verifier`).
+    /// `Some` is a caller-supplied override (tests).
+    key_verifier: Option<Arc<dyn KeyVerifier>>,
     /// When set, the process-wide player-facing QUIC server (built by `main` and
     /// passed as a shared handle). `init` installs the
     /// [`FrontDoor::player_handler`] on it so the process fronts players over QUIC
@@ -106,13 +121,30 @@ impl Gateway {
     /// by an `accountsrpc` remote stub — else a loud startup failure (unless
     /// `ACCOUNTS_DEV_AUTH=1` explicitly enables the dev fallback).
     pub fn new() -> Self {
-        Gateway { verifier: None, player_edge: None, passthroughs: Vec::new() }
+        Gateway {
+            verifier: None,
+            key_verifier: None,
+            player_edge: None,
+            passthroughs: Vec::new(),
+        }
     }
 
     /// A gateway using a caller-supplied verifier — bypasses the `init`-time
     /// resolution entirely (unit tests construct a [`DevSessionVerifier`] here).
     pub fn with_verifier(verifier: Arc<dyn SessionVerifier>) -> Self {
-        Gateway { verifier: Some(verifier), player_edge: None, passthroughs: Vec::new() }
+        Gateway {
+            verifier: Some(verifier),
+            key_verifier: None,
+            player_edge: None,
+            passthroughs: Vec::new(),
+        }
+    }
+
+    /// Overrides the API-key verifier — bypasses the `init`-time resolution of the
+    /// `apikeys.keys` capability entirely (builder-style; tests inject a fake here).
+    pub fn with_key_verifier(mut self, key_verifier: Arc<dyn KeyVerifier>) -> Self {
+        self.key_verifier = Some(key_verifier);
+        self
     }
 
     /// Adds one HTTP reverse-proxy passthrough: an unmatched request under `prefix`
@@ -156,18 +188,27 @@ impl Module for Gateway {
     /// the player-QUIC handler too. No I/O. The façade captures the slot registry +
     /// verifier and lazily builds the route table on first request.
     ///
-    /// The verifier is resolved HERE (phase 2) when none was injected: every
-    /// provider's phase-1 `register` — the accounts module or its remote stub —
-    /// has already run, so `accounts.sessions` is present iff this process was
-    /// wired for real auth. Absent capability + no explicit `ACCOUNTS_DEV_AUTH`
-    /// fails startup loudly (no silent dev fallback).
+    /// BOTH verifiers are resolved HERE (phase 2) when none was injected: every
+    /// provider's phase-1 `register` — the accounts/apikeys module or its remote
+    /// stub — has already run, so `accounts.sessions`/`apikeys.keys` is present iff
+    /// this process was wired for it. Absent capability + no explicit
+    /// `ACCOUNTS_DEV_AUTH`/`APIKEYS_DEV_ALLOW` fails startup loudly (no silent dev
+    /// fallback).
     fn init(&self, ctx: &Context) -> anyhow::Result<()> {
         let verifier = match &self.verifier {
             Some(v) => v.clone(),
             None => verifier::resolve_verifier(ctx)?,
         };
-        let front_door =
-            Arc::new(FrontDoor::new(ctx.slots().clone(), verifier, self.passthroughs.clone()));
+        let key_verifier = match &self.key_verifier {
+            Some(v) => v.clone(),
+            None => keys::resolve_key_verifier(ctx)?,
+        };
+        let front_door = Arc::new(FrontDoor::new(
+            ctx.slots().clone(),
+            verifier,
+            key_verifier,
+            self.passthroughs.clone(),
+        ));
         ctx.mount(front_door.router());
         if let Some(shared) = &self.player_edge {
             shared.lock().unwrap().set_handler(front_door.player_handler());
@@ -189,6 +230,8 @@ impl Module for Gateway {
 pub struct FrontDoor {
     slots: Arc<Slots>,
     verifier: Arc<dyn SessionVerifier>,
+    /// The API-key policy verifier — consulted post-match, pre-auth on BOTH planes.
+    key_verifier: Arc<dyn KeyVerifier>,
     table: OnceLock<Arc<RouteTable>>,
     /// The HTTP reverse-proxy passthrough for non-operation routes (`/admin`,
     /// `/accounts/epic`), built from the routes the composition root wired via
@@ -199,17 +242,20 @@ pub struct FrontDoor {
 
 impl FrontDoor {
     /// A façade over `slots` (the contribution registry the route table is built
-    /// from) fronting auth with `verifier`. `passthroughs` are the `(prefix, origin)`
-    /// reverse-proxy routes the composition root supplied — empty for a process that
-    /// proxies nothing (every unmatched route stays a 404).
+    /// from) fronting auth with `verifier` and the key check with `key_verifier`.
+    /// `passthroughs` are the `(prefix, origin)` reverse-proxy routes the composition
+    /// root supplied — empty for a process that proxies nothing (every unmatched
+    /// route stays a 404).
     pub fn new(
         slots: Arc<Slots>,
         verifier: Arc<dyn SessionVerifier>,
+        key_verifier: Arc<dyn KeyVerifier>,
         passthroughs: Vec<(String, String)>,
     ) -> FrontDoor {
         FrontDoor {
             slots,
             verifier,
+            key_verifier,
             table: OnceLock::new(),
             proxy: proxy::ProxyTable::from_routes(passthroughs),
         }
@@ -251,9 +297,9 @@ impl FrontDoor {
     /// check `ok`, then decode the payload and check `status`.
     pub fn player_handler(self: &Arc<Self>) -> edge::PlayerHandler {
         let front = self.clone();
-        Arc::new(move |method, token, payload| {
+        Arc::new(move |method, token, api_key, payload| {
             let front = front.clone();
-            Box::pin(async move { Ok(front.handle_player(method, token, payload).await) })
+            Box::pin(async move { Ok(front.handle_player(method, token, api_key, payload).await) })
         })
     }
 
@@ -268,19 +314,24 @@ impl FrontDoor {
     ///   2. **Match by method** — the allow-list gate: only `#[http]`-bound ops are
     ///      in the table, so a wire-only internal method (e.g. `characters.ownerOf`)
     ///      is NotFound here even though a peer edge would serve it.
-    ///   3. **Auth-once:** `token` is ATTACKER-CONTROLLED input (a claim, not an
+    ///   3. **API-key check** — AFTER the method match (an unknown method stays
+    ///      NotFound; the key check must not leak which methods exist) and before
+    ///      session auth, same order as the HTTP plane: missing → Unauthorized,
+    ///      unknown/revoked → Unauthorized, policy miss → Forbidden.
+    ///   4. **Auth-once:** `token` is ATTACKER-CONTROLLED input (a claim, not an
     ///      identity — the player envelope carries no identity field by design).
     ///      For an `AuthReq::Player` op it is required and verified via the
     ///      [`SessionVerifier`]; only the VERIFIED player_id becomes the `Identity`
     ///      threaded downstream, and nothing downstream re-verifies. `AuthReq::None`
     ///      runs with `Identity::none()`.
-    ///   4. **Dispatch** and return the wire response bytes VERBATIM — the domain
+    ///   5. **Dispatch** and return the wire response bytes VERBATIM — the domain
     ///      `Status` already rides inside the generated response envelope. A backend
     ///      `Err(opsapi::Error)` is re-serialized as the same `{status, err}` shape.
     async fn handle_player(
         &self,
         method: String,
         token: Option<String>,
+        api_key: Option<String>,
         payload: Vec<u8>,
     ) -> Vec<u8> {
         // (1) Well-formedness gate — malformed JSON is Invalid at the front.
@@ -295,7 +346,14 @@ impl FrontDoor {
             return front_envelope(Status::NotFound, "unknown operation");
         };
 
-        // (3) Auth-once: the single trust boundary, same rule as the HTTP plane.
+        // (3) API-key check — post-match, pre-auth (Decision 5's exact three-way).
+        if let Err(denial) =
+            check_api_key(&*self.key_verifier, api_key.as_deref(), &route.op.method).await
+        {
+            return front_envelope(denial.status(), denial.message());
+        }
+
+        // (4) Auth-once: the single trust boundary, same rule as the HTTP plane.
         let identity = match route.op.auth {
             AuthReq::Player => {
                 let Some(token) = token else {
@@ -309,7 +367,7 @@ impl FrontDoor {
             AuthReq::None => Identity::none(),
         };
 
-        // (4) Dispatch; the wire response IS the player response (envelope included).
+        // (5) Dispatch; the wire response IS the player response (envelope included).
         match table.dispatch(&route.op, identity, payload).await {
             Ok(bytes) => bytes,
             Err(e) => front_envelope(e.status, &e.msg),
@@ -566,9 +624,9 @@ async fn handle(front: Arc<FrontDoor>, peer: Option<SocketAddr>, req: Request) -
     resp
 }
 
-/// Steps (2)–(5) for a matched operation: auth-once → decode → dispatch → encode. Split
-/// out of [`handle`] so the caller can stamp the route-pattern label on EVERY outcome
-/// (including an early auth/decode failure) at one place.
+/// Steps (2)–(6) for a matched operation: key check → auth-once → decode → dispatch →
+/// encode. Split out of [`handle`] so the caller can stamp the route-pattern label on
+/// EVERY outcome (including an early key/auth/decode failure) at one place.
 async fn dispatch_matched_op(
     front: &FrontDoor,
     op: Operation,
@@ -577,7 +635,15 @@ async fn dispatch_matched_op(
     headers: HeaderMap,
     body: Body,
 ) -> Response {
-    // (2) Auth-once: the single trust boundary. For AuthPlayer verify the bearer and
+    // (2) API-key check: post-match, pre-auth (Decision 5's exact three-way) — the
+    // client-class gate every op-dispatched request passes, `AuthReq::None` included.
+    if let Err(denial) =
+        check_api_key(&*front.key_verifier, api_key_header(&headers).as_deref(), &op.method).await
+    {
+        return key_denial_response(&denial);
+    }
+
+    // (3) Auth-once: the single trust boundary. For AuthPlayer verify the bearer and
     // thread the verified player_id; AuthNone runs with no identity.
     let identity = match op.auth {
         AuthReq::Player => match authenticate(&headers, &*front.verifier).await {
@@ -587,7 +653,7 @@ async fn dispatch_matched_op(
         AuthReq::None => Identity::none(),
     };
 
-    // (3) Decode: bounded body + matched wildcards → the wire request both backends consume.
+    // (4) Decode: bounded body + matched wildcards → the wire request both backends consume.
     let body_bytes = match axum::body::to_bytes(body, MAX_BODY_BYTES).await {
         Ok(b) => b,
         Err(_) => return error_response(StatusCode::PAYLOAD_TOO_LARGE, "request body too large"),
@@ -602,14 +668,14 @@ async fn dispatch_matched_op(
         Err(e) => return op_error_response(&e),
     };
 
-    // (4) Dispatch on the topology-correct backend (Local in-process, else the Remote
+    // (5) Dispatch on the topology-correct backend (Local in-process, else the Remote
     // peer; a Remote failure evicts the cached conn so the next request re-dials).
     let wire_resp = match front.table().dispatch(&op, identity, wire_req).await {
         Ok(r) => r,
         Err(e) => return op_error_response(&e),
     };
 
-    // (5) Reduce the wire response to the external HTTP body + status.
+    // (6) Reduce the wire response to the external HTTP body + status.
     match (binding.encode)(&wire_resp) {
         // A non-OK domain outcome surfaces as an encode-Err carrying its Status.
         Err(e) => op_error_response(&e),
@@ -646,6 +712,20 @@ async fn authenticate(
 fn bearer(headers: &HeaderMap) -> Option<String> {
     let v = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
     v.strip_prefix("Bearer ").map(str::to_string)
+}
+
+/// Extracts the API key from the `X-Api-Key` header, or `None` (header names match
+/// case-insensitively). A non-UTF-8 value reads as absent — it cannot match any key.
+fn api_key_header(headers: &HeaderMap) -> Option<String> {
+    headers.get("x-api-key")?.to_str().ok().map(str::to_string)
+}
+
+/// Writes a [`KeyDenial`] as its HTTP response: the denial's domain [`Status`] mapped
+/// to its HTTP code (401/401/403) with the plane-independent message.
+fn key_denial_response(denial: &KeyDenial) -> Response {
+    let code = StatusCode::from_u16(denial.status().http())
+        .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    error_response(code, denial.message())
 }
 
 /// A plain text error response at an explicit HTTP status.

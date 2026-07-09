@@ -30,6 +30,7 @@ scheduler = { workspace = true }
 rating = { workspace = true }
 match_module = { workspace = true }
 leaderboard = { workspace = true }
+apikeys = { workspace = true }
 webui = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 anyhow = { workspace = true }

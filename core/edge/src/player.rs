@@ -59,17 +59,27 @@ pub struct PlayerRequest {
     /// parse, or every unauthenticated call dies as a malformed envelope.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token: Option<String>,
+    /// The caller's API key — the CLIENT-CLASS credential the front checks against a
+    /// key policy, orthogonal to `token` (which identifies the *player*). Like the
+    /// token it is an attacker-controlled CLAIM the front verifies; `#[serde(default)]`
+    /// keeps a pre-key envelope parsing (it then fails the front's key check as a
+    /// clean domain 401, never a malformed-envelope transport error).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
     /// The already-encoded request payload, preserved verbatim as raw JSON — the
     /// transport never re-parses the domain body.
     pub payload: Box<RawValue>,
 }
 
-/// The player-plane dispatch seam: (method, token, payload) in, response payload
-/// bytes out. ONE handler serves every method — routing, token verification and the
-/// per-op auth requirement all live in the front (gateway) behind this seam, so the
-/// transport stays domain-blind.
-pub type PlayerHandler =
-    Arc<dyn Fn(String, Option<String>, Vec<u8>) -> BoxFuture<'static, HandlerResult> + Send + Sync>;
+/// The player-plane dispatch seam: (method, token, api_key, payload) in, response
+/// payload bytes out. ONE handler serves every method — routing, token verification,
+/// the API-key policy check and the per-op auth requirement all live in the front
+/// (gateway) behind this seam, so the transport stays domain-blind.
+pub type PlayerHandler = Arc<
+    dyn Fn(String, Option<String>, Option<String>, Vec<u8>) -> BoxFuture<'static, HandlerResult>
+        + Send
+        + Sync,
+>;
 
 /// The player-facing QUIC listener. Construct, [`PlayerServer::set_handler`] (the
 /// gateway does this in its `Init`), then [`PlayerServer::listen`]. A server left
@@ -187,7 +197,7 @@ async fn dispatch(handler: &OnceLock<PlayerHandler>, req_bytes: Vec<u8>) -> Resp
         return err_response("edge: player front not wired");
     };
     let payload = req.payload.get().as_bytes().to_vec();
-    match run_caught(h(req.method, req.token, payload)).await {
+    match run_caught(h(req.method, req.token, req.api_key, payload)).await {
         Ok(bytes) => ok_response(bytes),
         Err(e) => err_response(&e.to_string()),
     }
@@ -229,20 +239,22 @@ impl PlayerClient {
         Ok(PlayerClient { _endpoint: endpoint, conn })
     }
 
-    /// One RPC over a fresh stream: stamps `token` (if any) into the player
-    /// envelope and relays `payload` verbatim. `Err(Error::Remote)` is a TRANSPORT
-    /// fault at the peer; a completed operation returns `Ok(bytes)` whose domain
-    /// status rides inside the payload envelope — callers must check it (the pinned
-    /// error grammar: an auth failure is `Ok` here).
+    /// One RPC over a fresh stream: stamps `token` and `api_key` (if any) into the
+    /// player envelope and relays `payload` verbatim. `Err(Error::Remote)` is a
+    /// TRANSPORT fault at the peer; a completed operation returns `Ok(bytes)` whose
+    /// domain status rides inside the payload envelope — callers must check it (the
+    /// pinned error grammar: an auth failure is `Ok` here).
     pub async fn call(
         &self,
         method: &str,
         token: Option<&str>,
+        api_key: Option<&str>,
         payload: &[u8],
     ) -> Result<Vec<u8>, Error> {
         let req = PlayerRequest {
             method: method.to_string(),
             token: token.map(str::to_string),
+            api_key: api_key.map(str::to_string),
             payload: raw_from_bytes(payload)?,
         };
         let env_bytes = serde_json::to_vec(&req).map_err(Error::Codec)?;

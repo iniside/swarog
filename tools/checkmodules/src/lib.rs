@@ -23,6 +23,7 @@ pub fn monolith_modules() -> Vec<Box<dyn Module>> {
         Box::new(rating::Rating::new()),
         Box::new(match_module::MatchModule::new()),
         Box::new(leaderboard::LeaderboardModule::new()),
+        Box::new(apikeys::ApiKeys::new()),
         Box::new(webui::WebUi::new()),
         Box::new(gateway::Gateway::new()),
     ]

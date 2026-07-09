@@ -590,6 +590,7 @@ version = "0.1.0"
 dependencies = [
  "accounts",
  "admin",
+ "apikeys",
  "audit",
  "characters",
  "config",
@@ -1084,6 +1085,7 @@ version = "0.1.0"
 dependencies = [
  "accountsapi",
  "anyhow",
+ "apikeysapi",
  "async-trait",
  "axum",
  "contrib",
@@ -2938,6 +2940,7 @@ dependencies = [
  "accounts",
  "admin",
  "anyhow",
+ "apikeys",
  "app",
  "audit",
  "characters",

@@ -1,9 +1,48 @@
+use super::keys::policy_allows;
 use super::*;
+use apikeysapi::KeyRecord;
 use axum::http::Request as HttpRequest;
 use opsapi::{DecodeFn, EncodeFn, LocalOp, OpSet, Status};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 use tower::ServiceExt; // for `oneshot`
+
+// ---- API-key test fixtures ----
+
+/// The full-policy demo key every happy-path request carries.
+const TEST_KEY: &str = "test-key";
+/// A key whose policy names only `other.op` — the denied-method fixture.
+const LIMITED_KEY: &str = "limited-key";
+
+/// A [`KeyVerifier`] over a fixed key → policy map — the front-door tests' stand-in
+/// for the `apikeys.keys` capability (no store, no TTL cache).
+struct FakeKeyVerifier {
+    keys: HashMap<String, String>,
+}
+
+#[async_trait::async_trait]
+impl KeyVerifier for FakeKeyVerifier {
+    async fn lookup(&self, key: &str) -> Option<KeyRecord> {
+        self.keys
+            .get(key)
+            .map(|policy| KeyRecord { name: key.to_string(), policy: policy.clone() })
+    }
+}
+
+/// The demo key set: [`TEST_KEY`] (full) and [`LIMITED_KEY`] (allows only `other.op`).
+fn demo_keys() -> Arc<dyn KeyVerifier> {
+    let mut keys = HashMap::new();
+    keys.insert(TEST_KEY.to_string(), "full".to_string());
+    keys.insert(LIMITED_KEY.to_string(), "other.op".to_string());
+    Arc::new(FakeKeyVerifier { keys })
+}
+
+/// Builds a `FrontDoor` over `slots` with the standard dev session verifier and an
+/// injectable key verifier — the single construction seam every test funnels through.
+fn front_door_with_keys(slots: Arc<Slots>, keys: Arc<dyn KeyVerifier>) -> Arc<FrontDoor> {
+    Arc::new(FrontDoor::new(slots, Arc::new(DevSessionVerifier::new()), keys, Vec::new()))
+}
 
 // ---- (a) route matching incl. {wild} extraction ----
 
@@ -128,14 +167,15 @@ fn demo_opset() -> OpSet {
 }
 
 /// Wires a `FrontDoor` over a `Slots` carrying the demo op, so a test can drive
-/// either plane (the axum fallback or the player handler) through it.
+/// either plane (the axum fallback or the player handler) through it. Keys resolve
+/// via [`demo_keys`] — happy paths send [`TEST_KEY`].
 fn demo_front_door() -> Arc<FrontDoor> {
     let slots = Arc::new(Slots::new());
     let op = demo_opset();
     slots.contribute(opsapi::SLOT, op.operation);
     slots.contribute(opsapi::BINDING_SLOT, op.binding);
     slots.contribute(opsapi::LOCAL_SLOT, op.local);
-    Arc::new(FrontDoor::new(slots, Arc::new(DevSessionVerifier::new()), Vec::new()))
+    front_door_with_keys(slots, demo_keys())
 }
 
 fn demo_router() -> Router {
@@ -155,6 +195,7 @@ async fn end_to_end_decode_invoke_encode() {
         .method("POST")
         .uri("/demo/42")
         .header(header::AUTHORIZATION, "Bearer dev-alice")
+        .header("X-Api-Key", TEST_KEY)
         .body(Body::from("123"))
         .unwrap();
     let resp = router.oneshot(req).await.unwrap();
@@ -167,14 +208,19 @@ async fn end_to_end_decode_invoke_encode() {
 
 #[tokio::test]
 async fn end_to_end_missing_bearer_is_401_before_dispatch() {
+    // A VALID key, so the request passes the key check and fails at session auth —
+    // distinguishing the two 401s by body.
     let router = demo_router();
     let req = HttpRequest::builder()
         .method("POST")
         .uri("/demo/42")
+        .header("X-Api-Key", TEST_KEY)
         .body(Body::from("1"))
         .unwrap();
     let resp = router.oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    let (status, body) = body_string(resp).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(body, "unauthorized");
 }
 
 #[tokio::test]
@@ -217,10 +263,15 @@ async fn end_to_end_domain_status_maps_to_http() {
     );
     slots.contribute(opsapi::BINDING_SLOT, OpBinding { method: "demo.get".into(), decode, encode });
     slots.contribute(opsapi::LOCAL_SLOT, LocalOp { method: "demo.get".into(), invoke });
-    let front = Arc::new(FrontDoor::new(slots, Arc::new(DevSessionVerifier::new()), Vec::new()));
+    let front = front_door_with_keys(slots, demo_keys());
     let router = front.router();
 
-    let req = HttpRequest::builder().method("GET").uri("/demo/7").body(Body::empty()).unwrap();
+    let req = HttpRequest::builder()
+        .method("GET")
+        .uri("/demo/7")
+        .header("X-Api-Key", TEST_KEY)
+        .body(Body::empty())
+        .unwrap();
     let resp = router.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }
@@ -236,6 +287,7 @@ async fn front_door_stamps_route_pattern_on_matched_op() {
         .method("POST")
         .uri("/demo/42")
         .header(header::AUTHORIZATION, "Bearer dev-alice")
+        .header("X-Api-Key", TEST_KEY)
         .body(Body::from("1"))
         .unwrap();
     let resp = router.oneshot(req).await.unwrap();
@@ -255,6 +307,7 @@ async fn front_door_stamps_route_pattern_on_auth_failure() {
     let req = HttpRequest::builder()
         .method("POST")
         .uri("/demo/42")
+        .header("X-Api-Key", TEST_KEY)
         .body(Body::from("1"))
         .unwrap();
     let resp = router.oneshot(req).await.unwrap();
@@ -313,19 +366,26 @@ async fn call_player(
     front: &Arc<FrontDoor>,
     method: &str,
     token: Option<&str>,
+    api_key: Option<&str>,
     payload: &[u8],
 ) -> String {
     let h = front.player_handler();
-    let bytes = h(method.to_string(), token.map(str::to_string), payload.to_vec())
-        .await
-        .expect("domain outcomes never surface as transport Err");
+    let bytes = h(
+        method.to_string(),
+        token.map(str::to_string),
+        api_key.map(str::to_string),
+        payload.to_vec(),
+    )
+    .await
+    .expect("domain outcomes never surface as transport Err");
     String::from_utf8(bytes).unwrap()
 }
 
 #[tokio::test]
 async fn player_missing_token_on_auth_op_is_unauthorized_envelope() {
     let front = demo_front_door();
-    let body = call_player(&front, "demo.echo", None, br#"{"n":1}"#).await;
+    // A valid key, so the failure is the SESSION's, not the key check's.
+    let body = call_player(&front, "demo.echo", None, Some(TEST_KEY), br#"{"n":1}"#).await;
     // Exact macro grammar: field `err`, Status as bare variant name.
     assert_eq!(body, r#"{"status":"Unauthorized","err":"unauthorized"}"#);
 }
@@ -333,7 +393,8 @@ async fn player_missing_token_on_auth_op_is_unauthorized_envelope() {
 #[tokio::test]
 async fn player_bad_token_is_unauthorized_envelope() {
     let front = demo_front_door();
-    let body = call_player(&front, "demo.echo", Some("nope-x"), br#"{"n":1}"#).await;
+    let body =
+        call_player(&front, "demo.echo", Some("nope-x"), Some(TEST_KEY), br#"{"n":1}"#).await;
     assert_eq!(body, r#"{"status":"Unauthorized","err":"unauthorized"}"#);
 }
 
@@ -342,14 +403,16 @@ async fn player_unknown_method_is_not_found_envelope() {
     let front = demo_front_door();
     // `characters.ownerOf` is the canonical wire-only internal: a peer edge
     // serves it, but it is absent from the route table → not player-reachable.
-    let body = call_player(&front, "characters.ownerOf", Some("dev-alice"), b"{}").await;
+    let body =
+        call_player(&front, "characters.ownerOf", Some("dev-alice"), Some(TEST_KEY), b"{}").await;
     assert_eq!(body, r#"{"status":"NotFound","err":"unknown operation"}"#);
 }
 
 #[tokio::test]
 async fn player_malformed_json_is_invalid_at_the_front() {
     let front = demo_front_door();
-    let body = call_player(&front, "demo.echo", Some("dev-alice"), b"{not json").await;
+    let body =
+        call_player(&front, "demo.echo", Some("dev-alice"), Some(TEST_KEY), b"{not json").await;
     assert_eq!(body, r#"{"status":"Invalid","err":"malformed request payload"}"#);
 }
 
@@ -357,7 +420,8 @@ async fn player_malformed_json_is_invalid_at_the_front() {
 async fn player_happy_path_returns_wire_response_verbatim() {
     let front = demo_front_door();
     // No OpBinding::decode on this plane: the payload IS the wire request.
-    let body = call_player(&front, "demo.echo", Some("dev-alice"), br#"{"n":1}"#).await;
+    let body =
+        call_player(&front, "demo.echo", Some("dev-alice"), Some(TEST_KEY), br#"{"n":1}"#).await;
     assert!(body.contains(r#""status":"Ok""#), "{body}");
     assert!(body.contains(r#""pid":"alice""#), "{body}");
     assert!(body.contains(r#""echo":{"n":1}"#), "{body}");
@@ -392,10 +456,11 @@ async fn player_auth_none_op_runs_with_no_identity() {
         OpBinding { method: "demo.public".into(), decode, encode },
     );
     slots.contribute(opsapi::LOCAL_SLOT, LocalOp { method: "demo.public".into(), invoke });
-    let front = Arc::new(FrontDoor::new(slots, Arc::new(DevSessionVerifier::new()), Vec::new()));
+    let front = front_door_with_keys(slots, demo_keys());
 
-    // No token at all — must dispatch, not 401.
-    let body = call_player(&front, "demo.public", None, b"{}").await;
+    // No token at all — must dispatch, not 401. (A key is still required: the key
+    // gates the CLIENT class even on an AuthNone op.)
+    let body = call_player(&front, "demo.public", None, Some(TEST_KEY), b"{}").await;
     assert_eq!(body, r#"{"status":"Ok","anon":true}"#);
 }
 
@@ -424,11 +489,228 @@ async fn player_backend_error_is_reserialized_as_status_err_envelope() {
     );
     // NO LOCAL_SLOT contribution → Remote; no PeerAddr contributed for ghostprov,
     // so the front door has no peer address to dial.
-    let remote_front = Arc::new(FrontDoor::new(slots, Arc::new(DevSessionVerifier::new()), Vec::new()));
-    let body = call_player(&remote_front, "ghostprov.op", None, b"{}").await;
+    let remote_front = front_door_with_keys(slots, demo_keys());
+    let body = call_player(&remote_front, "ghostprov.op", None, Some(TEST_KEY), b"{}").await;
     assert!(body.starts_with(r#"{"status":"Unavailable","err":""#), "{body}");
     assert!(body.contains("no peer contributed"), "{body}");
     assert!(body.contains("ghostprov"), "{body}");
+}
+
+// ---- the API-key check: policy evaluation ----
+
+#[test]
+fn policy_allows_full_and_exact_and_trimmed_lists() {
+    // `full` allows everything, including a method invented tomorrow.
+    assert!(policy_allows("full", "match.report"));
+    assert!(policy_allows("full", "brand.newOp"));
+
+    // Exact match in a comma list.
+    assert!(policy_allows("accounts.login,characters.create", "characters.create"));
+    assert!(!policy_allows("accounts.login,characters.create", "match.report"));
+
+    // Entries are trimmed — a spaced list still matches.
+    assert!(policy_allows("accounts.login, characters.create", "characters.create"));
+    assert!(policy_allows("  demo.echo  ", "demo.echo"));
+
+    // Empty policy allows nothing; an unknown method is denied by a restricted key
+    // (the safe-by-default rule for new ops).
+    assert!(!policy_allows("", "demo.echo"));
+    assert!(!policy_allows("other.op", "demo.echo"));
+
+    // `full` must be the WHOLE policy, not a list entry prefix quirk.
+    assert!(!policy_allows("fullish.op", "demo.echo"));
+}
+
+// ---- the API-key check: HTTP plane (post-match, pre-auth) ----
+
+#[tokio::test]
+async fn http_missing_api_key_is_401() {
+    let router = demo_router();
+    // Bearer present, key absent → the KEY check answers first (it runs pre-auth).
+    let req = HttpRequest::builder()
+        .method("POST")
+        .uri("/demo/42")
+        .header(header::AUTHORIZATION, "Bearer dev-alice")
+        .body(Body::from("1"))
+        .unwrap();
+    let resp = router.oneshot(req).await.unwrap();
+    let (status, body) = body_string(resp).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(body, "missing api key");
+}
+
+#[tokio::test]
+async fn http_unknown_api_key_is_401() {
+    let router = demo_router();
+    let req = HttpRequest::builder()
+        .method("POST")
+        .uri("/demo/42")
+        .header(header::AUTHORIZATION, "Bearer dev-alice")
+        .header("X-Api-Key", "bogus-key")
+        .body(Body::from("1"))
+        .unwrap();
+    let resp = router.oneshot(req).await.unwrap();
+    let (status, body) = body_string(resp).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(body, "invalid api key");
+}
+
+#[tokio::test]
+async fn http_denied_method_is_403() {
+    let router = demo_router();
+    // LIMITED_KEY is valid but its policy allows only `other.op`, not `demo.echo`.
+    let req = HttpRequest::builder()
+        .method("POST")
+        .uri("/demo/42")
+        .header(header::AUTHORIZATION, "Bearer dev-alice")
+        .header("X-Api-Key", LIMITED_KEY)
+        .body(Body::from("1"))
+        .unwrap();
+    let resp = router.oneshot(req).await.unwrap();
+    let (status, body) = body_string(resp).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body, "api key policy forbids this operation");
+}
+
+/// A non-op route never reaches the key check: an unmatched keyless request stays a
+/// plain 404 (the `/healthz`/`/metrics`/passthrough carve-out, at the unit level).
+#[tokio::test]
+async fn http_unmatched_route_needs_no_api_key() {
+    let router = demo_router();
+    let req = HttpRequest::builder().method("GET").uri("/nope").body(Body::empty()).unwrap();
+    let resp = router.oneshot(req).await.unwrap();
+    let (status, body) = body_string(resp).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_ne!(body, "missing api key");
+}
+
+// ---- the API-key check: player plane (post-match, pre-auth, envelope grammar) ----
+
+#[tokio::test]
+async fn player_missing_api_key_is_unauthorized_envelope() {
+    let front = demo_front_door();
+    let body = call_player(&front, "demo.echo", Some("dev-alice"), None, br#"{"n":1}"#).await;
+    assert_eq!(body, r#"{"status":"Unauthorized","err":"missing api key"}"#);
+}
+
+#[tokio::test]
+async fn player_unknown_api_key_is_unauthorized_envelope() {
+    let front = demo_front_door();
+    let body =
+        call_player(&front, "demo.echo", Some("dev-alice"), Some("bogus-key"), br#"{"n":1}"#)
+            .await;
+    assert_eq!(body, r#"{"status":"Unauthorized","err":"invalid api key"}"#);
+}
+
+#[tokio::test]
+async fn player_denied_method_is_forbidden_envelope() {
+    let front = demo_front_door();
+    let body =
+        call_player(&front, "demo.echo", Some("dev-alice"), Some(LIMITED_KEY), br#"{"n":1}"#)
+            .await;
+    assert_eq!(
+        body,
+        r#"{"status":"Forbidden","err":"api key policy forbids this operation"}"#
+    );
+}
+
+/// The ordering guarantee split-proof P5 relies on: the key check runs AFTER
+/// `find_by_method`, so an unknown method stays NotFound even under a key whose
+/// policy would deny it — method existence is never leaked through the key check.
+#[tokio::test]
+async fn player_unknown_method_stays_not_found_with_restrictive_key() {
+    let front = demo_front_door();
+    let body =
+        call_player(&front, "characters.ownerOf", Some("dev-alice"), Some(LIMITED_KEY), b"{}")
+            .await;
+    assert_eq!(body, r#"{"status":"NotFound","err":"unknown operation"}"#);
+}
+
+// ---- RealKeyVerifier: the TTL cache over the apikeys capability ----
+
+/// A scripted `apikeysapi::Keys`: pops the next response off a queue (falling back to
+/// `Ok(Some(full))` when exhausted) and counts every capability hit — the seam the
+/// cache assertions read.
+struct ScriptedKeys {
+    calls: AtomicUsize,
+    responses: std::sync::Mutex<std::collections::VecDeque<Result<Option<KeyRecord>, Error>>>,
+}
+
+impl ScriptedKeys {
+    fn new(responses: Vec<Result<Option<KeyRecord>, Error>>) -> Arc<ScriptedKeys> {
+        Arc::new(ScriptedKeys {
+            calls: AtomicUsize::new(0),
+            responses: std::sync::Mutex::new(responses.into_iter().collect()),
+        })
+    }
+
+    fn calls(&self) -> usize {
+        self.calls.load(Ordering::SeqCst)
+    }
+}
+
+#[async_trait::async_trait]
+impl apikeysapi::Keys for ScriptedKeys {
+    async fn lookup_key(&self, key: String) -> Result<Option<KeyRecord>, Error> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.responses.lock().unwrap().pop_front().unwrap_or_else(|| {
+            Ok(Some(KeyRecord { name: key, policy: "full".to_string() }))
+        })
+    }
+}
+
+fn full_record(name: &str) -> Option<KeyRecord> {
+    Some(KeyRecord { name: name.to_string(), policy: "full".to_string() })
+}
+
+#[tokio::test]
+async fn key_cache_serves_repeat_lookup_without_requerying() {
+    let keys = ScriptedKeys::new(vec![Ok(full_record("client"))]);
+    let v = RealKeyVerifier::with_ttl(keys.clone(), Duration::from_secs(60));
+
+    assert_eq!(v.lookup("k1").await.unwrap().name, "client");
+    assert_eq!(v.lookup("k1").await.unwrap().name, "client");
+    assert_eq!(keys.calls(), 1, "the second lookup must hit the cache");
+}
+
+#[tokio::test]
+async fn key_cache_caches_ok_none_too() {
+    // Ok(None) — a genuinely unknown key — IS cached (bounds bad-key spam): the
+    // scripted second response would be Some, but it must never be consulted.
+    let keys = ScriptedKeys::new(vec![Ok(None), Ok(full_record("client"))]);
+    let v = RealKeyVerifier::with_ttl(keys.clone(), Duration::from_secs(60));
+
+    assert!(v.lookup("unknown").await.is_none());
+    assert!(v.lookup("unknown").await.is_none(), "cached Ok(None) must be served");
+    assert_eq!(keys.calls(), 1);
+}
+
+#[tokio::test]
+async fn key_cache_expired_entry_requeries() {
+    // TTL zero: every entry is immediately stale, so each lookup re-consults the
+    // capability (expiry without sleeping).
+    let keys = ScriptedKeys::new(vec![]);
+    let v = RealKeyVerifier::with_ttl(keys.clone(), Duration::ZERO);
+
+    assert!(v.lookup("k1").await.is_some());
+    assert!(v.lookup("k1").await.is_some());
+    assert_eq!(keys.calls(), 2, "a stale entry must be re-queried");
+}
+
+#[tokio::test]
+async fn key_cache_never_caches_an_err() {
+    // First call errors (apikeys blip): THIS request collapses to None, but the
+    // failure is NOT cached — the next request re-queries and gets the valid record
+    // (an outage must not poison a valid key for a whole TTL).
+    let keys = ScriptedKeys::new(vec![
+        Err(Error::unavailable("apikeys unreachable")),
+        Ok(full_record("client")),
+    ]);
+    let v = RealKeyVerifier::with_ttl(keys.clone(), Duration::from_secs(60));
+
+    assert!(v.lookup("k1").await.is_none(), "an Err collapses to a per-request deny");
+    assert_eq!(v.lookup("k1").await.unwrap().name, "client");
+    assert_eq!(keys.calls(), 2, "the Err must not have been cached");
 }
 
 // ---- RemoteBackend exercised against a fake Caller ----

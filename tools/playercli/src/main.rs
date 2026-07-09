@@ -7,7 +7,7 @@
 //! raw response payload bytes to stdout.
 //!
 //!   playercli --addr 127.0.0.1:9100 --ca run/edge-ca.crt [--token dev-alice] \
-//!       characters.create '{"name":"hero","class":""}'
+//!       [--api-key dev-key-client] characters.create '{"name":"hero","class":""}'
 //!
 //! Exit code is the PINNED grammar from the QUIC player-front plan: 0 iff the
 //! transport call succeeded (`PlayerClient::call` returned `Ok` — transport `ok:true`)
@@ -21,13 +21,14 @@ use std::process::ExitCode;
 use edge::{DevCA, PlayerClient};
 
 fn usage() -> &'static str {
-    "playercli --addr 127.0.0.1:9100 --ca <path> [--token <t>] <method> [json-payload]"
+    "playercli --addr 127.0.0.1:9100 --ca <path> [--token <t>] [--api-key <k>] <method> [json-payload]"
 }
 
 struct Args {
     addr: String,
     ca: String,
     token: Option<String>,
+    api_key: Option<String>,
     method: String,
     payload: String,
 }
@@ -38,6 +39,7 @@ fn parse_args() -> Result<Args, String> {
     let mut addr = "127.0.0.1:9100".to_string();
     let mut ca = String::new();
     let mut token: Option<String> = None;
+    let mut api_key: Option<String> = None;
     let mut positional: Vec<String> = Vec::new();
 
     let mut args = std::env::args().skip(1);
@@ -51,6 +53,9 @@ fn parse_args() -> Result<Args, String> {
             "--token" | "-token" => {
                 token = Some(args.next().ok_or("playercli: --token requires a value")?)
             }
+            "--api-key" | "-api-key" => {
+                api_key = Some(args.next().ok_or("playercli: --api-key requires a value")?)
+            }
             other => positional.push(other.to_string()),
         }
     }
@@ -63,7 +68,7 @@ fn parse_args() -> Result<Args, String> {
     };
     let payload = positional.get(1).cloned().unwrap_or_else(|| "null".to_string());
 
-    Ok(Args { addr, ca, token, method, payload })
+    Ok(Args { addr, ca, token, api_key, method, payload })
 }
 
 #[tokio::main]
@@ -106,7 +111,10 @@ async fn main() -> ExitCode {
     // `PlayerClient::call` already unwraps the transport envelope: `Err` here is a
     // TRANSPORT fault (the peer's `ok:false`); a domain outcome — auth failure
     // included — arrives as `Ok(bytes)` per the pinned error grammar.
-    let resp = match client.call(&args.method, args.token.as_deref(), args.payload.as_bytes()).await {
+    let resp = match client
+        .call(&args.method, args.token.as_deref(), args.api_key.as_deref(), args.payload.as_bytes())
+        .await
+    {
         Ok(bytes) => bytes,
         Err(e) => {
             eprintln!("playercli: call {}: {e}", args.method);

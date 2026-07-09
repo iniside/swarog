@@ -287,7 +287,7 @@ mod player_e2e_tests {
 
     fn player_handler<F>(f: F) -> PlayerHandler
     where
-        F: Fn(String, Option<String>, Vec<u8>) -> BoxFuture<'static, HandlerResult>
+        F: Fn(String, Option<String>, Option<String>, Vec<u8>) -> BoxFuture<'static, HandlerResult>
             + Send
             + Sync
             + 'static,
@@ -302,44 +302,51 @@ mod player_e2e_tests {
         Arc::new(f)
     }
 
-    /// A [`PlayerServer`] whose handler reflects (method, token, payload) back as a
-    /// JSON object — lets one assertion see everything the transport threaded through.
+    /// A [`PlayerServer`] whose handler reflects (method, token, api_key, payload)
+    /// back as a JSON object — lets one assertion see everything the transport
+    /// threaded through.
     fn reflecting_server() -> PlayerServer {
         let srv = PlayerServer::new();
-        srv.set_handler(player_handler(|method, token, payload| {
+        srv.set_handler(player_handler(|method, token, api_key, payload| {
             Box::pin(async move {
                 let token = token.map_or("<none>".into(), |t| t);
+                let api_key = api_key.map_or("<none>".into(), |k| k);
                 let payload = String::from_utf8_lossy(&payload).into_owned();
-                Ok(format!(r#"{{"method":"{method}","token":"{token}","payload":{payload}}}"#)
-                    .into_bytes())
+                Ok(format!(
+                    r#"{{"method":"{method}","token":"{token}","api_key":"{api_key}","payload":{payload}}}"#
+                )
+                .into_bytes())
             })
         }));
         srv
     }
 
-    // Player-plane roundtrip WITH and WITHOUT a token: the token is threaded through
-    // verbatim (an unverified claim — verification is the front's job, not the
-    // transport's) and an omitted token still dispatches (the serde(default) proof
-    // over the live wire, not just the envelope unit test).
+    // Player-plane roundtrip WITH and WITHOUT a token + api_key: both are threaded
+    // through verbatim (unverified claims — verification is the front's job, not the
+    // transport's) and omitted fields still dispatch (the serde(default) proof over
+    // the live wire, not just the envelope unit test).
     #[tokio::test]
-    async fn player_roundtrip_with_and_without_token() {
+    async fn player_roundtrip_with_and_without_token_and_api_key() {
         let ca = DevCA::generate().unwrap();
         let running = reflecting_server().listen(loopback(), &ca).unwrap();
 
         let client = PlayerClient::dial(running.local_addr(), &ca.trust_anchor()).await.unwrap();
 
         let resp = client
-            .call("characters.create", Some("dev-alice"), br#"{"name":"hero"}"#)
+            .call("characters.create", Some("dev-alice"), Some("dev-key-client"), br#"{"name":"hero"}"#)
             .await
             .unwrap();
         assert_eq!(
             resp,
-            br#"{"method":"characters.create","token":"dev-alice","payload":{"name":"hero"}}"#
+            br#"{"method":"characters.create","token":"dev-alice","api_key":"dev-key-client","payload":{"name":"hero"}}"#
         );
 
-        // No token: the AuthNone shape — must dispatch, handler sees none.
-        let resp = client.call("leaderboard.top", None, br#"{"n":10}"#).await.unwrap();
-        assert_eq!(resp, br#"{"method":"leaderboard.top","token":"<none>","payload":{"n":10}}"#);
+        // No token, no key: the pre-key AuthNone shape — must dispatch, handler sees none.
+        let resp = client.call("leaderboard.top", None, None, br#"{"n":10}"#).await.unwrap();
+        assert_eq!(
+            resp,
+            br#"{"method":"leaderboard.top","token":"<none>","api_key":"<none>","payload":{"n":10}}"#
+        );
 
         client.close();
         running.close();
@@ -365,8 +372,11 @@ mod player_e2e_tests {
         std::fs::remove_file(&key).unwrap();
         let anchor = DevCA::load_cert_only(cert.to_str().unwrap()).unwrap();
         let client = PlayerClient::dial(running.local_addr(), &anchor).await.unwrap();
-        let resp = client.call("echo", None, br#"{"anchor":true}"#).await.unwrap();
-        assert_eq!(resp, br#"{"method":"echo","token":"<none>","payload":{"anchor":true}}"#);
+        let resp = client.call("echo", None, None, br#"{"anchor":true}"#).await.unwrap();
+        assert_eq!(
+            resp,
+            br#"{"method":"echo","token":"<none>","api_key":"<none>","payload":{"anchor":true}}"#
+        );
 
         client.close();
         running.close();
@@ -385,7 +395,7 @@ mod player_e2e_tests {
         let player_running = reflecting_server().listen(loopback(), &ca).unwrap();
         let ok_client =
             PlayerClient::dial(player_running.local_addr(), &ca.trust_anchor()).await.unwrap();
-        ok_client.call("echo", None, b"null").await.unwrap();
+        ok_client.call("echo", None, None, b"null").await.unwrap();
         ok_client.close();
         player_running.close();
 
@@ -397,7 +407,7 @@ mod player_e2e_tests {
         match PlayerClient::dial(running.local_addr(), &ca.trust_anchor()).await {
             Err(_) => { /* rejected at handshake — the expected path */ }
             Ok(client) => {
-                let r = client.call("echo", None, b"null").await;
+                let r = client.call("echo", None, None, b"null").await;
                 assert!(r.is_err(), "a player client must not be served on the mTLS plane, got {r:?}");
             }
         }
@@ -438,7 +448,7 @@ mod player_e2e_tests {
         big.push(b'"');
         big.resize((2 << 20) + 1, b'x');
         big.push(b'"');
-        let err = client.call("echo", None, &big).await.unwrap_err();
+        let err = client.call("echo", None, None, &big).await.unwrap_err();
         // Depending on timing the client sees the server's ok:false envelope or its
         // own blocked write failing on the stopped stream — either way, rejected.
         assert!(
@@ -447,8 +457,11 @@ mod player_e2e_tests {
         );
 
         // The connection survives: a normal call still works.
-        let resp = client.call("echo", None, br#"{"ok":1}"#).await.unwrap();
-        assert_eq!(resp, br#"{"method":"echo","token":"<none>","payload":{"ok":1}}"#);
+        let resp = client.call("echo", None, None, br#"{"ok":1}"#).await.unwrap();
+        assert_eq!(
+            resp,
+            br#"{"method":"echo","token":"<none>","api_key":"<none>","payload":{"ok":1}}"#
+        );
 
         client.close();
         running.close();
@@ -462,7 +475,7 @@ mod player_e2e_tests {
         let running = PlayerServer::new().listen(loopback(), &ca).unwrap();
         let client = PlayerClient::dial(running.local_addr(), &ca.trust_anchor()).await.unwrap();
 
-        let err = client.call("anything", None, b"null").await.unwrap_err();
+        let err = client.call("anything", None, None, b"null").await.unwrap_err();
         assert!(matches!(&err, Error::Remote(msg) if msg.contains("not wired")), "{err:?}");
 
         client.close();
