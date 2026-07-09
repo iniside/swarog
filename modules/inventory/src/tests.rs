@@ -1,4 +1,5 @@
 use super::*;
+use bus::AnyTx;
 use opsapi::Status;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -271,7 +272,7 @@ async fn grant_on_created_via_on_tx() {
         class: "novice".into(),
     };
     ctx.bus()
-        .emit_tx(&mut tx, &charactersevents::CREATED, &created)
+        .emit_tx(AnyTx::new(&mut *tx), &charactersevents::CREATED, &created)
         .await
         .unwrap();
     tx.commit().await.unwrap();

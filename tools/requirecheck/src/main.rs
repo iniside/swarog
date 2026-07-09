@@ -45,7 +45,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
-use bus::{Error, Transport, TxHandler};
+use bus::{AnyTx, Error, Transport, TxHandler};
 use lifecycle::{Caps, Context, Module};
 use registry::RequireKind;
 
@@ -73,7 +73,7 @@ struct NoopTransport;
 impl Transport for NoopTransport {
     async fn enqueue_tx(
         &self,
-        _conn: &mut sqlx::PgConnection,
+        _tx: AnyTx<'_>,
         _topic: &str,
         _payload: &[u8],
     ) -> Result<(), Error> {

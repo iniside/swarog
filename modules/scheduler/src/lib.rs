@@ -44,7 +44,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use bus::Bus;
+use bus::{AnyTx, Bus};
 use lifecycle::{Caps, Context, Module};
 use sqlx::{Connection, PgConnection, PgPool};
 use tokio::sync::watch;
@@ -175,7 +175,7 @@ async fn fire_locked(conn: &mut PgConnection, bus: &Bus, name: &str) -> anyhow::
         .execute(&mut *tx)
         .await?;
     bus.emit_tx(
-        &mut tx, // &mut Transaction coerces to the &mut PgConnection emit_tx wants
+        AnyTx::new(&mut *tx), // erased after the deref: Transaction<'_> isn't 'static
         &schedulerevents::FIRED,
         &schedulerevents::Fired {
             name: name.to_string(),

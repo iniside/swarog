@@ -14,7 +14,7 @@
 use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
-use bus::Bus;
+use bus::{AnyTx, Bus};
 use charactersapi::{Character, Ownership, Player};
 use lifecycle::{Caps, Context, Module};
 use opsapi::{Error, Identity};
@@ -216,7 +216,7 @@ impl Player for Service {
             class: c.class.clone(),
         };
         self.bus
-            .emit_tx(&mut tx, &charactersevents::CREATED, &evt)
+            .emit_tx(AnyTx::new(&mut *tx), &charactersevents::CREATED, &evt)
             .await
             .map_err(internal)?;
         tx.commit().await.map_err(internal)?;
@@ -259,7 +259,7 @@ impl Player for Service {
             player_id,
         };
         self.bus
-            .emit_tx(&mut tx, &charactersevents::DELETED, &evt)
+            .emit_tx(AnyTx::new(&mut *tx), &charactersevents::DELETED, &evt)
             .await
             .map_err(internal)?;
         tx.commit().await.map_err(internal)?;

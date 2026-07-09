@@ -20,7 +20,7 @@
 use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
-use bus::Bus;
+use bus::{AnyTx, Bus};
 use lifecycle::{Caps, Context, Module};
 use matchapi::Match;
 use opsapi::Error;
@@ -106,7 +106,7 @@ impl Match for Service {
             loser,
         };
         self.bus
-            .emit_tx(&mut tx, &matchevents::FINISHED, &evt)
+            .emit_tx(AnyTx::new(&mut *tx), &matchevents::FINISHED, &evt)
             .await
             .map_err(internal)?;
         tx.commit().await.map_err(internal)?;

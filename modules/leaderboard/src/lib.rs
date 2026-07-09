@@ -155,8 +155,11 @@ impl Module for LeaderboardModule {
         ctx.bus().on_tx(
             &matchevents::FINISHED,
             SUBSCRIBER,
-            move |conn, e: matchevents::Finished| {
-                Box::pin(async move { record_win(conn, &e.winner).await.map_err(bus::Error::transport) })
+            move |mut delivery, e: matchevents::Finished| {
+                Box::pin(async move {
+                    let conn = delivery.tx.downcast::<sqlx::PgConnection>()?;
+                    record_win(conn, &e.winner).await.map_err(bus::Error::transport)
+                })
             },
         );
 

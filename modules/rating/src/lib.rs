@@ -149,7 +149,7 @@ impl Module for Rating {
         ctx.bus().on_tx(
             &matchevents::FINISHED,
             SUBSCRIBER,
-            move |_conn, e: matchevents::Finished| {
+            move |_delivery, e: matchevents::Finished| {
                 let reactor = reactor.clone();
                 Box::pin(async move {
                     reactor.apply_result(&e.winner, &e.loser);

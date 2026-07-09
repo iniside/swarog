@@ -24,7 +24,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::Router;
-use bus::{Transport, TxHandler};
+use bus::{AnyTx, Delivery, Transport, TxHandler};
 use outbox::Relay;
 use sqlx::PgPool;
 use tokio::sync::watch;
@@ -115,15 +115,23 @@ pub struct Inner {
 
 #[async_trait::async_trait]
 impl Transport for Inner {
-    /// Writes one outbox row inside the PRODUCER's domain tx (`conn` is `&mut *tx`),
-    /// so the event is durable iff the domain change commits. Stamps `self.origin`
-    /// (the producer never sets it) and does NOT commit — the caller owns the tx.
+    /// Writes one outbox row inside the PRODUCER's domain tx (the [`AnyTx`] erases
+    /// `&mut *tx`), so the event is durable iff the domain change commits. Stamps
+    /// `self.origin` (the producer never sets it) and does NOT commit — the caller
+    /// owns the tx.
+    ///
+    /// The downcast is THE producer-side engine gate: this plane's outbox is
+    /// Postgres, so a producer whose store tx is any other engine gets
+    /// [`bus::Error::TxEngineMismatch`] — surfacing at the FIRST EMIT, which can
+    /// be arbitrarily post-boot (a request-path emit fails on first use, not at
+    /// startup).
     async fn enqueue_tx(
         &self,
-        conn: &mut sqlx::PgConnection,
+        mut tx: AnyTx<'_>,
         topic: &str,
         payload: &[u8],
     ) -> Result<(), bus::Error> {
+        let conn = tx.downcast::<sqlx::PgConnection>()?;
         // Bind the payload as text so `::jsonb` parses it (a bytea bind would try to
         // cast raw bytes). The bus already JSON-encoded it, so it is valid UTF-8.
         let text = std::str::from_utf8(payload).map_err(bus::Error::transport)?;
@@ -158,6 +166,13 @@ impl Inner {
     /// (the tx drops) and propagates → the row stays unsent (local) / a 500 is
     /// returned (inbound) → redelivered next tick. Each subscriber gets its OWN tx and
     /// its OWN inbox row, so a failing subscriber can never roll back another's effect.
+    ///
+    /// The handler receives a [`Delivery`]: the stable `event_id` plus this dedup
+    /// tx erased as an [`AnyTx`]. For an engine-matched (Postgres-store) consumer
+    /// nothing changed semantically — downcasting and writing through the handed
+    /// tx makes its effect atomic with the inbox marker, exactly as before. A
+    /// foreign-store consumer instead keys an idempotent write in ITS store on
+    /// `event_id` (the plane's inbox then only bounds redelivery).
     async fn consume(
         &self,
         subscriber: &str,
@@ -178,9 +193,16 @@ impl Inner {
             return Ok(());
         }
         // Run the handler on the SAME connection/tx, so its effect + the inbox marker
-        // commit or roll back together.
+        // commit or roll back together (for an engine-matched consumer writing
+        // through the handed delivery tx).
         handler
-            .call(&mut tx, payload.to_vec())
+            .call(
+                Delivery {
+                    event_id,
+                    tx: AnyTx::new(&mut *tx),
+                },
+                payload.to_vec(),
+            )
             .await
             .map_err(|e| anyhow::anyhow!("durable handler failed: {e}"))?;
         tx.commit().await?;

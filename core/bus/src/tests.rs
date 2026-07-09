@@ -132,12 +132,7 @@ struct FakeTransport {
 
 #[async_trait::async_trait]
 impl Transport for FakeTransport {
-    async fn enqueue_tx(
-        &self,
-        _conn: &mut sqlx::PgConnection,
-        topic: &str,
-        payload: &[u8],
-    ) -> Result<(), Error> {
+    async fn enqueue_tx(&self, _tx: AnyTx<'_>, topic: &str, payload: &[u8]) -> Result<(), Error> {
         self.enqueued
             .lock()
             .unwrap()
@@ -175,9 +170,9 @@ fn on_tx_without_transport_panics() {
     // no durable-events plane (no DB), where a durable subscriber cannot run.
     let bus = Bus::new();
     let et = define::<Grant>("inventory.grant");
-    bus.on_tx(&et, "inventory", |conn, g: Grant| {
+    bus.on_tx(&et, "inventory", |delivery, g: Grant| {
         Box::pin(async move {
-            let _ = (conn, g);
+            let _ = (delivery, g);
             Ok(())
         })
     });
@@ -189,9 +184,9 @@ fn on_tx_and_on_tx_raw_record_topic_and_subscriber() {
     let bus = Bus::with_transport(fake.clone());
     let et = define::<Grant>("inventory.grant");
 
-    bus.on_tx(&et, "inventory", |conn, g: Grant| {
+    bus.on_tx(&et, "inventory", |delivery, g: Grant| {
         Box::pin(async move {
-            let _ = (conn, g);
+            let _ = (delivery, g);
             Ok(())
         })
     });
@@ -199,7 +194,7 @@ fn on_tx_and_on_tx_raw_record_topic_and_subscriber() {
     impl TxHandler for Raw {
         fn call<'a>(
             &'a self,
-            _conn: &'a mut sqlx::PgConnection,
+            _delivery: Delivery<'a>,
             _payload: Vec<u8>,
         ) -> BoxFuture<'a, Result<(), Error>> {
             Box::pin(async { Ok(()) })
@@ -250,15 +245,19 @@ fn typed_adapter_decodes_before_calling_the_handler() {
 }
 
 /// Compile-only proof that the full durable tx-threading type-checks: `emit_tx`
-/// takes `&mut PgConnection` and routes `&encode(v)` to `Transport::enqueue_tx`;
-/// `on_tx`/`on_tx_raw` accept the borrow-through-future handler shape. Never
-/// executed (no live DB) — the compiler checking it is the assertion.
+/// takes an [`AnyTx`] (erased from any `Any + Send` local — the seam names no
+/// engine, so a plain `u32` stands in for a connection) and routes `&encode(v)`
+/// to `Transport::enqueue_tx`; `on_tx`/`on_tx_raw` accept the
+/// borrow-through-future handler shape (`for<'a> Fn(Delivery<'a>, T) ->
+/// BoxFuture<'a, _>`, the future borrowing the delivery). Never executed —
+/// the compiler checking it is the assertion.
 #[allow(dead_code)]
-async fn _tx_threading_type_checks(bus: &Bus, conn: &mut sqlx::PgConnection) {
+async fn _tx_threading_type_checks(bus: &Bus) {
     let et = define::<Grant>("inventory.grant");
+    let mut fake_tx: u32 = 0;
     let _ = bus
         .emit_tx(
-            conn,
+            AnyTx::new(&mut fake_tx),
             &et,
             &Grant {
                 item: "x".into(),
@@ -266,9 +265,12 @@ async fn _tx_threading_type_checks(bus: &Bus, conn: &mut sqlx::PgConnection) {
             },
         )
         .await;
-    bus.on_tx(&et, "inventory", |c, g: Grant| {
+    bus.on_tx(&et, "inventory", |mut delivery, g: Grant| {
         Box::pin(async move {
-            let _ = (c, g);
+            // The future borrows the delivery: both fields usable across an await.
+            let _ = delivery.event_id;
+            let _ = delivery.tx.downcast::<u32>();
+            let _ = g;
             Ok(())
         })
     });
@@ -276,11 +278,36 @@ async fn _tx_threading_type_checks(bus: &Bus, conn: &mut sqlx::PgConnection) {
     impl TxHandler for H {
         fn call<'a>(
             &'a self,
-            _conn: &'a mut sqlx::PgConnection,
+            _delivery: Delivery<'a>,
             _payload: Vec<u8>,
         ) -> BoxFuture<'a, Result<(), Error>> {
             Box::pin(async { Ok(()) })
         }
     }
     bus.on_tx_raw("audit", "audit", Arc::new(H));
+}
+
+/// [`AnyTx::downcast`] hands back the exact borrow for the constructed type and
+/// yields [`Error::TxEngineMismatch`] naming BOTH concrete types otherwise —
+/// the loud composition-root signal that replaces compile-time engine typing.
+#[test]
+fn any_tx_downcast_success_and_engine_mismatch() {
+    let mut n: u32 = 41;
+    let mut tx = AnyTx::new(&mut n);
+    *tx.downcast::<u32>().unwrap() += 1;
+    assert_eq!(n, 42);
+
+    let mut s = String::from("not-a-u32");
+    let mut tx = AnyTx::new(&mut s);
+    let err = tx.downcast::<u32>().unwrap_err();
+    match &err {
+        Error::TxEngineMismatch { expected, got } => {
+            assert_eq!(*expected, std::any::type_name::<u32>());
+            assert_eq!(*got, std::any::type_name::<String>());
+        }
+        other => panic!("expected TxEngineMismatch, got {other:?}"),
+    }
+    let msg = err.to_string();
+    assert!(msg.contains("u32"), "message must name the expected type: {msg}");
+    assert!(msg.contains("String"), "message must name the got type: {msg}");
 }

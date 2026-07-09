@@ -147,7 +147,7 @@ pub fn remote_factories() -> Vec<remote::RemoteFactory> {
         ctx.bus().on_tx(
             &configevents::CHANGED,
             "config-cache",
-            move |_conn, _e: configevents::Changed| {
+            move |_delivery, _e: configevents::Changed| {
                 let refresh = refresh.clone();
                 Box::pin(async move { refresh.refresh().await.map_err(bus::Error::transport) })
             },

@@ -30,7 +30,7 @@
 use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
-use bus::{Error as BusError, TxHandler};
+use bus::{Delivery, Error as BusError, TxHandler};
 use futures::future::BoxFuture;
 use lifecycle::{Caps, Context, Module};
 use opsapi::Error;
@@ -85,9 +85,11 @@ fn internal<E: std::fmt::Display>(e: E) -> Error {
 // inbox-dedup tx, so the ledger effect commits atomically with the dedup row.
 // ============================================================================
 
-/// Records one durable event to the ledger on the handed tx: the raw event JSON,
-/// verbatim, under its topic. No payload-type import — the untyped `on_tx_raw` hands
-/// the bytes (Go's `record`).
+/// Records one durable event to the ledger: the raw event JSON, verbatim, under its
+/// topic. Effects are exactly-once because the write commits atomically with the inbox
+/// dedup row on the delivery tx (downcast from `Delivery` — audit shares the plane's
+/// Postgres engine). No payload-type import — the untyped `on_tx_raw` hands the bytes
+/// (Go's `record`).
 struct RecordHandler {
     topic: String,
 }
@@ -95,10 +97,11 @@ struct RecordHandler {
 impl TxHandler for RecordHandler {
     fn call<'a>(
         &'a self,
-        conn: &'a mut PgConnection,
+        mut delivery: Delivery<'a>,
         payload: Vec<u8>,
     ) -> BoxFuture<'a, Result<(), BusError>> {
         Box::pin(async move {
+            let conn = delivery.tx.downcast::<PgConnection>()?;
             // The bus JSON-encoded the payload, so it is valid UTF-8; bind as text so
             // `::jsonb` parses it (a bytea bind would cast raw bytes).
             let text = std::str::from_utf8(&payload).map_err(BusError::transport)?;
@@ -114,9 +117,9 @@ impl TxHandler for RecordHandler {
 }
 
 /// Prunes ledger rows past the retention window as a REACTION to
-/// `scheduler.fired{name:"audit-prune"}`, on the handed tx. A non-prune schedule name
-/// is a committed no-op (the tick is marked processed, nothing to do); a redelivered
-/// tick is idempotent (Go's `prune`).
+/// `scheduler.fired{name:"audit-prune"}`, on the delivery tx (downcast from `Delivery`).
+/// A non-prune schedule name is a committed no-op (the tick is marked processed, nothing
+/// to do); a redelivered tick is idempotent (Go's `prune`).
 struct PruneHandler {
     retention_days: i32,
 }
@@ -133,10 +136,11 @@ struct FiredName {
 impl TxHandler for PruneHandler {
     fn call<'a>(
         &'a self,
-        conn: &'a mut PgConnection,
+        mut delivery: Delivery<'a>,
         payload: Vec<u8>,
     ) -> BoxFuture<'a, Result<(), BusError>> {
         Box::pin(async move {
+            let conn = delivery.tx.downcast::<PgConnection>()?;
             let fired: FiredName = serde_json::from_slice(&payload).map_err(BusError::from)?;
             if fired.name != PRUNE_SCHEDULE_NAME {
                 return Ok(()); // some other schedule — marked processed, nothing to do

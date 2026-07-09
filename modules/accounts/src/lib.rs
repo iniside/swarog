@@ -31,7 +31,7 @@ mod store;
 use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
-use bus::Bus;
+use bus::{AnyTx, Bus};
 use lifecycle::{Caps, Context, Module};
 use opsapi::{Error, Identity};
 
@@ -172,7 +172,7 @@ impl Service {
     ) -> Result<(), Error> {
         self.bus
             .emit_tx(
-                tx,
+                AnyTx::new(&mut **tx),
                 &accountsevents::PLAYER_REGISTERED,
                 &accountsevents::PlayerRegistered {
                     player_id: p.id.clone(),

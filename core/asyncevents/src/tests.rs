@@ -45,22 +45,27 @@ fn inner(pool: PgPool, origin: &str) -> Arc<Inner> {
     })
 }
 
-/// A [`TxHandler`] that counts calls and records each payload it received.
+/// A [`TxHandler`] that counts calls and records each payload AND the delivery
+/// `event_id` it received — so tests can assert the handler saw the same stable
+/// id the plane deduped on (the foreign-store idempotency key).
 struct RecordHandler {
     calls: Arc<AtomicU32>,
     seen: Arc<Mutex<Vec<Vec<u8>>>>,
+    ids: Arc<Mutex<Vec<String>>>,
 }
 impl TxHandler for RecordHandler {
     fn call<'a>(
         &'a self,
-        _conn: &'a mut sqlx::PgConnection,
+        delivery: Delivery<'a>,
         payload: Vec<u8>,
     ) -> BoxFuture<'a, Result<(), bus::Error>> {
         let calls = self.calls.clone();
         let seen = self.seen.clone();
+        let ids = self.ids.clone();
         Box::pin(async move {
             calls.fetch_add(1, Ordering::SeqCst);
             seen.lock().unwrap().push(payload);
+            ids.lock().unwrap().push(delivery.event_id.to_string());
             Ok(())
         })
     }
@@ -79,9 +84,9 @@ async fn plane_transport_is_live_at_context_construction() {
     // Transport::subscribe_tx. This runs long before Plane::start's snapshot; it
     // must not panic and must land in the plane's subscription table.
     let et = bus::define::<serde_json::Value>("test.topic");
-    ctx.bus().on_tx(&et, "consumer", |conn, v: serde_json::Value| {
+    ctx.bus().on_tx(&et, "consumer", |delivery, v: serde_json::Value| {
         Box::pin(async move {
-            let _ = (conn, v);
+            let _ = (delivery, v);
             Ok(())
         })
     });
@@ -98,7 +103,7 @@ async fn enqueue_tx_writes_row_with_origin() {
 
     let mut tx = pool.begin().await.unwrap();
     inner
-        .enqueue_tx(&mut tx, "test.enqueue", br#"{"a":1}"#)
+        .enqueue_tx(AnyTx::new(&mut *tx), "test.enqueue", br#"{"a":1}"#)
         .await
         .unwrap();
     tx.commit().await.unwrap();
@@ -126,8 +131,8 @@ async fn relay_drains_only_its_own_origin() {
 
     // One row from each origin, both committed.
     let mut tx = pool.begin().await.unwrap();
-    inner_a.enqueue_tx(&mut tx, "t.a", br#"{"n":1}"#).await.unwrap();
-    inner_b.enqueue_tx(&mut tx, "t.b", br#"{"n":2}"#).await.unwrap();
+    inner_a.enqueue_tx(AnyTx::new(&mut *tx), "t.a", br#"{"n":1}"#).await.unwrap();
+    inner_b.enqueue_tx(AnyTx::new(&mut *tx), "t.b", br#"{"n":2}"#).await.unwrap();
     tx.commit().await.unwrap();
 
     // Relay A with a local target recording delivered event ids.
@@ -164,15 +169,20 @@ async fn inbox_dedup_runs_handler_once() {
     let event_id = format!("asyncevents:test:{}", unique());
     let calls = Arc::new(AtomicU32::new(0));
     let seen = Arc::new(Mutex::new(Vec::new()));
+    let ids = Arc::new(Mutex::new(Vec::new()));
 
     for _ in 0..2 {
         let h: Arc<dyn TxHandler> = Arc::new(RecordHandler {
             calls: calls.clone(),
             seen: seen.clone(),
+            ids: ids.clone(),
         });
         inner.consume("sub-a", &event_id, b"{}", h).await.unwrap();
     }
     assert_eq!(calls.load(Ordering::SeqCst), 1, "handler ran more than once — inbox dedup broken");
+    // The one run saw the exact id the plane deduped on — the stable key a
+    // foreign-store consumer would use for its own idempotent effect.
+    assert_eq!(*ids.lock().unwrap(), vec![event_id.clone()]);
 
     cleanup_inbox(&pool, &event_id).await;
 }
@@ -188,17 +198,20 @@ async fn local_target_round_trip() {
     // Producer enqueues one durable event.
     let mut tx = pool.begin().await.unwrap();
     inner
-        .enqueue_tx(&mut tx, "rt.topic", br#"{"item":"starter-sword","qty":1}"#)
+        .enqueue_tx(AnyTx::new(&mut *tx), "rt.topic", br#"{"item":"starter-sword","qty":1}"#)
         .await
         .unwrap();
     tx.commit().await.unwrap();
 
-    // A subscription that records the payload, wired through the real build path.
+    // A subscription that records the payload + delivery id, wired through the
+    // real build path.
     let calls = Arc::new(AtomicU32::new(0));
     let seen = Arc::new(Mutex::new(Vec::new()));
+    let ids = Arc::new(Mutex::new(Vec::new()));
     let h: Arc<dyn TxHandler> = Arc::new(RecordHandler {
         calls: calls.clone(),
         seen: seen.clone(),
+        ids: ids.clone(),
     });
     inner.subscribe_tx("rt.topic", "rt-sub", h);
     let targets = inner.build_local_targets();
@@ -211,7 +224,13 @@ async fn local_target_round_trip() {
     let v: serde_json::Value = serde_json::from_slice(&payload).unwrap();
     assert_eq!(v["item"], "starter-sword");
     assert_eq!(v["qty"], 1);
+    // The handler was handed the relay-minted id ("{schema}:{outbox_id}") — the
+    // same id consume() deduped on, now proven by the inbox row keyed by it.
+    let event_id = ids.lock().unwrap()[0].clone();
+    assert!(event_id.starts_with("asyncevents:"), "unexpected event_id shape: {event_id}");
+    assert_eq!(inbox_count(&pool, &event_id, "rt-sub").await, 1, "inbox row not keyed by the delivered event_id");
     assert_eq!(unsent_count(&pool, &origin).await, 0, "row not marked sent after full delivery");
+    cleanup_inbox(&pool, &event_id).await;
 
     cleanup(&pool, &origin).await;
 }
@@ -220,6 +239,17 @@ async fn unsent_count(pool: &PgPool, origin: &str) -> i64 {
     use sqlx::Row;
     sqlx::query("SELECT count(*) AS n FROM asyncevents.outbox WHERE origin = $1 AND sent_at IS NULL")
         .bind(origin)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+        .get::<i64, _>("n")
+}
+
+async fn inbox_count(pool: &PgPool, event_id: &str, subscriber: &str) -> i64 {
+    use sqlx::Row;
+    sqlx::query("SELECT count(*) AS n FROM asyncevents.inbox WHERE event_id = $1 AND subscriber = $2")
+        .bind(event_id)
+        .bind(subscriber)
         .fetch_one(pool)
         .await
         .unwrap()

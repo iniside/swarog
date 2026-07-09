@@ -635,14 +635,20 @@ impl Module for Inventory {
         // effect runs on the HANDED conn so the grant/wipe commits atomically with the
         // dedup row.
         let granter = inner.clone();
-        ctx.bus().on_tx(&charactersevents::CREATED, "inventory", move |conn, e: charactersevents::Created| {
+        ctx.bus().on_tx(&charactersevents::CREATED, "inventory", move |mut delivery, e: charactersevents::Created| {
             let granter = granter.clone();
-            Box::pin(async move { granter.grant_starter(conn, &e.character_id).await })
+            Box::pin(async move {
+                let conn = delivery.tx.downcast::<sqlx::PgConnection>()?;
+                granter.grant_starter(conn, &e.character_id).await
+            })
         });
         let wiper = inner.clone();
-        ctx.bus().on_tx(&charactersevents::DELETED, "inventory", move |conn, e: charactersevents::Deleted| {
+        ctx.bus().on_tx(&charactersevents::DELETED, "inventory", move |mut delivery, e: charactersevents::Deleted| {
             let wiper = wiper.clone();
-            Box::pin(async move { wiper.wipe_character(conn, &e.character_id).await })
+            Box::pin(async move {
+                let conn = delivery.tx.downcast::<sqlx::PgConnection>()?;
+                wiper.wipe_character(conn, &e.character_id).await
+            })
         });
 
         // 4. HARD dependency on config (declared in requires()): every binary that
@@ -662,7 +668,7 @@ impl Module for Inventory {
         // so the inbound sink refreshes the `CachedConfig` FIRST — this handler then
         // reads the already-fresh reader.
         let watcher = inner.clone();
-        ctx.bus().on_tx(&configevents::CHANGED, "inventory", move |_conn, e: configevents::Changed| {
+        ctx.bus().on_tx(&configevents::CHANGED, "inventory", move |_delivery, e: configevents::Changed| {
             let watcher = watcher.clone();
             Box::pin(async move {
                 watcher.on_config_changed(e);

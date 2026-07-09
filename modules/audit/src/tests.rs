@@ -67,7 +67,11 @@ async fn insert_aged(pool: &PgPool, topic: &str, age_days: i32) {
 async fn deliver_prune(pool: &PgPool, handler: &PruneHandler, name: &str) {
     let payload = serde_json::to_vec(&serde_json::json!({ "name": name })).unwrap();
     let mut tx = pool.begin().await.unwrap();
-    handler.call(&mut tx, payload).await.unwrap();
+    let delivery = Delivery {
+        event_id: "audit:test",
+        tx: bus::AnyTx::new(&mut *tx),
+    };
+    handler.call(delivery, payload).await.unwrap();
     tx.commit().await.unwrap();
 }
 
@@ -132,7 +136,11 @@ async fn record_handler_inserts_raw_json() {
     };
     let raw = br#"{"character_id":"abc","name":"Test","class":"novice"}"#.to_vec();
     let mut tx = pool.begin().await.unwrap();
-    handler.call(&mut tx, raw).await.unwrap();
+    let delivery = Delivery {
+        event_id: "audit:test",
+        tx: bus::AnyTx::new(&mut *tx),
+    };
+    handler.call(delivery, raw).await.unwrap();
     tx.commit().await.unwrap();
 
     let (n, name): (i64, String) = sqlx::query_as(

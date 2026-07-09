@@ -14,7 +14,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::Duration;
 
-use bus::Bus;
+use bus::{AnyTx, Bus};
 use lifecycle::{Caps, Context, Module};
 use sqlx::postgres::PgListener;
 use sqlx::PgPool;
@@ -269,7 +269,7 @@ impl configapi::ConfigSnapshot for Service {
 async fn emit_changed(svc: &Service, bus: &Bus, ns: &str, key: &str, value: &str) -> anyhow::Result<()> {
     let mut tx = svc.pool.begin().await?;
     bus.emit_tx(
-        &mut tx, // &mut Transaction coerces to the &mut PgConnection emit_tx wants
+        AnyTx::new(&mut *tx), // erased after the deref: Transaction<'_> isn't 'static
         &configevents::CHANGED,
         &configevents::Changed {
             namespace: ns.to_string(),

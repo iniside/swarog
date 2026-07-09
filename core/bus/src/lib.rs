@@ -191,18 +191,24 @@ impl Bus {
     /// error otherwise. The generic payload is JSON-marshalled **here** — the
     /// exact point where `T` collapses to bytes for the transport.
     ///
-    /// Takes `&mut sqlx::PgConnection`, not `&mut Transaction`: a `Transaction`
-    /// derefs to `PgConnection`, so a caller inside a tx passes `&mut *tx` and no
-    /// second `'c` lifetime drags through this signature (BLOCKER-1).
+    /// Takes an [`AnyTx`], constructed from the deref of your concrete tx
+    /// (`AnyTx::new(&mut *tx)`) — erasure after the deref, because a
+    /// `Transaction<'c>` is not `'static` (only the derefed connection type is
+    /// [`Any`]); the wrapper borrows only for the call, never past your commit.
+    /// The seam therefore names no engine: the transport downcasts to ITS engine's
+    /// connection type and returns [`Error::TxEngineMismatch`] if the caller's
+    /// store is a different engine (BLOCKER-1 rationale for the erased shape:
+    /// a generic `Bus<Tx>` would infect `Context`, every stored handler, and the
+    /// object-safe `dyn Transport`).
     pub async fn emit_tx<T: Serialize>(
         &self,
-        conn: &mut sqlx::PgConnection,
+        tx: AnyTx<'_>,
         et: &EventType<T>,
         v: &T,
     ) -> Result<(), Error> {
         let transport = self.require_transport()?;
         let payload = encode(v)?;
-        transport.enqueue_tx(conn, et.topic(), &payload).await
+        transport.enqueue_tx(tx, et.topic(), &payload).await
     }
 
     /// Subscribes a typed durable handler. `subscriber` is the stable dedup name
@@ -219,15 +225,21 @@ impl Bus {
     /// without one belongs to a process that hosts no durable-events plane (no
     /// DB) — a durable subscriber simply cannot run there.
     ///
-    /// The handler is a closure `(&mut PgConnection, T) -> BoxFuture<Result<()>>`.
+    /// The handler is a closure `(Delivery<'a>, T) -> BoxFuture<'a, Result<()>>`.
     /// It is stored as a NAMED [`TxHandler`] trait object (not a bare `Fn`),
-    /// because a `Fn` whose *return* future borrows the `&mut PgConnection`
-    /// argument is a higher-ranked type Rust cannot infer through a stored boxed
-    /// closure — the named trait pins the `for<'a>` shape once (BLOCKER-1).
+    /// because a `Fn` whose *return* future borrows the [`Delivery`] argument is
+    /// a higher-ranked type Rust cannot infer through a stored boxed closure —
+    /// the named trait pins the `for<'a>` shape once (BLOCKER-1).
+    ///
+    /// The generalized contract: delivery is at-least-once with a stable
+    /// [`Delivery::event_id`]; effects are exactly-once iff the dedup-check and
+    /// the effect are atomic in the consumer's OWN store — via the handed
+    /// delivery tx (downcast [`Delivery::tx`] to your engine's connection type)
+    /// when engines match, via an idempotent `event_id`-keyed write otherwise.
     pub fn on_tx<T, F>(&self, et: &EventType<T>, subscriber: &str, handler: F)
     where
         T: DeserializeOwned + Send + 'static,
-        F: for<'a> Fn(&'a mut sqlx::PgConnection, T) -> BoxFuture<'a, Result<(), Error>>
+        F: for<'a> Fn(Delivery<'a>, T) -> BoxFuture<'a, Result<(), Error>>
             + Send
             + Sync
             + 'static,
@@ -255,6 +267,57 @@ impl Bus {
     }
 }
 
+/// A type-erased mutable borrow of the caller's transactional context.
+/// Producer side ([`Bus::emit_tx`]): YOUR domain tx. Consumer side
+/// ([`Delivery::tx`]): the plane's delivery tx. The events seam never names an
+/// engine; the party that owns the concrete store downcasts (its own engine is
+/// its own business).
+///
+/// Constructed from the deref of a concrete tx (`AnyTx::new(&mut *tx)`) —
+/// erasure must happen after the deref because e.g. `sqlx::Transaction<'c>` is
+/// not `'static` (so not [`Any`]) while the derefed connection type is. The
+/// wrapper borrows only for the duration of one call, never past the caller's
+/// commit.
+///
+/// The second field is the concrete type's name, captured at construction: a
+/// `&mut dyn Any` alone yields only a `TypeId` at downcast time, so a mismatch
+/// error could not name what it GOT without it.
+pub struct AnyTx<'a>(&'a mut (dyn Any + Send), &'static str);
+
+impl<'a> AnyTx<'a> {
+    /// Erases a concrete transactional borrow (typically the deref of a
+    /// transaction: `AnyTx::new(&mut *tx)`), remembering `T`'s type name for
+    /// the mismatch error.
+    pub fn new<T: Any + Send>(tx: &'a mut T) -> AnyTx<'a> {
+        AnyTx(tx, std::any::type_name::<T>())
+    }
+
+    /// The concrete transaction, or [`Error::TxEngineMismatch`] naming both the
+    /// expected and the supplied type. Callers need a `mut` binding
+    /// (`mut delivery` / `mut tx`) to downcast.
+    pub fn downcast<T: Any>(&mut self) -> Result<&mut T, Error> {
+        let got = self.1;
+        self.0
+            .downcast_mut::<T>()
+            .ok_or(Error::TxEngineMismatch {
+                expected: std::any::type_name::<T>(),
+                got,
+            })
+    }
+}
+
+/// What a durable handler receives per delivery, alongside the decoded payload.
+/// A struct (not bare args) so a later field — e.g. producer `origin` — can be
+/// added without re-breaking every handler signature.
+pub struct Delivery<'a> {
+    /// Stable across redeliveries (`"{schema}:{outbox_id}"`) — the idempotency
+    /// key for effects in a store the plane's tx cannot reach.
+    pub event_id: &'a str,
+    /// The plane's delivery transaction. Downcast it in your store layer if your
+    /// store shares the plane's engine; ignore it otherwise.
+    pub tx: AnyTx<'a>,
+}
+
 /// The `T` → bytes collapse, in ONE place: everything durable marshals through
 /// this so producer and consumer agree on the wire encoding (JSON). See [`decode`].
 fn encode<T: Serialize>(v: &T) -> Result<Vec<u8>, Error> {
@@ -280,6 +343,18 @@ pub enum Error {
     /// the leaf `bus` need not name `sqlx::Error` in its public error type.
     #[error("bus: transport error: {0}")]
     Transport(#[source] Box<dyn std::error::Error + Send + Sync + 'static>),
+    /// An [`AnyTx::downcast`] found a different engine's transaction than the
+    /// downcaster's: the composition wired a producer/consumer whose store engine
+    /// does not match the transport's (or the handler's) — a composition-root
+    /// bug, surfaced loudly with both concrete type names.
+    #[error(
+        "bus: transactional-context engine mismatch: expected `{expected}`, got `{got}` — \
+         the caller's store engine does not match the downcaster's"
+    )]
+    TxEngineMismatch {
+        expected: &'static str,
+        got: &'static str,
+    },
 }
 
 impl Error {
@@ -298,31 +373,39 @@ impl Error {
 #[async_trait::async_trait]
 pub trait Transport: Send + Sync {
     /// Writes the encoded event to the durable log **inside the caller's
-    /// transaction** (the `conn` is `&mut *tx`), so persisting the event is atomic
-    /// with the domain change. `async` because it is a DB write (Go's is sync `sql`).
-    async fn enqueue_tx(
-        &self,
-        conn: &mut sqlx::PgConnection,
-        topic: &str,
-        payload: &[u8],
-    ) -> Result<(), Error>;
+    /// transaction** (the [`AnyTx`] erases `&mut *tx`), so persisting the event is
+    /// atomic with the domain change. The transport downcasts to its OWN engine's
+    /// connection type; a caller whose store is a different engine gets
+    /// [`Error::TxEngineMismatch`]. `async` because it is a DB write (Go's is
+    /// sync `sql`).
+    async fn enqueue_tx(&self, tx: AnyTx<'_>, topic: &str, payload: &[u8]) -> Result<(), Error>;
 
     /// Registers a durable handler for `topic`. `subscriber` is a stable name
     /// identifying this subscription for inbox dedup `(event_id, subscriber)`. The
     /// handler is a NAMED trait object (see [`TxHandler`] / BLOCKER-1), stored by
-    /// the transport and later invoked with a per-delivery connection.
+    /// the transport and later invoked with a per-delivery [`Delivery`] (the
+    /// stable event id + the transport's erased delivery tx).
     fn subscribe_tx(&self, topic: &str, subscriber: &str, handler: Arc<dyn TxHandler>);
 }
 
 /// A durable handler, stored by a [`Transport`] and invoked once per delivered
 /// event. It is a **named trait** — not a bare `Fn` — on purpose (BLOCKER-1):
-/// `call` returns a future that borrows its `&'a mut PgConnection` argument, a
+/// `call` returns a future that borrows its [`Delivery`] argument, a
 /// higher-ranked (`for<'a>`) relationship Rust cannot infer through a stored
 /// boxed closure. Naming the trait pins that `'a` once.
 ///
-/// The handler borrows `&mut sqlx::PgConnection`, NOT `&mut sqlx::Transaction<'c>`:
-/// a `Transaction` derefs (`DerefMut`) to `PgConnection`, so the transport passes
-/// `&mut *tx` and no second `'c` lifetime threads through every stored handler.
+/// The handler receives a [`Delivery`]: a stable `event_id` plus the transport's
+/// erased delivery tx (constructed by the transport as `AnyTx::new(&mut *tx)` —
+/// erasure after the deref, because a `Transaction<'c>` is not `'static`; the
+/// wrapper borrows only for the call, never past the transport's commit). The
+/// generalized contract: delivery is at-least-once with a stable `event_id`;
+/// effects are exactly-once iff the dedup-check and the effect are atomic in the
+/// consumer's own store — via the handed delivery tx when engines match, via an
+/// idempotent `event_id`-keyed write otherwise.
+///
+/// Handler futures are awaited INLINE by the plane (inside its dedup tx), never
+/// spawned — an implementation must not require `'static` of the delivery
+/// borrow, and a future [`Transport`] must keep the inline-await shape.
 ///
 /// **On the dropped `cx` context param (option (b)):** Go's handler is
 /// `func(ctx context.Context, tx *sql.Tx, T) error`. We drop the `ctx` equivalent
@@ -334,11 +417,8 @@ pub trait Transport: Send + Sync {
 /// cancellation token can be added later as a plain `&CancellationToken` param
 /// with no dependency inversion; it is omitted here as unused by the sketch.
 pub trait TxHandler: Send + Sync {
-    fn call<'a>(
-        &'a self,
-        conn: &'a mut sqlx::PgConnection,
-        payload: Vec<u8>,
-    ) -> BoxFuture<'a, Result<(), Error>>;
+    fn call<'a>(&'a self, delivery: Delivery<'a>, payload: Vec<u8>)
+        -> BoxFuture<'a, Result<(), Error>>;
 }
 
 /// Adapts a typed [`Bus::on_tx`] closure into a raw [`TxHandler`]: it owns the
@@ -353,16 +433,16 @@ struct TypedAdapter<T, F> {
 impl<T, F> TxHandler for TypedAdapter<T, F>
 where
     T: DeserializeOwned + Send + 'static,
-    F: for<'a> Fn(&'a mut sqlx::PgConnection, T) -> BoxFuture<'a, Result<(), Error>> + Send + Sync,
+    F: for<'a> Fn(Delivery<'a>, T) -> BoxFuture<'a, Result<(), Error>> + Send + Sync,
 {
     fn call<'a>(
         &'a self,
-        conn: &'a mut sqlx::PgConnection,
+        delivery: Delivery<'a>,
         payload: Vec<u8>,
     ) -> BoxFuture<'a, Result<(), Error>> {
         Box::pin(async move {
             let v: T = decode(&payload)?;
-            (self.handler)(conn, v).await
+            (self.handler)(delivery, v).await
         })
     }
 }

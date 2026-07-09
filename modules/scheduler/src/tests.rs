@@ -9,8 +9,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use bus::{Bus, Error as BusError, Transport, TxHandler};
-use sqlx::PgConnection;
+use bus::{AnyTx, Bus, Error as BusError, Transport, TxHandler};
 
 use super::*;
 
@@ -105,7 +104,7 @@ impl FakeTransport {
 impl Transport for FakeTransport {
     async fn enqueue_tx(
         &self,
-        _conn: &mut PgConnection,
+        _tx: AnyTx<'_>,
         topic: &str,
         payload: &[u8],
     ) -> Result<(), BusError> {

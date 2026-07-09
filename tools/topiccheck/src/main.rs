@@ -56,7 +56,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
-use bus::{Error, Transport, TxHandler};
+use bus::{AnyTx, Error, Transport, TxHandler};
 use lifecycle::{App, Context, Module};
 
 /// Dev-default DSN (mirrors CLAUDE.md). Only ever used to build a LAZY pool that
@@ -100,7 +100,7 @@ struct RecordingTransport {
 impl Transport for RecordingTransport {
     async fn enqueue_tx(
         &self,
-        _conn: &mut sqlx::PgConnection,
+        _tx: AnyTx<'_>,
         _topic: &str,
         _payload: &[u8],
     ) -> Result<(), Error> {
