@@ -1,6 +1,6 @@
 ---
 name: durable-event-plane-bus-owned
-description: The durable async transport (outbox/inbox/relay/HTTP) is an APP-OWNED plane (core/asyncevents::Plane, DB ⇒ plane) injected into the bus at Context construction — NOT a module; modules never branch on topology nor declare it in requires()
+description: The durable async transport (outbox/inbox/relay/HTTP) is an APP-OWNED plane (core/asyncevents::Plane, DB ⇒ plane) injected into the bus at Context construction — NOT a module; modules never branch on topology nor declare it in requires(). core/bus is sqlx-free (AnyTx/Delivery seam): the events API names no store engine, handlers get event_id for cross-engine idempotency
 metadata: 
   node_type: memory
   type: project
@@ -22,6 +22,21 @@ the plane is process infrastructure, not a peer module.
 - Durable: `bus.EmitTx(tx, ...)` / `bus.OnTx[T](et, subscriber, h)` /
   `bus.OnTxRaw(topic, subscriber, h)` (untyped, for audit-style verbatim logging).
   Exactly-once, transactional, topology-transparent.
+
+**`core/bus` is sqlx-free (AnyTx/Delivery seam, 2026-07-09, plan
+`docs/plans/2026-07-09-1422-anytx-seam-plan.md`, commits `7418320`, `790e388`).**
+The events API names NO store engine: `emit_tx(AnyTx::new(&mut *tx), et, v)` takes a
+type-erased `bus::AnyTx<'_>`; durable handlers receive `bus::Delivery { event_id, tx }`.
+The engine lives only in the concrete transport (`asyncevents::enqueue_tx` downcasts
+`AnyTx → &mut sqlx::PgConnection`) and in each module's own store layer. **Generalized
+contract:** *delivery is at-least-once with a stable `event_id`; effects are
+exactly-once iff the dedup-check and the effect are atomic in the consumer's own store
+— via the handed delivery tx when engines match, via an idempotent `event_id`-keyed
+write otherwise.* A non-Postgres-store consumer ignores `Delivery::tx` and keys an
+idempotent write on `event_id` in its own store (inbox stays the redelivery gate). A
+foreign-store PRODUCER fails loud with `Error::TxEngineMismatch` at first emit — a
+second Transport impl in that engine is the day-two path (backplane stays Postgres).
+Don't reintroduce sqlx into `core/bus` or name a store engine in a module's events API.
 
 **`core/asyncevents`** (renamed from `core/messaging`) owns DB schema `asyncevents`
 (outbox + per-`(event_id,subscriber)` inbox) and exposes a **`Plane`** — NOT a
