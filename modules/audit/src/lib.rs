@@ -64,7 +64,10 @@ const ADMIN_SECTION: &str = "Platform";
 const ADMIN_LABEL: &str = "Audit Log";
 
 /// Creates this module's OWN schema and nothing else — full logical isolation (#10).
-/// Idempotent. Verbatim from Go's `schemaDDL`.
+/// Idempotent. The `event_id` ALTER is wrapped in a column-existence check because
+/// `ADD COLUMN IF NOT EXISTS` still takes ACCESS EXCLUSIVE on every run — two
+/// concurrent migrators (parallel integration tests share one DB) deadlock on it;
+/// the guarded form takes no exclusive lock once the column exists.
 const SCHEMA_DDL: &str = r#"
 CREATE SCHEMA IF NOT EXISTS audit;
 CREATE TABLE IF NOT EXISTS audit.log (
@@ -74,7 +77,14 @@ CREATE TABLE IF NOT EXISTS audit.log (
 	at      timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS log_at_idx ON audit.log(at);
-ALTER TABLE audit.log ADD COLUMN IF NOT EXISTS event_id text;"#;
+DO $$ BEGIN
+	IF NOT EXISTS (
+		SELECT 1 FROM information_schema.columns
+		WHERE table_schema = 'audit' AND table_name = 'log' AND column_name = 'event_id'
+	) THEN
+		ALTER TABLE audit.log ADD COLUMN event_id text;
+	END IF;
+END $$;"#;
 
 /// Folds any lower-level error into an `Internal` operation error (for the admin face).
 fn internal<E: std::fmt::Display>(e: E) -> Error {
