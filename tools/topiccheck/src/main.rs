@@ -34,8 +34,24 @@
 //! that never connects. If a future module ever queried in `init`, the local Postgres
 //! DSN (`DATABASE_URL`, else the dev default) is the fallback — but today none does.
 //!
-//! Advisory by default (prints the table, exits 0). With `--strict` it exits non-zero
-//! when any non-allowlisted topic is unsubscribed, for use as the verify gate.
+//! ## Second finding class: durability (seam #3 / constraint 7)
+//! Every entry in `defined_topics()` is a cross-module CONTRACT topic (a `bus::define`
+//! static in an `api/*/events` crate), so it MUST be delivered durably (`on_tx` /
+//! `on_tx_raw`), never plain in-process `on()`. The harness records in-process subs
+//! under the `IN_PROCESS_SENTINEL` subscriber; a defined topic carrying that sentinel is
+//! a durability violation. HONEST precision limit: `bus().subscribed_topics()` gives NO
+//! subscriber-module attribution (all in-process subs collapse to the one sentinel), so
+//! the provable claim is the stricter *"no in-process subscription to ANY defined topic,
+//! even the module's own"* — NOT "cross-module durability", which this cannot prove.
+//! `ALLOW_INPROCESS_DEFINED` is the escape hatch for a future legitimate same-module
+//! reaction.
+//!
+//! ## Flags / exit
+//! Advisory by default (prints the table, exits 0). `--strict` exits non-zero on ANY
+//! finding (unsubscribed OR durability) — the everything-strict gate. `--durability-strict`
+//! exits non-zero ONLY on a durability finding (ignoring unsubscribed) — the BLOCKING
+//! `fortress`-stage invocation, since a durability violation breaches a HARD constraint
+//! while an unsubscribed topic is merely advisory dead vocabulary.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
@@ -53,6 +69,23 @@ const DEFAULT_DSN: &str =
 /// topics has a live subscriber (see the table this prints). A new emit-only topic
 /// with no reactor yet is added here, with a reason comment.
 const ALLOW_UNSUBSCRIBED: &[&str] = &[];
+
+/// Defined (contract) topics that are LEGITIMATELY subscribed same-module on the
+/// in-process plane (plain `on()`). CLAUDE.md seam #3 permits plain `on()` for a
+/// same-module reaction; the durability rule below forbids it for ANY defined topic,
+/// because `bus().subscribed_topics()` carries no subscriber-module attribution (every
+/// in-process sub collapses to the `"(in-process)"` sentinel — main.rs ~line 205), so
+/// the tool cannot prove a sub is same-module vs cross-module. This allowlist is the
+/// only escape hatch: whitelist such a topic HERE with a reason comment. Empty today —
+/// the clean tree has zero in-process subscriptions to any defined topic.
+const ALLOW_INPROCESS_DEFINED: &[&str] = &[];
+
+/// The sentinel subscriber string that `collect_subscriptions` records for every
+/// in-process (`Bus::on`) subscription, since `bus().subscribed_topics()` returns bare
+/// topic strings with no subscriber-module attribution. Both the merge site
+/// (`collect_subscriptions`) and the durability check key off this exact string — a
+/// conscious edit point, like the manual `defined_topics()` enumeration.
+const IN_PROCESS_SENTINEL: &str = "(in-process)";
 
 /// A `bus::Transport` that records every durable subscription instead of persisting
 /// anything. `enqueue_tx` is a no-op (nothing is emitted during `register`/`init`);
@@ -149,6 +182,33 @@ fn unsubscribed(
         .collect()
 }
 
+/// The pure durability diff: every defined (contract) topic that has an in-process
+/// (`Bus::on`) subscriber — i.e. `by_topic[topic]` contains the `IN_PROCESS_SENTINEL` —
+/// and is not allowlisted. A published contract topic must be delivered durably
+/// (`on_tx`/`on_tx_raw`), so an in-process subscription to one is a seam #3 / constraint
+/// 7 violation. HONEST claim (per the plan's precision limit): because
+/// `subscribed_topics()` collapses every in-process sub to one sentinel with NO
+/// subscriber-module attribution, this proves only "no in-process subscription to any
+/// defined topic" — it cannot distinguish a legitimate same-module reaction from a
+/// cross-module violation, hence the `ALLOW_INPROCESS_DEFINED` escape hatch. Factored
+/// out (like `unsubscribed`) so it is unit-testable without the lifecycle harness.
+fn inprocess_defined(
+    defined: &[(String, &'static str)],
+    by_topic: &BTreeMap<String, BTreeSet<String>>,
+    allow: &[&str],
+) -> Vec<String> {
+    defined
+        .iter()
+        .filter(|(t, _)| {
+            !allow.contains(&t.as_str())
+                && by_topic
+                    .get(t)
+                    .is_some_and(|s| s.contains(IN_PROCESS_SENTINEL))
+        })
+        .map(|(t, _)| t.clone())
+        .collect()
+}
+
 /// Runs the harness: builds the module set with a recording transport and returns the
 /// `(topic -> subscribers)` map observed across both planes.
 fn collect_subscriptions() -> anyhow::Result<BTreeMap<String, BTreeSet<String>>> {
@@ -183,53 +243,88 @@ fn collect_subscriptions() -> anyhow::Result<BTreeMap<String, BTreeSet<String>>>
         by_topic
             .entry(topic)
             .or_default()
-            .insert("(in-process)".to_string());
+            .insert(IN_PROCESS_SENTINEL.to_string());
     }
     Ok(by_topic)
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // `--strict`: superset gate — exit non-zero on ANY finding (unsubscribed OR
+    // durability). `--durability-strict`: the BLOCKING verify invocation (fortress
+    // stage, wired in Step 3) — exit non-zero ONLY on a durability finding, ignoring
+    // unsubscribed (which is advisory "dead vocabulary"). Both still print the table.
     let strict = std::env::args().any(|a| a == "--strict");
+    let durability_strict = std::env::args().any(|a| a == "--durability-strict");
 
     let by_topic = collect_subscriptions()?;
     let subscribed: BTreeSet<String> = by_topic.keys().cloned().collect();
     let defined = defined_topics();
     let findings = unsubscribed(&defined, &subscribed, ALLOW_UNSUBSCRIBED);
+    let durability = inprocess_defined(&defined, &by_topic, ALLOW_INPROCESS_DEFINED);
+    let durability_set: BTreeSet<&str> = durability.iter().map(|t| t.as_str()).collect();
 
-    // The report table: every defined topic, its define site, and its subscribers.
+    // The report table: every defined topic, its define site, its subscribers, and a
+    // status column carrying BOTH finding classes (unsubscribed / in-process durability).
     println!("topiccheck: defined-vs-subscribed event topics\n");
-    let header = format!("{:<20} | {:<34} | SUBSCRIBERS", "TOPIC", "DEFINED AT");
+    let header = format!(
+        "{:<20} | {:<34} | {:<38} | STATUS",
+        "TOPIC", "DEFINED AT", "SUBSCRIBERS"
+    );
     println!("{header}");
-    println!("{}", "-".repeat(90));
+    println!("{}", "-".repeat(110));
     for (topic, site) in &defined {
         let subs = by_topic.get(topic);
-        let (subs_str, marker) = match subs {
-            Some(s) if !s.is_empty() => {
-                (s.iter().cloned().collect::<Vec<_>>().join(", "), "")
-            }
+        let (subs_str, mut status) = match subs {
+            Some(s) if !s.is_empty() => (s.iter().cloned().collect::<Vec<_>>().join(", "), "OK"),
             _ if ALLOW_UNSUBSCRIBED.contains(&topic.as_str()) => {
-                ("(none — allowlisted)".to_string(), "")
+                ("(none — allowlisted)".to_string(), "OK (allowlisted)")
             }
-            _ => ("NONE".to_string(), "  <-- UNSUBSCRIBED"),
+            _ => ("NONE".to_string(), "<-- UNSUBSCRIBED"),
         };
-        println!("{topic:<20} | {site:<34} | {subs_str}{marker}");
+        // A durability finding takes precedence in the status column: a defined topic
+        // with an in-process subscriber is a seam #3 / constraint 7 violation.
+        if durability_set.contains(topic.as_str()) {
+            status = "<-- IN-PROCESS (durability violation)";
+        }
+        println!("{topic:<20} | {site:<34} | {subs_str:<38} | {status}");
     }
     println!();
 
-    if findings.is_empty() {
-        println!("topiccheck: OK — all {} defined topics are subscribed (or allowlisted)", defined.len());
-        return Ok(());
+    // Report both finding classes distinctly.
+    if !durability.is_empty() {
+        eprintln!(
+            "topiccheck: DURABILITY FAIL — {} defined (contract) topic(s) have an in-process \
+             subscription; a published contract topic must be delivered durably (on_tx / \
+             on_tx_raw), never plain on() (CLAUDE.md seam #3, constraint 7):",
+            durability.len()
+        );
+        for t in &durability {
+            eprintln!("  - {t}");
+        }
+    }
+    if !findings.is_empty() {
+        eprintln!(
+            "topiccheck: UNSUBSCRIBED — {} defined topic(s) have no subscriber:",
+            findings.len()
+        );
+        for t in &findings {
+            eprintln!("  - {t}");
+        }
+    }
+    if durability.is_empty() && findings.is_empty() {
+        println!(
+            "topiccheck: OK — all {} defined topics are subscribed durably (or allowlisted)",
+            defined.len()
+        );
     }
 
-    eprintln!(
-        "topiccheck: FAIL — {} defined topic(s) have no subscriber:",
-        findings.len()
-    );
-    for t in &findings {
-        eprintln!("  - {t}");
+    // Exit logic. `--durability-strict` blocks ONLY on a durability finding; `--strict`
+    // blocks on either class (everything-strict superset).
+    if durability_strict && !durability.is_empty() {
+        std::process::exit(1);
     }
-    if strict {
+    if strict && (!durability.is_empty() || !findings.is_empty()) {
         std::process::exit(1);
     }
     Ok(())
