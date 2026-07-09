@@ -21,6 +21,15 @@ limits, if ever needed, are direct cgroups. Reference point: Guild Wars 1 (2005)
 ran a custom native-process orchestrator with live no-downtime updates — small
 team, no container tooling. Sized at ~10 agent iterations over a few days.
 
+**Separate application, NOT part of the core/ backplane** (decided 2026-07-09):
+own crate + binary (likely top-level `orchestrator/`, not `core/`, not a
+lifecycle::Module — it embodies topology while modules are topology-blind, and it
+outlives the processes it spawns). Shares only Postgres (registry) + the `/readyz`
+convention. Platform-side pieces still land at existing seams: multi-peer
+round-robin in `core/remote`, drain in `core/edge`/`httpmw`, replica-safety in
+modules.
+
 **How to apply:** when the orchestrator work starts, don't propose
-Docker/k8s/containerd anywhere in the design; deploy = copy binary + supervisor.
+Docker/k8s/containerd anywhere in the design and don't fold the orchestrator into
+`core/` or the module system; deploy = copy binary + supervisor.
 Related: [[server-management-is-a-domain-module]], [[team-is-solo-plus-agents-forever]].
