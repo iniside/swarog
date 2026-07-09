@@ -1,0 +1,47 @@
+[package]
+name = "requirecheck"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# requirecheck: the registry-seam analogue of topiccheck. `app::validate_requires`
+# is a manifest check (declared `requires()` names vs present providers); it never
+# observes an actual `ctx.registry().require(key)` call, so it cannot catch the
+# OPPOSITE drift — a real mandatory `require()` whose provider is NOT declared in
+# `requires()` (under-declaration), which compiles + passes archcheck and only panics
+# at `init` in a split process where the provider isn't co-hosted and no stub is wired.
+# This tool installs the `core/registry` require-observer (the honest analogue of
+# `Bus::set_transport`), builds the MONOLITH module set, runs the register+init
+# lifecycle phases, attributes each `require`/`try_require` to the calling module, and
+# diffs the MANDATORY require providers against each module's declared `requires()`. It
+# is a tool (not a module), so it may depend on every module impl — archcheck classifies
+# `tools/` as Other (unconstrained). NB: `match`'s crate is named `match_module`.
+[[bin]]
+name = "requirecheck"
+path = "src/main.rs"
+
+[dependencies]
+lifecycle = { workspace = true }
+registry = { workspace = true }
+bus = { workspace = true }
+sqlx = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+anyhow = { workspace = true }
+
+# The REQUIRE sites — the full monolith module set (minus messaging, whose durable
+# transport this tool replaces with a no-op one). Instantiating and building them runs
+# every real `require`/`try_require` call through the installed observer.
+config = { workspace = true }
+characters = { workspace = true }
+inventory = { workspace = true }
+accounts = { workspace = true }
+admin = { workspace = true }
+audit = { workspace = true }
+scheduler = { workspace = true }
+match_module = { workspace = true }
+rating = { workspace = true }
+leaderboard = { workspace = true }
+webui = { workspace = true }
+gateway = { workspace = true }

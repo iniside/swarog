@@ -33,6 +33,10 @@ members = [
     # Topic drift check (Step 14b): builds the monolith module set with a recording bus
     # transport and flags any `bus::define`d topic that no module subscribes to.
     "tools/topiccheck",
+    # Registry require-vs-declare drift check: builds the monolith module set with a
+    # require-observer installed and flags any mandatory `require()` whose provider is
+    # not declared in the caller's `requires()` (under-declaration).
+    "tools/requirecheck",
     # External C# client generator (Step 2): scrapes the player-reachable API (runtime
     # route_bindings() ∪ syn source parse) into a typed manifest; the C# emitter is Step 3.
     "tools/csharp-client-gen",
