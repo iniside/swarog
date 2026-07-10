@@ -192,7 +192,17 @@ pub(crate) async fn deliver_one(ctx: &WorkerCtx, entry: &SubEntry) -> anyhow::Re
                 subscription = entry.spec.id, %event_id, err = %msg,
                 "asyncevents: durable handler failed; backing off (no skip)"
             );
-            record_failure(&mut conn, entry.spec.id, failures + 1, &msg).await?;
+            record_failure(
+                &mut conn,
+                entry.spec.id,
+                failures + 1,
+                &msg,
+                cursor_gen,
+                &cursor_xid,
+                cursor_tie,
+                failures,
+            )
+            .await?;
             sqlx::query("COMMIT").execute(&mut *conn).await?;
             Ok(Step::Faulted)
         }
@@ -216,7 +226,17 @@ pub(crate) async fn deliver_one(ctx: &WorkerCtx, entry: &SubEntry) -> anyhow::Re
                 .execute(&ctx.pool)
                 .await;
             let mut fresh = ctx.pool.acquire().await?;
-            record_failure(&mut fresh, entry.spec.id, failures + 1, &msg).await?;
+            record_failure(
+                &mut fresh,
+                entry.spec.id,
+                failures + 1,
+                &msg,
+                cursor_gen,
+                &cursor_xid,
+                cursor_tie,
+                failures,
+            )
+            .await?;
             Ok(Step::Faulted)
         }
     }
@@ -226,29 +246,59 @@ pub(crate) async fn deliver_one(ctx: &WorkerCtx, entry: &SubEntry) -> anyhow::Re
 /// set the exponential `next_attempt_at`, record `last_error`, pause at the
 /// threshold. Runs on whatever connection the caller hands (the delivery tx on
 /// the error arm; a fresh autocommit connection on the timeout arm).
+///
+/// CAS-guarded on the claim-time state: the UPDATE only lands if the row still
+/// carries the `(cursor_generation, cursor_xid, cursor_tie)` and
+/// `consecutive_failures` the caller read when it claimed the subscription. On
+/// the error arm the row lock is still held, so the guard is trivially true. On
+/// the timeout arm the lock was released (terminated backend) BEFORE this runs,
+/// so a healthy replica that delivered (advancing the cursor) or an operator
+/// `retry` (resetting failures) in the terminate-to-record window makes this
+/// UPDATE match zero rows — the stale backoff/pause is dropped. The
+/// `consecutive_failures` leg is not redundant with the cursor: the cursor does
+/// NOT move on failure/retry/resume, so a cursor-only CAS would have an ABA where
+/// a stale `failures + 1` could pause a subscription an operator just reset.
+#[allow(clippy::too_many_arguments)]
 async fn record_failure(
     conn: &mut sqlx::pool::PoolConnection<sqlx::Postgres>,
     sub_id: &str,
     failures: i32,
     error: &str,
+    cursor_generation: i64,
+    cursor_xid_text: &str,
+    cursor_tie: i64,
+    claimed_failures: i32,
 ) -> anyhow::Result<()> {
     let pause = failures >= PAUSE_AFTER;
-    sqlx::query(
+    let result = sqlx::query(
         "UPDATE asyncevents.subscriptions \
          SET consecutive_failures = $2, \
              next_attempt_at = now() + make_interval(secs => $3), \
              last_error = $4, \
              state = CASE WHEN $5 THEN 'paused' ELSE state END, \
              updated_at = now() \
-         WHERE subscription_id = $1",
+         WHERE subscription_id = $1 \
+           AND cursor_generation = $6 AND cursor_xid = $7::xid8 AND cursor_tie = $8 \
+           AND consecutive_failures = $9",
     )
     .bind(sub_id)
     .bind(failures)
     .bind(backoff_secs(failures))
     .bind(error)
     .bind(pause)
+    .bind(cursor_generation)
+    .bind(cursor_xid_text)
+    .bind(cursor_tie)
+    .bind(claimed_failures)
     .execute(&mut **conn)
     .await?;
+    if result.rows_affected() == 0 {
+        tracing::info!(
+            subscription = sub_id,
+            "asyncevents: subscription state changed concurrently; stale failure not recorded"
+        );
+        return Ok(());
+    }
     if pause {
         tracing::error!(
             subscription = sub_id, failures,

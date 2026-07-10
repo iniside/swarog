@@ -491,6 +491,75 @@ async fn timeout_poisons_only_the_delivery_connection() {
     cleanup(&pool, topic, sub_id).await;
 }
 
+/// Timeout-arm race (F9): `record_failure` is CAS-guarded on the claim-time
+/// cursor AND `consecutive_failures`. On the timeout arm the row lock is released
+/// (terminated backend) before the failure is recorded, so a healthy replica that
+/// delivered — advancing the cursor and zeroing failures — in the
+/// terminate-to-record window must make the stale failure write match zero rows.
+/// The subscription stays active with `consecutive_failures = 0`; no stale
+/// backoff, no spurious pause.
+#[tokio::test]
+async fn stale_timeout_failure_does_not_pause_a_healthy_subscription() {
+    let Some(pool) = test_pool().await else { return };
+    let topic = unique("worker.stalefail");
+    let sub_id = unique("sub.stalefail");
+
+    let calls = Arc::new(AtomicU32::new(0));
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let h: Arc<dyn TxHandler> = Arc::new(TestHandler::ok(calls.clone(), seen.clone()));
+    let e = entry(sub_id, topic, h);
+    let ctx = worker_ctx(&pool, vec![e.clone()], Duration::from_secs(10));
+    catalog::reconcile(&pool, &ctx.subs).await.unwrap();
+
+    // The claim-time state the timeout arm captured: the freshly-reconciled row
+    // sits at the Genesis cursor with 0 failures.
+    let (claim_gen, claim_xid, claim_tie): (i64, String, i64) = sqlx::query_as(
+        "SELECT cursor_generation, cursor_xid::text, cursor_tie \
+         FROM asyncevents.subscriptions WHERE subscription_id = $1",
+    )
+    .bind(sub_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    // Replica B delivers in the terminate-to-record window: the cursor advances
+    // and failures stay reset. (A direct out-of-band UPDATE stands in for B.)
+    sqlx::query(
+        "UPDATE asyncevents.subscriptions \
+         SET cursor_generation = cursor_generation + 1, consecutive_failures = 0 \
+         WHERE subscription_id = $1",
+    )
+    .bind(sub_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // The stale timeout arm now records failure against the CLAIM-time cursor —
+    // which no longer matches, so the CAS guard matches zero rows.
+    let mut conn = pool.acquire().await.unwrap();
+    record_failure(
+        &mut conn,
+        sub_id,
+        1,
+        "handler timeout (stale)",
+        claim_gen,
+        &claim_xid,
+        claim_tie,
+        0,
+    )
+    .await
+    .unwrap();
+    drop(conn);
+
+    // Healthy subscription untouched: still active, failures 0, no error recorded.
+    let (state, failures, last_error, _) = sub_row(&pool, sub_id).await;
+    assert_eq!(state, "active");
+    assert_eq!(failures, 0, "stale failure must not have been recorded");
+    assert!(last_error.is_none(), "no error recorded on a stale CAS miss");
+
+    cleanup(&pool, topic, sub_id).await;
+}
+
 /// Lost NOTIFYs only delay delivery to the next poll tick: a worker whose
 /// wake-up Notify NEVER fires still delivers via the global 1s poll fallback.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
