@@ -578,6 +578,12 @@ fn missing_svc_violations(modules: &[String], cmds: &[String]) -> Vec<String> {
 /// caveat class as [`is_inline_test_mod`]): a module reached only through a re-export alias
 /// could false-negative, but no such shape exists in the tree. An unreadable/absent lib.rs
 /// yields `false` (a domain svc always has one — its absence is itself worth flagging).
+///
+/// Semantic complement: `tools/checkmodules::tests::each_svc_constructs_its_own_module`
+/// actually builds each svc's real module list and asserts a `Module::name()` match —
+/// same rule, different failure class (this one is a source-layer text scan that runs
+/// without executing module code; that one executes `modules()` and inspects real
+/// `Module` values).
 fn svc_lib_references_module(lib_path: &Path, module: &str) -> bool {
     let Ok(text) = std::fs::read_to_string(lib_path) else {
         return false;

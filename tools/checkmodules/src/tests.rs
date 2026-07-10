@@ -36,3 +36,71 @@ fn split_fleet_matches_cmd_dirs() {
          new svc crate in tools/checkmodules::split_process_modules()"
     );
 }
+
+/// Finding 8 remainder: the monolith (`cmd/server`) must host every domain module --
+/// a `modules/<name>` dir with no corresponding `Module::name()` in `monolith_modules()`
+/// would mean `cmd/server` silently stopped booting a fortress. Checked as a SUBSET
+/// (dir names is a subset of monolith names), not equality: the monolith's list also
+/// carries core-infra (`metrics`) and could in future carry a stub that isn't a
+/// `modules/` dir at all -- those extras are fine, only a gap is not. All 12
+/// `Module::name()` strings match their `modules/` dir names verbatim today
+/// (including `match`: the crate is renamed `match_module` to dodge the Rust
+/// keyword, but `name()` still returns `"match"`), so this is keyed off `name()`,
+/// never the crate/dir string.
+///
+/// No exemption list exists (archcheck's `SVC_EXEMPT_MODULES` is empty and its own
+/// test asserts it stays so) -- if a legitimately monolith-absent module ever
+/// appears, THIS test is where its exemption gets added, with a comment explaining
+/// why the monolith deliberately excludes it.
+#[test]
+fn monolith_hosts_every_modules_dir() {
+    let monolith_names: BTreeSet<String> = monolith_modules()
+        .iter()
+        .map(|m| m.name().to_string())
+        .collect();
+
+    let modules_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../modules");
+    let from_fs: BTreeSet<String> = std::fs::read_dir(&modules_dir)
+        .unwrap_or_else(|e| panic!("failed to read {}: {e}", modules_dir.display()))
+        .filter_map(|entry| {
+            let entry = entry.expect("readable dir entry");
+            if !entry.file_type().expect("file type").is_dir() {
+                return None;
+            }
+            Some(entry.file_name().to_string_lossy().into_owned())
+        })
+        .collect();
+
+    let missing: BTreeSet<&String> = from_fs.difference(&monolith_names).collect();
+    assert!(
+        missing.is_empty(),
+        "cmd/server's monolith_modules() is missing {missing:?} from modules/ \
+         (monolith has {monolith_names:?}) -- either wire the missing module's \
+         provider/stub into cmd/server's lib, or, if it is deliberately absent from \
+         the monolith, add a documented exemption right here"
+    );
+}
+
+/// Finding 8 remainder: every `cmd/<name>-svc` must construct its OWN module, not
+/// merely stub other capabilities it consumes. Sound because `remote::Stub::name()`
+/// is always the *provider's* name (the capability the svc is consuming remotely,
+/// never itself) -- no svc in this tree stubs its own capability, and doing so
+/// would be a bug this test would rightly fail. This is a semantic complement to
+/// archcheck's `svc_lib_references_module` (rule 12, G2 leg): that one is a
+/// source-layer text-token tripwire that runs without executing module code (so it
+/// survives even a checker-harness bug); this one actually constructs the module
+/// list and inspects real `Module::name()` values.
+#[test]
+fn each_svc_constructs_its_own_module() {
+    for (name, mods) in split_process_modules() {
+        let prefix = name
+            .strip_suffix("-svc")
+            .unwrap_or_else(|| panic!("split_process_modules() key {name:?} must end in -svc"));
+        assert!(
+            mods.iter().any(|m| m.name() == prefix),
+            "cmd/{name}/src/lib.rs's modules() never constructs a `{prefix}` \
+             Module -- it only stubs OTHER capabilities remotely; every svc must \
+             host its own domain module locally, not merely remote::Stub it"
+        );
+    }
+}
