@@ -98,14 +98,28 @@ async fn items_slug_dedupe() {
     assert_eq!(slugs, ["players", "players-2", "item", "leaderboard"]);
 }
 
+/// A wrong-typed contribution under `adminapi::SLOT` is a wiring bug: since the
+/// homogeneous-slot contract landed in `contrib`, `contributions::<Item>()` is
+/// loud about downcast misses — `debug_assert!`-panic in debug/test builds
+/// (log + skip in release), instead of the old silent skip.
+#[cfg(debug_assertions)]
 #[tokio::test]
-async fn items_skips_non_item_contributions() {
+async fn items_mismatched_contributions_are_loud_in_debug() {
     let ctx = Context::new();
     ctx.contribute(adminapi::SLOT, "not an item".to_string());
     ctx.contribute(adminapi::SLOT, 42u32);
     ctx.contribute(adminapi::SLOT, local_item("v", "S", "Valid"));
     let st = state_from(&ctx);
 
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        st.slots.contributions::<adminapi::Item>(adminapi::SLOT)
+    }));
+    assert!(r.is_err(), "mismatched contributions must panic under debug_assertions");
+
+    // Matching types still round-trip: a homogeneous slot resolves normally.
+    let ctx = Context::new();
+    ctx.contribute(adminapi::SLOT, local_item("v", "S", "Valid"));
+    let st = state_from(&ctx);
     let items = resolve_items(&st, &adminapi::Params::new()).await;
     assert_eq!(items.len(), 1);
     assert_eq!(items[0].slug, "valid");

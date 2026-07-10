@@ -16,6 +16,24 @@ fn empty_slot_is_empty_vec() {
     assert!(slots.contributions::<String>("nothing").is_empty());
 }
 
+/// The homogeneous-slot contract: a wrong-typed contribution under a slot makes
+/// `contributions::<T>()` panic in debug/test builds (`debug_assert!`); release
+/// builds log + skip instead.
+#[test]
+#[cfg(debug_assertions)]
+fn mismatched_contribution_panics_in_debug() {
+    let slots = Slots::new();
+    slots.contribute("mixed", "a string".to_string());
+    slots.contribute("mixed", 42u32);
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        slots.contributions::<u32>("mixed")
+    }));
+    assert!(r.is_err(), "downcast miss must debug_assert!-panic in debug builds");
+    // The lock is released before the panic, so the slots stay usable.
+    slots.contribute("clean", 7u32);
+    assert_eq!(slots.contributions::<u32>("clean"), vec![7]);
+}
+
 #[test]
 fn separate_slots_are_independent() {
     let slots = Slots::new();
