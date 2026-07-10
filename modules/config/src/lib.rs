@@ -2,43 +2,62 @@
 //! Go's `modules/config`). Namespaced `key=value` settings live in schema `config`;
 //! any module reads them via the provided [`configapi::Config`] capability
 //! (`get_string`/`get_bool`/`get_int`/`get` with a code-default fallback), and edits
-//! made in `/admin` (or raw `psql`) propagate to every reader through Postgres
-//! LISTEN/NOTIFY → in-memory cache refresh → `config.changed`. Secrets stay in env;
-//! only non-secret operational knobs go here.
+//! made in `/admin` (or raw `psql`) propagate to every reader through the
+//! `config.settings` write trigger. Secrets stay in env; only non-secret operational
+//! knobs go here.
+//!
+//! ## Step 7 — one trigger, two planes, monotonic revision
+//! Every INSERT/UPDATE/DELETE on `config.settings` fires ONE trigger that, in the
+//! writing transaction and in this order: (a) bumps the monotonic `config.revision`
+//! singleton, (b) `pg_notify`s the `config_changed` channel, (c) appends a durable
+//! `config.changed` event via the plane-owned `asyncevents.append_event` (config DDL
+//! NEVER touches the plane's tables — only that function). A raw `psql` write and a
+//! service `set` therefore audit and invalidate identically — the trigger is the
+//! single emission path, so there is no producer-side double-emit to dedup.
+//!
+//! Cache freshness rides the BROADCAST invalidation plane, not the durable event:
+//! the local [`Service`] (and, in a split, the remote `configrpc::CachedConfig`)
+//! registers an authoritative-refresh callback on the `config_changed` channel. The
+//! callback re-reads the whole snapshot and swaps it atomically, applying only a
+//! revision strictly newer than the one held — so a stale or duplicate NOTIFY is a
+//! no-op. The durable `config.changed` event now exists purely for audit and any
+//! future durable projection.
 //!
 //! An impl crate: NO other module imports it. Consumers depend on `configapi` (the
 //! reader trait, resolved via `registry::key("config", "reader")`) and
 //! `configevents` (the `config.changed` event) — never on this crate.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex, OnceLock, RwLock};
-use std::time::Duration;
+use std::sync::{Arc, OnceLock, RwLock};
 
-use bus::{AnyTx, Bus};
 use lifecycle::{Caps, Context, Module};
-use sqlx::postgres::PgListener;
 use sqlx::PgPool;
-use tokio::sync::watch;
-use tokio::task::JoinHandle;
 
-/// Fallback DSN for the listener's dedicated connection — same default as the
-/// shared pool. config can't store the DSN it needs to reach its own store, so this
-/// bootstrap tier stays in env.
+/// Fallback DSN — same default as the shared pool. Test-only now that the module owns
+/// no listener connection (the lazy-pool unit tests never issue a query).
+#[cfg(test)]
 const DEFAULT_DSN: &str =
     "postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable";
 
-/// The LISTEN/NOTIFY channel the `config.settings` write trigger fires on.
+/// The broadcast-invalidation channel the `config.settings` write trigger `pg_notify`s
+/// and every config cache LISTENs on for its authoritative refresh.
 const NOTIFY_CHANNEL: &str = "config_changed";
 
 /// Creates this module's OWN schema and nothing else — full logical isolation (#10).
-/// Idempotent (`IF NOT EXISTS` / `OR REPLACE`). Verbatim from Go's `schemaDDL`.
+/// Idempotent (`IF NOT EXISTS` / `OR REPLACE`).
 ///
-/// The `AFTER INSERT OR UPDATE` trigger is the single source of the `config_changed`
-/// NOTIFY: ANY writer — this service's `set`, another service's, or a raw `psql`
-/// UPDATE — fires it, so every LISTENing process reloads. The payload
-/// `"namespace:key"` matches the listener's split-on-first-`:` because ids are
-/// `^[a-z0-9_]+$`. DELETE is deliberately not triggered (the listener has no delete
-/// path); `RETURN NULL` is correct for an AFTER trigger.
+/// `config.revision` is a monotonic singleton (one row, `revision` bigint). The
+/// `AFTER INSERT OR UPDATE OR DELETE` trigger is the single source of change
+/// propagation: for ANY writer — this service's `set`, another service's, or a raw
+/// `psql` write — it branches on `TG_OP` (a DELETE reads `OLD`, not `NEW`) and, in the
+/// writing transaction, IN ORDER (a) locks + increments `config.revision`, (b)
+/// `pg_notify`s `config_changed` with the operation/namespace/key/revision payload, and
+/// (c) appends the durable `config.changed` event via the plane-owned
+/// `asyncevents.append_event` — the ONLY `asyncevents` object config's DDL references
+/// (it never touches the plane's tables). `RETURN NULL` is correct for an AFTER trigger.
+/// `value` is `null` on a DELETE. `config.revision` seeds at 0; the first mutation
+/// yields revision 1 (real revisions are ≥ 1, so a cache initialised to -1 always
+/// applies its first load).
 const SCHEMA_DDL: &str = r#"
 CREATE SCHEMA IF NOT EXISTS config;
 CREATE TABLE IF NOT EXISTS config.settings (
@@ -48,15 +67,54 @@ CREATE TABLE IF NOT EXISTS config.settings (
 	updated_at timestamptz NOT NULL DEFAULT now(),
 	PRIMARY KEY (namespace, key)
 );
+CREATE TABLE IF NOT EXISTS config.revision (
+	singleton bool   PRIMARY KEY DEFAULT true CHECK (singleton),
+	revision  bigint NOT NULL DEFAULT 0
+);
+INSERT INTO config.revision (singleton, revision) VALUES (true, 0)
+	ON CONFLICT (singleton) DO NOTHING;
 CREATE OR REPLACE FUNCTION config.notify_changed() RETURNS trigger
 	LANGUAGE plpgsql AS $$
+DECLARE
+	_ns      text;
+	_key     text;
+	_value   text;
+	_op      text;
+	_rev     bigint;
+	_payload jsonb;
 BEGIN
-	PERFORM pg_notify('config_changed', NEW.namespace || ':' || NEW.key);
+	IF TG_OP = 'DELETE' THEN
+		_ns := OLD.namespace; _key := OLD.key; _value := NULL; _op := 'delete';
+	ELSIF TG_OP = 'UPDATE' THEN
+		_ns := NEW.namespace; _key := NEW.key; _value := NEW.value; _op := 'update';
+	ELSE
+		_ns := NEW.namespace; _key := NEW.key; _value := NEW.value; _op := 'insert';
+	END IF;
+
+	-- (a) lock + increment the monotonic revision (serialises concurrent writers).
+	UPDATE config.revision SET revision = revision + 1 WHERE singleton
+		RETURNING revision INTO _rev;
+
+	_payload := jsonb_build_object(
+		'namespace', _ns,
+		'key',       _key,
+		'value',     _value,   -- to_jsonb(NULL) => JSON null (a DELETE carries no value)
+		'operation', _op,
+		'revision',  _rev
+	);
+
+	-- (b) broadcast-invalidation NOTIFY (every config cache refreshes on this).
+	PERFORM pg_notify('config_changed', _payload::text);
+
+	-- (c) durable audit event via the plane-owned writer (the ONLY asyncevents object
+	-- config touches — never the plane's tables directly).
+	PERFORM asyncevents.append_event('config.changed', 1, _payload);
+
 	RETURN NULL;
 END;
 $$;
 CREATE OR REPLACE TRIGGER settings_notify
-	AFTER INSERT OR UPDATE ON config.settings
+	AFTER INSERT OR UPDATE OR DELETE ON config.settings
 	FOR EACH ROW EXECUTE FUNCTION config.notify_changed();"#;
 
 /// One persisted config row (`updated_at` is intentionally not carried — the getters
@@ -70,6 +128,25 @@ struct Setting {
 
 /// The composite `(namespace, key)` map key backing the read cache.
 type CacheKey = (String, String);
+
+/// The atomically-swapped cache contents: the settings map plus the monotonic
+/// `config.revision` they were read at. Held under ONE `RwLock` so a reader always sees
+/// a coherent (revision, map) pair and the refresh's revision gate is race-free.
+struct CacheState {
+    /// The revision of the loaded snapshot; `-1` before the first load (real revisions
+    /// are ≥ 0, and a mutation makes them ≥ 1, so the first refresh always applies).
+    revision: i64,
+    map: HashMap<CacheKey, String>,
+}
+
+impl CacheState {
+    fn empty() -> CacheState {
+        CacheState {
+            revision: -1,
+            map: HashMap::new(),
+        }
+    }
+}
 
 /// Validates a namespace/key: non-empty and `[a-z0-9_]` only. Restricting ids this
 /// way makes the `:` separator unambiguous everywhere it appears — the `pg_notify`
@@ -90,22 +167,22 @@ fn valid_ident(s: &str) -> bool {
 /// uses it), NOT on the reader trait.
 pub struct Service {
     pool: PgPool,
-    cache: RwLock<HashMap<CacheKey, String>>,
+    cache: RwLock<CacheState>,
 }
 
 impl Service {
     fn new(pool: PgPool) -> Service {
         Service {
             pool,
-            cache: RwLock::new(HashMap::new()),
+            cache: RwLock::new(CacheState::empty()),
         }
     }
 
     /// Validates the ids, then upserts the row in a single autocommit statement. The
-    /// `config.settings` AFTER-write trigger fires `pg_notify('config_changed',
-    /// "ns:key")` on the same statement (delivered on commit), so no explicit NOTIFY
-    /// is needed. `set` does NOT touch the cache: the listener is the single refresh
-    /// path, so a local write and an external `psql` edit are handled identically.
+    /// `config.settings` AFTER-write trigger runs on commit — bumping the revision,
+    /// `pg_notify`ing `config_changed`, and appending the durable event. `set` does NOT
+    /// touch the cache: the invalidation callback is the single refresh path, so a
+    /// service write and an external `psql` edit are handled identically.
     pub async fn set(&self, ns: &str, key: &str, value: &str) -> anyhow::Result<()> {
         if !valid_ident(ns) {
             anyhow::bail!("config: invalid namespace {ns:?} (must match ^[a-z0-9_]+$)");
@@ -125,64 +202,38 @@ impl Service {
         Ok(())
     }
 
-    /// Reads every setting — the full-reload source used on each listener (re)connect.
-    /// Ordering is irrelevant: the cache is a map.
-    async fn load_all(&self) -> anyhow::Result<Vec<Setting>> {
-        let rows: Vec<(String, String, String)> =
-            sqlx::query_as("SELECT namespace, key, value FROM config.settings")
-                .fetch_all(&self.pool)
-                .await?;
-        Ok(rows
-            .into_iter()
-            .map(|(namespace, key, value)| Setting {
-                namespace,
-                key,
-                value,
-            })
-            .collect())
+    /// Reads the whole store — the monotonic `config.revision` AND every setting — in
+    /// ONE statement (a LEFT JOIN of the singleton revision row against settings), so
+    /// the revision names exactly the setting set returned (never two READ COMMITTED
+    /// reads that could straddle a concurrent write). With no settings the LEFT JOIN
+    /// still yields one row carrying the revision and NULL setting columns.
+    async fn load_snapshot(&self) -> anyhow::Result<(i64, Vec<Setting>)> {
+        load_snapshot_from(&self.pool).await
     }
 
-    /// Fetches a single setting's value. `Ok(None)` means the row is absent (a
-    /// deleted key); a real DB error is returned as `Err`.
-    async fn get_one(&self, ns: &str, key: &str) -> anyhow::Result<Option<String>> {
-        let row: Option<(String,)> =
-            sqlx::query_as("SELECT value FROM config.settings WHERE namespace = $1 AND key = $2")
-                .bind(ns)
-                .bind(key)
-                .fetch_optional(&self.pool)
-                .await?;
-        Ok(row.map(|(v,)| v))
+    /// Re-reads the authoritative store and applies it to the cache if newer — the
+    /// invalidation callback's whole body. Building the map before taking the lock keeps
+    /// the write critical section to the revision check + two moves.
+    async fn refresh(&self) -> anyhow::Result<()> {
+        let (revision, settings) = self.load_snapshot().await?;
+        self.apply(revision, settings);
+        Ok(())
     }
 
-    /// Swaps in a fresh cache from a full load (listener (re)connect) and returns the
-    /// settings whose value changed vs the prior snapshot — a new key or a changed
-    /// value counts as changed; removed keys are ignored (deletes out of scope). The
-    /// diff is computed under the write lock while swapping, so it reflects exactly
-    /// the snapshot installed. The listener replays these as `config.changed` after a
-    /// RECONNECT so materialized push consumers heal.
-    fn replace_cache(&self, settings: Vec<Setting>) -> Vec<Setting> {
-        let mut new_map: HashMap<CacheKey, String> = HashMap::with_capacity(settings.len());
-        for st in &settings {
-            new_map.insert((st.namespace.clone(), st.key.clone()), st.value.clone());
+    /// Atomic revision-gated swap: replaces the cache only when `revision` is strictly
+    /// newer than the one held, so a stale or duplicate NOTIFY (or a redundant boot
+    /// refresh) is a no-op.
+    fn apply(&self, revision: i64, settings: Vec<Setting>) {
+        let mut map: HashMap<CacheKey, String> = HashMap::with_capacity(settings.len());
+        for st in settings {
+            map.insert((st.namespace, st.key), st.value);
         }
         let mut guard = self.cache.write().unwrap();
-        let mut changed = Vec::new();
-        for st in &settings {
-            match guard.get(&(st.namespace.clone(), st.key.clone())) {
-                Some(prev) if prev == &st.value => {}
-                _ => changed.push(st.clone()),
-            }
+        if revision <= guard.revision {
+            return;
         }
-        *guard = new_map;
-        changed
-    }
-
-    /// Updates a single cached key (listener applying one notification).
-    fn set_cache_one(&self, ns: &str, key: &str, value: &str) {
-        self.cache
-            .write()
-            .unwrap()
-            .insert((ns.to_string(), key.to_string()), value.to_string());
+        guard.revision = revision;
+        guard.map = map;
     }
 
     /// Snapshots the cache as a slice sorted by `(namespace, key)` for a stable admin
@@ -191,6 +242,7 @@ impl Service {
         let mut out: Vec<Setting> = {
             let guard = self.cache.read().unwrap();
             guard
+                .map
                 .iter()
                 .map(|((ns, key), value)| Setting {
                     namespace: ns.clone(),
@@ -202,6 +254,35 @@ impl Service {
         out.sort_by(|a, b| a.namespace.cmp(&b.namespace).then(a.key.cmp(&b.key)));
         out
     }
+}
+
+/// Reads `(revision, settings)` from ONE statement over `pool`. A free function so the
+/// `ConfigSnapshot` RPC (which reads the STORE, not a `Service` cache) shares it.
+async fn load_snapshot_from(pool: &PgPool) -> anyhow::Result<(i64, Vec<Setting>)> {
+    // (revision, namespace?, key?, value?) — the setting columns are NULL on the single
+    // no-settings LEFT JOIN row.
+    type SnapshotRow = (i64, Option<String>, Option<String>, Option<String>);
+    let rows: Vec<SnapshotRow> = sqlx::query_as(
+        "SELECT r.revision, s.namespace, s.key, s.value \
+         FROM config.revision r LEFT JOIN config.settings s ON true",
+    )
+    .fetch_all(pool)
+    .await?;
+    // `config.revision` is a seeded singleton, so there is always ≥ 1 row; the revision
+    // is identical on every row.
+    let revision = rows.first().map(|r| r.0).unwrap_or(0);
+    let settings = rows
+        .into_iter()
+        .filter_map(|(_, ns, key, value)| match (ns, key, value) {
+            (Some(namespace), Some(key), Some(value)) => Some(Setting {
+                namespace,
+                key,
+                value,
+            }),
+            _ => None, // the no-settings LEFT JOIN row (NULL setting columns)
+        })
+        .collect();
+    Ok((revision, settings))
 }
 
 /// The read-side capability config exposes. All getters degrade to `default` on a
@@ -229,6 +310,7 @@ impl configapi::Config for Service {
         self.cache
             .read()
             .unwrap()
+            .map
             .get(&(ns.to_string(), key.to_string()))
             .cloned()
     }
@@ -240,159 +322,25 @@ impl configapi::Config for Service {
 /// still correct.
 #[async_trait::async_trait]
 impl configapi::ConfigSnapshot for Service {
-    async fn snapshot(&self) -> Result<Vec<configapi::Setting>, opsapi::Error> {
-        let settings = self
-            .load_all()
+    /// Reads the authoritative STORE (revision + every setting) in one statement, so a
+    /// peer's `CachedConfig` gets a consistent snapshot with the revision that names it —
+    /// never a `Service` cache read (which may be empty before the first refresh).
+    async fn snapshot(&self) -> Result<configapi::Snapshot, opsapi::Error> {
+        let (revision, settings) = self
+            .load_snapshot()
             .await
             .map_err(|e| opsapi::Error::internal(e.to_string()))?;
-        Ok(settings
-            .into_iter()
-            .map(|s| configapi::Setting {
-                namespace: s.namespace,
-                key: s.key,
-                value: s.value,
-            })
-            .collect())
-    }
-}
-
-// ============================================================================
-// Live reload — a dedicated PgListener, with boot-vs-reconnect replay.
-// ============================================================================
-
-/// Publishes one `config.changed` on the DURABLE plane (Step 5). The listener owns no
-/// domain write, so it opens its OWN short transaction purely to carry the outbox
-/// insert (`emit_tx` needs a tx), then commits. Mirrors Go, where ONLY the listener
-/// emitted `config.changed` — the admin `set` path stays a plain upsert whose trigger
-/// NOTIFY drives THIS emit, so a change is published exactly once regardless of who
-/// wrote it (no producer-side double-emit to dedup).
-async fn emit_changed(svc: &Service, bus: &Bus, ns: &str, key: &str, value: &str) -> anyhow::Result<()> {
-    let mut tx = svc.pool.begin().await?;
-    bus.emit_tx(
-        AnyTx::new(&mut *tx), // erased after the deref: Transaction<'_> isn't 'static
-        &configevents::CHANGED,
-        &configevents::Changed {
-            namespace: ns.to_string(),
-            key: key.to_string(),
-            value: value.to_string(),
-        },
-    )
-    .await?;
-    tx.commit().await?;
-    Ok(())
-}
-
-/// Does the FULL cache reload every (re)connect performs and, on a RECONNECT (not
-/// the initial boot load), emits `config.changed` for each key whose value differs
-/// from the prior snapshot. PG does not queue NOTIFY for a dead session, so a
-/// reconnect that only reloaded the pull cache would leave a materialized push
-/// consumer (e.g. inventory's starter spec) stale for any key changed during the
-/// disconnect — so we replay those changes as events. The boot load emits NOTHING
-/// (that would spam one event per key at startup; pull consumers lazy-load anyway).
-/// This is the single path the listener uses; the `reconnect` flag is the only
-/// difference, so a test can drive healing by calling it with `reconnect = true`.
-async fn reload_and_heal(svc: &Service, bus: &Bus, reconnect: bool) -> anyhow::Result<()> {
-    let settings = svc.load_all().await?;
-    let changed = svc.replace_cache(settings);
-    if reconnect {
-        for st in changed {
-            // DURABLE replay so a materialized push consumer (e.g. inventory's starter
-            // spec) heals across a listener reconnect even in a split topology.
-            emit_changed(svc, bus, &st.namespace, &st.key, &st.value).await?;
-        }
-    }
-    Ok(())
-}
-
-/// Keeps a dedicated `PgListener` connection LISTENing for `config_changed` and
-/// refreshes the cache until `stop` flips. It never dies on a DB outage: each
-/// (re)connect goes through [`listen_once`], which backs off on failure. `booted`
-/// tracks whether the first successful reload (the boot load) has happened; every
-/// subsequent reload is a reconnect and heals.
-async fn listen(dsn: String, svc: Arc<Service>, bus: Arc<Bus>, mut stop: watch::Receiver<bool>) {
-    let mut booted = false;
-    while !*stop.borrow() {
-        if listen_once(&dsn, &svc, &bus, booted, &mut stop).await {
-            booted = true; // the first successful reload is the boot load; the rest reconnect
-        }
-    }
-}
-
-/// Owns exactly one dedicated connection for its lifetime: connects, LISTENs, does a
-/// FULL cache reload (`reload_and_heal` with `booted` as the reconnect flag), then
-/// blocks on notifications until an error or cancellation. Returns `true` iff it got
-/// as far as installing a fresh cache (a successful reload), so the caller knows the
-/// boot load is done and subsequent reloads should heal. The dedicated `PgListener`
-/// connection is separate from `svc.pool` (which serves the reload/get_one reads),
-/// matching Go's raw-pgx listener conn vs the shared `*sql.DB`.
-async fn listen_once(
-    dsn: &str,
-    svc: &Arc<Service>,
-    bus: &Arc<Bus>,
-    booted: bool,
-    stop: &mut watch::Receiver<bool>,
-) -> bool {
-    let mut listener = match PgListener::connect(dsn).await {
-        Ok(l) => l,
-        Err(err) => {
-            tracing::error!(%err, "config listener connect failed");
-            backoff(stop).await;
-            return false;
-        }
-    };
-    if let Err(err) = listener.listen(NOTIFY_CHANNEL).await {
-        tracing::error!(%err, "config listener LISTEN failed");
-        backoff(stop).await;
-        return false;
-    }
-    if let Err(err) = reload_and_heal(svc, bus, booted).await {
-        tracing::error!(%err, "config listener reload failed");
-        backoff(stop).await;
-        return false;
-    }
-
-    loop {
-        tokio::select! {
-            _ = stop.changed() => return true, // clean shutdown (reload already succeeded)
-            res = listener.recv() => match res {
-                Ok(notif) => {
-                    let payload = notif.payload();
-                    let Some((ns, key)) = payload.split_once(':') else {
-                        tracing::warn!(%payload, "config listener ignoring malformed payload");
-                        continue;
-                    };
-                    match svc.get_one(ns, key).await {
-                        Ok(Some(v)) => {
-                            svc.set_cache_one(ns, key, &v);
-                            // DURABLE publish (Step 5): rides the outbox so a
-                            // cross-process consumer (inventory in a split) sees it.
-                            if let Err(err) = emit_changed(svc, bus, ns, key, &v).await {
-                                tracing::error!(%ns, %key, %err, "config listener emit_tx failed");
-                            }
-                        }
-                        Ok(None) => continue, // a delete (only upserts exist today) — nothing to cache
-                        Err(err) => {
-                            tracing::error!(%ns, %key, %err, "config listener getOne failed");
-                            continue;
-                        }
-                    }
-                }
-                Err(err) => {
-                    tracing::error!(%err, "config listener wait failed");
-                    backoff(stop).await;
-                    return true; // reconnect via the outer loop (conn dropped on return)
-                }
-            }
-        }
-    }
-}
-
-/// Waits ~1s, returning early if `stop` flips so shutdown stays prompt and a
-/// reconnect storm never tight-spins.
-async fn backoff(stop: &mut watch::Receiver<bool>) {
-    tokio::select! {
-        _ = stop.changed() => {}
-        _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+        Ok(configapi::Snapshot {
+            revision,
+            settings: settings
+                .into_iter()
+                .map(|s| configapi::Setting {
+                    namespace: s.namespace,
+                    key: s.key,
+                    value: s.value,
+                })
+                .collect(),
+        })
     }
 }
 
@@ -552,14 +500,9 @@ async fn apply_edit(svc: &Arc<Service>, values: adminapi::Params) -> anyhow::Res
 // ============================================================================
 
 /// The config module. Holds the constructed service (shared between `register`, the
-/// listener, and the admin render), the bus/dsn captured in `init`, and the
-/// listener's cancel/join handles.
+/// invalidation callback, and the admin render).
 pub struct Config {
     svc: OnceLock<Arc<Service>>,
-    bus: OnceLock<Arc<Bus>>,
-    dsn: Mutex<Option<String>>,
-    stop_tx: Mutex<Option<watch::Sender<bool>>>,
-    tasks: Mutex<Vec<JoinHandle<()>>>,
 }
 
 impl Default for Config {
@@ -572,10 +515,6 @@ impl Config {
     pub fn new() -> Config {
         Config {
             svc: OnceLock::new(),
-            bus: OnceLock::new(),
-            dsn: Mutex::new(None),
-            stop_tx: Mutex::new(None),
-            tasks: Mutex::new(Vec::new()),
         }
     }
 
@@ -594,13 +533,16 @@ impl Module for Config {
     }
 
     fn caps(&self) -> Caps {
-        Caps::REGISTER | Caps::MIGRATE | Caps::START | Caps::STOP
+        // No STOP: the cache is refreshed by the app-owned invalidation plane (which
+        // owns the LISTEN connection and its shutdown), so config spawns no task of its
+        // own. START does a single synchronous boot-load.
+        Caps::REGISTER | Caps::MIGRATE | Caps::START
     }
 
     /// Phase 1, BEFORE any `init`: builds the service and offers it under the
     /// capability key `"config.reader"`, so a dependent's `require`/`try_require`
-    /// resolves regardless of registration order. The cache is filled by the
-    /// listener's first connect (`start`), not here.
+    /// resolves regardless of registration order. The cache is boot-loaded in `start`
+    /// and kept fresh by the invalidation callback registered in `init`.
     fn register(&self, ctx: &Context) -> anyhow::Result<()> {
         let pool = ctx
             .db()
@@ -626,14 +568,10 @@ impl Module for Config {
         Ok(())
     }
 
-    /// Only wires up — no DB I/O (#8). Captures the bus + listener DSN and contributes
-    /// the admin editor page. The cache is filled by the listener's first connect.
+    /// Only wires up — no DB I/O (#8). Contributes the admin editor page + the edge
+    /// face, and registers the authoritative-refresh callback on the `config_changed`
+    /// invalidation channel (REFRESH role only — the boot-fill stays in `start`).
     fn init(&self, ctx: &Context) -> anyhow::Result<()> {
-        self.bus
-            .set(ctx.bus().clone())
-            .map_err(|_| anyhow::anyhow!("config.init ran twice"))?;
-        *self.dsn.lock().unwrap() = Some(env_or("DATABASE_URL", DEFAULT_DSN));
-
         let svc = self.svc();
         ctx.contribute(
             adminapi::SLOT,
@@ -659,61 +597,35 @@ impl Module for Config {
                 configrpc::config_snapshot_rpc::register_server(server, snap);
             }),
         );
+
+        // Broadcast-invalidation REFRESH: every committed `config_changed` NOTIFY (from
+        // the trigger — a service write OR a raw psql edit) re-runs this authoritative
+        // refresh, which re-reads the snapshot and swaps the cache if the revision is
+        // newer. Wiring-only (no I/O now): the closure first runs when the invalidation
+        // plane starts, after module `start`. This is the ONLY refresh path once booted;
+        // the `start` boot-load is the initial fill.
+        let refresh = self.svc();
+        ctx.invalidation().register(NOTIFY_CHANNEL, "config", move || {
+            let refresh = refresh.clone();
+            async move { refresh.refresh().await }
+        });
         Ok(())
     }
 
-    /// Launches the LISTEN/NOTIFY loop on a FRESH `Background`-rooted task (via
-    /// `tokio::spawn`, not tied to the `start` ctx), so a short start deadline can't
-    /// kill the loop; `stop` cancels it. The initial full cache load happens inside
-    /// the loop's first connect, so boot and reconnect share one cache-population
-    /// path.
+    /// Boot-fills the cache once, synchronously, so a co-hosted reader sees populated
+    /// config as soon as config has started (the invalidation plane's first refresh runs
+    /// only after every module start). A load failure fails startup loudly — config's
+    /// boot guarantee. Ongoing freshness is the invalidation callback's job.
     async fn start(&self, _ctx: &Context) -> anyhow::Result<()> {
-        let svc = self.svc();
-        let bus = self
-            .bus
-            .get()
-            .expect("config.init must run before start")
-            .clone();
-        let dsn = self
-            .dsn
-            .lock()
-            .unwrap()
-            .clone()
-            .expect("config.init must run before start");
-
-        let (stop_tx, stop_rx) = watch::channel(false);
-        let task = tokio::spawn(listen(dsn, svc, bus, stop_rx));
-        *self.stop_tx.lock().unwrap() = Some(stop_tx);
-        self.tasks.lock().unwrap().push(task);
+        self.svc().refresh().await?;
         Ok(())
-    }
-
-    /// Cancels the loop and awaits its exit. It does NOT close the listener conn — the
-    /// loop owns and re-creates it across reconnects, so a permanent outage degrades
-    /// to stale-cache + retry.
-    async fn stop(&self, _ctx: &Context) -> anyhow::Result<()> {
-        if let Some(tx) = self.stop_tx.lock().unwrap().take() {
-            let _ = tx.send(true);
-        }
-        let tasks = std::mem::take(&mut *self.tasks.lock().unwrap());
-        for t in tasks {
-            let _ = t.await;
-        }
-        Ok(())
-    }
-}
-
-fn env_or(key: &str, def: &str) -> String {
-    match std::env::var(key) {
-        Ok(v) if !v.is_empty() => v,
-        _ => def.to_string(),
     }
 }
 
 // ============================================================================
 // Tests. Unit tests need no DB; integration tests target the local Postgres (the
 // test DB) and SKIP cleanly (early return + message) when it is unreachable. In-crate
-// so they can drive the private `Service`/`reload_and_heal`/`listen` directly.
+// so they can drive the private `Service`/`load_snapshot`/`refresh` directly.
 // ============================================================================
 #[cfg(test)]
 mod tests;

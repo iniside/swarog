@@ -45,10 +45,12 @@
 #     character.deleted; inventory's on_tx wipes the holdings. Assert the DB holdings
 #     row is genuinely gone (the HTTP 404 after delete alone only proves the character
 #     is gone via owner_of and would mask an un-wiped row).
-#   - CONFIG live-reload C->B (Step 5): change inventory/starter_item at runtime via
-#     psql; config-svc publishes config.changed DURABLY onto the shared log; B pulls
-#     it, and its CachedConfig + inventory starter spec both reload. A NEWLY created
-#     character then gets the NEW starter -- cross-process live reload with no restart.
+#   - CONFIG live-reload C->B (Step 7): change inventory/starter_item at runtime via
+#     psql; config's write trigger bumps the revision, pg_notifies config_changed, and
+#     appends config.changed durably. B's invalidation plane (LISTENing config_changed on
+#     the shared DB) refreshes CachedConfig; inventory's starter spec reloads on the
+#     durable event. A NEWLY created character then gets the NEW starter -- cross-process
+#     live reload with no restart.
 #
 # THE QUIC PLAYER FRONT (Step 8, all through gateway-svc's :9100 QUIC front via the
 # playercli tool -- exit 0 iff transport ok AND payload status=="Ok"):
@@ -331,9 +333,10 @@ try {
         Note 'psql not found -- the config live-reload assertion will SKIP'
     }
 
-    # C (config-svc): owns the config schema + LISTEN/NOTIFY listener, serves
-    # config.snapshot on its mTLS edge, and appends config.changed durably onto the
-    # shared log (B and F pull it).
+    # C (config-svc): owns the config schema + write trigger, serves config.snapshot on
+    # its mTLS edge, and (via the trigger) bumps the revision, pg_notifies config_changed,
+    # and appends config.changed durably onto the shared log (B and F pull the event; B
+    # also LISTENs config_changed for cache invalidation).
     Note "starting C (config-svc) on :$CPort, edge :$CEdgePort ..."
     $script:CProc = Start-Svc (Join-Path $BinDir 'config-svc.exe') @{
         PORT               = ":$CPort"
@@ -574,9 +577,10 @@ try {
         }
         if ($baseOk) { Pass 'baseline character granted starter_sword (B booted on the default via CachedConfig)' } else { Fail "baseline starter_sword not granted (bcid=$bcid)" }
 
-        # [C2] runtime change on C's DB: trigger NOTIFYs -> C's listener emit_tx (durable
-        # append) -> B's pull worker delivers config.changed -> B refreshes CachedConfig
-        # + reloads spec.
+        # [C2] runtime change on C's DB: the write trigger bumps the revision, pg_notifies
+        # config_changed (B's invalidation plane refreshes CachedConfig), and appends
+        # config.changed durably (B's pull worker delivers it -> inventory reloads its
+        # starter spec).
         Write-Host '[C2] set config inventory/starter_item=health_potion (via psql on C shared DB)'
         Invoke-Sql "INSERT INTO config.settings (namespace,key,value) VALUES ('inventory','starter_item','health_potion') ON CONFLICT (namespace,key) DO UPDATE SET value=excluded.value;" | Out-Null
 

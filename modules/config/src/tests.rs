@@ -1,15 +1,24 @@
 use super::*;
 
+use std::time::Duration;
+
+use sqlx::postgres::PgListener;
+use sqlx::Row;
+
 /// A cacheless service over a lazy pool (never connects until a query) — for
 /// unit tests that only read the cache or validate ids before any DB work.
 fn lazy_service() -> Arc<Service> {
     Arc::new(Service::new(PgPool::connect_lazy(DEFAULT_DSN).unwrap()))
 }
 
+/// Preloads the read cache (revision-agnostic — these unit tests only exercise the
+/// getters/admin render, never the revision gate).
 fn preload(svc: &Service, entries: &[(&str, &str, &str)]) {
     let mut guard = svc.cache.write().unwrap();
     for (ns, key, val) in entries {
-        guard.insert((ns.to_string(), key.to_string()), val.to_string());
+        guard
+            .map
+            .insert((ns.to_string(), key.to_string()), val.to_string());
     }
 }
 
@@ -65,6 +74,39 @@ fn valid_ident_matches_go_regex() {
     assert!(!valid_ident("a b"));
 }
 
+/// The revision gate: [`Service::apply`] installs a snapshot only when its revision
+/// is strictly newer than the one held, so a stale/duplicate refresh is a no-op. No
+/// DB — drives `apply` directly.
+#[tokio::test]
+async fn apply_installs_only_newer_revisions() {
+    use configapi::Config as _;
+    let svc = lazy_service();
+
+    svc.apply(5, vec![setting("game", "name", "v5")]);
+    assert_eq!(svc.get("game", "name").as_deref(), Some("v5"));
+
+    // A STALE snapshot (older revision) is ignored, even though its contents differ.
+    svc.apply(3, vec![setting("game", "name", "v3")]);
+    assert_eq!(svc.get("game", "name").as_deref(), Some("v5"), "stale revision must not apply");
+
+    // A DUPLICATE (same revision) is also a no-op.
+    svc.apply(5, vec![setting("game", "name", "dup")]);
+    assert_eq!(svc.get("game", "name").as_deref(), Some("v5"), "duplicate revision must not apply");
+
+    // A newer revision applies (and a dropped key disappears — full-map swap).
+    svc.apply(6, vec![setting("game", "region", "eu")]);
+    assert_eq!(svc.get("game", "region").as_deref(), Some("eu"));
+    assert_eq!(svc.get("game", "name"), None, "full-map swap drops removed keys");
+}
+
+fn setting(ns: &str, key: &str, value: &str) -> Setting {
+    Setting {
+        namespace: ns.to_string(),
+        key: key.to_string(),
+        value: value.to_string(),
+    }
+}
+
 /// `register` provides the reader capability under `"config.reader"`, downcasting
 /// back to `Arc<dyn configapi::Config>`. No DB (lazy pool, no query).
 #[tokio::test]
@@ -114,8 +156,28 @@ async fn admin_render_builds_widgets_from_cache() {
 
 // ---- Live Postgres integration (the local DB is the test DB) ----------
 
-/// Opens the local Postgres, migrates the config schema, and returns `None`
-/// (printing a skip line) when it's unreachable.
+/// Migrates the asyncevents schema (the durable plane's event log) EXACTLY ONCE per
+/// test binary — its `CREATE INDEX`/`CREATE OR REPLACE TRIGGER` deadlock under
+/// parallel idempotent re-runs, so serialize them (mirrors the characters tests).
+static ASYNCEVENTS_READY: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
+
+async fn ensure_asyncevents_schema(pool: &PgPool) {
+    ASYNCEVENTS_READY
+        .get_or_init(|| async {
+            let dsn = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string());
+            asyncevents::Plane::new(pool.clone(), dsn)
+                .unwrap()
+                .migrate()
+                .await
+                .unwrap();
+        })
+        .await;
+}
+
+/// Opens the local Postgres and migrates BOTH the asyncevents plane (so the config
+/// trigger's `asyncevents.append_event` call resolves on every `config.settings` write)
+/// and the config schema; returns `None` (printing a skip line) when Postgres is
+/// unreachable.
 async fn test_pool() -> Option<PgPool> {
     let dsn = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string());
     let pool = match tokio::time::timeout(Duration::from_secs(3), PgPool::connect(&dsn)).await {
@@ -125,6 +187,7 @@ async fn test_pool() -> Option<PgPool> {
             return None;
         }
     };
+    ensure_asyncevents_schema(&pool).await;
     if let Err(err) = sqlx::raw_sql(SCHEMA_DDL).execute(&pool).await {
         eprintln!("SKIP: config migrate failed: {err}");
         return None;
@@ -150,194 +213,260 @@ async fn cleanup(pool: &PgPool, ns: &str) {
     let _ = asyncevents::testing::cleanup_events(pool, "namespace", ns).await;
 }
 
-/// Serializes the tests that RUN a real config listener or ASSERT on the shared
-/// `asyncevents.events` log. The `config_changed` NOTIFY channel is process-global, so
-/// a listener running in one test would pick up another test's `config.settings` write
-/// and append a `config.changed` event for its namespace — contaminating an
-/// event-count assertion. Holding this lock for the listener/log tests guarantees
-/// no concurrent listener races their assertions (other DB tests run no listener and
-/// never check the log, so they don't need it).
-static DB_SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
-/// Migrates the asyncevents schema (the durable plane's event log) EXACTLY ONCE per
-/// test binary — its `CREATE INDEX`/`CREATE OR REPLACE TRIGGER` deadlock under
-/// parallel idempotent re-runs, so serialize them (mirrors the characters tests).
-static ASYNCEVENTS_READY: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
-
-async fn ensure_asyncevents_schema(pool: &PgPool) {
-    ASYNCEVENTS_READY
-        .get_or_init(|| async {
-            let dsn = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string());
-            asyncevents::Plane::new(pool.clone(), dsn)
-                .unwrap()
-                .migrate()
-                .await
-                .unwrap();
-        })
-        .await;
-}
-
-/// Builds a config module wired against a LIVE durable plane: config registers + inits
-/// on a ctx whose bus already carries the injected `bus::Transport` (the caller builds it
-/// via `Context::with_db_and_transport`, needed before the listener's `emit_tx`). The
-/// caller must also have migrated the asyncevents schema (`ensure_asyncevents_schema`).
-fn build_module(ctx: &Context) -> Config {
-    let m = Config::new();
-    m.register(ctx).unwrap();
-    m.init(ctx).unwrap();
-    m
-}
-
-/// A ctx over the live pool with the asyncevents transport injected at construction —
-/// the shape `app::run` builds, and what the durable-listener tests need before `start`.
-fn wired_ctx(pool: &PgPool) -> Context {
-    let transport = asyncevents::testing::transport(pool.clone());
-    Context::with_db_and_transport(pool.clone(), transport.handle())
-}
-
-/// Counts durable `config.changed` log events for a namespace — the Step-5 durable
-/// publish replaces the old sync-bus assertion.
+/// Counts durable `config.changed` log events for a namespace.
 async fn changed_event_count(pool: &PgPool, ns: &str) -> i64 {
     asyncevents::testing::events_count(pool, "config.changed", "namespace", ns)
         .await
         .unwrap()
 }
 
-/// The DB round-trip: `set` persists, a fresh `load_all` + `replace_cache` makes
-/// the value readable through the getters.
+/// The DB round-trip: `set` persists, a fresh `load_snapshot` + `apply` makes the
+/// value readable through the getters at the revision the write produced.
 #[tokio::test]
-async fn set_then_load_reads_back() {
+async fn set_then_snapshot_reads_back() {
     use configapi::Config as _;
     let Some(pool) = test_pool().await else { return };
     let ns = unique_ns(&pool).await;
     let svc = Arc::new(Service::new(pool.clone()));
 
     svc.set(&ns, "limit", "42").await.unwrap();
-    let all = svc.load_all().await.unwrap();
-    svc.replace_cache(all);
+    let (revision, settings) = svc.load_snapshot().await.unwrap();
+    assert!(revision >= 1, "the first write must produce a revision >= 1");
+    svc.apply(revision, settings);
 
     assert_eq!(svc.get(&ns, "limit").as_deref(), Some("42"));
     assert_eq!(svc.get_int(&ns, "limit", 0), 42);
     cleanup(&pool, &ns).await;
 }
 
-/// The REAL push path end-to-end: a running listener + `set` -> pg_notify ->
-/// listener -> cache refresh AND a DURABLE `config.changed` (Step 5: a log event,
-/// not a sync-bus event). Also proves the BOOT load is silent (a pre-seeded key
-/// appends no event) while a POST-boot set does. Observed by polling the cache
-/// and the `asyncevents.events` log.
+/// One mutation ⇒ exactly one durable `config.changed` event (no double emission),
+/// across INSERT/UPDATE/DELETE. The per-namespace events carry the operation, the new
+/// value (`null` on DELETE), and a STRICTLY increasing revision — read straight off the
+/// log, so the assertions are race-free against concurrent tests bumping the singleton.
 #[tokio::test]
-async fn live_reload_updates_cache_and_emits_changed() {
-    use configapi::Config as _;
+async fn each_mutation_emits_one_event_with_operation_value_and_revision() {
     let Some(pool) = test_pool().await else { return };
-    ensure_asyncevents_schema(&pool).await;
-    let _serial = DB_SERIAL.lock().await;
     let ns = unique_ns(&pool).await;
+    let svc = Arc::new(Service::new(pool.clone()));
 
-    // Pre-seed a key so the boot load has something to (silently) load.
-    sqlx::query("INSERT INTO config.settings (namespace, key, value) VALUES ($1, 'sentinel', '1')")
+    // The trigger runs in each write's autocommit tx, so the event is committed by the
+    // time the write returns — no polling.
+    svc.set(&ns, "k", "1").await.unwrap(); // insert
+    svc.set(&ns, "k", "2").await.unwrap(); // update
+    sqlx::query("DELETE FROM config.settings WHERE namespace = $1 AND key = 'k'")
         .bind(&ns)
         .execute(&pool)
         .await
-        .unwrap();
+        .unwrap(); // delete
 
-    let ctx = wired_ctx(&pool); // durable transport injected at construction
-    let m = build_module(&ctx);
-
-    m.start(&ctx).await.unwrap();
-
-    // Wait for the listener to connect + boot-load (cache reflects the sentinel).
-    let svc = m.svc();
-    wait_until(|| svc.get(&ns, "sentinel").as_deref() == Some("1")).await;
-
-    // Boot load emitted NOTHING (reconnect=false): no config.changed outbox row.
-    tokio::time::sleep(Duration::from_millis(50)).await;
     assert_eq!(
         changed_event_count(&pool, &ns).await,
-        0,
-        "boot load must append no config.changed events"
+        3,
+        "exactly one event per mutation (no double emission)"
     );
 
-    // A POST-boot set DOES emit durably: cache refresh + one log event.
-    svc.set(&ns, "flag", "on").await.unwrap();
+    let rows = sqlx::query(
+        "SELECT payload->>'operation' AS op, payload->>'value' AS val, \
+                (payload->>'revision')::bigint AS rev \
+         FROM asyncevents.events WHERE topic = 'config.changed' AND payload->>'namespace' = $1 \
+         ORDER BY generation, producer_xid, tie_breaker",
+    )
+    .bind(&ns)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(rows.len(), 3);
 
-    wait_until_async(|| {
-        let pool = pool.clone();
-        let ns = ns.clone();
-        async move { changed_event_count(&pool, &ns).await == 1 }
-    })
-    .await;
-    assert_eq!(svc.get(&ns, "flag").as_deref(), Some("on"));
-    assert!(svc.get_bool(&ns, "flag", false));
+    let ops: Vec<String> = rows.iter().map(|r| r.get::<String, _>("op")).collect();
+    assert_eq!(ops, vec!["insert", "update", "delete"]);
 
-    // Clean shutdown, then remove the rows so reruns are stable.
-    m.stop(&ctx).await.unwrap();
+    // DELETE carries `value: null` (a NULL jsonb field → SQL NULL out of `->>`).
+    assert_eq!(rows[0].get::<Option<String>, _>("val").as_deref(), Some("1"));
+    assert_eq!(rows[1].get::<Option<String>, _>("val").as_deref(), Some("2"));
+    assert_eq!(rows[2].get::<Option<String>, _>("val"), None, "DELETE value must be null");
+
+    let revs: Vec<i64> = rows.iter().map(|r| r.get::<i64, _>("rev")).collect();
+    assert!(revs[0] < revs[1] && revs[1] < revs[2], "revision must strictly increment: {revs:?}");
+
     cleanup(&pool, &ns).await;
 }
 
-/// The reconnect self-heal, deterministic (no listener timing): after a disconnect
-/// PG does not replay missed NOTIFYs, so the reload DURABLY emits `config.changed`
-/// for the gap-changed key. Drives the SAME `reload_and_heal` the listener uses. Also
-/// asserts the boot reload (`reconnect=false`) appends no event.
+/// `snapshot()` reports the revision and settings from ONE statement: the revision
+/// tracks writes (a second write yields a strictly greater snapshot revision) and the
+/// settings reflect the store.
 #[tokio::test]
-async fn reconnect_reload_heals_gap_changes_boot_is_silent() {
+async fn snapshot_reports_revision_and_settings() {
     let Some(pool) = test_pool().await else { return };
-    ensure_asyncevents_schema(&pool).await;
-    let _serial = DB_SERIAL.lock().await;
     let ns = unique_ns(&pool).await;
-    let ctx = wired_ctx(&pool); // durable transport injected at construction
-    let m = build_module(&ctx);
-    let svc = m.svc();
-    let bus = ctx.bus().clone();
+    let svc = Arc::new(Service::new(pool.clone()));
 
-    // Seed a key, then boot-load (reconnect=false emits nothing).
-    sqlx::query("INSERT INTO config.settings (namespace, key, value) VALUES ($1, 'level', '1')")
-        .bind(&ns)
-        .execute(&pool)
-        .await
-        .unwrap();
-    reload_and_heal(&svc, &bus, false).await.unwrap();
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    assert_eq!(
-        changed_event_count(&pool, &ns).await,
-        0,
-        "boot reload must append no config.changed events"
+    svc.set(&ns, "a", "1").await.unwrap();
+    let snap1 = configapi::ConfigSnapshot::snapshot(&*svc).await.unwrap();
+    let mine = |s: &configapi::Setting| s.namespace == ns;
+    assert!(
+        snap1.settings.iter().filter(|s| mine(s)).any(|s| s.key == "a" && s.value == "1"),
+        "snapshot must include the just-written setting"
+    );
+    assert!(snap1.revision >= 1);
+
+    svc.set(&ns, "b", "2").await.unwrap();
+    let snap2 = configapi::ConfigSnapshot::snapshot(&*svc).await.unwrap();
+    assert!(
+        snap2.revision > snap1.revision,
+        "a later write must yield a strictly greater snapshot revision ({} !> {})",
+        snap2.revision,
+        snap1.revision
     );
 
-    // A write missed during a disconnect (no NOTIFY to a dead session).
-    sqlx::query("UPDATE config.settings SET value = '2' WHERE namespace = $1 AND key = 'level'")
+    cleanup(&pool, &ns).await;
+}
+
+/// A raw SQL write (the psql / another-service path — NOT `Service::set`) still fires
+/// the trigger: it produces the durable event AND a `config_changed` NOTIFY, so a
+/// config cache LISTENing on the invalidation channel refreshes regardless of who wrote.
+#[tokio::test]
+async fn psql_style_write_emits_event_and_notify() {
+    let Some(pool) = test_pool().await else { return };
+    let dsn = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string());
+    let ns = unique_ns(&pool).await;
+
+    let mut listener = PgListener::connect(&dsn).await.unwrap();
+    listener.listen(NOTIFY_CHANNEL).await.unwrap();
+
+    // A plain SQL write, exactly what `psql` (or a peer service) issues.
+    sqlx::query("INSERT INTO config.settings (namespace, key, value) VALUES ($1, 'raw', 'yes')")
         .bind(&ns)
         .execute(&pool)
         .await
         .unwrap();
 
-    // The reconnect reload heals: it durably emits config.changed for the gap key.
-    reload_and_heal(&svc, &bus, true).await.unwrap();
+    // The channel is process-global (concurrent tests write other namespaces), so
+    // recv until we see OUR namespace's notification, or time out.
+    let mut got = false;
+    for _ in 0..50 {
+        match tokio::time::timeout(Duration::from_millis(200), listener.recv()).await {
+            Ok(Ok(notif)) => {
+                if notif.payload().contains(&ns) {
+                    assert!(
+                        notif.payload().contains("\"operation\""),
+                        "NOTIFY payload must carry the operation: {}",
+                        notif.payload()
+                    );
+                    got = true;
+                    break;
+                }
+            }
+            _ => break, // recv error or timeout
+        }
+    }
+    assert!(got, "a raw write did not deliver a config_changed NOTIFY for {ns}");
     assert_eq!(
         changed_event_count(&pool, &ns).await,
         1,
-        "reconnect reload must append one config.changed event for the gap key"
+        "a raw write must append exactly one durable event"
+    );
+
+    cleanup(&pool, &ns).await;
+}
+
+/// The trigger and the native Rust writer are ONE writer protocol: both stamp
+/// `producer_xid = pg_current_xact_id()` of their own transaction, read the same
+/// generation under the shared advisory lock, and order same-tx appends by
+/// `tie_breaker`. Drives both in controlled transactions and asserts identical
+/// position/locking semantics.
+#[tokio::test]
+async fn trigger_and_native_writer_share_position_semantics() {
+    let Some(pool) = test_pool().await else { return };
+    let ns = unique_ns(&pool).await;
+
+    let generation: i64 =
+        sqlx::query_scalar("SELECT generation FROM asyncevents.plane_meta WHERE singleton")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
+    // Writer B — the config trigger: two settings in ONE transaction. Both events must
+    // carry this tx's xid and increasing tie_breakers (append order).
+    let mut tx_b = pool.begin().await.unwrap();
+    sqlx::query("INSERT INTO config.settings (namespace, key, value) VALUES ($1, 'a', '1')")
+        .bind(&ns)
+        .execute(&mut *tx_b)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO config.settings (namespace, key, value) VALUES ($1, 'b', '2')")
+        .bind(&ns)
+        .execute(&mut *tx_b)
+        .await
+        .unwrap();
+    let xid_b: String = sqlx::query_scalar("SELECT pg_current_xact_id()::text")
+        .fetch_one(&mut *tx_b)
+        .await
+        .unwrap();
+    tx_b.commit().await.unwrap();
+
+    // Writer A — the native Rust writer (`store::append`) via config.changed's contract,
+    // in its own transaction. Different xid, same generation and codec.
+    let mut tx_a = pool.begin().await.unwrap();
+    let payload = serde_json::to_vec(&configevents::Changed {
+        namespace: ns.clone(),
+        key: "native".into(),
+        value: Some("3".into()),
+        operation: "insert".into(),
+        revision: 0,
+    })
+    .unwrap();
+    asyncevents::store::append(&mut tx_a, configevents::CHANGED.contract(), &payload)
+        .await
+        .unwrap();
+    let xid_a: String = sqlx::query_scalar("SELECT pg_current_xact_id()::text")
+        .fetch_one(&mut *tx_a)
+        .await
+        .unwrap();
+    tx_a.commit().await.unwrap();
+
+    let rows = sqlx::query(
+        "SELECT payload->>'key' AS key, producer_xid::text AS xid, generation, tie_breaker \
+         FROM asyncevents.events WHERE topic = 'config.changed' AND payload->>'namespace' = $1 \
+         ORDER BY generation, producer_xid, tie_breaker",
+    )
+    .bind(&ns)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(rows.len(), 3, "two trigger events + one native event");
+
+    let by_key = |k: &str| rows.iter().find(|r| r.get::<String, _>("key") == k).unwrap();
+    let (a, b, native) = (by_key("a"), by_key("b"), by_key("native"));
+
+    // Every writer reads the SAME generation under the shared advisory lock.
+    for r in [a, b, native] {
+        assert_eq!(r.get::<i64, _>("generation"), generation, "generation mismatch across writers");
+    }
+    // xid = pg_current_xact_id() of the writing tx: the two trigger events share tx B's
+    // xid; the native event carries tx A's xid; the two are distinct transactions.
+    assert_eq!(a.get::<String, _>("xid"), xid_b);
+    assert_eq!(b.get::<String, _>("xid"), xid_b);
+    assert_eq!(native.get::<String, _>("xid"), xid_a);
+    assert_ne!(xid_a, xid_b, "distinct transactions must have distinct xids");
+    // tie_breaker orders same-tx appends: 'a' was inserted before 'b'.
+    assert!(
+        a.get::<i64, _>("tie_breaker") < b.get::<i64, _>("tie_breaker"),
+        "tie_breaker must order same-tx appends"
     );
 
     cleanup(&pool, &ns).await;
 }
 
 /// The admin `apply_edit` submit closure end-to-end: rendering yields a Form whose
-/// submit inserts an add-new triple; with a running listener the new key
-/// propagates back into the cache via the real push path.
+/// submit inserts an add-new triple; a subsequent authoritative `refresh` (the
+/// invalidation callback's body) lands the new key in the cache.
 #[tokio::test]
 async fn admin_apply_edit_inserts_new_triple() {
     use configapi::Config as _;
     let Some(pool) = test_pool().await else { return };
-    ensure_asyncevents_schema(&pool).await;
-    let _serial = DB_SERIAL.lock().await;
     let ns = unique_ns(&pool).await;
-    let ctx = wired_ctx(&pool); // durable transport injected at construction
-    let m = build_module(&ctx);
-    m.start(&ctx).await.unwrap();
-    let svc = m.svc();
+    let svc = Arc::new(Service::new(pool.clone()));
 
-    // Render, then invoke the Form's submit with an add-new triple.
     let content = admin_render(&svc, &adminapi::Params::new()).unwrap();
     let submit = content.form.unwrap().submit.unwrap();
     let mut values = adminapi::Params::new();
@@ -346,42 +475,9 @@ async fn admin_apply_edit_inserts_new_triple() {
     values.insert("_new_value".into(), "yes".into());
     submit(values).await.unwrap();
 
-    // The listener's push path lands the new key in the cache.
-    wait_until(|| svc.get(&ns, "spawned").as_deref() == Some("yes")).await;
+    // The refresh callback re-reads the snapshot and applies it.
+    svc.refresh().await.unwrap();
     assert_eq!(svc.get_string(&ns, "spawned", "def"), "yes");
 
-    m.stop(&ctx).await.unwrap();
     cleanup(&pool, &ns).await;
-}
-
-/// Polls `cond` up to 3s at 20ms intervals; panics on timeout.
-async fn wait_until(mut cond: impl FnMut() -> bool) {
-    let deadline = std::time::Instant::now() + Duration::from_secs(3);
-    loop {
-        if cond() {
-            return;
-        }
-        if std::time::Instant::now() > deadline {
-            panic!("condition not met within deadline");
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-}
-
-/// Async variant of [`wait_until`]: polls an async predicate (e.g. a DB count) up to
-/// 3s at 20ms intervals; panics on timeout.
-async fn wait_until_async<Fut>(mut cond: impl FnMut() -> Fut)
-where
-    Fut: std::future::Future<Output = bool>,
-{
-    let deadline = std::time::Instant::now() + Duration::from_secs(3);
-    loop {
-        if cond().await {
-            return;
-        }
-        if std::time::Instant::now() > deadline {
-            panic!("async condition not met within deadline");
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
 }

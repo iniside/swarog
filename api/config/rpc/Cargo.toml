@@ -20,16 +20,18 @@ configapi = { workspace = true }
 # Cross-cutting admin fan-out glue, re-exported (`register_admin`) so the config
 # module reaches it through its OWN rpc crate (archcheck-clean).
 adminrpc = { workspace = true }
-configevents = { workspace = true }
 opsapi = { workspace = true }
 edge = { workspace = true }
 registry = { workspace = true }
 lifecycle = { workspace = true }
 remote = { workspace = true }
-bus = { workspace = true }
 rpc-macro = { workspace = true }
 async-trait = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
 futures = { workspace = true }
 tracing = { workspace = true }
+
+[dev-dependencies]
+# The CachedConfig revision-gate unit test drives `refresh` against a fake snapshot.
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

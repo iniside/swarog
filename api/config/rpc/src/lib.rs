@@ -17,19 +17,27 @@
 //!
 //! ## Lifecycle (see [`remote_factories`])
 //! The factory runs in [`remote::Stub`]'s phase-1 `register`: it builds the cache,
-//! provides it, subscribes `on_tx("config-cache.config-changed.v1", config.changed)`
-//! for refresh, and
-//! contributes a provider-tagged [`remote::RemoteBoot`] boot hook. The `Stub` (which
-//! gained `Caps::START` for exactly this) drains [`remote::BOOT_SLOT`] in `start` and
-//! runs the boot hook once — a single `snapshot()` that fails LOUD if config-svc is
-//! down (config is a hard dependency). No domain module is involved: the cache lives
-//! and boots entirely inside the config `Stub`'s lifecycle.
+//! provides it, registers an authoritative-refresh callback on the `config_changed`
+//! invalidation channel (Step 7 — replaces the old durable `"config-cache"`
+//! subscription), and contributes a provider-tagged [`remote::RemoteBoot`] boot hook.
+//! The `Stub` (which gained `Caps::START` for exactly this) drains
+//! [`remote::BOOT_SLOT`] in `start` and runs the boot hook once — a single `snapshot()`
+//! that fails LOUD if config-svc is down (config is a hard dependency). The
+//! invalidation plane's first refresh runs later still (after every module start), so
+//! the boot guarantee does NOT degrade: "config-svc down at boot" stays a loud startup
+//! failure via `RemoteBoot`; the invalidation callback only keeps the cache fresh
+//! thereafter. No domain module is involved: the cache lives and boots entirely inside
+//! the config `Stub`'s lifecycle.
 //!
 //! Rule 5: reached ONLY by the `config` module (its own glue, sanctioned), `remote`,
 //! and `cmd/*` — never by a domain consumer (they import `configapi`, rule 4).
 
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
+
+/// The invalidation channel config's write trigger `pg_notify`s and every config cache
+/// LISTENs on. Shared vocabulary with `modules/config`'s `NOTIFY_CHANNEL`.
+const CONFIG_CHANGED_CHANNEL: &str = "config_changed";
 
 // The glue's method signatures re-resolve at THIS invocation site (the metadata
 // travels as tokens), so the api crate's domain types + the error type must be in
@@ -45,13 +53,23 @@ configapi::config_config_snapshot_meta!(rpc_macro::generate_glue);
 /// foreign rpc import — archcheck-clean).
 pub use adminrpc::register_admin;
 
+/// The atomically-swapped cache contents: the settings map plus the monotonic
+/// `config.revision` it was read at. One `RwLock` over the pair makes the refresh's
+/// revision gate race-free (a reader never sees a half-applied swap).
+struct CacheState {
+    /// `-1` before the first refresh; real revisions are ≥ 0, so the first snapshot
+    /// always applies.
+    revision: i64,
+    map: HashMap<(String, String), String>,
+}
+
 /// A snapshot-backed [`configapi::Config`] reader for a split process: it holds a
 /// generated [`config_snapshot_rpc::Client`] to config-svc and an in-process cache of
 /// the last full snapshot. All getters read the cache (degrading to `default` on a
 /// miss); the cache is boot-filled and refreshed by [`CachedConfig::refresh`].
 pub struct CachedConfig {
     snapshot: Arc<dyn configapi::ConfigSnapshot>,
-    cache: RwLock<HashMap<(String, String), String>>,
+    cache: RwLock<CacheState>,
 }
 
 impl CachedConfig {
@@ -61,22 +79,32 @@ impl CachedConfig {
     pub fn new(snapshot: Arc<dyn configapi::ConfigSnapshot>) -> CachedConfig {
         CachedConfig {
             snapshot,
-            cache: RwLock::new(HashMap::new()),
+            cache: RwLock::new(CacheState {
+                revision: -1,
+                map: HashMap::new(),
+            }),
         }
     }
 
-    /// Pulls the FULL snapshot from config-svc and replaces the cache atomically. Used
-    /// both for the one boot-fill (`Stub::start`) and for every `config.changed`
-    /// refresh — re-reading the whole snapshot is simplest and always consistent (the
-    /// snapshot is the authoritative store read). An `Err` (peer down) propagates so
-    /// the boot-fill fails loud and a refresh is logged + retried on the next event.
+    /// Pulls the FULL snapshot from config-svc and replaces the cache atomically IF the
+    /// snapshot's revision is newer than the one held — so a stale or duplicate NOTIFY
+    /// (or the redundant invalidation first-refresh after the boot-fill) is a no-op.
+    /// Used both for the one boot-fill (`Stub::start`) and for every `config_changed`
+    /// invalidation refresh — re-reading the whole snapshot is simplest and always
+    /// consistent (the snapshot is the authoritative store read). An `Err` (peer down)
+    /// propagates so the boot-fill fails loud and a refresh is logged + retried.
     pub async fn refresh(&self) -> Result<(), Error> {
-        let settings = self.snapshot.snapshot().await?;
-        let mut map = HashMap::with_capacity(settings.len());
-        for s in settings {
+        let snapshot = self.snapshot.snapshot().await?;
+        let mut map = HashMap::with_capacity(snapshot.settings.len());
+        for s in snapshot.settings {
             map.insert((s.namespace, s.key), s.value);
         }
-        *self.cache.write().unwrap() = map;
+        let mut guard = self.cache.write().unwrap();
+        if snapshot.revision <= guard.revision {
+            return Ok(());
+        }
+        guard.revision = snapshot.revision;
+        guard.map = map;
         Ok(())
     }
 }
@@ -107,6 +135,7 @@ impl configapi::Config for CachedConfig {
         self.cache
             .read()
             .unwrap()
+            .map
             .get(&(ns.to_string(), key.to_string()))
             .cloned()
     }
@@ -120,9 +149,10 @@ impl configapi::Config for CachedConfig {
 ///   1. builds a [`CachedConfig`] over the generated snapshot `Client`,
 ///   2. `provide`s it under the SAME `config.reader` key the local config module uses,
 ///      so a co-hosted consumer's `require::<dyn Config>` resolves to the cache,
-///   3. subscribes `on_tx("config-cache.config-changed.v1", config.changed)` — the
-///      DURABLE refresh: a
-///      cross-process `config.changed` (POSTed to `/events`) re-reads the snapshot,
+///   3. registers an authoritative-refresh callback on the `config_changed`
+///      invalidation channel (Step 7 — replaces the old durable `"config-cache"`
+///      subscription): every committed NOTIFY (from config-svc's write trigger, on the
+///      shared DB) re-reads the snapshot over the edge and swaps the cache if newer,
 ///   4. contributes a provider-tagged [`remote::RemoteBoot`] whose boot the `Stub`
 ///      runs in `start` (one `snapshot()` boot-fill; fails loud if config-svc is down).
 ///
@@ -141,26 +171,22 @@ pub fn remote_factories() -> Vec<remote::RemoteFactory> {
             cached.clone() as Arc<dyn configapi::Config>,
         );
 
-        // (3) durable refresh: a cross-process config.changed re-pulls the snapshot.
-        // The handler owns no domain write, so it ignores the handed conn and refreshes
-        // via the snapshot RPC; a transport failure surfaces as a bus transport error
-        // (the event stays unacked and is redelivered). Slated for removal: this
-        // cache-refresh subscription moves to the broadcast invalidation plane (plan
-        // Step 7) — kept functional until then.
+        // (3) broadcast-invalidation REFRESH (Step 7): a committed `config_changed`
+        // NOTIFY re-pulls the snapshot over the edge and applies it if newer. This is a
+        // freshness callback, NOT a durable subscription — no checkpoint, so every
+        // replica of this process refreshes independently (consumer-group semantics
+        // would refresh only one). Wiring-only: the closure first runs at the
+        // invalidation plane's start (after module start). A transport failure surfaces
+        // as an error the plane logs, counts, and retries on the next NOTIFY/poll.
         let refresh = cached.clone();
-        ctx.bus().on_tx(
-            bus::SubscriptionSpec {
-                id: "config-cache.config-changed.v1",
-                start: bus::StartPosition::Genesis,
-            },
-            &configevents::CHANGED,
-            move |_delivery, _e: configevents::Changed| {
+        ctx.invalidation()
+            .register(CONFIG_CHANGED_CHANNEL, "config-cache", move || {
                 let refresh = refresh.clone();
-                Box::pin(async move { refresh.refresh().await.map_err(bus::Error::transport) })
-            },
-        );
+                async move { refresh.refresh().await.map_err(anyhow::Error::from) }
+            });
 
-        // (4) boot-fill hook, run once by the Stub in `start` (fail loud if peer down).
+        // (4) boot-fill hook, run once by the Stub in `start` (fail loud if peer down) —
+        // the boot guarantee, run BEFORE the invalidation plane's first refresh.
         let boot = cached.clone();
         ctx.contribute(
             remote::BOOT_SLOT,
@@ -171,3 +197,6 @@ pub fn remote_factories() -> Vec<remote::RemoteFactory> {
         );
     })]
 }
+
+#[cfg(test)]
+mod tests;

@@ -656,6 +656,7 @@ dependencies = [
  "lifecycle",
  "opsapi",
  "registry",
+ "serde_json",
  "sqlx",
  "tokio",
  "tracing",
@@ -702,9 +703,7 @@ dependencies = [
  "adminrpc",
  "anyhow",
  "async-trait",
- "bus",
  "configapi",
- "configevents",
  "edge",
  "futures",
  "lifecycle",
@@ -713,6 +712,7 @@ dependencies = [
  "remote",
  "rpc-macro",
  "serde_json",
+ "tokio",
  "tracing",
 ]
 

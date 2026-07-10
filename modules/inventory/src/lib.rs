@@ -284,15 +284,31 @@ impl Inner {
     }
 
     /// Rebuilds the materialized starter spec when a relevant config key changes. The
-    /// ONLY spec-refresh path, so the `on(CHANGED)` subscription in `init` is
+    /// ONLY spec-refresh path, so the `config.changed` subscription in `init` is
     /// load-bearing — without it a running inventory would never see an /admin edit.
+    ///
+    /// The CHANGED key's new value is taken from the event payload (`e.value`, Step 7)
+    /// rather than re-read from the injected `config` reader: that reader is a
+    /// replica-local `CachedConfig` kept fresh by the SEPARATE invalidation plane, and
+    /// this durable delivery can arrive before that refresh lands — so re-reading it
+    /// would race and could materialize a stale spec. The UNCHANGED key stays read from
+    /// the reader (its cached value is authoritative regardless of lag — it did not
+    /// change). A DELETE (`value == None`) falls back to the code default. (Step 8
+    /// deletes this whole cache in favour of a direct read at grant time.)
     fn on_config_changed(&self, e: configevents::Changed) {
         if e.namespace != "inventory" || (e.key != "starter_item" && e.key != "starter_qty") {
             return;
         }
         let (item, qty) = {
             let mut g = self.starter.write().unwrap();
-            let s = self.load_starter_locked();
+            let mut s = self.load_starter_locked();
+            match (e.key.as_str(), e.value.as_deref()) {
+                ("starter_item", Some(v)) => s.item = v.to_string(),
+                ("starter_item", None) => s.item = STARTER_ITEM.to_string(),
+                ("starter_qty", Some(v)) => s.qty = v.parse().unwrap_or(STARTER_QTY),
+                ("starter_qty", None) => s.qty = STARTER_QTY,
+                _ => {}
+            }
             let out = (s.item.clone(), s.qty);
             *g = Some(s);
             out

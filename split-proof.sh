@@ -53,12 +53,14 @@
 #     the DB holdings row is genuinely gone (the wipe handler ran) -- the HTTP 404
 #     after delete alone only proves the character is gone via owner_of, which would
 #     mask an un-wiped row, so the DB check is the real integrity assertion.
-#   - CONFIG live-reload cross-process C->B (Step 5): change inventory/starter_item at
-#     runtime via psql; config-svc's listener publishes config.changed DURABLY onto
-#     the shared log; inventory-svc pulls it, and its CachedConfig + inventory starter
-#     spec both reload. A NEWLY created character then gets the NEW starter item -- proving the
-#     snapshot-backed remote config reader live-reloads across the process boundary
-#     WITHOUT a restart (B booted with the default starter_sword).
+#   - CONFIG live-reload cross-process C->B (Step 7): change inventory/starter_item at
+#     runtime via psql; config's write trigger bumps the revision, pg_notifies
+#     config_changed, and appends config.changed DURABLY. inventory-svc's invalidation
+#     plane (LISTENing config_changed on the shared DB) refreshes CachedConfig; its
+#     inventory starter spec reloads on the durable event. A NEWLY created character then
+#     gets the NEW starter item -- proving the snapshot-backed remote config reader
+#     live-reloads across the process boundary WITHOUT a restart (B booted with the
+#     default starter_sword).
 #
 # THE QUIC PLAYER FRONT (Step 8, all through gateway-svc's :9100 QUIC front via the
 # playercli tool -- exit 0 iff transport ok AND payload status=="Ok"):
@@ -350,8 +352,9 @@ else
 fi
 
 # --- start C (config-svc): gateway + config, edge :9002 ----------------------
-# C owns the config schema + LISTEN/NOTIFY listener and serves config.snapshot on its
-# mTLS edge; it appends config.changed durably onto the shared log (B and F pull it).
+# C owns the config schema + write trigger and serves config.snapshot on its mTLS edge;
+# the trigger bumps the revision, pg_notifies config_changed, and appends config.changed
+# durably onto the shared log (B and F pull the event; B also LISTENs config_changed).
 note "starting C (config-svc) on :$C_PORT, edge :$C_EDGE_PORT ..."
 env PORT=":$C_PORT" DATABASE_URL="$DATABASE_URL" EDGE_ADDR=":$C_EDGE_PORT" \
     EDGE_CA_CERT="$CA_CERT" EDGE_CA_KEY="$CA_KEY" \
@@ -641,9 +644,9 @@ else
         fail "baseline starter_sword not granted (BCID=$BCID) -- $R"
     fi
 
-    # [C2] runtime change on C's DB: the trigger NOTIFYs -> C's listener emit_tx
-    # (durable append) -> B's pull worker delivers config.changed -> B refreshes
-    # CachedConfig + reloads.
+    # [C2] runtime change on C's DB: the write trigger bumps the revision, pg_notifies
+    # config_changed (B's invalidation plane refreshes CachedConfig), and appends
+    # config.changed durably (B's pull worker delivers it -> inventory reloads its spec).
     echo "[C2] set config inventory/starter_item=health_potion (via psql on C's shared DB)"
     pg "INSERT INTO config.settings (namespace,key,value) VALUES ('inventory','starter_item','health_potion') ON CONFLICT (namespace,key) DO UPDATE SET value=excluded.value;" >/dev/null
 

@@ -27,9 +27,9 @@ use opsapi::Error;
 use rpc_macro::rpc;
 use serde::{Deserialize, Serialize};
 
-/// One config setting on the wire — the element of a [`ConfigSnapshot::snapshot`]
-/// reply. Field names are the wire contract; evolve additively (constraint #6). The
-/// config module maps its private row type to/from this at the edge boundary.
+/// One config setting on the wire — an element of a [`Snapshot`] reply. Field names
+/// are the wire contract; evolve additively (constraint #6). The config module maps
+/// its private row type to/from this at the edge boundary.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Setting {
     pub namespace: String,
@@ -37,7 +37,18 @@ pub struct Setting {
     pub value: String,
 }
 
-/// The wire-only remoting capability (Step 5): returns every setting so a peer's
+/// A full config snapshot: every setting plus the monotonic `config.revision` the
+/// store was at when they were read — both produced by ONE SQL statement (Step 7), so
+/// the revision names exactly this set of settings. A `CachedConfig` applies a snapshot
+/// only when its `revision` is newer than the one it already holds, so a stale or
+/// duplicate refresh is a no-op.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Snapshot {
+    pub revision: i64,
+    pub settings: Vec<Setting>,
+}
+
+/// The wire-only remoting capability (Step 5): returns a full [`Snapshot`] so a peer's
 /// `CachedConfig` can (re)build its in-process cache. It is WIRE-ONLY — no leading
 /// `Identity` (config is unauthenticated infrastructure) and no `#[http]` (not a
 /// gateway route; it rides the internal mTLS edge like `characters.ownerOf`). The
@@ -46,7 +57,7 @@ pub struct Setting {
 #[rpc(prefix = "config")]
 #[async_trait]
 pub trait ConfigSnapshot: Send + Sync {
-    async fn snapshot(&self) -> Result<Vec<Setting>, Error>;
+    async fn snapshot(&self) -> Result<Snapshot, Error>;
 }
 
 /// The read-mostly config capability: namespaced `key=value` getters with a

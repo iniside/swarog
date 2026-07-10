@@ -92,7 +92,9 @@ async fn starter_spec_reloads_on_config_change() {
     inner.on_config_changed(configevents::Changed {
         namespace: "game".into(),
         key: "name".into(),
-        value: "arena".into(),
+        value: Some("arena".into()),
+        operation: "update".into(),
+        revision: 1,
     });
     assert_eq!(inner.starter_spec(), (STARTER_ITEM.to_string(), 1), "unrelated change must not reload");
 
@@ -100,7 +102,9 @@ async fn starter_spec_reloads_on_config_change() {
     inner.on_config_changed(configevents::Changed {
         namespace: "inventory".into(),
         key: "starter_item".into(),
-        value: "health_potion".into(),
+        value: Some("health_potion".into()),
+        operation: "update".into(),
+        revision: 2,
     });
     assert_eq!(inner.starter_spec(), ("health_potion".to_string(), 5));
 }

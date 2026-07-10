@@ -27,8 +27,10 @@ tracing = { workspace = true }
 async-trait = { workspace = true }
 
 [dev-dependencies]
-# The durable plane under test: config now publishes `config.changed` via `emit_tx`,
-# so the integration tests install asyncevents' `bus::Transport` and assert the outbox
-# row (asyncevents is a core crate, not an api/ crate — no boundary violation).
+# The durable plane under test (Step 7): config's write trigger appends `config.changed`
+# via `asyncevents.append_event`, so the integration tests migrate the plane schema, and
+# the writer-parity contract test drives `asyncevents::store::append` directly alongside
+# the trigger (asyncevents is a core crate, not an api/ crate — no boundary violation).
 asyncevents = { workspace = true }
+serde_json = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
