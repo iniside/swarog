@@ -243,6 +243,81 @@ async fn skip_refuses_a_healthy_subscription() {
     cleanup(&pool, &topic, &id).await;
 }
 
+/// `skip` serializes against a live worker via the subscription row lock. A simulated
+/// worker holds `FOR UPDATE` on the row, advances the cursor onto event 0 and resets
+/// failures to 0 (a successful delivery), then commits. Because `skip` claims the same
+/// row with plain `FOR UPDATE` it BLOCKS until that commit (never a silent no-op), then
+/// re-evaluates the refuse-healthy guard on the now-unlocked row and REFUSES the healed
+/// subscription instead of rewinding the checkpoint.
+#[tokio::test]
+async fn skip_waits_for_the_row_lock_then_refuses_a_worker_healed_sub() {
+    let Some(pool) = test_pool().await else { return };
+    let topic = unique("evctl.locked");
+    let id = unique("sub.locked");
+    let pos = append_positions(&pool, &topic, 3).await;
+    wait_eligible(&pool, &topic, 1).await;
+    // Paused with failures ⇒ eligible for skip; Genesis cursor (nothing consumed).
+    insert_sub(&pool, &id, &topic, "paused", 20, (0, "0".to_string(), 0)).await;
+
+    // Simulated worker: lock the row FOR UPDATE, advance onto event 0 + heal to
+    // active/0-failures, hold the lock, then commit (release).
+    let (g0, x0, t0) = pos[0].clone();
+    let (wx0, wt0) = (x0.clone(), t0);
+    let (locked_tx, locked_rx) = tokio::sync::oneshot::channel();
+    let worker_pool = pool.clone();
+    let worker_id = id.clone();
+    let worker = tokio::spawn(async move {
+        let mut tx = worker_pool.begin().await.unwrap();
+        sqlx::query("SELECT 1 FROM asyncevents.subscriptions WHERE subscription_id = $1 FOR UPDATE")
+            .bind(&worker_id)
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+        locked_tx.send(()).unwrap();
+        // Hold the lock long enough that skip is provably blocked on it.
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        sqlx::query(
+            "UPDATE asyncevents.subscriptions \
+             SET cursor_generation = $2, cursor_xid = $3::xid8, cursor_tie = $4, \
+                 consecutive_failures = 0, next_attempt_at = NULL, state = 'active', updated_at = now() \
+             WHERE subscription_id = $1",
+        )
+        .bind(&worker_id)
+        .bind(g0)
+        .bind(&wx0)
+        .bind(wt0)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+    });
+
+    // Wait until the worker holds the lock, then skip must BLOCK on FOR UPDATE.
+    locked_rx.await.unwrap();
+    let started = std::time::Instant::now();
+    let err = skip(&pool, &id, "operator race").await.unwrap_err();
+    let waited = started.elapsed();
+    worker.await.unwrap();
+
+    assert!(
+        waited >= Duration::from_millis(300),
+        "skip must have blocked on the worker's row lock, waited only {waited:?}"
+    );
+    assert!(err.to_string().contains("refusing to skip"), "unexpected: {err}");
+
+    // The cursor is the worker's advance (event 0), NOT rewound by a racing skip.
+    let after = snapshot(&pool, &id).await.unwrap();
+    assert_eq!(
+        after.cursor,
+        format!("{g0}/{x0}/{t0}"),
+        "cursor must reflect the worker's advance, never a skip rewind"
+    );
+    assert_eq!(after.consecutive_failures, 0);
+    assert_eq!(after.state, "active");
+
+    cleanup(&pool, &topic, &id).await;
+}
+
 /// `retry` clears the failure count and backoff window but LEAVES the cursor — the
 /// current event is re-attempted, never skipped.
 #[tokio::test]

@@ -201,9 +201,47 @@ async fn set_state(pool: &PgPool, id: &str, state: &str) -> Result<(StateSnapsho
 /// `reason` in `last_error`. Refuses a healthy subscription (`state = 'active'` AND
 /// `consecutive_failures = 0`): skip is a poison-recovery verb, not a fast-forward.
 /// Never advances more than one event.
+///
+/// The read-pick-update runs in ONE transaction that claims the subscription row
+/// `FOR UPDATE` — the same row workers serialize their delivery/checkpoint on — so
+/// skip never races a live worker's cursor advance. Plain `FOR UPDATE` (not
+/// `SKIP LOCKED`): the operator WAITS for an in-flight delivery to finish rather than
+/// silently no-oping. If a worker advanced past the failure first, the guard re-checks
+/// on the locked row and finds `consecutive_failures = 0`, so skip REFUSES instead of
+/// rewinding the checkpoint — the correct outcome.
 pub async fn skip(pool: &PgPool, id: &str, reason: &str) -> Result<SkipOutcome> {
+    // Cosmetic before/after reads stay pool-side; the real work is the tx below.
     let before = snapshot(pool, id).await?;
-    if before.state == "active" && before.consecutive_failures == 0 {
+
+    let mut tx = pool.begin().await.context("eventctl: begin skip tx")?;
+
+    // Claim the subscription row FOR UPDATE (worker's exact shape) so the guard and
+    // cursor advance see — and hold — a consistent, worker-serialized view.
+    let sub = sqlx::query(
+        // alias must NOT equal the column name: a bare ORDER BY prefers the output
+        // alias (text sort) over the xid8 column.
+        "SELECT topic, contract_version, cursor_generation, cursor_xid::text AS cursor_xid_text, \
+                cursor_tie, state, consecutive_failures \
+         FROM asyncevents.subscriptions WHERE subscription_id = $1 FOR UPDATE",
+    )
+    .bind(id)
+    .fetch_optional(&mut *tx)
+    .await
+    .context("eventctl: claim subscription for skip")?
+    .ok_or_else(|| anyhow!("eventctl: no such subscription {id:?}"))?;
+    let topic: String = sub.get("topic");
+    let version: i32 = sub.get("contract_version");
+    let cg: i64 = sub.get("cursor_generation");
+    let cx: String = sub.get("cursor_xid_text");
+    let ct: i64 = sub.get("cursor_tie");
+    let state: String = sub.get("state");
+    let failures: i32 = sub.get("consecutive_failures");
+
+    // Re-evaluate the refuse-healthy guard on the LOCKED row: a worker that advanced
+    // past the failure (resetting failures to 0) between our `before` read and the lock
+    // makes this fire — skip refuses rather than rewinding a healthy checkpoint.
+    if state == "active" && failures == 0 {
+        tx.rollback().await.context("eventctl: rollback skip guard")?;
         bail!(
             "eventctl: refusing to skip {id:?} — it is active with no failures; skip only steps \
              past the CURRENT failing event of a paused/faulted subscription (pause it first, or \
@@ -215,22 +253,6 @@ pub async fn skip(pool: &PgPool, id: &str, reason: &str) -> Result<SkipOutcome> 
     // (topic, contract_version) match, position past the cursor, frontier-eligible
     // (current-generation rows gated by the snapshot xmin, older generations fully
     // eligible) — the same selection the worker uses.
-    let sub = sqlx::query(
-        // alias must NOT equal the column name: a bare ORDER BY prefers the output
-        // alias (text sort) over the xid8 column.
-        "SELECT topic, contract_version, cursor_generation, cursor_xid::text AS cursor_xid_text, cursor_tie \
-         FROM asyncevents.subscriptions WHERE subscription_id = $1",
-    )
-    .bind(id)
-    .fetch_one(pool)
-    .await
-    .context("eventctl: read subscription for skip")?;
-    let topic: String = sub.get("topic");
-    let version: i32 = sub.get("contract_version");
-    let cg: i64 = sub.get("cursor_generation");
-    let cx: String = sub.get("cursor_xid_text");
-    let ct: i64 = sub.get("cursor_tie");
-
     let ev = sqlx::query(
         // alias must NOT equal the column name: a bare ORDER BY prefers the output
         // alias (text sort) over the xid8 column.
@@ -248,7 +270,7 @@ pub async fn skip(pool: &PgPool, id: &str, reason: &str) -> Result<SkipOutcome> 
     .bind(cg)
     .bind(&cx)
     .bind(ct)
-    .fetch_optional(pool)
+    .fetch_optional(&mut *tx)
     .await
     .context("eventctl: select failing event")?
     .ok_or_else(|| {
@@ -273,9 +295,11 @@ pub async fn skip(pool: &PgPool, id: &str, reason: &str) -> Result<SkipOutcome> 
     .bind(&ex)
     .bind(et)
     .bind(&note)
-    .execute(pool)
+    .execute(&mut *tx)
     .await
     .context("eventctl: advance cursor past the skipped event")?;
+
+    tx.commit().await.context("eventctl: commit skip tx")?;
 
     Ok(SkipOutcome {
         after: snapshot(pool, id).await?,
