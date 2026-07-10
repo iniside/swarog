@@ -144,6 +144,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "adminctl"
+version = "0.1.0"
+dependencies = [
+ "admin",
+ "anyhow",
+ "sqlx",
+ "tokio",
+]
+
+[[package]]
 name = "adminevents"
 version = "0.1.0"
 dependencies = [

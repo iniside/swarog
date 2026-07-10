@@ -1,0 +1,28 @@
+[package]
+name = "adminctl"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The admin-user operator CLI: mint / list / delete GameOps admin logins against the
+# shared `admin` schema over `DATABASE_URL`. Wrapped by the root `install.sh`/
+# `install.ps1`. Hand-rolled arg parsing (like the other tools/ crates); the mutating
+# logic lives in the lib so it is unit-testable, main is a thin dispatcher. Depends on
+# the `admin` module crate for the ONE source of truth on the users table shape
+# (`USERS_DDL`) and the argon2id `hash_password`/`verify_password` fns — no DDL or
+# hashing parameters are duplicated here. Tools are not modules: archcheck's fortress
+# rules constrain `modules/*` edges, not a `tools/*` consumer of a module crate (same
+# spirit as `checkmodules` importing the `cmd/*` libs).
+[[bin]]
+name = "adminctl"
+path = "src/main.rs"
+
+[dependencies]
+admin = { workspace = true }
+sqlx = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+anyhow = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }

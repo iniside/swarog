@@ -49,6 +49,10 @@ members = [
     # recovery verbs (retry/pause/resume/skip/retire/bump-generation) over the shared
     # asyncevents schema; retention GC lives in core/asyncevents.
     "tools/eventctl",
+    # Admin-user operator CLI (Step 3): mint/list/delete GameOps admin logins in the
+    # shared `admin` schema over DATABASE_URL; wrapped by the root install.sh/.ps1.
+    # Reuses the `admin` module crate's USERS_DDL + argon2 hash fns (one source of truth).
+    "tools/adminctl",
     # External C# client generator (Step 2): scrapes the player-reachable API (runtime
     # route_bindings() ∪ syn source parse) into a typed manifest; the C# emitter is Step 3.
     "tools/csharp-client-gen",
