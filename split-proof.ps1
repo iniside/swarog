@@ -577,6 +577,17 @@ try {
     }
     if (-not $wiped) { Fail 'holdings never wiped in B (wipe on_tx handler did not run)' }
 
+    # [5t] the wipe handler also plants the tombstone (inventory.wiped_characters) in the
+    # SAME delivery tx -- the guard that keeps a reordered/late character.created grant
+    # from resurrecting holdings for this dead character.
+    $tomb = (Invoke-Sql "SELECT count(*) FROM inventory.wiped_characters WHERE character_id='$cid';").Trim()
+    Write-Host "[5t] inventory.wiped_characters rows for $cid = $tomb"
+    if ($tomb -eq '1') {
+        Pass 'wipe planted the tombstone (late character.created can no longer resurrect holdings)'
+    } else {
+        Fail "expected 1 tombstone row in inventory.wiped_characters for $cid, got $tomb"
+    }
+
     # [5b] the same character is gone via owner_of over QUIC too (a second, independent
     # signal alongside the DB wipe check above).
     Write-Host "[5b] post-delete GET /inventory/character/$cid through G (Bearer `$Token) -> 404"

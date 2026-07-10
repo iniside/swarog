@@ -142,6 +142,19 @@ async fn cleanup_owner(pool: &PgPool, owner_id: &str) {
         .bind(owner_id)
         .execute(pool)
         .await;
+    let _ = sqlx::query("DELETE FROM inventory.wiped_characters WHERE character_id = $1::uuid")
+        .bind(owner_id)
+        .execute(pool)
+        .await;
+}
+
+async fn tombstone_exists(pool: &PgPool, character_id: &str) -> bool {
+    sqlx::query_scalar::<_, i32>("SELECT 1 FROM inventory.wiped_characters WHERE character_id = $1::uuid")
+        .bind(character_id)
+        .fetch_optional(pool)
+        .await
+        .unwrap()
+        .is_some()
 }
 
 /// (a) grant_starter on a handed conn creates the holding; wipe_character clears it.
@@ -163,8 +176,36 @@ async fn grant_starter_then_wipe_on_conn() {
     inner.wipe_character(&mut conn, &cid).await.unwrap();
     let holdings = inner.store.list(&Owner::character(&cid)).await.unwrap();
     assert!(holdings.is_empty(), "wipe must clear all holdings");
+    assert!(tombstone_exists(&pool, &cid).await, "wipe must plant a tombstone");
+
+    // A grant REDELIVERED (or reordered) after the wipe is skipped: the tombstone
+    // is permanent truth — no holdings resurrect for a dead character.
+    inner.grant_starter(&mut conn, &cid).await.unwrap();
+    let holdings = inner.store.list(&Owner::character(&cid)).await.unwrap();
+    assert!(holdings.is_empty(), "grant after wipe must be skipped by the tombstone");
 
     cleanup_owner(&pool, &cid).await;
+}
+
+/// `lock_key` is stable per character id (two concurrent deliveries derive the SAME
+/// advisory key and contend) and its namespaced seed diverges from scheduler's
+/// plain FNV-1a of the same input string — the two modules can never contend on
+/// each other's locks for equal strings.
+#[test]
+fn lock_key_is_stable_and_namespaced() {
+    let id = "a2b7e8c1-0000-4000-8000-000000000001";
+    assert_eq!(lock_key(id), lock_key(id));
+    assert_ne!(lock_key("a"), lock_key("b"));
+    // Plain (un-namespaced) FNV-1a of the same input — scheduler's discipline.
+    let plain = {
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        for b in id.bytes() {
+            h ^= b as u64;
+            h = h.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        h as i64
+    };
+    assert_ne!(lock_key(id), plain, "inventory keys must not collide with scheduler's for equal strings");
 }
 
 /// (b) list_character authz mapping with a FAKE Ownership: err→503, None→404,
@@ -384,4 +425,150 @@ async fn grant_starter_reflects_config_after_invalidation_refresh() {
         .await
         .unwrap();
     let _ = asyncevents::testing::cleanup_events(&pool, "namespace", "inventory").await;
+}
+
+/// (e) THE REORDER CASE, through the real plane: `character.created` and
+/// `character.deleted` ride independent subscriptions with no cross-subscription
+/// ordering, so deliver Deleted BEFORE Created for the same character id. The wipe
+/// must plant a tombstone and the late grant must skip — NO holdings row may exist
+/// afterwards. Because the plane offers no "created was consumed" signal for a
+/// skipped grant, a SENTINEL character's Created is emitted AFTER the reordered one:
+/// per-subscription XID ordering means the sentinel's grant landing proves the
+/// reordered Created was already processed (and its checkpoint committed — a paused
+/// subscription would never reach the sentinel).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deleted_before_created_tombstones_and_skips_late_grant() {
+    let Some(pool) = test_pool().await else { return };
+    ensure_schema(&pool).await;
+
+    let dsn = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string());
+    let mut plane = asyncevents::Plane::new(pool.clone(), dsn).unwrap();
+    let ctx = Context::with_db_and_transport(pool.clone(), plane.transport());
+    ctx.registry()
+        .provide::<dyn Ownership>(key("characters", "ownership"), Arc::new(FakeOwnership::Miss) as Arc<dyn Ownership>);
+    ctx.registry()
+        .provide::<dyn Config>(key("config", "reader"), Arc::new(FakeConfig::new(STARTER_ITEM, STARTER_QTY)) as Arc<dyn Config>);
+
+    let inv = Inventory::new();
+    inv.register(&ctx).unwrap();
+    inv.init(&ctx).unwrap();
+    plane.start().await.unwrap();
+
+    let cid = unique_uuid(&pool).await;
+    let sentinel = unique_uuid(&pool).await;
+    let pid = unique_uuid(&pool).await;
+
+    // 1. Deleted FIRST (the reorder): the wipe handler must plant the tombstone.
+    let mut tx = pool.begin().await.unwrap();
+    ctx.bus()
+        .emit_tx(
+            AnyTx::new(&mut *tx),
+            &charactersevents::DELETED,
+            &charactersevents::Deleted { character_id: cid.clone(), player_id: pid.clone() },
+        )
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    let mut tombstoned = false;
+    for _ in 0..50 {
+        if tombstone_exists(&pool, &cid).await {
+            tombstoned = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(tombstoned, "wipe delivery did not plant a tombstone within timeout");
+
+    // 2. The LATE Created for the dead character, then the sentinel's Created.
+    for character_id in [&cid, &sentinel] {
+        let mut tx = pool.begin().await.unwrap();
+        ctx.bus()
+            .emit_tx(
+                AnyTx::new(&mut *tx),
+                &charactersevents::CREATED,
+                &charactersevents::Created {
+                    character_id: character_id.to_string(),
+                    player_id: pid.clone(),
+                    name: "Banquo".into(),
+                    class: "novice".into(),
+                },
+            )
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+    }
+
+    // 3. The sentinel's grant landing proves the reordered Created was processed.
+    let mut sentinel_granted = false;
+    for _ in 0..50 {
+        if !inv.inner().store.list(&Owner::character(&sentinel)).await.unwrap().is_empty() {
+            sentinel_granted = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(sentinel_granted, "sentinel starter grant did not land within timeout");
+
+    // 4. The dead character got NOTHING; the tombstone stands.
+    let holdings = inv.inner().store.list(&Owner::character(&cid)).await.unwrap();
+    assert!(holdings.is_empty(), "late grant must be skipped — no holdings for a wiped character");
+    assert!(tombstone_exists(&pool, &cid).await, "tombstone must survive the skipped grant");
+
+    plane.stop().await;
+
+    cleanup_owner(&pool, &cid).await;
+    cleanup_owner(&pool, &sentinel).await;
+    let _ = asyncevents::testing::cleanup_events(&pool, "character_id", &cid).await;
+    let _ = asyncevents::testing::cleanup_events(&pool, "character_id", &sentinel).await;
+}
+
+/// (f) The advisory xact-lock is actually exercised (mirrors the scheduler lock
+/// tests' shape): two parallel txs on separate connections — one holds the GRANT
+/// path pre-commit (the xact-lock is held until commit), the other runs the WIPE
+/// path and must BLOCK on `pg_advisory_xact_lock` until the first commits. Without
+/// the lock, under READ COMMITTED both would proceed and commit an orphaned holding
+/// alongside a tombstone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn concurrent_grant_and_wipe_serialize_on_advisory_lock() {
+    let Some(pool) = test_pool().await else { return };
+    ensure_schema(&pool).await;
+    let cid = unique_uuid(&pool).await;
+    let inner = inner_with(pool.clone(), Arc::new(FakeConfig::new(STARTER_ITEM, STARTER_QTY)));
+
+    // Tx 1: grant, NOT committed — holds the per-character xact-lock.
+    let mut tx1 = pool.begin().await.unwrap();
+    inner.grant_starter(&mut tx1, &cid).await.unwrap();
+
+    // Tx 2 (separate connection, parallel task): the wipe must block on the lock.
+    let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let wipe = tokio::spawn({
+        let pool = pool.clone();
+        let inner = inner.clone();
+        let cid = cid.clone();
+        let done = done.clone();
+        async move {
+            let mut tx2 = pool.begin().await.unwrap();
+            inner.wipe_character(&mut tx2, &cid).await.unwrap();
+            done.store(true, std::sync::atomic::Ordering::SeqCst);
+            tx2.commit().await.unwrap();
+        }
+    });
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(
+        !done.load(std::sync::atomic::Ordering::SeqCst),
+        "wipe must block on the per-character advisory lock while the grant tx is open"
+    );
+
+    // Commit releases the xact-lock; the wipe proceeds and wins (it runs second).
+    tx1.commit().await.unwrap();
+    tokio::time::timeout(Duration::from_secs(5), wipe).await.unwrap().unwrap();
+    assert!(done.load(std::sync::atomic::Ordering::SeqCst));
+
+    let holdings = inner.store.list(&Owner::character(&cid)).await.unwrap();
+    assert!(holdings.is_empty(), "the serialized wipe must have cleared the committed grant");
+    assert!(tombstone_exists(&pool, &cid).await, "the wipe must have planted the tombstone");
+
+    cleanup_owner(&pool, &cid).await;
 }

@@ -642,6 +642,17 @@ for i in $(seq 1 30); do
 done
 [ "$WIPED" = "1" ] || fail "holdings never wiped in B (wipe on_tx handler did not run)"
 
+# [5t] the wipe handler also plants the tombstone (inventory.wiped_characters) in the
+# SAME delivery tx — the guard that keeps a reordered/late character.created grant
+# from resurrecting holdings for this dead character.
+T="$(pg "SELECT count(*) FROM inventory.wiped_characters WHERE character_id='$CID';" | tr -d '[:space:]')"
+echo "[5t] inventory.wiped_characters rows for $CID = ${T:-?}"
+if [ "$T" = "1" ]; then
+    pass "wipe planted the tombstone (late character.created can no longer resurrect holdings)"
+else
+    fail "expected 1 tombstone row in inventory.wiped_characters for $CID, got ${T:-?}"
+fi
+
 # [5b] the same character is gone via owner_of over QUIC too (a second, independent
 # signal alongside the DB wipe check above).
 echo "[5b] post-delete GET /inventory/character/$CID through G (Bearer \$TOKEN) -> 404"

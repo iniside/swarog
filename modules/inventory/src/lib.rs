@@ -61,11 +61,54 @@ CREATE TABLE IF NOT EXISTS inventory.holdings (
 	quantity   int  NOT NULL CHECK (quantity >= 0),
 	PRIMARY KEY (owner_type, owner_id, item_id)
 );
-CREATE INDEX IF NOT EXISTS holdings_owner_idx ON inventory.holdings(owner_type, owner_id);"#;
+CREATE INDEX IF NOT EXISTS holdings_owner_idx ON inventory.holdings(owner_type, owner_id);
+
+-- Tombstones for wiped characters: character.created and character.deleted ride
+-- INDEPENDENT durable subscriptions, and the plane's ordering contract is
+-- per-subscription only (asyncevents README: "ordering is per-subscription in
+-- XID-allocation order") -- so a wipe can be delivered BEFORE the grant. The wipe
+-- handler plants a tombstone in its delivery tx; the grant handler skips tombstoned
+-- ids. Sound because character ids are UUIDs and never recur.
+CREATE TABLE IF NOT EXISTS inventory.wiped_characters (
+	character_id uuid PRIMARY KEY,
+	wiped_at     timestamptz NOT NULL DEFAULT now()
+);"#;
 
 /// Folds any lower-level error into an `Internal` operation error.
 fn internal<E: std::fmt::Display>(e: E) -> Error {
     Error::internal(e.to_string())
+}
+
+/// Derives a stable 64-bit advisory-lock key for a character id via FNV-1a (the
+/// same hash discipline as `modules/scheduler`'s `lock_key`), reinterpreted as
+/// `i64` (pg advisory keys use the full signed bigint range). The seed is
+/// NAMESPACED: the hash consumes the `"inventory.character/"` prefix before the
+/// id, so inventory's keys cannot collide with scheduler's plain-name keys (or
+/// any future module that namespaces differently). Two ids CAN still hash to the
+/// same key — they then merely serialize their deliveries, never break anything.
+fn lock_key(character_id: &str) -> i64 {
+    const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut h = OFFSET_BASIS;
+    for b in b"inventory.character/".iter().chain(character_id.as_bytes()) {
+        h ^= *b as u64;
+        h = h.wrapping_mul(PRIME);
+    }
+    h as i64
+}
+
+/// Takes the per-character transaction-scoped advisory lock INSIDE the handed
+/// delivery tx (released at commit/rollback). Both durable handlers take it FIRST,
+/// so two concurrent deliveries for the same character serialize: without it, under
+/// READ COMMITTED a concurrent grant could SELECT tombstone-absent while the wipe's
+/// tombstone insert is still uncommitted, and both would commit — an orphaned
+/// holding coexisting with a tombstone.
+async fn lock_character(conn: &mut PgConnection, character_id: &str) -> Result<(), sqlx::Error> {
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(lock_key(character_id))
+        .execute(conn)
+        .await?;
+    Ok(())
 }
 
 /// Env boolean mirroring Go's `envBool` (`"1"`/`"true"`/`"on"`, case-insensitive).
@@ -261,11 +304,34 @@ impl Inner {
         )
     }
 
-    /// Grants a brand-new character its starter item. `conn` is the messaging
-    /// transport's per-subscriber inbox-dedup tx (never the pool), so the grant
-    /// commits atomically with the `(event_id,"inventory")` dedup row. The item +
-    /// quantity come from a fresh read of the injected config reader.
+    /// Grants a brand-new character its starter item. `conn` is the plane's handed
+    /// delivery tx (never the pool), so the grant commits atomically with the
+    /// subscription checkpoint. The item + quantity come from a fresh read of the
+    /// injected config reader.
+    ///
+    /// Ordering guard: `character.created` and `character.deleted` ride
+    /// INDEPENDENT subscriptions — the plane's contract is "ordering is
+    /// per-subscription in XID-allocation order" (asyncevents README), so the wipe
+    /// for this character may already have been delivered. After serializing on
+    /// the per-character advisory xact-lock, a tombstone in
+    /// `inventory.wiped_characters` means the character is gone: skip the grant
+    /// and return Ok — the checkpoint still commits (exactly-once preserved).
+    /// UUIDs never recur, so the tombstone is permanent truth.
     async fn grant_starter(&self, conn: &mut PgConnection, character_id: &str) -> Result<(), bus::Error> {
+        lock_character(conn, character_id).await.map_err(bus::Error::transport)?;
+        let tombstoned: Option<i32> =
+            sqlx::query_scalar("SELECT 1 FROM inventory.wiped_characters WHERE character_id = $1::uuid")
+                .bind(character_id)
+                .fetch_optional(&mut *conn)
+                .await
+                .map_err(bus::Error::transport)?;
+        if tombstoned.is_some() {
+            tracing::info!(
+                character_id,
+                "skipping starter grant — character already wiped (deleted delivered before created)"
+            );
+            return Ok(());
+        }
         let (item, qty) = self.starter_spec();
         self.store
             .grant_exec(conn, &Owner::character(character_id), &item, qty)
@@ -274,8 +340,20 @@ impl Inner {
     }
 
     /// Removes a deleted character's holdings. Same handed-tx contract as
-    /// `grant_starter` — atomic with the inbox dedup row.
+    /// `grant_starter` — atomic with the subscription checkpoint. Takes the same
+    /// per-character advisory xact-lock first, then plants the permanent tombstone
+    /// (idempotent — redelivery hits ON CONFLICT DO NOTHING) BEFORE the delete, in
+    /// the SAME delivery tx, so a grant delivered after this commit (or blocked on
+    /// the lock until it) always sees the tombstone.
     async fn wipe_character(&self, conn: &mut PgConnection, character_id: &str) -> Result<(), bus::Error> {
+        lock_character(conn, character_id).await.map_err(bus::Error::transport)?;
+        sqlx::query(
+            "INSERT INTO inventory.wiped_characters (character_id) VALUES ($1::uuid) ON CONFLICT DO NOTHING",
+        )
+        .bind(character_id)
+        .execute(&mut *conn)
+        .await
+        .map_err(bus::Error::transport)?;
         self.store
             .clear_owner_exec(conn, &Owner::character(character_id))
             .await
@@ -586,11 +664,16 @@ impl Module for Inventory {
         let ownership = ctx.registry().require::<dyn Ownership>(&key("characters", "ownership"));
         let _ = inner.ownership.set(ownership);
 
-        // 2/3. React to character lifecycle — integrity without a cross-module FK.
-        // DURABLE subscriptions on the messaging plane: the transport runs each effect
-        // inside a per-(event_id,"inventory") inbox-dedup tx in BOTH topologies. The
-        // effect runs on the HANDED conn so the grant/wipe commits atomically with the
-        // dedup row.
+        // 2/3. React to character lifecycle. Two INDEPENDENT durable subscriptions,
+        // and the plane's contract is per-subscription ordering only ("ordering is
+        // per-subscription in XID-allocation order" — asyncevents README): a
+        // character's `deleted` can be delivered before its `created`. Integrity is
+        // therefore a consumer-side tombstone, not a cross-module FK: the wipe
+        // handler plants `inventory.wiped_characters` in its delivery tx and the
+        // grant handler skips tombstoned ids (UUIDs never recur, so the tombstone is
+        // permanent truth); a per-character advisory xact-lock serializes concurrent
+        // deliveries. Each effect runs on the HANDED conn so it commits atomically
+        // with the subscription checkpoint in BOTH topologies.
         let granter = inner.clone();
         ctx.bus().on_tx(
             bus::SubscriptionSpec {
