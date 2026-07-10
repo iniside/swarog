@@ -21,7 +21,10 @@ fn table(routes: &[(&str, &str)]) -> ProxyTable {
     routes.sort_by_key(|(prefix, _)| std::cmp::Reverse(prefix.len()));
     ProxyTable {
         routes,
-        client: reqwest::Client::new(),
+        client: reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("proxy client"),
     }
 }
 
@@ -136,6 +139,43 @@ async fn forward_proxies_verbatim_and_extends_xff() {
     assert!(text.contains("POST /admin/characters"), "got: {text}");
     assert!(text.contains("xff=203.0.113.9"), "got: {text}");
     assert!(text.contains("body=payload"), "got: {text}");
+}
+
+/// Spawns an upstream that always answers `302 Found` with `Location: /#token=abc`,
+/// modelling the Epic OAuth callback redirect whose fragment must survive verbatim.
+async fn spawn_redirecting_upstream() -> String {
+    async fn redirect() -> impl IntoResponse {
+        (StatusCode::FOUND, [("location", "/#token=abc")])
+    }
+    let app = Router::new().fallback(any(redirect));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    format!("http://{addr}")
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn forward_relays_redirect_without_following() {
+    let origin = spawn_redirecting_upstream().await;
+    let t = table(&[("/accounts/epic", origin.trim_start_matches("http://"))]);
+
+    let (parts, body) = Request::builder()
+        .method("GET")
+        .uri("/accounts/epic/callback?code=x&state=y")
+        .body(Body::empty())
+        .unwrap()
+        .into_parts();
+
+    let resp = t.forward(parts, body, None).await;
+    // The proxy must NOT follow the redirect — it relays the 302 + Location verbatim so
+    // the browser applies the `#token` fragment (which a server-side follow would drop).
+    assert_eq!(resp.status(), StatusCode::FOUND);
+    assert_eq!(
+        resp.headers().get("location").unwrap().as_bytes(),
+        b"/#token=abc",
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

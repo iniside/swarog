@@ -64,7 +64,10 @@ impl ProxyTable {
         routes.sort_by_key(|(prefix, _)| std::cmp::Reverse(prefix.len()));
         ProxyTable {
             routes,
-            client: reqwest::Client::new(),
+            client: reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .expect("proxy client"),
         }
     }
 

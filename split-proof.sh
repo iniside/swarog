@@ -263,6 +263,7 @@ note "starting D (accounts-svc) on :$D_PORT, edge :$D_EDGE_PORT ..."
 env PORT=":$D_PORT" DATABASE_URL="$DATABASE_URL" EDGE_ADDR=":$D_EDGE_PORT" \
     EDGE_CA_CERT="$CA_CERT" EDGE_CA_KEY="$CA_KEY" \
     ACCOUNTS_DEV_AUTH=1 \
+    EPIC_CLIENT_ID=test EPIC_CLIENT_SECRET=test EPIC_TOKEN_URL=http://127.0.0.1:1/token \
     "$BIN_DIR/accounts-svc$EXE" >"$RUN_DIR/accounts.out.log" 2>"$RUN_DIR/accounts.err.log" &
 D_PID=$!
 wait_healthy "$D_PORT" "D (accounts-svc)" || { echo "D failed to start"; exit 1; }
@@ -499,6 +500,37 @@ if [ "$G2" = "401" ]; then
     pass "dev- token -> 401 (gateway-svc verifies REAL sessions only)"
 else
     fail "dev- token expected 401, got $G2"
+fi
+
+echo ""
+echo "================ EPIC OAUTH REDIRECT (browser flow: G passthrough -> D) ================"
+# G reverse-proxies /accounts/epic/* to accounts-svc (D). D's callback exchanges the
+# authorization code with EPIC_TOKEN_URL, which we pointed at an unreachable port
+# (127.0.0.1:1) so the exchange fails deterministically and D answers
+# `302 -> /?epic=error`. The proof: the gateway proxy RELAYS that 302 verbatim
+# (reqwest Policy::none()) instead of following it server-side -- a server-side follow
+# would swallow the redirect, and in the real Epic login the browser would never see
+# the `#token` fragment. curl is run WITHOUT -L so we observe the raw 302 + Location.
+echo "[EP1] POST /accounts/epic/start through G (passthrough, keyless) -> {authorize_url}"
+ESTART="$(curl -s -X POST "http://localhost:$G_PORT/accounts/epic/start")"
+echo "    -> $ESTART"
+ESTATE="$(echo "$ESTART" | grep -o 'state=[^&"]*' | head -1 | sed 's/state=//')"
+if [ -n "$ESTATE" ]; then
+    pass "epic start relayed through G -> authorize_url with state=$(echo "$ESTATE" | cut -c1-8)..."
+else
+    fail "epic start expected authorize_url with a state param, got $ESTART"; exit 1
+fi
+
+echo "[EP2] GET /accounts/epic/callback?code=x&state=<state> through G (no -L) -> 302 relayed verbatim"
+EHDRS="$(curl -s -o /dev/null -D - -w 'HTTP:%{http_code}\n' \
+    "http://localhost:$G_PORT/accounts/epic/callback?code=x&state=$ESTATE")"
+ECODE="$(echo "$EHDRS" | grep -o 'HTTP:[0-9]*' | sed 's/HTTP://')"
+ELOC="$(echo "$EHDRS" | grep -i '^location:' | head -1 | sed 's/^[Ll]ocation:[[:space:]]*//' | tr -d '\r')"
+echo "    -> HTTP $ECODE  Location=$ELOC"
+if [ "$ECODE" = "302" ] && [ "$ELOC" = "/?epic=error" ]; then
+    pass "epic-oauth-redirect-through-gateway: G relays D's 302 verbatim (Location: $ELOC) -- proxy does not follow"
+else
+    fail "epic callback expected 302 with Location /?epic=error, got HTTP $ECODE Location=$ELOC"; exit 1
 fi
 
 echo ""

@@ -230,6 +230,9 @@ try {
         EDGE_CA_CERT       = $CaCert
         EDGE_CA_KEY        = $CaKey
         ACCOUNTS_DEV_AUTH  = '1'
+        EPIC_CLIENT_ID     = 'test'
+        EPIC_CLIENT_SECRET = 'test'
+        EPIC_TOKEN_URL     = 'http://127.0.0.1:1/token'
     } 'accounts'
     if (-not (Wait-Healthy $DPort 'D (accounts-svc)')) { throw 'D failed to start' }
 
@@ -458,6 +461,38 @@ try {
     $g2 = Invoke-Curl @("http://127.0.0.1:$GPort/characters", '-H', 'X-Api-Key: dev-key-client', '-H', "Authorization: Bearer dev-$([guid]::NewGuid())")
     Write-Host "    -> HTTP $($g2.Code)"
     if ($g2.Code -eq '401') { Pass 'dev- token -> 401 (gateway-svc verifies REAL sessions only)' } else { Fail "dev- token expected 401, got $($g2.Code)" }
+
+    Write-Host ''
+    Write-Host '================ EPIC OAUTH REDIRECT (browser flow: G passthrough -> D) ================'
+    # G reverse-proxies /accounts/epic/* to accounts-svc (D). D's callback exchanges the
+    # code with EPIC_TOKEN_URL (pointed at an unreachable 127.0.0.1:1) so the exchange
+    # fails deterministically and D answers 302 -> /?epic=error. The proof: the gateway
+    # proxy RELAYS that 302 verbatim (reqwest Policy::none()) instead of following it
+    # server-side -- a follow would swallow the redirect (and the real login's #token
+    # fragment). -MaximumRedirection 0 keeps the client from following so we see the 302.
+    Write-Host "[EP1] POST http://127.0.0.1:$GPort/accounts/epic/start through G (passthrough, keyless) -> {authorize_url}"
+    $estart = Invoke-Curl @('-X', 'POST', "http://127.0.0.1:$GPort/accounts/epic/start")
+    Write-Host "    -> $($estart.Body)"
+    $estate = $null
+    if ($estart.Body -match 'state=([^&"]+)') { $estate = $Matches[1] }
+    if ($estate) {
+        Pass "epic start relayed through G -> authorize_url with state=$($estate.Substring(0, [Math]::Min(8, $estate.Length)))..."
+    } else {
+        Fail "epic start expected authorize_url with a state param, got $($estart.Body)"; throw 'epic start failed'
+    }
+
+    Write-Host "[EP2] GET /accounts/epic/callback?code=x&state=<state> through G (no redirect follow) -> 302 relayed verbatim"
+    $ecb = Invoke-WebRequest -UseBasicParsing -MaximumRedirection 0 -SkipHttpErrorCheck `
+        -Uri "http://127.0.0.1:$GPort/accounts/epic/callback?code=x&state=$estate"
+    $ecode = [int]$ecb.StatusCode
+    $eloc = $ecb.Headers['Location']
+    if ($eloc -is [array]) { $eloc = $eloc[0] }
+    Write-Host "    -> HTTP $ecode  Location=$eloc"
+    if ($ecode -eq 302 -and $eloc -eq '/?epic=error') {
+        Pass "epic-oauth-redirect-through-gateway: G relays D's 302 verbatim (Location: $eloc) -- proxy does not follow"
+    } else {
+        Fail "epic callback expected 302 with Location /?epic=error, got HTTP $ecode Location=$eloc"; throw 'epic redirect failed'
+    }
 
     Write-Host ''
     Write-Host '================ API KEY POLICY (apikeys-svc via G) ================'
