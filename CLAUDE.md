@@ -263,6 +263,16 @@ Integration tests target this local Postgres directly (no Docker/testcontainers)
 (Admin/superuser credentials for provisioning are in local agent memory, not
 committed.) psql:
 
+**No data migrations — wipe is the migration strategy (current phase).** This is
+a local, for-fun project with no production data: when a schema or event-contract
+change would need a data migration, DROP the affected schemas (or the whole DB)
+and boot fresh — do NOT build bridges, dual-writes, backfills, or versioned
+data-migration machinery (the event-log rollout deliberately deleted exactly that
+class of code). Module `migrate` stays idempotent DDL (`CREATE … IF NOT EXISTS`),
+nothing more. If losing dev data hurts, the answer is a **seed script** minting
+fake data (like the `APIKEYS_DEV_SEED` dev-keys upsert), not a migration.
+Revisit only if this ever grows real persistent users.
+
 ```
 PGPASSWORD=gamebackend "/c/Program Files/PostgreSQL/18/bin/psql.exe" -U gamebackend -h localhost -d gamebackend
 ```
