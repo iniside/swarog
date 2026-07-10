@@ -75,6 +75,16 @@ param()
 $ErrorActionPreference = 'Stop'
 Set-Location -Path $PSScriptRoot
 
+# --- Live log tee: every invocation writes its full console output to a timestamped
+# log file (in addition to the console), with the log path printed FIRST so a human or
+# an agent can tail it live. PS7 supports nested transcripts, which matters when
+# verify.ps1 invokes this script as a child stage.
+$LogsDir = Join-Path $PSScriptRoot 'run/logs'
+New-Item -ItemType Directory -Force -Path $LogsDir | Out-Null
+$LogPath = Join-Path $LogsDir "split-proof-$(Get-Date -Format 'yyyyMMdd-HHmmss').log"
+Write-Host "[log] $LogPath"
+Start-Transcript -Path $LogPath | Out-Null
+
 $RunDir   = Join-Path $PSScriptRoot 'run'
 $BinDir   = Join-Path $PSScriptRoot 'target\debug'
 $CaCert   = Join-Path $RunDir 'edge-ca.crt'
@@ -1107,15 +1117,18 @@ try {
     }
 
     Write-Host '============================================'
+
+    if ($script:Fails -eq 0) {
+        Write-Host 'SPLIT PROOF: PASS (all assertions held on the twelve-process split + monolith parity)'
+        $script:ExitCode = 0
+    } else {
+        Write-Host "SPLIT PROOF: FAIL ($($script:Fails) assertion(s) failed)"
+        $script:ExitCode = 1
+    }
 }
 finally {
     Teardown
+    Stop-Transcript | Out-Null
 }
 
-if ($script:Fails -eq 0) {
-    Write-Host 'SPLIT PROOF: PASS (all assertions held on the twelve-process split + monolith parity)'
-    exit 0
-} else {
-    Write-Host "SPLIT PROOF: FAIL ($($script:Fails) assertion(s) failed)"
-    exit 1
-}
+exit $script:ExitCode

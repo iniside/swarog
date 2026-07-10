@@ -29,6 +29,17 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-Location -Path $PSScriptRoot
 
+# --- Live log tee: every invocation writes its full console output to a timestamped
+# log file (in addition to the console), with the log path printed FIRST so a human or
+# an agent can tail it live.
+$LogsDir = Join-Path $PSScriptRoot 'run/logs'
+New-Item -ItemType Directory -Force -Path $LogsDir | Out-Null
+$LogPath = Join-Path $LogsDir "run-$(Get-Date -Format 'yyyyMMdd-HHmmss').log"
+Write-Host "[log] $LogPath"
+Start-Transcript -Path $LogPath | Out-Null
+
+try {
+
 if ($Mode -eq 'microservices') {
     Write-Host "NOTE: 'microservices' is a deprecated alias for 'split'."
     $Mode = 'split'
@@ -387,3 +398,8 @@ Write-Host "  Drive the player QUIC front: target\debug\playercli.exe --addr 127
 Write-Host "  Logs:     $RunDir\<service>.{out,err}.log"
 Write-Host '  Teardown: .\run.ps1 -Teardown'
 Write-Host '====================================================================='
+
+}
+finally {
+    Stop-Transcript | Out-Null
+}

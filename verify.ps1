@@ -32,6 +32,24 @@ $runDir = Join-Path $root 'run'
 $verifyDir = Join-Path $runDir 'verify'
 New-Item -ItemType Directory -Force -Path $verifyDir | Out-Null
 
+# --- Live log tee: every invocation writes its full console output to a timestamped
+# log file (in addition to the console), with the log path printed FIRST so a human or
+# an agent can tail it live. PS7 supports nested transcripts, which matters because this
+# script invokes split-proof.ps1 as a child stage.
+$logsDir = Join-Path $root 'run/logs'
+New-Item -ItemType Directory -Force -Path $logsDir | Out-Null
+$LogPath = Join-Path $logsDir "verify-$(Get-Date -Format 'yyyyMMdd-HHmmss').log"
+Write-Host "[log] $LogPath"
+Start-Transcript -Path $LogPath | Out-Null
+
+# Exit-WithLog CODE -- stops the transcript before exiting so every exit path (normal
+# completion, --bless-public-api's early exits) closes the log file cleanly.
+function Exit-WithLog {
+    param([int]$Code)
+    Stop-Transcript | Out-Null
+    exit $Code
+}
+
 $RunAdvisory = $All.IsPresent -or $Slow.IsPresent
 $RunSlow = $Slow.IsPresent
 $Install = -not $NoInstall.IsPresent
@@ -197,7 +215,7 @@ function Invoke-BlessPublicApi {
     Write-Host "== public-api bless ==" -ForegroundColor Cyan
     if (-not (Ensure-PublicApiTooling)) {
         Write-Host "  cannot bless: nightly toolchain / cargo-public-api unavailable" -ForegroundColor Red
-        exit 1
+        Exit-WithLog 1
     }
     New-Item -ItemType Directory -Force -Path $publicApiBaselineDir | Out-Null
     $pver = ((& cargo public-api --version | Select-Object -First 1) -split '\s+')[1]
@@ -214,7 +232,7 @@ function Invoke-BlessPublicApi {
         (@($header) + $out) | Set-Content -Path $snap -Encoding utf8
         Write-Host "  blessed $pkg"
     }
-    if ($fail) { exit 1 } else { exit 0 }
+    if ($fail) { Exit-WithLog 1 } else { Exit-WithLog 0 }
 }
 
 function Invoke-PublicApiStage {
@@ -557,4 +575,4 @@ foreach ($r in $script:results) {
 }
 Write-Host ''
 if ($overall -eq 0) { Write-Host 'VERIFY: OK' } else { Write-Host 'VERIFY: FAIL' }
-exit $overall
+Exit-WithLog $overall

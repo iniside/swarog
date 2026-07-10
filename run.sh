@@ -21,6 +21,14 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
+# --- Live log tee: every invocation writes its full console output to a timestamped
+# log file (in addition to the console), with the log path printed FIRST so a human or
+# an agent can tail it live.
+mkdir -p run/logs
+LOG="run/logs/run-$(date +%Y%m%d-%H%M%S).log"
+echo "[log] $(pwd)/$LOG"
+exec > >(tee -a "$LOG") 2>&1
+
 MODE="monolith"
 TEARDOWN=0
 for arg in "$@"; do
