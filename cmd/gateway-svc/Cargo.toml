@@ -29,6 +29,10 @@ apikeysrpc = { workspace = true }
 matchrpc = { workspace = true }
 leaderboardrpc = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync"] }
+# Pins the process-global crypto provider to ring at main start (admin hardening
+# Step 4) — the default-provider builders inside axum-server/rustls-acme then resolve
+# to ring, never aws-lc-rs.
+rustls = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

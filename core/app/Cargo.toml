@@ -17,6 +17,13 @@ metrics = { workspace = true }
 httpmw = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time", "net", "signal"] }
 axum = { workspace = true }
+# Native TLS termination for the HTTP front (admin hardening Step 4): axum-server
+# serves the SAME router over rustls when `Config::with_tls` is set (cert/key files or
+# rustls-acme's TLS-ALPN-01 Let's Encrypt flow). Both ring-pinned — see the workspace
+# Cargo.toml note; `futures` for the ACME state driver stream.
+axum-server = { workspace = true }
+rustls-acme = { workspace = true }
+futures = { workspace = true }
 sqlx = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
@@ -25,3 +32,8 @@ tracing = { workspace = true }
 [dev-dependencies]
 async-trait = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+# The TLS files-mode integration test: rcgen mints a localhost cert, reqwest (rustls,
+# ring — same provider stack) trusts it and round-trips through the real TLS branch.
+rcgen = { workspace = true }
+reqwest = { workspace = true }
+rustls = { workspace = true }

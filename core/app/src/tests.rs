@@ -291,6 +291,141 @@ fn to_bind_addr_expands_colon_port() {
 }
 
 // ============================================================================
+// Native TLS front (admin hardening Step 4): `Config::with_tls` plumbing + the
+// files-mode TLS branch served for real — rcgen-minted localhost cert, reqwest
+// (rustls/ring, the same provider stack) trusting it, and the SAME watch-signal
+// graceful shutdown contract as the plain branch. ACME is not E2E-testable locally
+// (needs a public domain); its config parsing is unit-tested in cmd/gateway-svc.
+// ============================================================================
+
+#[test]
+fn with_tls_sets_the_front_and_default_is_off() {
+    let cfg = Config::from_values(None, None, None, None, None, None, None);
+    assert_eq!(cfg.tls, None, "TLS is opt-in; every existing process stays plain");
+
+    let front = TlsFront::Files {
+        cert: std::path::PathBuf::from("c.pem"),
+        key: std::path::PathBuf::from("k.pem"),
+    };
+    let cfg = cfg.without_db().with_tls(Some(front.clone()));
+    assert_eq!(cfg.tls, Some(front));
+    // The other builder opt-outs survive alongside it.
+    assert_eq!(cfg.database_url, None);
+    // And with_tls(None) is an explicit off.
+    assert_eq!(cfg.with_tls(None).tls, None);
+}
+
+/// Mints a self-signed localhost cert (SANs: localhost + 127.0.0.1) and writes the
+/// PEM pair under a unique temp dir; returns (cert_path, key_path, cert_pem).
+fn mint_localhost_cert(tag: &str) -> (std::path::PathBuf, std::path::PathBuf, String) {
+    let ck = rcgen::generate_simple_self_signed(vec![
+        "localhost".to_string(),
+        "127.0.0.1".to_string(),
+    ])
+    .expect("mint cert");
+    let dir = std::env::temp_dir().join(format!("app-tls-{tag}-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("mk temp dir");
+    let cert_path = dir.join("cert.pem");
+    let key_path = dir.join("key.pem");
+    let cert_pem = ck.cert.pem();
+    std::fs::write(&cert_path, &cert_pem).expect("write cert");
+    std::fs::write(&key_path, ck.key_pair.serialize_pem()).expect("write key");
+    (cert_path, key_path, cert_pem)
+}
+
+/// A reqwest client that trusts ONLY the freshly minted test cert.
+fn tls_client(cert_pem: &str) -> reqwest::Client {
+    let ca = reqwest::Certificate::from_pem(cert_pem.as_bytes()).expect("parse test ca");
+    reqwest::Client::builder()
+        .add_root_certificate(ca)
+        .build()
+        .expect("build client")
+}
+
+/// Picks an OS-assigned free port (bind :0, read, drop — fine for a local test).
+fn free_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .expect("probe port")
+        .local_addr()
+        .expect("local addr")
+        .port()
+}
+
+/// Polls `url` over the trusted-TLS client until the server answers (bounded).
+async fn get_when_up(client: &reqwest::Client, url: &str) -> reqwest::Response {
+    for _ in 0..100 {
+        match client.get(url).send().await {
+            Ok(resp) => return resp,
+            Err(_) => tokio::time::sleep(std::time::Duration::from_millis(100)).await,
+        }
+    }
+    panic!("server never came up at {url}");
+}
+
+/// The TLS serve path end-to-end: `serve_https` (the exact branch `run` dispatches
+/// to) serves the router over HTTPS from PEM files, and flipping the SAME watch
+/// signal `run` wires drains and returns `Ok` within the grace bound.
+#[tokio::test(flavor = "multi_thread")]
+async fn serve_https_files_serves_router_and_drains_on_signal() {
+    // Mirror production: the front-door main pins the ring provider (idempotent).
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let (cert, key, cert_pem) = mint_localhost_cert("direct");
+    let port = free_port();
+    let bind = format!("127.0.0.1:{port}");
+
+    let router = axum::Router::new().route("/hello", get(|| async { "tls ok" }));
+    let (sig_tx, sig_rx) = tokio::sync::watch::channel(false);
+    let server = tokio::spawn(async move {
+        serve_https(
+            TlsFront::Files { cert, key },
+            &bind,
+            router,
+            std::time::Duration::from_secs(2),
+            sig_rx,
+        )
+        .await
+    });
+
+    let client = tls_client(&cert_pem);
+    let resp = get_when_up(&client, &format!("https://127.0.0.1:{port}/hello")).await;
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+    assert_eq!(resp.text().await.unwrap(), "tls ok");
+    drop(client); // close the pooled keep-alive connection so the drain is instant
+
+    // Graceful shutdown: the same signal `run` sends on Ctrl-C/SIGTERM.
+    sig_tx.send(true).unwrap();
+    let served = tokio::time::timeout(std::time::Duration::from_secs(10), server)
+        .await
+        .expect("drain-bounded shutdown must not hang")
+        .expect("serve task panicked");
+    served.expect("serve_https returned an error");
+}
+
+/// The wiring through the REAL boot path: `app::run` with `with_tls(Files)` on an
+/// ephemeral port serves `/healthz` over HTTPS — proving `run` dispatches the TLS
+/// branch off `Config.tls` (DB-less, empty module set; `run` only returns on a
+/// process signal, so the task is aborted once the roundtrip proved the point).
+#[tokio::test(flavor = "multi_thread")]
+async fn run_with_tls_files_serves_https() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let (cert, key, cert_pem) = mint_localhost_cert("run");
+    let port = free_port();
+
+    let mut cfg = Config::from_values(None, None, None, None, None, None, None).without_db();
+    cfg.listen_addr = format!("127.0.0.1:{port}");
+    let cfg = cfg.with_tls(Some(TlsFront::Files { cert, key }));
+
+    let server = tokio::spawn(run(cfg, Vec::new(), None, None));
+
+    let client = tls_client(&cert_pem);
+    let resp = get_when_up(&client, &format!("https://127.0.0.1:{port}/healthz")).await;
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+    assert_eq!(resp.text().await.unwrap(), "ok");
+
+    server.abort();
+}
+
+// ============================================================================
 // The EDGE_SLOT drain (Step 3): modules contribute EdgeReg unconditionally in
 // init; `run` applies them only when the process has an internal edge server.
 // ============================================================================

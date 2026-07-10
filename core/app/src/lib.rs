@@ -38,6 +38,32 @@ const DEFAULT_MODULE_STOP_GRACE_MS: u64 = 5000;
 /// 2s acquire wait" IS not-ready. Chosen, not accidental.
 const READY_CHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
+/// How the HTTP front terminates TLS (admin hardening Step 4). The MECHANISM lives
+/// here in `core/app` (the serve path owns the listener); the ENV PARSING lives in the
+/// one composition root that fronts the public internet (`cmd/gateway-svc` reads
+/// `TLS_MODE`/`TLS_CERT_PATH`/… and calls [`Config::with_tls`]) — modules see nothing,
+/// and no other `cmd/*` main is TLS-aware today (single public front door).
+#[derive(Debug, Clone, PartialEq)]
+pub enum TlsFront {
+    /// Serve HTTPS from an operator-provided PEM cert chain + private key.
+    Files {
+        cert: std::path::PathBuf,
+        key: std::path::PathBuf,
+    },
+    /// Serve HTTPS with certificates obtained/renewed automatically from Let's
+    /// Encrypt via rustls-acme (TLS-ALPN-01 — no port-80 listener needed). Certs and
+    /// the account key persist in `cache_dir` across restarts.
+    Acme {
+        /// Domains on the certificate (SANs) — TLS-ALPN-01 is answered inline on the
+        /// HTTPS listener itself, so each must resolve to this host.
+        domains: Vec<String>,
+        /// Directory for the ACME account + issued-cert cache (created if absent).
+        cache_dir: std::path::PathBuf,
+        /// Optional operator contact (an email address; rendered as `mailto:`).
+        contact: Option<String>,
+    },
+}
+
 /// The process-level configuration [`run`] needs. Deliberately tiny: everything
 /// module-specific (event subscribers, peer edge addrs, admin URLs, …) is read by
 /// the module that owns it, not here.
@@ -78,6 +104,12 @@ pub struct Config {
     /// module (`MODULE_STOP_GRACE_MS`, default 5000ms). A process/topology knob read
     /// HERE, never by a module — applied via [`App::with_stop_grace`].
     pub module_stop_grace: std::time::Duration,
+    /// TLS termination for the HTTP front. `None` (the [`Config::from_env`] default)
+    /// serves plain HTTP exactly as before; `Some` switches the serve path to
+    /// axum-server over rustls ([`TlsFront::Files`]) or rustls-acme
+    /// ([`TlsFront::Acme`]). Set ONLY via [`Config::with_tls`] by a composition root
+    /// that parsed its own env — never read from env here.
+    pub tls: Option<TlsFront>,
 }
 
 impl Config {
@@ -115,6 +147,13 @@ impl Config {
             rate_limit_default: Some((rps, burst)),
             ..self
         }
+    }
+
+    /// Sets how the HTTP front terminates TLS — `None` leaves the plain-HTTP path
+    /// untouched. Called by the composition root that parsed the TLS env
+    /// (`cmd/gateway-svc` today); `core/app` itself never reads TLS env vars.
+    pub fn with_tls(self, tls: Option<TlsFront>) -> Config {
+        Config { tls, ..self }
     }
 
     /// The pure core of [`Config::from_env`] — env values in, config out. Split out so
@@ -168,6 +207,7 @@ impl Config {
             edge_drain_grace: std::time::Duration::from_millis(edge_drain_grace_ms),
             http_drain_grace: std::time::Duration::from_millis(http_drain_grace_ms),
             module_stop_grace: std::time::Duration::from_millis(module_stop_grace_ms),
+            tls: None,
         }
     }
 }
@@ -275,7 +315,9 @@ fn apply_http_layers(ctx: &Context, mut router: axum::Router) -> axum::Router {
 ///    sharing the same dev CA,
 /// 8. serve HTTP (the router the modules merged into the [`Context`], plus
 ///    `/healthz`/`/readyz`) on `cfg.listen_addr` — `/readyz` pings the DB only when a
-///    pool exists, else answers a plain 200,
+///    pool exists, else answers a plain 200; when [`Config::with_tls`] set a
+///    [`TlsFront`], the same router is served over rustls instead ([`serve_https`]),
+///
 /// 9. block until SIGINT (Ctrl-C — cross-platform),
 /// 10. graceful shutdown: stop accepting HTTP → drain-then-close the player listener
 ///     ([`edge::RunningServer::shutdown`]: stop admitting new connections/streams,
@@ -554,6 +596,22 @@ pub async fn run(
         let router = apply_http_layers(&ctx, router);
 
         let bind = to_bind_addr(&cfg.listen_addr);
+
+        // TLS branch (admin hardening Step 4): when the composition root configured a
+        // [`TlsFront`], the SAME router is served over rustls by [`serve_https`] —
+        // wired to the same watch-signal + drain-grace shutdown contract as the plain
+        // branch below, so the teardown choreography after this block is identical.
+        // `None` (every process except the public front door) falls through to the
+        // plain-HTTP path, unchanged.
+        if let Some(front) = cfg.tls.clone() {
+            let (sig_tx, sig_rx) = tokio::sync::watch::channel(false);
+            tokio::spawn(async move {
+                shutdown_signal().await;
+                let _ = sig_tx.send(true);
+            });
+            return serve_https(front, &bind, router, cfg.http_drain_grace, sig_rx).await;
+        }
+
         let listener = tokio::net::TcpListener::bind(&bind)
             .await
             .with_context(|| format!("bind http {bind}"))?;
@@ -671,6 +729,97 @@ async fn ordered_teardown(
     if let Some(app) = app {
         app.stop().await;
     }
+}
+
+/// Serves `router` over HTTPS on `bind` until `sig_rx` flips — the TLS twin of the
+/// plain `axum::serve` branch in [`run`] (admin hardening Step 4). Same shutdown
+/// contract: once the watch signal fires, `axum_server::Handle::graceful_shutdown`
+/// gets `drain_grace` to finish in-flight connections, then abandons stragglers — so
+/// the drain is time-bounded exactly like the plain branch's select-timer, and the
+/// ordered teardown that follows in [`run`] starts on time either way.
+///
+/// Crypto-provider note: both TLS arms build rustls configs through the process
+/// default provider. The workspace compiles rustls with ONLY the `ring` provider
+/// feature (single-provider auto-detection covers us), and the front-door main
+/// (`cmd/gateway-svc`) additionally pins it via
+/// `rustls::crypto::ring::default_provider().install_default()` — never aws-lc-rs.
+async fn serve_https(
+    front: TlsFront,
+    bind: &str,
+    router: axum::Router,
+    drain_grace: std::time::Duration,
+    sig_rx: tokio::sync::watch::Receiver<bool>,
+) -> anyhow::Result<()> {
+    let addr: SocketAddr = bind
+        .parse()
+        .with_context(|| format!("parse https bind addr {bind:?}"))?;
+
+    // The graceful-shutdown bridge: the same level-triggered watch signal the plain
+    // branch uses (see the `run` comment on why a watch, not a Notify) triggers
+    // axum-server's handle-based drain, bounded by `drain_grace`.
+    let handle = axum_server::Handle::new();
+    let drain_handle = handle.clone();
+    let mut rx = sig_rx;
+    tokio::spawn(async move {
+        let _ = rx.wait_for(|v| *v).await;
+        drain_handle.graceful_shutdown(Some(drain_grace));
+    });
+
+    let make = router.into_make_service_with_connect_info::<SocketAddr>();
+    match front {
+        TlsFront::Files { cert, key } => {
+            let config = axum_server::tls_rustls::RustlsConfig::from_pem_file(&cert, &key)
+                .await
+                .with_context(|| format!("load TLS cert {cert:?} / key {key:?}"))?;
+            tracing::info!(addr = %bind, cert = ?cert, "listening (https, cert/key files)");
+            axum_server::bind_rustls(addr, config)
+                .handle(handle)
+                .serve(make)
+                .await
+                .context("https serve")?;
+        }
+        TlsFront::Acme {
+            domains,
+            cache_dir,
+            contact,
+        } => {
+            // TLS-ALPN-01 against Let's Encrypt production: the challenge is answered
+            // inline on this listener via the acceptor's cert resolver — no :80
+            // listener, no extra route. Account key + issued certs persist in
+            // `cache_dir` so restarts don't re-issue (rate limits).
+            let mut state = rustls_acme::AcmeConfig::new(domains.clone())
+                .contact(contact.iter().map(|c| format!("mailto:{c}")))
+                .cache(rustls_acme::caches::DirCache::new(cache_dir.clone()))
+                .directory_lets_encrypt(true)
+                .state();
+            let acceptor = state.axum_acceptor(state.default_rustls_config());
+            // The state driver: polling this stream IS the ACME machinery (order,
+            // validate, renew). Logged via tracing; aborted once serving ends.
+            let driver = tokio::spawn(async move {
+                use futures::StreamExt as _;
+                loop {
+                    match state.next().await {
+                        Some(Ok(event)) => tracing::info!(?event, "acme"),
+                        Some(Err(err)) => tracing::warn!(%err, "acme"),
+                        None => break,
+                    }
+                }
+            });
+            tracing::info!(
+                addr = %bind, domains = ?domains, cache = ?cache_dir,
+                "listening (https, ACME/Let's Encrypt via TLS-ALPN-01)"
+            );
+            let served = axum_server::bind(addr)
+                .acceptor(acceptor)
+                .handle(handle)
+                .serve(make)
+                .await
+                .context("https serve");
+            driver.abort();
+            served?;
+        }
+    }
+    Ok(())
 }
 
 /// Builds the `/readyz` response: the baseline DB ping (when a pool exists) plus every

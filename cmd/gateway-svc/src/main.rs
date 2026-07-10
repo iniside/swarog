@@ -25,6 +25,10 @@ use std::sync::{Arc, Mutex};
 
 use lifecycle::ProcessWiring;
 
+mod tlsenv;
+#[cfg(test)]
+mod tlsenv_tests;
+
 /// Reads `env_key`, falling back to `default` when unset or blank — generalizes
 /// `characters-svc`'s bespoke `characters_edge_addr()` to any provider's peer
 /// address (a NUMERIC `host:port`, e.g. `127.0.0.1:9000`; Rust's `SocketAddr` needs a
@@ -39,6 +43,19 @@ fn env_addr(env_key: &str, default: &str) -> String {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt().init();
+
+    // Pin the process-global rustls crypto provider to ring BEFORE any TLS config is
+    // built (admin hardening Step 4 — the crypto-provider trap): the default-provider
+    // builders inside axum-server/rustls-acme then resolve to ring, matching the
+    // workspace's ring-only rustls. `install_default` errs only when a default is
+    // already installed — same provider here, so ignoring it is safe (the `.ok()`
+    // idempotent-install shape).
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
+    // TLS front for the public HTTP plane: TLS_MODE=off (default) | files | acme —
+    // parsed HERE in the composition root ([R12]: no other cmd/* main is TLS-aware;
+    // core/app carries only the mechanism). Partial config fails startup loudly.
+    let tls = tlsenv::tls_front_from_env()?;
 
     // One shared player-facing QUIC server for this process; `Gateway::with_player_edge`
     // installs the front's dispatch handler onto it during `init`, and `app::run`
@@ -86,7 +103,8 @@ async fn main() -> anyhow::Result<()> {
     app::run(
         app::Config::from_env()
             .without_db()
-            .with_rate_limit_default(20.0, 40),
+            .with_rate_limit_default(20.0, 40)
+            .with_tls(tls),
         mods,
         None,
         Some(player),

@@ -159,6 +159,18 @@ axum-extra = { version = "0.9", features = ["cookie"] }
 # ubiquitous crate; the security-critical XFF walk is ours, only bit-masking is ipnet's.
 ipnet = "2"
 
+# Native TLS termination for the HTTP front (admin hardening Step 4). BOTH pinned to
+# the ring provider — the crypto-provider trap: axum-server's `tls-rustls` feature and
+# rustls-acme's default features drag `aws-lc-rs` (NASM/CMake native build, and a second
+# provider that breaks rustls's single-provider auto-detection). So: axum-server with
+# ONLY `tls-rustls-no-provider`, rustls-acme with default features OFF plus `ring`
+# (provider), `axum` (AxumAcceptor glue over axum-server 0.8 — verified: rustls-acme
+# 0.15's `axum` feature depends on `axum-server ^0.8`), and `webpki-roots` (trust roots
+# for the ACME directory HTTPS client; without it `AcmeConfig::new` doesn't exist).
+# `cargo tree -i aws-lc-rs` must stay EMPTY — checked by the Step 4 gate.
+axum-server = { version = "0.8", default-features = false, features = ["tls-rustls-no-provider"] }
+rustls-acme = { version = "0.15", default-features = false, features = ["ring", "axum", "webpki-roots"] }
+
 # QUIC + mutual TLS stack for the edge transport. Pinned once here.
 quinn = "0.11"
 # TLS 1.3 only: the `tls12` feature is deliberately NOT enabled (mTLS point 5).
