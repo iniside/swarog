@@ -13,11 +13,13 @@
 #   ./run.sh --teardown      # stop whatever run.sh started last
 #
 # Assumes a local Postgres is already running (DATABASE_URL or the default DSN).
-# Env passthrough: DATABASE_URL, ADMIN_USER/ADMIN_PASS (admin portal + monolith),
-# ACCOUNTS_DEV_AUTH, INVENTORY_DEV_GRANT, etc. Dev conveniences are now EXPLICIT opt-ins
-# (the modules fail closed by default); this script sets them per process that hosts the
-# module (ADMIN_USER/ADMIN_PASS default admin/admin), all overridable from the caller's
-# environment. The admin portal fails startup on an empty ADMIN_USER unless ADMIN_OPEN=1.
+# Env passthrough: DATABASE_URL, ACCOUNTS_DEV_AUTH, INVENTORY_DEV_GRANT, etc. Dev
+# conveniences are now EXPLICIT opt-ins (the modules fail closed by default); this script
+# sets them per process that hosts the module, all overridable from the caller's
+# environment. The admin portal uses SESSION auth: this script seeds a dev login
+# (admin/admin) via `adminctl create-user` before boot, and sets the dev opt-outs
+# TLS_MODE=off (plain-http front door) + ADMIN_COOKIE_SECURE=0 (cookie sent over http)
+# + TRUSTED_PROXY_CIDRS=127.0.0.1/32 (lockout sees the real client behind the proxy).
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -88,24 +90,28 @@ write_pids_file() {
     for i in "${!STARTED_NAMES[@]}"; do echo "${STARTED_NAMES[$i]}=${STARTED_PIDS[$i]}" >> "$PIDS_FILE"; done
 }
 
-# admin_note -- one-liner about the admin Basic-auth gate (open when unset).
+# admin_note -- one-liner about the seeded dev admin login (session auth).
 admin_note() {
-    if [ -n "${ADMIN_USER:-}" ]; then
-        echo "    (Basic auth: ADMIN_USER/ADMIN_PASS are set)"
-    else
-        echo "    (ADMIN_USER/ADMIN_PASS unset -> the admin portal is OPEN; set them to gate it)"
-    fi
+    echo "    (session login: admin / admin -- seeded via adminctl; ADMIN_COOKIE_SECURE=0 so the cookie rides http)"
+}
+
+# seed_admin USER PASS -- mint/reset a dev admin login via adminctl (password over stdin,
+# never argv). adminctl ensures schema `admin` + admin.users itself, so it is safe to run
+# before the admin module migrates the rest of its schema.
+seed_admin() {
+    echo "Seeding dev admin login '$1' via adminctl ..."
+    printf '%s\n' "$2" | DATABASE_URL="$DATABASE_URL" cargo run -q -p adminctl -- create-user "$1" --password-stdin
 }
 
 # --- Build ------------------------------------------------------------------
 # Both modes build edgeca + playercli: each topology fronts players over QUIC
 # (PLAYER_EDGE_ADDR), so both need the shared dev CA (edgeca) and a client (playercli).
 if [ "$MODE" = "monolith" ]; then
-    echo "Building server (monolith) + edgeca + playercli + csharp-client-gen ..."
-    cargo build -p server -p edgeca -p playercli -p csharp-client-gen
+    echo "Building server (monolith) + edgeca + adminctl + playercli + csharp-client-gen ..."
+    cargo build -p server -p edgeca -p adminctl -p playercli -p csharp-client-gen
 else
-    echo "Building edgeca + the 12 split services + playercli + csharp-client-gen ..."
-    cargo build -p edgeca -p playercli -p csharp-client-gen \
+    echo "Building edgeca + the 12 split services + adminctl + playercli + csharp-client-gen ..."
+    cargo build -p edgeca -p adminctl -p playercli -p csharp-client-gen \
         -p accounts-svc -p audit-svc -p scheduler-svc -p rating-svc -p leaderboard-svc \
         -p match-svc -p characters-svc -p config-svc -p inventory-svc -p gateway-svc -p admin-svc \
         -p apikeys-svc
@@ -126,11 +132,14 @@ if [ "$MODE" = "monolith" ]; then
     EDGE_CA_KEY="$RUN_DIR/edge-ca.key"
     echo "Minting edge dev CA (player front) -> $EDGE_CA_CERT ..."
     "$BIN_DIR/edgeca$EXE" --cert "$EDGE_CA_CERT" --key "$EDGE_CA_KEY"
+    # The admin portal uses SESSION auth on schema `admin`; seed a dev login before boot.
+    seed_admin "${ADMIN_USER:-admin}" "${ADMIN_PASS:-admin}"
     # Dev conveniences are now EXPLICIT opt-ins (the modules fail closed by default): this
     # dev-boot script enables them (all still overridable by the caller's environment) so
     # local testing works out of the box -- APIKEYS_DEV_SEED (well-known dev keys),
-    # ACCOUNTS_DEV_AUTH (/accounts/register+login), INVENTORY_DEV_GRANT (simulated IAP),
-    # and ADMIN_USER/ADMIN_PASS (default admin/admin) to gate the admin portal.
+    # ACCOUNTS_DEV_AUTH (/accounts/register+login), INVENTORY_DEV_GRANT (simulated IAP);
+    # the admin dev opt-outs TLS_MODE=off + ADMIN_COOKIE_SECURE=0 + TRUSTED_PROXY_CIDRS
+    # keep the plain-http portal + session cookie working locally.
     start_server monolith "$BIN_DIR/server$EXE" \
         PORT=:8080 \
         DATABASE_URL="$DATABASE_URL" \
@@ -140,8 +149,9 @@ if [ "$MODE" = "monolith" ]; then
         APIKEYS_DEV_SEED="${APIKEYS_DEV_SEED:-1}" \
         ACCOUNTS_DEV_AUTH="${ACCOUNTS_DEV_AUTH:-1}" \
         INVENTORY_DEV_GRANT="${INVENTORY_DEV_GRANT:-1}" \
-        ADMIN_USER="${ADMIN_USER:-admin}" \
-        ADMIN_PASS="${ADMIN_PASS:-admin}"
+        TLS_MODE=off \
+        ADMIN_COOKIE_SECURE=0 \
+        TRUSTED_PROXY_CIDRS="127.0.0.1/32"
     wait_healthy 8080 monolith
     write_pids_file
     echo ""
@@ -179,6 +189,10 @@ EDGE_CA_CERT="$RUN_DIR/edge-ca.crt"
 EDGE_CA_KEY="$RUN_DIR/edge-ca.key"
 echo "Minting shared edge dev CA -> $EDGE_CA_CERT ..."
 "$BIN_DIR/edgeca$EXE" --cert "$EDGE_CA_CERT" --key "$EDGE_CA_KEY"
+
+# The admin portal uses SESSION auth on schema `admin`; seed a dev login before boot
+# (Postgres is already up -- adminctl connects via DATABASE_URL and self-heals the schema).
+seed_admin "${ADMIN_USER:-admin}" "${ADMIN_PASS:-admin}"
 
 # D: accounts-svc -- owns the accounts schema; serves accounts.verifySession on its edge
 # (every other process verifies bearers against it). player.registered is appended to
@@ -277,6 +291,7 @@ wait_healthy "$B_PORT" "B (inventory-svc)"
 echo "Starting G (gateway-svc) on :$G_PORT, player QUIC :$PLAYER_PORT ..."
 start_server gateway "$BIN_DIR/gateway-svc$EXE" \
     PORT=":$G_PORT" PLAYER_EDGE_ADDR=":$PLAYER_PORT" \
+    TLS_MODE=off \
     EDGE_CA_CERT="$EDGE_CA_CERT" EDGE_CA_KEY="$EDGE_CA_KEY" \
     CHARACTERS_EDGE_ADDR="127.0.0.1:$A_EDGE" \
     INVENTORY_EDGE_ADDR="127.0.0.1:$B_EDGE" \
@@ -288,14 +303,16 @@ start_server gateway "$BIN_DIR/gateway-svc$EXE" \
     ACCOUNTS_HTTP_ADDR="127.0.0.1:$D_PORT"
 wait_healthy "$G_PORT" "G (gateway-svc)"
 
-# E: admin-svc -- the admin portal (HTTP :8085, no DB, no edge server). It DIALS the
-# provider edges (A/B/C/D/F/H) to fan their admin pages out over QUIC. The admin module
-# is now fail-closed: an empty ADMIN_USER bails at startup unless ADMIN_OPEN=1, so this
-# dev-boot sets ADMIN_USER/ADMIN_PASS (default admin/admin, still overridable).
+# E: admin-svc -- the admin portal (HTTP :8085, its OWN DB schema `admin`, no edge
+# server). It DIALS the provider edges (A/B/C/D/F/H) to fan their admin pages out over
+# QUIC. Session auth (dev login seeded above): ADMIN_COOKIE_SECURE=0 lets the cookie ride
+# plain http and TRUSTED_PROXY_CIDRS=127.0.0.1/32 makes the lockout ip:<addr> subject the
+# real client behind the gateway passthrough.
 echo "Starting E (admin-svc) on :$E_PORT ..."
 start_server admin "$BIN_DIR/admin-svc$EXE" \
     PORT=":$E_PORT" \
-    ADMIN_USER="${ADMIN_USER:-admin}" ADMIN_PASS="${ADMIN_PASS:-admin}" \
+    DATABASE_URL="$DATABASE_URL" \
+    ADMIN_COOKIE_SECURE=0 TRUSTED_PROXY_CIDRS="127.0.0.1/32" \
     EDGE_CA_CERT="$EDGE_CA_CERT" EDGE_CA_KEY="$EDGE_CA_KEY" \
     CHARACTERS_EDGE_ADDR="127.0.0.1:$A_EDGE" \
     INVENTORY_EDGE_ADDR="127.0.0.1:$B_EDGE" \

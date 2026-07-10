@@ -443,10 +443,10 @@ csharp_stage() {
     echo "--- starting self-contained monolith on :$CSHARP_PORT, player QUIC :$CSHARP_PLAYER_PORT (ephemeral CA -> --insecure, APIKEYS_DEV_SEED=1, dev flags on) ---" >>"$log"
     # Dev conveniences are now explicit opt-ins (fail-closed defaults): the gbclient flow
     # does register->create->list, so enable ACCOUNTS_DEV_AUTH (+ INVENTORY_DEV_GRANT for
-    # symmetry) and set ADMIN_USER/ADMIN_PASS so the admin module does not bail at startup.
+    # symmetry). The admin module now boots with ZERO admin users (a warned no-op, session
+    # auth), so no ADMIN_USER/ADMIN_PASS is needed -- this flow never touches /admin.
     env PORT=":$CSHARP_PORT" DATABASE_URL="$dsn" PLAYER_EDGE_ADDR=":$CSHARP_PLAYER_PORT" \
         APIKEYS_DEV_SEED=1 ACCOUNTS_DEV_AUTH=1 INVENTORY_DEV_GRANT=1 \
-        ADMIN_USER=admin ADMIN_PASS=admin \
         "target/debug/server$exe" >>"$log" 2>&1 &
     local pid=$!
 

@@ -40,7 +40,7 @@
 #     omits match.report. [K1]-[K4] right after [A5] assert the policy directly: no
 #     key -> 401, bogus key -> 401, dev-key-client on match.report -> 403 (policy
 #     denies), dev-key-server on match.report -> 202 (allowed). Keyless surfaces stay
-#     keyless: /healthz, /metrics, /admin* (Basic-auth passthrough).
+#     keyless: /healthz, /metrics, /admin* (session-auth passthrough).
 #   - REAL AUTH (Step 6): register + login through G's front (POST /accounts/register
 #     -> 201, POST /accounts/login -> 200) mint a DB-backed session on D; the bearer
 #     then authorizes ops on every process (each gateway verifies it against D's
@@ -137,10 +137,14 @@ FLEET_SVCS=(
 DEFAULT_DSN="postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable"
 DATABASE_URL="${DATABASE_URL:-$DEFAULT_DSN}"
 
-# Basic-auth creds for the admin portal (admin-svc runs WITH them, so the negative
-# no-auth assertion returns 401 and the positive assertion supplies them).
-ADMIN_USER="proofadmin"
-ADMIN_PASS="proofpass"
+# Session-auth admin logins for the proof. proofadmin is the happy-path operator;
+# prooflock is a dedicated user we deliberately lock out ([AD2]). Both are minted
+# pre-boot via adminctl (session auth replaced the old ADMIN_USER/ADMIN_PASS Basic
+# gate). Passwords ride stdin into adminctl, never argv.
+PROOF_ADMIN_USER="proofadmin"
+PROOF_ADMIN_PASS="proofpass"
+PROOF_LOCK_USER="prooflock"
+PROOF_LOCK_PASS="lockpass"
 
 FAILS=0
 A_PID=""
@@ -305,7 +309,7 @@ fleet_preflight() {
 
 # ============================================================================
 fleet_preflight
-BUILD_PKGS=(edgeca "${FLEET_SVCS[@]}" playercli csharp-client-gen server)
+BUILD_PKGS=(edgeca "${FLEET_SVCS[@]}" adminctl playercli csharp-client-gen server)
 note "building ${BUILD_PKGS[*]} ..."
 CARGO_ARGS=()
 for p in "${BUILD_PKGS[@]}"; do CARGO_ARGS+=(-p "$p"); done
@@ -320,6 +324,20 @@ sleep 1
 
 note "minting shared edge dev CA -> $CA_CERT"
 "$BIN_DIR/edgeca$EXE" --cert "$CA_CERT" --key "$CA_KEY"
+
+# --- seed the admin logins PRE-BOOT (session auth replaced Basic auth). adminctl
+# ensures schema `admin` + admin.users itself and upserts the login (password over
+# stdin, never argv), so it runs before admin-svc migrates the rest of the schema.
+seed_admin() {
+    local user="$1" pass="$2"
+    if ! printf '%s\n' "$pass" | DATABASE_URL="$DATABASE_URL" "$BIN_DIR/adminctl$EXE" create-user "$user" --password-stdin >/dev/null; then
+        echo "split-proof: failed to seed admin user $user via adminctl" >&2
+        exit 1
+    fi
+    note "seeded admin login $user (adminctl create-user)"
+}
+seed_admin "$PROOF_ADMIN_USER" "$PROOF_ADMIN_PASS"
+seed_admin "$PROOF_LOCK_USER" "$PROOF_LOCK_PASS"
 
 # --- start D (accounts-svc): gateway + accounts, edge :9003 ------------------
 # D owns the accounts schema and serves accounts.verifySession + the auth op faces
@@ -480,11 +498,14 @@ env PORT=":$G_PORT" \
 G_PID=$!
 wait_healthy "$G_PORT" "G (gateway-svc)" || { echo "G failed to start"; exit 1; }
 
-# --- start E (admin-svc): the admin portal fortress -- HTTP :8085, no DB, no edge --
-# It DIALS all six peer edges (A/B/C/D + audit + scheduler) to fan out their admin pages over QUIC;
-# ADMIN_USER/ADMIN_PASS gate the portal so the negative no-auth assertion is 401.
+# --- start E (admin-svc): the admin portal fortress -- HTTP :8085, its OWN DB (schema
+# admin: users/sessions/login_attempts), no edge server. It DIALS all six peer edges
+# (A/B/C/D + audit + scheduler) to fan out their admin pages over QUIC. Session auth now
+# gates the portal (no ADMIN_USER/ADMIN_PASS): TRUSTED_PROXY_CIDRS=127.0.0.1/32 makes the
+# lockout ip:<addr> subject the real client behind G's passthrough, and
+# ADMIN_COOKIE_SECURE=0 lets curl carry the session cookie over plain http.
 note "starting E (admin-svc) on :$E_PORT ..."
-env PORT=":$E_PORT" \
+env PORT=":$E_PORT" DATABASE_URL="$DATABASE_URL" \
     EDGE_CA_CERT="$CA_CERT" EDGE_CA_KEY="$CA_KEY" \
     CHARACTERS_EDGE_ADDR="127.0.0.1:$EDGE_PORT" \
     INVENTORY_EDGE_ADDR="127.0.0.1:$B_EDGE_PORT" \
@@ -493,7 +514,7 @@ env PORT=":$E_PORT" \
     AUDIT_EDGE_ADDR="127.0.0.1:$F_EDGE_PORT" \
     SCHEDULER_EDGE_ADDR="127.0.0.1:$H_EDGE_PORT" \
     APIKEYS_EDGE_ADDR="127.0.0.1:$L_EDGE_PORT" \
-    ADMIN_USER="$ADMIN_USER" ADMIN_PASS="$ADMIN_PASS" \
+    TRUSTED_PROXY_CIDRS="127.0.0.1/32" ADMIN_COOKIE_SECURE=0 \
     "$BIN_DIR/admin-svc$EXE" >"$RUN_DIR/admin.out.log" 2>"$RUN_DIR/admin.err.log" &
 E_PID=$!
 wait_healthy "$E_PORT" "E (admin-svc)" || { echo "E failed to start"; exit 1; }
@@ -811,39 +832,113 @@ ACID="$(curl -s -X POST "http://localhost:$G_PORT/characters" \
     -d "{\"name\":\"$APROOF\",\"class\":\"ranger\"}" | grep -o '"id":"[^"]*"' | head -1 | sed 's/"id":"//;s/"//')"
 [ -n "$ACID" ] && pass "admin-proof character created (id=$ACID)" || fail "admin-proof character not created"
 
-echo "[AD1] GET http://localhost:$G_PORT/admin WITHOUT Basic auth -> 401 (ADMIN_USER set on E)"
-AN="$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:$G_PORT/admin")"
-echo "    -> HTTP $AN"
-if [ "$AN" = "401" ]; then
-    pass "unauthenticated /admin -> 401 through the passthrough (Basic-auth gate live on admin-svc)"
+ADMIN_JAR="$RUN_DIR/admin-proof.jar"
+rm -f "$ADMIN_JAR"
+
+echo "[AD1] GET http://localhost:$G_PORT/admin WITHOUT a session -> 303 Location /admin/login"
+AN="$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' "http://localhost:$G_PORT/admin")"
+AN_CODE="${AN%% *}"; AN_LOC="${AN#* }"
+echo "    -> HTTP $AN_CODE  Location=$AN_LOC"
+if [ "$AN_CODE" = "303" ] && [ "${AN_LOC%/admin/login}" != "$AN_LOC" ]; then
+    pass "unauthenticated /admin -> 303 to /admin/login through the passthrough (session gate live on admin-svc)"
 else
-    fail "unauthenticated /admin expected 401, got $AN"
+    fail "unauthenticated /admin expected 303 -> /admin/login, got $AN_CODE $AN_LOC"
 fi
 
-echo "[AD2] GET http://localhost:$G_PORT/admin/characters WITH Basic auth -> 200 + contains $APROOF"
-AD="$(curl -s -w $'\n%{http_code}' -u "$ADMIN_USER:$ADMIN_PASS" "http://localhost:$G_PORT/admin/characters")"
+# [AD2] asymmetric lockout: prooflock fails 6x. Each answer is the SAME generic 401
+# body (no username/lock oracle). The user row locks at 5 fails; the ip row (shared
+# subject, threshold 20) increments but does NOT lock. Clear both subjects first so the
+# assertion is deterministic across reruns.
+pg "DELETE FROM admin.login_attempts WHERE subject = 'user:$PROOF_LOCK_USER' OR subject LIKE 'ip:%';" >/dev/null
+echo "[AD2] POST /admin/login as $PROOF_LOCK_USER x6 wrong password -> each 401 identical body; user locks, ip does not"
+AD2_OK=1
+AD2_FIRST=""
+for i in $(seq 1 6); do
+    L6="$(curl -s -w $'\n%{http_code}' -X POST "http://localhost:$G_PORT/admin/login" \
+        -d "username=$PROOF_LOCK_USER&password=wrong-$PROOF_LOCK_USER")"
+    L6BODY="$(echo "$L6" | sed '$d')"; L6CODE="$(echo "$L6" | tail -1)"
+    [ "$L6CODE" = "401" ] || { AD2_OK=0; echo "    attempt $i -> HTTP $L6CODE (expected 401)"; }
+    if [ -z "$AD2_FIRST" ]; then AD2_FIRST="$L6BODY"; elif [ "$L6BODY" != "$AD2_FIRST" ]; then AD2_OK=0; echo "    attempt $i -> body differs from the first 401 (oracle leak)"; fi
+done
+U_FAILS="$(pg "SELECT fails FROM admin.login_attempts WHERE subject='user:$PROOF_LOCK_USER';" | tr -d '[:space:]')"
+U_LOCKED="$(pg "SELECT locked_until IS NOT NULL FROM admin.login_attempts WHERE subject='user:$PROOF_LOCK_USER';" | tr -d '[:space:]')"
+IP_LOCKED="$(pg "SELECT count(*) FROM admin.login_attempts WHERE subject LIKE 'ip:%' AND locked_until IS NOT NULL;" | tr -d '[:space:]')"
+echo "    -> user:$PROOF_LOCK_USER fails=${U_FAILS:-?} locked=${U_LOCKED:-?} ; ip-rows-locked=${IP_LOCKED:-?}"
+if [ "$AD2_OK" = "1" ] && [ "${U_FAILS:-0}" -ge 5 ] && [ "$U_LOCKED" = "t" ] && [ "${IP_LOCKED:-1}" = "0" ]; then
+    pass "6 wrong logins -> identical 401 bodies; user:$PROOF_LOCK_USER locked (fails>=5), ip subject NOT locked (asymmetric thresholds)"
+else
+    fail "lockout expected identical 401 x6 + user locked (fails>=5) + ip not locked, got ok=$AD2_OK fails=${U_FAILS:-?} locked=${U_LOCKED:-?} ip-locked=${IP_LOCKED:-?}"
+fi
+
+# [AD3] happy-path session login: proofadmin logs in through G's passthrough, gets a
+# 303 + admin_session cookie in the jar, then the jar authorizes the cross-process
+# admin pages -- /admin/characters (G -> E -> A over QUIC, renders the AD0 character)
+# and /admin/api-keys (G -> E -> L over QUIC, renders the seeded dev-client key; the old
+# [K5] rides this session).
+echo "[AD3] POST /admin/login as $PROOF_ADMIN_USER (curl -c jar) -> 303 + admin_session cookie"
+AD3CODE="$(curl -s -c "$ADMIN_JAR" -o /dev/null -w '%{http_code}' -X POST "http://localhost:$G_PORT/admin/login" \
+    -d "username=$PROOF_ADMIN_USER&password=$PROOF_ADMIN_PASS")"
+echo "    -> HTTP $AD3CODE  (jar $(grep -c admin_session "$ADMIN_JAR" 2>/dev/null || echo 0) admin_session cookie)"
+if [ "$AD3CODE" = "303" ] && grep -q admin_session "$ADMIN_JAR" 2>/dev/null; then
+    pass "$PROOF_ADMIN_USER login -> 303 + admin_session cookie minted (session auth live)"
+else
+    fail "$PROOF_ADMIN_USER login expected 303 + admin_session cookie, got $AD3CODE"
+fi
+
+echo "[AD3a] GET /admin/characters WITH the session jar -> 200 + contains $APROOF"
+AD="$(curl -s -w $'\n%{http_code}' -b "$ADMIN_JAR" "http://localhost:$G_PORT/admin/characters")"
 ADBODY="$(echo "$AD" | sed '$d')"; ADCODE="$(echo "$AD" | tail -1)"
 echo "    -> HTTP $ADCODE  (body $(echo -n "$ADBODY" | wc -c) bytes)"
 if [ "$ADCODE" = "200" ] && echo "$ADBODY" | grep -q "$APROOF"; then
-    pass "admin /admin/characters renders $APROOF cross-process (G passthrough -> E -> A admin.adminData over QUIC)"
+    pass "admin /admin/characters renders $APROOF cross-process (session jar; G passthrough -> E -> A admin.adminData over QUIC)"
 else
     fail "admin characters page expected 200 containing $APROOF, got $ADCODE"
 fi
 
-echo "[K5] GET http://localhost:$G_PORT/admin/api-keys WITH Basic auth -> 200 + contains dev-client"
+echo "[AD3b] GET /admin/api-keys WITH the session jar -> 200 + contains dev-client (old K5 rides the session)"
 # The apikeys admin fan-out end-to-end: G's HTTP passthrough -> admin-svc :8085, then
 # admin-svc's admin.adminData -> apikeys-svc :$L_PORT over the mTLS QUIC edge. The page
 # must render the seeded `dev-client` key row (APIKEYS_DEV_SEED=1 on L), proving the
 # remote apikeys admin item composed across TWO process hops. (The slug is `api-keys`:
 # the admin portal derives it from the "API Keys" LABEL, like "Audit Log" -> audit-log.)
-K5="$(curl -s -w $'\n%{http_code}' -u "$ADMIN_USER:$ADMIN_PASS" "http://localhost:$G_PORT/admin/api-keys")"
+K5="$(curl -s -w $'\n%{http_code}' -b "$ADMIN_JAR" "http://localhost:$G_PORT/admin/api-keys")"
 K5BODY="$(echo "$K5" | sed '$d')"; K5CODE="$(echo "$K5" | tail -1)"
 echo "    -> HTTP $K5CODE  (body $(echo -n "$K5BODY" | wc -c) bytes)"
 if [ "$K5CODE" = "200" ] && echo "$K5BODY" | grep -q "dev-client"; then
-    pass "admin /admin/apikeys renders dev-client cross-process (G passthrough -> E -> L admin.adminData over QUIC)"
+    pass "admin /admin/apikeys renders dev-client cross-process (session jar; G passthrough -> E -> L admin.adminData over QUIC)"
 else
     fail "admin apikeys page expected 200 containing dev-client, got $K5CODE"
 fi
+
+# [AD4] CSRF: a POST with a valid session but NO _csrf field is rejected 403 -- the
+# CSRF check runs BEFORE the local/remote editability decision, so the remote apikeys
+# item answers 403 (not the 405 a remote form would otherwise get).
+echo "[AD4] POST /admin/api-keys WITH the session jar but NO _csrf -> 403"
+AD4CODE="$(curl -s -o /dev/null -w '%{http_code}' -b "$ADMIN_JAR" -X POST "http://localhost:$G_PORT/admin/api-keys" \
+    -d "dummy=1")"
+echo "    -> HTTP $AD4CODE"
+if [ "$AD4CODE" = "403" ]; then
+    pass "session POST without _csrf -> 403 (CSRF gate precedes the editability decision)"
+else
+    fail "CSRF-less POST expected 403, got $AD4CODE"
+fi
+
+# [AD5] the durable admin.action trail: the login-succeeded ([AD3]) and login-locked
+# ([AD2]) events are on the shared log, and audit-svc's 7th subscription records them.
+echo "[AD5] admin.action durable trail: asyncevents.events >= 2 AND audit.log has admin.action rows"
+AD5_EVENTS="$(pg "SELECT count(*) FROM asyncevents.events WHERE topic='admin.action';" | tr -d '[:space:]')"
+echo "    -> asyncevents.events admin.action rows = ${AD5_EVENTS:-?}"
+AD5_OK=0
+for i in $(seq 1 30); do
+    AD5_AUDIT="$(pg "SELECT count(*) FROM audit.log WHERE topic='admin.action';" | tr -d '[:space:]')"
+    echo "    attempt $i -> audit.log admin.action rows = ${AD5_AUDIT:-?}"
+    if [ "${AD5_EVENTS:-0}" -ge 2 ] && [ "${AD5_AUDIT:-0}" -ge 2 ]; then
+        pass "admin.action emitted (>=2 on the shared log) AND recorded by audit-svc (durable E->F, 7th subscription)"
+        AD5_OK=1; break
+    fi
+    sleep 0.5
+done
+[ "$AD5_OK" = "1" ] || fail "admin.action never reached >=2 events + audit rows (asyncevents=${AD5_EVENTS:-?} audit=${AD5_AUDIT:-?})"
 
 echo ""
 echo "========= AUDIT LEDGER (durable events -> audit-svc :$F_PORT) ========="
@@ -883,8 +978,8 @@ for i in $(seq 1 30); do
 done
 [ "$AU2_OK" = "1" ] || fail "audit-svc never recorded player.registered for $PID (durable delivery D->F)"
 
-echo "[AU3] GET http://localhost:$G_PORT/admin/audit-log WITH Basic auth -> 200 + a logged topic"
-AUD="$(curl -s -w $'\n%{http_code}' -u "$ADMIN_USER:$ADMIN_PASS" "http://localhost:$G_PORT/admin/audit-log")"
+echo "[AU3] GET http://localhost:$G_PORT/admin/audit-log WITH the session jar -> 200 + a logged topic"
+AUD="$(curl -s -w $'\n%{http_code}' -b "$ADMIN_JAR" "http://localhost:$G_PORT/admin/audit-log")"
 AUDBODY="$(echo "$AUD" | sed '$d')"; AUDCODE="$(echo "$AUD" | tail -1)"
 echo "    -> HTTP $AUDCODE  (body $(echo -n "$AUDBODY" | wc -c) bytes)"
 if [ "$AUDCODE" = "200" ] && echo "$AUDBODY" | grep -qE 'character\.(created|deleted)|player\.registered'; then
@@ -1243,18 +1338,25 @@ teardown
 kill_stragglers
 sleep 2
 
+# Wipe the split phase's lockout + session residue so the monolith-parity login starts
+# clean (proofadmin's split session and any prooflock lock rows must not poison parity).
+# admin.users (the seeded logins) is left intact -- the monolith reuses proofadmin.
+pg "DELETE FROM admin.login_attempts; DELETE FROM admin.sessions;" >/dev/null
+note "cleared admin.login_attempts + admin.sessions before the monolith parity phase"
+
 note "starting monolith (cmd/server) on :$A_PORT, player QUIC :$PLAYER_PORT ..."
 # The monolith hosts every module, so it needs each module's dev opt-in explicitly:
 # APIKEYS_DEV_SEED (dev keys), ACCOUNTS_DEV_AUTH ([M0] register/login), INVENTORY_DEV_GRANT
-# (parity), and ADMIN_USER/ADMIN_PASS -- admin is now fail-closed (empty ADMIN_USER bails),
-# so the parity leg would not even boot without creds. [M3] below sends these creds.
+# (parity). Admin now boots on the shared `admin` schema with session auth (no
+# ADMIN_USER/ADMIN_PASS); ADMIN_COOKIE_SECURE=0 + TRUSTED_PROXY_CIDRS make the [M3]
+# session login work over plain http, and TLS_MODE=off keeps the front door plain.
 env PORT=":$A_PORT" DATABASE_URL="$DATABASE_URL" \
     PLAYER_EDGE_ADDR=":$PLAYER_PORT" \
     EDGE_CA_CERT="$CA_CERT" EDGE_CA_KEY="$CA_KEY" \
     APIKEYS_DEV_SEED=1 \
     ACCOUNTS_DEV_AUTH=1 \
     INVENTORY_DEV_GRANT=1 \
-    ADMIN_USER="$ADMIN_USER" ADMIN_PASS="$ADMIN_PASS" \
+    TLS_MODE=off ADMIN_COOKIE_SECURE=0 TRUSTED_PROXY_CIDRS="127.0.0.1/32" \
     "$BIN_DIR/server$EXE" >"$RUN_DIR/monolith.out.log" 2>"$RUN_DIR/monolith.err.log" &
 M_PID=$!
 if wait_healthy "$A_PORT" "monolith (server)"; then
@@ -1290,19 +1392,47 @@ if wait_healthy "$A_PORT" "monolith (server)"; then
     else
         fail "monolith dev- token expected Unauthorized, got rc=$M2_RC $M2_OUT"
     fi
-    # [M3] admin portal parity: the monolith hosts the admin module with all four
-    # providers LOCAL (no fan-out). The admin module is now fail-closed, so the monolith
-    # boots with ADMIN_USER/ADMIN_PASS set -- the page is Basic-auth gated (same creds as
-    # the split's E leg). The characters page renders the just-created "solo" character --
-    # proving the same portal serves both topologies (never-monolith-only-features).
-    echo "[M3] GET http://localhost:$A_PORT/admin/characters on the monolith (Basic auth) -> 200 + contains solo"
-    M3="$(curl -s -w $'\n%{http_code}' -u "$ADMIN_USER:$ADMIN_PASS" "http://localhost:$A_PORT/admin/characters")"
+    # [M3] admin portal parity: the monolith hosts the admin module LOCAL (no fan-out),
+    # with session auth on the SAME shared `admin` schema. A fresh cookie jar logs in as
+    # proofadmin, then the jar renders the LOCAL characters page (the just-created "solo"
+    # character) -- proving the same session-auth portal serves both topologies.
+    MONO_JAR="$RUN_DIR/admin-mono.jar"
+    rm -f "$MONO_JAR"
+    echo "[M3] POST /admin/login on the monolith as $PROOF_ADMIN_USER (fresh jar) -> 303, then GET /admin/characters -> 200 + solo"
+    M3L="$(curl -s -c "$MONO_JAR" -o /dev/null -w '%{http_code}' -X POST "http://localhost:$A_PORT/admin/login" \
+        -d "username=$PROOF_ADMIN_USER&password=$PROOF_ADMIN_PASS")"
+    M3="$(curl -s -w $'\n%{http_code}' -b "$MONO_JAR" "http://localhost:$A_PORT/admin/characters")"
     M3BODY="$(echo "$M3" | sed '$d')"; M3CODE="$(echo "$M3" | tail -1)"
-    echo "    -> HTTP $M3CODE  (body $(echo -n "$M3BODY" | wc -c) bytes)"
-    if [ "$M3CODE" = "200" ] && echo "$M3BODY" | grep -q 'solo'; then
-        pass "monolith /admin/characters renders LOCAL items (admin portal parity)"
+    echo "    -> login HTTP $M3L ; characters HTTP $M3CODE  (body $(echo -n "$M3BODY" | wc -c) bytes)"
+    if [ "$M3L" = "303" ] && [ "$M3CODE" = "200" ] && echo "$M3BODY" | grep -q 'solo'; then
+        pass "monolith session login + /admin/characters renders LOCAL items (admin portal parity)"
     else
-        fail "monolith admin characters page expected 200 containing solo, got $M3CODE"
+        fail "monolith admin parity expected login 303 + characters 200 containing solo, got login=$M3L characters=$M3CODE"
+    fi
+
+    # [M3b] LOCAL form-submit durable trail: in the monolith the apikeys page is LOCAL
+    # (editable form present). Fetch it, extract the session's _csrf + the current field
+    # values, resubmit them unchanged WITH _csrf (a valid no-op edit), and assert a NEW
+    # admin.action{form-submit} row landed on the shared log. Remote forms in the split
+    # are read-only, so this parity leg is the only place form-submit is exercised.
+    echo "[M3b] submit the LOCAL apikeys edit form WITH _csrf -> a new admin.action form-submit row"
+    M3B_BEFORE="$(pg "SELECT count(*) FROM asyncevents.events WHERE topic='admin.action' AND payload->>'action'='form-submit';" | tr -d '[:space:]')"
+    M3B_PAGE="$(curl -s -b "$MONO_JAR" "http://localhost:$A_PORT/admin/api-keys")"
+    M3B_CSRF="$(printf '%s' "$M3B_PAGE" | grep -o 'name="_csrf" value="[^"]*"' | head -1 | sed 's/.*value="//;s/"$//')"
+    M3B_ARGS=(--data-urlencode "_csrf=$M3B_CSRF")
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        fname="$(printf '%s' "$line" | sed 's/.*name="\([^"]*\)".*/\1/')"
+        fval="$(printf '%s' "$line" | sed 's/.*value="\([^"]*\)".*/\1/')"
+        M3B_ARGS+=(--data-urlencode "$fname=$fval")
+    done < <(printf '%s' "$M3B_PAGE" | grep -o '<input type="text" name="[^"]*" value="[^"]*">')
+    M3B_CODE="$(curl -s -o /dev/null -w '%{http_code}' -b "$MONO_JAR" -X POST "http://localhost:$A_PORT/admin/api-keys" "${M3B_ARGS[@]}")"
+    M3B_AFTER="$(pg "SELECT count(*) FROM asyncevents.events WHERE topic='admin.action' AND payload->>'action'='form-submit';" | tr -d '[:space:]')"
+    echo "    -> csrf=$(echo "$M3B_CSRF" | cut -c1-8)... submit HTTP $M3B_CODE ; form-submit rows ${M3B_BEFORE:-?} -> ${M3B_AFTER:-?}"
+    if { [ "$M3B_CODE" = "303" ] || [ "$M3B_CODE" = "200" ]; } && [ -n "$M3B_CSRF" ] && [ "${M3B_AFTER:-0}" -gt "${M3B_BEFORE:-0}" ]; then
+        pass "monolith LOCAL apikeys form-submit -> new admin.action{form-submit} on the shared log (durable trail in the co-hosting process)"
+    else
+        fail "monolith form-submit expected a new admin.action row (submit 303/200 + count up), got HTTP $M3B_CODE csrf='$M3B_CSRF' ${M3B_BEFORE:-?}->${M3B_AFTER:-?}"
     fi
 else
     fail "monolith (server) never became healthy on :$A_PORT"

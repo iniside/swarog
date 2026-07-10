@@ -431,7 +431,8 @@ function Invoke-CSharpStage {
     "--- starting self-contained monolith on :$CSharpPort, player QUIC :$CSharpPlayerPort (ephemeral CA -> --insecure, APIKEYS_DEV_SEED=1, dev flags on) ---" | Out-File -Append $log
     # Dev conveniences are now explicit opt-ins (fail-closed defaults): the gbclient flow
     # does register->create->list, so enable ACCOUNTS_DEV_AUTH (+ INVENTORY_DEV_GRANT for
-    # symmetry) and set ADMIN_USER/ADMIN_PASS so the admin module does not bail at startup.
+    # symmetry). The admin module now boots with ZERO admin users (a warned no-op, session
+    # auth), so no ADMIN_USER/ADMIN_PASS is needed -- this flow never touches /admin.
     $proc = Start-Process -FilePath 'target\debug\server.exe' -PassThru -WindowStyle Hidden `
         -RedirectStandardOutput (Join-Path $verifyDir 'csharp-client-server.out.log') `
         -RedirectStandardError (Join-Path $verifyDir 'csharp-client-server.err.log') `
@@ -442,8 +443,6 @@ function Invoke-CSharpStage {
             APIKEYS_DEV_SEED = '1'
             ACCOUNTS_DEV_AUTH = '1'
             INVENTORY_DEV_GRANT = '1'
-            ADMIN_USER = 'admin'
-            ADMIN_PASS = 'admin'
         }
 
     # curl.exe (not Invoke-WebRequest -- it hangs to its HttpClient timeout against this

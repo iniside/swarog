@@ -37,7 +37,7 @@
 #     match.report. [K1]-[K4] right after [A5] assert the policy directly: no key ->
 #     401, bogus key -> 401, dev-key-client on match.report -> 403 (policy denies),
 #     dev-key-server on match.report -> 202 (allowed). Keyless surfaces stay keyless:
-#     /healthz, /metrics, /admin* (Basic-auth passthrough).
+#     /healthz, /metrics, /admin* (session-auth passthrough).
 #   - REAL AUTH (Step 6): register + login through G's front mint a DB-backed session
 #     on D; the bearer then authorizes ops on every process (each gateway verifies it
 #     against D's accounts.verifySession over QUIC/mTLS). NEGATIVE: a garbage token
@@ -129,9 +129,13 @@ $FleetSvcs = @(
 $DefaultDsn = 'postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable'
 if (-not $env:DATABASE_URL -or $env:DATABASE_URL.Trim() -eq '') { $env:DATABASE_URL = $DefaultDsn }
 
-# Basic-auth creds for the admin portal (admin-svc runs WITH them).
-$AdminUser = 'proofadmin'
-$AdminPass = 'proofpass'
+# Session-auth admin logins for the proof. proofadmin is the happy-path operator;
+# prooflock is a dedicated user we deliberately lock out ([AD2]). Both are minted
+# pre-boot via adminctl (session auth replaced the old ADMIN_USER/ADMIN_PASS Basic gate).
+$ProofAdminUser = 'proofadmin'
+$ProofAdminPass = 'proofpass'
+$ProofLockUser  = 'prooflock'
+$ProofLockPass  = 'lockpass'
 
 $script:Fails = 0
 $script:AProc = $null
@@ -259,7 +263,7 @@ try {
     }
     Note "fleet preflight OK: $($FleetSvcs.Count) svcs booted here == cmd/*-svc on disk"
 
-    $BuildPkgs = @('edgeca') + $FleetSvcs + @('playercli', 'csharp-client-gen', 'server')
+    $BuildPkgs = @('edgeca') + $FleetSvcs + @('adminctl', 'playercli', 'csharp-client-gen', 'server')
     Note "building $($BuildPkgs -join ' + ') ..."
     $CargoArgs = @($BuildPkgs | ForEach-Object { @('-p', $_) })
     cargo build @CargoArgs
@@ -276,6 +280,16 @@ try {
     Note "minting shared edge dev CA -> $CaCert"
     & (Join-Path $BinDir 'edgeca.exe') --cert $CaCert --key $CaKey
     if ($LASTEXITCODE -ne 0) { throw 'edgeca failed' }
+
+    # Seed the admin logins PRE-BOOT (session auth replaced Basic auth). adminctl ensures
+    # schema `admin` + admin.users itself and upserts the login (password over stdin,
+    # never argv), so it runs before admin-svc migrates the rest of the schema.
+    $AdminCtl = Join-Path $BinDir 'adminctl.exe'
+    foreach ($seed in @(@($ProofAdminUser, $ProofAdminPass), @($ProofLockUser, $ProofLockPass))) {
+        $seed[1] | & $AdminCtl create-user $seed[0] --password-stdin | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "failed to seed admin user $($seed[0]) via adminctl" }
+        Note "seeded admin login $($seed[0]) (adminctl create-user)"
+    }
 
     # D (accounts-svc) FIRST: owns the accounts schema and serves accounts.verifySession
     # + the auth op faces on its mTLS edge; every other gateway verifies bearers here.
@@ -451,12 +465,16 @@ try {
     } 'gateway'
     if (-not (Wait-Healthy $GPort 'G (gateway-svc)')) { throw 'G failed to start' }
 
-    # E (admin-svc): the admin portal fortress -- HTTP :8085, no DB, no edge server. It
-    # DIALS all six peer edges (A/B/C/D + audit + scheduler) to fan out their admin pages over QUIC; ADMIN_USER/
-    # ADMIN_PASS gate the portal so the negative no-auth assertion returns 401.
+    # E (admin-svc): the admin portal fortress -- HTTP :8085, its OWN DB (schema admin:
+    # users/sessions/login_attempts), no edge server. It DIALS all six peer edges
+    # (A/B/C/D + audit + scheduler) to fan out their admin pages over QUIC. Session auth now
+    # gates the portal (no ADMIN_USER/ADMIN_PASS): TRUSTED_PROXY_CIDRS=127.0.0.1/32 makes the
+    # lockout ip:<addr> subject the real client behind G's passthrough, and
+    # ADMIN_COOKIE_SECURE=0 lets curl carry the session cookie over plain http.
     Note "starting E (admin-svc) on :$EPort ..."
     $script:EProc = Start-Svc (Join-Path $BinDir 'admin-svc.exe') @{
         PORT                 = ":$EPort"
+        DATABASE_URL         = $env:DATABASE_URL
         EDGE_CA_CERT         = $CaCert
         EDGE_CA_KEY          = $CaKey
         CHARACTERS_EDGE_ADDR = "127.0.0.1:$EdgePort"
@@ -466,8 +484,8 @@ try {
         AUDIT_EDGE_ADDR      = "127.0.0.1:$FEdgePort"
         SCHEDULER_EDGE_ADDR  = "127.0.0.1:$HEdgePort"
         APIKEYS_EDGE_ADDR    = "127.0.0.1:$LEdgePort"
-        ADMIN_USER           = $AdminUser
-        ADMIN_PASS           = $AdminPass
+        TRUSTED_PROXY_CIDRS  = '127.0.0.1/32'
+        ADMIN_COOKIE_SECURE  = '0'
     } 'admin'
     if (-not (Wait-Healthy $EPort 'E (admin-svc)')) { throw 'E failed to start' }
 
@@ -727,33 +745,109 @@ try {
         '-d', "{`"name`":`"$aproof`",`"class`":`"ranger`"}")
     if ($acr.Body -match '"id":"([^"]*)"') { Pass "admin-proof character created (id=$($Matches[1]))" } else { Fail 'admin-proof character not created' }
 
-    Write-Host "[AD1] GET http://127.0.0.1:$GPort/admin WITHOUT Basic auth -> 401 (ADMIN_USER set on E)"
-    $an = Invoke-Curl @("http://127.0.0.1:$GPort/admin")
-    Write-Host "    -> HTTP $($an.Code)"
-    if ($an.Code -eq '401') { Pass 'unauthenticated /admin -> 401 through the passthrough (Basic-auth gate live on admin-svc)' } else { Fail "unauthenticated /admin expected 401, got $($an.Code)" }
+    $AdminJar = Join-Path $RunDir 'admin-proof.jar'
+    Remove-Item $AdminJar -ErrorAction SilentlyContinue
 
-    Write-Host "[AD2] GET http://127.0.0.1:$GPort/admin/characters WITH Basic auth -> 200 + contains $aproof"
-    $ad = Invoke-Curl @('-u', "${AdminUser}:${AdminPass}", "http://127.0.0.1:$GPort/admin/characters")
+    Write-Host "[AD1] GET http://127.0.0.1:$GPort/admin WITHOUT a session -> 303 Location /admin/login"
+    $an = "" + (& curl.exe -s -o $null -w '%{http_code} %{redirect_url}' "http://127.0.0.1:$GPort/admin")
+    $anParts = $an.Trim() -split ' ', 2
+    $anCode = $anParts[0]; $anLoc = if ($anParts.Count -gt 1) { $anParts[1] } else { '' }
+    Write-Host "    -> HTTP $anCode  Location=$anLoc"
+    if ($anCode -eq '303' -and $anLoc -match '/admin/login$') {
+        Pass 'unauthenticated /admin -> 303 to /admin/login through the passthrough (session gate live on admin-svc)'
+    } else {
+        Fail "unauthenticated /admin expected 303 -> /admin/login, got $anCode $anLoc"
+    }
+
+    # [AD2] asymmetric lockout: prooflock fails 6x. Each answer is the SAME generic 401
+    # body (no username/lock oracle). The user row locks at 5 fails; the ip row (shared
+    # subject, threshold 20) increments but does NOT lock. Clear both subjects first so the
+    # assertion is deterministic across reruns.
+    Invoke-Sql "DELETE FROM admin.login_attempts WHERE subject = 'user:$ProofLockUser' OR subject LIKE 'ip:%';" | Out-Null
+    Write-Host "[AD2] POST /admin/login as $ProofLockUser x6 wrong password -> each 401 identical body; user locks, ip does not"
+    $ad2Ok = $true
+    $ad2First = $null
+    for ($i = 1; $i -le 6; $i++) {
+        $l6 = Invoke-Curl @('-X', 'POST', "http://127.0.0.1:$GPort/admin/login", '-d', "username=$ProofLockUser&password=wrong-$ProofLockUser")
+        if ($l6.Code -ne '401') { $ad2Ok = $false; Write-Host "    attempt $i -> HTTP $($l6.Code) (expected 401)" }
+        if ($null -eq $ad2First) { $ad2First = $l6.Body } elseif ($l6.Body -ne $ad2First) { $ad2Ok = $false; Write-Host "    attempt $i -> body differs from the first 401 (oracle leak)" }
+    }
+    $uFails = ("" + (Invoke-Sql "SELECT fails FROM admin.login_attempts WHERE subject='user:$ProofLockUser';")).Trim()
+    $uLocked = ("" + (Invoke-Sql "SELECT locked_until IS NOT NULL FROM admin.login_attempts WHERE subject='user:$ProofLockUser';")).Trim()
+    $ipLocked = ("" + (Invoke-Sql "SELECT count(*) FROM admin.login_attempts WHERE subject LIKE 'ip:%' AND locked_until IS NOT NULL;")).Trim()
+    Write-Host "    -> user:$ProofLockUser fails=$uFails locked=$uLocked ; ip-rows-locked=$ipLocked"
+    if ($ad2Ok -and [int]$uFails -ge 5 -and $uLocked -eq 't' -and $ipLocked -eq '0') {
+        Pass "6 wrong logins -> identical 401 bodies; user:$ProofLockUser locked (fails>=5), ip subject NOT locked (asymmetric thresholds)"
+    } else {
+        Fail "lockout expected identical 401 x6 + user locked (fails>=5) + ip not locked, got ok=$ad2Ok fails=$uFails locked=$uLocked ip-locked=$ipLocked"
+    }
+
+    # [AD3] happy-path session login: proofadmin logs in through G's passthrough, gets a
+    # 303 + admin_session cookie in the jar, then the jar authorizes the cross-process
+    # admin pages -- /admin/characters (G -> E -> A over QUIC, renders the AD0 character)
+    # and /admin/api-keys (G -> E -> L over QUIC, renders the seeded dev-client key; the old
+    # [K5] rides this session).
+    Write-Host "[AD3] POST /admin/login as $ProofAdminUser (curl -c jar) -> 303 + admin_session cookie"
+    $ad3Code = "" + (& curl.exe -s -c $AdminJar -o $null -w '%{http_code}' -X POST "http://127.0.0.1:$GPort/admin/login" -d "username=$ProofAdminUser&password=$ProofAdminPass")
+    $ad3Cookie = (Test-Path $AdminJar) -and (Select-String -Path $AdminJar -Pattern 'admin_session' -Quiet)
+    Write-Host "    -> HTTP $($ad3Code.Trim())  (admin_session cookie: $ad3Cookie)"
+    if ($ad3Code.Trim() -eq '303' -and $ad3Cookie) {
+        Pass "$ProofAdminUser login -> 303 + admin_session cookie minted (session auth live)"
+    } else {
+        Fail "$ProofAdminUser login expected 303 + admin_session cookie, got $($ad3Code.Trim())"
+    }
+
+    Write-Host "[AD3a] GET /admin/characters WITH the session jar -> 200 + contains $aproof"
+    $ad = Invoke-Curl @('-b', $AdminJar, "http://127.0.0.1:$GPort/admin/characters")
     Write-Host "    -> HTTP $($ad.Code)  (body $($ad.Body.Length) chars)"
     if ($ad.Code -eq '200' -and $ad.Body -match [regex]::Escape($aproof)) {
-        Pass "admin /admin/characters renders $aproof cross-process (G passthrough -> E -> A admin.adminData over QUIC)"
+        Pass "admin /admin/characters renders $aproof cross-process (session jar; G passthrough -> E -> A admin.adminData over QUIC)"
     } else {
         Fail "admin characters page expected 200 containing $aproof, got $($ad.Code)"
     }
 
-    Write-Host "[K5] GET http://127.0.0.1:$GPort/admin/api-keys WITH Basic auth -> 200 + contains dev-client"
+    Write-Host "[AD3b] GET /admin/api-keys WITH the session jar -> 200 + contains dev-client (old K5 rides the session)"
     # The apikeys admin fan-out end-to-end: G's HTTP passthrough -> admin-svc :8085, then
     # admin-svc's admin.adminData -> apikeys-svc :$LPort over the mTLS QUIC edge. The page
     # must render the seeded `dev-client` key row (APIKEYS_DEV_SEED=1 on L), proving the
     # remote apikeys admin item composed across TWO process hops. (The slug is `api-keys`:
     # the admin portal derives it from the "API Keys" LABEL, like "Audit Log" -> audit-log.)
-    $k5 = Invoke-Curl @('-u', "${AdminUser}:${AdminPass}", "http://127.0.0.1:$GPort/admin/api-keys")
+    $k5 = Invoke-Curl @('-b', $AdminJar, "http://127.0.0.1:$GPort/admin/api-keys")
     Write-Host "    -> HTTP $($k5.Code)  (body $($k5.Body.Length) chars)"
     if ($k5.Code -eq '200' -and $k5.Body -match 'dev-client') {
-        Pass 'admin /admin/apikeys renders dev-client cross-process (G passthrough -> E -> L admin.adminData over QUIC)'
+        Pass 'admin /admin/apikeys renders dev-client cross-process (session jar; G passthrough -> E -> L admin.adminData over QUIC)'
     } else {
         Fail "admin apikeys page expected 200 containing dev-client, got $($k5.Code)"
     }
+
+    # [AD4] CSRF: a POST with a valid session but NO _csrf field is rejected 403 -- the
+    # CSRF check runs BEFORE the local/remote editability decision, so the remote apikeys
+    # item answers 403 (not the 405 a remote form would otherwise get).
+    Write-Host "[AD4] POST /admin/api-keys WITH the session jar but NO _csrf -> 403"
+    $ad4 = Invoke-Curl @('-X', 'POST', '-b', $AdminJar, "http://127.0.0.1:$GPort/admin/api-keys", '-d', 'dummy=1')
+    Write-Host "    -> HTTP $($ad4.Code)"
+    if ($ad4.Code -eq '403') {
+        Pass 'session POST without _csrf -> 403 (CSRF gate precedes the editability decision)'
+    } else {
+        Fail "CSRF-less POST expected 403, got $($ad4.Code)"
+    }
+
+    # [AD5] the durable admin.action trail: the login-succeeded ([AD3]) and login-locked
+    # ([AD2]) events are on the shared log, and audit-svc's 7th subscription records them.
+    Write-Host '[AD5] admin.action durable trail: asyncevents.events >= 2 AND audit.log has admin.action rows'
+    $ad5Events = ("" + (Invoke-Sql "SELECT count(*) FROM asyncevents.events WHERE topic='admin.action';")).Trim()
+    Write-Host "    -> asyncevents.events admin.action rows = $ad5Events"
+    $ad5Ok = $false
+    for ($i = 1; $i -le 30; $i++) {
+        $ad5Audit = ("" + (Invoke-Sql "SELECT count(*) FROM audit.log WHERE topic='admin.action';")).Trim()
+        Write-Host "    attempt $i -> audit.log admin.action rows = $ad5Audit"
+        if ([int]$ad5Events -ge 2 -and [int]$ad5Audit -ge 2) {
+            Pass 'admin.action emitted (>=2 on the shared log) AND recorded by audit-svc (durable E->F, 7th subscription)'
+            $ad5Ok = $true; break
+        }
+        Start-Sleep -Milliseconds 500
+    }
+    if (-not $ad5Ok) { Fail "admin.action never reached >=2 events + audit rows (asyncevents=$ad5Events audit=$ad5Audit)" }
 
     Write-Host ''
     Write-Host "========= AUDIT LEDGER (durable events -> audit-svc :$FPort) ========="
@@ -784,8 +878,8 @@ try {
     }
     if (-not $au2Ok) { Fail "audit-svc never recorded player.registered for $PlayerId (durable delivery D->F)" }
 
-    Write-Host "[AU3] GET http://127.0.0.1:$GPort/admin/audit-log WITH Basic auth -> 200 + a logged topic"
-    $aud = Invoke-Curl @('-u', "${AdminUser}:${AdminPass}", "http://127.0.0.1:$GPort/admin/audit-log")
+    Write-Host "[AU3] GET http://127.0.0.1:$GPort/admin/audit-log WITH the session jar -> 200 + a logged topic"
+    $aud = Invoke-Curl @('-b', $AdminJar, "http://127.0.0.1:$GPort/admin/audit-log")
     Write-Host "    -> HTTP $($aud.Code)  (body $($aud.Body.Length) chars)"
     if ($aud.Code -eq '200' -and $aud.Body -match 'character\.(created|deleted)|player\.registered') {
         Pass 'admin /admin/audit-log renders the ledger cross-process (G passthrough -> E -> F admin.adminData over QUIC)'
@@ -1098,11 +1192,15 @@ try {
         Get-Process -Name $n -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
     }
     Start-Sleep -Seconds 2
+    # Wipe the split phase's lockout + session residue so the monolith-parity login starts
+    # clean (proofadmin's split session and any prooflock lock rows must not poison parity).
+    # admin.users (the seeded logins) is left intact -- the monolith reuses proofadmin.
+    Invoke-Sql 'DELETE FROM admin.login_attempts; DELETE FROM admin.sessions;' | Out-Null
+    Note 'cleared admin.login_attempts + admin.sessions before the monolith parity phase'
     # Per-process env in this script leaks across Start-Svc calls; neutralize the split
-    # passthrough knobs so the monolith serves /admin LOCALLY (not proxied). The admin
-    # module is now fail-closed (empty ADMIN_USER bails), so the monolith keeps the proof
-    # Basic-auth creds -- [M3] below sends them. APIKEYS_DEV_SEED=1 self-heals the dev
-    # keys against the local apikeys module (resolved locally, no APIKEYS_DEV_ALLOW).
+    # passthrough knobs so the monolith serves /admin LOCALLY (not proxied). Admin now boots
+    # on the shared `admin` schema with session auth (no ADMIN_USER/ADMIN_PASS).
+    # APIKEYS_DEV_SEED=1 self-heals the dev keys against the local apikeys module.
     $env:ADMIN_HTTP_ADDR = ''
     $env:ACCOUNTS_HTTP_ADDR = ''
     $env:APIKEYS_DEV_SEED = '1'
@@ -1117,8 +1215,9 @@ try {
         APIKEYS_DEV_SEED   = '1'
         ACCOUNTS_DEV_AUTH  = '1'
         INVENTORY_DEV_GRANT = '1'
-        ADMIN_USER         = $AdminUser
-        ADMIN_PASS         = $AdminPass
+        TLS_MODE           = 'off'
+        ADMIN_COOKIE_SECURE = '0'
+        TRUSTED_PROXY_CIDRS = '127.0.0.1/32'
     } 'monolith'
     if (Wait-Healthy $APort 'monolith (server)') {
         $msuffix = [guid]::NewGuid().ToString().Substring(0, 8)
@@ -1138,15 +1237,39 @@ try {
         $m2 = Invoke-PlayerCli @('--addr', "127.0.0.1:$PlayerPort", '--ca', $CaCert, '--token', "dev-$msuffix", '--api-key', 'dev-key-client', 'characters.create', '{"name":"x","class":""}')
         Write-Host "    -> rc=$($m2.Rc)  $($m2.Out)"
         if ($m2.Rc -ne 0 -and $m2.Out -match 'Unauthorized') { Pass 'monolith dev- token -> Unauthorized (parity with the split front)' } else { Fail "monolith dev- token expected Unauthorized, got rc=$($m2.Rc) $($m2.Out)" }
-        # [M3] admin portal parity: the monolith hosts the admin module with all four
-        # providers LOCAL (no fan-out). The admin module is now fail-closed, so the
-        # monolith boots with ADMIN_USER/ADMIN_PASS set and the page is Basic-auth gated
-        # (same proof creds as the split's E leg). The characters page renders the
-        # just-created "solo" character (never-monolith-only-features).
-        Write-Host "[M3] GET http://127.0.0.1:$APort/admin/characters on the monolith (Basic auth) -> 200 + contains solo"
-        $m3 = Invoke-Curl @('-u', "${AdminUser}:${AdminPass}", "http://127.0.0.1:$APort/admin/characters")
-        Write-Host "    -> HTTP $($m3.Code)  (body $($m3.Body.Length) chars)"
-        if ($m3.Code -eq '200' -and $m3.Body -match 'solo') { Pass 'monolith /admin/characters renders LOCAL items (admin portal parity)' } else { Fail "monolith admin characters page expected 200 containing solo, got $($m3.Code)" }
+        # [M3] admin portal parity: the monolith hosts the admin module LOCAL (no fan-out),
+        # with session auth on the SAME shared `admin` schema. A fresh cookie jar logs in as
+        # proofadmin, then the jar renders the LOCAL characters page (the just-created "solo"
+        # character) -- proving the same session-auth portal serves both topologies.
+        $MonoJar = Join-Path $RunDir 'admin-mono.jar'
+        Remove-Item $MonoJar -ErrorAction SilentlyContinue
+        Write-Host "[M3] POST /admin/login on the monolith as $ProofAdminUser (fresh jar) -> 303, then GET /admin/characters -> 200 + solo"
+        $m3l = "" + (& curl.exe -s -c $MonoJar -o $null -w '%{http_code}' -X POST "http://127.0.0.1:$APort/admin/login" -d "username=$ProofAdminUser&password=$ProofAdminPass")
+        $m3 = Invoke-Curl @('-b', $MonoJar, "http://127.0.0.1:$APort/admin/characters")
+        Write-Host "    -> login HTTP $($m3l.Trim()) ; characters HTTP $($m3.Code)  (body $($m3.Body.Length) chars)"
+        if ($m3l.Trim() -eq '303' -and $m3.Code -eq '200' -and $m3.Body -match 'solo') { Pass 'monolith session login + /admin/characters renders LOCAL items (admin portal parity)' } else { Fail "monolith admin parity expected login 303 + characters 200 containing solo, got login=$($m3l.Trim()) characters=$($m3.Code)" }
+
+        # [M3b] LOCAL form-submit durable trail: in the monolith the apikeys page is LOCAL
+        # (editable form present). Fetch it, extract the session's _csrf + the current field
+        # values, resubmit them unchanged WITH _csrf (a valid no-op edit), and assert a NEW
+        # admin.action{form-submit} row landed on the shared log. Remote forms in the split
+        # are read-only, so this parity leg is the only place form-submit is exercised.
+        Write-Host '[M3b] submit the LOCAL apikeys edit form WITH _csrf -> a new admin.action form-submit row'
+        $m3bBefore = [int](("" + (Invoke-Sql "SELECT count(*) FROM asyncevents.events WHERE topic='admin.action' AND payload->>'action'='form-submit';")).Trim())
+        $m3bPage = Invoke-Curl @('-b', $MonoJar, "http://127.0.0.1:$APort/admin/api-keys")
+        $m3bCsrf = if ($m3bPage.Body -match 'name="_csrf" value="([^"]*)"') { $Matches[1] } else { '' }
+        $m3bArgs = @('-X', 'POST', '-b', $MonoJar, "http://127.0.0.1:$APort/admin/api-keys", '--data-urlencode', "_csrf=$m3bCsrf")
+        foreach ($m in [regex]::Matches($m3bPage.Body, '<input type="text" name="([^"]*)" value="([^"]*)">')) {
+            $m3bArgs += @('--data-urlencode', "$($m.Groups[1].Value)=$($m.Groups[2].Value)")
+        }
+        $m3b = Invoke-Curl $m3bArgs
+        $m3bAfter = [int](("" + (Invoke-Sql "SELECT count(*) FROM asyncevents.events WHERE topic='admin.action' AND payload->>'action'='form-submit';")).Trim())
+        Write-Host "    -> csrf=$($m3bCsrf.Substring(0, [Math]::Min(8, $m3bCsrf.Length)))... submit HTTP $($m3b.Code) ; form-submit rows $m3bBefore -> $m3bAfter"
+        if (($m3b.Code -eq '303' -or $m3b.Code -eq '200') -and $m3bCsrf -ne '' -and $m3bAfter -gt $m3bBefore) {
+            Pass 'monolith LOCAL apikeys form-submit -> new admin.action{form-submit} on the shared log (durable trail in the co-hosting process)'
+        } else {
+            Fail "monolith form-submit expected a new admin.action row (submit 303/200 + count up), got HTTP $($m3b.Code) csrf='$m3bCsrf' $m3bBefore->$m3bAfter"
+        }
     } else {
         Fail "monolith (server) never became healthy on :$APort"
     }
