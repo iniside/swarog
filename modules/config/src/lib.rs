@@ -30,7 +30,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, OnceLock, RwLock};
 
-use lifecycle::{Caps, Context, Module};
+use lifecycle::{Context, Module};
 use sqlx::PgPool;
 
 /// Fallback DSN — same default as the shared pool. Test-only now that the module owns
@@ -568,13 +568,6 @@ impl Module for Config {
         "config"
     }
 
-    fn caps(&self) -> Caps {
-        // No STOP: the cache is refreshed by the app-owned invalidation plane (which
-        // owns the LISTEN connection and its shutdown), so config spawns no task of its
-        // own. START does a single synchronous boot-load.
-        Caps::REGISTER | Caps::MIGRATE | Caps::START
-    }
-
     /// Phase 1, BEFORE any `init`: builds the service and offers it under the
     /// capability key `"config.reader"`, so a dependent's `require`/`try_require`
     /// resolves regardless of registration order. The cache is boot-loaded in `start`
@@ -660,6 +653,10 @@ impl Module for Config {
     /// config as soon as config has started (the invalidation plane's first refresh runs
     /// only after every module start). A load failure fails startup loudly — config's
     /// boot guarantee. Ongoing freshness is the invalidation callback's job.
+    ///
+    /// No `stop` override: the cache is refreshed by the app-owned invalidation
+    /// plane (which owns the LISTEN connection and its shutdown), so config
+    /// spawns no task of its own to stop.
     async fn start(&self, _ctx: &Context) -> anyhow::Result<()> {
         self.svc().refresh().await?;
         Ok(())

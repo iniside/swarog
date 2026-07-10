@@ -19,7 +19,7 @@ use async_trait::async_trait;
 use charactersapi::Ownership;
 use configapi::Config;
 use inventoryapi::{holdings_rpc, Holding, Holdings};
-use lifecycle::{Caps, Context, Module};
+use lifecycle::{Context, Module};
 use opsapi::{Error, Identity};
 use registry::key;
 use sqlx::{PgConnection, PgPool};
@@ -532,10 +532,6 @@ impl Module for Inventory {
 
     fn requires(&self) -> Vec<String> {
         vec!["characters".into(), "config".into()]
-    }
-
-    fn caps(&self) -> Caps {
-        Caps::REGISTER | Caps::MIGRATE
     }
 
     /// Phase 1, BEFORE any `init`: builds the store-backed shared state (from

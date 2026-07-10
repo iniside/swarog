@@ -16,7 +16,7 @@
 use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
-use lifecycle::{Caps, Context, Module};
+use lifecycle::{Context, Module};
 use opsapi::Error;
 use ratingapi::MmrReader;
 use registry::key;
@@ -144,10 +144,6 @@ impl Module for Rating {
 
     /// `REGISTER` (it Provides `MmrReader` in phase 1) + `MIGRATE` (it owns schema
     /// `rating`); `init` wires the subscription + edge face.
-    fn caps(&self) -> Caps {
-        Caps::REGISTER | Caps::MIGRATE
-    }
-
     /// Phase 1, BEFORE any `init`: builds the pool-backed service and offers it under the
     /// canonical `rating.mmr_reader` key, so `match`'s `require::<dyn MmrReader>`
     /// resolves regardless of registration order.

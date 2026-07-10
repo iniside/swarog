@@ -16,7 +16,7 @@ use std::sync::{Arc, OnceLock};
 use async_trait::async_trait;
 use bus::{AnyTx, Bus};
 use charactersapi::{Character, Ownership, Player};
-use lifecycle::{Caps, Context, Module};
+use lifecycle::{Context, Module};
 use opsapi::{Error, Identity};
 use sqlx::{PgConnection, PgPool};
 
@@ -356,10 +356,6 @@ impl Characters {
 impl Module for Characters {
     fn name(&self) -> &str {
         "characters"
-    }
-
-    fn caps(&self) -> Caps {
-        Caps::REGISTER | Caps::MIGRATE
     }
 
     /// Phase 1, BEFORE any `init`: builds the store-backed service (from `ctx.db()` +

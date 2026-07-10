@@ -21,7 +21,7 @@ use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
 use bus::{AnyTx, Bus};
-use lifecycle::{Caps, Context, Module};
+use lifecycle::{Context, Module};
 use matchapi::Match;
 use opsapi::Error;
 use ratingapi::MmrReader;
@@ -158,10 +158,6 @@ impl Module for MatchModule {
     /// infrastructure, not a declared dependency.
     fn requires(&self) -> Vec<String> {
         vec!["rating".to_string()]
-    }
-
-    fn caps(&self) -> Caps {
-        Caps::REGISTER | Caps::MIGRATE
     }
 
     /// Phase 1, BEFORE any `init`: builds the store-backed service (from `ctx.db()` +

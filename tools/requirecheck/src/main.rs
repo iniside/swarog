@@ -47,7 +47,7 @@ use std::sync::{Arc, Mutex};
 
 use bus::{AnyTx, Error, Transport, TxHandler};
 use checkmodules::DeploymentProfile;
-use lifecycle::{Caps, Context};
+use lifecycle::Context;
 use registry::RequireKind;
 
 /// One observed registry lookup: `(module, kind, key)`.
@@ -184,10 +184,8 @@ fn collect_requires() -> anyhow::Result<Collected> {
     // Manual two-phase loop (NOT App::build) — App::build runs every init in one loop,
     // so the observer could not attribute a require to a module. Phase 1: register.
     for m in &modules {
-        if m.caps().contains(Caps::REGISTER) {
-            m.register(&ctx)
-                .map_err(|e| anyhow::anyhow!("requirecheck: register {:?}: {e:#}", m.name()))?;
-        }
+        m.register(&ctx)
+            .map_err(|e| anyhow::anyhow!("requirecheck: register {:?}: {e:#}", m.name()))?;
     }
     // Phase 2: mark the current module, then init — so every require lands attributed.
     for m in &modules {

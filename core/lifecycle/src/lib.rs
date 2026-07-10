@@ -10,7 +10,7 @@ mod wiring;
 
 pub use app::App;
 pub use context::Context;
-pub use module::{Caps, Module};
+pub use module::Module;
 pub use wiring::ProcessWiring;
 
 #[cfg(test)]

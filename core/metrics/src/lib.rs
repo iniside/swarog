@@ -133,8 +133,9 @@ impl Module for Metrics {
         "metrics"
     }
 
-    /// Wire-only (default `Caps::NONE`): mount the scrape route and contribute the
-    /// recording layer. No `register`/`migrate`/`start`/`stop` — nothing to persist or run.
+    /// Wire-only: mount the scrape route and contribute the recording layer.
+    /// `register`/`migrate`/`start`/`stop` stay at their default no-op impls —
+    /// nothing to persist or run.
     fn init(&self, ctx: &Context) -> anyhow::Result<()> {
         // (a) The scrape route lands in the merged router; `app::run` later adds
         // `/healthz`/`/readyz`, rate-limits, then applies the layer below — which exempts

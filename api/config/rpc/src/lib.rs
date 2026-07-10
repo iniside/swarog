@@ -20,7 +20,7 @@
 //! provides it, registers an authoritative-refresh callback on the `config_changed`
 //! invalidation channel (Step 7 — replaces the old durable `"config-cache"`
 //! subscription), and contributes a provider-tagged [`remote::RemoteBoot`] boot hook.
-//! The `Stub` (which gained `Caps::START` for exactly this) drains
+//! The `Stub` (whose `start` phase does exactly this) drains
 //! [`remote::BOOT_SLOT`] in `start` and runs the boot hook once — a single `snapshot()`
 //! that fails LOUD if config-svc is down (config is a hard dependency). The
 //! invalidation plane's first refresh runs later still (after every module start), so

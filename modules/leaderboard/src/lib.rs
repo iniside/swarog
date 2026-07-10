@@ -15,7 +15,7 @@ use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
 use leaderboardapi::{Leaderboard, Score};
-use lifecycle::{Caps, Context, Module};
+use lifecycle::{Context, Module};
 use opsapi::Error;
 use sqlx::{PgConnection, PgPool};
 
@@ -119,10 +119,6 @@ impl LeaderboardModule {
 impl Module for LeaderboardModule {
     fn name(&self) -> &str {
         "leaderboard"
-    }
-
-    fn caps(&self) -> Caps {
-        Caps::REGISTER | Caps::MIGRATE
     }
 
     /// Phase 1, BEFORE any `init`: builds the pool-backed service (needed by the

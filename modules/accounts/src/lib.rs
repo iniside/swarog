@@ -32,7 +32,7 @@ use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
 use bus::{AnyTx, Bus};
-use lifecycle::{Caps, Context, Module};
+use lifecycle::{Context, Module};
 use opsapi::{Error, Identity};
 
 use crate::epic::{short_id, OidcVerifier};
@@ -357,10 +357,6 @@ impl Accounts {
 impl Module for Accounts {
     fn name(&self) -> &str {
         "accounts"
-    }
-
-    fn caps(&self) -> Caps {
-        Caps::REGISTER | Caps::MIGRATE
     }
 
     /// Phase 1, BEFORE any `init`: builds the store-backed service and offers it

@@ -45,7 +45,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use bus::{AnyTx, Bus};
-use lifecycle::{Caps, Context, Module};
+use lifecycle::{Context, Module};
 use sqlx::{Connection, PgConnection, PgPool};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
@@ -322,10 +322,6 @@ impl Scheduler {
 impl Module for Scheduler {
     fn name(&self) -> &str {
         "scheduler"
-    }
-
-    fn caps(&self) -> Caps {
-        Caps::REGISTER | Caps::MIGRATE | Caps::START | Caps::STOP
     }
 
     /// Phase 1, BEFORE any `init`: builds the pool-backed service (needed by the admin

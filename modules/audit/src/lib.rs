@@ -32,7 +32,7 @@ use std::sync::{Arc, OnceLock};
 use async_trait::async_trait;
 use bus::{Delivery, Error as BusError, TxHandler};
 use futures::future::BoxFuture;
-use lifecycle::{Caps, Context, Module};
+use lifecycle::{Context, Module};
 use opsapi::Error;
 use sqlx::{PgConnection, PgPool};
 
@@ -298,10 +298,6 @@ impl Audit {
 impl Module for Audit {
     fn name(&self) -> &str {
         "audit"
-    }
-
-    fn caps(&self) -> Caps {
-        Caps::REGISTER | Caps::MIGRATE
     }
 
     /// Phase 1, BEFORE any `init`: builds the pool-backed service (needed by the admin

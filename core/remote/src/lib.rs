@@ -47,7 +47,7 @@ use std::sync::Arc;
 use anyhow::Context as _;
 use async_trait::async_trait;
 use futures::future::BoxFuture;
-use lifecycle::{Caps, Context, Module};
+use lifecycle::{Context, Module};
 use opsapi::{Caller, Error};
 use tokio::sync::Mutex;
 
@@ -246,8 +246,8 @@ impl Conn for edge::Client {
 /// PROVIDER name (`"characters"`) so `app::validate_requires` sees a co-hosted
 /// consumer's requirement satisfied; its phase-1 `register` `provide`s edge-backed
 /// clients under the SAME capability keys the local impl would. It migrates no schema
-/// and mounts no routes; as a [`Module`] with [`Caps::STOP`] it closes the underlying
-/// edge connection on shutdown.
+/// and mounts no routes; its `stop` closes the underlying edge connection on
+/// shutdown.
 pub struct Stub {
     /// The provider name — also the [`Module::name`], so `validate_requires` matches.
     provider: String,
@@ -293,10 +293,6 @@ impl Module for Stub {
     /// capability over the edge.
     fn requires(&self) -> Vec<String> {
         Vec::new()
-    }
-
-    fn caps(&self) -> Caps {
-        Caps::REGISTER | Caps::START | Caps::STOP
     }
 
     /// Phase 1, BEFORE any consumer's `init`: `provide` the edge-backed clients under

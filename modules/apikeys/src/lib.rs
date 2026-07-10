@@ -24,7 +24,7 @@ mod store;
 use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
-use lifecycle::{Caps, Context, Module};
+use lifecycle::{Context, Module};
 use opsapi::Error;
 
 use crate::store::Store;
@@ -124,10 +124,6 @@ impl ApiKeys {
 impl Module for ApiKeys {
     fn name(&self) -> &str {
         "apikeys"
-    }
-
-    fn caps(&self) -> Caps {
-        Caps::REGISTER | Caps::MIGRATE
     }
 
     /// Phase 1, BEFORE any `init`: builds the store-backed service and offers it under

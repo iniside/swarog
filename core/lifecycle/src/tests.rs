@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 use super::*;
 
 /// Records every lifecycle callback into a shared log so a test can assert
-/// phase ordering. Opts into all four optional phases so all fire.
+/// phase ordering.
 struct RecMod {
     name: String,
     log: Arc<Mutex<Vec<String>>>,
@@ -26,10 +26,6 @@ impl RecMod {
 impl Module for RecMod {
     fn name(&self) -> &str {
         &self.name
-    }
-
-    fn caps(&self) -> Caps {
-        Caps::REGISTER | Caps::MIGRATE | Caps::START | Caps::STOP
     }
 
     fn register(&self, _ctx: &Context) -> anyhow::Result<()> {
@@ -114,10 +110,12 @@ async fn duplicate_name_panics() {
     app_with(&log, &["dup", "dup"]);
 }
 
-/// A module that opts into NO optional phases is only ever `init`-ed — its
-/// (default no-op) migrate/start/stop are never invoked.
+/// A module implementing only `name`/`init` (all other phases left at their
+/// default no-op impls) still gets every phase called unconditionally — the
+/// full build/migrate/start/stop cycle must succeed on a DB-less `Context`
+/// without error, proving the defaults are true no-ops.
 #[tokio::test]
-async fn plain_module_only_inits() {
+async fn default_impl_module_survives_full_cycle() {
     struct Plain {
         log: Arc<Mutex<Vec<String>>>,
     }
