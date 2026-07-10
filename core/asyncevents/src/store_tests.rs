@@ -7,6 +7,15 @@ use std::time::Duration;
 const DEFAULT_DSN: &str =
     "postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable";
 
+/// Serializes the two tests that choreograph the WRITER advisory lock with an
+/// open transaction held across awaits. If they interleave, Postgres lock
+/// fairness deadlocks them: the frontier test holds tx A's SHARED lock while
+/// awaiting tx B's append; the bump test's pending EXCLUSIVE makes B queue
+/// behind it; A never commits, so the exclusive never grants — a Rust-await ↔
+/// DB-lock cycle Postgres cannot detect. Any new test that holds an appended
+/// tx open across further lock-taking awaits must take this guard too.
+static WRITER_LOCK_CHOREOGRAPHY: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// Opens the local Postgres and ensures the V2 schema; returns `None` (printing a
 /// skip line) when it's unreachable, so the suite degrades to a no-op without a DB.
 /// Guards run only in their dedicated test — a guard failure mid-suite must not
@@ -159,6 +168,7 @@ async fn tie_breaker_orders_events_within_one_tx() {
 /// gap. Only after A commits do both become eligible.
 #[tokio::test]
 async fn frontier_never_exposes_gap_behind_inflight_earlier_xid() {
+    let _choreo = WRITER_LOCK_CHOREOGRAPHY.lock().await;
     let Some(pool) = test_pool().await else { return };
     let topic = unique_topic("store.inversion");
     let c = contract(topic);
@@ -210,6 +220,7 @@ async fn frontier_never_exposes_gap_behind_inflight_earlier_xid() {
 /// bump does.
 #[tokio::test]
 async fn exclusive_bump_blocks_while_shared_writer_in_flight() {
+    let _choreo = WRITER_LOCK_CHOREOGRAPHY.lock().await;
     let Some(pool) = test_pool().await else { return };
     let topic = unique_topic("store.bump");
     let c = contract(topic);
