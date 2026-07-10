@@ -1,69 +1,62 @@
 ---
 name: durable-event-plane-bus-owned
-description: The durable async transport (outbox/inbox/relay/HTTP) is an APP-OWNED plane (core/asyncevents::Plane, DB ⇒ plane) injected into the bus at Context construction — NOT a module; modules never branch on topology nor declare it in requires(). core/bus is sqlx-free (AnyTx/Delivery seam): the events API names no store engine, handlers get event_id for cross-engine idempotency
+description: Durable events = APP-OWNED plane (core/asyncevents, DB ⇒ plane, injected at Context construction), since 2026-07-10 a PULL model — XID-ordered shared Postgres log + consumer-owned subscriptions with transactional checkpoints. Push relay/POST /events/inbox/EVENTS_* are GONE (don't re-propose). core/bus stays sqlx-free (AnyTx/Delivery); replica-local caches use core/invalidation, never durable subs
 metadata: 
   node_type: memory
   type: project
   originSessionId: 9daf9937-49a2-46ca-88f2-a2c9a48ebd40
 ---
 
-The async dual-path debt (a module carrying BOTH `bus.On` AND a hand-wired
-`POST /events/*` HTTP sink, "one path per topology") was RESOLVED 2026-07-07
-(plan `docs/plans/2026-07-07-1527-bus-owned-transport-plan.md`, Steps 1-9, verified
-live). Then 2026-07-09 the plane was **de-modulized** into an app-owned plane
-(plan `docs/plans/2026-07-09-1118-asyncevents-plane-plan.md`, commits `b3a6ce7`,
-`584d9eb`). Do NOT re-propose or re-introduce the old per-module outbox/inbox/sink
-pattern, and do NOT re-propose messaging-as-a-module or `requires("messaging")` —
-the plane is process infrastructure, not a peer module.
+Delivery history (each supersedes the previous — do NOT re-propose the older):
+per-module outbox/inbox/sink (debt, resolved 2026-07-07) → module `messaging` →
+app-owned push plane (outbox → relay → `POST /events` → inbox, 2026-07-09) →
+**pull event log (2026-07-09/10, plan
+`docs/plans/2026-07-09-2234-durable-event-log-fresh-plan.md`, Steps 1–12,
+commits `e5194d3`…; DB wiped at cutover — user accepted fresh start).**
 
-**Two planes, chosen by durability intent, never by topology:**
-- Best-effort: `bus.Emit` / `bus.On` — in-process fanout, zero DB (unchanged). For
-  in-memory/idempotent reactions (rating, `inventory.onConfigChanged`).
-- Durable: `bus.EmitTx(tx, ...)` / `bus.OnTx[T](et, subscriber, h)` /
-  `bus.OnTxRaw(topic, subscriber, h)` (untyped, for audit-style verbatim logging).
-  Exactly-once, transactional, topology-transparent.
+**Current model — "publisher owns the event, consumer owns the subscription":**
+- One shared XID-ordered log `asyncevents.events`; position =
+  `(generation, producer_xid xid8, tie_breaker)`, NEVER bigserial (INSERT vs
+  COMMIT order). Readers gate current-generation rows by
+  `producer_xid < pg_snapshot_xmin(pg_current_snapshot())` — slow commits delay
+  the frontier, never get skipped. `generation` + `plane_meta.system_identifier`
+  fence restores/PITR (`eventctl bump-generation`).
+- ONE writer implementation: SQL function `asyncevents.append_event` (shared
+  advisory lock → read generation → INSERT with `pg_current_xact_id()`). Rust
+  `store::append` and config's row trigger both call it. Module SQL may call
+  plane FUNCTIONS (`append_event`, `ensure_history_contract`), never plane
+  tables — archcheck tripwire.
+- Consumers: `on_tx(SubscriptionSpec { id: "<module>.<topic-kebab>.v1", start },
+  …)` — globally unique versioned id, explicit StartPosition (no default).
+  Worker: `FOR UPDATE SKIP LOCKED` on the subscription row (replicas = consumer
+  group by construction) → handler on the delivery connection → effect +
+  checkpoint commit in ONE tx. No inbox, no dedup, exactly-once for
+  TransactionalPg. Poison: backoff 1s→5m, pause@20, NEVER auto-skip
+  (`eventctl skip --reason` is the audited operator path).
+- Retention is checkpoint-coupled and conservative (paused sub blocks GC; topic
+  without a `history_contracts` row is never deleted from). Producer owns
+  `HistoryPolicy` in `bus::define(topic, version, policy)`.
+- NO routing config of any kind: `EVENTS_SUBSCRIBERS`/`EVENTS_ORIGIN`/
+  `POST /events`/relay/inbox/`core/outbox` are DELETED and archcheck-banned.
+  Monolith and split run identical code; adding a consumer = code in the
+  consuming module only.
 
-**`core/bus` is sqlx-free (AnyTx/Delivery seam, 2026-07-09, plan
-`docs/plans/2026-07-09-1422-anytx-seam-plan.md`, commits `7418320`, `790e388`).**
-The events API names NO store engine: `emit_tx(AnyTx::new(&mut *tx), et, v)` takes a
-type-erased `bus::AnyTx<'_>`; durable handlers receive `bus::Delivery { event_id, tx }`.
-The engine lives only in the concrete transport (`asyncevents::enqueue_tx` downcasts
-`AnyTx → &mut sqlx::PgConnection`) and in each module's own store layer. **Generalized
-contract:** *delivery is at-least-once with a stable `event_id`; effects are
-exactly-once iff the dedup-check and the effect are atomic in the consumer's own store
-— via the handed delivery tx when engines match, via an idempotent `event_id`-keyed
-write otherwise.* A non-Postgres-store consumer ignores `Delivery::tx` and keys an
-idempotent write on `event_id` in its own store (inbox stays the redelivery gate). A
-foreign-store PRODUCER fails loud with `Error::TxEngineMismatch` at first emit — a
-second Transport impl in that engine is the day-two path (backplane stays Postgres).
-Don't reintroduce sqlx into `core/bus` or name a store engine in a module's events API.
+**Replica-local caches are NOT durable subscriptions** (consumer group ⇒ only
+one replica would refresh): `core/invalidation` (second app-owned plane,
+LISTEN/NOTIFY broadcast + authoritative-refresh callbacks, first-refresh-or-fail
+at start, freshness not delivery). Config/CachedConfig/inventory-starter use it;
+config has a monotonic `config.revision` and its trigger emits both NOTIFY and
+the durable event.
 
-**`core/asyncevents`** (renamed from `core/messaging`) owns DB schema `asyncevents`
-(outbox + per-`(event_id,subscriber)` inbox) and exposes a **`Plane`** — NOT a
-`lifecycle::Module`. `core/app::run` owns its lifecycle: it constructs the `Plane`
-when the process has a DB, injects its `Transport` into the `Bus` **at `Context`
-construction** (`Context::with_db_and_transport`), migrates its schema before module
-migrations, starts relay/LISTEN/housekeeping after modules start, and stops delivery
-before any module stops. `Bus::set_transport`/`SetTransport` NO LONGER EXISTS — the
-transport is a constructor argument (the double-set panic class is gone
-structurally). It is the ONLY crate importing `outbox`; the leaf `bus/` still imports
-no module (the Transport interface is defined in `bus/`, implemented by asyncevents).
-A DB-less process (gateway-svc, admin-svc) hosts no plane; an `on_tx` there fails
-loud at init.
+**Still true (unchanged invariants):** plane is app-owned (`app::run`, DB ⇒
+plane, injected at `Context` construction — `set_transport` does not exist);
+modules declare NOTHING for it in `requires()`; `core/bus` is sqlx-free
+(`AnyTx`/`Delivery` seam; engine only in the transport); plain `emit`/`on` is
+in-process best-effort only. Rating is now a persistent projection
+(`rating.ratings`) — "restart resets MMR" is no longer true.
 
-**Modules declare NOTHING for it.** No `requires("messaging")`, no handle
-acquisition — `requires()` is reserved for domain capabilities from `modules/`.
-Modules just call `ctx.bus().emit_tx` / `on_tx` / `on_tx_raw` unchanged.
+**Gotcha:** run `cargo test --workspace` ONE invocation at a time — concurrent
+runs deadlock on the plane's migrate advisory lock (looks like a hang; bit two
+subagents on 2026-07-10).
 
-**Single-owner relay (the load-bearing correctness rule):** every outbox row is stamped
-`origin` (env `EVENTS_ORIGIN`, stable per process); a process's relay drains ONLY
-`WHERE origin=$self ... FOR UPDATE SKIP LOCKED`, so a foreign-origin relay can never
-swallow another process's event. This fixed a BLOCKER the plan review caught. Regression:
-`outbox.TestRelayDrainsOnlyOwnOrigin` + `scripts/smoke-split-asyncevents.sh` (evidence:
-`docs/2026-07-07-1654-messaging-split-verified.md`).
-
-**When adding a new cross-process event:** declare `bus.Define`, emit via `EmitTx(tx,...)`
-in the producer's domain tx, subscribe via `OnTx`; NO `requires()` entry for the plane
-(it is app-owned). Every hosting process just needs a DB (⇒ the plane is present) and
-`EVENTS_ORIGIN` + `EVENTS_SUBSCRIBERS` (topic=`<peer>/events`) set. No per-topic route,
-no hand-written inbox. See [[never-monolith-only]], [[verify-the-at-risk-path-not-the-safe-one]].
+See [[never-monolith-only]], [[verify-the-at-risk-path-not-the-safe-one]].
