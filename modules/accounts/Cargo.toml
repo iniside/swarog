@@ -21,6 +21,11 @@ edge = { workspace = true }
 accountsapi = { workspace = true }
 accountsrpc = { workspace = true }
 accountsevents = { workspace = true }
+# The scheduler's event CONTRACT crate only (any module may import an events crate):
+# accounts reacts to scheduler.fired{name} to prune expired sessions on a daily cadence.
+# No dep on the scheduler impl/api and no requires() change — audit's prune precedent.
+schedulerevents = { workspace = true }
+futures = { workspace = true }
 adminapi = { workspace = true }
 sqlx = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }

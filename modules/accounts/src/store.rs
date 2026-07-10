@@ -197,6 +197,20 @@ impl Store {
         Ok(row.map(|(id, display_name)| Player { id, display_name }))
     }
 
+    /// Deletes every expired session ON THE GIVEN CONNECTION (the delivery tx), so the
+    /// prune commits atomically with the durable subscription's checkpoint advance. The
+    /// returned count is the number of rows removed. Idempotent — a redelivered tick
+    /// simply deletes nothing the second time.
+    pub async fn prune_expired_sessions(
+        &self,
+        conn: &mut PgConnection,
+    ) -> Result<u64, sqlx::Error> {
+        let res = sqlx::query("DELETE FROM accounts.sessions WHERE expires_at <= now()")
+            .execute(&mut *conn)
+            .await?;
+        Ok(res.rows_affected())
+    }
+
     /// One player by id. A malformed id (22P02) is `Ok(None)`, like a genuine miss.
     pub async fn get_player(&self, id: &str) -> Result<Option<Player>, sqlx::Error> {
         let res: Result<Option<(String, String)>, sqlx::Error> = sqlx::query_as(

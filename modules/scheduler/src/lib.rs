@@ -79,6 +79,9 @@ CREATE TABLE IF NOT EXISTS scheduler.schedules (
 );
 INSERT INTO scheduler.schedules (name, interval_seconds)
 	VALUES ('audit-prune', 86400)
+	ON CONFLICT (name) DO NOTHING;
+INSERT INTO scheduler.schedules (name, interval_seconds)
+	VALUES ('accounts-sessions-prune', 86400)
 	ON CONFLICT (name) DO NOTHING;"#;
 
 // ============================================================================

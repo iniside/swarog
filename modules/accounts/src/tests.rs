@@ -3,6 +3,7 @@ use accountsapi::{Auth as _, Sessions as _};
 use base64::Engine as _;
 
 mod dev_auth_gate;
+mod prune;
 use rsa::pkcs8::EncodePrivateKey as _;
 use rsa::traits::PublicKeyParts as _;
 use sqlx::PgPool;

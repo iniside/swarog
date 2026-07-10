@@ -158,14 +158,15 @@ fn lock_key_is_stable_and_fnv1a() {
 /// AUDIT_PRUNE`) fails this build/test instead of drifting into a silent no-op prune.
 #[test]
 fn seeded_schedule_names_are_contract() {
-    assert!(
-        SCHEMA_DDL.contains(&format!(
-            "('{}',",
-            schedulerevents::schedule_names::AUDIT_PRUNE
-        )),
-        "seed DDL no longer contains the schedule row for {}",
-        schedulerevents::schedule_names::AUDIT_PRUNE
-    );
+    for name in [
+        schedulerevents::schedule_names::AUDIT_PRUNE,
+        schedulerevents::schedule_names::SESSIONS_PRUNE,
+    ] {
+        assert!(
+            SCHEMA_DDL.contains(&format!("('{name}',")),
+            "seed DDL no longer contains the schedule row for {name}"
+        );
+    }
 }
 
 // --- live Postgres ----------------------------------------------------------

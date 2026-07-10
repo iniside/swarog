@@ -32,9 +32,11 @@ mod store;
 use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
-use bus::{AnyTx, Bus};
+use bus::{AnyTx, Bus, Delivery, Error as BusError, TxHandler};
+use futures::future::BoxFuture;
 use lifecycle::{Context, Module};
 use opsapi::{Error, Identity};
+use sqlx::PgConnection;
 
 use crate::epic::{short_id, OidcVerifier};
 use crate::password::{hash_password, verify_password};
@@ -68,7 +70,8 @@ CREATE TABLE IF NOT EXISTS accounts.sessions (
 	created_at timestamptz NOT NULL DEFAULT now(),
 	expires_at timestamptz NOT NULL
 );
-CREATE INDEX IF NOT EXISTS sessions_player_idx ON accounts.sessions(player_id);"#;
+CREATE INDEX IF NOT EXISTS sessions_player_idx ON accounts.sessions(player_id);
+CREATE INDEX IF NOT EXISTS sessions_expires_idx ON accounts.sessions(expires_at);"#;
 
 /// Folds any lower-level error into an `Internal` operation error.
 fn internal<E: std::fmt::Display>(e: E) -> Error {
@@ -318,6 +321,63 @@ impl accountsapi::Auth for Service {
 }
 
 // ============================================================================
+// Durable prune reaction — sessions grow unboundedly (INSERT-only, TTL filtered on
+// read), so accounts reacts to the seeded daily `accounts-sessions-prune` schedule and
+// deletes expired rows on the DELIVERY tx (exactly-once with the checkpoint advance).
+// Copied from audit's prune: subscribe raw by the CONTRACT descriptor's topic const, no
+// `schedulerevents::Fired` payload-type import — the handler parses only `name`.
+// ============================================================================
+
+/// The prune reaction's own durable checkpoint — a globally unique subscription id,
+/// independent of any other accounts subscription.
+const PRUNE_SUB: bus::SubscriptionSpec = bus::SubscriptionSpec {
+    id: "accounts.prune-on-scheduler.v1",
+    start: bus::StartPosition::Genesis,
+};
+
+/// The `scheduler.fired` `name` accounts prunes on — a shared-vocabulary string (like a
+/// topic): the scheduler seeds this schedule name (86400s), accounts reacts to it.
+const PRUNE_SCHEDULE_NAME: &str = schedulerevents::schedule_names::SESSIONS_PRUNE;
+
+/// Just the `name` field of a `scheduler.fired` payload — parsed out of the raw JSON
+/// rather than importing `schedulerevents::Fired` into the handler (zero-coupling: it
+/// subscribes by the descriptor's topic const but never deserializes the producer type).
+#[derive(serde::Deserialize)]
+struct FiredName {
+    name: String,
+}
+
+/// Prunes expired sessions as a REACTION to `scheduler.fired{name:"accounts-sessions-prune"}`,
+/// on the delivery tx (downcast from `Delivery`). A non-prune schedule name is a
+/// committed no-op (the tick is marked processed, nothing to do); a redelivered tick is
+/// idempotent.
+struct PruneHandler {
+    svc: Arc<Service>,
+}
+
+impl TxHandler for PruneHandler {
+    fn call<'a>(
+        &'a self,
+        mut delivery: Delivery<'a>,
+        payload: Vec<u8>,
+    ) -> BoxFuture<'a, Result<(), BusError>> {
+        Box::pin(async move {
+            let conn = delivery.tx.downcast::<PgConnection>()?;
+            let fired: FiredName = serde_json::from_slice(&payload).map_err(BusError::from)?;
+            if fired.name != PRUNE_SCHEDULE_NAME {
+                return Ok(()); // some other schedule — marked processed, nothing to do
+            }
+            self.svc
+                .store
+                .prune_expired_sessions(conn)
+                .await
+                .map_err(BusError::transport)?;
+            Ok(())
+        })
+    }
+}
+
+// ============================================================================
 // Module — the lifecycle wiring.
 // ============================================================================
 
@@ -472,6 +532,15 @@ impl Module for Accounts {
         // register/login under devAuth, loginEpic when the epic provider is up, me
         // always.
         ops::register_player_ops(ctx, svc.clone(), dev_auth, epic_enabled);
+
+        // Durable session prune as a REACTION to scheduler.fired on the durable plane.
+        // Raw subscribe by the CONTRACT descriptor's topic const (no payload-type
+        // import): the handler parses `name` and prunes only for "accounts-sessions-prune",
+        // inside the handed delivery tx (audit's prune precedent — a contract-crate dep,
+        // NOT a scheduler capability, so no requires() entry).
+        let prune: Arc<dyn TxHandler> = Arc::new(PruneHandler { svc: svc.clone() });
+        ctx.bus()
+            .on_tx_raw(PRUNE_SUB, schedulerevents::FIRED.topic(), prune);
 
         // The local admin page (RenderFn is synchronous; the store reads are async —
         // bridge via block_in_place like characters, requires the multi-thread rt).

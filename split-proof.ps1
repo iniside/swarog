@@ -771,6 +771,38 @@ try {
     Invoke-Sql "DELETE FROM scheduler.schedules WHERE name='proof-tick';" | Out-Null
 
     Write-Host ''
+    Write-Host "========= SESSION PRUNE (scheduler-svc :$HPort -> accounts-svc :$DPort) ========="
+    # The durable session-prune reaction end-to-end across processes: accounts-svc (D)
+    # subscribes accounts.prune-on-scheduler.v1 and, on scheduler.fired{accounts-sessions-prune},
+    # DELETEs expired rows from accounts.sessions in the delivery tx. We plant an already-expired
+    # session on the shared DB, force the SEEDED daily schedule to fire NOW (reset last_fired to
+    # the epoch -> immediately due, like proof-tick above; a reused dev DB has it advanced, so
+    # the reset makes the fire deterministic), then poll until D's handler has removed the row.
+    # NOT via a synthetic asyncevents.append_event: forging an event the scheduler solely
+    # produces would violate publisher-owns-the-event (and feed audit's raw sink a fake row).
+    Write-Host "[SP0] plant a throwaway player + an EXPIRED session on the shared DB (FK needs a real player)"
+    $spPid = ("" + (Invoke-Sql "INSERT INTO accounts.players (display_name) VALUES ('prune-proof-$RunSuffix') RETURNING id::text;")).Trim()
+    if (-not $spPid) { Fail 'could not insert throwaway player for the session-prune proof'; throw 'session-prune bootstrap failed' }
+    $spToken = "prune-proof-$RunSuffix"
+    Invoke-Sql "INSERT INTO accounts.sessions (token, player_id, expires_at) VALUES ('$spToken', '$spPid'::uuid, now() - interval '1 day');" | Out-Null
+    Write-Host "[SP1] force the seeded 'accounts-sessions-prune' schedule due NOW (reset last_fired to epoch)"
+    Invoke-Sql "UPDATE scheduler.schedules SET last_fired = to_timestamp(0) WHERE name = 'accounts-sessions-prune';" | Out-Null
+    Write-Host "[SP2] poll accounts.sessions until D's prune handler removes the expired row"
+    $spOk = $false
+    for ($i = 1; $i -le 30; $i++) {
+        $spLeft = ("" + (Invoke-Sql "SELECT count(*) FROM accounts.sessions WHERE token='$spToken';")).Trim()
+        Write-Host "    attempt $i -> expired_rows_left=$spLeft"
+        if ($spLeft -eq '0') {
+            Pass "scheduler-svc fired accounts-sessions-prune; accounts-svc pruned the expired session (durable H -> D on the delivery tx)"
+            $spOk = $true; break
+        }
+        Start-Sleep -Milliseconds 500
+    }
+    if (-not $spOk) { Fail 'expired session was never pruned (scheduler H -> shared log -> accounts D subscription accounts.prune-on-scheduler.v1)' }
+    # Clean up the throwaway player (CASCADE removes any residual session) so reruns start fresh.
+    Invoke-Sql "DELETE FROM accounts.players WHERE id='$spPid'::uuid;" | Out-Null
+
+    Write-Host ''
     Write-Host "========= MATCH TRIO (match-svc :$IPort + rating-svc :$JPort + leaderboard-svc :$KPort) ========="
     # The match trio end-to-end across processes, all through the gateway front door:
     #   (i)   POST /match/report through G (AuthNone) -> 202. G routes match.report Remote

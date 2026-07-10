@@ -883,6 +883,38 @@ done
 pg "DELETE FROM scheduler.schedules WHERE name='proof-tick';" >/dev/null
 
 echo ""
+echo "========= SESSION PRUNE (scheduler-svc :$H_PORT -> accounts-svc :$D_PORT) ========="
+# The durable session-prune reaction end-to-end across processes: accounts-svc (D)
+# subscribes accounts.prune-on-scheduler.v1 and, on scheduler.fired{accounts-sessions-prune},
+# DELETEs expired rows from accounts.sessions in the delivery tx. We plant an already-expired
+# session on the shared DB, force the SEEDED daily schedule to fire NOW (reset last_fired to
+# the epoch -> immediately due, like proof-tick above; a reused dev DB has it advanced, so
+# the reset makes the fire deterministic), then poll until D's handler has removed the row.
+# NOT via a synthetic asyncevents.append_event: forging an event the scheduler solely
+# produces would violate publisher-owns-the-event (and feed audit's raw sink a fake row).
+echo "[SP0] plant a throwaway player + an EXPIRED session on the shared DB (FK needs a real player)"
+SP_PID="$(pg "INSERT INTO accounts.players (display_name) VALUES ('prune-proof-$RUN_SUFFIX') RETURNING id::text;" | tr -d '[:space:]')"
+[ -n "$SP_PID" ] || { fail "could not insert throwaway player for the session-prune proof"; exit 1; }
+SP_TOKEN="prune-proof-$RUN_SUFFIX"
+pg "INSERT INTO accounts.sessions (token, player_id, expires_at) VALUES ('$SP_TOKEN', '$SP_PID'::uuid, now() - interval '1 day');" >/dev/null
+echo "[SP1] force the seeded 'accounts-sessions-prune' schedule due NOW (reset last_fired to epoch)"
+pg "UPDATE scheduler.schedules SET last_fired = to_timestamp(0) WHERE name = 'accounts-sessions-prune';" >/dev/null
+echo "[SP2] poll accounts.sessions until D's prune handler removes the expired row"
+SP_OK=0
+for i in $(seq 1 30); do
+    SP_LEFT="$(pg "SELECT count(*) FROM accounts.sessions WHERE token='$SP_TOKEN';" | tr -d '[:space:]')"
+    echo "    attempt $i -> expired_rows_left=${SP_LEFT:-?}"
+    if [ "${SP_LEFT:-1}" = "0" ]; then
+        pass "scheduler-svc fired accounts-sessions-prune; accounts-svc pruned the expired session (durable H -> D on the delivery tx)"
+        SP_OK=1; break
+    fi
+    sleep 0.5
+done
+[ "$SP_OK" = "1" ] || fail "expired session was never pruned (scheduler H -> shared log -> accounts D subscription accounts.prune-on-scheduler.v1)"
+# Clean up the throwaway player (CASCADE removes any residual session) so reruns start fresh.
+pg "DELETE FROM accounts.players WHERE id='$SP_PID'::uuid;" >/dev/null
+
+echo ""
 echo "========= MATCH TRIO (match-svc :$I_PORT + rating-svc :$J_PORT + leaderboard-svc :$K_PORT) ========="
 # The match trio end-to-end across processes, all through the gateway front door:
 #   (i)   POST /match/report through G (AuthNone) -> 202. G routes match.report Remote to

@@ -38,4 +38,8 @@ pub static FIRED: LazyLock<EventType<Fired>> =
 /// reference one symbol.
 pub mod schedule_names {
     pub const AUDIT_PRUNE: &str = "audit-prune";
+    /// The daily cadence on which `accounts` prunes expired sessions
+    /// (`accounts.sessions` where `expires_at <= now()`). The scheduler seeds this
+    /// schedule (86400s); accounts reacts to `scheduler.fired{name}` matching it.
+    pub const SESSIONS_PRUNE: &str = "accounts-sessions-prune";
 }
