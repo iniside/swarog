@@ -143,12 +143,16 @@ function Find-Psql {
     return $null
 }
 $Psql = Find-Psql
+if (-not $Psql) {
+    Write-Error 'split-proof: psql not found -- local Postgres is the test DB and the DB assertions are mandatory; install psql or put it on PATH'
+    exit 1
+}
 
-# Run one SQL statement against the test DB (best-effort; no psql -> $null).
+# Run one SQL statement against the test DB. Follows DATABASE_URL natively -- psql
+# accepts a connection URI directly, so no DSN parsing is needed and percent-encoded
+# passwords / sslmode query params ride along for free.
 function Invoke-Sql([string]$Sql) {
-    if (-not $Psql) { return $null }
-    $env:PGPASSWORD = 'gamebackend'
-    return (& $Psql -U gamebackend -h localhost -d gamebackend -t -A -c $Sql 2>$null)
+    return (& $Psql $env:DATABASE_URL -t -A -c $Sql 2>$null)
 }
 
 # Health-check and player HTTP go to 127.0.0.1, NOT localhost: on Windows `localhost`
@@ -330,12 +334,8 @@ try {
     # Reset the config baseline: B must boot with the DEFAULT starter (starter_sword),
     # so the later runtime change to health_potion is provably a LIVE reload. C/B are not
     # up yet, so their boot loads see no row.
-    if ($Psql) {
-        Invoke-Sql "DELETE FROM config.settings WHERE namespace='inventory' AND key='starter_item';" | Out-Null
-        Note 'reset config baseline (deleted inventory/starter_item)'
-    } else {
-        Note 'psql not found -- the config live-reload assertion will SKIP'
-    }
+    Invoke-Sql "DELETE FROM config.settings WHERE namespace='inventory' AND key='starter_item';" | Out-Null
+    Note 'reset config baseline (deleted inventory/starter_item)'
 
     # C (config-svc): owns the config schema + write trigger, serves config.snapshot on
     # its mTLS edge, and (via the trigger) bumps the revision, pg_notifies config_changed,
@@ -488,7 +488,7 @@ try {
         '-d', '{"Winner":"k4-winner","Loser":"k4-loser"}')
     Write-Host "    -> HTTP $($k4.Code)"
     if ($k4.Code -eq '202') { Pass "dev-key-server (full) on match.report -> 202 (op's real success code)" } else { Fail "dev-key-server on match.report expected 202, got $($k4.Code)" }
-    if ($Psql) { Invoke-Sql "DELETE FROM leaderboard.scores WHERE player IN ('k3-winner','k3-loser','k4-winner','k4-loser');" | Out-Null }
+    Invoke-Sql "DELETE FROM leaderboard.scores WHERE player IN ('k3-winner','k3-loser','k4-winner','k4-loser');" | Out-Null
 
     Write-Host ''
     Write-Host '================ SPLIT PROOF ================'
@@ -533,28 +533,21 @@ try {
 
     # --- 5. INTEGRITY via event, not FK: holdings wiped in B (DB is the real proof) ---
     Write-Host "[5] poll B until the character's holdings are WIPED (character.deleted A->B)"
-    if ($Psql) {
-        $env:PGPASSWORD = 'gamebackend'
-        $wiped = $false
-        for ($i = 1; $i -le 30; $i++) {
-            $q = "SELECT count(*) FROM inventory.holdings WHERE owner_type='character' AND owner_id='$cid';"
-            $out = (& $Psql -U gamebackend -h localhost -d gamebackend -t -A -c $q 2>$null)
-            $count = ("$out").Trim()
-            Write-Host "    attempt $i -> inventory.holdings rows for $cid = $count"
-            if ($count -eq '0') { Pass 'holdings row wiped in B (integrity via character.deleted event, no FK cascade)'; $wiped = $true; break }
-            Start-Sleep -Milliseconds 500
-        }
-        if (-not $wiped) { Fail 'holdings never wiped in B (wipe on_tx handler did not run)' }
-    } else {
-        Note 'psql not found -- falling back to HTTP 404 as a WEAKER wipe signal'
-        $w = Invoke-Curl @("http://127.0.0.1:$GPort/inventory/character/$cid", '-H', 'X-Api-Key: dev-key-client', '-H', "Authorization: Bearer $Token")
-        Write-Host "    -> HTTP $($w.Code)"
-        if ($w.Code -eq '404') { Pass 'post-delete GET -> 404 (character gone; DB wipe unverified, psql missing)' } else { Fail "post-delete expected 404, got $($w.Code)" }
+    $wiped = $false
+    for ($i = 1; $i -le 30; $i++) {
+        $count = (Invoke-Sql "SELECT count(*) FROM inventory.holdings WHERE owner_type='character' AND owner_id='$cid';").Trim()
+        Write-Host "    attempt $i -> inventory.holdings rows for $cid = $count"
+        if ($count -eq '0') { Pass 'holdings row wiped in B (integrity via character.deleted event, no FK cascade)'; $wiped = $true; break }
+        Start-Sleep -Milliseconds 500
     }
+    if (-not $wiped) { Fail 'holdings never wiped in B (wipe on_tx handler did not run)' }
 
-    Write-Host "[5b] post-delete GET /inventory/character/$cid through G (Bearer `$Token)"
+    # [5b] the same character is gone via owner_of over QUIC too (a second, independent
+    # signal alongside the DB wipe check above).
+    Write-Host "[5b] post-delete GET /inventory/character/$cid through G (Bearer `$Token) -> 404"
     $w2 = Invoke-Curl @("http://127.0.0.1:$GPort/inventory/character/$cid", '-H', 'X-Api-Key: dev-key-client', '-H', "Authorization: Bearer $Token")
     Write-Host "    -> HTTP $($w2.Code)  $($w2.Body)"
+    if ($w2.Code -eq '404') { Pass 'post-delete GET -> 404 (character gone via owner_of over QUIC)' } else { Fail "post-delete GET expected 404, got $($w2.Code)" }
 
     Write-Host ''
     Write-Host "========= CONFIG LIVE-RELOAD (config-svc :$CPort -> inventory-svc) ========="
@@ -563,59 +556,55 @@ try {
     # must be granted the NEW starter in B -- config.changed flowed C's append -> the
     # shared log -> B's pull worker -> B's CachedConfig (snapshot refresh) + inventory
     # starter spec, no restart.
-    if (-not $Psql) {
-        Note 'psql not found -- SKIPPING the config live-reload assertion'
-    } else {
-        # [C1] baseline: B booted with the default starter (no config row) -> starter_sword.
-        Write-Host '[C1] baseline: create a character through G -> starter should be the DEFAULT starter_sword'
-        $bc = Invoke-Curl @('-X', 'POST', "http://127.0.0.1:$GPort/characters",
-            '-H', 'X-Api-Key: dev-key-client', '-H', "Authorization: Bearer $Token", '-H', 'Content-Type: application/json',
-            '-d', '{"name":"Baseline","class":"mage"}')
-        $bcid = $null
-        if ($bc.Body -match '"id":"([^"]+)"') { $bcid = $Matches[1] }
-        $baseOk = $false
-        for ($i = 1; $i -le 30; $i++) {
-            $r = Invoke-Curl @("http://127.0.0.1:$GPort/inventory/character/$bcid", '-H', 'X-Api-Key: dev-key-client', '-H', "Authorization: Bearer $Token")
-            if ($r.Body -match 'starter_sword') { $baseOk = $true; break }
-            if ($r.Body -match 'health_potion') { break }
-            Start-Sleep -Milliseconds 500
-        }
-        if ($baseOk) { Pass 'baseline character granted starter_sword (B booted on the default via CachedConfig)' } else { Fail "baseline starter_sword not granted (bcid=$bcid)" }
-
-        # [C2] runtime change on C's DB: the write trigger bumps the revision, pg_notifies
-        # config_changed (B's invalidation plane refreshes CachedConfig), and appends
-        # config.changed durably (B's pull worker delivers it -> inventory reloads its
-        # starter spec).
-        Write-Host '[C2] set config inventory/starter_item=health_potion (via psql on C shared DB)'
-        Invoke-Sql "INSERT INTO config.settings (namespace,key,value) VALUES ('inventory','starter_item','health_potion') ON CONFLICT (namespace,key) DO UPDATE SET value=excluded.value;" | Out-Null
-
-        # [C3] a NEWLY created character must now be granted the NEW starter. The spec is
-        # materialized at grant time, so retry with fresh characters until it takes.
-        Write-Host '[C3] create fresh characters until one is granted health_potion (live reload C->B)'
-        $reloadOk = $false
-        for ($i = 1; $i -le 30; $i++) {
-            $nc = Invoke-Curl @('-X', 'POST', "http://127.0.0.1:$GPort/characters",
-                '-H', 'X-Api-Key: dev-key-client', '-H', "Authorization: Bearer $Token", '-H', 'Content-Type: application/json',
-                '-d', '{"name":"Reloaded","class":"mage"}')
-            $ncid = $null
-            if ($nc.Body -match '"id":"([^"]+)"') { $ncid = $Matches[1] }
-            $r = $null
-            for ($j = 1; $j -le 10; $j++) {
-                $r = Invoke-Curl @("http://127.0.0.1:$GPort/inventory/character/$ncid", '-H', 'X-Api-Key: dev-key-client', '-H', "Authorization: Bearer $Token")
-                if ($r.Body -match 'starter_sword|health_potion') { break }
-                Start-Sleep -Milliseconds 300
-            }
-            if ($r.Body -match 'health_potion') {
-                Write-Host "    attempt $i -> char $ncid granted health_potion"
-                $reloadOk = $true; break
-            }
-            Start-Sleep -Milliseconds 500
-        }
-        if ($reloadOk) { Pass 'new character granted health_potion (config.changed C->B live-reloaded CachedConfig + starter spec)' } else { Fail 'starter never changed to health_potion cross-process (config live-reload failed)' }
-
-        # Reset to default so reruns start clean.
-        Invoke-Sql "DELETE FROM config.settings WHERE namespace='inventory' AND key='starter_item';" | Out-Null
+    # [C1] baseline: B booted with the default starter (no config row) -> starter_sword.
+    Write-Host '[C1] baseline: create a character through G -> starter should be the DEFAULT starter_sword'
+    $bc = Invoke-Curl @('-X', 'POST', "http://127.0.0.1:$GPort/characters",
+        '-H', 'X-Api-Key: dev-key-client', '-H', "Authorization: Bearer $Token", '-H', 'Content-Type: application/json',
+        '-d', '{"name":"Baseline","class":"mage"}')
+    $bcid = $null
+    if ($bc.Body -match '"id":"([^"]+)"') { $bcid = $Matches[1] }
+    $baseOk = $false
+    for ($i = 1; $i -le 30; $i++) {
+        $r = Invoke-Curl @("http://127.0.0.1:$GPort/inventory/character/$bcid", '-H', 'X-Api-Key: dev-key-client', '-H', "Authorization: Bearer $Token")
+        if ($r.Body -match 'starter_sword') { $baseOk = $true; break }
+        if ($r.Body -match 'health_potion') { break }
+        Start-Sleep -Milliseconds 500
     }
+    if ($baseOk) { Pass 'baseline character granted starter_sword (B booted on the default via CachedConfig)' } else { Fail "baseline starter_sword not granted (bcid=$bcid)" }
+
+    # [C2] runtime change on C's DB: the write trigger bumps the revision, pg_notifies
+    # config_changed (B's invalidation plane refreshes CachedConfig), and appends
+    # config.changed durably (B's pull worker delivers it -> inventory reloads its
+    # starter spec).
+    Write-Host '[C2] set config inventory/starter_item=health_potion (via psql on C shared DB)'
+    Invoke-Sql "INSERT INTO config.settings (namespace,key,value) VALUES ('inventory','starter_item','health_potion') ON CONFLICT (namespace,key) DO UPDATE SET value=excluded.value;" | Out-Null
+
+    # [C3] a NEWLY created character must now be granted the NEW starter. The spec is
+    # materialized at grant time, so retry with fresh characters until it takes.
+    Write-Host '[C3] create fresh characters until one is granted health_potion (live reload C->B)'
+    $reloadOk = $false
+    for ($i = 1; $i -le 30; $i++) {
+        $nc = Invoke-Curl @('-X', 'POST', "http://127.0.0.1:$GPort/characters",
+            '-H', 'X-Api-Key: dev-key-client', '-H', "Authorization: Bearer $Token", '-H', 'Content-Type: application/json',
+            '-d', '{"name":"Reloaded","class":"mage"}')
+        $ncid = $null
+        if ($nc.Body -match '"id":"([^"]+)"') { $ncid = $Matches[1] }
+        $r = $null
+        for ($j = 1; $j -le 10; $j++) {
+            $r = Invoke-Curl @("http://127.0.0.1:$GPort/inventory/character/$ncid", '-H', 'X-Api-Key: dev-key-client', '-H', "Authorization: Bearer $Token")
+            if ($r.Body -match 'starter_sword|health_potion') { break }
+            Start-Sleep -Milliseconds 300
+        }
+        if ($r.Body -match 'health_potion') {
+            Write-Host "    attempt $i -> char $ncid granted health_potion"
+            $reloadOk = $true; break
+        }
+        Start-Sleep -Milliseconds 500
+    }
+    if ($reloadOk) { Pass 'new character granted health_potion (config.changed C->B live-reloaded CachedConfig + starter spec)' } else { Fail 'starter never changed to health_potion cross-process (config live-reload failed)' }
+
+    # Reset to default so reruns start clean.
+    Invoke-Sql "DELETE FROM config.settings WHERE namespace='inventory' AND key='starter_item';" | Out-Null
 
     Write-Host ''
     Write-Host '========= ADMIN PORTAL (gateway-svc passthrough -> admin-svc -> providers over edge) ========='
@@ -666,30 +655,26 @@ try {
     # definitive proof the cross-process record handler ran): the character CREATED in [1]
     # + DELETED in [4], and the player REGISTERED in [A1]. Then the "Audit Log" admin page
     # renders through the gateway passthrough (G -> E -> F over QUIC).
-    if (-not $Psql) {
-        Note 'psql not found -- SKIPPING the audit ledger DB assertions'
-    } else {
-        Write-Host "[AU1] poll audit.log on F for character.created + character.deleted rows (cid=$cid)"
-        $auOk = $false
-        for ($i = 1; $i -le 30; $i++) {
-            $anC = ("" + (Invoke-Sql "SELECT count(*) FROM audit.log WHERE topic='character.created' AND payload->>'character_id'='$cid';")).Trim()
-            $anD = ("" + (Invoke-Sql "SELECT count(*) FROM audit.log WHERE topic='character.deleted' AND payload->>'character_id'='$cid';")).Trim()
-            Write-Host "    attempt $i -> created=$anC deleted=$anD"
-            if ($anC -eq '1' -and $anD -eq '1') { Pass "audit-svc recorded character.created + character.deleted for $cid (durable A->F, exactly-once)"; $auOk = $true; break }
-            Start-Sleep -Milliseconds 500
-        }
-        if (-not $auOk) { Fail "audit-svc never recorded both character events for $cid (durable delivery A->F)" }
-
-        Write-Host "[AU2] poll audit.log on F for the player.registered row (pid=$PlayerId)"
-        $au2Ok = $false
-        for ($i = 1; $i -le 30; $i++) {
-            $anR = ("" + (Invoke-Sql "SELECT count(*) FROM audit.log WHERE topic='player.registered' AND payload->>'player_id'='$PlayerId';")).Trim()
-            Write-Host "    attempt $i -> player.registered=$anR"
-            if ($anR -eq '1') { Pass "audit-svc recorded player.registered for $PlayerId (durable D->F)"; $au2Ok = $true; break }
-            Start-Sleep -Milliseconds 500
-        }
-        if (-not $au2Ok) { Fail "audit-svc never recorded player.registered for $PlayerId (durable delivery D->F)" }
+    Write-Host "[AU1] poll audit.log on F for character.created + character.deleted rows (cid=$cid)"
+    $auOk = $false
+    for ($i = 1; $i -le 30; $i++) {
+        $anC = ("" + (Invoke-Sql "SELECT count(*) FROM audit.log WHERE topic='character.created' AND payload->>'character_id'='$cid';")).Trim()
+        $anD = ("" + (Invoke-Sql "SELECT count(*) FROM audit.log WHERE topic='character.deleted' AND payload->>'character_id'='$cid';")).Trim()
+        Write-Host "    attempt $i -> created=$anC deleted=$anD"
+        if ($anC -eq '1' -and $anD -eq '1') { Pass "audit-svc recorded character.created + character.deleted for $cid (durable A->F, exactly-once)"; $auOk = $true; break }
+        Start-Sleep -Milliseconds 500
     }
+    if (-not $auOk) { Fail "audit-svc never recorded both character events for $cid (durable delivery A->F)" }
+
+    Write-Host "[AU2] poll audit.log on F for the player.registered row (pid=$PlayerId)"
+    $au2Ok = $false
+    for ($i = 1; $i -le 30; $i++) {
+        $anR = ("" + (Invoke-Sql "SELECT count(*) FROM audit.log WHERE topic='player.registered' AND payload->>'player_id'='$PlayerId';")).Trim()
+        Write-Host "    attempt $i -> player.registered=$anR"
+        if ($anR -eq '1') { Pass "audit-svc recorded player.registered for $PlayerId (durable D->F)"; $au2Ok = $true; break }
+        Start-Sleep -Milliseconds 500
+    }
+    if (-not $au2Ok) { Fail "audit-svc never recorded player.registered for $PlayerId (durable delivery D->F)" }
 
     Write-Host "[AU3] GET http://127.0.0.1:$GPort/admin/audit-log WITH Basic auth -> 200 + a logged topic"
     $aud = Invoke-Curl @('-u', "${AdminUser}:${AdminPass}", "http://127.0.0.1:$GPort/admin/audit-log")
@@ -708,28 +693,24 @@ try {
     # log. Assert on the shared DB: (i) a scheduler.fired event in asyncevents.events for
     # proof-tick (advisory-lock fire), and (ii) audit-svc's pull cursor (subscription
     # audit.prune-on-scheduler.v1) advanced PAST that event's position (H -> F delivery).
-    if (-not $Psql) {
-        Note 'psql not found -- SKIPPING the scheduler assertion'
-    } else {
-        Write-Host "[SC0] seed a 2s schedule 'proof-tick' on the shared DB (immediately due, epoch last_fired)"
-        # Drop stale proof-tick events from earlier runs so SC1 proves THIS run's fire.
-        Invoke-Sql "DELETE FROM asyncevents.events WHERE topic='scheduler.fired' AND payload->>'name'='proof-tick';" | Out-Null
-        Invoke-Sql "INSERT INTO scheduler.schedules (name, interval_seconds, last_fired) VALUES ('proof-tick', 2, to_timestamp(0)) ON CONFLICT (name) DO UPDATE SET interval_seconds=2, last_fired=to_timestamp(0);" | Out-Null
-        Write-Host "[SC1] poll the shared log for scheduler.fired{proof-tick} AND audit's pull cursor past it"
-        $scOk = $false
-        for ($i = 1; $i -le 30; $i++) {
-            $scFired = ("" + (Invoke-Sql "SELECT count(*) FROM asyncevents.events WHERE topic='scheduler.fired' AND payload->>'name'='proof-tick';")).Trim()
-            $scConsumed = ("" + (Invoke-Sql "SELECT count(*) FROM asyncevents.subscriptions s, asyncevents.events e WHERE s.subscription_id='audit.prune-on-scheduler.v1' AND e.topic='scheduler.fired' AND e.payload->>'name'='proof-tick' AND (s.cursor_generation, s.cursor_xid, s.cursor_tie) >= (e.generation, e.producer_xid, e.tie_breaker);")).Trim()
-            Write-Host "    attempt $i -> fired=$scFired consumed=$scConsumed"
-            if ([int]($scFired -as [int]) -ge 1 -and [int]($scConsumed -as [int]) -ge 1) {
-                Pass "scheduler-svc fired proof-tick durably (advisory-lock + stillDue re-check) AND audit's cursor advanced past it (H's event pulled by F)"
-                $scOk = $true; break
-            }
-            Start-Sleep -Milliseconds 500
+    Write-Host "[SC0] seed a 2s schedule 'proof-tick' on the shared DB (immediately due, epoch last_fired)"
+    # Drop stale proof-tick events from earlier runs so SC1 proves THIS run's fire.
+    Invoke-Sql "DELETE FROM asyncevents.events WHERE topic='scheduler.fired' AND payload->>'name'='proof-tick';" | Out-Null
+    Invoke-Sql "INSERT INTO scheduler.schedules (name, interval_seconds, last_fired) VALUES ('proof-tick', 2, to_timestamp(0)) ON CONFLICT (name) DO UPDATE SET interval_seconds=2, last_fired=to_timestamp(0);" | Out-Null
+    Write-Host "[SC1] poll the shared log for scheduler.fired{proof-tick} AND audit's pull cursor past it"
+    $scOk = $false
+    for ($i = 1; $i -le 30; $i++) {
+        $scFired = ("" + (Invoke-Sql "SELECT count(*) FROM asyncevents.events WHERE topic='scheduler.fired' AND payload->>'name'='proof-tick';")).Trim()
+        $scConsumed = ("" + (Invoke-Sql "SELECT count(*) FROM asyncevents.subscriptions s, asyncevents.events e WHERE s.subscription_id='audit.prune-on-scheduler.v1' AND e.topic='scheduler.fired' AND e.payload->>'name'='proof-tick' AND (s.cursor_generation, s.cursor_xid, s.cursor_tie) >= (e.generation, e.producer_xid, e.tie_breaker);")).Trim()
+        Write-Host "    attempt $i -> fired=$scFired consumed=$scConsumed"
+        if ([int]($scFired -as [int]) -ge 1 -and [int]($scConsumed -as [int]) -ge 1) {
+            Pass "scheduler-svc fired proof-tick durably (advisory-lock + stillDue re-check) AND audit's cursor advanced past it (H's event pulled by F)"
+            $scOk = $true; break
         }
-        if (-not $scOk) { Fail 'scheduler.fired{proof-tick} never produced+consumed (scheduler H -> shared log -> audit F)' }
-        Invoke-Sql "DELETE FROM scheduler.schedules WHERE name='proof-tick';" | Out-Null
+        Start-Sleep -Milliseconds 500
     }
+    if (-not $scOk) { Fail 'scheduler.fired{proof-tick} never produced+consumed (scheduler H -> shared log -> audit F)' }
+    Invoke-Sql "DELETE FROM scheduler.schedules WHERE name='proof-tick';" | Out-Null
 
     Write-Host ''
     Write-Host "========= MATCH TRIO (match-svc :$IPort + rating-svc :$JPort + leaderboard-svc :$KPort) ========="
@@ -773,22 +754,18 @@ try {
     }
     if (-not $lbOk) { Fail "leaderboard never showed $Winner wins=1 (durable I->K delivery / upsert / routing)" }
 
-    if (-not $Psql) {
-        Note 'psql not found -- SKIPPING the match.finished audit-ledger assertion'
-    } else {
-        Write-Host "[MT3] poll audit.log on F for a match.finished row (winner=$Winner)"
-        $mt3Ok = $false
-        for ($i = 1; $i -le 30; $i++) {
-            $anMf = ("" + (Invoke-Sql "SELECT count(*) FROM audit.log WHERE topic='match.finished' AND payload->>'winner'='$Winner';")).Trim()
-            Write-Host "    attempt $i -> match.finished=$anMf"
-            if ([int]($anMf -as [int]) -ge 1) {
-                Pass "audit-svc recorded match.finished for $Winner (durable I->F, exactly-once)"
-                $mt3Ok = $true; break
-            }
-            Start-Sleep -Milliseconds 500
+    Write-Host "[MT3] poll audit.log on F for a match.finished row (winner=$Winner)"
+    $mt3Ok = $false
+    for ($i = 1; $i -le 30; $i++) {
+        $anMf = ("" + (Invoke-Sql "SELECT count(*) FROM audit.log WHERE topic='match.finished' AND payload->>'winner'='$Winner';")).Trim()
+        Write-Host "    attempt $i -> match.finished=$anMf"
+        if ([int]($anMf -as [int]) -ge 1) {
+            Pass "audit-svc recorded match.finished for $Winner (durable I->F, exactly-once)"
+            $mt3Ok = $true; break
         }
-        if (-not $mt3Ok) { Fail "audit-svc never recorded match.finished for $Winner (durable delivery I->F)" }
+        Start-Sleep -Milliseconds 500
     }
+    if (-not $mt3Ok) { Fail "audit-svc never recorded match.finished for $Winner (durable delivery I->F)" }
 
     Write-Host "[MT4] second POST /match/report same winner -> leaderboard wins=2 (accumulating upsert)"
     $mr2 = Invoke-Curl @('-X', 'POST', "http://127.0.0.1:$GPort/match/report",
@@ -809,32 +786,26 @@ try {
     }
     if (-not $mt4Ok) { Fail "leaderboard never reached wins=2 for $Winner (accumulating upsert)" }
 
-    if (-not $Psql) {
-        Note 'psql not found -- SKIPPING the rating persistent-projection assertion'
-    } else {
-        # rating is a DURABLE PROJECTION (Step 9), not in-memory: the +15/-15 handler upserts
-        # rating.ratings on J inside the delivery tx. After the two reports above the winner
-        # is 1000+15+15=1030 and the loser 1000-15-15=970 -- a persisted value the checkpoint
-        # advanced over, so a restart would NOT reset it.
-        Write-Host "[MT5] poll rating.ratings on J for the persisted projection (winner=$Winner -> mmr=1030, loser=$Loser -> mmr=970)"
-        $mt5Ok = $false
-        for ($i = 1; $i -le 30; $i++) {
-            $wMmr = ("" + (Invoke-Sql "SELECT coalesce((SELECT mmr FROM rating.ratings WHERE player='$Winner'), -1);")).Trim()
-            $lMmr = ("" + (Invoke-Sql "SELECT coalesce((SELECT mmr FROM rating.ratings WHERE player='$Loser'), -1);")).Trim()
-            Write-Host "    attempt $i -> winner mmr=$wMmr, loser mmr=$lMmr"
-            if ([int]($wMmr -as [int]) -eq 1030 -and [int]($lMmr -as [int]) -eq 970) {
-                Pass "rating.ratings persisted $Winner=1030 / $Loser=970 (durable +15/-15 projection on J, restart-safe)"
-                $mt5Ok = $true; break
-            }
-            Start-Sleep -Milliseconds 500
+    # rating is a DURABLE PROJECTION (Step 9), not in-memory: the +15/-15 handler upserts
+    # rating.ratings on J inside the delivery tx. After the two reports above the winner
+    # is 1000+15+15=1030 and the loser 1000-15-15=970 -- a persisted value the checkpoint
+    # advanced over, so a restart would NOT reset it.
+    Write-Host "[MT5] poll rating.ratings on J for the persisted projection (winner=$Winner -> mmr=1030, loser=$Loser -> mmr=970)"
+    $mt5Ok = $false
+    for ($i = 1; $i -le 30; $i++) {
+        $wMmr = ("" + (Invoke-Sql "SELECT coalesce((SELECT mmr FROM rating.ratings WHERE player='$Winner'), -1);")).Trim()
+        $lMmr = ("" + (Invoke-Sql "SELECT coalesce((SELECT mmr FROM rating.ratings WHERE player='$Loser'), -1);")).Trim()
+        Write-Host "    attempt $i -> winner mmr=$wMmr, loser mmr=$lMmr"
+        if ([int]($wMmr -as [int]) -eq 1030 -and [int]($lMmr -as [int]) -eq 970) {
+            Pass "rating.ratings persisted $Winner=1030 / $Loser=970 (durable +15/-15 projection on J, restart-safe)"
+            $mt5Ok = $true; break
         }
-        if (-not $mt5Ok) { Fail "rating.ratings never reached winner=1030 / loser=970 (durable projection on J)" }
+        Start-Sleep -Milliseconds 500
     }
+    if (-not $mt5Ok) { Fail "rating.ratings never reached winner=1030 / loser=970 (durable projection on J)" }
 
-    if ($Psql) {
-        Invoke-Sql "DELETE FROM leaderboard.scores WHERE player IN ('$Winner','$Loser');" | Out-Null
-        Invoke-Sql "DELETE FROM rating.ratings WHERE player IN ('$Winner','$Loser');" | Out-Null
-    }
+    Invoke-Sql "DELETE FROM leaderboard.scores WHERE player IN ('$Winner','$Loser');" | Out-Null
+    Invoke-Sql "DELETE FROM rating.ratings WHERE player IN ('$Winner','$Loser');" | Out-Null
 
     Write-Host ''
     Write-Host "========= PLAYER QUIC FRONT (via gateway-svc :$PlayerPort) ========="

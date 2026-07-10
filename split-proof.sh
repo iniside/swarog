@@ -152,7 +152,8 @@ new_uuid() {
     fi
 }
 
-# --- psql discovery (local Postgres is the test DB) --------------------------
+# --- psql discovery (local Postgres is the test DB; REQUIRED -- the DB assertions
+# below are not optional, so a missing psql fails the whole proof at startup) -----
 find_psql() {
     if command -v psql >/dev/null 2>&1; then command -v psql; return; fi
     local p
@@ -162,11 +163,16 @@ find_psql() {
     echo ""
 }
 PSQL="$(find_psql)"
+if [ -z "$PSQL" ]; then
+    echo "split-proof: psql not found -- local Postgres is the test DB and the DB assertions are mandatory; install psql or put it on PATH" >&2
+    exit 1
+fi
 
-# Run one SQL statement against the test DB (best-effort; empty PSQL -> no-op).
+# Run one SQL statement against the test DB. Follows DATABASE_URL natively -- psql
+# accepts a connection URI directly, so no DSN parsing is needed and percent-encoded
+# passwords / sslmode query params ride along for free.
 pg() {
-    [ -n "$PSQL" ] || return 1
-    PGPASSWORD=gamebackend "$PSQL" -U gamebackend -h localhost -d gamebackend -t -A -c "$1" 2>/dev/null
+    "$PSQL" "$DATABASE_URL" -t -A -c "$1" 2>/dev/null
 }
 
 # --- teardown: kill all processes on ANY exit --------------------------------
@@ -348,12 +354,8 @@ wait_healthy "$A_PORT" "A (characters-svc)" || { echo "A failed to start"; exit 
 # --- reset the config baseline: B must boot with the DEFAULT starter (starter_sword),
 # so the later runtime change to health_potion is provably a LIVE reload, not a boot
 # value. DELETE fires no NOTIFY, but C/B are not up yet, so their boot loads see no row.
-if [ -n "$PSQL" ]; then
-    pg "DELETE FROM config.settings WHERE namespace='inventory' AND key='starter_item';" >/dev/null
-    note "reset config baseline (deleted inventory/starter_item)"
-else
-    note "psql not found -- the config live-reload assertion will SKIP"
-fi
+pg "DELETE FROM config.settings WHERE namespace='inventory' AND key='starter_item';" >/dev/null
+note "reset config baseline (deleted inventory/starter_item)"
 
 # --- start C (config-svc): gateway + config, edge :9002 ----------------------
 # C owns the config schema + write trigger and serves config.snapshot on its mTLS edge;
@@ -537,9 +539,7 @@ if [ "$K4" = "202" ]; then
 else
     fail "dev-key-server on match.report expected 202, got $K4"
 fi
-if [ -n "$PSQL" ]; then
-    pg "DELETE FROM leaderboard.scores WHERE player IN ('k3-winner','k3-loser','k4-winner','k4-loser');" >/dev/null
-fi
+pg "DELETE FROM leaderboard.scores WHERE player IN ('k3-winner','k3-loser','k4-winner','k4-loser');" >/dev/null
 
 echo ""
 echo "================ SPLIT PROOF ================"
@@ -601,27 +601,26 @@ if [ "$DCODE" = "204" ]; then pass "delete -> 204"; else fail "delete expected 2
 # 404 after delete alone only proves the character is gone via owner_of and would mask
 # an un-wiped holdings row, so we assert the DB directly (local Postgres is the test DB).
 echo "[5] poll B until the character's holdings are WIPED (character.deleted A->B)"
-if [ -n "$PSQL" ]; then
-    WIPED=0
-    for i in $(seq 1 30); do
-        N="$(PGPASSWORD=gamebackend "$PSQL" -U gamebackend -h localhost -d gamebackend -t -A -c \
-            "SELECT count(*) FROM inventory.holdings WHERE owner_type='character' AND owner_id='$CID';" 2>/dev/null | tr -d '[:space:]')"
-        echo "    attempt $i -> inventory.holdings rows for $CID = ${N:-?}"
-        if [ "$N" = "0" ]; then pass "holdings row wiped in B (integrity via character.deleted event, no FK cascade)"; WIPED=1; break; fi
-        sleep 0.5
-    done
-    [ "$WIPED" = "1" ] || fail "holdings never wiped in B (wipe on_tx handler did not run)"
-else
-    note "psql not found -- falling back to HTTP 404 as a WEAKER wipe signal"
-    W="$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:$G_PORT/inventory/character/$CID" -H "X-Api-Key: dev-key-client" -H "Authorization: Bearer $TOKEN")"
-    echo "    -> HTTP $W"
-    if [ "$W" = "404" ]; then pass "post-delete GET -> 404 (character gone; DB wipe unverified, psql missing)"; else fail "post-delete expected 404, got $W"; fi
-fi
+WIPED=0
+for i in $(seq 1 30); do
+    N="$(pg "SELECT count(*) FROM inventory.holdings WHERE owner_type='character' AND owner_id='$CID';" | tr -d '[:space:]')"
+    echo "    attempt $i -> inventory.holdings rows for $CID = ${N:-?}"
+    if [ "$N" = "0" ]; then pass "holdings row wiped in B (integrity via character.deleted event, no FK cascade)"; WIPED=1; break; fi
+    sleep 0.5
+done
+[ "$WIPED" = "1" ] || fail "holdings never wiped in B (wipe on_tx handler did not run)"
 
-# Also record the HTTP 404 (character gone via owner_of over QUIC) for the evidence doc.
-echo "[5b] post-delete GET /inventory/character/$CID through G (Bearer \$TOKEN)"
+# [5b] the same character is gone via owner_of over QUIC too (a second, independent
+# signal alongside the DB wipe check above).
+echo "[5b] post-delete GET /inventory/character/$CID through G (Bearer \$TOKEN) -> 404"
 W2="$(curl -s -w $'\n%{http_code}' "http://localhost:$G_PORT/inventory/character/$CID" -H "X-Api-Key: dev-key-client" -H "Authorization: Bearer $TOKEN")"
-echo "    -> HTTP $(echo "$W2" | tail -1)  $(echo "$W2" | sed '$d')"
+W2CODE="$(echo "$W2" | tail -1)"
+echo "    -> HTTP $W2CODE  $(echo "$W2" | sed '$d')"
+if [ "$W2CODE" = "404" ]; then
+    pass "post-delete GET -> 404 (character gone via owner_of over QUIC)"
+else
+    fail "post-delete GET expected 404, got $W2CODE"
+fi
 
 echo ""
 echo "========= CONFIG LIVE-RELOAD (config-svc :$C_PORT -> inventory-svc) ========="
@@ -630,64 +629,60 @@ echo "========= CONFIG LIVE-RELOAD (config-svc :$C_PORT -> inventory-svc) ======
 # be granted the NEW starter in B -- config.changed flowed C's append -> the shared
 # log -> B's pull worker -> B's CachedConfig (snapshot refresh) + inventory starter
 # spec, with no restart.
-if [ -z "$PSQL" ]; then
-    note "psql not found -- SKIPPING the config live-reload assertion"
+# [C1] baseline: B booted with the default starter (no config row) -> starter_sword.
+echo "[C1] baseline: create a character through G -> starter should be the DEFAULT starter_sword"
+BCID="$(curl -s -X POST "http://localhost:$G_PORT/characters" \
+    -H "X-Api-Key: dev-key-client" \
+    -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+    -d '{"name":"Baseline","class":"mage"}' | grep -o '"id":"[^"]*"' | head -1 | sed 's/"id":"//;s/"//')"
+BASE_OK=0
+for i in $(seq 1 30); do
+    R="$(curl -s "http://localhost:$G_PORT/inventory/character/$BCID" -H "X-Api-Key: dev-key-client" -H "Authorization: Bearer $TOKEN")"
+    if echo "$R" | grep -q 'starter_sword'; then BASE_OK=1; break; fi
+    if echo "$R" | grep -q 'health_potion'; then break; fi
+    sleep 0.5
+done
+if [ "$BASE_OK" = "1" ]; then
+    pass "baseline character granted starter_sword (B booted on the default via CachedConfig)"
 else
-    # [C1] baseline: B booted with the default starter (no config row) -> starter_sword.
-    echo "[C1] baseline: create a character through G -> starter should be the DEFAULT starter_sword"
-    BCID="$(curl -s -X POST "http://localhost:$G_PORT/characters" \
+    fail "baseline starter_sword not granted (BCID=$BCID) -- $R"
+fi
+
+# [C2] runtime change on C's DB: the write trigger bumps the revision, pg_notifies
+# config_changed (B's invalidation plane refreshes CachedConfig), and appends
+# config.changed durably (B's pull worker delivers it -> inventory reloads its spec).
+echo "[C2] set config inventory/starter_item=health_potion (via psql on C's shared DB)"
+pg "INSERT INTO config.settings (namespace,key,value) VALUES ('inventory','starter_item','health_potion') ON CONFLICT (namespace,key) DO UPDATE SET value=excluded.value;" >/dev/null
+
+# [C3] a NEWLY created character must now be granted the NEW starter. The spec is
+# materialized at grant time, so retry with fresh characters until the live-reloaded
+# value takes effect (or time out).
+echo "[C3] create fresh characters until one is granted health_potion (live reload C->B)"
+RELOAD_OK=0
+for i in $(seq 1 30); do
+    NCID="$(curl -s -X POST "http://localhost:$G_PORT/characters" \
         -H "X-Api-Key: dev-key-client" \
         -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-        -d '{"name":"Baseline","class":"mage"}' | grep -o '"id":"[^"]*"' | head -1 | sed 's/"id":"//;s/"//')"
-    BASE_OK=0
-    for i in $(seq 1 30); do
-        R="$(curl -s "http://localhost:$G_PORT/inventory/character/$BCID" -H "X-Api-Key: dev-key-client" -H "Authorization: Bearer $TOKEN")"
-        if echo "$R" | grep -q 'starter_sword'; then BASE_OK=1; break; fi
-        if echo "$R" | grep -q 'health_potion'; then break; fi
-        sleep 0.5
+        -d '{"name":"Reloaded","class":"mage"}' | grep -o '"id":"[^"]*"' | head -1 | sed 's/"id":"//;s/"//')"
+    for j in $(seq 1 10); do
+        R="$(curl -s "http://localhost:$G_PORT/inventory/character/$NCID" -H "X-Api-Key: dev-key-client" -H "Authorization: Bearer $TOKEN")"
+        echo "$R" | grep -qE 'starter_sword|health_potion' && break
+        sleep 0.3
     done
-    if [ "$BASE_OK" = "1" ]; then
-        pass "baseline character granted starter_sword (B booted on the default via CachedConfig)"
-    else
-        fail "baseline starter_sword not granted (BCID=$BCID) -- $R"
+    if echo "$R" | grep -q 'health_potion'; then
+        echo "    attempt $i -> char $NCID granted health_potion"
+        RELOAD_OK=1; break
     fi
-
-    # [C2] runtime change on C's DB: the write trigger bumps the revision, pg_notifies
-    # config_changed (B's invalidation plane refreshes CachedConfig), and appends
-    # config.changed durably (B's pull worker delivers it -> inventory reloads its spec).
-    echo "[C2] set config inventory/starter_item=health_potion (via psql on C's shared DB)"
-    pg "INSERT INTO config.settings (namespace,key,value) VALUES ('inventory','starter_item','health_potion') ON CONFLICT (namespace,key) DO UPDATE SET value=excluded.value;" >/dev/null
-
-    # [C3] a NEWLY created character must now be granted the NEW starter. The spec is
-    # materialized at grant time, so retry with fresh characters until the live-reloaded
-    # value takes effect (or time out).
-    echo "[C3] create fresh characters until one is granted health_potion (live reload C->B)"
-    RELOAD_OK=0
-    for i in $(seq 1 30); do
-        NCID="$(curl -s -X POST "http://localhost:$G_PORT/characters" \
-            -H "X-Api-Key: dev-key-client" \
-            -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-            -d '{"name":"Reloaded","class":"mage"}' | grep -o '"id":"[^"]*"' | head -1 | sed 's/"id":"//;s/"//')"
-        for j in $(seq 1 10); do
-            R="$(curl -s "http://localhost:$G_PORT/inventory/character/$NCID" -H "X-Api-Key: dev-key-client" -H "Authorization: Bearer $TOKEN")"
-            echo "$R" | grep -qE 'starter_sword|health_potion' && break
-            sleep 0.3
-        done
-        if echo "$R" | grep -q 'health_potion'; then
-            echo "    attempt $i -> char $NCID granted health_potion"
-            RELOAD_OK=1; break
-        fi
-        sleep 0.5
-    done
-    if [ "$RELOAD_OK" = "1" ]; then
-        pass "new character granted health_potion (config.changed C->B live-reloaded CachedConfig + starter spec)"
-    else
-        fail "starter never changed to health_potion cross-process (config live-reload failed) -- $R"
-    fi
-
-    # Reset to default so reruns start clean.
-    pg "DELETE FROM config.settings WHERE namespace='inventory' AND key='starter_item';" >/dev/null
+    sleep 0.5
+done
+if [ "$RELOAD_OK" = "1" ]; then
+    pass "new character granted health_potion (config.changed C->B live-reloaded CachedConfig + starter spec)"
+else
+    fail "starter never changed to health_potion cross-process (config live-reload failed) -- $R"
 fi
+
+# Reset to default so reruns start clean.
+pg "DELETE FROM config.settings WHERE namespace='inventory' AND key='starter_item';" >/dev/null
 
 echo ""
 echo "========= ADMIN PORTAL (gateway-svc passthrough -> admin-svc -> providers over edge) ========="
@@ -749,36 +744,32 @@ echo "========= AUDIT LEDGER (durable events -> audit-svc :$F_PORT) ========="
 #   (ii) the player REGISTERED in [A1] -> player.registered,
 #   (iii) the "Audit Log" admin page renders through the gateway passthrough (G -> E ->
 #         F over QUIC).
-if [ -z "$PSQL" ]; then
-    note "psql not found -- SKIPPING the audit ledger DB assertions"
-else
-    echo "[AU1] poll audit.log on F for character.created + character.deleted rows (CID=$CID)"
-    AU_OK=0
-    for i in $(seq 1 30); do
-        AN_CREATED="$(pg "SELECT count(*) FROM audit.log WHERE topic='character.created' AND payload->>'character_id'='$CID';" | tr -d '[:space:]')"
-        AN_DELETED="$(pg "SELECT count(*) FROM audit.log WHERE topic='character.deleted' AND payload->>'character_id'='$CID';" | tr -d '[:space:]')"
-        echo "    attempt $i -> created=${AN_CREATED:-?} deleted=${AN_DELETED:-?}"
-        if [ "$AN_CREATED" = "1" ] && [ "$AN_DELETED" = "1" ]; then
-            pass "audit-svc recorded character.created + character.deleted for $CID (durable A->F, exactly-once)"
-            AU_OK=1; break
-        fi
-        sleep 0.5
-    done
-    [ "$AU_OK" = "1" ] || fail "audit-svc never recorded both character events for $CID (durable delivery A->F)"
+echo "[AU1] poll audit.log on F for character.created + character.deleted rows (CID=$CID)"
+AU_OK=0
+for i in $(seq 1 30); do
+    AN_CREATED="$(pg "SELECT count(*) FROM audit.log WHERE topic='character.created' AND payload->>'character_id'='$CID';" | tr -d '[:space:]')"
+    AN_DELETED="$(pg "SELECT count(*) FROM audit.log WHERE topic='character.deleted' AND payload->>'character_id'='$CID';" | tr -d '[:space:]')"
+    echo "    attempt $i -> created=${AN_CREATED:-?} deleted=${AN_DELETED:-?}"
+    if [ "$AN_CREATED" = "1" ] && [ "$AN_DELETED" = "1" ]; then
+        pass "audit-svc recorded character.created + character.deleted for $CID (durable A->F, exactly-once)"
+        AU_OK=1; break
+    fi
+    sleep 0.5
+done
+[ "$AU_OK" = "1" ] || fail "audit-svc never recorded both character events for $CID (durable delivery A->F)"
 
-    echo "[AU2] poll audit.log on F for the player.registered row (PID=$PID)"
-    AU2_OK=0
-    for i in $(seq 1 30); do
-        AN_REG="$(pg "SELECT count(*) FROM audit.log WHERE topic='player.registered' AND payload->>'player_id'='$PID';" | tr -d '[:space:]')"
-        echo "    attempt $i -> player.registered=${AN_REG:-?}"
-        if [ "$AN_REG" = "1" ]; then
-            pass "audit-svc recorded player.registered for $PID (durable D->F)"
-            AU2_OK=1; break
-        fi
-        sleep 0.5
-    done
-    [ "$AU2_OK" = "1" ] || fail "audit-svc never recorded player.registered for $PID (durable delivery D->F)"
-fi
+echo "[AU2] poll audit.log on F for the player.registered row (PID=$PID)"
+AU2_OK=0
+for i in $(seq 1 30); do
+    AN_REG="$(pg "SELECT count(*) FROM audit.log WHERE topic='player.registered' AND payload->>'player_id'='$PID';" | tr -d '[:space:]')"
+    echo "    attempt $i -> player.registered=${AN_REG:-?}"
+    if [ "$AN_REG" = "1" ]; then
+        pass "audit-svc recorded player.registered for $PID (durable D->F)"
+        AU2_OK=1; break
+    fi
+    sleep 0.5
+done
+[ "$AU2_OK" = "1" ] || fail "audit-svc never recorded player.registered for $PID (durable delivery D->F)"
 
 echo "[AU3] GET http://localhost:$G_PORT/admin/audit-log WITH Basic auth -> 200 + a logged topic"
 AUD="$(curl -s -w $'\n%{http_code}' -u "$ADMIN_USER:$ADMIN_PASS" "http://localhost:$G_PORT/admin/audit-log")"
@@ -799,29 +790,25 @@ echo "========= SCHEDULER (scheduler-svc :$H_PORT -> audit-svc :$F_PORT) =======
 #   (i)  a scheduler.fired event in asyncevents.events for proof-tick (advisory-lock fire),
 #   (ii) audit-svc's pull cursor (subscription audit.prune-on-scheduler.v1) advanced
 #        PAST that event's position -- H's event was delivered to F's worker.
-if [ -z "$PSQL" ]; then
-    note "psql not found -- SKIPPING the scheduler assertion"
-else
-    echo "[SC0] seed a 2s schedule 'proof-tick' on the shared DB (immediately due, epoch last_fired)"
-    # Drop stale proof-tick events from earlier runs so SC1 proves THIS run's fire.
-    pg "DELETE FROM asyncevents.events WHERE topic='scheduler.fired' AND payload->>'name'='proof-tick';" >/dev/null
-    pg "INSERT INTO scheduler.schedules (name, interval_seconds, last_fired) VALUES ('proof-tick', 2, to_timestamp(0)) ON CONFLICT (name) DO UPDATE SET interval_seconds=2, last_fired=to_timestamp(0);" >/dev/null
-    echo "[SC1] poll the shared log for scheduler.fired{proof-tick} AND audit's pull cursor past it"
-    SC_OK=0
-    for i in $(seq 1 30); do
-        SC_FIRED="$(pg "SELECT count(*) FROM asyncevents.events WHERE topic='scheduler.fired' AND payload->>'name'='proof-tick';" | tr -d '[:space:]')"
-        SC_CONSUMED="$(pg "SELECT count(*) FROM asyncevents.subscriptions s, asyncevents.events e WHERE s.subscription_id='audit.prune-on-scheduler.v1' AND e.topic='scheduler.fired' AND e.payload->>'name'='proof-tick' AND (s.cursor_generation, s.cursor_xid, s.cursor_tie) >= (e.generation, e.producer_xid, e.tie_breaker);" | tr -d '[:space:]')"
-        echo "    attempt $i -> fired=${SC_FIRED:-?} consumed=${SC_CONSUMED:-?}"
-        if [ "${SC_FIRED:-0}" -ge 1 ] && [ "${SC_CONSUMED:-0}" -ge 1 ]; then
-            pass "scheduler-svc fired proof-tick durably (advisory-lock + stillDue re-check) AND audit's cursor advanced past it (H's event pulled by F)"
-            SC_OK=1; break
-        fi
-        sleep 0.5
-    done
-    [ "$SC_OK" = "1" ] || fail "scheduler.fired{proof-tick} never produced+consumed (scheduler H -> shared log -> audit F)"
-    # Clean up so reruns start fresh (retention GC arrives at plan Step 5).
-    pg "DELETE FROM scheduler.schedules WHERE name='proof-tick';" >/dev/null
-fi
+echo "[SC0] seed a 2s schedule 'proof-tick' on the shared DB (immediately due, epoch last_fired)"
+# Drop stale proof-tick events from earlier runs so SC1 proves THIS run's fire.
+pg "DELETE FROM asyncevents.events WHERE topic='scheduler.fired' AND payload->>'name'='proof-tick';" >/dev/null
+pg "INSERT INTO scheduler.schedules (name, interval_seconds, last_fired) VALUES ('proof-tick', 2, to_timestamp(0)) ON CONFLICT (name) DO UPDATE SET interval_seconds=2, last_fired=to_timestamp(0);" >/dev/null
+echo "[SC1] poll the shared log for scheduler.fired{proof-tick} AND audit's pull cursor past it"
+SC_OK=0
+for i in $(seq 1 30); do
+    SC_FIRED="$(pg "SELECT count(*) FROM asyncevents.events WHERE topic='scheduler.fired' AND payload->>'name'='proof-tick';" | tr -d '[:space:]')"
+    SC_CONSUMED="$(pg "SELECT count(*) FROM asyncevents.subscriptions s, asyncevents.events e WHERE s.subscription_id='audit.prune-on-scheduler.v1' AND e.topic='scheduler.fired' AND e.payload->>'name'='proof-tick' AND (s.cursor_generation, s.cursor_xid, s.cursor_tie) >= (e.generation, e.producer_xid, e.tie_breaker);" | tr -d '[:space:]')"
+    echo "    attempt $i -> fired=${SC_FIRED:-?} consumed=${SC_CONSUMED:-?}"
+    if [ "${SC_FIRED:-0}" -ge 1 ] && [ "${SC_CONSUMED:-0}" -ge 1 ]; then
+        pass "scheduler-svc fired proof-tick durably (advisory-lock + stillDue re-check) AND audit's cursor advanced past it (H's event pulled by F)"
+        SC_OK=1; break
+    fi
+    sleep 0.5
+done
+[ "$SC_OK" = "1" ] || fail "scheduler.fired{proof-tick} never produced+consumed (scheduler H -> shared log -> audit F)"
+# Clean up so reruns start fresh (retention GC arrives at plan Step 5).
+pg "DELETE FROM scheduler.schedules WHERE name='proof-tick';" >/dev/null
 
 echo ""
 echo "========= MATCH TRIO (match-svc :$I_PORT + rating-svc :$J_PORT + leaderboard-svc :$K_PORT) ========="
@@ -867,22 +854,18 @@ for i in $(seq 1 30); do
 done
 [ "$LB_OK" = "1" ] || fail "leaderboard never showed $WINNER wins=1 (durable I->K delivery / upsert / routing)"
 
-if [ -z "$PSQL" ]; then
-    note "psql not found -- SKIPPING the match.finished audit-ledger assertion"
-else
-    echo "[MT3] poll audit.log on F for a match.finished row (winner=$WINNER)"
-    MT3_OK=0
-    for i in $(seq 1 30); do
-        AN_MF="$(pg "SELECT count(*) FROM audit.log WHERE topic='match.finished' AND payload->>'winner'='$WINNER';" | tr -d '[:space:]')"
-        echo "    attempt $i -> match.finished=${AN_MF:-?}"
-        if [ "${AN_MF:-0}" -ge 1 ]; then
-            pass "audit-svc recorded match.finished for $WINNER (durable I->F, exactly-once)"
-            MT3_OK=1; break
-        fi
-        sleep 0.5
-    done
-    [ "$MT3_OK" = "1" ] || fail "audit-svc never recorded match.finished for $WINNER (durable delivery I->F)"
-fi
+echo "[MT3] poll audit.log on F for a match.finished row (winner=$WINNER)"
+MT3_OK=0
+for i in $(seq 1 30); do
+    AN_MF="$(pg "SELECT count(*) FROM audit.log WHERE topic='match.finished' AND payload->>'winner'='$WINNER';" | tr -d '[:space:]')"
+    echo "    attempt $i -> match.finished=${AN_MF:-?}"
+    if [ "${AN_MF:-0}" -ge 1 ]; then
+        pass "audit-svc recorded match.finished for $WINNER (durable I->F, exactly-once)"
+        MT3_OK=1; break
+    fi
+    sleep 0.5
+done
+[ "$MT3_OK" = "1" ] || fail "audit-svc never recorded match.finished for $WINNER (durable delivery I->F)"
 
 echo "[MT4] second POST /match/report same winner -> leaderboard wins=2 (accumulating upsert)"
 MR2="$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://localhost:$G_PORT/match/report" \
@@ -903,33 +886,27 @@ for i in $(seq 1 30); do
 done
 [ "$MT4_OK" = "1" ] || fail "leaderboard never reached wins=2 for $WINNER (accumulating upsert)"
 
-if [ -z "$PSQL" ]; then
-    note "psql not found -- SKIPPING the rating persistent-projection assertion"
-else
-    # rating is a DURABLE PROJECTION (Step 9), not in-memory: the +15/-15 handler upserts
-    # rating.ratings on J inside the delivery tx. After the two reports above the winner is
-    # 1000+15+15=1030 and the loser 1000-15-15=970 -- a persisted value the checkpoint
-    # advanced over, so a restart would NOT reset it.
-    echo "[MT5] poll rating.ratings on J for the persisted projection ($WINNER -> mmr=1030, $LOSER -> mmr=970)"
-    MT5_OK=0
-    for i in $(seq 1 30); do
-        W_MMR="$(pg "SELECT coalesce((SELECT mmr FROM rating.ratings WHERE player='$WINNER'), -1);" | tr -d '[:space:]')"
-        L_MMR="$(pg "SELECT coalesce((SELECT mmr FROM rating.ratings WHERE player='$LOSER'), -1);" | tr -d '[:space:]')"
-        echo "    attempt $i -> winner mmr=${W_MMR:-?}, loser mmr=${L_MMR:-?}"
-        if [ "${W_MMR:-0}" = "1030" ] && [ "${L_MMR:-0}" = "970" ]; then
-            pass "rating.ratings persisted $WINNER=1030 / $LOSER=970 (durable +15/-15 projection on J, restart-safe)"
-            MT5_OK=1; break
-        fi
-        sleep 0.5
-    done
-    [ "$MT5_OK" = "1" ] || fail "rating.ratings never reached winner=1030 / loser=970 (durable projection on J)"
-fi
+# rating is a DURABLE PROJECTION (Step 9), not in-memory: the +15/-15 handler upserts
+# rating.ratings on J inside the delivery tx. After the two reports above the winner is
+# 1000+15+15=1030 and the loser 1000-15-15=970 -- a persisted value the checkpoint
+# advanced over, so a restart would NOT reset it.
+echo "[MT5] poll rating.ratings on J for the persisted projection ($WINNER -> mmr=1030, $LOSER -> mmr=970)"
+MT5_OK=0
+for i in $(seq 1 30); do
+    W_MMR="$(pg "SELECT coalesce((SELECT mmr FROM rating.ratings WHERE player='$WINNER'), -1);" | tr -d '[:space:]')"
+    L_MMR="$(pg "SELECT coalesce((SELECT mmr FROM rating.ratings WHERE player='$LOSER'), -1);" | tr -d '[:space:]')"
+    echo "    attempt $i -> winner mmr=${W_MMR:-?}, loser mmr=${L_MMR:-?}"
+    if [ "${W_MMR:-0}" = "1030" ] && [ "${L_MMR:-0}" = "970" ]; then
+        pass "rating.ratings persisted $WINNER=1030 / $LOSER=970 (durable +15/-15 projection on J, restart-safe)"
+        MT5_OK=1; break
+    fi
+    sleep 0.5
+done
+[ "$MT5_OK" = "1" ] || fail "rating.ratings never reached winner=1030 / loser=970 (durable projection on J)"
 
 # Clean up this run's leaderboard + rating rows so reruns start fresh.
-if [ -n "$PSQL" ]; then
-    pg "DELETE FROM leaderboard.scores WHERE player IN ('$WINNER','$LOSER');" >/dev/null
-    pg "DELETE FROM rating.ratings WHERE player IN ('$WINNER','$LOSER');" >/dev/null
-fi
+pg "DELETE FROM leaderboard.scores WHERE player IN ('$WINNER','$LOSER');" >/dev/null
+pg "DELETE FROM rating.ratings WHERE player IN ('$WINNER','$LOSER');" >/dev/null
 
 echo ""
 echo "========= PLAYER QUIC FRONT (via gateway-svc :$PLAYER_PORT) ========="
