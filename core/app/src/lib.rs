@@ -648,11 +648,73 @@ fn env_u32(key: &str) -> Option<u32> {
     v.parse().ok()
 }
 
-/// Resolves once SIGINT (Ctrl-C) is received. Cross-platform (this repo runs on
-/// Windows); a failure to install the handler is logged and treated as "shut down".
+/// Resolves once a shutdown signal is received, so the same graceful path (HTTP
+/// drain, QUIC drain, plane halt, ordered module stop) runs for `kill`/systemd/
+/// container stops as for an interactive Ctrl-C.
+///
+/// - unix: SIGINT (Ctrl-C) *or* SIGTERM (the default `kill`, `docker stop`,
+///   `systemctl stop`).
+/// - windows: Ctrl-C, `CTRL_CLOSE_EVENT` (console window closed), or
+///   `CTRL_SHUTDOWN_EVENT` (system shutdown).
+///
+/// A failure to install a handler is logged and treated as "shut down".
+///
+/// **Windows limitation:** `Stop-Process -Force` / `taskkill /F` map to
+/// `TerminateProcess` — no console control event ever reaches the process, so no
+/// graceful path can run for a forced kill. A graceful stop on Windows needs a
+/// *non-forced* console event (e.g. interactive Ctrl-C). The repo scripts
+/// (`run.ps1`, `split-proof.ps1`) stay hard-kill by design; this is a documented
+/// limitation, not a bug in this handler.
+#[cfg(unix)]
 async fn shutdown_signal() {
-    if let Err(err) = tokio::signal::ctrl_c().await {
-        tracing::error!(%err, "failed to listen for ctrl-c; shutting down");
+    use tokio::signal::unix::{signal, SignalKind};
+
+    let mut term = match signal(SignalKind::terminate()) {
+        Ok(term) => term,
+        Err(err) => {
+            tracing::error!(%err, "failed to listen for SIGTERM; shutting down");
+            return;
+        }
+    };
+
+    tokio::select! {
+        r = tokio::signal::ctrl_c() => {
+            if let Err(err) = r {
+                tracing::error!(%err, "failed to listen for ctrl-c; shutting down");
+            }
+        }
+        _ = term.recv() => {}
+    }
+}
+
+/// See the unix variant for the shared contract and the `taskkill /F` limitation.
+#[cfg(windows)]
+async fn shutdown_signal() {
+    use tokio::signal::windows::{ctrl_close, ctrl_shutdown};
+
+    let mut close = match ctrl_close() {
+        Ok(close) => close,
+        Err(err) => {
+            tracing::error!(%err, "failed to listen for CTRL_CLOSE_EVENT; shutting down");
+            return;
+        }
+    };
+    let mut shutdown = match ctrl_shutdown() {
+        Ok(shutdown) => shutdown,
+        Err(err) => {
+            tracing::error!(%err, "failed to listen for CTRL_SHUTDOWN_EVENT; shutting down");
+            return;
+        }
+    };
+
+    tokio::select! {
+        r = tokio::signal::ctrl_c() => {
+            if let Err(err) = r {
+                tracing::error!(%err, "failed to listen for ctrl-c; shutting down");
+            }
+        }
+        _ = close.recv() => {}
+        _ = shutdown.recv() => {}
     }
 }
 

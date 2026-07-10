@@ -176,20 +176,37 @@ pg() {
 }
 
 # --- teardown: kill all processes on ANY exit --------------------------------
+# Send SIGTERM, then wait (bounded, ~10s) for the process to actually exit so a
+# draining service (graceful HTTP/QUIC shutdown) isn't racing the next run's port
+# bind. Forced kill is a last resort if it overstays the grace window.
+stop_pid() {
+    local pid="$1" label="$2"
+    [ -n "$pid" ] || return 0
+    kill "$pid" 2>/dev/null || return 0
+    note "stopping $label (pid $pid)"
+    local i=0
+    while [ "$i" -lt 40 ]; do
+        kill -0 "$pid" 2>/dev/null || { note "stopped $label (pid $pid)"; return 0; }
+        sleep 0.25
+        i=$((i + 1))
+    done
+    note "$label (pid $pid) still alive after grace; forcing"
+    kill -9 "$pid" 2>/dev/null || true
+}
 teardown() {
-    [ -n "$A_PID" ] && kill "$A_PID" 2>/dev/null && note "stopped A (pid $A_PID)"
-    [ -n "$B_PID" ] && kill "$B_PID" 2>/dev/null && note "stopped B (pid $B_PID)"
-    [ -n "$G_PID" ] && kill "$G_PID" 2>/dev/null && note "stopped G (pid $G_PID)"
-    [ -n "$C_PID" ] && kill "$C_PID" 2>/dev/null && note "stopped C (pid $C_PID)"
-    [ -n "$D_PID" ] && kill "$D_PID" 2>/dev/null && note "stopped D (pid $D_PID)"
-    [ -n "$E_PID" ] && kill "$E_PID" 2>/dev/null && note "stopped E (pid $E_PID)"
-    [ -n "$F_PID" ] && kill "$F_PID" 2>/dev/null && note "stopped F (pid $F_PID)"
-    [ -n "$H_PID" ] && kill "$H_PID" 2>/dev/null && note "stopped H (pid $H_PID)"
-    [ -n "$I_PID" ] && kill "$I_PID" 2>/dev/null && note "stopped I (pid $I_PID)"
-    [ -n "$J_PID" ] && kill "$J_PID" 2>/dev/null && note "stopped J (pid $J_PID)"
-    [ -n "$K_PID" ] && kill "$K_PID" 2>/dev/null && note "stopped K (pid $K_PID)"
-    [ -n "$L_PID" ] && kill "$L_PID" 2>/dev/null && note "stopped L (pid $L_PID)"
-    [ -n "$M_PID" ] && kill "$M_PID" 2>/dev/null && note "stopped monolith (pid $M_PID)"
+    stop_pid "$A_PID" "A"
+    stop_pid "$B_PID" "B"
+    stop_pid "$G_PID" "G"
+    stop_pid "$C_PID" "C"
+    stop_pid "$D_PID" "D"
+    stop_pid "$E_PID" "E"
+    stop_pid "$F_PID" "F"
+    stop_pid "$H_PID" "H"
+    stop_pid "$I_PID" "I"
+    stop_pid "$J_PID" "J"
+    stop_pid "$K_PID" "K"
+    stop_pid "$L_PID" "L"
+    stop_pid "$M_PID" "monolith"
     A_PID=""; B_PID=""; G_PID=""; C_PID=""; D_PID=""; E_PID=""; F_PID=""; H_PID=""; I_PID=""; J_PID=""; K_PID=""; L_PID=""; M_PID=""
 }
 trap teardown EXIT INT TERM
