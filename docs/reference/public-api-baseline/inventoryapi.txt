@@ -1,0 +1,127 @@
+# cargo-public-api 0.52.0 -- regenerate via .\verify.ps1 -BlessPublicApi
+pub mod inventoryapi
+pub mod inventoryapi::holdings_rpc
+pub struct inventoryapi::holdings_rpc::GrantRequest
+pub inventoryapi::holdings_rpc::GrantRequest::item_id: alloc::string::String
+pub inventoryapi::holdings_rpc::GrantRequest::qty: i64
+impl core::default::Default for inventoryapi::holdings_rpc::GrantRequest
+pub fn inventoryapi::holdings_rpc::GrantRequest::default() -> inventoryapi::holdings_rpc::GrantRequest
+impl serde_core::ser::Serialize for inventoryapi::holdings_rpc::GrantRequest
+pub fn inventoryapi::holdings_rpc::GrantRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for inventoryapi::holdings_rpc::GrantRequest where inventoryapi::holdings_rpc::GrantRequest: core::default::Default
+pub fn inventoryapi::holdings_rpc::GrantRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for inventoryapi::holdings_rpc::GrantRequest
+impl core::marker::Send for inventoryapi::holdings_rpc::GrantRequest
+impl core::marker::Sync for inventoryapi::holdings_rpc::GrantRequest
+impl core::marker::Unpin for inventoryapi::holdings_rpc::GrantRequest
+impl core::marker::UnsafeUnpin for inventoryapi::holdings_rpc::GrantRequest
+impl core::panic::unwind_safe::RefUnwindSafe for inventoryapi::holdings_rpc::GrantRequest
+impl core::panic::unwind_safe::UnwindSafe for inventoryapi::holdings_rpc::GrantRequest
+pub struct inventoryapi::holdings_rpc::GrantResponse
+pub inventoryapi::holdings_rpc::GrantResponse::err: alloc::string::String
+pub inventoryapi::holdings_rpc::GrantResponse::status: opsapi::Status
+pub inventoryapi::holdings_rpc::GrantResponse::value: serde_json::value::Value
+impl serde_core::ser::Serialize for inventoryapi::holdings_rpc::GrantResponse
+pub fn inventoryapi::holdings_rpc::GrantResponse::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for inventoryapi::holdings_rpc::GrantResponse
+pub fn inventoryapi::holdings_rpc::GrantResponse::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for inventoryapi::holdings_rpc::GrantResponse
+impl core::marker::Send for inventoryapi::holdings_rpc::GrantResponse
+impl core::marker::Sync for inventoryapi::holdings_rpc::GrantResponse
+impl core::marker::Unpin for inventoryapi::holdings_rpc::GrantResponse
+impl core::marker::UnsafeUnpin for inventoryapi::holdings_rpc::GrantResponse
+impl core::panic::unwind_safe::RefUnwindSafe for inventoryapi::holdings_rpc::GrantResponse
+impl core::panic::unwind_safe::UnwindSafe for inventoryapi::holdings_rpc::GrantResponse
+pub struct inventoryapi::holdings_rpc::ListCharacterRequest
+pub inventoryapi::holdings_rpc::ListCharacterRequest::character_id: alloc::string::String
+impl core::default::Default for inventoryapi::holdings_rpc::ListCharacterRequest
+pub fn inventoryapi::holdings_rpc::ListCharacterRequest::default() -> inventoryapi::holdings_rpc::ListCharacterRequest
+impl serde_core::ser::Serialize for inventoryapi::holdings_rpc::ListCharacterRequest
+pub fn inventoryapi::holdings_rpc::ListCharacterRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for inventoryapi::holdings_rpc::ListCharacterRequest where inventoryapi::holdings_rpc::ListCharacterRequest: core::default::Default
+pub fn inventoryapi::holdings_rpc::ListCharacterRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for inventoryapi::holdings_rpc::ListCharacterRequest
+impl core::marker::Send for inventoryapi::holdings_rpc::ListCharacterRequest
+impl core::marker::Sync for inventoryapi::holdings_rpc::ListCharacterRequest
+impl core::marker::Unpin for inventoryapi::holdings_rpc::ListCharacterRequest
+impl core::marker::UnsafeUnpin for inventoryapi::holdings_rpc::ListCharacterRequest
+impl core::panic::unwind_safe::RefUnwindSafe for inventoryapi::holdings_rpc::ListCharacterRequest
+impl core::panic::unwind_safe::UnwindSafe for inventoryapi::holdings_rpc::ListCharacterRequest
+pub struct inventoryapi::holdings_rpc::ListCharacterResponse
+pub inventoryapi::holdings_rpc::ListCharacterResponse::err: alloc::string::String
+pub inventoryapi::holdings_rpc::ListCharacterResponse::status: opsapi::Status
+pub inventoryapi::holdings_rpc::ListCharacterResponse::value: serde_json::value::Value
+impl serde_core::ser::Serialize for inventoryapi::holdings_rpc::ListCharacterResponse
+pub fn inventoryapi::holdings_rpc::ListCharacterResponse::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for inventoryapi::holdings_rpc::ListCharacterResponse
+pub fn inventoryapi::holdings_rpc::ListCharacterResponse::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for inventoryapi::holdings_rpc::ListCharacterResponse
+impl core::marker::Send for inventoryapi::holdings_rpc::ListCharacterResponse
+impl core::marker::Sync for inventoryapi::holdings_rpc::ListCharacterResponse
+impl core::marker::Unpin for inventoryapi::holdings_rpc::ListCharacterResponse
+impl core::marker::UnsafeUnpin for inventoryapi::holdings_rpc::ListCharacterResponse
+impl core::panic::unwind_safe::RefUnwindSafe for inventoryapi::holdings_rpc::ListCharacterResponse
+impl core::panic::unwind_safe::UnwindSafe for inventoryapi::holdings_rpc::ListCharacterResponse
+pub struct inventoryapi::holdings_rpc::ListMineRequest
+impl core::default::Default for inventoryapi::holdings_rpc::ListMineRequest
+pub fn inventoryapi::holdings_rpc::ListMineRequest::default() -> inventoryapi::holdings_rpc::ListMineRequest
+impl serde_core::ser::Serialize for inventoryapi::holdings_rpc::ListMineRequest
+pub fn inventoryapi::holdings_rpc::ListMineRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for inventoryapi::holdings_rpc::ListMineRequest where inventoryapi::holdings_rpc::ListMineRequest: core::default::Default
+pub fn inventoryapi::holdings_rpc::ListMineRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for inventoryapi::holdings_rpc::ListMineRequest
+impl core::marker::Send for inventoryapi::holdings_rpc::ListMineRequest
+impl core::marker::Sync for inventoryapi::holdings_rpc::ListMineRequest
+impl core::marker::Unpin for inventoryapi::holdings_rpc::ListMineRequest
+impl core::marker::UnsafeUnpin for inventoryapi::holdings_rpc::ListMineRequest
+impl core::panic::unwind_safe::RefUnwindSafe for inventoryapi::holdings_rpc::ListMineRequest
+impl core::panic::unwind_safe::UnwindSafe for inventoryapi::holdings_rpc::ListMineRequest
+pub struct inventoryapi::holdings_rpc::ListMineResponse
+pub inventoryapi::holdings_rpc::ListMineResponse::err: alloc::string::String
+pub inventoryapi::holdings_rpc::ListMineResponse::status: opsapi::Status
+pub inventoryapi::holdings_rpc::ListMineResponse::value: serde_json::value::Value
+impl serde_core::ser::Serialize for inventoryapi::holdings_rpc::ListMineResponse
+pub fn inventoryapi::holdings_rpc::ListMineResponse::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for inventoryapi::holdings_rpc::ListMineResponse
+pub fn inventoryapi::holdings_rpc::ListMineResponse::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for inventoryapi::holdings_rpc::ListMineResponse
+impl core::marker::Send for inventoryapi::holdings_rpc::ListMineResponse
+impl core::marker::Sync for inventoryapi::holdings_rpc::ListMineResponse
+impl core::marker::Unpin for inventoryapi::holdings_rpc::ListMineResponse
+impl core::marker::UnsafeUnpin for inventoryapi::holdings_rpc::ListMineResponse
+impl core::panic::unwind_safe::RefUnwindSafe for inventoryapi::holdings_rpc::ListMineResponse
+impl core::panic::unwind_safe::UnwindSafe for inventoryapi::holdings_rpc::ListMineResponse
+pub const inventoryapi::holdings_rpc::METHOD_GRANT: &str
+pub const inventoryapi::holdings_rpc::METHOD_LIST_CHARACTER: &str
+pub const inventoryapi::holdings_rpc::METHOD_LIST_MINE: &str
+pub fn inventoryapi::holdings_rpc::operations(alloc::sync::Arc<(dyn inventoryapi::Holdings + core::marker::Send + core::marker::Sync)>) -> alloc::vec::Vec<opsapi::OpSet>
+pub fn inventoryapi::holdings_rpc::route_bindings() -> alloc::vec::Vec<opsapi::RouteBinding>
+pub struct inventoryapi::Holding
+pub inventoryapi::Holding::item_id: alloc::string::String
+pub inventoryapi::Holding::item_name: alloc::string::String
+pub inventoryapi::Holding::owner_id: alloc::string::String
+pub inventoryapi::Holding::owner_type: alloc::string::String
+pub inventoryapi::Holding::quantity: i64
+impl core::clone::Clone for inventoryapi::Holding
+pub fn inventoryapi::Holding::clone(&self) -> inventoryapi::Holding
+impl core::cmp::Eq for inventoryapi::Holding
+impl core::cmp::PartialEq for inventoryapi::Holding
+pub fn inventoryapi::Holding::eq(&self, &inventoryapi::Holding) -> bool
+impl core::fmt::Debug for inventoryapi::Holding
+pub fn inventoryapi::Holding::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for inventoryapi::Holding
+impl serde_core::ser::Serialize for inventoryapi::Holding
+pub fn inventoryapi::Holding::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for inventoryapi::Holding
+pub fn inventoryapi::Holding::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for inventoryapi::Holding
+impl core::marker::Send for inventoryapi::Holding
+impl core::marker::Sync for inventoryapi::Holding
+impl core::marker::Unpin for inventoryapi::Holding
+impl core::marker::UnsafeUnpin for inventoryapi::Holding
+impl core::panic::unwind_safe::RefUnwindSafe for inventoryapi::Holding
+impl core::panic::unwind_safe::UnwindSafe for inventoryapi::Holding
+pub trait inventoryapi::Holdings: core::marker::Send + core::marker::Sync
+pub fn inventoryapi::Holdings::grant<'life0, 'async_trait>(&'life0 self, opsapi::Identity, alloc::string::String, i64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<inventoryapi::Holding>, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn inventoryapi::Holdings::list_character<'life0, 'async_trait>(&'life0 self, opsapi::Identity, alloc::string::String) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<inventoryapi::Holding>, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn inventoryapi::Holdings::list_mine<'life0, 'async_trait>(&'life0 self, opsapi::Identity) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<inventoryapi::Holding>, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait

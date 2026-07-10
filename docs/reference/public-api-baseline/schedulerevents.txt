@@ -1,0 +1,26 @@
+# cargo-public-api 0.52.0 -- regenerate via .\verify.ps1 -BlessPublicApi
+pub mod schedulerevents
+pub mod schedulerevents::schedule_names
+pub const schedulerevents::schedule_names::AUDIT_PRUNE: &str
+pub struct schedulerevents::Fired
+pub schedulerevents::Fired::name: alloc::string::String
+impl core::clone::Clone for schedulerevents::Fired
+pub fn schedulerevents::Fired::clone(&self) -> schedulerevents::Fired
+impl core::cmp::Eq for schedulerevents::Fired
+impl core::cmp::PartialEq for schedulerevents::Fired
+pub fn schedulerevents::Fired::eq(&self, &schedulerevents::Fired) -> bool
+impl core::fmt::Debug for schedulerevents::Fired
+pub fn schedulerevents::Fired::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for schedulerevents::Fired
+impl serde_core::ser::Serialize for schedulerevents::Fired
+pub fn schedulerevents::Fired::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for schedulerevents::Fired
+pub fn schedulerevents::Fired::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for schedulerevents::Fired
+impl core::marker::Send for schedulerevents::Fired
+impl core::marker::Sync for schedulerevents::Fired
+impl core::marker::Unpin for schedulerevents::Fired
+impl core::marker::UnsafeUnpin for schedulerevents::Fired
+impl core::panic::unwind_safe::RefUnwindSafe for schedulerevents::Fired
+impl core::panic::unwind_safe::UnwindSafe for schedulerevents::Fired
+pub static schedulerevents::FIRED: std::sync::lazy_lock::LazyLock<bus::EventType<schedulerevents::Fired>>

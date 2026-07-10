@@ -9,6 +9,7 @@
 #   .\verify.ps1 -Slow           # + cargo-mutants mutation testing (very slow)
 #   .\verify.ps1 -All -Strict    # advisory failures ALSO flip the exit code
 #   .\verify.ps1 -All -NoInstall # never auto-install a missing CLI (it SKIPs)
+#   .\verify.ps1 -BlessPublicApi # regenerate the committed public-api snapshots and exit
 #
 # ASCII only -- PowerShell 5.1 chokes on em-dashes.
 
@@ -17,7 +18,8 @@ param(
     [switch]$All,
     [switch]$Slow,
     [switch]$Strict,
-    [switch]$NoInstall
+    [switch]$NoInstall,
+    [switch]$BlessPublicApi
 )
 
 # Deliberately NOT 'Stop' during the run phase: a failing stage must not abort
@@ -35,19 +37,27 @@ $RunSlow = $Slow.IsPresent
 $Install = -not $NoInstall.IsPresent
 $StrictOn = $Strict.IsPresent
 
-# api/*api and api/*events contract crates (additive-only guard scope) -- mirrors
-# verify.sh's PUBLIC_API_CRATES, one-to-one by domain.
-$publicApiCrates = @(
-    'accountsevents',
-    'accountsapi',
-    'apikeysapi',
-    'charactersevents',
-    'charactersapi',
-    'inventoryapi',
-    'matchevents',
-    'schedulerevents',
-    'adminapi'
-)
+# Directory holding the committed public-api snapshots (the trusted baseline).
+$publicApiBaselineDir = Join-Path $root 'docs/reference/public-api-baseline'
+
+# Get-PublicApiCrates -- the public-api gate's scope, DERIVED from the filesystem: the
+# `name = "..."` of every api/*/api/Cargo.toml and api/*/events/Cargo.toml (twin of
+# verify.sh's public_api_crates). A new domain joins the gate automatically; rpc crates
+# stay out by construction.
+function Get-PublicApiCrates {
+    $names = @()
+    $apiRoot = Join-Path $root 'api'
+    foreach ($sub in @('api', 'events')) {
+        Get-ChildItem -Path $apiRoot -Directory -ErrorAction SilentlyContinue | Sort-Object Name | ForEach-Object {
+            $toml = Join-Path (Join-Path $_.FullName $sub) 'Cargo.toml'
+            if (Test-Path $toml) {
+                $m = Select-String -Path $toml -Pattern '^name = "(.*)"' | Select-Object -First 1
+                if ($m) { $names += $m.Matches[0].Groups[1].Value }
+            }
+        }
+    }
+    $names
+}
 
 # RUSTSEC-2023-0071 (rsa 0.9.10, Marvin Attack timing side-channel): a dev-only
 # dependency of modules/accounts (mints RSA-signed test JWTs for the OIDC verifier's
@@ -140,7 +150,14 @@ function Invoke-CargoAuditStage {
     }
 }
 
-# --- Advisory stage: public-api (apidiff parity, additive-only guard) -------
+# --- Advisory stage: public-api (committed-snapshot baseline gate) -----------
+# Twin of verify.sh's public_api_stage: diffs each contract crate's current public API
+# against a COMMITTED snapshot under docs/reference/public-api-baseline/<crate>.txt. ANY
+# difference FAILs (removed lines flagged BREAKING, added ADDITIVE); re-bless intentional
+# changes via -BlessPublicApi. cargo-public-api is version-pinned and the pin recorded in
+# each snapshot header. RESIDUAL RISK: rustdoc-JSON formatting can drift across the
+# nightly toolchain itself (nightly date not pinned) -- a formatting-only diff, re-blessed
+# after confirming no symbol changes. Advisory (blocking only under -Strict).
 function Ensure-PublicApiTooling {
     $hasNightly = (& rustup toolchain list 2>$null) -match '^nightly'
     if (-not $hasNightly) {
@@ -150,7 +167,35 @@ function Ensure-PublicApiTooling {
         $hasNightly = (& rustup toolchain list 2>$null) -match '^nightly'
     }
     if (-not $hasNightly) { return $false }
-    return (Ensure-Tool 'cargo-public-api' 'cargo' @('+nightly', 'install', 'cargo-public-api', '--locked'))
+    # Pin cargo-public-api (cargo-audit precedent): rustdoc-JSON output is
+    # version-sensitive, so an unpinned bump would spuriously diff every snapshot.
+    return (Ensure-Tool 'cargo-public-api' 'cargo' @('+nightly', 'install', 'cargo-public-api', '--locked', '--version', '0.52.0'))
+}
+
+# Invoke-BlessPublicApi -- regenerate every committed snapshot and exit. First-run
+# (baseline dir absent) is fine: the dir is created here.
+function Invoke-BlessPublicApi {
+    Write-Host "== public-api bless ==" -ForegroundColor Cyan
+    if (-not (Ensure-PublicApiTooling)) {
+        Write-Host "  cannot bless: nightly toolchain / cargo-public-api unavailable" -ForegroundColor Red
+        exit 1
+    }
+    New-Item -ItemType Directory -Force -Path $publicApiBaselineDir | Out-Null
+    $pver = ((& cargo public-api --version | Select-Object -First 1) -split '\s+')[1]
+    $header = "# cargo-public-api $pver -- regenerate via .\verify.ps1 -BlessPublicApi"
+    $fail = $false
+    foreach ($pkg in (Get-PublicApiCrates)) {
+        $snap = Join-Path $publicApiBaselineDir "$pkg.txt"
+        $out = & cargo +nightly public-api -p $pkg -s --color=never
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "  ${pkg}: cargo public-api FAILED" -ForegroundColor Red
+            $fail = $true
+            continue
+        }
+        (@($header) + $out) | Set-Content -Path $snap -Encoding utf8
+        Write-Host "  blessed $pkg"
+    }
+    if ($fail) { exit 1 } else { exit 0 }
 }
 
 function Invoke-PublicApiStage {
@@ -163,46 +208,51 @@ function Invoke-PublicApiStage {
         Add-Result 'public-api' 'SKIP' $false
         return
     }
-    $wt = Join-Path ([System.IO.Path]::GetTempPath()) ("verify-public-api-" + [guid]::NewGuid().ToString('N'))
-    & git worktree add --detach $wt HEAD *>> $log
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "  FAIL (git worktree add failed, see run/verify/public-api.log)" -ForegroundColor Red
-        Add-Result 'public-api' 'FAIL' $false
-        return
-    }
-    $incompat = $false
-    try {
-        foreach ($pkg in $publicApiCrates) {
-            $base = Join-Path $verifyDir "public-api-base-$pkg.txt"
-            $cur = Join-Path $verifyDir "public-api-cur-$pkg.txt"
-            $diffOut = Join-Path $verifyDir "public-api-diff-$pkg.txt"
-            Push-Location $wt
-            & cargo public-api -p $pkg -s --color=never *> $base 2>> $log
-            Pop-Location
-            & cargo public-api -p $pkg -s --color=never *> $cur 2>> $log
-            $baseLines = Get-Content $base -ErrorAction SilentlyContinue
-            $curLines = Get-Content $cur -ErrorAction SilentlyContinue
-            $diffText = Compare-Object $baseLines $curLines
-            $diffText | ForEach-Object { "{0} {1}" -f $_.SideIndicator, $_.InputObject } | Out-File $diffOut
-            # A line only present in the BASE (SideIndicator '<=', i.e. HEAD had it,
-            # current doesn't) means a symbol vanished or its signature changed --
-            # both break a consumer. Lines only in current ('=>') are pure additions.
-            $removed = $diffText | Where-Object { $_.SideIndicator -eq '<=' }
-            if ($removed) {
-                Write-Host "  ${pkg}: INCOMPATIBLE (see run/verify/public-api-diff-$pkg.txt)" -ForegroundColor Red
-                $incompat = $true
-            } else {
-                "  ${pkg}: ok" | Out-File -Append $log
-            }
+    $diff = $false
+    $toolfail = $false
+    foreach ($pkg in (Get-PublicApiCrates)) {
+        $snap = Join-Path $publicApiBaselineDir "$pkg.txt"
+        $cur = Join-Path $verifyDir "public-api-cur-$pkg.txt"
+        $diffOut = Join-Path $verifyDir "public-api-diff-$pkg.txt"
+        # Tool errors FAIL the stage -- capture stdout only; stderr goes to the log.
+        & cargo +nightly public-api -p $pkg -s --color=never 1> $cur 2>> $log
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "  ${pkg}: cargo public-api FAILED (see run/verify/public-api.log)" -ForegroundColor Red
+            $toolfail = $true
+            continue
         }
-    } finally {
-        & git worktree remove --force $wt *>> $log
+        if (-not (Test-Path $snap)) {
+            Write-Host "  ${pkg}: MISSING baseline snapshot -- run .\verify.ps1 -BlessPublicApi" -ForegroundColor Red
+            $diff = $true
+            continue
+        }
+        # Strip the pinned-version header before comparing against live output.
+        $expected = @(Get-Content $snap | Where-Object { $_ -notmatch '^# cargo-public-api' })
+        $curLines = @(Get-Content $cur -ErrorAction SilentlyContinue)
+        $delta = Compare-Object $expected $curLines
+        if ($delta) {
+            $delta | ForEach-Object { "{0} {1}" -f $_.SideIndicator, $_.InputObject } | Out-File $diffOut
+            Write-Host "  ${pkg}: DIFFERS from committed baseline (see run/verify/public-api-diff-$pkg.txt)" -ForegroundColor Red
+            $delta | ForEach-Object {
+                if ($_.SideIndicator -eq '<=') { Write-Host ("  BREAKING - " + $_.InputObject) -ForegroundColor Red }
+                else { Write-Host ("  ADDITIVE + " + $_.InputObject) -ForegroundColor Yellow }
+            }
+            $diff = $true
+        } else {
+            "  ${pkg}: ok" | Out-File -Append $log
+        }
     }
-    if (-not $incompat) {
+    if ($toolfail) {
+        Write-Host "  FAIL (cargo public-api errored, see run/verify/public-api.log)" -ForegroundColor Red
+        Add-Result 'public-api' 'FAIL' $false
+    } elseif (-not $diff) {
         Write-Host "  PASS" -ForegroundColor Green
         Add-Result 'public-api' 'PASS' $false
     } else {
-        Write-Host "  FAIL (incompatible API changes, see run/verify/public-api-diff-*.txt)" -ForegroundColor Red
+        Write-Host "  FAIL: a crate differs from its committed baseline -- review the diff; if" -ForegroundColor Red
+        Write-Host "        intentional (additive or a versioned new contract), regenerate via" -ForegroundColor Red
+        Write-Host "        .\verify.ps1 -BlessPublicApi (or --bless-public-api). If only formatting" -ForegroundColor Red
+        Write-Host "        changed (toolchain drift), re-bless after confirming no symbol changes." -ForegroundColor Red
         Add-Result 'public-api' 'FAIL' $false
     }
 }
@@ -454,6 +504,10 @@ function Invoke-TopiccheckStage {
 }
 
 # --- Run ---------------------------------------------------------------------
+if ($BlessPublicApi) {
+    Invoke-BlessPublicApi
+}
+
 Invoke-SimpleStage 'build'   $true 'cargo' @('build', '--workspace')
 Invoke-SimpleStage 'clippy'  $true 'cargo' @('clippy', '--workspace', '--all-targets', '--', '-D', 'warnings')
 Invoke-SimpleStage 'test'    $true 'cargo' @('test', '--workspace')

@@ -8,6 +8,7 @@
 #   ./verify.sh --slow         # + cargo-mutants mutation testing (very slow)
 #   ./verify.sh --all --strict # advisory failures ALSO flip the exit code
 #   ./verify.sh --all --no-install  # never auto-install a missing CLI (it SKIPs)
+#   ./verify.sh --bless-public-api  # regenerate the committed public-api snapshots and exit
 #
 # BLOCKING (always runs):
 #   1. build         cargo build --workspace
@@ -24,10 +25,12 @@
 #   7. split-proof   ./split-proof.sh -- the eleven-process topology proof
 #
 # ADVISORY (--all):
-#   8. public-api    cargo-public-api additive-only diff of the api/*api and
-#                    api/*events contract crates vs HEAD (apidiff parity; needs a
-#                    nightly toolchain for rustdoc JSON -- auto-installed, SKIPs
-#                    cleanly if unavailable)
+#   8. public-api    cargo-public-api diff of the api/*api and api/*events contract
+#                    crates vs COMMITTED snapshots in docs/reference/public-api-baseline/
+#                    (crate list derived from the filesystem; ANY diff FAILs, removed
+#                    symbols flagged BREAKING, added ADDITIVE; re-bless with
+#                    --bless-public-api). Needs a nightly toolchain for rustdoc JSON --
+#                    auto-installed, SKIPs cleanly if unavailable.
 #   9. fuzz          cargo-fuzz targets in core/edge/fuzz/ (frame_decode, wire_decode),
 #                    10s each. SKIPs if cargo-fuzz can't execute on this platform
 #                    (Windows lacks the libFuzzer sanitizer runtime as of this writing --
@@ -57,6 +60,7 @@ cd "$(dirname "$0")"
 LEVEL="fast"
 STRICT=0
 INSTALL=1
+BLESS_PUBLIC_API=0
 for arg in "$@"; do
     case "$arg" in
         --fast) LEVEL="fast" ;;
@@ -64,6 +68,7 @@ for arg in "$@"; do
         --slow) LEVEL="slow" ;;
         --strict) STRICT=1 ;;
         --no-install) INSTALL=0 ;;
+        --bless-public-api) BLESS_PUBLIC_API=1 ;;
         *) echo "unknown arg: $arg" >&2; exit 2 ;;
     esac
 done
@@ -79,19 +84,20 @@ RUN_DIR="run"
 VERIFY_DIR="$RUN_DIR/verify"
 mkdir -p "$VERIFY_DIR"
 
-# api/*api and api/*events contract crates (the additive-only guard's scope) --
-# mirrors experiments/go-sketch/verify.sh's CONTRACT_PKGS, one-to-one by domain.
-PUBLIC_API_CRATES=(
-    accountsevents
-    accountsapi
-    apikeysapi
-    charactersevents
-    charactersapi
-    inventoryapi
-    matchevents
-    schedulerevents
-    adminapi
-)
+# Directory holding the committed public-api snapshots (the trusted baseline).
+PUBLIC_API_BASELINE_DIR="docs/reference/public-api-baseline"
+
+# public_api_crates -- the public-api gate's scope, DERIVED from the filesystem: the
+# `name = "..."` of every api/*/api/Cargo.toml and api/*/events/Cargo.toml. A new domain
+# joins the gate automatically; rpc crates stay out by construction (not globbed).
+public_api_crates() {
+    local f name
+    for f in api/*/api/Cargo.toml api/*/events/Cargo.toml; do
+        [ -f "$f" ] || continue
+        name="$(sed -n 's/^name = "\(.*\)"/\1/p' "$f" | head -1)"
+        [ -n "$name" ] && echo "$name"
+    done
+}
 
 # --- Result accumulation ------------------------------------------------------
 STAGE_NAMES=()
@@ -173,14 +179,46 @@ cargo_audit_stage() {
     fi
 }
 
-# --- Advisory stage: public-api (apidiff parity, additive-only guard) --------
-# Snapshots each contract crate's public API at HEAD (via a detached git worktree --
-# same technique as Go's apidiff stage) and diffs it against the current working
-# tree. `cargo public-api -s` prints a stable, sorted plain-text item list; any line
-# REMOVED from the base (present at HEAD, gone now) means a symbol vanished or its
-# signature changed -- both break a consumer, so that's an INCOMPATIBLE finding.
-# Pure additions (`+`-only lines) are fine. Needs a nightly toolchain for rustdoc
-# JSON; cargo-public-api itself shells out to it, no `+nightly` needed on our end.
+# --- Advisory stage: public-api (committed-snapshot baseline gate) ------------
+# Diffs each contract crate's current public API (`cargo +nightly public-api -s`, a
+# stable sorted plain-text item list) against a COMMITTED snapshot under
+# docs/reference/public-api-baseline/<crate>.txt. ANY difference FAILs: removed lines
+# are flagged BREAKING (a symbol vanished or a signature changed -- breaks a consumer),
+# added lines ADDITIVE. The operator reviews the printed diff and, if intentional
+# (additive or a versioned new contract), re-blesses via `--bless-public-api`. Unlike
+# the old HEAD-worktree diff (which guarded only uncommitted changes and so caught
+# nothing in this commit-straight-to-master repo), a committed snapshot catches
+# committed breaks. cargo-public-api is version-pinned (rustdoc-JSON output is
+# version-sensitive) and the pin is recorded in each snapshot's header. RESIDUAL RISK:
+# rustdoc-JSON formatting can still drift across the *nightly toolchain itself* (the
+# nightly date is deliberately not pinned -- a pinned nightly bit-rots); such a drift
+# shows as a formatting-only diff, re-blessed after confirming no symbol changes. This
+# stays advisory (blocking only under --strict).
+
+# bless_public_api -- regenerate every committed snapshot from the current API and exit.
+# The first-run case (baseline dir absent) is fine: the dir is created here.
+bless_public_api() {
+    echo "== public-api bless =="
+    if ! ensure_public_api_tooling; then
+        echo "  cannot bless: nightly toolchain / cargo-public-api unavailable" >&2
+        return 1
+    fi
+    mkdir -p "$PUBLIC_API_BASELINE_DIR"
+    local pver header pkg snap out rc=0
+    pver="$(cargo public-api --version 2>/dev/null | awk '{print $2}')"
+    header="# cargo-public-api $pver -- regenerate via ./verify.sh --bless-public-api"
+    for pkg in $(public_api_crates); do
+        snap="$PUBLIC_API_BASELINE_DIR/$pkg.txt"
+        if out="$(cargo +nightly public-api -p "$pkg" -s --color=never 2>/dev/null)"; then
+            { echo "$header"; printf '%s\n' "$out"; } >"$snap"
+            echo "  blessed $pkg"
+        else
+            echo "  $pkg: cargo public-api FAILED" >&2
+            rc=1
+        fi
+    done
+    return "$rc"
+}
 ensure_public_api_tooling() {
     if ! rustup toolchain list 2>/dev/null | grep -q '^nightly'; then
         if [ "$INSTALL" -eq 0 ]; then return 1; fi
@@ -188,7 +226,9 @@ ensure_public_api_tooling() {
         rustup toolchain install nightly --profile minimal >/dev/null 2>&1
     fi
     rustup toolchain list 2>/dev/null | grep -q '^nightly' || return 1
-    ensure_tool cargo-public-api cargo +nightly install cargo-public-api --locked
+    # Pin cargo-public-api (cargo-audit precedent, verify.sh:156): rustdoc-JSON output
+    # is version-sensitive, so an unpinned bump would spuriously diff every snapshot.
+    ensure_tool cargo-public-api cargo +nightly install cargo-public-api --locked --version 0.52.0
 }
 
 public_api_stage() {
@@ -200,35 +240,46 @@ public_api_stage() {
         add_result public-api SKIP false
         return
     fi
-    local wt; wt="$(mktemp -d)"; rmdir "$wt"
-    if ! git worktree add --detach "$wt" HEAD >>"$log" 2>&1; then
-        echo "  FAIL (git worktree add failed, see run/verify/public-api.log)"
-        add_result public-api FAIL false
-        return
-    fi
-    local incompat=0 pkg base cur diffout
-    for pkg in "${PUBLIC_API_CRATES[@]}"; do
-        base="$VERIFY_DIR/public-api-base-$pkg.txt"
+    local diff=0 toolfail=0 pkg snap expected cur diffout
+    for pkg in $(public_api_crates); do
+        snap="$PUBLIC_API_BASELINE_DIR/$pkg.txt"
         cur="$VERIFY_DIR/public-api-cur-$pkg.txt"
+        expected="$VERIFY_DIR/public-api-base-$pkg.txt"
         diffout="$VERIFY_DIR/public-api-diff-$pkg.txt"
-        ( cd "$wt" && cargo public-api -p "$pkg" -s --color=never ) >"$base" 2>>"$log" || true
-        cargo public-api -p "$pkg" -s --color=never >"$cur" 2>>"$log" || true
-        diff -u "$base" "$cur" >"$diffout" || true
-        # A "-" line NOT starting with "---" (the unified-diff file header) is a
-        # symbol removed or changed since HEAD -- the incompatible case.
-        if grep -qE '^-[^-]' "$diffout"; then
-            echo "  $pkg: INCOMPATIBLE (see run/verify/public-api-diff-$pkg.txt)" | tee -a "$log"
-            incompat=1
-        else
+        # Tool errors FAIL the stage -- no `|| true` swallowing a crash into an empty diff.
+        if ! cargo +nightly public-api -p "$pkg" -s --color=never >"$cur" 2>>"$log"; then
+            echo "  $pkg: cargo public-api FAILED (see run/verify/public-api.log)" | tee -a "$log"
+            toolfail=1
+            continue
+        fi
+        if [ ! -f "$snap" ]; then
+            echo "  $pkg: MISSING baseline snapshot -- run ./verify.sh --bless-public-api" | tee -a "$log"
+            diff=1
+            continue
+        fi
+        # Strip the pinned-version header before comparing against live output.
+        grep -v '^# cargo-public-api' "$snap" >"$expected"
+        if diff -u "$expected" "$cur" >"$diffout"; then
             echo "  $pkg: ok" >>"$log"
+        else
+            echo "  $pkg: DIFFERS from committed baseline (see run/verify/public-api-diff-$pkg.txt)" | tee -a "$log"
+            # Removed lines (present in baseline, gone now) = BREAKING; added = ADDITIVE.
+            grep -E '^-[^-]' "$diffout" | sed 's/^-/  BREAKING -/' | tee -a "$log"
+            grep -E '^\+[^+]' "$diffout" | sed 's/^+/  ADDITIVE +/' | tee -a "$log"
+            diff=1
         fi
     done
-    git worktree remove --force "$wt" >>"$log" 2>&1 || true
-    if [ "$incompat" -eq 0 ]; then
+    if [ "$toolfail" -eq 1 ]; then
+        echo "  FAIL (cargo public-api errored, see run/verify/public-api.log)"
+        add_result public-api FAIL false
+    elif [ "$diff" -eq 0 ]; then
         echo "  PASS"
         add_result public-api PASS false
     else
-        echo "  FAIL (incompatible API changes, see run/verify/public-api-diff-*.txt)"
+        echo "  FAIL: a crate differs from its committed baseline -- review the diff; if"
+        echo "        intentional (additive or a versioned new contract), regenerate via"
+        echo "        ./verify.sh --bless-public-api (or -BlessPublicApi). If only formatting"
+        echo "        changed (toolchain drift), re-bless after confirming no symbol changes."
         add_result public-api FAIL false
     fi
 }
@@ -480,6 +531,11 @@ topiccheck_stage() {
 }
 
 # --- Run -----------------------------------------------------------------------
+if [ "$BLESS_PUBLIC_API" -eq 1 ]; then
+    bless_public_api
+    exit $?
+fi
+
 simple_stage build   true cargo build --workspace
 simple_stage clippy  true cargo clippy --workspace --all-targets -- -D warnings
 simple_stage test    true cargo test --workspace

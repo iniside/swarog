@@ -1,0 +1,38 @@
+# cargo-public-api 0.52.0 -- regenerate via .\verify.ps1 -BlessPublicApi
+pub mod matchapi
+pub mod matchapi::match_rpc
+pub struct matchapi::match_rpc::ReportRequest
+pub matchapi::match_rpc::ReportRequest::loser: alloc::string::String
+pub matchapi::match_rpc::ReportRequest::winner: alloc::string::String
+impl core::default::Default for matchapi::match_rpc::ReportRequest
+pub fn matchapi::match_rpc::ReportRequest::default() -> matchapi::match_rpc::ReportRequest
+impl serde_core::ser::Serialize for matchapi::match_rpc::ReportRequest
+pub fn matchapi::match_rpc::ReportRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for matchapi::match_rpc::ReportRequest where matchapi::match_rpc::ReportRequest: core::default::Default
+pub fn matchapi::match_rpc::ReportRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for matchapi::match_rpc::ReportRequest
+impl core::marker::Send for matchapi::match_rpc::ReportRequest
+impl core::marker::Sync for matchapi::match_rpc::ReportRequest
+impl core::marker::Unpin for matchapi::match_rpc::ReportRequest
+impl core::marker::UnsafeUnpin for matchapi::match_rpc::ReportRequest
+impl core::panic::unwind_safe::RefUnwindSafe for matchapi::match_rpc::ReportRequest
+impl core::panic::unwind_safe::UnwindSafe for matchapi::match_rpc::ReportRequest
+pub struct matchapi::match_rpc::ReportResponse
+pub matchapi::match_rpc::ReportResponse::err: alloc::string::String
+pub matchapi::match_rpc::ReportResponse::status: opsapi::Status
+impl serde_core::ser::Serialize for matchapi::match_rpc::ReportResponse
+pub fn matchapi::match_rpc::ReportResponse::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for matchapi::match_rpc::ReportResponse
+pub fn matchapi::match_rpc::ReportResponse::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for matchapi::match_rpc::ReportResponse
+impl core::marker::Send for matchapi::match_rpc::ReportResponse
+impl core::marker::Sync for matchapi::match_rpc::ReportResponse
+impl core::marker::Unpin for matchapi::match_rpc::ReportResponse
+impl core::marker::UnsafeUnpin for matchapi::match_rpc::ReportResponse
+impl core::panic::unwind_safe::RefUnwindSafe for matchapi::match_rpc::ReportResponse
+impl core::panic::unwind_safe::UnwindSafe for matchapi::match_rpc::ReportResponse
+pub const matchapi::match_rpc::METHOD_REPORT: &str
+pub fn matchapi::match_rpc::operations(alloc::sync::Arc<(dyn matchapi::Match + core::marker::Send + core::marker::Sync)>) -> alloc::vec::Vec<opsapi::OpSet>
+pub fn matchapi::match_rpc::route_bindings() -> alloc::vec::Vec<opsapi::RouteBinding>
+pub trait matchapi::Match: core::marker::Send + core::marker::Sync
+pub fn matchapi::Match::report<'life0, 'async_trait>(&'life0 self, alloc::string::String, alloc::string::String) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait

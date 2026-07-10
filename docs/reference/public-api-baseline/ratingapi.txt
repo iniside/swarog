@@ -1,0 +1,36 @@
+# cargo-public-api 0.52.0 -- regenerate via .\verify.ps1 -BlessPublicApi
+pub mod ratingapi
+pub mod ratingapi::mmr_reader_rpc
+pub struct ratingapi::mmr_reader_rpc::MmrRequest
+pub ratingapi::mmr_reader_rpc::MmrRequest::player_id: alloc::string::String
+impl serde_core::ser::Serialize for ratingapi::mmr_reader_rpc::MmrRequest
+pub fn ratingapi::mmr_reader_rpc::MmrRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for ratingapi::mmr_reader_rpc::MmrRequest
+pub fn ratingapi::mmr_reader_rpc::MmrRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for ratingapi::mmr_reader_rpc::MmrRequest
+impl core::marker::Send for ratingapi::mmr_reader_rpc::MmrRequest
+impl core::marker::Sync for ratingapi::mmr_reader_rpc::MmrRequest
+impl core::marker::Unpin for ratingapi::mmr_reader_rpc::MmrRequest
+impl core::marker::UnsafeUnpin for ratingapi::mmr_reader_rpc::MmrRequest
+impl core::panic::unwind_safe::RefUnwindSafe for ratingapi::mmr_reader_rpc::MmrRequest
+impl core::panic::unwind_safe::UnwindSafe for ratingapi::mmr_reader_rpc::MmrRequest
+pub struct ratingapi::mmr_reader_rpc::MmrResponse
+pub ratingapi::mmr_reader_rpc::MmrResponse::err: alloc::string::String
+pub ratingapi::mmr_reader_rpc::MmrResponse::status: opsapi::Status
+pub ratingapi::mmr_reader_rpc::MmrResponse::value: serde_json::value::Value
+impl serde_core::ser::Serialize for ratingapi::mmr_reader_rpc::MmrResponse
+pub fn ratingapi::mmr_reader_rpc::MmrResponse::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for ratingapi::mmr_reader_rpc::MmrResponse
+pub fn ratingapi::mmr_reader_rpc::MmrResponse::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for ratingapi::mmr_reader_rpc::MmrResponse
+impl core::marker::Send for ratingapi::mmr_reader_rpc::MmrResponse
+impl core::marker::Sync for ratingapi::mmr_reader_rpc::MmrResponse
+impl core::marker::Unpin for ratingapi::mmr_reader_rpc::MmrResponse
+impl core::marker::UnsafeUnpin for ratingapi::mmr_reader_rpc::MmrResponse
+impl core::panic::unwind_safe::RefUnwindSafe for ratingapi::mmr_reader_rpc::MmrResponse
+impl core::panic::unwind_safe::UnwindSafe for ratingapi::mmr_reader_rpc::MmrResponse
+pub const ratingapi::mmr_reader_rpc::METHOD_MMR: &str
+pub fn ratingapi::mmr_reader_rpc::operations(alloc::sync::Arc<(dyn ratingapi::MmrReader + core::marker::Send + core::marker::Sync)>) -> alloc::vec::Vec<opsapi::OpSet>
+pub fn ratingapi::mmr_reader_rpc::route_bindings() -> alloc::vec::Vec<opsapi::RouteBinding>
+pub trait ratingapi::MmrReader: core::marker::Send + core::marker::Sync
+pub fn ratingapi::MmrReader::mmr<'life0, 'async_trait>(&'life0 self, alloc::string::String) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<i64, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait

@@ -1,0 +1,28 @@
+# cargo-public-api 0.52.0 -- regenerate via .\verify.ps1 -BlessPublicApi
+pub mod configevents
+pub struct configevents::Changed
+pub configevents::Changed::key: alloc::string::String
+pub configevents::Changed::namespace: alloc::string::String
+pub configevents::Changed::operation: alloc::string::String
+pub configevents::Changed::revision: i64
+pub configevents::Changed::value: core::option::Option<alloc::string::String>
+impl core::clone::Clone for configevents::Changed
+pub fn configevents::Changed::clone(&self) -> configevents::Changed
+impl core::cmp::Eq for configevents::Changed
+impl core::cmp::PartialEq for configevents::Changed
+pub fn configevents::Changed::eq(&self, &configevents::Changed) -> bool
+impl core::fmt::Debug for configevents::Changed
+pub fn configevents::Changed::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for configevents::Changed
+impl serde_core::ser::Serialize for configevents::Changed
+pub fn configevents::Changed::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for configevents::Changed
+pub fn configevents::Changed::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for configevents::Changed
+impl core::marker::Send for configevents::Changed
+impl core::marker::Sync for configevents::Changed
+impl core::marker::Unpin for configevents::Changed
+impl core::marker::UnsafeUnpin for configevents::Changed
+impl core::panic::unwind_safe::RefUnwindSafe for configevents::Changed
+impl core::panic::unwind_safe::UnwindSafe for configevents::Changed
+pub static configevents::CHANGED: std::sync::lazy_lock::LazyLock<bus::EventType<configevents::Changed>>

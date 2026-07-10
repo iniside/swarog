@@ -1,0 +1,160 @@
+# cargo-public-api 0.52.0 -- regenerate via .\verify.ps1 -BlessPublicApi
+pub mod charactersapi
+pub mod charactersapi::ownership_rpc
+pub struct charactersapi::ownership_rpc::OwnerOfRequest
+pub charactersapi::ownership_rpc::OwnerOfRequest::character_id: alloc::string::String
+impl serde_core::ser::Serialize for charactersapi::ownership_rpc::OwnerOfRequest
+pub fn charactersapi::ownership_rpc::OwnerOfRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for charactersapi::ownership_rpc::OwnerOfRequest
+pub fn charactersapi::ownership_rpc::OwnerOfRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for charactersapi::ownership_rpc::OwnerOfRequest
+impl core::marker::Send for charactersapi::ownership_rpc::OwnerOfRequest
+impl core::marker::Sync for charactersapi::ownership_rpc::OwnerOfRequest
+impl core::marker::Unpin for charactersapi::ownership_rpc::OwnerOfRequest
+impl core::marker::UnsafeUnpin for charactersapi::ownership_rpc::OwnerOfRequest
+impl core::panic::unwind_safe::RefUnwindSafe for charactersapi::ownership_rpc::OwnerOfRequest
+impl core::panic::unwind_safe::UnwindSafe for charactersapi::ownership_rpc::OwnerOfRequest
+pub struct charactersapi::ownership_rpc::OwnerOfResponse
+pub charactersapi::ownership_rpc::OwnerOfResponse::err: alloc::string::String
+pub charactersapi::ownership_rpc::OwnerOfResponse::status: opsapi::Status
+pub charactersapi::ownership_rpc::OwnerOfResponse::value: serde_json::value::Value
+impl serde_core::ser::Serialize for charactersapi::ownership_rpc::OwnerOfResponse
+pub fn charactersapi::ownership_rpc::OwnerOfResponse::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for charactersapi::ownership_rpc::OwnerOfResponse
+pub fn charactersapi::ownership_rpc::OwnerOfResponse::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for charactersapi::ownership_rpc::OwnerOfResponse
+impl core::marker::Send for charactersapi::ownership_rpc::OwnerOfResponse
+impl core::marker::Sync for charactersapi::ownership_rpc::OwnerOfResponse
+impl core::marker::Unpin for charactersapi::ownership_rpc::OwnerOfResponse
+impl core::marker::UnsafeUnpin for charactersapi::ownership_rpc::OwnerOfResponse
+impl core::panic::unwind_safe::RefUnwindSafe for charactersapi::ownership_rpc::OwnerOfResponse
+impl core::panic::unwind_safe::UnwindSafe for charactersapi::ownership_rpc::OwnerOfResponse
+pub const charactersapi::ownership_rpc::METHOD_OWNER_OF: &str
+pub fn charactersapi::ownership_rpc::operations(alloc::sync::Arc<(dyn charactersapi::Ownership + core::marker::Send + core::marker::Sync)>) -> alloc::vec::Vec<opsapi::OpSet>
+pub fn charactersapi::ownership_rpc::route_bindings() -> alloc::vec::Vec<opsapi::RouteBinding>
+pub mod charactersapi::player_rpc
+pub struct charactersapi::player_rpc::CreateRequest
+pub charactersapi::player_rpc::CreateRequest::class: alloc::string::String
+pub charactersapi::player_rpc::CreateRequest::name: alloc::string::String
+impl core::default::Default for charactersapi::player_rpc::CreateRequest
+pub fn charactersapi::player_rpc::CreateRequest::default() -> charactersapi::player_rpc::CreateRequest
+impl serde_core::ser::Serialize for charactersapi::player_rpc::CreateRequest
+pub fn charactersapi::player_rpc::CreateRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for charactersapi::player_rpc::CreateRequest where charactersapi::player_rpc::CreateRequest: core::default::Default
+pub fn charactersapi::player_rpc::CreateRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for charactersapi::player_rpc::CreateRequest
+impl core::marker::Send for charactersapi::player_rpc::CreateRequest
+impl core::marker::Sync for charactersapi::player_rpc::CreateRequest
+impl core::marker::Unpin for charactersapi::player_rpc::CreateRequest
+impl core::marker::UnsafeUnpin for charactersapi::player_rpc::CreateRequest
+impl core::panic::unwind_safe::RefUnwindSafe for charactersapi::player_rpc::CreateRequest
+impl core::panic::unwind_safe::UnwindSafe for charactersapi::player_rpc::CreateRequest
+pub struct charactersapi::player_rpc::CreateResponse
+pub charactersapi::player_rpc::CreateResponse::err: alloc::string::String
+pub charactersapi::player_rpc::CreateResponse::status: opsapi::Status
+pub charactersapi::player_rpc::CreateResponse::value: serde_json::value::Value
+impl serde_core::ser::Serialize for charactersapi::player_rpc::CreateResponse
+pub fn charactersapi::player_rpc::CreateResponse::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for charactersapi::player_rpc::CreateResponse
+pub fn charactersapi::player_rpc::CreateResponse::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for charactersapi::player_rpc::CreateResponse
+impl core::marker::Send for charactersapi::player_rpc::CreateResponse
+impl core::marker::Sync for charactersapi::player_rpc::CreateResponse
+impl core::marker::Unpin for charactersapi::player_rpc::CreateResponse
+impl core::marker::UnsafeUnpin for charactersapi::player_rpc::CreateResponse
+impl core::panic::unwind_safe::RefUnwindSafe for charactersapi::player_rpc::CreateResponse
+impl core::panic::unwind_safe::UnwindSafe for charactersapi::player_rpc::CreateResponse
+pub struct charactersapi::player_rpc::DeleteRequest
+pub charactersapi::player_rpc::DeleteRequest::character_id: alloc::string::String
+impl core::default::Default for charactersapi::player_rpc::DeleteRequest
+pub fn charactersapi::player_rpc::DeleteRequest::default() -> charactersapi::player_rpc::DeleteRequest
+impl serde_core::ser::Serialize for charactersapi::player_rpc::DeleteRequest
+pub fn charactersapi::player_rpc::DeleteRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for charactersapi::player_rpc::DeleteRequest where charactersapi::player_rpc::DeleteRequest: core::default::Default
+pub fn charactersapi::player_rpc::DeleteRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for charactersapi::player_rpc::DeleteRequest
+impl core::marker::Send for charactersapi::player_rpc::DeleteRequest
+impl core::marker::Sync for charactersapi::player_rpc::DeleteRequest
+impl core::marker::Unpin for charactersapi::player_rpc::DeleteRequest
+impl core::marker::UnsafeUnpin for charactersapi::player_rpc::DeleteRequest
+impl core::panic::unwind_safe::RefUnwindSafe for charactersapi::player_rpc::DeleteRequest
+impl core::panic::unwind_safe::UnwindSafe for charactersapi::player_rpc::DeleteRequest
+pub struct charactersapi::player_rpc::DeleteResponse
+pub charactersapi::player_rpc::DeleteResponse::err: alloc::string::String
+pub charactersapi::player_rpc::DeleteResponse::status: opsapi::Status
+impl serde_core::ser::Serialize for charactersapi::player_rpc::DeleteResponse
+pub fn charactersapi::player_rpc::DeleteResponse::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for charactersapi::player_rpc::DeleteResponse
+pub fn charactersapi::player_rpc::DeleteResponse::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for charactersapi::player_rpc::DeleteResponse
+impl core::marker::Send for charactersapi::player_rpc::DeleteResponse
+impl core::marker::Sync for charactersapi::player_rpc::DeleteResponse
+impl core::marker::Unpin for charactersapi::player_rpc::DeleteResponse
+impl core::marker::UnsafeUnpin for charactersapi::player_rpc::DeleteResponse
+impl core::panic::unwind_safe::RefUnwindSafe for charactersapi::player_rpc::DeleteResponse
+impl core::panic::unwind_safe::UnwindSafe for charactersapi::player_rpc::DeleteResponse
+pub struct charactersapi::player_rpc::ListRequest
+impl core::default::Default for charactersapi::player_rpc::ListRequest
+pub fn charactersapi::player_rpc::ListRequest::default() -> charactersapi::player_rpc::ListRequest
+impl serde_core::ser::Serialize for charactersapi::player_rpc::ListRequest
+pub fn charactersapi::player_rpc::ListRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for charactersapi::player_rpc::ListRequest where charactersapi::player_rpc::ListRequest: core::default::Default
+pub fn charactersapi::player_rpc::ListRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for charactersapi::player_rpc::ListRequest
+impl core::marker::Send for charactersapi::player_rpc::ListRequest
+impl core::marker::Sync for charactersapi::player_rpc::ListRequest
+impl core::marker::Unpin for charactersapi::player_rpc::ListRequest
+impl core::marker::UnsafeUnpin for charactersapi::player_rpc::ListRequest
+impl core::panic::unwind_safe::RefUnwindSafe for charactersapi::player_rpc::ListRequest
+impl core::panic::unwind_safe::UnwindSafe for charactersapi::player_rpc::ListRequest
+pub struct charactersapi::player_rpc::ListResponse
+pub charactersapi::player_rpc::ListResponse::err: alloc::string::String
+pub charactersapi::player_rpc::ListResponse::status: opsapi::Status
+pub charactersapi::player_rpc::ListResponse::value: serde_json::value::Value
+impl serde_core::ser::Serialize for charactersapi::player_rpc::ListResponse
+pub fn charactersapi::player_rpc::ListResponse::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for charactersapi::player_rpc::ListResponse
+pub fn charactersapi::player_rpc::ListResponse::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for charactersapi::player_rpc::ListResponse
+impl core::marker::Send for charactersapi::player_rpc::ListResponse
+impl core::marker::Sync for charactersapi::player_rpc::ListResponse
+impl core::marker::Unpin for charactersapi::player_rpc::ListResponse
+impl core::marker::UnsafeUnpin for charactersapi::player_rpc::ListResponse
+impl core::panic::unwind_safe::RefUnwindSafe for charactersapi::player_rpc::ListResponse
+impl core::panic::unwind_safe::UnwindSafe for charactersapi::player_rpc::ListResponse
+pub const charactersapi::player_rpc::METHOD_CREATE: &str
+pub const charactersapi::player_rpc::METHOD_DELETE: &str
+pub const charactersapi::player_rpc::METHOD_LIST: &str
+pub fn charactersapi::player_rpc::operations(alloc::sync::Arc<(dyn charactersapi::Player + core::marker::Send + core::marker::Sync)>) -> alloc::vec::Vec<opsapi::OpSet>
+pub fn charactersapi::player_rpc::route_bindings() -> alloc::vec::Vec<opsapi::RouteBinding>
+pub struct charactersapi::Character
+pub charactersapi::Character::class: alloc::string::String
+pub charactersapi::Character::created_at: alloc::string::String
+pub charactersapi::Character::id: alloc::string::String
+pub charactersapi::Character::name: alloc::string::String
+pub charactersapi::Character::player_id: alloc::string::String
+impl core::clone::Clone for charactersapi::Character
+pub fn charactersapi::Character::clone(&self) -> charactersapi::Character
+impl core::cmp::Eq for charactersapi::Character
+impl core::cmp::PartialEq for charactersapi::Character
+pub fn charactersapi::Character::eq(&self, &charactersapi::Character) -> bool
+impl core::fmt::Debug for charactersapi::Character
+pub fn charactersapi::Character::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for charactersapi::Character
+impl serde_core::ser::Serialize for charactersapi::Character
+pub fn charactersapi::Character::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for charactersapi::Character
+pub fn charactersapi::Character::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for charactersapi::Character
+impl core::marker::Send for charactersapi::Character
+impl core::marker::Sync for charactersapi::Character
+impl core::marker::Unpin for charactersapi::Character
+impl core::marker::UnsafeUnpin for charactersapi::Character
+impl core::panic::unwind_safe::RefUnwindSafe for charactersapi::Character
+impl core::panic::unwind_safe::UnwindSafe for charactersapi::Character
+pub trait charactersapi::Ownership: core::marker::Send + core::marker::Sync
+pub fn charactersapi::Ownership::owner_of<'life0, 'async_trait>(&'life0 self, alloc::string::String) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<alloc::string::String>, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub trait charactersapi::Player: core::marker::Send + core::marker::Sync
+pub fn charactersapi::Player::create<'life0, 'async_trait>(&'life0 self, opsapi::Identity, alloc::string::String, alloc::string::String) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<charactersapi::Character, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn charactersapi::Player::delete<'life0, 'async_trait>(&'life0 self, opsapi::Identity, alloc::string::String) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn charactersapi::Player::list<'life0, 'async_trait>(&'life0 self, opsapi::Identity) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<charactersapi::Character>, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait

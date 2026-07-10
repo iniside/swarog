@@ -1,0 +1,85 @@
+# cargo-public-api 0.52.0 -- regenerate via .\verify.ps1 -BlessPublicApi
+pub mod configapi
+pub mod configapi::config_snapshot_rpc
+pub struct configapi::config_snapshot_rpc::SnapshotRequest
+impl serde_core::ser::Serialize for configapi::config_snapshot_rpc::SnapshotRequest
+pub fn configapi::config_snapshot_rpc::SnapshotRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for configapi::config_snapshot_rpc::SnapshotRequest
+pub fn configapi::config_snapshot_rpc::SnapshotRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for configapi::config_snapshot_rpc::SnapshotRequest
+impl core::marker::Send for configapi::config_snapshot_rpc::SnapshotRequest
+impl core::marker::Sync for configapi::config_snapshot_rpc::SnapshotRequest
+impl core::marker::Unpin for configapi::config_snapshot_rpc::SnapshotRequest
+impl core::marker::UnsafeUnpin for configapi::config_snapshot_rpc::SnapshotRequest
+impl core::panic::unwind_safe::RefUnwindSafe for configapi::config_snapshot_rpc::SnapshotRequest
+impl core::panic::unwind_safe::UnwindSafe for configapi::config_snapshot_rpc::SnapshotRequest
+pub struct configapi::config_snapshot_rpc::SnapshotResponse
+pub configapi::config_snapshot_rpc::SnapshotResponse::err: alloc::string::String
+pub configapi::config_snapshot_rpc::SnapshotResponse::status: opsapi::Status
+pub configapi::config_snapshot_rpc::SnapshotResponse::value: serde_json::value::Value
+impl serde_core::ser::Serialize for configapi::config_snapshot_rpc::SnapshotResponse
+pub fn configapi::config_snapshot_rpc::SnapshotResponse::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for configapi::config_snapshot_rpc::SnapshotResponse
+pub fn configapi::config_snapshot_rpc::SnapshotResponse::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for configapi::config_snapshot_rpc::SnapshotResponse
+impl core::marker::Send for configapi::config_snapshot_rpc::SnapshotResponse
+impl core::marker::Sync for configapi::config_snapshot_rpc::SnapshotResponse
+impl core::marker::Unpin for configapi::config_snapshot_rpc::SnapshotResponse
+impl core::marker::UnsafeUnpin for configapi::config_snapshot_rpc::SnapshotResponse
+impl core::panic::unwind_safe::RefUnwindSafe for configapi::config_snapshot_rpc::SnapshotResponse
+impl core::panic::unwind_safe::UnwindSafe for configapi::config_snapshot_rpc::SnapshotResponse
+pub const configapi::config_snapshot_rpc::METHOD_SNAPSHOT: &str
+pub fn configapi::config_snapshot_rpc::operations(alloc::sync::Arc<(dyn configapi::ConfigSnapshot + core::marker::Send + core::marker::Sync)>) -> alloc::vec::Vec<opsapi::OpSet>
+pub fn configapi::config_snapshot_rpc::route_bindings() -> alloc::vec::Vec<opsapi::RouteBinding>
+pub struct configapi::Setting
+pub configapi::Setting::key: alloc::string::String
+pub configapi::Setting::namespace: alloc::string::String
+pub configapi::Setting::value: alloc::string::String
+impl core::clone::Clone for configapi::Setting
+pub fn configapi::Setting::clone(&self) -> configapi::Setting
+impl core::cmp::Eq for configapi::Setting
+impl core::cmp::PartialEq for configapi::Setting
+pub fn configapi::Setting::eq(&self, &configapi::Setting) -> bool
+impl core::fmt::Debug for configapi::Setting
+pub fn configapi::Setting::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for configapi::Setting
+impl serde_core::ser::Serialize for configapi::Setting
+pub fn configapi::Setting::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for configapi::Setting
+pub fn configapi::Setting::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for configapi::Setting
+impl core::marker::Send for configapi::Setting
+impl core::marker::Sync for configapi::Setting
+impl core::marker::Unpin for configapi::Setting
+impl core::marker::UnsafeUnpin for configapi::Setting
+impl core::panic::unwind_safe::RefUnwindSafe for configapi::Setting
+impl core::panic::unwind_safe::UnwindSafe for configapi::Setting
+pub struct configapi::Snapshot
+pub configapi::Snapshot::revision: i64
+pub configapi::Snapshot::settings: alloc::vec::Vec<configapi::Setting>
+impl core::clone::Clone for configapi::Snapshot
+pub fn configapi::Snapshot::clone(&self) -> configapi::Snapshot
+impl core::cmp::Eq for configapi::Snapshot
+impl core::cmp::PartialEq for configapi::Snapshot
+pub fn configapi::Snapshot::eq(&self, &configapi::Snapshot) -> bool
+impl core::fmt::Debug for configapi::Snapshot
+pub fn configapi::Snapshot::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for configapi::Snapshot
+impl serde_core::ser::Serialize for configapi::Snapshot
+pub fn configapi::Snapshot::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for configapi::Snapshot
+pub fn configapi::Snapshot::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for configapi::Snapshot
+impl core::marker::Send for configapi::Snapshot
+impl core::marker::Sync for configapi::Snapshot
+impl core::marker::Unpin for configapi::Snapshot
+impl core::marker::UnsafeUnpin for configapi::Snapshot
+impl core::panic::unwind_safe::RefUnwindSafe for configapi::Snapshot
+impl core::panic::unwind_safe::UnwindSafe for configapi::Snapshot
+pub trait configapi::Config: core::marker::Send + core::marker::Sync
+pub fn configapi::Config::get(&self, &str, &str) -> core::option::Option<alloc::string::String>
+pub fn configapi::Config::get_bool(&self, &str, &str, bool) -> bool
+pub fn configapi::Config::get_int(&self, &str, &str, i64) -> i64
+pub fn configapi::Config::get_string(&self, &str, &str, &str) -> alloc::string::String
+pub trait configapi::ConfigSnapshot: core::marker::Send + core::marker::Sync
+pub fn configapi::ConfigSnapshot::snapshot<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<configapi::Snapshot, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait

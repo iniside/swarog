@@ -1,0 +1,60 @@
+# cargo-public-api 0.52.0 -- regenerate via .\verify.ps1 -BlessPublicApi
+pub mod apikeysapi
+pub mod apikeysapi::keys_rpc
+pub struct apikeysapi::keys_rpc::LookupKeyRequest
+pub apikeysapi::keys_rpc::LookupKeyRequest::key: alloc::string::String
+impl serde_core::ser::Serialize for apikeysapi::keys_rpc::LookupKeyRequest
+pub fn apikeysapi::keys_rpc::LookupKeyRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for apikeysapi::keys_rpc::LookupKeyRequest
+pub fn apikeysapi::keys_rpc::LookupKeyRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for apikeysapi::keys_rpc::LookupKeyRequest
+impl core::marker::Send for apikeysapi::keys_rpc::LookupKeyRequest
+impl core::marker::Sync for apikeysapi::keys_rpc::LookupKeyRequest
+impl core::marker::Unpin for apikeysapi::keys_rpc::LookupKeyRequest
+impl core::marker::UnsafeUnpin for apikeysapi::keys_rpc::LookupKeyRequest
+impl core::panic::unwind_safe::RefUnwindSafe for apikeysapi::keys_rpc::LookupKeyRequest
+impl core::panic::unwind_safe::UnwindSafe for apikeysapi::keys_rpc::LookupKeyRequest
+pub struct apikeysapi::keys_rpc::LookupKeyResponse
+pub apikeysapi::keys_rpc::LookupKeyResponse::err: alloc::string::String
+pub apikeysapi::keys_rpc::LookupKeyResponse::status: opsapi::Status
+pub apikeysapi::keys_rpc::LookupKeyResponse::value: serde_json::value::Value
+impl serde_core::ser::Serialize for apikeysapi::keys_rpc::LookupKeyResponse
+pub fn apikeysapi::keys_rpc::LookupKeyResponse::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for apikeysapi::keys_rpc::LookupKeyResponse
+pub fn apikeysapi::keys_rpc::LookupKeyResponse::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for apikeysapi::keys_rpc::LookupKeyResponse
+impl core::marker::Send for apikeysapi::keys_rpc::LookupKeyResponse
+impl core::marker::Sync for apikeysapi::keys_rpc::LookupKeyResponse
+impl core::marker::Unpin for apikeysapi::keys_rpc::LookupKeyResponse
+impl core::marker::UnsafeUnpin for apikeysapi::keys_rpc::LookupKeyResponse
+impl core::panic::unwind_safe::RefUnwindSafe for apikeysapi::keys_rpc::LookupKeyResponse
+impl core::panic::unwind_safe::UnwindSafe for apikeysapi::keys_rpc::LookupKeyResponse
+pub const apikeysapi::keys_rpc::METHOD_LOOKUP_KEY: &str
+pub fn apikeysapi::keys_rpc::operations(alloc::sync::Arc<(dyn apikeysapi::Keys + core::marker::Send + core::marker::Sync)>) -> alloc::vec::Vec<opsapi::OpSet>
+pub fn apikeysapi::keys_rpc::route_bindings() -> alloc::vec::Vec<opsapi::RouteBinding>
+pub struct apikeysapi::KeyRecord
+pub apikeysapi::KeyRecord::name: alloc::string::String
+pub apikeysapi::KeyRecord::policy: alloc::string::String
+impl core::clone::Clone for apikeysapi::KeyRecord
+pub fn apikeysapi::KeyRecord::clone(&self) -> apikeysapi::KeyRecord
+impl core::cmp::Eq for apikeysapi::KeyRecord
+impl core::cmp::PartialEq for apikeysapi::KeyRecord
+pub fn apikeysapi::KeyRecord::eq(&self, &apikeysapi::KeyRecord) -> bool
+impl core::default::Default for apikeysapi::KeyRecord
+pub fn apikeysapi::KeyRecord::default() -> apikeysapi::KeyRecord
+impl core::fmt::Debug for apikeysapi::KeyRecord
+pub fn apikeysapi::KeyRecord::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for apikeysapi::KeyRecord
+impl serde_core::ser::Serialize for apikeysapi::KeyRecord
+pub fn apikeysapi::KeyRecord::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for apikeysapi::KeyRecord
+pub fn apikeysapi::KeyRecord::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for apikeysapi::KeyRecord
+impl core::marker::Send for apikeysapi::KeyRecord
+impl core::marker::Sync for apikeysapi::KeyRecord
+impl core::marker::Unpin for apikeysapi::KeyRecord
+impl core::marker::UnsafeUnpin for apikeysapi::KeyRecord
+impl core::panic::unwind_safe::RefUnwindSafe for apikeysapi::KeyRecord
+impl core::panic::unwind_safe::UnwindSafe for apikeysapi::KeyRecord
+pub trait apikeysapi::Keys: core::marker::Send + core::marker::Sync
+pub fn apikeysapi::Keys::lookup_key<'life0, 'async_trait>(&'life0 self, alloc::string::String) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<apikeysapi::KeyRecord>, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait

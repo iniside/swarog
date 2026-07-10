@@ -85,8 +85,11 @@ module never knows the topology.
    `cmd/*` mains differ only in module list + which QUIC planes the process serves.
 6. Evolve events additively; never mutate a published payload shape — a breaking
    change is a NEW contract version (`define(topic, 2, …)`) and new subscription
-   ids. Guarded by the `public-api` verify stage (additive-only diff on contract
-   crates) and `cargo run -p topiccheck` (profile-aware: defined-vs-subscribed
+   ids. Guarded by the `public-api` verify stage (each contract crate's surface
+   diffed against a committed snapshot in `docs/reference/public-api-baseline/`;
+   any diff FAILs — removed symbols BREAKING, added ADDITIVE — re-bless intentional
+   changes with `./verify.sh --bless-public-api` / `-BlessPublicApi`) and
+   `cargo run -p topiccheck` (profile-aware: defined-vs-subscribed
    drift, version match, globally unique subscription ids, exactly one host per
    subscription per deployment profile).
 7. **The bus is async fire-and-forget** — no request/response through it; that's a
@@ -230,8 +233,11 @@ blocking stage fails; auto-installs pinned CLIs unless `--no-install`):
 - BLOCKING (default / `--fast`): build, clippy `-D warnings`, test, `cargo audit`
   (pinned 0.22.2; RUSTSEC-2023-0071 ignored — dev-only rsa in accounts test JWTs),
   fortress (builds every `cmd/*-svc` + archcheck), split-proof.
-- ADVISORY (`--all`, blocking under `--strict`): `public-api` (additive-only diff of
-  contract crates vs HEAD via detached worktree; needs nightly), `fuzz`
+- ADVISORY (`--all`, blocking under `--strict`): `public-api` (contract-crate list
+  derived from the filesystem, each diffed against a committed snapshot in
+  `docs/reference/public-api-baseline/`; any diff FAILs, tool errors FAIL, re-bless
+  via `--bless-public-api` / `-BlessPublicApi`; cargo-public-api pinned 0.52.0; needs
+  nightly), `fuzz`
   (`core/edge/fuzz/`, frame+wire decode; SKIPs on this Windows box), `topiccheck`.
 - SLOW (`--slow`): `cargo mutants` over edge/gateway/asyncevents/registry/bus.
 

@@ -1,0 +1,59 @@
+# cargo-public-api 0.52.0 -- regenerate via .\verify.ps1 -BlessPublicApi
+pub mod leaderboardapi
+pub mod leaderboardapi::leaderboard_rpc
+pub struct leaderboardapi::leaderboard_rpc::TopScoresRequest
+impl core::default::Default for leaderboardapi::leaderboard_rpc::TopScoresRequest
+pub fn leaderboardapi::leaderboard_rpc::TopScoresRequest::default() -> leaderboardapi::leaderboard_rpc::TopScoresRequest
+impl serde_core::ser::Serialize for leaderboardapi::leaderboard_rpc::TopScoresRequest
+pub fn leaderboardapi::leaderboard_rpc::TopScoresRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for leaderboardapi::leaderboard_rpc::TopScoresRequest where leaderboardapi::leaderboard_rpc::TopScoresRequest: core::default::Default
+pub fn leaderboardapi::leaderboard_rpc::TopScoresRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for leaderboardapi::leaderboard_rpc::TopScoresRequest
+impl core::marker::Send for leaderboardapi::leaderboard_rpc::TopScoresRequest
+impl core::marker::Sync for leaderboardapi::leaderboard_rpc::TopScoresRequest
+impl core::marker::Unpin for leaderboardapi::leaderboard_rpc::TopScoresRequest
+impl core::marker::UnsafeUnpin for leaderboardapi::leaderboard_rpc::TopScoresRequest
+impl core::panic::unwind_safe::RefUnwindSafe for leaderboardapi::leaderboard_rpc::TopScoresRequest
+impl core::panic::unwind_safe::UnwindSafe for leaderboardapi::leaderboard_rpc::TopScoresRequest
+pub struct leaderboardapi::leaderboard_rpc::TopScoresResponse
+pub leaderboardapi::leaderboard_rpc::TopScoresResponse::err: alloc::string::String
+pub leaderboardapi::leaderboard_rpc::TopScoresResponse::status: opsapi::Status
+pub leaderboardapi::leaderboard_rpc::TopScoresResponse::value: serde_json::value::Value
+impl serde_core::ser::Serialize for leaderboardapi::leaderboard_rpc::TopScoresResponse
+pub fn leaderboardapi::leaderboard_rpc::TopScoresResponse::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for leaderboardapi::leaderboard_rpc::TopScoresResponse
+pub fn leaderboardapi::leaderboard_rpc::TopScoresResponse::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for leaderboardapi::leaderboard_rpc::TopScoresResponse
+impl core::marker::Send for leaderboardapi::leaderboard_rpc::TopScoresResponse
+impl core::marker::Sync for leaderboardapi::leaderboard_rpc::TopScoresResponse
+impl core::marker::Unpin for leaderboardapi::leaderboard_rpc::TopScoresResponse
+impl core::marker::UnsafeUnpin for leaderboardapi::leaderboard_rpc::TopScoresResponse
+impl core::panic::unwind_safe::RefUnwindSafe for leaderboardapi::leaderboard_rpc::TopScoresResponse
+impl core::panic::unwind_safe::UnwindSafe for leaderboardapi::leaderboard_rpc::TopScoresResponse
+pub const leaderboardapi::leaderboard_rpc::METHOD_TOP_SCORES: &str
+pub fn leaderboardapi::leaderboard_rpc::operations(alloc::sync::Arc<(dyn leaderboardapi::Leaderboard + core::marker::Send + core::marker::Sync)>) -> alloc::vec::Vec<opsapi::OpSet>
+pub fn leaderboardapi::leaderboard_rpc::route_bindings() -> alloc::vec::Vec<opsapi::RouteBinding>
+pub struct leaderboardapi::Score
+pub leaderboardapi::Score::player: alloc::string::String
+pub leaderboardapi::Score::wins: i64
+impl core::clone::Clone for leaderboardapi::Score
+pub fn leaderboardapi::Score::clone(&self) -> leaderboardapi::Score
+impl core::cmp::Eq for leaderboardapi::Score
+impl core::cmp::PartialEq for leaderboardapi::Score
+pub fn leaderboardapi::Score::eq(&self, &leaderboardapi::Score) -> bool
+impl core::fmt::Debug for leaderboardapi::Score
+pub fn leaderboardapi::Score::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for leaderboardapi::Score
+impl serde_core::ser::Serialize for leaderboardapi::Score
+pub fn leaderboardapi::Score::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for leaderboardapi::Score
+pub fn leaderboardapi::Score::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for leaderboardapi::Score
+impl core::marker::Send for leaderboardapi::Score
+impl core::marker::Sync for leaderboardapi::Score
+impl core::marker::Unpin for leaderboardapi::Score
+impl core::marker::UnsafeUnpin for leaderboardapi::Score
+impl core::panic::unwind_safe::RefUnwindSafe for leaderboardapi::Score
+impl core::panic::unwind_safe::UnwindSafe for leaderboardapi::Score
+pub trait leaderboardapi::Leaderboard: core::marker::Send + core::marker::Sync
+pub fn leaderboardapi::Leaderboard::top_scores<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<leaderboardapi::Score>, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait

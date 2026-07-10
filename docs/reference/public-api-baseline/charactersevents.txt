@@ -1,0 +1,50 @@
+# cargo-public-api 0.52.0 -- regenerate via .\verify.ps1 -BlessPublicApi
+pub mod charactersevents
+pub struct charactersevents::Created
+pub charactersevents::Created::character_id: alloc::string::String
+pub charactersevents::Created::class: alloc::string::String
+pub charactersevents::Created::name: alloc::string::String
+pub charactersevents::Created::player_id: alloc::string::String
+impl core::clone::Clone for charactersevents::Created
+pub fn charactersevents::Created::clone(&self) -> charactersevents::Created
+impl core::cmp::Eq for charactersevents::Created
+impl core::cmp::PartialEq for charactersevents::Created
+pub fn charactersevents::Created::eq(&self, &charactersevents::Created) -> bool
+impl core::fmt::Debug for charactersevents::Created
+pub fn charactersevents::Created::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for charactersevents::Created
+impl serde_core::ser::Serialize for charactersevents::Created
+pub fn charactersevents::Created::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for charactersevents::Created
+pub fn charactersevents::Created::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for charactersevents::Created
+impl core::marker::Send for charactersevents::Created
+impl core::marker::Sync for charactersevents::Created
+impl core::marker::Unpin for charactersevents::Created
+impl core::marker::UnsafeUnpin for charactersevents::Created
+impl core::panic::unwind_safe::RefUnwindSafe for charactersevents::Created
+impl core::panic::unwind_safe::UnwindSafe for charactersevents::Created
+pub struct charactersevents::Deleted
+pub charactersevents::Deleted::character_id: alloc::string::String
+pub charactersevents::Deleted::player_id: alloc::string::String
+impl core::clone::Clone for charactersevents::Deleted
+pub fn charactersevents::Deleted::clone(&self) -> charactersevents::Deleted
+impl core::cmp::Eq for charactersevents::Deleted
+impl core::cmp::PartialEq for charactersevents::Deleted
+pub fn charactersevents::Deleted::eq(&self, &charactersevents::Deleted) -> bool
+impl core::fmt::Debug for charactersevents::Deleted
+pub fn charactersevents::Deleted::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for charactersevents::Deleted
+impl serde_core::ser::Serialize for charactersevents::Deleted
+pub fn charactersevents::Deleted::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for charactersevents::Deleted
+pub fn charactersevents::Deleted::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for charactersevents::Deleted
+impl core::marker::Send for charactersevents::Deleted
+impl core::marker::Sync for charactersevents::Deleted
+impl core::marker::Unpin for charactersevents::Deleted
+impl core::marker::UnsafeUnpin for charactersevents::Deleted
+impl core::panic::unwind_safe::RefUnwindSafe for charactersevents::Deleted
+impl core::panic::unwind_safe::UnwindSafe for charactersevents::Deleted
+pub static charactersevents::CREATED: std::sync::lazy_lock::LazyLock<bus::EventType<charactersevents::Created>>
+pub static charactersevents::DELETED: std::sync::lazy_lock::LazyLock<bus::EventType<charactersevents::Deleted>>
