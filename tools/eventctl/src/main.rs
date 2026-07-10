@@ -100,17 +100,18 @@ async fn cmd_list(pool: &PgPool) -> Result<()> {
         return Ok(());
     }
     println!(
-        "{:<40} {:<10} {:<24} {:<9} {:>6}  LAST ERROR",
-        "SUBSCRIPTION", "STATE", "CURSOR (gen/xid/tie)", "FAILURES", "LAG"
+        "{:<40} {:<10} {:<24} {:<9} {:>6}  {:<26} LAST ERROR",
+        "SUBSCRIPTION", "STATE", "CURSOR (gen/xid/tie)", "FAILURES", "LAG", "PAUSED SINCE"
     );
     for s in &subs {
         println!(
-            "{:<40} {:<10} {:<24} {:<9} {:>6}  {}",
+            "{:<40} {:<10} {:<24} {:<9} {:>6}  {:<26} {}",
             s.id,
             s.state,
             s.cursor,
             s.consecutive_failures,
             s.lag_events,
+            s.paused_since.as_deref().unwrap_or(""),
             s.last_error.as_deref().unwrap_or("-"),
         );
     }

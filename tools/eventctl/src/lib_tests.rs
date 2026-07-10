@@ -338,6 +338,29 @@ async fn retry_clears_failures_and_keeps_cursor() {
     cleanup(&pool, &topic, &id).await;
 }
 
+/// `info` reports `paused_since` only for subscriptions currently in state
+/// `paused`; an active subscription's `paused_since` is `None`.
+#[tokio::test]
+async fn info_reports_paused_since_only_for_paused_subs() {
+    let Some(pool) = test_pool().await else { return };
+    let topic = unique("evctl.pausedsince");
+    let paused_id = unique("sub.pausedsince.paused");
+    let active_id = unique("sub.pausedsince.active");
+    append_positions(&pool, &topic, 1).await;
+    insert_sub(&pool, &paused_id, &topic, "paused", 20, (0, "0".to_string(), 0)).await;
+    insert_sub(&pool, &active_id, &topic, "active", 0, (0, "0".to_string(), 0)).await;
+
+    let subs = info(&pool).await.unwrap();
+    let paused = subs.iter().find(|s| s.id == paused_id).expect("paused sub present");
+    let active = subs.iter().find(|s| s.id == active_id).expect("active sub present");
+
+    assert!(paused.paused_since.is_some(), "paused sub must report paused_since");
+    assert_eq!(active.paused_since, None, "active sub must not report paused_since");
+
+    cleanup(&pool, &topic, &paused_id).await;
+    cleanup(&pool, &topic, &active_id).await;
+}
+
 /// A missing subscription id is a loud error, not a silent no-op.
 #[tokio::test]
 async fn unknown_subscription_errors() {

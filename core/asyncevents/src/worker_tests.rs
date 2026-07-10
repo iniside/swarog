@@ -384,6 +384,18 @@ async fn poison_backs_off_then_pauses_never_skips() {
     let (state, failures, _, cursor_tie) = sub_row(&pool, sub_id).await;
     assert_eq!((state.as_str(), failures, cursor_tie), ("paused", 20, 0), "must pause, never skip");
 
+    // The per-subscription paused-state gauge reflects the pause after a refresh pass.
+    crate::plane_metrics::refresh(&pool, &[sub_id.to_string()])
+        .await
+        .unwrap();
+    assert_eq!(
+        crate::plane_metrics::paused_state_gauge()
+            .with_label_values(&[sub_id])
+            .get(),
+        1,
+        "paused_state gauge must read 1 for a paused subscription"
+    );
+
     // Paused: no more attempts.
     assert_eq!(deliver_one(&ctx, &e).await.unwrap(), Step::Skipped);
 

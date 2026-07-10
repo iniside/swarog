@@ -29,6 +29,12 @@ pub struct SubInfo {
     pub last_error: Option<String>,
     pub lag_events: i64,
     pub lag_age_seconds: f64,
+    /// `updated_at` (as text) iff `state = 'paused'`, else `None`. Note:
+    /// `updated_at` moves on ANY row update (retry, resume, skip, worker
+    /// checkpoint advance), so for a paused row it reads as "last
+    /// state/failure write", not strictly "when it entered `paused`" — exact
+    /// enough for an operator, since a pause stops further writes to the row.
+    pub paused_since: Option<String>,
 }
 
 /// The before/after view a mutating command prints. Text-only (cursor/next_attempt
@@ -68,12 +74,14 @@ pub struct SkipOutcome {
 }
 
 /// Every subscription with its lag (events + oldest age past the cursor). Powers both
-/// `list` and `lag`.
+/// `list` and `lag`. `paused_since` is derived from `updated_at` — see the field doc
+/// on [`SubInfo::paused_since`] for the exact semantics.
 pub async fn info(pool: &PgPool) -> Result<Vec<SubInfo>> {
     let rows = sqlx::query(
         "SELECT s.subscription_id, s.topic, s.contract_version, s.state, \
                 s.cursor_generation, s.cursor_xid::text AS cursor_xid, s.cursor_tie, \
                 s.consecutive_failures, s.last_error, s.next_attempt_at::text AS next_attempt_at, \
+                CASE WHEN s.state = 'paused' THEN s.updated_at::text END AS paused_since, \
                 count(e.event_id) AS lag_events, \
                 COALESCE(extract(epoch FROM now() - min(e.created_at)), 0)::float8 AS lag_age \
          FROM asyncevents.subscriptions s \
@@ -83,7 +91,7 @@ pub async fn info(pool: &PgPool) -> Result<Vec<SubInfo>> {
               > (s.cursor_generation, s.cursor_xid, s.cursor_tie) \
          GROUP BY s.subscription_id, s.topic, s.contract_version, s.state, \
                   s.cursor_generation, s.cursor_xid, s.cursor_tie, \
-                  s.consecutive_failures, s.last_error, s.next_attempt_at \
+                  s.consecutive_failures, s.last_error, s.next_attempt_at, s.updated_at \
          ORDER BY s.subscription_id",
     )
     .fetch_all(pool)
@@ -107,6 +115,7 @@ pub async fn info(pool: &PgPool) -> Result<Vec<SubInfo>> {
                 last_error: r.get("last_error"),
                 lag_events: r.get("lag_events"),
                 lag_age_seconds: r.get("lag_age"),
+                paused_since: r.get("paused_since"),
             }
         })
         .collect())

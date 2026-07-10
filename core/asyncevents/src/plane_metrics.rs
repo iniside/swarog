@@ -9,6 +9,12 @@
 //! - `asyncevents_subscription_lag_age_seconds{subscription}` — age of the oldest,
 //! - `asyncevents_subscription_consecutive_failures{subscription}`,
 //! - `asyncevents_subscriptions_paused` — paused count among LOCAL subscriptions,
+//! - `asyncevents_subscription_paused_state{subscription}` — 1 if this subscription
+//!   is currently paused, 0 otherwise. Deliberately NOT named
+//!   `asyncevents_subscription_paused` — that differs from the existing unlabeled
+//!   count gauge `asyncevents_subscriptions_paused` by a single letter ("paused"
+//!   vs "paused_state"), which would be a dashboard/alert-rule footgun if the two
+//!   were one letter apart instead of a clearly distinct name,
 //! - `asyncevents_safe_frontier_age_seconds` — how long the oldest not-yet-eligible
 //!   current-generation event has been waiting on the snapshot frontier (a
 //!   long-running foreign transaction delays delivery; this is the alarm for it).
@@ -25,6 +31,7 @@ struct Gauges {
     lag_age: GaugeVec,
     failures: IntGaugeVec,
     paused: IntGauge,
+    paused_state: IntGaugeVec,
     frontier_age: Gauge,
 }
 
@@ -60,6 +67,14 @@ fn gauges() -> &'static Gauges {
             "Locally-hosted subscriptions in state 'paused'.",
         )
         .expect("valid paused gauge");
+        let paused_state = IntGaugeVec::new(
+            Opts::new(
+                "asyncevents_subscription_paused_state",
+                "1 if this subscription is currently paused, 0 otherwise.",
+            ),
+            &["subscription"],
+        )
+        .expect("valid paused_state gauge");
         let frontier_age = Gauge::new(
             "asyncevents_safe_frontier_age_seconds",
             "Age of the oldest current-generation event still behind the snapshot frontier.",
@@ -71,15 +86,25 @@ fn gauges() -> &'static Gauges {
         let _ = metrics::register(Box::new(lag_age.clone()));
         let _ = metrics::register(Box::new(failures.clone()));
         let _ = metrics::register(Box::new(paused.clone()));
+        let _ = metrics::register(Box::new(paused_state.clone()));
         let _ = metrics::register(Box::new(frontier_age.clone()));
         Gauges {
             lag_events,
             lag_age,
             failures,
             paused,
+            paused_state,
             frontier_age,
         }
     })
+}
+
+/// Test-only accessor for the per-subscription paused-state gauge, so
+/// `worker_tests` can assert the labeled value directly instead of scraping
+/// text output.
+#[cfg(test)]
+pub(crate) fn paused_state_gauge() -> &'static IntGaugeVec {
+    &gauges().paused_state
 }
 
 pub(crate) async fn refresh(pool: &PgPool, local_ids: &[String]) -> anyhow::Result<()> {
@@ -113,6 +138,9 @@ pub(crate) async fn refresh(pool: &PgPool, local_ids: &[String]) -> anyhow::Resu
         g.lag_events.with_label_values(&[&id]).set(lag);
         g.lag_age.with_label_values(&[&id]).set(lag_age);
         g.failures.with_label_values(&[&id]).set(i64::from(failures));
+        g.paused_state
+            .with_label_values(&[&id])
+            .set(i64::from(state == "paused"));
     }
     g.paused.set(paused);
 
