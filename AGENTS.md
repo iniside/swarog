@@ -74,7 +74,9 @@ module never knows the topology.
    `cmd/*` mains differ only in module list + which QUIC planes the process serves.
 6. Evolve events additively; never mutate a published payload shape. Guarded by the
    `public-api` verify stage (additive-only diff on contract crates) and
-   `cargo run -p topiccheck` (defined-vs-subscribed topic drift).
+   `cargo run -p topiccheck` (defined-vs-subscribed topic drift; blocking under
+   `--durability-strict`; sanctioned sinkless topics live in topiccheck's
+   `ALLOW_UNSUBSCRIBED`).
 7. **The bus is async fire-and-forget** — no request/response through it; that's a
    registry capability's job. State projected from events is eventually consistent.
 8. Lifecycle: `register` (phase 1, provide services, no I/O) → `init` (wiring only,

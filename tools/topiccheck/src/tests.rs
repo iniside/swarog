@@ -188,6 +188,30 @@ fn allowlist_suppresses_unsubscribed() {
     assert!(unsubscribed(&d, &contracts(&[("a", 1)]), &["b"]).is_empty());
 }
 
+/// Integration-shaped: drive the REAL wiring (`observe`) for both deployment
+/// profiles and assert the current tree has ZERO unsubscribed defined topics —
+/// i.e. `ALLOW_UNSUBSCRIBED` is legitimately empty because every defined contract
+/// has a live durable subscriber in both Monolith and Split. Now that
+/// unsubscribed folds into `any_seam`, this is the assertion that
+/// `--durability-strict` (the fortress gate) exits 0 on this tree. Mirrors
+/// `main`'s harness setup: `ADMIN_OPEN=1` so the real `Admin::init` builds, and a
+/// tokio runtime for the in-process `Bus::on` spawns during `init`.
+#[tokio::test]
+async fn current_tree_has_zero_unsubscribed_in_both_profiles() {
+    std::env::set_var("ADMIN_OPEN", "1");
+    let defined = defined_topics();
+    for (label, profile) in [
+        ("Monolith", DeploymentProfile::Monolith),
+        ("Split", DeploymentProfile::Split),
+    ] {
+        let obs = observe(&profile).expect("observe should build every process with no I/O");
+        let subscribed: BTreeSet<(String, u32)> =
+            obs.subs.iter().map(|s| (s.topic.clone(), s.version)).collect();
+        let unsub = unsubscribed(&defined, &subscribed, ALLOW_UNSUBSCRIBED);
+        assert!(unsub.is_empty(), "profile {label}: unexpected unsubscribed topics {unsub:?}");
+    }
+}
+
 // --- The DEFINE set is exactly the six domain contract topics ----------------
 
 #[test]

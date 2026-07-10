@@ -90,8 +90,9 @@ module never knows the topology.
    any diff FAILs — removed symbols BREAKING, added ADDITIVE — re-bless intentional
    changes with `./verify.sh --bless-public-api` / `-BlessPublicApi`) and
    `cargo run -p topiccheck` (profile-aware: defined-vs-subscribed
-   drift, version match, globally unique subscription ids, exactly one host per
-   subscription per deployment profile).
+   drift (blocking under `--durability-strict`; sanctioned sinkless topics live in
+   topiccheck's `ALLOW_UNSUBSCRIBED`), version match, globally unique subscription
+   ids, exactly one host per subscription per deployment profile).
 7. **The bus is async fire-and-forget** — no request/response through it; that's a
    registry capability's job. State projected from events is eventually consistent.
 8. Lifecycle: `register` (phase 1, provide services, no I/O) → `init` (wiring only,

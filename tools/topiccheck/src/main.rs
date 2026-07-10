@@ -29,8 +29,9 @@
 //!    catches it).
 //! 4. **durability** (seam #3 / constraint 7) — a defined contract topic must never be
 //!    subscribed in-process via plain `on()`; it must be delivered durably.
-//! 5. **unsubscribed** (advisory) — a defined topic with no durable subscriber in the
-//!    profile is dead vocabulary.
+//! 5. **unsubscribed** (seam) — a defined contract topic with no durable subscriber in
+//!    the profile, unless it is in `ALLOW_UNSUBSCRIBED`. A sinkless defined event is an
+//!    explicit, diff-reviewed decision, not silent drift.
 //!
 //! ## No live DB needed
 //! `register`/`init` do NO I/O (constraint 8), so each process's shared pool is a
@@ -40,10 +41,13 @@
 //!
 //! ## Flags / exit
 //! Advisory by default (prints the per-profile tables, exits 0). `--durability-strict`
-//! (the BLOCKING `fortress`-stage invocation) exits non-zero on ANY SEAM violation
-//! (checks 1-4 — each breaches a hard durable-plane invariant) in ANY profile, but not on
-//! the advisory `unsubscribed`. `--strict` (the everything-strict gate) exits non-zero on
-//! ANY finding including `unsubscribed`.
+//! (the BLOCKING `fortress`-stage invocation) exits non-zero on ANY SEAM violation in ANY
+//! profile: the version / single-host / planeless / in-process-durability checks PLUS
+//! `unsubscribed` (a defined contract with no subscriber in the profile and not in
+//! `ALLOW_UNSUBSCRIBED`) — each breaches a hard durable-plane invariant. `--strict` (the
+//! everything-strict gate) additionally exits non-zero on any advisory finding; the
+//! advisory bucket is empty today (unsubscribed became a seam), so the two flags are
+//! momentarily equivalent — `--strict` survives as the gate for any future advisory.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
@@ -57,8 +61,12 @@ use lifecycle::{App, Context};
 const DEFAULT_DSN: &str =
     "postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable";
 
-/// Topics deliberately defined without a subscriber. Empty today: every one of the six
-/// defined topics has a live durable subscriber in both profiles.
+/// Sanctioned-sinkless registry: topics deliberately DEFINED and emitted today with no
+/// durable subscriber yet ("emitting now, consumer comes later"). Adding a topic here is
+/// the explicit, diff-reviewed decision to ship a sinkless event; a defined topic NOT
+/// listed here and unsubscribed in a profile is a SEAM violation that fails
+/// `--durability-strict`. Empty today: every one of the six defined topics has a live
+/// durable subscriber in both profiles.
 const ALLOW_UNSUBSCRIBED: &[&str] = &[];
 
 /// Defined (contract) topics legitimately subscribed same-module on the in-process plane
@@ -302,10 +310,10 @@ fn inprocess_defined_contracts(
         .collect()
 }
 
-/// Check 5 (advisory) — a defined `(topic, version)` contract with no durable
-/// subscriber in the profile. Keyed on `(topic, version)`, so a topic present at
-/// one version but subscribed only at another still reports the unsubscribed
-/// version.
+/// Check 5 (seam) — a defined `(topic, version)` contract with no durable subscriber
+/// in the profile and not in `allow` (the sanctioned-sinkless registry). Keyed on
+/// `(topic, version)`, so a topic present at one version but subscribed only at another
+/// still reports the unsubscribed version. A non-empty result fails `--durability-strict`.
 fn unsubscribed(
     defined: &[Contract],
     subscribed: &BTreeSet<(String, u32)>,
@@ -426,9 +434,9 @@ fn run_profile(name: &str, profile: &DeploymentProfile, defined: &[Contract]) ->
         } else if by_key.contains_key(&key) {
             "OK"
         } else if ALLOW_UNSUBSCRIBED.contains(&c.topic.as_str()) {
-            "OK (allowlisted)"
+            "OK (sanctioned sinkless)"
         } else {
-            "<-- UNSUBSCRIBED"
+            "<-- UNSUBSCRIBED (seam)"
         };
         let row_topic = format!("{} v{}", c.topic, c.version);
         println!("{row_topic:<24} | {hist:<12} | {subs_str:<48} | {status}");
@@ -459,13 +467,19 @@ fn run_profile(name: &str, profile: &DeploymentProfile, defined: &[Contract]) ->
             eprintln!("  - {t}");
         }
     }
-    let advisory = !unsub.is_empty();
-    if advisory {
-        eprintln!("topiccheck [{name}]: UNSUBSCRIBED (advisory) — defined topic(s) with no subscriber:");
+    if !unsub.is_empty() {
+        seam = true;
+        eprintln!(
+            "topiccheck [{name}]: UNSUBSCRIBED (SEAM) — defined contract has no subscriber \
+             in this profile and is not in ALLOW_UNSUBSCRIBED:"
+        );
         for t in &unsub {
             eprintln!("  - {t}");
         }
     }
+    // No advisory-bucket findings exist today (unsubscribed became a seam); the tuple's
+    // second slot stays wired so `--strict` keeps gating any advisory added later.
+    let advisory = false;
     Ok((seam, advisory))
 }
 
@@ -478,9 +492,10 @@ async fn main() -> anyhow::Result<()> {
 
     // A tokio runtime must be live: an in-process `Bus::on` during `init` spawns a task.
     // `--durability-strict`: the BLOCKING fortress invocation — exit non-zero on ANY SEAM
-    // violation (version / single-host / planeless / in-process-durability), which each
-    // breaches a hard durable-plane invariant. `--strict`: also block on the advisory
-    // `unsubscribed` dead-vocabulary finding. Both still print every profile's table.
+    // violation (version / single-host / planeless / in-process-durability / unsubscribed-
+    // outside-`ALLOW_UNSUBSCRIBED`), each of which breaches a hard durable-plane invariant.
+    // `--strict`: also block on any advisory finding — none exist today (the bucket is
+    // empty since unsubscribed became a seam). Both still print every profile's table.
     let strict = std::env::args().any(|a| a == "--strict");
     let durability_strict = std::env::args().any(|a| a == "--durability-strict");
 
