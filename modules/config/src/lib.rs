@@ -118,23 +118,21 @@ CREATE OR REPLACE TRIGGER settings_notify
 	FOR EACH ROW EXECUTE FUNCTION config.notify_changed();"#;
 
 /// Seeds `config.changed`'s row in `asyncevents.history_contracts` — the retention
-/// GC's per-`(topic, version)` policy source (see `asyncevents::store::ensure_history_contract`,
-/// which every OTHER topic reaches via the native writer / typed-subscription
-/// reconcile paths). `config.changed` is emitted by the SQL trigger calling the
-/// plane-owned `asyncevents.append_event` function directly, bypassing both of those
-/// Rust paths, so nothing else ever seeds this row; without it retention's
-/// conservative "no row = never GC" rule would keep this topic forever.
+/// GC's per-`(topic, version)` policy source — by calling the plane-owned
+/// `asyncevents.ensure_history_contract` function (never the plane's tables directly).
+/// `config.changed` is emitted by the SQL trigger calling the plane-owned
+/// `asyncevents.append_event` directly, bypassing both the native writer and the
+/// typed-subscription reconcile paths that seed the row for every OTHER topic, so
+/// nothing else ever seeds this row; without it retention's conservative "no row =
+/// never GC" rule would keep this topic forever.
 ///
-/// Deliberately raw SQL, NOT a call to `asyncevents::store::ensure_history_contract`:
-/// archcheck (CLAUDE.md constraint 1) forbids a module from taking a non-dev
-/// dependency on `asyncevents` — it is app-owned infrastructure injected at `Context`
-/// construction, never a module capability. The trigger's own `SCHEMA_DDL` already
-/// reaches this schema the same way, via a bare SQL function call, never a Rust
-/// import; this mirrors that pattern one level up, in the migrate function.
-/// `ON CONFLICT ... DO NOTHING` then a read-back drift check matches
-/// `ensure_history_contract`'s semantics: an existing row with a DIFFERENT policy
-/// fails loudly (a topic's history promise is immutable) rather than being adopted
-/// silently.
+/// A plane-function call, NOT raw table access: archcheck (CLAUDE.md constraint 1)
+/// forbids a module from taking a non-dev dependency on `asyncevents` — it is app-owned
+/// infrastructure injected at `Context` construction, never a module capability — and
+/// the plane owns its tables, exposing only this narrow function surface (the same
+/// pattern the write trigger uses for `asyncevents.append_event`). The function's own
+/// `ON CONFLICT ... DO NOTHING` + drift check RAISEs on a stored row with a DIFFERENT
+/// policy (a topic's history promise is immutable), surfacing here as a query error.
 async fn seed_history_contract(pool: &PgPool) -> anyhow::Result<()> {
     let contract = configevents::CHANGED.contract();
     let (policy, days): (&str, i32) = match contract.history {
@@ -145,36 +143,13 @@ async fn seed_history_contract(pool: &PgPool) -> anyhow::Result<()> {
     };
     let version = i32::try_from(contract.version)?;
 
-    sqlx::query(
-        "INSERT INTO asyncevents.history_contracts \
-             (topic, contract_version, policy, min_retention_days) \
-         VALUES ($1, $2, $3, $4) ON CONFLICT (topic, contract_version) DO NOTHING",
-    )
-    .bind(contract.topic)
-    .bind(version)
-    .bind(policy)
-    .bind(days)
-    .execute(pool)
-    .await?;
-
-    let (stored_policy, stored_days): (String, i32) = sqlx::query_as(
-        "SELECT policy, min_retention_days FROM asyncevents.history_contracts \
-         WHERE topic = $1 AND contract_version = $2",
-    )
-    .bind(contract.topic)
-    .bind(version)
-    .fetch_one(pool)
-    .await?;
-
-    let drifted = stored_policy != policy || (policy == "min_retention" && stored_days != days);
-    if drifted {
-        anyhow::bail!(
-            "config: asyncevents.history_contracts for ({}, v{version}) records policy \
-             {stored_policy}/{stored_days}d, but config's code contract declares {policy}/{days}d \
-             — a topic's history policy is immutable",
-            contract.topic
-        );
-    }
+    sqlx::query("SELECT asyncevents.ensure_history_contract($1, $2, $3, $4)")
+        .bind(contract.topic)
+        .bind(version)
+        .bind(policy)
+        .bind(days)
+        .execute(pool)
+        .await?;
     Ok(())
 }
 

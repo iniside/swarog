@@ -1,111 +1,162 @@
 use super::*;
 
-/// Helper: a defined set from plain topic strings (labels are irrelevant to the diff).
-fn defs(topics: &[&str]) -> Vec<(String, &'static str)> {
-    topics.iter().map(|t| (t.to_string(), "site")).collect()
+/// Helper: a defined contract from a topic + version (history irrelevant to most diffs).
+fn contract(topic: &str, version: u32) -> Contract {
+    Contract {
+        topic: topic.to_string(),
+        version,
+        history: HistoryPolicy::MinRetention { days: 7 },
+    }
 }
 
-fn subs(topics: &[&str]) -> BTreeSet<String> {
-    topics.iter().map(|t| t.to_string()).collect()
+fn defs(pairs: &[(&str, u32)]) -> Vec<Contract> {
+    pairs.iter().map(|(t, v)| contract(t, *v)).collect()
+}
+
+fn sub(id: &str, topic: &str, version: u32, process: &'static str) -> Sub {
+    Sub {
+        id: id.to_string(),
+        topic: topic.to_string(),
+        version,
+        history: None,
+        process,
+    }
+}
+
+fn topics(ts: &[&str]) -> BTreeSet<String> {
+    ts.iter().map(|t| t.to_string()).collect()
+}
+
+// --- Check 1: version match --------------------------------------------------
+
+#[test]
+fn matching_topic_and_version_is_clean() {
+    let d = defs(&[("a", 1), ("b", 2)]);
+    let s = vec![sub("x.a.v1", "a", 1, "p"), sub("x.b.v2", "b", 2, "p")];
+    assert!(version_findings(&d, &s).is_empty());
 }
 
 #[test]
-fn all_subscribed_yields_no_findings() {
-    let d = defs(&["a", "b", "c"]);
-    let s = subs(&["a", "b", "c", "extra"]);
-    assert!(unsubscribed(&d, &s, &[]).is_empty());
+fn undefined_topic_is_flagged() {
+    let d = defs(&[("a", 1)]);
+    let s = vec![sub("x.z.v1", "z", 1, "p")];
+    let v = version_findings(&d, &s);
+    assert_eq!(v.len(), 1, "{v:?}");
+    assert!(v[0].contains("UNDEFINED"), "{v:?}");
 }
 
 #[test]
-fn missing_subscriber_is_flagged() {
-    let d = defs(&["a", "b", "c"]);
-    let s = subs(&["a", "c"]);
-    assert_eq!(unsubscribed(&d, &s, &[]), vec!["b".to_string()]);
+fn version_mismatch_is_flagged() {
+    let d = defs(&[("a", 2)]);
+    let s = vec![sub("x.a.v1", "a", 1, "p")];
+    let v = version_findings(&d, &s);
+    assert_eq!(v.len(), 1, "{v:?}");
+    assert!(v[0].contains("v1") && v[0].contains("v2"), "{v:?}");
 }
 
 #[test]
-fn allowlist_suppresses_a_finding() {
-    let d = defs(&["a", "b"]);
-    let s = subs(&["a"]);
-    // "b" is unsubscribed but allowlisted, so no finding remains.
-    assert!(unsubscribed(&d, &s, &["b"]).is_empty());
+fn carried_history_mismatch_is_flagged() {
+    let d = defs(&[("a", 1)]); // contract history = MinRetention{7}
+    let mut s = sub("x.a.v1", "a", 1, "p");
+    s.history = Some(HistoryPolicy::KeepForever);
+    let v = version_findings(&d, &[s]);
+    assert_eq!(v.len(), 1, "{v:?}");
+    assert!(v[0].contains("history"), "{v:?}");
+}
+
+// --- Checks 2+3: single host -------------------------------------------------
+
+#[test]
+fn one_process_per_id_is_clean() {
+    let s = vec![sub("audit.a.v1", "a", 1, "audit-svc"), sub("audit.b.v1", "b", 1, "audit-svc")];
+    assert!(host_findings(&s).is_empty());
 }
 
 #[test]
-fn allowlist_only_covers_named_topics() {
-    let d = defs(&["a", "b"]);
-    let s = subs(&[]);
-    // "a" is allowlisted; "b" is not -> only "b" is a finding.
-    assert_eq!(unsubscribed(&d, &s, &["a"]), vec!["b".to_string()]);
+fn cross_process_duplicate_host_is_flagged() {
+    // Same subscription id wired into two different processes.
+    let s = vec![sub("x.a.v1", "a", 1, "p1"), sub("x.a.v1", "a", 1, "p2")];
+    let v = host_findings(&s);
+    assert_eq!(v.len(), 1, "{v:?}");
+    assert!(v[0].contains("p1") && v[0].contains("p2"), "{v:?}");
 }
 
-/// Helper: build a `by_topic` map from `(topic, subscribers)` pairs.
-fn by_topic(entries: &[(&str, &[&str])]) -> BTreeMap<String, BTreeSet<String>> {
-    entries
-        .iter()
-        .map(|(t, ss)| {
-            (
-                t.to_string(),
-                ss.iter().map(|s| s.to_string()).collect::<BTreeSet<String>>(),
-            )
-        })
-        .collect()
+// --- Check 3: planeless processes host nothing -------------------------------
+
+#[test]
+fn planeless_process_hosting_a_sub_is_flagged() {
+    let s = vec![sub("x.a.v1", "a", 1, "gateway-svc")];
+    let v = planeless_findings(&s, &["gateway-svc"]);
+    assert_eq!(v.len(), 1, "{v:?}");
+    assert!(v[0].contains("gateway-svc"), "{v:?}");
 }
+
+#[test]
+fn plane_hosting_process_is_clean_for_planeless_check() {
+    let s = vec![sub("x.a.v1", "a", 1, "audit-svc")];
+    assert!(planeless_findings(&s, &["gateway-svc"]).is_empty());
+}
+
+// --- Check 4: durability -----------------------------------------------------
 
 #[test]
 fn inprocess_subscribed_defined_topic_is_flagged() {
-    let d = defs(&["a", "b"]);
-    // "a" has an in-process subscriber -> durability violation; "b" is durable-only.
-    let bt = by_topic(&[
-        ("a", &[IN_PROCESS_SENTINEL]),
-        ("b", &["some.durable.subscriber"]),
-    ]);
-    assert_eq!(
-        inprocess_defined(&d, &bt, &[]),
-        vec!["a".to_string()]
-    );
+    let d = defs(&[("a", 1), ("b", 1)]);
+    let inproc = topics(&["a"]); // "a" has an in-process sub; "b" is durable-only
+    assert_eq!(inprocess_defined(&d, &inproc, &[]), vec!["a".to_string()]);
 }
 
 #[test]
 fn allowlist_suppresses_a_durability_finding() {
-    let d = defs(&["a"]);
-    let bt = by_topic(&[("a", &[IN_PROCESS_SENTINEL])]);
-    // "a" is in-process-subscribed but allowlisted -> no finding.
-    assert!(inprocess_defined(&d, &bt, &["a"]).is_empty());
+    let d = defs(&[("a", 1)]);
+    let inproc = topics(&["a"]);
+    assert!(inprocess_defined(&d, &inproc, &["a"]).is_empty());
 }
 
 #[test]
-fn durable_only_subscriber_is_not_a_durability_finding() {
-    let d = defs(&["a"]);
-    // A real durable subscriber (not the sentinel) is exactly what's required -> clean.
-    let bt = by_topic(&[("a", &["leaderboard"])]);
-    assert!(inprocess_defined(&d, &bt, &[]).is_empty());
+fn no_inprocess_subscriber_is_clean() {
+    let d = defs(&[("a", 1)]);
+    assert!(inprocess_defined(&d, &topics(&[]), &[]).is_empty());
+}
+
+// --- Check 5: unsubscribed (advisory) ----------------------------------------
+
+#[test]
+fn all_subscribed_yields_no_unsubscribed() {
+    let d = defs(&[("a", 1), ("b", 1)]);
+    assert!(unsubscribed(&d, &topics(&["a", "b", "extra"]), &[]).is_empty());
 }
 
 #[test]
-fn mixed_durable_and_inprocess_still_flags() {
-    let d = defs(&["a"]);
-    // Even with a durable subscriber present, ANY in-process sub to a defined topic
-    // is a violation.
-    let bt = by_topic(&[("a", &["leaderboard", IN_PROCESS_SENTINEL])]);
-    assert_eq!(inprocess_defined(&d, &bt, &[]), vec!["a".to_string()]);
+fn missing_subscriber_is_unsubscribed() {
+    let d = defs(&[("a", 1), ("b", 1)]);
+    assert_eq!(unsubscribed(&d, &topics(&["a"]), &[]), vec!["b".to_string()]);
 }
 
-/// The real DEFINE set is exactly the six domain topics — a guard against a topic
-/// being added to an events crate without being wired into `defined_topics()`.
 #[test]
-fn defined_topics_are_the_six_domain_topics() {
-    let mut got: Vec<String> = defined_topics().into_iter().map(|(t, _)| t).collect();
+fn allowlist_suppresses_unsubscribed() {
+    let d = defs(&[("a", 1), ("b", 1)]);
+    assert!(unsubscribed(&d, &topics(&["a"]), &["b"]).is_empty());
+}
+
+// --- The DEFINE set is exactly the six domain contract topics ----------------
+
+#[test]
+fn defined_topics_are_the_six_domain_topics_at_v1() {
+    let mut got: Vec<(String, u32)> = defined_topics()
+        .into_iter()
+        .map(|c| (c.topic, c.version))
+        .collect();
     got.sort();
     assert_eq!(
         got,
         vec![
-            "character.created".to_string(),
-            "character.deleted".to_string(),
-            "config.changed".to_string(),
-            "match.finished".to_string(),
-            "player.registered".to_string(),
-            "scheduler.fired".to_string(),
+            ("character.created".to_string(), 1),
+            ("character.deleted".to_string(), 1),
+            ("config.changed".to_string(), 1),
+            ("match.finished".to_string(), 1),
+            ("player.registered".to_string(), 1),
+            ("scheduler.fired".to_string(), 1),
         ]
     );
 }

@@ -40,8 +40,11 @@ const MIGRATE_LOCK_KEY: i64 = 0x6173_796E_636D_6967;
 /// the exclusive migrate advisory lock (`{migrate_key}`). `asyncevents.append_event`
 /// owns the WHOLE writer protocol so there is exactly one implementation:
 /// shared advisory lock -> read `plane_meta.generation` -> INSERT stamped with
-/// `pg_current_xact_id()` -> return the stable `event_id`. The `AFTER INSERT`
-/// trigger fires the wake-up NOTIFY the Step-3 worker will LISTEN on.
+/// `pg_current_xact_id()` -> return the stable `event_id`. `ensure_history_contract`
+/// is the plane-owned history-seed surface a module-owned writer (config's trigger
+/// seed) calls WITHOUT touching the plane's tables (archcheck-enforced); it mirrors
+/// [`ensure_history_contract`]'s ON-CONFLICT-then-drift-check semantics in SQL. The
+/// `AFTER INSERT` trigger fires the wake-up NOTIFY the Step-3 worker will LISTEN on.
 /// `tie_breaker` is a table-wide identity: within one transaction it is strictly
 /// increasing in append order, which is all the position ordering needs.
 const V2_DDL_TEMPLATE: &str = r#"
@@ -100,6 +103,28 @@ BEGIN
 	VALUES (_generation, pg_current_xact_id(), _topic, _version, _payload)
 	RETURNING event_id INTO _event_id;
 	RETURN _event_id;
+END;
+$$;
+CREATE OR REPLACE FUNCTION asyncevents.ensure_history_contract(
+	_topic text, _version integer, _policy text, _days integer)
+	RETURNS void LANGUAGE plpgsql AS $$
+DECLARE
+	_stored_policy text;
+	_stored_days   integer;
+BEGIN
+	INSERT INTO asyncevents.history_contracts (topic, contract_version, policy, min_retention_days)
+	VALUES (_topic, _version, _policy, _days)
+	ON CONFLICT (topic, contract_version) DO NOTHING;
+	SELECT policy, min_retention_days INTO _stored_policy, _stored_days
+		FROM asyncevents.history_contracts WHERE topic = _topic AND contract_version = _version;
+	-- Day count only matters under min_retention; keep_forever's stored days are a
+	-- NOT-NULL placeholder, never compared. A drifted policy fails loud (a topic's
+	-- history promise is immutable), never silently adopts the stored one.
+	IF _stored_policy IS DISTINCT FROM _policy
+		OR (_policy = 'min_retention' AND _stored_days IS DISTINCT FROM _days) THEN
+		RAISE EXCEPTION 'asyncevents: history_contracts for (%, v%) records policy %/%d, but the caller''s contract declares %/%d — a topic''s history policy is immutable',
+			_topic, _version, _stored_policy, _stored_days, _policy, _days;
+	END IF;
 END;
 $$;
 CREATE OR REPLACE FUNCTION asyncevents.notify_events() RETURNS trigger

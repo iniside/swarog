@@ -450,3 +450,138 @@ fn classifies_demo_manifest() {
 fn only_the_monolith_hosts_demos() {
     assert_eq!(DEMO_HOST, "server");
 }
+
+// --- Rule 14a: retired push-plane tokens banned in workspace source ----------
+
+#[test]
+fn retired_tokens_cover_the_env_graph_and_route() {
+    // The three tokens the cutover retired: two env knobs + the exact quoted route.
+    assert!(super::RETIRED_EVENT_TOKENS.contains(&"EVENTS_SUBSCRIBERS"));
+    assert!(super::RETIRED_EVENT_TOKENS.contains(&"EVENTS_ORIGIN"));
+    assert!(super::RETIRED_EVENT_TOKENS.contains(&"\"/events\""));
+}
+
+#[test]
+fn grep_retired_tokens_flags_a_comment_line() {
+    // The ban scans comments too (unlike grep_events_env): a doc comment naming
+    // EVENTS_SUBSCRIBERS documents delivery machinery that no longer exists.
+    let root = unique_temp_dir();
+    std::fs::create_dir_all(root.join("core/outbox/src")).unwrap();
+    std::fs::write(
+        root.join("core/outbox/src/lib.rs"),
+        "/// Parses the `EVENTS_SUBSCRIBERS` env value.\n",
+    )
+    .unwrap();
+    let hits = super::grep_retired_event_tokens(&root);
+    assert_eq!(hits.len(), 1, "{hits:?}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn grep_retired_tokens_quoted_route_only_no_false_positive_on_url() {
+    // `http://b/events` must NOT trip: only the exact quoted `"/events"` form is banned.
+    let root = unique_temp_dir();
+    std::fs::create_dir_all(root.join("core/x/src")).unwrap();
+    std::fs::write(
+        root.join("core/x/src/lib.rs"),
+        "let url = \"http://b/events\"; // a peer URL, not the route\n",
+    )
+    .unwrap();
+    assert!(super::grep_retired_event_tokens(&root).is_empty());
+    // …but the exact quoted route IS flagged.
+    std::fs::write(root.join("core/x/src/lib.rs"), "router.route(\"/events\", h);\n").unwrap();
+    assert_eq!(super::grep_retired_event_tokens(&root).len(), 1);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn grep_retired_tokens_excludes_the_archcheck_crate() {
+    // archcheck's own source names the tokens it bans — it must never flag itself.
+    let root = unique_temp_dir();
+    std::fs::create_dir_all(root.join("tools/archcheck/src")).unwrap();
+    std::fs::write(
+        root.join("tools/archcheck/src/main.rs"),
+        "const T: &[&str] = &[\"EVENTS_SUBSCRIBERS\", \"EVENTS_ORIGIN\"];\n",
+    )
+    .unwrap();
+    assert!(super::grep_retired_event_tokens(&root).is_empty(), "self-exclusion");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+// --- Rule 14b: schema-qualified asyncevents.<table> access banned ------------
+
+#[test]
+fn allowlisted_plane_function_calls_are_clean() {
+    assert!(super::forbidden_asyncevents_refs(
+        "PERFORM asyncevents.append_event('config.changed', 1, _payload);"
+    )
+    .is_empty());
+    assert!(super::forbidden_asyncevents_refs(
+        "SELECT asyncevents.ensure_history_contract($1, $2, $3, $4)"
+    )
+    .is_empty());
+}
+
+#[test]
+fn direct_plane_table_access_is_flagged() {
+    let refs = super::forbidden_asyncevents_refs(
+        "INSERT INTO asyncevents.history_contracts (topic) VALUES ($1)",
+    );
+    assert_eq!(refs, vec!["history_contracts".to_string()]);
+    let refs = super::forbidden_asyncevents_refs("SELECT * FROM asyncevents.events");
+    assert_eq!(refs, vec!["events".to_string()]);
+}
+
+#[test]
+fn asyncevents_rust_path_is_not_a_sql_ref() {
+    // A Rust path uses `asyncevents::`, never `asyncevents.` — the dot is what marks SQL,
+    // so a `use asyncevents::store;` or `crate::asyncevents::…` never matches.
+    assert!(super::forbidden_asyncevents_refs("use asyncevents::store::append;").is_empty());
+    // A longer identifier ending in `asyncevents` is boundary-rejected on the left.
+    assert!(super::forbidden_asyncevents_refs("myasyncevents.foo").is_empty());
+}
+
+#[test]
+fn is_test_source_recognizes_the_sanctioned_homes() {
+    assert!(super::is_test_source("modules/config/src/tests.rs"));
+    assert!(super::is_test_source("core/asyncevents/src/store_tests.rs"));
+    assert!(super::is_test_source("modules/x/tests/integration.rs"));
+    assert!(!super::is_test_source("modules/config/src/lib.rs"));
+}
+
+#[test]
+fn grep_asyncevents_sql_skips_comments_and_flags_code() {
+    let root = unique_temp_dir();
+    std::fs::create_dir_all(root.join("modules/x/src")).unwrap();
+    // A comment mentioning the table is fine; a code line SELECTing it is not.
+    std::fs::write(
+        root.join("modules/x/src/lib.rs"),
+        "// seeds asyncevents.history_contracts via the plane function\n\
+         let q = \"SELECT * FROM asyncevents.subscriptions\";\n",
+    )
+    .unwrap();
+    let hits = super::grep_asyncevents_sql(&root);
+    assert_eq!(hits.len(), 1, "{hits:?}");
+    assert!(hits[0].contains("subscriptions"), "{hits:?}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn grep_asyncevents_sql_excludes_plane_crate_and_tests() {
+    let root = unique_temp_dir();
+    // core/asyncevents (the plane) and a test file both SELECT plane tables — both clean.
+    std::fs::create_dir_all(root.join("core/asyncevents/src")).unwrap();
+    std::fs::create_dir_all(root.join("modules/x/src")).unwrap();
+    std::fs::write(
+        root.join("core/asyncevents/src/store.rs"),
+        "sqlx::query(\"SELECT * FROM asyncevents.events\");\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("modules/x/src/tests.rs"),
+        "sqlx::query(\"DELETE FROM asyncevents.events\");\n",
+    )
+    .unwrap();
+    assert!(super::grep_asyncevents_sql(&root).is_empty(), "plane + tests exempt");
+    let _ = std::fs::remove_dir_all(&root);
+}

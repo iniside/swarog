@@ -343,7 +343,8 @@ where
     sent
 }
 
-/// Parses the `EVENTS_SUBSCRIBERS` env value into a topic→URLs map.
+/// Parses the legacy subscribers env value (`topic=url,url2;topic2=url`) into a
+/// topic→URLs map.
 ///
 /// Shape: semicolon-separated entries, each `topic=url` (URLs may be comma-separated
 /// for multiple subscribers, and a topic may repeat — both append). Whitespace is

@@ -65,6 +65,31 @@ const FORBIDDEN_API_DEPS: &[&str] = &[
     "tokio", "quinn", "axum", "hyper", "sqlx", "tonic", "reqwest", "tower", "edge", "remote",
 ];
 
+/// The Rust workspace source dirs the two pull-plane bans (below) scan. Docs
+/// (`docs/`), agent `memory/`, and archived `experiments/` are deliberately out of
+/// scope — only shipping workspace source is constrained.
+const WORKSPACE_SRC_DIRS: [&str; 6] = ["core", "modules", "api", "cmd", "tools", "demos"];
+
+/// Fully-retired vocabulary of the producer-push event plane (deleted in the pull-plane
+/// cutover, plan Steps 3-4): the two env knobs of the old O(producers×consumers) config
+/// graph and the unauthenticated HTTP sink route. None may survive anywhere in shipping
+/// source — even a comment naming one signals code that still thinks in push delivery.
+/// The route is banned in its EXACT quoted form (`"/events"`) so an unrelated `/events`
+/// substring (a URL, prose) never false-positives.
+const RETIRED_EVENT_TOKENS: &[&str] = &["EVENTS_SUBSCRIBERS", "EVENTS_ORIGIN", "\"/events\""];
+
+/// The plane-owned SQL functions a module may reference by name in SQL. These are the
+/// ONLY schema-qualified `asyncevents.` references permitted outside `core/asyncevents`
+/// (the plane), `tools/eventctl` (the operator CLI), and test files: the plane owns its
+/// tables and exposes this narrow function surface (config's write trigger + its
+/// history seed), so a module never SELECTs/INSERTs a plane table directly.
+const ASYNCEVENTS_SQL_ALLOW: &[&str] = &["append_event(", "ensure_history_contract("];
+
+/// The crate whose OWN source necessarily names the tokens/markers it bans (const
+/// patterns, rule docs, unit-test fixtures) — excluded from both bans so the checker
+/// does not flag itself. Path-prefix under the workspace root.
+const BAN_SELF_EXCLUDE: &str = "tools/archcheck";
+
 /// A workspace package's classification, derived from its manifest path.
 #[derive(Debug, Clone)]
 enum Kind {
@@ -302,6 +327,17 @@ fn main() {
         violations.push(line);
     }
 
+    // --- 14: pull-plane cutover tripwires — retired push vocabulary + plane-table
+    // access. The producer-push plane (EVENTS_* env graph, POST /events sink) is gone;
+    // the plane owns its tables and exposes only a narrow SQL function surface.
+    let root_dir = workspace_root(meta.clone());
+    for line in grep_retired_event_tokens(&root_dir) {
+        violations.push(line);
+    }
+    for line in grep_asyncevents_sql(&root_dir) {
+        violations.push(line);
+    }
+
     // --- 6: every cmd/*-svc + the monolith main lists `metrics` ---------------
     // CLAUDE.md: "every main lists metrics::Metrics::new() for GET /metrics." The
     // durable-events plane is app-owned infrastructure, not a listed module, so there is
@@ -398,7 +434,7 @@ fn main() {
     }
 
     if violations.is_empty() {
-        println!("archcheck: OK — no module→module / module→foreign-rpc edges, single front door (only gateway-svc + server host `gateway`), no Option<edge::Server> in modules/, <name>api/<name>events crates stay transport-free, every cmd/*-svc + server lists `metrics`, no cross-schema FKs in modules/ DDL, no inline test modules in modules/, core/bus stays sqlx-free, no module runtime-deps `asyncevents`, no EVENTS_ env knobs read inside modules/, every modules/<name> boots as cmd/<name>-svc, demos/* imported only by cmd/server");
+        println!("archcheck: OK — no module→module / module→foreign-rpc edges, single front door (only gateway-svc + server host `gateway`), no Option<edge::Server> in modules/, <name>api/<name>events crates stay transport-free, every cmd/*-svc + server lists `metrics`, no cross-schema FKs in modules/ DDL, no inline test modules in modules/, core/bus stays sqlx-free, no module runtime-deps `asyncevents`, no EVENTS_ env knobs read inside modules/, no retired push-plane tokens (EVENTS_*/\"/events\") in workspace source, no schema-qualified asyncevents.<table> access outside the plane, every modules/<name> boots as cmd/<name>-svc, demos/* imported only by cmd/server");
         return;
     }
     eprintln!("archcheck: FAIL — {} violation(s):", violations.len());
@@ -794,6 +830,147 @@ fn grep_events_env(dir: &Path) -> Vec<String> {
                         ));
                     }
                 }
+            }
+        }
+    }
+    hits
+}
+
+/// The `root`-relative path of `file`, backslashes normalized to `/` — so a prefix
+/// match like [`BAN_SELF_EXCLUDE`] is OS-independent.
+fn workspace_rel(root: &Path, file: &Path) -> String {
+    file.strip_prefix(root)
+        .unwrap_or(file)
+        .to_string_lossy()
+        .replace('\\', "/")
+}
+
+/// Collects every `.rs` file under the [`WORKSPACE_SRC_DIRS`] of `root`, skipping any
+/// whose `root`-relative path starts with one of `skip_prefixes`. The two pull-plane
+/// bans below share this walk; each applies its own per-line rule.
+fn workspace_rs_files(root: &Path, skip_prefixes: &[&str]) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    for dir in WORKSPACE_SRC_DIRS {
+        let mut stack = vec![root.join(dir)];
+        while let Some(d) = stack.pop() {
+            let Ok(entries) = std::fs::read_dir(&d) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                    continue;
+                }
+                let rel = workspace_rel(root, &path);
+                if skip_prefixes.iter().any(|p| rel.starts_with(p)) {
+                    continue;
+                }
+                out.push(path);
+            }
+        }
+    }
+    out
+}
+
+/// True if `file` (root-relative) is a test file exempt from the SQL ban: `tests.rs`,
+/// `*_tests.rs`, or any file under a `tests/` directory — the sanctioned homes for test
+/// code, which may reach plane tables to set up / assert fixtures.
+fn is_test_source(rel: &str) -> bool {
+    let name = rel.rsplit('/').next().unwrap_or(rel);
+    name == "tests.rs"
+        || name.ends_with("_tests.rs")
+        || rel.split('/').any(|seg| seg == "tests")
+}
+
+/// Bans the retired producer-push vocabulary ([`RETIRED_EVENT_TOKENS`]) anywhere in
+/// workspace source — INCLUDING comments, because a comment naming `EVENTS_SUBSCRIBERS`
+/// or `POST "/events"` documents delivery machinery that no longer exists. The archcheck
+/// crate itself is excluded ([`BAN_SELF_EXCLUDE`]): it necessarily names these tokens.
+fn grep_retired_event_tokens(root: &Path) -> Vec<String> {
+    let mut hits = Vec::new();
+    for path in workspace_rs_files(root, &[BAN_SELF_EXCLUDE]) {
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        for (i, line) in text.lines().enumerate() {
+            for tok in RETIRED_EVENT_TOKENS {
+                if line.contains(tok) {
+                    hits.push(format!(
+                        "{}:{}: retired push-plane token `{tok}` — the producer-push event \
+                         plane (EVENTS_* env graph + POST /events sink) was replaced by the \
+                         pull plane; no shipping source may name it (plan Steps 3-4)",
+                        path.display(),
+                        i + 1
+                    ));
+                }
+            }
+        }
+    }
+    hits
+}
+
+/// Every schema-qualified `asyncevents.<ident>` reference in `line` that is NOT an
+/// allowlisted plane-function call ([`ASYNCEVENTS_SQL_ALLOW`]). Left-boundary checked so
+/// a longer identifier ending in `asyncevents` never false-positives (a Rust path uses
+/// `asyncevents::`, never `asyncevents.`, so a dot means SQL). Returns the referenced
+/// object name(s). Factored out so it is unit-testable without a filesystem walk.
+fn forbidden_asyncevents_refs(line: &str) -> Vec<String> {
+    let marker = "asyncevents.";
+    find_all(line, marker)
+        .into_iter()
+        .filter_map(|i| {
+            if i > 0 {
+                let prev = line.as_bytes()[i - 1] as char;
+                if prev.is_alphanumeric() || prev == '_' {
+                    return None; // continuation of a longer identifier, not schema-qualified
+                }
+            }
+            let after = &line[i + marker.len()..];
+            if ASYNCEVENTS_SQL_ALLOW.iter().any(|f| after.starts_with(f)) {
+                return None; // an allowlisted plane-function call
+            }
+            let end = after
+                .find(|c: char| !(c.is_alphanumeric() || c == '_'))
+                .unwrap_or(after.len());
+            Some(after[..end].to_string())
+        })
+        .collect()
+}
+
+/// Bans schema-qualified `asyncevents.` table access in workspace source outside the
+/// plane crate (`core/asyncevents`), the operator CLI (`tools/eventctl`), and test
+/// files — with the sole exception of the allowlisted plane-function calls. Comment
+/// lines are skipped (like the other tripwires): `asyncevents.` legitimately appears in
+/// prose describing the plane function. The plane owns its tables; a module reaches
+/// them only through the function surface.
+fn grep_asyncevents_sql(root: &Path) -> Vec<String> {
+    let mut hits = Vec::new();
+    let skip = [BAN_SELF_EXCLUDE, "core/asyncevents", "tools/eventctl"];
+    for path in workspace_rs_files(root, &skip) {
+        let rel = workspace_rel(root, &path);
+        if is_test_source(&rel) {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        for (i, line) in text.lines().enumerate() {
+            if line.trim_start().starts_with("//") {
+                continue; // skip comments/doc — code only
+            }
+            for object in forbidden_asyncevents_refs(line) {
+                hits.push(format!(
+                    "{}:{}: schema-qualified `asyncevents.{object}` — the durable-events plane \
+                     owns its tables; a module reaches them only through the plane function \
+                     surface ({}), never direct SQL",
+                    path.display(),
+                    i + 1,
+                    ASYNCEVENTS_SQL_ALLOW.join(", ")
+                ));
             }
         }
     }
