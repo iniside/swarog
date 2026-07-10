@@ -229,12 +229,24 @@ impl Store {
         Ok(res.rows_affected())
     }
 
-    async fn item_exists(&self, item_id: &str) -> Result<bool, sqlx::Error> {
-        let (ok,): (bool,) = sqlx::query_as("SELECT EXISTS(SELECT 1 FROM inventory.items WHERE id = $1)")
+    /// `item_exists` on a HANDED connection — the durable-delivery variant (same
+    /// shape as `grant_exec`): `grant_starter` validates the configured starter
+    /// item on the SAME delivery tx it inserts on, so the check and the insert
+    /// are one atomic unit (a pool-backed check would be a different connection —
+    /// TOCTOU against the tx's snapshot).
+    async fn item_exists_exec(&self, conn: &mut PgConnection, item_id: &str) -> Result<bool, sqlx::Error> {
+        let row: Option<i32> = sqlx::query_scalar("SELECT 1 FROM inventory.items WHERE id = $1")
             .bind(item_id)
-            .fetch_one(&self.pool)
+            .fetch_optional(&mut *conn)
             .await?;
-        Ok(ok)
+        Ok(row.is_some())
+    }
+
+    /// The pool-backed item check (the player IAP path): acquires a connection and
+    /// runs `item_exists_exec` against it. Not the durable-event path.
+    async fn item_exists(&self, item_id: &str) -> Result<bool, sqlx::Error> {
+        let mut conn = self.pool.acquire().await?;
+        self.item_exists_exec(&mut conn, item_id).await
     }
 
     async fn stats(&self) -> Result<(i64, i64), sqlx::Error> {
@@ -317,6 +329,16 @@ impl Inner {
     /// `inventory.wiped_characters` means the character is gone: skip the grant
     /// and return Ok — the checkpoint still commits (exactly-once preserved).
     /// UUIDs never recur, so the tombstone is permanent truth.
+    ///
+    /// Config validation guard: the config-read starter spec is VALIDATED here, on
+    /// the read path, and a bad value degrades to the compiled defaults with a warn
+    /// — never a delivery failure. A config typo is a property of the config, not
+    /// of the event, so failing the delivery would poison
+    /// `inventory.character-created.v1` for every subsequent character;
+    /// poison-pause stays reserved for genuinely undeliverable events. The item
+    /// check runs via `item_exists_exec` on the SAME handed delivery tx as the
+    /// insert (check + insert one atomic unit). Validating on the read also covers
+    /// values written straight via psql, which bypass any service-side check.
     async fn grant_starter(&self, conn: &mut PgConnection, character_id: &str) -> Result<(), bus::Error> {
         lock_character(conn, character_id).await.map_err(bus::Error::transport)?;
         let tombstoned: Option<i32> =
@@ -332,7 +354,34 @@ impl Inner {
             );
             return Ok(());
         }
-        let (item, qty) = self.starter_spec();
+        let (mut item, mut qty) = self.starter_spec();
+        if qty <= 0 {
+            // Negative would trip the holdings CHECK (quantity >= 0) — a poison;
+            // zero would be a silent no-op grant. Both degrade to the default.
+            tracing::warn!(
+                qty,
+                default = STARTER_QTY,
+                "inventory: configured starter_qty invalid — using default"
+            );
+            qty = STARTER_QTY;
+        }
+        if !self
+            .store
+            .item_exists_exec(&mut *conn, &item)
+            .await
+            .map_err(bus::Error::transport)?
+        {
+            // An unknown item would trip the in-module FK on insert — a poison.
+            // The compiled default `starter_sword` is seeded by this module's OWN
+            // idempotent migrate DDL in its own schema, so the fallback row is
+            // guaranteed present — the FK cannot fire on the default.
+            tracing::warn!(
+                %item,
+                default = STARTER_ITEM,
+                "inventory: configured starter_item unknown — using default"
+            );
+            item = STARTER_ITEM.to_string();
+        }
         self.store
             .grant_exec(conn, &Owner::character(character_id), &item, qty)
             .await

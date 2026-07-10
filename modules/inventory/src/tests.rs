@@ -187,6 +187,66 @@ async fn grant_starter_then_wipe_on_conn() {
     cleanup_owner(&pool, &cid).await;
 }
 
+/// (a2) Config-validation guard: an UNKNOWN configured starter item degrades to the
+/// compiled default (`STARTER_ITEM`) instead of failing the delivery — a config typo
+/// must never poison the `inventory.character-created.v1` subscription.
+#[tokio::test]
+async fn grant_starter_falls_back_to_default_item_on_unknown_config_item() {
+    let Some(pool) = test_pool().await else { return };
+    ensure_schema(&pool).await;
+    let cid = unique_uuid(&pool).await;
+    let inner = inner_with(pool.clone(), Arc::new(FakeConfig::new("no_such_item", 1)));
+
+    let mut conn = pool.acquire().await.unwrap();
+    inner.grant_starter(&mut conn, &cid).await.unwrap();
+
+    let holdings = inner.store.list(&Owner::character(&cid)).await.unwrap();
+    assert_eq!(holdings.len(), 1, "grant must succeed via the fallback item");
+    assert_eq!(holdings[0].item_id, STARTER_ITEM, "unknown configured item degrades to the default");
+    assert_eq!(holdings[0].quantity, 1);
+
+    cleanup_owner(&pool, &cid).await;
+}
+
+/// (a3) A NEGATIVE configured starter qty (would trip the holdings CHECK — a
+/// poison) degrades to `STARTER_QTY`.
+#[tokio::test]
+async fn grant_starter_falls_back_to_default_qty_on_negative_config_qty() {
+    let Some(pool) = test_pool().await else { return };
+    ensure_schema(&pool).await;
+    let cid = unique_uuid(&pool).await;
+    let inner = inner_with(pool.clone(), Arc::new(FakeConfig::new(STARTER_ITEM, -5)));
+
+    let mut conn = pool.acquire().await.unwrap();
+    inner.grant_starter(&mut conn, &cid).await.unwrap();
+
+    let holdings = inner.store.list(&Owner::character(&cid)).await.unwrap();
+    assert_eq!(holdings.len(), 1, "grant must succeed via the fallback qty");
+    assert_eq!(holdings[0].item_id, STARTER_ITEM);
+    assert_eq!(holdings[0].quantity, STARTER_QTY, "negative configured qty degrades to the default");
+
+    cleanup_owner(&pool, &cid).await;
+}
+
+/// (a4) A ZERO configured starter qty (a silent no-op grant) degrades to
+/// `STARTER_QTY` the same way.
+#[tokio::test]
+async fn grant_starter_falls_back_to_default_qty_on_zero_config_qty() {
+    let Some(pool) = test_pool().await else { return };
+    ensure_schema(&pool).await;
+    let cid = unique_uuid(&pool).await;
+    let inner = inner_with(pool.clone(), Arc::new(FakeConfig::new(STARTER_ITEM, 0)));
+
+    let mut conn = pool.acquire().await.unwrap();
+    inner.grant_starter(&mut conn, &cid).await.unwrap();
+
+    let holdings = inner.store.list(&Owner::character(&cid)).await.unwrap();
+    assert_eq!(holdings.len(), 1, "grant must succeed via the fallback qty");
+    assert_eq!(holdings[0].quantity, STARTER_QTY, "zero configured qty degrades to the default");
+
+    cleanup_owner(&pool, &cid).await;
+}
+
 /// `lock_key` is stable per character id (two concurrent deliveries derive the SAME
 /// advisory key and contend) and its namespaced seed diverges from scheduler's
 /// plain FNV-1a of the same input string — the two modules can never contend on
