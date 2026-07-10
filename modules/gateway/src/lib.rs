@@ -1,6 +1,8 @@
-//! `gateway` — the front-door lifecycle module, present in EVERY `app::run` process
-//! (the monolith and each split `*-svc`). It fronts the process's op surface on TWO
-//! public planes through ONE shared façade ([`FrontDoor`]):
+//! `gateway` — the front-door lifecycle module, hosted ONLY by the front processes
+//! (the monolith `cmd/server` and `cmd/gateway-svc`; a domain `*-svc` NEVER hosts it,
+//! serving its ops over the internal mTLS edge instead — archcheck-enforced). It
+//! fronts the process's op surface on TWO public planes through ONE shared façade
+//! ([`FrontDoor`]):
 //!
 //!   - **HTTP** — one axum FALLBACK handler mounted onto the shared `Context` router,
 //!     so `app` stays topology-blind (the leaf-slot seam). Port of Go's
@@ -41,12 +43,18 @@
 //! A player-QUIC request runs the same match/auth/dispatch, minus the HTTP
 //! translation — see [`FrontDoor::player_handler`] for the pinned response grammar.
 //!
-//! ## Lazy route table (the init-ordering sidestep)
+//! ## Lazy route table (the init-ordering sidestep) + eager startup validation
 //! Modules contribute their `OpSet`s during their own `init`, and the gateway's
-//! `init` may run first. So the table is NOT built eagerly: the [`FrontDoor`] holds a
-//! [`std::sync::OnceLock`] and builds the table from `ctx.contributions(...)` on the
-//! FIRST request — by which time every module's `init` has run (requests only arrive
-//! after `app::run` finishes Build and starts serving).
+//! `init` may run first. So the SERVING table is NOT built during `init`: the
+//! [`FrontDoor`] holds a [`std::sync::OnceLock`] and builds the table from
+//! `ctx.contributions(...)` on the FIRST request — by which time every module's
+//! `init` has run (requests only arrive after `app::run` finishes Build and starts
+//! serving). But collisions in the contributed slots (two modules claiming the same
+//! method id, two routes matching the same request set, two peers for one provider)
+//! must not lurk until the first request hits them: [`Gateway::start`] — which runs
+//! after ALL module `init`s — eagerly calls [`FrontDoor::build_table`] once, turning
+//! any such collision into a loud startup failure in BOTH topologies. The lazy path
+//! then rebuilds without re-checking (validation has already passed).
 
 mod backend;
 mod keys;
@@ -113,6 +121,11 @@ pub struct Gateway {
     /// monolith (no split peers to proxy to), so every unmatched route stays a 404 —
     /// exactly the prior behaviour. Topology lives in `cmd/*`, never read from env here.
     passthroughs: Vec<(String, String)>,
+    /// The [`FrontDoor`] built and mounted in `init`, stored so `start` can eagerly
+    /// validate the route table (a collision then fails startup, not the first
+    /// request). Interior-mutable because `Module` phases take `&self`; set exactly
+    /// once in `init`, read in `start`.
+    front_door: OnceLock<Arc<FrontDoor>>,
 }
 
 impl Gateway {
@@ -126,6 +139,7 @@ impl Gateway {
             key_verifier: None,
             player_edge: None,
             passthroughs: Vec::new(),
+            front_door: OnceLock::new(),
         }
     }
 
@@ -137,6 +151,7 @@ impl Gateway {
             key_verifier: None,
             player_edge: None,
             passthroughs: Vec::new(),
+            front_door: OnceLock::new(),
         }
     }
 
@@ -213,6 +228,24 @@ impl Module for Gateway {
         if let Some(shared) = &self.player_edge {
             shared.lock().unwrap().set_handler(front_door.player_handler());
         }
+        // Stash the façade so `start` can eagerly validate the route table.
+        let _ = self.front_door.set(front_door);
+        Ok(())
+    }
+
+    /// Eager route-table validation. `start` runs after EVERY module's `init`, so all
+    /// `opsapi` slot contributions are present — building the table here turns a
+    /// duplicate method id, an overlapping verb+path route, or a duplicate peer
+    /// provider into a loud startup failure in BOTH topologies (monolith and
+    /// gateway-svc), instead of a silent last-write-wins hybrid discovered on the
+    /// first request. The built table is discarded; the [`FrontDoor`] rebuilds it
+    /// lazily on first request (validation has passed by then).
+    async fn start(&self, _ctx: &Context) -> anyhow::Result<()> {
+        let front_door = self
+            .front_door
+            .get()
+            .expect("gateway: init runs before start and sets the FrontDoor");
+        front_door.build_table()?;
         Ok(())
     }
 }
@@ -262,10 +295,23 @@ impl FrontDoor {
     }
 
     /// The route table, built from the slots on first access. By first-request time
-    /// every module's `init` (where `OpSet`s are contributed) has completed.
+    /// every module's `init` (where `OpSet`s are contributed) has completed AND
+    /// [`Gateway::start`] has already validated the same slots via [`build_table`],
+    /// so the lazy build here cannot surface a NEW collision — hence the `expect`.
+    ///
+    /// [`build_table`]: FrontDoor::build_table
     fn table(&self) -> &Arc<RouteTable> {
-        self.table
-            .get_or_init(|| Arc::new(RouteTable::build(&self.slots)))
+        self.table.get_or_init(|| {
+            self.build_table()
+                .expect("route table already validated in Gateway::start")
+        })
+    }
+
+    /// Builds the route table from the current slots, failing on any collision (see
+    /// [`RouteTable::build`]). Shared by the eager startup validation
+    /// ([`Gateway::start`]) and the lazy first-request path ([`FrontDoor::table`]).
+    fn build_table(&self) -> anyhow::Result<Arc<RouteTable>> {
+        Ok(Arc::new(RouteTable::build(&self.slots)?))
     }
 
     /// Builds the axum router carrying ONLY the gateway's fallback. `Router::merge`
@@ -427,38 +473,95 @@ struct RouteTable {
 }
 
 impl RouteTable {
-    /// Reads the three opsapi slots and assembles the table. An `Operation` with no
-    /// paired `OpBinding` is a provider wiring bug and is skipped rather than bound to
-    /// an undecodable route (mirrors Go's `buildOpsMux`).
-    fn build(slots: &Slots) -> RouteTable {
+    /// Reads the four opsapi slots and assembles the table, FAILING on any collision:
+    /// two `OpBinding`s / `LocalOp`s / `Operation`s for one method, two `PeerAddr`s for
+    /// one provider, or two operations whose verb + path pattern match the same request
+    /// set. The slots are append-only multi-value contributions, so a duplicate is a
+    /// wiring bug (two modules claiming the same op) that would otherwise resolve to a
+    /// silent last-write-wins hybrid — [`Gateway::start`] calls this eagerly so the bug
+    /// is a loud startup failure. An `Operation` with no paired `OpBinding` is a
+    /// different wiring bug and is skipped rather than bound to an undecodable route
+    /// (mirrors Go's `buildOpsMux`).
+    fn build(slots: &Slots) -> anyhow::Result<RouteTable> {
         let operations: Vec<Operation> = slots.contributions(opsapi::SLOT);
         let bindings: Vec<OpBinding> = slots.contributions(opsapi::BINDING_SLOT);
         let locals: Vec<opsapi::LocalOp> = slots.contributions(opsapi::LOCAL_SLOT);
         let peer_addrs: Vec<opsapi::PeerAddr> = slots.contributions(opsapi::PEER_SLOT);
 
-        let binding_by_method: HashMap<String, OpBinding> =
-            bindings.into_iter().map(|b| (b.method.clone(), b)).collect();
-        let invokers: HashMap<String, LocalInvoker> =
-            locals.into_iter().map(|l| (l.method.clone(), l.invoke)).collect();
-        let peers: HashMap<String, String> =
-            peer_addrs.into_iter().map(|p| (p.provider, p.addr)).collect();
+        let mut binding_by_method: HashMap<String, OpBinding> = HashMap::new();
+        for b in bindings {
+            if binding_by_method.contains_key(&b.method) {
+                anyhow::bail!(
+                    "gateway: duplicate OpBinding for method {:?} — two modules \
+                     contributed a binding for the same op",
+                    b.method
+                );
+            }
+            binding_by_method.insert(b.method.clone(), b);
+        }
 
-        let mut routes = Vec::new();
+        let mut invokers: HashMap<String, LocalInvoker> = HashMap::new();
+        for l in locals {
+            if invokers.contains_key(&l.method) {
+                anyhow::bail!(
+                    "gateway: duplicate LocalOp for method {:?} — two modules claim \
+                     to serve the same op locally",
+                    l.method
+                );
+            }
+            invokers.insert(l.method.clone(), l.invoke);
+        }
+
+        let mut peers: HashMap<String, String> = HashMap::new();
+        for p in peer_addrs {
+            if let Some(existing) = peers.get(&p.provider) {
+                anyhow::bail!(
+                    "gateway: duplicate peer for provider {:?} — {:?} and {:?} both \
+                     contributed (two remote::Stubs for one provider)",
+                    p.provider,
+                    existing,
+                    p.addr
+                );
+            }
+            peers.insert(p.provider, p.addr);
+        }
+
+        let mut routes: Vec<Route> = Vec::new();
         for op in operations {
+            if routes.iter().any(|r| r.op.method == op.method) {
+                anyhow::bail!(
+                    "gateway: duplicate Operation for method {:?} — two modules \
+                     contributed an operation with the same method id",
+                    op.method
+                );
+            }
             let Some(binding) = binding_by_method.get(&op.method).cloned() else {
                 tracing::warn!(method = %op.method, "gateway: operation has no binding; skipping");
                 continue;
             };
             let pattern = parse_pattern(&op.path);
+            if let Some(existing) = routes
+                .iter()
+                .find(|r| r.op.verb.eq_ignore_ascii_case(&op.verb) && pattern_shape_eq(&r.pattern, &pattern))
+            {
+                anyhow::bail!(
+                    "gateway: duplicate route {} {:?} — methods {:?} and {:?} match \
+                     the same request set (wildcard names are ignored)",
+                    op.verb,
+                    op.path,
+                    existing.op.method,
+                    op.method
+                );
+            }
             routes.push(Route { op, binding, pattern });
         }
 
-        RouteTable {
+        Ok(RouteTable {
             routes,
             invokers: Arc::new(invokers),
             peers,
             remotes: tokio::sync::Mutex::new(HashMap::new()),
-        }
+        })
     }
 
     /// Finds the first route whose verb and path pattern match, returning it with the
@@ -780,6 +883,21 @@ fn parse_pattern(path: &str) -> Vec<Seg> {
             None => Seg::Lit(s.to_string()),
         })
         .collect()
+}
+
+/// Wildcard-name-blind pattern equality — two patterns are equal iff they accept the
+/// SAME request set, exactly [`match_pattern`]'s semantics: it never reads a wildcard's
+/// `{name}`, so `/char/{id}` and `/char/{name}` match identical requests and are a
+/// collision. Equal length required; literals compare by string; ANY `Wild` equals ANY
+/// `Wild`. (`Seg` deliberately derives no `PartialEq` — equality here is request-set
+/// equality, NOT structural: two differently-named wildcards must compare equal.)
+fn pattern_shape_eq(a: &[Seg], b: &[Seg]) -> bool {
+    a.len() == b.len()
+        && a.iter().zip(b).all(|(x, y)| match (x, y) {
+            (Seg::Lit(l), Seg::Lit(r)) => l == r,
+            (Seg::Wild(_), Seg::Wild(_)) => true,
+            _ => false,
+        })
 }
 
 /// Matches parsed pattern segments against request segments, returning the captured

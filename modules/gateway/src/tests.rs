@@ -346,7 +346,7 @@ fn find_by_method_hit_and_miss() {
     slots.contribute(opsapi::SLOT, op.operation);
     slots.contribute(opsapi::BINDING_SLOT, op.binding);
     slots.contribute(opsapi::LOCAL_SLOT, op.local);
-    let table = RouteTable::build(&slots);
+    let table = RouteTable::build(&slots).expect("single well-formed op builds");
 
     let route = table.find_by_method("demo.echo").expect("bound op is found");
     assert_eq!(route.op.method, "demo.echo");
@@ -355,6 +355,97 @@ fn find_by_method_hit_and_miss() {
     // A wire-only internal method was never contributed → invisible (the
     // allow-list gate the player plane relies on).
     assert!(table.find_by_method("characters.ownerOf").is_none());
+}
+
+// ---- RouteTable::build: startup-time collision detection ----
+
+/// Builds an `(Operation, OpBinding)` pair for `method` at `path` (GET, AuthNone) — the
+/// minimum a route needs to reach the build's collision checks (no local invoker).
+fn route_pair(method: &str, path: &str) -> (Operation, OpBinding) {
+    let decode: DecodeFn = Arc::new(|_b, _p| Ok(b"null".to_vec()));
+    let encode: EncodeFn = Arc::new(|r: &[u8]| Ok((Some(r.to_vec()), Status::Ok)));
+    (
+        Operation {
+            method: method.into(),
+            verb: "GET".into(),
+            path: path.into(),
+            auth: AuthReq::None,
+            success: 200,
+        },
+        OpBinding { method: method.into(), decode, encode },
+    )
+}
+
+#[test]
+fn build_rejects_duplicate_method_id() {
+    // Two full OpSets for the SAME method id `demo.echo` — a wiring bug (two modules
+    // claiming one op) that used to resolve to a silent last-write-wins hybrid.
+    let slots = Slots::new();
+    let a = demo_opset();
+    let b = demo_opset();
+    slots.contribute(opsapi::SLOT, a.operation);
+    slots.contribute(opsapi::BINDING_SLOT, a.binding);
+    slots.contribute(opsapi::LOCAL_SLOT, a.local);
+    slots.contribute(opsapi::SLOT, b.operation);
+    slots.contribute(opsapi::BINDING_SLOT, b.binding);
+    slots.contribute(opsapi::LOCAL_SLOT, b.local);
+
+    let err = RouteTable::build(&slots).err().expect("build must fail with a collision").to_string();
+    assert!(err.contains("demo.echo"), "the bail must name the colliding method: {err}");
+}
+
+#[test]
+fn build_rejects_overlapping_route_with_differently_named_wildcards() {
+    // Distinct method ids (so the method-id check passes) but the SAME verb + path
+    // shape, differing only in the wildcard NAME — which `match_pattern` never reads,
+    // so both accept `/char/<anything>`. Must be rejected wildcard-name-blind.
+    let slots = Slots::new();
+    let (op1, b1) = route_pair("char.byId", "/char/{id}");
+    let (op2, b2) = route_pair("char.byName", "/char/{name}");
+    slots.contribute(opsapi::SLOT, op1);
+    slots.contribute(opsapi::BINDING_SLOT, b1);
+    slots.contribute(opsapi::SLOT, op2);
+    slots.contribute(opsapi::BINDING_SLOT, b2);
+
+    let err = RouteTable::build(&slots).err().expect("build must fail with a collision").to_string();
+    assert!(
+        err.contains("char.byId") && err.contains("char.byName"),
+        "the bail must name BOTH colliding routes: {err}"
+    );
+}
+
+#[test]
+fn build_accepts_same_shape_different_literals() {
+    // Same wildcard SHAPE (`/{lit}/{id}`) but a different literal first segment → the
+    // two routes accept disjoint request sets, so this is NOT a collision.
+    let slots = Slots::new();
+    let (op1, b1) = route_pair("char.byId", "/char/{id}");
+    let (op2, b2) = route_pair("item.byId", "/item/{id}");
+    slots.contribute(opsapi::SLOT, op1);
+    slots.contribute(opsapi::BINDING_SLOT, b1);
+    slots.contribute(opsapi::SLOT, op2);
+    slots.contribute(opsapi::BINDING_SLOT, b2);
+
+    let table = RouteTable::build(&slots).expect("distinct-literal routes must build");
+    assert_eq!(table.routes.len(), 2);
+}
+
+#[test]
+fn build_rejects_duplicate_peer_provider() {
+    // Two PeerAddrs for one provider (different addresses) → two remote::Stubs wired
+    // the same provider, an ambiguous dispatch target.
+    let slots = Slots::new();
+    slots.contribute(
+        opsapi::PEER_SLOT,
+        opsapi::PeerAddr { provider: "characters".into(), addr: "127.0.0.1:9000".into() },
+    );
+    slots.contribute(
+        opsapi::PEER_SLOT,
+        opsapi::PeerAddr { provider: "characters".into(), addr: "127.0.0.1:9001".into() },
+    );
+
+    let err = RouteTable::build(&slots).err().expect("build must fail with a collision").to_string();
+    assert!(err.contains("characters"), "the bail must name the colliding provider: {err}");
 }
 
 // ---- the player handler: the pinned {status, err} grammar on every outcome ----
@@ -792,7 +883,7 @@ impl Caller for FailingCaller {
 #[tokio::test]
 async fn remote_dispatch_evicts_failed_caller_so_next_request_redials() {
     // A table with NO local invokers → every dispatch selects Remote.
-    let table = RouteTable::build(&Slots::new());
+    let table = RouteTable::build(&Slots::new()).expect("empty slots build");
     let op = Operation {
         method: "fakeprov.op".into(),
         verb: "POST".into(),
