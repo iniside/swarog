@@ -2,6 +2,7 @@
 pub mod schedulerevents
 pub mod schedulerevents::schedule_names
 pub const schedulerevents::schedule_names::AUDIT_PRUNE: &str
+pub const schedulerevents::schedule_names::SESSIONS_PRUNE: &str
 pub struct schedulerevents::Fired
 pub schedulerevents::Fired::name: alloc::string::String
 impl core::clone::Clone for schedulerevents::Fired
