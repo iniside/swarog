@@ -47,6 +47,7 @@ const DURABLE_TOPICS: &[&str] = &[
     "player.registered",
     "config.changed",
     "match.finished",
+    "admin.action",
 ];
 
 /// The per-topic subscription ids, zipped positionally with [`DURABLE_TOPICS`]:
@@ -59,6 +60,7 @@ const DURABLE_SPEC_IDS: &[&str] = &[
     "audit.player-registered.v1",
     "audit.config-changed.v1",
     "audit.match-finished.v1",
+    "audit.admin-action.v1",
 ];
 
 /// The `scheduler.fired` `name` audit prunes on. Shared vocabulary (a string, like a

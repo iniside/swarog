@@ -134,6 +134,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "adminevents"
+version = "0.1.0"
+dependencies = [
+ "bus",
+ "serde",
+]
+
+[[package]]
 name = "adminrpc"
 version = "0.1.0"
 dependencies = [
@@ -312,6 +320,7 @@ version = "0.1.0"
 dependencies = [
  "accountsevents",
  "adminapi",
+ "adminevents",
  "anyhow",
  "async-trait",
  "asyncevents",
@@ -3549,6 +3558,7 @@ name = "topiccheck"
 version = "0.1.0"
 dependencies = [
  "accountsevents",
+ "adminevents",
  "anyhow",
  "async-trait",
  "bus",

@@ -1,0 +1,16 @@
+[package]
+name = "adminevents"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The published event vocabulary of the admin domain (mirrors api/match/events): the
+# AdminAction payload + its topic descriptor. The ONLY surface consumers (audit) share
+# with admin; nobody imports the admin implementation. Rides the DURABLE plane
+# (bus::emit_tx atomic with the admin auth/store write), so the payload is serde (the
+# transport collapses it to JSON at the emit_tx/on_tx boundary). Imports only the
+# `bus` leaf.
+[dependencies]
+bus = { workspace = true }
+serde = { workspace = true }

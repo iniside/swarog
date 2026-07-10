@@ -77,6 +77,7 @@ members = [
     "api/config/events",
     "api/admin/api",
     "api/admin/rpc",
+    "api/admin/events",
     "api/audit/rpc",
     "api/scheduler/events",
     "api/scheduler/rpc",
@@ -199,6 +200,7 @@ checkmodules = { path = "tools/checkmodules" }
 # `<name>rpc` is the generated transport glue (own module + remote + cmd only). ----
 adminapi = { path = "api/admin/api" }
 adminrpc = { path = "api/admin/rpc" }
+adminevents = { path = "api/admin/events" }
 auditrpc = { path = "api/audit/rpc" }
 schedulerevents = { path = "api/scheduler/events" }
 schedulerrpc = { path = "api/scheduler/rpc" }

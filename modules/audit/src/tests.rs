@@ -96,6 +96,7 @@ fn durable_topics_match_events() {
         accountsevents::PLAYER_REGISTERED.topic(),
         configevents::CHANGED.topic(),
         matchevents::FINISHED.topic(),
+        adminevents::ACTION.topic(),
     ]
     .into_iter()
     .collect();

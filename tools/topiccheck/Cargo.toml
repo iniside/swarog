@@ -32,6 +32,7 @@ charactersevents = { workspace = true }
 configevents = { workspace = true }
 matchevents = { workspace = true }
 schedulerevents = { workspace = true }
+adminevents = { workspace = true }
 
 # The SUBSCRIBE sites — the full monolith module set, single-sourced (Step 3,
 # abstraction-leak closures) so this tool and requirecheck can't silently diverge on

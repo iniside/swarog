@@ -39,6 +39,7 @@ charactersevents = { workspace = true }
 accountsevents = { workspace = true }
 configevents = { workspace = true }
 matchevents = { workspace = true }
+adminevents = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
 # The retention-gate `init` test needs a real (in-memory) `bus::Transport` handle —
 # `on_tx_raw` panics on a transport-less bus — via `asyncevents::testing::transport`,
