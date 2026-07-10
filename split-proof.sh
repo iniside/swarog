@@ -898,7 +898,7 @@ echo "========= SESSION PRUNE (scheduler-svc :$H_PORT -> accounts-svc :$D_PORT) 
 # NOT via a synthetic asyncevents.append_event: forging an event the scheduler solely
 # produces would violate publisher-owns-the-event (and feed audit's raw sink a fake row).
 echo "[SP0] plant a throwaway player + an EXPIRED session on the shared DB (FK needs a real player)"
-SP_PID="$(pg "INSERT INTO accounts.players (display_name) VALUES ('prune-proof-$RUN_SUFFIX') RETURNING id::text;" | tr -d '[:space:]')"
+SP_PID="$(pg "INSERT INTO accounts.players (display_name) VALUES ('prune-proof-$RUN_SUFFIX') RETURNING id::text;" | head -n1 | tr -d '[:space:]')"
 [ -n "$SP_PID" ] || { fail "could not insert throwaway player for the session-prune proof"; exit 1; }
 SP_TOKEN="prune-proof-$RUN_SUFFIX"
 pg "INSERT INTO accounts.sessions (token, player_id, expires_at) VALUES ('$SP_TOKEN', '$SP_PID'::uuid, now() - interval '1 day');" >/dev/null

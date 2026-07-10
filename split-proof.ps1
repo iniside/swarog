@@ -786,7 +786,9 @@ try {
     # NOT via a synthetic asyncevents.append_event: forging an event the scheduler solely
     # produces would violate publisher-owns-the-event (and feed audit's raw sink a fake row).
     Write-Host "[SP0] plant a throwaway player + an EXPIRED session on the shared DB (FK needs a real player)"
-    $spPid = ("" + (Invoke-Sql "INSERT INTO accounts.players (display_name) VALUES ('prune-proof-$RunSuffix') RETURNING id::text;")).Trim()
+    # psql prints the INSERT command tag after the RETURNING row even with -t -A;
+    # only the first line is the uuid.
+    $spPid = ("" + @(Invoke-Sql "INSERT INTO accounts.players (display_name) VALUES ('prune-proof-$RunSuffix') RETURNING id::text;")[0]).Trim()
     if (-not $spPid) { Fail 'could not insert throwaway player for the session-prune proof'; throw 'session-prune bootstrap failed' }
     $spToken = "prune-proof-$RunSuffix"
     Invoke-Sql "INSERT INTO accounts.sessions (token, player_id, expires_at) VALUES ('$spToken', '$spPid'::uuid, now() - interval '1 day');" | Out-Null
