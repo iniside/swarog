@@ -14,8 +14,10 @@
 #
 # Assumes a local Postgres is already running (DATABASE_URL or the default DSN).
 # Env passthrough: DATABASE_URL, ADMIN_USER/ADMIN_PASS (admin portal + monolith),
-# ACCOUNTS_DEV_AUTH, etc. are inherited by every child process; unset ADMIN_USER =
-# the admin portal is OPEN (each service logs its own loud warning).
+# ACCOUNTS_DEV_AUTH, INVENTORY_DEV_GRANT, etc. Dev conveniences are now EXPLICIT opt-ins
+# (the modules fail closed by default); this script sets them per process that hosts the
+# module (ADMIN_USER/ADMIN_PASS default admin/admin), all overridable from the caller's
+# environment. The admin portal fails startup on an empty ADMIN_USER unless ADMIN_OPEN=1.
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -114,16 +116,22 @@ if [ "$MODE" = "monolith" ]; then
     EDGE_CA_KEY="$RUN_DIR/edge-ca.key"
     echo "Minting edge dev CA (player front) -> $EDGE_CA_CERT ..."
     "$BIN_DIR/edgeca$EXE" --cert "$EDGE_CA_CERT" --key "$EDGE_CA_KEY"
-    # ADMIN_USER/ADMIN_PASS + ACCOUNTS_DEV_AUTH inherit from the environment (not set here).
-    # APIKEYS_DEV_SEED defaults ON for this dev-boot script (still overridable by the
-    # caller's environment) so the well-known dev keys exist for local testing.
+    # Dev conveniences are now EXPLICIT opt-ins (the modules fail closed by default): this
+    # dev-boot script enables them (all still overridable by the caller's environment) so
+    # local testing works out of the box -- APIKEYS_DEV_SEED (well-known dev keys),
+    # ACCOUNTS_DEV_AUTH (/accounts/register+login), INVENTORY_DEV_GRANT (simulated IAP),
+    # and ADMIN_USER/ADMIN_PASS (default admin/admin) to gate the admin portal.
     start_server monolith "$BIN_DIR/server$EXE" \
         PORT=:8080 \
         DATABASE_URL="$DATABASE_URL" \
         PLAYER_EDGE_ADDR=:9100 \
         EDGE_CA_CERT="$EDGE_CA_CERT" \
         EDGE_CA_KEY="$EDGE_CA_KEY" \
-        APIKEYS_DEV_SEED="${APIKEYS_DEV_SEED:-1}"
+        APIKEYS_DEV_SEED="${APIKEYS_DEV_SEED:-1}" \
+        ACCOUNTS_DEV_AUTH="${ACCOUNTS_DEV_AUTH:-1}" \
+        INVENTORY_DEV_GRANT="${INVENTORY_DEV_GRANT:-1}" \
+        ADMIN_USER="${ADMIN_USER:-admin}" \
+        ADMIN_PASS="${ADMIN_PASS:-admin}"
     wait_healthy 8080 monolith
     write_pids_file
     echo ""
@@ -168,7 +176,8 @@ echo "Minting shared edge dev CA -> $EDGE_CA_CERT ..."
 echo "Starting D (accounts-svc) on :$D_PORT, edge :$D_EDGE ..."
 start_server accounts "$BIN_DIR/accounts-svc$EXE" \
     PORT=":$D_PORT" DATABASE_URL="$DATABASE_URL" EDGE_ADDR=":$D_EDGE" \
-    EDGE_CA_CERT="$EDGE_CA_CERT" EDGE_CA_KEY="$EDGE_CA_KEY"
+    EDGE_CA_CERT="$EDGE_CA_CERT" EDGE_CA_KEY="$EDGE_CA_KEY" \
+    ACCOUNTS_DEV_AUTH="${ACCOUNTS_DEV_AUTH:-1}"
 wait_healthy "$D_PORT" "D (accounts-svc)"
 
 # L: apikeys-svc -- owns the apikeys schema (plaintext key -> policy); serves
@@ -248,7 +257,8 @@ start_server inventory "$BIN_DIR/inventory-svc$EXE" \
     PORT=":$B_PORT" DATABASE_URL="$DATABASE_URL" EDGE_ADDR=":$B_EDGE" \
     EDGE_CA_CERT="$EDGE_CA_CERT" EDGE_CA_KEY="$EDGE_CA_KEY" \
     CHARACTERS_EDGE_ADDR="127.0.0.1:$A_EDGE" \
-    CONFIG_EDGE_ADDR="127.0.0.1:$C_EDGE"
+    CONFIG_EDGE_ADDR="127.0.0.1:$C_EDGE" \
+    INVENTORY_DEV_GRANT="${INVENTORY_DEV_GRANT:-1}"
 wait_healthy "$B_PORT" "B (inventory-svc)"
 
 # G: gateway-svc -- the dedicated front door: HTTP :8082 + player QUIC :9100. No DB, no
@@ -269,11 +279,13 @@ start_server gateway "$BIN_DIR/gateway-svc$EXE" \
 wait_healthy "$G_PORT" "G (gateway-svc)"
 
 # E: admin-svc -- the admin portal (HTTP :8085, no DB, no edge server). It DIALS the
-# provider edges (A/B/C/D/F/H) to fan their admin pages out over QUIC. ADMIN_USER/
-# ADMIN_PASS inherit from the environment (unset -> open portal + loud warning).
+# provider edges (A/B/C/D/F/H) to fan their admin pages out over QUIC. The admin module
+# is now fail-closed: an empty ADMIN_USER bails at startup unless ADMIN_OPEN=1, so this
+# dev-boot sets ADMIN_USER/ADMIN_PASS (default admin/admin, still overridable).
 echo "Starting E (admin-svc) on :$E_PORT ..."
 start_server admin "$BIN_DIR/admin-svc$EXE" \
     PORT=":$E_PORT" \
+    ADMIN_USER="${ADMIN_USER:-admin}" ADMIN_PASS="${ADMIN_PASS:-admin}" \
     EDGE_CA_CERT="$EDGE_CA_CERT" EDGE_CA_KEY="$EDGE_CA_KEY" \
     CHARACTERS_EDGE_ADDR="127.0.0.1:$A_EDGE" \
     INVENTORY_EDGE_ADDR="127.0.0.1:$B_EDGE" \

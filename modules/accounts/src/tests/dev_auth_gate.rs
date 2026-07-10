@@ -73,7 +73,8 @@ async fn dev_auth_on_lets_methods_reach_normal_handling() {
 #[tokio::test]
 async fn verify_session_unaffected_by_dev_auth_gate() {
     let Some(pool) = test_pool().await else { return };
-    // `wired` builds a service with dev_auth = env default (on): mint a real session.
+    // `wired` builds a service with dev_auth forced ON (the fixture no longer rides the
+    // env default, which is now fail-closed): mint a real session.
     let (_ctx, svc) = wired(&pool).await;
     let email = format!("gate-{}@test.local", suffix());
     let sess = svc.register(email, "pw".into(), "G".into()).await.unwrap();

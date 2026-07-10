@@ -636,10 +636,11 @@ impl Module for Inventory {
         // + in-process invoker) so the gateway fronts GET /inventory/me + GET
         // /inventory/character/{id} (and, dev-gated, POST /inventory/me/grant),
         // authenticates once, and dispatches with the verified player_id in identity.
-        let dev_grant = env_bool("INVENTORY_DEV_GRANT", true);
+        let dev_grant = env_bool("INVENTORY_DEV_GRANT", false);
         if dev_grant {
             tracing::warn!(
-                "INVENTORY_DEV_GRANT is ON — POST /inventory/me/grant (simulated IAP) is enabled; turn OFF in production"
+                "INVENTORY_DEV_GRANT is ON — POST /inventory/me/grant (simulated IAP) is enabled; \
+                 this is an explicit local-dev opt-in, keep it OFF (the fail-closed default) in production"
             );
         }
         for op in holdings_rpc::operations(inner.clone()) {

@@ -390,6 +390,11 @@ fn run_profile(name: &str, profile: &DeploymentProfile, defined: &[Contract]) ->
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Checkers build module graphs, they serve no HTTP — open-admin is meaningless here.
+    // Admin::init is now fail-closed (empty ADMIN_USER bails) unless ADMIN_OPEN is set, so
+    // set it explicitly so this harness's real Admin::init keeps building the graph.
+    std::env::set_var("ADMIN_OPEN", "1");
+
     // A tokio runtime must be live: an in-process `Bus::on` during `init` spawns a task.
     // `--durability-strict`: the BLOCKING fortress invocation — exit non-zero on ANY SEAM
     // violation (version / single-host / planeless / in-process-durability), which each

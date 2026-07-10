@@ -18,7 +18,8 @@
 //! Routes (mounted via `ctx.mount`): `GET /admin/theme.css` (ungated), `GET /admin`
 //! (redirect to the first item), `GET /admin/{slug}`, `POST /admin/{slug}` (LOCAL
 //! form submit only; 405 for remote/non-form). Basic-auth gate `ADMIN_USER`/
-//! `ADMIN_PASS` (open + loud warn when unset — local use only).
+//! `ADMIN_PASS` — required by default: an empty `ADMIN_USER` FAILS STARTUP unless
+//! `ADMIN_OPEN=1` is explicitly set (a deliberately open local portal, loud warn).
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -69,6 +70,10 @@ impl Module for Admin {
     /// `/admin` routes on the shared router. No I/O. The route table reads
     /// contributions lazily on each request, so a module contributing after the
     /// admin's `init` still appears (both run before the server accepts requests).
+    ///
+    /// Fail-closed: an empty `ADMIN_USER` is a startup failure unless `ADMIN_OPEN=1`
+    /// is explicitly set (a deliberately open local portal — loud warn), mirroring the
+    /// apikeys / gateway explicit-opt-in convention.
     fn init(&self, ctx: &Context) -> anyhow::Result<()> {
         let mut env = minijinja::Environment::new();
         env.add_template("admin.html", TEMPLATE)
@@ -77,8 +82,13 @@ impl Module for Admin {
         let auth_user = std::env::var("ADMIN_USER").unwrap_or_default();
         let auth_pass = std::env::var("ADMIN_PASS").unwrap_or_default();
         if auth_user.is_empty() {
+            if !admin_open_explicitly_on() {
+                anyhow::bail!(
+                    "admin: set ADMIN_USER/ADMIN_PASS or ADMIN_OPEN=1 for a deliberately open local portal"
+                );
+            }
             tracing::warn!(
-                "admin portal is UNAUTHENTICATED — set ADMIN_USER/ADMIN_PASS; intended for local use only"
+                "admin portal is UNAUTHENTICATED (ADMIN_OPEN=1) — no Basic-auth gate; intended for local use only"
             );
         }
 
@@ -461,8 +471,9 @@ fn render_page(st: &AdminState, data: PageData) -> Response {
 }
 
 impl AdminState {
-    /// Applies HTTP Basic auth when `ADMIN_USER` is configured; otherwise open (with
-    /// the startup warning) for local use. Returns `Some(401 response)` to write on a
+    /// Applies HTTP Basic auth when `ADMIN_USER` is configured; otherwise open (only
+    /// reachable under the explicit `ADMIN_OPEN=1` escape) for local use. Returns
+    /// `Some(401 response)` to write on a
     /// missing/mismatched credential, `None` when the request may proceed.
     fn check_auth(&self, headers: &HeaderMap) -> Option<Response> {
         if self.auth_user.is_empty() {
@@ -505,6 +516,17 @@ fn ct_eq(a: &[u8], b: &[u8]) -> bool {
         diff |= x ^ y;
     }
     diff == 0
+}
+
+/// `true` only when `ADMIN_OPEN` is EXPLICITLY set truthy (`1`/`true`/`on`,
+/// case-insensitive). Unset is `false` — an unauthenticated admin portal is a
+/// trust decision, so this follows the explicit-only convention (apikeys'
+/// `dev_seed_explicitly_on`, gateway's `dev_auth_explicitly_on`), NOT a default-open.
+fn admin_open_explicitly_on() -> bool {
+    matches!(
+        std::env::var("ADMIN_OPEN"),
+        Ok(v) if v == "1" || v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("on")
+    )
 }
 
 // ---------------------------------------------------------------------------

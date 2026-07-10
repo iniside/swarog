@@ -341,7 +341,10 @@ function Invoke-CSharpStage {
     $dsn = if ($env:DATABASE_URL) { $env:DATABASE_URL } else { $CSharpDefaultDsn }
 
     Stop-CSharpStragglers
-    "--- starting self-contained monolith on :$CSharpPort, player QUIC :$CSharpPlayerPort (ephemeral CA -> --insecure, APIKEYS_DEV_SEED=1) ---" | Out-File -Append $log
+    "--- starting self-contained monolith on :$CSharpPort, player QUIC :$CSharpPlayerPort (ephemeral CA -> --insecure, APIKEYS_DEV_SEED=1, dev flags on) ---" | Out-File -Append $log
+    # Dev conveniences are now explicit opt-ins (fail-closed defaults): the gbclient flow
+    # does register->create->list, so enable ACCOUNTS_DEV_AUTH (+ INVENTORY_DEV_GRANT for
+    # symmetry) and set ADMIN_USER/ADMIN_PASS so the admin module does not bail at startup.
     $proc = Start-Process -FilePath 'target\debug\server.exe' -PassThru -WindowStyle Hidden `
         -RedirectStandardOutput (Join-Path $verifyDir 'csharp-client-server.out.log') `
         -RedirectStandardError (Join-Path $verifyDir 'csharp-client-server.err.log') `
@@ -350,6 +353,10 @@ function Invoke-CSharpStage {
             DATABASE_URL = $dsn
             PLAYER_EDGE_ADDR = ":$CSharpPlayerPort"
             APIKEYS_DEV_SEED = '1'
+            ACCOUNTS_DEV_AUTH = '1'
+            INVENTORY_DEV_GRANT = '1'
+            ADMIN_USER = 'admin'
+            ADMIN_PASS = 'admin'
         }
 
     # curl.exe (not Invoke-WebRequest -- it hangs to its HttpClient timeout against this

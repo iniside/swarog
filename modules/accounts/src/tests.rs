@@ -268,10 +268,16 @@ async fn wired(pool: &PgPool) -> (Context, Arc<Service>) {
     let transport = asyncevents::testing::transport(pool.clone());
     let ctx = Context::with_db_and_transport(pool.clone(), transport.handle());
 
-    let accounts = Accounts::new();
-    accounts.register(&ctx).unwrap();
-
-    let svc = accounts.svc();
+    // Build the service directly with dev-auth forced ON — the fixture must NOT ride
+    // the `ACCOUNTS_DEV_AUTH` env default, which is now fail-closed (OFF). Same struct
+    // route as `dev_auth_gate::gated_service`, but wired to the ctx's transport-backed
+    // bus so `register`'s durable `emit_tx` lands in the shared event log.
+    let svc = Arc::new(Service {
+        store: Store { pool: pool.clone() },
+        bus: ctx.bus().clone(),
+        dev_auth: true,
+        epic: OnceLock::new(),
+    });
     (ctx, svc)
 }
 

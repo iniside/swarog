@@ -1,5 +1,5 @@
 # run.ps1 -- build the rust-sketch binaries, then run either the monolith (one process
-# hosting every module) or the FULL split (the 11-service microservice topology, each
+# hosting every module) or the FULL split (the 12-service microservice topology, each
 # service a binary linking only its own modules and talking to peers over the mTLS QUIC
 # edge). The split boot order + per-process env are transcribed from split-proof.ps1
 # (the source of truth); unlike that proof this script runs NO assertions and leaves
@@ -8,14 +8,16 @@
 #
 # Usage:
 #   .\run.ps1                    # monolith (server) on :8080  (DEFAULT)
-#   .\run.ps1 split              # the full 11-service split (front door on :8082)
+#   .\run.ps1 split              # the full 12-service split (front door on :8082)
 #   .\run.ps1 microservices      # deprecated alias for `split`
 #   .\run.ps1 -Teardown          # stop whatever run.ps1 started last
 #
 # Assumes a local Postgres is already running (DATABASE_URL or the default DSN).
 # Env passthrough: DATABASE_URL, ADMIN_USER/ADMIN_PASS (admin portal + monolith),
-# ACCOUNTS_DEV_AUTH, etc. are inherited by every child process; unset ADMIN_USER =
-# the admin portal is OPEN (each service logs its own loud warning).
+# ACCOUNTS_DEV_AUTH, INVENTORY_DEV_GRANT, etc. Dev conveniences are now EXPLICIT opt-ins
+# (the modules fail closed by default); this script sets them per process that hosts the
+# module (ADMIN_USER/ADMIN_PASS default admin/admin), all overridable from the caller's
+# environment. The admin portal fails startup on an empty ADMIN_USER unless ADMIN_OPEN=1.
 
 [CmdletBinding()]
 param(
@@ -38,6 +40,13 @@ $BinDir = Join-Path $PSScriptRoot 'target\debug'
 
 $DefaultDsn = 'postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable'
 if (-not $env:DATABASE_URL -or $env:DATABASE_URL.Trim() -eq '') { $env:DATABASE_URL = $DefaultDsn }
+
+# Env-Or NAME DEFAULT -- the caller's env value if set/non-empty, else DEFAULT (the
+# `${VAR:-default}` idiom from run.sh, for the overridable dev-convenience flags).
+function Env-Or([string]$Name, [string]$Default) {
+    $v = [Environment]::GetEnvironmentVariable($Name)
+    if ($v -and $v.Trim() -ne '') { return $v } else { return $Default }
+}
 
 # --- Teardown ---------------------------------------------------------------
 if ($Teardown) {
@@ -108,10 +117,11 @@ if ($Mode -eq 'monolith') {
     Write-Host 'Building server (monolith) + edgeca + playercli + csharp-client-gen ...'
     cargo build -p server -p edgeca -p playercli -p csharp-client-gen
 } else {
-    Write-Host 'Building edgeca + the 11 split services + playercli + csharp-client-gen ...'
+    Write-Host 'Building edgeca + the 12 split services + playercli + csharp-client-gen ...'
     cargo build -p edgeca -p playercli -p csharp-client-gen `
         -p accounts-svc -p audit-svc -p scheduler-svc -p rating-svc -p leaderboard-svc `
-        -p match-svc -p characters-svc -p config-svc -p inventory-svc -p gateway-svc -p admin-svc
+        -p match-svc -p characters-svc -p config-svc -p inventory-svc -p gateway-svc -p admin-svc `
+        -p apikeys-svc
 }
 if ($LASTEXITCODE -ne 0) { throw 'cargo build failed' }
 Write-Host 'Build OK.'
@@ -126,13 +136,21 @@ if ($Mode -eq 'monolith') {
     Write-Host "Minting edge dev CA (player front) -> $CaCert ..."
     & (Join-Path $BinDir 'edgeca.exe') --cert $CaCert --key $CaKey
     if ($LASTEXITCODE -ne 0) { throw 'edgeca failed' }
-    # ADMIN_USER/ADMIN_PASS + ACCOUNTS_DEV_AUTH inherit from the environment (not set here).
+    # Dev conveniences are now EXPLICIT opt-ins (the modules fail closed by default): this
+    # dev-boot enables them (all overridable) so local testing works out of the box --
+    # APIKEYS_DEV_SEED (dev keys), ACCOUNTS_DEV_AUTH (/accounts/register+login),
+    # INVENTORY_DEV_GRANT (simulated IAP), ADMIN_USER/ADMIN_PASS (default admin/admin).
     Start-Svc 'monolith' (Join-Path $BinDir 'server.exe') @{
-        PORT             = ':8080'
-        DATABASE_URL     = $env:DATABASE_URL
-        PLAYER_EDGE_ADDR = ':9100'
-        EDGE_CA_CERT     = $CaCert
-        EDGE_CA_KEY      = $CaKey
+        PORT               = ':8080'
+        DATABASE_URL       = $env:DATABASE_URL
+        PLAYER_EDGE_ADDR   = ':9100'
+        EDGE_CA_CERT       = $CaCert
+        EDGE_CA_KEY        = $CaKey
+        APIKEYS_DEV_SEED   = (Env-Or 'APIKEYS_DEV_SEED' '1')
+        ACCOUNTS_DEV_AUTH  = (Env-Or 'ACCOUNTS_DEV_AUTH' '1')
+        INVENTORY_DEV_GRANT = (Env-Or 'INVENTORY_DEV_GRANT' '1')
+        ADMIN_USER         = (Env-Or 'ADMIN_USER' 'admin')
+        ADMIN_PASS         = (Env-Or 'ADMIN_PASS' 'admin')
     } | Out-Null
     Wait-Healthy 8080 'monolith'
     Write-Pids
@@ -149,7 +167,7 @@ if ($Mode -eq 'monolith') {
     return
 }
 
-# --- Split (the full 11-service microservice topology) ----------------------
+# --- Split (the full 12-service microservice topology) ----------------------
 # Boot ORDER + per-process env are transcribed from split-proof.ps1. Ordering notes:
 #   - config-svc (C) MUST be up before inventory-svc (B): B's config stub boot-fills a
 #     snapshot from C in `start` and fails loud if C is unreachable.
@@ -160,11 +178,11 @@ if ($Mode -eq 'monolith') {
 # asyncevents log and pulls only its own subscriptions. Peer *_EDGE_ADDR values are
 # NUMERIC host:port (Rust's SocketAddr needs a literal IP). All peers share ONE dev CA.
 
-# HTTP ports 8080-8090, internal mTLS edge ports 9000-9008, player QUIC :9100.
+# HTTP ports 8080-8091, internal mTLS edge ports 9000-9009, player QUIC :9100.
 $APort = 8080; $BPort = 8081; $GPort = 8082; $CPort = 8083; $DPort = 8084; $EPort = 8085
-$FPort = 8086; $HPort = 8087; $IPort = 8088; $JPort = 8089; $KPort = 8090
+$FPort = 8086; $HPort = 8087; $IPort = 8088; $JPort = 8089; $KPort = 8090; $LPort = 8091
 $AEdge = 9000; $BEdge = 9001; $CEdge = 9002; $DEdge = 9003; $FEdge = 9004
-$HEdge = 9005; $IEdge = 9006; $JEdge = 9007; $KEdge = 9008; $PlayerPort = 9100
+$HEdge = 9005; $IEdge = 9006; $JEdge = 9007; $KEdge = 9008; $LEdge = 9009; $PlayerPort = 9100
 
 $CaCert = Join-Path $RunDir 'edge-ca.crt'
 $CaKey = Join-Path $RunDir 'edge-ca.key'
@@ -182,8 +200,24 @@ Start-Svc 'accounts' (Join-Path $BinDir 'accounts-svc.exe') @{
     EDGE_ADDR          = ":$DEdge"
     EDGE_CA_CERT       = $CaCert
     EDGE_CA_KEY        = $CaKey
+    ACCOUNTS_DEV_AUTH  = (Env-Or 'ACCOUNTS_DEV_AUTH' '1')
 } | Out-Null
 Wait-Healthy $DPort 'D (accounts-svc)'
+
+# L: apikeys-svc -- owns the apikeys schema (plaintext key -> policy); serves
+# apikeys.keys on its edge (gateway-svc + admin-svc resolve/dial it via
+# APIKEYS_EDGE_ADDR). APIKEYS_DEV_SEED defaults ON for this dev-boot script (still
+# overridable) so the well-known dev keys (dev-key-client, dev-key-server) exist.
+Write-Host "Starting L (apikeys-svc) on :$LPort, edge :$LEdge ..."
+Start-Svc 'apikeys' (Join-Path $BinDir 'apikeys-svc.exe') @{
+    PORT               = ":$LPort"
+    DATABASE_URL       = $env:DATABASE_URL
+    EDGE_ADDR          = ":$LEdge"
+    EDGE_CA_CERT       = $CaCert
+    EDGE_CA_KEY        = $CaKey
+    APIKEYS_DEV_SEED   = (Env-Or 'APIKEYS_DEV_SEED' '1')
+} | Out-Null
+Wait-Healthy $LPort 'L (apikeys-svc)'
 
 # F: audit-svc -- append-only ledger, a pure consumer: its pull workers drain its
 # subscriptions from the shared log. Serves admin.adminData ("Audit Log") on its edge.
@@ -283,6 +317,7 @@ Start-Svc 'inventory' (Join-Path $BinDir 'inventory-svc.exe') @{
     EDGE_CA_KEY          = $CaKey
     CHARACTERS_EDGE_ADDR = "127.0.0.1:$AEdge"
     CONFIG_EDGE_ADDR     = "127.0.0.1:$CEdge"
+    INVENTORY_DEV_GRANT  = (Env-Or 'INVENTORY_DEV_GRANT' '1')
 } | Out-Null
 Wait-Healthy $BPort 'B (inventory-svc)'
 
@@ -300,17 +335,21 @@ Start-Svc 'gateway' (Join-Path $BinDir 'gateway-svc.exe') @{
     ACCOUNTS_EDGE_ADDR    = "127.0.0.1:$DEdge"
     MATCH_EDGE_ADDR       = "127.0.0.1:$IEdge"
     LEADERBOARD_EDGE_ADDR = "127.0.0.1:$KEdge"
+    APIKEYS_EDGE_ADDR     = "127.0.0.1:$LEdge"
     ADMIN_HTTP_ADDR       = "127.0.0.1:$EPort"
     ACCOUNTS_HTTP_ADDR    = "127.0.0.1:$DPort"
 } | Out-Null
 Wait-Healthy $GPort 'G (gateway-svc)'
 
 # E: admin-svc -- the admin portal (HTTP :8085, no DB, no edge server). It DIALS the
-# provider edges (A/B/C/D/F/H) to fan their admin pages out over QUIC. ADMIN_USER/
-# ADMIN_PASS inherit from the environment (unset -> open portal + loud warning).
+# provider edges (A/B/C/D/F/H/L) to fan their admin pages out over QUIC. The admin module
+# is now fail-closed: an empty ADMIN_USER bails at startup unless ADMIN_OPEN=1, so this
+# dev-boot sets ADMIN_USER/ADMIN_PASS (default admin/admin, still overridable).
 Write-Host "Starting E (admin-svc) on :$EPort ..."
 Start-Svc 'admin' (Join-Path $BinDir 'admin-svc.exe') @{
     PORT                 = ":$EPort"
+    ADMIN_USER           = (Env-Or 'ADMIN_USER' 'admin')
+    ADMIN_PASS           = (Env-Or 'ADMIN_PASS' 'admin')
     EDGE_CA_CERT         = $CaCert
     EDGE_CA_KEY          = $CaKey
     CHARACTERS_EDGE_ADDR = "127.0.0.1:$AEdge"
@@ -319,16 +358,18 @@ Start-Svc 'admin' (Join-Path $BinDir 'admin-svc.exe') @{
     ACCOUNTS_EDGE_ADDR   = "127.0.0.1:$DEdge"
     AUDIT_EDGE_ADDR      = "127.0.0.1:$FEdge"
     SCHEDULER_EDGE_ADDR  = "127.0.0.1:$HEdge"
+    APIKEYS_EDGE_ADDR    = "127.0.0.1:$LEdge"
 } | Out-Null
 Wait-Healthy $EPort 'E (admin-svc)'
 
 Write-Pids
 Write-Host ''
-Write-Host '==================== split running (11 services) ===================='
+Write-Host '==================== split running (12 services) ===================='
 Write-Host "  Front door (gateway-svc): http://localhost:$GPort   (player QUIC :$PlayerPort)"
 Write-Host "  Admin panel:              http://localhost:$GPort/admin   (through the gateway front)"
 Admin-Note
 Write-Host "  Metrics (front door):     http://localhost:$GPort/metrics"
+Write-Host '  API keys (dev):           X-Api-Key: dev-key-client (player-facing)  |  dev-key-server (full/trusted)'
 Write-Host ''
 Write-Host '  Peers (direct HTTP, normally reached THROUGH the front door):'
 Write-Host "    A characters-svc :$APort (edge :$AEdge)   B inventory-svc :$BPort (edge :$BEdge)"
@@ -336,6 +377,7 @@ Write-Host "    C config-svc     :$CPort (edge :$CEdge)   D accounts-svc  :$DPor
 Write-Host "    E admin-svc      :$EPort               F audit-svc     :$FPort (edge :$FEdge)"
 Write-Host "    H scheduler-svc  :$HPort (edge :$HEdge)   I match-svc     :$IPort (edge :$IEdge)"
 Write-Host "    J rating-svc     :$JPort (edge :$JEdge)   K leaderboard-svc :$KPort (edge :$KEdge)"
+Write-Host "    L apikeys-svc    :$LPort (edge :$LEdge)"
 Write-Host ''
 Write-Host "  Drive the player QUIC front: target\debug\playercli.exe --addr 127.0.0.1:$PlayerPort --ca $CaCert ..."
 Write-Host "  Logs:     $RunDir\<service>.{out,err}.log"

@@ -334,3 +334,81 @@ fn template_renders_empty_shell() {
     assert!(html.contains("No sections contributed yet."));
     assert!(html.contains("Local Admin"));
 }
+
+// ---- fail-closed startup gate (Admin::init) ---------------------------------
+
+/// Serializes the two env-mutating tests below — `ADMIN_USER`/`ADMIN_OPEN` are
+/// process-global, so they must not race each other (or observe each other's writes).
+static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Runs `f` with `ADMIN_USER`/`ADMIN_PASS`/`ADMIN_OPEN` cleared, then explicitly set
+/// to the given values, restoring every prior value afterwards. Serialized so the two
+/// gate tests never interleave their env writes.
+fn with_admin_env(user: Option<&str>, open: Option<&str>, f: impl FnOnce()) {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let prev: Vec<(&str, Option<String>)> = ["ADMIN_USER", "ADMIN_PASS", "ADMIN_OPEN"]
+        .iter()
+        .map(|k| (*k, std::env::var(k).ok()))
+        .collect();
+    std::env::remove_var("ADMIN_USER");
+    std::env::remove_var("ADMIN_PASS");
+    std::env::remove_var("ADMIN_OPEN");
+    if let Some(u) = user {
+        std::env::set_var("ADMIN_USER", u);
+    }
+    if let Some(o) = open {
+        std::env::set_var("ADMIN_OPEN", o);
+    }
+    f();
+    for (k, v) in prev {
+        match v {
+            Some(v) => std::env::set_var(k, v),
+            None => std::env::remove_var(k),
+        }
+    }
+}
+
+/// Empty `ADMIN_USER` with `ADMIN_OPEN` unset FAILS startup — the fail-closed default.
+#[test]
+fn init_bails_when_creds_missing_and_not_explicitly_open() {
+    with_admin_env(None, None, || {
+        let ctx = Context::new();
+        let err = Admin::new()
+            .init(&ctx)
+            .expect_err("empty ADMIN_USER without ADMIN_OPEN must fail startup");
+        assert!(
+            err.to_string().contains("ADMIN_OPEN"),
+            "bail message should point at the ADMIN_OPEN escape: {err}"
+        );
+    });
+}
+
+/// Empty `ADMIN_USER` with `ADMIN_OPEN=1` boots an open portal (deliberate local escape).
+#[test]
+fn init_ok_when_explicitly_open() {
+    with_admin_env(None, Some("1"), || {
+        let ctx = Context::new();
+        Admin::new()
+            .init(&ctx)
+            .expect("ADMIN_OPEN=1 must permit a deliberately open portal");
+    });
+}
+
+/// `admin_open_explicitly_on` matches the apikeys/gateway truthy set, case-insensitively.
+#[test]
+fn admin_open_truthy_parsing() {
+    for (val, want) in [
+        (Some("1"), true),
+        (Some("true"), true),
+        (Some("ON"), true),
+        (Some("TrUe"), true),
+        (Some("0"), false),
+        (Some("no"), false),
+        (Some(""), false),
+        (None, false),
+    ] {
+        with_admin_env(None, val, || {
+            assert_eq!(admin_open_explicitly_on(), want, "ADMIN_OPEN={val:?}");
+        });
+    }
+}

@@ -251,8 +251,12 @@ note "minting shared edge dev CA -> $CA_CERT"
 # on its mTLS edge; EVERY other process's gateway verifies bearers against it.
 # player.registered is appended to the shared durable log (audit-svc pulls it).
 note "starting D (accounts-svc) on :$D_PORT, edge :$D_EDGE_PORT ..."
+# ACCOUNTS_DEV_AUTH=1: dev/password auth is now an explicit opt-in (fail-closed default),
+# and D hosts the accounts module, so the register/login the proof drives (via G Remote)
+# need it enabled here. G itself never sets it -- [A5] still proves a dev- token is 401.
 env PORT=":$D_PORT" DATABASE_URL="$DATABASE_URL" EDGE_ADDR=":$D_EDGE_PORT" \
     EDGE_CA_CERT="$CA_CERT" EDGE_CA_KEY="$CA_KEY" \
+    ACCOUNTS_DEV_AUTH=1 \
     "$BIN_DIR/accounts-svc$EXE" >"$RUN_DIR/accounts.out.log" 2>"$RUN_DIR/accounts.err.log" &
 D_PID=$!
 wait_healthy "$D_PORT" "D (accounts-svc)" || { echo "D failed to start"; exit 1; }
@@ -367,11 +371,15 @@ wait_healthy "$C_PORT" "C (config-svc)" || { echo "C failed to start"; exit 1; }
 # inventory.* Remote to it; it dials A over CHARACTERS_EDGE_ADDR for owner_of and
 # config-svc over CONFIG_EDGE_ADDR for the CachedConfig boot-fill + snapshot refresh.
 note "starting B (inventory-svc) on :$B_PORT, edge :$B_EDGE_PORT ..."
+# INVENTORY_DEV_GRANT=1: the simulated-IAP grant route is now an explicit opt-in
+# (fail-closed default); B hosts the inventory module, so set it here for parity with
+# the monolith stage (the starter-grant flow is durable-event driven and needs no flag).
 env PORT=":$B_PORT" DATABASE_URL="$DATABASE_URL" \
     EDGE_ADDR=":$B_EDGE_PORT" \
     EDGE_CA_CERT="$CA_CERT" EDGE_CA_KEY="$CA_KEY" \
     CHARACTERS_EDGE_ADDR="127.0.0.1:$EDGE_PORT" \
     CONFIG_EDGE_ADDR="127.0.0.1:$C_EDGE_PORT" \
+    INVENTORY_DEV_GRANT=1 \
     "$BIN_DIR/inventory-svc$EXE" >"$RUN_DIR/inventory.out.log" 2>"$RUN_DIR/inventory.err.log" &
 B_PID=$!
 wait_healthy "$B_PORT" "B (inventory-svc)" || { echo "B failed to start"; exit 1; }
@@ -1115,10 +1123,17 @@ kill_stragglers
 sleep 2
 
 note "starting monolith (cmd/server) on :$A_PORT, player QUIC :$PLAYER_PORT ..."
+# The monolith hosts every module, so it needs each module's dev opt-in explicitly:
+# APIKEYS_DEV_SEED (dev keys), ACCOUNTS_DEV_AUTH ([M0] register/login), INVENTORY_DEV_GRANT
+# (parity), and ADMIN_USER/ADMIN_PASS -- admin is now fail-closed (empty ADMIN_USER bails),
+# so the parity leg would not even boot without creds. [M3] below sends these creds.
 env PORT=":$A_PORT" DATABASE_URL="$DATABASE_URL" \
     PLAYER_EDGE_ADDR=":$PLAYER_PORT" \
     EDGE_CA_CERT="$CA_CERT" EDGE_CA_KEY="$CA_KEY" \
     APIKEYS_DEV_SEED=1 \
+    ACCOUNTS_DEV_AUTH=1 \
+    INVENTORY_DEV_GRANT=1 \
+    ADMIN_USER="$ADMIN_USER" ADMIN_PASS="$ADMIN_PASS" \
     "$BIN_DIR/server$EXE" >"$RUN_DIR/monolith.out.log" 2>"$RUN_DIR/monolith.err.log" &
 M_PID=$!
 if wait_healthy "$A_PORT" "monolith (server)"; then
@@ -1155,11 +1170,12 @@ if wait_healthy "$A_PORT" "monolith (server)"; then
         fail "monolith dev- token expected Unauthorized, got rc=$M2_RC $M2_OUT"
     fi
     # [M3] admin portal parity: the monolith hosts the admin module with all four
-    # providers LOCAL (no fan-out, no ADMIN_USER -> open). The characters page renders
-    # the just-created "solo" character -- proving the same portal serves both
-    # topologies (never-monolith-only-features), all items resolved in-process.
-    echo "[M3] GET http://localhost:$A_PORT/admin/characters on the monolith -> 200 + contains solo"
-    M3="$(curl -s -w $'\n%{http_code}' "http://localhost:$A_PORT/admin/characters")"
+    # providers LOCAL (no fan-out). The admin module is now fail-closed, so the monolith
+    # boots with ADMIN_USER/ADMIN_PASS set -- the page is Basic-auth gated (same creds as
+    # the split's E leg). The characters page renders the just-created "solo" character --
+    # proving the same portal serves both topologies (never-monolith-only-features).
+    echo "[M3] GET http://localhost:$A_PORT/admin/characters on the monolith (Basic auth) -> 200 + contains solo"
+    M3="$(curl -s -w $'\n%{http_code}' -u "$ADMIN_USER:$ADMIN_PASS" "http://localhost:$A_PORT/admin/characters")"
     M3BODY="$(echo "$M3" | sed '$d')"; M3CODE="$(echo "$M3" | tail -1)"
     echo "    -> HTTP $M3CODE  (body $(echo -n "$M3BODY" | wc -c) bytes)"
     if [ "$M3CODE" = "200" ] && echo "$M3BODY" | grep -q 'solo'; then

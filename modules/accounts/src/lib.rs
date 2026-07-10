@@ -2,7 +2,8 @@
 //! `accounts` and is a trusted VERIFIER of external identities: the production model
 //! is federation (the EOS Connect shape) — the backend checks an IdP's signed token,
 //! never holds a password, except for the dev/password provider gated behind
-//! `ACCOUNTS_DEV_AUTH` (default ON locally, loud warning; turn OFF in prod). One
+//! `ACCOUNTS_DEV_AUTH` (explicit opt-in — default OFF/fail-closed, loud warn when set;
+//! the run/split-proof scripts set `ACCOUNTS_DEV_AUTH=1` for local dev). One
 //! product-scoped `player_id`, many credential providers over it
 //! (`identities(provider, subject) → player_id`), opaque DB-backed `sessions`
 //! (30-day TTL, 32-byte base64url tokens).
@@ -374,7 +375,7 @@ impl Module for Accounts {
             // Resolve the dev-auth gate once, here, so it is the single source of
             // truth for BOTH the (gated) HTTP op contributions and the service-level
             // guard on the edge Auth face (register/login).
-            dev_auth: env_bool("ACCOUNTS_DEV_AUTH", true),
+            dev_auth: env_bool("ACCOUNTS_DEV_AUTH", false),
             epic: OnceLock::new(),
         });
         self.svc
@@ -413,8 +414,9 @@ impl Module for Accounts {
         let dev_auth = svc.dev_auth;
         if dev_auth {
             tracing::warn!(
-                "ACCOUNTS_DEV_AUTH is ON — /accounts/register and /accounts/login are enabled; \
-                 turn OFF in production"
+                "ACCOUNTS_DEV_AUTH is ON — /accounts/register and /accounts/login (dev/password \
+                 auth) are enabled; this is an explicit local-dev opt-in, keep it OFF (the \
+                 fail-closed default) in production"
             );
         }
 

@@ -215,6 +215,9 @@ try {
 
     # D (accounts-svc) FIRST: owns the accounts schema and serves accounts.verifySession
     # + the auth op faces on its mTLS edge; every other gateway verifies bearers here.
+    # ACCOUNTS_DEV_AUTH=1: dev/password auth is now an explicit opt-in (fail-closed
+    # default) and D hosts the accounts module, so the register/login the proof drives
+    # (via G Remote) need it enabled here. G never sets it -- [A5] still proves 401.
     Note "starting D (accounts-svc) on :$DPort, edge :$DEdgePort ..."
     $script:DProc = Start-Svc (Join-Path $BinDir 'accounts-svc.exe') @{
         PORT               = ":$DPort"
@@ -222,6 +225,7 @@ try {
         EDGE_ADDR          = ":$DEdgePort"
         EDGE_CA_CERT       = $CaCert
         EDGE_CA_KEY        = $CaKey
+        ACCOUNTS_DEV_AUTH  = '1'
     } 'accounts'
     if (-not (Wait-Healthy $DPort 'D (accounts-svc)')) { throw 'D failed to start' }
 
@@ -359,6 +363,7 @@ try {
         EDGE_CA_KEY          = $CaKey
         CHARACTERS_EDGE_ADDR = "127.0.0.1:$EdgePort"
         CONFIG_EDGE_ADDR     = "127.0.0.1:$CEdgePort"
+        INVENTORY_DEV_GRANT  = '1'
     } 'inventory'
     if (-not (Wait-Healthy $BPort 'B (inventory-svc)')) { throw 'B failed to start' }
 
@@ -980,25 +985,27 @@ try {
         Get-Process -Name $n -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
     }
     Start-Sleep -Seconds 2
-    # Per-process env in this script leaks across Start-Svc calls; neutralize the
-    # split-only knobs so the monolith gets an OPEN admin portal (no leaked
-    # Basic-auth creds; /admin is served locally, not proxied). APIKEYS_DEV_SEED=1
-    # self-heals the dev keys against the local apikeys module (the monolith
-    # resolves apikeys.keys locally, no APIKEYS_DEV_ALLOW needed).
+    # Per-process env in this script leaks across Start-Svc calls; neutralize the split
+    # passthrough knobs so the monolith serves /admin LOCALLY (not proxied). The admin
+    # module is now fail-closed (empty ADMIN_USER bails), so the monolith keeps the proof
+    # Basic-auth creds -- [M3] below sends them. APIKEYS_DEV_SEED=1 self-heals the dev
+    # keys against the local apikeys module (resolved locally, no APIKEYS_DEV_ALLOW).
     $env:ADMIN_HTTP_ADDR = ''
     $env:ACCOUNTS_HTTP_ADDR = ''
-    $env:ADMIN_USER = ''
-    $env:ADMIN_PASS = ''
     $env:APIKEYS_DEV_SEED = '1'
 
     Note "starting monolith (cmd/server) on :$APort, player QUIC :$PlayerPort ..."
     $script:MProc = Start-Svc (Join-Path $BinDir 'server.exe') @{
-        PORT             = ":$APort"
-        DATABASE_URL     = $env:DATABASE_URL
-        PLAYER_EDGE_ADDR = ":$PlayerPort"
-        EDGE_CA_CERT     = $CaCert
-        EDGE_CA_KEY      = $CaKey
-        APIKEYS_DEV_SEED = '1'
+        PORT               = ":$APort"
+        DATABASE_URL       = $env:DATABASE_URL
+        PLAYER_EDGE_ADDR   = ":$PlayerPort"
+        EDGE_CA_CERT       = $CaCert
+        EDGE_CA_KEY        = $CaKey
+        APIKEYS_DEV_SEED   = '1'
+        ACCOUNTS_DEV_AUTH  = '1'
+        INVENTORY_DEV_GRANT = '1'
+        ADMIN_USER         = $AdminUser
+        ADMIN_PASS         = $AdminPass
     } 'monolith'
     if (Wait-Healthy $APort 'monolith (server)') {
         $msuffix = [guid]::NewGuid().ToString().Substring(0, 8)
@@ -1019,10 +1026,12 @@ try {
         Write-Host "    -> rc=$($m2.Rc)  $($m2.Out)"
         if ($m2.Rc -ne 0 -and $m2.Out -match 'Unauthorized') { Pass 'monolith dev- token -> Unauthorized (parity with the split front)' } else { Fail "monolith dev- token expected Unauthorized, got rc=$($m2.Rc) $($m2.Out)" }
         # [M3] admin portal parity: the monolith hosts the admin module with all four
-        # providers LOCAL (no fan-out, no ADMIN_USER -> open). The characters page
-        # renders the just-created "solo" character (never-monolith-only-features).
-        Write-Host "[M3] GET http://127.0.0.1:$APort/admin/characters on the monolith -> 200 + contains solo"
-        $m3 = Invoke-Curl @("http://127.0.0.1:$APort/admin/characters")
+        # providers LOCAL (no fan-out). The admin module is now fail-closed, so the
+        # monolith boots with ADMIN_USER/ADMIN_PASS set and the page is Basic-auth gated
+        # (same proof creds as the split's E leg). The characters page renders the
+        # just-created "solo" character (never-monolith-only-features).
+        Write-Host "[M3] GET http://127.0.0.1:$APort/admin/characters on the monolith (Basic auth) -> 200 + contains solo"
+        $m3 = Invoke-Curl @('-u', "${AdminUser}:${AdminPass}", "http://127.0.0.1:$APort/admin/characters")
         Write-Host "    -> HTTP $($m3.Code)  (body $($m3.Body.Length) chars)"
         if ($m3.Code -eq '200' -and $m3.Body -match 'solo') { Pass 'monolith /admin/characters renders LOCAL items (admin portal parity)' } else { Fail "monolith admin characters page expected 200 containing solo, got $($m3.Code)" }
     } else {
