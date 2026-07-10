@@ -5,7 +5,6 @@
 //! There is no outbox, no relay, no `POST /events` sink and no per-process origin:
 //! every process reads the one shared log, restricted to its own subscription ids.
 
-use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
 use bus::{AnyTx, EventContract, HistoryPolicy, StartPosition, SubscriptionSpec, Transport, TxHandler};
@@ -59,14 +58,17 @@ fn start_desc(start: &StartPosition) -> String {
 /// [`crate::Plane::new`] — BEFORE the `Context` (and thus any module wiring)
 /// exists — so every `on_tx`, whether from a module's `init` or a stub factory's
 /// `register`, appends to a present list. [`crate::Plane::start`] snapshots it.
+///
+/// Deliberately holds NO per-process `history_contracts` seeding cache: an
+/// earlier revision marked a `(topic, version)` pair seeded before the
+/// producer's own tx committed, so a rollback left a stale RAM entry and the
+/// retention contract was never retried again for the process's lifetime.
+/// `enqueue_tx` instead calls [`store::ensure_history_contract`] idempotently
+/// on every emit (`ON CONFLICT DO NOTHING` + drift `RAISE`) — one extra
+/// statement per emit buys away that whole staleness class.
 #[derive(Default)]
 pub struct LogTransport {
     subs: Mutex<Vec<SubEntry>>,
-    /// The native-writer `history_contracts` seed guard: `(topic, version)` pairs
-    /// whose retention contract this process has already reconciled on a prior
-    /// emit. Purely a per-process round-trip optimization — the DDL is
-    /// `ON CONFLICT DO NOTHING`, so a concurrent double-seed is harmless.
-    contracts_seeded: Mutex<HashSet<(String, u32)>>,
 }
 
 impl LogTransport {
@@ -97,23 +99,12 @@ impl Transport for LogTransport {
         payload: &[u8],
     ) -> Result<(), bus::Error> {
         let conn = tx.downcast::<PgConnection>()?;
-        // Native-writer path (a) for `history_contracts`: on this process's FIRST
-        // emit of a (topic, version), seed its retention contract on the producer's
-        // own tx (atomic with the event) — and FAIL LOUDLY if a stored row already
+        // Native-writer path (a) for `history_contracts`: seed its retention
+        // contract on the producer's own tx (atomic with the event), idempotently
+        // on EVERY emit — `ensure_history_contract` is `ON CONFLICT DO NOTHING`, so
+        // a re-seed is a cheap no-op — and FAIL LOUDLY if a stored row already
         // records a DIFFERENT policy, never silently adopting it.
-        let key = (contract.topic.to_string(), contract.version);
-        let first = self.contracts_seeded.lock().unwrap().insert(key.clone());
-        if first {
-            if let Err(err) =
-                store::ensure_history_contract(conn, contract.topic, contract.version, contract.history)
-                    .await
-            {
-                // Un-mark on failure so a transient error retries next emit (and a
-                // policy conflict stays loud every time until the code is fixed).
-                self.contracts_seeded.lock().unwrap().remove(&key);
-                return Err(err);
-            }
-        }
+        store::ensure_history_contract(conn, contract.topic, contract.version, contract.history).await?;
         store::append(conn, contract, payload).await?;
         Ok(())
     }
