@@ -1,9 +1,16 @@
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Context as _;
 
 use crate::{Context, Module};
+
+/// Default per-module `stop` deadline, matching `core/app`'s
+/// `DEFAULT_MODULE_STOP_GRACE_MS`. A process overrides it via
+/// [`App::with_stop_grace`] from the `MODULE_STOP_GRACE_MS` knob (read in
+/// `core/app`, never by a module).
+const DEFAULT_STOP_GRACE: Duration = Duration::from_millis(5000);
 
 /// Session-level advisory-lock key serializing concurrent `App::migrate` runs
 /// across replicas/processes (parallel test binaries, split-process boots) against
@@ -21,6 +28,10 @@ pub struct App {
     modules: Vec<Box<dyn Module>>,
     names: HashSet<String>,
     ctx: Arc<Context>,
+    /// Deadline for any single module's `stop` (both graceful teardown and the
+    /// start-unwind path). A module that outlasts it is abandoned and teardown
+    /// continues — one hung module can never stall the rest.
+    stop_grace: Duration,
 }
 
 impl App {
@@ -29,7 +40,16 @@ impl App {
             modules: Vec::new(),
             names: HashSet::new(),
             ctx,
+            stop_grace: DEFAULT_STOP_GRACE,
         }
+    }
+
+    /// Overrides the per-module `stop` deadline (builder style). `core/app` calls
+    /// this with the `MODULE_STOP_GRACE_MS` knob; the knob is read there, never by
+    /// a module.
+    pub fn with_stop_grace(mut self, grace: Duration) -> App {
+        self.stop_grace = grace;
+        self
     }
 
     /// Adds a module. Panics on a duplicate name — a wiring bug, loud at startup.
@@ -141,15 +161,20 @@ impl App {
                     "module start failed; stopping the started prefix"
                 );
                 for started in self.modules[..i].iter().rev() {
-                    match started.stop(&self.ctx).await {
-                        Ok(()) => tracing::info!(
+                    match tokio::time::timeout(self.stop_grace, started.stop(&self.ctx)).await {
+                        Ok(Ok(())) => tracing::info!(
                             module = started.name(),
                             "module stopped (start unwind)"
                         ),
-                        Err(stop_err) => tracing::error!(
+                        Ok(Err(stop_err)) => tracing::error!(
                             module = started.name(),
                             %stop_err,
                             "module stop failed during start unwind"
+                        ),
+                        Err(_elapsed) => tracing::error!(
+                            module = started.name(),
+                            grace_ms = self.stop_grace.as_millis(),
+                            "module stop timed out; abandoning and continuing teardown (start unwind)"
                         ),
                     }
                 }
@@ -164,11 +189,16 @@ impl App {
     /// logs and continues on error so one stuck module can't strand the rest.
     pub async fn stop(&self) {
         for m in self.modules.iter().rev() {
-            match m.stop(&self.ctx).await {
-                Ok(()) => tracing::info!(module = m.name(), "module stopped"),
-                Err(err) => {
+            match tokio::time::timeout(self.stop_grace, m.stop(&self.ctx)).await {
+                Ok(Ok(())) => tracing::info!(module = m.name(), "module stopped"),
+                Ok(Err(err)) => {
                     tracing::error!(module = m.name(), %err, "module stop failed")
                 }
+                Err(_elapsed) => tracing::error!(
+                    module = m.name(),
+                    grace_ms = self.stop_grace.as_millis(),
+                    "module stop timed out; abandoning and continuing teardown"
+                ),
             }
         }
     }

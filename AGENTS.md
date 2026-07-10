@@ -87,7 +87,10 @@ module never knows the topology.
    (`RunningServer::shutdown`, `EDGE_DRAIN_GRACE_MS` default 5000 — read in
    `core/app`, never in modules), and the HTTP graceful drain is itself
    time-bounded (`HTTP_DRAIN_GRACE_MS` default 5000 — read in `core/app`, never in
-   modules) so a hung connection can't stall shutdown before teardown begins; a
+   modules) so a hung connection can't stall shutdown before teardown begins, and
+   each module's `stop` (in both ordered teardown and the start-unwind) is itself
+   bounded (`MODULE_STOP_GRACE_MS` default 5000 — read in `core/app`, never in
+   modules) so one hung module can't stall the rest; a
    failed startup unwinds what started, in reverse, through the same teardown.
 9. Events are typed at the seam: declare with `bus::define`, publish/subscribe via
    `emit_tx`/`on_tx`. `on_tx_raw` (untyped JSON) is for deliberately zero-coupling

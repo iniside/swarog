@@ -11,6 +11,9 @@ struct RecMod {
     name: String,
     log: Arc<Mutex<Vec<String>>>,
     fail_start: bool,
+    /// When set, `stop` sleeps 60s — a stand-in for a module that never returns,
+    /// used to prove the per-module stop deadline abandons it (records nothing).
+    hang_stop: bool,
 }
 
 impl RecMod {
@@ -19,6 +22,7 @@ impl RecMod {
             name: name.to_string(),
             log: log.clone(),
             fail_start: false,
+            hang_stop: false,
         })
     }
 
@@ -28,6 +32,17 @@ impl RecMod {
             name: name.to_string(),
             log: log.clone(),
             fail_start: true,
+            hang_stop: false,
+        })
+    }
+
+    /// A module whose `stop` never returns within the deadline (sleeps 60s).
+    fn boxed_hanging_stop(name: &str, log: &Arc<Mutex<Vec<String>>>) -> Box<dyn Module> {
+        Box::new(RecMod {
+            name: name.to_string(),
+            log: log.clone(),
+            fail_start: false,
+            hang_stop: true,
         })
     }
 
@@ -66,6 +81,9 @@ impl Module for RecMod {
     }
 
     async fn stop(&self, _ctx: &Context) -> anyhow::Result<()> {
+        if self.hang_stop {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+        }
         self.record("stop");
         Ok(())
     }
@@ -138,6 +156,61 @@ async fn start_failure_stops_started_prefix_in_reverse() {
     assert!(format!("{err:#}").contains("start blew up"), "{err:#}");
     // A started, then B failed → only A gets stop; B and C never do.
     assert_eq!(*log.lock().unwrap(), vec!["start:a", "stop:a"]);
+}
+
+/// A module hung in `stop` must not stall ordered teardown: with a short
+/// `with_stop_grace`, [`App::stop`] abandons the hung module after the deadline
+/// (recording nothing for it) and still stops the rest in REVERSE registration
+/// order. The whole call returns in well under the hung module's 60s sleep.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stop_abandons_a_hung_module_and_continues_teardown() {
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let mut app = App::new(Arc::new(Context::new())).with_stop_grace(Duration::from_millis(100));
+    app.add(RecMod::boxed("a", &log));
+    app.add(RecMod::boxed_hanging_stop("b", &log));
+    app.add(RecMod::boxed("c", &log));
+
+    let started = Instant::now();
+    app.stop().await;
+    let elapsed = started.elapsed();
+
+    assert!(
+        elapsed < Duration::from_secs(30),
+        "stop() waited on the hung module ({elapsed:?}) — the deadline did not fire"
+    );
+    // Reverse order: c stops, b is abandoned (no record), a stops.
+    assert_eq!(*log.lock().unwrap(), vec!["stop:c", "stop:a"]);
+}
+
+/// The start-unwind path is bounded the same way: when a module's `start` fails,
+/// the started prefix is stopped in reverse; a hung `stop` mid-prefix is abandoned
+/// after the deadline and the earlier module still gets stopped.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn start_unwind_abandons_a_hung_stop_and_continues() {
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let mut app = App::new(Arc::new(Context::new())).with_stop_grace(Duration::from_millis(100));
+    app.add(RecMod::boxed("a", &log));
+    app.add(RecMod::boxed_hanging_stop("b", &log));
+    app.add(RecMod::boxed("c", &log));
+    app.add(RecMod::boxed_failing_start("d", &log));
+    app.build().unwrap();
+    log.lock().unwrap().clear();
+
+    let started = Instant::now();
+    let err = app.start().await.unwrap_err();
+    let elapsed = started.elapsed();
+
+    assert!(err.to_string().contains("start \"d\""), "{err:#}");
+    assert!(
+        elapsed < Duration::from_secs(30),
+        "start unwind waited on the hung module ({elapsed:?}) — the deadline did not fire"
+    );
+    // a,b,c started; d failed. Unwind stops the prefix in reverse: c, then b is
+    // abandoned (no record), then a — d never started, so it is never stopped.
+    assert_eq!(
+        *log.lock().unwrap(),
+        vec!["start:a", "start:b", "start:c", "stop:c", "stop:a"]
+    );
 }
 
 /// Fallback DSN when `DATABASE_URL` is unset — the same default `core/app` uses.

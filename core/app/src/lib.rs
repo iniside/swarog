@@ -27,6 +27,7 @@ const DEFAULT_EDGE_ADDR: &str = ":9000";
 const DEFAULT_PLAYER_EDGE_ADDR: &str = ":9100";
 const DEFAULT_EDGE_DRAIN_GRACE_MS: u64 = 5000;
 const DEFAULT_HTTP_DRAIN_GRACE_MS: u64 = 5000;
+const DEFAULT_MODULE_STOP_GRACE_MS: u64 = 5000;
 
 /// The process-level configuration [`run`] needs. Deliberately tiny: everything
 /// module-specific (event subscribers, peer edge addrs, admin URLs, …) is read by
@@ -63,6 +64,11 @@ pub struct Config {
     /// teardown (`HTTP_DRAIN_GRACE_MS`, default 5000ms). A process/topology knob read
     /// HERE, never by a module.
     pub http_drain_grace: std::time::Duration,
+    /// Deadline for any SINGLE module's `stop` during ordered teardown (and the
+    /// start-unwind path) before it is abandoned and teardown continues to the next
+    /// module (`MODULE_STOP_GRACE_MS`, default 5000ms). A process/topology knob read
+    /// HERE, never by a module — applied via [`App::with_stop_grace`].
+    pub module_stop_grace: std::time::Duration,
 }
 
 impl Config {
@@ -78,6 +84,7 @@ impl Config {
             std::env::var("PLAYER_EDGE_ADDR").ok(),
             std::env::var("EDGE_DRAIN_GRACE_MS").ok(),
             std::env::var("HTTP_DRAIN_GRACE_MS").ok(),
+            std::env::var("MODULE_STOP_GRACE_MS").ok(),
         )
     }
 
@@ -110,6 +117,7 @@ impl Config {
         player_edge: Option<String>,
         drain_grace_ms: Option<String>,
         http_drain_grace_ms: Option<String>,
+        module_stop_grace_ms: Option<String>,
     ) -> Config {
         let database_url = match dsn {
             Some(v) if !v.trim().is_empty() => v,
@@ -136,6 +144,12 @@ impl Config {
             .filter(|v| !v.is_empty())
             .and_then(|v| v.parse::<u64>().ok())
             .unwrap_or(DEFAULT_HTTP_DRAIN_GRACE_MS);
+        let module_stop_grace_ms = module_stop_grace_ms
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(DEFAULT_MODULE_STOP_GRACE_MS);
         Config {
             database_url: Some(database_url),
             listen_addr: normalize_addr(port.as_deref().unwrap_or_default()),
@@ -144,6 +158,7 @@ impl Config {
             rate_limit_default: None,
             edge_drain_grace: std::time::Duration::from_millis(edge_drain_grace_ms),
             http_drain_grace: std::time::Duration::from_millis(http_drain_grace_ms),
+            module_stop_grace: std::time::Duration::from_millis(module_stop_grace_ms),
         }
     }
 }
@@ -331,8 +346,10 @@ pub async fn run(
     // 3. Fail loud if this process's module set is internally incoherent.
     validate_requires(&modules)?;
 
-    // 4. Two-phase Build (all registers before any init).
-    let mut app = App::new(ctx.clone());
+    // 4. Two-phase Build (all registers before any init). The per-module stop
+    //    deadline (`MODULE_STOP_GRACE_MS`, read HERE not by any module) bounds each
+    //    module's `stop` so one hung module can't stall teardown.
+    let mut app = App::new(ctx.clone()).with_stop_grace(cfg.module_stop_grace);
     for m in modules {
         app.add(m);
     }
