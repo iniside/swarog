@@ -28,6 +28,7 @@ use rcgen::{
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use rustls::server::WebPkiClientVerifier;
 use rustls::{ClientConfig, RootCertStore, ServerConfig};
+use rustls_pki_types::pem::PemObject;
 
 use crate::Error;
 
@@ -88,7 +89,7 @@ impl DevCA {
         let key_pem = std::fs::read_to_string(key_path)
             .map_err(|e| Error::Ca(format!("read CA key {key_path:?}: {e}")))?;
 
-        let ca_der = rustls_pemfile::certs(&mut cert_pem.as_bytes())
+        let ca_der = CertificateDer::pem_slice_iter(cert_pem.as_bytes())
             .next()
             .ok_or_else(|| Error::Ca(format!("CA cert {cert_path:?} has no PEM CERTIFICATE")))?
             .map_err(|e| Error::Ca(format!("parse CA cert {cert_path:?}: {e}")))?;
@@ -260,7 +261,7 @@ impl DevCA {
     pub fn load_cert_only(cert_path: &str) -> Result<TrustAnchor, Error> {
         let cert_pem = std::fs::read_to_string(cert_path)
             .map_err(|e| Error::Ca(format!("read CA cert {cert_path:?}: {e}")))?;
-        let ca_der = rustls_pemfile::certs(&mut cert_pem.as_bytes())
+        let ca_der = CertificateDer::pem_slice_iter(cert_pem.as_bytes())
             .next()
             .ok_or_else(|| Error::Ca(format!("CA cert {cert_path:?} has no PEM CERTIFICATE")))?
             .map_err(|e| Error::Ca(format!("parse CA cert {cert_path:?}: {e}")))?;
