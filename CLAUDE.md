@@ -244,8 +244,27 @@ blocking stage fails; auto-installs pinned CLIs unless `--no-install`):
   (`core/edge/fuzz/`, frame+wire decode; SKIPs on this Windows box), `topiccheck`.
 - SLOW (`--slow`): `cargo mutants` over edge/gateway/asyncevents/registry/bus.
 
-Run `cargo test --workspace` ONE invocation at a time — concurrent runs contend
-on the events plane's migrate advisory lock and look like a hang.
+## One test rollout at a time — MANDATORY
+
+At most ONE test run (`cargo test`, `verify.*`, `split-proof.*`) may execute on
+this machine at any moment — they all share the one local Postgres, and
+concurrent runs contend on the events plane's migrate advisory lock and on
+concurrent DDL (`CREATE OR REPLACE`), which looks like a hang or fails with
+`tuple concurrently updated`. This bites on EVERY rollout, so it is a hard
+protocol, not a tip:
+
+- **Before starting any test run**: check nothing is already running —
+  `Get-Process | Where-Object { $_.ProcessName -match '^cargo$|^rustc$' }`
+  (or `pgrep -x cargo` in bash). If something is, WAIT for it; never start a
+  second run "to check something quickly".
+- **Never launch a test run in the background and then start another command
+  that compiles or tests** — the second invocation is the classic cause.
+- **When dispatching subagents**: at most one subagent may be running tests at
+  a time; a subagent's prompt must include this check. Sequential steps, not
+  parallel test runs.
+- A hung run's leftovers (orphaned test binaries holding advisory locks,
+  idle-in-transaction sessions) must be killed before retrying — check
+  `pg_stat_activity` for stuck `asyncevents` sessions.
 
 **`split-proof.sh` / `.ps1`** boots the real split — characters :8080/:9000,
 inventory :8081/:9001, gateway :8082 + player-QUIC :9100, config :8083/:9002,
