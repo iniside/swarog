@@ -78,6 +78,10 @@ impl From<Error> for opsapi::Error {
 }
 
 #[cfg(test)]
+#[path = "shutdown_tests.rs"]
+mod shutdown_tests;
+
+#[cfg(test)]
 mod e2e_tests {
     use super::*;
     use futures::future::BoxFuture;

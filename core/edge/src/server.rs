@@ -9,12 +9,15 @@
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use futures::future::BoxFuture;
 use futures::FutureExt;
 use quinn::crypto::rustls::QuicServerConfig;
 use serde_json::value::RawValue;
+use tokio::sync::{watch, Notify};
 
 use crate::frame::{read_frame, write_frame};
 use crate::tls::DevCA;
@@ -93,31 +96,124 @@ impl Server {
             prefixes: self.prefixes,
         });
 
+        let shutdown = ShutdownState::new();
         let accept_endpoint = endpoint.clone();
+        let accept_state = shutdown.clone();
         tokio::spawn(async move {
-            while let Some(incoming) = accept_endpoint.accept().await {
-                let dispatch = dispatch.clone();
-                tokio::spawn(async move {
-                    match incoming.await {
-                        Ok(conn) => serve_conn(conn, dispatch).await,
-                        // Handshake failure (e.g. an un-certed client rejected by the
-                        // WebPkiClientVerifier) — nothing to serve.
-                        Err(e) => tracing::debug!(error = %e, "edge: connection handshake failed"),
+            let mut closing = accept_state.subscribe();
+            loop {
+                tokio::select! {
+                    incoming = accept_endpoint.accept() => {
+                        // `Endpoint::accept()` is cancel-safe: the incoming queue
+                        // lives in the endpoint, so losing a select race drops nothing.
+                        let Some(incoming) = incoming else { break };
+                        let dispatch = dispatch.clone();
+                        let conn_state = accept_state.clone();
+                        // The guard is created HERE (the accept arm) and moved into the
+                        // task, so an accepted-but-unstarted connection is never
+                        // invisible to the drain.
+                        let guard = accept_state.enter();
+                        tokio::spawn(async move {
+                            let _guard = guard;
+                            match incoming.await {
+                                Ok(conn) => serve_conn(conn, dispatch, conn_state).await,
+                                // Handshake failure (e.g. an un-certed client rejected by the
+                                // WebPkiClientVerifier) — nothing to serve.
+                                Err(e) => tracing::debug!(error = %e, "edge: connection handshake failed"),
+                            }
+                        });
                     }
-                });
+                    // Graceful shutdown: stop admitting NEW connections.
+                    _ = closing.wait_for(|c| *c) => break,
+                }
             }
         });
 
-        Ok(RunningServer { endpoint, local_addr })
+        Ok(RunningServer { endpoint, local_addr, shutdown })
+    }
+}
+
+/// Shared drain state for one running QUIC plane — the internal [`Server`] and the
+/// player-facing [`crate::PlayerServer`] each build one and thread it through their
+/// accept loops. `closing` is a `tokio::sync::watch` channel, NOT a `Notify`:
+/// `notify_waiters()` stores no permit, so a loop that is not currently parked would
+/// miss the signal, while a watch receiver observes the flipped value whenever it
+/// polls. `in_flight` counts RAII [`InFlightGuard`]s — one per
+/// accepted-but-not-yet-handshaken connection and one per accepted stream, each
+/// created at its ACCEPT site and moved into the spawned task.
+pub(crate) struct ShutdownState {
+    closing: watch::Sender<bool>,
+    in_flight: AtomicUsize,
+    idle_notify: Notify,
+}
+
+impl ShutdownState {
+    pub(crate) fn new() -> Arc<ShutdownState> {
+        Arc::new(ShutdownState {
+            closing: watch::Sender::new(false),
+            in_flight: AtomicUsize::new(0),
+            idle_notify: Notify::new(),
+        })
+    }
+
+    /// A receiver for the closing flag. Use `rx.wait_for(|c| *c)` in a `select!` arm:
+    /// unlike `changed()`, it resolves immediately when shutdown already began.
+    pub(crate) fn subscribe(&self) -> watch::Receiver<bool> {
+        self.closing.subscribe()
+    }
+
+    /// Registers one unit of in-flight work. Create the guard at the accept site and
+    /// MOVE it into the task performing the work — creating it inside the task body
+    /// leaves a window where accepted-but-unstarted work is invisible to the drain
+    /// and gets aborted by `endpoint.close()`.
+    pub(crate) fn enter(self: &Arc<Self>) -> InFlightGuard {
+        self.in_flight.fetch_add(1, Ordering::AcqRel);
+        InFlightGuard(self.clone())
+    }
+
+    fn begin_closing(&self) {
+        self.closing.send_replace(true);
+    }
+
+    fn in_flight_count(&self) -> usize {
+        self.in_flight.load(Ordering::Acquire)
+    }
+
+    /// Resolves once `in_flight` reaches 0. Subscribe-THEN-check: the `Notify` future
+    /// is registered BEFORE the counter is read, closing the race where the last
+    /// guard decrements (and notifies) between our check and our await. When already
+    /// idle, the first check returns without ever awaiting — the short-circuit an
+    /// idle teardown relies on.
+    async fn idle(&self) {
+        loop {
+            let notified = self.idle_notify.notified();
+            if self.in_flight.load(Ordering::Acquire) == 0 {
+                return;
+            }
+            notified.await;
+        }
+    }
+}
+
+/// RAII in-flight marker; dropping the last one wakes [`ShutdownState::idle`] waiters.
+pub(crate) struct InFlightGuard(Arc<ShutdownState>);
+
+impl Drop for InFlightGuard {
+    fn drop(&mut self) {
+        if self.0.in_flight.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.0.idle_notify.notify_waiters();
+        }
     }
 }
 
 /// A running edge server (either plane — the internal mTLS [`Server`] and the
-/// player-facing [`crate::PlayerServer`] both return one). Drop or
-/// [`RunningServer::close`] to stop.
+/// player-facing [`crate::PlayerServer`] both return one). Stop it gracefully with
+/// [`RunningServer::shutdown`] (drains in-flight work) or hard with
+/// [`RunningServer::close`] / drop (aborts everything immediately).
 pub struct RunningServer {
     pub(crate) endpoint: quinn::Endpoint,
     pub(crate) local_addr: SocketAddr,
+    pub(crate) shutdown: Arc<ShutdownState>,
 }
 
 impl RunningServer {
@@ -126,9 +222,32 @@ impl RunningServer {
         self.local_addr
     }
 
-    /// Stops the accept loop and closes all live connections.
+    /// Hard stop: aborts the accept loop and every live connection immediately,
+    /// in-flight work included. The graceful superset is [`RunningServer::shutdown`];
+    /// this stays as the abort path (and the tests' quick teardown).
     pub fn close(&self) {
         self.endpoint.close(0u32.into(), b"server shutting down");
+    }
+
+    /// Graceful shutdown: (1) flip the closing flag — the endpoint-accept loop and
+    /// every per-connection stream-accept loop stop admitting new work; (2) wait up
+    /// to `grace` for in-flight work (handshakes + stream handlers) to drain —
+    /// already-idle returns immediately, a timeout warns with the straggler count;
+    /// (3) close the endpoint (aborting any stragglers) and wait — bounded by
+    /// `min(grace, 3s)` so a dead peer cannot hang teardown — for the close
+    /// notifications to flush.
+    pub async fn shutdown(&self, grace: Duration) {
+        self.shutdown.begin_closing();
+        if tokio::time::timeout(grace, self.shutdown.idle()).await.is_err() {
+            tracing::warn!(
+                in_flight = self.shutdown.in_flight_count(),
+                grace_ms = grace.as_millis() as u64,
+                "edge: drain grace expired; aborting in-flight work"
+            );
+        }
+        self.endpoint.close(0u32.into(), b"server shutting down");
+        let bound = grace.min(Duration::from_secs(3));
+        let _ = tokio::time::timeout(bound, self.endpoint.wait_idle()).await;
     }
 }
 
@@ -181,16 +300,29 @@ impl Dispatch {
     }
 }
 
-/// Accepts streams on a single connection, one task per stream.
-async fn serve_conn(conn: quinn::Connection, dispatch: Arc<Dispatch>) {
+/// Accepts streams on a single connection, one task per stream. Each accepted
+/// stream's in-flight guard is created HERE (where `accept_bi()` yields) and moved
+/// into the stream task. On graceful shutdown the loop stops accepting NEW streams
+/// and returns WITHOUT closing the connection — in-flight stream tasks hold their
+/// own guards (and their streams keep the quinn connection refcount alive), so they
+/// finish under the drain.
+async fn serve_conn(conn: quinn::Connection, dispatch: Arc<Dispatch>, state: Arc<ShutdownState>) {
+    let mut closing = state.subscribe();
     loop {
-        match conn.accept_bi().await {
-            Ok((send, recv)) => {
-                let dispatch = dispatch.clone();
-                tokio::spawn(async move { serve_stream(send, recv, dispatch).await });
-            }
-            // Peer closed, idle timeout, or shutdown.
-            Err(_) => return,
+        tokio::select! {
+            res = conn.accept_bi() => match res {
+                Ok((send, recv)) => {
+                    let dispatch = dispatch.clone();
+                    let guard = state.enter();
+                    tokio::spawn(async move {
+                        let _guard = guard;
+                        serve_stream(send, recv, dispatch).await;
+                    });
+                }
+                // Peer closed, idle timeout, or shutdown.
+                Err(_) => return,
+            },
+            _ = closing.wait_for(|c| *c) => return,
         }
     }
 }
@@ -208,6 +340,12 @@ async fn serve_stream(mut send: quinn::SendStream, mut recv: quinn::RecvStream, 
         .unwrap_or_else(|_| br#"{"ok":false,"error":"edge: response encode failed"}"#.to_vec());
     let _ = write_frame(&mut send, &resp_bytes).await;
     let _ = send.finish();
+    // Hold the stream task (and thus its in-flight guard) open until the peer
+    // acknowledges receipt of the response, or the stream/connection dies. `finish`
+    // only queues the data — without this, a graceful shutdown could observe
+    // in-flight == 0 and reach `endpoint.close()` while the reply is still buffered,
+    // aborting its delivery.
+    let _ = send.stopped().await;
 }
 
 /// Runs a handler future, containing a panic (or a panicking codec) into an error

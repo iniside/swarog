@@ -25,6 +25,7 @@ const DEFAULT_DSN: &str =
 const DEFAULT_LISTEN_ADDR: &str = ":8080";
 const DEFAULT_EDGE_ADDR: &str = ":9000";
 const DEFAULT_PLAYER_EDGE_ADDR: &str = ":9100";
+const DEFAULT_EDGE_DRAIN_GRACE_MS: u64 = 5000;
 
 /// The process-level configuration [`run`] needs. Deliberately tiny: everything
 /// module-specific (event subscribers, peer edge addrs, admin URLs, …) is read by
@@ -52,6 +53,10 @@ pub struct Config {
     /// so it is ALWAYS on (Go's `cmd/gateway-svc` values). Either way `RATE_LIMIT_RPS`
     /// and `RATE_LIMIT_BURST` env override the effective values.
     pub rate_limit_default: Option<(f64, u32)>,
+    /// How long teardown waits for in-flight QUIC work (both planes) to drain before
+    /// aborting it (`EDGE_DRAIN_GRACE_MS`, default 5000ms). A process/topology knob
+    /// read HERE, never by a module.
+    pub edge_drain_grace: std::time::Duration,
 }
 
 impl Config {
@@ -65,6 +70,7 @@ impl Config {
             std::env::var("PORT").ok(),
             std::env::var("EDGE_ADDR").ok(),
             std::env::var("PLAYER_EDGE_ADDR").ok(),
+            std::env::var("EDGE_DRAIN_GRACE_MS").ok(),
         )
     }
 
@@ -95,6 +101,7 @@ impl Config {
         port: Option<String>,
         edge: Option<String>,
         player_edge: Option<String>,
+        drain_grace_ms: Option<String>,
     ) -> Config {
         let database_url = match dsn {
             Some(v) if !v.trim().is_empty() => v,
@@ -108,12 +115,20 @@ impl Config {
             Some(v) if !v.trim().is_empty() => v.trim().to_string(),
             _ => DEFAULT_PLAYER_EDGE_ADDR.to_string(),
         };
+        // Unset/blank/unparseable falls back to the default (the env_* helpers' shape).
+        let edge_drain_grace_ms = drain_grace_ms
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(DEFAULT_EDGE_DRAIN_GRACE_MS);
         Config {
             database_url: Some(database_url),
             listen_addr: normalize_addr(port.as_deref().unwrap_or_default()),
             edge_addr,
             player_edge_addr,
             rate_limit_default: None,
+            edge_drain_grace: std::time::Duration::from_millis(edge_drain_grace_ms),
         }
     }
 }
@@ -223,11 +238,14 @@ fn apply_http_layers(ctx: &Context, mut router: axum::Router) -> axum::Router {
 ///    `/healthz`/`/readyz`) on `cfg.listen_addr` — `/readyz` pings the DB only when a
 ///    pool exists, else answers a plain 200,
 /// 9. block until SIGINT (Ctrl-C — cross-platform),
-/// 10. graceful shutdown: stop accepting HTTP → close the player listener (players
-///     drain first) → close the internal edge listener → stop the durable plane
-///     (delivery halts before anything tears down) → stop the invalidation plane →
-///     drain the bus → [`App::stop`] (reverse registration order). The bus drains
-///     BEFORE any module `stop`, so a stopping module never emits.
+/// 10. graceful shutdown: stop accepting HTTP → drain-then-close the player listener
+///     ([`edge::RunningServer::shutdown`]: stop admitting new connections/streams,
+///     wait up to `EDGE_DRAIN_GRACE_MS` — default 5000ms — for in-flight handlers to
+///     finish, then abort stragglers) → the same drain for the internal edge listener
+///     → stop the durable plane (delivery halts before anything tears down) → stop
+///     the invalidation plane → drain the bus → [`App::stop`] (reverse registration
+///     order). The bus drains BEFORE any module `stop`, so a stopping module never
+///     emits.
 ///
 /// `modules` is the WHOLE topology of this process — real modules plus any remote
 /// stubs standing in for peers. `edge_server` is `None` for an all-local process and
@@ -523,6 +541,7 @@ pub async fn run(
     ordered_teardown(
         running_player.take(),
         running_edge.take(),
+        cfg.edge_drain_grace,
         &mut plane,
         &mut invalidation,
         &ctx,
@@ -535,31 +554,36 @@ pub async fn run(
 }
 
 /// Ordered teardown shared by graceful shutdown and every startup-failure unwind:
-/// close the player front (external players drain first) → close the internal edge →
-/// stop the durable plane (delivery halts before ANY module tears down — structurally
-/// what the old "messaging registers last, stops first" convention hand-ordered) →
-/// stop the invalidation plane → drain the in-process bus → stop modules (reverse
-/// registration order, inside `App::stop`).
+/// drain-then-close the player front (external players drain first — REAL drain:
+/// [`edge::RunningServer::shutdown`] stops admitting new connections/streams, waits
+/// up to `grace` for in-flight handlers to finish, then aborts stragglers) → the
+/// same drain for the internal edge → stop the durable plane (delivery halts before
+/// ANY module tears down — structurally what the old "messaging registers last,
+/// stops first" convention hand-ordered) → stop the invalidation plane → drain the
+/// in-process bus → stop modules (reverse registration order, inside `App::stop`).
 ///
 /// The same order serves ANY prefix of startup because every step degrades to a no-op
-/// for what was never created/started: listeners close only when `Some`, both planes'
-/// `stop` are `Option::take`-guarded (idempotent), `Bus::close` is idempotent, and
-/// `app` is `None` when no module `start` succeeded — after an `App::start` failure
-/// the started prefix was already stopped INSIDE `App::start`, and running `App::stop`
-/// here would call `stop` on never-started modules (outside the `Module` contract).
+/// for what was never created/started: listeners drain only when `Some` (an idle
+/// listener short-circuits, so the unwind path pays ~0 and needs no special-casing),
+/// both planes' `stop` are `Option::take`-guarded (idempotent), `Bus::close` is
+/// idempotent, and `app` is `None` when no module `start` succeeded — after an
+/// `App::start` failure the started prefix was already stopped INSIDE `App::start`,
+/// and running `App::stop` here would call `stop` on never-started modules (outside
+/// the `Module` contract).
 async fn ordered_teardown(
     running_player: Option<edge::RunningServer>,
     running_edge: Option<edge::RunningServer>,
+    grace: std::time::Duration,
     plane: &mut Option<asyncevents::Plane>,
     invalidation: &mut Option<invalidation::InvalidationPlane>,
     ctx: &Context,
     app: Option<&App>,
 ) {
     if let Some(running) = running_player {
-        running.close();
+        running.shutdown(grace).await;
     }
     if let Some(running) = running_edge {
-        running.close();
+        running.shutdown(grace).await;
     }
     if let Some(p) = plane {
         p.stop().await;

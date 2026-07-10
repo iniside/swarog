@@ -27,7 +27,7 @@ use serde_json::value::RawValue;
 
 use crate::client::raw_from_bytes;
 use crate::frame::{read_frame_max, write_frame};
-use crate::server::{err_response, ok_response, run_caught, HandlerResult, RunningServer};
+use crate::server::{err_response, ok_response, run_caught, HandlerResult, RunningServer, ShutdownState};
 use crate::tls::{client_bind_addr, DevCA, TrustAnchor};
 use crate::wire::Response;
 use crate::Error;
@@ -127,33 +127,65 @@ impl PlayerServer {
         let local_addr = endpoint.local_addr().map_err(Error::Io)?;
 
         let handler = Arc::new(self.handler);
+        let shutdown = ShutdownState::new();
         let accept_endpoint = endpoint.clone();
+        let accept_state = shutdown.clone();
         tokio::spawn(async move {
-            while let Some(incoming) = accept_endpoint.accept().await {
-                let handler = handler.clone();
-                tokio::spawn(async move {
-                    match incoming.await {
-                        Ok(conn) => serve_conn(conn, handler).await,
-                        Err(e) => tracing::debug!(error = %e, "edge: player handshake failed"),
+            let mut closing = accept_state.subscribe();
+            loop {
+                tokio::select! {
+                    incoming = accept_endpoint.accept() => {
+                        // Cancel-safe: the incoming queue lives in the endpoint.
+                        let Some(incoming) = incoming else { break };
+                        let handler = handler.clone();
+                        let conn_state = accept_state.clone();
+                        // Guard created at the ACCEPT arm and moved into the task —
+                        // see [`ShutdownState::enter`].
+                        let guard = accept_state.enter();
+                        tokio::spawn(async move {
+                            let _guard = guard;
+                            match incoming.await {
+                                Ok(conn) => serve_conn(conn, handler, conn_state).await,
+                                Err(e) => tracing::debug!(error = %e, "edge: player handshake failed"),
+                            }
+                        });
                     }
-                });
+                    // Graceful shutdown: stop admitting NEW connections.
+                    _ = closing.wait_for(|c| *c) => break,
+                }
             }
         });
 
-        Ok(RunningServer { endpoint, local_addr })
+        Ok(RunningServer { endpoint, local_addr, shutdown })
     }
 }
 
-/// Accepts streams on a single player connection, one task per stream.
-async fn serve_conn(conn: quinn::Connection, handler: Arc<OnceLock<PlayerHandler>>) {
+/// Accepts streams on a single player connection, one task per stream. Same drain
+/// contract as the internal plane's `serve_conn`: the in-flight guard is created
+/// where `accept_bi()` yields and moved into the stream task; on graceful shutdown
+/// the loop stops accepting NEW streams and returns without closing the connection,
+/// letting in-flight stream tasks finish under their own guards.
+async fn serve_conn(
+    conn: quinn::Connection,
+    handler: Arc<OnceLock<PlayerHandler>>,
+    state: Arc<ShutdownState>,
+) {
+    let mut closing = state.subscribe();
     loop {
-        match conn.accept_bi().await {
-            Ok((send, recv)) => {
-                let handler = handler.clone();
-                tokio::spawn(async move { serve_stream(send, recv, handler).await });
-            }
-            // Peer closed, idle timeout, or shutdown.
-            Err(_) => return,
+        tokio::select! {
+            res = conn.accept_bi() => match res {
+                Ok((send, recv)) => {
+                    let handler = handler.clone();
+                    let guard = state.enter();
+                    tokio::spawn(async move {
+                        let _guard = guard;
+                        serve_stream(send, recv, handler).await;
+                    });
+                }
+                // Peer closed, idle timeout, or shutdown.
+                Err(_) => return,
+            },
+            _ = closing.wait_for(|c| *c) => return,
         }
     }
 }
@@ -203,12 +235,16 @@ async fn dispatch(handler: &OnceLock<PlayerHandler>, req_bytes: Vec<u8>) -> Resp
     }
 }
 
-/// Serializes and writes one framed response envelope, then finishes the stream.
+/// Serializes and writes one framed response envelope, then finishes the stream and
+/// waits for the peer to acknowledge receipt (or the stream/connection to die) —
+/// `finish` only queues the data, and the caller's in-flight guard must not release
+/// before the reply actually left, or a graceful shutdown could abort its delivery.
 async fn respond(send: &mut quinn::SendStream, resp: Response) {
     let resp_bytes = serde_json::to_vec(&resp)
         .unwrap_or_else(|_| br#"{"ok":false,"error":"edge: response encode failed"}"#.to_vec());
     let _ = write_frame(send, &resp_bytes).await;
     let _ = send.finish();
+    let _ = send.stopped().await;
 }
 
 /// The player-side QUIC client: one persistent connection, stream-per-call —
