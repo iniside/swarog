@@ -13,7 +13,7 @@
 #   1. build         cargo build --workspace
 #   2. clippy        cargo clippy --workspace --all-targets -- -D warnings
 #   3. test          cargo test --workspace (unit + proptest properties, see
-#                    core/outbox/src/tests.rs, core/edge/src/{frame,codec,server}_tests.rs)
+#                    core/asyncevents/src/store_tests.rs, core/edge/src/{frame,codec,server}_tests.rs)
 #   4. cargo-audit   cargo audit against the RustSec advisory DB (auto-installs
 #                    cargo-audit; SKIPs if the advisory DB fetch fails offline)
 #   5. fortress      every domain module builds as its own -svc + archcheck dependency law
@@ -42,7 +42,7 @@
 #
 # SLOW (--slow):
 #   10. mutants    cargo-mutants over the pure foundation crates (edge, gateway,
-#                  outbox, registry, bus)
+#                  asyncevents, registry, bus)
 #
 # Prints a PASS/FAIL/SKIP summary and exits non-zero iff a BLOCKING stage failed (or
 # ANY stage failed under --strict). Deliberately NOT `set -e` in the run phase: a
@@ -292,7 +292,7 @@ mutants_stage() {
         add_result mutants SKIP false
         return
     fi
-    if cargo mutants -p edge -p gateway -p outbox -p registry -p bus --timeout 300 >"$log" 2>&1; then
+    if cargo mutants -p edge -p gateway -p asyncevents -p registry -p bus --timeout 300 >"$log" 2>&1; then
         echo "  PASS"
         add_result mutants PASS false
     else

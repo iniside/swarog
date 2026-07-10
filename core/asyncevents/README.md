@@ -2,25 +2,28 @@
 
 The async half of this backend's two communication seams: **sync** = registry
 capabilities (ask now, get an answer), **async** = durable fire-and-forget events.
-This crate is the async half's machinery: transactional outbox, relay,
-`POST /events` wire, inbox dedup. It is owned by `core/app::run` as a *process
-plane* (DB ⇒ plane), never listed as a module, never declared in `requires()`.
-Modules only ever see `ctx.bus().emit_tx(...)` / `on_tx(...)`.
+This crate is the async half's machinery: an XID-ordered shared event log in
+Postgres plus consumer-owned pull subscriptions with transactional checkpoints.
+It is owned by `core/app::run` as a *process plane* (DB ⇒ plane), never listed as
+a module, never declared in `requires()`. Modules only ever see
+`ctx.bus().emit_tx(...)` / `on_tx(spec, ...)`.
 
-This README answers the question every new reader asks: *"backends normally run
-NATS/Kafka/RabbitMQ as a service and each service has a client to it — why is
-this compiled into every process instead?"*
+**Publisher owns the event. Consumer owns the subscription.** A producer appends
+once inside its domain transaction and never knows who consumes; a consumer
+declares a durable, versioned `SubscriptionSpec` and pulls at its own pace from
+its own checkpoint. There is no per-process routing configuration: adding a
+consumer is a code change in the consuming module only, identical in the monolith
+and the split.
 
 ## How broker backends actually work (the part that's easy to misremember)
 
 A broker is a separate stateful process: its own log, offsets, retention,
 fan-out, wire protocol. But **every service that talks to it still compiles in a
 client library** (`kafka-clients`, `rdkafka`, `nats.rs`, `lapin`) plus its HTTP
-framework, metrics, middleware, serialization. A "microservice" binary is ~90%
-shared infrastructure code. So the design question is never *"code or service"*
-— both worlds compile shared code into every process. The question is **which
-capabilities arrive as code (linked in) and which as a protocol (dialed)**, and
-the rule is physical, not aesthetic:
+framework, metrics, middleware, serialization. So the design question is never
+*"code or service"* — both worlds compile shared code into every process. The
+question is **which capabilities arrive as code (linked in) and which as a
+protocol (dialed)**:
 
 - **Must share your process / transaction / memory → library.** Broker clients,
   middleware, metric registries — and, here, the `emit_tx` transport, because it
@@ -32,106 +35,115 @@ the rule is physical, not aesthetic:
 
 ## Where this backend sits: the broker-as-a-service already exists — it is Postgres
 
-The stateful half of a broker is here, and it is a separate service every process
-already dials:
-
 | | Kafka-style stack | this stack |
 |---|---|---|
-| Stateful service (log, coordination, durability) | broker cluster | **Postgres** (`asyncevents.outbox`, `FOR UPDATE SKIP LOCKED`, LISTEN/NOTIFY, WAL) |
+| Stateful service (log, offsets, retention, durability) | broker cluster | **Postgres** (`asyncevents.events` + `subscriptions`, LISTEN/NOTIFY, WAL) |
 | Compiled into every service | broker client + framework + outbox lib | `core/*` + this crate |
-| Who pushes delivery | broker (consumers pull) | the **relay** in each producer process (POSTs to subscribers) |
+| Delivery model | consumers pull from offsets | consumers pull from checkpoints (this crate's worker) |
+| Consumer group | broker-coordinated | `FOR UPDATE SKIP LOCKED` on the subscription row |
 
-The only piece that is code here but a service there is the *delivery loop* (the
-relay). And a broker would not remove the rest: the producer-side outbox and the
-consumer-side inbox dedup stay in-process in both worlds, because exactly-once
-semantics live exactly at the transaction boundary the broker cannot enter.
+Unlike a broker, the log lives in the SAME Postgres as the domain data, which
+buys the one thing a broker structurally cannot offer: **the domain effect and
+the consumer checkpoint commit in one transaction.** There is no inbox, no dedup
+table, no idempotency reasoning for a `TransactionalPg` consumer — the handler
+runs on the delivery connection, and either both the effect and the cursor
+advance commit, or neither does.
 
-`emit_tx` is "send to the broker": the broker's ingest is a SQL `INSERT`, which —
-unlike a network POST — can join the producer's domain transaction, because the
-broker's storage lives in the same Postgres as the domain data. The guarantee,
-stated generally: *delivery is at-least-once with a stable `event_id`; effects are
-exactly-once iff the dedup-check and the effect are atomic in the consumer's own
-store — via the handed delivery tx when engines match, via an idempotent
-`event_id`-keyed write otherwise.* Everything after commit (relay → `POST /events`
-→ inbox) is that at-least-once delivery; the per-subscriber inbox is the redelivery
-gate, and for an engine-matched consumer the inbox row and the module effect commit
-in one tx, i.e. exactly-once effects.
+The guarantee, stated generally: *delivery is at-least-once per subscription with
+a stable `event_id`; effects are exactly-once for a consumer whose effect commits
+in the handed delivery transaction; ordering is per-subscription in XID-allocation
+order.* A foreign-store consumer ignores the handed tx and keys an idempotent
+write on `event_id` — supported by the types, not used by any current module.
 
-## Why `core/*` compiles into every process
+## The correctness model (why the log is not just a bigserial table)
 
-1. **Some seams are in-process by definition.** `registry` is a hashmap of
-   `Arc<dyn Trait>`; `lifecycle` is call ordering inside your process; the
-   in-process bus is tokio channels. "Registry over the network" is not a thing,
-   the same way `std` is not a service.
-2. **The rest is the process's membrane.** `edge` (your QUIC listener), `httpmw`
-   (your middleware), `metrics` (your scrape registry on your port), this crate
-   (your broker client + your transactionality). Every process needs its own —
-   exactly like every Java microservice carries its own Netty and its own Kafka
-   client. A remote "metrics service" you call per-request is the known
-   anti-pattern; Prometheus scrapes each process for the same reason.
-3. **Monorepo + workspace turns the cost into a feature.** The classic pain of
-   compiled-in infrastructure is version skew across a polyrepo fleet (five
-   `kafka-clients` versions, a quarter-long migration). Here `core` has exactly
-   one version, upgrades are atomic in one commit, and cargo + archcheck police
-   the dependency edges. The price is recompiling the workspace when core
-   changes — seconds at this scale.
+`bigserial` is allocated at INSERT but becomes visible at COMMIT, in a different
+order — a naive cursor skips rows that commit late, forever. A V2 position is
+`(generation, producer_xid, tie_breaker)`:
+
+- `producer_xid` = `pg_current_xact_id()` of the producing top-level transaction;
+  readers only observe current-generation rows with
+  `producer_xid < pg_snapshot_xmin(pg_current_snapshot())` — the frontier. A slow
+  commit delays the frontier (alarmed via the safe-frontier-age metric); it can
+  never be skipped.
+- `generation` fences cluster identity: after a restore/PITR onto a new cluster,
+  XIDs stop being monotonic, so an operator bumps the generation
+  (`eventctl bump-generation`) and every older generation becomes fully eligible
+  while the new one starts a fresh XID ordering. `plane_meta` pins the cluster's
+  `system_identifier`; startup guards refuse a changed cluster without a bump
+  (plus `max_prepared_transactions = 0` and an empty `pg_prepared_xacts` —
+  a prepared transaction would sit outside the snapshot indefinitely).
+- `tie_breaker` orders events written by the same transaction.
+
+**Exactly one writer implementation exists:** the SQL function
+`asyncevents.append_event(topic, version, payload)` — transaction-scoped
+**shared** advisory lock on one fixed key → read `plane_meta.generation` → INSERT
+stamped with `pg_current_xact_id()`. The Rust producer (`store::append`, behind
+`Transport::enqueue_tx`) calls it; module-owned SQL (config's trigger) calls it;
+`store::bump_generation` takes the **exclusive** form of the same lock and waits
+every in-flight writer out. Module SQL may call the plane's functions
+(`append_event`, `ensure_history_contract`) but never touch plane tables —
+archcheck enforces this.
+
+sqlx has no `xid8` codec: every bind/decode crosses as text (`$n::xid8` in,
+`producer_xid::text` out) and comparisons stay in SQL.
+
+## Delivery (the worker)
+
+Per process, one worker pool over the subscriptions its modules registered
+(`catalog.rs` reconciles `SubscriptionSpec`s into `asyncevents.subscriptions` at
+start; an existing row with a different immutable `spec_hash` fails startup; the
+cursor is materialized from `StartPosition` at creation and is never NULL).
+One delivery: pick a due subscription `FOR UPDATE SKIP LOCKED` (replicas form a
+consumer group by construction) → frontier-bounded next-event select → SAVEPOINT
+→ handler on the same connection → cursor advance → COMMIT.
+
+Failure state machine: handler **error** → rollback to the savepoint, record
+exponential backoff (1s → 5m), pause after 20 consecutive failures — **no
+automatic skip, ever** (skipping is an audited `eventctl skip --reason` operator
+action). Handler **timeout** (`ASYNCEVENTS_HANDLER_TIMEOUT`, default 10s) → the
+connection has an in-flight statement and is unusable: drop it, terminate the
+wedged backend (releasing the row lock), record backoff on a fresh connection.
+Workers never sleep holding the row lock. Wake-up: one `PgListener` on
+`asyncevents_events` + a 1s poll floor. A dead worker fails `/readyz`.
+
+Replica-local caches are **not** durable subscriptions (under consumer-group
+semantics only one replica would refresh): they use `core/invalidation`
+(LISTEN/NOTIFY broadcast + authoritative refresh), which promises freshness, not
+delivery.
+
+## Retention
+
+Coupled to checkpoints, conservative by construction: per topic, the GC floor is
+the MIN cursor over active **and paused** subscriptions (a paused consumer blocks
+GC and raises `asyncevents_retention_blocked_age_seconds`); rows below the floor
+are deleted only past the topic's `MinRetention` days; `KeepForever` never
+deletes; **a topic with no `history_contracts` row is never deleted from**.
+`history_contracts` is seeded by the emitting transport, by typed-subscription
+reconcile, and — for SQL producers — by the producer's migrate calling
+`asyncevents.ensure_history_contract(...)`.
+
+Operator surface: `tools/eventctl` — `list`, `lag`, `retry`, `pause`, `resume`,
+`skip <id> --reason`, `retire`, `bump-generation`. No command advances a
+checkpoint silently.
 
 ## What adopting a real broker would change (and what it wouldn't)
 
-A dedicated broker earns its place only for semantics deliberately not offered
-here: replay/history, late consumers reading from an offset, cross-partition
-ordering, throughput beyond relay-HTTP. If that day comes, the change is local
-to this crate: the relay POSTs to the broker instead of to peers, and consumers
-gain a consume loop instead of the `POST /events` sink. The outbox, the inbox,
-and the module-facing API (`emit_tx`/`on_tx`) stay exactly as they are — modules
-never knew what delivery looks like, which is the point of the plane.
+A broker earns its place only past this project's stated boundary (one shared
+Postgres, moderate throughput): separate per-service databases, thousands of
+partitions, multi-region. The change is local to this crate — the log and worker
+move behind the broker's client — while `emit_tx`, the event contracts, and every
+`SubscriptionSpec` stay exactly as they are. Modules never knew what delivery
+looks like, which is the point of the plane. Deliberate scale choices at the
+current boundary: one event per delivery transaction (no batching knob), one
+checkpoint per subscription (no partition parallelism, no `partition_key`
+column), generation bumps are offline operator actions.
 
-## Engine-neutral types, Postgres-typed transport
+## First-migrate prerequisite (one-time superuser bootstrap)
 
-The module-facing API names no store engine: `emit_tx` takes a `bus::AnyTx` (a
-type-erased `&mut` to the caller's tx) and `on_tx` handlers receive a
-`bus::Delivery { event_id, tx }`. `core/bus` is therefore sqlx-free — the engine
-lives only in the concrete transport and in each module's own store layer.
-
-A **non-Postgres-store consumer** ignores the delivery `tx` and instead keys an
-idempotent write on `Delivery::event_id` (stable `"{schema}:{outbox_id}"` across
-redeliveries) in its own store: that yields exactly-once *effects in that store*,
-while the plane's inbox stays the redelivery gate. An engine-matched consumer
-downcasts `Delivery::tx` to `&mut sqlx::PgConnection` and commits its effect in the
-same tx as the inbox dedup row — nothing changed semantically for it.
-
-Producer-side, the types are engine-neutral but the only production transport
-enlists in a Postgres tx: `enqueue_tx` downcasts the `AnyTx` to
-`&mut sqlx::PgConnection`. A foreign-store producer therefore fails loud with
-`Error::TxEngineMismatch` at its **first emit** (a request-path emit fails on first
-use, not at boot) — a second `Transport` impl in that engine is the day-two path,
-deliberately out of scope while the backplane stays Postgres.
-
-## V2 event log (additive — plan Step 2)
-
-`Plane::migrate` also creates the V2 storage that replaces the push path at the
-Step-3 cutover (plan: `docs/plans/2026-07-09-2234-durable-event-log-fresh-plan.md`):
-`asyncevents.{plane_meta,events,subscriptions,history_contracts}`, the
-`events_scan` index, an `AFTER INSERT ON events` → `pg_notify('asyncevents_events')`
-wake-up trigger, and `asyncevents.append_event(topic, version, payload) RETURNS
-event_id` — the SINGLE writer implementation (transaction-scoped **shared**
-advisory lock on one fixed key → read `plane_meta.generation` → INSERT stamped
-with `pg_current_xact_id()`). The Rust producer (`store::append`) calls that
-function on the caller's open tx; a generation bump (`store::bump_generation`,
-wired to `eventctl` later) takes the **exclusive** form of the same lock and
-waits every in-flight writer out. A position is `(generation, producer_xid,
-tie_breaker)`; readers only observe current-generation rows with `producer_xid <
-pg_snapshot_xmin(pg_current_snapshot())`, so a slow commit delays the frontier
-but can never be skipped. sqlx has no `xid8` codec: every bind/decode crosses as
-text (`$n::xid8` in, `producer_xid::text` out) and comparisons stay in SQL.
-Nothing is wired into `Transport::enqueue_tx` yet — the outbox path above stays
-the live delivery mechanism.
-
-**First-migrate prerequisite (one-time superuser bootstrap):** the migrate seeds
-`plane_meta` with the cluster's `pg_control_system().system_identifier`, and the
-startup guards re-check it on every boot (plus `max_prepared_transactions = 0`
-and an empty `pg_prepared_xacts`). `pg_control_system()` is not executable by
-ordinary roles by default; grant it once as superuser:
+The migrate seeds `plane_meta` with the cluster's
+`pg_control_system().system_identifier`; the function is not executable by
+ordinary roles by default:
 
 ```
 GRANT EXECUTE ON FUNCTION pg_control_system() TO gamebackend;
@@ -141,25 +153,20 @@ GRANT EXECUTE ON FUNCTION pg_control_system() TO gamebackend;
 
 - **Lifecycle** (all driven by `app::run`, in this order): `Plane::new(pool, dsn)`
   → transport injected at `Context` construction (so every module's wiring-time
-  `on_tx` finds it) → `router()` mounted (`POST /events`) → `migrate()` before
-  any module migrate → `start()` after module starts (origin-collision guard,
-  local-target snapshot, relay + LISTEN + housekeeping) → `stop()` before any
-  module stops (delivery halts first).
-- **Schema** `asyncevents`: `outbox` (origin-stamped log; `AFTER INSERT` trigger
-  fires `pg_notify('asyncevents_outbox')`), `inbox` (PK `(event_id, subscriber)`
-  — the per-subscriber redelivery gate; for an engine-matched consumer this dedup
-  row commits in the same tx as the effect, so effects are exactly-once). The DDL
-  includes a guarded
-  `ALTER SCHEMA messaging RENAME TO asyncevents` + inbox dedup-prefix rewrite
-  for databases created before the 2026-07-09 rename.
-- **Single-owner drain:** each relay drains ONLY its own `EVENTS_ORIGIN`'s rows
-  (`FOR UPDATE SKIP LOCKED`), so many processes share one table without stealing
-  each other's deliveries. The generic drain/deliver engine lives in
-  [`core/outbox`](../outbox/); this crate owns the schema, the `bus::Transport`
-  impl, the inbound sink, the LISTEN wakeup, and retention pruning.
-- **Env:** `EVENTS_ORIGIN` (distinct per process in the split; default
-  `monolith`), `EVENTS_SUBSCRIBERS` (`topic=url,url2;topic2=url` — remote peer
-  `/events` sinks), `EVENTS_RETENTION` (default `168h`),
+  `on_tx` finds it) → `migrate()` before any module migrate (DDL under an
+  exclusive migrate advisory lock; drops the legacy push-era `outbox`/`inbox` if
+  present) → `start()` after module starts (subscription reconcile, worker pool,
+  LISTEN wake-up, retention) → `stop()` before any module stops (delivery halts
+  first).
+- **Schema** `asyncevents`: `events` (the log; PK `(generation, producer_xid,
+  tie_breaker)`, unique `event_id`, `AFTER INSERT` → `pg_notify
+  ('asyncevents_events')`), `subscriptions` (checkpoint + failure state),
+  `plane_meta` (generation + cluster identity singleton), `history_contracts`
+  (per-topic retention policy).
+- **Env:** `ASYNCEVENTS_HANDLER_TIMEOUT` (default `10s`),
   `EVENTS_HOUSEKEEP_INTERVAL` (default `1h`).
-- **Tests:** `asyncevents::transport(pool, origin)` gives module integration
-  tests a bare transport without booting the plane.
+- **Tests:** `asyncevents::testing` — `events_count`/`cleanup_events` +
+  `transport(pool)` returning a `TestTransport` whose `deliver_all()` runs a real
+  reconcile-and-drain worker pass, so module tests exercise emit → deliver
+  round-trips without booting a process. Run `cargo test --workspace` ONE
+  invocation at a time — concurrent runs contend on the migrate advisory lock.

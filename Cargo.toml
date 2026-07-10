@@ -1,14 +1,13 @@
 [workspace]
 resolver = "2"
 members = [
-    # Foundations — imported by everyone, import no module (Go's root leaves + opsapi/edge/outbox + internal/app).
+    # Foundations — imported by everyone, import no module (Go's root leaves + opsapi/edge + internal/app).
     "core/registry",
     "core/contrib",
     "core/bus",
     "core/lifecycle",
     "core/opsapi",
     "core/edge",
-    "core/outbox",
     "core/app",
     # Process infrastructure: the durable async-events plane (owned by core/app —
     # DB ⇒ plane, not a module) and the topology-blind registry SWAP — not domains,
@@ -132,9 +131,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }
 futures = "0.3"
 proptest = "1"
-# HTTP client for the outbox relay's remote delivery (POST /events). rustls to align
-# with the edge stack's TLS; default (native-tls) features off. Also the accounts
-# module's client for the Epic JWKS fetch + OAuth code exchange.
+# HTTP client for the accounts module (Epic JWKS fetch + OAuth code exchange).
+# rustls to align with the edge stack's TLS; default (native-tls) features off.
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 
 # Identity stack for the accounts module (Step 6): argon2id password hashing (PHC
@@ -183,7 +181,6 @@ bus = { path = "core/bus" }
 lifecycle = { path = "core/lifecycle" }
 opsapi = { path = "core/opsapi" }
 edge = { path = "core/edge" }
-outbox = { path = "core/outbox" }
 app = { path = "core/app" }
 # Process infrastructure in core/: asyncevents (the durable-events plane, owned by
 # app::run) and remote (the topology-blind registry SWAP; generic — imports no api/ crate).

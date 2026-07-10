@@ -263,7 +263,7 @@ function Invoke-MutantsStage {
         Add-Result 'mutants' 'SKIP' $false
         return
     }
-    & cargo mutants -p edge -p gateway -p outbox -p registry -p bus --timeout 300 *> $log
+    & cargo mutants -p edge -p gateway -p asyncevents -p registry -p bus --timeout 300 *> $log
     if ($LASTEXITCODE -eq 0) {
         Write-Host "  PASS" -ForegroundColor Green
         Add-Result 'mutants' 'PASS' $false

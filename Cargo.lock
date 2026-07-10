@@ -2066,20 +2066,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "outbox"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "futures",
- "proptest",
- "reqwest",
- "serde_json",
- "sqlx",
- "tokio",
- "tracing",
-]
-
-[[package]]
 name = "parking"
 version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -24,18 +24,26 @@ Three seams carry all extensibility; almost everything else follows from them:
    process, a `remote::Stub` provides an edge-backed client under the SAME key —
    the registry swap is the only difference between topologies.
 3. **Event bus** (`ctx.bus()`) — the async glue. Each publishing domain owns
-   `api/<name>/<name>events` declaring events via `bus::define`. **Every
-   cross-module event is DURABLE**: producer `emit_tx(AnyTx::new(&mut *tx), …)`
-   inside a real DB tx, consumer `on_tx`/`on_tx_raw` with a subscriber name (handler
-   receives `Delivery { event_id, tx }`; outbox → relay → `POST /events` → inbox
-   dedup). The contract is engine-neutral: *delivery is at-least-once with a stable
-   `event_id`; effects are exactly-once iff the dedup-check and the effect are atomic
-   in the consumer's own store — via the handed delivery tx when engines match, via
-   an idempotent `event_id`-keyed write otherwise.* The durable transport is installed
-   by `app::run` at `Context` construction (DB ⇒ plane), never by a module; a
-   process without a DB hosts no plane and `cmd/*` never lists it. Plain `emit`/`on`
-   is in-process only and reserved for same-module reactions — it never crosses a
-   process.
+   `api/<name>/<name>events` declaring versioned contracts via
+   `bus::define(topic, version, HistoryPolicy)`. **Every cross-module event is
+   DURABLE**, over an XID-ordered shared Postgres log with consumer-owned pull
+   subscriptions (*publisher owns the event, consumer owns the subscription*):
+   producer `emit_tx(AnyTx::new(&mut *tx), …)` inside a real DB tx — append once,
+   never knowing its consumers; consumer `on_tx(SubscriptionSpec, …)`/`on_tx_raw`
+   with a globally unique versioned subscription id (`inventory.character-created.v1`)
+   and an explicit `StartPosition`. The handler receives `Delivery { event_id, tx }`
+   and its effect + checkpoint commit in ONE transaction — no inbox, no dedup. The
+   contract: *delivery is at-least-once per subscription with a stable `event_id`;
+   effects are exactly-once for a `TransactionalPg` consumer; ordering is
+   per-subscription in XID-allocation order; a poison event backs off and pauses
+   its one subscription, never auto-skipped (operator surface:
+   `cargo run -p eventctl`).* The plane is installed by `app::run` at `Context`
+   construction (DB ⇒ plane), never by a module; a DB-less process hosts no plane.
+   There is NO per-process event-routing config — monolith and split run identical
+   producer/consumer code. Plain `emit`/`on` is in-process only, for same-module
+   reactions; replica-local cache refresh is **`core/invalidation`** (LISTEN/NOTIFY
+   broadcast + authoritative refresh callbacks — freshness, not delivery), never a
+   durable subscription.
 
 Plus two minor seams: **`ctx.contribute(slot, v)` / `ctx.contributions(slot)`** — a
 multi-value registry for cross-cutting collections (admin items via `adminapi::SLOT`,
@@ -49,9 +57,12 @@ module never knows the topology.
 
 1. **Foundations (`core/*`) never depend on a module or an `api/` crate.**
    Dependency only ever points module → core. (`core/` = app, bus, contrib, edge,
-   lifecycle, opsapi, outbox, registry, asyncevents, remote, metrics, httpmw —
-   `asyncevents` is the durable async-events plane owned by `app::run` (DB ⇒ plane),
-   NOT a module; remote/metrics/httpmw are process infrastructure, not domains.)
+   lifecycle, opsapi, registry, asyncevents, invalidation, remote, metrics, httpmw —
+   `asyncevents` (durable event log + pull workers) and `invalidation` (broadcast
+   cache refresh) are app-owned planes (DB ⇒ plane), NOT modules; remote/metrics/
+   httpmw are process infrastructure, not domains. Module SQL may call the plane's
+   SQL functions (`asyncevents.append_event`, `asyncevents.ensure_history_contract`)
+   but never touch plane tables — archcheck-enforced.)
 2. **Fortress rule.** Every folder in `modules/` is a fortress: it never imports
    another module's impl crate, and every domain module compiles + boots as its own
    `cmd/<name>-svc`. The only gates are the contract crates under `api/<name>/`.
@@ -72,18 +83,22 @@ module never knows the topology.
    topology branches in domain code. Edge exposure goes through `EDGE_SLOT`;
    remote resolution through the registry swap; durable delivery through the bus.
    `cmd/*` mains differ only in module list + which QUIC planes the process serves.
-6. Evolve events additively; never mutate a published payload shape. Guarded by the
-   `public-api` verify stage (additive-only diff on contract crates) and
-   `cargo run -p topiccheck` (defined-vs-subscribed topic drift).
+6. Evolve events additively; never mutate a published payload shape — a breaking
+   change is a NEW contract version (`define(topic, 2, …)`) and new subscription
+   ids. Guarded by the `public-api` verify stage (additive-only diff on contract
+   crates) and `cargo run -p topiccheck` (profile-aware: defined-vs-subscribed
+   drift, version match, globally unique subscription ids, exactly one host per
+   subscription per deployment profile).
 7. **The bus is async fire-and-forget** — no request/response through it; that's a
    registry capability's job. State projected from events is eventually consistent.
 8. Lifecycle: `register` (phase 1, provide services, no I/O) → `init` (wiring only,
    no I/O — contribute slots, subscribe, mount routes) → `migrate` (own schema
    only) → `start` (background work, first I/O) → `stop` (reverse registration
-   order). The durable plane's ordering is structural in `app::run`: the transport
-   is injected at `Context` construction, the plane's schema migrates before any
-   module migrates, the plane starts after modules start, and delivery halts before
-   any module stops.
+   order). Both planes' ordering is structural in `app::run`: transport +
+   invalidation handle injected at `Context` construction, plane schema migrates
+   before any module migrates, planes start after modules start (invalidation
+   completes every callback's first refresh or startup fails), delivery halts
+   before any module stops.
 9. Events are typed at the seam: declare with `bus::define`, publish/subscribe via
    `emit_tx`/`on_tx`. `on_tx_raw` (untyped JSON) is for deliberately zero-coupling
    sinks (audit) only.
@@ -106,21 +121,26 @@ module never knows the topology.
    `<prefix>_<snake>_meta!(rpc_macro::generate_glue);` invocation (+ re-export
    `adminrpc::register_admin` if it has an admin page).
 3. In `init`: contribute ops to the `opsapi` slots, edge faces to `edge::EDGE_SLOT`
-   (own glue), admin item to `adminapi::SLOT`; subscribe with `on_tx`. Emit with
-   `emit_tx` inside your store tx.
-4. New `cmd/<name>-svc` (copy an existing domain svc main: the `metrics` core-infra
-   module + your module + a `remote::Stub` per capability it consumes — every main
-   lists `metrics::Metrics::new()` for `GET /metrics`; the durable plane is app-owned
-   (DB ⇒ plane), not listed). It hosts NO gateway
-   (FrontDoor) — the
-   single public front door lives only in `cmd/gateway-svc` + `cmd/server` (monolith);
-   the svc serves its ops ONLY over the internal mTLS edge and gateway-svc dispatches to
-   it Remote (so it needs no accounts stub for a verifier). Register the module in
-   `cmd/server`, add stubs where consumers live, extend `split-proof.sh`/`.ps1` (new
-   process + a named assertion, HTTP ops asserted THROUGH gateway-svc) and the `fortress`
-   stage port list.
-5. Wire `EVENTS_SUBSCRIBERS` for any topic it produces/consumes across processes;
-   give the svc a distinct `EVENTS_ORIGIN`.
+   (own glue), admin item to `adminapi::SLOT`; subscribe with
+   `on_tx(SubscriptionSpec { id: "<name>.<topic-kebab>.v1", start: StartPosition::… }, …)`
+   — the id is a durable contract, the start position has no default. Emit with
+   `emit_tx` inside your store tx. Replica-local caches refresh via
+   `ctx.invalidation().register(channel, name, callback)`, not a durable sub.
+4. New `cmd/<name>-svc`: `src/lib.rs` exports
+   `modules(wiring: &ProcessWiring) -> Vec<Box<dyn Module>>` (the `metrics`
+   core-infra module + your module + a `remote::Stub` per consumed capability —
+   peer addresses come from `wiring`, checkers pass dummies); `main.rs` builds the
+   real `ProcessWiring` from env and adds runtime-only handles. Both planes are
+   app-owned (DB ⇒ plane), never listed. It hosts NO gateway (FrontDoor) — the
+   single public front door lives only in `cmd/gateway-svc` + `cmd/server`
+   (monolith); the svc serves its ops ONLY over the internal mTLS edge and
+   gateway-svc dispatches to it Remote. Register the module in `cmd/server`'s lib,
+   add stubs where consumers live, add the svc lib to `tools/checkmodules`'s Split
+   profile, extend `split-proof.sh`/`.ps1` (new process + a named assertion, HTTP
+   ops asserted THROUGH gateway-svc) and the `fortress` stage port list.
+5. No event-routing wiring exists: producers append to the shared log, consumers
+   pull from their checkpoint — the same code in monolith and split. `topiccheck`
+   validates the subscription graph per deployment profile.
 
 ## Domain modules (12 fortresses + gateway)
 
@@ -135,15 +155,20 @@ module never knows the topology.
   sync `Ownership` authz over the wire, starter-grant/wipe via durable
   `character.created/deleted`. `INVENTORY_DEV_GRANT` (default ON) enables the
   simulated-IAP grant route.
-- **config** — DB-backed knobs, LISTEN/NOTIFY live-reload, durable `config.changed`
-  (emitted ONLY from the listener path). Remote consumers get a `CachedConfig`
-  (snapshot boot-fill + invalidation on `config.changed`) via `configrpc`.
+- **config** — DB-backed knobs with a monotonic `config.revision`. A row trigger
+  (INSERT/UPDATE/DELETE) increments the revision, NOTIFYs `config_changed`, and
+  appends durable `config.changed` via `asyncevents.append_event` — a raw psql
+  write emits identically to a service write. Snapshot = `{revision, settings}`
+  in one statement. Local `Service` and remote `CachedConfig` (via `configrpc`)
+  are invalidation callbacks (atomic map swap, apply only newer revisions);
+  `CachedConfig` keeps boot-fill-or-fail-startup.
 - **admin** — GameOps portal at `/admin` (minijinja over the embedded Go-era theme;
   `ADMIN_USER`/`ADMIN_PASS` Basic auth, open + warn when unset). Renders contributed
   `adminapi::Item`s; remote items fan out over QUIC via `admin.adminData`
   (`adminrpc::admin_remote_factory`). Remote forms are read-only.
 - **audit** — append-only ledger (`audit.log`), zero-coupling raw durable sinks for
-  all 6 topics, prune reacting to `scheduler.fired{audit-prune}`
+  all 6 topics — six independent subscriptions (`audit.<topic-kebab>.v1`), each
+  with its own checkpoint — prune reacting to `scheduler.fired{audit-prune}`
   (`AUDIT_RETENTION_DAYS`, default 30).
 - **scheduler** — data-driven schedules (`scheduler.schedules`), 1s tick, per-name
   `pg_try_advisory_lock` + still-due re-check + `UPDATE`+`emit_tx` in one tx,
@@ -151,9 +176,10 @@ module never knows the topology.
 - **match / rating / leaderboard** — match records `match.matches` from a
   `/match/report` HTTP request body (Go-parity keys `Winner`/`Loser`) and emits a
   durable `match.finished` event (snake_case payload keys `winner`/`loser` — a
-  distinct shape from the HTTP body); rating is in-memory MMR (±15, restart resets
-  to 1000 — accepted) provided as wire-only `MmrReader`; leaderboard upserts wins in
-  the inbox tx, serves `GET /leaderboard`.
+  distinct shape from the HTTP body); rating is a persistent MMR projection
+  (`rating.ratings`, ±15 from 1000, upserted in the delivery tx — restarts
+  preserve MMR) provided as wire-only `MmrReader`; leaderboard upserts wins in
+  the delivery tx, serves `GET /leaderboard`.
 - **apikeys** — per-key API access policy (à la Supabase anon/service key): table
   `apikeys.keys(name, key, policy, revoked_at)`, plaintext keys (sessions-token
   trust model), policy = `full` or comma-separated wire-method list. Provides
@@ -161,7 +187,7 @@ module never knows the topology.
   (HTTP) / `api_key` envelope field (player-QUIC) on every op-dispatched request
   and enforces the key's policy post-match (401 missing/invalid, 403 denied),
   behind a 5s TTL cache (never caches infra errors). Non-goals: `/healthz`,
-  `/metrics`, `/events`, passthroughs stay keyless. Dev keys `dev-key-client`
+  `/metrics`, passthroughs stay keyless. Dev keys `dev-key-client`
   (player-facing list, NO `match.report`) + `dev-key-server` (`full`) seed ONLY
   when `APIKEYS_DEV_SEED` is explicitly truthy (self-healing upsert); a gateway
   process without the capability FAILS STARTUP unless `APIKEYS_DEV_ALLOW=1`
@@ -187,8 +213,9 @@ archcheck forbids any other consumer of a `demos/*` crate).
 cargo build --workspace
 cargo test --workspace          # unit + live-Postgres integration + proptests (232+)
 cargo clippy --workspace --all-targets -- -D warnings
-cargo run -p archcheck          # fortress dependency law
-cargo run -p topiccheck         # defined-vs-subscribed topic drift
+cargo run -p archcheck          # fortress dependency law + plane tripwires
+cargo run -p topiccheck         # profile-aware subscription graph validation
+cargo run -p eventctl -- list   # operator CLI: lag/retry/pause/resume/skip/retire
 ./verify.sh                     # the safety net (there is no CI — this IS it)
 ./split-proof.sh                # live 12-process split + monolith parity proof
 ./run.sh                        # mint dev CA + boot the split locally
@@ -202,7 +229,10 @@ blocking stage fails; auto-installs pinned CLIs unless `--no-install`):
 - ADVISORY (`--all`, blocking under `--strict`): `public-api` (additive-only diff of
   contract crates vs HEAD via detached worktree; needs nightly), `fuzz`
   (`core/edge/fuzz/`, frame+wire decode; SKIPs on this Windows box), `topiccheck`.
-- SLOW (`--slow`): `cargo mutants` over edge/gateway/outbox/registry/bus.
+- SLOW (`--slow`): `cargo mutants` over edge/gateway/asyncevents/registry/bus.
+
+Run `cargo test --workspace` ONE invocation at a time — concurrent runs contend
+on the events plane's migrate advisory lock and look like a hang.
 
 **`split-proof.sh` / `.ps1`** boots the real split — characters :8080/:9000,
 inventory :8081/:9001, gateway :8082 + player-QUIC :9100, config :8083/:9002,
@@ -249,7 +279,9 @@ core/                      # foundations — never import modules or api/ crates
   bus/ registry/ contrib/  #   async bus, sync capability registry, slots
   lifecycle/ opsapi/       #   Module/Context/two-phase build; typed ops + slots
   edge/                    #   internal mTLS QUIC + player plane + EDGE_SLOT
-  outbox/ asyncevents/     #   durable plane: relay lib; app-owned events plane
+  asyncevents/             #   app-owned durable plane: XID-ordered event log +
+                           #   pull workers + retention (+ eventctl operator CLI)
+  invalidation/            #   app-owned broadcast cache-refresh plane (LISTEN/NOTIFY)
   remote/                  #   generic Stub (factories injected by cmd roots)
   metrics/                 #   infra Module: GET /metrics + record layer — list in every main
   httpmw/                  #   rate limit + XFF + readyz + LAYER_SLOT (HTTP layer drain)

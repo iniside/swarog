@@ -70,7 +70,7 @@ grant_item_for_fresh_char() {
         -H 'Content-Type: application/json' -d '{"name":"Smoke","class":"novice"}') || return 1
     cid=$(echo "$ch" | sed -E 's/.*"id":"([^"]+)".*/\1/')
     [ -n "$cid" ] || return 1
-    # small settle for the async grant (outbox -> relay -> sink) to land
+    # small settle for the async grant (durable log -> pull worker) to land
     local t=20
     while [ "$t" -gt 0 ]; do
         inv=$(curl -fsS "$B/inventory/character/$cid" -H "Authorization: Bearer $TOKEN" 2>/dev/null) || inv=""
