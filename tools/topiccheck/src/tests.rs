@@ -27,6 +27,10 @@ fn topics(ts: &[&str]) -> BTreeSet<String> {
     ts.iter().map(|t| t.to_string()).collect()
 }
 
+fn contracts(pairs: &[(&str, u32)]) -> BTreeSet<(String, u32)> {
+    pairs.iter().map(|(t, v)| (t.to_string(), *v)).collect()
+}
+
 // --- Check 1: version match --------------------------------------------------
 
 #[test]
@@ -52,6 +56,30 @@ fn version_mismatch_is_flagged() {
     let v = version_findings(&d, &s);
     assert_eq!(v.len(), 1, "{v:?}");
     assert!(v[0].contains("v1") && v[0].contains("v2"), "{v:?}");
+    assert!(!v[0].contains("UNDEFINED"), "{v:?}");
+}
+
+#[test]
+fn coexisting_versions_of_one_topic_are_clean() {
+    // The documented v1+v2 coexistence model: one topic defined at two versions,
+    // each with its own subscriber. A topic-only key would collide the contracts
+    // and misreport; the (topic, version) key sees both as distinct and clean.
+    let d = defs(&[("t", 1), ("t", 2)]);
+    let s = vec![sub("c.t.v1", "t", 1, "p"), sub("c.t.v2", "t", 2, "p")];
+    let v = version_findings(&d, &s);
+    assert!(v.is_empty(), "{v:?}");
+}
+
+#[test]
+fn subscribing_a_version_a_topic_does_not_define_is_drift_not_undefined() {
+    // A v2 sub against a v1-only contract: the topic IS defined, just not at v2,
+    // so this is a version-drift finding, distinct from an UNDEFINED topic.
+    let d = defs(&[("t", 1)]);
+    let s = vec![sub("c.t.v2", "t", 2, "p")];
+    let v = version_findings(&d, &s);
+    assert_eq!(v.len(), 1, "{v:?}");
+    assert!(v[0].contains("v2") && v[0].contains("v1"), "{v:?}");
+    assert!(!v[0].contains("UNDEFINED"), "{v:?}");
 }
 
 #[test]
@@ -119,24 +147,45 @@ fn no_inprocess_subscriber_is_clean() {
     assert!(inprocess_defined(&d, &topics(&[]), &[]).is_empty());
 }
 
+#[test]
+fn inprocess_contracts_pass_flags_matching_topic_version() {
+    // The tuple-aware pass over `on()` registrations: only the exact defined
+    // (topic, version) subscribed in-process is a violation. A different version
+    // of the same topic in-process is NOT this contract's problem.
+    let d = defs(&[("a", 2)]);
+    assert_eq!(
+        inprocess_defined_contracts(&d, &contracts(&[("a", 2)]), &[]),
+        vec!["a".to_string()]
+    );
+    assert!(inprocess_defined_contracts(&d, &contracts(&[("a", 1)]), &[]).is_empty());
+    assert!(inprocess_defined_contracts(&d, &contracts(&[("a", 2)]), &["a"]).is_empty());
+}
+
 // --- Check 5: unsubscribed (advisory) ----------------------------------------
 
 #[test]
 fn all_subscribed_yields_no_unsubscribed() {
     let d = defs(&[("a", 1), ("b", 1)]);
-    assert!(unsubscribed(&d, &topics(&["a", "b", "extra"]), &[]).is_empty());
+    assert!(unsubscribed(&d, &contracts(&[("a", 1), ("b", 1), ("extra", 1)]), &[]).is_empty());
 }
 
 #[test]
 fn missing_subscriber_is_unsubscribed() {
     let d = defs(&[("a", 1), ("b", 1)]);
-    assert_eq!(unsubscribed(&d, &topics(&["a"]), &[]), vec!["b".to_string()]);
+    assert_eq!(unsubscribed(&d, &contracts(&[("a", 1)]), &[]), vec!["b".to_string()]);
+}
+
+#[test]
+fn unsubscribed_is_version_specific() {
+    // A topic subscribed only at v1 leaves its v2 contract unsubscribed.
+    let d = defs(&[("t", 1), ("t", 2)]);
+    assert_eq!(unsubscribed(&d, &contracts(&[("t", 1)]), &[]), vec!["t".to_string()]);
 }
 
 #[test]
 fn allowlist_suppresses_unsubscribed() {
     let d = defs(&[("a", 1), ("b", 1)]);
-    assert!(unsubscribed(&d, &topics(&["a"]), &["b"]).is_empty());
+    assert!(unsubscribed(&d, &contracts(&[("a", 1)]), &["b"]).is_empty());
 }
 
 // --- The DEFINE set is exactly the six domain contract topics ----------------

@@ -77,6 +77,32 @@ async fn subscribed_topics_reports_in_process_subscriptions() {
 }
 
 #[tokio::test]
+async fn subscribed_contracts_records_topic_and_version_per_on_call() {
+    let bus = Bus::new();
+    let a = define::<u32>("alpha", 1, HistoryPolicy::MinRetention { days: 7 });
+    let a2 = define::<u32>("alpha", 2, HistoryPolicy::MinRetention { days: 7 });
+    let b = define::<u32>("beta", 1, HistoryPolicy::KeepForever);
+    assert!(bus.subscribed_contracts().is_empty());
+    bus.on(&a, |_v| {});
+    bus.on(&a2, |_v| {}); // a coexisting v2 on the same topic — a distinct contract
+    bus.on(&b, |_v| {});
+    // Raw `subscribe` carries no version, so it is NOT recorded here (only in
+    // `subscribed_topics`) — the reason topiccheck keeps both checks.
+    bus.subscribe("gamma".to_string(), |_e| {});
+    let mut got = bus.subscribed_contracts();
+    got.sort();
+    assert_eq!(
+        got,
+        vec![
+            ("alpha".to_string(), 1),
+            ("alpha".to_string(), 2),
+            ("beta".to_string(), 1),
+        ]
+    );
+    settle(&bus).await;
+}
+
+#[tokio::test]
 async fn panicking_handler_does_not_stall_others() {
     let bus = Bus::new();
     let et = def::<u32>("t");

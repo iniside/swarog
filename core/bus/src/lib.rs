@@ -81,6 +81,13 @@ pub struct Bus {
     transport: Option<Arc<dyn Transport>>,
     /// Durable registrations: the duplicate-id guard + the introspection list.
     durable: Mutex<DurableSubs>,
+    /// Every `(topic, version)` subscribed in-process via the typed [`Bus::on`],
+    /// in registration order. Populated ONLY by `on` (which holds the
+    /// [`EventType`] and thus the contract version) — a raw
+    /// [`Bus::subscribe`] call carries no version and is NOT recorded here (it
+    /// stays visible in [`Bus::subscribed_topics`] instead). Introspection only,
+    /// consumed by `topiccheck`'s version-aware in-process durability check.
+    inprocess_contracts: Mutex<Vec<(String, u32)>>,
 }
 
 impl Bus {
@@ -156,6 +163,14 @@ impl Bus {
         T: Clone + Send + Sync + 'static,
         F: Fn(T) + Send + 'static,
     {
+        // Record the versioned contract in parallel with the topic-only
+        // `subscribe` below: `subscribe` erases the version (it takes a bare
+        // topic string), so the version is captured HERE, the only site that
+        // still holds the `EventType`.
+        self.inprocess_contracts
+            .lock()
+            .unwrap()
+            .push((et.topic().to_string(), et.contract().version));
         self.subscribe(et.topic().to_string(), move |e| {
             match e.data.downcast_ref::<T>() {
                 Some(v) => handler(v.clone()),
@@ -171,6 +186,18 @@ impl Bus {
     /// is unspecified.
     pub fn subscribed_topics(&self) -> Vec<String> {
         self.inner.lock().unwrap().subs.keys().cloned().collect()
+    }
+
+    /// Every `(topic, version)` subscribed in-process via the typed [`Bus::on`],
+    /// in registration order. The version-aware companion to
+    /// [`Bus::subscribed_topics`]: `on` holds the [`EventType`] and so can record
+    /// the contract version, which the bare-string [`Bus::subscribe`] cannot. Used
+    /// by `topiccheck` to catch a defined contract `(topic, version)` subscribed
+    /// in-process (a durability violation) without regressing the topic-level view
+    /// of raw `subscribe` callers. Introspection only; duplicates are kept (one
+    /// entry per `on` call). The order is registration order.
+    pub fn subscribed_contracts(&self) -> Vec<(String, u32)> {
+        self.inprocess_contracts.lock().unwrap().clone()
     }
 
     /// Every durable subscription registered on this bus, as `(id, topic)`
