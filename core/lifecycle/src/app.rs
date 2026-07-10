@@ -5,6 +5,14 @@ use anyhow::Context as _;
 
 use crate::{Context, Module};
 
+/// Session-level advisory-lock key serializing concurrent `App::migrate` runs
+/// across replicas/processes (parallel test binaries, split-process boots) against
+/// one shared DB: idempotent module DDL racing itself can still deadlock on catalog
+/// locks or fail `CREATE OR REPLACE` with "tuple concurrently updated". ASCII
+/// `"lifemigg"` as a positive i64 — distinct from asyncevents' plane migrate lock
+/// (`0x6173_796E_636D_6967`, "asyncmig") so the two planes never contend.
+const MODULE_MIGRATE_LOCK_KEY: i64 = 0x6C69_6665_6D69_6767;
+
 /// Collects modules and drives their lifecycle. Modules run in REGISTRATION order
 /// — there is NO topological sort: full logical isolation makes init order
 /// commutative, and the two-phase [`App::build`] (register → init) guarantees
@@ -64,7 +72,51 @@ impl App {
 
     /// Runs `migrate` on every module, in registration order. Call after
     /// `build`, before `start`.
+    ///
+    /// On a DB-backed process the whole module loop runs under a session-level
+    /// advisory lock ([`MODULE_MIGRATE_LOCK_KEY`]) so concurrent replica/process
+    /// boots serialize their idempotent DDL instead of racing it (catalog-lock
+    /// deadlocks / "tuple concurrently updated"). A DB-less process has no DDL to
+    /// run and loops unlocked.
     pub async fn migrate(&self) -> anyhow::Result<()> {
+        let Some(pool) = self.ctx.db() else {
+            // DB-less process: nothing persists, so there is no DDL to serialize.
+            return self.run_migrations().await;
+        };
+
+        // Hold the lock on a DEDICATED connection for the entire loop. A session
+        // lock (`pg_advisory_lock`, not `_xact`) because the loop spans many
+        // independent per-module transactions, not one. INVARIANT: this connection
+        // is held while every module's `migrate` acquires FURTHER pool connections,
+        // so the pool max MUST be >= 2 during migrate or the process self-deadlocks
+        // (the default pool size is comfortably above 2).
+        let mut lock_conn = pool
+            .acquire()
+            .await
+            .context("acquire module-migrate lock connection")?;
+        sqlx::query("SELECT pg_advisory_lock($1)")
+            .bind(MODULE_MIGRATE_LOCK_KEY)
+            .execute(&mut *lock_conn)
+            .await
+            .context("acquire module-migrate advisory lock")?;
+
+        // Run the loop, capture its Result, then ALWAYS unlock on the same
+        // connection — success and error alike — before propagating.
+        let loop_result = self.run_migrations().await;
+        let unlock_result = sqlx::query("SELECT pg_advisory_unlock($1)")
+            .bind(MODULE_MIGRATE_LOCK_KEY)
+            .execute(&mut *lock_conn)
+            .await;
+        drop(lock_conn); // return the connection to the pool after unlock
+
+        loop_result?;
+        unlock_result.context("release module-migrate advisory lock")?;
+        Ok(())
+    }
+
+    /// The bare module `migrate` loop, in registration order. Wrapped by
+    /// [`App::migrate`] under the advisory lock on a DB-backed process.
+    async fn run_migrations(&self) -> anyhow::Result<()> {
         for m in &self.modules {
             m.migrate(&self.ctx)
                 .await
