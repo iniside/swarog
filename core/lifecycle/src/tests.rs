@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 use sqlx::PgPool;
 
 use super::*;
+use crate::app::MODULE_MIGRATE_LOCK_KEY;
 
 /// Records every lifecycle callback into a shared log so a test can assert
 /// phase ordering.
@@ -231,6 +232,17 @@ async fn test_pool() -> Option<PgPool> {
     }
 }
 
+/// Serializes the tests that take the GLOBAL `MODULE_MIGRATE_LOCK_KEY` advisory
+/// lock on the shared DB — the `763f1d9` choreography lesson (asyncevents' two
+/// writer-lock tests deadlocked when interleaved: a Rust-await <-> DB-lock cycle
+/// Postgres cannot detect). `concurrent_migrate_runs_are_serialized_by_advisory_lock`
+/// and `migrate_times_out_when_lock_is_held` both contend for the same session
+/// lock, so both take this guard first. An async (tokio) mutex, same remedy as
+/// `763f1d9`'s `WRITER_LOCK_CHOREOGRAPHY`: the guard is held across awaits (a
+/// std guard trips `clippy::await_holding_lock`), and it cannot poison — a
+/// prior panicking holder never wedges later tests.
+static LOCK_TESTS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// A probe module whose `migrate` records the `(enter, exit)` window it was active
 /// in — a ~300ms sleep guarantees measurable overlap IF the advisory lock failed
 /// to serialize two concurrent `App::migrate` runs.
@@ -262,6 +274,9 @@ impl Module for MigrateProbe {
 /// first run exits). Skips when Postgres is unreachable, like the other live tests.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn concurrent_migrate_runs_are_serialized_by_advisory_lock() {
+    // See LOCK_TESTS: serializes against migrate_times_out_when_lock_is_held —
+    // both hold the GLOBAL module-migrate advisory lock (the `763f1d9` lesson).
+    let _choreo = LOCK_TESTS.lock().await;
     let Some(pool) = test_pool().await else {
         return;
     };
@@ -291,6 +306,54 @@ async fn concurrent_migrate_runs_are_serialized_by_advisory_lock() {
         "migrate windows overlapped — advisory lock did not serialize them \
          (first_exit={first_exit:?}, second_enter={second_enter:?})"
     );
+}
+
+/// Holding `MODULE_MIGRATE_LOCK_KEY` on a raw connection must make
+/// `migrate_with_lock_timeout` fail loudly, not hang, once its `lock_timeout`
+/// expires — and migrate must succeed normally once the holder releases.
+/// Uses a test-lowered `"200ms"` timeout instead of the real 60s so the test
+/// stays fast. Skips when Postgres is unreachable, like the other live tests.
+#[tokio::test]
+async fn migrate_times_out_when_lock_is_held() {
+    // See LOCK_TESTS: serializes against
+    // concurrent_migrate_runs_are_serialized_by_advisory_lock — both hold the
+    // GLOBAL module-migrate advisory lock (the `763f1d9` lesson).
+    let _choreo = LOCK_TESTS.lock().await;
+    let Some(pool) = test_pool().await else {
+        return;
+    };
+
+    let mut holder = pool
+        .acquire()
+        .await
+        .expect("acquire raw connection to hold the lock");
+    sqlx::query("SELECT pg_advisory_lock($1)")
+        .bind(MODULE_MIGRATE_LOCK_KEY)
+        .execute(&mut *holder)
+        .await
+        .expect("hold module-migrate advisory lock");
+
+    let app = App::new(Arc::new(Context::with_db(pool.clone())));
+    let err = app
+        .migrate_with_lock_timeout("200ms")
+        .await
+        .expect_err("migrate must fail while the lock is held");
+    assert!(
+        format!("{err:#}").contains("not acquired"),
+        "expected the lock-timeout context, got: {err:#}"
+    );
+
+    // Release the holder, then migrate must succeed normally.
+    sqlx::query("SELECT pg_advisory_unlock($1)")
+        .bind(MODULE_MIGRATE_LOCK_KEY)
+        .execute(&mut *holder)
+        .await
+        .expect("release module-migrate advisory lock");
+    drop(holder);
+
+    app.migrate_with_lock_timeout("200ms")
+        .await
+        .expect("migrate must succeed once the lock is free");
 }
 
 #[tokio::test]

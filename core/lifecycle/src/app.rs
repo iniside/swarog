@@ -18,7 +18,18 @@ const DEFAULT_STOP_GRACE: Duration = Duration::from_millis(5000);
 /// locks or fail `CREATE OR REPLACE` with "tuple concurrently updated". ASCII
 /// `"lifemigg"` as a positive i64 — distinct from asyncevents' plane migrate lock
 /// (`0x6173_796E_636D_6967`, "asyncmig") so the two planes never contend.
-const MODULE_MIGRATE_LOCK_KEY: i64 = 0x6C69_6665_6D69_6767;
+pub(crate) const MODULE_MIGRATE_LOCK_KEY: i64 = 0x6C69_6665_6D69_6767;
+
+/// Bound on how long [`App::migrate`] waits to acquire [`MODULE_MIGRATE_LOCK_KEY`]
+/// before giving up loudly, via `SET lock_timeout` on the dedicated lock
+/// connection (SQLSTATE `55P03` on expiry). `lock_timeout`, not
+/// `statement_timeout`: both would cancel a blocked `pg_advisory_lock`, but
+/// `lock_timeout` scopes the abort to lock waits only — `statement_timeout`
+/// would also bound every later statement on the connection, which is broader
+/// than needed. 60s: real contention is another replica actively migrating
+/// (seconds); only a stuck holder exceeds a minute, and failing loudly beats a
+/// silent hang given `/readyz` isn't serving yet at this phase.
+pub(crate) const MODULE_MIGRATE_LOCK_TIMEOUT: &str = "60s";
 
 /// Collects modules and drives their lifecycle. Modules run in REGISTRATION order
 /// — there is NO topological sort: full logical isolation makes init order
@@ -99,6 +110,16 @@ impl App {
     /// deadlocks / "tuple concurrently updated"). A DB-less process has no DDL to
     /// run and loops unlocked.
     pub async fn migrate(&self) -> anyhow::Result<()> {
+        self.migrate_with_lock_timeout(MODULE_MIGRATE_LOCK_TIMEOUT)
+            .await
+    }
+
+    /// [`App::migrate`]'s body, parameterized on the `lock_timeout` GUC value so
+    /// tests can wait milliseconds instead of [`MODULE_MIGRATE_LOCK_TIMEOUT`]'s
+    /// real 60s. `t` is a trusted crate-internal/test string, never
+    /// user/network input — it is spliced into the `SET` statement via `format!`
+    /// because `SET` cannot take a bind parameter.
+    pub(crate) async fn migrate_with_lock_timeout(&self, t: &str) -> anyhow::Result<()> {
         let Some(pool) = self.ctx.db() else {
             // DB-less process: nothing persists, so there is no DDL to serialize.
             return self.run_migrations().await;
@@ -114,11 +135,42 @@ impl App {
             .acquire()
             .await
             .context("acquire module-migrate lock connection")?;
-        sqlx::query("SELECT pg_advisory_lock($1)")
-            .bind(MODULE_MIGRATE_LOCK_KEY)
+
+        // Bound the upcoming lock wait only — `SET` cannot take a bind parameter,
+        // and `t` is trusted (crate-internal const or test literal), never
+        // external input.
+        sqlx::query(&format!("SET lock_timeout = '{t}'"))
             .execute(&mut *lock_conn)
             .await
-            .context("acquire module-migrate advisory lock")?;
+            .context("set module-migrate lock_timeout")?;
+
+        let lock_result = sqlx::query("SELECT pg_advisory_lock($1)")
+            .bind(MODULE_MIGRATE_LOCK_KEY)
+            .execute(&mut *lock_conn)
+            .await;
+
+        if let Err(e) = lock_result {
+            let timed_out = matches!(
+                &e,
+                sqlx::Error::Database(db) if db.code().as_deref() == Some("55P03")
+            );
+            // RESET before returning: sqlx does not reset session GUCs on
+            // release, and this connection is about to go back to the pool.
+            let _ = sqlx::query("RESET lock_timeout")
+                .execute(&mut *lock_conn)
+                .await;
+            drop(lock_conn);
+            return if timed_out {
+                Err(e).with_context(|| {
+                    format!(
+                        "module-migrate advisory lock not acquired within {t} — \
+                         another process is stuck mid-migrate; see pg_stat_activity"
+                    )
+                })
+            } else {
+                Err(e).context("acquire module-migrate advisory lock")
+            };
+        }
 
         // Run the loop, capture its Result, then ALWAYS unlock on the same
         // connection — success and error alike — before propagating.
@@ -127,10 +179,18 @@ impl App {
             .bind(MODULE_MIGRATE_LOCK_KEY)
             .execute(&mut *lock_conn)
             .await;
-        drop(lock_conn); // return the connection to the pool after unlock
+        // RESET before the connection returns to the pool — sqlx does not reset
+        // session GUCs on release, so without this the 60s (or test) cap would
+        // ride back into the pool and silently apply to later statements on
+        // this connection.
+        let reset_result = sqlx::query("RESET lock_timeout")
+            .execute(&mut *lock_conn)
+            .await;
+        drop(lock_conn); // return the connection to the pool after unlock + reset
 
         loop_result?;
         unlock_result.context("release module-migrate advisory lock")?;
+        reset_result.context("reset module-migrate lock_timeout")?;
         Ok(())
     }
 
