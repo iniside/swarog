@@ -606,19 +606,20 @@ dependencies = [
 name = "checkmodules"
 version = "0.1.0"
 dependencies = [
- "accounts",
- "admin",
- "apikeys",
- "audit",
- "characters",
- "config",
- "gateway",
- "inventory",
- "leaderboard",
+ "accounts-svc",
+ "admin-svc",
+ "apikeys-svc",
+ "audit-svc",
+ "characters-svc",
+ "config-svc",
+ "gateway-svc",
+ "inventory-svc",
+ "leaderboard-svc",
  "lifecycle",
- "match_module",
- "rating",
- "scheduler",
+ "match-svc",
+ "rating-svc",
+ "scheduler-svc",
+ "server",
 ]
 
 [[package]]

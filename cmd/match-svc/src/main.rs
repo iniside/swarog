@@ -17,7 +17,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use lifecycle::Module;
+use lifecycle::ProcessWiring;
 
 /// Reads `env_key`, falling back to `default` when unset or blank — a NUMERIC
 /// `host:port` (Rust's `SocketAddr` needs a literal IP, unlike Go's dialer).
@@ -38,17 +38,9 @@ async fn main() -> anyhow::Result<()> {
 
     // The `rating` stub's `register` provides the remote MmrReader before match's `init`
     // requires it (two-phase Build).
-    let mods: Vec<Box<dyn Module>> = vec![
-        Box::new(metrics::Metrics::new()), // core-infra: mounts GET /metrics + contributes the record layer
-        Box::new(match_module::MatchModule::new()),
-        // `rating` lives in rating-svc: this stub swaps in the edge-backed MmrReader so
-        // match's sync pre-emit read dials rating-svc over mTLS (lazy dial).
-        Box::new(remote::Stub::new(
-            "rating",
-            &env_addr("RATING_EDGE_ADDR", "127.0.0.1:9007"),
-            ratingrpc::remote_factories(),
-        )),
-    ];
+    let wiring =
+        ProcessWiring::new().with_peer("rating", env_addr("RATING_EDGE_ADDR", "127.0.0.1:9007"));
+    let mods = match_svc::modules(&wiring);
 
     // No player front: match-svc serves peers over the internal mTLS edge, not players.
     app::run(app::Config::from_env(), mods, Some(edge_server), None).await

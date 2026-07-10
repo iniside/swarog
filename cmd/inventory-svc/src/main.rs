@@ -22,7 +22,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use lifecycle::Module;
+use lifecycle::ProcessWiring;
 
 /// Reads `env_key`, falling back to `default` when unset or blank — a NUMERIC
 /// `host:port` (Rust's `SocketAddr` needs a literal IP, unlike Go's dialer). The run
@@ -51,22 +51,10 @@ async fn main() -> anyhow::Result<()> {
     // before inventory's `init` requires it (two-phase Build). The `config` stub also
     // runs a boot-fill snapshot in `start` — config-svc must already be up (the run
     // scripts start it first).
-    let mods: Vec<Box<dyn Module>> = vec![
-        Box::new(metrics::Metrics::new()), // core-infra: mounts GET /metrics + contributes the record layer
-        Box::new(inventory::Inventory::new()),
-        // `remote` is generic (Steps 4–5): this composition root injects each provider's
-        // swap closures explicitly, so `remote` never names `characters`/`config`.
-        Box::new(remote::Stub::new(
-            "characters",
-            &env_addr("CHARACTERS_EDGE_ADDR", "127.0.0.1:9000"),
-            charactersrpc::remote_factories(),
-        )),
-        Box::new(remote::Stub::new(
-            "config",
-            &env_addr("CONFIG_EDGE_ADDR", "127.0.0.1:9002"),
-            configrpc::remote_factories(),
-        )),
-    ];
+    let wiring = ProcessWiring::new()
+        .with_peer("characters", env_addr("CHARACTERS_EDGE_ADDR", "127.0.0.1:9000"))
+        .with_peer("config", env_addr("CONFIG_EDGE_ADDR", "127.0.0.1:9002"));
+    let mods = inventory_svc::modules(&wiring);
 
     // B now SERVES inventory ops on its own edge (`EDGE_ADDR`, default `:9001` in the
     // run scripts) so gateway-svc can dispatch `inventory.*` Remote to it. No player

@@ -46,7 +46,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
 use bus::{AnyTx, Error, Transport, TxHandler};
-use checkmodules::monolith_modules;
+use checkmodules::DeploymentProfile;
 use lifecycle::{Caps, Context};
 use registry::RequireKind;
 
@@ -175,7 +175,11 @@ fn collect_requires() -> anyhow::Result<Collected> {
             r.hits.push((module, kind, key.to_string()));
         }));
 
-    let modules = monolith_modules();
+    let modules: Vec<Box<dyn lifecycle::Module>> = DeploymentProfile::Monolith
+        .processes()
+        .into_iter()
+        .flat_map(|(_process_id, mods)| mods)
+        .collect();
 
     // Manual two-phase loop (NOT App::build) — App::build runs every init in one loop,
     // so the observer could not attribute a require to a module. Phase 1: register.

@@ -14,7 +14,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use lifecycle::Module;
+use lifecycle::ProcessWiring;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -26,10 +26,7 @@ async fn main() -> anyhow::Result<()> {
     let edge_server = Arc::new(Mutex::new(edge::Server::new()));
 
     // No gateway (no ops, no player front).
-    let mods: Vec<Box<dyn Module>> = vec![
-        Box::new(metrics::Metrics::new()), // core-infra: mounts GET /metrics + contributes the record layer
-        Box::new(audit::Audit::new()),
-    ];
+    let mods = audit_svc::modules(&ProcessWiring::new());
 
     // Serves audit.adminData on its own mTLS edge (EDGE_ADDR); no player front — audit
     // is a pure sink, fronted only by a remote admin over the internal edge.

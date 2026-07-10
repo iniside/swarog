@@ -37,6 +37,15 @@ const GATEWAY_CRATE: &str = "gateway";
 /// and the monolith. Every other `cmd/*-svc` serves ops only over the internal edge.
 const FRONT_DOOR_HOSTS: [&str; 2] = ["gateway-svc", "server"];
 
+/// The DERIVED exception to the gateway-crate rule (Step 10): `tools/checkmodules`
+/// builds BOTH deployment profiles by importing the `cmd/gateway-svc`/`cmd/server`
+/// LIBS (each constructs `gateway::Gateway` internally to hand back the real module
+/// list), and `topiccheck`/`requirecheck` build their module set through
+/// `checkmodules`. None of the three ships a process or dispatches an op — they are
+/// the checker path, not a second front door — so they're allowlisted here rather
+/// than by relaxing rule 3 itself.
+const GATEWAY_CHECKER_HOSTS: [&str; 3] = ["checkmodules", "topiccheck", "requirecheck"];
+
 /// Modules sanctioned to ship WITHOUT a `cmd/<name>-svc` process. The fortress rule
 /// (CLAUDE.md constraint 2) says every domain module compiles + boots as its own svc —
 /// currently with NO exceptions: non-shipping demo crates live under `demos/`, not
@@ -174,13 +183,24 @@ fn main() {
     // over the internal mTLS edge, so it must NOT depend on the `gateway` crate. Hosting
     // the FrontDoor in a domain svc duplicates the public front door and drags an accounts
     // stub in solely to feed the bearer verifier (post-port hardening, 2026-07-08).
+    //
+    // Scoped to every package (not just `Kind::Cmd`, Step 10): before Step 10's
+    // per-process libs, `tools/checkmodules` already depended DIRECTLY on `gateway`
+    // (to build its own module vec) and this check never saw it, because it only
+    // scanned `Kind::Cmd` consumers — an unintentional blind spot. Now that
+    // `checkmodules` reaches `gateway` only transitively (through the `cmd/gateway-svc`
+    // / `cmd/server` libs' OWN direct dep, already permitted above), scanning every
+    // package closes that historical gap instead of re-opening a narrower one.
     for pkg in packages {
         let manifest = pkg["manifest_path"].as_str().unwrap_or_default();
-        let Kind::Cmd(cmd) = classify(manifest) else {
-            continue; // only cmd/* binaries are constrained here
-        };
-        if FRONT_DOOR_HOSTS.contains(&cmd.as_str()) {
-            continue; // gateway-svc + server (monolith) are the sanctioned front doors
+        let pkg_name = pkg["name"].as_str().unwrap_or_default();
+        if let Kind::Cmd(cmd) = classify(manifest) {
+            if FRONT_DOOR_HOSTS.contains(&cmd.as_str()) {
+                continue; // gateway-svc + server (monolith) are the sanctioned front doors
+            }
+        }
+        if GATEWAY_CHECKER_HOSTS.contains(&pkg_name) {
+            continue; // the checker path (derived exception, Step 10) — see the const doc
         }
         for dep in pkg["dependencies"].as_array().into_iter().flatten() {
             if dep["kind"].as_str() == Some("dev") {
@@ -188,9 +208,11 @@ fn main() {
             }
             if dep["name"].as_str() == Some(GATEWAY_CRATE) {
                 violations.push(format!(
-                    "cmd/{cmd} depends on `{GATEWAY_CRATE}` — the FrontDoor is hosted ONLY by \
-                     the front processes (cmd/gateway-svc, cmd/server); a domain svc never hosts \
-                     it (serve ops over the internal mTLS edge, gateway-svc dispatches Remote)"
+                    "{pkg_name} depends on `{GATEWAY_CRATE}` — the FrontDoor is hosted ONLY by \
+                     the front processes (cmd/gateway-svc, cmd/server) plus the checker path \
+                     (tools/checkmodules, tools/topiccheck, tools/requirecheck); a domain svc \
+                     never hosts it (serve ops over the internal mTLS edge, gateway-svc \
+                     dispatches Remote)"
                 ));
             }
         }

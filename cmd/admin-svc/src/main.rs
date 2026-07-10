@@ -14,7 +14,7 @@
 //! Peer edge addresses come from `<PROVIDER>_EDGE_ADDR` (defaulting to the split-proof
 //! ports); the shared dev CA (`EDGE_CA_CERT`/`EDGE_CA_KEY`) authenticates the dials.
 
-use lifecycle::Module;
+use lifecycle::ProcessWiring;
 
 /// Reads `env_key`, falling back to `default` when unset or blank (a NUMERIC
 /// `host:port`, e.g. `127.0.0.1:9000` — Rust's `SocketAddr` needs a literal IP).
@@ -25,34 +25,23 @@ fn env_addr(env_key: &str, default: &str) -> String {
         .unwrap_or_else(|| default.to_string())
 }
 
-/// One admin-only stub for `provider`: it applies JUST the admin fan-out factory (not
-/// the provider's full `remote_factories()`), so admin-svc contributes the provider's
-/// REMOTE admin item WITHOUT also becoming front-capable for its typed ops.
-fn admin_stub(provider: &str, env_key: &str, default: &str) -> Box<dyn Module> {
-    Box::new(remote::Stub::new(
-        provider,
-        &env_addr(env_key, default),
-        vec![adminrpc::admin_remote_factory(provider)],
-    ))
-}
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt().init();
 
-    // The admin portal + one admin-only stub per provider. Each stub dials its peer's
-    // edge lazily on the first /admin request that fetches its item.
-    let mods: Vec<Box<dyn Module>> = vec![
-        Box::new(metrics::Metrics::new()), // core-infra: mounts GET /metrics + contributes the record layer
-        Box::new(admin::Admin::new()),
-        admin_stub("characters", "CHARACTERS_EDGE_ADDR", "127.0.0.1:9000"),
-        admin_stub("inventory", "INVENTORY_EDGE_ADDR", "127.0.0.1:9001"),
-        admin_stub("config", "CONFIG_EDGE_ADDR", "127.0.0.1:9002"),
-        admin_stub("accounts", "ACCOUNTS_EDGE_ADDR", "127.0.0.1:9003"),
-        admin_stub("audit", "AUDIT_EDGE_ADDR", "127.0.0.1:9004"),
-        admin_stub("scheduler", "SCHEDULER_EDGE_ADDR", "127.0.0.1:9005"),
-        admin_stub("apikeys", "APIKEYS_EDGE_ADDR", "127.0.0.1:9009"),
-    ];
+    // Peer edge addresses, resolved from env once here (the composition root owns
+    // topology knowledge); `admin_svc::modules` builds the portal + one admin-only
+    // stub per provider from this wiring, dialing each peer's edge lazily on the
+    // first /admin request that fetches its item.
+    let wiring = ProcessWiring::new()
+        .with_peer("characters", env_addr("CHARACTERS_EDGE_ADDR", "127.0.0.1:9000"))
+        .with_peer("inventory", env_addr("INVENTORY_EDGE_ADDR", "127.0.0.1:9001"))
+        .with_peer("config", env_addr("CONFIG_EDGE_ADDR", "127.0.0.1:9002"))
+        .with_peer("accounts", env_addr("ACCOUNTS_EDGE_ADDR", "127.0.0.1:9003"))
+        .with_peer("audit", env_addr("AUDIT_EDGE_ADDR", "127.0.0.1:9004"))
+        .with_peer("scheduler", env_addr("SCHEDULER_EDGE_ADDR", "127.0.0.1:9005"))
+        .with_peer("apikeys", env_addr("APIKEYS_EDGE_ADDR", "127.0.0.1:9009"));
+    let mods = admin_svc::modules(&wiring);
 
     // No DB (owns no schema) and no edge server (it only DIALS peers via the stubs).
     app::run(app::Config::from_env().without_db(), mods, None, None).await

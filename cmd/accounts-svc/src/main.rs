@@ -17,7 +17,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use lifecycle::Module;
+use lifecycle::ProcessWiring;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -28,10 +28,7 @@ async fn main() -> anyhow::Result<()> {
     // contributions onto this server after Build, then `listen`s it.
     let edge_server = Arc::new(Mutex::new(edge::Server::new()));
 
-    let mods: Vec<Box<dyn Module>> = vec![
-        Box::new(metrics::Metrics::new()), // core-infra: mounts GET /metrics + contributes the record layer
-        Box::new(accounts::Accounts::new()),
-    ];
+    let mods = accounts_svc::modules(&ProcessWiring::new());
 
     // Serves accounts.* on its own mTLS edge (EDGE_ADDR); no player front — accounts
     // is fronted by front processes' gateways (HTTP/QUIC), plus its own Epic OAuth routes.

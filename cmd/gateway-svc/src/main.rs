@@ -23,7 +23,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use lifecycle::Module;
+use lifecycle::ProcessWiring;
 
 /// Reads `env_key`, falling back to `default` when unset or blank — generalizes
 /// `characters-svc`'s bespoke `characters_edge_addr()` to any provider's peer
@@ -51,53 +51,25 @@ async fn main() -> anyhow::Result<()> {
     // swap closures (`<name>rpc::remote_factories()`) explicitly, so `remote` names no
     // provider. It reaches the two `<name>rpc` glue crates (sanctioned for `cmd/*`,
     // rule 5) but never the provider IMPL crates.
-    let mods: Vec<Box<dyn Module>> = vec![
-        Box::new(metrics::Metrics::new()), // core-infra: mounts GET /metrics + contributes the record layer
-        // Passthrough origins are resolved HERE (the composition root owns topology),
-        // not read inside the module: `/admin` → admin-svc, `/accounts/epic` → the
-        // Epic web OAuth flow on accounts-svc. A blank default drops the prefix (the
-        // proxy table skips empties), so an unset var leaves that route a 404.
-        Box::new(
-            gateway::Gateway::new()
-                .with_player_edge(player.clone())
-                .with_passthrough("/admin", &env_addr("ADMIN_HTTP_ADDR", ""))
-                .with_passthrough("/accounts/epic", &env_addr("ACCOUNTS_HTTP_ADDR", "")),
-        ),
-        Box::new(remote::Stub::new(
-            "characters",
-            &env_addr("CHARACTERS_EDGE_ADDR", "127.0.0.1:9000"),
-            charactersrpc::remote_factories(),
-        )),
-        Box::new(remote::Stub::new(
-            "inventory",
-            &env_addr("INVENTORY_EDGE_ADDR", "127.0.0.1:9001"),
-            inventoryrpc::remote_factories(),
-        )),
-        Box::new(remote::Stub::new(
-            "accounts",
-            &env_addr("ACCOUNTS_EDGE_ADDR", "127.0.0.1:9003"),
-            accountsrpc::remote_factories(),
-        )),
-        Box::new(remote::Stub::new(
-            "apikeys",
-            &env_addr("APIKEYS_EDGE_ADDR", "127.0.0.1:9009"),
-            apikeysrpc::remote_factories(),
-        )),
+    //
+    // Passthrough origins are resolved HERE (the composition root owns topology), not
+    // read inside the module: `/admin` → admin-svc, `/accounts/epic` → the Epic web
+    // OAuth flow on accounts-svc. A blank default drops the prefix (the proxy table
+    // skips empties), so an unset var leaves that route a 404.
+    let wiring = ProcessWiring::new()
+        .with_peer("characters", env_addr("CHARACTERS_EDGE_ADDR", "127.0.0.1:9000"))
+        .with_peer("inventory", env_addr("INVENTORY_EDGE_ADDR", "127.0.0.1:9001"))
+        .with_peer("accounts", env_addr("ACCOUNTS_EDGE_ADDR", "127.0.0.1:9003"))
+        .with_peer("apikeys", env_addr("APIKEYS_EDGE_ADDR", "127.0.0.1:9009"))
         // Step 10: match + leaderboard front-door routing. Their `remote_factories`
         // contribute only `route_bindings` (no provide), so the front routes
         // `POST /match/report` -> match-svc (:9006) and `GET /leaderboard` ->
         // leaderboard-svc (:9008) Remote over the mTLS edge.
-        Box::new(remote::Stub::new(
-            "match",
-            &env_addr("MATCH_EDGE_ADDR", "127.0.0.1:9006"),
-            matchrpc::remote_factories(),
-        )),
-        Box::new(remote::Stub::new(
-            "leaderboard",
-            &env_addr("LEADERBOARD_EDGE_ADDR", "127.0.0.1:9008"),
-            leaderboardrpc::remote_factories(),
-        )),
-    ];
+        .with_peer("match", env_addr("MATCH_EDGE_ADDR", "127.0.0.1:9006"))
+        .with_peer("leaderboard", env_addr("LEADERBOARD_EDGE_ADDR", "127.0.0.1:9008"))
+        .with_passthrough("/admin", env_addr("ADMIN_HTTP_ADDR", ""))
+        .with_passthrough("/accounts/epic", env_addr("ACCOUNTS_HTTP_ADDR", ""));
+    let mods = gateway_svc::modules(&wiring, Some(player.clone()));
 
     // No edge server: this process serves no provider over the internal mTLS edge, it
     // only DIALS peers (via the stubs). `without_db`: a pure-transport process owns no

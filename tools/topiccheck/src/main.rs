@@ -57,7 +57,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
 use bus::{AnyTx, Error, EventContract, SubscriptionSpec, Transport, TxHandler};
-use checkmodules::monolith_modules;
+use checkmodules::DeploymentProfile;
 use lifecycle::{App, Context};
 
 /// Dev-default DSN (mirrors CLAUDE.md). Only ever used to build a LAZY pool that
@@ -218,8 +218,10 @@ fn collect_subscriptions() -> anyhow::Result<BTreeMap<String, BTreeSet<String>>>
     ));
 
     let mut app = App::new(ctx.clone());
-    for m in monolith_modules() {
-        app.add(m);
+    for (_process_id, mods) in DeploymentProfile::Monolith.processes() {
+        for m in mods {
+            app.add(m);
+        }
     }
     app.build()
         .map_err(|e| anyhow::anyhow!("topiccheck: lifecycle build failed: {e:#}"))?;

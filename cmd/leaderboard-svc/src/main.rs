@@ -14,7 +14,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use lifecycle::Module;
+use lifecycle::ProcessWiring;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -24,10 +24,7 @@ async fn main() -> anyhow::Result<()> {
     // `init`, `app::run` applies + `listen`s it.
     let edge_server = Arc::new(Mutex::new(edge::Server::new()));
 
-    let mods: Vec<Box<dyn Module>> = vec![
-        Box::new(metrics::Metrics::new()), // core-infra: mounts GET /metrics + contributes the record layer
-        Box::new(leaderboard::LeaderboardModule::new()),
-    ];
+    let mods = leaderboard_svc::modules(&ProcessWiring::new());
 
     // No player front: leaderboard-svc is fronted by gateway-svc, never directly by
     // players.

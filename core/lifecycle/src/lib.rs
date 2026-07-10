@@ -6,10 +6,12 @@
 mod app;
 mod context;
 mod module;
+mod wiring;
 
 pub use app::App;
 pub use context::Context;
 pub use module::{Caps, Module};
+pub use wiring::ProcessWiring;
 
 #[cfg(test)]
 mod tests;

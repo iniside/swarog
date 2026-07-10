@@ -5,13 +5,17 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
-# checkmodules (Step 3, abstraction-leak closures): single-sources the monolith
-# module set that both `topiccheck` and `requirecheck` build to observe real
-# subscribe/require call sites. Before this crate, the identical 12-entry vec lived
-# in both tools' main.rs; a 13th module added to `cmd/server` but missed in either
-# copy would silently drop out of that harness's coverage. It is a tool (not a
-# module), so it may depend on every module impl — archcheck classifies `tools/` as
-# Other (unconstrained).
+# checkmodules (Step 3, abstraction-leak closures; per-process libs, Step 10):
+# single-sources the module sets that `topiccheck` and `requirecheck` build to
+# observe real subscribe/require call sites. It no longer builds module vecs
+# itself — it imports the `cmd/*` composition-root LIBS (each exports
+# `modules(&ProcessWiring, …)`, the exact list its `main.rs` boots) and exposes
+# `DeploymentProfile::{Monolith, Split}` over them, so a module added to any
+# `cmd/*` lib can't silently miss either harness's coverage. It is a tool (not a
+# module), so it may depend on every `cmd/*` lib — archcheck classifies `tools/`
+# as Other (unconstrained), with a derived exception for the `gateway` crate this
+# transitively reaches through `cmd/gateway-svc`/`cmd/server` (see archcheck's
+# `GATEWAY_CHECKER_HOSTS`).
 [lib]
 name = "checkmodules"
 path = "src/lib.rs"
@@ -19,15 +23,16 @@ path = "src/lib.rs"
 [dependencies]
 lifecycle = { workspace = true }
 
-config = { workspace = true }
-characters = { workspace = true }
-inventory = { workspace = true }
-accounts = { workspace = true }
-admin = { workspace = true }
-audit = { workspace = true }
-scheduler = { workspace = true }
-rating = { workspace = true }
-match_module = { workspace = true }
-leaderboard = { workspace = true }
-apikeys = { workspace = true }
-gateway = { workspace = true }
+server = { workspace = true }
+gateway-svc = { workspace = true }
+characters-svc = { workspace = true }
+inventory-svc = { workspace = true }
+config-svc = { workspace = true }
+apikeys-svc = { workspace = true }
+accounts-svc = { workspace = true }
+admin-svc = { workspace = true }
+audit-svc = { workspace = true }
+scheduler-svc = { workspace = true }
+match-svc = { workspace = true }
+rating-svc = { workspace = true }
+leaderboard-svc = { workspace = true }

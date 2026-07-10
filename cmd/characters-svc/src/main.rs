@@ -14,7 +14,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use lifecycle::Module;
+use lifecycle::ProcessWiring;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -29,10 +29,7 @@ async fn main() -> anyhow::Result<()> {
 
     // No accounts stub: without a gateway there is no bearer verifier to feed, so this
     // process never dials accounts-svc.
-    let mods: Vec<Box<dyn Module>> = vec![
-        Box::new(metrics::Metrics::new()), // core-infra: mounts GET /metrics + contributes the record layer
-        Box::new(characters::Characters::new()),
-    ];
+    let mods = characters_svc::modules(&ProcessWiring::new());
 
     // No player front: A serves peers over the internal mutual-TLS edge, not players.
     app::run(app::Config::from_env(), mods, Some(edge_server), None).await

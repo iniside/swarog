@@ -16,7 +16,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use lifecycle::Module;
+use lifecycle::ProcessWiring;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -27,10 +27,7 @@ async fn main() -> anyhow::Result<()> {
     let edge_server = Arc::new(Mutex::new(edge::Server::new()));
 
     // No gateway (no ops, no player front).
-    let mods: Vec<Box<dyn Module>> = vec![
-        Box::new(metrics::Metrics::new()), // core-infra: mounts GET /metrics + contributes the record layer
-        Box::new(rating::Rating::new()),
-    ];
+    let mods = rating_svc::modules(&ProcessWiring::new());
 
     // Serves rating.mmr on its own mTLS edge (EDGE_ADDR); no player front — rating is a
     // wire-only provider + a durable reactor, never fronted directly by players.

@@ -40,9 +40,11 @@ members = [
     # require-observer installed and flags any mandatory `require()` whose provider is
     # not declared in the caller's `requires()` (under-declaration).
     "tools/requirecheck",
-    # Single-sourced monolith module list (Step 3, abstraction-leak closures): the
-    # 12-entry vec both topiccheck and requirecheck build, extracted so a module added
-    # to cmd/server can't silently miss one harness's copy but not the other's.
+    # Single-sourced per-process module lists (Step 3, abstraction-leak closures;
+    # per-process cmd/* libs, Step 10): both topiccheck and requirecheck build their
+    # module set through this crate's `DeploymentProfile`, which imports the cmd/*
+    # composition-root libs directly — a module added to any cmd/* lib can't silently
+    # miss one harness's copy but not the other's.
     "tools/checkmodules",
     # Durable-event-log operator CLI (Step 5): inspects subscriptions/lag and drives the
     # recovery verbs (retry/pause/resume/skip/retire/bump-generation) over the shared
@@ -239,3 +241,22 @@ rating = { path = "modules/rating" }
 leaderboard = { path = "modules/leaderboard" }
 # ---- Demo crates (demos/): non-shipping, importable ONLY by cmd/server (archcheck). ----
 webui = { path = "demos/webui" }
+
+# ---- Composition-root libs (cmd/): each cmd/<name> package now also exports a `lib.rs`
+# (Step 10) carrying `pub fn modules(&ProcessWiring, …) -> Vec<Box<dyn Module>>` — the
+# SAME module list its `main.rs` boots. `tools/checkmodules` is their one non-`cmd/*`
+# consumer, so it can build both the Monolith and Split deployment profiles from the
+# real composition, not a hand-mirrored copy. ----
+server = { path = "cmd/server" }
+gateway-svc = { path = "cmd/gateway-svc" }
+characters-svc = { path = "cmd/characters-svc" }
+inventory-svc = { path = "cmd/inventory-svc" }
+config-svc = { path = "cmd/config-svc" }
+apikeys-svc = { path = "cmd/apikeys-svc" }
+accounts-svc = { path = "cmd/accounts-svc" }
+admin-svc = { path = "cmd/admin-svc" }
+audit-svc = { path = "cmd/audit-svc" }
+scheduler-svc = { path = "cmd/scheduler-svc" }
+match-svc = { path = "cmd/match-svc" }
+rating-svc = { path = "cmd/rating-svc" }
+leaderboard-svc = { path = "cmd/leaderboard-svc" }
