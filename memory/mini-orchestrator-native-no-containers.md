@@ -55,7 +55,14 @@ fallback);
 any-language service (e.g. future Go svc) implements it itself — the orchestrator
 supports nothing per-service; `core/remote` is merely our Rust client.
 `cmd/server` (monolith) satisfies it trivially (no peers to resolve). Its own
-state (manifest, PIDs, ports) lives locally (file/sqlite/in-memory). Open design
+state lives in **SQLite** (decided 2026-07-10; rusqlite `bundled` — embedded,
+no server, cross-platform, keeps the one-binary deploy): runtime state only
+(minted ports, instances/PIDs/versions, deploy generations) — desired state is
+the git manifest, and most runtime state is soft (reconcilable from agent
+reports after master restart, kubelet-style); SQLite persists what live
+processes can't tell you (deploy history, port assignments of dead instances,
+API-mutated desired state). No state replication — master migration = move the
+.db file or rebuild from manifest + reconciliation. Open design
 point: env is read at spawn, so a peer address change = consumer restart (or
 later stub re-resolve). Platform-side pieces still land at existing seams:
 multi-peer round-robin in `core/remote`, drain in `core/edge`/`httpmw`,
