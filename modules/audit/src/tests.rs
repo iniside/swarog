@@ -1,7 +1,7 @@
 //! audit tests. The durable handlers are driven directly against a real sqlx tx (the
 //! same shape the asyncevents plane's `consume` uses — an insert/prune inside a tx that commits),
 //! so they exercise the ledger SQL + tx atomicity without pulling in the transport
-//! internals (asyncevents' own tests cover the inbox dedup). The anti-drift topic-set
+//! internals (asyncevents' own tests cover the delivery-tx checkpointing). The anti-drift topic-set
 //! test needs no DB. Live-Postgres tests SKIP cleanly (early-return) when the local DB
 //! is unreachable, so `cargo test` never hard-fails on a machine without it.
 

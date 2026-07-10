@@ -8,13 +8,14 @@
 //! avoids importing the payload type (and its apidiff coupling), not the edit itself.
 //!
 //! ## One plane: durable (deliberate deviation from Go)
-//! Go split `durableTopics` (outbox plane) from `bestEffortTopics` (plain in-process
+//! Go split `durableTopics` (its push-relay plane) from `bestEffortTopics` (plain in-process
 //! bus), a distinction that assumed audit was CO-HOSTED with the producers. In the
 //! fortress topology every producer lives in its own process, so a plain-`emit`
 //! subscription would never cross the boundary and silently drop. Therefore ALL audited
 //! topics are DURABLE here: audit subscribes with [`bus::Bus::on_tx_raw`] (untyped
 //! durable), and the transport hands the raw JSON and runs the ledger insert inside its
-//! per-`(event_id,"audit")` inbox-dedup tx — exactly-once in BOTH topologies. The
+//! per-`(event_id,"audit")` delivery tx (effect + checkpoint commit together) —
+//! exactly-once in BOTH topologies. The
 //! producers already emit all five durably by their respective steps (characters today;
 //! config Step 5; accounts Step 6; match Step 10 — `match.finished` now has a real
 //! producer: the `match` module emit_tx's it atomic with the `match.matches` insert, and
@@ -108,13 +109,13 @@ fn internal<E: std::fmt::Display>(e: E) -> Error {
 
 // ============================================================================
 // Durable handlers — invoked by messaging inside its per-(event_id,"audit")
-// inbox-dedup tx, so the ledger effect commits atomically with the dedup row.
+// delivery tx, so the ledger effect commits atomically with the checkpoint.
 // ============================================================================
 
 /// Records one durable event to the ledger: the raw event JSON, verbatim, under its
 /// topic, alongside the delivery's `event_id` — a durable cross-reference from the
-/// ledger row back to the inbox dedup key. Effects are exactly-once because the write
-/// commits atomically with the inbox dedup row on the delivery tx (downcast from
+/// ledger row back to the subscription's checkpoint. Effects are exactly-once because the write
+/// commits atomically with the checkpoint on the delivery tx (downcast from
 /// `Delivery` — audit shares the plane's Postgres engine). No payload-type import — the
 /// untyped `on_tx_raw` hands the bytes (Go's `record`).
 struct RecordHandler {
@@ -323,7 +324,7 @@ impl Module for Audit {
     }
 
     /// Only wires up — no I/O (#8). Subscribes each durable topic (raw JSON, inserted on
-    /// the handed inbox-dedup tx), the `scheduler.fired` prune reaction, the local admin
+    /// the handed delivery tx), the `scheduler.fired` prune reaction, the local admin
     /// item, and the `admin.adminData` edge face (topology-blind; applied by `app::run`
     /// iff this process serves an internal edge).
     fn init(&self, ctx: &Context) -> anyhow::Result<()> {
@@ -331,9 +332,9 @@ impl Module for Audit {
         let retention_days = env_int("AUDIT_RETENTION_DAYS", DEFAULT_RETENTION_DAYS);
 
         // Durable plane: the producer emitted via emit_tx; messaging delivers here
-        // through its per-(event_id,"audit") inbox-dedup tx, in BOTH topologies. We
+        // through its per-(event_id,"audit") delivery tx, in BOTH topologies. We
         // subscribe by raw string (no payload-type import) and insert the raw JSON on
-        // the HANDED tx, so the ledger row commits atomically with the dedup row.
+        // the HANDED tx, so the ledger row commits atomically with the checkpoint.
         for (topic, id) in DURABLE_TOPICS.iter().zip(DURABLE_SPEC_IDS) {
             let handler: Arc<dyn TxHandler> = Arc::new(RecordHandler {
                 topic: (*topic).to_string(),
@@ -351,7 +352,7 @@ impl Module for Audit {
         // Retention prune as a REACTION to scheduler.fired on the durable plane. Raw
         // subscribe by the CONTRACT descriptor's topic const (no payload-type import):
         // the handler parses `name` and prunes only for "audit-prune", inside the handed
-        // inbox-dedup tx.
+        // delivery tx.
         let prune: Arc<dyn TxHandler> = Arc::new(PruneHandler { retention_days });
         ctx.bus()
             .on_tx_raw(PRUNE_SUB, schedulerevents::FIRED.topic(), prune);

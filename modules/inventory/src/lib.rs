@@ -146,7 +146,7 @@ impl Owner {
 
 // ============================================================================
 // Store — the SQL layer. Grant/clear have a `&mut PgConnection` variant so the
-// event-driven effect runs INSIDE the messaging inbox-dedup tx; reads use the pool.
+// event-driven effect runs INSIDE the messaging delivery tx; reads use the pool.
 // ============================================================================
 
 struct Store {
@@ -163,7 +163,7 @@ struct OwnerStat {
 
 impl Store {
     /// Grants `qty` of `item_id` to `owner` on the given connection (a tx, so the
-    /// grant + the inbox dedup row commit together). ON CONFLICT ADDS to the existing
+    /// grant + the checkpoint commit together in the delivery tx). ON CONFLICT ADDS to the existing
     /// stack (`quantity = quantity + EXCLUDED.quantity`) — the exact Go math.
     async fn grant_exec(
         &self,
@@ -649,7 +649,7 @@ impl Module for Inventory {
     /// cache Step 8 removed:
     ///   1. resolve `characters` ownership → inject into the shared state,
     ///   2/3. the two DURABLE `on_tx` subscriptions (grant-starter/wipe, on the HANDED
-    ///        conn so the effect is atomic with the inbox dedup row),
+    ///        conn so the effect is atomic with the checkpoint commit in the delivery tx),
     ///   4. resolve `config` (HARD — fail-loud, this is why config is in `requires`);
     ///      `grant_starter` reads it directly, no local cache/subscription needed,
     ///   5/6. contribute the player operations (grant dev-gated) + the local admin item,

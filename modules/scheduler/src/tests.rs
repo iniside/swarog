@@ -85,7 +85,7 @@ impl FakeTransport {
     }
 
     /// How many enqueued rows carry the given schedule name — the fake-transport-backed
-    /// stand-in for the old `outboxCount(db, name)` query.
+    /// stand-in for the old Go event-count-by-name query.
     fn count(&self, name: &str) -> usize {
         self.rows
             .lock()

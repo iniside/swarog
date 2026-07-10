@@ -1,6 +1,6 @@
 //! The SQL layer for the `accounts` schema — pure persistence, no event/bus
 //! knowledge (port of Go's `modules/accounts/store.go`). Write paths that must be
-//! atomic with the `player.registered` outbox row take `&mut PgConnection` so the
+//! atomic with the `player.registered` durable event append take `&mut PgConnection` so the
 //! caller (the service) owns the transaction; reads use the pool.
 
 use base64::Engine as _;
@@ -68,7 +68,7 @@ pub(crate) struct Store {
 impl Store {
     /// Creates a player and its first identity ON THE GIVEN CONNECTION (the caller's
     /// tx), so a failed identity insert rolls back the orphaned player AND the
-    /// caller can ride its `player.registered` outbox row on the same tx. A
+    /// caller can ride its `player.registered` durable event append on the same tx. A
     /// `(provider, subject)` collision is [`StoreError::Taken`].
     pub async fn insert_player_with_identity_tx(
         &self,

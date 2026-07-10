@@ -8,7 +8,7 @@ publish = false
 # The audit impl module (port of Go's modules/audit): an append-only event ledger for
 # GameOps. Owns schema `audit`, touches no other module's tables. It subscribes to the
 # bus GENERICALLY by topic string via `bus::on_tx_raw` (raw JSON, no domain payload-type
-# import — Go's zero-coupling design) and records each event on the HANDED inbox-dedup
+# import — Go's zero-coupling design) and records each event on the HANDED delivery
 # tx (exactly-once). A pure sink: no api crate; `auditrpc` is its OWN glue (re-exports
 # `register_admin` for the admin fan-out edge face).
 [dependencies]

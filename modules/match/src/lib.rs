@@ -49,7 +49,7 @@ fn internal<E: std::fmt::Display>(e: E) -> Error {
 // ============================================================================
 // Service — backs the Match capability (the gateway's in-process invoker + the
 // generated edge face). Holds the store (the domain write), the bus (the atomic
-// outbox emit), and the resolved MmrReader (the sync pre-emit read).
+// durable event append), and the resolved MmrReader (the sync pre-emit read).
 // ============================================================================
 
 pub struct Service {
@@ -67,8 +67,8 @@ impl Service {
             .expect("match.init must resolve the rating MmrReader before report")
     }
 
-    /// Inserts a match row on the given connection (a tx, so the row + its outbox row
-    /// commit together) and returns the generated `id`.
+    /// Inserts a match row on the given connection (a tx, so the row + its durable
+    /// event append commit together) and returns the generated `id`.
     async fn insert_tx(
         &self,
         conn: &mut PgConnection,
@@ -91,7 +91,7 @@ impl Match for Service {
     /// Records that `winner` beat `loser`. The MMR read is SYNCHRONOUS (query rating
     /// right now, for the log line — Go read the winner's MMR; we read both to exercise
     /// the wire, doing nothing material with the values). Then the domain INSERT + the
-    /// `match.finished` outbox row commit in ONE tx: the event is durable iff the match
+    /// `match.finished` durable event append commit in ONE tx: the event is durable iff the match
     /// is. A rating transport failure surfaces as an error (the sync dep is required).
     async fn report(&self, winner: String, loser: String) -> Result<(), Error> {
         let winner_mmr = self.rating().mmr(winner.clone()).await?;

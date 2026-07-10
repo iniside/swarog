@@ -3,7 +3,7 @@
 //! `scheduler`, and on each 1s tick emits `scheduler.fired{name}` for every schedule
 //! whose interval has elapsed. It runs NO job closures — a closure can't cross a process
 //! boundary, which would make the scheduler the one module that couldn't be split out.
-//! Instead it publishes through the same bus → outbox → sink seam every domain module
+//! Instead it publishes through the same bus → shared event log seam every domain module
 //! uses, so a consumer (e.g. audit's prune) reacts in its OWN process and the scheduler
 //! is fully decoupled and independently deployable (see `cmd/scheduler-svc`).
 //!
@@ -172,7 +172,7 @@ async fn fire_locked(conn: &mut PgConnection, bus: &Bus, name: &str) -> anyhow::
         return Ok(()); // not due, or deleted between the scan and here
     };
 
-    // `last_fired` bump + durable outbox write commit together, on the LOCKED connection.
+    // `last_fired` bump + the durable event append commit together, on the LOCKED connection.
     // (Commit happens here, before the unlock back in `fire`.)
     let mut tx = conn.begin().await?;
     sqlx::query("UPDATE scheduler.schedules SET last_fired = now() WHERE name = $1")

@@ -8,7 +8,7 @@
 //! plain-`emit` subscription would never cross the boundary. The plan retires the
 //! best-effort framing with the durable rule: leaderboard subscribes with **`on_tx`**
 //! and runs its `wins+1` upsert INSIDE the handed per-`(event_id,"leaderboard")`
-//! inbox-dedup tx — exactly-once in BOTH topologies. The top-100 read is served as a
+//! delivery tx — exactly-once in BOTH topologies. The top-100 read is served as a
 //! public `#[http]` op (`GET /leaderboard`, unchanged external shape).
 
 use std::sync::{Arc, OnceLock};
@@ -41,8 +41,8 @@ fn internal<E: std::fmt::Display>(e: E) -> Error {
     Error::internal(e.to_string())
 }
 
-/// Records one win for `player` on the given connection (the messaging inbox-dedup tx,
-/// so the tally + the dedup row commit together). ON CONFLICT ADDS to the existing tally
+/// Records one win for `player` on the given connection (the messaging delivery tx,
+/// so the tally + the checkpoint commit together). ON CONFLICT ADDS to the existing tally
 /// — the exact Go upsert.
 async fn record_win(conn: &mut PgConnection, player: &str) -> Result<(), sqlx::Error> {
     sqlx::query(
@@ -145,7 +145,7 @@ impl Module for LeaderboardModule {
 
     /// Only wires up — no I/O (#8). Subscribes `match.finished` on the DURABLE plane
     /// (`on_tx`): the transport runs the `wins+1` upsert inside a per-`(event_id,
-    /// "leaderboard")` inbox-dedup tx (exactly-once, atomic with the dedup row).
+    /// "leaderboard")` delivery tx (exactly-once, atomic with the checkpoint commit).
     /// Contributes the `top_scores` op (so a co-hosted gateway fronts `GET /leaderboard`)
     /// and the generated edge face (so a front door dispatches `leaderboard.topScores`
     /// here over QUIC when this process serves an internal edge).

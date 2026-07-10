@@ -24,7 +24,7 @@ contrib = { workspace = true }
 httpmw = { workspace = true }
 axum = { workspace = true }
 # The HTTP reverse-proxy passthrough (Go's httpproxy): reqwest is the workspace client
-# already used by the outbox relay + accounts; the `stream` feature streams the
+# already used by accounts (Epic OIDC/OAuth); the `stream` feature streams the
 # response body back (`bytes_stream`). The request body streams via `Body::wrap` (axum
 # `Body` is an `http_body::Body`), no extra crate needed.
 reqwest = { workspace = true, features = ["stream"] }

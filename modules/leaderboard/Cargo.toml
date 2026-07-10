@@ -11,7 +11,7 @@ publish = false
 # (upsert wins+1) and serves the top-100 as a public `#[http]` op (GET /leaderboard).
 # PLAN DELTA vs Go: the subscription is DURABLE (`on_tx`, upgraded from Go's plain `On`)
 # so it crosses process boundaries — the "best-effort" framing is retired with the
-# durable rule; the upsert runs INSIDE the handed inbox-dedup tx (exactly-once). An impl
+# durable rule; the upsert runs INSIDE the handed delivery tx (exactly-once). An impl
 # crate — no OTHER module imports it; `leaderboardrpc` is its OWN glue.
 [dependencies]
 bus = { workspace = true }

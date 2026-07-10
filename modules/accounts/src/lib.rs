@@ -166,8 +166,8 @@ impl Service {
         }
     }
 
-    /// Writes the `player.registered` outbox row on the caller's tx — the durable
-    /// rule: the event commits iff the registration does.
+    /// Appends the `player.registered` durable event (`emit_tx`) on the caller's
+    /// tx — the durable rule: the event commits iff the registration does.
     async fn emit_registered_tx(
         &self,
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
@@ -207,7 +207,7 @@ impl accountsapi::Sessions for Service {
 #[async_trait]
 impl accountsapi::Auth for Service {
     /// dev/password self-registration (AuthNone): creates a player + dev identity
-    /// and the `player.registered` outbox row in ONE tx, then mints a session.
+    /// and appends the `player.registered` durable event in ONE tx, then mints a session.
     /// Missing email/password → `Invalid` (400); a duplicate email → `Conflict`
     /// (409) — the same 400/409 Go returned, typed.
     async fn register(

@@ -7,8 +7,8 @@
 //! identity — the trust boundary lives at the gateway/edge seam. Port of Go's
 //! `modules/characters`.
 //!
-//! The core pattern (copied by every later module): the domain write and its outbox
-//! event commit in ONE transaction, via `bus::emit_tx` on the same `&mut *tx` — the
+//! The core pattern (copied by every later module): the domain write and its durable
+//! event append commit in ONE transaction, via `bus::emit_tx` on the same `&mut *tx` — the
 //! event is durable iff the character is. An impl crate: no other module imports it.
 
 use std::sync::{Arc, OnceLock};
@@ -65,7 +65,7 @@ fn internal<E: std::fmt::Display>(e: E) -> Error {
 
 // ============================================================================
 // Store — the SQL layer. Write paths take `&mut PgConnection` so the domain row
-// and its outbox row commit in ONE tx (create/delete); reads use the pool.
+// and its durable event append commit in ONE tx (create/delete); reads use the pool.
 // ============================================================================
 
 struct Store {
@@ -73,8 +73,8 @@ struct Store {
 }
 
 impl Store {
-    /// Inserts a character on the given connection (a tx, so the row + its outbox row
-    /// commit together) and returns it (id/created_at from `INSERT ... RETURNING`).
+    /// Inserts a character on the given connection (a tx, so the row + its durable
+    /// event append commit together) and returns it (id/created_at from `INSERT ... RETURNING`).
     async fn create_tx(
         &self,
         conn: &mut PgConnection,
@@ -166,7 +166,7 @@ impl Store {
 // ============================================================================
 
 /// What other modules get from `require::<dyn Ownership>` / `require::<dyn Player>`.
-/// Holds the store (for the domain writes) and the bus (for the atomic outbox emit).
+/// Holds the store (for the domain writes) and the bus (for the atomic durable event append).
 pub struct Service {
     store: Store,
     bus: Arc<Bus>,
@@ -190,7 +190,7 @@ impl Ownership for Service {
 #[async_trait]
 impl Player for Service {
     /// Adds a character owned by the caller (player_id from `identity`, NEVER an
-    /// argument). The domain INSERT + the `character.created` outbox row commit in
+    /// argument). The domain INSERT + the `character.created` durable event append commit in
     /// ONE tx: the event is durable iff the character is. A missing identity or empty
     /// name is `Status::Invalid`; class defaults to `"novice"`.
     async fn create(&self, identity: Identity, name: String, class: String) -> Result<Character, Error> {
@@ -233,7 +233,7 @@ impl Player for Service {
 
     /// Removes one of the caller's characters. Deleting a non-owned/absent character
     /// is `Status::NotFound` — and emits NO event (the tx is dropped/rolled back).
-    /// Otherwise the DELETE + the `character.deleted` outbox row commit atomically.
+    /// Otherwise the DELETE + the `character.deleted` durable event append commit atomically.
     async fn delete(&self, identity: Identity, character_id: String) -> Result<(), Error> {
         let player_id = identity
             .player_id()
