@@ -101,7 +101,10 @@ module never knows the topology.
    invalidation handle injected at `Context` construction, plane schema migrates
    before any module migrates, planes start after modules start (invalidation
    completes every callback's first refresh or startup fails), delivery halts
-   before any module stops.
+   before any module stops, and BOTH QUIC planes drain in-flight handlers before
+   modules stop (`RunningServer::shutdown`, `EDGE_DRAIN_GRACE_MS` default 5000 —
+   read in `core/app`, never in modules). A failed startup unwinds what started,
+   in reverse, through the same teardown.
 9. Events are typed at the seam: declare with `bus::define`, publish/subscribe via
    `emit_tx`/`on_tx`. `on_tx_raw` (untyped JSON) is for deliberately zero-coupling
    sinks (audit) only.
@@ -254,9 +257,11 @@ starter-grant + DB-verified wipe, config live-reload, audit rows, scheduler
 exactly-once, leaderboard accumulation, 429 rate-limit, api-key policy
 [K1-K5]: 401 no/bad key, 403 client-key on match.report, 202 server-key, remote
 admin page), then re-runs the monolith
-on the same player front for parity. Extend it with a named assertion whenever you
-add a module or cross-process flow. **Never ship a monolith-only feature** — both
-topologies are supported compilation paths.
+on the same player front for parity. **psql is REQUIRED** (the script dies at
+startup without it — DB assertions are mandatory, no HTTP fallbacks) and the SQL
+helper follows `DATABASE_URL`, same as the services. Extend it with a named
+assertion whenever you add a module or cross-process flow. **Never ship a
+monolith-only feature** — both topologies are supported compilation paths.
 
 Smoke test (monolith or through gateway-svc). The dev conveniences are now explicit
 opt-ins (fail-closed defaults), so the monolith needs `APIKEYS_DEV_SEED=1` (dev API
