@@ -62,7 +62,7 @@ fn validate_requires_satisfied_by_remote_stub() {
 
 #[test]
 fn config_defaults_when_env_absent() {
-    let cfg = Config::from_values(None, None, None, None, None);
+    let cfg = Config::from_values(None, None, None, None, None, None);
     assert_eq!(cfg.database_url.as_deref(), Some(DEFAULT_DSN));
     assert_eq!(cfg.listen_addr, ":8080");
     assert_eq!(cfg.edge_addr, ":9000");
@@ -77,12 +77,14 @@ fn config_defaults_when_env_blank() {
         Some("   ".into()),
         Some(" ".into()),
         Some("  ".into()),
+        Some("  ".into()),
     );
     assert_eq!(cfg.database_url.as_deref(), Some(DEFAULT_DSN));
     assert_eq!(cfg.listen_addr, ":8080");
     assert_eq!(cfg.edge_addr, ":9000");
     assert_eq!(cfg.player_edge_addr, ":9100");
     assert_eq!(cfg.edge_drain_grace, std::time::Duration::from_millis(5000));
+    assert_eq!(cfg.http_drain_grace, std::time::Duration::from_millis(5000));
 }
 
 #[test]
@@ -93,6 +95,7 @@ fn config_overrides_from_env() {
         Some(":9001".into()),
         Some(":9101".into()),
         Some("250".into()),
+        Some("750".into()),
     );
     assert_eq!(cfg.database_url.as_deref(), Some("postgres://u:p@db:5432/x"));
     // Bare port gets the leading colon (Go's normalizeAddr).
@@ -100,19 +103,29 @@ fn config_overrides_from_env() {
     assert_eq!(cfg.edge_addr, ":9001");
     assert_eq!(cfg.player_edge_addr, ":9101");
     assert_eq!(cfg.edge_drain_grace, std::time::Duration::from_millis(250));
+    assert_eq!(cfg.http_drain_grace, std::time::Duration::from_millis(750));
 }
 
 #[test]
 fn config_drain_grace_defaults_when_unset_or_unparseable() {
-    let cfg = Config::from_values(None, None, None, None, None);
+    let cfg = Config::from_values(None, None, None, None, None, None);
     assert_eq!(cfg.edge_drain_grace, std::time::Duration::from_millis(5000));
-    let cfg = Config::from_values(None, None, None, None, Some("not-a-number".into()));
+    assert_eq!(cfg.http_drain_grace, std::time::Duration::from_millis(5000));
+    let cfg = Config::from_values(
+        None,
+        None,
+        None,
+        None,
+        Some("not-a-number".into()),
+        Some("not-a-number".into()),
+    );
     assert_eq!(cfg.edge_drain_grace, std::time::Duration::from_millis(5000));
+    assert_eq!(cfg.http_drain_grace, std::time::Duration::from_millis(5000));
 }
 
 #[test]
 fn config_accepts_colon_port_form() {
-    let cfg = Config::from_values(None, Some(":8081".into()), None, None, None);
+    let cfg = Config::from_values(None, Some(":8081".into()), None, None, None, None);
     assert_eq!(cfg.listen_addr, ":8081");
 }
 
@@ -123,6 +136,7 @@ fn without_db_clears_dsn_and_keeps_the_rest() {
         Some("9090".into()),
         Some(":9001".into()),
         Some(":9101".into()),
+        None,
         None,
     )
     .without_db();
@@ -136,7 +150,7 @@ fn without_db_clears_dsn_and_keeps_the_rest() {
 #[test]
 fn rate_limit_default_off_unless_set() {
     // Module hosts leave it unset (opt-in); the gateway builder turns it always-on.
-    let cfg = Config::from_values(None, None, None, None, None);
+    let cfg = Config::from_values(None, None, None, None, None, None);
     assert_eq!(cfg.rate_limit_default, None);
     let gw = cfg.without_db().with_rate_limit_default(20.0, 40);
     assert_eq!(gw.rate_limit_default, Some((20.0, 40)));

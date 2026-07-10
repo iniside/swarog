@@ -85,8 +85,10 @@ module never knows the topology.
    module migrates, the plane starts after modules start, and delivery halts before
    any module stops. BOTH QUIC planes drain in-flight handlers before modules stop
    (`RunningServer::shutdown`, `EDGE_DRAIN_GRACE_MS` default 5000 — read in
-   `core/app`, never in modules); a failed startup unwinds what started, in
-   reverse, through the same teardown.
+   `core/app`, never in modules), and the HTTP graceful drain is itself
+   time-bounded (`HTTP_DRAIN_GRACE_MS` default 5000 — read in `core/app`, never in
+   modules) so a hung connection can't stall shutdown before teardown begins; a
+   failed startup unwinds what started, in reverse, through the same teardown.
 9. Events are typed at the seam: declare with `bus::define`, publish/subscribe via
    `emit_tx`/`on_tx`. `on_tx_raw` (untyped JSON) is for deliberately zero-coupling
    sinks (audit) only.

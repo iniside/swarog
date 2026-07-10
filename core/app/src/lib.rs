@@ -26,6 +26,7 @@ const DEFAULT_LISTEN_ADDR: &str = ":8080";
 const DEFAULT_EDGE_ADDR: &str = ":9000";
 const DEFAULT_PLAYER_EDGE_ADDR: &str = ":9100";
 const DEFAULT_EDGE_DRAIN_GRACE_MS: u64 = 5000;
+const DEFAULT_HTTP_DRAIN_GRACE_MS: u64 = 5000;
 
 /// The process-level configuration [`run`] needs. Deliberately tiny: everything
 /// module-specific (event subscribers, peer edge addrs, admin URLs, …) is read by
@@ -57,6 +58,11 @@ pub struct Config {
     /// aborting it (`EDGE_DRAIN_GRACE_MS`, default 5000ms). A process/topology knob
     /// read HERE, never by a module.
     pub edge_drain_grace: std::time::Duration,
+    /// How long, once the shutdown signal fires, the HTTP graceful drain gets to
+    /// finish before `run` abandons in-flight connections and proceeds to ordered
+    /// teardown (`HTTP_DRAIN_GRACE_MS`, default 5000ms). A process/topology knob read
+    /// HERE, never by a module.
+    pub http_drain_grace: std::time::Duration,
 }
 
 impl Config {
@@ -71,6 +77,7 @@ impl Config {
             std::env::var("EDGE_ADDR").ok(),
             std::env::var("PLAYER_EDGE_ADDR").ok(),
             std::env::var("EDGE_DRAIN_GRACE_MS").ok(),
+            std::env::var("HTTP_DRAIN_GRACE_MS").ok(),
         )
     }
 
@@ -102,6 +109,7 @@ impl Config {
         edge: Option<String>,
         player_edge: Option<String>,
         drain_grace_ms: Option<String>,
+        http_drain_grace_ms: Option<String>,
     ) -> Config {
         let database_url = match dsn {
             Some(v) if !v.trim().is_empty() => v,
@@ -122,6 +130,12 @@ impl Config {
             .filter(|v| !v.is_empty())
             .and_then(|v| v.parse::<u64>().ok())
             .unwrap_or(DEFAULT_EDGE_DRAIN_GRACE_MS);
+        let http_drain_grace_ms = http_drain_grace_ms
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(DEFAULT_HTTP_DRAIN_GRACE_MS);
         Config {
             database_url: Some(database_url),
             listen_addr: normalize_addr(port.as_deref().unwrap_or_default()),
@@ -129,6 +143,7 @@ impl Config {
             player_edge_addr,
             rate_limit_default: None,
             edge_drain_grace: std::time::Duration::from_millis(edge_drain_grace_ms),
+            http_drain_grace: std::time::Duration::from_millis(http_drain_grace_ms),
         }
     }
 }
@@ -518,17 +533,52 @@ pub async fn run(
             .with_context(|| format!("bind http {bind}"))?;
         tracing::info!(addr = %bind, "listening");
 
-        // 9. `with_graceful_shutdown` returns once SIGINT fires AND in-flight HTTP has
-        //    drained — so the await below IS "stop accepting HTTP". Serve WITH connection
-        //    info so the gateway's passthrough can set `X-Forwarded-For` (and Step 13's
-        //    rate limiter can key per client IP); handlers that don't need it ignore it.
-        axum::serve(
+        // 9. `with_graceful_shutdown` returns once the shutdown signal fires AND in-flight
+        //    HTTP has drained — so the await below IS "stop accepting HTTP". Serve WITH
+        //    connection info so the gateway's passthrough can set `X-Forwarded-For` (and
+        //    Step 13's rate limiter can key per client IP); handlers that don't need it
+        //    ignore it.
+        //
+        //    The signal fans out over a `watch` (NOT a `Notify`): two consumers wait on it
+        //    — the graceful-shutdown future AND the drain-grace timer below — and it can
+        //    fire before either starts awaiting. `watch` is level-triggered and
+        //    multi-receiver, so a signal that flipped `true` early is still observed by a
+        //    receiver that only starts `wait_for` afterwards. A `Notify` would lose the
+        //    wake-up (at most one stored permit, `notify_waiters` no-ops with no waiter).
+        let (sig_tx, sig_rx) = tokio::sync::watch::channel(false);
+        tokio::spawn(async move {
+            shutdown_signal().await;
+            let _ = sig_tx.send(true);
+        });
+        let graceful_rx = sig_rx.clone();
+        let serve_fut = axum::serve(
             listener,
             router.into_make_service_with_connect_info::<SocketAddr>(),
         )
-        .with_graceful_shutdown(shutdown_signal())
-        .await
-        .context("http serve")
+        .with_graceful_shutdown(async move {
+            // `wait_for(|v| *v)` returns immediately if the signal already flipped, else
+            // awaits the flip — covering the fire-before-serve-starts race either way.
+            let mut rx = graceful_rx;
+            let _ = rx.wait_for(|v| *v).await;
+        });
+
+        // The HTTP drain is time-bounded: once the signal fires, `with_graceful_shutdown`
+        // gets `http_drain_grace` to finish draining in-flight connections. A hung
+        // connection can no longer stall shutdown forever before the (already time-bounded)
+        // QUIC drain and module stop begin — the timeout arm abandons the drain and lets
+        // `ordered_teardown` proceed. The timer only STARTS after the signal, so normal
+        // serving is unaffected.
+        tokio::select! {
+            r = serve_fut => r.context("http serve"),
+            _ = async {
+                let mut rx = sig_rx;
+                let _ = rx.wait_for(|v| *v).await;
+                tokio::time::sleep(cfg.http_drain_grace).await;
+            } => {
+                tracing::warn!("http drain grace expired; abandoning in-flight connections");
+                Ok(())
+            }
+        }
     }
     .await;
 
