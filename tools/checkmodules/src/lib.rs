@@ -70,3 +70,6 @@ impl DeploymentProfile {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

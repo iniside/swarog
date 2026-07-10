@@ -99,6 +99,21 @@ public_api_crates() {
     done
 }
 
+# fortress_crates -- the fortress stage's build scope, DERIVED from the filesystem
+# (twin of public_api_crates): the `name = "..."` of every cmd/*-svc/Cargo.toml, plus
+# the monolith `server`. A new svc crate joins the fortress build automatically; the
+# module-set-membership drift itself is guarded separately by
+# checkmodules::split_fleet_matches_cmd_dirs (tools/checkmodules).
+fortress_crates() {
+    local f name
+    echo "server"
+    for f in cmd/*-svc/Cargo.toml; do
+        [ -f "$f" ] || continue
+        name="$(sed -n 's/^name = "\(.*\)"/\1/p' "$f" | head -1)"
+        [ -n "$name" ] && echo "$name"
+    done
+}
+
 # --- Result accumulation ------------------------------------------------------
 STAGE_NAMES=()
 STAGE_STATUS=()
@@ -143,7 +158,12 @@ simple_stage() {
 # enforces the dependency law (no module->module / module->foreign-rpc edge, no
 # resurrected Option<edge::Server> under modules/).
 fortress() {
-    cargo build -p server -p characters-svc -p inventory-svc -p gateway-svc -p config-svc -p apikeys-svc -p accounts-svc -p admin-svc -p audit-svc -p scheduler-svc -p match-svc -p rating-svc -p leaderboard-svc \
+    local -a pkg_args=()
+    local crate
+    while IFS= read -r crate; do
+        pkg_args+=(-p "$crate")
+    done < <(fortress_crates)
+    cargo build "${pkg_args[@]}" \
         && cargo run -q -p archcheck \
         && cargo run -q -p requirecheck -- --strict \
         && cargo run -q -p topiccheck -- --durability-strict

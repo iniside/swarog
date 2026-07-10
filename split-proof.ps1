@@ -8,6 +8,11 @@
 # rating-svc = J on :8089 / edge :9007, leaderboard-svc = K on :8090 / edge :9008,
 # apikeys-svc = L on :8091 / edge :9009), NOT
 # the monolith, driving the real player flows over HTTP
+#
+# Port assignments here are manual config (this table); FLEET MEMBERSHIP (the set of
+# cmd/*-svc processes) is the drift-guarded source of truth in
+# tools/checkmodules::split_fleet_matches_cmd_dirs (Step 15) -- add a new svc there
+# before adding it to this script.
 # (through the gateway front-door with a REAL bearer minted by register+login through
 # the front -- Step 6 replaced the dev-<uuid> tokens), the sync authz over
 # QUIC/mTLS, AND the NEW dedicated QUIC player front (Step 8): external players connect

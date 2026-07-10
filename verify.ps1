@@ -59,6 +59,24 @@ function Get-PublicApiCrates {
     $names
 }
 
+# Get-FortressCrates -- the fortress stage's build scope, DERIVED from the filesystem
+# (twin of Get-PublicApiCrates): the `name = "..."` of every cmd/*-svc/Cargo.toml, plus
+# the monolith `server`. A new svc crate joins the fortress build automatically; the
+# module-set-membership drift itself is guarded separately by
+# checkmodules::split_fleet_matches_cmd_dirs (tools/checkmodules).
+function Get-FortressCrates {
+    $names = @('server')
+    $cmdRoot = Join-Path $root 'cmd'
+    Get-ChildItem -Path $cmdRoot -Directory -Filter '*-svc' -ErrorAction SilentlyContinue | Sort-Object Name | ForEach-Object {
+        $toml = Join-Path $_.FullName 'Cargo.toml'
+        if (Test-Path $toml) {
+            $m = Select-String -Path $toml -Pattern '^name = "(.*)"' | Select-Object -First 1
+            if ($m) { $names += $m.Matches[0].Groups[1].Value }
+        }
+    }
+    $names
+}
+
 # RUSTSEC-2023-0071 (rsa 0.9.10, Marvin Attack timing side-channel): a dev-only
 # dependency of modules/accounts (mints RSA-signed test JWTs for the OIDC verifier's
 # fixtures), never linked into a shipped binary. Upstream: "No fixed upgrade is
@@ -105,7 +123,8 @@ function Invoke-SimpleStage {
 function Invoke-FortressStage {
     $log = Join-Path $verifyDir 'fortress.log'
     Write-Host "== fortress ==" -ForegroundColor Cyan
-    & cargo build -p server -p characters-svc -p inventory-svc -p gateway-svc -p config-svc -p apikeys-svc -p accounts-svc -p admin-svc -p audit-svc -p scheduler-svc -p match-svc -p rating-svc -p leaderboard-svc *> $log
+    $pkgArgs = (Get-FortressCrates) | ForEach-Object { '-p', $_ }
+    & cargo build @pkgArgs *> $log
     if ($LASTEXITCODE -eq 0) {
         & cargo run -q -p archcheck *>> $log
     }
