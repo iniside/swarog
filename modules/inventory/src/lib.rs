@@ -13,7 +13,7 @@
 //! to the service with the verified caller identity threaded in — never a
 //! client-supplied one. An impl crate: no other module imports it.
 
-use std::sync::{Arc, OnceLock, RwLock};
+use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
 use charactersapi::Ownership;
@@ -229,22 +229,17 @@ impl Store {
 // every path so they share the same store, ownership dep, and materialized starter.
 // ============================================================================
 
-struct Starter {
-    item: String,
-    qty: i64,
-}
-
 pub struct Inner {
     store: Store,
     /// The `characters` ownership capability backing `list_character`'s authz.
     /// Resolved in `init` (phase 2) — the service is Provided in `register` (phase 1)
     /// BEFORE `require` can run, exactly as Go sets `m.svc.characters` in Init.
     ownership: OnceLock<Arc<dyn Ownership>>,
-    /// The mandatory `config` reader; resolved in `init` (a hard dependency).
+    /// The mandatory `config` reader; resolved in `init` (a hard dependency). Read
+    /// directly on every grant — no local cache: since Step 7 this reader is a
+    /// replica-local `CachedConfig`/`Service` kept fresh by the app-owned broadcast
+    /// invalidation plane, so a second cache here would only add staleness risk.
     cfg: OnceLock<Arc<dyn Config>>,
-    /// The MATERIALIZED starter spec: resolved once lazily (double-checked under the
-    /// RwLock), rebuilt ONLY by `on_config_changed` on a `config.changed` event.
-    starter: RwLock<Option<Starter>>,
 }
 
 impl Inner {
@@ -254,72 +249,22 @@ impl Inner {
             .expect("inventory.init must resolve characters ownership before use")
     }
 
-    /// Resolves the starter spec into `Starter`. Caller holds the write lock. config
-    /// is mandatory, so this always reads the two keys, falling back to the consts.
-    fn load_starter_locked(&self) -> Starter {
-        let cfg = self.cfg.get().expect("inventory.init must resolve config before use");
-        Starter {
-            item: cfg.get_string("inventory", "starter_item", STARTER_ITEM),
-            qty: cfg.get_int("inventory", "starter_qty", STARTER_QTY),
-        }
-    }
-
-    /// The materialized starter item + quantity, lazily loaded on first use under the
-    /// double-checked lock (order-independent — no reliance on config's listener
-    /// having started), then served from cache until `on_config_changed` rebuilds it.
+    /// Reads the starter item + quantity straight off the injected `config` reader.
+    /// No local cache (Step 8): the reader is a replica-local cache already kept
+    /// fresh by the app-owned broadcast invalidation plane, so a second cache here
+    /// would only add a staleness window without buying anything.
     fn starter_spec(&self) -> (String, i64) {
-        {
-            let g = self.starter.read().unwrap();
-            if let Some(s) = g.as_ref() {
-                return (s.item.clone(), s.qty);
-            }
-        }
-        let mut g = self.starter.write().unwrap();
-        if g.is_none() {
-            // double-check: another thread may have loaded it between the locks.
-            *g = Some(self.load_starter_locked());
-        }
-        let s = g.as_ref().unwrap();
-        (s.item.clone(), s.qty)
-    }
-
-    /// Rebuilds the materialized starter spec when a relevant config key changes. The
-    /// ONLY spec-refresh path, so the `config.changed` subscription in `init` is
-    /// load-bearing — without it a running inventory would never see an /admin edit.
-    ///
-    /// The CHANGED key's new value is taken from the event payload (`e.value`, Step 7)
-    /// rather than re-read from the injected `config` reader: that reader is a
-    /// replica-local `CachedConfig` kept fresh by the SEPARATE invalidation plane, and
-    /// this durable delivery can arrive before that refresh lands — so re-reading it
-    /// would race and could materialize a stale spec. The UNCHANGED key stays read from
-    /// the reader (its cached value is authoritative regardless of lag — it did not
-    /// change). A DELETE (`value == None`) falls back to the code default. (Step 8
-    /// deletes this whole cache in favour of a direct read at grant time.)
-    fn on_config_changed(&self, e: configevents::Changed) {
-        if e.namespace != "inventory" || (e.key != "starter_item" && e.key != "starter_qty") {
-            return;
-        }
-        let (item, qty) = {
-            let mut g = self.starter.write().unwrap();
-            let mut s = self.load_starter_locked();
-            match (e.key.as_str(), e.value.as_deref()) {
-                ("starter_item", Some(v)) => s.item = v.to_string(),
-                ("starter_item", None) => s.item = STARTER_ITEM.to_string(),
-                ("starter_qty", Some(v)) => s.qty = v.parse().unwrap_or(STARTER_QTY),
-                ("starter_qty", None) => s.qty = STARTER_QTY,
-                _ => {}
-            }
-            let out = (s.item.clone(), s.qty);
-            *g = Some(s);
-            out
-        };
-        tracing::info!(%item, qty, "inventory starter reloaded from config");
+        let cfg = self.cfg.get().expect("inventory.init must resolve config before use");
+        (
+            cfg.get_string("inventory", "starter_item", STARTER_ITEM),
+            cfg.get_int("inventory", "starter_qty", STARTER_QTY),
+        )
     }
 
     /// Grants a brand-new character its starter item. `conn` is the messaging
     /// transport's per-subscriber inbox-dedup tx (never the pool), so the grant
     /// commits atomically with the `(event_id,"inventory")` dedup row. The item +
-    /// quantity come from the materialized (config-sourced, live-reloaded) spec.
+    /// quantity come from a fresh read of the injected config reader.
     async fn grant_starter(&self, conn: &mut PgConnection, character_id: &str) -> Result<(), bus::Error> {
         let (item, qty) = self.starter_spec();
         self.store
@@ -607,7 +552,6 @@ impl Module for Inventory {
             store: Store { pool },
             ownership: OnceLock::new(),
             cfg: OnceLock::new(),
-            starter: RwLock::new(None),
         });
         self.inner
             .set(inner.clone())
@@ -627,13 +571,14 @@ impl Module for Inventory {
         Ok(())
     }
 
-    /// Only wires up — no I/O (#8). EXACT order mirrors Go's `Init`:
+    /// Only wires up — no I/O (#8). EXACT order mirrors Go's `Init`, minus the config
+    /// cache Step 8 removed:
     ///   1. resolve `characters` ownership → inject into the shared state,
     ///   2/3. the two DURABLE `on_tx` subscriptions (grant-starter/wipe, on the HANDED
     ///        conn so the effect is atomic with the inbox dedup row),
-    ///   4. resolve `config` (HARD — fail-loud, this is why config is in `requires`),
-    ///   5. the SYNC `on(config.changed)` — the only starter-spec refresh path,
-    ///   6/7. contribute the player operations (grant dev-gated) + the local admin item,
+    ///   4. resolve `config` (HARD — fail-loud, this is why config is in `requires`);
+    ///      `grant_starter` reads it directly, no local cache/subscription needed,
+    ///   5/6. contribute the player operations (grant dev-gated) + the local admin item,
     ///   and the generated RPC face to the edge slot (applied by `app::run` iff this
     ///   process serves an internal edge).
     fn init(&self, ctx: &Context) -> anyhow::Result<()> {
@@ -683,39 +628,15 @@ impl Module for Inventory {
 
         // 4. HARD dependency on config (declared in requires()): every binary that
         // hosts inventory also hosts config, so this fails loud at boot rather than
-        // silently degrading to the starter consts.
+        // silently degrading to the starter consts. No local cache/subscription to
+        // keep fresh (Step 8): `grant_starter` reads this reader directly on every
+        // grant, and the reader is itself kept fresh by the app-owned broadcast
+        // invalidation plane — so editing inventory/starter_item flows
+        // config_changed -> the reader's own refresh -> the next grant sees it.
         let cfg = ctx.registry().require::<dyn Config>(&key("config", "reader"));
         let _ = inner.cfg.set(cfg);
 
-        // 5. The DURABLE config.changed subscription — the ONLY path that rebuilds the
-        // materialized starter spec, so editing inventory/starter_item flows
-        // config.changed -> here -> the next grant uses the new item. Durable (`on_tx`,
-        // Step 5) because under the fortress topology config lives in config-svc: the
-        // event crosses the process boundary via the outbox/`POST /events` plane. The
-        // handler owns no domain write (it only rebuilds an in-memory spec by re-reading
-        // the config reader), so it ignores the handed conn. In a split the `config`
-        // Stub's "config-cache" subscriber is registered in phase 1 (before this one),
-        // so the inbound sink refreshes the `CachedConfig` FIRST — this handler then
-        // reads the already-fresh reader.
-        // Slated for removal: this cache-refresh subscription moves to the broadcast
-        // invalidation plane (plan Step 8) — kept functional until then.
-        let watcher = inner.clone();
-        ctx.bus().on_tx(
-            bus::SubscriptionSpec {
-                id: "inventory.config-changed.v1",
-                start: bus::StartPosition::Genesis,
-            },
-            &configevents::CHANGED,
-            move |_delivery, e: configevents::Changed| {
-                let watcher = watcher.clone();
-                Box::pin(async move {
-                    watcher.on_config_changed(e);
-                    Ok(())
-                })
-            },
-        );
-
-        // 6. Player operations: contribute each generated op (route + HTTP↔wire binding
+        // 5. Player operations: contribute each generated op (route + HTTP↔wire binding
         // + in-process invoker) so the gateway fronts GET /inventory/me + GET
         // /inventory/character/{id} (and, dev-gated, POST /inventory/me/grant),
         // authenticates once, and dispatches with the verified player_id in identity.
@@ -736,7 +657,7 @@ impl Module for Inventory {
             ctx.contribute(opsapi::LOCAL_SLOT, op.local);
         }
 
-        // 7. The local admin page (owners list + ?owner= drill-down). The RenderFn is
+        // 6. The local admin page (owners list + ?owner= drill-down). The RenderFn is
         // synchronous but the store reads are async; no admin PORTAL renders this in
         // M1, so the closure bridges via block_in_place (needs the multi-thread runtime
         // the app boots on).
@@ -775,10 +696,9 @@ impl Module for Inventory {
 }
 
 // ============================================================================
-// Tests. The authz-mapping test uses a FAKE Ownership (no characters module); the
-// starter-reload test uses a mutable FAKE Config (no DB). The DB tests target the
-// local Postgres (the test DB) and SKIP cleanly when it is unreachable. In-crate so
-// they can drive the private `Inner`/`Store` directly.
+// Tests. The authz-mapping test uses a FAKE Ownership (no characters module). The DB
+// tests target the local Postgres (the test DB) and SKIP cleanly when it is
+// unreachable. In-crate so they can drive the private `Inner`/`Store` directly.
 // ============================================================================
 #[cfg(test)]
 mod tests;

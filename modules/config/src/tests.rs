@@ -481,3 +481,36 @@ async fn admin_apply_edit_inserts_new_triple() {
 
     cleanup(&pool, &ns).await;
 }
+
+/// Step 8 carry-over: `Module::migrate` seeds `config.changed`'s row in
+/// `asyncevents.history_contracts`. The write trigger emits via the plane-owned
+/// `asyncevents.append_event` SQL function directly, bypassing both Rust seed paths
+/// (native writer, typed-subscription reconcile) every OTHER topic gets seeded
+/// through — without this, retention's conservative "no row = never GC" rule would
+/// keep `config.changed` history forever. `test_pool` applies `SCHEMA_DDL` directly
+/// (no module involved), so this drives the real `Module::migrate` to also exercise
+/// `seed_history_contract`.
+#[tokio::test]
+async fn migrate_seeds_config_changed_history_contract() {
+    let Some(pool) = test_pool().await else { return };
+    let ctx = Context::with_db(pool.clone());
+    let m = Config::new();
+    m.register(&ctx).unwrap();
+    m.migrate(&ctx).await.unwrap();
+
+    let row: Option<(String, i32)> = sqlx::query_as(
+        "SELECT policy, min_retention_days FROM asyncevents.history_contracts \
+         WHERE topic = 'config.changed' AND contract_version = 1",
+    )
+    .fetch_optional(&pool)
+    .await
+    .unwrap();
+    let (policy, days) =
+        row.expect("config.changed history_contracts row must exist after Module::migrate");
+    assert_eq!(policy, "min_retention");
+    assert_eq!(days, 7, "must match configevents::CHANGED's declared HistoryPolicy::MinRetention{{days:7}}");
+
+    // Idempotent: migrating again must not error (ON CONFLICT DO NOTHING + a matching
+    // read-back never drifts against its own contract).
+    m.migrate(&ctx).await.unwrap();
+}

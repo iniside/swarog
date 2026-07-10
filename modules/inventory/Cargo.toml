@@ -25,7 +25,6 @@ inventoryrpc = { workspace = true }
 charactersapi = { workspace = true }
 charactersevents = { workspace = true }
 configapi = { workspace = true }
-configevents = { workspace = true }
 adminapi = { workspace = true }
 sqlx = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
@@ -37,4 +36,9 @@ serde_json = { workspace = true }
 
 [dev-dependencies]
 asyncevents = { workspace = true }
+# The live-reload test drives the REAL config module + invalidation plane end-to-end
+# (a dev-dependency — the fortress rule only fences non-dev module->module edges, the
+# same pattern `modules/match` already uses for `rating`).
+config = { workspace = true }
+invalidation = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }

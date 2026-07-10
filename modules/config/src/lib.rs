@@ -117,6 +117,67 @@ CREATE OR REPLACE TRIGGER settings_notify
 	AFTER INSERT OR UPDATE OR DELETE ON config.settings
 	FOR EACH ROW EXECUTE FUNCTION config.notify_changed();"#;
 
+/// Seeds `config.changed`'s row in `asyncevents.history_contracts` — the retention
+/// GC's per-`(topic, version)` policy source (see `asyncevents::store::ensure_history_contract`,
+/// which every OTHER topic reaches via the native writer / typed-subscription
+/// reconcile paths). `config.changed` is emitted by the SQL trigger calling the
+/// plane-owned `asyncevents.append_event` function directly, bypassing both of those
+/// Rust paths, so nothing else ever seeds this row; without it retention's
+/// conservative "no row = never GC" rule would keep this topic forever.
+///
+/// Deliberately raw SQL, NOT a call to `asyncevents::store::ensure_history_contract`:
+/// archcheck (CLAUDE.md constraint 1) forbids a module from taking a non-dev
+/// dependency on `asyncevents` — it is app-owned infrastructure injected at `Context`
+/// construction, never a module capability. The trigger's own `SCHEMA_DDL` already
+/// reaches this schema the same way, via a bare SQL function call, never a Rust
+/// import; this mirrors that pattern one level up, in the migrate function.
+/// `ON CONFLICT ... DO NOTHING` then a read-back drift check matches
+/// `ensure_history_contract`'s semantics: an existing row with a DIFFERENT policy
+/// fails loudly (a topic's history promise is immutable) rather than being adopted
+/// silently.
+async fn seed_history_contract(pool: &PgPool) -> anyhow::Result<()> {
+    let contract = configevents::CHANGED.contract();
+    let (policy, days): (&str, i32) = match contract.history {
+        bus::HistoryPolicy::MinRetention { days } => {
+            ("min_retention", i32::try_from(days).unwrap_or(i32::MAX))
+        }
+        bus::HistoryPolicy::KeepForever => ("keep_forever", 7),
+    };
+    let version = i32::try_from(contract.version)?;
+
+    sqlx::query(
+        "INSERT INTO asyncevents.history_contracts \
+             (topic, contract_version, policy, min_retention_days) \
+         VALUES ($1, $2, $3, $4) ON CONFLICT (topic, contract_version) DO NOTHING",
+    )
+    .bind(contract.topic)
+    .bind(version)
+    .bind(policy)
+    .bind(days)
+    .execute(pool)
+    .await?;
+
+    let (stored_policy, stored_days): (String, i32) = sqlx::query_as(
+        "SELECT policy, min_retention_days FROM asyncevents.history_contracts \
+         WHERE topic = $1 AND contract_version = $2",
+    )
+    .bind(contract.topic)
+    .bind(version)
+    .fetch_one(pool)
+    .await?;
+
+    let drifted = stored_policy != policy || (policy == "min_retention" && stored_days != days);
+    if drifted {
+        anyhow::bail!(
+            "config: asyncevents.history_contracts for ({}, v{version}) records policy \
+             {stored_policy}/{stored_days}d, but config's code contract declares {policy}/{days}d \
+             — a topic's history policy is immutable",
+            contract.topic
+        );
+    }
+    Ok(())
+}
+
 /// One persisted config row (`updated_at` is intentionally not carried — the getters
 /// and admin render only need the value).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -559,12 +620,20 @@ impl Module for Config {
         Ok(())
     }
 
-    /// Creates this module's own schema. Idempotent.
+    /// Creates this module's own schema, THEN seeds `config.changed`'s row in
+    /// `asyncevents.history_contracts` — the ONLY producer-side seed this topic gets:
+    /// the write trigger emits via the plane-owned `asyncevents.append_event` SQL
+    /// function directly (never the typed `enqueue_tx`/reconcile paths that seed the
+    /// row for every OTHER topic), so without this call retention's conservative GC
+    /// would never collect `config.changed` history. Runs after the plane's own
+    /// migrate (structural in `app::run`, #8), so `asyncevents.history_contracts`
+    /// already exists.
     async fn migrate(&self, ctx: &Context) -> anyhow::Result<()> {
         let pool = ctx
             .db()
             .ok_or_else(|| anyhow::anyhow!("config requires a DB pool"))?;
         sqlx::raw_sql(SCHEMA_DDL).execute(pool).await?;
+        seed_history_contract(pool).await?;
         Ok(())
     }
 
