@@ -96,6 +96,37 @@ fn worker_ctx(pool: &PgPool, entries: Vec<SubEntry>, timeout: Duration) -> Worke
     }
 }
 
+/// A per-call unique `tie_breaker` (nanos + pid derived) so concurrent tests seeding
+/// synthetic events at the same `(generation, producer_xid)` never collide on the
+/// events PK. Positive by construction (sign bit masked off).
+fn unique_tie() -> i64 {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos() as u64;
+    ((nanos ^ ((std::process::id() as u64) << 40)) as i64) & i64::MAX
+}
+
+/// Inserts one synthetic event directly at `(generation=0, producer_xid, tie_breaker)`.
+/// `OVERRIDING SYSTEM VALUE` is required because `tie_breaker` is `GENERATED ALWAYS`;
+/// pinning `generation = 0` (< the seeded `plane_meta.generation` of 1) makes the row
+/// frontier-eligible deterministically, so no `wait_eligible` poll is needed.
+async fn insert_synthetic_event(pool: &PgPool, topic: &str, producer_xid: &str, tie_breaker: i64) {
+    sqlx::query(
+        "INSERT INTO asyncevents.events \
+           (generation, producer_xid, tie_breaker, topic, contract_version, payload) \
+         OVERRIDING SYSTEM VALUE \
+         VALUES (0, $1::xid8, $2, $3, 1, $4::jsonb)",
+    )
+    .bind(producer_xid)
+    .bind(tie_breaker)
+    .bind(topic)
+    .bind(format!(r#"{{"xid":{producer_xid}}}"#))
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
 async fn append_committed(pool: &PgPool, topic: &'static str, payload: &str) {
     let mut tx = pool.begin().await.unwrap();
     store::append(&mut tx, &test_contract(topic), payload.as_bytes())
@@ -355,6 +386,44 @@ async fn poison_backs_off_then_pauses_never_skips() {
 
     // Paused: no more attempts.
     assert_eq!(deliver_one(&ctx, &e).await.unwrap(), Step::Skipped);
+
+    cleanup(&pool, topic, sub_id).await;
+}
+
+/// Regression: the worker's "next eligible event" pick must order by NUMERIC xid8, not
+/// the text alias. Two synthetic events at producer_xid 999 and 1000 (generation 0,
+/// both past the Genesis cursor): numerically 999 < 1000, so 999 delivers first. The
+/// old `producer_xid::text AS producer_xid` + bare `ORDER BY` sorted `'1000' < '999'`
+/// and delivered 1000 first — breaking per-subscription XID-order delivery.
+#[tokio::test]
+async fn next_pick_uses_numeric_xid_order_not_text() {
+    let Some(pool) = test_pool().await else { return };
+    let topic = unique("worker.xidorder");
+    let sub_id = unique("sub.xidorder");
+
+    let calls = Arc::new(AtomicU32::new(0));
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let h: Arc<dyn TxHandler> = Arc::new(TestHandler::ok(calls.clone(), seen.clone()));
+    let e = entry(sub_id, topic, h);
+    let ctx = worker_ctx(&pool, vec![e.clone()], Duration::from_secs(10));
+    catalog::reconcile(&pool, &ctx.subs).await.unwrap();
+
+    // generation 0 ⇒ frontier-eligible vs the seeded plane_meta generation (1),
+    // independent of the live XID counter, so no wait_eligible is needed.
+    let t999 = unique_tie();
+    let t1000 = unique_tie();
+    insert_synthetic_event(&pool, topic, "999", t999).await;
+    insert_synthetic_event(&pool, topic, "1000", t1000).await;
+
+    let step = deliver_one(&ctx, &e).await.unwrap();
+    assert_eq!(step, Step::Delivered, "one event must deliver");
+    let seen = seen.lock().unwrap().clone();
+    assert_eq!(seen.len(), 1, "exactly one delivery per step");
+    // jsonb re-renders with a space after the colon (`{"xid": 999}`).
+    assert!(
+        seen[0].replace(' ', "").contains("\"xid\":999"),
+        "numeric order must deliver producer_xid 999 first, got: {seen:?}"
+    );
 
     cleanup(&pool, topic, sub_id).await;
 }

@@ -98,7 +98,9 @@ pub(crate) async fn deliver_one(ctx: &WorkerCtx, entry: &SubEntry) -> anyhow::Re
     // `pg_backend_pid()` rides along so the timeout arm can terminate this exact
     // backend (a dropped socket alone may go unnoticed mid-statement).
     let sub = sqlx::query(
-        "SELECT cursor_generation, cursor_xid::text AS cursor_xid, cursor_tie, \
+        // alias must NOT equal the column name: a bare ORDER BY prefers the output
+        // alias (text sort) over the xid8 column.
+        "SELECT cursor_generation, cursor_xid::text AS cursor_xid_text, cursor_tie, \
                 consecutive_failures, pg_backend_pid() AS pid \
          FROM asyncevents.subscriptions \
          WHERE subscription_id = $1 AND state = 'active' \
@@ -113,7 +115,7 @@ pub(crate) async fn deliver_one(ctx: &WorkerCtx, entry: &SubEntry) -> anyhow::Re
         return Ok(Step::Skipped);
     };
     let cursor_gen: i64 = sub.get("cursor_generation");
-    let cursor_xid: String = sub.get("cursor_xid");
+    let cursor_xid: String = sub.get("cursor_xid_text");
     let cursor_tie: i64 = sub.get("cursor_tie");
     let failures: i32 = sub.get("consecutive_failures");
     let backend_pid: i32 = sub.get("pid");
@@ -124,8 +126,10 @@ pub(crate) async fn deliver_one(ctx: &WorkerCtx, entry: &SubEntry) -> anyhow::Re
     // older generations are fully eligible.
     let version = i32::try_from(entry.version).unwrap_or(i32::MAX);
     let ev = sqlx::query(
-        "SELECT event_id, generation, producer_xid::text AS producer_xid, tie_breaker, \
-                payload::text AS payload \
+        // alias must NOT equal the column name: a bare ORDER BY prefers the output
+        // alias (text sort) over the xid8 column.
+        "SELECT event_id, generation, producer_xid::text AS producer_xid_text, tie_breaker, \
+                payload::text AS payload_text \
          FROM asyncevents.events \
          WHERE topic = $1 AND contract_version = $2 \
            AND (generation, producer_xid, tie_breaker) > ($3, $4::xid8, $5) \
@@ -147,9 +151,9 @@ pub(crate) async fn deliver_one(ctx: &WorkerCtx, entry: &SubEntry) -> anyhow::Re
     };
     let event_id: String = ev.get("event_id");
     let ev_gen: i64 = ev.get("generation");
-    let ev_xid: String = ev.get("producer_xid");
+    let ev_xid: String = ev.get("producer_xid_text");
     let ev_tie: i64 = ev.get("tie_breaker");
-    let payload: String = ev.get("payload");
+    let payload: String = ev.get("payload_text");
 
     sqlx::query("SAVEPOINT deliver").execute(&mut *conn).await?;
 

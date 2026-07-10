@@ -216,7 +216,9 @@ pub async fn skip(pool: &PgPool, id: &str, reason: &str) -> Result<SkipOutcome> 
     // (current-generation rows gated by the snapshot xmin, older generations fully
     // eligible) — the same selection the worker uses.
     let sub = sqlx::query(
-        "SELECT topic, contract_version, cursor_generation, cursor_xid::text AS cursor_xid, cursor_tie \
+        // alias must NOT equal the column name: a bare ORDER BY prefers the output
+        // alias (text sort) over the xid8 column.
+        "SELECT topic, contract_version, cursor_generation, cursor_xid::text AS cursor_xid_text, cursor_tie \
          FROM asyncevents.subscriptions WHERE subscription_id = $1",
     )
     .bind(id)
@@ -226,11 +228,13 @@ pub async fn skip(pool: &PgPool, id: &str, reason: &str) -> Result<SkipOutcome> 
     let topic: String = sub.get("topic");
     let version: i32 = sub.get("contract_version");
     let cg: i64 = sub.get("cursor_generation");
-    let cx: String = sub.get("cursor_xid");
+    let cx: String = sub.get("cursor_xid_text");
     let ct: i64 = sub.get("cursor_tie");
 
     let ev = sqlx::query(
-        "SELECT event_id, generation, producer_xid::text AS producer_xid, tie_breaker, payload::text AS payload \
+        // alias must NOT equal the column name: a bare ORDER BY prefers the output
+        // alias (text sort) over the xid8 column.
+        "SELECT event_id, generation, producer_xid::text AS producer_xid_text, tie_breaker, payload::text AS payload_text \
          FROM asyncevents.events \
          WHERE topic = $1 AND contract_version = $2 \
            AND (generation, producer_xid, tie_breaker) > ($3, $4::xid8, $5) \
@@ -252,9 +256,9 @@ pub async fn skip(pool: &PgPool, id: &str, reason: &str) -> Result<SkipOutcome> 
     })?;
     let event_id: String = ev.get("event_id");
     let eg: i64 = ev.get("generation");
-    let ex: String = ev.get("producer_xid");
+    let ex: String = ev.get("producer_xid_text");
     let et: i64 = ev.get("tie_breaker");
-    let payload: String = ev.get("payload");
+    let payload: String = ev.get("payload_text");
 
     let note = format!("skipped event {event_id}: {reason}");
     sqlx::query(

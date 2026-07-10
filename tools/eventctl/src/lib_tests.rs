@@ -51,13 +51,47 @@ async fn append_positions(pool: &PgPool, topic: &str, n: usize) -> Vec<(i64, Str
     }
     tx.commit().await.unwrap();
     sqlx::query_as(
-        "SELECT generation, producer_xid::text, tie_breaker FROM asyncevents.events \
+        // alias must NOT equal the column name: a bare ORDER BY prefers the output
+        // alias (text sort) over the xid8 column. Positional read, so the alias name
+        // is irrelevant to decoding.
+        "SELECT generation, producer_xid::text AS producer_xid_text, tie_breaker FROM asyncevents.events \
          WHERE topic = $1 ORDER BY generation, producer_xid, tie_breaker",
     )
     .bind(topic)
     .fetch_all(pool)
     .await
     .unwrap()
+}
+
+/// A per-call unique `tie_breaker` (nanos + pid derived) so concurrent tests seeding
+/// synthetic events at the same `(generation, producer_xid)` never collide on the
+/// events PK. Positive by construction (sign bit masked off).
+fn unique_tie() -> i64 {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos() as u64;
+    ((nanos ^ ((std::process::id() as u64) << 40)) as i64) & i64::MAX
+}
+
+/// Inserts one synthetic event directly at `(generation=0, producer_xid, tie_breaker)`.
+/// `OVERRIDING SYSTEM VALUE` is required because `tie_breaker` is `GENERATED ALWAYS`;
+/// pinning `generation = 0` (< the seeded `plane_meta.generation` of 1) makes the row
+/// frontier-eligible deterministically, so no `wait_eligible` poll is needed.
+async fn insert_synthetic_event(pool: &PgPool, topic: &str, producer_xid: &str, tie_breaker: i64) {
+    sqlx::query(
+        "INSERT INTO asyncevents.events \
+           (generation, producer_xid, tie_breaker, topic, contract_version, payload) \
+         OVERRIDING SYSTEM VALUE \
+         VALUES (0, $1::xid8, $2, $3, 1, $4::jsonb)",
+    )
+    .bind(producer_xid)
+    .bind(tie_breaker)
+    .bind(topic)
+    .bind(format!(r#"{{"xid":{producer_xid}}}"#))
+    .execute(pool)
+    .await
+    .unwrap();
 }
 
 /// Waits until at least `want` events on `topic` are frontier-eligible.
@@ -155,6 +189,40 @@ async fn skip_steps_past_one_failing_event_and_records_reason() {
     // skip never runs away past more than the one failing event on a healthy sub.
     let err = skip(&pool, &id, "again").await.unwrap_err();
     assert!(err.to_string().contains("refusing to skip"), "unexpected: {err}");
+
+    cleanup(&pool, &topic, &id).await;
+}
+
+/// Regression: `skip` must select the failing event by NUMERIC xid8 order, not the
+/// text alias. With two eligible events at producer_xid 999 and 1000 past the cursor,
+/// numeric order makes 999 the next (failing) event, so `skip` advances exactly onto
+/// it. The old `producer_xid::text AS producer_xid` + bare `ORDER BY` picked 1000
+/// (`'1000' < '999'` as text) and skipped the wrong event.
+#[tokio::test]
+async fn skip_selects_failing_event_by_numeric_xid_order() {
+    let Some(pool) = test_pool().await else { return };
+    let topic = unique("evctl.xidorder");
+    let id = unique("sub.xidorder");
+    let t999 = unique_tie();
+    let t1000 = unique_tie();
+    // generation 0 ⇒ frontier-eligible vs plane_meta generation 1, so no wait needed.
+    insert_synthetic_event(&pool, &topic, "999", t999).await;
+    insert_synthetic_event(&pool, &topic, "1000", t1000).await;
+    // Paused with failures ⇒ eligible for skip; Genesis cursor (nothing consumed).
+    insert_sub(&pool, &id, &topic, "paused", 20, (0, "0".to_string(), 0)).await;
+
+    let out = skip(&pool, &id, "unrecoverable").await.unwrap();
+
+    assert_eq!(
+        out.after.cursor,
+        format!("0/999/{t999}"),
+        "skip must advance onto the numerically-next event (999), not 1000"
+    );
+    assert!(
+        out.skipped_payload.replace(' ', "").contains("\"xid\":999"),
+        "payload: {}",
+        out.skipped_payload
+    );
 
     cleanup(&pool, &topic, &id).await;
 }

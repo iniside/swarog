@@ -36,6 +36,45 @@ fn unique(prefix: &str) -> &'static str {
     Box::leak(format!("{prefix}.{}-{}", std::process::id(), nanos).into_boxed_str())
 }
 
+/// A per-call unique `tie_breaker` (nanos + pid derived) so concurrent tests seeding
+/// synthetic events at the same `(generation, producer_xid)` never collide on the
+/// events PK. Positive by construction (sign bit masked off).
+fn unique_tie() -> i64 {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos() as u64;
+    ((nanos ^ ((std::process::id() as u64) << 40)) as i64) & i64::MAX
+}
+
+/// Inserts one synthetic event directly at an explicit `(generation=0, producer_xid,
+/// tie_breaker)` position, backdated `age_days`. `OVERRIDING SYSTEM VALUE` is required
+/// because `tie_breaker` is `GENERATED ALWAYS`. Pinning `generation = 0` (< the seeded
+/// `plane_meta.generation` of 1) makes the row frontier-eligible deterministically,
+/// independent of the live cluster XID counter.
+async fn insert_synthetic_event(
+    pool: &PgPool,
+    topic: &str,
+    producer_xid: &str,
+    tie_breaker: i64,
+    age_days: i64,
+) {
+    sqlx::query(
+        "INSERT INTO asyncevents.events \
+           (generation, producer_xid, tie_breaker, topic, contract_version, payload, created_at) \
+         OVERRIDING SYSTEM VALUE \
+         VALUES (0, $1::xid8, $2, $3, 1, $4::jsonb, now() - make_interval(days => $5))",
+    )
+    .bind(producer_xid)
+    .bind(tie_breaker)
+    .bind(topic)
+    .bind(format!(r#"{{"xid":{producer_xid}}}"#))
+    .bind(age_days as i32)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
 /// Appends `n` events on `topic` (one committed tx) and returns their positions in
 /// log order as `(generation, producer_xid_text, tie_breaker)`.
 async fn append_positions(pool: &PgPool, topic: &'static str, n: usize) -> Vec<(i64, String, i64)> {
@@ -48,7 +87,10 @@ async fn append_positions(pool: &PgPool, topic: &'static str, n: usize) -> Vec<(
     }
     tx.commit().await.unwrap();
     sqlx::query_as(
-        "SELECT generation, producer_xid::text, tie_breaker FROM asyncevents.events \
+        // alias must NOT equal the column name: a bare ORDER BY prefers the output
+        // alias (text sort) over the xid8 column. Positional read, so the alias name
+        // is irrelevant to decoding.
+        "SELECT generation, producer_xid::text AS producer_xid_text, tie_breaker FROM asyncevents.events \
          WHERE topic = $1 ORDER BY generation, producer_xid, tie_breaker",
     )
     .bind(topic)
@@ -266,6 +308,38 @@ async fn topic_without_contract_is_never_deleted() {
     sweep(&pool).await.unwrap();
 
     assert_eq!(count_events(&pool, topic).await, 4, "unknown-policy topic must be kept");
+    cleanup(&pool, topic).await;
+}
+
+/// Regression: the GC floor must order candidate cursors by NUMERIC xid8, not by the
+/// text alias. A paused sub at producer_xid 999 and an active sub at 1000: numerically
+/// 999 < 1000, so the floor is the paused `(0,999,·)` cursor and GC deletes nothing
+/// (both events sit AT a cursor, not below one). The old `cursor_xid::text AS
+/// cursor_xid` + bare `ORDER BY` sorted lexicographically (`'1000' < '999'`), picked
+/// the active 1000 cursor as the floor, and deleted the still-needed 999 event. Asserts
+/// both events survive (buggy floor would leave 1).
+#[tokio::test]
+async fn floor_uses_numeric_xid_order_not_text() {
+    let Some(pool) = test_pool().await else { return };
+    let topic = unique("ret.xidorder");
+    let t999 = unique_tie();
+    let t1000 = unique_tie();
+    // Two synthetic events, generation 0 (frontier-eligible vs plane_meta generation 1),
+    // backdated 40d so the 30d retention bound is cleared and only the floor governs.
+    insert_synthetic_event(&pool, topic, "999", t999, 40).await;
+    insert_synthetic_event(&pool, topic, "1000", t1000, 40).await;
+    insert_contract(&pool, topic, "min_retention", 30).await;
+    // Each cursor points exactly AT its event (cursor tie == the event's tie_breaker).
+    let paused_cursor = (0i64, "999".to_string(), t999);
+    let active_cursor = (0i64, "1000".to_string(), t1000);
+    insert_sub(&pool, unique("sub.paused"), topic, "paused", Some(&paused_cursor)).await;
+    insert_sub(&pool, unique("sub.active"), topic, "active", Some(&active_cursor)).await;
+
+    gc_topic(&pool, topic, 1, 30).await.unwrap();
+
+    // Numeric floor = (0,999,t999): nothing is strictly below it, so both survive.
+    // (Text floor picks (0,1000,·), deletes the below-it 999 event → 1 left.)
+    assert_eq!(count_events(&pool, topic).await, 2, "numeric floor must retain both events");
     cleanup(&pool, topic).await;
 }
 

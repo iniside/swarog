@@ -129,7 +129,9 @@ async fn gc_topic(pool: &PgPool, topic: &str, version: i32, days: i32) -> anyhow
     // Floor = the lexicographically smallest active/paused cursor. Postgres cannot
     // MIN a composite, so ORDER BY the row and take the first.
     let floor = sqlx::query(
-        "SELECT cursor_generation, cursor_xid::text AS cursor_xid, cursor_tie \
+        // alias must NOT equal the column name: a bare ORDER BY prefers the output
+        // alias (text sort) over the xid8 column.
+        "SELECT cursor_generation, cursor_xid::text AS cursor_xid_text, cursor_tie \
          FROM asyncevents.subscriptions \
          WHERE topic = $1 AND contract_version = $2 AND state IN ('active','paused') \
          ORDER BY cursor_generation, cursor_xid, cursor_tie \
@@ -144,7 +146,7 @@ async fn gc_topic(pool: &PgPool, topic: &str, version: i32, days: i32) -> anyhow
         let deleted = match &floor {
             Some(f) => {
                 let fg: i64 = f.get("cursor_generation");
-                let fx: String = f.get("cursor_xid");
+                let fx: String = f.get("cursor_xid_text");
                 let ft: i64 = f.get("cursor_tie");
                 sqlx::query(
                     "DELETE FROM asyncevents.events WHERE ctid IN ( \
