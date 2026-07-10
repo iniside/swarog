@@ -585,3 +585,125 @@ fn grep_asyncevents_sql_excludes_plane_crate_and_tests() {
     assert!(super::grep_asyncevents_sql(&root).is_empty(), "plane + tests exempt");
     let _ = std::fs::remove_dir_all(&root);
 }
+
+// --- Rule 15: a module may not query a FOREIGN module's schema in SQL --------
+
+/// The 10 persisting-module schema names, as `grep_foreign_schema_sql` derives them from
+/// the `modules/` dir scan (admin/gateway own none but still appear as dir names).
+fn schema_set() -> Vec<String> {
+    strings(&[
+        "accounts",
+        "characters",
+        "inventory",
+        "config",
+        "audit",
+        "scheduler",
+        "match",
+        "rating",
+        "leaderboard",
+        "apikeys",
+    ])
+}
+
+#[test]
+fn foreign_schema_after_from_join_into_update_is_flagged() {
+    let s = schema_set();
+    // FROM inventory.items inside a `characters` module file.
+    assert_eq!(
+        super::foreign_schema_sql_refs("SELECT * FROM inventory.items", "characters", &s),
+        vec!["inventory".to_string()]
+    );
+    // INSERT INTO rating.ratings (own = match).
+    assert_eq!(
+        super::foreign_schema_sql_refs(
+            "INSERT INTO rating.ratings (player, mmr) VALUES ($1, $2)",
+            "match",
+            &s
+        ),
+        vec!["rating".to_string()]
+    );
+    // UPDATE config.settings.
+    assert_eq!(
+        super::foreign_schema_sql_refs("UPDATE config.settings SET v = $1", "audit", &s),
+        vec!["config".to_string()]
+    );
+    // EXISTS (SELECT 1 FROM apikeys.keys …) — caught by the inner FROM.
+    assert_eq!(
+        super::foreign_schema_sql_refs(
+            "WHERE EXISTS (SELECT 1 FROM apikeys.keys WHERE key = $1)",
+            "characters",
+            &s
+        ),
+        vec!["apikeys".to_string()]
+    );
+}
+
+#[test]
+fn own_schema_reference_is_clean() {
+    let s = schema_set();
+    // A module querying its OWN schema (`characters.characters`) is fine.
+    assert!(super::foreign_schema_sql_refs(
+        "SELECT id FROM characters.characters WHERE owner = $1",
+        "characters",
+        &s
+    )
+    .is_empty());
+}
+
+#[test]
+fn topic_literal_and_method_id_are_not_sql_refs() {
+    let s = schema_set();
+    // A topic literal passed to append_event has no preceding SQL keyword.
+    assert!(super::foreign_schema_sql_refs(
+        "PERFORM asyncevents.append_event('config.changed', 1, _payload);",
+        "audit",
+        &s
+    )
+    .is_empty());
+    // A method-id policy string ("accounts.login,characters.create") likewise.
+    assert!(super::foreign_schema_sql_refs(
+        "let policy = \"accounts.login,characters.create\";",
+        "apikeys",
+        &s
+    )
+    .is_empty());
+}
+
+#[test]
+fn foreign_schema_split_across_lines_escapes_the_line_scoped_rule() {
+    // DECLARED LIMITATION: the scan is line-scoped. With the keyword on one line and the
+    // schema token on the next, NEITHER line trips — documenting that a multi-line split
+    // escapes this tripwire (drift coverage, not exhaustive).
+    let s = schema_set();
+    assert!(super::foreign_schema_sql_refs("SELECT * FROM", "characters", &s).is_empty());
+    assert!(super::foreign_schema_sql_refs("  inventory.items", "characters", &s).is_empty());
+}
+
+#[test]
+fn grep_foreign_schema_sql_flags_code_and_skips_comments_and_tests() {
+    let root = unique_temp_dir();
+    // Two module dirs so the schema scan sees both `characters` and `inventory`.
+    std::fs::create_dir_all(root.join("modules/characters/src")).unwrap();
+    std::fs::create_dir_all(root.join("modules/inventory/src")).unwrap();
+    std::fs::write(root.join("modules/characters/Cargo.toml"), "[package]\n").unwrap();
+    std::fs::write(root.join("modules/inventory/Cargo.toml"), "[package]\n").unwrap();
+    // A code line querying inventory's schema is a violation; a comment naming it (even
+    // with a topic-shaped token) is not.
+    std::fs::write(
+        root.join("modules/characters/src/lib.rs"),
+        "// match.finished then FROM inventory.items — prose, not code\n\
+         let q = \"SELECT qty FROM inventory.items WHERE owner = $1\";\n",
+    )
+    .unwrap();
+    // A test source may build cross-schema fixtures — excluded.
+    std::fs::write(
+        root.join("modules/characters/src/tests.rs"),
+        "let q = \"DELETE FROM inventory.items\";\n",
+    )
+    .unwrap();
+    let hits = super::grep_foreign_schema_sql(&root);
+    assert_eq!(hits.len(), 1, "{hits:?}");
+    assert!(hits[0].contains("inventory"), "{hits:?}");
+    assert!(hits[0].contains(":2:"), "flags the code line, not the comment: {hits:?}");
+    let _ = std::fs::remove_dir_all(&root);
+}

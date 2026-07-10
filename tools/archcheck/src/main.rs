@@ -338,6 +338,14 @@ fn main() {
         violations.push(line);
     }
 
+    // --- 15: regression tripwire — a module querying a FOREIGN module's schema in
+    // SQL literals. Schema set = the fortress module dir scan; each module reaches
+    // another module's data only via a capability or durable events, never direct
+    // cross-schema SQL. (`asyncevents.` stays with rule 14b; cross-schema FKs with rule 7.)
+    for line in grep_foreign_schema_sql(&root_dir) {
+        violations.push(line);
+    }
+
     // --- 6: every cmd/*-svc + the monolith main lists `metrics` ---------------
     // CLAUDE.md: "every main lists metrics::Metrics::new() for GET /metrics." The
     // durable-events plane is app-owned infrastructure, not a listed module, so there is
@@ -434,7 +442,7 @@ fn main() {
     }
 
     if violations.is_empty() {
-        println!("archcheck: OK — no module→module / module→foreign-rpc edges, single front door (only gateway-svc + server host `gateway`), no Option<edge::Server> in modules/, <name>api/<name>events crates stay transport-free, every cmd/*-svc + server lists `metrics`, no cross-schema FKs in modules/ DDL, no inline test modules in modules/, core/bus stays sqlx-free, no module runtime-deps `asyncevents`, no EVENTS_ env knobs read inside modules/, no retired push-plane tokens (EVENTS_*/\"/events\") in workspace source, no schema-qualified asyncevents.<table> access outside the plane, every modules/<name> boots as cmd/<name>-svc, demos/* imported only by cmd/server");
+        println!("archcheck: OK — no module→module / module→foreign-rpc edges, single front door (only gateway-svc + server host `gateway`), no Option<edge::Server> in modules/, <name>api/<name>events crates stay transport-free, every cmd/*-svc + server lists `metrics`, no cross-schema FKs in modules/ DDL, no inline test modules in modules/, core/bus stays sqlx-free, no module runtime-deps `asyncevents`, no EVENTS_ env knobs read inside modules/, no retired push-plane tokens (EVENTS_*/\"/events\") in workspace source, no schema-qualified asyncevents.<table> access outside the plane, no module queries a foreign module's schema in SQL, every modules/<name> boots as cmd/<name>-svc, demos/* imported only by cmd/server");
         return;
     }
     eprintln!("archcheck: FAIL — {} violation(s):", violations.len());
@@ -939,6 +947,132 @@ fn forbidden_asyncevents_refs(line: &str) -> Vec<String> {
             Some(after[..end].to_string())
         })
         .collect()
+}
+
+/// SQL context keywords that legitimately precede a schema-qualified table name
+/// (`FROM inventory.items`, `INSERT INTO rating.ratings`, …). `DELETE FROM` is listed
+/// explicitly for clarity even though its trailing `FROM` alone already matches.
+const SQL_CONTEXT_KEYWORDS: &[&str] =
+    &["FROM", "JOIN", "INTO", "UPDATE", "DELETE FROM", "TABLE", "EXISTS"];
+
+/// True if `before` (the line text immediately preceding a `<schema>.` token) ends —
+/// ignoring trailing whitespace — with one of [`SQL_CONTEXT_KEYWORDS`]
+/// (case-insensitive), the keyword itself left-token-bounded so `XFROM` never counts as
+/// `FROM`. This is the gate that separates real query text from the false-positive
+/// minefield (topic literals, method-id strings) — neither of those is preceded by a
+/// SQL keyword.
+fn preceded_by_sql_keyword(before: &str) -> bool {
+    let trimmed = before.trim_end();
+    SQL_CONTEXT_KEYWORDS.iter().any(|kw| {
+        let Some(head) = trimmed.len().checked_sub(kw.len()) else {
+            return false;
+        };
+        // `get` (not slicing) so a non-char-boundary head can't panic on UTF-8 text.
+        let Some(tail) = trimmed.get(head..) else {
+            return false;
+        };
+        if !tail.eq_ignore_ascii_case(kw) {
+            return false;
+        }
+        head == 0 || {
+            let prev = trimmed.as_bytes()[head - 1] as char;
+            !(prev.is_alphanumeric() || prev == '_')
+        }
+    })
+}
+
+/// Every FOREIGN-schema SQL reference in `line`: a `<schema>.` token that (a) names a
+/// module OTHER than `own`, (b) starts a fresh identifier (left-boundary checked, so
+/// `myinventory.` never matches), and (c) is immediately preceded — ignoring whitespace —
+/// by a SQL context keyword ([`preceded_by_sql_keyword`]). Returns the offending schema
+/// name(s). Factored out so it is unit-testable without a filesystem walk.
+///
+/// The keyword gate is deliberate: it catches real query text (`FROM inventory.items`,
+/// `INSERT INTO rating.ratings`, `EXISTS (SELECT 1 FROM apikeys.keys)`) while ignoring the
+/// dotted tokens that would otherwise false-positive — topic literals
+/// (`'config.changed'` as an `append_event` arg) and method ids (`"characters.create"`),
+/// none of which are preceded by a SQL keyword.
+///
+/// DECLARED LIMITATION — the scan is LINE-SCOPED: a multi-line SQL string that splits the
+/// keyword from the schema token (`… FROM\n  other.items`) escapes the rule, because the
+/// `FROM` and `other.` live on different lines. No such split exists in the tree today;
+/// this is a drift tripwire, not full coverage (that stays with the deferred DB-role
+/// isolation).
+fn foreign_schema_sql_refs(line: &str, own: &str, schemas: &[String]) -> Vec<String> {
+    let mut hits = Vec::new();
+    for s in schemas {
+        if s == own {
+            continue; // a module may freely query its OWN schema
+        }
+        let marker = format!("{s}.");
+        for i in find_all(line, &marker) {
+            if i > 0 {
+                let prev = line.as_bytes()[i - 1] as char;
+                if prev.is_alphanumeric() || prev == '_' {
+                    continue; // continuation of a longer identifier, not schema-qualified
+                }
+            }
+            if preceded_by_sql_keyword(&line[..i]) {
+                hits.push(s.clone());
+            }
+        }
+    }
+    hits
+}
+
+/// Bans a module querying ANOTHER module's Postgres schema in SQL literals (finding 7,
+/// scoped tripwire). The schema set is the fortress module dir scan ([`crate_dirs`] over
+/// `modules/`); each module (own = its dir name) may name only its OWN schema in a SQL
+/// keyword context. `asyncevents.` stays with [`grep_asyncevents_sql`] and cross-schema
+/// FKs (`REFERENCES`) with [`grep_cross_schema_fk`] — this rule owns the read/write query
+/// surface (FROM/JOIN/INTO/UPDATE/…). Comment lines and test sources are skipped (same
+/// policy as `grep_asyncevents_sql`: tests may build cross-schema fixtures). See
+/// [`foreign_schema_sql_refs`] for the declared line-scope limitation.
+fn grep_foreign_schema_sql(root: &Path) -> Vec<String> {
+    let modules_root = root.join("modules");
+    let schemas = crate_dirs(&modules_root);
+    let mut hits = Vec::new();
+    for own in &schemas {
+        let mut stack = vec![modules_root.join(own).join("src")];
+        while let Some(d) = stack.pop() {
+            let Ok(entries) = std::fs::read_dir(&d) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                    continue;
+                }
+                let rel = workspace_rel(root, &path);
+                if is_test_source(&rel) {
+                    continue; // tests may build cross-schema fixtures
+                }
+                let Ok(text) = std::fs::read_to_string(&path) else {
+                    continue;
+                };
+                for (i, line) in text.lines().enumerate() {
+                    if line.trim_start().starts_with("//") {
+                        continue; // skip comments/doc — code only
+                    }
+                    for schema in foreign_schema_sql_refs(line, own, &schemas) {
+                        hits.push(format!(
+                            "{}:{}: SQL references foreign schema `{schema}.` — module `{own}` \
+                             may query only its OWN schema; a relation to another module is a \
+                             plain id column resolved via capability or durable events \
+                             (CLAUDE.md constraint 10)",
+                            path.display(),
+                            i + 1
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    hits
 }
 
 /// Bans schema-qualified `asyncevents.` table access in workspace source outside the
