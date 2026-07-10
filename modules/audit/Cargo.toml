@@ -40,3 +40,8 @@ accountsevents = { workspace = true }
 configevents = { workspace = true }
 matchevents = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
+# The retention-gate `init` test needs a real (in-memory) `bus::Transport` handle —
+# `on_tx_raw` panics on a transport-less bus — via `asyncevents::testing::transport`,
+# the same helper characters/inventory use for their own `init` integration tests.
+# `subscribe_tx` only appends to an in-memory list (no I/O), so a lazy pool suffices.
+asyncevents = { workspace = true }

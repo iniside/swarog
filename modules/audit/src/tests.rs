@@ -136,6 +136,87 @@ fn scheduler_fired_is_not_a_logged_topic() {
     );
 }
 
+// --- fail-closed retention gate (Audit::init) --------------------------------
+
+/// Serializes the three env-mutating tests below — `AUDIT_RETENTION_DAYS` is
+/// process-global, so they must not race each other (or observe each other's
+/// writes). Same shape as admin's `ENV_LOCK`/`with_admin_env` harness (admin
+/// `tests.rs`).
+static RETENTION_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Runs `f` with `AUDIT_RETENTION_DAYS` set to `val` (`None` = unset), restoring the
+/// prior value afterwards. Serialized so the three gate tests below never interleave
+/// their env writes.
+fn with_retention_env(val: Option<&str>, f: impl FnOnce()) {
+    let _guard = RETENTION_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let prev = std::env::var("AUDIT_RETENTION_DAYS").ok();
+    match val {
+        Some(v) => std::env::set_var("AUDIT_RETENTION_DAYS", v),
+        None => std::env::remove_var("AUDIT_RETENTION_DAYS"),
+    }
+    f();
+    match prev {
+        Some(v) => std::env::set_var("AUDIT_RETENTION_DAYS", v),
+        None => std::env::remove_var("AUDIT_RETENTION_DAYS"),
+    }
+}
+
+/// `AUDIT_RETENTION_DAYS=-1` FAILS startup — a negative retention would delete the
+/// whole ledger on the next prune tick. The bail fires BEFORE `init` ever touches
+/// `self.svc()`, so this needs no `register()` call and no live DB: `PgPool::
+/// connect_lazy` never dials Postgres (it only needs a Tokio context to spawn its
+/// background task, hence `#[tokio::test]`).
+#[tokio::test(flavor = "multi_thread")]
+async fn init_bails_on_negative_retention_days() {
+    with_retention_env(Some("-1"), || {
+        let ctx = Context::with_db(PgPool::connect_lazy(DEFAULT_DSN).unwrap());
+        let err = Audit::new()
+            .init(&ctx)
+            .expect_err("negative AUDIT_RETENTION_DAYS must fail startup");
+        assert!(
+            err.to_string().contains("AUDIT_RETENTION_DAYS"),
+            "bail message should name the offending knob: {err}"
+        );
+    });
+}
+
+/// `AUDIT_RETENTION_DAYS=0` FAILS startup too — a zero retention would also wipe every
+/// row on the next prune tick, not merely truncate history.
+#[tokio::test(flavor = "multi_thread")]
+async fn init_bails_on_zero_retention_days() {
+    with_retention_env(Some("0"), || {
+        let ctx = Context::with_db(PgPool::connect_lazy(DEFAULT_DSN).unwrap());
+        let err = Audit::new()
+            .init(&ctx)
+            .expect_err("zero AUDIT_RETENTION_DAYS must fail startup");
+        assert!(
+            err.to_string().contains("AUDIT_RETENTION_DAYS"),
+            "bail message should name the offending knob: {err}"
+        );
+    });
+}
+
+/// An unset `AUDIT_RETENTION_DAYS` boots normally at the compiled default —
+/// `env_int` falls back silently, so `init` must fully succeed (this test runs
+/// `register` first so `self.svc()` resolves, exercising the real boot order).
+/// `init` also subscribes durable handlers via `ctx.bus().on_tx_raw`, which panics
+/// on a transport-less bus — so this needs `Context::with_db_and_transport` with the
+/// `asyncevents::testing` in-memory transport handle (subscribing is pure
+/// bookkeeping, no I/O, so a lazy pool is enough — no live Postgres needed).
+#[tokio::test(flavor = "multi_thread")]
+async fn init_ok_when_retention_unset() {
+    with_retention_env(None, || {
+        let pool = PgPool::connect_lazy(DEFAULT_DSN).unwrap();
+        let transport = asyncevents::testing::transport(pool.clone());
+        let ctx = Context::with_db_and_transport(pool, transport.handle());
+        let audit = Audit::new();
+        audit.register(&ctx).expect("register");
+        audit
+            .init(&ctx)
+            .expect("unset AUDIT_RETENTION_DAYS must not fail startup");
+    });
+}
+
 // --- live Postgres ----------------------------------------------------------
 
 /// A durable event delivered through the record handler is written to the ledger

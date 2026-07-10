@@ -74,7 +74,7 @@ const SCHEMA_DDL: &str = r#"
 CREATE SCHEMA IF NOT EXISTS scheduler;
 CREATE TABLE IF NOT EXISTS scheduler.schedules (
 	name             text        PRIMARY KEY,
-	interval_seconds bigint      NOT NULL,
+	interval_seconds bigint      NOT NULL CHECK (interval_seconds > 0),
 	last_fired       timestamptz NOT NULL DEFAULT to_timestamp(0)
 );
 INSERT INTO scheduler.schedules (name, interval_seconds)
@@ -83,6 +83,22 @@ INSERT INTO scheduler.schedules (name, interval_seconds)
 INSERT INTO scheduler.schedules (name, interval_seconds)
 	VALUES ('accounts-sessions-prune', 86400)
 	ON CONFLICT (name) DO NOTHING;"#;
+
+/// The due-check SQL for [`due_schedules`], extracted to a const so the anti-drift test
+/// (`tests.rs`) can assert `interval_seconds > 0` is present without re-parsing the
+/// function body — `CREATE TABLE IF NOT EXISTS` no-ops on an existing table, so a
+/// non-positive row can still exist on an un-wiped DB until the CHECK constraint above
+/// is actually in place; this filter is the belt to that DDL's braces.
+const DUE_SQL: &str = "SELECT name FROM scheduler.schedules \
+     WHERE now() - last_fired >= make_interval(secs => interval_seconds) \
+     AND interval_seconds > 0";
+
+/// The re-check SQL for [`fire_locked`] (run UNDER the per-schedule advisory lock),
+/// extracted to a const for the same anti-drift reason as [`DUE_SQL`]. A row with a
+/// non-positive interval simply never re-confirms as due (`fetch_optional` yields
+/// `None`/`Some(false)`), the same treatment as a row deleted between the scan and here.
+const FIRE_RECHECK_SQL: &str = "SELECT now() - last_fired >= make_interval(secs => interval_seconds) \
+     FROM scheduler.schedules WHERE name = $1 AND interval_seconds > 0";
 
 // ============================================================================
 // The firing logic — free functions so the exactly-once test can drive them
@@ -94,12 +110,7 @@ INSERT INTO scheduler.schedules (name, interval_seconds)
 /// (another replica fired it between this scan and the lock), which is exactly why
 /// [`fire`] double-checks.
 async fn due_schedules(pool: &PgPool) -> anyhow::Result<Vec<String>> {
-    let rows: Vec<(String,)> = sqlx::query_as(
-        "SELECT name FROM scheduler.schedules \
-         WHERE now() - last_fired >= make_interval(secs => interval_seconds)",
-    )
-    .fetch_all(pool)
-    .await?;
+    let rows: Vec<(String,)> = sqlx::query_as(DUE_SQL).fetch_all(pool).await?;
     Ok(rows.into_iter().map(|(n,)| n).collect())
 }
 
@@ -161,13 +172,10 @@ async fn fire_locked(conn: &mut PgConnection, bus: &Bus, name: &str) -> anyhow::
     // Re-check UNDER the lock: a replica that held the lock just before us may already
     // have fired this schedule and moved `last_fired`. `fetch_optional` returns None when
     // the row vanished (deleted between the due-scan and here) — treat as not-due.
-    let still_due: Option<bool> = sqlx::query_scalar(
-        "SELECT now() - last_fired >= make_interval(secs => interval_seconds) \
-         FROM scheduler.schedules WHERE name = $1",
-    )
-    .bind(name)
-    .fetch_optional(&mut *conn)
-    .await?;
+    let still_due: Option<bool> = sqlx::query_scalar(FIRE_RECHECK_SQL)
+        .bind(name)
+        .fetch_optional(&mut *conn)
+        .await?;
     let Some(true) = still_due else {
         return Ok(()); // not due, or deleted between the scan and here
     };

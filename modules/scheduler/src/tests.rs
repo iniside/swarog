@@ -169,7 +169,54 @@ fn seeded_schedule_names_are_contract() {
     }
 }
 
+/// [`DUE_SQL`] and [`FIRE_RECHECK_SQL`] both guard against a non-positive
+/// `interval_seconds` at the SQL layer (belt to the DDL's `CHECK` braces — a row
+/// surviving on an un-wiped DB from before the CHECK existed must still never fire).
+/// Anti-drift on the extracted consts, same style as `seeded_schedule_names_are_contract`.
+#[test]
+fn due_checks_filter_non_positive_intervals() {
+    assert!(
+        DUE_SQL.contains("interval_seconds > 0"),
+        "DUE_SQL no longer filters non-positive intervals"
+    );
+    assert!(
+        FIRE_RECHECK_SQL.contains("interval_seconds > 0"),
+        "FIRE_RECHECK_SQL no longer filters non-positive intervals"
+    );
+}
+
 // --- live Postgres ----------------------------------------------------------
+
+/// A schedule with `interval_seconds = 0` (or negative) violates the table's `CHECK
+/// (interval_seconds > 0)` — the fresh-DB constraint that backs [`DUE_SQL`]/
+/// [`FIRE_RECHECK_SQL`]'s SQL-level filter. Requires the schema to have been created
+/// WITH the CHECK in place (`CREATE TABLE IF NOT EXISTS` no-ops on an existing table,
+/// so this test is only meaningful right after a schema wipe — stated in the plan's
+/// verification step).
+#[tokio::test(flavor = "multi_thread")]
+async fn zero_interval_insert_violates_check() {
+    let Some(pool) = test_pool().await else {
+        return;
+    };
+    let name = unique_name(&pool).await;
+
+    let err = sqlx::query(
+        "INSERT INTO scheduler.schedules (name, interval_seconds) VALUES ($1, 0)",
+    )
+    .bind(&name)
+    .execute(&pool)
+    .await
+    .expect_err("interval_seconds = 0 must violate the CHECK constraint");
+
+    let db_err = err.as_database_error().expect("expected a database error");
+    assert_eq!(
+        db_err.code().as_deref(),
+        Some("23514"), // check_violation
+        "expected a check-violation SQLSTATE, got: {db_err}"
+    );
+
+    cleanup(&pool, &name).await;
+}
 
 /// Two concurrent `fire` attempts (two replicas: two pools, two buses) against one due
 /// schedule must yield EXACTLY ONE durable emit and one `last_fired` bump — the advisory

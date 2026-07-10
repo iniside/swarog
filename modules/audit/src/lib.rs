@@ -178,6 +178,14 @@ impl TxHandler for PruneHandler {
             if fired.name != PRUNE_SCHEDULE_NAME {
                 return Ok(()); // some other schedule — marked processed, nothing to do
             }
+            // Belt-and-braces: `init` already bails on a non-positive configured value,
+            // so a `PruneHandler` should never be constructed with one — this is a
+            // debug-only tripwire against a future construction site that skips `init`.
+            debug_assert!(
+                self.retention_days > 0,
+                "PruneHandler constructed with non-positive retention_days: {}",
+                self.retention_days
+            );
             sqlx::query("DELETE FROM audit.log WHERE at < now() - make_interval(days => $1)")
                 .bind(self.retention_days)
                 .execute(&mut *conn)
@@ -328,8 +336,20 @@ impl Module for Audit {
     /// item, and the `admin.adminData` edge face (topology-blind; applied by `app::run`
     /// iff this process serves an internal edge).
     fn init(&self, ctx: &Context) -> anyhow::Result<()> {
-        let svc = self.svc();
+        // Validated BEFORE touching `self.svc()` so a bad value fails startup loudly
+        // (fail-closed, admin's `ADMIN_USER` bail pattern) without requiring `register`
+        // to have run first — a non-positive retention would delete the ledger outright
+        // on the next prune tick, so a typo must stop the process, not silently truncate
+        // history. `env_int` already falls back to `DEFAULT_RETENTION_DAYS` when unset or
+        // unparseable; only a *parseable* non-positive value reaches this bail.
         let retention_days = env_int("AUDIT_RETENTION_DAYS", DEFAULT_RETENTION_DAYS);
+        if retention_days <= 0 {
+            anyhow::bail!(
+                "audit: AUDIT_RETENTION_DAYS must be > 0 (got {retention_days}) — a non-positive \
+                 retention would delete the ledger; unset it for the default {DEFAULT_RETENTION_DAYS}"
+            );
+        }
+        let svc = self.svc();
 
         // Durable plane: the producer emitted via emit_tx; messaging delivers here
         // through its per-(event_id,"audit") delivery tx, in BOTH topologies. We
