@@ -827,10 +827,10 @@ echo "========= MATCH TRIO (match-svc :$I_PORT + rating-svc :$J_PORT + leaderboa
 #         durable on_tx upsert ran, AND that G routes leaderboard.topScores Remote to K.
 #   (iii) audit-svc (F) has a match.finished row (durable I->F, exactly-once).
 #   (iv)  a second report for the SAME winner -> wins=2 (accumulating upsert).
-#   (v)   rating (in-memory, no public read endpoint): the sync MMR read is proven by (i)
-#         succeeding with rating-svc UP -- a report cannot return 202 without J answering
-#         rating.mmr over the edge. The +15/-15 typed handler is covered by rating's
-#         in-crate unit tests (no wire read op to assert here by design).
+#   (v)   rating (DB-backed projection, no public read endpoint): the sync MMR read is
+#         proven by (i) succeeding with rating-svc UP -- a report cannot return 202 without
+#         J answering rating.mmr over the edge. The +15/-15 durable handler persists to
+#         rating.ratings on J, asserted directly in [MT5] after both reports.
 WINNER="champ-$RUN_SUFFIX"
 LOSER="chump-$RUN_SUFFIX"
 
@@ -895,9 +895,32 @@ for i in $(seq 1 30); do
 done
 [ "$MT4_OK" = "1" ] || fail "leaderboard never reached wins=2 for $WINNER (accumulating upsert)"
 
-# Clean up this run's leaderboard rows so reruns start fresh.
+if [ -z "$PSQL" ]; then
+    note "psql not found -- SKIPPING the rating persistent-projection assertion"
+else
+    # rating is a DURABLE PROJECTION (Step 9), not in-memory: the +15/-15 handler upserts
+    # rating.ratings on J inside the delivery tx. After the two reports above the winner is
+    # 1000+15+15=1030 and the loser 1000-15-15=970 -- a persisted value the checkpoint
+    # advanced over, so a restart would NOT reset it.
+    echo "[MT5] poll rating.ratings on J for the persisted projection ($WINNER -> mmr=1030, $LOSER -> mmr=970)"
+    MT5_OK=0
+    for i in $(seq 1 30); do
+        W_MMR="$(pg "SELECT coalesce((SELECT mmr FROM rating.ratings WHERE player='$WINNER'), -1);" | tr -d '[:space:]')"
+        L_MMR="$(pg "SELECT coalesce((SELECT mmr FROM rating.ratings WHERE player='$LOSER'), -1);" | tr -d '[:space:]')"
+        echo "    attempt $i -> winner mmr=${W_MMR:-?}, loser mmr=${L_MMR:-?}"
+        if [ "${W_MMR:-0}" = "1030" ] && [ "${L_MMR:-0}" = "970" ]; then
+            pass "rating.ratings persisted $WINNER=1030 / $LOSER=970 (durable +15/-15 projection on J, restart-safe)"
+            MT5_OK=1; break
+        fi
+        sleep 0.5
+    done
+    [ "$MT5_OK" = "1" ] || fail "rating.ratings never reached winner=1030 / loser=970 (durable projection on J)"
+fi
+
+# Clean up this run's leaderboard + rating rows so reruns start fresh.
 if [ -n "$PSQL" ]; then
     pg "DELETE FROM leaderboard.scores WHERE player IN ('$WINNER','$LOSER');" >/dev/null
+    pg "DELETE FROM rating.ratings WHERE player IN ('$WINNER','$LOSER');" >/dev/null
 fi
 
 echo ""

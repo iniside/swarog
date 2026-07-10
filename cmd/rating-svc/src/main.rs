@@ -4,14 +4,15 @@
 //! `app::run` installs it so match-svc resolves `rating.mmr` over the mutually-
 //! authenticated edge.
 //!
-//! rating owns NO schema (in-memory MMR, 1000 default), but its durable subscription
-//! (`rating.match-finished.v1`) to `match.finished` needs the plane's pull worker and
-//! checkpoint, so this process needs a DB pool and thus hosts the durable-events plane
-//! (app-owned, DB ⇒ plane). The worker drains the shared log against this
-//! subscription's cursor and runs rating's `on_tx` (+15/-15) per delivery; the effect
-//! is in-memory (restart resets — accepted until the persistent-projection step), so
-//! only redelivery, not the effect, is bounded by the checkpoint. It PRODUCES no
-//! events; durable delivery needs NO per-process env.
+//! rating owns schema `rating` (table `rating.ratings`, 1000 default), and its durable
+//! subscription (`rating.match-finished.v1`) to `match.finished` needs the plane's pull
+//! worker and checkpoint, so this process needs a DB pool and thus hosts the durable-events
+//! plane (app-owned, DB ⇒ plane). The worker drains the shared log against this
+//! subscription's cursor and runs rating's `on_tx` (+15/-15) per delivery; the upsert
+//! commits on the handed delivery connection, atomically with the checkpoint, so a
+//! restart resumes over a projection that already reflects every delivered event
+//! (restart no longer resets MMR). It PRODUCES no events; durable delivery needs NO
+//! per-process env.
 
 use std::sync::{Arc, Mutex};
 

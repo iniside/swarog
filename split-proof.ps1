@@ -737,8 +737,9 @@ try {
     #         delivery is async), proving the on_tx upsert ran AND G routes topScores to K.
     #   (iii) audit-svc (F) has a match.finished row (durable I->F, exactly-once).
     #   (iv)  a second report for the SAME winner -> wins=2 (accumulating upsert).
-    #   (v)   rating (in-memory, no public read op): the sync MMR read is proven by (i)
-    #         succeeding with J UP; the +15/-15 handler is covered by rating's unit tests.
+    #   (v)   rating (DB-backed projection, no public read op): the sync MMR read is proven
+    #         by (i) succeeding with J UP; the +15/-15 durable handler persists to
+    #         rating.ratings on J, asserted directly in [MT5] after both reports.
     $Winner = "champ-$RunSuffix"
     $Loser = "chump-$RunSuffix"
 
@@ -803,7 +804,32 @@ try {
     }
     if (-not $mt4Ok) { Fail "leaderboard never reached wins=2 for $Winner (accumulating upsert)" }
 
-    if ($Psql) { Invoke-Sql "DELETE FROM leaderboard.scores WHERE player IN ('$Winner','$Loser');" | Out-Null }
+    if (-not $Psql) {
+        Note 'psql not found -- SKIPPING the rating persistent-projection assertion'
+    } else {
+        # rating is a DURABLE PROJECTION (Step 9), not in-memory: the +15/-15 handler upserts
+        # rating.ratings on J inside the delivery tx. After the two reports above the winner
+        # is 1000+15+15=1030 and the loser 1000-15-15=970 -- a persisted value the checkpoint
+        # advanced over, so a restart would NOT reset it.
+        Write-Host "[MT5] poll rating.ratings on J for the persisted projection (winner=$Winner -> mmr=1030, loser=$Loser -> mmr=970)"
+        $mt5Ok = $false
+        for ($i = 1; $i -le 30; $i++) {
+            $wMmr = ("" + (Invoke-Sql "SELECT coalesce((SELECT mmr FROM rating.ratings WHERE player='$Winner'), -1);")).Trim()
+            $lMmr = ("" + (Invoke-Sql "SELECT coalesce((SELECT mmr FROM rating.ratings WHERE player='$Loser'), -1);")).Trim()
+            Write-Host "    attempt $i -> winner mmr=$wMmr, loser mmr=$lMmr"
+            if ([int]($wMmr -as [int]) -eq 1030 -and [int]($lMmr -as [int]) -eq 970) {
+                Pass "rating.ratings persisted $Winner=1030 / $Loser=970 (durable +15/-15 projection on J, restart-safe)"
+                $mt5Ok = $true; break
+            }
+            Start-Sleep -Milliseconds 500
+        }
+        if (-not $mt5Ok) { Fail "rating.ratings never reached winner=1030 / loser=970 (durable projection on J)" }
+    }
+
+    if ($Psql) {
+        Invoke-Sql "DELETE FROM leaderboard.scores WHERE player IN ('$Winner','$Loser');" | Out-Null
+        Invoke-Sql "DELETE FROM rating.ratings WHERE player IN ('$Winner','$Loser');" | Out-Null
+    }
 
     Write-Host ''
     Write-Host "========= PLAYER QUIC FRONT (via gateway-svc :$PlayerPort) ========="

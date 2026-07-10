@@ -21,7 +21,8 @@ use rpc_macro::rpc;
 /// Reads a player's current matchmaking rating (MMR). Wire-only (no identity, no
 /// `#[http]`): the sync capability `match` resolves over the edge to log/decide on the
 /// players' standing before recording a result. `rating` starts every unseen player at
-/// 1000 in memory, so a genuine "unseen player" is the default 1000, never an error —
+/// 1000 in its `rating.ratings` projection, so a genuine "unseen player" is the default
+/// 1000, never an error —
 /// an `Err` is a transport/infrastructure failure.
 #[rpc(prefix = "rating")]
 #[async_trait]
