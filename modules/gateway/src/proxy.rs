@@ -13,11 +13,27 @@
 //! still 404 — the exact prior behaviour).
 
 use std::net::SocketAddr;
+use std::time::Duration;
 
 use axum::body::Body;
 use axum::http::request::Parts;
 use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
+
+/// Cap on establishing the TCP+TLS connection to an origin. Hardcoded by design: a
+/// module never reads env, and nobody tunes a passthrough dial budget — threading a
+/// `Duration` through `ProcessWiring`→`with_passthrough` would add public surface for
+/// a knob no operator touches (config-as-code, anti-magic). Magnitude follows the
+/// repo's other reqwest clients (accounts' Epic clients use 10s); a same-host internal
+/// origin dials far faster, so 5s is generous.
+const PROXY_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Cap on the gap between response-body chunks from an origin — NOT a whole-request
+/// timeout. reqwest's `read_timeout` resets on every chunk, so it tolerates a large
+/// admin page that streams steadily while still killing an origin that accepted the
+/// connection and then stalled. A whole-request `timeout()` was rejected: it would abort
+/// a long-but-flowing body. Hardcoded for the same reason as the connect budget above.
+const PROXY_READ_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Hop-by-hop headers (RFC 7230 §6.1) that a proxy must NOT forward, plus `host`
 /// (reqwest sets it from the target origin). Matched case-insensitively (header names
@@ -54,6 +70,17 @@ impl ProxyTable {
     /// full URL. Routes are sorted longest-prefix-first so `/accounts/epic` wins over a
     /// hypothetical `/accounts`.
     pub fn from_routes(routes: Vec<(String, String)>) -> ProxyTable {
+        Self::from_routes_with_timeouts(routes, PROXY_CONNECT_TIMEOUT, PROXY_READ_TIMEOUT)
+    }
+
+    /// [`from_routes`](Self::from_routes) with the connect/read budgets injected, so a
+    /// test can shrink the read bound to prove the stall path returns 502. Production
+    /// always goes through `from_routes` with the hardcoded constants.
+    pub(crate) fn from_routes_with_timeouts(
+        routes: Vec<(String, String)>,
+        connect: Duration,
+        read: Duration,
+    ) -> ProxyTable {
         let mut routes: Vec<(String, String)> = routes
             .into_iter()
             .filter_map(|(prefix, origin)| {
@@ -66,6 +93,8 @@ impl ProxyTable {
             routes,
             client: reqwest::Client::builder()
                 .redirect(reqwest::redirect::Policy::none())
+                .connect_timeout(connect)
+                .read_timeout(read)
                 .build()
                 .expect("proxy client"),
         }
@@ -112,9 +141,7 @@ impl ProxyTable {
         let url = format!("{origin}{tail}");
 
         let mut headers = parts.headers.clone();
-        for h in HOP_BY_HOP {
-            headers.remove(*h);
-        }
+        strip_hop_by_hop(&mut headers);
         if let Some(xff) = build_xff(&parts.headers, peer) {
             headers.insert(HeaderName::from_static("x-forwarded-for"), xff);
         }
@@ -144,11 +171,10 @@ impl ProxyTable {
 /// hop-by-hop) + the streamed body. Status/headers are `http` types shared by axum and
 /// reqwest (both on `http` 1.x), so they copy directly.
 fn relay_response(upstream: reqwest::Response) -> Response {
+    let mut headers = upstream.headers().clone();
+    strip_hop_by_hop(&mut headers);
     let mut builder = Response::builder().status(upstream.status());
-    for (name, value) in upstream.headers() {
-        if HOP_BY_HOP.contains(&name.as_str()) {
-            continue;
-        }
+    for (name, value) in &headers {
         builder = builder.header(name, value);
     }
     builder
@@ -156,6 +182,30 @@ fn relay_response(upstream: reqwest::Response) -> Response {
         .unwrap_or_else(|_| {
             (StatusCode::BAD_GATEWAY, "bad upstream response").into_response()
         })
+}
+
+/// Removes hop-by-hop headers from `headers` in place: first every header NAMED as a
+/// token in a `Connection` header value (RFC 7230 §6.1 — a peer can mark any header
+/// connection-scoped, e.g. `Connection: x-internal-auth`), then the fixed [`HOP_BY_HOP`]
+/// set. `Connection` values are comma-separated token lists, may repeat across multiple
+/// header lines (`get_all`), and are matched case-insensitively (header names are already
+/// lowercased by `http`; the tokens are lowercased here). Applied on both the request and
+/// response side so neither direction leaks a header the peer scoped to its own hop.
+fn strip_hop_by_hop(headers: &mut HeaderMap) {
+    let named: Vec<String> = headers
+        .get_all("connection")
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(','))
+        .map(|tok| tok.trim().to_ascii_lowercase())
+        .filter(|tok| !tok.is_empty())
+        .collect();
+    for name in &named {
+        headers.remove(name.as_str());
+    }
+    for h in HOP_BY_HOP {
+        headers.remove(*h);
+    }
 }
 
 /// Computes the `X-Forwarded-For` value to send upstream: the existing chain (if the

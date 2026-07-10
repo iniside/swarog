@@ -4,6 +4,7 @@
 //! and an unmatched prefix stays 404).
 
 use std::net::SocketAddr;
+use std::time::Duration;
 
 use axum::body::Body;
 use axum::http::{HeaderMap, HeaderValue, Request, StatusCode};
@@ -23,6 +24,8 @@ fn table(routes: &[(&str, &str)]) -> ProxyTable {
         routes,
         client: reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
+            .connect_timeout(PROXY_CONNECT_TIMEOUT)
+            .read_timeout(PROXY_READ_TIMEOUT)
             .build()
             .expect("proxy client"),
     }
@@ -89,6 +92,31 @@ fn xff_chain_building() {
     assert_eq!(v.to_str().unwrap(), "198.51.100.1, 203.0.113.7");
     // Neither → header left unset.
     assert!(build_xff(&HeaderMap::new(), None).is_none());
+}
+
+#[test]
+fn strip_hop_by_hop_honors_connection_tokens() {
+    // A single connection-scoped header is removed along with the `connection` header
+    // itself; an unrelated header survives.
+    let mut h = HeaderMap::new();
+    h.insert("connection", HeaderValue::from_static("x-internal-auth"));
+    h.insert("x-internal-auth", HeaderValue::from_static("secret"));
+    h.insert("x-keep", HeaderValue::from_static("v"));
+    strip_hop_by_hop(&mut h);
+    assert!(h.get("x-internal-auth").is_none(), "connection-named header removed");
+    assert!(h.get("connection").is_none(), "connection header itself removed");
+    assert_eq!(h.get("x-keep").unwrap(), "v", "unrelated header survives");
+
+    // A comma-separated token list removes every named header (case/space tolerant).
+    let mut h = HeaderMap::new();
+    h.insert("connection", HeaderValue::from_static("keep-alive, X-A, x-b"));
+    h.insert("x-a", HeaderValue::from_static("1"));
+    h.insert("x-b", HeaderValue::from_static("2"));
+    h.insert("x-c", HeaderValue::from_static("3"));
+    strip_hop_by_hop(&mut h);
+    assert!(h.get("x-a").is_none(), "x-a listed → removed");
+    assert!(h.get("x-b").is_none(), "x-b listed → removed");
+    assert_eq!(h.get("x-c").unwrap(), "3", "x-c not listed → survives");
 }
 
 // ---- end-to-end proxy round-trip -------------------------------------------
@@ -200,4 +228,131 @@ async fn empty_table_is_404() {
         .into_parts();
     let resp = t.forward(parts, body, None).await;
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+// ---- hop-by-hop stripping across the wire -----------------------------------
+
+/// Spawns an upstream that echoes `secret=<X-Secret>` so a test can prove whether a
+/// request-side header reached the origin.
+async fn spawn_secret_echo_upstream() -> String {
+    async fn echo(req: Request<Body>) -> String {
+        let secret = req
+            .headers()
+            .get("x-secret")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("<absent>")
+            .to_string();
+        format!("secret={secret}")
+    }
+    let app = Router::new().fallback(any(echo));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    format!("http://{addr}")
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn forward_strips_connection_named_request_header() {
+    let origin = spawn_secret_echo_upstream().await;
+    let t = table(&[("/admin", origin.trim_start_matches("http://"))]);
+
+    let (parts, body) = Request::builder()
+        .method("GET")
+        .uri("/admin/page")
+        .header("connection", "x-secret")
+        .header("x-secret", "leak-me")
+        .body(Body::empty())
+        .unwrap()
+        .into_parts();
+
+    let resp = t.forward(parts, body, None).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+    let text = String::from_utf8_lossy(&bytes);
+    // `Connection: x-secret` scopes `x-secret` to our hop → it must NOT reach the origin.
+    assert!(text.contains("secret=<absent>"), "got: {text}");
+}
+
+/// Spawns an upstream that responds with `Connection: x-leak` + `x-leak: v`, modelling an
+/// origin that marks a header connection-scoped on the response side.
+async fn spawn_leaking_response_upstream() -> String {
+    async fn leak() -> impl IntoResponse {
+        (
+            StatusCode::OK,
+            [("connection", "x-leak"), ("x-leak", "v")],
+            "ok",
+        )
+    }
+    let app = Router::new().fallback(any(leak));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    format!("http://{addr}")
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn relay_strips_connection_named_response_header() {
+    let origin = spawn_leaking_response_upstream().await;
+    let t = table(&[("/admin", origin.trim_start_matches("http://"))]);
+
+    let (parts, body) = Request::builder()
+        .uri("/admin/page")
+        .body(Body::empty())
+        .unwrap()
+        .into_parts();
+
+    let resp = t.forward(parts, body, None).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    // Both the `connection` header and the header it scoped must be absent downstream.
+    assert!(resp.headers().get("connection").is_none(), "connection header stripped");
+    assert!(resp.headers().get("x-leak").is_none(), "connection-named header stripped");
+}
+
+// ---- read-timeout -----------------------------------------------------------
+
+/// Spawns a raw TCP listener that accepts a connection and then never writes a
+/// response (holds the socket open), so a proxied request stalls waiting for bytes.
+async fn spawn_stalling_upstream() -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        loop {
+            let Ok((stream, _)) = listener.accept().await else {
+                return;
+            };
+            // Hold the accepted socket open, never responding.
+            tokio::spawn(async move {
+                let _held = stream;
+                tokio::time::sleep(Duration::from_secs(600)).await;
+            });
+        }
+    });
+    format!("http://{addr}")
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stalled_origin_times_out_as_502() {
+    let origin = spawn_stalling_upstream().await;
+    let t = ProxyTable::from_routes_with_timeouts(
+        vec![("/admin".to_string(), origin.trim_start_matches("http://").to_string())],
+        Duration::from_secs(5),
+        Duration::from_millis(300),
+    );
+
+    let (parts, body) = Request::builder()
+        .uri("/admin/page")
+        .body(Body::empty())
+        .unwrap()
+        .into_parts();
+
+    let start = std::time::Instant::now();
+    let resp = t.forward(parts, body, None).await;
+    let elapsed = start.elapsed();
+    // The read-timeout fires (~300ms) and the send Err maps to 502, well within 1s.
+    assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
+    assert!(elapsed < Duration::from_secs(1), "timed out too slowly: {elapsed:?}");
 }
