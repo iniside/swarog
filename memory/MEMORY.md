@@ -1,5 +1,6 @@
 # Memory Index
 
+- [Verify the active session model before making claims](verify-session-model-before-claims.md) — never infer the current Codex model from the public API catalog or context size; separate model identity, nominal window, and product-level usable/remaining context
 - [Memory is git-backed via repo mirror](memory-git-backup-workflow.md) — run scripts/memory-sync.sh push after any memory change, pull after git sync; repo memory/ mirrors the per-machine live dir
 - [Verify the at-risk path, not the safe one](verify-the-at-risk-path-not-the-safe-one.md) — exercise the topology a change actually affects (split, not just monolith) with a committed repeatable proof; don't pass off easy-path testing as coverage
 - [Scope claims to what was verified](scope-claims-to-what-was-verified.md) — don't generalize a plane-specific result into a global claim (said "modules never branch on topology" while sync-provider if m.Edge!=nil still does); scope every "done" to what changed + find the counterexample first
