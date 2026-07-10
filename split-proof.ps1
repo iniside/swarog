@@ -12,7 +12,10 @@
 # Port assignments here are manual config (this table); FLEET MEMBERSHIP (the set of
 # cmd/*-svc processes) is the drift-guarded source of truth in
 # tools/checkmodules::split_fleet_matches_cmd_dirs (Step 15) -- add a new svc there
-# before adding it to this script.
+# before adding it to this script. This script ALSO self-checks that assumption:
+# a preflight compares $FleetSvcs against the cmd/*-svc directories on disk and
+# dies (naming exactly what is missing/stale) BEFORE booting anything, so a
+# forgotten svc is a loud failure, never a silently weaker proof.
 # (through the gateway front-door with a REAL bearer minted by register+login through
 # the front -- Step 6 replaced the dev-<uuid> tokens), the sync authz over
 # QUIC/mTLS, AND the NEW dedicated QUIC player front (Step 8): external players connect
@@ -113,6 +116,15 @@ $KEdgePort = 9008
 $LEdgePort = 9009
 $PlayerPort = 9100
 $PlayerCli = Join-Path $BinDir 'playercli.exe'
+
+# The svc processes this proof boots -- the ONE hand-maintained fleet list (the build
+# list and the straggler-kill list both derive from it). The preflight below pins it
+# to the cmd/*-svc directories on disk.
+$FleetSvcs = @(
+    'characters-svc', 'inventory-svc', 'gateway-svc', 'config-svc', 'accounts-svc',
+    'admin-svc', 'audit-svc', 'scheduler-svc', 'match-svc', 'rating-svc',
+    'leaderboard-svc', 'apikeys-svc'
+)
 
 $DefaultDsn = 'postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable'
 if (-not $env:DATABASE_URL -or $env:DATABASE_URL.Trim() -eq '') { $env:DATABASE_URL = $DefaultDsn }
@@ -226,14 +238,37 @@ function Invoke-PlayerCli([string[]]$CliArgs) {
 }
 
 try {
-    Note 'building edgeca + characters-svc + inventory-svc + gateway-svc + config-svc + accounts-svc + admin-svc + audit-svc + scheduler-svc + match-svc + rating-svc + leaderboard-svc + apikeys-svc + playercli + csharp-client-gen + server ...'
-    cargo build -p edgeca -p characters-svc -p inventory-svc -p gateway-svc -p config-svc -p accounts-svc -p admin-svc -p audit-svc -p scheduler-svc -p match-svc -p rating-svc -p leaderboard-svc -p apikeys-svc -p playercli -p csharp-client-gen -p server
+    # --- Fleet-membership tripwire: the boot blocks below are inherently manual
+    # (ports, env, named assertions), so VERIFY the "I didn't forget a svc"
+    # assumption instead of trusting memory. Compares $FleetSvcs against the
+    # cmd/*-svc directories on disk and dies BEFORE booting anything, naming
+    # exactly what drifted and what to do about it.
+    $DiskSvcs = @(Get-ChildItem (Join-Path $PSScriptRoot 'cmd') -Directory |
+        Where-Object { $_.Name -like '*-svc' } | ForEach-Object { $_.Name })
+    $NotBooted = @($DiskSvcs  | Where-Object { $FleetSvcs -notcontains $_ })
+    $NotOnDisk = @($FleetSvcs | Where-Object { $DiskSvcs  -notcontains $_ })
+    if ($NotBooted.Count -or $NotOnDisk.Count) {
+        Note 'FATAL fleet drift: the svcs this script boots != the cmd/*-svc directories on disk.'
+        foreach ($n in $NotBooted) {
+            Note "  cmd/$n exists but this script never boots it -- add a port, a boot block, and a named assertion for it (CLAUDE.md 'Adding a module' step 4), then extend `$FleetSvcs"
+        }
+        foreach ($n in $NotOnDisk) {
+            Note "  `$FleetSvcs lists '$n' but cmd/$n does not exist -- remove its entry and boot block, or restore the crate"
+        }
+        throw "fleet drift: $($NotBooted.Count) svc(s) not booted, $($NotOnDisk.Count) stale entr(ies) -- see [proof] lines above"
+    }
+    Note "fleet preflight OK: $($FleetSvcs.Count) svcs booted here == cmd/*-svc on disk"
+
+    $BuildPkgs = @('edgeca') + $FleetSvcs + @('playercli', 'csharp-client-gen', 'server')
+    Note "building $($BuildPkgs -join ' + ') ..."
+    $CargoArgs = @($BuildPkgs | ForEach-Object { @('-p', $_) })
+    cargo build @CargoArgs
     if ($LASTEXITCODE -ne 0) { throw 'cargo build failed' }
 
     New-Item -ItemType Directory -Force -Path $RunDir | Out-Null
 
     # Clear stragglers from an aborted prior run so ports are free (idempotent reruns).
-    foreach ($n in 'characters-svc', 'inventory-svc', 'gateway-svc', 'config-svc', 'accounts-svc', 'admin-svc', 'audit-svc', 'scheduler-svc', 'match-svc', 'rating-svc', 'leaderboard-svc', 'apikeys-svc', 'server') {
+    foreach ($n in ($FleetSvcs + 'server')) {
         Get-Process -Name $n -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
     }
     Start-Sleep -Milliseconds 500
@@ -1059,7 +1094,7 @@ try {
     Write-Host '================ MONOLITH PARITY ================'
     Note 'tearing down the split before the monolith stage ...'
     Teardown
-    foreach ($n in 'characters-svc', 'inventory-svc', 'gateway-svc', 'config-svc', 'accounts-svc', 'admin-svc', 'audit-svc', 'scheduler-svc', 'match-svc', 'rating-svc', 'leaderboard-svc', 'apikeys-svc', 'server') {
+    foreach ($n in ($FleetSvcs + 'server')) {
         Get-Process -Name $n -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
     }
     Start-Sleep -Seconds 2

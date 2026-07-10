@@ -13,7 +13,10 @@
 # Port assignments here are manual config (this table); FLEET MEMBERSHIP (the set of
 # `cmd/*-svc` processes) is the drift-guarded source of truth in
 # tools/checkmodules::split_fleet_matches_cmd_dirs (Step 15) -- add a new svc there
-# before adding it to this script.
+# before adding it to this script. This script ALSO self-checks that assumption:
+# fleet_preflight compares FLEET_SVCS against the cmd/*-svc directories on disk and
+# dies (naming exactly what is missing/stale) BEFORE booting anything, so a
+# forgotten svc is a loud failure, never a silently weaker proof.
 # player flows over HTTP (through the gateway front-door with a REAL bearer minted
 # by register+login through the front -- Step 6 replaced the dev-<uuid> tokens),
 # the sync authz over QUIC/mTLS, AND the NEW dedicated QUIC player front (Step 8 of
@@ -122,6 +125,14 @@ J_EDGE_PORT=9007
 K_EDGE_PORT=9008
 L_EDGE_PORT=9009
 PLAYER_PORT=9100
+
+# The svc processes this proof boots -- the ONE hand-maintained fleet list (the build
+# list and the straggler-kill lists all derive from it). fleet_preflight below pins
+# it to the cmd/*-svc directories on disk.
+FLEET_SVCS=(
+    characters-svc inventory-svc gateway-svc config-svc accounts-svc admin-svc
+    audit-svc scheduler-svc match-svc rating-svc leaderboard-svc apikeys-svc
+)
 
 DEFAULT_DSN="postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable"
 DATABASE_URL="${DATABASE_URL:-$DEFAULT_DSN}"
@@ -237,34 +248,16 @@ trap teardown EXIT
 
 # --- clear any stragglers from an aborted prior run (idempotent reruns) ------
 kill_stragglers() {
+    local n
     # By name (Windows), best-effort.
     if command -v taskkill >/dev/null 2>&1; then
-        taskkill //F //IM characters-svc.exe >/dev/null 2>&1 || true
-        taskkill //F //IM inventory-svc.exe >/dev/null 2>&1 || true
-        taskkill //F //IM gateway-svc.exe >/dev/null 2>&1 || true
-        taskkill //F //IM config-svc.exe >/dev/null 2>&1 || true
-        taskkill //F //IM accounts-svc.exe >/dev/null 2>&1 || true
-        taskkill //F //IM admin-svc.exe >/dev/null 2>&1 || true
-        taskkill //F //IM audit-svc.exe >/dev/null 2>&1 || true
-        taskkill //F //IM scheduler-svc.exe >/dev/null 2>&1 || true
-        taskkill //F //IM match-svc.exe >/dev/null 2>&1 || true
-        taskkill //F //IM rating-svc.exe >/dev/null 2>&1 || true
-        taskkill //F //IM leaderboard-svc.exe >/dev/null 2>&1 || true
-        taskkill //F //IM apikeys-svc.exe >/dev/null 2>&1 || true
-        taskkill //F //IM server.exe >/dev/null 2>&1 || true
+        for n in "${FLEET_SVCS[@]}" server; do
+            taskkill //F //IM "$n.exe" >/dev/null 2>&1 || true
+        done
     fi
-    pkill -f "characters-svc" 2>/dev/null || true
-    pkill -f "inventory-svc"  2>/dev/null || true
-    pkill -f "gateway-svc"    2>/dev/null || true
-    pkill -f "config-svc"     2>/dev/null || true
-    pkill -f "accounts-svc"   2>/dev/null || true
-    pkill -f "admin-svc"      2>/dev/null || true
-    pkill -f "audit-svc"      2>/dev/null || true
-    pkill -f "scheduler-svc"  2>/dev/null || true
-    pkill -f "match-svc"      2>/dev/null || true
-    pkill -f "rating-svc"     2>/dev/null || true
-    pkill -f "leaderboard-svc" 2>/dev/null || true
-    pkill -f "apikeys-svc"    2>/dev/null || true
+    for n in "${FLEET_SVCS[@]}"; do
+        pkill -f "$n" 2>/dev/null || true
+    done
     pkill -f "target/debug/server" 2>/dev/null || true
 }
 
@@ -281,9 +274,42 @@ wait_healthy() {
     return 1
 }
 
+# --- Fleet-membership tripwire: the boot blocks below are inherently manual
+# (ports, env, named assertions), so VERIFY the "I didn't forget a svc" assumption
+# instead of trusting memory. Compares FLEET_SVCS against the cmd/*-svc directories
+# on disk and dies BEFORE booting anything, naming exactly what drifted and what to
+# do about it.
+fleet_preflight() {
+    local disk=() missing=() stale=() d n
+    for d in cmd/*-svc/; do
+        [ -d "$d" ] && disk+=("$(basename "$d")")
+    done
+    for n in "${disk[@]}"; do
+        case " ${FLEET_SVCS[*]} " in *" $n "*) ;; *) missing+=("$n") ;; esac
+    done
+    for n in "${FLEET_SVCS[@]}"; do
+        case " ${disk[*]} " in *" $n "*) ;; *) stale+=("$n") ;; esac
+    done
+    if [ "${#missing[@]}" -gt 0 ] || [ "${#stale[@]}" -gt 0 ]; then
+        note "FATAL fleet drift: the svcs this script boots != the cmd/*-svc directories on disk."
+        for n in "${missing[@]}"; do
+            note "  cmd/$n exists but this script never boots it -- add a port, a boot block, and a named assertion for it (CLAUDE.md 'Adding a module' step 4), then extend FLEET_SVCS"
+        done
+        for n in "${stale[@]}"; do
+            note "  FLEET_SVCS lists '$n' but cmd/$n does not exist -- remove its entry and boot block, or restore the crate"
+        done
+        exit 1
+    fi
+    note "fleet preflight OK: ${#FLEET_SVCS[@]} svcs booted here == cmd/*-svc on disk"
+}
+
 # ============================================================================
-note "building edgeca + characters-svc + inventory-svc + gateway-svc + config-svc + accounts-svc + admin-svc + audit-svc + scheduler-svc + match-svc + rating-svc + leaderboard-svc + apikeys-svc + playercli + csharp-client-gen + server ..."
-if ! cargo build -p edgeca -p characters-svc -p inventory-svc -p gateway-svc -p config-svc -p accounts-svc -p admin-svc -p audit-svc -p scheduler-svc -p match-svc -p rating-svc -p leaderboard-svc -p apikeys-svc -p playercli -p csharp-client-gen -p server; then
+fleet_preflight
+BUILD_PKGS=(edgeca "${FLEET_SVCS[@]}" playercli csharp-client-gen server)
+note "building ${BUILD_PKGS[*]} ..."
+CARGO_ARGS=()
+for p in "${BUILD_PKGS[@]}"; do CARGO_ARGS+=(-p "$p"); done
+if ! cargo build "${CARGO_ARGS[@]}"; then
     echo "build failed"; exit 1
 fi
 PLAYERCLI="$BIN_DIR/playercli$EXE"
