@@ -86,10 +86,22 @@ fn provider_of_takes_prefix() {
 #[tokio::test]
 async fn dev_verifier_accepts_dev_token_only() {
     let v = DevSessionVerifier::new();
-    assert_eq!(v.verify("dev-alice").await.as_deref(), Some("alice"));
-    assert_eq!(v.verify("dev-").await, None); // empty suffix rejected
-    assert_eq!(v.verify("alice").await, None); // no prefix rejected
-    assert_eq!(v.verify("").await, None);
+    assert_eq!(v.verify("dev-alice").await.unwrap().as_deref(), Some("alice"));
+    assert_eq!(v.verify("dev-").await.unwrap(), None); // empty suffix rejected
+    assert_eq!(v.verify("alice").await.unwrap(), None); // no prefix rejected
+    assert_eq!(v.verify("").await.unwrap(), None);
+}
+
+/// A [`SessionVerifier`] that always reports its dependency unreachable — the
+/// gateway stand-in for an accounts-svc outage. Distinct from `Ok(None)` (a
+/// definitively invalid token), it must surface as 503 / `Status::Unavailable`.
+struct UnavailableVerifier;
+
+#[async_trait::async_trait]
+impl SessionVerifier for UnavailableVerifier {
+    async fn verify(&self, _token: &str) -> Result<Option<String>, VerifyUnavailable> {
+        Err(VerifyUnavailable)
+    }
 }
 
 #[tokio::test]
@@ -112,6 +124,18 @@ async fn authenticate_paths() {
     bad.insert(header::AUTHORIZATION, HeaderValue::from_static("Bearer nope"));
     let resp = authenticate(&bad, &v).await.unwrap_err();
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn authenticate_verifier_outage_is_503_not_401() {
+    // A verifier that cannot reach accounts must surface as 503 SERVICE_UNAVAILABLE —
+    // NOT 401 (which would mass-log-out players the moment accounts blips). The token
+    // is well-formed; only the dependency is down.
+    let v = UnavailableVerifier;
+    let mut h = HeaderMap::new();
+    h.insert(header::AUTHORIZATION, HeaderValue::from_static("Bearer dev-alice"));
+    let resp = authenticate(&h, &v).await.unwrap_err();
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
 }
 
 // ---- (b/c) end-to-end through the axum fallback ----
@@ -487,6 +511,28 @@ async fn player_bad_token_is_unauthorized_envelope() {
     let body =
         call_player(&front, "demo.echo", Some("nope-x"), Some(TEST_KEY), br#"{"n":1}"#).await;
     assert_eq!(body, r#"{"status":"Unauthorized","err":"unauthorized"}"#);
+}
+
+#[tokio::test]
+async fn player_verifier_outage_is_unavailable_envelope() {
+    // A well-formed token whose verification cannot reach accounts → Unavailable
+    // envelope (503), NOT Unauthorized: an outage must not read as an invalid session.
+    let slots = Arc::new(Slots::new());
+    let op = demo_opset();
+    slots.contribute(opsapi::SLOT, op.operation);
+    slots.contribute(opsapi::BINDING_SLOT, op.binding);
+    slots.contribute(opsapi::LOCAL_SLOT, op.local);
+    let front = Arc::new(FrontDoor::new(
+        slots,
+        Arc::new(UnavailableVerifier),
+        demo_keys(),
+        Vec::new(),
+    ));
+    let body = call_player(&front, "demo.echo", Some("dev-alice"), Some(TEST_KEY), br#"{"n":1}"#).await;
+    assert_eq!(
+        body,
+        r#"{"status":"Unavailable","err":"session verification unavailable"}"#
+    );
 }
 
 #[tokio::test]

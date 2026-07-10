@@ -19,14 +19,24 @@ use std::sync::{Arc, Once};
 use async_trait::async_trait;
 use lifecycle::Context;
 
-/// Verifies a bearer token and returns the caller's `player_id`, or `None` when the
-/// token is missing/invalid. The gateway calls this at exactly one place — the front
-/// handler, after extracting the `Authorization: Bearer <token>` header — and threads
-/// the resolved id through the operation as an `opsapi::Identity`. Nothing downstream
-/// re-verifies.
+/// The single non-auth failure class of a [`SessionVerifier::verify`]: the verifier
+/// could not reach the sessions store / accounts peer and so cannot say whether the
+/// token is valid. It is DISTINCT from `Ok(None)` (the token is definitively
+/// missing/invalid): an outage must surface as 503/`Status::Unavailable` (retry may
+/// succeed), never masquerade as an invalid session (which would log players out en
+/// masse the moment accounts blips).
+#[derive(Debug)]
+pub struct VerifyUnavailable;
+
+/// Verifies a bearer token and returns the caller's `player_id`, `Ok(None)` when the
+/// token is missing/invalid, or `Err(VerifyUnavailable)` when the verifier itself is
+/// unreachable (an accounts outage — a retryable dependency failure, NOT an invalid
+/// session). The gateway calls this at exactly one place — the front handler, after
+/// extracting the `Authorization: Bearer <token>` header — and threads the resolved id
+/// through the operation as an `opsapi::Identity`. Nothing downstream re-verifies.
 #[async_trait]
 pub trait SessionVerifier: Send + Sync {
-    async fn verify(&self, token: &str) -> Option<String>;
+    async fn verify(&self, token: &str) -> Result<Option<String>, VerifyUnavailable>;
 }
 
 /// The `dev-` token prefix [`DevSessionVerifier`] accepts.
@@ -56,7 +66,7 @@ impl Default for DevSessionVerifier {
 
 #[async_trait]
 impl SessionVerifier for DevSessionVerifier {
-    async fn verify(&self, token: &str) -> Option<String> {
+    async fn verify(&self, token: &str) -> Result<Option<String>, VerifyUnavailable> {
         self.warned.call_once(|| {
             tracing::warn!(
                 "DEV SESSION AUTH IS ON: the gateway accepts any `Bearer dev-<player_id>` token \
@@ -64,20 +74,20 @@ impl SessionVerifier for DevSessionVerifier {
                  it in production."
             );
         });
-        // `dev-` prefix with a non-empty suffix → that suffix is the player_id.
-        match token.strip_prefix(DEV_PREFIX) {
+        // `dev-` prefix with a non-empty suffix → that suffix is the player_id. The
+        // dev verifier never has an outage — it is a pure prefix match.
+        Ok(match token.strip_prefix(DEV_PREFIX) {
             Some(pid) if !pid.is_empty() => Some(pid.to_string()),
             _ => None,
-        }
+        })
     }
 }
 
 /// The REAL verifier (Step 6): adapts the `accounts.sessions` capability to the
-/// gateway's consumer-defined [`SessionVerifier`]. `Ok(None)` (unknown/expired
-/// token) and `Err` (accounts store/peer failure) both verify to `None` — the
-/// trait's contract is "verified player or not"; the failure is logged so an
-/// accounts outage is visible rather than silently indistinguishable from bad
-/// credentials.
+/// gateway's consumer-defined [`SessionVerifier`]. `Ok(None)` (unknown/expired token)
+/// verifies to `Ok(None)` — a definitive invalid session — while an accounts store/peer
+/// failure returns `Err(VerifyUnavailable)` (logged) so an outage surfaces as
+/// 503/`Status::Unavailable` rather than masquerading as bad credentials.
 pub struct SessionsVerifier {
     sessions: Arc<dyn accountsapi::Sessions>,
 }
@@ -90,12 +100,12 @@ impl SessionsVerifier {
 
 #[async_trait]
 impl SessionVerifier for SessionsVerifier {
-    async fn verify(&self, token: &str) -> Option<String> {
+    async fn verify(&self, token: &str) -> Result<Option<String>, VerifyUnavailable> {
         match self.sessions.verify_session(token.to_string()).await {
-            Ok(pid) => pid.filter(|p| !p.is_empty()),
+            Ok(pid) => Ok(pid.filter(|p| !p.is_empty())),
             Err(err) => {
                 tracing::error!(%err, "gateway: session verification failed (accounts unreachable?)");
-                None
+                Err(VerifyUnavailable)
             }
         }
     }

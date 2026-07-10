@@ -79,7 +79,7 @@ use serde_json::value::RawValue;
 
 pub use backend::{LocalBackend, OperationBackend, RemoteBackend};
 pub use keys::{AllowAllKeyVerifier, KeyVerifier, RealKeyVerifier};
-pub use verifier::{DevSessionVerifier, SessionVerifier, SessionsVerifier};
+pub use verifier::{DevSessionVerifier, SessionVerifier, SessionsVerifier, VerifyUnavailable};
 
 use keys::{check_api_key, KeyDenial};
 
@@ -406,8 +406,14 @@ impl FrontDoor {
                     return front_envelope(Status::Unauthorized, "unauthorized");
                 };
                 match self.verifier.verify(&token).await {
-                    Some(pid) => Identity::player(pid),
-                    None => return front_envelope(Status::Unauthorized, "unauthorized"),
+                    Ok(Some(pid)) => Identity::player(pid),
+                    Ok(None) => return front_envelope(Status::Unauthorized, "unauthorized"),
+                    Err(VerifyUnavailable) => {
+                        return front_envelope(
+                            Status::Unavailable,
+                            "session verification unavailable",
+                        )
+                    }
                 }
             }
             AuthReq::None => Identity::none(),
@@ -806,8 +812,12 @@ async fn authenticate(
         return Err(error_response(StatusCode::UNAUTHORIZED, "unauthorized"));
     };
     match verifier.verify(&token).await {
-        Some(pid) => Ok(Identity::player(pid)),
-        None => Err(error_response(StatusCode::UNAUTHORIZED, "unauthorized")),
+        Ok(Some(pid)) => Ok(Identity::player(pid)),
+        Ok(None) => Err(error_response(StatusCode::UNAUTHORIZED, "unauthorized")),
+        Err(VerifyUnavailable) => Err(error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "session verification unavailable",
+        )),
     }
 }
 
