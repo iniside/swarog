@@ -354,166 +354,223 @@ pub async fn run(
     // 5. Own-schema migrations — the plane's first (a module's first emit_tx must
     //    find `asyncevents.append_event`), then 6. background work: modules first,
     //    then the plane (its subscription snapshot must see every wiring-time on_tx).
-    if let Some(p) = &plane {
-        p.migrate().await.context("asyncevents migrate failed")?;
-    }
-    app.migrate().await.context("migrate failed")?;
-    app.start().await.context("start failed")?;
-    if let Some(p) = &mut plane {
-        p.start().await.context("asyncevents start failed")?;
-    }
-    // After module start (so the snapshot sees every wiring-time `register`): run each
-    // callback's FIRST refresh synchronously — a failure fails startup loudly — then
-    // launch the NOTIFY listener + poll fallback.
-    if let Some(p) = &mut invalidation {
-        p.start().await.context("invalidation start failed")?;
-    }
-
-    // 7. Bring up the shared edge server AFTER every module init has contributed its
-    //    registrations. One listener, all edge methods, mutual TLS via the shared dev
-    //    CA. This is where the EDGE_SLOT contributions land: modules contributed
-    //    unconditionally during init; only a process that actually has an edge server
-    //    applies them (the monolith reaches the `None` arm and they are dropped).
-    let running_edge = match edge_server {
-        Some(shared) => {
-            // Take the server out of the shared handle (`mem::take` leaves an empty
-            // one behind), then install every contributed registration on it.
-            let mut server = std::mem::take(&mut *shared.lock().unwrap());
-            let applied = apply_edge_registrations(&ctx, &mut server);
-            tracing::info!(applied, "installed contributed edge registrations");
-            let ca = edge::shared_dev_ca().context("edge ca")?;
-            let edge_bind: SocketAddr = to_bind_addr(&cfg.edge_addr)
-                .parse()
-                .with_context(|| format!("parse edge addr {:?}", cfg.edge_addr))?;
-            let running = server.listen(edge_bind, &ca).context("edge listen")?;
-            tracing::info!(addr = %running.local_addr(), "edge listening (mutual TLS)");
-            Some(running)
+    //
+    //    Everything from here through the end of HTTP serve is fallible and runs
+    //    inside ONE block: its `Err` falls through to the SAME ordered teardown the
+    //    happy path uses (see [`ordered_teardown`]), truncated to what was actually
+    //    created/started, so a partial startup never strands started modules, plane
+    //    workers, the scheduler's advisory lock, or an open listener. Listener
+    //    handles land in these outer slots the moment they exist so a LATER failure
+    //    still closes them.
+    let mut running_edge: Option<edge::RunningServer> = None;
+    let mut running_player: Option<edge::RunningServer> = None;
+    let mut modules_started = false;
+    let outcome: anyhow::Result<()> = async {
+        if let Some(p) = &plane {
+            p.migrate().await.context("asyncevents migrate failed")?;
         }
-        None => None,
-    };
-
-    // 7b. Bring up the player-facing QUIC front, same lifecycle as the internal edge:
-    //     the gateway registered its dispatch handler onto this shared handle during
-    //     Build, so `mem::take` hands `listen` the fully-wired server. Server-cert-only
-    //     TLS (no client cert) off the SAME dev CA — `server_tls_public` derives from
-    //     it — so external players can handshake; per-call auth is the front's job.
-    let running_player = match player_server {
-        Some(shared) => {
-            let player = std::mem::take(&mut *shared.lock().unwrap());
-            let ca = edge::shared_dev_ca().context("edge ca")?;
-            let player_bind: SocketAddr = to_bind_addr(&cfg.player_edge_addr)
-                .parse()
-                .with_context(|| format!("parse player edge addr {:?}", cfg.player_edge_addr))?;
-            let running = player.listen(player_bind, &ca).context("player edge listen")?;
-            tracing::info!(addr = %running.local_addr(), "player edge listening (server-cert-only TLS)");
-            Some(running)
+        app.migrate().await.context("migrate failed")?;
+        // Double-stop rule: on Err, `App::start` has ALREADY stopped its started
+        // prefix internally, so the unwind must skip `app.stop()` (which would run
+        // `stop` on never-started modules) — `modules_started` stays false. A
+        // migrate failure above skips it too (nothing started); only a failure
+        // AFTER this line unwinds with `app.stop()`.
+        app.start().await.context("start failed")?;
+        modules_started = true;
+        if let Some(p) = &mut plane {
+            p.start().await.context("asyncevents start failed")?;
         }
-        None => None,
-    };
+        // After module start (so the snapshot sees every wiring-time `register`): run
+        // each callback's FIRST refresh synchronously — a failure fails startup loudly —
+        // then launch the NOTIFY listener + poll fallback.
+        if let Some(p) = &mut invalidation {
+            p.start().await.context("invalidation start failed")?;
+        }
 
-    // 8. Serve HTTP: the router the modules merged into the Context, plus liveness
-    //    (`/healthz`, always 200 — a restart can't fix a down DB) and readiness
-    //    (`/readyz`). Readiness pings the DB when a pool exists (controls whether a
-    //    load balancer sends traffic); a DB-less process has nothing to ping, so it
-    //    answers a plain 200. Modules must not themselves mount these two routes (axum
-    //    `merge`/`route` panics on a duplicate, exactly like Go's ServeMux).
-    // `/readyz` folds in the baseline DB ping (when a pool exists) PLUS every
-    // `httpmw::ReadyCheck` a module contributed to `READINESS_SLOT` — read lazily, per
-    // request, so by request time every module's `init` (where checks are contributed)
-    // has run. Any failure → 503 with a per-failed-check JSON body (Go's readyzHandler).
-    let ready_pool = pool.clone();
-    let ready_ctx = ctx.clone();
-    let router = ctx
-        .take_router()
-        .route("/healthz", get(|| async { "ok" }))
-        .route(
-            "/readyz",
-            get(move || {
-                let pool = ready_pool.clone();
-                let ctx = ready_ctx.clone();
-                async move {
-                    let checks =
-                        ctx.contributions::<httpmw::ReadyCheck>(httpmw::READINESS_SLOT);
-                    readyz_response(pool.as_ref(), checks).await
-                }
-            }),
-        );
+        // 7. Bring up the shared edge server AFTER every module init has contributed
+        //    its registrations. One listener, all edge methods, mutual TLS via the
+        //    shared dev CA. This is where the EDGE_SLOT contributions land: modules
+        //    contributed unconditionally during init; only a process that actually has
+        //    an edge server applies them (the monolith reaches the `None` arm and they
+        //    are dropped).
+        running_edge = match edge_server {
+            Some(shared) => {
+                // Take the server out of the shared handle (`mem::take` leaves an empty
+                // one behind), then install every contributed registration on it.
+                let mut server = std::mem::take(&mut *shared.lock().unwrap());
+                let applied = apply_edge_registrations(&ctx, &mut server);
+                tracing::info!(applied, "installed contributed edge registrations");
+                let ca = edge::shared_dev_ca().context("edge ca")?;
+                let edge_bind: SocketAddr = to_bind_addr(&cfg.edge_addr)
+                    .parse()
+                    .with_context(|| format!("parse edge addr {:?}", cfg.edge_addr))?;
+                let running = server.listen(edge_bind, &ca).context("edge listen")?;
+                tracing::info!(addr = %running.local_addr(), "edge listening (mutual TLS)");
+                Some(running)
+            }
+            None => None,
+        };
 
-    // Rate limiting (Step 13): OPT-IN for module hosts (`RATE_LIMIT_RPS` default 0 = off —
-    // a split peer runs BEHIND the gateway, so limiting here would double-count and
-    // collapse every client into the gateway's single bucket), ALWAYS on for the gateway
-    // front door (`Config::with_rate_limit_default(20, 40)`). Layered UNDER the metrics
-    // layer below so a 429 the limiter issues is still counted (Go's
-    // `metrics(ratelimit(mux))` — the last `.layer` added is the outermost). Skips
-    // `/healthz|/readyz|/metrics` (`httpmw::skip_infra`); keys per resolved client IP
-    // (trust-aware XFF walk over `TRUSTED_PROXY_CIDRS`). The QUIC planes are NOT wrapped —
-    // rate limiting is an HTTP-plane concern (Go parity).
-    let (default_rps, default_burst) = cfg.rate_limit_default.unwrap_or((0.0, 40));
-    let rps = env_f64("RATE_LIMIT_RPS").unwrap_or(default_rps);
-    let burst = env_u32("RATE_LIMIT_BURST").unwrap_or(default_burst);
-    let router = if rps > 0.0 {
-        let trusted =
-            httpmw::parse_cidrs(&std::env::var("TRUSTED_PROXY_CIDRS").unwrap_or_default())
-                .map_err(|e| anyhow::anyhow!("parse TRUSTED_PROXY_CIDRS: {e}"))?;
-        let limiter = httpmw::IpLimiter::new(rps, burst);
-        limiter.spawn_eviction();
-        tracing::info!(rps, burst, trusted_cidrs = trusted.len(), "http rate limiting enabled");
-        httpmw::mount(router, limiter, Arc::new(trusted))
-    } else {
-        tracing::info!("http rate limiting disabled (RATE_LIMIT_RPS<=0; expected behind the gateway)");
-        router
-    };
+        // 7b. Bring up the player-facing QUIC front, same lifecycle as the internal
+        //     edge: the gateway registered its dispatch handler onto this shared handle
+        //     during Build, so `mem::take` hands `listen` the fully-wired server.
+        //     Server-cert-only TLS (no client cert) off the SAME dev CA —
+        //     `server_tls_public` derives from it — so external players can handshake;
+        //     per-call auth is the front's job.
+        running_player = match player_server {
+            Some(shared) => {
+                let player = std::mem::take(&mut *shared.lock().unwrap());
+                let ca = edge::shared_dev_ca().context("edge ca")?;
+                let player_bind: SocketAddr = to_bind_addr(&cfg.player_edge_addr)
+                    .parse()
+                    .with_context(|| format!("parse player edge addr {:?}", cfg.player_edge_addr))?;
+                let running = player.listen(player_bind, &ca).context("player edge listen")?;
+                tracing::info!(addr = %running.local_addr(), "player edge listening (server-cert-only TLS)");
+                Some(running)
+            }
+            None => None,
+        };
 
-    // Apply every contributed HTTP layer (`httpmw::LAYER_SLOT`) LAST, over the whole
-    // rate-limited surface, in contribution order. This is where the `metrics` module's
-    // recording layer lands (it also mounted `GET /metrics` during init): applied AFTER the
-    // rate limiter, it wraps it, so a `429` the limiter issues is still recorded — Go's
-    // `metrics(ratelimit(mux))`. A process serves `/metrics` iff it listed the `metrics`
-    // module (was `Config::without_metrics`, now module presence). The layer labels each
-    // request by its MATCHED route pattern and exempts the infra endpoints (see
-    // `core/metrics`). The QUIC planes are NOT wrapped (HTTP-plane concern).
-    let router = apply_http_layers(&ctx, router);
+        // 8. Serve HTTP: the router the modules merged into the Context, plus liveness
+        //    (`/healthz`, always 200 — a restart can't fix a down DB) and readiness
+        //    (`/readyz`). Readiness pings the DB when a pool exists (controls whether a
+        //    load balancer sends traffic); a DB-less process has nothing to ping, so it
+        //    answers a plain 200. Modules must not themselves mount these two routes (axum
+        //    `merge`/`route` panics on a duplicate, exactly like Go's ServeMux).
+        // `/readyz` folds in the baseline DB ping (when a pool exists) PLUS every
+        // `httpmw::ReadyCheck` a module contributed to `READINESS_SLOT` — read lazily, per
+        // request, so by request time every module's `init` (where checks are contributed)
+        // has run. Any failure → 503 with a per-failed-check JSON body (Go's readyzHandler).
+        let ready_pool = pool.clone();
+        let ready_ctx = ctx.clone();
+        let router = ctx
+            .take_router()
+            .route("/healthz", get(|| async { "ok" }))
+            .route(
+                "/readyz",
+                get(move || {
+                    let pool = ready_pool.clone();
+                    let ctx = ready_ctx.clone();
+                    async move {
+                        let checks =
+                            ctx.contributions::<httpmw::ReadyCheck>(httpmw::READINESS_SLOT);
+                        readyz_response(pool.as_ref(), checks).await
+                    }
+                }),
+            );
 
-    let bind = to_bind_addr(&cfg.listen_addr);
-    let listener = tokio::net::TcpListener::bind(&bind)
+        // Rate limiting (Step 13): OPT-IN for module hosts (`RATE_LIMIT_RPS` default 0 = off —
+        // a split peer runs BEHIND the gateway, so limiting here would double-count and
+        // collapse every client into the gateway's single bucket), ALWAYS on for the gateway
+        // front door (`Config::with_rate_limit_default(20, 40)`). Layered UNDER the metrics
+        // layer below so a 429 the limiter issues is still counted (Go's
+        // `metrics(ratelimit(mux))` — the last `.layer` added is the outermost). Skips
+        // `/healthz|/readyz|/metrics` (`httpmw::skip_infra`); keys per resolved client IP
+        // (trust-aware XFF walk over `TRUSTED_PROXY_CIDRS`). The QUIC planes are NOT wrapped —
+        // rate limiting is an HTTP-plane concern (Go parity).
+        let (default_rps, default_burst) = cfg.rate_limit_default.unwrap_or((0.0, 40));
+        let rps = env_f64("RATE_LIMIT_RPS").unwrap_or(default_rps);
+        let burst = env_u32("RATE_LIMIT_BURST").unwrap_or(default_burst);
+        let router = if rps > 0.0 {
+            let trusted =
+                httpmw::parse_cidrs(&std::env::var("TRUSTED_PROXY_CIDRS").unwrap_or_default())
+                    .map_err(|e| anyhow::anyhow!("parse TRUSTED_PROXY_CIDRS: {e}"))?;
+            let limiter = httpmw::IpLimiter::new(rps, burst);
+            limiter.spawn_eviction();
+            tracing::info!(rps, burst, trusted_cidrs = trusted.len(), "http rate limiting enabled");
+            httpmw::mount(router, limiter, Arc::new(trusted))
+        } else {
+            tracing::info!("http rate limiting disabled (RATE_LIMIT_RPS<=0; expected behind the gateway)");
+            router
+        };
+
+        // Apply every contributed HTTP layer (`httpmw::LAYER_SLOT`) LAST, over the whole
+        // rate-limited surface, in contribution order. This is where the `metrics` module's
+        // recording layer lands (it also mounted `GET /metrics` during init): applied AFTER the
+        // rate limiter, it wraps it, so a `429` the limiter issues is still recorded — Go's
+        // `metrics(ratelimit(mux))`. A process serves `/metrics` iff it listed the `metrics`
+        // module (was `Config::without_metrics`, now module presence). The layer labels each
+        // request by its MATCHED route pattern and exempts the infra endpoints (see
+        // `core/metrics`). The QUIC planes are NOT wrapped (HTTP-plane concern).
+        let router = apply_http_layers(&ctx, router);
+
+        let bind = to_bind_addr(&cfg.listen_addr);
+        let listener = tokio::net::TcpListener::bind(&bind)
+            .await
+            .with_context(|| format!("bind http {bind}"))?;
+        tracing::info!(addr = %bind, "listening");
+
+        // 9. `with_graceful_shutdown` returns once SIGINT fires AND in-flight HTTP has
+        //    drained — so the await below IS "stop accepting HTTP". Serve WITH connection
+        //    info so the gateway's passthrough can set `X-Forwarded-For` (and Step 13's
+        //    rate limiter can key per client IP); handlers that don't need it ignore it.
+        axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .with_graceful_shutdown(shutdown_signal())
         .await
-        .with_context(|| format!("bind http {bind}"))?;
-    tracing::info!(addr = %bind, "listening");
+        .context("http serve")
+    }
+    .await;
 
-    // 9. `with_graceful_shutdown` returns once SIGINT fires AND in-flight HTTP has
-    //    drained — so the await below IS "stop accepting HTTP". Serve WITH connection
-    //    info so the gateway's passthrough can set `X-Forwarded-For` (and Step 13's
-    //    rate limiter can key per client IP); handlers that don't need it ignore it.
-    axum::serve(
-        listener,
-        router.into_make_service_with_connect_info::<SocketAddr>(),
+    // 10. Ordered teardown — one sequence for BOTH graceful shutdown and startup
+    //     failure (see [`ordered_teardown`] for the order and its rationale).
+    match &outcome {
+        Ok(()) => tracing::info!("shutting down"),
+        Err(err) => tracing::error!(err = %format!("{err:#}"), "startup failed; unwinding"),
+    }
+    ordered_teardown(
+        running_player.take(),
+        running_edge.take(),
+        &mut plane,
+        &mut invalidation,
+        &ctx,
+        modules_started.then_some(&app),
     )
-    .with_graceful_shutdown(shutdown_signal())
-    .await
-    .context("http serve")?;
+    .await;
+    outcome?;
+    tracing::info!("bye");
+    Ok(())
+}
 
-    // 10. Ordered teardown: HTTP already stopped → close the player front (external
-    //     players drain first) → close the internal edge → stop the plane (durable
-    //     delivery halts before ANY module tears down — structurally what the old
-    //     "messaging registers last, stops first" convention hand-ordered) → drain
-    //     bus → stop modules (reverse registration order, inside App::stop).
-    tracing::info!("shutting down");
+/// Ordered teardown shared by graceful shutdown and every startup-failure unwind:
+/// close the player front (external players drain first) → close the internal edge →
+/// stop the durable plane (delivery halts before ANY module tears down — structurally
+/// what the old "messaging registers last, stops first" convention hand-ordered) →
+/// stop the invalidation plane → drain the in-process bus → stop modules (reverse
+/// registration order, inside `App::stop`).
+///
+/// The same order serves ANY prefix of startup because every step degrades to a no-op
+/// for what was never created/started: listeners close only when `Some`, both planes'
+/// `stop` are `Option::take`-guarded (idempotent), `Bus::close` is idempotent, and
+/// `app` is `None` when no module `start` succeeded — after an `App::start` failure
+/// the started prefix was already stopped INSIDE `App::start`, and running `App::stop`
+/// here would call `stop` on never-started modules (outside the `Module` contract).
+async fn ordered_teardown(
+    running_player: Option<edge::RunningServer>,
+    running_edge: Option<edge::RunningServer>,
+    plane: &mut Option<asyncevents::Plane>,
+    invalidation: &mut Option<invalidation::InvalidationPlane>,
+    ctx: &Context,
+    app: Option<&App>,
+) {
     if let Some(running) = running_player {
         running.close();
     }
     if let Some(running) = running_edge {
         running.close();
     }
-    if let Some(p) = &mut plane {
+    if let Some(p) = plane {
         p.stop().await;
     }
-    if let Some(p) = &mut invalidation {
+    if let Some(p) = invalidation {
         p.stop().await;
     }
     ctx.bus().close().await;
-    app.stop().await;
-    tracing::info!("bye");
-    Ok(())
+    if let Some(app) = app {
+        app.stop().await;
+    }
 }
 
 /// Builds the `/readyz` response: the baseline DB ping (when a pool exists) plus every

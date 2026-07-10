@@ -7,6 +7,7 @@ use super::*;
 struct RecMod {
     name: String,
     log: Arc<Mutex<Vec<String>>>,
+    fail_start: bool,
 }
 
 impl RecMod {
@@ -14,6 +15,16 @@ impl RecMod {
         Box::new(RecMod {
             name: name.to_string(),
             log: log.clone(),
+            fail_start: false,
+        })
+    }
+
+    /// A module whose `start` fails (recording nothing for the failed phase).
+    fn boxed_failing_start(name: &str, log: &Arc<Mutex<Vec<String>>>) -> Box<dyn Module> {
+        Box::new(RecMod {
+            name: name.to_string(),
+            log: log.clone(),
+            fail_start: true,
         })
     }
 
@@ -44,6 +55,9 @@ impl Module for RecMod {
     }
 
     async fn start(&self, _ctx: &Context) -> anyhow::Result<()> {
+        if self.fail_start {
+            anyhow::bail!("start blew up");
+        }
         self.record("start");
         Ok(())
     }
@@ -101,6 +115,26 @@ async fn full_lifecycle_ordering() {
             "stop:a",
         ]
     );
+}
+
+/// The partial-start unwind: when module B's `start` fails, A (started before B)
+/// is stopped, while B itself and C (whose `start` never ran) are NOT — `stop`
+/// is only ever invoked after a successful `start`. The original error survives.
+#[tokio::test]
+async fn start_failure_stops_started_prefix_in_reverse() {
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let mut app = App::new(Arc::new(Context::new()));
+    app.add(RecMod::boxed("a", &log));
+    app.add(RecMod::boxed_failing_start("b", &log));
+    app.add(RecMod::boxed("c", &log));
+    app.build().unwrap();
+    log.lock().unwrap().clear();
+
+    let err = app.start().await.unwrap_err();
+    assert!(err.to_string().contains("start \"b\""), "{err:#}");
+    assert!(format!("{err:#}").contains("start blew up"), "{err:#}");
+    // A started, then B failed → only A gets stop; B and C never do.
+    assert_eq!(*log.lock().unwrap(), vec!["start:a", "stop:a"]);
 }
 
 #[tokio::test]

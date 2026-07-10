@@ -13,7 +13,10 @@ use crate::Context;
 ///   - `start` — background work (tickers, workers), after every module's `init`,
 ///     in registration order.
 ///   - `stop` — release resources, in REVERSE registration order. Don't emit
-///     events here — the bus has already drained.
+///     events here — the bus has already drained. Guarantee: `stop` is only ever
+///     invoked on a module whose `start` completed successfully — when a startup
+///     fails partway, `App::start` stops the already-started prefix (in reverse)
+///     and modules whose `start` never ran are NOT stopped.
 ///
 /// Every phase is invoked unconditionally for every module; the default no-op
 /// impls below make a phase a no-op for modules that don't need it (e.g. a

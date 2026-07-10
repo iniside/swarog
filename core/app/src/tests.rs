@@ -168,6 +168,63 @@ async fn readyz_failure_is_503_with_named_json_body() {
     assert_eq!(body, r#"{"downstream":"peer unreachable"}"#);
 }
 
+// ============================================================================
+// The startup unwind (security-review hardening Step 3): `ordered_teardown` is the
+// ONE teardown sequence for graceful shutdown and every startup-failure path. The
+// double-stop rule: `app` is passed only when `App::start` succeeded — after an
+// `App::start` failure the started prefix was already stopped inside `App::start`,
+// so the unwind must NOT call `App::stop` (it would stop never-started modules).
+// ============================================================================
+
+/// A module that records its `stop` calls, so the test can see whether the
+/// teardown reached `App::stop`.
+struct StopRec {
+    log: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+#[async_trait::async_trait]
+impl Module for StopRec {
+    fn name(&self) -> &str {
+        "stoprec"
+    }
+    fn init(&self, _ctx: &Context) -> anyhow::Result<()> {
+        Ok(())
+    }
+    async fn stop(&self, _ctx: &Context) -> anyhow::Result<()> {
+        self.log.lock().unwrap().push("stop:stoprec".to_string());
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn ordered_teardown_skips_module_stop_when_modules_never_started() {
+    let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut app = App::new(std::sync::Arc::new(Context::new()));
+    app.add(Box::new(StopRec { log: log.clone() }));
+    app.build().unwrap();
+    let ctx = app.context().clone();
+
+    // No listeners, no planes, modules never started (`app` omitted) — e.g. a
+    // migrate failure or an `App::start` Err: bus close still runs, module stop
+    // does NOT.
+    ordered_teardown(None, None, &mut None, &mut None, &ctx, None).await;
+    assert!(log.lock().unwrap().is_empty(), "stop must not run: {log:?}");
+}
+
+#[tokio::test]
+async fn ordered_teardown_stops_modules_after_a_successful_start() {
+    let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut app = App::new(std::sync::Arc::new(Context::new()));
+    app.add(Box::new(StopRec { log: log.clone() }));
+    app.build().unwrap();
+    app.start().await.unwrap();
+    let ctx = app.context().clone();
+
+    // Modules started → `app` is passed → `App::stop` runs (last, after bus close).
+    ordered_teardown(None, None, &mut None, &mut None, &ctx, Some(&app)).await;
+    assert_eq!(*log.lock().unwrap(), vec!["stop:stoprec"]);
+}
+
 #[test]
 fn to_bind_addr_expands_colon_port() {
     assert_eq!(to_bind_addr(":9000"), "0.0.0.0:9000");

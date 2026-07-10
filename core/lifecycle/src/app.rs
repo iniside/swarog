@@ -74,12 +74,35 @@ impl App {
         Ok(())
     }
 
-    /// Runs `start` on every module, in registration order. Fails fast.
+    /// Runs `start` on every module, in registration order. On module N failing,
+    /// the already-started prefix (modules 0..N, exclusive) is stopped in REVERSE
+    /// order — best-effort, log-and-continue per module, the same policy as
+    /// [`App::stop`] — and the original error is returned. Modules whose `start`
+    /// never ran (the failing module itself, and everything after it) do NOT get
+    /// `stop`: a module's `stop` is only ever invoked after its `start` succeeded.
     pub async fn start(&self) -> anyhow::Result<()> {
-        for m in &self.modules {
-            m.start(&self.ctx)
-                .await
-                .with_context(|| format!("start {:?}", m.name()))?;
+        for (i, m) in self.modules.iter().enumerate() {
+            if let Err(err) = m.start(&self.ctx).await {
+                tracing::error!(
+                    module = m.name(),
+                    %err,
+                    "module start failed; stopping the started prefix"
+                );
+                for started in self.modules[..i].iter().rev() {
+                    match started.stop(&self.ctx).await {
+                        Ok(()) => tracing::info!(
+                            module = started.name(),
+                            "module stopped (start unwind)"
+                        ),
+                        Err(stop_err) => tracing::error!(
+                            module = started.name(),
+                            %stop_err,
+                            "module stop failed during start unwind"
+                        ),
+                    }
+                }
+                return Err(err).with_context(|| format!("start {:?}", m.name()));
+            }
             tracing::info!(module = m.name(), "module started");
         }
         Ok(())
