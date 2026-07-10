@@ -192,7 +192,8 @@ async fn read_response(resp: axum::response::Response) -> (StatusCode, String) {
 async fn readyz_all_green_is_200() {
     // No pool (nothing to ping) + a passing check → 200 "ok".
     let checks = vec![httpmw::ReadyCheck::new("cache", || async { Ok(()) })];
-    let (status, body) = read_response(readyz_response(None, checks).await).await;
+    let (status, body) =
+        read_response(readyz_response(None, checks, READY_CHECK_TIMEOUT).await).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body, "ok");
 }
@@ -205,10 +206,25 @@ async fn readyz_failure_is_503_with_named_json_body() {
             Err("peer unreachable".to_string())
         }),
     ];
-    let (status, body) = read_response(readyz_response(None, checks).await).await;
+    let (status, body) =
+        read_response(readyz_response(None, checks, READY_CHECK_TIMEOUT).await).await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
     // The body maps the FAILED check's name to its error; the passing one is absent.
     assert_eq!(body, r#"{"downstream":"peer unreachable"}"#);
+}
+
+#[tokio::test]
+async fn readyz_hung_check_times_out_fast_as_503() {
+    // A check that never resolves must not hang /readyz forever — a short bound (instead
+    // of the real 2s READY_CHECK_TIMEOUT) keeps this test fast while still exercising the
+    // Elapsed → named-failure path.
+    let bound = std::time::Duration::from_millis(50);
+    let checks = vec![httpmw::ReadyCheck::new("hang", || {
+        std::future::pending::<Result<(), String>>()
+    })];
+    let (status, body) = read_response(readyz_response(None, checks, bound).await).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(body, format!(r#"{{"hang":"timed out after {bound:?}"}}"#));
 }
 
 // ============================================================================

@@ -28,6 +28,15 @@ const DEFAULT_PLAYER_EDGE_ADDR: &str = ":9100";
 const DEFAULT_EDGE_DRAIN_GRACE_MS: u64 = 5000;
 const DEFAULT_HTTP_DRAIN_GRACE_MS: u64 = 5000;
 const DEFAULT_MODULE_STOP_GRACE_MS: u64 = 5000;
+/// Per-check budget for `/readyz` (the baseline DB ping AND each contributed
+/// `httpmw::ReadyCheck`, individually) — no env knob, a readiness-probe budget is not a
+/// tuning surface (config-as-code/anti-magic). LB probe timeouts are typically 5-10s, so
+/// 2s per check keeps even DB-ping + a couple of checks comfortably under budget.
+/// Deliberate trade-off: the bound on the DB ping INCLUDES pool-acquire wait, so a
+/// pool-saturation spike now yields a fast 503 (instance pulled from rotation while busy)
+/// instead of waiting out the contention — for a readiness probe, "busy to the point of a
+/// 2s acquire wait" IS not-ready. Chosen, not accidental.
+const READY_CHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// The process-level configuration [`run`] needs. Deliberately tiny: everything
 /// module-specific (event subscribers, peer edge addrs, admin URLs, …) is read by
@@ -504,7 +513,7 @@ pub async fn run(
                     async move {
                         let checks =
                             ctx.contributions::<httpmw::ReadyCheck>(httpmw::READINESS_SLOT);
-                        readyz_response(pool.as_ref(), checks).await
+                        readyz_response(pool.as_ref(), checks, READY_CHECK_TIMEOUT).await
                     }
                 }),
             );
@@ -668,23 +677,41 @@ async fn ordered_teardown(
 /// contributed [`httpmw::ReadyCheck`]. All green → `200 ok`; any failure → `503` with a
 /// JSON body mapping each FAILED check's name to its error string (Go's `readyzHandler`
 /// shape, refined to named checks instead of `readiness[i]` indices). Kept as a free
-/// function so it is unit-testable without a live DB (pass `None` + failing checks).
+/// function so it is unit-testable without a live DB (pass `None` + failing checks). Each
+/// check (the DB ping AND every contributed check) is individually bounded by `bound` —
+/// the route closure passes [`READY_CHECK_TIMEOUT`]; tests pass a short bound so a hung
+/// check fails fast instead of stalling the test suite for real wall-clock seconds.
 async fn readyz_response(
     pool: Option<&PgPool>,
     checks: Vec<httpmw::ReadyCheck>,
+    bound: std::time::Duration,
 ) -> axum::response::Response {
     use axum::response::IntoResponse;
     let mut failures: std::collections::BTreeMap<String, String> =
         std::collections::BTreeMap::new();
     if let Some(pool) = pool {
-        if let Err(err) = sqlx::query("SELECT 1").execute(pool).await {
-            tracing::warn!(%err, "readyz db check failed");
-            failures.insert("db".to_string(), err.to_string());
+        match tokio::time::timeout(bound, sqlx::query("SELECT 1").execute(pool)).await {
+            Ok(Ok(_)) => {}
+            Ok(Err(err)) => {
+                tracing::warn!(%err, "readyz db check failed");
+                failures.insert("db".to_string(), err.to_string());
+            }
+            Err(_elapsed) => {
+                tracing::warn!(?bound, "readyz db check timed out");
+                failures.insert("db".to_string(), format!("timed out after {bound:?}"));
+            }
         }
     }
     for check in checks {
-        if let Err(err) = check.run().await {
-            failures.insert(check.name().to_string(), err);
+        let name = check.name().to_string();
+        match tokio::time::timeout(bound, check.run()).await {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => {
+                failures.insert(name, err);
+            }
+            Err(_elapsed) => {
+                failures.insert(name, format!("timed out after {bound:?}"));
+            }
         }
     }
     if failures.is_empty() {
