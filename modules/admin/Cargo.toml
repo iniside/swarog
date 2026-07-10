@@ -5,24 +5,42 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
-# The GameOps admin PORTAL module (port of Go's modules/admin). It owns the look
-# (the embedded dark theme + shell) and composes a navigable model from the items
-# modules CONTRIBUTE to the `adminapi::SLOT` slot — it never imports a module's
-# impl or another schema. A fortress process reaches its /admin routes through the
-# gateway's HTTP passthrough. Imports only the admin CONTRACT crate + foundations.
+# The GameOps admin PORTAL module (port of Go's modules/admin, hardened for public
+# deployment). It owns the look (the embedded dark theme + shell), composes a
+# navigable model from the items modules CONTRIBUTE to the `adminapi::SLOT` slot —
+# it never imports a module's impl or another schema — and owns the GameOps
+# identity: schema `admin` (users / sessions / login_attempts), argon2id session
+# login with asymmetric lockout, CSRF on mutating posts, and the durable
+# `admin.action` audit trail. Imports only contract crates + foundations.
+# `tools/adminctl` (an operator CLI, not a module) reuses `USERS_DDL` + the pub
+# password fns — one source of truth, no drift.
 [dependencies]
 adminapi = { workspace = true }
+adminevents = { workspace = true }
 lifecycle = { workspace = true }
 async-trait = { workspace = true }
 contrib = { workspace = true }
+bus = { workspace = true }
 axum = { workspace = true }
+axum-extra = { workspace = true }
 minijinja = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
+sqlx = { workspace = true }
 tracing = { workspace = true }
 anyhow = { workspace = true }
 futures = { workspace = true }
 base64 = { workspace = true }
+argon2 = { workspace = true }
+rand = { workspace = true }
+# Trusted-proxy-aware client-IP resolution for the login lockout (core infra crate,
+# same helpers `core/app`'s rate limiter uses; honors TRUSTED_PROXY_CIDRS).
+httpmw = { workspace = true }
+ipnet = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
+# The sanctioned test-wiring pattern: the durable plane stays app-owned at runtime
+# (never a normal dep — archcheck rule 10); tests install its transport directly.
+asyncevents = { workspace = true }
+tower = { version = "0.5", features = ["util"] }

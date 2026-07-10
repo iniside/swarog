@@ -146,6 +146,11 @@ rand = "0.8"
 base64 = "0.22"
 url = "2"
 
+# Cookie parsing for the admin portal's session auth (axum 0.7 line). Only the
+# `cookie` feature — the admin module reads `admin_session` via `CookieJar` and
+# writes Set-Cookie headers itself (exact flag control, no extra `time` dep).
+axum-extra = { version = "0.9", features = ["cookie"] }
+
 # CIDR containment for the httpmw trusted-proxy client-IP walk (Step 13). A tiny,
 # ubiquitous crate; the security-critical XFF walk is ours, only bit-masking is ipnet's.
 ipnet = "2"

@@ -205,10 +205,9 @@ fn collect_requires() -> anyhow::Result<Collected> {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Checkers build module graphs, they serve no HTTP — open-admin is meaningless here.
-    // Admin::init is now fail-closed (empty ADMIN_USER bails) unless ADMIN_OPEN is set, so
-    // set it explicitly so this harness's real Admin::init keeps building the graph.
-    std::env::set_var("ADMIN_OPEN", "1");
+    // No auth env needed: Admin::init no longer reads ADMIN_USER/ADMIN_PASS — session
+    // auth is DB-backed (a zero-user boot merely warns), so the harness builds the
+    // module graph with a bare environment.
 
     let strict = std::env::args().any(|a| a == "--strict");
 

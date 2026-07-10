@@ -1,29 +1,40 @@
-//! White-box unit tests for the admin portal's pure helpers (ports of Go's
-//! `admin_test.go` + `admin_fanout_test.go`): `slugify`, `resolve_items` (slug dedup,
-//! local vs remote dispatch, absent-skip, error-card), and `build_groups` (first-seen
-//! section order + active marking). No DB, no network — LOCAL renders and REMOTE
-//! fetches are plain in-process closures.
+//! Admin portal tests. The pure helpers (`slugify`, `resolve_items`, `build_groups`,
+//! templates) run with no DB, no network (LOCAL renders + REMOTE fetches are plain
+//! closures). The session-auth matrix — login/lockout/CSRF/logout/cookie flags plus
+//! the durable `admin.action` emits — targets the local Postgres (the test DB) and
+//! SKIPs cleanly when it is unreachable, accounts-harness style.
 
-use std::sync::Arc;
+use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
+use axum::body::Body;
+use axum::extract::ConnectInfo;
+use axum::http::Request;
 use futures::future::BoxFuture;
 use lifecycle::Context;
+use tower::ServiceExt as _; // for `oneshot`
 
 use super::*;
 
-// ---- helpers ----------------------------------------------------------------
+const DEFAULT_DSN: &str =
+    "postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable";
+
+// ---- shared helpers -----------------------------------------------------------
 
 /// Builds an [`AdminState`] over a fresh `Slots`, so a test can contribute items and
-/// drive `resolve_items` against them.
+/// drive `resolve_items`/the router against them. The pool is LAZY — the pure tests
+/// never connect; the live tests pass a connected pool via [`wired`].
 fn state_from(ctx: &Context) -> AdminState {
-    let mut env = minijinja::Environment::new();
-    env.add_template("admin.html", TEMPLATE).unwrap();
     AdminState {
-        env,
+        env: template_env().unwrap(),
         slots: ctx.slots().clone(),
-        auth_user: String::new(),
-        auth_pass: String::new(),
-        user: UserView::new(""),
+        pool: sqlx::postgres::PgPool::connect_lazy(DEFAULT_DSN).unwrap(),
+        bus: ctx.bus().clone(),
+        open: true, // pure tests exercise helpers, not the session gate
+        cookie_secure: true,
+        trusted: Vec::new(),
     }
 }
 
@@ -269,10 +280,10 @@ fn groups_empty_input() {
     assert!(build_groups(&[], "anything").is_empty());
 }
 
-// ---- template render smoke --------------------------------------------------
+// ---- template render smoke ----------------------------------------------------
 
-#[test]
-fn template_renders_kpis_table_and_escapes() {
+#[tokio::test]
+async fn template_renders_kpis_table_csrf_and_escapes() {
     let ctx = Context::new();
     let st = state_from(&ctx);
     let data = PageData {
@@ -280,6 +291,7 @@ fn template_renders_kpis_table_and_escapes() {
         title: "Characters".into(),
         env: "Local".into(),
         user: UserView::new("Ops"),
+        csrf: "csrf-tok-123".into(),
         groups: vec![NavGroup {
             section: "Game Content".into(),
             items: vec![NavItem {
@@ -307,7 +319,15 @@ fn template_renders_kpis_table_and_escapes() {
                     }],
                 ],
             }),
-            form: None,
+            form: Some(adminapi::Form {
+                action: "/admin/characters".into(),
+                fields: vec![adminapi::Field {
+                    name: "note".into(),
+                    label: "Note".into(),
+                    value: String::new(),
+                }],
+                submit: None,
+            }),
         }),
     };
     let html = st
@@ -321,14 +341,18 @@ fn template_renders_kpis_table_and_escapes() {
     assert!(html.contains(r#"href="/admin/characters""#));
     assert!(html.contains("kpi-value"));
     assert!(html.contains(r#"badge blue"#), "badge cell rendered");
+    // The session CSRF token is injected as a hidden input on the edit form AND the
+    // logout form.
+    assert!(html.contains(r#"name="_csrf" value="csrf-tok-123""#), "csrf hidden input");
+    assert!(html.contains(r#"action="/admin/logout""#), "logout form rendered");
     // Player-supplied text is auto-escaped (the `.html` template name), matching Go's
     // html/template — no raw <script> reaches the output.
     assert!(html.contains("&lt;script&gt;Aria"));
     assert!(!html.contains("<script>Aria"));
 }
 
-#[test]
-fn template_renders_empty_shell() {
+#[tokio::test]
+async fn template_renders_empty_shell_without_csrf() {
     let ctx = Context::new();
     let st = state_from(&ctx);
     let data = PageData {
@@ -336,6 +360,7 @@ fn template_renders_empty_shell() {
         title: "Admin".into(),
         env: "Local".into(),
         user: UserView::new(""),
+        csrf: String::new(),
         groups: Vec::new(),
         page: None,
     };
@@ -347,65 +372,29 @@ fn template_renders_empty_shell() {
         .unwrap();
     assert!(html.contains("No sections contributed yet."));
     assert!(html.contains("Local Admin"));
+    // No session → no CSRF input, no logout form (ADMIN_OPEN mode).
+    assert!(!html.contains("_csrf"));
+    assert!(!html.contains(r#"action="/admin/logout""#));
 }
 
-// ---- fail-closed startup gate (Admin::init) ---------------------------------
+// ---- env-knob parsing (dev knobs, explicit-only conventions) ------------------
 
-/// Serializes the two env-mutating tests below — `ADMIN_USER`/`ADMIN_OPEN` are
-/// process-global, so they must not race each other (or observe each other's writes).
-static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+/// Serializes the env-mutating tests below — the knobs are process-global.
+static ENV_LOCK: Mutex<()> = Mutex::new(());
 
-/// Runs `f` with `ADMIN_USER`/`ADMIN_PASS`/`ADMIN_OPEN` cleared, then explicitly set
-/// to the given values, restoring every prior value afterwards. Serialized so the two
-/// gate tests never interleave their env writes.
-fn with_admin_env(user: Option<&str>, open: Option<&str>, f: impl FnOnce()) {
+/// Runs `f` with the given env var set (or cleared), restoring the prior value.
+fn with_env(key: &str, val: Option<&str>, f: impl FnOnce()) {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-    let prev: Vec<(&str, Option<String>)> = ["ADMIN_USER", "ADMIN_PASS", "ADMIN_OPEN"]
-        .iter()
-        .map(|k| (*k, std::env::var(k).ok()))
-        .collect();
-    std::env::remove_var("ADMIN_USER");
-    std::env::remove_var("ADMIN_PASS");
-    std::env::remove_var("ADMIN_OPEN");
-    if let Some(u) = user {
-        std::env::set_var("ADMIN_USER", u);
-    }
-    if let Some(o) = open {
-        std::env::set_var("ADMIN_OPEN", o);
+    let prev = std::env::var(key).ok();
+    match val {
+        Some(v) => std::env::set_var(key, v),
+        None => std::env::remove_var(key),
     }
     f();
-    for (k, v) in prev {
-        match v {
-            Some(v) => std::env::set_var(k, v),
-            None => std::env::remove_var(k),
-        }
+    match prev {
+        Some(v) => std::env::set_var(key, v),
+        None => std::env::remove_var(key),
     }
-}
-
-/// Empty `ADMIN_USER` with `ADMIN_OPEN` unset FAILS startup — the fail-closed default.
-#[test]
-fn init_bails_when_creds_missing_and_not_explicitly_open() {
-    with_admin_env(None, None, || {
-        let ctx = Context::new();
-        let err = Admin::new()
-            .init(&ctx)
-            .expect_err("empty ADMIN_USER without ADMIN_OPEN must fail startup");
-        assert!(
-            err.to_string().contains("ADMIN_OPEN"),
-            "bail message should point at the ADMIN_OPEN escape: {err}"
-        );
-    });
-}
-
-/// Empty `ADMIN_USER` with `ADMIN_OPEN=1` boots an open portal (deliberate local escape).
-#[test]
-fn init_ok_when_explicitly_open() {
-    with_admin_env(None, Some("1"), || {
-        let ctx = Context::new();
-        Admin::new()
-            .init(&ctx)
-            .expect("ADMIN_OPEN=1 must permit a deliberately open portal");
-    });
 }
 
 /// `admin_open_explicitly_on` matches the apikeys/gateway truthy set, case-insensitively.
@@ -421,8 +410,740 @@ fn admin_open_truthy_parsing() {
         (Some(""), false),
         (None, false),
     ] {
-        with_admin_env(None, val, || {
+        with_env("ADMIN_OPEN", val, || {
             assert_eq!(admin_open_explicitly_on(), want, "ADMIN_OPEN={val:?}");
         });
     }
+}
+
+/// `ADMIN_COOKIE_SECURE` is fail-closed: Secure stays ON unless EXPLICITLY falsy.
+#[test]
+fn cookie_secure_knob_parsing() {
+    for (val, want) in [
+        (None, true),
+        (Some("1"), true),
+        (Some("yes"), true),
+        (Some(""), true),
+        (Some("0"), false),
+        (Some("false"), false),
+        (Some("OFF"), false),
+    ] {
+        with_env("ADMIN_COOKIE_SECURE", val, || {
+            assert_eq!(cookie_secure_on(), want, "ADMIN_COOKIE_SECURE={val:?}");
+        });
+    }
+}
+
+#[test]
+fn backoff_is_exponential_and_capped() {
+    assert_eq!(backoff_secs(5), 32);
+    assert_eq!(backoff_secs(6), 64);
+    assert_eq!(backoff_secs(9), 512);
+    assert_eq!(backoff_secs(10), 900);
+    assert_eq!(backoff_secs(100), 900);
+    assert_eq!(backoff_secs(-1), 900, "nonsense input stays at the cap, never panics");
+}
+
+#[test]
+fn password_roundtrip() {
+    let h = hash_password("hunter2").unwrap();
+    assert!(verify_password(&h, "hunter2"), "correct password rejected");
+    assert!(!verify_password(&h, "wrong"), "wrong password accepted");
+    assert!(!verify_password("not-a-hash", "hunter2"), "garbage hash accepted");
+}
+
+// ============================================================================
+// Live-Postgres integration: the session-auth matrix. One schema migration per
+// test binary; each test uses unique usernames + a unique peer IP so parallel
+// tests never share a lockout subject.
+// ============================================================================
+
+/// Opens the local Postgres; returns `None` (printing a skip line) when unreachable,
+/// so the suite RUNS but SKIPs cleanly with no DB.
+async fn test_pool() -> Option<PgPool> {
+    let dsn = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string());
+    let pool = match tokio::time::timeout(Duration::from_secs(3), PgPool::connect(&dsn)).await {
+        Ok(Ok(p)) => p,
+        _ => {
+            eprintln!("SKIP: postgres unreachable at {dsn} — admin DB tests skipped");
+            return None;
+        }
+    };
+    Some(pool)
+}
+
+/// Migrates BOTH the asyncevents plane and the admin schema EXACTLY ONCE per test
+/// binary — concurrent idempotent DDL across parallel tests can deadlock on catalog
+/// locks.
+static SCHEMA_READY: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
+
+async fn ensure_schema(pool: &PgPool) {
+    SCHEMA_READY
+        .get_or_init(|| async {
+            let dsn = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string());
+            asyncevents::Plane::new(pool.clone(), dsn)
+                .unwrap()
+                .migrate()
+                .await
+                .unwrap();
+            let ctx = Context::with_db(pool.clone());
+            let admin = Admin::new();
+            admin.register(&ctx).unwrap();
+            admin.migrate(&ctx).await.unwrap();
+        })
+        .await;
+}
+
+/// A wired live state: real pool, real durable transport (`emit_tx` appends to
+/// `asyncevents.events`), fresh `Slots` for per-test item contributions.
+async fn wired(pool: &PgPool, open: bool, cookie_secure: bool) -> (Context, Arc<AdminState>) {
+    ensure_schema(pool).await;
+    let transport = asyncevents::testing::transport(pool.clone());
+    let ctx = Context::with_db_and_transport(pool.clone(), transport.handle());
+    let st = Arc::new(AdminState {
+        env: template_env().unwrap(),
+        slots: ctx.slots().clone(),
+        pool: pool.clone(),
+        bus: ctx.bus().clone(),
+        open,
+        cookie_secure,
+        trusted: Vec::new(),
+    });
+    (ctx, st)
+}
+
+/// Per-test unique suffix (parallel-safe, plus wall-clock so reruns never collide).
+static UNIQ: AtomicU32 = AtomicU32::new(0);
+fn uniq(prefix: &str) -> String {
+    let n = UNIQ.fetch_add(1, Ordering::Relaxed);
+    let t = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis();
+    format!("{prefix}-{t}-{n}")
+}
+
+async fn create_user(pool: &PgPool, username: &str, pass: &str) {
+    let hash = hash_password(pass).unwrap();
+    sqlx::query("INSERT INTO admin.users (username, pass_hash) VALUES ($1, $2)")
+        .bind(username)
+        .bind(&hash)
+        .execute(pool)
+        .await
+        .unwrap();
+}
+
+/// Test teardown: the user row (sessions CASCADE), its attempt rows, and its
+/// durable events.
+async fn cleanup_user(pool: &PgPool, username: &str) {
+    let _ = sqlx::query("DELETE FROM admin.users WHERE username = $1")
+        .bind(username)
+        .execute(pool)
+        .await;
+    let _ = sqlx::query("DELETE FROM admin.login_attempts WHERE subject = $1")
+        .bind(format!("user:{username}"))
+        .execute(pool)
+        .await;
+    let _ = asyncevents::testing::cleanup_events(pool, "actor", username).await;
+}
+
+async fn cleanup_ip(pool: &PgPool, ip: &str) {
+    let _ = sqlx::query("DELETE FROM admin.login_attempts WHERE subject = $1")
+        .bind(format!("ip:{ip}"))
+        .execute(pool)
+        .await;
+}
+
+/// Counts `admin.action` rows by one payload key + the action value. Direct plane
+/// SQL is sanctioned in test files (archcheck rule 14b exempts tests).
+async fn action_rows(pool: &PgPool, key: &str, value: &str, action: &str) -> i64 {
+    let (n,): (i64,) = sqlx::query_as(
+        "SELECT count(*) FROM asyncevents.events
+         WHERE topic = 'admin.action' AND payload->>$1 = $2 AND payload->>'action' = $3",
+    )
+    .bind(key)
+    .bind(value)
+    .bind(action)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    n
+}
+
+/// Builds a form request with the ConnectInfo extension `app::run` injects in
+/// production (`into_make_service_with_connect_info`).
+fn form_req(method: &str, uri: &str, peer: &str, cookie: Option<&str>, body: Option<String>) -> Request<Body> {
+    let mut b = Request::builder().method(method).uri(uri);
+    if let Some(c) = cookie {
+        b = b.header("cookie", c);
+    }
+    let mut req = match body {
+        Some(body) => b
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(Body::from(body))
+            .unwrap(),
+        None => b.body(Body::empty()).unwrap(),
+    };
+    let addr: SocketAddr = peer.parse().unwrap();
+    req.extensions_mut().insert(ConnectInfo(addr));
+    req
+}
+
+async fn send(st: &Arc<AdminState>, req: Request<Body>) -> Response {
+    router(st.clone()).oneshot(req).await.unwrap()
+}
+
+async fn body_string(resp: Response) -> String {
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    String::from_utf8_lossy(&bytes).to_string()
+}
+
+fn set_cookie(resp: &Response) -> String {
+    resp.headers()
+        .get(header::SET_COOKIE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// Extracts the session token from a minting Set-Cookie value.
+fn token_of(set_cookie: &str) -> String {
+    set_cookie
+        .strip_prefix("admin_session=")
+        .and_then(|rest| rest.split(';').next())
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn location_of(resp: &Response) -> String {
+    resp.headers()
+        .get(header::LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_string()
+}
+
+async fn post_login(st: &Arc<AdminState>, peer: &str, user: &str, pass: &str) -> Response {
+    send(
+        st,
+        form_req(
+            "POST",
+            "/admin/login",
+            peer,
+            None,
+            Some(format!("username={user}&password={pass}")),
+        ),
+    )
+    .await
+}
+
+async fn csrf_of(pool: &PgPool, token: &str) -> String {
+    let (csrf,): (String,) =
+        sqlx::query_as("SELECT csrf_token FROM admin.sessions WHERE token = $1")
+            .bind(token)
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    csrf
+}
+
+async fn attempts_row(pool: &PgPool, subject: &str) -> Option<(i32, bool)> {
+    sqlx::query_as(
+        "SELECT fails, locked_until IS NOT NULL FROM admin.login_attempts WHERE subject = $1",
+    )
+    .bind(subject)
+    .fetch_optional(pool)
+    .await
+    .unwrap()
+}
+
+// ---- the matrix -----------------------------------------------------------------
+
+/// Login success: 303 → /admin, the cookie carries every flag (Secure included by
+/// default), the session row exists, and the durable `login-succeeded` row landed.
+#[tokio::test(flavor = "multi_thread")]
+async fn login_success_mints_session_cookie_and_emits() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, st) = wired(&pool, false, true).await;
+    let user = uniq("t-ok");
+    create_user(&pool, &user, "right").await;
+
+    let resp = post_login(&st, "203.0.113.10:9999", &user, "right").await;
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+    assert_eq!(location_of(&resp), "/admin");
+    let sc = set_cookie(&resp);
+    for flag in ["HttpOnly", "SameSite=Strict", "Path=/admin", "Max-Age=43200", "Secure"] {
+        assert!(sc.contains(flag), "Set-Cookie missing {flag}: {sc}");
+    }
+    let token = token_of(&sc);
+    assert_eq!(token.len(), 43, "32B base64url token");
+
+    let (n,): (i64,) = sqlx::query_as(
+        "SELECT count(*) FROM admin.sessions WHERE token = $1 AND username = $2 AND expires_at > now()",
+    )
+    .bind(&token)
+    .bind(&user)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(n, 1, "session row minted");
+    assert_eq!(action_rows(&pool, "actor", &user, "login-succeeded").await, 1);
+
+    cleanup_user(&pool, &user).await;
+    cleanup_ip(&pool, "203.0.113.10").await;
+}
+
+/// `ADMIN_COOKIE_SECURE=0` variant: everything identical except no `Secure` flag.
+#[tokio::test(flavor = "multi_thread")]
+async fn login_cookie_without_secure_when_opted_out() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, st) = wired(&pool, false, false).await;
+    let user = uniq("t-insec");
+    create_user(&pool, &user, "right").await;
+
+    let resp = post_login(&st, "203.0.113.11:9999", &user, "right").await;
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+    let sc = set_cookie(&resp);
+    assert!(!sc.contains("Secure"), "Secure must be absent when opted out: {sc}");
+    for flag in ["HttpOnly", "SameSite=Strict", "Path=/admin", "Max-Age=43200"] {
+        assert!(sc.contains(flag), "Set-Cookie missing {flag}: {sc}");
+    }
+
+    cleanup_user(&pool, &user).await;
+    cleanup_ip(&pool, "203.0.113.11").await;
+}
+
+/// No username oracle: wrong password, unknown user, and a LOCKED user answer 401
+/// with BYTE-IDENTICAL bodies.
+#[tokio::test(flavor = "multi_thread")]
+async fn failed_logins_have_identical_generic_401_bodies() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, st) = wired(&pool, false, true).await;
+    let user = uniq("t-oracle");
+    create_user(&pool, &user, "right").await;
+    // A pre-locked user (row planted directly).
+    let locked_user = uniq("t-locked");
+    create_user(&pool, &locked_user, "right").await;
+    sqlx::query(
+        "INSERT INTO admin.login_attempts (subject, fails, locked_until)
+         VALUES ($1, 5, now() + interval '10 minutes')",
+    )
+    .bind(format!("user:{locked_user}"))
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let wrong = post_login(&st, "203.0.113.12:9999", &user, "nope").await;
+    let unknown = post_login(&st, "203.0.113.12:9999", &uniq("t-ghost"), "nope").await;
+    let locked = post_login(&st, "203.0.113.12:9999", &locked_user, "right").await;
+
+    assert_eq!(wrong.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(unknown.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(locked.status(), StatusCode::UNAUTHORIZED);
+    let (a, b, c) = (
+        body_string(wrong).await,
+        body_string(unknown).await,
+        body_string(locked).await,
+    );
+    assert_eq!(a, b, "wrong-pass and unknown-user bodies must be identical");
+    assert_eq!(a, c, "locked body must be identical too (no lock oracle)");
+    assert!(a.contains(GENERIC_LOGIN_ERROR));
+
+    cleanup_user(&pool, &user).await;
+    cleanup_user(&pool, &locked_user).await;
+    cleanup_ip(&pool, "203.0.113.12").await;
+}
+
+/// The user row locks at 5 consecutive fails (emitting `login-locked`), the correct
+/// password STILL answers the generic 401 while locked (and does not increment),
+/// and after the lock window expires the correct password logs in and resets the
+/// attempt rows.
+#[tokio::test(flavor = "multi_thread")]
+async fn user_locks_at_five_and_unlocks_after_window() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, st) = wired(&pool, false, true).await;
+    let user = uniq("t-lock5");
+    let subject = format!("user:{user}");
+    create_user(&pool, &user, "right").await;
+
+    for i in 0..5 {
+        let resp = post_login(&st, "203.0.113.13:9999", &user, "wrong").await;
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "fail #{i}");
+    }
+    assert_eq!(attempts_row(&pool, &subject).await, Some((5, true)), "locked at 5");
+    assert_eq!(action_rows(&pool, "actor", &user, "login-locked").await, 1);
+
+    // Correct password while locked: same generic 401, no further increment.
+    let resp = post_login(&st, "203.0.113.13:9999", &user, "right").await;
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(attempts_row(&pool, &subject).await, Some((5, true)), "no increment while locked");
+
+    // Expire the lock window → the correct password succeeds and resets the rows.
+    sqlx::query(
+        "UPDATE admin.login_attempts SET locked_until = now() - interval '1 second' WHERE subject = $1",
+    )
+    .bind(&subject)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let resp = post_login(&st, "203.0.113.13:9999", &user, "right").await;
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER, "unlocked after the window");
+    assert_eq!(attempts_row(&pool, &subject).await, None, "attempt rows reset on success");
+
+    cleanup_user(&pool, &user).await;
+    cleanup_ip(&pool, "203.0.113.13").await;
+}
+
+/// The IP row accumulates across usernames but does NOT lock below its 20
+/// threshold — a shared office IP isn't bricked by one folk's typos [R2].
+#[tokio::test(flavor = "multi_thread")]
+async fn ip_row_accumulates_but_does_not_lock_below_twenty() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, st) = wired(&pool, false, true).await;
+    let ip = "203.0.113.14";
+    let peer = format!("{ip}:9999");
+    let ghosts: Vec<String> = (0..3).map(|_| uniq("t-ipghost")).collect();
+
+    for g in &ghosts {
+        let resp = post_login(&st, &peer, g, "wrong").await;
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+    assert_eq!(
+        attempts_row(&pool, &format!("ip:{ip}")).await,
+        Some((3, false)),
+        "ip row counts but is not locked below 20"
+    );
+
+    // The same IP can still log a real user in.
+    let user = uniq("t-ipok");
+    create_user(&pool, &user, "right").await;
+    let resp = post_login(&st, &peer, &user, "right").await;
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+
+    cleanup_user(&pool, &user).await;
+    for g in &ghosts {
+        cleanup_user(&pool, g).await;
+    }
+    cleanup_ip(&pool, ip).await;
+}
+
+/// An expired session is a miss: page GETs bounce to the login form, POSTs 401.
+#[tokio::test(flavor = "multi_thread")]
+async fn expired_session_redirects_get_and_401s_post() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, st) = wired(&pool, false, true).await;
+    let user = uniq("t-expiry");
+    create_user(&pool, &user, "right").await;
+
+    let resp = post_login(&st, "203.0.113.15:9999", &user, "right").await;
+    let token = token_of(&set_cookie(&resp));
+    let cookie = format!("admin_session={token}");
+
+    // Live session works.
+    let ok = send(&st, form_req("GET", "/admin", "203.0.113.15:9999", Some(&cookie), None)).await;
+    assert_eq!(ok.status(), StatusCode::OK, "empty slot renders the shell");
+
+    sqlx::query("UPDATE admin.sessions SET expires_at = now() - interval '1 second' WHERE token = $1")
+        .bind(&token)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let get = send(&st, form_req("GET", "/admin", "203.0.113.15:9999", Some(&cookie), None)).await;
+    assert_eq!(get.status(), StatusCode::SEE_OTHER);
+    assert_eq!(location_of(&get), "/admin/login");
+    let post = send(
+        &st,
+        form_req("POST", "/admin/whatever", "203.0.113.15:9999", Some(&cookie), Some(String::new())),
+    )
+    .await;
+    assert_eq!(post.status(), StatusCode::UNAUTHORIZED);
+
+    cleanup_user(&pool, &user).await;
+    cleanup_ip(&pool, "203.0.113.15").await;
+}
+
+/// An unauthenticated GET bounces to `/admin/login`; the login page itself serves
+/// 200 with the form (the split-proof `[AD1]` shape).
+#[tokio::test(flavor = "multi_thread")]
+async fn unauthenticated_get_redirects_to_login() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, st) = wired(&pool, false, true).await;
+
+    let get = send(&st, form_req("GET", "/admin", "203.0.113.16:9999", None, None)).await;
+    assert_eq!(get.status(), StatusCode::SEE_OTHER);
+    assert_eq!(location_of(&get), "/admin/login");
+
+    let login = send(&st, form_req("GET", "/admin/login", "203.0.113.16:9999", None, None)).await;
+    assert_eq!(login.status(), StatusCode::OK);
+    let html = body_string(login).await;
+    assert!(html.contains(r#"action="/admin/login""#));
+    // Security headers ride the admin router.
+    // (Checked on a fresh response since `html` consumed the first.)
+    let login2 = send(&st, form_req("GET", "/admin/login", "203.0.113.16:9999", None, None)).await;
+    assert!(login2.headers().contains_key(header::CONTENT_SECURITY_POLICY));
+    assert_eq!(login2.headers()[header::X_FRAME_OPTIONS], "DENY");
+    assert_eq!(login2.headers()[header::X_CONTENT_TYPE_OPTIONS], "nosniff");
+    assert_eq!(login2.headers()[header::REFERRER_POLICY], "no-referrer");
+}
+
+/// CSRF is checked BEFORE the local/remote editability decision: a REMOTE item
+/// without `_csrf` is 403 (not 405); with a valid token the same POST reaches the
+/// editability check and 405s. A LOCAL form with a bad token never runs `submit`;
+/// with the right token it submits, emits `form-submit`, and 303s.
+#[tokio::test(flavor = "multi_thread")]
+async fn csrf_rejects_before_editability_and_gates_local_submit() {
+    let Some(pool) = test_pool().await else { return };
+    let (ctx, st) = wired(&pool, false, true).await;
+    let user = uniq("t-csrf");
+    create_user(&pool, &user, "right").await;
+
+    // A remote (read-only by construction) item + a local editable form.
+    let remote_label = uniq("Remote Panel");
+    let remote_slug = slugify(&remote_label);
+    ctx.contribute(
+        adminapi::SLOT,
+        remote_item(
+            "remote",
+            Ok(adminapi::ItemData {
+                id: "remote".into(),
+                section: "S".into(),
+                label: remote_label.clone(),
+                content: adminapi::Content::default(),
+            }),
+            None,
+        ),
+    );
+    let submitted: Arc<Mutex<Vec<adminapi::Params>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink = submitted.clone();
+    let local_label = uniq("Local Form");
+    let local_slug = slugify(&local_label);
+    let submit: adminapi::SubmitFn = Arc::new(move |values: adminapi::Params| {
+        let sink = sink.clone();
+        Box::pin(async move {
+            sink.lock().unwrap().push(values);
+            Ok(())
+        }) as BoxFuture<'static, anyhow::Result<()>>
+    });
+    ctx.contribute(
+        adminapi::SLOT,
+        adminapi::Item::local(
+            "localform",
+            "S",
+            &local_label,
+            Arc::new(move |_p: &adminapi::Params| {
+                Ok(adminapi::Content {
+                    kpis: Vec::new(),
+                    table: None,
+                    form: Some(adminapi::Form {
+                        action: String::new(),
+                        fields: vec![adminapi::Field {
+                            name: "knob".into(),
+                            label: "Knob".into(),
+                            value: String::new(),
+                        }],
+                        submit: Some(submit.clone()),
+                    }),
+                })
+            }),
+        ),
+    );
+
+    let resp = post_login(&st, "203.0.113.17:9999", &user, "right").await;
+    let token = token_of(&set_cookie(&resp));
+    let cookie = format!("admin_session={token}");
+    let csrf = csrf_of(&pool, &token).await;
+
+    // Remote item, no _csrf → 403 (CSRF first), with _csrf → 405 (editability).
+    let no_csrf = send(
+        &st,
+        form_req("POST", &format!("/admin/{remote_slug}"), "203.0.113.17:9999", Some(&cookie), Some(String::new())),
+    )
+    .await;
+    assert_eq!(no_csrf.status(), StatusCode::FORBIDDEN, "CSRF must reject before editability");
+    let with_csrf = send(
+        &st,
+        form_req(
+            "POST",
+            &format!("/admin/{remote_slug}"),
+            "203.0.113.17:9999",
+            Some(&cookie),
+            Some(format!("_csrf={csrf}")),
+        ),
+    )
+    .await;
+    assert_eq!(with_csrf.status(), StatusCode::METHOD_NOT_ALLOWED, "remote stays read-only");
+
+    // Local form, wrong _csrf → 403, submit never ran.
+    let bad = send(
+        &st,
+        form_req(
+            "POST",
+            &format!("/admin/{local_slug}"),
+            "203.0.113.17:9999",
+            Some(&cookie),
+            Some("knob=v&_csrf=wrong".to_string()),
+        ),
+    )
+    .await;
+    assert_eq!(bad.status(), StatusCode::FORBIDDEN);
+    assert!(submitted.lock().unwrap().is_empty(), "submit must not run on a CSRF miss");
+
+    // Local form, right _csrf → 303, submit ran, durable form-submit landed.
+    let good = send(
+        &st,
+        form_req(
+            "POST",
+            &format!("/admin/{local_slug}"),
+            "203.0.113.17:9999",
+            Some(&cookie),
+            Some(format!("knob=v&_csrf={csrf}")),
+        ),
+    )
+    .await;
+    assert_eq!(good.status(), StatusCode::SEE_OTHER);
+    assert_eq!(location_of(&good), format!("/admin/{local_slug}"));
+    {
+        let calls = submitted.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].get("knob").map(String::as_str), Some("v"));
+        assert!(!calls[0].contains_key("_csrf"), "_csrf never reaches the module");
+    }
+    assert_eq!(action_rows(&pool, "target", &local_slug, "form-submit").await, 1);
+
+    cleanup_user(&pool, &user).await;
+    cleanup_ip(&pool, "203.0.113.17").await;
+    let _ = sqlx::query(
+        "DELETE FROM asyncevents.events WHERE topic = 'admin.action' AND payload->>'target' = $1",
+    )
+    .bind(&local_slug)
+    .execute(&pool)
+    .await;
+}
+
+/// `ADMIN_OPEN=1` bypasses sessions AND CSRF: pages render with no cookie, and a
+/// local form posts without `_csrf` (actor recorded as `local-admin`).
+#[tokio::test(flavor = "multi_thread")]
+async fn admin_open_bypasses_sessions_and_csrf() {
+    let Some(pool) = test_pool().await else { return };
+    let (ctx, st) = wired(&pool, true, true).await;
+
+    let get = send(&st, form_req("GET", "/admin", "203.0.113.18:9999", None, None)).await;
+    assert_eq!(get.status(), StatusCode::OK, "open portal renders without a session");
+
+    let submitted: Arc<Mutex<Vec<adminapi::Params>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink = submitted.clone();
+    let label = uniq("Open Form");
+    let slug = slugify(&label);
+    let submit: adminapi::SubmitFn = Arc::new(move |values: adminapi::Params| {
+        let sink = sink.clone();
+        Box::pin(async move {
+            sink.lock().unwrap().push(values);
+            Ok(())
+        }) as BoxFuture<'static, anyhow::Result<()>>
+    });
+    ctx.contribute(
+        adminapi::SLOT,
+        adminapi::Item::local(
+            "openform",
+            "S",
+            &label,
+            Arc::new(move |_p: &adminapi::Params| {
+                Ok(adminapi::Content {
+                    kpis: Vec::new(),
+                    table: None,
+                    form: Some(adminapi::Form {
+                        action: String::new(),
+                        fields: vec![adminapi::Field {
+                            name: "knob".into(),
+                            label: "Knob".into(),
+                            value: String::new(),
+                        }],
+                        submit: Some(submit.clone()),
+                    }),
+                })
+            }),
+        ),
+    );
+
+    let post = send(
+        &st,
+        form_req("POST", &format!("/admin/{slug}"), "203.0.113.18:9999", None, Some("knob=v".to_string())),
+    )
+    .await;
+    assert_eq!(post.status(), StatusCode::SEE_OTHER, "no session, no _csrf — open mode submits");
+    assert_eq!(submitted.lock().unwrap().len(), 1);
+    assert_eq!(action_rows(&pool, "target", &slug, "form-submit").await, 1);
+
+    let _ = sqlx::query(
+        "DELETE FROM asyncevents.events WHERE topic = 'admin.action' AND payload->>'target' = $1",
+    )
+    .bind(&slug)
+    .execute(&pool)
+    .await;
+}
+
+/// Logout: CSRF-gated, deletes the session row, clears the cookie, emits the
+/// durable `logout`.
+#[tokio::test(flavor = "multi_thread")]
+async fn logout_deletes_session_clears_cookie_and_emits() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, st) = wired(&pool, false, true).await;
+    let user = uniq("t-logout");
+    create_user(&pool, &user, "right").await;
+
+    let resp = post_login(&st, "203.0.113.19:9999", &user, "right").await;
+    let token = token_of(&set_cookie(&resp));
+    let cookie = format!("admin_session={token}");
+    let csrf = csrf_of(&pool, &token).await;
+
+    // Without _csrf → 403, session intact.
+    let bad = send(
+        &st,
+        form_req("POST", "/admin/logout", "203.0.113.19:9999", Some(&cookie), Some(String::new())),
+    )
+    .await;
+    assert_eq!(bad.status(), StatusCode::FORBIDDEN);
+
+    let good = send(
+        &st,
+        form_req(
+            "POST",
+            "/admin/logout",
+            "203.0.113.19:9999",
+            Some(&cookie),
+            Some(format!("_csrf={csrf}")),
+        ),
+    )
+    .await;
+    assert_eq!(good.status(), StatusCode::SEE_OTHER);
+    assert_eq!(location_of(&good), "/admin/login");
+    let sc = set_cookie(&good);
+    assert!(sc.contains("Max-Age=0"), "clearing cookie: {sc}");
+
+    let (n,): (i64,) = sqlx::query_as("SELECT count(*) FROM admin.sessions WHERE token = $1")
+        .bind(&token)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(n, 0, "session row deleted");
+    assert_eq!(action_rows(&pool, "actor", &user, "logout").await, 1);
+
+    cleanup_user(&pool, &user).await;
+    cleanup_ip(&pool, "203.0.113.19").await;
+}
+
+/// Zero admin users is a WARNED boot, never a failure: the full lifecycle prefix
+/// (`register` → `migrate` → `start`) succeeds against a live DB regardless of the
+/// user count — the old `ADMIN_USER` fail-closed env gate is gone.
+#[tokio::test(flavor = "multi_thread")]
+async fn zero_user_boot_is_allowed() {
+    let Some(pool) = test_pool().await else { return };
+    ensure_schema(&pool).await;
+
+    let ctx = Context::with_db(pool.clone());
+    let admin = Admin::new();
+    admin.register(&ctx).unwrap();
+    admin.migrate(&ctx).await.unwrap();
+    admin.start(&ctx).await.expect("start must succeed with zero users (warn only)");
 }

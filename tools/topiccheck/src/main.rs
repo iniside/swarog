@@ -77,11 +77,12 @@ const ALLOW_UNSUBSCRIBED: &[&str] = &[];
 const ALLOW_INPROCESS_DEFINED: &[&str] = &[];
 
 /// Processes that host no DB / durable-events plane and therefore must host ZERO durable
-/// subscriptions. `gateway-svc` is the single front door with no store; `admin-svc` boots
-/// with `app::Config::from_env().without_db()` (`cmd/admin-svc/src/main.rs:47` — it owns
-/// no schema and only DIALS peers via stubs), so it hosts no plane either. The monolith
-/// `server` DOES host the plane, so it is not listed.
-const PLANELESS_PROCESSES: &[&str] = &["gateway-svc", "admin-svc"];
+/// subscriptions. `gateway-svc` is the single front door with no store. `admin-svc` is
+/// NOT listed anymore: since the admin-hardening rollout it is DB-backed (the admin
+/// module owns schema `admin` for session auth and emits durable `admin.action`), so it
+/// hosts the plane like any other DB-backed process. The monolith `server` DOES host the
+/// plane, so it is not listed either.
+const PLANELESS_PROCESSES: &[&str] = &["gateway-svc"];
 
 /// A defined contract topic: the topic string, its payload-shape version, and its
 /// history policy. Built from each `bus::define` static's [`EventContract`] — referenced
@@ -486,10 +487,9 @@ fn run_profile(name: &str, profile: &DeploymentProfile, defined: &[Contract]) ->
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Checkers build module graphs, they serve no HTTP — open-admin is meaningless here.
-    // Admin::init is now fail-closed (empty ADMIN_USER bails) unless ADMIN_OPEN is set, so
-    // set it explicitly so this harness's real Admin::init keeps building the graph.
-    std::env::set_var("ADMIN_OPEN", "1");
+    // No auth env needed: Admin::init no longer reads ADMIN_USER/ADMIN_PASS — session
+    // auth is DB-backed (a zero-user boot merely warns), so the harness builds every
+    // module graph with a bare environment.
 
     // A tokio runtime must be live: an in-process `Bus::on` during `init` spawns a task.
     // `--durability-strict`: the BLOCKING fortress invocation — exit non-zero on ANY SEAM

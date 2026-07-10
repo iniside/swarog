@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GameOps — Sign in</title>
+<link rel="stylesheet" href="/admin/theme.css">
+<style>
+.login-body{display:flex;align-items:center;justify-content:center;min-height:100vh;}
+.login-card{width:340px;padding:24px;}
+.login-card .form-row{margin-bottom:12px;}
+.login-err{margin-bottom:12px;}
+</style>
+</head>
+<body class="login-body">
+  <div class="panel login-card">
+    <div class="panel-title">GameOps — Sign in</div>
+    {% if error %}<div class="empty login-err">{{ error }}</div>{% endif %}
+    <form method="post" action="/admin/login">
+      <div class="form-row"><label>Username</label><input type="text" name="username" autofocus autocomplete="username"></div>
+      <div class="form-row"><label>Password</label><input type="password" name="password" autocomplete="current-password"></div>
+      <button type="submit" class="btn">Sign in</button>
+    </form>
+  </div>
+</body>
+</html>

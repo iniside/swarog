@@ -194,11 +194,10 @@ fn allowlist_suppresses_unsubscribed() {
 /// has a live durable subscriber in both Monolith and Split. Now that
 /// unsubscribed folds into `any_seam`, this is the assertion that
 /// `--durability-strict` (the fortress gate) exits 0 on this tree. Mirrors
-/// `main`'s harness setup: `ADMIN_OPEN=1` so the real `Admin::init` builds, and a
+/// `main`'s harness setup: no auth env (Admin::init no longer reads any), and a
 /// tokio runtime for the in-process `Bus::on` spawns during `init`.
 #[tokio::test]
 async fn current_tree_has_zero_unsubscribed_in_both_profiles() {
-    std::env::set_var("ADMIN_OPEN", "1");
     let defined = defined_topics();
     for (label, profile) in [
         ("Monolith", DeploymentProfile::Monolith),
@@ -212,10 +211,10 @@ async fn current_tree_has_zero_unsubscribed_in_both_profiles() {
     }
 }
 
-// --- The DEFINE set is exactly the six domain contract topics ----------------
+// --- The DEFINE set is exactly the seven domain contract topics ---------------
 
 #[test]
-fn defined_topics_are_the_six_domain_topics_at_v1() {
+fn defined_topics_are_the_seven_domain_topics_at_v1() {
     let mut got: Vec<(String, u32)> = defined_topics()
         .into_iter()
         .map(|c| (c.topic, c.version))
@@ -224,6 +223,7 @@ fn defined_topics_are_the_six_domain_topics_at_v1() {
     assert_eq!(
         got,
         vec![
+            ("admin.action".to_string(), 1),
             ("character.created".to_string(), 1),
             ("character.deleted".to_string(), 1),
             ("config.changed".to_string(), 1),

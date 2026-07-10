@@ -339,7 +339,9 @@ impl Module for Audit {
     /// iff this process serves an internal edge).
     fn init(&self, ctx: &Context) -> anyhow::Result<()> {
         // Validated BEFORE touching `self.svc()` so a bad value fails startup loudly
-        // (fail-closed, admin's `ADMIN_USER` bail pattern) without requiring `register`
+        // (fail-closed at init — the apikeys/gateway explicit-gate convention; the old
+        // admin `ADMIN_USER` bail this once mirrored is gone, replaced by DB-backed
+        // session auth) without requiring `register`
         // to have run first — a non-positive retention would delete the ledger outright
         // on the next prune tick, so a typo must stop the process, not silently truncate
         // history. `env_int` already falls back to `DEFAULT_RETENTION_DAYS` when unset or
