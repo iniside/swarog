@@ -48,7 +48,10 @@ monolith-vs-split). NOT config layering/precedence — one decision at process
 start ([[config-as-code-anti-magic]]). An unmanaged process simply gets no
 management (no restarts/replicas/rolling deploy) — no other penalty. The managed
 convention is a tiny language-neutral contract: (1) read `ORCHESTRATOR_URL` +
-identity, (2) hello + resolve peers, (3) expose `/readyz`, (4) drain on SIGTERM;
+identity, (2) hello + resolve peers, (3) expose `/readyz`, (4) drain on a
+**wire command from the centrala** (NOT SIGTERM — platform-neutral, see
+cross-platform below; signal/TerminateProcess is only the unresponsive-process
+fallback);
 any-language service (e.g. future Go svc) implements it itself — the orchestrator
 supports nothing per-service; `core/remote` is merely our Rust client.
 `cmd/server` (monolith) satisfies it trivially (no peers to resolve). Its own
@@ -71,6 +74,17 @@ Panel/CLI is read-only observability + imperative ops (status/restart/deploy);
 CLI first, own tiny web UI later at most — never a page in the backend's `admin`
 module (zero-sharing both ways). Only runtime-mutable desired state: future game
 -server `replicas` via API from the server-management module.
+
+**Cross-platform REQUIREMENT (2026-07-10, Lukasz): the orchestrator must run on
+Windows/Linux/macOS.** All platform abstraction lives ONLY in the agent — a small
+trait (`spawn_supervised`/`kill_tree`/`alive`) with cfg impls: process
+groups (unix) vs Job Objects (windows); master and the wire contract are
+platform-free. Graceful drain goes through the wire contract (not signals —
+SIGTERM doesn't exist on Windows); resource limits are an optional capability
+(cgroups/Job Objects, mac none) the agent applies best-effort and reports
+unsupported. Verify: Windows (dev box) + Linux blocking, mac compile-only.
+Bonus argument: one Rust binary replaces the duplicated `.sh`/`.ps1` operational
+scripts — it reduces the repo's platform surface.
 
 **Multi-machine (2026-07-10): master + per-machine agents (the Nomad
 server/client shape), NO overlay network, NO master election.** Overlay exists in
