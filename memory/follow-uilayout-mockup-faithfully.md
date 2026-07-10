@@ -18,9 +18,15 @@ user's words: they'd understand the clumsiness if I were working from a screensh
 HTML and CSS. Inventing when the spec exists reads as incompetence, not creativity.
 
 **How to apply:** before writing any theme.css / template, READ the relevant `UILayout/*.dc.html`
-first and lift values 1:1 — e.g. GameOps uses fonts Public Sans + IBM Plex Mono (Google Fonts),
-bg `#0f1116`, sidebar `#13151b`, cards `#161920` border `#232832`, accent amber `#f5a524`, green
-`#34d399`, red `#f5604d`, blue `#7aa2f7`, muted `#9aa0ac`/`#6b7180`; 256px sidebar with
-MAIN/OPERATIONS/SYSTEM groups; 64px header with search + Production pill + bell + avatar. The
-mockup is a spec, not runnable — port it, keeping dynamic data via the template engine.
+first and lift values 1:1 — never quote palette values from this memory; the mockup file is the
+only source (it gets replaced wholesale: 2026-07-10 a NEW `GameOps Admin.dc.html` landed with a
+changed colour scheme — darker bg `#0a0b0e`/cards `#0e0f12`, borders `#1b1e24`/`#22262e` — and the
+extensibility baseline: player-row `⋯` menu → View Characters / View Inventory, player-scoped
+Characters/Inventory sub-pages with "‹ Players" back header, character-card `⋯` menu → View/
+View Inventory modals). Adopting the new colour scheme is IN SCOPE of the admin-extensibility
+work. The mockup is a spec, not runnable — port it, keeping dynamic data via the template engine.
+
+**Dispatch (user-mandated, emphatic):** UI translation of this mockup must NEVER go to a
+`[sonnet]` lane — Fable (or Opus) only. This is a hard per-user rule on top of CLAUDE.md's
+"Visual/UI design is never [sonnet]".
 See [[gamebackend-north-star-and-jvm-exploration]].
