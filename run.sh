@@ -67,11 +67,13 @@ start_server() {
 wait_healthy() {
     local port="$1" name="$2" tries=60
     while [ "$tries" -gt 0 ]; do
-        if curl -fsS -o /dev/null "http://localhost:$port/healthz" 2>/dev/null; then
-            echo "$name healthy at http://localhost:$port/healthz"; return 0; fi
+        if curl -fsS -o /dev/null "http://localhost:$port/readyz" 2>/dev/null; then
+            echo "$name healthy at http://localhost:$port/readyz"; return 0; fi
         tries=$((tries - 1)); sleep 0.5
     done
-    echo "$name did not become healthy within ~30s" >&2; return 1
+    echo "$name did not become healthy within ~30s" >&2
+    curl -s "http://localhost:$port/readyz" >&2 2>&1
+    return 1
 }
 write_pids_file() {
     : > "$PIDS_FILE"

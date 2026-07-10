@@ -84,7 +84,7 @@ function Start-Svc([string]$Name, [string]$Exe, [hashtable]$EnvVars) {
 # Health-check goes to 127.0.0.1, NOT localhost: on Windows `localhost` resolves to IPv6
 # ::1 first, but the services bind IPv4 0.0.0.0, so Invoke-WebRequest would hang on ::1.
 function Wait-Healthy([int]$Port, [string]$Name) {
-    $url = "http://127.0.0.1:$Port/healthz"
+    $url = "http://127.0.0.1:$Port/readyz"
     for ($i = 0; $i -lt 60; $i++) {
         try {
             Invoke-WebRequest -UseBasicParsing -Uri $url -TimeoutSec 2 | Out-Null
@@ -92,6 +92,10 @@ function Wait-Healthy([int]$Port, [string]$Name) {
             return
         } catch { Start-Sleep -Milliseconds 500 }
     }
+    try {
+        $resp = Invoke-WebRequest -UseBasicParsing -Uri $url -TimeoutSec 2 -SkipHttpErrorCheck
+        Write-Host "  readyz body: $($resp.Content)"
+    } catch { Write-Host "  readyz body: $($_.Exception.Message)" }
     throw "$Name did not become healthy at $url within ~30s"
 }
 

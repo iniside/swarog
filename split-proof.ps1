@@ -152,7 +152,12 @@ if (-not $Psql) {
 # accepts a connection URI directly, so no DSN parsing is needed and percent-encoded
 # passwords / sslmode query params ride along for free.
 function Invoke-Sql([string]$Sql) {
-    return (& $Psql $env:DATABASE_URL -t -A -c $Sql 2>$null)
+    $out = & $Psql $env:DATABASE_URL -v ON_ERROR_STOP=1 -t -A -c $Sql 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "FATAL psql rc=$LASTEXITCODE for: $Sql`n$out"
+        throw "psql failed (rc=$LASTEXITCODE) for: $Sql"
+    }
+    return $out
 }
 
 # Health-check and player HTTP go to 127.0.0.1, NOT localhost: on Windows `localhost`
@@ -161,11 +166,16 @@ function Invoke-Sql([string]$Sql) {
 function Wait-Healthy([int]$Port, [string]$Name) {
     for ($i = 0; $i -lt 60; $i++) {
         try {
-            Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:$Port/healthz" -TimeoutSec 2 | Out-Null
+            Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:$Port/readyz" -TimeoutSec 2 | Out-Null
             Note "$Name healthy on :$Port"; return $true
         } catch { Start-Sleep -Milliseconds 500 }
     }
-    Note "$Name NEVER became healthy on :$Port"; return $false
+    Note "$Name NEVER became healthy on :$Port"
+    try {
+        $resp = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:$Port/readyz" -TimeoutSec 2 -SkipHttpErrorCheck
+        Note "  readyz body: $($resp.Content)"
+    } catch { Note "  readyz body: $($_.Exception.Message)" }
+    return $false
 }
 
 function Start-Svc([string]$Exe, [hashtable]$EnvVars, [string]$LogName) {

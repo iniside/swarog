@@ -172,7 +172,13 @@ fi
 # accepts a connection URI directly, so no DSN parsing is needed and percent-encoded
 # passwords / sslmode query params ride along for free.
 pg() {
-    "$PSQL" "$DATABASE_URL" -t -A -c "$1" 2>/dev/null
+    out=$("$PSQL" "$DATABASE_URL" -v ON_ERROR_STOP=1 -t -A -c "$1" 2>&1); rc=$?
+    if [ $rc -ne 0 ]; then
+        echo "FATAL psql rc=$rc for: $1" >&2
+        echo "$out" >&2
+        kill -s TERM $$
+    fi
+    printf '%s\n' "$out"
 }
 
 # --- teardown: kill all processes on ANY exit --------------------------------
@@ -193,7 +199,10 @@ stop_pid() {
     note "$label (pid $pid) still alive after grace; forcing"
     kill -9 "$pid" 2>/dev/null || true
 }
+TEARDOWN_DONE=""
 teardown() {
+    [ -n "$TEARDOWN_DONE" ] && return 0
+    TEARDOWN_DONE=1
     stop_pid "$A_PID" "A"
     stop_pid "$B_PID" "B"
     stop_pid "$G_PID" "G"
@@ -209,7 +218,8 @@ teardown() {
     stop_pid "$M_PID" "monolith"
     A_PID=""; B_PID=""; G_PID=""; C_PID=""; D_PID=""; E_PID=""; F_PID=""; H_PID=""; I_PID=""; J_PID=""; K_PID=""; L_PID=""; M_PID=""
 }
-trap teardown EXIT INT TERM
+trap 'teardown; exit 1' INT TERM
+trap teardown EXIT
 
 # --- clear any stragglers from an aborted prior run (idempotent reruns) ------
 kill_stragglers() {
@@ -247,12 +257,14 @@ kill_stragglers() {
 wait_healthy() {
     local port="$1" name="$2" tries=60
     while [ "$tries" -gt 0 ]; do
-        if curl -fsS -o /dev/null "http://localhost:$port/healthz" 2>/dev/null; then
+        if curl -fsS -o /dev/null "http://localhost:$port/readyz" 2>/dev/null; then
             note "$name healthy on :$port"; return 0
         fi
         tries=$((tries - 1)); sleep 0.5
     done
-    note "$name NEVER became healthy on :$port"; return 1
+    note "$name NEVER became healthy on :$port"
+    curl -s "http://localhost:$port/readyz" 2>&1 | while IFS= read -r line; do note "  readyz body: $line"; done
+    return 1
 }
 
 # ============================================================================
