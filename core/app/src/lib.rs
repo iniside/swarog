@@ -199,20 +199,22 @@ fn apply_http_layers(ctx: &Context, mut router: axum::Router) -> axum::Router {
 ///
 /// 1. open a [`PgPool`] from `cfg.database_url` — SKIPPED when it is `None` (a
 ///    pure-transport process like `gateway-svc` owns no schema),
-/// 2. construct the durable-events plane ([`asyncevents::Plane`]) iff a pool was
-///    opened — the plane is process infrastructure owned HERE, like the HTTP/edge
-///    planes, never a module — then build the [`Context`]: DB-backed with the
-///    plane's transport injected at construction
-///    ([`Context::with_db_and_transport`]), or DB-less (no plane; any `on_tx`
-///    there fails loud at init, `emit_tx` returns `NoTransport`),
+/// 2. construct the durable-events plane ([`asyncevents::Plane`]) AND the broadcast
+///    cache-invalidation plane ([`invalidation::InvalidationPlane`]) iff a pool was
+///    opened — both process infrastructure owned HERE, like the HTTP/edge planes,
+///    never a module — then build the [`Context`]: DB-backed with the durable plane's
+///    transport injected at construction ([`Context::with_db_and_transport`]) and the
+///    invalidation handle swapped in ([`Context::with_invalidation`]), or DB-less (no
+///    planes; any `on_tx`/`register` there is inert),
 /// 3. [`validate_requires`] — fail loud on an incomplete module set,
 /// 4. [`App::build`] (two-phase register → init), with the plane's worker-health
 ///    probe contributed to `/readyz`,
 /// 5. the plane's own-schema migration, then [`App::migrate`] — the event log
 ///    exists before any module's first `emit_tx`,
-/// 6. [`App::start`], then the plane's start (subscription reconcile — the
+/// 6. [`App::start`], then the durable plane's start (subscription reconcile — the
 ///    snapshot is taken AFTER all module inits and stub registers — pull workers,
-///    NOTIFY wake-up, metrics),
+///    NOTIFY wake-up, metrics), then the invalidation plane's start (each refresh
+///    callback's first run synchronously — fail loud — then its NOTIFY listener + poll),
 /// 7. if `edge_server` is `Some`, bind the internal mutual-TLS QUIC listener, and if
 ///    `player_server` is `Some`, bind the player-facing server-cert-only QUIC listener
 ///    — both AFTER build (so every handler a module registered during init exists),
@@ -222,10 +224,10 @@ fn apply_http_layers(ctx: &Context, mut router: axum::Router) -> axum::Router {
 ///    pool exists, else answers a plain 200,
 /// 9. block until SIGINT (Ctrl-C — cross-platform),
 /// 10. graceful shutdown: stop accepting HTTP → close the player listener (players
-///     drain first) → close the internal edge listener → stop the plane (delivery
-///     halts before anything tears down) → drain the bus → [`App::stop`] (reverse
-///     registration order). The bus drains BEFORE any module `stop`, so a stopping
-///     module never emits.
+///     drain first) → close the internal edge listener → stop the durable plane
+///     (delivery halts before anything tears down) → stop the invalidation plane →
+///     drain the bus → [`App::stop`] (reverse registration order). The bus drains
+///     BEFORE any module `stop`, so a stopping module never emits.
 ///
 /// `modules` is the WHOLE topology of this process — real modules plus any remote
 /// stubs standing in for peers. `edge_server` is `None` for an all-local process and
@@ -270,12 +272,26 @@ pub async fn run(
         _ => None,
     };
 
+    //    The broadcast cache-invalidation plane, same DB ⇒ plane rule (a DB-less process
+    //    hosts no cache consumers). It carries no durable checkpoint: it promises
+    //    FRESHNESS (a committed change re-runs every registered refresh), not delivery.
+    //    Its handle is injected at `Context` construction so a module's wiring-time
+    //    `ctx.invalidation().register` records onto the plane; it starts after module
+    //    start (the snapshot must see every registration) and stops before module stop.
+    let mut invalidation = match (&pool, &cfg.database_url) {
+        (Some(_), Some(dsn)) => Some(invalidation::InvalidationPlane::new(dsn.clone())),
+        _ => None,
+    };
+
     //    Wire the shared context; the same Arc is handed to App (which drives the
     //    modules) and kept here for the router + bus drain. DB-backed with the
     //    plane's transport injected AT CONSTRUCTION (so every module's wiring-time
-    //    on_tx finds a live durable plane), DB-less and plane-less otherwise.
-    let ctx = Arc::new(match (pool.clone(), &plane) {
-        (Some(p), Some(pl)) => Context::with_db_and_transport(p, pl.transport()),
+    //    on_tx finds a live durable plane) and the invalidation handle swapped in,
+    //    DB-less and plane-less otherwise.
+    let ctx = Arc::new(match (pool.clone(), &plane, &invalidation) {
+        (Some(p), Some(pl), Some(inv)) => {
+            Context::with_db_and_transport(p, pl.transport()).with_invalidation(inv.handle())
+        }
         _ => Context::new(),
     });
 
@@ -308,6 +324,33 @@ pub async fn run(
         );
     }
 
+    // The invalidation plane's freshness probe joins `/readyz`: a cache whose refresh
+    // callback has not succeeded for 60s is stale, so the process stops taking traffic
+    // that expects fresh reads. (Before `start` seeds the clock the set is empty ⇒ ready,
+    // but HTTP serves only after `start`, so that window is never observable.)
+    if let Some(p) = &invalidation {
+        // Register the plane's series into the process's private registry (it can't
+        // depend on core/metrics itself — see the plane's Cargo.toml).
+        for collector in p.collectors() {
+            let _ = metrics::register(collector);
+        }
+        let health = p.readiness();
+        ctx.contribute(
+            httpmw::READINESS_SLOT,
+            httpmw::ReadyCheck::new("invalidation", move || {
+                let health = health.clone();
+                async move {
+                    let stale = health.stale(invalidation::STALE_AFTER);
+                    if stale.is_empty() {
+                        Ok(())
+                    } else {
+                        Err(format!("invalidation callbacks stale >60s: {}", stale.join(", ")))
+                    }
+                }
+            }),
+        );
+    }
+
     // 5. Own-schema migrations — the plane's first (a module's first emit_tx must
     //    find `asyncevents.append_event`), then 6. background work: modules first,
     //    then the plane (its subscription snapshot must see every wiring-time on_tx).
@@ -318,6 +361,12 @@ pub async fn run(
     app.start().await.context("start failed")?;
     if let Some(p) = &mut plane {
         p.start().await.context("asyncevents start failed")?;
+    }
+    // After module start (so the snapshot sees every wiring-time `register`): run each
+    // callback's FIRST refresh synchronously — a failure fails startup loudly — then
+    // launch the NOTIFY listener + poll fallback.
+    if let Some(p) = &mut invalidation {
+        p.start().await.context("invalidation start failed")?;
     }
 
     // 7. Bring up the shared edge server AFTER every module init has contributed its
@@ -456,6 +505,9 @@ pub async fn run(
         running.close();
     }
     if let Some(p) = &mut plane {
+        p.stop().await;
+    }
+    if let Some(p) = &mut invalidation {
         p.stop().await;
     }
     ctx.bus().close().await;

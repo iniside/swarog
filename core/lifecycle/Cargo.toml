@@ -9,6 +9,7 @@ publish = false
 bus = { workspace = true }
 registry = { workspace = true }
 contrib = { workspace = true }
+invalidation = { workspace = true }
 async-trait = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }

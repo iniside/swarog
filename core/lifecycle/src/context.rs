@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex};
 use axum::Router;
 use bus::Bus;
 use contrib::Slots;
+use invalidation::Invalidation;
 use registry::Registry;
 use sqlx::PgPool;
 
@@ -30,6 +31,12 @@ pub struct Context {
     /// its own schema) or ignore it. `None` in unit tests — the lifecycle core
     /// never requires a live DB.
     db: Option<PgPool>,
+    /// The broadcast cache-invalidation registration handle. Always present (like the
+    /// bus): a module registers a refresh callback during `init` topology-blind, and a
+    /// DB-less process's handle simply has no plane draining it (and hosts no caches).
+    /// `app::run` swaps in the plane-backed handle via [`Context::with_invalidation`]
+    /// for a DB-backed process; the default is a standalone one nothing drains.
+    invalidation: Arc<Invalidation>,
 }
 
 impl Context {
@@ -41,6 +48,7 @@ impl Context {
             slots: Arc::new(Slots::new()),
             router: Mutex::new(Router::new()),
             db: None,
+            invalidation: Arc::new(Invalidation::new()),
         }
     }
 
@@ -65,8 +73,23 @@ impl Context {
         }
     }
 
+    /// Replaces the invalidation handle with a plane-backed one (app-owned, for a
+    /// DB-backed process). Consuming builder used by `app::run` right after
+    /// [`Context::with_db_and_transport`]; a module's wiring-time `register` then records
+    /// onto the plane.
+    pub fn with_invalidation(mut self, invalidation: Arc<Invalidation>) -> Self {
+        self.invalidation = invalidation;
+        self
+    }
+
     pub fn bus(&self) -> &Arc<Bus> {
         &self.bus
+    }
+
+    /// The broadcast cache-invalidation handle: a cache consumer registers its
+    /// authoritative refresh callback here during `init` (see `core/invalidation`).
+    pub fn invalidation(&self) -> &Arc<Invalidation> {
+        &self.invalidation
     }
 
     pub fn registry(&self) -> &Arc<Registry> {

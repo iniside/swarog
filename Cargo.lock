@@ -232,7 +232,9 @@ dependencies = [
  "bus",
  "edge",
  "httpmw",
+ "invalidation",
  "lifecycle",
+ "metrics",
  "sqlx",
  "thiserror 1.0.69",
  "tokio",
@@ -1501,6 +1503,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "invalidation"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "prometheus",
+ "sqlx",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "inventory"
 version = "0.1.0"
 dependencies = [
@@ -1771,6 +1784,7 @@ dependencies = [
  "axum",
  "bus",
  "contrib",
+ "invalidation",
  "registry",
  "sqlx",
  "tokio",

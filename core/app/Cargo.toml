@@ -10,6 +10,10 @@ lifecycle = { workspace = true }
 edge = { workspace = true }
 bus = { workspace = true }
 asyncevents = { workspace = true }
+invalidation = { workspace = true }
+# Registers the invalidation plane's collectors (it must not depend on core/metrics — a
+# cycle, since metrics is a lifecycle::Module and lifecycle depends on invalidation).
+metrics = { workspace = true }
 httpmw = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time", "net", "signal"] }
 axum = { workspace = true }

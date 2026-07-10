@@ -1,0 +1,21 @@
+[package]
+name = "invalidation"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+# The per-callback age gauge + failure counter are owned here (raw prometheus, NOT the
+# core/metrics crate — that one is a lifecycle::Module, and lifecycle depends on THIS
+# crate for the Context handle, so a metrics dep would cycle). `app::run` registers
+# `InvalidationPlane::collectors()` into the process's private registry so they ride the
+# same GET /metrics scrape — the same seam the durable plane uses, wired one layer up.
+prometheus = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
+sqlx = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }

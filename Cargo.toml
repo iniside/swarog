@@ -14,6 +14,9 @@ members = [
     # DB ⇒ plane, not a module) and the topology-blind registry SWAP — not domains,
     # so they live in core/ and the fortress rule applies to a clean modules/.
     "core/asyncevents",
+    # The broadcast cache-invalidation plane (also app-owned — DB ⇒ plane): Postgres
+    # LISTEN/NOTIFY re-runs replica-local cache refresh callbacks. Freshness, not delivery.
+    "core/invalidation",
     "core/remote",
     # Cross-cutting HTTP infra (Go's metrics/): a PRIVATE Prometheus registry + the
     # /metrics scrape, mounted by core/app in every module-hosting process (Step 12).
@@ -183,6 +186,7 @@ app = { path = "core/app" }
 # Process infrastructure in core/: asyncevents (the durable-events plane, owned by
 # app::run) and remote (the topology-blind registry SWAP; generic — imports no api/ crate).
 asyncevents = { path = "core/asyncevents" }
+invalidation = { path = "core/invalidation" }
 remote = { path = "core/remote" }
 metrics = { path = "core/metrics" }
 httpmw = { path = "core/httpmw" }
