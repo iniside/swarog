@@ -110,6 +110,24 @@ running processes keep running (addresses resolved, agents supervise locally),
 only management degrades until restart. Placement = manifest annotation, not
 scheduling.
 
+**Gateway route discovery is part of this project (2026-07-10, Lukasz):** the
+hand-listed `remote::Stub` set in `cmd/gateway-svc/src/lib.rs` should be replaced
+by **routing-as-data**: each svc serves a reserved `describe()` op over its edge
+returning a manifest of its `#[http]` ops (verb, path pattern, method id, param
+mapping — data the `#[rpc]` macro already has at glue-gen time); the gateway
+builds its route table at runtime from peers' manifests (peer list from the
+centrala's resolve), with the same loud collision-fail at manifest merge. Adding
+a module then requires ZERO gateway changes. Link-time auto-registration
+(linkme/inventory distributed slices) was considered and REJECTED — it only moves
+the hand list from lib.rs to Cargo.toml, same forget-risk; don't re-propose it.
+Open point to research first: whether every existing OpBinding decode/encode is
+declaratively describable (e.g. match's Go-parity `Winner`/`Loser` mapping) or
+whether HTTP decode moves svc-side (gateway as pure reverse proxy). Gateway's own
+typed capability deps (`accountsapi::Sessions`, `apikeysapi::Keys`) stay
+compiled-in — they're its sync deps, not routing. Until this lands, the interim
+safeguard is a checker tripwire diffing the stub list against `api/*/rpc` crates
+on the filesystem ([[didnt-forget-scripts-must-self-check]]).
+
 **How to apply:** when the orchestrator work starts, don't propose
 Docker/k8s/containerd anywhere in the design and don't fold the orchestrator into
 `core/` or the module system; deploy = copy binary + supervisor.
