@@ -82,7 +82,10 @@ groups (unix) vs Job Objects (windows); master and the wire contract are
 platform-free. Graceful drain goes through the wire contract (not signals —
 SIGTERM doesn't exist on Windows); resource limits are an optional capability
 (cgroups/Job Objects, mac none) the agent applies best-effort and reports
-unsupported. Verify: Windows (dev box) + Linux blocking, mac compile-only.
+unsupported. Verify: Windows (dev box) + Linux blocking; a real MacBook sits next to the dev
+box (2026-07-10) — mac is a live test platform AND the second physical machine
+for the multi-machine proof (master on Windows + agent on mac over real LAN:
+non-loopback resolve, mTLS across a physical network, mixed-platform fleet).
 Bonus argument: one Rust binary replaces the duplicated `.sh`/`.ps1` operational
 scripts — it reduces the repo's platform surface.
 
