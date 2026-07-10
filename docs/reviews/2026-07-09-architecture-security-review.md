@@ -1,5 +1,35 @@
 # Architecture and security review — 2026-07-09
 
+> **ADDENDUM (2026-07-10).** Do not read the findings below as a list of open
+> risks — most are closed:
+>
+> - **Findings 1, 2, 6 — closed structurally** by durable event log v2
+>   (2026-07-10): the push plane this review examined (`core/outbox`, the relay,
+>   `POST /events`, `EVENTS_SUBSCRIBERS`) was deleted, not hardened. Events are
+>   now an XID-ordered shared Postgres log with consumer-owned pull
+>   subscriptions; there is no event ingress endpoint and no per-process event
+>   routing config to drift. archcheck bans the retired push vocabulary.
+> - **Finding 10 — was already closed** when re-checked on 2026-07-10:
+>   `tools/checkmodules::monolith_modules()` calls `server::modules()` from
+>   `cmd/server`'s lib directly (no hand-mirrored list), and the Split profile
+>   calls every real `cmd/<name>-svc` lib.
+> - **Findings 5, 8, 9, 11, 12 and the tripwire slice of 7 — closed** by the
+>   hardening rollout of 2026-07-10
+>   (`docs/plans/2026-07-10-1400-security-review-hardening-plan.md`): startup
+>   unwind (`fix(lifecycle,app)` 2f6a063), gateway collision detection
+>   (`feat(gateway)` 499bba3), `Caps` deleted (`refactor(lifecycle,…)` a07a246),
+>   dev defaults fail-closed incl. admin startup bail (`feat(accounts,…)`
+>   29cbb8a), archcheck foreign-schema SQL tripwire (`feat(archcheck)` 58d02f6),
+>   rustls-pemfile removed (`chore(edge)` c6d0f72).
+> - **Finding 3 (shared CA) — deliberately deferred** to the mini-orchestrator /
+>   multi-host milestone; acceptable for the single-trusted-machine deployment.
+> - **Finding 4 — partially closed**: admin fail-open is gone (startup fails
+>   without `ADMIN_USER` unless explicit `ADMIN_OPEN=1`). CSRF protection and
+>   hashed API-key storage remain open by deliberate trust-model decision
+>   (sessions-token model, local portal).
+> - **Finding 7 (runtime DB-role isolation) — deliberately deferred**; the
+>   archcheck tripwire covers accidental drift.
+
 ## Scope
 
 Review of the Rust workspace as a modular monolith with a supported split-process
