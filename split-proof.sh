@@ -536,10 +536,10 @@ echo "================ EPIC OAUTH REDIRECT (browser flow: G passthrough -> D) ==
 # G reverse-proxies /accounts/epic/* to accounts-svc (D). D's callback exchanges the
 # authorization code with EPIC_TOKEN_URL, which we pointed at an unreachable port
 # (127.0.0.1:1) so the exchange fails deterministically and D answers
-# `302 -> /?epic=error`. The proof: the gateway proxy RELAYS that 302 verbatim
+# `303 See Other -> /?epic=error` (axum Redirect::to). The proof: the gateway proxy RELAYS that 303 verbatim
 # (reqwest Policy::none()) instead of following it server-side -- a server-side follow
 # would swallow the redirect, and in the real Epic login the browser would never see
-# the `#token` fragment. curl is run WITHOUT -L so we observe the raw 302 + Location.
+# the `#token` fragment. curl is run WITHOUT -L so we observe the raw 303 + Location.
 echo "[EP1] POST /accounts/epic/start through G (passthrough, keyless) -> {authorize_url}"
 ESTART="$(curl -s -X POST "http://localhost:$G_PORT/accounts/epic/start")"
 echo "    -> $ESTART"
@@ -550,16 +550,16 @@ else
     fail "epic start expected authorize_url with a state param, got $ESTART"; exit 1
 fi
 
-echo "[EP2] GET /accounts/epic/callback?code=x&state=<state> through G (no -L) -> 302 relayed verbatim"
+echo "[EP2] GET /accounts/epic/callback?code=x&state=<state> through G (no -L) -> 303 relayed verbatim"
 EHDRS="$(curl -s -o /dev/null -D - -w 'HTTP:%{http_code}\n' \
     "http://localhost:$G_PORT/accounts/epic/callback?code=x&state=$ESTATE")"
 ECODE="$(echo "$EHDRS" | grep -o 'HTTP:[0-9]*' | sed 's/HTTP://')"
 ELOC="$(echo "$EHDRS" | grep -i '^location:' | head -1 | sed 's/^[Ll]ocation:[[:space:]]*//' | tr -d '\r')"
 echo "    -> HTTP $ECODE  Location=$ELOC"
-if [ "$ECODE" = "302" ] && [ "$ELOC" = "/?epic=error" ]; then
-    pass "epic-oauth-redirect-through-gateway: G relays D's 302 verbatim (Location: $ELOC) -- proxy does not follow"
+if [ "$ECODE" = "303" ] && [ "$ELOC" = "/?epic=error" ]; then
+    pass "epic-oauth-redirect-through-gateway: G relays D's 303 verbatim (Location: $ELOC) -- proxy does not follow"
 else
-    fail "epic callback expected 302 with Location /?epic=error, got HTTP $ECODE Location=$ELOC"; exit 1
+    fail "epic callback expected 303 with Location /?epic=error, got HTTP $ECODE Location=$ELOC"; exit 1
 fi
 
 echo ""

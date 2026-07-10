@@ -477,9 +477,9 @@ try {
     # G reverse-proxies /accounts/epic/* to accounts-svc (D). D's callback exchanges the
     # code with EPIC_TOKEN_URL (pointed at an unreachable 127.0.0.1:1) so the exchange
     # fails deterministically and D answers 302 -> /?epic=error. The proof: the gateway
-    # proxy RELAYS that 302 verbatim (reqwest Policy::none()) instead of following it
+    # proxy RELAYS that 303 verbatim (reqwest Policy::none()) instead of following it
     # server-side -- a follow would swallow the redirect (and the real login's #token
-    # fragment). -MaximumRedirection 0 keeps the client from following so we see the 302.
+    # fragment). curl.exe (no -L) never follows, so we observe the raw 303.
     Write-Host "[EP1] POST http://127.0.0.1:$GPort/accounts/epic/start through G (passthrough, keyless) -> {authorize_url}"
     $estart = Invoke-Curl @('-X', 'POST', "http://127.0.0.1:$GPort/accounts/epic/start")
     Write-Host "    -> $($estart.Body)"
@@ -491,17 +491,19 @@ try {
         Fail "epic start expected authorize_url with a state param, got $($estart.Body)"; throw 'epic start failed'
     }
 
-    Write-Host "[EP2] GET /accounts/epic/callback?code=x&state=<state> through G (no redirect follow) -> 302 relayed verbatim"
-    $ecb = Invoke-WebRequest -UseBasicParsing -MaximumRedirection 0 -SkipHttpErrorCheck `
-        -Uri "http://127.0.0.1:$GPort/accounts/epic/callback?code=x&state=$estate"
-    $ecode = [int]$ecb.StatusCode
-    $eloc = $ecb.Headers['Location']
-    if ($eloc -is [array]) { $eloc = $eloc[0] }
+    Write-Host "[EP2] GET /accounts/epic/callback?code=x&state=<state> through G (no redirect follow) -> 303 relayed verbatim"
+    # curl.exe never follows redirects without -L (Invoke-WebRequest -MaximumRedirection 0
+    # THROWS on a 3xx even with -SkipHttpErrorCheck, so it can't assert this).
+    $eraw = & curl.exe -s -D - -o NUL -w "%{http_code}" "http://127.0.0.1:$GPort/accounts/epic/callback?code=x&state=$estate" 2>$null
+    $elines = ($eraw -join "`n") -split "`n"
+    $ecode = [int]$elines[-1].Trim()
+    $eloc = ($elines | Where-Object { $_ -match '^(?i)location:' } | Select-Object -First 1) -replace '^(?i)location:\s*', ''
+    if ($eloc) { $eloc = $eloc.Trim() }
     Write-Host "    -> HTTP $ecode  Location=$eloc"
-    if ($ecode -eq 302 -and $eloc -eq '/?epic=error') {
-        Pass "epic-oauth-redirect-through-gateway: G relays D's 302 verbatim (Location: $eloc) -- proxy does not follow"
+    if ($ecode -eq 303 -and $eloc -eq '/?epic=error') {
+        Pass "epic-oauth-redirect-through-gateway: G relays D's 303 verbatim (Location: $eloc) -- proxy does not follow"
     } else {
-        Fail "epic callback expected 302 with Location /?epic=error, got HTTP $ecode Location=$eloc"; throw 'epic redirect failed'
+        Fail "epic callback expected 303 (axum Redirect::to) with Location /?epic=error, got HTTP $ecode Location=$eloc"; throw 'epic redirect failed'
     }
 
     Write-Host ''
