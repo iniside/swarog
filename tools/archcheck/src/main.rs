@@ -15,6 +15,15 @@
 //!      depends on `metrics`. (There is no durable-events plane MODULE — the plane is
 //!      app-owned infrastructure, not a `cmd`-listed module — so nothing analogous is
 //!      required here.)
+//!   6. **core purity** — a `core/*` foundation NEVER depends on a module or an `api/`
+//!      crate (`<name>api`/`<name>events`/`<name>rpc`) or a demo; dependency only ever
+//!      points module → core (CLAUDE.md hard constraint 1). The dual of rules 1+2.
+//!   7. **svc constructs its module** — beyond the Cargo dep, a `cmd/<name>-svc`'s
+//!      `src/lib.rs` must reference the `<module>::` token (heuristic source tripwire),
+//!      proving `modules()` actually constructs the fortress it boots.
+//!
+//! (The above is a curated summary; the numbered rule comments in `main()` are the full
+//! set, currently 1–16 plus the two svc-parity legs of rule 12.)
 //!
 //! "Own" is defined by path prefix: `modules/<name>/` owns `api/<name>/rpc/`. It also
 //! greps `modules/` for a resurrected `Option<… edge::Server>` — the topology-leak
@@ -106,7 +115,10 @@ enum Kind {
     Cmd(String),
     /// `demos/<name>/` — a non-shipping demo crate (monolith-only by definition).
     Demo(String),
-    /// Anything else (foundations, contract crates, tools).
+    /// `core/<name>/` — a foundation crate (app, bus, registry, edge, …). Foundations
+    /// never import a module or an `api/` crate (CLAUDE.md hard constraint 1).
+    Core(String),
+    /// Anything else (contract crates outside the above shapes, tools).
     Other,
 }
 
@@ -143,6 +155,10 @@ fn classify(manifest_path: &str) -> Kind {
         if parts.len() >= 2 && parts[1] == "events" {
             return Kind::Events(parts[0].to_string());
         }
+    }
+    if let Some(name) = segment_after(&p, "/core/") {
+        // core/<name>/Cargo.toml — a foundation crate.
+        return Kind::Core(name);
     }
     Kind::Other
 }
@@ -401,17 +417,35 @@ fn main() {
             continue; // a svc with no same-named module (nothing to pair against)
         }
         let deps = pkg["dependencies"].as_array().cloned().unwrap_or_default();
-        let boots_its_module = deps.iter().any(|dep| {
-            dep["kind"].as_str() != Some("dev")
-                && matches!(
-                    by_name.get(dep["name"].as_str().unwrap_or_default()),
-                    Some(Kind::Module(m)) if m == module
-                )
+        // The actual CRATE name of the module dependency — usually == the dir name, but a
+        // module whose dir name is a Rust keyword renames its crate (modules/match →
+        // `match_module`), so the source token must follow the crate name, not the dir.
+        let module_crate = deps.iter().find_map(|dep| {
+            if dep["kind"].as_str() == Some("dev") {
+                return None;
+            }
+            let name = dep["name"].as_str().unwrap_or_default();
+            match by_name.get(name) {
+                Some(Kind::Module(m)) if m == module => Some(name.to_string()),
+                _ => None,
+            }
         });
-        if !boots_its_module {
+        let Some(module_crate) = module_crate else {
             violations.push(format!(
                 "cmd/{cmd} does not depend on modules/{module} — a domain svc must boot \
                  its own module (fortress rule, CLAUDE.md constraint 2)"
+            ));
+            continue; // no crate to reference-check against
+        };
+        // …and the svc's lib.rs must actually CONSTRUCT its module — a Cargo dep alone
+        // (checked above) can be present while `modules()` never boxes the module. Heuristic
+        // source tripwire (same caveat class as `is_inline_test_mod`): a boundary-checked
+        // `<crate>::` token anywhere in cmd/<name>-svc/src/lib.rs is the evidence.
+        let lib_path = root.join("cmd").join(&cmd).join("src").join("lib.rs");
+        if !svc_lib_references_module(&lib_path, &module_crate) {
+            violations.push(format!(
+                "cmd/{cmd} depends on module '{module}' but src/lib.rs never references \
+                 '{module_crate}::' — modules() likely doesn't construct it"
             ));
         }
     }
@@ -441,8 +475,40 @@ fn main() {
         }
     }
 
+    // --- 16: core purity — a foundation never imports a module or an api/ crate ---
+    // CLAUDE.md hard constraint 1: "Foundations (core/*) never depend on a module or an
+    // `api/` crate. Dependency only ever points module → core." Enforced here as the dual
+    // of rules 1+2 (which constrain modules as consumers): for every `Kind::Core(_)`
+    // package, any NON-dev dependency resolving to a module or a contract crate
+    // (`<name>api`/`<name>events`/`<name>rpc`) or a demo inverts the dependency arrow.
+    for pkg in packages {
+        let manifest = pkg["manifest_path"].as_str().unwrap_or_default();
+        let Kind::Core(core) = classify(manifest) else {
+            continue; // only core/* foundations are constrained as consumers here
+        };
+        for dep in pkg["dependencies"].as_array().into_iter().flatten() {
+            if dep["kind"].as_str() == Some("dev") {
+                continue; // a dev-dependency (tests) is not the runtime import graph
+            }
+            let dep_name = dep["name"].as_str().unwrap_or_default();
+            let kind = match by_name.get(dep_name) {
+                Some(Kind::Module(_)) => "modules",
+                Some(Kind::Api(_)) => "api/<name>/api",
+                Some(Kind::Events(_)) => "api/<name>/events",
+                Some(Kind::Rpc(_)) => "api/<name>/rpc",
+                Some(Kind::Demo(_)) => "demos",
+                _ => continue,
+            };
+            violations.push(format!(
+                "core/{core} depends on `{dep_name}` ({kind}) — a foundation never imports a \
+                 module or an api/ crate; dependency only ever points module → core \
+                 (CLAUDE.md hard constraint 1)"
+            ));
+        }
+    }
+
     if violations.is_empty() {
-        println!("archcheck: OK — no module→module / module→foreign-rpc edges, single front door (only gateway-svc + server host `gateway`), no Option<edge::Server> in modules/, <name>api/<name>events crates stay transport-free, every cmd/*-svc + server lists `metrics`, no cross-schema FKs in modules/ DDL, no inline test modules in modules/, core/bus stays sqlx-free, no module runtime-deps `asyncevents`, no EVENTS_ env knobs read inside modules/, no retired push-plane tokens (EVENTS_*/\"/events\") in workspace source, no schema-qualified asyncevents.<table> access outside the plane, no module queries a foreign module's schema in SQL, every modules/<name> boots as cmd/<name>-svc, demos/* imported only by cmd/server");
+        println!("archcheck: OK — no module→module / module→foreign-rpc edges, single front door (only gateway-svc + server host `gateway`), no Option<edge::Server> in modules/, <name>api/<name>events crates stay transport-free, every cmd/*-svc + server lists `metrics`, no cross-schema FKs in modules/ DDL, no inline test modules in modules/, core/bus stays sqlx-free, no module runtime-deps `asyncevents`, no EVENTS_ env knobs read inside modules/, no retired push-plane tokens (EVENTS_*/\"/events\") in workspace source, no schema-qualified asyncevents.<table> access outside the plane, no module queries a foreign module's schema in SQL, every modules/<name> boots as cmd/<name>-svc (and its svc lib.rs constructs it), demos/* imported only by cmd/server, no core/* foundation deps a module or api/ crate");
         return;
     }
     eprintln!("archcheck: FAIL — {} violation(s):", violations.len());
@@ -503,6 +569,24 @@ fn missing_svc_violations(modules: &[String], cmds: &[String]) -> Vec<String> {
             }
         })
         .collect()
+}
+
+/// Heuristic tripwire (rule 12, G2 leg): true if `lib_path` (a `cmd/<name>-svc/src/lib.rs`)
+/// references the boundary-checked token `<module>::` on any non-comment line — evidence
+/// the svc's `modules()` actually constructs its module (e.g.
+/// `Box::new(characters::Characters::new())`). A source token scan, NOT a full parse (same
+/// caveat class as [`is_inline_test_mod`]): a module reached only through a re-export alias
+/// could false-negative, but no such shape exists in the tree. An unreadable/absent lib.rs
+/// yields `false` (a domain svc always has one — its absence is itself worth flagging).
+fn svc_lib_references_module(lib_path: &Path, module: &str) -> bool {
+    let Ok(text) = std::fs::read_to_string(lib_path) else {
+        return false;
+    };
+    let token = format!("{module}::");
+    text.lines().any(|line| {
+        let t = line.trim_start();
+        !t.starts_with("//") && contains_boundary_checked(line, &token)
+    })
 }
 
 /// True if a `cmd/<dir>` crate is a process main subject to the "every main lists

@@ -41,8 +41,9 @@ fn classifies_cmd_manifest_by_dir_name() {
 
 #[test]
 fn non_module_non_cmd_is_other() {
+    // A tool crate (not under modules/cmd/demos/api/core) falls through to Kind::Other.
     assert!(matches!(
-        classify("/repo/core/app/Cargo.toml"),
+        classify("/repo/tools/rpc-macro/Cargo.toml"),
         Kind::Other
     ));
 }
@@ -677,6 +678,89 @@ fn foreign_schema_split_across_lines_escapes_the_line_scoped_rule() {
     let s = schema_set();
     assert!(super::foreign_schema_sql_refs("SELECT * FROM", "characters", &s).is_empty());
     assert!(super::foreign_schema_sql_refs("  inventory.items", "characters", &s).is_empty());
+}
+
+// --- Rule 16: core purity — foundations never dep a module or api/ crate -----
+
+#[test]
+fn classifies_core_manifest() {
+    assert!(matches!(
+        classify("/repo/core/app/Cargo.toml"),
+        Kind::Core(n) if n == "app"
+    ));
+    // Windows backslashes normalize the same way.
+    assert!(matches!(
+        classify(r"C:\repo\core\bus\Cargo.toml"),
+        Kind::Core(n) if n == "bus"
+    ));
+}
+
+#[test]
+fn non_core_paths_do_not_classify_as_core() {
+    // A module path must still win over the later /core/ check even if it contained one.
+    assert!(matches!(
+        classify("/repo/modules/characters/Cargo.toml"),
+        Kind::Module(_)
+    ));
+}
+
+// --- Rule 12 (G2 leg): svc lib.rs must construct its module ------------------
+
+#[test]
+fn svc_lib_referencing_its_module_is_clean() {
+    let dir = unique_temp_dir();
+    let lib = dir.join("lib.rs");
+    std::fs::write(
+        &lib,
+        "pub fn modules() -> Vec<Box<dyn Module>> {\n\
+         \tvec![Box::new(characters::Characters::new())]\n}\n",
+    )
+    .unwrap();
+    assert!(super::svc_lib_references_module(&lib, "characters"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn svc_lib_without_its_module_token_is_flagged() {
+    let dir = unique_temp_dir();
+    let lib = dir.join("lib.rs");
+    // Constructs metrics but never `characters::` — the tripwire fires.
+    std::fs::write(
+        &lib,
+        "pub fn modules() -> Vec<Box<dyn Module>> {\n\
+         \tvec![Box::new(metrics::Metrics::new())]\n}\n",
+    )
+    .unwrap();
+    assert!(!super::svc_lib_references_module(&lib, "characters"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn svc_lib_module_token_only_in_comment_is_flagged() {
+    let dir = unique_temp_dir();
+    let lib = dir.join("lib.rs");
+    // A comment naming `characters::` is not construction — comment lines are skipped.
+    std::fs::write(&lib, "// dials characters::Characters over the edge\n").unwrap();
+    assert!(!super::svc_lib_references_module(&lib, "characters"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn svc_lib_module_token_is_left_boundary_checked() {
+    let dir = unique_temp_dir();
+    let lib = dir.join("lib.rs");
+    // `mycharacters::` must NOT satisfy the `characters::` token (left-boundary check).
+    std::fs::write(&lib, "vec![Box::new(mycharacters::Thing::new())]\n").unwrap();
+    assert!(!super::svc_lib_references_module(&lib, "characters"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn svc_lib_missing_file_is_flagged() {
+    let dir = unique_temp_dir();
+    let lib = dir.join("does-not-exist.rs");
+    assert!(!super::svc_lib_references_module(&lib, "characters"));
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
