@@ -90,16 +90,17 @@ pub struct Service {
     pub(crate) store: Store,
     bus: Arc<Bus>,
     /// Whether the dev/password provider is enabled (`ACCOUNTS_DEV_AUTH`, resolved in
-    /// `register`). Gates `register`/`login` at the SERVICE level so the trust model
-    /// is consistent across BOTH exposure paths: the HTTP ops are already withheld
-    /// when this is off (see `ops::register_player_ops`), and this guard withholds the
-    /// same two methods over the internal mTLS edge face — a peer with a dev-CA cert
-    /// cannot self-register/login when dev auth is off. `me` + `verify_session` are
-    /// unaffected (needed by gateway/admin fan-out regardless).
+    /// `register`). Gates `register`/`login` at the SERVICE level — the SINGLE
+    /// authority every exposure path traverses (the HTTP ops are contributed
+    /// unconditionally in `ops::register_player_ops`, so the gateway route, the
+    /// player-QUIC plane and the internal mTLS edge face all funnel into this one
+    /// guard): with the gate off both methods answer NotFound, so a peer with a
+    /// dev-CA cert cannot self-register/login when dev auth is off. `me` +
+    /// `verify_session` are unaffected (needed by gateway/admin fan-out regardless).
     dev_auth: bool,
-    /// Set in `init` iff `EPIC_CLIENT_ID` is configured; `login_epic` is only
-    /// contributed as an operation in that case, but a direct edge call when it is
-    /// absent still answers a typed `Unavailable`.
+    /// Set in `init` iff `EPIC_CLIENT_ID` is configured. The `loginEpic` op is
+    /// contributed unconditionally; when the provider is absent `login_epic` answers
+    /// a typed `Unavailable` (→ 503) on every path, edge calls included.
     epic: OnceLock<Arc<OidcVerifier>>,
 }
 
@@ -387,8 +388,8 @@ impl TxHandler for PruneHandler {
 /// `edge::EDGE_SLOT` unconditionally, and `app::run` installs them iff this process
 /// serves an internal QUIC edge — the module never knows. The Auth face's
 /// dev-auth-gated methods (`register`/`login`) self-reject at the service level when
-/// `ACCOUNTS_DEV_AUTH` is off, mirroring the HTTP op gating so the mTLS edge honours
-/// the same trust model.
+/// `ACCOUNTS_DEV_AUTH` is off — the impl guard is the SINGLE gate for every exposure
+/// path (HTTP op, player QUIC, mTLS edge), so the trust model cannot diverge.
 pub struct Accounts {
     svc: OnceLock<Arc<Service>>,
 }
@@ -462,17 +463,17 @@ impl Module for Accounts {
 
     /// Only wires up — no I/O (#8). Reads the env gates, configures the epic
     /// provider (JWKS fetch is LAZY, so construction is pure), mounts the OAuth
-    /// browser routes, contributes the (gated) player operations, the local admin
+    /// browser routes, contributes the player operations (all unconditional — the
+    /// dev/epic gating lives at the impl), the local admin
     /// item, and the generated Sessions + Auth RPC faces to the edge slot.
     fn init(&self, ctx: &Context) -> anyhow::Result<()> {
         let svc = self.svc();
 
         // dev/password provider — local testing convenience, gated off for prod. The
-        // register/login OPERATIONS are contributed below only when this gate is ON,
-        // AND the edge Auth face's register/login self-reject when it is off (the
-        // `Service::dev_auth` guard) — same trust model on both exposure paths.
-        let dev_auth = svc.dev_auth;
-        if dev_auth {
+        // register/login OPERATIONS are contributed unconditionally below; the
+        // `Service::dev_auth` guard rejects both methods at the impl when the gate is
+        // off — ONE trust model, every exposure path.
+        if svc.dev_auth {
             tracing::warn!(
                 "ACCOUNTS_DEV_AUTH is ON — /accounts/register and /accounts/login (dev/password \
                  auth) are enabled; this is an explicit local-dev opt-in, keep it OFF (the \
@@ -483,7 +484,6 @@ impl Module for Accounts {
         // epic provider — the real federated path via Epic Account Services (OIDC).
         // Enabled only when configured. Defaults point at EAS endpoints (web OAuth);
         // sub is the Epic Account ID.
-        let mut epic_enabled = false;
         let client_id = std::env::var("EPIC_CLIENT_ID").unwrap_or_default();
         if !client_id.is_empty() {
             let jwks_url = env_or(
@@ -500,7 +500,6 @@ impl Module for Accounts {
                     svc.epic
                         .set(v.clone())
                         .map_err(|_| anyhow::anyhow!("accounts.init ran twice"))?;
-                    epic_enabled = true;
                     tracing::info!(jwks = %jwks_url, aud = %client_id, "epic provider enabled");
 
                     // Web OAuth (authorize-code) needs the confidential client secret.
@@ -528,10 +527,11 @@ impl Module for Accounts {
             }
         }
 
-        // Player operations: the generated Auth OpSets, gated exactly as Go —
-        // register/login under devAuth, loginEpic when the epic provider is up, me
-        // always.
-        ops::register_player_ops(ctx, svc.clone(), dev_auth, epic_enabled);
+        // Player operations: the generated Auth OpSets, ALL contributed
+        // unconditionally — the gating lives at the impl (register/login → NotFound
+        // when dev auth is off, loginEpic → Unavailable when epic is unconfigured),
+        // so the monolith and split front-door route sets are structurally equal.
+        ops::register_player_ops(ctx, svc.clone());
 
         // Durable session prune as a REACTION to scheduler.fired on the durable plane.
         // Raw subscribe by the CONTRACT descriptor's topic const (no payload-type

@@ -1,14 +1,18 @@
-//! Trust-model gate on the accounts edge Auth face: with `ACCOUNTS_DEV_AUTH` off the
-//! service-level guard withholds `register`/`login` — the SAME two methods the HTTP op
-//! contributions withhold (`ops::register_player_ops`) — so a peer reaching the internal
-//! mTLS edge Auth face with a dev-CA cert cannot self-register or log in when dev auth is
-//! off. `verify_session` (the Sessions face, needed by the gateway's auth-once verifier)
-//! is deliberately unaffected. A child of `tests` so it reuses that module's live-DB
-//! harness (`wired`/`test_pool`) and its once-per-binary schema serialization.
+//! Trust-model gate on the accounts Auth face: with `ACCOUNTS_DEV_AUTH` off the
+//! service-level guard withholds `register`/`login`. The HTTP ops are contributed
+//! UNCONDITIONALLY (`ops::register_player_ops`), so this impl guard is the SINGLE
+//! authority on every exposure path — gateway HTTP route, player QUIC, and the
+//! internal mTLS edge face alike: a peer with a dev-CA cert cannot self-register or
+//! log in when dev auth is off. `verify_session` (the Sessions face, needed by the
+//! gateway's auth-once verifier) is deliberately unaffected. A child of `tests` so it
+//! reuses that module's live-DB harness (`wired`/`test_pool`) and its once-per-binary
+//! schema serialization.
 
 // The `Auth`/`Sessions` trait methods resolve via the parent `tests` module's
 // `use accountsapi::{Auth as _, Sessions as _}` (re-exported through this glob).
 use super::*;
+
+use accountsapi::auth_rpc::{METHOD_LOGIN, METHOD_LOGIN_EPIC, METHOD_ME, METHOD_REGISTER};
 
 /// A service with the dev-auth gate forced on/off over a LAZY pool. The gate rejects
 /// register/login BEFORE any DB access, so the reject-path tests need no live DB.
@@ -63,6 +67,54 @@ async fn dev_auth_on_lets_methods_reach_normal_handling() {
         e.status,
         opsapi::Status::Invalid,
         "gate open: register must reach validation (Invalid), not the gate (NotFound)"
+    );
+}
+
+/// Decision A's structural-parity invariant: ALL four Auth ops (register/login/
+/// loginEpic/me) are contributed to the gateway slots UNCONDITIONALLY — even with dev
+/// auth OFF and no epic provider configured — while the impl guards reject the gated
+/// methods (register/login → NotFound, loginEpic → Unavailable). This is what makes
+/// the monolith and split front-door route sets equal by construction (routecheck's
+/// target invariant); the gate lives at the impl, never at the contribution site.
+#[tokio::test]
+async fn ops_contributed_unconditionally_while_guard_rejects() {
+    let svc = gated_service(false); // dev auth OFF; epic never configured
+
+    let ctx = Context::new();
+    crate::ops::register_player_ops(&ctx, svc.clone());
+
+    let ops: Vec<opsapi::Operation> = ctx.contributions(opsapi::SLOT);
+    for m in [METHOD_REGISTER, METHOD_LOGIN, METHOD_LOGIN_EPIC, METHOD_ME] {
+        assert!(
+            ops.iter().any(|o| o.method == m),
+            "op {m} must be contributed even with its gate off (impl-side gating)"
+        );
+    }
+    // The binding + local-invoker slots ride along 1:1 with the operations.
+    assert_eq!(
+        ctx.contributions::<opsapi::OpBinding>(opsapi::BINDING_SLOT).len(),
+        ops.len(),
+        "every contributed op must carry its HTTP↔wire binding"
+    );
+    assert_eq!(
+        ctx.contributions::<opsapi::LocalOp>(opsapi::LOCAL_SLOT).len(),
+        ops.len(),
+        "every contributed op must carry its in-process invoker"
+    );
+
+    // ...while the impl guards reject: the contributed-but-gated methods fail closed.
+    let e = svc
+        .register("a@x.io".into(), "pw".into(), "N".into())
+        .await
+        .unwrap_err();
+    assert_eq!(e.status, opsapi::Status::NotFound);
+    let e = svc.login("a@x.io".into(), "pw".into()).await.unwrap_err();
+    assert_eq!(e.status, opsapi::Status::NotFound);
+    let e = svc.login_epic("some-token".into()).await.unwrap_err();
+    assert_eq!(
+        e.status,
+        opsapi::Status::Unavailable,
+        "unconfigured epic answers 503 (feature unavailable), the honest status"
     );
 }
 

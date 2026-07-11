@@ -66,9 +66,10 @@ pub trait Holdings: Send + Sync {
     async fn list_character(&self, identity: Identity, character_id: String) -> Result<Vec<Holding>, Error>;
 
     /// Adds `qty` of `item_id` to the caller's own inventory (the simulated-IAP path,
-    /// gated by `INVENTORY_DEV_GRANT`). A non-positive qty or an unknown item is an
-    /// Invalid outcome. The body key stays `item_id` (matching Go's `BodyNames`
-    /// override). Returns the caller's updated holdings. 200.
+    /// gated by `INVENTORY_DEV_GRANT` at the IMPL: the route always exists, but with
+    /// the gate off the provider answers NotFound). A non-positive qty or an unknown
+    /// item is an Invalid outcome. The body key stays `item_id` (matching Go's
+    /// `BodyNames` override). Returns the caller's updated holdings. 200.
     #[http(
         verb = "POST",
         path = "/inventory/me/grant",

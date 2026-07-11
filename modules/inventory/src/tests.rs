@@ -65,11 +65,26 @@ impl Config for FakeConfig {
 fn inner_with(pool: PgPool, cfg: Arc<dyn Config>) -> Arc<Inner> {
     let inner = Arc::new(Inner {
         store: Store { pool },
+        dev_grant: true, // the fixture default; the gate tests below build their own
         ownership: OnceLock::new(),
         cfg: OnceLock::new(),
     });
     let _ = inner.cfg.set(cfg);
     inner
+}
+
+/// An `Inner` with the dev-grant gate forced on/off over a LAZY pool (mirrors
+/// accounts' `tests/dev_auth_gate.rs::gated_service`). The gate rejects `grant`
+/// BEFORE any DB access, so the reject-path tests need no live DB.
+fn gated_inner(dev_grant: bool) -> Arc<Inner> {
+    Arc::new(Inner {
+        store: Store {
+            pool: PgPool::connect_lazy(DEFAULT_DSN).unwrap(),
+        },
+        dev_grant,
+        ownership: OnceLock::new(),
+        cfg: OnceLock::new(),
+    })
 }
 
 // ---- No-DB unit tests --------------------------------------------------
@@ -90,6 +105,54 @@ async fn starter_spec_reads_config_directly_every_call() {
         inner.starter_spec(),
         ("health_potion".to_string(), 5),
         "no local cache — the very next read sees the new config values"
+    );
+}
+
+/// dev grant OFF → `Holdings::grant` is withheld at the service level with NotFound
+/// BEFORE any input handling or DB access (the pool is lazy and never queried) — the
+/// single impl-side authority every exposure path traverses now that the op is
+/// contributed unconditionally in both topologies.
+#[tokio::test]
+async fn dev_grant_off_withholds_grant_before_any_db_touch() {
+    let inner = gated_inner(false);
+
+    let e = inner
+        .grant(Identity::player("p1"), "coin".into(), 1)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        e.status,
+        Status::NotFound,
+        "grant must be withheld at the impl when INVENTORY_DEV_GRANT is off"
+    );
+
+    // The gate fires FIRST: even a request that would otherwise fail validation
+    // (missing identity, non-positive qty) answers NotFound, proving no input
+    // handling or store access precedes the guard.
+    let e = inner.grant(Identity::none(), "coin".into(), 0).await.unwrap_err();
+    assert_eq!(
+        e.status,
+        Status::NotFound,
+        "the gate must reject before identity/qty validation"
+    );
+}
+
+/// dev grant ON → the gate is open, so `grant` reaches its normal handling: a
+/// non-positive qty surfaces as Invalid (validation), NOT NotFound (the gate).
+/// Proves the guard only fires when the gate is off. DB-free — the qty check
+/// precedes the item-existence lookup.
+#[tokio::test]
+async fn dev_grant_on_lets_grant_reach_validation() {
+    let inner = gated_inner(true);
+
+    let e = inner
+        .grant(Identity::player("p1"), "coin".into(), 0)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        e.status,
+        Status::Invalid,
+        "gate open: grant must reach validation (Invalid), not the gate (NotFound)"
     );
 }
 

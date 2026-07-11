@@ -286,6 +286,14 @@ impl Store {
 
 pub struct Inner {
     store: Store,
+    /// Whether the simulated-IAP grant is enabled (`INVENTORY_DEV_GRANT`, resolved in
+    /// `register`). Gates `grant` at the SERVICE level — the single authority every
+    /// exposure path traverses (gateway HTTP route, player-QUIC allow-list, raw mTLS
+    /// edge face), so the trust model cannot diverge between the monolith and the
+    /// split. The op itself is contributed UNCONDITIONALLY (the monolith slot set and
+    /// the split route set stay structurally equal); with the gate off the impl
+    /// answers NotFound (→ 404) to a fully-authed caller.
+    dev_grant: bool,
     /// The `characters` ownership capability backing `list_character`'s authz.
     /// Resolved in `init` (phase 2) — the service is Provided in `register` (phase 1)
     /// BEFORE `require` can run, exactly as Go sets `m.svc.characters` in Init.
@@ -452,6 +460,12 @@ impl Holdings for Inner {
     /// non-positive qty or an unknown item is Invalid (→ 400). Returns the updated
     /// holdings, matching the old handler's respond-with-list behaviour.
     async fn grant(&self, identity: Identity, item_id: String, qty: i64) -> Result<Vec<Holding>, Error> {
+        // The dev-grant gate, checked FIRST (before any input handling or DB touch):
+        // the op is contributed/served unconditionally in both topologies, so this
+        // impl-side guard is the single fail-closed authority.
+        if !self.dev_grant {
+            return Err(Error::not_found("grant is not enabled"));
+        }
         let pid = identity
             .player_id()
             .ok_or_else(|| Error::invalid("missing player identity"))?
@@ -673,6 +687,10 @@ impl Module for Inventory {
             .clone();
         let inner = Arc::new(Inner {
             store: Store { pool },
+            // Resolve the dev-grant gate once, here, so it is the single source of
+            // truth for every exposure path (the op is contributed unconditionally;
+            // only this impl-side guard decides).
+            dev_grant: env_bool("INVENTORY_DEV_GRANT", false),
             ownership: OnceLock::new(),
             cfg: OnceLock::new(),
         });
@@ -701,7 +719,8 @@ impl Module for Inventory {
     ///        conn so the effect is atomic with the checkpoint commit in the delivery tx),
     ///   4. resolve `config` (HARD — fail-loud, this is why config is in `requires`);
     ///      `grant_starter` reads it directly, no local cache/subscription needed,
-    ///   5/6. contribute the player operations (grant dev-gated) + the local admin item,
+    ///   5/6. contribute the player operations (ALL unconditional; grant is gated at
+    ///        the impl) + the local admin item,
     ///   and the generated RPC face to the edge slot (applied by `app::run` iff this
     ///   process serves an internal edge).
     fn init(&self, ctx: &Context) -> anyhow::Result<()> {
@@ -765,22 +784,20 @@ impl Module for Inventory {
         let _ = inner.cfg.set(cfg);
 
         // 5. Player operations: contribute each generated op (route + HTTP↔wire binding
-        // + in-process invoker) so the gateway fronts GET /inventory/me + GET
-        // /inventory/character/{id} (and, dev-gated, POST /inventory/me/grant),
-        // authenticates once, and dispatches with the verified player_id in identity.
-        let dev_grant = env_bool("INVENTORY_DEV_GRANT", false);
-        if dev_grant {
+        // + in-process invoker) so the gateway fronts GET /inventory/me, GET
+        // /inventory/character/{id} AND POST /inventory/me/grant, authenticates once,
+        // and dispatches with the verified player_id in identity. ALL ops are
+        // contributed UNCONDITIONALLY — the dev-grant gate lives in the impl
+        // (`Holdings::grant` answers NotFound when `INVENTORY_DEV_GRANT` is off), so
+        // the monolith slot set and the split route set are structurally equal and
+        // the gate cannot be bypassed by any topology's transport.
+        if inner.dev_grant {
             tracing::warn!(
                 "INVENTORY_DEV_GRANT is ON — POST /inventory/me/grant (simulated IAP) is enabled; \
                  this is an explicit local-dev opt-in, keep it OFF (the fail-closed default) in production"
             );
         }
         for op in holdings_rpc::operations(inner.clone()) {
-            // grant is contributed only when dev-grant is set (mirrors the old
-            // conditional route registration).
-            if !dev_grant && op.operation.method == holdings_rpc::METHOD_GRANT {
-                continue;
-            }
             ctx.contribute(opsapi::SLOT, op.operation);
             ctx.contribute(opsapi::BINDING_SLOT, op.binding);
             ctx.contribute(opsapi::LOCAL_SLOT, op.local);
