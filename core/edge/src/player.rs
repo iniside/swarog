@@ -17,8 +17,9 @@
 //!   [`quinn::TransportConfig`] (stream/idle/window caps) because the peer is
 //!   untrusted — a certless attacker's per-connection cost must be bounded.
 
-use std::net::SocketAddr;
-use std::sync::{Arc, OnceLock};
+use std::collections::HashMap;
+use std::net::{IpAddr, SocketAddr};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use futures::future::BoxFuture;
 use quinn::crypto::rustls::{QuicClientConfig, QuicServerConfig};
@@ -46,6 +47,21 @@ const MAX_PLAYER_BIDI_STREAMS: u32 = 16;
 /// Idle timeout for a player connection — an abandoned handshake or silent peer is
 /// reaped instead of pinning server state indefinitely.
 const PLAYER_IDLE_TIMEOUT_MS: u32 = 30_000;
+
+/// Default ceiling on the number of player connections admitted at once, across ALL
+/// peers — bounds the accept-loop's fan-out so a flood of certless dials cannot spawn
+/// unbounded per-connection tasks. This is the fallback baked into `core/edge`; the
+/// live value is threaded down from `core/app` (`PLAYER_MAX_CONNS`, same default),
+/// which owns the env surface — the edge crate stays topology- and env-blind. `0`
+/// means "no global cap" (a deliberate opt-out, never the default).
+pub const DEFAULT_PLAYER_MAX_CONNS: usize = 1024;
+
+/// Default ceiling on concurrent player connections from a SINGLE source IP — a much
+/// tighter bound than the global one, so one abusive peer cannot consume the whole
+/// global budget. Threaded from `core/app` (`PLAYER_MAX_CONNS_PER_IP`, same default).
+/// `0` means "no per-IP cap" (opt-out only). Counted BEFORE the handshake, keyed by
+/// the raw UDP source address' IP, so the check costs nothing an attacker can inflate.
+pub const DEFAULT_PLAYER_MAX_CONNS_PER_IP: usize = 32;
 
 /// The on-wire envelope for a single player request. Unlike the internal
 /// `wire::Request` there is NO identity field: `token` is ATTACKER-CONTROLLED input
@@ -85,9 +101,25 @@ pub type PlayerHandler = Arc<
 /// gateway does this in its `Init`), then [`PlayerServer::listen`]. A server left
 /// without a handler still answers — every call gets a transport `ok:false`
 /// "front not wired" rather than a hang.
-#[derive(Default)]
 pub struct PlayerServer {
     handler: OnceLock<PlayerHandler>,
+    /// Global concurrent-connection cap; `0` = unlimited. Defaults to
+    /// [`DEFAULT_PLAYER_MAX_CONNS`] unless [`PlayerServer::with_conn_limits`] overrides
+    /// it (which `core/app` always does from its env-owned config).
+    max_conns: usize,
+    /// Per-source-IP concurrent-connection cap; `0` = unlimited. Defaults to
+    /// [`DEFAULT_PLAYER_MAX_CONNS_PER_IP`].
+    max_conns_per_ip: usize,
+}
+
+impl Default for PlayerServer {
+    fn default() -> Self {
+        PlayerServer {
+            handler: OnceLock::new(),
+            max_conns: DEFAULT_PLAYER_MAX_CONNS,
+            max_conns_per_ip: DEFAULT_PLAYER_MAX_CONNS_PER_IP,
+        }
+    }
 }
 
 impl PlayerServer {
@@ -101,6 +133,18 @@ impl PlayerServer {
         let _ = self.handler.set(h);
     }
 
+    /// Sets the connection admission caps (`global`, `per_ip`) before [`listen`], each
+    /// `0` = unlimited. The ENV surface (`PLAYER_MAX_CONNS`/`PLAYER_MAX_CONNS_PER_IP`)
+    /// lives in `core/app`, which calls this once on the fully-wired server it took from
+    /// the shared handle — the edge crate never reads env, keeping modules topology-blind.
+    ///
+    /// [`listen`]: PlayerServer::listen
+    pub fn with_conn_limits(mut self, global: usize, per_ip: usize) -> Self {
+        self.max_conns = global;
+        self.max_conns_per_ip = per_ip;
+        self
+    }
+
     /// Binds the public QUIC listener on `addr` with server-cert-only TLS
     /// ([`DevCA::server_tls_public`]) and an EXPLICIT transport config — the
     /// internal plane keeps quinn defaults, but a public port faces untrusted,
@@ -109,6 +153,15 @@ impl PlayerServer {
     /// receive window clamped to [`MAX_PLAYER_FRAME`] so a peer cannot make the
     /// server buffer more than one max frame per stream. (Transport knobs, not a
     /// rate limiter — full rate limiting is out of scope.)
+    ///
+    /// ADMISSION CONTROL: on top of the per-connection transport caps, the accept loop
+    /// bounds the NUMBER of concurrent connections — [`PlayerServer::with_conn_limits`]'s
+    /// global and per-IP ceilings — so a certless attacker cannot spawn an unbounded
+    /// task-per-connection fleet. The peer's source IP is read from the raw UDP datagram
+    /// BEFORE the TLS handshake is awaited; over either limit ⇒ [`quinn::Incoming::refuse`]
+    /// (no handshake CPU spent, no task spawned). An admitted connection holds a
+    /// [`ConnGuard`] moved into its task, so both counters decrement when the connection
+    /// (or a failed handshake) ends — no separate evictor.
     pub fn listen(self, addr: SocketAddr, ca: &DevCA) -> Result<RunningServer, Error> {
         let server_cfg = ca.server_tls_public()?;
         let qsc = QuicServerConfig::try_from(server_cfg)
@@ -127,6 +180,7 @@ impl PlayerServer {
         let local_addr = endpoint.local_addr().map_err(Error::Io)?;
 
         let handler = Arc::new(self.handler);
+        let limiter = ConnLimiter::new(self.max_conns, self.max_conns_per_ip);
         let shutdown = ShutdownState::new();
         let accept_endpoint = endpoint.clone();
         let accept_state = shutdown.clone();
@@ -137,6 +191,15 @@ impl PlayerServer {
                     incoming = accept_endpoint.accept() => {
                         // Cancel-safe: the incoming queue lives in the endpoint.
                         let Some(incoming) = incoming else { break };
+                        // Admission BEFORE the handshake: the source IP is a property of
+                        // the raw UDP datagram, so refusing here spends no crypto and
+                        // spawns no task. `refuse()` sends a CONNECTION_REFUSED close.
+                        let ip = incoming.remote_address().ip();
+                        let Some(conn_guard) = limiter.try_admit(ip) else {
+                            tracing::warn!(%ip, "edge: player connection refused (over conn limit)");
+                            incoming.refuse();
+                            continue;
+                        };
                         let handler = handler.clone();
                         let conn_state = accept_state.clone();
                         // Guard created at the ACCEPT arm and moved into the task —
@@ -144,6 +207,9 @@ impl PlayerServer {
                         let guard = accept_state.enter();
                         tokio::spawn(async move {
                             let _guard = guard;
+                            // Held for the connection's whole life; dropping it frees the
+                            // global + per-IP slot (also on a failed handshake below).
+                            let _conn_guard = conn_guard;
                             match incoming.await {
                                 Ok(conn) => serve_conn(conn, handler, conn_state).await,
                                 Err(e) => tracing::debug!(error = %e, "edge: player handshake failed"),
@@ -157,6 +223,74 @@ impl PlayerServer {
         });
 
         Ok(RunningServer { endpoint, local_addr, shutdown })
+    }
+}
+
+/// The mutable admission state, guarded by one lock so `global` and `per_ip` never
+/// disagree: `global` is the total live connection count and `per_ip[ip]` its per-source
+/// breakdown (an IP is present iff its count is > 0 — a count is removed when it hits 0,
+/// so the map never grows past the set of currently-connected IPs).
+struct LimiterState {
+    global: usize,
+    per_ip: HashMap<IpAddr, usize>,
+}
+
+/// Concurrent-connection admission control for the player plane. Both caps are checked
+/// and both counters incremented under ONE lock in [`ConnLimiter::try_admit`], so a burst
+/// of simultaneous dials cannot slip past either ceiling. `0` on a cap disables it.
+struct ConnLimiter {
+    max_conns: usize,
+    max_conns_per_ip: usize,
+    state: Mutex<LimiterState>,
+}
+
+impl ConnLimiter {
+    fn new(max_conns: usize, max_conns_per_ip: usize) -> Arc<ConnLimiter> {
+        Arc::new(ConnLimiter {
+            max_conns,
+            max_conns_per_ip,
+            state: Mutex::new(LimiterState { global: 0, per_ip: HashMap::new() }),
+        })
+    }
+
+    /// Admits a connection from `ip`, returning an RAII [`ConnGuard`] whose drop frees the
+    /// slot, or `None` if either cap is already at its ceiling. On the `None` paths NOTHING
+    /// is mutated (the global check returns before touching the map; the per-IP ceiling is
+    /// only reachable when the entry already exists with count ≥ 1), so a refusal leaves no
+    /// stray zero entry behind.
+    fn try_admit(self: &Arc<Self>, ip: IpAddr) -> Option<ConnGuard> {
+        let mut st = self.state.lock().unwrap();
+        if self.max_conns != 0 && st.global >= self.max_conns {
+            return None;
+        }
+        let per = st.per_ip.entry(ip).or_insert(0);
+        if self.max_conns_per_ip != 0 && *per >= self.max_conns_per_ip {
+            return None;
+        }
+        *per += 1;
+        st.global += 1;
+        Some(ConnGuard { limiter: self.clone(), ip })
+    }
+}
+
+/// RAII slot marker: dropping it decrements the global count and the source IP's count,
+/// pruning the map entry when it reaches 0. One is held for each admitted connection's
+/// whole lifetime (moved into the connection task).
+struct ConnGuard {
+    limiter: Arc<ConnLimiter>,
+    ip: IpAddr,
+}
+
+impl Drop for ConnGuard {
+    fn drop(&mut self) {
+        let mut st = self.limiter.state.lock().unwrap();
+        st.global = st.global.saturating_sub(1);
+        if let Some(count) = st.per_ip.get_mut(&self.ip) {
+            *count -= 1;
+            if *count == 0 {
+                st.per_ip.remove(&self.ip);
+            }
+        }
     }
 }
 

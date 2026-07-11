@@ -62,11 +62,61 @@ fn validate_requires_satisfied_by_remote_stub() {
 
 #[test]
 fn config_defaults_when_env_absent() {
-    let cfg = Config::from_values(None, None, None, None, None, None, None);
+    let cfg = Config::from_values(None, None, None, None, None, None, None, None, None);
     assert_eq!(cfg.database_url.as_deref(), Some(DEFAULT_DSN));
     assert_eq!(cfg.listen_addr, ":8080");
     assert_eq!(cfg.edge_addr, ":9000");
     assert_eq!(cfg.player_edge_addr, ":9100");
+    // Player-QUIC connection caps default to their env-owned baselines.
+    assert_eq!(cfg.player_max_conns, 1024);
+    assert_eq!(cfg.player_max_conns_per_ip, 32);
+}
+
+#[test]
+fn config_player_conn_caps_override_and_fall_back() {
+    // Explicit values parse; blank/unparseable falls back to the defaults (the grace-knob
+    // shape), and `0` is an accepted explicit opt-out (unlimited).
+    let cfg = Config::from_values(
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some("4096".into()),
+        Some("8".into()),
+    );
+    assert_eq!(cfg.player_max_conns, 4096);
+    assert_eq!(cfg.player_max_conns_per_ip, 8);
+
+    let cfg = Config::from_values(
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some("  ".into()),
+        Some("not-a-number".into()),
+    );
+    assert_eq!(cfg.player_max_conns, 1024);
+    assert_eq!(cfg.player_max_conns_per_ip, 32);
+
+    let cfg = Config::from_values(
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some("0".into()),
+        Some("0".into()),
+    );
+    assert_eq!(cfg.player_max_conns, 0);
+    assert_eq!(cfg.player_max_conns_per_ip, 0);
 }
 
 #[test]
@@ -76,6 +126,8 @@ fn config_defaults_when_env_blank() {
         Some("".into()),
         Some("   ".into()),
         Some(" ".into()),
+        Some("  ".into()),
+        Some("  ".into()),
         Some("  ".into()),
         Some("  ".into()),
         Some("  ".into()),
@@ -102,6 +154,8 @@ fn config_overrides_from_env() {
         Some("250".into()),
         Some("750".into()),
         Some("1200".into()),
+        None,
+        None,
     );
     assert_eq!(cfg.database_url.as_deref(), Some("postgres://u:p@db:5432/x"));
     // Bare port gets the leading colon (Go's normalizeAddr).
@@ -118,7 +172,7 @@ fn config_overrides_from_env() {
 
 #[test]
 fn config_drain_grace_defaults_when_unset_or_unparseable() {
-    let cfg = Config::from_values(None, None, None, None, None, None, None);
+    let cfg = Config::from_values(None, None, None, None, None, None, None, None, None);
     assert_eq!(cfg.edge_drain_grace, std::time::Duration::from_millis(5000));
     assert_eq!(cfg.http_drain_grace, std::time::Duration::from_millis(5000));
     let cfg = Config::from_values(
@@ -129,6 +183,8 @@ fn config_drain_grace_defaults_when_unset_or_unparseable() {
         Some("not-a-number".into()),
         Some("not-a-number".into()),
         Some("not-a-number".into()),
+        None,
+        None,
     );
     assert_eq!(cfg.edge_drain_grace, std::time::Duration::from_millis(5000));
     assert_eq!(cfg.http_drain_grace, std::time::Duration::from_millis(5000));
@@ -140,7 +196,8 @@ fn config_drain_grace_defaults_when_unset_or_unparseable() {
 
 #[test]
 fn config_accepts_colon_port_form() {
-    let cfg = Config::from_values(None, Some(":8081".into()), None, None, None, None, None);
+    let cfg =
+        Config::from_values(None, Some(":8081".into()), None, None, None, None, None, None, None);
     assert_eq!(cfg.listen_addr, ":8081");
 }
 
@@ -151,6 +208,8 @@ fn without_db_clears_dsn_and_keeps_the_rest() {
         Some("9090".into()),
         Some(":9001".into()),
         Some(":9101".into()),
+        None,
+        None,
         None,
         None,
         None,
@@ -166,7 +225,7 @@ fn without_db_clears_dsn_and_keeps_the_rest() {
 #[test]
 fn rate_limit_default_off_unless_set() {
     // Module hosts leave it unset (opt-in); the gateway builder turns it always-on.
-    let cfg = Config::from_values(None, None, None, None, None, None, None);
+    let cfg = Config::from_values(None, None, None, None, None, None, None, None, None);
     assert_eq!(cfg.rate_limit_default, None);
     let gw = cfg.without_db().with_rate_limit_default(20.0, 40);
     assert_eq!(gw.rate_limit_default, Some((20.0, 40)));
@@ -300,7 +359,7 @@ fn to_bind_addr_expands_colon_port() {
 
 #[test]
 fn with_tls_sets_the_front_and_default_is_off() {
-    let cfg = Config::from_values(None, None, None, None, None, None, None);
+    let cfg = Config::from_values(None, None, None, None, None, None, None, None, None);
     assert_eq!(cfg.tls, None, "TLS is opt-in; every existing process stays plain");
 
     let front = TlsFront::Files {
@@ -411,7 +470,8 @@ async fn run_with_tls_files_serves_https() {
     let (cert, key, cert_pem) = mint_localhost_cert("run");
     let port = free_port();
 
-    let mut cfg = Config::from_values(None, None, None, None, None, None, None).without_db();
+    let mut cfg =
+        Config::from_values(None, None, None, None, None, None, None, None, None).without_db();
     cfg.listen_addr = format!("127.0.0.1:{port}");
     let cfg = cfg.with_tls(Some(TlsFront::Files { cert, key }));
 

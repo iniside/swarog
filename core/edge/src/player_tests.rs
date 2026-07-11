@@ -1,5 +1,93 @@
 use super::*;
 
+use std::time::Duration;
+
+fn loopback() -> SocketAddr {
+    "127.0.0.1:0".parse().unwrap()
+}
+
+/// A trivial player server that echoes its payload — enough to keep an admitted
+/// connection live while a test holds it open.
+fn echo_server() -> PlayerServer {
+    let srv = PlayerServer::new();
+    srv.set_handler(Arc::new(|_method, _token, _key, payload| {
+        Box::pin(async move { Ok(payload) })
+    }));
+    srv
+}
+
+/// Dials the player plane, bounding the attempt so a REFUSED connection (which quinn
+/// surfaces as a connection error) can't hang the test. `Ok(Some)` = admitted,
+/// `Ok(None)` = refused/failed, `Err` = the dial didn't resolve within the window.
+async fn try_dial(addr: SocketAddr, trust: &TrustAnchor) -> Result<Option<PlayerClient>, ()> {
+    match tokio::time::timeout(Duration::from_secs(3), PlayerClient::dial(addr, trust)).await {
+        Ok(Ok(client)) => Ok(Some(client)),
+        Ok(Err(_)) => Ok(None),
+        Err(_) => Err(()),
+    }
+}
+
+// Admission control: the global cap refuses a connection over the ceiling BEFORE the
+// handshake, and releasing an admitted connection (RAII guard drop) frees a slot for a
+// subsequent dial. with_conn_limits(2, 2): two live connections fill the global budget,
+// a third is refused, and after dropping one a fourth is admitted within a bounded window.
+#[tokio::test]
+async fn player_global_conn_cap_refuses_over_limit_and_frees_on_drop() {
+    let ca = DevCA::generate().unwrap();
+    let running = echo_server().with_conn_limits(2, 2).listen(loopback(), &ca).unwrap();
+    let addr = running.local_addr();
+    let trust = ca.trust_anchor();
+
+    // Two admitted, held open — the global budget (2) is now full.
+    let c1 = try_dial(addr, &trust).await.unwrap().expect("first dial admitted");
+    let c2 = try_dial(addr, &trust).await.unwrap().expect("second dial admitted");
+
+    // The third is over the global cap → refused (no handshake completes).
+    assert!(
+        try_dial(addr, &trust).await.unwrap().is_none(),
+        "third dial must be refused while the global cap is full"
+    );
+
+    // Free one slot; the server-side guard drops once it notices the close.
+    c1.close();
+    drop(c1);
+
+    // Poll-retry until the freed slot admits a fourth connection (bounded).
+    let mut admitted = None;
+    for _ in 0..50 {
+        if let Some(c) = try_dial(addr, &trust).await.unwrap() {
+            admitted = Some(c);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(admitted.is_some(), "a fourth dial must succeed after a slot is freed");
+
+    drop(c2);
+    drop(admitted);
+    running.close();
+}
+
+// The per-IP cap is a distinct counter from the global one: with a generous global cap
+// (10) but a per-IP cap of 1, the SECOND connection from the same loopback IP is refused
+// even though the global budget is nowhere near full.
+#[tokio::test]
+async fn player_per_ip_conn_cap_refuses_second_from_same_ip() {
+    let ca = DevCA::generate().unwrap();
+    let running = echo_server().with_conn_limits(10, 1).listen(loopback(), &ca).unwrap();
+    let addr = running.local_addr();
+    let trust = ca.trust_anchor();
+
+    let c1 = try_dial(addr, &trust).await.unwrap().expect("first dial admitted");
+    assert!(
+        try_dial(addr, &trust).await.unwrap().is_none(),
+        "second dial from the same IP must be refused by the per-IP cap"
+    );
+
+    drop(c1);
+    running.close();
+}
+
 // The serde(default) proof at the envelope level: a request with the token AND the
 // api_key OMITTED — the shape every pre-key unauthenticated caller sends — must
 // parse (it then fails the FRONT's key check as a domain 401, never as a malformed

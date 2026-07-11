@@ -28,6 +28,14 @@ const DEFAULT_PLAYER_EDGE_ADDR: &str = ":9100";
 const DEFAULT_EDGE_DRAIN_GRACE_MS: u64 = 5000;
 const DEFAULT_HTTP_DRAIN_GRACE_MS: u64 = 5000;
 const DEFAULT_MODULE_STOP_GRACE_MS: u64 = 5000;
+/// Global cap on concurrent player-QUIC connections (`PLAYER_MAX_CONNS`) — the public
+/// front faces untrusted, certless peers, so the accept loop must bound its
+/// task-per-connection fan-out. `core/app` owns the env surface; `core/edge` stays
+/// env-blind and receives the value via `PlayerServer::with_conn_limits`.
+const DEFAULT_PLAYER_MAX_CONNS: usize = 1024;
+/// Per-source-IP cap on concurrent player-QUIC connections (`PLAYER_MAX_CONNS_PER_IP`)
+/// — a tighter bound so one abusive peer cannot consume the whole global budget.
+const DEFAULT_PLAYER_MAX_CONNS_PER_IP: usize = 32;
 /// Per-check budget for `/readyz` (the baseline DB ping AND each contributed
 /// `httpmw::ReadyCheck`, individually) — no env knob, a readiness-probe budget is not a
 /// tuning surface (config-as-code/anti-magic). LB probe timeouts are typically 5-10s, so
@@ -110,6 +118,16 @@ pub struct Config {
     /// ([`TlsFront::Acme`]). Set ONLY via [`Config::with_tls`] by a composition root
     /// that parsed its own env — never read from env here.
     pub tls: Option<TlsFront>,
+    /// Global cap on concurrent player-QUIC connections (`PLAYER_MAX_CONNS`, default
+    /// [`DEFAULT_PLAYER_MAX_CONNS`]) — threaded to the player edge before it listens.
+    /// `0` disables the cap (opt-out). Only used when a player server is passed to
+    /// [`run`]. A process/topology knob read HERE, never by a module.
+    pub player_max_conns: usize,
+    /// Per-source-IP cap on concurrent player-QUIC connections (`PLAYER_MAX_CONNS_PER_IP`,
+    /// default [`DEFAULT_PLAYER_MAX_CONNS_PER_IP`]). `0` disables it. Only used when a
+    /// player server is passed to [`run`]. A process/topology knob read HERE, never by a
+    /// module.
+    pub player_max_conns_per_ip: usize,
 }
 
 impl Config {
@@ -126,6 +144,8 @@ impl Config {
             std::env::var("EDGE_DRAIN_GRACE_MS").ok(),
             std::env::var("HTTP_DRAIN_GRACE_MS").ok(),
             std::env::var("MODULE_STOP_GRACE_MS").ok(),
+            std::env::var("PLAYER_MAX_CONNS").ok(),
+            std::env::var("PLAYER_MAX_CONNS_PER_IP").ok(),
         )
     }
 
@@ -158,6 +178,9 @@ impl Config {
 
     /// The pure core of [`Config::from_env`] — env values in, config out. Split out so
     /// the default/override logic is unit-testable without mutating process-global env.
+    /// One positional param per env var (all `Option<String>`, same shape) — a mirror of
+    /// `from_env`, not a public builder, so the long arg list is deliberate.
+    #[allow(clippy::too_many_arguments)]
     fn from_values(
         dsn: Option<String>,
         port: Option<String>,
@@ -166,6 +189,8 @@ impl Config {
         drain_grace_ms: Option<String>,
         http_drain_grace_ms: Option<String>,
         module_stop_grace_ms: Option<String>,
+        player_max_conns: Option<String>,
+        player_max_conns_per_ip: Option<String>,
     ) -> Config {
         let database_url = match dsn {
             Some(v) if !v.trim().is_empty() => v,
@@ -198,6 +223,18 @@ impl Config {
             .filter(|v| !v.is_empty())
             .and_then(|v| v.parse::<u64>().ok())
             .unwrap_or(DEFAULT_MODULE_STOP_GRACE_MS);
+        let player_max_conns = player_max_conns
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(DEFAULT_PLAYER_MAX_CONNS);
+        let player_max_conns_per_ip = player_max_conns_per_ip
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(DEFAULT_PLAYER_MAX_CONNS_PER_IP);
         Config {
             database_url: Some(database_url),
             listen_addr: normalize_addr(port.as_deref().unwrap_or_default()),
@@ -208,6 +245,8 @@ impl Config {
             http_drain_grace: std::time::Duration::from_millis(http_drain_grace_ms),
             module_stop_grace: std::time::Duration::from_millis(module_stop_grace_ms),
             tls: None,
+            player_max_conns,
+            player_max_conns_per_ip,
         }
     }
 }
@@ -520,7 +559,8 @@ pub async fn run(
         //     per-call auth is the front's job.
         running_player = match player_server {
             Some(shared) => {
-                let player = std::mem::take(&mut *shared.lock().unwrap());
+                let player = std::mem::take(&mut *shared.lock().unwrap())
+                    .with_conn_limits(cfg.player_max_conns, cfg.player_max_conns_per_ip);
                 let ca = edge::shared_dev_ca().context("edge ca")?;
                 let player_bind: SocketAddr = to_bind_addr(&cfg.player_edge_addr)
                     .parse()
