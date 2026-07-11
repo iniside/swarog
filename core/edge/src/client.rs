@@ -103,7 +103,16 @@ impl Client {
         let resp_bytes = read_frame(&mut recv).await?;
         let resp: Response = serde_json::from_slice(&resp_bytes).map_err(Error::Codec)?;
         if !resp.ok {
-            return Err(Error::Remote(resp.error.unwrap_or_default()));
+            let msg = resp.error.unwrap_or_default();
+            // The internal server's unknown-method sentinel (shared
+            // `crate::UNKNOWN_METHOD_PREFIX` — producer and detector cannot drift)
+            // becomes the typed variant; every other peer error stays `Remote`.
+            // Internal plane only: `player.rs` must NOT mirror this — the player
+            // server has no method table and never produces the sentinel.
+            if msg.starts_with(crate::UNKNOWN_METHOD_PREFIX) {
+                return Err(Error::UnknownMethod(msg));
+            }
+            return Err(Error::Remote(msg));
         }
         Ok(resp.payload.map(|p| p.get().as_bytes().to_vec()).unwrap_or_default())
     }

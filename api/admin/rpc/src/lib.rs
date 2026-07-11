@@ -41,23 +41,17 @@ pub fn register_admin(server: &mut edge::Server, svc: Arc<dyn AdminData>) {
 /// still appears in a remote admin's sidebar — its Section/Label/Content fetched
 /// lazily over the QUIC edge (no bespoke HTTP endpoint).
 ///
-/// The fetch maps a peer with no admin surface (the edge "unknown method" error) to
-/// [`adminapi::ItemError::Absent`] so the admin drops the item silently; every other
-/// error propagates so the admin shows an "unavailable" card (Go's `fetchAdmin`).
+/// The fetch maps a peer with no admin surface (the edge's typed unknown-method
+/// error, surfaced as [`opsapi::Status::NotFound`]) to [`adminapi::ItemError::Absent`]
+/// so the admin drops the item silently; every other error propagates so the admin
+/// shows an "unavailable" card (Go's `fetchAdmin`).
 pub fn admin_remote_factory(provider: &str) -> remote::RemoteFactory {
     let provider = provider.to_string();
     Box::new(move |ctx, caller| {
         let provider = provider.clone();
         let fetch: adminapi::RemoteFetchFn = Arc::new(move |_params: adminapi::Params| {
             let caller = caller.clone();
-            Box::pin(async move {
-                let client = admin_data_rpc::Client::new(caller);
-                match client.admin_data().await {
-                    Ok(data) => Ok(data),
-                    Err(e) if is_unknown_method(&e) => Err(adminapi::ItemError::Absent),
-                    Err(e) => Err(adminapi::ItemError::Other(anyhow::anyhow!("{e}"))),
-                }
-            })
+            Box::pin(fetch_remote_admin(caller))
         });
         ctx.contribute(
             adminapi::SLOT,
@@ -72,9 +66,25 @@ pub fn admin_remote_factory(provider: &str) -> remote::RemoteFactory {
     })
 }
 
-/// True when `e` is the edge's "unknown method" error — the peer has not registered
-/// an admin surface, so the item is skipped (not shown as unavailable). Mirrors Go's
-/// `strings.Contains(err.Error(), "unknown method")`.
-fn is_unknown_method(e: &Error) -> bool {
-    e.to_string().contains("unknown method")
+/// One remote admin-data fetch over `caller`, mapping the outcome onto the admin
+/// portal's tri-state: data, [`adminapi::ItemError::Absent`] (drop the item —
+/// [`opsapi::Status::NotFound`], which is how `edge::Error::UnknownMethod` surfaces
+/// through the transport when the peer has not registered an admin surface), or
+/// [`adminapi::ItemError::Other`] (error card — peer down, timeout, any other
+/// failure). Replaces Go's `strings.Contains(err.Error(), "unknown method")` sniff
+/// with the typed status; the aliasing caveat (a domain NotFound would also read as
+/// Absent) is accepted — `admin_data` has no domain not-found.
+async fn fetch_remote_admin(
+    caller: Arc<dyn opsapi::Caller>,
+) -> Result<adminapi::ItemData, adminapi::ItemError> {
+    let client = admin_data_rpc::Client::new(caller);
+    match client.admin_data().await {
+        Ok(data) => Ok(data),
+        Err(e) if e.status == opsapi::Status::NotFound => Err(adminapi::ItemError::Absent),
+        Err(e) => Err(adminapi::ItemError::Other(anyhow::anyhow!("{e}"))),
+    }
 }
+
+#[cfg(test)]
+#[path = "tests.rs"]
+mod tests;

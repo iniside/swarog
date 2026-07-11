@@ -175,6 +175,7 @@ dependencies = [
  "remote",
  "rpc-macro",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]

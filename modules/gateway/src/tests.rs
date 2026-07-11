@@ -1000,6 +1000,41 @@ async fn remote_backend_relays_method_identity_and_payload() {
     assert_eq!(seen.2, b"{\"name\":\"x\"}");
 }
 
+// BLAST RADIUS (Step 7, 2026-07-11 remediation plan): `From<edge::Error> for
+// opsapi::Error` is the single conversion behind EVERY generated rpc client and
+// this Remote dispatch. With `edge::Error::UnknownMethod → Status::NotFound`, a
+// gateway→svc method mismatch (version skew, misdeploy) now surfaces to the front
+// as a 404 that is INDISTINGUISHABLE from a domain not-found. That aliasing is
+// intentional (unknown-method is non-retryable; a 503 would invite pointless
+// retries) — this test pins the contract over a REAL loopback edge hop.
+#[tokio::test]
+async fn remote_dispatch_to_unserved_method_surfaces_as_not_found() {
+    let ca = edge::DevCA::generate().unwrap();
+    // A live peer whose dispatch table does NOT serve the op's method.
+    let running = edge::Server::new()
+        .listen("127.0.0.1:0".parse().unwrap(), &ca)
+        .unwrap();
+    let client = edge::Client::dial(running.local_addr(), &ca).await.unwrap();
+
+    let backend = RemoteBackend::new(Arc::new(client));
+    let op = Operation {
+        method: "characters.create".into(),
+        verb: "POST".into(),
+        path: "/characters".into(),
+        auth: AuthReq::Player,
+        success: 201,
+        retry_mode: RetryMode::Never,
+    };
+    let err = backend
+        .invoke(&op, Identity::player("bob"), b"{}".to_vec())
+        .await
+        .unwrap_err();
+    assert_eq!(err.status, Status::NotFound, "{err:?}");
+    assert_eq!(err.status.http(), 404);
+
+    running.close();
+}
+
 #[tokio::test]
 async fn local_backend_missing_invoker_is_internal_error() {
     let backend = LocalBackend::new(Arc::new(HashMap::new()));

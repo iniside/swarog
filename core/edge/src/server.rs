@@ -331,7 +331,9 @@ impl Dispatch {
         } else if let Some(fwd) = self.longest_prefix(&req.method) {
             run_caught(fwd(req.method.clone(), payload)).await
         } else {
-            return err_response(&format!("edge: unknown method {:?}", req.method));
+            // The shared sentinel (`crate::UNKNOWN_METHOD_PREFIX`) — the internal
+            // Client detects this prefix and types it as `Error::UnknownMethod`.
+            return err_response(&format!("{} {:?}", crate::UNKNOWN_METHOD_PREFIX, req.method));
         };
 
         match result {

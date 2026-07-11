@@ -60,20 +60,49 @@ pub enum Error {
     Connection(String),
     #[error("edge: stream: {0}")]
     Stream(String),
-    /// The peer returned an `ok:false` response envelope (a handler/dispatch error,
-    /// an unknown method, or a malformed request). Carries the peer's error string.
+    /// The peer returned an `ok:false` response envelope (a handler/dispatch error
+    /// or a malformed request). Carries the peer's error string.
     #[error("edge: remote error: {0}")]
     Remote(String),
+    /// The peer's dispatch table has no handler for the requested method: the
+    /// internal server's unknown-method sentinel, detected by [`Client`] via the
+    /// shared [`UNKNOWN_METHOD_PREFIX`]. Typed apart from [`Error::Remote`] so
+    /// consumers (the admin fan-out's "peer has no admin surface" probe) never
+    /// string-sniff, and so the opsapi mapping can classify it as non-retryable.
+    /// Carries the peer's full error string (already sentinel-prefixed), displayed
+    /// verbatim. Internal plane only — the player plane has no method table and
+    /// never produces this.
+    #[error("{0}")]
+    UnknownMethod(String),
 }
 
+/// The sentinel prefix the internal [`Server`]'s dispatch stamps on an unmatched
+/// method (`server.rs`) and the [`Client`] detects when decoding an `ok:false`
+/// response (`client.rs`). Defined ONCE so producer and detector cannot drift.
+/// The player plane never produces it (no method table), so `player.rs` must NOT
+/// detect it — a relayed front string could only false-positive there.
+pub(crate) const UNKNOWN_METHOD_PREFIX: &str = "edge: unknown method";
+
 /// Maps an edge transport failure onto an [`opsapi::Error`] for the [`opsapi::Caller`]
-/// boundary. Every edge-level failure is treated as [`opsapi::Status::Unavailable`]
+/// boundary. [`Error::UnknownMethod`] — the peer answered but serves no such method —
+/// maps to [`opsapi::Status::NotFound`] (non-retryable: the peer will keep not knowing
+/// the method). Every OTHER edge-level failure is [`opsapi::Status::Unavailable`]
 /// (a retryable transport failure): the DOMAIN status of a completed operation rides
 /// INSIDE the response payload envelope (the `#[rpc]` layer, Step 5), not at this
 /// transport level, so a non-OK edge response here means the call did not complete.
+///
+/// BLAST RADIUS (intentional, Step 7 of the 2026-07-11 remediation plan): this is
+/// the single conversion used by EVERY generated rpc client and the gateway's
+/// Remote dispatch. Mapping `UnknownMethod → NotFound` means a gateway→svc method
+/// mismatch (version skew, misdeploy) surfaces to the front as a 404 that is
+/// indistinguishable from a domain not-found — accepted, because unknown-method is
+/// not retryable and a 503 would invite pointless retries.
 impl From<Error> for opsapi::Error {
     fn from(e: Error) -> Self {
-        opsapi::Error::unavailable(e.to_string())
+        match e {
+            Error::UnknownMethod(msg) => opsapi::Error::not_found(msg),
+            other => opsapi::Error::unavailable(other.to_string()),
+        }
     }
 }
 
@@ -161,9 +190,12 @@ mod e2e_tests {
         let resp = client.call_raw("fwd.anything", b"null").await.unwrap();
         assert_eq!(resp, br#""served:fwd.anything""#);
 
-        // Unknown method → a remote error (ok:false).
+        // Unknown method → the TYPED variant (the client detects the shared
+        // sentinel), which the opsapi mapping classifies as non-retryable NotFound.
         let err = client.call_raw("nope", b"null").await.unwrap_err();
-        assert!(matches!(err, Error::Remote(msg) if msg.contains("unknown method")));
+        assert!(matches!(&err, Error::UnknownMethod(_)), "{err:?}");
+        let ops: opsapi::Error = err.into();
+        assert_eq!(ops.status, opsapi::Status::NotFound);
 
         // The Caller trait routes identically (bytes in/out), proving the generated
         // client (Step 5) can compose over this exact seam.
@@ -225,6 +257,10 @@ mod e2e_tests {
 
         let err = client.call_raw("boom", b"null").await.unwrap_err();
         assert!(matches!(&err, Error::Remote(msg) if msg.contains("panic")), "{err:?}");
+        // A genuine remote error stays a retryable transport failure at the opsapi
+        // boundary — only UnknownMethod maps to NotFound.
+        let ops: opsapi::Error = err.into();
+        assert_eq!(ops.status, opsapi::Status::Unavailable);
         // The connection survives — a subsequent call still works.
         let resp = client.call_raw("ok", br#"1"#).await.unwrap();
         assert_eq!(resp, b"1");
