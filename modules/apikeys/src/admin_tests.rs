@@ -200,3 +200,24 @@ async fn submit_rejects_invalid_policy_without_writing() {
 
     cleanup(&pool, &base).await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn submit_rejects_underscore_prefixed_new_name_without_writing() {
+    let Some(pool) = test_pool().await else { return };
+    let svc = Arc::new(Service { store: Store { pool: pool.clone() } });
+    let base = unique_name(&pool).await;
+    // A `_`-prefixed name would collide with the form's own `_new_*`/`_revoke_name`
+    // control fields on the next render — apply_edit must reject it before any write.
+    let new_name = format!("_{base}-new");
+    let new_key = format!("{base}-new-key");
+
+    let mut add = adminapi::Params::new();
+    add.insert("_new_name".into(), new_name.clone());
+    add.insert("_new_key".into(), new_key.clone());
+    add.insert("_new_policy".into(), "full".into());
+    let err = apply_edit(&svc, add).await.unwrap_err();
+    assert!(err.to_string().contains("must not start with '_'"), "got: {err}");
+    assert_eq!(svc.store.lookup(&new_key).await.unwrap(), None, "insert must not have committed");
+
+    cleanup(&pool, &base).await;
+}

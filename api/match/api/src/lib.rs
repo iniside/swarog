@@ -30,10 +30,13 @@ use rpc_macro::rpc;
 pub trait Match: Send + Sync {
     /// Records that `winner` beat `loser`. `report_id` is a REQUIRED client-supplied
     /// idempotency key: the split topology's `remote::Stub` auto-retries a failed RPC,
-    /// so a report whose response was lost can be re-sent — a duplicate `report_id` is
-    /// a silent no-op (202, no second `match.finished`). The public body keys are
-    /// capitalized (`ReportId` + the Go-default `Winner`/`Loser`) via the `body_names`
-    /// override. 202 on success, no body.
+    /// so a report whose response was lost can be re-sent. A duplicate `report_id`
+    /// carrying the SAME `winner`/`loser` is a silent no-op (202, no second
+    /// `match.finished`); a duplicate `report_id` carrying a DIFFERENT `winner`/`loser`
+    /// is rejected as **409 Conflict** — the id was already bound to another result, so
+    /// the request can't be a safe replay. The public body keys are capitalized
+    /// (`ReportId` + the Go-default `Winner`/`Loser`) via the `body_names` override.
+    /// 202 on success, no body.
     #[http(
         verb = "POST",
         path = "/match/report",

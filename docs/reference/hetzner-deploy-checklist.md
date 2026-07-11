@@ -19,7 +19,8 @@ Companion plan: `docs/plans/2026-07-10-2314-admin-hardening-plan.md`.
 
 - [ ] `TLS_MODE=acme`
 - [ ] `ACME_DOMAINS=api.example.com` (comma-separated for more)
-- [ ] `ACME_CONTACT=mailto:you@example.com` (optional but recommended —
+- [ ] `ACME_CONTACT=you@example.com` (bare email, no `mailto:` prefix — the
+      gateway adds it; optional but recommended —
       expiry mails from Let's Encrypt)
 - [ ] `ACME_CACHE_DIR=<persistent path>` (default `run/acme-cache`; MUST survive
       restarts or you re-issue on every boot and hit LE rate limits)

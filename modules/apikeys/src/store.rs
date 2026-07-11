@@ -68,7 +68,12 @@ impl Store {
     // wrappers (test-only, below) delegate to these for terse test setup.
 
     /// Inserts a new key over a caller's connection. A duplicate `name` (primary key) or
-    /// `key` (unique) surfaces as the underlying sqlx error for the caller to map.
+    /// `key` (unique) surfaces as the underlying sqlx error for the caller to map. A
+    /// `_`-prefixed `name` is rejected here too (not just in the admin `apply_edit`
+    /// guard) so every insertion path — admin or otherwise — stays safe: the admin
+    /// form's per-key policy fields use the key's own `name` as the field name, and a
+    /// `_`-prefixed one would collide with the form's `_new_*`/`_revoke_name` control
+    /// fields.
     pub async fn insert_tx(
         &self,
         conn: &mut PgConnection,
@@ -76,6 +81,12 @@ impl Store {
         key: &str,
         policy: &str,
     ) -> Result<(), sqlx::Error> {
+        if name.starts_with('_') {
+            return Err(sqlx::Error::Configuration(
+                format!("apikeys: key name {name:?} must not start with '_' (reserved for admin form control fields)")
+                    .into(),
+            ));
+        }
         sqlx::query("INSERT INTO apikeys.keys (name, key, policy) VALUES ($1, $2, $3)")
             .bind(name)
             .bind(key)

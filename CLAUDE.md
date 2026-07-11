@@ -243,8 +243,9 @@ module never knows the topology.
   commit-before-unlock. `SCHEDULER_ENABLED`.
 - **match / rating / leaderboard** — match records `match.matches` from a
   `/match/report` HTTP request body (a REQUIRED `ReportId` idempotency key —
-  duplicates are a 202 no-op and `report` is explicitly `#[retry_safe]`, so a replay
-  after an ambiguous result can't double-commit —
+  a duplicate `ReportId` with the SAME winner/loser is a 202 no-op, a duplicate
+  `ReportId` with a DIFFERENT winner/loser is a 409 Conflict, and `report` is
+  explicitly `#[retry_safe]`, so a replay after an ambiguous result can't double-commit —
   plus Go-parity keys `Winner`/`Loser`) and emits a
   durable `match.finished` event (snake_case payload keys `winner`/`loser` — a
   distinct shape from the HTTP body); rating is a persistent MMR projection

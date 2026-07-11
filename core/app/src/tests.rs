@@ -12,6 +12,16 @@ fn player_request_limit_values_default_override_and_allow_zero() {
     assert_eq!(parse_number(Some("0"), 20u32), 0);
     assert_eq!(parse_number(Some("bad"), 40u32), 40);
 }
+
+#[test]
+fn normalize_mailto_avoids_double_prefix() {
+    assert_eq!(normalize_mailto("you@example.com"), "mailto:you@example.com");
+    assert_eq!(
+        normalize_mailto("mailto:you@example.com"),
+        "mailto:you@example.com"
+    );
+}
+
 use lifecycle::Context;
 
 /// A minimal module for the topology tests: a name + a requires manifest. A

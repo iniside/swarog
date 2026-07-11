@@ -856,6 +856,15 @@ async fn ordered_teardown(
     }
 }
 
+/// Normalizes an `ACME_CONTACT` entry into the `mailto:` URI ACME expects, tolerating
+/// an operator who already included the `mailto:` prefix (the documented contract is
+/// a bare email — see `docs/reference/hetzner-deploy-checklist.md`) so we never emit
+/// a double-prefixed `mailto:mailto:...`.
+fn normalize_mailto(c: &str) -> String {
+    let email = c.strip_prefix("mailto:").unwrap_or(c);
+    format!("mailto:{email}")
+}
+
 /// Serves `router` over HTTPS on `bind` until `sig_rx` flips — the TLS twin of the
 /// plain `axum::serve` branch in [`run`] (admin hardening Step 4). Same shutdown
 /// contract: once the watch signal fires, `axum_server::Handle::graceful_shutdown`
@@ -913,7 +922,7 @@ async fn serve_https(
             // listener, no extra route. Account key + issued certs persist in
             // `cache_dir` so restarts don't re-issue (rate limits).
             let mut state = rustls_acme::AcmeConfig::new(domains.clone())
-                .contact(contact.iter().map(|c| format!("mailto:{c}")))
+                .contact(contact.iter().map(|c| normalize_mailto(c)))
                 .cache(rustls_acme::caches::DirCache::new(cache_dir.clone()))
                 .directory_lets_encrypt(true)
                 .state();

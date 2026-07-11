@@ -134,9 +134,10 @@ impl Service {
 #[async_trait]
 impl Match for Service {
     /// Records that `winner` beat `loser`. `report_id` is the REQUIRED idempotency key
-    /// (empty ⇒ `Invalid` — a missing key must never silently degrade the dedup). The
-    /// An existing report is checked before the synchronous MMR dependency: the same
-    /// payload is an immediate no-op, while reusing the id for another match conflicts.
+    /// (empty ⇒ `Invalid` — a missing key must never silently degrade the dedup). An
+    /// existing report is checked before the synchronous MMR dependency: the same
+    /// payload is an immediate 202 no-op, while reusing the id for a DIFFERENT
+    /// winner/loser pair is a 409 Conflict (`Error::conflict`).
     /// For a new report the MMR read is SYNCHRONOUS (query rating right now — Go read the
     /// winner's MMR; we read both to exercise the wire, doing nothing material with the
     /// values). Then the domain INSERT + the `match.finished` durable event append

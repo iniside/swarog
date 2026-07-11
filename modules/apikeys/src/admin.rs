@@ -43,6 +43,20 @@ fn check_policy(policy: &str) -> anyhow::Result<()> {
     }
 }
 
+/// Rejects a key name that would collide with the admin form's `_new_*`/`_revoke_name`
+/// control fields — a key literally named e.g. `_new_name` overwrites those widgets'
+/// own posted values on the next render/submit round-trip. Per-key policy fields use
+/// the key's own `name` as the field name, so any `_`-prefixed name is unsafe.
+fn check_name(name: &str) -> anyhow::Result<()> {
+    if name.starts_with('_') {
+        anyhow::bail!(
+            "apikeys: key name {name:?} must not start with '_' (reserved for admin form control fields)"
+        )
+    } else {
+        Ok(())
+    }
+}
+
 /// KPI row: total keys and the active (non-revoked) subset.
 fn build_kpis(rows: &[KeyRow]) -> Vec<adminapi::Kpi> {
     let active = rows.iter().filter(|r| !r.revoked).count();
@@ -216,6 +230,7 @@ pub(crate) async fn apply_edit(svc: &Service, values: adminapi::Params) -> anyho
     let new_key = adminapi::param(&values, "_new_key");
     let new_policy = adminapi::param(&values, "_new_policy");
     if !new_name.is_empty() && !new_key.is_empty() && !new_policy.is_empty() {
+        check_name(new_name)?;
         check_policy(new_policy)?;
         planned.push(PlannedWrite::Insert {
             name: new_name.to_string(),
