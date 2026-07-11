@@ -287,6 +287,11 @@ async fn run() -> Result<u32> {
         .write_pem(ca_cert_str, ca_key_str)
         .context("write CA")?;
 
+    // Seed the admin logins PRE-BOOT (session auth): adminctl ensures schema `admin`
+    // itself and upserts the login (password over stdin, never argv).
+    seed_admin(&ctx, "proofadmin", "proofpass")?;
+    seed_admin(&ctx, "prooflock", "lockpass")?;
+
     let pool = PgPool::connect(&ctx.db_url).await.context("connect DB")?;
     reset_config_baseline(&pool).await?;
 
@@ -337,16 +342,37 @@ fn preflight_fleet(root: &Path, ctx: &Ctx) -> Result<()> {
     Ok(())
 }
 
+/// Seed an admin login via adminctl (password over stdin, never argv). adminctl ensures
+/// schema `admin` + admin.users itself, so it runs before admin-svc migrates.
+fn seed_admin(ctx: &Ctx, user: &str, pass: &str) -> Result<()> {
+    use std::io::Write;
+    let bin = ctx.bin_dir.join(format!("adminctl{}", std::env::consts::EXE_SUFFIX));
+    let mut child = Command::new(&bin)
+        .args(["create-user", user, "--password-stdin"])
+        .env("DATABASE_URL", &ctx.db_url)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .with_context(|| format!("spawn adminctl for {user}"))?;
+    child
+        .stdin
+        .take()
+        .context("adminctl stdin")?
+        .write_all(format!("{pass}\n").as_bytes())?;
+    if !child.wait()?.success() {
+        bail!("adminctl create-user {user} failed");
+    }
+    Ok(())
+}
+
 async fn reset_config_baseline(pool: &PgPool) -> Result<()> {
     // Inventory's starter must default to starter_sword so a later live change proves a
     // reload; proof.* rows from a prior run must not leak into assertions.
-    sqlx::query(
-        "DELETE FROM config.settings WHERE namespace='inventory' AND key='starter_item'; \
-         DELETE FROM config.settings WHERE namespace='proof';",
-    )
-    .execute(pool)
-    .await
-    .ok(); // config schema may not exist yet on a truly fresh DB — best-effort.
+    // Two statements → two query() calls (sqlx's extended protocol runs only one each).
+    sqlx::query("DELETE FROM config.settings WHERE namespace='inventory' AND key='starter_item'")
+        .execute(pool).await.ok(); // config schema may not exist yet on a fresh DB — best-effort.
+    sqlx::query("DELETE FROM config.settings WHERE namespace='proof'").execute(pool).await.ok();
     Ok(())
 }
 
@@ -570,12 +596,14 @@ async fn assertions(ctx: &Ctx, pool: &PgPool, p: &mut Proof) -> Result<()> {
     p.check("[K5b] post-burst fresh key -> 401", k5b.status().as_u16() == 401, k5b.status());
 
     // --- Characters/inventory: plain-id relations + durable character.created/deleted. ---
+    let mut created_cid: Option<String> = None;
     if let Some(tok) = token.clone() {
         let other = register_login(ctx, &g, &format!("other-{suffix}@test.local")).await.ok();
         // [1] create through G -> A.
         let cid = create_character(ctx, &g, &tok, "Aria").await;
         p.check("[1] create character -> 201 + id", cid.is_some(), format!("cid={cid:?}"));
         if let Some(cid) = cid {
+            created_cid = Some(cid.clone());
             // [2] starter grant appears (character.created -> inventory, durable).
             let starter = poll_inventory_has(ctx, &g, &tok, &cid, "starter_sword").await;
             p.check("[2] starter_sword granted via event", starter, format!("cid={cid}"));
@@ -727,6 +755,165 @@ async fn assertions(ctx: &Ctx, pool: &PgPool, p: &mut Proof) -> Result<()> {
         // [P6] per-connection rate-limit + refill.
         p.check("[P6] player rate-limit + refill", player_burst(ctx).await, "");
     }
+
+    // --- Admin portal (session auth) + audit ledger, cross-process over QUIC. ---
+    let admin = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .cookie_store(true)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()?;
+    let aproof = format!("AdminProof-{suffix}");
+    // [AD0] a character for the admin table to render (through G -> A).
+    if let Some(tok) = token.clone() {
+        let acid = create_character(ctx, &g, &tok, &aproof).await;
+        p.check("[AD0] admin-proof character created", acid.is_some(), format!("id={acid:?}"));
+    }
+    // [AD1] unauthenticated /admin -> 303 to /admin/login (session gate live on E).
+    let ad1 = ctx.http_noredirect.get(format!("{g}/admin")).send().await?;
+    let ad1_loc = ad1.headers().get("location").and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+    p.check(
+        "[AD1] unauthenticated /admin -> 303 /admin/login",
+        ad1.status().as_u16() == 303 && ad1_loc.ends_with("/admin/login"),
+        format!("code={} loc={ad1_loc}", ad1.status().as_u16()),
+    );
+
+    // [AD2] asymmetric lockout: prooflock 6x wrong -> each 401; user locks at 5, ip not.
+    sqlx::query("DELETE FROM admin.login_attempts WHERE subject='user:prooflock' OR subject LIKE 'ip:%'")
+        .execute(pool).await.ok();
+    let mut ad2_all401 = true;
+    for i in 0..6 {
+        let pw = format!("wrong-{i}");
+        let r = ctx.http_noredirect.post(format!("{g}/admin/login"))
+            .form(&[("username", "prooflock"), ("password", pw.as_str())]).send().await?;
+        if r.status().as_u16() != 401 { ad2_all401 = false; }
+    }
+    let ad2_fails: Option<i64> = sqlx::query_scalar("SELECT fails::bigint FROM admin.login_attempts WHERE subject='user:prooflock'").fetch_optional(pool).await.ok().flatten();
+    let ad2_locked: Option<bool> = sqlx::query_scalar("SELECT locked_until > now() FROM admin.login_attempts WHERE subject='user:prooflock'").fetch_optional(pool).await.ok().flatten();
+    let ad2_ip_locked: Option<i64> = sqlx::query_scalar("SELECT count(*) FROM admin.login_attempts WHERE subject LIKE 'ip:%' AND locked_until > now()").fetch_optional(pool).await.ok().flatten();
+    p.check(
+        "[AD2] user locks at 5, ip does not",
+        ad2_all401 && ad2_fails.map(|f| f >= 5).unwrap_or(false) && ad2_locked == Some(true) && ad2_ip_locked == Some(0),
+        format!("all401={ad2_all401} fails={ad2_fails:?} locked={ad2_locked:?} ip_locked={ad2_ip_locked:?}"),
+    );
+
+    // [AD2b] 12 CONCURRENT wrong logins -> advisory-lock serializes to exactly 5 fails +
+    // one login-locked event (the flow that HUNG the bash harness; deadlock-free in tokio).
+    // Hit admin-svc DIRECTLY (:8085, which trusts XFF from 127.0.0.1): this exercises the
+    // same lockout logic without the gateway's per-IP rate limiter — the harness fires
+    // truly concurrently and would otherwise trip the gateway's 127.0.0.1 bucket, which
+    // the slower curl-per-process shell never hit.
+    let admin_direct = format!("http://127.0.0.1:{P_ADMIN}/admin/login");
+    // A long-timeout client for the concurrent admin bursts: each login holds the
+    // advisory lock across a 64 MiB Argon2 (~300-500ms) and 12/40 requests serialize,
+    // so the tail can take several seconds — well past the 5s default (the curl-per-
+    // process shell never saw this because process-spawn latency spread its requests).
+    let slow = reqwest::Client::builder()
+        .timeout(Duration::from_secs(60))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()?;
+    // NB: sqlx's extended protocol runs only ONE statement per query() — split the two.
+    sqlx::query("DELETE FROM admin.login_attempts WHERE subject IN ('user:prooflock','ip:198.51.100.42')")
+        .execute(pool).await.ok();
+    sqlx::query("DELETE FROM asyncevents.events WHERE topic='admin.action' AND payload->>'actor'='prooflock' AND payload->>'action'='login-locked'")
+        .execute(pool).await.ok();
+    let mut hs = Vec::new();
+    for i in 0..12 {
+        let http = slow.clone();
+        let url = admin_direct.clone();
+        hs.push(tokio::spawn(async move {
+            let pw = format!("wrong-{i}");
+            http.post(url).header("X-Forwarded-For", "198.51.100.42")
+                .form(&[("username", "prooflock"), ("password", pw.as_str())]).send().await
+                .map(|r| r.status().as_u16()).unwrap_or(0)
+        }));
+    }
+    let mut ad2b_codes = Vec::new();
+    for h in hs { if let Ok(c) = h.await { ad2b_codes.push(c); } }
+    ad2b_codes.sort_unstable();
+    let ad2b_fails: Option<i64> = sqlx::query_scalar("SELECT fails::bigint FROM admin.login_attempts WHERE subject='user:prooflock'").fetch_optional(pool).await.ok().flatten();
+    let ad2b_locked: Option<bool> = sqlx::query_scalar("SELECT locked_until > now() FROM admin.login_attempts WHERE subject='user:prooflock'").fetch_optional(pool).await.ok().flatten();
+    let ad2b_ev: Option<i64> = sqlx::query_scalar("SELECT count(*) FROM asyncevents.events WHERE topic='admin.action' AND payload->>'actor'='prooflock' AND payload->>'action'='login-locked'").fetch_optional(pool).await.ok().flatten();
+    p.check(
+        "[AD2b] concurrent lockout -> fails=5, one lock event",
+        ad2b_fails == Some(5) && ad2b_locked == Some(true) && ad2b_ev == Some(1),
+        format!("fails={ad2b_fails:?} locked={ad2b_locked:?} ev={ad2b_ev:?} codes={ad2b_codes:?}"),
+    );
+
+    // [AD2c] 40 CONCURRENT logins from one IP -> some 429, each carrying Retry-After: 1.
+    let mut hs = Vec::new();
+    for i in 0..40 {
+        let http = slow.clone();
+        let url = admin_direct.clone();
+        hs.push(tokio::spawn(async move {
+            let user = format!("ghost-{i}");
+            match http.post(url).header("X-Forwarded-For", "198.51.100.43")
+                .form(&[("username", user.as_str()), ("password", "wrong")]).send().await
+            {
+                Ok(r) => {
+                    let code = r.status().as_u16();
+                    let ra = r.headers().get("retry-after").and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+                    (code, ra)
+                }
+                Err(_) => (0, String::new()),
+            }
+        }));
+    }
+    let (mut n429, mut n429_retry) = (0u32, 0u32);
+    for h in hs {
+        if let Ok((code, ra)) = h.await {
+            if code == 429 {
+                n429 += 1;
+                if ra == "1" { n429_retry += 1; }
+            }
+        }
+    }
+    p.check(
+        "[AD2c] login burst -> 429 + Retry-After: 1",
+        n429 >= 1 && n429 == n429_retry,
+        format!("429={n429} retry={n429_retry}"),
+    );
+
+    // [AD3] session login -> 303 + admin_session cookie (AD3a proves the cookie works).
+    let ad3 = admin.post(format!("{g}/admin/login")).form(&[("username", "proofadmin"), ("password", "proofpass")]).send().await?;
+    p.check("[AD3] admin login -> 303 + session", ad3.status().as_u16() == 303, ad3.status());
+    // [AD3a] /admin/characters WITH session -> 200 + AProof (G passthrough -> E -> A QUIC).
+    let ad3a = admin.get(format!("{g}/admin/characters")).send().await?;
+    let (ad3a_code, ad3a_body) = (ad3a.status().as_u16(), ad3a.text().await.unwrap_or_default());
+    p.check("[AD3a] /admin/characters -> 200 + AProof", ad3a_code == 200 && ad3a_body.contains(&aproof), format!("code={ad3a_code}"));
+    // [AD3b] /admin/api-keys WITH session -> 200 + dev-client (E -> L QUIC, two hops).
+    let ad3b = admin.get(format!("{g}/admin/api-keys")).send().await?;
+    let (ad3b_code, ad3b_body) = (ad3b.status().as_u16(), ad3b.text().await.unwrap_or_default());
+    p.check("[AD3b] /admin/api-keys -> 200 + dev-client", ad3b_code == 200 && ad3b_body.contains("dev-client"), format!("code={ad3b_code}"));
+    // [AD4] POST /admin/api-keys with session but NO _csrf -> 403 (CSRF before editability).
+    let ad4 = admin.post(format!("{g}/admin/api-keys")).form(&[("dummy", "1")]).send().await?;
+    p.check("[AD4] no-CSRF admin POST -> 403", ad4.status().as_u16() == 403, ad4.status());
+    // [AD5] admin.action durable trail: >=2 asyncevents rows AND audit.log has them.
+    let ad5_events: Option<i64> = sqlx::query_scalar("SELECT count(*) FROM asyncevents.events WHERE topic='admin.action'").fetch_optional(pool).await.ok().flatten();
+    let ad5_audit: Option<i64> = sqlx::query_scalar("SELECT count(*) FROM audit.log WHERE topic='admin.action'").fetch_optional(pool).await.ok().flatten();
+    p.check(
+        "[AD5] admin.action durable trail",
+        ad5_events.map(|e| e >= 2).unwrap_or(false) && ad5_audit.map(|a| a >= 1).unwrap_or(false),
+        format!("events={ad5_events:?} audit={ad5_audit:?}"),
+    );
+
+    // --- Audit ledger (F pulls six subscriptions from the shared log). ---
+    // [AU1] character.created + character.deleted recorded for the Batch B character.
+    if let Some(cid) = &created_cid {
+        let created = poll_count(pool, "SELECT count(*) FROM audit.log WHERE topic='character.created' AND payload->>'character_id'=$1", cid, 1).await;
+        let deleted = poll_count(pool, "SELECT count(*) FROM audit.log WHERE topic='character.deleted' AND payload->>'character_id'=$1", cid, 1).await;
+        p.check("[AU1] audit character.created + deleted", created && deleted, format!("cid={cid}"));
+    }
+    // [AU2] player.registered recorded for the registered player.
+    if let Some(pid) = &player_id {
+        let reg = poll_count(pool, "SELECT count(*) FROM audit.log WHERE topic='player.registered' AND payload->>'player_id'=$1", pid, 1).await;
+        p.check("[AU2] audit player.registered", reg, format!("pid={pid}"));
+    }
+    // [AU3] /admin/audit-log WITH session -> 200 + a logged topic (E -> F QUIC).
+    let au3 = admin.get(format!("{g}/admin/audit-log")).send().await?;
+    let (au3_code, au3_body) = (au3.status().as_u16(), au3.text().await.unwrap_or_default());
+    let au3_ok = au3_code == 200
+        && (au3_body.contains("character.created") || au3_body.contains("character.deleted") || au3_body.contains("player.registered"));
+    p.check("[AU3] /admin/audit-log renders ledger", au3_ok, format!("code={au3_code}"));
 
     Ok(())
 }
