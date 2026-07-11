@@ -1372,3 +1372,69 @@ async fn login_attempt_gc_removes_only_stale_unlocked_rows() {
     sqlx::query("DELETE FROM admin.login_attempts WHERE subject=ANY($1)")
         .bind([stale, locked, fresh]).execute(&pool).await.unwrap();
 }
+
+/// A verifier that reports when `verify` has started and then blocks until the test
+/// releases it — lets the test freeze a login mid-Argon2 deterministically.
+struct GatedVerifier {
+    started: std::sync::mpsc::Sender<()>,
+    release: Mutex<std::sync::mpsc::Receiver<()>>,
+}
+
+impl PasswordVerifier for GatedVerifier {
+    fn verify(&self, _encoded: &str, _password: &str) -> bool {
+        self.started.send(()).expect("test alive");
+        let _ = self.release.lock().unwrap().recv();
+        false
+    }
+}
+
+/// The RAM-cap regression: `spawn_blocking` is NOT cancelled when its JoinHandle
+/// drops, so if the argon permit lived in the handler's async frame a client
+/// disconnect would release it while the detached 64 MiB hash keeps running. The
+/// permit must be owned by the blocking closure — released only AFTER the hash
+/// completes, even when the caller future is dropped mid-verify.
+#[tokio::test(flavor = "multi_thread")]
+async fn argon_permit_survives_login_cancellation_until_hash_completes() {
+    let Some(pool) = test_pool().await else { return };
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let verifier = Arc::new(GatedVerifier {
+        started: started_tx,
+        release: Mutex::new(release_rx),
+    });
+    let (_ctx, st) = wired_with_verifier(&pool, false, true, verifier).await;
+    assert_eq!(st.argon_permits.available_permits(), 2);
+
+    let task_st = st.clone();
+    let login = tokio::spawn(async move {
+        post_login(&task_st, "203.0.113.97:1", "unknown-cancelled", "wrong").await
+    });
+    // Wait until the login is provably inside the blocking verify.
+    tokio::task::spawn_blocking(move || started_rx.recv().expect("verify started"))
+        .await
+        .unwrap();
+    assert_eq!(st.argon_permits.available_permits(), 1);
+
+    // Simulate the client disconnect: abort drops the handler future at its
+    // `.await` on the spawn_blocking JoinHandle; the blocking hash keeps running.
+    login.abort();
+    let err = login.await.expect_err("login task was aborted mid-verify");
+    assert!(err.is_cancelled());
+    assert_eq!(
+        st.argon_permits.available_permits(),
+        1,
+        "cancelling the request must NOT release the argon permit while the hash still runs"
+    );
+
+    // Let the hash finish; only then may the permit return.
+    release_tx.send(()).expect("verifier still blocked");
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while st.argon_permits.available_permits() != 2 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "permit was not released after the blocking verify completed"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    cleanup_ip(&pool, "203.0.113.97").await;
+}

@@ -70,7 +70,7 @@ use lifecycle::{Context, Module};
 use rand::RngCore as _;
 use serde::Serialize;
 use sqlx::PgPool;
-use tokio::sync::Semaphore;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 mod password;
 pub use password::{hash_password, verify_password};
@@ -466,6 +466,7 @@ impl AdminState {
         submitted: String,
         ip: IpAddr,
         valid_input: bool,
+        argon: OwnedSemaphorePermit,
     ) -> anyhow::Result<LoginOutcome> {
         const LOCK_NAMESPACE: i64 = 4_702_968_888_123_215_687;
         let effective_username = if valid_input { username.clone() } else { "<invalid>".to_string() };
@@ -506,9 +507,16 @@ impl AdminState {
             (row.expect("known row").0, submitted)
         };
         let verifier = self.verifier.clone();
-        let verified = tokio::task::spawn_blocking(move || verifier.verify(&hash, &candidate))
-            .await
-            .map_err(|error| anyhow::anyhow!("admin password verifier task failed: {error}"))?;
+        // The argon permit MUST live inside the blocking closure: spawn_blocking is
+        // not cancelled when its JoinHandle drops, so a permit held in this async
+        // frame would be released on client disconnect while the detached 64 MiB
+        // hash keeps running — defeating the RAM cap.
+        let verified = tokio::task::spawn_blocking(move || {
+            let _permit = argon;
+            verifier.verify(&hash, &candidate)
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("admin password verifier task failed: {error}"))?;
         let ok = verified && known_user && valid_input && !locked.0;
 
         if locked.0 {
@@ -667,7 +675,8 @@ struct LoginView {
 
 /// Renders the login page. Every FAILED login funnels here with the SAME
 /// `GENERIC_LOGIN_ERROR` + 401 — wrong password, unknown user, and locked produce
-/// byte-identical bodies.
+/// byte-identical bodies. (The locked path does skip the 1-2 attempt-row writes,
+/// a marginal sub-millisecond, non-body timing asymmetry we accept.)
 fn render_login(st: &AdminState, status: StatusCode, error: &str) -> Response {
     let view = LoginView { error: error.into() };
     match st.env.get_template("login.html").and_then(|t| t.render(&view)) {
@@ -719,13 +728,13 @@ async fn login_submit(
     if request % 256 == 255 {
         st.cleanup_login_attempts().await;
     }
-    let Ok(_argon) = st.argon_permits.clone().acquire_owned().await else {
+    let Ok(argon) = st.argon_permits.clone().acquire_owned().await else {
         return (StatusCode::INTERNAL_SERVER_ERROR, "login failed").into_response();
     };
     let valid_input = !username.is_empty()
         && username.len() <= 128
         && submitted.len() <= 1024;
-    match st.authenticate_and_mint(username, submitted, ip, valid_input).await {
+    match st.authenticate_and_mint(username, submitted, ip, valid_input, argon).await {
         Ok(LoginOutcome::Success { username, token }) => {
             tracing::debug!(%username, "admin login succeeded");
             let mut resp = see_other("/admin");
