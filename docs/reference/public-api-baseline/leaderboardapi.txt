@@ -1,4 +1,4 @@
-# cargo-public-api 0.52.0 -- regenerate via .\verify.ps1 -BlessPublicApi
+# cargo-public-api 0.52.0 -- regenerate via ./verify.sh --bless-public-api
 pub mod leaderboardapi
 pub mod leaderboardapi::leaderboard_rpc
 pub struct leaderboardapi::leaderboard_rpc::TopScoresRequest

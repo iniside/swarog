@@ -1,0 +1,27 @@
+# cargo-public-api 0.52.0 -- regenerate via ./verify.sh --bless-public-api
+pub mod adminevents
+pub struct adminevents::AdminAction
+pub adminevents::AdminAction::action: alloc::string::String
+pub adminevents::AdminAction::actor: alloc::string::String
+pub adminevents::AdminAction::detail: alloc::string::String
+pub adminevents::AdminAction::target: alloc::string::String
+impl core::clone::Clone for adminevents::AdminAction
+pub fn adminevents::AdminAction::clone(&self) -> adminevents::AdminAction
+impl core::cmp::Eq for adminevents::AdminAction
+impl core::cmp::PartialEq for adminevents::AdminAction
+pub fn adminevents::AdminAction::eq(&self, &adminevents::AdminAction) -> bool
+impl core::fmt::Debug for adminevents::AdminAction
+pub fn adminevents::AdminAction::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for adminevents::AdminAction
+impl serde_core::ser::Serialize for adminevents::AdminAction
+pub fn adminevents::AdminAction::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for adminevents::AdminAction
+pub fn adminevents::AdminAction::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for adminevents::AdminAction
+impl core::marker::Send for adminevents::AdminAction
+impl core::marker::Sync for adminevents::AdminAction
+impl core::marker::Unpin for adminevents::AdminAction
+impl core::marker::UnsafeUnpin for adminevents::AdminAction
+impl core::panic::unwind_safe::RefUnwindSafe for adminevents::AdminAction
+impl core::panic::unwind_safe::UnwindSafe for adminevents::AdminAction
+pub static adminevents::ACTION: std::sync::lazy_lock::LazyLock<bus::EventType<adminevents::AdminAction>>
