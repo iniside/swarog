@@ -46,6 +46,18 @@ pub const MAX_PLAYER_FRAME: usize = 1 << 20; // 1 MiB
 /// bounds the per-connection dispatch fan-out an untrusted peer can force.
 const MAX_PLAYER_BIDI_STREAMS: u32 = 16;
 
+/// Steady-state bound on the two PEER-controlled waits in [`serve_stream`]: the
+/// request read (peer opened a bidi stream but never sent a full frame) and the
+/// response delivery (peer never grants flow-control credit / never acknowledges).
+/// Both hold an in-flight guard, a [`RequestConnGuard`] clone and a stream slot,
+/// and an attacker-chosen keepalive resets [`PLAYER_IDLE_TIMEOUT_MS`] — so without
+/// this bound an application-level hang with a live transport pins the stream task
+/// forever. Twin of the internal plane's `EDGE_STREAM_GRACE`, kept plane-local
+/// (like [`MAX_PLAYER_BIDI_STREAMS`] vs `MAX_EDGE_BIDI_STREAMS`) so the untrusted
+/// plane's knob never couples to the trusted one's. The handler dispatch between
+/// the two waits is deliberately UNBOUNDED — a domain call may legitimately be long.
+const PLAYER_STREAM_GRACE: Duration = Duration::from_secs(30);
+
 /// Idle timeout for a player connection — an abandoned handshake or silent peer is
 /// reaped instead of pinning server state indefinitely.
 const PLAYER_IDLE_TIMEOUT_MS: u32 = 30_000;
@@ -131,6 +143,7 @@ pub struct PlayerServer {
     /// [`DEFAULT_PLAYER_MAX_CONNS_PER_IP`].
     max_conns_per_ip: usize,
     request_limits: PlayerRequestLimits,
+    stream_grace: Duration,
 }
 
 impl Default for PlayerServer {
@@ -140,6 +153,7 @@ impl Default for PlayerServer {
             max_conns: DEFAULT_PLAYER_MAX_CONNS,
             max_conns_per_ip: DEFAULT_PLAYER_MAX_CONNS_PER_IP,
             request_limits: PlayerRequestLimits::default(),
+            stream_grace: PLAYER_STREAM_GRACE,
         }
     }
 }
@@ -147,6 +161,13 @@ impl Default for PlayerServer {
 impl PlayerServer {
     pub fn new() -> Self {
         PlayerServer::default()
+    }
+
+    /// Test seam: shrink the per-stream grace so a reap test does not sleep 30s.
+    /// Production always runs [`PLAYER_STREAM_GRACE`].
+    #[cfg(test)]
+    pub(crate) fn set_stream_grace(&mut self, grace: Duration) {
+        self.stream_grace = grace;
     }
 
     /// Installs the single dispatch handler. First set wins (`OnceLock`) — the
@@ -225,6 +246,7 @@ impl PlayerServer {
         let local_addr = endpoint.local_addr().map_err(Error::Io)?;
 
         let handler = Arc::new(self.handler);
+        let stream_grace = self.stream_grace;
         let limiter = ConnLimiter::new(self.max_conns, self.max_conns_per_ip);
         let request_limiter = RequestLimiter::new(self.request_limits);
         let shutdown = ShutdownState::new();
@@ -272,7 +294,7 @@ impl PlayerServer {
                             // global + per-IP slot (also on a failed handshake below).
                             let _conn_guard = conn_guard;
                             match incoming.await {
-                                Ok(conn) => serve_conn(conn, handler, conn_state, request_guard).await,
+                                Ok(conn) => serve_conn(conn, handler, conn_state, request_guard, stream_grace).await,
                                 Err(e) => tracing::debug!(error = %e, "edge: player handshake failed"),
                             }
                         });
@@ -457,6 +479,7 @@ async fn serve_conn(
     handler: Arc<OnceLock<PlayerHandler>>,
     state: Arc<ShutdownState>,
     request_guard: Arc<RequestConnGuard>,
+    stream_grace: Duration,
 ) {
     let mut closing = state.subscribe();
     loop {
@@ -476,7 +499,7 @@ async fn serve_conn(
                     tokio::spawn(async move {
                         let _guard = guard;
                         let _request_guard = request_guard;
-                        serve_stream(send, recv, handler, limiter, ip, connection_id).await;
+                        serve_stream(send, recv, handler, limiter, ip, connection_id, stream_grace).await;
                     });
                 }
                 // Peer closed, idle timeout, or shutdown.
@@ -492,6 +515,13 @@ async fn serve_conn(
 /// transport faults — oversize frame, malformed envelope, unwired front; a handler
 /// `Ok(bytes)` passes through verbatim as `ok:true` (domain outcomes, auth failures
 /// included, ride INSIDE those bytes — the pinned error grammar).
+///
+/// Both PEER-controlled waits are bounded by `grace` ([`PLAYER_STREAM_GRACE`] in
+/// production): the request read here and the response delivery in [`respond`]. An
+/// untrusted peer whose keepalive keeps the connection alive but that never
+/// completes a frame (or never drains the reply) would otherwise pin this task —
+/// and its in-flight guard, [`RequestConnGuard`] clone and stream slot — forever.
+/// The handler dispatch in the middle stays unbounded.
 async fn serve_stream(
     mut send: quinn::SendStream,
     mut recv: quinn::RecvStream,
@@ -499,28 +529,35 @@ async fn serve_stream(
     limiter: Arc<RequestLimiter>,
     ip: IpAddr,
     connection_id: u64,
+    grace: Duration,
 ) {
     if !limiter.allow(ip, connection_id) {
         let _ = recv.stop(quinn::VarInt::from_u32(0));
-        respond(&mut send, err_response("player request rate limit exceeded")).await;
+        respond(&mut send, err_response("player request rate limit exceeded"), grace).await;
         return;
     }
-    let req_bytes = match read_frame_max(&mut recv, MAX_PLAYER_FRAME).await {
-        Ok(b) => b,
-        Err(Error::FrameTooLarge { size, max }) => {
+    let req_bytes = match tokio::time::timeout(grace, read_frame_max(&mut recv, MAX_PLAYER_FRAME)).await {
+        Ok(Ok(b)) => b,
+        Ok(Err(Error::FrameTooLarge { size, max })) => {
             // The sender may still be blocked pushing the oversized body (the
             // receive window is one max frame) — stop the receive side so the peer's
             // write unblocks with an error instead of deadlocking, then reply.
             let _ = recv.stop(quinn::VarInt::from_u32(0));
-            respond(&mut send, err_response(&format!("edge: player frame too large: {size} > {max}"))).await;
+            respond(&mut send, err_response(&format!("edge: player frame too large: {size} > {max}")), grace).await;
             return;
         }
         // Malformed / truncated request: nothing to reply to reliably.
-        Err(_) => return,
+        Ok(Err(_)) => return,
+        // Peer opened the stream but never sent a full frame within the grace:
+        // drop the stream (returning resets both halves) and free the guards.
+        Err(_) => {
+            tracing::debug!("edge: player request not received within grace; dropping stream");
+            return;
+        }
     };
 
     let resp = dispatch(&handler, req_bytes).await;
-    respond(&mut send, resp).await;
+    respond(&mut send, resp, grace).await;
 }
 
 /// Decodes the player envelope and runs the front handler (panic-contained). No
@@ -544,12 +581,21 @@ async fn dispatch(handler: &OnceLock<PlayerHandler>, req_bytes: Vec<u8>) -> Resp
 /// waits for the peer to acknowledge receipt (or the stream/connection to die) —
 /// `finish` only queues the data, and the caller's in-flight guard must not release
 /// before the reply actually left, or a graceful shutdown could abort its delivery.
-async fn respond(send: &mut quinn::SendStream, resp: Response) {
+/// The WHOLE output half is bounded by `grace`: `write_frame` can stall on withheld
+/// flow-control credit and `stopped()` on a never-acknowledging peer — the same
+/// keepalive-pinned pathology as the read. One timeout here bounds all three call
+/// sites (rate-denied, oversize-frame, main response).
+async fn respond(send: &mut quinn::SendStream, resp: Response, grace: Duration) {
     let resp_bytes = serde_json::to_vec(&resp)
         .unwrap_or_else(|_| br#"{"ok":false,"error":"edge: response encode failed"}"#.to_vec());
-    let _ = write_frame(send, &resp_bytes).await;
-    let _ = send.finish();
-    let _ = send.stopped().await;
+    let deliver = async {
+        let _ = write_frame(send, &resp_bytes).await;
+        let _ = send.finish();
+        let _ = send.stopped().await;
+    };
+    if tokio::time::timeout(grace, deliver).await.is_err() {
+        tracing::debug!("edge: peer did not drain player response within grace; dropping stream");
+    }
 }
 
 /// The player-side QUIC client: one persistent connection, stream-per-call —

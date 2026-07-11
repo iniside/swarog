@@ -216,6 +216,195 @@ fn accepted_stream_keeps_connection_bucket_alive_after_loop_exits() {
     );
 }
 
+// --- Stream-grace tests (live QUIC over loopback), mirroring server_tests.rs ---
+//
+// An attacker-chosen keepalive resets the 30s idle timeout, so a peer that opens a
+// stream but never completes a frame (or never drains the reply) would pin the
+// stream task — its in-flight guard, RequestConnGuard clone and stream slot —
+// forever. `serve_stream`/`respond` bound BOTH peer-controlled waits with the
+// stream grace; these tests shrink it via the `set_stream_grace` test seam and
+// prove the reap by watching `in_flight` — one guard per live connection task plus
+// one per live stream task. The codebase never uses tokio paused time (real quinn
+// timers don't advance under it) — the shrunk grace is the seam instead.
+
+/// Polls until `in_flight` equals `want` (or fails after 2s) — the accept/reap path
+/// runs in background tasks, so the count moves asynchronously.
+async fn wait_in_flight(state: &Arc<ShutdownState>, want: usize) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        let got = state.in_flight_count();
+        if got == want {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "in_flight never reached {want} (last seen {got})"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// A raw quinn client on the player plane (server-cert-only trust): live keepalive
+/// (defeats the idle reaper, the attacker's move) + a caller-chosen stream receive
+/// window so a test can withhold flow-control credit for the response.
+async fn raw_player_conn(
+    addr: SocketAddr,
+    ca: &DevCA,
+    window: u32,
+) -> (quinn::Endpoint, quinn::Connection) {
+    let qcc = QuicClientConfig::try_from(ca.trust_anchor().client_tls_public().unwrap()).unwrap();
+    let mut endpoint = quinn::Endpoint::client(client_bind_addr(addr)).unwrap();
+    let mut transport = quinn::TransportConfig::default();
+    transport.keep_alive_interval(Some(Duration::from_millis(500)));
+    transport.stream_receive_window(quinn::VarInt::from_u32(window));
+    let mut cfg = quinn::ClientConfig::new(Arc::new(qcc));
+    cfg.transport_config(Arc::new(transport));
+    endpoint.set_default_client_config(cfg);
+    let conn = endpoint.connect(addr, "localhost").unwrap().await.unwrap();
+    (endpoint, conn)
+}
+
+fn player_envelope(method: &str, payload: &str) -> Vec<u8> {
+    let req = PlayerRequest {
+        method: method.to_string(),
+        token: None,
+        api_key: None,
+        payload: RawValue::from_string(payload.to_string()).unwrap(),
+    };
+    serde_json::to_vec(&req).unwrap()
+}
+
+// The INPUT half is bounded: a peer that opens a bidi stream and sends only a
+// partial frame (with a live keepalive holding the connection open) has its stream
+// task reaped after the grace — and the CONNECTION survives, so a well-formed call
+// on the same connection still succeeds afterwards.
+#[tokio::test]
+async fn hung_request_read_is_reaped_after_grace() {
+    let ca = DevCA::generate().unwrap();
+    let mut srv = echo_server();
+    srv.set_stream_grace(Duration::from_millis(200));
+    let running = srv.listen(loopback(), &ca).unwrap();
+
+    let (_endpoint, conn) = raw_player_conn(running.local_addr(), &ca, 1024).await;
+    // One connection task in flight.
+    wait_in_flight(&running.shutdown, 1).await;
+
+    // Open a stream and send 2 of the 4 length-prefix bytes, then stall forever.
+    let (mut hung_send, _hung_recv) = conn.open_bi().await.unwrap();
+    hung_send.write_all(&[0u8, 0]).await.unwrap();
+    // The server accepted the stream: conn + stream = 2.
+    wait_in_flight(&running.shutdown, 2).await;
+    // ...and reaped it after the grace, while the connection stayed up.
+    wait_in_flight(&running.shutdown, 1).await;
+
+    // A well-formed call on the SAME connection still works.
+    let (mut send, mut recv) = conn.open_bi().await.unwrap();
+    write_frame(&mut send, &player_envelope("echo", r#"{"n":1}"#)).await.unwrap();
+    send.finish().unwrap();
+    let resp_bytes = read_frame_max(&mut recv, MAX_PLAYER_FRAME).await.unwrap();
+    let resp: Response = serde_json::from_slice(&resp_bytes).unwrap();
+    assert!(resp.ok, "connection must survive a single reaped stream");
+    assert_eq!(resp.payload.unwrap().get(), r#"{"n":1}"#);
+
+    conn.close(0u32.into(), b"bye");
+    running.close();
+}
+
+// The OUTPUT half is bounded: a peer that sends a full request but never grants
+// flow-control credit for the response (tiny stream receive window, never reads)
+// pins the delivery — with a live keepalive defeating the idle reaper — and is
+// reaped after the grace.
+#[tokio::test]
+async fn undrained_response_is_reaped_after_grace() {
+    let ca = DevCA::generate().unwrap();
+    // Response far larger than the client's 1 KiB stream receive window below.
+    let big = format!("\"{}\"", "a".repeat(256 * 1024)).into_bytes();
+    let mut srv = PlayerServer::new();
+    srv.set_handler(Arc::new(move |_method, _token, _key, _payload| {
+        let big = big.clone();
+        Box::pin(async move { Ok(big) })
+    }));
+    srv.set_stream_grace(Duration::from_millis(200));
+    let running = srv.listen(loopback(), &ca).unwrap();
+
+    let (_endpoint, conn) = raw_player_conn(running.local_addr(), &ca, 1024).await;
+    wait_in_flight(&running.shutdown, 1).await;
+
+    let (mut send, _recv) = conn.open_bi().await.unwrap();
+    write_frame(&mut send, &player_envelope("big", "null")).await.unwrap();
+    send.finish().unwrap();
+
+    // Stream accepted + handler dispatched; the delivery stalls on flow control...
+    wait_in_flight(&running.shutdown, 2).await;
+    // ...and the grace reaps it while the connection stays alive.
+    wait_in_flight(&running.shutdown, 1).await;
+    assert!(conn.close_reason().is_none(), "the connection itself must survive the stream reap");
+
+    conn.close(0u32.into(), b"bye");
+    running.close();
+}
+
+// The rate-denied EARLY-RETURN path is bounded too: its `respond` call site shares
+// the one timeout in `respond`, so a denied peer that withholds ALL flow-control
+// credit (zero stream receive window — even the tiny denial reply cannot be
+// written) is reaped after the grace instead of pinning the stream task on
+// `write_frame`/`stopped()`. The handler-call count proves the second stream took
+// the denied path, not the dispatch path.
+#[tokio::test]
+async fn rate_denied_response_is_reaped_after_grace() {
+    let ca = DevCA::generate().unwrap();
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let seen = calls.clone();
+    // Per-connection budget of ONE request; refill slow enough (0.01/s) that the
+    // second request cannot re-earn a token within the test window.
+    let mut srv = PlayerServer::new().with_request_limits(0.0, 0, 0.01, 1);
+    srv.set_handler(Arc::new(move |_method, _token, _key, payload| {
+        seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Box::pin(async move { Ok(payload) })
+    }));
+    srv.set_stream_grace(Duration::from_millis(200));
+    let running = srv.listen(loopback(), &ca).unwrap();
+
+    // ZERO receive window: the server cannot write even one response byte.
+    let (_endpoint, conn) = raw_player_conn(running.local_addr(), &ca, 0).await;
+    wait_in_flight(&running.shutdown, 1).await;
+
+    // First request: admitted, dispatched, then its response delivery stalls on the
+    // zero window — reaped after the grace (the main-response call site).
+    let (mut s1, _r1) = conn.open_bi().await.unwrap();
+    write_frame(&mut s1, &player_envelope("echo", r#"{"n":1}"#)).await.unwrap();
+    s1.finish().unwrap();
+    wait_in_flight(&running.shutdown, 2).await;
+    wait_in_flight(&running.shutdown, 1).await;
+
+    // Second request: DENIED by the per-conn bucket; the denial reply also cannot
+    // be delivered — the rate-denied call site is reaped after the grace too.
+    let (mut s2, _r2) = conn.open_bi().await.unwrap();
+    write_frame(&mut s2, &player_envelope("echo", r#"{"n":2}"#)).await.unwrap();
+    s2.finish().unwrap();
+    wait_in_flight(&running.shutdown, 2).await;
+    wait_in_flight(&running.shutdown, 1).await;
+
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "the second stream must have taken the rate-denied path, not dispatch"
+    );
+    assert!(conn.close_reason().is_none(), "the connection itself must survive both reaps");
+
+    conn.close(0u32.into(), b"bye");
+    running.close();
+}
+
+// Pin the player plane's timing/size invariants: the production stream grace stays
+// at the documented 30s (twin of server_tests::edge_timing_invariants — the two
+// planes' consts are deliberately separate, so each plane pins its own).
+#[test]
+fn player_timing_invariants() {
+    assert_eq!(PLAYER_STREAM_GRACE, Duration::from_secs(30));
+    assert_eq!(MAX_PLAYER_BIDI_STREAMS, 16);
+}
+
 #[tokio::test]
 async fn request_denial_is_exact_and_handler_is_not_called() {
     let ca = DevCA::generate().unwrap();

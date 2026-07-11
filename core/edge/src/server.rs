@@ -229,7 +229,9 @@ impl ShutdownState {
         self.closing.send_replace(true);
     }
 
-    fn in_flight_count(&self) -> usize {
+    /// `pub(crate)` so the player plane's reap tests (`player_tests.rs`) can watch
+    /// the same counter the internal plane's tests do.
+    pub(crate) fn in_flight_count(&self) -> usize {
         self.in_flight.load(Ordering::Acquire)
     }
 
