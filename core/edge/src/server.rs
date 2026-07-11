@@ -24,6 +24,29 @@ use crate::tls::DevCA;
 use crate::wire::{Request, Response};
 use crate::Error;
 
+/// Steady-state bound on the two PEER-controlled waits in [`serve_stream`]: the
+/// request read (peer opened a bidi stream but never sent a full frame) and the
+/// response delivery (peer never grants flow-control credit / never acknowledges).
+/// Both hold an [`InFlightGuard`] and a stream slot, and the internal client's 5s
+/// keepalive ([`crate::client`]) resets the connection idle timeout — so without
+/// this bound an application-level hang with a live transport leaks the stream task
+/// forever. Distinct from `EDGE_DRAIN_GRACE_MS` (shutdown-only); this one runs in
+/// steady state. The handler dispatch between the two waits is deliberately
+/// UNBOUNDED — a domain call may legitimately be long.
+const EDGE_STREAM_GRACE: Duration = Duration::from_secs(30);
+
+/// Explicit idle timeout for internal-edge connections. This mirrors quinn's
+/// current default (30s) — it is pinned here for auditability against a future
+/// quinn default change, not to rescue anything. MUST stay comfortably above the
+/// internal client's [`crate::client::KEEPALIVE_INTERVAL`] (5s) so the keepalive
+/// keeps a quiet-but-live connection open.
+const EDGE_IDLE_TIMEOUT_MS: u32 = 30_000;
+
+/// Concurrent bidi streams one internal-edge peer may hold open, mirroring the
+/// player plane's cap (quinn's default is 100 — the internal stream-per-call
+/// pattern never needs that many at once per connection).
+const MAX_EDGE_BIDI_STREAMS: u32 = 16;
+
 /// The result a handler returns: response payload bytes, or any error (whose
 /// `Display` becomes the wire error string — edge carries only a bare string, so
 /// the operation `Status` rides INSIDE the payload envelope the `#[rpc]` layer emits).
@@ -48,16 +71,34 @@ pub type ForwardHandler =
     Arc<dyn Fn(String, Vec<u8>) -> BoxFuture<'static, HandlerResult> + Send + Sync>;
 
 /// The registration builder. Register all handlers, then [`Server::listen`].
-#[derive(Default)]
 pub struct Server {
     handlers: HashMap<String, Handler>,
     id_handlers: HashMap<String, IdentityHandler>,
     prefixes: Vec<(String, ForwardHandler)>,
+    stream_grace: Duration,
+}
+
+impl Default for Server {
+    fn default() -> Self {
+        Server {
+            handlers: HashMap::new(),
+            id_handlers: HashMap::new(),
+            prefixes: Vec::new(),
+            stream_grace: EDGE_STREAM_GRACE,
+        }
+    }
 }
 
 impl Server {
     pub fn new() -> Self {
         Server::default()
+    }
+
+    /// Test seam: shrink the per-stream grace so a reap test does not sleep 30s.
+    /// Production always runs [`EDGE_STREAM_GRACE`].
+    #[cfg(test)]
+    pub(crate) fn set_stream_grace(&mut self, grace: Duration) {
+        self.stream_grace = grace;
     }
 
     /// Registers a [`Handler`] under a method name.
@@ -86,8 +127,20 @@ impl Server {
         let server_cfg = ca.server_tls()?;
         let qsc = QuicServerConfig::try_from(server_cfg)
             .map_err(|e| Error::Tls(format!("quic server config: {e}")))?;
-        let endpoint = quinn::Endpoint::server(quinn::ServerConfig::with_crypto(Arc::new(qsc)), addr)
-            .map_err(Error::Io)?;
+        let mut quinn_cfg = quinn::ServerConfig::with_crypto(Arc::new(qsc));
+
+        // Explicit TransportConfig (same template as the player plane): the idle
+        // timeout pins quinn's current default so a future default change cannot
+        // silently unbound the plane, and the stream cap tightens 100 → 16. The
+        // internal peer is mTLS-authenticated, so this is auditability, not defense.
+        let mut transport = quinn::TransportConfig::default();
+        transport.max_concurrent_bidi_streams(quinn::VarInt::from_u32(MAX_EDGE_BIDI_STREAMS));
+        transport.max_idle_timeout(Some(quinn::IdleTimeout::from(quinn::VarInt::from_u32(
+            EDGE_IDLE_TIMEOUT_MS,
+        ))));
+        quinn_cfg.transport_config(Arc::new(transport));
+
+        let endpoint = quinn::Endpoint::server(quinn_cfg, addr).map_err(Error::Io)?;
         let local_addr = endpoint.local_addr().map_err(Error::Io)?;
 
         let dispatch = Arc::new(Dispatch {
@@ -95,6 +148,7 @@ impl Server {
             id_handlers: self.id_handlers,
             prefixes: self.prefixes,
         });
+        let stream_grace = self.stream_grace;
 
         let shutdown = ShutdownState::new();
         let accept_endpoint = endpoint.clone();
@@ -116,7 +170,7 @@ impl Server {
                         tokio::spawn(async move {
                             let _guard = guard;
                             match incoming.await {
-                                Ok(conn) => serve_conn(conn, dispatch, conn_state).await,
+                                Ok(conn) => serve_conn(conn, dispatch, conn_state, stream_grace).await,
                                 // Handshake failure (e.g. an un-certed client rejected by the
                                 // WebPkiClientVerifier) — nothing to serve.
                                 Err(e) => tracing::debug!(error = %e, "edge: connection handshake failed"),
@@ -306,7 +360,12 @@ impl Dispatch {
 /// and returns WITHOUT closing the connection — in-flight stream tasks hold their
 /// own guards (and their streams keep the quinn connection refcount alive), so they
 /// finish under the drain.
-async fn serve_conn(conn: quinn::Connection, dispatch: Arc<Dispatch>, state: Arc<ShutdownState>) {
+async fn serve_conn(
+    conn: quinn::Connection,
+    dispatch: Arc<Dispatch>,
+    state: Arc<ShutdownState>,
+    stream_grace: Duration,
+) {
     let mut closing = state.subscribe();
     loop {
         tokio::select! {
@@ -316,7 +375,7 @@ async fn serve_conn(conn: quinn::Connection, dispatch: Arc<Dispatch>, state: Arc
                     let guard = state.enter();
                     tokio::spawn(async move {
                         let _guard = guard;
-                        serve_stream(send, recv, dispatch).await;
+                        serve_stream(send, recv, dispatch, stream_grace).await;
                     });
                 }
                 // Peer closed, idle timeout, or shutdown.
@@ -328,24 +387,48 @@ async fn serve_conn(conn: quinn::Connection, dispatch: Arc<Dispatch>, state: Arc
 }
 
 /// Reads one framed request, dispatches it, and writes one framed response.
-async fn serve_stream(mut send: quinn::SendStream, mut recv: quinn::RecvStream, dispatch: Arc<Dispatch>) {
-    let req_bytes = match read_frame(&mut recv).await {
-        Ok(b) => b,
+///
+/// Both PEER-controlled waits are bounded by `grace` ([`EDGE_STREAM_GRACE`] in
+/// production): the request read and the response delivery. A peer whose 5s
+/// keepalive keeps the connection alive but that never completes a frame (or never
+/// drains the reply) would otherwise pin this task — and its [`InFlightGuard`] +
+/// stream slot — forever. The handler dispatch in the middle stays unbounded.
+async fn serve_stream(
+    mut send: quinn::SendStream,
+    mut recv: quinn::RecvStream,
+    dispatch: Arc<Dispatch>,
+    grace: Duration,
+) {
+    let req_bytes = match tokio::time::timeout(grace, read_frame(&mut recv)).await {
+        Ok(Ok(b)) => b,
         // Malformed / truncated request: nothing to reply to reliably.
-        Err(_) => return,
+        Ok(Err(_)) => return,
+        // Peer opened the stream but never sent a full frame within the grace:
+        // drop the stream (returning resets both halves) and free the guard.
+        Err(_) => {
+            tracing::debug!("edge: stream request not received within grace; dropping stream");
+            return;
+        }
     };
 
     let resp = dispatch.dispatch(req_bytes).await;
     let resp_bytes = serde_json::to_vec(&resp)
         .unwrap_or_else(|_| br#"{"ok":false,"error":"edge: response encode failed"}"#.to_vec());
-    let _ = write_frame(&mut send, &resp_bytes).await;
-    let _ = send.finish();
     // Hold the stream task (and thus its in-flight guard) open until the peer
     // acknowledges receipt of the response, or the stream/connection dies. `finish`
-    // only queues the data — without this, a graceful shutdown could observe
-    // in-flight == 0 and reach `endpoint.close()` while the reply is still buffered,
-    // aborting its delivery.
-    let _ = send.stopped().await;
+    // only queues the data — without the `stopped()` wait, a graceful shutdown could
+    // observe in-flight == 0 and reach `endpoint.close()` while the reply is still
+    // buffered, aborting its delivery. The WHOLE output half is bounded by `grace`:
+    // `write_frame` can stall on withheld flow-control credit and `stopped()` on a
+    // never-acknowledging peer — the same keepalive-pinned pathology as the read.
+    let deliver = async {
+        let _ = write_frame(&mut send, &resp_bytes).await;
+        let _ = send.finish();
+        let _ = send.stopped().await;
+    };
+    if tokio::time::timeout(grace, deliver).await.is_err() {
+        tracing::debug!("edge: peer did not drain response within grace; dropping stream");
+    }
 }
 
 /// Runs a handler future, containing a panic (or a panicking codec) into an error

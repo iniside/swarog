@@ -14,6 +14,11 @@ use crate::tls::{client_bind_addr, DevCA};
 use crate::wire::{Request, Response};
 use crate::Error;
 
+/// Transport keepalive on the persistent internal connection. MUST stay well below
+/// the server's `EDGE_IDLE_TIMEOUT_MS` (30s, `server.rs`) so a quiet-but-live
+/// connection is never idle-reaped between two domain calls.
+pub(crate) const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(5);
+
 /// A QUIC RPC client over one persistent connection. Implements [`opsapi::Caller`],
 /// so the generated RPC client (Step 5) composes over it transport-agnostically.
 pub struct Client {
@@ -48,7 +53,7 @@ impl Client {
         // domain calls; the next non-retry-safe mutation would then fail on a stale
         // cached connection. Keepalive is transport liveness, not RPC replay.
         let mut transport = quinn::TransportConfig::default();
-        transport.keep_alive_interval(Some(Duration::from_secs(5)));
+        transport.keep_alive_interval(Some(KEEPALIVE_INTERVAL));
         let mut quinn_cfg = quinn::ClientConfig::new(Arc::new(qcc));
         quinn_cfg.transport_config(Arc::new(transport));
         endpoint.set_default_client_config(quinn_cfg);
@@ -101,6 +106,13 @@ impl Client {
             return Err(Error::Remote(resp.error.unwrap_or_default()));
         }
         Ok(resp.payload.map(|p| p.get().as_bytes().to_vec()).unwrap_or_default())
+    }
+
+    /// Test seam: the raw quinn connection, for edge tests that need to hold a
+    /// stream open below the frame layer (e.g. the stream-grace reap tests).
+    #[cfg(test)]
+    pub(crate) fn connection(&self) -> &quinn::Connection {
+        &self.conn
     }
 
     /// Tears down the persistent connection.
