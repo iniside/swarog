@@ -28,14 +28,18 @@ use rpc_macro::rpc;
 #[rpc(prefix = "match")]
 #[async_trait]
 pub trait Match: Send + Sync {
-    /// Records that `winner` beat `loser`. The public body keys are the Go-default
-    /// capitalized `Winner`/`Loser` (a `body_names` override). 202 on success, no body.
+    /// Records that `winner` beat `loser`. `report_id` is a REQUIRED client-supplied
+    /// idempotency key: the split topology's `remote::Stub` auto-retries a failed RPC,
+    /// so a report whose response was lost can be re-sent — a duplicate `report_id` is
+    /// a silent no-op (202, no second `match.finished`). The public body keys are
+    /// capitalized (`ReportId` + the Go-default `Winner`/`Loser`) via the `body_names`
+    /// override. 202 on success, no body.
     #[http(
         verb = "POST",
         path = "/match/report",
         auth = "none",
         success = 202,
-        body_names(winner = "Winner", loser = "Loser")
+        body_names(report_id = "ReportId", winner = "Winner", loser = "Loser")
     )]
-    async fn report(&self, winner: String, loser: String) -> Result<(), Error>;
+    async fn report(&self, report_id: String, winner: String, loser: String) -> Result<(), Error>;
 }

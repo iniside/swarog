@@ -216,6 +216,11 @@
       "success": 202,
       "args": [
         {
+          "name": "report_id",
+          "wire_name": "ReportId",
+          "ty": "String"
+        },
+        {
           "name": "winner",
           "wire_name": "Winner",
           "ty": "String"

@@ -516,9 +516,14 @@ csharp_stage() {
         status=FAIL
     fi
 
+    # ReportId is match.report's REQUIRED idempotency key; per-run-unique (nanos) because
+    # match.matches persists across verify runs and a constant id would dedup C6's insert.
+    local csharp_rid
+    csharp_rid="$(date +%s%N)"
+
     echo "--- [C5] raw --insecure --api-key dev-key-client match.report -> exit 1 + Forbidden (client policy lacks match.report) ---" >>"$log"
     local c5_out c5_rc
-    c5_out="$(gbclient raw --addr "127.0.0.1:$CSHARP_PLAYER_PORT" --insecure --api-key dev-key-client match.report '{"Winner":"c5-winner","Loser":"c5-loser"}' 2>>"$log")"
+    c5_out="$(gbclient raw --addr "127.0.0.1:$CSHARP_PLAYER_PORT" --insecure --api-key dev-key-client match.report "{\"ReportId\":\"c5-$csharp_rid\",\"Winner\":\"c5-winner\",\"Loser\":\"c5-loser\"}" 2>>"$log")"
     c5_rc=$?
     echo "    -> rc=$c5_rc  $c5_out" >>"$log"
     if [ "$c5_rc" -ne 1 ] || ! echo "$c5_out" | grep -q 'Forbidden'; then
@@ -528,7 +533,7 @@ csharp_stage() {
 
     echo "--- [C6] raw --insecure --api-key dev-key-server match.report -> exit 0 (full policy allows it) ---" >>"$log"
     local c6_out c6_rc
-    c6_out="$(gbclient raw --addr "127.0.0.1:$CSHARP_PLAYER_PORT" --insecure --api-key dev-key-server match.report '{"Winner":"c6-winner","Loser":"c6-loser"}' 2>>"$log")"
+    c6_out="$(gbclient raw --addr "127.0.0.1:$CSHARP_PLAYER_PORT" --insecure --api-key dev-key-server match.report "{\"ReportId\":\"c6-$csharp_rid\",\"Winner\":\"c6-winner\",\"Loser\":\"c6-loser\"}" 2>>"$log")"
     c6_rc=$?
     echo "    -> rc=$c6_rc  $c6_out" >>"$log"
     if [ "$c6_rc" -ne 0 ]; then

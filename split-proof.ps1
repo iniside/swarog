@@ -593,14 +593,14 @@ try {
     Write-Host '[K3] POST /match/report through G with dev-key-client (player-facing policy, NO match.report) -> 403'
     $k3 = Invoke-Curl @('-X', 'POST', "http://127.0.0.1:$GPort/match/report",
         '-H', 'X-Api-Key: dev-key-client', '-H', 'Content-Type: application/json',
-        '-d', '{"Winner":"k3-winner","Loser":"k3-loser"}')
+        '-d', "{`"ReportId`":`"k3-$RunSuffix`",`"Winner`":`"k3-winner`",`"Loser`":`"k3-loser`"}")
     Write-Host "    -> HTTP $($k3.Code)"
     if ($k3.Code -eq '403') { Pass 'dev-key-client on match.report -> 403 (policy forbids this operation)' } else { Fail "dev-key-client on match.report expected 403, got $($k3.Code)" }
 
     Write-Host '[K4] POST /match/report through G with dev-key-server (full policy) -> 202'
     $k4 = Invoke-Curl @('-X', 'POST', "http://127.0.0.1:$GPort/match/report",
         '-H', 'X-Api-Key: dev-key-server', '-H', 'Content-Type: application/json',
-        '-d', '{"Winner":"k4-winner","Loser":"k4-loser"}')
+        '-d', "{`"ReportId`":`"k4-$RunSuffix`",`"Winner`":`"k4-winner`",`"Loser`":`"k4-loser`"}")
     Write-Host "    -> HTTP $($k4.Code)"
     if ($k4.Code -eq '202') { Pass "dev-key-server (full) on match.report -> 202 (op's real success code)" } else { Fail "dev-key-server on match.report expected 202, got $($k4.Code)" }
     Invoke-Sql "DELETE FROM leaderboard.scores WHERE player IN ('k3-winner','k3-loser','k4-winner','k4-loser');" | Out-Null
@@ -749,7 +749,9 @@ try {
     Remove-Item $AdminJar -ErrorAction SilentlyContinue
 
     Write-Host "[AD1] GET http://127.0.0.1:$GPort/admin WITHOUT a session -> 303 Location /admin/login"
-    $an = "" + (& curl.exe -s -o $null -w '%{http_code} %{redirect_url}' "http://127.0.0.1:$GPort/admin")
+    # -o NUL, not -o $null: pwsh drops a $null native arg entirely, so -o would swallow
+    # -w and the http_code would come back empty (observed under pwsh 7.6).
+    $an = "" + (& curl.exe -s -o NUL -w '%{http_code} %{redirect_url}' "http://127.0.0.1:$GPort/admin")
     $anParts = $an.Trim() -split ' ', 2
     $anCode = $anParts[0]; $anLoc = if ($anParts.Count -gt 1) { $anParts[1] } else { '' }
     Write-Host "    -> HTTP $anCode  Location=$anLoc"
@@ -788,7 +790,7 @@ try {
     # and /admin/api-keys (G -> E -> L over QUIC, renders the seeded dev-client key; the old
     # [K5] rides this session).
     Write-Host "[AD3] POST /admin/login as $ProofAdminUser (curl -c jar) -> 303 + admin_session cookie"
-    $ad3Code = "" + (& curl.exe -s -c $AdminJar -o $null -w '%{http_code}' -X POST "http://127.0.0.1:$GPort/admin/login" -d "username=$ProofAdminUser&password=$ProofAdminPass")
+    $ad3Code = "" + (& curl.exe -s -c $AdminJar -o NUL -w '%{http_code}' -X POST "http://127.0.0.1:$GPort/admin/login" -d "username=$ProofAdminUser&password=$ProofAdminPass")
     $ad3Cookie = (Test-Path $AdminJar) -and (Select-String -Path $AdminJar -Pattern 'admin_session' -Quiet)
     Write-Host "    -> HTTP $($ad3Code.Trim())  (admin_session cookie: $ad3Cookie)"
     if ($ad3Code.Trim() -eq '303' -and $ad3Cookie) {
@@ -962,14 +964,22 @@ try {
     #   (v)   rating (DB-backed projection, no public read op): the sync MMR read is proven
     #         by (i) succeeding with J UP; the +15/-15 durable handler persists to
     #         rating.ratings on J, asserted directly in [MT5] after both reports.
+    #   (vi)  re-POSTing [MT1]'s exact ReportId is an idempotent no-op: still 202, one
+    #         match row, no third match.finished (the split stub auto-retries, so a lost
+    #         response MUST NOT double-commit a match).
     $Winner = "champ-$RunSuffix"
     $Loser = "chump-$RunSuffix"
+    # ReportId is the REQUIRED idempotency key. Per-run-unique (RunSuffix): the cleanup
+    # below deletes leaderboard/rating rows but NOT match.matches, so a constant id
+    # would dedup on the SECOND split-proof run and [MT2]/[MT4] would never see wins move.
+    $Mt1Rid = "mt1-$RunSuffix"
+    $Mt4Rid = "mt4-$RunSuffix"
 
-    Write-Host "[MT1] POST http://127.0.0.1:$GPort/match/report (AuthNone, capitalized Winner/Loser body keys)"
+    Write-Host "[MT1] POST http://127.0.0.1:$GPort/match/report (AuthNone, capitalized ReportId/Winner/Loser body keys)"
     $mr = Invoke-Curl @('-X', 'POST', "http://127.0.0.1:$GPort/match/report",
         '-H', 'X-Api-Key: dev-key-server',
         '-H', 'Content-Type: application/json',
-        '-d', "{`"Winner`":`"$Winner`",`"Loser`":`"$Loser`"}")
+        '-d', "{`"ReportId`":`"$Mt1Rid`",`"Winner`":`"$Winner`",`"Loser`":`"$Loser`"}")
     Write-Host "    -> HTTP $($mr.Code)"
     if ($mr.Code -eq '202') {
         Pass 'match.report through G -> 202 (AuthNone; match-svc read rating.mmr from rating-svc over QUIC, recorded + emit_tx match.finished)'
@@ -1007,7 +1017,7 @@ try {
     $mr2 = Invoke-Curl @('-X', 'POST', "http://127.0.0.1:$GPort/match/report",
         '-H', 'X-Api-Key: dev-key-server',
         '-H', 'Content-Type: application/json',
-        '-d', "{`"Winner`":`"$Winner`",`"Loser`":`"$Loser`"}")
+        '-d', "{`"ReportId`":`"$Mt4Rid`",`"Winner`":`"$Winner`",`"Loser`":`"$Loser`"}")
     Write-Host "    -> report#2 HTTP $($mr2.Code)"
     if ($mr2.Code -ne '202') { Fail "second match.report expected 202, got $($mr2.Code)" }
     $mt4Ok = $false
@@ -1039,6 +1049,27 @@ try {
         Start-Sleep -Milliseconds 500
     }
     if (-not $mt5Ok) { Fail "rating.ratings never reached winner=1030 / loser=970 (durable projection on J)" }
+
+    # --- [MT6] duplicate-report-idempotent: the split stub auto-retries a failed RPC,
+    # so a re-sent report MUST be a no-op. Re-POST with [MT1]'s exact ReportId -> still
+    # 202, but NO second match row (psql, the strong assertion) and NO third
+    # match.finished (leaderboard wins stays 2).
+    Write-Host "[MT6] duplicate POST /match/report with [MT1]'s ReportId ($Mt1Rid) -> 202 no-op (dedup)"
+    $mr3 = Invoke-Curl @('-X', 'POST', "http://127.0.0.1:$GPort/match/report",
+        '-H', 'X-Api-Key: dev-key-server',
+        '-H', 'Content-Type: application/json',
+        '-d', "{`"ReportId`":`"$Mt1Rid`",`"Winner`":`"$Winner`",`"Loser`":`"$Loser`"}")
+    Write-Host "    -> duplicate report HTTP $($mr3.Code)"
+    if ($mr3.Code -ne '202') { Fail "duplicate match.report expected 202 (idempotent no-op), got $($mr3.Code)" }
+    Start-Sleep -Seconds 2 # give a hypothetical (wrong) third match.finished time to reach leaderboard
+    $mt6Rows = ("" + (Invoke-Sql "SELECT count(*) FROM match.matches WHERE report_id='$Mt1Rid';")).Trim()
+    $mt6Lb = Invoke-Curl @("http://127.0.0.1:$GPort/leaderboard", '-H', 'X-Api-Key: dev-key-client')
+    Write-Host "    -> match.matches rows for $Mt1Rid = $mt6Rows"
+    if ([int]($mt6Rows -as [int]) -eq 1 -and $mt6Lb.Body -match "`"player`":`"$Winner`",`"wins`":2") {
+        Pass 'duplicate ReportId -> 202, 1 match row, leaderboard wins still 2 (dedup skipped the emit)'
+    } else {
+        Fail "duplicate ReportId not idempotent (rows=$mt6Rows, wins!=2?)"
+    }
 
     Invoke-Sql "DELETE FROM leaderboard.scores WHERE player IN ('$Winner','$Loser');" | Out-Null
     Invoke-Sql "DELETE FROM rating.ratings WHERE player IN ('$Winner','$Loser');" | Out-Null
@@ -1244,7 +1275,7 @@ try {
         $MonoJar = Join-Path $RunDir 'admin-mono.jar'
         Remove-Item $MonoJar -ErrorAction SilentlyContinue
         Write-Host "[M3] POST /admin/login on the monolith as $ProofAdminUser (fresh jar) -> 303, then GET /admin/characters -> 200 + solo"
-        $m3l = "" + (& curl.exe -s -c $MonoJar -o $null -w '%{http_code}' -X POST "http://127.0.0.1:$APort/admin/login" -d "username=$ProofAdminUser&password=$ProofAdminPass")
+        $m3l = "" + (& curl.exe -s -c $MonoJar -o NUL -w '%{http_code}' -X POST "http://127.0.0.1:$APort/admin/login" -d "username=$ProofAdminUser&password=$ProofAdminPass")
         $m3 = Invoke-Curl @('-b', $MonoJar, "http://127.0.0.1:$APort/admin/characters")
         Write-Host "    -> login HTTP $($m3l.Trim()) ; characters HTTP $($m3.Code)  (body $($m3.Body.Length) chars)"
         if ($m3l.Trim() -eq '303' -and $m3.Code -eq '200' -and $m3.Body -match 'solo') { Pass 'monolith session login + /admin/characters renders LOCAL items (admin portal parity)' } else { Fail "monolith admin parity expected login 303 + characters 200 containing solo, got login=$($m3l.Trim()) characters=$($m3.Code)" }

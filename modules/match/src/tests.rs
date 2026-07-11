@@ -69,6 +69,16 @@ async fn wired(pool: &PgPool) -> (Context, Arc<Service>) {
     (ctx, svc)
 }
 
+/// A per-call-unique ReportId (nanos-suffixed) — `match.matches` has `UNIQUE (report_id)`
+/// and test rows from aborted runs may survive, so a constant id would dedup.
+fn rid(tag: &str) -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    format!("{tag}-{nanos}")
+}
+
 async fn cleanup(pool: &PgPool, match_id: &str) {
     let _ = sqlx::query("DELETE FROM match.matches WHERE id = $1::uuid")
         .bind(match_id)
@@ -101,11 +111,13 @@ async fn report_persists_match_and_durable_event_atomically() {
     let Some(pool) = test_pool().await else { return };
     let (_ctx, svc) = wired(&pool).await;
 
-    svc.report("alice".into(), "bob".into()).await.unwrap();
+    let report_id = rid("atomic");
+    svc.report(report_id.clone(), "alice".into(), "bob".into()).await.unwrap();
 
     let (id,): (String,) = sqlx::query_as(
-        "SELECT id::text FROM match.matches WHERE winner = 'alice' AND loser = 'bob' ORDER BY at DESC LIMIT 1",
+        "SELECT id::text FROM match.matches WHERE report_id = $1",
     )
+    .bind(&report_id)
     .fetch_one(&pool)
     .await
     .unwrap();
@@ -118,6 +130,61 @@ async fn report_persists_match_and_durable_event_atomically() {
     );
 
     cleanup(&pool, &id).await;
+}
+
+/// THE IDEMPOTENCY PROOF: two `report`s with the SAME ReportId (the split stub
+/// auto-retries a failed RPC, so this happens in production) leave exactly ONE
+/// `match.matches` row and exactly ONE `match.finished` event — the duplicate hits
+/// `ON CONFLICT (report_id) DO NOTHING`, skips the emit, and still returns Ok.
+#[tokio::test]
+async fn duplicate_report_id_records_and_emits_once() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+
+    let report_id = rid("dup");
+    svc.report(report_id.clone(), "carol".into(), "dave".into()).await.unwrap();
+    svc.report(report_id.clone(), "carol".into(), "dave".into())
+        .await
+        .expect("a duplicate report is an Ok no-op, not an error");
+
+    let (rows, id): (i64, String) = {
+        let (n,): (i64,) = sqlx::query_as("SELECT count(*) FROM match.matches WHERE report_id = $1")
+            .bind(&report_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let (id,): (String,) =
+            sqlx::query_as("SELECT id::text FROM match.matches WHERE report_id = $1")
+                .bind(&report_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        (n, id)
+    };
+    assert_eq!(rows, 1, "duplicate report_id must not insert a second match row");
+    assert_eq!(
+        event_count(&pool, &id).await,
+        1,
+        "duplicate report_id must not emit a second match.finished"
+    );
+
+    cleanup(&pool, &id).await;
+}
+
+/// An empty (or whitespace) ReportId is rejected with `Invalid` — the idempotency key
+/// is REQUIRED; a missing key must fail loud, never silently degrade the dedup.
+#[tokio::test]
+async fn empty_report_id_is_invalid() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+
+    for bad in ["", "   "] {
+        let err = svc
+            .report(bad.into(), "erin".into(), "frank".into())
+            .await
+            .expect_err("empty ReportId must be rejected");
+        assert_eq!(err.status, opsapi::Status::Invalid, "got: {}", err.msg);
+    }
 }
 
 /// A process module set WITHOUT `rating` must fail `validate_requires` — match declares

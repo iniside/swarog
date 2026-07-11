@@ -502,8 +502,12 @@ function Invoke-CSharpStage {
         $status = 'FAIL'
     }
 
+    # ReportId is match.report's REQUIRED idempotency key; per-run-unique (ticks) because
+    # match.matches persists across verify runs and a constant id would dedup C6's insert.
+    $csharpRid = [DateTime]::UtcNow.Ticks
+
     "--- [C5] raw --insecure --api-key dev-key-client match.report -> exit 1 + Forbidden (client policy lacks match.report) ---" | Out-File -Append $log
-    $c5 = Invoke-GbClient @('raw', '--addr', "127.0.0.1:$CSharpPlayerPort", '--insecure', '--api-key', 'dev-key-client', 'match.report', '{"Winner":"c5-winner","Loser":"c5-loser"}')
+    $c5 = Invoke-GbClient @('raw', '--addr', "127.0.0.1:$CSharpPlayerPort", '--insecure', '--api-key', 'dev-key-client', 'match.report', "{`"ReportId`":`"c5-$csharpRid`",`"Winner`":`"c5-winner`",`"Loser`":`"c5-loser`"}")
     "    -> rc=$($c5.Rc)  $($c5.Out)" | Out-File -Append $log
     if ($c5.Rc -ne 1 -or $c5.Out -notmatch 'Forbidden') {
         "    C5 FAIL: expected exit 1 + Forbidden, got rc=$($c5.Rc) $($c5.Out)" | Out-File -Append $log
@@ -511,7 +515,7 @@ function Invoke-CSharpStage {
     }
 
     "--- [C6] raw --insecure --api-key dev-key-server match.report -> exit 0 (full policy allows it) ---" | Out-File -Append $log
-    $c6 = Invoke-GbClient @('raw', '--addr', "127.0.0.1:$CSharpPlayerPort", '--insecure', '--api-key', 'dev-key-server', 'match.report', '{"Winner":"c6-winner","Loser":"c6-loser"}')
+    $c6 = Invoke-GbClient @('raw', '--addr', "127.0.0.1:$CSharpPlayerPort", '--insecure', '--api-key', 'dev-key-server', 'match.report', "{`"ReportId`":`"c6-$csharpRid`",`"Winner`":`"c6-winner`",`"Loser`":`"c6-loser`"}")
     "    -> rc=$($c6.Rc)  $($c6.Out)" | Out-File -Append $log
     if ($c6.Rc -ne 0) {
         "    C6 FAIL: expected exit 0, got rc=$($c6.Rc) $($c6.Out)" | Out-File -Append $log

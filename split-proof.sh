@@ -643,7 +643,7 @@ if [ "$K2" = "401" ]; then pass "bogus api key -> 401 (invalid key)"; else fail 
 echo "[K3] POST /match/report through G with dev-key-client (player-facing policy, NO match.report) -> 403"
 K3="$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://localhost:$G_PORT/match/report" \
     -H "X-Api-Key: dev-key-client" -H "Content-Type: application/json" \
-    -d '{"Winner":"k3-winner","Loser":"k3-loser"}')"
+    -d "{\"ReportId\":\"k3-$RUN_SUFFIX\",\"Winner\":\"k3-winner\",\"Loser\":\"k3-loser\"}")"
 echo "    -> HTTP $K3"
 if [ "$K3" = "403" ]; then
     pass "dev-key-client on match.report -> 403 (policy forbids this operation)"
@@ -654,7 +654,7 @@ fi
 echo "[K4] POST /match/report through G with dev-key-server (full policy) -> 202"
 K4="$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://localhost:$G_PORT/match/report" \
     -H "X-Api-Key: dev-key-server" -H "Content-Type: application/json" \
-    -d '{"Winner":"k4-winner","Loser":"k4-loser"}')"
+    -d "{\"ReportId\":\"k4-$RUN_SUFFIX\",\"Winner\":\"k4-winner\",\"Loser\":\"k4-loser\"}")"
 echo "    -> HTTP $K4"
 if [ "$K4" = "202" ]; then
     pass "dev-key-server (full) on match.report -> 202 (op's real success code)"
@@ -1065,14 +1065,22 @@ echo "========= MATCH TRIO (match-svc :$I_PORT + rating-svc :$J_PORT + leaderboa
 #         proven by (i) succeeding with rating-svc UP -- a report cannot return 202 without
 #         J answering rating.mmr over the edge. The +15/-15 durable handler persists to
 #         rating.ratings on J, asserted directly in [MT5] after both reports.
+#   (vi)  re-POSTing [MT1]'s exact ReportId is an idempotent no-op: still 202, one
+#         match row, no third match.finished (the split stub auto-retries, so a lost
+#         response MUST NOT double-commit a match).
 WINNER="champ-$RUN_SUFFIX"
 LOSER="chump-$RUN_SUFFIX"
+# ReportId is the REQUIRED idempotency key. Per-run-unique (RUN_SUFFIX): the cleanup
+# below deletes leaderboard/rating rows but NOT match.matches, so a constant id would
+# dedup on the SECOND split-proof run and [MT2]/[MT4] would never see wins move.
+MT1_RID="mt1-$RUN_SUFFIX"
+MT4_RID="mt4-$RUN_SUFFIX"
 
-echo "[MT1] POST http://localhost:$G_PORT/match/report (AuthNone, capitalized Winner/Loser body keys)"
+echo "[MT1] POST http://localhost:$G_PORT/match/report (AuthNone, capitalized ReportId/Winner/Loser body keys)"
 MR="$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://localhost:$G_PORT/match/report" \
     -H "X-Api-Key: dev-key-server" \
     -H "Content-Type: application/json" \
-    -d "{\"Winner\":\"$WINNER\",\"Loser\":\"$LOSER\"}")"
+    -d "{\"ReportId\":\"$MT1_RID\",\"Winner\":\"$WINNER\",\"Loser\":\"$LOSER\"}")"
 echo "    -> HTTP $MR"
 if [ "$MR" = "202" ]; then
     pass "match.report through G -> 202 (AuthNone; match-svc read rating.mmr from rating-svc over QUIC, recorded + emit_tx'd match.finished)"
@@ -1110,7 +1118,7 @@ echo "[MT4] second POST /match/report same winner -> leaderboard wins=2 (accumul
 MR2="$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://localhost:$G_PORT/match/report" \
     -H "X-Api-Key: dev-key-server" \
     -H "Content-Type: application/json" \
-    -d "{\"Winner\":\"$WINNER\",\"Loser\":\"$LOSER\"}")"
+    -d "{\"ReportId\":\"$MT4_RID\",\"Winner\":\"$WINNER\",\"Loser\":\"$LOSER\"}")"
 echo "    -> report#2 HTTP $MR2"
 [ "$MR2" = "202" ] || fail "second match.report expected 202, got $MR2"
 MT4_OK=0
@@ -1142,6 +1150,27 @@ for i in $(seq 1 30); do
     sleep 0.5
 done
 [ "$MT5_OK" = "1" ] || fail "rating.ratings never reached winner=1030 / loser=970 (durable projection on J)"
+
+# --- [MT6] duplicate-report-idempotent: the split stub auto-retries a failed RPC, so
+# a re-sent report MUST be a no-op. Re-POST with [MT1]'s exact ReportId -> still 202,
+# but NO second match row (psql, the strong assertion) and NO third match.finished
+# (leaderboard wins stays 2, rating stays 1030/970).
+echo "[MT6] duplicate POST /match/report with [MT1]'s ReportId ($MT1_RID) -> 202 no-op (dedup)"
+MR3="$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://localhost:$G_PORT/match/report" \
+    -H "X-Api-Key: dev-key-server" \
+    -H "Content-Type: application/json" \
+    -d "{\"ReportId\":\"$MT1_RID\",\"Winner\":\"$WINNER\",\"Loser\":\"$LOSER\"}")"
+echo "    -> duplicate report HTTP $MR3"
+[ "$MR3" = "202" ] || fail "duplicate match.report expected 202 (idempotent no-op), got $MR3"
+sleep 2 # give a hypothetical (wrong) third match.finished time to reach leaderboard
+MT6_ROWS="$(pg "SELECT count(*) FROM match.matches WHERE report_id='$MT1_RID';" | tr -d '[:space:]')"
+MT6_LB="$(curl -s "http://localhost:$G_PORT/leaderboard" -H "X-Api-Key: dev-key-client")"
+echo "    -> match.matches rows for $MT1_RID = ${MT6_ROWS:-?}"
+if [ "${MT6_ROWS:-0}" = "1" ] && echo "$MT6_LB" | grep -q "\"player\":\"$WINNER\",\"wins\":2"; then
+    pass "duplicate ReportId -> 202, 1 match row, leaderboard wins still 2 (dedup skipped the emit)"
+else
+    fail "duplicate ReportId not idempotent (rows=${MT6_ROWS:-?}, wins!=2?)"
+fi
 
 # Clean up this run's leaderboard + rating rows so reruns start fresh.
 pg "DELETE FROM leaderboard.scores WHERE player IN ('$WINNER','$LOSER');" >/dev/null

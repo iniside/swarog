@@ -77,6 +77,7 @@ public sealed record LeaderboardTopScoresRequest();
 
 /// <summary>Request for <c>match.report</c>.</summary>
 public sealed record MatchReportRequest(
+    [property: JsonPropertyName("ReportId")] string ReportId,
     [property: JsonPropertyName("Winner")] string Winner,
     [property: JsonPropertyName("Loser")] string Loser);
 
@@ -224,9 +225,9 @@ public sealed class GameBackendClient(IPlayerTransport transport)
     }
 
     /// <summary>Invokes <c>match.report</c> (unauthenticated).</summary>
-    public async Task MatchReportAsync(string winner, string loser, CancellationToken ct = default)
+    public async Task MatchReportAsync(string reportId, string winner, string loser, CancellationToken ct = default)
     {
-        var request = new MatchReportRequest(winner, loser);
+        var request = new MatchReportRequest(reportId, winner, loser);
         byte[] payload = JsonSerializer.SerializeToUtf8Bytes(request, JsonOpts);
         PlayerResponse resp = await transport.CallAsync("match.report", null, payload, ct).ConfigureAwait(false);
         Unwrap(resp);

@@ -31,14 +31,18 @@ use sqlx::{PgConnection, PgPool};
 /// Creates this module's OWN schema and nothing else — full logical isolation (#10).
 /// Idempotent. The match row is the durable-rule tx source (`report` INSERTs it and
 /// `emit_tx`s `match.finished` on the same tx). `winner`/`loser` are plain player id
-/// refs — no cross-module foreign key.
+/// refs — no cross-module foreign key. `report_id` is the client-supplied idempotency
+/// key: `UNIQUE (report_id)` is what makes a stub-retried report a no-op instead of a
+/// second match (+ second `match.finished`).
 const SCHEMA_DDL: &str = r#"
 CREATE SCHEMA IF NOT EXISTS match;
 CREATE TABLE IF NOT EXISTS match.matches (
-	id     uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
-	winner text        NOT NULL,
-	loser  text        NOT NULL,
-	at     timestamptz NOT NULL DEFAULT now()
+	id        uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+	report_id text        NOT NULL,
+	winner    text        NOT NULL,
+	loser     text        NOT NULL,
+	at        timestamptz NOT NULL DEFAULT now(),
+	UNIQUE (report_id)
 );"#;
 
 /// Folds any lower-level error into an `Internal` operation error.
@@ -68,38 +72,61 @@ impl Service {
     }
 
     /// Inserts a match row on the given connection (a tx, so the row + its durable
-    /// event append commit together) and returns the generated `id`.
+    /// event append commit together) and returns the generated `id` — or `None` when
+    /// `report_id` was already recorded (`ON CONFLICT DO NOTHING`): the caller skips
+    /// the emit, making a retried report idempotent (pattern:
+    /// `inventory.wiped_characters`).
     async fn insert_tx(
         &self,
         conn: &mut PgConnection,
+        report_id: &str,
         winner: &str,
         loser: &str,
-    ) -> Result<String, sqlx::Error> {
-        let (id,): (String,) = sqlx::query_as(
-            "INSERT INTO match.matches (winner, loser) VALUES ($1, $2) RETURNING id::text",
+    ) -> Result<Option<String>, sqlx::Error> {
+        let row: Option<(String,)> = sqlx::query_as(
+            "INSERT INTO match.matches (report_id, winner, loser) VALUES ($1, $2, $3) \
+             ON CONFLICT (report_id) DO NOTHING RETURNING id::text",
         )
+        .bind(report_id)
         .bind(winner)
         .bind(loser)
-        .fetch_one(&mut *conn)
+        .fetch_optional(&mut *conn)
         .await?;
-        Ok(id)
+        Ok(row.map(|(id,)| id))
     }
 }
 
 #[async_trait]
 impl Match for Service {
-    /// Records that `winner` beat `loser`. The MMR read is SYNCHRONOUS (query rating
-    /// right now, for the log line — Go read the winner's MMR; we read both to exercise
-    /// the wire, doing nothing material with the values). Then the domain INSERT + the
-    /// `match.finished` durable event append commit in ONE tx: the event is durable iff the match
-    /// is. A rating transport failure surfaces as an error (the sync dep is required).
-    async fn report(&self, winner: String, loser: String) -> Result<(), Error> {
+    /// Records that `winner` beat `loser`. `report_id` is the REQUIRED idempotency key
+    /// (empty ⇒ `Invalid` — a missing key must never silently degrade the dedup). The
+    /// MMR read is SYNCHRONOUS (query rating right now, for the log line — Go read the
+    /// winner's MMR; we read both to exercise the wire, doing nothing material with the
+    /// values). Then the domain INSERT + the `match.finished` durable event append
+    /// commit in ONE tx: the event is durable iff the match is. A duplicate `report_id`
+    /// (the split stub auto-retries a lost response) inserts nothing, emits nothing, and
+    /// returns Ok — at-most-once effect per report. A rating transport failure surfaces
+    /// as an error (the sync dep is required).
+    async fn report(&self, report_id: String, winner: String, loser: String) -> Result<(), Error> {
+        if report_id.trim().is_empty() {
+            return Err(Error::invalid("ReportId must be a non-empty idempotency key"));
+        }
         let winner_mmr = self.rating().mmr(winner.clone()).await?;
         let loser_mmr = self.rating().mmr(loser.clone()).await?;
         tracing::info!(%winner, winner_mmr, %loser, loser_mmr, "match reported");
 
         let mut tx = self.pool.begin().await.map_err(internal)?;
-        let match_id = self.insert_tx(&mut tx, &winner, &loser).await.map_err(internal)?;
+        let Some(match_id) = self
+            .insert_tx(&mut tx, &report_id, &winner, &loser)
+            .await
+            .map_err(internal)?
+        else {
+            // Duplicate report_id: the match is already recorded (and its
+            // `match.finished` already appended) — dropping the tx rolls back the
+            // no-op and the retry succeeds without a second event.
+            tracing::info!(%report_id, %winner, %loser, "duplicate match report deduped");
+            return Ok(());
+        };
         let evt = matchevents::Finished {
             match_id,
             winner,

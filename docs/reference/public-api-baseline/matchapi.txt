@@ -1,8 +1,9 @@
-# cargo-public-api 0.52.0 -- regenerate via ./verify.sh --bless-public-api
+# cargo-public-api 0.52.0 -- regenerate via .\verify.ps1 -BlessPublicApi
 pub mod matchapi
 pub mod matchapi::match_rpc
 pub struct matchapi::match_rpc::ReportRequest
 pub matchapi::match_rpc::ReportRequest::loser: alloc::string::String
+pub matchapi::match_rpc::ReportRequest::report_id: alloc::string::String
 pub matchapi::match_rpc::ReportRequest::winner: alloc::string::String
 impl core::default::Default for matchapi::match_rpc::ReportRequest
 pub fn matchapi::match_rpc::ReportRequest::default() -> matchapi::match_rpc::ReportRequest
@@ -35,4 +36,4 @@ pub const matchapi::match_rpc::METHOD_REPORT: &str
 pub fn matchapi::match_rpc::operations(alloc::sync::Arc<(dyn matchapi::Match + core::marker::Send + core::marker::Sync)>) -> alloc::vec::Vec<opsapi::OpSet>
 pub fn matchapi::match_rpc::route_bindings() -> alloc::vec::Vec<opsapi::RouteBinding>
 pub trait matchapi::Match: core::marker::Send + core::marker::Sync
-pub fn matchapi::Match::report<'life0, 'async_trait>(&'life0 self, alloc::string::String, alloc::string::String) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn matchapi::Match::report<'life0, 'async_trait>(&'life0 self, alloc::string::String, alloc::string::String, alloc::string::String) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait

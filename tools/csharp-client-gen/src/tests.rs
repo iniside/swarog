@@ -97,6 +97,8 @@ fn body_name_rename_applied_to_wire_name() {
     let report = m.methods.iter().find(|x| x.wire_method == "match.report").unwrap();
     let winner = report.args.iter().find(|a| a.name == "winner").unwrap();
     assert_eq!(winner.wire_name, "Winner");
+    let rid = report.args.iter().find(|a| a.name == "report_id").unwrap();
+    assert_eq!(rid.wire_name, "ReportId", "the idempotency key rides capitalized");
 }
 
 // --- Emit: golden C# -------------------------------------------------------

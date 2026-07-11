@@ -203,7 +203,9 @@ module never knows the topology.
   `pg_try_advisory_lock` + still-due re-check + `UPDATE`+`emit_tx` in one tx,
   commit-before-unlock. `SCHEDULER_ENABLED`.
 - **match / rating / leaderboard** — match records `match.matches` from a
-  `/match/report` HTTP request body (Go-parity keys `Winner`/`Loser`) and emits a
+  `/match/report` HTTP request body (a REQUIRED `ReportId` idempotency key —
+  duplicates are a 202 no-op, so the split stub's auto-retry can't double-commit —
+  plus Go-parity keys `Winner`/`Loser`) and emits a
   durable `match.finished` event (snake_case payload keys `winner`/`loser` — a
   distinct shape from the HTTP body); rating is a persistent MMR projection
   (`rating.ratings`, ±15 from 1000, upserted in the delivery tx — restarts
@@ -317,7 +319,7 @@ opt-ins/opt-outs (fail-closed defaults), so the monolith needs `APIKEYS_DEV_SEED
 http) and a seeded admin user (`adminctl create-user`) — `./run.sh` / `./run.ps1`
 set/seed all of these for you (dev portal creds `admin`/`admin`):
 ```
-curl -X POST localhost:8080/match/report -H "X-Api-Key: dev-key-server" -d '{"Winner":"alice","Loser":"bob"}'
+curl -X POST localhost:8080/match/report -H "X-Api-Key: dev-key-server" -d '{"ReportId":"demo-1","Winner":"alice","Loser":"bob"}'
 curl localhost:8080/leaderboard -H "X-Api-Key: dev-key-client"
 ```
 
