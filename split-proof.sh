@@ -459,8 +459,8 @@ wait_healthy "$A_PORT" "A (characters-svc)" || { echo "A failed to start"; exit 
 # --- reset the config baseline: B must boot with the DEFAULT starter (starter_sword),
 # so the later runtime change to health_potion is provably a LIVE reload, not a boot
 # value. DELETE fires no NOTIFY, but C/B are not up yet, so their boot loads see no row.
-pg "DELETE FROM config.settings WHERE namespace='inventory' AND key='starter_item';" >/dev/null
-note "reset config baseline (deleted inventory/starter_item)"
+pg "DELETE FROM config.settings WHERE namespace='inventory' AND key='starter_item'; DELETE FROM config.settings WHERE namespace='proof';" >/dev/null
+note "reset config baseline (deleted inventory/starter_item + stale proof/* rows)"
 
 # --- start C (config-svc): gateway + config, edge :9002 ----------------------
 # C owns the config schema + write trigger and serves config.snapshot on its mTLS edge;
@@ -696,6 +696,49 @@ else
 fi
 pg "DELETE FROM leaderboard.scores WHERE player IN ('k3-winner','k3-loser','k4-winner','k4-loser');" >/dev/null
 
+# [K5] key-verifier load-shed is 503, never a mislabeled 401 (and never a crash).
+# The verifier bounds concurrent uncached lookups with a global 64-permit semaphore
+# (+ a flight-lock table); when exhausted it sheds with 503 Unavailable ("no verdict
+# was reached"), NOT 401 ("your key is invalid"). A DEFINITE 503 is not reliably
+# reproducible through the front door from this script: gateway-svc's always-on
+# rate limiter (burst 40, asserted in [RL1]) admits fewer concurrent requests from
+# one client IP than the semaphore has permits (64), so full saturation cannot be
+# forced here. We assert the fix's GUARANTEED weaker observable instead: a parallel
+# burst of DISTINCT uncached keys (each takes a real permit-guarded lookup over the
+# edge to apikeys-svc) yields ONLY 401 (invalid key), 503 (shed) or 429 (rate
+# limiter, orthogonal) -- never a 200 (bogus key admitted) and never another 5xx
+# (crash). Any 503s observed are reported as best-effort shed evidence, not asserted.
+sleep 2 # let the [RL] token bucket refill so the burst isn't eaten by 429s
+echo "[K5] 30 PARALLEL GET /leaderboard with DISTINCT bogus keys -> every response 401/503/429, >=1 401, nothing else"
+k5_args=()
+for i in $(seq 1 30); do
+    [ "${#k5_args[@]}" -gt 0 ] && k5_args+=(--next)
+    k5_args+=(-s -o /dev/null -w '%{http_code}\n' -H "X-Api-Key: k5-$RUN_SUFFIX-$i" "http://localhost:$G_PORT/leaderboard")
+done
+K5_CODES="$(curl -Z --parallel-max 30 "${k5_args[@]}")"
+K5_TOTAL="$(echo "$K5_CODES" | grep -c '[0-9]')"
+K5_401="$(echo "$K5_CODES" | grep -c '401')"
+K5_503="$(echo "$K5_CODES" | grep -c '503')"
+K5_429="$(echo "$K5_CODES" | grep -c '429')"
+K5_OTHER=$((K5_TOTAL - K5_401 - K5_503 - K5_429))
+echo "    -> $K5_TOTAL responses: ${K5_401}x401, ${K5_503}x503 (shed, best-effort), ${K5_429}x429, ${K5_OTHER} other"
+if [ "$K5_TOTAL" = "30" ] && [ "$K5_OTHER" = "0" ] && [ "$K5_401" -ge 1 ]; then
+    pass "distinct-key burst: all 30 responses 401/503/429 -- no bogus key admitted, no 5xx crash ($K5_503 load-shed 503s observed)"
+else
+    fail "distinct-key burst expected 30 responses all 401/503/429 with >=1 401, got total=$K5_TOTAL 401=$K5_401 503=$K5_503 429=$K5_429 other=$K5_OTHER"
+fi
+
+# [K5b] the burst RELEASED its permits/flight locks (shed is transient, never sticky):
+# one more fresh distinct key must reach a definitive verdict (401 invalid), not 503.
+echo "[K5b] fresh distinct bogus key after the burst -> 401 (verifier recovered, permits released)"
+K5B="$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:$G_PORT/leaderboard" -H "X-Api-Key: k5b-$RUN_SUFFIX")"
+echo "    -> HTTP $K5B"
+if [ "$K5B" = "401" ]; then
+    pass "post-burst distinct key -> 401 (semaphore permits released after the burst)"
+else
+    fail "post-burst distinct key expected 401, got $K5B"
+fi
+
 echo ""
 echo "================ SPLIT PROOF ================"
 
@@ -847,8 +890,60 @@ else
     fail "starter never changed to health_potion cross-process (config live-reload failed) -- $R"
 fi
 
-# Reset to default so reruns start clean.
+# [C4] a >8KB config value must COMMIT (the pg_notify large-value fix). pg_notify
+# hard-caps its payload at 8000 bytes; before the fix the write trigger put the full
+# value into the NOTIFY payload, so ANY large config value ABORTED the writing tx.
+# The trigger now NOTIFYs value-less (revision only) while the durable config.changed
+# event still carries the full value. Assert: the INSERT commits (pg() dies on a
+# psql error, so reaching the checks below IS the no-abort proof), the revision
+# bumped by exactly one, the 9000-char value round-trips at full length, and the
+# durable event appended in the same tx carries the full value.
+C4_KEY="c4-large-$RUN_SUFFIX"
+C4_REV_BEFORE="$(pg "SELECT revision FROM config.revision;" | tr -d '[:space:]')"
+echo "[C4] write a >8KB config value (proof/$C4_KEY, 9000 chars) -- must NOT abort (revision $C4_REV_BEFORE -> +1)"
+pg "INSERT INTO config.settings (namespace,key,value) VALUES ('proof','$C4_KEY',repeat('x',9000));" >/dev/null
+C4_REV_AFTER="$(pg "SELECT revision FROM config.revision;" | tr -d '[:space:]')"
+C4_LEN="$(pg "SELECT length(value) FROM config.settings WHERE namespace='proof' AND key='$C4_KEY';" | tr -d '[:space:]')"
+C4_EVT="$(pg "SELECT count(*) FROM asyncevents.events WHERE topic='config.changed' AND payload->>'key'='$C4_KEY' AND length(payload->>'value')=9000;" | tr -d '[:space:]')"
+echo "    -> revision $C4_REV_BEFORE -> $C4_REV_AFTER, stored length=$C4_LEN, durable config.changed rows (full value)=$C4_EVT"
+if [ "$C4_REV_AFTER" = "$((C4_REV_BEFORE + 1))" ] && [ "$C4_LEN" = "9000" ] && [ "$C4_EVT" = "1" ]; then
+    pass "large config value committed: revision +1, 9000-char value round-trips, durable event carries the full value (NOTIFY stayed value-less)"
+else
+    fail "large config write expected rev+1 / len=9000 / 1 durable event, got rev $C4_REV_BEFORE->$C4_REV_AFTER len=$C4_LEN events=$C4_EVT"
+fi
+
+# [C4b] the reload pipeline still works WITH the 9KB row in the store: the
+# reset-to-default DELETE below bumps the revision and NOTIFYs, and B's refresh
+# re-reads the WHOLE snapshot -- which now contains the large value -- so a fresh
+# character reverting to starter_sword proves CachedConfig + the one-statement
+# snapshot query swallow a large value cross-process. (This replaces the previously
+# silent rerun-cleanliness reset with an asserted one.)
+echo "[C4b] reset starter_item (DELETE) -> fresh characters revert to starter_sword (reload with the 9KB row present)"
 pg "DELETE FROM config.settings WHERE namespace='inventory' AND key='starter_item';" >/dev/null
+REVERT_OK=0
+for i in $(seq 1 30); do
+    VCID="$(curl -s -X POST "http://localhost:$G_PORT/characters" \
+        -H "X-Api-Key: dev-key-client" \
+        -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+        -d '{"name":"Reverted","class":"mage"}' | grep -o '"id":"[^"]*"' | head -1 | sed 's/"id":"//;s/"//')"
+    for j in $(seq 1 10); do
+        R="$(curl -s "http://localhost:$G_PORT/inventory/character/$VCID" -H "X-Api-Key: dev-key-client" -H "Authorization: Bearer $TOKEN")"
+        echo "$R" | grep -qE 'starter_sword|health_potion' && break
+        sleep 0.3
+    done
+    if echo "$R" | grep -q 'starter_sword'; then
+        echo "    attempt $i -> char $VCID granted starter_sword"
+        REVERT_OK=1; break
+    fi
+    sleep 0.5
+done
+if [ "$REVERT_OK" = "1" ]; then
+    pass "starter reverted to starter_sword after the delete (snapshot refresh works with a >8KB value in the store)"
+else
+    fail "starter never reverted to starter_sword after the reset (reload broken alongside the large value?) -- $R"
+fi
+# Drop the large row so reruns start clean (each run keys it by RUN_SUFFIX anyway).
+pg "DELETE FROM config.settings WHERE namespace='proof' AND key='$C4_KEY';" >/dev/null
 
 echo ""
 echo "========= ADMIN PORTAL (gateway-svc passthrough -> admin-svc -> providers over edge) ========="
@@ -1250,6 +1345,12 @@ pg "DELETE FROM rating.ratings WHERE player IN ('$WINNER','$LOSER');" >/dev/null
 
 echo ""
 echo "========= PLAYER QUIC FRONT (via gateway-svc :$PLAYER_PORT) ========="
+# DEFERRED (documented, not faked): the player-QUIC ANTI-SPOOF branch -- admission
+# gated on a validated source address (unvalidated Incoming -> quinn retry(), no
+# connection slot consumed) -- cannot be asserted here: this script cannot forge an
+# off-path UDP source address, and a happy-path playercli dial only proves the
+# validated branch. Coverage lives in the unit tests (core/edge/src/player_tests.rs).
+# The player RATE-LIMIT (a different, observable guard) IS asserted below in [P6].
 
 # --- P1. player QUIC create -> G -> mTLS edge -> A ---------------------------
 # A FRESH character owned by the registered player, created THROUGH the QUIC player front (the
@@ -1457,6 +1558,10 @@ fi
 # process exited (exit code 0), not just that it exited within the grace window. The
 # in-flight-request-survives-drain probe itself is DEFERRED: the fleet has no
 # artificial-delay endpoint to race a request against SIGTERM without being racy/low-value.
+# DEFERRED for the same reason: the internal-edge STREAM-REAP fix (bounded
+# read/stopped waits on a hung peer stream) -- there is no fault-injection endpoint
+# in the fleet to wedge a stream cross-process. Coverage lives in the edge unit
+# tests (core/edge/src/server_tests.rs, loopback peer with controlled waits).
 if [ -z "$STOP_NONZERO" ]; then
     pass "[W1b split clean-exit] every drained process exited 0 after SIGTERM"
 else

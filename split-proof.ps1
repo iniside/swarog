@@ -460,7 +460,7 @@ try {
     # Reset the config baseline: B must boot with the DEFAULT starter (starter_sword),
     # so the later runtime change to health_potion is provably a LIVE reload. C/B are not
     # up yet, so their boot loads see no row.
-    Invoke-Sql "DELETE FROM config.settings WHERE namespace='inventory' AND key='starter_item';" | Out-Null
+    Invoke-Sql "DELETE FROM config.settings WHERE namespace='inventory' AND key='starter_item'; DELETE FROM config.settings WHERE namespace='proof';" | Out-Null
     Note 'reset config baseline (deleted inventory/starter_item)'
 
     # C (config-svc): owns the config schema + write trigger, serves config.snapshot on
@@ -669,6 +669,49 @@ try {
     if ($k4.Code -eq '202') { Pass "dev-key-server (full) on match.report -> 202 (op's real success code)" } else { Fail "dev-key-server on match.report expected 202, got $($k4.Code)" }
     Invoke-Sql "DELETE FROM leaderboard.scores WHERE player IN ('k3-winner','k3-loser','k4-winner','k4-loser');" | Out-Null
 
+    # [K5] key-verifier load-shed is 503, never a mislabeled 401 (and never a crash).
+    # The verifier bounds concurrent uncached lookups with a global 64-permit semaphore
+    # (+ a flight-lock table); when exhausted it sheds with 503 Unavailable ("no verdict
+    # was reached"), NOT 401 ("your key is invalid"). A DEFINITE 503 is not reliably
+    # reproducible through the front door from this script: gateway-svc's always-on
+    # rate limiter (burst 40, asserted in [RL1]) admits fewer concurrent requests from
+    # one client IP than the semaphore has permits (64), so full saturation cannot be
+    # forced here. We assert the fix's GUARANTEED weaker observable instead: a parallel
+    # burst of DISTINCT uncached keys (each takes a real permit-guarded lookup over the
+    # edge to apikeys-svc) yields ONLY 401 (invalid key), 503 (shed) or 429 (rate
+    # limiter, orthogonal) -- never a 200 (bogus key admitted) and never another 5xx
+    # (crash). Any 503s observed are reported as best-effort shed evidence, not asserted.
+    Start-Sleep -Seconds 2 # let the [RL] token bucket refill so the burst isn't eaten by 429s
+    Write-Host '[K5] 30 PARALLEL GET /leaderboard with DISTINCT bogus keys -> every response 401/503/429, >=1 401, nothing else'
+    $k5Args = @()
+    for ($i = 1; $i -le 30; $i++) {
+        if ($k5Args.Count -gt 0) { $k5Args += '--next' }
+        $k5Args += @('-s', '-o', 'NUL', '-w', "%{http_code}`n", '-H', "X-Api-Key: k5-$RunSuffix-$i", "http://127.0.0.1:$GPort/leaderboard")
+    }
+    $k5Codes = @(& curl.exe -Z --parallel-max 30 @k5Args 2>$null)
+    $k5Total = @($k5Codes | Where-Object { $_ -match '\d' }).Count
+    $k5c401 = @($k5Codes | Where-Object { $_ -match '401' }).Count
+    $k5c503 = @($k5Codes | Where-Object { $_ -match '503' }).Count
+    $k5c429 = @($k5Codes | Where-Object { $_ -match '429' }).Count
+    $k5Other = $k5Total - $k5c401 - $k5c503 - $k5c429
+    Write-Host "    -> $k5Total responses: ${k5c401}x401, ${k5c503}x503 (shed, best-effort), ${k5c429}x429, ${k5Other} other"
+    if ($k5Total -eq 30 -and $k5Other -eq 0 -and $k5c401 -ge 1) {
+        Pass "distinct-key burst: all 30 responses 401/503/429 -- no bogus key admitted, no 5xx crash ($k5c503 load-shed 503s observed)"
+    } else {
+        Fail "distinct-key burst expected 30 responses all 401/503/429 with >=1 401, got total=$k5Total 401=$k5c401 503=$k5c503 429=$k5c429 other=$k5Other"
+    }
+
+    # [K5b] the burst RELEASED its permits/flight locks (shed is transient, never sticky):
+    # one more fresh distinct key must reach a definitive verdict (401 invalid), not 503.
+    Write-Host '[K5b] fresh distinct bogus key after the burst -> 401 (verifier recovered, permits released)'
+    $k5b = Invoke-Curl @("http://127.0.0.1:$GPort/leaderboard", '-H', "X-Api-Key: k5b-$RunSuffix")
+    Write-Host "    -> HTTP $($k5b.Code)"
+    if ($k5b.Code -eq '401') {
+        Pass 'post-burst distinct key -> 401 (semaphore permits released after the burst)'
+    } else {
+        Fail "post-burst distinct key expected 401, got $($k5b.Code)"
+    }
+
     Write-Host ''
     Write-Host '================ SPLIT PROOF ================'
 
@@ -793,8 +836,62 @@ try {
     }
     if ($reloadOk) { Pass 'new character granted health_potion (config.changed C->B live-reloaded CachedConfig + starter spec)' } else { Fail 'starter never changed to health_potion cross-process (config live-reload failed)' }
 
-    # Reset to default so reruns start clean.
+    # [C4] a >8KB config value must COMMIT (the pg_notify large-value fix). pg_notify
+    # hard-caps its payload at 8000 bytes; before the fix the write trigger put the full
+    # value into the NOTIFY payload, so ANY large config value ABORTED the writing tx.
+    # The trigger now NOTIFYs value-less (revision only) while the durable config.changed
+    # event still carries the full value. Assert: the INSERT commits (Invoke-Sql throws
+    # on a psql error, so reaching the checks below IS the no-abort proof), the revision
+    # bumped by exactly one, the 9000-char value round-trips at full length, and the
+    # durable event appended in the same tx carries the full value.
+    $c4Key = "c4-large-$RunSuffix"
+    $c4RevBefore = [long](("" + (Invoke-Sql "SELECT revision FROM config.revision;")).Trim())
+    Write-Host "[C4] write a >8KB config value (proof/$c4Key, 9000 chars) -- must NOT abort (revision $c4RevBefore -> +1)"
+    Invoke-Sql "INSERT INTO config.settings (namespace,key,value) VALUES ('proof','$c4Key',repeat('x',9000));" | Out-Null
+    $c4RevAfter = [long](("" + (Invoke-Sql "SELECT revision FROM config.revision;")).Trim())
+    $c4Len = ("" + (Invoke-Sql "SELECT length(value) FROM config.settings WHERE namespace='proof' AND key='$c4Key';")).Trim()
+    $c4Evt = ("" + (Invoke-Sql "SELECT count(*) FROM asyncevents.events WHERE topic='config.changed' AND payload->>'key'='$c4Key' AND length(payload->>'value')=9000;")).Trim()
+    Write-Host "    -> revision $c4RevBefore -> $c4RevAfter, stored length=$c4Len, durable config.changed rows (full value)=$c4Evt"
+    if ($c4RevAfter -eq ($c4RevBefore + 1) -and $c4Len -eq '9000' -and $c4Evt -eq '1') {
+        Pass 'large config value committed: revision +1, 9000-char value round-trips, durable event carries the full value (NOTIFY stayed value-less)'
+    } else {
+        Fail "large config write expected rev+1 / len=9000 / 1 durable event, got rev $c4RevBefore->$c4RevAfter len=$c4Len events=$c4Evt"
+    }
+
+    # [C4b] the reload pipeline still works WITH the 9KB row in the store: the
+    # reset-to-default DELETE below bumps the revision and NOTIFYs, and B's refresh
+    # re-reads the WHOLE snapshot -- which now contains the large value -- so a fresh
+    # character reverting to starter_sword proves CachedConfig + the one-statement
+    # snapshot query swallow a large value cross-process. (This replaces the previously
+    # silent rerun-cleanliness reset with an asserted one.)
+    Write-Host '[C4b] reset starter_item (DELETE) -> fresh characters revert to starter_sword (reload with the 9KB row present)'
     Invoke-Sql "DELETE FROM config.settings WHERE namespace='inventory' AND key='starter_item';" | Out-Null
+    $revertOk = $false
+    for ($i = 1; $i -le 30; $i++) {
+        $vc = Invoke-Curl @('-X', 'POST', "http://127.0.0.1:$GPort/characters",
+            '-H', 'X-Api-Key: dev-key-client', '-H', "Authorization: Bearer $Token", '-H', 'Content-Type: application/json',
+            '-d', '{"name":"Reverted","class":"mage"}')
+        $vcid = $null
+        if ($vc.Body -match '"id":"([^"]+)"') { $vcid = $Matches[1] }
+        $r = $null
+        for ($j = 1; $j -le 10; $j++) {
+            $r = Invoke-Curl @("http://127.0.0.1:$GPort/inventory/character/$vcid", '-H', 'X-Api-Key: dev-key-client', '-H', "Authorization: Bearer $Token")
+            if ($r.Body -match 'starter_sword|health_potion') { break }
+            Start-Sleep -Milliseconds 300
+        }
+        if ($r.Body -match 'starter_sword') {
+            Write-Host "    attempt $i -> char $vcid granted starter_sword"
+            $revertOk = $true; break
+        }
+        Start-Sleep -Milliseconds 500
+    }
+    if ($revertOk) {
+        Pass 'starter reverted to starter_sword after the delete (snapshot refresh works with a >8KB value in the store)'
+    } else {
+        Fail 'starter never reverted to starter_sword after the reset (reload broken alongside the large value?)'
+    }
+    # Drop the large row so reruns start clean (each run keys it by RunSuffix anyway).
+    Invoke-Sql "DELETE FROM config.settings WHERE namespace='proof' AND key='$c4Key';" | Out-Null
 
     Write-Host ''
     Write-Host '========= ADMIN PORTAL (gateway-svc passthrough -> admin-svc -> providers over edge) ========='
@@ -1199,6 +1296,12 @@ try {
 
     Write-Host ''
     Write-Host "========= PLAYER QUIC FRONT (via gateway-svc :$PlayerPort) ========="
+    # DEFERRED (documented, not faked): the player-QUIC ANTI-SPOOF branch -- admission
+    # gated on a validated source address (unvalidated Incoming -> quinn retry(), no
+    # connection slot consumed) -- cannot be asserted here: this script cannot forge an
+    # off-path UDP source address, and a happy-path playercli dial only proves the
+    # validated branch. Coverage lives in the unit tests (core/edge/src/player_tests.rs).
+    # The player RATE-LIMIT (a different, observable guard) IS asserted below in [P6].
 
     # --- P1. player QUIC create -> G -> mTLS edge -> A ---
     # A FRESH character owned by the registered player, created THROUGH the QUIC player front (the
@@ -1347,6 +1450,12 @@ try {
     Write-Host ''
     Write-Host '================ MONOLITH PARITY ================'
     Note 'tearing down the split before the monolith stage ...'
+    # The in-flight-request-survives-drain probe is DEFERRED: the fleet has no
+    # artificial-delay endpoint to race a request against shutdown without being
+    # racy/low-value. DEFERRED for the same reason: the internal-edge STREAM-REAP fix
+    # (bounded read/stopped waits on a hung peer stream) -- there is no fault-injection
+    # endpoint in the fleet to wedge a stream cross-process. Coverage lives in the edge
+    # unit tests (core/edge/src/server_tests.rs, loopback peer with controlled waits).
     Teardown $true 'W1 split graceful shutdown'
     foreach ($n in ($FleetSvcs + 'server')) {
         Get-Process -Name $n -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
