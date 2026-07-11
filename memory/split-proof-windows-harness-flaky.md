@@ -42,14 +42,24 @@ bash-parallel jobs is suspect on Windows.
   assertion is the harness, not a service deadlock.
 - Recovery: kill `*-svc`/`winctrl`/`server`/`curl` (spare `cowork-svc`), then
   `pg_terminate_backend` all non-psql gamebackend sessions, then re-run.
-**Chosen fix (2026-07-11): a Rust harness replaces both scripts.** `tools/splitproof`
-(`cargo run -p splitproof`) spawns the fleet via `std::process::Command` (typed env
-map + kill-on-drop guard — no shell, so the whole bug class is structurally gone),
+**DONE (2026-07-11): a Rust harness REPLACED both scripts; they + tools/winctrl are
+deleted.** `cargo run -p splitproof` (`tools/splitproof`) spawns the 12-svc fleet via
+`std::process::Command` (typed env map + kill-on-drop guard — no shell, so the whole
+bug class is structurally gone: no quoting, no MSYS `wait`, no winctrl, no orphans),
 health-checks over reqwest, asserts DB via sqlx, and drives the player QUIC front
-through `edge::PlayerClient` as a library (no playercli subprocess). MVP landed: boots
-12/12, 8 core assertions green ([RDY]/auth/[K5]/[C4]/[P1]/leaderboard), 0 orphans after
-exit. The shell scripts were also hardened (commit 358ab57) but are on death row — the
-Rust harness grows to full named-assertion parity, then `.sh`/`.ps1` + `tools/winctrl`
-are deleted and verify.* points at `splitproof`. Plan:
-docs/plans/2026-07-11-1730-rust-splitproof-harness-plan.md. See
+through `edge::PlayerClient` as a library. It self-builds its fleet (`build_fleet`),
+has a fleet-drift preflight (`fleet()` == `cmd/*-svc`), and is exempt in archcheck's
+asyncevents-SQL allowlist (it asserts plane state like the scripts' `pg`). Full parity
+reached: **66 named assertions** across the split (A/K/EP/[1-5]/C/MT/P/AD/AU/SC/SP/MX/RL)
++ monolith parity (M0-M3b, boots cmd/server on the same front) + native graceful
+shutdown ([W2]: Ctrl-Break to the monolith's process group on Windows / SIGTERM on
+unix). `verify.sh`/`.ps1` split-proof stage now runs `cargo run -p splitproof`. Commits
+b0bacb2..e9ff199 (Batches A-G). Plan:
+docs/plans/2026-07-11-1730-rust-splitproof-harness-plan.md.
+
+Two harness insights worth keeping (baked into commit messages): sqlx's extended
+protocol runs only ONE statement per `query()` (split multi-statement DELETEs); and the
+harness drives HTTP far faster than the curl-per-process shell, so mutating helpers
+retry on the gateway's transient per-IP 429 and concurrent admin-login bursts need a
+long-timeout client (admin login holds an advisory lock across a 64 MiB Argon2). See
 [[verify-the-at-risk-path-not-the-safe-one]] and [[config-as-code-anti-magic]].
