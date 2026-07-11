@@ -30,6 +30,15 @@
 //! runs each callback's first refresh synchronously and fails loudly if one fails;
 //! readiness ([`Health`]) reports unready once any callback has gone 60s without a
 //! successful refresh.
+//!
+//! **Callbacks are deadline-bounded.** Every refresh runs under a timeout
+//! (`INVALIDATION_CALLBACK_TIMEOUT_MS`, default 10s) so a hung callback can't wedge the
+//! NOTIFY fan-out, the poll fallback, or startup — like every other plane in this repo,
+//! the refresh path is time-bounded. A startup first-refresh timeout fails boot (the
+//! same fail-loud contract as any first-refresh error); a steady-state timeout counts as
+//! a refresh failure (logged + failure gauge), so the stale clock keeps ticking and
+//! readiness eventually reports it. [`stop`](InvalidationPlane::stop) is likewise bounded
+//! (5s per background task, then `abort`) so a hung callback can't stall teardown.
 
 mod gauges;
 
@@ -46,6 +55,14 @@ use tokio::task::JoinHandle;
 
 /// Default lost-NOTIFY poll interval; overridden by `INVALIDATION_POLL_INTERVAL_MS`.
 const DEFAULT_POLL: Duration = Duration::from_secs(30);
+
+/// Default per-callback refresh deadline; overridden by `INVALIDATION_CALLBACK_TIMEOUT_MS`.
+const DEFAULT_CALLBACK_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Grace for a background task to exit after `stop` signals before it is aborted.
+/// Deliberately a compile-time constant, NOT an env knob (like `core/app`'s
+/// `READY_CHECK_TIMEOUT`): teardown promptness is not a per-deployment tuning surface.
+const DEFAULT_STOP_GRACE_MS: u64 = 5000;
 
 /// Readiness threshold: a callback with no successful refresh in this long → unready.
 pub const STALE_AFTER: Duration = Duration::from_secs(60);
@@ -64,8 +81,14 @@ struct Registration {
 }
 
 impl Registration {
-    async fn run(&self) -> anyhow::Result<()> {
-        (self.refresh)().await
+    /// Runs the refresh under deadline `d`. A timeout is a loud error (not a hang): in
+    /// steady state it flows through [`RunCtx::run_one`]'s failure path; at startup it
+    /// fails `start` — so a wedged callback can never silently stall the plane.
+    async fn run(&self, d: Duration) -> anyhow::Result<()> {
+        match tokio::time::timeout(d, (self.refresh)()).await {
+            Ok(r) => r,
+            Err(_) => anyhow::bail!("refresh timed out after {d:?}"),
+        }
     }
 }
 
@@ -156,13 +179,16 @@ struct RunCtx {
     by_channel: HashMap<String, Vec<Registration>>,
     health: Health,
     gauges: gauges::Gauges,
+    /// Per-callback refresh deadline applied to every steady-state run.
+    callback_timeout: Duration,
 }
 
 impl RunCtx {
     /// Runs one callback, isolating its outcome: success marks the health clock; an
-    /// error is logged and counted, never propagated (a sibling must still run).
+    /// error (including a deadline timeout) is logged and counted, never propagated (a
+    /// sibling must still run).
     async fn run_one(&self, reg: &Registration) {
-        match reg.run().await {
+        match reg.run(self.callback_timeout).await {
             Ok(()) => self.health.mark(&reg.name),
             Err(err) => {
                 tracing::error!(callback = %reg.name, %err, "invalidation refresh failed");
@@ -201,6 +227,7 @@ pub struct InvalidationPlane {
     /// `cfg.database_url`, never re-read from env here.
     listen_dsn: String,
     poll: Duration,
+    callback_timeout: Duration,
     health: Health,
     gauges: gauges::Gauges,
     /// Cancellation + background tasks, present between `start` and `stop`.
@@ -215,6 +242,7 @@ impl InvalidationPlane {
             registrar: Arc::new(Invalidation::new()),
             listen_dsn,
             poll: poll_from_env(),
+            callback_timeout: callback_timeout_from_env(),
             health: Health::default(),
             gauges: gauges::Gauges::new(),
             stop: None,
@@ -230,6 +258,13 @@ impl InvalidationPlane {
     /// Test-only override of the poll interval (prod reads `INVALIDATION_POLL_INTERVAL_MS`).
     pub fn with_poll_interval(mut self, poll: Duration) -> Self {
         self.poll = poll;
+        self
+    }
+
+    /// Test-only override of the per-callback refresh deadline (prod reads
+    /// `INVALIDATION_CALLBACK_TIMEOUT_MS`).
+    pub fn with_callback_timeout(mut self, timeout: Duration) -> Self {
+        self.callback_timeout = timeout;
         self
     }
 
@@ -251,7 +286,7 @@ impl InvalidationPlane {
     pub async fn start(&mut self) -> anyhow::Result<()> {
         let regs = self.registrar.snapshot();
         for reg in &regs {
-            reg.run()
+            reg.run(self.callback_timeout)
                 .await
                 .with_context(|| format!("invalidation first refresh for {:?}", reg.name))?;
             self.health.mark(&reg.name);
@@ -270,6 +305,7 @@ impl InvalidationPlane {
             by_channel,
             health: self.health.clone(),
             gauges: self.gauges.clone(),
+            callback_timeout: self.callback_timeout,
         });
 
         let (stop_tx, stop_rx) = watch::channel(false);
@@ -291,13 +327,19 @@ impl InvalidationPlane {
         Ok(())
     }
 
-    /// Halts the background loops and awaits their exit. Idempotent — a never-started
-    /// plane is a no-op.
+    /// Halts the background loops and awaits their exit, bounded per task. Idempotent — a
+    /// never-started plane is a no-op. A task that hasn't exited within
+    /// [`DEFAULT_STOP_GRACE_MS`] (e.g. blocked in a hung callback mid-refresh) is aborted
+    /// so one wedged callback can't stall teardown — safe because a task only holds a
+    /// `PgListener`, dropped at the abort's await point.
     pub async fn stop(&mut self) {
         if let Some((stop_tx, tasks)) = self.stop.take() {
             let _ = stop_tx.send(true);
-            for t in tasks {
-                let _ = t.await;
+            let grace = Duration::from_millis(DEFAULT_STOP_GRACE_MS);
+            for mut t in tasks {
+                if tokio::time::timeout(grace, &mut t).await.is_err() {
+                    t.abort();
+                }
             }
         }
     }
@@ -378,6 +420,17 @@ fn poll_from_env() -> Duration {
     {
         Some(ms) if ms > 0 => Duration::from_millis(ms),
         _ => DEFAULT_POLL,
+    }
+}
+
+/// Reads `INVALIDATION_CALLBACK_TIMEOUT_MS` (positive ms), else [`DEFAULT_CALLBACK_TIMEOUT`].
+fn callback_timeout_from_env() -> Duration {
+    match std::env::var("INVALIDATION_CALLBACK_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+    {
+        Some(ms) if ms > 0 => Duration::from_millis(ms),
+        _ => DEFAULT_CALLBACK_TIMEOUT,
     }
 }
 

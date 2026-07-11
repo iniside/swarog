@@ -192,6 +192,7 @@ async fn failing_callback_does_not_block_sibling() {
         by_channel,
         health: Health::default(),
         gauges: gauges::Gauges::new(),
+        callback_timeout: Duration::from_secs(10),
     };
     ctx.run_channel("c").await;
 
@@ -201,6 +202,134 @@ async fn failing_callback_does_not_block_sibling() {
         1,
         "sibling did not run after a failing callback"
     );
+}
+
+/// A hung callback (a never-resolving future) must not block a sibling on the same
+/// channel: the deadline fires, its run is counted as a failure, and the sibling still
+/// runs. Drives the fan-out primitive directly with a short timeout (no DB, no NOTIFY).
+#[tokio::test]
+async fn hung_callback_does_not_block_sibling() {
+    let good = Arc::new(AtomicUsize::new(0));
+
+    let inv = Invalidation::new();
+    // A callback whose future never resolves — the deadline is the only thing that can
+    // end it, so if the timeout is dropped this fan-out hangs forever.
+    inv.register("c", "hung", || async {
+        std::future::pending::<()>().await;
+        Ok(())
+    });
+    inv.register("c", "good", counting(&good));
+
+    let regs = inv.snapshot();
+    let mut by_channel: HashMap<String, Vec<Registration>> = HashMap::new();
+    for reg in &regs {
+        by_channel.entry(reg.channel.clone()).or_default().push(reg.clone());
+    }
+    let ctx = RunCtx {
+        all: regs,
+        by_channel,
+        health: Health::default(),
+        gauges: gauges::Gauges::new(),
+        callback_timeout: Duration::from_millis(100),
+    };
+
+    // If the deadline were absent this would hang forever; a generous overall bound keeps
+    // a regression from wedging the suite.
+    tokio::time::timeout(Duration::from_secs(5), ctx.run_channel("c"))
+        .await
+        .expect("hung callback wedged the fan-out despite the deadline");
+
+    assert_eq!(
+        good.load(Ordering::SeqCst),
+        1,
+        "sibling did not run after a hung callback timed out"
+    );
+    // Only the successful sibling marked its health clock; the timed-out callback never
+    // recorded a success (it took the failure path), so the fresh set is exactly "good".
+    assert!(
+        ctx.health.stale(Duration::from_secs(3600)).is_empty(),
+        "no callback should be stale immediately after a fresh success"
+    );
+}
+
+/// A first-refresh that hangs past the deadline fails `start` loudly — the boot contract
+/// (no cache stale-ready) holds even when a callback wedges rather than errors. No DB: the
+/// boot refresh runs before any connect, so the DSN ("postgres://unused") is never touched.
+#[tokio::test]
+async fn first_refresh_timeout_fails_start() {
+    let mut plane = InvalidationPlane::new("postgres://unused".to_string())
+        .with_callback_timeout(Duration::from_millis(100));
+    plane.handle().register("c", "hung", || async {
+        std::future::pending::<()>().await; // never resolves
+        Ok(())
+    });
+
+    let res = plane.start().await;
+    let err = res.expect_err("start must fail loudly when a first refresh times out");
+    assert!(
+        format!("{err:#}").contains("timed out"),
+        "error should mention the timeout, got: {err:#}"
+    );
+
+    plane.stop().await; // no-op: never started
+}
+
+/// `stop` returns within its grace bound even when a background task is wedged in a hung
+/// refresh mid-flight. Uses a live DB channel (so `start` gets past the first refresh) with
+/// a callback that succeeds the FIRST time (the boot refresh) then hangs on every later
+/// call; a NOTIFY drives a fan-out into the hang, and `stop` must still complete — the
+/// task exceeding its grace is aborted, not awaited forever.
+#[tokio::test]
+async fn stop_returns_despite_hung_callback() {
+    let Some((pool, dsn)) = test_pool().await else {
+        return;
+    };
+    let chan = unique_channel();
+    let calls = Arc::new(AtomicUsize::new(0));
+
+    let mut plane = InvalidationPlane::new(dsn)
+        .with_poll_interval(Duration::from_secs(3600)) // only NOTIFY drives a refresh
+        .with_callback_timeout(Duration::from_secs(3600)); // long: the hang must be live at stop
+    {
+        let calls = calls.clone();
+        plane.handle().register(&chan, "cb", move || {
+            let calls = calls.clone();
+            async move {
+                // First call (the boot refresh) succeeds; every later call hangs forever.
+                if calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                    return Ok(());
+                }
+                std::future::pending::<()>().await;
+                Ok(())
+            }
+        });
+    }
+    plane.start().await.unwrap(); // boot refresh = call #0, succeeds
+
+    tokio::time::sleep(Duration::from_millis(500)).await; // listener connect + connect refresh
+
+    // Drive a NOTIFY fan-out into the hang; re-send until the callback is entered again.
+    for _ in 0..50 {
+        sqlx::query("SELECT pg_notify($1, '')")
+            .bind(&chan)
+            .execute(&pool)
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        if calls.load(Ordering::SeqCst) > 1 {
+            break;
+        }
+    }
+    assert!(
+        calls.load(Ordering::SeqCst) > 1,
+        "callback never re-entered — the hang was never triggered"
+    );
+
+    // The listener task is now wedged in the hung refresh; stop must still return, well
+    // inside 5s grace + a task or two + margin.
+    tokio::time::timeout(Duration::from_secs(20), plane.stop())
+        .await
+        .expect("stop() did not return despite a hung callback — teardown is unbounded");
 }
 
 /// A first-refresh failure surfaces loudly as an error from `start` (no DB needed — the
