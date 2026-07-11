@@ -1,0 +1,30 @@
+# routecheck (remediation round 3, Step 7a): the static monolith/split front-door
+# route-parity checker. Builds every process of both deployment profiles (from
+# checkmodules, the same single-sourced module lists topiccheck uses) through the
+# real register->init lifecycle with a lazy pool + no-op durable transport, then
+# asserts the contributed operation/binding/local/edge sets are structurally
+# consistent -- catching the "route present in split but not monolith" bug class
+# (the inventory dev-grant bypass) for every env config, with no hand list. It is
+# a tool (not a module), so it may depend on every module via checkmodules --
+# archcheck only constrains `modules/` consumers.
+[package]
+name = "routecheck"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "routecheck"
+path = "src/main.rs"
+
+[dependencies]
+lifecycle = { workspace = true }
+bus = { workspace = true }
+opsapi = { workspace = true }
+edge = { workspace = true }
+checkmodules = { workspace = true }
+sqlx = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+anyhow = { workspace = true }

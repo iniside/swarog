@@ -19,39 +19,44 @@
 #   4. cargo-audit   cargo audit against the RustSec advisory DB (auto-installs
 #                    cargo-audit; SKIPs if the advisory DB fetch fails offline)
 #   5. fortress      every domain module builds as its own -svc + archcheck dependency law
-#   6. codegen-fresh regenerates clients/csharp/Generated via csharp-client-gen and
+#   6. routecheck    static monolith/split front-door route parity: builds every
+#                    process of both profiles (register->init, lazy pool, no live DB)
+#                    under both env-gate configs and fails on any structural
+#                    divergence between the two topologies' route sets (the
+#                    inventory-dev-grant bug-class net)
+#   7. codegen-fresh regenerates clients/csharp/Generated via csharp-client-gen and
 #                    diffs against the working tree -- FAILs if a contract changed
 #                    without regenerating. Pure Rust + git, no dotnet/QUIC, runs
 #                    everywhere.
-#   7. contract-golden  the VALUE-level contract baseline (topiccheck contract-golden):
+#   8. contract-golden  the VALUE-level contract baseline (topiccheck contract-golden):
 #                    every bus::define's topic/version/history and every generated
 #                    Operation's verb/path/auth/success/retry_mode, diffed against the
 #                    COMMITTED golden in docs/reference/contract-golden/contracts.txt
 #                    (values cargo-public-api structurally cannot see; re-bless
 #                    intentional changes with --bless-contract-golden)
-#   8. split-proof   ./split-proof.sh -- the eleven-process topology proof
+#   9. split-proof   ./split-proof.sh -- the eleven-process topology proof
 #
 # ADVISORY (--all):
-#   8. public-api    cargo-public-api diff of the api/*api and api/*events contract
+#  10. public-api    cargo-public-api diff of the api/*api and api/*events contract
 #                    crates vs COMMITTED snapshots in docs/reference/public-api-baseline/
 #                    (crate list derived from the filesystem; ANY diff FAILs, removed
 #                    symbols flagged BREAKING, added ADDITIVE; re-bless with
 #                    --bless-public-api). Needs a nightly toolchain for rustdoc JSON --
 #                    auto-installed, SKIPs cleanly if unavailable.
-#   9. fuzz          cargo-fuzz targets in core/edge/fuzz/ (frame_decode, wire_decode),
+#  11. fuzz          cargo-fuzz targets in core/edge/fuzz/ (frame_decode, wire_decode),
 #                    10s each. SKIPs if cargo-fuzz can't execute on this platform
 #                    (Windows lacks the libFuzzer sanitizer runtime as of this writing --
 #                    the targets still build/check and are exercised for real on Linux/CI)
-#  10. csharp-client builds clients/csharp (gbclient) and drives it over pure QUIC
+#  12. csharp-client builds clients/csharp (gbclient) and drives it over pure QUIC
 #                    against a self-contained monolith: raw Unauthorized/NotFound
 #                    negatives + a typed register->create->list flow. SKIPs if dotnet
 #                    is absent or QuicConnection.IsSupported is false (msquic missing).
-#  11. topiccheck    builds the monolith module set with a recording bus transport and
+#  13. topiccheck    builds the monolith module set with a recording bus transport and
 #                    fails (under --strict) on any bus::define'd topic with no subscriber
 #                    (the Rust redesign of Go's whole-program topiccheck)
 #
 # SLOW (--slow):
-#   10. mutants    cargo-mutants over the pure foundation crates (edge, gateway,
+#   14. mutants    cargo-mutants over the pure foundation crates (edge, gateway,
 #                  asyncevents, registry, bus)
 #
 # Prints a PASS/FAIL/SKIP summary and exits non-zero iff a BLOCKING stage failed (or
@@ -614,6 +619,7 @@ simple_stage clippy  true cargo clippy --workspace --all-targets -- -D warnings
 simple_stage test    true cargo test --workspace
 cargo_audit_stage
 simple_stage fortress    true fortress
+simple_stage routecheck  true cargo run -q -p routecheck
 simple_stage codegen-fresh true codegen_fresh
 simple_stage contract-golden true cargo run -q -p topiccheck -- contract-golden
 simple_stage split-proof true cargo run -q -p splitproof

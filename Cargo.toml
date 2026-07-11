@@ -45,6 +45,12 @@ members = [
     # require-observer installed and flags any mandatory `require()` whose provider is
     # not declared in the caller's `requires()` (under-declaration).
     "tools/requirecheck",
+    # Static monolith/split front-door route-parity check (remediation round 3, Step
+    # 7a): builds every process of both profiles (register->init, lazy pool, no-op
+    # transport) under both env-gate configs and asserts the operation/binding/local/
+    # edge contribution sets are structurally consistent -- the general net for the
+    # inventory-dev-grant bug class (a route present in one topology but not the other).
+    "tools/routecheck",
     # Single-sourced per-process module lists (Step 3, abstraction-leak closures;
     # per-process cmd/* libs, Step 10): both topiccheck and requirecheck build their
     # module set through this crate's `DeploymentProfile`, which imports the cmd/*

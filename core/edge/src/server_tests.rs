@@ -16,6 +16,30 @@ fn dispatch_with(prefixes: &[String]) -> Dispatch {
     }
 }
 
+/// `Server::methods()` reports the union of exact + identity registrations, sorted,
+/// and excludes prefix registrations (they match by prefix, not method identity).
+/// The seam `tools/routecheck` reads a domain module's served set through.
+#[test]
+fn methods_reports_exact_and_identity_registrations() {
+    let mut srv = Server::new();
+    assert!(srv.methods().is_empty());
+    srv.handle("b.exact", echo_handler());
+    srv.handle(
+        "a.exact",
+        Arc::new(|_payload: Vec<u8>| {
+            Box::pin(async { Ok(Vec::new()) }) as BoxFuture<'static, HandlerResult>
+        }),
+    );
+    srv.handle_identity(
+        "c.identity",
+        Arc::new(|_id: Option<String>, _payload: Vec<u8>| {
+            Box::pin(async { Ok(Vec::new()) }) as BoxFuture<'static, HandlerResult>
+        }),
+    );
+    srv.handle_prefix("z.", tagged_forward("z.".to_string()));
+    assert_eq!(srv.methods(), vec!["a.exact", "b.exact", "c.identity"]);
+}
+
 // --- Property test (port of Go's TestPropPrefixLongestMatch in edge/prop_test.go) ---
 //
 // For any set of distinct registered prefixes and any method string,

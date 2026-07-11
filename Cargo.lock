@@ -3120,6 +3120,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "routecheck"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "bus",
+ "checkmodules",
+ "edge",
+ "lifecycle",
+ "opsapi",
+ "sqlx",
+ "tokio",
+]
+
+[[package]]
 name = "rpc-macro"
 version = "0.1.0"
 dependencies = [

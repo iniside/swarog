@@ -119,6 +119,26 @@ impl Server {
         self.prefixes.push((prefix.into(), fwd));
     }
 
+    /// The method names registered on this builder — the exact-match handlers
+    /// ([`Server::handle`]) plus the identity handlers ([`Server::handle_identity`]),
+    /// sorted. Prefix registrations are excluded: they match by prefix, not by
+    /// method identity.
+    ///
+    /// Zero-I/O by construction: `Server::new()` binds no socket (only
+    /// [`Server::listen`] does), so a static checker (`tools/routecheck`) can build
+    /// a fresh `Server`, apply every contributed `EdgeReg`, and read the served
+    /// method set without ever touching the network.
+    pub fn methods(&self) -> Vec<String> {
+        let mut out: Vec<String> = self
+            .handlers
+            .keys()
+            .chain(self.id_handlers.keys())
+            .cloned()
+            .collect();
+        out.sort();
+        out
+    }
+
     /// Binds a QUIC listener on `addr` (e.g. `127.0.0.1:0` for an ephemeral port),
     /// builds the mutual-TLS server config from `ca`, and starts the accept loop in
     /// the background. Returns once the socket is bound; [`RunningServer::local_addr`]
