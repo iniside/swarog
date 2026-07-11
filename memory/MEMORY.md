@@ -9,6 +9,7 @@
 - [Team = solo + agents, never humans](team-is-solo-plus-agents-forever.md) — scaling means more AI agents (Codex/Claude), don't hedge advice on "if a human joins"
 - [Work on master, no branches](work-on-master-no-branches.md) — commit directly on master for this repo; overrides CLAUDE.md's "branch-first" (solo for-fun project, history is enough)
 - ["Didn't-forget" scripts must self-check](didnt-forget-scripts-must-self-check.md) — any script resting on a hand-maintained list must diff it against the real source of truth and die pre-work with a per-entry log of what drifted + the fix (ref: split-proof fleet_preflight)
+- [Historical docs are archives](historical-docs-are-archives.md) — plans, dated reviews, statuses, and summaries preserve history; never call their superseded statements current drift or rewrite them to match HEAD
 
 - [Rust backend: full port COMPLETE](rust-sketch-split-verified-m1.md) — Go port finished 2026-07-08 (fortress refactor + all modules + infra + tiered verify net); 11-process split-proof + monolith parity live; go-sketch archived as reference
 - [Don't descope transport for simplicity](dont-descope-transport-for-simplicity.md) — never cut gateway/durable-messaging/RPC-codegen to "minimum viable"; it produces per-module hacks + debt, port the full seam in milestone 1
