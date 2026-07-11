@@ -23,10 +23,11 @@ struct FakeKeyVerifier {
 
 #[async_trait::async_trait]
 impl KeyVerifier for FakeKeyVerifier {
-    async fn lookup(&self, key: &str) -> Option<KeyRecord> {
-        self.keys
+    async fn lookup(&self, key: &str) -> Result<Option<KeyRecord>, LookupUnavailable> {
+        Ok(self
+            .keys
             .get(key)
-            .map(|policy| KeyRecord { name: key.to_string(), policy: policy.clone() })
+            .map(|policy| KeyRecord { name: key.to_string(), policy: policy.clone() }))
     }
 }
 
@@ -810,8 +811,8 @@ async fn key_cache_serves_repeat_lookup_without_requerying() {
     let keys = ScriptedKeys::new(vec![Ok(full_record("client"))]);
     let v = RealKeyVerifier::with_ttl(keys.clone(), Duration::from_secs(60));
 
-    assert_eq!(v.lookup("k1").await.unwrap().name, "client");
-    assert_eq!(v.lookup("k1").await.unwrap().name, "client");
+    assert_eq!(v.lookup("k1").await.unwrap().unwrap().name, "client");
+    assert_eq!(v.lookup("k1").await.unwrap().unwrap().name, "client");
     assert_eq!(keys.calls(), 1, "the second lookup must hit the cache");
 }
 
@@ -822,8 +823,8 @@ async fn key_cache_caches_ok_none_too() {
     let keys = ScriptedKeys::new(vec![Ok(None), Ok(full_record("client"))]);
     let v = RealKeyVerifier::with_ttl(keys.clone(), Duration::from_secs(60));
 
-    assert!(v.lookup("unknown").await.is_none());
-    assert!(v.lookup("unknown").await.is_none(), "cached Ok(None) must be served");
+    assert!(v.lookup("unknown").await.unwrap().is_none());
+    assert!(v.lookup("unknown").await.unwrap().is_none(), "cached Ok(None) must be served");
     assert_eq!(keys.calls(), 1);
 }
 
@@ -834,32 +835,37 @@ async fn key_cache_expired_entry_requeries() {
     let keys = ScriptedKeys::new(vec![]);
     let v = RealKeyVerifier::with_ttl(keys.clone(), Duration::ZERO);
 
-    assert!(v.lookup("k1").await.is_some());
-    assert!(v.lookup("k1").await.is_some());
+    assert!(v.lookup("k1").await.unwrap().is_some());
+    assert!(v.lookup("k1").await.unwrap().is_some());
     assert_eq!(keys.calls(), 2, "a stale entry must be re-queried");
 }
 
 #[tokio::test]
 async fn key_cache_never_caches_an_err() {
-    // First call errors (apikeys blip): THIS request collapses to None, but the
-    // failure is NOT cached — the next request re-queries and gets the valid record
-    // (an outage must not poison a valid key for a whole TTL).
+    // First call errors (apikeys blip): THIS request surfaces LookupUnavailable (a
+    // retryable 503, NOT a false 401), and the failure is NOT cached — the next
+    // request re-queries and gets the valid record (an outage must not poison a
+    // valid key for a whole TTL).
     let keys = ScriptedKeys::new(vec![
         Err(Error::unavailable("apikeys unreachable")),
         Ok(full_record("client")),
     ]);
     let v = RealKeyVerifier::with_ttl(keys.clone(), Duration::from_secs(60));
 
-    assert!(v.lookup("k1").await.is_none(), "an Err collapses to a per-request deny");
-    assert_eq!(v.lookup("k1").await.unwrap().name, "client");
+    assert!(
+        matches!(v.lookup("k1").await, Err(LookupUnavailable)),
+        "a store Err must surface as LookupUnavailable, not a key verdict"
+    );
+    assert_eq!(v.lookup("k1").await.unwrap().unwrap().name, "client");
     assert_eq!(keys.calls(), 2, "the Err must not have been cached");
 }
 
 #[tokio::test]
 async fn overlong_key_never_reaches_capability() {
+    // An over-length string is definitively NOT a key: Ok(None) → 401, not a 503.
     let keys = ScriptedKeys::new(vec![]);
     let v = RealKeyVerifier::with_ttl(keys.clone(), Duration::from_secs(60));
-    assert!(v.lookup(&"x".repeat(257)).await.is_none());
+    assert!(v.lookup(&"x".repeat(257)).await.unwrap().is_none());
     assert_eq!(keys.calls(), 0);
 }
 
@@ -872,8 +878,79 @@ async fn concurrent_same_key_miss_is_single_flight() {
         let v = v.clone();
         tasks.push(tokio::spawn(async move { v.lookup("same").await }));
     }
-    for task in tasks { assert!(task.await.unwrap().is_some()); }
+    for task in tasks { assert!(task.await.unwrap().unwrap().is_some()); }
     assert_eq!(keys.calls(), 1);
+}
+
+/// An `apikeysapi::Keys` whose lookups park on a test-held gate — the fixture that
+/// keeps N capability calls in flight so the global semaphore can be saturated.
+struct BlockingKeys {
+    calls: AtomicUsize,
+    gate: tokio::sync::Mutex<()>,
+}
+
+#[async_trait::async_trait]
+impl apikeysapi::Keys for BlockingKeys {
+    async fn lookup_key(&self, key: String) -> Result<Option<KeyRecord>, Error> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let _parked = self.gate.lock().await;
+        Ok(Some(KeyRecord { name: key, policy: "full".to_string() }))
+    }
+}
+
+#[tokio::test]
+async fn global_semaphore_shed_is_unavailable_not_invalid() {
+    // Saturate the global in-flight semaphore (KEY_LOOKUP_MAX_IN_FLIGHT = 64) with 64
+    // DISTINCT uncached keys parked inside the capability, then look up a 65th
+    // distinct key: the shed must be Err(LookupUnavailable) → KeyDenial::Unavailable
+    // → Status::Unavailable (503) — a valid-but-uncached key under distinct-key spam
+    // must NOT be told "invalid api key" (401).
+    let keys = Arc::new(BlockingKeys {
+        calls: AtomicUsize::new(0),
+        gate: tokio::sync::Mutex::new(()),
+    });
+    let held_gate = keys.gate.lock().await;
+    let v = Arc::new(RealKeyVerifier::with_ttl(keys.clone(), Duration::from_secs(60)));
+
+    let mut tasks = Vec::new();
+    for i in 0..64 {
+        let v = v.clone();
+        tasks.push(tokio::spawn(async move { v.lookup(&format!("k{i}")).await }));
+    }
+    // Wait until all 64 hold a permit (they are parked inside lookup_key).
+    while keys.calls.load(Ordering::SeqCst) < 64 {
+        tokio::task::yield_now().await;
+    }
+
+    // The 65th distinct key is shed — through check_api_key it must map to
+    // Unavailable/503, never Invalid/401.
+    assert!(matches!(v.lookup("valid-but-uncached").await, Err(LookupUnavailable)));
+    let denial = check_api_key(&*v, Some("valid-but-uncached"), "demo.echo").await.unwrap_err();
+    assert!(matches!(denial, KeyDenial::Unavailable), "a shed is not a key verdict");
+    assert!(matches!(denial.status(), Status::Unavailable));
+    assert_eq!(denial.status().http(), 503);
+    assert_eq!(denial.message(), "api key verification unavailable");
+
+    // Release the parked lookups; they all complete Ok (the shed was per-request).
+    drop(held_gate);
+    for task in tasks {
+        assert!(task.await.unwrap().unwrap().is_some());
+    }
+}
+
+#[tokio::test]
+async fn check_api_key_maps_lookup_outcomes() {
+    let v = RealKeyVerifier::with_ttl(ScriptedKeys::new(vec![Ok(None)]), Duration::from_secs(60));
+
+    // (b) A definitively unknown key stays Invalid → 401.
+    let denial = check_api_key(&v, Some("nope"), "demo.echo").await.unwrap_err();
+    assert!(matches!(denial, KeyDenial::Invalid));
+    assert_eq!(denial.status().http(), 401);
+
+    // (c) An oversize key is definitively NOT a key: Invalid → 401, not a 503.
+    let denial = check_api_key(&v, Some(&"x".repeat(257)), "demo.echo").await.unwrap_err();
+    assert!(matches!(denial, KeyDenial::Invalid));
+    assert_eq!(denial.status().http(), 401);
 }
 
 // ---- RemoteBackend exercised against a fake Caller ----

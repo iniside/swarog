@@ -9,9 +9,11 @@
 //! Unlike sessions, key lookups sit on EVERY request (both planes), so the real
 //! verifier wraps the capability in a small TTL cache (5 s): `Ok(Some)` AND `Ok(None)`
 //! are cached (bounding DB/edge chatter under bad-key spam), but an `Err` is NEVER
-//! cached — an apikeys-svc blip must not poison a valid key as a 401 for a whole TTL
-//! (the per-request `Err → deny` collapse still applies, logged `error!`). Revocation
-//! and policy edits therefore propagate within ≤ TTL in both topologies.
+//! cached — an apikeys-svc blip must not poison a valid key as a 401 for a whole TTL.
+//! An `Err` (store blip, load-shed) surfaces as [`LookupUnavailable`] →
+//! 503/`Status::Unavailable` (logged `error!`), never as "invalid api key" — exactly
+//! `verifier.rs`'s `VerifyUnavailable` posture. Revocation and policy edits therefore
+//! propagate within ≤ TTL in both topologies.
 //!
 //! Fallback policy (NO silent dev fallback, mirroring `resolve_verifier`): when the
 //! capability is absent at init the gateway FAILS STARTUP loudly — unless
@@ -52,26 +54,38 @@ struct FlightState {
     misses: u64,
 }
 
-/// Resolves an API key string to its [`KeyRecord`], or `None` when the key is
-/// missing from the store, revoked, or the lookup failed (the `Err → deny` collapse —
-/// the trait's contract is "known key or not", exactly like `SessionVerifier`). The
-/// gateway calls this at exactly one place per plane, after route/method match and
-/// before session auth.
+/// The single non-key-validity failure class of a [`KeyVerifier::lookup`]: the
+/// verifier could not consult the apikeys store (peer/store failure) or deliberately
+/// shed the lookup under load. It is DISTINCT from `Ok(None)` (the key is definitively
+/// unknown/revoked): an outage or shed must surface as 503/`Status::Unavailable`
+/// (retry may succeed), never masquerade as an invalid key — mirroring
+/// `verifier.rs::VerifyUnavailable`.
+#[derive(Debug)]
+pub struct LookupUnavailable;
+
+/// Resolves an API key string to its [`KeyRecord`]: `Ok(None)` when the key is
+/// definitively unknown from the store or revoked, `Err(LookupUnavailable)` when the
+/// verifier itself cannot answer (store blip, load-shed) — exactly like
+/// `SessionVerifier`'s three-state contract. The gateway calls this at exactly one
+/// place per plane, after route/method match and before session auth.
 #[async_trait]
 pub trait KeyVerifier: Send + Sync {
-    async fn lookup(&self, key: &str) -> Option<KeyRecord>;
+    async fn lookup(&self, key: &str) -> Result<Option<KeyRecord>, LookupUnavailable>;
 }
 
-/// The three ways the front denies a request at the key check. One evaluation
+/// The four ways the front denies a request at the key check. One evaluation
 /// ([`check_api_key`]) serves BOTH planes; only the response envelope differs, so the
 /// message + status mapping lives here and cannot drift between HTTP and player-QUIC.
 pub(crate) enum KeyDenial {
     /// No key was presented at all (no `X-Api-Key` header / no `api_key` field).
     Missing,
-    /// A key was presented but is unknown or revoked (or the lookup failed).
+    /// A key was presented but is definitively unknown or revoked.
     Invalid,
     /// The key is valid but its policy does not include the requested method.
     Forbidden,
+    /// The verifier could not answer (store blip, load-shed) — retryable, NOT a
+    /// credential verdict.
+    Unavailable,
 }
 
 impl KeyDenial {
@@ -81,23 +95,27 @@ impl KeyDenial {
             KeyDenial::Missing => "missing api key",
             KeyDenial::Invalid => "invalid api key",
             KeyDenial::Forbidden => "api key policy forbids this operation",
+            KeyDenial::Unavailable => "api key verification unavailable",
         }
     }
 
     /// The domain [`Status`] (→ HTTP code via `Status::http`): a missing/unknown key
     /// is Unauthorized (401 — no acceptable credential), a policy miss is Forbidden
-    /// (403 — credential understood, operation refused).
+    /// (403 — credential understood, operation refused), a verifier outage/shed is
+    /// Unavailable (503 — no verdict was reached, retry may succeed).
     pub(crate) fn status(&self) -> Status {
         match self {
             KeyDenial::Missing | KeyDenial::Invalid => Status::Unauthorized,
             KeyDenial::Forbidden => Status::Forbidden,
+            KeyDenial::Unavailable => Status::Unavailable,
         }
     }
 }
 
-/// The three-way key check both planes run after their route/method match: missing →
+/// The key check both planes run after their route/method match: missing →
 /// [`KeyDenial::Missing`], unknown/revoked → [`KeyDenial::Invalid`], policy miss →
-/// [`KeyDenial::Forbidden`], else `Ok(())` and the request proceeds to session auth.
+/// [`KeyDenial::Forbidden`], verifier outage/shed → [`KeyDenial::Unavailable`], else
+/// `Ok(())` and the request proceeds to session auth.
 pub(crate) async fn check_api_key(
     verifier: &dyn KeyVerifier,
     key: Option<&str>,
@@ -106,8 +124,10 @@ pub(crate) async fn check_api_key(
     let Some(key) = key else {
         return Err(KeyDenial::Missing);
     };
-    let Some(record) = verifier.lookup(key).await else {
-        return Err(KeyDenial::Invalid);
+    let record = match verifier.lookup(key).await {
+        Ok(Some(record)) => record,
+        Ok(None) => return Err(KeyDenial::Invalid),
+        Err(LookupUnavailable) => return Err(KeyDenial::Unavailable),
     };
     if !policy_allows(&record.policy, method) {
         return Err(KeyDenial::Forbidden);
@@ -147,7 +167,7 @@ impl Default for AllowAllKeyVerifier {
 
 #[async_trait]
 impl KeyVerifier for AllowAllKeyVerifier {
-    async fn lookup(&self, _key: &str) -> Option<KeyRecord> {
+    async fn lookup(&self, _key: &str) -> Result<Option<KeyRecord>, LookupUnavailable> {
         self.warned.call_once(|| {
             tracing::warn!(
                 "DEV API-KEY ALLOW-ALL IS ON: the gateway resolves ANY presented API key to a \
@@ -155,15 +175,16 @@ impl KeyVerifier for AllowAllKeyVerifier {
                  production."
             );
         });
-        Some(KeyRecord { name: "dev-allow-all".to_string(), policy: "full".to_string() })
+        Ok(Some(KeyRecord { name: "dev-allow-all".to_string(), policy: "full".to_string() }))
     }
 }
 
 /// The REAL verifier: adapts the `apikeys.keys` capability to [`KeyVerifier`] behind
 /// the TTL cache described in the module doc. `Ok(Some)`/`Ok(None)` are cached for
-/// [`KEY_CACHE_TTL`]; an `Err` (apikeys store/peer failure) is logged and collapses to
-/// `None` for THIS request only — never cached, so one blip costs one denial, not a
-/// TTL-long outage for a valid key.
+/// [`KEY_CACHE_TTL`]; an `Err` (apikeys store/peer failure) and a load-shed (flight
+/// table saturated, global in-flight semaphore exhausted) are logged and surface as
+/// [`LookupUnavailable`] for THIS request only — never cached, so one blip costs one
+/// retryable 503, not a TTL-long outage (or a false 401) for a valid key.
 pub struct RealKeyVerifier {
     keys: Arc<dyn apikeysapi::Keys>,
     ttl: Duration,
@@ -245,29 +266,37 @@ impl RealKeyVerifier {
 
 #[async_trait]
 impl KeyVerifier for RealKeyVerifier {
-    async fn lookup(&self, key: &str) -> Option<KeyRecord> {
+    async fn lookup(&self, key: &str) -> Result<Option<KeyRecord>, LookupUnavailable> {
         if key.len() > KEY_MAX_BYTES {
-            return None;
+            // An over-length string is definitively NOT a key (the store never holds
+            // one) — a credential verdict (→ 401), not an outage.
+            return Ok(None);
         }
         if let Some(record) = self.cached(key) {
-            return record;
+            return Ok(record);
         }
-        let flight = self.flight(key)?;
+        let Some(flight) = self.flight(key) else {
+            // Flight-lock table saturated under distinct-key spam: a shed, not a
+            // verdict — the key may well be valid.
+            return Err(LookupUnavailable);
+        };
         let _flight_guard = flight.lock_owned().await;
         if let Some(record) = self.cached(key) {
-            return record;
+            return Ok(record);
         }
         let Ok(_permit) = self.global.clone().try_acquire_owned() else {
-            return None;
+            // Global in-flight cap reached: shed this lookup rather than swamp the
+            // capability — again no verdict was reached.
+            return Err(LookupUnavailable);
         };
         match self.keys.lookup_key(key.to_string()).await {
             Ok(record) => {
                 self.insert(key, record.clone());
-                record
+                Ok(record)
             }
             Err(err) => {
                 tracing::error!(%err, "gateway: api key lookup failed (apikeys unreachable?)");
-                None
+                Err(LookupUnavailable)
             }
         }
     }

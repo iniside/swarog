@@ -77,7 +77,7 @@ use opsapi::{
 use serde_json::value::RawValue;
 
 pub use backend::{LocalBackend, OperationBackend, RemoteBackend};
-pub use keys::{AllowAllKeyVerifier, KeyVerifier, RealKeyVerifier};
+pub use keys::{AllowAllKeyVerifier, KeyVerifier, LookupUnavailable, RealKeyVerifier};
 pub use verifier::{DevSessionVerifier, SessionVerifier, SessionsVerifier, VerifyUnavailable};
 
 use keys::{check_api_key, KeyDenial};
