@@ -229,7 +229,27 @@ async fn handle_callback(
             return Redirect::to("/?epic=error").into_response();
         };
         match svc.store.link_identity(&p.id, "epic", &subject).await {
-            Ok(()) | Err(crate::store::StoreError::Taken) => {}
+            Ok(()) => {}
+            Err(crate::store::StoreError::Taken) => {
+                // The (provider, subject) is already claimed. Report success ONLY when
+                // it is this same player's own identity (an idempotent re-link); an
+                // Epic account bound to a DIFFERENT player must not read as linked.
+                match svc.store.player_by_identity("epic", &subject).await {
+                    Ok(Some(owner)) if owner.id == p.id => {}
+                    Ok(Some(_)) => {
+                        tracing::warn!(player_id = %p.id, "epic link: identity already linked to a different player");
+                        return Redirect::to("/?epic=error").into_response();
+                    }
+                    Ok(None) => {
+                        tracing::warn!(player_id = %p.id, "epic link: taken identity vanished (race)");
+                        return Redirect::to("/?epic=error").into_response();
+                    }
+                    Err(err) => {
+                        tracing::warn!(%err, player_id = %p.id, "epic link: owner lookup failed after taken");
+                        return Redirect::to("/?epic=error").into_response();
+                    }
+                }
+            }
             Err(err) => {
                 tracing::error!(%err, "epic link failed");
                 return Redirect::to("/?epic=error").into_response();

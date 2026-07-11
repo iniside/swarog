@@ -529,6 +529,156 @@ async fn epic_oauth_link_flow_end_to_end() {
     cleanup_player(&pool, &sess.player_id).await;
 }
 
+/// Spins up a mock Epic (local JWKS + token endpoint minting an id_token whose
+/// `sub` is `subject`) and the accounts callback router, returning a redirect-less
+/// client, the callback base URL, and the `EpicOAuth` handle to mint states on.
+async fn epic_link_harness(
+    svc: Arc<Service>,
+    subject: &str,
+) -> (reqwest::Client, String, Arc<epic_oauth::EpicOAuth>) {
+    const KID: &str = "k1";
+    const CLIENT_ID: &str = "client-xyz";
+    const ISSUER: &str = "https://eas.example";
+
+    let (enc, jwks) = test_key(KID);
+    let jwks_url = serve_jwks(jwks).await;
+
+    let id_token = sign(
+        &enc,
+        KID,
+        serde_json::json!({"iss": format!("{ISSUER}/x"), "aud": CLIENT_ID, "sub": subject, "exp": future_exp()}),
+    );
+    let token_body = serde_json::json!({ "id_token": id_token }).to_string();
+    let token_app = axum::Router::new().route(
+        "/token",
+        axum::routing::post(move || {
+            let body = token_body.clone();
+            async move { ([(axum::http::header::CONTENT_TYPE, "application/json")], body) }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let token_url = format!("http://{}/token", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        axum::serve(listener, token_app).await.unwrap();
+    });
+
+    let verifier = Arc::new(OidcVerifier::new(&jwks_url, ISSUER, CLIENT_ID).unwrap());
+    let oauth = Arc::new(
+        epic_oauth::EpicOAuth::new(
+            CLIENT_ID.into(),
+            "secret".into(),
+            "http://localhost/cb".into(),
+            "http://localhost/authorize".into(),
+            token_url,
+            verifier,
+        )
+        .unwrap(),
+    );
+
+    let app = epic_oauth::router(oauth.clone(), svc);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let base = format!("http://{addr}/accounts/epic/callback");
+
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+
+    (client, base, oauth)
+}
+
+/// A LINK flow whose Epic account is already bound to a DIFFERENT player must NOT
+/// read as success: the callback redirects to `/?epic=error` and the linking player
+/// gains no epic identity (the false-success bug this fix closes).
+#[tokio::test(flavor = "multi_thread")]
+async fn epic_link_cross_player_collision_is_error() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+
+    let epic_acct = format!("epicacct-{}", suffix());
+
+    // Player A already owns the Epic identity.
+    let a = svc
+        .register(format!("a-{}@test.local", suffix()), "pw".into(), "A".into())
+        .await
+        .unwrap();
+    svc.store.link_identity(&a.player_id, "epic", &epic_acct).await.unwrap();
+
+    // Player B, logged in, tries to link the SAME Epic account.
+    let b = svc
+        .register(format!("b-{}@test.local", suffix()), "pw".into(), "B".into())
+        .await
+        .unwrap();
+
+    let (client, base, oauth) = epic_link_harness(svc.clone(), &epic_acct).await;
+    let state = oauth.new_state(b.token.clone()); // LINK bound to B's session
+
+    let resp = client
+        .get(format!("{base}?code=abc&state={state}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 303, "callback must redirect");
+    assert_eq!(
+        resp.headers().get("location").unwrap().to_str().unwrap(),
+        "/?epic=error",
+        "a cross-player collision must not report linked"
+    );
+
+    let ids = svc.store.identities_of(&b.player_id).await.unwrap();
+    assert!(
+        !ids.iter().any(|i| i.provider == "epic"),
+        "B must not gain an epic identity on collision; got {ids:?}"
+    );
+
+    cleanup_player(&pool, &a.player_id).await;
+    cleanup_player(&pool, &b.player_id).await;
+}
+
+/// A LINK flow re-linking the player's OWN already-linked Epic account is
+/// idempotent: `/?epic=linked` and no duplicate identity row.
+#[tokio::test(flavor = "multi_thread")]
+async fn epic_link_same_player_is_idempotent() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+
+    let epic_acct = format!("epicacct-{}", suffix());
+
+    let a = svc
+        .register(format!("a-{}@test.local", suffix()), "pw".into(), "A".into())
+        .await
+        .unwrap();
+    svc.store.link_identity(&a.player_id, "epic", &epic_acct).await.unwrap();
+
+    let (client, base, oauth) = epic_link_harness(svc.clone(), &epic_acct).await;
+    let state = oauth.new_state(a.token.clone()); // LINK bound to A's own session
+
+    let resp = client
+        .get(format!("{base}?code=abc&state={state}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 303, "callback must redirect");
+    assert_eq!(
+        resp.headers().get("location").unwrap().to_str().unwrap(),
+        "/?epic=linked",
+        "re-linking one's own identity must succeed"
+    );
+
+    let ids = svc.store.identities_of(&a.player_id).await.unwrap();
+    let epic_rows = ids
+        .iter()
+        .filter(|i| i.provider == "epic" && i.subject == epic_acct)
+        .count();
+    assert_eq!(epic_rows, 1, "re-link must not duplicate the identity row; got {ids:?}");
+
+    cleanup_player(&pool, &a.player_id).await;
+}
+
 /// An OAuth state is single-use and expires; an unknown state is rejected.
 #[test]
 fn oauth_state_is_single_use() {
