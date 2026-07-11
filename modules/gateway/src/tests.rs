@@ -2,7 +2,7 @@ use super::keys::policy_allows;
 use super::*;
 use apikeysapi::KeyRecord;
 use axum::http::Request as HttpRequest;
-use opsapi::{DecodeFn, EncodeFn, LocalOp, OpSet, Status};
+use opsapi::{DecodeFn, EncodeFn, LocalOp, OpSet, RetryMode, Status};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -184,6 +184,7 @@ fn demo_opset() -> OpSet {
             path: "/demo/{id}".into(),
             auth: AuthReq::Player,
             success: 200,
+            retry_mode: RetryMode::Never,
         },
         binding: OpBinding { method: "demo.echo".into(), decode, encode },
         local: LocalOp { method: "demo.echo".into(), invoke: echo_invoker() },
@@ -283,6 +284,7 @@ async fn end_to_end_domain_status_maps_to_http() {
             path: "/demo/{id}".into(),
             auth: AuthReq::None,
             success: 200,
+            retry_mode: RetryMode::Never,
         },
     );
     slots.contribute(opsapi::BINDING_SLOT, OpBinding { method: "demo.get".into(), decode, encode });
@@ -395,6 +397,7 @@ fn route_pair(method: &str, path: &str) -> (Operation, OpBinding) {
             path: path.into(),
             auth: AuthReq::None,
             success: 200,
+            retry_mode: RetryMode::Never,
         },
         OpBinding { method: method.into(), decode, encode },
     )
@@ -586,6 +589,7 @@ async fn player_auth_none_op_runs_with_no_identity() {
             path: "/public".into(),
             auth: AuthReq::None,
             success: 200,
+            retry_mode: RetryMode::Never,
         },
     );
     slots.contribute(
@@ -618,6 +622,7 @@ async fn player_backend_error_is_reserialized_as_status_err_envelope() {
             path: "/ghost".into(),
             auth: AuthReq::None,
             success: 200,
+            retry_mode: RetryMode::Never,
         },
     );
     slots.contribute(
@@ -850,6 +855,27 @@ async fn key_cache_never_caches_an_err() {
     assert_eq!(keys.calls(), 2, "the Err must not have been cached");
 }
 
+#[tokio::test]
+async fn overlong_key_never_reaches_capability() {
+    let keys = ScriptedKeys::new(vec![]);
+    let v = RealKeyVerifier::with_ttl(keys.clone(), Duration::from_secs(60));
+    assert!(v.lookup(&"x".repeat(257)).await.is_none());
+    assert_eq!(keys.calls(), 0);
+}
+
+#[tokio::test]
+async fn concurrent_same_key_miss_is_single_flight() {
+    let keys = ScriptedKeys::new(vec![Ok(full_record("client"))]);
+    let v = Arc::new(RealKeyVerifier::with_ttl(keys.clone(), Duration::from_secs(60)));
+    let mut tasks = Vec::new();
+    for _ in 0..32 {
+        let v = v.clone();
+        tasks.push(tokio::spawn(async move { v.lookup("same").await }));
+    }
+    for task in tasks { assert!(task.await.unwrap().is_some()); }
+    assert_eq!(keys.calls(), 1);
+}
+
 // ---- RemoteBackend exercised against a fake Caller ----
 
 /// What a `FakeCaller` records for one relayed call: (method, identity, payload).
@@ -866,6 +892,7 @@ impl Caller for FakeCaller {
         method: &str,
         identity: Option<&str>,
         payload: &[u8],
+        _retry_mode: RetryMode,
     ) -> Result<Vec<u8>, Error> {
         *self.seen.lock().unwrap() =
             Some((method.to_string(), identity.map(str::to_string), payload.to_vec()));
@@ -883,6 +910,7 @@ async fn remote_backend_relays_method_identity_and_payload() {
         path: "/characters".into(),
         auth: AuthReq::Player,
         success: 201,
+        retry_mode: RetryMode::Never,
     };
     let resp = backend
         .invoke(&op, Identity::player("bob"), b"{\"name\":\"x\"}".to_vec())
@@ -904,6 +932,7 @@ async fn local_backend_missing_invoker_is_internal_error() {
         path: "/x".into(),
         auth: AuthReq::None,
         success: 200,
+        retry_mode: RetryMode::Never,
     };
     let err = backend.invoke(&op, Identity::none(), vec![]).await.unwrap_err();
     assert_eq!(err.status, Status::Internal);
@@ -920,7 +949,13 @@ struct FailingCaller {
 
 #[async_trait::async_trait]
 impl Caller for FailingCaller {
-    async fn call(&self, _m: &str, _i: Option<&str>, _p: &[u8]) -> Result<Vec<u8>, Error> {
+    async fn call(
+        &self,
+        _m: &str,
+        _i: Option<&str>,
+        _p: &[u8],
+        _retry_mode: RetryMode,
+    ) -> Result<Vec<u8>, Error> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         Err(Error::unavailable("fake: connection lost"))
     }
@@ -936,6 +971,7 @@ async fn remote_dispatch_evicts_failed_caller_so_next_request_redials() {
         path: "/fake".into(),
         auth: AuthReq::None,
         success: 200,
+        retry_mode: RetryMode::Never,
     };
 
     // Seed the cache as if a previous request had dialed this provider.

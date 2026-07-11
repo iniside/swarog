@@ -226,9 +226,11 @@ stop_pid() {
         i=$((i + 1))
     done
     note "$label (pid $pid) still alive after grace; forcing"
+    STOP_FORCED=1
     kill -9 "$pid" 2>/dev/null || true
 }
 TEARDOWN_DONE=""
+STOP_FORCED=""
 teardown() {
     [ -n "$TEARDOWN_DONE" ] && return 0
     TEARDOWN_DONE=1
@@ -886,6 +888,45 @@ else
     fail "lockout expected identical 401 x6 + user locked (fails>=5) + ip not locked, got ok=$AD2_OK fails=${U_FAILS:-?} locked=${U_LOCKED:-?} ip-locked=${IP_LOCKED:-?}"
 fi
 
+# [AD2b] Twelve requests race inside the admission burst. Advisory transaction
+# locks must make the user threshold exact rather than allowing a parallel burst
+# through the pre-check.
+AD2B_IP="198.51.100.42"
+pg "DELETE FROM admin.login_attempts WHERE subject IN ('user:$PROOF_LOCK_USER','ip:$AD2B_IP'); DELETE FROM asyncevents.events WHERE topic='admin.action' AND payload->>'actor'='$PROOF_LOCK_USER' AND payload->>'action'='login-locked';" >/dev/null
+echo "[AD2b] 12 parallel wrong logins -> exact user threshold and one lock event"
+AD2B_DIR="$RUN_DIR/ad2b"; rm -rf "$AD2B_DIR"; mkdir -p "$AD2B_DIR"
+for i in $(seq 1 12); do
+    curl -s -o "$AD2B_DIR/$i.body" -w '%{http_code}' -X POST "http://localhost:$G_PORT/admin/login" \
+        -H "X-Forwarded-For: $AD2B_IP" -d "username=$PROOF_LOCK_USER&password=wrong-$i" >"$AD2B_DIR/$i.code" &
+done
+wait
+AD2B_FAILS="$(pg "SELECT fails FROM admin.login_attempts WHERE subject='user:$PROOF_LOCK_USER';" | tr -d '[:space:]')"
+AD2B_LOCKED="$(pg "SELECT locked_until > now() FROM admin.login_attempts WHERE subject='user:$PROOF_LOCK_USER';" | tr -d '[:space:]')"
+AD2B_EVENTS="$(pg "SELECT count(*) FROM asyncevents.events WHERE topic='admin.action' AND payload->>'actor'='$PROOF_LOCK_USER' AND payload->>'action'='login-locked';" | tr -d '[:space:]')"
+if [ "$AD2B_FAILS" = "5" ] && [ "$AD2B_LOCKED" = "t" ] && [ "$AD2B_EVENTS" = "1" ]; then
+    pass "parallel lockout serialized: fails=5, active lock, one login-locked event"
+else
+    fail "parallel lockout expected fails=5/locked/one event, got $AD2B_FAILS/$AD2B_LOCKED/$AD2B_EVENTS"
+fi
+
+# [AD2c] Separate IP exhausts the production burst and receives the exact public
+# admission response, independently of the transactional user-lock assertion.
+AD2C_IP="198.51.100.43"
+echo "[AD2c] login admission burst -> exact 429 + Retry-After: 1"
+AD2C_DIR="$RUN_DIR/ad2c"; rm -rf "$AD2C_DIR"; mkdir -p "$AD2C_DIR"
+for i in $(seq 1 40); do
+    curl -s -D "$AD2C_DIR/$i.headers" -o /dev/null -w '%{http_code}' -X POST "http://localhost:$G_PORT/admin/login" \
+        -H "X-Forwarded-For: $AD2C_IP" -d "username=ghost-ad2c-$i&password=wrong" >"$AD2C_DIR/$i.code" &
+done
+wait
+AD2C_429="$(grep -l '^429$' "$AD2C_DIR"/*.code | wc -l | tr -d '[:space:]')"
+AD2C_RETRY="$(grep -il '^retry-after: 1' "$AD2C_DIR"/*.headers | wc -l | tr -d '[:space:]')"
+if [ "${AD2C_429:-0}" -ge 1 ] && [ "$AD2C_429" = "$AD2C_RETRY" ]; then
+    pass "admin login limiter returns 429 with Retry-After: 1"
+else
+    fail "admin login limiter expected every 429 to carry Retry-After: 1, got 429=$AD2C_429 retry=$AD2C_RETRY"
+fi
+
 # [AD3] happy-path session login: proofadmin logs in through G's passthrough, gets a
 # 303 + admin_session cookie in the jar, then the jar authorizes the cross-process
 # admin pages -- /admin/characters (G -> E -> A over QUIC, renders the AD0 character)
@@ -1082,7 +1123,7 @@ echo "========= MATCH TRIO (match-svc :$I_PORT + rating-svc :$J_PORT + leaderboa
 #         J answering rating.mmr over the edge. The +15/-15 durable handler persists to
 #         rating.ratings on J, asserted directly in [MT5] after both reports.
 #   (vi)  re-POSTing [MT1]'s exact ReportId is an idempotent no-op: still 202, one
-#         match row, no third match.finished (the split stub auto-retries, so a lost
+#         match row, no third match.finished (a caller replay after an ambiguous
 #         response MUST NOT double-commit a match).
 WINNER="champ-$RUN_SUFFIX"
 LOSER="chump-$RUN_SUFFIX"
@@ -1167,8 +1208,8 @@ for i in $(seq 1 30); do
 done
 [ "$MT5_OK" = "1" ] || fail "rating.ratings never reached winner=1030 / loser=970 (durable projection on J)"
 
-# --- [MT6] duplicate-report-idempotent: the split stub auto-retries a failed RPC, so
-# a re-sent report MUST be a no-op. Re-POST with [MT1]'s exact ReportId -> still 202,
+# --- [MT6] duplicate-report-idempotent: mutating RPCs are not transport-retried, but
+# a caller may re-send after an ambiguous result. Re-POST with [MT1]'s exact ReportId -> still 202,
 # but NO second match row (psql, the strong assertion) and NO third match.finished
 # (leaderboard wins stays 2, rating stays 1030/970).
 echo "[MT6] duplicate POST /match/report with [MT1]'s ReportId ($MT1_RID) -> 202 no-op (dedup)"
@@ -1273,6 +1314,18 @@ if [ "$P5_RC" -ne 0 ] && echo "$P5_OUT" | grep -q 'NotFound'; then
     pass "wire-only characters.ownerOf -> exit 1 + NotFound (allow-list gate live)"
 else
     fail "ownerOf expected exit 1 + NotFound, got rc=$P5_RC $P5_OUT"
+fi
+
+echo "[P6] persistent player connection consumes burst, gets exact denial, refills, then succeeds"
+P6_OUT="$("$PLAYERCLI" --addr "127.0.0.1:$PLAYER_PORT" --ca "$CA_CERT" --api-key "dev-key-client" \
+    --repeat 22 --pause-before-last-ms 2000 leaderboard.topScores '{}' 2>&1)"
+P6_RC=$?
+echo "    -> rc=$P6_RC  $P6_OUT"
+if [ "$P6_RC" -ne 0 ] && echo "$P6_OUT" | grep -q 'player request rate limit exceeded' && \
+   [ "$(echo "$P6_OUT" | grep -c '"status":"Ok"')" -ge 21 ]; then
+    pass "persistent player request limiter returns pinned denial and admits after refill"
+else
+    fail "persistent player request limiter proof failed: rc=$P6_RC $P6_OUT"
 fi
 
 echo "============================================"
@@ -1380,6 +1433,12 @@ echo ""
 echo "================ MONOLITH PARITY ================"
 note "tearing down the split before the monolith stage ..."
 teardown
+if [ -z "$STOP_FORCED" ]; then
+    pass "[W1 split graceful shutdown] SIGTERM drained every process without KILL fallback"
+else
+    fail "[W1 split graceful shutdown] at least one process required KILL fallback"
+fi
+STOP_FORCED=""
 # Re-arm the once-guard: this mid-script teardown only freed the split's ports.
 # Without the reset the EXIT-trap teardown no-ops and the monolith LEAKS, holding
 # target/debug/server.exe locked and failing the next build (os error 5).
@@ -1487,6 +1546,12 @@ else
     fail "monolith (server) never became healthy on :$A_PORT"
 fi
 teardown
+
+if [ -z "$STOP_FORCED" ]; then
+    pass "[W2 monolith graceful shutdown] SIGTERM drained without KILL fallback"
+else
+    fail "[W2 monolith graceful shutdown] monolith required KILL fallback"
+fi
 
 echo "============================================"
 if [ "$FAILS" -eq 0 ]; then

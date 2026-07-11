@@ -55,6 +55,7 @@ pub struct MeView {
 #[rpc(prefix = "accounts")]
 #[async_trait]
 pub trait Sessions: Send + Sync {
+    #[retry_safe]
     async fn verify_session(&self, token: String) -> Result<Option<String>, Error>;
 }
 
@@ -89,6 +90,7 @@ pub trait Auth: Send + Sync {
     /// The caller's own player + identities (identity injected by the gateway after
     /// bearer verification — the AuthPlayer trust boundary). 200.
     #[http(verb = "GET", path = "/accounts/me", auth = "player", success = 200)]
+    #[retry_safe]
     async fn me(&self, identity: Identity) -> Result<MeView, Error>;
 }
 

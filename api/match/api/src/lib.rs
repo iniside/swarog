@@ -41,5 +41,6 @@ pub trait Match: Send + Sync {
         success = 202,
         body_names(report_id = "ReportId", winner = "Winner", loser = "Loser")
     )]
+    #[retry_safe]
     async fn report(&self, report_id: String, winner: String, loser: String) -> Result<(), Error>;
 }

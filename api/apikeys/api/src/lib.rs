@@ -36,5 +36,6 @@ pub struct KeyRecord {
 #[rpc(prefix = "apikeys")]
 #[async_trait]
 pub trait Keys: Send + Sync {
+    #[retry_safe]
     async fn lookup_key(&self, key: String) -> Result<Option<KeyRecord>, Error>;
 }

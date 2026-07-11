@@ -32,7 +32,7 @@ pub use client::Client;
 pub use reg::{EdgeReg, EDGE_SLOT};
 pub use codec::{default_codec, Codec, JsonCodec};
 pub use frame::{frame_bytes, read_frame, read_frame_max, write_frame, MAX_FRAME};
-pub use player::{PlayerClient, PlayerHandler, PlayerRequest, PlayerServer, MAX_PLAYER_FRAME};
+pub use player::{PlayerClient, PlayerHandler, PlayerRequest, PlayerRequestLimits, PlayerServer, MAX_PLAYER_FRAME};
 pub use server::{ForwardHandler, Handler, HandlerResult, IdentityHandler, RunningServer, Server};
 pub use tls::{dev_ca_from_env, shared_dev_ca, DevCA, TrustAnchor, ALPN, PLAYER_ALPN};
 pub use wire::Response;
@@ -167,7 +167,13 @@ mod e2e_tests {
 
         // The Caller trait routes identically (bytes in/out), proving the generated
         // client (Step 5) can compose over this exact seam.
-        let resp = opsapi::Caller::call(&client, "echo", None, br#"{"n":2}"#)
+        let resp = opsapi::Caller::call(
+            &client,
+            "echo",
+            None,
+            br#"{"n":2}"#,
+            opsapi::RetryMode::Never,
+        )
             .await
             .unwrap();
         assert_eq!(resp, br#"{"n":2}"#);

@@ -96,6 +96,7 @@ impl Identity {
 /// `identity` carries the caller's verified player_id (`None` when the call is
 /// unauthenticated, i.e. `AuthNone`); the edge client stamps it into the request
 /// envelope's identity field so the peer's generated adapter can read it.
+/// `retry_mode` is generated from private RPC metadata and defaults to no replay.
 #[async_trait::async_trait]
 pub trait Caller: Send + Sync {
     async fn call(
@@ -103,7 +104,17 @@ pub trait Caller: Send + Sync {
         method: &str,
         identity: Option<&str>,
         payload: &[u8],
+        retry_mode: RetryMode,
     ) -> Result<Vec<u8>, Error>;
+}
+
+/// Transport replay policy declared by RPC metadata. Missing metadata is fail-closed:
+/// calls are never replayed unless the capability author marks the method read-only.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RetryMode {
+    #[default]
+    Never,
+    OnceAfterReconnect,
 }
 
 // ---------------------------------------------------------------------------
@@ -245,6 +256,8 @@ pub struct Operation {
     pub auth: AuthReq,
     /// HTTP status the gateway writes on a [`Status::Ok`] outcome (e.g. 201/200/204).
     pub success: u16,
+    /// Whether a transport may replay this operation after reconnecting.
+    pub retry_mode: RetryMode,
 }
 
 /// The per-method HTTP-surface declaration the `#[rpc]` macro (Step 5) reads to

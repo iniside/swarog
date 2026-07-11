@@ -1,4 +1,17 @@
 use super::*;
+
+#[test]
+fn player_request_limit_values_default_override_and_allow_zero() {
+    let cfg = Config::from_values(None, None, None, None, None, None, None, None, None);
+    assert_eq!(cfg.player_rate_limit_rps, 20.0);
+    assert_eq!(cfg.player_rate_limit_burst, 40);
+    assert_eq!(cfg.player_conn_rate_limit_rps, 10.0);
+    assert_eq!(cfg.player_conn_rate_limit_burst, 20);
+    assert_eq!(parse_number(Some(" 7.5 "), 20.0), 7.5);
+    assert_eq!(parse_number(Some("0"), 10.0), 0.0);
+    assert_eq!(parse_number(Some("0"), 20u32), 0);
+    assert_eq!(parse_number(Some("bad"), 40u32), 40);
+}
 use lifecycle::Context;
 
 /// A minimal module for the topology tests: a name + a requires manifest. A

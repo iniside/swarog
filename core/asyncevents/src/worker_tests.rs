@@ -87,13 +87,113 @@ fn entry(sub_id: &'static str, topic: &'static str, handler: Arc<dyn TxHandler>)
     }
 }
 
-fn worker_ctx(pool: &PgPool, entries: Vec<SubEntry>, timeout: Duration) -> WorkerCtx {
+fn worker_ctx(_pool: &PgPool, entries: Vec<SubEntry>, timeout: Duration) -> WorkerCtx {
     WorkerCtx {
-        pool: pool.clone(),
+        dsn: std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string()),
         subs: entries,
         handler_timeout: timeout,
         wakeup: Arc::new(Notify::new()),
+        active: ActiveDeliveries::default(),
     }
+}
+
+#[test]
+fn handler_timeout_parser_is_strict_and_checked() {
+    assert_eq!(parse_duration("500ms"), Some(Duration::from_millis(500)));
+    assert_eq!(parse_duration("10s"), Some(Duration::from_secs(10)));
+    assert_eq!(parse_duration("2m"), Some(Duration::from_secs(120)));
+    assert_eq!(parse_duration("7"), Some(Duration::from_secs(7)));
+    for invalid in ["", " ", "0", "0ms", "1h", "5seconds", "-1", "1.5s"] {
+        assert_eq!(parse_duration(invalid), None, "accepted {invalid:?}");
+    }
+    assert_eq!(parse_duration("18446744073709551615m"), None);
+}
+
+#[tokio::test]
+async fn hot_subscription_yields_after_quantum() {
+    let Some(pool) = test_pool().await else { return };
+    let topic_a = unique("worker.fair.hot");
+    let topic_b = unique("worker.fair.later");
+    let sub_a = unique("worker-fair-hot");
+    let sub_b = unique("worker-fair-later");
+    let calls_a = Arc::new(AtomicU32::new(0));
+    let calls_b = Arc::new(AtomicU32::new(0));
+    let a = entry(sub_a, topic_a, Arc::new(TestHandler::ok(calls_a.clone(), Arc::new(Mutex::new(Vec::new())))));
+    let b = entry(sub_b, topic_b, Arc::new(TestHandler::ok(calls_b.clone(), Arc::new(Mutex::new(Vec::new())))));
+    catalog::reconcile(&pool, &[a.clone(), b.clone()]).await.unwrap();
+    let (xid,): (String,) = sqlx::query_as("SELECT pg_current_xact_id()::text")
+        .fetch_one(&pool).await.unwrap();
+    for tie in 1..=(DELIVERIES_PER_SUB_PASS + 1) {
+        insert_synthetic_event(&pool, topic_a, &xid, i64::try_from(tie).unwrap()).await;
+    }
+    insert_synthetic_event(&pool, topic_b, &xid, i64::try_from(DELIVERIES_PER_SUB_PASS + 2).unwrap()).await;
+    let ctx = worker_ctx(&pool, vec![a, b], Duration::from_secs(10));
+    let delivered = drain_pass(&ctx, None).await;
+    assert_eq!(delivered, DELIVERIES_PER_SUB_PASS + 1);
+    assert_eq!(calls_a.load(Ordering::SeqCst), DELIVERIES_PER_SUB_PASS as u32);
+    assert_eq!(calls_b.load(Ordering::SeqCst), 1, "later subscription made no progress");
+    let _ = sqlx::query("DELETE FROM asyncevents.subscriptions WHERE subscription_id = ANY($1)")
+        .bind(vec![sub_a, sub_b]).execute(&pool).await;
+    let _ = sqlx::query("DELETE FROM asyncevents.events WHERE topic = ANY($1)")
+        .bind(vec![topic_a, topic_b]).execute(&pool).await;
+}
+
+struct ReplenishingHandler {
+    topic: &'static str,
+    next_tie: Arc<AtomicU32>,
+}
+
+impl TxHandler for ReplenishingHandler {
+    fn call<'a>(&'a self, mut delivery: Delivery<'a>, _payload: Vec<u8>) -> BoxFuture<'a, Result<(), bus::Error>> {
+        Box::pin(async move {
+            let tie = i64::from(self.next_tie.fetch_add(1, Ordering::SeqCst)) + 10_000;
+            let conn = delivery.tx.downcast::<sqlx::PgConnection>()?;
+            sqlx::query(
+                "INSERT INTO asyncevents.events (generation, producer_xid, tie_breaker, topic, contract_version, payload) \
+                 OVERRIDING SYSTEM VALUE VALUES (0, pg_current_xact_id(), $1, $2, 1, '{}'::jsonb)",
+            ).bind(tie).bind(self.topic).execute(&mut *conn).await.map_err(bus::Error::transport)?;
+            Ok(())
+        })
+    }
+}
+
+#[tokio::test]
+async fn two_workers_make_progress_past_two_continuously_hot_subscriptions() {
+    let Some(pool) = test_pool().await else { return };
+    let hot_a = unique("worker.production-hot-a");
+    let hot_b = unique("worker.production-hot-b");
+    let later = unique("worker.production-later");
+    let sub_a = unique("worker-production-sub-a");
+    let sub_b = unique("worker-production-sub-b");
+    let sub_later = unique("worker-production-sub-later");
+    let later_calls = Arc::new(AtomicU32::new(0));
+    let entries = vec![
+        entry(sub_a, hot_a, Arc::new(ReplenishingHandler { topic: hot_a, next_tie: Arc::new(AtomicU32::new(1)) })),
+        entry(sub_b, hot_b, Arc::new(ReplenishingHandler { topic: hot_b, next_tie: Arc::new(AtomicU32::new(1)) })),
+        entry(sub_later, later, Arc::new(TestHandler::ok(later_calls.clone(), Arc::new(Mutex::new(Vec::new()))))),
+    ];
+    catalog::reconcile(&pool, &entries).await.unwrap();
+    let (xid,): (String,) = sqlx::query_as("SELECT pg_current_xact_id()::text").fetch_one(&pool).await.unwrap();
+    insert_synthetic_event(&pool, hot_a, &xid, 1).await;
+    insert_synthetic_event(&pool, hot_b, &xid, 2).await;
+    insert_synthetic_event(&pool, later, &xid, 3).await;
+    let ctx = Arc::new(worker_ctx(&pool, entries, Duration::from_secs(10)));
+    let (stop_tx, stop_rx) = watch::channel(false);
+    let first = tokio::spawn(run(0, ctx.clone(), stop_rx.clone()));
+    let second = tokio::spawn(run(1, ctx, stop_rx));
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while later_calls.load(Ordering::SeqCst) == 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }).await.expect("later subscription starved behind two hot subscriptions");
+    stop_tx.send(true).unwrap();
+    let _ = tokio::time::timeout(Duration::from_secs(2), first).await;
+    let _ = tokio::time::timeout(Duration::from_secs(2), second).await;
+    assert_eq!(later_calls.load(Ordering::SeqCst), 1);
+    let _ = sqlx::query("DELETE FROM asyncevents.subscriptions WHERE subscription_id = ANY($1)")
+        .bind(vec![sub_a, sub_b, sub_later]).execute(&pool).await;
+    let _ = sqlx::query("DELETE FROM asyncevents.events WHERE topic = ANY($1)")
+        .bind(vec![hot_a, hot_b, later]).execute(&pool).await;
 }
 
 /// A per-call unique `tie_breaker` (nanos + pid derived) so concurrent tests seeding
@@ -589,7 +689,7 @@ async fn notify_loss_is_covered_by_the_poll_fallback() {
 
     // No wakeup::listen task: the Notify never fires — poll only.
     let (stop_tx, stop_rx) = watch::channel(false);
-    let task = tokio::spawn(run(ctx.clone(), stop_rx));
+    let task = tokio::spawn(run(0, ctx.clone(), stop_rx));
 
     append_committed(&pool, topic, r#"{"n":1}"#).await;
 

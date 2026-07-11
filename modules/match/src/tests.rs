@@ -3,7 +3,13 @@
 //! unreachable. The `validate_requires` test proves match fails loud without `rating`.
 //! In-crate so they can drive the private `Service` directly.
 
-use std::time::Duration;
+use std::{
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
+    time::Duration,
+};
 
 use super::*;
 use rating::Rating;
@@ -67,6 +73,42 @@ async fn wired(pool: &PgPool) -> (Context, Arc<Service>) {
 
     let svc = mm.svc();
     (ctx, svc)
+}
+
+async fn service_with_reader(pool: &PgPool, reader: Arc<dyn MmrReader>) -> (Context, Arc<Service>) {
+    ensure_schema(pool).await;
+    let transport = asyncevents::testing::transport(pool.clone());
+    let ctx = Context::with_db_and_transport(pool.clone(), transport.handle());
+    let svc = Arc::new(Service {
+        pool: pool.clone(),
+        bus: ctx.bus().clone(),
+        rating: OnceLock::new(),
+    });
+    assert!(svc.rating.set(reader).is_ok(), "reader set once");
+    (ctx, svc)
+}
+
+struct CountingReader {
+    calls: AtomicUsize,
+    failure: Option<Error>,
+    first_call_barrier: Option<Arc<tokio::sync::Barrier>>,
+}
+
+#[async_trait]
+impl MmrReader for CountingReader {
+    async fn mmr(&self, _player_id: String) -> Result<i64, Error> {
+        let call = self.calls.fetch_add(1, Ordering::SeqCst);
+        if call < 2 {
+            if let Some(barrier) = &self.first_call_barrier {
+                barrier.wait().await;
+            }
+        }
+        if let Some(error) = &self.failure {
+            Err(error.clone())
+        } else {
+            Ok(1000)
+        }
+    }
 }
 
 /// A per-call-unique ReportId (nanos-suffixed) — `match.matches` has `UNIQUE (report_id)`
@@ -168,6 +210,119 @@ async fn duplicate_report_id_records_and_emits_once() {
         "duplicate report_id must not emit a second match.finished"
     );
 
+    cleanup(&pool, &id).await;
+}
+
+#[tokio::test]
+async fn duplicate_same_payload_skips_failing_rating_dependency() {
+    let Some(pool) = test_pool().await else { return };
+    let report_id = rid("replay-no-rating");
+
+    let (_ctx, initial) = wired(&pool).await;
+    initial
+        .report(report_id.clone(), "alice".into(), "bob".into())
+        .await
+        .unwrap();
+
+    let reader = Arc::new(CountingReader {
+        calls: AtomicUsize::new(0),
+        failure: Some(Error::internal("rating unavailable")),
+        first_call_barrier: None,
+    });
+    let (_ctx, replay) = service_with_reader(&pool, reader.clone()).await;
+    replay
+        .report(report_id.clone(), "alice".into(), "bob".into())
+        .await
+        .expect("an exact replay must not depend on rating availability");
+    assert_eq!(reader.calls.load(Ordering::SeqCst), 0);
+
+    let (id,): (String,) =
+        sqlx::query_as("SELECT id::text FROM match.matches WHERE report_id = $1")
+            .bind(&report_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(event_count(&pool, &id).await, 1);
+    cleanup(&pool, &id).await;
+}
+
+#[tokio::test]
+async fn duplicate_different_payload_is_conflict_without_rating_call() {
+    let Some(pool) = test_pool().await else { return };
+    let report_id = rid("payload-conflict");
+    let (_ctx, initial) = wired(&pool).await;
+    initial
+        .report(report_id.clone(), "alice".into(), "bob".into())
+        .await
+        .unwrap();
+
+    let reader = Arc::new(CountingReader {
+        calls: AtomicUsize::new(0),
+        failure: Some(Error::internal("must not be called")),
+        first_call_barrier: None,
+    });
+    let (_ctx, replay) = service_with_reader(&pool, reader.clone()).await;
+    let err = replay
+        .report(report_id.clone(), "mallory".into(), "bob".into())
+        .await
+        .expect_err("one ReportId cannot name two different matches");
+    assert_eq!(err.status, opsapi::Status::Conflict);
+    assert_eq!(err.msg, Service::REPORT_ID_CONFLICT);
+    assert_eq!(reader.calls.load(Ordering::SeqCst), 0);
+
+    let (winner, loser, id): (String, String, String) = sqlx::query_as(
+        "SELECT winner, loser, id::text FROM match.matches WHERE report_id = $1",
+    )
+    .bind(&report_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!((winner.as_str(), loser.as_str()), ("alice", "bob"));
+    assert_eq!(event_count(&pool, &id).await, 1);
+    cleanup(&pool, &id).await;
+}
+
+#[tokio::test]
+async fn concurrent_payload_collision_accepts_exactly_one_payload() {
+    let Some(pool) = test_pool().await else { return };
+    let report_id = rid("concurrent-conflict");
+    let reader = Arc::new(CountingReader {
+        calls: AtomicUsize::new(0),
+        failure: None,
+        first_call_barrier: Some(Arc::new(tokio::sync::Barrier::new(2))),
+    });
+    let (_ctx, svc) = service_with_reader(&pool, reader).await;
+
+    let left = tokio::spawn({
+        let svc = svc.clone();
+        let report_id = report_id.clone();
+        async move { svc.report(report_id, "alice".into(), "bob".into()).await }
+    });
+    let right = tokio::spawn({
+        let svc = svc.clone();
+        let report_id = report_id.clone();
+        async move { svc.report(report_id, "carol".into(), "dave".into()).await }
+    });
+    let results = [left.await.unwrap(), right.await.unwrap()];
+    assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+    let conflict = results
+        .iter()
+        .find_map(|result| result.as_ref().err())
+        .expect("the losing payload must conflict");
+    assert_eq!(conflict.status, opsapi::Status::Conflict);
+    assert_eq!(conflict.msg, Service::REPORT_ID_CONFLICT);
+
+    let (winner, loser, id): (String, String, String) = sqlx::query_as(
+        "SELECT winner, loser, id::text FROM match.matches WHERE report_id = $1",
+    )
+    .bind(&report_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(
+        (winner == "alice" && loser == "bob") || (winner == "carol" && loser == "dave")
+    );
+    assert_eq!(event_count(&pool, &id).await, 1);
     cleanup(&pool, &id).await;
 }
 

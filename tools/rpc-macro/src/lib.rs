@@ -252,6 +252,7 @@ struct MethodModel {
     /// `Some(T)` for a `Result<T, _>` where `T != ()`.
     value_ty: Option<Type>,
     http: Option<HttpBind>,
+    retry_safe: bool,
 }
 
 fn build_method(
@@ -261,10 +262,16 @@ fn build_method(
     // Pull off (and remove) an `#[http(...)]` attribute so the re-emitted trait is
     // clean (`http` is not a registered attribute).
     let mut http = None;
+    let mut retry_safe = false;
     let mut kept = Vec::new();
     for attr in f.attrs.drain(..) {
         if attr.path().is_ident("http") {
             http = Some(parse_http(&attr)?);
+        } else if attr.path().is_ident("retry_safe") {
+            if retry_safe {
+                return Err(syn::Error::new(attr.span(), "duplicate #[retry_safe]"));
+            }
+            retry_safe = true;
         } else {
             kept.push(attr);
         }
@@ -335,6 +342,7 @@ fn build_method(
         args,
         value_ty,
         http,
+        retry_safe,
     })
 }
 
@@ -728,6 +736,11 @@ fn gen_client_method(m: &MethodModel, qual: &TokenStream2) -> TokenStream2 {
         Some(id) => quote! { #id.player_id() },
         None => quote! { ::core::option::Option::None },
     };
+    let retry_mode = if m.retry_safe {
+        quote! { ::opsapi::RetryMode::OnceAfterReconnect }
+    } else {
+        quote! { ::opsapi::RetryMode::Never }
+    };
 
     let ret_expr = if let Some(vty) = &m.value_ty {
         // `status == Ok` was already checked above, so `resp.value` carries the real
@@ -747,7 +760,7 @@ fn gen_client_method(m: &MethodModel, qual: &TokenStream2) -> TokenStream2 {
             let __req = #build_req;
             let __payload = ::serde_json::to_vec(&__req)
                 .map_err(|__e| ::opsapi::Error::internal(__e.to_string()))?;
-            let __resp_bytes = self.caller.call(#qual #const_ident, #identity_expr, &__payload).await?;
+            let __resp_bytes = self.caller.call(#qual #const_ident, #identity_expr, &__payload, #retry_mode).await?;
             let resp: #qual #resp_name = ::serde_json::from_slice(&__resp_bytes)
                 .map_err(|__e| ::opsapi::Error::internal(__e.to_string()))?;
             if resp.status != ::opsapi::Status::Ok {
@@ -898,6 +911,11 @@ fn gen_operation_literal(m: &MethodModel) -> TokenStream2 {
     let path = &b.path;
     let success = b.success;
     let auth = format_ident!("{}", b.auth);
+    let retry_mode = if m.retry_safe {
+        quote! { ::opsapi::RetryMode::OnceAfterReconnect }
+    } else {
+        quote! { ::opsapi::RetryMode::Never }
+    };
     quote! {
         ::opsapi::Operation {
             method: #const_ident.to_string(),
@@ -905,6 +923,7 @@ fn gen_operation_literal(m: &MethodModel) -> TokenStream2 {
             path: #path.to_string(),
             auth: ::opsapi::AuthReq::#auth,
             success: #success,
+            retry_mode: #retry_mode,
         }
     }
 }

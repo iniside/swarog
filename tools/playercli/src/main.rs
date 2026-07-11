@@ -21,7 +21,7 @@ use std::process::ExitCode;
 use edge::{DevCA, PlayerClient};
 
 fn usage() -> &'static str {
-    "playercli --addr 127.0.0.1:9100 --ca <path> [--token <t>] [--api-key <k>] <method> [json-payload]"
+    "playercli --addr 127.0.0.1:9100 --ca <path> [--token <t>] [--api-key <k>] [--repeat <n>] [--interval-ms <ms>] [--pause-before-last-ms <ms>] <method> [json-payload]"
 }
 
 struct Args {
@@ -31,6 +31,9 @@ struct Args {
     api_key: Option<String>,
     method: String,
     payload: String,
+    repeat: usize,
+    interval_ms: u64,
+    pause_before_last_ms: u64,
 }
 
 /// Hand-rolled flag parsing (mirrors `tools/edgeca`'s style): known `--flag value`
@@ -41,6 +44,9 @@ fn parse_args() -> Result<Args, String> {
     let mut token: Option<String> = None;
     let mut api_key: Option<String> = None;
     let mut positional: Vec<String> = Vec::new();
+    let mut repeat = 1usize;
+    let mut interval_ms = 0u64;
+    let mut pause_before_last_ms = 0u64;
 
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -56,6 +62,12 @@ fn parse_args() -> Result<Args, String> {
             "--api-key" | "-api-key" => {
                 api_key = Some(args.next().ok_or("playercli: --api-key requires a value")?)
             }
+            "--repeat" => repeat = args.next().ok_or("playercli: --repeat requires a value")?
+                .parse().map_err(|_| "playercli: --repeat must be a positive integer")?,
+            "--interval-ms" => interval_ms = args.next().ok_or("playercli: --interval-ms requires a value")?
+                .parse().map_err(|_| "playercli: --interval-ms must be an integer")?,
+            "--pause-before-last-ms" => pause_before_last_ms = args.next().ok_or("playercli: --pause-before-last-ms requires a value")?
+                .parse().map_err(|_| "playercli: --pause-before-last-ms must be an integer")?,
             other => positional.push(other.to_string()),
         }
     }
@@ -68,7 +80,8 @@ fn parse_args() -> Result<Args, String> {
     };
     let payload = positional.get(1).cloned().unwrap_or_else(|| "null".to_string());
 
-    Ok(Args { addr, ca, token, api_key, method, payload })
+    if repeat == 0 { return Err("playercli: --repeat must be positive".to_string()); }
+    Ok(Args { addr, ca, token, api_key, method, payload, repeat, interval_ms, pause_before_last_ms })
 }
 
 #[tokio::main]
@@ -111,26 +124,29 @@ async fn main() -> ExitCode {
     // `PlayerClient::call` already unwraps the transport envelope: `Err` here is a
     // TRANSPORT fault (the peer's `ok:false`); a domain outcome — auth failure
     // included — arrives as `Ok(bytes)` per the pinned error grammar.
-    let resp = match client
-        .call(&args.method, args.token.as_deref(), args.api_key.as_deref(), args.payload.as_bytes())
-        .await
-    {
-        Ok(bytes) => bytes,
-        Err(e) => {
-            eprintln!("playercli: call {}: {e}", args.method);
-            return ExitCode::FAILURE;
+    let mut all_ok = true;
+    for index in 0..args.repeat {
+        if index + 1 == args.repeat && args.pause_before_last_ms != 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(args.pause_before_last_ms)).await;
         }
-    };
+        match client.call(&args.method, args.token.as_deref(), args.api_key.as_deref(), args.payload.as_bytes()).await {
+            Ok(resp) => {
+                println!("{}", String::from_utf8_lossy(&resp));
+                all_ok &= serde_json::from_slice::<serde_json::Value>(&resp).ok()
+                    .and_then(|v| v.get("status").and_then(|s| s.as_str()).map(|s| s == "Ok"))
+                    .unwrap_or(false);
+            }
+            Err(e) => {
+                eprintln!("playercli: call {}: {e}", args.method);
+                all_ok = false;
+            }
+        }
+        if index + 1 < args.repeat && args.interval_ms != 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(args.interval_ms)).await;
+        }
+    }
 
-    let body = String::from_utf8_lossy(&resp);
-    println!("{body}");
-
-    let status_ok = serde_json::from_slice::<serde_json::Value>(&resp)
-        .ok()
-        .and_then(|v| v.get("status").and_then(|s| s.as_str()).map(|s| s == "Ok"))
-        .unwrap_or(false);
-
-    if status_ok {
+    if all_ok {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE

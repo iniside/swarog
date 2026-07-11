@@ -37,14 +37,46 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use bus::Transport;
-use sqlx::PgPool;
+use futures::FutureExt;
+use sqlx::{Connection, PgConnection, PgPool};
 use tokio::sync::{watch, Notify};
 use tokio::task::JoinHandle;
+use std::time::Duration;
 
 /// Pull workers per plane. Each drains due subscriptions independently;
 /// `FOR UPDATE SKIP LOCKED` arbitrates, so the count is throughput tuning, not
 /// correctness.
 const WORKERS: usize = 2;
+const DEFAULT_PLANE_STOP_GRACE_MS: u64 = 5_000;
+
+async fn terminate_claim(
+    dsn: &str,
+    active: &worker::ActiveDeliveries,
+    worker_id: usize,
+    delivery: &worker::ActiveDelivery,
+) -> anyhow::Result<bool> {
+    // The worker may have completed after stop claimed it. Never act on a stale
+    // generation, and bind PostgreSQL's stable session identity as well as PID:
+    // an OS PID can be reused by a newly connected, unrelated backend.
+    if !active.contains(
+        worker_id,
+        delivery.generation,
+        delivery.pid,
+        &delivery.backend_start,
+    ) {
+        return Ok(false);
+    }
+    let mut control = PgConnection::connect(dsn).await?;
+    let terminated: bool = sqlx::query_scalar(
+        "SELECT COALESCE((SELECT pg_terminate_backend(pid) \
+         FROM pg_stat_activity WHERE pid = $1 AND backend_start::text = $2), false)",
+    )
+    .bind(delivery.pid)
+    .bind(&delivery.backend_start)
+    .fetch_one(&mut control)
+    .await?;
+    Ok(terminated)
+}
 
 /// Drops the LEGACY push-plane storage (outbox/inbox/notify trigger and the
 /// pre-rename `messaging` schema). The fresh-start decision makes this a plain
@@ -87,6 +119,8 @@ pub struct Plane {
     liveness: Liveness,
     /// Cancellation + background tasks, present between `start` and `stop`.
     stop: Option<(watch::Sender<bool>, Vec<JoinHandle<()>>)>,
+    stop_grace: Duration,
+    active_deliveries: worker::ActiveDeliveries,
 }
 
 impl Plane {
@@ -99,6 +133,8 @@ impl Plane {
             listen_dsn,
             liveness: Liveness::default(),
             stop: None,
+            stop_grace: Duration::from_millis(DEFAULT_PLANE_STOP_GRACE_MS),
+            active_deliveries: worker::ActiveDeliveries::default(),
         })
     }
 
@@ -135,6 +171,9 @@ impl Plane {
     /// after `App::start`), so the snapshot is complete. Each task roots on a
     /// shared `watch` cancel; [`Plane::stop`] flips it and awaits every task.
     pub async fn start(&mut self) -> anyhow::Result<()> {
+        // Parse configuration before the subscription catalog is reconciled: an
+        // invalid value must fail startup without mutating durable state.
+        let handler_timeout = worker::handler_timeout_from_env()?;
         let subs = self.inner.snapshot();
         catalog::reconcile(&self.pool, &subs).await?;
 
@@ -145,22 +184,24 @@ impl Plane {
         if !subs.is_empty() {
             let wakeup = Arc::new(Notify::new());
             let ctx = Arc::new(worker::WorkerCtx {
-                pool: self.pool.clone(),
+                dsn: self.listen_dsn.clone(),
                 subs,
-                handler_timeout: worker::handler_timeout_from_env(),
+                handler_timeout,
                 wakeup: wakeup.clone(),
+                active: self.active_deliveries.clone(),
             });
             self.liveness.stopping.store(false, Ordering::SeqCst);
-            for _ in 0..WORKERS {
-                let inner = tokio::spawn(worker::run(ctx.clone(), stop_rx.clone()));
+            for worker_id in 0..WORKERS {
                 let liveness = self.liveness.clone();
-                // Supervisor: a worker that ends while the plane is NOT stopping
-                // (panic or bug) marks the plane dead — /readyz goes 503.
+                let worker_ctx = ctx.clone();
+                let worker_stop = stop_rx.clone();
                 tasks.push(tokio::spawn(async move {
-                    let res = inner.await;
+                    let result = std::panic::AssertUnwindSafe(worker::run(worker_id, worker_ctx, worker_stop))
+                        .catch_unwind()
+                        .await;
                     if !liveness.stopping.load(Ordering::SeqCst) {
-                        if let Err(err) = &res {
-                            tracing::error!(%err, "asyncevents worker task died");
+                        if result.is_err() {
+                            tracing::error!("asyncevents worker panicked while the plane was running");
                         } else {
                             tracing::error!("asyncevents worker exited while the plane was running");
                         }
@@ -197,13 +238,64 @@ impl Plane {
     /// — an in-flight delivery finishes its commit before the worker exits.
     /// Idempotent — a never-started plane is a no-op.
     pub async fn stop(&mut self) {
-        if let Some((stop_tx, tasks)) = self.stop.take() {
+        if let Some((stop_tx, mut tasks)) = self.stop.take() {
             self.liveness.stopping.store(true, Ordering::SeqCst);
             let _ = stop_tx.send(true);
-            for t in tasks {
-                let _ = t.await;
+            let deadline = tokio::time::Instant::now() + self.stop_grace;
+            // Reserve part of the one global budget for backend termination and
+            // task cancellation. This avoids spending the whole deadline merely
+            // waiting for a handler that is blocked in DB/network I/O.
+            let cooperative = self.stop_grace.saturating_sub(
+                self.stop_grace.min(Duration::from_secs(1)).max(self.stop_grace / 2),
+            );
+            let graceful = async {
+                for task in &mut tasks { let _ = task.await; }
+            };
+            if tokio::time::timeout(cooperative, graceful).await.is_ok() {
+                return;
+            }
+            // The timed join loop may already have consumed some handles. Do
+            // not poll a completed JoinHandle a second time.
+            tasks.retain(|task| !task.is_finished());
+
+            let claims = self.active_deliveries.claim_active();
+            for (worker_id, delivery) in claims {
+                let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                if remaining.is_zero() { break; }
+                let dsn = self.listen_dsn.clone();
+                let active = self.active_deliveries.clone();
+                let claim = delivery.clone();
+                let terminate = async move {
+                    terminate_claim(&dsn, &active, worker_id, &claim).await
+                };
+                match tokio::time::timeout(remaining, terminate).await {
+                    Ok(Ok(true)) => tracing::warn!(worker_id, generation = delivery.generation, pid = delivery.pid, "asyncevents: terminated stuck delivery backend"),
+                    Ok(Ok(false)) => tracing::warn!(worker_id, generation = delivery.generation, pid = delivery.pid, "asyncevents: delivery backend was already gone"),
+                    Ok(Err(err)) => tracing::warn!(worker_id, generation = delivery.generation, pid = delivery.pid, %err, "asyncevents: failed to terminate delivery backend; private socket will be force-closed"),
+                    Err(_) => tracing::warn!(worker_id, generation = delivery.generation, pid = delivery.pid, "asyncevents: deadline exhausted terminating delivery backend; private socket will be force-closed"),
+                }
+                // A concurrently completed generation removes itself. A still
+                // present record refers to precisely the PID/generation claimed
+                // above; no newer worker session can be mistaken for it.
+                let _still_active = self.active_deliveries.contains(
+                    worker_id, delivery.generation, delivery.pid, &delivery.backend_start,
+                );
+            }
+
+            for task in &tasks { task.abort(); }
+            for mut task in tasks {
+                let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                if remaining.is_zero() { break; }
+                let _ = tokio::time::timeout(remaining, &mut task).await;
             }
         }
+    }
+
+    #[cfg(test)]
+    #[allow(dead_code)]
+    fn with_stop_grace(mut self, grace: Duration) -> Self {
+        self.stop_grace = grace;
+        self
     }
 }
 
@@ -286,10 +378,11 @@ pub mod testing {
             let subs = self.inner.snapshot();
             crate::catalog::reconcile(&self.pool, &subs).await?;
             let ctx = crate::worker::WorkerCtx {
-                pool: self.pool.clone(),
+                dsn: std::env::var("DATABASE_URL").unwrap_or_else(|_| "postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable".to_string()),
                 subs,
                 handler_timeout: std::time::Duration::from_secs(10),
                 wakeup: Arc::new(tokio::sync::Notify::new()),
+                active: crate::worker::ActiveDeliveries::default(),
             };
             let mut total = 0u64;
             loop {

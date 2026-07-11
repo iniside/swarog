@@ -27,5 +27,6 @@ use rpc_macro::rpc;
 #[rpc(prefix = "rating")]
 #[async_trait]
 pub trait MmrReader: Send + Sync {
+    #[retry_safe]
     async fn mmr(&self, player_id: String) -> Result<i64, Error>;
 }

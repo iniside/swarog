@@ -49,6 +49,7 @@ pub trait Sample: Send + Sync {
         success = 200,
         path_args(character_id = "id")
     )]
+    #[retry_safe]
     async fn list_character(
         &self,
         caller: Identity,
@@ -57,6 +58,7 @@ pub trait Sample: Send + Sync {
 
     /// Wire-only (no `#[http]`), unauthenticated: no identity param, marshals all
     /// args. Mirrors characters' `OwnerOf`.
+    #[retry_safe]
     async fn owner_of(&self, character_id: String) -> Result<Owner, Error>;
 
     /// Wire-only method returning an `Option<T>` — the exact shape of characters'

@@ -19,7 +19,9 @@
 
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use futures::future::BoxFuture;
 use quinn::crypto::rustls::{QuicClientConfig, QuicServerConfig};
@@ -62,6 +64,22 @@ pub const DEFAULT_PLAYER_MAX_CONNS: usize = 1024;
 /// `0` means "no per-IP cap" (opt-out only). Counted BEFORE the handshake, keyed by
 /// the raw UDP source address' IP, so the check costs nothing an attacker can inflate.
 pub const DEFAULT_PLAYER_MAX_CONNS_PER_IP: usize = 32;
+const REQUEST_IP_IDLE: Duration = Duration::from_secs(180);
+const REQUEST_IP_CAP: usize = 65_536;
+
+#[derive(Debug, Clone, Copy)]
+pub struct PlayerRequestLimits {
+    pub per_ip_rps: f64,
+    pub per_ip_burst: u32,
+    pub per_conn_rps: f64,
+    pub per_conn_burst: u32,
+}
+
+impl Default for PlayerRequestLimits {
+    fn default() -> Self {
+        Self { per_ip_rps: 20.0, per_ip_burst: 40, per_conn_rps: 10.0, per_conn_burst: 20 }
+    }
+}
 
 /// The on-wire envelope for a single player request. Unlike the internal
 /// `wire::Request` there is NO identity field: `token` is ATTACKER-CONTROLLED input
@@ -110,6 +128,7 @@ pub struct PlayerServer {
     /// Per-source-IP concurrent-connection cap; `0` = unlimited. Defaults to
     /// [`DEFAULT_PLAYER_MAX_CONNS_PER_IP`].
     max_conns_per_ip: usize,
+    request_limits: PlayerRequestLimits,
 }
 
 impl Default for PlayerServer {
@@ -118,6 +137,7 @@ impl Default for PlayerServer {
             handler: OnceLock::new(),
             max_conns: DEFAULT_PLAYER_MAX_CONNS,
             max_conns_per_ip: DEFAULT_PLAYER_MAX_CONNS_PER_IP,
+            request_limits: PlayerRequestLimits::default(),
         }
     }
 }
@@ -142,6 +162,22 @@ impl PlayerServer {
     pub fn with_conn_limits(mut self, global: usize, per_ip: usize) -> Self {
         self.max_conns = global;
         self.max_conns_per_ip = per_ip;
+        self
+    }
+
+    pub fn with_request_limits(
+        mut self,
+        per_ip_rps: f64,
+        per_ip_burst: u32,
+        per_conn_rps: f64,
+        per_conn_burst: u32,
+    ) -> Self {
+        self.request_limits = PlayerRequestLimits {
+            per_ip_rps,
+            per_ip_burst,
+            per_conn_rps,
+            per_conn_burst,
+        };
         self
     }
 
@@ -181,6 +217,7 @@ impl PlayerServer {
 
         let handler = Arc::new(self.handler);
         let limiter = ConnLimiter::new(self.max_conns, self.max_conns_per_ip);
+        let request_limiter = RequestLimiter::new(self.request_limits);
         let shutdown = ShutdownState::new();
         let accept_endpoint = endpoint.clone();
         let accept_state = shutdown.clone();
@@ -201,6 +238,7 @@ impl PlayerServer {
                             continue;
                         };
                         let handler = handler.clone();
+                        let request_guard = request_limiter.connect(ip);
                         let conn_state = accept_state.clone();
                         // Guard created at the ACCEPT arm and moved into the task —
                         // see [`ShutdownState::enter`].
@@ -211,7 +249,7 @@ impl PlayerServer {
                             // global + per-IP slot (also on a failed handshake below).
                             let _conn_guard = conn_guard;
                             match incoming.await {
-                                Ok(conn) => serve_conn(conn, handler, conn_state).await,
+                                Ok(conn) => serve_conn(conn, handler, conn_state, request_guard).await,
                                 Err(e) => tracing::debug!(error = %e, "edge: player handshake failed"),
                             }
                         });
@@ -224,6 +262,98 @@ impl PlayerServer {
 
         Ok(RunningServer { endpoint, local_addr, shutdown })
     }
+}
+
+#[derive(Clone)]
+struct Bucket { tokens: f64, last_refill: Instant, last_seen: Instant }
+
+impl Bucket {
+    fn new(burst: u32, now: Instant) -> Self {
+        Self { tokens: f64::from(burst), last_refill: now, last_seen: now }
+    }
+    fn refill(&mut self, rate: f64, burst: u32, now: Instant) {
+        self.tokens = (self.tokens + now.duration_since(self.last_refill).as_secs_f64() * rate)
+            .min(f64::from(burst));
+        self.last_refill = now;
+        self.last_seen = now;
+    }
+}
+
+struct RequestState {
+    ips: HashMap<IpAddr, Bucket>,
+    conns: HashMap<u64, Bucket>,
+}
+
+struct RequestLimiter {
+    limits: PlayerRequestLimits,
+    state: Mutex<RequestState>,
+    next_id: AtomicU64,
+    request_count: AtomicU64,
+}
+
+impl RequestLimiter {
+    fn new(limits: PlayerRequestLimits) -> Arc<Self> {
+        Arc::new(Self {
+            limits,
+            state: Mutex::new(RequestState { ips: HashMap::new(), conns: HashMap::new() }),
+            next_id: AtomicU64::new(1),
+            request_count: AtomicU64::new(0),
+        })
+    }
+
+    fn connect(self: &Arc<Self>, ip: IpAddr) -> Arc<RequestConnGuard> {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        if self.limits.per_conn_rps > 0.0 && self.limits.per_conn_burst > 0 {
+            self.state.lock().unwrap().conns.insert(
+                id,
+                Bucket::new(self.limits.per_conn_burst, Instant::now()),
+            );
+        }
+        Arc::new(RequestConnGuard { limiter: self.clone(), ip, id })
+    }
+
+    fn allow(&self, ip: IpAddr, connection_id: u64) -> bool {
+        let now = Instant::now();
+        let sweep = self.request_count.fetch_add(1, Ordering::Relaxed) % 256 == 255;
+        let mut st = self.state.lock().unwrap();
+        if sweep {
+            st.ips.retain(|_, b| now.duration_since(b.last_seen) <= REQUEST_IP_IDLE);
+        }
+        let ip_enabled = self.limits.per_ip_rps > 0.0 && self.limits.per_ip_burst > 0;
+        let conn_enabled = self.limits.per_conn_rps > 0.0 && self.limits.per_conn_burst > 0;
+        if ip_enabled && !st.ips.contains_key(&ip) {
+            if st.ips.len() >= REQUEST_IP_CAP {
+                st.ips.retain(|_, b| now.duration_since(b.last_seen) <= REQUEST_IP_IDLE);
+                if st.ips.len() >= REQUEST_IP_CAP {
+                    if let Some(oldest) = st.ips.iter().min_by_key(|(addr, b)| (b.last_seen, **addr)).map(|(a, _)| *a) {
+                        st.ips.remove(&oldest);
+                    }
+                }
+            }
+            st.ips.insert(ip, Bucket::new(self.limits.per_ip_burst, now));
+        }
+        if ip_enabled {
+            st.ips.get_mut(&ip).unwrap().refill(self.limits.per_ip_rps, self.limits.per_ip_burst, now);
+        }
+        if conn_enabled {
+            let Some(bucket) = st.conns.get_mut(&connection_id) else { return false };
+            bucket.refill(self.limits.per_conn_rps, self.limits.per_conn_burst, now);
+        }
+        let ip_ok = !ip_enabled || st.ips.get(&ip).is_some_and(|b| b.tokens >= 1.0);
+        let conn_ok = !conn_enabled || st.conns.get(&connection_id).is_some_and(|b| b.tokens >= 1.0);
+        if ip_ok && conn_ok {
+            if ip_enabled { st.ips.get_mut(&ip).unwrap().tokens -= 1.0; }
+            if conn_enabled { st.conns.get_mut(&connection_id).unwrap().tokens -= 1.0; }
+            true
+        } else {
+            false
+        }
+    }
+}
+
+struct RequestConnGuard { limiter: Arc<RequestLimiter>, ip: IpAddr, id: u64 }
+impl Drop for RequestConnGuard {
+    fn drop(&mut self) { self.limiter.state.lock().unwrap().conns.remove(&self.id); }
 }
 
 /// The mutable admission state, guarded by one lock so `global` and `per_ip` never
@@ -303,6 +433,7 @@ async fn serve_conn(
     conn: quinn::Connection,
     handler: Arc<OnceLock<PlayerHandler>>,
     state: Arc<ShutdownState>,
+    request_guard: Arc<RequestConnGuard>,
 ) {
     let mut closing = state.subscribe();
     loop {
@@ -311,9 +442,18 @@ async fn serve_conn(
                 Ok((send, recv)) => {
                     let handler = handler.clone();
                     let guard = state.enter();
+                    let limiter = request_guard.limiter.clone();
+                    let ip = request_guard.ip;
+                    let connection_id = request_guard.id;
+                    // The connection loop can end (peer close / shutdown) while an
+                    // already accepted stream is still waiting to run. Keep the
+                    // request-bucket guard alive through that stream task so its
+                    // admission cannot observe a prematurely removed conn bucket.
+                    let request_guard = request_guard.clone();
                     tokio::spawn(async move {
                         let _guard = guard;
-                        serve_stream(send, recv, handler).await;
+                        let _request_guard = request_guard;
+                        serve_stream(send, recv, handler, limiter, ip, connection_id).await;
                     });
                 }
                 // Peer closed, idle timeout, or shutdown.
@@ -333,7 +473,15 @@ async fn serve_stream(
     mut send: quinn::SendStream,
     mut recv: quinn::RecvStream,
     handler: Arc<OnceLock<PlayerHandler>>,
+    limiter: Arc<RequestLimiter>,
+    ip: IpAddr,
+    connection_id: u64,
 ) {
+    if !limiter.allow(ip, connection_id) {
+        let _ = recv.stop(quinn::VarInt::from_u32(0));
+        respond(&mut send, err_response("player request rate limit exceeded")).await;
+        return;
+    }
     let req_bytes = match read_frame_max(&mut recv, MAX_PLAYER_FRAME).await {
         Ok(b) => b,
         Err(Error::FrameTooLarge { size, max }) => {

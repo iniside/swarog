@@ -65,6 +65,8 @@ pub struct Service {
 }
 
 impl Service {
+    const REPORT_ID_CONFLICT: &'static str = "ReportId already used for a different match";
+
     fn rating(&self) -> &Arc<dyn MmrReader> {
         self.rating
             .get()
@@ -94,23 +96,62 @@ impl Service {
         .await?;
         Ok(row.map(|(id,)| id))
     }
+
+    async fn existing_report(
+        &self,
+        report_id: &str,
+    ) -> Result<Option<(String, String)>, sqlx::Error> {
+        sqlx::query_as("SELECT winner, loser FROM match.matches WHERE report_id = $1")
+            .bind(report_id)
+            .fetch_optional(&self.pool)
+            .await
+    }
+
+    async fn existing_report_tx(
+        &self,
+        conn: &mut PgConnection,
+        report_id: &str,
+    ) -> Result<Option<(String, String)>, sqlx::Error> {
+        sqlx::query_as("SELECT winner, loser FROM match.matches WHERE report_id = $1")
+            .bind(report_id)
+            .fetch_optional(&mut *conn)
+            .await
+    }
+
+    fn duplicate_result(
+        existing: &(String, String),
+        winner: &str,
+        loser: &str,
+    ) -> Result<(), Error> {
+        if existing.0 == winner && existing.1 == loser {
+            Ok(())
+        } else {
+            Err(Error::conflict(Self::REPORT_ID_CONFLICT))
+        }
+    }
 }
 
 #[async_trait]
 impl Match for Service {
     /// Records that `winner` beat `loser`. `report_id` is the REQUIRED idempotency key
     /// (empty ⇒ `Invalid` — a missing key must never silently degrade the dedup). The
-    /// MMR read is SYNCHRONOUS (query rating right now, for the log line — Go read the
+    /// An existing report is checked before the synchronous MMR dependency: the same
+    /// payload is an immediate no-op, while reusing the id for another match conflicts.
+    /// For a new report the MMR read is SYNCHRONOUS (query rating right now — Go read the
     /// winner's MMR; we read both to exercise the wire, doing nothing material with the
     /// values). Then the domain INSERT + the `match.finished` durable event append
     /// commit in ONE tx: the event is durable iff the match is. A duplicate `report_id`
-    /// (the split stub auto-retries a lost response) inserts nothing, emits nothing, and
+    /// (the explicitly retry-safe RPC may replay after a lost response) inserts nothing, emits nothing, and
     /// returns Ok — at-most-once effect per report. A rating transport failure surfaces
     /// as an error (the sync dep is required).
     async fn report(&self, report_id: String, winner: String, loser: String) -> Result<(), Error> {
         if report_id.trim().is_empty() {
             return Err(Error::invalid("ReportId must be a non-empty idempotency key"));
         }
+        if let Some(existing) = self.existing_report(&report_id).await.map_err(internal)? {
+            return Self::duplicate_result(&existing, &winner, &loser);
+        }
+
         let winner_mmr = self.rating().mmr(winner.clone()).await?;
         let loser_mmr = self.rating().mmr(loser.clone()).await?;
         tracing::info!(%winner, winner_mmr, %loser, loser_mmr, "match reported");
@@ -121,11 +162,23 @@ impl Match for Service {
             .await
             .map_err(internal)?
         else {
-            // Duplicate report_id: the match is already recorded (and its
-            // `match.finished` already appended) — dropping the tx rolls back the
-            // no-op and the retry succeeds without a second event.
-            tracing::info!(%report_id, %winner, %loser, "duplicate match report deduped");
-            return Ok(());
+            // Another transaction won after our preflight lookup. The INSERT waits
+            // for that transaction, so this statement observes and verifies the
+            // committed payload before deciding whether the retry is a no-op.
+            let existing = self
+                .existing_report_tx(&mut tx, &report_id)
+                .await
+                .map_err(internal)?
+                .ok_or_else(|| Error::internal("conflicting ReportId row disappeared"))?;
+            let result = Self::duplicate_result(&existing, &winner, &loser);
+            if result.is_ok() {
+                tracing::info!(%report_id, %winner, %loser, "duplicate match report deduped");
+            }
+            // The conflict branch performed no write, but it still owns an open sqlx
+            // transaction after the INSERT/SELECT. Roll it back explicitly: relying on
+            // Drop defers ROLLBACK and can leave locks held for a following request.
+            tx.rollback().await.map_err(internal)?;
+            return result;
         };
         let evt = matchevents::Finished {
             match_id,

@@ -23,6 +23,10 @@ Three seams carry all extensibility; almost everything else follows from them:
    `require`s `dyn Trait` under `registry::key(provider, snake_trait)`. In a split
    process, a `remote::Stub` provides an edge-backed client under the SAME key —
    the registry swap is the only difference between topologies.
+   Generated RPC operations default to `opsapi::RetryMode::Never`. Only a
+   read/idempotent contract method explicitly marked `#[retry_safe]` gets one replay
+   after reconnect (`RetryMode::OnceAfterReconnect`); mutating methods remain
+   fail-closed unless their contract supplies its own idempotency semantics.
 3. **Event bus** (`ctx.bus()`) — the async glue. Each publishing domain owns
    `api/<name>/<name>events` declaring versioned contracts via
    `bus::define(topic, version, HistoryPolicy)`. **Every cross-module event is
@@ -111,6 +115,12 @@ module never knows the topology.
    bounded (`MODULE_STOP_GRACE_MS` default 5000 — read in `core/app`, never in
    modules) so one hung module can't stall the rest. A
    failed startup unwinds what started, in reverse, through the same teardown.
+   Durable workers visit subscriptions fairly with a fixed 64-delivery quantum per
+   subscription/pass. `ASYNCEVENTS_HANDLER_TIMEOUT` (default `10s`, invalid values
+   fail startup) bounds each cooperative handler; plane stop has a 5s global grace,
+   terminates still-active dedicated Postgres delivery backends, then aborts tasks.
+   A Tokio timeout cannot preempt handler code that synchronously CPU-spins without
+   yielding, so handlers must remain async-cooperative.
 9. Events are typed at the seam: declare with `bus::define`, publish/subscribe via
    `emit_tx`/`on_tx`. `on_tx_raw` (untyped JSON) is for deliberately zero-coupling
    sinks (audit) only.
@@ -184,7 +194,13 @@ module never knows the topology.
   `least(2^fails,900)s` backoff, trusted-proxy client IP via `TRUSTED_PROXY_CIDRS`);
   one generic 401 for wrong-pass/unknown-user/locked (no username oracle); CSRF
   checked BEFORE the local/remote editability decision; security headers on the
-  admin router only. Admin users are created by **`cargo run -p adminctl`**
+  admin router only. Login admission is bounded at 32 concurrent requests and
+  5 rps/burst 20 per resolved client IP; Argon2 runs in `spawn_blocking` behind
+  2 permits. Username input is capped at 128 bytes, password input at 1024 bytes,
+  and stale unlocked `login_attempts` rows older than 24h are deleted in batches
+  of 256. The `admin_login_attempts_updated_idx` addition rolls out by `DROP SCHEMA
+  admin CASCADE`, fresh boot, then user reseed with `adminctl` — no data migration,
+  backfill, or compatibility bridge. Admin users are created by **`cargo run -p adminctl`**
   (`create-user` upsert = also password reset, `--password-stdin`/`ADMINCTL_PASSWORD`,
   never argv) wrapped by **`./install.sh` / `install.ps1`**; zero-user boot warns
   instead of failing; `ADMIN_OPEN=1` bypasses sessions AND CSRF (deliberately open
@@ -204,7 +220,8 @@ module never knows the topology.
   commit-before-unlock. `SCHEDULER_ENABLED`.
 - **match / rating / leaderboard** — match records `match.matches` from a
   `/match/report` HTTP request body (a REQUIRED `ReportId` idempotency key —
-  duplicates are a 202 no-op, so the split stub's auto-retry can't double-commit —
+  duplicates are a 202 no-op and `report` is explicitly `#[retry_safe]`, so a replay
+  after an ambiguous result can't double-commit —
   plus Go-parity keys `Winner`/`Loser`) and emits a
   durable `match.finished` event (snake_case payload keys `winner`/`loser` — a
   distinct shape from the HTTP body); rating is a persistent MMR projection
@@ -238,6 +255,10 @@ module never knows the topology.
   processes (`cmd/gateway-svc`, the monolith `cmd/server`); a domain svc NEVER hosts it —
   it serves ops over the internal mTLS edge and gateway-svc dispatches Remote. Enforced by
   `archcheck` (only gateway-svc + server may depend on the `gateway` crate).
+  Player QUIC request buckets use `PLAYER_RATE_LIMIT_RPS` (default 20),
+  `PLAYER_RATE_LIMIT_BURST` (40), `PLAYER_CONN_RATE_LIMIT_RPS` (10), and
+  `PLAYER_CONN_RATE_LIMIT_BURST` (20): the first pair limits a source IP across
+  reconnects and the second limits each persistent connection.
 
 Not a module: **`demos/webui`** — dev demo SPA at `/` exercising the accounts flow
 from a browser. Non-shipping, monolith-only (registered in `cmd/server` only;
@@ -311,6 +332,10 @@ startup without it — DB assertions are mandatory, no HTTP fallbacks) and the S
 helper follows `DATABASE_URL`, same as the services. Extend it with a named
 assertion whenever you add a module or cross-process flow. **Never ship a
 monolith-only feature** — both topologies are supported compilation paths.
+On Windows, `split-proof.ps1` starts services through `tools/winctrl` in fresh
+process groups and sends `CTRL_BREAK_EVENT`; named `[W1]`/`[W2]` assertions fail if
+any process needs the force-kill fallback. The shell proof keeps the symmetric
+SIGTERM/KILL assertions.
 
 Smoke test (monolith or through gateway-svc). The dev conveniences are explicit
 opt-ins/opt-outs (fail-closed defaults), so the monolith needs `APIKEYS_DEV_SEED=1`

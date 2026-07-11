@@ -14,7 +14,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use opsapi::{AuthReq, Caller, Error, Identity, PathArgs, Status};
+use opsapi::{AuthReq, Caller, Error, Identity, PathArgs, RetryMode, Status};
 
 // The glue's signatures re-resolve here (the metadata travels as tokens), so the
 // api crate's domain types must be in scope — exactly like a real `<name>rpc` crate.
@@ -29,6 +29,30 @@ rpc_macro_tests::sample_sample_meta!(rpc_macro::generate_glue);
 // --- A concrete impl --------------------------------------------------------
 
 struct SampleImpl;
+
+struct RecordingCaller {
+    modes: std::sync::Mutex<Vec<RetryMode>>,
+}
+
+#[async_trait]
+impl Caller for RecordingCaller {
+    async fn call(
+        &self,
+        method: &str,
+        _identity: Option<&str>,
+        _payload: &[u8],
+        retry_mode: RetryMode,
+    ) -> Result<Vec<u8>, Error> {
+        self.modes.lock().unwrap().push(retry_mode);
+        match method {
+            "sample.ownerOf" => Ok(
+                br#"{"status":"Ok","value":{"player_id":"p","ok":true}}"#.to_vec(),
+            ),
+            "sample.grant" => Ok(br#"{"status":"Ok","value":[]}"#.to_vec()),
+            _ => unreachable!("unexpected method {method}"),
+        }
+    }
+}
 
 #[async_trait]
 impl Sample for SampleImpl {
@@ -170,6 +194,7 @@ fn operations_expose_only_http_methods() {
     assert_eq!(grant.operation.path, "/sample/grant");
     assert_eq!(grant.operation.auth, AuthReq::Player);
     assert_eq!(grant.operation.success, 200);
+    assert_eq!(grant.operation.retry_mode, RetryMode::Never);
 
     let list = ops
         .iter()
@@ -177,6 +202,7 @@ fn operations_expose_only_http_methods() {
         .expect("list_character operation present");
     assert_eq!(list.operation.verb, "GET");
     assert_eq!(list.operation.path, "/sample/character/{id}");
+    assert_eq!(list.operation.retry_mode, RetryMode::OnceAfterReconnect);
 
     // owner_of is NOT exposed as an operation.
     assert!(ops.iter().all(|o| o.operation.method != "sample.ownerOf"));
@@ -190,6 +216,23 @@ fn operations_expose_only_http_methods() {
     assert_eq!(sample_rpc::METHOD_GRANT, "sample.grant");
     assert_eq!(sample_rpc::METHOD_LIST_CHARACTER, "sample.listCharacter");
     assert_eq!(sample_rpc::METHOD_OWNER_OF, "sample.ownerOf");
+}
+
+#[tokio::test]
+async fn retry_marker_reaches_generated_client_and_missing_marker_defaults_never() {
+    let caller = Arc::new(RecordingCaller { modes: std::sync::Mutex::new(Vec::new()) });
+    let client = sample_rpc::Client::new(caller.clone());
+
+    client.owner_of("c1".into()).await.unwrap();
+    client
+        .grant(Identity::player("alice"), "sword".into(), 1)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        *caller.modes.lock().unwrap(),
+        vec![RetryMode::OnceAfterReconnect, RetryMode::Never]
+    );
 }
 
 #[tokio::test]

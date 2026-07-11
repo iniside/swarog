@@ -70,6 +70,7 @@ async fn opset_closures_compose() {
             path: "/demo/{id}".into(),
             auth: AuthReq::Player,
             success: 200,
+            retry_mode: RetryMode::Never,
         },
         binding: OpBinding {
             method: "demo.echo".into(),

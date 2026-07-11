@@ -19,7 +19,7 @@
 //! with its loud warning.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, Once};
+use std::sync::{Arc, Mutex, Once, Weak};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -36,6 +36,21 @@ const KEY_CACHE_TTL: Duration = Duration::from_secs(5);
 /// amortized) — an attacker spraying distinct garbage keys cannot grow memory without
 /// bound, and a full clear costs at most one extra lookup per live key.
 const KEY_CACHE_MAX_ENTRIES: usize = 10_000;
+const KEY_MAX_BYTES: usize = 256;
+const KEY_LOOKUP_MAX_IN_FLIGHT: usize = 64;
+
+struct CacheEntry {
+    record: Option<KeyRecord>,
+    inserted_at: Instant,
+    sequence: u64,
+}
+
+struct CacheState { entries: HashMap<String, CacheEntry>, sequence: u64 }
+struct FlightState {
+    locks: HashMap<String, (Weak<tokio::sync::Mutex<()>>, u64)>,
+    sequence: u64,
+    misses: u64,
+}
 
 /// Resolves an API key string to its [`KeyRecord`], or `None` when the key is
 /// missing from the store, revoked, or the lookup failed (the `Err → deny` collapse —
@@ -152,7 +167,9 @@ impl KeyVerifier for AllowAllKeyVerifier {
 pub struct RealKeyVerifier {
     keys: Arc<dyn apikeysapi::Keys>,
     ttl: Duration,
-    cache: Mutex<HashMap<String, (Option<KeyRecord>, Instant)>>,
+    cache: Mutex<CacheState>,
+    flights: Mutex<FlightState>,
+    global: Arc<tokio::sync::Semaphore>,
 }
 
 impl RealKeyVerifier {
@@ -163,15 +180,21 @@ impl RealKeyVerifier {
     /// A verifier with an explicit TTL — the test seam (`Duration::ZERO` makes every
     /// cached entry immediately stale, so expiry is testable without sleeping).
     pub fn with_ttl(keys: Arc<dyn apikeysapi::Keys>, ttl: Duration) -> RealKeyVerifier {
-        RealKeyVerifier { keys, ttl, cache: Mutex::new(HashMap::new()) }
+        RealKeyVerifier {
+            keys,
+            ttl,
+            cache: Mutex::new(CacheState { entries: HashMap::new(), sequence: 0 }),
+            flights: Mutex::new(FlightState { locks: HashMap::new(), sequence: 0, misses: 0 }),
+            global: Arc::new(tokio::sync::Semaphore::new(KEY_LOOKUP_MAX_IN_FLIGHT)),
+        }
     }
 
     /// Serves `key` from the cache when its entry is younger than the TTL. The lock is
     /// never held across an await.
     fn cached(&self, key: &str) -> Option<Option<KeyRecord>> {
         let cache = self.cache.lock().unwrap();
-        match cache.get(key) {
-            Some((record, at)) if at.elapsed() < self.ttl => Some(record.clone()),
+        match cache.entries.get(key) {
+            Some(entry) if entry.inserted_at.elapsed() < self.ttl => Some(entry.record.clone()),
             _ => None,
         }
     }
@@ -180,20 +203,63 @@ impl RealKeyVerifier {
     /// map first when it has reached [`KEY_CACHE_MAX_ENTRIES`] (the bounded-memory
     /// rule — see the module doc).
     fn insert(&self, key: &str, record: Option<KeyRecord>) {
+        let now = Instant::now();
         let mut cache = self.cache.lock().unwrap();
-        if cache.len() >= KEY_CACHE_MAX_ENTRIES {
-            cache.clear();
+        cache.entries.retain(|_, entry| now.duration_since(entry.inserted_at) < self.ttl);
+        if cache.entries.len() >= KEY_CACHE_MAX_ENTRIES && !cache.entries.contains_key(key) {
+            if let Some(oldest) = cache.entries.iter()
+                .min_by_key(|(_, entry)| (entry.inserted_at, entry.sequence))
+                .map(|(key, _)| key.clone())
+            {
+                cache.entries.remove(&oldest);
+            }
         }
-        cache.insert(key.to_string(), (record, Instant::now()));
+        cache.sequence = cache.sequence.wrapping_add(1);
+        let sequence = cache.sequence;
+        cache.entries.insert(key.to_string(), CacheEntry { record, inserted_at: now, sequence });
+    }
+
+    fn flight(&self, key: &str) -> Option<Arc<tokio::sync::Mutex<()>>> {
+        let mut flights = self.flights.lock().unwrap();
+        flights.misses = flights.misses.wrapping_add(1);
+        if flights.misses.is_multiple_of(256) {
+            flights.locks.retain(|_, (weak, _)| weak.strong_count() != 0);
+        }
+        if let Some(lock) = flights.locks.get(key).and_then(|(weak, _)| weak.upgrade()) {
+            return Some(lock);
+        }
+        flights.locks.remove(key);
+        if flights.locks.len() >= KEY_CACHE_MAX_ENTRIES {
+            flights.locks.retain(|_, (weak, _)| weak.strong_count() != 0);
+            if flights.locks.len() >= KEY_CACHE_MAX_ENTRIES {
+                return None;
+            }
+        }
+        let lock = Arc::new(tokio::sync::Mutex::new(()));
+        flights.sequence = flights.sequence.wrapping_add(1);
+        let sequence = flights.sequence;
+        flights.locks.insert(key.to_string(), (Arc::downgrade(&lock), sequence));
+        Some(lock)
     }
 }
 
 #[async_trait]
 impl KeyVerifier for RealKeyVerifier {
     async fn lookup(&self, key: &str) -> Option<KeyRecord> {
+        if key.len() > KEY_MAX_BYTES {
+            return None;
+        }
         if let Some(record) = self.cached(key) {
             return record;
         }
+        let flight = self.flight(key)?;
+        let _flight_guard = flight.lock_owned().await;
+        if let Some(record) = self.cached(key) {
+            return record;
+        }
+        let Ok(_permit) = self.global.clone().try_acquire_owned() else {
+            return None;
+        };
         match self.keys.lookup_key(key.to_string()).await {
             Ok(record) => {
                 self.insert(key, record.clone());

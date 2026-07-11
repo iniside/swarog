@@ -5,7 +5,7 @@
 //! SKIPs cleanly when it is unreachable, accounts-harness style.
 
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -35,6 +35,11 @@ fn state_from(ctx: &Context) -> AdminState {
         open: true, // pure tests exercise helpers, not the session gate
         cookie_secure: true,
         trusted: Vec::new(),
+        login_slots: Arc::new(tokio::sync::Semaphore::new(32)),
+        argon_permits: Arc::new(tokio::sync::Semaphore::new(2)),
+        login_limiter: httpmw::IpLimiter::new(5.0, 20),
+        login_requests: AtomicU64::new(0),
+        verifier: Arc::new(ArgonVerifier),
     }
 }
 
@@ -497,6 +502,15 @@ async fn ensure_schema(pool: &PgPool) {
 /// A wired live state: real pool, real durable transport (`emit_tx` appends to
 /// `asyncevents.events`), fresh `Slots` for per-test item contributions.
 async fn wired(pool: &PgPool, open: bool, cookie_secure: bool) -> (Context, Arc<AdminState>) {
+    wired_with_verifier(pool, open, cookie_secure, Arc::new(ArgonVerifier)).await
+}
+
+async fn wired_with_verifier(
+    pool: &PgPool,
+    open: bool,
+    cookie_secure: bool,
+    verifier: Arc<dyn PasswordVerifier>,
+) -> (Context, Arc<AdminState>) {
     ensure_schema(pool).await;
     let transport = asyncevents::testing::transport(pool.clone());
     let ctx = Context::with_db_and_transport(pool.clone(), transport.handle());
@@ -508,8 +522,25 @@ async fn wired(pool: &PgPool, open: bool, cookie_secure: bool) -> (Context, Arc<
         open,
         cookie_secure,
         trusted: Vec::new(),
+        login_slots: Arc::new(tokio::sync::Semaphore::new(32)),
+        argon_permits: Arc::new(tokio::sync::Semaphore::new(2)),
+        login_limiter: httpmw::IpLimiter::new(1_000.0, 1_000),
+        login_requests: AtomicU64::new(0),
+        verifier,
     });
     (ctx, st)
+}
+
+#[derive(Default)]
+struct RecordingVerifier {
+    calls: Mutex<Vec<(String, String)>>,
+}
+
+impl PasswordVerifier for RecordingVerifier {
+    fn verify(&self, encoded: &str, password: &str) -> bool {
+        self.calls.lock().unwrap().push((encoded.to_string(), password.to_string()));
+        false
+    }
 }
 
 /// Per-test unique suffix (parallel-safe, plus wall-clock so reruns never collide).
@@ -1146,4 +1177,198 @@ async fn zero_user_boot_is_allowed() {
     admin.register(&ctx).unwrap();
     admin.migrate(&ctx).await.unwrap();
     admin.start(&ctx).await.expect("start must succeed with zero users (warn only)");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn migrate_is_idempotent_including_attempt_retention_index() {
+    let Some(pool) = test_pool().await else { return };
+    let ctx = Context::with_db(pool);
+    let admin = Admin::new();
+    admin.register(&ctx).unwrap();
+    admin.migrate(&ctx).await.unwrap();
+    admin.migrate(&ctx).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn unknown_and_invalid_usernames_never_create_user_attempt_rows() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, st) = wired(&pool, false, true).await;
+    let ghost = uniq("t-no-ghost-row");
+    let ip = "203.0.113.81";
+
+    let unknown = post_login(&st, &format!("{ip}:9999"), &ghost, "wrong").await;
+    assert_eq!(unknown.status(), StatusCode::UNAUTHORIZED);
+    let invalid_name = "x".repeat(129);
+    let invalid = post_login(&st, &format!("{ip}:9999"), &invalid_name, "wrong").await;
+    assert_eq!(invalid.status(), StatusCode::UNAUTHORIZED);
+
+    assert_eq!(attempts_row(&pool, &format!("user:{ghost}")).await, None);
+    assert_eq!(attempts_row(&pool, &format!("user:{invalid_name}")).await, None);
+    assert_eq!(attempts_row(&pool, &format!("ip:{ip}")).await, Some((2, false)));
+    cleanup_ip(&pool, ip).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn login_ip_limiter_returns_exact_retry_after() {
+    let Some(pool) = test_pool().await else { return };
+    ensure_schema(&pool).await;
+    let transport = asyncevents::testing::transport(pool.clone());
+    let ctx = Context::with_db_and_transport(pool.clone(), transport.handle());
+    let st = Arc::new(AdminState {
+        env: template_env().unwrap(),
+        slots: ctx.slots().clone(),
+        pool,
+        bus: ctx.bus().clone(),
+        open: false,
+        cookie_secure: true,
+        trusted: Vec::new(),
+        login_slots: Arc::new(tokio::sync::Semaphore::new(32)),
+        argon_permits: Arc::new(tokio::sync::Semaphore::new(2)),
+        login_limiter: httpmw::IpLimiter::new(0.0, 1),
+        login_requests: AtomicU64::new(0),
+        verifier: Arc::new(ArgonVerifier),
+    });
+    let peer = "203.0.113.82:9999";
+    assert_eq!(post_login(&st, peer, "ghost", "wrong").await.status(), StatusCode::UNAUTHORIZED);
+    let denied = post_login(&st, peer, "ghost", "wrong").await;
+    assert_eq!(denied.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(denied.headers()[header::RETRY_AFTER], "1");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_failures_stop_exactly_at_user_threshold_and_emit_once() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, st) = wired(&pool, false, true).await;
+    let user = uniq("t-parallel-lock");
+    let ip = "203.0.113.83";
+    create_user(&pool, &user, "right").await;
+
+    let calls = (0..12).map(|i| {
+        let st = st.clone();
+        let user = user.clone();
+        async move {
+            post_login(&st, &format!("{ip}:{}", 9000 + i), &user, "wrong").await.status()
+        }
+    });
+    let statuses = futures::future::join_all(calls).await;
+    assert!(statuses.iter().all(|status| *status == StatusCode::UNAUTHORIZED));
+    assert_eq!(
+        attempts_row(&pool, &format!("user:{user}")).await,
+        Some((USER_LOCK_THRESHOLD, true))
+    );
+    assert_eq!(action_rows(&pool, "actor", &user, "login-locked").await, 1);
+
+    cleanup_user(&pool, &user).await;
+    cleanup_ip(&pool, ip).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn verifier_runs_exactly_once_for_every_denial_shape() {
+    let Some(pool) = test_pool().await else { return };
+    let verifier = Arc::new(RecordingVerifier::default());
+    let (_ctx, st) = wired_with_verifier(&pool, false, true, verifier.clone()).await;
+    let known = uniq("t-verify-known");
+    let user_locked = uniq("t-verify-userlocked");
+    let ip_locked_user = uniq("t-verify-iplocked");
+    create_user(&pool, &known, "right").await;
+    create_user(&pool, &user_locked, "right").await;
+    create_user(&pool, &ip_locked_user, "right").await;
+    sqlx::query("INSERT INTO admin.login_attempts(subject,fails,locked_until) VALUES ($1,5,now()+interval '10 minutes')")
+        .bind(format!("user:{user_locked}"))
+        .execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO admin.login_attempts(subject,fails,locked_until) VALUES ($1,20,now()+interval '10 minutes')")
+        .bind("ip:203.0.113.94")
+        .execute(&pool).await.unwrap();
+
+    let invalid_username = "x".repeat(129);
+    let cases = [
+        ("203.0.113.90:1", known.as_str(), "known-secret"),
+        ("203.0.113.91:1", "unknown-structural", "unknown-secret"),
+        ("203.0.113.92:1", user_locked.as_str(), "locked-secret"),
+        ("203.0.113.94:1", ip_locked_user.as_str(), "ip-locked-secret"),
+        ("203.0.113.95:1", invalid_username.as_str(), "invalid-secret"),
+    ];
+    for (peer, user, pass) in cases {
+        assert_eq!(post_login(&st, peer, user, pass).await.status(), StatusCode::UNAUTHORIZED);
+    }
+    {
+        let calls = verifier.calls.lock().unwrap();
+        assert_eq!(calls.len(), 5, "one verifier call per admitted request");
+        assert_eq!(calls[0].1, "known-secret");
+        for (_, candidate) in &calls[1..] {
+            assert_eq!(candidate, "admin-invalid-credentials");
+        }
+    }
+
+    for user in [&known, &user_locked, &ip_locked_user] { cleanup_user(&pool, user).await; }
+    for ip in ["203.0.113.90", "203.0.113.91", "203.0.113.92", "203.0.113.94", "203.0.113.95"] {
+        cleanup_ip(&pool, ip).await;
+    }
+}
+
+struct SlowVerifier;
+impl PasswordVerifier for SlowVerifier {
+    fn verify(&self, _encoded: &str, _password: &str) -> bool {
+        std::thread::sleep(Duration::from_millis(150));
+        false
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn blocking_password_verify_does_not_stall_runtime_heartbeat() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, st) = wired_with_verifier(&pool, false, true, Arc::new(SlowVerifier)).await;
+    let login = post_login(&st, "203.0.113.96:1", "unknown-heartbeat", "wrong");
+    let heartbeat = async {
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        1
+    };
+    let (response, beat) = tokio::join!(login, heartbeat);
+    assert_eq!(beat, 1);
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    cleanup_ip(&pool, "203.0.113.96").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn crossed_user_and_ip_lock_orders_do_not_deadlock() {
+    let Some(pool) = test_pool().await else { return };
+    let verifier = Arc::new(RecordingVerifier::default());
+    let (_ctx, st) = wired_with_verifier(&pool, false, true, verifier).await;
+    let shared_user = uniq("t-two-ip");
+    let user_a = uniq("t-one-ip-a");
+    let user_b = uniq("t-one-ip-b");
+    for user in [&shared_user, &user_a, &user_b] { create_user(&pool, user, "right").await; }
+
+    let calls = vec![
+        post_login(&st, "203.0.113.101:1", &shared_user, "wrong"),
+        post_login(&st, "203.0.113.102:1", &shared_user, "wrong"),
+        post_login(&st, "203.0.113.103:1", &user_a, "wrong"),
+        post_login(&st, "203.0.113.103:2", &user_b, "wrong"),
+    ];
+    let responses = tokio::time::timeout(Duration::from_secs(3), futures::future::join_all(calls))
+        .await.expect("sorted advisory locks must not deadlock");
+    assert!(responses.iter().all(|r| r.status() == StatusCode::UNAUTHORIZED));
+
+    for user in [&shared_user, &user_a, &user_b] { cleanup_user(&pool, user).await; }
+    for ip in ["203.0.113.101", "203.0.113.102", "203.0.113.103"] { cleanup_ip(&pool, ip).await; }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn login_attempt_gc_removes_only_stale_unlocked_rows() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, st) = wired(&pool, false, true).await;
+    let stale = format!("ip:198.51.100.{}", UNIQ.fetch_add(1, Ordering::Relaxed) % 200 + 1);
+    let locked = format!("user:{}", uniq("t-gc-locked"));
+    let fresh = format!("user:{}", uniq("t-gc-fresh"));
+    sqlx::query("INSERT INTO admin.login_attempts(subject,fails,updated_at) VALUES ($1,1,now()-interval '25 hours'),($2,5,now()-interval '25 hours'),($3,1,now())")
+        .bind(&stale).bind(&locked).bind(&fresh).execute(&pool).await.unwrap();
+    sqlx::query("UPDATE admin.login_attempts SET locked_until=now()+interval '1 hour' WHERE subject=$1")
+        .bind(&locked).execute(&pool).await.unwrap();
+    st.cleanup_login_attempts().await;
+    let (count,): (i64,) = sqlx::query_as("SELECT count(*) FROM admin.login_attempts WHERE subject=ANY($1)")
+        .bind([&locked, &fresh]).fetch_one(&pool).await.unwrap();
+    assert_eq!(count, 2);
+    assert_eq!(attempts_row(&pool, &stale).await, None);
+    sqlx::query("DELETE FROM admin.login_attempts WHERE subject=ANY($1)")
+        .bind([stale, locked, fresh]).execute(&pool).await.unwrap();
 }

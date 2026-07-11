@@ -29,6 +29,7 @@ members = [
     "tools/rpc-macro-tests",
     "tools/edgeca",
     "tools/playercli",
+    "tools/winctrl",
     # Fortress enforcement (Step 5): a small binary that reads `cargo metadata` and
     # fails on any module→module or module→foreign-<name>rpc dependency edge.
     "tools/archcheck",
@@ -139,6 +140,7 @@ proptest = "1"
 # HTTP client for the accounts module (Epic JWKS fetch + OAuth code exchange).
 # rustls to align with the edge stack's TLS; default (native-tls) features off.
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+windows-sys = "0.59"
 
 # Identity stack for the accounts module (Step 6): argon2id password hashing (PHC
 # string format — byte-compatible with Go's $argon2id$v=19$m=…,t=…,p=…$salt$hash),

@@ -48,6 +48,7 @@ pub struct Holding {
 pub trait Holdings: Send + Sync {
     /// The caller's own (player-owned) holdings. 200.
     #[http(verb = "GET", path = "/inventory/me", auth = "player", success = 200)]
+    #[retry_safe]
     async fn list_mine(&self, identity: Identity) -> Result<Vec<Holding>, Error>;
 
     /// A character's holdings, but only if the caller OWNS the character — otherwise
@@ -61,6 +62,7 @@ pub trait Holdings: Send + Sync {
         success = 200,
         path_args(character_id = "id")
     )]
+    #[retry_safe]
     async fn list_character(&self, identity: Identity, character_id: String) -> Result<Vec<Holding>, Error>;
 
     /// Adds `qty` of `item_id` to the caller's own inventory (the simulated-IAP path,

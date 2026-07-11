@@ -49,6 +49,7 @@ pub struct Character {
 #[rpc(prefix = "characters")]
 #[async_trait]
 pub trait Ownership: Send + Sync {
+    #[retry_safe]
     async fn owner_of(&self, character_id: String) -> Result<Option<String>, Error>;
 }
 
@@ -67,6 +68,7 @@ pub trait Player: Send + Sync {
 
     /// List the caller's own characters. 200.
     #[http(verb = "GET", path = "/characters", auth = "player", success = 200)]
+    #[retry_safe]
     async fn list(&self, identity: Identity) -> Result<Vec<Character>, Error>;
 
     /// Delete one of the caller's characters; deleting a non-owned/absent character

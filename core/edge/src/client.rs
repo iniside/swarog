@@ -4,6 +4,7 @@
 
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use quinn::crypto::rustls::QuicClientConfig;
 use serde_json::value::RawValue;
@@ -42,7 +43,15 @@ impl Client {
         let qcc = QuicClientConfig::try_from(client_cfg)
             .map_err(|e| Error::Tls(format!("quic client config: {e}")))?;
         let mut endpoint = quinn::Endpoint::client(client_bind_addr(addr)).map_err(Error::Io)?;
-        endpoint.set_default_client_config(quinn::ClientConfig::new(Arc::new(qcc)));
+        // Internal stubs cache this connection for the process lifetime. Quinn's
+        // default idle timeout can otherwise retire a quiet connection between two
+        // domain calls; the next non-retry-safe mutation would then fail on a stale
+        // cached connection. Keepalive is transport liveness, not RPC replay.
+        let mut transport = quinn::TransportConfig::default();
+        transport.keep_alive_interval(Some(Duration::from_secs(5)));
+        let mut quinn_cfg = quinn::ClientConfig::new(Arc::new(qcc));
+        quinn_cfg.transport_config(Arc::new(transport));
+        endpoint.set_default_client_config(quinn_cfg);
         let conn = endpoint
             .connect(addr, "localhost")
             .map_err(|e| Error::Connect(e.to_string()))?
@@ -107,6 +116,7 @@ impl opsapi::Caller for Client {
         method: &str,
         identity: Option<&str>,
         payload: &[u8],
+        _retry_mode: opsapi::RetryMode,
     ) -> Result<Vec<u8>, opsapi::Error> {
         self.call_raw_id(method, identity, payload)
             .await

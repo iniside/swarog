@@ -36,6 +36,10 @@ const DEFAULT_PLAYER_MAX_CONNS: usize = 1024;
 /// Per-source-IP cap on concurrent player-QUIC connections (`PLAYER_MAX_CONNS_PER_IP`)
 /// — a tighter bound so one abusive peer cannot consume the whole global budget.
 const DEFAULT_PLAYER_MAX_CONNS_PER_IP: usize = 32;
+const DEFAULT_PLAYER_RATE_LIMIT_RPS: f64 = 20.0;
+const DEFAULT_PLAYER_RATE_LIMIT_BURST: u32 = 40;
+const DEFAULT_PLAYER_CONN_RATE_LIMIT_RPS: f64 = 10.0;
+const DEFAULT_PLAYER_CONN_RATE_LIMIT_BURST: u32 = 20;
 /// Per-check budget for `/readyz` (the baseline DB ping AND each contributed
 /// `httpmw::ReadyCheck`, individually) — no env knob, a readiness-probe budget is not a
 /// tuning surface (config-as-code/anti-magic). LB probe timeouts are typically 5-10s, so
@@ -128,6 +132,10 @@ pub struct Config {
     /// player server is passed to [`run`]. A process/topology knob read HERE, never by a
     /// module.
     pub player_max_conns_per_ip: usize,
+    pub player_rate_limit_rps: f64,
+    pub player_rate_limit_burst: u32,
+    pub player_conn_rate_limit_rps: f64,
+    pub player_conn_rate_limit_burst: u32,
 }
 
 impl Config {
@@ -136,7 +144,7 @@ impl Config {
     /// monolith used. Both `:8080` and `8080` forms of `PORT` are accepted. The DSN
     /// is always `Some` here — a process that wants no DB calls [`Config::without_db`].
     pub fn from_env() -> Config {
-        Config::from_values(
+        let mut cfg = Config::from_values(
             std::env::var("DATABASE_URL").ok(),
             std::env::var("PORT").ok(),
             std::env::var("EDGE_ADDR").ok(),
@@ -146,7 +154,12 @@ impl Config {
             std::env::var("MODULE_STOP_GRACE_MS").ok(),
             std::env::var("PLAYER_MAX_CONNS").ok(),
             std::env::var("PLAYER_MAX_CONNS_PER_IP").ok(),
-        )
+        );
+        cfg.player_rate_limit_rps = env_rate("PLAYER_RATE_LIMIT_RPS", DEFAULT_PLAYER_RATE_LIMIT_RPS);
+        cfg.player_rate_limit_burst = env_number("PLAYER_RATE_LIMIT_BURST", DEFAULT_PLAYER_RATE_LIMIT_BURST);
+        cfg.player_conn_rate_limit_rps = env_rate("PLAYER_CONN_RATE_LIMIT_RPS", DEFAULT_PLAYER_CONN_RATE_LIMIT_RPS);
+        cfg.player_conn_rate_limit_burst = env_number("PLAYER_CONN_RATE_LIMIT_BURST", DEFAULT_PLAYER_CONN_RATE_LIMIT_BURST);
+        cfg
     }
 
     /// Drops the DB requirement, leaving everything else intact — the pure-transport
@@ -247,8 +260,41 @@ impl Config {
             tls: None,
             player_max_conns,
             player_max_conns_per_ip,
+            player_rate_limit_rps: DEFAULT_PLAYER_RATE_LIMIT_RPS,
+            player_rate_limit_burst: DEFAULT_PLAYER_RATE_LIMIT_BURST,
+            player_conn_rate_limit_rps: DEFAULT_PLAYER_CONN_RATE_LIMIT_RPS,
+            player_conn_rate_limit_burst: DEFAULT_PLAYER_CONN_RATE_LIMIT_BURST,
         }
     }
+}
+
+fn env_number<T>(name: &str, default: T) -> T
+where
+    T: std::str::FromStr + Copy,
+{
+    parse_number(std::env::var(name).ok().as_deref(), default)
+}
+
+fn env_rate(name: &str, default: f64) -> f64 {
+    std::env::var(name)
+        .ok()
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .and_then(|value| value.parse::<f64>().ok())
+        .filter(|value| value.is_finite() && *value >= 0.0)
+        .unwrap_or(default)
+}
+
+fn parse_number<T>(value: Option<&str>, default: T) -> T
+where
+    T: std::str::FromStr + Copy,
+{
+    value
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
 }
 
 /// Accepts both `:8080` and `8080` forms and returns `:8080`; empty → the default.
@@ -560,7 +606,13 @@ pub async fn run(
         running_player = match player_server {
             Some(shared) => {
                 let player = std::mem::take(&mut *shared.lock().unwrap())
-                    .with_conn_limits(cfg.player_max_conns, cfg.player_max_conns_per_ip);
+                    .with_conn_limits(cfg.player_max_conns, cfg.player_max_conns_per_ip)
+                    .with_request_limits(
+                        cfg.player_rate_limit_rps,
+                        cfg.player_rate_limit_burst,
+                        cfg.player_conn_rate_limit_rps,
+                        cfg.player_conn_rate_limit_burst,
+                    );
                 let ca = edge::shared_dev_ca().context("edge ca")?;
                 let player_bind: SocketAddr = to_bind_addr(&cfg.player_edge_addr)
                     .parse()
@@ -937,7 +989,7 @@ fn env_u32(key: &str) -> Option<u32> {
 ///
 /// - unix: SIGINT (Ctrl-C) *or* SIGTERM (the default `kill`, `docker stop`,
 ///   `systemctl stop`).
-/// - windows: Ctrl-C, `CTRL_CLOSE_EVENT` (console window closed), or
+/// - windows: Ctrl-C, Ctrl-Break, `CTRL_CLOSE_EVENT` (console window closed), or
 ///   `CTRL_SHUTDOWN_EVENT` (system shutdown).
 ///
 /// A failure to install a handler is logged and treated as "shut down".
@@ -945,9 +997,8 @@ fn env_u32(key: &str) -> Option<u32> {
 /// **Windows limitation:** `Stop-Process -Force` / `taskkill /F` map to
 /// `TerminateProcess` — no console control event ever reaches the process, so no
 /// graceful path can run for a forced kill. A graceful stop on Windows needs a
-/// *non-forced* console event (e.g. interactive Ctrl-C). The repo scripts
-/// (`run.ps1`, `split-proof.ps1`) stay hard-kill by design; this is a documented
-/// limitation, not a bug in this handler.
+/// *non-forced* console event. `split-proof.ps1` uses a process group and
+/// `CTRL_BREAK_EVENT`; forced termination remains only its stale-process fallback.
 #[cfg(unix)]
 async fn shutdown_signal() {
     use tokio::signal::unix::{signal, SignalKind};
@@ -973,7 +1024,15 @@ async fn shutdown_signal() {
 /// See the unix variant for the shared contract and the `taskkill /F` limitation.
 #[cfg(windows)]
 async fn shutdown_signal() {
-    use tokio::signal::windows::{ctrl_close, ctrl_shutdown};
+    use tokio::signal::windows::{ctrl_break, ctrl_close, ctrl_shutdown};
+
+    let mut break_signal = match ctrl_break() {
+        Ok(break_signal) => break_signal,
+        Err(err) => {
+            tracing::error!(%err, "failed to listen for CTRL_BREAK_EVENT; shutting down");
+            return;
+        }
+    };
 
     let mut close = match ctrl_close() {
         Ok(close) => close,
@@ -996,6 +1055,7 @@ async fn shutdown_signal() {
                 tracing::error!(%err, "failed to listen for ctrl-c; shutting down");
             }
         }
+        _ = break_signal.recv() => {}
         _ = close.recv() => {}
         _ = shutdown.recv() => {}
     }

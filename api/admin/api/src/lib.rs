@@ -44,6 +44,7 @@ pub const SLOT: &str = "admin.item";
 #[rpc(prefix = "admin")]
 #[async_trait]
 pub trait AdminData: Send + Sync {
+    #[retry_safe]
     async fn admin_data(&self) -> Result<ItemData, Error>;
 }
 

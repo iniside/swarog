@@ -3,6 +3,8 @@ use super::*;
 use bus::{AnyTx, SubscriptionSpec};
 use lifecycle::Context;
 use std::time::Duration;
+use std::sync::atomic::{AtomicI32, Ordering};
+use tokio::sync::Notify;
 
 /// Fallback DSN when `DATABASE_URL` is unset — the same default `core/app` uses.
 const DEFAULT_DSN: &str =
@@ -158,4 +160,89 @@ async fn test_transport_round_trips_emit_to_delivery() {
         .bind(sub_id)
         .execute(&pool)
         .await;
+}
+
+#[tokio::test]
+async fn stop_terminates_active_backend_and_rolls_back_effect_and_checkpoint() {
+    let Some(pool) = test_pool().await else { return };
+    sqlx::query("CREATE TABLE IF NOT EXISTS asyncevents_stop_test_effects (tag text PRIMARY KEY)")
+        .execute(&pool).await.unwrap();
+    let tag = unique_topic("plane.stop-effect");
+    let _ = sqlx::query("DELETE FROM asyncevents_stop_test_effects WHERE tag = $1")
+        .bind(tag).execute(&pool).await;
+
+    let dsn = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string());
+    let mut plane = Plane::new(pool.clone(), dsn).unwrap()
+        .with_stop_grace(Duration::from_millis(800));
+    let ctx = Context::with_db_and_transport(pool.clone(), plane.transport());
+    let topic = unique_topic("plane.stop");
+    let sub_id = unique_topic("plane-stop-sub");
+    let event = bus::define::<serde_json::Value>(
+        topic, 1, bus::HistoryPolicy::MinRetention { days: 7 },
+    );
+    let entered = Arc::new(Notify::new());
+    let never = Arc::new(Notify::new());
+    let pid = Arc::new(AtomicI32::new(0));
+    ctx.bus().on_tx(spec(sub_id), &event, {
+        let entered = entered.clone();
+        let never = never.clone();
+        let pid = pid.clone();
+        move |mut delivery, _value: serde_json::Value| {
+            let entered = entered.clone();
+            let never = never.clone();
+            let pid = pid.clone();
+            Box::pin(async move {
+                let conn = delivery.tx.downcast::<sqlx::PgConnection>()?;
+                let backend: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+                    .fetch_one(&mut *conn).await.map_err(bus::Error::transport)?;
+                pid.store(backend, Ordering::SeqCst);
+                sqlx::query("INSERT INTO asyncevents_stop_test_effects(tag) VALUES ($1)")
+                    .bind(tag).execute(&mut *conn).await.map_err(bus::Error::transport)?;
+                entered.notify_one();
+                never.notified().await;
+                Ok(())
+            })
+        }
+    });
+    plane.start().await.unwrap();
+    let mut tx = pool.begin().await.unwrap();
+    ctx.bus().emit_tx(AnyTx::new(&mut *tx), &event, &serde_json::json!({"tag": tag}))
+        .await.unwrap();
+    tx.commit().await.unwrap();
+    tokio::time::timeout(Duration::from_secs(5), entered.notified()).await.unwrap();
+
+    tokio::time::timeout(Duration::from_secs(2), plane.stop()).await.unwrap();
+    let backend = pid.load(Ordering::SeqCst);
+    let present: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid = $1)")
+        .bind(backend).fetch_one(&pool).await.unwrap();
+    assert!(!present, "delivery backend survived stop");
+    let effects: i64 = sqlx::query_scalar("SELECT count(*) FROM asyncevents_stop_test_effects WHERE tag = $1")
+        .bind(tag).fetch_one(&pool).await.unwrap();
+    assert_eq!(effects, 0, "handler effect committed during forced stop");
+    let cursor_tie: i64 = sqlx::query_scalar("SELECT cursor_tie FROM asyncevents.subscriptions WHERE subscription_id = $1")
+        .bind(sub_id).fetch_one(&pool).await.unwrap();
+    assert_eq!(cursor_tie, 0, "checkpoint advanced during forced stop");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(effects, sqlx::query_scalar::<_, i64>("SELECT count(*) FROM asyncevents_stop_test_effects WHERE tag = $1")
+        .bind(tag).fetch_one(&pool).await.unwrap(), "delivery continued after stop");
+    let _ = sqlx::query("DELETE FROM asyncevents.events WHERE topic = $1").bind(topic).execute(&pool).await;
+    let _ = sqlx::query("DELETE FROM asyncevents.subscriptions WHERE subscription_id = $1").bind(sub_id).execute(&pool).await;
+    let _ = sqlx::query("DROP TABLE IF EXISTS asyncevents_stop_test_effects").execute(&pool).await;
+}
+
+#[tokio::test]
+async fn stale_backend_identity_cannot_terminate_live_reused_pid() {
+    let Some(_pool) = test_pool().await else { return };
+    let dsn = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string());
+    let mut target = sqlx::PgConnection::connect(&dsn).await.unwrap();
+    let (pid, backend_start): (i32, String) = sqlx::query_as(
+        "SELECT pg_backend_pid(), backend_start::text FROM pg_stat_activity WHERE pid = pg_backend_pid()",
+    ).fetch_one(&mut target).await.unwrap();
+    let active = worker::ActiveDeliveries::default();
+    let _guard = active.register(7, 11, pid, format!("stale-{backend_start}"));
+    let claim = active.claim_active().pop().unwrap().1;
+    assert!(!terminate_claim(&dsn, &active, 7, &claim).await.unwrap());
+    let still_same_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut target).await.unwrap();
+    assert_eq!(still_same_pid, pid, "stale claim terminated the live replacement backend");
 }

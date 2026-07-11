@@ -8,11 +8,13 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 struct FakeConn {
     ok: bool,
     closes: Arc<AtomicUsize>,
+    calls: Arc<AtomicUsize>,
 }
 
 #[async_trait]
 impl Conn for FakeConn {
     async fn call(&self, _method: &str, _identity: Option<&str>, _payload: &[u8]) -> Result<Vec<u8>, Error> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
         if self.ok {
             Ok(b"ok".to_vec())
         } else {
@@ -29,6 +31,7 @@ impl Conn for FakeConn {
 struct FakeDialer {
     dials: Arc<AtomicUsize>,
     closes: Arc<AtomicUsize>,
+    calls: Arc<AtomicUsize>,
     heal_after: usize,
 }
 
@@ -39,26 +42,34 @@ impl Dialer for FakeDialer {
         Ok(Arc::new(FakeConn {
             ok: n + 1 >= self.heal_after,
             closes: self.closes.clone(),
+            calls: self.calls.clone(),
         }))
     }
 }
 
-fn reconnecting(heal_after: usize) -> (Reconnecting<FakeDialer>, Arc<AtomicUsize>, Arc<AtomicUsize>) {
+fn reconnecting(
+    heal_after: usize,
+) -> (Reconnecting<FakeDialer>, Arc<AtomicUsize>, Arc<AtomicUsize>, Arc<AtomicUsize>) {
     let dials = Arc::new(AtomicUsize::new(0));
     let closes = Arc::new(AtomicUsize::new(0));
+    let calls = Arc::new(AtomicUsize::new(0));
     let r = Reconnecting::new(FakeDialer {
         dials: dials.clone(),
         closes: closes.clone(),
+        calls: calls.clone(),
         heal_after,
     });
-    (r, dials, closes)
+    (r, dials, closes, calls)
 }
 
 /// A healthy first connection: one dial, one call, no redial.
 #[tokio::test]
 async fn healthy_call_does_not_redial() {
-    let (r, dials, closes) = reconnecting(1); // dial #0 → ok
-    let out = r.call("characters.ownerOf", None, b"{}").await.unwrap();
+    let (r, dials, closes, _) = reconnecting(1); // dial #0 → ok
+    let out = r
+        .call("characters.ownerOf", None, b"{}", RetryMode::OnceAfterReconnect)
+        .await
+        .unwrap();
     assert_eq!(out, b"ok");
     assert_eq!(dials.load(Ordering::SeqCst), 1, "must not redial a healthy conn");
     assert_eq!(closes.load(Ordering::SeqCst), 0);
@@ -68,8 +79,11 @@ async fn healthy_call_does_not_redial() {
 /// conn is reset (closed) and re-dialed, and the retry succeeds — exactly two dials.
 #[tokio::test]
 async fn redials_once_and_succeeds() {
-    let (r, dials, closes) = reconnecting(2); // dial #0 → dead, dial #1 → ok
-    let out = r.call("characters.ownerOf", None, b"{}").await.unwrap();
+    let (r, dials, closes, _) = reconnecting(2); // dial #0 → dead, dial #1 → ok
+    let out = r
+        .call("characters.ownerOf", None, b"{}", RetryMode::OnceAfterReconnect)
+        .await
+        .unwrap();
     assert_eq!(out, b"ok");
     assert_eq!(dials.load(Ordering::SeqCst), 2, "exactly one reconnect");
     assert_eq!(closes.load(Ordering::SeqCst), 1, "the dead conn was closed on reset");
@@ -79,8 +93,11 @@ async fn redials_once_and_succeeds() {
 /// retry also fails — the error propagates and there is NO third dial.
 #[tokio::test]
 async fn gives_up_after_one_retry() {
-    let (r, dials, closes) = reconnecting(usize::MAX); // every conn dead
-    let err = r.call("characters.ownerOf", None, b"{}").await.unwrap_err();
+    let (r, dials, closes, _) = reconnecting(usize::MAX); // every conn dead
+    let err = r
+        .call("characters.ownerOf", None, b"{}", RetryMode::OnceAfterReconnect)
+        .await
+        .unwrap_err();
     assert_eq!(err.status, opsapi::Status::Unavailable);
     assert_eq!(dials.load(Ordering::SeqCst), 2, "one initial dial + one retry, no more");
     assert_eq!(closes.load(Ordering::SeqCst), 1, "the first dead conn was closed");
@@ -89,10 +106,33 @@ async fn gives_up_after_one_retry() {
 /// `close` drops and closes the cached connection.
 #[tokio::test]
 async fn close_closes_cached_conn() {
-    let (r, _dials, closes) = reconnecting(1);
-    r.call("characters.ownerOf", None, b"{}").await.unwrap(); // caches a conn
+    let (r, _dials, closes, _) = reconnecting(1);
+    r.call("characters.ownerOf", None, b"{}", RetryMode::Never)
+        .await
+        .unwrap(); // caches a conn
     r.close().await;
     assert_eq!(closes.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn unsafe_failure_resets_without_replaying_and_next_request_redials() {
+    let (r, dials, closes, calls) = reconnecting(2);
+    let err = r
+        .call("characters.create", None, b"{}", RetryMode::Never)
+        .await
+        .unwrap_err();
+    assert_eq!(err.status, opsapi::Status::Unavailable);
+    assert_eq!(dials.load(Ordering::SeqCst), 1);
+    assert_eq!(calls.load(Ordering::SeqCst), 1, "unsafe call must not replay");
+    assert_eq!(closes.load(Ordering::SeqCst), 1, "failed connection is still reset");
+
+    let out = r
+        .call("characters.create", None, b"{}", RetryMode::Never)
+        .await
+        .unwrap();
+    assert_eq!(out, b"ok");
+    assert_eq!(dials.load(Ordering::SeqCst), 2, "next independent request redials");
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
 }
 
 // ---- The injected-factory swap: register runs every factory --------------

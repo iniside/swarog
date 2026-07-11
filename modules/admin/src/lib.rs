@@ -51,7 +51,9 @@
 
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, SocketAddr};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, OnceLock};
+use std::time::Instant;
 
 use axum::extract::{ConnectInfo, Path, Query, Request, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
@@ -68,6 +70,7 @@ use lifecycle::{Context, Module};
 use rand::RngCore as _;
 use serde::Serialize;
 use sqlx::PgPool;
+use tokio::sync::Semaphore;
 
 mod password;
 pub use password::{hash_password, verify_password};
@@ -133,7 +136,9 @@ CREATE TABLE IF NOT EXISTS admin.login_attempts (
 	fails        int  NOT NULL DEFAULT 0,
 	locked_until timestamptz,
 	updated_at   timestamptz NOT NULL DEFAULT now()
-);"#;
+);
+CREATE INDEX IF NOT EXISTS admin_login_attempts_updated_idx
+ON admin.login_attempts(updated_at);"#;
 
 // ---------------------------------------------------------------------------
 // Module
@@ -233,6 +238,11 @@ impl Module for Admin {
             open,
             cookie_secure,
             trusted,
+            login_slots: Arc::new(Semaphore::new(32)),
+            argon_permits: Arc::new(Semaphore::new(2)),
+            login_limiter: httpmw::IpLimiter::new(5.0, 20),
+            login_requests: AtomicU64::new(0),
+            verifier: Arc::new(ArgonVerifier),
         });
         ctx.mount(router(state));
         Ok(())
@@ -280,6 +290,28 @@ struct AdminState {
     cookie_secure: bool,
     /// Trusted-proxy CIDRs for the client-IP walk (lockout `ip:<addr>` subject).
     trusted: Vec<IpNet>,
+    login_slots: Arc<Semaphore>,
+    argon_permits: Arc<Semaphore>,
+    login_limiter: Arc<httpmw::IpLimiter>,
+    login_requests: AtomicU64,
+    verifier: Arc<dyn PasswordVerifier>,
+}
+
+trait PasswordVerifier: Send + Sync {
+    fn verify(&self, encoded: &str, password: &str) -> bool;
+}
+
+struct ArgonVerifier;
+
+impl PasswordVerifier for ArgonVerifier {
+    fn verify(&self, encoded: &str, password: &str) -> bool {
+        password::verify_password(encoded, password)
+    }
+}
+
+enum LoginOutcome {
+    Success { username: String, token: String },
+    Denied,
 }
 
 /// Builds the `/admin` router. `theme.css` is ungated (a stylesheet leaks nothing);
@@ -411,24 +443,91 @@ impl AdminState {
         Ok(())
     }
 
-    /// Records one failed login: both subject rows (`user:` / `ip:`) increment; a
-    /// row at/over its threshold gets `locked_until = now() + least(2^fails, 900)s`,
-    /// and the USER row crossing additionally emits `admin.action{login-locked}` —
-    /// atomic with the lock write.
-    async fn record_failure(&self, username: &str, ip: IpAddr) -> anyhow::Result<()> {
+    async fn cleanup_login_attempts(&self) {
+        let result = sqlx::query(
+            "WITH stale AS (
+               SELECT ctid FROM admin.login_attempts
+               WHERE updated_at < now() - interval '24 hours'
+                 AND (locked_until IS NULL OR locked_until <= now())
+               ORDER BY updated_at LIMIT 256 FOR UPDATE SKIP LOCKED
+             )
+             DELETE FROM admin.login_attempts a USING stale WHERE a.ctid = stale.ctid",
+        )
+        .execute(&self.pool)
+        .await;
+        if let Err(error) = result {
+            tracing::warn!(%error, "admin login-attempt cleanup failed");
+        }
+    }
+
+    async fn authenticate_and_mint(
+        &self,
+        username: String,
+        submitted: String,
+        ip: IpAddr,
+        valid_input: bool,
+    ) -> anyhow::Result<LoginOutcome> {
+        const LOCK_NAMESPACE: i64 = 4_702_968_888_123_215_687;
+        let effective_username = if valid_input { username.clone() } else { "<invalid>".to_string() };
+        let user_subject = format!("user:{effective_username}");
+        let ip_subject = format!("ip:{ip}");
+        let mut subjects = [user_subject.clone(), ip_subject.clone()];
+        subjects.sort();
+
         let mut tx = self.pool.begin().await?;
-        let subjects = [
-            (format!("user:{username}"), USER_LOCK_THRESHOLD, true),
-            (format!("ip:{ip}"), IP_LOCK_THRESHOLD, false),
-        ];
-        for (subject, threshold, is_user) in subjects {
+        let result: anyhow::Result<LoginOutcome> = async {
+        for subject in &subjects {
+            sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, $2))")
+                .bind(subject)
+                .bind(LOCK_NAMESPACE)
+                .execute(&mut *tx)
+                .await?;
+        }
+
+        let locked: (bool,) = sqlx::query_as(
+            "SELECT EXISTS (SELECT 1 FROM admin.login_attempts
+             WHERE subject = ANY($1) AND locked_until > now())",
+        )
+        .bind(&subjects)
+        .fetch_one(&mut *tx)
+        .await?;
+        let row: Option<(String,)> = if valid_input {
+            sqlx::query_as("SELECT pass_hash FROM admin.users WHERE username = $1")
+                .bind(&effective_username)
+                .fetch_optional(&mut *tx)
+                .await?
+        } else {
+            None
+        };
+        let known_user = row.is_some();
+        let (hash, candidate) = if locked.0 || !valid_input || !known_user {
+            (DUMMY_HASH.clone(), "admin-invalid-credentials".to_string())
+        } else {
+            (row.expect("known row").0, submitted)
+        };
+        let verifier = self.verifier.clone();
+        let verified = tokio::task::spawn_blocking(move || verifier.verify(&hash, &candidate))
+            .await
+            .map_err(|error| anyhow::anyhow!("admin password verifier task failed: {error}"))?;
+        let ok = verified && known_user && valid_input && !locked.0;
+
+        if locked.0 {
+            return Ok(LoginOutcome::Denied);
+        }
+        if !ok {
+            let failures = if known_user && valid_input {
+                vec![(&user_subject, USER_LOCK_THRESHOLD, true), (&ip_subject, IP_LOCK_THRESHOLD, false)]
+            } else {
+                vec![(&ip_subject, IP_LOCK_THRESHOLD, false)]
+            };
+            for (subject, threshold, is_user) in failures {
             let (fails,): (i32,) = sqlx::query_as(
                 "INSERT INTO admin.login_attempts (subject, fails) VALUES ($1, 1)
                  ON CONFLICT (subject) DO UPDATE
                  SET fails = admin.login_attempts.fails + 1, updated_at = now()
                  RETURNING fails",
             )
-            .bind(&subject)
+            .bind(subject)
             .fetch_one(&mut *tx)
             .await?;
             if fails >= threshold {
@@ -438,11 +537,11 @@ impl AdminState {
                      SET locked_until = now() + ($2::float8) * interval '1 second'
                      WHERE subject = $1",
                 )
-                .bind(&subject)
+                .bind(subject)
                 .bind(backoff as f64)
                 .execute(&mut *tx)
                 .await?;
-                if is_user {
+                if is_user && fails == threshold {
                     let evt = adminevents::AdminAction {
                         actor: username.to_string(),
                         action: "login-locked".into(),
@@ -452,11 +551,53 @@ impl AdminState {
                     self.bus
                         .emit_tx(AnyTx::new(&mut *tx), &adminevents::ACTION, &evt)
                         .await?;
+                    }
                 }
             }
+            return Ok(LoginOutcome::Denied);
         }
-        tx.commit().await?;
-        Ok(())
+
+        sqlx::query("DELETE FROM admin.login_attempts WHERE subject = ANY($1)")
+            .bind(&subjects)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM admin.sessions WHERE expires_at <= now()")
+            .execute(&mut *tx)
+            .await?;
+        let token = new_token();
+        let csrf = new_token();
+        sqlx::query(
+            "INSERT INTO admin.sessions (token, username, csrf_token, expires_at)
+             VALUES ($1, $2, $3, now() + ($4::float8) * interval '1 second')",
+        )
+        .bind(&token)
+        .bind(&username)
+        .bind(&csrf)
+        .bind(SESSION_TTL_SECS as f64)
+        .execute(&mut *tx)
+        .await?;
+        let evt = adminevents::AdminAction {
+            actor: username.clone(),
+            action: "login-succeeded".into(),
+            target: user_subject,
+            detail: format!("ip:{ip}"),
+        };
+        self.bus.emit_tx(AnyTx::new(&mut *tx), &adminevents::ACTION, &evt).await?;
+        Ok(LoginOutcome::Success { username, token })
+        }
+        .await;
+        match result {
+            Ok(outcome) => {
+                tx.commit().await?;
+                Ok(outcome)
+            }
+            Err(error) => {
+                if let Err(rollback_error) = tx.rollback().await {
+                    tracing::error!(%rollback_error, "admin security transaction rollback failed");
+                }
+                Err(error)
+            }
+        }
     }
 }
 
@@ -563,100 +704,53 @@ async fn login_submit(
         return see_other("/admin"); // no sessions to mint on an open portal
     }
     let username = body.get("username").map(String::as_str).unwrap_or("").trim().to_string();
-    let submitted = body.get("password").map(String::as_str).unwrap_or("");
+    let submitted = body.get("password").cloned().unwrap_or_default();
     let ip = st.resolve_ip(peer, &headers);
-    let subjects = vec![format!("user:{username}"), format!("ip:{ip}")];
-
-    // Lockout gate first: a locked subject answers the SAME generic 401 (no lock
-    // oracle) and does NOT increment further while locked.
-    let locked: Result<(bool,), _> = sqlx::query_as(
-        "SELECT EXISTS (SELECT 1 FROM admin.login_attempts
-          WHERE subject = ANY($1) AND locked_until > now())",
-    )
-    .bind(&subjects)
-    .fetch_one(&st.pool)
-    .await;
-    match locked {
-        Ok((true,)) => return render_login(&st, StatusCode::UNAUTHORIZED, GENERIC_LOGIN_ERROR),
-        Ok((false,)) => {}
-        Err(e) => {
-            tracing::error!(err = %e, "admin lockout check failed");
-            return (StatusCode::INTERNAL_SERVER_ERROR, "login failed").into_response();
-        }
+    if !st.login_limiter.allow(ip) {
+        return too_many_logins();
     }
-
-    // Verify — ALWAYS one argon2 pass, unknown users included (timing parity).
-    let row: Option<(String,)> =
-        match sqlx::query_as("SELECT pass_hash FROM admin.users WHERE username = $1")
-            .bind(&username)
-            .fetch_optional(&st.pool)
-            .await
-        {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::error!(err = %e, "admin user lookup failed");
-                return (StatusCode::INTERNAL_SERVER_ERROR, "login failed").into_response();
-            }
-        };
-    let ok = match &row {
-        Some((hash,)) => password::verify_password(hash, submitted),
-        None => {
-            let _ = password::verify_password(&DUMMY_HASH, submitted);
-            false
-        }
+    let request = st.login_requests.fetch_add(1, Ordering::Relaxed);
+    if request % 256 == 255 {
+        st.login_limiter.evict_idle(Instant::now());
+    }
+    let Ok(_slot) = st.login_slots.clone().try_acquire_owned() else {
+        return too_many_logins();
     };
-
-    if !ok {
-        if let Err(e) = st.record_failure(&username, ip).await {
-            tracing::error!(err = %e, "admin failure bookkeeping failed");
-        }
-        return render_login(&st, StatusCode::UNAUTHORIZED, GENERIC_LOGIN_ERROR);
+    if request % 256 == 255 {
+        st.cleanup_login_attempts().await;
     }
-
-    // Success: reset the attempt rows, GC expired sessions opportunistically, mint
-    // the session, and append the durable trail — ONE tx (session exists iff the
-    // audit event does).
-    let token = new_token();
-    let csrf = new_token();
-    let minted: anyhow::Result<()> = async {
-        let mut tx = st.pool.begin().await?;
-        sqlx::query("DELETE FROM admin.login_attempts WHERE subject = ANY($1)")
-            .bind(&subjects)
-            .execute(&mut *tx)
-            .await?;
-        sqlx::query("DELETE FROM admin.sessions WHERE expires_at <= now()")
-            .execute(&mut *tx)
-            .await?;
-        sqlx::query(
-            "INSERT INTO admin.sessions (token, username, csrf_token, expires_at)
-             VALUES ($1, $2, $3, now() + ($4::float8) * interval '1 second')",
-        )
-        .bind(&token)
-        .bind(&username)
-        .bind(&csrf)
-        .bind(SESSION_TTL_SECS as f64)
-        .execute(&mut *tx)
-        .await?;
-        let evt = adminevents::AdminAction {
-            actor: username.clone(),
-            action: "login-succeeded".into(),
-            target: format!("user:{username}"),
-            detail: format!("ip:{ip}"),
-        };
-        st.bus.emit_tx(AnyTx::new(&mut *tx), &adminevents::ACTION, &evt).await?;
-        tx.commit().await?;
-        Ok(())
-    }
-    .await;
-    if let Err(e) = minted {
-        tracing::error!(err = %e, "admin session mint failed");
+    let Ok(_argon) = st.argon_permits.clone().acquire_owned().await else {
         return (StatusCode::INTERNAL_SERVER_ERROR, "login failed").into_response();
+    };
+    let valid_input = !username.is_empty()
+        && username.len() <= 128
+        && submitted.len() <= 1024;
+    match st.authenticate_and_mint(username, submitted, ip, valid_input).await {
+        Ok(LoginOutcome::Success { username, token }) => {
+            tracing::debug!(%username, "admin login succeeded");
+            let mut resp = see_other("/admin");
+            resp.headers_mut().insert(
+                header::SET_COOKIE,
+                session_set_cookie(&token, st.cookie_secure),
+            );
+            resp
+        }
+        Ok(LoginOutcome::Denied) => {
+            render_login(&st, StatusCode::UNAUTHORIZED, GENERIC_LOGIN_ERROR)
+        }
+        Err(error) => {
+            tracing::error!(%error, "admin login transaction failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, "login failed").into_response()
+        }
     }
+}
 
-    let mut resp = see_other("/admin");
-    resp.headers_mut()
-        .insert(header::SET_COOKIE, session_set_cookie(&token, st.cookie_secure));
-    resp
+fn too_many_logins() -> Response {
+    let mut response = (StatusCode::TOO_MANY_REQUESTS, "too many login attempts").into_response();
+    response
+        .headers_mut()
+        .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
+    response
 }
 
 /// `POST /admin/logout` — session + CSRF gated; deletes the session row and appends

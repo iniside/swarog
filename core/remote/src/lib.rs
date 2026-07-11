@@ -36,8 +36,9 @@
 //! ## The reconnecting caller
 //! [`Reconnecting`] is a self-healing [`opsapi::Caller`]: it dials the peer LAZILY on
 //! first use, holds the connection for reuse (persistent conn, stream-per-call), and
-//! on a call error drops the connection and retries EXACTLY once with a fresh dial
-//! (the port of Go's `edgeConn`). A dial failure — the peer is down — propagates to
+//! on a call error always drops the connection, but replays only methods explicitly
+//! marked retry-safe; mutations return the first error and the next request redials.
+//! A dial failure — the peer is down — propagates to
 //! the consumer, which maps it to a 503. The retry logic is generic over a private
 //! [`Dialer`]/[`Conn`] seam so it is unit-testable with a fake transport (no QUIC).
 
@@ -49,7 +50,7 @@ use anyhow::Context as _;
 use async_trait::async_trait;
 use futures::future::BoxFuture;
 use lifecycle::{Context, Module};
-use opsapi::{Caller, Error};
+use opsapi::{Caller, Error, RetryMode};
 use tokio::sync::Mutex;
 
 // ---------------------------------------------------------------------------
@@ -130,8 +131,8 @@ trait Dialer: Send + Sync {
 }
 
 /// A lazily-dialed, self-healing [`Caller`] over a [`Dialer`]. Holds at most one live
-/// connection; on a call error it drops that connection and retries once with a fresh
-/// dial. Generic over `D` purely so the tests can inject a fake dialer.
+/// connection; on a call error it drops that connection and follows the call's
+/// fail-closed [`RetryMode`]. Generic over `D` purely so tests can inject a fake dialer.
 struct Reconnecting<D: Dialer> {
     dialer: D,
     /// The cached live connection, or `None` before the first dial / after a reset.
@@ -181,17 +182,24 @@ impl<D: Dialer> Reconnecting<D> {
 
 #[async_trait]
 impl<D: Dialer> Caller for Reconnecting<D> {
-    /// One RPC with a single reconnect-and-retry on failure. The first error may be a
-    /// stale/dead connection (the peer restarted); we drop it, re-dial, and retry
-    /// once. If the re-dial fails or the retry also errors, the error propagates so
-    /// the consumer answers 503.
-    async fn call(&self, method: &str, identity: Option<&str>, payload: &[u8]) -> Result<Vec<u8>, Error> {
+    /// One RPC. A failure always invalidates the cached connection. Only an explicit
+    /// [`RetryMode::OnceAfterReconnect`] redials and replays once; the default
+    /// [`RetryMode::Never`] returns the first error without replaying a mutation.
+    async fn call(
+        &self,
+        method: &str,
+        identity: Option<&str>,
+        payload: &[u8],
+        retry_mode: RetryMode,
+    ) -> Result<Vec<u8>, Error> {
         let c = self.get().await?;
         match c.call(method, identity, payload).await {
             Ok(v) => Ok(v),
-            Err(_first) => {
-                // Possible transport failure — reconnect once and retry.
+            Err(first) => {
                 self.reset(&c).await;
+                if retry_mode == RetryMode::Never {
+                    return Err(first);
+                }
                 let c2 = self.get().await?;
                 c2.call(method, identity, payload).await
             }

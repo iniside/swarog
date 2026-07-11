@@ -213,30 +213,65 @@ function Start-Svc([string]$Exe, [hashtable]$EnvVars, [string]$LogName) {
     foreach ($k in $EnvVars.Keys) { Set-Item -Path "Env:$k" -Value $EnvVars[$k] }
     $out = Join-Path $RunDir "$LogName.out.log"
     $err = Join-Path $RunDir "$LogName.err.log"
-    return Start-Process -FilePath $Exe -NoNewWindow -PassThru -RedirectStandardOutput $out -RedirectStandardError $err
+    $pidFile = Join-Path $RunDir "$LogName.pid"
+    Remove-Item -LiteralPath $pidFile -Force -ErrorAction SilentlyContinue
+    # Run the short-lived spawner through Start-Process with file-backed output.
+    # Calling it directly under verify's redirected native pipeline leaves another
+    # inheritable pipe handle in the spawned service; PowerShell then waits for EOF
+    # until that long-lived service exits even though winctrl itself already returned.
+    $spawnOut = Join-Path $RunDir "$LogName.spawn.out.log"
+    $spawnErr = Join-Path $RunDir "$LogName.spawn.err.log"
+    $spawn = Start-Process -FilePath $Winctrl -ArgumentList @(
+        'spawn', '--pid-file', $pidFile, '--stdout', $out, '--stderr', $err, '--', $Exe
+    ) -PassThru -NoNewWindow -RedirectStandardOutput $spawnOut -RedirectStandardError $spawnErr
+    # Start-Process -Wait deliberately waits for the entire descendant tree, which
+    # includes the long-lived service winctrl just created. WaitForExit targets only
+    # the short-lived winctrl process handle.
+    $spawn.WaitForExit()
+    if ($spawn.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $pidFile)) {
+        throw "winctrl failed to spawn $LogName"
+    }
+    $childPid = [int](Get-Content -LiteralPath $pidFile -Raw).Trim()
+    return Get-Process -Id $childPid -ErrorAction Stop
 }
 
-function Teardown {
-    if ($script:AProc -and -not $script:AProc.HasExited) { Stop-Process -Id $script:AProc.Id -Force -ErrorAction SilentlyContinue; Note "stopped A (pid $($script:AProc.Id))" }
-    if ($script:BProc -and -not $script:BProc.HasExited) { Stop-Process -Id $script:BProc.Id -Force -ErrorAction SilentlyContinue; Note "stopped B (pid $($script:BProc.Id))" }
-    if ($script:GProc -and -not $script:GProc.HasExited) { Stop-Process -Id $script:GProc.Id -Force -ErrorAction SilentlyContinue; Note "stopped G (pid $($script:GProc.Id))" }
-    if ($script:CProc -and -not $script:CProc.HasExited) { Stop-Process -Id $script:CProc.Id -Force -ErrorAction SilentlyContinue; Note "stopped C (pid $($script:CProc.Id))" }
-    if ($script:DProc -and -not $script:DProc.HasExited) { Stop-Process -Id $script:DProc.Id -Force -ErrorAction SilentlyContinue; Note "stopped D (pid $($script:DProc.Id))" }
-    if ($script:EProc -and -not $script:EProc.HasExited) { Stop-Process -Id $script:EProc.Id -Force -ErrorAction SilentlyContinue; Note "stopped E (pid $($script:EProc.Id))" }
-    if ($script:FProc -and -not $script:FProc.HasExited) { Stop-Process -Id $script:FProc.Id -Force -ErrorAction SilentlyContinue; Note "stopped F (pid $($script:FProc.Id))" }
-    if ($script:HProc -and -not $script:HProc.HasExited) { Stop-Process -Id $script:HProc.Id -Force -ErrorAction SilentlyContinue; Note "stopped H (pid $($script:HProc.Id))" }
-    if ($script:IProc -and -not $script:IProc.HasExited) { Stop-Process -Id $script:IProc.Id -Force -ErrorAction SilentlyContinue; Note "stopped I (pid $($script:IProc.Id))" }
-    if ($script:JProc -and -not $script:JProc.HasExited) { Stop-Process -Id $script:JProc.Id -Force -ErrorAction SilentlyContinue; Note "stopped J (pid $($script:JProc.Id))" }
-    if ($script:KProc -and -not $script:KProc.HasExited) { Stop-Process -Id $script:KProc.Id -Force -ErrorAction SilentlyContinue; Note "stopped K (pid $($script:KProc.Id))" }
-    if ($script:LProc -and -not $script:LProc.HasExited) { Stop-Process -Id $script:LProc.Id -Force -ErrorAction SilentlyContinue; Note "stopped L (pid $($script:LProc.Id))" }
-    if ($script:MProc -and -not $script:MProc.HasExited) { Stop-Process -Id $script:MProc.Id -Force -ErrorAction SilentlyContinue; Note "stopped monolith (pid $($script:MProc.Id))" }
+function Stop-Svc([System.Diagnostics.Process]$Proc, [string]$Label) {
+    if (-not $Proc -or $Proc.HasExited) { return $true }
+    & $Winctrl break $Proc.Id
+    $breakSent = $LASTEXITCODE -eq 0
+    if ($breakSent -and $Proc.WaitForExit(10000)) {
+        Note "gracefully stopped $Label (pid $($Proc.Id))"
+        return $true
+    }
+    Note "$Label (pid $($Proc.Id)) did not drain after CTRL_BREAK; forcing"
+    Stop-Process -Id $Proc.Id -Force -ErrorAction SilentlyContinue
+    return $false
+}
+
+function Teardown([bool]$AssertGraceful = $false, [string]$Assertion = 'W graceful shutdown') {
+    $graceful = $true
+    $entries = @(
+        [pscustomobject]@{ Proc=$script:AProc; Label='A' }, [pscustomobject]@{ Proc=$script:BProc; Label='B' },
+        [pscustomobject]@{ Proc=$script:GProc; Label='G' }, [pscustomobject]@{ Proc=$script:CProc; Label='C' },
+        [pscustomobject]@{ Proc=$script:DProc; Label='D' }, [pscustomobject]@{ Proc=$script:EProc; Label='E' },
+        [pscustomobject]@{ Proc=$script:FProc; Label='F' }, [pscustomobject]@{ Proc=$script:HProc; Label='H' },
+        [pscustomobject]@{ Proc=$script:IProc; Label='I' }, [pscustomobject]@{ Proc=$script:JProc; Label='J' },
+        [pscustomobject]@{ Proc=$script:KProc; Label='K' }, [pscustomobject]@{ Proc=$script:LProc; Label='L' },
+        [pscustomobject]@{ Proc=$script:MProc; Label='monolith' })
+    foreach ($entry in $entries) {
+        if (-not (Stop-Svc $entry.Proc $entry.Label)) { $graceful = $false }
+    }
+    if ($AssertGraceful) {
+        if ($graceful) { Pass "[$Assertion] CTRL_BREAK drained every process without Force fallback" }
+        else { Fail "[$Assertion] at least one process required Force fallback" }
+    }
     $script:AProc = $null; $script:BProc = $null; $script:GProc = $null; $script:CProc = $null; $script:DProc = $null; $script:EProc = $null; $script:FProc = $null; $script:HProc = $null; $script:IProc = $null; $script:JProc = $null; $script:KProc = $null; $script:LProc = $null; $script:MProc = $null
 }
 
 # Runs playercli, capturing stdout (joined) and the process exit code. Returns a
 # pscustomobject { Rc; Out }. playercli exits 0 iff transport ok AND status=="Ok".
 function Invoke-PlayerCli([string[]]$CliArgs) {
-    $out = & $PlayerCli @CliArgs 2>$null
+    $out = & $PlayerCli @CliArgs 2>&1
     $rc = $LASTEXITCODE
     return [pscustomobject]@{ Rc = $rc; Out = (($out | Out-String)).Trim() }
 }
@@ -263,13 +298,14 @@ try {
     }
     Note "fleet preflight OK: $($FleetSvcs.Count) svcs booted here == cmd/*-svc on disk"
 
-    $BuildPkgs = @('edgeca') + $FleetSvcs + @('adminctl', 'playercli', 'csharp-client-gen', 'server')
+    $BuildPkgs = @('edgeca', 'winctrl') + $FleetSvcs + @('adminctl', 'playercli', 'csharp-client-gen', 'server')
     Note "building $($BuildPkgs -join ' + ') ..."
     $CargoArgs = @($BuildPkgs | ForEach-Object { @('-p', $_) })
     cargo build @CargoArgs
     if ($LASTEXITCODE -ne 0) { throw 'cargo build failed' }
 
     New-Item -ItemType Directory -Force -Path $RunDir | Out-Null
+    $Winctrl = Join-Path $BinDir 'winctrl.exe'
 
     # Clear stragglers from an aborted prior run so ports are free (idempotent reruns).
     foreach ($n in ($FleetSvcs + 'server')) {
@@ -799,6 +835,65 @@ try {
         Fail "lockout expected identical 401 x6 + user locked (fails>=5) + ip not locked, got ok=$ad2Ok fails=$uFails locked=$uLocked ip-locked=$ipLocked"
     }
 
+    # [AD2b] Race twelve requests within the production burst. The DB advisory
+    # locks must serialize the threshold and emit login-locked exactly once.
+    $ad2bIp = '198.51.100.42'
+    Invoke-Sql "DELETE FROM admin.login_attempts WHERE subject IN ('user:$ProofLockUser','ip:$ad2bIp'); DELETE FROM asyncevents.events WHERE topic='admin.action' AND payload->>'actor'='$ProofLockUser' AND payload->>'action'='login-locked';" | Out-Null
+    Write-Host '[AD2b] 12 parallel wrong logins -> exact threshold and one lock event'
+    $jobs = 1..12 | ForEach-Object {
+        $i = $_; $url = "http://127.0.0.1:$GPort/admin/login"; $user = $ProofLockUser; $ip = $ad2bIp
+        Start-Job -ScriptBlock {
+            param($url, $user, $ip, $i)
+            & curl.exe -s -o NUL -w '%{http_code}' -X POST $url -H "X-Forwarded-For: $ip" -d "username=$user&password=wrong-$i"
+        } -ArgumentList $url, $user, $ip, $i
+    }
+    $ad2bCodes = $jobs | Wait-Job | Receive-Job
+    $jobs | Remove-Job -Force
+    $ad2bFails = ("" + (Invoke-Sql "SELECT fails FROM admin.login_attempts WHERE subject='user:$ProofLockUser';")).Trim()
+    $ad2bLocked = ("" + (Invoke-Sql "SELECT locked_until > now() FROM admin.login_attempts WHERE subject='user:$ProofLockUser';")).Trim()
+    $ad2bEvents = ("" + (Invoke-Sql "SELECT count(*) FROM asyncevents.events WHERE topic='admin.action' AND payload->>'actor'='$ProofLockUser' AND payload->>'action'='login-locked';")).Trim()
+    if ($ad2bFails -eq '5' -and $ad2bLocked -eq 't' -and $ad2bEvents -eq '1' -and @($ad2bCodes).Count -eq 12) {
+        Pass 'parallel lockout serialized: fails=5, active lock, one login-locked event'
+    } else {
+        Fail "parallel lockout expected fails=5/locked/one event, got $ad2bFails/$ad2bLocked/$ad2bEvents"
+    }
+
+    # [AD2c] A distinct trusted-proxy IP exhausts only the login admission burst.
+    $ad2cIp = '198.51.100.43'
+    Write-Host '[AD2c] login admission burst -> exact 429 + Retry-After: 1'
+    # Start-Job spins up 21 PowerShell runtimes serially and can take longer than
+    # the limiter's one-second refill window. Launch curl processes directly so the
+    # production burst is actually concurrent and the assertion is deterministic.
+    $ad2cDir = Join-Path $RunDir 'ad2c-ps'
+    Remove-Item -LiteralPath $ad2cDir -Recurse -Force -ErrorAction SilentlyContinue
+    New-Item -ItemType Directory -Path $ad2cDir | Out-Null
+    $ad2cProcs = 1..40 | ForEach-Object {
+        $i = $_
+        $headers = Join-Path $ad2cDir "$i.headers"
+        $code = Join-Path $ad2cDir "$i.code"
+        $err = Join-Path $ad2cDir "$i.err"
+        Start-Process -FilePath 'curl.exe' -ArgumentList @(
+            '-s', '-D', $headers, '-o', 'NUL', '-w', '%{http_code}', '-X', 'POST',
+            "http://127.0.0.1:$GPort/admin/login", '-H', "X-Forwarded-For:$ad2cIp",
+            '-d', "username=ghost-ad2c-$i&password=wrong"
+        ) -PassThru -NoNewWindow -RedirectStandardOutput $code -RedirectStandardError $err
+    }
+    $ad2cProcs | ForEach-Object { $_.WaitForExit() }
+    $ad2cResults = @(1..40 | ForEach-Object {
+        $headers = Join-Path $ad2cDir "$_.headers"
+        $code = Join-Path $ad2cDir "$_.code"
+        [pscustomobject]@{
+            Code = (Get-Content -LiteralPath $code -Raw).Trim()
+            Retry = [bool](Select-String -Path $headers -Pattern '^Retry-After: 1' -CaseSensitive:$false -Quiet)
+        }
+    })
+    $limited = @($ad2cResults | Where-Object Code -eq '429')
+    if ($limited.Count -ge 1 -and @($limited | Where-Object { -not $_.Retry }).Count -eq 0) {
+        Pass 'admin login limiter returns 429 with Retry-After: 1'
+    } else {
+        Fail "admin login limiter expected every 429 to carry Retry-After: 1, got $($limited.Count) limited responses"
+    }
+
     # [AD3] happy-path session login: proofadmin logs in through G's passthrough, gets a
     # 303 + admin_session cookie in the jar, then the jar authorizes the cross-process
     # admin pages -- /admin/characters (G -> E -> A over QUIC, renders the AD0 character)
@@ -980,7 +1075,7 @@ try {
     #         by (i) succeeding with J UP; the +15/-15 durable handler persists to
     #         rating.ratings on J, asserted directly in [MT5] after both reports.
     #   (vi)  re-POSTing [MT1]'s exact ReportId is an idempotent no-op: still 202, one
-    #         match row, no third match.finished (the split stub auto-retries, so a lost
+    #         match row, no third match.finished (a caller replay after an ambiguous
     #         response MUST NOT double-commit a match).
     $Winner = "champ-$RunSuffix"
     $Loser = "chump-$RunSuffix"
@@ -1065,8 +1160,8 @@ try {
     }
     if (-not $mt5Ok) { Fail "rating.ratings never reached winner=1030 / loser=970 (durable projection on J)" }
 
-    # --- [MT6] duplicate-report-idempotent: the split stub auto-retries a failed RPC,
-    # so a re-sent report MUST be a no-op. Re-POST with [MT1]'s exact ReportId -> still
+    # --- [MT6] duplicate-report-idempotent: mutating RPCs are not transport-retried,
+    # but a caller may re-send after an ambiguous result. Re-POST with [MT1]'s exact ReportId -> still
     # 202, but NO second match row (psql, the strong assertion) and NO third
     # match.finished (leaderboard wins stays 2).
     Write-Host "[MT6] duplicate POST /match/report with [MT1]'s ReportId ($Mt1Rid) -> 202 no-op (dedup)"
@@ -1135,6 +1230,12 @@ try {
     $p5 = Invoke-PlayerCli @('--addr', "127.0.0.1:$PlayerPort", '--ca', $CaCert, '--token', $Token, '--api-key', 'dev-key-client', 'characters.ownerOf', "{`"character_id`":`"$pcid`"}")
     Write-Host "    -> rc=$($p5.Rc)  $($p5.Out)"
     if ($p5.Rc -ne 0 -and $p5.Out -match 'NotFound') { Pass 'wire-only characters.ownerOf -> exit 1 + NotFound (allow-list gate live)' } else { Fail "ownerOf expected exit 1 + NotFound, got rc=$($p5.Rc) $($p5.Out)" }
+
+    Write-Host '[P6] persistent player connection consumes burst, gets exact denial, refills, then succeeds'
+    $p6 = Invoke-PlayerCli @('--addr', "127.0.0.1:$PlayerPort", '--ca', $CaCert, '--api-key', 'dev-key-client', '--repeat', '22', '--pause-before-last-ms', '2000', 'leaderboard.topScores', '{}')
+    Write-Host "    -> rc=$($p6.Rc)  $($p6.Out)"
+    $okCount = ([regex]::Matches($p6.Out, '"status":"Ok"')).Count
+    if ($p6.Rc -ne 0 -and $p6.Out -match 'player request rate limit exceeded' -and $okCount -ge 21) { Pass 'persistent player request limiter returns pinned denial and admits after refill' } else { Fail "persistent player request limiter proof failed: rc=$($p6.Rc) $($p6.Out)" }
 
     Write-Host '============================================'
 
@@ -1233,7 +1334,7 @@ try {
     Write-Host ''
     Write-Host '================ MONOLITH PARITY ================'
     Note 'tearing down the split before the monolith stage ...'
-    Teardown
+    Teardown $true 'W1 split graceful shutdown'
     foreach ($n in ($FleetSvcs + 'server')) {
         Get-Process -Name $n -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
     }
@@ -1320,6 +1421,7 @@ try {
         Fail "monolith (server) never became healthy on :$APort"
     }
 
+    Teardown $true 'W2 monolith graceful shutdown'
     Write-Host '============================================'
 
     if ($script:Fails -eq 0) {

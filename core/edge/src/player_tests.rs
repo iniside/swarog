@@ -126,3 +126,78 @@ fn token_and_api_key_roundtrip_and_absent_fields_are_not_serialised() {
     assert!(!s.contains("token"), "absent token must not be serialised: {s}");
     assert!(!s.contains("api_key"), "absent api_key must not be serialised: {s}");
 }
+
+#[test]
+fn request_limiter_shares_ip_and_isolates_connections() {
+    let limits = PlayerRequestLimits { per_ip_rps: 0.0, per_ip_burst: 2, per_conn_rps: 0.0, per_conn_burst: 1 };
+    let disabled = RequestLimiter::new(limits);
+    let ip = "127.0.0.1".parse().unwrap();
+    let a = disabled.connect(ip);
+    assert!(disabled.allow(ip, a.id));
+    assert!(disabled.allow(ip, a.id), "zero rate disables that level even with a burst");
+
+    let limited = RequestLimiter::new(PlayerRequestLimits { per_ip_rps: 1.0, per_ip_burst: 2, per_conn_rps: 1.0, per_conn_burst: 1 });
+    let a = limited.connect(ip);
+    let b = limited.connect(ip);
+    assert!(limited.allow(ip, a.id));
+    assert!(limited.allow(ip, b.id), "separate connection starts with its own token");
+    assert!(!limited.allow(ip, a.id), "shared IP burst and connection burst are exhausted");
+}
+
+#[test]
+fn accepted_stream_keeps_connection_bucket_alive_after_loop_exits() {
+    let limiter = RequestLimiter::new(PlayerRequestLimits {
+        per_ip_rps: 0.0,
+        per_ip_burst: 0,
+        per_conn_rps: 1.0,
+        per_conn_burst: 1,
+    });
+    let ip = "127.0.0.1".parse().unwrap();
+    let connection_loop_guard = limiter.connect(ip);
+
+    // This clone is the ownership handed to an accepted stream before its task is
+    // scheduled. The connection loop then closes/shuts down while the stream is
+    // still gated before admission.
+    let accepted_stream_guard = connection_loop_guard.clone();
+    let connection_id = accepted_stream_guard.id;
+    drop(connection_loop_guard);
+
+    assert!(
+        limiter.state.lock().unwrap().conns.contains_key(&connection_id),
+        "accepted stream must retain its connection bucket after the loop exits"
+    );
+    let handler_calls = std::sync::atomic::AtomicUsize::new(0);
+    if limiter.allow(ip, connection_id) {
+        handler_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+    assert_eq!(
+        handler_calls.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "released accepted stream must be admitted and run its handler"
+    );
+
+    drop(accepted_stream_guard);
+    assert!(
+        !limiter.state.lock().unwrap().conns.contains_key(&connection_id),
+        "the bucket is removed after the final accepted stream finishes"
+    );
+}
+
+#[tokio::test]
+async fn request_denial_is_exact_and_handler_is_not_called() {
+    let ca = DevCA::generate().unwrap();
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let seen = calls.clone();
+    let srv = PlayerServer::new().with_request_limits(0.0, 0, 1.0, 1);
+    srv.set_handler(Arc::new(move |_method, _token, _key, payload| {
+        seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Box::pin(async move { Ok(payload) })
+    }));
+    let running = srv.listen(loopback(), &ca).unwrap();
+    let client = PlayerClient::dial(running.local_addr(), &ca.trust_anchor()).await.unwrap();
+    assert!(client.call("echo", None, None, br#"{}"#).await.is_ok());
+    let err = client.call("echo", None, None, br#"{}"#).await.unwrap_err();
+    assert!(err.to_string().contains("player request rate limit exceeded"));
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    running.close();
+}

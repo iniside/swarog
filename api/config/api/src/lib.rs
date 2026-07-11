@@ -57,6 +57,7 @@ pub struct Snapshot {
 #[rpc(prefix = "config")]
 #[async_trait]
 pub trait ConfigSnapshot: Send + Sync {
+    #[retry_safe]
     async fn snapshot(&self) -> Result<Snapshot, Error>;
 }
 

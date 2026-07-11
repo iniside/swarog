@@ -90,6 +90,8 @@ impl OperationBackend for RemoteBackend {
         // `Caller::call` maps every edge-transport failure to Status::Unavailable; a
         // completed op's DOMAIN status (404/403/…) rides inside the returned bytes and
         // is decoded by the gateway's `encode`, exactly as on the Local path.
-        self.caller.call(&op.method, identity.player_id(), &req).await
+        self.caller
+            .call(&op.method, identity.player_id(), &req, op.retry_mode)
+            .await
     }
 }

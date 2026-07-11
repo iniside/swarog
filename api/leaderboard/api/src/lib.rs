@@ -36,5 +36,6 @@ pub trait Leaderboard: Send + Sync {
     /// The top-ranked players (wins desc, player asc), capped at 100 — the same shape
     /// and limit as the pre-migration handler. 200.
     #[http(verb = "GET", path = "/leaderboard", auth = "none", success = 200)]
+    #[retry_safe]
     async fn top_scores(&self) -> Result<Vec<Score>, Error>;
 }
