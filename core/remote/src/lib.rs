@@ -36,8 +36,10 @@
 //! ## The reconnecting caller
 //! [`Reconnecting`] is a self-healing [`opsapi::Caller`]: it dials the peer LAZILY on
 //! first use, holds the connection for reuse (persistent conn, stream-per-call), and
-//! on a call error always drops the connection, but replays only methods explicitly
-//! marked retry-safe; mutations return the first error and the next request redials.
+//! on a *transport* error always drops the connection (a definitive peer answer —
+//! `opsapi::Status::is_definitive_answer` — keeps it), but replays only methods
+//! explicitly marked retry-safe; mutations return the first error and the next
+//! request redials.
 //! A dial failure — the peer is down — propagates to
 //! the consumer, which maps it to a 503. The retry logic is generic over a private
 //! [`Dialer`]/[`Conn`] seam so it is unit-testable with a fake transport (no QUIC).
@@ -131,8 +133,9 @@ trait Dialer: Send + Sync {
 }
 
 /// A lazily-dialed, self-healing [`Caller`] over a [`Dialer`]. Holds at most one live
-/// connection; on a call error it drops that connection and follows the call's
-/// fail-closed [`RetryMode`]. Generic over `D` purely so tests can inject a fake dialer.
+/// connection; on a *transport* error it drops that connection and follows the call's
+/// fail-closed [`RetryMode`] (a definitive peer answer keeps the connection — see
+/// [`Caller::call`] below). Generic over `D` purely so tests can inject a fake dialer.
 struct Reconnecting<D: Dialer> {
     dialer: D,
     /// The cached live connection, or `None` before the first dial / after a reset.
@@ -182,9 +185,14 @@ impl<D: Dialer> Reconnecting<D> {
 
 #[async_trait]
 impl<D: Dialer> Caller for Reconnecting<D> {
-    /// One RPC. A failure always invalidates the cached connection. Only an explicit
-    /// [`RetryMode::OnceAfterReconnect`] redials and replays once; the default
-    /// [`RetryMode::Never`] returns the first error without replaying a mutation.
+    /// One RPC. A *transport* failure always invalidates the cached connection; a
+    /// DEFINITIVE peer answer ([`opsapi::Status::is_definitive_answer`], e.g. the
+    /// typed unknown-method → `NotFound`) proves the connection is healthy and is
+    /// returned as-is — no reset, no redial, regardless of `retry_mode`. Only an
+    /// explicit [`RetryMode::OnceAfterReconnect`] redials and replays once; the
+    /// default [`RetryMode::Never`] returns the first error without replaying a
+    /// mutation. If the replay on the fresh connection ALSO errors, that connection
+    /// is reset too — a dead c2 must not stay cached.
     async fn call(
         &self,
         method: &str,
@@ -195,13 +203,25 @@ impl<D: Dialer> Caller for Reconnecting<D> {
         let c = self.get().await?;
         match c.call(method, identity, payload).await {
             Ok(v) => Ok(v),
+            // A definitive peer answer: the peer received and answered the request,
+            // so the connection is healthy — keep it cached. Reset stays the DEFAULT
+            // for everything else (Unavailable, Internal, any future status).
+            Err(first) if first.status.is_definitive_answer() => Err(first),
             Err(first) => {
                 self.reset(&c).await;
                 if retry_mode == RetryMode::Never {
                     return Err(first);
                 }
                 let c2 = self.get().await?;
-                c2.call(method, identity, payload).await
+                match c2.call(method, identity, payload).await {
+                    Ok(v) => Ok(v),
+                    Err(second) => {
+                        // The replayed connection failed too — invalidate it so the
+                        // NEXT request redials instead of reusing a dead c2.
+                        self.reset(&c2).await;
+                        Err(second)
+                    }
+                }
             }
         }
     }

@@ -33,8 +33,9 @@
 //!      the op's `OpBinding::decode`.
 //!   5. **Dispatch** on the topology-correct backend (`RouteTable::dispatch`): a
 //!      [`LocalBackend`] when this process holds the op's `LocalInvoker`, else a
-//!      [`RemoteBackend`] dialing the owning peer (a Remote failure evicts the cached
-//!      connection so the next request re-dials).
+//!      [`RemoteBackend`] dialing the owning peer (a Remote *transport* failure
+//!      evicts the cached connection so the next request re-dials; a definitive
+//!      peer answer keeps it).
 //!   6. Reduce the wire response via `OpBinding::encode` — an encode-`Err` carries the
 //!      domain `Status` (→ its HTTP code); an `Ok` writes the op's declared `success`
 //!      code with the domain body.
@@ -596,10 +597,14 @@ impl RouteTable {
     /// caller. Serves BOTH planes — the HTTP handler and the player handler funnel
     /// through here, so the eviction rule below protects both.
     ///
-    /// **Evict-on-error:** a Remote call failure drops that provider's cached
-    /// `Arc<dyn Caller>`, so the NEXT request re-dials instead of reusing a dead
-    /// connection forever (a provider restart would otherwise brick the route
-    /// permanently). This is the reset idea of `remote::Reconnecting` WITHOUT the
+    /// **Evict-on-transport-error:** a Remote *transport* failure drops that
+    /// provider's cached `Arc<dyn Caller>`, so the NEXT request re-dials instead of
+    /// reusing a dead connection forever (a provider restart would otherwise brick
+    /// the route permanently). A DEFINITIVE peer answer
+    /// ([`opsapi::Status::is_definitive_answer`], e.g. the typed unknown-method →
+    /// `NotFound`) proves the connection is healthy and is NOT evicted; anything
+    /// else — `Unavailable`, `Internal`, any future status — still evicts (the safe
+    /// default). This is the reset idea of `remote::Reconnecting` WITHOUT the
     /// inline retry: one failed request, then self-heal. Eviction is guarded by
     /// pointer identity so a concurrent request's freshly-dialed replacement is
     /// never discarded by a stale failure.
@@ -617,7 +622,10 @@ impl RouteTable {
                 let provider = provider_of(&op.method);
                 let caller = self.remote_caller(provider).await?;
                 let result = RemoteBackend::new(caller.clone()).invoke(op, identity, req).await;
-                if result.is_err() {
+                // Skip eviction ONLY on a definitive peer answer (the connection
+                // demonstrably carried a round trip); every other error — including
+                // any future status — evicts, keeping eviction the safe default.
+                if matches!(&result, Err(e) if !e.status.is_definitive_answer()) {
                     let mut cache = self.remotes.lock().await;
                     if let Some(cached) = cache.get(provider) {
                         if Arc::ptr_eq(cached, &caller) {
@@ -777,7 +785,8 @@ async fn dispatch_matched_op(
     };
 
     // (5) Dispatch on the topology-correct backend (Local in-process, else the Remote
-    // peer; a Remote failure evicts the cached conn so the next request re-dials).
+    // peer; a Remote transport failure evicts the cached conn so the next request
+    // re-dials).
     let wire_resp = match front.table().dispatch(&op, identity, wire_req).await {
         Ok(r) => r,
         Err(e) => return op_error_response(&e),

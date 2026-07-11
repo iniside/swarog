@@ -3,10 +3,13 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 // ---- Fake transport for the redial-once logic --------------------------
 
-/// A fake connection: `ok` decides whether its single `call` succeeds; a shared
-/// counter records closes so a test can assert `reset` closed the dead conn.
+/// A fake connection: `ok` decides whether its single `call` succeeds; a failing
+/// call errors with `status` (historically only `Unavailable`, which is exactly why
+/// the definitive-answer classification went untested); a shared counter records
+/// closes so a test can assert `reset` closed the dead conn.
 struct FakeConn {
     ok: bool,
+    status: opsapi::Status,
     closes: Arc<AtomicUsize>,
     calls: Arc<AtomicUsize>,
 }
@@ -18,7 +21,7 @@ impl Conn for FakeConn {
         if self.ok {
             Ok(b"ok".to_vec())
         } else {
-            Err(Error::unavailable("fake: dead conn"))
+            Err(Error::new(self.status, "fake: call failed"))
         }
     }
     fn close(&self) {
@@ -27,12 +30,14 @@ impl Conn for FakeConn {
 }
 
 /// A fake dialer: the Nth dial (0-based) yields a conn whose `call` succeeds iff
-/// `N + 1 >= heal_after`. `dials` counts how many times it was asked to dial.
+/// `N + 1 >= heal_after`; a failing conn errors with `fail_status`. `dials` counts
+/// how many times it was asked to dial.
 struct FakeDialer {
     dials: Arc<AtomicUsize>,
     closes: Arc<AtomicUsize>,
     calls: Arc<AtomicUsize>,
     heal_after: usize,
+    fail_status: opsapi::Status,
 }
 
 #[async_trait]
@@ -41,6 +46,7 @@ impl Dialer for FakeDialer {
         let n = self.dials.fetch_add(1, Ordering::SeqCst);
         Ok(Arc::new(FakeConn {
             ok: n + 1 >= self.heal_after,
+            status: self.fail_status,
             closes: self.closes.clone(),
             calls: self.calls.clone(),
         }))
@@ -50,6 +56,16 @@ impl Dialer for FakeDialer {
 fn reconnecting(
     heal_after: usize,
 ) -> (Reconnecting<FakeDialer>, Arc<AtomicUsize>, Arc<AtomicUsize>, Arc<AtomicUsize>) {
+    reconnecting_failing_with(heal_after, opsapi::Status::Unavailable)
+}
+
+/// Like [`reconnecting`], but failing conns error with `fail_status` — so tests can
+/// exercise the definitive-answer (`NotFound`) vs transport-default (`Internal`)
+/// classification, not just `Unavailable`.
+fn reconnecting_failing_with(
+    heal_after: usize,
+    fail_status: opsapi::Status,
+) -> (Reconnecting<FakeDialer>, Arc<AtomicUsize>, Arc<AtomicUsize>, Arc<AtomicUsize>) {
     let dials = Arc::new(AtomicUsize::new(0));
     let closes = Arc::new(AtomicUsize::new(0));
     let calls = Arc::new(AtomicUsize::new(0));
@@ -58,6 +74,7 @@ fn reconnecting(
         closes: closes.clone(),
         calls: calls.clone(),
         heal_after,
+        fail_status,
     });
     (r, dials, closes, calls)
 }
@@ -90,7 +107,8 @@ async fn redials_once_and_succeeds() {
 }
 
 /// A persistently dead peer: the first call fails, one reconnect is attempted, the
-/// retry also fails — the error propagates and there is NO third dial.
+/// retry also fails — the error propagates and there is NO third dial. BOTH dead
+/// conns are reset (closes == 2): a dead c2 must not stay cached for the next request.
 #[tokio::test]
 async fn gives_up_after_one_retry() {
     let (r, dials, closes, _) = reconnecting(usize::MAX); // every conn dead
@@ -100,7 +118,47 @@ async fn gives_up_after_one_retry() {
         .unwrap_err();
     assert_eq!(err.status, opsapi::Status::Unavailable);
     assert_eq!(dials.load(Ordering::SeqCst), 2, "one initial dial + one retry, no more");
-    assert_eq!(closes.load(Ordering::SeqCst), 1, "the first dead conn was closed");
+    assert_eq!(closes.load(Ordering::SeqCst), 2, "BOTH dead conns were closed (c2 too)");
+}
+
+/// A DEFINITIVE peer answer (`NotFound`, the typed unknown-method mapping) proves the
+/// connection is healthy: no reset, no redial, the original error is returned — for
+/// BOTH retry modes (the classification precedes the retry_mode branch).
+#[tokio::test]
+async fn notfound_does_not_reset_or_redial() {
+    for mode in [RetryMode::Never, RetryMode::OnceAfterReconnect] {
+        let (r, dials, closes, calls) =
+            reconnecting_failing_with(usize::MAX, opsapi::Status::NotFound);
+        let err = r
+            .call("characters.ownerOf", None, b"{}", mode)
+            .await
+            .unwrap_err();
+        assert_eq!(err.status, opsapi::Status::NotFound, "original answer returned ({mode:?})");
+        assert_eq!(dials.load(Ordering::SeqCst), 1, "no redial on a definitive answer ({mode:?})");
+        assert_eq!(closes.load(Ordering::SeqCst), 0, "healthy conn must NOT be reset ({mode:?})");
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "no replay ({mode:?})");
+    }
+}
+
+/// A non-Unavailable, non-NotFound status (`Internal`) still takes the reset path:
+/// reset is the DEFAULT — only a proven definitive answer skips it. Pins the
+/// classification direction against a future `== Unavailable` rewrite (M4): a new
+/// transport-fault status must fall into reset, not into keep-cached.
+#[tokio::test]
+async fn internal_status_still_resets() {
+    let (r, dials, closes, _) =
+        reconnecting_failing_with(usize::MAX, opsapi::Status::Internal);
+    let err = r
+        .call("characters.create", None, b"{}", RetryMode::Never)
+        .await
+        .unwrap_err();
+    assert_eq!(err.status, opsapi::Status::Internal);
+    assert_eq!(dials.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        closes.load(Ordering::SeqCst),
+        1,
+        "an unclassified status MUST reset — reset is the default, not `== Unavailable`"
+    );
 }
 
 /// `close` drops and closes the cached connection.

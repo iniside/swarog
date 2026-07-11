@@ -172,6 +172,23 @@ impl Status {
             Status::Conflict => 409,
         }
     }
+
+    /// True iff this status is a DEFINITIVE peer answer at the transport-error seam:
+    /// the peer demonstrably received the request and answered it, so the connection
+    /// that carried it is healthy and must NOT be reset/evicted. Everything else —
+    /// `Unavailable`, `Internal`, any future variant — is treated as a (possible)
+    /// transport failure and takes the reset path by default (fail-safe: resetting a
+    /// healthy connection costs one redial; caching a dead one bricks the route).
+    ///
+    /// Tied to the `From<edge::Error> for opsapi::Error` mapping in `core/edge`:
+    /// today `UnknownMethod` (the peer answered "no such method") maps to `NotFound`
+    /// and every other edge failure maps to `Unavailable`. If that mapping ever
+    /// grows a non-`Unavailable` status for a genuine transport fault, the default
+    /// (non-definitive → reset) path here catches it — the predicate classifies on
+    /// the ANSWER, never on `== Unavailable`.
+    pub fn is_definitive_answer(self) -> bool {
+        matches!(self, Status::NotFound)
+    }
 }
 
 /// A typed operation error a handler returns to select the [`Status`] that rides
