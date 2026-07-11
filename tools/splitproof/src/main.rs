@@ -230,6 +230,178 @@ impl Proof {
     }
 }
 
+/// Send a GRACEFUL shutdown signal to a process (Ctrl-Break on Windows to its own
+/// process group, SIGTERM on unix) — the non-forced path the app's `shutdown_signal`
+/// drains on. The child MUST have been spawned in its own process group (Windows).
+#[cfg(windows)]
+fn send_graceful(pid: u32) -> bool {
+    use windows_sys::Win32::System::Console::{GenerateConsoleCtrlEvent, CTRL_BREAK_EVENT};
+    unsafe { GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, pid) != 0 }
+}
+#[cfg(unix)]
+fn send_graceful(pid: u32) -> bool {
+    unsafe { libc::kill(pid as i32, libc::SIGTERM) == 0 }
+}
+
+/// Windows: put a child in its OWN process group so a targeted Ctrl-Break reaches it
+/// (and not this harness). No-op on unix (SIGTERM targets the pid directly).
+fn new_group(cmd: &mut Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+        cmd.creation_flags(CREATE_NEW_PROCESS_GROUP);
+    }
+    #[cfg(not(windows))]
+    let _ = cmd;
+}
+
+/// Extract `<input name="X" value="Y">` pairs from an admin form page (for the M3b
+/// no-op form resubmit — a tiny hand parser avoids a regex dep).
+fn extract_form_fields(html: &str) -> Vec<(String, String)> {
+    let attr = |tag: &str, key: &str| -> Option<String> {
+        let pat = format!("{key}=\"");
+        let start = tag.find(&pat)? + pat.len();
+        let end = tag[start..].find('"')? + start;
+        Some(tag[start..end].to_string())
+    };
+    let mut out = Vec::new();
+    for input in html.split("<input").skip(1) {
+        let tag = &input[..input.find('>').unwrap_or(input.len())];
+        if let Some(name) = attr(tag, "name") {
+            out.push((name, attr(tag, "value").unwrap_or_default()));
+        }
+    }
+    out
+}
+
+/// Monolith-parity phase: boot cmd/server (all modules Local) on the split's player
+/// front and re-prove register/QUIC/auth/admin work identically (M0-M3b).
+async fn monolith_parity(ctx: &Ctx, pool: &PgPool, p: &mut Proof) -> Result<()> {
+    println!("\n[splitproof] === MONOLITH PARITY (cmd/server, all Local) ===");
+    sqlx::query("DELETE FROM admin.sessions").execute(pool).await.ok();
+    sqlx::query("DELETE FROM admin.login_attempts").execute(pool).await.ok();
+    let bin = ctx.bin_dir.join(format!("server{}", std::env::consts::EXE_SUFFIX));
+    if !bin.exists() {
+        bail!("monolith binary not found: {}", bin.display());
+    }
+    let out = File::create(ctx.run_dir.join("monolith.out.log"))?;
+    let err = File::create(ctx.run_dir.join("monolith.err.log"))?;
+    let mut cmd = Command::new(&bin);
+    cmd.env("PORT", format!(":{P_CHARACTERS}"))
+        .env("DATABASE_URL", &ctx.db_url)
+        .env("PLAYER_EDGE_ADDR", format!(":{PLAYER_PORT}"))
+        .env("EDGE_CA_CERT", ctx.ca_cert.display().to_string())
+        .env("EDGE_CA_KEY", ctx.ca_key.display().to_string())
+        .env("APIKEYS_DEV_SEED", "1")
+        .env("ACCOUNTS_DEV_AUTH", "1")
+        .env("INVENTORY_DEV_GRANT", "1")
+        .env("TLS_MODE", "off")
+        .env("ADMIN_COOKIE_SECURE", "0")
+        .env("TRUSTED_PROXY_CIDRS", "127.0.0.1/32")
+        .stdout(out)
+        .stderr(err);
+    new_group(&mut cmd); // own process group so [W2]'s Ctrl-Break targets only it
+    let child = cmd.spawn().context("spawn monolith")?;
+    let pid = child.id();
+    let mut mono = Running { child }; // kill-on-drop safety net until [W2]
+    let m = format!("http://127.0.0.1:{P_CHARACTERS}");
+    // wait healthy
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        if let Ok(r) = ctx.http.get(format!("{m}/readyz")).send().await {
+            if r.status().is_success() {
+                break;
+            }
+        }
+        if Instant::now() >= deadline {
+            bail!("monolith did not become healthy on :{P_CHARACTERS}");
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    println!("[splitproof] monolith healthy on :{P_CHARACTERS}");
+    let suffix = std::process::id();
+
+    // [M0] register a player on the monolith (accounts module local, real session).
+    let mtoken = register_login(ctx, &m, &format!("mono-{suffix}@test.local")).await.ok();
+    p.check("[M0] monolith register -> real bearer", mtoken.is_some(), "");
+    if let Some(tok) = &mtoken {
+        // [M1] QUIC characters.create 'solo' (all ops Local).
+        let m1 = player_call(ctx, Some(tok), "characters.create", r#"{"name":"solo","class":""}"#).await;
+        p.check("[M1] monolith QUIC create -> Ok", status_or_err(&m1, "Ok"), "");
+        // [M2] a dev- token is rejected by the real local accounts verifier.
+        let m2 = player_call(ctx, Some(&format!("dev-{suffix}")), "characters.create", r#"{"name":"x","class":""}"#).await;
+        p.check("[M2] monolith dev- token -> Unauthorized", status_or_err(&m2, "Unauthorized"), "");
+    }
+
+    // [M3] admin portal parity: fresh jar logs in -> 303, LOCAL characters page shows 'solo'.
+    let jar = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .cookie_store(true)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()?;
+    let m3l = jar.post(format!("{m}/admin/login")).form(&[("username", "proofadmin"), ("password", "proofpass")]).send().await?;
+    let m3 = jar.get(format!("{m}/admin/characters")).send().await?;
+    let (m3c, m3b) = (m3.status().as_u16(), m3.text().await.unwrap_or_default());
+    p.check(
+        "[M3] monolith admin login + characters shows solo",
+        m3l.status().as_u16() == 303 && m3c == 200 && m3b.contains("solo"),
+        format!("login={} chars={m3c}", m3l.status().as_u16()),
+    );
+
+    // [M3b] LOCAL apikeys form-submit WITH _csrf -> a NEW admin.action{form-submit} event
+    // (remote forms in the split are read-only, so this is the only place it's exercised).
+    let before: Option<i64> = sqlx::query_scalar("SELECT count(*) FROM asyncevents.events WHERE topic='admin.action' AND payload->>'action'='form-submit'").fetch_optional(pool).await.ok().flatten();
+    let page = jar.get(format!("{m}/admin/api-keys")).send().await?.text().await.unwrap_or_default();
+    let fields = extract_form_fields(&page);
+    if fields.iter().any(|(k, _)| k == "_csrf") {
+        let form: Vec<(&str, &str)> = fields.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        let _ = jar.post(format!("{m}/admin/api-keys")).form(&form).send().await;
+        let mut ok = false;
+        for _ in 0..30 {
+            let after: Option<i64> = sqlx::query_scalar("SELECT count(*) FROM asyncevents.events WHERE topic='admin.action' AND payload->>'action'='form-submit'").fetch_optional(pool).await.ok().flatten();
+            if after.unwrap_or(0) > before.unwrap_or(0) {
+                ok = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(300)).await;
+        }
+        p.check("[M3b] local form-submit -> new admin.action event", ok, format!("before={before:?}"));
+    } else {
+        p.check("[M3b] local form-submit form present (_csrf)", false, "no _csrf field on apikeys page");
+    }
+
+    // [W2] graceful shutdown: a native Ctrl-Break (Windows) / SIGTERM (unix) must drain
+    // in-flight work and exit 0 within the grace window — no force-kill. This is the
+    // proof winctrl gave, now native (the app's shutdown_signal listens for ctrl_break).
+    let sent = send_graceful(pid);
+    let mut clean = false;
+    if sent {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            match mono.child.try_wait() {
+                Ok(Some(status)) => {
+                    clean = status.success();
+                    break;
+                }
+                Ok(None) => {}
+                Err(_) => break,
+            }
+            if Instant::now() >= deadline {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    }
+    p.check(
+        "[W2] monolith graceful shutdown -> clean exit",
+        sent && clean,
+        format!("sent={sent} clean={clean}"),
+    );
+    // mono drops here: if it exited, kill() is a no-op; otherwise force-kill (cleanup).
+    Ok(())
+}
+
 fn workspace_dirs() -> Result<(PathBuf, PathBuf)> {
     // splitproof.exe lives in target/debug (or target/release); its siblings are the
     // svc binaries, and the workspace root is two levels up.
@@ -312,6 +484,14 @@ async fn run() -> Result<u32> {
 
     let mut p = Proof::default();
     assertions(&ctx, &pool, &mut p).await?;
+
+    // --- Monolith parity: tear the split down (frees :8080 + :9100), boot cmd/server on
+    // the same player front, and re-prove a subset (never-monolith-only-features). ---
+    drop(fleet);
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    if let Err(e) = monolith_parity(&ctx, &pool, &mut p).await {
+        p.check("[M0-M3b] monolith parity phase", false, format!("fatal: {e:#}"));
+    }
 
     println!(
         "\n[splitproof] {} passed, {} failed",

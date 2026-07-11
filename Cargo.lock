@@ -3664,10 +3664,12 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "edge",
+ "libc",
  "reqwest",
  "serde_json",
  "sqlx",
  "tokio",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
