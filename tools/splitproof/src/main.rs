@@ -581,7 +581,106 @@ async fn assertions(ctx: &Ctx, pool: &PgPool, p: &mut Proof) -> Result<()> {
         .await?;
     p.check("[K5b] post-burst fresh key -> 401", k5b.status().as_u16() == 401, k5b.status());
 
+    // --- Characters/inventory: plain-id relations + durable character.created/deleted. ---
+    if let Some(tok) = token.clone() {
+        let other = register_login(ctx, &g, &format!("other-{suffix}@test.local")).await.ok();
+        // [1] create through G -> A.
+        let cid = create_character(ctx, &g, &tok, "Aria").await;
+        p.check("[1] create character -> 201 + id", cid.is_some(), format!("cid={cid:?}"));
+        if let Some(cid) = cid {
+            // [2] starter grant appears (character.created -> inventory, durable).
+            let starter = poll_inventory_has(ctx, &g, &tok, &cid, "starter_sword").await;
+            p.check("[2] starter_sword granted via event", starter, format!("cid={cid}"));
+            // [3] a DIFFERENT player is denied (owner_of over QUIC gates).
+            if let Some(other) = &other {
+                let (nc, _) = inventory_of(ctx, &g, other, &cid).await;
+                p.check("[3] other player -> 403/404", nc == 403 || nc == 404, format!("code={nc}"));
+            }
+            // [4] delete.
+            let del = ctx
+                .http
+                .delete(format!("{g}/characters/{cid}"))
+                .header("X-Api-Key", "dev-key-client")
+                .header("Authorization", format!("Bearer {tok}"))
+                .send()
+                .await?;
+            p.check("[4] delete character -> 204", del.status().as_u16() == 204, del.status());
+            // [5] holdings wiped in B (integrity via character.deleted, not FK cascade).
+            let wiped = poll_count(
+                pool,
+                "SELECT count(*) FROM inventory.holdings WHERE owner_type='character' AND owner_id::text=$1",
+                &cid,
+                0,
+            )
+            .await;
+            p.check("[5] holdings wiped via character.deleted", wiped, format!("cid={cid}"));
+            // [5t] wipe planted the tombstone in the same delivery tx.
+            let tomb: Option<i64> = sqlx::query_scalar(
+                "SELECT count(*) FROM inventory.wiped_characters WHERE character_id::text=$1",
+            )
+            .bind(&cid)
+            .fetch_optional(pool)
+            .await
+            .ok()
+            .flatten();
+            p.check("[5t] wipe tombstone planted", tomb == Some(1), format!("rows={tomb:?}"));
+            // [5b] gone via owner_of over QUIC too.
+            let (w2, _) = inventory_of(ctx, &g, &tok, &cid).await;
+            p.check("[5b] post-delete inventory -> 404", w2 == 404, format!("code={w2}"));
+        }
+
+        // --- Config live-reload (C1-C3, C4b): revision + NOTIFY + durable config.changed. ---
+        // [C1] baseline: B booted with no config row -> default starter_sword.
+        if let Some(bcid) = create_character(ctx, &g, &tok, "Baseline").await {
+            let base = poll_inventory_has(ctx, &g, &tok, &bcid, "starter_sword").await;
+            p.check("[C1] baseline starter is starter_sword", base, format!("cid={bcid}"));
+        }
+        // [C2] runtime change on the shared config DB.
+        let c2 = sqlx::query(
+            "INSERT INTO config.settings (namespace,key,value) VALUES ('inventory','starter_item','health_potion') \
+             ON CONFLICT (namespace,key) DO UPDATE SET value=excluded.value",
+        )
+        .execute(pool)
+        .await;
+        p.check("[C2] set inventory/starter_item=health_potion", c2.is_ok(), "");
+        // [C3] live reload: a fresh character is eventually granted health_potion.
+        p.check(
+            "[C3] live config reload -> health_potion",
+            poll_fresh_grant(ctx, &g, &tok, "Reloaded", "health_potion").await,
+            "",
+        );
+        // [C4b] reset -> fresh characters revert to starter_sword (reload still works).
+        sqlx::query("DELETE FROM config.settings WHERE namespace='inventory' AND key='starter_item'")
+            .execute(pool)
+            .await
+            .ok();
+        p.check(
+            "[C4b] config reset -> revert to starter_sword",
+            poll_fresh_grant(ctx, &g, &tok, "Reverted", "starter_sword").await,
+            "",
+        );
+    }
+
     Ok(())
+}
+
+/// After a config change, create fresh characters until one is granted `needle` (the
+/// grant spec reloads eventually-consistently, so early characters may still get the
+/// old item).
+async fn poll_fresh_grant(ctx: &Ctx, g: &str, token: &str, name: &str, needle: &str) -> bool {
+    for _ in 0..30 {
+        if let Some(cc) = create_character(ctx, g, token, name).await {
+            for _ in 0..4 {
+                let (_, b) = inventory_of(ctx, g, token, &cc).await;
+                if b.contains(needle) {
+                    return true;
+                }
+                tokio::time::sleep(Duration::from_millis(300)).await;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+    false
 }
 
 async fn current_revision(pool: &PgPool) -> Option<i64> {
@@ -591,6 +690,88 @@ async fn current_revision(pool: &PgPool) -> Option<i64> {
         .ok()
         .flatten()
         .and_then(|r| r.try_get::<i64, _>("revision").ok())
+}
+
+/// Register + login a player through the gateway front, returning the bearer.
+async fn register_login(ctx: &Ctx, g: &str, email: &str) -> Result<String> {
+    ctx.http
+        .post(format!("{g}/accounts/register"))
+        .header("X-Api-Key", "dev-key-client")
+        .json(&serde_json::json!({"email": email, "password": "pw", "displayName": "P"}))
+        .send()
+        .await?;
+    let login = ctx
+        .http
+        .post(format!("{g}/accounts/login"))
+        .header("X-Api-Key", "dev-key-client")
+        .json(&serde_json::json!({"email": email, "password": "pw"}))
+        .send()
+        .await?;
+    let body: serde_json::Value = login.json().await.unwrap_or(serde_json::Value::Null);
+    body.get("token")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .context("no token from login")
+}
+
+/// Create a character through G -> A, returning its id.
+async fn create_character(ctx: &Ctx, g: &str, token: &str, name: &str) -> Option<String> {
+    let r = ctx
+        .http
+        .post(format!("{g}/characters"))
+        .header("X-Api-Key", "dev-key-client")
+        .header("Authorization", format!("Bearer {token}"))
+        .json(&serde_json::json!({"name": name, "class": "mage"}))
+        .send()
+        .await
+        .ok()?;
+    if r.status().as_u16() != 201 {
+        return None;
+    }
+    let body: serde_json::Value = r.json().await.ok()?;
+    body.get("id").and_then(|v| v.as_str()).map(str::to_string)
+}
+
+/// GET a character's inventory through G -> B: (status, body).
+async fn inventory_of(ctx: &Ctx, g: &str, token: &str, cid: &str) -> (u16, String) {
+    match ctx
+        .http
+        .get(format!("{g}/inventory/character/{cid}"))
+        .header("X-Api-Key", "dev-key-client")
+        .header("Authorization", format!("Bearer {token}"))
+        .send()
+        .await
+    {
+        Ok(r) => {
+            let c = r.status().as_u16();
+            (c, r.text().await.unwrap_or_default())
+        }
+        Err(_) => (0, String::new()),
+    }
+}
+
+/// Poll a character's inventory (through G) until its body contains `needle`.
+async fn poll_inventory_has(ctx: &Ctx, g: &str, token: &str, cid: &str, needle: &str) -> bool {
+    for _ in 0..30 {
+        let (code, body) = inventory_of(ctx, g, token, cid).await;
+        if code == 200 && body.contains(needle) {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    false
+}
+
+/// Poll a scalar count query until it equals `want`.
+async fn poll_count(pool: &PgPool, sql: &str, cid: &str, want: i64) -> bool {
+    for _ in 0..30 {
+        let n: Option<i64> = sqlx::query_scalar(sql).bind(cid).fetch_optional(pool).await.ok().flatten();
+        if n == Some(want) {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    false
 }
 
 async fn player_call(ctx: &Ctx, token: &str, method: &str, payload: &str) -> Result<serde_json::Value> {
