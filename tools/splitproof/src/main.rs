@@ -492,6 +492,12 @@ async fn run() -> Result<u32> {
     let mut p = Proof::default();
     assertions(&ctx, &pool, &mut p).await?;
 
+    // [I-GATE] live security proof: the harness boots the whole fleet with
+    // INVENTORY_DEV_GRANT=1 (see `fleet()` above), so `assertions` structurally
+    // cannot see the split bypass Step 1 closed. Restart ONLY inventory-svc without
+    // the flag and prove a fully-authed grant call now 404s through the front door.
+    i_gate(&ctx, &all, &mut fleet, &mut p).await?;
+
     // --- Monolith parity: tear the split down (frees :8080 + :9100), boot cmd/server on
     // the same player front, and re-prove a subset (never-monolith-only-features). ---
     drop(fleet);
@@ -1188,6 +1194,86 @@ async fn assertions(ctx: &Ctx, pool: &PgPool, p: &mut Proof) -> Result<()> {
     let rl3 = ctx.http.get(format!("{g}/leaderboard")).header("X-Api-Key", "dev-key-client").send().await?;
     p.check("[RL3] post-pause /leaderboard -> 200", rl3.status().as_u16() == 200, rl3.status());
 
+    Ok(())
+}
+
+/// `[I-GATE]` — proves Step 1's impl-side `INVENTORY_DEV_GRANT` guard live in the
+/// split, where `assertions` (fleet-wide `INVENTORY_DEV_GRANT=1`) structurally cannot:
+/// drop ONLY the running inventory-svc, respawn it from a clone of its `Svc` with the
+/// flag stripped out, and prove a FULLY-AUTHED (valid key + valid bearer) grant call
+/// still 404s through gateway-svc. `fleet`/`all` share index order (both built by
+/// iterating `ctx.fleet()`), so `all[idx]`'s env is inventory-svc's original env and
+/// `fleet[idx]` is its `Running` guard.
+async fn i_gate(ctx: &Ctx, all: &[Svc], fleet: &mut Vec<Running>, p: &mut Proof) -> Result<()> {
+    println!("\n[splitproof] === [I-GATE] restart inventory-svc WITHOUT INVENTORY_DEV_GRANT ===");
+    let idx = all
+        .iter()
+        .position(|s| s.name == "inventory-svc")
+        .context("inventory-svc missing from fleet (preflight_fleet should have caught this)")?;
+
+    // Kill only inventory-svc (Drop kills + waits) and give the OS a moment to free
+    // its HTTP + edge ports before rebinding — gateway-svc's `remote::Stub` re-resolves
+    // the peer on its next dial, so this restart is transparent to the front door.
+    fleet.remove(idx);
+    tokio::time::sleep(Duration::from_millis(800)).await;
+
+    let env: Vec<(String, String)> = all[idx]
+        .env
+        .iter()
+        .filter(|(k, _)| k != "INVENTORY_DEV_GRANT")
+        .cloned()
+        .collect();
+    let restarted = Svc { name: all[idx].name, http_port: all[idx].http_port, env };
+    println!("[splitproof] restarting {} on :{} without the dev-grant flag ...", restarted.name, restarted.http_port);
+    let running = ctx.spawn(&restarted)?;
+    ctx.wait_healthy(&restarted).await?;
+    fleet.insert(idx, running);
+    println!("[splitproof] {} healthy (dev-grant OFF)", restarted.name);
+
+    // A FULLY-AUTHED caller (real X-Api-Key + real player bearer, per M1 an unauthed
+    // call is now 401) still gets 404 — the impl guard, not a key/auth failure.
+    //
+    // gateway-svc's cached `Reconnecting` conn to inventory-svc has no way to learn
+    // its old peer died until it actually tries the dead connection (QUIC is UDP —
+    // there is no TCP RST). `grant` is RetryMode::Never (a mutation), so the FIRST
+    // post-restart call may transport-fail or hang past our client timeout while that
+    // dead conn is detected and reset; only the call AFTER that redials fresh and
+    // reaches the new process. Poll instead of asserting on a single shot.
+    let g = format!("http://127.0.0.1:{P_GATEWAY}");
+    let email = format!("igate-{}@test.local", std::process::id());
+    let token = register_login(ctx, &g, &email).await.context("i-gate register/login")?;
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let mut last: Option<u16> = None;
+    let mut ok = false;
+    loop {
+        if let Ok(r) = ctx
+            .http
+            .post(format!("{g}/inventory/me/grant"))
+            .header("X-Api-Key", "dev-key-client")
+            .header("Authorization", format!("Bearer {token}"))
+            .json(&serde_json::json!({"item_id": "coin", "qty": 1}))
+            .send()
+            .await
+        {
+            // Err(_) falls through: transient — gateway's cached conn to the killed
+            // process is dying and hasn't been reset+redialed yet.
+            let code = r.status().as_u16();
+            last = Some(code);
+            if code == 404 {
+                ok = true;
+                break;
+            }
+        }
+        if Instant::now() >= deadline {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    p.check(
+        "[I-GATE] fully-authed grant -> 404 with INVENTORY_DEV_GRANT off",
+        ok,
+        format!("last_code={last:?}"),
+    );
     Ok(())
 }
 
