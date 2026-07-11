@@ -465,18 +465,6 @@ async fn assertions(ctx: &Ctx, pool: &PgPool, p: &mut Proof) -> Result<()> {
         format!("wrote_ok={} len={:?} rev {rev0}->{rev1}", wrote.is_ok(), readback),
     );
 
-    // [P1] QUIC player front: characters.create through gateway :9100 over the edge
-    // lib (no playercli subprocess). Domain status must be "Ok".
-    if let Some(tok) = &token {
-        match player_call(ctx, tok, "characters.create", r#"{"name":"hero","class":""}"#).await {
-            Ok(resp) => {
-                let status = resp.get("status").and_then(|s| s.as_str()).unwrap_or("");
-                p.check("[P1] QUIC characters.create -> Ok", status == "Ok", format!("status={status}"));
-            }
-            Err(e) => p.check("[P1] QUIC characters.create -> Ok", false, format!("transport error: {e}")),
-        }
-    }
-
     // [L1] leaderboard with a VALID key -> 200 (positive control for K5's negatives).
     let lb = ctx
         .http
@@ -661,6 +649,85 @@ async fn assertions(ctx: &Ctx, pool: &PgPool, p: &mut Proof) -> Result<()> {
         );
     }
 
+    // --- Match / rating / leaderboard: durable match.finished projection + idempotency. ---
+    let winner = format!("champ-{suffix}");
+    let loser = format!("chump-{suffix}");
+    let mt1_rid = format!("mt1-{suffix}");
+    let mt4_rid = format!("mt4-{suffix}");
+    // [MT1] report -> 202 (AuthNone, capitalized body keys; emits durable match.finished).
+    let mt1 = report(ctx, &g, &mt1_rid, &winner, &loser).await;
+    p.check("[MT1] match.report -> 202", mt1 == 202, format!("code={mt1}"));
+    // [MT2] leaderboard shows winner wins=1 (I->K durable + upsert; G routes Remote to K).
+    p.check("[MT2] leaderboard winner wins=1", poll_leaderboard_wins(ctx, &g, &winner, 1).await, "");
+    // [MT3] audit recorded match.finished (I->F durable, exactly-once).
+    let mt3 = poll_count(
+        pool,
+        "SELECT count(*) FROM audit.log WHERE topic='match.finished' AND payload->>'winner'=$1",
+        &winner,
+        1,
+    )
+    .await;
+    p.check("[MT3] audit match.finished recorded", mt3, "");
+    // [MT4] a second report -> leaderboard wins=2 (accumulating upsert).
+    let mt4 = report(ctx, &g, &mt4_rid, &winner, &loser).await;
+    p.check(
+        "[MT4] second report -> wins=2",
+        mt4 == 202 && poll_leaderboard_wins(ctx, &g, &winner, 2).await,
+        format!("code={mt4}"),
+    );
+    // [MT5] rating projection persisted (winner +15+15=1030, loser -15-15=970).
+    let mt5 = {
+        let mut ok = false;
+        for _ in 0..30 {
+            let w: Option<i64> = sqlx::query_scalar("SELECT mmr::bigint FROM rating.ratings WHERE player=$1")
+                .bind(&winner).fetch_optional(pool).await.ok().flatten();
+            let l: Option<i64> = sqlx::query_scalar("SELECT mmr::bigint FROM rating.ratings WHERE player=$1")
+                .bind(&loser).fetch_optional(pool).await.ok().flatten();
+            if w == Some(1030) && l == Some(970) {
+                ok = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        ok
+    };
+    p.check("[MT5] rating projection 1030/970", mt5, "");
+    // [MT6] re-POST MT1's ReportId -> 202 no-op: exactly one match row (the strong dedup
+    // proof — a caller replay after an ambiguous result must not double-commit).
+    let mt6 = report(ctx, &g, &mt1_rid, &winner, &loser).await;
+    let rows: Option<i64> = sqlx::query_scalar("SELECT count(*) FROM match.matches WHERE report_id=$1")
+        .bind(&mt1_rid).fetch_optional(pool).await.ok().flatten();
+    p.check(
+        "[MT6] duplicate report -> 202, one match row",
+        mt6 == 202 && rows == Some(1),
+        format!("code={mt6} rows={rows:?}"),
+    );
+
+    // --- Player QUIC front (P1-P6) over the edge lib (no playercli subprocess). ---
+    if let Some(tok) = token.clone() {
+        // [P1] create over QUIC -> Ok; capture the fresh character id for P2/P3.
+        let p1 = player_call(ctx, Some(&tok), "characters.create", r#"{"name":"hero","class":""}"#).await;
+        let pcid = p1.as_ref().ok().and_then(find_id).unwrap_or_default();
+        p.check("[P1] QUIC characters.create -> Ok", status_or_err(&p1, "Ok"), format!("pcid={pcid}"));
+        // [P2] inventory.listCharacter over QUIC (G -> Remote B -> owner_of QUIC -> A) -> Ok.
+        let p2 = player_call(ctx, Some(&tok), "inventory.listCharacter", &format!("{{\"character_id\":\"{pcid}\"}}")).await;
+        p.check("[P2] QUIC inventory.listCharacter -> Ok", status_or_err(&p2, "Ok"), "");
+        // [P3] the HTTP front routes inventory.* Remote to B -> 200.
+        let (p3, _) = inventory_of(ctx, &g, &tok, &pcid).await;
+        p.check("[P3] HTTP front inventory -> 200", p3 == 200, format!("code={p3}"));
+        // [P4] no token -> Unauthorized (bearer required at the front).
+        let p4 = player_call(ctx, None, "characters.create", r#"{"name":"x","class":""}"#).await;
+        p.check("[P4] no-token op -> Unauthorized", status_or_err(&p4, "Unauthorized"), "");
+        // [P4b] bad token -> Unauthorized (token verified, not just present).
+        let p4b = player_call(ctx, Some("nope-x"), "characters.create", r#"{"name":"x","class":""}"#).await;
+        p.check("[P4b] bad-token op -> Unauthorized", status_or_err(&p4b, "Unauthorized"), "");
+        // [P5] a wire-only method absent from the player allow-list -> NotFound.
+        let p5 = player_call(ctx, Some(&tok), "characters.ownerOf", &format!("{{\"character_id\":\"{pcid}\"}}")).await;
+        p.check("[P5] wire-only method -> NotFound", status_or_err(&p5, "NotFound"), "");
+        // [P6] per-connection rate-limit + refill.
+        p.check("[P6] player rate-limit + refill", player_burst(ctx).await, "");
+    }
+
     Ok(())
 }
 
@@ -774,7 +841,12 @@ async fn poll_count(pool: &PgPool, sql: &str, cid: &str, want: i64) -> bool {
     false
 }
 
-async fn player_call(ctx: &Ctx, token: &str, method: &str, payload: &str) -> Result<serde_json::Value> {
+async fn player_call(
+    ctx: &Ctx,
+    token: Option<&str>,
+    method: &str,
+    payload: &str,
+) -> Result<serde_json::Value> {
     let ca = ctx.ca_cert.to_str().context("CA cert path not UTF-8")?;
     let trust = DevCA::load_cert_only(ca).map_err(|e| anyhow::anyhow!("load CA: {e}"))?;
     let addr = format!("127.0.0.1:{PLAYER_PORT}").parse().context("player addr")?;
@@ -782,8 +854,102 @@ async fn player_call(ctx: &Ctx, token: &str, method: &str, payload: &str) -> Res
         .await
         .map_err(|e| anyhow::anyhow!("dial: {e}"))?;
     let resp = client
-        .call(method, Some(token), Some("dev-key-client"), payload.as_bytes())
+        .call(method, token, Some("dev-key-client"), payload.as_bytes())
         .await
         .map_err(|e| anyhow::anyhow!("call: {e}"))?;
     Ok(serde_json::from_slice(&resp).unwrap_or(serde_json::Value::Null))
+}
+
+/// Recursively finds the first `"id": "<string>"` field in a JSON value (the QUIC
+/// characters.create envelope nests the created character under a status wrapper).
+fn find_id(v: &serde_json::Value) -> Option<String> {
+    match v {
+        serde_json::Value::Object(m) => {
+            if let Some(id) = m.get("id").and_then(|x| x.as_str()) {
+                return Some(id.to_string());
+            }
+            m.values().find_map(find_id)
+        }
+        serde_json::Value::Array(a) => a.iter().find_map(find_id),
+        _ => None,
+    }
+}
+
+/// POST a match report (server key) and return the HTTP status.
+async fn report(ctx: &Ctx, g: &str, rid: &str, winner: &str, loser: &str) -> u16 {
+    match ctx
+        .http
+        .post(format!("{g}/match/report"))
+        .header("X-Api-Key", "dev-key-server")
+        .json(&serde_json::json!({"ReportId": rid, "Winner": winner, "Loser": loser}))
+        .send()
+        .await
+    {
+        Ok(r) => r.status().as_u16(),
+        Err(_) => 0,
+    }
+}
+
+/// Poll the leaderboard (through G) until `winner` shows exactly `wins` wins.
+async fn poll_leaderboard_wins(ctx: &Ctx, g: &str, winner: &str, wins: u32) -> bool {
+    let needle = format!("\"player\":\"{winner}\",\"wins\":{wins}");
+    for _ in 0..30 {
+        if let Ok(r) = ctx
+            .http
+            .get(format!("{g}/leaderboard"))
+            .header("X-Api-Key", "dev-key-client")
+            .send()
+            .await
+        {
+            if r.text().await.unwrap_or_default().contains(&needle) {
+                return true;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    false
+}
+
+/// True if a player call's DOMAIN status equals `want` (auth/routing failures ride the
+/// Ok envelope as `{"status":"..."}`), or a transport Err mentions it.
+fn status_or_err(r: &Result<serde_json::Value>, want: &str) -> bool {
+    match r {
+        Ok(v) => v.get("status").and_then(|s| s.as_str()) == Some(want),
+        Err(e) => e.to_string().contains(want),
+    }
+}
+
+/// [P6] one persistent player connection fires a 22-call burst (per-connection limit is
+/// burst 20): the burst must be rate-limited at least once, then — after a refill pause
+/// before the last call — succeed again (>=21 Ok). Proves the limiter is per-connection
+/// and transient, not sticky.
+async fn player_burst(ctx: &Ctx) -> bool {
+    let Some(ca) = ctx.ca_cert.to_str() else { return false };
+    let Ok(trust) = DevCA::load_cert_only(ca) else { return false };
+    let Ok(addr) = format!("127.0.0.1:{PLAYER_PORT}").parse() else { return false };
+    let Ok(client) = PlayerClient::dial(addr, &trust).await else { return false };
+    let mut ok = 0u32;
+    let mut limited = false;
+    for i in 0..22 {
+        if i == 21 {
+            tokio::time::sleep(Duration::from_millis(2000)).await;
+        }
+        match client.call("leaderboard.topScores", None, Some("dev-key-client"), b"{}").await {
+            Ok(resp) => {
+                let is_ok = serde_json::from_slice::<serde_json::Value>(&resp)
+                    .ok()
+                    .and_then(|v| v.get("status").and_then(|s| s.as_str()).map(|s| s == "Ok"))
+                    .unwrap_or(false);
+                if is_ok {
+                    ok += 1;
+                }
+            }
+            Err(e) => {
+                if e.to_string().contains("rate limit") {
+                    limited = true;
+                }
+            }
+        }
+    }
+    limited && ok >= 21
 }
