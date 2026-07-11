@@ -43,6 +43,7 @@
 
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Context as _;
 use async_trait::async_trait;
@@ -239,6 +240,35 @@ impl Conn for edge::Client {
 }
 
 // ---------------------------------------------------------------------------
+// The per-stub readiness probe (the `/readyz` contribution).
+// ---------------------------------------------------------------------------
+
+/// The bounded connectivity probe backing each stub's `/readyz` [`httpmw::ReadyCheck`].
+/// Parses `peer_addr`, resolves the shared dev CA, and dials the peer's QUIC edge —
+/// returning `Ok(())` iff a fresh mTLS connection completes, or an `Err(String)`
+/// naming the failure (bad addr / unavailable CA / timeout / dial error). The dial is
+/// wrapped in a HARD 1s inner timeout, deliberately embedded here rather than relying
+/// solely on `core/app`'s outer `READY_CHECK_TIMEOUT`: a hung QUIC handshake must not
+/// outlive the probe and leak a pending dial even if the outer bound were ever removed.
+/// The dial mirrors [`EdgeDialer::dial`] (same shared-anchor mutual-TLS path).
+async fn probe_peer(peer_addr: String) -> Result<(), String> {
+    let addr: SocketAddr = peer_addr
+        .parse()
+        .map_err(|e| format!("bad peer edge addr {peer_addr:?}: {e}"))?;
+    let ca = edge::shared_dev_ca().map_err(|e| format!("shared dev CA unavailable: {e}"))?;
+    match tokio::time::timeout(Duration::from_secs(1), edge::Client::dial(addr, &ca)).await {
+        Err(_elapsed) => Err(format!("dial to {addr} timed out after 1s")),
+        Ok(Err(e)) => Err(format!("dial to {addr} failed: {e}")),
+        Ok(Ok(client)) => {
+            // A completed handshake is the readiness signal; drop the probe connection
+            // immediately (the real capability calls hold their own reconnecting conn).
+            client.close();
+            Ok(())
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // The Stub module — the swap.
 // ---------------------------------------------------------------------------
 
@@ -347,6 +377,19 @@ impl Module for Stub {
     /// caller passes `adminrpc::admin_remote_factory(provider)` into [`Stub::new`],
     /// which contributes the REMOTE `adminapi::Item` there. `remote` stays `api/`-free:
     /// the admin closure arrives boxed, this crate never names `adminapi`.
+    ///
+    /// `init` ALSO contributes a per-stub `httpmw::ReadyCheck` (`stub:<provider>`) to
+    /// [`httpmw::READINESS_SLOT`], so a stub-holding process's `/readyz` reflects its
+    /// peers' reachability instead of answering 200 with the whole fleet dead. A stub is
+    /// a HARD synchronous dependency — a process cannot serve the provider's ops with the
+    /// peer down — so an unreachable peer flipping this process unready is the intended
+    /// semantics, and it fans out fleet-wide (every stub-holder reports its own peers).
+    /// The deliberate cost: each probe is a FRESH QUIC/mTLS dial (see [`probe_peer`]),
+    /// run per stub, sequentially by `/readyz`; a dead peer therefore costs ~1s per stub
+    /// per probe (a 6-stub front like gateway-svc pays up to ~6s on a fully-dead fleet) —
+    /// acceptable at this local/dev deploy scale. The check reads lazily per request, so
+    /// contributing it in `init` (no I/O) is correct. The monolith hosts no stubs and is
+    /// unaffected.
     fn init(&self, ctx: &Context) -> anyhow::Result<()> {
         ctx.contribute(
             opsapi::PEER_SLOT,
@@ -354,6 +397,14 @@ impl Module for Stub {
                 provider: self.provider.clone(),
                 addr: self.peer_addr.clone(),
             },
+        );
+        // Fresh dial per probe; the probe body owns its 1s inner bound (see `probe_peer`).
+        let peer_addr = self.peer_addr.clone();
+        ctx.contribute(
+            httpmw::READINESS_SLOT,
+            httpmw::ReadyCheck::new(format!("stub:{}", self.provider), move || {
+                probe_peer(peer_addr.clone())
+            }),
         );
         Ok(())
     }

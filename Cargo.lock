@@ -2989,6 +2989,7 @@ dependencies = [
  "async-trait",
  "edge",
  "futures",
+ "httpmw",
  "lifecycle",
  "opsapi",
  "registry",

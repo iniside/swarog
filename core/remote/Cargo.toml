@@ -18,6 +18,10 @@ publish = false
 edge = { workspace = true }
 opsapi = { workspace = true }
 lifecycle = { workspace = true }
+# Readiness slot: each `Stub` contributes an `httpmw::ReadyCheck` so a stub-holding
+# process's `/readyz` probes its peers' reachability. core→core (edge/opsapi/lifecycle
+# are already core deps) — legal; archcheck's core-leaf rule bans only core→module/api.
+httpmw = { workspace = true }
 tokio = { workspace = true, features = ["sync"] }
 async-trait = { workspace = true }
 anyhow = { workspace = true }

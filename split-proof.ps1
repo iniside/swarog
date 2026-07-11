@@ -489,6 +489,21 @@ try {
     } 'admin'
     if (-not (Wait-Healthy $EPort 'E (admin-svc)')) { throw 'E failed to start' }
 
+    # --- [GW-RDY] the DB-less front's /readyz reflects its peers, not a bare 200 --------
+    # gateway-svc holds a Stub per consumed provider; each Stub contributes a
+    # `stub:<provider>` httpmw::ReadyCheck that dials the peer's edge. With the WHOLE fleet
+    # up, G's /readyz must be 200 "ok" (a bare-200 DB-less front used to answer ready even
+    # with the backend dead -- the readiness probe closes that gap).
+    Write-Host ''
+    Write-Host "[GW-RDY] GET http://127.0.0.1:$GPort/readyz through G -> expect 200 ok (peers probed)"
+    $rdy = Invoke-Curl @("http://127.0.0.1:$GPort/readyz")
+    Write-Host "    -> HTTP $($rdy.Code)  $($rdy.Body)"
+    if ($rdy.Code -eq '200' -and $rdy.Body -match 'ok') {
+        Pass 'gateway-svc /readyz -> 200 ok with the full fleet up (per-stub probes pass)'
+    } else {
+        Fail "gateway-svc /readyz expected 200 ok, got $($rdy.Code) ($($rdy.Body))"; throw 'GW-RDY failed'
+    }
+
     $RunSuffix = [guid]::NewGuid().ToString().Substring(0, 8)
 
     Write-Host ''

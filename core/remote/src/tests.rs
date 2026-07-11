@@ -153,3 +153,52 @@ fn stub_with_no_factories_fails_loud() {
     let err = stub.register(&ctx).unwrap_err();
     assert!(err.to_string().contains("zero factories"), "{err}");
 }
+
+// ---- The per-stub readiness probe (the `/readyz` contribution) -----------
+//
+// `probe_peer` backs each stub's `httpmw::ReadyCheck`. It dials the peer's QUIC edge
+// with a 1s inner bound, so a dead peer errs FAST (not after the outer READY_CHECK
+// bound) and a live edge answers Ok. These exercise the real `edge` transport (already
+// a dependency), so no fake is needed — the point is the bounded dial itself.
+
+/// An unreachable peer: the probe returns `Err` well within its own 1s bound (a rejected
+/// connection returns fast; even a silent drop is capped at 1s). Asserting elapsed < 2s
+/// proves the inner timeout owns the dial — it never waits on the outer readyz bound.
+#[tokio::test]
+async fn probe_unreachable_peer_errs_fast() {
+    let started = std::time::Instant::now();
+    // 127.0.0.1:1 — a privileged port nothing listens on: connect is refused/dropped.
+    let out = probe_peer("127.0.0.1:1".to_string()).await;
+    let elapsed = started.elapsed();
+    assert!(out.is_err(), "an unreachable peer must fail the readiness probe: {out:?}");
+    assert!(
+        elapsed < std::time::Duration::from_secs(2),
+        "the probe's own 1s bound must fire, not the outer readyz bound (took {elapsed:?})"
+    );
+}
+
+/// A bad peer address never dials at all — it fails at parse, instantly.
+#[tokio::test]
+async fn probe_bad_addr_errs_at_parse() {
+    let err = probe_peer("not-an-addr".to_string()).await.unwrap_err();
+    assert!(err.contains("bad peer edge addr"), "{err}");
+}
+
+/// A LIVE edge: a real `edge::Server` listening on loopback with the process's shared
+/// dev CA — the SAME anchor `probe_peer` resolves internally — so the mTLS handshake
+/// completes and the probe reports ready.
+#[tokio::test]
+async fn probe_live_edge_reports_ready() {
+    // The server listens with the shared anchor the probe also dials with; an empty
+    // handler set is fine — the probe only completes the handshake, it makes no call.
+    let ca = edge::shared_dev_ca().expect("shared dev CA");
+    let srv = edge::Server::new();
+    let running = srv
+        .listen(std::net::SocketAddr::from(([127, 0, 0, 1], 0)), &ca)
+        .expect("listen on loopback");
+
+    let out = probe_peer(running.local_addr().to_string()).await;
+    assert!(out.is_ok(), "a live edge must pass the readiness probe: {out:?}");
+
+    running.close();
+}

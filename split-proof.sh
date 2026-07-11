@@ -519,6 +519,22 @@ env PORT=":$E_PORT" DATABASE_URL="$DATABASE_URL" \
 E_PID=$!
 wait_healthy "$E_PORT" "E (admin-svc)" || { echo "E failed to start"; exit 1; }
 
+# --- [GW-RDY] the DB-less front's /readyz reflects its peers, not a bare 200 --------
+# gateway-svc holds a Stub per consumed provider; each Stub contributes a
+# `stub:<provider>` httpmw::ReadyCheck that dials the peer's edge. With the WHOLE fleet
+# up, G's /readyz must be 200 "ok" (a bare-200 DB-less front used to answer ready even
+# with the backend dead — the readiness probe closes that gap).
+echo ""
+echo "[GW-RDY] GET http://localhost:$G_PORT/readyz through G -> expect 200 ok (peers probed)"
+RDY="$(curl -s -w $'\n%{http_code}' "http://localhost:$G_PORT/readyz")"
+RDY_BODY="$(echo "$RDY" | sed '$d')"; RDY_CODE="$(echo "$RDY" | tail -1)"
+echo "    -> HTTP $RDY_CODE  $RDY_BODY"
+if [ "$RDY_CODE" = "200" ] && echo "$RDY_BODY" | grep -q "ok"; then
+    pass "gateway-svc /readyz -> 200 ok with the full fleet up (per-stub probes pass)"
+else
+    fail "gateway-svc /readyz expected 200 ok, got $RDY_CODE ($RDY_BODY)"; exit 1
+fi
+
 RUN_SUFFIX="$(new_uuid | cut -c1-8)"
 
 echo ""
