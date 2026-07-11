@@ -30,6 +30,11 @@ members = [
     "tools/edgeca",
     "tools/playercli",
     "tools/winctrl",
+    # Cross-platform split-proof harness (replaces split-proof.sh/.ps1): spawns the
+    # 12-svc fleet via std::process (typed env/args, kill-on-drop — no shell quoting,
+    # no winctrl, no MSYS job-control), health-checks over reqwest, and drives QUIC via
+    # the `edge` lib. `cargo run -p splitproof`.
+    "tools/splitproof",
     # Fortress enforcement (Step 5): a small binary that reads `cargo metadata` and
     # fails on any module→module or module→foreign-<name>rpc dependency edge.
     "tools/archcheck",

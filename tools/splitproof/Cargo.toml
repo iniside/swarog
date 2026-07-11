@@ -1,0 +1,19 @@
+[package]
+name = "splitproof"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Cross-platform split-proof harness. Replaces split-proof.sh/.ps1: the fleet is
+# spawned as child processes with a typed env map and a kill-on-drop guard (no shell,
+# so no PowerShell arg-quoting / MSYS job-control / winctrl bugs), health-checked over
+# reqwest, DB-asserted via sqlx, and the player QUIC front driven through the `edge`
+# crate as a library. See docs/plans/2026-07-11-1730-rust-splitproof-harness-plan.md.
+
+[dependencies]
+edge = { path = "../../core/edge" }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+sqlx = { workspace = true }
+serde_json = { workspace = true }
+reqwest = { workspace = true }

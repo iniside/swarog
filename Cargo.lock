@@ -3608,6 +3608,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "splitproof"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "edge",
+ "reqwest",
+ "serde_json",
+ "sqlx",
+ "tokio",
+]
+
+[[package]]
 name = "sqlx"
 version = "0.8.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
