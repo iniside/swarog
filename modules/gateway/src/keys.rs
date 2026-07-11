@@ -34,9 +34,10 @@ use apikeysapi::KeyRecord;
 /// the capability is consulted again — the propagation bound for a revoke/policy edit.
 const KEY_CACHE_TTL: Duration = Duration::from_secs(5);
 
-/// Cache size bound: on insert at this many entries the map is CLEARED (crude, O(1)
-/// amortized) — an attacker spraying distinct garbage keys cannot grow memory without
-/// bound, and a full clear costs at most one extra lookup per live key.
+/// Cache size bound: on insert, expired entries are purged first (`retain`); if the
+/// map is still at this many entries the single oldest surviving entry is evicted
+/// (`min_by_key` over insertion time/sequence, O(n)) — an attacker spraying distinct
+/// garbage keys cannot grow memory without bound.
 const KEY_CACHE_MAX_ENTRIES: usize = 10_000;
 const KEY_MAX_BYTES: usize = 256;
 const KEY_LOOKUP_MAX_IN_FLIGHT: usize = 64;
@@ -220,9 +221,9 @@ impl RealKeyVerifier {
         }
     }
 
-    /// Caches one authoritative lookup result (present OR absent), clearing the whole
-    /// map first when it has reached [`KEY_CACHE_MAX_ENTRIES`] (the bounded-memory
-    /// rule — see the module doc).
+    /// Caches one authoritative lookup result (present OR absent). First purges expired
+    /// entries (`retain`); if the map is still at [`KEY_CACHE_MAX_ENTRIES`], evicts the
+    /// single oldest surviving entry (the bounded-memory rule — see the module doc).
     fn insert(&self, key: &str, record: Option<KeyRecord>) {
         let now = Instant::now();
         let mut cache = self.cache.lock().unwrap();

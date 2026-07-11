@@ -236,12 +236,25 @@ function Start-Svc([string]$Exe, [hashtable]$EnvVars, [string]$LogName) {
 }
 
 function Stop-Svc([System.Diagnostics.Process]$Proc, [string]$Label) {
-    if (-not $Proc -or $Proc.HasExited) { return $true }
+    if (-not $Proc) { return $true }
+    if ($Proc.HasExited) {
+        # A real process handle that was already gone before we sent CTRL_BREAK — we
+        # never observed a drain, so this can't be scored graceful regardless of what
+        # killed it. Exit-code read is best-effort for the log line; an
+        # inaccessible/unknown code still means $false.
+        try { $ec = $Proc.ExitCode } catch { $ec = '?' }
+        Note "$Label already exited (code $ec) before shutdown was initiated"
+        return $false
+    }
     & $Winctrl break $Proc.Id
     $breakSent = $LASTEXITCODE -eq 0
     if ($breakSent -and $Proc.WaitForExit(10000)) {
-        Note "gracefully stopped $Label (pid $($Proc.Id))"
-        return $true
+        if ($Proc.ExitCode -eq 0) {
+            Note "gracefully stopped $Label (pid $($Proc.Id))"
+            return $true
+        }
+        Note "$Label (pid $($Proc.Id)) drained but exited $($Proc.ExitCode)"
+        return $false
     }
     Note "$Label (pid $($Proc.Id)) did not drain after CTRL_BREAK; forcing"
     Stop-Process -Id $Proc.Id -Force -ErrorAction SilentlyContinue

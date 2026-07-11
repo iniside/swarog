@@ -215,13 +215,27 @@ pg() {
 # draining service (graceful HTTP/QUIC shutdown) isn't racing the next run's port
 # bind. Forced kill is a last resort if it overstays the grace window.
 stop_pid() {
-    local pid="$1" label="$2"
+    local pid="$1" label="$2" ec=""
     [ -n "$pid" ] || return 0
     kill "$pid" 2>/dev/null || return 0
     note "stopping $label (pid $pid)"
     local i=0
     while [ "$i" -lt 40 ]; do
-        kill -0 "$pid" 2>/dev/null || { note "stopped $label (pid $pid)"; return 0; }
+        if ! kill -0 "$pid" 2>/dev/null; then
+            # Gone within the grace period: reap it and check HOW it exited. A clean
+            # SIGTERM handler exits 0; a signal-kill (or a crash mid-drain) yields
+            # non-zero (128+signal) -- that's a drained-but-not-graceful exit, distinct
+            # from the KILL-fallback case below (which STOP_FORCED already covers).
+            wait "$pid" 2>/dev/null
+            ec=$?
+            if [ "$ec" -ne 0 ]; then
+                STOP_NONZERO=1
+                note "$label (pid $pid) exited non-zero ($ec) after SIGTERM"
+            else
+                note "stopped $label (pid $pid)"
+            fi
+            return 0
+        fi
         sleep 0.25
         i=$((i + 1))
     done
@@ -231,6 +245,7 @@ stop_pid() {
 }
 TEARDOWN_DONE=""
 STOP_FORCED=""
+STOP_NONZERO=""
 teardown() {
     [ -n "$TEARDOWN_DONE" ] && return 0
     TEARDOWN_DONE=1
@@ -1438,7 +1453,17 @@ if [ -z "$STOP_FORCED" ]; then
 else
     fail "[W1 split graceful shutdown] at least one process required KILL fallback"
 fi
+# W1b is deliberately narrower than "did it exit fast" -- it checks HOW every drained
+# process exited (exit code 0), not just that it exited within the grace window. The
+# in-flight-request-survives-drain probe itself is DEFERRED: the fleet has no
+# artificial-delay endpoint to race a request against SIGTERM without being racy/low-value.
+if [ -z "$STOP_NONZERO" ]; then
+    pass "[W1b split clean-exit] every drained process exited 0 after SIGTERM"
+else
+    fail "[W1b split clean-exit] at least one drained process exited non-zero after SIGTERM"
+fi
 STOP_FORCED=""
+STOP_NONZERO=""
 # Re-arm the once-guard: this mid-script teardown only freed the split's ports.
 # Without the reset the EXIT-trap teardown no-ops and the monolith LEAKS, holding
 # target/debug/server.exe locked and failing the next build (os error 5).
@@ -1551,6 +1576,13 @@ if [ -z "$STOP_FORCED" ]; then
     pass "[W2 monolith graceful shutdown] SIGTERM drained without KILL fallback"
 else
     fail "[W2 monolith graceful shutdown] monolith required KILL fallback"
+fi
+# W2b: symmetric with W1b -- the monolith's own SIGTERM handler must exit 0, not just
+# exit within the grace window.
+if [ -z "$STOP_NONZERO" ]; then
+    pass "[W2b monolith clean-exit] monolith exited 0 after SIGTERM"
+else
+    fail "[W2b monolith clean-exit] monolith exited non-zero after SIGTERM"
 fi
 
 echo "============================================"
