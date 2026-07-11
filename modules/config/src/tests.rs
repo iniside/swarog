@@ -291,6 +291,56 @@ async fn each_mutation_emits_one_event_with_operation_value_and_revision() {
     cleanup(&pool, &ns).await;
 }
 
+/// A config value larger than `pg_notify`'s 8000-byte payload cap must NOT abort the
+/// writing transaction: the NOTIFY payload is value-less by design (the invalidation
+/// callback re-reads the whole snapshot and never reads the NOTIFY payload itself), so
+/// only the durable `config.changed` event — not the NOTIFY — carries `value`. Confirms
+/// the revision still increments, the oversized value is stored and readable back
+/// through the getters, and a normal (small) write still refreshes fine afterwards.
+#[tokio::test]
+async fn large_value_write_does_not_abort_on_notify_cap() {
+    use configapi::Config as _;
+    let Some(pool) = test_pool().await else { return };
+    let ns = unique_ns(&pool).await;
+    let svc = Arc::new(Service::new(pool.clone()));
+
+    // Comfortably over pg_notify's 8000-byte payload cap; the OLD code (value inside the
+    // NOTIFY payload) would RAISE and abort this write's transaction.
+    let big_value = "x".repeat(10_000);
+
+    svc.set(&ns, "big", &big_value)
+        .await
+        .expect("a write with a >8KB value must not abort");
+
+    let (revision, settings) = svc.load_snapshot().await.unwrap();
+    assert!(revision >= 1, "the write must produce a revision >= 1");
+    svc.apply(revision, settings);
+    assert_eq!(svc.get(&ns, "big").as_deref(), Some(big_value.as_str()));
+
+    // The durable `config.changed` event still carries the FULL value — only the
+    // (unconsumed) NOTIFY payload dropped it.
+    let (val,): (Option<String>,) = sqlx::query_as(
+        "SELECT payload->>'value' FROM asyncevents.events \
+         WHERE topic = 'config.changed' AND payload->>'namespace' = $1 AND payload->>'key' = 'big' \
+         ORDER BY generation, producer_xid, tie_breaker DESC LIMIT 1",
+    )
+    .bind(&ns)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(val.as_deref(), Some(big_value.as_str()), "durable event must keep the full value");
+
+    // A normal small write on the same namespace still round-trips (revision/refresh not
+    // wedged by the earlier large write).
+    svc.set(&ns, "small", "ok").await.unwrap();
+    let (revision2, settings2) = svc.load_snapshot().await.unwrap();
+    assert!(revision2 > revision, "a later write must yield a strictly greater revision");
+    svc.apply(revision2, settings2);
+    assert_eq!(svc.get(&ns, "small").as_deref(), Some("ok"));
+
+    cleanup(&pool, &ns).await;
+}
+
 /// `snapshot()` reports the revision and settings from ONE statement: the revision
 /// tracks writes (a second write yields a strictly greater snapshot revision) and the
 /// settings reflect the store.

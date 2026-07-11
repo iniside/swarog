@@ -103,8 +103,13 @@ BEGIN
 		'revision',  _rev
 	);
 
-	-- (b) broadcast-invalidation NOTIFY (every config cache refreshes on this).
-	PERFORM pg_notify('config_changed', _payload::text);
+	-- (b) broadcast-invalidation NOTIFY (every config cache refreshes on this). Value-
+	-- less by design: the invalidation callback is a zero-arg closure that re-reads the
+	-- whole snapshot and never reads the NOTIFY payload, while pg_notify hard-caps its
+	-- payload at 8000 bytes — including `value` here would abort the writing tx on any
+	-- large config value for a payload nothing consumes.
+	PERFORM pg_notify('config_changed', jsonb_build_object(
+		'namespace', _ns, 'key', _key, 'operation', _op, 'revision', _rev)::text);
 
 	-- (c) durable audit event via the plane-owned writer (the ONLY asyncevents object
 	-- config touches — never the plane's tables directly).
