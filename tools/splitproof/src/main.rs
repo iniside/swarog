@@ -124,7 +124,9 @@ impl Ctx {
                 ("APIKEYS_DEV_SEED".into(), "1".into()),
             ]),
             svc("audit-svc", P_AUDIT, Some(E_AUDIT), vec![]),
-            svc("scheduler-svc", P_SCHEDULER, Some(E_SCHEDULER), vec![]),
+            svc("scheduler-svc", P_SCHEDULER, Some(E_SCHEDULER), vec![
+                ("SCHEDULER_ENABLED".into(), "1".into()),
+            ]),
             svc("rating-svc", P_RATING, Some(E_RATING), vec![]),
             svc("leaderboard-svc", P_LEADERBOARD, Some(E_LEADERBOARD), vec![]),
             svc("match-svc", P_MATCH, Some(E_MATCH), vec![peer("RATING", E_RATING)]),
@@ -915,6 +917,66 @@ async fn assertions(ctx: &Ctx, pool: &PgPool, p: &mut Proof) -> Result<()> {
         && (au3_body.contains("character.created") || au3_body.contains("character.deleted") || au3_body.contains("player.registered"));
     p.check("[AU3] /admin/audit-log renders ledger", au3_ok, format!("code={au3_code}"));
 
+    // --- Scheduler: data-driven schedule fires durably; audit pulls scheduler.fired. ---
+    // [SC0] seed an immediately-due 2s schedule (epoch last_fired).
+    sqlx::query("DELETE FROM asyncevents.events WHERE topic='scheduler.fired' AND payload->>'name'='proof-tick'").execute(pool).await.ok();
+    sqlx::query("INSERT INTO scheduler.schedules (name, interval_seconds, last_fired) VALUES ('proof-tick', 2, to_timestamp(0)) ON CONFLICT (name) DO UPDATE SET interval_seconds=2, last_fired=to_timestamp(0)").execute(pool).await.ok();
+    // [SC1] proof-tick fires durably AND audit's prune subscription cursor advances past it.
+    let sc = {
+        let mut ok = false;
+        for _ in 0..30 {
+            let fired: Option<i64> = sqlx::query_scalar("SELECT count(*) FROM asyncevents.events WHERE topic='scheduler.fired' AND payload->>'name'='proof-tick'").fetch_optional(pool).await.ok().flatten();
+            let consumed: Option<i64> = sqlx::query_scalar("SELECT count(*) FROM asyncevents.subscriptions s, asyncevents.events e WHERE s.subscription_id='audit.prune-on-scheduler.v1' AND e.topic='scheduler.fired' AND e.payload->>'name'='proof-tick' AND (s.cursor_generation, s.cursor_xid, s.cursor_tie) >= (e.generation, e.producer_xid, e.tie_breaker)").fetch_optional(pool).await.ok().flatten();
+            if fired.map(|f| f >= 1).unwrap_or(false) && consumed.map(|c| c >= 1).unwrap_or(false) {
+                ok = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        ok
+    };
+    p.check("[SC1] scheduler.fired proof-tick + audit cursor advanced", sc, "");
+
+    // --- Session prune: scheduler fires accounts-sessions-prune; D prunes on delivery. ---
+    let sp_token = format!("prune-proof-{suffix}");
+    // [SP0] plant a throwaway player + an EXPIRED session (FK needs a real player).
+    let sp_pid: Option<String> = sqlx::query_scalar("INSERT INTO accounts.players (display_name) VALUES ($1) RETURNING id::text")
+        .bind(format!("prune-proof-{suffix}")).fetch_optional(pool).await.ok().flatten();
+    if let Some(pid) = &sp_pid {
+        sqlx::query("INSERT INTO accounts.sessions (token, player_id, expires_at) VALUES ($1, $2::uuid, now() - interval '1 day')")
+            .bind(&sp_token).bind(pid).execute(pool).await.ok();
+        // [SP1] force the seeded prune schedule due NOW.
+        sqlx::query("UPDATE scheduler.schedules SET last_fired = to_timestamp(0) WHERE name = 'accounts-sessions-prune'").execute(pool).await.ok();
+        // [SP2] poll until D's prune handler removes the expired row (durable H -> D).
+        let sp = poll_count(pool, "SELECT count(*) FROM accounts.sessions WHERE token=$1", &sp_token, 0).await;
+        p.check("[SP2] expired session pruned (scheduler -> accounts)", sp, "");
+    } else {
+        p.check("[SP0] plant throwaway player", false, "insert failed");
+    }
+
+    // --- Metrics ---
+    // [MX1] characters-svc /metrics -> 200 + http_requests_total (one recorded hit first).
+    let _ = ctx.http.get(format!("http://127.0.0.1:{P_CHARACTERS}/__metrics_probe")).send().await;
+    let mx1 = ctx.http.get(format!("http://127.0.0.1:{P_CHARACTERS}/metrics")).send().await?;
+    let (mx1c, mx1b) = (mx1.status().as_u16(), mx1.text().await.unwrap_or_default());
+    p.check("[MX1] characters-svc /metrics -> http_requests_total", mx1c == 200 && mx1b.contains("http_requests_total"), format!("code={mx1c}"));
+    // [MX2] gateway-svc /metrics -> 200 + a per-op route label.
+    let mx2 = ctx.http.get(format!("{g}/metrics")).send().await?;
+    let (mx2c, mx2b) = (mx2.status().as_u16(), mx2.text().await.unwrap_or_default());
+    p.check("[MX2] gateway-svc /metrics -> http_requests_total + route label", mx2c == 200 && mx2b.contains("http_requests_total") && mx2b.contains("/leaderboard"), format!("code={mx2c}"));
+
+    // --- Rate limiting (gateway always-on 20rps/burst40; /healthz SkipInfra). ---
+    // [RL1] 60 parallel /leaderboard -> >=1 429.
+    let rl1 = burst_429(ctx, &format!("{g}/leaderboard"), Some("dev-key-client"), 60).await;
+    p.check("[RL1] 60 parallel /leaderboard -> >=1 429", rl1 >= 1, format!("429={rl1}"));
+    // [RL2] 60 parallel /healthz -> 0 429 (SkipInfra holds).
+    let rl2 = burst_429(ctx, &format!("{g}/healthz"), None, 60).await;
+    p.check("[RL2] 60 parallel /healthz -> 0 429", rl2 == 0, format!("429={rl2}"));
+    // [RL3] pause -> bucket refills -> 200.
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    let rl3 = ctx.http.get(format!("{g}/leaderboard")).header("X-Api-Key", "dev-key-client").send().await?;
+    p.check("[RL3] post-pause /leaderboard -> 200", rl3.status().as_u16() == 200, rl3.status());
+
     Ok(())
 }
 
@@ -947,43 +1009,61 @@ async fn current_revision(pool: &PgPool) -> Option<i64> {
 }
 
 /// Register + login a player through the gateway front, returning the bearer.
+/// Retries past a transient gateway 429 (see `create_character`).
 async fn register_login(ctx: &Ctx, g: &str, email: &str) -> Result<String> {
-    ctx.http
-        .post(format!("{g}/accounts/register"))
-        .header("X-Api-Key", "dev-key-client")
-        .json(&serde_json::json!({"email": email, "password": "pw", "displayName": "P"}))
-        .send()
-        .await?;
-    let login = ctx
-        .http
-        .post(format!("{g}/accounts/login"))
-        .header("X-Api-Key", "dev-key-client")
-        .json(&serde_json::json!({"email": email, "password": "pw"}))
-        .send()
-        .await?;
-    let body: serde_json::Value = login.json().await.unwrap_or(serde_json::Value::Null);
-    body.get("token")
-        .and_then(|v| v.as_str())
-        .map(str::to_string)
-        .context("no token from login")
+    for _ in 0..15 {
+        let reg = ctx.http.post(format!("{g}/accounts/register"))
+            .header("X-Api-Key", "dev-key-client")
+            .json(&serde_json::json!({"email": email, "password": "pw", "displayName": "P"}))
+            .send().await?;
+        if reg.status().as_u16() == 429 {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            continue;
+        }
+        break;
+    }
+    for _ in 0..15 {
+        let login = ctx.http.post(format!("{g}/accounts/login"))
+            .header("X-Api-Key", "dev-key-client")
+            .json(&serde_json::json!({"email": email, "password": "pw"}))
+            .send().await?;
+        if login.status().as_u16() == 429 {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            continue;
+        }
+        let body: serde_json::Value = login.json().await.unwrap_or(serde_json::Value::Null);
+        return body.get("token").and_then(|v| v.as_str()).map(str::to_string).context("no token from login");
+    }
+    bail!("login rate-limited out")
 }
 
-/// Create a character through G -> A, returning its id.
+/// Create a character through G -> A, returning its id. Retries on the gateway's
+/// always-on 429 (the harness drives requests far faster than the curl-per-process
+/// shell, so a preceding burst can transiently empty the 127.0.0.1 token bucket).
 async fn create_character(ctx: &Ctx, g: &str, token: &str, name: &str) -> Option<String> {
-    let r = ctx
-        .http
-        .post(format!("{g}/characters"))
-        .header("X-Api-Key", "dev-key-client")
-        .header("Authorization", format!("Bearer {token}"))
-        .json(&serde_json::json!({"name": name, "class": "mage"}))
-        .send()
-        .await
-        .ok()?;
-    if r.status().as_u16() != 201 {
-        return None;
+    for _ in 0..15 {
+        let r = ctx
+            .http
+            .post(format!("{g}/characters"))
+            .header("X-Api-Key", "dev-key-client")
+            .header("Authorization", format!("Bearer {token}"))
+            .json(&serde_json::json!({"name": name, "class": "mage"}))
+            .send()
+            .await
+            .ok()?;
+        match r.status().as_u16() {
+            429 => {
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                continue;
+            }
+            201 => {
+                let body: serde_json::Value = r.json().await.ok()?;
+                return body.get("id").and_then(|v| v.as_str()).map(str::to_string);
+            }
+            _ => return None,
+        }
     }
-    let body: serde_json::Value = r.json().await.ok()?;
-    body.get("id").and_then(|v| v.as_str()).map(str::to_string)
+    None
 }
 
 /// GET a character's inventory through G -> B: (status, body).
@@ -1062,19 +1142,28 @@ fn find_id(v: &serde_json::Value) -> Option<String> {
     }
 }
 
-/// POST a match report (server key) and return the HTTP status.
+/// POST a match report (server key) and return the HTTP status. Retries past a
+/// transient gateway 429 (see `create_character`).
 async fn report(ctx: &Ctx, g: &str, rid: &str, winner: &str, loser: &str) -> u16 {
-    match ctx
-        .http
-        .post(format!("{g}/match/report"))
-        .header("X-Api-Key", "dev-key-server")
-        .json(&serde_json::json!({"ReportId": rid, "Winner": winner, "Loser": loser}))
-        .send()
-        .await
-    {
-        Ok(r) => r.status().as_u16(),
-        Err(_) => 0,
+    for _ in 0..15 {
+        let code = match ctx
+            .http
+            .post(format!("{g}/match/report"))
+            .header("X-Api-Key", "dev-key-server")
+            .json(&serde_json::json!({"ReportId": rid, "Winner": winner, "Loser": loser}))
+            .send()
+            .await
+        {
+            Ok(r) => r.status().as_u16(),
+            Err(_) => 0,
+        };
+        if code == 429 {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            continue;
+        }
+        return code;
     }
+    429
 }
 
 /// Poll the leaderboard (through G) until `winner` shows exactly `wins` wins.
@@ -1095,6 +1184,30 @@ async fn poll_leaderboard_wins(ctx: &Ctx, g: &str, winner: &str, wins: u32) -> b
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
     false
+}
+
+/// Fire `n` concurrent GETs at `url` (optional api key) and return how many got 429.
+async fn burst_429(ctx: &Ctx, url: &str, api_key: Option<&str>, n: u32) -> u32 {
+    let mut hs = Vec::new();
+    for _ in 0..n {
+        let http = ctx.http.clone();
+        let url = url.to_string();
+        let key = api_key.map(|s| s.to_string());
+        hs.push(tokio::spawn(async move {
+            let mut req = http.get(url);
+            if let Some(k) = key {
+                req = req.header("X-Api-Key", k);
+            }
+            req.send().await.map(|r| r.status().as_u16()).unwrap_or(0)
+        }));
+    }
+    let mut n429 = 0;
+    for h in hs {
+        if let Ok(429) = h.await {
+            n429 += 1;
+        }
+    }
+    n429
 }
 
 /// True if a player call's DOMAIN status equals `want` (auth/routing failures ride the
