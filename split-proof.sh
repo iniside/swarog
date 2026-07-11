@@ -1335,6 +1335,10 @@ echo ""
 echo "================ MONOLITH PARITY ================"
 note "tearing down the split before the monolith stage ..."
 teardown
+# Re-arm the once-guard: this mid-script teardown only freed the split's ports.
+# Without the reset the EXIT-trap teardown no-ops and the monolith LEAKS, holding
+# target/debug/server.exe locked and failing the next build (os error 5).
+TEARDOWN_DONE=""
 kill_stragglers
 sleep 2
 
