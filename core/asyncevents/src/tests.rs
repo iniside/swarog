@@ -162,6 +162,32 @@ async fn test_transport_round_trips_emit_to_delivery() {
         .await;
 }
 
+/// The `/readyz` staleness probe's semantics (Step 2.2): never stalled without
+/// workers (clock unseeded), fresh after a pass, stalled once the last healthy
+/// pass ages past `max_age`, and never stalled while stopping (a controlled
+/// stop is not an outage).
+#[tokio::test]
+async fn liveness_delivery_stalled_flags_only_a_running_plane_with_old_passes() {
+    let l = Liveness::default();
+    assert!(
+        !l.delivery_stalled(Duration::ZERO),
+        "a plane hosting no workers must never read as stalled"
+    );
+
+    l.mark_pass_ok();
+    assert!(!l.delivery_stalled(Duration::from_secs(30)), "a fresh pass is not stale");
+
+    // The coarse clock ticks in whole seconds; 2.1s guarantees age >= 1 > 0.
+    tokio::time::sleep(Duration::from_millis(2_100)).await;
+    assert!(
+        l.delivery_stalled(Duration::ZERO),
+        "a pass older than max_age must flag the plane"
+    );
+
+    l.stopping.store(true, Ordering::SeqCst);
+    assert!(!l.delivery_stalled(Duration::ZERO), "a stopping plane is not a stall");
+}
+
 #[tokio::test]
 async fn stop_terminates_active_backend_and_rolls_back_effect_and_checkpoint() {
     let Some(pool) = test_pool().await else { return };
@@ -205,6 +231,11 @@ async fn stop_terminates_active_backend_and_rolls_back_effect_and_checkpoint() {
         }
     });
     plane.start().await.unwrap();
+    // A healthy just-started plane is green: `start` seeded the staleness clock.
+    assert!(
+        !plane.liveness().delivery_stalled(Duration::from_secs(30)),
+        "no false stall right after start"
+    );
     let mut tx = pool.begin().await.unwrap();
     ctx.bus().emit_tx(AnyTx::new(&mut *tx), &event, &serde_json::json!({"tag": tag}))
         .await.unwrap();
@@ -212,6 +243,11 @@ async fn stop_terminates_active_backend_and_rolls_back_effect_and_checkpoint() {
     tokio::time::timeout(Duration::from_secs(5), entered.notified()).await.unwrap();
 
     tokio::time::timeout(Duration::from_secs(2), plane.stop()).await.unwrap();
+    // A controlled stop never reads as a stall — even at max_age zero.
+    assert!(
+        !plane.liveness().delivery_stalled(Duration::ZERO),
+        "controlled stop must not flag /readyz"
+    );
     let backend = pid.load(Ordering::SeqCst);
     let present: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid = $1)")
         .bind(backend).fetch_one(&pool).await.unwrap();

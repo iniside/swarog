@@ -94,6 +94,7 @@ fn worker_ctx(_pool: &PgPool, entries: Vec<SubEntry>, timeout: Duration) -> Work
         handler_timeout: timeout,
         wakeup: Arc::new(Notify::new()),
         active: ActiveDeliveries::default(),
+        liveness: crate::Liveness::default(),
     }
 }
 
@@ -356,9 +357,10 @@ async fn skip_locked_single_owner_and_failover_from_checkpoint() {
     let step_b = deliver_one(&ctx_b, &entry_b).await.unwrap();
     assert_eq!(step_b, Step::Skipped, "second worker must skip the locked subscription");
 
-    // A times out (crash-before-commit): backoff recorded, cursor NOT advanced.
+    // A times out (crash-before-commit): backoff recorded, cursor NOT advanced,
+    // and the poisoned delivery connection is reported as such.
     let step_a = a.await.unwrap();
-    assert_eq!(step_a, Step::Faulted);
+    assert_eq!(step_a, Step::Poisoned);
     let (state, failures, _, _) = sub_row(&pool, sub_id).await;
     assert_eq!(state, "active");
     assert_eq!(failures, 1);
@@ -575,12 +577,12 @@ async fn timeout_poisons_only_the_delivery_connection() {
     let mut step = Step::Skipped;
     for _ in 0..200 {
         step = deliver_one(&ctx, &e).await.unwrap();
-        if step == Step::Faulted {
+        if step == Step::Poisoned {
             break;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    assert_eq!(step, Step::Faulted);
+    assert_eq!(step, Step::Poisoned, "a timeout must report its connection poisoned");
 
     // The pool is not poisoned; the failure was recorded on a fresh connection.
     let one: i32 = sqlx::query_scalar("SELECT 1").fetch_one(&pool).await.unwrap();
@@ -670,6 +672,76 @@ async fn stale_timeout_failure_does_not_pause_a_healthy_subscription() {
     assert!(last_error.is_none(), "no error recorded on a stale CAS miss");
 
     cleanup(&pool, topic, sub_id).await;
+}
+
+/// Step 2.3 regression: a handler timeout on the PERSISTENT worker connection
+/// (the `drain_pass_on` path `worker::run` uses) reports the pass unhealthy —
+/// the worker reconnects immediately instead of issuing the next op on a
+/// terminated backend (which failed and logged a spurious ERROR first).
+#[tokio::test]
+async fn timeout_marks_persistent_connection_unhealthy_for_immediate_reconnect() {
+    let Some(pool) = test_pool().await else { return };
+    let topic = unique("worker.poisonconn");
+    let sub_id = unique("sub.poisonconn");
+
+    let wedged: Arc<dyn TxHandler> = Arc::new(TestHandler {
+        calls: Arc::new(AtomicU32::new(0)),
+        seen: Arc::new(Mutex::new(Vec::new())),
+        fail_first: 0,
+        pg_sleep_secs: 30.0,
+    });
+    let e = entry(sub_id, topic, wedged);
+    let ctx = worker_ctx(&pool, vec![e.clone()], Duration::from_millis(500));
+    catalog::reconcile(&pool, &ctx.subs).await.unwrap();
+
+    append_committed(&pool, topic, r#"{"n":1}"#).await;
+    wait_eligible(&pool, topic, 1).await;
+
+    let mut conn = connect(&ctx.dsn, ctx.handler_timeout).await.unwrap();
+    let (delivered, healthy) = drain_pass_on(&ctx, None, &mut conn).await;
+    assert_eq!(delivered, 0);
+    assert!(!healthy, "a poisoned delivery connection must trigger an immediate reconnect");
+
+    // The backoff still landed (on a fresh session inside the timeout arm).
+    let (state, failures, last_error, cursor_tie) = sub_row(&pool, sub_id).await;
+    assert_eq!(state, "active");
+    assert_eq!(failures, 1);
+    assert!(last_error.unwrap().contains("timeout"));
+    assert_eq!(cursor_tie, 0, "cursor must not advance on a timed-out delivery");
+
+    // In contrast, a plain handler ERROR keeps the connection healthy (savepoint
+    // rollback + commit on the same conn) — Faulted must NOT force a reconnect.
+    clear_backoff(&pool, sub_id).await;
+    let failing: Arc<dyn TxHandler> = Arc::new(TestHandler {
+        calls: Arc::new(AtomicU32::new(0)),
+        seen: Arc::new(Mutex::new(Vec::new())),
+        fail_first: u32::MAX,
+        pg_sleep_secs: 0.0,
+    });
+    let e_err = entry(sub_id, topic, failing);
+    let ctx_err = worker_ctx(&pool, vec![e_err.clone()], Duration::from_secs(10));
+    let mut conn2 = connect(&ctx_err.dsn, ctx_err.handler_timeout).await.unwrap();
+    let (_, healthy) = drain_pass_on(&ctx_err, None, &mut conn2).await;
+    assert!(healthy, "a handler error must not be treated as a poisoned connection");
+
+    cleanup(&pool, topic, sub_id).await;
+}
+
+/// Step 2.5: every delivery session (fresh-conn and persistent alike goes
+/// through `worker::connect`) carries `idle_in_transaction_session_timeout`
+/// derived from the handler budget (2x) — the belt against this worker leaking
+/// its OWN open transaction.
+#[tokio::test]
+async fn delivery_sessions_set_idle_in_transaction_timeout() {
+    let Some(_pool) = test_pool().await else { return };
+    let dsn = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string());
+    let mut conn = connect(&dsn, Duration::from_secs(5)).await.unwrap();
+    let setting: String =
+        sqlx::query_scalar("SELECT current_setting('idle_in_transaction_session_timeout')")
+            .fetch_one(&mut conn)
+            .await
+            .unwrap();
+    assert_eq!(setting, "10s", "expected 2x the 5s handler budget");
 }
 
 /// Lost NOTIFYs only delay delivery to the next poll tick: a worker whose

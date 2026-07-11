@@ -33,8 +33,9 @@ mod worker;
 
 pub use transport::LogTransport;
 
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
+use std::time::Instant;
 
 use bus::Transport;
 use futures::FutureExt;
@@ -87,19 +88,58 @@ DROP TABLE IF EXISTS asyncevents.inbox CASCADE;
 DROP FUNCTION IF EXISTS asyncevents.notify_outbox() CASCADE;
 DROP SCHEMA IF EXISTS messaging CASCADE;"#;
 
-/// A cloneable worker-health probe: flipped once if any worker task dies while
-/// the plane is running (panic or premature exit). `app::run` folds it into
-/// `/readyz` as a named `httpmw::ReadyCheck` — a process whose delivery loop is
-/// gone must stop taking traffic that expects its effects.
+/// Coarse monotonic seconds since the first call in this process — the base for
+/// the delivery-staleness probe. Deliberately not wall-clock (a clock jump must
+/// not flap `/readyz`, and tests never depend on the system time).
+fn coarse_now_secs() -> u64 {
+    static BASE: OnceLock<Instant> = OnceLock::new();
+    BASE.get_or_init(Instant::now).elapsed().as_secs()
+}
+
+/// A cloneable worker-health probe: [`Liveness::dead`] is flipped once if any
+/// worker task dies while the plane is running (panic or premature exit);
+/// [`Liveness::delivery_stalled`] flags a worker pool that is alive but has not
+/// completed a healthy pass recently (e.g. looping on connection errors — that
+/// loop never exits, so `dead` alone would keep `/readyz` green forever).
+/// `app::run` folds both into `/readyz` as a named `httpmw::ReadyCheck` — a
+/// process whose delivery loop is gone must stop taking traffic that expects
+/// its effects.
 #[derive(Clone, Default)]
 pub struct Liveness {
     dead: Arc<AtomicBool>,
     stopping: Arc<AtomicBool>,
+    /// Coarse-clock second of the last healthy worker pass; `0` = no workers
+    /// hosted (never seeded), which never counts as stalled.
+    last_ok_secs: Arc<AtomicU64>,
 }
 
 impl Liveness {
     pub fn dead(&self) -> bool {
         self.dead.load(Ordering::SeqCst)
+    }
+
+    /// True iff this process hosts delivery workers and none has completed a
+    /// healthy pass within `max_age`. Never true while the plane is stopping
+    /// (a controlled stop is not a stall) or when the plane hosts no workers
+    /// (the clock was never seeded).
+    pub fn delivery_stalled(&self, max_age: Duration) -> bool {
+        if self.stopping.load(Ordering::SeqCst) {
+            return false;
+        }
+        let last = self.last_ok_secs.load(Ordering::SeqCst);
+        if last == 0 {
+            return false;
+        }
+        coarse_now_secs().saturating_sub(last) > max_age.as_secs()
+    }
+
+    /// Stamps "a healthy pass completed now". `Plane::start` seeds it (starting
+    /// from 0 would read as an infinite age and flap `/readyz` right after
+    /// startup, since HTTP serves before the first pass on a cold DB); the
+    /// worker loop bumps it after every healthy `drain_pass_on`. `max(1)`
+    /// because `0` is the "no workers" sentinel.
+    pub(crate) fn mark_pass_ok(&self) {
+        self.last_ok_secs.store(coarse_now_secs().max(1), Ordering::SeqCst);
     }
 }
 
@@ -189,8 +229,12 @@ impl Plane {
                 handler_timeout,
                 wakeup: wakeup.clone(),
                 active: self.active_deliveries.clone(),
+                liveness: self.liveness.clone(),
             });
             self.liveness.stopping.store(false, Ordering::SeqCst);
+            // Seed the staleness clock: the first pass may lag on a cold DB while
+            // HTTP is already serving — age must start at 0, not "infinite".
+            self.liveness.mark_pass_ok();
             for worker_id in 0..WORKERS {
                 let liveness = self.liveness.clone();
                 let worker_ctx = ctx.clone();
@@ -274,12 +318,6 @@ impl Plane {
                     Ok(Err(err)) => tracing::warn!(worker_id, generation = delivery.generation, pid = delivery.pid, %err, "asyncevents: failed to terminate delivery backend; private socket will be force-closed"),
                     Err(_) => tracing::warn!(worker_id, generation = delivery.generation, pid = delivery.pid, "asyncevents: deadline exhausted terminating delivery backend; private socket will be force-closed"),
                 }
-                // A concurrently completed generation removes itself. A still
-                // present record refers to precisely the PID/generation claimed
-                // above; no newer worker session can be mistaken for it.
-                let _still_active = self.active_deliveries.contains(
-                    worker_id, delivery.generation, delivery.pid, &delivery.backend_start,
-                );
             }
 
             for task in &tasks { task.abort(); }
@@ -355,12 +393,29 @@ pub mod testing {
     pub struct TestTransport {
         inner: Arc<LogTransport>,
         pool: PgPool,
+        /// The DSN the drive-by worker sessions connect with — kept alongside the
+        /// pool so `deliver_all`'s workers hit the SAME database `reconcile`
+        /// targeted (a `PgPool` cannot be asked for its DSN back).
+        dsn: String,
     }
 
     pub fn transport(pool: PgPool) -> TestTransport {
+        transport_with_dsn(
+            pool,
+            std::env::var("DATABASE_URL").unwrap_or_else(|_| {
+                "postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable"
+                    .to_string()
+            }),
+        )
+    }
+
+    /// Like [`transport`], but with an explicit worker DSN — for a test whose
+    /// pool was NOT opened from `DATABASE_URL`.
+    pub fn transport_with_dsn(pool: PgPool, dsn: String) -> TestTransport {
         TestTransport {
             inner: Arc::new(LogTransport::new()),
             pool,
+            dsn,
         }
     }
 
@@ -378,11 +433,12 @@ pub mod testing {
             let subs = self.inner.snapshot();
             crate::catalog::reconcile(&self.pool, &subs).await?;
             let ctx = crate::worker::WorkerCtx {
-                dsn: std::env::var("DATABASE_URL").unwrap_or_else(|_| "postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable".to_string()),
+                dsn: self.dsn.clone(),
                 subs,
                 handler_timeout: std::time::Duration::from_secs(10),
                 wakeup: Arc::new(tokio::sync::Notify::new()),
                 active: crate::worker::ActiveDeliveries::default(),
+                liveness: crate::Liveness::default(),
             };
             let mut total = 0u64;
             loop {

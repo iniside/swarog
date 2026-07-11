@@ -568,6 +568,166 @@ fn contributed_http_layers_apply_in_contribution_order() {
     assert_eq!(*order.lock().unwrap(), vec![1, 2, 3], "spent layers never re-run");
 }
 
+// ============================================================================
+// Startup order (event-plane hardening Step 2.1): the invalidation plane's
+// synchronous first refresh completes BEFORE durable delivery starts — a durable
+// handler reading a replica-local cache must never run against a cold cache.
+// Live-Postgres test through the REAL boot path (`run`).
+// ============================================================================
+
+/// A probe module: registers an invalidation callback with a deliberately SLOW
+/// first refresh (2s — under the old `plane.start()`-first order delivery would
+/// race ahead of it) plus a durable subscription whose handler records how many
+/// refreshes had completed at delivery time; `start` emits the probe event.
+struct OrderProbe {
+    topic: &'static str,
+    sub_id: &'static str,
+    channel: &'static str,
+    refreshes: std::sync::Arc<std::sync::atomic::AtomicU32>,
+    /// Refresh count observed by the durable handler; -1 = not delivered yet.
+    refreshes_at_delivery: std::sync::Arc<std::sync::atomic::AtomicI32>,
+}
+
+#[async_trait::async_trait]
+impl Module for OrderProbe {
+    fn name(&self) -> &str {
+        "orderprobe"
+    }
+
+    fn init(&self, ctx: &Context) -> anyhow::Result<()> {
+        use std::sync::atomic::Ordering;
+        let refreshes = self.refreshes.clone();
+        ctx.invalidation().register(self.channel, "orderprobe", move || {
+            let refreshes = refreshes.clone();
+            async move {
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                refreshes.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
+        });
+
+        let et = bus::define::<serde_json::Value>(
+            self.topic,
+            1,
+            bus::HistoryPolicy::MinRetention { days: 7 },
+        );
+        let refreshes = self.refreshes.clone();
+        let at_delivery = self.refreshes_at_delivery.clone();
+        ctx.bus().on_tx(
+            bus::SubscriptionSpec {
+                id: self.sub_id,
+                start: bus::StartPosition::Genesis,
+            },
+            &et,
+            move |_delivery, _v: serde_json::Value| {
+                let refreshes = refreshes.clone();
+                let at_delivery = at_delivery.clone();
+                Box::pin(async move {
+                    at_delivery
+                        .store(refreshes.load(Ordering::SeqCst) as i32, Ordering::SeqCst);
+                    Ok(())
+                })
+            },
+        );
+        Ok(())
+    }
+
+    async fn start(&self, ctx: &Context) -> anyhow::Result<()> {
+        // Module start runs BEFORE both planes start: the probe event is already
+        // in the log when the first delivery pass begins.
+        let pool = ctx.db().expect("db-backed test").clone();
+        let et = bus::define::<serde_json::Value>(
+            self.topic,
+            1,
+            bus::HistoryPolicy::MinRetention { days: 7 },
+        );
+        let mut tx = pool.begin().await?;
+        ctx.bus()
+            .emit_tx(
+                bus::AnyTx::new(&mut *tx),
+                &et,
+                &serde_json::json!({ "probe": self.topic }),
+            )
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn durable_delivery_starts_only_after_invalidation_first_refresh() {
+    use std::sync::atomic::{AtomicI32, AtomicU32, Ordering};
+    use std::sync::Arc;
+
+    let dsn = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string());
+    let pool = match tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        sqlx::PgPool::connect(&dsn),
+    )
+    .await
+    {
+        Ok(Ok(p)) => p,
+        _ => {
+            eprintln!("SKIP: postgres unreachable at {dsn} — startup-order test skipped");
+            return;
+        }
+    };
+
+    fn leak(s: String) -> &'static str {
+        Box::leak(s.into_boxed_str())
+    }
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let pid = std::process::id();
+    let topic = leak(format!("app.startorder.{pid}-{nanos}"));
+    let sub_id = leak(format!("app.startorder-sub.{pid}-{nanos}"));
+    let channel = leak(format!("app_startorder_{pid}_{nanos}"));
+
+    let refreshes = Arc::new(AtomicU32::new(0));
+    let at_delivery = Arc::new(AtomicI32::new(-1));
+
+    let mut cfg =
+        Config::from_values(Some(dsn.clone()), None, None, None, None, None, None, None, None);
+    cfg.listen_addr = format!("127.0.0.1:{}", free_port());
+
+    let probe = OrderProbe {
+        topic,
+        sub_id,
+        channel,
+        refreshes: refreshes.clone(),
+        refreshes_at_delivery: at_delivery.clone(),
+    };
+    let server = tokio::spawn(run(cfg, vec![Box::new(probe)], None, None));
+
+    // First refresh sleeps 2s, delivery polls at a 1s floor and frontier
+    // eligibility can lag behind unrelated transactions — poll generously.
+    let mut delivered = false;
+    for _ in 0..300 {
+        if at_delivery.load(Ordering::SeqCst) >= 0 {
+            delivered = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    server.abort();
+    assert!(delivered, "the probe event was never delivered");
+    assert!(
+        at_delivery.load(Ordering::SeqCst) >= 1,
+        "durable delivery ran before the invalidation plane's first refresh completed"
+    );
+
+    let _ = sqlx::query("DELETE FROM asyncevents.events WHERE topic = $1")
+        .bind(topic)
+        .execute(&pool)
+        .await;
+    let _ = sqlx::query("DELETE FROM asyncevents.subscriptions WHERE subscription_id = $1")
+        .bind(sub_id)
+        .execute(&pool)
+        .await;
+}
+
 /// The monolith path: `run` never drains the slot (no edge server), so a
 /// contributed registration is silently skipped — no effect, no error.
 #[test]

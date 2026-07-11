@@ -50,6 +50,11 @@ const DEFAULT_PLAYER_CONN_RATE_LIMIT_BURST: u32 = 20;
 /// 2s acquire wait" IS not-ready. Chosen, not accidental.
 const READY_CHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
+/// `/readyz` flags the durable plane when no worker completed a healthy pass for
+/// this long — ~30 ticks of the workers' 1s poll floor plus slack for a slow
+/// pass, so a transient error never flaps readiness.
+const DELIVERY_STALL_MAX: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// How the HTTP front terminates TLS (admin hardening Step 4). The MECHANISM lives
 /// here in `core/app` (the serve path owns the listener); the ENV PARSING lives in the
 /// one composition root that fronts the public internet (`cmd/gateway-svc` reads
@@ -492,7 +497,10 @@ pub async fn run(
     app.build().context("startup failed")?;
 
     // The plane's worker-health probe joins `/readyz`: a process whose pull
-    // workers died (panic) must stop taking traffic that expects their effects.
+    // workers died (panic) OR whose workers are alive but persistently failing
+    // (reconnect/error loop — `dead` never flips there) must stop taking traffic
+    // that expects their effects. 30s ≈ 30 ticks of the 1s poll floor plus slack
+    // for a slow pass, so a transient error never flaps readiness.
     if let Some(p) = &plane {
         let liveness = p.liveness();
         ctx.contribute(
@@ -502,6 +510,11 @@ pub async fn run(
                 async move {
                     if liveness.dead() {
                         Err("asyncevents worker task died".to_string())
+                    } else if liveness.delivery_stalled(DELIVERY_STALL_MAX) {
+                        Err(format!(
+                            "asyncevents workers have not completed a healthy pass in >{}s",
+                            DELIVERY_STALL_MAX.as_secs()
+                        ))
                     } else {
                         Ok(())
                     }
@@ -563,14 +576,17 @@ pub async fn run(
         // AFTER this line unwinds with `app.stop()`.
         app.start().await.context("start failed")?;
         modules_started = true;
-        if let Some(p) = &mut plane {
-            p.start().await.context("asyncevents start failed")?;
-        }
         // After module start (so the snapshot sees every wiring-time `register`): run
         // each callback's FIRST refresh synchronously — a failure fails startup loudly —
-        // then launch the NOTIFY listener + poll fallback.
+        // then launch the NOTIFY listener + poll fallback. This runs BEFORE durable
+        // delivery starts: a durable handler reading a replica-local cache must never
+        // run against a cold cache. (Teardown deliberately does NOT mirror this order —
+        // `ordered_teardown` halts the durable plane FIRST, before modules stop.)
         if let Some(p) = &mut invalidation {
             p.start().await.context("invalidation start failed")?;
+        }
+        if let Some(p) = &mut plane {
+            p.start().await.context("asyncevents start failed")?;
         }
 
         // 7. Bring up the shared edge server AFTER every module init has contributed

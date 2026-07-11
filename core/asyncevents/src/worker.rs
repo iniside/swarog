@@ -31,18 +31,11 @@ use crate::transport::SubEntry;
 const DEFAULT_HANDLER_TIMEOUT: Duration = Duration::from_secs(10);
 pub(crate) const DELIVERIES_PER_SUB_PASS: u64 = 64;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum DeliveryState {
-    Active,
-    Terminating,
-}
-
 #[derive(Clone, Debug)]
 pub(crate) struct ActiveDelivery {
     pub generation: u64,
     pub pid: i32,
     pub backend_start: String,
-    pub state: DeliveryState,
 }
 
 #[derive(Clone, Default)]
@@ -53,19 +46,21 @@ pub(crate) struct ActiveDeliveries {
 impl ActiveDeliveries {
     pub(crate) fn register(&self, worker_id: usize, generation: u64, pid: i32, backend_start: String) -> ActiveGuard {
         self.inner.lock().unwrap().insert(worker_id, ActiveDelivery {
-            generation, pid, backend_start, state: DeliveryState::Active,
+            generation, pid, backend_start,
         });
         ActiveGuard { active: self.clone(), worker_id, generation }
     }
 
+    /// Snapshot of every in-flight delivery. Called exactly once per
+    /// [`crate::Plane::stop`]; `terminate_claim` re-checks the claim against the
+    /// live map (generation + pid + backend_start) before acting, and
+    /// [`ActiveGuard`]'s generation-checked drop is the stale-removal guard —
+    /// no claim-side state machine is needed.
     pub fn claim_active(&self) -> Vec<(usize, ActiveDelivery)> {
-        let mut inner = self.inner.lock().unwrap();
-        inner.iter_mut().filter_map(|(&worker_id, delivery)| {
-            if delivery.state == DeliveryState::Active {
-                delivery.state = DeliveryState::Terminating;
-                Some((worker_id, delivery.clone()))
-            } else { None }
-        }).collect()
+        self.inner.lock().unwrap()
+            .iter()
+            .map(|(&worker_id, delivery)| (worker_id, delivery.clone()))
+            .collect()
     }
 
     pub fn contains(&self, worker_id: usize, generation: u64, pid: i32, backend_start: &str) -> bool {
@@ -106,6 +101,9 @@ pub(crate) struct WorkerCtx {
     /// 1s poll fallback in [`run`] — NOTIFY is best-effort, the poll is the floor.
     pub wakeup: Arc<Notify>,
     pub active: ActiveDeliveries,
+    /// The plane's health probe; [`run`] stamps it after every healthy pass so
+    /// `/readyz` can flag a worker stuck in a reconnect/error loop.
+    pub liveness: crate::Liveness,
 }
 
 /// `ASYNCEVENTS_HANDLER_TIMEOUT`: `10s`/`500ms`/`5m` or a bare seconds integer.
@@ -150,15 +148,43 @@ pub(crate) enum Step {
     Empty,
     /// Not due (backoff/paused/retired) or another worker holds the row lock.
     Skipped,
-    /// Handler error or timeout; backoff recorded. Yield this sub.
+    /// Handler error; backoff recorded on the same (still healthy) connection
+    /// via savepoint rollback + commit. Yield this sub.
     Faulted,
+    /// Handler timeout; backoff recorded, but the delivery connection's backend
+    /// was terminated — the connection is unusable and the caller must discard
+    /// it (immediate reconnect, no follow-up op, no spurious error).
+    Poisoned,
+}
+
+/// Opens one delivery-session connection: a direct `PgConnection` with
+/// `idle_in_transaction_session_timeout` derived from the handler budget (2x,
+/// so a legit slow handler near the configurable `ASYNCEVENTS_HANDLER_TIMEOUT`
+/// is never killed by it). This is a belt against THIS worker leaking its OWN
+/// open transaction (a dropped future between statements would leave the
+/// session idle-in-transaction, holding the row lock and pinning xmin — the
+/// timeout arm's `pg_terminate_backend` only covers a backend wedged INSIDE a
+/// statement). It deliberately does NOT cover a rogue idle-in-tx session
+/// elsewhere in the cluster pinning the frontier: that is an ops concern —
+/// a global `idle_in_transaction_session_timeout` (postgresql.conf /
+/// ALTER SYSTEM) plus alerting on the existing
+/// `asyncevents_safe_frontier_age_seconds` gauge.
+pub(crate) async fn connect(dsn: &str, handler_timeout: Duration) -> sqlx::Result<PgConnection> {
+    let mut conn = PgConnection::connect(dsn).await?;
+    // SET takes no bind parameters; the value is a locally computed integer
+    // (milliseconds), never user input.
+    let timeout_ms = handler_timeout.saturating_mul(2).as_millis().min(u128::from(u32::MAX));
+    sqlx::query(&format!("SET idle_in_transaction_session_timeout = {timeout_ms}"))
+        .execute(&mut conn)
+        .await?;
+    Ok(conn)
 }
 
 /// One delivery attempt: lock the subscription row, pick the next eligible
 /// event, run the handler under a savepoint on the same connection, advance the
 /// cursor, commit. See the module docs for the error/timeout arms.
 pub(crate) async fn deliver_one(ctx: &WorkerCtx, entry: &SubEntry) -> anyhow::Result<Step> {
-    let mut conn = PgConnection::connect(&ctx.dsn).await?;
+    let mut conn = connect(&ctx.dsn, ctx.handler_timeout).await?;
     deliver_one_on(ctx, entry, &mut conn).await
 }
 
@@ -307,7 +333,7 @@ async fn deliver_one_on(ctx: &WorkerCtx, entry: &SubEntry, conn: &mut PgConnecti
                 failures,
             )
             .await?;
-            Ok(Step::Faulted)
+            Ok(Step::Poisoned)
         }
     }
 }
@@ -392,7 +418,9 @@ pub(crate) async fn drain_pass(ctx: &WorkerCtx, stop: Option<&watch::Receiver<bo
             }
             match deliver_one(ctx, entry).await {
                 Ok(Step::Delivered) => delivered += 1,
-                Ok(Step::Empty | Step::Skipped | Step::Faulted) => break,
+                // `Poisoned` killed a per-call connection that is dropped right
+                // here anyway — nothing to reconnect, just yield the sub.
+                Ok(Step::Empty | Step::Skipped | Step::Faulted | Step::Poisoned) => break,
                 Err(err) => {
                     tracing::error!(subscription = entry.spec.id, %err, "asyncevents: delivery attempt errored");
                     break;
@@ -407,15 +435,28 @@ pub(crate) async fn drain_pass(ctx: &WorkerCtx, stop: Option<&watch::Receiver<bo
 /// nothing, wait for a NOTIFY wake-up or the global 1s poll fallback (lost
 /// NOTIFYs only delay a row by one tick). All waits happen with no row lock held.
 pub(crate) async fn run(worker_id: usize, ctx: Arc<WorkerCtx>, mut stop: watch::Receiver<bool>) {
-    let mut conn = None;
+    // The persistent connection travels with its session identity: pid and
+    // backend_start are constant per connection, so they are queried ONCE at
+    // (re)connect instead of every pass.
+    let mut conn: Option<(PgConnection, i32, String)> = None;
     let mut generation = 0u64;
     loop {
         if *stop.borrow() {
             return;
         }
         if conn.is_none() {
-            match PgConnection::connect(&ctx.dsn).await {
-                Ok(c) => conn = Some(c),
+            let established: sqlx::Result<(PgConnection, i32, String)> = async {
+                let mut c = connect(&ctx.dsn, ctx.handler_timeout).await?;
+                let (pid, backend_start): (i32, String) = sqlx::query_as(
+                    "SELECT pg_backend_pid(), backend_start::text FROM pg_stat_activity WHERE pid = pg_backend_pid()"
+                )
+                .fetch_one(&mut c)
+                .await?;
+                Ok((c, pid, backend_start))
+            }
+            .await;
+            match established {
+                Ok(v) => conn = Some(v),
                 Err(err) => {
                     tracing::error!(%err, "asyncevents: worker connection failed");
                     tokio::select! {
@@ -426,22 +467,13 @@ pub(crate) async fn run(worker_id: usize, ctx: Arc<WorkerCtx>, mut stop: watch::
                 }
             }
         }
-        let connection = conn.as_mut().expect("connected");
-        let (pid, backend_start): (i32, String) = match sqlx::query_as(
-            "SELECT pg_backend_pid(), backend_start::text FROM pg_stat_activity WHERE pid = pg_backend_pid()"
-        )
-            .fetch_one(&mut *connection).await {
-                Ok(identity) => identity,
-                Err(err) => {
-                    tracing::error!(%err, "asyncevents: worker PID query failed; reconnecting");
-                    conn = None;
-                    continue;
-                }
-            };
+        let (connection, pid, backend_start) = conn.as_mut().expect("connected");
         generation = generation.wrapping_add(1);
-        let _active = ctx.active.register(worker_id, generation, pid, backend_start);
+        let _active = ctx.active.register(worker_id, generation, *pid, backend_start.clone());
         let (delivered, healthy) = drain_pass_on(&ctx, Some(&stop), connection).await;
-        if !healthy {
+        if healthy {
+            ctx.liveness.mark_pass_ok();
+        } else {
             conn = None;
         }
         if delivered == 0 {
@@ -466,6 +498,10 @@ async fn drain_pass_on(
             match deliver_one_on(ctx, entry, conn).await {
                 Ok(Step::Delivered) => delivered += 1,
                 Ok(Step::Empty | Step::Skipped | Step::Faulted) => break,
+                // The timeout arm terminated this connection's own backend: the
+                // session is unusable. Report unhealthy so the caller reconnects
+                // NOW instead of failing (and error-logging) the next op.
+                Ok(Step::Poisoned) => return (delivered, false),
                 Err(err) => {
                     tracing::error!(subscription = entry.spec.id, %err, "asyncevents: delivery attempt errored; reconnecting");
                     return (delivered, false);

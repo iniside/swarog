@@ -31,6 +31,9 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 async-trait = { workspace = true }
+# The startup-order integration test (invalidation first refresh BEFORE durable
+# delivery) emits/subscribes a throwaway JSON event through the real boot path.
+serde_json = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 # The TLS files-mode integration test: rcgen mints a localhost cert, reqwest (rustls,
 # ring — same provider stack) trusts it and round-trips through the real TLS branch.
