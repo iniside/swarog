@@ -5,12 +5,34 @@
 //! to be perfect, only prompt. Never dies on a DB outage: each (re)connect backs
 //! off on failure.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
+use prometheus::IntCounter;
 use tokio::sync::{watch, Notify};
 
 const NOTIFY_CHANNEL: &str = "asyncevents_events";
+
+/// Counts wake-up listener task deaths (panic or premature exit while the plane
+/// runs). Losing the listener is a LATENCY degrade only — workers still poll
+/// every 1s — so its supervision is a counter + loud log, never a readyz flag.
+/// Registered once per process into `core/metrics`'s private registry, like
+/// [`crate::plane_metrics`].
+pub(crate) fn listener_deaths() -> &'static IntCounter {
+    static C: OnceLock<IntCounter> = OnceLock::new();
+    C.get_or_init(|| {
+        let c = IntCounter::new(
+            "asyncevents_wakeup_listener_deaths_total",
+            "Times the NOTIFY wake-up listener task died while the plane was \
+             running (delivery falls back to the workers' 1s poll).",
+        )
+        .expect("valid wakeup listener_deaths counter");
+        // OnceLock guards the single registration; a second Plane in one process
+        // (tests) reuses the static and never re-registers.
+        let _ = metrics::register(Box::new(c.clone()));
+        c
+    })
+}
 
 pub(crate) async fn listen(dsn: String, wakeup: Arc<Notify>, mut stop: watch::Receiver<bool>) {
     loop {

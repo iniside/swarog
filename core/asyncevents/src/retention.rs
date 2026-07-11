@@ -50,13 +50,39 @@ fn blocked_gauge() -> &'static Gauge {
 }
 
 /// `EVENTS_HOUSEKEEP_INTERVAL`: a Go-style duration (`1h`/`30m`/`45s`/`500ms`) or a
-/// bare seconds integer; unset/unparseable falls back to [`DEFAULT_INTERVAL`].
-pub(crate) fn interval_from_env() -> Duration {
-    match std::env::var("EVENTS_HOUSEKEEP_INTERVAL") {
-        Ok(v) => parse_go_duration(&v).unwrap_or(DEFAULT_INTERVAL),
-        Err(_) => DEFAULT_INTERVAL,
+/// bare seconds integer; unset falls back to [`DEFAULT_INTERVAL`]. A value that
+/// parses to ZERO fails startup: `tokio::time::interval(Duration::ZERO)` panics,
+/// so an explicit "disable"-looking `0` must bail loudly (twin of
+/// [`crate::worker::handler_timeout_from_env`]) rather than panic the spawned task.
+pub(crate) fn interval_from_env() -> anyhow::Result<Duration> {
+    interval_from_value(std::env::var("EVENTS_HOUSEKEEP_INTERVAL").ok().as_deref())
+}
+
+/// The pure half of [`interval_from_env`], testable without env mutation.
+/// DECISION (plan m4c): an UNPARSEABLE string stays fallback-to-default — a
+/// garbage typo shouldn't brick startup the way a deliberate `0` (which would
+/// panic the ticker) must; only values that *parse to zero* are rejected.
+pub(crate) fn interval_from_value(v: Option<&str>) -> anyhow::Result<Duration> {
+    let Some(v) = v else { return Ok(DEFAULT_INTERVAL) };
+    match parse_go_duration(v) {
+        Some(d) if d.is_zero() => anyhow::bail!(
+            "EVENTS_HOUSEKEEP_INTERVAL={v:?} parses to a zero interval, which would \
+             panic the retention ticker; set a positive duration or unset it \
+             (default {DEFAULT_INTERVAL:?})"
+        ),
+        Some(d) => Ok(d),
+        None => Ok(DEFAULT_INTERVAL),
     }
 }
+
+/// Test-only panic injection: when set, the retention task panics immediately on
+/// entry (before its first tick), so the plane's per-task supervision
+/// (`Liveness::retention_dead` → the `asyncevents-retention` readyz check) is
+/// testable without waiting out an interval. `#[cfg(test)]`-gated — never
+/// compiled into a shipping binary.
+#[cfg(test)]
+pub(crate) static RETENTION_PANIC_ONCE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 /// Single-unit Go-duration parser (`h`/`m`/`s`/`ms`, or a bare seconds integer).
 /// Restored from the pre-cutover housekeeping helper; the plane's other knob
@@ -82,6 +108,10 @@ fn parse_go_duration(s: &str) -> Option<Duration> {
 /// The retention task: sweep on a ticker until stopped. The first sweep lands one
 /// interval in (the immediate tick is consumed), so boot is never blocked on GC.
 pub(crate) async fn run(pool: PgPool, interval: Duration, mut stop: watch::Receiver<bool>) {
+    #[cfg(test)]
+    if RETENTION_PANIC_ONCE.swap(false, std::sync::atomic::Ordering::SeqCst) {
+        panic!("test-injected retention panic (RETENTION_PANIC_ONCE)");
+    }
     let mut ticker = tokio::time::interval(interval);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     ticker.tick().await; // consume the immediate first tick

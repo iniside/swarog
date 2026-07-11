@@ -101,8 +101,10 @@ pub(crate) struct WorkerCtx {
     /// 1s poll fallback in [`run`] — NOTIFY is best-effort, the poll is the floor.
     pub wakeup: Arc<Notify>,
     pub active: ActiveDeliveries,
-    /// The plane's health probe; [`run`] stamps it after every healthy pass so
-    /// `/readyz` can flag a worker stuck in a reconnect/error loop.
+    /// The plane's health probe; stamped after every delivered event (progress
+    /// within a long pass) and after every healthy pass, so `/readyz` can flag a
+    /// worker stuck in a reconnect/error loop without false-flagging slow-but-
+    /// healthy handlers.
     pub liveness: crate::Liveness,
 }
 
@@ -315,13 +317,29 @@ async fn deliver_one_on(ctx: &WorkerCtx, entry: &SubEntry, conn: &mut PgConnecti
                 subscription = entry.spec.id, %event_id, backend_pid,
                 "asyncevents: durable handler timed out; poisoning the delivery connection"
             );
-            if let Ok(mut control) = PgConnection::connect(&ctx.dsn).await {
-                let _ = sqlx::query("SELECT pg_terminate_backend($1)")
-                    .bind(backend_pid)
-                    .execute(&mut control)
-                    .await;
+            match PgConnection::connect(&ctx.dsn).await {
+                Ok(mut control) => {
+                    if let Err(err) = sqlx::query("SELECT pg_terminate_backend($1)")
+                        .bind(backend_pid)
+                        .execute(&mut control)
+                        .await
+                    {
+                        tracing::error!(backend_pid, %err, "asyncevents: pg_terminate_backend failed; the wedged backend may still hold the subscription row lock");
+                    }
+                }
+                Err(err) => {
+                    tracing::error!(backend_pid, %err, "asyncevents: control connection for pg_terminate_backend failed; the wedged backend may still hold the subscription row lock");
+                }
             }
             let mut fresh = PgConnection::connect(&ctx.dsn).await?;
+            // If the termination above failed, the un-terminated backend may still
+            // hold the subscription row lock — bound this session (lock_timeout for
+            // the row lock, statement_timeout as the belt) so `record_failure`
+            // errors loudly instead of blocking unbounded (same class as the
+            // migrate lock bound, 41b1c0f). SET takes no bind parameters; the
+            // values are local constants, never user input.
+            sqlx::query("SET lock_timeout = '5s'").execute(&mut fresh).await?;
+            sqlx::query("SET statement_timeout = '15s'").execute(&mut fresh).await?;
             record_failure(
                 &mut fresh,
                 entry.spec.id,
@@ -496,7 +514,13 @@ async fn drain_pass_on(
         for _ in 0..DELIVERIES_PER_SUB_PASS {
             if stop.is_some_and(|s| *s.borrow()) { return (delivered, true); }
             match deliver_one_on(ctx, entry, conn).await {
-                Ok(Step::Delivered) => delivered += 1,
+                Ok(Step::Delivered) => {
+                    delivered += 1;
+                    // Stamp per DELIVERY, not per pass: a full pass over slow but
+                    // HEALTHY handlers can take up to 64×subs×handler_timeout —
+                    // far past `DELIVERY_STALL_MAX` — and must not read as a stall.
+                    ctx.liveness.mark_pass_ok();
+                }
                 Ok(Step::Empty | Step::Skipped | Step::Faulted) => break,
                 // The timeout arm terminated this connection's own backend: the
                 // session is unusable. Report unhealthy so the caller reconnects

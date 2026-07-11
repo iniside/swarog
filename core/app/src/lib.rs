@@ -521,6 +521,23 @@ pub async fn run(
                 }
             }),
         );
+        // The retention GC task gets its OWN named check, never the delivery
+        // `dead` flag: a GC outage is storage growth, not a serving outage, and
+        // per-task isolation keeps the failing surface visible by name.
+        let liveness = p.liveness();
+        ctx.contribute(
+            httpmw::READINESS_SLOT,
+            httpmw::ReadyCheck::new("asyncevents-retention", move || {
+                let liveness = liveness.clone();
+                async move {
+                    if liveness.retention_dead() {
+                        Err("asyncevents retention task died".to_string())
+                    } else {
+                        Ok(())
+                    }
+                }
+            }),
+        );
     }
 
     // The invalidation plane's freshness probe joins `/readyz`: a cache whose refresh

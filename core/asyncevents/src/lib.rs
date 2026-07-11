@@ -103,10 +103,15 @@ fn coarse_now_secs() -> u64 {
 /// loop never exits, so `dead` alone would keep `/readyz` green forever).
 /// `app::run` folds both into `/readyz` as a named `httpmw::ReadyCheck` — a
 /// process whose delivery loop is gone must stop taking traffic that expects
-/// its effects.
+/// its effects. [`Liveness::retention_dead`] is a SEPARATE bit for the retention
+/// GC task (its own named `asyncevents-retention` check): a GC outage is storage
+/// growth, not a serving outage, so it must never ride the delivery `dead` flag.
 #[derive(Clone, Default)]
 pub struct Liveness {
     dead: Arc<AtomicBool>,
+    /// Flipped once if the retention GC task dies (panic or premature exit)
+    /// while the plane is running. Deliberately NOT folded into [`Self::dead`].
+    retention_dead: Arc<AtomicBool>,
     stopping: Arc<AtomicBool>,
     /// Coarse-clock second of the last healthy worker pass; `0` = no workers
     /// hosted (never seeded), which never counts as stalled.
@@ -116,6 +121,11 @@ pub struct Liveness {
 impl Liveness {
     pub fn dead(&self) -> bool {
         self.dead.load(Ordering::SeqCst)
+    }
+
+    /// True iff the retention GC task died while the plane was running.
+    pub fn retention_dead(&self) -> bool {
+        self.retention_dead.load(Ordering::SeqCst)
     }
 
     /// True iff this process hosts delivery workers and none has completed a
@@ -133,11 +143,13 @@ impl Liveness {
         coarse_now_secs().saturating_sub(last) > max_age.as_secs()
     }
 
-    /// Stamps "a healthy pass completed now". `Plane::start` seeds it (starting
+    /// Stamps "healthy delivery progress now". `Plane::start` seeds it (starting
     /// from 0 would read as an infinite age and flap `/readyz` right after
     /// startup, since HTTP serves before the first pass on a cold DB); the
-    /// worker loop bumps it after every healthy `drain_pass_on`. `max(1)`
-    /// because `0` is the "no workers" sentinel.
+    /// worker stamps it after EVERY delivered event (a full pass can legitimately
+    /// take up to 64×subs×handler_timeout, far past `DELIVERY_STALL_MAX` — the
+    /// clock must reflect progress, not pass boundaries) and after every healthy
+    /// `drain_pass_on`. `max(1)` because `0` is the "no workers" sentinel.
     pub(crate) fn mark_pass_ok(&self) {
         self.last_ok_secs.store(coarse_now_secs().max(1), Ordering::SeqCst);
     }
@@ -214,12 +226,14 @@ impl Plane {
         // Parse configuration before the subscription catalog is reconciled: an
         // invalid value must fail startup without mutating durable state.
         let handler_timeout = worker::handler_timeout_from_env()?;
+        let housekeep_interval = retention::interval_from_env()?;
         let subs = self.inner.snapshot();
         catalog::reconcile(&self.pool, &subs).await?;
 
         let (stop_tx, stop_rx) = watch::channel(false);
         let mut tasks = Vec::new();
 
+        self.liveness.stopping.store(false, Ordering::SeqCst);
         let ids: Vec<String> = subs.iter().map(|s| s.spec.id.to_string()).collect();
         if !subs.is_empty() {
             let wakeup = Arc::new(Notify::new());
@@ -231,7 +245,6 @@ impl Plane {
                 active: self.active_deliveries.clone(),
                 liveness: self.liveness.clone(),
             });
-            self.liveness.stopping.store(false, Ordering::SeqCst);
             // Seed the staleness clock: the first pass may lag on a cold DB while
             // HTTP is already serving — age must start at 0, not "infinite".
             self.liveness.mark_pass_ok();
@@ -253,25 +266,49 @@ impl Plane {
                     }
                 }));
             }
-            tasks.push(tokio::spawn(wakeup::listen(
-                self.listen_dsn.clone(),
-                wakeup,
-                stop_rx.clone(),
-            )));
+            // Supervised like the workers, but with a LATENCY-only disposition:
+            // the listener's loss never degrades correctness (the 1s poll is the
+            // floor), so its death is a loud log + counter, never `dead`/readyz.
+            let liveness = self.liveness.clone();
+            let listen = wakeup::listen(self.listen_dsn.clone(), wakeup, stop_rx.clone());
+            tasks.push(tokio::spawn(async move {
+                let result = std::panic::AssertUnwindSafe(listen).catch_unwind().await;
+                if !liveness.stopping.load(Ordering::SeqCst) {
+                    wakeup::listener_deaths().inc();
+                    if result.is_err() {
+                        tracing::error!("asyncevents wake-up listener panicked while the plane was running; delivery degrades to the 1s poll");
+                    } else {
+                        tracing::error!("asyncevents wake-up listener exited while the plane was running; delivery degrades to the 1s poll");
+                    }
+                }
+            }));
         }
-        // Checkpoint-coupled retention GC (interval from EVENTS_HOUSEKEEP_INTERVAL).
-        // Runs regardless of whether this process hosts subscriptions — GC is a
-        // DB-global property of the shared log, safe to run redundantly per process.
-        tasks.push(tokio::spawn(retention::run(
-            self.pool.clone(),
-            retention::interval_from_env(),
-            stop_rx.clone(),
-        )));
-        tasks.push(tokio::spawn(plane_metrics::refresh_loop(
-            self.pool.clone(),
-            ids,
-            stop_rx,
-        )));
+        // Checkpoint-coupled retention GC (interval from EVENTS_HOUSEKEEP_INTERVAL,
+        // validated above). Runs regardless of whether this process hosts
+        // subscriptions — GC is a DB-global property of the shared log, safe to run
+        // redundantly per process. Its death flips ONLY `retention_dead` (its own
+        // named readyz check): a GC outage is storage growth, not a serving outage,
+        // so it must never take delivery out of rotation via the `dead` flag.
+        let liveness = self.liveness.clone();
+        let gc = retention::run(self.pool.clone(), housekeep_interval, stop_rx.clone());
+        tasks.push(tokio::spawn(async move {
+            let result = std::panic::AssertUnwindSafe(gc).catch_unwind().await;
+            if !liveness.stopping.load(Ordering::SeqCst) {
+                if result.is_err() {
+                    tracing::error!("asyncevents retention task panicked while the plane was running");
+                } else {
+                    tracing::error!("asyncevents retention task exited while the plane was running");
+                }
+                liveness.retention_dead.store(true, Ordering::SeqCst);
+            }
+        }));
+        // Metrics refresh death is log-only: pure observability, never readyz.
+        let refresh = plane_metrics::refresh_loop(self.pool.clone(), ids, stop_rx);
+        tasks.push(tokio::spawn(async move {
+            if std::panic::AssertUnwindSafe(refresh).catch_unwind().await.is_err() {
+                tracing::error!("asyncevents metrics refresh task panicked while the plane was running");
+            }
+        }));
 
         self.stop = Some((stop_tx, tasks));
         Ok(())

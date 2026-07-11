@@ -188,6 +188,57 @@ async fn liveness_delivery_stalled_flags_only_a_running_plane_with_old_passes() 
     assert!(!l.delivery_stalled(Duration::ZERO), "a stopping plane is not a stall");
 }
 
+/// Step 4a (DB-free): the retention flag is its own bit — flipping it never
+/// touches the delivery `dead` flag (per-task readyz isolation), and vice versa.
+#[test]
+fn liveness_retention_dead_is_independent_of_delivery_dead() {
+    let l = Liveness::default();
+    assert!(!l.retention_dead(), "fresh Liveness must not read retention-dead");
+
+    l.retention_dead.store(true, Ordering::SeqCst);
+    assert!(l.retention_dead());
+    assert!(!l.dead(), "retention death must never flip the delivery dead flag");
+
+    let l2 = Liveness::default();
+    l2.dead.store(true, Ordering::SeqCst);
+    assert!(l2.dead());
+    assert!(!l2.retention_dead(), "delivery death must never flip the retention flag");
+}
+
+/// Step 4a (Decision 2, DB-bound): a PANICKING retention task flips ONLY the
+/// `asyncevents-retention` readyz flag (`Liveness::retention_dead`); the delivery
+/// `dead` flag stays green — per-task isolation through the real `Plane::start`/
+/// `stop` harness. Uses the `#[cfg(test)]` `RETENTION_PANIC_ONCE` seam: the
+/// retention task panics on entry, before its first tick, so no interval elapses.
+#[tokio::test]
+async fn retention_panic_flips_retention_flag_but_not_delivery_dead() {
+    let Some(pool) = test_pool().await else { return };
+    let dsn = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string());
+    let mut plane = Plane::new(pool.clone(), dsn).unwrap();
+    let liveness = plane.liveness();
+
+    retention::RETENTION_PANIC_ONCE.store(true, Ordering::SeqCst);
+    plane.start().await.unwrap();
+
+    let mut flipped = false;
+    for _ in 0..100 {
+        if liveness.retention_dead() {
+            flipped = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(flipped, "retention panic never flipped the retention readyz flag");
+    assert!(
+        !liveness.dead(),
+        "delivery dead flag must stay green on a retention-only death"
+    );
+
+    plane.stop().await;
+    assert!(!liveness.dead(), "controlled stop must not flip the delivery dead flag");
+    assert!(liveness.retention_dead(), "the retention flag is sticky across stop");
+}
+
 #[tokio::test]
 async fn stop_terminates_active_backend_and_rolls_back_effect_and_checkpoint() {
     let Some(pool) = test_pool().await else { return };
