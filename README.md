@@ -43,10 +43,11 @@ running as a monolith and running split.
 
 ### 3. Event bus (`ctx.bus()`)
 
-The async glue. Every cross-module event is **durable**: the producer emits inside
-its own DB transaction (outbox), a relay delivers over HTTP, the consumer dedups
-in an inbox. Delivery is at-least-once with a stable `event_id`; effects are
-exactly-once when the dedup check and the effect share a transaction. The bus is
+The async glue. Every cross-module event is **durable**: the producer appends into
+a shared XID-ordered log inside its own DB transaction, and the consumer pulls
+from its own checkpointed subscription. Delivery is at-least-once per subscription
+with a stable `event_id`; effects are exactly-once when the handler effect and the
+checkpoint advance share a transaction. The bus is
 fire-and-forget by design — no request/response through it (that's the registry's
 job), so state projected from events is eventually consistent. Event payloads
 evolve additively only, enforced mechanically.
@@ -82,7 +83,7 @@ svc must compile).
 
 ## Domain modules
 
-12 fortresses plus the gateway:
+11 fortresses plus the gateway:
 
 - **accounts** — identity: one `player_id`, many identities, opaque DB sessions;
   dev/password auth, Epic OIDC verifier, Epic web OAuth link/login.
@@ -96,7 +97,7 @@ svc must compile).
 - **scheduler** — data-driven schedules, per-name advisory locks, exactly-once
   firing via `UPDATE` + emit in one transaction.
 - **match / rating / leaderboard** — match reports → durable `match.finished` →
-  in-memory MMR + persistent leaderboard projection.
+  a persistent MMR projection (restarts preserve MMR) + persistent leaderboard projection.
 - **apikeys** — per-key API access policy (anon/service-key model); the gateway
   requires an `X-Api-Key` on every op and enforces the key's policy.
 - **gateway** — the single public front door: HTTP op routing (local vs remote
@@ -122,7 +123,7 @@ cmd/            composition roots — the ONLY topology-aware code
 core/           foundations — never import modules or api/ crates
   app/ bus/ registry/ contrib/ lifecycle/ opsapi/
   edge/           internal mTLS QUIC + player plane
-  outbox/ asyncevents/   the durable event plane
+  asyncevents/    the durable event plane
   remote/ metrics/ httpmw/
 api/<name>/     contract surface per domain (api / events / rpc)
 modules/        private impls — the fortresses

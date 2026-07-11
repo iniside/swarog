@@ -6,7 +6,8 @@
 //! `player.registered` on the plain sync bus; here it rides the **durable** plane —
 //! the accounts module `emit_tx`s it INSIDE the registration store transaction, so
 //! the event is durable iff the player row is, and a cross-process consumer
-//! (audit-svc from Step 8 on) receives it through the outbox → `POST /events` path.
+//! (audit-svc from Step 8 on) receives it by pulling from its own checkpointed
+//! subscription against the shared event log.
 
 use std::sync::LazyLock;
 

@@ -154,7 +154,7 @@ module never knows the topology.
    pull from their checkpoint — the same code in monolith and split. `topiccheck`
    validates the subscription graph per deployment profile.
 
-## Domain modules (12 fortresses + gateway)
+## Domain modules (11 fortresses + gateway)
 
 - **accounts** — identity: one `player_id`, many identities (`provider`,`subject`),
   opaque DB sessions (30-day TTL). Dev/password auth (argon2id, `ACCOUNTS_DEV_AUTH`
@@ -195,8 +195,9 @@ module never knows the topology.
   `admin.adminData` (`adminrpc::admin_remote_factory`). Remote forms are read-only.
   admin-svc has a DB (schema `admin` + the durable plane) — no longer planeless.
 - **audit** — append-only ledger (`audit.log`), zero-coupling raw durable sinks for
-  all 7 topics — seven independent subscriptions (`audit.<topic-kebab>.v1`), each
-  with its own checkpoint — prune reacting to `scheduler.fired{audit-prune}`
+  all 6 ledger topics — six independent subscriptions (`audit.<topic-kebab>.v1`), each
+  with its own checkpoint, plus a 7th independent subscription for prune reacting
+  to `scheduler.fired{audit-prune}`
   (`AUDIT_RETENTION_DAYS`, default 30).
 - **scheduler** — data-driven schedules (`scheduler.schedules`), 1s tick, per-name
   `pg_try_advisory_lock` + still-due re-check + `UPDATE`+`emit_tx` in one tx,
@@ -364,7 +365,7 @@ api/<name>/                # contract surface per domain
   <name>api/               #   pure #[rpc] traits + ops/bindings (transport-free)
   <name>events/            #   bus::define descriptors + payloads
   <name>rpc/               #   generated glue (Client/register_server/factories)
-modules/                   # private impls — 12 fortresses + gateway (see above)
+modules/                   # private impls — 11 fortresses + gateway (see above)
 demos/                     # non-shipping demo crates (webui) — cmd/server only
 tools/                     # rpc-macro (+tests), archcheck, topiccheck, edgeca,
                            # playercli

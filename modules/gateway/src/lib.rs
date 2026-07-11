@@ -18,12 +18,11 @@
 //!   1. **Match** the request (verb + path, with `{wild}` path segments) against the
 //!      `Operation`s modules contributed to `opsapi::SLOT`. No match → 404, and the
 //!      fallback is invisible: only otherwise-unmatched routes reach it, so it never
-//!      shadows `/healthz`/`/readyz` (added by `app`) or `POST /events` (the
-//!      durable-events plane, mounted by `app::run` when the process has a DB).
+//!      shadows `/healthz`/`/readyz` (added by `app`).
 //!   2. **API-key check** (post-match, pre-auth): every op-dispatched request must
 //!      carry an `X-Api-Key` header naming a known, unrevoked key whose policy allows
 //!      the matched method (see [`KeyVerifier`]) — missing → 401, unknown/revoked →
-//!      401, policy miss → 403. Non-op routes (`/healthz`, `/metrics`, `POST /events`,
+//!      401, policy miss → 403. Non-op routes (`/healthz`, `/metrics`,
 //!      the passthroughs) never reach this check by construction.
 //!   3. **Auth-once:** for an `AuthReq::Player` op it verifies the `Authorization:
 //!      Bearer <token>` header via the [`SessionVerifier`] and threads the resolved

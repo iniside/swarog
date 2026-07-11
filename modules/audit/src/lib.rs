@@ -16,10 +16,11 @@
 //! durable), and the transport hands the raw JSON and runs the ledger insert inside its
 //! per-`(event_id,"audit")` delivery tx (effect + checkpoint commit together) —
 //! exactly-once in BOTH topologies. The
-//! producers already emit all five durably by their respective steps (characters today;
+//! producers already emit all six durably by their respective steps (characters today;
 //! config Step 5; accounts Step 6; match Step 10 — `match.finished` now has a real
-//! producer: the `match` module emit_tx's it atomic with the `match.matches` insert, and
-//! match-svc's relay POSTs it to audit-svc's `/events`).
+//! producer: the `match` module emit_tx's it atomic with the `match.matches` insert,
+//! landing it in the shared event log, and audit's own pull subscription drains it
+//! from its checkpoint — no relay, no HTTP hop).
 //!
 //! Retention is enforced by REACTING to `scheduler.fired{name:"audit-prune"}` on the
 //! durable plane (Step 9 seeds the schedule). audit subscribes to `scheduler.fired`

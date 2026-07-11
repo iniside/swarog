@@ -17,7 +17,8 @@
 //! Alongside the async in-process core, the bus carries an optional
 //! [`Transport`] for the *durable* plane ([`Bus::emit_tx`] / [`Bus::on_tx`] /
 //! [`Bus::on_tx_raw`], [`Error::NoTransport`]). The transport itself is
-//! implemented by `core/asyncevents` (outbox log + inbox dedup + relay) and
+//! implemented by `core/asyncevents` (XID-ordered shared log + consumer-owned
+//! pull subscriptions with transactional checkpoints) and
 //! injected at construction by the composition root (`core/app` builds
 //! [`Bus::with_transport`] iff the process has a DB) — so the dependency
 //! points module → leaf and `bus` stays free of any module import (hard

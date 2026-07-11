@@ -7,7 +7,7 @@ publish = false
 
 # The audit fortress process (Step 8). Hosts audit and stands up one shared
 # QUIC edge server so a remote admin process pulls audit's `admin.adminData` page over
-# the mTLS edge. audit owns schema `audit` + an inbox, so unlike the pure aggregators
+# the mTLS edge. audit owns schema `audit` + its subscription checkpoints, so unlike the pure aggregators
 # (gateway-svc/admin-svc) it needs a DB pool and thus hosts the durable-events plane
 # (app-owned, DB ⇒ plane; its pull workers drain audit's subscriptions from the shared log). No
 # gateway module: audit fronts

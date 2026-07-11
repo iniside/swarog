@@ -1,3 +1,5 @@
+> **ARCHIWALNE (Go-era, 2026-07-07)** — dokument opisuje port Go sprzed migracji do Rust; struktura (m.in. `outbox/`) jest nieaktualna. Stan bieżący: CLAUDE.md.
+
 # BaaS Feature Gap Matrix — co mamy vs katalog PlayFab/AccelByte
 
 **Data:** 2026-07-07 · **Cel:** uporządkować, które „prawdziwe" ficzery backendu gry

@@ -11,7 +11,7 @@ publish = false
 # checkpoint, so it needs a DB pool and thus hosts the durable-events plane (app-owned,
 # DB ⇒ plane; its pull worker drains `match.finished` from the shared log; its
 # durable `on_tx` upserts wins+1 on the
-# handed inbox-dedup tx). It hosts NO gateway (FrontDoor) — the single public front door
+# handed delivery tx). It hosts NO gateway (FrontDoor) — the single public front door
 # lives only in gateway-svc + the monolith, so no accounts stub is needed. Mirrors
 # `characters-svc`'s shape.
 [[bin]]
