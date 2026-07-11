@@ -62,7 +62,9 @@ pub const DEFAULT_PLAYER_MAX_CONNS: usize = 1024;
 /// tighter bound than the global one, so one abusive peer cannot consume the whole
 /// global budget. Threaded from `core/app` (`PLAYER_MAX_CONNS_PER_IP`, same default).
 /// `0` means "no per-IP cap" (opt-out only). Counted BEFORE the handshake, keyed by
-/// the raw UDP source address' IP, so the check costs nothing an attacker can inflate.
+/// the UDP source address' IP — but only AFTER that address has passed QUIC address
+/// validation (a stateless Retry round-trip), so an off-path spoofer can never reserve
+/// a slot for an address it does not control.
 pub const DEFAULT_PLAYER_MAX_CONNS_PER_IP: usize = 32;
 const REQUEST_IP_IDLE: Duration = Duration::from_secs(180);
 const REQUEST_IP_CAP: usize = 65_536;
@@ -193,11 +195,18 @@ impl PlayerServer {
     /// ADMISSION CONTROL: on top of the per-connection transport caps, the accept loop
     /// bounds the NUMBER of concurrent connections — [`PlayerServer::with_conn_limits`]'s
     /// global and per-IP ceilings — so a certless attacker cannot spawn an unbounded
-    /// task-per-connection fleet. The peer's source IP is read from the raw UDP datagram
-    /// BEFORE the TLS handshake is awaited; over either limit ⇒ [`quinn::Incoming::refuse`]
-    /// (no handshake CPU spent, no task spawned). An admitted connection holds a
-    /// [`ConnGuard`] moved into its task, so both counters decrement when the connection
-    /// (or a failed handshake) ends — no separate evictor.
+    /// task-per-connection fleet. Admission is gated on QUIC ADDRESS VALIDATION first:
+    /// an unvalidated `Incoming` is answered with a stateless Retry
+    /// ([`quinn::Incoming::retry`]) and NO slot is reserved — the source IP of a raw
+    /// UDP datagram is spoofable, so counting it before validation would let an
+    /// off-path flood of forged sources exhaust the budget and deny real players. Only
+    /// when the dial re-arrives validated (it echoed the Retry token, proving it owns
+    /// the address) is the IP counted; over either limit ⇒ [`quinn::Incoming::refuse`]
+    /// (still before the TLS handshake — no crypto spent, no task spawned). An admitted
+    /// connection holds a [`ConnGuard`] moved into its task, so both counters decrement
+    /// when the connection (or a failed handshake) ends — no separate evictor. The
+    /// Retry costs every first dial one extra RTT — acceptable under the plane's
+    /// persistent-connection model (paid once per dial, not per call).
     pub fn listen(self, addr: SocketAddr, ca: &DevCA) -> Result<RunningServer, Error> {
         let server_cfg = ca.server_tls_public()?;
         let qsc = QuicServerConfig::try_from(server_cfg)
@@ -228,9 +237,23 @@ impl PlayerServer {
                     incoming = accept_endpoint.accept() => {
                         // Cancel-safe: the incoming queue lives in the endpoint.
                         let Some(incoming) = incoming else { break };
-                        // Admission BEFORE the handshake: the source IP is a property of
-                        // the raw UDP datagram, so refusing here spends no crypto and
-                        // spawns no task. `refuse()` sends a CONNECTION_REFUSED close.
+                        // Address validation BEFORE admission: the source IP of a raw UDP
+                        // datagram is spoofable, so reserving a slot on it would let an
+                        // off-path attacker burn the global/per-IP budget with forged
+                        // sources. Send a stateless Retry instead — no slot reserved, no
+                        // state kept. A real dialer echoes the token and re-arrives as a
+                        // VALIDATED Incoming below; a spoofer never sees the Retry packet,
+                        // so `try_admit` is unreachable for addresses it doesn't own.
+                        if !incoming.remote_address_validated() {
+                            // `may_retry()` is guaranteed true when unvalidated, so the
+                            // Err arm (which hands the Incoming back) cannot fire here —
+                            // and if it ever did, dropping it is the safe outcome.
+                            let _ = incoming.retry();
+                            continue;
+                        }
+                        // Admission BEFORE the handshake: the source IP is now VALIDATED
+                        // (Retry-proven), so refusing here spends no crypto and spawns no
+                        // task. `refuse()` sends a CONNECTION_REFUSED close.
                         let ip = incoming.remote_address().ip();
                         let Some(conn_guard) = limiter.try_admit(ip) else {
                             tracing::warn!(%ip, "edge: player connection refused (over conn limit)");

@@ -88,6 +88,39 @@ async fn player_per_ip_conn_cap_refuses_second_from_same_ip() {
     running.close();
 }
 
+// Address-validation gate (anti-spoof admission): every FIRST Incoming from a fresh
+// dial is UNVALIDATED, so the accept loop answers it with a stateless Retry and
+// reserves NO slot; the dialer echoes the token and re-arrives validated, and only
+// then is a slot taken. With BOTH caps at 1, admission of the retried dial proves the
+// slot was reserved exactly once (a buggy pre-validation reservation would either trip
+// the cap on the validated re-arrival or leak a phantom slot), and the follow-up
+// refusal proves the validated connection genuinely holds it. A true off-path spoofed
+// source cannot be forged at this level — quinn only surfaces an `Incoming` for a
+// well-formed Initial, and a loopback dialer is on-path, so it always completes the
+// Retry. That negative (spoof flood never consumes budget) rests on quinn's Retry
+// semantics and is deferred to the live split assertions (Step 9a).
+#[tokio::test]
+async fn player_dial_traverses_retry_gate_and_reserves_slot_exactly_once() {
+    let ca = DevCA::generate().unwrap();
+    let running = echo_server().with_conn_limits(1, 1).listen(loopback(), &ca).unwrap();
+    let addr = running.local_addr();
+    let trust = ca.trust_anchor();
+
+    // Admitted despite caps of 1 — the unvalidated first Incoming reserved nothing.
+    let client = try_dial(addr, &trust).await.unwrap().expect("retried dial admitted");
+    let echoed = client.call("echo", None, None, br#"{"ping":1}"#).await.unwrap();
+    assert_eq!(echoed, br#"{"ping":1}"#);
+
+    // The single slot is held by the validated connection, so a second dial is refused.
+    assert!(
+        try_dial(addr, &trust).await.unwrap().is_none(),
+        "second dial must be refused while the only slot is held"
+    );
+
+    drop(client);
+    running.close();
+}
+
 // The serde(default) proof at the envelope level: a request with the token AND the
 // api_key OMITTED — the shape every pre-key unauthenticated caller sends — must
 // parse (it then fails the FRONT's key check as a domain 401, never as a malformed
