@@ -453,6 +453,13 @@ async fn run() -> Result<u32> {
     // Fleet-drift tripwire: the harness svc list must equal cmd/*-svc on disk.
     preflight_fleet(&root, &ctx)?;
 
+    // Build the fleet (svcs + monolith + adminctl) so a bare `cargo run -p splitproof`
+    // is self-contained — no dependency on a prior verify stage having built them.
+    // Skippable for fast dev iteration (SPLITPROOF_SKIP_BUILD=1).
+    if std::env::var("SPLITPROOF_SKIP_BUILD").is_err() {
+        build_fleet(&ctx, &root)?;
+    }
+
     println!("[splitproof] minting shared edge dev CA -> {}", ctx.ca_cert.display());
     let ca_cert_str = ctx.ca_cert.to_str().context("CA cert path not UTF-8")?;
     let ca_key_str = ctx.ca_key.to_str().context("CA key path not UTF-8")?;
@@ -503,6 +510,30 @@ async fn run() -> Result<u32> {
     }
     // fleet drops here → every child is killed (no orphans).
     Ok(p.fail.len() as u32)
+}
+
+/// Build every fleet svc + the monolith + adminctl (cargo caches, so this is a fast
+/// no-op after the first build).
+fn build_fleet(ctx: &Ctx, root: &Path) -> Result<()> {
+    println!("[splitproof] building fleet (cargo build) ...");
+    let mut args = vec!["build".to_string()];
+    for svc in ctx.fleet() {
+        args.push("-p".into());
+        args.push(svc.name.into());
+    }
+    for extra in ["server", "adminctl"] {
+        args.push("-p".into());
+        args.push(extra.into());
+    }
+    let status = Command::new("cargo")
+        .args(&args)
+        .current_dir(root)
+        .status()
+        .context("run cargo build")?;
+    if !status.success() {
+        bail!("cargo build of the fleet failed");
+    }
+    Ok(())
 }
 
 fn preflight_fleet(root: &Path, ctx: &Ctx) -> Result<()> {

@@ -554,7 +554,7 @@ Invoke-SimpleStage 'test'    $true 'cargo' @('test', '--workspace')
 Invoke-CargoAuditStage
 Invoke-FortressStage
 Invoke-CodegenFreshStage
-Invoke-SimpleStage 'split-proof' $true 'pwsh' @('-File', (Join-Path $root 'split-proof.ps1'))
+Invoke-SimpleStage 'split-proof' $true 'cargo' @('run', '-q', '-p', 'splitproof')
 
 if ($RunAdvisory) {
     Invoke-PublicApiStage

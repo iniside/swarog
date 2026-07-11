@@ -1013,8 +1013,8 @@ fn env_u32(key: &str) -> Option<u32> {
 /// **Windows limitation:** `Stop-Process -Force` / `taskkill /F` map to
 /// `TerminateProcess` — no console control event ever reaches the process, so no
 /// graceful path can run for a forced kill. A graceful stop on Windows needs a
-/// *non-forced* console event. `split-proof.ps1` uses a process group and
-/// `CTRL_BREAK_EVENT`; forced termination remains only its stale-process fallback.
+/// *non-forced* console event. The `splitproof` harness ([W2]) spawns the process in
+/// its own group and sends `CTRL_BREAK_EVENT`; forced kill is only its cleanup fallback.
 #[cfg(unix)]
 async fn shutdown_signal() {
     use tokio::signal::unix::{signal, SignalKind};

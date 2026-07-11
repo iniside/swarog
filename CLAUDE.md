@@ -174,8 +174,9 @@ module never knows the topology.
    (monolith); the svc serves its ops ONLY over the internal mTLS edge and
    gateway-svc dispatches to it Remote. Register the module in `cmd/server`'s lib,
    add stubs where consumers live, add the svc lib to `tools/checkmodules`'s Split
-   profile, extend `split-proof.sh`/`.ps1` (new process + a named assertion, HTTP
-   ops asserted THROUGH gateway-svc) and the `fortress` stage port list.
+   profile, and extend `tools/splitproof` (a new `Svc` in `fleet()` with its env +
+   ports + a named assertion, HTTP ops asserted THROUGH gateway-svc; the harness's
+   fleet-drift preflight fails if `fleet()` != `cmd/*-svc` on disk).
 5. No event-routing wiring exists: producers append to the shared log, consumers
    pull from their checkpoint — the same code in monolith and split. `topiccheck`
    validates the subscription graph per deployment profile.
@@ -305,7 +306,7 @@ cargo run -p eventctl -- list   # operator CLI: lag/retry/pause/resume/skip/reti
 cargo run -p adminctl -- list   # operator CLI: admin users (create-user/list/delete)
 ./install.sh <username>         # create/reset an admin portal user (no-echo prompt)
 ./verify.sh                     # the safety net (there is no CI — this IS it)
-./split-proof.sh                # live 12-process split + monolith parity proof
+cargo run -p splitproof         # live 12-process split + monolith parity proof (Rust harness)
 ./run.sh                        # mint dev CA + boot the split locally
 ```
 
@@ -324,7 +325,7 @@ blocking stage fails; auto-installs pinned CLIs unless `--no-install`):
 
 ## One test rollout at a time — MANDATORY
 
-At most ONE test run (`cargo test`, `verify.*`, `split-proof.*`) may execute on
+At most ONE test run (`cargo test`, `verify.*`, `cargo run -p splitproof`) may execute on
 this machine at any moment — they all share the one local Postgres, and
 concurrent runs contend on the events plane's migrate advisory lock and on
 concurrent DDL (`CREATE OR REPLACE`), which looks like a hang or fails with
@@ -344,27 +345,29 @@ protocol, not a tip:
   idle-in-transaction sessions) must be killed before retrying — check
   `pg_stat_activity` for stuck `asyncevents` sessions.
 
-**`split-proof.sh` / `.ps1`** boots the real split — characters :8080/:9000,
-inventory :8081/:9001, gateway :8082 + player-QUIC :9100, config :8083/:9002,
-accounts :8084/:9003, admin :8085, audit :8086/:9004, scheduler :8087/:9005,
-match :8088/:9006, rating :8089/:9007, leaderboard :8090/:9008,
-apikeys :8091/:9009 — and asserts named
-scenarios (register/login → real bearer, authz negatives, allow-list, cross-process
-starter-grant + DB-verified wipe, config live-reload, audit rows, scheduler
-exactly-once, leaderboard accumulation, 429 rate-limit, api-key policy
-[K1-K4]: 401 no/bad key, 403 client-key on match.report, 202 server-key; admin
-session auth [AD1-AD5]: login redirect, asymmetric lockout via DB rows, session
-cookie + remote admin page, CSRF 403, durable admin.action; monolith-parity
-[M3/M3b] incl. a real form-submit emit), then re-runs the monolith
-on the same player front for parity. **psql is REQUIRED** (the script dies at
-startup without it — DB assertions are mandatory, no HTTP fallbacks) and the SQL
-helper follows `DATABASE_URL`, same as the services. Extend it with a named
-assertion whenever you add a module or cross-process flow. **Never ship a
-monolith-only feature** — both topologies are supported compilation paths.
-On Windows, `split-proof.ps1` starts services through `tools/winctrl` in fresh
-process groups and sends `CTRL_BREAK_EVENT`; named `[W1]`/`[W2]` assertions fail if
-any process needs the force-kill fallback. The shell proof keeps the symmetric
-SIGTERM/KILL assertions.
+**`cargo run -p splitproof`** (the cross-platform Rust harness in `tools/splitproof`,
+which REPLACED the retired `split-proof.sh`/`.ps1` + `tools/winctrl` — the shell
+harnesses were structurally fragile on Windows: PowerShell native-arg quote-stripping,
+MSYS `wait` hangs, winctrl exit-code false-throws) boots the real split — characters
+:8080/:9000, inventory :8081/:9001, gateway :8082 + player-QUIC :9100, config
+:8083/:9002, accounts :8084/:9003, admin :8085, audit :8086/:9004, scheduler
+:8087/:9005, match :8088/:9006, rating :8089/:9007, leaderboard :8090/:9008,
+apikeys :8091/:9009. The fleet is spawned via `std::process::Command` with a TYPED env
+map + a kill-on-drop guard (no shell, so no quoting/job-control/winctrl bugs, no
+orphans), health-checked over reqwest, DB-asserted via sqlx, and the player QUIC front
+driven through the `edge` crate as a library. It asserts the same named scenarios
+(register/login → real bearer, authz negatives, allow-list, cross-process starter-grant
++ DB-verified wipe, config live-reload, audit rows, scheduler exactly-once, leaderboard
+accumulation, 429 rate-limit, api-key policy [K1-K5], admin session auth [AD1-AD5],
+audit [AU1-AU3], scheduler/prune [SC/SP], metrics [MX], rate-limit [RL], player QUIC
+[P1-P6]), then re-runs the monolith (`cmd/server`) on the same player front for parity
+([M0-M3b]) and proves native graceful shutdown ([W2]: Ctrl-Break to the monolith's
+process group / SIGTERM on unix → clean drain, no force-kill). **psql is REQUIRED** at
+`DATABASE_URL` and the fleet must be buildable (the harness `cargo build`s it). A
+fleet-drift preflight fails loudly if the harness svc list != `cmd/*-svc` on disk.
+Extend `tools/splitproof` with a new `Svc` in `fleet()` + a named assertion whenever
+you add a module or cross-process flow. **Never ship a monolith-only feature** — both
+topologies are supported compilation paths.
 
 Smoke test (monolith or through gateway-svc). The dev conveniences are explicit
 opt-ins/opt-outs (fail-closed defaults), so the monolith needs `APIKEYS_DEV_SEED=1`

@@ -575,7 +575,7 @@ simple_stage test    true cargo test --workspace
 cargo_audit_stage
 simple_stage fortress    true fortress
 simple_stage codegen-fresh true codegen_fresh
-simple_stage split-proof true bash ./split-proof.sh
+simple_stage split-proof true cargo run -q -p splitproof
 
 if [ "$RUN_ADVISORY" -eq 1 ]; then
     public_api_stage

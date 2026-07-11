@@ -94,9 +94,11 @@ const RETIRED_EVENT_TOKENS: &[&str] = &["EVENTS_SUBSCRIBERS", "EVENTS_ORIGIN", "
 
 /// The plane-owned SQL functions a module may reference by name in SQL. These are the
 /// ONLY schema-qualified `asyncevents.` references permitted outside `core/asyncevents`
-/// (the plane), `tools/eventctl` (the operator CLI), and test files: the plane owns its
-/// tables and exposes this narrow function surface (config's write trigger + its
-/// history seed), so a module never SELECTs/INSERTs a plane table directly.
+/// (the plane), `tools/eventctl` (the operator CLI), `tools/splitproof` (the split-proof
+/// harness, which asserts plane/event state like the retired shell scripts' `pg` did),
+/// and test files: the plane owns its tables and exposes this narrow function surface
+/// (config's write trigger + its history seed), so a module never SELECTs/INSERTs a
+/// plane table directly.
 const ASYNCEVENTS_SQL_ALLOW: &[&str] = &["append_event(", "ensure_history_contract("];
 
 /// The crate whose OWN source necessarily names the tokens/markers it bans (const
@@ -1262,7 +1264,7 @@ fn grep_foreign_schema_sql(root: &Path) -> Vec<String> {
 /// them only through the function surface.
 fn grep_asyncevents_sql(root: &Path) -> Vec<String> {
     let mut hits = Vec::new();
-    let skip = [BAN_SELF_EXCLUDE, "core/asyncevents", "tools/eventctl"];
+    let skip = [BAN_SELF_EXCLUDE, "core/asyncevents", "tools/eventctl", "tools/splitproof"];
     for path in workspace_rs_files(root, &skip) {
         let rel = workspace_rel(root, &path);
         if is_test_source(&rel) {
