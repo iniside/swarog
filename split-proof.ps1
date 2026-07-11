@@ -158,7 +158,33 @@ function Fail($m) { Write-Host "  FAIL  $m"; $script:Fails++ }
 
 # curl.exe returns "body\n<httpcode>" via -w; split the last line off as the status.
 function Invoke-Curl([string[]]$CurlArgs) {
-    $raw = & curl.exe -s -w "`n%{http_code}" @CurlArgs 2>$null
+    # Windows PowerShell 5.1 mangles embedded double-quotes when passing a native
+    # argument to curl.exe, so an inline JSON body `-d '{"k":"v"}'` reaches curl as
+    # invalid JSON and the service 400s (bash passes it fine, which is why only the
+    # .ps1 path breaks). Route every inline data body through a temp file that curl
+    # reads verbatim (`--data-binary @file`), independent of the host shell's quoting.
+    # Only plain -d/--data/--data-raw are redirected; --data-urlencode and every other
+    # flag pass through untouched. --data-binary keeps the default form-urlencoded
+    # Content-Type, so callers that omit an explicit Content-Type are unaffected.
+    $args2 = New-Object System.Collections.Generic.List[string]
+    $tmpFiles = @()
+    for ($i = 0; $i -lt $CurlArgs.Count; $i++) {
+        $a = $CurlArgs[$i]
+        if (($a -eq '-d' -or $a -eq '--data' -or $a -eq '--data-raw') -and ($i + 1) -lt $CurlArgs.Count) {
+            $tf = Join-Path ([System.IO.Path]::GetTempPath()) ("curlbody-" + [guid]::NewGuid().ToString('N') + ".txt")
+            [System.IO.File]::WriteAllText($tf, [string]$CurlArgs[$i + 1], (New-Object System.Text.UTF8Encoding($false)))
+            $tmpFiles += $tf
+            $args2.Add('--data-binary'); $args2.Add("@$tf")
+            $i++
+            continue
+        }
+        $args2.Add($a)
+    }
+    try {
+        $raw = & curl.exe -s -w "`n%{http_code}" @($args2.ToArray()) 2>$null
+    } finally {
+        foreach ($tf in $tmpFiles) { Remove-Item -LiteralPath $tf -Force -ErrorAction SilentlyContinue }
+    }
     $text = ($raw -join "`n")
     $lines = $text -split "`n"
     $code = $lines[-1].Trim()
@@ -226,12 +252,34 @@ function Start-Svc([string]$Exe, [hashtable]$EnvVars, [string]$LogName) {
     ) -PassThru -NoNewWindow -RedirectStandardOutput $spawnOut -RedirectStandardError $spawnErr
     # Start-Process -Wait deliberately waits for the entire descendant tree, which
     # includes the long-lived service winctrl just created. WaitForExit targets only
-    # the short-lived winctrl process handle.
-    $spawn.WaitForExit()
-    if ($spawn.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $pidFile)) {
-        throw "winctrl failed to spawn $LogName"
+    # the short-lived winctrl process handle (bounded so a wedged spawner can't hang us).
+    $null = $spawn.WaitForExit(30000)
+    # Ground-truth success = the pid file was written AND names a live process.
+    # We deliberately do NOT gate on $spawn.ExitCode: `Start-Process -PassThru` with
+    # redirected output frequently leaves .ExitCode $null even on a CLEAN exit, and
+    # `$null -ne 0` is $true in PowerShell — that false-threw AFTER the service was
+    # already spawned, so the caller's `$Proc = Start-Svc` never bound and the live
+    # service was orphaned past teardown. winctrl writes the pid file atomically
+    # (temp+rename) right before exiting, so the pid file + a live process is the
+    # only reliable signal.
+    $childPid = 0
+    foreach ($i in 1..50) {
+        if (Test-Path -LiteralPath $pidFile) {
+            $raw = (Get-Content -LiteralPath $pidFile -Raw -ErrorAction SilentlyContinue)
+            $parsed = 0
+            if ($raw -and [int]::TryParse($raw.Trim(), [ref]$parsed) -and $parsed -gt 0 `
+                    -and (Get-Process -Id $parsed -ErrorAction SilentlyContinue)) {
+                $childPid = $parsed
+                break
+            }
+        }
+        Start-Sleep -Milliseconds 100
     }
-    $childPid = [int](Get-Content -LiteralPath $pidFile -Raw).Trim()
+    if ($childPid -le 0) {
+        $code = try { $spawn.ExitCode } catch { '<null>' }
+        $se = (Get-Content -LiteralPath $spawnErr -Raw -ErrorAction SilentlyContinue)
+        throw "winctrl failed to spawn ${LogName}: no live pid after spawn (winctrl exit=$code)$(if ($se) { "; stderr: $se" })"
+    }
     return Get-Process -Id $childPid -ErrorAction Stop
 }
 
@@ -284,7 +332,13 @@ function Teardown([bool]$AssertGraceful = $false, [string]$Assertion = 'W gracef
 # Runs playercli, capturing stdout (joined) and the process exit code. Returns a
 # pscustomobject { Rc; Out }. playercli exits 0 iff transport ok AND status=="Ok".
 function Invoke-PlayerCli([string[]]$CliArgs) {
-    $out = & $PlayerCli @CliArgs 2>&1
+    # Windows PowerShell 5.1 strips embedded double-quotes from a native argument, so a
+    # JSON payload `{"name":"x"}` reaches playercli as `{name:x}` and its edge json
+    # codec rejects the unquoted key ("key must be a string at column 2"). Escape each
+    # " as \" so CommandLineToArgvW hands the child a literal " (bash needs no dance;
+    # this is the same 5.1 quirk the Invoke-Curl temp-file route sidesteps).
+    $escaped = $CliArgs | ForEach-Object { $_.Replace('"', '\"') }
+    $out = & $PlayerCli @escaped 2>&1
     $rc = $LASTEXITCODE
     return [pscustomobject]@{ Rc = $rc; Out = (($out | Out-String)).Trim() }
 }

@@ -1005,11 +1005,18 @@ AD2B_IP="198.51.100.42"
 pg "DELETE FROM admin.login_attempts WHERE subject IN ('user:$PROOF_LOCK_USER','ip:$AD2B_IP'); DELETE FROM asyncevents.events WHERE topic='admin.action' AND payload->>'actor'='$PROOF_LOCK_USER' AND payload->>'action'='login-locked';" >/dev/null
 echo "[AD2b] 12 parallel wrong logins -> exact user threshold and one lock event"
 AD2B_DIR="$RUN_DIR/ad2b"; rm -rf "$AD2B_DIR"; mkdir -p "$AD2B_DIR"
+# One curl process runs all 12 POSTs concurrently (-Z). This replaces a
+# `for ... & done; wait` burst: under git-bash/MSYS on Windows, bash job control
+# reaps native curl.exe children unreliably and the bare `wait` can hang forever.
+# curl -Z manages its own parallel transfers, so it is portable (mirrors [K5]).
+ad2b_args=()
 for i in $(seq 1 12); do
-    curl -s -o "$AD2B_DIR/$i.body" -w '%{http_code}' -X POST "http://localhost:$G_PORT/admin/login" \
-        -H "X-Forwarded-For: $AD2B_IP" -d "username=$PROOF_LOCK_USER&password=wrong-$i" >"$AD2B_DIR/$i.code" &
+    [ "$i" -gt 1 ] && ad2b_args+=(--next)
+    ad2b_args+=(-s -o "$AD2B_DIR/$i.body" -w '%{http_code}\n' \
+        -X POST "http://localhost:$G_PORT/admin/login" \
+        -H "X-Forwarded-For: $AD2B_IP" -d "username=$PROOF_LOCK_USER&password=wrong-$i")
 done
-wait
+curl -Z --parallel-max 12 "${ad2b_args[@]}" >"$AD2B_DIR/codes.txt" 2>/dev/null || true
 AD2B_FAILS="$(pg "SELECT fails FROM admin.login_attempts WHERE subject='user:$PROOF_LOCK_USER';" | tr -d '[:space:]')"
 AD2B_LOCKED="$(pg "SELECT locked_until > now() FROM admin.login_attempts WHERE subject='user:$PROOF_LOCK_USER';" | tr -d '[:space:]')"
 AD2B_EVENTS="$(pg "SELECT count(*) FROM asyncevents.events WHERE topic='admin.action' AND payload->>'actor'='$PROOF_LOCK_USER' AND payload->>'action'='login-locked';" | tr -d '[:space:]')"
@@ -1024,12 +1031,18 @@ fi
 AD2C_IP="198.51.100.43"
 echo "[AD2c] login admission burst -> exact 429 + Retry-After: 1"
 AD2C_DIR="$RUN_DIR/ad2c"; rm -rf "$AD2C_DIR"; mkdir -p "$AD2C_DIR"
+# Same portability fix as [AD2b]: one curl -Z process instead of a `& … wait` burst
+# (git-bash `wait` on native curl.exe children hangs). 40 concurrent POSTs from one
+# IP trip the admin login limiter; each transfer dumps its own headers file.
+ad2c_args=()
 for i in $(seq 1 40); do
-    curl -s -D "$AD2C_DIR/$i.headers" -o /dev/null -w '%{http_code}' -X POST "http://localhost:$G_PORT/admin/login" \
-        -H "X-Forwarded-For: $AD2C_IP" -d "username=ghost-ad2c-$i&password=wrong" >"$AD2C_DIR/$i.code" &
+    [ "$i" -gt 1 ] && ad2c_args+=(--next)
+    ad2c_args+=(-s -D "$AD2C_DIR/$i.headers" -o /dev/null -w '%{http_code}\n' \
+        -X POST "http://localhost:$G_PORT/admin/login" \
+        -H "X-Forwarded-For: $AD2C_IP" -d "username=ghost-ad2c-$i&password=wrong")
 done
-wait
-AD2C_429="$(grep -l '^429$' "$AD2C_DIR"/*.code | wc -l | tr -d '[:space:]')"
+curl -Z --parallel-max 40 "${ad2c_args[@]}" >"$AD2C_DIR/codes.txt" 2>/dev/null || true
+AD2C_429="$(grep -c '^429$' "$AD2C_DIR/codes.txt" | tr -d '[:space:]')"
 AD2C_RETRY="$(grep -il '^retry-after: 1' "$AD2C_DIR"/*.headers | wc -l | tr -d '[:space:]')"
 if [ "${AD2C_429:-0}" -ge 1 ] && [ "$AD2C_429" = "$AD2C_RETRY" ]; then
     pass "admin login limiter returns 429 with Retry-After: 1"
