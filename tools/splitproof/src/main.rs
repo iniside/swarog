@@ -79,6 +79,9 @@ struct Ctx {
     ca_key: PathBuf,
     db_url: String,
     http: reqwest::Client,
+    /// A client that does NOT follow redirects, so a 303 (epic callback, admin login)
+    /// is observable as a status + Location instead of being transparently chased.
+    http_noredirect: reqwest::Client,
 }
 
 fn edge_addr(port: u16) -> (String, String) {
@@ -262,7 +265,11 @@ async fn run() -> Result<u32> {
         ca_cert: run_dir.join("edge-ca.crt"),
         ca_key: run_dir.join("edge-ca.key"),
         http: reqwest::Client::builder()
-            .timeout(Duration::from_secs(2))
+            .timeout(Duration::from_secs(5))
+            .build()?,
+        http_noredirect: reqwest::Client::builder()
+            .timeout(Duration::from_secs(5))
+            .redirect(reqwest::redirect::Policy::none())
             .build()?,
         bin_dir,
         run_dir,
@@ -478,6 +485,101 @@ async fn assertions(ctx: &Ctx, pool: &PgPool, p: &mut Proof) -> Result<()> {
         .send()
         .await?;
     p.check("[L1] leaderboard (valid key) -> 200", lb.status().as_u16() == 200, lb.status());
+
+    // --- Auth negatives: a bearer the real verifier rejects is 401 on every plane. ---
+    // [A4] garbage bearer -> 401.
+    let a4 = ctx
+        .http
+        .get(format!("{g}/characters"))
+        .header("X-Api-Key", "dev-key-client")
+        .header("Authorization", "Bearer totally-bogus-token")
+        .send()
+        .await?;
+    p.check("[A4] garbage token -> 401", a4.status().as_u16() == 401, a4.status());
+
+    // [A5] a dev-<uuid> token -> 401 (gateway-svc never sets ACCOUNTS_DEV_AUTH, so the
+    // real accounts verifier rejects it — dev auth is not a bearer bypass at the front).
+    let a5 = ctx
+        .http
+        .get(format!("{g}/characters"))
+        .header("X-Api-Key", "dev-key-client")
+        .header("Authorization", format!("Bearer dev-{suffix}"))
+        .send()
+        .await?;
+    p.check("[A5] dev-<uuid> token -> 401", a5.status().as_u16() == 401, a5.status());
+
+    // --- Epic OAuth passthrough (keyless; gateway proxies /accounts/epic/* to D). ---
+    // [EP1] start -> authorize_url carrying a state param.
+    let ep1 = ctx.http.post(format!("{g}/accounts/epic/start")).send().await?;
+    let ep1_body = ep1.text().await.unwrap_or_default();
+    let state = ep1_body
+        .split("state=")
+        .nth(1)
+        .map(|s| s.split(['&', '"']).next().unwrap_or("").to_string());
+    p.check(
+        "[EP1] epic start -> authorize_url with state",
+        state.as_deref().map(|s| !s.is_empty()).unwrap_or(false),
+        format!("state={:?}", state.as_deref().map(|s| &s[..s.len().min(8)])),
+    );
+    // [EP2] callback with a bad code -> 303 relayed verbatim to /?epic=error (no follow).
+    if let Some(st) = &state {
+        let ep2 = ctx
+            .http_noredirect
+            .get(format!("{g}/accounts/epic/callback?code=x&state={st}"))
+            .send()
+            .await?;
+        let loc = ep2
+            .headers()
+            .get("location")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        p.check(
+            "[EP2] epic callback -> 303 /?epic=error",
+            ep2.status().as_u16() == 303 && loc == "/?epic=error",
+            format!("code={} loc={loc}", ep2.status().as_u16()),
+        );
+    }
+
+    // --- API-key policy (gateway enforces X-Api-Key + per-key method allow-list). ---
+    // [K1] no key -> 401.
+    let k1 = ctx.http.get(format!("{g}/leaderboard")).send().await?;
+    p.check("[K1] no api key -> 401", k1.status().as_u16() == 401, k1.status());
+    // [K2] bogus key -> 401.
+    let k2 = ctx
+        .http
+        .get(format!("{g}/leaderboard"))
+        .header("X-Api-Key", "totally-bogus-key")
+        .send()
+        .await?;
+    p.check("[K2] bogus api key -> 401", k2.status().as_u16() == 401, k2.status());
+    // [K3] dev-key-client on match.report -> 403 (player policy omits match.report).
+    let k3 = ctx
+        .http
+        .post(format!("{g}/match/report"))
+        .header("X-Api-Key", "dev-key-client")
+        .json(&serde_json::json!({"ReportId": format!("k3-{suffix}"), "Winner": "k3-w", "Loser": "k3-l"}))
+        .send()
+        .await?;
+    p.check("[K3] client key on match.report -> 403", k3.status().as_u16() == 403, k3.status());
+    // [K4] dev-key-server on match.report -> 202 (full policy).
+    let k4 = ctx
+        .http
+        .post(format!("{g}/match/report"))
+        .header("X-Api-Key", "dev-key-server")
+        .json(&serde_json::json!({"ReportId": format!("k4-{suffix}"), "Winner": "k4-w", "Loser": "k4-l"}))
+        .send()
+        .await?;
+    p.check("[K4] server key on match.report -> 202", k4.status().as_u16() == 202, k4.status());
+    // [K5b] a fresh distinct key AFTER the K5 burst -> 401 (permits/flights released,
+    // shed is transient not sticky).
+    let k5b = ctx
+        .http
+        .get(format!("{g}/leaderboard"))
+        .header("X-Api-Key", format!("k5b-{suffix}"))
+        .send()
+        .await?;
+    p.check("[K5b] post-burst fresh key -> 401", k5b.status().as_u16() == 401, k5b.status());
 
     Ok(())
 }
