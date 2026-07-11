@@ -9,6 +9,7 @@
 #   ./verify.sh --all --strict # advisory failures ALSO flip the exit code
 #   ./verify.sh --all --no-install  # never auto-install a missing CLI (it SKIPs)
 #   ./verify.sh --bless-public-api  # regenerate the committed public-api snapshots and exit
+#   ./verify.sh --bless-contract-golden  # regenerate the committed contract-golden and exit
 #
 # BLOCKING (always runs):
 #   1. build         cargo build --workspace
@@ -22,7 +23,13 @@
 #                    diffs against the working tree -- FAILs if a contract changed
 #                    without regenerating. Pure Rust + git, no dotnet/QUIC, runs
 #                    everywhere.
-#   7. split-proof   ./split-proof.sh -- the eleven-process topology proof
+#   7. contract-golden  the VALUE-level contract baseline (topiccheck contract-golden):
+#                    every bus::define's topic/version/history and every generated
+#                    Operation's verb/path/auth/success/retry_mode, diffed against the
+#                    COMMITTED golden in docs/reference/contract-golden/contracts.txt
+#                    (values cargo-public-api structurally cannot see; re-bless
+#                    intentional changes with --bless-contract-golden)
+#   8. split-proof   ./split-proof.sh -- the eleven-process topology proof
 #
 # ADVISORY (--all):
 #   8. public-api    cargo-public-api diff of the api/*api and api/*events contract
@@ -69,6 +76,7 @@ LEVEL="fast"
 STRICT=0
 INSTALL=1
 BLESS_PUBLIC_API=0
+BLESS_CONTRACT_GOLDEN=0
 for arg in "$@"; do
     case "$arg" in
         --fast) LEVEL="fast" ;;
@@ -77,6 +85,7 @@ for arg in "$@"; do
         --strict) STRICT=1 ;;
         --no-install) INSTALL=0 ;;
         --bless-public-api) BLESS_PUBLIC_API=1 ;;
+        --bless-contract-golden) BLESS_CONTRACT_GOLDEN=1 ;;
         *) echo "unknown arg: $arg" >&2; exit 2 ;;
     esac
 done
@@ -595,6 +604,10 @@ if [ "$BLESS_PUBLIC_API" -eq 1 ]; then
     bless_public_api
     exit $?
 fi
+if [ "$BLESS_CONTRACT_GOLDEN" -eq 1 ]; then
+    cargo run -q -p topiccheck -- contract-golden --bless
+    exit $?
+fi
 
 simple_stage build   true cargo build --workspace
 simple_stage clippy  true cargo clippy --workspace --all-targets -- -D warnings
@@ -602,6 +615,7 @@ simple_stage test    true cargo test --workspace
 cargo_audit_stage
 simple_stage fortress    true fortress
 simple_stage codegen-fresh true codegen_fresh
+simple_stage contract-golden true cargo run -q -p topiccheck -- contract-golden
 simple_stage split-proof true cargo run -q -p splitproof
 
 if [ "$RUN_ADVISORY" -eq 1 ]; then
@@ -617,12 +631,12 @@ fi
 # --- Summary ---------------------------------------------------------------
 echo ""
 echo "=== verify summary ==="
-printf "%-14s | %-6s | %-8s\n" "Stage" "Status" "Blocking"
-printf "%-14s-+-%-6s-+-%-8s\n" "--------------" "------" "--------"
+printf "%-16s | %-6s | %-8s\n" "Stage" "Status" "Blocking"
+printf "%-16s-+-%-6s-+-%-8s\n" "----------------" "------" "--------"
 fail=0
 for i in "${!STAGE_NAMES[@]}"; do
     n="${STAGE_NAMES[$i]}"; s="${STAGE_STATUS[$i]}"; b="${STAGE_BLOCKING[$i]}"
-    printf "%-14s | %-6s | %-8s\n" "$n" "$s" "$b"
+    printf "%-16s | %-6s | %-8s\n" "$n" "$s" "$b"
     if [ "$s" = "FAIL" ] && { [ "$b" = "true" ] || [ "$STRICT" -eq 1 ]; }; then fail=1; fi
 done
 echo ""

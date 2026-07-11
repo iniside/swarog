@@ -10,6 +10,7 @@
 #   .\verify.ps1 -All -Strict    # advisory failures ALSO flip the exit code
 #   .\verify.ps1 -All -NoInstall # never auto-install a missing CLI (it SKIPs)
 #   .\verify.ps1 -BlessPublicApi # regenerate the committed public-api snapshots and exit
+#   .\verify.ps1 -BlessContractGolden # regenerate the committed contract-golden and exit
 #
 # ASCII only -- PowerShell 5.1 chokes on em-dashes.
 
@@ -19,7 +20,8 @@ param(
     [switch]$Slow,
     [switch]$Strict,
     [switch]$NoInstall,
-    [switch]$BlessPublicApi
+    [switch]$BlessPublicApi,
+    [switch]$BlessContractGolden
 )
 
 # Deliberately NOT 'Stop' during the run phase: a failing stage must not abort
@@ -576,6 +578,12 @@ function Invoke-TopiccheckStage {
 if ($BlessPublicApi) {
     Invoke-BlessPublicApi
 }
+if ($BlessContractGolden) {
+    # Regenerate docs/reference/contract-golden/contracts.txt from the live values and
+    # exit (twin of --bless-contract-golden in verify.sh).
+    & cargo run -q -p topiccheck -- contract-golden --bless
+    Exit-WithLog $LASTEXITCODE
+}
 
 Invoke-SimpleStage 'build'   $true 'cargo' @('build', '--workspace')
 Invoke-SimpleStage 'clippy'  $true 'cargo' @('clippy', '--workspace', '--all-targets', '--', '-D', 'warnings')
@@ -583,6 +591,7 @@ Invoke-SimpleStage 'test'    $true 'cargo' @('test', '--workspace')
 Invoke-CargoAuditStage
 Invoke-FortressStage
 Invoke-CodegenFreshStage
+Invoke-SimpleStage 'contract-golden' $true 'cargo' @('run', '-q', '-p', 'topiccheck', '--', 'contract-golden')
 Invoke-SimpleStage 'split-proof' $true 'cargo' @('run', '-q', '-p', 'splitproof')
 
 if ($RunAdvisory) {
@@ -598,11 +607,11 @@ if ($RunSlow) {
 # --- Summary ------------------------------------------------------------------
 Write-Host ''
 Write-Host '=== verify summary ===' -ForegroundColor Cyan
-'{0,-14} | {1,-6} | {2,-8}' -f 'Stage', 'Status', 'Blocking' | Write-Host
-'{0,-14}-+-{1,-6}-+-{2,-8}' -f ('-' * 14), ('-' * 6), ('-' * 8) | Write-Host
+'{0,-16} | {1,-6} | {2,-8}' -f 'Stage', 'Status', 'Blocking' | Write-Host
+'{0,-16}-+-{1,-6}-+-{2,-8}' -f ('-' * 16), ('-' * 6), ('-' * 8) | Write-Host
 $overall = 0
 foreach ($r in $script:results) {
-    '{0,-14} | {1,-6} | {2,-8}' -f $r.Name, $r.Status, $r.Blocking | Write-Host
+    '{0,-16} | {1,-6} | {2,-8}' -f $r.Name, $r.Status, $r.Blocking | Write-Host
     if ($r.Status -eq 'FAIL' -and ($r.Blocking -or $StrictOn)) { $overall = 1 }
 }
 Write-Host ''

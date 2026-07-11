@@ -49,6 +49,8 @@
 //! advisory bucket is empty today (unsubscribed became a seam), so the two flags are
 //! momentarily equivalent — `--strict` survives as the gate for any future advisory.
 
+mod golden;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
@@ -497,6 +499,13 @@ async fn main() -> anyhow::Result<()> {
     // outside-`ALLOW_UNSUBSCRIBED`), each of which breaches a hard durable-plane invariant.
     // `--strict`: also block on any advisory finding — none exist today (the bucket is
     // empty since unsubscribed became a seam). Both still print every profile's table.
+    // `contract-golden [--bless]`: the VALUE-level contract baseline (Step 6c) — an
+    // independent subcommand that never builds the process harness (see `golden.rs`).
+    if std::env::args().any(|a| a == "contract-golden") {
+        let bless = std::env::args().any(|a| a == "--bless");
+        return golden::run(bless);
+    }
+
     let strict = std::env::args().any(|a| a == "--strict");
     let durability_strict = std::env::args().any(|a| a == "--durability-strict");
 

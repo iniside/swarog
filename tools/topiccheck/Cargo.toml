@@ -34,6 +34,23 @@ matchevents = { workspace = true }
 schedulerevents = { workspace = true }
 adminevents = { workspace = true }
 
+# The RPC-contract sources for the `contract-golden` subcommand (Step 6c): each api
+# crate's generated `<snake>_rpc::route_bindings()` carries the impl-free Operation
+# values (method/verb/path/auth/success/retry_mode) that go into the committed golden.
+# Referenced directly (like the events crates above) so a renamed/removed trait breaks
+# this tool at compile time; the hand-list is additionally self-checked against the
+# `#[rpc]` traits actually present under api/*/api at runtime.
+opsapi = { workspace = true }
+accountsapi = { workspace = true }
+adminapi = { workspace = true }
+apikeysapi = { workspace = true }
+charactersapi = { workspace = true }
+configapi = { workspace = true }
+inventoryapi = { workspace = true }
+leaderboardapi = { workspace = true }
+matchapi = { workspace = true }
+ratingapi = { workspace = true }
+
 # The SUBSCRIBE sites — the full monolith module set, single-sourced (Step 3,
 # abstraction-leak closures) so this tool and requirecheck can't silently diverge on
 # which modules they build. Instantiating and building them runs every real

@@ -1,0 +1,27 @@
+# contract-golden -- VALUE-level event + rpc contract baseline (Step 6c).
+# Lines: `event topic=<t> version=<n> history=<policy>` from every bus::define, and
+# `rpc module=<crate::mod> method=<m> verb=<V> path=<p> auth=<a> success=<n> retry=<r>`
+# from every generated route_bindings(). ANY diff fails the blocking contract-golden
+# verify stage: a removed line is BREAKING, an added line is ADDITIVE.
+# Regenerate intentionally via ./verify.sh --bless-contract-golden (verify.ps1
+# -BlessContractGolden), i.e. `cargo run -p topiccheck -- contract-golden --bless`.
+
+event topic=admin.action version=1 history=min-retention:30d
+event topic=character.created version=1 history=min-retention:7d
+event topic=character.deleted version=1 history=min-retention:7d
+event topic=config.changed version=1 history=min-retention:7d
+event topic=match.finished version=1 history=min-retention:7d
+event topic=player.registered version=1 history=min-retention:7d
+event topic=scheduler.fired version=1 history=min-retention:7d
+rpc module=accountsapi::auth_rpc method=accounts.login verb=POST path=/accounts/login auth=None success=200 retry=Never
+rpc module=accountsapi::auth_rpc method=accounts.loginEpic verb=POST path=/accounts/login/epic auth=None success=200 retry=Never
+rpc module=accountsapi::auth_rpc method=accounts.me verb=GET path=/accounts/me auth=Player success=200 retry=OnceAfterReconnect
+rpc module=accountsapi::auth_rpc method=accounts.register verb=POST path=/accounts/register auth=None success=201 retry=Never
+rpc module=charactersapi::player_rpc method=characters.create verb=POST path=/characters auth=Player success=201 retry=Never
+rpc module=charactersapi::player_rpc method=characters.delete verb=DELETE path=/characters/{id} auth=Player success=204 retry=Never
+rpc module=charactersapi::player_rpc method=characters.list verb=GET path=/characters auth=Player success=200 retry=OnceAfterReconnect
+rpc module=inventoryapi::holdings_rpc method=inventory.grant verb=POST path=/inventory/me/grant auth=Player success=200 retry=Never
+rpc module=inventoryapi::holdings_rpc method=inventory.listCharacter verb=GET path=/inventory/character/{id} auth=Player success=200 retry=OnceAfterReconnect
+rpc module=inventoryapi::holdings_rpc method=inventory.listMine verb=GET path=/inventory/me auth=Player success=200 retry=OnceAfterReconnect
+rpc module=leaderboardapi::leaderboard_rpc method=leaderboard.topScores verb=GET path=/leaderboard auth=None success=200 retry=OnceAfterReconnect
+rpc module=matchapi::match_rpc method=match.report verb=POST path=/match/report auth=None success=202 retry=OnceAfterReconnect
