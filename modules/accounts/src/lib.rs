@@ -38,9 +38,21 @@ use lifecycle::{Context, Module};
 use opsapi::{Error, Identity};
 use sqlx::PgConnection;
 
-use crate::epic::{short_id, OidcVerifier};
-use crate::password::{hash_password, verify_password};
+use tokio::sync::Semaphore;
+
+use crate::epic::{short_id, OidcVerifier, VerifyError};
+use crate::password::{hash_password, ArgonVerifier, PasswordVerifier, DUMMY_HASH};
 use crate::store::{Player, Store, StoreError};
+
+/// Input caps enforced before any argon2 work: RFC 5321's total-address maximum
+/// for the email, 1 KiB for the password (argon2 cost scales with input length —
+/// an unauthenticated caller must not choose it).
+const MAX_EMAIL_BYTES: usize = 320;
+const MAX_PASSWORD_BYTES: usize = 1024;
+
+/// The fixed decoy candidate verified against [`DUMMY_HASH`] when the email is
+/// unknown or the input invalid — never the caller's real password against a decoy.
+const DECOY_CANDIDATE: &str = "accounts-invalid-credentials";
 
 /// Creates this module's OWN schema and nothing else — full logical isolation (#10).
 /// Idempotent. Verbatim from Go's `schemaDDL`: the identities/sessions FKs are
@@ -102,6 +114,14 @@ pub struct Service {
     /// contributed unconditionally; when the provider is absent `login_epic` answers
     /// a typed `Unavailable` (→ 503) on every path, edge calls included.
     epic: OnceLock<Arc<OidcVerifier>>,
+    /// RAM cap on concurrent argon2 hashes (64 MiB each): at most 2 run at once,
+    /// on `spawn_blocking` threads — never on an async worker (admin's pattern).
+    argon_permits: Arc<Semaphore>,
+    /// Admission bound on concurrent login requests: beyond 32 in flight new logins
+    /// are shed with `Unavailable` (503) instead of queueing without bound.
+    login_slots: Arc<Semaphore>,
+    /// The injectable verify seam — [`ArgonVerifier`] in production, fakes in tests.
+    verifier: Arc<dyn PasswordVerifier>,
 }
 
 impl Service {
@@ -223,13 +243,31 @@ impl accountsapi::Auth for Service {
         if email.is_empty() || password.is_empty() {
             return Err(Error::invalid("email and password are required"));
         }
+        if email.len() > MAX_EMAIL_BYTES || password.len() > MAX_PASSWORD_BYTES {
+            return Err(Error::invalid("email or password too long"));
+        }
         let display = if display_name.is_empty() {
             email.clone()
         } else {
             display_name
         };
 
-        let hash = hash_password(&password).map_err(internal)?;
+        let Ok(argon) = self.argon_permits.clone().acquire_owned().await else {
+            return Err(Error::internal("argon2 semaphore closed"));
+        };
+        // The 64 MiB hash runs on a blocking thread, never the async worker; the
+        // permit MOVES INTO the closure — spawn_blocking is not cancelled when its
+        // JoinHandle drops, so a permit held in this async frame would be released
+        // on client disconnect while the detached hash keeps running (RAM-cap
+        // defeat; admin 5844831 precedent).
+        let pw = password;
+        let hash = tokio::task::spawn_blocking(move || {
+            let _permit = argon;
+            hash_password(&pw)
+        })
+        .await
+        .map_err(|e| Error::internal(format!("password hash task failed: {e}")))?
+        .map_err(internal)?;
 
         let mut tx = self.store.pool.begin().await.map_err(internal)?;
         let p = match self
@@ -254,29 +292,77 @@ impl accountsapi::Auth for Service {
         self.issue_session(&p).await
     }
 
-    /// dev/password login (AuthNone). Bad credentials — an unknown email or a wrong
-    /// password, deliberately indistinguishable — are `Unauthorized` (401).
+    /// dev/password login (AuthNone). Bad credentials — an unknown email, a wrong
+    /// password, or over-cap/empty input, deliberately indistinguishable — are
+    /// `Unauthorized` (401). Every admitted request performs exactly ONE argon2
+    /// verify (the real hash or the [`DUMMY_HASH`] decoy) on a `spawn_blocking`
+    /// thread behind the argon permit, so unknown-email and wrong-password are
+    /// timing-indistinguishable and the 64 MiB hashes never run on an async worker.
+    ///
+    /// No per-IP limiter here on purpose: `Auth::login` is a pre-auth opsapi
+    /// method — the gateway injects `Identity` only POST-auth, so no client IP ever
+    /// reaches this service. Per-IP throttling, if wanted, lives at the gateway
+    /// (which already rate-limits by source IP).
     async fn login(&self, email: String, password: String) -> Result<accountsapi::Session, Error> {
+        // The dev-auth guard stays the VERY FIRST check (before any admission or
+        // identity fetch): with the gate off the contributed op answers NotFound —
+        // the single trust gate every exposure path traverses (Step 1's invariant).
         if !self.dev_auth {
             return Err(Error::not_found("password login is not enabled"));
         }
-        let Some((p, hash)) = self.store.password_identity(&email).await.map_err(|e| {
-            tracing::error!(err = %e, "login failed");
-            internal(e)
-        })?
-        else {
-            return Err(Error::unauthorized("invalid credentials"));
+        // Admission bound: shed (never queue) beyond 32 concurrent logins. The slot
+        // stays in this async frame — releasing it on cancel is correct, the request
+        // is gone.
+        let Ok(_slot) = self.login_slots.clone().try_acquire_owned() else {
+            return Err(Error::unavailable("too many concurrent login attempts"));
         };
-        if !verify_password(&hash, &password) {
+        let valid_input = !email.is_empty()
+            && email.len() <= MAX_EMAIL_BYTES
+            && !password.is_empty()
+            && password.len() <= MAX_PASSWORD_BYTES;
+        let identity = if valid_input {
+            self.store.password_identity(&email).await.map_err(|e| {
+                tracing::error!(err = %e, "login failed");
+                internal(e)
+            })?
+        } else {
+            None
+        };
+        let known_user = identity.is_some();
+        // Real-or-decoy: an unknown email (or invalid input) verifies a FIXED decoy
+        // candidate against the decoy hash — same argon2 cost, never a match, and
+        // the caller's password is never run against a hash we didn't store for it.
+        let (hash, candidate) = match &identity {
+            Some((_, hash)) => (hash.clone(), password),
+            None => (DUMMY_HASH.clone(), DECOY_CANDIDATE.to_string()),
+        };
+        let Ok(argon) = self.argon_permits.clone().acquire_owned().await else {
+            return Err(Error::internal("argon2 semaphore closed"));
+        };
+        let verifier = self.verifier.clone();
+        // The argon permit MUST live inside the blocking closure: spawn_blocking is
+        // not cancelled when its JoinHandle drops, so a permit held in this async
+        // frame would be released on client disconnect while the detached 64 MiB
+        // hash keeps running — defeating the RAM cap (admin 5844831 precedent).
+        let verified = tokio::task::spawn_blocking(move || {
+            let _permit = argon;
+            verifier.verify(&hash, &candidate)
+        })
+        .await
+        .map_err(|e| Error::internal(format!("password verifier task failed: {e}")))?;
+        if !(verified && known_user && valid_input) {
             return Err(Error::unauthorized("invalid credentials"));
         }
+        let (p, _) = identity.expect("known_user implies identity");
         self.issue_session(&p).await
     }
 
     /// Epic (EOS Connect / OIDC) login (AuthNone): verifies the id_token and logs
     /// the player in, provisioning on first sight (which emits `player.registered`
     /// durably). Missing id_token → `Invalid` (400); a rejected token →
-    /// `Unauthorized` (401).
+    /// `Unauthorized` (401); a JWKS/IdP infrastructure failure → `Unavailable`
+    /// (503) — the `verify_session` 503-not-401 precedent: an IdP outage must not
+    /// read as bad credentials.
     async fn login_epic(&self, id_token: String) -> Result<accountsapi::Session, Error> {
         if id_token.is_empty() {
             return Err(Error::invalid("id_token is required"));
@@ -286,9 +372,13 @@ impl accountsapi::Auth for Service {
         };
         let subject = match epic.verify(&id_token).await {
             Ok(s) => s,
-            Err(err) => {
+            Err(VerifyError::Rejected(err)) => {
                 tracing::warn!(%err, "epic token rejected");
                 return Err(Error::unauthorized("invalid id_token"));
+            }
+            Err(VerifyError::Infra(err)) => {
+                tracing::warn!(%err, "epic JWKS unavailable");
+                return Err(Error::unavailable("identity provider unavailable"));
             }
         };
         let (p, _created) = self
@@ -438,6 +528,11 @@ impl Module for Accounts {
             // guard on the edge Auth face (register/login).
             dev_auth: env_bool("ACCOUNTS_DEV_AUTH", false),
             epic: OnceLock::new(),
+            // Pure construction (no I/O): the argon RAM cap, the login admission
+            // bound and the real verifier — admin's shapes.
+            argon_permits: Arc::new(Semaphore::new(2)),
+            login_slots: Arc::new(Semaphore::new(32)),
+            verifier: Arc::new(ArgonVerifier),
         });
         self.svc
             .set(svc.clone())
@@ -610,5 +705,7 @@ fn env_or(key: &str, def: &str) -> String {
 // tests target the local Postgres (the test DB) and SKIP cleanly when it is
 // unreachable. In-crate so they can drive the private `Service`/`Store` directly.
 // ============================================================================
+#[cfg(test)]
+mod epic_tests;
 #[cfg(test)]
 mod tests;

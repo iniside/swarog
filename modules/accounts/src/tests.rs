@@ -4,9 +4,11 @@ use base64::Engine as _;
 
 mod dev_auth_gate;
 mod prune;
+use crate::password::verify_password;
 use rsa::pkcs8::EncodePrivateKey as _;
 use rsa::traits::PublicKeyParts as _;
 use sqlx::PgPool;
+use std::sync::Mutex;
 use std::time::Duration;
 
 /// Fallback DSN for the lazy-pool unit tests (the live tests read `DATABASE_URL`).
@@ -177,6 +179,12 @@ async fn oidc_verifier_rejects_alg_none() {
 
 /// A service over a lazy pool + a transport-less bus — for the validation tests.
 fn lazy_service() -> Arc<Service> {
+    lazy_service_with_verifier(Arc::new(ArgonVerifier))
+}
+
+/// The verifier-injecting twin (admin's `wired_with_verifier` shape): recording and
+/// gated fakes drive the decoy-path and permit-lifetime tests without real argon2.
+fn lazy_service_with_verifier(verifier: Arc<dyn PasswordVerifier>) -> Arc<Service> {
     Arc::new(Service {
         store: Store {
             pool: PgPool::connect_lazy(DEFAULT_DSN).unwrap(),
@@ -184,7 +192,39 @@ fn lazy_service() -> Arc<Service> {
         bus: Arc::new(Bus::new()),
         dev_auth: true,
         epic: OnceLock::new(),
+        argon_permits: Arc::new(Semaphore::new(2)),
+        login_slots: Arc::new(Semaphore::new(32)),
+        verifier,
     })
+}
+
+/// A recording fake: logs every (encoded, candidate) pair, never matches.
+#[derive(Default)]
+struct RecordingVerifier {
+    calls: Mutex<Vec<(String, String)>>,
+}
+
+impl PasswordVerifier for RecordingVerifier {
+    fn verify(&self, encoded: &str, password: &str) -> bool {
+        self.calls.lock().unwrap().push((encoded.to_string(), password.to_string()));
+        false
+    }
+}
+
+/// A verifier that reports when `verify` has started and then blocks until the test
+/// releases it — lets the test freeze a login mid-Argon2 deterministically (admin's
+/// fixture, duplicated per the fortress rule).
+struct GatedVerifier {
+    started: std::sync::mpsc::Sender<()>,
+    release: Mutex<std::sync::mpsc::Receiver<()>>,
+}
+
+impl PasswordVerifier for GatedVerifier {
+    fn verify(&self, _encoded: &str, _password: &str) -> bool {
+        self.started.send(()).expect("test alive");
+        let _ = self.release.lock().unwrap().recv();
+        false
+    }
 }
 
 #[tokio::test]
@@ -217,6 +257,160 @@ async fn me_requires_identity() {
     let svc = lazy_service();
     let e = svc.me(Identity::none()).await.unwrap_err();
     assert_eq!(e.status, opsapi::Status::Invalid);
+}
+
+/// Register rejects over-cap inputs BEFORE hashing (400, not a 64 MiB argon2 run
+/// on attacker-chosen input length).
+#[tokio::test(flavor = "multi_thread")]
+async fn register_rejects_over_cap_inputs() {
+    let svc = lazy_service();
+    let e = svc
+        .register(format!("{}@x.io", "a".repeat(321)), "pw".into(), String::new())
+        .await
+        .unwrap_err();
+    assert_eq!(e.status, opsapi::Status::Invalid);
+    let e = svc
+        .register("a@x.io".into(), "p".repeat(1025), String::new())
+        .await
+        .unwrap_err();
+    assert_eq!(e.status, opsapi::Status::Invalid);
+}
+
+/// Invalid login input (over-cap email) still performs exactly ONE verify — against
+/// the DECOY hash with the FIXED decoy candidate (never the caller's password) —
+/// and answers the same generic 401. DB-free: invalid input skips the identity
+/// fetch entirely. Status-identity + call-recording, not timing.
+#[tokio::test(flavor = "multi_thread")]
+async fn invalid_login_input_takes_decoy_verify_path() {
+    let verifier = Arc::new(RecordingVerifier::default());
+    let svc = lazy_service_with_verifier(verifier.clone());
+    let e = svc
+        .login(format!("{}@x.io", "a".repeat(321)), "real-secret".into())
+        .await
+        .unwrap_err();
+    assert_eq!(e.status, opsapi::Status::Unauthorized);
+    let calls = verifier.calls.lock().unwrap();
+    assert_eq!(calls.len(), 1, "exactly one verify per admitted login");
+    assert_eq!(calls[0].0, *DUMMY_HASH, "invalid input must verify the decoy hash");
+    assert_eq!(
+        calls[0].1, DECOY_CANDIDATE,
+        "the caller's password must never be verified against a decoy"
+    );
+}
+
+/// The RAM-cap regression (admin 5844831's twin): `spawn_blocking` is NOT cancelled
+/// when its JoinHandle drops, so if the argon permit lived in the login's async
+/// frame a client disconnect would release it while the detached 64 MiB hash keeps
+/// running. The permit must be owned by the blocking closure — released only AFTER
+/// the hash completes, even when the caller future is dropped mid-verify.
+#[tokio::test(flavor = "multi_thread")]
+async fn argon_permit_survives_login_cancellation_until_hash_completes() {
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let verifier = Arc::new(GatedVerifier {
+        started: started_tx,
+        release: Mutex::new(release_rx),
+    });
+    let svc = lazy_service_with_verifier(verifier);
+    assert_eq!(svc.argon_permits.available_permits(), 2);
+
+    // Over-cap email → invalid input → decoy verify path, no DB touched.
+    let task_svc = svc.clone();
+    let login = tokio::spawn(async move {
+        task_svc
+            .login(format!("{}@x.io", "a".repeat(321)), "pw".into())
+            .await
+    });
+    // Wait until the login is provably inside the blocking verify.
+    tokio::task::spawn_blocking(move || started_rx.recv().expect("verify started"))
+        .await
+        .unwrap();
+    assert_eq!(svc.argon_permits.available_permits(), 1);
+
+    // Simulate the client disconnect: abort drops the login future at its `.await`
+    // on the spawn_blocking JoinHandle; the blocking hash keeps running.
+    login.abort();
+    let err = login.await.expect_err("login task was aborted mid-verify");
+    assert!(err.is_cancelled());
+    assert_eq!(
+        svc.argon_permits.available_permits(),
+        1,
+        "cancelling the request must NOT release the argon permit while the hash still runs"
+    );
+
+    // Let the hash finish; only then may the permit return.
+    release_tx.send(()).expect("verifier still blocked");
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while svc.argon_permits.available_permits() != 2 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "permit was not released after the blocking verify completed"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+/// Concurrency shape: with both argon permits busy the 3rd..32nd logins QUEUE on
+/// the argon semaphore (still admitted), while the 33rd is shed at the admission
+/// bound with `Unavailable` — reject, never unbounded queueing. DB-free (over-cap
+/// emails take the decoy path without an identity fetch).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn third_login_queues_and_thirty_third_is_shed() {
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let verifier = Arc::new(GatedVerifier {
+        started: started_tx,
+        release: Mutex::new(release_rx),
+    });
+    let svc = lazy_service_with_verifier(verifier);
+
+    let mut logins = Vec::new();
+    for _ in 0..32 {
+        let task_svc = svc.clone();
+        logins.push(tokio::spawn(async move {
+            task_svc
+                .login(format!("{}@x.io", "a".repeat(321)), "pw".into())
+                .await
+        }));
+    }
+    // Two verifies running (both argon permits held)...
+    for _ in 0..2 {
+        let rx = started_rx.recv_timeout(Duration::from_secs(5));
+        // recv_timeout blocks this test thread briefly; the runtime has 4 workers.
+        rx.expect("two logins must reach the blocking verify");
+    }
+    // ...and all 32 admission slots taken (the other 30 queue on the argon permits).
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while svc.login_slots.available_permits() != 0 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "all 32 logins must hold an admission slot"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(svc.argon_permits.available_permits(), 0);
+
+    // The 33rd concurrent login is shed immediately — Unavailable, no queueing.
+    let e = svc
+        .login(format!("{}@x.io", "a".repeat(321)), "pw".into())
+        .await
+        .unwrap_err();
+    assert_eq!(
+        e.status,
+        opsapi::Status::Unavailable,
+        "the 33rd concurrent login must be shed at the admission bound"
+    );
+
+    // Release every gated verify; all 32 admitted logins (including the queued
+    // 3rd..32nd) complete with the generic 401 — queued means served, not dropped.
+    for _ in 0..32 {
+        release_tx.send(()).expect("verifier still gated");
+    }
+    for login in logins {
+        let e = login.await.unwrap().unwrap_err();
+        assert_eq!(e.status, opsapi::Status::Unauthorized);
+    }
+    assert_eq!(svc.login_slots.available_permits(), 32);
 }
 
 // ============================================================================
@@ -265,6 +459,13 @@ async fn ensure_schema(pool: &PgPool) {
 /// asyncevents `bus::Transport` is injected at `Context` construction (needed before any
 /// `emit_tx`), and accounts registers against the same ctx.
 async fn wired(pool: &PgPool) -> (Context, Arc<Service>) {
+    wired_with_verifier(pool, Arc::new(ArgonVerifier)).await
+}
+
+async fn wired_with_verifier(
+    pool: &PgPool,
+    verifier: Arc<dyn PasswordVerifier>,
+) -> (Context, Arc<Service>) {
     ensure_schema(pool).await;
     let transport = asyncevents::testing::transport(pool.clone());
     let ctx = Context::with_db_and_transport(pool.clone(), transport.handle());
@@ -278,6 +479,9 @@ async fn wired(pool: &PgPool) -> (Context, Arc<Service>) {
         bus: ctx.bus().clone(),
         dev_auth: true,
         epic: OnceLock::new(),
+        argon_permits: Arc::new(Semaphore::new(2)),
+        login_slots: Arc::new(Semaphore::new(32)),
+        verifier,
     });
     (ctx, svc)
 }
@@ -358,6 +562,31 @@ async fn register_login_session_roundtrip_with_durable_event() {
         .any(|i| i.provider == "dev" && i.subject == email));
 
     cleanup_player(&pool, &sess.player_id).await;
+}
+
+/// An UNKNOWN email (valid input, no identity row) takes the decoy verify path:
+/// exactly one verifier call, against the DECOY hash with the FIXED decoy candidate
+/// — so unknown-email costs the same argon2 work as wrong-password (no timing
+/// oracle), asserted by call-recording + status-identity, not timing.
+#[tokio::test(flavor = "multi_thread")]
+async fn unknown_email_takes_decoy_verify_path() {
+    let Some(pool) = test_pool().await else { return };
+    let verifier = Arc::new(RecordingVerifier::default());
+    let (_ctx, svc) = wired_with_verifier(&pool, verifier.clone()).await;
+
+    let e = svc
+        .login(format!("ghost-{}@test.local", suffix()), "real-secret".into())
+        .await
+        .unwrap_err();
+    assert_eq!(e.status, opsapi::Status::Unauthorized);
+
+    let calls = verifier.calls.lock().unwrap();
+    assert_eq!(calls.len(), 1, "exactly one verify per admitted login");
+    assert_eq!(calls[0].0, *DUMMY_HASH, "unknown email must verify the decoy hash");
+    assert_eq!(
+        calls[0].1, DECOY_CANDIDATE,
+        "the caller's password must never be verified against a decoy"
+    );
 }
 
 /// Session TTL: a session whose `expires_at` has passed no longer resolves (Go's

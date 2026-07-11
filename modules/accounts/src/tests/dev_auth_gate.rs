@@ -24,6 +24,9 @@ fn gated_service(dev_auth: bool) -> Arc<Service> {
         bus: Arc::new(Bus::new()),
         dev_auth,
         epic: OnceLock::new(),
+        argon_permits: Arc::new(Semaphore::new(2)),
+        login_slots: Arc::new(Semaphore::new(32)),
+        verifier: Arc::new(ArgonVerifier),
     })
 }
 
@@ -137,6 +140,9 @@ async fn verify_session_unaffected_by_dev_auth_gate() {
         bus: Arc::new(Bus::new()),
         dev_auth: false,
         epic: OnceLock::new(),
+        argon_permits: Arc::new(Semaphore::new(2)),
+        login_slots: Arc::new(Semaphore::new(32)),
+        verifier: Arc::new(ArgonVerifier),
     });
 
     // Sessions still resolves the token (gate does not touch verify_session)...
