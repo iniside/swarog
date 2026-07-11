@@ -25,6 +25,10 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "ti
 anyhow = { workspace = true }
 tracing = { workspace = true }
 async-trait = { workspace = true }
+# The emission loop's `"scheduler"` /readyz check (httpmw::ReadyCheck) and the
+# catch_unwind supervision wrapper (futures::FutureExt) — remediation round-3 4b.
+httpmw = { workspace = true }
+futures = { workspace = true }
 
 [dev-dependencies]
 # The exactly-once concurrency test installs a fake bus transport that records the

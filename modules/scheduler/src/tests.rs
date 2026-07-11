@@ -133,7 +133,61 @@ fn bus_with_fake() -> (Arc<Bus>, Arc<FakeTransport>) {
     (Arc::new(bus), ft)
 }
 
+/// Polls `f` every 50ms until it is true or `max` elapses; returns the final verdict.
+async fn wait_until(mut f: impl FnMut() -> bool, max: std::time::Duration) -> bool {
+    let start = std::time::Instant::now();
+    while start.elapsed() < max {
+        if f() {
+            return true;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    f()
+}
+
 // --- no DB ------------------------------------------------------------------
+
+/// The `"scheduler"` readiness verdict transitions (remediation 4b): a never-started
+/// loop is ready, a healthy stamp is ready, the `dead` flag flips it, and the pure
+/// staleness predicate honors the never-seeded sentinel, the stall window, and a
+/// controlled stop. Direct struct manipulation — no DB, no clock waits.
+#[test]
+fn liveness_check_transitions() {
+    use std::sync::atomic::Ordering;
+
+    let max = Duration::from_secs(30);
+
+    // Never seeded (disabled, or before `start`): ready.
+    let l = Liveness::default();
+    assert!(l.check(max).is_ok(), "never-started loop must read ready");
+
+    // Freshly stamped: ready.
+    l.mark_tick_ok();
+    assert!(l.check(max).is_ok(), "healthy stamp must read ready");
+
+    // Loop task died: not ready, named reason.
+    l.dead.store(true, Ordering::SeqCst);
+    let err = l.check(max).expect_err("dead loop must read unready");
+    assert!(err.contains("died"), "unexpected verdict: {err}");
+
+    // The staleness predicate, deterministically (coarse-clock seconds):
+    assert!(
+        !stalled_from(0, 1_000, false, max),
+        "never-seeded clock must never stall"
+    );
+    assert!(
+        !stalled_from(990, 1_000, false, max),
+        "10s-old stamp is within the 30s window"
+    );
+    assert!(
+        stalled_from(900, 1_000, false, max),
+        "100s-old stamp must read stalled"
+    );
+    assert!(
+        !stalled_from(900, 1_000, true, max),
+        "a controlled stop is not a stall"
+    );
+}
 
 /// `lock_key` is stable per name (so two replicas derive the SAME advisory key and
 /// contend) and the FNV-1a wrap matches Go's `int64(fnv64a(name))` for a known input.
@@ -238,8 +292,8 @@ async fn fire_exactly_once_under_concurrency() {
 
     let (p1, b1, n1) = (pool1.clone(), bus1.clone(), name.clone());
     let (p2, b2, n2) = (pool2.clone(), bus2.clone(), name.clone());
-    let h1 = tokio::spawn(async move { fire(&p1, &b1, &n1).await });
-    let h2 = tokio::spawn(async move { fire(&p2, &b2, &n2).await });
+    let h1 = tokio::spawn(async move { fire(&p1, &b1, &n1, TICK_DEADLINE).await });
+    let h2 = tokio::spawn(async move { fire(&p2, &b2, &n2, TICK_DEADLINE).await });
     h1.await.unwrap().expect("replica 1 fire");
     h2.await.unwrap().expect("replica 2 fire");
 
@@ -250,7 +304,7 @@ async fn fire_exactly_once_under_concurrency() {
     );
 
     // last_fired moved off the epoch exactly once (now not due).
-    let due = due_schedules(&pool1).await.unwrap();
+    let due = due_schedules(&pool1, TICK_DEADLINE).await.unwrap();
     assert!(
         !due.contains(&name),
         "schedule {name:?} still due after firing"
@@ -272,11 +326,15 @@ async fn fires_again_after_interval() {
 
     let (bus, ft) = bus_with_fake();
 
-    fire(&pool, &bus, &name).await.expect("first fire");
+    fire(&pool, &bus, &name, TICK_DEADLINE)
+        .await
+        .expect("first fire");
     assert_eq!(ft.count(&name), 1, "after first fire want 1 durable emit");
 
     // Immediately not due — second fire is a no-op.
-    fire(&pool, &bus, &name).await.expect("second (immediate) fire");
+    fire(&pool, &bus, &name, TICK_DEADLINE)
+        .await
+        .expect("second (immediate) fire");
     assert_eq!(
         ft.count(&name),
         1,
@@ -285,8 +343,176 @@ async fn fires_again_after_interval() {
 
     // After the interval it is due again.
     tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
-    fire(&pool, &bus, &name).await.expect("third fire");
+    fire(&pool, &bus, &name, TICK_DEADLINE)
+        .await
+        .expect("third fire");
     assert_eq!(ft.count(&name), 2, "after interval want 2 durable emits");
 
+    cleanup(&pool, &name).await;
+}
+
+/// The 4b hang bound, end to end against the live DB: a competing row lock wedges
+/// `fire`'s `UPDATE`, and the session `statement_timeout` must make the fire ERROR
+/// (SQLSTATE 57014) instead of stalling forever — with the future never dropped, so
+/// the advisory unlock still runs (lock NOT leaked to another session), the session
+/// timeout is RESET before the connection re-pools, and the same pool fires cleanly
+/// once unblocked.
+#[tokio::test(flavor = "multi_thread")]
+async fn wedged_fire_errors_via_statement_timeout_and_leaks_nothing() {
+    let Some(pool) = test_pool().await else {
+        return;
+    };
+    let name = unique_name(&pool).await;
+    seed_schedule(&pool, &name, 3600).await; // due (epoch), won't re-arm mid-test
+
+    // A 1-connection pool for the fire, so the post-mortem RESET assertion below
+    // deterministically observes the SAME session the wedged fire used.
+    let fire_pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&dsn())
+        .await
+        .expect("connect 1-conn fire pool");
+
+    // The wedge: a competing session holds the schedule row FOR UPDATE in an open tx,
+    // so fire's `UPDATE ... SET last_fired` blocks until the statement_timeout cancels it.
+    let mut blocker = PgConnection::connect(&dsn()).await.expect("connect blocker");
+    let mut btx = blocker.begin().await.expect("open blocker tx");
+    sqlx::query("SELECT 1 FROM scheduler.schedules WHERE name = $1 FOR UPDATE")
+        .bind(&name)
+        .fetch_one(&mut *btx)
+        .await
+        .expect("take competing row lock");
+
+    let (bus, ft) = bus_with_fake();
+    let started = std::time::Instant::now();
+    let err = fire(&fire_pool, &bus, &name, Duration::from_millis(500))
+        .await
+        .expect_err("wedged fire must ERROR via statement_timeout, not stall");
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "fire took {:?} — the statement_timeout did not bound the wedge",
+        started.elapsed()
+    );
+    let code = err
+        .downcast_ref::<sqlx::Error>()
+        .and_then(|e| e.as_database_error())
+        .and_then(|d| d.code());
+    assert_eq!(
+        code.as_deref(),
+        Some("57014"), // query_canceled — "canceling statement due to statement timeout"
+        "expected a statement_timeout cancellation, got: {err:#}"
+    );
+    assert_eq!(ft.count(&name), 0, "a timed-out fire must not emit");
+
+    // The advisory lock was NOT leaked: a DIFFERENT session can take it now (a leaked
+    // session lock on the pooled connection would make this try-lock return false).
+    let key = lock_key(&name);
+    let mut probe = PgConnection::connect(&dsn()).await.expect("connect probe");
+    let free: bool = sqlx::query_scalar("SELECT pg_try_advisory_lock($1)")
+        .bind(key)
+        .fetch_one(&mut probe)
+        .await
+        .expect("probe try-lock");
+    assert!(
+        free,
+        "advisory lock for {name:?} leaked after the timed-out fire"
+    );
+    sqlx::query("SELECT pg_advisory_unlock($1)")
+        .bind(key)
+        .execute(&mut probe)
+        .await
+        .expect("probe unlock");
+
+    // The session statement_timeout was RESET before the connection re-pooled
+    // (deterministic: the pool has exactly one connection).
+    let (timeout,): (String,) = sqlx::query_as("SHOW statement_timeout")
+        .fetch_one(&fire_pool)
+        .await
+        .expect("SHOW statement_timeout");
+    assert_eq!(
+        timeout, "0",
+        "tick statement_timeout leaked into the pooled connection"
+    );
+
+    // Release the wedge: the SAME pool/session now fires cleanly — nothing about the
+    // error path poisoned the loop's ability to keep running.
+    btx.rollback().await.expect("release competing lock");
+    fire(&fire_pool, &bus, &name, TICK_DEADLINE)
+        .await
+        .expect("fire after unblock");
+    assert_eq!(ft.count(&name), 1, "after unblock want exactly 1 durable emit");
+
+    cleanup(&pool, &name).await;
+}
+
+/// The `"scheduler"` /readyz verdict under a wedge, driving the REAL [`run_loop`]:
+/// while a competing lock wedges every tick, the liveness stamp ages past the stall
+/// window and [`Liveness::check`] flips to Err — with the loop task still ALIVE (the
+/// DB-layer bound errors the tick; nothing is dropped or killed). Releasing the lock
+/// lets a healthy tick land, the stamp refreshes, and the verdict recovers to Ok.
+#[tokio::test(flavor = "multi_thread")]
+async fn wedged_tick_flips_scheduler_readyz_and_recovers() {
+    let Some(pool) = test_pool().await else {
+        return;
+    };
+    let name = unique_name(&pool).await;
+    seed_schedule(&pool, &name, 1).await; // stays due while the wedge holds
+
+    let mut blocker = PgConnection::connect(&dsn()).await.expect("connect blocker");
+    let mut btx = blocker.begin().await.expect("open blocker tx");
+    sqlx::query("SELECT 1 FROM scheduler.schedules WHERE name = $1 FOR UPDATE")
+        .bind(&name)
+        .fetch_one(&mut *btx)
+        .await
+        .expect("take competing row lock");
+
+    let (bus, ft) = bus_with_fake();
+    let liveness = Liveness::default();
+    let (stop_tx, stop_rx) = watch::channel(false);
+    let cfg = LoopCfg {
+        tick_interval: Duration::from_millis(100),
+        tick_deadline: Duration::from_millis(300),
+    };
+    let task = tokio::spawn(run_loop(
+        pool.clone(),
+        bus.clone(),
+        liveness.clone(),
+        cfg,
+        stop_rx,
+    ));
+
+    // Every tick errors (fire's UPDATE hits the 300ms statement_timeout), so the stamp
+    // seeded at loop entry ages past the 1s stall window and the check flips.
+    let stall_max = Duration::from_secs(1);
+    let flipped = wait_until(|| liveness.check(stall_max).is_err(), Duration::from_secs(20)).await;
+    assert!(
+        flipped,
+        "the scheduler readyz check never flipped while ticks were wedged"
+    );
+    let err = liveness.check(stall_max).unwrap_err();
+    assert!(
+        err.contains("no healthy scheduler tick"),
+        "unexpected verdict: {err}"
+    );
+    // The loop is still ALIVE — bounded, not dead: the hang became an error, the
+    // future was never dropped, and no panic killed the task.
+    assert!(!task.is_finished(), "the emission loop died under the wedge");
+    assert!(
+        liveness.check(Duration::from_secs(3600)).is_ok(),
+        "the dead flag flipped — the loop should only be stalled, not dead"
+    );
+
+    // Release the wedge: a healthy tick lands (the schedule finally fires), the stamp
+    // refreshes, and the verdict recovers.
+    btx.rollback().await.expect("release competing lock");
+    let recovered = wait_until(|| liveness.check(stall_max).is_ok(), Duration::from_secs(20)).await;
+    assert!(recovered, "readyz never recovered after the wedge lifted");
+    assert!(
+        ft.count(&name) >= 1,
+        "the schedule never fired after the wedge lifted"
+    );
+
+    stop_tx.send(true).expect("signal stop");
+    task.await.expect("loop task join");
     cleanup(&pool, &name).await;
 }
