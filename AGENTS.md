@@ -551,6 +551,14 @@ mirrored into the repo at `memory/` so it survives across machines via git.
 - The live path is derived (repo abspath → non-alnum→`-`), so scripts are portable;
   override with `CLAUDE_MEMORY_DIR` if detection is ever wrong. `… path` prints it.
 
+## Commit After Every Task — MANDATORY
+
+After completing every task, create a git commit containing only the changes made
+for that task. Do not include unrelated pre-existing working-tree changes. If a
+task produces no repository changes, no commit is required. Use the commit format
+defined below. A request to commit is implicit in every task; pushing still
+requires an explicit user request.
+
 ## Git Safety — MANDATORY
 
 **Never `git stash`, `git checkout -- <file>`, `git restore`, or anything that
@@ -558,8 +566,9 @@ discards/overwrites uncommitted working-tree changes** without the user's say-so
 inspect old contents use `git show <sha>:<path>`. Only ever `git reset --soft HEAD~1`
 to undo a commit *you* just created *this turn*, and only when nothing else has
 committed since. Never `git push --force` or rewrite published history without
-explicit instruction. Commit or push only when the user asks; if on the default
-branch, branch first.
+explicit instruction. Commit after every completed task as required above; push
+only when the user asks. Work directly on `master`; do not create a branch unless
+the user explicitly requests one.
 
 ## Commit Message Format — MANDATORY
 
