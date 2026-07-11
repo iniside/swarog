@@ -42,5 +42,14 @@ bash-parallel jobs is suspect on Windows.
   assertion is the harness, not a service deadlock.
 - Recovery: kill `*-svc`/`winctrl`/`server`/`curl` (spare `cowork-svc`), then
   `pg_terminate_backend` all non-psql gamebackend sessions, then re-run.
-- The real fix is the `.ps1 Start-Svc` ExitCode gate; the user deferred it 2026-07-11.
-  See [[verify-the-at-risk-path-not-the-safe-one]].
+**Chosen fix (2026-07-11): a Rust harness replaces both scripts.** `tools/splitproof`
+(`cargo run -p splitproof`) spawns the fleet via `std::process::Command` (typed env
+map + kill-on-drop guard — no shell, so the whole bug class is structurally gone),
+health-checks over reqwest, asserts DB via sqlx, and drives the player QUIC front
+through `edge::PlayerClient` as a library (no playercli subprocess). MVP landed: boots
+12/12, 8 core assertions green ([RDY]/auth/[K5]/[C4]/[P1]/leaderboard), 0 orphans after
+exit. The shell scripts were also hardened (commit 358ab57) but are on death row — the
+Rust harness grows to full named-assertion parity, then `.sh`/`.ps1` + `tools/winctrl`
+are deleted and verify.* points at `splitproof`. Plan:
+docs/plans/2026-07-11-1730-rust-splitproof-harness-plan.md. See
+[[verify-the-at-risk-path-not-the-safe-one]] and [[config-as-code-anti-magic]].
