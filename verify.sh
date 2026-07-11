@@ -259,6 +259,29 @@ ensure_public_api_tooling() {
     ensure_tool cargo-public-api cargo +nightly install cargo-public-api --locked --version 0.52.0
 }
 
+# orphan_baseline_findings -- Step 6b: a deleted contract crate leaves its committed
+# docs/reference/public-api-baseline/<crate>.txt behind forever, since public_api_stage
+# only ITERATES the live crate list (never the baseline dir) -- a snapshot for a crate
+# that no longer exists would silently never be checked or cleaned up again. Diffs the
+# baseline dir's file stems against the live `public_api_crates()` set; prints one
+# finding per orphan naming the file. Takes the live-crate list as $1 (newline-separated)
+# so callers compute it once.
+orphan_baseline_findings() {
+    local live="$1" f stem found=0 live_csv
+    live_csv="$(tr '\n' ',' <<<"$live" | sed 's/,$//')"
+    [ -d "$PUBLIC_API_BASELINE_DIR" ] || return 0
+    for f in "$PUBLIC_API_BASELINE_DIR"/*.txt; do
+        [ -f "$f" ] || continue
+        stem="$(basename "$f" .txt)"
+        if ! grep -qxF "$stem" <<<"$live"; then
+            echo "  ORPHAN baseline $f -- no live crate named \"$stem\" (public_api_crates()" \
+                "is: $live_csv) -- delete this snapshot, it belongs to a removed contract crate"
+            found=1
+        fi
+    done
+    return "$found"
+}
+
 public_api_stage() {
     local log="$VERIFY_DIR/public-api.log"; : >"$log"
     echo "== public-api =="
@@ -269,6 +292,10 @@ public_api_stage() {
         return
     fi
     local diff=0 toolfail=0 pkg snap expected cur diffout
+    local live_crates; live_crates="$(public_api_crates)"
+    if ! orphan_baseline_findings "$live_crates" | tee -a "$log"; then
+        diff=1
+    fi
     for pkg in $(public_api_crates); do
         snap="$PUBLIC_API_BASELINE_DIR/$pkg.txt"
         cur="$VERIFY_DIR/public-api-cur-$pkg.txt"

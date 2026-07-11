@@ -1,4 +1,5 @@
 use super::*;
+use std::path::Path;
 
 /// Helper: a defined contract from a topic + version (history irrelevant to most diffs).
 fn contract(topic: &str, version: u32) -> Contract {
@@ -209,6 +210,78 @@ async fn current_tree_has_zero_unsubscribed_in_both_profiles() {
         let unsub = unsubscribed(&defined, &subscribed, ALLOW_UNSUBSCRIBED);
         assert!(unsub.is_empty(), "profile {label}: unexpected unsubscribed topics {unsub:?}");
     }
+}
+
+// --- Define-site self-check: defined_topics() matches every `bus::define(` call ----
+
+/// Step 6b: `defined_topics()` (main.rs) is a hand-maintained list of statics -- this
+/// mirrors `checkmodules::split_fleet_matches_cmd_dirs`'s pattern (drift tripwire
+/// against the filesystem) so a NEW `api/<domain>/events/src/lib.rs` define site that
+/// nobody added to `defined_topics()` fails loudly here instead of silently never being
+/// checked by any profile. Comment-filtered text scan (skip lines whose trimmed content
+/// starts with `//`), same tolerance level as archcheck's text tripwires -- this is not
+/// a Rust parser, just a drift detector for the topic string literal that follows each
+/// `define(` call.
+#[test]
+fn defined_topics_matches_every_define_site_on_disk() {
+    let api_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../api");
+    let mut from_fs: BTreeSet<String> = BTreeSet::new();
+    let mut files_scanned = 0;
+    for entry in std::fs::read_dir(&api_dir)
+        .unwrap_or_else(|e| panic!("failed to read {}: {e}", api_dir.display()))
+    {
+        let entry = entry.expect("readable dir entry");
+        if !entry.file_type().expect("file type").is_dir() {
+            continue;
+        }
+        let lib = entry.path().join("events").join("src").join("lib.rs");
+        let Ok(text) = std::fs::read_to_string(&lib) else {
+            continue; // domain has no events crate -- nothing to scan
+        };
+        files_scanned += 1;
+        for line in text.lines() {
+            let t = line.trim_start();
+            if t.starts_with("//") {
+                continue;
+            }
+            let Some(after) = t.split_once("define(") else { continue };
+            let rest = after.1;
+            let Some(start) = rest.find('"') else {
+                panic!(
+                    "{}: a `define(` call has no string-literal first argument on the \
+                     same line -- the scan assumes `define(\"topic\", ...)` on one line: {line:?}",
+                    lib.display()
+                );
+            };
+            let after_quote = &rest[start + 1..];
+            let end = after_quote.find('"').unwrap_or_else(|| {
+                panic!(
+                    "{}: unterminated string literal after `define(` in line {line:?}",
+                    lib.display()
+                )
+            });
+            let topic = &after_quote[..end];
+            if !from_fs.insert(topic.to_string()) {
+                panic!(
+                    "{}: topic {topic:?} is defined more than once across api/*/events \
+                     (duplicate define-site) -- topiccheck assumes one define per topic string",
+                    lib.display()
+                );
+            }
+        }
+    }
+    assert!(files_scanned > 0, "expected at least one api/*/events/src/lib.rs to scan");
+
+    let from_defined: BTreeSet<String> =
+        defined_topics().into_iter().map(|c| c.topic).collect();
+
+    assert_eq!(
+        from_fs, from_defined,
+        "tools/topiccheck::defined_topics() has drifted from the real `bus::define(` call \
+         sites under api/*/events/src/lib.rs (filesystem scan found {from_fs:?}, \
+         defined_topics() returns {from_defined:?}) -- add/remove the missing/orphaned \
+         Contract in defined_topics() (tools/topiccheck/src/main.rs)"
+    );
 }
 
 // --- The DEFINE set is exactly the seven domain contract topics ---------------

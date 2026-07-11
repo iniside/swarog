@@ -235,6 +235,26 @@ function Invoke-BlessPublicApi {
     if ($fail) { Exit-WithLog 1 } else { Exit-WithLog 0 }
 }
 
+# Get-OrphanBaselineFindings -- Step 6b (twin of verify.sh's orphan_baseline_findings): a
+# deleted contract crate leaves its committed docs/reference/public-api-baseline/<crate>.txt
+# behind forever, since Invoke-PublicApiStage only ITERATES the live crate list (never the
+# baseline dir) -- a snapshot for a crate that no longer exists would silently never be
+# checked or cleaned up again. Diffs the baseline dir's file stems against the live
+# Get-PublicApiCrates set; returns one finding string per orphan naming the file.
+function Get-OrphanBaselineFindings {
+    param([string[]]$LiveCrates)
+    $findings = @()
+    if (-not (Test-Path $publicApiBaselineDir)) { return $findings }
+    $liveSet = [System.Collections.Generic.HashSet[string]]::new([string[]]$LiveCrates)
+    Get-ChildItem -Path $publicApiBaselineDir -Filter '*.txt' -ErrorAction SilentlyContinue | Sort-Object Name | ForEach-Object {
+        $stem = $_.BaseName
+        if (-not $liveSet.Contains($stem)) {
+            $findings += "  ORPHAN baseline $($_.FullName) -- no live crate named `"$stem`" (Get-PublicApiCrates is: $($LiveCrates -join ', ')) -- delete this snapshot, it belongs to a removed contract crate"
+        }
+    }
+    $findings
+}
+
 function Invoke-PublicApiStage {
     $log = Join-Path $verifyDir 'public-api.log'
     '' | Out-File $log
@@ -247,6 +267,15 @@ function Invoke-PublicApiStage {
     }
     $diff = $false
     $toolfail = $false
+    $liveCrates = @(Get-PublicApiCrates)
+    $orphans = Get-OrphanBaselineFindings -LiveCrates $liveCrates
+    if ($orphans) {
+        $diff = $true
+        foreach ($o in $orphans) {
+            Write-Host $o -ForegroundColor Red
+            $o | Out-File -Append $log
+        }
+    }
     foreach ($pkg in (Get-PublicApiCrates)) {
         $snap = Join-Path $publicApiBaselineDir "$pkg.txt"
         $cur = Join-Path $verifyDir "public-api-cur-$pkg.txt"
