@@ -11,6 +11,7 @@
 - ["Didn't-forget" scripts must self-check](didnt-forget-scripts-must-self-check.md) — any script resting on a hand-maintained list must diff it against the real source of truth and die pre-work with a per-entry log of what drifted + the fix (ref: split-proof fleet_preflight)
 - [Historical docs are archives](historical-docs-are-archives.md) — plans, dated reviews, statuses, and summaries preserve history; never call their superseded statements current drift or rewrite them to match HEAD
 - [Commit implementation steps as you go](commit-implementation-steps-as-you-go.md) — after each approved plan step is completed and reviewed, commit it immediately with Conventional Commits instead of accumulating one large rollout commit
+- [asyncevents single-invocation parallelism deadlocks](asyncevents-single-invocation-parallelism-deadlocks.md) — a single `cargo test -p asyncevents -p app` self-deadlocks on the shared plane via a leaked idle-in-tx session; run plane tests --test-threads=1, separated; refines "one test rollout at a time"
 
 - [Rust backend: full port COMPLETE](rust-sketch-split-verified-m1.md) — Go port finished 2026-07-08 (fortress refactor + all modules + infra + tiered verify net); 11-process split-proof + monolith parity live; go-sketch archived as reference
 - [Don't descope transport for simplicity](dont-descope-transport-for-simplicity.md) — never cut gateway/durable-messaging/RPC-codegen to "minimum viable"; it produces per-module hacks + debt, port the full seam in milestone 1
