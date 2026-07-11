@@ -21,9 +21,14 @@
 //!   7. **svc constructs its module** — beyond the Cargo dep, a `cmd/<name>-svc`'s
 //!      `src/lib.rs` must reference the `<module>::` token (heuristic source tripwire),
 //!      proving `modules()` actually constructs the fortress it boots.
+//!   8. **gateway stub coverage** — every domain exposing player-facing HTTP ops (a
+//!      `#[http(` attribute in `api/<name>/api/src/lib.rs`) must have a
+//!      `remote::Stub::new("<name>", …)` in `cmd/gateway-svc/src/lib.rs`, so the gateway
+//!      can dispatch those ops Remote in the split. Extra stubs are fine; a missing one
+//!      is a gap.
 //!
 //! (The above is a curated summary; the numbered rule comments in `main()` are the full
-//! set, currently 1–16 plus the two svc-parity legs of rule 12.)
+//! set, currently 1–17 plus the two svc-parity legs of rule 12.)
 //!
 //! "Own" is defined by path prefix: `modules/<name>/` owns `api/<name>/rpc/`. It also
 //! greps `modules/` for a resurrected `Option<… edge::Server>` — the topology-leak
@@ -98,6 +103,15 @@ const ASYNCEVENTS_SQL_ALLOW: &[&str] = &["append_event(", "ensure_history_contra
 /// patterns, rule docs, unit-test fixtures) — excluded from both bans so the checker
 /// does not flag itself. Path-prefix under the workspace root.
 const BAN_SELF_EXCLUDE: &str = "tools/archcheck";
+
+/// The textual marker in an `api/<name>/api/src/lib.rs` that means "this domain exposes
+/// player-facing HTTP ops" (an `#[http(…)]` attribute on an `#[rpc]` method). This is the
+/// ONLY authoritative signal for HTTP surface: the generated `route_bindings()` exists
+/// even for wire-only crates (e.g. `ratingrpc`), so the attribute — never the glue — is
+/// what rule 17 keys off. The provider/stub name is the DIR name (`api/<name>/api`), not
+/// the crate name: `modules/match`'s crate is `match_module` but its provider name is
+/// `match`, and `api/match/api` yields that directly.
+const HTTP_OP_MARKER: &str = "#[http(";
 
 /// A workspace package's classification, derived from its manifest path.
 #[derive(Debug, Clone)]
@@ -507,8 +521,26 @@ fn main() {
         }
     }
 
+    // --- 17: gateway stub coverage — every #[http( domain is stubbed in gateway-svc ---
+    // A domain that exposes player-facing HTTP ops must be reachable from the front door:
+    // in the split, gateway-svc dispatches those ops Remote through a `remote::Stub` keyed
+    // by the provider name. A domain with `#[http(` in its `api/<name>/api/src/lib.rs` but
+    // no `Stub::new("<name>", …)` in cmd/gateway-svc would 404 through the gateway in the
+    // split while working in the monolith — the classic split-only regression. Extra stubs
+    // (apikeys is stubbed for the API-key capability, not an HTTP domain) are fine; only a
+    // MISSING one is a gap. Textual complement to
+    // `checkmodules::tests::gateway_stubs_every_http_domain`, which builds the real module
+    // list and checks `Module::name()`.
+    let gateway_lib = std::fs::read_to_string(
+        root.join("cmd").join("gateway-svc").join("src").join("lib.rs"),
+    )
+    .unwrap_or_default();
+    for line in gateway_stub_coverage_violations(&http_op_domains(&root.join("api")), &gateway_lib) {
+        violations.push(line);
+    }
+
     if violations.is_empty() {
-        println!("archcheck: OK — no module→module / module→foreign-rpc edges, single front door (only gateway-svc + server host `gateway`), no Option<edge::Server> in modules/, <name>api/<name>events crates stay transport-free, every cmd/*-svc + server lists `metrics`, no cross-schema FKs in modules/ DDL, no inline test modules in modules/, core/bus stays sqlx-free, no module runtime-deps `asyncevents`, no EVENTS_ env knobs read inside modules/, no retired push-plane tokens (EVENTS_*/\"/events\") in workspace source, no schema-qualified asyncevents.<table> access outside the plane, no module queries a foreign module's schema in SQL, every modules/<name> boots as cmd/<name>-svc (and its svc lib.rs constructs it), demos/* imported only by cmd/server, no core/* foundation deps a module or api/ crate");
+        println!("archcheck: OK — no module→module / module→foreign-rpc edges, single front door (only gateway-svc + server host `gateway`), no Option<edge::Server> in modules/, <name>api/<name>events crates stay transport-free, every cmd/*-svc + server lists `metrics`, no cross-schema FKs in modules/ DDL, no inline test modules in modules/, core/bus stays sqlx-free, no module runtime-deps `asyncevents`, no EVENTS_ env knobs read inside modules/, no retired push-plane tokens (EVENTS_*/\"/events\") in workspace source, no schema-qualified asyncevents.<table> access outside the plane, no module queries a foreign module's schema in SQL, every modules/<name> boots as cmd/<name>-svc (and its svc lib.rs constructs it), demos/* imported only by cmd/server, no core/* foundation deps a module or api/ crate, every #[http( domain is stubbed in cmd/gateway-svc");
         return;
     }
     eprintln!("archcheck: FAIL — {} violation(s):", violations.len());
@@ -593,6 +625,63 @@ fn svc_lib_references_module(lib_path: &Path, module: &str) -> bool {
         let t = line.trim_start();
         !t.starts_with("//") && contains_boundary_checked(line, &token)
     })
+}
+
+/// Every domain whose `api/<name>/api/src/lib.rs` declares at least one [`HTTP_OP_MARKER`]
+/// (`#[http(`) on a NON-comment line (boundary-checked, same style as the other grep
+/// tripwires) — i.e. the domain exposes player-facing HTTP ops. The domain name is the
+/// `api/<name>` DIR name, which IS the provider/stub name (see [`HTTP_OP_MARKER`]). A
+/// missing/unreadable lib.rs simply contributes no domain.
+fn http_op_domains(api_root: &Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(api_root) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter(|e| e.path().is_dir())
+        .filter_map(|e| {
+            let domain = e.file_name().to_str().map(String::from)?;
+            let lib = e.path().join("api").join("src").join("lib.rs");
+            let text = std::fs::read_to_string(&lib).ok()?;
+            let has_http = text.lines().any(|line| {
+                let t = line.trim_start();
+                !t.starts_with("//") && contains_boundary_checked(line, HTTP_OP_MARKER)
+            });
+            has_http.then_some(domain)
+        })
+        .collect()
+}
+
+/// True if `gateway_lib` (the text of `cmd/gateway-svc/src/lib.rs`) constructs a
+/// `remote::Stub` whose FIRST argument is the string literal `"<name>"`. rustfmt puts the
+/// stub name on the line AFTER `Stub::new(`, so a flat `contains("Stub::new(\"x\"")` would
+/// miss it — instead each `Stub::new(` site is inspected with leading whitespace (the
+/// newline included) trimmed off before matching the literal.
+fn gateway_stubs_domain(gateway_lib: &str, name: &str) -> bool {
+    let marker = "Stub::new(";
+    let needle = format!("\"{name}\"");
+    find_all(gateway_lib, marker)
+        .into_iter()
+        .any(|i| gateway_lib[i + marker.len()..].trim_start().starts_with(&needle))
+}
+
+/// Rule 17: a violation per `#[http(`-bearing `http_domains` entry that has no
+/// `remote::Stub::new("<name>", …)` in `gateway_lib` (gateway-svc's lib.rs text). Extra
+/// stubs are fine — only a MISSING one is reported. Factored out so it is unit-testable
+/// without a filesystem walk.
+fn gateway_stub_coverage_violations(http_domains: &[String], gateway_lib: &str) -> Vec<String> {
+    http_domains
+        .iter()
+        .filter(|d| !gateway_stubs_domain(gateway_lib, d))
+        .map(|d| {
+            format!(
+                "domain `{d}` exposes HTTP ops (`{HTTP_OP_MARKER}` in api/{d}/api/src/lib.rs) \
+                 but cmd/gateway-svc/src/lib.rs has no `Stub::new(\"{d}\"` — add \
+                 remote::Stub::new(\"{d}\", ...) to cmd/gateway-svc/src/lib.rs so the gateway \
+                 dispatches its player-facing ops Remote in the split"
+            )
+        })
+        .collect()
 }
 
 /// True if a `cmd/<dir>` crate is a process main subject to the "every main lists

@@ -104,3 +104,51 @@ fn each_svc_constructs_its_own_module() {
         );
     }
 }
+
+/// Step 6 (admin-hardening): every domain exposing player-facing HTTP ops (a `#[http(`
+/// attribute in `api/<name>/api/src/lib.rs`) MUST be reachable from the front door -- in
+/// the split, gateway-svc dispatches those ops Remote through a `remote::Stub` keyed by
+/// the provider name. A domain with `#[http(` but no stub in gateway-svc would 404
+/// through the gateway in the split while working in the monolith (the classic split-only
+/// regression). This is the SEMANTIC complement to archcheck's textual rule-17 tripwire:
+/// that one greps gateway-svc's lib.rs for `Stub::new("<name>"`; this one builds
+/// gateway-svc's REAL module list and asserts `Module::name()` (== the provider name a
+/// `remote::Stub` carries) covers every `#[http(`-bearing domain dir. The scan is the same
+/// lower-tech filesystem walk as `monolith_hosts_every_modules_dir`. Checked as a SUBSET
+/// (http domains ⊆ gateway names): extra stubs (apikeys, stubbed for the API-key
+/// capability) are fine -- only a gap fails.
+#[test]
+fn gateway_stubs_every_http_domain() {
+    let gateway_names: BTreeSet<String> = gateway_svc::modules(&checker_wiring(), None)
+        .iter()
+        .map(|m| m.name().to_string())
+        .collect();
+
+    let api_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../api");
+    let http_domains: BTreeSet<String> = std::fs::read_dir(&api_dir)
+        .unwrap_or_else(|e| panic!("failed to read {}: {e}", api_dir.display()))
+        .filter_map(|entry| {
+            let entry = entry.expect("readable dir entry");
+            if !entry.file_type().expect("file type").is_dir() {
+                return None;
+            }
+            let domain = entry.file_name().to_string_lossy().into_owned();
+            let lib = entry.path().join("api").join("src").join("lib.rs");
+            let text = std::fs::read_to_string(&lib).ok()?;
+            let has_http = text.lines().any(|line| {
+                let t = line.trim_start();
+                !t.starts_with("//") && t.contains("#[http(")
+            });
+            has_http.then_some(domain)
+        })
+        .collect();
+
+    let missing: BTreeSet<&String> = http_domains.difference(&gateway_names).collect();
+    assert!(
+        missing.is_empty(),
+        "cmd/gateway-svc's modules() is missing a remote::Stub for {missing:?} from the \
+         #[http(-bearing domains (gateway hosts {gateway_names:?}) -- add \
+         remote::Stub::new(\"<domain>\", ...) to cmd/gateway-svc/src/lib.rs so the gateway \
+         dispatches its player-facing ops Remote in the split"
+    );
+}

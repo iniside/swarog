@@ -791,3 +791,66 @@ fn grep_foreign_schema_sql_flags_code_and_skips_comments_and_tests() {
     assert!(hits[0].contains(":2:"), "flags the code line, not the comment: {hits:?}");
     let _ = std::fs::remove_dir_all(&root);
 }
+
+// --- Rule 17: gateway stub coverage — every #[http( domain stubbed in gateway-svc ---
+
+#[test]
+fn gateway_stubs_domain_matches_multiline_new() {
+    // rustfmt puts the stub name on the line AFTER `Stub::new(` — the check must still
+    // see it across the newline.
+    let text = "Box::new(remote::Stub::new(\n    \"characters\",\n    &peer,\n));";
+    assert!(super::gateway_stubs_domain(text, "characters"));
+    // A different domain is not stubbed, and a prefix isn't a match.
+    assert!(!super::gateway_stubs_domain(text, "inventory"));
+    assert!(!super::gateway_stubs_domain(text, "char"));
+}
+
+#[test]
+fn gateway_stubs_domain_matches_single_line() {
+    let text = "remote::Stub::new(\"match\", &peer, f)";
+    assert!(super::gateway_stubs_domain(text, "match"));
+}
+
+#[test]
+fn missing_gateway_stub_is_a_violation() {
+    // `match` exposes HTTP ops but is not stubbed — one violation naming it + the fix path.
+    let v = super::gateway_stub_coverage_violations(
+        &strings(&["characters", "match"]),
+        "remote::Stub::new(\"characters\", &p, f);",
+    );
+    assert_eq!(v.len(), 1, "{v:?}");
+    assert!(v[0].contains("`match`"), "{v:?}");
+    assert!(v[0].contains("cmd/gateway-svc/src/lib.rs"), "{v:?}");
+}
+
+#[test]
+fn all_http_domains_stubbed_is_clean() {
+    // Extra stubs (apikeys) are fine — only a MISSING http domain is a gap.
+    let text = "Stub::new(\"characters\", ..); Stub::new(\"match\", ..); Stub::new(\"apikeys\", ..);";
+    assert!(
+        super::gateway_stub_coverage_violations(&strings(&["characters", "match"]), text)
+            .is_empty()
+    );
+}
+
+#[test]
+fn http_op_domains_scans_api_dirs_and_skips_comments() {
+    let root = unique_temp_dir();
+    std::fs::create_dir_all(root.join("characters/api/src")).unwrap();
+    std::fs::create_dir_all(root.join("rating/api/src")).unwrap();
+    // characters exposes an #[http( op; rating is wire-only — the ONLY `#[http(` there is
+    // in a comment, which must be skipped.
+    std::fs::write(
+        root.join("characters/api/src/lib.rs"),
+        "#[rpc]\ntrait Characters {\n    #[http(post, \"/create\")]\n    fn create();\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("rating/api/src/lib.rs"),
+        "// wire-only; no #[http( ops here\n#[rpc]\ntrait Mmr { fn get(); }\n",
+    )
+    .unwrap();
+    let domains = super::http_op_domains(&root);
+    assert_eq!(domains, vec!["characters".to_string()], "{domains:?}");
+    let _ = std::fs::remove_dir_all(&root);
+}
