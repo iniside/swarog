@@ -31,7 +31,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, OnceLock, RwLock};
 
 use lifecycle::{Context, Module};
-use sqlx::PgPool;
+use sqlx::{PgConnection, PgPool};
 
 /// Fallback DSN — same default as the shared pool. Test-only now that the module owns
 /// no listener connection (the lazy-pool unit tests never issue a query).
@@ -193,6 +193,20 @@ fn valid_ident(s: &str) -> bool {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
 }
 
+/// Validates a `(namespace, key)` pair (both [`valid_ident`]), returning a descriptive
+/// error naming the offending id. Shared by every write path — [`Service::set`],
+/// [`Service::set_tx`], and the admin `apply_edit` phase-1 validation — so they all
+/// reject the same ids identically.
+fn validate_ident(ns: &str, key: &str) -> anyhow::Result<()> {
+    if !valid_ident(ns) {
+        anyhow::bail!("config: invalid namespace {ns:?} (must match ^[a-z0-9_]+$)");
+    }
+    if !valid_ident(key) {
+        anyhow::bail!("config: invalid key {key:?} (must match ^[a-z0-9_]+$)");
+    }
+    Ok(())
+}
+
 // ============================================================================
 // Service — the "config" capability: a read-mostly cache + a transactional Set.
 // ============================================================================
@@ -220,12 +234,7 @@ impl Service {
     /// touch the cache: the invalidation callback is the single refresh path, so a
     /// service write and an external `psql` edit are handled identically.
     pub async fn set(&self, ns: &str, key: &str, value: &str) -> anyhow::Result<()> {
-        if !valid_ident(ns) {
-            anyhow::bail!("config: invalid namespace {ns:?} (must match ^[a-z0-9_]+$)");
-        }
-        if !valid_ident(key) {
-            anyhow::bail!("config: invalid key {key:?} (must match ^[a-z0-9_]+$)");
-        }
+        validate_ident(ns, key)?;
         sqlx::query(
             "INSERT INTO config.settings (namespace, key, value) VALUES ($1, $2, $3) \
              ON CONFLICT (namespace, key) DO UPDATE SET value = excluded.value, updated_at = now()",
@@ -234,6 +243,32 @@ impl Service {
         .bind(key)
         .bind(value)
         .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// The transactional twin of [`Service::set`]: validates the ids (defense in depth)
+    /// and runs the SAME upsert over a caller-supplied connection, so the admin
+    /// `apply_edit` can batch several settings into ONE transaction that commits (or
+    /// rolls back) as a unit. The `config.settings` AFTER-write trigger is FOR EACH ROW,
+    /// so each upsert still bumps the revision + `pg_notify`s + appends its own durable
+    /// `config.changed` event — all made visible atomically at commit.
+    pub async fn set_tx(
+        &self,
+        conn: &mut PgConnection,
+        ns: &str,
+        key: &str,
+        value: &str,
+    ) -> anyhow::Result<()> {
+        validate_ident(ns, key)?;
+        sqlx::query(
+            "INSERT INTO config.settings (namespace, key, value) VALUES ($1, $2, $3) \
+             ON CONFLICT (namespace, key) DO UPDATE SET value = excluded.value, updated_at = now()",
+        )
+        .bind(ns)
+        .bind(key)
+        .bind(value)
+        .execute(conn)
         .await?;
         Ok(())
     }
@@ -498,19 +533,29 @@ impl adminapi::AdminData for Service {
     }
 }
 
-/// Diffs the posted values against the current cache and `set`s ONLY the keys that
-/// actually changed (each `set` is a NOTIFY + a `config.changed`; rewriting every row
-/// would emit a storm of false "changed" events). It then inserts the add-new row if
-/// its triple is fully filled. Returns the first error.
+/// Applies a posted edit in two phases over ONE cache snapshot (anti-TOCTOU,
+/// all-or-nothing):
+///   - **Phase 1** snapshots the cache once and validates the WHOLE form — every changed
+///     setting plus the `_new_*` triple — building the planned-writes list. It `set`s
+///     ONLY the keys that actually changed (each write is a NOTIFY + a `config.changed`;
+///     rewriting every row would emit a storm of false "changed" events). The first
+///     invalid id returns before any write, so an invalid field can never leave an
+///     earlier valid one committed.
+///   - **Phase 2** opens one transaction, applies exactly the planned settings via
+///     `set_tx`, commits. The settings trigger is FOR EACH ROW, so N writes still emit N
+///     `config.changed` events (with increasing revisions), all made visible atomically
+///     at commit; a store error rolls the whole batch back.
 async fn apply_edit(svc: &Arc<Service>, values: adminapi::Params) -> anyhow::Result<()> {
-    let mut first_err: Option<anyhow::Error> = None;
+    // Phase 1 — validate the whole form against one cache snapshot, building the plan.
+    let mut planned: Vec<(String, String, String)> = Vec::new();
 
     for s in svc.all() {
         if let Some(v) = values.get(&format!("{}:{}", s.namespace, s.key)) {
             if *v != s.value {
-                if let Err(e) = svc.set(&s.namespace, &s.key, v).await {
-                    first_err.get_or_insert(e);
-                }
+                // These ids came from the store, so they are valid; validate defensively
+                // to keep every write path uniform.
+                validate_ident(&s.namespace, &s.key)?;
+                planned.push((s.namespace.clone(), s.key.clone(), v.clone()));
             }
         }
     }
@@ -519,16 +564,17 @@ async fn apply_edit(svc: &Arc<Service>, values: adminapi::Params) -> anyhow::Res
     let key = adminapi::param(&values, "_new_key");
     let val = adminapi::param(&values, "_new_value");
     if !ns.is_empty() && !key.is_empty() && !val.is_empty() {
-        if let Err(e) = svc.set(ns, key, val).await {
-            // set validates the ids
-            first_err.get_or_insert(e);
-        }
+        validate_ident(ns, key)?;
+        planned.push((ns.to_string(), key.to_string(), val.to_string()));
     }
 
-    match first_err {
-        Some(e) => Err(e),
-        None => Ok(()),
+    // Phase 2 — one transaction: apply exactly the planned settings and commit.
+    let mut tx = svc.pool.begin().await?;
+    for (ns, key, value) in planned {
+        svc.set_tx(&mut tx, &ns, &key, &value).await?;
     }
+    tx.commit().await?;
+    Ok(())
 }
 
 // ============================================================================

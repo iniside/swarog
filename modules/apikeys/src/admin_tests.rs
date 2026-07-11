@@ -145,6 +145,43 @@ async fn edge_serves_admin_data() {
     cleanup(&pool, &base).await;
 }
 
+/// Atomicity of a MIXED submit: one call carrying a valid policy edit, an INVALID policy
+/// for another key, AND a valid add-row triple. Phase-1 validation fails on the invalid
+/// policy before ANY write, so the whole form is rejected and the store is left exactly
+/// as it was — no partial commit of the valid edit or the add-row.
+#[tokio::test(flavor = "multi_thread")]
+async fn submit_mixed_valid_and_invalid_is_atomic() {
+    let Some(pool) = test_pool().await else { return };
+    let svc = Arc::new(Service { store: Store { pool: pool.clone() } });
+    let base = unique_name(&pool).await;
+    let x_name = format!("{base}-x");
+    let x_key = format!("{base}-x-key");
+    let y_name = format!("{base}-y");
+    let y_key = format!("{base}-y-key");
+    svc.store.insert(&x_name, &x_key, "accounts.login").await.unwrap();
+    svc.store.insert(&y_name, &y_key, "characters.create").await.unwrap();
+
+    // One submit: VALID policy change for X, INVALID (blank) policy for Y, VALID add-row.
+    let new_name = format!("{base}-new");
+    let new_key = format!("{base}-new-key");
+    let mut edit = adminapi::Params::new();
+    edit.insert(x_name.clone(), "full".into());
+    edit.insert(y_name.clone(), "   ".into());
+    edit.insert("_new_name".into(), new_name.clone());
+    edit.insert("_new_key".into(), new_key.clone());
+    edit.insert("_new_policy".into(), "leaderboard.topScores".into());
+
+    let err = apply_edit(&svc, edit).await.unwrap_err();
+    assert!(err.to_string().contains("invalid policy"), "got: {err}");
+
+    // Nothing committed: X and Y policies unchanged, no new row inserted.
+    assert_eq!(svc.store.lookup(&x_key).await.unwrap().unwrap().policy, "accounts.login");
+    assert_eq!(svc.store.lookup(&y_key).await.unwrap().unwrap().policy, "characters.create");
+    assert_eq!(svc.store.lookup(&new_key).await.unwrap(), None, "add-row must not have committed");
+
+    cleanup(&pool, &base).await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn submit_rejects_invalid_policy_without_writing() {
     let Some(pool) = test_pool().await else { return };

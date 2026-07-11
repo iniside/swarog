@@ -173,29 +173,40 @@ pub(crate) fn admin_render(
     })
 }
 
-/// Applies a posted edit, first-error-wins (config's `apply_edit` pattern):
-///   1. diff each posted policy against the current row — `set_policy` ONLY on a change,
-///   2. insert the add-row triple when `_new_name`/`_new_key`/`_new_policy` are all set,
-///   3. revoke the key named in `_revoke_name` when non-empty.
-///
-/// Policies are validated loosely ([`valid_policy`]) before any write.
-pub(crate) async fn apply_edit(svc: &Service, values: adminapi::Params) -> anyhow::Result<()> {
-    let mut first_err: Option<anyhow::Error> = None;
+/// One write the posted form plans against a single snapshot — executed together in
+/// phase 2's transaction so the whole form lands atomically.
+enum PlannedWrite {
+    SetPolicy { name: String, policy: String },
+    Insert { name: String, key: String, policy: String },
+    Revoke { name: String },
+}
 
-    // (1) policy edits — only touch keys whose posted value differs from the store.
-    for r in svc.store.list().await? {
+/// Applies a posted edit in two phases over ONE snapshot (anti-TOCTOU, all-or-nothing):
+///   - **Phase 1** reads the store once and validates the WHOLE form — every changed
+///     policy plus the `_new_*` triple — building the planned-writes list. The first
+///     validation error returns before any write, so an invalid field can never leave an
+///     earlier valid one committed.
+///   - **Phase 2** opens one transaction, executes exactly the planned writes, commits.
+///     A store error rolls the whole batch back, leaving the store untouched.
+///
+/// The plan is: (1) `set_policy` for each posted policy differing from the snapshot,
+/// (2) `insert` the add-row triple when `_new_name`/`_new_key`/`_new_policy` are all set,
+/// (3) `revoke` the key named in `_revoke_name` when non-empty. Policies are validated
+/// loosely ([`valid_policy`]) in phase 1.
+pub(crate) async fn apply_edit(svc: &Service, values: adminapi::Params) -> anyhow::Result<()> {
+    // Phase 1 — validate the whole form against one snapshot, building the plan.
+    let rows = svc.store.list().await?;
+    let mut planned: Vec<PlannedWrite> = Vec::new();
+
+    // (1) policy edits — only keys whose posted value differs from the snapshot.
+    for r in &rows {
         if let Some(v) = values.get(&r.name) {
             if *v != r.policy {
-                match check_policy(v) {
-                    Err(e) => {
-                        first_err.get_or_insert(e);
-                    }
-                    Ok(()) => {
-                        if let Err(e) = svc.store.set_policy(&r.name, v).await {
-                            first_err.get_or_insert(e.into());
-                        }
-                    }
-                }
+                check_policy(v)?;
+                planned.push(PlannedWrite::SetPolicy {
+                    name: r.name.clone(),
+                    policy: v.clone(),
+                });
             }
         }
     }
@@ -205,30 +216,39 @@ pub(crate) async fn apply_edit(svc: &Service, values: adminapi::Params) -> anyho
     let new_key = adminapi::param(&values, "_new_key");
     let new_policy = adminapi::param(&values, "_new_policy");
     if !new_name.is_empty() && !new_key.is_empty() && !new_policy.is_empty() {
-        match check_policy(new_policy) {
-            Err(e) => {
-                first_err.get_or_insert(e);
-            }
-            Ok(()) => {
-                if let Err(e) = svc.store.insert(new_name, new_key, new_policy).await {
-                    first_err.get_or_insert(e.into());
-                }
-            }
-        }
+        check_policy(new_policy)?;
+        planned.push(PlannedWrite::Insert {
+            name: new_name.to_string(),
+            key: new_key.to_string(),
+            policy: new_policy.to_string(),
+        });
     }
 
-    // (3) revoke by name.
+    // (3) revoke by name (a missing name is a no-op at the store — no validation surface).
     let revoke_name = adminapi::param(&values, "_revoke_name");
     if !revoke_name.is_empty() {
-        if let Err(e) = svc.store.revoke(revoke_name).await {
-            first_err.get_or_insert(e.into());
-        }
+        planned.push(PlannedWrite::Revoke {
+            name: revoke_name.to_string(),
+        });
     }
 
-    match first_err {
-        Some(e) => Err(e),
-        None => Ok(()),
+    // Phase 2 — one transaction: execute exactly the planned writes and commit.
+    let mut tx = svc.store.pool.begin().await?;
+    for write in planned {
+        match write {
+            PlannedWrite::SetPolicy { name, policy } => {
+                svc.store.set_policy_tx(&mut tx, &name, &policy).await?;
+            }
+            PlannedWrite::Insert { name, key, policy } => {
+                svc.store.insert_tx(&mut tx, &name, &key, &policy).await?;
+            }
+            PlannedWrite::Revoke { name } => {
+                svc.store.revoke_tx(&mut tx, &name).await?;
+            }
+        }
     }
+    tx.commit().await?;
+    Ok(())
 }
 
 #[async_trait::async_trait]

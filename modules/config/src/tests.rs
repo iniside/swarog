@@ -482,6 +482,89 @@ async fn admin_apply_edit_inserts_new_triple() {
     cleanup(&pool, &ns).await;
 }
 
+/// Atomicity of a MIXED admin submit: one call carrying a valid change to an existing
+/// setting AND an invalid `_new_*` namespace. Phase-1 validation fails before any write,
+/// so the store is untouched — the valid change does NOT sneak through and NO durable
+/// `config.changed` event is appended.
+#[tokio::test]
+async fn admin_apply_edit_mixed_is_atomic() {
+    let Some(pool) = test_pool().await else { return };
+    let ns = unique_ns(&pool).await;
+    let svc = Arc::new(Service::new(pool.clone()));
+
+    // Seed one existing setting and load it into the cache (apply_edit diffs the cache).
+    svc.set(&ns, "existing", "old").await.unwrap();
+    svc.refresh().await.unwrap();
+    let base_events = changed_event_count(&pool, &ns).await; // 1 — the seed insert.
+
+    // One submit: a VALID change to `existing` + an INVALID new-row namespace (not
+    // ^[a-z0-9_]+$). Phase-1 validation rejects the whole form before any write.
+    let mut values = adminapi::Params::new();
+    values.insert(format!("{ns}:existing"), "new".into());
+    values.insert("_new_namespace".into(), "Bad NS".into());
+    values.insert("_new_key".into(), "k".into());
+    values.insert("_new_value".into(), "v".into());
+    let err = apply_edit(&svc, values).await.unwrap_err();
+    assert!(err.to_string().contains("invalid namespace"), "got: {err}");
+
+    // Nothing committed: `existing` is unchanged and no new event was appended.
+    let (_rev, settings) = svc.load_snapshot().await.unwrap();
+    let existing = settings
+        .iter()
+        .find(|s| s.namespace == ns && s.key == "existing")
+        .expect("existing setting present");
+    assert_eq!(existing.value, "old", "the valid change must not have committed");
+    assert_eq!(
+        changed_event_count(&pool, &ns).await,
+        base_events,
+        "a rejected form must append no events"
+    );
+
+    cleanup(&pool, &ns).await;
+}
+
+/// A successful batch of two changed settings in ONE submit lands both values and, since
+/// the settings trigger is FOR EACH ROW, emits exactly two `config.changed` events —
+/// committed atomically at the transaction boundary.
+#[tokio::test]
+async fn admin_apply_edit_batch_emits_one_event_per_change() {
+    let Some(pool) = test_pool().await else { return };
+    let ns = unique_ns(&pool).await;
+    let svc = Arc::new(Service::new(pool.clone()));
+
+    // Two existing settings loaded into the cache.
+    svc.set(&ns, "a", "1").await.unwrap();
+    svc.set(&ns, "b", "1").await.unwrap();
+    svc.refresh().await.unwrap();
+    let base_events = changed_event_count(&pool, &ns).await; // 2 — the seed inserts.
+
+    // One submit changing BOTH values.
+    let mut values = adminapi::Params::new();
+    values.insert(format!("{ns}:a"), "2".into());
+    values.insert(format!("{ns}:b"), "2".into());
+    apply_edit(&svc, values).await.unwrap();
+
+    // Both landed, and the batch emitted exactly two more events.
+    let (_rev, settings) = svc.load_snapshot().await.unwrap();
+    let val = |k: &str| {
+        settings
+            .iter()
+            .find(|s| s.namespace == ns && s.key == k)
+            .unwrap()
+            .value
+            .clone()
+    };
+    assert_eq!(val("a"), "2");
+    assert_eq!(val("b"), "2");
+    assert_eq!(
+        changed_event_count(&pool, &ns).await - base_events,
+        2,
+        "a two-setting batch must emit exactly two config.changed events"
+    );
+
+    cleanup(&pool, &ns).await;
+}
+
 /// Step 8 carry-over: `Module::migrate` seeds `config.changed`'s row in
 /// `asyncevents.history_contracts`. The write trigger emits via the plane-owned
 /// `asyncevents.append_event` SQL function directly, bypassing both Rust seed paths
