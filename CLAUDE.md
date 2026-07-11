@@ -176,14 +176,26 @@ module never knows the topology.
   in one statement. Local `Service` and remote `CachedConfig` (via `configrpc`)
   are invalidation callbacks (atomic map swap, apply only newer revisions);
   `CachedConfig` keeps boot-fill-or-fail-startup.
-- **admin** — GameOps portal at `/admin` (minijinja over the embedded Go-era theme;
-  `ADMIN_USER`/`ADMIN_PASS` Basic auth — required: an empty `ADMIN_USER` FAILS STARTUP
-  unless `ADMIN_OPEN=1` is explicitly set (deliberately open local portal, loud warn)).
-  Renders contributed
-  `adminapi::Item`s; remote items fan out over QUIC via `admin.adminData`
-  (`adminrpc::admin_remote_factory`). Remote forms are read-only.
+- **admin** — GameOps portal at `/admin` (minijinja over the embedded Go-era theme).
+  **Session auth** (owns schema `admin`: users/sessions/login_attempts): argon2id
+  passwords, opaque token + per-session CSRF in an `HttpOnly`/`SameSite=Strict`/
+  `Path=/admin` cookie (`Secure` unless `ADMIN_COOKIE_SECURE=0` — dev opt-out, loud
+  warn), 12h TTL; asymmetric lockout (user locks at 5 fails, IP at 20,
+  `least(2^fails,900)s` backoff, trusted-proxy client IP via `TRUSTED_PROXY_CIDRS`);
+  one generic 401 for wrong-pass/unknown-user/locked (no username oracle); CSRF
+  checked BEFORE the local/remote editability decision; security headers on the
+  admin router only. Admin users are created by **`cargo run -p adminctl`**
+  (`create-user` upsert = also password reset, `--password-stdin`/`ADMINCTL_PASSWORD`,
+  never argv) wrapped by **`./install.sh` / `install.ps1`**; zero-user boot warns
+  instead of failing; `ADMIN_OPEN=1` bypasses sessions AND CSRF (deliberately open
+  local portal, loud warn). `ADMIN_USER`/`ADMIN_PASS` no longer exist. Emits durable
+  `admin.action` (login-succeeded/login-locked/logout — local in BOTH topologies —
+  plus form-submit where the form's module is co-hosted; field names only, never
+  values). Renders contributed `adminapi::Item`s; remote items fan out over QUIC via
+  `admin.adminData` (`adminrpc::admin_remote_factory`). Remote forms are read-only.
+  admin-svc has a DB (schema `admin` + the durable plane) — no longer planeless.
 - **audit** — append-only ledger (`audit.log`), zero-coupling raw durable sinks for
-  all 6 topics — six independent subscriptions (`audit.<topic-kebab>.v1`), each
+  all 7 topics — seven independent subscriptions (`audit.<topic-kebab>.v1`), each
   with its own checkpoint — prune reacting to `scheduler.fired{audit-prune}`
   (`AUDIT_RETENTION_DAYS`, default 30).
 - **scheduler** — data-driven schedules (`scheduler.schedules`), 1s tick, per-name
@@ -214,7 +226,12 @@ module never knows the topology.
   player-QUIC plane (bearer-in-envelope, exact-method allow-list), HTTP passthrough
   (`/admin`, `/accounts/epic` → origins passed in by `cmd/gateway-svc` via
   `Gateway::with_passthrough`, env read in the main, not the module), always-on
-  rate limit in gateway-svc (20 rps/burst 40). The FrontDoor is hosted ONLY by the front
+  rate limit in gateway-svc (20 rps/burst 40), and **native TLS termination**
+  (mechanism in `core/app` — `Config::with_tls(TlsFront::Files|Acme)`; env parsed
+  ONLY in `cmd/gateway-svc` main: `TLS_MODE=off|files|acme` (default off),
+  `TLS_CERT_PATH`+`TLS_KEY_PATH`, `ACME_DOMAINS`/`ACME_CONTACT`/`ACME_CACHE_DIR`;
+  rustls-acme TLS-ALPN-01 auto-renew, ring-pinned — `aws-lc-rs` must never enter
+  the tree). The FrontDoor is hosted ONLY by the front
   processes (`cmd/gateway-svc`, the monolith `cmd/server`); a domain svc NEVER hosts it —
   it serves ops over the internal mTLS edge and gateway-svc dispatches Remote. Enforced by
   `archcheck` (only gateway-svc + server may depend on the `gateway` crate).
@@ -232,6 +249,8 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo run -p archcheck          # fortress dependency law + plane tripwires
 cargo run -p topiccheck         # profile-aware subscription graph validation
 cargo run -p eventctl -- list   # operator CLI: lag/retry/pause/resume/skip/retire
+cargo run -p adminctl -- list   # operator CLI: admin users (create-user/list/delete)
+./install.sh <username>         # create/reset an admin portal user (no-echo prompt)
 ./verify.sh                     # the safety net (there is no CI — this IS it)
 ./split-proof.sh                # live 12-process split + monolith parity proof
 ./run.sh                        # mint dev CA + boot the split locally
@@ -280,19 +299,22 @@ apikeys :8091/:9009 — and asserts named
 scenarios (register/login → real bearer, authz negatives, allow-list, cross-process
 starter-grant + DB-verified wipe, config live-reload, audit rows, scheduler
 exactly-once, leaderboard accumulation, 429 rate-limit, api-key policy
-[K1-K5]: 401 no/bad key, 403 client-key on match.report, 202 server-key, remote
-admin page), then re-runs the monolith
+[K1-K4]: 401 no/bad key, 403 client-key on match.report, 202 server-key; admin
+session auth [AD1-AD5]: login redirect, asymmetric lockout via DB rows, session
+cookie + remote admin page, CSRF 403, durable admin.action; monolith-parity
+[M3/M3b] incl. a real form-submit emit), then re-runs the monolith
 on the same player front for parity. **psql is REQUIRED** (the script dies at
 startup without it — DB assertions are mandatory, no HTTP fallbacks) and the SQL
 helper follows `DATABASE_URL`, same as the services. Extend it with a named
 assertion whenever you add a module or cross-process flow. **Never ship a
 monolith-only feature** — both topologies are supported compilation paths.
 
-Smoke test (monolith or through gateway-svc). The dev conveniences are now explicit
-opt-ins (fail-closed defaults), so the monolith needs `APIKEYS_DEV_SEED=1` (dev API
-keys below), `ACCOUNTS_DEV_AUTH=1` + `INVENTORY_DEV_GRANT=1` (register/login + IAP
-grant), and `ADMIN_USER`/`ADMIN_PASS` (or `ADMIN_OPEN=1`) so the admin module boots —
-`./run.sh` / `./run.ps1` set all of these for you:
+Smoke test (monolith or through gateway-svc). The dev conveniences are explicit
+opt-ins/opt-outs (fail-closed defaults), so the monolith needs `APIKEYS_DEV_SEED=1`
+(dev API keys below), `ACCOUNTS_DEV_AUTH=1` + `INVENTORY_DEV_GRANT=1`
+(register/login + IAP grant), `ADMIN_COOKIE_SECURE=0` (session cookie over plain
+http) and a seeded admin user (`adminctl create-user`) — `./run.sh` / `./run.ps1`
+set/seed all of these for you (dev portal creds `admin`/`admin`):
 ```
 curl -X POST localhost:8080/match/report -H "X-Api-Key: dev-key-server" -d '{"Winner":"alice","Loser":"bob"}'
 curl localhost:8080/leaderboard -H "X-Api-Key: dev-key-client"
