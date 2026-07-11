@@ -26,7 +26,14 @@ Three seams carry all extensibility; almost everything else follows from them:
    Generated RPC operations default to `opsapi::RetryMode::Never`. Only a
    read/idempotent contract method explicitly marked `#[retry_safe]` gets one replay
    after reconnect (`RetryMode::OnceAfterReconnect`); mutating methods remain
-   fail-closed unless their contract supplies its own idempotency semantics.
+   fail-closed unless their contract supplies its own idempotency semantics. An
+   internal-edge method-name mismatch is a typed `edge::Error::UnknownMethod`
+   mapped to `opsapi::Error::Status::NotFound` (non-retryable) — a deliberate
+   choice that a gateway→svc unknown-method surfaces front-visibly the same as
+   a domain-level 404. Each internal stream's request read and response-write
+   half are independently bounded by `EDGE_STREAM_GRACE` (30s) so a peer stuck
+   at the application level can't leak the stream task/slot past the (higher)
+   connection idle timeout; the handler dispatch in between stays unbounded.
 3. **Event bus** (`ctx.bus()`) — the async glue. Each publishing domain owns
    `api/<name>/<name>events` declaring versioned contracts via
    `bus::define(topic, version, HistoryPolicy)`. **Every cross-module event is
@@ -105,8 +112,10 @@ module never knows the topology.
    order). Both planes' ordering is structural in `app::run`: transport +
    invalidation handle injected at `Context` construction, plane schema migrates
    before any module migrates, planes start after modules start (invalidation
-   completes every callback's first refresh or startup fails), delivery halts
-   before any module stops, and BOTH QUIC planes drain in-flight handlers before
+   completes every callback's first refresh BEFORE durable delivery starts — a
+   durable handler must never read a cold replica-local cache — or startup
+   fails), delivery halts before any module stops, and BOTH QUIC planes drain
+   in-flight handlers before
    modules stop (`RunningServer::shutdown`, `EDGE_DRAIN_GRACE_MS` default 5000 —
    read in `core/app`, never in modules), and the HTTP graceful drain is itself
    time-bounded (`HTTP_DRAIN_GRACE_MS` default 5000 — read in `core/app`, never in
@@ -120,7 +129,14 @@ module never knows the topology.
    fail startup) bounds each cooperative handler; plane stop has a 5s global grace,
    terminates still-active dedicated Postgres delivery backends, then aborts tasks.
    A Tokio timeout cannot preempt handler code that synchronously CPU-spins without
-   yielding, so handlers must remain async-cooperative.
+   yielding, so handlers must remain async-cooperative. `/readyz` flips not only
+   when a worker task died but also when delivery has gone STALE (no healthy
+   pass completed in 30s — e.g. a worker alive but looping on connection
+   errors), and each worker's own delivery session carries an
+   `idle_in_transaction_session_timeout` (2x the handler timeout) as a belt
+   against that worker leaking its OWN open transaction — it does not cover a
+   rogue idle-in-tx session elsewhere in the cluster (see
+   `docs/reference/event-plane-ops.md`).
 9. Events are typed at the seam: declare with `bus::define`, publish/subscribe via
    `emit_tx`/`on_tx`. `on_tx_raw` (untyped JSON) is for deliberately zero-coupling
    sinks (audit) only.
@@ -182,10 +198,13 @@ module never knows the topology.
 - **config** — DB-backed knobs with a monotonic `config.revision`. A row trigger
   (INSERT/UPDATE/DELETE) increments the revision, NOTIFYs `config_changed`, and
   appends durable `config.changed` via `asyncevents.append_event` — a raw psql
-  write emits identically to a service write. Snapshot = `{revision, settings}`
-  in one statement. Local `Service` and remote `CachedConfig` (via `configrpc`)
-  are invalidation callbacks (atomic map swap, apply only newer revisions);
-  `CachedConfig` keeps boot-fill-or-fail-startup.
+  write emits identically to a service write. The NOTIFY payload is value-less
+  (`namespace`/`key`/`operation`/`revision` only — `pg_notify` hard-caps at 8000
+  bytes and the invalidation callback re-reads the whole snapshot anyway); the
+  durable `config.changed` event still carries the full `value`. Snapshot =
+  `{revision, settings}` in one statement. Local `Service` and remote
+  `CachedConfig` (via `configrpc`) are invalidation callbacks (atomic map swap,
+  apply only newer revisions); `CachedConfig` keeps boot-fill-or-fail-startup.
 - **admin** — GameOps portal at `/admin` (minijinja over the embedded Go-era theme).
   **Session auth** (owns schema `admin`: users/sessions/login_attempts): argon2id
   passwords, opaque token + per-session CSRF in an `HttpOnly`/`SameSite=Strict`/
@@ -196,7 +215,10 @@ module never knows the topology.
   checked BEFORE the local/remote editability decision; security headers on the
   admin router only. Login admission is bounded at 32 concurrent requests and
   5 rps/burst 20 per resolved client IP; Argon2 runs in `spawn_blocking` behind
-  2 permits. Username input is capped at 128 bytes, password input at 1024 bytes,
+  2 permits, owned BY the blocking closure (not the async handler frame) so a
+  cancelled request can't release its permit while the hash keeps running
+  detached — login admission (`login_slots`/`IpLimiter`) still releases on
+  cancel by design. Username input is capped at 128 bytes, password input at 1024 bytes,
   and stale unlocked `login_attempts` rows older than 24h are deleted in batches
   of 256. The `admin_login_attempts_updated_idx` addition rolls out by `DROP SCHEMA
   admin CASCADE`, fresh boot, then user reseed with `adminctl` — no data migration,
@@ -233,8 +255,11 @@ module never knows the topology.
   trust model), policy = `full` or comma-separated wire-method list. Provides
   `apikeysapi::Keys` (`apikeys.keys`); the gateway REQUIRES an `X-Api-Key` header
   (HTTP) / `api_key` envelope field (player-QUIC) on every op-dispatched request
-  and enforces the key's policy post-match (401 missing/invalid, 403 denied),
-  behind a 5s TTL cache (never caches infra errors). Non-goals: `/healthz`,
+  and enforces the key's policy post-match (401 missing/invalid, 403 denied;
+  503 — distinct from 401 — when the verifier itself is load-shedding, e.g. a
+  store blip or the flight-table saturated, so an uncached-but-valid key is
+  never reported as invalid), behind a 5s TTL cache (never caches infra
+  errors). Non-goals: `/healthz`,
   `/metrics`, passthroughs stay keyless. Dev keys `dev-key-client`
   (player-facing list, NO `match.report`) + `dev-key-server` (`full`) seed ONLY
   when `APIKEYS_DEV_SEED` is explicitly truthy (self-healing upsert); a gateway
@@ -258,7 +283,11 @@ module never knows the topology.
   Player QUIC request buckets use `PLAYER_RATE_LIMIT_RPS` (default 20),
   `PLAYER_RATE_LIMIT_BURST` (40), `PLAYER_CONN_RATE_LIMIT_RPS` (10), and
   `PLAYER_CONN_RATE_LIMIT_BURST` (20): the first pair limits a source IP across
-  reconnects and the second limits each persistent connection.
+  reconnects and the second limits each persistent connection. Admission
+  itself is gated on a validated source address: an unvalidated `Incoming`
+  gets a stateless QUIC Retry and reserves no connection slot, so an off-path
+  source-spoof flood can't exhaust the admission budget — a slot is taken only
+  once the dial re-arrives with the Retry token echoed back.
 
 Not a module: **`demos/webui`** — dev demo SPA at `/` exercising the accounts flow
 from a browser. Non-shipping, monolith-only (registered in `cmd/server` only;
