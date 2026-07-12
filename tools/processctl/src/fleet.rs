@@ -40,6 +40,48 @@ pub struct ServiceSpec {
     pub player_port: Option<u16>,
     pub dependencies: Vec<&'static str>,
     pub env: BTreeMap<String, String>,
+    /// Application settings that may be overridden from the single inherited
+    /// environment snapshot. Topology wiring and bind addresses are never listed.
+    pub overrideable_env: &'static [&'static str],
+}
+
+#[derive(Clone, Debug)]
+pub struct EnvironmentSnapshot {
+    inherited: BTreeMap<String, String>,
+}
+
+impl EnvironmentSnapshot {
+    pub fn capture() -> Self {
+        Self { inherited: std::env::vars().collect() }
+    }
+
+    /// Constructs a deterministic snapshot, primarily for tooling tests.
+    pub fn from_values(values: impl IntoIterator<Item = (String, String)>) -> Self {
+        Self { inherited: values.into_iter().collect() }
+    }
+
+    pub fn value(&self, key: &str) -> Option<&str> {
+        self.inherited.get(key).map(String::as_str)
+    }
+
+    pub fn build_environment(&self) -> BTreeMap<String, String> {
+        let mut env = self.filtered(BUILD_ENV_ALLOWLIST);
+        // LIB and INCLUDE are synthesized from the locally discovered toolchain.
+        // They are not inherited authorities and therefore are not allowlist entries.
+        #[cfg(windows)]
+        append_msvc_linker_path(&mut env);
+        env
+    }
+
+    pub fn runtime_environment(&self) -> BTreeMap<String, String> {
+        self.filtered(SERVICE_ENV_ALLOWLIST)
+    }
+
+    fn filtered(&self, allowlist: &[&str]) -> BTreeMap<String, String> {
+        allowlist.iter().filter_map(|key| {
+            self.inherited.get(*key).cloned().map(|value| ((*key).to_string(), value))
+        }).collect()
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -174,21 +216,11 @@ impl FleetSpec {
 }
 
 pub fn build_environment() -> BTreeMap<String, String> {
-    let mut env = inherited_environment(BUILD_ENV_ALLOWLIST);
-    #[cfg(windows)]
-    append_msvc_linker_path(&mut env);
-    env
+    EnvironmentSnapshot::capture().build_environment()
 }
 
 pub fn runtime_environment() -> BTreeMap<String, String> {
-    inherited_environment(SERVICE_ENV_ALLOWLIST)
-}
-
-fn inherited_environment(allowlist: &[&str]) -> BTreeMap<String, String> {
-    allowlist
-        .iter()
-        .filter_map(|key| std::env::var(key).ok().map(|value| ((*key).to_string(), value)))
-        .collect()
+    EnvironmentSnapshot::capture().runtime_environment()
 }
 
 #[cfg(windows)]
@@ -278,11 +310,19 @@ fn newest_directory(parent: &Path) -> Option<OsString> {
 }
 
 pub fn game_backend_fleet(inputs: &FleetInputs, flavor: FleetFlavor) -> FleetSpec {
+    game_backend_fleet_with_environment(inputs, flavor, &EnvironmentSnapshot::capture())
+}
+
+pub fn game_backend_fleet_with_environment(
+    inputs: &FleetInputs,
+    flavor: FleetFlavor,
+    environment: &EnvironmentSnapshot,
+) -> FleetSpec {
     let db = inputs.database_url.clone();
     let cert = inputs.edge_ca_cert.display().to_string();
     let key = inputs.edge_ca_key.display().to_string();
     let base = || {
-        let mut env = runtime_environment();
+        let mut env = environment.runtime_environment();
         env.insert("DATABASE_URL".into(), db.clone());
         env.insert("EDGE_CA_CERT".into(), cert.clone());
         env.insert("EDGE_CA_KEY".into(), key.clone());
@@ -302,6 +342,7 @@ pub fn game_backend_fleet(inputs: &FleetInputs, flavor: FleetFlavor) -> FleetSpe
             player_port: None,
             dependencies,
             env,
+            overrideable_env: &[],
         }
     };
     let peer = |env: &mut BTreeMap<String, String>, key: &str, port: u16| {
@@ -327,7 +368,7 @@ pub fn game_backend_fleet(inputs: &FleetInputs, flavor: FleetFlavor) -> FleetSpe
     peer(&mut inventory.env, "CHARACTERS", 9000);
     peer(&mut inventory.env, "CONFIG", 9002);
 
-    let mut gateway_env = runtime_environment();
+    let mut gateway_env = environment.runtime_environment();
     gateway_env.insert("EDGE_CA_CERT".into(), cert.clone());
     gateway_env.insert("EDGE_CA_KEY".into(), key.clone());
     gateway_env.insert("PORT".into(), ":8082".into());
@@ -356,6 +397,7 @@ pub fn game_backend_fleet(inputs: &FleetInputs, flavor: FleetFlavor) -> FleetSpe
             "leaderboard-svc", "apikeys-svc",
         ],
         env: gateway_env,
+        overrideable_env: &[],
     };
 
     let mut admin = service(
@@ -383,13 +425,25 @@ pub fn game_backend_fleet(inputs: &FleetInputs, flavor: FleetFlavor) -> FleetSpe
         .env
         .insert("TRUSTED_PROXY_CIDRS".into(), "127.0.0.1/32".into());
 
-    match flavor {
-        FleetFlavor::Development => {
-            accounts.env.insert("ACCOUNTS_DEV_AUTH".into(), "1".into());
-            apikeys.env.insert("APIKEYS_DEV_SEED".into(), "1".into());
-            inventory.env.insert("INVENTORY_DEV_GRANT".into(), "1".into());
+    accounts.overrideable_env = &["ACCOUNTS_DEV_AUTH"];
+    apikeys.overrideable_env = &["APIKEYS_DEV_SEED"];
+    scheduler.overrideable_env = &["SCHEDULER_ENABLED"];
+    inventory.overrideable_env = &["INVENTORY_DEV_GRANT"];
+    admin.overrideable_env = &["ADMIN_COOKIE_SECURE", "TRUSTED_PROXY_CIDRS"];
+
+    accounts.env.insert("ACCOUNTS_DEV_AUTH".into(), "1".into());
+    apikeys.env.insert("APIKEYS_DEV_SEED".into(), "1".into());
+    inventory.env.insert("INVENTORY_DEV_GRANT".into(), "1".into());
+
+    for service in [&mut accounts, &mut apikeys, &mut scheduler, &mut inventory, &mut admin] {
+        for key in service.overrideable_env {
+            if let Some(value) = environment.value(key) {
+                service.env.insert((*key).to_string(), value.to_string());
+            }
         }
-        FleetFlavor::Proof => {
+    }
+
+    if flavor == FleetFlavor::Proof {
             accounts.env.insert("ACCOUNTS_DEV_AUTH".into(), "1".into());
             accounts.env.insert("EPIC_CLIENT_ID".into(), "test".into());
             accounts.env.insert("EPIC_CLIENT_SECRET".into(), "test".into());
@@ -399,7 +453,6 @@ pub fn game_backend_fleet(inputs: &FleetInputs, flavor: FleetFlavor) -> FleetSpe
             apikeys.env.insert("APIKEYS_DEV_SEED".into(), "1".into());
             scheduler.env.insert("SCHEDULER_ENABLED".into(), "1".into());
             inventory.env.insert("INVENTORY_DEV_GRANT".into(), "1".into());
-        }
     }
 
     FleetSpec::new(vec![
@@ -407,4 +460,45 @@ pub fn game_backend_fleet(inputs: &FleetInputs, flavor: FleetFlavor) -> FleetSpe
         inventory, gateway, admin,
     ])
     .expect("the built-in game backend fleet is internally valid")
+}
+
+pub fn game_backend_monolith(
+    inputs: &FleetInputs,
+    flavor: FleetFlavor,
+    environment: &EnvironmentSnapshot,
+) -> ServiceSpec {
+    let mut env = environment.runtime_environment();
+    for (key, value) in [
+        ("PORT", ":8080".into()),
+        ("DATABASE_URL", inputs.database_url.clone()),
+        ("PLAYER_EDGE_ADDR", ":9100".into()),
+        ("EDGE_CA_CERT", inputs.edge_ca_cert.display().to_string()),
+        ("EDGE_CA_KEY", inputs.edge_ca_key.display().to_string()),
+        ("APIKEYS_DEV_SEED", "1".into()),
+        ("ACCOUNTS_DEV_AUTH", "1".into()),
+        ("INVENTORY_DEV_GRANT", "1".into()),
+        ("TLS_MODE", "off".into()),
+        ("ADMIN_COOKIE_SECURE", "0".into()),
+        ("TRUSTED_PROXY_CIDRS", "127.0.0.1/32".into()),
+    ] { env.insert(key.into(), value); }
+    let overrideable_env = &[
+        "APIKEYS_DEV_SEED", "ACCOUNTS_DEV_AUTH", "INVENTORY_DEV_GRANT",
+        "ADMIN_COOKIE_SECURE", "TRUSTED_PROXY_CIDRS",
+    ];
+    for key in overrideable_env {
+        if let Some(value) = environment.value(key) {
+            env.insert((*key).to_string(), value.to_string());
+        }
+    }
+    if flavor == FleetFlavor::Proof {
+        // Proof-only overlay is intentionally last and cannot be weakened by ambient state.
+        env.insert("ACCOUNTS_DEV_AUTH".into(), "1".into());
+        env.insert("APIKEYS_DEV_SEED".into(), "1".into());
+        env.insert("INVENTORY_DEV_GRANT".into(), "1".into());
+    }
+    ServiceSpec {
+        name: "monolith", executable_package: "server", http_port: 8080,
+        edge_port: None, player_port: Some(9100), dependencies: vec![], env,
+        overrideable_env,
+    }
 }

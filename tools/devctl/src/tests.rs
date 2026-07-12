@@ -1,8 +1,7 @@
 use super::cli::{parse, Command, Topology};
 use super::control::{self, ControlServer};
 use super::supervisor::service_specs;
-use processctl::{observe_process_identity, FleetState};
-use std::collections::BTreeMap;
+use processctl::{observe_process_identity, EnvironmentSnapshot, FleetState};
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
@@ -14,38 +13,27 @@ fn up_defaults_to_monolith_and_switches_topology() {
         parse(["up".into()]).unwrap(),
         Command::Up {
             topology: Topology::Monolith,
-            skip_build: false,
-            overrides: vec![]
+            skip_build: false
         }
     );
     assert_eq!(
         parse(["up".into(), "split".into(), "--skip-build".into()]).unwrap(),
         Command::Up {
             topology: Topology::Split,
-            skip_build: true,
-            overrides: vec![]
+            skip_build: true
         }
     );
 }
 
 #[test]
-fn override_is_structured_without_rendering_its_value() {
-    let command = parse([
+fn secret_capable_cli_environment_overrides_are_rejected() {
+    let error = parse([
         "up".into(),
         "--env".into(),
         "DATABASE_URL=postgres://secret".into(),
     ])
-    .unwrap();
-    match command {
-        Command::Up { overrides, .. } => {
-            assert_eq!(overrides[0].0, "DATABASE_URL");
-            assert_eq!(overrides[0].1, "postgres://secret");
-        }
-        _ => panic!("expected up"),
-    }
-    let error = parse(["up".into(), "--env".into(), "broken".into()])
-        .unwrap_err()
-        .to_string();
+    .unwrap_err()
+    .to_string();
     assert!(!error.contains("secret"));
 }
 
@@ -64,43 +52,54 @@ fn microservices_alias_selects_split() {
 fn topology_specs_are_isolated_and_unknown_overrides_fail_closed() {
     let cert = PathBuf::from("run/test-ca.crt");
     let key = PathBuf::from("run/test-ca.key");
+    let environment = EnvironmentSnapshot::from_values([
+        ("HTTP_PROXY".into(), "http://proxy".into()),
+        ("CARGO_HOME".into(), "cargo-home".into()),
+        ("ACCOUNTS_DEV_AUTH".into(), "0".into()),
+        ("PORT".into(), ":9999".into()),
+    ]);
     let monolith = service_specs(
         Topology::Monolith,
         "postgres://typed",
         &cert,
         &key,
-        &BTreeMap::new(),
-    )
-    .unwrap();
+        &environment,
+    );
     assert_eq!(monolith.len(), 1);
     assert_eq!(monolith[0].name, "monolith");
     assert!(!monolith[0].env.contains_key("HTTP_PROXY"));
     assert!(!monolith[0].env.contains_key("CARGO_HOME"));
+    assert_eq!(
+        monolith[0].env.get("PORT").map(String::as_str),
+        Some(":8080")
+    );
+    assert_eq!(
+        monolith[0].env.get("ACCOUNTS_DEV_AUTH").map(String::as_str),
+        Some("0")
+    );
 
     let split = service_specs(
         Topology::Split,
         "postgres://typed",
         &cert,
         &key,
-        &BTreeMap::new(),
-    )
-    .unwrap();
+        &environment,
+    );
     assert_eq!(split.len(), 12);
     assert!(split
         .iter()
         .all(|service| !service.env.contains_key("HTTP_PROXY")));
 
-    let error = service_specs(
-        Topology::Split,
-        "postgres://typed",
-        &cert,
-        &key,
-        &BTreeMap::from([("UNDECLARED_SECRET".into(), "do-not-render".into())]),
-    )
-    .unwrap_err()
-    .to_string();
-    assert!(error.contains("UNDECLARED_SECRET"));
-    assert!(!error.contains("do-not-render"));
+    assert_eq!(
+        split
+            .iter()
+            .find(|s| s.name == "accounts-svc")
+            .unwrap()
+            .env
+            .get("ACCOUNTS_DEV_AUTH")
+            .map(String::as_str),
+        Some("0")
+    );
 }
 
 #[cfg(windows)]

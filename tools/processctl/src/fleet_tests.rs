@@ -1,7 +1,8 @@
 use std::collections::BTreeMap;
 
 use crate::{
-    game_backend_fleet, FleetError, FleetFlavor, FleetInputs, FleetSpec, ServiceSpec,
+    game_backend_fleet, game_backend_fleet_with_environment, game_backend_monolith,
+    EnvironmentSnapshot, FleetError, FleetFlavor, FleetInputs, FleetSpec, ServiceSpec,
 };
 #[cfg(windows)]
 use crate::build_environment;
@@ -12,6 +13,30 @@ fn inputs() -> FleetInputs {
         edge_ca_cert: "run/edge-ca.crt".into(),
         edge_ca_key: "run/edge-ca.key".into(),
     }
+}
+
+#[test]
+fn inherited_application_overrides_are_explicit_and_cannot_rewire_topology() {
+    let environment = EnvironmentSnapshot::from_values([
+        ("ACCOUNTS_DEV_AUTH".into(), "0".into()),
+        ("PORT".into(), ":9999".into()),
+        ("EDGE_ADDR".into(), ":9998".into()),
+        ("EDGE_CA_KEY".into(), "attacker-key".into()),
+        ("HTTP_PROXY".into(), "http://proxy".into()),
+    ]);
+    let fleet = game_backend_fleet_with_environment(
+        &inputs(), FleetFlavor::Development, &environment,
+    );
+    let accounts = fleet.service("accounts-svc").unwrap();
+    assert_eq!(accounts.env.get("ACCOUNTS_DEV_AUTH").map(String::as_str), Some("0"));
+    assert_eq!(accounts.env.get("PORT").map(String::as_str), Some(":8084"));
+    assert_eq!(accounts.env.get("EDGE_ADDR").map(String::as_str), Some(":9003"));
+    assert_eq!(accounts.env.get("EDGE_CA_KEY").map(String::as_str), Some("run/edge-ca.key"));
+    assert!(!accounts.env.contains_key("HTTP_PROXY"));
+
+    let monolith = game_backend_monolith(&inputs(), FleetFlavor::Development, &environment);
+    assert_eq!(monolith.env.get("PORT").map(String::as_str), Some(":8080"));
+    assert_eq!(monolith.env.get("EDGE_CA_KEY").map(String::as_str), Some("run/edge-ca.key"));
 }
 
 #[test]
@@ -74,6 +99,7 @@ fn hard_dependencies_must_appear_earlier_in_startup_order() {
         player_port: None,
         dependencies,
         env: BTreeMap::new(),
+        overrideable_env: &[],
     };
     let error = FleetSpec::new(vec![
         service("consumer-svc", vec!["provider-svc"]),

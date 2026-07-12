@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 use anyhow::{bail, Context, Result};
 use edge::{DevCA, PlayerClient};
 use processctl::{
-    build_environment, game_backend_fleet, rollout_lock_path, runtime_environment, BorrowedLease, FleetFlavor,
+    game_backend_fleet_with_environment, game_backend_monolith, rollout_lock_path, EnvironmentSnapshot, BorrowedLease, FleetFlavor,
     FleetInputs, FleetSpec, OutputDestination, OwnedChild, OwnedLease, ProcessGroupPolicy,
     RolloutLock, ServiceSpec, ShutdownOutcome, ShutdownPolicy, SpawnSpec,
 };
@@ -46,6 +46,7 @@ struct Ctx {
     /// A client that does NOT follow redirects, so a 303 (epic callback, admin login)
     /// is observable as a status + Location instead of being transparently chased.
     http_noredirect: reqwest::Client,
+    environment: EnvironmentSnapshot,
 }
 
 impl Ctx {
@@ -203,22 +204,11 @@ async fn monolith_parity(ctx: &Ctx, pool: &PgPool, p: &mut Proof) -> Result<()> 
         bail!("monolith binary not found: {}", bin.display());
     }
     let characters_port = ctx.http_port("characters-svc");
-    let mut env = runtime_environment();
-    for (key, value) in [
-        ("PORT", format!(":{characters_port}")),
-        ("DATABASE_URL", ctx.db_url.clone()),
-        ("PLAYER_EDGE_ADDR", format!(":{}", ctx.player_port())),
-        ("EDGE_CA_CERT", ctx.ca_cert.display().to_string()),
-        ("EDGE_CA_KEY", ctx.ca_key.display().to_string()),
-        ("APIKEYS_DEV_SEED", "1".into()),
-        ("ACCOUNTS_DEV_AUTH", "1".into()),
-        ("INVENTORY_DEV_GRANT", "1".into()),
-        ("TLS_MODE", "off".into()),
-        ("ADMIN_COOKIE_SECURE", "0".into()),
-        ("TRUSTED_PROXY_CIDRS", "127.0.0.1/32".into()),
-    ] {
-        env.insert(key.into(), value);
-    }
+    let env = game_backend_monolith(
+        &FleetInputs { database_url: ctx.db_url.clone(), edge_ca_cert: ctx.ca_cert.clone(), edge_ca_key: ctx.ca_key.clone() },
+        FleetFlavor::Proof,
+        &ctx.environment,
+    ).env;
     let child = OwnedChild::spawn(spawn_spec(
         "server",
         bin,
@@ -404,14 +394,16 @@ fn main() -> std::process::ExitCode {
 }
 
 async fn run(bin_dir: PathBuf, root: PathBuf, run_dir: PathBuf) -> Result<u32> {
-    let db_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DB.to_string());
-    let fleet = game_backend_fleet(
+    let environment = EnvironmentSnapshot::capture();
+    let db_url = environment.value("DATABASE_URL").map(str::to_owned).unwrap_or_else(|| DEFAULT_DB.to_string());
+    let fleet = game_backend_fleet_with_environment(
         &FleetInputs {
             database_url: db_url.clone(),
             edge_ca_cert: run_dir.join("edge-ca.crt"),
             edge_ca_key: run_dir.join("edge-ca.key"),
         },
         FleetFlavor::Proof,
+        &environment,
     );
     let ctx = Ctx {
         ca_cert: run_dir.join("edge-ca.crt"),
@@ -428,6 +420,7 @@ async fn run(bin_dir: PathBuf, root: PathBuf, run_dir: PathBuf) -> Result<u32> {
         run_dir,
         db_url,
         fleet,
+        environment,
     };
 
     // Fleet-drift tripwire: the harness svc list must equal cmd/*-svc on disk.
@@ -510,7 +503,7 @@ fn build_fleet(ctx: &Ctx, root: &Path) -> Result<()> {
         args.push("-p".into());
         args.push(extra.into());
     }
-    let env = build_environment();
+    let env = ctx.environment.build_environment();
     let cargo = executable_on_path("cargo", &env)?;
     let mut child = OwnedChild::spawn(SpawnSpec {
         label: "splitproof-cargo-build".into(),
@@ -546,7 +539,7 @@ fn preflight_fleet(root: &Path, ctx: &Ctx) -> Result<()> {
 /// input, never argv). adminctl ensures its schema before admin-svc migrates.
 fn seed_admin(ctx: &Ctx, user: &str, pass: &str) -> Result<()> {
     let bin = ctx.bin_dir.join(format!("adminctl{}", std::env::consts::EXE_SUFFIX));
-    let mut env = runtime_environment();
+    let mut env = ctx.environment.runtime_environment();
     env.insert("DATABASE_URL".into(), ctx.db_url.clone());
     env.insert("ADMINCTL_PASSWORD".into(), pass.to_string());
     let mut child = OwnedChild::spawn(SpawnSpec {

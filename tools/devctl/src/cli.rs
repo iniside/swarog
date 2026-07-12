@@ -20,7 +20,6 @@ pub enum Command {
     Up {
         topology: Topology,
         skip_build: bool,
-        overrides: Vec<(String, String)>,
     },
     Status,
     Down,
@@ -45,7 +44,6 @@ fn parse_up(args: &[String]) -> Result<Command> {
     let mut topology = Topology::Monolith;
     let mut topology_seen = false;
     let mut skip_build = false;
-    let mut overrides = Vec::new();
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -63,17 +61,6 @@ fn parse_up(args: &[String]) -> Result<Command> {
                 topology = Topology::Split;
             }
             "--skip-build" => skip_build = true,
-            "--env" => {
-                index += 1;
-                let value = args
-                    .get(index)
-                    .ok_or_else(|| anyhow::anyhow!("--env requires KEY=VALUE"))?;
-                let (key, value) = value
-                    .split_once('=')
-                    .filter(|(key, _)| !key.is_empty())
-                    .ok_or_else(|| anyhow::anyhow!("--env requires KEY=VALUE"))?;
-                overrides.push((key.to_string(), value.to_string()));
-            }
             arg => bail!("unexpected argument {arg:?}"),
         }
         index += 1;
@@ -81,7 +68,6 @@ fn parse_up(args: &[String]) -> Result<Command> {
     Ok(Command::Up {
         topology,
         skip_build,
-        overrides,
     })
 }
 
@@ -89,7 +75,7 @@ pub const USAGE: &str = "\
 devctl - owned foreground development fleet supervisor
 
 USAGE:
-  devctl up [monolith|split] [--skip-build] [--env KEY=VALUE]
+  devctl up [monolith|split] [--skip-build]
   devctl status
   devctl down
 

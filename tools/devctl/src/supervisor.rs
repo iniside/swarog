@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
@@ -8,10 +8,10 @@ use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use processctl::{
-    build_environment, game_backend_fleet, observe_process_identity, rollout_lock_path,
-    runtime_environment, FleetFlavor, FleetInputs, FleetState, FleetStatus, ManagedProcess,
-    ManagedStatus, OutputDestination, OwnedChild, ProcessGroupPolicy, RolloutLock, ServiceSpec,
-    ShutdownPolicy, SpawnSpec, StateStore,
+    game_backend_fleet_with_environment, game_backend_monolith, observe_process_identity,
+    rollout_lock_path, EnvironmentSnapshot, FleetFlavor, FleetInputs, FleetState, FleetStatus,
+    ManagedProcess, ManagedStatus, OutputDestination, OwnedChild, ProcessGroupPolicy, RolloutLock,
+    ServiceSpec, ShutdownPolicy, SpawnSpec, StateStore,
 };
 use rand::RngCore as _;
 
@@ -41,10 +41,9 @@ pub fn execute(command: Command) -> Result<()> {
         Command::Up {
             topology,
             skip_build,
-            overrides,
         } => {
             std::fs::create_dir_all(&run_dir).context("create devctl run directory")?;
-            supervise(&root, &run_dir, &store, topology, skip_build, overrides)
+            supervise(&root, &run_dir, &store, topology, skip_build)
         }
     }
 }
@@ -68,26 +67,21 @@ fn supervise(
     store: &StateStore,
     topology: Topology,
     skip_build: bool,
-    overrides: Vec<(String, String)>,
 ) -> Result<()> {
+    let environment = EnvironmentSnapshot::capture();
     install_signal_handler()?;
     INTERRUPTED.store(false, Ordering::SeqCst);
     let run_id = run_id();
     let _lease = RolloutLock::acquire_exclusive(rollout_lock_path(root), &run_id)
         .context("acquire rollout lock")?;
-    let override_snapshot = immutable_overrides(overrides)?;
-    let db_url = override_snapshot
-        .get("DATABASE_URL")
-        .cloned()
-        .or_else(|| {
-            std::env::var("DATABASE_URL")
-                .ok()
-                .filter(|value| !value.trim().is_empty())
-        })
+    let db_url = environment
+        .value("DATABASE_URL")
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_owned)
         .unwrap_or_else(|| DEFAULT_DB.to_string());
     let ca_cert = run_dir.join("edge-ca.crt");
     let ca_key = run_dir.join("edge-ca.key");
-    let services = service_specs(topology, &db_url, &ca_cert, &ca_key, &override_snapshot)?;
+    let services = service_specs(topology, &db_url, &ca_cert, &ca_key, &environment);
     let endpoint = control_endpoint(run_dir, &run_id);
     let mut initial = FleetState::new(&run_id, topology.name())?;
     initial.set_supervisor(observe_process_identity(std::process::id())?);
@@ -100,11 +94,11 @@ fn supervise(
     let mut children = Vec::new();
     let result = (|| -> Result<()> {
         if !skip_build {
-            build(root, topology, &services)?;
+            build(root, topology, &services, &environment)?;
         }
         edgeca::mint_dev_ca(&ca_cert, &ca_key)
             .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-        seed_admin(root, &db_url)?;
+        seed_admin(root, &db_url, &environment)?;
         for service in &services {
             if stop_requested(&stop) {
                 bail!("startup interrupted");
@@ -160,81 +154,33 @@ pub(crate) fn service_specs(
     db: &str,
     cert: &Path,
     key: &Path,
-    overrides: &BTreeMap<String, String>,
-) -> Result<Vec<ServiceSpec>> {
-    let mut services = match topology {
-        Topology::Split => game_backend_fleet(
-            &FleetInputs {
-                database_url: db.into(),
-                edge_ca_cert: cert.into(),
-                edge_ca_key: key.into(),
-            },
-            FleetFlavor::Development,
-        )
-        .services()
-        .to_vec(),
-        Topology::Monolith => vec![monolith_spec(db, cert, key)],
+    environment: &EnvironmentSnapshot,
+) -> Vec<ServiceSpec> {
+    let inputs = FleetInputs {
+        database_url: db.into(),
+        edge_ca_cert: cert.into(),
+        edge_ca_key: key.into(),
     };
-    let mut unused: BTreeSet<_> = overrides.keys().cloned().collect();
-    for service in &mut services {
-        for (key, value) in overrides {
-            if service.env.contains_key(key) {
-                service.env.insert(key.clone(), value.clone());
-                unused.remove(key);
-            }
+    match topology {
+        Topology::Split => {
+            game_backend_fleet_with_environment(&inputs, FleetFlavor::Development, environment)
+                .services()
+                .to_vec()
         }
-    }
-    if !unused.is_empty() {
-        bail!("unknown or non-overrideable environment keys: {unused:?}");
-    }
-    Ok(services)
-}
-
-fn monolith_spec(db: &str, cert: &Path, key: &Path) -> ServiceSpec {
-    let mut env = runtime_environment();
-    for (key_name, value) in [
-        ("PORT", ":8080".into()),
-        ("DATABASE_URL", db.into()),
-        ("PLAYER_EDGE_ADDR", ":9100".into()),
-        ("EDGE_CA_CERT", cert.display().to_string()),
-        ("EDGE_CA_KEY", key.display().to_string()),
-        ("APIKEYS_DEV_SEED", "1".into()),
-        ("ACCOUNTS_DEV_AUTH", "1".into()),
-        ("INVENTORY_DEV_GRANT", "1".into()),
-        ("TLS_MODE", "off".into()),
-        ("ADMIN_COOKIE_SECURE", "0".into()),
-        ("TRUSTED_PROXY_CIDRS", "127.0.0.1/32".into()),
-    ] {
-        env.insert(key_name.into(), value);
-    }
-    ServiceSpec {
-        name: "monolith",
-        executable_package: "server",
-        http_port: 8080,
-        edge_port: None,
-        player_port: Some(9100),
-        dependencies: vec![],
-        env,
+        Topology::Monolith => vec![game_backend_monolith(
+            &inputs,
+            FleetFlavor::Development,
+            environment,
+        )],
     }
 }
 
-fn immutable_overrides(overrides: Vec<(String, String)>) -> Result<BTreeMap<String, String>> {
-    let mut snapshot = BTreeMap::new();
-    for (key, value) in overrides {
-        if !key
-            .bytes()
-            .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_')
-        {
-            bail!("invalid environment override key {key:?}");
-        }
-        if snapshot.insert(key.clone(), value).is_some() {
-            bail!("duplicate environment override key {key:?}");
-        }
-    }
-    Ok(snapshot)
-}
-
-fn build(root: &Path, topology: Topology, services: &[ServiceSpec]) -> Result<()> {
+fn build(
+    root: &Path,
+    topology: Topology,
+    services: &[ServiceSpec],
+    environment: &EnvironmentSnapshot,
+) -> Result<()> {
     let mut packages: Vec<&str> = services
         .iter()
         .map(|service| service.executable_package)
@@ -247,14 +193,14 @@ fn build(root: &Path, topology: Topology, services: &[ServiceSpec]) -> Result<()
         args.extend([OsString::from("-p"), OsString::from(package)]);
     }
     println!("devctl: building {} topology", topology.name());
-    let environment = build_environment();
-    let cargo = executable_on_path("cargo", &environment)?;
+    let build_env = environment.build_environment();
+    let cargo = executable_on_path("cargo", &build_env)?;
     run_transient(
         SpawnSpec {
             label: "devctl-cargo-build".into(),
             executable: cargo,
             args,
-            env: os_env(environment),
+            env: os_env(build_env),
             cwd: root.into(),
             stdout: OutputDestination::Inherit,
             stderr: OutputDestination::Inherit,
@@ -265,8 +211,8 @@ fn build(root: &Path, topology: Topology, services: &[ServiceSpec]) -> Result<()
     .context("cargo build")
 }
 
-fn seed_admin(root: &Path, db: &str) -> Result<()> {
-    let mut env = runtime_environment();
+fn seed_admin(root: &Path, db: &str, environment: &EnvironmentSnapshot) -> Result<()> {
+    let mut env = environment.runtime_environment();
     env.insert("DATABASE_URL".into(), db.into());
     let spec = SpawnSpec {
         label: "devctl-admin-seed".into(),

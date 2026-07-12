@@ -61,6 +61,7 @@ pub fn dispatch_guardian_from_current_exe() -> Option<std::process::ExitCode> {
 #[cfg(all(test, windows))]
 mod tests;
 pub use fleet::{
-    build_environment, game_backend_fleet, runtime_environment, FleetError, FleetFlavor,
+    build_environment, game_backend_fleet, game_backend_fleet_with_environment,
+    game_backend_monolith, runtime_environment, EnvironmentSnapshot, FleetError, FleetFlavor,
     FleetInputs, FleetSpec, ServiceSpec, BUILD_ENV_ALLOWLIST,
 };
