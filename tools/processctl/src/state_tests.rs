@@ -46,6 +46,18 @@ fn invalid_or_secret_shaped_identifiers_are_rejected() {
 }
 
 #[test]
+fn failure_record_is_typed_and_never_accepts_raw_secret_shaped_context() {
+    let mut state = FleetState::new("run-failure", "split").unwrap();
+    state.record_failure("health", Some("match-svc")).unwrap();
+    let failure = state.failure().unwrap();
+    assert_eq!(failure.stage(), "health");
+    assert_eq!(failure.process(), Some("match-svc"));
+    assert!(state
+        .record_failure("postgres://user:secret@host", Some("match-svc"))
+        .is_err());
+}
+
+#[test]
 fn unsupported_state_version_is_never_accepted() {
     let dir = test_dir("version");
     let path = dir.join("fleet.json");

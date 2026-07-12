@@ -22,8 +22,9 @@ pub use process::{
     ProcessIdentity, ShutdownOutcome, ShutdownPolicy, SpawnSpec, StartMarker,
 };
 pub use state::{
-    FleetState, FleetStatus, ManagedProcess, ManagedStatus, StateCheckpointError, StateError,
-    StateStore, MAX_STATE_BYTES, STATE_VERSION,
+    validate_private_path, write_private_atomic, FailureRecord, FleetState, FleetStatus,
+    ManagedProcess, ManagedStatus, StateCheckpointError, StateError, StateStore, MAX_STATE_BYTES,
+    STATE_VERSION,
 };
 
 #[cfg(test)]

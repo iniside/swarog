@@ -11,6 +11,37 @@ pub const STATE_VERSION: u32 = 1;
 pub const MAX_STATE_BYTES: u64 = 1024 * 1024;
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 
+/// Atomically writes arbitrary owner-only tooling data using the same platform
+/// permissions and replacement path as the private fleet state.
+pub fn write_private_atomic(path: &Path, bytes: &[u8]) -> Result<(), StateError> {
+    let store = StateStore::new(path);
+    let parent = path.parent().ok_or(StateError::InvalidField {
+        field: "private path",
+        reason: "must have a parent directory",
+    })?;
+    let file_name = path.file_name().ok_or(StateError::InvalidField {
+        field: "private path",
+        reason: "must have a file name",
+    })?;
+    let temp = parent.join(format!(
+        ".{}.{}.{}.tmp",
+        file_name.to_string_lossy(),
+        std::process::id(),
+        NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
+    ));
+    store.write_platform(&temp, parent, bytes)
+}
+
+/// Validates that a tooling file is a private regular file owned by this user.
+pub fn validate_private_path(path: &Path) -> Result<(), StateError> {
+    open_state_for_read(path)
+        .map(drop)
+        .map_err(|source| StateError::Io {
+            operation: "validate private tooling file",
+            source,
+        })
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FleetStatus {
@@ -95,6 +126,24 @@ pub struct FleetState {
     supervisor: Option<ProcessIdentity>,
     control_endpoint: Option<PathBuf>,
     processes: Vec<ManagedProcess>,
+    #[serde(default)]
+    failure: Option<FailureRecord>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct FailureRecord {
+    stage: String,
+    process: Option<String>,
+}
+
+impl FailureRecord {
+    pub fn stage(&self) -> &str {
+        &self.stage
+    }
+    pub fn process(&self) -> Option<&str> {
+        self.process.as_deref()
+    }
 }
 
 impl FleetState {
@@ -111,6 +160,7 @@ impl FleetState {
             supervisor: None,
             control_endpoint: None,
             processes: Vec::new(),
+            failure: None,
         })
     }
 
@@ -160,6 +210,25 @@ impl FleetState {
 
     pub fn push_process(&mut self, process: ManagedProcess) {
         self.processes.push(process);
+    }
+
+    pub fn failure(&self) -> Option<&FailureRecord> {
+        self.failure.as_ref()
+    }
+
+    pub fn record_failure(
+        &mut self,
+        stage: impl Into<String>,
+        process: Option<impl Into<String>>,
+    ) -> Result<(), StateError> {
+        let stage = stage.into();
+        validate_identifier("failure stage", &stage)?;
+        let process = process.map(Into::into);
+        if let Some(process) = &process {
+            validate_identifier("failed process", process)?;
+        }
+        self.failure = Some(FailureRecord { stage, process });
+        Ok(())
     }
 }
 
