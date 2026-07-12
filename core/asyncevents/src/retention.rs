@@ -21,9 +21,11 @@
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use prometheus::Gauge;
+use prometheus::{Gauge, IntCounter};
 use sqlx::{PgPool, Row};
 use tokio::sync::watch;
+
+use crate::Liveness;
 
 /// Bounds each retention DELETE so a sweep never takes a long lock.
 const BATCH: i64 = 1000;
@@ -46,6 +48,28 @@ fn blocked_gauge() -> &'static Gauge {
         // (tests) reuses the static and never re-registers.
         let _ = metrics::register(Box::new(g.clone()));
         g
+    })
+}
+
+/// Counts retention sweep failures (a top-level sweep query error or a per-topic
+/// GC error) while the plane runs. A live-but-ineffective GC task never flips
+/// [`crate::Liveness::retention_dead`], so this counter (plus
+/// [`crate::Liveness::retention_stalled`] on `/readyz`) is how persistent
+/// ineffectiveness surfaces. Registered once per process into `core/metrics`'s
+/// private registry, like [`blocked_gauge`].
+pub(crate) fn sweep_errors() -> &'static IntCounter {
+    static C: OnceLock<IntCounter> = OnceLock::new();
+    C.get_or_init(|| {
+        let c = IntCounter::new(
+            "asyncevents_retention_sweep_errors_total",
+            "Times a retention sweep failed (top-level query error or a per-topic \
+             GC error) while the plane was running (the log may grow unbounded).",
+        )
+        .expect("valid retention sweep_errors counter");
+        // OnceLock guards the single registration; a second Plane in one process
+        // (tests) reuses the static and never re-registers.
+        let _ = metrics::register(Box::new(c.clone()));
+        c
     })
 }
 
@@ -107,7 +131,12 @@ fn parse_go_duration(s: &str) -> Option<Duration> {
 
 /// The retention task: sweep on a ticker until stopped. The first sweep lands one
 /// interval in (the immediate tick is consumed), so boot is never blocked on GC.
-pub(crate) async fn run(pool: PgPool, interval: Duration, mut stop: watch::Receiver<bool>) {
+pub(crate) async fn run(
+    pool: PgPool,
+    interval: Duration,
+    liveness: Liveness,
+    mut stop: watch::Receiver<bool>,
+) {
     #[cfg(test)]
     if RETENTION_PANIC_ONCE.swap(false, std::sync::atomic::Ordering::SeqCst) {
         panic!("test-injected retention panic (RETENTION_PANIC_ONCE)");
@@ -119,8 +148,14 @@ pub(crate) async fn run(pool: PgPool, interval: Duration, mut stop: watch::Recei
         tokio::select! {
             _ = stop.changed() => return,
             _ = ticker.tick() => {
-                if let Err(err) = sweep(&pool).await {
-                    tracing::error!(%err, "asyncevents retention sweep failed");
+                match sweep(&pool).await {
+                    // A healthy pass advances the staleness clock; the readyz
+                    // check reads it via `Liveness::retention_stalled`.
+                    Ok(()) => liveness.mark_retention_ok(),
+                    Err(err) => {
+                        sweep_errors().inc();
+                        tracing::error!(%err, "asyncevents retention sweep failed");
+                    }
                 }
             }
         }
@@ -143,6 +178,7 @@ pub(crate) async fn sweep(pool: &PgPool) -> anyhow::Result<()> {
         let version: i32 = row.get("contract_version");
         let days: i32 = row.get("min_retention_days");
         if let Err(err) = gc_topic(pool, &topic, version, days).await {
+            sweep_errors().inc();
             tracing::error!(%topic, version, %err, "asyncevents retention: topic GC failed");
         }
     }

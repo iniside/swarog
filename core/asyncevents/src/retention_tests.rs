@@ -373,6 +373,85 @@ async fn floor_uses_numeric_xid_order_not_text() {
     cleanup(&pool, topic).await;
 }
 
+/// Step 6: a retention task alive but whose sweeps persistently FAIL must flip
+/// `Liveness::retention_stalled` within budget. Failure is injected by closing the
+/// pool before `run` spawns: every `sweep` then errors (a closed pool is a
+/// deterministic stand-in for a revoked function / broken query), so the clock —
+/// seeded like `Plane::start` does — never advances and ages out.
+#[tokio::test]
+async fn persistent_sweep_failure_flips_retention_stalled() {
+    let Some(pool) = test_pool().await else { return };
+    pool.close().await; // every subsequent query errors
+    let liveness = crate::Liveness::default();
+    liveness.mark_retention_ok(); // seed at t0, exactly as Plane::start does
+    assert!(
+        !liveness.retention_stalled(Duration::from_secs(1)),
+        "freshly seeded clock must not read as stalled"
+    );
+
+    let (_stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+    let task = tokio::spawn(run(pool, Duration::from_millis(50), liveness.clone(), stop_rx));
+
+    // The seed never advances (all sweeps fail), so once >1s of coarse time has
+    // elapsed the check flips. Poll up to a generous budget to avoid clock races.
+    let mut stalled = false;
+    for _ in 0..80 {
+        if liveness.retention_stalled(Duration::from_secs(1)) {
+            stalled = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    task.abort();
+    assert!(stalled, "persistently failing sweeps must flip retention_stalled within budget");
+}
+
+/// Step 6: healthy sweeps keep the retention clock fresh — `retention_stalled`
+/// stays false. An idle pool's `sweep` is a no-op success (no `min_retention`
+/// contracts), so the task marks progress every interval.
+#[tokio::test]
+async fn healthy_sweeps_keep_retention_unstalled() {
+    let Some(pool) = test_pool().await else { return };
+    let liveness = crate::Liveness::default();
+    liveness.mark_retention_ok();
+
+    let (_stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+    let task = tokio::spawn(run(pool, Duration::from_millis(50), liveness.clone(), stop_rx));
+
+    // Over several intervals the continuously-marked clock must never read stalled
+    // against a 2s window (marks land every ~50ms).
+    for _ in 0..30 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(
+            !liveness.retention_stalled(Duration::from_secs(2)),
+            "a continuously succeeding sweep must keep retention un-stalled"
+        );
+    }
+    task.abort();
+}
+
+/// Step 6: a failing top-level sweep increments `asyncevents_retention_sweep_errors_total`.
+/// The counter is process-global (OnceLock), so assert on the delta, not the value.
+#[tokio::test]
+async fn sweep_failure_increments_error_counter() {
+    let Some(pool) = test_pool().await else { return };
+    pool.close().await;
+    let before = sweep_errors().get();
+
+    let liveness = crate::Liveness::default();
+    let (_stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+    let task = tokio::spawn(run(pool, Duration::from_millis(20), liveness, stop_rx));
+    // Give the ticker time for at least one failing sweep past the first-tick skip.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    task.abort();
+
+    assert!(
+        sweep_errors().get() > before,
+        "a failing sweep must increment the sweep-error counter (before={before}, after={})",
+        sweep_errors().get()
+    );
+}
+
 /// Interval parsing: Go-style units, bare seconds, and default fallback.
 #[test]
 fn interval_parses_go_durations() {

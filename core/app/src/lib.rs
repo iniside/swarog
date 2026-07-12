@@ -60,6 +60,15 @@ const READY_CHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(
 /// pass, so a transient error never flaps readiness.
 const DELIVERY_STALL_MAX: std::time::Duration = std::time::Duration::from_secs(30);
 
+/// `/readyz` flags the durable plane's retention GC when no sweep has SUCCEEDED for
+/// this long — a task alive but persistently failing (revoked function, broken
+/// query) never flips `retention_dead`. 3× the default housekeep interval
+/// (`EVENTS_HOUSEKEEP_INTERVAL`, default 1h in `asyncevents::retention`), so a
+/// single transient miss never flaps readiness; only a sustained outage does. A
+/// process that raises the interval past 20m widens this window proportionally by
+/// design (staleness is measured against sweeps that should have happened).
+const RETENTION_STALL_MAX: std::time::Duration = std::time::Duration::from_secs(3 * 3600);
+
 /// How the HTTP front terminates TLS (admin hardening Step 4). The MECHANISM lives
 /// here in `core/app` (the serve path owns the listener); the ENV PARSING lives in the
 /// one composition root that fronts the public internet (`cmd/gateway-svc` reads
@@ -570,6 +579,11 @@ pub async fn run(
                 async move {
                     if liveness.retention_dead() {
                         Err("asyncevents retention task died".to_string())
+                    } else if liveness.retention_stalled(RETENTION_STALL_MAX) {
+                        Err(format!(
+                            "asyncevents retention sweep has not succeeded in >{}s",
+                            RETENTION_STALL_MAX.as_secs()
+                        ))
                     } else {
                         Ok(())
                     }

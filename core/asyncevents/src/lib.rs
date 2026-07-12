@@ -106,6 +106,9 @@ fn coarse_now_secs() -> u64 {
 /// its effects. [`Liveness::retention_dead`] is a SEPARATE bit for the retention
 /// GC task (its own named `asyncevents-retention` check): a GC outage is storage
 /// growth, not a serving outage, so it must never ride the delivery `dead` flag.
+/// [`Liveness::retention_stalled`] is the retention twin of `delivery_stalled` —
+/// a GC task alive but whose sweeps persistently fail — folded into that same
+/// named check.
 #[derive(Clone, Default)]
 pub struct Liveness {
     dead: Arc<AtomicBool>,
@@ -116,6 +119,13 @@ pub struct Liveness {
     /// Coarse-clock second of the last healthy worker pass; `0` = no workers
     /// hosted (never seeded), which never counts as stalled.
     last_ok_secs: Arc<AtomicU64>,
+    /// Coarse-clock second of the last successful retention sweep; `0` = never
+    /// seeded, which never counts as stalled. The retention twin of
+    /// [`Self::last_ok_secs`]: a GC task that is alive but whose sweeps keep
+    /// failing (a revoked function, a broken query) never flips
+    /// [`Self::retention_dead`], so `dead` alone would keep the
+    /// `asyncevents-retention` check green while the log grows unbounded.
+    retention_ok_secs: Arc<AtomicU64>,
 }
 
 impl Liveness {
@@ -152,6 +162,30 @@ impl Liveness {
     /// `drain_pass_on`. `max(1)` because `0` is the "no workers" sentinel.
     pub(crate) fn mark_pass_ok(&self) {
         self.last_ok_secs.store(coarse_now_secs().max(1), Ordering::SeqCst);
+    }
+
+    /// True iff this process's retention sweep has not succeeded within `max_age`.
+    /// Exact mirror of [`Self::delivery_stalled`]: never true while the plane is
+    /// stopping (a controlled stop is not a stall) or before the clock was seeded
+    /// (`0` sentinel — `Plane::start` seeds it, so this only reads `0` outside a
+    /// running plane).
+    pub fn retention_stalled(&self, max_age: Duration) -> bool {
+        if self.stopping.load(Ordering::SeqCst) {
+            return false;
+        }
+        let last = self.retention_ok_secs.load(Ordering::SeqCst);
+        if last == 0 {
+            return false;
+        }
+        coarse_now_secs().saturating_sub(last) > max_age.as_secs()
+    }
+
+    /// Stamps "healthy retention sweep now". `Plane::start` seeds it (the first
+    /// sweep lands one housekeep interval in, far past HTTP serving — age must
+    /// start at 0, not "infinite"); [`retention::run`] stamps it after every
+    /// `Ok` sweep. `max(1)` because `0` is the "never seeded" sentinel.
+    pub(crate) fn mark_retention_ok(&self) {
+        self.retention_ok_secs.store(coarse_now_secs().max(1), Ordering::SeqCst);
     }
 }
 
@@ -289,8 +323,17 @@ impl Plane {
         // redundantly per process. Its death flips ONLY `retention_dead` (its own
         // named readyz check): a GC outage is storage growth, not a serving outage,
         // so it must never take delivery out of rotation via the `dead` flag.
+        // Seed the retention staleness clock before the task starts: the first
+        // sweep lands one housekeep interval in (the immediate tick is consumed)
+        // while HTTP already serves — age must start at 0, not "infinite".
+        self.liveness.mark_retention_ok();
         let liveness = self.liveness.clone();
-        let gc = retention::run(self.pool.clone(), housekeep_interval, stop_rx.clone());
+        let gc = retention::run(
+            self.pool.clone(),
+            housekeep_interval,
+            self.liveness.clone(),
+            stop_rx.clone(),
+        );
         tasks.push(tokio::spawn(async move {
             let result = std::panic::AssertUnwindSafe(gc).catch_unwind().await;
             if !liveness.stopping.load(Ordering::SeqCst) {
