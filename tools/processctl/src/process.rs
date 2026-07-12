@@ -121,12 +121,12 @@ impl PlatformChild {
         Err(unsupported_io())
     }
 
-    fn observe_identity(&self) -> std::io::Result<ProcessIdentity> {
+    fn graceful(&mut self) -> std::io::Result<()> {
         Err(unsupported_io())
     }
 
-    fn graceful(&mut self) -> std::io::Result<()> {
-        Err(unsupported_io())
+    fn completion_forced_remainder(&self, _status: ExitStatus) -> bool {
+        false
     }
 
     fn force(&mut self) -> std::io::Result<()> {
@@ -186,18 +186,24 @@ impl OwnedChild {
         if let Some(status) = self.try_wait()? {
             return Ok(ShutdownOutcome::AlreadyExited(status));
         }
-        self.verify_identity()?;
         let inner = self
             .inner
             .as_mut()
             .expect("live process has a platform handle");
         if inner.graceful().is_ok() {
             if let Some(status) = self.wait_for(policy.graceful_timeout)? {
-                return Ok(ShutdownOutcome::Graceful(status));
+                let forced_remainder = self
+                    .inner
+                    .as_ref()
+                    .is_some_and(|inner| inner.completion_forced_remainder(status));
+                return Ok(if forced_remainder {
+                    ShutdownOutcome::Forced(status)
+                } else {
+                    ShutdownOutcome::Graceful(status)
+                });
             }
         }
 
-        self.verify_identity()?;
         let inner = self
             .inner
             .as_mut()
@@ -213,22 +219,6 @@ impl OwnedChild {
             label: self.label.clone(),
             timeout: policy.force_timeout,
         })
-    }
-
-    fn verify_identity(&self) -> Result<(), ProcessError> {
-        let observed = self
-            .inner
-            .as_ref()
-            .and_then(|inner| inner.observe_identity().ok());
-        if observed.as_ref() == Some(&self.identity) {
-            Ok(())
-        } else {
-            Err(ProcessError::IdentityMismatch {
-                label: self.label.clone(),
-                expected: self.identity.clone(),
-                observed,
-            })
-        }
     }
 
     fn wait_for(&mut self, timeout: Duration) -> Result<Option<ExitStatus>, ProcessError> {

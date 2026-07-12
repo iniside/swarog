@@ -4,24 +4,24 @@ use std::io::Read;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::ffi::OsStringExt;
 use std::os::unix::process::CommandExt;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Child, Command, ExitStatus};
 
 use crate::process::{ProcessError, ProcessIdentity, SpawnSpec, StartMarker};
 
 const GUARDIAN_LIVENESS_FD: RawFd = 3;
 const GUARDIAN_STATUS_FD: RawFd = 4;
+const FORCED_REMAINDER_EXIT: i32 = 190;
 
 pub(crate) struct PlatformChild {
     guardian: Child,
     guardian_pidfd: OwnedFd,
     liveness: Option<OwnedFd>,
-    target_pid: i32,
 }
 
 pub(crate) fn spawn(spec: &SpawnSpec) -> Result<(PlatformChild, ProcessIdentity), ProcessError> {
-    let guardian_path = guardian_path().map_err(|source| ProcessError::Io {
-        operation: "locate process guardian",
+    let guardian_path = std::env::current_exe().map_err(|source| ProcessError::Io {
+        operation: "locate current executable for guardian dispatch",
         source,
     })?;
     let (live_read, live_write) = pipe_cloexec().map_err(|source| ProcessError::Io {
@@ -37,6 +37,7 @@ pub(crate) fn spawn(spec: &SpawnSpec) -> Result<(PlatformChild, ProcessIdentity)
     let status_write_fd = status_write.as_raw_fd();
     let mut command = Command::new(guardian_path);
     command
+        .arg(crate::guardian::DISPATCH_ARG)
         .arg("--")
         .arg(&spec.executable)
         .args(&spec.args)
@@ -95,7 +96,6 @@ pub(crate) fn spawn(spec: &SpawnSpec) -> Result<(PlatformChild, ProcessIdentity)
             guardian,
             guardian_pidfd,
             liveness: Some(live_write),
-            target_pid,
         },
         identity,
     ))
@@ -106,41 +106,18 @@ impl PlatformChild {
         self.guardian.try_wait()
     }
 
-    pub(crate) fn observe_identity(&self) -> std::io::Result<ProcessIdentity> {
-        observe_pid(self.target_pid as u32)
-    }
-
     pub(crate) fn graceful(&mut self) -> std::io::Result<()> {
         pidfd_send_signal(self.guardian_pidfd.as_raw_fd(), libc::SIGTERM)
+    }
+
+    pub(crate) fn completion_forced_remainder(&self, status: ExitStatus) -> bool {
+        use std::os::unix::process::ExitStatusExt;
+        status.code() == Some(FORCED_REMAINDER_EXIT) || status.signal() == Some(libc::SIGKILL)
     }
 
     pub(crate) fn force(&mut self) -> std::io::Result<()> {
         self.liveness.take();
         pidfd_send_signal(self.guardian_pidfd.as_raw_fd(), libc::SIGUSR1)
-    }
-}
-
-fn guardian_path() -> std::io::Result<PathBuf> {
-    let current = std::env::current_exe()?;
-    let directory = current.parent().ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            "current executable has no parent",
-        )
-    })?;
-    let bin_dir = if directory.file_name().is_some_and(|name| name == "deps") {
-        directory.parent().unwrap_or(directory)
-    } else {
-        directory
-    };
-    let path = bin_dir.join("processctl-guardian");
-    if path.is_file() {
-        Ok(path)
-    } else {
-        Err(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            format!("guardian binary not found at {}", path.display()),
-        ))
     }
 }
 
@@ -191,27 +168,7 @@ fn pidfd_send_signal(pidfd: RawFd, signal: i32) -> std::io::Result<()> {
     }
 }
 
-fn observe_pid(pid: u32) -> std::io::Result<ProcessIdentity> {
-    let proc_dir = Path::new("/proc").join(pid.to_string());
-    let executable = std::fs::read_link(proc_dir.join("exe"))?;
-    let stat = std::fs::read_to_string(proc_dir.join("stat"))?;
-    let close = stat.rfind(')').ok_or_else(|| {
-        std::io::Error::new(std::io::ErrorKind::InvalidData, "malformed /proc stat")
-    })?;
-    let fields: Vec<&str> = stat[close + 1..].split_whitespace().collect();
-    let started = fields
-        .get(19)
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "missing starttime"))?
-        .parse::<u64>()
-        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
-    Ok(ProcessIdentity {
-        pid,
-        executable,
-        started: StartMarker(started),
-    })
-}
-
-fn read_identity(reader: &mut impl Read) -> std::io::Result<ProcessIdentity> {
+pub(super) fn read_identity(reader: &mut impl Read) -> std::io::Result<ProcessIdentity> {
     let mut pid = [0u8; 4];
     let mut started = [0u8; 8];
     let mut path_len = [0u8; 4];

@@ -20,7 +20,3 @@ windows-sys = { workspace = true, features = [
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2"
-
-[[bin]]
-name = "processctl-guardian"
-path = "src/bin/processctl-guardian.rs"

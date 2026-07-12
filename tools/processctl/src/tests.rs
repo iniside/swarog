@@ -123,19 +123,6 @@ fn already_exited_child_is_observed_without_signalling() {
 }
 
 #[test]
-fn identity_mismatch_fails_closed_and_drop_still_reaps_owned_handle() {
-    let _serial = PROCESS_TEST_LOCK.lock().unwrap();
-    protect_test_harness();
-    let dir = test_dir("identity");
-    let ready = dir.join("ready");
-    let mut child = OwnedChild::spawn(spec("ignore", &ready)).unwrap();
-    wait_file(&ready);
-    child.identity.started.0 ^= 1;
-    let error = child.shutdown(policy(Duration::ZERO)).unwrap_err();
-    assert!(error.to_string().contains("cannot verify process identity"));
-}
-
-#[test]
 fn force_kills_and_reaps_descendants_but_not_a_decoy() {
     let _serial = PROCESS_TEST_LOCK.lock().unwrap();
     protect_test_harness();

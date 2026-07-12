@@ -97,16 +97,16 @@ impl PlatformChild {
         self.child.try_wait()
     }
 
-    pub(crate) fn observe_identity(&self) -> std::io::Result<ProcessIdentity> {
-        observe_process(self.child.as_raw_handle() as HANDLE, self.child.id())
-    }
-
     pub(crate) fn graceful(&mut self) -> std::io::Result<()> {
         if unsafe { GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, self.child.id()) } == 0 {
             Err(std::io::Error::last_os_error())
         } else {
             Ok(())
         }
+    }
+
+    pub(crate) fn completion_forced_remainder(&self, _status: ExitStatus) -> bool {
+        false
     }
 
     pub(crate) fn force(&mut self) -> std::io::Result<()> {

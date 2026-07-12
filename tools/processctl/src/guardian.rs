@@ -7,10 +7,13 @@ use std::time::{Duration, Instant};
 
 const LIVENESS_FD: RawFd = 3;
 const STATUS_FD: RawFd = 4;
+pub(crate) const DISPATCH_ARG: &str = "--__processctl-guardian-v1";
+const FORCED_REMAINDER_EXIT: i32 = 190;
 
 pub(crate) fn run() -> i32 {
     match run_inner() {
-        Ok(status) => status
+        Ok((_status, true)) => FORCED_REMAINDER_EXIT,
+        Ok((status, false)) => status
             .code()
             .unwrap_or_else(|| 128 + status.signal().unwrap_or(1)),
         Err(error) => {
@@ -20,9 +23,12 @@ pub(crate) fn run() -> i32 {
     }
 }
 
-fn run_inner() -> std::io::Result<ExitStatus> {
+fn run_inner() -> std::io::Result<(ExitStatus, bool)> {
     let mut args = std::env::args_os();
     let _guardian = args.next();
+    if args.next().as_deref() != Some(std::ffi::OsStr::new(DISPATCH_ARG)) {
+        return Err(invalid("guardian dispatch marker missing"));
+    }
     if args.next().as_deref() != Some(std::ffi::OsStr::new("--")) {
         return Err(invalid("expected `-- <executable> [args...]`"));
     }
@@ -73,6 +79,15 @@ fn run_inner() -> std::io::Result<ExitStatus> {
             if libc::sigprocmask(libc::SIG_SETMASK, &empty, std::ptr::null_mut()) != 0 {
                 return Err(std::io::Error::last_os_error());
             }
+            if libc::ptrace(
+                libc::PTRACE_TRACEME,
+                0,
+                std::ptr::null_mut::<libc::c_void>(),
+                std::ptr::null_mut::<libc::c_void>(),
+            ) != 0
+            {
+                return Err(std::io::Error::last_os_error());
+            }
             Ok(())
         });
     }
@@ -81,40 +96,91 @@ fn run_inner() -> std::io::Result<ExitStatus> {
     let target_pidfd = match pidfd_open(target_pid) {
         Ok(pidfd) => pidfd,
         Err(error) => {
-            kill_and_reap_failed_spawn(&mut target, target_pid);
+            kill_and_reap_failed_spawn(&mut target, target_pid)?;
             return Err(error);
         }
     };
+    if let Err(error) = wait_for_exec_trap(target_pid) {
+        kill_and_reap_failed_spawn(&mut target, target_pid)?;
+        return Err(error);
+    }
     let target_started = match proc_start_marker(target_pid) {
         Ok(started) => started,
         Err(error) => {
-            kill_and_reap_failed_spawn(&mut target, target_pid);
+            kill_and_reap_failed_spawn(&mut target, target_pid)?;
+            return Err(error);
+        }
+    };
+    let target_executable = match std::fs::read_link(format!("/proc/{target_pid}/exe")) {
+        Ok(path) => path,
+        Err(error) => {
+            kill_and_reap_failed_spawn(&mut target, target_pid)?;
             return Err(error);
         }
     };
 
     let mut status_pipe = unsafe { std::fs::File::from_raw_fd(STATUS_FD) };
-    let path = executable.as_os_str().as_bytes();
-    let path_len = u32::try_from(path.len()).map_err(|_| invalid("target path is too long"))?;
+    let path = target_executable.as_os_str().as_bytes();
+    let path_len = match u32::try_from(path.len()) {
+        Ok(path_len) => path_len,
+        Err(_) => {
+            kill_and_reap_failed_spawn(&mut target, target_pid)?;
+            return Err(invalid("target path is too long"));
+        }
+    };
     let handshake = status_pipe
         .write_all(&(target_pid as u32).to_ne_bytes())
         .and_then(|()| status_pipe.write_all(&target_started.to_ne_bytes()))
         .and_then(|()| status_pipe.write_all(&path_len.to_ne_bytes()))
         .and_then(|()| status_pipe.write_all(path));
     if let Err(error) = handshake {
-        let _ = unsafe { libc::kill(-target_pid, libc::SIGKILL) };
-        let _ = target.wait();
+        kill_and_reap_failed_spawn(&mut target, target_pid)?;
         return Err(error);
     }
     drop(status_pipe);
+    if unsafe {
+        libc::ptrace(
+            libc::PTRACE_DETACH,
+            target_pid,
+            std::ptr::null_mut::<libc::c_void>(),
+            std::ptr::null_mut::<libc::c_void>(),
+        )
+    } != 0
+    {
+        let error = std::io::Error::last_os_error();
+        kill_and_reap_failed_spawn(&mut target, target_pid)?;
+        return Err(error);
+    }
 
     supervise(&mut target, target_pid, &target_pidfd, &signal_fd)
 }
 
-fn kill_and_reap_failed_spawn(target: &mut Child, target_pid: i32) {
+fn wait_for_exec_trap(target_pid: i32) -> std::io::Result<()> {
+    let mut status = 0;
+    loop {
+        let waited = unsafe { libc::waitpid(target_pid, &mut status, libc::WUNTRACED) };
+        if waited == target_pid {
+            if libc::WIFSTOPPED(status) && libc::WSTOPSIG(status) == libc::SIGTRAP {
+                return Ok(());
+            }
+            return Err(std::io::Error::other(format!(
+                "target did not stop at exec boundary (wait status {status:#x})"
+            )));
+        }
+        if waited < 0 {
+            let error = std::io::Error::last_os_error();
+            if error.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(error);
+        }
+    }
+}
+
+fn kill_and_reap_failed_spawn(target: &mut Child, target_pid: i32) -> std::io::Result<()> {
     let _ = unsafe { libc::kill(-target_pid, libc::SIGKILL) };
     let _ = target.wait();
-    reap_descendants(Duration::from_secs(5));
+    reap_descendants(Duration::from_secs(5)).map(|_| ())
 }
 
 fn supervise(
@@ -122,7 +188,7 @@ fn supervise(
     target_pid: i32,
     target_pidfd: &OwnedFd,
     signal_fd: &OwnedFd,
-) -> std::io::Result<ExitStatus> {
+) -> std::io::Result<(ExitStatus, bool)> {
     let mut force = false;
     loop {
         let mut pollfds = [
@@ -168,9 +234,9 @@ fn supervise(
             let status = target.wait()?;
             // A target may leave ordinary descendants alive. Kill its owned group,
             // then reap children reparented to this subreaper before exiting.
-            let _ = unsafe { libc::kill(-target_pid, libc::SIGKILL) };
-            reap_descendants(Duration::from_secs(5));
-            return Ok(status);
+            let forced_group = unsafe { libc::kill(-target_pid, libc::SIGKILL) } == 0;
+            let forced_adopted = reap_descendants(Duration::from_secs(5))?;
+            return Ok((status, forced_group || forced_adopted));
         }
     }
 }
@@ -270,33 +336,52 @@ fn proc_start_marker(pid: i32) -> std::io::Result<u64> {
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
 }
 
-fn reap_descendants(timeout: Duration) {
+fn reap_descendants(timeout: Duration) -> std::io::Result<bool> {
     let deadline = Instant::now() + timeout;
+    let mut forced_any = false;
     loop {
-        kill_direct_children();
-        let mut status = 0;
-        let waited = unsafe { libc::waitpid(-1, &mut status, libc::WNOHANG) };
-        if waited < 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ECHILD) {
-            return;
+        forced_any |= kill_direct_children()? > 0;
+        loop {
+            let mut status = 0;
+            let waited = unsafe { libc::waitpid(-1, &mut status, libc::WNOHANG) };
+            if waited > 0 {
+                continue;
+            }
+            if waited == 0 {
+                break;
+            }
+            let error = std::io::Error::last_os_error();
+            if error.raw_os_error() == Some(libc::ECHILD) {
+                return Ok(forced_any);
+            }
+            if error.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(error);
         }
         if Instant::now() >= deadline {
-            return;
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "timed out draining guardian descendants",
+            ));
         }
         std::thread::sleep(Duration::from_millis(10));
     }
 }
 
-fn kill_direct_children() {
+fn kill_direct_children() -> std::io::Result<usize> {
     let path = format!("/proc/self/task/{}/children", unsafe { libc::getpid() });
-    let Ok(children) = std::fs::read_to_string(path) else {
-        return;
-    };
+    let children = std::fs::read_to_string(path)?;
+    let mut signalled = 0;
     for pid in children
         .split_whitespace()
         .filter_map(|pid| pid.parse::<i32>().ok())
     {
-        unsafe { libc::kill(pid, libc::SIGKILL) };
+        if unsafe { libc::kill(pid, libc::SIGKILL) } == 0 {
+            signalled += 1;
+        }
     }
+    Ok(signalled)
 }
 
 fn invalid(message: &'static str) -> std::io::Error {
