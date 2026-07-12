@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::ffi::OsString;
+use std::io::Write as _;
 use std::path::PathBuf;
 use std::process::ExitStatus;
 #[cfg(target_os = "linux")]
@@ -182,6 +183,37 @@ impl OwnedChild {
         }
     }
 
+    /// Spawns an owned process with a bounded byte sequence delivered through an
+    /// anonymous, non-nameable stdin pipe. The bytes never enter argv or the child
+    /// environment and the write end is closed before this function returns.
+    pub fn spawn_with_stdin_bytes(spec: SpawnSpec, bytes: &[u8]) -> Result<Self, ProcessError> {
+        #[cfg(any(windows, target_os = "linux"))]
+        {
+            let (input, mut writer) = private_stdin_pipe()?;
+            let (inner, identity) = crate::platform::spawn(&spec, Some(input))?;
+            let mut child = Self {
+                label: spec.label,
+                identity,
+                inner: Some(inner),
+                status: None,
+            };
+            if let Err(source) = writer.write_all(bytes) {
+                let _ = child.shutdown(ShutdownPolicy::default());
+                return Err(ProcessError::Io {
+                    operation: "write child stdin",
+                    source,
+                });
+            }
+            drop(writer);
+            Ok(child)
+        }
+        #[cfg(not(any(windows, target_os = "linux")))]
+        {
+            let _ = (spec, bytes);
+            Err(ProcessError::UnsupportedPlatform(std::env::consts::OS))
+        }
+    }
+
     #[cfg(any(windows, target_os = "linux"))]
     pub(crate) fn spawn_with_input(
         spec: SpawnSpec,
@@ -267,6 +299,55 @@ impl OwnedChild {
             std::thread::sleep(Duration::from_millis(10));
         }
     }
+}
+
+#[cfg(target_os = "linux")]
+fn private_stdin_pipe() -> Result<(crate::platform::InheritedInput, std::fs::File), ProcessError> {
+    use std::os::fd::FromRawFd as _;
+    let mut fds = [-1; 2];
+    if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
+        return Err(ProcessError::Io {
+            operation: "create child stdin pipe",
+            source: std::io::Error::last_os_error(),
+        });
+    }
+    Ok(unsafe {
+        (
+            crate::platform::InheritedInput(std::fs::File::from_raw_fd(fds[0])),
+            std::fs::File::from_raw_fd(fds[1]),
+        )
+    })
+}
+
+#[cfg(windows)]
+fn private_stdin_pipe() -> Result<(crate::platform::InheritedInput, std::fs::File), ProcessError> {
+    use std::os::windows::io::FromRawHandle as _;
+    use windows_sys::Win32::Foundation::{SetHandleInformation, HANDLE, HANDLE_FLAG_INHERIT};
+    use windows_sys::Win32::System::Pipes::CreatePipe;
+    let mut read: HANDLE = std::ptr::null_mut();
+    let mut write: HANDLE = std::ptr::null_mut();
+    if unsafe { CreatePipe(&mut read, &mut write, std::ptr::null(), 0) } == 0 {
+        return Err(ProcessError::Io {
+            operation: "create child stdin pipe",
+            source: std::io::Error::last_os_error(),
+        });
+    }
+    if unsafe { SetHandleInformation(write, HANDLE_FLAG_INHERIT, 0) } == 0 {
+        unsafe {
+            windows_sys::Win32::Foundation::CloseHandle(read);
+            windows_sys::Win32::Foundation::CloseHandle(write);
+        }
+        return Err(ProcessError::Io {
+            operation: "make child stdin writer private",
+            source: std::io::Error::last_os_error(),
+        });
+    }
+    Ok(unsafe {
+        (
+            crate::platform::InheritedInput(std::fs::File::from_raw_handle(read.cast())),
+            std::fs::File::from_raw_handle(write.cast()),
+        )
+    })
 }
 
 impl Drop for OwnedChild {

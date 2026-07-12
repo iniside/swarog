@@ -91,6 +91,8 @@ pub struct FleetState {
     run_id: String,
     topology: String,
     status: FleetStatus,
+    #[serde(default)]
+    supervisor: Option<ProcessIdentity>,
     control_endpoint: Option<PathBuf>,
     processes: Vec<ManagedProcess>,
 }
@@ -106,6 +108,7 @@ impl FleetState {
             run_id,
             topology,
             status: FleetStatus::Starting,
+            supervisor: None,
             control_endpoint: None,
             processes: Vec::new(),
         })
@@ -129,6 +132,14 @@ impl FleetState {
 
     pub fn set_status(&mut self, status: FleetStatus) {
         self.status = status;
+    }
+
+    pub fn supervisor(&self) -> Option<&ProcessIdentity> {
+        self.supervisor.as_ref()
+    }
+
+    pub fn set_supervisor(&mut self, supervisor: ProcessIdentity) {
+        self.supervisor = Some(supervisor);
     }
 
     pub fn control_endpoint(&self) -> Option<&Path> {

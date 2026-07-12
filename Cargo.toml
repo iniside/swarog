@@ -35,6 +35,7 @@ members = [
     "tools/playercli",
     # Exact, handle-owned child-process lifecycle used by dev/test tooling.
     "tools/processctl",
+    "tools/devctl",
     # Cross-platform split-proof harness (replaces split-proof.sh/.ps1 + tools/winctrl):
     # spawns the
     # 12-svc fleet via std::process (typed env/args, kill-on-drop — no shell quoting,

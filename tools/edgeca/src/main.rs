@@ -8,8 +8,6 @@
 
 use std::process::ExitCode;
 
-use edge::DevCA;
-
 fn main() -> ExitCode {
     let mut cert_path = String::new();
     let mut key_path = String::new();
@@ -30,14 +28,10 @@ fn main() -> ExitCode {
         return ExitCode::from(2);
     }
 
-    let ca = match DevCA::generate() {
-        Ok(ca) => ca,
-        Err(e) => {
-            eprintln!("edgeca: generate CA: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
-    if let Err(e) = ca.write_pem(&cert_path, &key_path) {
+    if let Err(e) = edgeca::mint_dev_ca(
+        std::path::Path::new(&cert_path),
+        std::path::Path::new(&key_path),
+    ) {
         eprintln!("edgeca: write CA: {e}");
         return ExitCode::FAILURE;
     }
