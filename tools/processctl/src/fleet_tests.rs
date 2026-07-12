@@ -1,4 +1,6 @@
 use crate::{game_backend_fleet, FleetError, FleetFlavor, FleetInputs};
+#[cfg(windows)]
+use crate::build_environment;
 
 fn inputs() -> FleetInputs {
     FleetInputs {
@@ -56,4 +58,23 @@ fn disk_drift_compares_names_not_order() {
     let reversed = fleet.services().iter().rev().map(|service| service.name.to_string());
     assert!(fleet.validate_names(reversed).is_ok());
     assert!(matches!(fleet.validate_names(["accounts-svc".to_string()]), Err(FleetError::DiskDrift { .. })));
+}
+
+#[cfg(windows)]
+#[test]
+fn sanitized_build_path_contains_the_discovered_msvc_linker() {
+    let env = build_environment();
+    let path = env.get("PATH").expect("build environment has PATH");
+    assert!(
+        std::env::split_paths(path).any(|directory| directory.join("link.exe").is_file()),
+        "sanitized build PATH must contain an installed MSVC linker"
+    );
+    assert!(
+        env.get("LIB")
+            .into_iter()
+            .flat_map(std::env::split_paths)
+            .any(|directory| directory.join("kernel32.lib").is_file()),
+        "sanitized build LIB must contain the Windows SDK libraries"
+    );
+    assert!(env.contains_key("INCLUDE"));
 }

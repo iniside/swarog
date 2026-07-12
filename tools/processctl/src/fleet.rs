@@ -1,4 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
+#[cfg(windows)]
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 
 use thiserror::Error;
@@ -136,7 +138,10 @@ impl FleetSpec {
 }
 
 pub fn build_environment() -> BTreeMap<String, String> {
-    inherited_environment(BUILD_ENV_ALLOWLIST)
+    let mut env = inherited_environment(BUILD_ENV_ALLOWLIST);
+    #[cfg(windows)]
+    append_msvc_linker_path(&mut env);
+    env
 }
 
 pub fn runtime_environment() -> BTreeMap<String, String> {
@@ -148,6 +153,92 @@ fn inherited_environment(allowlist: &[&str]) -> BTreeMap<String, String> {
         .iter()
         .filter_map(|key| std::env::var(key).ok().map(|value| ((*key).to_string(), value)))
         .collect()
+}
+
+#[cfg(windows)]
+fn append_msvc_linker_path(env: &mut BTreeMap<String, String>) {
+    let Some(program_files) = std::env::var_os("ProgramFiles(x86)") else {
+        return;
+    };
+    let visual_studio = PathBuf::from(program_files).join("Microsoft Visual Studio");
+    let Ok(releases) = std::fs::read_dir(visual_studio) else {
+        return;
+    };
+    let mut candidates = Vec::new();
+    for release in releases.filter_map(Result::ok) {
+        let Ok(editions) = std::fs::read_dir(release.path()) else {
+            continue;
+        };
+        for edition in editions.filter_map(Result::ok) {
+            let tools = edition.path().join("VC/Tools/MSVC");
+            let Ok(versions) = std::fs::read_dir(tools) else {
+                continue;
+            };
+            for version in versions.filter_map(Result::ok) {
+                let tool_root = version.path();
+                let bin = tool_root.join("bin/Hostx64/x64");
+                if bin.join("link.exe").is_file() {
+                    candidates.push((tool_root, bin));
+                }
+            }
+        }
+    }
+    candidates.sort();
+    let Some((msvc_root, linker_dir)) = candidates.pop() else {
+        return;
+    };
+    let sdk_root = PathBuf::from(
+        std::env::var_os("ProgramFiles(x86)").expect("ProgramFiles(x86) was present above"),
+    )
+    .join("Windows Kits/10");
+    let sdk_version = newest_directory(&sdk_root.join("Lib"));
+
+    let mut paths = vec![linker_dir];
+    if let Some(version) = &sdk_version {
+        let sdk_bin = sdk_root.join("bin").join(version).join("x64");
+        if sdk_bin.is_dir() {
+            paths.push(sdk_bin);
+        }
+    }
+    if let Some(existing) = env.get("PATH") {
+        paths.extend(std::env::split_paths(OsStr::new(existing)));
+    }
+    if let Ok(path) = std::env::join_paths(paths) {
+        env.insert("PATH".into(), path.to_string_lossy().into_owned());
+    }
+
+    let mut libraries = vec![msvc_root.join("lib/x64")];
+    let mut includes = vec![msvc_root.join("include")];
+    if let Some(version) = sdk_version {
+        libraries.extend(
+            ["ucrt/x64", "um/x64"]
+                .into_iter()
+                .map(|suffix| sdk_root.join("Lib").join(&version).join(suffix)),
+        );
+        includes.extend(
+            ["ucrt", "shared", "um", "winrt", "cppwinrt"]
+                .into_iter()
+                .map(|suffix| sdk_root.join("Include").join(&version).join(suffix)),
+        );
+    }
+    if let Ok(value) = std::env::join_paths(libraries.into_iter().filter(|path| path.is_dir())) {
+        env.insert("LIB".into(), value.to_string_lossy().into_owned());
+    }
+    if let Ok(value) = std::env::join_paths(includes.into_iter().filter(|path| path.is_dir())) {
+        env.insert("INCLUDE".into(), value.to_string_lossy().into_owned());
+    }
+}
+
+#[cfg(windows)]
+fn newest_directory(parent: &Path) -> Option<OsString> {
+    let mut directories: Vec<_> = std::fs::read_dir(parent)
+        .ok()?
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+        .map(|entry| entry.file_name())
+        .collect();
+    directories.sort();
+    directories.pop()
 }
 
 pub fn game_backend_fleet(inputs: &FleetInputs, flavor: FleetFlavor) -> FleetSpec {
