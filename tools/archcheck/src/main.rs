@@ -49,7 +49,7 @@ mod tests;
 const GATEWAY_CRATE: &str = "gateway";
 /// Tool-owned conformance policy must never enter a shipping process graph.
 const CONFORMANCE_POLICY_PACKAGE: &str = "conformancecheck";
-const SLOT_CONSTRUCTOR: &str = "contrib::Slot::new(";
+const SLOT_CONSTRUCTOR: &str = "Slot::new(";
 const SLOT_OWNER_FILES: [&str; 6] = [
     "api/admin/api/src/lib.rs",
     "core/opsapi/src/lib.rs",
@@ -1159,7 +1159,12 @@ fn slot_constructor_violations(rel: &str, text: &str) -> Vec<String> {
             let trimmed = line.trim_start();
             !trimmed.starts_with("//")
                 && !trimmed.starts_with('"')
-                && line.contains(SLOT_CONSTRUCTOR)
+                && line.match_indices(SLOT_CONSTRUCTOR).any(|(start, _)| {
+                    line[..start]
+                        .chars()
+                        .next_back()
+                        .is_none_or(|ch| !(ch == '_' || ch.is_alphanumeric()))
+                })
         })
         .map(|(line, _)| {
             format!(

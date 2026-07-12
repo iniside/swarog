@@ -925,12 +925,22 @@ fn module_slot_constructor_is_a_violation() {
 }
 
 #[test]
+fn imported_slot_constructor_is_a_violation() {
+    let findings = super::slot_constructor_violations(
+        "modules/inventory/src/lib.rs",
+        "use contrib::Slot;\nconst BAD: Slot<u32> = Slot::new(\"bad\");",
+    );
+    assert_eq!(findings.len(), 1, "{findings:?}");
+    assert!(findings[0].contains("modules/inventory/src/lib.rs:2"));
+}
+
+#[test]
 fn every_canonical_slot_owner_may_construct_slots() {
     assert_eq!(super::SLOT_OWNER_FILES.len(), 6);
     for owner in super::SLOT_OWNER_FILES {
         let findings = super::slot_constructor_violations(
             owner,
-            "pub const SLOT: contrib::Slot<u32> = contrib::Slot::new(\"owned\");",
+            "use contrib::Slot;\npub const SLOT: Slot<u32> = Slot::new(\"owned\");",
         );
         assert!(findings.is_empty(), "owner {owner} was rejected: {findings:?}");
     }
@@ -940,7 +950,9 @@ fn every_canonical_slot_owner_may_construct_slots() {
 fn slot_constructor_in_comments_and_strings_is_ignored() {
     let text = r###"
 // contrib::Slot::new("line-comment")
+// Slot::new("imported-line-comment")
 "contrib::Slot::new(normal-string)";
+"Slot::new(imported-normal-string)";
 "###;
     assert!(
         super::slot_constructor_violations("modules/demo/src/lib.rs", text).is_empty()
