@@ -185,7 +185,12 @@ never a silent last-writer-wins overwrite.
    add stubs where consumers live, add the svc lib to `tools/checkmodules`'s Split
    profile, and extend `tools/splitproof` (a new `Svc` in `fleet()` with its env +
    ports + a named assertion, HTTP ops asserted THROUGH gateway-svc; the harness's
-   fleet-drift preflight fails if `fleet()` != `cmd/*-svc` on disk).
+   fleet-drift preflight fails if `fleet()` != `cmd/*-svc` on disk). Add
+   `src/conformance.rs` with `pub fn entry() -> conformance::Entry` declaring a
+   stance (`Applies(fixture)` or `NotApplicable { why }`) for every
+   `conformance::Convention`, and add the entry to `tools/conformance`'s
+   `entries()` list — `conformancecheck`'s drift preflight fails loudly if
+   forgotten.
 5. No event-routing wiring exists: producers append to the shared log, consumers
    pull from their checkpoint — the same code in monolith and split. `topiccheck`
    validates the subscription graph per deployment profile.
@@ -318,6 +323,7 @@ cargo test --workspace          # unit + live-Postgres integration + proptests (
 cargo clippy --workspace --all-targets -- -D warnings
 cargo run -p archcheck          # fortress dependency law + plane tripwires
 cargo run -p topiccheck         # profile-aware subscription graph validation
+cargo run -p conformancecheck   # convention-conformance: every module declares a stance per convention
 cargo run -p eventctl -- list   # operator CLI: lag/retry/pause/resume/skip/retire
 cargo run -p adminctl -- list   # operator CLI: admin users (create-user/list/delete)
 ./install.sh <username>         # create/reset an admin portal user (no-echo prompt)
@@ -442,8 +448,8 @@ api/<name>/                # contract surface per domain
   <name>rpc/               #   generated glue (Client/register_server/factories)
 modules/                   # private impls — 11 fortresses + gateway (see above)
 demos/                     # non-shipping demo crates (webui) — cmd/server only
-tools/                     # rpc-macro (+tests), archcheck, topiccheck, edgeca,
-                           # playercli
+tools/                     # rpc-macro (+tests), archcheck, topiccheck,
+                           # conformancecheck, edgeca, playercli
 experiments/               # archived sketches: go-sketch (the ported original),
                            # jvm-kotlin-sketch, jvm-quarkus-sketch — reference only
 UILayout/                  # Claude Design mockups (spec for admin UI, not runnable)

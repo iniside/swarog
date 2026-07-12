@@ -34,29 +34,32 @@
 #                    COMMITTED golden in docs/reference/contract-golden/contracts.txt
 #                    (values cargo-public-api structurally cannot see; re-bless
 #                    intentional changes with --bless-contract-golden)
-#   9. split-proof   ./split-proof.sh -- the eleven-process topology proof
+#   9. conformance   cargo run -p conformancecheck -- convention-conformance: every
+#                    module declares a stance (Applies/NotApplicable) per convention,
+#                    drift-checked against modules/* on disk, executed against fixtures
+#  10. split-proof   ./split-proof.sh -- the eleven-process topology proof
 #
 # ADVISORY (--all):
-#  10. public-api    cargo-public-api diff of the api/*api and api/*events contract
+#  11. public-api    cargo-public-api diff of the api/*api and api/*events contract
 #                    crates vs COMMITTED snapshots in docs/reference/public-api-baseline/
 #                    (crate list derived from the filesystem; ANY diff FAILs, removed
 #                    symbols flagged BREAKING, added ADDITIVE; re-bless with
 #                    --bless-public-api). Needs a nightly toolchain for rustdoc JSON --
 #                    auto-installed, SKIPs cleanly if unavailable.
-#  11. fuzz          cargo-fuzz targets in core/edge/fuzz/ (frame_decode, wire_decode),
+#  12. fuzz          cargo-fuzz targets in core/edge/fuzz/ (frame_decode, wire_decode),
 #                    10s each. SKIPs if cargo-fuzz can't execute on this platform
 #                    (Windows lacks the libFuzzer sanitizer runtime as of this writing --
 #                    the targets still build/check and are exercised for real on Linux/CI)
-#  12. csharp-client builds clients/csharp (gbclient) and drives it over pure QUIC
+#  13. csharp-client builds clients/csharp (gbclient) and drives it over pure QUIC
 #                    against a self-contained monolith: raw Unauthorized/NotFound
 #                    negatives + a typed register->create->list flow. SKIPs if dotnet
 #                    is absent or QuicConnection.IsSupported is false (msquic missing).
-#  13. topiccheck    builds the monolith module set with a recording bus transport and
+#  14. topiccheck    builds the monolith module set with a recording bus transport and
 #                    fails (under --strict) on any bus::define'd topic with no subscriber
 #                    (the Rust redesign of Go's whole-program topiccheck)
 #
 # SLOW (--slow):
-#   14. mutants    cargo-mutants over the pure foundation crates (edge, gateway,
+#   15. mutants    cargo-mutants over the pure foundation crates (edge, gateway,
 #                  asyncevents, registry, bus)
 #
 # Prints a PASS/FAIL/SKIP summary and exits non-zero iff a BLOCKING stage failed (or
@@ -640,6 +643,7 @@ simple_stage fortress    true fortress
 simple_stage routecheck  true cargo run -q -p routecheck
 simple_stage codegen-fresh true codegen_fresh
 simple_stage contract-golden true cargo run -q -p topiccheck -- contract-golden
+simple_stage conformance true cargo run -q -p conformancecheck
 simple_stage split-proof true cargo run -q -p splitproof
 
 if [ "$RUN_ADVISORY" -eq 1 ]; then

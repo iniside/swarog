@@ -611,6 +611,7 @@ Invoke-FortressStage
 Invoke-SimpleStage 'routecheck' $true 'cargo' @('run', '-q', '-p', 'routecheck')
 Invoke-CodegenFreshStage
 Invoke-SimpleStage 'contract-golden' $true 'cargo' @('run', '-q', '-p', 'topiccheck', '--', 'contract-golden')
+Invoke-SimpleStage 'conformance' $true 'cargo' @('run', '-q', '-p', 'conformancecheck')
 Invoke-SimpleStage 'split-proof' $true 'cargo' @('run', '-q', '-p', 'splitproof')
 
 if ($RunAdvisory) {

@@ -88,6 +88,11 @@ value changes which operations get contributed), add it to `GATES` in
 3. Add the svc to the `fortress` verify-stage port list.
 4. New event topics: consumers exist or the topic is consciously added to
    topiccheck's `ALLOW_UNSUBSCRIBED`.
+5. Add `src/conformance.rs` with `pub fn entry() -> conformance::Entry`
+   declaring a stance (`Applies(fixture)` or `NotApplicable { why }`) for
+   every `conformance::Convention`, and add the entry to `tools/conformance`'s
+   `entries()` list — `conformancecheck`'s drift preflight fails loudly if
+   forgotten.
 
 ## Step 6 — Verify (via the safe-verification skill)
 
@@ -99,6 +104,7 @@ at-risk path — a monolith-only demo is not proof.
 
 Grep-diff yourself against reality (hand-maintained lists drift): the module
 appears in `cmd/server`, in its own svc, in checkmodules Split profile, in both
-split-proof scripts, in the fortress port list; every `require` has a stub in
-every process where a consumer runs without the provider. If any list disagrees
-with the code, fix the list in the same change.
+split-proof scripts, in the fortress port list, and in `tools/conformance`'s
+`entries()`; every `require` has a stub in every process where a consumer runs
+without the provider. If any list disagrees with the code, fix the list in the
+same change.
