@@ -95,12 +95,10 @@
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote};
-use std::collections::BTreeMap;
+use rpc_contract_model::{HttpBind, RpcArgs};
 use syn::{
     parse::{Parse, ParseStream},
-    spanned::Spanned,
-    FnArg, GenericArgument, Ident, ItemTrait, LitInt, LitStr, Pat, PathArguments, ReturnType,
-    Signature, Token, TraitItem, Type,
+    Ident, ItemTrait, LitStr, Token,
 };
 
 /// The `#[rpc(prefix = "...")]` attribute (the pure, transport-free half — see the
@@ -134,352 +132,44 @@ pub fn generate_glue(input: TokenStream) -> TokenStream {
 }
 
 // ---------------------------------------------------------------------------
-// Attribute parsing
+// Expansion
 // ---------------------------------------------------------------------------
-
-struct RpcArgs {
-    prefix: String,
-}
-
-impl Parse for RpcArgs {
-    fn parse(input: ParseStream) -> syn::Result<Self> {
-        // prefix = "characters"
-        let key: Ident = input.parse()?;
-        if key != "prefix" {
-            return Err(syn::Error::new(key.span(), "expected `prefix = \"...\"`"));
-        }
-        input.parse::<Token![=]>()?;
-        let lit: LitStr = input.parse()?;
-        Ok(RpcArgs {
-            prefix: lit.value(),
-        })
-    }
-}
-
-/// One method's `#[http(...)]` binding.
-#[derive(Default)]
-struct HttpBind {
-    verb: String,
-    path: String,
-    /// `AuthReq` variant ident: `None` or `Player`.
-    auth: String,
-    success: u16,
-    /// param name -> path wildcard name.
-    path_args: BTreeMap<String, String>,
-    /// param name -> external body JSON key.
-    body_names: BTreeMap<String, String>,
-}
-
-fn parse_http(attr: &syn::Attribute) -> syn::Result<HttpBind> {
-    let mut b = HttpBind::default();
-    let mut seen_auth = false;
-    attr.parse_nested_meta(|meta| {
-        if meta.path.is_ident("verb") {
-            b.verb = meta.value()?.parse::<LitStr>()?.value();
-        } else if meta.path.is_ident("path") {
-            b.path = meta.value()?.parse::<LitStr>()?.value();
-        } else if meta.path.is_ident("success") {
-            b.success = meta.value()?.parse::<LitInt>()?.base10_parse()?;
-        } else if meta.path.is_ident("auth") {
-            let v = meta.value()?.parse::<LitStr>()?.value();
-            b.auth = match v.as_str() {
-                "none" => "None".to_string(),
-                "player" => "Player".to_string(),
-                other => {
-                    return Err(meta.error(format!(
-                        "auth must be \"none\" or \"player\", got {other:?}"
-                    )))
-                }
-            };
-            seen_auth = true;
-        } else if meta.path.is_ident("path_args") {
-            meta.parse_nested_meta(|inner| {
-                let param = inner
-                    .path
-                    .get_ident()
-                    .ok_or_else(|| inner.error("path_args key must be a bare param name"))?
-                    .to_string();
-                let wild = inner.value()?.parse::<LitStr>()?.value();
-                b.path_args.insert(param, wild);
-                Ok(())
-            })?;
-        } else if meta.path.is_ident("body_names") {
-            meta.parse_nested_meta(|inner| {
-                let param = inner
-                    .path
-                    .get_ident()
-                    .ok_or_else(|| inner.error("body_names key must be a bare param name"))?
-                    .to_string();
-                let key = inner.value()?.parse::<LitStr>()?.value();
-                b.body_names.insert(param, key);
-                Ok(())
-            })?;
-        } else {
-            return Err(meta.error("unknown #[http(...)] key"));
-        }
-        Ok(())
-    })?;
-    if b.verb.is_empty() || b.path.is_empty() || !seen_auth || b.success == 0 {
-        return Err(syn::Error::new(
-            attr.span(),
-            "#[http(...)] requires verb, path, auth and success",
-        ));
-    }
-    Ok(b)
-}
-
-/// Extracts the `{name}` wildcard placeholders from an HTTP path template, in order.
-/// Hand-rolled scan (same no-new-deps style as [`parse_http`]): an unclosed `{` is
-/// silently dropped — a malformed template surfaces via the placeholder/`path_args`
-/// mismatch check, not here.
-fn parse_path_placeholders(path: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut current: Option<String> = None;
-    for c in path.chars() {
-        match c {
-            '{' => current = Some(String::new()),
-            '}' => {
-                if let Some(name) = current.take() {
-                    out.push(name);
-                }
-            }
-            _ => {
-                if let Some(cur) = current.as_mut() {
-                    cur.push(c);
-                }
-            }
-        }
-    }
-    out
-}
-
-// ---------------------------------------------------------------------------
-// Method model
-// ---------------------------------------------------------------------------
-
-struct Arg {
-    ident: Ident,
-    ty: Type,
-    /// Set when this arg is sourced from a path wildcard (`path_args`).
-    wildcard: Option<String>,
-    /// External JSON key when it differs from the param name (`body_names`).
-    rename: Option<String>,
-}
 
 struct MethodModel {
-    /// The Go-style Pascal name, e.g. `OwnerOf` (for type names).
     pascal: String,
-    /// The wire method string, e.g. `characters.ownerOf`.
     wire: String,
-    /// The full method signature (minus `#[http]`), reproduced for the client impl.
-    sig: Signature,
+    sig: syn::Signature,
     method_ident: Ident,
     has_identity: bool,
     id_ident: Option<Ident>,
-    args: Vec<Arg>,
-    /// `Some(T)` for a `Result<T, _>` where `T != ()`.
-    value_ty: Option<Type>,
+    args: Vec<rpc_contract_model::Arg>,
+    value_ty: Option<syn::Type>,
     http: Option<HttpBind>,
     retry_safe: bool,
 }
 
-fn build_method(
-    prefix: &str,
-    f: &mut syn::TraitItemFn,
-) -> syn::Result<MethodModel> {
-    // Pull off (and remove) an `#[http(...)]` attribute so the re-emitted trait is
-    // clean (`http` is not a registered attribute).
-    let mut http = None;
-    let mut retry_safe = false;
-    let mut kept = Vec::new();
-    for attr in f.attrs.drain(..) {
-        if attr.path().is_ident("http") {
-            http = Some(parse_http(&attr)?);
-        } else if attr.path().is_ident("retry_safe") {
-            if retry_safe {
-                return Err(syn::Error::new(attr.span(), "duplicate #[retry_safe]"));
-            }
-            retry_safe = true;
-        } else {
-            kept.push(attr);
-        }
-    }
-    f.attrs = kept;
-
-    let sig = f.sig.clone();
-    let method_ident = sig.ident.clone();
-    let name = method_ident.to_string();
-
-    let mut inputs = sig.inputs.iter();
-    match inputs.next() {
-        Some(FnArg::Receiver(_)) => {}
-        _ => {
-            return Err(syn::Error::new(
-                sig.span(),
-                "rpc method must take &self as its first parameter",
-            ))
-        }
-    }
-
-    let http_ref = http.as_ref();
-    let mut has_identity = false;
-    let mut id_ident = None;
-    let mut args = Vec::new();
-    for (i, input) in inputs.enumerate() {
-        let pt = match input {
-            FnArg::Typed(pt) => pt,
-            FnArg::Receiver(_) => {
-                return Err(syn::Error::new(input.span(), "unexpected self parameter"))
-            }
-        };
-        let ident = match &*pt.pat {
-            Pat::Ident(pi) => pi.ident.clone(),
-            _ => {
-                return Err(syn::Error::new(
-                    pt.pat.span(),
-                    "rpc method parameters must be simple identifiers",
-                ))
-            }
-        };
-        // The first parameter, if typed `Identity`, is the caller identity.
-        if i == 0 && is_identity_type(&pt.ty) {
-            has_identity = true;
-            id_ident = Some(ident);
-            continue;
-        }
-        let pname = ident.to_string();
-        let wildcard = http_ref.and_then(|b| b.path_args.get(&pname).cloned());
-        let rename = http_ref.and_then(|b| b.body_names.get(&pname).cloned());
-        args.push(Arg {
-            ident,
-            ty: (*pt.ty).clone(),
-            wildcard,
-            rename,
-        });
-    }
-
-    // Compile-time validation of the `#[http(...)]` mappings (finding 9). All the
-    // data is in scope here: bogus keys and placeholder/`path_args` drift are inert
-    // at runtime (a bad key is never `.get()`-hit; a stray `{wildcard}` decodes to
-    // "" via `unwrap_or_default`), so catch them as ordinary compile errors instead.
-    if let Some(b) = http_ref {
-        let param_names: std::collections::HashSet<String> =
-            args.iter().map(|a| a.ident.to_string()).collect();
-        // (1) Every `path_args`/`body_names` KEY must name a real (marshalled) param.
-        // The leading `Identity` param is stripped and excluded here, so mapping it
-        // is correctly rejected — identity is never sourced from path or body.
-        for k in b.path_args.keys().chain(b.body_names.keys()) {
-            if !param_names.contains(k) {
-                return Err(syn::Error::new(
-                    sig.span(),
-                    format!(
-                        "#[http(...)] path_args/body_names entry {k:?} names no parameter of method `{name}`"
-                    ),
-                ));
-            }
-        }
-        // (2) The `{name}` placeholders in the path template and the `path_args`
-        // VALUES must be in exact bijection: every placeholder is fed by a
-        // `path_args` value, and every `path_args` value fills a placeholder.
-        let placeholders = parse_path_placeholders(&b.path);
-        let values: std::collections::HashSet<&String> = b.path_args.values().collect();
-        for ph in &placeholders {
-            if !values.contains(ph) {
-                return Err(syn::Error::new(
-                    sig.span(),
-                    format!(
-                        "#[http(...)] path template of `{name}` has placeholder {{{ph}}} with no matching path_args value"
-                    ),
-                ));
-            }
-        }
-        for v in b.path_args.values() {
-            if !placeholders.contains(v) {
-                return Err(syn::Error::new(
-                    sig.span(),
-                    format!(
-                        "#[http(...)] path_args value {v:?} of `{name}` does not appear as a {{...}} placeholder in path {:?}",
-                        b.path
-                    ),
-                ));
-            }
-        }
-    }
-
-    let value_ty = result_ok_type(&sig.output)?;
-
-    Ok(MethodModel {
-        pascal: to_pascal(&name),
-        wire: format!("{prefix}.{}", to_lower_camel(&name)),
-        sig,
-        method_ident,
-        has_identity,
-        id_ident,
-        args,
-        value_ty,
-        http,
-        retry_safe,
+fn parse_methods(prefix: &str, item_trait: &mut ItemTrait) -> syn::Result<Vec<MethodModel>> {
+    rpc_contract_model::build_methods(item_trait).map(|methods| {
+        methods
+            .into_iter()
+            .map(|method| {
+                let name = method.method_ident.to_string();
+                MethodModel {
+                    pascal: to_pascal(&name),
+                    wire: format!("{prefix}.{}", to_lower_camel(&name)),
+                    sig: method.sig,
+                    method_ident: method.method_ident,
+                    has_identity: method.has_identity,
+                    id_ident: method.id_ident,
+                    args: method.args,
+                    value_ty: method.value_ty,
+                    http: method.http,
+                    retry_safe: method.retry_safe,
+                }
+            })
+            .collect()
     })
 }
-
-/// `true` when the type's final path segment is `Identity` (bare, or `opsapi::`-
-/// qualified). This is the identity-convention recogniser.
-fn is_identity_type(ty: &Type) -> bool {
-    if let Type::Path(tp) = ty {
-        if let Some(seg) = tp.path.segments.last() {
-            return seg.ident == "Identity";
-        }
-    }
-    false
-}
-
-/// Extracts `T` from a `Result<T, _>` return type; `None` when `T` is `()`.
-fn result_ok_type(output: &ReturnType) -> syn::Result<Option<Type>> {
-    let ty = match output {
-        ReturnType::Type(_, ty) => ty.as_ref(),
-        ReturnType::Default => {
-            return Err(syn::Error::new(
-                output.span(),
-                "rpc method must return Result<T, opsapi::Error>",
-            ))
-        }
-    };
-    let tp = match ty {
-        Type::Path(tp) => tp,
-        _ => return Err(syn::Error::new(ty.span(), "rpc method must return Result<..>")),
-    };
-    let seg = tp
-        .path
-        .segments
-        .last()
-        .ok_or_else(|| syn::Error::new(ty.span(), "rpc method must return Result<..>"))?;
-    if seg.ident != "Result" {
-        return Err(syn::Error::new(
-            seg.ident.span(),
-            "rpc method must return Result<T, opsapi::Error>",
-        ));
-    }
-    let ok = match &seg.arguments {
-        PathArguments::AngleBracketed(ab) => ab.args.first().and_then(|a| match a {
-            GenericArgument::Type(t) => Some(t.clone()),
-            _ => None,
-        }),
-        _ => None,
-    }
-    .ok_or_else(|| syn::Error::new(seg.span(), "Result must have a type argument"))?;
-
-    // Unit `()` → no value field.
-    if let Type::Tuple(tup) = &ok {
-        if tup.elems.is_empty() {
-            return Ok(None);
-        }
-    }
-    Ok(Some(ok))
-}
-
-// ---------------------------------------------------------------------------
-// Expansion
-// ---------------------------------------------------------------------------
 
 /// The `#[rpc]` expansion: the cleaned trait, the pure `<snake>_rpc` module, and the
 /// metadata-callback macro carrying the pre-strip tokens to `generate_glue!`.
@@ -494,12 +184,7 @@ fn expand(
     let module_ident = format_ident!("{}_rpc", snake);
 
     // Build a model per method, stripping `#[http]` from the trait as we go.
-    let mut methods = Vec::new();
-    for it in item_trait.items.iter_mut() {
-        if let TraitItem::Fn(f) = it {
-            methods.push(build_method(&args.prefix, f)?);
-        }
-    }
+    let mut methods = parse_methods(&args.prefix, &mut item_trait)?;
     // Deterministic emission order (Go sorts by method name).
     methods.sort_by(|a, b| a.pascal.cmp(&b.pascal));
 
@@ -627,7 +312,10 @@ impl Parse for GlueInput {
         input.parse::<Token![,]>()?;
         let key: Ident = input.parse()?;
         if key != "api" {
-            return Err(syn::Error::new(key.span(), "expected `api = <crate ident>`"));
+            return Err(syn::Error::new(
+                key.span(),
+                "expected `api = <crate ident>`",
+            ));
         }
         input.parse::<Token![=]>()?;
         let api: Ident = input.parse()?;
@@ -655,12 +343,7 @@ fn expand_glue(glue: GlueInput) -> syn::Result<TokenStream2> {
     let trait_path = quote! { ::#api::#trait_ident };
     let qual = quote! { ::#api::#module_ident:: };
 
-    let mut methods = Vec::new();
-    for it in item_trait.items.iter_mut() {
-        if let TraitItem::Fn(f) = it {
-            methods.push(build_method(&glue.prefix, f)?);
-        }
-    }
+    let mut methods = parse_methods(&glue.prefix, &mut item_trait)?;
     methods.sort_by(|a, b| a.pascal.cmp(&b.pascal));
 
     let client_methods = methods
@@ -759,10 +442,7 @@ fn gen_request_struct(m: &MethodModel) -> TokenStream2 {
         let ty = &a.ty;
         // A body arg with an overridden external key gets a serde rename; a path arg
         // keeps its param-name key (wire-internal, populated by decode).
-        let rename = a
-            .rename
-            .as_ref()
-            .map(|k| quote! { #[serde(rename = #k)] });
+        let rename = a.rename.as_ref().map(|k| quote! { #[serde(rename = #k)] });
         quote! { #rename pub #ident: #ty, }
     });
     // Bound methods derive Default so `decode` can build from partial input (path

@@ -30,6 +30,7 @@ members = [
     "core/httpmw",
     # Tooling — codegen + the dev-CA minter (Go's tools/).
     "tools/rpc-macro",
+    "tools/rpc-contract-model",
     "tools/rpc-macro-tests",
     "tools/edgeca",
     "tools/playercli",
@@ -242,6 +243,7 @@ httpmw = { path = "core/httpmw" }
 
 # ---- Tooling (tools/): the #[rpc] codegen. ----
 rpc-macro = { path = "tools/rpc-macro" }
+rpc-contract-model = { path = "tools/rpc-contract-model" }
 checkmodules = { path = "tools/checkmodules" }
 
 # ---- Contract surfaces (api/<name>/): shared by modules, import no module.

@@ -3212,6 +3212,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "rpc-contract-model"
+version = "0.1.0"
+dependencies = [
+ "syn",
+]
+
+[[package]]
 name = "rpc-macro"
 version = "0.1.0"
 dependencies = [
@@ -3219,6 +3226,7 @@ dependencies = [
  "opsapi",
  "proc-macro2",
  "quote",
+ "rpc-contract-model",
  "serde",
  "serde_json",
  "syn",
