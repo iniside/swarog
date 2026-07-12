@@ -1,4 +1,5 @@
 mod process;
+mod state;
 
 #[cfg(target_os = "linux")]
 mod guardian;
@@ -14,6 +15,13 @@ pub use process::{
     OutputDestination, OwnedChild, ProcessError, ProcessGroupPolicy, ProcessIdentity,
     ShutdownOutcome, ShutdownPolicy, SpawnSpec, StartMarker,
 };
+pub use state::{
+    FleetState, FleetStatus, ManagedProcess, ManagedStatus, StateCheckpointError, StateError,
+    StateStore, STATE_VERSION,
+};
+
+#[cfg(test)]
+mod state_tests;
 
 #[cfg(target_os = "linux")]
 /// Dispatches the private Linux guardian mode embedded in the current executable.

@@ -2753,6 +2753,8 @@ name = "processctl"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "serde",
+ "serde_json",
  "thiserror 1.0.69",
  "windows-sys 0.59.0",
 ]

@@ -9,7 +9,8 @@ use std::sync::Once;
 use std::time::{Duration, Instant};
 
 use crate::{
-    OutputDestination, OwnedChild, ProcessGroupPolicy, ShutdownOutcome, ShutdownPolicy, SpawnSpec,
+    FleetState, OutputDestination, OwnedChild, ProcessGroupPolicy, ShutdownOutcome, ShutdownPolicy,
+    SpawnSpec, StateStore,
 };
 
 static NEXT_DIR: AtomicU64 = AtomicU64::new(0);
@@ -253,6 +254,29 @@ fn process_already_inside_owned_job_can_create_nested_owned_job() {
     while supervisor.try_wait().unwrap().is_none() {
         std::thread::sleep(Duration::from_millis(10));
     }
+}
+
+#[test]
+fn failed_post_spawn_checkpoint_reaps_new_child_and_started_prefix() {
+    let _serial = PROCESS_TEST_LOCK.lock().unwrap();
+    protect_test_harness();
+    let dir = test_dir("checkpoint-rollback");
+    let first_ready = dir.join("first.ready");
+    let second_ready = dir.join("second.ready");
+    let first = OwnedChild::spawn(spec("ignore", &first_ready)).unwrap();
+    let second = OwnedChild::spawn(spec("ignore", &second_ready)).unwrap();
+    wait_file(&first_ready);
+    wait_file(&second_ready);
+    let pids = [first.identity().pid, second.identity().pid];
+    let mut started = vec![first, second];
+    let store = StateStore::new(dir.join("missing-parent").join("fleet.json"));
+    let state = FleetState::new("run-rollback", "split").unwrap();
+    let error = store
+        .checkpoint_or_rollback(&state, &mut started, policy(Duration::from_millis(100)))
+        .unwrap_err();
+    assert!(error.cleanup_failures.is_empty());
+    wait_dead(pids[0]);
+    wait_dead(pids[1]);
 }
 
 #[test]

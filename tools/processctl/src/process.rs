@@ -6,6 +6,7 @@ use std::process::ExitStatus;
 use std::process::Stdio;
 use std::time::Duration;
 
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -49,14 +50,14 @@ pub struct SpawnSpec {
     pub process_group: ProcessGroupPolicy,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ProcessIdentity {
     pub pid: u32,
     pub executable: PathBuf,
     pub started: StartMarker,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct StartMarker(pub u64);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

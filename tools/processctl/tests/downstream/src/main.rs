@@ -8,8 +8,8 @@ mod linux_fixture {
     use std::time::{Duration, Instant};
 
     use processctl::{
-        OutputDestination, OwnedChild, ProcessGroupPolicy, ShutdownOutcome, ShutdownPolicy,
-        SpawnSpec,
+        FleetState, ManagedProcess, OutputDestination, OwnedChild, ProcessGroupPolicy,
+        ProcessIdentity, ShutdownOutcome, ShutdownPolicy, SpawnSpec, StartMarker, StateStore,
     };
 
     pub(super) fn entry() -> ExitCode {
@@ -32,7 +32,7 @@ mod linux_fixture {
             None | Some("self-test") => self_test(),
             Some("child") => child(args.collect()),
             Some("crash-supervisor") => crash_supervisor(args.collect()),
-            _ => Err("expected self-test, child, or crash-supervisor".into()),
+            _ => self_test(),
         }
     }
 
@@ -204,6 +204,8 @@ mod linux_fixture {
         }
 
         crash_cleanup_test(&dir)?;
+        checkpoint_rollback_test(&dir)?;
+        stale_state_identity_test(&dir)?;
         println!("processctl downstream fixture: PASS");
         Ok(())
     }
@@ -248,6 +250,59 @@ mod linux_fixture {
         wait_dead(pids[1])?;
         if !process_alive(decoy.id()) {
             return Err("unrelated decoy was killed".into());
+        }
+        let _ = decoy.kill();
+        let _ = decoy.wait();
+        Ok(())
+    }
+
+    fn checkpoint_rollback_test(dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
+        let first_ready = dir.join("checkpoint-first.ready");
+        let second_ready = dir.join("checkpoint-second.ready");
+        let first = spawn("ignore", &first_ready)?;
+        let second = spawn("ignore", &second_ready)?;
+        wait_file(&first_ready)?;
+        wait_file(&second_ready)?;
+        let pids = [first.identity().pid, second.identity().pid];
+        let mut started = vec![first, second];
+        let state = FleetState::new("fixture-rollback", "split")?;
+        let store = StateStore::new(dir.join("missing-parent").join("fleet.json"));
+        let error = store
+            .checkpoint_or_rollback(&state, &mut started, policy(Duration::from_millis(100)))
+            .unwrap_err();
+        if !error.cleanup_failures.is_empty() {
+            return Err(format!("checkpoint rollback failed: {error}").into());
+        }
+        wait_dead(pids[0])?;
+        wait_dead(pids[1])?;
+        Ok(())
+    }
+
+    fn stale_state_identity_test(dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
+        let ready = dir.join("stale-decoy.ready");
+        let mut decoy = Command::new(std::env::current_exe()?)
+            .args(["child", "sleep"])
+            .arg(&ready)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()?;
+        wait_file(&ready)?;
+        let mut state = FleetState::new("stale-run", "split")?;
+        state.push_process(ManagedProcess::new(
+            "stale-decoy",
+            ProcessIdentity {
+                pid: decoy.id(),
+                executable: PathBuf::from("definitely-not-the-decoy"),
+                started: StartMarker(0),
+            },
+            PathBuf::from("stale.out"),
+            PathBuf::from("stale.err"),
+        )?);
+        let store = StateStore::new(dir.join("stale-state.json"));
+        store.write_atomic(&state)?;
+        let _loaded = store.load()?.ok_or("stale state disappeared")?;
+        if !process_alive(decoy.id()) {
+            return Err("loading stale identity signalled an unrelated decoy".into());
         }
         let _ = decoy.kill();
         let _ = decoy.wait();
