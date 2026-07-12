@@ -54,11 +54,13 @@ const FRONT_DOOR_HOSTS: [&str; 2] = ["gateway-svc", "server"];
 /// The DERIVED exception to the gateway-crate rule (Step 10): `tools/checkmodules`
 /// builds BOTH deployment profiles by importing the `cmd/gateway-svc`/`cmd/server`
 /// LIBS (each constructs `gateway::Gateway` internally to hand back the real module
-/// list), and `topiccheck`/`requirecheck` build their module set through
-/// `checkmodules`. None of the three ships a process or dispatches an op — they are
-/// the checker path, not a second front door — so they're allowlisted here rather
-/// than by relaxing rule 3 itself.
-const GATEWAY_CHECKER_HOSTS: [&str; 3] = ["checkmodules", "topiccheck", "requirecheck"];
+/// list), `topiccheck`/`requirecheck` build their module set through `checkmodules`,
+/// and `conformancecheck` (tools/conformance) imports every module crate directly —
+/// `gateway` included — to read its `conformance::entry()`. None of the four ships
+/// a process or dispatches an op — they are the checker path, not a second front
+/// door — so they're allowlisted here rather than by relaxing rule 3 itself.
+const GATEWAY_CHECKER_HOSTS: [&str; 4] =
+    ["checkmodules", "topiccheck", "requirecheck", "conformancecheck"];
 
 /// Modules sanctioned to ship WITHOUT a `cmd/<name>-svc` process. The fortress rule
 /// (CLAUDE.md constraint 2) says every domain module compiles + boots as its own svc —
@@ -267,9 +269,9 @@ fn main() {
                 violations.push(format!(
                     "{pkg_name} depends on `{GATEWAY_CRATE}` — the FrontDoor is hosted ONLY by \
                      the front processes (cmd/gateway-svc, cmd/server) plus the checker path \
-                     (tools/checkmodules, tools/topiccheck, tools/requirecheck); a domain svc \
-                     never hosts it (serve ops over the internal mTLS edge, gateway-svc \
-                     dispatches Remote)"
+                     (tools/checkmodules, tools/topiccheck, tools/requirecheck, \
+                     tools/conformance); a domain svc never hosts it (serve ops over the \
+                     internal mTLS edge, gateway-svc dispatches Remote)"
                 ));
             }
         }

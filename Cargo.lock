@@ -975,6 +975,32 @@ name = "conformance"
 version = "0.1.0"
 
 [[package]]
+name = "conformancecheck"
+version = "0.1.0"
+dependencies = [
+ "accounts",
+ "admin",
+ "anyhow",
+ "apikeys",
+ "async-trait",
+ "audit",
+ "bus",
+ "characters",
+ "checkmodules",
+ "config",
+ "conformance",
+ "gateway",
+ "inventory",
+ "leaderboard",
+ "lifecycle",
+ "match_module",
+ "rating",
+ "scheduler",
+ "sqlx",
+ "tokio",
+]
+
+[[package]]
 name = "const-oid"
 version = "0.9.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"

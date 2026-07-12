@@ -55,6 +55,12 @@ members = [
     # edge contribution sets are structurally consistent -- the general net for the
     # inventory-dev-grant bug class (a route present in one topology but not the other).
     "tools/routecheck",
+    # Convention-conformance harness (package `conformancecheck`): drift-preflights
+    # the hand list of every module's `conformance::entry()` against modules/* on
+    # disk + the monolith module set, demands a stance per module per convention,
+    # and executes the fixtures (env validation, byte caps, outage class, argon
+    # parity). `cargo run -p conformancecheck`.
+    "tools/conformance",
     # Single-sourced per-process module lists (Step 3, abstraction-leak closures;
     # per-process cmd/* libs, Step 10): both topiccheck and requirecheck build their
     # module set through this crate's `DeploymentProfile`, which imports the cmd/*

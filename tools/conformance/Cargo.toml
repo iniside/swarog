@@ -1,0 +1,44 @@
+# conformancecheck (convention-conformance harness, plan 2026-07-12-0952): executes
+# every module's declared stance on every cross-module convention (env validation,
+# input byte caps, infra-outage 503-classification, argon2 parity). A drift
+# preflight diffs the hand list of `<crate>::conformance::entry()` calls against
+# `modules/*` on disk AND the monolith module set from checkmodules — a forgotten
+# module fails per-entry before any assertion runs (silence = fail). It is a tool
+# (not a module), so it may depend on every module crate directly — archcheck only
+# constrains `modules/` consumers, and rule 3's GATEWAY_CHECKER_HOSTS allowlists
+# this harness's direct `gateway` dep.
+[package]
+name = "conformancecheck"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "conformancecheck"
+path = "src/main.rs"
+
+[dependencies]
+conformance = { workspace = true }
+checkmodules = { workspace = true }
+lifecycle = { workspace = true }
+bus = { workspace = true }
+sqlx = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+anyhow = { workspace = true }
+# The 12 fortresses, imported ONLY for their `conformance::entry()` (always-compiled
+# probe surface, the asyncevents::testing precedent). Note the match trap: crate
+# `match_module`, entry.module "match".
+accounts = { workspace = true }
+admin = { workspace = true }
+apikeys = { workspace = true }
+audit = { workspace = true }
+characters = { workspace = true }
+config = { workspace = true }
+gateway = { workspace = true }
+inventory = { workspace = true }
+leaderboard = { workspace = true }
+match_module = { workspace = true }
+rating = { workspace = true }
+scheduler = { workspace = true }
