@@ -210,7 +210,30 @@ fn fail_phase(phase: &str, findings: &[String]) -> ! {
     std::process::exit(1);
 }
 
+fn parse_deny_gaps(args: impl IntoIterator<Item = String>) -> Result<bool, String> {
+    let mut deny = false;
+    for arg in args {
+        match arg.as_str() {
+            "--deny-gaps" => deny = true,
+            "-h" | "--help" => {
+                println!("usage: conformancecheck [--deny-gaps]");
+                std::process::exit(0);
+            }
+            _ => return Err(format!("unknown argument {arg:?}")),
+        }
+    }
+    Ok(deny)
+}
+
+fn deny_gaps_fails(deny_gaps: bool, gap_count: usize) -> bool {
+    deny_gaps && gap_count != 0
+}
+
 fn main() {
+    let deny_gaps = parse_deny_gaps(std::env::args().skip(1)).unwrap_or_else(|error| {
+        eprintln!("conformancecheck: {error}\nusage: conformancecheck [--deny-gaps]");
+        std::process::exit(2);
+    });
     println!("conformancecheck: convention-conformance matrix (module × convention)\n");
 
     // ---- Phase 1: drift preflight (fail before anything else) ---------------
@@ -219,6 +242,10 @@ fn main() {
     let discovered_inputs = input_inventory::discover(&input_inventory::api_root())
         .unwrap_or_else(|error| fail_phase("input discovery", &[format!("{error:#}")]));
     let input_policies = policy::input_policies();
+    let input_gap_count = input_policies
+        .iter()
+        .filter(|(_, policy)| matches!(policy, InputPolicy::KnownGap { .. }))
+        .count();
     let policy_keys = input_policies
         .iter()
         .map(|(key, _)| key.clone())
@@ -420,8 +447,12 @@ fn main() {
         );
     } else {
         println!("\n[conformancecheck] GAP: {} known gap(s)", gaps.len());
-        for gap in gaps {
+        for gap in &gaps {
             println!("  - {gap}");
         }
+    }
+    if deny_gaps_fails(deny_gaps, input_gap_count.max(gaps.len())) {
+        eprintln!("\nconformancecheck: FAIL — --deny-gaps rejects the known input-cap gaps");
+        std::process::exit(1);
     }
 }

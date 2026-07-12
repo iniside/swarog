@@ -13,6 +13,16 @@ use crate::checks::{
     CORE_INFRA_MODULES,
 };
 
+#[test]
+fn default_allows_gaps_but_deny_gaps_fails() {
+    assert!(!crate::deny_gaps_fails(false, 6));
+    assert!(crate::deny_gaps_fails(true, 6));
+    assert!(!crate::deny_gaps_fails(true, 0));
+    assert!(!crate::parse_deny_gaps(Vec::<String>::new()).unwrap());
+    assert!(crate::parse_deny_gaps(["--deny-gaps".to_owned()]).unwrap());
+    assert!(crate::parse_deny_gaps(["--unknown".to_owned()]).is_err());
+}
+
 fn set(names: &[&str]) -> BTreeSet<String> {
     names.iter().map(|s| s.to_string()).collect()
 }
