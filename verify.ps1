@@ -177,7 +177,7 @@ function Invoke-FortressStage {
 function Invoke-CargoAuditStage {
     $log = Join-Path $verifyDir 'cargo-audit.log'
     Write-Host "== cargo-audit ==" -ForegroundColor Cyan
-    if (-not (Ensure-Tool 'cargo-audit' 'cargo' @('install', 'cargo-audit', '--locked', '--version', '0.22.2'))) {
+    if (-not (Ensure-Tool 'cargo-audit' 'cargo' @('install', 'cargo-audit', '--locked'))) {
         if ($script:EnsureToolInstallFailed) {
             Write-Host "  FAIL (cargo install cargo-audit failed -- see run/verify/cargo-audit.log)" -ForegroundColor Red
             'cargo-audit unavailable: cargo install cargo-audit failed (environment defect, not an operator opt-out)' | Out-File $log

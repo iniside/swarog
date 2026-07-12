@@ -215,7 +215,7 @@ CARGO_AUDIT_IGNORE=(RUSTSEC-2023-0071)
 cargo_audit_stage() {
     local log="$VERIFY_DIR/cargo-audit.log"
     echo "== cargo-audit =="
-    ensure_tool cargo-audit cargo install cargo-audit --locked --version 0.22.2
+    ensure_tool cargo-audit cargo install cargo-audit --locked
     local ensure_rc=$?
     if [ "$ensure_rc" -eq 1 ]; then
         echo "  SKIP (cargo-audit unavailable, --no-install)"

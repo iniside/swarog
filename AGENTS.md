@@ -328,7 +328,8 @@ cargo run -p splitproof         # live 12-process split + monolith parity proof 
 **`verify.sh` / `verify.ps1` tiers** (PASS/FAIL/SKIP table; non-zero exit iff a
 blocking stage fails; auto-installs pinned CLIs unless `--no-install`):
 - BLOCKING (default / `--fast`): build, clippy `-D warnings`, test, `cargo audit`
-  (pinned 0.22.2; RUSTSEC-2023-0071 ignored — dev-only rsa in accounts test JWTs),
+  (use any installed version; when missing, install the latest available
+  `cargo-audit --locked`; RUSTSEC-2023-0071 ignored — dev-only rsa in accounts test JWTs),
   fortress (builds every `cmd/*-svc` + archcheck), split-proof.
 - ADVISORY (`--all`, blocking under `--strict`): `public-api` (contract-crate list
   derived from the filesystem, each diffed against a committed snapshot in
