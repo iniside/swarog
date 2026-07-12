@@ -854,3 +854,43 @@ fn http_op_domains_scans_api_dirs_and_skips_comments() {
     assert_eq!(domains, vec!["characters".to_string()], "{domains:?}");
     let _ = std::fs::remove_dir_all(&root);
 }
+
+// --- Rule 18: conformance policy stays out of shipping dependency graphs -----
+
+#[test]
+fn shipping_roots_reject_transitive_conformance_but_ignore_dev_and_tools() {
+    let packages = serde_json::json!([
+        {
+            "name": "server",
+            "manifest_path": "G:/repo/cmd/server/Cargo.toml",
+            "dependencies": [{ "name": "accounts", "kind": null }]
+        },
+        {
+            "name": "accounts-svc",
+            "manifest_path": "G:/repo/cmd/accounts-svc/Cargo.toml",
+            "dependencies": [{ "name": "accounts", "kind": "dev" }]
+        },
+        {
+            "name": "accounts",
+            "manifest_path": "G:/repo/modules/accounts/Cargo.toml",
+            "dependencies": [{ "name": "conformance", "kind": null }]
+        },
+        {
+            "name": "conformancecheck",
+            "manifest_path": "G:/repo/tools/conformance/Cargo.toml",
+            "dependencies": [{ "name": "conformance", "kind": null }]
+        },
+        {
+            "name": "conformance",
+            "manifest_path": "G:/repo/core/conformance/Cargo.toml",
+            "dependencies": []
+        }
+    ]);
+    let findings = super::shipping_conformance_violations(packages.as_array().unwrap());
+    assert_eq!(findings.len(), 1, "{findings:?}");
+    assert!(findings[0].contains("cmd/server"), "{findings:?}");
+    assert!(
+        findings[0].contains("server -> accounts -> conformance"),
+        "{findings:?}"
+    );
+}

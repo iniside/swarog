@@ -37,7 +37,7 @@
 //! It is a `go-arch-lint`-equivalent: architecture, not correctness. Run by the
 //! `fortress` verify stage; `cargo run -p archcheck` exits 0 on a clean tree.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
 use std::process::Command;
 
@@ -47,6 +47,8 @@ mod tests;
 /// The crate that IS the public front door (FrontDoor module). Only the two front
 /// processes below may depend on it.
 const GATEWAY_CRATE: &str = "gateway";
+/// Tool-owned conformance policy must never enter a shipping process graph.
+const CONFORMANCE_POLICY_CRATE: &str = "conformance";
 /// The `cmd/<dir>` crates permitted to host the front door: the dedicated front process
 /// and the monolith. Every other `cmd/*-svc` serves ops only over the internal edge.
 const FRONT_DOOR_HOSTS: [&str; 2] = ["gateway-svc", "server"];
@@ -55,9 +57,9 @@ const FRONT_DOOR_HOSTS: [&str; 2] = ["gateway-svc", "server"];
 /// builds BOTH deployment profiles by importing the `cmd/gateway-svc`/`cmd/server`
 /// LIBS (each constructs `gateway::Gateway` internally to hand back the real module
 /// list), `topiccheck`/`requirecheck` build their module set through `checkmodules`,
-/// and `conformancecheck` (tools/conformance) imports every module crate directly —
-/// `gateway` included — to read its `conformance::entry()`. None of the four ships
-/// a process or dispatches an op — they are the checker path, not a second front
+/// and `conformancecheck` (tools/conformance) imports `gateway` for factual probes.
+/// None of the four ships a process or dispatches an op — they are the checker path,
+/// not a second front
 /// door — so they're allowlisted here rather than by relaxing rule 3 itself.
 const GATEWAY_CHECKER_HOSTS: [&str; 4] =
     ["checkmodules", "topiccheck", "requirecheck", "conformancecheck"];
@@ -212,6 +214,12 @@ fn main() {
         let manifest = pkg["manifest_path"].as_str().unwrap_or_default();
         by_name.insert(name, classify(manifest));
     }
+
+    // --- 18: conformance policy stays out of every shipping process graph ----
+    // Roots are derived from cmd/* metadata: every *-svc plus the monolith server.
+    // Walk normal/build edges between workspace packages once; no service list and no
+    // per-root cargo-tree invocation can drift as composition roots are added.
+    violations.extend(shipping_conformance_violations(packages));
 
     for pkg in packages {
         let manifest = pkg["manifest_path"].as_str().unwrap_or_default();
@@ -544,7 +552,7 @@ fn main() {
     }
 
     if violations.is_empty() {
-        println!("archcheck: OK — no module→module / module→foreign-rpc edges, single front door (only gateway-svc + server host `gateway`), no Option<edge::Server> in modules/, <name>api/<name>events crates stay transport-free, every cmd/*-svc + server lists `metrics`, no cross-schema FKs in modules/ DDL, no inline test modules in modules/, core/bus stays sqlx-free, no module runtime-deps `asyncevents`, no EVENTS_ env knobs read inside modules/, no retired push-plane tokens (EVENTS_*/\"/events\") in workspace source, no schema-qualified asyncevents.<table> access outside the plane, no module queries a foreign module's schema in SQL, every modules/<name> boots as cmd/<name>-svc (and its svc lib.rs constructs it), demos/* imported only by cmd/server, no core/* foundation deps a module or api/ crate, every #[http( domain is stubbed in cmd/gateway-svc");
+        println!("archcheck: OK — no module→module / module→foreign-rpc edges, shipping process graphs exclude conformance policy, single front door (only gateway-svc + server host `gateway`), no Option<edge::Server> in modules/, <name>api/<name>events crates stay transport-free, every cmd/*-svc + server lists `metrics`, no cross-schema FKs in modules/ DDL, no inline test modules in modules/, core/bus stays sqlx-free, no module runtime-deps `asyncevents`, no EVENTS_ env knobs read inside modules/, no retired push-plane tokens (EVENTS_*/\"/events\") in workspace source, no schema-qualified asyncevents.<table> access outside the plane, no module queries a foreign module's schema in SQL, every modules/<name> boots as cmd/<name>-svc (and its svc lib.rs constructs it), demos/* imported only by cmd/server, no core/* foundation deps a module or api/ crate, every #[http( domain is stubbed in cmd/gateway-svc");
         return;
     }
     eprintln!("archcheck: FAIL — {} violation(s):", violations.len());
@@ -693,6 +701,66 @@ fn gateway_stub_coverage_violations(http_domains: &[String], gateway_lib: &str) 
 /// if one is ever added).
 fn cmd_is_a_main(dir: &str) -> bool {
     dir.ends_with("-svc") || dir == "server"
+}
+
+/// One violation per shipping `cmd/*` root whose transitive normal/build workspace
+/// dependency graph reaches the tool-owned conformance policy crate.
+fn shipping_conformance_violations(packages: &[serde_json::Value]) -> Vec<String> {
+    let package_by_name: HashMap<&str, &serde_json::Value> = packages
+        .iter()
+        .filter_map(|package| Some((package["name"].as_str()?, package)))
+        .collect();
+    let mut violations = Vec::new();
+
+    for root in packages {
+        let manifest = root["manifest_path"].as_str().unwrap_or_default();
+        let Kind::Cmd(cmd) = classify(manifest) else {
+            continue;
+        };
+        if !cmd_is_a_main(&cmd) {
+            continue;
+        }
+        let root_name = root["name"].as_str().unwrap_or_default();
+        let mut queue = VecDeque::from([(root_name, vec![root_name.to_string()])]);
+        let mut seen = HashSet::from([root_name]);
+        let mut found = None;
+
+        while let Some((name, path)) = queue.pop_front() {
+            let Some(package) = package_by_name.get(name) else {
+                continue;
+            };
+            for dependency in package["dependencies"].as_array().into_iter().flatten() {
+                if dependency["kind"].as_str() == Some("dev") {
+                    continue;
+                }
+                let Some(dependency_name) = dependency["name"].as_str() else {
+                    continue;
+                };
+                let mut dependency_path = path.clone();
+                dependency_path.push(dependency_name.to_string());
+                if dependency_name == CONFORMANCE_POLICY_CRATE {
+                    found = Some(dependency_path);
+                    break;
+                }
+                if package_by_name.contains_key(dependency_name) && seen.insert(dependency_name) {
+                    queue.push_back((dependency_name, dependency_path));
+                }
+            }
+            if found.is_some() {
+                break;
+            }
+        }
+
+        if let Some(path) = found {
+            violations.push(format!(
+                "cmd/{cmd} shipping dependency graph reaches `{CONFORMANCE_POLICY_CRATE}` via {} \
+                 — conformance policy belongs only in tools/conformance; shipping modules may \
+                 expose factual probes but never depend on its policy types",
+                path.join(" -> ")
+            ));
+        }
+    }
+    violations
 }
 
 /// Returns whether `deps` (a `cargo metadata` package's `"dependencies"` array) contains
