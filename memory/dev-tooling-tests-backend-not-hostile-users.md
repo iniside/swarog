@@ -14,3 +14,8 @@ accidental partial client from hanging the rollout.
 When review finds tooling hardening outside this threat model, record or reject it
 instead of automatically implementing it. Review against a frozen functional
 acceptance list so fixes do not recursively create a security-tool project.
+
+For helper CLIs such as `cargo-audit`, prefer any already-installed version and
+install the latest available release when missing. Do not pin an older tool version
+merely because a previous script did; pin only when a demonstrated compatibility or
+reproducibility constraint requires it.
