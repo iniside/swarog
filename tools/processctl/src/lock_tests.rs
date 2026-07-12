@@ -1,5 +1,6 @@
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
 
 use crate::lock::validate_credential;
 use crate::{LeaseError, RolloutLock};
@@ -45,7 +46,18 @@ fn borrower_role_one_shot_replay_and_dead_owner_are_fail_closed() {
         Err(LeaseError::BorrowerReplay)
     ));
     drop(borrowed);
+    let observed_closed_before_cleanup = Arc::new(AtomicBool::new(false));
+    let observed = Arc::clone(&observed_closed_before_cleanup);
+    let successor_path = path.clone();
+    let marker_during_hook = marker.clone();
+    crate::lock::install_owner_drop_hook(path.clone(), move || {
+        assert!(marker_during_hook.exists());
+        let successor = RolloutLock::acquire(&successor_path, "successor", "splitproof").unwrap();
+        observed.store(true, Ordering::SeqCst);
+        drop(successor);
+    });
     drop(owner);
+    assert!(observed_closed_before_cleanup.load(Ordering::SeqCst));
     assert!(!marker.exists());
 
     let dead_path = lock_path("dead");

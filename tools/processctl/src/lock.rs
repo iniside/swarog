@@ -22,6 +22,10 @@ const CONSUMED_MARKER: &[u8] = b"processctl-borrowed-v1\n";
 static INHERITED_CREDENTIAL_CONSUMED: AtomicBool = AtomicBool::new(false);
 #[cfg(windows)]
 static CONSUMED_STDIN: std::sync::OnceLock<File> = std::sync::OnceLock::new();
+#[cfg(test)]
+type OwnerDropHook = (PathBuf, Box<dyn FnOnce() + Send>);
+#[cfg(test)]
+static OWNER_DROP_HOOK: std::sync::Mutex<Option<OwnerDropHook>> = std::sync::Mutex::new(None);
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -79,7 +83,7 @@ pub enum LeaseError {
 pub struct RolloutLock;
 
 pub struct OwnedLease {
-    file: File,
+    file: Option<File>,
     path: PathBuf,
     metadata: LockMetadata,
     borrower_issued: bool,
@@ -146,7 +150,7 @@ impl RolloutLock {
             return Err(error);
         }
         Ok(OwnedLease {
-            file,
+            file: Some(file),
             path,
             metadata,
             borrower_issued: false,
@@ -401,9 +405,36 @@ impl Drop for BorrowedChild<'_> {
 
 impl Drop for OwnedLease {
     fn drop(&mut self) {
-        let _ = unlock(&self.file);
+        if let Some(file) = self.file.take() {
+            drop(file);
+        }
+        #[cfg(test)]
+        let hook = {
+            let mut hook = OWNER_DROP_HOOK.lock().expect("owner drop hook mutex");
+            if hook
+                .as_ref()
+                .is_some_and(|(expected_path, _)| expected_path == &self.path)
+            {
+                hook.take().map(|(_, hook)| hook)
+            } else {
+                None
+            }
+        };
+        #[cfg(test)]
+        if let Some(hook) = hook {
+            hook();
+        }
         cleanup_consumption_marker(&borrow_marker_path(&self.path, &self.metadata));
     }
+}
+
+#[cfg(test)]
+pub(crate) fn install_owner_drop_hook(path: PathBuf, hook: impl FnOnce() + Send + 'static) {
+    let previous = OWNER_DROP_HOOK
+        .lock()
+        .expect("owner drop hook mutex")
+        .replace((path, Box::new(hook)));
+    assert!(previous.is_none(), "owner drop hook already installed");
 }
 
 impl BorrowedLease {
