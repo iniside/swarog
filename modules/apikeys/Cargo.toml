@@ -17,6 +17,9 @@ opsapi = { workspace = true }
 edge = { workspace = true }
 apikeysapi = { workspace = true }
 apikeysrpc = { workspace = true }
+# Convention-conformance contract types: this crate exposes `conformance::entry()`
+# (always compiled, the asyncevents::testing precedent) for the conformancecheck harness.
+conformance = { workspace = true }
 adminapi = { workspace = true }
 sqlx = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }

@@ -17,6 +17,9 @@ publish = false
 [dependencies]
 adminapi = { workspace = true }
 adminevents = { workspace = true }
+# Convention-conformance contract types: this crate exposes `conformance::entry()`
+# (always compiled, the asyncevents::testing precedent) for the conformancecheck harness.
+conformance = { workspace = true }
 lifecycle = { workspace = true }
 async-trait = { workspace = true }
 contrib = { workspace = true }

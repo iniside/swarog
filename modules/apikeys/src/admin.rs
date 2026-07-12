@@ -62,7 +62,7 @@ fn check_name(name: &str) -> anyhow::Result<()> {
 /// (`modules/gateway/src/keys.rs`) treats an over-length string as definitively unknown.
 /// Checked here, in phase 1, so an over-length add-row is rejected before ANY write,
 /// matching the store's own `insert_tx` guard (defense-in-depth, not the sole gate).
-fn check_key_length(key: &str) -> anyhow::Result<()> {
+pub(crate) fn check_key_length(key: &str) -> anyhow::Result<()> {
     if key.len() > apikeysapi::MAX_KEY_BYTES {
         anyhow::bail!(
             "apikeys: key is {} bytes, exceeding apikeysapi::MAX_KEY_BYTES ({} bytes) — it would \

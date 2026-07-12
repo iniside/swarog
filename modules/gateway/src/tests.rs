@@ -93,17 +93,10 @@ async fn dev_verifier_accepts_dev_token_only() {
     assert_eq!(v.verify("").await.unwrap(), None);
 }
 
-/// A [`SessionVerifier`] that always reports its dependency unreachable — the
-/// gateway stand-in for an accounts-svc outage. Distinct from `Ok(None)` (a
-/// definitively invalid token), it must surface as 503 / `Status::Unavailable`.
-struct UnavailableVerifier;
-
-#[async_trait::async_trait]
-impl SessionVerifier for UnavailableVerifier {
-    async fn verify(&self, _token: &str) -> Result<Option<String>, VerifyUnavailable> {
-        Err(VerifyUnavailable)
-    }
-}
+// The always-unavailable [`SessionVerifier`] fixture now lives in the always-compiled
+// `conformance` module (the harness probes it through the real `authenticate`); the
+// tests re-import it from there.
+use super::conformance::UnavailableVerifier;
 
 #[tokio::test]
 async fn authenticate_paths() {

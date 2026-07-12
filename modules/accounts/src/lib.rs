@@ -23,6 +23,7 @@
 //! transaction — the event is durable iff the player row is.
 
 mod admin;
+pub mod conformance;
 mod epic;
 mod epic_oauth;
 mod ops;
@@ -49,6 +50,19 @@ use crate::store::{Player, Store, StoreError};
 /// an unauthenticated caller must not choose it).
 const MAX_EMAIL_BYTES: usize = 320;
 const MAX_PASSWORD_BYTES: usize = 1024;
+
+/// The SHARED cap checks — the register/login handlers and the conformance probes
+/// (`conformance::entry`, T8 InputByteCaps) call these same pure fns, so the probe
+/// proves what the handlers actually enforce, never a const compared to itself.
+/// Byte counts (`str::len()`), not characters. Emptiness is checked separately by
+/// each handler (a different rejection, not a cap).
+pub(crate) fn email_within_cap(email: &str) -> bool {
+    email.len() <= MAX_EMAIL_BYTES
+}
+
+pub(crate) fn password_within_cap(password: &str) -> bool {
+    password.len() <= MAX_PASSWORD_BYTES
+}
 
 /// The fixed decoy candidate verified against [`DUMMY_HASH`] when the email is
 /// unknown or the input invalid — never the caller's real password against a decoy.
@@ -243,7 +257,7 @@ impl accountsapi::Auth for Service {
         if email.is_empty() || password.is_empty() {
             return Err(Error::invalid("email and password are required"));
         }
-        if email.len() > MAX_EMAIL_BYTES || password.len() > MAX_PASSWORD_BYTES {
+        if !email_within_cap(&email) || !password_within_cap(&password) {
             return Err(Error::invalid("email or password too long"));
         }
         let display = if display_name.is_empty() {
@@ -317,9 +331,9 @@ impl accountsapi::Auth for Service {
             return Err(Error::unavailable("too many concurrent login attempts"));
         };
         let valid_input = !email.is_empty()
-            && email.len() <= MAX_EMAIL_BYTES
+            && email_within_cap(&email)
             && !password.is_empty()
-            && password.len() <= MAX_PASSWORD_BYTES;
+            && password_within_cap(&password);
         let identity = if valid_input {
             self.store.password_identity(&email).await.map_err(|e| {
                 tracing::error!(err = %e, "login failed");

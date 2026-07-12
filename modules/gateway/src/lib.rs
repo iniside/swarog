@@ -57,6 +57,7 @@
 //! then rebuilds without re-checking (validation has already passed).
 
 mod backend;
+pub mod conformance;
 mod keys;
 mod proxy;
 mod verifier;

@@ -72,6 +72,7 @@ use serde::Serialize;
 use sqlx::PgPool;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
+pub mod conformance;
 mod password;
 pub use password::{hash_password, verify_password};
 
@@ -100,6 +101,24 @@ const IP_LOCK_THRESHOLD: i32 = 20;
 
 /// Lockout backoff ceiling: `least(2^fails, 900)` seconds.
 const MAX_BACKOFF_SECS: i64 = 900;
+
+/// Byte caps on the login form inputs, enforced BEFORE any argon2 work (the hash's
+/// cost scales with input length — an unauthenticated caller must not choose it).
+pub(crate) const MAX_USERNAME_BYTES: usize = 128;
+pub(crate) const MAX_PASSWORD_BYTES: usize = 1024;
+
+/// The SHARED cap checks — the login handler and the conformance probes
+/// (`conformance::entry`, T8 InputByteCaps) call these same pure fns, so the probe
+/// proves what the handler actually enforces, never a const compared to itself.
+/// Byte counts (`str::len()`), not characters. Username emptiness is checked
+/// separately by the handler (a different rejection, not a cap).
+pub(crate) fn username_within_cap(username: &str) -> bool {
+    username.len() <= MAX_USERNAME_BYTES
+}
+
+pub(crate) fn password_within_cap(password: &str) -> bool {
+    password.len() <= MAX_PASSWORD_BYTES
+}
 
 /// The ONE body every failed login answers with — wrong password, unknown user, and
 /// locked are indistinguishable (no username/lock oracle).
@@ -747,8 +766,8 @@ async fn login_submit(
         return (StatusCode::INTERNAL_SERVER_ERROR, "login failed").into_response();
     };
     let valid_input = !username.is_empty()
-        && username.len() <= 128
-        && submitted.len() <= 1024;
+        && username_within_cap(&username)
+        && password_within_cap(&submitted);
     match st.authenticate_and_mint(username, submitted, ip, valid_input, argon).await {
         Ok(LoginOutcome::Success { username, token }) => {
             tracing::debug!(%username, "admin login succeeded");

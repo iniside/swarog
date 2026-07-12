@@ -19,6 +19,7 @@
 //! permanently poison the harness.
 
 mod admin;
+pub mod conformance;
 mod store;
 
 use std::sync::{Arc, OnceLock};
