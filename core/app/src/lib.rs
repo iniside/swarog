@@ -28,6 +28,11 @@ const DEFAULT_PLAYER_EDGE_ADDR: &str = ":9100";
 const DEFAULT_EDGE_DRAIN_GRACE_MS: u64 = 5000;
 const DEFAULT_HTTP_DRAIN_GRACE_MS: u64 = 5000;
 const DEFAULT_MODULE_STOP_GRACE_MS: u64 = 5000;
+/// Whole-request inbound HTTP timeout (`HTTP_REQUEST_TIMEOUT_MS`, round 4 finding 3):
+/// bounds request-received → response-started for every process. Default ON at 30s
+/// (aligned with the proxy's `PROXY_READ_TIMEOUT`); explicit `0` disables the layer.
+/// A process/topology knob read HERE in `core/app`, never by a module.
+const DEFAULT_HTTP_REQUEST_TIMEOUT_MS: u64 = 30000;
 /// Global cap on concurrent player-QUIC connections (`PLAYER_MAX_CONNS`) — the public
 /// front faces untrusted, certless peers, so the accept loop must bound its
 /// task-per-connection fan-out. `core/app` owns the env surface; `core/edge` stays
@@ -121,6 +126,13 @@ pub struct Config {
     /// module (`MODULE_STOP_GRACE_MS`, default 5000ms). A process/topology knob read
     /// HERE, never by a module — applied via [`App::with_stop_grace`].
     pub module_stop_grace: std::time::Duration,
+    /// Whole-request inbound HTTP timeout applied to the served router (round 4,
+    /// finding 3). `Some(d)` wraps the surface in a `tower_http::timeout::TimeoutLayer`
+    /// that emits **408** once `d` elapses before the response starts; `None` disables
+    /// the layer. Default `Some(30s)` for every process (`HTTP_REQUEST_TIMEOUT_MS`,
+    /// `0` → `None`), overridable by [`Config::with_request_timeout_default`]. A
+    /// process/topology knob read HERE, never by a module.
+    pub http_request_timeout: Option<std::time::Duration>,
     /// TLS termination for the HTTP front. `None` (the [`Config::from_env`] default)
     /// serves plain HTTP exactly as before; `Some` switches the serve path to
     /// axum-server over rustls ([`TlsFront::Files`]) or rustls-acme
@@ -157,6 +169,7 @@ impl Config {
             std::env::var("EDGE_DRAIN_GRACE_MS").ok(),
             std::env::var("HTTP_DRAIN_GRACE_MS").ok(),
             std::env::var("MODULE_STOP_GRACE_MS").ok(),
+            std::env::var("HTTP_REQUEST_TIMEOUT_MS").ok(),
             std::env::var("PLAYER_MAX_CONNS").ok(),
             std::env::var("PLAYER_MAX_CONNS_PER_IP").ok(),
         );
@@ -187,6 +200,18 @@ impl Config {
         }
     }
 
+    /// Overrides the whole-request inbound HTTP timeout default (round 4, finding 3).
+    /// [`Config::from_env`] already defaults it ON at 30s for every process and lets
+    /// `HTTP_REQUEST_TIMEOUT_MS` tune/disable it; this builder lets a composition root
+    /// pick a different baseline (mirrors [`Config::with_rate_limit_default`]). Pass a
+    /// zero `Duration` to disable the layer.
+    pub fn with_request_timeout_default(self, timeout: std::time::Duration) -> Config {
+        Config {
+            http_request_timeout: (!timeout.is_zero()).then_some(timeout),
+            ..self
+        }
+    }
+
     /// Sets how the HTTP front terminates TLS — `None` leaves the plain-HTTP path
     /// untouched. Called by the composition root that parsed the TLS env
     /// (`cmd/gateway-svc` today); `core/app` itself never reads TLS env vars.
@@ -207,6 +232,7 @@ impl Config {
         drain_grace_ms: Option<String>,
         http_drain_grace_ms: Option<String>,
         module_stop_grace_ms: Option<String>,
+        http_request_timeout_ms: Option<String>,
         player_max_conns: Option<String>,
         player_max_conns_per_ip: Option<String>,
     ) -> Config {
@@ -241,6 +267,17 @@ impl Config {
             .filter(|v| !v.is_empty())
             .and_then(|v| v.parse::<u64>().ok())
             .unwrap_or(DEFAULT_MODULE_STOP_GRACE_MS);
+        // Same parse shape as the graces above (unset/blank/unparseable → default);
+        // the ONE difference is the disable semantics: an explicit `0` yields `None`
+        // (layer off), any positive value yields `Some(Duration)`. Default 30s.
+        let http_request_timeout_ms = http_request_timeout_ms
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(DEFAULT_HTTP_REQUEST_TIMEOUT_MS);
+        let http_request_timeout =
+            (http_request_timeout_ms > 0).then(|| std::time::Duration::from_millis(http_request_timeout_ms));
         let player_max_conns = player_max_conns
             .as_deref()
             .map(str::trim)
@@ -262,6 +299,7 @@ impl Config {
             edge_drain_grace: std::time::Duration::from_millis(edge_drain_grace_ms),
             http_drain_grace: std::time::Duration::from_millis(http_drain_grace_ms),
             module_stop_grace: std::time::Duration::from_millis(module_stop_grace_ms),
+            http_request_timeout,
             tls: None,
             player_max_conns,
             player_max_conns_per_ip,
@@ -708,6 +746,36 @@ pub async fn run(
         } else {
             tracing::info!("http rate limiting disabled (RATE_LIMIT_RPS<=0; expected behind the gateway)");
             router
+        };
+
+        // Whole-request inbound timeout (round 4, finding 3): bound request-received →
+        // response-STARTED across the whole surface, layered here — the same point as the
+        // rate limiter, i.e. UNDER the metrics layer applied below — so a timeout is
+        // COUNTED (Go's `metrics(...)` is the outermost wrap; the last `.layer` added is
+        // outermost). This bounds BOTH the typed-op body-decode await AND the proxy
+        // passthrough's inbound-upload leg, because both resolve inside the handler future.
+        //
+        // The emitted status is **408 Request Timeout** and that is DELIBERATE — do NOT
+        // "fix" it to 504. tower-http's `TimeoutLayer` returns 408; the request never
+        // reached an upstream, so 408 (client didn't produce a request in time) is the
+        // honest code. The proxy passthrough's origin→client RESPONSE streaming resolves
+        // the handler future FIRST (`forward()` returns a streaming body), so that leg is
+        // NOT bounded by this layer — the proxy's own per-chunk `read_timeout` covers it.
+        // Default 30s (`HTTP_REQUEST_TIMEOUT_MS`, read in core/app); explicit `0` disables.
+        let router = match cfg.http_request_timeout {
+            Some(d) => {
+                tracing::info!(timeout_ms = %d.as_millis(), "http request timeout enabled (408 on elapse)");
+                // 408 spelled out explicitly (the deprecated `::new` defaulted to it) so
+                // the deliberate status is visible at the call site, not just in the comment.
+                router.layer(tower_http::timeout::TimeoutLayer::with_status_code(
+                    StatusCode::REQUEST_TIMEOUT,
+                    d,
+                ))
+            }
+            None => {
+                tracing::info!("http request timeout disabled (HTTP_REQUEST_TIMEOUT_MS=0)");
+                router
+            }
         };
 
         // Apply every contributed HTTP layer (`httpmw::LAYER_SLOT`) LAST, over the whole

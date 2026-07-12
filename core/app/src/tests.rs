@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn player_request_limit_values_default_override_and_allow_zero() {
-    let cfg = Config::from_values(None, None, None, None, None, None, None, None, None);
+    let cfg = Config::from_values(None, None, None, None, None, None, None, None, None, None);
     assert_eq!(cfg.player_rate_limit_rps, 20.0);
     assert_eq!(cfg.player_rate_limit_burst, 40);
     assert_eq!(cfg.player_conn_rate_limit_rps, 10.0);
@@ -85,7 +85,7 @@ fn validate_requires_satisfied_by_remote_stub() {
 
 #[test]
 fn config_defaults_when_env_absent() {
-    let cfg = Config::from_values(None, None, None, None, None, None, None, None, None);
+    let cfg = Config::from_values(None, None, None, None, None, None, None, None, None, None);
     assert_eq!(cfg.database_url.as_deref(), Some(DEFAULT_DSN));
     assert_eq!(cfg.listen_addr, ":8080");
     assert_eq!(cfg.edge_addr, ":9000");
@@ -107,6 +107,7 @@ fn config_player_conn_caps_override_and_fall_back() {
         None,
         None,
         None,
+        None,
         Some("4096".into()),
         Some("8".into()),
     );
@@ -121,6 +122,7 @@ fn config_player_conn_caps_override_and_fall_back() {
         None,
         None,
         None,
+        None,
         Some("  ".into()),
         Some("not-a-number".into()),
     );
@@ -128,6 +130,7 @@ fn config_player_conn_caps_override_and_fall_back() {
     assert_eq!(cfg.player_max_conns_per_ip, 32);
 
     let cfg = Config::from_values(
+        None,
         None,
         None,
         None,
@@ -152,6 +155,7 @@ fn config_defaults_when_env_blank() {
         Some("  ".into()),
         Some("  ".into()),
         Some("  ".into()),
+        None,
         Some("  ".into()),
         Some("  ".into()),
     );
@@ -179,6 +183,7 @@ fn config_overrides_from_env() {
         Some("1200".into()),
         None,
         None,
+        None,
     );
     assert_eq!(cfg.database_url.as_deref(), Some("postgres://u:p@db:5432/x"));
     // Bare port gets the leading colon (Go's normalizeAddr).
@@ -195,7 +200,7 @@ fn config_overrides_from_env() {
 
 #[test]
 fn config_drain_grace_defaults_when_unset_or_unparseable() {
-    let cfg = Config::from_values(None, None, None, None, None, None, None, None, None);
+    let cfg = Config::from_values(None, None, None, None, None, None, None, None, None, None);
     assert_eq!(cfg.edge_drain_grace, std::time::Duration::from_millis(5000));
     assert_eq!(cfg.http_drain_grace, std::time::Duration::from_millis(5000));
     let cfg = Config::from_values(
@@ -206,6 +211,7 @@ fn config_drain_grace_defaults_when_unset_or_unparseable() {
         Some("not-a-number".into()),
         Some("not-a-number".into()),
         Some("not-a-number".into()),
+        None,
         None,
         None,
     );
@@ -218,9 +224,55 @@ fn config_drain_grace_defaults_when_unset_or_unparseable() {
 }
 
 #[test]
+fn config_http_request_timeout_default_override_and_zero_disables() {
+    // Default ON at 30s when the env var is unset/blank/unparseable (grace-knob shape).
+    let cfg = Config::from_values(None, None, None, None, None, None, None, None, None, None);
+    assert_eq!(
+        cfg.http_request_timeout,
+        Some(std::time::Duration::from_millis(30000))
+    );
+    let cfg = Config::from_values(
+        None, None, None, None, None, None, None,
+        Some("not-a-number".into()),
+        None, None,
+    );
+    assert_eq!(
+        cfg.http_request_timeout,
+        Some(std::time::Duration::from_millis(30000))
+    );
+    // Explicit positive value overrides.
+    let cfg = Config::from_values(
+        None, None, None, None, None, None, None,
+        Some("1500".into()),
+        None, None,
+    );
+    assert_eq!(
+        cfg.http_request_timeout,
+        Some(std::time::Duration::from_millis(1500))
+    );
+    // Explicit `0` disables the layer entirely.
+    let cfg = Config::from_values(
+        None, None, None, None, None, None, None,
+        Some("0".into()),
+        None, None,
+    );
+    assert_eq!(cfg.http_request_timeout, None);
+    // The builder mirrors the env: a zero Duration also disables.
+    let cfg = Config::from_values(None, None, None, None, None, None, None, None, None, None)
+        .with_request_timeout_default(std::time::Duration::from_secs(5));
+    assert_eq!(
+        cfg.http_request_timeout,
+        Some(std::time::Duration::from_secs(5))
+    );
+    let cfg = Config::from_values(None, None, None, None, None, None, None, None, None, None)
+        .with_request_timeout_default(std::time::Duration::ZERO);
+    assert_eq!(cfg.http_request_timeout, None);
+}
+
+#[test]
 fn config_accepts_colon_port_form() {
     let cfg =
-        Config::from_values(None, Some(":8081".into()), None, None, None, None, None, None, None);
+        Config::from_values(None, Some(":8081".into()), None, None, None, None, None, None, None, None);
     assert_eq!(cfg.listen_addr, ":8081");
 }
 
@@ -231,6 +283,7 @@ fn without_db_clears_dsn_and_keeps_the_rest() {
         Some("9090".into()),
         Some(":9001".into()),
         Some(":9101".into()),
+        None,
         None,
         None,
         None,
@@ -248,7 +301,7 @@ fn without_db_clears_dsn_and_keeps_the_rest() {
 #[test]
 fn rate_limit_default_off_unless_set() {
     // Module hosts leave it unset (opt-in); the gateway builder turns it always-on.
-    let cfg = Config::from_values(None, None, None, None, None, None, None, None, None);
+    let cfg = Config::from_values(None, None, None, None, None, None, None, None, None, None);
     assert_eq!(cfg.rate_limit_default, None);
     let gw = cfg.without_db().with_rate_limit_default(20.0, 40);
     assert_eq!(gw.rate_limit_default, Some((20.0, 40)));
@@ -382,7 +435,7 @@ fn to_bind_addr_expands_colon_port() {
 
 #[test]
 fn with_tls_sets_the_front_and_default_is_off() {
-    let cfg = Config::from_values(None, None, None, None, None, None, None, None, None);
+    let cfg = Config::from_values(None, None, None, None, None, None, None, None, None, None);
     assert_eq!(cfg.tls, None, "TLS is opt-in; every existing process stays plain");
 
     let front = TlsFront::Files {
@@ -494,7 +547,7 @@ async fn run_with_tls_files_serves_https() {
     let port = free_port();
 
     let mut cfg =
-        Config::from_values(None, None, None, None, None, None, None, None, None).without_db();
+        Config::from_values(None, None, None, None, None, None, None, None, None, None).without_db();
     cfg.listen_addr = format!("127.0.0.1:{port}");
     let cfg = cfg.with_tls(Some(TlsFront::Files { cert, key }));
 
@@ -504,6 +557,93 @@ async fn run_with_tls_files_serves_https() {
     let resp = get_when_up(&client, &format!("https://127.0.0.1:{port}/healthz")).await;
     assert_eq!(resp.status(), reqwest::StatusCode::OK);
     assert_eq!(resp.text().await.unwrap(), "ok");
+
+    server.abort();
+}
+
+// ============================================================================
+// Whole-request inbound HTTP timeout (round 4, finding 3): `run` wraps the served
+// router in a `tower_http::timeout::TimeoutLayer` (default 30s, `0` disables) that
+// emits 408 on elapse. Exercised through the REAL plain-HTTP boot path (`run`,
+// DB-less) with a route-mounting module — the same branch every process serves on.
+// ============================================================================
+
+/// A test module that mounts a slow route (`/slow`, sleeps `slow_ms`) and an instant
+/// one (`/fast`) — enough to prove the timeout layer trips the slow leg and leaves the
+/// fast leg untouched.
+struct SlowRoutes {
+    slow_ms: u64,
+}
+
+#[async_trait::async_trait]
+impl Module for SlowRoutes {
+    fn name(&self) -> &str {
+        "slowroutes"
+    }
+
+    fn init(&self, ctx: &Context) -> anyhow::Result<()> {
+        let slow_ms = self.slow_ms;
+        let router = axum::Router::new()
+            .route(
+                "/slow",
+                get(move || async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(slow_ms)).await;
+                    "slow"
+                }),
+            )
+            .route("/fast", get(|| async { "fast" }));
+        ctx.mount(router);
+        Ok(())
+    }
+}
+
+/// A short-configured timeout trips the slow handler (408) but leaves a fast request
+/// untouched (200) — proving `run` applied the layer on the plain-HTTP branch.
+#[tokio::test(flavor = "multi_thread")]
+async fn run_http_request_timeout_408s_slow_handler_but_not_fast() {
+    let port = free_port();
+    let mut cfg = Config::from_values(None, None, None, None, None, None, None, None, None, None)
+        .without_db();
+    cfg.listen_addr = format!("127.0.0.1:{port}");
+    cfg.http_request_timeout = Some(std::time::Duration::from_millis(150));
+
+    let server = tokio::spawn(run(cfg, vec![Box::new(SlowRoutes { slow_ms: 5000 })], None, None));
+    let client = reqwest::Client::new();
+
+    // A fast request is unaffected by the layer.
+    let fast = get_when_up(&client, &format!("http://127.0.0.1:{port}/fast")).await;
+    assert_eq!(fast.status(), reqwest::StatusCode::OK);
+    assert_eq!(fast.text().await.unwrap(), "fast");
+
+    // The slow handler exceeds the 150ms budget → 408 Request Timeout (deliberately 408,
+    // not 504 — see the layer-site comment in `run`).
+    let slow = client
+        .get(format!("http://127.0.0.1:{port}/slow"))
+        .send()
+        .await
+        .expect("slow request");
+    assert_eq!(slow.status(), reqwest::StatusCode::REQUEST_TIMEOUT);
+
+    server.abort();
+}
+
+/// `http_request_timeout = None` (env `HTTP_REQUEST_TIMEOUT_MS=0`) drops the layer:
+/// a slow handler runs to completion with 200.
+#[tokio::test(flavor = "multi_thread")]
+async fn run_http_request_timeout_zero_disables_the_layer() {
+    let port = free_port();
+    let mut cfg = Config::from_values(None, None, None, None, None, None, None, None, None, None)
+        .without_db();
+    cfg.listen_addr = format!("127.0.0.1:{port}");
+    cfg.http_request_timeout = None; // the `0` disables-case
+
+    let server = tokio::spawn(run(cfg, vec![Box::new(SlowRoutes { slow_ms: 300 })], None, None));
+    let client = reqwest::Client::new();
+
+    // With no layer, the 300ms handler completes instead of being timed out.
+    let slow = get_when_up(&client, &format!("http://127.0.0.1:{port}/slow")).await;
+    assert_eq!(slow.status(), reqwest::StatusCode::OK);
+    assert_eq!(slow.text().await.unwrap(), "slow");
 
     server.abort();
 }
@@ -699,7 +839,7 @@ async fn durable_delivery_starts_only_after_invalidation_first_refresh() {
     let at_delivery = Arc::new(AtomicI32::new(-1));
 
     let mut cfg =
-        Config::from_values(Some(dsn.clone()), None, None, None, None, None, None, None, None);
+        Config::from_values(Some(dsn.clone()), None, None, None, None, None, None, None, None, None);
     cfg.listen_addr = format!("127.0.0.1:{}", free_port());
 
     let probe = OrderProbe {
