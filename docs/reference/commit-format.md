@@ -1,6 +1,6 @@
 # Commit Message Format
 
-Detail for the **Commit Message Format — MANDATORY** rule in [CLAUDE.md](../../CLAUDE.md). The Conventional-Commits rule + the `Co-Authored-By` trailer rule stay in CLAUDE.md; this file holds the scope conventions and examples.
+Detail for the **Commit Message Format — MANDATORY** rule in [AGENTS.md](../../AGENTS.md). This file holds scope conventions and examples.
 
 ## Conventional Commits
 
@@ -21,12 +21,6 @@ refactor(admin): move section rendering behind adminapi.Slot
 fix(match,rating): assert rating service to a local consumer interface
 ```
 
-## Co-Authored-By trailer
+## Attribution trailers
 
-Reflects the **executing model**, overriding the harness default (which hardcodes `Co-Authored-By: Claude Opus 4.8`). Stamp the model that actually authored the commit:
-
-- Sonnet subagent → `Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>`
-- Opus → `Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>`
-- Fable → `Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>`
-
-When dispatching a code-writing subagent, put **its model's** trailer in the prompt. This is what the trailer audit ("confirm trailers match the intended lane") checks.
+Do not require or invent model-specific `Co-Authored-By` trailers. If active tooling adds an attribution trailer, it must name the actual contributing tool or agent without a fabricated provider, model family, or version. Attribution is never a substitute for the required commit after each completed task or independently reviewable part.

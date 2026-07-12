@@ -1,12 +1,12 @@
 # Plan Writing Workflow
 
-Detail for the **Plan Writing Workflow — MANDATORY** rule in [CLAUDE.md](../../CLAUDE.md). The 5-step skeleton stays in CLAUDE.md; this file holds the full elaboration of the steps that need it.
+Detail for the **Plan Writing Workflow — MANDATORY** rule in [AGENTS.md](../../AGENTS.md). The five-step skeleton stays in `AGENTS.md`; this file holds the full elaboration.
 
 Front-load the thinking. For any plan (plan mode / "write me a plan" / a `docs/plans/…-plan.md`), run the steps in order — no skipping for "it's small".
 
 ## Step 1 — Ask how many research subagents
 
-Bands (same as [research-mode.md](research-mode.md)): **2–4** narrow / **4–8** multi-module / **8–12** whole-repo survey. Ask **every time**, even mid-session — count is task-specific. Pass `model:` explicitly (Haiku read-and-list, Sonnet light reasoning).
+Bands (same as [research-mode.md](research-mode.md)): **2–4** narrow / **4–8** multi-module / **8–12** whole-repo survey. Ask **every time**, even mid-session—the count is task-specific. Use the best available research profile and keep provider/model names out of durable guidance.
 
 ## Step 2 — Research subagents on 3 non-overlapping angles
 
@@ -29,7 +29,7 @@ The plan body must be `Step 1 → Step 2 → …` where each step spells out, ex
 - **(a) what** is touched — exact files/symbols.
 - **(b) why now / in what order** — the dependency that forces this step before the next (e.g. "declare the event payload in `<module>events` before the consumer subscribes"; "the schema migration before the store methods that query it").
 - **(c) how** — the concrete actions, not just "add a module" but any non-mechanical move (declaring `DependsOn`, wiring `Provide`/`Require` to a consumer-defined interface, registering in `cmd/server/main.go`).
-- **(d) dispatch tag** — `[inline]`, `[fable]`, `[opus]`, or `[sonnet]` (see [implementation-mode.md](implementation-mode.md) for the heuristic).
+- **(d) dispatch tag** — `[inline]`, `[subagent-complex]`, or `[subagent-mechanical]` (see [implementation-mode.md](implementation-mode.md) for the heuristic).
 
 Steps do **NOT** each have to compile or pass tests in isolation — a step may leave the tree broken mid-rollout — but every step MUST be **written out**: a reader follows them top-to-bottom without inventing the order. Reference material (Context, Verified facts, file tables) is fine as supporting sections, but it does not replace the ordered steps — it feeds them.
 

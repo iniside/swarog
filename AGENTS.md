@@ -575,8 +575,9 @@ inherit.
 The user approves the tags with the plan (called out at ExitPlanMode). Ask only for
 untagged/ad-hoc work, and if any step is a subagent lane also ask **"what effort
 level?"** (effort does NOT inherit — embed it in the prompt). Review each diff against
-its plan step before dispatching the next; commit after each task (subagents may
-commit their own work). Mid-rollout, don't silently flip a tag — ask.
+its plan step before dispatching the next; commit after each task or independently
+reviewable part of a larger task (subagents may commit their own work). Mid-rollout,
+don't silently flip a tag — ask.
 
 **Cross-cutting Agent-call invariants (effort/nav-guidance don't inherit, concise
 prompts) — shared by research + implementation:
@@ -600,11 +601,12 @@ mirrored into the repo at `memory/` so it survives across machines via git.
 
 ## Commit After Every Task — MANDATORY
 
-After completing every task, create a git commit containing only the changes made
-for that task. Do not include unrelated pre-existing working-tree changes. If a
-task produces no repository changes, no commit is required. Use the commit format
-defined below. A request to commit is implicit in every task; pushing still
-requires an explicit user request.
+After completing every task—or each independently reviewable, verified part of a
+larger task—create a git commit containing only the changes made for that unit. Do
+not wait for a long multi-part rollout to finish, and do not include unrelated
+pre-existing working-tree changes. If a task produces no repository changes, no
+commit is required. Use the commit format defined below. A request to commit is
+implicit in every task; pushing still requires an explicit user request.
 
 ## Git Safety — MANDATORY
 
@@ -613,9 +615,9 @@ discards/overwrites uncommitted working-tree changes** without the user's say-so
 inspect old contents use `git show <sha>:<path>`. Only ever `git reset --soft HEAD~1`
 to undo a commit *you* just created *this turn*, and only when nothing else has
 committed since. Never `git push --force` or rewrite published history without
-explicit instruction. Commit after every completed task as required above; push
-only when the user asks. Work directly on `master`; do not create a branch unless
-the user explicitly requests one.
+explicit instruction. Commit after every completed task or independently reviewable
+part as required above; push only when the user asks. Work directly on `master`; do
+not create a branch unless the user explicitly requests one.
 
 ## Commit Message Format — MANDATORY
 
