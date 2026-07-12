@@ -31,6 +31,7 @@ impl core::panic::unwind_safe::UnwindSafe for adminapi::admin_data_rpc::AdminDat
 pub const adminapi::admin_data_rpc::METHOD_ADMIN_DATA: &str
 pub fn adminapi::admin_data_rpc::operations(alloc::sync::Arc<(dyn adminapi::AdminData + core::marker::Send + core::marker::Sync)>) -> alloc::vec::Vec<opsapi::OpSet>
 pub fn adminapi::admin_data_rpc::route_bindings() -> alloc::vec::Vec<opsapi::RouteBinding>
+pub fn adminapi::admin_data_rpc::wire_ops() -> alloc::vec::Vec<opsapi::WireOp>
 pub enum adminapi::ItemError
 pub adminapi::ItemError::Absent
 pub adminapi::ItemError::Other(anyhow::Error)

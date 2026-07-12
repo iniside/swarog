@@ -1,7 +1,9 @@
 # contract-golden -- VALUE-level event + rpc contract baseline (Step 6c).
-# Lines: `event topic=<t> version=<n> history=<policy>` from every bus::define, and
+# Lines: `event topic=<t> version=<n> history=<policy>` from every bus::define,
 # `rpc module=<crate::mod> method=<m> verb=<V> path=<p> auth=<a> success=<n> retry=<r>`
-# from every generated route_bindings(). ANY diff fails the blocking contract-golden
+# from every generated route_bindings(), and
+# `wire module=<crate::mod> method=<m> retry=<r>` from every generated wire_ops()
+# (EVERY method, http-bound and wire-only). ANY diff fails the blocking contract-golden
 # verify stage: a removed line is BREAKING, an added line is ADDITIVE.
 # Regenerate intentionally via ./verify.sh --bless-contract-golden (verify.ps1
 # -BlessContractGolden), i.e. `cargo run -p topiccheck -- contract-golden --bless`.
@@ -25,3 +27,21 @@ rpc module=inventoryapi::holdings_rpc method=inventory.listCharacter verb=GET pa
 rpc module=inventoryapi::holdings_rpc method=inventory.listMine verb=GET path=/inventory/me auth=Player success=200 retry=OnceAfterReconnect
 rpc module=leaderboardapi::leaderboard_rpc method=leaderboard.topScores verb=GET path=/leaderboard auth=None success=200 retry=OnceAfterReconnect
 rpc module=matchapi::match_rpc method=match.report verb=POST path=/match/report auth=None success=202 retry=OnceAfterReconnect
+wire module=accountsapi::auth_rpc method=accounts.login retry=Never
+wire module=accountsapi::auth_rpc method=accounts.loginEpic retry=Never
+wire module=accountsapi::auth_rpc method=accounts.me retry=OnceAfterReconnect
+wire module=accountsapi::auth_rpc method=accounts.register retry=Never
+wire module=accountsapi::sessions_rpc method=accounts.verifySession retry=OnceAfterReconnect
+wire module=adminapi::admin_data_rpc method=admin.adminData retry=OnceAfterReconnect
+wire module=apikeysapi::keys_rpc method=apikeys.lookupKey retry=OnceAfterReconnect
+wire module=charactersapi::ownership_rpc method=characters.ownerOf retry=OnceAfterReconnect
+wire module=charactersapi::player_rpc method=characters.create retry=Never
+wire module=charactersapi::player_rpc method=characters.delete retry=Never
+wire module=charactersapi::player_rpc method=characters.list retry=OnceAfterReconnect
+wire module=configapi::config_snapshot_rpc method=config.snapshot retry=OnceAfterReconnect
+wire module=inventoryapi::holdings_rpc method=inventory.grant retry=Never
+wire module=inventoryapi::holdings_rpc method=inventory.listCharacter retry=OnceAfterReconnect
+wire module=inventoryapi::holdings_rpc method=inventory.listMine retry=OnceAfterReconnect
+wire module=leaderboardapi::leaderboard_rpc method=leaderboard.topScores retry=OnceAfterReconnect
+wire module=matchapi::match_rpc method=match.report retry=OnceAfterReconnect
+wire module=ratingapi::mmr_reader_rpc method=rating.mmr retry=OnceAfterReconnect

@@ -129,6 +129,7 @@ pub const accountsapi::auth_rpc::METHOD_ME: &str
 pub const accountsapi::auth_rpc::METHOD_REGISTER: &str
 pub fn accountsapi::auth_rpc::operations(alloc::sync::Arc<(dyn accountsapi::Auth + core::marker::Send + core::marker::Sync)>) -> alloc::vec::Vec<opsapi::OpSet>
 pub fn accountsapi::auth_rpc::route_bindings() -> alloc::vec::Vec<opsapi::RouteBinding>
+pub fn accountsapi::auth_rpc::wire_ops() -> alloc::vec::Vec<opsapi::WireOp>
 pub mod accountsapi::sessions_rpc
 pub struct accountsapi::sessions_rpc::VerifySessionRequest
 pub accountsapi::sessions_rpc::VerifySessionRequest::token: alloc::string::String
@@ -161,6 +162,7 @@ impl core::panic::unwind_safe::UnwindSafe for accountsapi::sessions_rpc::VerifyS
 pub const accountsapi::sessions_rpc::METHOD_VERIFY_SESSION: &str
 pub fn accountsapi::sessions_rpc::operations(alloc::sync::Arc<(dyn accountsapi::Sessions + core::marker::Send + core::marker::Sync)>) -> alloc::vec::Vec<opsapi::OpSet>
 pub fn accountsapi::sessions_rpc::route_bindings() -> alloc::vec::Vec<opsapi::RouteBinding>
+pub fn accountsapi::sessions_rpc::wire_ops() -> alloc::vec::Vec<opsapi::WireOp>
 pub struct accountsapi::IdentityRef
 pub accountsapi::IdentityRef::provider: alloc::string::String
 pub accountsapi::IdentityRef::subject: alloc::string::String

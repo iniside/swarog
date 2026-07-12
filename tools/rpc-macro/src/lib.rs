@@ -16,7 +16,10 @@
 //!   - `METHOD_<NAME>: &str = "<prefix>.<lowerCamel(name)>"` consts,
 //!   - for `#[http(...)]`-annotated methods only, `operations(impl) ->
 //!     Vec<opsapi::OpSet>` and `route_bindings() -> Vec<opsapi::RouteBinding>` (the
-//!     decode/encode/local glue the gateway routes over).
+//!     decode/encode/local glue the gateway routes over),
+//!   - for EVERY method (http-bound and wire-only), `wire_ops() ->
+//!     Vec<opsapi::WireOp>` — each method's name + `RetryMode`, so a wire-only
+//!     method's `#[retry_safe]` surfaces as a contract-golden value.
 //!
 //! It ALSO emits a `#[macro_export] macro_rules! <prefix>_<snake(trait)>_meta`
 //! **metadata-callback macro**: a proc macro cannot re-parse another crate (and the
@@ -507,6 +510,8 @@ fn expand(
     let bound: Vec<&MethodModel> = methods.iter().filter(|m| m.http.is_some()).collect();
     let opset_pushes = bound.iter().map(|m| gen_opset_push(m)).collect::<Vec<_>>();
     let route_pushes = bound.iter().map(|m| gen_route_push(m)).collect::<Vec<_>>();
+    // wire_ops covers EVERY method (http-bound and wire-only), not just `bound`.
+    let wire_op_literals = methods.iter().map(gen_wire_op_literal).collect::<Vec<_>>();
 
     // The metadata-callback macro. `$crate` cannot name this crate from a proc
     // macro, so the api crate's name comes from the build env (Cargo sets
@@ -567,6 +572,16 @@ fn expand(
                 let mut __rb: ::std::vec::Vec<::opsapi::RouteBinding> = ::std::vec::Vec::new();
                 #(#route_pushes)*
                 __rb
+            }
+
+            /// Every method's transport replay policy (`WireOp`), http-bound AND
+            /// wire-only — unlike `operations`/`route_bindings`, which cover only
+            /// `#[http]` methods. This surfaces a wire-only method's `#[retry_safe]`
+            /// (otherwise compiled solely into the client's `RetryMode`) as a
+            /// contract-golden value. Impl-free; deterministic order (methods sorted
+            /// by name).
+            pub fn wire_ops() -> ::std::vec::Vec<::opsapi::WireOp> {
+                ::std::vec![ #(#wire_op_literals),* ]
             }
         }
 
@@ -1048,6 +1063,25 @@ fn gen_opset_push(m: &MethodModel) -> TokenStream2 {
                     invoke: __invoke,
                 },
             });
+        }
+    }
+}
+
+/// The `WireOp` literal for one method (http-bound OR wire-only): its method-name
+/// const paired with its `RetryMode`. Mirrors the retry-mode selection in
+/// [`gen_operation_literal`]/[`gen_client_method`], but is emitted for EVERY method so
+/// a wire-only `#[retry_safe]` surfaces as a golden value.
+fn gen_wire_op_literal(m: &MethodModel) -> TokenStream2 {
+    let const_ident = method_const_ident(m);
+    let retry_mode = if m.retry_safe {
+        quote! { ::opsapi::RetryMode::OnceAfterReconnect }
+    } else {
+        quote! { ::opsapi::RetryMode::Never }
+    };
+    quote! {
+        ::opsapi::WireOp {
+            method: #const_ident,
+            retry_mode: #retry_mode,
         }
     }
 }

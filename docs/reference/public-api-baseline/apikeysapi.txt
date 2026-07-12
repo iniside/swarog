@@ -32,6 +32,7 @@ impl core::panic::unwind_safe::UnwindSafe for apikeysapi::keys_rpc::LookupKeyRes
 pub const apikeysapi::keys_rpc::METHOD_LOOKUP_KEY: &str
 pub fn apikeysapi::keys_rpc::operations(alloc::sync::Arc<(dyn apikeysapi::Keys + core::marker::Send + core::marker::Sync)>) -> alloc::vec::Vec<opsapi::OpSet>
 pub fn apikeysapi::keys_rpc::route_bindings() -> alloc::vec::Vec<opsapi::RouteBinding>
+pub fn apikeysapi::keys_rpc::wire_ops() -> alloc::vec::Vec<opsapi::WireOp>
 pub struct apikeysapi::KeyRecord
 pub apikeysapi::KeyRecord::name: alloc::string::String
 pub apikeysapi::KeyRecord::policy: alloc::string::String

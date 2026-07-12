@@ -96,6 +96,7 @@ pub const inventoryapi::holdings_rpc::METHOD_LIST_CHARACTER: &str
 pub const inventoryapi::holdings_rpc::METHOD_LIST_MINE: &str
 pub fn inventoryapi::holdings_rpc::operations(alloc::sync::Arc<(dyn inventoryapi::Holdings + core::marker::Send + core::marker::Sync)>) -> alloc::vec::Vec<opsapi::OpSet>
 pub fn inventoryapi::holdings_rpc::route_bindings() -> alloc::vec::Vec<opsapi::RouteBinding>
+pub fn inventoryapi::holdings_rpc::wire_ops() -> alloc::vec::Vec<opsapi::WireOp>
 pub struct inventoryapi::Holding
 pub inventoryapi::Holding::item_id: alloc::string::String
 pub inventoryapi::Holding::item_name: alloc::string::String

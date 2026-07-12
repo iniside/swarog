@@ -401,6 +401,23 @@ pub struct OpSet {
     pub local: LocalOp,
 }
 
+/// One trait method's transport replay policy, surfaced as a diffable golden value.
+/// [`Operation`]/[`RouteBinding`] only exist for `#[http]`-bound methods, so a
+/// WIRE-ONLY method's `#[retry_safe]` — compiled solely into the generated client's
+/// [`RetryMode`] argument — otherwise surfaces NO comparable data value, the
+/// contract-golden's self-declared blind spot. The `#[rpc]` macro emits a
+/// `wire_ops() -> Vec<WireOp>` over EVERY method (http-bound AND wire-only) so the
+/// golden pins each method's retry semantics; a silent flip of a wire-only method's
+/// `#[retry_safe]` then shows as a golden diff. Pure comparable data, like
+/// [`Operation`]: `method` is the generated `METHOD_*` const (`&'static str`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WireOp {
+    /// The rpc method name, e.g. `"characters.ownerOf"`.
+    pub method: &'static str,
+    /// Whether a transport may replay this method after reconnecting.
+    pub retry_mode: RetryMode,
+}
+
 /// The IMPL-FREE subset of an operation's gateway wiring: the static [`Operation`]
 /// paired with its [`OpBinding`], with NO [`LocalOp`] — so it needs no provider impl
 /// to construct because it only ever dispatches REMOTELY (over a RemoteBackend to

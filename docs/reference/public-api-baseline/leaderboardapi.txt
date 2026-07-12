@@ -33,6 +33,7 @@ impl core::panic::unwind_safe::UnwindSafe for leaderboardapi::leaderboard_rpc::T
 pub const leaderboardapi::leaderboard_rpc::METHOD_TOP_SCORES: &str
 pub fn leaderboardapi::leaderboard_rpc::operations(alloc::sync::Arc<(dyn leaderboardapi::Leaderboard + core::marker::Send + core::marker::Sync)>) -> alloc::vec::Vec<opsapi::OpSet>
 pub fn leaderboardapi::leaderboard_rpc::route_bindings() -> alloc::vec::Vec<opsapi::RouteBinding>
+pub fn leaderboardapi::leaderboard_rpc::wire_ops() -> alloc::vec::Vec<opsapi::WireOp>
 pub struct leaderboardapi::Score
 pub leaderboardapi::Score::player: alloc::string::String
 pub leaderboardapi::Score::wins: i64

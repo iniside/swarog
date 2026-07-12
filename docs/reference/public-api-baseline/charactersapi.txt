@@ -32,6 +32,7 @@ impl core::panic::unwind_safe::UnwindSafe for charactersapi::ownership_rpc::Owne
 pub const charactersapi::ownership_rpc::METHOD_OWNER_OF: &str
 pub fn charactersapi::ownership_rpc::operations(alloc::sync::Arc<(dyn charactersapi::Ownership + core::marker::Send + core::marker::Sync)>) -> alloc::vec::Vec<opsapi::OpSet>
 pub fn charactersapi::ownership_rpc::route_bindings() -> alloc::vec::Vec<opsapi::RouteBinding>
+pub fn charactersapi::ownership_rpc::wire_ops() -> alloc::vec::Vec<opsapi::WireOp>
 pub mod charactersapi::player_rpc
 pub struct charactersapi::player_rpc::CreateRequest
 pub charactersapi::player_rpc::CreateRequest::class: alloc::string::String
@@ -127,6 +128,7 @@ pub const charactersapi::player_rpc::METHOD_DELETE: &str
 pub const charactersapi::player_rpc::METHOD_LIST: &str
 pub fn charactersapi::player_rpc::operations(alloc::sync::Arc<(dyn charactersapi::Player + core::marker::Send + core::marker::Sync)>) -> alloc::vec::Vec<opsapi::OpSet>
 pub fn charactersapi::player_rpc::route_bindings() -> alloc::vec::Vec<opsapi::RouteBinding>
+pub fn charactersapi::player_rpc::wire_ops() -> alloc::vec::Vec<opsapi::WireOp>
 pub struct charactersapi::Character
 pub charactersapi::Character::class: alloc::string::String
 pub charactersapi::Character::created_at: alloc::string::String

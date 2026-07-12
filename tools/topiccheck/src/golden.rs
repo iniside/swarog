@@ -15,14 +15,16 @@
 //! ## Sources
 //! - **Events:** [`crate::defined_topics`] — the canonical `bus::define` list, already
 //!   compile-time-coupled to every events crate.
-//! - **RPC:** each generated `<snake>_rpc::route_bindings()` — impl-free and carrying
-//!   the IDENTICAL `opsapi::Operation` values that `operations()` (and therefore the
-//!   gateway route table) uses, so no provider impl and no DB are needed. Wire-only
-//!   traits (no `#[http]`) yield zero bindings today; they stay listed so a newly
-//!   HTTP-bound method on them lands in the golden automatically. Limitation (accepted
-//!   in the Step 6c plan): a wire-only method's `#[retry_safe]` is compiled only into
-//!   the generated client and surfaces no data value, so it is guarded by the
-//!   public-api snapshot's method list + review, not by this golden.
+//! - **RPC (http-bound):** each generated `<snake>_rpc::route_bindings()` — impl-free
+//!   and carrying the IDENTICAL `opsapi::Operation` values that `operations()` (and
+//!   therefore the gateway route table) uses, so no provider impl and no DB are needed.
+//!   Wire-only traits (no `#[http]`) yield zero bindings; they stay listed so a newly
+//!   HTTP-bound method on them lands in the golden automatically.
+//! - **RPC (wire retry semantics):** each generated `<snake>_rpc::wire_ops()` — the
+//!   `opsapi::WireOp` (method + `RetryMode`) for EVERY method, http-bound AND
+//!   wire-only. This closes the former blind spot (Step 6c): a wire-only method's
+//!   `#[retry_safe]` was compiled only into the client and surfaced no data value, so
+//!   a silent flip was guarded by review alone; it is now a golden line.
 //!
 //! ## Self-check (house rule: hand-maintained lists must self-verify)
 //! [`rpc_modules`] is a hand-list of generated rpc modules. Before diffing, it is
@@ -38,9 +40,11 @@ use bus::HistoryPolicy;
 /// comparing, so the header never participates in the diff.
 const GOLDEN_HEADER: &str = "\
 # contract-golden -- VALUE-level event + rpc contract baseline (Step 6c).
-# Lines: `event topic=<t> version=<n> history=<policy>` from every bus::define, and
+# Lines: `event topic=<t> version=<n> history=<policy>` from every bus::define,
 # `rpc module=<crate::mod> method=<m> verb=<V> path=<p> auth=<a> success=<n> retry=<r>`
-# from every generated route_bindings(). ANY diff fails the blocking contract-golden
+# from every generated route_bindings(), and
+# `wire module=<crate::mod> method=<m> retry=<r>` from every generated wire_ops()
+# (EVERY method, http-bound and wire-only). ANY diff fails the blocking contract-golden
 # verify stage: a removed line is BREAKING, an added line is ADDITIVE.
 # Regenerate intentionally via ./verify.sh --bless-contract-golden (verify.ps1
 # -BlessContractGolden), i.e. `cargo run -p topiccheck -- contract-golden --bless`.";
@@ -57,26 +61,68 @@ fn workspace_root() -> PathBuf {
 
 /// The generated rpc modules, each referenced DIRECTLY (so a renamed/removed trait
 /// breaks this tool at compile time, the `defined_topics` idiom) and labeled with its
-/// `crate::module` path for the golden lines and the filesystem self-check.
-fn rpc_modules() -> Vec<(&'static str, Vec<opsapi::RouteBinding>)> {
+/// `crate::module` path for the golden lines and the filesystem self-check. Each entry
+/// carries both `route_bindings()` (http-bound `Operation`s) and `wire_ops()` (every
+/// method's `RetryMode`, incl. wire-only) from the SAME module — one hand-list, one
+/// self-check, both value sources.
+#[allow(clippy::type_complexity)]
+fn rpc_modules() -> Vec<(&'static str, Vec<opsapi::RouteBinding>, Vec<opsapi::WireOp>)> {
     vec![
-        ("accountsapi::auth_rpc", accountsapi::auth_rpc::route_bindings()),
-        ("accountsapi::sessions_rpc", accountsapi::sessions_rpc::route_bindings()),
-        ("adminapi::admin_data_rpc", adminapi::admin_data_rpc::route_bindings()),
-        ("apikeysapi::keys_rpc", apikeysapi::keys_rpc::route_bindings()),
-        ("charactersapi::ownership_rpc", charactersapi::ownership_rpc::route_bindings()),
-        ("charactersapi::player_rpc", charactersapi::player_rpc::route_bindings()),
+        (
+            "accountsapi::auth_rpc",
+            accountsapi::auth_rpc::route_bindings(),
+            accountsapi::auth_rpc::wire_ops(),
+        ),
+        (
+            "accountsapi::sessions_rpc",
+            accountsapi::sessions_rpc::route_bindings(),
+            accountsapi::sessions_rpc::wire_ops(),
+        ),
+        (
+            "adminapi::admin_data_rpc",
+            adminapi::admin_data_rpc::route_bindings(),
+            adminapi::admin_data_rpc::wire_ops(),
+        ),
+        (
+            "apikeysapi::keys_rpc",
+            apikeysapi::keys_rpc::route_bindings(),
+            apikeysapi::keys_rpc::wire_ops(),
+        ),
+        (
+            "charactersapi::ownership_rpc",
+            charactersapi::ownership_rpc::route_bindings(),
+            charactersapi::ownership_rpc::wire_ops(),
+        ),
+        (
+            "charactersapi::player_rpc",
+            charactersapi::player_rpc::route_bindings(),
+            charactersapi::player_rpc::wire_ops(),
+        ),
         (
             "configapi::config_snapshot_rpc",
             configapi::config_snapshot_rpc::route_bindings(),
+            configapi::config_snapshot_rpc::wire_ops(),
         ),
-        ("inventoryapi::holdings_rpc", inventoryapi::holdings_rpc::route_bindings()),
+        (
+            "inventoryapi::holdings_rpc",
+            inventoryapi::holdings_rpc::route_bindings(),
+            inventoryapi::holdings_rpc::wire_ops(),
+        ),
         (
             "leaderboardapi::leaderboard_rpc",
             leaderboardapi::leaderboard_rpc::route_bindings(),
+            leaderboardapi::leaderboard_rpc::wire_ops(),
         ),
-        ("matchapi::match_rpc", matchapi::match_rpc::route_bindings()),
-        ("ratingapi::mmr_reader_rpc", ratingapi::mmr_reader_rpc::route_bindings()),
+        (
+            "matchapi::match_rpc",
+            matchapi::match_rpc::route_bindings(),
+            matchapi::match_rpc::wire_ops(),
+        ),
+        (
+            "ratingapi::mmr_reader_rpc",
+            ratingapi::mmr_reader_rpc::route_bindings(),
+            ratingapi::mmr_reader_rpc::wire_ops(),
+        ),
     ]
 }
 
@@ -187,13 +233,19 @@ pub fn live_lines() -> anyhow::Result<BTreeSet<String>> {
         ));
     }
     let modules = rpc_modules();
-    self_check_rpc_list(&modules.iter().map(|(l, _)| *l).collect::<Vec<_>>())?;
-    for (label, bindings) in modules {
+    self_check_rpc_list(&modules.iter().map(|(l, _, _)| *l).collect::<Vec<_>>())?;
+    for (label, bindings, wire_ops) in modules {
         for rb in bindings {
             let op = rb.operation;
             lines.insert(format!(
                 "rpc module={label} method={} verb={} path={} auth={:?} success={} retry={:?}",
                 op.method, op.verb, op.path, op.auth, op.success, op.retry_mode
+            ));
+        }
+        for w in wire_ops {
+            lines.insert(format!(
+                "wire module={label} method={} retry={:?}",
+                w.method, w.retry_mode
             ));
         }
     }
