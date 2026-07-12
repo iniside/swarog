@@ -5,8 +5,11 @@
 //!
 //! Divergence from Go's shape (not semantics): Go's `keyfunc.NewDefault` fetched the
 //! JWKS eagerly inside `Init`; Rust `init` must do no I/O (constraint #8), so the
-//! JWKS is fetched LAZILY on first verify and cached, with one refetch when a
-//! token's `kid` is absent from the cached set (the keyfunc refresh behaviour).
+//! JWKS is fetched LAZILY on first verify and cached with its fetch instant. A
+//! cached kid is accepted only while the set is younger than [`JWKS_CACHE_TTL`]
+//! (so a key Epic rotates out stops being accepted without a restart); a stale set,
+//! or a `kid` absent from the cached set, triggers one refetch (the keyfunc refresh
+//! behaviour), rate-bounded by [`MIN_REFRESH_INTERVAL`].
 
 use std::time::{Duration, Instant};
 
@@ -23,6 +26,13 @@ const ALLOWED_ALGS: [Algorithm; 2] = [Algorithm::RS256, Algorithm::ES256];
 /// unauthenticated caller controls the header) costs the IdP at most one fetch per
 /// interval instead of one per request.
 const MIN_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
+
+/// How long a cached JWKS answers `kid` lookups before it is treated as stale and a
+/// refetch is attempted. This bounds how long a key Epic has ROTATED OUT (e.g. after
+/// a compromise) stays accepted: at most `JWKS_CACHE_TTL` past the rotation, since a
+/// hit is honoured only while the set is younger than this (the full-set swap on
+/// refetch is what actually drops the rotated kid).
+const JWKS_CACHE_TTL: Duration = Duration::from_secs(600);
 
 /// Why a token failed verification — the taxonomy the caller maps to a status
 /// (mirrors the `verify_session` 503-not-401 precedent: an IdP outage must not
@@ -64,8 +74,10 @@ pub(crate) struct OidcVerifier {
     issuer_prefix: String,
     jwks_url: String,
     http: reqwest::Client,
-    /// The cached key set; `None` until the first SUCCESSFUL fetch fills it.
-    keys: RwLock<Option<JwkSet>>,
+    /// The cached key set paired with the [`Instant`] it was fetched; `None` until
+    /// the first SUCCESSFUL fetch fills it. The instant drives [`JWKS_CACHE_TTL`]
+    /// expiry on the hit path.
+    keys: RwLock<Option<(JwkSet, Instant)>>,
     /// Singleflight + cooldown for JWKS refetches: the mutex serializes refreshers
     /// (concurrent cache misses queue and re-check the cache the winner filled);
     /// the `Instant` is the last fetch ATTEMPT (success or failure), so within
@@ -90,39 +102,42 @@ impl OidcVerifier {
     }
 
     /// The key for `kid` (or the first key when the token carries none), consulting
-    /// the cache first and refetching the JWKS on a miss — so a provider key
-    /// rotation heals without a restart. Refetches are SINGLEFLIGHT (one refresher
-    /// at a time; queued misses re-check the winner's cache) and rate-bounded by
-    /// [`MIN_REFRESH_INTERVAL`], because `kid` is attacker-controlled input on an
-    /// unauthenticated path — without the bound every bogus token is one IdP fetch.
+    /// the cache first and refetching the JWKS when the cached set is stale
+    /// ([`JWKS_CACHE_TTL`]) or missing the `kid` — so a provider key rotation both
+    /// heals a new key and EXPIRES a rotated-out one without a restart. Refetches are
+    /// SINGLEFLIGHT (one refresher at a time; queued misses re-check the winner's
+    /// cache) and rate-bounded by [`MIN_REFRESH_INTERVAL`], because `kid` is
+    /// attacker-controlled input on an unauthenticated path — without the bound every
+    /// bogus token is one IdP fetch.
     async fn key_for(&self, kid: Option<&str>) -> Result<Jwk, VerifyError> {
-        if let Some(set) = self.keys.read().await.as_ref() {
-            if let Some(k) = find_key(set, kid) {
-                return Ok(k.clone());
-            }
+        // Hit path: a cached kid is honoured only while the set is still fresh.
+        if let Some(k) = self.fresh_hit(kid).await {
+            return Ok(k);
         }
         // Singleflight: the mutex is held across the whole fetch, so concurrent
-        // misses queue here and first re-check the cache the winner just filled.
+        // stale/misses queue here and first re-check the fresh cache the winner
+        // just filled.
         let mut refresh = self.refresh.lock().await;
-        if let Some(set) = self.keys.read().await.as_ref() {
-            if let Some(k) = find_key(set, kid) {
-                return Ok(k.clone());
-            }
+        if let Some(k) = self.fresh_hit(kid).await {
+            return Ok(k);
         }
         // Cooldown: within MIN_REFRESH_INTERVAL of the last ATTEMPT, don't hit the
-        // IdP again. An unknown kid while a recent successful fetch is cached is a
-        // bad token (Rejected → 401); if no fetch has EVER succeeded there is no
-        // verdict to give (Infra → 503).
+        // IdP again. Freshness degrades OPEN, unknown kids stay CLOSED: if the (now
+        // stale) cache still answers this kid, serve it rather than reject a valid
+        // login; an unknown kid while a fetch has ever succeeded is a bad token
+        // (Rejected → 401); if no fetch has EVER succeeded there is no verdict to
+        // give (Infra → 503).
         if let Some(last) = *refresh {
             if last.elapsed() < MIN_REFRESH_INTERVAL {
-                return if self.keys.read().await.is_some() {
-                    Err(VerifyError::Rejected(anyhow::anyhow!(
-                        "no JWKS key for kid {kid:?} (refresh cooldown)"
-                    )))
-                } else {
-                    Err(VerifyError::Infra(anyhow::anyhow!(
+                return match self.keys.read().await.as_ref() {
+                    Some((set, _)) => find_key(set, kid).cloned().ok_or_else(|| {
+                        VerifyError::Rejected(anyhow::anyhow!(
+                            "no JWKS key for kid {kid:?} (refresh cooldown)"
+                        ))
+                    }),
+                    None => Err(VerifyError::Infra(anyhow::anyhow!(
                         "JWKS never fetched and refresh is cooling down"
-                    )))
+                    ))),
                 };
             }
         }
@@ -142,10 +157,22 @@ impl OidcVerifier {
         *refresh = Some(Instant::now());
         let set = fetched.map_err(VerifyError::Infra)?;
         let found = find_key(&set, kid).cloned();
-        *self.keys.write().await = Some(set);
+        *self.keys.write().await = Some((set, Instant::now()));
         found.ok_or_else(|| {
             VerifyError::Rejected(anyhow::anyhow!("no JWKS key for kid {kid:?} after fresh fetch"))
         })
+    }
+
+    /// A cached key for `kid`, but ONLY if the cached set is younger than
+    /// [`JWKS_CACHE_TTL`] — a stale set (or an absent kid) returns `None` so the
+    /// caller falls through to the refresh path.
+    async fn fresh_hit(&self, kid: Option<&str>) -> Option<Jwk> {
+        let guard = self.keys.read().await;
+        let (set, fetched_at) = guard.as_ref()?;
+        if fetched_at.elapsed() >= JWKS_CACHE_TTL {
+            return None;
+        }
+        find_key(set, kid).cloned()
     }
 
     /// Returns the token subject if the token is authentic and valid. Failures are
@@ -175,6 +202,26 @@ impl OidcVerifier {
             return Err(rejected(anyhow::anyhow!("missing subject")));
         }
         Ok(data.claims.sub)
+    }
+}
+
+#[cfg(test)]
+impl OidcVerifier {
+    /// Test-only: rewind the cached set's fetch instant past [`JWKS_CACHE_TTL`] so the
+    /// next hit reads it as stale, exercising the TTL path without a 10-minute sleep.
+    pub(crate) async fn expire_cache_for_test(&self) {
+        if let Some((_, fetched_at)) = self.keys.write().await.as_mut() {
+            *fetched_at = fetched_at
+                .checked_sub(JWKS_CACHE_TTL + Duration::from_secs(1))
+                .expect("Instant rewind (machine uptime exceeds JWKS_CACHE_TTL)");
+        }
+    }
+
+    /// Test-only: clear the refresh cooldown so the next stale/miss is permitted to
+    /// refetch, without waiting out [`MIN_REFRESH_INTERVAL`]. (Distinguishes the
+    /// stale-refetch path from the stale-under-cooldown degrade-open path.)
+    pub(crate) async fn reset_cooldown_for_test(&self) {
+        *self.refresh.lock().await = None;
     }
 }
 

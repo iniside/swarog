@@ -71,6 +71,40 @@ async fn serve_counting_jwks(status: u16, body: String) -> (String, Arc<AtomicUs
     (format!("http://{addr}/jwks"), hits)
 }
 
+/// Like `serve_counting_jwks` (always 200) but the body is swappable at runtime via
+/// the returned handle, so a test can rotate the key set the endpoint returns between
+/// fetches (exercising the TTL-triggered refetch).
+async fn serve_switchable_jwks(
+    initial: String,
+) -> (String, Arc<AtomicUsize>, Arc<std::sync::Mutex<String>>) {
+    let hits = Arc::new(AtomicUsize::new(0));
+    let body = Arc::new(std::sync::Mutex::new(initial));
+    let counter = hits.clone();
+    let body_for_handler = body.clone();
+    let app = axum::Router::new().route(
+        "/jwks",
+        axum::routing::get(move || {
+            let counter = counter.clone();
+            let body = body_for_handler.clone();
+            async move {
+                counter.fetch_add(1, Ordering::SeqCst);
+                let current = body.lock().unwrap().clone();
+                (
+                    axum::http::StatusCode::OK,
+                    [(axum::http::header::CONTENT_TYPE, "application/json")],
+                    current,
+                )
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    (format!("http://{addr}/jwks"), hits, body)
+}
+
 /// A structurally valid RS256 token whose header names `kid` — enough to reach the
 /// JWKS lookup (the signature never gets checked when the kid is unknown).
 fn token_with_kid(enc: &jsonwebtoken::EncodingKey, kid: &str) -> String {
@@ -178,6 +212,86 @@ async fn jwks_500_is_infra_and_maps_to_unavailable() {
         opsapi::Status::Unavailable,
         "an IdP outage must answer 503, never 401 (bad-credentials)"
     );
+}
+
+/// A stale cache triggers a refetch, and the full-set swap EXPIRES a rotated-out
+/// kid: once the set is older than `JWKS_CACHE_TTL`, a token whose kid Epic rotated
+/// out is rejected on the next verify (the fix's whole point) — while the newly
+/// rotated-in kid verifies from the freshly fetched set, no restart needed.
+#[tokio::test(flavor = "multi_thread")]
+async fn stale_cache_refetches_and_rotated_out_kid_is_rejected() {
+    let (enc1, jwks1) = test_key("kid-1");
+    let (enc2, jwks2) = test_key("kid-2");
+    let (url, hits, body) = serve_switchable_jwks(jwks1).await;
+    let v = OidcVerifier::new(&url, ISSUER, CLIENT_ID).unwrap();
+
+    // Warm the cache with the current key.
+    assert_eq!(v.verify(&token_with_kid(&enc1, "kid-1")).await.unwrap(), "puid");
+    assert_eq!(hits.load(Ordering::SeqCst), 1);
+
+    // Epic rotates: the endpoint now serves ONLY kid-2. Age the cache past the TTL
+    // and clear the warm-up cooldown so the stale hit is permitted to refetch (the
+    // stale-under-cooldown degrade-open path is covered by its own test).
+    *body.lock().unwrap() = jwks2;
+    v.expire_cache_for_test().await;
+    v.reset_cooldown_for_test().await;
+
+    // The stale hit refetches; kid-1 is absent from the fresh set → Rejected (not
+    // served from the stale cache), and one refetch went out.
+    let err = v
+        .verify(&token_with_kid(&enc1, "kid-1"))
+        .await
+        .expect_err("a rotated-out kid must stop being accepted");
+    assert!(
+        matches!(err, VerifyError::Rejected(_)),
+        "rotated-out kid absent from the fresh set is a bad token: {err}"
+    );
+    assert_eq!(hits.load(Ordering::SeqCst), 2, "the stale hit forced a refetch");
+
+    // The rotated-in kid verifies from the now-fresh cache — no further fetch (the
+    // refetch was < MIN_REFRESH_INTERVAL ago, but the set is fresh and answers it).
+    assert_eq!(v.verify(&token_with_kid(&enc2, "kid-2")).await.unwrap(), "puid");
+    assert_eq!(hits.load(Ordering::SeqCst), 2);
+}
+
+/// A FRESH cached hit never refetches: repeated verifies within `JWKS_CACHE_TTL`
+/// cost exactly the one warm-up fetch.
+#[tokio::test(flavor = "multi_thread")]
+async fn fresh_cache_hit_does_not_refetch() {
+    let (enc, jwks) = test_key("kid-1");
+    let (url, hits) = serve_counting_jwks(200, jwks).await;
+    let v = OidcVerifier::new(&url, ISSUER, CLIENT_ID).unwrap();
+
+    for _ in 0..3 {
+        assert_eq!(v.verify(&token_with_kid(&enc, "kid-1")).await.unwrap(), "puid");
+    }
+    assert_eq!(hits.load(Ordering::SeqCst), 1, "a fresh cached kid never refetches");
+}
+
+/// Freshness degrades OPEN under the cooldown: a set that is stale but still answers
+/// the kid is SERVED (a valid login is not rejected), and the refresh cooldown still
+/// bounds the fetch rate — no second fetch goes out while the cooldown is active.
+#[tokio::test(flavor = "multi_thread")]
+async fn stale_cache_under_cooldown_serves_stale_without_refetch() {
+    let (enc, jwks) = test_key("kid-1");
+    let (url, hits) = serve_counting_jwks(200, jwks).await;
+    let v = OidcVerifier::new(&url, ISSUER, CLIENT_ID).unwrap();
+
+    // Warm-up fetch stamps the refresh cooldown AND caches kid-1 fresh.
+    assert_eq!(v.verify(&token_with_kid(&enc, "kid-1")).await.unwrap(), "puid");
+    assert_eq!(hits.load(Ordering::SeqCst), 1);
+
+    // Age the cache past the TTL — but the refresh attempt is still within
+    // MIN_REFRESH_INTERVAL, so the cooldown forbids a fetch.
+    v.expire_cache_for_test().await;
+
+    // The stale set still answers kid-1: served (degrade-open), no refetch.
+    assert_eq!(
+        v.verify(&token_with_kid(&enc, "kid-1")).await.unwrap(),
+        "puid",
+        "a stale-but-answering set is served rather than rejecting a valid login"
+    );
+    assert_eq!(hits.load(Ordering::SeqCst), 1, "the cooldown bounds the fetch rate");
 }
 
 /// The Rejected side of the mapping: a demonstrably bad token (unknown kid after a
