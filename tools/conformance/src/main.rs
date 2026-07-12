@@ -37,19 +37,21 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use bus::{
-    AnyTx, Error as BusError, EventContract, HistoryPolicy, SubscriptionSpec, Transport,
-    TxHandler,
+    AnyTx, Error as BusError, EventContract, HistoryPolicy, SubscriptionSpec, Transport, TxHandler,
 };
 use lifecycle::{App, Context};
 
 mod checks;
+mod input_inventory;
 mod model;
 mod policy;
 #[cfg(test)]
 mod tests;
 
-use checks::{argon_parity_findings, completeness_findings, conv_label, drift_findings, eval_cap_probe};
-use model::{ArgonParams, Convention, EnvCase, Fixture, OutageClass, Stance};
+use checks::{
+    argon_parity_findings, completeness_findings, conv_label, drift_findings, eval_cap_probe,
+};
+use model::{ArgonParams, Convention, EnvCase, Fixture, InputPolicy, OutageClass, Stance};
 
 /// Dev-default DSN (mirrors CLAUDE.md). Only ever used to build a LAZY pool that
 /// never connects — `register`/`init` do no I/O.
@@ -127,7 +129,10 @@ fn build_full_monolith() -> anyhow::Result<()> {
     let dsn = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string());
     let pool = sqlx::postgres::PgPool::connect_lazy(&dsn)
         .map_err(|e| anyhow::anyhow!("conformancecheck: build lazy pool: {e}"))?;
-    let ctx = Arc::new(Context::with_db_and_transport(pool, Arc::new(NoopTransport)));
+    let ctx = Arc::new(Context::with_db_and_transport(
+        pool,
+        Arc::new(NoopTransport),
+    ));
     let mut app = App::new(ctx);
     for m in checkmodules::monolith_modules() {
         app.add(m);
@@ -195,7 +200,10 @@ impl Cell {
 }
 
 fn fail_phase(phase: &str, findings: &[String]) -> ! {
-    eprintln!("conformancecheck: {phase} FAILED — {} finding(s):", findings.len());
+    eprintln!(
+        "conformancecheck: {phase} FAILED — {} finding(s):",
+        findings.len()
+    );
     for f in findings {
         eprintln!("  - {f}");
     }
@@ -207,6 +215,45 @@ fn main() {
 
     // ---- Phase 1: drift preflight (fail before anything else) ---------------
     let entries = policy::entries();
+
+    let discovered_inputs = input_inventory::discover(&input_inventory::api_root())
+        .unwrap_or_else(|error| fail_phase("input discovery", &[format!("{error:#}")]));
+    let input_policies = policy::input_policies();
+    let policy_keys = input_policies
+        .iter()
+        .map(|(key, _)| key.clone())
+        .collect::<Vec<_>>();
+    let input_policy_drift = input_inventory::policy_key_findings(&discovered_inputs, &policy_keys);
+    if !input_policy_drift.is_empty() {
+        fail_phase("input policy drift", &input_policy_drift);
+    }
+    let actual_golden = input_inventory::render_golden(&discovered_inputs);
+    let committed_golden =
+        std::fs::read_to_string(input_inventory::golden_path()).unwrap_or_else(|error| {
+            fail_phase("input golden", &[format!("read committed golden: {error}")])
+        });
+    let golden = input_inventory::golden_findings(&actual_golden, &committed_golden);
+    if !golden.is_empty() {
+        fail_phase("input golden", &golden);
+    }
+
+    println!(
+        "conformancecheck: RPC request string inventory ({} fields)",
+        discovered_inputs.len()
+    );
+    for (key, stance) in &input_policies {
+        let policy = match stance {
+            InputPolicy::Validated { cap, basis } => format!("validated({cap}): {basis}"),
+            InputPolicy::KnownGap {
+                planned_cap,
+                remediation,
+            } => format!("GAP(planned {planned_cap}): {remediation}"),
+            InputPolicy::Opaque { rationale } => format!("opaque: {rationale}"),
+            InputPolicy::Unrestricted { rationale } => format!("unrestricted: {rationale}"),
+        };
+        println!("  {}\t{policy}", input_inventory::render_key(key));
+    }
+    println!();
     let disk: BTreeSet<String> = crate_dirs(&modules_dir()).into_iter().collect();
     let entry_names: BTreeSet<String> = entries.iter().map(|e| e.module.to_string()).collect();
     let monolith = monolith_module_names();

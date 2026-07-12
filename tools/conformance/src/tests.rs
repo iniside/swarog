@@ -42,7 +42,9 @@ fn drift_on_disk_module_without_entry_fails_with_the_add_hint() {
     );
     // The monolith leg reports it too — per-entry, one line per mismatch.
     assert!(
-        findings.iter().any(|f| f.starts_with("monolith module \"foo\"")),
+        findings
+            .iter()
+            .any(|f| f.starts_with("monolith module \"foo\"")),
         "expected the monolith-leg line too, got: {findings:?}"
     );
 }
@@ -261,8 +263,13 @@ fn real_policy_has_the_three_known_input_cap_gaps() {
 /// plain constructors need neither env flips nor a runtime.
 #[test]
 fn real_entries_match_disk_and_monolith() {
-    let disk: BTreeSet<String> = crate::crate_dirs(&crate::modules_dir()).into_iter().collect();
-    assert!(!disk.is_empty(), "modules/ scan found nothing — harness path bug");
+    let disk: BTreeSet<String> = crate::crate_dirs(&crate::modules_dir())
+        .into_iter()
+        .collect();
+    assert!(
+        !disk.is_empty(),
+        "modules/ scan found nothing — harness path bug"
+    );
     let entry_names: BTreeSet<String> = crate::policy::entries()
         .iter()
         .map(|e| e.module.to_string())
@@ -270,6 +277,30 @@ fn real_entries_match_disk_and_monolith() {
     let monolith = crate::monolith_module_names();
     let findings = drift_findings(&disk, &entry_names, &monolith);
     assert!(findings.is_empty(), "drift findings: {findings:?}");
+}
+
+#[test]
+fn real_rpc_input_inventory_is_exactly_covered_and_matches_golden() {
+    let discovered = crate::input_inventory::discover(&crate::input_inventory::api_root()).unwrap();
+    assert_eq!(
+        discovered.len(),
+        18,
+        "unexpected request string inventory: {discovered:?}"
+    );
+    let policies = crate::policy::input_policies();
+    let policy_keys = policies
+        .iter()
+        .map(|(key, _)| key.clone())
+        .collect::<Vec<_>>();
+    let findings = crate::input_inventory::policy_key_findings(&discovered, &policy_keys);
+    assert!(findings.is_empty(), "input policy findings: {findings:?}");
+
+    let actual = crate::input_inventory::render_golden(&discovered);
+    let committed = std::fs::read_to_string(crate::input_inventory::golden_path()).unwrap();
+    assert!(
+        crate::input_inventory::golden_findings(&actual, &committed).is_empty(),
+        "committed input golden is stale\nactual:\n{actual}"
+    );
 }
 
 /// CapCase probes stay callable as plain data — a smoke check that the fixture

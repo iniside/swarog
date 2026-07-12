@@ -978,7 +978,9 @@ dependencies = [
  "checkmodules",
  "gateway",
  "lifecycle",
+ "rpc-contract-model",
  "sqlx",
+ "syn",
  "tokio",
 ]
 

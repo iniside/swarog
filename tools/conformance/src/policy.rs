@@ -2,9 +2,10 @@
 
 use std::sync::Arc;
 
+use crate::input_inventory::{Exposure, InputKey};
 use crate::model::{
-    ArgonParams, CapCase, Convention, Entry, EnvCase, Fixture, OutageCase, OutageClass,
-    Stance,
+    ArgonParams, CapCase, Convention, Entry, EnvCase, Fixture, InputPolicy, OutageCase,
+    OutageClass, Stance,
 };
 
 fn na(why: &'static str) -> Stance {
@@ -34,6 +35,37 @@ pub fn entries() -> Vec<Entry> {
         match_module(),
         rating(),
         scheduler(),
+    ]
+}
+
+pub fn input_policies() -> Vec<(InputKey, InputPolicy)> {
+    use Exposure::{External, Wire};
+    use InputPolicy::{KnownGap, Opaque, Unrestricted, Validated};
+
+    let key = |method: &str, field: &str, exposure| InputKey {
+        wire_method: method.to_owned(),
+        wire_field_name: field.to_owned(),
+        exposure,
+    };
+    vec![
+        (key("accounts.login", "email", External), Validated { cap: 320, basis: "accounts::valid_email_bytes is called by the production login path" }),
+        (key("accounts.login", "password", External), Validated { cap: 1024, basis: "accounts::valid_password_bytes is called by the production login path" }),
+        (key("accounts.loginEpic", "id_token", External), Unrestricted { rationale: "provider-issued OIDC compact token; the configured Epic verifier validates its signed structure and issuer" }),
+        (key("accounts.register", "displayName", External), KnownGap { planned_cap: 128, remediation: "Step 17 adds the shared display-name validator" }),
+        (key("accounts.register", "email", External), Validated { cap: 320, basis: "accounts::valid_email_bytes is called by the production register path" }),
+        (key("accounts.register", "password", External), Validated { cap: 1024, basis: "accounts::valid_password_bytes is called by the production register path" }),
+        (key("accounts.verifySession", "token", Wire), Opaque { rationale: "opaque session credential minted and resolved by accounts; it is not player-authored free text" }),
+        (key("apikeys.lookupKey", "key", Wire), Validated { cap: apikeysapi::MAX_KEY_BYTES, basis: "gateway lookup and apikeys creation both enforce apikeysapi::MAX_KEY_BYTES" }),
+        (key("characters.create", "class", External), KnownGap { planned_cap: 64, remediation: "Step 17 adds the shared character-class validator" }),
+        (key("characters.create", "name", External), KnownGap { planned_cap: 128, remediation: "Step 17 adds the shared character-name validator" }),
+        (key("characters.delete", "character_id", External), Opaque { rationale: "opaque character UUID resolved by the characters store, not player-authored free text" }),
+        (key("characters.ownerOf", "character_id", Wire), Opaque { rationale: "opaque character UUID passed between domain capabilities" }),
+        (key("inventory.grant", "item_id", External), Opaque { rationale: "opaque catalog identifier accepted only when it exactly resolves to an existing inventory item" }),
+        (key("inventory.listCharacter", "character_id", External), Opaque { rationale: "opaque character UUID authorized through characters::Ownership" }),
+        (key("match.report", "Loser", External), KnownGap { planned_cap: 128, remediation: "Step 17 adds the shared match participant validator" }),
+        (key("match.report", "ReportId", External), KnownGap { planned_cap: 128, remediation: "Step 17 adds the shared report-id validator" }),
+        (key("match.report", "Winner", External), KnownGap { planned_cap: 128, remediation: "Step 17 adds the shared match participant validator" }),
+        (key("rating.mmr", "player_id", Wire), Opaque { rationale: "opaque player UUID passed between domain capabilities" }),
     ]
 }
 

@@ -21,6 +21,8 @@ sqlx = { workspace = true }
 tokio = { workspace = true }
 async-trait = { workspace = true }
 anyhow = { workspace = true }
+rpc-contract-model = { workspace = true }
+syn = { workspace = true }
 # Only modules that expose factual probes are direct dependencies. The complete
 # module inventory comes from checkmodules and the filesystem drift preflight.
 accounts = { workspace = true }

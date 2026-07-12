@@ -75,6 +75,24 @@ pub struct CapCase {
     pub probe: Arc<dyn Fn(usize) -> bool + Send + Sync>,
 }
 
+#[derive(Clone, Debug)]
+pub enum InputPolicy {
+    Validated {
+        cap: usize,
+        basis: &'static str,
+    },
+    KnownGap {
+        planned_cap: usize,
+        remediation: &'static str,
+    },
+    Opaque {
+        rationale: &'static str,
+    },
+    Unrestricted {
+        rationale: &'static str,
+    },
+}
+
 #[derive(Clone)]
 pub struct OutageCase {
     pub name: &'static str,
