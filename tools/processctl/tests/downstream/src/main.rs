@@ -364,7 +364,7 @@ mod linux_fixture {
         }
         drop(borrower);
         assert!(
-            !std::fs::read_dir(dir)?.any(|entry| entry.is_ok_and(|entry| entry
+            std::fs::read_dir(dir)?.any(|entry| entry.is_ok_and(|entry| entry
                 .path()
                 .extension()
                 .is_some_and(|value| value == "borrowed")))
@@ -373,6 +373,13 @@ mod linux_fixture {
             owner.spawn_borrower(borrower_spec(&ready)?, "splitproof"),
             Err(LeaseError::BorrowerAlreadyIssued)
         ));
+        drop(owner);
+        assert!(
+            !std::fs::read_dir(dir)?.any(|entry| entry.is_ok_and(|entry| entry
+                .path()
+                .extension()
+                .is_some_and(|value| value == "borrowed")))
+        );
         Ok(())
     }
 

@@ -22,7 +22,7 @@ pub enum FleetStatus {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case", tag = "state")]
+#[serde(deny_unknown_fields, rename_all = "snake_case", tag = "state")]
 pub enum ManagedStatus {
     Starting,
     Healthy,
@@ -769,7 +769,7 @@ pub(crate) fn validate_private_regular_windows(
     handle: windows_sys::Win32::Foundation::HANDLE,
 ) -> std::io::Result<()> {
     use std::mem::{size_of, zeroed};
-    use windows_sys::Win32::Security::Authorization::{GetSecurityInfo, SE_KERNEL_OBJECT};
+    use windows_sys::Win32::Security::Authorization::{GetSecurityInfo, SE_FILE_OBJECT};
     use windows_sys::Win32::Security::{
         AclSizeInformation, GetAce, GetAclInformation, GetSecurityDescriptorControl,
         ACCESS_ALLOWED_ACE, ACL_SIZE_INFORMATION, DACL_SECURITY_INFORMATION,
@@ -797,7 +797,7 @@ pub(crate) fn validate_private_regular_windows(
     let result = unsafe {
         GetSecurityInfo(
             handle,
-            SE_KERNEL_OBJECT,
+            SE_FILE_OBJECT,
             OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
             &mut owner,
             std::ptr::null_mut(),

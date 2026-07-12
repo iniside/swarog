@@ -83,7 +83,6 @@ pub struct OwnedLease {
     path: PathBuf,
     metadata: LockMetadata,
     borrower_issued: bool,
-    active_marker: Option<PathBuf>,
 }
 
 pub struct BorrowedLease {
@@ -93,7 +92,7 @@ pub struct BorrowedLease {
 }
 
 pub struct BorrowedChild<'lease> {
-    owner: &'lease mut OwnedLease,
+    _owner: &'lease mut OwnedLease,
     child: Option<OwnedChild>,
 }
 
@@ -151,7 +150,6 @@ impl RolloutLock {
             path,
             metadata,
             borrower_issued: false,
-            active_marker: None,
         })
     }
 }
@@ -216,10 +214,8 @@ impl OwnedLease {
             self.borrower_issued = false;
             return Err(error);
         }
-        let marker = borrow_marker_path(&self.path, &self.metadata);
-        self.active_marker = Some(marker);
         Ok(BorrowedChild {
-            owner: self,
+            _owner: self,
             child: Some(child),
         })
     }
@@ -376,20 +372,14 @@ impl BorrowedChild<'_> {
     }
 
     pub fn try_wait(&mut self) -> Result<Option<std::process::ExitStatus>, LeaseError> {
-        let status = self.child_mut().try_wait()?;
-        if status.is_some() {
-            self.cleanup_marker();
-        }
-        Ok(status)
+        Ok(self.child_mut().try_wait()?)
     }
 
     pub fn shutdown(
         &mut self,
         policy: crate::ShutdownPolicy,
     ) -> Result<crate::ShutdownOutcome, LeaseError> {
-        let outcome = self.child_mut().shutdown(policy)?;
-        self.cleanup_marker();
-        Ok(outcome)
+        Ok(self.child_mut().shutdown(policy)?)
     }
 
     fn child(&self) -> &OwnedChild {
@@ -399,12 +389,6 @@ impl BorrowedChild<'_> {
     fn child_mut(&mut self) -> &mut OwnedChild {
         self.child.as_mut().expect("borrowed child already dropped")
     }
-
-    fn cleanup_marker(&mut self) {
-        if let Some(marker) = self.owner.active_marker.take() {
-            cleanup_consumption_marker(&marker);
-        }
-    }
 }
 
 impl Drop for BorrowedChild<'_> {
@@ -412,13 +396,13 @@ impl Drop for BorrowedChild<'_> {
         if let Some(child) = self.child.take() {
             drop(child);
         }
-        self.cleanup_marker();
     }
 }
 
 impl Drop for OwnedLease {
     fn drop(&mut self) {
         let _ = unlock(&self.file);
+        cleanup_consumption_marker(&borrow_marker_path(&self.path, &self.metadata));
     }
 }
 

@@ -70,6 +70,17 @@ fn unknown_fields_and_oversized_state_are_rejected() {
     std::fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
     assert!(StateStore::new(&path).load().is_err());
 
+    let mut nested = serde_json::to_value(sample_state("run-1", FleetStatus::Running)).unwrap();
+    nested["processes"][0]["identity"]["unexpected"] = serde_json::json!(true);
+    std::fs::write(&path, serde_json::to_vec(&nested).unwrap()).unwrap();
+    assert!(StateStore::new(&path).load().is_err());
+
+    let mut exited = serde_json::to_value(sample_state("run-1", FleetStatus::Running)).unwrap();
+    exited["processes"][0]["status"] =
+        serde_json::json!({"state": "exited", "code": 0, "unexpected": true});
+    std::fs::write(&path, serde_json::to_vec(&exited).unwrap()).unwrap();
+    assert!(StateStore::new(&path).load().is_err());
+
     std::fs::write(
         &path,
         vec![b' '; crate::state::MAX_STATE_BYTES as usize + 1],

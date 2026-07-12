@@ -125,6 +125,7 @@ fn child_entry() {
                 .success());
             std::fs::write(ready, "borrowed-ok").unwrap();
         }
+        #[cfg(windows)]
         "state-crash-before-publish" => {
             let path = PathBuf::from(std::env::var_os("PROCESSCTL_TEST_STATE").unwrap());
             let state = FleetState::new("crash-run", "split").unwrap();
@@ -330,6 +331,7 @@ fn inherited_borrower_is_one_shot_and_credential_is_not_reinherited() {
     let dir = test_dir("borrower");
     let lock_path = dir.join("rollout.lock");
     let mut owner = RolloutLock::acquire(&lock_path, "borrow-run", "splitproof").unwrap();
+    let replay = owner.credential_for_test();
     let ready = dir.join("borrower.ready");
     assert!(matches!(
         owner.spawn_borrower(spec("lease-borrower", &ready), "wrong-role"),
@@ -348,17 +350,28 @@ fn inherited_borrower_is_one_shot_and_credential_is_not_reinherited() {
         std::thread::sleep(Duration::from_millis(10));
     }
     drop(borrower);
-    assert!(!std::fs::read_dir(&dir).unwrap().any(|entry| entry
+    assert!(std::fs::read_dir(&dir).unwrap().any(|entry| entry
         .unwrap()
         .path()
         .extension()
         .is_some_and(|extension| extension == "borrowed")));
     assert!(matches!(
+        crate::lock::validate_credential(replay, "splitproof"),
+        Err(LeaseError::BorrowerReplay)
+    ));
+    assert!(matches!(
         owner.spawn_borrower(spec("lease-borrower", &ready), "splitproof"),
         Err(LeaseError::BorrowerAlreadyIssued)
     ));
+    drop(owner);
+    assert!(!std::fs::read_dir(&dir).unwrap().any(|entry| entry
+        .unwrap()
+        .path()
+        .extension()
+        .is_some_and(|extension| extension == "borrowed")));
 }
 
+#[cfg(windows)]
 #[test]
 fn initial_state_publish_survives_process_crash_without_placeholder() {
     let dir = test_dir("state-crash-publish");

@@ -46,6 +46,7 @@ fn borrower_role_one_shot_replay_and_dead_owner_are_fail_closed() {
     ));
     drop(borrowed);
     drop(owner);
+    assert!(!marker.exists());
 
     let dead_path = lock_path("dead");
     let dead_owner = RolloutLock::acquire(&dead_path, "run-dead", "splitproof").unwrap();
