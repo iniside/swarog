@@ -23,8 +23,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Context as _, Result};
 use syn::{
-    Attribute, Fields, FnArg, GenericArgument, Item, ItemStruct, ItemTrait, Lit, LitStr,
-    PathArguments, Pat, ReturnType, TraitItem, Type,
+    Attribute, Fields, GenericArgument, Item, ItemStruct, ItemTrait, LitStr, PathArguments,
+    ReturnType, Type,
 };
 
 use crate::model::{ArgDef, DtoDef, FieldDef, Manifest, MethodDef, TypeRef};
@@ -274,7 +274,9 @@ pub(crate) fn parse_sources(files: &[(PathBuf, String)]) -> Result<Parsed> {
         for item in ast.items {
             match item {
                 Item::Trait(t) => {
-                    if let Some(prefix) = rpc_prefix(&t) {
+                    let prefix = rpc_contract_model::trait_prefix(&t)
+                        .with_context(|| format!("parse #[rpc] on {} in {}", t.ident, file.display()))?;
+                    if let Some(prefix) = prefix {
                         traits.push(parse_trait(&t, &prefix).with_context(|| {
                             format!("parse trait {} in {}", t.ident, file.display())
                         })?);
@@ -302,104 +304,36 @@ pub(crate) fn parse_sources(files: &[(PathBuf, String)]) -> Result<Parsed> {
     Ok(Parsed { traits, structs })
 }
 
-/// The `prefix` from a `#[rpc(prefix = "...")]` attribute, if the trait has one.
-fn rpc_prefix(t: &ItemTrait) -> Option<String> {
-    for a in &t.attrs {
-        if a.path().is_ident("rpc") {
-            let mut prefix = None;
-            let _ = a.parse_nested_meta(|m| {
-                if m.path.is_ident("prefix") {
-                    let s: LitStr = m.value()?.parse()?;
-                    prefix = Some(s.value());
-                }
-                Ok(())
-            });
-            return prefix;
-        }
-    }
-    None
-}
-
 /// Parses a `#[rpc]` trait's `#[http]` methods (wire-only methods are skipped).
 fn parse_trait(t: &ItemTrait, prefix: &str) -> Result<ParsedTrait> {
+    let mut syntax = t.clone();
+    let methods = rpc_contract_model::build_methods(&mut syntax)
+        .with_context(|| format!("parse RPC methods of {}", t.ident))?;
     let mut http_methods = Vec::new();
-    for item in &t.items {
-        let TraitItem::Fn(f) = item else { continue };
-        let Some(http_attr) = f.attrs.iter().find(|a| a.path().is_ident("http")) else {
+    for method in methods {
+        if method.http.is_none() {
             continue; // wire-only method (no #[http]) — not player-reachable
-        };
-        let body_names = parse_http_body_names(http_attr)
-            .with_context(|| format!("parse #[http] on {}", f.sig.ident))?;
-
-        let name = f.sig.ident.to_string();
+        }
+        let name = method.method_ident.to_string();
         let wire = format!("{prefix}.{}", to_lower_camel(&name));
-        let args = parse_args(&f.sig, &body_names)
+        let args = method
+            .args
+            .iter()
+            .map(|arg| {
+                let name = arg.ident.to_string();
+                Ok(ArgDef {
+                    wire_name: arg.rename.clone().unwrap_or_else(|| name.clone()),
+                    name,
+                    ty: map_type(&arg.ty)?,
+                })
+            })
+            .collect::<Result<Vec<_>>>()
             .with_context(|| format!("parse args of {name}"))?;
-        let ret = result_ok_type(&f.sig.output)
+        let ret = result_ok_type(&method.sig.output)
             .with_context(|| format!("parse return of {name}"))?;
         http_methods.push(ParsedHttpMethod { wire, args, ret });
     }
     Ok(ParsedTrait { prefix: prefix.to_string(), http_methods })
-}
-
-/// The method args after stripping a leading `Identity` param; `wire_name` applies the
-/// `body_names` override (path-wildcard args have no override → keep the param name).
-fn parse_args(sig: &syn::Signature, body_names: &BTreeMap<String, String>) -> Result<Vec<ArgDef>> {
-    let mut args = Vec::new();
-    let mut inputs = sig.inputs.iter();
-    // Skip &self.
-    match inputs.next() {
-        Some(FnArg::Receiver(_)) => {}
-        _ => return Err(anyhow!("method must take &self")),
-    }
-    for (i, input) in inputs.enumerate() {
-        let FnArg::Typed(pt) = input else {
-            return Err(anyhow!("unexpected receiver"));
-        };
-        let Pat::Ident(pi) = &*pt.pat else {
-            return Err(anyhow!("param must be a simple identifier"));
-        };
-        // The leading param, when typed `Identity`, is the caller identity — stripped.
-        if i == 0 && is_identity_type(&pt.ty) {
-            continue;
-        }
-        let name = pi.ident.to_string();
-        let wire_name = body_names.get(&name).cloned().unwrap_or_else(|| name.clone());
-        let ty = map_type(&pt.ty)?;
-        args.push(ArgDef { name, wire_name, ty });
-    }
-    Ok(args)
-}
-
-/// Reads the `body_names(param = "key")` overrides from an `#[http]` attr, consuming the
-/// other keys (`verb`/`path`/`auth`/`success`/`path_args`) so the nested parse succeeds.
-fn parse_http_body_names(attr: &Attribute) -> Result<BTreeMap<String, String>> {
-    let mut body_names = BTreeMap::new();
-    attr.parse_nested_meta(|meta| {
-        if meta.path.is_ident("body_names") {
-            meta.parse_nested_meta(|inner| {
-                let param = inner
-                    .path
-                    .get_ident()
-                    .ok_or_else(|| inner.error("body_names key must be a bare param name"))?
-                    .to_string();
-                let key: LitStr = inner.value()?.parse()?;
-                body_names.insert(param, key.value());
-                Ok(())
-            })
-        } else if meta.path.is_ident("path_args") {
-            meta.parse_nested_meta(|inner| {
-                let _key: LitStr = inner.value()?.parse()?;
-                Ok(())
-            })
-        } else {
-            // verb/path/auth (LitStr) or success (LitInt) — consume the value.
-            let _v: Lit = meta.value()?.parse()?;
-            Ok(())
-        }
-    })
-    .map_err(|e| anyhow!("{e}"))?;
-    Ok(body_names)
 }
 
 /// Parses a `pub struct Name { ... }` into (name, [(field, wire key, type)]). Returns
@@ -448,17 +382,6 @@ fn serde_rename(attrs: &[Attribute]) -> Option<String> {
 // ---------------------------------------------------------------------------
 // Type mapping + DTO recursion
 // ---------------------------------------------------------------------------
-
-/// `true` when the type's final path segment is `Identity` — the macro's identity
-/// recogniser, reimplemented (`tools/rpc-macro/src/lib.rs:343`).
-fn is_identity_type(ty: &Type) -> bool {
-    if let Type::Path(tp) = ty {
-        if let Some(seg) = tp.path.segments.last() {
-            return seg.ident == "Identity";
-        }
-    }
-    false
-}
 
 /// Maps a `syn::Type` into the minimal [`TypeRef`] lattice. `String`/`i64`/`Vec<T>`/`()`
 /// are recognised; any other single-segment path is treated as a DTO `Struct(name)`.

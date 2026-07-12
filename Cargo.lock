@@ -1127,6 +1127,7 @@ dependencies = [
  "leaderboardapi",
  "matchapi",
  "opsapi",
+ "rpc-contract-model",
  "serde",
  "serde_json",
  "syn",

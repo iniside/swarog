@@ -22,3 +22,4 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 syn = { workspace = true }
 anyhow = { workspace = true }
+rpc-contract-model = { workspace = true }
