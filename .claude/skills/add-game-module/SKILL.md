@@ -64,6 +64,10 @@ Emit with `emit_tx(AnyTx::new(&mut *tx), …)` inside the store's transaction.
 Tests in `src/tests.rs`, never inline. Any dev convenience (seed, dev auth):
 default OFF, explicit env opt-in, loud warn when ON.
 
+If your module reads a route-gating env var in `register`/`init` (one whose
+value changes which operations get contributed), add it to `GATES` in
+`tools/routecheck/src/main.rs` — routecheck cannot discover it on its own.
+
 ## Step 4 — Composition roots
 
 - `cmd/<name>-svc/src/lib.rs`: `modules(wiring: &ProcessWiring) -> Vec<Box<dyn Module>>`

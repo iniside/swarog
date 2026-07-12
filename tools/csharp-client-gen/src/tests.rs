@@ -13,9 +13,11 @@
 
 use std::collections::BTreeSet;
 
+use std::path::PathBuf;
+
 use crate::emit::{emit_client, emit_dtos, emit_status};
 use crate::model::{Manifest, TypeRef};
-use crate::scrape::{check_completeness, check_drift, scrape};
+use crate::scrape::{check_completeness, check_drift, parse_sources, scrape};
 
 /// The committed golden manifest — regenerate with
 /// `cargo run -p csharp-client-gen -- --emit-manifest testdata/manifest.golden.json`.
@@ -162,6 +164,54 @@ fn drift_gate_fires_on_signature_without_route() {
     let err = check_drift(&runtime, &parsed).expect_err("must fire");
     assert!(err.contains("characters.ghost"), "err was: {err}");
     assert!(err.contains("no route_binding"), "err was: {err}");
+}
+
+// --- Cross-domain DTO name collision -----------------------------------------
+
+#[test]
+fn struct_collision_across_files_bails_naming_both_paths() {
+    // Two synthetic api-crate sources declaring the SAME short struct name — a flat
+    // `name -> fields` map would silently let whichever file sorts last overwrite the
+    // other DTO's fields. This must be a hard error instead, naming both source files.
+    let files = vec![
+        (
+            PathBuf::from("api/characters/api/src/lib.rs"),
+            "pub struct Score { pub value: i64 }".to_string(),
+        ),
+        (
+            PathBuf::from("api/leaderboard/api/src/lib.rs"),
+            "pub struct Score { pub points: i64 }".to_string(),
+        ),
+    ];
+    let err = match parse_sources(&files) {
+        Ok(_) => panic!("must bail on colliding struct name"),
+        Err(e) => e,
+    };
+    let msg = format!("{err:#}");
+    assert!(msg.contains("Score"), "err was: {msg}");
+    assert!(
+        msg.contains("api/characters/api/src/lib.rs"),
+        "err must name the first declaring file: {msg}"
+    );
+    assert!(
+        msg.contains("api/leaderboard/api/src/lib.rs"),
+        "err must name the second declaring file: {msg}"
+    );
+}
+
+#[test]
+fn struct_no_collision_when_names_differ() {
+    let files = vec![
+        (
+            PathBuf::from("api/characters/api/src/lib.rs"),
+            "pub struct Character { pub id: i64 }".to_string(),
+        ),
+        (
+            PathBuf::from("api/leaderboard/api/src/lib.rs"),
+            "pub struct Score { pub value: i64 }".to_string(),
+        ),
+    ];
+    assert!(parse_sources(&files).is_ok());
 }
 
 // --- Gate 2: provider-completeness -----------------------------------------

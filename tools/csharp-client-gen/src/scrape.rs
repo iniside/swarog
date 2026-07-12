@@ -81,7 +81,7 @@ struct ParsedTrait {
 
 /// The full Phase-B parse of every `api/*/api` crate: the `#[rpc]` traits and the global
 /// DTO struct registry (name → fields), used to recurse reachable types.
-struct Parsed {
+pub(crate) struct Parsed {
     traits: Vec<ParsedTrait>,
     /// name → fields parsed from a `pub struct`.
     structs: BTreeMap<String, StructFields>,
@@ -245,16 +245,32 @@ fn discover_api_lib_files(root: &Path) -> Result<Vec<PathBuf>> {
 }
 
 /// Parses every api crate source into [`Parsed`]: `#[rpc]` traits (with their `#[http]`
-/// method sigs) and a global `pub struct` registry.
+/// method sigs) and a global `pub struct` registry. Reads each discovered file, then
+/// delegates to [`parse_sources`] (kept separate so it's unit-testable on synthetic
+/// `(path, source)` pairs without touching the real `api/` tree).
 fn parse_all_api_crates(root: &Path) -> Result<Parsed> {
-    let mut traits: Vec<ParsedTrait> = Vec::new();
-    let mut structs: BTreeMap<String, StructFields> = BTreeMap::new();
-
+    let mut files = Vec::new();
     for file in discover_api_lib_files(root)? {
         let src = std::fs::read_to_string(&file)
             .with_context(|| format!("read {}", file.display()))?;
+        files.push((file, src));
+    }
+    parse_sources(&files)
+}
+
+/// Parses already-read `(file, source)` pairs into [`Parsed`]. A `pub struct` name
+/// colliding across two different files (a flat `name -> fields` map would silently let
+/// the last-processed file overwrite the first DTO's fields — same failure class the
+/// drift/completeness gates exist to catch) is a hard `bail!` naming BOTH source files.
+pub(crate) fn parse_sources(files: &[(PathBuf, String)]) -> Result<Parsed> {
+    let mut traits: Vec<ParsedTrait> = Vec::new();
+    let mut structs: BTreeMap<String, StructFields> = BTreeMap::new();
+    // name -> the file that first declared it, so a later collision can name both.
+    let mut struct_provenance: BTreeMap<String, PathBuf> = BTreeMap::new();
+
+    for (file, src) in files {
         let ast =
-            syn::parse_file(&src).with_context(|| format!("parse {}", file.display()))?;
+            syn::parse_file(src).with_context(|| format!("parse {}", file.display()))?;
         for item in ast.items {
             match item {
                 Item::Trait(t) => {
@@ -266,6 +282,16 @@ fn parse_all_api_crates(root: &Path) -> Result<Parsed> {
                 }
                 Item::Struct(s) => {
                     if let Some((name, fields)) = parse_struct(&s) {
+                        if let Some(prev) = struct_provenance.get(&name) {
+                            return Err(anyhow!(
+                                "DTO struct {name:?} declared in both {} and {} — \
+                                 cross-domain name collision (rename one; a flat name \
+                                 registry would silently drop one DTO's fields)",
+                                prev.display(),
+                                file.display()
+                            ));
+                        }
+                        struct_provenance.insert(name.clone(), file.clone());
                         structs.insert(name, fields);
                     }
                 }
