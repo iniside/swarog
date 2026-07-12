@@ -62,7 +62,10 @@ ops via `opsapi::{SLOT,BINDING_SLOT,LOCAL_SLOT}`, readiness checks, remote boot
 hooks) — and **`edge::EDGE_SLOT`**: a module contributes its QUIC edge registrations
 (`edge::EdgeReg` wrapping its own generated `register_server` glue) UNCONDITIONALLY
 in `init`; `app::run` applies them iff the process serves an internal edge. The
-module never knows the topology.
+module never knows the topology. Wire-method names are unique per process:
+`edge::Server::handle/handle_identity` PANIC on a duplicate registration — a
+collision is a loud boot failure (same convention as `registry::provide`),
+never a silent last-writer-wins overwrite.
 
 ## Hard constraints (do not violate without discussing)
 
@@ -119,7 +122,11 @@ module never knows the topology.
    modules stop (`RunningServer::shutdown`, `EDGE_DRAIN_GRACE_MS` default 5000 —
    read in `core/app`, never in modules), and the HTTP graceful drain is itself
    time-bounded (`HTTP_DRAIN_GRACE_MS` default 5000 — read in `core/app`, never in
-   modules) so a hung connection can't stall shutdown before teardown begins, and
+   modules) so a hung connection can't stall shutdown before teardown begins;
+   every process's inbound HTTP is bounded whole-request by
+   `HTTP_REQUEST_TIMEOUT_MS` (default 30000, `0` disables — read in `core/app`,
+   never in modules; elapse = deliberate 408) so a trickle upload can't pin a
+   handler; and
    each module's `stop` (in both ordered teardown and the start-unwind) is itself
    bounded (`MODULE_STOP_GRACE_MS` default 5000 — read in `core/app`, never in
    modules) so one hung module can't stall the rest. A
@@ -132,7 +139,9 @@ module never knows the topology.
    yielding, so handlers must remain async-cooperative. `/readyz` flips not only
    when a worker task died but also when delivery has gone STALE (no healthy
    pass completed in 30s — e.g. a worker alive but looping on connection
-   errors), and each worker's own delivery session carries an
+   errors) and when retention has gone STALE the same way (no successful sweep
+   in 3x the housekeep interval; sweep errors also count in
+   `asyncevents_retention_sweep_errors_total`), and each worker's own delivery session carries an
    `idle_in_transaction_session_timeout` (2x the handler timeout) as a belt
    against that worker leaking its OWN open transaction — it does not cover a
    rogue idle-in-tx session elsewhere in the cluster (see
@@ -240,7 +249,13 @@ module never knows the topology.
   (`AUDIT_RETENTION_DAYS`, default 30).
 - **scheduler** — data-driven schedules (`scheduler.schedules`), 1s tick, per-name
   `pg_try_advisory_lock` + still-due re-check + `UPDATE`+`emit_tx` in one tx,
-  commit-before-unlock. `SCHEDULER_ENABLED`.
+  commit-before-unlock. Each fire runs on its own DEDICATED connection (derived
+  from the pool's connect options — dropping it closes the session, so an abort
+  can never strand the advisory lock in the pool), acquire/connect waits are
+  bounded (5s), the whole tick shares ONE 30s budget (exhaustion skips the
+  remaining due schedules to the next tick), and `stop()` grace-then-aborts its
+  tasks (4s, under the app-level 5s) instead of joining forever.
+  `SCHEDULER_ENABLED`.
 - **match / rating / leaderboard** — match records `match.matches` from a
   `/match/report` HTTP request body (a REQUIRED `ReportId` idempotency key —
   a duplicate `ReportId` with the SAME winner/loser is a 202 no-op, a duplicate

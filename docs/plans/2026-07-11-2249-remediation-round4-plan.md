@@ -1,6 +1,7 @@
 # Remediation Round 4 — audit findings, authority-point hardening
 
-**Status:** draft for approval.
+**Status:** EXECUTED 2026-07-12 (all 16 steps landed; see
+`docs/status/2026-07-12-0941-remediation-round4-summary.md`).
 **Review:** grumpy-reviewer pass (Fable, think hard, separate context) done
 2026-07-11; both MAJORs fixed (Step 4 dedicated-conn source →
 `PgConnection::connect_with(pool.connect_options())`; Step 12 `octet_length`
