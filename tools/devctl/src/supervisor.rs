@@ -30,6 +30,18 @@ const SHUTDOWN: ShutdownPolicy = ShutdownPolicy {
 };
 static INTERRUPTED: AtomicBool = AtomicBool::new(false);
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum StepOutcome {
+    Completed,
+    RequestedStop,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TransientOutcome {
+    Completed,
+    Cancelled,
+}
+
 pub fn execute(command: Command) -> Result<()> {
     let root = workspace_root()?;
     let run_dir = root.join("run/devctl");
@@ -143,13 +155,20 @@ fn supervise(
     let mut children = Vec::new();
     let result = (|| -> Result<()> {
         if !skip_build {
-            if let Err(error) = build(root, topology, &services, &environment, &stop) {
-                state
-                    .lock()
-                    .expect("state mutex poisoned")
-                    .record_failure("build", None::<String>)?;
-                return Err(error);
+            match build(root, topology, &services, &environment, &stop) {
+                Ok(StepOutcome::Completed) => {}
+                Ok(StepOutcome::RequestedStop) => return Ok(()),
+                Err(error) => {
+                    state
+                        .lock()
+                        .expect("state mutex poisoned")
+                        .record_failure("build", None::<String>)?;
+                    return Err(error);
+                }
             }
+        }
+        if stop_requested(&stop) {
+            return Ok(());
         }
         if let Err(error) = edgeca::mint_dev_ca(&ca_cert, &ca_key) {
             state
@@ -158,57 +177,52 @@ fn supervise(
                 .record_failure("edge-ca", None::<String>)?;
             return Err(anyhow::anyhow!(error.to_string()));
         }
-        if let Err(error) = seed_admin(root, &db_url, &environment, &stop) {
-            state
-                .lock()
-                .expect("state mutex poisoned")
-                .record_failure("admin-seed", None::<String>)?;
-            return Err(error);
+        match seed_admin(root, &db_url, &environment, &stop) {
+            Ok(StepOutcome::Completed) => {}
+            Ok(StepOutcome::RequestedStop) => return Ok(()),
+            Err(error) => {
+                state
+                    .lock()
+                    .expect("state mutex poisoned")
+                    .record_failure("admin-seed", None::<String>)?;
+                return Err(error);
+            }
         }
         for service in &services {
             if stop_requested(&stop) {
-                bail!("startup interrupted");
+                return Ok(());
             }
             println!(
                 "devctl: starting {} on :{}",
                 service.name, service.http_port
             );
-            let child = OwnedChild::spawn(spawn_spec(root, run_dir, service))
-                .with_context(|| format!("start {}", service.name))?;
-            let process = ManagedProcess::new(
-                service.name,
-                child.identity().clone(),
-                run_dir.join(format!("{}.out.log", service.name)),
-                run_dir.join(format!("{}.err.log", service.name)),
-            )?;
-            children.push(child);
-            state
-                .lock()
-                .expect("state mutex poisoned")
-                .push_process(process);
-            checkpoint(store, &state, &mut children, "spawn", Some(service.name))?;
-            if let Err(error) =
-                wait_healthy(service, children.last_mut().expect("just pushed"), &stop)
-            {
-                {
-                    let mut state = state.lock().expect("state mutex poisoned");
-                    state
-                        .processes_mut()
-                        .last_mut()
-                        .expect("matching process state")
-                        .set_status(ManagedStatus::Failed);
-                    state.record_failure("health", Some(service.name))?;
+            spawn_managed(root, run_dir, service, store, &state, &mut children)?;
+            match wait_healthy(service, children.last_mut().expect("just pushed"), &stop) {
+                Ok(StepOutcome::Completed) => {}
+                Ok(StepOutcome::RequestedStop) => return Ok(()),
+                Err(error) => {
+                    {
+                        let mut state = state.lock().expect("state mutex poisoned");
+                        state
+                            .processes_mut()
+                            .last_mut()
+                            .expect("matching process state")
+                            .set_status(ManagedStatus::Failed);
+                        state.record_failure("health", Some(service.name))?;
+                    }
+                    if let Err(checkpoint_error) = checkpoint(
+                        store,
+                        &state,
+                        &mut children,
+                        "health-failure",
+                        Some(service.name),
+                    ) {
+                        bail!(
+                            "{error:#}; failed-state checkpoint also failed: {checkpoint_error:#}"
+                        );
+                    }
+                    return Err(error);
                 }
-                if let Err(checkpoint_error) = checkpoint(
-                    store,
-                    &state,
-                    &mut children,
-                    "health-failure",
-                    Some(service.name),
-                ) {
-                    bail!("{error:#}; failed-state checkpoint also failed: {checkpoint_error:#}");
-                }
-                return Err(error);
             }
             state
                 .lock()
@@ -292,7 +306,7 @@ fn build(
     services: &[ServiceSpec],
     environment: &EnvironmentSnapshot,
     stop: &AtomicBool,
-) -> Result<()> {
+) -> Result<StepOutcome> {
     let mut packages: Vec<&str> = services
         .iter()
         .map(|service| service.executable_package)
@@ -307,7 +321,7 @@ fn build(
     println!("devctl: building {} topology", topology.name());
     let build_env = environment.build_environment();
     let cargo = executable_on_path("cargo", &build_env)?;
-    run_transient(
+    match run_transient(
         SpawnSpec {
             label: "devctl-cargo-build".into(),
             executable: cargo,
@@ -322,7 +336,11 @@ fn build(
         stop,
         BUILD_TIMEOUT,
     )
-    .context("cargo build")
+    .context("cargo build")?
+    {
+        TransientOutcome::Completed => Ok(StepOutcome::Completed),
+        TransientOutcome::Cancelled => Ok(StepOutcome::RequestedStop),
+    }
 }
 
 fn seed_admin(
@@ -330,7 +348,7 @@ fn seed_admin(
     db: &str,
     environment: &EnvironmentSnapshot,
     stop: &AtomicBool,
-) -> Result<()> {
+) -> Result<StepOutcome> {
     let mut env = environment.runtime_environment();
     env.insert("DATABASE_URL".into(), db.into());
     let spec = SpawnSpec {
@@ -346,8 +364,12 @@ fn seed_admin(
         stderr: OutputDestination::Null,
         process_group: ProcessGroupPolicy::Owned,
     };
-    run_transient(spec, Some(b"admin\n"), stop, ADMIN_TIMEOUT)
-        .context("seed development admin user")
+    match run_transient(spec, Some(b"admin\n"), stop, ADMIN_TIMEOUT)
+        .context("seed development admin user")?
+    {
+        TransientOutcome::Completed => Ok(StepOutcome::Completed),
+        TransientOutcome::Cancelled => Ok(StepOutcome::RequestedStop),
+    }
 }
 
 pub(crate) fn run_transient(
@@ -355,7 +377,7 @@ pub(crate) fn run_transient(
     stdin: Option<&[u8]>,
     stop: &AtomicBool,
     timeout: Duration,
-) -> Result<()> {
+) -> Result<TransientOutcome> {
     let mut child = match stdin {
         Some(bytes) => OwnedChild::spawn_with_stdin_bytes(spec, bytes)?,
         None => OwnedChild::spawn(spec)?,
@@ -364,29 +386,93 @@ pub(crate) fn run_transient(
     loop {
         if let Some(status) = child.try_wait()? {
             if status.success() {
-                return Ok(());
+                return Ok(TransientOutcome::Completed);
             }
             bail!("child exited with {status}");
         }
         let interrupted = stop_requested(stop);
         let timed_out = Instant::now() >= deadline;
         if interrupted || timed_out {
-            let reason = if interrupted {
-                "cancelled"
-            } else {
-                "timed out"
-            };
             let cleanup = child
                 .shutdown(SHUTDOWN)
                 .err()
                 .map(|error| error.to_string());
             if let Some(cleanup) = cleanup {
+                let reason = if interrupted {
+                    "cancelled"
+                } else {
+                    "timed out"
+                };
                 bail!("transient child {reason}; cleanup also failed: {cleanup}");
             }
-            bail!("transient child {reason} after {timeout:?}");
+            if interrupted {
+                return Ok(TransientOutcome::Cancelled);
+            }
+            bail!("transient child timed out after {timeout:?}");
         }
         std::thread::sleep(Duration::from_millis(20));
     }
+}
+
+pub(crate) fn spawn_managed(
+    root: &Path,
+    run_dir: &Path,
+    service: &ServiceSpec,
+    store: &StateStore,
+    state: &Arc<Mutex<FleetState>>,
+    children: &mut Vec<OwnedChild>,
+) -> Result<()> {
+    let mut child = match OwnedChild::spawn(spawn_spec(root, run_dir, service)) {
+        Ok(child) => child,
+        Err(error) => {
+            state
+                .lock()
+                .expect("state mutex poisoned")
+                .record_failure("spawn", Some(service.name))?;
+            if let Err(checkpoint_error) =
+                checkpoint(store, state, children, "spawn-failure", Some(service.name))
+            {
+                bail!(
+                    "start {}: {error}; cleanup checkpoint also failed: {checkpoint_error:#}",
+                    service.name
+                );
+            }
+            return Err(error).with_context(|| format!("start {}", service.name));
+        }
+    };
+    let process = match ManagedProcess::new(
+        service.name,
+        child.identity().clone(),
+        run_dir.join(format!("{}.out.log", service.name)),
+        run_dir.join(format!("{}.err.log", service.name)),
+    ) {
+        Ok(process) => process,
+        Err(error) => {
+            state
+                .lock()
+                .expect("state mutex poisoned")
+                .record_failure("spawn", Some(service.name))?;
+            let cleanup = child
+                .shutdown(SHUTDOWN)
+                .err()
+                .map(|error| error.to_string());
+            let checkpoint_error =
+                checkpoint(store, state, children, "spawn-failure", Some(service.name)).err();
+            match (cleanup, checkpoint_error) {
+                (None, None) => return Err(error.into()),
+                (cleanup, checkpoint) => bail!(
+                    "create managed state for {}: {error}; cleanup failures: child={cleanup:?}, checkpoint={checkpoint:?}",
+                    service.name
+                ),
+            }
+        }
+    };
+    children.push(child);
+    state
+        .lock()
+        .expect("state mutex poisoned")
+        .push_process(process);
+    checkpoint(store, state, children, "spawn", Some(service.name))
 }
 
 fn spawn_spec(root: &Path, run_dir: &Path, service: &ServiceSpec) -> SpawnSpec {
@@ -402,17 +488,21 @@ fn spawn_spec(root: &Path, run_dir: &Path, service: &ServiceSpec) -> SpawnSpec {
     }
 }
 
-fn wait_healthy(service: &ServiceSpec, child: &mut OwnedChild, stop: &AtomicBool) -> Result<()> {
+pub(crate) fn wait_healthy(
+    service: &ServiceSpec,
+    child: &mut OwnedChild,
+    stop: &AtomicBool,
+) -> Result<StepOutcome> {
     let deadline = Instant::now() + HEALTH_TIMEOUT;
     while Instant::now() < deadline {
         if stop_requested(stop) {
-            bail!("startup interrupted");
+            return Ok(StepOutcome::RequestedStop);
         }
         if let Some(status) = child.try_wait()? {
             bail!("{} exited during startup with {status}", service.name);
         }
         if ready(service.http_port) {
-            return Ok(());
+            return Ok(StepOutcome::Completed);
         }
         std::thread::sleep(Duration::from_millis(250));
     }
@@ -462,7 +552,7 @@ fn monitor(
     }
 }
 
-fn teardown(
+pub(crate) fn teardown(
     store: &StateStore,
     state: &Arc<Mutex<FleetState>>,
     children: &mut [OwnedChild],

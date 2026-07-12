@@ -1,9 +1,12 @@
 use super::cli::{parse, Command, Topology};
 use super::control::{self, ControlServer};
-use super::supervisor::{run_transient, service_specs, wait_for_terminal};
+use super::supervisor::{
+    run_transient, service_specs, spawn_managed, teardown, wait_for_terminal, wait_healthy,
+    StepOutcome, TransientOutcome,
+};
 use processctl::{
-    observe_process_identity, EnvironmentSnapshot, FleetState, FleetStatus, OutputDestination,
-    ProcessGroupPolicy, SpawnSpec, StateStore,
+    observe_process_identity, EnvironmentSnapshot, FleetState, FleetStatus, ManagedProcess,
+    OutputDestination, OwnedChild, ProcessGroupPolicy, ServiceSpec, SpawnSpec, StateStore,
 };
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
@@ -219,6 +222,9 @@ fn down_waits_for_stopped_checkpoint_and_reports_failed_cleanup() {
 #[test]
 fn transient_child_entry() {
     if std::env::var_os("DEVCTL_TRANSIENT_CHILD").is_some() {
+        if let Some(path) = std::env::var_os("DEVCTL_TRANSIENT_READY") {
+            std::fs::write(path, std::process::id().to_string()).unwrap();
+        }
         std::thread::sleep(Duration::from_secs(60));
     }
 }
@@ -227,40 +233,220 @@ fn transient_child_entry() {
 fn transient_children_obey_cancellation_and_deadline() {
     use std::collections::BTreeMap;
     use std::ffi::OsString;
-    let spec = || SpawnSpec {
+    let directory = test_directory("transient");
+    let spec = |ready: &std::path::Path| SpawnSpec {
         label: "devctl-transient-test".into(),
         executable: std::env::current_exe().unwrap(),
         args: ["--exact", "tests::transient_child_entry", "--nocapture"]
             .into_iter()
             .map(OsString::from)
             .collect(),
-        env: BTreeMap::from([(
-            OsString::from("DEVCTL_TRANSIENT_CHILD"),
-            OsString::from("1"),
-        )]),
+        env: BTreeMap::from([
+            (
+                OsString::from("DEVCTL_TRANSIENT_CHILD"),
+                OsString::from("1"),
+            ),
+            (
+                OsString::from("DEVCTL_TRANSIENT_READY"),
+                ready.as_os_str().to_owned(),
+            ),
+        ]),
         cwd: std::env::current_dir().unwrap(),
         stdout: OutputDestination::Null,
         stderr: OutputDestination::Null,
         process_group: ProcessGroupPolicy::Owned,
     };
 
-    let cancelled = AtomicBool::new(true);
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let ready = directory.join("cancel.ready");
+    let setter = Arc::clone(&cancelled);
+    let setter_ready = ready.clone();
+    let trigger = std::thread::spawn(move || {
+        while !setter_ready.exists() {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        setter.store(true, std::sync::atomic::Ordering::SeqCst);
+    });
     let started = std::time::Instant::now();
-    assert!(
-        run_transient(spec(), None, &cancelled, Duration::from_secs(5))
-            .unwrap_err()
-            .to_string()
-            .contains("cancelled")
+    assert_eq!(
+        run_transient(spec(&ready), None, &cancelled, Duration::from_secs(5)).unwrap(),
+        TransientOutcome::Cancelled
     );
+    trigger.join().unwrap();
     assert!(started.elapsed() < Duration::from_secs(2));
+    let pid: u32 = std::fs::read_to_string(&ready).unwrap().parse().unwrap();
+    assert!(observe_process_identity(pid).is_err());
+
+    let store = StateStore::new(directory.join("build-state.json"));
+    let state = Arc::new(Mutex::new(
+        FleetState::new("build-stop", "monolith").unwrap(),
+    ));
+    teardown(&store, &state, &mut [], false).unwrap();
+    assert_eq!(
+        store.load().unwrap().unwrap().status(),
+        FleetStatus::Stopped
+    );
 
     let running = AtomicBool::new(false);
-    assert!(
-        run_transient(spec(), None, &running, Duration::from_millis(50))
-            .unwrap_err()
-            .to_string()
-            .contains("timed out")
+    assert!(run_transient(
+        spec(&directory.join("timeout.ready")),
+        None,
+        &running,
+        Duration::from_millis(50),
+    )
+    .unwrap_err()
+    .to_string()
+    .contains("timed out"));
+}
+
+#[test]
+fn requested_stop_during_health_finishes_stopped_and_reaps_child() {
+    let directory = test_directory("health-stop");
+    let ready = directory.join("child.ready");
+    let child = OwnedChild::spawn(fake_child_spec(&ready)).unwrap();
+    wait_for_file(&ready);
+    let identity = child.identity().clone();
+    let service = fake_service("health-svc", "unused", 65_000);
+    let mut fleet = FleetState::new("health-stop", "split").unwrap();
+    fleet.push_process(
+        ManagedProcess::new(
+            service.name,
+            identity.clone(),
+            directory.join("health.out"),
+            directory.join("health.err"),
+        )
+        .unwrap(),
     );
+    let state = Arc::new(Mutex::new(fleet));
+    let store = StateStore::new(directory.join("state.json"));
+    store.write_atomic(&state.lock().unwrap()).unwrap();
+    let mut children = vec![child];
+    let stop = AtomicBool::new(true);
+    assert_eq!(
+        wait_healthy(&service, &mut children[0], &stop).unwrap(),
+        StepOutcome::RequestedStop
+    );
+    teardown(&store, &state, &mut children, false).unwrap();
+    assert_eq!(
+        store.load().unwrap().unwrap().status(),
+        FleetStatus::Stopped
+    );
+    assert!(observe_process_identity(identity.pid).is_err());
+}
+
+#[test]
+fn missing_service_executable_records_spawn_and_reaps_prefix() {
+    let directory = test_directory("spawn-failure");
+    let ready = directory.join("prefix.ready");
+    let prefix = OwnedChild::spawn(fake_child_spec(&ready)).unwrap();
+    wait_for_file(&ready);
+    let prefix_identity = prefix.identity().clone();
+    let prefix_process = ManagedProcess::new(
+        "prefix-svc",
+        prefix_identity.clone(),
+        directory.join("prefix.out"),
+        directory.join("prefix.err"),
+    )
+    .unwrap();
+    let mut fleet = FleetState::new("spawn-failure", "split").unwrap();
+    fleet.push_process(prefix_process);
+    let state = Arc::new(Mutex::new(fleet));
+    let store = StateStore::new(directory.join("state.json"));
+    store.write_atomic(&state.lock().unwrap()).unwrap();
+    let mut children = vec![prefix];
+    let missing = fake_service("missing-svc", "definitely-missing", 65_001);
+
+    let primary = spawn_managed(
+        &directory,
+        &directory,
+        &missing,
+        &store,
+        &state,
+        &mut children,
+    )
+    .unwrap_err();
+    assert!(primary.to_string().contains("start missing-svc"));
+    let checkpointed = store.load().unwrap().unwrap();
+    assert_eq!(checkpointed.failure().unwrap().stage(), "spawn");
+    assert_eq!(
+        checkpointed.failure().unwrap().process(),
+        Some("missing-svc")
+    );
+
+    teardown(&store, &state, &mut children, true).unwrap();
+    let terminal = store.load().unwrap().unwrap();
+    assert_eq!(terminal.status(), FleetStatus::Failed);
+    assert_eq!(terminal.failure().unwrap().stage(), "spawn");
+    assert_eq!(terminal.failure().unwrap().process(), Some("missing-svc"));
+    assert!(observe_process_identity(prefix_identity.pid).is_err());
+}
+
+fn fake_child_spec(ready: &std::path::Path) -> SpawnSpec {
+    use std::collections::BTreeMap;
+    use std::ffi::OsString;
+    SpawnSpec {
+        label: "devctl-fake-child".into(),
+        executable: std::env::current_exe().unwrap(),
+        args: ["--exact", "tests::transient_child_entry", "--nocapture"]
+            .into_iter()
+            .map(OsString::from)
+            .collect(),
+        env: BTreeMap::from([
+            (
+                OsString::from("DEVCTL_TRANSIENT_CHILD"),
+                OsString::from("1"),
+            ),
+            (
+                OsString::from("DEVCTL_TRANSIENT_READY"),
+                ready.as_os_str().to_owned(),
+            ),
+        ]),
+        cwd: std::env::current_dir().unwrap(),
+        stdout: OutputDestination::Null,
+        stderr: OutputDestination::Null,
+        process_group: ProcessGroupPolicy::Owned,
+    }
+}
+
+fn fake_service(
+    name: &'static str,
+    executable_package: &'static str,
+    http_port: u16,
+) -> ServiceSpec {
+    ServiceSpec {
+        name,
+        executable_package,
+        http_port,
+        edge_port: None,
+        player_port: None,
+        dependencies: vec![],
+        env: Default::default(),
+        overrideable_env: &[],
+    }
+}
+
+fn wait_for_file(path: &std::path::Path) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while !path.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "fake child did not become ready"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+fn test_directory(name: &str) -> PathBuf {
+    let directory = std::env::temp_dir().join(format!(
+        "devctl-{name}-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&directory).unwrap();
+    directory
 }
 
 #[cfg(windows)]
