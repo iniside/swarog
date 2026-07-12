@@ -246,10 +246,16 @@ fn deliver_credential(
     child: &mut OwnedChild,
 ) -> Result<(), LeaseError> {
     let (sender, receiver) = std::sync::mpsc::sync_channel(1);
-    let delivery = std::thread::spawn(move || {
-        let result = writer.write_all(&bytes).and_then(|_| writer.flush());
-        let _ = sender.send(result);
-    });
+    let delivery = std::thread::Builder::new()
+        .name("processctl-credential-delivery".into())
+        .spawn(move || {
+            let result = writer.write_all(&bytes).and_then(|_| writer.flush());
+            let _ = sender.send(result);
+        })
+        .map_err(|source| LeaseError::Io {
+            operation: "start borrower credential delivery",
+            source,
+        })?;
     let result = match receiver.recv_timeout(timeout) {
         Ok(result) => result.map_err(|source| LeaseError::Io {
             operation: "deliver one-shot borrower credential",
