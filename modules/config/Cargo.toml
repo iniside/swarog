@@ -14,6 +14,9 @@ lifecycle = { workspace = true }
 registry = { workspace = true }
 opsapi = { workspace = true }
 edge = { workspace = true }
+# Convention-conformance contract types: this crate exposes `conformance::entry()`
+# (always compiled, the asyncevents::testing precedent) for the conformancecheck harness.
+conformance = { workspace = true }
 configapi = { workspace = true }
 # config's OWN generated glue (rule 5: a module may import its own `<name>rpc`): the
 # ConfigSnapshot `register_server` config exposes on the internal edge (Step 5).

@@ -13,6 +13,8 @@
 //! to the service with the verified caller identity threaded in — never a
 //! client-supplied one. An impl crate: no other module imports it.
 
+pub mod conformance;
+
 use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;

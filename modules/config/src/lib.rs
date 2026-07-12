@@ -27,6 +27,8 @@
 //! reader trait, resolved via `registry::key("config", "reader")`) and
 //! `configevents` (the `config.changed` event) — never on this crate.
 
+pub mod conformance;
+
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, OnceLock, RwLock};
 

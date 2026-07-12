@@ -17,6 +17,9 @@ lifecycle = { workspace = true }
 registry = { workspace = true }
 opsapi = { workspace = true }
 edge = { workspace = true }
+# Convention-conformance contract types: this crate exposes `conformance::entry()`
+# (always compiled, the asyncevents::testing precedent) for the conformancecheck harness.
+conformance = { workspace = true }
 charactersapi = { workspace = true }
 charactersrpc = { workspace = true }
 charactersevents = { workspace = true }

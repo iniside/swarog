@@ -17,6 +17,9 @@ lifecycle = { workspace = true }
 edge = { workspace = true }
 opsapi = { workspace = true }
 adminapi = { workspace = true }
+# Convention-conformance contract types: this crate exposes `conformance::entry()`
+# (always compiled, the asyncevents::testing precedent) for the conformancecheck harness.
+conformance = { workspace = true }
 auditrpc = { workspace = true }
 # The scheduler event CONTRACT crate (sanctioned dependency — a contract, not an impl):
 # audit subscribes to `scheduler.fired` by the descriptor's topic const so a rename can
