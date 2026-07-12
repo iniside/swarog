@@ -11,7 +11,7 @@
 
 use async_trait::async_trait;
 use opsapi::{Error, Identity};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Serializer};
 
 // --- Domain types the sample capability exchanges ---------------------------
 
@@ -26,6 +26,20 @@ pub struct Holding {
 pub struct Owner {
     pub player_id: String,
     pub ok: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct FailingValue;
+
+impl Serialize for FailingValue {
+    fn serialize<S>(&self, _serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        Err(serde::ser::Error::custom(
+            "intentional failing Serialize fixture",
+        ))
+    }
 }
 
 // --- The sample capability trait --------------------------------------------
@@ -67,4 +81,8 @@ pub trait Sample: Send + Sync {
     /// `Ok(None)` MUST round-trip as a genuine `None`, NOT surface as a transport /
     /// internal error.
     async fn find_owner(&self, character_id: String) -> Result<Option<String>, Error>;
+
+    /// Wire-only regression fixture: the implementation succeeds, but its return
+    /// value deliberately cannot be serialized into the generated response.
+    async fn failing_value(&self) -> Result<FailingValue, Error>;
 }

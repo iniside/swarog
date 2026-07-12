@@ -547,15 +547,22 @@ fn response_arms(m: &MethodModel, qual: &TokenStream2) -> TokenStream2 {
     let resp_name = quote! { #qual #resp_name };
     if m.value_ty.is_some() {
         quote! {
-            ::core::result::Result::Ok(__v) => #resp_name {
-                status: ::opsapi::Status::Ok,
-                err: ::std::string::String::new(),
-                // Serialize the return value into the envelope's raw `Value`. This
-                // preserves `None` for an `Option` return as JSON `null` (rather than
-                // collapsing it into a missing field). Serialization of a well-formed
-                // `Serialize` domain type is infallible; a `null` fallback is a safe
-                // floor that the client would surface as an internal error.
-                value: ::serde_json::to_value(&__v).unwrap_or(::serde_json::Value::Null),
+            ::core::result::Result::Ok(__v) => match ::serde_json::to_value(&__v) {
+                ::core::result::Result::Ok(__value) => #resp_name {
+                    status: ::opsapi::Status::Ok,
+                    err: ::std::string::String::new(),
+                    // `None` deliberately becomes JSON `null` while retaining an OK
+                    // status, so a legitimate `Ok(None)` survives the envelope.
+                    value: __value,
+                },
+                ::core::result::Result::Err(__e) => #resp_name {
+                    // Serialization is a server-side failure, not a successful null
+                    // response and not an edge transport failure. Keep it inside the
+                    // ordinary domain envelope so local and remote paths agree.
+                    status: ::opsapi::Status::Internal,
+                    err: ::std::format!("response serialization failed: {__e}"),
+                    value: ::serde_json::Value::Null,
+                },
             },
             ::core::result::Result::Err(__e) => #resp_name {
                 status: __e.status,

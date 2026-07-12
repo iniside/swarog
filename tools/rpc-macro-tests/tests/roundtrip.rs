@@ -18,7 +18,7 @@ use opsapi::{AuthReq, Caller, Error, Identity, PathArgs, RetryMode, Status};
 
 // The glue's signatures re-resolve here (the metadata travels as tokens), so the
 // api crate's domain types must be in scope — exactly like a real `<name>rpc` crate.
-use rpc_macro_tests::{Holding, Owner, Sample};
+use rpc_macro_tests::{FailingValue, Holding, Owner, Sample};
 
 // Expand the api crate's metadata-callback macro into the edge-dependent glue:
 // a local `sample_rpc` module with Client / register_server / provide_remote that
@@ -106,6 +106,10 @@ impl Sample for SampleImpl {
         }
         Ok(Some(format!("owner-of-{character_id}")))
     }
+
+    async fn failing_value(&self) -> Result<FailingValue, Error> {
+        Ok(FailingValue)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -172,6 +176,14 @@ async fn client_server_roundtrip_over_edge() {
     let none = client.find_owner("absent".into()).await.unwrap();
     assert_eq!(none, None, "Ok(None) must round-trip as None, not an error");
 
+    // A return value that cannot be serialized is an Internal DOMAIN envelope.
+    // The edge call itself remains successful; it must never masquerade as an OK
+    // response whose value silently became JSON null.
+    let error = client.failing_value().await.unwrap_err();
+    assert_eq!(error.status, Status::Internal);
+    assert!(error.msg.contains("response serialization failed"));
+    assert!(error.msg.contains("intentional failing Serialize fixture"));
+
     client_close(&client);
     running.close();
 }
@@ -216,6 +228,7 @@ fn operations_expose_only_http_methods() {
     assert_eq!(sample_rpc::METHOD_GRANT, "sample.grant");
     assert_eq!(sample_rpc::METHOD_LIST_CHARACTER, "sample.listCharacter");
     assert_eq!(sample_rpc::METHOD_OWNER_OF, "sample.ownerOf");
+    assert_eq!(sample_rpc::METHOD_FAILING_VALUE, "sample.failingValue");
 }
 
 #[tokio::test]
