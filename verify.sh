@@ -141,14 +141,19 @@ STAGE_NAMES=()
 STAGE_STATUS=()
 STAGE_BLOCKING=()
 
+# INVARIANT (see simple_stage above): a blocking stage may SKIP only on an explicit
+# operator opt-out, and any blocking SKIP must be named on the final summary line.
 add_result() {
     STAGE_NAMES+=("$1")
     STAGE_STATUS+=("$2")
     STAGE_BLOCKING+=("$3")
 }
 
-# ensure_tool BIN CMD... -- returns 0 if BIN is available (installing via CMD... if
-# missing and installs are enabled), 1 if unavailable (stage SKIPs). Port of Go's
+# ensure_tool BIN CMD... -- returns 0 if BIN is available, 1 if unavailable because
+# installs are disabled (--no-install, explicit operator opt-out -- caller SKIPs), 2 if
+# unavailable because an ATTEMPTED install failed (environment defect -- caller's choice
+# whether that's a SKIP or a FAIL; cargo_audit_stage below treats it as FAIL, the other
+# ensure_tool callers still just test truthiness and SKIP either way). Port of Go's
 # verify.sh ensure_tool, generalized from `go install` to an arbitrary install command.
 ensure_tool() {
     local bin="$1"; shift
@@ -157,11 +162,17 @@ ensure_tool() {
     echo "installing $bin ($*) ..."
     "$@" >/dev/null 2>&1
     hash -r
-    command -v "$bin" >/dev/null 2>&1
+    if command -v "$bin" >/dev/null 2>&1; then return 0; fi
+    return 2
 }
 
 # simple_stage NAME BLOCKING CMD... -- runs CMD, logging to run/verify/NAME.log,
-# recording PASS on exit 0 else FAIL.
+# recording PASS on exit 0 else FAIL. INVARIANT: a blocking stage may SKIP only on an
+# explicit operator opt-out (e.g. --no-install + tool absent), never on an environment
+# defect (e.g. an attempted install failing) -- and any blocking stage that DOES SKIP
+# must be named on the final summary line (see the tally loop below). simple_stage
+# itself has no SKIP branch; only cargo_audit_stage's ensure_tool-mediated SKIP exists,
+# and it is deliberately narrow (see the rc==2 branch there).
 simple_stage() {
     local name="$1" blocking="$2"; shift 2
     local log="$VERIFY_DIR/$name.log"
@@ -201,10 +212,17 @@ CARGO_AUDIT_IGNORE=(RUSTSEC-2023-0071)
 cargo_audit_stage() {
     local log="$VERIFY_DIR/cargo-audit.log"
     echo "== cargo-audit =="
-    if ! ensure_tool cargo-audit cargo install cargo-audit --locked --version 0.22.2; then
-        echo "  SKIP (cargo-audit unavailable)"
-        echo "cargo-audit unavailable (missing and --no-install, or install failed)" >"$log"
+    ensure_tool cargo-audit cargo install cargo-audit --locked --version 0.22.2
+    local ensure_rc=$?
+    if [ "$ensure_rc" -eq 1 ]; then
+        echo "  SKIP (cargo-audit unavailable, --no-install)"
+        echo "cargo-audit unavailable (missing and --no-install)" >"$log"
         add_result cargo-audit SKIP true
+        return
+    elif [ "$ensure_rc" -eq 2 ]; then
+        echo "  FAIL (cargo install cargo-audit failed -- see run/verify/cargo-audit.log)"
+        echo "cargo-audit unavailable: cargo install cargo-audit failed (environment defect, not an operator opt-out)" >"$log"
+        add_result cargo-audit FAIL true
         return
     fi
     local ignore_args=() id
@@ -640,11 +658,22 @@ echo "=== verify summary ==="
 printf "%-16s | %-6s | %-8s\n" "Stage" "Status" "Blocking"
 printf "%-16s-+-%-6s-+-%-8s\n" "----------------" "------" "--------"
 fail=0
+blocking_skips=()
 for i in "${!STAGE_NAMES[@]}"; do
     n="${STAGE_NAMES[$i]}"; s="${STAGE_STATUS[$i]}"; b="${STAGE_BLOCKING[$i]}"
     printf "%-16s | %-6s | %-8s\n" "$n" "$s" "$b"
     if [ "$s" = "FAIL" ] && { [ "$b" = "true" ] || [ "$STRICT" -eq 1 ]; }; then fail=1; fi
+    if [ "$s" = "SKIP" ] && [ "$b" = "true" ]; then blocking_skips+=("$n"); fi
 done
 echo ""
-if [ "$fail" -eq 0 ]; then echo "VERIFY: OK"; else echo "VERIFY: FAIL"; fi
+if [ "$fail" -eq 0 ]; then
+    if [ "${#blocking_skips[@]}" -gt 0 ]; then
+        skipped="$(IFS=,; echo "${blocking_skips[*]}")"
+        echo "VERIFY: OK (blocking stage(s) SKIPPED: $skipped)"
+    else
+        echo "VERIFY: OK"
+    fi
+else
+    echo "VERIFY: FAIL"
+fi
 exit "$fail"

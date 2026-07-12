@@ -106,25 +106,37 @@ $cargoAuditIgnore = @('RUSTSEC-2023-0071')
 $fuzzTargets = @('frame_decode', 'wire_decode')
 
 # --- Result accumulation ----------------------------------------------------
+# INVARIANT: a blocking stage may SKIP only on an explicit operator opt-out, and any
+# blocking SKIP must be named on the final summary line.
 $script:results = @()
 function Add-Result {
     param([string]$Name, [string]$Status, [bool]$Blocking)
     $script:results += [pscustomobject]@{ Name = $Name; Status = $Status; Blocking = $Blocking }
 }
 
-# Ensure-Tool BIN CMD ARGS -- $true if BIN is available (installing via CMD ARGS if
-# missing and installs are enabled), $false if unavailable (stage SKIPs).
+# Ensure-Tool BIN CMD ARGS -- $true if BIN is available, $false if unavailable (stage
+# SKIPs or FAILs depending on why). Also sets $script:EnsureToolInstallFailed: $false if
+# the tool was simply missing with installs disabled (-NoInstall, explicit operator
+# opt-out), $true if an ATTEMPTED install failed (environment defect). A caller decides
+# what to do with that distinction; Invoke-CargoAuditStage below treats
+# EnsureToolInstallFailed as FAIL, the other Ensure-Tool callers still just test the
+# $false return and SKIP either way (unaffected -- same as before this flag existed).
 function Ensure-Tool {
     param([string]$Bin, [string]$Exe, [string[]]$InstallArgs)
+    $script:EnsureToolInstallFailed = $false
     if (Get-Command $Bin -ErrorAction SilentlyContinue) { return $true }
     if (-not $Install) { return $false }
     Write-Host "installing $Bin ($Exe $InstallArgs) ..." -ForegroundColor Yellow
     & $Exe @InstallArgs *> $null
-    return [bool](Get-Command $Bin -ErrorAction SilentlyContinue)
+    if (Get-Command $Bin -ErrorAction SilentlyContinue) { return $true }
+    $script:EnsureToolInstallFailed = $true
+    return $false
 }
 
 # Invoke-SimpleStage NAME BLOCKING EXE ARGS -- runs EXE, logging to
-# run/verify/NAME.log, recording PASS on exit 0 else FAIL.
+# run/verify/NAME.log, recording PASS on exit 0 else FAIL. Has no SKIP branch; only
+# Invoke-CargoAuditStage's Ensure-Tool-mediated SKIP exists, and it is deliberately
+# narrow (see the rc-eq-2 branch there).
 function Invoke-SimpleStage {
     param([string]$Name, [bool]$Blocking, [string]$Exe, [string[]]$Arguments)
     $log = Join-Path $verifyDir "$Name.log"
@@ -166,8 +178,14 @@ function Invoke-CargoAuditStage {
     $log = Join-Path $verifyDir 'cargo-audit.log'
     Write-Host "== cargo-audit ==" -ForegroundColor Cyan
     if (-not (Ensure-Tool 'cargo-audit' 'cargo' @('install', 'cargo-audit', '--locked', '--version', '0.22.2'))) {
-        Write-Host "  SKIP (cargo-audit unavailable)" -ForegroundColor Yellow
-        'cargo-audit unavailable (missing and -NoInstall, or install failed)' | Out-File $log
+        if ($script:EnsureToolInstallFailed) {
+            Write-Host "  FAIL (cargo install cargo-audit failed -- see run/verify/cargo-audit.log)" -ForegroundColor Red
+            'cargo-audit unavailable: cargo install cargo-audit failed (environment defect, not an operator opt-out)' | Out-File $log
+            Add-Result 'cargo-audit' 'FAIL' $true
+            return
+        }
+        Write-Host "  SKIP (cargo-audit unavailable, -NoInstall)" -ForegroundColor Yellow
+        'cargo-audit unavailable (missing and -NoInstall)' | Out-File $log
         Add-Result 'cargo-audit' 'SKIP' $true
         return
     }
@@ -611,10 +629,20 @@ Write-Host '=== verify summary ===' -ForegroundColor Cyan
 '{0,-16} | {1,-6} | {2,-8}' -f 'Stage', 'Status', 'Blocking' | Write-Host
 '{0,-16}-+-{1,-6}-+-{2,-8}' -f ('-' * 16), ('-' * 6), ('-' * 8) | Write-Host
 $overall = 0
+$blockingSkips = @()
 foreach ($r in $script:results) {
     '{0,-16} | {1,-6} | {2,-8}' -f $r.Name, $r.Status, $r.Blocking | Write-Host
     if ($r.Status -eq 'FAIL' -and ($r.Blocking -or $StrictOn)) { $overall = 1 }
+    if ($r.Status -eq 'SKIP' -and $r.Blocking) { $blockingSkips += $r.Name }
 }
 Write-Host ''
-if ($overall -eq 0) { Write-Host 'VERIFY: OK' } else { Write-Host 'VERIFY: FAIL' }
+if ($overall -eq 0) {
+    if ($blockingSkips.Count -gt 0) {
+        Write-Host "VERIFY: OK (blocking stage(s) SKIPPED: $($blockingSkips -join ','))"
+    } else {
+        Write-Host 'VERIFY: OK'
+    }
+} else {
+    Write-Host 'VERIFY: FAIL'
+}
 Exit-WithLog $overall
