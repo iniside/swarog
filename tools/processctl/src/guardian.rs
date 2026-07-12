@@ -1,6 +1,4 @@
-use std::io::Write;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
-use std::os::unix::ffi::OsStrExt;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::process::{Child, Command, ExitStatus};
 use std::time::{Duration, Instant};
@@ -8,22 +6,37 @@ use std::time::{Duration, Instant};
 const LIVENESS_FD: RawFd = 3;
 const STATUS_FD: RawFd = 4;
 pub(crate) const DISPATCH_ARG: &str = "--__processctl-guardian-v1";
-const FORCED_REMAINDER_EXIT: i32 = 190;
+
+use crate::protocol::{write_frame, Frame};
 
 pub(crate) fn run() -> i32 {
-    match run_inner() {
-        Ok((_status, true)) => FORCED_REMAINDER_EXIT,
-        Ok((status, false)) => status
-            .code()
-            .unwrap_or_else(|| 128 + status.signal().unwrap_or(1)),
+    if unsafe { libc::fcntl(STATUS_FD, libc::F_GETFD) } < 0 {
+        eprintln!("processctl-guardian: status pipe is unavailable");
+        return 1;
+    }
+    let mut status_pipe = unsafe { std::fs::File::from_raw_fd(STATUS_FD) };
+    match run_inner(&mut status_pipe) {
+        Ok((status, forced_remainder)) => {
+            let frame = Frame::Completion {
+                raw_target_wait_status: status.into_raw(),
+                forced_remainder,
+            };
+            if let Err(error) = write_frame(&mut status_pipe, &frame) {
+                eprintln!("processctl-guardian: write completion: {error}");
+                1
+            } else {
+                0
+            }
+        }
         Err(error) => {
+            let _ = write_frame(&mut status_pipe, &Frame::GuardianFailed(error.to_string()));
             eprintln!("processctl-guardian: {error}");
             1
         }
     }
 }
 
-fn run_inner() -> std::io::Result<(ExitStatus, bool)> {
+fn run_inner(status_pipe: &mut std::fs::File) -> std::io::Result<(ExitStatus, bool)> {
     let mut args = std::env::args_os();
     let _guardian = args.next();
     if args.next().as_deref() != Some(std::ffi::OsStr::new(DISPATCH_ARG)) {
@@ -119,18 +132,18 @@ fn run_inner() -> std::io::Result<(ExitStatus, bool)> {
         }
     };
 
-    let mut status_pipe = unsafe { std::fs::File::from_raw_fd(STATUS_FD) };
-    let handshake = write_identity(
-        &mut status_pipe,
-        target_pid as u32,
-        target_started,
-        &target_executable,
+    let handshake = write_frame(
+        status_pipe,
+        &Frame::Identity(crate::ProcessIdentity {
+            pid: target_pid as u32,
+            executable: target_executable,
+            started: crate::StartMarker(target_started),
+        }),
     );
     if let Err(error) = handshake {
         kill_and_reap_failed_spawn(&mut target, target_pid)?;
         return Err(error);
     }
-    drop(status_pipe);
     if unsafe {
         libc::ptrace(
             libc::PTRACE_DETACH,
@@ -146,20 +159,6 @@ fn run_inner() -> std::io::Result<(ExitStatus, bool)> {
     }
 
     supervise(&mut target, target_pid, &target_pidfd, &signal_fd)
-}
-
-pub(super) fn write_identity(
-    writer: &mut impl Write,
-    pid: u32,
-    started: u64,
-    executable: &std::path::Path,
-) -> std::io::Result<()> {
-    let path = executable.as_os_str().as_bytes();
-    let path_len = u32::try_from(path.len()).map_err(|_| invalid("target path is too long"))?;
-    writer.write_all(&pid.to_ne_bytes())?;
-    writer.write_all(&started.to_ne_bytes())?;
-    writer.write_all(&path_len.to_ne_bytes())?;
-    writer.write_all(path)
 }
 
 fn wait_for_exec_trap(target_pid: i32) -> std::io::Result<()> {

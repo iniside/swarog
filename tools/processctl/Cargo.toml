@@ -20,3 +20,8 @@ windows-sys = { workspace = true, features = [
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2"
+
+[[test]]
+name = "processctl-downstream"
+path = "tests/downstream/src/main.rs"
+harness = false

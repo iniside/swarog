@@ -1,22 +1,22 @@
-use std::ffi::OsString;
 use std::fs::File;
 use std::io::Read;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
-use std::os::unix::ffi::OsStringExt;
 use std::os::unix::process::CommandExt;
-use std::path::PathBuf;
 use std::process::{Child, Command, ExitStatus};
 
-use crate::process::{ProcessError, ProcessIdentity, SpawnSpec, StartMarker};
+use crate::process::{ProcessError, ProcessIdentity, SpawnSpec};
+use crate::protocol::{read_frame, Frame};
 
 const GUARDIAN_LIVENESS_FD: RawFd = 3;
 const GUARDIAN_STATUS_FD: RawFd = 4;
-const FORCED_REMAINDER_EXIT: i32 = 190;
 
 pub(crate) struct PlatformChild {
     guardian: Child,
     guardian_pidfd: OwnedFd,
     liveness: Option<OwnedFd>,
+    status_pipe: File,
+    completion: Option<ExitStatus>,
+    completion_forced_remainder: bool,
 }
 
 pub(crate) fn spawn(spec: &SpawnSpec) -> Result<(PlatformChild, ProcessIdentity), ProcessError> {
@@ -73,7 +73,7 @@ pub(crate) fn spawn(spec: &SpawnSpec) -> Result<(PlatformChild, ProcessIdentity)
         }
     };
     let mut status = File::from(status_read);
-    let identity = match read_identity(&mut status) {
+    let identity = match read_handshake(&mut status) {
         Ok(identity) => identity,
         Err(source) => {
             drop(live_write);
@@ -96,6 +96,9 @@ pub(crate) fn spawn(spec: &SpawnSpec) -> Result<(PlatformChild, ProcessIdentity)
             guardian,
             guardian_pidfd,
             liveness: Some(live_write),
+            status_pipe: status,
+            completion: None,
+            completion_forced_remainder: false,
         },
         identity,
     ))
@@ -103,16 +106,24 @@ pub(crate) fn spawn(spec: &SpawnSpec) -> Result<(PlatformChild, ProcessIdentity)
 
 impl PlatformChild {
     pub(crate) fn try_wait(&mut self) -> std::io::Result<Option<ExitStatus>> {
-        self.guardian.try_wait()
+        if let Some(status) = self.completion {
+            return Ok(Some(status));
+        }
+        let Some(_guardian_status) = self.guardian.try_wait()? else {
+            return Ok(None);
+        };
+        let (status, forced_remainder) = read_completion(&mut self.status_pipe)?;
+        self.completion = Some(status);
+        self.completion_forced_remainder = forced_remainder;
+        Ok(self.completion)
     }
 
     pub(crate) fn graceful(&mut self) -> std::io::Result<()> {
         pidfd_send_signal(self.guardian_pidfd.as_raw_fd(), libc::SIGTERM)
     }
 
-    pub(crate) fn completion_forced_remainder(&self, status: ExitStatus) -> bool {
-        use std::os::unix::process::ExitStatusExt;
-        status.code() == Some(FORCED_REMAINDER_EXIT) || status.signal() == Some(libc::SIGKILL)
+    pub(crate) fn completion_forced_remainder(&self, _status: ExitStatus) -> bool {
+        self.completion_forced_remainder
     }
 
     pub(crate) fn force(&mut self) -> std::io::Result<()> {
@@ -168,25 +179,35 @@ fn pidfd_send_signal(pidfd: RawFd, signal: i32) -> std::io::Result<()> {
     }
 }
 
-pub(super) fn read_identity(reader: &mut impl Read) -> std::io::Result<ProcessIdentity> {
-    let mut pid = [0u8; 4];
-    let mut started = [0u8; 8];
-    let mut path_len = [0u8; 4];
-    reader.read_exact(&mut pid)?;
-    reader.read_exact(&mut started)?;
-    reader.read_exact(&mut path_len)?;
-    let path_len = u32::from_ne_bytes(path_len) as usize;
-    if path_len == 0 || path_len > 1024 * 1024 {
-        return Err(std::io::Error::new(
+pub(super) fn read_handshake(reader: &mut impl Read) -> std::io::Result<ProcessIdentity> {
+    match read_frame(reader)? {
+        Frame::Identity(identity) => Ok(identity),
+        Frame::GuardianFailed(message) => Err(std::io::Error::other(format!(
+            "guardian failed before target handshake: {message}"
+        ))),
+        Frame::Completion { .. } => Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
-            "guardian reported an invalid executable-path length",
-        ));
+            "guardian sent completion before identity",
+        )),
     }
-    let mut path = vec![0u8; path_len];
-    reader.read_exact(&mut path)?;
-    Ok(ProcessIdentity {
-        pid: u32::from_ne_bytes(pid),
-        executable: PathBuf::from(OsString::from_vec(path)),
-        started: StartMarker(u64::from_ne_bytes(started)),
-    })
+}
+
+pub(super) fn read_completion(reader: &mut impl Read) -> std::io::Result<(ExitStatus, bool)> {
+    use std::os::unix::process::ExitStatusExt;
+    match read_frame(reader)? {
+        Frame::Completion {
+            raw_target_wait_status,
+            forced_remainder,
+        } => Ok((
+            ExitStatus::from_raw(raw_target_wait_status),
+            forced_remainder,
+        )),
+        Frame::GuardianFailed(message) => Err(std::io::Error::other(format!(
+            "process guardian failed: {message}"
+        ))),
+        Frame::Identity(_) => Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "guardian sent a second identity frame",
+        )),
+    }
 }
