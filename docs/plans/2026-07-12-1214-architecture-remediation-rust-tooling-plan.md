@@ -1,6 +1,6 @@
 # Architecture remediation and Rust tooling plan
 
-**Status:** REVIEWED — independent think-hard punch list incorporated
+**Status:** REVIEWED — independent think-hard punch list incorporated; remaining work pruned for minimum sufficient fixes
 
 **Date:** 2026-07-12
 
@@ -19,6 +19,7 @@ Implementation must obey these rollout constraints:
 4. All DB-shape changes use the repo's wipe-and-reseed policy. This plan intentionally introduces no migrations, backfills, dual writes, or compatibility bridges.
 5. `run.*` and `verify.*` are removed only after the Rust replacements pass parity checks. Until then they may be reduced to thin forwarders, never independently maintained implementations.
 6. Dev tooling uses a trusted-local-operator threat model. Its acceptance criteria are backend coverage, accurate outcomes, bounded accidental-failure handling, exact owned-process cleanup, and no secrets in argv/logs/state. Same-account adversarial security, custom cryptography, reparse-point defenses, and daemon-grade control protocols are out of scope unless they directly reproduce a backend-test failure.
+7. A remaining step may introduce a new subsystem only when the failure cannot be closed at an existing authority. Prefer a hidden expected-state field and conditional SQL over server-side form state, a hard capacity plus the existing background reaper over request-path coordination, and representative boundary tests over combinatorial matrices.
 
 ## Git-history evidence: where prior fixes created the next failure mode
 
@@ -39,8 +40,8 @@ These commits are evidence for preserving the good invariant from each earlier f
 - `devctl up` is a foreground supervisor. `status` and `down` communicate with that supervisor over an authenticated loopback control channel; they never signal a PID read from a stale file.
 - Local control authentication means ordinary OS-local ownership plus exact supervisor identity, not a new security protocol. The channel must bound frames and waits so an accidental partial client cannot hang cleanup; it is not required to withstand a malicious user running under the same account.
 - Process-tree containment is supported explicitly on Windows and Linux, the two platforms exercised by this repository. Other Unix targets fail startup as unsupported instead of receiving a weaker `/proc`-based implementation under a misleading “Unix” name.
-- Config admin edits use the authoritative global `config.revision` as an optimistic concurrency token. The page is a full coherent snapshot, so any intervening config change rejects the entire stale form instead of overwriting newer state.
-- API-key admin edits use per-row expected state and an all-or-nothing transaction. A stale row rejects the whole submitted batch.
+- Config admin edits carry the authoritative global `config.revision` as a hidden optimistic concurrency token. The page is a full coherent snapshot, so any intervening config change rejects the entire stale form instead of overwriting newer state.
+- API-key admin edits carry per-row expected state in hidden fields and use an all-or-nothing transaction. These values are concurrency tokens, not secrets; existing admin authentication and CSRF remain the trust boundary. A stale row rejects the whole submitted batch.
 - Match replay semantics remain idempotent: validate `ReportId` syntax first, then allow an exact existing report to replay even if newer participant policy would reject it; new reports receive the full participant validation.
 - New textual byte caps are private domain policy unless a cross-layer fast rejection requires a shared contract constant. Proposed caps: session bearer 128 bytes, accounts display name 128 bytes, Epic ID token 65,536 bytes, character name 128 bytes, character class 64 bytes, match report id 128 bytes, winner 128 bytes, loser 128 bytes. These are byte caps, deliberately far below the 1 MiB transport/body ceiling and above realistic values.
 - A retention pass is healthy only when every eligible topic sweep succeeds. Partial failure still attempts later topics but does not refresh liveness.
@@ -151,7 +152,7 @@ Port all C1–C6 C# assertions, but launch its fixture with `OwnedChild`, fail i
 
 **Files/symbols:** root `verify.sh`, `verify.ps1`, `run.sh`, `run.ps1`; new tooling README/help text; existing splitproof named-output snapshots.
 
-Temporarily reduce the four scripts to argument-preserving forwarders to `devctl`/`verifyctl`; they must contain no process discovery, environment composition, stage logic, or cleanup. Compare old documented modes and new CLI mappings explicitly. Run one `verifyctl --fast` after the new tools' focused tests and after the mandatory no-concurrent-rollout check.
+Temporarily reduce the four scripts to argument-preserving forwarders to `devctl`/`verifyctl`; they must contain no process discovery, environment composition, stage logic, or cleanup. Record a short old-command to new-command mapping table and run one `verifyctl --fast` after the new tools' focused tests and after the mandatory no-concurrent-rollout check. Do not build a snapshot/parity framework for the wrappers.
 
 Do not proceed to runtime fixes until build/clippy/test/audit/fortress/custom gates/splitproof all preserve their intended blocking behavior. This creates a trustworthy safety net before high-risk behavior changes.
 
@@ -159,23 +160,23 @@ Do not proceed to runtime fixes until build/clippy/test/audit/fortress/custom ga
 
 **Files/symbols:** `core/conformance/src/lib.rs`; new ordinary library crate `tools/rpc-contract-model/`; `tools/rpc-macro/src/lib.rs`; the existing C# generator parser; new `tools/conformance/src/policy/*.rs` and input inventory module; affected module `Cargo.toml` files and validators; `tools/verifyctl/src/stages/conformance.rs`; `docs/reference/public-api-baseline/` only if an intentional public contract actually changes.
 
-Replace the binary `Stance` with `Applies`, `NotApplicable { why }`, `KnownGap { why, remediation }`, and `Waived { why, decision, expires }`. `KnownGap` fails `--deny-gaps`; a separate explicit `--allow-known-gaps` research mode prints GAP and never OK. A waiver requires a committed decision identifier and expiry; introduce no waiver in this rollout without user approval.
+Replace the binary `Stance` with `Applies`, `NotApplicable { why }`, and `KnownGap { why, remediation }`. `KnownGap` fails `--deny-gaps`; a separate explicit `--allow-known-gaps` research mode prints GAP and never OK. Do not build waiver, decision-id, or expiry machinery until the project has a real approved exception that needs it.
 
-Remove normal conformance dependencies from every domain and command graph. Put policy entries and all `Stance` closures in `tools/conformance`; module crates never depend on `core/conformance`. Where the tool must exercise a domain validator, expose one minimal `#[doc(hidden)] pub` factual probe from that module containing no conformance types or policy. Do not use a Cargo feature: workspace feature unification could otherwise compile adapter behavior into shipping binaries. Verify `cargo tree -p server -i conformance`, every `cmd/*-svc`, and the workspace-unified graph exclude the conformance crate from shipping roots; the only module-to-tool direction is `tools/conformance` depending on the module probes.
+Remove normal conformance dependencies from every domain and command graph. Put policy entries and all `Stance` closures in `tools/conformance`; module crates never depend on `core/conformance`. Where the tool must exercise a domain validator, expose one minimal `#[doc(hidden)] pub` factual probe from that module containing no conformance types or policy. Do not use a Cargo feature: workspace feature unification could otherwise compile adapter behavior into shipping binaries. Add one automated dependency assertion that enumerates the shipping roots and proves they exclude conformance; do not maintain a hand-run cargo-tree ritual per service. The only module-to-tool direction is `tools/conformance` depending on the module probes.
 
-Extract the existing `#[rpc]` syntax parser and semantic model into the ordinary `rpc-contract-model` library. Both the proc macro and the C# generator consume that library; delete their duplicated parsing paths. The conformance inventory consumes the same model and snapshots only its output, so the golden is drift detection rather than a second authority. Every string-bearing request field maps to one of: concrete validator/cap, opaque token cap, intentionally unrestricted with rationale, or known gap. Initially record the missing caps as `KnownGap`; step 17 closes them before the next full fast verification.
+Extract the existing `#[rpc]` syntax parser and semantic model into the ordinary `rpc-contract-model` library. Both the proc macro and the C# generator consume that library; delete their duplicated parsing paths. The conformance inventory consumes the same model and snapshots only its output, so the golden is drift detection rather than a second authority. Limit the inventory to externally or wire-reachable string request fields. Each maps to one of: concrete validator/cap, opaque token cap, intentionally unrestricted with rationale, or known gap. Initially record the missing caps as `KnownGap`; step 17 closes them before the next full fast verification.
 
-**Focused verification:** false `NotApplicable` cannot pass, gap/waiver expiry behavior, omitted new field breaks the inventory golden, probes call the same production validator, and isolated plus workspace-unified server/service dependency trees exclude conformance.
+**Focused verification:** false `NotApplicable` cannot pass, a known gap fails `--deny-gaps`, an omitted externally reachable field breaks the inventory golden, probes call the same production validator, and one dependency-graph assertion covers all shipping server/service roots.
 
 ### 9. Enforce RPC metadata invariants at the generator boundary `[subagent-complex]`
 
-**Files/symbols:** `tools/rpc-macro/src/lib.rs` parser/expansion; `tools/rpc-macro-tests/tests/`, new trybuild fixtures; generated rpc crates only through the normal codegen-freshness flow.
+**Files/symbols:** `tools/rpc-macro/src/lib.rs` parser/expansion; existing `tools/rpc-macro-tests/` compile-fail/runtime harness; generated rpc crates only through the normal codegen-freshness flow.
 
 At macro expansion, require `auth = player` if and only if the operation's leading parameter is `Identity`; emit a compile error for either mismatch. Accept success status codes only in 200–299 and reject invalid metadata instead of silently falling back to 200. When response serialization fails, generate an Internal error envelope; never convert it into transport success with JSON `null`. Keep a legitimate `Ok(None)` response unchanged.
 
 **Why here:** this is one authoritative seam and prevents dozens of generated handlers from drifting independently.
 
-**Focused verification:** compile-fail fixtures for both auth/identity directions and invalid success codes; runtime fixture with a deliberately failing `Serialize`; control fixture proving `Option::None` remains a successful null payload. Regenerate to a temporary tree and inspect the exact diff before accepting it.
+**Focused verification:** use the existing compile-fail harness if it can cover both auth/identity directions and invalid success codes; do not add `trybuild` merely for form. Add one runtime fixture with a deliberately failing `Serialize` and one control proving `Option::None` remains a successful null payload. The blocking codegen-freshness stage is the permanent diff authority; inspect an actual generated diff only when one appears.
 
 ### 10. Fail wiring errors at construction, not on a request `[subagent-complex]`
 
@@ -185,7 +186,7 @@ Replace string-only slot parameters with `contrib::Slot<T>`: `Context::contribut
 
 Make invalidation registration reject empty channel/name and duplicate callback names globally, even across channels, before mutating its registry. Global uniqueness is required because health state and metrics are keyed by name; a collision would otherwise mask one callback.
 
-**Focused verification:** compile-fail wrong-value fixtures for an app-owned, edge, and ops slot; runtime forged-key collision failure; valid multi-value collection; archcheck rejection of module-local slot construction; standalone `characters-svc` and another contributing domain svc boot without an admin/gateway consumer; no request-time panic; duplicate same-channel and cross-channel invalidation registration; empty identifiers; and unchanged first-refresh startup semantics.
+**Focused verification:** one representative compile-fail wrong-value fixture, runtime forged-key collision failure, valid multi-value collection, archcheck rejection of module-local slot construction, standalone fortress boots without an admin/gateway consumer, duplicate same-channel and cross-channel invalidation registration, empty identifiers, and unchanged first-refresh startup semantics. Do not duplicate equivalent compile-fail fixtures for every slot owner.
 
 ### 11. Correct retention health and duration arithmetic `[subagent-complex]`
 
@@ -205,7 +206,7 @@ Add `ORDER BY name` to `DUE_SQL` and maintain the last actually attempted schedu
 
 When the four-second module stop grace expires, call `abort` and then await each same `JoinHandle`; accept cancellation as expected and log any other join error. Never discard an aborted handle while its cleanup may still run.
 
-**Focused verification:** pure rotation sequences; a repeatedly slow/poison first name cannot starve a healthy later schedule on the next tick; budget exhaustion leaves skipped cursor position intact; abort is awaited and the dedicated connection Drop guard runs; existing exactly-once integration tests remain unchanged.
+**Focused verification:** a pure rotation helper covers wrap and a removed cursor; two successive ticks prove a slow first name cannot starve the next schedule; abort is awaited and the dedicated connection Drop guard runs before stop returns. Existing exactly-once integration tests remain the regression proof; do not add a multi-replica scheduler simulator.
 
 ### 13. Bound session lookup and make account creation/login atomic `[subagent-complex]`
 
@@ -215,31 +216,31 @@ Add `accountsapi::MAX_SESSION_TOKEN_BYTES = 128`. Reject over-cap bearers before
 
 Add transaction-taking session helpers that all accept the same `&mut PgConnection`/transaction borrowed by their caller. Registration must insert account/identity, append `player.registered`, create the session, and commit once; it performs no pool read or session insert outside that transaction. Introduce one transactional external-login operation returning `(Session, created)`. Every writer of an external `(provider, subject)` identity—including explicit `link_identity`—must first take the same transaction-scoped advisory lock on a domain-separated stable 64-bit hash of that pair. External login then re-reads the identity: the winner creates player + identity + event; a serialized loser observes the identity and creates only its session. All effects use the same live outer transaction and commit once, avoiding PostgreSQL's aborted-transaction state after a uniqueness error. Use it from Epic API login and browser OAuth login. Keep explicit account linking's authorization semantics separate and do not mark registration retry-safe.
 
-**Focused verification:** an over-cap token against a dead/lazy pool performs no query, and gateway fake verifier sees zero calls; injected duplicate session token rolls back account, identity, event, and session; controlled external-login winner and blocked loser prove the loser path re-reads after the advisory lock and both receive sessions while exactly one player/event exists; a `link_identity` versus first external-login race yields one authorized owner, a valid login outcome consistent with that owner, and no orphan player/event or aborted transaction; commit failure leaves no partial state. Inspect and bless only the intended new accountsapi constant.
+**Focused verification:** an over-cap token performs no store/remote call; an injected session-insert failure rolls back registration and its event; two controlled concurrent first-logins produce one player/event and two sessions; one `link_identity` versus first-login race proves the shared lock and authorized owner. These deterministic transaction/concurrency tests replace separate winner/loser/commit-failure matrices. Inspect and bless only the intended new accountsapi constant.
 
 ### 14. Bind Epic OAuth state to the initiating browser `[subagent-complex]`
 
 **Files/symbols:** `modules/accounts/src/epic_oauth.rs` (`OauthState`, start/callback handlers, `take_state`); accounts router/tests; startup validation for `EPIC_REDIRECT_URI`.
 
-Generate or reuse a high-entropy browser-binding cookie and store its binding with each OAuth state. Use a host-only, HttpOnly, `SameSite=Lax`, `Path=/accounts/epic`, `Max-Age=600` cookie with no Domain. Validate `EPIC_REDIRECT_URI` once: require HTTPS, except HTTP is allowed only for a loopback host; reject userinfo, fragments, non-HTTP(S) schemes, and any path other than the configured accounts Epic callback. `Secure=true` for HTTPS and false only for the accepted loopback HTTP case. Reusing the binding cookie permits parallel tabs while each state remains single-use.
+Generate or reuse a high-entropy browser-binding cookie and store its binding with each OAuth state. Use a host-only, HttpOnly, `SameSite=Lax`, `Path=/accounts/epic`, `Max-Age=600` cookie with no Domain. Validate `EPIC_REDIRECT_URI` once: it must parse, use HTTPS (or HTTP only for loopback), and use `/accounts/epic/callback`. `Secure=true` for HTTPS and false only for the accepted loopback HTTP case. Do not build a separate hostile-operator URI policy beyond these runtime requirements. Reusing the binding cookie permits parallel tabs while each state remains single-use.
 
 Change `take_state` to require both state and binding. Missing/wrong binding must not consume the legitimate state; matching expired state is removed and rejected. Perform this validation before calling Epic's token endpoint or mutating/linking an account.
 
-**Focused verification:** exact cookie attributes, URI validation matrix, parallel starts, matching callback, wrong/missing binding, expired state, replay, and zero token-endpoint calls for all rejected callbacks. A split-passthrough test proves a cookie set on the public gateway origin is returned to the callback route.
+**Focused verification:** cookie attributes, parallel starts, matching callback, wrong/missing binding, expired state, replay, and zero token-endpoint calls for rejected callbacks. One split-passthrough smoke proves a cookie set on the public gateway origin returns to the callback route; do not create an exhaustive URI matrix.
 
 ### 15. Replace admin snapshot claims with real compare-and-swap `[subagent-complex]`
 
-**Files/symbols:** `api/admin/api/src/lib.rs` (`SubmitFn`, new `SubmitError`); `modules/admin/src/lib.rs` (`item`, `item_post`, new bounded `FormInstanceStore`), templates and tests; `modules/config/src/lib.rs` admin render/apply code and tests; `modules/apikeys/src/admin.rs` (`PlannedWrite`, render/apply) and tests; adminapi public baseline.
+**Files/symbols:** `api/admin/api/src/lib.rs` (`SubmitFn`, new `SubmitError`, hidden field representation); `modules/admin/src/lib.rs` (`item_post`) and tests; `modules/config/src/lib.rs` admin render/apply code and tests; `modules/apikeys/src/admin.rs` (`PlannedWrite`, render/apply) and tests; adminapi public baseline.
 
-The real portal currently re-renders on POST, which would create a fresh closure and defeat snapshot CAS. Fix that seam first: on authenticated GET, store the exact local `Form` instance (submit closure, declared fields, session identity and slug) in a server-side `FormInstanceStore`, return a random hidden `_form` nonce, and on POST consume that same instance after session and CSRF checks without re-rendering. The store is single-use, TTL 15 minutes, capped at 4096 entries, reaps expired entries before admitting a new one, and refuses to emit an editable form when still full. Bind entries to the opaque admin session identity and slug; store no submitted values. Remote forms remain read-only.
+The real portal currently re-renders on POST, which creates a fresh closure and defeats a captured-snapshot CAS. Do not add a server-side form-instance store. Extend the declarative form with hidden expected-state fields and round-trip them through the existing authenticated, CSRF-protected GET/POST flow. They are concurrency tokens, not secrets. Remote forms remain read-only.
 
 Change `SubmitFn` to return `Result<(), adminapi::SubmitError>` with `Conflict` and transparent `Other` variants. `item_post` maps `Conflict` to HTTP 409 with a stable stale-form message and `Other` to the existing error rendering. This is an intentional additive/breaking contract adjustment requiring exact public API inspection and re-blessing of adminapi only.
 
-For config, capture one coherent `{revision, settings}` in the GET-created closure. On submit, begin a transaction, lock/read the current revision, compare it with the captured revision, and return `SubmitError::Conflict` before any update/event if it changed. Apply the batch and commit once only when equal. This intentionally treats any intervening config change as a conflict because the form represents the whole snapshot.
+For config, render one coherent `{revision, settings}` and include `_expected_revision` as a hidden field. On submit, begin a transaction, lock/read the current revision, compare it with the posted expected revision, and return `SubmitError::Conflict` before any update/event if it changed. Apply the batch and commit once only when equal. This intentionally treats any intervening config change as a conflict because the form represents the whole snapshot.
 
-For API keys, capture each rendered row's expected policy and revoked state in the closure. Execute conditional updates that include expected old state and require exactly one affected row; inserts rely on the unique key. Any missing/changed/conflicting row rolls back the entire batch. Return a clear stale-form response and remove the inaccurate “anti-TOCTOU” comments unless the new CAS is present.
+For API keys, render each row's expected policy and revoked state as hidden fields. Execute conditional updates that include expected old state and require exactly one affected row; inserts rely on the unique key. Any missing/changed/conflicting row rolls back the entire batch. Return a clear stale-form response and remove the inaccurate “anti-TOCTOU” comments unless the new CAS is present.
 
-**Focused verification:** exercise the real HTTP flow GET form → concurrent DB write → POST with the captured `_form` nonce → 409, proving zero partial writes/events. Also test nonce/session/slug binding, replay, expiry, 409 mapping, full-store behavior, and CSRF-before-form-resolution ordering. Fresh config form succeeds; unrelated config revision conflicts conservatively; one stale API key rolls back changes to other keys; insert collision is non-destructive. Inspect and bless only the intended adminapi diff.
+**Focused verification:** exercise the real HTTP flow GET form → concurrent DB write → POST with the original hidden expected state → 409, proving zero partial writes/events. Fresh config succeeds; an unrelated config revision conflicts conservatively; one stale API-key row rolls back changes to other rows; an insert collision is non-destructive; existing CSRF-before-editability behavior remains covered. There are no nonce, TTL, capacity, reaper, or form-store tests because that subsystem is not introduced. Inspect and bless only the intended adminapi diff.
 
 ### 16. Validate rate configuration and bound per-IP state `[subagent-complex]`
 
@@ -247,9 +248,9 @@ For API keys, capture each rendered row's expected policy and revoked state in t
 
 Replace permissive `env_f64` use with one pure rate parser that rejects non-finite and negative values. For the always-on gateway HTTP rate, invalid values fall back loudly to the documented default 20 rps rather than disabling protection. Permit zero only at call sites whose documented policy explicitly says zero disables; encode that policy in the parser call rather than accepting zero globally.
 
-Give `IpLimiter` a private `DEFAULT_MAX_VISITORS = 65_536` hard capacity (roughly a few MiB at current entry size) used by HTTP gateway and admin login; provide a crate-private/specially named small-cap constructor for tests. Existing IPs continue through their existing bucket. For a new IP at capacity, perform the O(N) expired-entry reap only if `CAPACITY_REAP_MIN_INTERVAL = 60s` has elapsed since the last capacity reap; one caller updates that timestamp under the mutex, and all other saturated arrivals reject immediately without scanning or insertion. The existing once-per-minute background reap remains. If the bounded-frequency reap does not free space, reject the new IP. Do not evict an active/LRU entry, which would grant an attacker a fresh burst. Increment one global `http_rate_limit_table_saturated_total` counter for these denials; saturation does not flip readiness because an address flood should not withdraw the whole service.
+Give `IpLimiter` a private `DEFAULT_MAX_VISITORS = 65_536` hard capacity used by HTTP gateway and admin login; provide a crate-private small-cap constructor for tests. Existing IPs continue through their existing bucket. A new IP at capacity is rejected immediately without a request-path scan or insertion. The existing once-per-minute background reap is the only reclamation mechanism; do not add a second coordinated capacity reaper or LRU eviction. Increment one global `http_rate_limit_table_saturated_total` counter for these denials; saturation does not flip readiness.
 
-**Focused verification:** NaN, ±infinity, negative, malformed, zero under both policies, and valid fractional values; tiny-cap limiter with existing/new/expired visitors; repeated high-cardinality inputs never exceed the cap or refresh capacity by eviction; an instrumented fake clock proves at most one full reap per 60 seconds under continuous saturated new-IP traffic while existing IP admission remains O(1).
+**Focused verification:** table-test NaN, ±infinity, negative, malformed, zero under both policies, and a valid fractional value. A tiny-cap limiter proves existing IPs still work, new IPs cannot grow the map past the cap, and the existing background reap later frees expired entries. No request-path fake-clock coordination is introduced.
 
 ### 17. Close all input-policy gaps and harden new match reports `[subagent-complex]`
 
@@ -262,9 +263,9 @@ Implement the byte caps fixed above using shared validator functions called by b
 3. for a new id only, require nonempty winner/loser, each at most 128 bytes, and `winner != loser`;
 4. only then calculate/store effects and emit `match.finished` in the existing transaction.
 
-This ordering avoids breaking replay of already accepted reports while preventing new empty/self matches. Update the conformance inventory so every former `KnownGap` becomes `Applies`, then run conformance with `--deny-gaps` and confirm zero gaps/waivers.
+This ordering avoids breaking replay of already accepted reports while preventing new empty/self matches. Update the conformance inventory so every former `KnownGap` becomes `Applies`, then run conformance with `--deny-gaps` and confirm zero gaps.
 
-**Focused verification:** boundary and over-boundary UTF-8 byte lengths for every cap. ReportId and other domains reject before DB/service work; winner/loser validation performs exactly the one required replay lookup but no write, event, MMR, or leaderboard effect. Cover exact replay, different-payload conflict, new invalid participants, and input-inventory completeness.
+**Focused verification:** table-test boundary and boundary+1 UTF-8 byte lengths through the production validators. ReportId and other domains reject before DB/service work; winner/loser validation performs exactly the one required replay lookup but no write or event. Cover exact replay, different-payload conflict, new invalid participants, and one inventory-golden omission case; do not build a second validation DSL.
 
 ### 18. Preserve healthy shared QUIC connections on stream-local errors `[subagent-complex]`
 
@@ -272,27 +273,27 @@ This ordering avoids breaking replay of already accepted reports while preventin
 
 Define private `CallFailure { mapped: opsapi::Error, provenance: FailureProvenance }` with `FailureProvenance::{ConnectionFatal, StreamLocal, PeerAnswer}`. Classify it at the exact Quinn/frame operation before mapping erases the concrete cause, and preserve it through edge client and remote. `ConnectionLost`, locally closed endpoint, or fatal connection open/read/write errors are `ConnectionFatal`; peer `STOPPED`, frame-too-large, codec/response serialization, and individual stream cancellation are `StreamLocal`; `Remote` and `UnknownMethod` envelopes are `PeerAnswer`. Unknown/unprovenanced failures default to `StreamLocal`, never to connection-fatal. Reset the cached client and perform the one allowed reconnect replay only for proven `ConnectionFatal`. Stream-local and peer-answer failures do not call `Client::close` and do not evict/replace the shared connection.
 
-Keep generated retry policy authoritative: `RetryMode::Never` remains fail closed and `OnceAfterReconnect` gets at most one replay after proven connection loss. Do not infer fatality from `opsapi::Status::Unavailable`, because mapping has erased provenance. Gateway cache eviction may be reviewed for the same predicate, but it must not gain a new close of shared connections; concurrent Arc holders remain valid.
+Keep generated retry policy authoritative: `RetryMode::Never` remains fail closed and `OnceAfterReconnect` gets at most one replay after proven connection loss. Do not infer fatality from `opsapi::Status::Unavailable`, because mapping has erased provenance. Do not expand this step into gateway cache eviction unless a focused failing test demonstrates the same provenance bug there.
 
-**Focused verification:** two concurrent streams where one receives peer `STOPPED`, frame-too-large, codec failure, `Remote`, or `UnknownMethod` and the other still completes; `open_bi` `ConnectionLost` causes one redial and retry only for a retry-safe operation; non-retry-safe mutation is not replayed; redial pointer race retains the winning healthy client; UnknownMethod remains NotFound and non-retryable.
+**Focused verification:** a table maps concrete Quinn/frame failures to provenance; one representative concurrent-stream test proves a stream-local failure does not break the other stream; one connection-loss test proves exactly one redial/replay for retry-safe work; one non-retry-safe test proves no replay; UnknownMethod remains NotFound. Do not duplicate the full concurrent transport fixture for every stream-local variant.
 
 ### 19. Cut over commands and repair current documentation without rewriting history `[subagent-mechanical]`
 
-**Files/symbols:** delete `run.sh`, `run.ps1`, `verify.sh`, `verify.ps1` after parity; update `README.md`, `CLAUDE.md`, `AGENTS.md` consistently only for their duplicated project facts while preserving tool-specific working agreements, `docs/reference/architecture-enforcement.md`, `docs/reference/hetzner-cloud.md`, C# client docs, splitproof header, `docs/README.md`, new `docs/reference/current-tooling.md`; stale comments in inventory/registry/match/leaderboard; dated plans `2026-07-12-0952-convention-conformance-harness-plan.md` and `2026-07-11-2249-remediation-round4-plan.md` via status/errata headers only.
+**Files/symbols:** delete `run.sh`, `run.ps1`, `verify.sh`, `verify.ps1` after parity; update `README.md`, `CLAUDE.md`, `AGENTS.md` consistently only for their duplicated project facts while preserving tool-specific working agreements, `docs/reference/architecture-enforcement.md`, `docs/reference/hetzner-cloud.md`, C# client docs, splitproof header, and `docs/README.md`; add `docs/reference/current-tooling.md` only if it replaces duplicated command facts; correct stale comments in inventory/registry/match/leaderboard; update dated plans `2026-07-12-0952-convention-conformance-harness-plan.md` and `2026-07-11-2249-remediation-round4-plan.md` via status/errata headers only.
 
 Make `cargo run -p devctl -- up monolith|split`, `status`, `down`, and `cargo run -p verifyctl -- [--fast|--all|--strict|--slow]` the only current commands. Document the inherited lease, exact owned-process cleanup, fail-closed audit behavior, and the single-rollout protocol. Replace current references to `go-arch-lint`, retired split-proof shell harnesses, obsolete player-QUIC limiter claims, and the invalid conformance command. Correct source comments that still describe messaging delivery, future `RemoteBackend`, one service-name assumption, or inventory cache behavior.
 
-Add a small blocking `docs-current` stage inside `verifyctl`—not a new standalone checker. Its exact inputs are root `README.md`, `CLAUDE.md`, `AGENTS.md`, `docs/reference/**/*.md`, `core/*/{README.md,src/lib.rs}`, `modules/*/{README.md,src/lib.rs}`, and `tools/*/{README.md,src/main.rs}` when present; it excludes `docs/plans/**`, status/summary history, tests, and `experiments/**`. Parse local Markdown links and fenced `text|bash|powershell` command blocks, and validate only Cargo package tokens occurring after `-p`. Retired-command checks match complete executable command lines/known script links, not raw words, so prose that says “do not use taskkill” remains legal. Maintain an explicit allowlist for intentional historical/negative mentions. Update the stage-manifest golden and place it after conformance and before split-proof.
+Add a small blocking `docs-current` stage inside `verifyctl`—not a new standalone checker. Limit its inputs to root `README.md`, `CLAUDE.md`, `AGENTS.md`, and `docs/reference/**/*.md`; exclude plans and status/history. Check local Markdown links, Cargo package tokens directly following `-p`, and exact executable command lines or links naming retired `run.*`/`verify.*` scripts. Exact matching plus history exclusion must make negative prose legal without a growing phrase allowlist. Source comments are corrected once by review/`rg`, not permanently parsed as documentation. Update the stage-manifest golden and place it after conformance and before split-proof. Add a new canonical tooling document only if it replaces duplicated facts rather than creating another copy.
 
 After `devctl` and `verifyctl` parity has passed, remove the four shell/PowerShell forwarders in the same change so there is one implementation, not permanent wrappers. Dated plans remain historical: prepend Status/Superseded/Errata rather than editing their bodies.
 
-**Focused verification:** docs-current positive/negative fixtures including legal negative prose, no retired executable command in current command blocks, all documented `cargo -p` packages exist, local Markdown links resolve, README command smoke help, duplicated project facts agree without forcing tool-specific working agreements to match, and `rg` confirms no executable broad process-kill path remains outside immutable historical text.
+**Focused verification:** small fixtures cover a broken local link, missing package, retired executable command, and legal negative prose. Smoke current CLI help, and use one exact `rg` check for broad process-kill commands in active tooling source. Do not add a general documentation parser or duplicated-fact reconciliation framework.
 
 ### 20. Final regression proof and implementation record `[inline]`
 
 **Files/symbols:** this plan status header; a new dated implementation summary at `docs/status/YYYY-MM-DD-HHMM-architecture-remediation-summary.md`; public API/contract baselines only where reviewed.
 
-Run focused tests sequentially throughout implementation. At the end, after confirming no Cargo/rustc rollout is active and clearing any verified orphan/stuck Postgres session, run exactly one:
+Run focused tests sequentially throughout implementation. At the end, after confirming no Cargo/rustc rollout is active, inspect or clear Postgres only if there is evidence of an orphan or stuck session, then run exactly one:
 
 ```text
 cargo run -p verifyctl -- --all --strict
@@ -300,7 +301,7 @@ cargo run -p verifyctl -- --all --strict
 
 This must cover build, clippy, workspace tests, audit, fortress/archcheck, routecheck, codegen freshness, contract golden, zero-gap conformance, docs-current, splitproof, public API, fuzz platform handling, C# client, and topiccheck. Run `--slow` as a separate explicitly requested rollout; do not overlap it with the final gate.
 
-Inspect the final `git diff --stat`, dependency graph, public API diff, generated-code diff, and docs command diff. Confirm no normal server/service depends on conformance, no foundation depends on module/API crates, no module fortress edge appeared, no event payload changed, no DB migration machinery was added, and no process cleanup can address an unowned identity. Then prepend this plan's final status and write an implementation summary listing exact verification results and any approved deviations. Commit every completed task or independently reviewable part as it verifies; pushing still requires an explicit user request.
+Inspect the final `git diff --stat`, the conformance dependency direction, intentional public/generated API diffs, and broad process-cleanup paths. Rely on passing archcheck/codegen/docs stages for invariants they already check instead of manually repeating the entire suite. Then prepend this plan's final status and write a concise implementation summary listing commands, results, commits, and approved deviations. Commit every completed task or independently reviewable part as it verifies; pushing still requires an explicit user request.
 
 ## Required commit boundaries during implementation
 
@@ -333,9 +334,9 @@ The reviewer returned `CHANGES REQUIRED`. The revised plan incorporates the subs
 - selected one shared rpc parser/model authority and removed conformance policy from production graphs without feature leakage;
 - changed contribution typing to consumer declarations in lifecycle `register`, covering the first producer and every known slot;
 - retained the existing `EVENTS_HOUSEKEEP_INTERVAL` name and defined the scheduler cursor as a last-name/insertion-point cursor;
-- replaced the ineffective “captured closure” CAS test with a real bounded, session-bound GET→POST form instance and typed 409 conflict path;
+- replaced the ineffective “captured closure” CAS with hidden expected-state fields, conditional SQL, and a typed 409 conflict path; no server-side form-instance subsystem is needed;
 - fixed redirect URI policy, exact IP-map capacity, match test ordering, and remote provenance variants;
-- narrowed docs-current to parsed command blocks/package tokens/local links with negative-prose allowances.
+- narrowed docs-current to current root/reference Markdown links, package tokens, and exact retired commands; source trees and phrase allowlists are excluded.
 
 The initial review incorrectly treated provider-specific dispatch tags and opt-in commits as repository requirements. `AGENTS.md` actually mandates `[inline]`/`[subagent-complex]`/`[subagent-mechanical]` and commits after every completed task or independently reviewable part. This revision corrects the plan and the stale reference documents; only pushing remains opt-in.
 
