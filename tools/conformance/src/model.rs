@@ -88,10 +88,6 @@ pub enum InputPolicy {
     Opaque {
         rationale: &'static str,
     },
-    #[allow(dead_code)]
-    Unrestricted {
-        rationale: &'static str,
-    },
 }
 
 #[derive(Clone)]

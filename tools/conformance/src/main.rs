@@ -276,7 +276,6 @@ fn main() {
                 remediation,
             } => format!("GAP(planned {planned_cap}): {remediation}"),
             InputPolicy::Opaque { rationale } => format!("opaque: {rationale}"),
-            InputPolicy::Unrestricted { rationale } => format!("unrestricted: {rationale}"),
         };
         println!("  {}\t{policy}", input_inventory::render_key(key));
     }
