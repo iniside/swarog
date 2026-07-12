@@ -306,6 +306,22 @@ pub fn bless() -> anyhow::Result<PathBuf> {
     Ok(path)
 }
 
+pub fn render_to(path: &std::path::Path) -> anyhow::Result<PathBuf> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let lines = live_lines()?;
+    let mut out = String::from(GOLDEN_HEADER);
+    out.push('\n');
+    for line in lines {
+        out.push('\n');
+        out.push_str(&line);
+    }
+    out.push('\n');
+    std::fs::write(path, out)?;
+    Ok(path.to_path_buf())
+}
+
 /// Entry point for `topiccheck contract-golden [--bless]`: bless writes the golden;
 /// the default run diffs and exits non-zero on any finding.
 pub fn run(bless_flag: bool) -> anyhow::Result<()> {

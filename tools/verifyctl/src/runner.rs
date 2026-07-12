@@ -39,9 +39,8 @@ pub fn execute(options: Options) -> Result<Exit> {
             println!("{}", crate::cli::USAGE);
             return Ok(Exit::Green);
         }
-        Action::BlessPublicApi | Action::BlessContractGolden => {
-            bail!("bless action recognized but not implemented until verifyctl step 6")
-        }
+        Action::BlessPublicApi => return stages::public_api::bless(),
+        Action::BlessContractGolden => return stages::contract_golden::bless(),
         Action::Verify => {}
     }
     let snapshot = EnvironmentSnapshot::capture();
@@ -66,7 +65,7 @@ pub fn execute(options: Options) -> Result<Exit> {
         lease: &mut lease,
         stage: crate::model::StageId::Build,
     };
-    for stage in stages::INITIAL {
+    for stage in stages::manifest(options.level, options.strict) {
         context.stage = stage.id;
         println!("== {} ==", stage.id.name());
         let outcome = match (stage.run)(&mut context) {
@@ -124,11 +123,36 @@ impl Context<'_> {
         find_on_path(executable, &self.environment.build)
     }
 
+    pub fn environment(&self) -> &BTreeMap<String, String> {
+        &self.environment.build
+    }
+
+    pub fn database_url(&self) -> Option<&str> {
+        self.environment
+            .splitproof
+            .get("DATABASE_URL")
+            .map(String::as_str)
+    }
+
+    pub fn stage_log(&self, label: &str, stream: &str) -> PathBuf {
+        self.command_log(label, stream)
+    }
+
     pub fn command(
         &mut self,
         label: &str,
         executable: PathBuf,
         args: Vec<OsString>,
+    ) -> Result<Outcome> {
+        self.command_at(label, executable, args, self.root.clone())
+    }
+
+    pub fn command_at(
+        &mut self,
+        label: &str,
+        executable: PathBuf,
+        args: Vec<OsString>,
+        cwd: PathBuf,
     ) -> Result<Outcome> {
         let stdout = self.command_log(label, "out");
         let stderr = self.command_log(label, "err");
@@ -137,12 +161,45 @@ impl Context<'_> {
             executable,
             args,
             env: os_environment(&self.environment.build),
-            cwd: self.root.clone(),
+            cwd,
             stdout: OutputDestination::File(stdout),
             stderr: OutputDestination::File(stderr),
             process_group: ProcessGroupPolicy::Owned,
         })?;
         wait_owned(&mut child, &self.command_log(label, "cleanup"))
+    }
+
+    pub fn command_code(
+        &mut self,
+        label: &str,
+        executable: PathBuf,
+        args: Vec<OsString>,
+        timeout: Duration,
+    ) -> Result<Option<i32>> {
+        let mut child = OwnedChild::spawn(SpawnSpec {
+            label: format!("verify-{}-{label}", self.stage.name()),
+            executable,
+            args,
+            env: os_environment(&self.environment.build),
+            cwd: self.root.clone(),
+            stdout: OutputDestination::File(self.command_log(label, "out")),
+            stderr: OutputDestination::File(self.command_log(label, "err")),
+            process_group: ProcessGroupPolicy::Owned,
+        })?;
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            if let Some(status) = child.try_wait()? {
+                return Ok(status.code());
+            }
+            if interrupted() || std::time::Instant::now() >= deadline {
+                record_cleanup(
+                    &self.command_log(label, "cleanup"),
+                    child.shutdown(SHUTDOWN),
+                );
+                return Ok(None);
+            }
+            std::thread::sleep(POLL);
+        }
     }
 
     pub fn splitproof(&mut self) -> Result<Outcome> {

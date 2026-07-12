@@ -25,6 +25,33 @@ fn main() -> ExitCode {
 fn cargo(executable: PathBuf) -> ExitCode {
     let args: Vec<_> = std::env::args().skip(1).collect();
     record(&format!("cargo {}", args.join(" ")));
+    if args.iter().any(|arg| arg == "public-api") {
+        if let Some(index) = args.iter().position(|arg| arg == "-p") {
+            let root = std::env::current_dir().expect("fixture cwd");
+            let snapshot = std::fs::read_to_string(
+                root.join("docs/reference/public-api-baseline")
+                    .join(format!("{}.txt", args[index + 1])),
+            )
+            .expect("public-api fixture snapshot");
+            for line in snapshot
+                .lines()
+                .filter(|line| !line.starts_with("# cargo-public-api"))
+            {
+                println!("{line}");
+            }
+        } else {
+            println!("cargo-public-api 0.52.0");
+        }
+    }
+    if let Some(index) = args.iter().position(|arg| arg == "--out") {
+        let out = PathBuf::from(&args[index + 1]);
+        copy_tree(
+            &std::env::current_dir()
+                .expect("fixture cwd")
+                .join("clients/csharp/Generated"),
+            &out,
+        );
+    }
     if control("sleep-build") && args.join(" ").contains("build --workspace") {
         record("sleeping");
         std::thread::sleep(Duration::from_secs(30));
@@ -42,6 +69,17 @@ fn cargo(executable: PathBuf) -> ExitCode {
         return ExitCode::FAILURE;
     }
     ExitCode::SUCCESS
+}
+
+fn copy_tree(source: &std::path::Path, target: &std::path::Path) {
+    std::fs::create_dir_all(target).expect("create fake generated tree");
+    for entry in std::fs::read_dir(source).expect("read generated tree") {
+        let path = entry.expect("generated entry").path();
+        if path.is_file() {
+            std::fs::copy(&path, target.join(path.file_name().unwrap()))
+                .expect("copy generated file");
+        }
+    }
 }
 
 fn audit() -> ExitCode {

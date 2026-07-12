@@ -502,6 +502,14 @@ async fn main() -> anyhow::Result<()> {
     // `contract-golden [--bless]`: the VALUE-level contract baseline (Step 6c) — an
     // independent subcommand that never builds the process harness (see `golden.rs`).
     if std::env::args().any(|a| a == "contract-golden") {
+        let args = std::env::args().collect::<Vec<_>>();
+        if let Some(index) = args.iter().position(|a| a == "--output") {
+            let path = args
+                .get(index + 1)
+                .ok_or_else(|| anyhow::anyhow!("--output requires a path"))?;
+            golden::render_to(std::path::Path::new(path))?;
+            return Ok(());
+        }
         let bless = std::env::args().any(|a| a == "--bless");
         return golden::run(bless);
     }

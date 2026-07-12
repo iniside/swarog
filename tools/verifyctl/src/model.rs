@@ -90,7 +90,7 @@ impl Summary {
 
     pub fn failed(&self, strict: bool) -> bool {
         self.results.iter().any(|result| match result.outcome {
-            Outcome::Fail => result.class == StageClass::Blocking || strict,
+            Outcome::Fail => result.class != StageClass::Advisory || strict,
             Outcome::Skip(SkipReason::NotApplicablePlatform) => false,
             Outcome::Skip(SkipReason::ExplicitNoInstallMissingTool) => false,
             Outcome::Pass => false,

@@ -79,7 +79,7 @@ USAGE:
   verifyctl --bless-public-api
   verifyctl --bless-contract-golden
 
---fast is the default. Bless actions are reserved until their stages are ported.";
+--fast is the default. Bless actions are explicit, recoverable baseline updates.";
 
 #[cfg(test)]
 mod tests {

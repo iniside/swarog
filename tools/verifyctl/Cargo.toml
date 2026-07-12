@@ -9,6 +9,9 @@ publish = false
 anyhow.workspace = true
 rand.workspace = true
 processctl = { path = "../processctl" }
+reqwest.workspace = true
+tokio.workspace = true
+toml = "1.1"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = ["Win32_System_Console", "Win32_System_Threading"] }
