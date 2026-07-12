@@ -21,7 +21,7 @@ pub use process::{
 };
 pub use state::{
     FleetState, FleetStatus, ManagedProcess, ManagedStatus, StateCheckpointError, StateError,
-    StateStore, STATE_VERSION,
+    StateStore, MAX_STATE_BYTES, STATE_VERSION,
 };
 
 #[cfg(test)]

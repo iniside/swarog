@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::{fs::File, io::Read};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -7,6 +8,7 @@ use thiserror::Error;
 use crate::{OwnedChild, ProcessIdentity, ShutdownPolicy};
 
 pub const STATE_VERSION: u32 = 1;
+pub const MAX_STATE_BYTES: u64 = 1024 * 1024;
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -30,6 +32,7 @@ pub enum ManagedStatus {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ManagedProcess {
     label: String,
     identity: ProcessIdentity,
@@ -82,6 +85,7 @@ impl ManagedProcess {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct FleetState {
     version: u32,
     run_id: String,
@@ -195,8 +199,8 @@ impl StateStore {
     }
 
     pub fn load(&self) -> Result<Option<FleetState>, StateError> {
-        let bytes = match std::fs::read(&self.path) {
-            Ok(bytes) => bytes,
+        let file = match open_state_for_read(&self.path) {
+            Ok(file) => file,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(source) => {
                 return Err(StateError::Io {
@@ -205,6 +209,19 @@ impl StateStore {
                 });
             }
         };
+        let mut bytes = Vec::new();
+        file.take(MAX_STATE_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|source| StateError::Io {
+                operation: "read process state",
+                source,
+            })?;
+        if bytes.len() as u64 > MAX_STATE_BYTES {
+            return Err(StateError::InvalidField {
+                field: "state file",
+                reason: "exceeds maximum size",
+            });
+        }
         let state: FleetState = serde_json::from_slice(&bytes)?;
         if state.version != STATE_VERSION {
             return Err(StateError::UnsupportedVersion {
@@ -223,6 +240,12 @@ impl StateStore {
             });
         }
         let bytes = serde_json::to_vec_pretty(state)?;
+        if bytes.len() as u64 > MAX_STATE_BYTES {
+            return Err(StateError::InvalidField {
+                field: "state file",
+                reason: "exceeds maximum size",
+            });
+        }
         let parent = self.path.parent().ok_or(StateError::InvalidField {
             field: "state path",
             reason: "must have a parent directory",
@@ -237,6 +260,16 @@ impl StateStore {
             std::process::id(),
             NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
         ));
+        match open_state_for_read(&self.path) {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(source) => {
+                return Err(StateError::Io {
+                    operation: "validate existing process state",
+                    source,
+                });
+            }
+        }
         self.write_platform(&temp, parent, &bytes)
     }
 
@@ -305,18 +338,22 @@ impl StateStore {
             .create_new(true)
             .write(true)
             .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
             .open(temp)
             .map_err(|source| StateError::Io {
                 operation: "create private state temp file",
                 source,
             })?;
         let mut cleanup = TempCleanup::new(temp);
-        std::fs::set_permissions(temp, std::fs::Permissions::from_mode(0o600)).map_err(
-            |source| StateError::Io {
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))
+            .map_err(|source| StateError::Io {
                 operation: "secure state temp file",
                 source,
-            },
-        )?;
+            })?;
+        validate_private_regular_linux(&file).map_err(|source| StateError::Io {
+            operation: "validate private state temp file",
+            source,
+        })?;
         self.inject(StateFailurePoint::SecureTemp)?;
         self.inject(StateFailurePoint::Write)?;
         file.write_all(bytes).map_err(|source| StateError::Io {
@@ -340,7 +377,7 @@ impl StateStore {
         })?;
         cleanup.disarm();
         self.inject(StateFailurePoint::SyncParent)?;
-        std::fs::File::open(parent)
+        open_directory_linux(parent)
             .and_then(|directory| directory.sync_all())
             .map_err(|source| StateError::Io {
                 operation: "sync state parent directory",
@@ -439,6 +476,64 @@ impl StateStore {
         }
         self.inject(StateFailurePoint::SyncParent)
     }
+}
+
+#[cfg(target_os = "linux")]
+fn open_state_for_read(path: &Path) -> std::io::Result<File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(path)?;
+    validate_private_regular_linux(&file)?;
+    Ok(file)
+}
+
+#[cfg(target_os = "linux")]
+fn validate_private_regular_linux(file: &File) -> std::io::Result<()> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let metadata = file.metadata()?;
+    if !metadata.file_type().is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "state path is not a regular file",
+        ));
+    }
+    if metadata.uid() != unsafe { libc::geteuid() } {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "state file is not owned by the current user",
+        ));
+    }
+    if metadata.permissions().mode() & 0o777 != 0o600 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "state file permissions are not exactly 0600",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn open_directory_linux(path: &Path) -> std::io::Result<File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(path)
+}
+
+#[cfg(windows)]
+fn open_state_for_read(path: &Path) -> std::io::Result<File> {
+    File::open(path)
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
+fn open_state_for_read(_path: &Path) -> std::io::Result<File> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "processctl state supports only Windows and Linux",
+    ))
 }
 
 struct TempCleanup<'a> {

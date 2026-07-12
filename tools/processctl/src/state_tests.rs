@@ -56,6 +56,22 @@ fn unsupported_state_version_is_never_accepted() {
 }
 
 #[test]
+fn unknown_fields_and_oversized_state_are_rejected() {
+    let dir = test_dir("closed-schema");
+    let path = dir.join("fleet.json");
+    let mut value = serde_json::to_value(sample_state("run-1", FleetStatus::Running)).unwrap();
+    value["unexpected"] = serde_json::json!(true);
+    write_private_test_file(&path, &serde_json::to_vec(&value).unwrap());
+    assert!(StateStore::new(&path).load().is_err());
+
+    write_private_test_file(
+        &path,
+        &vec![b' '; crate::state::MAX_STATE_BYTES as usize + 1],
+    );
+    assert!(StateStore::new(path).load().is_err());
+}
+
+#[test]
 fn every_injected_atomic_write_failure_leaves_a_complete_old_or_new_state() {
     let dir = test_dir("failures");
     let path = dir.join("fleet.json");
@@ -144,6 +160,44 @@ fn state_file_is_owner_read_write_only() {
     );
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn state_load_and_replace_reject_symlinks_directories_and_insecure_modes() {
+    use std::os::unix::fs::{symlink, PermissionsExt};
+    let dir = test_dir("path-hardening");
+    let target = dir.join("target.json");
+    write_private_test_file(
+        &target,
+        &serde_json::to_vec(&sample_state("target", FleetStatus::Running)).unwrap(),
+    );
+    let link = dir.join("fleet.json");
+    symlink(&target, &link).unwrap();
+    let store = StateStore::new(&link);
+    assert!(store.load().is_err());
+    assert!(store
+        .write_atomic(&sample_state("replacement", FleetStatus::Running))
+        .is_err());
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&std::fs::read(&target).unwrap()).unwrap()
+            ["run_id"],
+        "target"
+    );
+
+    std::fs::remove_file(&link).unwrap();
+    std::fs::create_dir(&link).unwrap();
+    assert!(store.load().is_err());
+    std::fs::remove_dir(&link).unwrap();
+    write_private_test_file(
+        &link,
+        &serde_json::to_vec(&sample_state("insecure", FleetStatus::Running)).unwrap(),
+    );
+    std::fs::set_permissions(&link, std::fs::Permissions::from_mode(0o644)).unwrap();
+    assert!(store.load().is_err());
+    assert!(store
+        .write_atomic(&sample_state("replacement", FleetStatus::Running))
+        .is_err());
+}
+
 #[cfg(windows)]
 #[test]
 fn state_file_has_one_protected_owner_only_dacl_entry() {
@@ -220,6 +274,15 @@ fn identity(pid: u32) -> ProcessIdentity {
         pid,
         executable: PathBuf::from("target/debug/fake-service"),
         started: StartMarker(1234),
+    }
+}
+
+fn write_private_test_file(path: &std::path::Path, bytes: &[u8]) {
+    std::fs::write(path, bytes).unwrap();
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
     }
 }
 

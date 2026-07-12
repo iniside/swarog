@@ -22,6 +22,7 @@ const CONSUMED_MARKER: &[u8] = b"processctl-borrowed-v1\n";
 static INHERITED_CREDENTIAL_CONSUMED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 struct LockMetadata {
     version: u32,
     owner: ProcessIdentity,
@@ -31,6 +32,7 @@ struct LockMetadata {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct BorrowCredential {
     version: u32,
     lock_path: PathBuf,
@@ -268,8 +270,50 @@ fn deliver_credential(
     result
 }
 
+#[cfg(target_os = "linux")]
 fn cleanup_consumption_marker(path: &Path) {
-    let is_ours = std::fs::metadata(path).is_ok_and(|metadata| metadata.is_file())
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+    let Ok(mut file) = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(path)
+    else {
+        return;
+    };
+    if validate_private_regular_linux(&file, "borrower marker").is_err() {
+        return;
+    }
+    let mut content = Vec::new();
+    if std::io::Read::by_ref(&mut file)
+        .take(CONSUMED_MARKER.len() as u64 + 1)
+        .read_to_end(&mut content)
+        .is_err()
+        || content != CONSUMED_MARKER
+    {
+        return;
+    }
+    let Ok(opened) = file.metadata() else {
+        return;
+    };
+    let Ok(current) = std::fs::symlink_metadata(path) else {
+        return;
+    };
+    if !current.file_type().is_file()
+        || current.uid() != unsafe { libc::geteuid() }
+        || current.permissions().mode() & 0o777 != 0o600
+        || current.dev() != opened.dev()
+        || current.ino() != opened.ino()
+    {
+        return;
+    }
+    if std::fs::remove_file(path).is_ok() {
+        let _ = sync_parent_directory_linux(path, "sync borrower marker removal");
+    }
+}
+
+#[cfg(windows)]
+fn cleanup_consumption_marker(path: &Path) {
+    let is_ours = std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_file())
         && std::fs::read(path).is_ok_and(|bytes| bytes == CONSUMED_MARKER);
     if is_ours {
         let _ = std::fs::remove_file(path);
@@ -441,24 +485,81 @@ fn borrow_marker_path(lock: &Path, metadata: &LockMetadata) -> PathBuf {
 #[cfg(target_os = "linux")]
 fn open_lock_file(path: &Path) -> Result<File, LeaseError> {
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .mode(0o600)
-        .open(path)
-        .map_err(|source| LeaseError::Io {
-            operation: "open private rollout lock",
+    let options = || {
+        let mut options = std::fs::OpenOptions::new();
+        options
+            .read(true)
+            .write(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
+        options
+    };
+    let (file, created) = match options().create_new(true).open(path) {
+        Ok(file) => (file, true),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => (
+            options().open(path).map_err(|source| LeaseError::Io {
+                operation: "open private rollout lock",
+                source,
+            })?,
+            false,
+        ),
+        Err(source) => {
+            return Err(LeaseError::Io {
+                operation: "create private rollout lock",
+                source,
+            });
+        }
+    };
+    if created {
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))
+            .map_err(|source| LeaseError::Io {
+                operation: "secure rollout lock permissions",
+                source,
+            })?;
+    }
+    validate_private_regular_linux(&file, "rollout lock")?;
+    if created {
+        file.sync_all().map_err(|source| LeaseError::Io {
+            operation: "sync new rollout lock",
             source,
         })?;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).map_err(|source| {
-        LeaseError::Io {
-            operation: "secure rollout lock permissions",
-            source,
-        }
-    })?;
+        sync_parent_directory_linux(path, "sync rollout lock parent directory")?;
+    }
     Ok(file)
+}
+
+#[cfg(target_os = "linux")]
+fn validate_private_regular_linux(file: &File, kind: &'static str) -> Result<(), LeaseError> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let metadata = file.metadata().map_err(|source| LeaseError::Io {
+        operation: "inspect private processctl file",
+        source,
+    })?;
+    if !metadata.file_type().is_file()
+        || metadata.uid() != unsafe { libc::geteuid() }
+        || metadata.permissions().mode() & 0o777 != 0o600
+    {
+        return Err(LeaseError::InvalidField(format!(
+            "{kind} must be a regular file owned by the current user with mode 0600"
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn sync_parent_directory_linux(path: &Path, operation: &'static str) -> Result<(), LeaseError> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let parent = path.parent().ok_or_else(|| {
+        LeaseError::InvalidField("processctl file must have a parent directory".into())
+    })?;
+    let directory = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(parent)
+        .map_err(|source| LeaseError::Io { operation, source })?;
+    directory
+        .sync_all()
+        .map_err(|source| LeaseError::Io { operation, source })
 }
 
 #[cfg(windows)]
@@ -775,6 +876,7 @@ fn create_consumption_marker(path: &Path, nonce: &[u8; 32]) -> Result<(), LeaseE
         .create_new(true)
         .write(true)
         .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
         .open(path)
         .map_err(|source| {
             if source.kind() == std::io::ErrorKind::AlreadyExists {
@@ -792,7 +894,9 @@ fn create_consumption_marker(path: &Path, nonce: &[u8; 32]) -> Result<(), LeaseE
             operation: "write one-shot borrower marker",
             source,
         })?;
-    flush_file(&file, "flush one-shot borrower marker")
+    flush_file(&file, "flush one-shot borrower marker")?;
+    validate_private_regular_linux(&file, "borrower marker")?;
+    sync_parent_directory_linux(path, "sync borrower marker parent directory")
 }
 
 #[cfg(windows)]

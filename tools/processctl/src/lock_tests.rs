@@ -89,6 +89,32 @@ fn metadata_is_private_and_contains_no_credential_or_secret_fields() {
     assert_owner_only_dacl(&path);
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn lock_rejects_symlinks_directories_and_insecure_existing_files() {
+    use std::os::unix::fs::{symlink, PermissionsExt};
+    let path = lock_path("path-hardening");
+    let target = path.with_file_name("target.lock");
+    std::fs::write(&target, b"do-not-touch").unwrap();
+    std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600)).unwrap();
+    symlink(&target, &path).unwrap();
+    assert!(RolloutLock::acquire(&path, "run-1", "splitproof").is_err());
+    assert_eq!(std::fs::read(&target).unwrap(), b"do-not-touch");
+
+    std::fs::remove_file(&path).unwrap();
+    std::fs::create_dir(&path).unwrap();
+    assert!(RolloutLock::acquire(&path, "run-1", "splitproof").is_err());
+    std::fs::remove_dir(&path).unwrap();
+
+    std::fs::write(&path, b"insecure").unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+    assert!(RolloutLock::acquire(&path, "run-1", "splitproof").is_err());
+    assert_eq!(
+        std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+        0o644
+    );
+}
+
 #[cfg(windows)]
 fn assert_owner_only_dacl(path: &std::path::Path) {
     use std::mem::{size_of, zeroed};
