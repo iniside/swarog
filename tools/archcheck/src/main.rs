@@ -49,6 +49,15 @@ mod tests;
 const GATEWAY_CRATE: &str = "gateway";
 /// Tool-owned conformance policy must never enter a shipping process graph.
 const CONFORMANCE_POLICY_PACKAGE: &str = "conformancecheck";
+const SLOT_CONSTRUCTOR: &str = "contrib::Slot::new(";
+const SLOT_OWNER_FILES: [&str; 6] = [
+    "api/admin/api/src/lib.rs",
+    "core/opsapi/src/lib.rs",
+    "core/edge/src/reg.rs",
+    "core/httpmw/src/readiness.rs",
+    "core/httpmw/src/layer.rs",
+    "core/remote/src/lib.rs",
+];
 /// The `cmd/<dir>` crates permitted to host the front door: the dedicated front process
 /// and the monolith. Every other `cmd/*-svc` serves ops only over the internal edge.
 const FRONT_DOOR_HOSTS: [&str; 2] = ["gateway-svc", "server"];
@@ -388,6 +397,11 @@ fn main() {
         violations.push(line);
     }
 
+    // --- 19: canonical typed slots are constructed only by their owners ------
+    // The exact fully-qualified token keeps this a narrow drift tripwire: no Rust
+    // parser, alias analysis, or broad `Slot::new` false positives.
+    violations.extend(grep_non_owner_slot_constructors(&root_dir));
+
     // --- 6: every cmd/*-svc + the monolith main lists `metrics` ---------------
     // CLAUDE.md: "every main lists metrics::Metrics::new() for GET /metrics." The
     // durable-events plane is app-owned infrastructure, not a listed module, so there is
@@ -552,7 +566,7 @@ fn main() {
     }
 
     if violations.is_empty() {
-        println!("archcheck: OK — no module→module / module→foreign-rpc edges, shipping process graphs exclude `conformancecheck`, single front door (only gateway-svc + server host `gateway`), no Option<edge::Server> in modules/, <name>api/<name>events crates stay transport-free, every cmd/*-svc + server lists `metrics`, no cross-schema FKs in modules/ DDL, no inline test modules in modules/, core/bus stays sqlx-free, no module runtime-deps `asyncevents`, no EVENTS_ env knobs read inside modules/, no retired push-plane tokens (EVENTS_*/\"/events\") in workspace source, no schema-qualified asyncevents.<table> access outside the plane, no module queries a foreign module's schema in SQL, every modules/<name> boots as cmd/<name>-svc (and its svc lib.rs constructs it), demos/* imported only by cmd/server, no core/* foundation deps a module or api/ crate, every #[http( domain is stubbed in cmd/gateway-svc");
+        println!("archcheck: OK — no module→module / module→foreign-rpc edges, shipping process graphs exclude `conformancecheck`, canonical typed slots are constructed only by owner files, single front door (only gateway-svc + server host `gateway`), no Option<edge::Server> in modules/, <name>api/<name>events crates stay transport-free, every cmd/*-svc + server lists `metrics`, no cross-schema FKs in modules/ DDL, no inline test modules in modules/, core/bus stays sqlx-free, no module runtime-deps `asyncevents`, no EVENTS_ env knobs read inside modules/, no retired push-plane tokens (EVENTS_*/\"/events\") in workspace source, no schema-qualified asyncevents.<table> access outside the plane, no module queries a foreign module's schema in SQL, every modules/<name> boots as cmd/<name>-svc (and its svc lib.rs constructs it), demos/* imported only by cmd/server, no core/* foundation deps a module or api/ crate, every #[http( domain is stubbed in cmd/gateway-svc");
         return;
     }
     eprintln!("archcheck: FAIL — {} violation(s):", violations.len());
@@ -1133,6 +1147,40 @@ fn workspace_rs_files(root: &Path, skip_prefixes: &[&str]) -> Vec<std::path::Pat
         }
     }
     out
+}
+
+fn slot_constructor_violations(rel: &str, text: &str) -> Vec<String> {
+    if SLOT_OWNER_FILES.contains(&rel) {
+        return Vec::new();
+    }
+    text.lines()
+        .enumerate()
+        .filter(|(_, line)| {
+            let trimmed = line.trim_start();
+            !trimmed.starts_with("//")
+                && !trimmed.starts_with('"')
+                && line.contains(SLOT_CONSTRUCTOR)
+        })
+        .map(|(line, _)| {
+            format!(
+                "{rel}:{}: `{SLOT_CONSTRUCTOR}` constructs a canonical contribution slot \
+                 outside its owning contract/core file — use the owner's exported slot constant",
+                line + 1
+            )
+        })
+        .collect()
+}
+
+fn grep_non_owner_slot_constructors(root: &Path) -> Vec<String> {
+    let mut findings = Vec::new();
+    for path in workspace_rs_files(root, &[BAN_SELF_EXCLUDE]) {
+        let rel = workspace_rel(root, &path);
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        findings.extend(slot_constructor_violations(&rel, &text));
+    }
+    findings
 }
 
 /// True if `file` (root-relative) is a test file exempt from the SQL ban: `tests.rs`,
