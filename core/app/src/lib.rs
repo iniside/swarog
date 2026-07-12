@@ -64,6 +64,12 @@ fn retention_stall_message(stall_after: std::time::Duration) -> String {
     format!("asyncevents retention sweep has not succeeded in >{stall_after:?}")
 }
 
+/// Freezes readiness membership after every wiring-time contributor has run. The
+/// cloned checks still execute their live closures on every request.
+fn snapshot_readiness_checks(ctx: &Context) -> Vec<httpmw::ReadyCheck> {
+    ctx.contributions(httpmw::READINESS_SLOT)
+}
+
 /// How the HTTP front terminates TLS (admin hardening Step 4). The MECHANISM lives
 /// here in `core/app` (the serve path owns the listener); the ENV PARSING lives in the
 /// one composition root that fronts the public internet (`cmd/gateway-svc` reads
@@ -612,6 +618,12 @@ pub async fn run(
         );
     }
 
+    // Module register/init is complete and the app-owned plane checks above are the
+    // final readiness contributors. Snapshot the typed slot now so a forged-key type
+    // conflict fails during boot wiring, never on a `/readyz` request. ReadyCheck is a
+    // cloneable Arc-backed handle; its closure remains live when invoked per request.
+    let readiness_checks = snapshot_readiness_checks(&ctx);
+
     // 5. Own-schema migrations — the plane's first (a module's first emit_tx must
     //    find `asyncevents.append_event`), then 6. background work: modules first,
     //    then the plane (its subscription snapshot must see every wiring-time on_tx).
@@ -708,12 +720,12 @@ pub async fn run(
         //    load balancer sends traffic); a DB-less process has nothing to ping, so it
         //    answers a plain 200. Modules must not themselves mount these two routes (axum
         //    `merge`/`route` panics on a duplicate, exactly like Go's ServeMux).
-        // `/readyz` folds in the baseline DB ping (when a pool exists) PLUS every
-        // `httpmw::ReadyCheck` a module contributed to `READINESS_SLOT` — read lazily, per
-        // request, so by request time every module's `init` (where checks are contributed)
-        // has run. Any failure → 503 with a per-failed-check JSON body (Go's readyzHandler).
+        // `/readyz` folds in the baseline DB ping (when a pool exists) PLUS the startup
+        // snapshot of every `httpmw::ReadyCheck` contributed during wiring. Membership
+        // is fixed before migrate/start; each Arc-backed check closure still runs live on
+        // every request. Any failure → 503 with a per-failed-check JSON body.
         let ready_pool = pool.clone();
-        let ready_ctx = ctx.clone();
+        let ready_checks = readiness_checks.clone();
         let router = ctx
             .take_router()
             .route("/healthz", get(|| async { "ok" }))
@@ -721,10 +733,8 @@ pub async fn run(
                 "/readyz",
                 get(move || {
                     let pool = ready_pool.clone();
-                    let ctx = ready_ctx.clone();
+                    let checks = ready_checks.clone();
                     async move {
-                        let checks =
-                            ctx.contributions::<httpmw::ReadyCheck>(httpmw::READINESS_SLOT);
                         readyz_response(pool.as_ref(), checks, READY_CHECK_TIMEOUT).await
                     }
                 }),

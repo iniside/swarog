@@ -362,6 +362,39 @@ async fn readyz_hung_check_times_out_fast_as_503() {
     assert_eq!(body, format!(r#"{{"hang":"timed out after {bound:?}"}}"#));
 }
 
+#[tokio::test]
+async fn readiness_snapshot_freezes_membership_but_keeps_checks_live() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let ctx = Context::new();
+    let healthy = Arc::new(AtomicBool::new(false));
+    let observed = healthy.clone();
+    ctx.contribute(
+        httpmw::READINESS_SLOT,
+        httpmw::ReadyCheck::new("live", move || {
+            let observed = observed.clone();
+            async move {
+                observed
+                    .load(Ordering::SeqCst)
+                    .then_some(())
+                    .ok_or_else(|| "not ready".to_string())
+            }
+        }),
+    );
+
+    let snapshot = snapshot_readiness_checks(&ctx);
+    ctx.contribute(
+        httpmw::READINESS_SLOT,
+        httpmw::ReadyCheck::new("late", || async { Ok(()) }),
+    );
+    assert_eq!(snapshot.len(), 1, "snapshot membership must stay fixed");
+    assert_eq!(snapshot[0].name(), "live");
+
+    assert_eq!(snapshot[0].run().await.unwrap_err(), "not ready");
+    healthy.store(true, Ordering::SeqCst);
+    snapshot[0].run().await.unwrap();
+}
+
 // ============================================================================
 // The startup unwind (security-review hardening Step 3): `ordered_teardown` is the
 // ONE teardown sequence for graceful shutdown and every startup-failure path. The
