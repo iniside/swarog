@@ -117,18 +117,6 @@ pub fn manifest(level: crate::cli::Level, strict: bool) -> Vec<Stage> {
     stages
 }
 
-pub(crate) fn workspace_root() -> Result<PathBuf> {
-    let mut root = std::env::current_dir()?;
-    loop {
-        if root.join("Cargo.toml").is_file() && root.join("tools/verifyctl").is_dir() {
-            return Ok(root);
-        }
-        if !root.pop() {
-            bail!("verifyctl must run inside the GameBackend workspace");
-        }
-    }
-}
-
 pub(crate) fn temp_dir(parent: &Path, label: &str) -> Result<PathBuf> {
     let path = parent.join(format!(
         ".{label}-{}-{}",

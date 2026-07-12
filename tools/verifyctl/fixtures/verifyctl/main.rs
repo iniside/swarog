@@ -72,6 +72,18 @@ fn cargo(executable: PathBuf) -> ExitCode {
     if control("route-fail") && args.join(" ").contains("routecheck") {
         return ExitCode::FAILURE;
     }
+    if control("advisory-fail")
+        && args.iter().any(|arg| arg == "public-api")
+        && args.iter().any(|arg| arg == "-p")
+    {
+        return ExitCode::FAILURE;
+    }
+    if control("slow-fail")
+        && args.iter().any(|arg| arg == "mutants")
+        && !args.iter().any(|arg| arg == "--version")
+    {
+        return ExitCode::FAILURE;
+    }
     ExitCode::SUCCESS
 }
 

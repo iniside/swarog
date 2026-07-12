@@ -34,27 +34,34 @@ pub enum Exit {
 }
 
 pub fn execute(options: Options) -> Result<Exit> {
-    match options.action {
-        Action::Help => {
-            println!("{}", crate::cli::USAGE);
-            return Ok(Exit::Green);
-        }
-        Action::BlessPublicApi => return stages::public_api::bless(),
-        Action::BlessContractGolden => return stages::contract_golden::bless(),
-        Action::Verify => {}
+    if options.action == Action::Help {
+        println!("{}", crate::cli::USAGE);
+        return Ok(Exit::Green);
     }
     let snapshot = EnvironmentSnapshot::capture();
     let root = workspace_root()?;
-    let environment = FrozenEnvironment::from_snapshot(&snapshot);
     let run_id = run_id();
+    std::fs::create_dir_all(root.join("run")).context("create shared rollout directory")?;
+
+    if options.action != Action::Verify {
+        let _lease = RolloutLock::acquire_exclusive(rollout_lock_path(&root), &run_id)
+            .context("acquire shared rollout lease")?;
+        return match options.action {
+            Action::BlessPublicApi => stages::public_api::bless(&root),
+            Action::BlessContractGolden => stages::contract_golden::bless(&root),
+            Action::Verify | Action::Help => unreachable!("handled above"),
+        };
+    }
+
+    let environment = FrozenEnvironment::from_snapshot(&snapshot);
+    let mut lease = RolloutLock::acquire(rollout_lock_path(&root), &run_id, "splitproof")
+        .context("acquire shared rollout lease")?;
     let log_dir = root.join("run").join("verify").join(&run_id);
     std::fs::create_dir_all(&log_dir)
         .with_context(|| format!("create run log directory {}", log_dir.display()))?;
     println!("[run-id] {run_id}");
     println!("[logs] {}", log_dir.display());
 
-    let mut lease = RolloutLock::acquire(rollout_lock_path(&root), &run_id, "splitproof")
-        .context("acquire shared rollout lease")?;
     install_interrupt_handler()?;
     let mut summary = Summary::default();
     let mut context = Context {
@@ -68,17 +75,16 @@ pub fn execute(options: Options) -> Result<Exit> {
     for stage in stages::manifest(options.level, options.strict) {
         context.stage = stage.id;
         println!("== {} ==", stage.id.name());
-        let outcome = match (stage.run)(&mut context) {
-            Ok(outcome) => outcome,
-            Err(error) if interrupted() => {
+        let result = (stage.run)(&mut context);
+        let outcome = stage_outcome(stage.id, result, |message| {
+            eprintln!("verifyctl: {message}");
+            if let Err(error) = context.note(message) {
                 eprintln!(
-                    "verifyctl: stage {} errored after interruption: {error:#}",
+                    "verifyctl: could not append {} stage error log: {error:#}",
                     stage.id.name()
                 );
-                Outcome::Fail
             }
-            Err(error) => return Err(error),
-        };
+        });
         println!("  {outcome}");
         summary.push(StageResult {
             id: stage.id,
@@ -96,6 +102,26 @@ pub fn execute(options: Options) -> Result<Exit> {
     } else {
         Exit::Green
     })
+}
+
+fn stage_outcome(
+    id: crate::model::StageId,
+    result: Result<Outcome>,
+    report: impl FnOnce(&str),
+) -> Outcome {
+    match result {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            let suffix = if interrupted() {
+                " after interruption"
+            } else {
+                ""
+            };
+            let message = format!("stage {} errored{suffix}: {error:#}", id.name());
+            report(&message);
+            Outcome::Fail
+        }
+    }
 }
 
 pub struct Context<'a> {
@@ -429,6 +455,19 @@ fn install_interrupt_handler() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stage_error_is_a_logged_failure_outcome() {
+        let mut reported = String::new();
+        let outcome = stage_outcome(
+            crate::model::StageId::PublicApi,
+            Err(anyhow::anyhow!("fixture stage error")),
+            |message| reported.push_str(message),
+        );
+        assert_eq!(outcome, Outcome::Fail);
+        assert!(reported.contains("stage public-api errored"));
+        assert!(reported.contains("fixture stage error"));
+    }
 
     #[test]
     fn path_lookup_uses_fake_executable() {

@@ -2,10 +2,13 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 #[cfg(windows)]
 use processctl::{OutputDestination, OwnedChild, ProcessGroupPolicy, ShutdownPolicy, SpawnSpec};
+
+static VERIFY_RUN_LOCK: Mutex<()> = Mutex::new(());
 
 fn fixture() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_verifyctl-fixture"))
@@ -69,6 +72,7 @@ impl Drop for FakeRun {
 
 #[test]
 fn fake_path_covers_outcomes_audit_install_lease_and_summary_exits() {
+    let _serial = VERIFY_RUN_LOCK.lock().unwrap();
     let pass = FakeRun::new("pass", true);
     let output = pass.command(&[]).output().unwrap();
     assert_exit(&output, 0);
@@ -133,6 +137,34 @@ fn fake_path_covers_outcomes_audit_install_lease_and_summary_exits() {
         .unwrap();
     assert_exit(&output, 1);
 
+    let advisory = FakeRun::new("advisory-fail", true);
+    let output = advisory
+        .command(&["--all"])
+        .env("RUSTFLAGS", "advisory-fail")
+        .output()
+        .unwrap();
+    assert_exit(&output, 0);
+    let advisory_stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(advisory_stdout.contains("public-api           | FAIL"));
+    assert!(advisory_stdout.contains("topiccheck           | PASS"));
+
+    let strict_advisory = FakeRun::new("strict-advisory-fail", true);
+    let output = strict_advisory
+        .command(&["--strict"])
+        .env("RUSTFLAGS", "advisory-fail")
+        .output()
+        .unwrap();
+    assert_exit(&output, 1);
+
+    let slow = FakeRun::new("slow-fail", true);
+    let output = slow
+        .command(&["--slow"])
+        .env("RUSTFLAGS", "slow-fail")
+        .output()
+        .unwrap();
+    assert_exit(&output, 1);
+    assert!(String::from_utf8_lossy(&output.stdout).contains("mutants              | FAIL"));
+
     let cli = Command::new(verifyctl())
         .arg("--fast")
         .arg("--all")
@@ -141,6 +173,32 @@ fn fake_path_covers_outcomes_audit_install_lease_and_summary_exits() {
     assert_exit(&cli, 2);
 
     interruption_cleans_child_and_releases_lease();
+}
+
+#[test]
+fn verify_and_bless_actions_share_one_rollout_lock() {
+    let _serial = VERIFY_RUN_LOCK.lock().unwrap();
+    let owner = processctl::RolloutLock::acquire_exclusive(
+        processctl::rollout_lock_path(&workspace_root()),
+        "verifyctl-action-contention",
+    )
+    .unwrap();
+
+    for (label, args) in [
+        ("verify", &[][..]),
+        ("public-api-bless", &["--bless-public-api"][..]),
+        ("contract-golden-bless", &["--bless-contract-golden"][..]),
+    ] {
+        let run = FakeRun::new(label, true);
+        let output = run.command(args).output().unwrap();
+        assert_exit(&output, 2);
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("acquire shared rollout lease"),
+            "{label} did not report shared rollout contention"
+        );
+    }
+
+    drop(owner);
 }
 
 #[cfg(windows)]

@@ -109,14 +109,13 @@ fn ensure_tooling(ctx: &mut Context<'_>) -> Result<Tooling> {
     )
 }
 
-pub fn bless() -> Result<Exit> {
-    let root = super::workspace_root()?;
-    super::recover_pending_replacement(&root)?;
+pub fn bless(root: &Path) -> Result<Exit> {
+    super::recover_pending_replacement(root)?;
     std::fs::create_dir_all(root.join("run/verify"))?;
-    if !bless_tooling(&root)? {
+    if !bless_tooling(root)? {
         return Ok(Exit::Failed);
     }
-    let crates = discover(&root)?;
+    let crates = discover(root)?;
     let temp = super::temp_dir(&root.join("run/verify"), "public-api-bless")?;
     let version = Command::new("cargo")
         .current_dir(&root)
@@ -161,7 +160,7 @@ pub fn bless() -> Result<Exit> {
         proposals.push((PathBuf::from(BASELINE).join(format!("{orphan}.txt")), None));
     }
     proposals.sort_by(|a, b| a.0.cmp(&b.0));
-    let result = super::replace_recoverably(&root, &proposals);
+    let result = super::replace_recoverably(root, &proposals);
     let _ = std::fs::remove_dir_all(temp);
     result?;
     Ok(Exit::Green)

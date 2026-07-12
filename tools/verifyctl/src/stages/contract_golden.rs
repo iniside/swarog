@@ -3,7 +3,7 @@ use crate::{
     runner::{Context, Exit},
 };
 use anyhow::{Context as _, Result};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 const TARGET: &str = "docs/reference/contract-golden/contracts.txt";
 
@@ -14,9 +14,8 @@ pub fn run(ctx: &mut Context<'_>) -> Result<Outcome> {
     )
 }
 
-pub fn bless() -> Result<Exit> {
-    let root = super::workspace_root()?;
-    super::recover_pending_replacement(&root)?;
+pub fn bless(root: &Path) -> Result<Exit> {
+    super::recover_pending_replacement(root)?;
     let temp = super::temp_dir(&root, "contract-golden-bless")?;
     let proposed = temp.join("contracts.txt");
     let status = std::process::Command::new("cargo")
@@ -37,7 +36,7 @@ pub fn bless() -> Result<Exit> {
         let _ = std::fs::remove_dir_all(&temp);
         return Ok(Exit::Failed);
     }
-    let result = super::replace_recoverably(&root, &[(PathBuf::from(TARGET), Some(proposed))]);
+    let result = super::replace_recoverably(root, &[(PathBuf::from(TARGET), Some(proposed))]);
     let _ = std::fs::remove_dir_all(temp);
     result?;
     Ok(Exit::Green)
