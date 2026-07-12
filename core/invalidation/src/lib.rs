@@ -118,7 +118,21 @@ impl Invalidation {
         F: Fn() -> Fut + Send + Sync + 'static,
         Fut: Future<Output = anyhow::Result<()>> + Send + 'static,
     {
-        self.regs.lock().unwrap().push(Registration {
+        assert!(
+            !channel.is_empty(),
+            "invalidation channel must not be empty"
+        );
+        assert!(
+            !name.is_empty(),
+            "invalidation callback name must not be empty"
+        );
+
+        let mut regs = self.regs.lock().unwrap();
+        if regs.iter().any(|registration| registration.name == name) {
+            drop(regs);
+            panic!("duplicate invalidation callback name {name:?}");
+        }
+        regs.push(Registration {
             channel: channel.to_string(),
             name: name.to_string(),
             refresh: Arc::new(move || Box::pin(callback())),

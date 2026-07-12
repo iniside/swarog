@@ -4,6 +4,75 @@
 //! fan-out primitives directly.
 
 use super::*;
+
+fn register_noop(invalidation: &Invalidation, channel: &str, name: &str) {
+    invalidation.register(channel, name, || async { Ok(()) });
+}
+
+#[test]
+fn register_rejects_empty_channel() {
+    let invalidation = Invalidation::new();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        register_noop(&invalidation, "", "callback");
+    }));
+    assert!(result.is_err());
+    assert!(invalidation.snapshot().is_empty());
+}
+
+#[test]
+fn register_rejects_empty_name() {
+    let invalidation = Invalidation::new();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        register_noop(&invalidation, "channel", "");
+    }));
+    assert!(result.is_err());
+    assert!(invalidation.snapshot().is_empty());
+}
+
+#[test]
+fn register_rejects_duplicate_name_on_same_channel() {
+    let invalidation = Invalidation::new();
+    register_noop(&invalidation, "channel", "callback");
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        register_noop(&invalidation, "channel", "callback");
+    }));
+    assert!(result.is_err());
+    let registrations = invalidation.snapshot();
+    assert_eq!(registrations.len(), 1);
+    assert_eq!(registrations[0].channel, "channel");
+    assert_eq!(registrations[0].name, "callback");
+}
+
+#[test]
+fn register_rejects_duplicate_name_across_channels() {
+    let invalidation = Invalidation::new();
+    register_noop(&invalidation, "first", "callback");
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        register_noop(&invalidation, "second", "callback");
+    }));
+    assert!(result.is_err());
+    let registrations = invalidation.snapshot();
+    assert_eq!(registrations.len(), 1);
+    assert_eq!(registrations[0].channel, "first");
+}
+
+#[test]
+fn duplicate_panic_does_not_poison_registry_or_replace_first() {
+    let invalidation = Invalidation::new();
+    register_noop(&invalidation, "first", "kept");
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        register_noop(&invalidation, "other", "kept");
+    }));
+    assert!(result.is_err());
+
+    register_noop(&invalidation, "other", "unique");
+    let registrations = invalidation.snapshot();
+    assert_eq!(registrations.len(), 2);
+    assert_eq!(registrations[0].channel, "first");
+    assert_eq!(registrations[0].name, "kept");
+    assert_eq!(registrations[1].channel, "other");
+    assert_eq!(registrations[1].name, "unique");
+}
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use sqlx::PgPool;
