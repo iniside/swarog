@@ -344,6 +344,87 @@ async fn topic_without_contract_is_never_deleted() {
     cleanup(&pool, topic).await;
 }
 
+/// A failed topic must not short-circuit the pass or be hidden as success. A
+/// topic-specific DELETE trigger injects one failure while another contract is
+/// still swept; the aggregate error identifies the failed topic.
+#[tokio::test]
+async fn sweep_continues_after_topic_failure_and_returns_contextual_error() {
+    let Some(pool) = test_pool().await else { return };
+    let bad_topic = unique("ret.fail.bad");
+    let good_topic = unique("ret.fail.good");
+    insert_synthetic_event(&pool, bad_topic, "7001", unique_tie(), 40).await;
+    insert_synthetic_event(&pool, good_topic, "7002", unique_tie(), 40).await;
+    insert_contract(&pool, bad_topic, "min_retention", 30).await;
+    insert_contract(&pool, good_topic, "min_retention", 30).await;
+
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let function = format!("retention_test_fail_{}_{}", std::process::id(), stamp);
+    let trigger = format!("retention_test_trigger_{}_{}", std::process::id(), stamp);
+    sqlx::raw_sql(&format!(
+        "CREATE FUNCTION asyncevents.{function}() RETURNS trigger LANGUAGE plpgsql AS $$ \
+         BEGIN \
+           IF OLD.topic = TG_ARGV[0] THEN \
+             IF pg_backend_pid() = TG_ARGV[2]::int THEN \
+               RAISE EXCEPTION 'retention test failure for %', OLD.topic; \
+             END IF; \
+             RETURN NULL; \
+           END IF; \
+           IF OLD.topic = TG_ARGV[1] AND pg_backend_pid() <> TG_ARGV[2]::int THEN \
+             RETURN NULL; \
+           END IF; \
+           RETURN OLD; \
+         END $$"
+    ))
+    .execute(&pool)
+    .await
+    .unwrap();
+    // A one-connection pool confines the trigger fault to this test's sweep;
+    // concurrent retention tests use different PostgreSQL backend PIDs.
+    let dsn = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string());
+    let fault_pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&dsn)
+        .await
+        .unwrap();
+    let backend_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&fault_pool)
+        .await
+        .unwrap();
+    sqlx::raw_sql(&format!(
+        "CREATE TRIGGER {trigger} BEFORE DELETE ON asyncevents.events \
+         FOR EACH ROW EXECUTE FUNCTION asyncevents.{function}(\
+           '{bad_topic}', '{good_topic}', '{backend_pid}')"
+    ))
+    .execute(&pool)
+    .await
+    .unwrap();
+    let result = sweep(&fault_pool).await;
+    let bad_remaining = count_events(&pool, bad_topic).await;
+    let good_remaining = count_events(&pool, good_topic).await;
+    fault_pool.close().await;
+
+    // Remove the fault injection and all test data before asserting, so a failed
+    // assertion cannot poison later retention tests sharing this database.
+    sqlx::raw_sql(&format!("DROP TRIGGER {trigger} ON asyncevents.events"))
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::raw_sql(&format!("DROP FUNCTION asyncevents.{function}()"))
+        .execute(&pool)
+        .await
+        .unwrap();
+    cleanup(&pool, bad_topic).await;
+    cleanup(&pool, good_topic).await;
+
+    let err = result.expect_err("one failed topic must fail the whole retention pass").to_string();
+    assert!(err.contains(bad_topic), "aggregate error omitted bad topic: {err}");
+    assert_eq!(bad_remaining, 1, "the trigger must preserve the bad topic's event");
+    assert_eq!(good_remaining, 0, "a bad topic must not prevent later topic GC");
+}
+
 /// Regression: the GC floor must order candidate cursors by NUMERIC xid8, not by the
 /// text alias. A paused sub at producer_xid 999 and an active sub at 1000: numerically
 /// 999 < 1000, so the floor is the paused `(0,999,·)` cursor and GC deletes nothing

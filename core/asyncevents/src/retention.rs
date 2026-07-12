@@ -198,18 +198,25 @@ pub(crate) async fn sweep(pool: &PgPool) -> anyhow::Result<()> {
     .fetch_all(pool)
     .await?;
 
+    let mut failures = Vec::new();
     for row in &contracts {
         let topic: String = row.get("topic");
         let version: i32 = row.get("contract_version");
         let days: i32 = row.get("min_retention_days");
         if let Err(err) = gc_topic(pool, &topic, version, days).await {
-            sweep_errors().inc();
-            tracing::error!(%topic, version, %err, "asyncevents retention: topic GC failed");
+            failures.push(format!("topic {topic:?} version {version}: {err:#}"));
         }
     }
 
-    refresh_blocked_gauge(pool).await?;
-    Ok(())
+    if let Err(err) = refresh_blocked_gauge(pool).await {
+        failures.push(format!("blocked-age gauge refresh: {err:#}"));
+    }
+
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        anyhow::bail!("retention pass failed: {}", failures.join("; "))
+    }
 }
 
 /// Deletes retained-past-policy events for one `(topic, version)` in bounded
