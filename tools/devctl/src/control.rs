@@ -248,7 +248,15 @@ fn serve(endpoint: &Path, state: Arc<Mutex<FleetState>>, stop: &AtomicBool) -> R
         let mut file = unsafe { std::fs::File::from_raw_handle(pipe.cast()) };
         let mut bytes = [0u8; 4096];
         let read = file.read(&mut bytes)?;
-        file.write_all(&handle(&bytes[..read], &state, stop))?;
+        if read == 0 {
+            continue;
+        }
+        if file
+            .write_all(&handle(&bytes[..read], &state, stop))
+            .is_err()
+        {
+            continue;
+        }
         if stop.load(Ordering::SeqCst) {
             break;
         }

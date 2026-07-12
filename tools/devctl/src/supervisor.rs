@@ -155,7 +155,7 @@ fn supervise(
     result
 }
 
-fn service_specs(
+pub(crate) fn service_specs(
     topology: Topology,
     db: &str,
     cert: &Path,
