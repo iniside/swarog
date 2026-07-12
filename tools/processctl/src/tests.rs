@@ -325,6 +325,17 @@ fn private_stdin_bytes_are_delivered_without_argv_or_environment() {
     }
 }
 
+#[test]
+fn private_stdin_bytes_are_bounded_before_spawn() {
+    let dir = test_dir("stdin-bound");
+    let ready = dir.join("ready");
+    let error = OwnedChild::spawn_with_stdin_bytes(spec("stdin-bytes", &ready), &[0; 4097])
+        .err()
+        .expect("oversized stdin must fail");
+    assert!(error.to_string().contains("exceeds 4096 bytes"));
+    assert!(!ready.exists());
+}
+
 #[cfg(windows)]
 #[test]
 fn initial_state_publish_survives_process_crash_without_placeholder() {

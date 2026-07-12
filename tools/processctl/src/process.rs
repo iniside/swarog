@@ -189,6 +189,15 @@ impl OwnedChild {
     pub fn spawn_with_stdin_bytes(spec: SpawnSpec, bytes: &[u8]) -> Result<Self, ProcessError> {
         #[cfg(any(windows, target_os = "linux"))]
         {
+            if bytes.len() > 4096 {
+                return Err(ProcessError::Io {
+                    operation: "validate child stdin",
+                    source: std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "private child stdin exceeds 4096 bytes",
+                    ),
+                });
+            }
             let (input, mut writer) = private_stdin_pipe()?;
             let (inner, identity) = crate::platform::spawn(&spec, Some(input))?;
             let mut child = Self {

@@ -247,12 +247,14 @@ fn build(root: &Path, topology: Topology, services: &[ServiceSpec]) -> Result<()
         args.extend([OsString::from("-p"), OsString::from(package)]);
     }
     println!("devctl: building {} topology", topology.name());
+    let environment = build_environment();
+    let cargo = executable_on_path("cargo", &environment)?;
     run_transient(
         SpawnSpec {
             label: "devctl-cargo-build".into(),
-            executable: executable_on_path("cargo", &build_environment())?,
+            executable: cargo,
             args,
-            env: os_env(build_environment()),
+            env: os_env(environment),
             cwd: root.into(),
             stdout: OutputDestination::Inherit,
             stderr: OutputDestination::Inherit,
