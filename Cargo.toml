@@ -17,6 +17,10 @@ members = [
     # LISTEN/NOTIFY re-runs replica-local cache refresh callbacks. Freshness, not delivery.
     "core/invalidation",
     "core/remote",
+    # Convention-conformance contract types (std-only): Convention/Entry/Stance/
+    # Fixture declared by every module's `conformance::entry()` and executed by
+    # the `conformancecheck` harness (tools/conformance). Silence = fail.
+    "core/conformance",
     # Cross-cutting HTTP infra (Go's metrics/): a PRIVATE Prometheus registry + the
     # /metrics scrape, mounted by core/app in every module-hosting process (Step 12).
     "core/metrics",
@@ -222,6 +226,7 @@ app = { path = "core/app" }
 asyncevents = { path = "core/asyncevents" }
 invalidation = { path = "core/invalidation" }
 remote = { path = "core/remote" }
+conformance = { path = "core/conformance" }
 metrics = { path = "core/metrics" }
 httpmw = { path = "core/httpmw" }
 
