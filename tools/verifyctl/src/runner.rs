@@ -237,11 +237,13 @@ impl Context<'_> {
         let stdout = self.command_log("splitproof", "out");
         let stderr = self.command_log("splitproof", "err");
         let cleanup = self.command_log("splitproof", "cleanup");
+        let mut environment = self.environment.splitproof.clone();
+        environment.insert("SPLITPROOF_SKIP_BUILD".into(), "1".into());
         let spec = SpawnSpec {
             label: "verify-splitproof".into(),
             executable,
             args: Vec::new(),
-            env: os_environment(&self.environment.splitproof),
+            env: os_environment(&environment),
             cwd: self.root.clone(),
             stdout: OutputDestination::File(stdout),
             stderr: OutputDestination::File(stderr),

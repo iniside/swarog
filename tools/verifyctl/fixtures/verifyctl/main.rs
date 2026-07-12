@@ -125,6 +125,10 @@ fn splitproof() -> ExitCode {
             return ExitCode::FAILURE;
         }
     }
+    record(&format!(
+        "splitproof skip-build {}",
+        std::env::var("SPLITPROOF_SKIP_BUILD").unwrap_or_else(|_| "missing".into())
+    ));
     ExitCode::SUCCESS
 }
 
