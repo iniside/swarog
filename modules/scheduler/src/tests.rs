@@ -353,10 +353,12 @@ async fn fires_again_after_interval() {
 
 /// The 4b hang bound, end to end against the live DB: a competing row lock wedges
 /// `fire`'s `UPDATE`, and the session `statement_timeout` must make the fire ERROR
-/// (SQLSTATE 57014) instead of stalling forever — with the future never dropped, so
-/// the advisory unlock still runs (lock NOT leaked to another session), the session
-/// timeout is RESET before the connection re-pools, and the same pool fires cleanly
-/// once unblocked.
+/// (SQLSTATE 57014) instead of stalling forever — with the future never dropped on
+/// this path, so the explicit advisory unlock still runs (lock immediately free to a
+/// different session, no polling needed), and a subsequent fire from the same pool's
+/// connect options works cleanly once unblocked. (`fire` no longer touches a pooled
+/// session at all — each fire is a dedicated connection, closed on exit — so the old
+/// "RESET before re-pooling" assertion is gone by construction.)
 #[tokio::test(flavor = "multi_thread")]
 async fn wedged_fire_errors_via_statement_timeout_and_leaks_nothing() {
     let Some(pool) = test_pool().await else {
@@ -364,14 +366,6 @@ async fn wedged_fire_errors_via_statement_timeout_and_leaks_nothing() {
     };
     let name = unique_name(&pool).await;
     seed_schedule(&pool, &name, 3600).await; // due (epoch), won't re-arm mid-test
-
-    // A 1-connection pool for the fire, so the post-mortem RESET assertion below
-    // deterministically observes the SAME session the wedged fire used.
-    let fire_pool = sqlx::postgres::PgPoolOptions::new()
-        .max_connections(1)
-        .connect(&dsn())
-        .await
-        .expect("connect 1-conn fire pool");
 
     // The wedge: a competing session holds the schedule row FOR UPDATE in an open tx,
     // so fire's `UPDATE ... SET last_fired` blocks until the statement_timeout cancels it.
@@ -385,7 +379,7 @@ async fn wedged_fire_errors_via_statement_timeout_and_leaks_nothing() {
 
     let (bus, ft) = bus_with_fake();
     let started = std::time::Instant::now();
-    let err = fire(&fire_pool, &bus, &name, Duration::from_millis(500))
+    let err = fire(&pool, &bus, &name, Duration::from_millis(500))
         .await
         .expect_err("wedged fire must ERROR via statement_timeout, not stall");
     assert!(
@@ -404,8 +398,8 @@ async fn wedged_fire_errors_via_statement_timeout_and_leaks_nothing() {
     );
     assert_eq!(ft.count(&name), 0, "a timed-out fire must not emit");
 
-    // The advisory lock was NOT leaked: a DIFFERENT session can take it now (a leaked
-    // session lock on the pooled connection would make this try-lock return false).
+    // The advisory lock was NOT leaked: the error path ran the explicit unlock before
+    // `fire` returned, so a DIFFERENT session can take the key immediately.
     let key = lock_key(&name);
     let mut probe = PgConnection::connect(&dsn()).await.expect("connect probe");
     let free: bool = sqlx::query_scalar("SELECT pg_try_advisory_lock($1)")
@@ -423,21 +417,10 @@ async fn wedged_fire_errors_via_statement_timeout_and_leaks_nothing() {
         .await
         .expect("probe unlock");
 
-    // The session statement_timeout was RESET before the connection re-pooled
-    // (deterministic: the pool has exactly one connection).
-    let (timeout,): (String,) = sqlx::query_as("SHOW statement_timeout")
-        .fetch_one(&fire_pool)
-        .await
-        .expect("SHOW statement_timeout");
-    assert_eq!(
-        timeout, "0",
-        "tick statement_timeout leaked into the pooled connection"
-    );
-
-    // Release the wedge: the SAME pool/session now fires cleanly — nothing about the
-    // error path poisoned the loop's ability to keep running.
+    // Release the wedge: a fresh fire now succeeds — nothing about the error path
+    // poisoned the schedule or the pool the connect options come from.
     btx.rollback().await.expect("release competing lock");
-    fire(&fire_pool, &bus, &name, TICK_DEADLINE)
+    fire(&pool, &bus, &name, TICK_DEADLINE)
         .await
         .expect("fire after unblock");
     assert_eq!(ft.count(&name), 1, "after unblock want exactly 1 durable emit");
@@ -514,5 +497,161 @@ async fn wedged_tick_flips_scheduler_readyz_and_recovers() {
 
     stop_tx.send(true).expect("signal stop");
     task.await.expect("loop task join");
+    cleanup(&pool, &name).await;
+}
+
+/// Probes whether the advisory `key` is currently free from an INDEPENDENT session:
+/// try-lock and (if taken) immediately release, so the probe itself never holds the
+/// key across iterations.
+async fn advisory_key_free(probe: &mut PgConnection, key: i64) -> bool {
+    let free: bool = sqlx::query_scalar("SELECT pg_try_advisory_lock($1)")
+        .bind(key)
+        .fetch_one(&mut *probe)
+        .await
+        .expect("probe try-lock");
+    if free {
+        sqlx::query("SELECT pg_advisory_unlock($1)")
+            .bind(key)
+            .execute(&mut *probe)
+            .await
+            .expect("probe unlock");
+    }
+    free
+}
+
+/// Aggregate tick budget: with the tick deadline already in the past, every due
+/// schedule is SKIPPED — no emit, `last_fired` unmoved (still due next tick) — and the
+/// tick reports `Err` so the [`Liveness`] stamp is withheld. Drives `tick` directly
+/// with an exhausted deadline (the deadline is a parameter for exactly this test).
+#[tokio::test(flavor = "multi_thread")]
+async fn exhausted_tick_budget_skips_remaining_schedules() {
+    let Some(pool) = test_pool().await else {
+        return;
+    };
+    let name = unique_name(&pool).await;
+    seed_schedule(&pool, &name, 3600).await; // due (epoch)
+
+    let (bus, ft) = bus_with_fake();
+    let (_stop_tx, stop_rx) = watch::channel(false);
+    // Already-exhausted aggregate deadline; the due-scan itself keeps a healthy budget.
+    let exhausted = Instant::now() - Duration::from_secs(1);
+    let err = tick(&pool, &bus, TICK_DEADLINE, exhausted, &stop_rx)
+        .await
+        .expect_err("an exhausted tick budget must report the tick as errored");
+    assert!(
+        err.to_string().contains("fire(s) failed"),
+        "unexpected tick error: {err:#}"
+    );
+    assert_eq!(ft.count(&name), 0, "a budget-skipped schedule must not emit");
+
+    // `last_fired` never moved — the schedule is still due for the next tick.
+    let due = due_schedules(&pool, TICK_DEADLINE).await.unwrap();
+    assert!(
+        due.contains(&name),
+        "budget-skipped schedule {name:?} must remain due for the next tick"
+    );
+
+    cleanup(&pool, &name).await;
+}
+
+/// Shutdown under a wedged fire: the loop is stuck mid-fire (competing row lock, long
+/// tick deadline), so the stop signal cannot be observed at a schedule boundary —
+/// [`Scheduler::stop_tasks`] must return within [`STOP_GRACE`] (plus slack) by ABORTING
+/// the loop, and the abort must NOT strand the schedule's advisory lock: the dedicated
+/// per-fire connection dies with the dropped future, the session closes, and Postgres
+/// releases the lock. The release is asynchronous (the server has to notice the
+/// disconnect), so the freed-lock assertion POLLS instead of asserting immediately.
+#[tokio::test(flavor = "multi_thread")]
+async fn stop_aborts_wedged_fire_within_grace_and_releases_the_lock() {
+    let Some(pool) = test_pool().await else {
+        return;
+    };
+    let name = unique_name(&pool).await;
+    seed_schedule(&pool, &name, 1).await; // stays due while the wedge holds
+
+    // The wedge: a competing row lock blocks fire's UPDATE well past STOP_GRACE
+    // (the 120s tick deadline guarantees the statement_timeout never fires first).
+    let mut blocker = PgConnection::connect(&dsn()).await.expect("connect blocker");
+    let mut btx = blocker.begin().await.expect("open blocker tx");
+    sqlx::query("SELECT 1 FROM scheduler.schedules WHERE name = $1 FOR UPDATE")
+        .bind(&name)
+        .fetch_one(&mut *btx)
+        .await
+        .expect("take competing row lock");
+
+    let (bus, ft) = bus_with_fake();
+    let sched = Scheduler::new();
+    let (stop_tx, stop_rx) = watch::channel(false);
+    let cfg = LoopCfg {
+        tick_interval: Duration::from_millis(50),
+        tick_deadline: Duration::from_secs(120),
+    };
+    let task = tokio::spawn(run_loop(
+        pool.clone(),
+        bus.clone(),
+        sched.liveness.clone(),
+        cfg,
+        stop_rx,
+    ));
+    *sched.stop_tx.lock().unwrap() = Some(stop_tx);
+    sched.tasks.lock().unwrap().push(task);
+
+    // Wait until the fire actually holds the advisory lock (i.e. it is wedged INSIDE
+    // the guarded section) — only then is stop() genuinely racing a stuck fire.
+    let key = lock_key(&name);
+    let mut probe = PgConnection::connect(&dsn()).await.expect("connect probe");
+    let wedged = {
+        let started = std::time::Instant::now();
+        loop {
+            if !advisory_key_free(&mut probe, key).await {
+                break true;
+            }
+            if started.elapsed() > Duration::from_secs(20) {
+                break false;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    };
+    assert!(wedged, "the loop never wedged inside a lock-holding fire");
+
+    // stop() must resolve within the grace even though the fire cannot finish
+    // (this is the exact hang the round-4 finding named — a bare JoinHandle.await
+    // here used to outwait the app-level MODULE_STOP_GRACE_MS and get detached).
+    sched.liveness.set_stopping();
+    let started = std::time::Instant::now();
+    sched.stop_tasks().await;
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < STOP_GRACE + Duration::from_secs(2),
+        "stop_tasks took {elapsed:?} — the abort fallback did not bound shutdown"
+    );
+
+    // The abort dropped the fire's dedicated connection, closing its socket. A backend
+    // BLOCKED inside a statement does not notice a client disconnect until the
+    // statement resolves (in production the fire's own statement_timeout bounds that
+    // window; here the competing row lock is the wedge) — so release the wedge first,
+    // then POLL: the backend's UPDATE unblocks, it notices the dead client, terminates,
+    // rolls back the in-flight tx (no last_fired bump, no emit — exactly-once holds),
+    // and releases the session advisory lock.
+    btx.rollback().await.expect("release competing lock");
+    let freed = {
+        let started = std::time::Instant::now();
+        loop {
+            if advisory_key_free(&mut probe, key).await {
+                break true;
+            }
+            if started.elapsed() > Duration::from_secs(15) {
+                break false;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    };
+    assert!(
+        freed,
+        "advisory lock for {name:?} still held after the aborted fire's session should have closed"
+    );
+    // The aborted fire's tx died with its session: no durable emit ever landed.
+    assert_eq!(ft.count(&name), 0, "an aborted fire must not emit");
+
     cleanup(&pool, &name).await;
 }

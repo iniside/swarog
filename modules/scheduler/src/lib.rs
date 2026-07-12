@@ -15,45 +15,59 @@
 //! Every horizontal replica scans the same `scheduler.schedules`, so two could see the
 //! same schedule "due" in one window. [`fire`] serializes them per-schedule with a
 //! Postgres SESSION-level `pg_try_advisory_lock` keyed by an FNV-1a hash of the name,
-//! taken on ONE DEDICATED pooled connection (a session lock is held only by the
+//! taken on ONE DEDICATED, per-fire connection (a session lock is held only by the
 //! connection that took it, and the tx that relies on it must run on that same session).
 //! Under the lock it RE-CHECKS `still_due` (a replica that held the lock just before us
 //! may already have fired), then bumps `last_fired` and `emit_tx`s `scheduler.fired`
 //! in ONE tx, COMMITs, and only THEN unlocks — so the next winner always observes the
 //! moved `last_fired`.
 //!
-//! ## sqlx connection / lock / cancellation mechanics (Go NOTE #10)
-//! - The advisory lock, the re-check, the tx, and the unlock ALL run on the SAME
-//!   `PoolConnection` (`pool.acquire()`), because the lock is connection-scoped.
-//! - The tx is opened with `Connection::begin(&mut conn)` (borrows the connection), so
-//!   after `tx.commit()` the borrow ends and the SAME connection performs the unlock.
-//! - The unlock MUST run even on an error path. A dropped `PoolConnection` returns to
-//!   the pool WITHOUT dropping its session advisory locks, so [`fire`] captures the
-//!   guarded work's `Result`, ALWAYS runs `pg_advisory_unlock` on the connection, then
-//!   propagates — the Rust analogue of Go's `defer pg_advisory_unlock`. On an unlock
-//!   FAILURE it `detach()`+`close()`s the physical connection so PG releases the lock
-//!   server-side rather than stranding it on a pooled connection.
-//! - Cancellation safety: [`run_loop`] runs `tick` (hence every `fire`) OUTSIDE the
-//!   stop-vs-tick `select!`, so a shutdown signal is only ever observed BETWEEN fires,
-//!   never mid-fire. `stop` sends the signal and AWAITS the loop task, so the in-flight
-//!   tick (with its unlock) always completes — no `fire` future is ever dropped
-//!   mid-`await`. This is why no `Drop`-guard/`tokio::spawn` unlock is needed: the loop
-//!   structure guarantees the inline unlock always executes.
+//! ## Dedicated per-fire connections (round-4 remediation; supersedes Go NOTE #10)
+//! [`fire`] opens its OWN `PgConnection` from the shared pool's connect options
+//! (`PgConnection::connect_with(pool.connect_options())` — the module has no DSN)
+//! rather than checking a `PoolConnection` out of the pool; asyncevents' dedicated
+//! delivery backends are the precedent. The lock, the re-check, the tx, and the unlock
+//! all run on that one session, and the connection is CLOSED when the fire ends —
+//! nothing is ever returned to a shared pool, so no session state (advisory lock or
+//! `statement_timeout`) can leak into it.
 //!
-//! ## Bounding a wedged DB, WITHOUT dropping the fire future (remediation 4b/B2)
-//! A `tokio::time::timeout` around `tick` is FORBIDDEN here: cancelling the future
-//! mid-[`fire`] would drop the connection between `pg_try_advisory_lock` and the
-//! unlock, and a dropped `PoolConnection` returns to the pool STILL HOLDING its
-//! session advisory lock — that schedule then never fires again on any replica.
-//! Instead the bound lives at the DB layer: [`fire`] sets a session-scoped
-//! `statement_timeout` ([`TICK_DEADLINE`]) on its dedicated connection (and `RESET`s
-//! it before the connection returns to the shared pool; a failed `RESET` closes the
-//! physical connection), and [`due_schedules`] uses `SET LOCAL` inside its own tx.
-//! A wedged statement then ERRORS through the existing error arms — the future is
-//! never dropped, so the unlock choreography above still always runs. Loop health is
-//! a [`Liveness`] probe folded into `/readyz` as the `"scheduler"` check: the task
-//! dying (panic caught by the supervision wrapper in `start`) flips `dead`, and "no
-//! fully-healthy tick in [`TICK_STALL_MAX`]" flags a wedge/error loop that never exits.
+//! The payoff is ABORT-SAFETY. Historically, any timeout/abort that could drop a fire
+//! future mid-`await` was FORBIDDEN here: a dropped `PoolConnection` returns to the
+//! pool STILL HOLDING its session advisory lock, silently poisoning a pooled session —
+//! that schedule then never fires again on any replica. That hazard is specific to
+//! POOLED connections and is gone by construction: dropping the fire future drops the
+//! dedicated connection, which closes the SOCKET, and Postgres releases the session's
+//! advisory lock and rolls back its in-flight tx when it notices the disconnect.
+//! Exactly-once still holds under an abort because the `last_fired` bump and the
+//! durable emit share the dying session's transaction — they commit together or roll
+//! back together, and the released lock lets another replica (or the next tick)
+//! re-check and fire. The explicit unlock still runs on the normal paths (deterministic
+//! release, commit-before-unlock ordering preserved); the session close is the backstop
+//! for unlock failures and aborts.
+//!
+//! ## Bounding a wedged DB (three layered bounds)
+//! - **Session acquisition**: [`due_schedules`]' pool checkout and [`fire`]'s dedicated
+//!   connect are wrapped in `tokio::time::timeout(`[`ACQUIRE_DEADLINE`]`, …)` —
+//!   dropping a PENDING acquire/connect carries no session state, so cancelling it is
+//!   always safe.
+//! - **In-flight statements**, at the DB layer: each tick computes ONE aggregate
+//!   deadline ([`TICK_DEADLINE`]) and every [`fire`] sets a session-scoped
+//!   `statement_timeout` of the REMAINING tick budget — N due schedules share one
+//!   budget instead of N×30s. When the budget is exhausted, the remaining due schedules
+//!   are SKIPPED for this tick (logged, tick counted as errored; the next tick re-reads
+//!   due schedules) rather than attempted with a floored timeout. A wedged statement
+//!   ERRORS through the existing error arms — the future is not dropped on this path.
+//! - **Shutdown**: [`run_loop`]'s `select!` races only the stop signal against the
+//!   ticker, and `tick` re-checks the signal between fires, so a stop is normally
+//!   observed at a schedule boundary with every unlock run inline. If the loop is
+//!   wedged mid-fire past [`STOP_GRACE`], `stop` ABORTS it — safe per the
+//!   dedicated-connection design above — so this module resolves before the app-level
+//!   `MODULE_STOP_GRACE_MS` abandons the stop future.
+//!
+//! Loop health is a [`Liveness`] probe folded into `/readyz` as the `"scheduler"`
+//! check: the task dying (panic caught by the supervision wrapper in `start`) flips
+//! `dead`, and "no fully-healthy tick in [`TICK_STALL_MAX`]" flags a wedge/error loop
+//! that never exits.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -63,8 +77,7 @@ use async_trait::async_trait;
 use bus::{AnyTx, Bus};
 use futures::FutureExt;
 use lifecycle::{Context, Module};
-use sqlx::pool::PoolConnection;
-use sqlx::{Connection, PgConnection, PgPool, Postgres};
+use sqlx::{Connection, PgConnection, PgPool};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
@@ -79,6 +92,19 @@ const TICK_INTERVAL: Duration = Duration::from_secs(1);
 /// (lost lock holder, stuck backend). See the module docs on why this is a DB-layer
 /// bound and never a future-dropping `tokio::time::timeout`.
 const TICK_DEADLINE: Duration = Duration::from_secs(30);
+
+/// Bound on OBTAINING a DB session — [`due_schedules`]' pool checkout and [`fire`]'s
+/// dedicated connect. Dropping a pending acquire/connect carries no session state
+/// (no lock, no open tx), so a cancelling `tokio::time::timeout` is safe here, unlike
+/// around in-flight fire work (which the session `statement_timeout` bounds instead).
+const ACQUIRE_DEADLINE: Duration = Duration::from_secs(5);
+
+/// How long `stop` waits for the emission loop to exit on its own before ABORTING it
+/// (mirrors `invalidation::Plane::stop`). Deliberately UNDER `core/app`'s 5s
+/// `MODULE_STOP_GRACE_MS` so this module's `stop` resolves before the lifecycle
+/// abandons (drops) the stop future and the task would be left detached. Abort safety
+/// is documented at [`Scheduler::stop_tasks`] and in the module docs.
+const STOP_GRACE: Duration = Duration::from_secs(4);
 
 /// `/readyz` flags the scheduler when no FULLY-healthy tick completed for this long
 /// (analogous to `core/app`'s `DELIVERY_STALL_MAX` for the asyncevents workers).
@@ -212,7 +238,16 @@ impl Liveness {
 /// statement_timeout` bounds a wedged scan and reverts automatically at tx end —
 /// nothing leaks to the shared pool.
 async fn due_schedules(pool: &PgPool, deadline: Duration) -> anyhow::Result<Vec<String>> {
-    let mut tx = pool.begin().await?;
+    // Bounded checkout: a starved/wedged pool must not stall the tick loop forever.
+    // Dropping the pending `begin` on elapse carries no session state — safe to cancel.
+    let mut tx = tokio::time::timeout(ACQUIRE_DEADLINE, pool.begin())
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "scheduler: due-scan pool checkout timed out after {}s",
+                ACQUIRE_DEADLINE.as_secs()
+            )
+        })??;
     // `SET` takes no bind parameters; the interpolated value is a plain integer (ms).
     sqlx::query(&format!(
         "SET LOCAL statement_timeout = {}",
@@ -225,14 +260,47 @@ async fn due_schedules(pool: &PgPool, deadline: Duration) -> anyhow::Result<Vec<
     Ok(rows.into_iter().map(|(n,)| n).collect())
 }
 
-/// Finds every due schedule and tries to fire each. A per-schedule failure is LOGGED
-/// and does NOT abort the others (Go's `tick`) — but any failure makes the whole tick
-/// report `Err`, so [`run_loop`] withholds the [`Liveness`] stamp and a persistently
-/// failing/wedging schedule surfaces on `/readyz` instead of staying silently broken.
-async fn tick(pool: &PgPool, bus: &Bus, deadline: Duration) -> anyhow::Result<()> {
+/// Finds every due schedule and tries to fire each within ONE aggregate budget: the
+/// caller computes `tick_deadline` once per tick and every [`fire`] receives only the
+/// REMAINING budget for its session `statement_timeout` — a tick of N schedules is
+/// bounded by `budget`, not N×`budget`. Once the budget is exhausted the remaining due
+/// schedules are SKIPPED for this tick (logged, counted as failures) instead of
+/// attempted with a floored timeout — no point burning a connect + advisory lock on a
+/// guaranteed statement-timeout error; the next tick re-reads due schedules. The stop
+/// signal is also honored BETWEEN fires, so an in-progress tick yields at the next
+/// schedule boundary (a controlled stop, not a failure). A per-schedule failure is
+/// LOGGED and does NOT abort the others (Go's `tick`) — but any failure/skip makes the
+/// whole tick report `Err`, so [`run_loop`] withholds the [`Liveness`] stamp and a
+/// persistently failing/wedging schedule surfaces on `/readyz` instead of staying
+/// silently broken. `tick_deadline` is a parameter (not computed here) so the
+/// budget-exhaustion path is directly testable.
+async fn tick(
+    pool: &PgPool,
+    bus: &Bus,
+    budget: Duration,
+    tick_deadline: Instant,
+    stop: &watch::Receiver<bool>,
+) -> anyhow::Result<()> {
     let mut failed = 0usize;
-    for name in due_schedules(pool, deadline).await? {
-        if let Err(e) = fire(pool, bus, &name, deadline).await {
+    for name in due_schedules(pool, budget).await? {
+        if *stop.borrow() {
+            tracing::info!(
+                schedule = %name,
+                "scheduler stopping; yielding the tick at this schedule boundary"
+            );
+            break;
+        }
+        let remaining = tick_deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            tracing::error!(
+                schedule = %name,
+                budget_secs = budget.as_secs(),
+                "scheduler tick budget exhausted; skipping this due schedule until the next tick"
+            );
+            failed += 1;
+            continue;
+        }
+        if let Err(e) = fire(pool, bus, &name, remaining).await {
             tracing::error!(schedule = %name, error = %e, "scheduler fire failed");
             failed += 1;
         }
@@ -243,40 +311,57 @@ async fn tick(pool: &PgPool, bus: &Bus, deadline: Duration) -> anyhow::Result<()
     Ok(())
 }
 
-/// RESETs the tick's session-scoped `statement_timeout` before `conn` returns to the
-/// SHARED pool (other modules' queries must never inherit the tick bound). If the
-/// `RESET` itself fails the session is unknown-state — detach + close the physical
-/// connection instead of pooling it.
-async fn reset_deadline_or_close(mut conn: PoolConnection<Postgres>) {
-    if let Err(e) = sqlx::query("RESET statement_timeout")
-        .execute(&mut *conn)
-        .await
-    {
-        tracing::warn!(
-            error = %e,
-            "scheduler: RESET statement_timeout failed; closing the connection so the pool never inherits the tick deadline"
-        );
-        let _ = conn.detach().close().await;
-    }
-}
-
 /// Emits `scheduler.fired` for one due schedule EXACTLY ONCE across horizontal replicas.
 /// See the module-level docs for the full connection/lock/cancellation rationale.
 ///
-/// Every statement below runs under a session-scoped `statement_timeout` of `deadline`
-/// (set right after acquire, `RESET` on every exit path): a wedged lock/re-check/
-/// update/emit ERRORS back through the caller's error arm WITHOUT the future being
-/// dropped, so the unlock below still always runs (B2 — the whole point; a cancelling
-/// timeout here would strand the session advisory lock in the pool).
+/// Runs on a DEDICATED, per-fire connection (opened from the shared pool's connect
+/// options, bounded by [`ACQUIRE_DEADLINE`]) — never a pooled one. If this future is
+/// dropped mid-flight (the loop abort in [`Scheduler::stop_tasks`]), the connection
+/// drops with it, the socket closes, and Postgres releases the session advisory lock
+/// and rolls back the in-flight tx server-side — nothing is ever returned to a shared
+/// pool, so no session state can leak. Every statement runs under a session
+/// `statement_timeout` of `deadline` (the tick's REMAINING budget), so a wedged
+/// lock/re-check/update/emit ERRORS back through the caller's error arm.
 async fn fire(pool: &PgPool, bus: &Bus, name: &str, deadline: Duration) -> anyhow::Result<()> {
     let key = lock_key(name);
 
-    // A DEDICATED pooled connection: the session-level advisory lock is held ONLY by the
-    // connection that took it, and the tx that relies on the lock must share that session
-    // — so every step below runs on `conn`.
-    let mut conn = pool.acquire().await?;
+    // The module has no DSN of its own — the ctx-provided pool's connect options are
+    // the sanctioned source (asyncevents' dedicated delivery backends are the precedent).
+    let mut conn = tokio::time::timeout(
+        ACQUIRE_DEADLINE,
+        PgConnection::connect_with(&*pool.connect_options()),
+    )
+    .await
+    .map_err(|_| {
+        anyhow::anyhow!(
+            "scheduler: dedicated fire connection timed out after {}s",
+            ACQUIRE_DEADLINE.as_secs()
+        )
+    })??;
 
-    // If this very first statement fails, `conn` is unmodified — safe to pool as-is.
+    let result = fire_on(&mut conn, bus, name, key, deadline).await;
+
+    // Graceful close on every non-abort path: ends the session immediately, which also
+    // releases the advisory lock should the explicit unlock in `fire_on` have failed.
+    // On the abort path this line never runs — the dropped connection closes the socket
+    // and the server releases the lock once it notices the disconnect.
+    let _ = conn.close().await;
+    result
+}
+
+/// The per-session body of [`fire`]: set the statement bound, take the per-schedule
+/// advisory lock, run the guarded work capturing its `Result`, then ALWAYS attempt the
+/// unlock on the same session before returning (Go's `defer unlock` — deterministic
+/// release on the common path, preserving commit-before-unlock ordering). An unlock
+/// failure is only logged: [`fire`] closes the session either way, which releases the
+/// lock server-side.
+async fn fire_on(
+    conn: &mut PgConnection,
+    bus: &Bus,
+    name: &str,
+    key: i64,
+    deadline: Duration,
+) -> anyhow::Result<()> {
     sqlx::query(&format!(
         "SET statement_timeout = {}",
         deadline.as_millis().max(1)
@@ -284,45 +369,27 @@ async fn fire(pool: &PgPool, bus: &Bus, name: &str, deadline: Duration) -> anyho
     .execute(&mut *conn)
     .await?;
 
-    let locked: bool = match sqlx::query_scalar("SELECT pg_try_advisory_lock($1)")
+    let locked: bool = sqlx::query_scalar("SELECT pg_try_advisory_lock($1)")
         .bind(key)
         .fetch_one(&mut *conn)
-        .await
-    {
-        Ok(l) => l,
-        Err(e) => {
-            // Errored (e.g. timed out) BEFORE acquiring — nothing to unlock.
-            reset_deadline_or_close(conn).await;
-            return Err(e.into());
-        }
-    };
+        .await?;
     if !locked {
         // Another replica holds this key (or a colliding one) and is firing now.
-        reset_deadline_or_close(conn).await;
         return Ok(());
     }
 
-    // The lock is now HELD on `conn`. Run the guarded work capturing its Result, then
-    // ALWAYS unlock on the same connection before returning (Go's `defer unlock`). On an
-    // unlock FAILURE, close the physical connection so PG releases the session lock
-    // rather than the connection returning to the pool still holding it (this also
-    // discards the session `statement_timeout` — no RESET needed on that path).
-    let result = fire_locked(&mut conn, bus, name).await;
+    let result = fire_locked(conn, bus, name).await;
 
     if let Err(e) = sqlx::query("SELECT pg_advisory_unlock($1)")
         .bind(key)
         .execute(&mut *conn)
         .await
     {
-        tracing::error!(
+        tracing::warn!(
             schedule = name, error = %e,
-            "scheduler advisory unlock failed; closing the connection so the lock is not stranded in the pool"
+            "scheduler advisory unlock failed; the session close in fire() releases the lock"
         );
-        let _ = conn.detach().close().await;
-        return result;
     }
-
-    reset_deadline_or_close(conn).await;
     result
 }
 
@@ -492,6 +559,42 @@ impl Scheduler {
             .expect("scheduler.register must run before init")
             .clone()
     }
+
+    /// Signals the loop and awaits its exit, bounded by [`STOP_GRACE`] per task
+    /// (mirrors `invalidation::Plane::stop`). On the graceful path the loop observes
+    /// the signal at the next schedule boundary (the tick loop re-checks it between
+    /// fires) and exits with every advisory unlock run inline. A loop still wedged
+    /// mid-fire past the grace is ABORTED — SAFE because every `fire` runs on a
+    /// dedicated, per-fire connection: dropping the fire future drops that connection,
+    /// the socket closes, and Postgres releases the session advisory lock and rolls
+    /// back the in-flight tx (the `last_fired` bump and the durable emit share that tx,
+    /// so exactly-once holds). Extracted from `Module::stop` (which only adds the
+    /// `set_stopping` bookkeeping) so the stuck-fire shutdown path is testable without
+    /// a `lifecycle::Context`.
+    async fn stop_tasks(&self) {
+        if let Some(tx) = self.stop_tx.lock().unwrap().take() {
+            let _ = tx.send(true);
+        }
+        let tasks = std::mem::take(&mut *self.tasks.lock().unwrap());
+        for mut t in tasks {
+            match tokio::time::timeout(STOP_GRACE, &mut t).await {
+                Ok(Ok(())) => {}
+                // The supervision wrapper catches tick panics, so a JoinError here
+                // means the wrapper itself died — never swallow it silently.
+                Ok(Err(e)) => {
+                    tracing::error!(error = %e, "scheduler emission loop task terminated abnormally");
+                }
+                Err(_) => {
+                    tracing::error!(
+                        grace_secs = STOP_GRACE.as_secs(),
+                        "scheduler emission loop did not exit within the stop grace; aborting it \
+                         (safe: fires run on dedicated connections — the advisory lock dies with the session)"
+                    );
+                    t.abort();
+                }
+            }
+        }
+    }
 }
 
 #[async_trait]
@@ -633,24 +736,14 @@ impl Module for Scheduler {
         Ok(())
     }
 
-    /// Signals the loop and AWAITS its exit (bounded by the caller). Because the loop
-    /// only observes the stop signal BETWEEN fires, awaiting it here lets any in-flight
-    /// tick finish — including its advisory unlock (Go NOTE #10 parity).
+    /// Signals the loop and awaits its exit, bounded by [`STOP_GRACE`] with an abort
+    /// fallback — see [`Scheduler::stop_tasks`] for the full choreography and why the
+    /// abort cannot strand an advisory lock.
     async fn stop(&self, _ctx: &Context) -> anyhow::Result<()> {
         // Before signaling, so the supervision wrapper reads a controlled exit and the
         // readiness probe never counts a stopping process as stalled.
         self.liveness.set_stopping();
-        if let Some(tx) = self.stop_tx.lock().unwrap().take() {
-            let _ = tx.send(true);
-        }
-        let tasks = std::mem::take(&mut *self.tasks.lock().unwrap());
-        for t in tasks {
-            // The supervision wrapper catches tick panics, so a JoinError here means
-            // the wrapper itself died (or was aborted) — never swallow it silently.
-            if let Err(e) = t.await {
-                tracing::error!(error = %e, "scheduler emission loop task terminated abnormally");
-            }
-        }
+        self.stop_tasks().await;
         Ok(())
     }
 }
@@ -664,13 +757,15 @@ struct LoopCfg {
 }
 
 /// Scans for due schedules every `cfg.tick_interval` until `stop` flips. Cancellation
-/// safety (Go NOTE #10): the `select!` races ONLY the stop signal against the ticker;
-/// the actual `tick` (hence every `fire`, with its advisory unlock) runs OUTSIDE the
-/// `select!`, so a stop is observed only BETWEEN fires — a `fire` future is never dropped
-/// mid-`await`, and its unlock always runs. `stop` awaits this task, so the in-flight
-/// tick completes before shutdown proceeds. A wedged DB statement inside `tick` is
-/// bounded by `cfg.tick_deadline` at the DB layer (see the module docs) and lands in
-/// the error arm below; only a FULLY-healthy tick refreshes the [`Liveness`] stamp.
+/// behavior: the `select!` races ONLY the stop signal against the ticker; the actual
+/// `tick` (hence every `fire`, with its advisory unlock) runs OUTSIDE the `select!`,
+/// and `tick` re-checks the signal between fires — so on the graceful path a stop is
+/// observed at a schedule boundary and every unlock runs inline. `stop` awaits this
+/// task bounded by [`STOP_GRACE`] and ABORTS it on elapse; the abort may drop a `fire`
+/// future mid-`await`, which is safe with dedicated per-fire connections (module docs).
+/// Each tick gets ONE aggregate deadline (`Instant::now() + cfg.tick_deadline`) that
+/// bounds all its fires at the DB layer; a wedged statement lands in the error arm
+/// below, and only a FULLY-healthy tick refreshes the [`Liveness`] stamp.
 async fn run_loop(
     pool: PgPool,
     bus: Arc<Bus>,
@@ -690,7 +785,8 @@ async fn run_loop(
         if *stop.borrow() {
             break;
         }
-        match tick(&pool, &bus, cfg.tick_deadline).await {
+        let tick_deadline = Instant::now() + cfg.tick_deadline;
+        match tick(&pool, &bus, cfg.tick_deadline, tick_deadline, &stop).await {
             Ok(()) => liveness.mark_tick_ok(),
             Err(e) => tracing::error!(error = %e, "scheduler tick failed"),
         }
