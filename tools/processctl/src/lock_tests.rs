@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use crate::lock::validate_credential;
-use crate::{LeaseError, RolloutLock};
+use crate::{rollout_lock_path, LeaseError, RolloutLock};
 
 static NEXT_DIR: AtomicU64 = AtomicU64::new(0);
 
@@ -17,6 +17,33 @@ fn concurrent_owner_is_rejected_and_release_allows_next_owner() {
     ));
     drop(owner);
     RolloutLock::acquire(&path, "run-2", "splitproof").unwrap();
+}
+
+#[test]
+fn devctl_exclusive_and_splitproof_lendable_contend_on_canonical_path() {
+    let dir = lock_path("cross-tool")
+        .parent()
+        .expect("lock fixture parent")
+        .to_path_buf();
+    let run = dir.join("run");
+    std::fs::create_dir_all(&run).unwrap();
+    let path = rollout_lock_path(&dir);
+    assert_eq!(path, run.join("rollout.lock"));
+
+    let exclusive = RolloutLock::acquire_exclusive(&path, "devctl-run").unwrap();
+    assert_eq!(exclusive.allowed_borrower_role(), None);
+    assert!(matches!(
+        RolloutLock::acquire(&path, "splitproof-run", "splitproof"),
+        Err(LeaseError::AlreadyOwned)
+    ));
+    drop(exclusive);
+
+    let lendable = RolloutLock::acquire(&path, "splitproof-run", "splitproof").unwrap();
+    assert_eq!(lendable.allowed_borrower_role(), Some("splitproof"));
+    assert!(matches!(
+        RolloutLock::acquire_exclusive(&path, "devctl-run"),
+        Err(LeaseError::AlreadyOwned)
+    ));
 }
 
 #[test]

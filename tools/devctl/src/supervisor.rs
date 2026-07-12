@@ -8,10 +8,10 @@ use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use processctl::{
-    build_environment, game_backend_fleet, observe_process_identity, runtime_environment,
-    FleetFlavor, FleetInputs, FleetState, FleetStatus, ManagedProcess, ManagedStatus,
-    OutputDestination, OwnedChild, ProcessGroupPolicy, RolloutLock, ServiceSpec, ShutdownPolicy,
-    SpawnSpec, StateStore,
+    build_environment, game_backend_fleet, observe_process_identity, rollout_lock_path,
+    runtime_environment, FleetFlavor, FleetInputs, FleetState, FleetStatus, ManagedProcess,
+    ManagedStatus, OutputDestination, OwnedChild, ProcessGroupPolicy, RolloutLock, ServiceSpec,
+    ShutdownPolicy, SpawnSpec, StateStore,
 };
 use rand::RngCore as _;
 
@@ -73,7 +73,7 @@ fn supervise(
     install_signal_handler()?;
     INTERRUPTED.store(false, Ordering::SeqCst);
     let run_id = run_id();
-    let _lease = RolloutLock::acquire(run_dir.join("rollout.lock"), &run_id, "verifyctl")
+    let _lease = RolloutLock::acquire_exclusive(rollout_lock_path(root), &run_id)
         .context("acquire rollout lock")?;
     let override_snapshot = immutable_overrides(overrides)?;
     let db_url = override_snapshot

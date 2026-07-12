@@ -14,6 +14,12 @@ use thiserror::Error;
 use crate::state::validate_identifier;
 use crate::{observe_process_identity, OwnedChild, ProcessIdentity, SpawnSpec};
 
+/// The single rollout lock shared by all workspace tools that compile, test,
+/// or supervise the game backend fleet.
+pub fn rollout_lock_path(workspace_root: &Path) -> PathBuf {
+    workspace_root.join("run").join("rollout.lock")
+}
+
 pub const ROLLOUT_LOCK_VERSION: u32 = 1;
 const MAX_CREDENTIAL_BYTES: u64 = 64 * 1024;
 const MAX_METADATA_BYTES: u64 = 64 * 1024;
@@ -36,7 +42,7 @@ struct LockMetadata {
     owner: ProcessIdentity,
     run_id: String,
     lease_started_unix_nanos: u64,
-    allowed_borrower_role: String,
+    allowed_borrower_role: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -56,6 +62,8 @@ pub enum LeaseError {
     AlreadyOwned,
     #[error("borrower credential was already issued")]
     BorrowerAlreadyIssued,
+    #[error("this rollout lease does not permit borrowing")]
+    BorrowingDisabled,
     #[error("borrower role mismatch: expected {expected}, received {received}")]
     WrongRole { expected: String, received: String },
     #[error("rollout lock owner is not live or no longer owns the advisory lock")]
@@ -105,18 +113,36 @@ pub struct BorrowedChild<'lease> {
 }
 
 impl RolloutLock {
+    pub fn acquire_exclusive(
+        path: impl Into<PathBuf>,
+        run_id: impl Into<String>,
+    ) -> Result<OwnedLease, LeaseError> {
+        Self::acquire_inner(path.into(), run_id.into(), None)
+    }
+
     pub fn acquire(
         path: impl Into<PathBuf>,
         run_id: impl Into<String>,
         allowed_borrower_role: impl Into<String>,
     ) -> Result<OwnedLease, LeaseError> {
-        let path = path.into();
-        let run_id = run_id.into();
-        let allowed_borrower_role = allowed_borrower_role.into();
+        Self::acquire_inner(
+            path.into(),
+            run_id.into(),
+            Some(allowed_borrower_role.into()),
+        )
+    }
+
+    fn acquire_inner(
+        path: PathBuf,
+        run_id: String,
+        allowed_borrower_role: Option<String>,
+    ) -> Result<OwnedLease, LeaseError> {
         validate_identifier("run id", &run_id)
             .map_err(|error| LeaseError::InvalidField(error.to_string()))?;
-        validate_identifier("borrower role", &allowed_borrower_role)
-            .map_err(|error| LeaseError::InvalidField(error.to_string()))?;
+        if let Some(role) = &allowed_borrower_role {
+            validate_identifier("borrower role", role)
+                .map_err(|error| LeaseError::InvalidField(error.to_string()))?;
+        }
         let parent = path.parent().ok_or_else(|| {
             LeaseError::InvalidField("lock path must have a parent directory".into())
         })?;
@@ -171,8 +197,8 @@ impl OwnedLease {
         &self.metadata.run_id
     }
 
-    pub fn allowed_borrower_role(&self) -> &str {
-        &self.metadata.allowed_borrower_role
+    pub fn allowed_borrower_role(&self) -> Option<&str> {
+        self.metadata.allowed_borrower_role.as_deref()
     }
 
     pub fn spawn_borrower<'lease>(
@@ -183,9 +209,12 @@ impl OwnedLease {
         if self.borrower_issued {
             return Err(LeaseError::BorrowerAlreadyIssued);
         }
-        if role != self.metadata.allowed_borrower_role {
+        let Some(expected_role) = self.metadata.allowed_borrower_role.as_deref() else {
+            return Err(LeaseError::BorrowingDisabled);
+        };
+        if role != expected_role {
             return Err(LeaseError::WrongRole {
-                expected: self.metadata.allowed_borrower_role.clone(),
+                expected: expected_role.to_string(),
                 received: role.to_string(),
             });
         }
@@ -524,9 +553,12 @@ pub(crate) fn validate_credential(
     if credential.version != ROLLOUT_LOCK_VERSION {
         return Err(LeaseError::UnsupportedVersion(credential.version));
     }
-    if credential.metadata.allowed_borrower_role != expected_role {
+    if credential.metadata.allowed_borrower_role.as_deref() != Some(expected_role) {
         return Err(LeaseError::WrongRole {
-            expected: credential.metadata.allowed_borrower_role,
+            expected: credential
+                .metadata
+                .allowed_borrower_role
+                .unwrap_or_else(|| "<borrowing-disabled>".into()),
             received: expected_role.to_string(),
         });
     }
