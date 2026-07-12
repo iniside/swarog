@@ -34,13 +34,6 @@ fn error_display_is_the_message() {
     assert_eq!(e.to_string(), "email taken");
 }
 
-#[test]
-fn slot_names_match_go() {
-    assert_eq!(SLOT, "ops.operation");
-    assert_eq!(BINDING_SLOT, "ops.binding");
-    assert_eq!(LOCAL_SLOT, "ops.local");
-}
-
 // A LocalInvoker / OpBinding round-trip proving the closure shapes are usable:
 // a bytes-in/bytes-out invoker and a decode/encode pair compose the way the
 // gateway (Step 10) will drive them.

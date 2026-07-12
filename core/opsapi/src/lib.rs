@@ -302,14 +302,14 @@ pub struct HttpBind {
 /// Contribution slot the gateway reads to build its route table (the [`Operation`]
 /// half). A module contributes `Operation`s here; the gateway reads them. Same
 /// multi-value seam as `adminapi`'s slot.
-pub const SLOT: &str = "ops.operation";
+pub const SLOT: contrib::Slot<Operation> = contrib::Slot::new("ops.operation");
 
 /// Contribution slot pairing each [`Operation`] with its HTTP↔wire translation
 /// ([`OpBinding`]). Contributed by the module in the SAME process as the operation.
-pub const BINDING_SLOT: &str = "ops.binding";
+pub const BINDING_SLOT: contrib::Slot<OpBinding> = contrib::Slot::new("ops.binding");
 
 /// Contribution slot for the gateway's in-process dispatch table ([`LocalOp`]).
-pub const LOCAL_SLOT: &str = "ops.local";
+pub const LOCAL_SLOT: contrib::Slot<LocalOp> = contrib::Slot::new("ops.local");
 
 /// Contribution slot the gateway reads to resolve a Remote op's peer edge address. A
 /// `remote::Stub` contributes one [`PeerAddr`] per provider it fronts; the gateway's
@@ -318,7 +318,7 @@ pub const LOCAL_SLOT: &str = "ops.local";
 /// composition root (`cmd/*` wires the stub with the address), the SAME slot idiom
 /// [`SLOT`]/`edge::EDGE_SLOT` use — the module stays topology-blind. Unread in a
 /// process with no gateway, the contributions sit inert.
-pub const PEER_SLOT: &str = "opsapi.peers";
+pub const PEER_SLOT: contrib::Slot<PeerAddr> = contrib::Slot::new("opsapi.peers");
 
 /// One provider's peer edge address, contributed by a `remote::Stub` into [`PEER_SLOT`].
 /// Transport-free: just the provider name and the address as an UNPARSED string — the

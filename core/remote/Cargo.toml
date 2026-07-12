@@ -15,6 +15,7 @@ publish = false
 # from `cmd/*`. This is the core-leaf rule (no api/ dep in dependencies OR
 # dev-dependencies, verified by `cargo tree -p remote`).
 [dependencies]
+contrib = { workspace = true }
 edge = { workspace = true }
 opsapi = { workspace = true }
 lifecycle = { workspace = true }

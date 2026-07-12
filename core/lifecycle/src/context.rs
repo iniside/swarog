@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use axum::Router;
 use bus::Bus;
-use contrib::Slots;
+use contrib::{Slot, Slots};
 use invalidation::Invalidation;
 use registry::Registry;
 use sqlx::PgPool;
@@ -105,15 +105,15 @@ impl Context {
         self.db.as_ref()
     }
 
-    /// Forwards to the slot registry: adds a value to a named slot. Unlike a
+    /// Forwards to the slot registry: adds a value to a typed slot. Unlike a
     /// service (one per name), a slot collects MANY contributors.
-    pub fn contribute<T: Any + Send + Sync>(&self, slot: impl Into<String>, v: T) {
+    pub fn contribute<T: Any + Send + Sync>(&self, slot: Slot<T>, v: T) {
         self.slots.contribute(slot, v);
     }
 
-    /// Forwards to the slot registry: everything contributed to a slot, downcast
-    /// to `T`, in registration order. Read lazily, after all modules have wired up.
-    pub fn contributions<T: Clone + 'static>(&self, slot: &str) -> Vec<T> {
+    /// Forwards to the slot registry: everything contributed to a typed slot, in
+    /// registration order. Read lazily, after all modules have wired up.
+    pub fn contributions<T: Clone + Send + Sync + 'static>(&self, slot: Slot<T>) -> Vec<T> {
         self.slots.contributions(slot)
     }
 

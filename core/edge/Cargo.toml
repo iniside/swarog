@@ -6,6 +6,7 @@ license.workspace = true
 publish = false
 
 [dependencies]
+contrib = { workspace = true }
 opsapi = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time", "io-util"] }
 tracing = { workspace = true }

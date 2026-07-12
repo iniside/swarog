@@ -22,7 +22,7 @@ use axum::Router;
 
 /// The contrib slot HTTP layers are contributed to (`ctx.contribute`) and `app::run`
 /// drains (`ctx.contributions::<HttpLayer>`).
-pub const LAYER_SLOT: &str = "app.http_layer";
+pub const LAYER_SLOT: contrib::Slot<HttpLayer> = contrib::Slot::new("app.http_layer");
 
 /// The wrapping closure: consumes the assembled router and returns it wrapped (typically
 /// one `Router::layer` call). `FnOnce` because axum layering consumes the router.

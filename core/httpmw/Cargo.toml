@@ -6,6 +6,7 @@ license.workspace = true
 publish = false
 
 [dependencies]
+contrib = { workspace = true }
 axum = { workspace = true }
 ipnet = { workspace = true }
 # tokio for the background idle-bucket eviction loop (spawn + interval) — Go ran a

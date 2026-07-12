@@ -78,7 +78,7 @@ pub type RemoteFactory = Box<dyn Fn(&Context, Arc<dyn Caller>) + Send + Sync>;
 
 /// The contrib slot [`RemoteBoot`] boot hooks are contributed to (by a factory in
 /// [`Stub::register`]) and each [`Stub`] drains in `start`.
-pub const BOOT_SLOT: &str = "remote.boot";
+pub const BOOT_SLOT: contrib::Slot<RemoteBoot> = contrib::Slot::new("remote.boot");
 
 /// A start-time async action bound to a provider, produced by a factory that needs a
 /// boot step the pure `register` swap cannot do (a `register` is synchronous + does no

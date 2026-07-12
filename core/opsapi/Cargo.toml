@@ -6,6 +6,7 @@ license.workspace = true
 publish = false
 
 [dependencies]
+contrib = { workspace = true }
 async-trait = { workspace = true }
 thiserror = { workspace = true }
 futures = { workspace = true }

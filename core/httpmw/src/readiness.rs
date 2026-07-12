@@ -14,7 +14,7 @@ use std::sync::Arc;
 /// The contrib slot `/readyz` reads (`ctx.contribute(READINESS_SLOT, ReadyCheck::new(…))`).
 /// Defined here — not in a module — so it is a stable, dependency-free name any module
 /// can target without an import cycle.
-pub const READINESS_SLOT: &str = "readiness.check";
+pub const READINESS_SLOT: contrib::Slot<ReadyCheck> = contrib::Slot::new("readiness.check");
 
 /// A boxed, `Send` future producing a readiness verdict.
 type CheckFuture = Pin<Box<dyn Future<Output = Result<(), String>> + Send>>;

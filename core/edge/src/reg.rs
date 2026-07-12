@@ -17,7 +17,7 @@ use crate::Server;
 
 /// The contrib slot edge registrations are contributed to (`ctx.contribute`) and
 /// `app::run` drains (`ctx.contributions::<EdgeReg>`).
-pub const EDGE_SLOT: &str = "edge.registration";
+pub const EDGE_SLOT: contrib::Slot<EdgeReg> = contrib::Slot::new("edge.registration");
 
 /// The registration closure: everything a module wants installed on the process's
 /// shared internal edge server (typically one `register_server` call per generated

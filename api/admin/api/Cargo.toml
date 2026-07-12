@@ -11,6 +11,7 @@ publish = false
 # Imports NO module and NO `edge` — the `#[rpc]` macro only emits the transport-free
 # surface + a metadata-callback macro here; the edge glue lives in `adminrpc`.
 [dependencies]
+contrib = { workspace = true }
 serde = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }

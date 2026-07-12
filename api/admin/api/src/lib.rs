@@ -26,7 +26,7 @@ use rpc_macro::rpc;
 use serde::{Deserialize, Serialize};
 
 /// The core contribution slot the admin portal reads (Go's `adminapi.Slot`).
-pub const SLOT: &str = "admin.item";
+pub const SLOT: contrib::Slot<Item> = contrib::Slot::new("admin.item");
 
 /// The admin fan-out capability EVERY provider module implements: returns the
 /// module's admin page ([`ItemData`]) so a REMOTE admin process can pull it over the
