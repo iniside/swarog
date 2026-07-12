@@ -1,7 +1,9 @@
 use super::cli::{parse, Command, Topology};
 use super::control::{self, ControlServer};
-use super::supervisor::service_specs;
-use processctl::{observe_process_identity, EnvironmentSnapshot, FleetState};
+use super::supervisor::{service_specs, wait_for_terminal};
+use processctl::{
+    observe_process_identity, EnvironmentSnapshot, FleetState, FleetStatus, StateStore,
+};
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
@@ -172,6 +174,45 @@ fn concurrent_control_clients_retry_pipe_busy() {
         assert!(thread.join().unwrap().is_ok());
     }
     drop(server);
+}
+
+#[cfg(windows)]
+#[test]
+fn down_waits_for_stopped_checkpoint_and_reports_failed_cleanup() {
+    let directory = std::env::temp_dir().join(format!(
+        "devctl-down-test-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&directory).unwrap();
+    let store = StateStore::new(directory.join("state.json"));
+    let supervisor = observe_process_identity(std::process::id()).unwrap();
+    let mut state = FleetState::new("down-test", "monolith").unwrap();
+    state.set_supervisor(supervisor.clone());
+    state.set_status(FleetStatus::Stopping);
+    store.write_atomic(&state).unwrap();
+
+    let writer_store = store.clone();
+    let mut stopped = state.clone();
+    stopped.set_status(FleetStatus::Stopped);
+    let writer = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(75));
+        writer_store.write_atomic(&stopped).unwrap();
+    });
+    assert!(wait_for_terminal(&store, &supervisor, Duration::from_secs(1)).is_ok());
+    writer.join().unwrap();
+
+    state.set_status(FleetStatus::Failed);
+    store.write_atomic(&state).unwrap();
+    assert!(
+        wait_for_terminal(&store, &supervisor, Duration::from_millis(100))
+            .unwrap_err()
+            .to_string()
+            .contains("shutdown failed")
+    );
 }
 
 #[cfg(windows)]

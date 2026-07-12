@@ -21,6 +21,7 @@ use crate::control::{self, ControlServer};
 const DEFAULT_DB: &str =
     "postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable";
 const HEALTH_TIMEOUT: Duration = Duration::from_secs(30);
+const DOWN_TIMEOUT: Duration = Duration::from_secs(130);
 const SHUTDOWN: ShutdownPolicy = ShutdownPolicy {
     graceful_timeout: Duration::from_secs(5),
     force_timeout: Duration::from_secs(5),
@@ -57,8 +58,54 @@ fn client_command(store: &StateStore, command: &str) -> Result<()> {
         .supervisor()
         .context("state has no supervisor identity")?;
     let message = control::request(endpoint, command, supervisor)?;
-    println!("{message}");
-    Ok(())
+    if command != "down" {
+        println!("{message}");
+        return Ok(());
+    }
+    wait_for_terminal(store, supervisor, DOWN_TIMEOUT)
+}
+
+pub(crate) fn wait_for_terminal(
+    store: &StateStore,
+    supervisor: &processctl::ProcessIdentity,
+    timeout: Duration,
+) -> Result<()> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let state = store
+            .load()?
+            .context("devctl state disappeared during shutdown")?;
+        match state.status() {
+            FleetStatus::Stopped => {
+                println!(
+                    "{} stopped ({} processes reaped)",
+                    state.topology(),
+                    state.processes().len()
+                );
+                return Ok(());
+            }
+            FleetStatus::Failed => {
+                let failed: Vec<_> = state
+                    .processes()
+                    .iter()
+                    .filter(|process| matches!(process.status(), ManagedStatus::Failed))
+                    .map(|process| process.label())
+                    .collect();
+                bail!(
+                    "{} shutdown failed; failed cleanup entries: {failed:?}",
+                    state.topology()
+                );
+            }
+            _ => {}
+        }
+        if observe_process_identity(supervisor.pid).ok().as_ref() != Some(supervisor) {
+            bail!("supervisor exited before publishing a terminal cleanup state");
+        }
+        if Instant::now() >= deadline {
+            bail!("timed out waiting {timeout:?} for shutdown cleanup");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
 
 fn supervise(
