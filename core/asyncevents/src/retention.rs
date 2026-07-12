@@ -83,7 +83,7 @@ pub(crate) fn sweep_errors() -> &'static IntCounter {
 /// readiness threshold from the same authoritative value. The env syntax is a
 /// single Go-style unit (`1h`/`30m`/`45s`/`500ms`) or bare seconds; unset uses
 /// [`DEFAULT_INTERVAL`]. Malformed values retain the historical default fallback;
-/// zero and overflowing values fail startup.
+/// zero, overflowing, and clock-unobservable thresholds fail startup.
 impl Config {
     pub(crate) fn from_env() -> anyhow::Result<Config> {
         Self::from_var_result(std::env::var("EVENTS_HOUSEKEEP_INTERVAL"))
@@ -122,10 +122,11 @@ impl Config {
                  retention staleness threshold overflowed"
             )
         })?;
-        if stall_after.as_millis() > u128::from(u64::MAX) {
+        if stall_after.as_millis() >= u128::from(u64::MAX - 1) {
             anyhow::bail!(
                 "EVENTS_HOUSEKEEP_INTERVAL={value:?} is too large: its 3x retention \
-                 staleness threshold does not fit the u64 millisecond liveness clock"
+                 staleness threshold must be less than u64::MAX - 1 milliseconds \
+                 so the capped liveness clock can exceed it"
             );
         }
         Ok(Config { interval, stall_after })

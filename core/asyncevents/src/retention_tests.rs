@@ -13,7 +13,8 @@ const DEFAULT_DSN: &str =
     "postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable";
 
 /// The sweep interval and readiness threshold are one checked configuration:
-/// malformed input falls back, while zero and every overflow class fail startup.
+/// malformed input falls back, while zero, overflow, and clock-unobservable
+/// thresholds fail startup.
 #[test]
 fn housekeep_config_is_strict_checked_and_authoritative() {
     let default = Config::from_value(None).unwrap();
@@ -47,12 +48,13 @@ fn housekeep_config_is_strict_checked_and_authoritative() {
     let err = Config::from_value(Some(&triple_overflow)).unwrap_err().to_string();
     assert!(err.contains("EVENTS_HOUSEKEEP_INTERVAL"), "{err}");
 
-    let max_clock_interval = u64::MAX / 3;
+    let first_unobservable_interval = u64::MAX / 3;
+    let max_clock_interval = first_unobservable_interval - 1;
     let max_clock = Config::from_value(Some(&format!("{max_clock_interval}ms"))).unwrap();
-    assert_eq!(max_clock.stall_after.as_millis(), u128::from(max_clock_interval) * 3);
-    let clock_overflow = format!("{}ms", max_clock_interval + 1);
-    let err = Config::from_value(Some(&clock_overflow)).unwrap_err().to_string();
-    assert!(err.contains("u64 millisecond liveness clock"), "{err}");
+    assert_eq!(max_clock.stall_after.as_millis(), u128::from(u64::MAX - 3));
+    let unobservable = format!("{first_unobservable_interval}ms");
+    let err = Config::from_value(Some(&unobservable)).unwrap_err().to_string();
+    assert!(err.contains("less than u64::MAX - 1 milliseconds"), "{err}");
 
     assert_eq!(
         Config::from_var_result(Err(std::env::VarError::NotPresent)).unwrap(),
