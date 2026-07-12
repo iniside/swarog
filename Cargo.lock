@@ -17,7 +17,6 @@ dependencies = [
  "axum",
  "base64",
  "bus",
- "conformance",
  "edge",
  "futures",
  "jsonwebtoken",
@@ -101,7 +100,6 @@ dependencies = [
  "axum-extra",
  "base64",
  "bus",
- "conformance",
  "contrib",
  "futures",
  "httpmw",
@@ -211,7 +209,6 @@ dependencies = [
  "apikeysapi",
  "apikeysrpc",
  "async-trait",
- "conformance",
  "edge",
  "lifecycle",
  "opsapi",
@@ -496,7 +493,6 @@ dependencies = [
  "bus",
  "charactersevents",
  "configevents",
- "conformance",
  "edge",
  "futures",
  "lifecycle",
@@ -781,7 +777,6 @@ dependencies = [
  "charactersapi",
  "charactersevents",
  "charactersrpc",
- "conformance",
  "edge",
  "lifecycle",
  "opsapi",
@@ -905,7 +900,6 @@ dependencies = [
  "configapi",
  "configevents",
  "configrpc",
- "conformance",
  "edge",
  "lifecycle",
  "opsapi",
@@ -971,10 +965,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "conformance"
-version = "0.1.0"
-
-[[package]]
 name = "conformancecheck"
 version = "0.1.0"
 dependencies = [
@@ -982,20 +972,12 @@ dependencies = [
  "admin",
  "anyhow",
  "apikeys",
+ "apikeysapi",
  "async-trait",
- "audit",
  "bus",
- "characters",
  "checkmodules",
- "config",
- "conformance",
  "gateway",
- "inventory",
- "leaderboard",
  "lifecycle",
- "match_module",
- "rating",
- "scheduler",
  "sqlx",
  "tokio",
 ]
@@ -1532,7 +1514,6 @@ dependencies = [
  "apikeysapi",
  "async-trait",
  "axum",
- "conformance",
  "contrib",
  "edge",
  "futures",
@@ -2000,7 +1981,6 @@ dependencies = [
  "charactersevents",
  "config",
  "configapi",
- "conformance",
  "edge",
  "invalidation",
  "inventoryapi",
@@ -2163,7 +2143,6 @@ dependencies = [
  "anyhow",
  "async-trait",
  "bus",
- "conformance",
  "edge",
  "leaderboardapi",
  "leaderboardrpc",
@@ -2333,7 +2312,6 @@ dependencies = [
  "async-trait",
  "asyncevents",
  "bus",
- "conformance",
  "edge",
  "lifecycle",
  "matchapi",
@@ -3013,7 +2991,6 @@ dependencies = [
  "anyhow",
  "async-trait",
  "bus",
- "conformance",
  "edge",
  "lifecycle",
  "matchevents",
@@ -3461,7 +3438,6 @@ dependencies = [
  "anyhow",
  "async-trait",
  "bus",
- "conformance",
  "edge",
  "futures",
  "httpmw",

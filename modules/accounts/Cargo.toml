@@ -25,9 +25,6 @@ accountsevents = { workspace = true }
 # accounts reacts to scheduler.fired{name} to prune expired sessions on a daily cadence.
 # No dep on the scheduler impl/api and no requires() change — audit's prune precedent.
 schedulerevents = { workspace = true }
-# Convention-conformance contract types: this crate exposes `conformance::entry()`
-# (always compiled, the asyncevents::testing precedent) for the conformancecheck harness.
-conformance = { workspace = true }
 futures = { workspace = true }
 adminapi = { workspace = true }
 sqlx = { workspace = true }

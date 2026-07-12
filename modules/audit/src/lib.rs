@@ -29,7 +29,6 @@
 //! the payload type: the handler still parses `name` out of the raw JSON), and prunes
 //! in its own schema inside the handed tx.
 
-pub mod conformance;
 
 use std::sync::{Arc, OnceLock};
 

@@ -11,7 +11,6 @@
 //! delivery tx — exactly-once in BOTH topologies. The top-100 read is served as a
 //! public `#[http]` op (`GET /leaderboard`, unchanged external shape).
 
-pub mod conformance;
 
 use std::sync::{Arc, OnceLock};
 

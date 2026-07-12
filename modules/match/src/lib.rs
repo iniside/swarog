@@ -17,7 +17,6 @@
 //! ratings before recording. It never blocks on the reactors: whoever cares about a
 //! finished match subscribes durably; match never learns who.
 
-pub mod conformance;
 
 use std::sync::{Arc, OnceLock};
 

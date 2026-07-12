@@ -11,7 +11,6 @@
 //! event append commit in ONE transaction, via `bus::emit_tx` on the same `&mut *tx` — the
 //! event is durable iff the character is. An impl crate: no other module imports it.
 
-pub mod conformance;
 
 use std::sync::{Arc, OnceLock};
 

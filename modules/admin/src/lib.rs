@@ -107,8 +107,8 @@ const MAX_BACKOFF_SECS: i64 = 900;
 pub(crate) const MAX_USERNAME_BYTES: usize = 128;
 pub(crate) const MAX_PASSWORD_BYTES: usize = 1024;
 
-/// The SHARED cap checks — the login handler and the conformance probes
-/// (`conformance::entry`, T8 InputByteCaps) call these same pure fns, so the probe
+/// The SHARED cap checks — the login handler and factual conformance probes
+/// call these same pure fns, so the probe
 /// proves what the handler actually enforces, never a const compared to itself.
 /// Byte counts (`str::len()`), not characters. Username emptiness is checked
 /// separately by the handler (a different rejection, not a cap).

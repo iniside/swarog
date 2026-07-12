@@ -40,14 +40,16 @@ use bus::{
     AnyTx, Error as BusError, EventContract, HistoryPolicy, SubscriptionSpec, Transport,
     TxHandler,
 };
-use conformance::{ArgonParams, Convention, Entry, EnvCase, Fixture, OutageClass, Stance};
 use lifecycle::{App, Context};
 
 mod checks;
+mod model;
+mod policy;
 #[cfg(test)]
 mod tests;
 
 use checks::{argon_parity_findings, completeness_findings, conv_label, drift_findings, eval_cap_probe};
+use model::{ArgonParams, Convention, EnvCase, Fixture, OutageClass, Stance};
 
 /// Dev-default DSN (mirrors CLAUDE.md). Only ever used to build a LAZY pool that
 /// never connects — `register`/`init` do no I/O.
@@ -81,28 +83,6 @@ impl Transport for NoopTransport {
         _handler: Arc<dyn TxHandler>,
     ) {
     }
-}
-
-/// The hand-maintained list of every fortress's conformance entry. Adding a
-/// module here requires its `conformance::entry()` to exist (or this does not
-/// compile); FORGETTING to add one is caught by the drift preflight, which
-/// diffs this list against `modules/*` on disk and the monolith module set.
-/// Note the match trap: crate `match_module`, entry.module `"match"`.
-fn entries() -> Vec<Entry> {
-    vec![
-        accounts::conformance::entry(),
-        admin::conformance::entry(),
-        apikeys::conformance::entry(),
-        audit::conformance::entry(),
-        characters::conformance::entry(),
-        config::conformance::entry(),
-        gateway::conformance::entry(),
-        inventory::conformance::entry(),
-        leaderboard::conformance::entry(),
-        match_module::conformance::entry(),
-        rating::conformance::entry(),
-        scheduler::conformance::entry(),
-    ]
 }
 
 /// The names of every immediate subdirectory of `dir` holding a `Cargo.toml` —
@@ -224,7 +204,7 @@ fn main() {
     println!("conformancecheck: convention-conformance matrix (module × convention)\n");
 
     // ---- Phase 1: drift preflight (fail before anything else) ---------------
-    let entries = entries();
+    let entries = policy::entries();
     let disk: BTreeSet<String> = crate_dirs(&modules_dir()).into_iter().collect();
     let entry_names: BTreeSet<String> = entries.iter().map(|e| e.module.to_string()).collect();
     let monolith = monolith_module_names();
@@ -255,6 +235,15 @@ fn main() {
             let fixture = match stance {
                 Stance::NotApplicable { .. } => {
                     cells[i][j] = Cell::NotApplicable;
+                    continue;
+                }
+                Stance::KnownGap { why, remediation } => {
+                    cells[i][j] = Cell::Fail;
+                    details.push(format!(
+                        "[{} × {}] known gap: {why}; remediation: {remediation}",
+                        entry.module,
+                        conv_label(conv)
+                    ));
                     continue;
                 }
                 Stance::Applies(f) => f,

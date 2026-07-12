@@ -16,9 +16,6 @@ accountsapi = { workspace = true }
 # The apikeys CONTRACT crate (same rule) — names `dyn Keys` for the key-verifier
 # adapter. NEVER the apikeys impl crate, never apikeysrpc (archcheck enforces).
 apikeysapi = { workspace = true }
-# Convention-conformance contract types: this crate exposes `conformance::entry()`
-# (always compiled, the asyncevents::testing precedent) for the conformancecheck harness.
-conformance = { workspace = true }
 edge = { workspace = true }
 contrib = { workspace = true }
 # The shared route-pattern label seam (`httpmw::RoutePattern`): the front door stamps a

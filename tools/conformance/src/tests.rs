@@ -6,7 +6,7 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use conformance::{ArgonParams, CapCase, Convention, Entry, EnvCase, Fixture, Stance};
+use crate::model::{ArgonParams, CapCase, Convention, Entry, EnvCase, Fixture, Stance};
 
 use crate::checks::{
     argon_parity_findings, completeness_findings, drift_findings, eval_cap_probe,
@@ -37,7 +37,7 @@ fn drift_on_disk_module_without_entry_fails_with_the_add_hint() {
     assert!(
         findings.iter().any(|f| f
             == "modules/foo on disk has no conformance entry — add foo::conformance::entry() \
-                to tools/conformance entries()"),
+                to tools/conformance policy"),
         "expected the per-entry add hint, got: {findings:?}"
     );
     // The monolith leg reports it too — per-entry, one line per mismatch.
@@ -207,7 +207,7 @@ fn argon_parity_equal_and_single_are_clean_mismatch_fails() {
 /// convention.
 #[test]
 fn real_entries_pass_the_completeness_matrix() {
-    let findings = completeness_findings(&crate::entries());
+    let findings = completeness_findings(&crate::policy::entries());
     assert!(findings.is_empty(), "completeness findings: {findings:?}");
 }
 
@@ -218,7 +218,7 @@ fn real_entries_pass_the_completeness_matrix() {
 fn real_entries_match_disk_and_monolith() {
     let disk: BTreeSet<String> = crate::crate_dirs(&crate::modules_dir()).into_iter().collect();
     assert!(!disk.is_empty(), "modules/ scan found nothing — harness path bug");
-    let entry_names: BTreeSet<String> = crate::entries()
+    let entry_names: BTreeSet<String> = crate::policy::entries()
         .iter()
         .map(|e| e.module.to_string())
         .collect();

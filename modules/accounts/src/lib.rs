@@ -51,8 +51,8 @@ use crate::store::{Player, Store, StoreError};
 const MAX_EMAIL_BYTES: usize = 320;
 const MAX_PASSWORD_BYTES: usize = 1024;
 
-/// The SHARED cap checks — the register/login handlers and the conformance probes
-/// (`conformance::entry`, T8 InputByteCaps) call these same pure fns, so the probe
+/// The SHARED cap checks — the register/login handlers and factual conformance probes
+/// call these same pure fns, so the probe
 /// proves what the handlers actually enforce, never a const compared to itself.
 /// Byte counts (`str::len()`), not characters. Emptiness is checked separately by
 /// each handler (a different rejection, not a cap).

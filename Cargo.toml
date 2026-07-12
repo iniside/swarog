@@ -17,10 +17,6 @@ members = [
     # LISTEN/NOTIFY re-runs replica-local cache refresh callbacks. Freshness, not delivery.
     "core/invalidation",
     "core/remote",
-    # Convention-conformance contract types (std-only): Convention/Entry/Stance/
-    # Fixture declared by every module's `conformance::entry()` and executed by
-    # the `conformancecheck` harness (tools/conformance). Silence = fail.
-    "core/conformance",
     # Cross-cutting HTTP infra (Go's metrics/): a PRIVATE Prometheus registry + the
     # /metrics scrape, mounted by core/app in every module-hosting process (Step 12).
     "core/metrics",
@@ -60,11 +56,9 @@ members = [
     # edge contribution sets are structurally consistent -- the general net for the
     # inventory-dev-grant bug class (a route present in one topology but not the other).
     "tools/routecheck",
-    # Convention-conformance harness (package `conformancecheck`): drift-preflights
-    # the hand list of every module's `conformance::entry()` against modules/* on
-    # disk + the monolith module set, demands a stance per module per convention,
-    # and executes the fixtures (env validation, byte caps, outage class, argon
-    # parity). `cargo run -p conformancecheck`.
+    # Convention-conformance harness (package `conformancecheck`): owns the policy,
+    # drift-preflights it against modules/* on disk + the monolith module set, and
+    # executes minimal factual module probes. `cargo run -p conformancecheck`.
     "tools/conformance",
     # Single-sourced per-process module lists (Step 3, abstraction-leak closures;
     # per-process cmd/* libs, Step 10): both topiccheck and requirecheck build their
@@ -237,7 +231,6 @@ app = { path = "core/app" }
 asyncevents = { path = "core/asyncevents" }
 invalidation = { path = "core/invalidation" }
 remote = { path = "core/remote" }
-conformance = { path = "core/conformance" }
 metrics = { path = "core/metrics" }
 httpmw = { path = "core/httpmw" }
 

@@ -6,7 +6,7 @@
 
 use std::collections::BTreeSet;
 
-use conformance::{ArgonParams, Convention, Entry, Fixture, Stance};
+use crate::model::{ArgonParams, Convention, Entry, Fixture, Stance};
 
 /// Core-infra modules hosted in every process that are NOT fortresses under
 /// `modules/` — they appear in `checkmodules::monolith_modules()` but carry no
@@ -60,19 +60,19 @@ pub fn drift_findings(
     for m in disk.iter().filter(|m| !entry_names.contains(*m)) {
         findings.push(format!(
             "modules/{m} on disk has no conformance entry — add {m}::conformance::entry() \
-             to tools/conformance entries()"
+             to tools/conformance policy"
         ));
     }
     for m in entry_names.iter().filter(|m| !disk.contains(*m)) {
         findings.push(format!(
             "conformance entry \"{m}\" has no modules/{m} directory on disk — remove the \
-             stale entry from tools/conformance entries()"
+             stale entry from tools/conformance policy"
         ));
     }
     for m in monolith.iter().filter(|m| !entry_names.contains(**m)) {
         findings.push(format!(
             "monolith module \"{m}\" (checkmodules::monolith_modules) has no conformance \
-             entry — add {m}::conformance::entry() to tools/conformance entries()"
+             entry — add {m} to tools/conformance policy"
         ));
     }
     for m in entry_names.iter().filter(|m| !monolith.contains(m)) {
@@ -131,6 +131,13 @@ pub fn completeness_findings(entries: &[Entry]) -> Vec<String> {
                         findings.push(format!(
                             "{module}: NotApplicable for {label} with an empty why — a \
                              reviewer-checkable sentence is required"
+                        ));
+                    }
+                }
+                Stance::KnownGap { why, remediation } => {
+                    if why.trim().is_empty() || remediation.trim().is_empty() {
+                        findings.push(format!(
+                            "{module}: KnownGap for {label} requires non-empty why and remediation"
                         ));
                     }
                 }

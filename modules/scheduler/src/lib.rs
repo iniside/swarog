@@ -69,7 +69,6 @@
 //! `dead`, and "no fully-healthy tick in [`TICK_STALL_MAX`]" flags a wedge/error loop
 //! that never exits.
 
-pub mod conformance;
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};

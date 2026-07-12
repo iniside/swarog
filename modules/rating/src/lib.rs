@@ -13,7 +13,6 @@
 //! in-memory effect would be dishonest — the checkpoint would advance past events whose
 //! effect the restart erases.
 
-pub mod conformance;
 
 use std::sync::{Arc, OnceLock};
 

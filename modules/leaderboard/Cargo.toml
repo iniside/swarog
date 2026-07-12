@@ -18,9 +18,6 @@ bus = { workspace = true }
 lifecycle = { workspace = true }
 edge = { workspace = true }
 opsapi = { workspace = true }
-# Convention-conformance contract types: this crate exposes `conformance::entry()`
-# (always compiled, the asyncevents::testing precedent) for the conformancecheck harness.
-conformance = { workspace = true }
 leaderboardapi = { workspace = true }
 leaderboardrpc = { workspace = true }
 matchevents = { workspace = true }

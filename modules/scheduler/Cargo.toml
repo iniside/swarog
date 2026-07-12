@@ -18,9 +18,6 @@ lifecycle = { workspace = true }
 edge = { workspace = true }
 opsapi = { workspace = true }
 adminapi = { workspace = true }
-# Convention-conformance contract types: this crate exposes `conformance::entry()`
-# (always compiled, the asyncevents::testing precedent) for the conformancecheck harness.
-conformance = { workspace = true }
 schedulerrpc = { workspace = true }
 schedulerevents = { workspace = true }
 sqlx = { workspace = true }
