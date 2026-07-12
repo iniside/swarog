@@ -51,6 +51,9 @@ fn unsupported_state_version_is_never_accepted() {
     let path = dir.join("fleet.json");
     let mut value = serde_json::to_value(sample_state("run-1", FleetStatus::Running)).unwrap();
     value["version"] = serde_json::json!(STATE_VERSION + 1);
+    StateStore::new(&path)
+        .write_atomic(&sample_state("run-1", FleetStatus::Running))
+        .unwrap();
     std::fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
     assert!(StateStore::new(path).load().is_err());
 }
@@ -61,13 +64,17 @@ fn unknown_fields_and_oversized_state_are_rejected() {
     let path = dir.join("fleet.json");
     let mut value = serde_json::to_value(sample_state("run-1", FleetStatus::Running)).unwrap();
     value["unexpected"] = serde_json::json!(true);
-    write_private_test_file(&path, &serde_json::to_vec(&value).unwrap());
+    StateStore::new(&path)
+        .write_atomic(&sample_state("run-1", FleetStatus::Running))
+        .unwrap();
+    std::fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
     assert!(StateStore::new(&path).load().is_err());
 
-    write_private_test_file(
+    std::fs::write(
         &path,
-        &vec![b' '; crate::state::MAX_STATE_BYTES as usize + 1],
-    );
+        vec![b' '; crate::state::MAX_STATE_BYTES as usize + 1],
+    )
+    .unwrap();
     assert!(StateStore::new(path).load().is_err());
 }
 
@@ -200,14 +207,51 @@ fn state_load_and_replace_reject_symlinks_directories_and_insecure_modes() {
 
 #[cfg(windows)]
 #[test]
-fn state_file_has_one_protected_owner_only_dacl_entry() {
+fn state_load_and_replace_reject_reparse_directories_and_insecure_acl() {
+    let dir = test_dir("windows-path-hardening");
+    let path = dir.join("fleet.json");
+    std::fs::create_dir(&path).unwrap();
+    assert!(StateStore::new(&path).load().is_err());
+    std::fs::remove_dir(&path).unwrap();
+
+    std::fs::write(&path, b"insecure-destination").unwrap();
+    let store = StateStore::new(&path);
+    assert!(store.load().is_err());
+    assert!(store
+        .write_atomic(&sample_state("replacement", FleetStatus::Running))
+        .is_err());
+    assert_eq!(std::fs::read(&path).unwrap(), b"insecure-destination");
+    std::fs::remove_file(&path).unwrap();
+
+    let target = dir.join("target.json");
+    StateStore::new(&target)
+        .write_atomic(&sample_state("target", FleetStatus::Running))
+        .unwrap();
+    if std::os::windows::fs::symlink_file(&target, &path).is_ok() {
+        assert!(store.load().is_err());
+        assert!(store
+            .write_atomic(&sample_state("replacement", FleetStatus::Running))
+            .is_err());
+        assert_eq!(
+            StateStore::new(target).load().unwrap().unwrap().run_id(),
+            "target"
+        );
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn state_file_has_protected_current_owner_full_control_dacl() {
     use std::mem::{size_of, zeroed};
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Foundation::LocalFree;
     use windows_sys::Win32::Security::Authorization::{GetNamedSecurityInfoW, SE_FILE_OBJECT};
     use windows_sys::Win32::Security::{
-        AclSizeInformation, GetAclInformation, ACL_SIZE_INFORMATION, DACL_SECURITY_INFORMATION,
+        AclSizeInformation, GetAce, GetAclInformation, GetSecurityDescriptorControl,
+        ACCESS_ALLOWED_ACE, ACL_SIZE_INFORMATION, DACL_SECURITY_INFORMATION,
+        OWNER_SECURITY_INFORMATION, SE_DACL_PROTECTED,
     };
+    use windows_sys::Win32::Storage::FileSystem::FILE_ALL_ACCESS;
 
     let dir = test_dir("acl");
     let store = StateStore::new(dir.join("fleet.json"));
@@ -221,14 +265,15 @@ fn state_file_has_one_protected_owner_only_dacl_entry() {
         .chain(std::iter::once(0))
         .collect();
     let mut dacl = std::ptr::null_mut();
+    let mut owner = std::ptr::null_mut();
     let mut descriptor = std::ptr::null_mut();
     assert_eq!(
         unsafe {
             GetNamedSecurityInfoW(
                 path.as_ptr(),
                 SE_FILE_OBJECT,
-                DACL_SECURITY_INFORMATION,
-                std::ptr::null_mut(),
+                DACL_SECURITY_INFORMATION | OWNER_SECURITY_INFORMATION,
+                &mut owner,
                 std::ptr::null_mut(),
                 &mut dacl,
                 std::ptr::null_mut(),
@@ -237,6 +282,17 @@ fn state_file_has_one_protected_owner_only_dacl_entry() {
         },
         0
     );
+    assert_eq!(
+        crate::state::sid_to_string(owner).unwrap(),
+        crate::state::current_user_sid_string().unwrap()
+    );
+    let mut control = 0;
+    let mut revision = 0;
+    assert_ne!(
+        unsafe { GetSecurityDescriptorControl(descriptor, &mut control, &mut revision) },
+        0
+    );
+    assert_ne!(control & SE_DACL_PROTECTED, 0);
     let mut info: ACL_SIZE_INFORMATION = unsafe { zeroed() };
     assert_ne!(
         unsafe {
@@ -249,8 +305,18 @@ fn state_file_has_one_protected_owner_only_dacl_entry() {
         },
         0
     );
-    unsafe { LocalFree(descriptor as _) };
     assert_eq!(info.AceCount, 1);
+    let mut ace = std::ptr::null_mut();
+    assert_ne!(unsafe { GetAce(dacl, 0, &mut ace) }, 0);
+    let ace = unsafe { &*(ace.cast::<ACCESS_ALLOWED_ACE>()) };
+    assert_eq!(ace.Header.AceType, 0);
+    assert_eq!(ace.Header.AceFlags, 0);
+    assert_eq!(ace.Mask, FILE_ALL_ACCESS);
+    assert_eq!(
+        crate::state::sid_to_string((&raw const ace.SidStart).cast_mut().cast()).unwrap(),
+        crate::state::current_user_sid_string().unwrap()
+    );
+    unsafe { LocalFree(descriptor as _) };
 }
 
 fn sample_state(run_id: &str, status: FleetStatus) -> FleetState {
@@ -277,6 +343,7 @@ fn identity(pid: u32) -> ProcessIdentity {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn write_private_test_file(path: &std::path::Path, bytes: &[u8]) {
     std::fs::write(path, bytes).unwrap();
     #[cfg(target_os = "linux")]

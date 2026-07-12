@@ -92,7 +92,7 @@ fn child_entry() {
         "stdin-check" => {
             std::fs::write(
                 std::env::var_os("PROCESSCTL_TEST_READY").unwrap(),
-                if stdin_is_closed() {
+                if stdin_is_safe_eof() {
                     "closed"
                 } else {
                     "leaked"
@@ -102,6 +102,7 @@ fn child_entry() {
         }
         "lease-borrower" => {
             let lease = BorrowedLease::consume_inherited("splitproof").unwrap();
+            assert!(borrower_stdin_is_retained_non_inheritable());
             assert_eq!(lease.run_id(), "borrow-run");
             assert!(BorrowedLease::consume_inherited("splitproof").is_err());
             let ready = PathBuf::from(std::env::var_os("PROCESSCTL_TEST_READY").unwrap());
@@ -123,6 +124,13 @@ fn child_entry() {
                 .unwrap()
                 .success());
             std::fs::write(ready, "borrowed-ok").unwrap();
+        }
+        "state-crash-before-publish" => {
+            let path = PathBuf::from(std::env::var_os("PROCESSCTL_TEST_STATE").unwrap());
+            let state = FleetState::new("crash-run", "split").unwrap();
+            StateStore::failing(&path, crate::state::StateFailurePoint::CrashBeforePublish)
+                .write_atomic(&state)
+                .unwrap();
         }
         "fd-check" => {
             #[cfg(target_os = "linux")]
@@ -352,6 +360,36 @@ fn inherited_borrower_is_one_shot_and_credential_is_not_reinherited() {
 }
 
 #[test]
+fn initial_state_publish_survives_process_crash_without_placeholder() {
+    let dir = test_dir("state-crash-publish");
+    let path = dir.join("fleet.json");
+    let mut child = Command::new(std::env::current_exe().unwrap());
+    child
+        .args(["--exact", "tests::child_entry", "--nocapture"])
+        .env_clear()
+        .env("PROCESSCTL_TEST_MODE", "state-crash-before-publish")
+        .env("PROCESSCTL_TEST_STATE", &path)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let status = child.spawn().unwrap().wait().unwrap();
+    assert!(!status.success());
+    assert!(!path.exists(), "crash exposed an empty destination");
+    let temps: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|extension| extension == "tmp"))
+        .collect();
+    assert_eq!(temps.len(), 1);
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&std::fs::read(&temps[0]).unwrap()).unwrap()
+            ["run_id"],
+        "crash-run"
+    );
+    crate::state::validate_private_test_path(&temps[0]).unwrap();
+    std::fs::remove_file(&temps[0]).unwrap();
+}
+
+#[test]
 fn supervisor_crash_kills_owned_tree_and_preserves_decoy() {
     let _serial = PROCESS_TEST_LOCK.lock().unwrap();
     protect_test_harness();
@@ -523,10 +561,41 @@ fn ignore_graceful_signal() {
     assert_ne!(unsafe { SetConsoleCtrlHandler(Some(ignore), 1) }, 0);
 }
 
-fn stdin_is_closed() -> bool {
+fn stdin_is_safe_eof() -> bool {
+    use windows_sys::Win32::Storage::FileSystem::{GetFileType, ReadFile, FILE_TYPE_CHAR};
     use windows_sys::Win32::System::Console::{GetStdHandle, STD_INPUT_HANDLE};
     let handle = unsafe { GetStdHandle(STD_INPUT_HANDLE) };
-    handle.is_null() || handle == windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE
+    if handle.is_null()
+        || handle == windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE
+        || unsafe { GetFileType(handle) } != FILE_TYPE_CHAR
+    {
+        return false;
+    }
+    let mut byte = 0u8;
+    let mut read = 0;
+    (unsafe {
+        ReadFile(
+            handle,
+            (&raw mut byte).cast(),
+            1,
+            &mut read,
+            std::ptr::null_mut(),
+        )
+    }) != 0
+        && read == 0
+}
+
+fn borrower_stdin_is_retained_non_inheritable() -> bool {
+    use windows_sys::Win32::Foundation::{
+        GetHandleInformation, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE,
+    };
+    use windows_sys::Win32::System::Console::{GetStdHandle, STD_INPUT_HANDLE};
+    let handle = unsafe { GetStdHandle(STD_INPUT_HANDLE) };
+    if handle.is_null() || handle == INVALID_HANDLE_VALUE || !stdin_is_safe_eof() {
+        return false;
+    }
+    let mut flags = 0;
+    (unsafe { GetHandleInformation(handle, &mut flags) }) != 0 && flags & HANDLE_FLAG_INHERIT == 0
 }
 
 #[cfg(windows)]

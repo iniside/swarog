@@ -319,6 +319,10 @@ impl StateStore {
     fn inject(&self, point: StateFailurePoint) -> Result<(), StateError> {
         #[cfg(test)]
         if self.failure == Some(point) {
+            #[cfg(windows)]
+            if point == StateFailurePoint::CrashBeforePublish {
+                std::process::abort();
+            }
             return Err(StateError::Io {
                 operation: "injected state-store failure",
                 source: std::io::Error::other(format!("{point:?}")),
@@ -403,6 +407,12 @@ impl StateStore {
             })?;
         let mut cleanup = TempCleanup::new(temp);
         let mut file = unsafe { std::fs::File::from_raw_handle(handle) };
+        validate_private_regular_windows(file.as_raw_handle() as _).map_err(|source| {
+            StateError::Io {
+                operation: "validate owner-only state temp file",
+                source,
+            }
+        })?;
         self.inject(StateFailurePoint::Write)?;
         file.write_all(bytes).map_err(|source| StateError::Io {
             operation: "write state temp file",
@@ -424,56 +434,50 @@ impl StateStore {
         }
         drop(file);
 
-        let mut new_destination_cleanup = None;
-        if self.path.exists() {
-            apply_owner_only_dacl(&self.path, &security).map_err(|source| StateError::Io {
-                operation: "secure existing state destination",
-                source,
-            })?;
-        } else {
-            let placeholder =
-                create_private_file(&self.path, &security, true).map_err(|source| {
-                    StateError::Io {
-                        operation: "create owner-only state destination",
-                        source,
-                    }
-                })?;
-            new_destination_cleanup = Some(TempCleanup::new(&self.path));
-            if unsafe { windows_sys::Win32::Storage::FileSystem::FlushFileBuffers(placeholder) }
-                == 0
-            {
-                unsafe { windows_sys::Win32::Foundation::CloseHandle(placeholder) };
-                return Err(StateError::Io {
-                    operation: "flush state destination placeholder",
-                    source: std::io::Error::last_os_error(),
-                });
-            }
-            unsafe { windows_sys::Win32::Foundation::CloseHandle(placeholder) };
-        }
-
+        self.inject(StateFailurePoint::CrashBeforePublish)?;
         self.inject(StateFailurePoint::Replace)?;
         let destination = wide_path(&self.path)?;
         let replacement = wide_path(temp)?;
-        if unsafe {
-            windows_sys::Win32::Storage::FileSystem::ReplaceFileW(
-                destination.as_ptr(),
-                replacement.as_ptr(),
-                std::ptr::null(),
-                0,
-                std::ptr::null(),
-                std::ptr::null(),
-            )
-        } == 0
-        {
+        let existing = match create_private_file(&self.path, &security, false) {
+            Ok(handle) => {
+                unsafe { windows_sys::Win32::Foundation::CloseHandle(handle) };
+                true
+            }
+            Err(error) if matches!(error.raw_os_error(), Some(2 | 3)) => false,
+            Err(source) => {
+                return Err(StateError::Io {
+                    operation: "validate existing state destination",
+                    source,
+                });
+            }
+        };
+        let published = if existing {
+            unsafe {
+                windows_sys::Win32::Storage::FileSystem::ReplaceFileW(
+                    destination.as_ptr(),
+                    replacement.as_ptr(),
+                    std::ptr::null(),
+                    0,
+                    std::ptr::null(),
+                    std::ptr::null(),
+                )
+            }
+        } else {
+            unsafe {
+                windows_sys::Win32::Storage::FileSystem::MoveFileExW(
+                    replacement.as_ptr(),
+                    destination.as_ptr(),
+                    windows_sys::Win32::Storage::FileSystem::MOVEFILE_WRITE_THROUGH,
+                )
+            }
+        };
+        if published == 0 {
             return Err(StateError::Io {
-                operation: "atomically replace process state",
+                operation: "atomically publish process state",
                 source: std::io::Error::last_os_error(),
             });
         }
         cleanup.disarm();
-        if let Some(cleanup) = new_destination_cleanup.as_mut() {
-            cleanup.disarm();
-        }
         self.inject(StateFailurePoint::SyncParent)
     }
 }
@@ -525,7 +529,34 @@ fn open_directory_linux(path: &Path) -> std::io::Result<File> {
 
 #[cfg(windows)]
 fn open_state_for_read(path: &Path) -> std::io::Result<File> {
-    File::open(path)
+    use std::os::windows::io::FromRawHandle;
+    let security = OwnerOnlySecurity::new()?;
+    let handle = create_private_file(path, &security, false)?;
+    Ok(unsafe { File::from_raw_handle(handle) })
+}
+
+#[cfg(all(test, windows))]
+pub(crate) fn validate_private_test_path(path: &Path) -> std::io::Result<()> {
+    let wide = wide_path(path).map_err(state_to_io)?;
+    let handle = unsafe {
+        windows_sys::Win32::Storage::FileSystem::CreateFileW(
+            wide.as_ptr(),
+            windows_sys::Win32::Foundation::GENERIC_READ,
+            windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ
+                | windows_sys::Win32::Storage::FileSystem::FILE_SHARE_WRITE,
+            std::ptr::null(),
+            windows_sys::Win32::Storage::FileSystem::OPEN_EXISTING,
+            windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_NORMAL
+                | windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT,
+            std::ptr::null_mut(),
+        )
+    };
+    if handle == windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE {
+        return Err(std::io::Error::last_os_error());
+    }
+    let result = validate_private_regular_windows(handle);
+    unsafe { windows_sys::Win32::Foundation::CloseHandle(handle) };
+    result
 }
 
 #[cfg(not(any(windows, target_os = "linux")))]
@@ -562,7 +593,6 @@ impl Drop for TempCleanup<'_> {
 #[cfg(windows)]
 pub(crate) struct OwnerOnlySecurity {
     descriptor: windows_sys::Win32::Security::PSECURITY_DESCRIPTOR,
-    dacl: *mut windows_sys::Win32::Security::ACL,
 }
 
 #[cfg(windows)]
@@ -573,7 +603,9 @@ impl OwnerOnlySecurity {
             ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
         };
 
-        let sddl: Vec<u16> = std::ffi::OsStr::new("D:P(A;;GA;;;OW)")
+        let sid = current_user_sid_string()?;
+        let sddl = format!("O:{sid}D:P(A;;GA;;;{sid})");
+        let sddl: Vec<u16> = std::ffi::OsStr::new(&sddl)
             .encode_wide()
             .chain(std::iter::once(0))
             .collect();
@@ -606,7 +638,21 @@ impl OwnerOnlySecurity {
             unsafe { windows_sys::Win32::Foundation::LocalFree(descriptor as _) };
             return Err(std::io::Error::last_os_error());
         }
-        Ok(Self { descriptor, dacl })
+        let mut owner = std::ptr::null_mut();
+        let mut owner_defaulted = 0;
+        if unsafe {
+            windows_sys::Win32::Security::GetSecurityDescriptorOwner(
+                descriptor,
+                &mut owner,
+                &mut owner_defaulted,
+            )
+        } == 0
+            || owner.is_null()
+        {
+            unsafe { windows_sys::Win32::Foundation::LocalFree(descriptor as _) };
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(Self { descriptor })
     }
 
     pub(crate) fn attributes(&self) -> windows_sys::Win32::Security::SECURITY_ATTRIBUTES {
@@ -617,6 +663,60 @@ impl OwnerOnlySecurity {
             bInheritHandle: 0,
         }
     }
+}
+
+#[cfg(windows)]
+pub(crate) fn current_user_sid_string() -> std::io::Result<String> {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::Security::{GetTokenInformation, TokenUser, TOKEN_QUERY, TOKEN_USER};
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    let mut token = std::ptr::null_mut();
+    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let result = (|| {
+        let mut required = 0;
+        unsafe { GetTokenInformation(token, TokenUser, std::ptr::null_mut(), 0, &mut required) };
+        if required == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let words = required.div_ceil(std::mem::size_of::<usize>() as u32) as usize;
+        let mut buffer = vec![0usize; words];
+        if unsafe {
+            GetTokenInformation(
+                token,
+                TokenUser,
+                buffer.as_mut_ptr().cast(),
+                required,
+                &mut required,
+            )
+        } == 0
+        {
+            return Err(std::io::Error::last_os_error());
+        }
+        let user = unsafe { &*(buffer.as_ptr().cast::<TOKEN_USER>()) };
+        sid_to_string(user.User.Sid)
+    })();
+    unsafe { CloseHandle(token) };
+    result
+}
+
+#[cfg(windows)]
+pub(crate) fn sid_to_string(sid: windows_sys::Win32::Security::PSID) -> std::io::Result<String> {
+    use windows_sys::Win32::Foundation::LocalFree;
+    use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
+    let mut sid_string = std::ptr::null_mut();
+    if unsafe { ConvertSidToStringSidW(sid, &mut sid_string) } == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let length = (0..)
+        .find(|&index| unsafe { *sid_string.add(index) } == 0)
+        .expect("Windows SID string is NUL terminated");
+    let result = String::from_utf16(unsafe { std::slice::from_raw_parts(sid_string, length) })
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error));
+    unsafe { LocalFree(sid_string.cast()) };
+    result
 }
 
 #[cfg(windows)]
@@ -646,44 +746,123 @@ fn create_private_file(
             } else {
                 windows_sys::Win32::Storage::FileSystem::OPEN_EXISTING
             },
-            windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_NORMAL,
+            windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_NORMAL
+                | windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT,
             std::ptr::null_mut(),
         )
     };
     if handle == windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE {
         Err(std::io::Error::last_os_error())
     } else {
-        Ok(handle)
+        let validation = validate_private_regular_windows(handle);
+        if let Err(error) = validation {
+            unsafe { windows_sys::Win32::Foundation::CloseHandle(handle) };
+            Err(error)
+        } else {
+            Ok(handle)
+        }
     }
 }
 
 #[cfg(windows)]
-pub(crate) fn apply_owner_only_dacl(
-    path: &Path,
-    security: &OwnerOnlySecurity,
+pub(crate) fn validate_private_regular_windows(
+    handle: windows_sys::Win32::Foundation::HANDLE,
 ) -> std::io::Result<()> {
-    use windows_sys::Win32::Security::Authorization::{SetNamedSecurityInfoW, SE_FILE_OBJECT};
+    use std::mem::{size_of, zeroed};
+    use windows_sys::Win32::Security::Authorization::{GetSecurityInfo, SE_KERNEL_OBJECT};
     use windows_sys::Win32::Security::{
-        DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
+        AclSizeInformation, GetAce, GetAclInformation, GetSecurityDescriptorControl,
+        ACCESS_ALLOWED_ACE, ACL_SIZE_INFORMATION, DACL_SECURITY_INFORMATION,
+        OWNER_SECURITY_INFORMATION, SE_DACL_PROTECTED,
+    };
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, FILE_ALL_ACCESS,
+        FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT,
     };
 
-    let mut path = wide_path(path).map_err(state_to_io)?;
+    let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { zeroed() };
+    if unsafe { GetFileInformationByHandle(handle, &mut info) } == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    if info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT) != 0 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "processctl path is not a regular non-reparse file",
+        ));
+    }
+
+    let mut owner = std::ptr::null_mut();
+    let mut dacl = std::ptr::null_mut();
+    let mut descriptor = std::ptr::null_mut();
     let result = unsafe {
-        SetNamedSecurityInfoW(
-            path.as_mut_ptr(),
-            SE_FILE_OBJECT,
-            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+        GetSecurityInfo(
+            handle,
+            SE_KERNEL_OBJECT,
+            OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+            &mut owner,
             std::ptr::null_mut(),
+            &mut dacl,
             std::ptr::null_mut(),
-            security.dacl,
-            std::ptr::null(),
+            &mut descriptor,
         )
     };
-    if result == 0 {
-        Ok(())
-    } else {
-        Err(std::io::Error::from_raw_os_error(result as i32))
+    if result != 0 {
+        return Err(std::io::Error::from_raw_os_error(result as i32));
     }
+    let validation = (|| {
+        if owner.is_null() || dacl.is_null() || sid_to_string(owner)? != current_user_sid_string()?
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "processctl file owner is not the current user",
+            ));
+        }
+        let mut control = 0;
+        let mut revision = 0;
+        if unsafe { GetSecurityDescriptorControl(descriptor, &mut control, &mut revision) } == 0
+            || control & SE_DACL_PROTECTED == 0
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "processctl file DACL is not protected",
+            ));
+        }
+        let mut acl_info: ACL_SIZE_INFORMATION = unsafe { zeroed() };
+        if unsafe {
+            GetAclInformation(
+                dacl,
+                (&raw mut acl_info).cast(),
+                size_of::<ACL_SIZE_INFORMATION>() as u32,
+                AclSizeInformation,
+            )
+        } == 0
+            || acl_info.AceCount != 1
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "processctl file DACL must contain exactly one ACE",
+            ));
+        }
+        let mut ace = std::ptr::null_mut();
+        if unsafe { GetAce(dacl, 0, &mut ace) } == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let ace = unsafe { &*(ace.cast::<ACCESS_ALLOWED_ACE>()) };
+        let ace_sid = (&raw const ace.SidStart).cast_mut().cast();
+        if ace.Header.AceType != 0
+            || ace.Header.AceFlags != 0
+            || ace.Mask != FILE_ALL_ACCESS
+            || sid_to_string(ace_sid)? != current_user_sid_string()?
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "processctl file DACL is not one current-user GENERIC_ALL ACE",
+            ));
+        }
+        Ok(())
+    })();
+    unsafe { windows_sys::Win32::Foundation::LocalFree(descriptor as _) };
+    validation
 }
 
 #[cfg(windows)]
@@ -730,6 +909,8 @@ pub(crate) enum StateFailurePoint {
     SecureTemp,
     Write,
     Flush,
+    #[cfg(windows)]
+    CrashBeforePublish,
     Replace,
     SyncParent,
 }

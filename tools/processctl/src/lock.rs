@@ -20,6 +20,8 @@ const CREDENTIAL_DELIVERY_TIMEOUT: Duration = Duration::from_secs(2);
 const BORROWER_FORCE_TIMEOUT: Duration = Duration::from_secs(5);
 const CONSUMED_MARKER: &[u8] = b"processctl-borrowed-v1\n";
 static INHERITED_CREDENTIAL_CONSUMED: AtomicBool = AtomicBool::new(false);
+#[cfg(windows)]
+static CONSUMED_STDIN: std::sync::OnceLock<File> = std::sync::OnceLock::new();
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -313,11 +315,53 @@ fn cleanup_consumption_marker(path: &Path) {
 
 #[cfg(windows)]
 fn cleanup_consumption_marker(path: &Path) {
-    let is_ours = std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_file())
-        && std::fs::read(path).is_ok_and(|bytes| bytes == CONSUMED_MARKER);
-    if is_ours {
-        let _ = std::fs::remove_file(path);
+    use std::os::windows::io::FromRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        CreateFileW, FileDispositionInfo, SetFileInformationByHandle, DELETE,
+        FILE_ATTRIBUTE_NORMAL, FILE_DISPOSITION_INFO, FILE_FLAG_OPEN_REPARSE_POINT,
+        FILE_SHARE_DELETE, FILE_SHARE_READ, OPEN_EXISTING,
+    };
+    let Ok(wide) = crate::state::wide_path(path) else {
+        return;
+    };
+    let handle = unsafe {
+        CreateFileW(
+            wide.as_ptr(),
+            windows_sys::Win32::Foundation::GENERIC_READ | DELETE,
+            FILE_SHARE_READ | FILE_SHARE_DELETE,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
+            std::ptr::null_mut(),
+        )
+    };
+    if handle == windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE
+        || crate::state::validate_private_regular_windows(handle).is_err()
+    {
+        if handle != windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE {
+            unsafe { windows_sys::Win32::Foundation::CloseHandle(handle) };
+        }
+        return;
     }
+    let mut file = unsafe { File::from_raw_handle(handle) };
+    let mut content = Vec::new();
+    if std::io::Read::by_ref(&mut file)
+        .take(CONSUMED_MARKER.len() as u64 + 1)
+        .read_to_end(&mut content)
+        .is_err()
+        || content != CONSUMED_MARKER
+    {
+        return;
+    }
+    let disposition = FILE_DISPOSITION_INFO { DeleteFile: 1 };
+    let _ = unsafe {
+        SetFileInformationByHandle(
+            handle,
+            FileDispositionInfo,
+            (&raw const disposition).cast(),
+            std::mem::size_of::<FILE_DISPOSITION_INFO>() as u32,
+        )
+    };
 }
 
 impl BorrowedChild<'_> {
@@ -566,8 +610,8 @@ fn sync_parent_directory_linux(path: &Path, operation: &'static str) -> Result<(
 fn open_lock_file(path: &Path) -> Result<File, LeaseError> {
     use std::os::windows::io::FromRawHandle;
     use windows_sys::Win32::Storage::FileSystem::{
-        CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
-        OPEN_ALWAYS,
+        CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ,
+        FILE_SHARE_WRITE, OPEN_ALWAYS,
     };
 
     let security = crate::state::OwnerOnlySecurity::new().map_err(|source| LeaseError::Io {
@@ -582,10 +626,10 @@ fn open_lock_file(path: &Path) -> Result<File, LeaseError> {
             path_wide.as_ptr(),
             windows_sys::Win32::Foundation::GENERIC_READ
                 | windows_sys::Win32::Foundation::GENERIC_WRITE,
-            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
             &attributes,
             OPEN_ALWAYS,
-            FILE_ATTRIBUTE_NORMAL,
+            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
             std::ptr::null_mut(),
         )
     };
@@ -595,10 +639,11 @@ fn open_lock_file(path: &Path) -> Result<File, LeaseError> {
             source: std::io::Error::last_os_error(),
         });
     }
-    if let Err(source) = crate::state::apply_owner_only_dacl(path, &security) {
+    let validation = crate::state::validate_private_regular_windows(handle);
+    if let Err(source) = validation {
         unsafe { windows_sys::Win32::Foundation::CloseHandle(handle) };
         return Err(LeaseError::Io {
-            operation: "secure rollout lock DACL",
+            operation: "validate rollout lock security",
             source,
         });
     }
@@ -839,7 +884,7 @@ fn consume_credential_stdin() -> Result<Vec<u8>, LeaseError> {
 #[cfg(windows)]
 fn consume_credential_stdin() -> Result<Vec<u8>, LeaseError> {
     use std::os::windows::io::FromRawHandle;
-    use windows_sys::Win32::System::Console::{GetStdHandle, SetStdHandle, STD_INPUT_HANDLE};
+    use windows_sys::Win32::System::Console::{GetStdHandle, STD_INPUT_HANDLE};
     let handle = unsafe { GetStdHandle(STD_INPUT_HANDLE) };
     if handle.is_null() || handle == windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE {
         return Err(LeaseError::Io {
@@ -847,9 +892,55 @@ fn consume_credential_stdin() -> Result<Vec<u8>, LeaseError> {
             source: std::io::Error::last_os_error(),
         });
     }
-    unsafe { SetStdHandle(STD_INPUT_HANDLE, std::ptr::null_mut()) };
     let mut input = unsafe { File::from_raw_handle(handle) };
-    read_credential_to_eof(&mut input)
+    let bytes = read_credential_to_eof(&mut input);
+    drop(input);
+    install_consumed_stdin()?;
+    bytes
+}
+
+#[cfg(windows)]
+fn install_consumed_stdin() -> Result<(), LeaseError> {
+    use std::os::windows::io::FromRawHandle;
+    use windows_sys::Win32::Foundation::{SetHandleInformation, HANDLE_FLAG_INHERIT};
+    use windows_sys::Win32::Storage::FileSystem::{
+        CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+    };
+    use windows_sys::Win32::System::Console::{SetStdHandle, STD_INPUT_HANDLE};
+    let nul: Vec<u16> = "NUL\0".encode_utf16().collect();
+    let handle = unsafe {
+        CreateFileW(
+            nul.as_ptr(),
+            windows_sys::Win32::Foundation::GENERIC_READ,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL,
+            std::ptr::null_mut(),
+        )
+    };
+    if handle == windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE {
+        return Err(LeaseError::Io {
+            operation: "open retained borrower NUL stdin",
+            source: std::io::Error::last_os_error(),
+        });
+    }
+    let file = unsafe { File::from_raw_handle(handle) };
+    if unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0) } == 0 {
+        return Err(LeaseError::Io {
+            operation: "make retained borrower stdin non-inheritable",
+            source: std::io::Error::last_os_error(),
+        });
+    }
+    if unsafe { SetStdHandle(STD_INPUT_HANDLE, handle) } == 0 {
+        return Err(LeaseError::Io {
+            operation: "install retained borrower NUL stdin",
+            source: std::io::Error::last_os_error(),
+        });
+    }
+    CONSUMED_STDIN.set(file).map_err(|_| {
+        LeaseError::InvalidField("retained borrower stdin was already installed".into())
+    })
 }
 
 fn read_credential_to_eof(input: &mut File) -> Result<Vec<u8>, LeaseError> {
@@ -932,7 +1023,8 @@ fn super_private_create_new(
     security: &crate::state::OwnerOnlySecurity,
 ) -> std::io::Result<windows_sys::Win32::Foundation::HANDLE> {
     use windows_sys::Win32::Storage::FileSystem::{
-        CreateFileW, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ,
+        CreateFileW, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, FILE_FLAG_OPEN_REPARSE_POINT,
+        FILE_SHARE_READ,
     };
     let path = crate::state::wide_path(path).map_err(|error| {
         std::io::Error::new(std::io::ErrorKind::InvalidInput, error.to_string())
@@ -946,13 +1038,19 @@ fn super_private_create_new(
             FILE_SHARE_READ,
             &attributes,
             CREATE_NEW,
-            FILE_ATTRIBUTE_NORMAL,
+            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
             std::ptr::null_mut(),
         )
     };
     if handle == windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE {
         Err(std::io::Error::last_os_error())
     } else {
-        Ok(handle)
+        let validation = crate::state::validate_private_regular_windows(handle);
+        if let Err(error) = validation {
+            unsafe { windows_sys::Win32::Foundation::CloseHandle(handle) };
+            Err(error)
+        } else {
+            Ok(handle)
+        }
     }
 }

@@ -116,6 +116,32 @@ fn lock_rejects_symlinks_directories_and_insecure_existing_files() {
 }
 
 #[cfg(windows)]
+#[test]
+fn lock_rejects_reparse_directories_insecure_acl_and_delete_sharing() {
+    let path = lock_path("windows-path-hardening");
+    std::fs::create_dir(&path).unwrap();
+    assert!(RolloutLock::acquire(&path, "run-1", "splitproof").is_err());
+    std::fs::remove_dir(&path).unwrap();
+
+    std::fs::write(&path, b"insecure-lock").unwrap();
+    assert!(RolloutLock::acquire(&path, "run-1", "splitproof").is_err());
+    assert_eq!(std::fs::read(&path).unwrap(), b"insecure-lock");
+    std::fs::remove_file(&path).unwrap();
+
+    let owner = RolloutLock::acquire(&path, "run-1", "splitproof").unwrap();
+    assert!(std::fs::remove_file(&path).is_err());
+    drop(owner);
+    std::fs::remove_file(&path).unwrap();
+
+    let target = path.with_file_name("target.lock");
+    let target_owner = RolloutLock::acquire(&target, "target", "splitproof").unwrap();
+    drop(target_owner);
+    if std::os::windows::fs::symlink_file(&target, &path).is_ok() {
+        assert!(RolloutLock::acquire(&path, "replacement", "splitproof").is_err());
+    }
+}
+
+#[cfg(windows)]
 fn assert_owner_only_dacl(path: &std::path::Path) {
     use std::mem::{size_of, zeroed};
     use std::os::windows::ffi::OsStrExt;
@@ -124,6 +150,7 @@ fn assert_owner_only_dacl(path: &std::path::Path) {
     use windows_sys::Win32::Security::{
         AclSizeInformation, GetAclInformation, ACL_SIZE_INFORMATION, DACL_SECURITY_INFORMATION,
     };
+    crate::state::validate_private_test_path(path).unwrap();
     let wide: Vec<u16> = path
         .as_os_str()
         .encode_wide()
