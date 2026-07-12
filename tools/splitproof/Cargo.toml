@@ -12,14 +12,9 @@ publish = false
 
 [dependencies]
 edge = { path = "../../core/edge" }
+processctl = { path = "../processctl" }
 tokio = { workspace = true }
 anyhow = { workspace = true }
 sqlx = { workspace = true }
 serde_json = { workspace = true }
 reqwest = { workspace = true, features = ["cookies"] }
-
-[target.'cfg(windows)'.dependencies]
-windows-sys = { workspace = true, features = ["Win32_System_Console", "Win32_Foundation"] }
-
-[target.'cfg(unix)'.dependencies]
-libc = "0.2"

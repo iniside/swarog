@@ -12,188 +12,78 @@
 //! graceful-shutdown / monolith-parity proofs are follow-ups. See
 //! docs/plans/2026-07-11-1730-rust-splitproof-harness-plan.md.
 
-use std::fs::File;
+use std::collections::BTreeMap;
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use edge::{DevCA, PlayerClient};
+use processctl::{
+    build_environment, game_backend_fleet, runtime_environment, BorrowedLease, FleetFlavor,
+    FleetInputs, FleetSpec, OutputDestination, OwnedChild, OwnedLease, ProcessGroupPolicy,
+    RolloutLock, ServiceSpec, ShutdownOutcome, ShutdownPolicy, SpawnSpec,
+};
 use sqlx::{PgPool, Row};
 
 const DEFAULT_DB: &str =
     "postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable";
 
-// HTTP ports (CLAUDE.md fleet map).
-const P_CHARACTERS: u16 = 8080;
-const P_INVENTORY: u16 = 8081;
-const P_GATEWAY: u16 = 8082;
-const P_CONFIG: u16 = 8083;
-const P_ACCOUNTS: u16 = 8084;
-const P_ADMIN: u16 = 8085;
-const P_AUDIT: u16 = 8086;
-const P_SCHEDULER: u16 = 8087;
-const P_MATCH: u16 = 8088;
-const P_RATING: u16 = 8089;
-const P_LEADERBOARD: u16 = 8090;
-const P_APIKEYS: u16 = 8091;
-// Internal mTLS edge ports.
-const E_CHARACTERS: u16 = 9000;
-const E_INVENTORY: u16 = 9001;
-const E_CONFIG: u16 = 9002;
-const E_ACCOUNTS: u16 = 9003;
-const E_AUDIT: u16 = 9004;
-const E_SCHEDULER: u16 = 9005;
-const E_MATCH: u16 = 9006;
-const E_RATING: u16 = 9007;
-const E_LEADERBOARD: u16 = 9008;
-const E_APIKEYS: u16 = 9009;
-const PLAYER_PORT: u16 = 9100;
-
-/// A fleet member: its binary name, HTTP readiness port, and the exact env map the
-/// composition root reads (topology wiring lives ONLY here, like the cmd/* mains).
-struct Svc {
-    name: &'static str,
-    http_port: u16,
-    env: Vec<(String, String)>,
-}
-
-/// Kills the child on drop, so a panic or an early `?` return tears the whole fleet
-/// down — there is no code path that leaves an orphaned `-svc` process behind (the
-/// exact failure mode that plagued the winctrl harness).
 struct Running {
-    child: Child,
-}
-
-impl Drop for Running {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
+    name: &'static str,
+    child: OwnedChild,
 }
 
 struct Ctx {
     bin_dir: PathBuf,
+    root: PathBuf,
     run_dir: PathBuf,
     ca_cert: PathBuf,
     ca_key: PathBuf,
     db_url: String,
+    fleet: FleetSpec,
     http: reqwest::Client,
     /// A client that does NOT follow redirects, so a 303 (epic callback, admin login)
     /// is observable as a status + Location instead of being transparently chased.
     http_noredirect: reqwest::Client,
 }
 
-fn edge_addr(port: u16) -> (String, String) {
-    ("EDGE_ADDR".into(), format!(":{port}"))
-}
-
-fn peer(name: &str, port: u16) -> (String, String) {
-    (format!("{name}_EDGE_ADDR"), format!("127.0.0.1:{port}"))
-}
-
 impl Ctx {
-    fn base_env(&self) -> Vec<(String, String)> {
-        vec![
-            ("DATABASE_URL".into(), self.db_url.clone()),
-            ("EDGE_CA_CERT".into(), self.ca_cert.display().to_string()),
-            ("EDGE_CA_KEY".into(), self.ca_key.display().to_string()),
-        ]
+    fn service(&self, name: &str) -> &ServiceSpec {
+        self.fleet.service(name).expect("canonical service name")
     }
 
-    /// The boot ORDER mirrors the dependency graph the scripts use: providers before
-    /// their consumers, the front door (gateway) after every peer it dials.
-    fn fleet(&self) -> Vec<Svc> {
-        let svc = |name, http_port, edge_port: Option<u16>, extra: Vec<(String, String)>| {
-            let mut env = self.base_env();
-            env.push(("PORT".into(), format!(":{http_port}")));
-            if let Some(e) = edge_port {
-                env.push(edge_addr(e));
-            }
-            env.extend(extra);
-            Svc { name, http_port, env }
-        };
-        vec![
-            svc("accounts-svc", P_ACCOUNTS, Some(E_ACCOUNTS), vec![
-                ("ACCOUNTS_DEV_AUTH".into(), "1".into()),
-                ("EPIC_CLIENT_ID".into(), "test".into()),
-                ("EPIC_CLIENT_SECRET".into(), "test".into()),
-                ("EPIC_TOKEN_URL".into(), "http://127.0.0.1:1/token".into()),
-            ]),
-            svc("apikeys-svc", P_APIKEYS, Some(E_APIKEYS), vec![
-                ("APIKEYS_DEV_SEED".into(), "1".into()),
-            ]),
-            svc("audit-svc", P_AUDIT, Some(E_AUDIT), vec![]),
-            svc("scheduler-svc", P_SCHEDULER, Some(E_SCHEDULER), vec![
-                ("SCHEDULER_ENABLED".into(), "1".into()),
-            ]),
-            svc("rating-svc", P_RATING, Some(E_RATING), vec![]),
-            svc("leaderboard-svc", P_LEADERBOARD, Some(E_LEADERBOARD), vec![]),
-            svc("match-svc", P_MATCH, Some(E_MATCH), vec![peer("RATING", E_RATING)]),
-            svc("characters-svc", P_CHARACTERS, Some(E_CHARACTERS), vec![]),
-            svc("config-svc", P_CONFIG, Some(E_CONFIG), vec![]),
-            svc("inventory-svc", P_INVENTORY, Some(E_INVENTORY), vec![
-                peer("CHARACTERS", E_CHARACTERS),
-                peer("CONFIG", E_CONFIG),
-                ("INVENTORY_DEV_GRANT".into(), "1".into()),
-            ]),
-            // gateway-svc: without_db (no DATABASE_URL), only stubs; every op resolves
-            // Remote over the mTLS edge. It also serves the player QUIC front.
-            Svc {
-                name: "gateway-svc",
-                http_port: P_GATEWAY,
-                env: {
-                    let mut env = vec![
-                        ("EDGE_CA_CERT".into(), self.ca_cert.display().to_string()),
-                        ("EDGE_CA_KEY".into(), self.ca_key.display().to_string()),
-                        ("PORT".into(), format!(":{P_GATEWAY}")),
-                        ("PLAYER_EDGE_ADDR".into(), format!(":{PLAYER_PORT}")),
-                        peer("CHARACTERS", E_CHARACTERS),
-                        peer("INVENTORY", E_INVENTORY),
-                        peer("ACCOUNTS", E_ACCOUNTS),
-                        peer("MATCH", E_MATCH),
-                        peer("LEADERBOARD", E_LEADERBOARD),
-                        peer("APIKEYS", E_APIKEYS),
-                        ("ADMIN_HTTP_ADDR".into(), format!("127.0.0.1:{P_ADMIN}")),
-                        ("ACCOUNTS_HTTP_ADDR".into(), format!("127.0.0.1:{P_ACCOUNTS}")),
-                    ];
-                    env.sort_by(|a, b| a.0.cmp(&b.0));
-                    env
-                },
-            },
-            svc("admin-svc", P_ADMIN, None, vec![
-                peer("CHARACTERS", E_CHARACTERS),
-                peer("INVENTORY", E_INVENTORY),
-                peer("CONFIG", E_CONFIG),
-                peer("ACCOUNTS", E_ACCOUNTS),
-                peer("AUDIT", E_AUDIT),
-                peer("SCHEDULER", E_SCHEDULER),
-                peer("APIKEYS", E_APIKEYS),
-                ("TRUSTED_PROXY_CIDRS".into(), "127.0.0.1/32".into()),
-                ("ADMIN_COOKIE_SECURE".into(), "0".into()),
-            ]),
-        ]
+    fn http_port(&self, name: &str) -> u16 {
+        self.service(name).http_port
     }
 
-    fn spawn(&self, svc: &Svc) -> Result<Running> {
+    fn player_port(&self) -> u16 {
+        self.service("gateway-svc")
+            .player_port
+            .expect("gateway has player port")
+    }
+
+    fn spawn(&self, svc: &ServiceSpec) -> Result<Running> {
         let bin = self
             .bin_dir
-            .join(format!("{}{}", svc.name, std::env::consts::EXE_SUFFIX));
+            .join(format!("{}{}", svc.executable_package, std::env::consts::EXE_SUFFIX));
         if !bin.exists() {
             bail!("binary not found: {} (run `cargo build` first)", bin.display());
         }
-        let out = File::create(self.run_dir.join(format!("{}.out.log", svc.name)))?;
-        let err = File::create(self.run_dir.join(format!("{}.err.log", svc.name)))?;
-        let child = Command::new(&bin)
-            .envs(svc.env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
-            .stdout(out)
-            .stderr(err)
-            .spawn()
+        let child = OwnedChild::spawn(spawn_spec(
+            svc.name,
+            bin,
+            Vec::new(),
+            &svc.env,
+            &self.root,
+            &self.run_dir.join(format!("{}.out.log", svc.name)),
+            &self.run_dir.join(format!("{}.err.log", svc.name)),
+        ))
             .with_context(|| format!("spawn {}", svc.name))?;
-        Ok(Running { child })
+        Ok(Running { name: svc.name, child })
     }
 
-    async fn wait_healthy(&self, svc: &Svc) -> Result<()> {
+    async fn wait_healthy(&self, svc: &ServiceSpec) -> Result<()> {
         let url = format!("http://127.0.0.1:{}/readyz", svc.http_port);
         let deadline = Instant::now() + Duration::from_secs(30);
         loop {
@@ -230,30 +120,64 @@ impl Proof {
     }
 }
 
-/// Send a GRACEFUL shutdown signal to a process (Ctrl-Break on Windows to its own
-/// process group, SIGTERM on unix) — the non-forced path the app's `shutdown_signal`
-/// drains on. The child MUST have been spawned in its own process group (Windows).
-#[cfg(windows)]
-fn send_graceful(pid: u32) -> bool {
-    use windows_sys::Win32::System::Console::{GenerateConsoleCtrlEvent, CTRL_BREAK_EVENT};
-    unsafe { GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, pid) != 0 }
-}
-#[cfg(unix)]
-fn send_graceful(pid: u32) -> bool {
-    unsafe { libc::kill(pid as i32, libc::SIGTERM) == 0 }
+fn spawn_spec(
+    label: impl Into<String>,
+    executable: PathBuf,
+    args: Vec<OsString>,
+    env: &BTreeMap<String, String>,
+    cwd: &Path,
+    stdout: &Path,
+    stderr: &Path,
+) -> SpawnSpec {
+    SpawnSpec {
+        label: label.into(),
+        executable,
+        args,
+        env: env
+            .iter()
+            .map(|(key, value)| (OsString::from(key), OsString::from(value)))
+            .collect(),
+        cwd: cwd.to_path_buf(),
+        stdout: OutputDestination::File(stdout.to_path_buf()),
+        stderr: OutputDestination::File(stderr.to_path_buf()),
+        process_group: ProcessGroupPolicy::Owned,
+    }
 }
 
-/// Windows: put a child in its OWN process group so a targeted Ctrl-Break reaches it
-/// (and not this harness). No-op on unix (SIGTERM targets the pid directly).
-fn new_group(cmd: &mut Command) {
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-        cmd.creation_flags(CREATE_NEW_PROCESS_GROUP);
+fn wait_for_exit(child: &mut OwnedChild) -> Result<std::process::ExitStatus> {
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(status);
+        }
+        std::thread::sleep(Duration::from_millis(25));
     }
-    #[cfg(not(windows))]
-    let _ = cmd;
+}
+
+fn executable_on_path(name: &str, env: &BTreeMap<String, String>) -> Result<PathBuf> {
+    let configured = std::env::var_os("CARGO").filter(|_| name == "cargo");
+    if let Some(path) = configured {
+        let path = PathBuf::from(path);
+        if path.is_file() {
+            return Ok(path);
+        }
+    }
+    let path = env.get("PATH").context("PATH is absent from the build environment")?;
+    let extensions: Vec<&str> = if cfg!(windows) {
+        env.get("PATHEXT")
+            .map(|value| value.split(';').collect())
+            .unwrap_or_else(|| vec![".COM", ".EXE", ".BAT", ".CMD"])
+    } else {
+        vec![""]
+    };
+    for directory in std::env::split_paths(OsStr::new(path)) {
+        for extension in &extensions {
+            let candidate = directory.join(format!("{name}{extension}"));
+            if candidate.is_file() {
+                return Ok(candidate);
+            }
+        }
+    }
+    bail!("{name} executable not found in the explicit build PATH")
 }
 
 /// Extract `<input name="X" value="Y">` pairs from an admin form page (for the M3b
@@ -285,27 +209,35 @@ async fn monolith_parity(ctx: &Ctx, pool: &PgPool, p: &mut Proof) -> Result<()> 
     if !bin.exists() {
         bail!("monolith binary not found: {}", bin.display());
     }
-    let out = File::create(ctx.run_dir.join("monolith.out.log"))?;
-    let err = File::create(ctx.run_dir.join("monolith.err.log"))?;
-    let mut cmd = Command::new(&bin);
-    cmd.env("PORT", format!(":{P_CHARACTERS}"))
-        .env("DATABASE_URL", &ctx.db_url)
-        .env("PLAYER_EDGE_ADDR", format!(":{PLAYER_PORT}"))
-        .env("EDGE_CA_CERT", ctx.ca_cert.display().to_string())
-        .env("EDGE_CA_KEY", ctx.ca_key.display().to_string())
-        .env("APIKEYS_DEV_SEED", "1")
-        .env("ACCOUNTS_DEV_AUTH", "1")
-        .env("INVENTORY_DEV_GRANT", "1")
-        .env("TLS_MODE", "off")
-        .env("ADMIN_COOKIE_SECURE", "0")
-        .env("TRUSTED_PROXY_CIDRS", "127.0.0.1/32")
-        .stdout(out)
-        .stderr(err);
-    new_group(&mut cmd); // own process group so [W2]'s Ctrl-Break targets only it
-    let child = cmd.spawn().context("spawn monolith")?;
-    let pid = child.id();
-    let mut mono = Running { child }; // kill-on-drop safety net until [W2]
-    let m = format!("http://127.0.0.1:{P_CHARACTERS}");
+    let characters_port = ctx.http_port("characters-svc");
+    let mut env = runtime_environment();
+    for (key, value) in [
+        ("PORT", format!(":{characters_port}")),
+        ("DATABASE_URL", ctx.db_url.clone()),
+        ("PLAYER_EDGE_ADDR", format!(":{}", ctx.player_port())),
+        ("EDGE_CA_CERT", ctx.ca_cert.display().to_string()),
+        ("EDGE_CA_KEY", ctx.ca_key.display().to_string()),
+        ("APIKEYS_DEV_SEED", "1".into()),
+        ("ACCOUNTS_DEV_AUTH", "1".into()),
+        ("INVENTORY_DEV_GRANT", "1".into()),
+        ("TLS_MODE", "off".into()),
+        ("ADMIN_COOKIE_SECURE", "0".into()),
+        ("TRUSTED_PROXY_CIDRS", "127.0.0.1/32".into()),
+    ] {
+        env.insert(key.into(), value);
+    }
+    let child = OwnedChild::spawn(spawn_spec(
+        "server",
+        bin,
+        Vec::new(),
+        &env,
+        &ctx.root,
+        &ctx.run_dir.join("monolith.out.log"),
+        &ctx.run_dir.join("monolith.err.log"),
+    ))
+    .context("spawn monolith")?;
+    let mut mono = Running { name: "server", child };
+    let m = format!("http://127.0.0.1:{characters_port}");
     // wait healthy
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
@@ -315,11 +247,11 @@ async fn monolith_parity(ctx: &Ctx, pool: &PgPool, p: &mut Proof) -> Result<()> 
             }
         }
         if Instant::now() >= deadline {
-            bail!("monolith did not become healthy on :{P_CHARACTERS}");
+            bail!("monolith did not become healthy on :{characters_port}");
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
-    println!("[splitproof] monolith healthy on :{P_CHARACTERS}");
+    println!("[splitproof] monolith healthy on :{characters_port}");
     let suffix = std::process::id();
 
     // [M0] register a player on the monolith (accounts module local, real session).
@@ -374,25 +306,15 @@ async fn monolith_parity(ctx: &Ctx, pool: &PgPool, p: &mut Proof) -> Result<()> 
     // [W2] graceful shutdown: a native Ctrl-Break (Windows) / SIGTERM (unix) must drain
     // in-flight work and exit 0 within the grace window — no force-kill. This is the
     // proof winctrl gave, now native (the app's shutdown_signal listens for ctrl_break).
-    let sent = send_graceful(pid);
-    let mut clean = false;
-    if sent {
-        let deadline = Instant::now() + Duration::from_secs(15);
-        loop {
-            match mono.child.try_wait() {
-                Ok(Some(status)) => {
-                    clean = status.success();
-                    break;
-                }
-                Ok(None) => {}
-                Err(_) => break,
-            }
-            if Instant::now() >= deadline {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(200)).await;
-        }
-    }
+    let shutdown = mono.child.shutdown(ShutdownPolicy {
+        graceful_timeout: Duration::from_secs(15),
+        force_timeout: Duration::from_secs(5),
+    });
+    let (sent, clean) = match shutdown {
+        Ok(ShutdownOutcome::Graceful(status)) => (true, status.success()),
+        Ok(ShutdownOutcome::AlreadyExited(status)) => (false, status.success()),
+        Ok(ShutdownOutcome::Forced(_)) | Err(_) => (true, false),
+    };
     p.check(
         "[W2] monolith graceful shutdown -> clean exit",
         sent && clean,
@@ -415,9 +337,67 @@ fn workspace_dirs() -> Result<(PathBuf, PathBuf)> {
     Ok((bin_dir, root))
 }
 
-#[tokio::main]
-async fn main() -> std::process::ExitCode {
-    match run().await {
+enum ActiveLease {
+    Borrowed(BorrowedLease),
+    Owned(OwnedLease),
+}
+
+impl ActiveLease {
+    fn description(&self) -> (&'static str, &str) {
+        match self {
+            Self::Borrowed(lease) => ("borrowed", lease.run_id()),
+            Self::Owned(lease) => ("owned", lease.run_id()),
+        }
+    }
+}
+
+fn main() -> std::process::ExitCode {
+    if let Some(exit) = processctl::dispatch_guardian_from_current_exe() {
+        return exit;
+    }
+    let (bin_dir, root) = match workspace_dirs() {
+        Ok(paths) => paths,
+        Err(error) => {
+            eprintln!("splitproof: fatal: {error:#}");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+    let run_dir = root.join("run");
+    if let Err(error) = std::fs::create_dir_all(&run_dir) {
+        eprintln!("splitproof: fatal: create {}: {error}", run_dir.display());
+        return std::process::ExitCode::FAILURE;
+    }
+    let lease = match BorrowedLease::consume_inherited_if_present("splitproof") {
+        Ok(Some(lease)) => ActiveLease::Borrowed(lease),
+        Ok(None) => match RolloutLock::acquire(
+            run_dir.join("rollout.lock"),
+            format!("splitproof-{}", std::process::id()),
+            "splitproof",
+        ) {
+            Ok(lease) => ActiveLease::Owned(lease),
+            Err(error) => {
+                eprintln!("splitproof: fatal: acquire rollout lease: {error}");
+                return std::process::ExitCode::FAILURE;
+            }
+        },
+        Err(error) => {
+            eprintln!("splitproof: fatal: consume inherited rollout lease: {error}");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+    let runtime = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            eprintln!("splitproof: fatal: create Tokio runtime: {error}");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+    let (lease_kind, run_id) = lease.description();
+    println!("[splitproof] rollout lease: {lease_kind} ({run_id})");
+    let result = runtime.block_on(run(bin_dir, root, run_dir));
+    drop(runtime);
+    drop(lease);
+    match result {
         Ok(0) => std::process::ExitCode::SUCCESS,
         Ok(n) => {
             eprintln!("splitproof: {n} assertion(s) failed");
@@ -430,11 +410,16 @@ async fn main() -> std::process::ExitCode {
     }
 }
 
-async fn run() -> Result<u32> {
-    let (bin_dir, root) = workspace_dirs()?;
-    let run_dir = root.join("run");
-    std::fs::create_dir_all(&run_dir)?;
+async fn run(bin_dir: PathBuf, root: PathBuf, run_dir: PathBuf) -> Result<u32> {
     let db_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DB.to_string());
+    let fleet = game_backend_fleet(
+        &FleetInputs {
+            database_url: db_url.clone(),
+            edge_ca_cert: run_dir.join("edge-ca.crt"),
+            edge_ca_key: run_dir.join("edge-ca.key"),
+        },
+        FleetFlavor::Proof,
+    );
     let ctx = Ctx {
         ca_cert: run_dir.join("edge-ca.crt"),
         ca_key: run_dir.join("edge-ca.key"),
@@ -446,8 +431,10 @@ async fn run() -> Result<u32> {
             .redirect(reqwest::redirect::Policy::none())
             .build()?,
         bin_dir,
+        root: root.clone(),
         run_dir,
         db_url,
+        fleet,
     };
 
     // Fleet-drift tripwire: the harness svc list must equal cmd/*-svc on disk.
@@ -477,9 +464,8 @@ async fn run() -> Result<u32> {
     reset_config_baseline(&pool).await?;
 
     // Boot the fleet; each guard lives in `fleet` so a `?` below drops them all (kill).
-    let all = ctx.fleet();
     let mut fleet: Vec<Running> = Vec::new();
-    for svc in &all {
+    for svc in ctx.fleet.services() {
         println!("[splitproof] starting {} on :{} ...", svc.name, svc.http_port);
         // config-svc must boot AFTER the baseline reset (done above) so its first
         // snapshot is the default; the ordering in `fleet()` already places it late.
@@ -487,7 +473,7 @@ async fn run() -> Result<u32> {
         ctx.wait_healthy(svc).await?;
         println!("[splitproof] {} healthy", svc.name);
     }
-    println!("[splitproof] fleet up: {}/{} processes healthy\n", fleet.len(), all.len());
+    println!("[splitproof] fleet up: {}/{} processes healthy\n", fleet.len(), ctx.fleet.services().len());
 
     let mut p = Proof::default();
     assertions(&ctx, &pool, &mut p).await?;
@@ -496,7 +482,7 @@ async fn run() -> Result<u32> {
     // INVENTORY_DEV_GRANT=1 (see `fleet()` above), so `assertions` structurally
     // cannot see the split bypass Step 1 closed. Restart ONLY inventory-svc without
     // the flag and prove a fully-authed grant call now 404s through the front door.
-    i_gate(&ctx, &all, &mut fleet, &mut p).await?;
+    i_gate(&ctx, &mut fleet, &mut p).await?;
 
     // --- Monolith parity: tear the split down (frees :8080 + :9100), boot cmd/server on
     // the same player front, and re-prove a subset (never-monolith-only-features). ---
@@ -523,19 +509,31 @@ async fn run() -> Result<u32> {
 fn build_fleet(ctx: &Ctx, root: &Path) -> Result<()> {
     println!("[splitproof] building fleet (cargo build) ...");
     let mut args = vec!["build".to_string()];
-    for svc in ctx.fleet() {
+    for svc in ctx.fleet.services() {
         args.push("-p".into());
-        args.push(svc.name.into());
+        args.push(svc.executable_package.into());
     }
     for extra in ["server", "adminctl"] {
         args.push("-p".into());
         args.push(extra.into());
     }
-    let status = Command::new("cargo")
-        .args(&args)
-        .current_dir(root)
-        .status()
-        .context("run cargo build")?;
+    let env = build_environment();
+    let cargo = executable_on_path("cargo", &env)?;
+    let mut child = OwnedChild::spawn(SpawnSpec {
+        label: "splitproof-cargo-build".into(),
+        executable: cargo,
+        args: args.into_iter().map(OsString::from).collect(),
+        env: env
+            .into_iter()
+            .map(|(key, value)| (OsString::from(key), OsString::from(value)))
+            .collect(),
+        cwd: root.to_path_buf(),
+        stdout: OutputDestination::Inherit,
+        stderr: OutputDestination::Inherit,
+        process_group: ProcessGroupPolicy::Owned,
+    })
+    .context("run cargo build")?;
+    let status = wait_for_exit(&mut child)?;
     if !status.success() {
         bail!("cargo build of the fleet failed");
     }
@@ -543,43 +541,36 @@ fn build_fleet(ctx: &Ctx, root: &Path) -> Result<()> {
 }
 
 fn preflight_fleet(root: &Path, ctx: &Ctx) -> Result<()> {
-    let mut on_disk: Vec<String> = std::fs::read_dir(root.join("cmd"))?
-        .filter_map(|e| e.ok())
-        .map(|e| e.file_name().to_string_lossy().into_owned())
-        .filter(|n| n.ends_with("-svc"))
-        .collect();
-    on_disk.sort();
-    let mut booted: Vec<String> = ctx.fleet().iter().map(|s| s.name.to_string()).collect();
-    booted.sort();
-    if on_disk != booted {
-        bail!(
-            "fleet drift: cmd/*-svc on disk {:?} != harness fleet {:?} — add the missing svc's boot block + env",
-            on_disk, booted
-        );
-    }
-    println!("[splitproof] fleet preflight OK: {} svcs == cmd/*-svc on disk", booted.len());
+    ctx.fleet.validate_disk(&root.join("cmd"))?;
+    println!(
+        "[splitproof] fleet preflight OK: {} svcs == cmd/*-svc on disk",
+        ctx.fleet.services().len()
+    );
     Ok(())
 }
 
-/// Seed an admin login via adminctl (password over stdin, never argv). adminctl ensures
-/// schema `admin` + admin.users itself, so it runs before admin-svc migrates.
+/// Seed an admin login via adminctl (password in its supported private environment
+/// input, never argv). adminctl ensures its schema before admin-svc migrates.
 fn seed_admin(ctx: &Ctx, user: &str, pass: &str) -> Result<()> {
-    use std::io::Write;
     let bin = ctx.bin_dir.join(format!("adminctl{}", std::env::consts::EXE_SUFFIX));
-    let mut child = Command::new(&bin)
-        .args(["create-user", user, "--password-stdin"])
-        .env("DATABASE_URL", &ctx.db_url)
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .with_context(|| format!("spawn adminctl for {user}"))?;
-    child
-        .stdin
-        .take()
-        .context("adminctl stdin")?
-        .write_all(format!("{pass}\n").as_bytes())?;
-    if !child.wait()?.success() {
+    let mut env = runtime_environment();
+    env.insert("DATABASE_URL".into(), ctx.db_url.clone());
+    env.insert("ADMINCTL_PASSWORD".into(), pass.to_string());
+    let mut child = OwnedChild::spawn(SpawnSpec {
+        label: format!("adminctl-{user}"),
+        executable: bin,
+        args: ["create-user", user].into_iter().map(OsString::from).collect(),
+        env: env
+            .into_iter()
+            .map(|(key, value)| (OsString::from(key), OsString::from(value)))
+            .collect(),
+        cwd: ctx.root.clone(),
+        stdout: OutputDestination::Null,
+        stderr: OutputDestination::Null,
+        process_group: ProcessGroupPolicy::Owned,
+    })
+    .with_context(|| format!("spawn adminctl for {user}"))?;
+    if !wait_for_exit(&mut child)?.success() {
         bail!("adminctl create-user {user} failed");
     }
     Ok(())
@@ -596,7 +587,7 @@ async fn reset_config_baseline(pool: &PgPool) -> Result<()> {
 }
 
 async fn assertions(ctx: &Ctx, pool: &PgPool, p: &mut Proof) -> Result<()> {
-    let g = format!("http://127.0.0.1:{P_GATEWAY}");
+    let g = format!("http://127.0.0.1:{}", ctx.http_port("gateway-svc"));
     let suffix = std::process::id();
 
     // [RDY] gateway readyz with the full fleet up.
@@ -1021,7 +1012,10 @@ async fn assertions(ctx: &Ctx, pool: &PgPool, p: &mut Proof) -> Result<()> {
     // same lockout logic without the gateway's per-IP rate limiter — the harness fires
     // truly concurrently and would otherwise trip the gateway's 127.0.0.1 bucket, which
     // the slower curl-per-process shell never hit.
-    let admin_direct = format!("http://127.0.0.1:{P_ADMIN}/admin/login");
+    let admin_direct = format!(
+        "http://127.0.0.1:{}/admin/login",
+        ctx.http_port("admin-svc")
+    );
     // A long-timeout client for the concurrent admin bursts: each login holds the
     // advisory lock across a 64 MiB Argon2 (~300-500ms) and 12/40 requests serialize,
     // so the tail can take several seconds — well past the 5s default (the curl-per-
@@ -1173,8 +1167,9 @@ async fn assertions(ctx: &Ctx, pool: &PgPool, p: &mut Proof) -> Result<()> {
 
     // --- Metrics ---
     // [MX1] characters-svc /metrics -> 200 + http_requests_total (one recorded hit first).
-    let _ = ctx.http.get(format!("http://127.0.0.1:{P_CHARACTERS}/__metrics_probe")).send().await;
-    let mx1 = ctx.http.get(format!("http://127.0.0.1:{P_CHARACTERS}/metrics")).send().await?;
+    let characters_port = ctx.http_port("characters-svc");
+    let _ = ctx.http.get(format!("http://127.0.0.1:{characters_port}/__metrics_probe")).send().await;
+    let mx1 = ctx.http.get(format!("http://127.0.0.1:{characters_port}/metrics")).send().await?;
     let (mx1c, mx1b) = (mx1.status().as_u16(), mx1.text().await.unwrap_or_default());
     p.check("[MX1] characters-svc /metrics -> http_requests_total", mx1c == 200 && mx1b.contains("http_requests_total"), format!("code={mx1c}"));
     // [MX2] gateway-svc /metrics -> 200 + a per-op route label.
@@ -1199,16 +1194,13 @@ async fn assertions(ctx: &Ctx, pool: &PgPool, p: &mut Proof) -> Result<()> {
 
 /// `[I-GATE]` — proves Step 1's impl-side `INVENTORY_DEV_GRANT` guard live in the
 /// split, where `assertions` (fleet-wide `INVENTORY_DEV_GRANT=1`) structurally cannot:
-/// drop ONLY the running inventory-svc, respawn it from a clone of its `Svc` with the
-/// flag stripped out, and prove a FULLY-AUTHED (valid key + valid bearer) grant call
-/// still 404s through gateway-svc. `fleet`/`all` share index order (both built by
-/// iterating `ctx.fleet()`), so `all[idx]`'s env is inventory-svc's original env and
-/// `fleet[idx]` is its `Running` guard.
-async fn i_gate(ctx: &Ctx, all: &[Svc], fleet: &mut Vec<Running>, p: &mut Proof) -> Result<()> {
+/// drop ONLY the running inventory-svc, respawn it from the canonical named spec with
+/// the flag stripped out, and prove a FULLY-AUTHED grant still 404s through gateway-svc.
+async fn i_gate(ctx: &Ctx, fleet: &mut Vec<Running>, p: &mut Proof) -> Result<()> {
     println!("\n[splitproof] === [I-GATE] restart inventory-svc WITHOUT INVENTORY_DEV_GRANT ===");
-    let idx = all
+    let idx = fleet
         .iter()
-        .position(|s| s.name == "inventory-svc")
+        .position(|running| running.name == "inventory-svc")
         .context("inventory-svc missing from fleet (preflight_fleet should have caught this)")?;
 
     // Kill only inventory-svc (Drop kills + waits) and give the OS a moment to free
@@ -1217,13 +1209,15 @@ async fn i_gate(ctx: &Ctx, all: &[Svc], fleet: &mut Vec<Running>, p: &mut Proof)
     fleet.remove(idx);
     tokio::time::sleep(Duration::from_millis(800)).await;
 
-    let env: Vec<(String, String)> = all[idx]
+    let original = ctx.service("inventory-svc");
+    let env: BTreeMap<String, String> = original
         .env
         .iter()
-        .filter(|(k, _)| k != "INVENTORY_DEV_GRANT")
-        .cloned()
+        .filter(|(key, _)| key.as_str() != "INVENTORY_DEV_GRANT")
+        .map(|(key, value)| (key.clone(), value.clone()))
         .collect();
-    let restarted = Svc { name: all[idx].name, http_port: all[idx].http_port, env };
+    let mut restarted = original.clone();
+    restarted.env = env;
     println!("[splitproof] restarting {} on :{} without the dev-grant flag ...", restarted.name, restarted.http_port);
     let running = ctx.spawn(&restarted)?;
     ctx.wait_healthy(&restarted).await?;
@@ -1239,7 +1233,7 @@ async fn i_gate(ctx: &Ctx, all: &[Svc], fleet: &mut Vec<Running>, p: &mut Proof)
     // post-restart call may transport-fail or hang past our client timeout while that
     // dead conn is detected and reset; only the call AFTER that redials fresh and
     // reaches the new process. Poll instead of asserting on a single shot.
-    let g = format!("http://127.0.0.1:{P_GATEWAY}");
+    let g = format!("http://127.0.0.1:{}", ctx.http_port("gateway-svc"));
     let email = format!("igate-{}@test.local", std::process::id());
     let token = register_login(ctx, &g, &email).await.context("i-gate register/login")?;
     let deadline = Instant::now() + Duration::from_secs(60);
@@ -1413,7 +1407,7 @@ async fn player_call(
 ) -> Result<serde_json::Value> {
     let ca = ctx.ca_cert.to_str().context("CA cert path not UTF-8")?;
     let trust = DevCA::load_cert_only(ca).map_err(|e| anyhow::anyhow!("load CA: {e}"))?;
-    let addr = format!("127.0.0.1:{PLAYER_PORT}").parse().context("player addr")?;
+    let addr = format!("127.0.0.1:{}", ctx.player_port()).parse().context("player addr")?;
     let client = PlayerClient::dial(addr, &trust)
         .await
         .map_err(|e| anyhow::anyhow!("dial: {e}"))?;
@@ -1523,7 +1517,7 @@ fn status_or_err(r: &Result<serde_json::Value>, want: &str) -> bool {
 async fn player_burst(ctx: &Ctx) -> bool {
     let Some(ca) = ctx.ca_cert.to_str() else { return false };
     let Ok(trust) = DevCA::load_cert_only(ca) else { return false };
-    let Ok(addr) = format!("127.0.0.1:{PLAYER_PORT}").parse() else { return false };
+    let Ok(addr) = format!("127.0.0.1:{}", ctx.player_port()).parse() else { return false };
     let Ok(client) = PlayerClient::dial(addr, &trust).await else { return false };
     let mut ok = 0u32;
     let mut limited = false;

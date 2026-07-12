@@ -101,7 +101,9 @@ fn child_entry() {
             .unwrap();
         }
         "lease-borrower" => {
-            let lease = BorrowedLease::consume_inherited("splitproof").unwrap();
+            let lease = BorrowedLease::consume_inherited_if_present("splitproof")
+                .unwrap()
+                .expect("borrower pipe must be detected");
             assert!(borrower_stdin_is_retained_non_inheritable());
             assert_eq!(lease.run_id(), "borrow-run");
             assert!(BorrowedLease::consume_inherited("splitproof").is_err());
@@ -124,6 +126,12 @@ fn child_entry() {
                 .unwrap()
                 .success());
             std::fs::write(ready, "borrowed-ok").unwrap();
+        }
+        "optional-lease-direct" => {
+            assert!(BorrowedLease::consume_inherited_if_present("splitproof")
+                .unwrap()
+                .is_none());
+            ready_from_env();
         }
         #[cfg(windows)]
         "state-crash-before-publish" => {
@@ -445,6 +453,25 @@ fn target_cannot_inherit_guardian_control_pipe_descriptors() {
     wait_file(&ready);
     assert_eq!(std::fs::read_to_string(&ready).unwrap(), "closed");
     let _ = child.shutdown(policy(Duration::from_millis(100)));
+}
+
+#[test]
+fn direct_process_without_borrower_pipe_observes_no_inherited_lease() {
+    let _serial = PROCESS_TEST_LOCK.lock().unwrap();
+    protect_test_harness();
+    let dir = test_dir("optional-lease-direct");
+    let ready = dir.join("ready");
+    let mut child = OwnedChild::spawn(spec("optional-lease-direct", &ready)).unwrap();
+    wait_file(&ready);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            assert!(status.success());
+            break;
+        }
+        assert!(Instant::now() < deadline, "direct fixture did not exit");
+        std::thread::sleep(Duration::from_millis(10));
+    }
 }
 
 fn spec(mode: &str, ready: &Path) -> SpawnSpec {

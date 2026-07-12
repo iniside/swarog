@@ -438,6 +438,15 @@ pub(crate) fn install_owner_drop_hook(path: PathBuf, hook: impl FnOnce() + Send 
 }
 
 impl BorrowedLease {
+    /// Consumes an inherited one-shot lease when stdin is the private borrower pipe.
+    /// A normal direct invocation leaves stdin untouched and returns `None`.
+    pub fn consume_inherited_if_present(expected_role: &str) -> Result<Option<Self>, LeaseError> {
+        if !inherited_credential_present()? {
+            return Ok(None);
+        }
+        Self::consume_inherited(expected_role).map(Some)
+    }
+
     pub fn consume_inherited(expected_role: &str) -> Result<Self, LeaseError> {
         validate_identifier("borrower role", expected_role)
             .map_err(|error| LeaseError::InvalidField(error.to_string()))?;
@@ -456,6 +465,48 @@ impl BorrowedLease {
     pub fn run_id(&self) -> &str {
         &self.metadata.run_id
     }
+}
+
+#[cfg(target_os = "linux")]
+fn inherited_credential_present() -> Result<bool, LeaseError> {
+    let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+    if unsafe { libc::fstat(0, stat.as_mut_ptr()) } != 0 {
+        return Err(LeaseError::Io {
+            operation: "inspect inherited borrower credential",
+            source: std::io::Error::last_os_error(),
+        });
+    }
+    let stat = unsafe { stat.assume_init() };
+    Ok(stat.st_mode & libc::S_IFMT == libc::S_IFIFO)
+}
+
+#[cfg(windows)]
+fn inherited_credential_present() -> Result<bool, LeaseError> {
+    use windows_sys::Win32::Storage::FileSystem::{GetFileType, FILE_TYPE_PIPE, FILE_TYPE_UNKNOWN};
+    use windows_sys::Win32::System::Console::{GetStdHandle, STD_INPUT_HANDLE};
+    let handle = unsafe { GetStdHandle(STD_INPUT_HANDLE) };
+    if handle.is_null() || handle == windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE {
+        return Ok(false);
+    }
+    let kind = unsafe { GetFileType(handle) };
+    if kind == FILE_TYPE_UNKNOWN {
+        let source = std::io::Error::last_os_error();
+        if source.raw_os_error().unwrap_or(0) != 0 {
+            return Err(LeaseError::Io {
+                operation: "inspect inherited borrower credential",
+                source,
+            });
+        }
+    }
+    Ok(kind == FILE_TYPE_PIPE)
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
+fn inherited_credential_present() -> Result<bool, LeaseError> {
+    Err(LeaseError::InvalidField(format!(
+        "processctl supports only Windows and Linux, not {}",
+        std::env::consts::OS
+    )))
 }
 
 pub(crate) fn validate_credential(
