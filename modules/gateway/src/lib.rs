@@ -63,7 +63,7 @@ mod verifier;
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use axum::body::Body;
 use axum::extract::{ConnectInfo, Request};
@@ -475,7 +475,19 @@ struct RouteTable {
     peers: HashMap<String, String>,
     /// Lazily-dialed edge clients per provider, shared across requests to that peer.
     /// An entry is EVICTED when a call through it fails (see [`RouteTable::dispatch`]).
-    remotes: tokio::sync::Mutex<HashMap<String, Arc<dyn Caller>>>,
+    /// A `std::sync::Mutex` locked only for synchronous get/insert/remove — never
+    /// held across an await (the `keys.rs` cache rule), so a slow dial to one
+    /// provider can never block cache hits for the others.
+    remotes: Mutex<HashMap<String, Arc<dyn Caller>>>,
+    /// Per-provider dial flights (the `keys.rs` singleflight shape): while one
+    /// request dials a provider, concurrent requests to the SAME provider queue on
+    /// that provider's flight mutex and re-check the cache after it; requests to
+    /// OTHER providers never touch it — a dead peer stalls only its own routes.
+    /// Entries are `Weak` so a finished flight self-GCs (dead entries are purged on
+    /// each [`RouteTable::flight`] call — the map is bounded by the fleet's provider
+    /// count, so no saturation shed is needed here, unlike the attacker-keyed
+    /// api-key flight table).
+    flights: Mutex<HashMap<String, Weak<tokio::sync::Mutex<()>>>>,
 }
 
 impl RouteTable {
@@ -566,7 +578,8 @@ impl RouteTable {
             routes,
             invokers: Arc::new(invokers),
             peers,
-            remotes: tokio::sync::Mutex::new(HashMap::new()),
+            remotes: Mutex::new(HashMap::new()),
+            flights: Mutex::new(HashMap::new()),
         })
     }
 
@@ -626,7 +639,7 @@ impl RouteTable {
                 // demonstrably carried a round trip); every other error — including
                 // any future status — evicts, keeping eviction the safe default.
                 if matches!(&result, Err(e) if !e.status.is_definitive_answer()) {
-                    let mut cache = self.remotes.lock().await;
+                    let mut cache = self.remotes.lock().unwrap();
                     if let Some(cached) = cache.get(provider) {
                         if Arc::ptr_eq(cached, &caller) {
                             cache.remove(provider);
@@ -648,10 +661,23 @@ impl RouteTable {
     /// every op a process serves is local, so this is the seam that lets a unified
     /// front-door route cross-provider without any per-module HTTP shim — exercised
     /// directly in the `RemoteBackend` tests.
+    ///
+    /// **Per-provider singleflight (the `keys.rs` flight shape):** no lock is ever
+    /// held across an await. A cache miss resolves this provider's flight mutex
+    /// synchronously, awaits ONLY that flight, re-checks the cache (a concurrent
+    /// winner's client is reused, not re-dialed), then dials — bounded by the edge
+    /// client's `DIAL_DEADLINE` — and publishes the client. A provider whose dial
+    /// hangs therefore stalls only its own requests, never first dials to healthy
+    /// peers (previously one `tokio::sync::Mutex` was held across the dial await,
+    /// serialising ALL providers behind the slowest).
     async fn remote_caller(&self, provider: &str) -> Result<Arc<dyn Caller>, Error> {
-        let mut cache = self.remotes.lock().await;
-        if let Some(c) = cache.get(provider) {
-            return Ok(c.clone());
+        if let Some(c) = self.cached_remote(provider) {
+            return Ok(c);
+        }
+        let flight = self.flight(provider);
+        let _flight_guard = flight.lock_owned().await;
+        if let Some(c) = self.cached_remote(provider) {
+            return Ok(c);
         }
         let addr_str = self.peers.get(provider).ok_or_else(|| {
             Error::unavailable(format!(
@@ -670,8 +696,30 @@ impl RouteTable {
             .await
             .map_err(|e| Error::unavailable(format!("gateway: dial {provider}: {e}")))?;
         let caller: Arc<dyn Caller> = Arc::new(client);
-        cache.insert(provider.to_string(), caller.clone());
+        self.remotes.lock().unwrap().insert(provider.to_string(), caller.clone());
         Ok(caller)
+    }
+
+    /// Serves `provider`'s client from the cache. The lock is never held across an
+    /// await.
+    fn cached_remote(&self, provider: &str) -> Option<Arc<dyn Caller>> {
+        self.remotes.lock().unwrap().get(provider).cloned()
+    }
+
+    /// Resolves (or creates) `provider`'s dial-flight mutex — synchronous, the
+    /// flights lock is never held across an await. Dead flights (every holder
+    /// finished, `Weak` no longer upgrades) are purged on each call; the map is
+    /// bounded by the provider count, so unlike `keys.rs` there is no saturation
+    /// shed.
+    fn flight(&self, provider: &str) -> Arc<tokio::sync::Mutex<()>> {
+        let mut flights = self.flights.lock().unwrap();
+        flights.retain(|_, weak| weak.strong_count() != 0);
+        if let Some(lock) = flights.get(provider).and_then(Weak::upgrade) {
+            return lock;
+        }
+        let lock = Arc::new(tokio::sync::Mutex::new(()));
+        flights.insert(provider.to_string(), Arc::downgrade(&lock));
+        lock
     }
 }
 

@@ -1091,7 +1091,7 @@ async fn remote_dispatch_evicts_failed_caller_so_next_request_redials() {
     table
         .remotes
         .lock()
-        .await
+        .unwrap()
         .insert("fakeprov".into(), failing.clone() as Arc<dyn Caller>);
 
     // First request: the cached caller fails → the error propagates AND the
@@ -1100,7 +1100,7 @@ async fn remote_dispatch_evicts_failed_caller_so_next_request_redials() {
     assert_eq!(err.status, Status::Unavailable);
     assert_eq!(failing.calls.load(Ordering::SeqCst), 1);
     assert!(
-        !table.remotes.lock().await.contains_key("fakeprov"),
+        !table.remotes.lock().unwrap().contains_key("fakeprov"),
         "failed caller must be evicted"
     );
 
@@ -1115,11 +1115,116 @@ async fn remote_dispatch_evicts_failed_caller_so_next_request_redials() {
     // cache, exactly what remote_caller does after dialing), the route works again
     // — the self-heal, with exactly one failed request in between.
     let healthy = Arc::new(FakeCaller { seen: std::sync::Mutex::new(None) });
-    table.remotes.lock().await.insert("fakeprov".into(), healthy as Arc<dyn Caller>);
+    table.remotes.lock().unwrap().insert("fakeprov".into(), healthy as Arc<dyn Caller>);
     let resp = table.dispatch(&op, Identity::none(), b"{}".to_vec()).await.unwrap();
     assert_eq!(resp, br#"{"status":"Ok","relayed":true}"#);
     assert!(
-        table.remotes.lock().await.contains_key("fakeprov"),
+        table.remotes.lock().unwrap().contains_key("fakeprov"),
         "a successful call must keep its caller cached"
     );
+}
+
+// ---- per-provider dial singleflight: no lock held across the dial await ----
+
+/// A minimal Remote op for `provider` (no local invoker contributed → Remote).
+fn remote_op(provider: &str) -> Operation {
+    Operation {
+        method: format!("{provider}.op"),
+        verb: "POST".into(),
+        path: format!("/{provider}"),
+        auth: AuthReq::None,
+        success: 200,
+        retry_mode: RetryMode::Never,
+    }
+}
+
+/// Finding 1a (round 4): a provider whose dial HANGS (peer addr bound but silent)
+/// must not block requests to a healthy provider. Before the flight rework one
+/// `tokio::sync::Mutex` was held across `edge::Client::dial` in `remote_caller`,
+/// so the hung dial serialised EVERY other provider's first cache lookup behind
+/// it; now the cache is a sync mutex and only the hung provider's own flight is
+/// held across the dial.
+#[tokio::test]
+async fn hung_dial_to_one_provider_does_not_block_another() {
+    // A bound-but-silent UDP socket: the QUIC dial to it hangs until the edge
+    // client's DIAL_DEADLINE (5s) — far longer than the healthy call's budget.
+    let silent = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind silent socket");
+    let silent_addr = silent.local_addr().unwrap();
+
+    let slots = Slots::new();
+    slots.contribute(
+        opsapi::PEER_SLOT,
+        opsapi::PeerAddr { provider: "slowprov".into(), addr: silent_addr.to_string() },
+    );
+    let table = Arc::new(RouteTable::build(&slots).expect("peer-only slots build"));
+
+    // The healthy provider is already cached (as after a successful earlier dial).
+    let healthy = Arc::new(FakeCaller { seen: std::sync::Mutex::new(None) });
+    table.remotes.lock().unwrap().insert("fastprov".into(), healthy as Arc<dyn Caller>);
+
+    // Start the doomed dispatch and give it time to be inside the hung dial.
+    let slow_table = table.clone();
+    let slow = tokio::spawn(async move {
+        slow_table.dispatch(&remote_op("slowprov"), Identity::none(), b"{}".to_vec()).await
+    });
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(!slow.is_finished(), "the silent peer's dial must still be in flight");
+
+    // The healthy provider's call must complete immediately — well inside the
+    // 5s the hung dial still has to run.
+    let resp = tokio::time::timeout(
+        Duration::from_secs(1),
+        table.dispatch(&remote_op("fastprov"), Identity::none(), b"{}".to_vec()),
+    )
+    .await
+    .expect("healthy provider must not be blocked by another provider's hung dial")
+    .expect("cached healthy caller must serve the call");
+    assert_eq!(resp, br#"{"status":"Ok","relayed":true}"#);
+
+    // The hung dial eventually fails on its own deadline (Step 1) — bounded, not
+    // leaked. Not awaited here to keep the test fast; drop cancels it.
+    slow.abort();
+}
+
+/// Duplicate-dial suppression: a second request to the SAME uncached provider
+/// waits on that provider's flight and reuses the winner's client instead of
+/// dialing again. The first dialer is simulated by holding the provider's flight
+/// (exactly what `remote_caller` holds across its dial): the second dispatch must
+/// park on it — had it proceeded to dial it would have failed loudly with "no
+/// peer contributed" — and, once the winner publishes its client and releases the
+/// flight, complete over the cached client without any dial of its own.
+#[tokio::test]
+async fn concurrent_requests_to_same_provider_share_one_dial() {
+    let table = Arc::new(RouteTable::build(&Slots::new()).expect("empty slots build"));
+
+    // First dialer: acquire the provider's flight as remote_caller would.
+    let flight = table.flight("flightprov");
+    let winner_guard = flight.clone().lock_owned().await;
+
+    // Second caller arrives while the dial is in flight.
+    let waiter_table = table.clone();
+    let waiter = tokio::spawn(async move {
+        waiter_table.dispatch(&remote_op("flightprov"), Identity::none(), b"{}".to_vec()).await
+    });
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(!waiter.is_finished(), "second caller must wait on the provider's flight");
+
+    // Winner finishes its dial: publish the client, release the flight.
+    let healthy = Arc::new(FakeCaller { seen: std::sync::Mutex::new(None) });
+    table.remotes.lock().unwrap().insert("flightprov".into(), healthy as Arc<dyn Caller>);
+    drop(winner_guard);
+
+    // The waiter re-checks the cache and reuses the winner's client — success
+    // proves it never dialed itself (no peer is contributed for flightprov, so
+    // its own dial path would have errored "no peer contributed").
+    let resp = waiter.await.unwrap().expect("waiter must reuse the winner's client");
+    assert_eq!(resp, br#"{"status":"Ok","relayed":true}"#);
+
+    // The finished flight self-GCs: the next flight() call purges dead weaks, so
+    // only the entry it resolves survives.
+    drop(flight);
+    let _other = table.flight("otherprov");
+    let flights = table.flights.lock().unwrap();
+    assert!(!flights.contains_key("flightprov"), "dead flight must be purged");
+    assert_eq!(flights.len(), 1);
 }
