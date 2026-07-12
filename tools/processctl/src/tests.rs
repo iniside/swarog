@@ -331,14 +331,24 @@ fn inherited_borrower_is_one_shot_and_credential_is_not_reinherited() {
         .spawn_borrower(spec("lease-borrower", &ready), "splitproof")
         .unwrap();
     assert!(matches!(
-        owner.spawn_borrower(spec("lease-borrower", &ready), "splitproof"),
-        Err(LeaseError::BorrowerAlreadyIssued)
+        RolloutLock::acquire(&lock_path, "competing-run", "splitproof"),
+        Err(LeaseError::AlreadyOwned)
     ));
     wait_file(&ready);
     assert_eq!(std::fs::read_to_string(&ready).unwrap(), "borrowed-ok");
     while borrower.try_wait().unwrap().is_none() {
         std::thread::sleep(Duration::from_millis(10));
     }
+    drop(borrower);
+    assert!(!std::fs::read_dir(&dir).unwrap().any(|entry| entry
+        .unwrap()
+        .path()
+        .extension()
+        .is_some_and(|extension| extension == "borrowed")));
+    assert!(matches!(
+        owner.spawn_borrower(spec("lease-borrower", &ready), "splitproof"),
+        Err(LeaseError::BorrowerAlreadyIssued)
+    ));
 }
 
 #[test]

@@ -4,7 +4,7 @@ use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
@@ -16,6 +16,9 @@ use crate::{observe_process_identity, OwnedChild, ProcessIdentity, SpawnSpec};
 pub const ROLLOUT_LOCK_VERSION: u32 = 1;
 const MAX_CREDENTIAL_BYTES: u64 = 64 * 1024;
 const MAX_METADATA_BYTES: u64 = 64 * 1024;
+const CREDENTIAL_DELIVERY_TIMEOUT: Duration = Duration::from_secs(2);
+const BORROWER_FORCE_TIMEOUT: Duration = Duration::from_secs(5);
+const CONSUMED_MARKER: &[u8] = b"processctl-borrowed-v1\n";
 static INHERITED_CREDENTIAL_CONSUMED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -51,6 +54,10 @@ pub enum LeaseError {
     MetadataMismatch,
     #[error("borrower credential was already consumed")]
     BorrowerReplay,
+    #[error("timed out delivering the inherited borrower credential after {0:?}")]
+    CredentialDeliveryTimeout(Duration),
+    #[error("borrower credential delivery thread panicked")]
+    CredentialDeliveryPanicked,
     #[error("unsupported rollout lock version {0}")]
     UnsupportedVersion(u32),
     #[error("serialize rollout lock data: {0}")]
@@ -72,12 +79,18 @@ pub struct OwnedLease {
     path: PathBuf,
     metadata: LockMetadata,
     borrower_issued: bool,
+    active_marker: Option<PathBuf>,
 }
 
 pub struct BorrowedLease {
     _lock_file: File,
     metadata: LockMetadata,
     _not_transferable: PhantomData<Rc<()>>,
+}
+
+pub struct BorrowedChild<'lease> {
+    owner: &'lease mut OwnedLease,
+    child: Option<OwnedChild>,
 }
 
 impl RolloutLock {
@@ -134,6 +147,7 @@ impl RolloutLock {
             path,
             metadata,
             borrower_issued: false,
+            active_marker: None,
         })
     }
 }
@@ -151,11 +165,11 @@ impl OwnedLease {
         &self.metadata.allowed_borrower_role
     }
 
-    pub fn spawn_borrower(
-        &mut self,
+    pub fn spawn_borrower<'lease>(
+        &'lease mut self,
         spec: SpawnSpec,
         role: &str,
-    ) -> Result<OwnedChild, LeaseError> {
+    ) -> Result<BorrowedChild<'lease>, LeaseError> {
         if self.borrower_issued {
             return Err(LeaseError::BorrowerAlreadyIssued);
         }
@@ -165,7 +179,6 @@ impl OwnedLease {
                 received: role.to_string(),
             });
         }
-        self.borrower_issued = true;
         let mut nonce = [0u8; 32];
         rand::rngs::OsRng.fill_bytes(&mut nonce);
         let credential = self.credential(nonce);
@@ -175,17 +188,36 @@ impl OwnedLease {
                 "borrower credential exceeds its bound".into(),
             ));
         }
-        let (input, mut writer) = credential_pipe()?;
-        writer.write_all(&bytes).map_err(|source| LeaseError::Io {
-            operation: "write one-shot borrower credential",
-            source,
-        })?;
-        writer.flush().map_err(|source| LeaseError::Io {
-            operation: "flush one-shot borrower credential",
-            source,
-        })?;
-        drop(writer);
-        Ok(OwnedChild::spawn_with_input(spec, input)?)
+        let (input, writer) = credential_pipe()?;
+        self.borrower_issued = true;
+        let mut child = match OwnedChild::spawn_with_input(spec, input) {
+            Ok(child) => child,
+            Err(error) => {
+                self.borrower_issued = false;
+                return Err(error.into());
+            }
+        };
+        let delivery = deliver_credential(writer, bytes, CREDENTIAL_DELIVERY_TIMEOUT, &mut child);
+        if let Err(error) = delivery {
+            let cleanup = child.shutdown(crate::ShutdownPolicy {
+                graceful_timeout: Duration::ZERO,
+                force_timeout: BORROWER_FORCE_TIMEOUT,
+            });
+            drop(child);
+            if let Err(cleanup) = cleanup {
+                return Err(cleanup.into());
+            }
+            let marker = borrow_marker_path(&self.path, &self.metadata);
+            cleanup_consumption_marker(&marker);
+            self.borrower_issued = false;
+            return Err(error);
+        }
+        let marker = borrow_marker_path(&self.path, &self.metadata);
+        self.active_marker = Some(marker);
+        Ok(BorrowedChild {
+            owner: self,
+            child: Some(child),
+        })
     }
 
     fn credential(&self, nonce: [u8; 32]) -> BorrowCredential {
@@ -200,6 +232,93 @@ impl OwnedLease {
     #[cfg(test)]
     pub(crate) fn credential_for_test(&self) -> BorrowCredential {
         self.credential([7; 32])
+    }
+}
+
+fn deliver_credential(
+    mut writer: File,
+    bytes: Vec<u8>,
+    timeout: Duration,
+    child: &mut OwnedChild,
+) -> Result<(), LeaseError> {
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    let delivery = std::thread::spawn(move || {
+        let result = writer.write_all(&bytes).and_then(|_| writer.flush());
+        let _ = sender.send(result);
+    });
+    let result = match receiver.recv_timeout(timeout) {
+        Ok(result) => result.map_err(|source| LeaseError::Io {
+            operation: "deliver one-shot borrower credential",
+            source,
+        }),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            child.shutdown(crate::ShutdownPolicy {
+                graceful_timeout: Duration::ZERO,
+                force_timeout: BORROWER_FORCE_TIMEOUT,
+            })?;
+            Err(LeaseError::CredentialDeliveryTimeout(timeout))
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            Err(LeaseError::CredentialDeliveryPanicked)
+        }
+    };
+    if delivery.join().is_err() {
+        return Err(LeaseError::CredentialDeliveryPanicked);
+    }
+    result
+}
+
+fn cleanup_consumption_marker(path: &Path) {
+    let is_ours = std::fs::metadata(path).is_ok_and(|metadata| metadata.is_file())
+        && std::fs::read(path).is_ok_and(|bytes| bytes == CONSUMED_MARKER);
+    if is_ours {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+impl BorrowedChild<'_> {
+    pub fn identity(&self) -> &ProcessIdentity {
+        self.child().identity()
+    }
+
+    pub fn try_wait(&mut self) -> Result<Option<std::process::ExitStatus>, LeaseError> {
+        let status = self.child_mut().try_wait()?;
+        if status.is_some() {
+            self.cleanup_marker();
+        }
+        Ok(status)
+    }
+
+    pub fn shutdown(
+        &mut self,
+        policy: crate::ShutdownPolicy,
+    ) -> Result<crate::ShutdownOutcome, LeaseError> {
+        let outcome = self.child_mut().shutdown(policy)?;
+        self.cleanup_marker();
+        Ok(outcome)
+    }
+
+    fn child(&self) -> &OwnedChild {
+        self.child.as_ref().expect("borrowed child already dropped")
+    }
+
+    fn child_mut(&mut self) -> &mut OwnedChild {
+        self.child.as_mut().expect("borrowed child already dropped")
+    }
+
+    fn cleanup_marker(&mut self) {
+        if let Some(marker) = self.owner.active_marker.take() {
+            cleanup_consumption_marker(&marker);
+        }
+    }
+}
+
+impl Drop for BorrowedChild<'_> {
+    fn drop(&mut self) {
+        if let Some(child) = self.child.take() {
+            drop(child);
+        }
+        self.cleanup_marker();
     }
 }
 
@@ -524,6 +643,17 @@ fn credential_pipe() -> Result<(crate::platform::InheritedInput, File), LeaseErr
             source: std::io::Error::last_os_error(),
         });
     }
+    if unsafe { libc::fcntl(fds[0], libc::F_SETPIPE_SZ, 4096) } < 0 {
+        let source = std::io::Error::last_os_error();
+        unsafe {
+            libc::close(fds[0]);
+            libc::close(fds[1]);
+        }
+        return Err(LeaseError::Io {
+            operation: "bound one-shot borrower pipe",
+            source,
+        });
+    }
     Ok(unsafe {
         (
             crate::platform::InheritedInput(File::from_raw_fd(fds[0])),
@@ -543,7 +673,7 @@ fn credential_pipe() -> Result<(crate::platform::InheritedInput, File), LeaseErr
     attributes.bInheritHandle = 1;
     let mut read = std::ptr::null_mut();
     let mut write = std::ptr::null_mut();
-    if unsafe { CreatePipe(&mut read, &mut write, &attributes, 0) } == 0 {
+    if unsafe { CreatePipe(&mut read, &mut write, &attributes, 4096) } == 0 {
         return Err(LeaseError::Io {
             operation: "create one-shot borrower pipe",
             source: std::io::Error::last_os_error(),
@@ -656,10 +786,12 @@ fn create_consumption_marker(path: &Path, nonce: &[u8; 32]) -> Result<(), LeaseE
                 }
             }
         })?;
-    file.write_all(nonce).map_err(|source| LeaseError::Io {
-        operation: "write one-shot borrower marker",
-        source,
-    })?;
+    let _ = nonce;
+    file.write_all(CONSUMED_MARKER)
+        .map_err(|source| LeaseError::Io {
+            operation: "write one-shot borrower marker",
+            source,
+        })?;
     flush_file(&file, "flush one-shot borrower marker")
 }
 
@@ -681,10 +813,12 @@ fn create_consumption_marker(path: &Path, nonce: &[u8; 32]) -> Result<(), LeaseE
         }
     })?;
     let mut file = unsafe { File::from_raw_handle(handle) };
-    file.write_all(nonce).map_err(|source| LeaseError::Io {
-        operation: "write one-shot borrower marker",
-        source,
-    })?;
+    let _ = nonce;
+    file.write_all(CONSUMED_MARKER)
+        .map_err(|source| LeaseError::Io {
+            operation: "write one-shot borrower marker",
+            source,
+        })?;
     flush_file(&file, "flush one-shot borrower marker")
 }
 

@@ -223,6 +223,7 @@ mod linux_fixture {
         crash_cleanup_test(&dir)?;
         checkpoint_rollback_test(&dir)?;
         stale_state_identity_test(&dir)?;
+        oversized_credential_delivery_test(&dir)?;
         inherited_lease_test(&dir)?;
         println!("processctl downstream fixture: PASS");
         Ok(())
@@ -338,8 +339,8 @@ mod linux_fixture {
         ));
         let mut borrower = owner.spawn_borrower(borrower_spec(&ready)?, "splitproof")?;
         assert!(matches!(
-            owner.spawn_borrower(borrower_spec(&ready)?, "splitproof"),
-            Err(LeaseError::BorrowerAlreadyIssued)
+            RolloutLock::acquire(dir.join("rollout.lock"), "competing-run", "splitproof"),
+            Err(LeaseError::AlreadyOwned)
         ));
         let deadline = Instant::now() + Duration::from_secs(10);
         while !ready.exists() {
@@ -357,11 +358,82 @@ mod linux_fixture {
             std::thread::sleep(Duration::from_millis(10));
         }
         if std::fs::read_to_string(&ready)? != "borrowed-ok"
-            || !wait_status(&mut borrower)?.success()
+            || !wait_borrowed_status(&mut borrower)?.success()
         {
             return Err("borrower did not consume the inherited lease".into());
         }
+        drop(borrower);
+        assert!(
+            !std::fs::read_dir(dir)?.any(|entry| entry.is_ok_and(|entry| entry
+                .path()
+                .extension()
+                .is_some_and(|value| value == "borrowed")))
+        );
+        assert!(matches!(
+            owner.spawn_borrower(borrower_spec(&ready)?, "splitproof"),
+            Err(LeaseError::BorrowerAlreadyIssued)
+        ));
         Ok(())
+    }
+
+    fn oversized_credential_delivery_test(dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
+        let mut long_dir = dir.join("long-credential");
+        for index in 0..19 {
+            long_dir = long_dir.join(format!("{index:02}-{}", "x".repeat(190)));
+        }
+        std::fs::create_dir_all(&long_dir)?;
+        let lock_path = long_dir.join("rollout.lock");
+        assert!(lock_path.as_os_str().len() > 3650);
+        let mut owner = RolloutLock::acquire(&lock_path, "fixture-borrow", "splitproof")?;
+        let ignored_ready = dir.join("oversized-ignored.ready");
+        let ignored_spec = SpawnSpec {
+            label: "credential-non-reader".into(),
+            executable: std::env::current_exe()?,
+            args: vec![
+                OsString::from("child"),
+                OsString::from("ignore"),
+                ignored_ready.as_os_str().to_owned(),
+            ],
+            env: BTreeMap::new(),
+            cwd: std::env::current_dir()?,
+            stdout: OutputDestination::Null,
+            stderr: OutputDestination::Null,
+            process_group: ProcessGroupPolicy::Owned,
+        };
+        match owner.spawn_borrower(ignored_spec, "splitproof") {
+            Err(LeaseError::CredentialDeliveryTimeout(_)) => {}
+            Err(error) => {
+                return Err(format!("unexpected oversized delivery error: {error}").into())
+            }
+            Ok(_) => return Err("oversized credential fit in the bounded pipe".into()),
+        }
+
+        let ready = dir.join("oversized-borrower.ready");
+        let mut borrower = owner.spawn_borrower(borrower_spec(&ready)?, "splitproof")?;
+        wait_file(&ready)?;
+        if std::fs::read_to_string(&ready)? != "borrowed-ok"
+            || !wait_borrowed_status(&mut borrower)?.success()
+        {
+            return Err("oversized credential retry did not complete".into());
+        }
+        Ok(())
+    }
+
+    fn wait_borrowed_status(
+        child: &mut processctl::BorrowedChild<'_>,
+    ) -> Result<std::process::ExitStatus, processctl::LeaseError> {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Some(status) = child.try_wait()? {
+                return Ok(status);
+            }
+            if Instant::now() >= deadline {
+                return Err(processctl::LeaseError::InvalidField(
+                    "timed out waiting for borrowed child exit".into(),
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 
     fn borrower_spec(ready: &Path) -> Result<SpawnSpec, Box<dyn std::error::Error>> {

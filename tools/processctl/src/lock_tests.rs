@@ -31,6 +31,15 @@ fn borrower_role_one_shot_replay_and_dead_owner_are_fail_closed() {
     let borrowed = validate_credential(credential.clone(), "splitproof").unwrap();
     assert_eq!(borrowed.run_id(), "run-1");
     assert_eq!(borrowed.owner(), owner.owner());
+    let marker = std::fs::read_dir(path.parent().unwrap())
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "borrowed")
+        })
+        .expect("borrow marker");
+    assert_ne!(std::fs::read(&marker).unwrap(), vec![7; 32]);
     assert!(matches!(
         validate_credential(credential, "splitproof"),
         Err(LeaseError::BorrowerReplay)
