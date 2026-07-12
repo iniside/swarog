@@ -300,6 +300,9 @@ fn ignore_term() {
 
 fn test_dir() -> std::io::Result<PathBuf> {
     let path = std::env::temp_dir().join(format!("processctl-downstream-{}", std::process::id()));
+    if path.exists() {
+        std::fs::remove_dir_all(&path)?;
+    }
     std::fs::create_dir_all(&path)?;
     Ok(path)
 }

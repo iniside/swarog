@@ -120,19 +120,12 @@ fn run_inner() -> std::io::Result<(ExitStatus, bool)> {
     };
 
     let mut status_pipe = unsafe { std::fs::File::from_raw_fd(STATUS_FD) };
-    let path = target_executable.as_os_str().as_bytes();
-    let path_len = match u32::try_from(path.len()) {
-        Ok(path_len) => path_len,
-        Err(_) => {
-            kill_and_reap_failed_spawn(&mut target, target_pid)?;
-            return Err(invalid("target path is too long"));
-        }
-    };
-    let handshake = status_pipe
-        .write_all(&(target_pid as u32).to_ne_bytes())
-        .and_then(|()| status_pipe.write_all(&target_started.to_ne_bytes()))
-        .and_then(|()| status_pipe.write_all(&path_len.to_ne_bytes()))
-        .and_then(|()| status_pipe.write_all(path));
+    let handshake = write_identity(
+        &mut status_pipe,
+        target_pid as u32,
+        target_started,
+        &target_executable,
+    );
     if let Err(error) = handshake {
         kill_and_reap_failed_spawn(&mut target, target_pid)?;
         return Err(error);
@@ -153,6 +146,20 @@ fn run_inner() -> std::io::Result<(ExitStatus, bool)> {
     }
 
     supervise(&mut target, target_pid, &target_pidfd, &signal_fd)
+}
+
+pub(super) fn write_identity(
+    writer: &mut impl Write,
+    pid: u32,
+    started: u64,
+    executable: &std::path::Path,
+) -> std::io::Result<()> {
+    let path = executable.as_os_str().as_bytes();
+    let path_len = u32::try_from(path.len()).map_err(|_| invalid("target path is too long"))?;
+    writer.write_all(&pid.to_ne_bytes())?;
+    writer.write_all(&started.to_ne_bytes())?;
+    writer.write_all(&path_len.to_ne_bytes())?;
+    writer.write_all(path)
 }
 
 fn wait_for_exec_trap(target_pid: i32) -> std::io::Result<()> {

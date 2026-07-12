@@ -174,7 +174,12 @@ pub(crate) fn spawn(spec: &SpawnSpec) -> Result<(PlatformChild, ProcessIdentity)
 
     if unsafe { AssignProcessToJobObject(job.0, process.0) } == 0 {
         let source = std::io::Error::last_os_error();
-        terminate_unassigned(&process);
+        if let Err(cleanup) = terminate_unassigned(&process) {
+            return Err(ProcessError::Io {
+                operation: "clean up unassigned suspended process",
+                source: cleanup,
+            });
+        }
         return Err(ProcessError::Io {
             operation: "assign suspended process to job",
             source,
@@ -183,7 +188,12 @@ pub(crate) fn spawn(spec: &SpawnSpec) -> Result<(PlatformChild, ProcessIdentity)
     let identity = match observe_process(process.0, info.dwProcessId) {
         Ok(identity) => identity,
         Err(source) => {
-            terminate_job_and_wait(&job, &process);
+            if let Err(cleanup) = terminate_job_and_wait(&job) {
+                return Err(ProcessError::Io {
+                    operation: "clean up job after identity failure",
+                    source: cleanup,
+                });
+            }
             return Err(ProcessError::Io {
                 operation: "read suspended process identity",
                 source,
@@ -192,7 +202,12 @@ pub(crate) fn spawn(spec: &SpawnSpec) -> Result<(PlatformChild, ProcessIdentity)
     };
     if unsafe { ResumeThread(thread.0) } == u32::MAX {
         let source = std::io::Error::last_os_error();
-        terminate_job_and_wait(&job, &process);
+        if let Err(cleanup) = terminate_job_and_wait(&job) {
+            return Err(ProcessError::Io {
+                operation: "clean up job after resume failure",
+                source: cleanup,
+            });
+        }
         return Err(ProcessError::Io {
             operation: "resume assigned primary thread",
             source,
@@ -300,14 +315,37 @@ fn exit_status(process: HANDLE) -> std::io::Result<ExitStatus> {
     }
 }
 
-fn terminate_unassigned(process: &OwnedHandle) {
-    let _ = unsafe { TerminateProcess(process.0, 1) };
-    let _ = unsafe { WaitForSingleObject(process.0, 5_000) };
+fn terminate_unassigned(process: &OwnedHandle) -> std::io::Result<()> {
+    if unsafe { TerminateProcess(process.0, 1) } == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    match unsafe { WaitForSingleObject(process.0, 5_000) } {
+        WAIT_OBJECT_0 => Ok(()),
+        WAIT_TIMEOUT => Err(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "timed out reaping unassigned suspended process",
+        )),
+        _ => Err(std::io::Error::last_os_error()),
+    }
 }
 
-fn terminate_job_and_wait(job: &OwnedHandle, process: &OwnedHandle) {
-    let _ = unsafe { TerminateJobObject(job.0, 1) };
-    let _ = unsafe { WaitForSingleObject(process.0, 5_000) };
+fn terminate_job_and_wait(job: &OwnedHandle) -> std::io::Result<()> {
+    if unsafe { TerminateJobObject(job.0, 1) } == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        if job_active_processes(job.0)? == 0 {
+            return Ok(());
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "timed out draining failed process job",
+            ));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
 }
 
 fn open_output(destination: &OutputDestination, inherited: u32) -> std::io::Result<OwnedHandle> {
