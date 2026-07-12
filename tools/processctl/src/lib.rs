@@ -1,3 +1,4 @@
+mod fleet;
 mod lock;
 mod process;
 mod state;
@@ -23,6 +24,9 @@ pub use state::{
     FleetState, FleetStatus, ManagedProcess, ManagedStatus, StateCheckpointError, StateError,
     StateStore, MAX_STATE_BYTES, STATE_VERSION,
 };
+
+#[cfg(test)]
+mod fleet_tests;
 
 #[cfg(test)]
 mod lock_tests;
@@ -55,3 +59,7 @@ pub fn dispatch_guardian_from_current_exe() -> Option<std::process::ExitCode> {
 
 #[cfg(all(test, windows))]
 mod tests;
+pub use fleet::{
+    build_environment, game_backend_fleet, runtime_environment, FleetError, FleetFlavor,
+    FleetInputs, FleetSpec, ServiceSpec, BUILD_ENV_ALLOWLIST,
+};
