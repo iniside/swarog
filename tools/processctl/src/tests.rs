@@ -8,6 +8,7 @@ use std::sync::Mutex;
 use std::sync::Once;
 use std::time::{Duration, Instant};
 
+use crate::{BorrowedLease, LeaseError, RolloutLock};
 use crate::{
     FleetState, OutputDestination, OwnedChild, ProcessGroupPolicy, ShutdownOutcome, ShutdownPolicy,
     SpawnSpec, StateStore,
@@ -87,6 +88,41 @@ fn child_entry() {
                 std::thread::sleep(Duration::from_millis(10));
             }
             std::fs::write(ready, "nested-job-ok").unwrap();
+        }
+        "stdin-check" => {
+            std::fs::write(
+                std::env::var_os("PROCESSCTL_TEST_READY").unwrap(),
+                if stdin_is_closed() {
+                    "closed"
+                } else {
+                    "leaked"
+                },
+            )
+            .unwrap();
+        }
+        "lease-borrower" => {
+            let lease = BorrowedLease::consume_inherited("splitproof").unwrap();
+            assert_eq!(lease.run_id(), "borrow-run");
+            assert!(BorrowedLease::consume_inherited("splitproof").is_err());
+            let ready = PathBuf::from(std::env::var_os("PROCESSCTL_TEST_READY").unwrap());
+            let child_ready = ready.with_extension("child");
+            let grandchild_ready = ready.with_extension("grandchild");
+            let mut child = spawn_test_process("stdin-check", &child_ready);
+            let mut grandchild = spawn_test_process("stdin-check", &grandchild_ready);
+            wait_file(&child_ready);
+            wait_file(&grandchild_ready);
+            assert!(child.wait().unwrap().success());
+            assert!(grandchild.wait().unwrap().success());
+            assert_eq!(std::fs::read_to_string(child_ready).unwrap(), "closed");
+            assert_eq!(std::fs::read_to_string(grandchild_ready).unwrap(), "closed");
+            assert!(Command::new("cargo")
+                .arg("--version")
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .unwrap()
+                .success());
+            std::fs::write(ready, "borrowed-ok").unwrap();
         }
         "fd-check" => {
             #[cfg(target_os = "linux")]
@@ -280,6 +316,32 @@ fn failed_post_spawn_checkpoint_reaps_new_child_and_started_prefix() {
 }
 
 #[test]
+fn inherited_borrower_is_one_shot_and_credential_is_not_reinherited() {
+    let _serial = PROCESS_TEST_LOCK.lock().unwrap();
+    protect_test_harness();
+    let dir = test_dir("borrower");
+    let lock_path = dir.join("rollout.lock");
+    let mut owner = RolloutLock::acquire(&lock_path, "borrow-run", "splitproof").unwrap();
+    let ready = dir.join("borrower.ready");
+    assert!(matches!(
+        owner.spawn_borrower(spec("lease-borrower", &ready), "wrong-role"),
+        Err(LeaseError::WrongRole { .. })
+    ));
+    let mut borrower = owner
+        .spawn_borrower(spec("lease-borrower", &ready), "splitproof")
+        .unwrap();
+    assert!(matches!(
+        owner.spawn_borrower(spec("lease-borrower", &ready), "splitproof"),
+        Err(LeaseError::BorrowerAlreadyIssued)
+    ));
+    wait_file(&ready);
+    assert_eq!(std::fs::read_to_string(&ready).unwrap(), "borrowed-ok");
+    while borrower.try_wait().unwrap().is_none() {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
 fn supervisor_crash_kills_owned_tree_and_preserves_decoy() {
     let _serial = PROCESS_TEST_LOCK.lock().unwrap();
     protect_test_harness();
@@ -331,6 +393,11 @@ fn spec(mode: &str, ready: &Path) -> SpawnSpec {
         OsString::from("PROCESSCTL_TEST_READY"),
         ready.as_os_str().to_owned(),
     );
+    for key in ["PATH", "SystemRoot"] {
+        if let Some(value) = std::env::var_os(key) {
+            env.insert(OsString::from(key), value);
+        }
+    }
     SpawnSpec {
         label: format!("test-{mode}"),
         executable: std::env::current_exe().unwrap(),
@@ -444,6 +511,12 @@ fn ignore_graceful_signal() {
         1
     }
     assert_ne!(unsafe { SetConsoleCtrlHandler(Some(ignore), 1) }, 0);
+}
+
+fn stdin_is_closed() -> bool {
+    use windows_sys::Win32::System::Console::{GetStdHandle, STD_INPUT_HANDLE};
+    let handle = unsafe { GetStdHandle(STD_INPUT_HANDLE) };
+    handle.is_null() || handle == windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE
 }
 
 #[cfg(windows)]

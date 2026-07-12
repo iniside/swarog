@@ -2,6 +2,7 @@ use std::fs::File;
 use std::io::Read;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::process::CommandExt;
+use std::path::Path;
 use std::process::{Child, Command, ExitStatus};
 
 use crate::process::{ProcessError, ProcessIdentity, SpawnSpec};
@@ -19,7 +20,10 @@ pub(crate) struct PlatformChild {
     completion_forced_remainder: bool,
 }
 
-pub(crate) fn spawn(spec: &SpawnSpec) -> Result<(PlatformChild, ProcessIdentity), ProcessError> {
+pub(crate) fn spawn(
+    spec: &SpawnSpec,
+    input: Option<crate::platform::InheritedInput>,
+) -> Result<(PlatformChild, ProcessIdentity), ProcessError> {
     let guardian_path = std::env::current_exe().map_err(|source| ProcessError::Io {
         operation: "locate current executable for guardian dispatch",
         source,
@@ -44,7 +48,10 @@ pub(crate) fn spawn(spec: &SpawnSpec) -> Result<(PlatformChild, ProcessIdentity)
         .env_clear()
         .envs(&spec.env)
         .current_dir(&spec.cwd)
-        .stdin(std::process::Stdio::null())
+        .stdin(match input {
+            Some(crate::platform::InheritedInput(file)) => std::process::Stdio::from(file),
+            None => std::process::Stdio::null(),
+        })
         .stdout(spec.stdout.open()?)
         .stderr(spec.stderr.open()?);
     unsafe {
@@ -210,4 +217,30 @@ pub(super) fn read_completion(reader: &mut impl Read) -> std::io::Result<(ExitSt
             "guardian sent a second identity frame",
         )),
     }
+}
+
+pub(crate) fn observe_process_identity(pid: u32) -> std::io::Result<ProcessIdentity> {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
+    use std::path::PathBuf;
+
+    let proc_dir = Path::new("/proc").join(pid.to_string());
+    let executable = std::fs::read_link(proc_dir.join("exe"))?;
+    let stat = std::fs::read_to_string(proc_dir.join("stat"))?;
+    let close = stat.rfind(')').ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidData, "malformed /proc stat")
+    })?;
+    let started = stat[close + 1..]
+        .split_whitespace()
+        .nth(19)
+        .ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, "missing process starttime")
+        })?
+        .parse::<u64>()
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    Ok(ProcessIdentity {
+        pid,
+        executable: PathBuf::from(OsString::from_vec(executable.into_os_string().into_vec())),
+        started: crate::StartMarker(started),
+    })
 }

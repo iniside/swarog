@@ -113,6 +113,21 @@ pub struct OwnedChild {
     pub(crate) status: Option<ExitStatus>,
 }
 
+pub fn observe_process_identity(pid: u32) -> Result<ProcessIdentity, ProcessError> {
+    #[cfg(any(windows, target_os = "linux"))]
+    {
+        crate::platform::observe_process_identity(pid).map_err(|source| ProcessError::Io {
+            operation: "observe process identity",
+            source,
+        })
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
+    {
+        let _ = pid;
+        Err(ProcessError::UnsupportedPlatform(std::env::consts::OS))
+    }
+}
+
 #[cfg(any(windows, target_os = "linux"))]
 type PlatformChild = crate::platform::PlatformChild;
 
@@ -150,7 +165,7 @@ impl OwnedChild {
     pub fn spawn(spec: SpawnSpec) -> Result<Self, ProcessError> {
         #[cfg(any(windows, target_os = "linux"))]
         {
-            let (inner, identity) = crate::platform::spawn(&spec)?;
+            let (inner, identity) = crate::platform::spawn(&spec, None)?;
             Ok(Self {
                 label: spec.label,
                 identity,
@@ -164,6 +179,20 @@ impl OwnedChild {
             let _ = spec;
             Err(ProcessError::UnsupportedPlatform(std::env::consts::OS))
         }
+    }
+
+    #[cfg(any(windows, target_os = "linux"))]
+    pub(crate) fn spawn_with_input(
+        spec: SpawnSpec,
+        input: crate::platform::InheritedInput,
+    ) -> Result<Self, ProcessError> {
+        let (inner, identity) = crate::platform::spawn(&spec, Some(input))?;
+        Ok(Self {
+            label: spec.label,
+            identity,
+            inner: Some(inner),
+            status: None,
+        })
     }
 
     pub fn identity(&self) -> &ProcessIdentity {

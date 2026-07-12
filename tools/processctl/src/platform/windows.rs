@@ -2,6 +2,7 @@ use std::cmp::Ordering;
 use std::ffi::{OsStr, OsString};
 use std::mem::{size_of, zeroed};
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
+use std::os::windows::io::AsRawHandle;
 use std::os::windows::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
@@ -44,6 +45,20 @@ pub(crate) struct PlatformChild {
 }
 
 struct OwnedHandle(HANDLE);
+
+enum ChildInput {
+    Owned(OwnedHandle),
+    Inherited(std::fs::File),
+}
+
+impl ChildInput {
+    fn handle(&self) -> HANDLE {
+        match self {
+            Self::Owned(handle) => handle.0,
+            Self::Inherited(file) => file.as_raw_handle() as HANDLE,
+        }
+    }
+}
 
 impl Drop for OwnedHandle {
     fn drop(&mut self) {
@@ -100,7 +115,10 @@ impl Drop for AttributeList {
     }
 }
 
-pub(crate) fn spawn(spec: &SpawnSpec) -> Result<(PlatformChild, ProcessIdentity), ProcessError> {
+pub(crate) fn spawn(
+    spec: &SpawnSpec,
+    input: Option<crate::platform::InheritedInput>,
+) -> Result<(PlatformChild, ProcessIdentity), ProcessError> {
     match spec.process_group {
         ProcessGroupPolicy::Owned => {}
     }
@@ -113,10 +131,13 @@ pub(crate) fn spawn(spec: &SpawnSpec) -> Result<(PlatformChild, ProcessIdentity)
         operation: "create kill-on-close job",
         source,
     })?;
-    let stdin = open_null(true).map_err(|source| ProcessError::Io {
-        operation: "open child stdin",
-        source,
-    })?;
+    let stdin = match input {
+        Some(input) => ChildInput::Inherited(input.0),
+        None => ChildInput::Owned(open_null(true).map_err(|source| ProcessError::Io {
+            operation: "open child stdin",
+            source,
+        })?),
+    };
     let stdout =
         open_output(&spec.stdout, STD_OUTPUT_HANDLE).map_err(|source| ProcessError::Io {
             operation: "open child stdout",
@@ -127,7 +148,7 @@ pub(crate) fn spawn(spec: &SpawnSpec) -> Result<(PlatformChild, ProcessIdentity)
             operation: "open child stderr",
             source,
         })?;
-    let mut inherited = [stdin.0, stdout.0, stderr.0];
+    let mut inherited = [stdin.handle(), stdout.0, stderr.0];
     let mut attributes = AttributeList::new(&mut inherited).map_err(|source| ProcessError::Io {
         operation: "create child handle allow-list",
         source,
@@ -136,7 +157,7 @@ pub(crate) fn spawn(spec: &SpawnSpec) -> Result<(PlatformChild, ProcessIdentity)
     let mut startup: STARTUPINFOEXW = unsafe { zeroed() };
     startup.StartupInfo.cb = size_of::<STARTUPINFOEXW>() as u32;
     startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
-    startup.StartupInfo.hStdInput = stdin.0;
+    startup.StartupInfo.hStdInput = stdin.handle();
     startup.StartupInfo.hStdOutput = stdout.0;
     startup.StartupInfo.hStdError = stderr.0;
     startup.lpAttributeList = attributes.as_mut_ptr();
@@ -530,4 +551,14 @@ fn observe_process(process: HANDLE, pid: u32) -> std::io::Result<ProcessIdentity
         executable: PathBuf::from(OsString::from_wide(&path)),
         started: StartMarker(marker),
     })
+}
+
+pub(crate) fn observe_process_identity(pid: u32) -> std::io::Result<ProcessIdentity> {
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+    let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if process.is_null() {
+        return Err(std::io::Error::last_os_error());
+    }
+    let process = OwnedHandle(process);
+    observe_process(process.0, pid)
 }

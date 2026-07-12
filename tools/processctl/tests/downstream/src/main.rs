@@ -8,8 +8,9 @@ mod linux_fixture {
     use std::time::{Duration, Instant};
 
     use processctl::{
-        FleetState, ManagedProcess, OutputDestination, OwnedChild, ProcessGroupPolicy,
-        ProcessIdentity, ShutdownOutcome, ShutdownPolicy, SpawnSpec, StartMarker, StateStore,
+        BorrowedLease, FleetState, LeaseError, ManagedProcess, OutputDestination, OwnedChild,
+        ProcessGroupPolicy, ProcessIdentity, RolloutLock, ShutdownOutcome, ShutdownPolicy,
+        SpawnSpec, StartMarker, StateStore,
     };
 
     pub(super) fn entry() -> ExitCode {
@@ -31,6 +32,7 @@ mod linux_fixture {
         match args.next().as_deref().and_then(OsStr::to_str) {
             None | Some("self-test") => self_test(),
             Some("child") => child(args.collect()),
+            Some("lease-borrower") => lease_borrower(args.collect()),
             Some("crash-supervisor") => crash_supervisor(args.collect()),
             _ => self_test(),
         }
@@ -105,6 +107,21 @@ mod linux_fixture {
                         && std::io::Error::last_os_error().raw_os_error() == Some(libc::EBADF)
                 });
                 std::fs::write(ready, if clean { "closed" } else { "open" })?;
+                Ok(())
+            }
+            "stdin-check" => {
+                let unavailable = unsafe { libc::fcntl(0, libc::F_GETFD) } < 0
+                    && std::io::Error::last_os_error().raw_os_error() == Some(libc::EBADF);
+                let replaced_with_null = std::fs::read_link("/proc/self/fd/0")
+                    .is_ok_and(|target| target == Path::new("/dev/null"));
+                std::fs::write(
+                    ready,
+                    if unavailable || replaced_with_null {
+                        "closed"
+                    } else {
+                        "leaked"
+                    },
+                )?;
                 Ok(())
             }
             _ => Err(format!("unknown child mode {mode}").into()),
@@ -206,6 +223,7 @@ mod linux_fixture {
         crash_cleanup_test(&dir)?;
         checkpoint_rollback_test(&dir)?;
         stale_state_identity_test(&dir)?;
+        inherited_lease_test(&dir)?;
         println!("processctl downstream fixture: PASS");
         Ok(())
     }
@@ -309,6 +327,110 @@ mod linux_fixture {
         Ok(())
     }
 
+    fn inherited_lease_test(dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
+        let mut owner =
+            RolloutLock::acquire(dir.join("rollout.lock"), "fixture-borrow", "splitproof")?;
+        let ready = dir.join("borrower.ready");
+        let error_log = ready.with_extension("err");
+        assert!(matches!(
+            owner.spawn_borrower(borrower_spec(&ready)?, "wrong-role"),
+            Err(LeaseError::WrongRole { .. })
+        ));
+        let mut borrower = owner.spawn_borrower(borrower_spec(&ready)?, "splitproof")?;
+        assert!(matches!(
+            owner.spawn_borrower(borrower_spec(&ready)?, "splitproof"),
+            Err(LeaseError::BorrowerAlreadyIssued)
+        ));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !ready.exists() {
+            if let Some(status) = borrower.try_wait()? {
+                let detail = std::fs::read_to_string(&error_log).unwrap_or_default();
+                return Err(format!(
+                    "borrower exited before consuming the inherited lease ({status}): {detail}"
+                )
+                .into());
+            }
+            if Instant::now() >= deadline {
+                let detail = std::fs::read_to_string(&error_log).unwrap_or_default();
+                return Err(format!("timed out waiting for borrower: {detail}").into());
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        if std::fs::read_to_string(&ready)? != "borrowed-ok"
+            || !wait_status(&mut borrower)?.success()
+        {
+            return Err("borrower did not consume the inherited lease".into());
+        }
+        Ok(())
+    }
+
+    fn borrower_spec(ready: &Path) -> Result<SpawnSpec, Box<dyn std::error::Error>> {
+        let mut env = BTreeMap::new();
+        if let Some(path) = std::env::var_os("PATH") {
+            env.insert(OsString::from("PATH"), path);
+        }
+        Ok(SpawnSpec {
+            label: "lease-borrower".into(),
+            executable: std::env::current_exe()?,
+            args: vec![
+                OsString::from("lease-borrower"),
+                ready.as_os_str().to_owned(),
+            ],
+            env,
+            cwd: std::env::current_dir()?,
+            stdout: OutputDestination::Null,
+            stderr: OutputDestination::File(ready.with_extension("err")),
+            process_group: ProcessGroupPolicy::Owned,
+        })
+    }
+
+    fn lease_borrower(args: Vec<OsString>) -> Result<(), Box<dyn std::error::Error>> {
+        let lease = BorrowedLease::consume_inherited("splitproof")?;
+        if lease.run_id() != "fixture-borrow"
+            || BorrowedLease::consume_inherited("splitproof").is_ok()
+        {
+            return Err("borrower credential was wrong or consumable twice".into());
+        }
+        let ready = args
+            .first()
+            .map(PathBuf::from)
+            .ok_or("missing borrower ready")?;
+        let child_ready = ready.with_extension("child");
+        let grandchild_ready = ready.with_extension("grandchild");
+        let mut child = Command::new(std::env::current_exe()?)
+            .args(["child", "stdin-check"])
+            .arg(&child_ready)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()?;
+        let mut grandchild = Command::new(std::env::current_exe()?)
+            .args(["child", "stdin-check"])
+            .arg(&grandchild_ready)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()?;
+        wait_file(&child_ready)?;
+        wait_file(&grandchild_ready)?;
+        if !child.wait()?.success()
+            || !grandchild.wait()?.success()
+            || std::fs::read_to_string(child_ready)? != "closed"
+            || std::fs::read_to_string(grandchild_ready)? != "closed"
+        {
+            return Err("credential handle leaked to a fake service or grandchild".into());
+        }
+        if !Command::new("cargo")
+            .arg("--version")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()?
+            .success()
+        {
+            return Err("cargo child failed after credential consumption".into());
+        }
+        std::fs::write(ready, "borrowed-ok")?;
+        Ok(())
+    }
+
     fn spawn(mode: &str, ready: &Path) -> Result<OwnedChild, processctl::ProcessError> {
         spawn_executable(
             &std::env::current_exe().expect("current executable"),
@@ -324,6 +446,10 @@ mod linux_fixture {
         I: IntoIterator<Item = S>,
         S: AsRef<OsStr>,
     {
+        let mut env = BTreeMap::new();
+        if let Some(path) = std::env::var_os("PATH") {
+            env.insert(OsString::from("PATH"), path);
+        }
         OwnedChild::spawn(SpawnSpec {
             label: executable.display().to_string(),
             executable: executable.to_path_buf(),
@@ -331,7 +457,7 @@ mod linux_fixture {
                 .into_iter()
                 .map(|arg| arg.as_ref().to_owned())
                 .collect(),
-            env: BTreeMap::new(),
+            env,
             cwd: std::env::current_dir().expect("current directory"),
             stdout: OutputDestination::Null,
             stderr: OutputDestination::Null,

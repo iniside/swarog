@@ -1,3 +1,4 @@
+mod lock;
 mod process;
 mod state;
 
@@ -11,14 +12,18 @@ mod protocol;
 #[cfg(all(test, target_os = "linux"))]
 mod protocol_tests;
 
+pub use lock::{BorrowedLease, LeaseError, OwnedLease, RolloutLock, ROLLOUT_LOCK_VERSION};
 pub use process::{
-    OutputDestination, OwnedChild, ProcessError, ProcessGroupPolicy, ProcessIdentity,
-    ShutdownOutcome, ShutdownPolicy, SpawnSpec, StartMarker,
+    observe_process_identity, OutputDestination, OwnedChild, ProcessError, ProcessGroupPolicy,
+    ProcessIdentity, ShutdownOutcome, ShutdownPolicy, SpawnSpec, StartMarker,
 };
 pub use state::{
     FleetState, FleetStatus, ManagedProcess, ManagedStatus, StateCheckpointError, StateError,
     StateStore, STATE_VERSION,
 };
+
+#[cfg(test)]
+mod lock_tests;
 
 #[cfg(test)]
 mod state_tests;

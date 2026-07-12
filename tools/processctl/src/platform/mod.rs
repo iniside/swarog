@@ -8,6 +8,12 @@ mod windows;
 mod windows_tests;
 
 #[cfg(target_os = "linux")]
+pub(crate) use linux::observe_process_identity;
+#[cfg(target_os = "linux")]
 pub(crate) use linux::{spawn, PlatformChild};
 #[cfg(windows)]
+pub(crate) use windows::observe_process_identity;
+#[cfg(windows)]
 pub(crate) use windows::{spawn, PlatformChild};
+
+pub(crate) struct InheritedInput(pub(crate) std::fs::File);

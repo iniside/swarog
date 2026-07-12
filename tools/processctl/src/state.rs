@@ -465,14 +465,14 @@ impl Drop for TempCleanup<'_> {
 }
 
 #[cfg(windows)]
-struct OwnerOnlySecurity {
+pub(crate) struct OwnerOnlySecurity {
     descriptor: windows_sys::Win32::Security::PSECURITY_DESCRIPTOR,
     dacl: *mut windows_sys::Win32::Security::ACL,
 }
 
 #[cfg(windows)]
 impl OwnerOnlySecurity {
-    fn new() -> std::io::Result<Self> {
+    pub(crate) fn new() -> std::io::Result<Self> {
         use std::os::windows::ffi::OsStrExt;
         use windows_sys::Win32::Security::Authorization::{
             ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
@@ -514,7 +514,7 @@ impl OwnerOnlySecurity {
         Ok(Self { descriptor, dacl })
     }
 
-    fn attributes(&self) -> windows_sys::Win32::Security::SECURITY_ATTRIBUTES {
+    pub(crate) fn attributes(&self) -> windows_sys::Win32::Security::SECURITY_ATTRIBUTES {
         windows_sys::Win32::Security::SECURITY_ATTRIBUTES {
             nLength: std::mem::size_of::<windows_sys::Win32::Security::SECURITY_ATTRIBUTES>()
                 as u32,
@@ -563,7 +563,10 @@ fn create_private_file(
 }
 
 #[cfg(windows)]
-fn apply_owner_only_dacl(path: &Path, security: &OwnerOnlySecurity) -> std::io::Result<()> {
+pub(crate) fn apply_owner_only_dacl(
+    path: &Path,
+    security: &OwnerOnlySecurity,
+) -> std::io::Result<()> {
     use windows_sys::Win32::Security::Authorization::{SetNamedSecurityInfoW, SE_FILE_OBJECT};
     use windows_sys::Win32::Security::{
         DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
@@ -589,7 +592,7 @@ fn apply_owner_only_dacl(path: &Path, security: &OwnerOnlySecurity) -> std::io::
 }
 
 #[cfg(windows)]
-fn wide_path(path: &Path) -> Result<Vec<u16>, StateError> {
+pub(crate) fn wide_path(path: &Path) -> Result<Vec<u16>, StateError> {
     use std::os::windows::ffi::OsStrExt;
     let mut wide: Vec<u16> = path.as_os_str().encode_wide().collect();
     if wide.contains(&0) {
@@ -607,7 +610,7 @@ fn state_to_io(error: StateError) -> std::io::Error {
     std::io::Error::new(std::io::ErrorKind::InvalidInput, error)
 }
 
-fn validate_identifier(field: &'static str, value: &str) -> Result<(), StateError> {
+pub(crate) fn validate_identifier(field: &'static str, value: &str) -> Result<(), StateError> {
     if value.is_empty() || value.len() > 128 {
         return Err(StateError::InvalidField {
             field,
