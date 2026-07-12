@@ -39,6 +39,18 @@ fn inherited_application_overrides_are_explicit_and_cannot_rewire_topology() {
     assert_eq!(monolith.env.get("EDGE_CA_KEY").map(String::as_str), Some("run/edge-ca.key"));
 }
 
+#[cfg(windows)]
+#[test]
+fn inherited_windows_baseline_lookup_is_case_insensitive() {
+    let environment = EnvironmentSnapshot::from_values([
+        ("Path".into(), "typed-path".into()),
+        ("SystemRoot".into(), "typed-root".into()),
+    ]);
+    let runtime = environment.runtime_environment();
+    assert_eq!(runtime.get("PATH").map(String::as_str), Some("typed-path"));
+    assert_eq!(runtime.get("SYSTEMROOT").map(String::as_str), Some("typed-root"));
+}
+
 #[test]
 fn proof_fleet_is_the_canonical_twelve_service_snapshot() {
     let fleet = game_backend_fleet(&inputs(), FleetFlavor::Proof);

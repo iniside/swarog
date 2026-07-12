@@ -61,7 +61,7 @@ impl EnvironmentSnapshot {
     }
 
     pub fn value(&self, key: &str) -> Option<&str> {
-        self.inherited.get(key).map(String::as_str)
+        self.lookup(key).map(String::as_str)
     }
 
     pub fn build_environment(&self) -> BTreeMap<String, String> {
@@ -79,8 +79,15 @@ impl EnvironmentSnapshot {
 
     fn filtered(&self, allowlist: &[&str]) -> BTreeMap<String, String> {
         allowlist.iter().filter_map(|key| {
-            self.inherited.get(*key).cloned().map(|value| ((*key).to_string(), value))
+            self.lookup(key).cloned().map(|value| ((*key).to_string(), value))
         }).collect()
+    }
+
+    fn lookup(&self, key: &str) -> Option<&String> {
+        #[cfg(windows)]
+        { self.inherited.iter().find(|(candidate, _)| candidate.eq_ignore_ascii_case(key)).map(|(_, value)| value) }
+        #[cfg(not(windows))]
+        { self.inherited.get(key) }
     }
 }
 

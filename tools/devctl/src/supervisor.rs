@@ -143,11 +143,28 @@ fn supervise(
     let mut children = Vec::new();
     let result = (|| -> Result<()> {
         if !skip_build {
-            build(root, topology, &services, &environment, &stop)?;
+            if let Err(error) = build(root, topology, &services, &environment, &stop) {
+                state
+                    .lock()
+                    .expect("state mutex poisoned")
+                    .record_failure("build", None::<String>)?;
+                return Err(error);
+            }
         }
-        edgeca::mint_dev_ca(&ca_cert, &ca_key)
-            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-        seed_admin(root, &db_url, &environment, &stop)?;
+        if let Err(error) = edgeca::mint_dev_ca(&ca_cert, &ca_key) {
+            state
+                .lock()
+                .expect("state mutex poisoned")
+                .record_failure("edge-ca", None::<String>)?;
+            return Err(anyhow::anyhow!(error.to_string()));
+        }
+        if let Err(error) = seed_admin(root, &db_url, &environment, &stop) {
+            state
+                .lock()
+                .expect("state mutex poisoned")
+                .record_failure("admin-seed", None::<String>)?;
+            return Err(error);
+        }
         for service in &services {
             if stop_requested(&stop) {
                 bail!("startup interrupted");
