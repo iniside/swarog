@@ -596,6 +596,40 @@ inherit, trailer, concise prompts) — shared by research + implementation:
 heuristic, dispatch rules, refactor safety:
 [docs/reference/implementation-mode.md](docs/reference/implementation-mode.md).**
 
+## Adversarial Subagent Review — MANDATORY
+
+Reviewing a subagent's (or my own) diff means **trying to break it**, not reading it
+for plausibility. Most bugs that shipped from past rollouts passed a lax "looks like
+the plan" review; the external audit then broke each fix *at the boundary the fix
+itself introduced*. Documented evidence: retention sweep swallowing per-topic errors
+while stamping success (`7ca0b51`), `RETENTION_STALL_MAX` hardcoded 3h against a
+configurable interval, cargo-audit network failure reported as green SKIP
+(`b78444f`), scheduler budget starvation (`addc824`), conformance `NotApplicable`
+hiding a known gap. None of these required new information to catch — only hostility.
+
+For EVERY diff accepted from a subagent (and every `[inline]` fix before commit):
+
+1. **Review as the grumpy nitpicker who questions everything**: for each change ask
+   *what input, state, ordering, or partial failure makes this wrong* — not whether
+   it matches the plan step.
+2. **Attack the fix's OWN new seams first.** A fix creates new boundaries: a loop
+   that can partially fail, a constant that shadows a config knob, an error class
+   folded into success, a resource owned by the wrong scope. That's where the next
+   finding lives — check there before re-checking the original symptom.
+3. **Verify claims against code, never against the subagent's summary.** Open the
+   files. Read the negative-path test and confirm it exercises the *failing branch*
+   (the retention tests closed the whole pool, so the per-topic error branch was
+   never covered — a test existing is not a branch being tested).
+4. **State the fix's failure mode out loud.** If I cannot name what would make this
+   change wrong and which test pins that, the review is NOT done — say so instead of
+   accepting.
+5. **Bounce, don't polish.** Findings go back to the subagent as a punch list (or
+   are fixed in a reviewed follow-up) — never silently absorbed with an "acceptable"
+   shrug.
+
+A zero-findings review of a non-trivial diff is a signal to re-review, not a clean
+bill.
+
 ## Agent memory backup — MANDATORY
 
 The Claude Code project memory lives OUTSIDE the repo
