@@ -217,7 +217,7 @@ fn serve(endpoint: &Path, state: Arc<Mutex<FleetState>>, stop: &AtomicBool) -> R
         .chain(std::iter::once(0))
         .collect();
     loop {
-        let mut attributes = windows_sys::Win32::Security::SECURITY_ATTRIBUTES {
+        let attributes = windows_sys::Win32::Security::SECURITY_ATTRIBUTES {
             nLength: std::mem::size_of::<windows_sys::Win32::Security::SECURITY_ATTRIBUTES>()
                 as u32,
             lpSecurityDescriptor: descriptor,
@@ -232,7 +232,7 @@ fn serve(endpoint: &Path, state: Arc<Mutex<FleetState>>, stop: &AtomicBool) -> R
                 4096,
                 4096,
                 0,
-                &mut attributes,
+                &attributes,
             )
         };
         if pipe == INVALID_HANDLE_VALUE {
