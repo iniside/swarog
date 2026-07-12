@@ -1,6 +1,11 @@
+#[cfg(windows)]
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{Duration, Instant};
+
+#[cfg(windows)]
+use processctl::{OutputDestination, OwnedChild, ProcessGroupPolicy, ShutdownPolicy, SpawnSpec};
 
 fn fixture() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_verifyctl-fixture"))
@@ -86,7 +91,12 @@ fn fake_path_covers_outcomes_audit_install_lease_and_summary_exits() {
         .output()
         .unwrap();
     assert_exit(&output, 0);
-    assert!(String::from_utf8_lossy(&output.stdout).contains("audit                | SKIP"));
+    let strict_stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(strict_stdout.contains("audit                | SKIP"));
+    assert!(strict_stdout.contains("public-api           | PASS"));
+    assert!(strict_stdout.contains("fuzz                 | SKIP"));
+    assert!(strict_stdout.contains("csharp-client        | SKIP"));
+    assert!(strict_stdout.contains("topiccheck           | PASS"));
 
     let install = FakeRun::new("install", false);
     let output = install.command(&[]).output().unwrap();
@@ -131,6 +141,52 @@ fn fake_path_covers_outcomes_audit_install_lease_and_summary_exits() {
     assert_exit(&cli, 2);
 
     interruption_cleans_child_and_releases_lease();
+}
+
+#[cfg(windows)]
+#[test]
+fn exact_owned_cleanup_leaves_decoy_server_alive() {
+    let run = FakeRun::new("decoy-survival", true);
+    let first_dir = run.root.join("owned");
+    let decoy_dir = run.root.join("decoy");
+    std::fs::create_dir_all(&first_dir).unwrap();
+    std::fs::create_dir_all(&decoy_dir).unwrap();
+    copy_as(&fixture(), &first_dir, "server");
+    copy_as(&fixture(), &decoy_dir, "server");
+    let spawn = |label: &str, executable: PathBuf| {
+        OwnedChild::spawn(SpawnSpec {
+            label: label.into(),
+            executable,
+            args: Vec::new(),
+            env: [(OsString::from("RUSTFLAGS"), OsString::from("sleep-decoy"))]
+                .into_iter()
+                .collect(),
+            cwd: workspace_root(),
+            stdout: OutputDestination::Null,
+            stderr: OutputDestination::Null,
+            process_group: ProcessGroupPolicy::Owned,
+        })
+        .unwrap()
+    };
+    let mut owned = spawn("owned-server", first_dir.join("server.exe"));
+    let mut decoy = spawn("decoy-server", decoy_dir.join("server.exe"));
+    std::thread::sleep(Duration::from_millis(100));
+    owned
+        .shutdown(ShutdownPolicy {
+            graceful_timeout: Duration::from_millis(100),
+            force_timeout: Duration::from_secs(2),
+        })
+        .unwrap();
+    assert!(
+        decoy.try_wait().unwrap().is_none(),
+        "decoy server was killed"
+    );
+    decoy
+        .shutdown(ShutdownPolicy {
+            graceful_timeout: Duration::from_millis(100),
+            force_timeout: Duration::from_secs(2),
+        })
+        .unwrap();
 }
 
 fn interruption_cleans_child_and_releases_lease() {

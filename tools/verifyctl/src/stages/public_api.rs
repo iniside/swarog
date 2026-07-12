@@ -211,8 +211,7 @@ pub(crate) fn discover(root: &Path) -> Result<Vec<String>> {
             if !manifest.is_file() {
                 continue;
             }
-            let value: toml::Value = std::fs::read_to_string(&manifest)?
-                .parse()
+            let value: toml::Table = toml::from_str(&std::fs::read_to_string(&manifest)?)
                 .with_context(|| format!("parse {}", manifest.display()))?;
             let name = value
                 .get("package")

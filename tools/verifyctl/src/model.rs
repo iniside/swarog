@@ -161,5 +161,9 @@ mod tests {
             Outcome::Skip(SkipReason::ExplicitNoInstallMissingTool),
         ));
         assert!(!no_install.failed(true));
+
+        let mut slow = Summary::default();
+        slow.push(result(StageClass::Slow, Outcome::Fail));
+        assert!(slow.failed(false));
     }
 }

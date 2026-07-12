@@ -25,6 +25,10 @@ fn main() -> ExitCode {
 fn cargo(executable: PathBuf) -> ExitCode {
     let args: Vec<_> = std::env::args().skip(1).collect();
     record(&format!("cargo {}", args.join(" ")));
+    if control("sleep-decoy") {
+        std::thread::sleep(Duration::from_secs(30));
+        return ExitCode::SUCCESS;
+    }
     if args.iter().any(|arg| arg == "public-api") {
         if let Some(index) = args.iter().position(|arg| arg == "-p") {
             let root = std::env::current_dir().expect("fixture cwd");
