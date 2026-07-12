@@ -33,6 +33,8 @@ members = [
     "tools/rpc-macro-tests",
     "tools/edgeca",
     "tools/playercli",
+    # Exact, handle-owned child-process lifecycle used by dev/test tooling.
+    "tools/processctl",
     # Cross-platform split-proof harness (replaces split-proof.sh/.ps1 + tools/winctrl):
     # spawns the
     # 12-svc fleet via std::process (typed env/args, kill-on-drop — no shell quoting,

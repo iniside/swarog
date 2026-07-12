@@ -1,0 +1,344 @@
+use std::collections::BTreeMap;
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
+#[cfg(windows)]
+use std::sync::Once;
+use std::time::{Duration, Instant};
+
+use crate::{
+    OutputDestination, OwnedChild, ProcessGroupPolicy, ShutdownOutcome, ShutdownPolicy, SpawnSpec,
+};
+
+static NEXT_DIR: AtomicU64 = AtomicU64::new(0);
+static PROCESS_TEST_LOCK: Mutex<()> = Mutex::new(());
+#[cfg(windows)]
+static PROTECT_TEST_HARNESS: Once = Once::new();
+
+#[test]
+fn child_entry() {
+    let Ok(mode) = std::env::var("PROCESSCTL_TEST_MODE") else {
+        return;
+    };
+    match mode.as_str() {
+        "exit" => {}
+        "sleep" => {
+            ready_from_env();
+            std::thread::sleep(Duration::from_secs(60));
+        }
+        "ignore" => {
+            ignore_graceful_signal();
+            ready_from_env();
+            std::thread::sleep(Duration::from_secs(60));
+        }
+        "tree" => {
+            ignore_graceful_signal();
+            let ready = PathBuf::from(std::env::var_os("PROCESSCTL_TEST_READY").unwrap());
+            let grandchild_ready = ready.with_extension("grandchild");
+            let grandchild = spawn_test_process("sleep", &grandchild_ready);
+            std::fs::write(
+                &ready,
+                format!("{}\n{}", std::process::id(), grandchild.id()),
+            )
+            .unwrap();
+            std::mem::forget(grandchild);
+            std::thread::sleep(Duration::from_secs(60));
+        }
+        "fd-check" => {
+            #[cfg(target_os = "linux")]
+            {
+                let three = unsafe { libc::fcntl(3, libc::F_GETFD) };
+                let three_error = std::io::Error::last_os_error().raw_os_error();
+                let four = unsafe { libc::fcntl(4, libc::F_GETFD) };
+                let four_error = std::io::Error::last_os_error().raw_os_error();
+                let closed = three < 0
+                    && three_error == Some(libc::EBADF)
+                    && four < 0
+                    && four_error == Some(libc::EBADF);
+                std::fs::write(
+                    std::env::var_os("PROCESSCTL_TEST_READY").unwrap(),
+                    if closed { "closed" } else { "open" },
+                )
+                .unwrap();
+            }
+        }
+        "supervisor-crash" => {
+            let supervisor_ready =
+                PathBuf::from(std::env::var_os("PROCESSCTL_TEST_SUPERVISOR_READY").unwrap());
+            let tree_ready = PathBuf::from(std::env::var_os("PROCESSCTL_TEST_TREE_READY").unwrap());
+            let mut owned = OwnedChild::spawn(spec("tree", &tree_ready)).unwrap();
+            wait_file(&tree_ready);
+            std::fs::write(supervisor_ready, owned.identity().pid.to_string()).unwrap();
+            let _ = owned.try_wait();
+            std::process::abort();
+        }
+        other => panic!("unknown child mode {other}"),
+    }
+}
+
+#[test]
+fn graceful_exit_and_repeated_shutdown_are_idempotent() {
+    let _serial = PROCESS_TEST_LOCK.lock().unwrap();
+    protect_test_harness();
+    let dir = test_dir("graceful");
+    let ready = dir.join("ready");
+    let mut child = OwnedChild::spawn(spec("sleep", &ready)).unwrap();
+    wait_file(&ready);
+    let first = child.shutdown(policy(Duration::from_secs(3))).unwrap();
+    assert!(matches!(first, ShutdownOutcome::Graceful(_)));
+    let second = child.shutdown(policy(Duration::ZERO)).unwrap();
+    assert!(matches!(second, ShutdownOutcome::AlreadyExited(_)));
+}
+
+#[test]
+fn ignored_graceful_signal_forces_the_owned_process() {
+    let _serial = PROCESS_TEST_LOCK.lock().unwrap();
+    protect_test_harness();
+    let dir = test_dir("force");
+    let ready = dir.join("ready");
+    let mut child = OwnedChild::spawn(spec("ignore", &ready)).unwrap();
+    wait_file(&ready);
+    let outcome = child.shutdown(policy(Duration::from_millis(150))).unwrap();
+    assert!(matches!(outcome, ShutdownOutcome::Forced(_)));
+}
+
+#[test]
+fn already_exited_child_is_observed_without_signalling() {
+    let _serial = PROCESS_TEST_LOCK.lock().unwrap();
+    protect_test_harness();
+    let dir = test_dir("exited");
+    let ready = dir.join("unused");
+    let mut child = OwnedChild::spawn(spec("exit", &ready)).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while child.try_wait().unwrap().is_none() {
+        assert!(Instant::now() < deadline, "child did not exit");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(matches!(
+        child.shutdown(policy(Duration::ZERO)).unwrap(),
+        ShutdownOutcome::AlreadyExited(_)
+    ));
+}
+
+#[test]
+fn identity_mismatch_fails_closed_and_drop_still_reaps_owned_handle() {
+    let _serial = PROCESS_TEST_LOCK.lock().unwrap();
+    protect_test_harness();
+    let dir = test_dir("identity");
+    let ready = dir.join("ready");
+    let mut child = OwnedChild::spawn(spec("ignore", &ready)).unwrap();
+    wait_file(&ready);
+    child.identity.started.0 ^= 1;
+    let error = child.shutdown(policy(Duration::ZERO)).unwrap_err();
+    assert!(error.to_string().contains("cannot verify process identity"));
+}
+
+#[test]
+fn force_kills_and_reaps_descendants_but_not_a_decoy() {
+    let _serial = PROCESS_TEST_LOCK.lock().unwrap();
+    protect_test_harness();
+    let dir = test_dir("tree");
+    let ready = dir.join("tree.ready");
+    let decoy_ready = dir.join("decoy.ready");
+    let mut decoy = spawn_test_process("sleep", &decoy_ready);
+    wait_file(&decoy_ready);
+
+    let mut child = OwnedChild::spawn(spec("tree", &ready)).unwrap();
+    wait_file(&ready);
+    let pids = read_pids(&ready);
+    let outcome = child.shutdown(policy(Duration::from_millis(100))).unwrap();
+    assert!(matches!(outcome, ShutdownOutcome::Forced(_)));
+    wait_dead(pids[0]);
+    wait_dead(pids[1]);
+    assert!(process_alive(decoy.id()), "unrelated decoy was terminated");
+    let _ = decoy.kill();
+    let _ = decoy.wait();
+}
+
+#[test]
+fn supervisor_crash_kills_owned_tree_and_preserves_decoy() {
+    let _serial = PROCESS_TEST_LOCK.lock().unwrap();
+    protect_test_harness();
+    let dir = test_dir("crash");
+    let supervisor_ready = dir.join("supervisor.ready");
+    let tree_ready = dir.join("tree.ready");
+    let decoy_ready = dir.join("decoy.ready");
+    let mut decoy = spawn_test_process("sleep", &decoy_ready);
+    wait_file(&decoy_ready);
+
+    let mut supervisor = Command::new(std::env::current_exe().unwrap());
+    supervisor
+        .args(["--exact", "tests::child_entry", "--nocapture"])
+        .env_clear()
+        .env("PROCESSCTL_TEST_MODE", "supervisor-crash")
+        .env("PROCESSCTL_TEST_SUPERVISOR_READY", &supervisor_ready)
+        .env("PROCESSCTL_TEST_TREE_READY", &tree_ready)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let mut supervisor = supervisor.spawn().unwrap();
+    wait_file(&supervisor_ready);
+    let tree_pids = read_pids(&tree_ready);
+    let status = supervisor.wait().unwrap();
+    assert!(!status.success(), "crash helper unexpectedly succeeded");
+    wait_dead(tree_pids[0]);
+    wait_dead(tree_pids[1]);
+    assert!(process_alive(decoy.id()), "unrelated decoy was terminated");
+    let _ = decoy.kill();
+    let _ = decoy.wait();
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn target_cannot_inherit_guardian_control_pipe_descriptors() {
+    let _serial = PROCESS_TEST_LOCK.lock().unwrap();
+    protect_test_harness();
+    let dir = test_dir("fds");
+    let ready = dir.join("ready");
+    let mut child = OwnedChild::spawn(spec("fd-check", &ready)).unwrap();
+    wait_file(&ready);
+    assert_eq!(std::fs::read_to_string(&ready).unwrap(), "closed");
+    let _ = child.shutdown(policy(Duration::from_millis(100)));
+}
+
+fn spec(mode: &str, ready: &Path) -> SpawnSpec {
+    let mut env = BTreeMap::new();
+    env.insert(OsString::from("PROCESSCTL_TEST_MODE"), OsString::from(mode));
+    env.insert(
+        OsString::from("PROCESSCTL_TEST_READY"),
+        ready.as_os_str().to_owned(),
+    );
+    SpawnSpec {
+        label: format!("test-{mode}"),
+        executable: std::env::current_exe().unwrap(),
+        args: vec![
+            OsString::from("--exact"),
+            OsString::from("tests::child_entry"),
+            OsString::from("--nocapture"),
+        ],
+        env,
+        cwd: std::env::current_dir().unwrap(),
+        stdout: OutputDestination::Null,
+        stderr: OutputDestination::Null,
+        process_group: ProcessGroupPolicy::Owned,
+    }
+}
+
+fn spawn_test_process(mode: &str, ready: &Path) -> Child {
+    Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "tests::child_entry", "--nocapture"])
+        .env_clear()
+        .env("PROCESSCTL_TEST_MODE", mode)
+        .env("PROCESSCTL_TEST_READY", ready)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap()
+}
+
+fn ready_from_env() {
+    std::fs::write(
+        std::env::var_os("PROCESSCTL_TEST_READY").unwrap(),
+        std::process::id().to_string(),
+    )
+    .unwrap();
+}
+
+fn policy(graceful_timeout: Duration) -> ShutdownPolicy {
+    ShutdownPolicy {
+        graceful_timeout,
+        force_timeout: Duration::from_secs(5),
+    }
+}
+
+fn test_dir(name: &str) -> PathBuf {
+    let unique = NEXT_DIR.fetch_add(1, Ordering::Relaxed);
+    let dir =
+        std::env::temp_dir().join(format!("processctl-{name}-{}-{unique}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+fn wait_file(path: &Path) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !path.exists() {
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for {}",
+            path.display()
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+fn read_pids(path: &Path) -> Vec<u32> {
+    std::fs::read_to_string(path)
+        .unwrap()
+        .lines()
+        .map(|line| line.parse().unwrap())
+        .collect()
+}
+
+fn wait_dead(pid: u32) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while process_alive(pid) {
+        assert!(Instant::now() < deadline, "pid {pid} stayed alive");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[cfg(windows)]
+fn process_alive(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, WAIT_TIMEOUT};
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, WaitForSingleObject, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    const SYNCHRONIZE_ACCESS: u32 = 0x0010_0000;
+    let handle = unsafe {
+        OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE_ACCESS,
+            0,
+            pid,
+        )
+    };
+    if handle.is_null() {
+        return false;
+    }
+    let alive = unsafe { WaitForSingleObject(handle, 0) } == WAIT_TIMEOUT;
+    unsafe { CloseHandle(handle) };
+    alive
+}
+
+#[cfg(target_os = "linux")]
+fn process_alive(pid: u32) -> bool {
+    unsafe { libc::kill(pid as i32, 0) == 0 }
+}
+
+#[cfg(windows)]
+fn ignore_graceful_signal() {
+    use windows_sys::Win32::System::Console::SetConsoleCtrlHandler;
+    unsafe extern "system" fn ignore(_: u32) -> i32 {
+        1
+    }
+    assert_ne!(unsafe { SetConsoleCtrlHandler(Some(ignore), 1) }, 0);
+}
+
+#[cfg(windows)]
+fn protect_test_harness() {
+    use windows_sys::Win32::System::Console::{SetConsoleCtrlHandler, CTRL_BREAK_EVENT};
+    unsafe extern "system" fn handler(event: u32) -> i32 {
+        i32::from(event == CTRL_BREAK_EVENT)
+    }
+    PROTECT_TEST_HARNESS.call_once(|| {
+        assert_ne!(unsafe { SetConsoleCtrlHandler(Some(handler), 1) }, 0);
+    });
+}
+
+#[cfg(target_os = "linux")]
+fn protect_test_harness() {}
+
+#[cfg(target_os = "linux")]
+fn ignore_graceful_signal() {
+    unsafe { libc::signal(libc::SIGTERM, libc::SIG_IGN) };
+}
