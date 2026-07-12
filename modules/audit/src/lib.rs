@@ -83,27 +83,19 @@ const ADMIN_SECTION: &str = "Platform";
 const ADMIN_LABEL: &str = "Audit Log";
 
 /// Creates this module's OWN schema and nothing else — full logical isolation (#10).
-/// Idempotent. The `event_id` ALTER is wrapped in a column-existence check because
-/// `ADD COLUMN IF NOT EXISTS` still takes ACCESS EXCLUSIVE on every run — two
-/// concurrent migrators (parallel integration tests share one DB) deadlock on it;
-/// the guarded form takes no exclusive lock once the column exists.
+/// Idempotent DDL only (`CREATE … IF NOT EXISTS`) — schema evolution is wipe +
+/// fresh CREATE (`DROP SCHEMA audit CASCADE`, or a full DB wipe), never `ALTER`;
+/// see CLAUDE.md's "wipe is the migration strategy".
 const SCHEMA_DDL: &str = r#"
 CREATE SCHEMA IF NOT EXISTS audit;
 CREATE TABLE IF NOT EXISTS audit.log (
-	id      bigserial   PRIMARY KEY,
-	topic   text        NOT NULL,
-	payload jsonb       NOT NULL,
-	at      timestamptz NOT NULL DEFAULT now()
+	id       bigserial   PRIMARY KEY,
+	topic    text        NOT NULL,
+	payload  jsonb       NOT NULL,
+	at       timestamptz NOT NULL DEFAULT now(),
+	event_id text
 );
-CREATE INDEX IF NOT EXISTS log_at_idx ON audit.log(at);
-DO $$ BEGIN
-	IF NOT EXISTS (
-		SELECT 1 FROM information_schema.columns
-		WHERE table_schema = 'audit' AND table_name = 'log' AND column_name = 'event_id'
-	) THEN
-		ALTER TABLE audit.log ADD COLUMN event_id text;
-	END IF;
-END $$;"#;
+CREATE INDEX IF NOT EXISTS log_at_idx ON audit.log(at);"#;
 
 /// Folds any lower-level error into an `Internal` operation error (for the admin face).
 fn internal<E: std::fmt::Display>(e: E) -> Error {
