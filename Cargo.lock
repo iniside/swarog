@@ -1245,6 +1245,9 @@ name = "edgeca"
 version = "0.1.0"
 dependencies = [
  "edge",
+ "processctl",
+ "rand 0.8.6",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
