@@ -220,7 +220,8 @@ pub(crate) async fn run(
 pub(crate) async fn sweep(pool: &PgPool) -> anyhow::Result<()> {
     let contracts = sqlx::query(
         "SELECT topic, contract_version, min_retention_days \
-         FROM asyncevents.history_contracts WHERE policy = 'min_retention'",
+         FROM asyncevents.history_contracts WHERE policy = 'min_retention' \
+         ORDER BY topic, contract_version",
     )
     .fetch_all(pool)
     .await?;

@@ -370,8 +370,9 @@ async fn topic_without_contract_is_never_deleted() {
 #[tokio::test]
 async fn sweep_continues_after_topic_failure_and_returns_contextual_error() {
     let Some(pool) = test_pool().await else { return };
-    let bad_topic = unique("ret.fail.bad");
-    let good_topic = unique("ret.fail.good");
+    let bad_topic = unique("ret.fail.00-bad");
+    let good_topic = unique("ret.fail.01-good");
+    assert!(bad_topic < good_topic, "fixture must place the failing contract first");
     insert_synthetic_event(&pool, bad_topic, "7001", unique_tie(), 40).await;
     insert_synthetic_event(&pool, good_topic, "7002", unique_tie(), 40).await;
     insert_contract(&pool, bad_topic, "min_retention", 30).await;
