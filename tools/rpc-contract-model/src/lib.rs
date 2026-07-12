@@ -173,6 +173,21 @@ pub fn build_method(method: &mut syn::TraitItemFn) -> syn::Result<MethodModel> {
 
     if let Some(binding) = &http {
         validate_http_mappings(&sig, &name, &args, binding)?;
+        match (binding.auth.as_str(), has_identity) {
+            ("Player", false) => {
+                return Err(syn::Error::new(
+                    sig.span(),
+                    "HTTP method with auth = \"player\" must take a leading Identity parameter",
+                ));
+            }
+            ("None", true) => {
+                return Err(syn::Error::new(
+                    sig.span(),
+                    "HTTP method with a leading Identity parameter must declare auth = \"player\"",
+                ));
+            }
+            _ => {}
+        }
     }
 
     Ok(MethodModel {
@@ -196,7 +211,15 @@ fn parse_http(attr: &syn::Attribute) -> syn::Result<HttpBind> {
         } else if meta.path.is_ident("path") {
             binding.path = meta.value()?.parse::<LitStr>()?.value();
         } else if meta.path.is_ident("success") {
-            binding.success = meta.value()?.parse::<LitInt>()?.base10_parse()?;
+            let literal = meta.value()?.parse::<LitInt>()?;
+            let success = literal.base10_parse()?;
+            if !(200..=299).contains(&success) {
+                return Err(syn::Error::new(
+                    literal.span(),
+                    "#[http(...)] success must be between 200 and 299",
+                ));
+            }
+            binding.success = success;
         } else if meta.path.is_ident("auth") {
             let value = meta.value()?.parse::<LitStr>()?.value();
             binding.auth = match value.as_str() {

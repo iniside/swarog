@@ -1,0 +1,5 @@
+error: #[http(...)] success must be between 200 and 299
+  --> tests/compile_fail/success_above_299.rs:10:66
+   |
+10 |     #[http(verb = "GET", path = "/bad", auth = "none", success = 300)]
+   |                                                                  ^^^

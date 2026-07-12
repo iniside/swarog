@@ -11,4 +11,8 @@ fn http_mapping_validation() {
     t.compile_fail("tests/compile_fail/bad_path_args_key.rs");
     t.compile_fail("tests/compile_fail/bad_body_names_key.rs");
     t.compile_fail("tests/compile_fail/placeholder_mismatch.rs");
+    t.compile_fail("tests/compile_fail/auth_player_without_identity.rs");
+    t.compile_fail("tests/compile_fail/identity_with_auth_none.rs");
+    t.compile_fail("tests/compile_fail/success_below_200.rs");
+    t.compile_fail("tests/compile_fail/success_above_299.rs");
 }

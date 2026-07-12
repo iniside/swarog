@@ -22,7 +22,11 @@ pub trait Holdings: Send + Sync {
         success = 200,
         path_args(character_id = "id")
     )]
-    async fn list_character(&self, identity: Identity, character_id: String) -> Result<Vec<Holding>, Error>;
+    async fn list_character(
+        &self,
+        identity: Identity,
+        character_id: String,
+    ) -> Result<Vec<Holding>, Error>;
 
     #[http(
         verb = "POST",
@@ -31,7 +35,16 @@ pub trait Holdings: Send + Sync {
         success = 200,
         body_names(item_id = "sku")
     )]
-    async fn grant(&self, identity: Identity, item_id: String, qty: i64) -> Result<Vec<Holding>, Error>;
+    async fn grant(
+        &self,
+        identity: Identity,
+        item_id: String,
+        qty: i64,
+    ) -> Result<Vec<Holding>, Error>;
+
+    // Wire-only methods carry no HTTP auth metadata; both identity shapes remain valid.
+    async fn wire_player(&self, identity: Identity) -> Result<(), Error>;
+    async fn wire_none(&self) -> Result<(), Error>;
 }
 
 fn main() {}

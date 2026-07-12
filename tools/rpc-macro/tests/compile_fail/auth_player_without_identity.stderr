@@ -1,0 +1,5 @@
+error: HTTP method with auth = "player" must take a leading Identity parameter
+  --> tests/compile_fail/auth_player_without_identity.rs:11:5
+   |
+11 |     async fn get(&self) -> Result<(), Error>;
+   |     ^^^^^
