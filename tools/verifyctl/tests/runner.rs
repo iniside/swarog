@@ -39,6 +39,30 @@ impl FakeRun {
         let target = root.join("target");
         std::fs::create_dir_all(target.join("debug")).unwrap();
         std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(root.join("Cargo.toml"), "[workspace]\n").unwrap();
+        for directory in [
+            "api",
+            "clients/csharp/Generated",
+            "cmd",
+            "run",
+            "tools/processctl",
+        ] {
+            std::fs::create_dir_all(root.join(directory)).unwrap();
+        }
+        let contract = root.join("api/fixture/api");
+        std::fs::create_dir_all(&contract).unwrap();
+        std::fs::write(
+            contract.join("Cargo.toml"),
+            "[package]\nname = 'fixtureapi'\nversion = '0.1.0'\n",
+        )
+        .unwrap();
+        let baseline = root.join("docs/reference/public-api-baseline");
+        std::fs::create_dir_all(&baseline).unwrap();
+        std::fs::write(
+            baseline.join("fixtureapi.txt"),
+            "# cargo-public-api fixture\n",
+        )
+        .unwrap();
         copy_as(&fixture(), &bin, "cargo");
         if audit_present {
             copy_as(&fixture(), &bin, "cargo-audit");
@@ -55,7 +79,7 @@ impl FakeRun {
     fn command(&self, args: &[&str]) -> Command {
         let mut command = Command::new(verifyctl());
         command
-            .current_dir(workspace_root())
+            .current_dir(&self.root)
             .args(args)
             .env("PATH", &self.bin)
             .env("CARGO_TARGET_DIR", &self.target)
@@ -93,7 +117,8 @@ fn fake_path_covers_outcomes_audit_install_lease_and_summary_exits() {
     assert!(record.contains("cargo test --workspace --exclude verifyctl"));
     assert!(record.contains("cargo test -p verifyctl --target-dir"));
     assert!(record.contains(
-        &workspace_root()
+        &pass
+            .root
             .join("target/verifyctl-self")
             .display()
             .to_string()
@@ -189,27 +214,25 @@ fn fake_path_covers_outcomes_audit_install_lease_and_summary_exits() {
 #[test]
 fn verify_and_bless_actions_share_one_rollout_lock() {
     let _serial = VERIFY_RUN_LOCK.lock().unwrap();
-    let owner = processctl::RolloutLock::acquire_exclusive(
-        processctl::rollout_lock_path(&workspace_root()),
-        "verifyctl-action-contention",
-    )
-    .unwrap();
-
     for (label, args) in [
         ("verify", &[][..]),
         ("public-api-bless", &["--bless-public-api"][..]),
         ("contract-golden-bless", &["--bless-contract-golden"][..]),
     ] {
         let run = FakeRun::new(label, true);
+        let owner = processctl::RolloutLock::acquire_exclusive(
+            processctl::rollout_lock_path(&run.root),
+            "verifyctl-action-contention",
+        )
+        .unwrap();
         let output = run.command(args).output().unwrap();
         assert_exit(&output, 2);
         assert!(
             String::from_utf8_lossy(&output.stderr).contains("acquire shared rollout lease"),
             "{label} did not report shared rollout contention"
         );
+        drop(owner);
     }
-
-    drop(owner);
 }
 
 #[cfg(windows)]
@@ -230,7 +253,7 @@ fn exact_owned_cleanup_leaves_decoy_server_alive() {
             env: [(OsString::from("RUSTFLAGS"), OsString::from("sleep-decoy"))]
                 .into_iter()
                 .collect(),
-            cwd: workspace_root(),
+            cwd: run.root.clone(),
             stdout: OutputDestination::Null,
             stderr: OutputDestination::Null,
             process_group: ProcessGroupPolicy::Owned,
@@ -268,7 +291,7 @@ fn interruption_cleans_child_and_releases_lease() {
 
     assert!(matches!(
         processctl::RolloutLock::acquire_exclusive(
-            processctl::rollout_lock_path(&workspace_root()),
+            processctl::rollout_lock_path(&run.root),
             "verifyctl-test-competing"
         ),
         Err(processctl::LeaseError::AlreadyOwned)
@@ -288,7 +311,7 @@ fn interruption_cleans_child_and_releases_lease() {
     };
     assert_eq!(status.code(), Some(130));
     let lease = processctl::RolloutLock::acquire_exclusive(
-        processctl::rollout_lock_path(&workspace_root()),
+        processctl::rollout_lock_path(&run.root),
         "verifyctl-test-after-interrupt",
     )
     .unwrap();
@@ -351,15 +374,6 @@ fn send_interrupt(pid: u32) {
 fn copy_as(source: &Path, directory: &Path, name: &str) {
     let destination = directory.join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
     std::fs::copy(source, destination).unwrap();
-}
-
-fn workspace_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .to_path_buf()
 }
 
 fn assert_exit(output: &Output, expected: i32) {
