@@ -1,10 +1,17 @@
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use processctl::{FleetState, ProcessIdentity};
 use serde::{Deserialize, Serialize};
+
+const MAX_FRAME: usize = 4096;
+const IO_DEADLINE: Duration = Duration::from_secs(2);
+const BIND_DEADLINE: Duration = Duration::from_secs(2);
+const POLL: Duration = Duration::from_millis(10);
 
 #[derive(Deserialize, Serialize)]
 struct Request {
@@ -18,7 +25,6 @@ struct Response {
 }
 
 pub struct ControlServer {
-    endpoint: PathBuf,
     stop: Arc<AtomicBool>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
@@ -29,42 +35,49 @@ impl ControlServer {
         state: Arc<Mutex<FleetState>>,
         stop: Arc<AtomicBool>,
     ) -> Result<Self> {
+        let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
         let thread_stop = Arc::clone(&stop);
-        let thread_endpoint = endpoint.clone();
         let thread = std::thread::Builder::new()
             .name("devctl-control".into())
             .spawn(move || {
-                if let Err(error) = serve(&thread_endpoint, state, &thread_stop) {
+                if let Err(error) = serve(&endpoint, state, &thread_stop, ready_tx) {
                     eprintln!("devctl: control endpoint failed: {error:#}");
                     thread_stop.store(true, Ordering::SeqCst);
                 }
             })
             .context("spawn control endpoint")?;
-        Ok(Self {
-            endpoint,
-            stop,
-            thread: Some(thread),
-        })
+        match ready_rx.recv_timeout(BIND_DEADLINE) {
+            Ok(Ok(())) => Ok(Self {
+                stop,
+                thread: Some(thread),
+            }),
+            Ok(Err(error)) => {
+                let _ = thread.join();
+                Err(error)
+            }
+            Err(_) => {
+                stop.store(true, Ordering::SeqCst);
+                let _ = thread.join();
+                bail!("control endpoint did not become ready within {BIND_DEADLINE:?}")
+            }
+        }
     }
 }
 
 impl Drop for ControlServer {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
-        let _ = request_raw(&self.endpoint, "wake", None);
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
-        #[cfg(target_os = "linux")]
-        let _ = std::fs::remove_file(&self.endpoint);
     }
 }
 
 pub fn request(endpoint: &Path, command: &str, expected: &ProcessIdentity) -> Result<String> {
-    request_raw(endpoint, command, Some(expected))
+    request_raw(endpoint, command, expected)
 }
 
-fn handle(bytes: &[u8], state: &Arc<Mutex<FleetState>>, stop: &AtomicBool) -> Vec<u8> {
+fn response(bytes: &[u8], state: &Arc<Mutex<FleetState>>, stop: &AtomicBool) -> Vec<u8> {
     let response = match serde_json::from_slice::<Request>(bytes) {
         Ok(request) if request.command == "status" => {
             let state = state.lock().expect("state mutex poisoned");
@@ -77,10 +90,7 @@ fn handle(bytes: &[u8], state: &Arc<Mutex<FleetState>>, stop: &AtomicBool) -> Ve
                     state
                         .processes()
                         .iter()
-                        .filter(|process| matches!(
-                            process.status(),
-                            processctl::ManagedStatus::Healthy
-                        ))
+                        .filter(|p| matches!(p.status(), processctl::ManagedStatus::Healthy))
                         .count(),
                     state.processes().len()
                 ),
@@ -93,10 +103,6 @@ fn handle(bytes: &[u8], state: &Arc<Mutex<FleetState>>, stop: &AtomicBool) -> Ve
                 message: "shutdown requested".into(),
             }
         }
-        Ok(request) if request.command == "wake" => Response {
-            ok: true,
-            message: "wake".into(),
-        },
         Ok(_) => Response {
             ok: false,
             message: "unknown control command".into(),
@@ -106,23 +112,124 @@ fn handle(bytes: &[u8], state: &Arc<Mutex<FleetState>>, stop: &AtomicBool) -> Ve
             message: "invalid control request".into(),
         },
     };
-    serde_json::to_vec(&response)
-        .unwrap_or_else(|_| b"{\"ok\":false,\"message\":\"encode failure\"}".to_vec())
+    serde_json::to_vec(&response).unwrap_or_default()
+}
+
+fn read_frame(stream: &mut impl Read, stop: &AtomicBool) -> Result<Vec<u8>> {
+    let mut length = [0u8; 4];
+    read_exact_bounded(stream, &mut length, stop)?;
+    let length = u32::from_be_bytes(length) as usize;
+    if length == 0 || length > MAX_FRAME {
+        bail!("control frame length {length} is outside 1..={MAX_FRAME}");
+    }
+    let mut bytes = vec![0; length];
+    read_exact_bounded(stream, &mut bytes, stop)?;
+    Ok(bytes)
+}
+
+fn write_frame(stream: &mut impl Write, bytes: &[u8], stop: &AtomicBool) -> Result<()> {
+    if bytes.is_empty() || bytes.len() > MAX_FRAME {
+        bail!("control response exceeds frame bound");
+    }
+    let mut frame = Vec::with_capacity(4 + bytes.len());
+    frame.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
+    frame.extend_from_slice(bytes);
+    write_all_bounded(stream, &frame, stop)
+}
+
+fn read_exact_bounded(
+    stream: &mut impl Read,
+    mut bytes: &mut [u8],
+    stop: &AtomicBool,
+) -> Result<()> {
+    let deadline = Instant::now() + IO_DEADLINE;
+    while !bytes.is_empty() {
+        if stop.load(Ordering::SeqCst) {
+            bail!("control I/O cancelled");
+        }
+        match stream.read(bytes) {
+            Ok(0) if Instant::now() < deadline => std::thread::sleep(POLL),
+            Ok(0) => bail!("control read deadline elapsed"),
+            Ok(count) => bytes = &mut bytes[count..],
+            Err(error) if retryable(&error) && Instant::now() < deadline => {
+                std::thread::sleep(POLL)
+            }
+            Err(error) if retryable(&error) => bail!("control read deadline elapsed"),
+            Err(error) => return Err(error).context("read control frame"),
+        }
+        if Instant::now() >= deadline && !bytes.is_empty() {
+            bail!("control read deadline elapsed");
+        }
+    }
+    Ok(())
+}
+
+fn write_all_bounded(stream: &mut impl Write, mut bytes: &[u8], stop: &AtomicBool) -> Result<()> {
+    let deadline = Instant::now() + IO_DEADLINE;
+    while !bytes.is_empty() {
+        if stop.load(Ordering::SeqCst) {
+            bail!("control I/O cancelled");
+        }
+        match stream.write(bytes) {
+            Ok(0) if Instant::now() < deadline => std::thread::sleep(POLL),
+            Ok(0) => bail!("control write deadline elapsed"),
+            Ok(count) => bytes = &bytes[count..],
+            Err(error) if retryable(&error) && Instant::now() < deadline => {
+                std::thread::sleep(POLL)
+            }
+            Err(error) if retryable(&error) => bail!("control write deadline elapsed"),
+            Err(error) => return Err(error).context("write control frame"),
+        }
+    }
+    Ok(())
+}
+
+fn retryable(error: &std::io::Error) -> bool {
+    error.kind() == std::io::ErrorKind::WouldBlock
+        || error.kind() == std::io::ErrorKind::TimedOut
+        || matches!(error.raw_os_error(), Some(232 | 536))
+}
+
+fn decode_response(bytes: &[u8]) -> Result<String> {
+    let response: Response = serde_json::from_slice(bytes).context("decode control response")?;
+    if response.ok {
+        Ok(response.message)
+    } else {
+        bail!("{}", response.message)
+    }
 }
 
 #[cfg(target_os = "linux")]
-fn serve(endpoint: &Path, state: Arc<Mutex<FleetState>>, stop: &AtomicBool) -> Result<()> {
-    use std::io::{Read as _, Write as _};
-    use std::os::unix::fs::PermissionsExt as _;
-    use std::os::unix::io::AsRawFd as _;
+fn serve(
+    endpoint: &Path,
+    state: Arc<Mutex<FleetState>>,
+    stop: &AtomicBool,
+    ready: std::sync::mpsc::SyncSender<Result<()>>,
+) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::io::AsRawFd;
     use std::os::unix::net::UnixListener;
-
     let _ = std::fs::remove_file(endpoint);
-    let listener = UnixListener::bind(endpoint).context("bind Unix control socket")?;
-    std::fs::set_permissions(endpoint, std::fs::Permissions::from_mode(0o600))
-        .context("restrict Unix control socket")?;
-    for stream in listener.incoming() {
-        let mut stream = stream.context("accept Unix control client")?;
+    let listener = match UnixListener::bind(endpoint) {
+        Ok(listener) => listener,
+        Err(error) => {
+            let message = error.to_string();
+            let _ = ready.send(Err(error).context("bind Unix control socket"));
+            bail!(message);
+        }
+    };
+    std::fs::set_permissions(endpoint, std::fs::Permissions::from_mode(0o600))?;
+    listener.set_nonblocking(true)?;
+    let _ = ready.send(Ok(()));
+    while !stop.load(Ordering::SeqCst) {
+        let mut stream = match listener.accept() {
+            Ok((stream, _)) => stream,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(POLL);
+                continue;
+            }
+            Err(error) => return Err(error).context("accept Unix control client"),
+        };
         let mut credentials: libc::ucred = unsafe { std::mem::zeroed() };
         let mut length = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
         if unsafe {
@@ -138,66 +245,92 @@ fn serve(endpoint: &Path, state: Arc<Mutex<FleetState>>, stop: &AtomicBool) -> R
         {
             continue;
         }
-        let mut bytes = Vec::new();
-        stream.read_to_end(&mut bytes)?;
-        stream.write_all(&handle(&bytes, &state, stop))?;
-        if stop.load(Ordering::SeqCst) {
-            break;
+        stream.set_nonblocking(true)?;
+        if let Ok(request) = read_frame(&mut stream, stop) {
+            let response_stop = AtomicBool::new(false);
+            let _ = write_frame(
+                &mut stream,
+                &response(&request, &state, stop),
+                &response_stop,
+            );
         }
     }
+    let _ = std::fs::remove_file(endpoint);
     Ok(())
 }
 
 #[cfg(target_os = "linux")]
-fn request_raw(
-    endpoint: &Path,
-    command: &str,
-    expected: Option<&ProcessIdentity>,
-) -> Result<String> {
-    use std::io::{Read as _, Write as _};
-    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+fn request_raw(endpoint: &Path, command: &str, expected: &ProcessIdentity) -> Result<String> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    use std::os::unix::io::AsRawFd;
     use std::os::unix::net::UnixStream;
-    let metadata = std::fs::symlink_metadata(endpoint).context("inspect Unix control socket")?;
+    let metadata = std::fs::symlink_metadata(endpoint)?;
     if metadata.file_type().is_symlink()
         || metadata.uid() != unsafe { libc::geteuid() }
         || metadata.permissions().mode() & 0o777 != 0o600
     {
         bail!("control socket ownership or mode is invalid");
     }
-    if let Some(expected) = expected {
-        let observed = processctl::observe_process_identity(expected.pid)?;
-        if &observed != expected {
-            bail!("supervisor identity no longer matches state");
-        }
+    let observed = processctl::observe_process_identity(expected.pid)?;
+    if &observed != expected {
+        bail!("supervisor identity no longer matches state");
     }
-    let mut stream = UnixStream::connect(endpoint).context("connect Unix control socket")?;
-    stream.write_all(&serde_json::to_vec(&Request {
-        command: command.into(),
-    })?)?;
-    stream.shutdown(std::net::Shutdown::Write)?;
-    let mut bytes = Vec::new();
-    stream.read_to_end(&mut bytes)?;
-    decode_response(&bytes)
+    let mut stream = UnixStream::connect(endpoint)?;
+    let mut credentials: libc::ucred = unsafe { std::mem::zeroed() };
+    let mut length = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    if unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            (&raw mut credentials).cast(),
+            &mut length,
+        )
+    } != 0
+        || credentials.pid as u32 != expected.pid
+        || credentials.uid != unsafe { libc::geteuid() }
+    {
+        bail!("Unix control peer is not the recorded supervisor");
+    }
+    stream.set_nonblocking(true)?;
+    let never_stop = AtomicBool::new(false);
+    write_frame(
+        &mut stream,
+        &serde_json::to_vec(&Request {
+            command: command.into(),
+        })?,
+        &never_stop,
+    )?;
+    decode_response(&read_frame(&mut stream, &never_stop)?)
 }
 
 #[cfg(windows)]
-fn serve(endpoint: &Path, state: Arc<Mutex<FleetState>>, stop: &AtomicBool) -> Result<()> {
-    use std::io::{Read as _, Write as _};
-    use std::os::windows::ffi::OsStrExt as _;
-    use std::os::windows::io::FromRawHandle as _;
-    use windows_sys::Win32::Foundation::{CloseHandle, ERROR_PIPE_CONNECTED, INVALID_HANDLE_VALUE};
+fn serve(
+    endpoint: &Path,
+    state: Arc<Mutex<FleetState>>,
+    stop: &AtomicBool,
+    ready: std::sync::mpsc::SyncSender<Result<()>>,
+) -> Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::io::FromRawHandle;
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, ERROR_NO_DATA, ERROR_PIPE_CONNECTED, ERROR_PIPE_LISTENING,
+        INVALID_HANDLE_VALUE,
+    };
     use windows_sys::Win32::Security::Authorization::{
         ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
     };
-    use windows_sys::Win32::Storage::FileSystem::PIPE_ACCESS_DUPLEX;
-    use windows_sys::Win32::System::Pipes::{
-        ConnectNamedPipe, CreateNamedPipeW, PIPE_READMODE_BYTE, PIPE_TYPE_BYTE, PIPE_WAIT,
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_DUPLEX,
     };
-
+    use windows_sys::Win32::System::Pipes::{
+        ConnectNamedPipe, CreateNamedPipeW, PIPE_NOWAIT, PIPE_READMODE_BYTE,
+        PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE,
+    };
     let sid = current_sid()?;
     let sddl: Vec<u16> = std::ffi::OsStr::new(&format!("O:{sid}D:P(A;;GA;;;{sid})"))
         .encode_wide()
-        .chain(std::iter::once(0))
+        .chain(Some(0))
         .collect();
     let mut descriptor = std::ptr::null_mut();
     if unsafe {
@@ -209,14 +342,14 @@ fn serve(endpoint: &Path, state: Arc<Mutex<FleetState>>, stop: &AtomicBool) -> R
         )
     } == 0
     {
-        return Err(std::io::Error::last_os_error()).context("create pipe owner DACL");
+        let error = std::io::Error::last_os_error();
+        let message = error.to_string();
+        let _ = ready.send(Err(error).context("create pipe owner DACL"));
+        bail!(message);
     }
-    let name: Vec<u16> = endpoint
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect();
-    loop {
+    let name: Vec<u16> = endpoint.as_os_str().encode_wide().chain(Some(0)).collect();
+    let mut first = true;
+    while !stop.load(Ordering::SeqCst) {
         let attributes = windows_sys::Win32::Security::SECURITY_ATTRIBUTES {
             nLength: std::mem::size_of::<windows_sys::Win32::Security::SECURITY_ATTRIBUTES>()
                 as u32,
@@ -226,39 +359,59 @@ fn serve(endpoint: &Path, state: Arc<Mutex<FleetState>>, stop: &AtomicBool) -> R
         let pipe = unsafe {
             CreateNamedPipeW(
                 name.as_ptr(),
-                PIPE_ACCESS_DUPLEX,
-                PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
-                1,
-                4096,
-                4096,
+                PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE,
+                PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_NOWAIT | PIPE_REJECT_REMOTE_CLIENTS,
+                4,
+                MAX_FRAME as u32,
+                MAX_FRAME as u32,
                 0,
                 &attributes,
             )
         };
         if pipe == INVALID_HANDLE_VALUE {
+            let error = std::io::Error::last_os_error();
+            if first {
+                let message = error.to_string();
+                let _ = ready.send(Err(error).context("create named pipe"));
+                unsafe { windows_sys::Win32::Foundation::LocalFree(descriptor as _) };
+                bail!(message);
+            }
             unsafe { windows_sys::Win32::Foundation::LocalFree(descriptor as _) };
-            return Err(std::io::Error::last_os_error()).context("create named pipe");
+            return Err(error).context("create named pipe");
         }
-        let connected = unsafe { ConnectNamedPipe(pipe, std::ptr::null_mut()) } != 0
-            || std::io::Error::last_os_error().raw_os_error() == Some(ERROR_PIPE_CONNECTED as i32);
-        if !connected {
+        if first {
+            first = false;
+            let _ = ready.send(Ok(()));
+        }
+        loop {
+            if stop.load(Ordering::SeqCst) {
+                unsafe { CloseHandle(pipe) };
+                break;
+            }
+            let connected = unsafe { ConnectNamedPipe(pipe, std::ptr::null_mut()) } != 0;
+            if connected
+                || std::io::Error::last_os_error().raw_os_error()
+                    == Some(ERROR_PIPE_CONNECTED as i32)
+            {
+                let mut file = unsafe { std::fs::File::from_raw_handle(pipe.cast()) };
+                if let Ok(request) = read_frame(&mut file, stop) {
+                    let response_stop = AtomicBool::new(false);
+                    let _ =
+                        write_frame(&mut file, &response(&request, &state, stop), &response_stop);
+                }
+                break;
+            }
+            let code = std::io::Error::last_os_error().raw_os_error();
+            if code == Some(ERROR_PIPE_LISTENING as i32) {
+                std::thread::sleep(POLL);
+                continue;
+            }
             unsafe { CloseHandle(pipe) };
-            continue;
-        }
-        let mut file = unsafe { std::fs::File::from_raw_handle(pipe.cast()) };
-        let mut bytes = [0u8; 4096];
-        let read = file.read(&mut bytes)?;
-        if read == 0 {
-            continue;
-        }
-        if file
-            .write_all(&handle(&bytes[..read], &state, stop))
-            .is_err()
-        {
-            continue;
-        }
-        if stop.load(Ordering::SeqCst) {
-            break;
+            if code == Some(ERROR_NO_DATA as i32) {
+                break;
+            }
+            unsafe { windows_sys::Win32::Foundation::LocalFree(descriptor as _) };
+            bail!("connect named pipe: {}", std::io::Error::last_os_error());
         }
     }
     unsafe { windows_sys::Win32::Foundation::LocalFree(descriptor as _) };
@@ -266,56 +419,61 @@ fn serve(endpoint: &Path, state: Arc<Mutex<FleetState>>, stop: &AtomicBool) -> R
 }
 
 #[cfg(windows)]
-fn request_raw(
-    endpoint: &Path,
-    command: &str,
-    expected: Option<&ProcessIdentity>,
-) -> Result<String> {
-    use std::io::{Read as _, Write as _};
-    use std::os::windows::ffi::OsStrExt as _;
-    use std::os::windows::io::FromRawHandle as _;
+fn request_raw(endpoint: &Path, command: &str, expected: &ProcessIdentity) -> Result<String> {
+    use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::io::FromRawHandle;
     use windows_sys::Win32::Foundation::{GENERIC_READ, GENERIC_WRITE, INVALID_HANDLE_VALUE};
     use windows_sys::Win32::Storage::FileSystem::{CreateFileW, OPEN_EXISTING};
-    use windows_sys::Win32::System::Pipes::GetNamedPipeServerProcessId;
-    let name: Vec<u16> = endpoint
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect();
-    let handle = unsafe {
-        CreateFileW(
-            name.as_ptr(),
-            GENERIC_READ | GENERIC_WRITE,
-            0,
-            std::ptr::null(),
-            OPEN_EXISTING,
-            0,
-            std::ptr::null_mut(),
-        )
+    use windows_sys::Win32::System::Pipes::{
+        GetNamedPipeServerProcessId, SetNamedPipeHandleState, WaitNamedPipeW, PIPE_NOWAIT,
+        PIPE_READMODE_BYTE,
     };
-    if handle == INVALID_HANDLE_VALUE {
-        return Err(std::io::Error::last_os_error()).context("connect named pipe");
-    }
-    let mut pid = 0;
-    if unsafe { GetNamedPipeServerProcessId(handle, &mut pid) } == 0 {
-        unsafe { windows_sys::Win32::Foundation::CloseHandle(handle) };
-        return Err(std::io::Error::last_os_error()).context("identify named pipe server");
-    }
-    if let Some(expected) = expected {
-        let observed = processctl::observe_process_identity(pid)?;
-        if pid != expected.pid || &observed != expected {
-            unsafe { windows_sys::Win32::Foundation::CloseHandle(handle) };
-            bail!("named pipe server is not the recorded supervisor");
+    let name: Vec<u16> = endpoint.as_os_str().encode_wide().chain(Some(0)).collect();
+    let deadline = Instant::now() + IO_DEADLINE;
+    let handle = loop {
+        let handle = unsafe {
+            CreateFileW(
+                name.as_ptr(),
+                GENERIC_READ | GENERIC_WRITE,
+                0,
+                std::ptr::null(),
+                OPEN_EXISTING,
+                0,
+                std::ptr::null_mut(),
+            )
+        };
+        if handle != INVALID_HANDLE_VALUE {
+            break handle;
         }
+        if Instant::now() >= deadline {
+            return Err(std::io::Error::last_os_error())
+                .context("connect named pipe deadline elapsed");
+        }
+        unsafe { WaitNamedPipeW(name.as_ptr(), POLL.as_millis() as u32) };
+    };
+    let mut pid = 0;
+    if unsafe { GetNamedPipeServerProcessId(handle, &mut pid) } == 0
+        || pid != expected.pid
+        || processctl::observe_process_identity(pid)? != *expected
+    {
+        unsafe { windows_sys::Win32::Foundation::CloseHandle(handle) };
+        bail!("named pipe server is not the recorded supervisor");
+    }
+    let mode = PIPE_READMODE_BYTE | PIPE_NOWAIT;
+    if unsafe { SetNamedPipeHandleState(handle, &mode, std::ptr::null(), std::ptr::null()) } == 0 {
+        unsafe { windows_sys::Win32::Foundation::CloseHandle(handle) };
+        return Err(std::io::Error::last_os_error()).context("make control client nonblocking");
     }
     let mut file = unsafe { std::fs::File::from_raw_handle(handle.cast()) };
-    file.write_all(&serde_json::to_vec(&Request {
-        command: command.into(),
-    })?)?;
-    file.flush()?;
-    let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes)?;
-    decode_response(&bytes)
+    let never_stop = AtomicBool::new(false);
+    write_frame(
+        &mut file,
+        &serde_json::to_vec(&Request {
+            command: command.into(),
+        })?,
+        &never_stop,
+    )?;
+    decode_response(&read_frame(&mut file, &never_stop)?)
 }
 
 #[cfg(windows)]
@@ -357,19 +515,18 @@ fn current_sid() -> Result<String> {
 }
 
 #[cfg(not(any(windows, target_os = "linux")))]
-fn serve(_: &Path, _: Arc<Mutex<FleetState>>, _: &AtomicBool) -> Result<()> {
+fn serve(
+    _: &Path,
+    _: Arc<Mutex<FleetState>>,
+    _: &AtomicBool,
+    ready: std::sync::mpsc::SyncSender<Result<()>>,
+) -> Result<()> {
+    let _ = ready.send(Err(anyhow::anyhow!(
+        "devctl supports only Windows and Linux"
+    )));
     bail!("devctl supports only Windows and Linux")
 }
 #[cfg(not(any(windows, target_os = "linux")))]
-fn request_raw(_: &Path, _: &str, _: Option<&ProcessIdentity>) -> Result<String> {
+fn request_raw(_: &Path, _: &str, _: &ProcessIdentity) -> Result<String> {
     bail!("devctl supports only Windows and Linux")
-}
-
-fn decode_response(bytes: &[u8]) -> Result<String> {
-    let response: Response = serde_json::from_slice(bytes).context("decode control response")?;
-    if response.ok {
-        Ok(response.message)
-    } else {
-        bail!("{}", response.message)
-    }
 }

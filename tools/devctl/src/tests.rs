@@ -132,6 +132,101 @@ fn owner_only_control_pipe_round_trips_and_rejects_wrong_supervisor() {
 }
 
 #[cfg(windows)]
+#[test]
+fn partial_control_frame_cannot_hang_server_drop() {
+    use std::io::Write as _;
+    let (endpoint, _identity, state, stop) = control_fixture("partial");
+    let server = ControlServer::bind(endpoint.clone(), state, stop).unwrap();
+    let mut client = open_pipe(&endpoint);
+    client.write_all(&[0, 0]).unwrap();
+    let started = std::time::Instant::now();
+    drop(server);
+    assert!(started.elapsed() < Duration::from_secs(1));
+}
+
+#[cfg(windows)]
+#[test]
+fn control_bind_is_ready_and_duplicate_bind_fails() {
+    let (endpoint, identity, state, stop) = control_fixture("bind");
+    let server =
+        ControlServer::bind(endpoint.clone(), Arc::clone(&state), Arc::clone(&stop)).unwrap();
+    assert!(control::request(&endpoint, "status", &identity).is_ok());
+    let duplicate = ControlServer::bind(endpoint.clone(), state, stop);
+    assert!(duplicate.is_err());
+    drop(server);
+}
+
+#[cfg(windows)]
+#[test]
+fn concurrent_control_clients_retry_pipe_busy() {
+    let (endpoint, identity, state, stop) = control_fixture("concurrent");
+    let server = ControlServer::bind(endpoint.clone(), state, stop).unwrap();
+    let threads: Vec<_> = (0..8)
+        .map(|_| {
+            let endpoint = endpoint.clone();
+            let identity = identity.clone();
+            std::thread::spawn(move || control::request(&endpoint, "status", &identity))
+        })
+        .collect();
+    for thread in threads {
+        assert!(thread.join().unwrap().is_ok());
+    }
+    drop(server);
+}
+
+#[cfg(windows)]
+fn control_fixture(
+    name: &str,
+) -> (
+    PathBuf,
+    processctl::ProcessIdentity,
+    Arc<Mutex<FleetState>>,
+    Arc<AtomicBool>,
+) {
+    let endpoint = PathBuf::from(format!(
+        r"\\.\pipe\gamebackend-devctl-test-{name}-{}",
+        std::process::id()
+    ));
+    let identity = observe_process_identity(std::process::id()).unwrap();
+    let mut fleet = FleetState::new(format!("control-{name}"), "monolith").unwrap();
+    fleet.set_supervisor(identity.clone());
+    fleet.set_control_endpoint(Some(endpoint.clone()));
+    (
+        endpoint,
+        identity,
+        Arc::new(Mutex::new(fleet)),
+        Arc::new(AtomicBool::new(false)),
+    )
+}
+
+#[cfg(windows)]
+fn open_pipe(endpoint: &std::path::Path) -> std::fs::File {
+    use std::os::windows::ffi::OsStrExt as _;
+    use std::os::windows::io::FromRawHandle as _;
+    use windows_sys::Win32::Foundation::{GENERIC_READ, GENERIC_WRITE, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Storage::FileSystem::{CreateFileW, OPEN_EXISTING};
+    use windows_sys::Win32::System::Pipes::WaitNamedPipeW;
+    let name: Vec<u16> = endpoint.as_os_str().encode_wide().chain(Some(0)).collect();
+    loop {
+        let handle = unsafe {
+            CreateFileW(
+                name.as_ptr(),
+                GENERIC_READ | GENERIC_WRITE,
+                0,
+                std::ptr::null(),
+                OPEN_EXISTING,
+                0,
+                std::ptr::null_mut(),
+            )
+        };
+        if handle != INVALID_HANDLE_VALUE {
+            return unsafe { std::fs::File::from_raw_handle(handle.cast()) };
+        }
+        unsafe { WaitNamedPipeW(name.as_ptr(), 20) };
+    }
+}
+
+#[cfg(windows)]
 fn retry_control(
     endpoint: &std::path::Path,
     command: &str,
