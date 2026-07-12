@@ -22,6 +22,8 @@ const DEFAULT_DB: &str =
     "postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable";
 const HEALTH_TIMEOUT: Duration = Duration::from_secs(30);
 const DOWN_TIMEOUT: Duration = Duration::from_secs(130);
+const BUILD_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+const ADMIN_TIMEOUT: Duration = Duration::from_secs(30);
 const SHUTDOWN: ShutdownPolicy = ShutdownPolicy {
     graceful_timeout: Duration::from_secs(5),
     force_timeout: Duration::from_secs(5),
@@ -136,16 +138,16 @@ fn supervise(
     let state = Arc::new(Mutex::new(initial));
     let stop = Arc::new(AtomicBool::new(false));
     let _control = ControlServer::bind(endpoint, Arc::clone(&state), Arc::clone(&stop))?;
-    checkpoint(store, &state, &mut [])?;
+    checkpoint(store, &state, &mut [], "supervisor", None)?;
 
     let mut children = Vec::new();
     let result = (|| -> Result<()> {
         if !skip_build {
-            build(root, topology, &services, &environment)?;
+            build(root, topology, &services, &environment, &stop)?;
         }
         edgeca::mint_dev_ca(&ca_cert, &ca_key)
             .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-        seed_admin(root, &db_url, &environment)?;
+        seed_admin(root, &db_url, &environment, &stop)?;
         for service in &services {
             if stop_requested(&stop) {
                 bail!("startup interrupted");
@@ -167,8 +169,30 @@ fn supervise(
                 .lock()
                 .expect("state mutex poisoned")
                 .push_process(process);
-            checkpoint(store, &state, &mut children)?;
-            wait_healthy(service, children.last_mut().expect("just pushed"), &stop)?;
+            checkpoint(store, &state, &mut children, "spawn", Some(service.name))?;
+            if let Err(error) =
+                wait_healthy(service, children.last_mut().expect("just pushed"), &stop)
+            {
+                {
+                    let mut state = state.lock().expect("state mutex poisoned");
+                    state
+                        .processes_mut()
+                        .last_mut()
+                        .expect("matching process state")
+                        .set_status(ManagedStatus::Failed);
+                    state.record_failure("health", Some(service.name))?;
+                }
+                if let Err(checkpoint_error) = checkpoint(
+                    store,
+                    &state,
+                    &mut children,
+                    "health-failure",
+                    Some(service.name),
+                ) {
+                    bail!("{error:#}; failed-state checkpoint also failed: {checkpoint_error:#}");
+                }
+                return Err(error);
+            }
             state
                 .lock()
                 .expect("state mutex poisoned")
@@ -176,24 +200,47 @@ fn supervise(
                 .last_mut()
                 .expect("matching process state")
                 .set_status(ManagedStatus::Healthy);
-            checkpoint(store, &state, &mut children)?;
+            checkpoint(store, &state, &mut children, "healthy", Some(service.name))?;
             println!("devctl: {} healthy", service.name);
         }
         state
             .lock()
             .expect("state mutex poisoned")
             .set_status(FleetStatus::Running);
-        checkpoint(store, &state, &mut children)?;
+        checkpoint(store, &state, &mut children, "running", None)?;
         println!(
             "devctl: {} running; press Ctrl-C or run `devctl down`",
             topology.name()
         );
-        monitor(&mut children, &stop)
+        if let Some((index, status)) = monitor(&mut children, &stop)? {
+            let label = services[index].name;
+            {
+                let mut state = state.lock().expect("state mutex poisoned");
+                state.processes_mut()[index].set_status(ManagedStatus::Exited {
+                    code: status.code(),
+                });
+                state.record_failure("unexpected-exit", Some(label))?;
+            }
+            if let Err(checkpoint_error) =
+                checkpoint(store, &state, &mut children, "unexpected-exit", Some(label))
+            {
+                bail!("{label} exited unexpectedly with {status}; failed-state checkpoint also failed: {checkpoint_error:#}");
+            }
+            bail!("{label} exited unexpectedly with {status}");
+        }
+        Ok(())
     })();
 
-    let failed = result.is_err();
-    teardown(store, &state, &mut children, failed)?;
-    result
+    let primary = result.err();
+    let cleanup = teardown(store, &state, &mut children, primary.is_some()).err();
+    match (primary, cleanup) {
+        (None, None) => Ok(()),
+        (Some(primary), None) => Err(primary),
+        (None, Some(cleanup)) => Err(cleanup),
+        (Some(primary), Some(cleanup)) => {
+            bail!("primary failure: {primary:#}; cleanup also failed: {cleanup:#}")
+        }
+    }
 }
 
 pub(crate) fn service_specs(
@@ -227,6 +274,7 @@ fn build(
     topology: Topology,
     services: &[ServiceSpec],
     environment: &EnvironmentSnapshot,
+    stop: &AtomicBool,
 ) -> Result<()> {
     let mut packages: Vec<&str> = services
         .iter()
@@ -254,11 +302,18 @@ fn build(
             process_group: ProcessGroupPolicy::Owned,
         },
         None,
+        stop,
+        BUILD_TIMEOUT,
     )
     .context("cargo build")
 }
 
-fn seed_admin(root: &Path, db: &str, environment: &EnvironmentSnapshot) -> Result<()> {
+fn seed_admin(
+    root: &Path,
+    db: &str,
+    environment: &EnvironmentSnapshot,
+    stop: &AtomicBool,
+) -> Result<()> {
     let mut env = environment.runtime_environment();
     env.insert("DATABASE_URL".into(), db.into());
     let spec = SpawnSpec {
@@ -274,20 +329,44 @@ fn seed_admin(root: &Path, db: &str, environment: &EnvironmentSnapshot) -> Resul
         stderr: OutputDestination::Null,
         process_group: ProcessGroupPolicy::Owned,
     };
-    run_transient(spec, Some(b"admin\n")).context("seed development admin user")
+    run_transient(spec, Some(b"admin\n"), stop, ADMIN_TIMEOUT)
+        .context("seed development admin user")
 }
 
-fn run_transient(spec: SpawnSpec, stdin: Option<&[u8]>) -> Result<()> {
+fn run_transient(
+    spec: SpawnSpec,
+    stdin: Option<&[u8]>,
+    stop: &AtomicBool,
+    timeout: Duration,
+) -> Result<()> {
     let mut child = match stdin {
         Some(bytes) => OwnedChild::spawn_with_stdin_bytes(spec, bytes)?,
         None => OwnedChild::spawn(spec)?,
     };
+    let deadline = Instant::now() + timeout;
     loop {
         if let Some(status) = child.try_wait()? {
             if status.success() {
                 return Ok(());
             }
             bail!("child exited with {status}");
+        }
+        let interrupted = stop_requested(stop);
+        let timed_out = Instant::now() >= deadline;
+        if interrupted || timed_out {
+            let reason = if interrupted {
+                "cancelled"
+            } else {
+                "timed out"
+            };
+            let cleanup = child
+                .shutdown(SHUTDOWN)
+                .err()
+                .map(|error| error.to_string());
+            if let Some(cleanup) = cleanup {
+                bail!("transient child {reason}; cleanup also failed: {cleanup}");
+            }
+            bail!("transient child {reason} after {timeout:?}");
         }
         std::thread::sleep(Duration::from_millis(20));
     }
@@ -349,14 +428,17 @@ fn ready(port: u16) -> bool {
     response[..read].starts_with(b"HTTP/1.1 200") || response[..read].starts_with(b"HTTP/1.0 200")
 }
 
-fn monitor(children: &mut [OwnedChild], stop: &AtomicBool) -> Result<()> {
+fn monitor(
+    children: &mut [OwnedChild],
+    stop: &AtomicBool,
+) -> Result<Option<(usize, std::process::ExitStatus)>> {
     loop {
         if stop_requested(stop) {
-            return Ok(());
+            return Ok(None);
         }
-        for child in children.iter_mut() {
+        for (index, child) in children.iter_mut().enumerate() {
             if let Some(status) = child.try_wait()? {
-                bail!("managed child exited unexpectedly with {status}");
+                return Ok(Some((index, status)));
             }
         }
         std::thread::sleep(Duration::from_millis(100));
@@ -373,12 +455,16 @@ fn teardown(
         .lock()
         .expect("state mutex poisoned")
         .set_status(FleetStatus::Stopping);
-    let mut checkpoint_error = checkpoint(store, state, children).err();
+    let mut checkpoint_error = checkpoint(store, state, children, "stopping", None).err();
     for index in (0..children.len()).rev() {
         state.lock().expect("state mutex poisoned").processes_mut()[index]
             .set_status(ManagedStatus::Stopping);
         if checkpoint_error.is_none() {
-            checkpoint_error = checkpoint(store, state, children).err();
+            let label = state.lock().expect("state mutex poisoned").processes()[index]
+                .label()
+                .to_string();
+            checkpoint_error =
+                checkpoint(store, state, children, "process-stopping", Some(&label)).err();
         }
         let outcome = children[index].shutdown(SHUTDOWN);
         let status = match outcome {
@@ -390,16 +476,24 @@ fn teardown(
                     .and_then(|status| status.code()),
             },
             Err(error) => {
-                eprintln!(
-                    "devctl: cleanup {} failed: {error}",
-                    state.lock().expect("state mutex poisoned").processes()[index].label()
-                );
+                let label = state.lock().expect("state mutex poisoned").processes()[index]
+                    .label()
+                    .to_string();
+                eprintln!("devctl: cleanup {} failed: {error}", label);
+                state
+                    .lock()
+                    .expect("state mutex poisoned")
+                    .record_failure("cleanup", Some(label))?;
                 ManagedStatus::Failed
             }
         };
         state.lock().expect("state mutex poisoned").processes_mut()[index].set_status(status);
         if checkpoint_error.is_none() {
-            checkpoint_error = checkpoint(store, state, children).err();
+            let label = state.lock().expect("state mutex poisoned").processes()[index]
+                .label()
+                .to_string();
+            checkpoint_error =
+                checkpoint(store, state, children, "process-reaped", Some(&label)).err();
         }
     }
     state.lock().expect("state mutex poisoned").set_status(
@@ -410,6 +504,10 @@ fn teardown(
         },
     );
     if let Err(error) = store.write_atomic(&state.lock().expect("state mutex poisoned")) {
+        state
+            .lock()
+            .expect("state mutex poisoned")
+            .record_failure("checkpoint-final", None::<String>)?;
         if checkpoint_error.is_none() {
             checkpoint_error = Some(error.into());
         }
@@ -424,12 +522,20 @@ fn checkpoint(
     store: &StateStore,
     state: &Arc<Mutex<FleetState>>,
     children: &mut [OwnedChild],
+    stage: &'static str,
+    process: Option<&str>,
 ) -> Result<()> {
-    store.checkpoint_or_rollback(
+    if let Err(error) = store.checkpoint_or_rollback(
         &state.lock().expect("state mutex poisoned"),
         children,
         SHUTDOWN,
-    )?;
+    ) {
+        state
+            .lock()
+            .expect("state mutex poisoned")
+            .record_failure(format!("checkpoint-{stage}"), process.map(str::to_owned))?;
+        return Err(error.into());
+    }
     Ok(())
 }
 
