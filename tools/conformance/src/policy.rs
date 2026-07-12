@@ -47,18 +47,10 @@ fn accounts() -> Entry {
             ),
             (
                 Convention::InputByteCaps,
-                Stance::Applies(Fixture::InputByteCaps(vec![
-                    CapCase {
-                        name: "accounts register/login email",
-                        cap: 320,
-                        probe: Arc::new(accounts::conformance::conformance_email_rejected),
-                    },
-                    CapCase {
-                        name: "accounts register/login password",
-                        cap: 1024,
-                        probe: Arc::new(accounts::conformance::conformance_password_rejected),
-                    },
-                ])),
+                Stance::KnownGap {
+                    why: "accounts caps email and password, but the wire-reachable register display_name field remains uncapped",
+                    remediation: "Step 17 adds a shared production validator capping display_name at 128 bytes while retaining the existing email/password caps",
+                },
             ),
             (
                 Convention::InfraOutage503,
@@ -190,12 +182,30 @@ fn audit() -> Entry {
 }
 
 fn characters() -> Entry {
-    all_na(
-        "characters",
-        "characters parses no process environment",
-        "character creation currently accepts no player-supplied free-text field",
-        "characters has no external credential verifier",
-    )
+    Entry {
+        module: "characters",
+        stances: vec![
+            (
+                Convention::EnvValidation,
+                na("characters parses no process environment"),
+            ),
+            (
+                Convention::InputByteCaps,
+                Stance::KnownGap {
+                    why: "characters.create accepts wire-reachable name and class strings without enforced byte caps",
+                    remediation: "Step 17 adds shared production validators capping character name at 128 bytes and class at 64 bytes",
+                },
+            ),
+            (
+                Convention::InfraOutage503,
+                na("characters has no external credential verifier"),
+            ),
+            (
+                Convention::ArgonParity,
+                na("this module performs no password hashing"),
+            ),
+        ],
+    }
 }
 
 fn config() -> Entry {

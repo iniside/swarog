@@ -235,6 +235,27 @@ fn real_entries_pass_the_completeness_matrix() {
     assert!(findings.is_empty(), "completeness findings: {findings:?}");
 }
 
+#[test]
+fn real_policy_has_the_three_known_input_cap_gaps() {
+    let entries = crate::policy::entries();
+    let gaps: Vec<(&str, Convention)> = entries
+        .iter()
+        .flat_map(|entry| {
+            entry.stances.iter().filter_map(|(convention, stance)| {
+                matches!(stance, Stance::KnownGap { .. }).then_some((entry.module, *convention))
+            })
+        })
+        .collect();
+    assert_eq!(
+        gaps,
+        vec![
+            ("accounts", Convention::InputByteCaps),
+            ("characters", Convention::InputByteCaps),
+            ("match", Convention::InputByteCaps),
+        ]
+    );
+}
+
 /// The real hand list matches `modules/*` on disk and the monolith module set —
 /// the same preflight the binary runs, provable under `cargo test` because
 /// plain constructors need neither env flips nor a runtime.
