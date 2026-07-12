@@ -96,20 +96,24 @@ impl Slots {
     /// call, so borrowed views are impossible; contributions are cheap handles
     /// (`Arc<dyn Trait>`, small structs) where cloning is fine.
     pub fn contributions<T: Clone + Send + Sync + 'static>(&self, slot: Slot<T>) -> Vec<T> {
-        let buckets = self.m.lock().unwrap();
-        let Some(bucket) = buckets.get(slot.name) else {
-            return Vec::new();
-        };
-        if bucket.type_id != TypeId::of::<T>() {
-            let actual = bucket.type_name;
-            drop(buckets);
-            panic!(
-                "contribution slot {:?} has type {}, not {}",
-                slot.name,
-                actual,
-                std::any::type_name::<T>()
-            );
+        let mut buckets = self.m.lock().unwrap();
+        if let Some(bucket) = buckets.get(slot.name) {
+            if bucket.type_id != TypeId::of::<T>() {
+                let actual = bucket.type_name;
+                drop(buckets);
+                panic!(
+                    "contribution slot {:?} has type {}, not {}",
+                    slot.name,
+                    actual,
+                    std::any::type_name::<T>()
+                );
+            }
         }
+        let bucket = buckets.entry(slot.name).or_insert_with(|| Bucket {
+            type_id: TypeId::of::<T>(),
+            type_name: std::any::type_name::<T>(),
+            values: Box::new(Vec::<T>::new()),
+        });
         bucket
             .values
             .downcast_ref::<Vec<T>>()

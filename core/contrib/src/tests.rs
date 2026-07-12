@@ -37,6 +37,52 @@ fn forged_type_conflict_panics_without_corrupting_the_bucket() {
 }
 
 #[test]
+fn canonical_empty_read_reserves_type_before_forged_contribution() {
+    let slots = Slots::new();
+    const CANONICAL: Slot<String> = Slot::new("reserved");
+    const FORGED: Slot<u32> = Slot::new("reserved");
+
+    assert!(slots.contributions(CANONICAL).is_empty());
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        slots.contribute(FORGED, 42);
+    }));
+    assert!(
+        result.is_err(),
+        "canonical empty read must reserve its type"
+    );
+    assert!(slots.contributions(CANONICAL).is_empty());
+    slots.contribute(CANONICAL, "valid".to_string());
+    assert_eq!(slots.contributions(CANONICAL), vec!["valid"]);
+}
+
+#[test]
+fn forged_first_bucket_rejects_canonical_read_and_contribution() {
+    let slots = Slots::new();
+    const CANONICAL: Slot<String> = Slot::new("forged-first");
+    const FORGED: Slot<u32> = Slot::new("forged-first");
+
+    slots.contribute(FORGED, 7);
+    let read = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        slots.contributions(CANONICAL)
+    }));
+    assert!(
+        read.is_err(),
+        "canonical read must reject a forged-first bucket"
+    );
+    let contribute = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        slots.contribute(CANONICAL, "wrong bucket".to_string());
+    }));
+    assert!(
+        contribute.is_err(),
+        "canonical contribution must reject a forged-first bucket"
+    );
+
+    assert_eq!(slots.contributions(FORGED), vec![7]);
+    slots.contribute(FORGED, 8);
+    assert_eq!(slots.contributions(FORGED), vec![7, 8]);
+}
+
+#[test]
 fn separate_slots_are_independent() {
     let slots = Slots::new();
     const A: Slot<u32> = Slot::new("a");
