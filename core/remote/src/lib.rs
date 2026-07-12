@@ -191,8 +191,10 @@ impl<D: Dialer> Caller for Reconnecting<D> {
     /// returned as-is — no reset, no redial, regardless of `retry_mode`. Only an
     /// explicit [`RetryMode::OnceAfterReconnect`] redials and replays once; the
     /// default [`RetryMode::Never`] returns the first error without replaying a
-    /// mutation. If the replay on the fresh connection ALSO errors, that connection
-    /// is reset too — a dead c2 must not stay cached.
+    /// mutation. The SAME definitive-answer guard applies to the replay on the
+    /// fresh connection: if it too answers definitively, that connection is proven
+    /// healthy and is kept cached, unreset. Only a non-definitive replay failure
+    /// resets the fresh connection too — a dead c2 must not stay cached.
     async fn call(
         &self,
         method: &str,
@@ -215,9 +217,13 @@ impl<D: Dialer> Caller for Reconnecting<D> {
                 let c2 = self.get().await?;
                 match c2.call(method, identity, payload).await {
                     Ok(v) => Ok(v),
+                    // Mirrors the first-attempt guard above: a definitive answer on
+                    // the replay proves c2 is healthy too — keep it cached.
+                    Err(second) if second.status.is_definitive_answer() => Err(second),
                     Err(second) => {
-                        // The replayed connection failed too — invalidate it so the
-                        // NEXT request redials instead of reusing a dead c2.
+                        // The replayed connection failed (non-definitively) too —
+                        // invalidate it so the NEXT request redials instead of
+                        // reusing a dead c2.
                         self.reset(&c2).await;
                         Err(second)
                     }

@@ -193,6 +193,61 @@ async fn unsafe_failure_resets_without_replaying_and_next_request_redials() {
     assert_eq!(calls.load(Ordering::SeqCst), 2);
 }
 
+/// A fake dialer whose dial #0 conn fails with `first_status` and every later
+/// dial's conn fails with `second_status` — for exercising a DIFFERENT status on
+/// the replay than on the first attempt (a definitive second answer must keep the
+/// fresh connection, even though the first attempt was a transport failure).
+struct TwoStatusDialer {
+    dials: Arc<AtomicUsize>,
+    closes: Arc<AtomicUsize>,
+    calls: Arc<AtomicUsize>,
+    first_status: opsapi::Status,
+    second_status: opsapi::Status,
+}
+
+#[async_trait]
+impl Dialer for TwoStatusDialer {
+    async fn dial(&self) -> Result<Arc<dyn Conn>, Error> {
+        let n = self.dials.fetch_add(1, Ordering::SeqCst);
+        let status = if n == 0 { self.first_status } else { self.second_status };
+        Ok(Arc::new(FakeConn {
+            ok: false,
+            status,
+            closes: self.closes.clone(),
+            calls: self.calls.clone(),
+        }))
+    }
+}
+
+/// The first attempt fails `Unavailable` (a transport fault — reset, redial); the
+/// replay on the fresh connection fails `NotFound` (a DEFINITIVE answer). The
+/// mirrored guard on the second-attempt arm must keep c2 cached: only c1 (the
+/// genuinely dead connection) is reset, and the final error surfaces as NotFound.
+#[tokio::test]
+async fn definitive_second_attempt_keeps_healthy_connection() {
+    let dials = Arc::new(AtomicUsize::new(0));
+    let closes = Arc::new(AtomicUsize::new(0));
+    let calls = Arc::new(AtomicUsize::new(0));
+    let r = Reconnecting::new(TwoStatusDialer {
+        dials: dials.clone(),
+        closes: closes.clone(),
+        calls: calls.clone(),
+        first_status: opsapi::Status::Unavailable,
+        second_status: opsapi::Status::NotFound,
+    });
+    let err = r
+        .call("characters.ownerOf", None, b"{}", RetryMode::OnceAfterReconnect)
+        .await
+        .unwrap_err();
+    assert_eq!(err.status, opsapi::Status::NotFound, "the definitive replay answer surfaces");
+    assert_eq!(dials.load(Ordering::SeqCst), 2, "one initial dial + one retry, no more");
+    assert_eq!(
+        closes.load(Ordering::SeqCst),
+        1,
+        "only c1 (transport failure) was reset; c2 (definitive answer) stays cached"
+    );
+}
+
 // ---- The injected-factory swap: register runs every factory --------------
 //
 // `remote` is generic and imports no `api/` crate, so these tests use LOCAL fake
