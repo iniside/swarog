@@ -48,7 +48,7 @@ mod tests;
 /// processes below may depend on it.
 const GATEWAY_CRATE: &str = "gateway";
 /// Tool-owned conformance policy must never enter a shipping process graph.
-const CONFORMANCE_POLICY_CRATE: &str = "conformance";
+const CONFORMANCE_POLICY_PACKAGE: &str = "conformancecheck";
 /// The `cmd/<dir>` crates permitted to host the front door: the dedicated front process
 /// and the monolith. Every other `cmd/*-svc` serves ops only over the internal edge.
 const FRONT_DOOR_HOSTS: [&str; 2] = ["gateway-svc", "server"];
@@ -552,7 +552,7 @@ fn main() {
     }
 
     if violations.is_empty() {
-        println!("archcheck: OK — no module→module / module→foreign-rpc edges, shipping process graphs exclude conformance policy, single front door (only gateway-svc + server host `gateway`), no Option<edge::Server> in modules/, <name>api/<name>events crates stay transport-free, every cmd/*-svc + server lists `metrics`, no cross-schema FKs in modules/ DDL, no inline test modules in modules/, core/bus stays sqlx-free, no module runtime-deps `asyncevents`, no EVENTS_ env knobs read inside modules/, no retired push-plane tokens (EVENTS_*/\"/events\") in workspace source, no schema-qualified asyncevents.<table> access outside the plane, no module queries a foreign module's schema in SQL, every modules/<name> boots as cmd/<name>-svc (and its svc lib.rs constructs it), demos/* imported only by cmd/server, no core/* foundation deps a module or api/ crate, every #[http( domain is stubbed in cmd/gateway-svc");
+        println!("archcheck: OK — no module→module / module→foreign-rpc edges, shipping process graphs exclude `conformancecheck`, single front door (only gateway-svc + server host `gateway`), no Option<edge::Server> in modules/, <name>api/<name>events crates stay transport-free, every cmd/*-svc + server lists `metrics`, no cross-schema FKs in modules/ DDL, no inline test modules in modules/, core/bus stays sqlx-free, no module runtime-deps `asyncevents`, no EVENTS_ env knobs read inside modules/, no retired push-plane tokens (EVENTS_*/\"/events\") in workspace source, no schema-qualified asyncevents.<table> access outside the plane, no module queries a foreign module's schema in SQL, every modules/<name> boots as cmd/<name>-svc (and its svc lib.rs constructs it), demos/* imported only by cmd/server, no core/* foundation deps a module or api/ crate, every #[http( domain is stubbed in cmd/gateway-svc");
         return;
     }
     eprintln!("archcheck: FAIL — {} violation(s):", violations.len());
@@ -738,7 +738,7 @@ fn shipping_conformance_violations(packages: &[serde_json::Value]) -> Vec<String
                 };
                 let mut dependency_path = path.clone();
                 dependency_path.push(dependency_name.to_string());
-                if dependency_name == CONFORMANCE_POLICY_CRATE {
+                if dependency_name == CONFORMANCE_POLICY_PACKAGE {
                     found = Some(dependency_path);
                     break;
                 }
@@ -753,7 +753,7 @@ fn shipping_conformance_violations(packages: &[serde_json::Value]) -> Vec<String
 
         if let Some(path) = found {
             violations.push(format!(
-                "cmd/{cmd} shipping dependency graph reaches `{CONFORMANCE_POLICY_CRATE}` via {} \
+                "cmd/{cmd} shipping dependency graph reaches `{CONFORMANCE_POLICY_PACKAGE}` via {} \
                  — conformance policy belongs only in tools/conformance; shipping modules may \
                  expose factual probes but never depend on its policy types",
                 path.join(" -> ")

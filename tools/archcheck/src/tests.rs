@@ -855,10 +855,10 @@ fn http_op_domains_scans_api_dirs_and_skips_comments() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
-// --- Rule 18: conformance policy stays out of shipping dependency graphs -----
+// --- Rule 18: conformancecheck stays out of shipping dependency graphs --------
 
 #[test]
-fn shipping_roots_reject_transitive_conformance_but_ignore_dev_and_tools() {
+fn shipping_roots_reject_normal_and_build_paths_to_conformancecheck_only() {
     let packages = serde_json::json!([
         {
             "name": "server",
@@ -868,29 +868,46 @@ fn shipping_roots_reject_transitive_conformance_but_ignore_dev_and_tools() {
         {
             "name": "accounts-svc",
             "manifest_path": "G:/repo/cmd/accounts-svc/Cargo.toml",
-            "dependencies": [{ "name": "accounts", "kind": "dev" }]
+            "dependencies": [{ "name": "conformancecheck", "kind": "dev" }]
+        },
+        {
+            "name": "gateway-svc",
+            "manifest_path": "G:/repo/cmd/gateway-svc/Cargo.toml",
+            "dependencies": [{ "name": "gateway-build", "kind": "build" }]
         },
         {
             "name": "accounts",
             "manifest_path": "G:/repo/modules/accounts/Cargo.toml",
-            "dependencies": [{ "name": "conformance", "kind": null }]
+            "dependencies": [{ "name": "conformancecheck", "kind": null }]
+        },
+        {
+            "name": "gateway-build",
+            "manifest_path": "G:/repo/tools/gateway-build/Cargo.toml",
+            "dependencies": [{ "name": "conformancecheck", "kind": null }]
         },
         {
             "name": "conformancecheck",
             "manifest_path": "G:/repo/tools/conformance/Cargo.toml",
-            "dependencies": [{ "name": "conformance", "kind": null }]
+            "dependencies": [{ "name": "gateway", "kind": null }]
         },
         {
-            "name": "conformance",
-            "manifest_path": "G:/repo/core/conformance/Cargo.toml",
+            "name": "gateway",
+            "manifest_path": "G:/repo/modules/gateway/Cargo.toml",
             "dependencies": []
         }
     ]);
     let findings = super::shipping_conformance_violations(packages.as_array().unwrap());
-    assert_eq!(findings.len(), 1, "{findings:?}");
-    assert!(findings[0].contains("cmd/server"), "{findings:?}");
+    assert_eq!(findings.len(), 2, "{findings:?}");
     assert!(
-        findings[0].contains("server -> accounts -> conformance"),
+        findings
+            .iter()
+            .any(|finding| finding.contains("server -> accounts -> conformancecheck")),
         "{findings:?}"
     );
+    assert!(
+        findings.iter().any(|finding| finding
+            .contains("gateway-svc -> gateway-build -> conformancecheck")),
+        "{findings:?}"
+    );
+    assert!(findings.iter().all(|finding| !finding.contains("accounts-svc")));
 }
