@@ -99,6 +99,12 @@ fn child_entry() {
             )
             .unwrap();
         }
+        "stdin-bytes" => {
+            use std::io::Read as _;
+            let mut bytes = Vec::new();
+            std::io::stdin().read_to_end(&mut bytes).unwrap();
+            std::fs::write(std::env::var_os("PROCESSCTL_TEST_READY").unwrap(), bytes).unwrap();
+        }
         "optional-lease-direct" => {
             assert!(BorrowedLease::consume_inherited_if_present("splitproof")
                 .unwrap()
@@ -302,6 +308,21 @@ fn failed_post_spawn_checkpoint_reaps_new_child_and_started_prefix() {
     assert!(error.cleanup_failures.is_empty());
     wait_dead(pids[0]);
     wait_dead(pids[1]);
+}
+
+#[test]
+fn private_stdin_bytes_are_delivered_without_argv_or_environment() {
+    let _serial = PROCESS_TEST_LOCK.lock().unwrap();
+    protect_test_harness();
+    let dir = test_dir("stdin-bytes");
+    let ready = dir.join("ready");
+    let mut child =
+        OwnedChild::spawn_with_stdin_bytes(spec("stdin-bytes", &ready), b"private\n").unwrap();
+    wait_file(&ready);
+    assert_eq!(std::fs::read(&ready).unwrap(), b"private\n");
+    while child.try_wait().unwrap().is_none() {
+        std::thread::sleep(Duration::from_millis(10));
+    }
 }
 
 #[cfg(windows)]

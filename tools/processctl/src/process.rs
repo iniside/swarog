@@ -323,10 +323,14 @@ fn private_stdin_pipe() -> Result<(crate::platform::InheritedInput, std::fs::Fil
 fn private_stdin_pipe() -> Result<(crate::platform::InheritedInput, std::fs::File), ProcessError> {
     use std::os::windows::io::FromRawHandle as _;
     use windows_sys::Win32::Foundation::{SetHandleInformation, HANDLE, HANDLE_FLAG_INHERIT};
+    use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
     use windows_sys::Win32::System::Pipes::CreatePipe;
+    let mut attributes: SECURITY_ATTRIBUTES = unsafe { std::mem::zeroed() };
+    attributes.nLength = std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32;
+    attributes.bInheritHandle = 1;
     let mut read: HANDLE = std::ptr::null_mut();
     let mut write: HANDLE = std::ptr::null_mut();
-    if unsafe { CreatePipe(&mut read, &mut write, std::ptr::null(), 0) } == 0 {
+    if unsafe { CreatePipe(&mut read, &mut write, &attributes, 4096) } == 0 {
         return Err(ProcessError::Io {
             operation: "create child stdin pipe",
             source: std::io::Error::last_os_error(),
