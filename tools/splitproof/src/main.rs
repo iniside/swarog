@@ -154,13 +154,6 @@ fn wait_for_exit(child: &mut OwnedChild) -> Result<std::process::ExitStatus> {
 }
 
 fn executable_on_path(name: &str, env: &BTreeMap<String, String>) -> Result<PathBuf> {
-    let configured = std::env::var_os("CARGO").filter(|_| name == "cargo");
-    if let Some(path) = configured {
-        let path = PathBuf::from(path);
-        if path.is_file() {
-            return Ok(path);
-        }
-    }
     let path = env.get("PATH").context("PATH is absent from the build environment")?;
     let extensions: Vec<&str> = if cfg!(windows) {
         env.get("PATHEXT")

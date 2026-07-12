@@ -464,7 +464,8 @@ mod linux_fixture {
     }
 
     fn lease_borrower(args: Vec<OsString>) -> Result<(), Box<dyn std::error::Error>> {
-        let lease = BorrowedLease::consume_inherited("splitproof")?;
+        let lease = BorrowedLease::consume_inherited_if_present("splitproof")?
+            .ok_or("borrower marker was not detected")?;
         if lease.run_id() != "fixture-borrow"
             || BorrowedLease::consume_inherited("splitproof").is_ok()
         {

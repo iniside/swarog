@@ -8,10 +8,9 @@ use std::sync::Mutex;
 use std::sync::Once;
 use std::time::{Duration, Instant};
 
-use crate::{BorrowedLease, LeaseError, RolloutLock};
 use crate::{
-    FleetState, OutputDestination, OwnedChild, ProcessGroupPolicy, ShutdownOutcome, ShutdownPolicy,
-    SpawnSpec, StateStore,
+    BorrowedLease, FleetState, OutputDestination, OwnedChild, ProcessGroupPolicy, ShutdownOutcome,
+    ShutdownPolicy, SpawnSpec, StateStore,
 };
 
 static NEXT_DIR: AtomicU64 = AtomicU64::new(0);
@@ -99,33 +98,6 @@ fn child_entry() {
                 },
             )
             .unwrap();
-        }
-        "lease-borrower" => {
-            let lease = BorrowedLease::consume_inherited_if_present("splitproof")
-                .unwrap()
-                .expect("borrower pipe must be detected");
-            assert!(borrower_stdin_is_retained_non_inheritable());
-            assert_eq!(lease.run_id(), "borrow-run");
-            assert!(BorrowedLease::consume_inherited("splitproof").is_err());
-            let ready = PathBuf::from(std::env::var_os("PROCESSCTL_TEST_READY").unwrap());
-            let child_ready = ready.with_extension("child");
-            let grandchild_ready = ready.with_extension("grandchild");
-            let mut child = spawn_test_process("stdin-check", &child_ready);
-            let mut grandchild = spawn_test_process("stdin-check", &grandchild_ready);
-            wait_file(&child_ready);
-            wait_file(&grandchild_ready);
-            assert!(child.wait().unwrap().success());
-            assert!(grandchild.wait().unwrap().success());
-            assert_eq!(std::fs::read_to_string(child_ready).unwrap(), "closed");
-            assert_eq!(std::fs::read_to_string(grandchild_ready).unwrap(), "closed");
-            assert!(Command::new("cargo")
-                .arg("--version")
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()
-                .unwrap()
-                .success());
-            std::fs::write(ready, "borrowed-ok").unwrap();
         }
         "optional-lease-direct" => {
             assert!(BorrowedLease::consume_inherited_if_present("splitproof")
@@ -330,53 +302,6 @@ fn failed_post_spawn_checkpoint_reaps_new_child_and_started_prefix() {
     assert!(error.cleanup_failures.is_empty());
     wait_dead(pids[0]);
     wait_dead(pids[1]);
-}
-
-#[test]
-fn inherited_borrower_is_one_shot_and_credential_is_not_reinherited() {
-    let _serial = PROCESS_TEST_LOCK.lock().unwrap();
-    protect_test_harness();
-    let dir = test_dir("borrower");
-    let lock_path = dir.join("rollout.lock");
-    let mut owner = RolloutLock::acquire(&lock_path, "borrow-run", "splitproof").unwrap();
-    let replay = owner.credential_for_test();
-    let ready = dir.join("borrower.ready");
-    assert!(matches!(
-        owner.spawn_borrower(spec("lease-borrower", &ready), "wrong-role"),
-        Err(LeaseError::WrongRole { .. })
-    ));
-    let mut borrower = owner
-        .spawn_borrower(spec("lease-borrower", &ready), "splitproof")
-        .unwrap();
-    assert!(matches!(
-        RolloutLock::acquire(&lock_path, "competing-run", "splitproof"),
-        Err(LeaseError::AlreadyOwned)
-    ));
-    wait_file(&ready);
-    assert_eq!(std::fs::read_to_string(&ready).unwrap(), "borrowed-ok");
-    while borrower.try_wait().unwrap().is_none() {
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    drop(borrower);
-    assert!(std::fs::read_dir(&dir).unwrap().any(|entry| entry
-        .unwrap()
-        .path()
-        .extension()
-        .is_some_and(|extension| extension == "borrowed")));
-    assert!(matches!(
-        crate::lock::validate_credential(replay, "splitproof"),
-        Err(LeaseError::BorrowerReplay)
-    ));
-    assert!(matches!(
-        owner.spawn_borrower(spec("lease-borrower", &ready), "splitproof"),
-        Err(LeaseError::BorrowerAlreadyIssued)
-    ));
-    drop(owner);
-    assert!(!std::fs::read_dir(&dir).unwrap().any(|entry| entry
-        .unwrap()
-        .path()
-        .extension()
-        .is_some_and(|extension| extension == "borrowed")));
 }
 
 #[cfg(windows)]
@@ -623,19 +548,6 @@ fn stdin_is_safe_eof() -> bool {
         )
     }) != 0
         && read == 0
-}
-
-fn borrower_stdin_is_retained_non_inheritable() -> bool {
-    use windows_sys::Win32::Foundation::{
-        GetHandleInformation, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE,
-    };
-    use windows_sys::Win32::System::Console::{GetStdHandle, STD_INPUT_HANDLE};
-    let handle = unsafe { GetStdHandle(STD_INPUT_HANDLE) };
-    if handle.is_null() || handle == INVALID_HANDLE_VALUE || !stdin_is_safe_eof() {
-        return false;
-    }
-    let mut flags = 0;
-    (unsafe { GetHandleInformation(handle, &mut flags) }) != 0 && flags & HANDLE_FLAG_INHERIT == 0
 }
 
 #[cfg(windows)]

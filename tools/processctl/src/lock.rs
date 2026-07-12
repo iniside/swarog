@@ -1,3 +1,4 @@
+use std::ffi::OsString;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::marker::PhantomData;
@@ -19,6 +20,7 @@ const MAX_METADATA_BYTES: u64 = 64 * 1024;
 const CREDENTIAL_DELIVERY_TIMEOUT: Duration = Duration::from_secs(2);
 const BORROWER_FORCE_TIMEOUT: Duration = Duration::from_secs(5);
 const CONSUMED_MARKER: &[u8] = b"processctl-borrowed-v1\n";
+pub(crate) const BORROWED_LEASE_ARG: &str = "--processctl-borrowed-lease-v1";
 static INHERITED_CREDENTIAL_CONSUMED: AtomicBool = AtomicBool::new(false);
 #[cfg(windows)]
 static CONSUMED_STDIN: std::sync::OnceLock<File> = std::sync::OnceLock::new();
@@ -62,6 +64,8 @@ pub enum LeaseError {
     MetadataMismatch,
     #[error("borrower credential was already consumed")]
     BorrowerReplay,
+    #[error("borrowed-lease argv marker was present without its private credential pipe")]
+    BorrowerMarkerWithoutPipe,
     #[error("timed out delivering the inherited borrower credential after {0:?}")]
     CredentialDeliveryTimeout(Duration),
     #[error("borrower credential delivery thread panicked")]
@@ -173,7 +177,7 @@ impl OwnedLease {
 
     pub fn spawn_borrower<'lease>(
         &'lease mut self,
-        spec: SpawnSpec,
+        mut spec: SpawnSpec,
         role: &str,
     ) -> Result<BorrowedChild<'lease>, LeaseError> {
         if self.borrower_issued {
@@ -195,6 +199,7 @@ impl OwnedLease {
             ));
         }
         let (input, writer) = credential_pipe()?;
+        spec.args.push(OsString::from(BORROWED_LEASE_ARG));
         self.borrower_issued = true;
         let mut child = match OwnedChild::spawn_with_input(spec, input) {
             Ok(child) => child,
@@ -441,8 +446,11 @@ impl BorrowedLease {
     /// Consumes an inherited one-shot lease when stdin is the private borrower pipe.
     /// A normal direct invocation leaves stdin untouched and returns `None`.
     pub fn consume_inherited_if_present(expected_role: &str) -> Result<Option<Self>, LeaseError> {
-        if !inherited_credential_present()? {
+        if !std::env::args_os().any(|arg| arg == BORROWED_LEASE_ARG) {
             return Ok(None);
+        }
+        if !inherited_credential_present()? {
+            return Err(LeaseError::BorrowerMarkerWithoutPipe);
         }
         Self::consume_inherited(expected_role).map(Some)
     }

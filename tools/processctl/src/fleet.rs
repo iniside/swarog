@@ -55,6 +55,8 @@ pub enum FleetError {
     DuplicateService(String),
     #[error("service {service} depends on unknown service {dependency}")]
     UnknownDependency { service: String, dependency: String },
+    #[error("service {service} dependency {dependency} must appear earlier in startup order")]
+    DependencyNotEarlier { service: String, dependency: String },
     #[error("fleet drift: cmd/*-svc on disk {on_disk:?} != canonical fleet {canonical:?}")]
     DiskDrift {
         on_disk: Vec<String>,
@@ -66,10 +68,22 @@ pub enum FleetError {
         #[source]
         source: std::io::Error,
     },
+    #[error("read entry in service directory {path}: {source}")]
+    ReadDirectoryEntry {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("read service entry type for {path}: {source}")]
+    ReadEntryType {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
 }
 
 impl FleetSpec {
-    fn new(services: Vec<ServiceSpec>) -> Result<Self, FleetError> {
+    pub(crate) fn new(services: Vec<ServiceSpec>) -> Result<Self, FleetError> {
         let names: BTreeSet<_> = services.iter().map(|service| service.name).collect();
         if names.len() != services.len() {
             let mut seen = BTreeSet::new();
@@ -80,10 +94,19 @@ impl FleetSpec {
                 .expect("different lengths imply a duplicate");
             return Err(FleetError::DuplicateService(duplicate.to_string()));
         }
-        for service in &services {
+        for (index, service) in services.iter().enumerate() {
             for dependency in &service.dependencies {
                 if !names.contains(dependency) {
                     return Err(FleetError::UnknownDependency {
+                        service: service.name.to_string(),
+                        dependency: (*dependency).to_string(),
+                    });
+                }
+                if !services[..index]
+                    .iter()
+                    .any(|candidate| candidate.name == *dependency)
+                {
+                    return Err(FleetError::DependencyNotEarlier {
                         service: service.name.to_string(),
                         dependency: (*dependency).to_string(),
                     });
@@ -109,11 +132,24 @@ impl FleetSpec {
             path: cmd_dir.to_path_buf(),
             source,
         })?;
-        let on_disk = entries
-            .filter_map(Result::ok)
-            .filter_map(|entry| entry.file_type().ok().filter(|kind| kind.is_dir()).map(|_| entry))
-            .map(|entry| entry.file_name().to_string_lossy().into_owned())
-            .filter(|name| name.ends_with("-svc"));
+        let mut on_disk = Vec::new();
+        for entry in entries {
+            let entry = entry.map_err(|source| FleetError::ReadDirectoryEntry {
+                path: cmd_dir.to_path_buf(),
+                source,
+            })?;
+            let path = entry.path();
+            let file_type = entry
+                .file_type()
+                .map_err(|source| FleetError::ReadEntryType {
+                    path: path.clone(),
+                    source,
+                })?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if file_type.is_dir() && name.ends_with("-svc") {
+                on_disk.push(name);
+            }
+        }
         self.validate_names(on_disk)
     }
 
@@ -317,7 +353,7 @@ pub fn game_backend_fleet(inputs: &FleetInputs, flavor: FleetFlavor) -> FleetSpe
         player_port: Some(9100),
         dependencies: vec![
             "characters-svc", "inventory-svc", "accounts-svc", "match-svc",
-            "leaderboard-svc", "apikeys-svc", "admin-svc",
+            "leaderboard-svc", "apikeys-svc",
         ],
         env: gateway_env,
     };

@@ -31,3 +31,8 @@ libc = "0.2"
 name = "processctl-downstream"
 path = "tests/downstream/src/main.rs"
 harness = false
+
+[[test]]
+name = "processctl-lease-marker"
+path = "tests/lease_marker/src/main.rs"
+harness = false

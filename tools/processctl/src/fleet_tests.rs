@@ -1,4 +1,8 @@
-use crate::{game_backend_fleet, FleetError, FleetFlavor, FleetInputs};
+use std::collections::BTreeMap;
+
+use crate::{
+    game_backend_fleet, FleetError, FleetFlavor, FleetInputs, FleetSpec, ServiceSpec,
+};
 #[cfg(windows)]
 use crate::build_environment;
 
@@ -38,7 +42,7 @@ fn proof_fleet_is_the_canonical_twelve_service_snapshot() {
         ("characters-svc", "characters-svc", 8080, Some(9000), None, vec![]),
         ("config-svc", "config-svc", 8083, Some(9002), None, vec![]),
         ("inventory-svc", "inventory-svc", 8081, Some(9001), None, vec!["characters-svc", "config-svc"]),
-        ("gateway-svc", "gateway-svc", 8082, None, Some(9100), vec!["characters-svc", "inventory-svc", "accounts-svc", "match-svc", "leaderboard-svc", "apikeys-svc", "admin-svc"]),
+        ("gateway-svc", "gateway-svc", 8082, None, Some(9100), vec!["characters-svc", "inventory-svc", "accounts-svc", "match-svc", "leaderboard-svc", "apikeys-svc"]),
         ("admin-svc", "admin-svc", 8085, None, None, vec!["characters-svc", "inventory-svc", "config-svc", "accounts-svc", "audit-svc", "scheduler-svc", "apikeys-svc"]),
     ]);
 }
@@ -58,6 +62,25 @@ fn disk_drift_compares_names_not_order() {
     let reversed = fleet.services().iter().rev().map(|service| service.name.to_string());
     assert!(fleet.validate_names(reversed).is_ok());
     assert!(matches!(fleet.validate_names(["accounts-svc".to_string()]), Err(FleetError::DiskDrift { .. })));
+}
+
+#[test]
+fn hard_dependencies_must_appear_earlier_in_startup_order() {
+    let service = |name, dependencies| ServiceSpec {
+        name,
+        executable_package: name,
+        http_port: 1,
+        edge_port: None,
+        player_port: None,
+        dependencies,
+        env: BTreeMap::new(),
+    };
+    let error = FleetSpec::new(vec![
+        service("consumer-svc", vec!["provider-svc"]),
+        service("provider-svc", vec![]),
+    ])
+    .unwrap_err();
+    assert!(matches!(error, FleetError::DependencyNotEarlier { .. }));
 }
 
 #[cfg(windows)]
