@@ -16,10 +16,10 @@ pub fn run(ctx: &mut Context<'_>) -> Result<Outcome> {
 
 pub fn bless(root: &Path) -> Result<Exit> {
     super::recover_pending_replacement(root)?;
-    let temp = super::temp_dir(&root, "contract-golden-bless")?;
+    let temp = super::temp_dir(root, "contract-golden-bless")?;
     let proposed = temp.join("contracts.txt");
     let status = std::process::Command::new("cargo")
-        .current_dir(&root)
+        .current_dir(root)
         .args([
             "run",
             "-q",

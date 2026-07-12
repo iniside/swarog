@@ -118,7 +118,7 @@ pub fn bless(root: &Path) -> Result<Exit> {
     let crates = discover(root)?;
     let temp = super::temp_dir(&root.join("run/verify"), "public-api-bless")?;
     let version = Command::new("cargo")
-        .current_dir(&root)
+        .current_dir(root)
         .args(["+nightly", "public-api", "--version"])
         .output()
         .context("query cargo-public-api")?;
@@ -130,7 +130,7 @@ pub fn bless(root: &Path) -> Result<Exit> {
     let mut proposals = Vec::new();
     for package in &crates {
         let output = Command::new("cargo")
-            .current_dir(&root)
+            .current_dir(root)
             .args([
                 "+nightly",
                 "public-api",
