@@ -4,6 +4,8 @@ mod linux;
 mod linux_tests;
 #[cfg(windows)]
 mod windows;
+#[cfg(all(test, windows))]
+mod windows_tests;
 
 #[cfg(target_os = "linux")]
 pub(crate) use linux::{spawn, PlatformChild};

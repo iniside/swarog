@@ -1,7 +1,9 @@
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::path::PathBuf;
-use std::process::{ExitStatus, Stdio};
+use std::process::ExitStatus;
+#[cfg(target_os = "linux")]
+use std::process::Stdio;
 use std::time::Duration;
 
 use thiserror::Error;
@@ -14,6 +16,7 @@ pub enum OutputDestination {
 }
 
 impl OutputDestination {
+    #[cfg(target_os = "linux")]
     pub(crate) fn open(&self) -> Result<Stdio, ProcessError> {
         match self {
             Self::Inherit => Ok(Stdio::inherit()),

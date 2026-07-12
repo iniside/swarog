@@ -46,6 +46,47 @@ fn child_entry() {
             std::mem::forget(grandchild);
             std::thread::sleep(Duration::from_secs(60));
         }
+        "root-graceful-descendant" => {
+            let ready = PathBuf::from(std::env::var_os("PROCESSCTL_TEST_READY").unwrap());
+            let grandchild_ready = ready.with_extension("grandchild");
+            let grandchild = spawn_test_process("ignore", &grandchild_ready);
+            wait_file(&grandchild_ready);
+            std::fs::write(
+                &ready,
+                format!("{}\n{}", std::process::id(), grandchild.id()),
+            )
+            .unwrap();
+            std::mem::forget(grandchild);
+            std::thread::sleep(Duration::from_secs(60));
+        }
+        "handle-check" => {
+            #[cfg(windows)]
+            {
+                use windows_sys::Win32::Foundation::GetHandleInformation;
+                let handle = std::env::var("PROCESSCTL_TEST_SENTINEL_HANDLE")
+                    .unwrap()
+                    .parse::<usize>()
+                    .unwrap() as *mut std::ffi::c_void;
+                let mut flags = 0u32;
+                let closed = unsafe { GetHandleInformation(handle, &mut flags) } == 0;
+                std::fs::write(
+                    std::env::var_os("PROCESSCTL_TEST_READY").unwrap(),
+                    if closed { "closed" } else { "leaked" },
+                )
+                .unwrap();
+            }
+        }
+        "nested-supervisor" => {
+            let ready = PathBuf::from(std::env::var_os("PROCESSCTL_TEST_READY").unwrap());
+            let inner_ready = ready.with_extension("inner");
+            let mut inner = OwnedChild::spawn(spec("exit", &inner_ready)).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while inner.try_wait().unwrap().is_none() {
+                assert!(Instant::now() < deadline, "nested child did not exit");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            std::fs::write(ready, "nested-job-ok").unwrap();
+        }
         "fd-check" => {
             #[cfg(target_os = "linux")]
             {
@@ -142,6 +183,76 @@ fn force_kills_and_reaps_descendants_but_not_a_decoy() {
     assert!(process_alive(decoy.id()), "unrelated decoy was terminated");
     let _ = decoy.kill();
     let _ = decoy.wait();
+}
+
+#[test]
+fn graceful_root_with_live_descendant_forces_job_remainder() {
+    let _serial = PROCESS_TEST_LOCK.lock().unwrap();
+    protect_test_harness();
+    let dir = test_dir("graceful-descendant");
+    let ready = dir.join("tree.ready");
+    let mut child = OwnedChild::spawn(spec("root-graceful-descendant", &ready)).unwrap();
+    wait_file(&ready);
+    let pids = read_pids(&ready);
+    let outcome = child.shutdown(policy(Duration::from_millis(150))).unwrap();
+    assert!(matches!(outcome, ShutdownOutcome::Forced(_)));
+    wait_dead(pids[0]);
+    wait_dead(pids[1]);
+}
+
+#[test]
+fn startup_handle_list_excludes_unrelated_inheritable_handle() {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Foundation::{DuplicateHandle, DUPLICATE_SAME_ACCESS};
+    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+
+    let _serial = PROCESS_TEST_LOCK.lock().unwrap();
+    protect_test_harness();
+    let dir = test_dir("handles");
+    let ready = dir.join("ready");
+    let sentinel = std::fs::File::create(dir.join("sentinel")).unwrap();
+    let current = unsafe { GetCurrentProcess() };
+    let mut inheritable = std::ptr::null_mut();
+    assert_ne!(
+        unsafe {
+            DuplicateHandle(
+                current,
+                sentinel.as_raw_handle() as _,
+                current,
+                &mut inheritable,
+                0,
+                1,
+                DUPLICATE_SAME_ACCESS,
+            )
+        },
+        0
+    );
+    let mut child_spec = spec("handle-check", &ready);
+    child_spec.env.insert(
+        OsString::from("PROCESSCTL_TEST_SENTINEL_HANDLE"),
+        OsString::from((inheritable as usize).to_string()),
+    );
+    let mut child = OwnedChild::spawn(child_spec).unwrap();
+    unsafe { windows_sys::Win32::Foundation::CloseHandle(inheritable) };
+    wait_file(&ready);
+    assert_eq!(std::fs::read_to_string(&ready).unwrap(), "closed");
+    while child.try_wait().unwrap().is_none() {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn process_already_inside_owned_job_can_create_nested_owned_job() {
+    let _serial = PROCESS_TEST_LOCK.lock().unwrap();
+    protect_test_harness();
+    let dir = test_dir("nested-job");
+    let ready = dir.join("ready");
+    let mut supervisor = OwnedChild::spawn(spec("nested-supervisor", &ready)).unwrap();
+    wait_file(&ready);
+    assert_eq!(std::fs::read_to_string(&ready).unwrap(), "nested-job-ok");
+    while supervisor.try_wait().unwrap().is_none() {
+        std::thread::sleep(Duration::from_millis(10));
+    }
 }
 
 #[test]
