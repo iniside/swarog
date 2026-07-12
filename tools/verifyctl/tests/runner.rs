@@ -51,8 +51,7 @@ impl FakeRun {
             .args(args)
             .env("PATH", &self.bin)
             .env("CARGO_TARGET_DIR", &self.target)
-            .env("FAKE_BIN_DIR", &self.bin)
-            .env("FAKE_RECORD", &self.record);
+            .env("VERIFYCTL_POISON", "must-not-reach-child");
         command
     }
 }
@@ -74,6 +73,9 @@ fn fake_path_covers_outcomes_audit_install_lease_and_summary_exits() {
     assert!(std::fs::read_to_string(&pass.record)
         .unwrap()
         .contains("splitproof borrowed verify-"));
+    assert!(!std::fs::read_to_string(&pass.record)
+        .unwrap()
+        .contains("POISON LEAKED"));
 
     let no_install = FakeRun::new("no-install", false);
     let output = no_install
@@ -88,12 +90,15 @@ fn fake_path_covers_outcomes_audit_install_lease_and_summary_exits() {
     assert_exit(&output, 0);
     assert!(std::fs::read_to_string(&install.record)
         .unwrap()
-        .contains("install cargo-audit --locked --version 0.22.2"));
+        .contains("install cargo-audit --locked"));
+    assert!(!std::fs::read_to_string(&install.record)
+        .unwrap()
+        .contains("--version"));
 
     let install_fail = FakeRun::new("install-fail", false);
     let output = install_fail
         .command(&[])
-        .env("FAKE_INSTALL_FAIL", "1")
+        .env("RUSTFLAGS", "install-fail")
         .output()
         .unwrap();
     assert_exit(&output, 1);
@@ -101,7 +106,7 @@ fn fake_path_covers_outcomes_audit_install_lease_and_summary_exits() {
     let network = FakeRun::new("network", true);
     let output = network
         .command(&[])
-        .env("FAKE_AUDIT_FAIL", "1")
+        .env("RUSTFLAGS", "audit-network-fail")
         .output()
         .unwrap();
     assert_exit(&output, 1);
@@ -110,7 +115,7 @@ fn fake_path_covers_outcomes_audit_install_lease_and_summary_exits() {
     let route_fail = FakeRun::new("route-fail", true);
     let output = route_fail
         .command(&[])
-        .env("FAKE_FAIL_MATCH", "routecheck")
+        .env("RUSTFLAGS", "route-fail")
         .output()
         .unwrap();
     assert_exit(&output, 1);
@@ -128,7 +133,7 @@ fn fake_path_covers_outcomes_audit_install_lease_and_summary_exits() {
 fn interruption_cleans_child_and_releases_lease() {
     let run = FakeRun::new("interrupt", true);
     let mut command = run.command(&[]);
-    command.env("FAKE_SLEEP_MATCH", "build --workspace");
+    command.env("RUSTFLAGS", "sleep-build");
     prepare_interruptible(&mut command);
     let mut child = command.spawn().unwrap();
     wait_for_record(&run.record, "sleeping");

@@ -1,23 +1,43 @@
+use std::ffi::OsString;
+
 use anyhow::Result;
 
 use crate::model::{Outcome, SkipReason};
 use crate::runner::Context;
 
-const VERSION: &str = "0.22.2";
-
 pub fn run(ctx: &mut Context<'_>) -> Result<Outcome> {
-    if !ctx.on_path("cargo-audit") {
+    let mut executable = ctx.resolve("cargo-audit");
+    if executable.is_none() {
         if !ctx.options.install {
             ctx.note("cargo-audit is missing and installation was explicitly disabled")?;
             return Ok(Outcome::Skip(SkipReason::ExplicitNoInstallMissingTool));
         }
-        let installed = ctx.cargo(
-            "audit-install",
-            &["install", "cargo-audit", "--locked", "--version", VERSION],
-        )?;
-        if installed != Outcome::Pass || !ctx.on_path("cargo-audit") {
+        let installed = match ctx.cargo("audit-install", &["install", "cargo-audit", "--locked"]) {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                ctx.note(&format!(
+                    "cargo-audit installation invocation failed: {error:#}"
+                ))?;
+                return Ok(Outcome::Fail);
+            }
+        };
+        executable = ctx.resolve("cargo-audit");
+        if installed != Outcome::Pass || executable.is_none() {
             return Ok(Outcome::Fail);
         }
     }
-    ctx.cargo("audit", &["audit", "--ignore", "RUSTSEC-2023-0071"])
+    match ctx.command(
+        "audit",
+        executable.expect("resolved above"),
+        vec![
+            OsString::from("--ignore"),
+            OsString::from("RUSTSEC-2023-0071"),
+        ],
+    ) {
+        Ok(outcome) => Ok(outcome),
+        Err(error) => {
+            ctx.note(&format!("cargo-audit invocation failed: {error:#}"))?;
+            Ok(Outcome::Fail)
+        }
+    }
 }

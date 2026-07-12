@@ -16,35 +16,43 @@ fn main() -> ExitCode {
     if stem.eq_ignore_ascii_case("splitproof") {
         return splitproof();
     }
+    if stem.eq_ignore_ascii_case("cargo-audit") {
+        return audit();
+    }
     cargo(executable)
 }
 
 fn cargo(executable: PathBuf) -> ExitCode {
     let args: Vec<_> = std::env::args().skip(1).collect();
     record(&format!("cargo {}", args.join(" ")));
-    if matches_env("FAKE_SLEEP_MATCH", &args) {
+    if control("sleep-build") && args.join(" ").contains("build --workspace") {
         record("sleeping");
         std::thread::sleep(Duration::from_secs(30));
     }
     if args.first().map(String::as_str) == Some("install") {
-        if std::env::var_os("FAKE_INSTALL_FAIL").is_some() {
+        if control("install-fail") {
             return ExitCode::FAILURE;
         }
-        let bin = PathBuf::from(std::env::var_os("FAKE_BIN_DIR").expect("FAKE_BIN_DIR"));
+        let bin = executable.parent().expect("fake bin directory");
         let target = bin.join(format!("cargo-audit{}", std::env::consts::EXE_SUFFIX));
         std::fs::copy(executable, target).expect("install fake cargo-audit");
         return ExitCode::SUCCESS;
     }
-    if args.first().map(String::as_str) == Some("audit")
-        && std::env::var_os("FAKE_AUDIT_FAIL").is_some()
-    {
-        record("audit network failure");
-        return ExitCode::FAILURE;
-    }
-    if matches_env("FAKE_FAIL_MATCH", &args) {
+    if control("route-fail") && args.join(" ").contains("routecheck") {
         return ExitCode::FAILURE;
     }
     ExitCode::SUCCESS
+}
+
+fn audit() -> ExitCode {
+    let args: Vec<_> = std::env::args().skip(1).collect();
+    record(&format!("cargo-audit {}", args.join(" ")));
+    if control("audit-network-fail") {
+        record("audit network failure");
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
 }
 
 fn splitproof() -> ExitCode {
@@ -59,27 +67,30 @@ fn splitproof() -> ExitCode {
             return ExitCode::FAILURE;
         }
     }
-    if std::env::var_os("FAKE_SPLITPROOF_FAIL").is_some() {
-        ExitCode::FAILURE
-    } else {
-        ExitCode::SUCCESS
-    }
+    ExitCode::SUCCESS
 }
 
-fn matches_env(name: &str, args: &[String]) -> bool {
-    std::env::var(name)
+fn control(name: &str) -> bool {
+    std::env::var("RUSTFLAGS")
         .ok()
-        .is_some_and(|needle| args.join(" ").contains(&needle))
+        .is_some_and(|value| value.split(',').any(|item| item == name))
 }
 
 fn record(message: &str) {
-    let Some(path) = std::env::var_os("FAKE_RECORD") else {
+    let Some(target) = std::env::var_os("CARGO_TARGET_DIR") else {
         return;
     };
+    let path = PathBuf::from(target)
+        .parent()
+        .expect("target parent")
+        .join("record.log");
     let mut file = OpenOptions::new()
         .create(true)
         .append(true)
         .open(path)
         .expect("open record");
     writeln!(file, "{message}").expect("write record");
+    if std::env::var_os("VERIFYCTL_POISON").is_some() {
+        writeln!(file, "POISON LEAKED").expect("write poison marker");
+    }
 }

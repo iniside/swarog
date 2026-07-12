@@ -8,8 +8,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context as _, Result};
 use processctl::{
-    rollout_lock_path, OutputDestination, OwnedChild, OwnedLease, ProcessGroupPolicy, RolloutLock,
-    ShutdownPolicy, SpawnSpec,
+    rollout_lock_path, EnvironmentSnapshot, OutputDestination, OwnedChild, OwnedLease,
+    ProcessGroupPolicy, RolloutLock, ShutdownPolicy, SpawnSpec,
 };
 use rand::RngCore as _;
 
@@ -44,7 +44,9 @@ pub fn execute(options: Options) -> Result<Exit> {
         }
         Action::Verify => {}
     }
+    let snapshot = EnvironmentSnapshot::capture();
     let root = workspace_root()?;
+    let environment = FrozenEnvironment::from_snapshot(&snapshot);
     let run_id = run_id();
     let log_dir = root.join("run").join("verify").join(&run_id);
     std::fs::create_dir_all(&log_dir)
@@ -60,13 +62,24 @@ pub fn execute(options: Options) -> Result<Exit> {
         root,
         log_dir,
         options,
+        environment,
         lease: &mut lease,
         stage: crate::model::StageId::Build,
     };
     for stage in stages::INITIAL {
         context.stage = stage.id;
         println!("== {} ==", stage.id.name());
-        let outcome = (stage.run)(&mut context)?;
+        let outcome = match (stage.run)(&mut context) {
+            Ok(outcome) => outcome,
+            Err(error) if interrupted() => {
+                eprintln!(
+                    "verifyctl: stage {} errored after interruption: {error:#}",
+                    stage.id.name()
+                );
+                Outcome::Fail
+            }
+            Err(error) => return Err(error),
+        };
         println!("  {outcome}");
         summary.push(StageResult {
             id: stage.id,
@@ -90,6 +103,7 @@ pub struct Context<'a> {
     pub root: PathBuf,
     pub log_dir: PathBuf,
     pub options: Options,
+    environment: FrozenEnvironment,
     lease: &'a mut OwnedLease,
     stage: crate::model::StageId,
 }
@@ -100,8 +114,14 @@ impl Context<'_> {
     }
 
     pub fn cargo_os(&mut self, label: &str, args: &[OsString]) -> Result<Outcome> {
-        let cargo = find_on_path("cargo").context("cargo is not available on PATH")?;
+        let cargo = self
+            .resolve("cargo")
+            .context("cargo is not available on the captured PATH")?;
         self.command(label, cargo, args.to_vec())
+    }
+
+    pub fn resolve(&self, executable: &str) -> Option<PathBuf> {
+        find_on_path(executable, &self.environment.build)
     }
 
     pub fn command(
@@ -116,28 +136,29 @@ impl Context<'_> {
             label: format!("verify-{}-{label}", self.stage.name()),
             executable,
             args,
-            env: current_environment(),
+            env: os_environment(&self.environment.build),
             cwd: self.root.clone(),
             stdout: OutputDestination::File(stdout),
             stderr: OutputDestination::File(stderr),
             process_group: ProcessGroupPolicy::Owned,
         })?;
-        wait_owned(&mut child)
+        wait_owned(&mut child, &self.command_log(label, "cleanup"))
     }
 
     pub fn splitproof(&mut self) -> Result<Outcome> {
-        let executable = splitproof_executable(&self.root);
+        let executable = splitproof_executable(&self.root, &self.environment.build);
         if !executable.is_file() {
             self.note("splitproof executable was not produced by the build stage")?;
             return Ok(Outcome::Fail);
         }
         let stdout = self.command_log("splitproof", "out");
         let stderr = self.command_log("splitproof", "err");
+        let cleanup = self.command_log("splitproof", "cleanup");
         let spec = SpawnSpec {
             label: "verify-splitproof".into(),
             executable,
             args: Vec::new(),
-            env: current_environment(),
+            env: os_environment(&self.environment.splitproof),
             cwd: self.root.clone(),
             stdout: OutputDestination::File(stdout),
             stderr: OutputDestination::File(stderr),
@@ -146,7 +167,7 @@ impl Context<'_> {
         let mut child = self.lease.spawn_borrower(spec, "splitproof")?;
         loop {
             if interrupted() {
-                child.shutdown(SHUTDOWN)?;
+                record_cleanup(&cleanup, child.shutdown(SHUTDOWN));
                 return Ok(Outcome::Fail);
             }
             if let Some(status) = child.try_wait()? {
@@ -158,10 +179,6 @@ impl Context<'_> {
             }
             std::thread::sleep(POLL);
         }
-    }
-
-    pub fn on_path(&self, executable: &str) -> bool {
-        find_on_path(executable).is_some()
     }
 
     pub fn note(&self, message: &str) -> Result<()> {
@@ -177,10 +194,10 @@ impl Context<'_> {
     }
 }
 
-fn wait_owned(child: &mut OwnedChild) -> Result<Outcome> {
+fn wait_owned(child: &mut OwnedChild, cleanup_log: &Path) -> Result<Outcome> {
     loop {
         if interrupted() {
-            child.shutdown(SHUTDOWN)?;
+            record_cleanup(cleanup_log, child.shutdown(SHUTDOWN));
             return Ok(Outcome::Fail);
         }
         if let Some(status) = child.try_wait()? {
@@ -220,32 +237,57 @@ fn run_id() -> String {
     )
 }
 
-fn current_environment() -> BTreeMap<OsString, OsString> {
-    std::env::vars_os().collect()
+#[derive(Clone)]
+struct FrozenEnvironment {
+    build: BTreeMap<String, String>,
+    splitproof: BTreeMap<String, String>,
 }
 
-fn splitproof_executable(root: &Path) -> PathBuf {
-    let target = std::env::var_os("CARGO_TARGET_DIR")
+impl FrozenEnvironment {
+    fn from_snapshot(snapshot: &EnvironmentSnapshot) -> Self {
+        let build = snapshot.build_environment();
+        let mut splitproof = build.clone();
+        if let Some(database_url) = snapshot.value("DATABASE_URL") {
+            splitproof.insert("DATABASE_URL".into(), database_url.into());
+        }
+        Self { build, splitproof }
+    }
+}
+
+fn os_environment(environment: &BTreeMap<String, String>) -> BTreeMap<OsString, OsString> {
+    environment
+        .iter()
+        .map(|(key, value)| (key.into(), value.into()))
+        .collect()
+}
+
+fn splitproof_executable(root: &Path, environment: &BTreeMap<String, String>) -> PathBuf {
+    let target = environment
+        .get("CARGO_TARGET_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| root.join("target"));
+    let target = if target.is_absolute() {
+        target
+    } else {
+        root.join(target)
+    };
     target
         .join("debug")
         .join(format!("splitproof{}", std::env::consts::EXE_SUFFIX))
 }
 
-fn find_on_path(name: &str) -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
+fn find_on_path(name: &str, environment: &BTreeMap<String, String>) -> Option<PathBuf> {
+    let path = environment_value(environment, "PATH")?;
     let extensions: Vec<OsString> = if cfg!(windows) {
-        std::env::var_os("PATHEXT")
-            .unwrap_or_else(|| ".COM;.EXE;.BAT;.CMD".into())
-            .to_string_lossy()
+        environment_value(environment, "PATHEXT")
+            .unwrap_or(".COM;.EXE;.BAT;.CMD")
             .split(';')
             .map(OsString::from)
             .collect()
     } else {
         vec![OsString::new()]
     };
-    for directory in std::env::split_paths(&path) {
+    for directory in std::env::split_paths(OsString::from(path).as_os_str()) {
         for extension in &extensions {
             let candidate = directory.join(format!("{name}{}", extension.to_string_lossy()));
             if candidate.is_file() {
@@ -254,6 +296,31 @@ fn find_on_path(name: &str) -> Option<PathBuf> {
         }
     }
     None
+}
+
+fn environment_value<'a>(environment: &'a BTreeMap<String, String>, key: &str) -> Option<&'a str> {
+    environment
+        .iter()
+        .find(|(candidate, _)| {
+            if cfg!(windows) {
+                candidate.eq_ignore_ascii_case(key)
+            } else {
+                candidate.as_str() == key
+            }
+        })
+        .map(|(_, value)| value.as_str())
+}
+
+fn record_cleanup<E: std::fmt::Display>(
+    path: &Path,
+    result: std::result::Result<processctl::ShutdownOutcome, E>,
+) {
+    if let Err(error) = result {
+        eprintln!("verifyctl: interrupted cleanup failed: {error}");
+        if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
+            let _ = writeln!(file, "interrupted cleanup failed: {error}");
+        }
+    }
 }
 
 fn interrupted() -> bool {
@@ -312,10 +379,9 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let fake = dir.join(format!("cargo-audit{}", std::env::consts::EXE_SUFFIX));
         std::fs::write(&fake, b"fake").unwrap();
-        let old = std::env::var_os("PATH");
-        std::env::set_var("PATH", &dir);
+        let environment = BTreeMap::from([("PATH".into(), dir.to_string_lossy().into_owned())]);
         assert_eq!(
-            find_on_path("cargo-audit")
+            find_on_path("cargo-audit", &environment)
                 .unwrap()
                 .file_name()
                 .unwrap()
@@ -326,12 +392,48 @@ mod tests {
                 .to_string_lossy()
                 .to_ascii_lowercase()
         );
-        if let Some(old) = old {
-            std::env::set_var("PATH", old);
-        } else {
-            std::env::remove_var("PATH");
-        }
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn frozen_snapshot_ignores_poison_ambient_and_resolves_relative_target() {
+        let root = PathBuf::from("workspace-root");
+        let snapshot = EnvironmentSnapshot::from_values([
+            ("PATH".into(), "captured-path".into()),
+            ("PATHEXT".into(), ".EXE".into()),
+            ("CARGO_TARGET_DIR".into(), "frozen-target".into()),
+            ("DATABASE_URL".into(), "postgres://typed".into()),
+            ("VERIFYCTL_POISON".into(), "must-not-pass".into()),
+        ]);
+        let frozen = FrozenEnvironment::from_snapshot(&snapshot);
+        assert!(
+            environment_value(&frozen.build, "PATH").is_some_and(|path| std::env::split_paths(
+                OsString::from(path).as_os_str()
+            )
+            .any(|entry| entry == Path::new("captured-path")))
+        );
+        assert_eq!(
+            frozen.splitproof.get("DATABASE_URL").map(String::as_str),
+            Some("postgres://typed")
+        );
+        assert!(!frozen.build.contains_key("VERIFYCTL_POISON"));
+        assert_eq!(
+            splitproof_executable(&root, &frozen.build),
+            root.join("frozen-target/debug")
+                .join(format!("splitproof{}", std::env::consts::EXE_SUFFIX))
+        );
+    }
+
+    #[test]
+    fn cleanup_failure_fixture_does_not_change_interrupted_exit() {
+        let path =
+            std::env::temp_dir().join(format!("verifyctl-cleanup-{}.log", std::process::id()));
+        record_cleanup::<&str>(&path, Err("fixture cleanup failure"));
+        assert!(std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("fixture cleanup failure"));
+        assert_eq!(Exit::Interrupted as u8, 130);
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]
