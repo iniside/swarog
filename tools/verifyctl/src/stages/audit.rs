@@ -30,6 +30,7 @@ pub fn run(ctx: &mut Context<'_>) -> Result<Outcome> {
         "audit",
         executable.expect("resolved above"),
         vec![
+            OsString::from("audit"),
             OsString::from("--ignore"),
             OsString::from("RUSTSEC-2023-0071"),
         ],

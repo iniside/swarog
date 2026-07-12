@@ -47,6 +47,10 @@ fn cargo(executable: PathBuf) -> ExitCode {
 fn audit() -> ExitCode {
     let args: Vec<_> = std::env::args().skip(1).collect();
     record(&format!("cargo-audit {}", args.join(" ")));
+    if args != ["audit", "--ignore", "RUSTSEC-2023-0071"] {
+        record("cargo-audit argv mismatch");
+        return ExitCode::FAILURE;
+    }
     if control("audit-network-fail") {
         record("audit network failure");
         ExitCode::FAILURE

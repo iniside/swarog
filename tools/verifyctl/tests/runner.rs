@@ -76,6 +76,9 @@ fn fake_path_covers_outcomes_audit_install_lease_and_summary_exits() {
     assert!(!std::fs::read_to_string(&pass.record)
         .unwrap()
         .contains("POISON LEAKED"));
+    assert!(std::fs::read_to_string(&pass.record)
+        .unwrap()
+        .contains("cargo-audit audit --ignore RUSTSEC-2023-0071"));
 
     let no_install = FakeRun::new("no-install", false);
     let output = no_install
