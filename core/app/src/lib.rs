@@ -60,14 +60,9 @@ const READY_CHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(
 /// pass, so a transient error never flaps readiness.
 const DELIVERY_STALL_MAX: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// `/readyz` flags the durable plane's retention GC when no sweep has SUCCEEDED for
-/// this long — a task alive but persistently failing (revoked function, broken
-/// query) never flips `retention_dead`. 3× the default housekeep interval
-/// (`EVENTS_HOUSEKEEP_INTERVAL`, default 1h in `asyncevents::retention`), so a
-/// single transient miss never flaps readiness; only a sustained outage does. A
-/// process that raises the interval past 20m widens this window proportionally by
-/// design (staleness is measured against sweeps that should have happened).
-const RETENTION_STALL_MAX: std::time::Duration = std::time::Duration::from_secs(3 * 3600);
+fn retention_stall_message(stall_after: std::time::Duration) -> String {
+    format!("asyncevents retention sweep has not succeeded in >{stall_after:?}")
+}
 
 /// How the HTTP front terminates TLS (admin hardening Step 4). The MECHANISM lives
 /// here in `core/app` (the serve path owns the listener); the ENV PARSING lives in the
@@ -572,6 +567,7 @@ pub async fn run(
         // `dead` flag: a GC outage is storage growth, not a serving outage, and
         // per-task isolation keeps the failing surface visible by name.
         let liveness = p.liveness();
+        let retention_stall_after = p.retention_stall_after();
         ctx.contribute(
             httpmw::READINESS_SLOT,
             httpmw::ReadyCheck::new("asyncevents-retention", move || {
@@ -579,11 +575,8 @@ pub async fn run(
                 async move {
                     if liveness.retention_dead() {
                         Err("asyncevents retention task died".to_string())
-                    } else if liveness.retention_stalled(RETENTION_STALL_MAX) {
-                        Err(format!(
-                            "asyncevents retention sweep has not succeeded in >{}s",
-                            RETENTION_STALL_MAX.as_secs()
-                        ))
+                    } else if liveness.retention_stalled(retention_stall_after) {
+                        Err(retention_stall_message(retention_stall_after))
                     } else {
                         Ok(())
                     }

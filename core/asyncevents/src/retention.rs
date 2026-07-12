@@ -33,6 +33,12 @@ const BATCH: i64 = 1000;
 /// Default sweep interval when `EVENTS_HOUSEKEEP_INTERVAL` is unset (1h).
 const DEFAULT_INTERVAL: Duration = Duration::from_secs(3600);
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Config {
+    pub(crate) interval: Duration,
+    pub(crate) stall_after: Duration,
+}
+
 /// The paused-subscription-blocks-GC alarm (see the module docs). Registered once
 /// per process into `core/metrics`'s private registry, like [`crate::plane_metrics`].
 fn blocked_gauge() -> &'static Gauge {
@@ -73,29 +79,38 @@ pub(crate) fn sweep_errors() -> &'static IntCounter {
     })
 }
 
-/// `EVENTS_HOUSEKEEP_INTERVAL`: a Go-style duration (`1h`/`30m`/`45s`/`500ms`) or a
-/// bare seconds integer; unset falls back to [`DEFAULT_INTERVAL`]. A value that
-/// parses to ZERO fails startup: `tokio::time::interval(Duration::ZERO)` panics,
-/// so an explicit "disable"-looking `0` must bail loudly (twin of
-/// [`crate::worker::handler_timeout_from_env`]) rather than panic the spawned task.
-pub(crate) fn interval_from_env() -> anyhow::Result<Duration> {
-    interval_from_value(std::env::var("EVENTS_HOUSEKEEP_INTERVAL").ok().as_deref())
-}
+/// Parse the retention interval once while constructing the plane and derive its
+/// readiness threshold from the same authoritative value. The env syntax is a
+/// single Go-style unit (`1h`/`30m`/`45s`/`500ms`) or bare seconds; unset uses
+/// [`DEFAULT_INTERVAL`]. Malformed, zero, and overflowing values fail startup.
+impl Config {
+    pub(crate) fn from_env() -> anyhow::Result<Config> {
+        Self::from_value(std::env::var("EVENTS_HOUSEKEEP_INTERVAL").ok().as_deref())
+    }
 
-/// The pure half of [`interval_from_env`], testable without env mutation.
-/// DECISION (plan m4c): an UNPARSEABLE string stays fallback-to-default — a
-/// garbage typo shouldn't brick startup the way a deliberate `0` (which would
-/// panic the ticker) must; only values that *parse to zero* are rejected.
-pub(crate) fn interval_from_value(v: Option<&str>) -> anyhow::Result<Duration> {
-    let Some(v) = v else { return Ok(DEFAULT_INTERVAL) };
-    match parse_go_duration(v) {
-        Some(d) if d.is_zero() => anyhow::bail!(
-            "EVENTS_HOUSEKEEP_INTERVAL={v:?} parses to a zero interval, which would \
-             panic the retention ticker; set a positive duration or unset it \
-             (default {DEFAULT_INTERVAL:?})"
-        ),
-        Some(d) => Ok(d),
-        None => Ok(DEFAULT_INTERVAL),
+    pub(crate) fn from_value(value: Option<&str>) -> anyhow::Result<Config> {
+        let interval = match value {
+            None => DEFAULT_INTERVAL,
+            Some(value) => parse_go_duration(value).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "EVENTS_HOUSEKEEP_INTERVAL={value:?} is invalid; expected a positive \
+                     single-unit duration such as 1h, 30m, 45s, 500ms, or bare seconds"
+                )
+            })?,
+        };
+        if interval.is_zero() {
+            anyhow::bail!(
+                "EVENTS_HOUSEKEEP_INTERVAL={value:?} parses to a zero interval; set a \
+                 positive duration or unset it (default {DEFAULT_INTERVAL:?})"
+            );
+        }
+        let stall_after = interval.checked_mul(3).ok_or_else(|| {
+            anyhow::anyhow!(
+                "EVENTS_HOUSEKEEP_INTERVAL={value:?} is too large: deriving the 3x \
+                 retention staleness threshold overflowed"
+            )
+        })?;
+        Ok(Config { interval, stall_after })
     }
 }
 
@@ -118,10 +133,20 @@ fn parse_go_duration(s: &str) -> Option<Duration> {
         return n.trim().parse::<u64>().ok().map(Duration::from_millis);
     }
     if let Some(n) = s.strip_suffix('h') {
-        return n.trim().parse::<u64>().ok().map(|h| Duration::from_secs(h * 3600));
+        return n
+            .trim()
+            .parse::<u64>()
+            .ok()?
+            .checked_mul(3600)
+            .map(Duration::from_secs);
     }
     if let Some(n) = s.strip_suffix('m') {
-        return n.trim().parse::<u64>().ok().map(|m| Duration::from_secs(m * 60));
+        return n
+            .trim()
+            .parse::<u64>()
+            .ok()?
+            .checked_mul(60)
+            .map(Duration::from_secs);
     }
     if let Some(n) = s.strip_suffix('s') {
         return n.trim().parse::<u64>().ok().map(Duration::from_secs);

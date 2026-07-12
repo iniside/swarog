@@ -96,6 +96,11 @@ fn coarse_now_secs() -> u64 {
     BASE.get_or_init(Instant::now).elapsed().as_secs()
 }
 
+fn coarse_now_millis() -> u64 {
+    static BASE: OnceLock<Instant> = OnceLock::new();
+    u64::try_from(BASE.get_or_init(Instant::now).elapsed().as_millis()).unwrap_or(u64::MAX)
+}
+
 /// A cloneable worker-health probe: [`Liveness::dead`] is flipped once if any
 /// worker task dies while the plane is running (panic or premature exit);
 /// [`Liveness::delivery_stalled`] flags a worker pool that is alive but has not
@@ -119,13 +124,13 @@ pub struct Liveness {
     /// Coarse-clock second of the last healthy worker pass; `0` = no workers
     /// hosted (never seeded), which never counts as stalled.
     last_ok_secs: Arc<AtomicU64>,
-    /// Coarse-clock second of the last successful retention sweep; `0` = never
+    /// Coarse-clock millisecond of the last successful retention sweep; `0` = never
     /// seeded, which never counts as stalled. The retention twin of
     /// [`Self::last_ok_secs`]: a GC task that is alive but whose sweeps keep
     /// failing (a revoked function, a broken query) never flips
     /// [`Self::retention_dead`], so `dead` alone would keep the
     /// `asyncevents-retention` check green while the log grows unbounded.
-    retention_ok_secs: Arc<AtomicU64>,
+    retention_ok_millis: Arc<AtomicU64>,
 }
 
 impl Liveness {
@@ -173,11 +178,11 @@ impl Liveness {
         if self.stopping.load(Ordering::SeqCst) {
             return false;
         }
-        let last = self.retention_ok_secs.load(Ordering::SeqCst);
+        let last = self.retention_ok_millis.load(Ordering::SeqCst);
         if last == 0 {
             return false;
         }
-        coarse_now_secs().saturating_sub(last) > max_age.as_secs()
+        u128::from(coarse_now_millis().saturating_sub(last)) > max_age.as_millis()
     }
 
     /// Stamps "healthy retention sweep now". `Plane::start` seeds it (the first
@@ -185,7 +190,8 @@ impl Liveness {
     /// start at 0, not "infinite"); [`retention::run`] stamps it after every
     /// `Ok` sweep. `max(1)` because `0` is the "never seeded" sentinel.
     pub(crate) fn mark_retention_ok(&self) {
-        self.retention_ok_secs.store(coarse_now_secs().max(1), Ordering::SeqCst);
+        self.retention_ok_millis
+            .store(coarse_now_millis().max(1), Ordering::SeqCst);
     }
 }
 
@@ -203,6 +209,7 @@ pub struct Plane {
     /// (its authoritative `cfg.database_url`), never re-read from env here.
     listen_dsn: String,
     liveness: Liveness,
+    retention: retention::Config,
     /// Cancellation + background tasks, present between `start` and `stop`.
     stop: Option<(watch::Sender<bool>, Vec<JoinHandle<()>>)>,
     stop_grace: Duration,
@@ -210,14 +217,18 @@ pub struct Plane {
 }
 
 impl Plane {
-    /// No env reads, no I/O — construction is wiring-safe; the first DB touch is
-    /// [`Plane::migrate`]. (`ASYNCEVENTS_HANDLER_TIMEOUT` is read at `start`.)
+    /// No I/O — construction is wiring-safe; the first DB touch is
+    /// [`Plane::migrate`]. Retention configuration is read and validated here so
+    /// startup cannot mutate durable state before discovering an invalid value.
+    /// (`ASYNCEVENTS_HANDLER_TIMEOUT` is read at `start`.)
     pub fn new(pool: PgPool, listen_dsn: String) -> anyhow::Result<Plane> {
+        let retention = retention::Config::from_env()?;
         Ok(Plane {
             inner: Arc::new(LogTransport::new()),
             pool,
             listen_dsn,
             liveness: Liveness::default(),
+            retention,
             stop: None,
             stop_grace: Duration::from_millis(DEFAULT_PLANE_STOP_GRACE_MS),
             active_deliveries: worker::ActiveDeliveries::default(),
@@ -234,6 +245,12 @@ impl Plane {
     /// The worker-health probe for `/readyz` (see [`Liveness`]).
     pub fn liveness(&self) -> Liveness {
         self.liveness.clone()
+    }
+
+    /// Maximum age of the last successful retention sweep before readiness
+    /// degrades. Derived from the configured sweep interval at construction.
+    pub fn retention_stall_after(&self) -> Duration {
+        self.retention.stall_after
     }
 
     /// Creates the V2 event-log schema, seeds `plane_meta`, runs the [`store`]
@@ -257,10 +274,9 @@ impl Plane {
     /// after `App::start`), so the snapshot is complete. Each task roots on a
     /// shared `watch` cancel; [`Plane::stop`] flips it and awaits every task.
     pub async fn start(&mut self) -> anyhow::Result<()> {
-        // Parse configuration before the subscription catalog is reconciled: an
-        // invalid value must fail startup without mutating durable state.
+        // Parse the remaining startup configuration before the subscription
+        // catalog is reconciled: an invalid value must fail without mutation.
         let handler_timeout = worker::handler_timeout_from_env()?;
-        let housekeep_interval = retention::interval_from_env()?;
         let subs = self.inner.snapshot();
         catalog::reconcile(&self.pool, &subs).await?;
 
@@ -330,7 +346,7 @@ impl Plane {
         let liveness = self.liveness.clone();
         let gc = retention::run(
             self.pool.clone(),
-            housekeep_interval,
+            self.retention.interval,
             self.liveness.clone(),
             stop_rx.clone(),
         );

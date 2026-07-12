@@ -900,3 +900,11 @@ fn contributed_edge_registrations_are_silently_skipped_without_an_edge_server() 
     drop(ctx);
     assert_eq!(calls.load(Ordering::SeqCst), 0);
 }
+
+#[test]
+fn retention_readiness_message_preserves_plane_threshold_precision() {
+    assert_eq!(
+        retention_stall_message(std::time::Duration::from_millis(1500)),
+        "asyncevents retention sweep has not succeeded in >1.5s"
+    );
+}

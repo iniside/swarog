@@ -69,6 +69,20 @@ async fn plane_transport_is_live_at_context_construction() {
     assert_eq!(plane.inner.snapshot().len(), 1);
 }
 
+#[tokio::test]
+async fn retention_liveness_honors_subsecond_threshold_precision() {
+    let liveness = Liveness::default();
+    assert!(!liveness.retention_stalled(Duration::from_millis(1500)));
+    liveness.mark_retention_ok();
+    assert!(!liveness.retention_stalled(Duration::from_millis(1500)));
+
+    tokio::time::sleep(Duration::from_millis(1600)).await;
+    assert!(liveness.retention_stalled(Duration::from_millis(1500)));
+
+    liveness.stopping.store(true, Ordering::SeqCst);
+    assert!(!liveness.retention_stalled(Duration::from_millis(1500)));
+}
+
 /// `enqueue_tx` appends to the V2 log on the caller's tx: the row carries the
 /// contract's topic + version and commits with the domain tx.
 #[tokio::test]

@@ -12,34 +12,37 @@ use sqlx::PgPool;
 const DEFAULT_DSN: &str =
     "postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable";
 
-/// Step 4a (DB-free): `EVENTS_HOUSEKEEP_INTERVAL` values that parse to ZERO are
-/// REJECTED (a zero interval panics `tokio::time::interval` inside the spawned
-/// task — fail startup instead), while an unparseable string still falls back to
-/// the default (decision m4c: a typo shouldn't brick startup, an explicit `0`
-/// must). Twin of `worker_tests::handler_timeout_parser_is_strict_and_checked`.
+/// The sweep interval and readiness threshold are one checked configuration:
+/// malformed, zero, unit-overflowing, and 3x-overflowing values fail startup.
 #[test]
-fn housekeep_interval_rejects_zero_but_falls_back_on_garbage() {
-    assert_eq!(interval_from_value(None).unwrap(), DEFAULT_INTERVAL);
-    assert_eq!(interval_from_value(Some("30m")).unwrap(), Duration::from_secs(1800));
-    assert_eq!(interval_from_value(Some("2h")).unwrap(), Duration::from_secs(7200));
-    assert_eq!(interval_from_value(Some("45")).unwrap(), Duration::from_secs(45));
-    assert_eq!(interval_from_value(Some("500ms")).unwrap(), Duration::from_millis(500));
-    // Unparseable = typo → fallback to default, NOT a startup failure.
+fn housekeep_config_is_strict_checked_and_authoritative() {
+    let default = Config::from_value(None).unwrap();
+    assert_eq!(default.interval, DEFAULT_INTERVAL);
+    assert_eq!(default.stall_after, Duration::from_secs(3 * 3600));
+
+    for (value, interval, stall_after) in [
+        ("500ms", Duration::from_millis(500), Duration::from_millis(1500)),
+        ("5m", Duration::from_secs(300), Duration::from_secs(900)),
+        ("4h", Duration::from_secs(4 * 3600), Duration::from_secs(12 * 3600)),
+    ] {
+        assert_eq!(Config::from_value(Some(value)).unwrap(), Config { interval, stall_after });
+    }
+
     for garbage in ["nonsense", "", "  ", "-1", "1.5h", "5 hours"] {
-        assert_eq!(
-            interval_from_value(Some(garbage)).unwrap(),
-            DEFAULT_INTERVAL,
-            "unparseable {garbage:?} must fall back to the default"
-        );
+        let err = Config::from_value(Some(garbage)).unwrap_err().to_string();
+        assert!(err.contains("EVENTS_HOUSEKEEP_INTERVAL"), "{garbage:?}: {err}");
     }
-    // Anything that PARSES to zero fails loudly, naming the env var.
     for zero in ["0", "0s", "0ms", "0m", "0h", " 0s "] {
-        let err = interval_from_value(Some(zero)).unwrap_err().to_string();
-        assert!(
-            err.contains("EVENTS_HOUSEKEEP_INTERVAL"),
-            "zero value {zero:?} must be rejected naming the env var, got: {err}"
-        );
+        let err = Config::from_value(Some(zero)).unwrap_err().to_string();
+        assert!(err.contains("EVENTS_HOUSEKEEP_INTERVAL"), "{zero:?}: {err}");
     }
+    for overflow in [format!("{}h", u64::MAX), format!("{}m", u64::MAX)] {
+        let err = Config::from_value(Some(&overflow)).unwrap_err().to_string();
+        assert!(err.contains("EVENTS_HOUSEKEEP_INTERVAL"), "{overflow:?}: {err}");
+    }
+    let triple_overflow = format!("{}s", u64::MAX / 3 + 1);
+    let err = Config::from_value(Some(&triple_overflow)).unwrap_err().to_string();
+    assert!(err.contains("EVENTS_HOUSEKEEP_INTERVAL"), "{err}");
 }
 
 async fn test_pool() -> Option<PgPool> {
