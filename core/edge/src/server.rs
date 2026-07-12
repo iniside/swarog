@@ -6,6 +6,13 @@
 //! Dispatch precedence (exactly Go's): an exact [`Server::handle`] wins over an
 //! exact [`Server::handle_identity`], which wins over the longest-matching
 //! [`Server::handle_prefix`]; an unmatched method is an "unknown method" error.
+//!
+//! Method names are UNIQUE across both exact tables: registering a name already
+//! present in either [`Server::handle`]'s or [`Server::handle_identity`]'s map
+//! panics ("registered twice"). Registration happens at startup (`app::run` →
+//! `apply_edge_registrations`), so a collision is a loud boot failure — the same
+//! convention as `registry::provide` — never a silent overwrite where dispatch
+//! precedence would quietly pick one of two capabilities claiming a method.
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -102,14 +109,35 @@ impl Server {
     }
 
     /// Registers a [`Handler`] under a method name.
+    ///
+    /// # Panics
+    /// If `method` is already registered (in either exact table) — see the module
+    /// doc's uniqueness contract.
     pub fn handle(&mut self, method: impl Into<String>, h: Handler) {
-        self.handlers.insert(method.into(), h);
+        let method = method.into();
+        self.assert_unregistered(&method);
+        self.handlers.insert(method, h);
     }
 
     /// Registers an [`IdentityHandler`] under a method name — like [`Server::handle`],
     /// but the handler also receives the request envelope's identity string.
+    ///
+    /// # Panics
+    /// If `method` is already registered (in either exact table) — see the module
+    /// doc's uniqueness contract.
     pub fn handle_identity(&mut self, method: impl Into<String>, h: IdentityHandler) {
-        self.id_handlers.insert(method.into(), h);
+        let method = method.into();
+        self.assert_unregistered(&method);
+        self.id_handlers.insert(method, h);
+    }
+
+    /// The uniqueness contract: a method name may live in at most ONE exact table,
+    /// once. A duplicate means two capabilities claim the same wire method — fail
+    /// loudly at registration (startup) instead of letting one silently win.
+    fn assert_unregistered(&self, method: &str) {
+        if self.handlers.contains_key(method) || self.id_handlers.contains_key(method) {
+            panic!("edge: method {method:?} registered twice — two capabilities claim the same wire method");
+        }
     }
 
     /// Registers a [`ForwardHandler`] for every method whose name starts with

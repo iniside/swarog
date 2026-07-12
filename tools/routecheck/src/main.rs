@@ -164,11 +164,25 @@ fn observe_profile(profile: &DeploymentProfile) -> anyhow::Result<Vec<ProcessRou
         // read the served set — exactly what `app::run` does on an edge-hosting
         // process. `EdgeReg::apply` is one-shot across clones, which is fine: each
         // process is built once per config run.
-        let mut server = edge::Server::new();
-        for reg in ctx.contributions::<edge::EdgeReg>(edge::EDGE_SLOT) {
-            reg.apply(&mut server);
-        }
-        let edge_methods: BTreeSet<String> = server.methods().into_iter().collect();
+        //
+        // ONLY for processes that actually host an internal edge — every split
+        // domain svc. The monolith "server" and split "gateway-svc" never call
+        // `apply_edge_registrations` (their contributions are silently dropped by
+        // `app::run`), and `edge::Server` panics on a duplicate method name — so
+        // applying the monolith's co-hosted contributions (every admin-page module
+        // registers `admin.adminData` for ITS OWN svc's edge) to one Server would
+        // manufacture a collision no real process ever sees. Modeling reality
+        // exactly: edge-less processes get an empty served set.
+        let hosts_internal_edge = process_id != "server" && process_id != "gateway-svc";
+        let edge_methods: BTreeSet<String> = if hosts_internal_edge {
+            let mut server = edge::Server::new();
+            for reg in ctx.contributions::<edge::EdgeReg>(edge::EDGE_SLOT) {
+                reg.apply(&mut server);
+            }
+            server.methods().into_iter().collect()
+        } else {
+            BTreeSet::new()
+        };
 
         out.push(ProcessRoutes {
             process: process_id,

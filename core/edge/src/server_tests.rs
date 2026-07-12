@@ -40,6 +40,41 @@ fn methods_reports_exact_and_identity_registrations() {
     assert_eq!(srv.methods(), vec!["a.exact", "b.exact", "c.identity"]);
 }
 
+fn identity_handler() -> IdentityHandler {
+    Arc::new(|_id: Option<String>, _payload: Vec<u8>| {
+        Box::pin(async { Ok(Vec::new()) }) as BoxFuture<'static, HandlerResult>
+    })
+}
+
+// --- Uniqueness contract: a duplicate method registration panics at startup ---
+// (the same convention as `registry::provide` — never a silent overwrite).
+
+#[test]
+#[should_panic(expected = "registered twice")]
+fn duplicate_handle_panics() {
+    let mut srv = Server::new();
+    srv.handle("dup.method", echo_handler());
+    srv.handle("dup.method", echo_handler());
+}
+
+#[test]
+#[should_panic(expected = "registered twice")]
+fn duplicate_handle_identity_panics() {
+    let mut srv = Server::new();
+    srv.handle_identity("dup.method", identity_handler());
+    srv.handle_identity("dup.method", identity_handler());
+}
+
+// Cross-map collision: a name in `handlers` and `id_handlers` is ALSO a duplicate —
+// dispatch precedence would otherwise silently pick the exact handler.
+#[test]
+#[should_panic(expected = "registered twice")]
+fn cross_map_duplicate_panics() {
+    let mut srv = Server::new();
+    srv.handle("dup.method", echo_handler());
+    srv.handle_identity("dup.method", identity_handler());
+}
+
 // --- Property test (port of Go's TestPropPrefixLongestMatch in edge/prop_test.go) ---
 //
 // For any set of distinct registered prefixes and any method string,

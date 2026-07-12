@@ -19,6 +19,20 @@ use crate::Error;
 /// connection is never idle-reaped between two domain calls.
 pub(crate) const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(5);
 
+/// Explicit idle timeout on the client half of the persistent connection — the
+/// mirror of the server plane's `EDGE_IDLE_TIMEOUT_MS` (`server.rs`): it pins
+/// quinn's current default (30s) for auditability against a future default change.
+/// MUST stay well above [`KEEPALIVE_INTERVAL`] so the keepalive keeps a
+/// quiet-but-live connection open.
+pub(crate) const CLIENT_IDLE_TIMEOUT_MS: u32 = 30_000;
+
+/// Upper bound on the QUIC handshake when dialing a peer. Without it, a dial to a
+/// bound-but-dead address (e.g. a crashed svc whose port is still held, or a
+/// blackholed route) waits out the full transport idle machinery; a caller holding
+/// a lock across the dial (the gateway's route table) would stall everyone. Elapse
+/// maps to [`Error::Connect`].
+pub(crate) const DIAL_DEADLINE: Duration = Duration::from_secs(5);
+
 /// A QUIC RPC client over one persistent connection. Implements [`opsapi::Caller`],
 /// so the generated RPC client (Step 5) composes over it transport-agnostically.
 pub struct Client {
@@ -54,13 +68,20 @@ impl Client {
         // cached connection. Keepalive is transport liveness, not RPC replay.
         let mut transport = quinn::TransportConfig::default();
         transport.keep_alive_interval(Some(KEEPALIVE_INTERVAL));
+        transport.max_idle_timeout(Some(quinn::IdleTimeout::from(quinn::VarInt::from_u32(
+            CLIENT_IDLE_TIMEOUT_MS,
+        ))));
         let mut quinn_cfg = quinn::ClientConfig::new(Arc::new(qcc));
         quinn_cfg.transport_config(Arc::new(transport));
         endpoint.set_default_client_config(quinn_cfg);
-        let conn = endpoint
+        let connecting = endpoint
             .connect(addr, "localhost")
-            .map_err(|e| Error::Connect(e.to_string()))?
+            .map_err(|e| Error::Connect(e.to_string()))?;
+        // Bound the handshake: a bound-but-dead peer must fail the dial fast, not
+        // after the transport idle machinery gives up.
+        let conn = tokio::time::timeout(DIAL_DEADLINE, connecting)
             .await
+            .map_err(|_| Error::Connect("dial timed out after 5s".into()))?
             .map_err(|e| Error::Connection(e.to_string()))?;
         Ok(Client {
             _endpoint: endpoint,
@@ -156,3 +177,7 @@ pub(crate) fn raw_from_bytes(payload: &[u8]) -> Result<Box<RawValue>, Error> {
     }
     serde_json::from_slice::<Box<RawValue>>(payload).map_err(Error::Codec)
 }
+
+#[cfg(test)]
+#[path = "client_tests.rs"]
+mod client_tests;
