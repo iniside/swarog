@@ -225,6 +225,31 @@ fn parse_http(attr: &syn::Attribute) -> syn::Result<HttpBind> {
     Ok(b)
 }
 
+/// Extracts the `{name}` wildcard placeholders from an HTTP path template, in order.
+/// Hand-rolled scan (same no-new-deps style as [`parse_http`]): an unclosed `{` is
+/// silently dropped — a malformed template surfaces via the placeholder/`path_args`
+/// mismatch check, not here.
+fn parse_path_placeholders(path: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut current: Option<String> = None;
+    for c in path.chars() {
+        match c {
+            '{' => current = Some(String::new()),
+            '}' => {
+                if let Some(name) = current.take() {
+                    out.push(name);
+                }
+            }
+            _ => {
+                if let Some(cur) = current.as_mut() {
+                    cur.push(c);
+                }
+            }
+        }
+    }
+    out
+}
+
 // ---------------------------------------------------------------------------
 // Method model
 // ---------------------------------------------------------------------------
@@ -328,6 +353,54 @@ fn build_method(
             wildcard,
             rename,
         });
+    }
+
+    // Compile-time validation of the `#[http(...)]` mappings (finding 9). All the
+    // data is in scope here: bogus keys and placeholder/`path_args` drift are inert
+    // at runtime (a bad key is never `.get()`-hit; a stray `{wildcard}` decodes to
+    // "" via `unwrap_or_default`), so catch them as ordinary compile errors instead.
+    if let Some(b) = http_ref {
+        let param_names: std::collections::HashSet<String> =
+            args.iter().map(|a| a.ident.to_string()).collect();
+        // (1) Every `path_args`/`body_names` KEY must name a real (marshalled) param.
+        // The leading `Identity` param is stripped and excluded here, so mapping it
+        // is correctly rejected — identity is never sourced from path or body.
+        for k in b.path_args.keys().chain(b.body_names.keys()) {
+            if !param_names.contains(k) {
+                return Err(syn::Error::new(
+                    sig.span(),
+                    format!(
+                        "#[http(...)] path_args/body_names entry {k:?} names no parameter of method `{name}`"
+                    ),
+                ));
+            }
+        }
+        // (2) The `{name}` placeholders in the path template and the `path_args`
+        // VALUES must be in exact bijection: every placeholder is fed by a
+        // `path_args` value, and every `path_args` value fills a placeholder.
+        let placeholders = parse_path_placeholders(&b.path);
+        let values: std::collections::HashSet<&String> = b.path_args.values().collect();
+        for ph in &placeholders {
+            if !values.contains(ph) {
+                return Err(syn::Error::new(
+                    sig.span(),
+                    format!(
+                        "#[http(...)] path template of `{name}` has placeholder {{{ph}}} with no matching path_args value"
+                    ),
+                ));
+            }
+        }
+        for v in b.path_args.values() {
+            if !placeholders.contains(v) {
+                return Err(syn::Error::new(
+                    sig.span(),
+                    format!(
+                        "#[http(...)] path_args value {v:?} of `{name}` does not appear as a {{...}} placeholder in path {:?}",
+                        b.path
+                    ),
+                ));
+            }
+        }
     }
 
     let value_ty = result_ok_type(&sig.output)?;

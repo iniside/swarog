@@ -1,0 +1,5 @@
+error: #[http(...)] path template of `delete` has placeholder {id} with no matching path_args value
+  --> tests/compile_fail/placeholder_mismatch.rs:20:5
+   |
+20 |     async fn delete(&self, identity: Identity, character_id: String) -> Result<(), Error>;
+   |     ^^^^^

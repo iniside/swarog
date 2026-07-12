@@ -1,0 +1,5 @@
+error: #[http(...)] path_args/body_names entry "character" names no parameter of method `delete`
+  --> tests/compile_fail/bad_path_args_key.rs:19:5
+   |
+19 |     async fn delete(&self, identity: Identity, character_id: String) -> Result<(), Error>;
+   |     ^^^^^

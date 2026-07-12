@@ -1,0 +1,5 @@
+error: #[http(...)] path_args/body_names entry "item" names no parameter of method `grant`
+  --> tests/compile_fail/bad_body_names_key.rs:19:5
+   |
+19 |     async fn grant(&self, identity: Identity, item_id: String, qty: i64) -> Result<(), Error>;
+   |     ^^^^^
