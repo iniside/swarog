@@ -49,7 +49,8 @@ mod tests;
 const GATEWAY_CRATE: &str = "gateway";
 /// Tool-owned conformance policy must never enter a shipping process graph.
 const CONFORMANCE_POLICY_PACKAGE: &str = "conformancecheck";
-const SLOT_CONSTRUCTOR: &str = "Slot::new(";
+const SLOT_CONSTRUCTOR: &str = "contrib::Slot::new(";
+const BARE_SLOT_CONSTRUCTOR: &str = "Slot::new(";
 const SLOT_OWNER_FILES: [&str; 6] = [
     "api/admin/api/src/lib.rs",
     "core/opsapi/src/lib.rs",
@@ -1153,22 +1154,29 @@ fn slot_constructor_violations(rel: &str, text: &str) -> Vec<String> {
     if SLOT_OWNER_FILES.contains(&rel) {
         return Vec::new();
     }
+    // Deliberately a cheap exact-token tripwire, not Rust parsing or alias analysis:
+    // whitespace-split spellings and renamed imports are out of scope. The qualified
+    // constructor is forbidden workspace-wide; the bare imported spelling is checked
+    // only where no canonical slot may be declared at all (modules and cmd roots).
+    let check_bare = rel.starts_with("modules/") || rel.starts_with("cmd/");
     text.lines()
         .enumerate()
         .filter(|(_, line)| {
             let trimmed = line.trim_start();
             !trimmed.starts_with("//")
                 && !trimmed.starts_with('"')
-                && line.match_indices(SLOT_CONSTRUCTOR).any(|(start, _)| {
-                    line[..start]
-                        .chars()
-                        .next_back()
-                        .is_none_or(|ch| !(ch == '_' || ch.is_alphanumeric()))
-                })
+                && (line.contains(SLOT_CONSTRUCTOR)
+                    || (check_bare
+                        && line.match_indices(BARE_SLOT_CONSTRUCTOR).any(|(start, _)| {
+                            line[..start]
+                                .chars()
+                                .next_back()
+                                .is_none_or(|ch| !(ch == '_' || ch.is_alphanumeric()))
+                        })))
         })
         .map(|(line, _)| {
             format!(
-                "{rel}:{}: `{SLOT_CONSTRUCTOR}` constructs a canonical contribution slot \
+                "{rel}:{}: constructs a canonical contribution slot \
                  outside its owning contract/core file — use the owner's exported slot constant",
                 line + 1
             )

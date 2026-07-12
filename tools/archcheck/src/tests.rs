@@ -925,13 +925,34 @@ fn module_slot_constructor_is_a_violation() {
 }
 
 #[test]
-fn imported_slot_constructor_is_a_violation() {
+fn qualified_slot_constructor_remains_a_workspace_wide_violation() {
     let findings = super::slot_constructor_violations(
-        "modules/inventory/src/lib.rs",
-        "use contrib::Slot;\nconst BAD: Slot<u32> = Slot::new(\"bad\");",
+        "core/bus/src/tests.rs",
+        "const BAD: contrib::Slot<u32> = contrib::Slot::new(\"bad\");",
     );
     assert_eq!(findings.len(), 1, "{findings:?}");
-    assert!(findings[0].contains("modules/inventory/src/lib.rs:2"));
+    assert!(findings[0].contains("core/bus/src/tests.rs:1"));
+}
+
+#[test]
+fn imported_slot_constructor_is_a_violation_in_modules_and_cmd() {
+    for rel in ["modules/inventory/src/lib.rs", "cmd/server/src/lib.rs"] {
+        let findings = super::slot_constructor_violations(
+            rel,
+            "use contrib::Slot;\nconst BAD: Slot<u32> = Slot::new(\"bad\");",
+        );
+        assert_eq!(findings.len(), 1, "{rel}: {findings:?}");
+        assert!(findings[0].contains(&format!("{rel}:2")), "{findings:?}");
+    }
+}
+
+#[test]
+fn contribs_own_bare_constructor_test_seam_is_not_flagged() {
+    let findings = super::slot_constructor_violations(
+        "core/contrib/src/tests.rs",
+        "const TEST_SLOT: Slot<u32> = Slot::new(\"test\");",
+    );
+    assert!(findings.is_empty(), "{findings:?}");
 }
 
 #[test]
