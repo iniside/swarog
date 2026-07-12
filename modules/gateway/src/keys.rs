@@ -39,7 +39,6 @@ const KEY_CACHE_TTL: Duration = Duration::from_secs(5);
 /// (`min_by_key` over insertion time/sequence, O(n)) — an attacker spraying distinct
 /// garbage keys cannot grow memory without bound.
 const KEY_CACHE_MAX_ENTRIES: usize = 10_000;
-const KEY_MAX_BYTES: usize = 256;
 const KEY_LOOKUP_MAX_IN_FLIGHT: usize = 64;
 
 struct CacheEntry {
@@ -268,9 +267,11 @@ impl RealKeyVerifier {
 #[async_trait]
 impl KeyVerifier for RealKeyVerifier {
     async fn lookup(&self, key: &str) -> Result<Option<KeyRecord>, LookupUnavailable> {
-        if key.len() > KEY_MAX_BYTES {
+        if key.len() > apikeysapi::MAX_KEY_BYTES {
             // An over-length string is definitively NOT a key (the store never holds
-            // one) — a credential verdict (→ 401), not an outage.
+            // one — apikeysapi::MAX_KEY_BYTES is the same limit enforced at creation
+            // time, `modules/apikeys/src/store.rs::insert_tx` + its DDL CHECK) — a
+            // credential verdict (→ 401), not an outage.
             return Ok(None);
         }
         if let Some(record) = self.cached(key) {

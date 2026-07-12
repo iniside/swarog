@@ -57,6 +57,24 @@ fn check_name(name: &str) -> anyhow::Result<()> {
     }
 }
 
+/// Rejects a key secret longer than the shared [`apikeysapi::MAX_KEY_BYTES`] contract
+/// (BYTES, not chars) — the same limit `RealKeyVerifier::lookup`
+/// (`modules/gateway/src/keys.rs`) treats an over-length string as definitively unknown.
+/// Checked here, in phase 1, so an over-length add-row is rejected before ANY write,
+/// matching the store's own `insert_tx` guard (defense-in-depth, not the sole gate).
+fn check_key_length(key: &str) -> anyhow::Result<()> {
+    if key.len() > apikeysapi::MAX_KEY_BYTES {
+        anyhow::bail!(
+            "apikeys: key is {} bytes, exceeding apikeysapi::MAX_KEY_BYTES ({} bytes) — it would \
+             always be rejected by the gateway's key verifier",
+            key.len(),
+            apikeysapi::MAX_KEY_BYTES,
+        )
+    } else {
+        Ok(())
+    }
+}
+
 /// KPI row: total keys and the active (non-revoked) subset.
 fn build_kpis(rows: &[KeyRow]) -> Vec<adminapi::Kpi> {
     let active = rows.iter().filter(|r| !r.revoked).count();
@@ -231,6 +249,7 @@ pub(crate) async fn apply_edit(svc: &Service, values: adminapi::Params) -> anyho
     let new_policy = adminapi::param(&values, "_new_policy");
     if !new_name.is_empty() && !new_key.is_empty() && !new_policy.is_empty() {
         check_name(new_name)?;
+        check_key_length(new_key)?;
         check_policy(new_policy)?;
         planned.push(PlannedWrite::Insert {
             name: new_name.to_string(),

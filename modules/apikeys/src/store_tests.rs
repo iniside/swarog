@@ -124,6 +124,26 @@ async fn insert_rejects_underscore_prefixed_name() {
 }
 
 #[tokio::test]
+async fn insert_rejects_over_length_key() {
+    let Some(pool) = test_pool().await else { return };
+    let store = Store { pool: pool.clone() };
+    let base = unique_name(&pool).await;
+    let name = format!("{base}-a");
+    // One byte over the shared apikeysapi::MAX_KEY_BYTES contract.
+    let key = "x".repeat(apikeysapi::MAX_KEY_BYTES + 1);
+
+    let err = store.insert(&name, &key, "full").await.unwrap_err();
+    assert!(err.to_string().contains("MAX_KEY_BYTES"), "got: {err}");
+    assert_eq!(
+        store.lookup(&key).await.unwrap(),
+        None,
+        "rejected insert must not have written a row"
+    );
+
+    cleanup(&pool, &base).await;
+}
+
+#[tokio::test]
 async fn seed_upsert_is_idempotent() {
     let Some(pool) = test_pool().await else { return };
     let store = Store { pool: pool.clone() };

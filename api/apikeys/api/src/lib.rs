@@ -14,6 +14,17 @@ use opsapi::Error;
 use rpc_macro::rpc;
 use serde::{Deserialize, Serialize};
 
+/// The single shared key-length contract, enforced at BOTH ends of the split this
+/// constant closes: the gateway's `RealKeyVerifier::lookup` (`modules/gateway/src/keys.rs`,
+/// a hash-flood/DoS guard — an over-length string is definitively not a key, `Ok(None)`,
+/// never a store round-trip) and the apikeys store's creation paths
+/// (`modules/apikeys/src/store.rs::insert_tx`, plus the DDL `CHECK (octet_length(key) <=
+/// MAX_KEY_BYTES)` in `modules/apikeys/src/lib.rs` and the admin form's validation phase
+/// in `modules/apikeys/src/admin.rs`) — so a key can never be CREATED longer than the
+/// gateway will ever accept, closing the "active key that always 401s" gap. This is a
+/// BYTE count (`str::len()`), not a character count.
+pub const MAX_KEY_BYTES: usize = 256;
+
 /// One resolved API key: the client-class `name` it identifies and the `policy` that
 /// governs which wire methods it may call. The policy is either the literal string
 /// `full` (every method) or a comma-separated list of wire method names (e.g.

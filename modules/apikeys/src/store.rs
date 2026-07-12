@@ -87,6 +87,23 @@ impl Store {
                     .into(),
             ));
         }
+        // Byte length, matching the gateway's `RealKeyVerifier::lookup` check
+        // (`modules/gateway/src/keys.rs`) — both sides import the single contract
+        // constant `apikeysapi::MAX_KEY_BYTES` so a key can never be created longer
+        // than the gateway will ever accept it (the DDL CHECK on `apikeys.keys.key`
+        // is the belt-and-suspenders twin of this guard).
+        if key.len() > apikeysapi::MAX_KEY_BYTES {
+            return Err(sqlx::Error::Configuration(
+                format!(
+                    "apikeys: key for {name:?} is {} bytes, exceeding apikeysapi::MAX_KEY_BYTES \
+                     ({} bytes) — a key longer than this limit would always be rejected by the \
+                     gateway's key verifier",
+                    key.len(),
+                    apikeysapi::MAX_KEY_BYTES,
+                )
+                .into(),
+            ));
+        }
         sqlx::query("INSERT INTO apikeys.keys (name, key, policy) VALUES ($1, $2, $3)")
             .bind(name)
             .bind(key)
@@ -154,6 +171,20 @@ impl Store {
     /// any stray `revoked_at`, so a revoke on a shared dev DB can't permanently poison
     /// the harness.
     pub async fn upsert_seed(&self, name: &str, key: &str, policy: &str) -> Result<(), sqlx::Error> {
+        // Same byte-length guard as `insert_tx` — this is a write path too (self-healing
+        // upsert), so it must not become a back door around the shared
+        // `apikeysapi::MAX_KEY_BYTES` contract.
+        if key.len() > apikeysapi::MAX_KEY_BYTES {
+            return Err(sqlx::Error::Configuration(
+                format!(
+                    "apikeys: seed key for {name:?} is {} bytes, exceeding apikeysapi::MAX_KEY_BYTES \
+                     ({} bytes)",
+                    key.len(),
+                    apikeysapi::MAX_KEY_BYTES,
+                )
+                .into(),
+            ));
+        }
         sqlx::query(
             "INSERT INTO apikeys.keys (name, key, policy) VALUES ($1, $2, $3) \
              ON CONFLICT (name) DO UPDATE \

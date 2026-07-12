@@ -36,9 +36,16 @@ use crate::store::Store;
 const SCHEMA_DDL: &str = r#"
 CREATE SCHEMA IF NOT EXISTS apikeys;
 
+-- octet_length, NOT length(): the shared contract (`apikeysapi::MAX_KEY_BYTES`, also
+-- enforced at `insert_tx`/`upsert_seed` and the admin form) is a BYTE count, matching
+-- the gateway's `key.len()` check (`modules/gateway/src/keys.rs`) — `length()` counts
+-- characters, so a multibyte key <=256 chars but >256 bytes would slip past a
+-- char-count CHECK and re-open the exact split this contract closes. Defense-in-depth
+-- only (the store already rejects in Rust); fresh-boot only per the wipe policy — an
+-- existing dev DB needs `DROP SCHEMA apikeys CASCADE` (or a full wipe) to pick this up.
 CREATE TABLE IF NOT EXISTS apikeys.keys (
 	name       text PRIMARY KEY,
-	key        text        UNIQUE NOT NULL,
+	key        text        UNIQUE NOT NULL CHECK (octet_length(key) <= 256),
 	policy     text        NOT NULL,
 	created_at timestamptz NOT NULL DEFAULT now(),
 	revoked_at timestamptz
