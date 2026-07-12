@@ -83,6 +83,18 @@ async fn retention_liveness_honors_subsecond_threshold_precision() {
     assert!(!liveness.retention_stalled(Duration::from_millis(1500)));
 }
 
+#[test]
+fn retention_timestamp_encoding_preserves_sentinel_and_exact_boundary() {
+    assert!(!retention_age_exceeds(0, u64::MAX - 1, Duration::from_millis(1)));
+
+    let encoded = encode_retention_millis(10);
+    assert_eq!(encoded, 11);
+    assert!(!retention_age_exceeds(encoded, 510, Duration::from_millis(500)));
+    assert!(retention_age_exceeds(encoded, 511, Duration::from_millis(500)));
+
+    assert_eq!(encode_retention_millis(u64::MAX - 1), u64::MAX);
+}
+
 /// `enqueue_tx` appends to the V2 log on the caller's tx: the row carries the
 /// contract's topic + version and commits with the domain tx.
 #[tokio::test]

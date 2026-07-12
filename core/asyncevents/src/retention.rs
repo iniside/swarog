@@ -82,21 +82,33 @@ pub(crate) fn sweep_errors() -> &'static IntCounter {
 /// Parse the retention interval once while constructing the plane and derive its
 /// readiness threshold from the same authoritative value. The env syntax is a
 /// single Go-style unit (`1h`/`30m`/`45s`/`500ms`) or bare seconds; unset uses
-/// [`DEFAULT_INTERVAL`]. Malformed, zero, and overflowing values fail startup.
+/// [`DEFAULT_INTERVAL`]. Malformed values retain the historical default fallback;
+/// zero and overflowing values fail startup.
 impl Config {
     pub(crate) fn from_env() -> anyhow::Result<Config> {
-        Self::from_value(std::env::var("EVENTS_HOUSEKEEP_INTERVAL").ok().as_deref())
+        Self::from_var_result(std::env::var("EVENTS_HOUSEKEEP_INTERVAL"))
+    }
+
+    fn from_var_result(value: Result<String, std::env::VarError>) -> anyhow::Result<Config> {
+        match value {
+            Ok(value) => Self::from_value(Some(&value)),
+            Err(std::env::VarError::NotPresent) => Self::from_value(None),
+            // Present-but-non-Unicode is malformed, not absent. The historical
+            // policy for malformed input is the default fallback.
+            Err(std::env::VarError::NotUnicode(_)) => Self::from_value(Some("")),
+        }
     }
 
     pub(crate) fn from_value(value: Option<&str>) -> anyhow::Result<Config> {
         let interval = match value {
             None => DEFAULT_INTERVAL,
-            Some(value) => parse_go_duration(value).ok_or_else(|| {
-                anyhow::anyhow!(
-                    "EVENTS_HOUSEKEEP_INTERVAL={value:?} is invalid; expected a positive \
-                     single-unit duration such as 1h, 30m, 45s, 500ms, or bare seconds"
-                )
-            })?,
+            Some(value) => match parse_go_duration(value) {
+                Ok(Some(interval)) => interval,
+                Ok(None) => DEFAULT_INTERVAL,
+                Err(()) => anyhow::bail!(
+                    "EVENTS_HOUSEKEEP_INTERVAL={value:?} overflows its duration unit"
+                ),
+            },
         };
         if interval.is_zero() {
             anyhow::bail!(
@@ -110,6 +122,12 @@ impl Config {
                  retention staleness threshold overflowed"
             )
         })?;
+        if stall_after.as_millis() > u128::from(u64::MAX) {
+            anyhow::bail!(
+                "EVENTS_HOUSEKEEP_INTERVAL={value:?} is too large: its 3x retention \
+                 staleness threshold does not fit the u64 millisecond liveness clock"
+            );
+        }
         Ok(Config { interval, stall_after })
     }
 }
@@ -127,31 +145,40 @@ pub(crate) static RETENTION_PANIC_ONCE: std::sync::atomic::AtomicBool =
 /// Restored from the pre-cutover housekeeping helper; the plane's other knob
 /// ([`crate::worker`]) has its own copy without `h` (a delivery timeout in hours is
 /// nonsensical).
-fn parse_go_duration(s: &str) -> Option<Duration> {
+fn parse_number(s: &str) -> Result<Option<u64>, ()> {
+    match s.trim().parse::<u64>() {
+        Ok(value) => Ok(Some(value)),
+        Err(err)
+            if matches!(
+                err.kind(),
+                std::num::IntErrorKind::PosOverflow | std::num::IntErrorKind::NegOverflow
+            ) =>
+        {
+            Err(())
+        }
+        Err(_) => Ok(None),
+    }
+}
+
+fn parse_go_duration(s: &str) -> Result<Option<Duration>, ()> {
     let s = s.trim();
     if let Some(n) = s.strip_suffix("ms") {
-        return n.trim().parse::<u64>().ok().map(Duration::from_millis);
+        return Ok(parse_number(n)?.map(Duration::from_millis));
     }
     if let Some(n) = s.strip_suffix('h') {
-        return n
-            .trim()
-            .parse::<u64>()
-            .ok()?
-            .checked_mul(3600)
-            .map(Duration::from_secs);
+        return parse_number(n)?
+            .map(|hours| hours.checked_mul(3600).map(Duration::from_secs).ok_or(()))
+            .transpose();
     }
     if let Some(n) = s.strip_suffix('m') {
-        return n
-            .trim()
-            .parse::<u64>()
-            .ok()?
-            .checked_mul(60)
-            .map(Duration::from_secs);
+        return parse_number(n)?
+            .map(|minutes| minutes.checked_mul(60).map(Duration::from_secs).ok_or(()))
+            .transpose();
     }
     if let Some(n) = s.strip_suffix('s') {
-        return n.trim().parse::<u64>().ok().map(Duration::from_secs);
+        return Ok(parse_number(n)?.map(Duration::from_secs));
     }
-    s.parse::<u64>().ok().map(Duration::from_secs)
+    Ok(parse_number(s)?.map(Duration::from_secs))
 }
 
 /// The retention task: sweep on a ticker until stopped. The first sweep lands one

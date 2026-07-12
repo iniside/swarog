@@ -13,7 +13,7 @@ const DEFAULT_DSN: &str =
     "postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable";
 
 /// The sweep interval and readiness threshold are one checked configuration:
-/// malformed, zero, unit-overflowing, and 3x-overflowing values fail startup.
+/// malformed input falls back, while zero and every overflow class fail startup.
 #[test]
 fn housekeep_config_is_strict_checked_and_authoritative() {
     let default = Config::from_value(None).unwrap();
@@ -29,8 +29,11 @@ fn housekeep_config_is_strict_checked_and_authoritative() {
     }
 
     for garbage in ["nonsense", "", "  ", "-1", "1.5h", "5 hours"] {
-        let err = Config::from_value(Some(garbage)).unwrap_err().to_string();
-        assert!(err.contains("EVENTS_HOUSEKEEP_INTERVAL"), "{garbage:?}: {err}");
+        assert_eq!(
+            Config::from_value(Some(garbage)).unwrap(),
+            default,
+            "malformed {garbage:?} must retain the default fallback"
+        );
     }
     for zero in ["0", "0s", "0ms", "0m", "0h", " 0s "] {
         let err = Config::from_value(Some(zero)).unwrap_err().to_string();
@@ -43,6 +46,23 @@ fn housekeep_config_is_strict_checked_and_authoritative() {
     let triple_overflow = format!("{}s", u64::MAX / 3 + 1);
     let err = Config::from_value(Some(&triple_overflow)).unwrap_err().to_string();
     assert!(err.contains("EVENTS_HOUSEKEEP_INTERVAL"), "{err}");
+
+    let max_clock_interval = u64::MAX / 3;
+    let max_clock = Config::from_value(Some(&format!("{max_clock_interval}ms"))).unwrap();
+    assert_eq!(max_clock.stall_after.as_millis(), u128::from(max_clock_interval) * 3);
+    let clock_overflow = format!("{}ms", max_clock_interval + 1);
+    let err = Config::from_value(Some(&clock_overflow)).unwrap_err().to_string();
+    assert!(err.contains("u64 millisecond liveness clock"), "{err}");
+
+    assert_eq!(
+        Config::from_var_result(Err(std::env::VarError::NotPresent)).unwrap(),
+        default
+    );
+    assert_eq!(
+        Config::from_var_result(Err(std::env::VarError::NotUnicode("present".into()))).unwrap(),
+        default,
+        "present non-Unicode input is malformed and follows the default fallback"
+    );
 }
 
 async fn test_pool() -> Option<PgPool> {
@@ -539,10 +559,10 @@ async fn sweep_failure_increments_error_counter() {
 /// Interval parsing: Go-style units, bare seconds, and default fallback.
 #[test]
 fn interval_parses_go_durations() {
-    assert_eq!(parse_go_duration("1h"), Some(Duration::from_secs(3600)));
-    assert_eq!(parse_go_duration("30m"), Some(Duration::from_secs(1800)));
-    assert_eq!(parse_go_duration("45s"), Some(Duration::from_secs(45)));
-    assert_eq!(parse_go_duration("500ms"), Some(Duration::from_millis(500)));
-    assert_eq!(parse_go_duration("90"), Some(Duration::from_secs(90)));
-    assert_eq!(parse_go_duration("nonsense"), None);
+    assert_eq!(parse_go_duration("1h"), Ok(Some(Duration::from_secs(3600))));
+    assert_eq!(parse_go_duration("30m"), Ok(Some(Duration::from_secs(1800))));
+    assert_eq!(parse_go_duration("45s"), Ok(Some(Duration::from_secs(45))));
+    assert_eq!(parse_go_duration("500ms"), Ok(Some(Duration::from_millis(500))));
+    assert_eq!(parse_go_duration("90"), Ok(Some(Duration::from_secs(90))));
+    assert_eq!(parse_go_duration("nonsense"), Ok(None));
 }

@@ -98,7 +98,23 @@ fn coarse_now_secs() -> u64 {
 
 fn coarse_now_millis() -> u64 {
     static BASE: OnceLock<Instant> = OnceLock::new();
-    u64::try_from(BASE.get_or_init(Instant::now).elapsed().as_millis()).unwrap_or(u64::MAX)
+    BASE.get_or_init(Instant::now)
+        .elapsed()
+        .as_millis()
+        .min(u128::from(u64::MAX - 1)) as u64
+}
+
+fn encode_retention_millis(now_millis: u64) -> u64 {
+    now_millis
+        .checked_add(1)
+        .expect("retention clock is capped below u64::MAX")
+}
+
+fn retention_age_exceeds(encoded_last: u64, now_millis: u64, max_age: Duration) -> bool {
+    let Some(last_millis) = encoded_last.checked_sub(1) else {
+        return false;
+    };
+    u128::from(now_millis.saturating_sub(last_millis)) > max_age.as_millis()
 }
 
 /// A cloneable worker-health probe: [`Liveness::dead`] is flipped once if any
@@ -178,20 +194,21 @@ impl Liveness {
         if self.stopping.load(Ordering::SeqCst) {
             return false;
         }
-        let last = self.retention_ok_millis.load(Ordering::SeqCst);
-        if last == 0 {
-            return false;
-        }
-        u128::from(coarse_now_millis().saturating_sub(last)) > max_age.as_millis()
+        retention_age_exceeds(
+            self.retention_ok_millis.load(Ordering::SeqCst),
+            coarse_now_millis(),
+            max_age,
+        )
     }
 
     /// Stamps "healthy retention sweep now". `Plane::start` seeds it (the first
     /// sweep lands one housekeep interval in, far past HTTP serving — age must
     /// start at 0, not "infinite"); [`retention::run`] stamps it after every
-    /// `Ok` sweep. `max(1)` because `0` is the "never seeded" sentinel.
+    /// `Ok` sweep. The stored timestamp is encoded as `now + 1` because `0` is
+    /// the "never seeded" sentinel; reads decode it before age comparison.
     pub(crate) fn mark_retention_ok(&self) {
         self.retention_ok_millis
-            .store(coarse_now_millis().max(1), Ordering::SeqCst);
+            .store(encode_retention_millis(coarse_now_millis()), Ordering::SeqCst);
     }
 }
 
