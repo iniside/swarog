@@ -29,7 +29,17 @@
 //!    op method also has a `LocalOp` invoker (nothing dispatches Remote there).
 //! 3. **SPLIT SERVE-PARITY** — every method gateway-svc fronts is actually served on
 //!    some domain svc's internal edge (`methods(ops(gateway-svc)) ⊆ ⋃ edge(svc)`),
-//!    catching "gate only the front" half-fixes.
+//!    catching "gate only the front" half-fixes. This is set-membership only —
+//!    routecheck no longer needs to (and does not) check for a DUPLICATE edge
+//!    method across a process's registrations, because that uniqueness is now a
+//!    guarantee enforced by the authority itself: `edge::Server::handle`/
+//!    `handle_identity` `panic!` the moment a second capability claims a method
+//!    already registered (remediation round 4, Step 1). Since routecheck builds
+//!    each profile's real edge registrations through the same `Server::methods()`
+//!    path production uses, a duplicate inside one process's `EDGE_SLOT`
+//!    contributions PANICS mid-run of routecheck's own profile build — a loud
+//!    backtrace surfacing from what looks like a "static checker" is the
+//!    intended failure mode here, not a bug in routecheck.
 //!
 //! ## Env configs (the gate matrix)
 //! Both invariant sets are asserted under TWO env configs, sequentially:
@@ -58,13 +68,19 @@ use opsapi::Operation;
 const DEFAULT_DSN: &str =
     "postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable";
 
-/// The dev/feature gate env vars read during `register`/`init` that historically
-/// gated (or could plausibly gate) which operations a module contributes, paired
-/// with their "on" values. The check asserts route parity with ALL of them unset
-/// (the fail-closed default) and ALL of them set — a contribution conditional on
-/// any of these diverges the two front sets in at least one config and fails.
-/// `EPIC_CLIENT_ID` needs only presence (the OIDC verifier constructs lazily, no
-/// I/O); the dummy value never dials anything in these two phases.
+/// An explicit, hand-curated allowlist of the dev/feature gate env vars read
+/// during `register`/`init` that historically gated (or could plausibly gate)
+/// which operations a module contributes, paired with their "on" values. This
+/// list is NOT derived from the source tree — it is not "every env config",
+/// it is exactly the entries below. The check asserts route parity with ALL of
+/// them unset (the fail-closed default) and ALL of them set — a contribution
+/// conditional on any of these diverges the two front sets in at least one
+/// config and fails. Adding a new route-gating env var read in a module's
+/// `register`/`init` REQUIRES adding it here — routecheck cannot discover it on
+/// its own (see the add-game-module skill's module checklist, which carries the
+/// matching reminder). `EPIC_CLIENT_ID` needs only presence (the OIDC verifier
+/// constructs lazily, no I/O); the dummy value never dials anything in these
+/// two phases.
 const GATES: &[(&str, &str)] = &[
     ("ACCOUNTS_DEV_AUTH", "1"),
     ("INVENTORY_DEV_GRANT", "1"),
