@@ -250,8 +250,16 @@ impl Module for Admin {
 
     /// First I/O: a zero-user table is a WARNED boot (the operator runs
     /// `./install.sh` / `adminctl create-user`), never a startup failure — the old
-    /// `ADMIN_USER` fail-closed env gate is gone.
+    /// `ADMIN_USER` fail-closed env gate is gone. Also forces the argon2
+    /// `DUMMY_HASH` LazyLock on a `spawn_blocking` thread (#8: first I/O/CPU
+    /// belongs here), so the first unknown-user login never pays the 64 MiB
+    /// argon2id init cost on an async Tokio worker.
     async fn start(&self, _ctx: &Context) -> anyhow::Result<()> {
+        tokio::task::spawn_blocking(|| {
+            std::sync::LazyLock::force(&DUMMY_HASH);
+        })
+        .await?;
+
         let deps = self.deps()?;
         let (n,): (i64,) = sqlx::query_as("SELECT count(*) FROM admin.users")
             .fetch_one(&deps.pool)
@@ -639,6 +647,13 @@ fn new_token() -> String {
 /// submitted password is compared against the hash of a fixed internal string.
 static DUMMY_HASH: LazyLock<String> =
     LazyLock::new(|| password::hash_password("admin-timing-equalizer").expect("static argon2 hash"));
+
+/// Test-only: exposes this module's argon2 cost parameters so `cmd/server`'s
+/// cross-module parity test can assert accounts' and admin's security-cost twins
+/// never drift silently.
+pub fn argon2_params_for_parity_test() -> (u32, u32, u32, usize) {
+    password::argon2_params()
+}
 
 /// The `Set-Cookie` value minting a session (exact flags, no cookie-builder dep):
 /// HttpOnly + SameSite=Strict + Path=/admin + Max-Age=12h, `Secure` per the knob.

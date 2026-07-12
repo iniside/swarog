@@ -50,3 +50,6 @@ pub fn modules(
         Box::new(gw),                            // HTTP + player QUIC front, auth-once (real accounts sessions)
     ]
 }
+
+#[cfg(test)]
+mod tests;

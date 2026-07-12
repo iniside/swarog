@@ -45,3 +45,10 @@ pub fn verify_password(encoded: &str, pw: &str) -> bool {
     };
     Argon2::default().verify_password(pw.as_bytes(), &parsed).is_ok()
 }
+
+/// Test-only: exposes this module's argon2 cost parameters (memory KiB, time,
+/// parallelism, output key length) so `cmd/server`'s cross-module parity test can
+/// assert accounts' and admin's security-cost twins never drift silently.
+pub(crate) fn argon2_params() -> (u32, u32, u32, usize) {
+    (ARGON_MEMORY_KIB, ARGON_TIME, ARGON_THREADS, ARGON_KEY_LEN)
+}

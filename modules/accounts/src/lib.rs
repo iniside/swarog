@@ -679,6 +679,24 @@ impl Module for Accounts {
         );
         Ok(())
     }
+
+    /// First I/O/CPU (#8): forces the argon2 `DUMMY_HASH` LazyLock here, on a
+    /// `spawn_blocking` thread, so the first unknown-user login never pays the
+    /// 64 MiB argon2id init cost on an async Tokio worker.
+    async fn start(&self, _ctx: &Context) -> anyhow::Result<()> {
+        tokio::task::spawn_blocking(|| {
+            std::sync::LazyLock::force(&DUMMY_HASH);
+        })
+        .await?;
+        Ok(())
+    }
+}
+
+/// Test-only: exposes this module's argon2 cost parameters so `cmd/server`'s
+/// cross-module parity test can assert accounts' and admin's security-cost twins
+/// never drift silently.
+pub fn argon2_params_for_parity_test() -> (u32, u32, u32, usize) {
+    password::argon2_params()
 }
 
 /// Truthiness mirrors the repo's `envBool` (`"1"`/`"true"`/`"on"`, case-insensitive);
