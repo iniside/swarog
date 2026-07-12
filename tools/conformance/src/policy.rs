@@ -40,7 +40,7 @@ pub fn entries() -> Vec<Entry> {
 
 pub fn input_policies() -> Vec<(InputKey, InputPolicy)> {
     use Exposure::{External, Wire};
-    use InputPolicy::{KnownGap, Opaque, Unrestricted, Validated};
+    use InputPolicy::{KnownGap, Opaque, Validated};
 
     let key = |method: &str, field: &str, exposure| InputKey {
         wire_method: method.to_owned(),
@@ -50,11 +50,11 @@ pub fn input_policies() -> Vec<(InputKey, InputPolicy)> {
     vec![
         (key("accounts.login", "email", External), Validated { cap: 320, basis: "accounts::valid_email_bytes is called by the production login path" }),
         (key("accounts.login", "password", External), Validated { cap: 1024, basis: "accounts::valid_password_bytes is called by the production login path" }),
-        (key("accounts.loginEpic", "id_token", External), Unrestricted { rationale: "provider-issued OIDC compact token; the configured Epic verifier validates its signed structure and issuer" }),
+        (key("accounts.loginEpic", "id_token", External), KnownGap { planned_cap: 65_536, remediation: "Step 17 adds the shared Epic token validator" }),
         (key("accounts.register", "displayName", External), KnownGap { planned_cap: 128, remediation: "Step 17 adds the shared display-name validator" }),
         (key("accounts.register", "email", External), Validated { cap: 320, basis: "accounts::valid_email_bytes is called by the production register path" }),
         (key("accounts.register", "password", External), Validated { cap: 1024, basis: "accounts::valid_password_bytes is called by the production register path" }),
-        (key("accounts.verifySession", "token", Wire), Opaque { rationale: "opaque session credential minted and resolved by accounts; it is not player-authored free text" }),
+        (key("accounts.verifySession", "token", Wire), KnownGap { planned_cap: 128, remediation: "Step 13 rejects oversized bearer tokens before SQL or remote lookup" }),
         (key("apikeys.lookupKey", "key", Wire), Validated { cap: apikeysapi::MAX_KEY_BYTES, basis: "gateway lookup and apikeys creation both enforce apikeysapi::MAX_KEY_BYTES" }),
         (key("characters.create", "class", External), KnownGap { planned_cap: 64, remediation: "Step 17 adds the shared character-class validator" }),
         (key("characters.create", "name", External), KnownGap { planned_cap: 128, remediation: "Step 17 adds the shared character-name validator" }),

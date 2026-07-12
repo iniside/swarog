@@ -6,7 +6,9 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use crate::model::{ArgonParams, CapCase, Convention, Entry, EnvCase, Fixture, Stance};
+use crate::model::{
+    ArgonParams, CapCase, Convention, Entry, EnvCase, Fixture, InputPolicy, Stance,
+};
 
 use crate::checks::{
     argon_parity_findings, completeness_findings, drift_findings, eval_cap_probe,
@@ -310,6 +312,30 @@ fn real_rpc_input_inventory_is_exactly_covered_and_matches_golden() {
     assert!(
         crate::input_inventory::golden_findings(&actual, &committed).is_empty(),
         "committed input golden is stale\nactual:\n{actual}"
+    );
+}
+
+#[test]
+fn real_input_policy_has_the_exact_eight_field_gaps() {
+    let gaps = crate::policy::input_policies()
+        .into_iter()
+        .filter_map(|(key, policy)| {
+            matches!(policy, InputPolicy::KnownGap { .. })
+                .then_some(crate::input_inventory::render_key(&key))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        gaps,
+        [
+            "accounts.loginEpic\tid_token\texternal",
+            "accounts.register\tdisplayName\texternal",
+            "accounts.verifySession\ttoken\twire",
+            "characters.create\tclass\texternal",
+            "characters.create\tname\texternal",
+            "match.report\tLoser\texternal",
+            "match.report\tReportId\texternal",
+            "match.report\tWinner\texternal",
+        ]
     );
 }
 
