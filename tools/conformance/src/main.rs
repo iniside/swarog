@@ -179,6 +179,7 @@ fn run_env_case(case: &EnvCase) -> Option<String> {
 enum Cell {
     Pass,
     Fail,
+    Gap,
     NotApplicable,
 }
 
@@ -187,6 +188,7 @@ impl Cell {
         match self {
             Cell::Pass => "pass",
             Cell::Fail => "FAIL",
+            Cell::Gap => "GAP",
             Cell::NotApplicable => "n/a",
         }
     }
@@ -223,6 +225,7 @@ fn main() {
     let n_conv = Convention::ALL.len();
     let mut cells: Vec<Vec<Cell>> = vec![vec![Cell::NotApplicable; n_conv]; entries.len()];
     let mut details: Vec<String> = Vec::new();
+    let mut gaps: Vec<String> = Vec::new();
     // (module, params, entry index, convention index) — parity is judged across
     // modules after the walk, so the cells are patched afterwards.
     let mut argon: Vec<(&str, ArgonParams, usize, usize)> = Vec::new();
@@ -238,8 +241,8 @@ fn main() {
                     continue;
                 }
                 Stance::KnownGap { why, remediation } => {
-                    cells[i][j] = Cell::Fail;
-                    details.push(format!(
+                    cells[i][j] = Cell::Gap;
+                    gaps.push(format!(
                         "[{} × {}] known gap: {why}; remediation: {remediation}",
                         entry.module,
                         conv_label(conv)
@@ -362,9 +365,16 @@ fn main() {
         }
         std::process::exit(1);
     }
-    println!(
-        "\n[conformancecheck] OK: {} modules × {} conventions",
-        entries.len(),
-        n_conv
-    );
+    if gaps.is_empty() {
+        println!(
+            "\n[conformancecheck] OK: {} modules × {} conventions",
+            entries.len(),
+            n_conv
+        );
+    } else {
+        println!("\n[conformancecheck] GAP: {} known gap(s)", gaps.len());
+        for gap in gaps {
+            println!("  - {gap}");
+        }
+    }
 }

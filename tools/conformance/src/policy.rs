@@ -282,12 +282,30 @@ fn leaderboard() -> Entry {
 }
 
 fn match_module() -> Entry {
-    all_na(
-        "match",
-        "match parses no process environment",
-        "ReportId has no byte cap today; this is a candidate for later adoption",
-        "match has no credential verifier",
-    )
+    Entry {
+        module: "match",
+        stances: vec![
+            (
+                Convention::EnvValidation,
+                na("match parses no process environment"),
+            ),
+            (
+                Convention::InputByteCaps,
+                Stance::KnownGap {
+                    why: "/match/report accepts wire-reachable ReportId, Winner, and Loser strings without enforced byte caps",
+                    remediation: "Step 17 adds shared production validators capping ReportId, winner, and loser at 128 bytes",
+                },
+            ),
+            (
+                Convention::InfraOutage503,
+                na("match has no credential verifier"),
+            ),
+            (
+                Convention::ArgonParity,
+                na("this module performs no password hashing"),
+            ),
+        ],
+    }
 }
 
 fn rating() -> Entry {

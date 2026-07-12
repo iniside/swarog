@@ -126,6 +126,30 @@ fn completeness_empty_why_fails() {
 }
 
 #[test]
+fn completeness_known_gap_requires_why_and_remediation() {
+    let mut entry = full_entry("m");
+    entry.stances[1] = (
+        Convention::InputByteCaps,
+        Stance::KnownGap {
+            why: "wire field is uncapped",
+            remediation: "add the shared validator",
+        },
+    );
+    assert!(completeness_findings(&[entry.clone()]).is_empty());
+
+    entry.stances[1] = (
+        Convention::InputByteCaps,
+        Stance::KnownGap {
+            why: "wire field is uncapped",
+            remediation: "",
+        },
+    );
+    let findings = completeness_findings(&[entry]);
+    assert_eq!(findings.len(), 1);
+    assert!(findings[0].contains("requires non-empty why and remediation"));
+}
+
+#[test]
 fn completeness_mismatched_fixture_variant_fails() {
     let mut e = full_entry("m");
     e.stances[1] = (
