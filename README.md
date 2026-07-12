@@ -139,13 +139,28 @@ cargo build --workspace
 cargo test --workspace          # unit + live-Postgres integration + proptests
 cargo run -p archcheck          # fortress dependency law
 cargo run -p topiccheck         # event topic drift
-./verify.sh                     # the tiered safety net (build, clippy, test,
-                                # audit, fortress, split-proof; --all / --slow)
+./verify.sh --fast              # forwards to verifyctl; --fast is the default
 ./split-proof.sh                # boots the real 12-process split + gateway,
                                 # asserts named end-to-end scenarios, then
                                 # re-runs the monolith for parity
-./run.sh                        # mint a dev CA + boot the split locally
+./run.sh up monolith            # forwards to devctl and stays foreground
 ```
+
+The four temporary `run.*`/`verify.*` compatibility scripts contain no orchestration;
+they pass their arguments unchanged to `devctl`/`verifyctl`. Legacy command mappings:
+
+| Previous command | Forwarder/new CLI command |
+|---|---|
+| `./run.sh` or `.\run.ps1` | `./run.sh up monolith` or `.\run.ps1 up monolith` |
+| `./run.sh split` | `./run.sh up split` |
+| `./run.sh microservices` | `./run.sh up microservices` (deprecated alias) |
+| `./run.sh --teardown` or `.\run.ps1 -Teardown` | `./run.sh down` or `.\run.ps1 down` |
+| `./verify.sh [--fast\|--all\|--slow] [--strict] [--no-install]` | unchanged |
+| `.\verify.ps1 -Fast/-All/-Slow/-Strict/-NoInstall` | `.\verify.ps1 --fast/--all/--slow/--strict/--no-install` |
+| `-BlessPublicApi` / `-BlessContractGolden` | `--bless-public-api` / `--bless-contract-golden` |
+
+Direct forms are `cargo run -p devctl -- up monolith`, `up split`, `status`, `down`,
+and `cargo run -p verifyctl -- --fast` (or `--all`/`--slow`, optionally `--strict`).
 
 `split-proof` is the heart of the repo's promise: it boots every domain service as
 a separate process (each with its HTTP port and internal QUIC edge), routes real
