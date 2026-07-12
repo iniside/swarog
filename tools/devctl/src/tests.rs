@@ -1,8 +1,9 @@
 use super::cli::{parse, Command, Topology};
 use super::control::{self, ControlServer};
-use super::supervisor::{service_specs, wait_for_terminal};
+use super::supervisor::{run_transient, service_specs, wait_for_terminal};
 use processctl::{
-    observe_process_identity, EnvironmentSnapshot, FleetState, FleetStatus, StateStore,
+    observe_process_identity, EnvironmentSnapshot, FleetState, FleetStatus, OutputDestination,
+    ProcessGroupPolicy, SpawnSpec, StateStore,
 };
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
@@ -212,6 +213,53 @@ fn down_waits_for_stopped_checkpoint_and_reports_failed_cleanup() {
             .unwrap_err()
             .to_string()
             .contains("shutdown failed")
+    );
+}
+
+#[test]
+fn transient_child_entry() {
+    if std::env::var_os("DEVCTL_TRANSIENT_CHILD").is_some() {
+        std::thread::sleep(Duration::from_secs(60));
+    }
+}
+
+#[test]
+fn transient_children_obey_cancellation_and_deadline() {
+    use std::collections::BTreeMap;
+    use std::ffi::OsString;
+    let spec = || SpawnSpec {
+        label: "devctl-transient-test".into(),
+        executable: std::env::current_exe().unwrap(),
+        args: ["--exact", "tests::transient_child_entry", "--nocapture"]
+            .into_iter()
+            .map(OsString::from)
+            .collect(),
+        env: BTreeMap::from([(
+            OsString::from("DEVCTL_TRANSIENT_CHILD"),
+            OsString::from("1"),
+        )]),
+        cwd: std::env::current_dir().unwrap(),
+        stdout: OutputDestination::Null,
+        stderr: OutputDestination::Null,
+        process_group: ProcessGroupPolicy::Owned,
+    };
+
+    let cancelled = AtomicBool::new(true);
+    let started = std::time::Instant::now();
+    assert!(
+        run_transient(spec(), None, &cancelled, Duration::from_secs(5))
+            .unwrap_err()
+            .to_string()
+            .contains("cancelled")
+    );
+    assert!(started.elapsed() < Duration::from_secs(2));
+
+    let running = AtomicBool::new(false);
+    assert!(
+        run_transient(spec(), None, &running, Duration::from_millis(50))
+            .unwrap_err()
+            .to_string()
+            .contains("timed out")
     );
 }
 

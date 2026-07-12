@@ -350,7 +350,7 @@ fn seed_admin(
         .context("seed development admin user")
 }
 
-fn run_transient(
+pub(crate) fn run_transient(
     spec: SpawnSpec,
     stdin: Option<&[u8]>,
     stop: &AtomicBool,
