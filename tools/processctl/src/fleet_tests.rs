@@ -125,6 +125,10 @@ fn hard_dependencies_must_appear_earlier_in_startup_order() {
 #[test]
 fn sanitized_build_path_contains_the_discovered_msvc_linker() {
     let env = build_environment();
+    assert_eq!(
+        env.get("ProgramFiles(x86)").map(String::as_str),
+        std::env::var("ProgramFiles(x86)").ok().as_deref()
+    );
     let path = env.get("PATH").expect("build environment has PATH");
     assert!(
         std::env::split_paths(path).any(|directory| directory.join("link.exe").is_file()),
