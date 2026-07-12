@@ -192,7 +192,7 @@ Make invalidation registration reject empty channel/name and duplicate callback 
 
 **Files/symbols:** `core/asyncevents/src/retention.rs`, `src/retention_tests.rs`, `src/lib.rs` (`Plane::start`, `Liveness`); `core/app/src/lib.rs` (`RETENTION_STALL_MAX`, readyz message).
 
-Parse the existing operator knob `EVENTS_HOUSEKEEP_INTERVAL` once into an internal config containing `interval` and checked `stall_after = interval * 3`. Do not rename or alias it. Use checked arithmetic for hour/minute/second multiplication and the final sum; reject zero and overflow as startup errors while preserving the documented default for an absent value. Preserve subsecond precision in readiness messages/tests.
+Parse the existing operator knob `EVENTS_HOUSEKEEP_INTERVAL` once into an internal config containing `interval` and checked `stall_after = interval * 3`. Do not rename or alias it. Use checked arithmetic for hour/minute/second multiplication and the final sum; reject zero and overflow as startup errors while preserving the documented default for an absent **or unparseable** value (`remediation-round3` decision m4c: garbage falls back, it does not brick startup). Preserve subsecond precision in readiness messages/tests.
 
 Change `sweep` to visit every topic, collect per-topic failures, and return an aggregate error after the pass. Increment the failed-sweep metric exactly once per failed pass, not once per topic and again in the caller. Refresh `retention_last_success` only on complete success. Move the derived threshold into plane/liveness state and remove the hardcoded app-level three hours and second environment authority.
 
