@@ -202,7 +202,7 @@ Change `sweep` to visit every topic, collect per-topic failures, and return an a
 
 **Files/symbols:** `modules/scheduler/src/lib.rs` (`DUE_SQL`, `tick`, task loop, `stop_tasks`); `modules/scheduler/src/tests.rs`.
 
-Add `ORDER BY name` to `DUE_SQL` and maintain the last actually attempted schedule name as the scheduler loop's cursor. On each stable due list, start at the first name lexicographically greater than the cursor, wrapping to the beginning; if the prior name disappeared, use that insertion point. Update the cursor when an actual schedule attempt begins. If the shared 30-second tick budget expires, break without advancing past unattempted rows. Preserve the dedicated connection, advisory-lock recheck, update + `emit_tx`, commit-before-unlock, and exactly-once behavior.
+Add `ORDER BY name COLLATE "C"` to `DUE_SQL` so PostgreSQL and Rust use the same bytewise/lexicographic ordering, then maintain the last actually attempted schedule name as the scheduler loop's cursor. On each stable due list, start at the first name lexicographically greater than the cursor, wrapping to the beginning; if the prior name disappeared, use that insertion point. Update the cursor when an actual schedule attempt begins. If the shared 30-second tick budget expires, break without advancing past unattempted rows. Preserve the dedicated connection, advisory-lock recheck, update + `emit_tx`, commit-before-unlock, and exactly-once behavior.
 
 When the four-second module stop grace expires, call `abort` and then await each same `JoinHandle`; accept cancellation as expected and log any other join error. Never discard an aborted handle while its cleanup may still run.
 
