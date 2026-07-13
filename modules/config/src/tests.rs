@@ -11,10 +11,10 @@ fn lazy_service() -> Arc<Service> {
     Arc::new(Service::new(PgPool::connect_lazy(DEFAULT_DSN).unwrap()))
 }
 
-/// Preloads the read cache (revision-agnostic — these unit tests only exercise the
-/// getters/admin render, never the revision gate).
+/// Preloads one coherent read-cache revision for unit tests that never touch the DB.
 fn preload(svc: &Service, entries: &[(&str, &str, &str)]) {
     let mut guard = svc.cache.write().unwrap();
+    guard.revision = 7;
     for (ns, key, val) in entries {
         guard
             .map
@@ -107,6 +107,18 @@ fn setting(ns: &str, key: &str, value: &str) -> Setting {
     }
 }
 
+fn form_values(form: &adminapi::Form) -> adminapi::Params {
+    form.fields
+        .iter()
+        .map(|field| (field.name.clone(), field.value.clone()))
+        .chain(
+            form.hidden
+                .iter()
+                .map(|field| (field.name.clone(), field.value.clone())),
+        )
+        .collect()
+}
+
 /// `register` provides the reader capability under `"config.reader"`, downcasting
 /// back to `Arc<dyn configapi::Config>`. No DB (lazy pool, no query).
 #[tokio::test]
@@ -151,6 +163,9 @@ async fn admin_render_builds_widgets_from_cache() {
     let form = content.form.as_ref().unwrap();
     assert_eq!(form.fields.len(), 3 + 3); // per-setting + add-new triple
     assert_eq!(form.fields[3].name, "_new_namespace");
+    assert_eq!(form.hidden.len(), 1);
+    assert_eq!(form.hidden[0].name, "_expected_revision");
+    assert_eq!(form.hidden[0].value, "7");
     assert!(form.submit.is_some());
 }
 
@@ -160,6 +175,10 @@ async fn admin_render_builds_widgets_from_cache() {
 /// test binary — its `CREATE INDEX`/`CREATE OR REPLACE TRIGGER` deadlock under
 /// parallel idempotent re-runs, so serialize them (mirrors the characters tests).
 static ASYNCEVENTS_READY: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
+
+/// Config's optimistic token is the one global revision, so DB-writing tests must not
+/// invalidate each other's freshly rendered forms inside this test binary.
+static CONFIG_DB_TEST_GUARD: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 async fn ensure_asyncevents_schema(pool: &PgPool) {
     ASYNCEVENTS_READY
@@ -220,11 +239,21 @@ async fn changed_event_count(pool: &PgPool, ns: &str) -> i64 {
         .unwrap()
 }
 
+async fn stored_value(pool: &PgPool, ns: &str, key: &str) -> Option<String> {
+    sqlx::query_scalar("SELECT value FROM config.settings WHERE namespace = $1 AND key = $2")
+        .bind(ns)
+        .bind(key)
+        .fetch_optional(pool)
+        .await
+        .unwrap()
+}
+
 /// The DB round-trip: `set` persists, a fresh `load_snapshot` + `apply` makes the
 /// value readable through the getters at the revision the write produced.
 #[tokio::test]
 async fn set_then_snapshot_reads_back() {
     use configapi::Config as _;
+    let _guard = CONFIG_DB_TEST_GUARD.lock().await;
     let Some(pool) = test_pool().await else { return };
     let ns = unique_ns(&pool).await;
     let svc = Arc::new(Service::new(pool.clone()));
@@ -245,6 +274,7 @@ async fn set_then_snapshot_reads_back() {
 /// log, so the assertions are race-free against concurrent tests bumping the singleton.
 #[tokio::test]
 async fn each_mutation_emits_one_event_with_operation_value_and_revision() {
+    let _guard = CONFIG_DB_TEST_GUARD.lock().await;
     let Some(pool) = test_pool().await else { return };
     let ns = unique_ns(&pool).await;
     let svc = Arc::new(Service::new(pool.clone()));
@@ -300,6 +330,7 @@ async fn each_mutation_emits_one_event_with_operation_value_and_revision() {
 #[tokio::test]
 async fn large_value_write_does_not_abort_on_notify_cap() {
     use configapi::Config as _;
+    let _guard = CONFIG_DB_TEST_GUARD.lock().await;
     let Some(pool) = test_pool().await else { return };
     let ns = unique_ns(&pool).await;
     let svc = Arc::new(Service::new(pool.clone()));
@@ -346,6 +377,7 @@ async fn large_value_write_does_not_abort_on_notify_cap() {
 /// settings reflect the store.
 #[tokio::test]
 async fn snapshot_reports_revision_and_settings() {
+    let _guard = CONFIG_DB_TEST_GUARD.lock().await;
     let Some(pool) = test_pool().await else { return };
     let ns = unique_ns(&pool).await;
     let svc = Arc::new(Service::new(pool.clone()));
@@ -376,6 +408,7 @@ async fn snapshot_reports_revision_and_settings() {
 /// config cache LISTENing on the invalidation channel refreshes regardless of who wrote.
 #[tokio::test]
 async fn psql_style_write_emits_event_and_notify() {
+    let _guard = CONFIG_DB_TEST_GUARD.lock().await;
     let Some(pool) = test_pool().await else { return };
     let dsn = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string());
     let ns = unique_ns(&pool).await;
@@ -426,6 +459,7 @@ async fn psql_style_write_emits_event_and_notify() {
 /// position/locking semantics.
 #[tokio::test]
 async fn trigger_and_native_writer_share_position_semantics() {
+    let _guard = CONFIG_DB_TEST_GUARD.lock().await;
     let Some(pool) = test_pool().await else { return };
     let ns = unique_ns(&pool).await;
 
@@ -511,15 +545,20 @@ async fn trigger_and_native_writer_share_position_semantics() {
 /// submit inserts an add-new triple; a subsequent authoritative `refresh` (the
 /// invalidation callback's body) lands the new key in the cache.
 #[tokio::test]
-async fn admin_apply_edit_inserts_new_triple() {
+async fn admin_apply_edit_fresh_revision_inserts_new_triple() {
     use configapi::Config as _;
+    let _guard = CONFIG_DB_TEST_GUARD.lock().await;
     let Some(pool) = test_pool().await else { return };
     let ns = unique_ns(&pool).await;
     let svc = Arc::new(Service::new(pool.clone()));
 
-    let content = admin_render(&svc, &adminapi::Params::new()).unwrap();
-    let submit = content.form.unwrap().submit.unwrap();
-    let mut values = adminapi::Params::new();
+    svc.refresh().await.unwrap();
+    let form = admin_render(&svc, &adminapi::Params::new())
+        .unwrap()
+        .form
+        .unwrap();
+    let mut values = form_values(&form);
+    let submit = form.submit.unwrap();
     values.insert("_new_namespace".into(), ns.clone());
     values.insert("_new_key".into(), "spawned".into());
     values.insert("_new_value".into(), "yes".into());
@@ -532,12 +571,188 @@ async fn admin_apply_edit_inserts_new_triple() {
     cleanup(&pool, &ns).await;
 }
 
+/// A same-key write committed after GET makes the whole form stale. The admin's
+/// attempted change to a second key must not partially land or append an event.
+#[tokio::test]
+async fn admin_apply_edit_same_key_stale_conflicts_without_partial_writes() {
+    let _guard = CONFIG_DB_TEST_GUARD.lock().await;
+    let Some(pool) = test_pool().await else { return };
+    let ns = unique_ns(&pool).await;
+    let svc = Arc::new(Service::new(pool.clone()));
+
+    svc.set(&ns, "changed", "old").await.unwrap();
+    svc.set(&ns, "untouched", "old").await.unwrap();
+    svc.refresh().await.unwrap();
+    let form = admin_render(&svc, &adminapi::Params::new())
+        .unwrap()
+        .form
+        .unwrap();
+    let mut values = form_values(&form);
+    values.insert(format!("{ns}:changed"), "stale-admin".into());
+    values.insert(format!("{ns}:untouched"), "must-not-land".into());
+
+    svc.set(&ns, "changed", "concurrent").await.unwrap();
+    let events_after_concurrent = changed_event_count(&pool, &ns).await;
+    let err = apply_edit(&svc, values).await.unwrap_err();
+    assert!(matches!(err, adminapi::SubmitError::Conflict));
+
+    assert_eq!(stored_value(&pool, &ns, "changed").await.as_deref(), Some("concurrent"));
+    assert_eq!(stored_value(&pool, &ns, "untouched").await.as_deref(), Some("old"));
+    assert_eq!(
+        changed_event_count(&pool, &ns).await,
+        events_after_concurrent,
+        "the stale submit must append no config.changed event"
+    );
+
+    cleanup(&pool, &ns).await;
+}
+
+/// The page represents the whole config snapshot, so even a write in an unrelated
+/// namespace invalidates its global revision token conservatively.
+#[tokio::test]
+async fn admin_apply_edit_unrelated_revision_conflicts_without_target_event() {
+    let _guard = CONFIG_DB_TEST_GUARD.lock().await;
+    let Some(pool) = test_pool().await else { return };
+    let ns = unique_ns(&pool).await;
+    let other_ns = unique_ns(&pool).await;
+    let svc = Arc::new(Service::new(pool.clone()));
+
+    svc.set(&ns, "target", "old").await.unwrap();
+    svc.refresh().await.unwrap();
+    let form = admin_render(&svc, &adminapi::Params::new())
+        .unwrap()
+        .form
+        .unwrap();
+    let mut values = form_values(&form);
+    values.insert(format!("{ns}:target"), "must-not-land".into());
+    let target_events = changed_event_count(&pool, &ns).await;
+
+    svc.set(&other_ns, "unrelated", "new").await.unwrap();
+    let err = apply_edit(&svc, values).await.unwrap_err();
+    assert!(matches!(err, adminapi::SubmitError::Conflict));
+    assert_eq!(stored_value(&pool, &ns, "target").await.as_deref(), Some("old"));
+    assert_eq!(
+        changed_event_count(&pool, &ns).await,
+        target_events,
+        "an unrelated stale conflict must emit nothing for the target namespace"
+    );
+
+    cleanup(&pool, &ns).await;
+    cleanup(&pool, &other_ns).await;
+}
+
+/// Missing or malformed expected revisions never degrade into an unguarded write.
+#[tokio::test]
+async fn admin_apply_edit_requires_parseable_expected_revision() {
+    let _guard = CONFIG_DB_TEST_GUARD.lock().await;
+    let Some(pool) = test_pool().await else { return };
+    let ns = unique_ns(&pool).await;
+    let svc = Arc::new(Service::new(pool.clone()));
+    svc.refresh().await.unwrap();
+
+    let form = admin_render(&svc, &adminapi::Params::new())
+        .unwrap()
+        .form
+        .unwrap();
+    let base = form_values(&form);
+    for malformed in [None, Some("not-a-revision")] {
+        let mut values = base.clone();
+        match malformed {
+            None => {
+                values.remove("_expected_revision");
+            }
+            Some(value) => {
+                values.insert("_expected_revision".into(), value.into());
+            }
+        }
+        values.insert("_new_namespace".into(), ns.clone());
+        values.insert("_new_key".into(), "blocked".into());
+        values.insert("_new_value".into(), "no".into());
+        let err = apply_edit(&svc, values).await.unwrap_err();
+        assert!(matches!(err, adminapi::SubmitError::Conflict));
+    }
+
+    assert_eq!(stored_value(&pool, &ns, "blocked").await, None);
+    assert_eq!(changed_event_count(&pool, &ns).await, 0);
+    cleanup(&pool, &ns).await;
+}
+
+/// Two submits carrying the same fresh token serialize on the settings-table lock:
+/// exactly one commits, the waiter observes the bumped revision and conflicts, and
+/// both finish within a bounded interval (the lock order has no deadlock cycle).
+#[tokio::test(flavor = "multi_thread")]
+async fn concurrent_admin_submits_yield_one_success_and_one_conflict() {
+    let _guard = CONFIG_DB_TEST_GUARD.lock().await;
+    let Some(pool) = test_pool().await else { return };
+    let ns = unique_ns(&pool).await;
+    let svc = Arc::new(Service::new(pool.clone()));
+
+    svc.set(&ns, "race", "old").await.unwrap();
+    svc.refresh().await.unwrap();
+    let form = admin_render(&svc, &adminapi::Params::new())
+        .unwrap()
+        .form
+        .unwrap();
+    let mut a_values = form_values(&form);
+    let mut b_values = a_values.clone();
+    a_values.insert(format!("{ns}:race"), "from_a".into());
+    b_values.insert(format!("{ns}:race"), "from_b".into());
+    let base_events = changed_event_count(&pool, &ns).await;
+
+    let barrier = Arc::new(tokio::sync::Barrier::new(3));
+    let a = {
+        let svc = svc.clone();
+        let barrier = barrier.clone();
+        tokio::spawn(async move {
+            barrier.wait().await;
+            apply_edit(&svc, a_values).await
+        })
+    };
+    let b = {
+        let svc = svc.clone();
+        let barrier = barrier.clone();
+        tokio::spawn(async move {
+            barrier.wait().await;
+            apply_edit(&svc, b_values).await
+        })
+    };
+    barrier.wait().await;
+    let (a_result, b_result) = tokio::time::timeout(Duration::from_secs(10), async {
+        (a.await.unwrap(), b.await.unwrap())
+    })
+    .await
+    .expect("concurrent config submits must not deadlock");
+
+    let mut successes = 0;
+    let mut conflicts = 0;
+    for result in [a_result, b_result] {
+        match result {
+            Ok(()) => successes += 1,
+            Err(adminapi::SubmitError::Conflict) => conflicts += 1,
+            Err(adminapi::SubmitError::Other(err)) => panic!("unexpected submit error: {err}"),
+        }
+    }
+    assert_eq!((successes, conflicts), (1, 1));
+    assert!(matches!(
+        stored_value(&pool, &ns, "race").await.as_deref(),
+        Some("from_a" | "from_b")
+    ));
+    assert_eq!(
+        changed_event_count(&pool, &ns).await,
+        base_events + 1,
+        "only the winning submit may write and emit"
+    );
+
+    cleanup(&pool, &ns).await;
+}
+
 /// Atomicity of a MIXED admin submit: one call carrying a valid change to an existing
 /// setting AND an invalid `_new_*` namespace. Phase-1 validation fails before any write,
 /// so the store is untouched — the valid change does NOT sneak through and NO durable
 /// `config.changed` event is appended.
 #[tokio::test]
 async fn admin_apply_edit_mixed_is_atomic() {
+    let _guard = CONFIG_DB_TEST_GUARD.lock().await;
     let Some(pool) = test_pool().await else { return };
     let ns = unique_ns(&pool).await;
     let svc = Arc::new(Service::new(pool.clone()));
@@ -549,7 +764,11 @@ async fn admin_apply_edit_mixed_is_atomic() {
 
     // One submit: a VALID change to `existing` + an INVALID new-row namespace (not
     // ^[a-z0-9_]+$). Phase-1 validation rejects the whole form before any write.
-    let mut values = adminapi::Params::new();
+    let form = admin_render(&svc, &adminapi::Params::new())
+        .unwrap()
+        .form
+        .unwrap();
+    let mut values = form_values(&form);
     values.insert(format!("{ns}:existing"), "new".into());
     values.insert("_new_namespace".into(), "Bad NS".into());
     values.insert("_new_key".into(), "k".into());
@@ -578,6 +797,7 @@ async fn admin_apply_edit_mixed_is_atomic() {
 /// committed atomically at the transaction boundary.
 #[tokio::test]
 async fn admin_apply_edit_batch_emits_one_event_per_change() {
+    let _guard = CONFIG_DB_TEST_GUARD.lock().await;
     let Some(pool) = test_pool().await else { return };
     let ns = unique_ns(&pool).await;
     let svc = Arc::new(Service::new(pool.clone()));
@@ -589,7 +809,11 @@ async fn admin_apply_edit_batch_emits_one_event_per_change() {
     let base_events = changed_event_count(&pool, &ns).await; // 2 — the seed inserts.
 
     // One submit changing BOTH values.
-    let mut values = adminapi::Params::new();
+    let form = admin_render(&svc, &adminapi::Params::new())
+        .unwrap()
+        .form
+        .unwrap();
+    let mut values = form_values(&form);
     values.insert(format!("{ns}:a"), "2".into());
     values.insert(format!("{ns}:b"), "2".into());
     apply_edit(&svc, values).await.unwrap();
@@ -625,6 +849,7 @@ async fn admin_apply_edit_batch_emits_one_event_per_change() {
 /// `seed_history_contract`.
 #[tokio::test]
 async fn migrate_seeds_config_changed_history_contract() {
+    let _guard = CONFIG_DB_TEST_GUARD.lock().await;
     let Some(pool) = test_pool().await else { return };
     let ctx = Context::with_db(pool.clone());
     let m = Config::new();

@@ -313,23 +313,32 @@ impl Service {
         guard.map = map;
     }
 
-    /// Snapshots the cache as a slice sorted by `(namespace, key)` for a stable admin
-    /// render.
-    fn all(&self) -> Vec<Setting> {
-        let mut out: Vec<Setting> = {
+    /// Clones one coherent cache snapshot and sorts its settings by
+    /// `(namespace, key)` for a stable admin render. Revision and map are copied while
+    /// holding the same read guard, so the hidden concurrency token always names the
+    /// visible fields beside it.
+    fn cached_snapshot(&self) -> (i64, Vec<Setting>) {
+        let (revision, mut out): (i64, Vec<Setting>) = {
             let guard = self.cache.read().unwrap();
-            guard
-                .map
-                .iter()
-                .map(|((ns, key), value)| Setting {
-                    namespace: ns.clone(),
-                    key: key.clone(),
-                    value: value.clone(),
-                })
-                .collect()
+            (
+                guard.revision,
+                guard
+                    .map
+                    .iter()
+                    .map(|((ns, key), value)| Setting {
+                        namespace: ns.clone(),
+                        key: key.clone(),
+                        value: value.clone(),
+                    })
+                    .collect(),
+            )
         };
         out.sort_by(|a, b| a.namespace.cmp(&b.namespace).then(a.key.cmp(&b.key)));
-        out
+        (revision, out)
+    }
+
+    fn all(&self) -> Vec<Setting> {
+        self.cached_snapshot().1
     }
 }
 
@@ -430,7 +439,7 @@ impl configapi::ConfigSnapshot for Service {
 /// admin portal owns the POST route/auth/rendering; config only supplies the
 /// declarative widgets and the `apply_edit` submit closure.
 fn admin_render(svc: &Arc<Service>, _params: &adminapi::Params) -> anyhow::Result<adminapi::Content> {
-    let rows = svc.all();
+    let (revision, rows) = svc.cached_snapshot();
 
     let mut namespaces: HashSet<&str> = HashSet::new();
     let mut table = adminapi::Table {
@@ -473,14 +482,13 @@ fn admin_render(svc: &Arc<Service>, _params: &adminapi::Params) -> anyhow::Resul
     let form = adminapi::Form {
         action: String::new(),
         fields,
-        hidden: Vec::new(),
+        hidden: vec![adminapi::HiddenField {
+            name: "_expected_revision".into(),
+            value: revision.to_string(),
+        }],
         submit: Some(Arc::new(move |values: adminapi::Params| {
             let svc = submit_svc.clone();
-            Box::pin(async move {
-                apply_edit(&svc, values)
-                    .await
-                    .map_err(adminapi::SubmitError::from)
-            })
+            Box::pin(async move { apply_edit(&svc, values).await })
         })),
     };
 
@@ -544,20 +552,22 @@ impl adminapi::AdminData for Service {
     }
 }
 
-/// Applies a posted edit in two phases over ONE cache snapshot (anti-TOCTOU,
-/// all-or-nothing):
-///   - **Phase 1** snapshots the cache once and validates the WHOLE form — every changed
-///     setting plus the `_new_*` triple — building the planned-writes list. It `set`s
-///     ONLY the keys that actually changed (each write is a NOTIFY + a `config.changed`;
-///     rewriting every row would emit a storm of false "changed" events). The first
-///     invalid id returns before any write, so an invalid field can never leave an
-///     earlier valid one committed.
-///   - **Phase 2** opens one transaction, applies exactly the planned settings via
-///     `set_tx`, commits. The settings trigger is FOR EACH ROW, so N writes still emit N
-///     `config.changed` events (with increasing revisions), all made visible atomically
-///     at commit; a store error rolls the whole batch back.
-async fn apply_edit(svc: &Arc<Service>, values: adminapi::Params) -> anyhow::Result<()> {
-    // Phase 1 — validate the whole form against one cache snapshot, building the plan.
+/// Applies a posted whole-snapshot edit with the global `config.revision` as its
+/// compare-and-swap authority. Validation/planning happens before the transaction so
+/// the short database lock section contains only the CAS and its writes. The table
+/// lock MUST precede the revision-row lock: ordinary/raw writers acquire their table
+/// lock through settings DML before the trigger bumps the revision, so using the same
+/// order avoids a row↔revision lock inversion and also covers concurrent inserts.
+async fn apply_edit(
+    svc: &Arc<Service>,
+    values: adminapi::Params,
+) -> Result<(), adminapi::SubmitError> {
+    let expected_revision = values
+        .get("_expected_revision")
+        .and_then(|value| value.parse::<i64>().ok())
+        .ok_or(adminapi::SubmitError::Conflict)?;
+
+    // Validate the whole form and build the exact write set before taking DB locks.
     let mut planned: Vec<(String, String, String)> = Vec::new();
 
     for s in svc.all() {
@@ -565,7 +575,7 @@ async fn apply_edit(svc: &Arc<Service>, values: adminapi::Params) -> anyhow::Res
             if *v != s.value {
                 // These ids came from the store, so they are valid; validate defensively
                 // to keep every write path uniform.
-                validate_ident(&s.namespace, &s.key)?;
+                validate_ident(&s.namespace, &s.key).map_err(adminapi::SubmitError::from)?;
                 planned.push((s.namespace.clone(), s.key.clone(), v.clone()));
             }
         }
@@ -575,16 +585,31 @@ async fn apply_edit(svc: &Arc<Service>, values: adminapi::Params) -> anyhow::Res
     let key = adminapi::param(&values, "_new_key");
     let val = adminapi::param(&values, "_new_value");
     if !ns.is_empty() && !key.is_empty() && !val.is_empty() {
-        validate_ident(ns, key)?;
+        validate_ident(ns, key).map_err(adminapi::SubmitError::from)?;
         planned.push((ns.to_string(), key.to_string(), val.to_string()));
     }
 
-    // Phase 2 — one transaction: apply exactly the planned settings and commit.
-    let mut tx = svc.pool.begin().await?;
-    for (ns, key, value) in planned {
-        svc.set_tx(&mut tx, &ns, &key, &value).await?;
+    let mut tx = svc.pool.begin().await.map_err(anyhow::Error::from)?;
+    sqlx::query("LOCK TABLE config.settings IN SHARE ROW EXCLUSIVE MODE")
+        .execute(&mut *tx)
+        .await
+        .map_err(anyhow::Error::from)?;
+    let current_revision: i64 = sqlx::query_scalar(
+        "SELECT revision FROM config.revision WHERE singleton FOR UPDATE",
+    )
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(anyhow::Error::from)?;
+    if current_revision != expected_revision {
+        return Err(adminapi::SubmitError::Conflict);
     }
-    tx.commit().await?;
+
+    for (ns, key, value) in planned {
+        svc.set_tx(&mut tx, &ns, &key, &value)
+            .await
+            .map_err(adminapi::SubmitError::from)?;
+    }
+    tx.commit().await.map_err(anyhow::Error::from)?;
     Ok(())
 }
 
