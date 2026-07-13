@@ -213,3 +213,36 @@ Konwencja: każdy krok = osobny commit (Conventional Commits), po nim adversaria
 2. Implementacja: kolejność kroków jak wyżej; tag przy kroku = model subagenta wykonawczego (`[opus + think hard]` albo `[sonnet]`); nav-guidance i zakaz równoległych testów wklejane do promptów.
 3. Po KAŻDYM commicie: adversarial review — subagent na **opus** (atak na nowe seamy fixu, weryfikacja failing-branch testu na kodzie, nie na podstawie podsumowania wykonawcy) + CODEX (drugi, niezależny przegląd; jeśli Codex znów nie odpowie, odnotować i kontynuować z samym opusem) — punch list wraca do wykonawcy, nie jest cicho absorbowany.
 4. Memory-sync po każdej zmianie memory; push tylko na życzenie.
+
+---
+
+## ERRATA 2026-07-13 (po zatwierdzeniu): odzyskana recenzja planu Codexa
+
+Recenzja Codexa uznana w pkt 0 za martwą UKOŃCZYŁA się (32 min, 8 BLOCKER + 12 MAJOR);
+wynik odzyskany z rolloutu sesji na dysku po zatwierdzeniu planu, w trakcie fazy B.
+Triage względem stanu po krokach 1-7:
+
+- Zamknięte wcześniej przez follow-upy reviewów commitów: C3 (stale listener ⇒ pre-spawn
+  probe, 029c5a5), C8 (public-api bless, 627c33e), C12 (splitproof root + csharp, c2546dc).
+- Wcielone do dispatchów nadchodzących kroków: C1→Step 9 (jawna konekcja + rollback po
+  55P03, test reuse poolowanej konekcji), C5+C6→Step 12 (rezerwa harnessu w budżecie,
+  peak-sessions z transientami, tabela per-cmd z self-checkiem), C11→Step 8 (synchronizacja
+  negative-path testu — bez niej test przechodzi na starym kodzie), C16→Step 11 (realny
+  wiszący edge-handler), C17→Step 14 (wspólny authority overlapu dla gateway startup I
+  routecheck + fixture; twierdzenie planu, że routecheck łapie overlap, było BŁĘDNE —
+  routecheck nie woła RouteTable::build), C18→Step 15b (normalize we WSZYSTKICH mutacjach
+  CLI po username; invalid input ⇒ valid_input=false z zachowaniem dummy-Argon),
+  C19→Step 17 (mechaniczna reguła docs-current: cel z sekcji Current-reference niosący
+  marker ARCHIVED ⇒ FAIL + fixture), C20→Step 13 (fallible konstrukcja invalidation
+  propagowana przez app::run + boot-test).
+- Nowy krok 5b (follow-up gate'u): C7 — sample None per pole Option (compile-coupling:
+  Option→T łamie literal `None` ⇒ głośny break; dziś jedyne pole Option to
+  configevents::Changed.value), C9 — body_shapes bez path-wildcardów + asercja makra,
+  C10 — test integracyjny shape'u payloadu SQL-triggera configa vs golden.
+- Odrzucone (rationale): C2 — lock catalog↔GC pozostaje odrzucony (kontrakt MinRetention
+  obiecuje tylko days; NOT EXISTS zawęża okno do pojedynczego statementu READ COMMITTED —
+  reszta to gold-plating); C4 — drain QUIC pozostaje Known-gap 3 (zapisany, zatwierdzony);
+  C13/C15 — scenariusze split dla inventory-degrade i hung-verifier wymagałyby
+  kontrolowanych zawieszeń (test-backdoor) w produkcyjnych svc; polityki są
+  topology-blind, a zagrożona gałąź (delivery tx / admission seam) jest ćwiczona na
+  realnym planie i fake'ach seamu.
