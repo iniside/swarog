@@ -253,6 +253,30 @@ async fn login_epic_requires_token_and_configured_provider() {
 }
 
 #[tokio::test]
+async fn over_cap_session_tokens_short_circuit_before_sql_by_bytes() {
+    let store = Store {
+        pool: PgPool::connect_lazy(
+            "postgres://gamebackend:gamebackend@127.0.0.1:1/no-session-cap-test",
+        )
+        .unwrap(),
+    };
+    let ascii = "a".repeat(accountsapi::MAX_SESSION_TOKEN_BYTES + 1);
+    let multibyte = "é".repeat(accountsapi::MAX_SESSION_TOKEN_BYTES / 2 + 1);
+    assert!(multibyte.len() > accountsapi::MAX_SESSION_TOKEN_BYTES);
+
+    for token in [ascii, multibyte] {
+        let result = tokio::time::timeout(
+            Duration::from_millis(100),
+            store.player_by_session(&token),
+        )
+        .await
+        .expect("over-cap lookup touched the dead lazy pool")
+        .unwrap();
+        assert!(result.is_none());
+    }
+}
+
+#[tokio::test]
 async fn me_requires_identity() {
     let svc = lazy_service();
     let e = svc.me(Identity::none()).await.unwrap_err();

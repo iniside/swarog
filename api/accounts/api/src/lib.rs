@@ -17,8 +17,8 @@ use rpc_macro::rpc;
 use serde::{Deserialize, Serialize};
 
 /// Maximum accepted opaque session-token size in bytes. Accounts mints 43-byte
-/// base64url tokens; the wider cap leaves format headroom while bounding attacker-
-/// controlled lookup and internal-RPC work at every topology's auth boundary.
+/// base64url tokens; the wider cap leaves format headroom while bounding lookup and
+/// internal-RPC work from attacker-controlled input at every topology's auth boundary.
 pub const MAX_SESSION_TOKEN_BYTES: usize = 128;
 
 /// The result of a successful register/login: the caller's product-scoped

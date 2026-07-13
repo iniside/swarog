@@ -185,6 +185,9 @@ impl Store {
     /// is a genuine unknown/expired token; an `Err` is a store failure the caller
     /// surfaces as infrastructure trouble (503), never a 401.
     pub async fn player_by_session(&self, token: &str) -> Result<Option<Player>, sqlx::Error> {
+        if token.len() > accountsapi::MAX_SESSION_TOKEN_BYTES {
+            return Ok(None);
+        }
         let row: Option<(String, String)> = sqlx::query_as(
             "SELECT p.id::text, p.display_name \
                FROM accounts.sessions s \
