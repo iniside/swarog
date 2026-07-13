@@ -67,6 +67,9 @@ impl Default for DevSessionVerifier {
 #[async_trait]
 impl SessionVerifier for DevSessionVerifier {
     async fn verify(&self, token: &str) -> Result<Option<String>, VerifyUnavailable> {
+        if token.len() > accountsapi::MAX_SESSION_TOKEN_BYTES {
+            return Ok(None);
+        }
         self.warned.call_once(|| {
             tracing::warn!(
                 "DEV SESSION AUTH IS ON: the gateway accepts any `Bearer dev-<player_id>` token \
@@ -101,6 +104,12 @@ impl SessionsVerifier {
 #[async_trait]
 impl SessionVerifier for SessionsVerifier {
     async fn verify(&self, token: &str) -> Result<Option<String>, VerifyUnavailable> {
+        // An over-cap bearer is definitively not one of accounts' opaque sessions.
+        // Reject it before invoking the capability: in a split process that call is
+        // an internal RPC (and retry-safe replay), while in the monolith it is local.
+        if token.len() > accountsapi::MAX_SESSION_TOKEN_BYTES {
+            return Ok(None);
+        }
         match self.sessions.verify_session(token.to_string()).await {
             Ok(pid) => Ok(pid.filter(|p| !p.is_empty())),
             Err(err) => {

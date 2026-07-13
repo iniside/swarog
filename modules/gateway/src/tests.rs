@@ -91,6 +91,52 @@ async fn dev_verifier_accepts_dev_token_only() {
     assert_eq!(v.verify("dev-").await.unwrap(), None); // empty suffix rejected
     assert_eq!(v.verify("alice").await.unwrap(), None); // no prefix rejected
     assert_eq!(v.verify("").await.unwrap(), None);
+    let over_cap_dev = format!(
+        "dev-{}",
+        "x".repeat(accountsapi::MAX_SESSION_TOKEN_BYTES)
+    );
+    assert_eq!(
+        v.verify(&over_cap_dev).await.unwrap(),
+        None,
+        "the explicit dev fallback must honor the shared session-token byte cap"
+    );
+}
+
+/// A topology-neutral stand-in for `accounts.sessions`: locally this trait object is
+/// the accounts service, while in a split gateway it is the generated RPC client.
+/// Counting calls therefore proves an over-cap bearer reaches neither topology.
+#[derive(Default)]
+struct CountingSessions {
+    calls: AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl accountsapi::Sessions for CountingSessions {
+    async fn verify_session(&self, _token: String) -> Result<Option<String>, Error> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Ok(Some("counted-player".to_string()))
+    }
+}
+
+#[tokio::test]
+async fn sessions_verifier_caps_before_local_or_remote_capability_dispatch() {
+    let sessions = Arc::new(CountingSessions::default());
+    let verifier = SessionsVerifier::new(sessions.clone());
+
+    let over_cap = "x".repeat(accountsapi::MAX_SESSION_TOKEN_BYTES + 1);
+    assert_eq!(verifier.verify(&over_cap).await.unwrap(), None);
+    assert_eq!(sessions.calls.load(Ordering::SeqCst), 0);
+
+    let at_cap = "x".repeat(accountsapi::MAX_SESSION_TOKEN_BYTES);
+    assert_eq!(
+        verifier.verify(&at_cap).await.unwrap().as_deref(),
+        Some("counted-player")
+    );
+    assert_eq!(
+        sessions.calls.load(Ordering::SeqCst),
+        1,
+        "the exact 128-byte boundary remains eligible for verification"
+    );
 }
 
 // The always-unavailable [`SessionVerifier`] fixture now lives in the always-compiled
@@ -130,6 +176,22 @@ async fn authenticate_verifier_outage_is_503_not_401() {
     h.insert(header::AUTHORIZATION, HeaderValue::from_static("Bearer dev-alice"));
     let resp = authenticate(&h, &v).await.unwrap_err();
     assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+}
+
+#[tokio::test]
+async fn authenticate_overlong_token_is_401_without_capability_dispatch() {
+    let sessions = Arc::new(CountingSessions::default());
+    let verifier = SessionsVerifier::new(sessions.clone());
+    let token = "x".repeat(accountsapi::MAX_SESSION_TOKEN_BYTES + 1);
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::AUTHORIZATION,
+        HeaderValue::from_str(&format!("Bearer {token}")).unwrap(),
+    );
+
+    let resp = authenticate(&headers, &verifier).await.unwrap_err();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(sessions.calls.load(Ordering::SeqCst), 0);
 }
 
 // ---- (b/c) end-to-end through the axum fallback ----
@@ -508,6 +570,34 @@ async fn player_bad_token_is_unauthorized_envelope() {
     let body =
         call_player(&front, "demo.echo", Some("nope-x"), Some(TEST_KEY), br#"{"n":1}"#).await;
     assert_eq!(body, r#"{"status":"Unauthorized","err":"unauthorized"}"#);
+}
+
+#[tokio::test]
+async fn player_overlong_token_is_unauthorized_without_capability_dispatch() {
+    let sessions = Arc::new(CountingSessions::default());
+    let slots = Arc::new(Slots::new());
+    let op = demo_opset();
+    slots.contribute(opsapi::SLOT, op.operation);
+    slots.contribute(opsapi::BINDING_SLOT, op.binding);
+    slots.contribute(opsapi::LOCAL_SLOT, op.local);
+    let front = Arc::new(FrontDoor::new(
+        slots,
+        Arc::new(SessionsVerifier::new(sessions.clone())),
+        demo_keys(),
+        Vec::new(),
+    ));
+    let token = "x".repeat(accountsapi::MAX_SESSION_TOKEN_BYTES + 1);
+
+    let body = call_player(
+        &front,
+        "demo.echo",
+        Some(&token),
+        Some(TEST_KEY),
+        br#"{"n":1}"#,
+    )
+    .await;
+    assert_eq!(body, r#"{"status":"Unauthorized","err":"unauthorized"}"#);
+    assert_eq!(sessions.calls.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]
