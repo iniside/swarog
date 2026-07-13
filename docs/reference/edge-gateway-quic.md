@@ -1,3 +1,7 @@
+> **ARCHIVED (JVM/Quarkus-era)** — describes the retired
+> `experiments/jvm-quarkus-sketch/edge` gateway (MessagePack/msquic FFM), not
+> the current Rust gateway. Current state: CLAUDE.md.
+
 # Edge gateway (player ↔ backend) — QUIC transport, MessagePack, schema-less
 
 Reference for the client-edge gateway explored in `experiments/jvm-quarkus-sketch/edge`. Distinct from the

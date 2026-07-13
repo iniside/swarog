@@ -11,8 +11,6 @@ Start with the repository-level documents:
 ## Current reference
 
 - [Architecture enforcement](reference/architecture-enforcement.md)
-- [Gateway](reference/gateway.md) and
-  [edge/gateway QUIC](reference/edge-gateway-quic.md)
 - [Event-plane operations](reference/event-plane-ops.md)
 - [External C# client](reference/csharp-client.md)
 - [Hetzner deploy checklist](reference/hetzner-deploy-checklist.md)
@@ -30,8 +28,10 @@ machine-checked baselines, not narrative guidance.
 records: do not rewrite their commands or conclusions to look current; use a new
 plan or an explicit erratum when the present design changes.
 
-The Go-era BaaS gap matrix and the JVM testing/Quarkus notes under `reference/`
-are retained research snapshots rather than instructions for the Rust workspace.
+The Go-era BaaS gap matrix and the JVM testing/Quarkus notes under `reference/` —
+including the JVM/Quarkus-era [gateway](reference/gateway.md) and
+[edge/gateway QUIC](reference/edge-gateway-quic.md) notes — are retained research
+snapshots rather than instructions for the Rust workspace.
 
 `../experiments/` contains the retired Go original and JVM sketches. Their local
 READMEs describe those archived implementations and must not be used as current

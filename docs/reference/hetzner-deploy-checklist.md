@@ -58,7 +58,7 @@ Companion plan: `docs/plans/2026-07-10-2314-admin-hardening-plan.md`.
       generic 401s; then
       `SELECT * FROM admin.login_attempts;` shows the user row locked
       (`locked_until` set) and the ip row counting but unlocked below 20.
-- [ ] `SELECT * FROM asyncevents.events WHERE topic='admin.action' ORDER BY id DESC
+- [ ] `SELECT * FROM asyncevents.events WHERE topic='admin.action' ORDER BY created_at DESC
       LIMIT 5;` shows login-succeeded/login-locked rows; `audit.log` mirrors them.
 - [ ] A mutating admin form POST without `_csrf` (devtools-edited) → 403.
 - [ ] `/admin` reached ONLY via the gateway passthrough; admin-svc's own port is

@@ -1,3 +1,7 @@
+> **ARCHIVED (JVM/Quarkus-era, 2026-07-06)** — describes the retired
+> `experiments/jvm-quarkus-sketch` gateway (MessagePack/msquic FFM), not the
+> current Rust gateway. Current state: CLAUDE.md.
+
 # The `gateway` module — external front door (QUIC-RPC router + HTTP reverse-proxy)
 
 Durable reference for the `gateway` added to `experiments/jvm-quarkus-sketch/` (branch `quarkus-per-service`).
