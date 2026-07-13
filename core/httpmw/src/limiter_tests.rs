@@ -30,6 +30,18 @@ fn zero_burst_denies_everything() {
 }
 
 #[test]
+fn positive_rate_zero_burst_still_denies_everything() {
+    // Regression pin for Step 13 / DEFECT 1: the mechanism itself stays dumb (a
+    // capacity-0 bucket denies unconditionally regardless of refill rate) — the
+    // pair-policy gate belongs to `core/app::env_rate_pair`, not here. A nonzero
+    // rate must not accidentally let a zero-capacity bucket admit anything.
+    let lim = IpLimiter::new(100.0, 0);
+    let who = ip(9, 9, 9, 8);
+    assert!(!lim.allow(who));
+    assert!(!lim.allow(who));
+}
+
+#[test]
 fn buckets_are_per_ip() {
     let lim = IpLimiter::new(0.0, 1);
     let a = ip(1, 1, 1, 1);

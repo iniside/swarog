@@ -127,7 +127,8 @@ async fn notify_triggers_callback() {
     let hits = Arc::new(AtomicUsize::new(0));
 
     // Long poll so only the NOTIFY path can bump the counter during the test.
-    let mut plane = InvalidationPlane::new(dsn).with_poll_interval(Duration::from_secs(3600));
+    let mut plane =
+        new_plane(dsn).unwrap().with_poll_interval(Duration::from_secs(3600));
     plane.handle().register(&chan, "cb", counting(&hits));
     plane.start().await.unwrap();
 
@@ -168,8 +169,9 @@ async fn reconnect_performs_full_refresh() {
     let chan = unique_channel();
     let hits = Arc::new(AtomicUsize::new(0));
 
-    let mut plane =
-        InvalidationPlane::new(listen_dsn).with_poll_interval(Duration::from_secs(3600));
+    let mut plane = new_plane(listen_dsn)
+        .unwrap()
+        .with_poll_interval(Duration::from_secs(3600));
     plane.handle().register(&chan, "cb", counting(&hits));
     plane.start().await.unwrap();
 
@@ -215,7 +217,8 @@ async fn poll_fallback_refreshes_without_notify() {
     let chan = unique_channel();
     let hits = Arc::new(AtomicUsize::new(0));
 
-    let mut plane = InvalidationPlane::new(dsn).with_poll_interval(Duration::from_millis(300));
+    let mut plane =
+        new_plane(dsn).unwrap().with_poll_interval(Duration::from_millis(300));
     plane.handle().register(&chan, "cb", counting(&hits));
     plane.start().await.unwrap();
 
@@ -326,7 +329,8 @@ async fn hung_callback_does_not_block_sibling() {
 /// boot refresh runs before any connect, so the DSN ("postgres://unused") is never touched.
 #[tokio::test]
 async fn first_refresh_timeout_fails_start() {
-    let mut plane = InvalidationPlane::new("postgres://unused".to_string())
+    let mut plane = new_plane("postgres://unused".to_string())
+        .unwrap()
         .with_callback_timeout(Duration::from_millis(100));
     plane.handle().register("c", "hung", || async {
         std::future::pending::<()>().await; // never resolves
@@ -356,7 +360,8 @@ async fn stop_returns_despite_hung_callback() {
     let chan = unique_channel();
     let calls = Arc::new(AtomicUsize::new(0));
 
-    let mut plane = InvalidationPlane::new(dsn)
+    let mut plane = new_plane(dsn)
+        .unwrap()
         .with_poll_interval(Duration::from_secs(3600)) // only NOTIFY drives a refresh
         .with_callback_timeout(Duration::from_secs(3600)); // long: the hang must be live at stop
     {
@@ -405,7 +410,7 @@ async fn stop_returns_despite_hung_callback() {
 /// boot refresh runs before any connect, so the DSN is never touched).
 #[tokio::test]
 async fn first_refresh_failure_fails_start() {
-    let mut plane = InvalidationPlane::new("postgres://unused".to_string());
+    let mut plane = new_plane("postgres://unused".to_string()).unwrap();
     plane
         .handle()
         .register("c", "boom", || async { anyhow::bail!("nope") });
@@ -414,4 +419,112 @@ async fn first_refresh_failure_fails_start() {
     assert!(res.is_err(), "start must fail loudly when a first refresh fails");
 
     plane.stop().await; // no-op: never started
+}
+
+// ============================================================================
+// Step 13 / DEFECT 2 (+ C20): `InvalidationPlane::new` env resolution is the fail-loud
+// decision authority for `INVALIDATION_POLL_INTERVAL_MS`/`INVALIDATION_CALLBACK_TIMEOUT_MS`,
+// mirroring `asyncevents::retention::Config`'s posture exactly: absent → default,
+// malformed → default (garbage tolerated), EXPLICIT zero → fail construction (never a
+// silent default). These are boot-level tests: construction does no I/O, so no DB is
+// needed to prove a bad knob aborts startup before a connection is ever attempted.
+// ============================================================================
+
+static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+/// Constructs a plane while holding [`ENV_LOCK`] — the single serialization point
+/// against the env-mutating tests below. `INVALIDATION_POLL_INTERVAL_MS`/
+/// `INVALIDATION_CALLBACK_TIMEOUT_MS` are read ONLY inside `InvalidationPlane::new`,
+/// so routing every construction in this file through this helper is sufficient to
+/// stop a parallel test thread from ever observing another test's temporarily
+/// mutated env value.
+fn new_plane(dsn: impl Into<String>) -> anyhow::Result<InvalidationPlane> {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    InvalidationPlane::new(dsn.into())
+}
+
+/// Runs `f` with `key` env-set (or cleared) for its duration, holding [`ENV_LOCK`]
+/// across mutate→f→restore (including on panic) so no [`new_plane`] call on another
+/// thread can race the mutation.
+fn with_env(key: &str, val: Option<&str>, f: impl FnOnce()) {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let prev = std::env::var(key).ok();
+    match val {
+        Some(v) => std::env::set_var(key, v),
+        None => std::env::remove_var(key),
+    }
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+    match prev {
+        Some(v) => std::env::set_var(key, v),
+        None => std::env::remove_var(key),
+    }
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+#[test]
+fn poll_interval_zero_fails_construction_naming_the_var() {
+    with_env("INVALIDATION_POLL_INTERVAL_MS", Some("0"), || {
+        let err = InvalidationPlane::new("postgres://unused".to_string())
+            .err()
+            .expect("an explicit zero poll interval must fail construction");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("INVALIDATION_POLL_INTERVAL_MS"),
+            "error should name the var: {msg}"
+        );
+    });
+}
+
+#[test]
+fn poll_interval_absent_defaults() {
+    with_env("INVALIDATION_POLL_INTERVAL_MS", None, || {
+        let plane = InvalidationPlane::new("postgres://unused".to_string())
+            .expect("absent poll interval must not fail construction");
+        assert_eq!(plane.poll, DEFAULT_POLL);
+    });
+}
+
+#[test]
+fn poll_interval_malformed_falls_back_to_default() {
+    // Mirrors `asyncevents::retention::Config`'s posture: malformed (not absent, not
+    // zero) tolerates garbage rather than failing — the historical knob convention.
+    with_env("INVALIDATION_POLL_INTERVAL_MS", Some("banana"), || {
+        let plane = InvalidationPlane::new("postgres://unused".to_string())
+            .expect("malformed poll interval must fall back, not fail");
+        assert_eq!(plane.poll, DEFAULT_POLL);
+    });
+}
+
+#[test]
+fn callback_timeout_zero_fails_construction_naming_the_var() {
+    with_env("INVALIDATION_CALLBACK_TIMEOUT_MS", Some("0"), || {
+        let err = InvalidationPlane::new("postgres://unused".to_string())
+            .err()
+            .expect("an explicit zero callback timeout must fail construction");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("INVALIDATION_CALLBACK_TIMEOUT_MS"),
+            "error should name the var: {msg}"
+        );
+    });
+}
+
+#[test]
+fn callback_timeout_absent_defaults() {
+    with_env("INVALIDATION_CALLBACK_TIMEOUT_MS", None, || {
+        let plane = InvalidationPlane::new("postgres://unused".to_string())
+            .expect("absent callback timeout must not fail construction");
+        assert_eq!(plane.callback_timeout, DEFAULT_CALLBACK_TIMEOUT);
+    });
+}
+
+#[test]
+fn callback_timeout_malformed_falls_back_to_default() {
+    with_env("INVALIDATION_CALLBACK_TIMEOUT_MS", Some("nope"), || {
+        let plane = InvalidationPlane::new("postgres://unused".to_string())
+            .expect("malformed callback timeout must fall back, not fail");
+        assert_eq!(plane.callback_timeout, DEFAULT_CALLBACK_TIMEOUT);
+    });
 }

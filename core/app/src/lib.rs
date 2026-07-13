@@ -246,22 +246,25 @@ impl Config {
         // value is kept for `run` to reject loudly (see [`resolve_pool_max`]).
         cfg.db_pool_max =
             resolve_pool_max(std::env::var("DATABASE_POOL_MAX_CONNECTIONS").ok().as_deref());
-        cfg.player_rate_limit_rps = env_rate(
+        // `Allow` policy makes `env_rate_pair` infallible by construction (it only ever
+        // bails under `Reject`), so unwrapping here is safe and keeps `from_env`
+        // infallible — zero signature ripple through every `cmd/*` main that calls it.
+        (cfg.player_rate_limit_rps, cfg.player_rate_limit_burst) = env_rate_pair(
             "PLAYER_RATE_LIMIT_RPS",
+            "PLAYER_RATE_LIMIT_BURST",
             DEFAULT_PLAYER_RATE_LIMIT_RPS,
+            DEFAULT_PLAYER_RATE_LIMIT_BURST,
             RateZeroPolicy::Allow,
-        );
-        cfg.player_rate_limit_burst =
-            env_number("PLAYER_RATE_LIMIT_BURST", DEFAULT_PLAYER_RATE_LIMIT_BURST);
-        cfg.player_conn_rate_limit_rps = env_rate(
+        )
+        .expect("Allow-policy is infallible by construction");
+        (cfg.player_conn_rate_limit_rps, cfg.player_conn_rate_limit_burst) = env_rate_pair(
             "PLAYER_CONN_RATE_LIMIT_RPS",
-            DEFAULT_PLAYER_CONN_RATE_LIMIT_RPS,
-            RateZeroPolicy::Allow,
-        );
-        cfg.player_conn_rate_limit_burst = env_number(
             "PLAYER_CONN_RATE_LIMIT_BURST",
+            DEFAULT_PLAYER_CONN_RATE_LIMIT_RPS,
             DEFAULT_PLAYER_CONN_RATE_LIMIT_BURST,
-        );
+            RateZeroPolicy::Allow,
+        )
+        .expect("Allow-policy is infallible by construction");
         cfg
     }
 
@@ -429,13 +432,6 @@ fn validate_pool_max(db_pool_max: u32) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn env_number<T>(name: &str, default: T) -> T
-where
-    T: std::str::FromStr + Copy,
-{
-    parse_number(std::env::var(name).ok().as_deref(), default)
-}
-
 /// Parses one optional rate without applying a surface-specific fallback. Unset and
 /// blank values are absent; malformed, non-finite, negative, and policy-rejected zero
 /// values are invalid.
@@ -496,15 +492,39 @@ fn env_rate(name: &str, default: f64, zero_policy: RateZeroPolicy) -> f64 {
     resolved.value
 }
 
-fn parse_number<T>(value: Option<&str>, default: T) -> T
-where
-    T: std::str::FromStr + Copy,
-{
-    value
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(default)
+/// The single decision authority for a `(rps, burst)` rate-limit pair — the one place
+/// that resolves BOTH knobs together, closing the gap where `rps` alone carried
+/// [`RateZeroPolicy`] while `burst` was parsed independently and could silently mount
+/// a capacity-0 bucket under `Reject` (a lone `RATE_LIMIT_BURST=0` beside a real `rps`
+/// blocked 100% of traffic on the always-on gateway front door, while the same
+/// `burst==0` on the player plane means "disabled" — two opposite semantics for the
+/// same value). `rps` keeps today's per-value policy unchanged: a LONE
+/// `rps_var=0` under `Reject` still warns and falls back to `default_rps` (existing
+/// [`env_rate`]/[`RateZeroPolicy::Reject`] behavior, pinned by
+/// `gateway_lone_rps_zero_reject_warns_and_defaults`). The hard failure this function
+/// adds is narrower and pair-specific: under `Reject`, an EFFECTIVE (post-fallback)
+/// `rps > 0.0` combined with an explicit `burst == 0` is rejected outright, because
+/// that combination — not a lone zero — is what silently mounts the capacity-0
+/// bucket. Under `Allow` (the player plane), `burst == 0` always passes through
+/// unchanged: it is that plane's own "disable this layer" signal and must not be
+/// touched here.
+fn env_rate_pair(
+    rps_var: &str,
+    burst_var: &str,
+    default_rps: f64,
+    default_burst: u32,
+    policy: RateZeroPolicy,
+) -> anyhow::Result<(f64, u32)> {
+    let rps = env_rate(rps_var, default_rps, policy);
+    let burst = env_u32(burst_var).unwrap_or(default_burst);
+    if policy == RateZeroPolicy::Reject && rps > 0.0 && burst == 0 {
+        anyhow::bail!(
+            "{rps_var}/{burst_var}: a positive rate paired with a zero burst mounts a \
+             capacity-0 token bucket that blocks all traffic on this always-on surface; \
+             set {burst_var} to a positive burst or set {rps_var}=0 to disable the limiter"
+        );
+    }
+    Ok((rps, burst))
 }
 
 /// Accepts both `:8080` and `8080` forms and returns `:8080`; empty → the default.
@@ -682,7 +702,10 @@ pub async fn run(
     //    `ctx.invalidation().register` records onto the plane; it starts after module
     //    start (the snapshot must see every registration) and stops before module stop.
     let mut invalidation = match (&pool, &cfg.database_url) {
-        (Some(_), Some(dsn)) => Some(invalidation::InvalidationPlane::new(dsn.clone())),
+        (Some(_), Some(dsn)) => Some(
+            invalidation::InvalidationPlane::new(dsn.clone())
+                .context("invalidation plane construction failed")?,
+        ),
         _ => None,
     };
 
@@ -922,8 +945,13 @@ pub async fn run(
         } else {
             RateZeroPolicy::Allow
         };
-        let rps = env_rate("RATE_LIMIT_RPS", default_rps, zero_policy);
-        let burst = env_u32("RATE_LIMIT_BURST").unwrap_or(default_burst);
+        let (rps, burst) = env_rate_pair(
+            "RATE_LIMIT_RPS",
+            "RATE_LIMIT_BURST",
+            default_rps,
+            default_burst,
+            zero_policy,
+        )?;
         let router = if rps > 0.0 {
             let trusted =
                 httpmw::parse_cidrs(&std::env::var("TRUSTED_PROXY_CIDRS").unwrap_or_default())

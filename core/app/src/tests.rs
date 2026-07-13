@@ -7,8 +7,6 @@ fn player_request_limit_defaults_and_burst_semantics() {
     assert_eq!(cfg.player_rate_limit_burst, 40);
     assert_eq!(cfg.player_conn_rate_limit_rps, 10.0);
     assert_eq!(cfg.player_conn_rate_limit_burst, 20);
-    assert_eq!(parse_number(Some("0"), 20u32), 0);
-    assert_eq!(parse_number(Some("bad"), 40u32), 40);
 }
 
 #[test]
@@ -476,6 +474,129 @@ fn db_pool_max_below_floor_fails_startup() {
     assert!(validate_pool_max(MIN_DB_POOL_MAX).is_ok());
     assert!(validate_pool_max(DEFAULT_DB_POOL_MAX).is_ok());
     assert!(validate_pool_max(resolve_pool_max(Some("ten"))).is_ok());
+}
+
+// ============================================================================
+// `env_rate_pair` (Step 13 / DEFECT 1): the single decision authority resolving a
+// `(rps, burst)` pair together, closing the gap where a bare `RATE_LIMIT_BURST=0`
+// alongside an always-on gateway `rps>0` silently mounted a capacity-0 bucket.
+//
+// Each test below sets env vars under UNIQUE names (never the real
+// `RATE_LIMIT_*`/`PLAYER_RATE_LIMIT_*` knobs) so tests can run in parallel with the
+// rest of the suite without a cross-test lock: isolation is by construction (the
+// var names are the test's own), not a mutex.
+// ============================================================================
+
+/// Sets `vars` for the duration of `f`, restoring prior values after — including on
+/// panic, so a failing assertion never leaks env state into a sibling test.
+fn with_env_vars<const N: usize>(vars: [(&str, Option<&str>); N], f: impl FnOnce()) {
+    let prev: Vec<(String, Option<String>)> = vars
+        .iter()
+        .map(|(k, _)| ((*k).to_string(), std::env::var(k).ok()))
+        .collect();
+    for (k, v) in vars {
+        match v {
+            Some(v) => std::env::set_var(k, v),
+            None => std::env::remove_var(k),
+        }
+    }
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+    for (k, v) in prev {
+        match v {
+            Some(v) => std::env::set_var(&k, v),
+            None => std::env::remove_var(&k),
+        }
+    }
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+#[test]
+fn env_rate_pair_reject_explicit_rps_and_zero_burst_fails_naming_both_vars() {
+    with_env_vars(
+        [
+            ("T13_GW_RPS_A", Some("5")),
+            ("T13_GW_BURST_A", Some("0")),
+        ],
+        || {
+            let err = env_rate_pair(
+                "T13_GW_RPS_A",
+                "T13_GW_BURST_A",
+                20.0,
+                40,
+                RateZeroPolicy::Reject,
+            )
+            .expect_err("positive rps paired with an explicit zero burst must fail");
+            let msg = format!("{err:#}");
+            assert!(msg.contains("T13_GW_RPS_A"), "message should name the rps var: {msg}");
+            assert!(msg.contains("T13_GW_BURST_A"), "message should name the burst var: {msg}");
+        },
+    );
+}
+
+#[test]
+fn env_rate_pair_reject_unset_rps_nonzero_default_and_zero_burst_still_fails() {
+    // RPS is left UNSET (so it resolves to the surface's nonzero default, e.g. the
+    // gateway's always-on 20.0) while only BURST is explicitly zeroed — the exact
+    // shape of DEFECT 1 (a lone `RATE_LIMIT_BURST=0` beside an always-on rps).
+    with_env_vars([("T13_GW_BURST_B", Some("0"))], || {
+        let err = env_rate_pair(
+            "T13_GW_RPS_B",
+            "T13_GW_BURST_B",
+            20.0,
+            40,
+            RateZeroPolicy::Reject,
+        )
+        .expect_err("an effective nonzero rps (from the default) with a zero burst must fail");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("T13_GW_RPS_B"));
+        assert!(msg.contains("T13_GW_BURST_B"));
+    });
+}
+
+#[test]
+fn env_rate_pair_reject_lone_rps_zero_warns_and_defaults_unchanged() {
+    // SCOPE PRECISION (i): a LONE `rps=0` under `Reject` keeps today's semantics —
+    // warn + fall back to the default rps — and is NOT a pair failure as long as
+    // burst is left at its own (nonzero) default. This pins that the new pair check
+    // did not change the pre-existing single-value policy.
+    with_env_vars([("T13_GW_RPS_C", Some("0"))], || {
+        let (rps, burst) = env_rate_pair(
+            "T13_GW_RPS_C",
+            "T13_GW_BURST_C",
+            20.0,
+            40,
+            RateZeroPolicy::Reject,
+        )
+        .expect("a lone explicit rps=0 must still warn+default, not fail");
+        assert_eq!(rps, 20.0, "explicit zero rps under Reject falls back to the default");
+        assert_eq!(burst, 40, "burst is untouched and keeps its own default");
+    });
+}
+
+#[test]
+fn env_rate_pair_allow_zero_burst_passes_through_as_disable() {
+    // The player plane's own semantics: `burst==0` under `Allow` is that plane's
+    // "disable this layer" signal and must pass through unchanged, never rejected.
+    with_env_vars(
+        [
+            ("T13_PLAYER_RPS_D", Some("10")),
+            ("T13_PLAYER_BURST_D", Some("0")),
+        ],
+        || {
+            let (rps, burst) = env_rate_pair(
+                "T13_PLAYER_RPS_D",
+                "T13_PLAYER_BURST_D",
+                10.0,
+                40,
+                RateZeroPolicy::Allow,
+            )
+            .expect("Allow policy is infallible by construction");
+            assert_eq!(rps, 10.0);
+            assert_eq!(burst, 0, "burst=0 under Allow stays the player plane's disable signal");
+        },
+    );
 }
 
 // ============================================================================

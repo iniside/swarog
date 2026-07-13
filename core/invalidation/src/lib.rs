@@ -255,18 +255,22 @@ pub struct InvalidationPlane {
 }
 
 impl InvalidationPlane {
-    /// No env reads beyond the poll interval, no I/O — construction is wiring-safe; the
-    /// first DB touch is [`start`](Self::start).
-    pub fn new(listen_dsn: String) -> InvalidationPlane {
-        InvalidationPlane {
+    /// No I/O — construction is wiring-safe; the first DB touch is
+    /// [`start`](Self::start). Fails loudly (never silently defaults) on an EXPLICIT
+    /// zero or out-of-range `INVALIDATION_POLL_INTERVAL_MS`/`INVALIDATION_CALLBACK_TIMEOUT_MS`
+    /// (mirroring `asyncevents::retention::Config`'s posture: absent → default, malformed
+    /// → default, explicit zero → fail) — so `core/app::run` propagates a bad knob into a
+    /// boot failure instead of a plane that silently reverts to the default poll/timeout.
+    pub fn new(listen_dsn: String) -> anyhow::Result<InvalidationPlane> {
+        Ok(InvalidationPlane {
             registrar: Arc::new(Invalidation::new()),
             listen_dsn,
-            poll: poll_from_env(),
-            callback_timeout: callback_timeout_from_env(),
+            poll: poll_from_env()?,
+            callback_timeout: callback_timeout_from_env()?,
             health: Health::default(),
             gauges: gauges::Gauges::new(),
             stop: None,
-        }
+        })
     }
 
     /// The Prometheus collectors for `core/metrics::register` (called once by `app::run`,
@@ -433,24 +437,44 @@ async fn backoff(stop: &mut watch::Receiver<bool>) {
 }
 
 /// Reads `INVALIDATION_POLL_INTERVAL_MS` (positive ms), else [`DEFAULT_POLL`].
-fn poll_from_env() -> Duration {
-    match std::env::var("INVALIDATION_POLL_INTERVAL_MS")
-        .ok()
-        .and_then(|v| v.trim().parse::<u64>().ok())
-    {
-        Some(ms) if ms > 0 => Duration::from_millis(ms),
-        _ => DEFAULT_POLL,
-    }
+fn poll_from_env() -> anyhow::Result<Duration> {
+    parse_ms_env("INVALIDATION_POLL_INTERVAL_MS", DEFAULT_POLL)
 }
 
 /// Reads `INVALIDATION_CALLBACK_TIMEOUT_MS` (positive ms), else [`DEFAULT_CALLBACK_TIMEOUT`].
-fn callback_timeout_from_env() -> Duration {
-    match std::env::var("INVALIDATION_CALLBACK_TIMEOUT_MS")
-        .ok()
-        .and_then(|v| v.trim().parse::<u64>().ok())
-    {
-        Some(ms) if ms > 0 => Duration::from_millis(ms),
-        _ => DEFAULT_CALLBACK_TIMEOUT,
+fn callback_timeout_from_env() -> anyhow::Result<Duration> {
+    parse_ms_env("INVALIDATION_CALLBACK_TIMEOUT_MS", DEFAULT_CALLBACK_TIMEOUT)
+}
+
+/// The shared decision authority for both millisecond-duration env knobs on this
+/// plane. Mirrors `asyncevents::retention::Config`'s posture exactly: absent (unset
+/// or blank) → `default`; malformed (unparseable as `u64`) → `default` (the
+/// historical "garbage is tolerated" fallback); an EXPLICIT zero is a distinct,
+/// invalid case that fails loudly rather than silently reverting to the default —
+/// zero would otherwise busy-loop the poller/callback deadline with no operator
+/// signal that their setting was ignored.
+fn parse_ms_env(name: &str, default: Duration) -> anyhow::Result<Duration> {
+    let raw = match std::env::var(name) {
+        Ok(raw) => raw,
+        Err(std::env::VarError::NotPresent) => return Ok(default),
+        // Present-but-non-Unicode is malformed, not absent; malformed falls back to
+        // the default (same policy as an unparseable numeric string below).
+        Err(std::env::VarError::NotUnicode(_)) => return Ok(default),
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(default);
+    }
+    match trimmed.parse::<u64>() {
+        Ok(0) => anyhow::bail!(
+            "{name}=0 is invalid: a zero duration is rejected rather than silently \
+             falling back to the default ({default:?}) — set a positive millisecond \
+             value or unset {name} entirely"
+        ),
+        Ok(ms) => Ok(Duration::from_millis(ms)),
+        // Malformed (non-numeric, negative, overflow) mirrors the historical "garbage
+        // is tolerated" knob convention: fall back to the default, never fail.
+        Err(_) => Ok(default),
     }
 }
 

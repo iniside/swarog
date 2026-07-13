@@ -492,7 +492,7 @@ async fn grant_starter_reflects_config_after_invalidation_refresh() {
     // this test exercises only the invalidation path; the subs just need somewhere
     // to record).
     let events_plane = asyncevents::Plane::new(pool.clone(), dsn.clone()).unwrap();
-    let mut inv_plane = invalidation::InvalidationPlane::new(dsn);
+    let mut inv_plane = invalidation::InvalidationPlane::new(dsn).unwrap();
     let ctx = Context::with_db_and_transport(pool.clone(), events_plane.transport())
         .with_invalidation(inv_plane.handle());
 
