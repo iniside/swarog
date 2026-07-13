@@ -158,7 +158,11 @@ fn fleet_session_budget_is_enforced() {
         .iter()
         .map(|service| service.pool_budget.pool_max + service.pool_budget.dedicated)
         .sum();
-    assert!(total <= 87, "proof fleet reserves {total} sessions, budget is 87");
+    assert!(
+        total <= crate::fleet::PG_SESSION_BUDGET,
+        "proof fleet reserves {total} sessions, budget is {}",
+        crate::fleet::PG_SESSION_BUDGET
+    );
 }
 
 #[test]
@@ -176,36 +180,60 @@ fn pool_budget_dedicated_matches_exported_session_constants() {
         crate::fleet::SCHEDULER_FIRE_SESSIONS as usize,
         scheduler::DEDICATED_FIRE_SESSIONS
     );
+    assert_eq!(
+        crate::fleet::AE_TRANSIENT_POISON_SESSIONS as usize,
+        asyncevents::TRANSIENT_POISON_SESSIONS
+    );
 
-    // And the per-service reservations are composed from those mirrors — a plain DB svc
-    // reserves both planes, the scheduler adds its fire connection, gateway reserves
-    // nothing.
+    // And the per-service reservations are composed from those mirrors, asserted for
+    // EVERY service in the fleet (a wrong count on any svc must be visible, not just
+    // on spot-checked ones): each DB-backed svc reserves both planes, the scheduler
+    // adds its fire connection, gateway (DB-less) reserves nothing.
     let fleet = game_backend_fleet(&inputs(), FleetFlavor::Proof);
     let plane = crate::fleet::AE_WORKERS
         + crate::fleet::AE_WAKEUP_SESSIONS
         + crate::fleet::INVALIDATION_LISTEN_SESSIONS;
-    assert_eq!(fleet.service("audit-svc").unwrap().pool_budget.dedicated, plane);
+    for service in fleet.services() {
+        let expected_dedicated = match service.name {
+            "gateway-svc" => 0,
+            "scheduler-svc" => plane + crate::fleet::SCHEDULER_FIRE_SESSIONS,
+            _ => plane,
+        };
+        assert_eq!(
+            service.pool_budget.dedicated, expected_dedicated,
+            "{}: dedicated sessions drifted from the composition formula",
+            service.name
+        );
+        // One field feeds BOTH runtime and invariant: a DB-backed svc's injected env
+        // cap equals its reserved pool_max; the DB-less gateway gets no injection and
+        // reserves no pool.
+        let injected = service.env.get("DATABASE_POOL_MAX_CONNECTIONS");
+        if service.name == "gateway-svc" {
+            assert_eq!(service.pool_budget.pool_max, 0, "gateway reserves no pool");
+            assert!(injected.is_none(), "gateway must not get a pool cap injected");
+        } else {
+            assert_eq!(
+                injected.map(String::as_str),
+                Some(service.pool_budget.pool_max.to_string().as_str()),
+                "{}: injected pool cap != reserved pool_max",
+                service.name
+            );
+        }
+    }
+    // The monolith's single-process reservation follows the same composition.
+    let monolith = game_backend_monolith(
+        &inputs(),
+        FleetFlavor::Proof,
+        &EnvironmentSnapshot::from_values([]),
+    );
     assert_eq!(
-        fleet.service("scheduler-svc").unwrap().pool_budget.dedicated,
+        monolith.pool_budget.dedicated,
         plane + crate::fleet::SCHEDULER_FIRE_SESSIONS
     );
     assert_eq!(
-        fleet.service("gateway-svc").unwrap().pool_budget,
-        PoolBudget { pool_max: 0, dedicated: 0 }
+        monolith.env.get("DATABASE_POOL_MAX_CONNECTIONS").map(String::as_str),
+        Some(monolith.pool_budget.pool_max.to_string().as_str())
     );
-
-    // The injected env cap equals the reserved pool_max for a DB svc (one field feeds
-    // BOTH runtime and invariant), and gateway has no injection at all.
-    let audit = fleet.service("audit-svc").unwrap();
-    assert_eq!(
-        audit.env.get("DATABASE_POOL_MAX_CONNECTIONS").map(String::as_str),
-        Some(audit.pool_budget.pool_max.to_string().as_str())
-    );
-    assert!(!fleet
-        .service("gateway-svc")
-        .unwrap()
-        .env
-        .contains_key("DATABASE_POOL_MAX_CONNECTIONS"));
 }
 
 #[cfg(windows)]

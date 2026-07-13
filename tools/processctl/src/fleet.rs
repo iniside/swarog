@@ -19,12 +19,22 @@ const SERVICE_ENV_ALLOWLIST: &[&str] = &[
 ];
 
 /// Sessions the local Postgres reserves for dev tooling running ALONGSIDE the fleet,
-/// carved out of the usable budget before the processes get any. It covers splitproof's
-/// own sqlx pool, `devctl`'s psql seeding, an ad-hoc `eventctl`, AND absorbs
-/// asyncevents' transient poison-recovery bursts ([`asyncevents::TRANSIENT_POISON_SESSIONS`],
-/// mirrored as documented headroom) so a poisoned handler's extra backends never overrun
-/// `max_connections`. Raise it if a new always-on dev consumer appears.
-const HARNESS_RESERVE: u32 = 10;
+/// carved out of the usable budget before the processes get any. This is a HEURISTIC
+/// reserve — an itemized estimate, deliberately not derivation machinery. The named
+/// breakdown (add a new always-on consumer by item, never by nudging a bare number):
+///
+/// | item                                                     | sessions |
+/// |----------------------------------------------------------|----------|
+/// | splitproof's own sqlx assertion pool                     | ~4       |
+/// | devctl psql seeding / adminctl                           | 1        |
+/// | eventctl ad-hoc operator session                         | 1        |
+/// | asyncevents poison-recovery burst                        | 2 (= [`AE_TRANSIENT_POISON_SESSIONS`]) |
+/// | slack                                                    | 2        |
+/// | **total**                                                | **10**   |
+///
+/// The poison-burst term is the mirrored const itself, so that line of the estimate
+/// tracks the real mechanism; the other items are hand-estimated.
+const HARNESS_RESERVE: u32 = 4 + 1 + 1 + AE_TRANSIENT_POISON_SESSIONS + 2;
 
 /// Usable Postgres sessions the whole fleet + monolith must fit within. Assumes the
 /// local Postgres runs stock defaults: `max_connections = 100` minus
@@ -32,7 +42,7 @@ const HARNESS_RESERVE: u32 = 10;
 /// PG-side configurable — an operator who raised `max_connections` has strictly MORE
 /// headroom, so this is a conservative floor, not a hard platform limit. [`HARNESS_RESERVE`]
 /// is subtracted so the fleet is charged only its own share.
-const PG_SESSION_BUDGET: u32 = 97 - HARNESS_RESERVE;
+pub(crate) const PG_SESSION_BUDGET: u32 = 97 - HARNESS_RESERVE;
 
 // Local `u32` mirrors of the plane/module session constants that own the real
 // mechanism. Kept as plain numbers so the RUNTIME fleet build carries no dependency on
@@ -47,18 +57,29 @@ pub(crate) const AE_WAKEUP_SESSIONS: u32 = 1;
 pub(crate) const INVALIDATION_LISTEN_SESSIONS: u32 = 1;
 /// Mirror of `scheduler::DEDICATED_FIRE_SESSIONS` — the scheduler's per-fire connection.
 pub(crate) const SCHEDULER_FIRE_SESSIONS: u32 = 1;
+/// Mirror of `asyncevents::TRANSIENT_POISON_SESSIONS` — transient poison-recovery burst
+/// headroom. NOT charged per service; it rides inside [`HARNESS_RESERVE`]'s breakdown.
+pub(crate) const AE_TRANSIENT_POISON_SESSIONS: u32 = 2;
 
 /// Dedicated sessions EVERY DB-backed process reserves: both planes are constructed in
 /// any process with a DB (DB ⇒ plane), so the worst case is the delivery workers + the
 /// wake-up listener + the invalidation listener. A process without durable subs or cache
 /// registrations holds fewer at runtime; reserving the full set is the safe
-/// over-approximation for an exhaustion invariant.
+/// over-approximation for an exhaustion invariant. The COUNTS are drift-proof via the
+/// mirror test; what needs a human re-audit is a plane growing a new session CATEGORY
+/// (that is exactly how the transient-poison headroom arose) — a new category means a
+/// new exported const, a new mirror, and a new term here or in the reserve.
 const PLANE_DEDICATED_SESSIONS: u32 =
     AE_WORKERS + AE_WAKEUP_SESSIONS + INVALIDATION_LISTEN_SESSIONS;
 
 /// Per-DB-process pooled-connection cap in the SPLIT. Low by necessity: 11 DB-backed
 /// processes share one local Postgres, so each gets a small slice within
-/// [`PG_SESSION_BUDGET`]. Comfortably above core/app's migrate floor (2).
+/// [`PG_SESSION_BUDGET`]. Comfortably above core/app's migrate floor (2). The pool's
+/// concurrent users are the retention GC sweep, the metrics/invalidation poll refreshes,
+/// the `/readyz` DB ping, and the HTTP/edge handlers — under the sequential split-proof
+/// harness load these overlap only briefly, so 3 suffices; the failure mode of an
+/// undersized pool is acquire-wait LATENCY (a slow request/probe), never a correctness
+/// break, since every user waits on the pool rather than erroring.
 const SPLIT_SERVICE_POOL_MAX: u32 = 3;
 
 /// Pooled-connection cap for the MONOLITH — one process hosting every module + both
