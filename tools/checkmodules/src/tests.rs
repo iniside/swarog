@@ -6,9 +6,8 @@ use std::path::Path;
 /// the filesystem set of `cmd/*-svc` directories. The compile-time `vec!` of
 /// `<name>_svc::modules(...)` calls can't be derived (each is a distinct crate
 /// import), so this is the drift tripwire: a 13th `cmd/<name>-svc` crate fails this
-/// test loudly until it's added to `split_process_modules()` (and the fortress
-/// build list in verify.sh/verify.ps1, which IS derived from the same directory
-/// set — see `fortress_crates()` / `Get-FortressCrates`).
+/// test loudly until it's added to `split_process_modules()`. The verifyctl fortress
+/// build list is independently derived from the same directory set.
 #[test]
 fn split_fleet_matches_cmd_dirs() {
     let from_fleet: BTreeSet<String> = split_process_modules()

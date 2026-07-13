@@ -1,12 +1,12 @@
 ---
 name: safe-verification
-description: Run tests/verification on this machine WITHOUT tripping the one-test-rollout-at-a-time constraint (shared local Postgres, events-plane advisory locks). Use BEFORE any cargo test, verify.sh/ps1, split-proof, or dispatching a subagent that will run tests — and whenever a test run hangs, fails with "tuple concurrently updated", or seems stuck on migration. Also selects the minimal verification stage for the change instead of defaulting to full verify.
+description: Run tests/verification on this machine WITHOUT tripping the one-test-rollout-at-a-time constraint (shared local Postgres, events-plane advisory locks). Use BEFORE any cargo test, devctl fleet, verifyctl rollout, or dispatching a subagent that will run tests — and whenever a test run hangs, fails with "tuple concurrently updated", or seems stuck on migration. Also selects the minimal verification stage for the change instead of defaulting to full verify.
 ---
 
 # Safe Verification
 
-Every test run here (`cargo test`, `verify.*`, `split-proof.*`) shares ONE
-local Postgres. Concurrent runs contend on the events plane's migrate advisory
+Every rollout-bearing run here (`cargo test`, `devctl up`, `verifyctl`) shares
+ONE local Postgres. Concurrent runs contend on the events plane's migrate advisory
 lock and concurrent DDL — which looks like a hang or fails with
 `tuple concurrently updated`. This protocol is mandatory (CLAUDE.md: "One test
 rollout at a time"), and it exists because the failure mode looks like *your*
@@ -15,14 +15,20 @@ change is broken when it isn't.
 ## Step 1 — Pre-flight: is anything already running?
 
 ```powershell
-Get-Process | Where-Object { $_.ProcessName -match '^cargo$|^rustc$|-svc$|^server$' }
+Get-Process | Where-Object { $_.ProcessName -match '^cargo$|^rustc$' }
 ```
 (bash: `pgrep -x cargo; pgrep rustc`)
 
-If a run is active: **WAIT for it**. Never start a second run "to check
+If Cargo/rustc is active, **WAIT for it** before invoking another Cargo command.
+Once clear, run `cargo run -p devctl -- status`; it must report no active fleet.
+If a rollout is active: **WAIT for it**. Never start a second run "to check
 something quickly" — that is the classic cause. If you started the running one
 in the background, monitor it; don't launch anything that compiles or tests
 (including `cargo clippy` builds) alongside it.
+
+If status says no active fleet but `*-svc` or `server` processes remain, treat
+them as leftovers and identify ownership before stopping anything; never kill
+unrelated processes by name.
 
 ## Step 2 — Check for leftovers from a dead/hung run
 
@@ -53,7 +59,7 @@ radius (cheapest that actually exercises the change):
 | Touches a contract crate (`api/*`) | build workspace + tests of producer AND consumers; expect the `public-api` stage to need a bless if intentional |
 | New/changed event or subscription | `cargo run -p topiccheck` + the consumer's tests |
 | New require/capability wiring | `cargo run -p requirecheck` + `cargo run -p archcheck` (both cheap, no test DB contention) |
-| Cross-process behavior, new module, gateway/edge change | `./split-proof.ps1` (or `.sh`) — the at-risk path is the SPLIT; do not pass off monolith-only testing as coverage |
+| Cross-process behavior, new module, gateway/edge change | `cargo run -p verifyctl -- --fast` — its blocking split-proof stage is the at-risk path; do not pass off monolith-only testing as coverage |
 | Anything in core/ | `cargo test --workspace` |
 
 archcheck / topiccheck / requirecheck are static (seconds); they can run while
@@ -62,10 +68,10 @@ you think, but not alongside a compiling test run of the same workspace
 
 ## Step 4 — Full net LAST, once, at the end
 
-When the rollout is done: one `./verify.ps1` (or `./verify.sh`) run — it IS the
-CI. Use `--fast` mid-rollout if you need the blocking tiers only; the final
-pre-commit run should be the default tier. Re-run pre-flight (Step 1) before
-launching it.
+When the rollout is done, run one selected `verifyctl` manifest; it is the local
+safety net. Use `cargo run -p verifyctl -- --fast` for blocking tiers only, or
+`cargo run -p verifyctl -- --all --strict` when the advisory tiers must also
+block. Re-run pre-flight (Step 1) before launching it.
 
 ## Subagents
 

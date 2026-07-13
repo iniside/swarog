@@ -42,10 +42,11 @@ Walk the hops in order; the failure is at the first broken one:
    applies it iff the process serves the internal edge. No registration = the
    svc listens but the method dispatches nowhere.
 6. **Right port?** Cross-check the address gateway-svc was given against the
-   svc's edge port. The authoritative fleet list lives in
-   `split-proof.ps1`/`.sh` (`fleet_preflight` self-checks it). Convention:
+   svc's edge port. The authoritative typed fleet lives in
+   `tools/processctl/src/fleet.rs`; `tools/splitproof` fails its fleet-drift
+   preflight when that set disagrees with `cmd/*-svc`. Convention:
    characters :8080/:9000 … apikeys :8091/:9009, gateway HTTP :8082 +
-   player-QUIC :9100 — trust the script over this table.
+   player-QUIC :9100 — trust the fleet source over this summary.
 
 ## §B — Durable event trace (producer tx → shared log → consumer checkpoint)
 
@@ -77,23 +78,24 @@ did the event row get appended? Did the checkpoint advance?
   stub in that process's module set → add the stub or fix `requires()`.
 - Gateway process without accounts capability fails unless
   `ACCOUNTS_DEV_AUTH=1`; without apikeys capability unless `APIKEYS_DEV_ALLOW=1`;
-  admin without `ADMIN_USER`/`ADMIN_PASS` unless `ADMIN_OPEN=1`. These are
-  deliberate fail-closed gates — set the env or host the capability, don't
-  weaken the gate.
+  these are deliberate fail-closed gates — set the env or host the capability,
+  don't weaken the gate. Admin no longer accepts `ADMIN_USER`/`ADMIN_PASS`: seed
+  a user through `adminctl`; zero-user boot warns, while `ADMIN_OPEN=1` is the
+  explicit local bypass.
 - Invalidation plane: startup fails if a registered callback's first refresh
   fails (e.g. `CachedConfig` boot-fill) — check DB reachability from that
   process, not the callback.
 
 ## §D — mTLS / connect
 
-`run.sh`/`run.ps1` mint the dev CA (via `tools/edgeca`). Cert errors after
-adding a process usually mean it wasn't issued a cert / given the CA paths its
-peers expect. Compare its env wiring with a working svc's block in the run/
-split-proof scripts.
+`devctl up` and the split-proof harness mint the dev CA via `tools/edgeca`.
+Cert errors after adding a process usually mean it was not given the CA paths
+its peers expect. Compare its typed environment and peer wiring with a working
+service in `tools/processctl/src/fleet.rs`.
 
 ## Output
 
 Report the trace: each hop checked, evidence (command output, file:line of the
 wiring), and the FIRST broken hop. Fix that hop; then re-run the relevant named
-split-proof assertion (respect the safe-verification protocol), not just the
-monolith.
+split-proof path through verifyctl (respect the safe-verification protocol), not
+just the monolith.

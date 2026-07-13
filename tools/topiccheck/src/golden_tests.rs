@@ -8,14 +8,14 @@ use super::*;
 
 /// The committed golden must exist and match the live `define(...)` +
 /// `route_bindings()` values exactly. On drift, either revert the value change or
-/// re-bless intentionally (`cargo run -p topiccheck -- contract-golden --bless`).
+/// re-bless intentionally (`cargo run -p verifyctl -- --bless-contract-golden`).
 #[test]
 fn committed_golden_matches_live_contract_values() {
     let findings = check().expect("contract-golden check must run");
     assert!(
         findings.is_empty(),
         "live contract values differ from {GOLDEN_REL}:\n  {}\n(if intentional, re-bless \
-         via ./verify.sh --bless-contract-golden)",
+         via cargo run -p verifyctl -- --bless-contract-golden)",
         findings.join("\n  ")
     );
 }

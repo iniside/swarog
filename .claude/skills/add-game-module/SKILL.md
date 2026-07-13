@@ -81,30 +81,33 @@ value changes which operations get contributed), add it to `GATES` in
 ## Step 5 — Enforcement wiring (this is what keeps it not-monolith-only)
 
 1. Add the svc lib to `tools/checkmodules`'s Split profile.
-2. Extend `split-proof.sh` AND `.ps1`: new process (next free port pair — see
-   the script's fleet list, it self-checks via `fleet_preflight`) + a **named
-   assertion** exercising the cross-process path, HTTP ops asserted THROUGH
-   gateway-svc, DB-verified where state changes.
-3. Add the svc to the `fortress` verify-stage port list.
-4. New event topics: consumers exist or the topic is consciously added to
+2. Extend the canonical fleet in `tools/processctl/src/fleet.rs` with the typed
+   service environment, dependencies, and ports. Extend `tools/splitproof` with
+   a **named assertion** exercising the cross-process path, HTTP ops asserted
+   THROUGH gateway-svc and state changes DB-verified. Its fleet-drift preflight
+   must still agree with `cmd/*-svc` on disk.
+3. New event topics: consumers exist or the topic is consciously added to
    topiccheck's `ALLOW_UNSUBSCRIBED`.
-5. Add `src/conformance.rs` with `pub fn entry() -> conformance::Entry`
-   declaring a stance (`Applies(fixture)` or `NotApplicable { why }`) for
-   every `conformance::Convention`, and add the entry to `tools/conformance`'s
-   `entries()` list — `conformancecheck`'s drift preflight fails loudly if
-   forgotten.
+4. Add the module to `tools/conformance/src/policy.rs`. Shipping modules expose
+   only the smallest `#[doc(hidden)]` factual probes needed by that tool-owned
+   policy; they never depend on conformance policy types and never use a Cargo
+   feature for conformance. Map every externally or wire-reachable request string
+   field in the centralized input policy, with a concrete non-applicability reason
+   where a convention genuinely does not apply.
 
 ## Step 6 — Verify (via the safe-verification skill)
 
-Static first: `archcheck`, `topiccheck`, `requirecheck`. Then targeted tests,
-then `split-proof`, then one full `verify` at the end. The split run is the
-at-risk path — a monolith-only demo is not proof.
+Static checks and targeted tests come first. Then run the blocking split-proof
+through `cargo run -p verifyctl -- --fast`, followed by the selected final
+`verifyctl` manifest once. The split run is the at-risk path — a monolith-only
+demo is not proof.
 
 ## Self-check before declaring done
 
 Grep-diff yourself against reality (hand-maintained lists drift): the module
-appears in `cmd/server`, in its own svc, in checkmodules Split profile, in both
-split-proof scripts, in the fortress port list, and in `tools/conformance`'s
-`entries()`; every `require` has a stub in every process where a consumer runs
-without the provider. If any list disagrees with the code, fix the list in the
-same change.
+appears in `cmd/server`, in its own svc, in checkmodules Split profile, in the
+canonical processctl fleet, in a named `tools/splitproof` assertion, and in the
+centralized conformance policy; every `require` has a stub in every process where
+a consumer runs without the provider. The verifyctl fortress stage derives its
+build set from `cmd/*-svc`; do not add another manual build or port list. If any
+list disagrees with the code, fix the list in the same change.

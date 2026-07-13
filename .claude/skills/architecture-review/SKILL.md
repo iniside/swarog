@@ -15,7 +15,7 @@ enforcement — do NOT re-derive what it covers; run it or trust it:
 | `cargo run -p topiccheck` | subscription graph, contract versions, globally unique subscription ids, one host per profile, sinkless topics |
 | `cargo run -p requirecheck` | `require()` calls vs declared `requires()` manifest — but ONLY requires resolved in `init` (a `start`-time require escapes it — flag those yourself, see below) |
 | verify `public-api` stage | contract-crate surface diffs vs committed baseline |
-| `split-proof` | live cross-process behavior |
+| verifyctl `split-proof` stage | live cross-process behavior through `tools/splitproof` |
 
 Your job is the **semantic layer above those tools**. Read the diff and check:
 
@@ -64,10 +64,11 @@ any module SQL touching `asyncevents.*` tables (calling the plane's SQL
 
 A new module or cross-process flow must land with ALL of: `cmd/<name>-svc`,
 registration in `cmd/server`, stubs where consumers live, the svc lib in
-`tools/checkmodules`'s Split profile, a **named assertion** in
-`split-proof.sh`/`.ps1` (HTTP ops asserted THROUGH gateway-svc, not direct), and
-the fortress-stage port list. A feature demonstrated only via the monolith
-smoke test is incomplete — say so explicitly.
+`tools/checkmodules`'s Split profile, a typed service entry in the canonical
+`tools/processctl` fleet, and a **named assertion** in `tools/splitproof` (HTTP
+ops asserted THROUGH gateway-svc, not direct). The verifyctl fortress build list
+is derived from `cmd/*-svc`; do not ask for a second manual list. A feature
+demonstrated only via the monolith smoke test is incomplete — say so explicitly.
 
 ## 7. Contract hygiene beyond the surface diff
 

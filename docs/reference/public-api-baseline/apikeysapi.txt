@@ -1,4 +1,4 @@
-# cargo-public-api 0.52.0 -- regenerate via ./verify.sh --bless-public-api
+# cargo-public-api 0.52.0 -- regenerate via cargo run -p verifyctl -- --bless-public-api
 pub mod apikeysapi
 pub mod apikeysapi::keys_rpc
 pub struct apikeysapi::keys_rpc::LookupKeyRequest

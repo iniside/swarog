@@ -1,4 +1,4 @@
-# cargo-public-api 0.52.0 -- regenerate via ./verify.sh --bless-public-api
+# cargo-public-api 0.52.0 -- regenerate via cargo run -p verifyctl -- --bless-public-api
 pub mod schedulerevents
 pub mod schedulerevents::schedule_names
 pub const schedulerevents::schedule_names::AUDIT_PRUNE: &str

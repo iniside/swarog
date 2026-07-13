@@ -1,4 +1,4 @@
-# cargo-public-api 0.52.0 -- regenerate via ./verify.sh --bless-public-api
+# cargo-public-api 0.52.0 -- regenerate via cargo run -p verifyctl -- --bless-public-api
 pub mod matchapi
 pub mod matchapi::match_rpc
 pub struct matchapi::match_rpc::ReportRequest

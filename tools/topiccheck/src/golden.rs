@@ -9,8 +9,8 @@
 //! This module renders those values into stable sorted lines, diffs them against the
 //! COMMITTED golden at `docs/reference/contract-golden/contracts.txt`, and fails on any
 //! difference (removed = BREAKING, added = ADDITIVE — same semantics as the public-api
-//! baseline). Re-bless intentional changes via `./verify.sh --bless-contract-golden`
-//! (or `-BlessContractGolden`), i.e. `cargo run -p topiccheck -- contract-golden --bless`.
+//! baseline). Re-bless intentional changes via
+//! `cargo run -p verifyctl -- --bless-contract-golden`.
 //!
 //! ## Sources
 //! - **Events:** [`crate::defined_topics`] — the canonical `bus::define` list, already
@@ -46,8 +46,7 @@ const GOLDEN_HEADER: &str = "\
 # `wire module=<crate::mod> method=<m> retry=<r>` from every generated wire_ops()
 # (EVERY method, http-bound and wire-only). ANY diff fails the blocking contract-golden
 # verify stage: a removed line is BREAKING, an added line is ADDITIVE.
-# Regenerate intentionally via ./verify.sh --bless-contract-golden (verify.ps1
-# -BlessContractGolden), i.e. `cargo run -p topiccheck -- contract-golden --bless`.";
+# Regenerate intentionally via cargo run -p verifyctl -- --bless-contract-golden.";
 
 /// Repo-relative location of the committed golden (mirrors
 /// `docs/reference/public-api-baseline/`).
@@ -275,7 +274,7 @@ pub fn check() -> anyhow::Result<Vec<String>> {
     let live = live_lines()?;
     let Some(committed) = committed_lines()? else {
         return Ok(vec![format!(
-            "MISSING golden {GOLDEN_REL} -- run `cargo run -p topiccheck -- contract-golden --bless`"
+            "MISSING golden {GOLDEN_REL} -- run `cargo run -p verifyctl -- --bless-contract-golden`"
         )]);
     };
     let mut findings = Vec::new();
@@ -343,7 +342,7 @@ pub fn run(bless_flag: bool) -> anyhow::Result<()> {
         }
         eprintln!(
             "  (a changed value shows as one REMOVED + one ADDED line; if intentional, \
-             re-bless via ./verify.sh --bless-contract-golden)"
+             re-bless via cargo run -p verifyctl -- --bless-contract-golden)"
         );
         std::process::exit(1);
     }

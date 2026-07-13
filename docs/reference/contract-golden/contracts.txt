@@ -5,8 +5,7 @@
 # `wire module=<crate::mod> method=<m> retry=<r>` from every generated wire_ops()
 # (EVERY method, http-bound and wire-only). ANY diff fails the blocking contract-golden
 # verify stage: a removed line is BREAKING, an added line is ADDITIVE.
-# Regenerate intentionally via ./verify.sh --bless-contract-golden (verify.ps1
-# -BlessContractGolden), i.e. `cargo run -p topiccheck -- contract-golden --bless`.
+# Regenerate intentionally via cargo run -p verifyctl -- --bless-contract-golden.
 
 event topic=admin.action version=1 history=min-retention:30d
 event topic=character.created version=1 history=min-retention:7d

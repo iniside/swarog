@@ -1,4 +1,4 @@
-# cargo-public-api 0.52.0 -- regenerate via ./verify.sh --bless-public-api
+# cargo-public-api 0.52.0 -- regenerate via cargo run -p verifyctl -- --bless-public-api
 pub mod adminevents
 pub struct adminevents::AdminAction
 pub adminevents::AdminAction::action: alloc::string::String
