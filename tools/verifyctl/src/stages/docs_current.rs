@@ -145,20 +145,21 @@ fn check_links(
         if target_without_suffix.is_empty() {
             continue;
         }
-        if retired_link(target_without_suffix) {
+        let portable_target = target_without_suffix.replace('\\', "/");
+        let resolved = if portable_target.starts_with('/') {
+            root.join(portable_target.trim_start_matches('/'))
+        } else {
+            document
+                .parent()
+                .unwrap_or(root)
+                .join(portable_target)
+        };
+        if retired_root_link(root, &resolved) {
             findings.insert(format!(
                 "{relative}:{line_number}: retired wrapper link `{target}`"
             ));
             continue;
         }
-        let resolved = if target_without_suffix.starts_with('/') {
-            root.join(target_without_suffix.trim_start_matches('/'))
-        } else {
-            document
-                .parent()
-                .unwrap_or(root)
-                .join(target_without_suffix)
-        };
         if !resolved.exists() {
             findings.insert(format!(
                 "{relative}:{line_number}: missing local Markdown link `{target}`"
@@ -205,11 +206,25 @@ fn strip_query_and_fragment(target: &str) -> &str {
     &target[..end]
 }
 
-fn retired_link(target: &str) -> bool {
-    target
-        .rsplit(['/', '\\'])
-        .next()
-        .is_some_and(|name| RETIRED_LINKS.contains(&name))
+fn retired_root_link(root: &Path, resolved: &Path) -> bool {
+    let resolved = normalize_path(resolved);
+    RETIRED_LINKS
+        .iter()
+        .any(|name| resolved == normalize_path(&root.join(name)))
+}
+
+fn normalize_path(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                normalized.pop();
+            }
+            _ => normalized.push(component.as_os_str()),
+        }
+    }
+    normalized
 }
 
 fn check_packages(
@@ -273,21 +288,37 @@ fn check_retired_command(
     snippet: &str,
     findings: &mut BTreeSet<String>,
 ) {
-    if let Some(command) = RETIRED_COMMANDS.iter().find(|command| {
-        snippet
-            .strip_prefix(**command)
-            .is_some_and(|rest| {
-                rest.is_empty()
-                    || rest
-                        .chars()
-                        .next()
-                        .is_some_and(char::is_whitespace)
-            })
-    }) {
+    if let Some(command) = retired_command(snippet) {
         findings.insert(format!(
             "{relative}:{line_number}: retired executable command `{command}`"
         ));
     }
+}
+
+fn retired_command(snippet: &str) -> Option<&'static str> {
+    let mut tokens = snippet.split_whitespace();
+    let mut first = tokens.next()?;
+    if first == "$" {
+        first = tokens.next()?;
+    }
+    let command = match first {
+        "bash" | "sh" => {
+            let command = tokens.next()?;
+            command.ends_with(".sh").then_some(command)?
+        }
+        "pwsh" | "powershell" => {
+            let mut command = tokens.next()?;
+            if command == "-File" {
+                command = tokens.next()?;
+            }
+            command.ends_with(".ps1").then_some(command)?
+        }
+        command => command,
+    };
+    RETIRED_COMMANDS
+        .iter()
+        .copied()
+        .find(|retired| *retired == command)
 }
 
 fn display_path(root: &Path, path: &Path) -> String {
@@ -335,7 +366,7 @@ mod tests {
 cargo run -p missing-package
 ./verify.sh --fast
 ```
-[legacy](../run.ps1)
+[legacy](run.ps1)
 "#;
         let findings = check(contents, &["known-package"]);
         assert!(findings.windows(2).all(|pair| pair[0] <= pair[1]));
@@ -351,7 +382,71 @@ cargo run -p missing-package
             .any(|finding| finding.contains("retired executable command `./verify.sh`")));
         assert!(findings
             .iter()
-            .any(|finding| finding.contains("retired wrapper link `../run.ps1`")));
+            .any(|finding| finding.contains("retired wrapper link `run.ps1`")));
+    }
+
+    #[test]
+    fn recognizes_launch_prefixes_and_prompt_without_matching_negative_prose() {
+        let positive = r#"```sh
+bash ./verify.sh --fast
+sh ./run.sh
+pwsh -File .\verify.ps1
+powershell .\run.ps1
+$ ./run.sh
+```
+"#;
+        let findings = check(positive, &[]);
+        assert_eq!(
+            findings
+                .iter()
+                .filter(|finding| finding.contains("retired executable command"))
+                .count(),
+            5
+        );
+
+        let negative = r#"`Do not run bash ./verify.sh --fast`
+`bash ./verify.sh.old --fast`
+`pwsh -File .\verify.ps1.example`
+```sh
+# bash ./verify.sh --fast is retired documentation
+```
+"#;
+        assert!(check(negative, &[]).is_empty());
+    }
+
+    #[test]
+    fn retired_links_are_limited_to_deleted_root_wrappers() {
+        let root = fixture_root("retired-links");
+        let archive = root.join("experiments/go-sketch");
+        std::fs::create_dir_all(&archive).unwrap();
+        for wrapper in RETIRED_LINKS {
+            std::fs::write(archive.join(wrapper), "archived fixture").unwrap();
+        }
+        let document = root.join("README.md");
+        let contents = r#"[root run sh](run.sh)
+[root run ps1](.\run.ps1)
+[root verify sh](verify.sh?old=1)
+[root verify ps1](./verify.ps1#old)
+[archive run sh](experiments/go-sketch/run.sh)
+[archive run ps1](experiments\go-sketch\run.ps1)
+[archive verify sh](experiments/go-sketch/verify.sh)
+[archive verify ps1](experiments/go-sketch/verify.ps1)
+"#;
+        std::fs::write(&document, contents).unwrap();
+        let mut found = BTreeSet::new();
+        check_document(&root, &document, contents, &BTreeSet::new(), &mut found);
+        assert_eq!(
+            found
+                .iter()
+                .filter(|finding| finding.contains("retired wrapper link"))
+                .count(),
+            4
+        );
+        assert!(!found.iter().any(|finding| finding.contains("experiments")));
+        assert!(!found
+            .iter()
+            .any(|finding| finding.contains("missing local Markdown link")));
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
