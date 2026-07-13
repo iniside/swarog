@@ -229,6 +229,13 @@ async fn current_tree_has_zero_unsubscribed_in_both_profiles() {
 /// string. A topic-only key would treat the v2 site as a duplicate of v1 and panic on
 /// every additive event evolution -- exactly the dead-gate failure mode this scan must
 /// not repeat.
+///
+/// Tolerance (deliberate, no lexer): this is a text scan, not Rust parsing. A `define(`
+/// occurrence inside a string literal or a block comment WILL be picked up as a phantom
+/// site. That is acceptable because the failure mode is loud, never silent: a phantom
+/// site either fails version parsing (panic here) or surfaces as a drift-assert mismatch
+/// against the compiled `EventContract` values in `defined_topics()` -- it can never make
+/// the gate pass something it should have failed.
 fn parse_define_sites(file_label: &str, text: &str) -> BTreeSet<(String, u32)> {
     let mut sites: BTreeSet<(String, u32)> = BTreeSet::new();
     for line in text.lines() {
@@ -236,66 +243,112 @@ fn parse_define_sites(file_label: &str, text: &str) -> BTreeSet<(String, u32)> {
         if t.starts_with("//") {
             continue;
         }
-        let Some(after) = t.split_once("define(") else { continue };
-        let rest = after.1;
-        let Some(start) = rest.find('"') else {
-            panic!(
-                "{file_label}: a `define(` call has no string-literal first argument on the \
-                 same line -- the scan assumes `define(\"topic\", <version>, ...)` on one \
-                 line: {line:?}"
-            );
-        };
-        let after_quote = &rest[start + 1..];
-        let end = after_quote.find('"').unwrap_or_else(|| {
-            panic!("{file_label}: unterminated string literal after `define(` in line {line:?}")
-        });
-        let topic = &after_quote[..end];
+        // Scan EVERY `define(` occurrence on the line, not only the first -- two defines
+        // packed onto one line must both be recorded, or a real site would be silently
+        // skipped.
+        let mut remaining = t;
+        while let Some((_, rest)) = remaining.split_once("define(") {
+            remaining = rest;
+            let Some(start) = rest.find('"') else {
+                panic!(
+                    "{file_label}: a `define(` call has no string-literal first argument on \
+                     the same line -- the scan assumes `define(\"topic\", <version>, ...)` \
+                     on one line: {line:?}"
+                );
+            };
+            let after_quote = &rest[start + 1..];
+            let end = after_quote.find('"').unwrap_or_else(|| {
+                panic!(
+                    "{file_label}: unterminated string literal after `define(` in line {line:?}"
+                )
+            });
+            let topic = &after_quote[..end];
 
-        // Parse the version argument: skip whitespace, expect exactly one comma, skip
-        // whitespace, then take a run of ASCII digits as the u32 literal. A version token
-        // that is NOT an integer literal -- a const name, a line wrap that puts the
-        // version on the next line, or nothing at all -- MUST panic here, never silently
-        // skip the site. A silent skip is the same dead-gate class Step 1 of this
-        // remediation just closed (a check that looks like it validates something but
-        // quietly excludes the case that would fail it); this scan does not get to
-        // reintroduce that pattern for the version field.
-        let after_topic = &after_quote[end + 1..];
-        let after_comma = after_topic.trim_start().strip_prefix(',').unwrap_or_else(|| {
-            panic!(
-                "{file_label}: `define(\"{topic}\", ...)` is not followed by a `,` and a \
-                 version literal on the same line -- cannot parse the version: {line:?}"
-            )
-        });
-        let version_field = after_comma.trim_start();
-        let digits: String = version_field.chars().take_while(|c| c.is_ascii_digit()).collect();
-        if digits.is_empty() {
-            panic!(
-                "{file_label}: `define(\"{topic}\", ...)` version argument is not an integer \
-                 literal on the same line (found {version_field:?}) -- a const name or a \
-                 version wrapped onto the next line cannot be scanned by this text-based \
-                 drift check; keep `define(\"topic\", <u32 literal>, ...)` on one line: \
-                 {line:?}"
-            );
-        }
-        let version: u32 = digits.parse().unwrap_or_else(|e| {
-            panic!("{file_label}: version literal {digits:?} failed to parse as u32: {e}")
-        });
+            // Parse the version argument: skip whitespace, expect exactly one comma, skip
+            // whitespace, then take a run of ASCII digits as the u32 literal. A version
+            // token that is NOT a plain decimal integer literal -- a const name, a line
+            // wrap that puts the version on the next line, nothing at all, or a digit run
+            // glued to more token characters (`1_0`, `0x10`) -- MUST panic here, never
+            // silently skip or truncate the site. A silent skip is the same dead-gate
+            // class Step 1 of this remediation just closed (a check that looks like it
+            // validates something but quietly excludes the case that would fail it); this
+            // scan does not get to reintroduce that pattern for the version field.
+            let after_topic = &after_quote[end + 1..];
+            let after_comma = after_topic.trim_start().strip_prefix(',').unwrap_or_else(|| {
+                panic!(
+                    "{file_label}: `define(\"{topic}\", ...)` is not followed by a `,` and a \
+                     version literal on the same line -- cannot parse the version: {line:?}"
+                )
+            });
+            let version_field = after_comma.trim_start();
+            let digits: String =
+                version_field.chars().take_while(|c| c.is_ascii_digit()).collect();
+            if digits.is_empty() {
+                panic!(
+                    "{file_label}: `define(\"{topic}\", ...)` version argument is not an \
+                     integer literal on the same line (found {version_field:?}) -- a const \
+                     name or a version wrapped onto the next line cannot be scanned by this \
+                     text-based drift check; keep `define(\"topic\", <u32 literal>, ...)` on \
+                     one line: {line:?}"
+                );
+            }
+            // Boundary check: the digit run must END the token. `take_while` alone would
+            // silently TRUNCATE `1_0` to 1 or `0x10` to 0 -- a wrong version recorded
+            // without a peep. The compiled-contract drift assert would still catch the
+            // mismatch loudly downstream, but this scan's own contract is loud failure at
+            // the site, same as the non-literal case.
+            if let Some(next) = version_field[digits.len()..].chars().next() {
+                if next == '_' || next.is_ascii_alphanumeric() {
+                    panic!(
+                        "{file_label}: `define(\"{topic}\", ...)` version token is not a \
+                         plain decimal integer literal (found {version_field:?}) -- \
+                         separators (`1_0`) and radix prefixes (`0x10`) are rejected, not \
+                         truncated: {line:?}"
+                    );
+                }
+            }
+            let version: u32 = digits.parse().unwrap_or_else(|e| {
+                panic!("{file_label}: version literal {digits:?} failed to parse as u32: {e}")
+            });
 
-        if !sites.insert((topic.to_string(), version)) {
-            panic!(
-                "{file_label}: (topic, version) = ({topic:?}, {version}) is defined more than \
-                 once -- topiccheck assumes one define per (topic, version) pair"
-            );
+            if !sites.insert((topic.to_string(), version)) {
+                panic!(
+                    "{file_label}: (topic, version) = ({topic:?}, {version}) is defined more \
+                     than once -- topiccheck assumes one define per (topic, version) pair"
+                );
+            }
         }
     }
     sites
 }
 
+/// Union of define-sites across files, panicking on a `(topic, version)` pair defined in
+/// two different files -- the cross-file half of the duplicate-define tripwire, extracted
+/// from the #[test] body so the panic path is directly testable. Names BOTH files.
+fn union_define_sites<'a>(
+    files: impl IntoIterator<Item = (&'a str, &'a str)>,
+) -> BTreeSet<(String, u32)> {
+    let mut origin: std::collections::BTreeMap<(String, u32), String> =
+        std::collections::BTreeMap::new();
+    for (label, text) in files {
+        for site in parse_define_sites(label, text) {
+            if let Some(first) = origin.get(&site) {
+                panic!(
+                    "(topic, version) = {site:?} is defined in both {first} and {label} \
+                     (duplicate define-site across files) -- topiccheck assumes one define \
+                     per (topic, version) pair"
+                );
+            }
+            origin.insert(site, label.to_string());
+        }
+    }
+    origin.into_keys().collect()
+}
+
 #[test]
 fn defined_topics_matches_every_define_site_on_disk() {
     let api_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../api");
-    let mut from_fs: BTreeSet<(String, u32)> = BTreeSet::new();
-    let mut files_scanned = 0;
+    let mut files: Vec<(String, String)> = Vec::new();
     for entry in std::fs::read_dir(&api_dir)
         .unwrap_or_else(|e| panic!("failed to read {}: {e}", api_dir.display()))
     {
@@ -307,19 +360,10 @@ fn defined_topics_matches_every_define_site_on_disk() {
         let Ok(text) = std::fs::read_to_string(&lib) else {
             continue; // domain has no events crate -- nothing to scan
         };
-        files_scanned += 1;
-        let label = lib.display().to_string();
-        for site in parse_define_sites(&label, &text) {
-            if !from_fs.insert(site.clone()) {
-                panic!(
-                    "{label}: (topic, version) = {site:?} is defined more than once across \
-                     api/*/events (duplicate define-site across files) -- topiccheck assumes \
-                     one define per (topic, version) pair"
-                );
-            }
-        }
+        files.push((lib.display().to_string(), text));
     }
-    assert!(files_scanned > 0, "expected at least one api/*/events/src/lib.rs to scan");
+    assert!(!files.is_empty(), "expected at least one api/*/events/src/lib.rs to scan");
+    let from_fs = union_define_sites(files.iter().map(|(l, t)| (l.as_str(), t.as_str())));
 
     let from_defined: BTreeSet<(String, u32)> =
         defined_topics().into_iter().map(|c| (c.topic, c.version)).collect();
@@ -355,12 +399,84 @@ fn parse_define_sites_panics_on_a_genuine_duplicate_topic_version_pair() {
 }
 
 #[test]
-#[should_panic(expected = "fixture")]
-fn parse_define_sites_panics_with_file_label_on_a_non_literal_version() {
+#[should_panic(expected = "is not an integer literal")]
+fn parse_define_sites_panics_on_a_non_literal_version() {
     // A const token (or any non-integer version argument) must fail loudly, never be
     // silently skipped -- this scan is a gate, not a best-effort hint.
     let text = "define(\"x\", VERSION, HistoryPolicy::KeepForever);\n";
     parse_define_sites("fixture", text);
+}
+
+#[test]
+fn parse_define_sites_non_literal_panic_names_the_file_label() {
+    // The label pin, separate from the branch pin above: the panic must say WHICH file.
+    let text = "define(\"x\", VERSION, HistoryPolicy::KeepForever);\n";
+    let err = std::panic::catch_unwind(|| parse_define_sites("api/x/events/src/lib.rs", text))
+        .expect_err("non-literal version must panic");
+    let msg = err.downcast_ref::<String>().expect("panic payload is a String");
+    assert!(msg.contains("api/x/events/src/lib.rs"), "{msg}");
+    assert!(msg.contains("is not an integer literal"), "{msg}");
+}
+
+#[test]
+#[should_panic(expected = "not a plain decimal integer literal")]
+fn parse_define_sites_rejects_underscore_separated_version_instead_of_truncating() {
+    // `take_while(is_ascii_digit)` alone would read `1_0` as version 1 -- silently
+    // recording the wrong version. The boundary check must reject, not truncate.
+    let text = "define(\"x\", 1_0, HistoryPolicy::KeepForever);\n";
+    parse_define_sites("fixture", text);
+}
+
+#[test]
+#[should_panic(expected = "not a plain decimal integer literal")]
+fn parse_define_sites_rejects_hex_version_instead_of_truncating() {
+    // `0x10` would truncate to version 0 under take_while alone.
+    let text = "define(\"x\", 0x10, HistoryPolicy::KeepForever);\n";
+    parse_define_sites("fixture", text);
+}
+
+#[test]
+fn parse_define_sites_scans_every_define_on_one_line() {
+    // Two defines packed onto one physical line: a first-occurrence-only scan would
+    // silently drop the second site.
+    let text = "define(\"x\", 1, H::K); define(\"y\", 2, H::K);\n";
+    let sites = parse_define_sites("fixture", text);
+    assert_eq!(
+        sites,
+        BTreeSet::from([("x".to_string(), 1), ("y".to_string(), 2)])
+    );
+}
+
+#[test]
+fn union_define_sites_merges_distinct_sites_across_files() {
+    let got = union_define_sites([
+        ("file-a", "define(\"x\", 1, H::K);\n"),
+        ("file-b", "define(\"y\", 1, H::K);\ndefine(\"x\", 2, H::K);\n"),
+    ]);
+    assert_eq!(
+        got,
+        BTreeSet::from([
+            ("x".to_string(), 1),
+            ("x".to_string(), 2),
+            ("y".to_string(), 1),
+        ])
+    );
+}
+
+#[test]
+fn union_define_sites_panics_naming_both_files_on_a_cross_file_duplicate() {
+    // The cross-file duplicate path: same (topic, version) defined in two files must
+    // panic and name BOTH file labels.
+    let err = std::panic::catch_unwind(|| {
+        union_define_sites([
+            ("file-a", "define(\"x\", 1, H::K);\n"),
+            ("file-b", "define(\"x\", 1, H::K);\n"),
+        ])
+    })
+    .expect_err("cross-file duplicate (topic, version) must panic");
+    let msg = err.downcast_ref::<String>().expect("panic payload is a String");
+    assert!(msg.contains("file-a") && msg.contains("file-b"), "{msg}");
+    assert!(msg.contains("duplicate define-site across files"), "{msg}");
 }
 
 // --- The DEFINE set is exactly the seven domain contract topics ---------------
