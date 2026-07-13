@@ -41,6 +41,24 @@ fn is_invalid_uuid(e: &sqlx::Error) -> bool {
     matches!(e, sqlx::Error::Database(db) if db.code().as_deref() == Some("22P02"))
 }
 
+/// Domain-separated stable FNV-1a key for serializing every writer of one external
+/// `(provider, subject)` identity. Hash collisions only add serialization.
+pub(crate) fn identity_lock_key(provider: &str, subject: &str) -> i64 {
+    const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut hash = OFFSET_BASIS;
+    for byte in b"accounts.identity.v1\0"
+        .iter()
+        .chain(provider.as_bytes())
+        .chain([0].iter())
+        .chain(subject.as_bytes())
+    {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(PRIME);
+    }
+    hash as i64
+}
+
 /// A fresh opaque bearer token: 32 random bytes, base64url without padding — Go's
 /// `newToken` byte-for-byte (43 chars).
 pub(crate) fn new_token() -> String {
@@ -123,9 +141,25 @@ impl Store {
         })
     }
 
-    /// The player an external identity maps to, or `Ok(None)` on a genuine miss.
-    pub async fn player_by_identity(
+    /// Takes the transaction-scoped writer lock for one external identity. Callers
+    /// make this the first statement after BEGIN, then re-read under the lock.
+    pub async fn lock_identity_tx(
         &self,
+        conn: &mut PgConnection,
+        provider: &str,
+        subject: &str,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query("SELECT pg_advisory_xact_lock($1)")
+            .bind(identity_lock_key(provider, subject))
+            .execute(&mut *conn)
+            .await?;
+        Ok(())
+    }
+
+    /// The player an external identity maps to on the caller's locked transaction.
+    pub async fn player_by_identity_tx(
+        &self,
+        conn: &mut PgConnection,
         provider: &str,
         subject: &str,
     ) -> Result<Option<Player>, sqlx::Error> {
@@ -137,32 +171,43 @@ impl Store {
         )
         .bind(provider)
         .bind(subject)
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut *conn)
         .await?;
         Ok(row.map(|(id, display_name)| Player { id, display_name }))
     }
 
-    /// Attaches an already-verified external identity to an existing player. A taken
-    /// `(provider, subject)` is [`StoreError::Taken`] (Go's `ErrIdentityLinked`).
+    /// Attaches an already-verified external identity in its own transaction, sharing
+    /// the SAME writer lock as first-login. Same-owner re-link is idempotent; another
+    /// owner is [`StoreError::Taken`].
     pub async fn link_identity(
         &self,
         player_id: &str,
         provider: &str,
         subject: &str,
     ) -> Result<(), StoreError> {
-        let res = sqlx::query(
+        let mut tx = self.pool.begin().await?;
+        self.lock_identity_tx(&mut tx, provider, subject).await?;
+        if let Some(owner) = self
+            .player_by_identity_tx(&mut tx, provider, subject)
+            .await?
+        {
+            if owner.id == player_id {
+                tx.commit().await?;
+                return Ok(());
+            }
+            tx.rollback().await?;
+            return Err(StoreError::Taken);
+        }
+        sqlx::query(
             "INSERT INTO accounts.identities (provider, subject, player_id) VALUES ($1, $2, $3::uuid)",
         )
         .bind(provider)
         .bind(subject)
         .bind(player_id)
-        .execute(&self.pool)
-        .await;
-        match res {
-            Ok(_) => Ok(()),
-            Err(e) if is_unique_violation(&e) => Err(StoreError::Taken),
-            Err(e) => Err(e.into()),
-        }
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(())
     }
 
     /// Inserts a caller-provided session token ON THE GIVEN CONNECTION, so session

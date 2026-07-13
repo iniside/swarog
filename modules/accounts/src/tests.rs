@@ -39,6 +39,13 @@ fn argon2_encoded_format_matches_go() {
     assert_eq!(h.split('$').count(), 6, "PHC field count: {h}");
 }
 
+#[test]
+fn external_identity_lock_key_is_stable_and_namespaced() {
+    assert_eq!(store::identity_lock_key("epic", "abc"), 3_307_116_543_472_636_275);
+    assert_eq!(store::identity_lock_key("dev", "a@x.io"), -2_923_477_806_597_887_200);
+    assert_ne!(store::identity_lock_key("epic", "abc"), store::identity_lock_key("epic", "ab\0c"));
+}
+
 /// A REAL hash produced by the Go sketch's `hashPassword("hunter2")`
 /// (golang.org/x/crypto/argon2, RawStdEncoding) must verify here — the byte-level
 /// parity proof that a password set under the Go backend survives the port.
@@ -694,35 +701,146 @@ async fn expired_session_does_not_verify() {
     cleanup_player(&pool, &sess.player_id).await;
 }
 
-/// find_or_create_external: first sight provisions (created=true, ONE durable
-/// player.registered), second sight maps to the SAME player (created=false, no
-/// second event) — Go's TestStoreFindOrCreateExternal plus the durable assertion.
+/// external_login: first sight provisions player+event+session atomically; second
+/// sight maps to the same player and creates only another session.
 #[tokio::test]
-async fn find_or_create_external_is_idempotent() {
+async fn external_login_is_idempotent_and_issues_each_session() {
     let Some(pool) = test_pool().await else { return };
     let (_ctx, svc) = wired(&pool).await;
     let sub = format!("puid-{}", suffix());
 
-    let (p, created) = svc
-        .find_or_create_external("epic", &sub, "epic:new")
+    let (first, created) = svc
+        .external_login("epic", &sub, "epic:new")
         .await
         .unwrap();
     assert!(created, "first login must provision");
-    assert_eq!(registered_events(&pool, &p.id).await, 1);
+    assert_eq!(registered_events(&pool, &first.player_id).await, 1);
 
     let (again, created2) = svc
-        .find_or_create_external("epic", &sub, "epic:new")
+        .external_login("epic", &sub, "epic:new")
         .await
         .unwrap();
     assert!(!created2, "second login must not provision");
-    assert_eq!(again.id, p.id, "same identity mapped to different players");
-    assert_eq!(registered_events(&pool, &p.id).await, 1, "no second event");
+    assert_eq!(again.player_id, first.player_id, "same identity mapped to different players");
+    assert_ne!(again.token, first.token, "each login must issue its own session");
+    assert_eq!(registered_events(&pool, &first.player_id).await, 1, "no second event");
 
-    cleanup_player(&pool, &p.id).await;
+    cleanup_player(&pool, &first.player_id).await;
 }
 
-/// Identity linking: an external identity attaches to an existing player; linking
-/// the SAME (provider, subject) again — to anyone — is Taken.
+#[tokio::test(flavor = "multi_thread")]
+async fn concurrent_first_logins_create_one_player_event_and_two_sessions() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let sub = format!("race-first-{}", suffix());
+    let barrier = Arc::new(tokio::sync::Barrier::new(3));
+
+    let first = {
+        let svc = svc.clone();
+        let sub = sub.clone();
+        let barrier = barrier.clone();
+        tokio::spawn(async move {
+            barrier.wait().await;
+            svc.external_login("epic", &sub, "Race first").await
+        })
+    };
+    let second = {
+        let svc = svc.clone();
+        let sub = sub.clone();
+        let barrier = barrier.clone();
+        tokio::spawn(async move {
+            barrier.wait().await;
+            svc.external_login("epic", &sub, "Race first").await
+        })
+    };
+    barrier.wait().await;
+    let (first, second) = (first.await.unwrap().unwrap(), second.await.unwrap().unwrap());
+    let sessions: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM accounts.sessions WHERE player_id = $1::uuid",
+    )
+    .bind(&first.0.player_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let events = registered_events(&pool, &first.0.player_id).await;
+
+    cleanup_player(&pool, &first.0.player_id).await;
+
+    assert_eq!(first.0.player_id, second.0.player_id);
+    assert_ne!(first.0.token, second.0.token);
+    assert_ne!(first.1, second.1, "exactly one concurrent login must create");
+    assert_eq!(sessions, 2);
+    assert_eq!(events, 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn link_racing_first_login_has_only_two_coherent_outcomes() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let owner = svc
+        .register(
+            format!("link-race-{}@test.local", suffix()),
+            "pw".into(),
+            "Link racer".into(),
+        )
+        .await
+        .unwrap();
+    let sub = format!("link-race-{}", suffix());
+    let barrier = Arc::new(tokio::sync::Barrier::new(3));
+
+    let link = {
+        let svc = svc.clone();
+        let owner_id = owner.player_id.clone();
+        let sub = sub.clone();
+        let barrier = barrier.clone();
+        tokio::spawn(async move {
+            barrier.wait().await;
+            svc.store.link_identity(&owner_id, "epic", &sub).await
+        })
+    };
+    let login = {
+        let svc = svc.clone();
+        let sub = sub.clone();
+        let barrier = barrier.clone();
+        tokio::spawn(async move {
+            barrier.wait().await;
+            svc.external_login("epic", &sub, "External racer").await
+        })
+    };
+    barrier.wait().await;
+    let link = link.await.unwrap();
+    let (login_session, created) = login.await.unwrap().unwrap();
+    let identity_owner: String = sqlx::query_scalar(
+        "SELECT player_id::text FROM accounts.identities WHERE provider = 'epic' AND subject = $1",
+    )
+    .bind(&sub)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let login_events = registered_events(&pool, &login_session.player_id).await;
+
+    cleanup_player(&pool, &owner.player_id).await;
+    if login_session.player_id != owner.player_id {
+        cleanup_player(&pool, &login_session.player_id).await;
+    }
+
+    match link {
+        Ok(()) => {
+            assert!(!created, "link winner must make login adopt its owner");
+            assert_eq!(login_session.player_id, owner.player_id);
+            assert_eq!(identity_owner, owner.player_id);
+        }
+        Err(StoreError::Taken) => {
+            assert!(created, "login winner must provision before link observes Taken");
+            assert_ne!(login_session.player_id, owner.player_id);
+            assert_eq!(identity_owner, login_session.player_id);
+        }
+        Err(err) => panic!("unexpected link error: {err:#}"),
+    }
+    assert_eq!(login_events, 1, "the winning owner must have exactly one registration event");
+}
+
+/// Identity linking: same-owner relink is idempotent; another owner is Taken.
 #[tokio::test]
 async fn link_identity_attaches_and_rejects_duplicates() {
     let Some(pool) = test_pool().await else { return };
@@ -738,14 +856,20 @@ async fn link_identity_attaches_and_rejects_duplicates() {
     let ids = svc.store.identities_of(&sess.player_id).await.unwrap();
     assert!(ids.iter().any(|i| i.provider == "epic" && i.subject == sub));
 
-    let err = svc
+    svc
         .store
         .link_identity(&sess.player_id, "epic", &sub)
         .await
-        .unwrap_err();
+        .unwrap();
+    let other = svc
+        .register(format!("other-{}@test.local", suffix()), "pw".into(), "Other".into())
+        .await
+        .unwrap();
+    let err = svc.store.link_identity(&other.player_id, "epic", &sub).await.unwrap_err();
     assert!(matches!(err, StoreError::Taken));
 
     cleanup_player(&pool, &sess.player_id).await;
+    cleanup_player(&pool, &other.player_id).await;
 }
 
 /// Drives the whole Epic OAuth LINK flow against a mock Epic (local JWKS + local

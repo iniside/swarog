@@ -231,24 +231,8 @@ async fn handle_callback(
         match svc.store.link_identity(&p.id, "epic", &subject).await {
             Ok(()) => {}
             Err(crate::store::StoreError::Taken) => {
-                // The (provider, subject) is already claimed. Report success ONLY when
-                // it is this same player's own identity (an idempotent re-link); an
-                // Epic account bound to a DIFFERENT player must not read as linked.
-                match svc.store.player_by_identity("epic", &subject).await {
-                    Ok(Some(owner)) if owner.id == p.id => {}
-                    Ok(Some(_)) => {
-                        tracing::warn!(player_id = %p.id, "epic link: identity already linked to a different player");
-                        return Redirect::to("/?epic=error").into_response();
-                    }
-                    Ok(None) => {
-                        tracing::warn!(player_id = %p.id, "epic link: taken identity vanished (race)");
-                        return Redirect::to("/?epic=error").into_response();
-                    }
-                    Err(err) => {
-                        tracing::warn!(%err, player_id = %p.id, "epic link: owner lookup failed after taken");
-                        return Redirect::to("/?epic=error").into_response();
-                    }
-                }
+                tracing::warn!(player_id = %p.id, "epic link: identity already linked to a different player");
+                return Redirect::to("/?epic=error").into_response();
             }
             Err(err) => {
                 tracing::error!(%err, "epic link failed");
@@ -261,20 +245,17 @@ async fn handle_callback(
     // LOGIN flow: find or create a player for this Epic identity (durable
     // player.registered on first sight), mint a session, hand the token back via the
     // URL fragment for the page to pick up.
-    let p = match svc
-        .find_or_create_external("epic", &subject, &format!("epic:{}", short_id(&subject)))
+    let session = match svc
+        .external_login("epic", &subject, &format!("epic:{}", short_id(&subject)))
         .await
     {
-        Ok((p, _created)) => p,
+        Ok((session, _created)) => session,
         Err(err) => {
             tracing::error!(%err, "epic login failed");
             return Redirect::to("/?epic=error").into_response();
         }
     };
-    match svc.store.new_session(&p.id).await {
-        Ok(token) => Redirect::to(&format!("/#token={token}")).into_response(),
-        Err(_) => Redirect::to("/?epic=error").into_response(),
-    }
+    Redirect::to(&format!("/#token={}", session.token)).into_response()
 }
 
 /// Extracts the token from an `Authorization: Bearer <token>` header, or `None`.

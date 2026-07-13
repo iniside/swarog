@@ -205,56 +205,72 @@ impl Service {
         Ok(session)
     }
 
-    /// Maps a verified external identity to a player, creating one on first sight
-    /// (implicit registration, like EOS first-login) — the bool is `true` when a new
-    /// player was provisioned, in which case `player.registered` was emitted
-    /// DURABLY inside the same tx as the insert. A concurrent first-login race
-    /// (unique violation) resolves to the winner's player.
-    pub(crate) async fn find_or_create_external(
+    /// Transactional first-login: lock the external identity, re-read under that
+    /// lock, then create at most one player/event while every caller gets its own
+    /// session in the same transaction. IdP I/O has already completed before entry.
+    pub(crate) async fn external_login(
         &self,
         provider: &str,
         subject: &str,
         display_name: &str,
-    ) -> Result<(Player, bool), Error> {
+    ) -> Result<(accountsapi::Session, bool), Error> {
+        let mut tx = self.store.pool.begin().await.map_err(internal)?;
+        // First statement after BEGIN: every external identity writer shares it.
+        self.store
+            .lock_identity_tx(&mut tx, provider, subject)
+            .await
+            .map_err(internal)?;
         if let Some(p) = self
             .store
-            .player_by_identity(provider, subject)
+            .player_by_identity_tx(&mut tx, provider, subject)
             .await
             .map_err(internal)?
         {
-            return Ok((p, false));
+            let session = match self
+                .issue_session_tx(&mut tx, &p, store::new_token())
+                .await
+            {
+                Ok(session) => session,
+                Err(err) => {
+                    tx.rollback().await.ok();
+                    return Err(err);
+                }
+            };
+            tx.commit().await.map_err(internal)?;
+            return Ok((session, false));
         }
 
-        let mut tx = self.store.pool.begin().await.map_err(internal)?;
-        match self
+        let p = match self
             .store
             .insert_player_with_identity_tx(&mut tx, provider, subject, display_name, None)
             .await
         {
-            Ok(p) => {
-                self.emit_registered_tx(&mut tx, &p, provider).await?;
-                tx.commit().await.map_err(internal)?;
-                Ok((p, true))
-            }
+            Ok(p) => p,
             Err(StoreError::Taken) => {
-                // Raced with a concurrent first-login: roll back our half-insert
-                // explicitly (deterministic lock release) and adopt the winner's row.
-                tx.rollback().await.map_err(internal)?;
-                match self
-                    .store
-                    .player_by_identity(provider, subject)
-                    .await
-                    .map_err(internal)?
-                {
-                    Some(p) => Ok((p, false)),
-                    None => Err(Error::internal("identity insert raced but no winner found")),
-                }
+                tx.rollback().await.ok();
+                return Err(Error::internal("identity was taken while its writer lock was held"));
             }
             Err(StoreError::Db(e)) => {
                 tx.rollback().await.ok();
-                Err(internal(e))
+                return Err(internal(e));
             }
+        };
+        if let Err(err) = self.emit_registered_tx(&mut tx, &p, provider).await {
+            tx.rollback().await.ok();
+            return Err(err);
         }
+        let session = match self
+            .issue_session_tx(&mut tx, &p, store::new_token())
+            .await
+        {
+            Ok(session) => session,
+            Err(err) => {
+                tx.rollback().await.ok();
+                return Err(err);
+            }
+        };
+        tx.commit().await.map_err(internal)?;
+        Ok((session, true))
     }
 
     /// Appends the `player.registered` durable event (`emit_tx`) on the caller's
@@ -432,10 +448,10 @@ impl accountsapi::Auth for Service {
                 return Err(Error::unavailable("identity provider unavailable"));
             }
         };
-        let (p, _created) = self
-            .find_or_create_external("epic", &subject, &format!("epic:{}", short_id(&subject)))
+        let (session, _created) = self
+            .external_login("epic", &subject, &format!("epic:{}", short_id(&subject)))
             .await?;
-        self.issue_session(&p).await
+        Ok(session)
     }
 
     /// The caller's own player + identities (player_id from `identity`, injected by
