@@ -1478,11 +1478,16 @@ async fn flight_lock_second_caller_is_bounded_too() {
         front.router().oneshot(demo_http_request()),
         front.router().oneshot(demo_http_request()),
     );
+    let elapsed = started.elapsed();
     let (status_a, body_a) = body_string(a.unwrap()).await;
     let (status_b, body_b) = body_string(b.unwrap()).await;
+    // A few x the 100ms budget (a 2s ceiling would only prove "not infinite"):
+    // concurrent timeouts land at ~100ms, so this pins the callers to a small
+    // multiple of ONE budget rather than any accumulating serial wait.
     assert!(
-        started.elapsed() < BOUNDED,
-        "both same-key callers must resolve within ~one budget, never serially 2x"
+        elapsed < Duration::from_millis(400),
+        "both same-key callers must resolve within a few x one budget, never an \
+         accumulating serial wait (elapsed: {elapsed:?})"
     );
     assert_eq!(status_a, StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(status_b, StatusCode::SERVICE_UNAVAILABLE);
@@ -1491,9 +1496,12 @@ async fn flight_lock_second_caller_is_bounded_too() {
 }
 
 /// RECOVERY: after a timed-out admission for key K the backend heals (hangs once,
-/// answers after) — the NEXT request for K must verify OK, proving the timeout-drop
-/// released the flight lock (its `Weak` table entry died with the dropped future) and
-/// nothing (cache or flight) pinned the key into a persistent 503.
+/// answers after) — the NEXT request for K must verify OK. What this pins is the
+/// end-to-end behavior: no persistent 503 for K after a timed-out admission. The
+/// MECHANISM (the dropped future releases the `lock_owned` flight guard and its
+/// `Weak` table entry dies) is established by code review of `keys.rs`' drop-safety,
+/// not asserted directly here — no test seam is built into `RealKeyVerifier`'s
+/// flight table for that.
 #[tokio::test]
 async fn healed_backend_serves_same_key_after_admission_timeout() {
     let real = Arc::new(RealKeyVerifier::new(Arc::new(HangOnceKeys {

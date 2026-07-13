@@ -42,17 +42,39 @@ fn env_addr(env_key: &str, default: &str) -> String {
 
 /// Parses `CREDENTIAL_ADMISSION_TIMEOUT_MS` — the front door's whole-credential-
 /// admission deadline (api-key check + session verify, both public planes). Env is
-/// read HERE in the composition root (the gateway module never reads env);
-/// unset/blank/unparseable yields `None`, leaving the module's 5s default in place —
-/// the same lenient trim/parse shape `core/app`'s grace knobs use.
-fn admission_budget_from_env() -> Option<std::time::Duration> {
-    std::env::var("CREDENTIAL_ADMISSION_TIMEOUT_MS")
-        .ok()
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty())
-        .and_then(|v| v.parse::<u64>().ok())
-        .map(std::time::Duration::from_millis)
+/// read HERE in the composition root (the gateway module never reads env).
+fn admission_budget_from_env() -> anyhow::Result<Option<std::time::Duration>> {
+    admission_budget_from_value(std::env::var("CREDENTIAL_ADMISSION_TIMEOUT_MS").ok().as_deref())
 }
+
+/// The testable parser body. Each front main (`cmd/gateway-svc` here and `cmd/server`)
+/// keeps its OWN copy of this fn per the repo's env-in-main convention — there is no
+/// shared config crate for `cmd/*` roots.
+///
+/// Unset/blank/unparseable → `Ok(None)`: the module's 5000ms default applies (the same
+/// lenient trim/parse shape `core/app`'s grace knobs use). An EXPLICIT `0` FAILS
+/// STARTUP LOUDLY: unlike the sibling knobs where `0` means "disable", this deadline
+/// guards an always-on security surface — a zero budget would time out every admission
+/// instantly (every credentialed request 503s, a silently bricked front door), and
+/// mapping `0` to "no bound" would reintroduce the unbounded-hang defect, so neither
+/// meaning is acceptable to infer silently.
+fn admission_budget_from_value(raw: Option<&str>) -> anyhow::Result<Option<std::time::Duration>> {
+    let Some(v) = raw.map(str::trim).filter(|v| !v.is_empty()) else {
+        return Ok(None);
+    };
+    match v.parse::<u64>() {
+        Ok(0) => anyhow::bail!(
+            "CREDENTIAL_ADMISSION_TIMEOUT_MS=0 is invalid: 0 would time out every \
+             admission instantly (every credentialed request would 503); running \
+             without a bound is not supported — unset the var for the 5000ms default"
+        ),
+        Ok(ms) => Ok(Some(std::time::Duration::from_millis(ms))),
+        Err(_) => Ok(None),
+    }
+}
+
+#[cfg(test)]
+mod admission_budget_tests;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -104,7 +126,7 @@ async fn main() -> anyhow::Result<()> {
         .with_peer("leaderboard", env_addr("LEADERBOARD_EDGE_ADDR", "127.0.0.1:9008"))
         .with_passthrough("/admin", env_addr("ADMIN_HTTP_ADDR", ""))
         .with_passthrough("/accounts/epic", env_addr("ACCOUNTS_HTTP_ADDR", ""));
-    if let Some(budget) = admission_budget_from_env() {
+    if let Some(budget) = admission_budget_from_env()? {
         wiring = wiring.with_admission_budget(budget);
     }
     let mods = gateway_svc::modules(&wiring, Some(player.clone()));
