@@ -639,6 +639,13 @@ rollout, before "done": `git log -<N> --format="%h %B" | grep "Co-Authored"` and
 confirm trailers match each lane (`[fable]`→Fable 5, `[opus]`→Opus 4.8,
 `[sonnet]`→Sonnet 4.6) — surface mismatches immediately.
 
+**For `core/*` internals or cross-seam work (bus/registry/edge/lifecycle), the
+top-tier lane is served by the `core-implementer` agent**
+(`.claude/agents/core-implementer.md`, `subagent_type: "core-implementer"`) —
+authority-first, built from `docs/reference/core-failure-taxonomy.md`. Pass it an
+explicit `model:` and effort; it is the vehicle for the Fix-the-Authority discipline
+below and refuses to finish without naming the authority and the failing-branch proof.
+
 The user approves the tags with the plan (called out at ExitPlanMode). Ask only for
 untagged/ad-hoc work, and if any step is a subagent lane also ask **"what effort
 level?"** (effort does NOT inherit — embed it in the prompt). Review each diff against
@@ -688,6 +695,10 @@ work instead; these rules are extracted from it:
    lifecycle owner) and either fix them in the same rollout or record them as
    explicit known gaps — never silently leave a twin of the bug you just fixed.
 
+These six rules are encoded in the **`core-implementer`** agent
+(`.claude/agents/core-implementer.md`); dispatch it for authority-first work rather
+than restating them per prompt.
+
 ## Adversarial Subagent Review — MANDATORY
 
 Reviewing a subagent's (or my own) diff means **trying to break it**, not reading it
@@ -698,6 +709,15 @@ while stamping success (`7ca0b51`), `RETENTION_STALL_MAX` hardcoded 3h against a
 configurable interval, cargo-audit network failure reported as green SKIP
 (`b78444f`), scheduler budget starvation (`addc824`), conformance `NotApplicable`
 hiding a known gap. None of these required new information to catch — only hostility.
+
+**Run this as the `core-reviewer` agent** (`.claude/agents/core-reviewer.md`,
+`subagent_type: "core-reviewer"`) — class-keyed to
+`docs/reference/core-failure-taxonomy.md` and routed by the files the diff touches —
+not a generic reviewer; it is the reliable local second-independent-reviewer. When the
+diff adds/changes tests or a verify stage (verifyctl/archcheck/conformance/topiccheck/
+golden), ALSO run the **`proof-auditor` agent** (`.claude/agents/proof-auditor.md`),
+which attacks whether the proof covers the *failing* branch and whether a gate can see
+what it gates. Dispatch each at a `model:` ≥ the implementer's tier.
 
 For EVERY diff accepted from a subagent (and every `[inline]` fix before commit):
 
