@@ -27,6 +27,7 @@ fn findings(root: &Path) -> Result<Vec<String>> {
             .with_context(|| format!("read current documentation {}", document.display()))?;
         check_document(root, &document, &contents, &packages, &mut findings);
     }
+    check_current_reference_archival(root, &mut findings)?;
     Ok(findings.into_iter().collect())
 }
 
@@ -164,6 +165,71 @@ fn check_links(
             ));
         }
     }
+}
+
+/// `docs/README.md`'s "Current reference" section is a promise: every link there
+/// points at narrative guidance that is actually current. If a linked file has
+/// since been marked archived (the repo's own precedent marker — see
+/// `baas-feature-gap-matrix.md`), the section is lying and must drop the link
+/// (or the marker must be removed because the doc really is current again).
+/// Mechanical check only: it looks for the marker string, never judges content.
+fn check_current_reference_archival(root: &Path, findings: &mut BTreeSet<String>) -> Result<()> {
+    let document = root.join("docs/README.md");
+    if !document.is_file() {
+        return Ok(());
+    }
+    let contents = std::fs::read_to_string(&document)
+        .with_context(|| format!("read {}", document.display()))?;
+    let relative = display_path(root, &document);
+    let mut in_section = false;
+    for (index, line) in contents.lines().enumerate() {
+        let line_number = index + 1;
+        let trimmed = line.trim();
+        if trimmed.starts_with("## ") {
+            in_section = trimmed.trim_start_matches('#').trim().eq_ignore_ascii_case("Current reference");
+            continue;
+        }
+        if !in_section {
+            continue;
+        }
+        for target in markdown_targets(line) {
+            if ignored_link(&target) {
+                continue;
+            }
+            let target_without_suffix = strip_query_and_fragment(&target);
+            if target_without_suffix.is_empty() {
+                continue;
+            }
+            let portable_target = target_without_suffix.replace('\\', "/");
+            let resolved = if portable_target.starts_with('/') {
+                root.join(portable_target.trim_start_matches('/'))
+            } else {
+                document.parent().unwrap_or(root).join(portable_target)
+            };
+            if !resolved.is_file() {
+                // Missing-link reporting is check_links's job.
+                continue;
+            }
+            let target_contents = std::fs::read_to_string(&resolved)
+                .with_context(|| format!("read {}", resolved.display()))?;
+            if let Some(first_line) = target_contents.lines().find(|line| !line.trim().is_empty()) {
+                if is_archived_marker(first_line) {
+                    findings.insert(format!(
+                        "{relative}:{line_number}: \"Current reference\" links archived document `{target}`"
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Matches this repo's existing archival-marker precedent (e.g.
+/// `baas-feature-gap-matrix.md:1`): an English `> **ARCHIVED` blockquote or the
+/// earlier Polish `ARCHIWALNE` wording, either as the first non-empty line.
+fn is_archived_marker(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    trimmed.starts_with("> **ARCHIVED") || trimmed.contains("ARCHIWALNE")
 }
 
 fn markdown_targets(line: &str) -> Vec<String> {
@@ -487,5 +553,54 @@ cargo run `-p` prose-only
         }
         assert!(findings(&root).unwrap().is_empty());
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn current_reference_flags_archived_target() {
+        let root = fixture_root("archived-current-reference");
+        std::fs::write(
+            root.join("docs/reference/retired.md"),
+            "> **ARCHIVED (JVM/Quarkus-era)** — not current. Current state: CLAUDE.md.\n\n# Retired\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("docs/reference/live.md"),
+            "# Live\n\nStill current.\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("docs/README.md"),
+            r#"# Documentation map
+
+## Current reference
+
+- [Retired](reference/retired.md)
+- [Live](reference/live.md)
+
+## Historical material
+
+- [Retired again](reference/retired.md)
+"#,
+        )
+        .unwrap();
+        let mut found = BTreeSet::new();
+        check_current_reference_archival(&root, &mut found).unwrap();
+        assert_eq!(found.len(), 1, "unexpected findings: {found:?}");
+        assert!(found
+            .iter()
+            .any(|finding| finding.contains("docs/README.md")
+                && finding.contains("archived document `reference/retired.md`")));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn real_tree_current_reference_has_no_archived_links() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .unwrap();
+        let mut found = BTreeSet::new();
+        check_current_reference_archival(&root, &mut found).unwrap();
+        assert!(found.is_empty(), "unexpected findings: {found:?}");
     }
 }
