@@ -388,11 +388,12 @@ concurrent DDL (`CREATE OR REPLACE`), which looks like a hang or fails with
 `tuple concurrently updated`. This bites on EVERY rollout, so it is a hard
 protocol, not a tip:
 
-- **Before starting any rollout**: `cargo run -p devctl -- status` must not report
-  an active fleet. For an ad-hoc test, also check that nothing is already compiling —
+- **Before any Cargo-launched rollout or `devctl status`**: first check
   `Get-Process | Where-Object { $_.ProcessName -match '^cargo$|^rustc$' }`
-  (or `pgrep -x cargo` in bash). If something is, WAIT for it; never start a
-  second run "to check something quickly".
+  (or `pgrep -x cargo; pgrep -x rustc` in bash) and WAIT if either is active.
+  Only when clear, run `cargo run -p devctl -- status` and require no active fleet.
+  After status exits, re-check Cargo/rustc before launching exactly one selected
+  rollout; never start a second run "to check something quickly".
 - **Never launch a test run in the background and then start another command
   that compiles or tests** — the second invocation is the classic cause.
 - **When dispatching subagents**: at most one subagent may be running tests at
