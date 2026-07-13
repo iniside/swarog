@@ -97,10 +97,11 @@ value changes which operations get contributed), add it to `GATES` in
 
 ## Step 6 — Verify (via the safe-verification skill)
 
-Static checks and targeted tests come first. Then run the blocking split-proof
-through `cargo run -p verifyctl -- --fast`, followed by the selected final
-`verifyctl` manifest once. The split run is the at-risk path — a monolith-only
-demo is not proof.
+Static checks and targeted tests come first. Then select exactly ONE terminal
+`verifyctl` manifest: `--fast` when the blocking tiers are sufficient, or the
+explicitly required broader level such as `--all --strict`. Never run `--fast`
+as a rehearsal for another full manifest. Its split-proof stage is the at-risk
+path — a monolith-only demo is not proof.
 
 ## Self-check before declaring done
 

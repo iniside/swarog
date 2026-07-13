@@ -805,6 +805,29 @@ async fn assertions(ctx: &Ctx, pool: &PgPool, p: &mut Proof) -> Result<()> {
         p.check("[1] create character -> 201 + id", cid.is_some(), format!("cid={cid:?}"));
         if let Some(cid) = cid {
             created_cid = Some(cid.clone());
+            // [1b] list through G -> A and prove the newly-created row crossed the
+            // characters.list remote binding, not merely that some JSON returned.
+            let list = ctx
+                .http
+                .get(format!("{g}/characters"))
+                .header("X-Api-Key", "dev-key-client")
+                .header("Authorization", format!("Bearer {tok}"))
+                .send()
+                .await?;
+            let list_status = list.status();
+            let list_body: serde_json::Value =
+                list.json().await.unwrap_or(serde_json::Value::Null);
+            let contains_created = list_body.as_array().is_some_and(|characters| {
+                characters.iter().any(|character| {
+                    character.get("id").and_then(serde_json::Value::as_str)
+                        == Some(cid.as_str())
+                })
+            });
+            p.check(
+                "[1b] list characters -> 200 + created id",
+                list_status.as_u16() == 200 && contains_created,
+                format!("code={list_status} cid={cid}"),
+            );
             // [2] starter grant appears (character.created -> inventory, durable).
             let starter = poll_inventory_has(ctx, &g, &tok, &cid, "starter_sword").await;
             p.check("[2] starter_sword granted via event", starter, format!("cid={cid}"));

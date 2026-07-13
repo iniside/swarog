@@ -59,7 +59,7 @@ radius (cheapest that actually exercises the change):
 | Touches a contract crate (`api/*`) | build workspace + tests of producer AND consumers; expect the `public-api` stage to need a bless if intentional |
 | New/changed event or subscription | `cargo run -p topiccheck` + the consumer's tests |
 | New require/capability wiring | `cargo run -p requirecheck` + `cargo run -p archcheck` (both cheap, no test DB contention) |
-| Cross-process behavior, new module, gateway/edge change | `cargo run -p verifyctl -- --fast` — its blocking split-proof stage is the at-risk path; do not pass off monolith-only testing as coverage |
+| Cross-process behavior, new module, gateway/edge change | Targeted/static checks now; reserve the live split-proof for the single terminal `verifyctl` manifest in Step 4 |
 | Anything in core/ | `cargo test --workspace` |
 
 archcheck / topiccheck / requirecheck are static (seconds); they can run while
@@ -68,10 +68,12 @@ you think, but not alongside a compiling test run of the same workspace
 
 ## Step 4 — Full net LAST, once, at the end
 
-When the rollout is done, run one selected `verifyctl` manifest; it is the local
-safety net. Use `cargo run -p verifyctl -- --fast` for blocking tiers only, or
+When the rollout is done, run exactly one selected `verifyctl` manifest; it is
+the local safety net and includes the blocking split-proof. Use
+`cargo run -p verifyctl -- --fast` for blocking tiers only, or
 `cargo run -p verifyctl -- --all --strict` when the advisory tiers must also
-block. Re-run pre-flight (Step 1) before launching it.
+block. Never rehearse with `--fast` before a broader terminal manifest. Re-run
+pre-flight (Step 1) before launching it.
 
 ## Subagents
 
