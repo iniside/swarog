@@ -32,6 +32,22 @@ pub struct Fired {
 pub static FIRED: LazyLock<EventType<Fired>> =
     LazyLock::new(|| define("scheduler.fired", 1, HistoryPolicy::MinRetention { days: 7 }));
 
+/// Fully-POPULATED wire sample for the contract-golden fingerprint (Step 5): every
+/// field set so serde's actual JSON key (`name`) lands in the golden. A silent
+/// `#[serde(rename)]` or a reshaped field then fails the blocking contract-golden stage
+/// instead of poisoning retained durable JSON.
+#[doc(hidden)]
+pub fn golden_samples() -> Vec<(&'static str, u32, serde_json::Value)> {
+    vec![(
+        "scheduler.fired",
+        1,
+        serde_json::to_value(Fired {
+            name: "audit-prune".to_string(),
+        })
+        .expect("Fired serializes to json"),
+    )]
+}
+
 /// Names of schedules the scheduler module SEEDS — not a namespace for names
 /// consumers invent. The producer's seed DDL already ships this string
 /// (coupling-through-data); the const names that existing fact where both sides can

@@ -24,6 +24,7 @@ sqlx = { workspace = true }
 tokio = { workspace = true }
 async-trait = { workspace = true }
 anyhow = { workspace = true }
+serde_json = { workspace = true }
 
 # The DEFINE sites — the canonical `bus::define` statics, referenced directly so a
 # renamed/removed topic breaks THIS tool at compile time (the intended coupling).
@@ -56,3 +57,9 @@ ratingapi = { workspace = true }
 # which modules they build. Instantiating and building them runs every real
 # `on`/`on_tx`/`on_tx_raw` call.
 checkmodules = { workspace = true }
+
+[dev-dependencies]
+# The golden_tests flatten_shape unit test derives serde::Serialize on a fixture with
+# #[serde(rename)] to prove the flattener reads the serde WIRE key, not the Rust field
+# name. Only the tests need the derive crate; the tool itself uses serde_json alone.
+serde = { workspace = true }

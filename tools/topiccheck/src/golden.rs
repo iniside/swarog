@@ -39,13 +39,22 @@ use bus::HistoryPolicy;
 /// Header written at the top of the golden file; `#`-prefixed lines are ignored when
 /// comparing, so the header never participates in the diff.
 const GOLDEN_HEADER: &str = "\
-# contract-golden -- VALUE-level event + rpc contract baseline (Step 6c).
+# contract-golden -- VALUE-level event + rpc contract baseline (Step 6c; Step 5 serde).
 # Lines: `event topic=<t> version=<n> history=<policy>` from every bus::define,
 # `rpc module=<crate::mod> method=<m> verb=<V> path=<p> auth=<a> success=<n> retry=<r>`
-# from every generated route_bindings(), and
+# from every generated route_bindings(),
 # `wire module=<crate::mod> method=<m> retry=<r>` from every generated wire_ops()
-# (EVERY method, http-bound and wire-only). ANY diff fails the blocking contract-golden
-# verify stage: a removed line is BREAKING, an added line is ADDITIVE.
+# (EVERY method, http-bound and wire-only),
+# `payload topic=<t> version=<n> <serde-key-path>:<type>` from each events crate's
+# hand-POPULATED golden_samples() (Some/non-empty everywhere), and
+# `rpc-body module=<crate::mod> method=<m> <serde-key-path>:<type>` from each generated
+# body_shapes() (http-bound request bodies only). The last two pin the serde WIRE SHAPE:
+# a silent #[serde(rename)] or a reshaped field lands as a golden diff.
+# KNOWN GAP (by design): rpc-body values come from <Request>::default(), so Option/Vec
+# fields default to None/empty and are ABSENT -- a rename on an Option/Vec HTTP body
+# field may not surface. Durable EVENT payloads have no such gap (samples are populated).
+# ANY diff fails the blocking contract-golden verify stage: a removed line is BREAKING,
+# an added line is ADDITIVE.
 # Regenerate intentionally via cargo run -p verifyctl -- --bless-contract-golden.";
 
 /// Repo-relative location of the committed golden (mirrors
@@ -65,64 +74,184 @@ fn workspace_root() -> PathBuf {
 /// method's `RetryMode`, incl. wire-only) from the SAME module — one hand-list, one
 /// self-check, both value sources.
 #[allow(clippy::type_complexity)]
-fn rpc_modules() -> Vec<(&'static str, Vec<opsapi::RouteBinding>, Vec<opsapi::WireOp>)> {
+fn rpc_modules() -> Vec<(
+    &'static str,
+    Vec<opsapi::RouteBinding>,
+    Vec<opsapi::WireOp>,
+    Vec<(&'static str, serde_json::Value)>,
+)> {
     vec![
         (
             "accountsapi::auth_rpc",
             accountsapi::auth_rpc::route_bindings(),
             accountsapi::auth_rpc::wire_ops(),
+            accountsapi::auth_rpc::body_shapes(),
         ),
         (
             "accountsapi::sessions_rpc",
             accountsapi::sessions_rpc::route_bindings(),
             accountsapi::sessions_rpc::wire_ops(),
+            accountsapi::sessions_rpc::body_shapes(),
         ),
         (
             "adminapi::admin_data_rpc",
             adminapi::admin_data_rpc::route_bindings(),
             adminapi::admin_data_rpc::wire_ops(),
+            adminapi::admin_data_rpc::body_shapes(),
         ),
         (
             "apikeysapi::keys_rpc",
             apikeysapi::keys_rpc::route_bindings(),
             apikeysapi::keys_rpc::wire_ops(),
+            apikeysapi::keys_rpc::body_shapes(),
         ),
         (
             "charactersapi::ownership_rpc",
             charactersapi::ownership_rpc::route_bindings(),
             charactersapi::ownership_rpc::wire_ops(),
+            charactersapi::ownership_rpc::body_shapes(),
         ),
         (
             "charactersapi::player_rpc",
             charactersapi::player_rpc::route_bindings(),
             charactersapi::player_rpc::wire_ops(),
+            charactersapi::player_rpc::body_shapes(),
         ),
         (
             "configapi::config_snapshot_rpc",
             configapi::config_snapshot_rpc::route_bindings(),
             configapi::config_snapshot_rpc::wire_ops(),
+            configapi::config_snapshot_rpc::body_shapes(),
         ),
         (
             "inventoryapi::holdings_rpc",
             inventoryapi::holdings_rpc::route_bindings(),
             inventoryapi::holdings_rpc::wire_ops(),
+            inventoryapi::holdings_rpc::body_shapes(),
         ),
         (
             "leaderboardapi::leaderboard_rpc",
             leaderboardapi::leaderboard_rpc::route_bindings(),
             leaderboardapi::leaderboard_rpc::wire_ops(),
+            leaderboardapi::leaderboard_rpc::body_shapes(),
         ),
         (
             "matchapi::match_rpc",
             matchapi::match_rpc::route_bindings(),
             matchapi::match_rpc::wire_ops(),
+            matchapi::match_rpc::body_shapes(),
         ),
         (
             "ratingapi::mmr_reader_rpc",
             ratingapi::mmr_reader_rpc::route_bindings(),
             ratingapi::mmr_reader_rpc::wire_ops(),
+            ratingapi::mmr_reader_rpc::body_shapes(),
         ),
     ]
+}
+
+/// The hand-POPULATED durable-event wire samples for the payload fingerprint, one hand
+/// per events crate — referenced DIRECTLY (the `defined_topics()`/`rpc_modules()` idiom)
+/// so a renamed/removed `golden_samples` breaks this tool at compile time. Every
+/// `(topic, version)` a crate DEFINES must appear here (enforced by `live_lines`'
+/// didn't-forget check), and every sample here must map to a defined topic.
+fn event_samples() -> Vec<(&'static str, u32, serde_json::Value)> {
+    let mut all = Vec::new();
+    all.extend(accountsevents::golden_samples());
+    all.extend(charactersevents::golden_samples());
+    all.extend(configevents::golden_samples());
+    all.extend(matchevents::golden_samples());
+    all.extend(schedulerevents::golden_samples());
+    all.extend(adminevents::golden_samples());
+    all
+}
+
+/// Flattens a serialized sample into stable `<prefix>.<serde-key>:<type>` leaf lines —
+/// the serde WIRE shape (actual JSON keys, post-`#[serde(rename)]`), which cargo-public-api
+/// (Rust field names) and the topic/version/history golden lines both miss. Recursive:
+/// a non-empty object recurses per key (`{prefix}.{key}`); an empty object emits
+/// `{prefix}:object{}`; a non-empty array recurses into its first element (`{prefix}[]`);
+/// an empty array emits `{prefix}:array[]`; a scalar emits `{prefix}:<type>`.
+fn flatten_shape(prefix: &str, v: &serde_json::Value, out: &mut BTreeSet<String>) {
+    use serde_json::Value;
+    match v {
+        Value::Object(map) => {
+            if map.is_empty() {
+                out.insert(format!("{prefix}:object{{}}"));
+            } else {
+                for (k, val) in map {
+                    flatten_shape(&format!("{prefix}.{k}"), val, out);
+                }
+            }
+        }
+        Value::Array(arr) => match arr.first() {
+            Some(first) => flatten_shape(&format!("{prefix}[]"), first, out),
+            None => {
+                out.insert(format!("{prefix}:array[]"));
+            }
+        },
+        Value::String(_) => {
+            out.insert(format!("{prefix}:string"));
+        }
+        Value::Number(_) => {
+            out.insert(format!("{prefix}:number"));
+        }
+        Value::Bool(_) => {
+            out.insert(format!("{prefix}:bool"));
+        }
+        Value::Null => {
+            out.insert(format!("{prefix}:null"));
+        }
+    }
+}
+
+/// Didn't-forget check (house rule: hand-maintained lists self-verify): every
+/// `(topic, version)` in `defined_topics()` MUST have at least one `golden_samples()`
+/// entry, and every sample must map to a defined topic. A new durable event with no
+/// populated sample would otherwise ship its wire shape unpinned — the exact blind gate
+/// this step closes.
+fn self_check_event_samples() -> anyhow::Result<()> {
+    let defined: BTreeSet<(String, u32)> = crate::defined_topics()
+        .into_iter()
+        .map(|c| (c.topic, c.version))
+        .collect();
+    let sampled: BTreeSet<(String, u32)> = event_samples()
+        .into_iter()
+        .map(|(t, v, _)| (t.to_string(), v))
+        .collect();
+    let drift = event_sample_drift(&defined, &sampled);
+    if drift.is_empty() {
+        Ok(())
+    } else {
+        anyhow::bail!(
+            "contract-golden: event golden_samples() drifted from defined_topics() (fix \
+             before any diff runs):\n  {}",
+            drift.join("\n  ")
+        )
+    }
+}
+
+/// The pure set-difference core of [`self_check_event_samples`], factored out so a test
+/// can execute the MISSING/STALE branches on a fixture (proving the failing branch, not
+/// merely asserting its absence on the real crate).
+fn event_sample_drift(
+    defined: &BTreeSet<(String, u32)>,
+    sampled: &BTreeSet<(String, u32)>,
+) -> Vec<String> {
+    let mut drift = Vec::new();
+    for (t, v) in defined.difference(sampled) {
+        drift.push(format!(
+            "MISSING golden_samples() for defined topic {t} v{v} -- add a POPULATED entry \
+             to the owning api/*/events/src/lib.rs golden_samples() (every field Some/non-empty)"
+        ));
+    }
+    for (t, v) in sampled.difference(defined) {
+        drift.push(format!(
+            "STALE golden_samples() entry {t} v{v} -- no matching bus::define; remove it \
+             from the owning events crate's golden_samples()"
+        ));
+    }
+    drift
 }
 
 /// `OwnerOf` -> `owner_of` — the module-name derivation `rpc_macro::to_snake` applies,
@@ -231,9 +360,20 @@ pub fn live_lines() -> anyhow::Result<BTreeSet<String>> {
             c.topic, c.version
         ));
     }
+    // Durable-event payload wire shapes (Step 5). The didn't-forget check runs first so
+    // a newly-defined topic without a populated sample fails HERE with a per-entry fix,
+    // not as a silently-thin golden.
+    self_check_event_samples()?;
+    for (topic, version, value) in event_samples() {
+        let mut shape = BTreeSet::new();
+        flatten_shape("payload", &value, &mut shape);
+        for path in shape {
+            lines.insert(format!("payload topic={topic} version={version} {path}"));
+        }
+    }
     let modules = rpc_modules();
-    self_check_rpc_list(&modules.iter().map(|(l, _, _)| *l).collect::<Vec<_>>())?;
-    for (label, bindings, wire_ops) in modules {
+    self_check_rpc_list(&modules.iter().map(|(l, _, _, _)| *l).collect::<Vec<_>>())?;
+    for (label, bindings, wire_ops, body_shapes) in modules {
         for rb in bindings {
             let op = rb.operation;
             lines.insert(format!(
@@ -246,6 +386,15 @@ pub fn live_lines() -> anyhow::Result<BTreeSet<String>> {
                 "wire module={label} method={} retry={:?}",
                 w.method, w.retry_mode
             ));
+        }
+        // HTTP-bound request-body wire shapes (Step 5). Option/Vec fields are absent
+        // (Default = None/empty) — documented known gap in GOLDEN_HEADER.
+        for (method, value) in body_shapes {
+            let mut shape = BTreeSet::new();
+            flatten_shape("body", &value, &mut shape);
+            for path in shape {
+                lines.insert(format!("rpc-body module={label} method={method} {path}"));
+            }
         }
     }
     Ok(lines)

@@ -34,3 +34,22 @@ pub struct AdminAction {
 /// auto-derefs). Its `.topic()` is `"admin.action"` — the string audit subscribes to.
 pub static ACTION: LazyLock<EventType<AdminAction>> =
     LazyLock::new(|| define("admin.action", 1, HistoryPolicy::MinRetention { days: 30 }));
+
+/// Fully-POPULATED wire sample for the contract-golden fingerprint (Step 5): every
+/// field set so serde's actual JSON keys (`actor`/`action`/`target`/`detail`) land in
+/// the golden. A silent `#[serde(rename)]` or a reshaped field then fails the blocking
+/// contract-golden stage instead of poisoning retained durable JSON.
+#[doc(hidden)]
+pub fn golden_samples() -> Vec<(&'static str, u32, serde_json::Value)> {
+    vec![(
+        "admin.action",
+        1,
+        serde_json::to_value(AdminAction {
+            actor: "admin".to_string(),
+            action: "login-succeeded".to_string(),
+            target: "session".to_string(),
+            detail: "ip=127.0.0.1".to_string(),
+        })
+        .expect("AdminAction serializes to json"),
+    )]
+}

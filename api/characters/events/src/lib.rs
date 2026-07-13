@@ -46,3 +46,35 @@ pub static CREATED: LazyLock<EventType<Created>> =
 /// row was actually removed — a delete of a non-owned/absent character emits nothing.
 pub static DELETED: LazyLock<EventType<Deleted>> =
     LazyLock::new(|| define("character.deleted", 1, HistoryPolicy::MinRetention { days: 7 }));
+
+/// Fully-POPULATED wire samples for the contract-golden fingerprint (Step 5): one
+/// entry per payload struct, every field set (so serde's actual JSON keys — not the
+/// Rust field names cargo-public-api sees — land in the golden). `contract-golden`
+/// flattens each value into `payload.<key>:<type>` lines; a silent `#[serde(rename)]`
+/// or a reshaped field then fails the blocking stage instead of poisoning retained
+/// durable JSON. Keep every field populated (Options `Some`, collections non-empty).
+#[doc(hidden)]
+pub fn golden_samples() -> Vec<(&'static str, u32, serde_json::Value)> {
+    vec![
+        (
+            "character.created",
+            1,
+            serde_json::to_value(Created {
+                character_id: "char-1".to_string(),
+                player_id: "player-1".to_string(),
+                name: "Aria".to_string(),
+                class: "mage".to_string(),
+            })
+            .expect("Created serializes to json"),
+        ),
+        (
+            "character.deleted",
+            1,
+            serde_json::to_value(Deleted {
+                character_id: "char-1".to_string(),
+                player_id: "player-1".to_string(),
+            })
+            .expect("Deleted serializes to json"),
+        ),
+    ]
+}

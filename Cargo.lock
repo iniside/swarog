@@ -69,6 +69,7 @@ version = "0.1.0"
 dependencies = [
  "bus",
  "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -161,6 +162,7 @@ version = "0.1.0"
 dependencies = [
  "bus",
  "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -824,6 +826,7 @@ version = "0.1.0"
 dependencies = [
  "bus",
  "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -946,6 +949,7 @@ version = "0.1.0"
 dependencies = [
  "bus",
  "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -2354,6 +2358,7 @@ version = "0.1.0"
 dependencies = [
  "bus",
  "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -3482,6 +3487,7 @@ version = "0.1.0"
 dependencies = [
  "bus",
  "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -4278,6 +4284,8 @@ dependencies = [
  "opsapi",
  "ratingapi",
  "schedulerevents",
+ "serde",
+ "serde_json",
  "sqlx",
  "tokio",
 ]

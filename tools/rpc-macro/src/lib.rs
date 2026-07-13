@@ -197,6 +197,9 @@ fn expand(
     let route_pushes = bound.iter().map(|m| gen_route_push(m)).collect::<Vec<_>>();
     // wire_ops covers EVERY method (http-bound and wire-only), not just `bound`.
     let wire_op_literals = methods.iter().map(gen_wire_op_literal).collect::<Vec<_>>();
+    // body_shapes covers ONLY http-bound methods (their `<Method>Request` derives
+    // Default; wire-only request structs do not — see gen_request_struct).
+    let body_shape_literals = bound.iter().map(|m| gen_body_shape_literal(m)).collect::<Vec<_>>();
 
     // The metadata-callback macro. `$crate` cannot name this crate from a proc
     // macro, so the api crate's name comes from the build env (Cargo sets
@@ -267,6 +270,30 @@ fn expand(
             /// by name).
             pub fn wire_ops() -> ::std::vec::Vec<::opsapi::WireOp> {
                 ::std::vec![ #(#wire_op_literals),* ]
+            }
+
+            /// The JSON wire body shape of each `#[http]`-bound method: the method's
+            /// wire name paired with `serde_json::to_value(<Method>Request::default())`.
+            /// The contract-golden stage flattens each value into serde-key paths, so a
+            /// silent `#[serde(rename)]` (or added/removed field) on an HTTP request body
+            /// shows up as a golden diff — the wire-shape blind spot `route_bindings`
+            /// (verb/path/auth only) and `wire_ops` (retry only) cannot see.
+            ///
+            /// WIRE-ONLY methods are DELIBERATELY excluded: their request structs do not
+            /// derive `Default` (nothing decodes them from partial HTTP input), and the
+            /// internal mTLS edge is co-deployed from ONE commit (client and server in the
+            /// same workspace, no independent rollout), so a wire-only body reshape cannot
+            /// poison a differently-versioned peer the way a retained public event JSON or
+            /// an external HTTP client can. Only http-bound bodies are pinned here.
+            ///
+            /// KNOWN GAP (by design): `Default` zeroes `Option` fields to `None` and
+            /// collections to empty, so those keys are ABSENT from the sample — a rename
+            /// on an `Option`/`Vec` HTTP body field may not surface. Durable event
+            /// payloads close this via hand-populated `golden_samples()`; HTTP bodies
+            /// accept the gap (an HTTP client rejects the wire mismatch synchronously,
+            /// unlike a retained event replayed into a consumer).
+            pub fn body_shapes() -> ::std::vec::Vec<(&'static str, ::serde_json::Value)> {
+                ::std::vec![ #(#body_shape_literals),* ]
             }
         }
 
@@ -770,6 +797,22 @@ fn gen_wire_op_literal(m: &MethodModel) -> TokenStream2 {
             method: #const_ident,
             retry_mode: #retry_mode,
         }
+    }
+}
+
+/// One `(wire_method, serde_json::Value)` entry for `body_shapes()`. Only called for
+/// http-bound methods (whose `<Method>Request` derives `Default`), so the
+/// `to_value(<Request>::default())` is always constructible.
+fn gen_body_shape_literal(m: &MethodModel) -> TokenStream2 {
+    let const_ident = method_const_ident(m);
+    let req_name = format_ident!("{}Request", m.pascal);
+    quote! {
+        (
+            #const_ident,
+            ::serde_json::to_value(
+                <#req_name as ::core::default::Default>::default()
+            ).expect("http request struct serializes to json"),
+        )
     }
 }
 

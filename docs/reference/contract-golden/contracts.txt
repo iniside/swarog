@@ -1,10 +1,19 @@
-# contract-golden -- VALUE-level event + rpc contract baseline (Step 6c).
+# contract-golden -- VALUE-level event + rpc contract baseline (Step 6c; Step 5 serde).
 # Lines: `event topic=<t> version=<n> history=<policy>` from every bus::define,
 # `rpc module=<crate::mod> method=<m> verb=<V> path=<p> auth=<a> success=<n> retry=<r>`
-# from every generated route_bindings(), and
+# from every generated route_bindings(),
 # `wire module=<crate::mod> method=<m> retry=<r>` from every generated wire_ops()
-# (EVERY method, http-bound and wire-only). ANY diff fails the blocking contract-golden
-# verify stage: a removed line is BREAKING, an added line is ADDITIVE.
+# (EVERY method, http-bound and wire-only),
+# `payload topic=<t> version=<n> <serde-key-path>:<type>` from each events crate's
+# hand-POPULATED golden_samples() (Some/non-empty everywhere), and
+# `rpc-body module=<crate::mod> method=<m> <serde-key-path>:<type>` from each generated
+# body_shapes() (http-bound request bodies only). The last two pin the serde WIRE SHAPE:
+# a silent #[serde(rename)] or a reshaped field lands as a golden diff.
+# KNOWN GAP (by design): rpc-body values come from <Request>::default(), so Option/Vec
+# fields default to None/empty and are ABSENT -- a rename on an Option/Vec HTTP body
+# field may not surface. Durable EVENT payloads have no such gap (samples are populated).
+# ANY diff fails the blocking contract-golden verify stage: a removed line is BREAKING,
+# an added line is ADDITIVE.
 # Regenerate intentionally via cargo run -p verifyctl -- --bless-contract-golden.
 
 event topic=admin.action version=1 history=min-retention:30d
@@ -14,6 +23,28 @@ event topic=config.changed version=1 history=min-retention:7d
 event topic=match.finished version=1 history=min-retention:7d
 event topic=player.registered version=1 history=min-retention:7d
 event topic=scheduler.fired version=1 history=min-retention:7d
+payload topic=admin.action version=1 payload.action:string
+payload topic=admin.action version=1 payload.actor:string
+payload topic=admin.action version=1 payload.detail:string
+payload topic=admin.action version=1 payload.target:string
+payload topic=character.created version=1 payload.character_id:string
+payload topic=character.created version=1 payload.class:string
+payload topic=character.created version=1 payload.name:string
+payload topic=character.created version=1 payload.player_id:string
+payload topic=character.deleted version=1 payload.character_id:string
+payload topic=character.deleted version=1 payload.player_id:string
+payload topic=config.changed version=1 payload.key:string
+payload topic=config.changed version=1 payload.namespace:string
+payload topic=config.changed version=1 payload.operation:string
+payload topic=config.changed version=1 payload.revision:number
+payload topic=config.changed version=1 payload.value:string
+payload topic=match.finished version=1 payload.loser:string
+payload topic=match.finished version=1 payload.match_id:string
+payload topic=match.finished version=1 payload.winner:string
+payload topic=player.registered version=1 payload.display_name:string
+payload topic=player.registered version=1 payload.player_id:string
+payload topic=player.registered version=1 payload.provider:string
+payload topic=scheduler.fired version=1 payload.name:string
 rpc module=accountsapi::auth_rpc method=accounts.login verb=POST path=/accounts/login auth=None success=200 retry=Never
 rpc module=accountsapi::auth_rpc method=accounts.loginEpic verb=POST path=/accounts/login/epic auth=None success=200 retry=Never
 rpc module=accountsapi::auth_rpc method=accounts.me verb=GET path=/accounts/me auth=Player success=200 retry=OnceAfterReconnect
@@ -26,6 +57,25 @@ rpc module=inventoryapi::holdings_rpc method=inventory.listCharacter verb=GET pa
 rpc module=inventoryapi::holdings_rpc method=inventory.listMine verb=GET path=/inventory/me auth=Player success=200 retry=OnceAfterReconnect
 rpc module=leaderboardapi::leaderboard_rpc method=leaderboard.topScores verb=GET path=/leaderboard auth=None success=200 retry=OnceAfterReconnect
 rpc module=matchapi::match_rpc method=match.report verb=POST path=/match/report auth=None success=202 retry=OnceAfterReconnect
+rpc-body module=accountsapi::auth_rpc method=accounts.login body.email:string
+rpc-body module=accountsapi::auth_rpc method=accounts.login body.password:string
+rpc-body module=accountsapi::auth_rpc method=accounts.loginEpic body.id_token:string
+rpc-body module=accountsapi::auth_rpc method=accounts.me body:object{}
+rpc-body module=accountsapi::auth_rpc method=accounts.register body.displayName:string
+rpc-body module=accountsapi::auth_rpc method=accounts.register body.email:string
+rpc-body module=accountsapi::auth_rpc method=accounts.register body.password:string
+rpc-body module=charactersapi::player_rpc method=characters.create body.class:string
+rpc-body module=charactersapi::player_rpc method=characters.create body.name:string
+rpc-body module=charactersapi::player_rpc method=characters.delete body.character_id:string
+rpc-body module=charactersapi::player_rpc method=characters.list body:object{}
+rpc-body module=inventoryapi::holdings_rpc method=inventory.grant body.item_id:string
+rpc-body module=inventoryapi::holdings_rpc method=inventory.grant body.qty:number
+rpc-body module=inventoryapi::holdings_rpc method=inventory.listCharacter body.character_id:string
+rpc-body module=inventoryapi::holdings_rpc method=inventory.listMine body:object{}
+rpc-body module=leaderboardapi::leaderboard_rpc method=leaderboard.topScores body:object{}
+rpc-body module=matchapi::match_rpc method=match.report body.Loser:string
+rpc-body module=matchapi::match_rpc method=match.report body.ReportId:string
+rpc-body module=matchapi::match_rpc method=match.report body.Winner:string
 wire module=accountsapi::auth_rpc method=accounts.login retry=Never
 wire module=accountsapi::auth_rpc method=accounts.loginEpic retry=Never
 wire module=accountsapi::auth_rpc method=accounts.me retry=OnceAfterReconnect

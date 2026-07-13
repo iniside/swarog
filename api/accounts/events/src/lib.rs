@@ -36,3 +36,22 @@ pub struct PlayerRegistered {
 /// pass it as `&*accountsevents::PLAYER_REGISTERED`.
 pub static PLAYER_REGISTERED: LazyLock<EventType<PlayerRegistered>> =
     LazyLock::new(|| define("player.registered", 1, HistoryPolicy::MinRetention { days: 7 }));
+
+/// Fully-POPULATED wire sample for the contract-golden fingerprint (Step 5): every
+/// field set so serde's actual JSON keys land in the golden. `contract-golden`
+/// flattens this into `payload.<key>:<type>` lines; a silent `#[serde(rename)]` or a
+/// reshaped field then fails the blocking stage instead of poisoning retained durable
+/// JSON.
+#[doc(hidden)]
+pub fn golden_samples() -> Vec<(&'static str, u32, serde_json::Value)> {
+    vec![(
+        "player.registered",
+        1,
+        serde_json::to_value(PlayerRegistered {
+            player_id: "player-1".to_string(),
+            display_name: "Aria".to_string(),
+            provider: "dev".to_string(),
+        })
+        .expect("PlayerRegistered serializes to json"),
+    )]
+}

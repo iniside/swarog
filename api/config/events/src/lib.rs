@@ -51,3 +51,24 @@ pub struct Changed {
 /// pass it as `&*configevents::CHANGED`.
 pub static CHANGED: LazyLock<EventType<Changed>> =
     LazyLock::new(|| define("config.changed", 1, HistoryPolicy::MinRetention { days: 7 }));
+
+/// Fully-POPULATED wire sample for the contract-golden fingerprint (Step 5): every
+/// field set — crucially `value = Some(...)` so the `Option<String>` field appears in
+/// the golden (a `None` would collapse to `null`/absent and hide a rename). A silent
+/// `#[serde(rename)]` or a reshaped field then fails the blocking contract-golden stage
+/// instead of poisoning retained durable JSON.
+#[doc(hidden)]
+pub fn golden_samples() -> Vec<(&'static str, u32, serde_json::Value)> {
+    vec![(
+        "config.changed",
+        1,
+        serde_json::to_value(Changed {
+            namespace: "gameplay".to_string(),
+            key: "max_level".to_string(),
+            value: Some("100".to_string()),
+            operation: "update".to_string(),
+            revision: 42,
+        })
+        .expect("Changed serializes to json"),
+    )]
+}

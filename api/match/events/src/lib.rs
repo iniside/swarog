@@ -32,3 +32,22 @@ pub struct Finished {
 /// auto-derefs). Its `.topic()` is `"match.finished"` — the string audit subscribes to.
 pub static FINISHED: LazyLock<EventType<Finished>> =
     LazyLock::new(|| define("match.finished", 1, HistoryPolicy::MinRetention { days: 7 }));
+
+/// Fully-POPULATED wire sample for the contract-golden fingerprint (Step 5): every
+/// field set so serde's actual JSON keys (`winner`/`loser`, distinct from the HTTP
+/// report body's `Winner`/`Loser`) land in the golden. A silent `#[serde(rename)]` or a
+/// reshaped field then fails the blocking contract-golden stage instead of poisoning
+/// retained durable JSON.
+#[doc(hidden)]
+pub fn golden_samples() -> Vec<(&'static str, u32, serde_json::Value)> {
+    vec![(
+        "match.finished",
+        1,
+        serde_json::to_value(Finished {
+            match_id: "match-1".to_string(),
+            winner: "alice".to_string(),
+            loser: "bob".to_string(),
+        })
+        .expect("Finished serializes to json"),
+    )]
+}
