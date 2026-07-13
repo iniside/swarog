@@ -1,58 +1,75 @@
-# Architecture enforcement (`go-arch-lint`)
+# Architecture enforcement (Rust workspace)
 
-The three seams (module registry, service registry, event bus) plus the contribution slot are
-only as good as the boundaries around them. The hard constraints in `CLAUDE.md` — *core never
-imports a module*, *modules never import each other's impl*, *cross-module comms go through the
-`<name>events`/`adminapi` contract (under `api/<name>/`) or a registry interface* — were, until
-now, **discipline**: nothing stopped a careless `import "gamebackend/modules/characters"` from
-another module. A single Go module compiles them all together, so the compiler won't catch it.
+The architecture is enforced by Rust tools in the workspace and orchestrated by
+`verifyctl`. The source of truth for the rules is [AGENTS.md](../../AGENTS.md);
+this page maps those rules to their executable gates.
 
-`.go-arch-lint.yml` makes those constraints **machine-checked**.
+## Run the gates
 
-## Run it
-
-```
-go install github.com/fe3dback/go-arch-lint@latest   # one-time
-go-arch-lint check                                    # from repo root; exit 1 on any violation
+```sh
+cargo run -p verifyctl -- --fast
 ```
 
-Wire it into CI next to `go vet` / `go test`.
+`--fast` is the blocking manifest. Use `--all` to add advisory checks,
+`--all --strict` to make advisory failures blocking, or `--slow` to run blocking
+plus advisory checks and add mutation testing. Under `--slow`, advisory failures
+remain non-blocking unless `--strict` is also present. Do not run individual
+checkers as a substitute for the manifest: the
+runner serializes the shared-Postgres rollout, freezes the environment, preserves
+logs, and reports one authoritative result table.
 
-## What the config encodes
+## Blocking architecture gates
 
-- **Components.** Each module impl (`modules/<name>`) is its own component, so cross-impl imports
-  can be forbidden. The shared contract surface — every `<name>events` package + `admin/adminapi`,
-  now living under the top-level `api/<name>/` tree (disjoint from `modules/<name>/`, which holds
-  impl only) — is one `contracts` component, plus one component per generated `<name>rpc` glue
-  package (`api/<name>/<name>rpc`, impl-tier, may import `edge`). `core` is a `commonComponent`
-  (importable by all). `cmd` is the composition root.
-- **Rules.** `core` and `contracts` have no `deps` entry, so they may use only commons (`core`) —
-  i.e. they never import a module impl. Each module impl `mayDependOn: [contracts]` (plus `core`,
-  free as a common, and its own `<name>rpc` glue where applicable) — never another module's impl.
-  Only `cmd` may depend on the concrete modules.
-- **Vendor imports are ignored** (`allow.depOnAnyVendor: true`) — we enforce *internal* architecture
-  only; which third-party libs a module uses is its own business.
+- **fortress** builds every `cmd/*-svc` through `tools/checkmodules` and runs
+  `archcheck`. `archcheck` rejects foundation-to-domain dependencies,
+  module-to-module implementation dependencies, foreign RPC-glue dependencies,
+  topology-aware transport state inside modules, missing service composition
+  roots, and illegal consumers of `demos/*`.
+- **routecheck** compares the declared HTTP/player route surface with the process
+  profiles that host it, catching missing, duplicate, or wrongly exposed routes.
+- **codegen-freshness** regenerates committed RPC and external-client output in a
+  temporary location and fails on drift.
+- **contract-golden** compares the generated wire-contract inventory with the
+  committed golden file.
+- **conformance** checks the centralized convention inventory in
+  `tools/conformance/src/policy.rs`, denies module/convention drift, and runs the
+  repository-owned executable probes. It is a behavioral supplement to
+  `archcheck`; an `Applies` stance needs a biting fixture and a `NotApplicable`
+  stance needs a concrete reason.
+- **split-proof** boots the real split fleet, drives traffic through the gateway,
+  reruns the monolith for parity, and proves owned graceful shutdown.
 
-## Why no cycle rule
+Build, clippy, tests, and dependency audit are also blocking. An audit invocation,
+installation, or network error is a failure; it is never converted into a green
+skip. An explicitly selected `--no-install` is the sole missing-tool exception and
+is reported as SKIP rather than PASS.
 
-Import cycles need no linter here: **the Go compiler already rejects circular package imports**.
-(On the JVM this isn't free — the Kotlin sketch in `experiments/` needs an explicit ArchUnit
-`slices().should().beFreeOfCycles()` rule for the same guarantee.)
+## Advisory contract gates
 
-## Enforcement is at lint time, not compile time
+`--all` adds:
 
-A bad cross-module impl import still **compiles** (`go build` is happy) — `go-arch-lint check` is
-what turns it red. Verified: adding `import "gamebackend/modules/characters"` to `inventory`
-builds fine but produces *"Component inventory shouldn't depend on gamebackend/modules/characters"*.
-The only way to get compile-time enforcement would be splitting each module into its own Go module
-(separate `go.mod`), which we deliberately don't — one module keeps the build trivial, and the lint
-gate is enough.
+- **public-api**, which diffs every contract crate against
+  `docs/reference/public-api-baseline/` so breaking changes require an explicit
+  review and additive changes remain visible;
+- **topiccheck**, which validates durable topic versions, subscription identifiers,
+  allowed sinkless topics, and exactly one subscription host per deployment
+  profile;
+- **csharp-client**, an external generated-client and live player-QUIC proof; and
+- **fuzz**, where supported by the current platform.
 
-## Provenance
+Intentional baseline changes are explicit actions:
 
-Chosen over `depguard` (the more widely-used option, since it ships inside `golangci-lint`) because
-this repo has no `golangci-lint` yet, so depguard's "already integrated" advantage didn't apply, and
-`go-arch-lint` is the purpose-built, declarative fit for "modular monolith component boundaries" —
-the direct equivalent of the ArchUnit rules in `experiments/jvm-kotlin-sketch`. If general-purpose
-Go linting is adopted later, folding these rules into `golangci-lint` + `depguard` is the mainstream
-alternative.
+```sh
+cargo run -p verifyctl -- --bless-public-api
+cargo run -p verifyctl -- --bless-contract-golden
+```
+
+Both actions take the same rollout lease and replace baseline sets recoverably.
+
+## What the compiler does and does not prove
+
+Cargo already rejects Rust crate dependency cycles and type errors, but a Cargo
+workspace can still compile architecture violations such as one domain importing
+another domain's implementation crate. That is why the graph and source checks in
+`archcheck`, the every-service fortress build, and the live topology proof are all
+required. A green compilation alone is not an architecture proof.

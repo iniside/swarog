@@ -80,10 +80,11 @@ never a silent last-writer-wins overwrite.
 2. **Fortress rule.** Every folder in `modules/` is a fortress: it never imports
    another module's impl crate, and every domain module compiles + boots as its own
    `cmd/<name>-svc`. The only gates are the contract crates under `api/<name>/`.
-   Enforced mechanically: `cargo run -p archcheck` (no module→module edges, no
-   module→foreign-`<name>rpc` edges, no `Option<edge::Server>` in modules/, every
-   `modules/<name>` has a `cmd/<name>-svc`) + the `fortress` verify stage (builds
-   every svc). NO exceptions — non-shipping demo crates live under `demos/`
+   Enforced mechanically by the blocking `fortress` stage in `verifyctl`:
+   `archcheck` rejects module→module edges, foreign `<name>rpc` edges,
+   `Option<edge::Server>` in `modules/`, missing `cmd/<name>-svc` roots, and illegal
+   demo consumers; `checkmodules` builds every svc. NO exceptions — non-shipping
+   demo crates live under `demos/`
    (importable ONLY by `cmd/server`, archcheck-enforced), not in `modules/`.
 3. **Contract surface per domain, under `api/<name>/`:** `<name>api` (pure traits +
    `#[rpc]`, transport-free — importable by any module), `<name>events` (payloads +
@@ -102,8 +103,8 @@ never a silent last-writer-wins overwrite.
    ids. Guarded by the `public-api` verify stage (each contract crate's surface
    diffed against a committed snapshot in `docs/reference/public-api-baseline/`;
    any diff FAILs — removed symbols BREAKING, added ADDITIVE — re-bless intentional
-   changes with `./verify.sh --bless-public-api` / `-BlessPublicApi`) and
-   `cargo run -p topiccheck` (profile-aware: defined-vs-subscribed
+   changes with `cargo run -p verifyctl -- --bless-public-api`) and the advisory
+   `topiccheck` stage (profile-aware: defined-vs-subscribed
    drift (blocking under `--durability-strict`; sanctioned sinkless topics live in
    topiccheck's `ALLOW_UNSUBSCRIBED`), version match, globally unique subscription
    ids, exactly one host per subscription per deployment profile).
@@ -185,12 +186,10 @@ never a silent last-writer-wins overwrite.
    add stubs where consumers live, add the svc lib to `tools/checkmodules`'s Split
    profile, and extend `tools/splitproof` (a new `Svc` in `fleet()` with its env +
    ports + a named assertion, HTTP ops asserted THROUGH gateway-svc; the harness's
-   fleet-drift preflight fails if `fleet()` != `cmd/*-svc` on disk). Add
-   `src/conformance.rs` with `pub fn entry() -> conformance::Entry` declaring a
-   stance (`Applies(fixture)` or `NotApplicable { why }`) for every
-   `conformance::Convention`, and add the entry to `tools/conformance`'s
-   `entries()` list — `conformancecheck`'s drift preflight fails loudly if
-   forgotten.
+   fleet-drift preflight fails if `fleet()` != `cmd/*-svc` on disk). Add the module
+   to the centralized convention inventory in `tools/conformance/src/policy.rs`;
+   use the smallest executable fixture that proves each applicable convention and
+   give every genuine non-applicability a concrete reason.
 5. No event-routing wiring exists: producers append to the shared log, consumers
    pull from their checkpoint — the same code in monolith and split. `topiccheck`
    validates the subscription graph per deployment profile.
@@ -199,8 +198,9 @@ never a silent last-writer-wins overwrite.
 
 - **accounts** — identity: one `player_id`, many identities (`provider`,`subject`),
   opaque DB sessions (30-day TTL). Dev/password auth (argon2id, `ACCOUNTS_DEV_AUTH`
-  explicit-only — default OFF/fail-closed, loud warn when ON; the run/split-proof
-  scripts set `ACCOUNTS_DEV_AUTH=1`), Epic OIDC verifier (`EPIC_CLIENT_ID`, JWKS, RS256/ES256),
+  explicit-only — default OFF/fail-closed, loud warn when ON; the `devctl` and
+  split-proof development profiles set `ACCOUNTS_DEV_AUTH=1`), Epic OIDC verifier
+  (`EPIC_CLIENT_ID`, JWKS, RS256/ES256),
   Epic web OAuth link/login (`EPIC_CLIENT_SECRET`, `/accounts/epic/start|callback`).
   Emits durable `player.registered`. The gateway's session verifier resolves
   `accountsapi::Sessions` — a process hosting a gateway without the accounts
@@ -208,7 +208,7 @@ never a silent last-writer-wins overwrite.
 - **characters / inventory** — the modularity reference case: plain-id relations,
   sync `Ownership` authz over the wire, starter-grant/wipe via durable
   `character.created/deleted`. `INVENTORY_DEV_GRANT` (explicit-only — default
-  OFF/fail-closed, set by the run/split-proof scripts) enables the simulated-IAP
+  OFF/fail-closed, set by the `devctl` and split-proof development profiles) enables the simulated-IAP
   grant route.
 - **config** — DB-backed knobs with a monotonic `config.revision`. A row trigger
   (INSERT/UPDATE/DELETE) increments the revision, NOTIFYs `config_changed`, and
@@ -318,44 +318,74 @@ archcheck forbids any other consumer of a `demos/*` crate).
 ## Commands
 
 ```
-cargo build --workspace
-cargo test --workspace          # unit + live-Postgres integration + proptests (232+)
-cargo clippy --workspace --all-targets -- -D warnings
-cargo run -p archcheck          # fortress dependency law + plane tripwires
-cargo run -p topiccheck         # profile-aware subscription graph validation
-cargo run -p conformancecheck   # convention-conformance: every module declares a stance per convention
-cargo run -p eventctl -- list   # operator CLI: lag/retry/pause/resume/skip/retire
-cargo run -p adminctl -- list   # operator CLI: admin users (create-user/list/delete)
-./install.sh <username>         # create/reset an admin portal user (no-echo prompt)
-./verify.sh                     # the safety net (there is no CI — this IS it)
-cargo run -p splitproof         # live 12-process split + monolith parity proof (Rust harness)
-./run.sh                        # mint dev CA + boot the split locally
+cargo run -p devctl -- up monolith
+cargo run -p devctl -- up split
+cargo run -p devctl -- status
+cargo run -p devctl -- down
+cargo run -p verifyctl -- --fast
+cargo run -p verifyctl -- --all
+cargo run -p verifyctl -- --all --strict
+cargo run -p verifyctl -- --slow
 ```
 
-**`verify.sh` / `verify.ps1` tiers** (PASS/FAIL/SKIP table; non-zero exit iff a
-blocking stage fails; auto-installs pinned CLIs unless `--no-install`):
-- BLOCKING (default / `--fast`): build, clippy `-D warnings`, test, `cargo audit`
-  (use any installed version; when missing, install the latest available
-  `cargo-audit --locked`; RUSTSEC-2023-0071 ignored — dev-only rsa in accounts test JWTs),
-  fortress (builds every `cmd/*-svc` + archcheck), split-proof.
-- ADVISORY (`--all`, blocking under `--strict`): `public-api` (contract-crate list
-  derived from the filesystem, each diffed against a committed snapshot in
-  `docs/reference/public-api-baseline/`; any diff FAILs, tool errors FAIL, re-bless
-  via `--bless-public-api` / `-BlessPublicApi`; cargo-public-api pinned 0.52.0; needs
-  nightly), `fuzz`
-  (`core/edge/fuzz/`, frame+wire decode; SKIPs on this Windows box), `topiccheck`.
-- SLOW (`--slow`): `cargo mutants` over edge/gateway/asyncevents/registry/bus.
+`devctl up` is the owned foreground supervisor. It builds, seeds, starts, and
+health-checks the selected topology, writes bounded state/logs under `run/devctl/`,
+and retains ownership until shutdown. `status` and `down` validate the recorded
+supervisor identity over a bounded loopback control endpoint; cleanup reaps exactly
+the process groups/job members that supervisor created, never unrelated processes
+selected by name or a reused PID.
+
+`verifyctl` prints a PASS/FAIL/SKIP table and exits non-zero for every applicable
+blocking failure:
+
+- BLOCKING (default / `--fast`): build, clippy `-D warnings`, test, audit,
+  fortress, routecheck, codegen-freshness, contract-golden, conformance, and
+  split-proof. Audit install/invocation/network errors are FAIL, never green SKIP;
+  only a missing tool with explicit `--no-install` is labeled SKIP.
+- ADVISORY (`--all`, or included and blocking with `--strict`): public-api, fuzz,
+  external C# client, and topiccheck.
+- SLOW (`--slow`): the blocking and advisory manifests plus `cargo mutants`;
+  advisory failures remain non-blocking unless `--strict` is also present.
+
+Intentional baseline updates use `cargo run -p verifyctl -- --bless-public-api`
+or `cargo run -p verifyctl -- --bless-contract-golden`; each is a recoverable,
+lease-protected action.
+
+## Dev tooling scope — MANDATORY
+
+Everything under `tools/` exists to develop, inspect, generate for, exercise, or
+verify the game backend. These programs are development utilities, not production
+services or products. Keep them simple and purpose-built for backend development.
+They do not need certification, security-product hardening, encrypted local control
+or state, custom cryptography, or defenses against a malicious local operator.
+
+`devctl`, `verifyctl`, `splitproof`, and `processctl` specifically must start the
+intended binaries with typed configuration, serialize rollouts, detect failures,
+preserve useful logs/state, stop owned processes, avoid unrelated-process
+kills/orphans, and report the backend test result accurately.
+
+Assume a trusted local operator running under one OS account. Use ordinary OS-local
+permissions and do not expose secrets in argv, logs, or state, but do not add
+encryption-at-rest machinery, custom cryptography, same-user attack defenses,
+elaborate ACL/reparse-point hardening, or daemon-grade control protocols unless a
+concrete backend-test failure requires it.
+Control paths must be bounded enough that accidental partial input cannot hang a
+rollout; they do not need to resist a malicious user who can already kill/debug the
+process. Review dev tooling against this functional threat model and treat unrelated
+security hardening as out of scope.
 
 ## One test rollout at a time — MANDATORY
 
-At most ONE test run (`cargo test`, `verify.*`, `cargo run -p splitproof`) may execute on
-this machine at any moment — they all share the one local Postgres, and
+At most ONE rollout-bearing command (`devctl up`, `verifyctl`, or an explicitly
+requested ad-hoc `cargo test`) may execute on this machine at any moment — they
+all share the one local Postgres, and
 concurrent runs contend on the events plane's migrate advisory lock and on
 concurrent DDL (`CREATE OR REPLACE`), which looks like a hang or fails with
 `tuple concurrently updated`. This bites on EVERY rollout, so it is a hard
 protocol, not a tip:
 
-- **Before starting any test run**: check nothing is already running —
+- **Before starting any rollout**: `cargo run -p devctl -- status` must not report
+  an active fleet. For an ad-hoc test, also check that nothing is already compiling —
   `Get-Process | Where-Object { $_.ProcessName -match '^cargo$|^rustc$' }`
   (or `pgrep -x cargo` in bash). If something is, WAIT for it; never start a
   second run "to check something quickly".
@@ -368,16 +398,21 @@ protocol, not a tip:
   idle-in-transaction sessions) must be killed before retrying — check
   `pg_stat_activity` for stuck `asyncevents` sessions.
 
-**`cargo run -p splitproof`** (the cross-platform Rust harness in `tools/splitproof`,
-which REPLACED the retired `split-proof.sh`/`.ps1` + `tools/winctrl` — the shell
-harnesses were structurally fragile on Windows: PowerShell native-arg quote-stripping,
-MSYS `wait` hangs, winctrl exit-code false-throws) boots the real split — characters
+All rollout tools acquire the canonical `run/rollout.lock`. `devctl up` holds an
+exclusive lease for the foreground fleet. `verifyctl` holds one lease for its
+entire manifest and passes a private one-shot inherited lease to the split-proof
+child; the child validates the parent identity/role and participates in that same
+rollout rather than reacquiring the lock. A competing or malformed borrower fails
+closed.
+
+The blocking **split-proof** stage uses the cross-platform Rust harness in
+`tools/splitproof`. It boots the real split — characters
 :8080/:9000, inventory :8081/:9001, gateway :8082 + player-QUIC :9100, config
 :8083/:9002, accounts :8084/:9003, admin :8085, audit :8086/:9004, scheduler
 :8087/:9005, match :8088/:9006, rating :8089/:9007, leaderboard :8090/:9008,
-apikeys :8091/:9009. The fleet is spawned via `std::process::Command` with a TYPED env
-map + a kill-on-drop guard (no shell, so no quoting/job-control/winctrl bugs, no
-orphans), health-checked over reqwest, DB-asserted via sqlx, and the player QUIC front
+apikeys :8091/:9009. The fleet is spawned with a typed environment and owned
+process containment plus a kill-on-drop guard, health-checked over reqwest,
+DB-asserted via sqlx, and the player QUIC front
 driven through the `edge` crate as a library. It asserts the same named scenarios
 (register/login → real bearer, authz negatives, allow-list, cross-process starter-grant
 + DB-verified wipe, config live-reload, audit rows, scheduler exactly-once, leaderboard
@@ -386,7 +421,8 @@ audit [AU1-AU3], scheduler/prune [SC/SP], metrics [MX], rate-limit [RL], player 
 [P1-P6]), then re-runs the monolith (`cmd/server`) on the same player front for parity
 ([M0-M3b]) and proves native graceful shutdown ([W2]: Ctrl-Break to the monolith's
 process group / SIGTERM on unix → clean drain, no force-kill). **psql is REQUIRED** at
-`DATABASE_URL` and the fleet must be buildable (the harness `cargo build`s it). A
+`DATABASE_URL`; the preceding blocking build stage produces the fleet and the
+harness runs it without a nested build. A
 fleet-drift preflight fails loudly if the harness svc list != `cmd/*-svc` on disk.
 Extend `tools/splitproof` with a new `Svc` in `fleet()` + a named assertion whenever
 you add a module or cross-process flow. **Never ship a monolith-only feature** — both
@@ -396,8 +432,9 @@ Smoke test (monolith or through gateway-svc). The dev conveniences are explicit
 opt-ins/opt-outs (fail-closed defaults), so the monolith needs `APIKEYS_DEV_SEED=1`
 (dev API keys below), `ACCOUNTS_DEV_AUTH=1` + `INVENTORY_DEV_GRANT=1`
 (register/login + IAP grant), `ADMIN_COOKIE_SECURE=0` (session cookie over plain
-http) and a seeded admin user (`adminctl create-user`) — `./run.sh` / `./run.ps1`
-set/seed all of these for you (dev portal creds `admin`/`admin`):
+http) and a seeded admin user (`adminctl create-user`) —
+`cargo run -p devctl -- up monolith` sets/seeds all of these for you (dev portal
+creds `admin`/`admin`):
 ```
 curl -X POST localhost:8080/match/report -H "X-Api-Key: dev-key-server" -d '{"ReportId":"demo-1","Winner":"alice","Loser":"bob"}'
 curl localhost:8080/leaderboard -H "X-Api-Key: dev-key-client"
@@ -449,11 +486,11 @@ api/<name>/                # contract surface per domain
   <name>rpc/               #   generated glue (Client/register_server/factories)
 modules/                   # private impls — 11 fortresses + gateway (see above)
 demos/                     # non-shipping demo crates (webui) — cmd/server only
-tools/                     # rpc-macro (+tests), archcheck, topiccheck,
-                           # conformancecheck, edgeca, playercli
+tools/                     # devctl/verifyctl/processctl/splitproof, rpc-macro,
+                           # architecture checkers, generators, edgeca, playercli
 experiments/               # archived sketches: go-sketch (the ported original),
                            # jvm-kotlin-sketch, jvm-quarkus-sketch — reference only
-UILayout/                  # Claude Design mockups (spec for admin UI, not runnable)
+UILayout/                  # design mockups (spec for admin UI, not runnable)
 ```
 
 ---
@@ -493,8 +530,8 @@ relevant feedback memory for the violated rule (not only for repeat offenses).
 This is a modular monolith built on Open/Closed — new features are *new code*, not
 edits to existing code. So before any plan proposing a new module, service, event,
 or admin section (or a replacement), first **map the overlapping existing systems**.
-The three seams (module registry, service registry `Provide`/`Require`, event bus)
-plus the `Contribute`/`Contributions` slot mean a capability you want often already
+The three seams (module registry, service registry `registry::provide`/
+`registry::require`, event bus) plus the contribution slots mean a capability you want often already
 exists or has a near-twin. For each candidate, document in the plan's Context: what
 it does, how it differs, and an explicit **"why not extend / depend on X"**. A plan
 that adds a module without that rationale is incomplete — lead with evidence, not
@@ -503,15 +540,15 @@ enthusiasm for new code.
 ## Research / Search Mode — MANDATORY
 
 Before any non-trivial research/search, ask the user **"how should I research
-this?"** Don't default to grep — one grep pass is lossy (misses interface
-satisfaction, embedded methods, generated code, event subscribers wired by string
-topic, the registry/reflection-driven surface). Treat any single grep sweep as a
+this?"** Don't default to grep — one grep pass is lossy (misses trait
+implementations, macro-generated RPC glue, typed event wiring, and shared registry
+keys/contribution slots). Treat any single grep sweep as a
 **lower bound, not the answer**, and say which method you used. "Non-trivial" =
 mapping an API surface, finding all callers, understanding data flow, locating
 wiring, surveying overlap; one-shot lookups with a known file+symbol proceed without
 asking.
 
-**Method menu (gopls/LSP, parallel subagents, targeted read, grep) + subagent-count
+**Method menu (clangd/LSP, parallel subagents, targeted read, grep) + subagent-count
 bands: [docs/reference/research-mode.md](docs/reference/research-mode.md); shared
 Agent-call invariants: [docs/reference/subagent-dispatch.md](docs/reference/subagent-dispatch.md).**
 Any code-touching subagent gets the nav guidance pasted into its prompt — it does not
@@ -535,7 +572,8 @@ Front-load the thinking. For any plan (plan mode / "write me a plan" / a
 `docs/plans/…-plan.md`), in order — no skipping for "it's small":
 
 1. **Ask how many research subagents** (2–4 / 4–8 / 8–12 bands). Ask **every time**,
-   even mid-session — count is task-specific. Pass `model:` explicitly.
+   even mid-session — count is task-specific. Choose an available execution profile
+   appropriate to the task; provider-specific model names do not belong in repo guidance.
 2. **Research subagents on 3 non-overlapping angles:** API surface / API usages /
    patterns. Synthesize in the main model — never write off one subagent.
 3. **Write concrete specifics:** exact files, signatures, API calls from step 2,
@@ -544,7 +582,8 @@ Front-load the thinking. For any plan (plan mode / "write me a plan" / a
 4. **Structure as an ordered `Step 1 → Step 2 → …` sequence, NOT a catalog.** Each
    step states **(a) what** is touched (exact files/symbols), **(b) why now / order** —
    the dependency forcing it before the next, **(c) how** — non-mechanical moves
-   spelled out, **(d) dispatch tag** — `[inline]`/`[fable]`/`[opus]`/`[sonnet]`. A
+   spelled out, **(d) dispatch tag** — `[inline]`/`[subagent-complex]`/
+   `[subagent-mechanical]`. A
    catalog that leaves order/topology/per-step actions to "figure as you go" is
    **banned**; steps need not each compile, but every step MUST be written out.
 5. **Dispatch one grumpy senior-engineer reviewer** at session tier (separate context
@@ -558,40 +597,35 @@ checklist): [docs/reference/plan-writing-workflow.md](docs/reference/plan-writin
 
 ## Implementation Mode — MANDATORY
 
-**Mixed dispatch — decided per plan step, not per session. Tags name a CONCRETE
-model, not a tier alias.** Four lanes, each set at plan-writing time (Plan Writing
-step 4d):
+**Mixed dispatch — decided per plan step, not per session. Tags describe the kind
+of execution required, not a vendor or model.** Three lanes are set at plan-writing
+time (Plan Writing step 4d):
 
 - `[inline]` — main model writes in this context. **No independent review** —
   reserved for mid-edit judgment that can't be handed off. Default complex work to a
   subagent lane, not `[inline]`.
-- `[fable]` — Fable 5 subagent. Top tier; for complex/correctness-critical work (new
-  API design, the bus/registry seams, lifecycle ordering, cross-module context) **when
-  Fable is the session model**.
-- `[opus]` — Opus 4.8 subagent. Substantive implementation. **While the session is
-  Opus, `[opus]` is also the top-tier lane** — same tier as inline but a separate
-  context, the independent-reviewer boundary.
-- `[sonnet]` — Sonnet subagent. Mechanical: rename sweeps, scaffolding, N-similar
+- `[subagent-complex]` — separate-context implementation for substantive or
+  correctness-critical work: new API design, bus/registry seams, lifecycle ordering,
+  cross-module behavior, security boundaries, or broad refactors.
+- `[subagent-mechanical]` — mechanical work: rename sweeps, scaffolding, N-similar
   edits, applying a fully-specified step, compile fixes, tests from a pattern,
-  config. **Never burn a higher tier on a rename.** Visual/UI design is never
-  `[sonnet]`.
+  and configuration. Visual/UI design is never `[subagent-mechanical]`.
 
-**Every code-writing Agent call passes an explicit `model:` matching its lane —
-NON-NEGOTIABLE** (there is no "inherit" path): `[fable]`→`model:"fable"`,
-`[opus]`→`model:"opus"`, `[sonnet]`→`model:"sonnet"` (listing-only research →
-`model:"haiku"`). Pre-flight every Agent call for the field. After a multi-subagent
-rollout, before "done": `git log -<N> --format="%h %B" | grep "Co-Authored"` and
-confirm trailers match each lane (`[fable]`→Fable 5, `[opus]`→Opus 4.8,
-`[sonnet]`→Sonnet 4.6) — surface mismatches immediately.
+Choose the best available execution profile for each subagent lane. Do not encode
+provider-specific model names or versions in plans, prompts, tags, commits, or
+durable repository guidance. The dispatch prompt must still state the requested
+effort level and navigation guidance explicitly because neither is assumed to
+inherit.
 
 The user approves the tags with the plan (called out at ExitPlanMode). Ask only for
 untagged/ad-hoc work, and if any step is a subagent lane also ask **"what effort
 level?"** (effort does NOT inherit — embed it in the prompt). Review each diff against
-its plan step before dispatching the next; commit after each task (subagents may
-commit their own work). Mid-rollout, don't silently flip a tag — ask.
+its plan step before dispatching the next; commit after each task or independently
+reviewable part of a larger task (subagents may commit their own work). Mid-rollout,
+don't silently flip a tag — ask.
 
-**Cross-cutting Agent-call invariants (explicit `model:`, effort/nav-guidance don't
-inherit, trailer, concise prompts) — shared by research + implementation:
+**Cross-cutting Agent-call invariants (effort/nav-guidance don't inherit, concise
+prompts) — shared by research + implementation:
 [docs/reference/subagent-dispatch.md](docs/reference/subagent-dispatch.md). Lane
 heuristic, dispatch rules, refactor safety:
 [docs/reference/implementation-mode.md](docs/reference/implementation-mode.md).**
@@ -644,6 +678,15 @@ mirrored into the repo at `memory/` so it survives across machines via git.
 - The live path is derived (repo abspath → non-alnum→`-`), so scripts are portable;
   override with `CLAUDE_MEMORY_DIR` if detection is ever wrong. `… path` prints it.
 
+## Commit After Every Task — MANDATORY
+
+After completing every task—or each independently reviewable, verified part of a
+larger task—create a git commit containing only the changes made for that unit. Do
+not wait for a long multi-part rollout to finish, and do not include unrelated
+pre-existing working-tree changes. If a task produces no repository changes, no
+commit is required. Use the commit format defined below. A request to commit is
+implicit in every task; pushing still requires an explicit user request.
+
 ## Git Safety — MANDATORY
 
 **Never `git stash`, `git checkout -- <file>`, `git restore`, or anything that
@@ -651,8 +694,9 @@ discards/overwrites uncommitted working-tree changes** without the user's say-so
 inspect old contents use `git show <sha>:<path>`. Only ever `git reset --soft HEAD~1`
 to undo a commit *you* just created *this turn*, and only when nothing else has
 committed since. Never `git push --force` or rewrite published history without
-explicit instruction. Commit or push only when the user asks; if on the default
-branch, branch first.
+explicit instruction. Commit after every completed task or independently reviewable
+part as required above; push only when the user asks. Work directly on `master`; do
+not create a branch unless the user explicitly requests one.
 
 ## Commit Message Format — MANDATORY
 
@@ -661,10 +705,8 @@ feat/fix/refactor/test/docs/chore; `scope` = lowercased module/package, comma-se
 multiples (`fix(match,rating): …`). NOT bracketed `[Module]` scopes. Multi-step
 rollouts may note `(Step N — …)`.
 
-**`Co-Authored-By` trailer reflects the EXECUTING model**, overriding the harness
-default (which hardcodes Opus 4.8): Opus → `Claude Opus 4.8`, Fable → `Claude Fable
-5`, Sonnet subagent → `Claude Sonnet 4.6` (all `<noreply@anthropic.com>`). When
-dispatching a code-writing subagent, put **its model's** trailer in the prompt — this
-is what the trailer audit (Implementation Mode) checks.
+Do not require or invent model-specific `Co-Authored-By` trailers. If the active
+tooling adds an attribution trailer, it must describe the actual contributing tool
+or agent without a fabricated vendor, model family, or version.
 
 **Examples + scope conventions: [docs/reference/commit-format.md](docs/reference/commit-format.md).**

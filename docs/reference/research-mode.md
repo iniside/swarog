@@ -4,13 +4,21 @@ Detail for the **Research / Search Mode — MANDATORY** rule in [AGENTS.md](../.
 
 ## Why not just grep
 
-One grep pass is lossy here — it misses interface satisfaction (a type implements an interface with no textual reference to it), embedded/promoted methods, generated code, event subscribers wired by string topic (`core.Define`/`core.On`), and the registry/reflection-driven surface (`Provide`/`Require`, `Contribute`/`Contributions`). Treat any single grep sweep as a **lower bound, not the answer**, and always say which method you used.
+One grep pass is lossy here — it misses trait implementations, generated RPC glue,
+macro-expanded operation metadata, durable event subscriptions assembled through
+typed descriptors, and registry/contribution consumers reached through shared keys
+and slots. Treat any single grep sweep as a **lower bound, not the answer**, and
+always say which method you used.
 
 ## Method menu
 
 Offer the fitting subset:
 
-- **LSP / gopls** — Go symbol nav with a file+line anchor: definition, references, implementations (preferred for "where is X defined / who calls Y / what satisfies this interface"). The interface-implementations query is the one grep can't do.
+- **LSP / clangd** — Rust/C++-style symbol navigation with a file+line+column
+  anchor: definition, references, implementations, callers, and type hierarchy
+  (preferred for "where is X defined / who calls Y / what implements this trait").
+  Start with one targeted `rg` anchor, then ask clangd; implementation queries are
+  the part a text sweep cannot prove.
 - **Parallel research subagents** — fan out subagents, each a distinct **non-overlapping** angle (e.g. API surface / callers+consumers / event publishers+subscribers / config+env wiring). If picked, ask **"how many?"** (bands below). Dispatch mechanics per [subagent-dispatch.md](subagent-dispatch.md)—every one gets the nav guidance pasted in and reports which method it used.
 - **Targeted main-model read** — small surface, one file end-to-end.
 - **Grep/Glob** — only when nothing else fits; acknowledge it's a lower bound.

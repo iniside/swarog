@@ -1,7 +1,8 @@
 # Hetzner deploy checklist (public front + hardened admin)
 
 Manual, deploy-day steps that CANNOT be verified locally (ACME needs public DNS +
-port 443). Everything else is covered by `./verify.sh` + `./split-proof.sh`.
+port 443). Run `cargo run -p verifyctl -- --all --strict` before deploying; its
+blocking split-proof stage covers split/monolith parity locally.
 Companion plan: `docs/plans/2026-07-10-2314-admin-hardening-plan.md`.
 
 ## Prerequisites
@@ -68,7 +69,9 @@ Companion plan: `docs/plans/2026-07-10-2314-admin-hardening-plan.md`.
 
 - No HTTP→HTTPS redirect on :80 (nothing listens there).
 - No TOTP/2FA yet (sessions design accommodates it later).
-- Player QUIC (:9100) has no per-IP rate limit yet — separate work item.
-- Monolith (`cmd/server`) does not parse TLS env — TLS is gateway-svc-only
-  (single public front door). If the monolith ever fronts the internet, add the
-  same ~10 parse lines to `cmd/server/main.rs`.
+- Player QUIC (:9100) is rate-limited both per validated source IP across
+  reconnects and per persistent connection. Stateless Retry happens before a
+  connection slot is reserved.
+- Production TLS environment parsing belongs to `cmd/gateway-svc`, the single
+  public front door. Domain services remain internal mTLS peers; the monolith is
+  the local parity topology, not the public deployment entry point.

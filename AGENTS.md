@@ -80,10 +80,11 @@ never a silent last-writer-wins overwrite.
 2. **Fortress rule.** Every folder in `modules/` is a fortress: it never imports
    another module's impl crate, and every domain module compiles + boots as its own
    `cmd/<name>-svc`. The only gates are the contract crates under `api/<name>/`.
-   Enforced mechanically: `cargo run -p archcheck` (no module→module edges, no
-   module→foreign-`<name>rpc` edges, no `Option<edge::Server>` in modules/, every
-   `modules/<name>` has a `cmd/<name>-svc`) + the `fortress` verify stage (builds
-   every svc). NO exceptions — non-shipping demo crates live under `demos/`
+   Enforced mechanically by the blocking `fortress` stage in `verifyctl`:
+   `archcheck` rejects module→module edges, foreign `<name>rpc` edges,
+   `Option<edge::Server>` in `modules/`, missing `cmd/<name>-svc` roots, and illegal
+   demo consumers; `checkmodules` builds every svc. NO exceptions — non-shipping
+   demo crates live under `demos/`
    (importable ONLY by `cmd/server`, archcheck-enforced), not in `modules/`.
 3. **Contract surface per domain, under `api/<name>/`:** `<name>api` (pure traits +
    `#[rpc]`, transport-free — importable by any module), `<name>events` (payloads +
@@ -102,8 +103,8 @@ never a silent last-writer-wins overwrite.
    ids. Guarded by the `public-api` verify stage (each contract crate's surface
    diffed against a committed snapshot in `docs/reference/public-api-baseline/`;
    any diff FAILs — removed symbols BREAKING, added ADDITIVE — re-bless intentional
-   changes with `./verify.sh --bless-public-api` / `-BlessPublicApi`) and
-   `cargo run -p topiccheck` (profile-aware: defined-vs-subscribed
+   changes with `cargo run -p verifyctl -- --bless-public-api`) and the advisory
+   `topiccheck` stage (profile-aware: defined-vs-subscribed
    drift (blocking under `--durability-strict`; sanctioned sinkless topics live in
    topiccheck's `ALLOW_UNSUBSCRIBED`), version match, globally unique subscription
    ids, exactly one host per subscription per deployment profile).
@@ -185,7 +186,10 @@ never a silent last-writer-wins overwrite.
    add stubs where consumers live, add the svc lib to `tools/checkmodules`'s Split
    profile, and extend `tools/splitproof` (a new `Svc` in `fleet()` with its env +
    ports + a named assertion, HTTP ops asserted THROUGH gateway-svc; the harness's
-   fleet-drift preflight fails if `fleet()` != `cmd/*-svc` on disk).
+   fleet-drift preflight fails if `fleet()` != `cmd/*-svc` on disk). Add the module
+   to the centralized convention inventory in `tools/conformance/src/policy.rs`;
+   use the smallest executable fixture that proves each applicable convention and
+   give every genuine non-applicability a concrete reason.
 5. No event-routing wiring exists: producers append to the shared log, consumers
    pull from their checkpoint — the same code in monolith and split. `topiccheck`
    validates the subscription graph per deployment profile.
@@ -194,8 +198,9 @@ never a silent last-writer-wins overwrite.
 
 - **accounts** — identity: one `player_id`, many identities (`provider`,`subject`),
   opaque DB sessions (30-day TTL). Dev/password auth (argon2id, `ACCOUNTS_DEV_AUTH`
-  explicit-only — default OFF/fail-closed, loud warn when ON; the run/split-proof
-  scripts set `ACCOUNTS_DEV_AUTH=1`), Epic OIDC verifier (`EPIC_CLIENT_ID`, JWKS, RS256/ES256),
+  explicit-only — default OFF/fail-closed, loud warn when ON; the `devctl` and
+  split-proof development profiles set `ACCOUNTS_DEV_AUTH=1`), Epic OIDC verifier
+  (`EPIC_CLIENT_ID`, JWKS, RS256/ES256),
   Epic web OAuth link/login (`EPIC_CLIENT_SECRET`, `/accounts/epic/start|callback`).
   Emits durable `player.registered`. The gateway's session verifier resolves
   `accountsapi::Sessions` — a process hosting a gateway without the accounts
@@ -203,7 +208,7 @@ never a silent last-writer-wins overwrite.
 - **characters / inventory** — the modularity reference case: plain-id relations,
   sync `Ownership` authz over the wire, starter-grant/wipe via durable
   `character.created/deleted`. `INVENTORY_DEV_GRANT` (explicit-only — default
-  OFF/fail-closed, set by the run/split-proof scripts) enables the simulated-IAP
+  OFF/fail-closed, set by the `devctl` and split-proof development profiles) enables the simulated-IAP
   grant route.
 - **config** — DB-backed knobs with a monotonic `config.revision`. A row trigger
   (INSERT/UPDATE/DELETE) increments the revision, NOTIFYs `config_changed`, and
@@ -258,8 +263,9 @@ never a silent last-writer-wins overwrite.
   `SCHEDULER_ENABLED`.
 - **match / rating / leaderboard** — match records `match.matches` from a
   `/match/report` HTTP request body (a REQUIRED `ReportId` idempotency key —
-  duplicates are a 202 no-op and `report` is explicitly `#[retry_safe]`, so a replay
-  after an ambiguous result can't double-commit —
+  a duplicate `ReportId` with the SAME winner/loser is a 202 no-op, a duplicate
+  `ReportId` with a DIFFERENT winner/loser is a 409 Conflict, and `report` is
+  explicitly `#[retry_safe]`, so a replay after an ambiguous result can't double-commit —
   plus Go-parity keys `Winner`/`Loser`) and emits a
   durable `match.finished` event (snake_case payload keys `winner`/`loser` — a
   distinct shape from the HTTP body); rating is a persistent MMR projection
@@ -312,32 +318,38 @@ archcheck forbids any other consumer of a `demos/*` crate).
 ## Commands
 
 ```
-cargo build --workspace
-cargo test --workspace          # unit + live-Postgres integration + proptests (232+)
-cargo clippy --workspace --all-targets -- -D warnings
-cargo run -p archcheck          # fortress dependency law + plane tripwires
-cargo run -p topiccheck         # profile-aware subscription graph validation
-cargo run -p eventctl -- list   # operator CLI: lag/retry/pause/resume/skip/retire
-cargo run -p adminctl -- list   # operator CLI: admin users (create-user/list/delete)
-./install.sh <username>         # create/reset an admin portal user (no-echo prompt)
-./verify.sh                     # the safety net (there is no CI — this IS it)
-cargo run -p splitproof         # live 12-process split + monolith parity proof (Rust harness)
-./run.sh                        # mint dev CA + boot the split locally
+cargo run -p devctl -- up monolith
+cargo run -p devctl -- up split
+cargo run -p devctl -- status
+cargo run -p devctl -- down
+cargo run -p verifyctl -- --fast
+cargo run -p verifyctl -- --all
+cargo run -p verifyctl -- --all --strict
+cargo run -p verifyctl -- --slow
 ```
 
-**`verify.sh` / `verify.ps1` tiers** (PASS/FAIL/SKIP table; non-zero exit iff a
-blocking stage fails; auto-installs pinned CLIs unless `--no-install`):
-- BLOCKING (default / `--fast`): build, clippy `-D warnings`, test, `cargo audit`
-  (use any installed version; when missing, install the latest available
-  `cargo-audit --locked`; RUSTSEC-2023-0071 ignored — dev-only rsa in accounts test JWTs),
-  fortress (builds every `cmd/*-svc` + archcheck), split-proof.
-- ADVISORY (`--all`, blocking under `--strict`): `public-api` (contract-crate list
-  derived from the filesystem, each diffed against a committed snapshot in
-  `docs/reference/public-api-baseline/`; any diff FAILs, tool errors FAIL, re-bless
-  via `--bless-public-api` / `-BlessPublicApi`; cargo-public-api pinned 0.52.0; needs
-  nightly), `fuzz`
-  (`core/edge/fuzz/`, frame+wire decode; SKIPs on this Windows box), `topiccheck`.
-- SLOW (`--slow`): `cargo mutants` over edge/gateway/asyncevents/registry/bus.
+`devctl up` is the owned foreground supervisor. It builds, seeds, starts, and
+health-checks the selected topology, writes bounded state/logs under `run/devctl/`,
+and retains ownership until shutdown. `status` and `down` validate the recorded
+supervisor identity over a bounded loopback control endpoint; cleanup reaps exactly
+the process groups/job members that supervisor created, never unrelated processes
+selected by name or a reused PID.
+
+`verifyctl` prints a PASS/FAIL/SKIP table and exits non-zero for every applicable
+blocking failure:
+
+- BLOCKING (default / `--fast`): build, clippy `-D warnings`, test, audit,
+  fortress, routecheck, codegen-freshness, contract-golden, conformance, and
+  split-proof. Audit install/invocation/network errors are FAIL, never green SKIP;
+  only a missing tool with explicit `--no-install` is labeled SKIP.
+- ADVISORY (`--all`, or included and blocking with `--strict`): public-api, fuzz,
+  external C# client, and topiccheck.
+- SLOW (`--slow`): the blocking and advisory manifests plus `cargo mutants`;
+  advisory failures remain non-blocking unless `--strict` is also present.
+
+Intentional baseline updates use `cargo run -p verifyctl -- --bless-public-api`
+or `cargo run -p verifyctl -- --bless-contract-golden`; each is a recoverable,
+lease-protected action.
 
 ## Dev tooling scope — MANDATORY
 
@@ -364,14 +376,16 @@ security hardening as out of scope.
 
 ## One test rollout at a time — MANDATORY
 
-At most ONE test run (`cargo test`, `verify.*`, `cargo run -p splitproof`) may execute on
-this machine at any moment — they all share the one local Postgres, and
+At most ONE rollout-bearing command (`devctl up`, `verifyctl`, or an explicitly
+requested ad-hoc `cargo test`) may execute on this machine at any moment — they
+all share the one local Postgres, and
 concurrent runs contend on the events plane's migrate advisory lock and on
 concurrent DDL (`CREATE OR REPLACE`), which looks like a hang or fails with
 `tuple concurrently updated`. This bites on EVERY rollout, so it is a hard
 protocol, not a tip:
 
-- **Before starting any test run**: check nothing is already running —
+- **Before starting any rollout**: `cargo run -p devctl -- status` must not report
+  an active fleet. For an ad-hoc test, also check that nothing is already compiling —
   `Get-Process | Where-Object { $_.ProcessName -match '^cargo$|^rustc$' }`
   (or `pgrep -x cargo` in bash). If something is, WAIT for it; never start a
   second run "to check something quickly".
@@ -384,16 +398,21 @@ protocol, not a tip:
   idle-in-transaction sessions) must be killed before retrying — check
   `pg_stat_activity` for stuck `asyncevents` sessions.
 
-**`cargo run -p splitproof`** (the cross-platform Rust harness in `tools/splitproof`,
-which REPLACED the retired `split-proof.sh`/`.ps1` + `tools/winctrl` — the shell
-harnesses were structurally fragile on Windows: PowerShell native-arg quote-stripping,
-MSYS `wait` hangs, winctrl exit-code false-throws) boots the real split — characters
+All rollout tools acquire the canonical `run/rollout.lock`. `devctl up` holds an
+exclusive lease for the foreground fleet. `verifyctl` holds one lease for its
+entire manifest and passes a private one-shot inherited lease to the split-proof
+child; the child validates the parent identity/role and participates in that same
+rollout rather than reacquiring the lock. A competing or malformed borrower fails
+closed.
+
+The blocking **split-proof** stage uses the cross-platform Rust harness in
+`tools/splitproof`. It boots the real split — characters
 :8080/:9000, inventory :8081/:9001, gateway :8082 + player-QUIC :9100, config
 :8083/:9002, accounts :8084/:9003, admin :8085, audit :8086/:9004, scheduler
 :8087/:9005, match :8088/:9006, rating :8089/:9007, leaderboard :8090/:9008,
-apikeys :8091/:9009. The fleet is spawned via `std::process::Command` with a TYPED env
-map + a kill-on-drop guard (no shell, so no quoting/job-control/winctrl bugs, no
-orphans), health-checked over reqwest, DB-asserted via sqlx, and the player QUIC front
+apikeys :8091/:9009. The fleet is spawned with a typed environment and owned
+process containment plus a kill-on-drop guard, health-checked over reqwest,
+DB-asserted via sqlx, and the player QUIC front
 driven through the `edge` crate as a library. It asserts the same named scenarios
 (register/login → real bearer, authz negatives, allow-list, cross-process starter-grant
 + DB-verified wipe, config live-reload, audit rows, scheduler exactly-once, leaderboard
@@ -402,7 +421,8 @@ audit [AU1-AU3], scheduler/prune [SC/SP], metrics [MX], rate-limit [RL], player 
 [P1-P6]), then re-runs the monolith (`cmd/server`) on the same player front for parity
 ([M0-M3b]) and proves native graceful shutdown ([W2]: Ctrl-Break to the monolith's
 process group / SIGTERM on unix → clean drain, no force-kill). **psql is REQUIRED** at
-`DATABASE_URL` and the fleet must be buildable (the harness `cargo build`s it). A
+`DATABASE_URL`; the preceding blocking build stage produces the fleet and the
+harness runs it without a nested build. A
 fleet-drift preflight fails loudly if the harness svc list != `cmd/*-svc` on disk.
 Extend `tools/splitproof` with a new `Svc` in `fleet()` + a named assertion whenever
 you add a module or cross-process flow. **Never ship a monolith-only feature** — both
@@ -412,8 +432,9 @@ Smoke test (monolith or through gateway-svc). The dev conveniences are explicit
 opt-ins/opt-outs (fail-closed defaults), so the monolith needs `APIKEYS_DEV_SEED=1`
 (dev API keys below), `ACCOUNTS_DEV_AUTH=1` + `INVENTORY_DEV_GRANT=1`
 (register/login + IAP grant), `ADMIN_COOKIE_SECURE=0` (session cookie over plain
-http) and a seeded admin user (`adminctl create-user`) — `./run.sh` / `./run.ps1`
-set/seed all of these for you (dev portal creds `admin`/`admin`):
+http) and a seeded admin user (`adminctl create-user`) —
+`cargo run -p devctl -- up monolith` sets/seeds all of these for you (dev portal
+creds `admin`/`admin`):
 ```
 curl -X POST localhost:8080/match/report -H "X-Api-Key: dev-key-server" -d '{"ReportId":"demo-1","Winner":"alice","Loser":"bob"}'
 curl localhost:8080/leaderboard -H "X-Api-Key: dev-key-client"
@@ -465,11 +486,11 @@ api/<name>/                # contract surface per domain
   <name>rpc/               #   generated glue (Client/register_server/factories)
 modules/                   # private impls — 11 fortresses + gateway (see above)
 demos/                     # non-shipping demo crates (webui) — cmd/server only
-tools/                     # rpc-macro (+tests), archcheck, topiccheck, edgeca,
-                           # playercli
+tools/                     # devctl/verifyctl/processctl/splitproof, rpc-macro,
+                           # architecture checkers, generators, edgeca, playercli
 experiments/               # archived sketches: go-sketch (the ported original),
                            # jvm-kotlin-sketch, jvm-quarkus-sketch — reference only
-UILayout/                  # Claude Design mockups (spec for admin UI, not runnable)
+UILayout/                  # design mockups (spec for admin UI, not runnable)
 ```
 
 ---
@@ -509,8 +530,8 @@ relevant feedback memory for the violated rule (not only for repeat offenses).
 This is a modular monolith built on Open/Closed — new features are *new code*, not
 edits to existing code. So before any plan proposing a new module, service, event,
 or admin section (or a replacement), first **map the overlapping existing systems**.
-The three seams (module registry, service registry `Provide`/`Require`, event bus)
-plus the `Contribute`/`Contributions` slot mean a capability you want often already
+The three seams (module registry, service registry `registry::provide`/
+`registry::require`, event bus) plus the contribution slots mean a capability you want often already
 exists or has a near-twin. For each candidate, document in the plan's Context: what
 it does, how it differs, and an explicit **"why not extend / depend on X"**. A plan
 that adds a module without that rationale is incomplete — lead with evidence, not
@@ -519,15 +540,15 @@ enthusiasm for new code.
 ## Research / Search Mode — MANDATORY
 
 Before any non-trivial research/search, ask the user **"how should I research
-this?"** Don't default to grep — one grep pass is lossy (misses interface
-satisfaction, embedded methods, generated code, event subscribers wired by string
-topic, the registry/reflection-driven surface). Treat any single grep sweep as a
+this?"** Don't default to grep — one grep pass is lossy (misses trait
+implementations, macro-generated RPC glue, typed event wiring, and shared registry
+keys/contribution slots). Treat any single grep sweep as a
 **lower bound, not the answer**, and say which method you used. "Non-trivial" =
 mapping an API surface, finding all callers, understanding data flow, locating
 wiring, surveying overlap; one-shot lookups with a known file+symbol proceed without
 asking.
 
-**Method menu (gopls/LSP, parallel subagents, targeted read, grep) + subagent-count
+**Method menu (clangd/LSP, parallel subagents, targeted read, grep) + subagent-count
 bands: [docs/reference/research-mode.md](docs/reference/research-mode.md); shared
 Agent-call invariants: [docs/reference/subagent-dispatch.md](docs/reference/subagent-dispatch.md).**
 Any code-touching subagent gets the nav guidance pasted into its prompt — it does not

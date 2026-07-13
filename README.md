@@ -77,9 +77,10 @@ between fortresses are the contract crates under `api/<name>/`:
 **Modules are topology-blind.** No `Option<transport>`, no `if split`, no env
 branches in domain code. `cmd/*` mains are the only topology-aware code and differ
 only in their module list and which QUIC planes they serve. All of this is enforced
-mechanically — `archcheck` (dependency law), `topiccheck` (event topic drift), a
-`public-api` diff (additive-only contracts), and a `fortress` build stage (every
-svc must compile).
+mechanically by the Rust verification runner: `archcheck` and the `fortress`
+stage enforce dependency and process boundaries, while route, event-topic,
+generated-code, contract-golden, conformance, and public-API checks protect the
+surfaces that cross those boundaries.
 
 ## Domain modules
 
@@ -128,39 +129,56 @@ core/           foundations — never import modules or api/ crates
 api/<name>/     contract surface per domain (api / events / rpc)
 modules/        private impls — the fortresses
 demos/          dev demo SPA (monolith-only)
-tools/          rpc-macro, archcheck, topiccheck, edgeca, playercli
+tools/          devctl/verifyctl/processctl/splitproof, architecture checkers,
+                generators, edgeca, playercli
 experiments/    archived sketches (Go original, JVM explorations)
 ```
 
-## Building and verifying
+## Run locally
 
 ```sh
-cargo build --workspace
-cargo test --workspace          # unit + live-Postgres integration + proptests
-cargo run -p archcheck          # fortress dependency law
-cargo run -p topiccheck         # event topic drift
-./verify.sh --fast              # forwards to verifyctl; --fast is the default
-./split-proof.sh                # boots the real 12-process split + gateway,
-                                # asserts named end-to-end scenarios, then
-                                # re-runs the monolith for parity
-./run.sh up monolith            # forwards to devctl and stays foreground
+cargo run -p devctl -- up monolith
+cargo run -p devctl -- up split
+cargo run -p devctl -- status
+cargo run -p devctl -- down
 ```
 
-The four temporary `run.*`/`verify.*` compatibility scripts contain no orchestration;
-they pass their arguments unchanged to `devctl`/`verifyctl`. Legacy command mappings:
+`devctl up` is a foreground supervisor. It builds the selected topology, creates
+the development edge CA, seeds the development admin account, starts each process
+with a typed environment, health-checks it, and keeps ownership until shutdown.
+State, logs, and the bounded loopback control endpoint live under `run/devctl/`.
+`status` and `down` verify the recorded supervisor identity before talking to it;
+shutdown reaps exactly the processes owned by that supervisor and does not kill by
+process name or stale PID.
 
-| Previous command | Forwarder/new CLI command |
-|---|---|
-| `./run.sh` or `.\run.ps1` | `./run.sh up monolith` or `.\run.ps1 up monolith` |
-| `./run.sh split` | `./run.sh up split` |
-| `./run.sh microservices` | `./run.sh up microservices` (deprecated alias) |
-| `./run.sh --teardown` or `.\run.ps1 -Teardown` | `./run.sh down` or `.\run.ps1 down` |
-| `./verify.sh [--fast\|--all\|--slow] [--strict] [--no-install]` | unchanged |
-| `.\verify.ps1 -Fast/-All/-Slow/-Strict/-NoInstall` | `.\verify.ps1 --fast/--all/--slow/--strict/--no-install` |
-| `-BlessPublicApi` / `-BlessContractGolden` | `--bless-public-api` / `--bless-contract-golden` |
+## Verify
 
-Direct forms are `cargo run -p devctl -- up monolith`, `up split`, `status`, `down`,
-and `cargo run -p verifyctl -- --fast` (or `--all`/`--slow`, optionally `--strict`).
+```sh
+cargo run -p verifyctl -- --fast
+cargo run -p verifyctl -- --all
+cargo run -p verifyctl -- --all --strict
+cargo run -p verifyctl -- --slow
+```
+
+`--fast` is the default blocking safety net: build, clippy, tests, dependency
+audit, fortress/architecture checks, route and generated-contract freshness,
+contract golden files, convention conformance, and the live split proof. `--all`
+adds the advisory public-API, fuzz, external C# client, and event-topic stages;
+`--strict` includes those advisory stages and makes their failures blocking.
+`--slow` runs blocking plus advisory stages and adds mutation testing; advisory
+failures remain non-blocking unless `--strict` is also present.
+The runner prints a PASS/FAIL/SKIP table and exits non-zero for every applicable
+blocking failure. Audit invocation, installation, and network failures are FAIL,
+not a green SKIP. Across the manifest, an explicit `--no-install` turns a missing
+tool into a labeled SKIP; documented platform non-applicability may also skip.
+
+All rollout-bearing tools share one lease at `run/rollout.lock`. A running
+`devctl up` and a verification run therefore cannot overlap. `verifyctl` owns the
+lease for the whole run and passes a private inherited lease to its split-proof
+child, so that child participates in the same rollout instead of reacquiring or
+bypassing the lock. Before an ad-hoc `cargo test`, also confirm that no `cargo` or
+`rustc` process is already running. Never start a second compile/test rollout in
+the background against the shared Postgres.
 
 `split-proof` is the heart of the repo's promise: it boots every domain service as
 a separate process (each with its HTTP port and internal QUIC edge), routes real
@@ -177,4 +195,5 @@ tests hit it directly — no containers.
 
 A hobby project and an architecture playground — the point is the seams, the
 mechanical enforcement, and the split proof, not production readiness. No CI:
-`./verify.sh` *is* the safety net, run locally before every push.
+`cargo run -p verifyctl -- --fast` is the safety net, run locally before every
+push.

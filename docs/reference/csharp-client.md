@@ -113,8 +113,8 @@ capability wired — but every gateway-hosting process in this repo (including
 `cmd/gateway-svc`) hard-codes the accounts stub as mandatory, so the capability is
 always present and `dev-` tokens are always rejected. Instead, get a real bearer the
 cheap way: a trivial `register`/`login` round-trip (2 HTTP calls, same as
-`split-proof.sh` does), or just run `gbclient flow` which performs `register` for
-you as its first step.
+the blocking split-proof stage does), or just run `gbclient flow` which performs
+`register` for you as its first step.
 
 ## CLI usage
 
@@ -151,16 +151,16 @@ Exit codes (both modes):
 
 ## The verify stages
 
-Two independent stages in `verify.sh` / `verify.ps1`, deliberately split by
-runtime dependency:
+Two independent `verifyctl` stages are deliberately split by runtime dependency:
 
-- **`codegen-fresh` (blocking, always runs).** `cargo run -p csharp-client-gen --
-  --out clients/csharp/Generated` followed by `git diff --exit-code -- 
-  clients/csharp/Generated`. Pure Rust + git — no `dotnet`, no QUIC — so it runs on
-  every machine and catches a contract change that wasn't regenerated.
+- **`codegen-freshness` (blocking, always runs).** Regenerates the committed C#
+  output in an isolated directory and compares it byte-for-byte with
+  `clients/csharp/Generated`. Pure Rust — no `dotnet`, no QUIC — so it runs on
+  every machine and catches a contract change that was not regenerated.
 - **`csharp-client` (advisory, SKIP-aware).** Builds `clients/csharp` with
   `dotnet build -c Release`, boots a self-contained monolith
-  (`cargo build -p server`, `PORT=:8099`, `PLAYER_EDGE_ADDR=:9100`, ephemeral CA →
+  (the runner builds the `server` package, sets `PORT=:8099` and
+  `PLAYER_EDGE_ADDR=:9100`, uses an ephemeral CA with
   `--insecure`, `APIKEYS_DEV_SEED=1` so the two well-known dev keys exist), and runs
   six named scenarios through `gbclient`, all carrying `--api-key dev-key-client`
   except where noted: a raw `leaderboard.topScores` probe (auth=none, C1),
@@ -171,19 +171,24 @@ runtime dependency:
   with `dev-key-client` (C5, expect exit 1 + `Forbidden` — the client-facing dev
   key's policy deliberately omits `match.report`), and `match.report` with
   `dev-key-server` (C6, `full` policy, expect exit 0 — the key-policy proof on the
-  external C# client). SKIPs — not FAILs — when `dotnet` is absent, or when the
-  first scenario's exit code is `3` (`QuicConnection.IsSupported` false). Both
-  `.sh` and `.ps1` implement this in lockstep per CLAUDE.md.
+  external C# client). A missing `dotnet` is FAIL by default and SKIP only when the
+  operator explicitly passed `--no-install`; an available runtime whose first
+  scenario exits `3` (`QuicConnection.IsSupported` false) is a documented platform
+  SKIP.
+
+Run the blocking freshness proof with `cargo run -p verifyctl -- --fast`; run the
+live external-client stage with `cargo run -p verifyctl -- --all` (or add
+`--strict` to make an applicable failure blocking).
 
 ## The msquic / Linux-CI caveat
 
 `System.Net.Quic` is stable from .NET 9 but depends on `msquic`. On Windows 11
-(this repo's dev box, where `verify.sh`/`.ps1` actually run — "there is no CI —
-this IS it") msquic ships in-box, so the `csharp-client` stage runs cleanly. On
+(this repo's dev box, where `verifyctl` runs locally) msquic ships in-box, so the
+`csharp-client` stage runs cleanly. On
 Linux, `msquic` requires the separate `libmsquic` package, and recent-distro
 packaging has known gaps — so the stage is written to SKIP cleanly there
-(`QuicConnection.IsSupported == false` → exit 3 → `add_result csharp-client SKIP
-false`) rather than FAIL. The `codegen-fresh` stage has no such dependency and is
+(`QuicConnection.IsSupported == false` → exit 3) rather than FAIL. The
+`codegen-freshness` stage has no such dependency and is
 the one guaranteed to run everywhere.
 
 ## Regeneration

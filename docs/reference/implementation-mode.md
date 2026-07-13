@@ -22,12 +22,20 @@ Implementation subagents run **sequentially per plan step** (no parallel fan-out
 
 The shared effort/navigation/prompt rules are in [subagent-dispatch.md](subagent-dispatch.md). On top of those, implementation adds:
 
-1. **Review between tasks.** Main model reviews each diff against the plan step (did what the plan said? touched out-of-scope files? introduced conflicting patterns — a module importing another module's package, a cross-module foreign key, a raw `e.Data.(T)` assert, an event publish used where a sync service was needed?) before dispatching the next. No parallel fan-out for sequential plan steps.
+1. **Review between tasks.** Main model reviews each diff against the plan step (did what the plan said? touched out-of-scope files? introduced conflicting patterns — a module importing another module's impl crate, a cross-module foreign key, untyped event JSON outside a deliberate raw sink, or an event publish used where a sync capability was needed?) before dispatching the next. No parallel fan-out for sequential plan steps.
 2. **Trust but verify.** Read the actual edits — self-reports describe intent, not result.
 3. **Commit after each task or independently reviewable part.** Granular history beats one final rollout commit: `git add` + `git commit` immediately after each unit verifies. **Subagents MAY commit their own work** before main-model review. The main-model review still runs afterward; a bad commit is fixed with a follow-up commit, never by discarding history.
 
 ## Refactor safety
 
-- **Verify after dep/wiring changes with a real build:** `go build ./...` then `go vet ./...`, and `go test ./...` for the registry/lifecycle tests. Don't trust a grep "no consumers found" — confirm it compiles.
-- **The Go compiler rejects import cycles.** That backstops constraint #2 (modules never import each other) — if reuse would close a cycle, you've violated the architecture, not hit a tooling limit. Resolve it through the bus (async) or a consumer-defined service interface from the registry (sync), never by importing the other module's package.
+- **Verify dependency and wiring changes through the canonical runner:**
+  `cargo run -p verifyctl -- --fast` performs the workspace build, clippy, tests,
+  fortress/architecture gates, generated-contract checks, and live topology proof.
+  Do not trust a grep saying "no consumers found"; make the Rust compiler and
+  architecture checkers prove it.
+- **Cargo rejects crate cycles, but not every forbidden acyclic edge.** A direct
+  module-to-module implementation dependency may compile, so the `archcheck` and
+  fortress stages remain mandatory. Resolve cross-domain work through the durable
+  bus (async) or a provider contract trait resolved from the registry (sync), never
+  by importing the other module's implementation crate.
 - **Delete through dying chains.** When a file depends on a dying type, delete the file too — don't shim the survivor around the dying API. Ask "is the consumer still meaningful?", not "can it survive?".

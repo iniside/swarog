@@ -10,8 +10,12 @@ Bands (same as [research-mode.md](research-mode.md)): **2–4** narrow / **4–8
 
 ## Step 2 — Research subagents on 3 non-overlapping angles
 
-- *API surface* — every exported function / type / interface with full signatures; the module's `core.Module` methods (`Name`/`DependsOn`/`Init`/`Migrate`/`Start`/`Stop`); declared events (`core.Define`).
-- *API usages* — concrete call sites: who constructs, who consumes, how args are filled; who `Require`s a service, who subscribes (`core.On`) to an event.
+- *API surface* — every public function, type, and trait with full signatures; the
+  module's `lifecycle::Module` methods (`name`/`requires`/`register`/`init`/
+  `migrate`/`start`/`stop`); contract traits and `bus::define` event descriptors.
+- *API usages* — concrete call sites: who constructs, who consumes, how arguments
+  are filled; who uses `registry::require`, who subscribes with `on_tx`, and who
+  contributes to or reads a shared slot.
 - *Patterns* — idioms to reuse: how existing modules register, migrate their schema, emit/subscribe, contribute an admin section.
 
 Synthesize in the main model — never write a plan off a single subagent.
@@ -28,7 +32,11 @@ The plan body must be `Step 1 → Step 2 → …` where each step spells out, ex
 
 - **(a) what** is touched — exact files/symbols.
 - **(b) why now / in what order** — the dependency that forces this step before the next (e.g. "declare the event payload in `<module>events` before the consumer subscribes"; "the schema migration before the store methods that query it").
-- **(c) how** — the concrete actions, not just "add a module" but any non-mechanical move (declaring `DependsOn`, wiring `Provide`/`Require` to a consumer-defined interface, registering in `cmd/server/main.go`).
+- **(c) how** — the concrete actions, not just "add a module" but any
+  non-mechanical move (declaring `requires()`, wiring `registry::provide`/
+  `registry::require` to a contract trait, contributing generated edge glue, and
+  registering the module in `cmd/server/src/lib.rs` plus its service composition
+  root).
 - **(d) dispatch tag** — `[inline]`, `[subagent-complex]`, or `[subagent-mechanical]` (see [implementation-mode.md](implementation-mode.md) for the heuristic).
 
 Steps do **NOT** each have to compile or pass tests in isolation — a step may leave the tree broken mid-rollout — but every step MUST be **written out**: a reader follows them top-to-bottom without inventing the order. Reference material (Context, Verified facts, file tables) is fine as supporting sections, but it does not replace the ordered steps — it feeds them.
@@ -37,4 +45,10 @@ Steps do **NOT** each have to compile or pass tests in isolation — a step may 
 
 One reviewer subagent at **session tier** (separate context — the independent-reviewer boundary is the point). **Ask the user the think-effort level first** (default / think / think hard / ultrathink) — effort does NOT inherit through the Agent tool, so embed the chosen level in the reviewer's prompt.
 
-It hunts logical holes, missing pieces (schema `Migrate`? unit test? a declared `DependsOn` that doesn't match the real sync dependency? an event mutated instead of evolved additively? a module importing another module's package, or a cross-module foreign key?), ambiguity, unstated assumptions, rule conflicts, "figure-it-out-later" smell. It produces a punch list, does **not** rewrite. Address the list before showing the user (or note deferred items with rationale).
+It hunts logical holes, missing pieces (module `migrate`? separate-file unit test?
+a declared `requires()` capability that does not match the real synchronous
+dependency? an event mutated instead of evolved additively? a module importing
+another module's implementation crate, or a cross-module foreign key?), ambiguity,
+unstated assumptions, rule conflicts, and "figure-it-out-later" smell. It produces
+a punch list, does **not** rewrite. Address the list before showing the user (or
+note deferred items with rationale).
