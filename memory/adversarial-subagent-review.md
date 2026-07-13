@@ -28,5 +28,13 @@ shadowing knobs, errors folded into success, wrong-scope ownership); (3) verify
 against code, never the subagent's summary — confirm negative-path tests hit the
 failing branch; (4) if I can't state the fix's failure mode + pinning test, the
 review isn't done; (5) bounce findings as a punch list, never silently absorb.
-Zero findings on a non-trivial diff ⇒ re-review. Related: [[scope-claims-to-what-was-verified]],
-[[verify-the-at-risk-path-not-the-safe-one]].
+
+**Refined 2026-07-13:** it is ONE pass by a different method. A clean verdict IS valid
+when it enumerates the classes attacked — do NOT mandate re-review on zero findings; that
+manufactures findings and recreates the 46-commit carousel. Rigor = the class list, not a
+loop. **This applies to my OWN freshly-authored scaffolding too** (agent files, docs,
+config) — Lukasz caught me committing 3 agent files without the required pass, and they
+carried duplicated-authority (routing table + rules copied into prompts). Review your own
+tooling before commit; don't defer to "next task". Related:
+[[scope-claims-to-what-was-verified]], [[verify-the-at-risk-path-not-the-safe-one]],
+[[specialized-core-agents]].

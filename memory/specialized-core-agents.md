@@ -23,8 +23,19 @@ metadata:
 
 **Why:** the remediation showed double hostile review WORKED but was costly (46 commits);
 the real disease was authorless multi-commit chains (lock/lease 8x) + gates going green.
-These target the source, not more review rounds. **How to apply:** they compose with —
-never duplicate — the skills [[separate-public-surface-from-impl]] neighbours:
-`architecture-review` (seam law), `split-topology-debugger`, `safe-verification`. All omit
-frontmatter `model` so they inherit session tier (keeps reviewer >= author tier, per
-[[plan-reviewer-must-be-session-tier]]); dispatcher passes model:/effort per call.
+These target the source, not more review rounds — so they must NOT re-create the carousel.
+
+**How to apply (design corrected 2026-07-13 after Lukasz caught two defects in v1):**
+- Agents are THIN: role + routing + output format + ONE pointer to the single source of
+  each rule. Classes/routing/attacks live only in [[core-failure-taxonomy]]; the six
+  Fix-the-Authority rules + review method + hard constraints live only in CLAUDE.md.
+  Copying either into an agent prompt is duplicated-authority (a taxonomy class) — banned.
+- Review is ONE independent pass (core-reviewer), a different method than the implementer.
+  A **clean verdict is valid** when it enumerates the classes attacked — do NOT mandate
+  re-review on zero findings (that manufactures findings = the carousel). proof-auditor runs
+  ONLY for diffs touching a verify stage or where the test/gate is the risk, not every fix
+  that adds a unit test.
+- They compose with — never duplicate — `architecture-review` (seam law),
+  `split-topology-debugger`, `safe-verification`. All omit frontmatter `model` so they
+  inherit session tier (keeps reviewer >= author tier, per
+  [[plan-reviewer-must-be-session-tier]]); dispatcher passes model:/effort per call.
