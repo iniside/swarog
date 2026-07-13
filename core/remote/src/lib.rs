@@ -351,6 +351,27 @@ fn coarse_now_secs() -> u64 {
     BASE.get_or_init(std::time::Instant::now).elapsed().as_secs()
 }
 
+/// The stub's `/readyz` verdict as a PURE function of the cached probe result and the
+/// staleness clock — NO I/O, no dialer, no async, so zero-I/O is guaranteed by
+/// construction (not inferred from timing). `last_probe_at`/`now_secs` are coarse
+/// seconds (`0` = never probed). A nonzero stamp older than [`PROBE_STALL_MAX`] flips
+/// unready even if `cached` is `Ok`, so a dead probe task can't freeze a stale-green
+/// verdict; a `0` stamp falls through to `cached` (the fail-closed `Err("probe pending")`
+/// seed until the first probe completes).
+fn readiness_verdict(
+    cached: &Result<(), String>,
+    last_probe_at: u64,
+    now_secs: u64,
+) -> Result<(), String> {
+    if last_probe_at != 0 && now_secs.saturating_sub(last_probe_at) > PROBE_STALL_MAX.as_secs() {
+        return Err(format!(
+            "stub probe stalled: no completed peer probe in >{}s (probe task may have died)",
+            PROBE_STALL_MAX.as_secs()
+        ));
+    }
+    cached.clone()
+}
+
 /// The background reachability probe loop owned by each [`Stub`]. It is the ONLY
 /// runtime caller of [`probe_peer`]: it dials the peer on a two-rate cadence (fast
 /// while unready, gentle while ready), stamps the shared cached verdict + the
@@ -619,18 +640,14 @@ impl Module for Stub {
                 let verdict = verdict.clone();
                 let last_probe_at = last_probe_at.clone();
                 async move {
+                    let now = coarse_now_secs();
                     let stamp = last_probe_at.load(Ordering::SeqCst);
-                    if stamp != 0
-                        && coarse_now_secs().saturating_sub(stamp) > PROBE_STALL_MAX.as_secs()
-                    {
-                        return Err(format!(
-                            "stub probe stalled: no completed peer probe in >{}s (probe task may have died)",
-                            PROBE_STALL_MAX.as_secs()
-                        ));
-                    }
-                    // Clone the verdict OUT and drop the std guard before the async block
-                    // can yield — the guard must never cross an `.await`.
-                    verdict.lock().unwrap_or_else(|e| e.into_inner()).clone()
+                    // Clone the cached verdict OUT and drop the std guard before computing
+                    // the decision — the guard must never cross an `.await` (and this
+                    // closure has none). The verdict is then a PURE function of the cached
+                    // result + the staleness clock (see `readiness_verdict`).
+                    let cached = verdict.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                    readiness_verdict(&cached, stamp, now)
                 }
             }),
         );

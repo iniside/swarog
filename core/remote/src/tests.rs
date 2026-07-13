@@ -691,25 +691,88 @@ async fn failing_boot_hook_keeps_its_own_error_context() {
 //
 // Step 1 replaced the per-request QUIC/mTLS dial in each stub's `/readyz`
 // `httpmw::ReadyCheck` with a background probe loop that stamps a CACHED verdict; the
-// check now READS ONLY that cache (zero network I/O). The two tests below pin the two
-// halves of that fix: the check does no dial (the amplification-gone proof), and the
-// background loop is the sole dialer, reflecting peer reachability in both directions.
+// check now READS ONLY that cache (zero network I/O). The AIRTIGHT zero-I/O proof is the
+// `readiness_verdict_*` unit tests below: they exercise the readyz decision as a PURE
+// function (`readiness_verdict`) with no dialer, no async, and no clock — so zero-I/O is
+// guaranteed BY CONSTRUCTION, not inferred from a wall-clock timing race (a closed
+// loopback port fails a QUIC dial instantly, so the old `<100ms` assertion could never
+// have discriminated a dial-then-return-cache regression). Those tests also cover the two
+// branches the timing test never did: the staleness guard (stale-`Ok` -> unready) and the
+// fail-closed `"probe pending"` seed. `readyz_check_does_no_io` then pins only that the
+// wired `ReadyCheck` is actually plumbed to the cache, and `background_probe_updates_verdict`
+// pins that the background loop is the sole dialer, reflecting reachability both ways.
 
-/// The `/readyz` `ReadyCheck` performs ZERO network I/O — it only reads the cached
-/// verdict stamped by the background probe. Seed the cache with a SENTINEL and point
-/// the stub at a blackhole peer (`127.0.0.1:1`) so that IF the check ever dialed, each
-/// run would take ~1s (`probe_peer`'s inner bound) and the returned string would name a
-/// dial failure, not the sentinel. 100 sequential runs returning the sentinel in <100ms
-/// prove the check never dials.
-///
-/// The OLD per-request-dial code would take ~100 × 1s ≈ 100s here (one fresh QUIC/mTLS
-/// handshake attempt PER `/readyz` request); the cached read is effectively instant —
-/// this is the anti-amplification proof.
+/// `readiness_verdict` returns the cached `Ok` while the probe stamp is fresh — including
+/// a stamp slightly older than "now" but still inside [`PROBE_STALL_MAX`] (15s).
+#[test]
+fn readiness_verdict_ok_when_fresh() {
+    assert_eq!(readiness_verdict(&Ok(()), 100, 100), Ok(()));
+    // 14s < 15s — still fresh, still ready.
+    assert_eq!(readiness_verdict(&Ok(()), 100, 114), Ok(()));
+}
+
+/// A FRESH cached `Err` is surfaced verbatim — the check reports the peer's real probe
+/// failure, no I/O of its own.
+#[test]
+fn readiness_verdict_returns_cached_err_when_fresh() {
+    assert_eq!(
+        readiness_verdict(&Err("dial to X failed".into()), 100, 105),
+        Err("dial to X failed".to_string())
+    );
+}
+
+/// The dead-probe-task guard: a cached `Ok` older than [`PROBE_STALL_MAX`] flips unready
+/// so a frozen stale-green verdict can't be served. This is the branch NO prior test
+/// exercised.
+#[test]
+fn readiness_verdict_stale_ok_flips_unready() {
+    // 16s > 15s.
+    let out = readiness_verdict(&Ok(()), 100, 116);
+    let msg = out.expect_err("a stale Ok must flip to unready");
+    assert!(
+        msg.contains("stub probe stalled"),
+        "stale verdict must name the stall (got {msg:?})"
+    );
+}
+
+/// Staleness takes precedence over a cached error: a long-stale stamp yields the STALL
+/// message (the probe task may be dead), not the last observed dial error.
+#[test]
+fn readiness_verdict_stale_takes_precedence_over_cached_err() {
+    let out = readiness_verdict(&Err("old dial err".into()), 100, 200);
+    let msg = out.expect_err("a stale verdict must be unready regardless of cached value");
+    assert!(
+        msg.contains("stalled"),
+        "stale-with-cached-err must surface the stall, not the old error (got {msg:?})"
+    );
+}
+
+/// The fail-closed cold-start seed: a `0` stamp (never probed) SKIPS the stall check and
+/// falls through to the cached `Err("probe pending")` — proving cold start reports
+/// unready until the first probe completes.
+#[test]
+fn readiness_verdict_never_probed_falls_through_to_seed() {
+    assert_eq!(
+        readiness_verdict(&Err("probe pending".into()), 0, 9999),
+        Err("probe pending".to_string())
+    );
+}
+
+/// A `0` stamp with a cached `Ok` is ready (documents the pure contract: stamp `0` never
+/// trips the stall guard, it defers entirely to the cached verdict).
+#[test]
+fn readiness_verdict_never_probed_ok_is_ready() {
+    assert_eq!(readiness_verdict(&Ok(()), 0, 9999), Ok(()));
+}
+
+/// The wired `stub:<provider>` `ReadyCheck` is plumbed to the cache: with a seeded
+/// sentinel verdict and a fresh stamp, the contributed check returns exactly that
+/// sentinel (never a live dial). The airtight zero-I/O proof is `readiness_verdict_*`
+/// above (pure, by construction); this test only pins the wiring — that `init`'s closure
+/// reads the shared verdict cache rather than dialing the peer.
 #[tokio::test]
 async fn readyz_check_does_no_io() {
     let ctx = Context::new();
-    // Blackhole peer: a dial here would burn ~1s each and yield a "dial to …"/timeout
-    // string, distinct from the sentinel below.
     let stub = Stub::new("fake", "127.0.0.1:1", vec![Box::new(|_ctx, _caller| {})]);
 
     // Seed the cache DIRECTLY (same crate — private fields are reachable). A cache read
@@ -727,21 +790,13 @@ async fn readyz_check_does_no_io() {
         .find(|c| c.name() == "stub:fake")
         .expect("stub must contribute a `stub:fake` readiness check");
 
-    let started = std::time::Instant::now();
-    for _ in 0..100 {
-        let out = check.run().await;
+    for _ in 0..5 {
         assert_eq!(
-            out.unwrap_err(),
+            check.run().await.unwrap_err(),
             "SENTINEL-cached",
-            "the check must return the cached sentinel, not a live-dial result"
+            "the wired check must return the cached sentinel, not a live-dial result"
         );
     }
-    let elapsed = started.elapsed();
-    assert!(
-        elapsed < Duration::from_millis(100),
-        "100 cached reads must be near-instant; a per-request dial to the blackhole \
-         would take ~100s (took {elapsed:?})"
-    );
 }
 
 /// The background probe loop — spawned by the stub, the SOLE runtime caller of
