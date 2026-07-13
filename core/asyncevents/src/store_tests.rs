@@ -7,6 +7,35 @@ use std::time::Duration;
 const DEFAULT_DSN: &str =
     "postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable";
 
+/// Pins the exact case [`split_sql_statements`] exists to get right: a `;`
+/// inside a bare `$$...$$` PL/pgSQL function body must NOT be treated as a
+/// statement boundary, while a `;` outside dollar quotes — including one on
+/// the SAME line as the closing `$$;` — must split normally. Uses the same
+/// shape as this crate's own `V2_DDL_TEMPLATE` (a `RAISE`/`RETURN` with an
+/// embedded `;` inside the function body).
+#[test]
+fn split_sql_statements_respects_dollar_quoting() {
+    let script = r#"
+CREATE SCHEMA IF NOT EXISTS asyncevents;
+CREATE OR REPLACE FUNCTION asyncevents.f() RETURNS text LANGUAGE plpgsql AS $$
+BEGIN
+	RETURN 'a;b;c';
+END;
+$$;
+CREATE TABLE IF NOT EXISTS asyncevents.t (id int);
+"#;
+    let stmts = split_sql_statements(script);
+    assert_eq!(
+        stmts,
+        vec![
+            "CREATE SCHEMA IF NOT EXISTS asyncevents".to_string(),
+            "CREATE OR REPLACE FUNCTION asyncevents.f() RETURNS text LANGUAGE plpgsql AS $$\nBEGIN\n\tRETURN 'a;b;c';\nEND;\n$$".to_string(),
+            "CREATE TABLE IF NOT EXISTS asyncevents.t (id int)".to_string(),
+        ],
+        "a `;` inside the $$...$$ body must not split the function statement"
+    );
+}
+
 /// Serializes the two tests that choreograph the WRITER advisory lock with an
 /// open transaction held across awaits. If they interleave, Postgres lock
 /// fairness deadlocks them: the frontier test holds tx A's SHARED lock while

@@ -171,17 +171,39 @@ pub(crate) async fn ensure_schema(pool: &PgPool) -> anyhow::Result<()> {
 /// bind parameter; the alphanumeric assert below is a tripwire for a malformed
 /// caller value, not a security boundary.
 ///
-/// Runs the multi-statement DDL on an EXPLICIT connection acquired from the
-/// pool (not `.execute(pool)`, which borrows a random pooled connection for
-/// the call and returns it to the pool immediately after): a 55P03 lock-wait
-/// abort — or any other mid-transaction failure — can leave the session in
-/// Postgres's ABORTED-TRANSACTION state (no implicit ROLLBACK is issued by a
-/// failed multi-statement `raw_sql` batch), and a later borrower of that same
-/// pooled connection would see every statement rejected with "current
-/// transaction is aborted" until a ROLLBACK runs. Owning the connection lets
-/// us issue a best-effort ROLLBACK on ANY error before the connection returns
-/// to the pool, so a stuck lock holder degrades to a clean timeout error
-/// instead of poisoning a pool slot.
+/// Runs the DDL statement-by-statement inside ONE `sqlx::Transaction` (an
+/// EXPLICIT connection, held for the whole batch, not `.execute(pool)`
+/// per-statement, which would borrow a random pooled connection each time):
+/// a 55P03 lock-wait abort — or any other mid-batch failure — can leave the
+/// session in Postgres's ABORTED-TRANSACTION state, and a later borrower of
+/// that same pooled connection would see every statement rejected with
+/// "current transaction is aborted" until a ROLLBACK runs (confirmed by
+/// `migrate_lock_timeout_fails_fast_without_poisoning_pool`'s
+/// `max_connections(1)` reuse probe — sqlx's own `test_before_acquire` ping
+/// does NOT clear this on its own). `Transaction`'s `Drop` issues a
+/// best-effort ROLLBACK whenever it goes out of scope without `commit()`, so
+/// an early `?` return on ANY statement failure cleans up automatically —
+/// the pool never gets back a poisoned connection.
+///
+/// Individual `sqlx::query(stmt)` calls (extended/prepared-statement
+/// protocol) rather than one `sqlx::raw_sql(..)` multi-statement batch
+/// (simple-query protocol) — [`split_sql_statements`] below splits the
+/// template on top-level `;` (dollar-quote-aware, so a `;` inside a
+/// PL/pgSQL function body is never treated as a boundary). This is NOT a
+/// style preference: `sqlx::raw_sql(..).execute(&mut PgConnection)` does not
+/// produce a generally-`Send` future in this sqlx version (0.8.6) — verified
+/// by spawning an equivalent single-call helper in complete isolation
+/// (every parameter owned, `'static`, no surrounding generator, no
+/// composition with any other future) and still hitting rustc's
+/// "implementation of Executor is not general enough" auto-trait leak check.
+/// `core/app::run` boxes itself (`Pin<Box<dyn Future + Send>>`) so
+/// `core/app`'s tests can `tokio::spawn` it, and this function sits on that
+/// call graph via `Plane::migrate`; `sqlx::query(..).execute(&mut
+/// PgConnection)` has no such problem (used pervasively elsewhere in this
+/// crate already — [`control_identity_on`], the `plane_meta` seed insert
+/// below). `raw_sql(..).execute(&Pool<DB>)` (the blanket impl every OTHER
+/// `SCHEMA_DDL` migration in this workspace uses) also doesn't have the
+/// problem, but does not admit holding one connection for the whole batch.
 pub(crate) async fn ensure_schema_with_lock_timeout(
     pool: &PgPool,
     lock_timeout: &str,
@@ -199,40 +221,42 @@ pub(crate) async fn ensure_schema_with_lock_timeout(
         .replace("{migrate_key}", &MIGRATE_LOCK_KEY.to_string())
         .replace("{writer_key}", &WRITER_LOCK_KEY.to_string());
 
-    let mut conn = pool
-        .acquire()
+    let mut tx = pool
+        .begin()
         .await
         .context("asyncevents: acquire V2 schema DDL connection")?;
 
-    if let Err(err) = sqlx::raw_sql(&ddl).execute(&mut *conn).await {
-        // Recovery: a failed multi-statement batch (including a 55P03
-        // lock-timeout abort) can leave this session mid-aborted-tx. ROLLBACK
-        // before the connection returns to the pool so the next borrower
-        // doesn't inherit "current transaction is aborted". If the ROLLBACK
-        // itself fails, the session state is unknown — detach the connection
-        // from the pool and drop it (closing the socket) so it can never serve
-        // a later borrower. sqlx already discards a connection whose error was
-        // connection-death on return to the pool; this handles the
-        // rollback-errored-but-connection-alive case.
-        if sqlx::raw_sql("ROLLBACK;").execute(&mut *conn).await.is_err() {
-            drop(conn.detach());
+    // `BEGIN`/`COMMIT` are literal statements in the template (it predates
+    // this sqlx::Transaction-based executor and was written for
+    // `raw_sql`'s simple-query protocol); `sqlx::Transaction` already owns
+    // that lifecycle, so skip them here rather than edit the long-lived,
+    // carefully reviewed DDL text.
+    for stmt in split_sql_statements(&ddl) {
+        let bare = stmt.trim_end_matches(';').trim();
+        if bare.eq_ignore_ascii_case("BEGIN") || bare.eq_ignore_ascii_case("COMMIT") {
+            continue;
         }
-        let timed_out = matches!(
-            &err,
-            sqlx::Error::Database(db) if db.code().as_deref() == Some("55P03")
-        );
-        return if timed_out {
-            Err(err).with_context(|| {
-                format!(
-                    "asyncevents: V2 plane advisory lock not acquired within {lock_timeout} — \
-                     another process is stuck mid plane-DDL; see pg_stat_activity"
-                )
-            })
-        } else {
-            Err(err).context("asyncevents: V2 schema DDL failed")
-        };
+        if let Err(err) = sqlx::query(&stmt).execute(&mut *tx).await {
+            // `tx` drops here (the `?`/early-`return` below), issuing sqlx's
+            // own best-effort ROLLBACK — no manual detach/rollback dance
+            // needed.
+            let timed_out = matches!(
+                &err,
+                sqlx::Error::Database(db) if db.code().as_deref() == Some("55P03")
+            );
+            return if timed_out {
+                Err(err).with_context(|| {
+                    format!(
+                        "asyncevents: V2 plane advisory lock not acquired within {lock_timeout} — \
+                         another process is stuck mid plane-DDL; see pg_stat_activity"
+                    )
+                })
+            } else {
+                Err(err).context("asyncevents: V2 schema DDL failed")
+            };
+        }
     }
-    drop(conn);
+    tx.commit().await.context("asyncevents: V2 schema DDL commit failed")?;
 
     let identity = control_identity(pool).await?;
     sqlx::query(
@@ -244,6 +268,43 @@ pub(crate) async fn ensure_schema_with_lock_timeout(
     .await
     .context("asyncevents: plane_meta seed failed")?;
     Ok(())
+}
+
+/// Splits a semicolon-separated SQL script into individual top-level
+/// statements, treating text between a matching pair of bare `$$` dollar
+/// quotes as opaque — so a `;` inside a PL/pgSQL function body (this
+/// crate's DDL uses only the bare `$$...$$` form, never a tagged
+/// `$tag$...$tag$`) is never mistaken for a statement boundary. Blank
+/// segments (trailing/leading whitespace between statements) are dropped.
+/// See [`store_tests::split_sql_statements_respects_dollar_quoting`] for the
+/// case this exists to get right.
+fn split_sql_statements(script: &str) -> Vec<String> {
+    let mut statements = Vec::new();
+    let mut current = String::new();
+    let mut in_dollar_quote = false;
+    let mut chars = script.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '$' && chars.peek() == Some(&'$') {
+            current.push(c);
+            current.push(chars.next().expect("peeked Some"));
+            in_dollar_quote = !in_dollar_quote;
+            continue;
+        }
+        if c == ';' && !in_dollar_quote {
+            let stmt = current.trim();
+            if !stmt.is_empty() {
+                statements.push(stmt.to_string());
+            }
+            current.clear();
+            continue;
+        }
+        current.push(c);
+    }
+    let tail = current.trim();
+    if !tail.is_empty() {
+        statements.push(tail.to_string());
+    }
+    statements
 }
 
 /// Appends one durable event by calling `asyncevents.append_event` — the single

@@ -576,7 +576,7 @@ async fn ordered_teardown_skips_module_stop_when_modules_never_started() {
     // No listeners, no planes, modules never started (`app` omitted) — e.g. a
     // migrate failure or an `App::start` Err: bus close still runs, module stop
     // does NOT.
-    ordered_teardown(None, None, std::time::Duration::from_millis(100), &mut None, &mut None, &ctx, None).await;
+    ordered_teardown(None, None, std::time::Duration::from_millis(100), None, None, ctx, None).await;
     assert!(log.lock().unwrap().is_empty(), "stop must not run: {log:?}");
 }
 
@@ -590,7 +590,16 @@ async fn ordered_teardown_stops_modules_after_a_successful_start() {
     let ctx = app.context().clone();
 
     // Modules started → `app` is passed → `App::stop` runs (last, after bus close).
-    ordered_teardown(None, None, std::time::Duration::from_millis(100), &mut None, &mut None, &ctx, Some(&app)).await;
+    ordered_teardown(
+        None,
+        None,
+        std::time::Duration::from_millis(100),
+        None,
+        None,
+        ctx,
+        Some(std::sync::Arc::new(app)),
+    )
+    .await;
     assert_eq!(*log.lock().unwrap(), vec!["stop:stoprec"]);
 }
 

@@ -184,7 +184,12 @@ fn rpc_modules() -> Vec<(
 ///
 /// Keyed by the `api/<dir>` name so the Option-None tripwire can associate the fields
 /// its filesystem scan finds in `api/<dir>/events/src/lib.rs` with THIS crate's samples.
-fn event_samples_by_crate() -> Vec<(&'static str, Vec<(&'static str, u32, serde_json::Value)>)> {
+/// One golden sample: `(topic, version, payload)`.
+type TopicSample = (&'static str, u32, serde_json::Value);
+/// One events crate's samples, keyed by its `api/<dir>` name.
+type CrateSamples = (&'static str, Vec<TopicSample>);
+
+fn event_samples_by_crate() -> Vec<CrateSamples> {
     vec![
         ("accounts", accountsevents::golden_samples()),
         ("characters", charactersevents::golden_samples()),
@@ -195,7 +200,7 @@ fn event_samples_by_crate() -> Vec<(&'static str, Vec<(&'static str, u32, serde_
     ]
 }
 
-fn event_samples() -> Vec<(&'static str, u32, serde_json::Value)> {
+fn event_samples() -> Vec<TopicSample> {
     event_samples_by_crate().into_iter().flat_map(|(_, samples)| samples).collect()
 }
 

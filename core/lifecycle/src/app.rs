@@ -1,4 +1,6 @@
 use std::collections::HashSet;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -109,89 +111,109 @@ impl App {
     /// boots serialize their idempotent DDL instead of racing it (catalog-lock
     /// deadlocks / "tuple concurrently updated"). A DB-less process has no DDL to
     /// run and loops unlocked.
-    pub async fn migrate(&self) -> anyhow::Result<()> {
+    ///
+    /// Boxed with an explicit `dyn Future + Send` return (not `async fn`):
+    /// `core/app::run` (the sole production caller) is itself boxed the same
+    /// way so `core/app`'s tests can `tokio::spawn` it (see `run`'s doc
+    /// comment there). Awaited unboxed, this method's opaque return type —
+    /// which internally composes `#[async_trait]`-generated boxed dyn
+    /// `Module::migrate` futures over every registered module with several
+    /// sequential/conditional `&mut PgConnection` reborrows of the migrate
+    /// advisory-lock connection — would flow untyped into that caller's own
+    /// generator; rustc's Send auto-trait leak checker cannot always prove
+    /// the combination region-polymorphically across the crate boundary
+    /// ("implementation of Send is not general enough" for `&App`/`&str`/
+    /// `&String`). Boxing HERE, at the definition, proves the bound once,
+    /// fully monomorphized within this crate.
+    pub fn migrate(&self) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + '_>> {
         self.migrate_with_lock_timeout(MODULE_MIGRATE_LOCK_TIMEOUT)
-            .await
     }
 
     /// [`App::migrate`]'s body, parameterized on the `lock_timeout` GUC value so
     /// tests can wait milliseconds instead of [`MODULE_MIGRATE_LOCK_TIMEOUT`]'s
     /// real 60s. `t` is a trusted crate-internal/test string, never
     /// user/network input — it is spliced into the `SET` statement via `format!`
-    /// because `SET` cannot take a bind parameter.
-    pub(crate) async fn migrate_with_lock_timeout(&self, t: &str) -> anyhow::Result<()> {
-        let Some(pool) = self.ctx.db() else {
-            // DB-less process: nothing persists, so there is no DDL to serialize.
-            return self.run_migrations().await;
-        };
+    /// because `SET` cannot take a bind parameter. Boxed for the same reason as
+    /// [`App::migrate`] (see its doc comment) — this is the function that
+    /// actually holds the multi-step `&mut PgConnection` reborrow sequence.
+    pub(crate) fn migrate_with_lock_timeout<'a>(
+        &'a self,
+        t: &'a str,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>> {
+        Box::pin(async move {
+            let Some(pool) = self.ctx.db() else {
+                // DB-less process: nothing persists, so there is no DDL to serialize.
+                return self.run_migrations().await;
+            };
 
-        // Hold the lock on a DEDICATED connection for the entire loop. A session
-        // lock (`pg_advisory_lock`, not `_xact`) because the loop spans many
-        // independent per-module transactions, not one. INVARIANT: this connection
-        // is held while every module's `migrate` acquires FURTHER pool connections,
-        // so the pool max MUST be >= 2 during migrate or the process self-deadlocks
-        // (the default pool size is comfortably above 2).
-        let mut lock_conn = pool
-            .acquire()
-            .await
-            .context("acquire module-migrate lock connection")?;
+            // Hold the lock on a DEDICATED connection for the entire loop. A session
+            // lock (`pg_advisory_lock`, not `_xact`) because the loop spans many
+            // independent per-module transactions, not one. INVARIANT: this connection
+            // is held while every module's `migrate` acquires FURTHER pool connections,
+            // so the pool max MUST be >= 2 during migrate or the process self-deadlocks
+            // (the default pool size is comfortably above 2).
+            let mut lock_conn = pool
+                .acquire()
+                .await
+                .context("acquire module-migrate lock connection")?;
 
-        // Bound the upcoming lock wait only — `SET` cannot take a bind parameter,
-        // and `t` is trusted (crate-internal const or test literal), never
-        // external input.
-        sqlx::query(&format!("SET lock_timeout = '{t}'"))
-            .execute(&mut *lock_conn)
-            .await
-            .context("set module-migrate lock_timeout")?;
+            // Bound the upcoming lock wait only — `SET` cannot take a bind parameter,
+            // and `t` is trusted (crate-internal const or test literal), never
+            // external input.
+            sqlx::query(&format!("SET lock_timeout = '{t}'"))
+                .execute(&mut *lock_conn)
+                .await
+                .context("set module-migrate lock_timeout")?;
 
-        let lock_result = sqlx::query("SELECT pg_advisory_lock($1)")
-            .bind(MODULE_MIGRATE_LOCK_KEY)
-            .execute(&mut *lock_conn)
-            .await;
-
-        if let Err(e) = lock_result {
-            let timed_out = matches!(
-                &e,
-                sqlx::Error::Database(db) if db.code().as_deref() == Some("55P03")
-            );
-            // RESET before returning: sqlx does not reset session GUCs on
-            // release, and this connection is about to go back to the pool.
-            let _ = sqlx::query("RESET lock_timeout")
+            let lock_result = sqlx::query("SELECT pg_advisory_lock($1)")
+                .bind(MODULE_MIGRATE_LOCK_KEY)
                 .execute(&mut *lock_conn)
                 .await;
-            drop(lock_conn);
-            return if timed_out {
-                Err(e).with_context(|| {
-                    format!(
-                        "module-migrate advisory lock not acquired within {t} — \
-                         another process is stuck mid-migrate; see pg_stat_activity"
-                    )
-                })
-            } else {
-                Err(e).context("acquire module-migrate advisory lock")
-            };
-        }
 
-        // Run the loop, capture its Result, then ALWAYS unlock on the same
-        // connection — success and error alike — before propagating.
-        let loop_result = self.run_migrations().await;
-        let unlock_result = sqlx::query("SELECT pg_advisory_unlock($1)")
-            .bind(MODULE_MIGRATE_LOCK_KEY)
-            .execute(&mut *lock_conn)
-            .await;
-        // RESET before the connection returns to the pool — sqlx does not reset
-        // session GUCs on release, so without this the 60s (or test) cap would
-        // ride back into the pool and silently apply to later statements on
-        // this connection.
-        let reset_result = sqlx::query("RESET lock_timeout")
-            .execute(&mut *lock_conn)
-            .await;
-        drop(lock_conn); // return the connection to the pool after unlock + reset
+            if let Err(e) = lock_result {
+                let timed_out = matches!(
+                    &e,
+                    sqlx::Error::Database(db) if db.code().as_deref() == Some("55P03")
+                );
+                // RESET before returning: sqlx does not reset session GUCs on
+                // release, and this connection is about to go back to the pool.
+                let _ = sqlx::query("RESET lock_timeout")
+                    .execute(&mut *lock_conn)
+                    .await;
+                drop(lock_conn);
+                return if timed_out {
+                    Err(e).with_context(|| {
+                        format!(
+                            "module-migrate advisory lock not acquired within {t} — \
+                             another process is stuck mid-migrate; see pg_stat_activity"
+                        )
+                    })
+                } else {
+                    Err(e).context("acquire module-migrate advisory lock")
+                };
+            }
 
-        loop_result?;
-        unlock_result.context("release module-migrate advisory lock")?;
-        reset_result.context("reset module-migrate lock_timeout")?;
-        Ok(())
+            // Run the loop, capture its Result, then ALWAYS unlock on the same
+            // connection — success and error alike — before propagating.
+            let loop_result = self.run_migrations().await;
+            let unlock_result = sqlx::query("SELECT pg_advisory_unlock($1)")
+                .bind(MODULE_MIGRATE_LOCK_KEY)
+                .execute(&mut *lock_conn)
+                .await;
+            // RESET before the connection returns to the pool — sqlx does not reset
+            // session GUCs on release, so without this the 60s (or test) cap would
+            // ride back into the pool and silently apply to later statements on
+            // this connection.
+            let reset_result = sqlx::query("RESET lock_timeout")
+                .execute(&mut *lock_conn)
+                .await;
+            drop(lock_conn); // return the connection to the pool after unlock + reset
+
+            loop_result?;
+            unlock_result.context("release module-migrate advisory lock")?;
+            reset_result.context("reset module-migrate lock_timeout")?;
+            Ok(())
+        })
     }
 
     /// The bare module `migrate` loop, in registration order. Wrapped by
@@ -212,54 +234,63 @@ impl App {
     /// [`App::stop`] — and the original error is returned. Modules whose `start`
     /// never ran (the failing module itself, and everything after it) do NOT get
     /// `stop`: a module's `stop` is only ever invoked after its `start` succeeded.
-    pub async fn start(&self) -> anyhow::Result<()> {
-        for (i, m) in self.modules.iter().enumerate() {
-            if let Err(err) = m.start(&self.ctx).await {
-                tracing::error!(
-                    module = m.name(),
-                    %err,
-                    "module start failed; stopping the started prefix"
-                );
-                for started in self.modules[..i].iter().rev() {
-                    match tokio::time::timeout(self.stop_grace, started.stop(&self.ctx)).await {
-                        Ok(Ok(())) => tracing::info!(
-                            module = started.name(),
-                            "module stopped (start unwind)"
-                        ),
-                        Ok(Err(stop_err)) => tracing::error!(
-                            module = started.name(),
-                            %stop_err,
-                            "module stop failed during start unwind"
-                        ),
-                        Err(_elapsed) => tracing::error!(
-                            module = started.name(),
-                            grace_ms = self.stop_grace.as_millis(),
-                            "module stop timed out; abandoning and continuing teardown (start unwind)"
-                        ),
+    ///
+    /// Boxed for the same reason as [`App::migrate`] (see its doc comment).
+    pub fn start(&self) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + '_>> {
+        Box::pin(async move {
+            for (i, m) in self.modules.iter().enumerate() {
+                if let Err(err) = m.start(&self.ctx).await {
+                    tracing::error!(
+                        module = m.name(),
+                        %err,
+                        "module start failed; stopping the started prefix"
+                    );
+                    for started in self.modules[..i].iter().rev() {
+                        match tokio::time::timeout(self.stop_grace, started.stop(&self.ctx)).await
+                        {
+                            Ok(Ok(())) => tracing::info!(
+                                module = started.name(),
+                                "module stopped (start unwind)"
+                            ),
+                            Ok(Err(stop_err)) => tracing::error!(
+                                module = started.name(),
+                                %stop_err,
+                                "module stop failed during start unwind"
+                            ),
+                            Err(_elapsed) => tracing::error!(
+                                module = started.name(),
+                                grace_ms = self.stop_grace.as_millis(),
+                                "module stop timed out; abandoning and continuing teardown (start unwind)"
+                            ),
+                        }
                     }
+                    return Err(err).with_context(|| format!("start {:?}", m.name()));
                 }
-                return Err(err).with_context(|| format!("start {:?}", m.name()));
+                tracing::info!(module = m.name(), "module started");
             }
-            tracing::info!(module = m.name(), "module started");
-        }
-        Ok(())
+            Ok(())
+        })
     }
 
     /// Runs `stop` on every module, in REVERSE registration order. Best-effort:
     /// logs and continues on error so one stuck module can't strand the rest.
-    pub async fn stop(&self) {
-        for m in self.modules.iter().rev() {
-            match tokio::time::timeout(self.stop_grace, m.stop(&self.ctx)).await {
-                Ok(Ok(())) => tracing::info!(module = m.name(), "module stopped"),
-                Ok(Err(err)) => {
-                    tracing::error!(module = m.name(), %err, "module stop failed")
+    ///
+    /// Boxed for the same reason as [`App::migrate`] (see its doc comment).
+    pub fn stop(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        Box::pin(async move {
+            for m in self.modules.iter().rev() {
+                match tokio::time::timeout(self.stop_grace, m.stop(&self.ctx)).await {
+                    Ok(Ok(())) => tracing::info!(module = m.name(), "module stopped"),
+                    Ok(Err(err)) => {
+                        tracing::error!(module = m.name(), %err, "module stop failed")
+                    }
+                    Err(_elapsed) => tracing::error!(
+                        module = m.name(),
+                        grace_ms = self.stop_grace.as_millis(),
+                        "module stop timed out; abandoning and continuing teardown"
+                    ),
                 }
-                Err(_elapsed) => tracing::error!(
-                    module = m.name(),
-                    grace_ms = self.stop_grace.as_millis(),
-                    "module stop timed out; abandoning and continuing teardown"
-                ),
             }
-        }
+        })
     }
 }
