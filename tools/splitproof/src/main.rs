@@ -1423,10 +1423,12 @@ async fn i_gate(ctx: &Ctx, fleet: &mut Vec<Running>, p: &mut Proof) -> Result<()
 /// (characters-svc — a stub gateway-svc holds, deliberately distinct from the inventory-svc
 /// that [I-GATE] restarts) with no respawn, and assert gateway `/readyz` flips to 503
 /// NAMING the dead `stub:characters` driven by the probe alone; then respawn and assert
-/// /readyz recovers to 200. No burst-latency assertion: a concurrent /readyz burst finishes
-/// in ~1s even against the OLD per-request-dial code (axum runs handlers concurrently), so it
-/// cannot distinguish fixed from unfixed — the anti-amplification proof is the sequential
-/// core/remote `readiness_verdict_*` unit tests.
+/// /readyz recovers to 200. While the peer is down it ALSO times ONE sequential /readyz and
+/// asserts it stays fast (<500ms): the OLD per-request-dial code would spend ~1s dialing the
+/// dead peer in-request, the fixed cached path returns in <10ms — a real behavioral
+/// fixed-vs-unfixed distinguisher on the split. Deliberately NOT a concurrent burst (axum
+/// overlaps those to ~1s even unfixed, proving nothing); the exhaustive by-construction
+/// anti-amplification proof remains the sequential core/remote `readiness_verdict_*` unit tests.
 async fn rdy_dead(ctx: &Ctx, fleet: &mut Vec<Running>, p: &mut Proof) -> Result<()> {
     println!("\n[splitproof] === [RDY-DEAD] kill characters-svc; gateway /readyz must flip via background probe ===");
     let g = format!("http://127.0.0.1:{}", ctx.http_port("gateway-svc"));
@@ -1463,6 +1465,17 @@ async fn rdy_dead(ctx: &Ctx, fleet: &mut Vec<Running>, p: &mut Proof) -> Result<
         .iter()
         .position(|running| running.name == "characters-svc")
         .context("characters-svc missing from fleet (preflight_fleet should have caught this)")?;
+
+    // Guard: characters-svc must be ALIVE before we intentionally kill it. The baseline
+    // /readyz==200 poll above already implies this (gateway cannot be 200 with stub:characters
+    // down), but assert it explicitly so a spontaneous EARLIER crash can never be silently
+    // "healed" by our respawn below and hidden from the later [LV2] liveness sweep.
+    let alive_before = matches!(fleet[idx].child.try_wait(), Ok(None));
+    p.check(
+        "[RDY-DEAD] characters-svc alive before intentional kill",
+        alive_before,
+        format!("alive={alive_before}"),
+    );
 
     // Kill ONLY characters-svc (Drop kills + waits), NO respawn yet, and let the OS free
     // its HTTP + edge ports so the recovery respawn below rebinds cleanly.
@@ -1501,6 +1514,22 @@ async fn rdy_dead(ctx: &Ctx, fleet: &mut Vec<Running>, p: &mut Proof) -> Result<
         "[RDY-DEAD] dead peer flips gateway /readyz to 503 (background probe)",
         got503 && names_stub,
         format!("last_code={last:?} names_stub={names_stub}"),
+    );
+
+    // The fixed-vs-unfixed DISTINGUISHER on the split: while characters is DOWN, time ONE
+    // sequential /readyz. The OLD per-request-dial code dialed the dead peer IN-REQUEST (1s
+    // timeout) so this GET would take ~1s; the fixed cached-verdict path returns in <10ms
+    // (gateway-svc is DB-less, so /readyz is just cached stub reads). A SINGLE request — not a
+    // concurrent burst, which axum overlaps to ~1s even unfixed and so proves nothing. 500ms
+    // cleanly separates the two (fixed <50ms vs unfixed ~1000ms).
+    let t0 = Instant::now();
+    let fast = ctx.http.get(format!("{g}/readyz")).send().await;
+    let latency = t0.elapsed();
+    let fast_503 = matches!(&fast, Ok(r) if r.status() == reqwest::StatusCode::SERVICE_UNAVAILABLE);
+    p.check(
+        "[RDY-DEAD] /readyz stays fast while peer down (cached verdict, no in-request dial)",
+        fast_503 && latency < Duration::from_millis(500),
+        format!("latency={latency:?} is_503={fast_503}"),
     );
 
     // Recovery: respawn characters-svc from its canonical spec and wait for it healthy.
