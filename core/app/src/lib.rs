@@ -925,57 +925,19 @@ pub async fn run(
             return serve_https(front, &bind, router, cfg.http_drain_grace, sig_rx).await;
         }
 
-        let listener = tokio::net::TcpListener::bind(&bind)
-            .await
-            .with_context(|| format!("bind http {bind}"))?;
-        tracing::info!(addr = %bind, "listening");
-
-        // 9. `with_graceful_shutdown` returns once the shutdown signal fires AND in-flight
-        //    HTTP has drained — so the await below IS "stop accepting HTTP". Serve WITH
-        //    connection info so the gateway's passthrough can set `X-Forwarded-For` (and
-        //    Step 13's rate limiter can key per client IP); handlers that don't need it
-        //    ignore it.
-        //
-        //    The signal fans out over a `watch` (NOT a `Notify`): two consumers wait on it
-        //    — the graceful-shutdown future AND the drain-grace timer below — and it can
-        //    fire before either starts awaiting. `watch` is level-triggered and
-        //    multi-receiver, so a signal that flipped `true` early is still observed by a
-        //    receiver that only starts `wait_for` afterwards. A `Notify` would lose the
-        //    wake-up (at most one stored permit, `notify_waiters` no-ops with no waiter).
+        // 9. Serve the plain-HTTP plane through [`serve_http`] — the exact TLS-branch shape
+        //    above, with the SAME watch-signal graceful-shutdown contract (see the comment
+        //    at that dispatch on why a level-triggered `watch`, not a `Notify`). The plain
+        //    path serves through axum-server's `Handle` for the SAME reason `serve_https`
+        //    does: each connection task owns its hyper future and a grace-expiry abort DROPS
+        //    it in place (true cancellation) rather than the detached-task leak `axum::serve`
+        //    would produce (see `serve_http`).
         let (sig_tx, sig_rx) = tokio::sync::watch::channel(false);
         tokio::spawn(async move {
             shutdown_signal().await;
             let _ = sig_tx.send(true);
         });
-        let graceful_rx = sig_rx.clone();
-        let serve_fut = axum::serve(
-            listener,
-            router.into_make_service_with_connect_info::<SocketAddr>(),
-        )
-        .with_graceful_shutdown(async move {
-            // `wait_for(|v| *v)` returns immediately if the signal already flipped, else
-            // awaits the flip — covering the fire-before-serve-starts race either way.
-            let mut rx = graceful_rx;
-            let _ = rx.wait_for(|v| *v).await;
-        });
-
-        // The HTTP drain is time-bounded: once the signal fires, `with_graceful_shutdown`
-        // gets `http_drain_grace` to finish draining in-flight connections. A hung
-        // connection can no longer stall shutdown forever before the (already time-bounded)
-        // QUIC drain and module stop begin — the timeout arm abandons the drain and lets
-        // `ordered_teardown` proceed. The timer only STARTS after the signal, so normal
-        // serving is unaffected.
-        tokio::select! {
-            r = serve_fut => r.context("http serve"),
-            _ = async {
-                let mut rx = sig_rx;
-                let _ = rx.wait_for(|v| *v).await;
-                tokio::time::sleep(cfg.http_drain_grace).await;
-            } => {
-                tracing::warn!("http drain grace expired; abandoning in-flight connections");
-                Ok(())
-            }
-        }
+        serve_http(&bind, router, cfg.http_drain_grace, sig_rx).await
     }
     .await;
 
@@ -1053,8 +1015,85 @@ fn normalize_mailto(c: &str) -> String {
     format!("mailto:{email}")
 }
 
+/// Serves `router` over plain HTTP on `bind` until `sig_rx` flips — the twin of
+/// [`serve_https`], served through axum-server's [`Handle`](axum_server::Handle)
+/// rather than [`axum::serve`].
+///
+/// Why not `axum::serve`: axum 0.7 `tokio::spawn`s one DETACHED task per connection
+/// and never stores the `JoinHandle`s, so dropping its serve future when the drain
+/// grace expires ABANDONS the in-flight handlers — a hung handler keeps running (and
+/// keeps touching modules/DB) while [`ordered_teardown`] stops the durable plane and
+/// the modules underneath it. axum-server instead gives each connection task
+/// ownership of its hyper future and `select!`s it against the `Handle`'s shutdown, so
+/// a grace-expiry abort DROPS that future in place — true cancellation, no leak. This
+/// is the exact mechanism [`serve_https`] already relied on; the plain path now shares
+/// it.
+///
+/// Shutdown contract: once `sig_rx` flips, the drain task calls
+/// `graceful_shutdown(None)` (stop accepting, let in-flight connections finish on
+/// their own with NO internal deadline), waits `drain_grace`, samples the still-open
+/// `connection_count` at that single instant, warns if any remain, then `shutdown()`
+/// force-drops them. Using `None` + an explicit deadline here — rather than
+/// `graceful_shutdown(Some(drain_grace))` as [`serve_https`] does — deliberately
+/// trades the exact mirror for a race-free count: with `Some(grace)` axum-server's own
+/// timer fires `shutdown()` at the same instant this task wakes and can zero the count
+/// before we read it, turning the operator warn into a silent false-negative. The
+/// drain OUTCOME (graceful for `drain_grace`, then hard abort) is identical, and the
+/// serve future returns within `drain_grace` of the signal either way, so the ordered
+/// teardown that follows in [`run`] starts on time.
+///
+/// Listener handoff: axum-server's `from_tcp` wraps the std listener via tokio's
+/// `TcpListener::from_std`, which REQUIRES non-blocking mode already set; tokio's
+/// `into_std` returns a listener with non-blocking mode left ON (verified against
+/// tokio 1.52 `into_std` docs + axum-server 0.8 `from_tcp` source), so the handoff
+/// needs no `set_nonblocking` call.
+async fn serve_http(
+    bind: &str,
+    router: axum::Router,
+    drain_grace: std::time::Duration,
+    sig_rx: tokio::sync::watch::Receiver<bool>,
+) -> anyhow::Result<()> {
+    let listener = tokio::net::TcpListener::bind(bind)
+        .await
+        .with_context(|| format!("bind http {bind}"))?;
+    tracing::info!(addr = %bind, "listening");
+
+    let handle = axum_server::Handle::new();
+    let drain_handle = handle.clone();
+    let mut rx = sig_rx;
+    tokio::spawn(async move {
+        // Level-triggered watch (see the `run` comment): a flip is observed even if it
+        // raced ahead of this `wait_for`.
+        let _ = rx.wait_for(|v| *v).await;
+        drain_handle.graceful_shutdown(None);
+        tokio::time::sleep(drain_grace).await;
+        let abandoned = drain_handle.connection_count();
+        if abandoned > 0 {
+            // Preserves the operator-visible signal the old select-timer emitted — now
+            // carrying the count of connections force-dropped.
+            tracing::warn!(abandoned, "http drain grace expired; abandoning in-flight connections");
+        }
+        drain_handle.shutdown();
+    });
+
+    // Serve WITH connection info so the gateway's passthrough can set `X-Forwarded-For`
+    // (and the rate limiter can key per client IP) — identical `MakeService` to
+    // `serve_https`. The await returns once the accept loop has stopped (graceful
+    // signal) AND every connection task has ended (drained or aborted by the task
+    // above).
+    axum_server::from_tcp(
+        listener
+            .into_std()
+            .context("convert http listener to std")?,
+    )?
+    .handle(handle)
+    .serve(router.into_make_service_with_connect_info::<SocketAddr>())
+    .await
+    .context("http serve")
+}
+
 /// Serves `router` over HTTPS on `bind` until `sig_rx` flips — the TLS twin of the
-/// plain `axum::serve` branch in [`run`] (admin hardening Step 4). Same shutdown
+/// plain [`serve_http`] branch in [`run`] (admin hardening Step 4). Same shutdown
 /// contract: once the watch signal fires, `axum_server::Handle::graceful_shutdown`
 /// gets `drain_grace` to finish in-flight connections, then abandons stragglers — so
 /// the drain is time-bounded exactly like the plain branch's select-timer, and the

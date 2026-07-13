@@ -824,6 +824,166 @@ async fn run_http_request_timeout_zero_disables_the_layer() {
 }
 
 // ============================================================================
+// Plain-HTTP graceful drain owns its connection tasks (Step 8). `serve_http` (the
+// exact branch `run` dispatches to for a non-TLS process) serves through
+// axum-server's `Handle` — each connection task owns its hyper future and a
+// grace-expiry abort DROPS it in place (true cancellation), NOT the detached-task
+// leak `axum::serve` produced. Driven directly with the same watch signal `run`
+// wires (like `serve_https_files_serves_router_and_drains_on_signal`), so the test
+// SYNCHRONIZES on the handler actually running rather than sleeping past a race —
+// the old `axum::serve` code would FALSE-PASS a sleep-only test because the outer
+// select! returned before the detached handler resumed.
+// ============================================================================
+
+/// The negative path the fix closes: a handler stuck well past the drain grace must
+/// be CANCELLED at grace expiry — its future dropped in place — and must therefore
+/// never wake to run its post-sleep body. On the old detached-task code the abandoned
+/// handler would resume after `serve` had already returned (teardown underway) and set
+/// both flags; post-fix it stays false because the future was dropped.
+#[tokio::test(flavor = "multi_thread")]
+async fn serve_http_cancels_hung_handler_at_grace_and_never_wakes_it() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    // Signalled the instant the handler starts executing (synchronize, don't sleep).
+    let entered = Arc::new(tokio::sync::Notify::new());
+    // Set once `serve_http` returns — i.e. ordered teardown is beginning; a handler that
+    // wakes AFTER this and reads it is exactly the abandoned-task defect.
+    let stopped = Arc::new(AtomicBool::new(false));
+    // The handler's post-sleep effects — must stay false (handler cancelled, never woke).
+    let handler_finished = Arc::new(AtomicBool::new(false));
+    let touched_after_stop = Arc::new(AtomicBool::new(false));
+
+    let (e, st, hf, tas) = (
+        entered.clone(),
+        stopped.clone(),
+        handler_finished.clone(),
+        touched_after_stop.clone(),
+    );
+    let router = axum::Router::new().route(
+        "/hang",
+        get(move || {
+            let (e, st, hf, tas) = (e.clone(), st.clone(), hf.clone(), tas.clone());
+            async move {
+                e.notify_one();
+                // Sleeps WELL past the drain grace below; on the fixed path the enclosing
+                // future is dropped before this resolves.
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                // Only reachable if the handler was NOT cancelled — records whether it woke
+                // after teardown had begun.
+                tas.store(st.load(Ordering::SeqCst), Ordering::SeqCst);
+                hf.store(true, Ordering::SeqCst);
+                "done"
+            }
+        }),
+    );
+
+    let port = free_port();
+    let bind = format!("127.0.0.1:{port}");
+    let grace = std::time::Duration::from_millis(300);
+    let (sig_tx, sig_rx) = tokio::sync::watch::channel(false);
+    let server = tokio::spawn(async move { serve_http(&bind, router, grace, sig_rx).await });
+
+    // Fire the request that hangs inside the handler (own task; we never expect a body).
+    let hang = tokio::spawn(async move {
+        let client = reqwest::Client::new();
+        let _ = client
+            .get(format!("http://127.0.0.1:{port}/hang"))
+            .timeout(std::time::Duration::from_secs(30))
+            .send()
+            .await;
+    });
+
+    // SYNCHRONIZE: wait until the handler is actually running, not a blind sleep.
+    tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified())
+        .await
+        .expect("handler never entered");
+
+    // Flip the shutdown signal; `serve_http` must return within ~grace (drain then abort),
+    // NOT wait for the 2s handler.
+    sig_tx.send(true).unwrap();
+    let served = tokio::time::timeout(std::time::Duration::from_secs(5), server)
+        .await
+        .expect("serve_http must return within the drain grace, not hang on the handler")
+        .expect("serve task panicked");
+    served.expect("serve_http returned an error");
+
+    // Teardown has begun.
+    stopped.store(true, Ordering::SeqCst);
+
+    // Wait comfortably past the handler's own 2s sleep: on the OLD detached-task code the
+    // abandoned handler WOULD wake by now and set both flags. Post-fix its future was
+    // dropped at grace, so it never resumes.
+    tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
+    assert!(
+        !handler_finished.load(Ordering::SeqCst),
+        "hung handler must be cancelled at grace, not run to completion after teardown"
+    );
+    assert!(
+        !touched_after_stop.load(Ordering::SeqCst),
+        "cancelled handler must not touch state after teardown began"
+    );
+
+    hang.abort();
+}
+
+/// The graceful half of the same ordering: a request already in flight when the signal
+/// fires that finishes WITHIN the grace must complete successfully (drain first, abort
+/// only on grace expiry) — proving the fix drains gracefully and does not hard-kill
+/// live connections the instant the signal arrives.
+#[tokio::test(flavor = "multi_thread")]
+async fn serve_http_completes_in_flight_request_within_grace() {
+    let entered = std::sync::Arc::new(tokio::sync::Notify::new());
+    let e = entered.clone();
+    let router = axum::Router::new().route(
+        "/drain",
+        get(move || {
+            let e = e.clone();
+            async move {
+                e.notify_one();
+                // Finishes well WITHIN the 2s grace below.
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                "drained"
+            }
+        }),
+    );
+
+    let port = free_port();
+    let bind = format!("127.0.0.1:{port}");
+    let grace = std::time::Duration::from_secs(2);
+    let (sig_tx, sig_rx) = tokio::sync::watch::channel(false);
+    let server = tokio::spawn(async move { serve_http(&bind, router, grace, sig_rx).await });
+
+    let resp = tokio::spawn(async move {
+        reqwest::Client::new()
+            .get(format!("http://127.0.0.1:{port}/drain"))
+            .send()
+            .await
+    });
+
+    // SYNCHRONIZE on the handler running, then flip shutdown WHILE it is in flight.
+    tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified())
+        .await
+        .expect("handler never entered");
+    sig_tx.send(true).unwrap();
+
+    // The in-flight request must still get its response during the graceful drain.
+    let resp = tokio::time::timeout(std::time::Duration::from_secs(5), resp)
+        .await
+        .expect("in-flight request hung")
+        .expect("request task panicked")
+        .expect("request errored");
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+    assert_eq!(resp.text().await.unwrap(), "drained");
+
+    let served = tokio::time::timeout(std::time::Duration::from_secs(5), server)
+        .await
+        .expect("serve_http must return after the drain")
+        .expect("serve task panicked");
+    served.expect("serve_http returned an error");
+}
+
+// ============================================================================
 // The EDGE_SLOT drain (Step 3): modules contribute EdgeReg unconditionally in
 // init; `run` applies them only when the process has an internal edge server.
 // ============================================================================
