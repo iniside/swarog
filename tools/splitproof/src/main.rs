@@ -1431,12 +1431,32 @@ async fn rdy_dead(ctx: &Ctx, fleet: &mut Vec<Running>, p: &mut Proof) -> Result<
     println!("\n[splitproof] === [RDY-DEAD] kill characters-svc; gateway /readyz must flip via background probe ===");
     let g = format!("http://127.0.0.1:{}", ctx.http_port("gateway-svc"));
 
-    // Baseline: full fleet healthy, so gateway /readyz is 200 before we kill the peer.
-    let base = ctx.http.get(format!("{g}/readyz")).send().await?;
+    // Baseline: wait for gateway /readyz to be 200 before we kill the peer. This POLLS
+    // (not a single shot) on purpose: [I-GATE] just respawned inventory-svc, and the new
+    // background probe recovers gateway's `stub:inventory` verdict only ~1-2s after that
+    // peer's edge is back (its own PROBE_INTERVAL_UNREADY cadence) — `i_gate`'s wait_healthy
+    // gates on inventory's OWN /readyz, not on gateway's stub reflecting it. A single-shot
+    // read here could catch a transient stub-recovery 503 and flake. 10s is generous.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut base_ok = false;
+    let mut last: Option<u16> = None;
+    loop {
+        if let Ok(r) = ctx.http.get(format!("{g}/readyz")).send().await {
+            last = Some(r.status().as_u16());
+            if r.status().is_success() {
+                base_ok = true;
+                break;
+            }
+        }
+        if Instant::now() >= deadline {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
     p.check(
         "[RDY-DEAD] baseline gateway /readyz 200",
-        base.status().is_success(),
-        base.status(),
+        base_ok,
+        format!("last_code={last:?}"),
     );
 
     let idx = fleet
