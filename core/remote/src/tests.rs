@@ -3,25 +3,80 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 // ---- Fake transport for the redial-once logic --------------------------
 
-/// A fake connection: `ok` decides whether its single `call` succeeds; a failing
-/// call errors with `status` (historically only `Unavailable`, which is exactly why
-/// the definitive-answer classification went untested); a shared counter records
-/// closes so a test can assert `reset` closed the dead conn.
+#[test]
+fn edge_failures_map_to_provenance_before_status_erasure() {
+    let cases = [
+        (
+            edge::Error::Connection("lost".into()),
+            FailureProvenance::ConnectionFatal,
+            opsapi::Status::Unavailable,
+        ),
+        (
+            edge::Error::Remote("handler failed".into()),
+            FailureProvenance::PeerAnswer,
+            opsapi::Status::Unavailable,
+        ),
+        (
+            edge::Error::UnknownMethod("edge: unknown method fake".into()),
+            FailureProvenance::PeerAnswer,
+            opsapi::Status::NotFound,
+        ),
+        (
+            edge::Error::Stream("stopped".into()),
+            FailureProvenance::StreamLocal,
+            opsapi::Status::Unavailable,
+        ),
+        (
+            edge::Error::FrameTooLarge { size: 2, max: 1 },
+            FailureProvenance::StreamLocal,
+            opsapi::Status::Unavailable,
+        ),
+        (
+            edge::Error::Connect("unprovenanced at call seam".into()),
+            FailureProvenance::StreamLocal,
+            opsapi::Status::Unavailable,
+        ),
+    ];
+
+    for (failure, provenance, status) in cases {
+        let mapped = map_edge_call_failure(failure);
+        assert_eq!(mapped.provenance, provenance);
+        assert_eq!(mapped.mapped.status, status);
+    }
+}
+
+#[derive(Clone, Copy)]
+struct FakeFailure {
+    status: opsapi::Status,
+    provenance: FailureProvenance,
+}
+
+/// A fake connection: `ok` decides whether its call succeeds; a failing call carries
+/// independently selected mapped status and provenance. Shared counters record calls
+/// and closes so tests can prove retry/reset policy without inferring from status.
 struct FakeConn {
     ok: bool,
-    status: opsapi::Status,
+    failure: FakeFailure,
     closes: Arc<AtomicUsize>,
     calls: Arc<AtomicUsize>,
 }
 
 #[async_trait]
 impl Conn for FakeConn {
-    async fn call(&self, _method: &str, _identity: Option<&str>, _payload: &[u8]) -> Result<Vec<u8>, Error> {
+    async fn call(
+        &self,
+        _method: &str,
+        _identity: Option<&str>,
+        _payload: &[u8],
+    ) -> Result<Vec<u8>, CallFailure> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         if self.ok {
             Ok(b"ok".to_vec())
         } else {
-            Err(Error::new(self.status, "fake: call failed"))
+            Err(CallFailure {
+                mapped: Error::new(self.failure.status, "fake: call failed"),
+                provenance: self.failure.provenance,
+            })
         }
     }
     fn close(&self) {
@@ -30,14 +85,14 @@ impl Conn for FakeConn {
 }
 
 /// A fake dialer: the Nth dial (0-based) yields a conn whose `call` succeeds iff
-/// `N + 1 >= heal_after`; a failing conn errors with `fail_status`. `dials` counts
-/// how many times it was asked to dial.
+/// `N + 1 >= heal_after`; a failing conn returns `failure`. `dials` counts how many
+/// times it was asked to dial.
 struct FakeDialer {
     dials: Arc<AtomicUsize>,
     closes: Arc<AtomicUsize>,
     calls: Arc<AtomicUsize>,
     heal_after: usize,
-    fail_status: opsapi::Status,
+    failure: FakeFailure,
 }
 
 #[async_trait]
@@ -46,7 +101,7 @@ impl Dialer for FakeDialer {
         let n = self.dials.fetch_add(1, Ordering::SeqCst);
         Ok(Arc::new(FakeConn {
             ok: n + 1 >= self.heal_after,
-            status: self.fail_status,
+            failure: self.failure,
             closes: self.closes.clone(),
             calls: self.calls.clone(),
         }))
@@ -56,15 +111,20 @@ impl Dialer for FakeDialer {
 fn reconnecting(
     heal_after: usize,
 ) -> (Reconnecting<FakeDialer>, Arc<AtomicUsize>, Arc<AtomicUsize>, Arc<AtomicUsize>) {
-    reconnecting_failing_with(heal_after, opsapi::Status::Unavailable)
+    reconnecting_failing_with(
+        heal_after,
+        FakeFailure {
+            status: opsapi::Status::Unavailable,
+            provenance: FailureProvenance::ConnectionFatal,
+        },
+    )
 }
 
-/// Like [`reconnecting`], but failing conns error with `fail_status` — so tests can
-/// exercise the definitive-answer (`NotFound`) vs transport-default (`Internal`)
-/// classification, not just `Unavailable`.
+/// Like [`reconnecting`], but failing conns return an explicit mapped status and
+/// provenance.
 fn reconnecting_failing_with(
     heal_after: usize,
-    fail_status: opsapi::Status,
+    failure: FakeFailure,
 ) -> (Reconnecting<FakeDialer>, Arc<AtomicUsize>, Arc<AtomicUsize>, Arc<AtomicUsize>) {
     let dials = Arc::new(AtomicUsize::new(0));
     let closes = Arc::new(AtomicUsize::new(0));
@@ -74,7 +134,7 @@ fn reconnecting_failing_with(
         closes: closes.clone(),
         calls: calls.clone(),
         heal_after,
-        fail_status,
+        failure,
     });
     (r, dials, closes, calls)
 }
@@ -121,44 +181,53 @@ async fn gives_up_after_one_retry() {
     assert_eq!(closes.load(Ordering::SeqCst), 2, "BOTH dead conns were closed (c2 too)");
 }
 
-/// A DEFINITIVE peer answer (`NotFound`, the typed unknown-method mapping) proves the
-/// connection is healthy: no reset, no redial, the original error is returned — for
-/// BOTH retry modes (the classification precedes the retry_mode branch).
+/// Peer-answer provenance preserves the shared connection regardless of mapped status:
+/// `Remote` maps to Unavailable while `UnknownMethod` maps to NotFound, but neither may
+/// reset or replay in either retry mode.
 #[tokio::test]
-async fn notfound_does_not_reset_or_redial() {
-    for mode in [RetryMode::Never, RetryMode::OnceAfterReconnect] {
-        let (r, dials, closes, calls) =
-            reconnecting_failing_with(usize::MAX, opsapi::Status::NotFound);
-        let err = r
-            .call("characters.ownerOf", None, b"{}", mode)
-            .await
-            .unwrap_err();
-        assert_eq!(err.status, opsapi::Status::NotFound, "original answer returned ({mode:?})");
-        assert_eq!(dials.load(Ordering::SeqCst), 1, "no redial on a definitive answer ({mode:?})");
-        assert_eq!(closes.load(Ordering::SeqCst), 0, "healthy conn must NOT be reset ({mode:?})");
-        assert_eq!(calls.load(Ordering::SeqCst), 1, "no replay ({mode:?})");
+async fn peer_answers_do_not_reset_or_replay() {
+    for status in [opsapi::Status::Unavailable, opsapi::Status::NotFound] {
+        for mode in [RetryMode::Never, RetryMode::OnceAfterReconnect] {
+            let (r, dials, closes, calls) = reconnecting_failing_with(
+                usize::MAX,
+                FakeFailure {
+                    status,
+                    provenance: FailureProvenance::PeerAnswer,
+                },
+            );
+            let err = r
+                .call("characters.ownerOf", None, b"{}", mode)
+                .await
+                .unwrap_err();
+            assert_eq!(err.status, status, "mapped peer answer returned ({mode:?})");
+            assert_eq!(dials.load(Ordering::SeqCst), 1, "no peer-answer redial ({mode:?})");
+            assert_eq!(closes.load(Ordering::SeqCst), 0, "peer answer keeps conn ({mode:?})");
+            assert_eq!(calls.load(Ordering::SeqCst), 1, "no peer-answer replay ({mode:?})");
+        }
     }
 }
 
-/// A non-Unavailable, non-NotFound status (`Internal`) still takes the reset path:
-/// reset is the DEFAULT — only a proven definitive answer skips it. Pins the
-/// classification direction against a future `== Unavailable` rewrite (M4): a new
-/// transport-fault status must fall into reset, not into keep-cached.
+/// Stream-local provenance also preserves the connection and never replays. Use
+/// `Internal` deliberately: status is independent from provenance in both directions.
 #[tokio::test]
-async fn internal_status_still_resets() {
-    let (r, dials, closes, _) =
-        reconnecting_failing_with(usize::MAX, opsapi::Status::Internal);
-    let err = r
-        .call("characters.create", None, b"{}", RetryMode::Never)
-        .await
-        .unwrap_err();
-    assert_eq!(err.status, opsapi::Status::Internal);
-    assert_eq!(dials.load(Ordering::SeqCst), 1);
-    assert_eq!(
-        closes.load(Ordering::SeqCst),
-        1,
-        "an unclassified status MUST reset — reset is the default, not `== Unavailable`"
-    );
+async fn stream_local_failures_do_not_reset_or_replay() {
+    for mode in [RetryMode::Never, RetryMode::OnceAfterReconnect] {
+        let (r, dials, closes, calls) = reconnecting_failing_with(
+            usize::MAX,
+            FakeFailure {
+                status: opsapi::Status::Internal,
+                provenance: FailureProvenance::StreamLocal,
+            },
+        );
+        let err = r
+            .call("characters.create", None, b"{}", mode)
+            .await
+            .unwrap_err();
+        assert_eq!(err.status, opsapi::Status::Internal);
+        assert_eq!(dials.load(Ordering::SeqCst), 1, "no stream-local redial ({mode:?})");
+        assert_eq!(closes.load(Ordering::SeqCst), 0, "stream-local keeps conn ({mode:?})");
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "no stream-local replay ({mode:?})");
+    }
 }
 
 /// `close` drops and closes the cached connection.
@@ -193,59 +262,185 @@ async fn unsafe_failure_resets_without_replaying_and_next_request_redials() {
     assert_eq!(calls.load(Ordering::SeqCst), 2);
 }
 
-/// A fake dialer whose dial #0 conn fails with `first_status` and every later
-/// dial's conn fails with `second_status` — for exercising a DIFFERENT status on
-/// the replay than on the first attempt (a definitive second answer must keep the
-/// fresh connection, even though the first attempt was a transport failure).
-struct TwoStatusDialer {
+/// A fake dialer whose dial #0 connection fails one way and every later connection
+/// fails another, so replay behavior can be tested independently of mapped status.
+struct TwoFailureDialer {
     dials: Arc<AtomicUsize>,
     closes: Arc<AtomicUsize>,
     calls: Arc<AtomicUsize>,
-    first_status: opsapi::Status,
-    second_status: opsapi::Status,
+    first: FakeFailure,
+    second: FakeFailure,
 }
 
 #[async_trait]
-impl Dialer for TwoStatusDialer {
+impl Dialer for TwoFailureDialer {
     async fn dial(&self) -> Result<Arc<dyn Conn>, Error> {
         let n = self.dials.fetch_add(1, Ordering::SeqCst);
-        let status = if n == 0 { self.first_status } else { self.second_status };
+        let failure = if n == 0 { self.first } else { self.second };
         Ok(Arc::new(FakeConn {
             ok: false,
-            status,
+            failure,
             closes: self.closes.clone(),
             calls: self.calls.clone(),
         }))
     }
 }
 
-/// The first attempt fails `Unavailable` (a transport fault — reset, redial); the
-/// replay on the fresh connection fails `NotFound` (a DEFINITIVE answer). The
-/// mirrored guard on the second-attempt arm must keep c2 cached: only c1 (the
-/// genuinely dead connection) is reset, and the final error surfaces as NotFound.
+/// A fatal first attempt triggers the one replay. If c2 then reports a stream-local
+/// failure or peer answer, it stays cached; a following request reuses it without a
+/// third dial. Statuses are deliberately varied to prove provenance is authoritative.
 #[tokio::test]
-async fn definitive_second_attempt_keeps_healthy_connection() {
+async fn nonfatal_second_attempt_keeps_fresh_connection_cached() {
+    for second in [
+        FakeFailure {
+            status: opsapi::Status::Internal,
+            provenance: FailureProvenance::StreamLocal,
+        },
+        FakeFailure {
+            status: opsapi::Status::NotFound,
+            provenance: FailureProvenance::PeerAnswer,
+        },
+    ] {
+        let dials = Arc::new(AtomicUsize::new(0));
+        let closes = Arc::new(AtomicUsize::new(0));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let r = Reconnecting::new(TwoFailureDialer {
+            dials: dials.clone(),
+            closes: closes.clone(),
+            calls: calls.clone(),
+            first: FakeFailure {
+                status: opsapi::Status::Unavailable,
+                provenance: FailureProvenance::ConnectionFatal,
+            },
+            second,
+        });
+        let err = r
+            .call("characters.ownerOf", None, b"{}", RetryMode::OnceAfterReconnect)
+            .await
+            .unwrap_err();
+        assert_eq!(err.status, second.status);
+        assert_eq!(dials.load(Ordering::SeqCst), 2, "initial dial plus one reconnect");
+        assert_eq!(closes.load(Ordering::SeqCst), 1, "only fatal c1 closes");
+
+        let again = r
+            .call("characters.ownerOf", None, b"{}", RetryMode::Never)
+            .await
+            .unwrap_err();
+        assert_eq!(again.status, second.status);
+        assert_eq!(dials.load(Ordering::SeqCst), 2, "following call reuses c2");
+        assert_eq!(closes.load(Ordering::SeqCst), 1);
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+    }
+}
+
+/// One coordinated fake connection represents concurrent QUIC streams without
+/// duplicating a transport fixture: one call parks while another fails stream-locally.
+/// The parked call and a follow-up call must both retain the same cached connection.
+struct CoordinatedConn {
+    closes: Arc<AtomicUsize>,
+    calls: Arc<AtomicUsize>,
+    parked: Arc<tokio::sync::Semaphore>,
+    release: Arc<tokio::sync::Semaphore>,
+}
+
+#[async_trait]
+impl Conn for CoordinatedConn {
+    async fn call(
+        &self,
+        method: &str,
+        _identity: Option<&str>,
+        _payload: &[u8],
+    ) -> Result<Vec<u8>, CallFailure> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        match method {
+            "park" => {
+                self.parked.add_permits(1);
+                self.release
+                    .acquire()
+                    .await
+                    .expect("test release semaphore stays open")
+                    .forget();
+                Ok(b"parked-ok".to_vec())
+            }
+            "stream-local" => Err(CallFailure {
+                mapped: Error::unavailable("fake stream cancelled"),
+                provenance: FailureProvenance::StreamLocal,
+            }),
+            _ => Ok(b"ok".to_vec()),
+        }
+    }
+
+    fn close(&self) {
+        self.closes.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+struct CoordinatedDialer {
+    dials: Arc<AtomicUsize>,
+    conn: Arc<CoordinatedConn>,
+}
+
+#[async_trait]
+impl Dialer for CoordinatedDialer {
+    async fn dial(&self) -> Result<Arc<dyn Conn>, Error> {
+        self.dials.fetch_add(1, Ordering::SeqCst);
+        Ok(self.conn.clone())
+    }
+}
+
+#[tokio::test]
+async fn stream_local_failure_preserves_concurrent_call_and_cached_connection() {
     let dials = Arc::new(AtomicUsize::new(0));
     let closes = Arc::new(AtomicUsize::new(0));
     let calls = Arc::new(AtomicUsize::new(0));
-    let r = Reconnecting::new(TwoStatusDialer {
-        dials: dials.clone(),
+    let parked_signal = Arc::new(tokio::sync::Semaphore::new(0));
+    let release = Arc::new(tokio::sync::Semaphore::new(0));
+    let conn = Arc::new(CoordinatedConn {
         closes: closes.clone(),
         calls: calls.clone(),
-        first_status: opsapi::Status::Unavailable,
-        second_status: opsapi::Status::NotFound,
+        parked: parked_signal.clone(),
+        release: release.clone(),
     });
-    let err = r
-        .call("characters.ownerOf", None, b"{}", RetryMode::OnceAfterReconnect)
+    let reconnecting = Arc::new(Reconnecting::new(CoordinatedDialer {
+        dials: dials.clone(),
+        conn,
+    }));
+
+    let parked = tokio::spawn({
+        let reconnecting = reconnecting.clone();
+        async move { reconnecting.call("park", None, b"{}", RetryMode::Never).await }
+    });
+    parked_signal
+        .acquire()
+        .await
+        .expect("parked signal semaphore stays open")
+        .forget();
+
+    let failure = reconnecting
+        .call(
+            "stream-local",
+            None,
+            b"{}",
+            RetryMode::OnceAfterReconnect,
+        )
         .await
         .unwrap_err();
-    assert_eq!(err.status, opsapi::Status::NotFound, "the definitive replay answer surfaces");
-    assert_eq!(dials.load(Ordering::SeqCst), 2, "one initial dial + one retry, no more");
+    assert_eq!(failure.status, opsapi::Status::Unavailable);
+    assert_eq!(dials.load(Ordering::SeqCst), 1);
+    assert_eq!(closes.load(Ordering::SeqCst), 0);
+
+    release.add_permits(1);
+    assert_eq!(parked.await.unwrap().unwrap(), b"parked-ok");
     assert_eq!(
-        closes.load(Ordering::SeqCst),
-        1,
-        "only c1 (transport failure) was reset; c2 (definitive answer) stays cached"
+        reconnecting
+            .call("after", None, b"{}", RetryMode::Never)
+            .await
+            .unwrap(),
+        b"ok"
     );
+    assert_eq!(dials.load(Ordering::SeqCst), 1, "follow-up reuses shared connection");
+    assert_eq!(closes.load(Ordering::SeqCst), 0);
+    assert_eq!(calls.load(Ordering::SeqCst), 3);
 }
 
 // ---- The injected-factory swap: register runs every factory --------------

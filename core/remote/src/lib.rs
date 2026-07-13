@@ -36,10 +36,10 @@
 //! ## The reconnecting caller
 //! [`Reconnecting`] is a self-healing [`opsapi::Caller`]: it dials the peer LAZILY on
 //! first use, holds the connection for reuse (persistent conn, stream-per-call), and
-//! on a *transport* error always drops the connection (a definitive peer answer —
-//! `opsapi::Status::is_definitive_answer` — keeps it), but replays only methods
+//! on a proven connection-fatal error drops the connection, but replays only methods
 //! explicitly marked retry-safe; mutations return the first error and the next
-//! request redials.
+//! request redials. Stream-local failures and peer answers preserve the shared
+//! connection and are never replayed.
 //! A dial failure — the peer is down — propagates to
 //! the consumer, which maps it to a 503. The retry logic is generic over a private
 //! [`Dialer`]/[`Conn`] seam so it is unit-testable with a fake transport (no QUIC).
@@ -119,9 +119,27 @@ impl RemoteBoot {
 
 /// One live connection to a peer: makes a single RPC, or is closed. The real impl is
 /// [`edge::Client`]; the tests use a fake.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FailureProvenance {
+    ConnectionFatal,
+    StreamLocal,
+    PeerAnswer,
+}
+
+#[derive(Debug)]
+struct CallFailure {
+    mapped: Error,
+    provenance: FailureProvenance,
+}
+
 #[async_trait]
 trait Conn: Send + Sync {
-    async fn call(&self, method: &str, identity: Option<&str>, payload: &[u8]) -> Result<Vec<u8>, Error>;
+    async fn call(
+        &self,
+        method: &str,
+        identity: Option<&str>,
+        payload: &[u8],
+    ) -> Result<Vec<u8>, CallFailure>;
     fn close(&self);
 }
 
@@ -133,9 +151,9 @@ trait Dialer: Send + Sync {
 }
 
 /// A lazily-dialed, self-healing [`Caller`] over a [`Dialer`]. Holds at most one live
-/// connection; on a *transport* error it drops that connection and follows the call's
-/// fail-closed [`RetryMode`] (a definitive peer answer keeps the connection — see
-/// [`Caller::call`] below). Generic over `D` purely so tests can inject a fake dialer.
+/// connection; only a proven connection-fatal error drops that connection and follows
+/// the call's fail-closed [`RetryMode`]. Generic over `D` purely so tests can inject a
+/// fake dialer.
 struct Reconnecting<D: Dialer> {
     dialer: D,
     /// The cached live connection, or `None` before the first dial / after a reset.
@@ -185,16 +203,13 @@ impl<D: Dialer> Reconnecting<D> {
 
 #[async_trait]
 impl<D: Dialer> Caller for Reconnecting<D> {
-    /// One RPC. A *transport* failure always invalidates the cached connection; a
-    /// DEFINITIVE peer answer ([`opsapi::Status::is_definitive_answer`], e.g. the
-    /// typed unknown-method → `NotFound`) proves the connection is healthy and is
-    /// returned as-is — no reset, no redial, regardless of `retry_mode`. Only an
-    /// explicit [`RetryMode::OnceAfterReconnect`] redials and replays once; the
-    /// default [`RetryMode::Never`] returns the first error without replaying a
-    /// mutation. The SAME definitive-answer guard applies to the replay on the
-    /// fresh connection: if it too answers definitively, that connection is proven
-    /// healthy and is kept cached, unreset. Only a non-definitive replay failure
-    /// resets the fresh connection too — a dead c2 must not stay cached.
+    /// One RPC. Only [`FailureProvenance::ConnectionFatal`] invalidates the cached
+    /// connection. Stream-local failures and peer answers return as-is without reset,
+    /// redial, or replay regardless of `retry_mode`. After a proven fatal failure,
+    /// [`RetryMode::Never`] returns without replaying, while
+    /// [`RetryMode::OnceAfterReconnect`] redials and replays at most once. A fatal
+    /// replay failure resets the fresh connection too; a stream-local or peer-answer
+    /// replay failure leaves it cached.
     async fn call(
         &self,
         method: &str,
@@ -205,27 +220,25 @@ impl<D: Dialer> Caller for Reconnecting<D> {
         let c = self.get().await?;
         match c.call(method, identity, payload).await {
             Ok(v) => Ok(v),
-            // A definitive peer answer: the peer received and answered the request,
-            // so the connection is healthy — keep it cached. Reset stays the DEFAULT
-            // for everything else (Unavailable, Internal, any future status).
-            Err(first) if first.status.is_definitive_answer() => Err(first),
+            Err(first) if first.provenance != FailureProvenance::ConnectionFatal => {
+                Err(first.mapped)
+            }
             Err(first) => {
                 self.reset(&c).await;
                 if retry_mode == RetryMode::Never {
-                    return Err(first);
+                    return Err(first.mapped);
                 }
                 let c2 = self.get().await?;
                 match c2.call(method, identity, payload).await {
                     Ok(v) => Ok(v),
-                    // Mirrors the first-attempt guard above: a definitive answer on
-                    // the replay proves c2 is healthy too — keep it cached.
-                    Err(second) if second.status.is_definitive_answer() => Err(second),
+                    Err(second) if second.provenance != FailureProvenance::ConnectionFatal => {
+                        Err(second.mapped)
+                    }
                     Err(second) => {
-                        // The replayed connection failed (non-definitively) too —
-                        // invalidate it so the NEXT request redials instead of
-                        // reusing a dead c2.
+                        // The replayed connection failed fatally too — invalidate it
+                        // so the NEXT request redials instead of reusing a dead c2.
                         self.reset(&c2).await;
-                        Err(second)
+                        Err(second.mapped)
                     }
                 }
             }
@@ -259,13 +272,34 @@ impl Dialer for EdgeDialer {
     }
 }
 
+fn map_edge_call_failure(failure: edge::Error) -> CallFailure {
+    let provenance = match &failure {
+        edge::Error::Connection(_) => FailureProvenance::ConnectionFatal,
+        edge::Error::Remote(_) | edge::Error::UnknownMethod(_) => {
+            FailureProvenance::PeerAnswer
+        }
+        _ => FailureProvenance::StreamLocal,
+    };
+    CallFailure {
+        mapped: Error::from(failure),
+        provenance,
+    }
+}
+
 #[async_trait]
 impl Conn for edge::Client {
-    async fn call(&self, method: &str, identity: Option<&str>, payload: &[u8]) -> Result<Vec<u8>, Error> {
-        // The edge client stamps `identity` into the request envelope; a transport
-        // failure (an `edge::Error`) becomes an `opsapi::Error::Unavailable`. A domain
-        // status rides INSIDE the payload the generated `Client` decodes — not here.
-        self.call_raw_id(method, identity, payload).await.map_err(Error::from)
+    async fn call(
+        &self,
+        method: &str,
+        identity: Option<&str>,
+        payload: &[u8],
+    ) -> Result<Vec<u8>, CallFailure> {
+        // Classify while the concrete edge cause is still available. Mapping to
+        // opsapi erases this distinction (`Remote` and stream failures both become
+        // Unavailable), so mapped status must never drive reset/replay decisions.
+        self.call_raw_id(method, identity, payload)
+            .await
+            .map_err(map_edge_call_failure)
     }
 
     fn close(&self) {
