@@ -163,6 +163,59 @@ fn body_shapes_exclude_path_wildcards_but_keep_body_keys() {
     );
 }
 
+/// The Option-None tripwire's text scan: a real `pub <name>: Option<` field is found;
+/// an `Option<` inside a doc comment or a non-Option field is not (the same
+/// comment-filtered no-lexer tolerance as parse_define_sites).
+#[test]
+fn scan_option_fields_finds_real_fields_and_skips_comments() {
+    let text = "\
+/// This doc mentions Option<String> in prose -- a phantom, must be skipped.
+// pub commented_out: Option<String>,
+pub struct Payload {
+    pub required: String,
+    pub maybe: Option<String>,
+    pub also_maybe: Option<i64>,
+}
+";
+    let fields = scan_option_fields(text);
+    assert_eq!(
+        fields,
+        BTreeSet::from(["maybe".to_string(), "also_maybe".to_string()]),
+        "exactly the two real Option fields, no comment phantoms"
+    );
+}
+
+/// The tripwire's failing branch, executed on a fixture: an Option field whose crate
+/// samples never carry it as None yields a per-field message naming crate and field;
+/// adding a None sample clears it.
+#[test]
+fn option_none_gaps_flags_an_option_field_with_no_null_sample() {
+    let fields = BTreeSet::from(["maybe".to_string()]);
+    // Only a populated sample -- the None case is uncovered.
+    let populated = vec![("x.topic", 1u32, serde_json::json!({ "maybe": "v", "req": "r" }))];
+    let gaps = option_none_gaps("fixture", &fields, &populated);
+    assert_eq!(gaps.len(), 1, "exactly one gap: {gaps:?}");
+    assert!(
+        gaps[0].contains("api/fixture/events") && gaps[0].contains("`maybe`"),
+        "gap message must name the crate and field: {gaps:?}"
+    );
+
+    // With a second None-carrying sample the gap closes.
+    let with_null = vec![
+        ("x.topic", 1u32, serde_json::json!({ "maybe": "v", "req": "r" })),
+        ("x.topic", 1u32, serde_json::json!({ "maybe": null, "req": "r" })),
+    ];
+    assert!(option_none_gaps("fixture", &fields, &with_null).is_empty());
+}
+
+/// The gate-path tripwire passes on the real tree: the only Option field across all
+/// events crates (configevents::Changed.value) has its None sample.
+#[test]
+fn self_check_option_none_samples_passes_on_real_crate() {
+    self_check_option_none_samples()
+        .expect("every Option payload field must have a None-covering golden sample");
+}
+
 /// Step 5b, item 1 — the Option-None convention materializes: config.changed carries a
 /// delete-shaped sample with `value: None`, so BOTH the Some-shape (`value:string`) and
 /// the None-shape (`value:null`) are pinned lines. (The compile-coupling half — the

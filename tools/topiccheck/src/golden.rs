@@ -179,16 +179,127 @@ fn rpc_modules() -> Vec<(
 /// `T` would leave the gate green over retained `null` JSON — the `None` literal makes
 /// that demotion a compile error instead. Today the only Option field across all 6
 /// events crates is `configevents::Changed.value` (two samples: update/Some,
-/// delete/None).
+/// delete/None). The convention is ENFORCED mechanically by
+/// [`self_check_option_none_samples`] on the gate path.
+///
+/// Keyed by the `api/<dir>` name so the Option-None tripwire can associate the fields
+/// its filesystem scan finds in `api/<dir>/events/src/lib.rs` with THIS crate's samples.
+fn event_samples_by_crate() -> Vec<(&'static str, Vec<(&'static str, u32, serde_json::Value)>)> {
+    vec![
+        ("accounts", accountsevents::golden_samples()),
+        ("characters", charactersevents::golden_samples()),
+        ("config", configevents::golden_samples()),
+        ("match", matchevents::golden_samples()),
+        ("scheduler", schedulerevents::golden_samples()),
+        ("admin", adminevents::golden_samples()),
+    ]
+}
+
 fn event_samples() -> Vec<(&'static str, u32, serde_json::Value)> {
-    let mut all = Vec::new();
-    all.extend(accountsevents::golden_samples());
-    all.extend(charactersevents::golden_samples());
-    all.extend(configevents::golden_samples());
-    all.extend(matchevents::golden_samples());
-    all.extend(schedulerevents::golden_samples());
-    all.extend(adminevents::golden_samples());
-    all
+    event_samples_by_crate().into_iter().flat_map(|(_, samples)| samples).collect()
+}
+
+/// Text-scan tripwire input (the `parse_define_sites` pattern — comment-filtered line
+/// scan, NO lexer): every field declared `pub <name>: Option<` on one line. The same
+/// documented tolerance as the define-site scan applies: a `//`-leading line is
+/// skipped (so `Option<` in a doc comment is not a phantom hit), and a multi-line
+/// field declaration or a `#[serde(rename)]`d Option field (whose sample key would
+/// differ from the Rust name) is out of scope — neither exists in any events crate
+/// today, and introducing one lands here as a loud false-fail to resolve consciously,
+/// not a silent pass.
+fn scan_option_fields(text: &str) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    for line in text.lines() {
+        let t = line.trim_start();
+        if t.starts_with("//") {
+            continue;
+        }
+        let Some(rest) = t.strip_prefix("pub ") else { continue };
+        let Some((name, ty)) = rest.split_once(':') else { continue };
+        let name = name.trim();
+        if ty.trim_start().starts_with("Option<")
+            && !name.is_empty()
+            && name.chars().all(|c| c.is_alphanumeric() || c == '_')
+        {
+            out.insert(name.to_string());
+        }
+    }
+    out
+}
+
+/// The pure core of the Option-None tripwire: for one crate's scanned Option fields,
+/// require that flattening the crate's samples yields a `…<field>:null` leaf for each —
+/// i.e. at least one sample carries the field as `None`. Returns per-field gap messages.
+fn option_none_gaps(
+    crate_dir: &str,
+    option_fields: &BTreeSet<String>,
+    samples: &[(&'static str, u32, serde_json::Value)],
+) -> Vec<String> {
+    let mut leaves = BTreeSet::new();
+    for (_, _, v) in samples {
+        flatten_shape("payload", v, &mut leaves);
+    }
+    option_fields
+        .iter()
+        .filter(|f| {
+            let needle = format!(".{f}:null");
+            !leaves.iter().any(|l| l.ends_with(&needle))
+        })
+        .map(|f| {
+            format!(
+                "events crate api/{crate_dir}/events field `{f}` is Option but no golden \
+                 sample covers its None case -- add a None-populated sample to that \
+                 crate's golden_samples()"
+            )
+        })
+        .collect()
+}
+
+/// Gate-path enforcement of the Option-None convention (Step 5b follow-up): the
+/// convention was previously prose-only, so the NEXT Option field added to any events
+/// crate would silently reopen the Option→T blindness. This scans every
+/// `api/*/events/src/lib.rs` for `pub <name>: Option<` fields and fails the run with a
+/// per-field fix unless that crate's samples pin the field's `:null` shape. A crate
+/// with Option fields that is missing from [`event_samples_by_crate`] is itself a
+/// finding.
+fn self_check_option_none_samples() -> anyhow::Result<()> {
+    let by_crate: std::collections::BTreeMap<&str, Vec<(&'static str, u32, serde_json::Value)>> =
+        event_samples_by_crate().into_iter().collect();
+    let api_root = workspace_root().join("api");
+    let mut findings = Vec::new();
+    for entry in std::fs::read_dir(&api_root)? {
+        let dir = entry?.path();
+        let lib = dir.join("events").join("src").join("lib.rs");
+        let Ok(text) = std::fs::read_to_string(&lib) else {
+            continue; // domain has no events crate -- nothing to scan
+        };
+        let fields = scan_option_fields(&text);
+        if fields.is_empty() {
+            continue;
+        }
+        let dir_name = dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(str::to_string)
+            .ok_or_else(|| anyhow::anyhow!("non-utf8 dir name under {}", api_root.display()))?;
+        match by_crate.get(dir_name.as_str()) {
+            Some(samples) => findings.extend(option_none_gaps(&dir_name, &fields, samples)),
+            None => findings.push(format!(
+                "api/{dir_name}/events declares Option payload fields but is missing from \
+                 event_samples_by_crate() -- add its golden_samples() to \
+                 tools/topiccheck/src/golden.rs"
+            )),
+        }
+    }
+    if findings.is_empty() {
+        Ok(())
+    } else {
+        anyhow::bail!(
+            "contract-golden: Option-None sample convention violated (fix before any diff \
+             runs):\n  {}",
+            findings.join("\n  ")
+        )
+    }
 }
 
 /// Flattens a serialized sample into stable `<prefix>.<serde-key>:<type>` leaf lines —
@@ -385,10 +496,11 @@ pub fn live_lines() -> anyhow::Result<BTreeSet<String>> {
             c.topic, c.version
         ));
     }
-    // Durable-event payload wire shapes (Step 5). The didn't-forget check runs first so
-    // a newly-defined topic without a populated sample fails HERE with a per-entry fix,
-    // not as a silently-thin golden.
+    // Durable-event payload wire shapes (Step 5). The didn't-forget checks run first so
+    // a newly-defined topic without a populated sample — or a new Option field without
+    // a None sample — fails HERE with a per-entry fix, not as a silently-thin golden.
     self_check_event_samples()?;
+    self_check_option_none_samples()?;
     for (topic, version, value) in event_samples() {
         let mut shape = BTreeSet::new();
         flatten_shape("payload", &value, &mut shape);
