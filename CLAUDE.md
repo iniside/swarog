@@ -710,14 +710,15 @@ configurable interval, cargo-audit network failure reported as green SKIP
 (`b78444f`), scheduler budget starvation (`addc824`), conformance `NotApplicable`
 hiding a known gap. None of these required new information to catch — only hostility.
 
-**Run this as the `core-reviewer` agent** (`.claude/agents/core-reviewer.md`,
-`subagent_type: "core-reviewer"`) — class-keyed to
-`docs/reference/core-failure-taxonomy.md` and routed by the files the diff touches —
-not a generic reviewer; it is the reliable local second-independent-reviewer. When the
-diff adds/changes tests or a verify stage (verifyctl/archcheck/conformance/topiccheck/
-golden), ALSO run the **`proof-auditor` agent** (`.claude/agents/proof-auditor.md`),
-which attacks whether the proof covers the *failing* branch and whether a gate can see
-what it gates. Dispatch each at a `model:` ≥ the implementer's tier.
+**Run ONE independent pass as the `core-reviewer` agent**
+(`subagent_type: "core-reviewer"`) — class-keyed to
+`docs/reference/core-failure-taxonomy.md`, routed by the files the diff touches, a
+different method than the implementer used, at a `model:` ≥ the implementer's tier. Add
+the **`proof-auditor` agent** ONLY when the diff touches a verify stage
+(verifyctl/archcheck/conformance/topiccheck/golden) or the test/gate is itself the risk
+surface — NOT for an ordinary fix that merely adds a unit test (`core-reviewer` already
+checks the negative test hits the failing branch). This is one independent pass, not a
+stack of mandatory review layers.
 
 For EVERY diff accepted from a subagent (and every `[inline]` fix before commit):
 
@@ -739,8 +740,10 @@ For EVERY diff accepted from a subagent (and every `[inline]` fix before commit)
    are fixed in a reviewed follow-up) — never silently absorbed with an "acceptable"
    shrug.
 
-A zero-findings review of a non-trivial diff is a signal to re-review, not a clean
-bill.
+A clean verdict is valid — but it must enumerate the classes attacked for the files
+touched; a clean bill with no class list is not done. One pass by a method different
+from the implementer's, then the verdict stands — do not loop reviews to manufacture
+findings (that recreates the very fix-on-fix carousel the agents exist to end).
 
 ## Agent memory backup — MANDATORY
 
