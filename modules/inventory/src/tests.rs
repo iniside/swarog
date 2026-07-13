@@ -157,6 +157,26 @@ async fn dev_grant_on_lets_grant_reach_validation() {
     );
 }
 
+/// `validate_quantity` is THE quantity-policy authority: it accepts exactly
+/// `1..=MAX_HOLDING_QTY` and rejects everything else. Pins each boundary so a
+/// future edit to the one gate can't silently widen or narrow it. No DB.
+#[test]
+fn validate_quantity_boundaries() {
+    assert!(validate_quantity(0).is_err(), "zero is a no-op grant — rejected");
+    assert!(validate_quantity(-1).is_err(), "negative — rejected");
+    assert_eq!(validate_quantity(1).unwrap(), 1, "the smallest legit grant");
+    assert_eq!(
+        validate_quantity(MAX_HOLDING_QTY).unwrap(),
+        MAX_HOLDING_QTY,
+        "the cap itself is inclusive"
+    );
+    assert!(validate_quantity(MAX_HOLDING_QTY + 1).is_err(), "one over the cap — rejected");
+    assert!(
+        validate_quantity(i64::MAX).is_err(),
+        "the value that overflowed the old int4 column (22003) — rejected before the DB"
+    );
+}
+
 // ---- Live Postgres integration ----------------------------------------
 
 async fn test_pool() -> Option<PgPool> {
@@ -696,4 +716,147 @@ async fn concurrent_grant_and_wipe_serialize_on_advisory_lock() {
     assert!(tombstone_exists(&pool, &cid).await, "the wipe must have planted the tombstone");
 
     cleanup_owner(&pool, &cid).await;
+}
+
+/// (g) Posture B (HTTP IAP): `Holdings::grant` REJECTS an out-of-range qty as
+/// Invalid (400) — never a DB error — and accepts the cap. Pins the client-facing
+/// posture (contrast the durable-subscription degrade in posture A). i64::MAX is the
+/// value that used to 500 on the int4 overflow; now it's a clean 400 before any DB
+/// touch. The `MAX_HOLDING_QTY` accept path exercises the real store insert.
+#[tokio::test]
+async fn grant_http_rejects_out_of_range_qty() {
+    let Some(pool) = test_pool().await else { return };
+    ensure_schema(&pool).await;
+    let pid = unique_uuid(&pool).await;
+    // dev_grant defaults ON in inner_with, so grant reaches its input validation.
+    let inner = inner_with(pool.clone(), Arc::new(FakeConfig::new(STARTER_ITEM, STARTER_QTY)));
+
+    // i64::MAX — the overflow value — is rejected as Invalid, NOT an internal/DB error.
+    let e = inner
+        .grant(Identity::player(&pid), "coin".into(), i64::MAX)
+        .await
+        .unwrap_err();
+    assert_eq!(e.status, Status::Invalid, "i64::MAX qty must be a 400, never a DB error");
+
+    // One over the app cap — same client-facing rejection.
+    let e = inner
+        .grant(Identity::player(&pid), "coin".into(), MAX_HOLDING_QTY + 1)
+        .await
+        .unwrap_err();
+    assert_eq!(e.status, Status::Invalid, "qty just over MAX_HOLDING_QTY must be a 400");
+
+    // The cap itself is accepted and actually lands (within the DB CHECK's 2_000_000).
+    let holdings = inner
+        .grant(Identity::player(&pid), "coin".into(), MAX_HOLDING_QTY)
+        .await
+        .expect("qty == MAX_HOLDING_QTY must succeed");
+    assert_eq!(holdings.len(), 1);
+    assert_eq!(holdings[0].item_id, "coin");
+    assert_eq!(holdings[0].quantity, MAX_HOLDING_QTY);
+
+    cleanup_owner(&pool, &pid).await;
+}
+
+/// (h) THE POISON BRANCH, through the REAL delivery path: an out-of-range
+/// `starter_qty` (2147483648 — 2^31, which overflowed the old int4 column to
+/// SQLSTATE 22003 inside the delivery tx) must DEGRADE to `STARTER_QTY` and the
+/// starter grant must LAND, so `inventory.character-created.v1` is NOT poison-paused.
+/// Same end-to-end harness as `grant_on_created_via_on_tx`: real asyncevents plane,
+/// real on_tx(CREATED), emit a durable Created, poll for the grant. On pre-fix code
+/// the delivery raises 22003 and pauses the subscription — that's the branch pinned.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn starter_qty_out_of_range_degrades_to_default() {
+    let Some(pool) = test_pool().await else { return };
+    ensure_schema(&pool).await;
+
+    let dsn = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string());
+    let mut plane = asyncevents::Plane::new(pool.clone(), dsn).unwrap();
+    let ctx = Context::with_db_and_transport(pool.clone(), plane.transport());
+
+    ctx.registry().provide::<dyn Ownership>(
+        key("characters", "ownership"),
+        Arc::new(FakeOwnership::Miss) as Arc<dyn Ownership>,
+    );
+    // 2^31 — a value the old int4 quantity column could not hold. It exceeds
+    // MAX_HOLDING_QTY, so posture A degrades it to STARTER_QTY on the read path.
+    ctx.registry().provide::<dyn Config>(
+        key("config", "reader"),
+        Arc::new(FakeConfig::new(STARTER_ITEM, 2_147_483_648)) as Arc<dyn Config>,
+    );
+
+    let inv = Inventory::new();
+    inv.register(&ctx).unwrap();
+    inv.init(&ctx).unwrap();
+    plane.start().await.unwrap();
+
+    let cid = unique_uuid(&pool).await;
+    let pid = unique_uuid(&pool).await;
+
+    let mut tx = pool.begin().await.unwrap();
+    let created = charactersevents::Created {
+        character_id: cid.clone(),
+        player_id: pid,
+        name: "Faramir".into(),
+        class: "novice".into(),
+    };
+    ctx.bus()
+        .emit_tx(AnyTx::new(&mut *tx), &charactersevents::CREATED, &created)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    // The grant landing (not pausing) IS the proof the subscription survived the
+    // out-of-range config value — and it lands at the degraded default qty.
+    let mut granted = false;
+    for _ in 0..50 {
+        let holdings = inv.inner().store.list(&Owner::character(&cid)).await.unwrap();
+        if !holdings.is_empty() {
+            assert_eq!(holdings[0].item_id, STARTER_ITEM);
+            assert_eq!(
+                holdings[0].quantity, STARTER_QTY,
+                "out-of-range starter_qty must degrade to the default, not poison the delivery"
+            );
+            granted = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(
+        granted,
+        "starter grant did not land — an out-of-range starter_qty poison-paused the subscription"
+    );
+
+    plane.stop().await;
+    cleanup_owner(&pool, &cid).await;
+    let _ = asyncevents::testing::cleanup_events(&pool, "character_id", &cid).await;
+}
+
+/// (i) The DB CHECK is the DEEPER authority: a raw sqlx INSERT (exactly what a `psql`
+/// edit does, bypassing every service-side `validate_quantity`) with a quantity above
+/// the 2_000_000 CHECK ceiling is refused by Postgres with SQLSTATE 23514 (check
+/// violation). Pins the DDL authority — the guard that covers writers the Rust policy
+/// fn never sees.
+#[tokio::test]
+async fn raw_sql_insert_above_check_is_rejected() {
+    let Some(pool) = test_pool().await else { return };
+    ensure_schema(&pool).await;
+    let oid = unique_uuid(&pool).await;
+
+    let err = sqlx::query(
+        "INSERT INTO inventory.holdings (owner_type, owner_id, item_id, quantity) \
+         VALUES ('player', $1::uuid, 'coin', 2000001)",
+    )
+    .bind(&oid)
+    .execute(&pool)
+    .await
+    .expect_err("a quantity above the DB CHECK ceiling must be rejected");
+
+    let code = err
+        .as_database_error()
+        .and_then(|d| d.code())
+        .map(|c| c.into_owned())
+        .unwrap_or_default();
+    assert_eq!(code, "23514", "must be a CHECK-constraint violation (23514), not a silent write");
+
+    cleanup_owner(&pool, &oid).await;
 }

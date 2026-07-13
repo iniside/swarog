@@ -38,9 +38,15 @@ const ADMIN_LABEL: &str = "Inventory";
 const ADMIN_OWNERS_LIMIT: i64 = 200;
 
 /// Creates this module's OWN schema and nothing else — full logical isolation (#10).
-/// Idempotent. Verbatim from Go's `schemaDDL`: `holdings.owner_id` is a plain `uuid`
-/// ref to a player/character with NO cross-module FK; `holdings.item_id` DOES carry
-/// the in-module FK to `items(id)`; `quantity` is CHECK'd non-negative.
+/// Idempotent. `holdings.owner_id` is a plain `uuid` ref to a player/character with
+/// NO cross-module FK; `holdings.item_id` DOES carry the in-module FK to `items(id)`.
+/// `quantity` is `bigint` (matches the i64 the config knob + HTTP grant op carry —
+/// an `int4` column overflowed to SQLSTATE 22003 inside the delivery tx and
+/// poison-paused `inventory.character-created.v1`) and CHECK-bounded to
+/// `0..=2_000_000`: the DB CHECK is the authority (it covers a raw `psql` writer too,
+/// same doctrine as scheduler's DB-side guards), and its ceiling sits at 2x the
+/// app-level `MAX_HOLDING_QTY` single-grant cap because the CHECK bounds accumulated
+/// STATE (the `ON CONFLICT` sum) while the policy bounds one grant.
 const SCHEMA_DDL: &str = r#"
 CREATE SCHEMA IF NOT EXISTS inventory;
 
@@ -59,7 +65,7 @@ CREATE TABLE IF NOT EXISTS inventory.holdings (
 	owner_type text NOT NULL,                 -- 'player' | 'character'
 	owner_id   uuid NOT NULL,                 -- ref player/character id, no cross-module FK
 	item_id    text NOT NULL REFERENCES inventory.items(id),
-	quantity   int  NOT NULL CHECK (quantity >= 0),
+	quantity   bigint NOT NULL CHECK (quantity >= 0 AND quantity <= 2000000),
 	PRIMARY KEY (owner_type, owner_id, item_id)
 );
 CREATE INDEX IF NOT EXISTS holdings_owner_idx ON inventory.holdings(owner_type, owner_id);
@@ -150,6 +156,36 @@ impl Owner {
 // event-driven effect runs INSIDE the durable subscription delivery tx; reads use the pool.
 // ============================================================================
 
+/// Gameplay sanity cap on a SINGLE grant — a million-item stack is never a
+/// legitimate grant. The DB CHECK sits higher (2_000_000) because it bounds
+/// accumulated STATE (the `ON CONFLICT` sum of repeated grants), not one grant.
+const MAX_HOLDING_QTY: i64 = 1_000_000;
+
+/// Rejection from the one quantity-policy authority: the offending value.
+#[derive(Debug)]
+struct QuantityError(i64);
+
+impl std::fmt::Display for QuantityError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "quantity {} out of range (must be 1..={MAX_HOLDING_QTY})", self.0)
+    }
+}
+impl std::error::Error for QuantityError {}
+
+/// THE single quantity-policy authority. Every writer path routes its quantity
+/// through here (`grant_starter`'s config-driven grant, `Holdings::grant`'s HTTP
+/// IAP grant, and the `grant_exec` belt), so the decision of what is grantable
+/// lives in exactly one place — never re-derived at a call site. Enforces
+/// `0 < qty <= MAX_HOLDING_QTY`; the DB CHECK (`0..=2_000_000`) is the deeper
+/// authority that also covers a raw `psql` writer bypassing this function.
+fn validate_quantity(qty: i64) -> Result<i64, QuantityError> {
+    if qty > 0 && qty <= MAX_HOLDING_QTY {
+        Ok(qty)
+    } else {
+        Err(QuantityError(qty))
+    }
+}
+
 struct Store {
     pool: PgPool,
 }
@@ -173,6 +209,12 @@ impl Store {
         item_id: &str,
         qty: i64,
     ) -> Result<(), sqlx::Error> {
+        // Posture C (belt): the ONE shared writer refuses an out-of-policy quantity
+        // even if a future ingress path forgets to validate first. Both current
+        // callers (grant_starter via posture A, grant_pool via posture B) already
+        // validate, so on today's paths this never fires — it surfaces a programming
+        // error as an internal error, never a raw 22003/23514 from the DB.
+        validate_quantity(qty).map_err(|e| sqlx::Error::Protocol(e.to_string()))?;
         sqlx::query(
             "INSERT INTO inventory.holdings (owner_type, owner_id, item_id, quantity) \
              VALUES ($1, $2::uuid, $3, $4) \
@@ -363,17 +405,22 @@ impl Inner {
             );
             return Ok(());
         }
-        let (mut item, mut qty) = self.starter_spec();
-        if qty <= 0 {
-            // Negative would trip the holdings CHECK (quantity >= 0) — a poison;
-            // zero would be a silent no-op grant. Both degrade to the default.
+        let (mut item, cfg_qty) = self.starter_spec();
+        // Posture A (config-driven, DURABLE subscription): a bad admin value must
+        // NEVER poison inventory.character-created.v1 for every subsequent character.
+        // ANY validation failure — non-positive (negative would trip the CHECK, zero
+        // is a silent no-op) OR above the cap (a huge value overflowed the old int4
+        // column to SQLSTATE 22003 inside the delivery tx) — degrades to the compiled
+        // default with a warn, never a delivery failure. Contrast posture B in
+        // Holdings::grant, which rejects to the client (no checkpoint rides on it).
+        let qty = validate_quantity(cfg_qty).unwrap_or_else(|_| {
             tracing::warn!(
-                qty,
+                qty = cfg_qty,
                 default = STARTER_QTY,
-                "inventory: configured starter_qty invalid — using default"
+                "inventory: configured starter_qty out of range — using default"
             );
-            qty = STARTER_QTY;
-        }
+            STARTER_QTY
+        });
         if !self
             .store
             .item_exists_exec(&mut *conn, &item)
@@ -458,8 +505,9 @@ impl Holdings for Inner {
     }
 
     /// Adds `qty` of `item_id` to the caller's own inventory (simulated IAP). A
-    /// non-positive qty or an unknown item is Invalid (→ 400). Returns the updated
-    /// holdings, matching the old handler's respond-with-list behaviour.
+    /// non-positive or out-of-range qty, or an unknown item, is Invalid (→ 400).
+    /// Returns the updated holdings, matching the old handler's respond-with-list
+    /// behaviour.
     async fn grant(&self, identity: Identity, item_id: String, qty: i64) -> Result<Vec<Holding>, Error> {
         // The dev-grant gate, checked FIRST (before any input handling or DB touch):
         // the op is contributed/served unconditionally in both topologies, so this
@@ -471,9 +519,13 @@ impl Holdings for Inner {
             .player_id()
             .ok_or_else(|| Error::invalid("missing player identity"))?
             .to_string();
-        if qty <= 0 {
-            return Err(Error::invalid("qty must be positive"));
-        }
+        // Posture B (HTTP IAP): no durable checkpoint rides on the result, so an
+        // out-of-range qty is REJECTED to the caller as Invalid (400) — the client
+        // gets actionable feedback (previously a huge qty 500'd on the int4 overflow).
+        // Contrast posture A in grant_starter, which degrades to a default to protect
+        // the durable subscription.
+        let qty = validate_quantity(qty)
+            .map_err(|_| Error::invalid(format!("qty must be between 1 and {MAX_HOLDING_QTY}")))?;
         if !self.store.item_exists(&item_id).await.map_err(internal)? {
             return Err(Error::invalid("unknown item"));
         }
