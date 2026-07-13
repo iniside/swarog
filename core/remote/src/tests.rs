@@ -550,3 +550,139 @@ async fn probe_live_edge_reports_ready() {
 
     running.close();
 }
+
+// ---- Bounded RemoteBoot hooks (Step 11) -----------------------------------
+//
+// `Stub::start` used to await each `RemoteBoot` hook unbounded. A hung hook (e.g.
+// `configrpc`'s `CachedConfig` boot-fill against a peer that accepts the QUIC
+// connection but never answers the call) pinned process startup forever, and
+// because `App::start` awaits module starts sequentially, every module started
+// after the stub never got a chance to run either.
+//
+// The first test drives a REAL hanging peer: a live `edge::Server` whose handler
+// never resolves, called through a real `edge::Client` — the same await the
+// production defect crosses, not a bare closure fake. The crate's existing
+// `probe_peer` tests already establish this real-edge-server pattern is a normal,
+// cheap seam in this test module.
+
+/// A stub with a single `RemoteBoot` hook that makes a REAL edge call to a live
+/// server whose handler never completes. `start_with_boot_timeout` must return
+/// `Err` within a bound well short of the real hang, and the error must name both
+/// the provider and the timeout duration.
+#[tokio::test]
+async fn hung_boot_hook_times_out_naming_provider_and_bound() {
+    let ca = edge::shared_dev_ca().expect("shared dev CA");
+    let mut srv = edge::Server::new();
+    // A handler that never resolves — the stand-in for a peer that accepted the
+    // connection but is not answering.
+    srv.handle(
+        "hang",
+        Arc::new(|_payload: Vec<u8>| Box::pin(std::future::pending())),
+    );
+    let running = srv
+        .listen(std::net::SocketAddr::from(([127, 0, 0, 1], 0)), &ca)
+        .expect("listen on loopback");
+    let addr = running.local_addr();
+
+    let ctx = Context::new();
+    let boot_calls = Arc::new(AtomicUsize::new(0));
+    let hook_calls = boot_calls.clone();
+    ctx.contribute(
+        BOOT_SLOT,
+        RemoteBoot::new("hangy", move || {
+            let addr = addr;
+            let hook_calls = hook_calls.clone();
+            Box::pin(async move {
+                hook_calls.fetch_add(1, Ordering::SeqCst);
+                let client = edge::Client::dial(addr, &edge::shared_dev_ca().unwrap())
+                    .await
+                    .map_err(|e| anyhow::anyhow!("dial: {e}"))?;
+                client
+                    .call_raw("hang", b"{}")
+                    .await
+                    .map_err(|e| anyhow::anyhow!("call: {e}"))?;
+                Ok(())
+            })
+        }),
+    );
+
+    let stub = Stub::new("hangy", &addr.to_string(), vec![Box::new(|_ctx, _caller| {})]);
+    let short_bound = Duration::from_millis(200);
+
+    let started = std::time::Instant::now();
+    let err = stub
+        .start_with_boot_timeout(&ctx, short_bound)
+        .await
+        .unwrap_err();
+    let elapsed = started.elapsed();
+
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "the injected bound must fire, not the real (unbounded) hang: {elapsed:?}"
+    );
+    let msg = err.to_string();
+    assert!(msg.contains("hangy"), "error must name the provider: {msg}");
+    assert!(
+        msg.contains("200ms"),
+        "error must mention the configured timeout: {msg}"
+    );
+    assert_eq!(
+        boot_calls.load(Ordering::SeqCst),
+        1,
+        "the hook ran exactly once before hanging"
+    );
+
+    running.close();
+}
+
+/// A fast hook still runs exactly once and `start` succeeds — the timeout wrapper
+/// must not change the happy path.
+#[tokio::test]
+async fn fast_boot_hook_runs_once_and_succeeds() {
+    let ctx = Context::new();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let hook_calls = calls.clone();
+    ctx.contribute(
+        BOOT_SLOT,
+        RemoteBoot::new("fast", move || {
+            let hook_calls = hook_calls.clone();
+            Box::pin(async move {
+                hook_calls.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            })
+        }),
+    );
+
+    let stub = Stub::new("fast", "127.0.0.1:9000", vec![Box::new(|_ctx, _caller| {})]);
+    stub.start_with_boot_timeout(&ctx, Duration::from_secs(5))
+        .await
+        .unwrap();
+
+    assert_eq!(calls.load(Ordering::SeqCst), 1, "the hook ran exactly once");
+}
+
+/// A hook's own `Err` (not a timeout) keeps its existing context, unaffected by the
+/// new timeout wrapper.
+#[tokio::test]
+async fn failing_boot_hook_keeps_its_own_error_context() {
+    let ctx = Context::new();
+    ctx.contribute(
+        BOOT_SLOT,
+        RemoteBoot::new("broken", || {
+            Box::pin(async move { Err(anyhow::anyhow!("peer said no")) })
+        }),
+    );
+
+    let stub = Stub::new(
+        "broken",
+        "127.0.0.1:9000",
+        vec![Box::new(|_ctx, _caller| {})],
+    );
+    let err = stub
+        .start_with_boot_timeout(&ctx, Duration::from_secs(5))
+        .await
+        .unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("broken"), "{msg}");
+    assert!(format!("{err:#}").contains("peer said no"), "{err:#}");
+}

@@ -80,6 +80,21 @@ pub type RemoteFactory = Box<dyn Fn(&Context, Arc<dyn Caller>) + Send + Sync>;
 /// [`Stub::register`]) and each [`Stub`] drains in `start`.
 pub const BOOT_SLOT: contrib::Slot<RemoteBoot> = contrib::Slot::new("remote.boot");
 
+/// Upper bound on one [`RemoteBoot`] hook (Step 11). Deliberately generous compared
+/// to `edge::client::DIAL_DEADLINE` (5s, `core/edge`): a dial fails fast against a
+/// dead/unreachable peer, but a boot hook's peer already answered the QUIC
+/// handshake — it is presumed alive and doing real work (e.g. `configrpc`'s
+/// `CachedConfig` boot-fill `snapshot()` call), so a slow-but-eventually-successful
+/// boot should be given real headroom rather than racing the dial timeout. It still
+/// MUST be finite: without a bound, a peer that accepts the connection but never
+/// answers pins this hook forever — and because `App::start` awaits module starts
+/// sequentially and unbounded, every module started after this stub never gets a
+/// chance to run either. This is a core-leaf constant (never reads env — Hard
+/// Constraint 1/5 in the workspace root doc); if a deployment ever needs a
+/// different value, thread it through [`Stub::new`] the way `peer_addr` already is,
+/// NOT env.
+pub const BOOT_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// A start-time async action bound to a provider, produced by a factory that needs a
 /// boot step the pure `register` swap cannot do (a `register` is synchronous + does no
 /// I/O). The canonical case is `configrpc`'s `CachedConfig`: the swap `provide`s the
@@ -377,6 +392,35 @@ impl Stub {
             factories,
         }
     }
+
+    /// Runs every [`RemoteBoot`] tagged with THIS stub's provider, each bounded by
+    /// `boot_timeout`. Production always calls this via [`Module::start`] with
+    /// [`BOOT_TIMEOUT`]; tests inject a short bound to prove the timeout branch
+    /// without sleeping 10s.
+    async fn start_with_boot_timeout(
+        &self,
+        ctx: &Context,
+        boot_timeout: Duration,
+    ) -> anyhow::Result<()> {
+        for b in ctx.contributions::<RemoteBoot>(BOOT_SLOT) {
+            if b.provider == self.provider {
+                tokio::time::timeout(boot_timeout, (b.boot)())
+                    .await
+                    .map_err(|_| {
+                        anyhow::anyhow!(
+                            "remote boot for provider {:?} did not complete within {:?} — \
+                             peer accepted the connection but is not answering; startup \
+                             fails rather than hangs",
+                            self.provider,
+                            boot_timeout,
+                        )
+                    })?
+                    .with_context(|| format!("remote boot for provider {:?}", self.provider))?;
+                tracing::info!(provider = %self.provider, "remote stub boot hook ran");
+            }
+        }
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -483,16 +527,11 @@ impl Module for Stub {
     /// loud if config-svc is down). Filtering by provider keeps a hook to its own
     /// provider's stub, so it runs exactly once even when a process holds several
     /// stubs. A boot error fails process startup loudly (config is a hard dependency).
+    /// Each hook is bounded by [`BOOT_TIMEOUT`] — see its doc for why a live-but-slow
+    /// peer now fails startup instead of hanging it (and every module start after it,
+    /// since `App::start` awaits module starts sequentially and unbounded).
     async fn start(&self, ctx: &Context) -> anyhow::Result<()> {
-        for b in ctx.contributions::<RemoteBoot>(BOOT_SLOT) {
-            if b.provider == self.provider {
-                (b.boot)()
-                    .await
-                    .with_context(|| format!("remote boot for provider {:?}", self.provider))?;
-                tracing::info!(provider = %self.provider, "remote stub boot hook ran");
-            }
-        }
-        Ok(())
+        self.start_with_boot_timeout(ctx, BOOT_TIMEOUT).await
     }
 
     /// Closes the persistent edge connection (if one was ever dialed).
