@@ -46,10 +46,6 @@ pub fn run(ctx: &mut Context<'_>) -> Result<Outcome> {
     {
         return Ok(Outcome::Fail);
     }
-    if ctx.cargo("server-build", &["build", "-p", "server"])? != Outcome::Pass {
-        return Ok(Outcome::Fail);
-    }
-
     let server = server_executable(ctx);
     if !server.is_file() {
         return Ok(Outcome::Fail);
