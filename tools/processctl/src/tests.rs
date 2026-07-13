@@ -347,6 +347,7 @@ fn private_stdin_bytes_are_bounded_before_spawn() {
     assert!(!ready.exists());
 }
 
+#[cfg(windows)]
 #[test]
 fn owned_child_preserves_non_verbatim_argv_zero() {
     let _serial = PROCESS_TEST_LOCK.lock().unwrap();
