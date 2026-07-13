@@ -84,10 +84,23 @@ impl Ctx {
         Ok(Running { name: svc.name, child })
     }
 
-    async fn wait_healthy(&self, svc: &ServiceSpec) -> Result<()> {
+    /// Polls `/readyz` until success, but checks the just-spawned child's own liveness
+    /// FIRST on every iteration (mirrors devctl's `wait_healthy` in
+    /// tools/devctl/src/supervisor.rs). A stale listener left by a previous hung run
+    /// can answer 200 on `svc.http_port` even though the NEW child already died on
+    /// bind (EADDRINUSE) — checking `try_wait` before trusting the HTTP probe turns
+    /// that into an immediate, loud failure instead of a proof running against old code.
+    async fn wait_healthy(&self, svc: &ServiceSpec, child: &mut OwnedChild) -> Result<()> {
         let url = format!("http://127.0.0.1:{}/readyz", svc.http_port);
         let deadline = Instant::now() + Duration::from_secs(30);
         loop {
+            if let Some(status) = child.try_wait()? {
+                bail!(
+                    "{} exited during startup with {status} (a stale listener may still answer on :{})",
+                    svc.name,
+                    svc.http_port
+                );
+            }
             if let Ok(resp) = self.http.get(&url).send().await {
                 if resp.status().is_success() {
                     return Ok(());
@@ -99,6 +112,22 @@ impl Ctx {
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
     }
+}
+
+/// Returns one description per fleet child that is no longer alive (`try_wait`
+/// returned `Some`, or the liveness probe itself errored). Shared by the `[LV1]`
+/// (post-boot) and `[LV2]` (pre-teardown) liveness assertions so a service that dies
+/// AFTER clearing its health gate can't silently drop out of later assertions.
+fn fleet_liveness(fleet: &mut [Running]) -> Vec<String> {
+    let mut dead = Vec::new();
+    for running in fleet.iter_mut() {
+        match running.child.try_wait() {
+            Ok(Some(status)) => dead.push(format!("{} exited with {status}", running.name)),
+            Ok(None) => {}
+            Err(error) => dead.push(format!("{} liveness check failed: {error}", running.name)),
+        }
+    }
+    dead
 }
 
 /// Tiny assertion recorder: prints PASS/FAIL per check, keeps a failure list, and the
@@ -502,13 +531,23 @@ async fn run(root: PathBuf, run_dir: PathBuf) -> Result<u32> {
         // config-svc must boot AFTER the baseline reset (done above) so its first
         // snapshot is the default; the centralized processctl fleet already
         // places it late.
-        fleet.push(ctx.spawn(svc)?);
-        ctx.wait_healthy(svc).await?;
+        let mut running = ctx.spawn(svc)?;
+        ctx.wait_healthy(svc, &mut running.child).await?;
+        fleet.push(running);
         println!("[splitproof] {} healthy", svc.name);
     }
     println!("[splitproof] fleet up: {}/{} processes healthy\n", fleet.len(), ctx.fleet.services().len());
 
     let mut p = Proof::default();
+    // [LV1] every child that cleared its readyz gate is still alive right after boot —
+    // catches a stale listener on a service's port answering for a child that already
+    // died (e.g. bind conflict surfacing only after the first successful accept).
+    let lv1_dead = fleet_liveness(&mut fleet);
+    p.check(
+        "[LV1] fleet liveness after boot",
+        lv1_dead.is_empty(),
+        if lv1_dead.is_empty() { "all processes alive".to_string() } else { lv1_dead.join("; ") },
+    );
     assertions(&ctx, &pool, &mut p).await?;
 
     // [I-GATE] live security proof: the harness boots the whole fleet with
@@ -517,6 +556,16 @@ async fn run(root: PathBuf, run_dir: PathBuf) -> Result<u32> {
     // ONLY inventory-svc without the flag and prove a fully-authed grant call now
     // 404s through the front door.
     i_gate(&ctx, &mut fleet, &mut p).await?;
+
+    // [LV2] fleet-wide liveness sweep immediately before the split fleet is torn down —
+    // a service that died AFTER [LV1]'s post-boot check (e.g. mid-assertions) must not
+    // silently drop out of the assertions that ran against it.
+    let lv2_dead = fleet_liveness(&mut fleet);
+    p.check(
+        "[LV2] fleet liveness before teardown",
+        lv2_dead.is_empty(),
+        if lv2_dead.is_empty() { "all processes alive".to_string() } else { lv2_dead.join("; ") },
+    );
 
     // --- Monolith parity: tear the split down (frees :8080 + :9100), boot cmd/server on
     // the same player front, and re-prove a subset (never-monolith-only-features). ---
@@ -1282,8 +1331,8 @@ async fn i_gate(ctx: &Ctx, fleet: &mut Vec<Running>, p: &mut Proof) -> Result<()
     let mut restarted = original.clone();
     restarted.env = env;
     println!("[splitproof] restarting {} on :{} without the dev-grant flag ...", restarted.name, restarted.http_port);
-    let running = ctx.spawn(&restarted)?;
-    ctx.wait_healthy(&restarted).await?;
+    let mut running = ctx.spawn(&restarted)?;
+    ctx.wait_healthy(&restarted, &mut running.child).await?;
     fleet.insert(idx, running);
     println!("[splitproof] {} healthy (dev-grant OFF)", restarted.name);
 
