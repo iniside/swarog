@@ -1,8 +1,11 @@
 # Architecture remediation and Rust tooling plan
 
-**Status:** REVIEWED — independent think-hard punch list incorporated; remaining work pruned for minimum sufficient fixes
+**Status:** COMPLETE — all 20 steps implemented; final Windows `verifyctl --all --strict` passed on 2026-07-13
 
 **Date:** 2026-07-12
+
+**Completed:** 2026-07-13. Implementation record:
+`docs/status/2026-07-13-1240-architecture-remediation-summary.md`.
 
 **Scope:** close every finding from the 2026-07-12 architecture review and replace the fragile run/verify shell orchestration with owned Rust processes.
 **Non-goals:** no production data migration machinery, no topology changes, no event-contract mutation, no changes under `experiments/`, and no runtime implementation as part of this planning task.
