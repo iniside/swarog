@@ -307,17 +307,7 @@ async fn over_cap_session_tokens_short_circuit_handler_and_store_before_sql_by_b
 
 #[test]
 fn new_accounts_caps_count_utf8_bytes_at_boundary() {
-    let cases: [(&str, usize, fn(&str) -> bool); 3] = [
-        ("display name", MAX_DISPLAY_NAME_BYTES, display_name_within_cap),
-        ("Epic id_token", MAX_EPIC_ID_TOKEN_BYTES, epic_id_token_within_cap),
-        (
-            "session token",
-            accountsapi::MAX_SESSION_TOKEN_BYTES,
-            session_token_within_cap,
-        ),
-    ];
-
-    for (name, cap, within_cap) in cases {
+    fn assert_cap(name: &str, cap: usize, within_cap: fn(&str) -> bool) {
         let boundary = "é".repeat(cap / 2);
         assert_eq!(boundary.len(), cap, "{name} boundary fixture");
         assert!(within_cap(&boundary), "{name} must accept exactly {cap} bytes");
@@ -330,6 +320,14 @@ fn new_accounts_caps_count_utf8_bytes_at_boundary() {
             cap + 1
         );
     }
+
+    assert_cap("display name", MAX_DISPLAY_NAME_BYTES, display_name_within_cap);
+    assert_cap("Epic id_token", MAX_EPIC_ID_TOKEN_BYTES, epic_id_token_within_cap);
+    assert_cap(
+        "session token",
+        accountsapi::MAX_SESSION_TOKEN_BYTES,
+        session_token_within_cap,
+    );
 }
 
 #[tokio::test]
