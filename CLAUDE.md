@@ -1,7 +1,8 @@
 # CLAUDE.md
 
-Guidance for working in this repo. A for-fun game backend in **Rust** (Cargo
-workspace), built as a **modular monolith with a proven split**: one repo, one
+Guidance for working in this repo. A game backend in **Rust** (Cargo
+workspace), built as a serious architecture experiment — a **modular monolith with a
+proven split**: one repo, one
 `cmd/server` binary for the monolith, AND every domain module compiles and boots as
 its own `cmd/<name>-svc` process. Features are added by *writing new code, not
 modifying existing code* (Open/Closed at the architecture level). The retired Go
@@ -467,7 +468,7 @@ Integration tests target this local Postgres directly (no Docker/testcontainers)
 committed.) psql:
 
 **No data migrations — wipe is the migration strategy (current phase).** This is
-a local, for-fun project with no production data: when a schema or event-contract
+pre-production with no persistent users yet: when a schema or event-contract
 change would need a data migration, DROP the affected schemas (or the whole DB)
 and boot fresh — do NOT build bridges, dual-writes, backfills, or versioned
 data-migration machinery (the event-log rollout deliberately deleted exactly that
