@@ -16,6 +16,10 @@ use super::*;
 const DEFAULT_DSN: &str =
     "postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable";
 
+/// Tests that drive a global due scan/run loop must not see each other's temporary
+/// schedules. Direct per-name `fire` tests do not need this serialization.
+static TICK_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 fn dsn() -> String {
     std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string())
 }
@@ -75,13 +79,19 @@ async fn cleanup(pool: &PgPool, name: &str) {
 /// tests shouldn't need). Durable delivery is the asyncevents plane's own concern.
 struct FakeTransport {
     rows: Mutex<Vec<(String, Vec<u8>)>>,
+    stop_after: Mutex<Option<(String, watch::Sender<bool>)>>,
 }
 
 impl FakeTransport {
     fn new() -> Arc<FakeTransport> {
         Arc::new(FakeTransport {
             rows: Mutex::new(Vec::new()),
+            stop_after: Mutex::new(None),
         })
+    }
+
+    fn stop_after(&self, name: &str, stop: watch::Sender<bool>) {
+        *self.stop_after.lock().unwrap() = Some((name.to_string(), stop));
     }
 
     /// How many enqueued rows carry the given schedule name — the fake-transport-backed
@@ -112,6 +122,14 @@ impl Transport for FakeTransport {
             .lock()
             .unwrap()
             .push((contract.topic.to_string(), payload.to_vec()));
+        let fired = serde_json::from_slice::<schedulerevents::Fired>(payload).ok();
+        if let (Some(fired), Some((name, stop))) =
+            (fired, self.stop_after.lock().unwrap().as_ref())
+        {
+            if fired.name == *name {
+                let _ = stop.send(true);
+            }
+        }
         Ok(())
     }
 
@@ -239,6 +257,19 @@ fn due_checks_filter_non_positive_intervals() {
     );
 }
 
+#[test]
+fn due_rotation_resumes_after_cursor_or_its_insertion_point() {
+    let names = vec!["a".to_string(), "c".to_string(), "e".to_string()];
+    assert_eq!(rotation_start(&[], None), 0);
+    assert_eq!(rotation_start(&names, None), 0);
+    assert_eq!(rotation_start(&names, Some("a")), 1);
+    assert_eq!(rotation_start(&names, Some("c")), 2);
+    assert_eq!(rotation_start(&names, Some("e")), 0);
+    assert_eq!(rotation_start(&names, Some("b")), 1);
+    assert_eq!(rotation_start(&names, Some("d")), 2);
+    assert_eq!(rotation_start(&names, Some("z")), 0);
+}
+
 // --- live Postgres ----------------------------------------------------------
 
 /// A schedule with `interval_seconds = 0` (or negative) violates the table's `CHECK
@@ -249,6 +280,7 @@ fn due_checks_filter_non_positive_intervals() {
 /// verification step).
 #[tokio::test(flavor = "multi_thread")]
 async fn zero_interval_insert_violates_check() {
+    let _tick_guard = TICK_TEST_LOCK.lock().await;
     let Some(pool) = test_pool().await else {
         return;
     };
@@ -277,6 +309,7 @@ async fn zero_interval_insert_violates_check() {
 /// lock + `still_due` re-check at work (Go's `TestFireExactlyOnceUnderConcurrency`).
 #[tokio::test(flavor = "multi_thread")]
 async fn fire_exactly_once_under_concurrency() {
+    let _tick_guard = TICK_TEST_LOCK.lock().await;
     let Some(pool1) = test_pool().await else {
         return;
     };
@@ -317,6 +350,7 @@ async fn fire_exactly_once_under_concurrency() {
 /// interval elapses it fires again (Go's `TestFiresAgainAfterInterval`).
 #[tokio::test(flavor = "multi_thread")]
 async fn fires_again_after_interval() {
+    let _tick_guard = TICK_TEST_LOCK.lock().await;
     let Some(pool) = test_pool().await else {
         return;
     };
@@ -361,6 +395,7 @@ async fn fires_again_after_interval() {
 /// "RESET before re-pooling" assertion is gone by construction.)
 #[tokio::test(flavor = "multi_thread")]
 async fn wedged_fire_errors_via_statement_timeout_and_leaks_nothing() {
+    let _tick_guard = TICK_TEST_LOCK.lock().await;
     let Some(pool) = test_pool().await else {
         return;
     };
@@ -435,6 +470,7 @@ async fn wedged_fire_errors_via_statement_timeout_and_leaks_nothing() {
 /// lets a healthy tick land, the stamp refreshes, and the verdict recovers to Ok.
 #[tokio::test(flavor = "multi_thread")]
 async fn wedged_tick_flips_scheduler_readyz_and_recovers() {
+    let _tick_guard = TICK_TEST_LOCK.lock().await;
     let Some(pool) = test_pool().await else {
         return;
     };
@@ -525,6 +561,7 @@ async fn advisory_key_free(probe: &mut PgConnection, key: i64) -> bool {
 /// with an exhausted deadline (the deadline is a parameter for exactly this test).
 #[tokio::test(flavor = "multi_thread")]
 async fn exhausted_tick_budget_skips_remaining_schedules() {
+    let _tick_guard = TICK_TEST_LOCK.lock().await;
     let Some(pool) = test_pool().await else {
         return;
     };
@@ -533,9 +570,17 @@ async fn exhausted_tick_budget_skips_remaining_schedules() {
 
     let (bus, ft) = bus_with_fake();
     let (_stop_tx, stop_rx) = watch::channel(false);
+    let mut cursor = None;
     // Already-exhausted aggregate deadline; the due-scan itself keeps a healthy budget.
     let exhausted = Instant::now() - Duration::from_secs(1);
-    let err = tick(&pool, &bus, TICK_DEADLINE, exhausted, &stop_rx)
+    let err = tick(
+        &pool,
+        &bus,
+        TICK_DEADLINE,
+        exhausted,
+        &stop_rx,
+        &mut cursor,
+    )
         .await
         .expect_err("an exhausted tick budget must report the tick as errored");
     assert!(
@@ -543,6 +588,7 @@ async fn exhausted_tick_budget_skips_remaining_schedules() {
         "unexpected tick error: {err:#}"
     );
     assert_eq!(ft.count(&name), 0, "a budget-skipped schedule must not emit");
+    assert_eq!(cursor, None, "a budget-skipped schedule must not advance fairness");
 
     // `last_fired` never moved — the schedule is still due for the next tick.
     let due = due_schedules(&pool, TICK_DEADLINE).await.unwrap();
@@ -554,6 +600,72 @@ async fn exhausted_tick_budget_skips_remaining_schedules() {
     cleanup(&pool, &name).await;
 }
 
+/// A budget-consuming first name cannot starve its lexical successor forever.
+/// Tick one wedges on `00-slow` until its statement timeout consumes the budget;
+/// tick two resumes after that actual-attempt cursor and emits `01-next` first.
+#[tokio::test(flavor = "multi_thread")]
+async fn successive_ticks_rotate_past_a_budget_consuming_schedule() {
+    let _tick_guard = TICK_TEST_LOCK.lock().await;
+    let Some(pool) = test_pool().await else {
+        return;
+    };
+    let unique = unique_name(&pool).await;
+    let slow = format!("!fair-{unique}-00-slow");
+    let next = format!("!fair-{unique}-01-next");
+    seed_schedule(&pool, &slow, 3600).await;
+    seed_schedule(&pool, &next, 3600).await;
+
+    let mut blocker = PgConnection::connect(&dsn()).await.expect("connect blocker");
+    let mut btx = blocker.begin().await.expect("open blocker tx");
+    sqlx::query("SELECT 1 FROM scheduler.schedules WHERE name = $1 FOR UPDATE")
+        .bind(&slow)
+        .fetch_one(&mut *btx)
+        .await
+        .expect("wedge the slow schedule");
+
+    let (bus, ft) = bus_with_fake();
+    let (first_stop_tx, first_stop_rx) = watch::channel(false);
+    ft.stop_after(&next, first_stop_tx);
+    let mut cursor = None;
+    // The due scan retains its normal DB bound; the actual fire budget is short.
+    let first = tick(
+        &pool,
+        &bus,
+        TICK_DEADLINE,
+        Instant::now() + Duration::from_millis(150),
+        &first_stop_rx,
+        &mut cursor,
+    )
+    .await;
+    let first_cursor = cursor.clone();
+    let next_after_first = ft.count(&next);
+
+    // Stop at the next schedule boundary once `next` commits, preventing this
+    // focused test from firing unrelated due rows in the shared test database.
+    let (second_stop_tx, second_stop_rx) = watch::channel(false);
+    ft.stop_after(&next, second_stop_tx);
+    let second = tick(
+        &pool,
+        &bus,
+        TICK_DEADLINE,
+        Instant::now() + Duration::from_millis(500),
+        &second_stop_rx,
+        &mut cursor,
+    )
+    .await;
+    let next_after_second = ft.count(&next);
+
+    btx.rollback().await.expect("release slow schedule wedge");
+    cleanup(&pool, &slow).await;
+    cleanup(&pool, &next).await;
+
+    assert!(first.is_err(), "the wedged first tick must report failure");
+    assert_eq!(first_cursor.as_deref(), Some(slow.as_str()));
+    assert_eq!(next_after_first, 0, "tick one must leave the successor unattempted");
+    assert!(second.is_ok(), "controlled stop after the successor is healthy: {second:?}");
+    assert_eq!(next_after_second, 1, "tick two must emit the lexical successor once");
+}
+
 /// Shutdown under a wedged fire: the loop is stuck mid-fire (competing row lock, long
 /// tick deadline), so the stop signal cannot be observed at a schedule boundary —
 /// [`Scheduler::stop_tasks`] must return within [`STOP_GRACE`] (plus slack) by ABORTING
@@ -563,6 +675,7 @@ async fn exhausted_tick_budget_skips_remaining_schedules() {
 /// disconnect), so the freed-lock assertion POLLS instead of asserting immediately.
 #[tokio::test(flavor = "multi_thread")]
 async fn stop_aborts_wedged_fire_within_grace_and_releases_the_lock() {
+    let _tick_guard = TICK_TEST_LOCK.lock().await;
     let Some(pool) = test_pool().await else {
         return;
     };

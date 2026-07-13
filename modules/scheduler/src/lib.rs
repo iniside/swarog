@@ -150,7 +150,8 @@ INSERT INTO scheduler.schedules (name, interval_seconds)
 /// is actually in place; this filter is the belt to that DDL's braces.
 const DUE_SQL: &str = "SELECT name FROM scheduler.schedules \
      WHERE now() - last_fired >= make_interval(secs => interval_seconds) \
-     AND interval_seconds > 0";
+     AND interval_seconds > 0 \
+     ORDER BY name COLLATE \"C\"";
 
 /// The re-check SQL for [`fire_locked`] (run UNDER the per-schedule advisory lock),
 /// extracted to a const for the same anti-drift reason as [`DUE_SQL`]. A row with a
@@ -261,11 +262,31 @@ async fn due_schedules(pool: &PgPool, deadline: Duration) -> anyhow::Result<Vec<
     Ok(rows.into_iter().map(|(n,)| n).collect())
 }
 
-/// Finds every due schedule and tries to fire each within ONE aggregate budget: the
+/// Index at which a sorted due-list rotation resumes. The cursor is the last name
+/// whose [`fire`] attempt actually began: an existing name resumes after itself; a
+/// disappeared name resumes at its lexical insertion point; passing the end wraps.
+/// [`DUE_SQL`]'s C collation matches Rust string ordering used here.
+fn rotation_start(names: &[String], cursor: Option<&str>) -> usize {
+    if names.is_empty() {
+        return 0;
+    }
+    let insertion = cursor.map_or(0, |cursor| {
+        names.partition_point(|name| name.as_str() <= cursor)
+    });
+    if insertion == names.len() {
+        0
+    } else {
+        insertion
+    }
+}
+
+/// Finds every due schedule in stable name order, rotates to the first name after the
+/// last actual-attempt cursor, and tries to fire each within ONE aggregate budget: the
 /// caller computes `tick_deadline` once per tick and every [`fire`] receives only the
 /// REMAINING budget for its session `statement_timeout` — a tick of N schedules is
 /// bounded by `budget`, not N×`budget`. Once the budget is exhausted the remaining due
-/// schedules are SKIPPED for this tick (logged, counted as failures) instead of
+/// schedules are left for the next tick (the first skip is logged and counted as a
+/// failure) instead of
 /// attempted with a floored timeout — no point burning a connect + advisory lock on a
 /// guaranteed statement-timeout error; the next tick re-reads due schedules. The stop
 /// signal is also honored BETWEEN fires, so an in-progress tick yields at the next
@@ -274,16 +295,21 @@ async fn due_schedules(pool: &PgPool, deadline: Duration) -> anyhow::Result<Vec<
 /// whole tick report `Err`, so [`run_loop`] withholds the [`Liveness`] stamp and a
 /// persistently failing/wedging schedule surfaces on `/readyz` instead of staying
 /// silently broken. `tick_deadline` is a parameter (not computed here) so the
-/// budget-exhaustion path is directly testable.
+/// budget-exhaustion path is directly testable. The cursor advances immediately
+/// before a real [`fire`] call, never for a stop/budget skip.
 async fn tick(
     pool: &PgPool,
     bus: &Bus,
     budget: Duration,
     tick_deadline: Instant,
     stop: &watch::Receiver<bool>,
+    cursor: &mut Option<String>,
 ) -> anyhow::Result<()> {
     let mut failed = 0usize;
-    for name in due_schedules(pool, budget).await? {
+    let due = due_schedules(pool, budget).await?;
+    let start = rotation_start(&due, cursor.as_deref());
+    for offset in 0..due.len() {
+        let name = &due[(start + offset) % due.len()];
         if *stop.borrow() {
             tracing::info!(
                 schedule = %name,
@@ -292,16 +318,24 @@ async fn tick(
             break;
         }
         let remaining = tick_deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
+        // PostgreSQL statement_timeout is integer milliseconds. A sub-millisecond
+        // remainder is therefore exhausted too; passing it to `fire` would floor it
+        // back to 1ms and start work beyond the shared deadline.
+        if remaining.as_millis() == 0 {
             tracing::error!(
                 schedule = %name,
                 budget_secs = budget.as_secs(),
                 "scheduler tick budget exhausted; skipping this due schedule until the next tick"
             );
             failed += 1;
-            continue;
+            break;
         }
-        if let Err(e) = fire(pool, bus, &name, remaining).await {
+        // This schedule is now an actual attempt even if connection acquisition,
+        // lock acquisition, the under-lock recheck, or the transaction later fails.
+        // Advancing before the await prevents a slow/erroring head from starving
+        // later names; stop/budget-skipped names never reach this assignment.
+        *cursor = Some(name.clone());
+        if let Err(e) = fire(pool, bus, name, remaining).await {
             tracing::error!(schedule = %name, error = %e, "scheduler fire failed");
             failed += 1;
         }
@@ -778,6 +812,7 @@ async fn run_loop(
     // the stamp's age must start at 0, not read as an infinite stall.
     liveness.mark_tick_ok();
     let mut ticker = tokio::time::interval(cfg.tick_interval);
+    let mut cursor = None;
     loop {
         tokio::select! {
             _ = stop.changed() => break,
@@ -787,7 +822,16 @@ async fn run_loop(
             break;
         }
         let tick_deadline = Instant::now() + cfg.tick_deadline;
-        match tick(&pool, &bus, cfg.tick_deadline, tick_deadline, &stop).await {
+        match tick(
+            &pool,
+            &bus,
+            cfg.tick_deadline,
+            tick_deadline,
+            &stop,
+            &mut cursor,
+        )
+        .await
+        {
             Ok(()) => liveness.mark_tick_ok(),
             Err(e) => tracing::error!(error = %e, "scheduler tick failed"),
         }
