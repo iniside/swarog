@@ -129,6 +129,55 @@ impl Store {
         Ok(())
     }
 
+    pub async fn lock_admin_state_tx(
+        conn: &mut PgConnection,
+        name: &str,
+    ) -> Result<Option<(String, bool)>, sqlx::Error> {
+        sqlx::query_as::<_, (String, bool)>(
+            r#"
+            SELECT policy, (revoked_at IS NOT NULL) AS revoked
+            FROM apikeys.keys
+            WHERE name = $1
+            FOR UPDATE
+            "#,
+        )
+        .bind(name)
+        .fetch_optional(&mut *conn)
+        .await
+    }
+
+    pub async fn update_admin_state_tx(
+        conn: &mut PgConnection,
+        name: &str,
+        expected_policy: &str,
+        expected_revoked: bool,
+        policy: &str,
+        revoked: bool,
+    ) -> Result<u64, sqlx::Error> {
+        let result = sqlx::query(
+            r#"
+            UPDATE apikeys.keys
+            SET policy = $1,
+                revoked_at = CASE
+                    WHEN $2 THEN COALESCE(revoked_at, now())
+                    ELSE NULL
+                END
+            WHERE name = $3
+              AND policy = $4
+              AND (revoked_at IS NOT NULL) = $5
+            "#,
+        )
+        .bind(policy)
+        .bind(revoked)
+        .bind(name)
+        .bind(expected_policy)
+        .bind(expected_revoked)
+        .execute(&mut *conn)
+        .await?;
+
+        Ok(result.rows_affected())
+    }
+
     /// Revokes a key by name (`revoked_at = now()`) over a caller's connection, after
     /// which `lookup` treats it as unknown. A missing name is a no-op.
     pub async fn revoke_tx(&self, conn: &mut PgConnection, name: &str) -> Result<(), sqlx::Error> {

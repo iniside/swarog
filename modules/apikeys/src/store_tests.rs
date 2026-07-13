@@ -12,6 +12,12 @@ use std::time::Duration;
 const DEFAULT_DSN: &str =
     "postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable";
 
+static DB_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+pub(crate) async fn db_test_lock() -> tokio::sync::MutexGuard<'static, ()> {
+    DB_TEST_LOCK.lock().await
+}
+
 /// Opens the local Postgres, migrates the apikeys schema, and returns `None` (printing a
 /// skip line) when it's unreachable.
 pub(crate) async fn test_pool() -> Option<PgPool> {
@@ -52,6 +58,7 @@ pub(crate) async fn cleanup(pool: &PgPool, base: &str) {
 
 #[tokio::test]
 async fn lookup_known_unknown_revoked() {
+    let _guard = db_test_lock().await;
     let Some(pool) = test_pool().await else { return };
     let store = Store { pool: pool.clone() };
     let base = unique_name(&pool).await;
@@ -78,6 +85,7 @@ async fn lookup_known_unknown_revoked() {
 
 #[tokio::test]
 async fn policy_crud_and_list() {
+    let _guard = db_test_lock().await;
     let Some(pool) = test_pool().await else { return };
     let store = Store { pool: pool.clone() };
     let base = unique_name(&pool).await;
@@ -107,6 +115,7 @@ async fn policy_crud_and_list() {
 
 #[tokio::test]
 async fn insert_rejects_underscore_prefixed_name() {
+    let _guard = db_test_lock().await;
     let Some(pool) = test_pool().await else { return };
     let store = Store { pool: pool.clone() };
     let base = unique_name(&pool).await;
@@ -125,6 +134,7 @@ async fn insert_rejects_underscore_prefixed_name() {
 
 #[tokio::test]
 async fn insert_rejects_over_length_key() {
+    let _guard = db_test_lock().await;
     let Some(pool) = test_pool().await else { return };
     let store = Store { pool: pool.clone() };
     let base = unique_name(&pool).await;
@@ -145,6 +155,7 @@ async fn insert_rejects_over_length_key() {
 
 #[tokio::test]
 async fn seed_upsert_is_idempotent() {
+    let _guard = db_test_lock().await;
     let Some(pool) = test_pool().await else { return };
     let store = Store { pool: pool.clone() };
     let base = unique_name(&pool).await;
@@ -168,6 +179,7 @@ async fn seed_upsert_is_idempotent() {
 
 #[tokio::test]
 async fn seed_upsert_self_heals_revoke_and_policy() {
+    let _guard = db_test_lock().await;
     let Some(pool) = test_pool().await else { return };
     let store = Store { pool: pool.clone() };
     let base = unique_name(&pool).await;

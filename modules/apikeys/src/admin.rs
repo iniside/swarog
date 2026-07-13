@@ -25,6 +25,14 @@ pub(crate) const ADMIN_ITEM_ID: &str = "apikeys";
 pub(crate) const ADMIN_SECTION: &str = "Platform";
 /// Menu entry + page title.
 pub(crate) const ADMIN_LABEL: &str = "API Keys";
+pub(crate) const EXPECTED_STATE_FIELD: &str = "_expected_state";
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+struct ExpectedRow {
+    name: String,
+    policy: String,
+    revoked: bool,
+}
 
 /// Loose policy validation (Decision 4 of the plan): non-empty, and either the literal
 /// `full` or a comma-separated list whose every entry is non-blank. Deliberately NOT a
@@ -131,6 +139,17 @@ fn build_table(rows: &[KeyRow]) -> adminapi::Table {
 pub(crate) async fn admin_content_full(svc: &Arc<Service>) -> anyhow::Result<adminapi::Content> {
     let rows = svc.store.list().await?;
 
+    let mut expected_rows: Vec<ExpectedRow> = rows
+        .iter()
+        .map(|row| ExpectedRow {
+            name: row.name.clone(),
+            policy: row.policy.clone(),
+            revoked: row.revoked,
+        })
+        .collect();
+    expected_rows.sort_by(|a, b| a.name.cmp(&b.name));
+    let expected_state = serde_json::to_string(&expected_rows)?;
+
     let mut fields: Vec<adminapi::Field> = Vec::with_capacity(rows.len() + 4);
     for r in &rows {
         // One flat text field per key; editing its value re-writes the policy. Revoked
@@ -169,14 +188,13 @@ pub(crate) async fn admin_content_full(svc: &Arc<Service>) -> anyhow::Result<adm
     let form = adminapi::Form {
         action: String::new(),
         fields,
-        hidden: Vec::new(),
+        hidden: vec![adminapi::HiddenField {
+            name: EXPECTED_STATE_FIELD.into(),
+            value: expected_state,
+        }],
         submit: Some(Arc::new(move |values: adminapi::Params| {
             let svc = submit_svc.clone();
-            Box::pin(async move {
-                apply_edit(&svc, values)
-                    .await
-                    .map_err(adminapi::SubmitError::from)
-            })
+            Box::pin(async move { apply_edit(&svc, values).await })
         })),
     };
 
@@ -210,52 +228,91 @@ pub(crate) fn admin_render(
     })
 }
 
-/// One write the posted form plans against a single snapshot — executed together in
-/// phase 2's transaction so the whole form lands atomically.
+/// One write the posted form plans against the state rendered by its GET. Updates
+/// combine policy and revoke changes so editing and revoking one key is one CAS write.
 enum PlannedWrite {
-    SetPolicy { name: String, policy: String },
+    Update {
+        expected: ExpectedRow,
+        policy: String,
+        revoked: bool,
+    },
     Insert { name: String, key: String, policy: String },
-    Revoke { name: String },
 }
 
-/// Applies a posted edit in two phases over ONE snapshot (anti-TOCTOU, all-or-nothing):
-///   - **Phase 1** reads the store once and validates the WHOLE form — every changed
-///     policy plus the `_new_*` triple — building the planned-writes list. The first
-///     validation error returns before any write, so an invalid field can never leave an
-///     earlier valid one committed.
-///   - **Phase 2** opens one transaction, executes exactly the planned writes, commits.
-///     A store error rolls the whole batch back, leaving the store untouched.
-///
-/// The plan is: (1) `set_policy` for each posted policy differing from the snapshot,
-/// (2) `insert` the add-row triple when `_new_name`/`_new_key`/`_new_policy` are all set,
-/// (3) `revoke` the key named in `_revoke_name` when non-empty. Policies are validated
-/// loosely ([`valid_policy`]) in phase 1.
-pub(crate) async fn apply_edit(svc: &Service, values: adminapi::Params) -> anyhow::Result<()> {
-    // Phase 1 — validate the whole form against one snapshot, building the plan.
-    let rows = svc.store.list().await?;
-    let mut planned: Vec<PlannedWrite> = Vec::new();
+/// Applies a posted whole-form edit using the rendered rows as compare-and-swap
+/// evidence. Every expected row is locked and checked before planning or executing a
+/// write. An unrelated row inserted after GET is outside that evidence and does not
+/// conflict; any changed, revoked, or deleted expected row rejects the entire batch.
+pub(crate) async fn apply_edit(
+    svc: &Service,
+    values: adminapi::Params,
+) -> Result<(), adminapi::SubmitError> {
+    let expected_json = values
+        .get(EXPECTED_STATE_FIELD)
+        .ok_or(adminapi::SubmitError::Conflict)?;
+    let mut expected_rows: Vec<ExpectedRow> =
+        serde_json::from_str(expected_json).map_err(|_| adminapi::SubmitError::Conflict)?;
+    expected_rows.sort_by(|a, b| a.name.cmp(&b.name));
+    if expected_rows
+        .windows(2)
+        .any(|rows| rows[0].name == rows[1].name)
+    {
+        return Err(adminapi::SubmitError::Conflict);
+    }
 
-    // (1) policy edits — only keys whose posted value differs from the snapshot.
-    for r in &rows {
-        if let Some(v) = values.get(&r.name) {
-            if *v != r.policy {
-                check_policy(v)?;
-                planned.push(PlannedWrite::SetPolicy {
-                    name: r.name.clone(),
-                    policy: v.clone(),
-                });
-            }
+    let mut tx = svc
+        .store
+        .pool
+        .begin()
+        .await
+        .map_err(anyhow::Error::from)?;
+    for expected in &expected_rows {
+        let actual = crate::store::Store::lock_admin_state_tx(&mut tx, &expected.name)
+            .await
+            .map_err(anyhow::Error::from)?;
+        match actual {
+            Some((policy, revoked))
+                if policy == expected.policy && revoked == expected.revoked => {}
+            _ => return Err(adminapi::SubmitError::Conflict),
         }
     }
 
-    // (2) add-row: insert only when the whole triple is filled.
+    let mut planned: Vec<PlannedWrite> = Vec::new();
+
+    let revoke_name = adminapi::param(&values, "_revoke_name");
+    if !revoke_name.is_empty()
+        && !expected_rows
+            .iter()
+            .any(|expected| expected.name == revoke_name)
+    {
+        return Err(adminapi::SubmitError::Conflict);
+    }
+
+    for expected in &expected_rows {
+        let policy = values
+            .get(&expected.name)
+            .cloned()
+            .unwrap_or_else(|| expected.policy.clone());
+        let revoked = expected.revoked || expected.name == revoke_name;
+        if policy != expected.policy {
+            check_policy(&policy).map_err(adminapi::SubmitError::from)?;
+        }
+        if policy != expected.policy || revoked != expected.revoked {
+            planned.push(PlannedWrite::Update {
+                expected: expected.clone(),
+                policy,
+                revoked,
+            });
+        }
+    }
+
     let new_name = adminapi::param(&values, "_new_name");
     let new_key = adminapi::param(&values, "_new_key");
     let new_policy = adminapi::param(&values, "_new_policy");
     if !new_name.is_empty() && !new_key.is_empty() && !new_policy.is_empty() {
-        check_name(new_name)?;
-        check_key_length(new_key)?;
-        check_policy(new_policy)?;
+        check_name(new_name).map_err(adminapi::SubmitError::from)?;
+        check_key_length(new_key).map_err(adminapi::SubmitError::from)?;
+        check_policy(new_policy).map_err(adminapi::SubmitError::from)?;
         planned.push(PlannedWrite::Insert {
             name: new_name.to_string(),
             key: new_key.to_string(),
@@ -263,31 +320,46 @@ pub(crate) async fn apply_edit(svc: &Service, values: adminapi::Params) -> anyho
         });
     }
 
-    // (3) revoke by name (a missing name is a no-op at the store — no validation surface).
-    let revoke_name = adminapi::param(&values, "_revoke_name");
-    if !revoke_name.is_empty() {
-        planned.push(PlannedWrite::Revoke {
-            name: revoke_name.to_string(),
-        });
-    }
-
-    // Phase 2 — one transaction: execute exactly the planned writes and commit.
-    let mut tx = svc.store.pool.begin().await?;
     for write in planned {
         match write {
-            PlannedWrite::SetPolicy { name, policy } => {
-                svc.store.set_policy_tx(&mut tx, &name, &policy).await?;
+            PlannedWrite::Update {
+                expected,
+                policy,
+                revoked,
+            } => {
+                let affected = crate::store::Store::update_admin_state_tx(
+                    &mut tx,
+                    &expected.name,
+                    &expected.policy,
+                    expected.revoked,
+                    &policy,
+                    revoked,
+                )
+                .await
+                .map_err(anyhow::Error::from)?;
+                if affected != 1 {
+                    return Err(adminapi::SubmitError::Conflict);
+                }
             }
             PlannedWrite::Insert { name, key, policy } => {
-                svc.store.insert_tx(&mut tx, &name, &key, &policy).await?;
-            }
-            PlannedWrite::Revoke { name } => {
-                svc.store.revoke_tx(&mut tx, &name).await?;
+                if let Err(error) = svc.store.insert_tx(&mut tx, &name, &key, &policy).await {
+                    if is_unique_violation(&error) {
+                        return Err(adminapi::SubmitError::Conflict);
+                    }
+                    return Err(adminapi::SubmitError::Other(error.into()));
+                }
             }
         }
     }
-    tx.commit().await?;
+    tx.commit().await.map_err(anyhow::Error::from)?;
     Ok(())
+}
+
+fn is_unique_violation(error: &sqlx::Error) -> bool {
+    matches!(
+        error,
+        sqlx::Error::Database(database) if database.code().as_deref() == Some("23505")
+    )
 }
 
 #[async_trait::async_trait]
