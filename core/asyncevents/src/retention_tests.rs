@@ -480,6 +480,187 @@ async fn floor_uses_numeric_xid_order_not_text() {
     cleanup(&pool, topic).await;
 }
 
+/// Counts events on `topic` at or above a cursor position, using the SAME typed
+/// composite-tuple comparison the GC subquery relies on.
+async fn count_events_at_or_above(pool: &PgPool, topic: &str, cursor: &(i64, String, i64)) -> i64 {
+    sqlx::query_scalar(
+        "SELECT count(*) FROM asyncevents.events \
+         WHERE topic = $1 AND (generation, producer_xid, tie_breaker) >= ($2, $3::xid8, $4)",
+    )
+    .bind(topic)
+    .bind(cursor.0)
+    .bind(&cursor.1)
+    .bind(cursor.2)
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+/// THE mid-sweep stale-floor regression. GC of a `> BATCH` (1000) topic runs in
+/// multiple DELETE statements. A subscription that registers BETWEEN batches, with a
+/// cursor below the floor the OLD code fetched ONCE before the loop, used to lose
+/// events at/above its brand-new cursor: the stale floor kept deleting them. The new
+/// code folds the floor into each DELETE's `NOT EXISTS` subquery, so batch 2 sees the
+/// freshly-registered subscription and protects its events.
+///
+/// Injection: a BEFORE DELETE row trigger, confined to this test's topic AND its
+/// single-connection pool's backend pid, INSERTs a new active subscription at a low
+/// cursor on the first deleted row of batch 1 (`ON CONFLICT DO NOTHING` makes the
+/// per-row trigger idempotent — it fires once effectively). The insert commits with
+/// batch 1's autocommit DELETE, so batch 2's fresh READ COMMITTED snapshot observes
+/// it. (WRITER_LOCK_CHOREOGRAPHY from `store_tests` does NOT apply: this test never
+/// holds an appended-but-uncommitted tx across a lock await — gc_topic runs plain
+/// autocommit DELETEs and the trigger's insert rides each statement's own tx.)
+#[tokio::test]
+async fn mid_sweep_registered_subscription_survives_stale_floor() {
+    let Some(pool) = test_pool().await else { return };
+    let topic = unique("ret.midsweep");
+    // 1500 > BATCH (1000): GC needs at least two DELETE statements, so a between-batch
+    // registration is observable. append_positions returns them in log order.
+    let pos = append_positions(&pool, topic, 1500).await;
+    backdate(&pool, topic, 40).await;
+    insert_contract(&pool, topic, "min_retention", 30).await;
+    // Original active cursor near the end: events 0..1489 are below it (GC-eligible),
+    // 1490..1499 are pinned regardless.
+    insert_sub(&pool, unique("sub.act"), topic, "active", Some(&pos[1490])).await;
+
+    // The subscription the trigger injects mid-sweep, cursored at pos[1200] — ABOVE
+    // batch 1's lowest-1000 delete range, so the divergence lands purely in batch 2.
+    let injected_id = unique("sub.injected");
+    let inj = &pos[1200];
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let function = format!("retention_midsweep_fn_{}_{}", std::process::id(), stamp);
+    let trigger = format!("retention_midsweep_trg_{}_{}", std::process::id(), stamp);
+
+    // Single-connection pool so the trigger's pid gate confines the injection to THIS
+    // test's sweep; concurrent retention tests run on different backend pids.
+    let dsn = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string());
+    let fault_pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&dsn)
+        .await
+        .unwrap();
+    let backend_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&fault_pool)
+        .await
+        .unwrap();
+
+    sqlx::raw_sql(&format!(
+        "CREATE FUNCTION asyncevents.{function}() RETURNS trigger LANGUAGE plpgsql AS $$ \
+         BEGIN \
+           IF OLD.topic = TG_ARGV[1] AND pg_backend_pid() = TG_ARGV[5]::int THEN \
+             INSERT INTO asyncevents.subscriptions \
+               (subscription_id, topic, contract_version, state, \
+                cursor_generation, cursor_xid, cursor_tie, spec_hash, start_kind, updated_at) \
+             VALUES (TG_ARGV[0], TG_ARGV[1], 1, 'active', \
+                TG_ARGV[2]::bigint, TG_ARGV[3]::xid8, TG_ARGV[4]::bigint, 'test', 'explicit', now()) \
+             ON CONFLICT (subscription_id) DO NOTHING; \
+           END IF; \
+           RETURN OLD; \
+         END $$"
+    ))
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::raw_sql(&format!(
+        "CREATE TRIGGER {trigger} BEFORE DELETE ON asyncevents.events \
+         FOR EACH ROW EXECUTE FUNCTION asyncevents.{function}(\
+           '{injected_id}', '{topic}', '{}', '{}', '{}', '{backend_pid}')",
+        inj.0, inj.1, inj.2
+    ))
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    gc_topic(&fault_pool, topic, 1, 30).await.unwrap();
+    fault_pool.close().await;
+
+    let survivors_at_or_above = count_events_at_or_above(&pool, topic, inj).await;
+
+    // Tear the fixture down before asserting so a failure can't poison later tests.
+    sqlx::raw_sql(&format!("DROP TRIGGER {trigger} ON asyncevents.events"))
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::raw_sql(&format!("DROP FUNCTION asyncevents.{function}()"))
+        .execute(&pool)
+        .await
+        .unwrap();
+    cleanup(&pool, topic).await;
+
+    // Every event at/above the mid-sweep cursor (pos[1200]..pos[1499] = 300) must
+    // survive. Old code's stale floor (pos[1490]) deletes pos[1200]..pos[1489],
+    // leaving only 10 — this assertion is red on the pre-fold implementation.
+    assert_eq!(
+        survivors_at_or_above, 300,
+        "events at/above a mid-sweep registered cursor must survive the fresh-floor GC"
+    );
+}
+
+/// Inverse-defect pin (review): the `state IN ('active','paused')` filter inside the
+/// new `NOT EXISTS` subquery is MANDATORY. Without it, a RETIRED subscription's low
+/// cursor would satisfy the correlated predicate and pin GC forever. Here a retired
+/// sub sits at a LOW non-genesis cursor while an active sub is near the top: events
+/// above the retired cursor but below the active floor (and past the day bound) must
+/// be deleted. If the state filter were dropped, the retired cursor would retain
+/// pos[1]..pos[4] and this assertion (1 survivor) would fail.
+#[tokio::test]
+async fn retired_low_cursor_does_not_pin_new_delete() {
+    let Some(pool) = test_pool().await else { return };
+    let topic = unique("ret.retired.low");
+    let pos = append_positions(&pool, topic, 5).await;
+    backdate(&pool, topic, 40).await;
+    insert_contract(&pool, topic, "min_retention", 30).await;
+    insert_sub(&pool, unique("sub.act"), topic, "active", Some(&pos[4])).await;
+    // Retired at a LOW, non-genesis cursor (pos[1]) — excluded from the floor.
+    insert_sub(&pool, unique("sub.ret"), topic, "retired", Some(&pos[1])).await;
+
+    gc_topic(&pool, topic, 1, 30).await.unwrap();
+
+    // Floor = active pos[4] (retired excluded): events 0..3 deleted, event 4 stays.
+    assert_eq!(
+        count_events(&pool, topic).await,
+        1,
+        "a retired low cursor must not pin the new NOT EXISTS delete"
+    );
+    cleanup(&pool, topic).await;
+}
+
+/// Numeric-order sibling for the NEW subquery's composite comparison, exercising the
+/// DELETE branch (not just retention). xids 2 and 10: numeric 2 < 10, but text
+/// '10' < '2'. An active sub cursored AT the xid-10 event must protect only the
+/// xid-10 event and let the numerically-lower xid-2 event be deleted. Under the old
+/// text-aliased ordering the cursor `'10'` would compare `<= '2'` (text) and wrongly
+/// retain the xid-2 event. Asserts exactly one survivor (the xid-10 event).
+#[tokio::test]
+async fn new_subquery_uses_numeric_xid_order_in_delete() {
+    let Some(pool) = test_pool().await else { return };
+    let topic = unique("ret.xidorder.delete");
+    let t2 = unique_tie();
+    let t10 = unique_tie();
+    insert_synthetic_event(&pool, topic, "2", t2, 40).await;
+    insert_synthetic_event(&pool, topic, "10", t10, 40).await;
+    insert_contract(&pool, topic, "min_retention", 30).await;
+    // Active cursor points exactly AT the xid-10 event.
+    let active_cursor = (0i64, "10".to_string(), t10);
+    insert_sub(&pool, unique("sub.active"), topic, "active", Some(&active_cursor)).await;
+
+    gc_topic(&pool, topic, 1, 30).await.unwrap();
+
+    // Numeric: (0,10,t10) is NOT <= (0,2,t2), so the xid-2 event is below the floor and
+    // deleted; the xid-10 event sits AT the cursor and survives → 1 left.
+    // (Text ordering: '10' <= '2' would retain both → 2 left, red.)
+    assert_eq!(
+        count_events(&pool, topic).await,
+        1,
+        "numeric xid order in the NOT EXISTS subquery must delete the lower-xid event"
+    );
+    cleanup(&pool, topic).await;
+}
+
 /// Step 6: a retention task alive but whose sweeps persistently FAIL must flip
 /// `Liveness::retention_stalled` within budget. Failure is injected by closing the
 /// pool before `run` spawns: every `sweep` then errors (a closed pool is a

@@ -16,7 +16,10 @@
 //! - The `min_retention_days` bound is a `created_at` predicate. There is no index
 //!   on `created_at`; the resulting seq scan is ACCEPTED at this project's scale.
 //! - Deletes are batch-bounded (`ctid IN (… LIMIT {BATCH})`) so a sweep never holds
-//!   a long lock; the day/generation bounds ride as bound params, never interpolated.
+//!   a long lock; the day bound rides as a bound param and the checkpoint floor is a
+//!   correlated `NOT EXISTS` subquery over typed cursor columns — never interpolated,
+//!   and recomputed per DELETE statement (see [`gc_topic`]) so a subscription that
+//!   registers mid-sweep is honored from the next batch.
 
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -252,65 +255,53 @@ pub(crate) async fn sweep(pool: &PgPool) -> anyhow::Result<()> {
 /// batches: strictly below the checkpoint floor (MIN cursor over active+paused
 /// subscriptions) AND older than `min_retention_days`. A topic with no active/paused
 /// subscription has no floor, so only the day bound applies.
+///
+/// The floor is recomputed PER DELETE STATEMENT: the correlated `NOT EXISTS`
+/// subquery carries the full floor predicate, so it is re-evaluated against the
+/// live `subscriptions` table on every batch. This is the fix for a mid-sweep
+/// stale-floor race: the old code fetched the floor ONCE before the batch loop, so
+/// a subscription registering between batches (with a cursor below the previously
+/// computed floor) could lose events at/above its brand-new cursor. Folding the
+/// floor into the DELETE closes that inter-batch window entirely.
+///
+/// A residual window remains and is DELIBERATE: within a single DELETE statement,
+/// under READ COMMITTED, the correlated subquery reads one snapshot, so a
+/// subscription registering DURING that one statement's execution is not observed.
+/// This is acceptable — the `MinRetention` contract promises only `days` of
+/// retention (see [`crate::HistoryPolicy`]); a subscription must be registered
+/// before the events it needs age past `days`. The audit's proposed
+/// catalog↔GC lock (serializing subscription registration against GC) was REJECTED
+/// as contract-overreach: it would buy a guarantee the contract never made
+/// (docs/plans/2026-07-13-1415-audit-remediation-plan.md, Step 18 / rejected C2).
+///
+/// The `state IN ('active','paused')` filter inside the subquery is MANDATORY: it
+/// is the inverse of the stale-floor defect. Without it, a `retired`/`completed`
+/// subscription's low cursor would satisfy `NOT EXISTS` and pin GC forever. The
+/// composite comparison rides TYPED columns (never a text-aliased `xid8`), so
+/// numeric xid8 order governs — the module's `floor_uses_numeric_xid_order_not_text`
+/// regression is the precedent. Cursors are `NOT NULL`, so there is no NULL seam.
 async fn gc_topic(pool: &PgPool, topic: &str, version: i32, days: i32) -> anyhow::Result<()> {
-    // Floor = the lexicographically smallest active/paused cursor. Postgres cannot
-    // MIN a composite, so ORDER BY the row and take the first.
-    let floor = sqlx::query(
-        // alias must NOT equal the column name: a bare ORDER BY prefers the output
-        // alias (text sort) over the xid8 column.
-        "SELECT cursor_generation, cursor_xid::text AS cursor_xid_text, cursor_tie \
-         FROM asyncevents.subscriptions \
-         WHERE topic = $1 AND contract_version = $2 AND state IN ('active','paused') \
-         ORDER BY cursor_generation, cursor_xid, cursor_tie \
-         LIMIT 1",
-    )
-    .bind(topic)
-    .bind(version)
-    .fetch_optional(pool)
-    .await?;
-
     loop {
-        let deleted = match &floor {
-            Some(f) => {
-                let fg: i64 = f.get("cursor_generation");
-                let fx: String = f.get("cursor_xid_text");
-                let ft: i64 = f.get("cursor_tie");
-                sqlx::query(
-                    "DELETE FROM asyncevents.events WHERE ctid IN ( \
-                       SELECT ctid FROM asyncevents.events \
-                       WHERE topic = $1 AND contract_version = $2 \
-                         AND created_at < now() - make_interval(days => $3) \
-                         AND (generation, producer_xid, tie_breaker) < ($4, $5::xid8, $6) \
-                       LIMIT $7)",
-                )
-                .bind(topic)
-                .bind(version)
-                .bind(days)
-                .bind(fg)
-                .bind(&fx)
-                .bind(ft)
-                .bind(BATCH)
-                .execute(pool)
-                .await?
-                .rows_affected()
-            }
-            // No active/paused subscription pins this topic: only the day bound
-            // applies (MinRetention promises `days`, nothing more).
-            None => sqlx::query(
-                "DELETE FROM asyncevents.events WHERE ctid IN ( \
-                   SELECT ctid FROM asyncevents.events \
-                   WHERE topic = $1 AND contract_version = $2 \
-                     AND created_at < now() - make_interval(days => $3) \
-                   LIMIT $4)",
-            )
-            .bind(topic)
-            .bind(version)
-            .bind(days)
-            .bind(BATCH)
-            .execute(pool)
-            .await?
-            .rows_affected(),
-        };
+        let deleted = sqlx::query(
+            "DELETE FROM asyncevents.events WHERE ctid IN ( \
+               SELECT e.ctid FROM asyncevents.events e \
+               WHERE e.topic = $1 AND e.contract_version = $2 \
+                 AND e.created_at < now() - make_interval(days => $3) \
+                 AND NOT EXISTS ( \
+                   SELECT 1 FROM asyncevents.subscriptions s \
+                   WHERE s.topic = $1 AND s.contract_version = $2 \
+                     AND s.state IN ('active','paused') \
+                     AND (s.cursor_generation, s.cursor_xid, s.cursor_tie) \
+                         <= (e.generation, e.producer_xid, e.tie_breaker)) \
+               LIMIT $4)",
+        )
+        .bind(topic)
+        .bind(version)
+        .bind(days)
+        .bind(BATCH)
+        .execute(pool)
+        .await?
+        .rows_affected();
         if deleted < BATCH as u64 {
             return Ok(());
         }
