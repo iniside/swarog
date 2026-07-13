@@ -7,6 +7,7 @@
 //! hard-fails on a machine without it. In-crate so they can drive the private `fire` /
 //! `due_schedules` / `lock_key`.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use bus::{AnyTx, Bus, Error as BusError, Transport, TxHandler};
@@ -19,6 +20,14 @@ const DEFAULT_DSN: &str =
 /// Tests that drive a global due scan/run loop must not see each other's temporary
 /// schedules. Direct per-name `fire` tests do not need this serialization.
 static TICK_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+struct DropFlag(Arc<AtomicBool>);
+
+impl Drop for DropFlag {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+}
 
 fn dsn() -> String {
     std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string())
@@ -673,7 +682,7 @@ async fn successive_ticks_rotate_past_a_budget_consuming_schedule() {
 /// per-fire connection dies with the dropped future, the session closes, and Postgres
 /// releases the lock. The release is asynchronous (the server has to notice the
 /// disconnect), so the freed-lock assertion POLLS instead of asserting immediately.
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "current_thread")]
 async fn stop_aborts_wedged_fire_within_grace_and_releases_the_lock() {
     let _tick_guard = TICK_TEST_LOCK.lock().await;
     let Some(pool) = test_pool().await else {
@@ -699,13 +708,15 @@ async fn stop_aborts_wedged_fire_within_grace_and_releases_the_lock() {
         tick_interval: Duration::from_millis(50),
         tick_deadline: Duration::from_secs(120),
     };
-    let task = tokio::spawn(run_loop(
-        pool.clone(),
-        bus.clone(),
-        sched.liveness.clone(),
-        cfg,
-        stop_rx,
-    ));
+    let task_dropped = Arc::new(AtomicBool::new(false));
+    let task_drop_flag = DropFlag(task_dropped.clone());
+    let loop_pool = pool.clone();
+    let loop_bus = bus.clone();
+    let loop_liveness = sched.liveness.clone();
+    let task = tokio::spawn(async move {
+        let _task_drop_flag = task_drop_flag;
+        run_loop(loop_pool, loop_bus, loop_liveness, cfg, stop_rx).await;
+    });
     *sched.stop_tx.lock().unwrap() = Some(stop_tx);
     sched.tasks.lock().unwrap().push(task);
 
@@ -734,6 +745,10 @@ async fn stop_aborts_wedged_fire_within_grace_and_releases_the_lock() {
     let started = std::time::Instant::now();
     sched.stop_tasks().await;
     let elapsed = started.elapsed();
+    assert!(
+        task_dropped.load(Ordering::SeqCst),
+        "stop_tasks returned before the aborted task future was dropped and reaped"
+    );
     assert!(
         elapsed < STOP_GRACE + Duration::from_secs(2),
         "stop_tasks took {elapsed:?} — the abort fallback did not bound shutdown"

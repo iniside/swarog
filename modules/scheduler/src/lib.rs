@@ -605,7 +605,8 @@ impl Scheduler {
     /// back the in-flight tx (the `last_fired` bump and the durable emit share that tx,
     /// so exactly-once holds). Extracted from `Module::stop` (which only adds the
     /// `set_stopping` bookkeeping) so the stuck-fire shutdown path is testable without
-    /// a `lifecycle::Context`.
+    /// a `lifecycle::Context`. An aborted handle is awaited before this returns so
+    /// dropping the task's dedicated connection is completed, never detached.
     async fn stop_tasks(&self) {
         if let Some(tx) = self.stop_tx.lock().unwrap().take() {
             let _ = tx.send(true);
@@ -626,6 +627,14 @@ impl Scheduler {
                          (safe: fires run on dedicated connections — the advisory lock dies with the session)"
                     );
                     t.abort();
+                    match t.await {
+                        Ok(()) => {} // raced to a clean exit as abort was requested
+                        Err(e) if e.is_cancelled() => {} // expected abort completion
+                        Err(e) => tracing::error!(
+                            error = %e,
+                            "scheduler aborted emission loop task terminated abnormally"
+                        ),
+                    }
                 }
             }
         }
