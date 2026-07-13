@@ -45,7 +45,8 @@
 //! [`Dialer`]/[`Conn`] seam so it is unit-testable with a fake transport (no QUIC).
 
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
 use anyhow::Context as _;
@@ -53,7 +54,9 @@ use async_trait::async_trait;
 use futures::future::BoxFuture;
 use lifecycle::{Context, Module};
 use opsapi::{Caller, Error, RetryMode};
+use tokio::sync::watch;
 use tokio::sync::Mutex;
+use tokio::task::JoinHandle;
 
 // ---------------------------------------------------------------------------
 // The injected provider-swap action (the Step-4 generic-`remote` seam).
@@ -326,6 +329,57 @@ impl Conn for edge::Client {
 // The per-stub readiness probe (the `/readyz` contribution).
 // ---------------------------------------------------------------------------
 
+/// Probe cadence while the peer is reachable — gentle re-check so a healthy fleet
+/// pays almost nothing.
+const PROBE_INTERVAL_READY: Duration = Duration::from_secs(5);
+/// Probe cadence while the peer is unreachable — fast so a recovery (or an initial
+/// come-up) is detected quickly.
+const PROBE_INTERVAL_UNREADY: Duration = Duration::from_secs(1);
+/// Staleness bound (3x [`PROBE_INTERVAL_READY`]): if no probe has COMPLETED in this
+/// long the readyz check reports unready even if the last cached verdict was `Ok`,
+/// so a dead/stuck probe task cannot freeze a stale-green verdict.
+const PROBE_STALL_MAX: Duration = Duration::from_secs(15);
+/// Grace given to the probe task to observe the stop signal before it is aborted —
+/// larger than `probe_peer`'s 1s inner dial timeout so a probe mid-dial finishes
+/// cleanly rather than being force-aborted in the common case.
+const PROBE_STOP_GRACE: Duration = Duration::from_secs(2);
+
+/// Coarse monotonic seconds since first call, for the probe staleness stamp (mirrors
+/// `asyncevents::coarse_now_secs`). Cheap, wall-clock-independent, never negative.
+fn coarse_now_secs() -> u64 {
+    static BASE: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    BASE.get_or_init(std::time::Instant::now).elapsed().as_secs()
+}
+
+/// The background reachability probe loop owned by each [`Stub`]. It is the ONLY
+/// runtime caller of [`probe_peer`]: it dials the peer on a two-rate cadence (fast
+/// while unready, gentle while ready), stamps the shared cached verdict + the
+/// `last_probe_at` coarse timestamp, and never holds the std guard across the dial
+/// (`probe_peer` is awaited BEFORE the lock). The `/readyz` [`httpmw::ReadyCheck`]
+/// only READS that cache, so probe cost is decoupled from request rate.
+async fn probe_loop(
+    peer_addr: String,
+    verdict: Arc<StdMutex<Result<(), String>>>,
+    last_probe_at: Arc<AtomicU64>,
+    ready: Duration,
+    unready: Duration,
+    mut stop: watch::Receiver<bool>,
+) {
+    loop {
+        // Dial OUTSIDE any lock — the std guard must never cross an `.await`.
+        let v = probe_peer(peer_addr.clone()).await;
+        let is_err = v.is_err();
+        *verdict.lock().unwrap_or_else(|e| e.into_inner()) = v;
+        // `.max(1)` so a completed probe at t=0 is distinguishable from "never probed".
+        last_probe_at.store(coarse_now_secs().max(1), Ordering::SeqCst);
+        let wait = if is_err { unready } else { ready };
+        tokio::select! {
+            _ = stop.changed() => return,
+            _ = tokio::time::sleep(wait) => {}
+        }
+    }
+}
+
 /// The bounded connectivity probe backing each stub's `/readyz` [`httpmw::ReadyCheck`].
 /// Parses `peer_addr`, resolves the shared dev CA, and dials the peer's QUIC edge —
 /// returning `Ok(())` iff a fresh mTLS connection completes, or an `Err(String)`
@@ -375,6 +429,17 @@ pub struct Stub {
     /// composition root from the provider's `<name>rpc::remote_factories()` — `remote`
     /// never names the provider itself.
     factories: Vec<RemoteFactory>,
+    /// The cached peer-reachability verdict, stamped by [`probe_loop`] and READ (zero
+    /// I/O) by the `/readyz` [`httpmw::ReadyCheck`]. Seeded fail-closed
+    /// (`Err("probe pending")`) so an unknown-reachability cold start reports unready.
+    verdict: Arc<StdMutex<Result<(), String>>>,
+    /// Coarse seconds of the last COMPLETED probe (`0` = never). Backs the readyz
+    /// staleness guard: a frozen verdict from a dead probe task flips unready.
+    last_probe_at: Arc<AtomicU64>,
+    /// Stop signal for the background probe task (`None` until `start`).
+    probe_stop: StdMutex<Option<watch::Sender<bool>>>,
+    /// The background probe task handle, torn down in `stop` (`None` until `start`).
+    probe_task: StdMutex<Option<JoinHandle<()>>>,
 }
 
 impl Stub {
@@ -390,7 +455,32 @@ impl Stub {
                 peer: peer_addr.to_string(),
             })),
             factories,
+            // Fail-closed seed: unknown reachability = not ready until the first probe
+            // completes.
+            verdict: Arc::new(StdMutex::new(Err("probe pending".to_string()))),
+            last_probe_at: Arc::new(AtomicU64::new(0)),
+            probe_stop: StdMutex::new(None),
+            probe_task: StdMutex::new(None),
         }
+    }
+
+    /// Spawns the background reachability probe loop (idempotent-callee contract: call
+    /// exactly once, from `start`). Splits the spawn out of `start` so tests can drive
+    /// it with short intervals via [`Stub::spawn_probe`] without threading them through
+    /// [`Stub::new`]. Production calls it with the const cadence; the loop is the sole
+    /// runtime caller of [`probe_peer`].
+    pub(crate) fn spawn_probe(&self, ready: Duration, unready: Duration) {
+        let (stop_tx, stop_rx) = watch::channel(false);
+        let handle = tokio::spawn(probe_loop(
+            self.peer_addr.clone(),
+            self.verdict.clone(),
+            self.last_probe_at.clone(),
+            ready,
+            unready,
+            stop_rx,
+        ));
+        *self.probe_stop.lock().unwrap_or_else(|e| e.into_inner()) = Some(stop_tx);
+        *self.probe_task.lock().unwrap_or_else(|e| e.into_inner()) = Some(handle);
     }
 
     /// Runs every [`RemoteBoot`] tagged with THIS stub's provider, each bounded by
@@ -498,12 +588,19 @@ impl Module for Stub {
     /// a HARD synchronous dependency — a process cannot serve the provider's ops with the
     /// peer down — so an unreachable peer flipping this process unready is the intended
     /// semantics, and it fans out fleet-wide (every stub-holder reports its own peers).
-    /// The deliberate cost: each probe is a FRESH QUIC/mTLS dial (see [`probe_peer`]),
-    /// run per stub, sequentially by `/readyz`; a dead peer therefore costs ~1s per stub
-    /// per probe (a 6-stub front like gateway-svc pays up to ~6s on a fully-dead fleet) —
-    /// acceptable at this local/dev deploy scale. The check reads lazily per request, so
-    /// contributing it in `init` (no I/O) is correct. The monolith hosts no stubs and is
-    /// unaffected.
+    ///
+    /// The reachability I/O is NOT done here: a background probe loop owned by the stub
+    /// (spawned in `start`, torn down in `stop` — see [`Stub::spawn_probe`]/[`probe_loop`])
+    /// dials the peer on a two-rate cadence ([`PROBE_INTERVAL_UNREADY`] 1s while unready,
+    /// [`PROBE_INTERVAL_READY`] 5s while ready) and stamps a CACHED verdict plus a
+    /// `last_probe_at` coarse timestamp. The `/readyz` check here reads ONLY that cache
+    /// (zero I/O), so probe cost is fully decoupled from request rate — a flood of unauth,
+    /// rate-limit-exempt `/readyz` requests can no longer amplify into per-request QUIC/mTLS
+    /// handshakes (a 6-stub front like gateway-svc used to pay up to 6 fresh dials PER
+    /// request; it now pays none). The seed is fail-closed (`Err("probe pending")` until
+    /// the first probe completes), and a stalled/dead probe loop (no completed probe within
+    /// [`PROBE_STALL_MAX`]) flips the check unready rather than freezing a stale-green
+    /// verdict. The monolith hosts no stubs and is unaffected.
     fn init(&self, ctx: &Context) -> anyhow::Result<()> {
         ctx.contribute(
             opsapi::PEER_SLOT,
@@ -512,12 +609,29 @@ impl Module for Stub {
                 addr: self.peer_addr.clone(),
             },
         );
-        // Fresh dial per probe; the probe body owns its 1s inner bound (see `probe_peer`).
-        let peer_addr = self.peer_addr.clone();
+        // Zero-I/O readyz: read the cached verdict stamped by the background probe loop,
+        // with a staleness guard so a dead probe task can't freeze a stale-green verdict.
+        let verdict = self.verdict.clone();
+        let last_probe_at = self.last_probe_at.clone();
         ctx.contribute(
             httpmw::READINESS_SLOT,
             httpmw::ReadyCheck::new(format!("stub:{}", self.provider), move || {
-                probe_peer(peer_addr.clone())
+                let verdict = verdict.clone();
+                let last_probe_at = last_probe_at.clone();
+                async move {
+                    let stamp = last_probe_at.load(Ordering::SeqCst);
+                    if stamp != 0
+                        && coarse_now_secs().saturating_sub(stamp) > PROBE_STALL_MAX.as_secs()
+                    {
+                        return Err(format!(
+                            "stub probe stalled: no completed peer probe in >{}s (probe task may have died)",
+                            PROBE_STALL_MAX.as_secs()
+                        ));
+                    }
+                    // Clone the verdict OUT and drop the std guard before the async block
+                    // can yield — the guard must never cross an `.await`.
+                    verdict.lock().unwrap_or_else(|e| e.into_inner()).clone()
+                }
             }),
         );
         Ok(())
@@ -533,11 +647,42 @@ impl Module for Stub {
     /// peer now fails startup instead of hanging it (and every module start after it,
     /// since `App::start` awaits module starts sequentially and unbounded).
     async fn start(&self, ctx: &Context) -> anyhow::Result<()> {
-        self.start_with_boot_timeout(ctx, BOOT_TIMEOUT).await
+        // Boot hooks first (ordered, and they fail-loud on a dead hard dependency)…
+        self.start_with_boot_timeout(ctx, BOOT_TIMEOUT).await?;
+        // …then arm the background reachability probe that feeds the cached readyz verdict.
+        self.spawn_probe(PROBE_INTERVAL_READY, PROBE_INTERVAL_UNREADY);
+        Ok(())
     }
 
-    /// Closes the persistent edge connection (if one was ever dialed).
+    /// Tears down the background probe task (grace-then-abort, mirroring the scheduler)
+    /// and closes the persistent edge connection (if one was ever dialed). Safe when the
+    /// probe was never spawned (start-unwind before this stub started): the `Option::take`
+    /// guards leave `None`.
     async fn stop(&self, _ctx: &Context) -> anyhow::Result<()> {
+        if let Some(tx) = self
+            .probe_stop
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+        {
+            let _ = tx.send(true);
+        }
+        // Take the handle out into a local so the std guard is dropped BEFORE the await
+        // below (a `MutexGuard` is not `Send` and must never cross an `.await`).
+        let task = self
+            .probe_task
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        if let Some(mut task) = task {
+            match tokio::time::timeout(PROBE_STOP_GRACE, &mut task).await {
+                Ok(_) => {}
+                Err(_) => {
+                    task.abort();
+                    let _ = task.await; // await the abort so we don't leak the task
+                }
+            }
+        }
         self.conn.close().await;
         Ok(())
     }
