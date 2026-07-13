@@ -17,6 +17,7 @@
 //! - `http_request_duration_seconds` — latency histogram, on prometheus's default
 //!   buckets, which are byte-identical to Go's `prometheus.DefBuckets`
 //!   (`.005,.01,.025,.05,.1,.25,.5,1,2.5,5,10`).
+//!
 //! The same private registry also carries the unlabeled, `httpmw`-owned
 //! `http_rate_limit_table_saturated_total` counter.
 //!
