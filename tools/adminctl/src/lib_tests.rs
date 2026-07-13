@@ -123,3 +123,55 @@ async fn create_user_rejects_empty_password() {
     // No row should have been created.
     assert!(stored_hash(&pool, &user).await.is_none(), "no user row for a rejected create");
 }
+
+/// The zombie-account regression: `create_user` must normalize (trim) the raw argv
+/// username before binding, so the stored row matches what the login handler's own
+/// trim+cap would look up — never a padded row the login path can never reach.
+#[tokio::test]
+async fn create_user_trims_padded_username() {
+    let Some(pool) = test_pool().await else {
+        return;
+    };
+    let bare = unique_username("adminctl-pad");
+    let padded = format!("  {bare}  ");
+
+    let inserted = create_user(&pool, &padded, "pw").await.unwrap();
+    assert!(inserted, "first create must report a new row");
+
+    // Stored under the TRIMMED name, not the raw padded argv.
+    assert!(stored_hash(&pool, &bare).await.is_some(), "row stored under the trimmed username");
+    assert!(stored_hash(&pool, &padded).await.is_none(), "no row stored under the padded username");
+
+    delete_user(&pool, &bare).await.unwrap();
+}
+
+/// `create_user` rejects a username over the 128-byte cap — same authority the
+/// login handler enforces, applied to the TRIMMED value.
+#[tokio::test]
+async fn create_user_rejects_over_cap_username() {
+    let Some(pool) = test_pool().await else {
+        return;
+    };
+    let too_long = "a".repeat(200);
+    let err = create_user(&pool, &too_long, "pw").await.unwrap_err();
+    assert!(err.to_string().contains("128-byte cap"), "over-cap username is rejected: {err}");
+    assert!(stored_hash(&pool, &too_long).await.is_none(), "no user row for a rejected create");
+}
+
+/// `delete_user` round-trips with `create_user`'s normalization: deleting the SAME
+/// padded input that created the row must find and remove it (both bind the
+/// trimmed name through the same authority).
+#[tokio::test]
+async fn delete_user_round_trips_padded_username() {
+    let Some(pool) = test_pool().await else {
+        return;
+    };
+    let bare = unique_username("adminctl-pad-del");
+    let padded = format!("  {bare}  ");
+
+    create_user(&pool, &bare, "pw").await.unwrap();
+    assert!(stored_hash(&pool, &bare).await.is_some(), "user exists before delete");
+
+    assert!(delete_user(&pool, &padded).await.unwrap(), "padded-input delete finds the trimmed row");
+    assert!(stored_hash(&pool, &bare).await.is_none(), "user gone after delete");
+}

@@ -119,6 +119,26 @@ pub(crate) fn password_within_cap(password: &str) -> bool {
     password.len() <= MAX_PASSWORD_BYTES
 }
 
+/// The ONE authority for turning raw username input into the value that gets
+/// bound to `admin.users.username` — trims, then cap-checks the TRIMMED value
+/// against [`MAX_USERNAME_BYTES`] via [`username_within_cap`]. Shared by the login
+/// handler (`login_submit`, below) and every `tools/adminctl` mutation that binds a
+/// username (`create_user`, `delete_user`), so a CLI-created account can never store
+/// a username the login path would then reject as empty/over-cap — the zombie
+/// account defect this fn closes. `pub` (not `pub(crate)`): `adminctl` is a
+/// different crate and is the ONLY enforcement point for `install.sh`/`install.ps1`,
+/// which pass argv straight through.
+pub fn normalize_username(input: &str) -> Result<String, &'static str> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Err("username must not be empty");
+    }
+    if !username_within_cap(trimmed) {
+        return Err("username exceeds the 128-byte cap");
+    }
+    Ok(trimmed.to_string())
+}
+
 /// The ONE body every failed login answers with — wrong password, unknown user, and
 /// locked are indistinguishable (no username/lock oracle).
 const GENERIC_LOGIN_ERROR: &str = "Invalid credentials.";
@@ -810,7 +830,7 @@ async fn login_submit(
     if st.open {
         return see_other("/admin"); // no sessions to mint on an open portal
     }
-    let username = body.get("username").map(String::as_str).unwrap_or("").trim().to_string();
+    let raw_username = body.get("username").map(String::as_str).unwrap_or("");
     let submitted = body.get("password").cloned().unwrap_or_default();
     let ip = st.resolve_ip(peer, &headers);
     if !st.login_limiter.allow(ip) {
@@ -828,9 +848,15 @@ async fn login_submit(
     let Ok(argon) = st.argon_permits.clone().acquire_owned().await else {
         return (StatusCode::INTERNAL_SERVER_ERROR, "login failed").into_response();
     };
-    let valid_input = !username.is_empty()
-        && username_within_cap(&username)
-        && password_within_cap(&submitted);
+    // Route trim + cap through the SAME authority the CLI uses (`normalize_username`)
+    // so login and adminctl agree bit-for-bit; a rejection here maps to
+    // `valid_input=false` and `authenticate_and_mint` still burns the dummy-hash
+    // argon2 verify below (no username-validity timing oracle) exactly as before.
+    let (username, username_valid) = match normalize_username(raw_username) {
+        Ok(name) => (name, true),
+        Err(_) => (String::new(), false),
+    };
+    let valid_input = username_valid && password_within_cap(&submitted);
     match st.authenticate_and_mint(username, submitted, ip, valid_input, argon).await {
         Ok(LoginOutcome::Success { username, token }) => {
             tracing::debug!(%username, "admin login succeeded");

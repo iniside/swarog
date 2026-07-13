@@ -45,10 +45,16 @@ pub async fn ensure_schema(pool: &PgPool) -> Result<()> {
 /// username is a password RESET, not an error. Returns `true` when a new row was
 /// inserted, `false` when an existing user's password was reset. Rejects an empty
 /// password (an unusable login).
+///
+/// The username is normalized through [`admin::normalize_username`] — the SAME
+/// authority the login handler trims/caps against — before it is bound. Binding the
+/// raw argv value (the pre-fix behavior) could mint a row like `"  alice  "` that
+/// `login_submit`'s trim+cap would then never match, i.e. a permanently unusable
+/// ("zombie") account; `install.sh`/`install.ps1` pass argv straight through, so
+/// this is the only enforcement point.
 pub async fn create_user(pool: &PgPool, username: &str, password: &str) -> Result<bool> {
-    if username.trim().is_empty() {
-        return Err(anyhow!("adminctl: username must not be empty"));
-    }
+    let username = admin::normalize_username(username)
+        .map_err(|error| anyhow!("adminctl: {error}"))?;
     if password.is_empty() {
         return Err(anyhow!("adminctl: password must not be empty"));
     }
@@ -62,7 +68,7 @@ pub async fn create_user(pool: &PgPool, username: &str, password: &str) -> Resul
          ON CONFLICT (username) DO UPDATE SET pass_hash = EXCLUDED.pass_hash \
          RETURNING (xmax = 0) AS inserted",
     )
-    .bind(username)
+    .bind(&username)
     .bind(&hash)
     .fetch_one(pool)
     .await
@@ -91,11 +97,16 @@ pub async fn list_users(pool: &PgPool) -> Result<Vec<UserRow>> {
 
 /// `delete`: remove one admin login by username. Returns `true` iff a row was deleted
 /// (`false` = no such user), so the CLI can report the difference rather than pretend
-/// success. Sessions cascade off `admin.users` (FK `ON DELETE CASCADE`).
+/// success. Sessions cascade off `admin.users` (FK `ON DELETE CASCADE`). Normalizes
+/// through the same [`admin::normalize_username`] authority as `create_user` so
+/// `delete-user "  alice  "` deletes the row `create-user "  alice  "` actually
+/// stored (both bind the trimmed name).
 pub async fn delete_user(pool: &PgPool, username: &str) -> Result<bool> {
+    let username = admin::normalize_username(username)
+        .map_err(|error| anyhow!("adminctl: {error}"))?;
     ensure_schema(pool).await?;
     let done = sqlx::query("DELETE FROM admin.users WHERE username = $1")
-        .bind(username)
+        .bind(&username)
         .execute(pool)
         .await
         .context("adminctl: delete admin user")?;

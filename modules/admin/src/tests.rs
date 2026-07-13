@@ -453,6 +453,44 @@ fn backoff_is_exponential_and_capped() {
     assert_eq!(backoff_secs(-1), 900, "nonsense input stays at the cap, never panics");
 }
 
+/// The consistency table (C18): `normalize_username` and the login path's own
+/// `!username.is_empty() && username_within_cap(...)` check on the TRIMMED value
+/// must agree on every case, or a CLI-created account and the login handler could
+/// disagree about which usernames are usable (the zombie-account defect).
+#[test]
+fn normalize_username_agrees_with_login_validity_check() {
+    let padded_128 = format!("  {}  ", "a".repeat(128));
+    let cases: &[(&str, &str)] = &[
+        ("empty", ""),
+        ("whitespace-only", "   "),
+        ("exactly-128-bytes", &"a".repeat(128)),
+        ("129-bytes", &"a".repeat(129)),
+        ("padded-under-cap", "  alice  "),
+        ("padded-exactly-128-after-trim", &padded_128),
+    ];
+    for (label, input) in cases {
+        let normalize_ok = normalize_username(input).is_ok();
+        // Mirrors the OLD inline check `login_submit` used to run directly (now
+        // routed through `normalize_username` too) — trim, then the same cap fn.
+        let trimmed = input.trim();
+        let login_ok = !trimmed.is_empty() && username_within_cap(trimmed);
+        assert_eq!(
+            normalize_ok, login_ok,
+            "{label}: normalize_username()={normalize_ok} login-style check={login_ok} for {input:?}"
+        );
+    }
+}
+
+#[test]
+fn normalize_username_trims_and_rejects_empty_or_over_cap() {
+    assert_eq!(normalize_username("  alice  ").unwrap(), "alice");
+    assert_eq!(normalize_username("bob").unwrap(), "bob");
+    assert!(normalize_username("").is_err());
+    assert!(normalize_username("   ").is_err());
+    assert!(normalize_username(&"a".repeat(129)).is_err());
+    assert!(normalize_username(&"a".repeat(128)).is_ok(), "exactly at the cap is accepted");
+}
+
 #[test]
 fn password_roundtrip() {
     let h = hash_password("hunter2").unwrap();
