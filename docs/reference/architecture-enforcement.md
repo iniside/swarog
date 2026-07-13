@@ -20,14 +20,15 @@ logs, and reports one authoritative result table.
 
 ## Blocking architecture gates
 
-- **fortress** builds every `cmd/*-svc` through `tools/checkmodules` and runs
-  `archcheck`. `archcheck` rejects foundation-to-domain dependencies,
-  module-to-module implementation dependencies, foreign RPC-glue dependencies,
-  topology-aware transport state inside modules, missing service composition
-  roots, and illegal consumers of `demos/*`.
+- **fortress** discovers and builds `server` plus every on-disk `cmd/*-svc`, then
+  runs `archcheck`, `requirecheck --strict`, and
+  `topiccheck --durability-strict`. `archcheck` rejects foundation-to-domain
+  dependencies, module-to-module implementation dependencies, foreign RPC-glue
+  dependencies, topology-aware transport state inside modules, missing service
+  composition roots, and illegal consumers of `demos/*`.
 - **routecheck** compares the declared HTTP/player route surface with the process
   profiles that host it, catching missing, duplicate, or wrongly exposed routes.
-- **codegen-freshness** regenerates committed RPC and external-client output in a
+- **codegen-freshness** regenerates the committed external C# client output in a
   temporary location and fails on drift.
 - **contract-golden** compares the generated wire-contract inventory with the
   committed golden file.
@@ -36,6 +37,9 @@ logs, and reports one authoritative result table.
   repository-owned executable probes. It is a behavioral supplement to
   `archcheck`; an `Applies` stance needs a biting fixture and a `NotApplicable`
   stance needs a concrete reason.
+- **docs-current** scans the root guidance and `docs/reference/` for broken local
+  links, retired wrapper commands/links, and unknown workspace packages in command
+  examples.
 - **split-proof** boots the real split fleet, drives traffic through the gateway,
   reruns the monolith for parity, and proves owned graceful shutdown.
 

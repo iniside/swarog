@@ -14,11 +14,12 @@ always say which method you used.
 
 Offer the fitting subset:
 
-- **LSP / clangd** — Rust/C++-style symbol navigation with a file+line+column
-  anchor: definition, references, implementations, callers, and type hierarchy
-  (preferred for "where is X defined / who calls Y / what implements this trait").
-  Start with one targeted `rg` anchor, then ask clangd; implementation queries are
-  the part a text sweep cannot prove.
+- **LSP / rust-analyzer** — Rust symbol navigation from a concrete
+  file+line+column anchor: definition, references, trait implementations, call
+  hierarchy, and inferred type information (preferred for "where is X defined /
+  who calls Y / what implements this trait"). Start with one targeted `rg` result
+  to establish the anchor, then query rust-analyzer; implementation and call
+  hierarchy results are the part a text sweep cannot prove.
 - **Parallel research subagents** — fan out subagents, each a distinct **non-overlapping** angle (e.g. API surface / callers+consumers / event publishers+subscribers / config+env wiring). If picked, ask **"how many?"** (bands below). Dispatch mechanics per [subagent-dispatch.md](subagent-dispatch.md)—every one gets the nav guidance pasted in and reports which method it used.
 - **Targeted main-model read** — small surface, one file end-to-end.
 - **Grep/Glob** — only when nothing else fits; acknowledge it's a lower bound.

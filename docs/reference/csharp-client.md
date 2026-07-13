@@ -90,7 +90,7 @@ pretty JSON for debugging/golden tests without touching the C# output.
   exposing `#[http]` methods) requires exactly one edit: add its prefix to
   `PROVIDERS` in `tools/csharp-client-gen/src/scrape.rs`. Forgetting this is not a
   silent gap — the provider-completeness gate turns it into a hard build failure
-  the next time `csharp-client-gen` (or the `codegen-fresh` verify stage) runs.
+  the next time `csharp-client-gen` (or the `codegen-freshness` verify stage) runs.
 
 ## Dev vs prod-like mode
 
@@ -201,7 +201,7 @@ cargo run -p csharp-client-gen -- --out clients/csharp/Generated
 
 Generated output (`clients/csharp/Generated/{Client.cs,Dtos.cs,Status.cs}`) is
 **committed to the repo**, not built on the fly by the C# project — the
-`codegen-fresh` verify stage is exactly the freshness gate that keeps the committed
+`codegen-freshness` verify stage is exactly the freshness gate that keeps the committed
 copy honest against the current contract crates. The emitter is deterministic
 (stable provider/method/field ordering, fixed header, no timestamps) so a stale
 diff always means a real drift, never generator jitter.

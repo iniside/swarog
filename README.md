@@ -79,8 +79,8 @@ branches in domain code. `cmd/*` mains are the only topology-aware code and diff
 only in their module list and which QUIC planes they serve. All of this is enforced
 mechanically by the Rust verification runner: `archcheck` and the `fortress`
 stage enforce dependency and process boundaries, while route, event-topic,
-generated-code, contract-golden, conformance, and public-API checks protect the
-surfaces that cross those boundaries.
+external-client codegen, contract-golden, conformance, current-documentation, and
+public-API checks protect the surfaces that cross those boundaries.
 
 ## Domain modules
 
@@ -91,7 +91,8 @@ surfaces that cross those boundaries.
 - **characters / inventory** — the modularity reference case: plain-id relations,
   synchronous ownership authz over the wire, starter-grant/wipe via durable events.
 - **config** — DB-backed knobs with LISTEN/NOTIFY live reload; remote consumers get
-  a snapshot-filled cache invalidated by `config.changed`.
+  a snapshot-filled cache kept fresh by the `config_changed` invalidation channel.
+  The durable `config.changed` event is a separate audit/consumer contract.
 - **admin** — GameOps portal at `/admin`; renders contributed admin pages, remote
   pages fan out over QUIC.
 - **audit** — append-only ledger; zero-coupling raw event sinks; scheduled pruning.
@@ -146,7 +147,8 @@ cargo run -p devctl -- down
 `devctl up` is a foreground supervisor. It builds the selected topology, creates
 the development edge CA, seeds the development admin account, starts each process
 with a typed environment, health-checks it, and keeps ownership until shutdown.
-State, logs, and the bounded loopback control endpoint live under `run/devctl/`.
+Bounded state/control metadata lives under `run/devctl/`, alongside ordinary owned
+per-process logs.
 `status` and `down` verify the recorded supervisor identity before talking to it;
 shutdown reaps exactly the processes owned by that supervisor and does not kill by
 process name or stale PID.
@@ -161,8 +163,9 @@ cargo run -p verifyctl -- --slow
 ```
 
 `--fast` is the default blocking safety net: build, clippy, tests, dependency
-audit, fortress/architecture checks, route and generated-contract freshness,
-contract golden files, convention conformance, and the live split proof. `--all`
+audit, fortress/architecture checks, route checks, external C# codegen freshness,
+contract-golden wire inventory, convention conformance, `docs-current`, and the
+live split proof. `--all`
 adds the advisory public-API, fuzz, external C# client, and event-topic stages;
 `--strict` includes those advisory stages and makes their failures blocking.
 `--slow` runs blocking plus advisory stages and adds mutation testing; advisory
@@ -181,7 +184,8 @@ bypassing the lock. Before an ad-hoc `cargo test`, also confirm that no `cargo` 
 the background against the shared Postgres.
 
 `split-proof` is the heart of the repo's promise: it boots every domain service as
-a separate process (each with its HTTP port and internal QUIC edge), routes real
+a separate process (each with its HTTP port and, where applicable, an internal QUIC
+edge), routes real
 traffic through the gateway — registration, login, authz negatives, cross-process
 flows, live config reload, scheduler exactly-once, API-key policy — and then runs
 the same scenarios against the monolith. **A feature that only works in one

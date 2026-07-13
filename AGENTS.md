@@ -80,11 +80,12 @@ never a silent last-writer-wins overwrite.
 2. **Fortress rule.** Every folder in `modules/` is a fortress: it never imports
    another module's impl crate, and every domain module compiles + boots as its own
    `cmd/<name>-svc`. The only gates are the contract crates under `api/<name>/`.
-   Enforced mechanically by the blocking `fortress` stage in `verifyctl`:
-   `archcheck` rejects module→module edges, foreign `<name>rpc` edges,
-   `Option<edge::Server>` in `modules/`, missing `cmd/<name>-svc` roots, and illegal
-   demo consumers; `checkmodules` builds every svc. NO exceptions — non-shipping
-   demo crates live under `demos/`
+   Enforced mechanically by the blocking `fortress` stage in `verifyctl`: it builds
+   `server` and every on-disk `cmd/*-svc`, then runs `archcheck`, strict capability
+   requirement checking, and durability-strict topic checking. `archcheck` rejects
+   module→module edges, foreign `<name>rpc` edges, `Option<edge::Server>` in
+   `modules/`, missing `cmd/<name>-svc` roots, and illegal demo consumers. NO
+   exceptions — non-shipping demo crates live under `demos/`
    (importable ONLY by `cmd/server`, archcheck-enforced), not in `modules/`.
 3. **Contract surface per domain, under `api/<name>/`:** `<name>api` (pure traits +
    `#[rpc]`, transport-free — importable by any module), `<name>events` (payloads +
@@ -184,9 +185,10 @@ never a silent last-writer-wins overwrite.
    (monolith); the svc serves its ops ONLY over the internal mTLS edge and
    gateway-svc dispatches to it Remote. Register the module in `cmd/server`'s lib,
    add stubs where consumers live, add the svc lib to `tools/checkmodules`'s Split
-   profile, and extend `tools/splitproof` (a new `Svc` in `fleet()` with its env +
-   ports + a named assertion, HTTP ops asserted THROUGH gateway-svc; the harness's
-   fleet-drift preflight fails if `fleet()` != `cmd/*-svc` on disk). Add the module
+   profile, add its typed env/ports/dependencies to
+   `tools/processctl/src/fleet.rs`, and extend `tools/splitproof` with a named
+   assertion (HTTP ops asserted THROUGH gateway-svc; the harness's fleet-drift
+   preflight fails if the centralized fleet != `cmd/*-svc` on disk). Add the module
    to the centralized convention inventory in `tools/conformance/src/policy.rs`;
    use the smallest executable fixture that proves each applicable convention and
    give every genuine non-applicability a concrete reason.
@@ -329,8 +331,9 @@ cargo run -p verifyctl -- --slow
 ```
 
 `devctl up` is the owned foreground supervisor. It builds, seeds, starts, and
-health-checks the selected topology, writes bounded state/logs under `run/devctl/`,
-and retains ownership until shutdown. `status` and `down` validate the recorded
+health-checks the selected topology, writes bounded state/control metadata and
+ordinary owned per-process logs under `run/devctl/`, and retains ownership until
+shutdown. `status` and `down` validate the recorded
 supervisor identity over a bounded loopback control endpoint; cleanup reaps exactly
 the process groups/job members that supervisor created, never unrelated processes
 selected by name or a reused PID.
@@ -339,8 +342,9 @@ selected by name or a reused PID.
 blocking failure:
 
 - BLOCKING (default / `--fast`): build, clippy `-D warnings`, test, audit,
-  fortress, routecheck, codegen-freshness, contract-golden, conformance, and
-  split-proof. Audit install/invocation/network errors are FAIL, never green SKIP;
+  fortress, routecheck, codegen-freshness, contract-golden, conformance,
+  docs-current, and split-proof. Audit install/invocation/network errors are FAIL,
+  never green SKIP;
   only a missing tool with explicit `--no-install` is labeled SKIP.
 - ADVISORY (`--all`, or included and blocking with `--strict`): public-api, fuzz,
   external C# client, and topiccheck.
@@ -424,8 +428,9 @@ process group / SIGTERM on unix → clean drain, no force-kill). **psql is REQUI
 `DATABASE_URL`; the preceding blocking build stage produces the fleet and the
 harness runs it without a nested build. A
 fleet-drift preflight fails loudly if the harness svc list != `cmd/*-svc` on disk.
-Extend `tools/splitproof` with a new `Svc` in `fleet()` + a named assertion whenever
-you add a module or cross-process flow. **Never ship a monolith-only feature** — both
+Add a new module's typed service to `tools/processctl/src/fleet.rs` and add its
+named assertion to `tools/splitproof`; cross-process flows also need a named harness
+assertion. **Never ship a monolith-only feature** — both
 topologies are supported compilation paths.
 
 Smoke test (monolith or through gateway-svc). The dev conveniences are explicit
@@ -548,7 +553,7 @@ mapping an API surface, finding all callers, understanding data flow, locating
 wiring, surveying overlap; one-shot lookups with a known file+symbol proceed without
 asking.
 
-**Method menu (clangd/LSP, parallel subagents, targeted read, grep) + subagent-count
+**Method menu (rust-analyzer/LSP, parallel subagents, targeted read, grep) + subagent-count
 bands: [docs/reference/research-mode.md](docs/reference/research-mode.md); shared
 Agent-call invariants: [docs/reference/subagent-dispatch.md](docs/reference/subagent-dispatch.md).**
 Any code-touching subagent gets the nav guidance pasted into its prompt — it does not
