@@ -1423,12 +1423,12 @@ async fn i_gate(ctx: &Ctx, fleet: &mut Vec<Running>, p: &mut Proof) -> Result<()
 /// (characters-svc — a stub gateway-svc holds, deliberately distinct from the inventory-svc
 /// that [I-GATE] restarts) with no respawn, and assert gateway `/readyz` flips to 503
 /// NAMING the dead `stub:characters` driven by the probe alone; then respawn and assert
-/// /readyz recovers to 200. While the peer is down it ALSO times ONE sequential /readyz and
-/// asserts it stays fast (<500ms): the OLD per-request-dial code would spend ~1s dialing the
-/// dead peer in-request, the fixed cached path returns in <10ms — a real behavioral
-/// fixed-vs-unfixed distinguisher on the split. Deliberately NOT a concurrent burst (axum
-/// overlaps those to ~1s even unfixed, proving nothing); the exhaustive by-construction
-/// anti-amplification proof remains the sequential core/remote `readiness_verdict_*` unit tests.
+/// /readyz recovers to 200. This scenario proves readiness ACCURACY + RECOVERY end-to-end on
+/// the split (gateway-svc's 6 stubs); it makes NO behavioral fixed-vs-unfixed assertion,
+/// because a killed peer leaves a CLOSED loopback port whose QUIC dial fast-fails — so even the
+/// OLD in-request-dial path would be fast here, and any latency threshold would be unsound
+/// (false-pass the unfixed, false-fail the fixed under jitter). The exhaustive by-construction
+/// anti-amplification proof is the sequential core/remote `readiness_verdict_*` unit tests.
 async fn rdy_dead(ctx: &Ctx, fleet: &mut Vec<Running>, p: &mut Proof) -> Result<()> {
     println!("\n[splitproof] === [RDY-DEAD] kill characters-svc; gateway /readyz must flip via background probe ===");
     let g = format!("http://127.0.0.1:{}", ctx.http_port("gateway-svc"));
@@ -1516,21 +1516,14 @@ async fn rdy_dead(ctx: &Ctx, fleet: &mut Vec<Running>, p: &mut Proof) -> Result<
         format!("last_code={last:?} names_stub={names_stub}"),
     );
 
-    // The fixed-vs-unfixed DISTINGUISHER on the split: while characters is DOWN, time ONE
-    // sequential /readyz. The OLD per-request-dial code dialed the dead peer IN-REQUEST (1s
-    // timeout) so this GET would take ~1s; the fixed cached-verdict path returns in <10ms
-    // (gateway-svc is DB-less, so /readyz is just cached stub reads). A SINGLE request — not a
-    // concurrent burst, which axum overlaps to ~1s even unfixed and so proves nothing. 500ms
-    // cleanly separates the two (fixed <50ms vs unfixed ~1000ms).
-    let t0 = Instant::now();
-    let fast = ctx.http.get(format!("{g}/readyz")).send().await;
-    let latency = t0.elapsed();
-    let fast_503 = matches!(&fast, Ok(r) if r.status() == reqwest::StatusCode::SERVICE_UNAVAILABLE);
-    p.check(
-        "[RDY-DEAD] /readyz stays fast while peer down (cached verdict, no in-request dial)",
-        fast_503 && latency < Duration::from_millis(500),
-        format!("latency={latency:?} is_503={fast_503}"),
-    );
+    // NOTE: [RDY-DEAD] makes NO behavioral fixed-vs-unfixed assertion on purpose. A killed svc
+    // leaves a CLOSED loopback port, and a QUIC dial to it fast-fails (see
+    // `probe_unreachable_peer_errs_fast` in core/remote) rather than consuming the 1s timeout —
+    // so even the OLD in-request-dial /readyz would return quickly here. A latency threshold
+    // would therefore be unsound in BOTH directions (false-pass the unfixed path, false-fail the
+    // fixed one under CI jitter). The exhaustive anti-amplification proof is the SEQUENTIAL
+    // core/remote `readiness_verdict_*` unit tests (zero-I/O by construction); this split
+    // scenario proves readiness ACCURACY + RECOVERY end-to-end across gateway-svc's 6 stubs.
 
     // Recovery: respawn characters-svc from its canonical spec and wait for it healthy.
     let restarted = ctx.service("characters-svc").clone();
