@@ -69,6 +69,12 @@ const DEFAULT_DSN: &str =
 /// listed here and unsubscribed in a profile is a SEAM violation that fails
 /// `--durability-strict`. Empty today: every one of the six defined topics has a live
 /// durable subscriber in both profiles.
+///
+/// KNOWN GAP: this allow-list keys on the topic string only, not `(topic, version)`. Fine
+/// while it is empty, but if a multi-version topic (e.g. an additive v2 alongside a still-
+/// live v1) ever needs a version-scoped sinkless allowance, this must become tuple-keyed
+/// (`&[(&str, u32)]`) — a topic-only entry would silently allow EVERY version of that topic
+/// unsubscribed, not just the intended one.
 const ALLOW_UNSUBSCRIBED: &[&str] = &[];
 
 /// Defined (contract) topics legitimately subscribed same-module on the in-process plane
@@ -76,6 +82,10 @@ const ALLOW_UNSUBSCRIBED: &[&str] = &[];
 /// defined topic. A future legitimate same-module reaction is whitelisted here with a
 /// reason comment (the tool cannot prove same-module vs cross-module, so this is the
 /// escape hatch — see check 4).
+///
+/// KNOWN GAP: like `ALLOW_UNSUBSCRIBED`, this keys on the topic string only, not
+/// `(topic, version)`. Fine while empty; must become tuple-keyed if a multi-version topic
+/// ever needs a version-scoped in-process allowance.
 const ALLOW_INPROCESS_DEFINED: &[&str] = &[];
 
 /// Processes that host no DB / durable-events plane and therefore must host ZERO durable

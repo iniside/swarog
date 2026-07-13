@@ -220,12 +220,81 @@ async fn current_tree_has_zero_unsubscribed_in_both_profiles() {
 /// nobody added to `defined_topics()` fails loudly here instead of silently never being
 /// checked by any profile. Comment-filtered text scan (skip lines whose trimmed content
 /// starts with `//`), same tolerance level as archcheck's text tripwires -- this is not
-/// a Rust parser, just a drift detector for the topic string literal that follows each
+/// a Rust parser, just a drift detector for the `(topic, version)` pair that follows each
 /// `define(` call.
+///
+/// Keyed on `(topic, version)`, NOT topic alone: a legal ADDITIVE v2 `define(...)` site
+/// living beside its v1 (CLAUDE.md hard constraint 6 -- evolve events additively, never
+/// mutate a published shape) is two distinct, valid define-sites for the same topic
+/// string. A topic-only key would treat the v2 site as a duplicate of v1 and panic on
+/// every additive event evolution -- exactly the dead-gate failure mode this scan must
+/// not repeat.
+fn parse_define_sites(file_label: &str, text: &str) -> BTreeSet<(String, u32)> {
+    let mut sites: BTreeSet<(String, u32)> = BTreeSet::new();
+    for line in text.lines() {
+        let t = line.trim_start();
+        if t.starts_with("//") {
+            continue;
+        }
+        let Some(after) = t.split_once("define(") else { continue };
+        let rest = after.1;
+        let Some(start) = rest.find('"') else {
+            panic!(
+                "{file_label}: a `define(` call has no string-literal first argument on the \
+                 same line -- the scan assumes `define(\"topic\", <version>, ...)` on one \
+                 line: {line:?}"
+            );
+        };
+        let after_quote = &rest[start + 1..];
+        let end = after_quote.find('"').unwrap_or_else(|| {
+            panic!("{file_label}: unterminated string literal after `define(` in line {line:?}")
+        });
+        let topic = &after_quote[..end];
+
+        // Parse the version argument: skip whitespace, expect exactly one comma, skip
+        // whitespace, then take a run of ASCII digits as the u32 literal. A version token
+        // that is NOT an integer literal -- a const name, a line wrap that puts the
+        // version on the next line, or nothing at all -- MUST panic here, never silently
+        // skip the site. A silent skip is the same dead-gate class Step 1 of this
+        // remediation just closed (a check that looks like it validates something but
+        // quietly excludes the case that would fail it); this scan does not get to
+        // reintroduce that pattern for the version field.
+        let after_topic = &after_quote[end + 1..];
+        let after_comma = after_topic.trim_start().strip_prefix(',').unwrap_or_else(|| {
+            panic!(
+                "{file_label}: `define(\"{topic}\", ...)` is not followed by a `,` and a \
+                 version literal on the same line -- cannot parse the version: {line:?}"
+            )
+        });
+        let version_field = after_comma.trim_start();
+        let digits: String = version_field.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if digits.is_empty() {
+            panic!(
+                "{file_label}: `define(\"{topic}\", ...)` version argument is not an integer \
+                 literal on the same line (found {version_field:?}) -- a const name or a \
+                 version wrapped onto the next line cannot be scanned by this text-based \
+                 drift check; keep `define(\"topic\", <u32 literal>, ...)` on one line: \
+                 {line:?}"
+            );
+        }
+        let version: u32 = digits.parse().unwrap_or_else(|e| {
+            panic!("{file_label}: version literal {digits:?} failed to parse as u32: {e}")
+        });
+
+        if !sites.insert((topic.to_string(), version)) {
+            panic!(
+                "{file_label}: (topic, version) = ({topic:?}, {version}) is defined more than \
+                 once -- topiccheck assumes one define per (topic, version) pair"
+            );
+        }
+    }
+    sites
+}
+
 #[test]
 fn defined_topics_matches_every_define_site_on_disk() {
     let api_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../api");
-    let mut from_fs: BTreeSet<String> = BTreeSet::new();
+    let mut from_fs: BTreeSet<(String, u32)> = BTreeSet::new();
     let mut files_scanned = 0;
     for entry in std::fs::read_dir(&api_dir)
         .unwrap_or_else(|e| panic!("failed to read {}: {e}", api_dir.display()))
@@ -239,41 +308,21 @@ fn defined_topics_matches_every_define_site_on_disk() {
             continue; // domain has no events crate -- nothing to scan
         };
         files_scanned += 1;
-        for line in text.lines() {
-            let t = line.trim_start();
-            if t.starts_with("//") {
-                continue;
-            }
-            let Some(after) = t.split_once("define(") else { continue };
-            let rest = after.1;
-            let Some(start) = rest.find('"') else {
+        let label = lib.display().to_string();
+        for site in parse_define_sites(&label, &text) {
+            if !from_fs.insert(site.clone()) {
                 panic!(
-                    "{}: a `define(` call has no string-literal first argument on the \
-                     same line -- the scan assumes `define(\"topic\", ...)` on one line: {line:?}",
-                    lib.display()
-                );
-            };
-            let after_quote = &rest[start + 1..];
-            let end = after_quote.find('"').unwrap_or_else(|| {
-                panic!(
-                    "{}: unterminated string literal after `define(` in line {line:?}",
-                    lib.display()
-                )
-            });
-            let topic = &after_quote[..end];
-            if !from_fs.insert(topic.to_string()) {
-                panic!(
-                    "{}: topic {topic:?} is defined more than once across api/*/events \
-                     (duplicate define-site) -- topiccheck assumes one define per topic string",
-                    lib.display()
+                    "{label}: (topic, version) = {site:?} is defined more than once across \
+                     api/*/events (duplicate define-site across files) -- topiccheck assumes \
+                     one define per (topic, version) pair"
                 );
             }
         }
     }
     assert!(files_scanned > 0, "expected at least one api/*/events/src/lib.rs to scan");
 
-    let from_defined: BTreeSet<String> =
-        defined_topics().into_iter().map(|c| c.topic).collect();
+    let from_defined: BTreeSet<(String, u32)> =
+        defined_topics().into_iter().map(|c| (c.topic, c.version)).collect();
 
     assert_eq!(
         from_fs, from_defined,
@@ -282,6 +331,36 @@ fn defined_topics_matches_every_define_site_on_disk() {
          defined_topics() returns {from_defined:?}) -- add/remove the missing/orphaned \
          Contract in defined_topics() (tools/topiccheck/src/main.rs)"
     );
+}
+
+// --- parse_define_sites: direct unit coverage of the extracted scan helper --------
+
+#[test]
+fn parse_define_sites_treats_additive_v2_beside_v1_as_two_clean_sites() {
+    // The point of this whole fix: a v1 define beside a legal additive v2 define for the
+    // SAME topic must NOT panic. Under the old topic-only dedup this fixture panicked.
+    let text = "define(\"x\", 1, HistoryPolicy::KeepForever);\ndefine(\"x\", 2, HistoryPolicy::KeepForever);\n";
+    let sites = parse_define_sites("fixture", text);
+    assert_eq!(
+        sites,
+        BTreeSet::from([("x".to_string(), 1), ("x".to_string(), 2)])
+    );
+}
+
+#[test]
+#[should_panic(expected = "defined more than once")]
+fn parse_define_sites_panics_on_a_genuine_duplicate_topic_version_pair() {
+    let text = "define(\"x\", 1, HistoryPolicy::KeepForever);\ndefine(\"x\", 1, HistoryPolicy::KeepForever);\n";
+    parse_define_sites("fixture", text);
+}
+
+#[test]
+#[should_panic(expected = "fixture")]
+fn parse_define_sites_panics_with_file_label_on_a_non_literal_version() {
+    // A const token (or any non-integer version argument) must fail loudly, never be
+    // silently skipped -- this scan is a gate, not a best-effort hint.
+    let text = "define(\"x\", VERSION, HistoryPolicy::KeepForever);\n";
+    parse_define_sites("fixture", text);
 }
 
 // --- The DEFINE set is exactly the seven domain contract topics ---------------
