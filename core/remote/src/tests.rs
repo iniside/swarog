@@ -686,3 +686,119 @@ async fn failing_boot_hook_keeps_its_own_error_context() {
     assert!(msg.contains("broken"), "{msg}");
     assert!(format!("{err:#}").contains("peer said no"), "{err:#}");
 }
+
+// ---- The zero-I/O readyz check (Step 1: probe cache, no per-request dial) --
+//
+// Step 1 replaced the per-request QUIC/mTLS dial in each stub's `/readyz`
+// `httpmw::ReadyCheck` with a background probe loop that stamps a CACHED verdict; the
+// check now READS ONLY that cache (zero network I/O). The two tests below pin the two
+// halves of that fix: the check does no dial (the amplification-gone proof), and the
+// background loop is the sole dialer, reflecting peer reachability in both directions.
+
+/// The `/readyz` `ReadyCheck` performs ZERO network I/O — it only reads the cached
+/// verdict stamped by the background probe. Seed the cache with a SENTINEL and point
+/// the stub at a blackhole peer (`127.0.0.1:1`) so that IF the check ever dialed, each
+/// run would take ~1s (`probe_peer`'s inner bound) and the returned string would name a
+/// dial failure, not the sentinel. 100 sequential runs returning the sentinel in <100ms
+/// prove the check never dials.
+///
+/// The OLD per-request-dial code would take ~100 × 1s ≈ 100s here (one fresh QUIC/mTLS
+/// handshake attempt PER `/readyz` request); the cached read is effectively instant —
+/// this is the anti-amplification proof.
+#[tokio::test]
+async fn readyz_check_does_no_io() {
+    let ctx = Context::new();
+    // Blackhole peer: a dial here would burn ~1s each and yield a "dial to …"/timeout
+    // string, distinct from the sentinel below.
+    let stub = Stub::new("fake", "127.0.0.1:1", vec![Box::new(|_ctx, _caller| {})]);
+
+    // Seed the cache DIRECTLY (same crate — private fields are reachable). A cache read
+    // returns this exact sentinel; a live dial never would. Fresh stamp so the
+    // staleness guard does NOT fire and force an unready verdict of its own.
+    *stub.verdict.lock().unwrap() = Err("SENTINEL-cached".to_string());
+    stub.last_probe_at
+        .store(coarse_now_secs().max(1), Ordering::SeqCst);
+
+    // `init` contributes the `stub:<provider>` ReadyCheck to READINESS_SLOT.
+    stub.init(&ctx).unwrap();
+    let check = ctx
+        .contributions::<httpmw::ReadyCheck>(httpmw::READINESS_SLOT)
+        .into_iter()
+        .find(|c| c.name() == "stub:fake")
+        .expect("stub must contribute a `stub:fake` readiness check");
+
+    let started = std::time::Instant::now();
+    for _ in 0..100 {
+        let out = check.run().await;
+        assert_eq!(
+            out.unwrap_err(),
+            "SENTINEL-cached",
+            "the check must return the cached sentinel, not a live-dial result"
+        );
+    }
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < Duration::from_millis(100),
+        "100 cached reads must be near-instant; a per-request dial to the blackhole \
+         would take ~100s (took {elapsed:?})"
+    );
+}
+
+/// The background probe loop — spawned by the stub, the SOLE runtime caller of
+/// `probe_peer` — updates the cached verdict in BOTH directions and tears down cleanly.
+/// A live loopback `edge::Server` (the same shared-CA anchor the probe dials) makes the
+/// verdict flip to `Ok`; closing it makes a later probe flip it back to `Err`; and
+/// `Module::stop` grace-then-aborts the loop without hanging.
+#[tokio::test]
+async fn background_probe_updates_verdict() {
+    let ca = edge::shared_dev_ca().expect("shared dev CA");
+    let srv = edge::Server::new();
+    let running = srv
+        .listen(std::net::SocketAddr::from(([127, 0, 0, 1], 0)), &ca)
+        .expect("listen on loopback");
+
+    let stub = Stub::new(
+        "fake",
+        &running.local_addr().to_string(),
+        vec![Box::new(|_ctx, _caller| {})],
+    );
+    // Short cadence both rates so the test observes flips within its budget.
+    stub.spawn_probe(Duration::from_millis(50), Duration::from_millis(50));
+
+    // The loop dials the LIVE peer and stamps `Ok`.
+    let mut became_ready = false;
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while std::time::Instant::now() < deadline {
+        let v = stub.verdict.lock().unwrap().clone();
+        if v.is_ok() {
+            became_ready = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(became_ready, "background probe never stamped Ok for a live peer");
+    assert_ne!(
+        stub.last_probe_at.load(Ordering::SeqCst),
+        0,
+        "a completed probe must stamp last_probe_at"
+    );
+
+    // Peer dies → a later probe fails → the cached verdict flips to `Err`.
+    running.close();
+    let mut became_err = false;
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while std::time::Instant::now() < deadline {
+        let v = stub.verdict.lock().unwrap().clone();
+        if v.is_err() {
+            became_err = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(became_err, "background probe never reflected peer loss");
+
+    // Tear down through the real `Module::stop` path (grace-then-abort). The test
+    // completing at all proves stop does not hang on the running loop.
+    let ctx = Context::new();
+    stub.stop(&ctx).await.expect("stop tears the probe loop down cleanly");
+}
