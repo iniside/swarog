@@ -23,4 +23,3 @@ a Go advantage. Distinguish mechanical agent errors (a stricter compiler catches
 these) from overclaiming/verification failures (no type system catches these — see
 [[verify-the-at-risk-path-not-the-safe-one]],
 [[scope-claims-to-what-was-verified]]).
-*** Delete File: C:/Users/lukas/.claude/projects/G--Projects-GameBackend/memory/refactor-churn-was-opus-remediation.md
