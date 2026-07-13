@@ -89,7 +89,8 @@ fn gated_inner(dev_grant: bool) -> Arc<Inner> {
 
 // ---- No-DB unit tests --------------------------------------------------
 
-/// `starter_spec` reads straight off the injected config reader (no cache, Step 8):
+/// `starter_spec` reads straight off the injected config reader (no inventory-owned
+/// second cache, Step 8):
 /// changing the fake's cells is visible on the VERY NEXT call, with no refresh step.
 #[tokio::test]
 async fn starter_spec_reads_config_directly_every_call() {
@@ -104,7 +105,7 @@ async fn starter_spec_reads_config_directly_every_call() {
     assert_eq!(
         inner.starter_spec(),
         ("health_potion".to_string(), 5),
-        "no local cache — the very next read sees the new config values"
+        "no inventory-owned second cache — the very next read sees the new config values"
     );
 }
 
@@ -451,7 +452,8 @@ async fn grant_on_created_via_on_tx() {
     let _ = asyncevents::testing::cleanup_events(&pool, "character_id", &cid).await;
 }
 
-/// (d) Step 8's replacement for the removed `config.changed` cache: `grant_starter`
+/// (d) Step 8's replacement for the removed inventory-owned `config.changed` cache:
+/// `grant_starter`
 /// reads the config reader DIRECTLY, so freshness rides the app-owned broadcast
 /// invalidation plane. Wires up the REAL `config` module + a REAL
 /// `invalidation::InvalidationPlane` (dev-dependency, mirrors `modules/match`'s use of

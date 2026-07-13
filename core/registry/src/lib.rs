@@ -26,8 +26,9 @@ use std::any::{type_name, Any};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-/// Maps a service name to its implementation — one service per name. (Contrast
-/// [`contrib::Slots`], which collects MANY values under one name.)
+/// Maps a capability-scoped key to its implementation — one implementation per key.
+/// A provider can expose multiple traits under distinct keys. (Contrast
+/// [`contrib::Slots`], which collects MANY values under one slot.)
 ///
 /// The map lives behind a `Mutex` for interior mutability: the same `&Registry`
 /// is shared (through the lifecycle `Context`) across every module's `register`

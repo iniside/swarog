@@ -1,15 +1,14 @@
-//! Cross-platform split-proof harness — replaces `split-proof.sh` / `split-proof.ps1`.
+//! Cross-platform split-proof harness — replacement for the retired shell harnesses.
 //!
 //! The shell harnesses are structurally fragile on Windows (PowerShell native-arg
 //! quote-stripping, MSYS `wait` hangs, winctrl exit-code false-throws). This harness
-//! removes the shell entirely: the 12-svc fleet is spawned via `std::process::Command`
+//! removes the shell entirely: the 12-service fleet is spawned via `processctl`
 //! with a TYPED env map and a kill-on-drop guard, health-checked over `reqwest`,
 //! DB-asserted via `sqlx`, and the player QUIC front driven through the `edge` crate as
 //! a library. No `curl.exe`, no `psql.exe`, no `playercli.exe`, no `winctrl`.
 //!
-//! MVP scope: boot the fleet + a core assertion set (auth, key-verifier shed, config
-//! large-value, QUIC create, leaderboard). Full named-assertion parity + the
-//! graceful-shutdown / monolith-parity proofs are follow-ups. See
+//! The harness runs the full named split assertion set, then reboots the monolith for
+//! parity and proves its native graceful shutdown. See
 //! docs/plans/2026-07-11-1730-rust-splitproof-harness-plan.md.
 
 use std::collections::BTreeMap;

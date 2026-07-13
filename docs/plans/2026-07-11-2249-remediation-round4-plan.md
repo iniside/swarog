@@ -1,3 +1,10 @@
+> **Status / errata (2026-07-13): HISTORICAL EXECUTION RECORD.** The round remains
+> executed as recorded below. Current operator commands have since cut over to
+> `devctl` and `verifyctl`; references in the body to shell verification/run wrappers
+> describe the implementation at that time and are not current instructions. Later
+> authority changes are tracked in
+> `2026-07-12-1214-architecture-remediation-rust-tooling-plan.md`.
+
 # Remediation Round 4 — audit findings, authority-point hardening
 
 **Status:** EXECUTED 2026-07-12 (all 16 steps landed; see

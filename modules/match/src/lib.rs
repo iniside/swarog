@@ -321,8 +321,8 @@ impl Module for MatchModule {
         let _ = svc.rating.set(rating);
 
         // The single public op (report). The generated `operations()` yields one OpSet;
-        // contribute each half to its slot (LocalBackend + the future RemoteBackend
-        // consume the SAME wire envelopes).
+        // contribute each half to its slot (LocalBackend and RemoteBackend consume
+        // the SAME wire envelopes).
         for op in matchapi::match_rpc::operations(svc.clone()) {
             ctx.contribute(opsapi::SLOT, op.operation);
             ctx.contribute(opsapi::BINDING_SLOT, op.binding);

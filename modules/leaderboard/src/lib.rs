@@ -42,7 +42,7 @@ fn internal<E: std::fmt::Display>(e: E) -> Error {
     Error::internal(e.to_string())
 }
 
-/// Records one win for `player` on the given connection (the messaging delivery tx,
+/// Records one win for `player` on the given connection (the durable subscription delivery tx,
 /// so the tally + the checkpoint commit together). ON CONFLICT ADDS to the existing tally
 /// — the exact Go upsert.
 async fn record_win(conn: &mut PgConnection, player: &str) -> Result<(), sqlx::Error> {
@@ -182,7 +182,7 @@ impl Module for LeaderboardModule {
 
 // ============================================================================
 // Tests. The upsert is driven directly against a real sqlx tx (the same shape
-// messaging's consume uses); the top-scores read against the pool. Live-Postgres tests
+// the durable subscription handler uses); the top-scores read against the pool. Live-Postgres tests
 // SKIP cleanly when the local DB is unreachable. In-crate so they can drive the private
 // `Service` + `record_win` directly.
 // ============================================================================

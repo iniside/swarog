@@ -147,7 +147,7 @@ impl Owner {
 
 // ============================================================================
 // Store — the SQL layer. Grant/clear have a `&mut PgConnection` variant so the
-// event-driven effect runs INSIDE the messaging delivery tx; reads use the pool.
+// event-driven effect runs INSIDE the durable subscription delivery tx; reads use the pool.
 // ============================================================================
 
 struct Store {
@@ -300,7 +300,7 @@ pub struct Inner {
     /// BEFORE `require` can run, exactly as Go sets `m.svc.characters` in Init.
     ownership: OnceLock<Arc<dyn Ownership>>,
     /// The mandatory `config` reader; resolved in `init` (a hard dependency). Read
-    /// directly on every grant — no local cache: since Step 7 this reader is a
+    /// directly on every grant — no inventory-owned second cache: this reader is a
     /// replica-local `CachedConfig`/`Service` kept fresh by the app-owned broadcast
     /// invalidation plane, so a second cache here would only add staleness risk.
     cfg: OnceLock<Arc<dyn Config>>,
@@ -314,9 +314,9 @@ impl Inner {
     }
 
     /// Reads the starter item + quantity straight off the injected `config` reader.
-    /// No local cache (Step 8): the reader is a replica-local cache already kept
-    /// fresh by the app-owned broadcast invalidation plane, so a second cache here
-    /// would only add a staleness window without buying anything.
+    /// No inventory-owned second cache (Step 8): the injected reader is already a
+    /// replica-local cache kept fresh by the app-owned broadcast invalidation plane,
+    /// so another cache here would only add a staleness window without buying anything.
     fn starter_spec(&self) -> (String, i64) {
         let cfg = self.cfg.get().expect("inventory.init must resolve config before use");
         (
@@ -714,12 +714,12 @@ impl Module for Inventory {
     }
 
     /// Only wires up — no I/O (#8). EXACT order mirrors Go's `Init`, minus the config
-    /// cache Step 8 removed:
+    /// inventory-owned config cache Step 8 removed:
     ///   1. resolve `characters` ownership → inject into the shared state,
     ///   2/3. the two DURABLE `on_tx` subscriptions (grant-starter/wipe, on the HANDED
     ///        conn so the effect is atomic with the checkpoint commit in the delivery tx),
     ///   4. resolve `config` (HARD — fail-loud, this is why config is in `requires`);
-    ///      `grant_starter` reads it directly, no local cache/subscription needed,
+    ///      `grant_starter` reads it directly, no second cache/subscription needed,
     ///   5/6. contribute the player operations (ALL unconditional; grant is gated at
     ///        the impl) + the local admin item,
     ///   and the generated RPC face to the edge slot (applied by `app::run` iff this
@@ -774,12 +774,13 @@ impl Module for Inventory {
             },
         );
 
-        // 4. HARD dependency on config (declared in requires()): every binary that
-        // hosts inventory also hosts config, so this fails loud at boot rather than
-        // silently degrading to the starter consts. No local cache/subscription to
-        // keep fresh (Step 8): `grant_starter` reads this reader directly on every
-        // grant, and the reader is itself kept fresh by the app-owned broadcast
-        // invalidation plane — so editing inventory/starter_item flows
+        // 4. HARD dependency on config (declared in requires()): every composition
+        // hosting inventory supplies the capability locally or through a remote stub,
+        // so this fails loud at boot rather than silently degrading to the starter
+        // consts. No inventory-owned second cache/subscription to keep fresh (Step 8):
+        // `grant_starter` reads this reader directly on every grant, and the reader is
+        // itself kept fresh by the app-owned broadcast invalidation plane — so editing
+        // inventory/starter_item flows
         // config_changed -> the reader's own refresh -> the next grant sees it.
         let cfg = ctx.registry().require::<dyn Config>(&key("config", "reader"));
         let _ = inner.cfg.set(cfg);

@@ -1,3 +1,10 @@
+> **Status / errata (2026-07-13): SUPERSEDED — do not implement this design.**
+> Step 8 of `2026-07-12-1214-architecture-remediation-rust-tooling-plan.md`
+> replaced the proposed shipping `core/conformance` types and per-module policy
+> entries with tool-owned policy in `tools/conformance`; modules expose only minimal
+> factual probes with no conformance dependency or feature flag. The body below is
+> retained unchanged as historical design context.
+
 # Convention-Conformance Harness (`core/conformance` + `tools/conformance`) — Plan
 
 > Po zatwierdzeniu: Step 0 kopiuje ten plik do `docs/plans/2026-07-12-<HHMM>-convention-conformance-harness-plan.md` (repo = source of truth; plan-mode pozwala pisać tylko tutaj).
