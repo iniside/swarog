@@ -16,6 +16,11 @@ use opsapi::{Error, Identity};
 use rpc_macro::rpc;
 use serde::{Deserialize, Serialize};
 
+/// Maximum accepted opaque session-token size in bytes. Accounts mints 43-byte
+/// base64url tokens; the wider cap leaves format headroom while bounding attacker-
+/// controlled lookup and internal-RPC work at every topology's auth boundary.
+pub const MAX_SESSION_TOKEN_BYTES: usize = 128;
+
 /// The result of a successful register/login: the caller's product-scoped
 /// `player_id` plus the opaque bearer token minted for it. The serde field names
 /// are the public HTTP response shape (`{player_id, token}`), unchanged from Go.

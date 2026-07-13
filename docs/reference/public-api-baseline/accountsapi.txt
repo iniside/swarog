@@ -236,6 +236,7 @@ impl core::marker::Unpin for accountsapi::Session
 impl core::marker::UnsafeUnpin for accountsapi::Session
 impl core::panic::unwind_safe::RefUnwindSafe for accountsapi::Session
 impl core::panic::unwind_safe::UnwindSafe for accountsapi::Session
+pub const accountsapi::MAX_SESSION_TOKEN_BYTES: usize
 pub trait accountsapi::Auth: core::marker::Send + core::marker::Sync
 pub fn accountsapi::Auth::login<'life0, 'async_trait>(&'life0 self, alloc::string::String, alloc::string::String) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<accountsapi::Session, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn accountsapi::Auth::login_epic<'life0, 'async_trait>(&'life0 self, alloc::string::String) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<accountsapi::Session, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
