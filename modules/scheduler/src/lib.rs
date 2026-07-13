@@ -82,6 +82,14 @@ use sqlx::{Connection, PgConnection, PgPool};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
+/// Dedicated Postgres sessions the scheduler holds beyond the shared pool: each
+/// `fire` runs on ONE dedicated per-fire connection opened from the pool's connect
+/// options (see the module docs on why the advisory lock must ride a session the
+/// pool can't hand to another caller). Ticks are serial, so at most one is live at a
+/// time. Public so the fleet's Postgres session budget (`tools/processctl`) reserves
+/// it for the scheduler process.
+pub const DEDICATED_FIRE_SESSIONS: usize = 1;
+
 /// How often the emission loop scans for due schedules. It bounds firing latency (a
 /// schedule fires within ~1s of becoming due), not accuracy — `last_fired` is
 /// authoritative, so a slow tick never double-fires.

@@ -59,6 +59,12 @@ const DEFAULT_POLL: Duration = Duration::from_secs(30);
 /// Default per-callback refresh deadline; overridden by `INVALIDATION_CALLBACK_TIMEOUT_MS`.
 const DEFAULT_CALLBACK_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Dedicated Postgres sessions this plane holds while running: exactly one
+/// `PgListener` per process, LISTENing on every registered channel (see the
+/// "Freshness floors" doc above). Public so the fleet's Postgres session budget
+/// (`tools/processctl`) reserves it as a per-DB-process singleton.
+pub const LISTEN_SESSIONS: usize = 1;
+
 /// Grace for a background task to exit after `stop` signals before it is aborted.
 /// Deliberately a compile-time constant, NOT an env knob (like `core/app`'s
 /// `READY_CHECK_TIMEOUT`): teardown promptness is not a per-deployment tuning surface.

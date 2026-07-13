@@ -27,6 +27,16 @@ windows-sys = { workspace = true, features = [
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2"
 
+[dev-dependencies]
+# Anti-drift ONLY: the fleet session budget mirrors these crates' exported session
+# constants as plain `u32`s (no runtime dep — a tool must not pull the heavy plane/
+# module crates into its shipping binary). This dev-dep edge lets the fleet_tests
+# anti-drift test assert the mirrors still equal the real constants; archcheck ignores
+# dev-dependencies, so no architectural edge is created.
+asyncevents = { workspace = true }
+invalidation = { workspace = true }
+scheduler = { workspace = true }
+
 [[test]]
 name = "processctl-downstream"
 path = "tests/downstream/src/main.rs"

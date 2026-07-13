@@ -18,6 +18,62 @@ const SERVICE_ENV_ALLOWLIST: &[&str] = &[
     "TEMP", "TMP", "USERPROFILE", "WINDIR",
 ];
 
+/// Sessions the local Postgres reserves for dev tooling running ALONGSIDE the fleet,
+/// carved out of the usable budget before the processes get any. It covers splitproof's
+/// own sqlx pool, `devctl`'s psql seeding, an ad-hoc `eventctl`, AND absorbs
+/// asyncevents' transient poison-recovery bursts ([`asyncevents::TRANSIENT_POISON_SESSIONS`],
+/// mirrored as documented headroom) so a poisoned handler's extra backends never overrun
+/// `max_connections`. Raise it if a new always-on dev consumer appears.
+const HARNESS_RESERVE: u32 = 10;
+
+/// Usable Postgres sessions the whole fleet + monolith must fit within. Assumes the
+/// local Postgres runs stock defaults: `max_connections = 100` minus
+/// `superuser_reserved_connections = 3` = 97 sessions for ordinary roles. BOTH are
+/// PG-side configurable — an operator who raised `max_connections` has strictly MORE
+/// headroom, so this is a conservative floor, not a hard platform limit. [`HARNESS_RESERVE`]
+/// is subtracted so the fleet is charged only its own share.
+const PG_SESSION_BUDGET: u32 = 97 - HARNESS_RESERVE;
+
+// Local `u32` mirrors of the plane/module session constants that own the real
+// mechanism. Kept as plain numbers so the RUNTIME fleet build carries no dependency on
+// the heavy `asyncevents`/`invalidation`/`scheduler` crates; the
+// `pool_budget_dedicated_matches_exported_session_constants` test (dev-deps on those
+// crates) fails the build if any mirror drifts from its source of truth.
+/// Mirror of `asyncevents::WORKERS` — dedicated delivery backends per DB process.
+pub(crate) const AE_WORKERS: u32 = 2;
+/// Mirror of `asyncevents::WAKEUP_SESSIONS` — the one NOTIFY wake-up `PgListener`.
+pub(crate) const AE_WAKEUP_SESSIONS: u32 = 1;
+/// Mirror of `invalidation::LISTEN_SESSIONS` — the one cache-invalidation `PgListener`.
+pub(crate) const INVALIDATION_LISTEN_SESSIONS: u32 = 1;
+/// Mirror of `scheduler::DEDICATED_FIRE_SESSIONS` — the scheduler's per-fire connection.
+pub(crate) const SCHEDULER_FIRE_SESSIONS: u32 = 1;
+
+/// Dedicated sessions EVERY DB-backed process reserves: both planes are constructed in
+/// any process with a DB (DB ⇒ plane), so the worst case is the delivery workers + the
+/// wake-up listener + the invalidation listener. A process without durable subs or cache
+/// registrations holds fewer at runtime; reserving the full set is the safe
+/// over-approximation for an exhaustion invariant.
+const PLANE_DEDICATED_SESSIONS: u32 =
+    AE_WORKERS + AE_WAKEUP_SESSIONS + INVALIDATION_LISTEN_SESSIONS;
+
+/// Per-DB-process pooled-connection cap in the SPLIT. Low by necessity: 11 DB-backed
+/// processes share one local Postgres, so each gets a small slice within
+/// [`PG_SESSION_BUDGET`]. Comfortably above core/app's migrate floor (2).
+const SPLIT_SERVICE_POOL_MAX: u32 = 3;
+
+/// Pooled-connection cap for the MONOLITH — one process hosting every module + both
+/// planes, so it affords a larger pool than a single split peer.
+const MONOLITH_POOL_MAX: u32 = 20;
+
+/// Compile-time proof that the monolith's single-process reservation fits the budget —
+/// the monolith is built outside `FleetSpec::new` (it's one `ServiceSpec`, not a fleet),
+/// so this const assertion is its dedicated budget check. It can never drift because it
+/// is evaluated from the same consts the monolith's `pool_budget` is built from.
+const _: () = assert!(
+    MONOLITH_POOL_MAX + PLANE_DEDICATED_SESSIONS + SCHEDULER_FIRE_SESSIONS <= PG_SESSION_BUDGET,
+    "monolith Postgres session reservation exceeds PG_SESSION_BUDGET"
+);
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FleetInputs {
     pub database_url: String,
@@ -43,6 +99,27 @@ pub struct ServiceSpec {
     /// Application settings that may be overridden from the single inherited
     /// environment snapshot. Topology wiring and bind addresses are never listed.
     pub overrideable_env: &'static [&'static str],
+    /// This process's Postgres session reservation. `pool_max` is ALSO the value
+    /// injected as `DATABASE_POOL_MAX_CONNECTIONS` (one field feeds BOTH the spawned
+    /// process's runtime pool AND the fleet-wide exhaustion invariant), so runtime and
+    /// invariant can never disagree. A DB-less process (gateway-svc) reserves `0`/`0`
+    /// and gets no env injection.
+    pub pool_budget: PoolBudget,
+}
+
+/// A process's Postgres session reservation, split into the pooled cap and the
+/// dedicated sessions it holds OUTSIDE the pool. Their sum is what the fleet-wide
+/// [`PG_SESSION_BUDGET`] invariant charges against one local Postgres.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PoolBudget {
+    /// `PgPool` max_connections, injected as `DATABASE_POOL_MAX_CONNECTIONS`. `0` marks
+    /// a DB-less process (no pool, env not injected).
+    pub pool_max: u32,
+    /// Dedicated Postgres sessions held outside the pool (plane delivery workers,
+    /// NOTIFY listeners, the scheduler's per-fire connection). Derived from the
+    /// exported session constants of the real crates — see the module-level
+    /// `AE_*`/`INVALIDATION_*`/`SCHEDULER_*` mirrors and their anti-drift test.
+    pub dedicated: u32,
 }
 
 #[derive(Clone, Debug)]
@@ -102,6 +179,8 @@ pub enum FleetError {
     UnknownService(String),
     #[error("duplicate service {0}")]
     DuplicateService(String),
+    #[error("fleet Postgres session reservation {total} exceeds budget {budget}")]
+    PoolBudgetExceeded { total: u32, budget: u32 },
     #[error("service {service} depends on unknown service {dependency}")]
     UnknownDependency { service: String, dependency: String },
     #[error("service {service} dependency {dependency} must appear earlier in startup order")]
@@ -161,6 +240,21 @@ impl FleetSpec {
                     });
                 }
             }
+        }
+        // The whole fleet shares ONE local Postgres. Charge every process's pooled cap
+        // PLUS its dedicated sessions against the usable budget so the split can never
+        // be provisioned into connection exhaustion. `pool_max` here is the SAME value
+        // injected as `DATABASE_POOL_MAX_CONNECTIONS`, so this invariant and the running
+        // pool size are one number.
+        let total: u32 = services
+            .iter()
+            .map(|service| service.pool_budget.pool_max + service.pool_budget.dedicated)
+            .sum();
+        if total > PG_SESSION_BUDGET {
+            return Err(FleetError::PoolBudgetExceeded {
+                total,
+                budget: PG_SESSION_BUDGET,
+            });
         }
         Ok(Self { services })
     }
@@ -333,6 +427,14 @@ pub fn game_backend_fleet_with_environment(
         env.insert("DATABASE_URL".into(), db.clone());
         env.insert("EDGE_CA_CERT".into(), cert.clone());
         env.insert("EDGE_CA_KEY".into(), key.clone());
+        // One field feeds BOTH runtime and invariant: the same cap the fleet charges
+        // against PG_SESSION_BUDGET is what the spawned process opens its pool with.
+        // Only DB-backed svcs go through `base()`; gateway-svc builds its env separately
+        // and never gets this key.
+        env.insert(
+            "DATABASE_POOL_MAX_CONNECTIONS".into(),
+            SPLIT_SERVICE_POOL_MAX.to_string(),
+        );
         env
     };
     let service = |name, http_port, edge_port: Option<u16>, dependencies: Vec<&'static str>| {
@@ -350,6 +452,10 @@ pub fn game_backend_fleet_with_environment(
             dependencies,
             env,
             overrideable_env: &[],
+            pool_budget: PoolBudget {
+                pool_max: SPLIT_SERVICE_POOL_MAX,
+                dedicated: PLANE_DEDICATED_SESSIONS,
+            },
         }
     };
     let peer = |env: &mut BTreeMap<String, String>, key: &str, port: u16| {
@@ -360,6 +466,8 @@ pub fn game_backend_fleet_with_environment(
     let mut apikeys = service("apikeys-svc", 8091, Some(9009), vec![]);
     let audit = service("audit-svc", 8086, Some(9004), vec![]);
     let mut scheduler = service("scheduler-svc", 8087, Some(9005), vec![]);
+    // Beyond the two planes, the scheduler holds one dedicated per-fire connection.
+    scheduler.pool_budget.dedicated += SCHEDULER_FIRE_SESSIONS;
     let rating = service("rating-svc", 8089, Some(9007), vec![]);
     let leaderboard = service("leaderboard-svc", 8090, Some(9008), vec![]);
     let mut matches = service("match-svc", 8088, Some(9006), vec!["rating-svc"]);
@@ -405,6 +513,9 @@ pub fn game_backend_fleet_with_environment(
         ],
         env: gateway_env,
         overrideable_env: &[],
+        // Pure-transport front door: no DB, no pool, no plane — reserves nothing and
+        // gets no DATABASE_POOL_MAX_CONNECTIONS (gateway_env never went through base()).
+        pool_budget: PoolBudget { pool_max: 0, dedicated: 0 },
     };
 
     let mut admin = service(
@@ -482,6 +593,9 @@ pub fn game_backend_monolith(
     for (key, value) in [
         ("PORT", ":8080".into()),
         ("DATABASE_URL", inputs.database_url.clone()),
+        // One process, all modules + both planes — a larger pool than a split peer, and
+        // the same value the const budget assertion above charges for the monolith.
+        ("DATABASE_POOL_MAX_CONNECTIONS", MONOLITH_POOL_MAX.to_string()),
         ("PLAYER_EDGE_ADDR", ":9100".into()),
         ("EDGE_CA_CERT", inputs.edge_ca_cert.display().to_string()),
         ("EDGE_CA_KEY", inputs.edge_ca_key.display().to_string()),
@@ -511,5 +625,11 @@ pub fn game_backend_monolith(
         name: "monolith", executable_package: "server", http_port: 8080,
         edge_port: None, player_port: Some(9100), dependencies: vec![], env,
         overrideable_env,
+        // One process hosts every module + both planes + the scheduler's fire
+        // connection. Fits PG_SESSION_BUDGET by the const assertion in this module.
+        pool_budget: PoolBudget {
+            pool_max: MONOLITH_POOL_MAX,
+            dedicated: PLANE_DEDICATED_SESSIONS + SCHEDULER_FIRE_SESSIONS,
+        },
     }
 }

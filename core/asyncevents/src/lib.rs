@@ -46,8 +46,23 @@ use std::time::Duration;
 
 /// Pull workers per plane. Each drains due subscriptions independently;
 /// `FOR UPDATE SKIP LOCKED` arbitrates, so the count is throughput tuning, not
-/// correctness.
-const WORKERS: usize = 2;
+/// correctness. Public because the fleet's Postgres session budget
+/// (`tools/processctl`) must reserve one DEDICATED delivery backend per worker —
+/// the delivery session is opened outside the pool (see [`worker`]).
+pub const WORKERS: usize = 2;
+
+/// Dedicated Postgres sessions the NOTIFY wake-up listener holds while the plane
+/// runs: exactly one `PgListener` per process (see [`wakeup::listen`]). Reserved by
+/// the fleet session budget as a per-DB-process singleton.
+pub const WAKEUP_SESSIONS: usize = 1;
+
+/// Extra Postgres sessions a poisoned handler can transiently hold during
+/// timeout-forced termination (the delivery backend being terminated + its
+/// replacement establishing). NOT part of the steady-state per-process reservation —
+/// documented headroom the fleet budget's `HARNESS_RESERVE` absorbs, so a poisoning
+/// burst never overruns `max_connections`.
+pub const TRANSIENT_POISON_SESSIONS: usize = 2;
+
 const DEFAULT_PLANE_STOP_GRACE_MS: u64 = 5_000;
 
 async fn terminate_claim(

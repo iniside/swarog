@@ -18,6 +18,7 @@ use anyhow::Context as _;
 use axum::http::StatusCode;
 use axum::routing::get;
 use lifecycle::{App, Context, Module};
+use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
 
 const DEFAULT_DSN: &str =
@@ -45,6 +46,18 @@ const DEFAULT_PLAYER_RATE_LIMIT_RPS: f64 = 20.0;
 const DEFAULT_PLAYER_RATE_LIMIT_BURST: u32 = 40;
 const DEFAULT_PLAYER_CONN_RATE_LIMIT_RPS: f64 = 10.0;
 const DEFAULT_PLAYER_CONN_RATE_LIMIT_BURST: u32 = 20;
+
+/// Default `PgPool` max_connections when `DATABASE_POOL_MAX_CONNECTIONS` is unset —
+/// sqlx's own default, so an unconfigured process behaves exactly as before this knob
+/// existed. The split fleet lowers it per-process (11 DB-backed processes must share
+/// one local Postgres) via `tools/processctl`, which also holds the fleet-wide
+/// session-budget invariant. A process/topology knob read HERE in `core/app`.
+const DEFAULT_DB_POOL_MAX: u32 = 10;
+/// The migrate floor: the two-phase migrate holds ONE connection as the schema-lock
+/// holder while each module's `migrate` checks out its OWN connection from the same
+/// pool; a `max_connections` of 1 self-deadlocks (the module can never acquire the
+/// second). Anything below this fails startup loudly rather than hanging.
+const MIN_DB_POOL_MAX: u32 = 2;
 
 /// Whether an explicit zero rate disables a limiter or is invalid for an always-on
 /// surface. Kept at the process configuration boundary so the limiter implementations
@@ -199,6 +212,14 @@ pub struct Config {
     pub player_rate_limit_burst: u32,
     pub player_conn_rate_limit_rps: f64,
     pub player_conn_rate_limit_burst: u32,
+    /// `PgPool` max_connections for this process (`DATABASE_POOL_MAX_CONNECTIONS`,
+    /// default [`DEFAULT_DB_POOL_MAX`]). Unset/blank/unparseable → the default (knob
+    /// convention: garbage never fails, it falls back). A validly-parsed value BELOW
+    /// [`MIN_DB_POOL_MAX`] is kept verbatim here and rejected loudly in [`run`] (the
+    /// migrate self-deadlock) — the distinction between "garbage" and "an explicit 0/1"
+    /// is preserved so the fail-closed check only bites a real misconfiguration. Ignored
+    /// by a DB-less process (no pool is opened). A process/topology knob read HERE.
+    pub db_pool_max: u32,
 }
 
 impl Config {
@@ -219,6 +240,12 @@ impl Config {
             std::env::var("PLAYER_MAX_CONNS").ok(),
             std::env::var("PLAYER_MAX_CONNS_PER_IP").ok(),
         );
+        // Set separately from the positional `from_values` (the same shape as the
+        // player-rate knobs below) so this addition doesn't ripple through every
+        // `from_values` test call site. Garbage falls back; an explicit sub-floor
+        // value is kept for `run` to reject loudly (see [`resolve_pool_max`]).
+        cfg.db_pool_max =
+            resolve_pool_max(std::env::var("DATABASE_POOL_MAX_CONNECTIONS").ok().as_deref());
         cfg.player_rate_limit_rps = env_rate(
             "PLAYER_RATE_LIMIT_RPS",
             DEFAULT_PLAYER_RATE_LIMIT_RPS,
@@ -365,8 +392,41 @@ impl Config {
             player_rate_limit_burst: DEFAULT_PLAYER_RATE_LIMIT_BURST,
             player_conn_rate_limit_rps: DEFAULT_PLAYER_CONN_RATE_LIMIT_RPS,
             player_conn_rate_limit_burst: DEFAULT_PLAYER_CONN_RATE_LIMIT_BURST,
+            // `from_values` is the env-independent core; the DB pool cap has no
+            // positional slot here (set in `from_env`), so it defaults. A caller
+            // wanting a specific cap sets the field or uses `from_env`.
+            db_pool_max: DEFAULT_DB_POOL_MAX,
         }
     }
+}
+
+/// Resolves `DATABASE_POOL_MAX_CONNECTIONS` into a pool max. Unset/blank → the default;
+/// an unparseable value ALSO falls back to the default (the repo's knob convention:
+/// garbage is tolerated, never fatal). A validly-parsed integer is kept VERBATIM — even
+/// when it is below [`MIN_DB_POOL_MAX`] — so [`run`] can reject an explicit `0`/`1` loudly
+/// while a typo (`"ten"`) still boots on the default. This is the ONLY place the raw env
+/// string is interpreted.
+fn resolve_pool_max(raw: Option<&str>) -> u32 {
+    raw.map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(|v| v.parse::<u32>().unwrap_or(DEFAULT_DB_POOL_MAX))
+        .unwrap_or(DEFAULT_DB_POOL_MAX)
+}
+
+/// Fails loudly when a DB-backed process is configured below the migrate floor. Named
+/// separately from parsing so both `run` and the unit tests exercise the SAME decision
+/// authority (the two-phase migrate holds the lock connection while modules migrate on
+/// their own pool connections — a pool of 1 self-deadlocks).
+fn validate_pool_max(db_pool_max: u32) -> anyhow::Result<()> {
+    if db_pool_max < MIN_DB_POOL_MAX {
+        anyhow::bail!(
+            "DATABASE_POOL_MAX_CONNECTIONS={db_pool_max} is below the migrate floor of \
+             {MIN_DB_POOL_MAX}: the two-phase migrate holds one connection as the schema-lock \
+             holder while each module's migrate checks out its own connection from the same \
+             pool, so a pool this small self-deadlocks"
+        );
+    }
+    Ok(())
 }
 
 fn env_number<T>(name: &str, default: T) -> T
@@ -589,11 +649,20 @@ pub async fn run(
     //    skips it. `PgPool::connect` establishes an initial connection, so an
     //    unreachable DB fails here (Go's explicit ping equivalent).
     let pool = match &cfg.database_url {
-        Some(dsn) => Some(
-            PgPool::connect(dsn)
-                .await
-                .with_context(|| format!("open db {dsn}"))?,
-        ),
+        Some(dsn) => {
+            // Fail closed BEFORE opening the pool: a sub-floor max_connections would
+            // otherwise hang the two-phase migrate rather than error (see
+            // [`validate_pool_max`]). The cap itself is topology-driven — the split
+            // fleet lowers it so 11 DB processes fit one local Postgres.
+            validate_pool_max(cfg.db_pool_max)?;
+            Some(
+                PgPoolOptions::new()
+                    .max_connections(cfg.db_pool_max)
+                    .connect(dsn)
+                    .await
+                    .with_context(|| format!("open db {dsn}"))?,
+            )
+        }
         None => None,
     };
 

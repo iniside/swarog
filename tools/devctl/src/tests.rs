@@ -6,7 +6,7 @@ use super::supervisor::{
 };
 use processctl::{
     observe_process_identity, EnvironmentSnapshot, FleetState, FleetStatus, ManagedProcess,
-    OutputDestination, OwnedChild, ProcessGroupPolicy, ProcessIdentity, ServiceSpec, SpawnSpec,
+    OutputDestination, OwnedChild, PoolBudget, ProcessGroupPolicy, ProcessIdentity, ServiceSpec, SpawnSpec,
     StartMarker, StateStore, ShutdownPolicy, WorkspaceLayout,
 };
 use std::path::PathBuf;
@@ -592,6 +592,7 @@ fn fake_service(
         dependencies: vec![],
         env: Default::default(),
         overrideable_env: &[],
+        pool_budget: PoolBudget { pool_max: 0, dedicated: 0 },
     }
 }
 

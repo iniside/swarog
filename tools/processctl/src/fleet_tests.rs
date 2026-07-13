@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use crate::{
     game_backend_fleet, game_backend_fleet_with_environment, game_backend_monolith,
-    EnvironmentSnapshot, FleetError, FleetFlavor, FleetInputs, FleetSpec, ServiceSpec,
+    EnvironmentSnapshot, FleetError, FleetFlavor, FleetInputs, FleetSpec, PoolBudget, ServiceSpec,
 };
 #[cfg(windows)]
 use crate::build_environment;
@@ -121,6 +121,7 @@ fn hard_dependencies_must_appear_earlier_in_startup_order() {
         dependencies,
         env: BTreeMap::new(),
         overrideable_env: &[],
+        pool_budget: PoolBudget { pool_max: 0, dedicated: 0 },
     };
     let error = FleetSpec::new(vec![
         service("consumer-svc", vec!["provider-svc"]),
@@ -128,6 +129,83 @@ fn hard_dependencies_must_appear_earlier_in_startup_order() {
     ])
     .unwrap_err();
     assert!(matches!(error, FleetError::DependencyNotEarlier { .. }));
+}
+
+#[test]
+fn fleet_session_budget_is_enforced() {
+    // An oversized fleet (each process demanding 50 pooled + 50 dedicated) blows the
+    // shared-Postgres budget and is rejected at construction — exercises the failing
+    // branch, not just its neighbor.
+    let hog = |name| ServiceSpec {
+        name,
+        executable_package: name,
+        http_port: 1,
+        edge_port: None,
+        player_port: None,
+        dependencies: vec![],
+        env: BTreeMap::new(),
+        overrideable_env: &[],
+        pool_budget: PoolBudget { pool_max: 50, dedicated: 50 },
+    };
+    let error = FleetSpec::new(vec![hog("a-svc"), hog("b-svc")]).unwrap_err();
+    assert!(matches!(error, FleetError::PoolBudgetExceeded { total, .. } if total == 200));
+
+    // The real proof fleet is comfortably within budget (built via `.expect` in
+    // `game_backend_fleet`, which would panic on violation — assert it explicitly too).
+    let fleet = game_backend_fleet(&inputs(), FleetFlavor::Proof);
+    let total: u32 = fleet
+        .services()
+        .iter()
+        .map(|service| service.pool_budget.pool_max + service.pool_budget.dedicated)
+        .sum();
+    assert!(total <= 87, "proof fleet reserves {total} sessions, budget is 87");
+}
+
+#[test]
+fn pool_budget_dedicated_matches_exported_session_constants() {
+    // Anti-drift: the fleet's `u32` mirrors must equal the real crates' exported session
+    // constants (pattern: seeded_schedule_names_are_contract). If a plane changes its
+    // worker/listener count, this fails until the mirror + budget are re-derived.
+    assert_eq!(crate::fleet::AE_WORKERS as usize, asyncevents::WORKERS);
+    assert_eq!(crate::fleet::AE_WAKEUP_SESSIONS as usize, asyncevents::WAKEUP_SESSIONS);
+    assert_eq!(
+        crate::fleet::INVALIDATION_LISTEN_SESSIONS as usize,
+        invalidation::LISTEN_SESSIONS
+    );
+    assert_eq!(
+        crate::fleet::SCHEDULER_FIRE_SESSIONS as usize,
+        scheduler::DEDICATED_FIRE_SESSIONS
+    );
+
+    // And the per-service reservations are composed from those mirrors — a plain DB svc
+    // reserves both planes, the scheduler adds its fire connection, gateway reserves
+    // nothing.
+    let fleet = game_backend_fleet(&inputs(), FleetFlavor::Proof);
+    let plane = crate::fleet::AE_WORKERS
+        + crate::fleet::AE_WAKEUP_SESSIONS
+        + crate::fleet::INVALIDATION_LISTEN_SESSIONS;
+    assert_eq!(fleet.service("audit-svc").unwrap().pool_budget.dedicated, plane);
+    assert_eq!(
+        fleet.service("scheduler-svc").unwrap().pool_budget.dedicated,
+        plane + crate::fleet::SCHEDULER_FIRE_SESSIONS
+    );
+    assert_eq!(
+        fleet.service("gateway-svc").unwrap().pool_budget,
+        PoolBudget { pool_max: 0, dedicated: 0 }
+    );
+
+    // The injected env cap equals the reserved pool_max for a DB svc (one field feeds
+    // BOTH runtime and invariant), and gateway has no injection at all.
+    let audit = fleet.service("audit-svc").unwrap();
+    assert_eq!(
+        audit.env.get("DATABASE_POOL_MAX_CONNECTIONS").map(String::as_str),
+        Some(audit.pool_budget.pool_max.to_string().as_str())
+    );
+    assert!(!fleet
+        .service("gateway-svc")
+        .unwrap()
+        .env
+        .contains_key("DATABASE_POOL_MAX_CONNECTIONS"));
 }
 
 #[cfg(windows)]

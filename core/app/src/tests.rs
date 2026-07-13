@@ -451,6 +451,33 @@ fn rate_limit_default_off_unless_set() {
     assert_eq!(gw.database_url, None);
 }
 
+#[test]
+fn db_pool_max_resolves_default_on_unset_blank_and_garbage() {
+    // Unset → sqlx default (no behavior change when the knob is absent).
+    assert_eq!(resolve_pool_max(None), DEFAULT_DB_POOL_MAX);
+    assert_eq!(resolve_pool_max(Some("   ")), DEFAULT_DB_POOL_MAX);
+    // Garbage falls back to the default (the repo's knob convention: never fatal) —
+    // NOT an error, so a typo still boots. A negative parses as garbage for u32.
+    assert_eq!(resolve_pool_max(Some("ten")), DEFAULT_DB_POOL_MAX);
+    assert_eq!(resolve_pool_max(Some("-5")), DEFAULT_DB_POOL_MAX);
+    // A valid value is honored verbatim, including one below the floor (so `run` can
+    // tell an explicit misconfiguration apart from a typo).
+    assert_eq!(resolve_pool_max(Some(" 32 ")), 32);
+    assert_eq!(resolve_pool_max(Some("0")), 0);
+    assert_eq!(resolve_pool_max(Some("1")), 1);
+}
+
+#[test]
+fn db_pool_max_below_floor_fails_startup() {
+    // The migrate self-deadlock: an explicit 0 or 1 is rejected loudly; the floor and
+    // anything above it passes. Garbage (which resolves to the default) also passes.
+    assert!(validate_pool_max(0).is_err());
+    assert!(validate_pool_max(1).is_err());
+    assert!(validate_pool_max(MIN_DB_POOL_MAX).is_ok());
+    assert!(validate_pool_max(DEFAULT_DB_POOL_MAX).is_ok());
+    assert!(validate_pool_max(resolve_pool_max(Some("ten"))).is_ok());
+}
+
 // ============================================================================
 // /readyz fold-in (Step 13): baseline DB ping + contributed ReadyChecks, 503 with a
 // per-failed-check JSON body. Exercised without a DB by passing `None` for the pool.

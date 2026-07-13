@@ -2763,8 +2763,11 @@ dependencies = [
 name = "processctl"
 version = "0.1.0"
 dependencies = [
+ "asyncevents",
+ "invalidation",
  "libc",
  "rand 0.8.6",
+ "scheduler",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
