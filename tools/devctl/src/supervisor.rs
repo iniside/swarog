@@ -63,8 +63,19 @@ pub fn execute(command: Command) -> Result<()> {
     }
 }
 
-fn client_command(store: &StateStore, command: &str) -> Result<()> {
-    let state = store.load()?.context("no devctl supervisor state")?;
+pub(crate) fn client_command(store: &StateStore, command: &str) -> Result<()> {
+    let Some(state) = store.load()? else {
+        println!("devctl: inactive (no supervisor state)");
+        return Ok(());
+    };
+    if matches!(state.status(), FleetStatus::Stopped | FleetStatus::Failed) {
+        println!(
+            "devctl: inactive (last {} {})",
+            state.topology(),
+            format!("{:?}", state.status()).to_lowercase()
+        );
+        return Ok(());
+    }
     let endpoint = state
         .control_endpoint()
         .context("state has no control endpoint")?;

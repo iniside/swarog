@@ -1,12 +1,13 @@
 use super::cli::{parse, Command, Topology};
 use super::control::{self, ControlServer};
 use super::supervisor::{
-    run_transient, service_specs, spawn_managed, teardown, wait_for_terminal, wait_healthy,
-    StepOutcome, TransientOutcome,
+    client_command, run_transient, service_specs, spawn_managed, teardown, wait_for_terminal,
+    wait_healthy, StepOutcome, TransientOutcome,
 };
 use processctl::{
     observe_process_identity, EnvironmentSnapshot, FleetState, FleetStatus, ManagedProcess,
-    OutputDestination, OwnedChild, ProcessGroupPolicy, ServiceSpec, SpawnSpec, StateStore,
+    OutputDestination, OwnedChild, ProcessGroupPolicy, ProcessIdentity, ServiceSpec, SpawnSpec,
+    StartMarker, StateStore,
 };
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
@@ -52,6 +53,65 @@ fn microservices_alias_selects_split() {
             ..
         }
     ));
+}
+
+#[test]
+fn client_commands_succeed_without_supervisor_state() {
+    let directory = test_directory("inactive-missing");
+    let store = StateStore::new(directory.join("state.json"));
+
+    assert!(client_command(&store, "status").is_ok());
+    assert!(client_command(&store, "down").is_ok());
+}
+
+#[test]
+fn client_commands_do_not_contact_terminal_supervisors() {
+    let directory = test_directory("inactive-terminal");
+    let store = StateStore::new(directory.join("state.json"));
+    let unusable_supervisor = ProcessIdentity {
+        pid: u32::MAX,
+        executable: PathBuf::from("unusable-devctl-supervisor"),
+        started: StartMarker(0),
+    };
+
+    for status in [FleetStatus::Stopped, FleetStatus::Failed] {
+        let mut state = FleetState::new("terminal-test", "split").unwrap();
+        state.set_status(status);
+        state.set_supervisor(unusable_supervisor.clone());
+        state.set_control_endpoint(Some(PathBuf::from("unusable-control-endpoint")));
+        store.write_atomic(&state).unwrap();
+
+        assert!(client_command(&store, "status").is_ok());
+        assert!(client_command(&store, "down").is_ok());
+    }
+}
+
+#[test]
+fn client_commands_require_control_data_for_nonterminal_state() {
+    let directory = test_directory("active-missing-control");
+    let store = StateStore::new(directory.join("state.json"));
+
+    for status in [
+        FleetStatus::Starting,
+        FleetStatus::Running,
+        FleetStatus::Stopping,
+    ] {
+        let mut state = FleetState::new("active-test", "monolith").unwrap();
+        state.set_status(status);
+        store.write_atomic(&state).unwrap();
+
+        for command in ["status", "down"] {
+            let error = client_command(&store, command).unwrap_err().to_string();
+            assert!(error.contains("control endpoint"));
+        }
+
+        state.set_control_endpoint(Some(PathBuf::from("unusable-control-endpoint")));
+        store.write_atomic(&state).unwrap();
+        for command in ["status", "down"] {
+            let error = client_command(&store, command).unwrap_err().to_string();
+            assert!(error.contains("supervisor identity"));
+        }
+    }
 }
 
 #[test]
