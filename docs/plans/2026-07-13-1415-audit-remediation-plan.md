@@ -246,3 +246,9 @@ Triage względem stanu po krokach 1-7:
   kontrolowanych zawieszeń (test-backdoor) w produkcyjnych svc; polityki są
   topology-blind, a zagrożona gałąź (delivery tx / admission seam) jest ćwiczona na
   realnym planie i fake'ach seamu.
+
+> **Precyzja (2026-07-13, errata do Context R1):** sformułowanie „fold floora jako
+> `NOT EXISTS` eliminuje wyścig CAŁKOWICIE" dotyczy okna MIĘDZY batchami — to ono
+> jest wyeliminowane. Okno wewnątrz pojedynczego statementu DELETE (jeden snapshot
+> READ COMMITTED) pozostaje i jest zaakceptowane kontraktowo, zgodnie z odrzuceniem
+> locka catalog↔GC (Step 18 / odrzucone C2).

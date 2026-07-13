@@ -525,7 +525,9 @@ async fn mid_sweep_registered_subscription_survives_stale_floor() {
     insert_sub(&pool, unique("sub.act"), topic, "active", Some(&pos[1490])).await;
 
     // The subscription the trigger injects mid-sweep, cursored at pos[1200] — ABOVE
-    // batch 1's lowest-1000 delete range, so the divergence lands purely in batch 2.
+    // batch 1's delete range, so the divergence lands purely in batch 2. This is
+    // deterministic, not a planner accident: gc_topic's subquery ORDER BYs the log
+    // position before LIMIT, so batch 1 is exactly the lowest 1000 (pos[0..999]).
     let injected_id = unique("sub.injected");
     let inj = &pos[1200];
     let stamp = std::time::SystemTime::now()
@@ -575,21 +577,28 @@ async fn mid_sweep_registered_subscription_survives_stale_floor() {
     .await
     .unwrap();
 
-    gc_topic(&fault_pool, topic, 1, 30).await.unwrap();
+    // Capture the GC result instead of unwrapping here: the trigger/function live on
+    // the SHARED events table, so teardown must run UNCONDITIONALLY — an early unwrap
+    // on a failed gc_topic would leak the row trigger into every later test/sweep.
+    // (An async drop-guard is awkward with SQL, so: capture, always drop, then unwrap.)
+    let gc_result = gc_topic(&fault_pool, topic, 1, 30).await;
     fault_pool.close().await;
 
     let survivors_at_or_above = count_events_at_or_above(&pool, topic, inj).await;
 
-    // Tear the fixture down before asserting so a failure can't poison later tests.
-    sqlx::raw_sql(&format!("DROP TRIGGER {trigger} ON asyncevents.events"))
+    // Tear the fixture down before ANY assertion/unwrap so a failure can't poison
+    // later tests. IF EXISTS keeps teardown itself non-panicking on a partial setup.
+    sqlx::raw_sql(&format!("DROP TRIGGER IF EXISTS {trigger} ON asyncevents.events"))
         .execute(&pool)
         .await
         .unwrap();
-    sqlx::raw_sql(&format!("DROP FUNCTION asyncevents.{function}()"))
+    sqlx::raw_sql(&format!("DROP FUNCTION IF EXISTS asyncevents.{function}()"))
         .execute(&pool)
         .await
         .unwrap();
     cleanup(&pool, topic).await;
+
+    gc_result.expect("mid-sweep GC must succeed");
 
     // Every event at/above the mid-sweep cursor (pos[1200]..pos[1499] = 300) must
     // survive. Old code's stale floor (pos[1490]) deletes pos[1200]..pos[1489],

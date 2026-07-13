@@ -15,6 +15,9 @@
 //!   from — an unknown retention promise is treated as "keep".
 //! - The `min_retention_days` bound is a `created_at` predicate. There is no index
 //!   on `created_at`; the resulting seq scan is ACCEPTED at this project's scale.
+//!   The same posture covers the correlated `subscriptions` anti-join in
+//!   [`gc_topic`]: the subscriptions table is small (one row per subscription),
+//!   so no supporting index is warranted.
 //! - Deletes are batch-bounded (`ctid IN (… LIMIT {BATCH})`) so a sweep never holds
 //!   a long lock; the day bound rides as a bound param and the checkpoint floor is a
 //!   correlated `NOT EXISTS` subquery over typed cursor columns — never interpolated,
@@ -282,6 +285,13 @@ pub(crate) async fn sweep(pool: &PgPool) -> anyhow::Result<()> {
 /// regression is the precedent. Cursors are `NOT NULL`, so there is no NULL seam.
 async fn gc_topic(pool: &PgPool, topic: &str, version: i32, days: i32) -> anyhow::Result<()> {
     loop {
+        // ORDER BY before LIMIT: each batch deletes floor-UPWARD in log order,
+        // deterministically. Without it batch composition is a planner accident —
+        // an unordered batch could reap HIGH positions that a subscription
+        // registering between batches (the exact race the NOT EXISTS fold closes)
+        // still wanted; the fresh floor only protects events earlier batches have
+        // not already taken. Ordered batches make "everything at/above a mid-sweep
+        // cursor survives" a guarantee, not a plan-dependent coincidence.
         let deleted = sqlx::query(
             "DELETE FROM asyncevents.events WHERE ctid IN ( \
                SELECT e.ctid FROM asyncevents.events e \
@@ -293,6 +303,7 @@ async fn gc_topic(pool: &PgPool, topic: &str, version: i32, days: i32) -> anyhow
                      AND s.state IN ('active','paused') \
                      AND (s.cursor_generation, s.cursor_xid, s.cursor_tie) \
                          <= (e.generation, e.producer_xid, e.tie_breaker)) \
+               ORDER BY e.generation, e.producer_xid, e.tie_breaker \
                LIMIT $4)",
         )
         .bind(topic)
