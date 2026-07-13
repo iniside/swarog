@@ -296,7 +296,7 @@ async fn monolith_parity(ctx: &Ctx, pool: &PgPool, p: &mut Proof) -> Result<()> 
         let form: Vec<(&str, &str)> = fields.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
         let response = jar.post(format!("{m}/admin/api-keys")).form(&form).send().await?;
         let post_status = response.status();
-        let after = if post_status.as_u16() == 303 {
+        let after: Option<i64> = if post_status.as_u16() == 303 {
             Some(
                 sqlx::query_scalar(
                     "SELECT count(*) FROM asyncevents.events \
