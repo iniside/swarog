@@ -1,35 +1,26 @@
 ---
 name: separate-public-surface-from-impl
-description: "A module's public/consumed-by-others surface must be structurally separate from its impl folder; and when multiplying a convention, stop and question the convention itself"
+description: "A module's public/consumed surface must be structurally separate from its impl folder; and when multiplying a convention, stop and question the convention itself"
 metadata: 
   node_type: memory
   type: feedback
-  originSessionId: 9daf9937-49a2-46ca-88f2-a2c9a48ebd40
+  originSessionId: 88cdd953-b406-40a0-8ab2-6c7eb07acece
 ---
 
-I placed every public package of each module — `<name>api` (contract), `<name>events`,
-and the generated rpc glue (`<name>playerrpc`/`<name>adminrpc`/`<name>rpc`) — INSIDE
-`modules/<name>/`. So a consumer imports `modules/characters/charactersapi` — textually
-reaching into another module's private folder. The user caught it on a glance; I'd
-entrenched it across the whole unified-operation-transport program (I even wrote the plan
-codifying `modules/<name>/<name>api/`) without once questioning the layout.
+I placed every public package of each module (`<name>api`, `<name>events`, the rpc glue)
+INSIDE `modules/<name>/`, so a consumer imported `modules/characters/charactersapi` —
+textually reaching into another module's private folder. The user caught it on a glance; I'd
+entrenched it across a whole program (I even wrote the plan codifying
+`modules/<name>/<name>api/`) without once questioning the layout. (Resolved: the public
+surface now lives in a top-level `api/<name>/` tree next to `modules/<name>/` — the current
+layout is documented in CLAUDE.md.)
 
-**Why it's wrong:** co-locating the public contract inside the impl folder erases the
-public/private boundary. "Depend on a capability, not a package" (rule 4) is undermined
-when depending on the capability *looks* like reaching into the provider's guts. And I
-extended a 1-package convention (`<module>events`) into 3–4 packages per module on
-autopilot — the multiplication was the signal to stop and re-question, and I missed it.
-
-**How to apply:**
-1. A module's surface that OTHER modules consume (contract interfaces, events, and the
-   glue clients other processes call) belongs in a location that READS as public —
-   a separate top-level area / standalone `*api` modules — not nested in the impl folder.
-2. When you find yourself creating the Nth instance of a convention (here: the Nth
+**The two lessons (why this stays):**
+1. A module's surface that OTHER modules consume belongs where it READS as public (a separate
+   top-level area), not nested in the impl folder — otherwise "depend on a capability, not a
+   package" is undermined when depending *looks* like reaching into the provider's guts.
+2. When you catch yourself creating the Nth instance of a convention (here: the Nth
    co-located sub-package), STOP and question the convention itself before multiplying it.
-   Don't extend a smell just because a precedent exists.
-3. RESOLVED 2026-07-07: hoisted the public surface to a top-level `api/<name>/` tree
-   (`<name>api` + `<name>events` + `<name>rpc*`) next to `modules/<name>/` (impl-only), plan
-   `docs/plans/2026-07-07-2324-public-api-hoist-plan.md`, verified (build+arch-lint+both split
-   smokes green). Package names stayed lowercase-descriptive (no renames). The lesson stands
-   for future work — separate public from impl from the start; question a convention when you
-   catch yourself multiplying it. See [[unified-operation-transport]], [[scope-claims-to-what-was-verified]].
+   Don't extend a smell because a precedent exists.
+
+See [[scope-claims-to-what-was-verified]].

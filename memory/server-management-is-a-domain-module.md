@@ -4,32 +4,23 @@ description: "Game-server management will be a specialized domain module (fortre
 metadata: 
   node_type: memory
   type: project
-  originSessionId: fb10aade-7f3e-4b87-9d35-e9f2dfc074bf
+  originSessionId: 88cdd953-b406-40a0-8ab2-6c7eb07acece
 ---
 
-Decision (2026-07-09): when the project gets dedicated game-server management
-(session allocation, instance lifecycle, matchmaker→instance routing), it will be
-built as a **specialized domain module** in `modules/` — a fortress like any other,
-with its own contract crates — NOT as a generic service-discovery layer and NOT by
-adopting Consul/etcd/Agones-style generic infra.
+Decision (2026-07-09): dedicated game-server management (session allocation, instance
+lifecycle, matchmaker→instance routing) will be a **specialized domain module** in
+`modules/` — a fortress with its own contract crates — NOT a generic service-discovery layer
+and NOT Consul/etcd/Agones-style infra.
 
-**Why:** the services topology of this backend is static (discovery = env/DNS at
-the `cmd/*` composition roots); the only *dynamic* discovery-shaped problem in a
-game backend is allocating stateful session game-server instances, and that is a
-domain problem (players_count, allocation state, heartbeats) — the
-"table + heartbeat + LISTEN/NOTIFY" pattern, owned by a module.
+**Why:** the services topology is static (discovery = env/DNS at `cmd/*`); the only *dynamic*
+discovery-shaped problem in a game backend is allocating stateful session instances, and
+that's a domain problem (players_count, allocation state, heartbeats) — a "table + heartbeat +
+LISTEN/NOTIFY" pattern owned by a module.
 
-**Boundary to the orchestrator** (2026-07-09): the module commands the
-orchestrator over a wire API (HTTP/JSON) — no shared crates (zero-sharing rule,
-[[mini-orchestrator-native-no-containers]]), external-system client pattern like
-accounts→Epic; orchestrator address injected by `cmd/*` (the
-`Gateway::with_passthrough` pattern), module stays topology-blind. Semantics
-split: orchestrator knows only process verbs (spawn/kill/status →
-instance_id+addr), the module owns ALL game semantics (sessions, players,
-allocation policy) in its own schema. Sync request/response (not the bus).
-Open points for the plan: dead-instance feedback (poll status wins over webhook),
-API auth (localhost+token vs edgeca mTLS).
+**Boundary to the orchestrator:** the module commands the orchestrator over a wire API
+(external-system client pattern like accounts→Epic), address injected by `cmd/*`, module stays
+topology-blind; orchestrator knows only process verbs (spawn/kill/status), the module owns all
+game semantics — full design in [[mini-orchestrator-native-no-containers]].
 
-**How to apply:** don't propose generic service-discovery infrastructure or a
-registry in `core/`; when server management comes up, plan it as
-`modules/<name>` + `api/<name>/` contracts. Related: [[never-monolith-only-features]].
+**How to apply:** don't propose generic service-discovery infra or a registry in `core/`; plan
+it as `modules/<name>` + `api/<name>/`. Related: [[never-monolith-only-features]].

@@ -1,21 +1,19 @@
-# Dev tooling tests the backend; it is not a security product
+---
+name: dev-tooling-tests-backend-not-hostile-users
+description: "Dev tooling (devctl/verifyctl/splitproof/processctl) tests the backend, it is not a security product — keeps only the cargo-audit versioning delta not in CLAUDE.md"
+metadata: 
+  node_type: memory
+  type: feedback
+  originSessionId: 88cdd953-b406-40a0-8ab2-6c7eb07acece
+---
 
-`devctl`, `verifyctl`, `splitproof`, and `processctl` exist to start, exercise,
-verify, and clean up the game backend. Optimize them for accurate backend coverage,
-one rollout at a time, useful diagnostics, bounded accidental failures, exact owned
-process cleanup, and no secrets in argv/logs/state.
+The threat model (trusted local operator, one OS account; no custom crypto, same-user
+defenses, ACL/reparse hardening, or daemon-grade protocols unless a concrete backend-test
+failure requires it) is fully in CLAUDE.md `## Dev tooling scope — MANDATORY`. This memory
+keeps only the delta not there:
 
-Assume a trusted local operator under one OS account. Do not expand work into custom
-cryptography, malicious same-user defenses, elaborate ACL/reparse hardening, or
-daemon-grade protocols unless a concrete backend-test failure requires it. A local
-control path only needs ordinary OS-local permissions and bounds that prevent an
-accidental partial client from hanging the rollout.
-
-When review finds tooling hardening outside this threat model, record or reject it
-instead of automatically implementing it. Review against a frozen functional
-acceptance list so fixes do not recursively create a security-tool project.
-
-For helper CLIs such as `cargo-audit`, prefer any already-installed version and
-install the latest available release when missing. Do not pin an older tool version
-merely because a previous script did; pin only when a demonstrated compatibility or
-reproducibility constraint requires it.
+**cargo-audit / helper CLIs:** prefer any already-installed version and install the latest
+when missing. Do NOT pin an older tool version merely because a previous script did; pin only
+when a demonstrated compatibility/reproducibility constraint requires it. When review
+proposes tooling hardening outside the threat model, record or reject it — don't recursively
+turn a test harness into a security-tool project.

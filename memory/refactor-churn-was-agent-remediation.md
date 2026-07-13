@@ -14,7 +14,7 @@ workflow.
 
 **Why:** I had argued "Go's fast compile suits your refactor churn" in a Go-vs-Rust
 discussion; user corrected that the churn was error-correction. That reframes
-language-fit debates (relevant to [[decision-quarkus-as-final]]): the question is
+language-fit debates (relevant to [[decision-migrate-everything-to-rust]]): the question is
 which language catches agent mistakes earliest, not which tolerates churn. The
 `verifyctl` gauntlet is partly a hand-built substitute for a stricter compiler.
 

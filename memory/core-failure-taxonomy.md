@@ -26,6 +26,6 @@ blind-violation) each with the review attack + the authority-locating fix, plus 
 files-touched review checklist. It is the source the planned `core-implementer` /
 `core-reviewer` agents derive their checklists from. Keep it current from real commits.
 
-Builds on [[fix-the-authority-not-the-symptom]] and [[adversarial-subagent-review]] — this is
-the empirical catalog those rules operate on. Split-only landmark: INV-01 (INVENTORY_DEV_GRANT
+Builds on CLAUDE.md's Fix-the-Authority discipline and [[adversarial-subagent-review]] — this
+is the empirical catalog those rules operate on. Split-only landmark: INV-01 (INVENTORY_DEV_GRANT
 gated only monolith call-site, live in split) reinforces [[verify-the-at-risk-path-not-the-safe-one]].
