@@ -28,6 +28,11 @@ pub fn modules(
     for (prefix, origin) in wiring.passthrough() {
         gw = gw.with_passthrough(prefix, origin);
     }
+    // The credential-admission budget (`CREDENTIAL_ADMISSION_TIMEOUT_MS`) is parsed in
+    // `main.rs` like the passthrough origins; unset leaves the module's 5s default.
+    if let Some(budget) = wiring.admission_budget() {
+        gw = gw.with_admission_budget(budget);
+    }
 
     vec![
         Box::new(metrics::Metrics::new()), // core-infra: mounts GET /metrics + contributes the record layer

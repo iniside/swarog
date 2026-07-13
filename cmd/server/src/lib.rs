@@ -21,17 +21,21 @@ use std::sync::{Arc, Mutex};
 
 use lifecycle::{Module, ProcessWiring};
 
-/// The monolith hosts every module locally, so `wiring` (peer addresses, passthrough
-/// origins) is unused — nothing here dials a peer. The parameter exists so this lib
-/// shares the one `modules(&ProcessWiring, …)` shape the gateway-hosting `cmd/*` libs
-/// use.
+/// The monolith hosts every module locally, so `wiring`'s peer addresses and
+/// passthrough origins are unused — nothing here dials a peer. What IS read is the
+/// credential-admission budget (`CREDENTIAL_ADMISSION_TIMEOUT_MS`, parsed by
+/// `main.rs`): the monolith fronts the same two public planes as gateway-svc, so its
+/// admission deadline is configured the same way (unset → the module's 5s default).
 pub fn modules(
-    _wiring: &ProcessWiring,
+    wiring: &ProcessWiring,
     player: Option<Arc<Mutex<edge::PlayerServer>>>,
 ) -> Vec<Box<dyn Module>> {
     let mut gw = gateway::Gateway::new();
     if let Some(p) = player {
         gw = gw.with_player_edge(p);
+    }
+    if let Some(budget) = wiring.admission_budget() {
+        gw = gw.with_admission_budget(budget);
     }
 
     vec![

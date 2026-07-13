@@ -18,6 +18,12 @@ use std::collections::HashMap;
 pub struct ProcessWiring {
     peers: HashMap<String, String>,
     passthrough: Vec<(String, String)>,
+    /// The front door's credential-admission budget (`CREDENTIAL_ADMISSION_TIMEOUT_MS`),
+    /// parsed from env by the front processes' `main.rs` (the same place passthrough
+    /// origins are resolved). `None` when unset — the gateway module then applies its
+    /// own default. Plain data read from env, exactly like the peers/passthrough above;
+    /// no runtime handle lives here.
+    admission_budget: Option<std::time::Duration>,
 }
 
 impl ProcessWiring {
@@ -51,5 +57,19 @@ impl ProcessWiring {
     /// Every recorded passthrough `(prefix, origin)` pair, in registration order.
     pub fn passthrough(&self) -> &[(String, String)] {
         &self.passthrough
+    }
+
+    /// Records the front door's credential-admission budget (`main.rs` calls this once
+    /// with its env-parsed value). Absent this call the gateway module applies its own
+    /// default.
+    pub fn with_admission_budget(mut self, budget: std::time::Duration) -> Self {
+        self.admission_budget = Some(budget);
+        self
+    }
+
+    /// The env-parsed credential-admission budget, or `None` when `main.rs` never set
+    /// one (checker mode / an unset env var) — the gateway then uses its own default.
+    pub fn admission_budget(&self) -> Option<std::time::Duration> {
+        self.admission_budget
     }
 }

@@ -11,6 +11,20 @@ use std::sync::{Arc, Mutex};
 
 use lifecycle::ProcessWiring;
 
+/// Parses `CREDENTIAL_ADMISSION_TIMEOUT_MS` — the front door's whole-credential-
+/// admission deadline (api-key check + session verify, both public planes). Env is
+/// read HERE in the composition root (the gateway module never reads env);
+/// unset/blank/unparseable yields `None`, leaving the module's 5s default in place —
+/// the same lenient trim/parse shape `core/app`'s grace knobs use.
+fn admission_budget_from_env() -> Option<std::time::Duration> {
+    std::env::var("CREDENTIAL_ADMISSION_TIMEOUT_MS")
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .and_then(|v| v.parse::<u64>().ok())
+        .map(std::time::Duration::from_millis)
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt().init();
@@ -28,7 +42,14 @@ async fn main() -> anyhow::Result<()> {
     // constructs, migrates, starts and stops it) — it is never listed here; its Stop
     // ordering (delivery halts before any module tears down) is structural in
     // `app::run`, not a list-order convention.
-    let mut mods = server::modules(&ProcessWiring::new(), Some(player.clone()));
+    // The monolith fronts the same two public planes as gateway-svc, so its
+    // credential-admission budget is configured the same way — env parsed here in
+    // main (where runtime handles are built), carried as plain data on the wiring.
+    let mut wiring = ProcessWiring::new();
+    if let Some(budget) = admission_budget_from_env() {
+        wiring = wiring.with_admission_budget(budget);
+    }
+    let mut mods = server::modules(&wiring, Some(player.clone()));
     mods.push(Box::new(webui::WebUi::new())); // dev demo SPA at GET /; monolith-only (the one sanctioned fortress-svc exception)
 
     // No internal edge server: every provider is in-process in the monolith, so no

@@ -1311,3 +1311,229 @@ async fn concurrent_requests_to_same_provider_share_one_dial() {
     assert!(!flights.contains_key("flightprov"), "dead flight must be purged");
     assert_eq!(flights.len(), 1);
 }
+
+// ---- bounded credential admission (Step 10): one deadline over key + session ----
+
+/// The message + envelope a fired admission budget produces (the EXISTING
+/// Unavailable class on both fronts — no new status mapping).
+const ADMISSION_TIMEOUT_MSG: &str =
+    "credential admission timed out (CREDENTIAL_ADMISSION_TIMEOUT_MS)";
+
+/// Well above any test budget (100ms) but far below the test-hang ceiling:
+/// admission outcomes must land within this or the deadline is not working.
+const BOUNDED: Duration = Duration::from_secs(2);
+
+/// A [`KeyVerifier`] whose lookup NEVER resolves — the direct stand-in for a hung
+/// apikeys backend (the edge client bounds only the dial, not the RPC round-trip).
+struct HungKeyVerifier;
+
+#[async_trait::async_trait]
+impl KeyVerifier for HungKeyVerifier {
+    async fn lookup(&self, _key: &str) -> Result<Option<KeyRecord>, LookupUnavailable> {
+        std::future::pending().await
+    }
+}
+
+/// A [`SessionVerifier`] whose verify NEVER resolves — the hung-accounts stand-in.
+struct HungSessionVerifier;
+
+#[async_trait::async_trait]
+impl SessionVerifier for HungSessionVerifier {
+    async fn verify(&self, _token: &str) -> Result<Option<String>, VerifyUnavailable> {
+        std::future::pending().await
+    }
+}
+
+/// An `apikeysapi::Keys` capability whose lookups never resolve — drives the REAL
+/// key verifier (flight lock + global permits) into the hung-backend shape.
+struct HangingKeys;
+
+#[async_trait::async_trait]
+impl apikeysapi::Keys for HangingKeys {
+    async fn lookup_key(&self, _key: String) -> Result<Option<KeyRecord>, Error> {
+        std::future::pending().await
+    }
+}
+
+/// An `apikeysapi::Keys` that hangs on its FIRST call and answers every later one —
+/// the heal-after-outage fixture for the recovery proof.
+struct HangOnceKeys {
+    calls: AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl apikeysapi::Keys for HangOnceKeys {
+    async fn lookup_key(&self, key: String) -> Result<Option<KeyRecord>, Error> {
+        if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+            std::future::pending::<()>().await;
+        }
+        Ok(Some(KeyRecord { name: key, policy: "full".to_string() }))
+    }
+}
+
+/// A `FrontDoor` over the demo op with injectable verifiers and an explicit
+/// admission budget — the construction seam for every hung-backend proof.
+fn admission_front_door(
+    keys: Arc<dyn KeyVerifier>,
+    verifier: Arc<dyn SessionVerifier>,
+    budget: Duration,
+) -> Arc<FrontDoor> {
+    let slots = Arc::new(Slots::new());
+    let op = demo_opset();
+    slots.contribute(opsapi::SLOT, op.operation);
+    slots.contribute(opsapi::BINDING_SLOT, op.binding);
+    slots.contribute(opsapi::LOCAL_SLOT, op.local);
+    Arc::new(FrontDoor::new(slots, verifier, keys, Vec::new()).with_admission_budget(budget))
+}
+
+fn demo_http_request() -> HttpRequest<Body> {
+    HttpRequest::builder()
+        .method("POST")
+        .uri("/demo/42")
+        .header(header::AUTHORIZATION, "Bearer dev-alice")
+        .header("X-Api-Key", TEST_KEY)
+        .body(Body::from("1"))
+        .unwrap()
+}
+
+#[tokio::test]
+async fn hung_key_verifier_http_front_is_503_within_budget() {
+    let front = admission_front_door(
+        Arc::new(HungKeyVerifier),
+        Arc::new(DevSessionVerifier::new()),
+        Duration::from_millis(100),
+    );
+    let started = std::time::Instant::now();
+    let resp = front.router().oneshot(demo_http_request()).await.unwrap();
+    let (status, body) = body_string(resp).await;
+    assert!(started.elapsed() < BOUNDED, "admission must be bounded by the budget");
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(body, ADMISSION_TIMEOUT_MSG);
+}
+
+#[tokio::test]
+async fn hung_key_verifier_player_front_is_unavailable_within_budget() {
+    let front = admission_front_door(
+        Arc::new(HungKeyVerifier),
+        Arc::new(DevSessionVerifier::new()),
+        Duration::from_millis(100),
+    );
+    let started = std::time::Instant::now();
+    let body = call_player(&front, "demo.echo", Some("dev-alice"), Some(TEST_KEY), b"{}").await;
+    assert!(started.elapsed() < BOUNDED, "admission must be bounded by the budget");
+    assert_eq!(
+        body,
+        format!(r#"{{"status":"Unavailable","err":"{ADMISSION_TIMEOUT_MSG}"}}"#)
+    );
+}
+
+#[tokio::test]
+async fn hung_session_verifier_http_front_is_503_within_budget() {
+    // The key check answers fast (a full-policy fake); the SESSION verify hangs —
+    // the ONE budget must cover the second await too.
+    let front = admission_front_door(
+        demo_keys(),
+        Arc::new(HungSessionVerifier),
+        Duration::from_millis(100),
+    );
+    let started = std::time::Instant::now();
+    let resp = front.router().oneshot(demo_http_request()).await.unwrap();
+    let (status, body) = body_string(resp).await;
+    assert!(started.elapsed() < BOUNDED, "admission must be bounded by the budget");
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(body, ADMISSION_TIMEOUT_MSG);
+}
+
+#[tokio::test]
+async fn hung_session_verifier_player_front_is_unavailable_within_budget() {
+    let front = admission_front_door(
+        demo_keys(),
+        Arc::new(HungSessionVerifier),
+        Duration::from_millis(100),
+    );
+    let started = std::time::Instant::now();
+    let body = call_player(&front, "demo.echo", Some("dev-alice"), Some(TEST_KEY), b"{}").await;
+    assert!(started.elapsed() < BOUNDED, "admission must be bounded by the budget");
+    assert_eq!(
+        body,
+        format!(r#"{{"status":"Unavailable","err":"{ADMISSION_TIMEOUT_MSG}"}}"#)
+    );
+}
+
+/// Two concurrent requests for the SAME key against a hung backend, through the REAL
+/// key verifier: the first holds the per-key flight lock inside the hung lookup, the
+/// second queues on that flight — and BOTH must resolve within ~one budget (it is
+/// admissible for both to time out concurrently; what is banned is the second
+/// serially waiting 2x behind the first's dropped flight).
+#[tokio::test]
+async fn flight_lock_second_caller_is_bounded_too() {
+    let real = Arc::new(RealKeyVerifier::new(Arc::new(HangingKeys)));
+    let front = admission_front_door(
+        real,
+        Arc::new(DevSessionVerifier::new()),
+        Duration::from_millis(100),
+    );
+    let started = std::time::Instant::now();
+    let (a, b) = tokio::join!(
+        front.router().oneshot(demo_http_request()),
+        front.router().oneshot(demo_http_request()),
+    );
+    let (status_a, body_a) = body_string(a.unwrap()).await;
+    let (status_b, body_b) = body_string(b.unwrap()).await;
+    assert!(
+        started.elapsed() < BOUNDED,
+        "both same-key callers must resolve within ~one budget, never serially 2x"
+    );
+    assert_eq!(status_a, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(status_b, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(body_a, ADMISSION_TIMEOUT_MSG);
+    assert_eq!(body_b, ADMISSION_TIMEOUT_MSG);
+}
+
+/// RECOVERY: after a timed-out admission for key K the backend heals (hangs once,
+/// answers after) — the NEXT request for K must verify OK, proving the timeout-drop
+/// released the flight lock (its `Weak` table entry died with the dropped future) and
+/// nothing (cache or flight) pinned the key into a persistent 503.
+#[tokio::test]
+async fn healed_backend_serves_same_key_after_admission_timeout() {
+    let real = Arc::new(RealKeyVerifier::new(Arc::new(HangOnceKeys {
+        calls: AtomicUsize::new(0),
+    })));
+    let front = admission_front_door(
+        real,
+        Arc::new(DevSessionVerifier::new()),
+        Duration::from_millis(100),
+    );
+
+    // First request: the backend hangs → bounded 503.
+    let resp = front.router().oneshot(demo_http_request()).await.unwrap();
+    let (status, body) = body_string(resp).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(body, ADMISSION_TIMEOUT_MSG);
+
+    // Second request, SAME key: the healed backend answers → full dispatch.
+    let resp = front.router().oneshot(demo_http_request()).await.unwrap();
+    let (status, body) = body_string(resp).await;
+    assert_eq!(status, StatusCode::OK, "no persistent 503 after the backend heals: {body}");
+    assert!(body.contains(r#""pid":"alice""#), "{body}");
+}
+
+/// Happy path under a generous budget: a valid key + token dispatches exactly as
+/// before the admission seam existed — on both fronts.
+#[tokio::test]
+async fn generous_budget_leaves_happy_path_unaffected() {
+    let front = admission_front_door(
+        demo_keys(),
+        Arc::new(DevSessionVerifier::new()),
+        Duration::from_secs(30),
+    );
+    let resp = front.router().oneshot(demo_http_request()).await.unwrap();
+    let (status, body) = body_string(resp).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains(r#""pid":"alice""#), "{body}");
+
+    let body =
+        call_player(&front, "demo.echo", Some("dev-alice"), Some(TEST_KEY), br#"{"n":1}"#).await;
+    assert!(body.contains(r#""status":"Ok""#), "{body}");
+    assert!(body.contains(r#""pid":"alice""#), "{body}");
+}

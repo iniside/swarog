@@ -40,6 +40,20 @@ fn env_addr(env_key: &str, default: &str) -> String {
         .unwrap_or_else(|| default.to_string())
 }
 
+/// Parses `CREDENTIAL_ADMISSION_TIMEOUT_MS` — the front door's whole-credential-
+/// admission deadline (api-key check + session verify, both public planes). Env is
+/// read HERE in the composition root (the gateway module never reads env);
+/// unset/blank/unparseable yields `None`, leaving the module's 5s default in place —
+/// the same lenient trim/parse shape `core/app`'s grace knobs use.
+fn admission_budget_from_env() -> Option<std::time::Duration> {
+    std::env::var("CREDENTIAL_ADMISSION_TIMEOUT_MS")
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .and_then(|v| v.parse::<u64>().ok())
+        .map(std::time::Duration::from_millis)
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt().init();
@@ -73,7 +87,11 @@ async fn main() -> anyhow::Result<()> {
     // read inside the module: `/admin` → admin-svc, `/accounts/epic` → the Epic web
     // OAuth flow on accounts-svc. A blank default drops the prefix (the proxy table
     // skips empties), so an unset var leaves that route a 404.
-    let wiring = ProcessWiring::new()
+    //
+    // The credential-admission budget (`CREDENTIAL_ADMISSION_TIMEOUT_MS`) is likewise
+    // resolved here: one deadline bounding the front door's api-key + session verify
+    // on both planes (unset → the gateway module's 5s default).
+    let mut wiring = ProcessWiring::new()
         .with_peer("characters", env_addr("CHARACTERS_EDGE_ADDR", "127.0.0.1:9000"))
         .with_peer("inventory", env_addr("INVENTORY_EDGE_ADDR", "127.0.0.1:9001"))
         .with_peer("accounts", env_addr("ACCOUNTS_EDGE_ADDR", "127.0.0.1:9003"))
@@ -86,6 +104,9 @@ async fn main() -> anyhow::Result<()> {
         .with_peer("leaderboard", env_addr("LEADERBOARD_EDGE_ADDR", "127.0.0.1:9008"))
         .with_passthrough("/admin", env_addr("ADMIN_HTTP_ADDR", ""))
         .with_passthrough("/accounts/epic", env_addr("ACCOUNTS_HTTP_ADDR", ""));
+    if let Some(budget) = admission_budget_from_env() {
+        wiring = wiring.with_admission_budget(budget);
+    }
     let mods = gateway_svc::modules(&wiring, Some(player.clone()));
 
     // No edge server: this process serves no provider over the internal mTLS edge, it
