@@ -648,6 +648,42 @@ prompts) — shared by research + implementation:
 heuristic, dispatch rules, refactor safety:
 [docs/reference/implementation-mode.md](docs/reference/implementation-mode.md).**
 
+## Fix the Authority, Not the Symptom — MANDATORY
+
+The implementation twin of Adversarial Subagent Review. Past shallow fixes each
+patched the reported symptom while leaving the flawed *decision authority* in place —
+a hardcoded 3h threshold beside the configurable interval it shadowed, a green SKIP
+beside a "mandatory" audit stage, per-topic error swallowing beside a liveness stamp.
+The cost was four waves of bug-fixing (the 2026-07-12/13 remediation: ~130 commits)
+instead of building features. The 2026-07-13 remediation is the reference for how to
+work instead; these rules are extracted from it:
+
+1. **Locate the authority first.** Before writing a fix, name the single place that
+   *decides* the behavior (the config parser, the contract type, the one enum, the
+   one SQL statement). The fix goes THERE. A patch that corrects the outcome while
+   the flawed authority survives is banned — it guarantees the next finding.
+2. **No hack-on-hack.** If a fix would add a second special case beside an earlier
+   fix (another env fallback, another `if`, another wrapper around a wrapper), STOP:
+   that's the signal the authority itself is wrong — replace it. Preserve the good
+   invariant from the earlier fix; do not revert-and-redo.
+3. **Minimal sufficient closure.** State (to yourself, in one sentence) what concrete
+   defect this change closes and what the *minimal* closure is. Below that line is
+   po-łebkach; above it is gold-plating (the tooling-half-systemd failure mode).
+   Both directions burned this repo.
+4. **Semantic changes are recorded, never smuggled.** Reversing a documented
+   decision, changing a metric's semantics, or deviating from an approved plan gets
+   named in the commit message AND an errata note in the plan/reference doc —
+   in the same rollout, not "later".
+5. **Prove the failing branch.** Every fix ships with a test that executes the
+   branch that used to be wrong (not a test that merely exists near it), on the
+   topology that's actually at risk (split, not just monolith). A negative path
+   proven by construction (counting fake, dead pool, decoy process) beats one
+   asserted by absence of errors.
+6. **Sweep for siblings before leaving.** While the defect class is loaded in
+   context, grep for its siblings (same pattern, other call sites, the adjacent
+   lifecycle owner) and either fix them in the same rollout or record them as
+   explicit known gaps — never silently leave a twin of the bug you just fixed.
+
 ## Adversarial Subagent Review — MANDATORY
 
 Reviewing a subagent's (or my own) diff means **trying to break it**, not reading it
