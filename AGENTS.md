@@ -338,6 +338,13 @@ supervisor identity over a bounded loopback control endpoint; cleanup reaps exac
 the process groups/job members that supervisor created, never unrelated processes
 selected by name or a reused PID.
 
+`cargo run -p devctl -- up ...` keeps its parent Cargo process active for the life
+of the foreground supervisor. While it is running, do not start another Cargo
+command. Inspect or stop that fleet with the already-built direct binary:
+`target/debug/devctl.exe status` / `down` on Windows or
+`target/debug/devctl status` / `down` on Unix (under the configured
+`CARGO_TARGET_DIR` when it differs).
+
 `verifyctl` prints a PASS/FAIL/SKIP table and exits non-zero for every applicable
 blocking failure:
 
@@ -388,11 +395,15 @@ concurrent DDL (`CREATE OR REPLACE`), which looks like a hang or fails with
 `tuple concurrently updated`. This bites on EVERY rollout, so it is a hard
 protocol, not a tip:
 
-- **Before any Cargo-launched rollout or `devctl status`**: first check
+- **Before any Cargo-launched rollout**: first check
   `Get-Process | Where-Object { $_.ProcessName -match '^cargo$|^rustc$' }`
-  (or `pgrep -x cargo; pgrep -x rustc` in bash) and WAIT if either is active.
-  Only when clear, run `cargo run -p devctl -- status` and require no active fleet.
-  After status exits, re-check Cargo/rustc before launching exactly one selected
+  (or `pgrep -x cargo; pgrep -x rustc` in bash). If either is active, never start
+  a second Cargo command. To inspect or stop an already-running foreground
+  `devctl` fleet, use the already-built direct binary (`target/debug/devctl.exe`
+  on Windows or `target/debug/devctl` on Unix, adjusted for `CARGO_TARGET_DIR`),
+  then WAIT for or stop the owning rollout as appropriate. When Cargo/rustc are
+  clear, run `cargo run -p devctl -- status` and require no active fleet. After
+  status exits, re-check Cargo/rustc before launching exactly one selected
   rollout; never start a second run "to check something quickly".
 - **Never launch a test run in the background and then start another command
   that compiles or tests** — the second invocation is the classic cause.

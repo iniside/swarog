@@ -17,14 +17,20 @@ change is broken when it isn't.
 ```powershell
 Get-Process | Where-Object { $_.ProcessName -match '^cargo$|^rustc$' }
 ```
-(bash: `pgrep -x cargo; pgrep rustc`)
+(bash: `pgrep -x cargo; pgrep -x rustc`)
 
-If Cargo/rustc is active, **WAIT for it** before invoking another Cargo command.
-Once clear, run `cargo run -p devctl -- status`; it must report no active fleet.
-If a rollout is active: **WAIT for it**. Never start a second run "to check
-something quickly" — that is the classic cause. If you started the running one
-in the background, monitor it; don't launch anything that compiles or tests
-(including `cargo clippy` builds) alongside it.
+If Cargo/rustc is active, **never invoke another Cargo command**. To inspect or
+stop an already-running foreground `devctl` fleet, use the already-built direct
+binary: `target/debug/devctl.exe status` / `down` on Windows or
+`target/debug/devctl status` / `down` on Unix (under the configured
+`CARGO_TARGET_DIR` when it differs). Then **WAIT for or stop the owning rollout**
+as appropriate. If you started it in the background, monitor it; do not launch
+anything that compiles or tests (including `cargo clippy`) alongside it.
+
+Only when Cargo/rustc are clear, run `cargo run -p devctl -- status`; it must
+report no active fleet. After status exits, re-check Cargo/rustc before launching
+exactly one selected rollout. Never start a second run "to check something
+quickly" — that is the classic cause.
 
 If status says no active fleet but `*-svc` or `server` processes remain, treat
 them as leftovers and identify ownership before stopping anything; never kill

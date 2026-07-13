@@ -153,6 +153,13 @@ per-process logs.
 shutdown reaps exactly the processes owned by that supervisor and does not kill by
 process name or stale PID.
 
+`cargo run -p devctl -- up ...` keeps its parent Cargo process active for the life
+of the foreground supervisor. While it is running, do not start another Cargo
+command. Inspect or stop that fleet with the already-built direct binary:
+`target/debug/devctl.exe status` / `down` on Windows or
+`target/debug/devctl status` / `down` on Unix (under the configured
+`CARGO_TARGET_DIR` when it differs).
+
 ## Verify
 
 ```sh
