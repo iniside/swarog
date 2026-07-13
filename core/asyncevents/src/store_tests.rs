@@ -367,8 +367,11 @@ async fn identity_mismatch_guard_fails_startup() {
 /// Step 9 (missed-sibling `MODULE_MIGRATE_LOCK_TIMEOUT` bound) + the reviewer's
 /// aborted-tx amendment: a stuck V2 plane migrate-lock holder must fail FAST
 /// under a short `lock_timeout`, name the `55P03`/pg_stat_activity remedial, and
-/// must NOT leave the returning pooled connection mid-aborted-transaction — a
-/// later borrower on the SAME POOL must still be able to run an ordinary query.
+/// must NOT leave the returning pooled connection mid-aborted-transaction.
+/// The blocker lives on the SHARED test pool; the DDL under test runs on its
+/// own `max_connections(1)` pool, so the post-failure `SELECT 1` provably
+/// reuses the EXACT connection the failed DDL ran on — the no-poisoning claim
+/// holds by construction, not by which connection the pool happens to hand out.
 /// Takes the WRITER_LOCK_CHOREOGRAPHY guard because it holds a lock across an
 /// open transaction spanning further awaits, same as the WRITER_LOCK_KEY tests.
 #[tokio::test]
@@ -376,9 +379,18 @@ async fn migrate_lock_timeout_fails_fast_without_poisoning_pool() {
     let _choreo = WRITER_LOCK_CHOREOGRAPHY.lock().await;
     let Some(pool) = test_pool().await else { return };
 
-    // Hold the V2 plane migrate advisory lock on a dedicated connection, across
-    // an open (unclosed) transaction, so a concurrent `ensure_schema_with_lock_timeout`
-    // call is forced to wait on it.
+    // The pool under test: exactly ONE connection, so every statement below —
+    // the failing DDL, the reuse probe, the happy-path retry — shares it.
+    let dsn = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string());
+    let small_pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&dsn)
+        .await
+        .expect("test_pool connected, so a second pool must too");
+
+    // Hold the V2 plane migrate advisory lock on a shared-pool connection,
+    // across an open (unclosed) transaction, so the
+    // `ensure_schema_with_lock_timeout` call below is forced to wait on it.
     let mut blocker = pool.acquire().await.unwrap();
     sqlx::raw_sql("BEGIN;").execute(&mut *blocker).await.unwrap();
     sqlx::query("SELECT pg_advisory_xact_lock($1)")
@@ -390,7 +402,7 @@ async fn migrate_lock_timeout_fails_fast_without_poisoning_pool() {
     // Failing-branch: the DDL must give up quickly (bounded by the 1s test
     // timeout), never hang for the real 60s default.
     let start = std::time::Instant::now();
-    let err = ensure_schema_with_lock_timeout(&pool, "1s")
+    let err = ensure_schema_with_lock_timeout(&small_pool, "1s")
         .await
         .expect_err("a held V2 migrate lock must fail the DDL, not hang");
     let elapsed = start.elapsed();
@@ -407,22 +419,21 @@ async fn migrate_lock_timeout_fails_fast_without_poisoning_pool() {
         "error must name the pg_stat_activity operator hint: {err}"
     );
 
-    // Reuse test (the review's core point): the failed multi-statement DDL ran
-    // on an explicit connection that returned to the pool after a best-effort
-    // ROLLBACK. If that ROLLBACK were missing, this query would fail with
-    // "current transaction is aborted" on whichever pooled connection sqlx
-    // happens to hand back for it.
+    // Reuse test (the review's core point): with max_connections(1) this
+    // SELECT runs on the EXACT connection the failed multi-statement DDL used.
+    // If the recovery ROLLBACK were missing, it would fail with "current
+    // transaction is aborted".
     let one: i32 = sqlx::query_scalar("SELECT 1")
-        .fetch_one(&pool)
+        .fetch_one(&small_pool)
         .await
-        .expect("pool must not be poisoned by the failed DDL attempt");
+        .expect("the DDL connection must not be left mid-aborted-tx");
     assert_eq!(one, 1);
 
     // Happy path: release the blocker and prove ensure_schema still succeeds
-    // (idempotent DDL) once the lock is free.
+    // (idempotent DDL) on the same single connection once the lock is free.
     sqlx::raw_sql("ROLLBACK;").execute(&mut *blocker).await.unwrap();
     drop(blocker);
-    ensure_schema_with_lock_timeout(&pool, "5s")
+    ensure_schema_with_lock_timeout(&small_pool, "5s")
         .await
         .expect("ensure_schema must succeed once the migrate lock is free");
 }

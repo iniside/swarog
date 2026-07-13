@@ -165,9 +165,11 @@ pub(crate) async fn ensure_schema(pool: &PgPool) -> anyhow::Result<()> {
 
 /// [`ensure_schema`]'s body, parameterized on the `lock_timeout` GUC value so
 /// tests can wait milliseconds instead of [`V2_MIGRATE_LOCK_TIMEOUT`]'s real
-/// 60s (mirrors `core/lifecycle`'s `App::migrate_with_lock_timeout`). `t` is a
-/// trusted crate-internal/test string, never user/network input — it is
-/// spliced into the DDL text because `SET LOCAL` cannot take a bind parameter.
+/// 60s (mirrors `core/lifecycle`'s `App::migrate_with_lock_timeout`).
+/// `lock_timeout` is a trusted crate-internal/test string, never user/network
+/// input — it is spliced into the DDL text because `SET LOCAL` cannot take a
+/// bind parameter; the alphanumeric assert below is a tripwire for a malformed
+/// caller value, not a security boundary.
 ///
 /// Runs the multi-statement DDL on an EXPLICIT connection acquired from the
 /// pool (not `.execute(pool)`, which borrows a random pooled connection for
@@ -184,6 +186,14 @@ pub(crate) async fn ensure_schema_with_lock_timeout(
     pool: &PgPool,
     lock_timeout: &str,
 ) -> anyhow::Result<()> {
+    // Tripwire, not a security boundary: the value is crate-internal (const or
+    // test literal), but it is spliced into quoted SQL, so a malformed value
+    // should die loudly here rather than as a cryptic DDL syntax error.
+    assert!(
+        !lock_timeout.is_empty() && lock_timeout.chars().all(|c| c.is_ascii_alphanumeric()),
+        "asyncevents: lock_timeout {lock_timeout:?} must be ASCII alphanumeric \
+         (digits + unit, e.g. \"60s\")"
+    );
     let ddl = V2_DDL_TEMPLATE
         .replace("{lock_timeout}", lock_timeout)
         .replace("{migrate_key}", &MIGRATE_LOCK_KEY.to_string())
@@ -195,11 +205,18 @@ pub(crate) async fn ensure_schema_with_lock_timeout(
         .context("asyncevents: acquire V2 schema DDL connection")?;
 
     if let Err(err) = sqlx::raw_sql(&ddl).execute(&mut *conn).await {
-        // Best-effort recovery: a failed multi-statement batch (including a
-        // 55P03 lock-timeout abort) can leave this session mid-aborted-tx.
-        // ROLLBACK before the connection returns to the pool so the next
-        // borrower doesn't inherit "current transaction is aborted".
-        let _ = sqlx::raw_sql("ROLLBACK;").execute(&mut *conn).await;
+        // Recovery: a failed multi-statement batch (including a 55P03
+        // lock-timeout abort) can leave this session mid-aborted-tx. ROLLBACK
+        // before the connection returns to the pool so the next borrower
+        // doesn't inherit "current transaction is aborted". If the ROLLBACK
+        // itself fails, the session state is unknown — detach the connection
+        // from the pool and drop it (closing the socket) so it can never serve
+        // a later borrower. sqlx already discards a connection whose error was
+        // connection-death on return to the pool; this handles the
+        // rollback-errored-but-connection-alive case.
+        if sqlx::raw_sql("ROLLBACK;").execute(&mut *conn).await.is_err() {
+            drop(conn.detach());
+        }
         let timed_out = matches!(
             &err,
             sqlx::Error::Database(db) if db.code().as_deref() == Some("55P03")
