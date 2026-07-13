@@ -363,3 +363,66 @@ async fn identity_mismatch_guard_fails_startup() {
     );
     tx.rollback().await.unwrap();
 }
+
+/// Step 9 (missed-sibling `MODULE_MIGRATE_LOCK_TIMEOUT` bound) + the reviewer's
+/// aborted-tx amendment: a stuck V2 plane migrate-lock holder must fail FAST
+/// under a short `lock_timeout`, name the `55P03`/pg_stat_activity remedial, and
+/// must NOT leave the returning pooled connection mid-aborted-transaction — a
+/// later borrower on the SAME POOL must still be able to run an ordinary query.
+/// Takes the WRITER_LOCK_CHOREOGRAPHY guard because it holds a lock across an
+/// open transaction spanning further awaits, same as the WRITER_LOCK_KEY tests.
+#[tokio::test]
+async fn migrate_lock_timeout_fails_fast_without_poisoning_pool() {
+    let _choreo = WRITER_LOCK_CHOREOGRAPHY.lock().await;
+    let Some(pool) = test_pool().await else { return };
+
+    // Hold the V2 plane migrate advisory lock on a dedicated connection, across
+    // an open (unclosed) transaction, so a concurrent `ensure_schema_with_lock_timeout`
+    // call is forced to wait on it.
+    let mut blocker = pool.acquire().await.unwrap();
+    sqlx::raw_sql("BEGIN;").execute(&mut *blocker).await.unwrap();
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(MIGRATE_LOCK_KEY)
+        .execute(&mut *blocker)
+        .await
+        .unwrap();
+
+    // Failing-branch: the DDL must give up quickly (bounded by the 1s test
+    // timeout), never hang for the real 60s default.
+    let start = std::time::Instant::now();
+    let err = ensure_schema_with_lock_timeout(&pool, "1s")
+        .await
+        .expect_err("a held V2 migrate lock must fail the DDL, not hang");
+    let elapsed = start.elapsed();
+    assert!(
+        elapsed < Duration::from_secs(10),
+        "ensure_schema_with_lock_timeout did not fail fast: took {elapsed:?}"
+    );
+    assert!(
+        err.to_string().contains("V2 plane advisory lock"),
+        "unexpected error: {err}"
+    );
+    assert!(
+        err.to_string().contains("pg_stat_activity"),
+        "error must name the pg_stat_activity operator hint: {err}"
+    );
+
+    // Reuse test (the review's core point): the failed multi-statement DDL ran
+    // on an explicit connection that returned to the pool after a best-effort
+    // ROLLBACK. If that ROLLBACK were missing, this query would fail with
+    // "current transaction is aborted" on whichever pooled connection sqlx
+    // happens to hand back for it.
+    let one: i32 = sqlx::query_scalar("SELECT 1")
+        .fetch_one(&pool)
+        .await
+        .expect("pool must not be poisoned by the failed DDL attempt");
+    assert_eq!(one, 1);
+
+    // Happy path: release the blocker and prove ensure_schema still succeeds
+    // (idempotent DDL) once the lock is free.
+    sqlx::raw_sql("ROLLBACK;").execute(&mut *blocker).await.unwrap();
+    drop(blocker);
+    ensure_schema_with_lock_timeout(&pool, "5s")
+        .await
+        .expect("ensure_schema must succeed once the migrate lock is free");
+}

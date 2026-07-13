@@ -36,8 +36,21 @@ pub const WRITER_LOCK_KEY: i64 = 0x6173_796E_6365_7674;
 /// concurrently updated". ASCII `"asyncmig"`.
 const MIGRATE_LOCK_KEY: i64 = 0x6173_796E_636D_6967;
 
+/// Bound on how long the V2 DDL's `pg_advisory_xact_lock` wait may take before
+/// giving up loudly (SQLSTATE `55P03`), mirroring `core/lifecycle`'s
+/// `MODULE_MIGRATE_LOCK_TIMEOUT` (same 60s convention — module migrate already
+/// got this bound; the plane DDL was the missed sibling). `SET LOCAL`, not
+/// `SET` + `RESET`: this lock is transaction-scoped (`pg_advisory_xact_lock`,
+/// not `_lock`), so `SET LOCAL` self-resets at `COMMIT`/`ROLLBACK` — simpler
+/// than lifecycle's session-lock dance (`SET` before, `RESET` after on the same
+/// connection) which exists only because that lock spans many independent
+/// transactions.
+const V2_MIGRATE_LOCK_TIMEOUT: &str = "60s";
+
 /// The V2 DDL, normative in the plan. Idempotent; runs in ONE transaction under
-/// the exclusive migrate advisory lock (`{migrate_key}`). `asyncevents.append_event`
+/// the exclusive migrate advisory lock (`{migrate_key}`), bounded by
+/// `SET LOCAL lock_timeout = '{lock_timeout}'` (see [`V2_MIGRATE_LOCK_TIMEOUT`]).
+/// `asyncevents.append_event`
 /// owns the WHOLE writer protocol so there is exactly one implementation:
 /// shared advisory lock -> read `plane_meta.generation` -> INSERT stamped with
 /// `pg_current_xact_id()` -> return the stable `event_id`. `ensure_history_contract`
@@ -49,6 +62,7 @@ const MIGRATE_LOCK_KEY: i64 = 0x6173_796E_636D_6967;
 /// increasing in append order, which is all the position ordering needs.
 const V2_DDL_TEMPLATE: &str = r#"
 BEGIN;
+SET LOCAL lock_timeout = '{lock_timeout}';
 SELECT pg_advisory_xact_lock({migrate_key});
 CREATE SCHEMA IF NOT EXISTS asyncevents;
 CREATE TABLE IF NOT EXISTS asyncevents.plane_meta (
@@ -146,13 +160,63 @@ COMMIT;"#;
 /// prerequisite of the FIRST migrate, not just of the startup guard — hence the
 /// GRANT bootstrap surfaces here too (via [`control_identity`]).
 pub(crate) async fn ensure_schema(pool: &PgPool) -> anyhow::Result<()> {
+    ensure_schema_with_lock_timeout(pool, V2_MIGRATE_LOCK_TIMEOUT).await
+}
+
+/// [`ensure_schema`]'s body, parameterized on the `lock_timeout` GUC value so
+/// tests can wait milliseconds instead of [`V2_MIGRATE_LOCK_TIMEOUT`]'s real
+/// 60s (mirrors `core/lifecycle`'s `App::migrate_with_lock_timeout`). `t` is a
+/// trusted crate-internal/test string, never user/network input — it is
+/// spliced into the DDL text because `SET LOCAL` cannot take a bind parameter.
+///
+/// Runs the multi-statement DDL on an EXPLICIT connection acquired from the
+/// pool (not `.execute(pool)`, which borrows a random pooled connection for
+/// the call and returns it to the pool immediately after): a 55P03 lock-wait
+/// abort — or any other mid-transaction failure — can leave the session in
+/// Postgres's ABORTED-TRANSACTION state (no implicit ROLLBACK is issued by a
+/// failed multi-statement `raw_sql` batch), and a later borrower of that same
+/// pooled connection would see every statement rejected with "current
+/// transaction is aborted" until a ROLLBACK runs. Owning the connection lets
+/// us issue a best-effort ROLLBACK on ANY error before the connection returns
+/// to the pool, so a stuck lock holder degrades to a clean timeout error
+/// instead of poisoning a pool slot.
+pub(crate) async fn ensure_schema_with_lock_timeout(
+    pool: &PgPool,
+    lock_timeout: &str,
+) -> anyhow::Result<()> {
     let ddl = V2_DDL_TEMPLATE
+        .replace("{lock_timeout}", lock_timeout)
         .replace("{migrate_key}", &MIGRATE_LOCK_KEY.to_string())
         .replace("{writer_key}", &WRITER_LOCK_KEY.to_string());
-    sqlx::raw_sql(&ddl)
-        .execute(pool)
+
+    let mut conn = pool
+        .acquire()
         .await
-        .context("asyncevents: V2 schema DDL failed")?;
+        .context("asyncevents: acquire V2 schema DDL connection")?;
+
+    if let Err(err) = sqlx::raw_sql(&ddl).execute(&mut *conn).await {
+        // Best-effort recovery: a failed multi-statement batch (including a
+        // 55P03 lock-timeout abort) can leave this session mid-aborted-tx.
+        // ROLLBACK before the connection returns to the pool so the next
+        // borrower doesn't inherit "current transaction is aborted".
+        let _ = sqlx::raw_sql("ROLLBACK;").execute(&mut *conn).await;
+        let timed_out = matches!(
+            &err,
+            sqlx::Error::Database(db) if db.code().as_deref() == Some("55P03")
+        );
+        return if timed_out {
+            Err(err).with_context(|| {
+                format!(
+                    "asyncevents: V2 plane advisory lock not acquired within {lock_timeout} — \
+                     another process is stuck mid plane-DDL; see pg_stat_activity"
+                )
+            })
+        } else {
+            Err(err).context("asyncevents: V2 schema DDL failed")
+        };
+    }
+    drop(conn);
+
     let identity = control_identity(pool).await?;
     sqlx::query(
         "INSERT INTO asyncevents.plane_meta (generation, system_identifier) \
