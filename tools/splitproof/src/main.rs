@@ -25,6 +25,9 @@ use processctl::{
 };
 use sqlx::{PgPool, Row};
 
+#[cfg(test)]
+mod tests;
+
 const DEFAULT_DB: &str =
     "postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable";
 
@@ -173,14 +176,27 @@ fn executable_on_path(name: &str, env: &BTreeMap<String, String>) -> Result<Path
     bail!("{name} executable not found in the explicit build PATH")
 }
 
+/// Decodes the fixed HTML-escape set emitted by Minijinja. `&amp;` stays last so an
+/// original literal entity such as `&quot;` round-trips instead of being decoded twice.
+fn decode_html_attr(value: &str) -> String {
+    value
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#x27;", "'")
+        .replace("&#x2f;", "/")
+        .replace("&amp;", "&")
+}
+
 /// Extract `<input name="X" value="Y">` pairs from an admin form page (for the M3b
-/// no-op form resubmit — a tiny hand parser avoids a regex dep).
+/// no-op form resubmit — a tiny hand parser avoids a regex dep). Attribute values are
+/// decoded as a browser would decode them before submitting the form.
 fn extract_form_fields(html: &str) -> Vec<(String, String)> {
     let attr = |tag: &str, key: &str| -> Option<String> {
         let pat = format!("{key}=\"");
         let start = tag.find(&pat)? + pat.len();
         let end = tag[start..].find('"')? + start;
-        Some(tag[start..end].to_string())
+        Some(decode_html_attr(&tag[start..end]))
     };
     let mut out = Vec::new();
     for input in html.split("<input").skip(1) {
@@ -265,22 +281,42 @@ async fn monolith_parity(ctx: &Ctx, pool: &PgPool, p: &mut Proof) -> Result<()> 
 
     // [M3b] LOCAL apikeys form-submit WITH _csrf -> a NEW admin.action{form-submit} event
     // (remote forms in the split are read-only, so this is the only place it's exercised).
-    let before: Option<i64> = sqlx::query_scalar("SELECT count(*) FROM asyncevents.events WHERE topic='admin.action' AND payload->>'action'='form-submit'").fetch_optional(pool).await.ok().flatten();
+    let before: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM asyncevents.events \
+         WHERE topic='admin.action' \
+           AND payload->>'actor'='proofadmin' \
+           AND payload->>'target'='api-keys' \
+           AND payload->>'action'='form-submit'",
+    )
+    .fetch_one(pool)
+    .await?;
     let page = jar.get(format!("{m}/admin/api-keys")).send().await?.text().await.unwrap_or_default();
     let fields = extract_form_fields(&page);
     if fields.iter().any(|(k, _)| k == "_csrf") {
         let form: Vec<(&str, &str)> = fields.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
-        let _ = jar.post(format!("{m}/admin/api-keys")).form(&form).send().await;
-        let mut ok = false;
-        for _ in 0..30 {
-            let after: Option<i64> = sqlx::query_scalar("SELECT count(*) FROM asyncevents.events WHERE topic='admin.action' AND payload->>'action'='form-submit'").fetch_optional(pool).await.ok().flatten();
-            if after.unwrap_or(0) > before.unwrap_or(0) {
-                ok = true;
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(300)).await;
-        }
-        p.check("[M3b] local form-submit -> new admin.action event", ok, format!("before={before:?}"));
+        let response = jar.post(format!("{m}/admin/api-keys")).form(&form).send().await?;
+        let post_status = response.status();
+        let after = if post_status.as_u16() == 303 {
+            Some(
+                sqlx::query_scalar(
+                    "SELECT count(*) FROM asyncevents.events \
+                     WHERE topic='admin.action' \
+                       AND payload->>'actor'='proofadmin' \
+                       AND payload->>'target'='api-keys' \
+                       AND payload->>'action'='form-submit'",
+                )
+                .fetch_one(pool)
+                .await?,
+            )
+        } else {
+            None
+        };
+        let ok = post_status.as_u16() == 303 && after.is_some_and(|after| after > before);
+        p.check(
+            "[M3b] local form-submit -> new admin.action event",
+            ok,
+            format!("post={post_status} before={before} after={after:?}"),
+        );
     } else {
         p.check("[M3b] local form-submit form present (_csrf)", false, "no _csrf field on apikeys page");
     }
