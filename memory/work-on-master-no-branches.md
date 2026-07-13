@@ -1,6 +1,6 @@
 ---
 name: work-on-master-no-branches
-description: "For GameBackend, commit directly on master — no feature branches (solo, for-fun repo)"
+description: "For GameBackend, commit directly on master — no feature branches (solo + agents workflow, history is enough)"
 metadata: 
   node_type: memory
   type: feedback
@@ -10,8 +10,9 @@ metadata:
 For this repo the user wants work committed **directly on `master`** — do NOT
 create feature branches or PRs by default.
 
-**Why:** solo, for-fun project; branching/merging is "więcej zachodu niż jest tego
-warte" (more hassle than it's worth) and the commit history alone is enough
+**Why:** solo + AI-agents workflow (no human collaborators, per
+[[team-is-solo-plus-agents-forever]]); branching/merging is "więcej zachodu niż jest
+tego warte" (more hassle than it's worth) and the commit history alone is enough
 traceability. Stated 2026-07-07 after merging feat/config-module, then deleting the
 merged branches.
 
