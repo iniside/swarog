@@ -69,9 +69,9 @@ fn collect_reference_markdown(directory: &Path, documents: &mut Vec<PathBuf>) ->
 
 fn workspace_packages(root: &Path) -> Result<BTreeSet<String>> {
     let root_manifest_path = root.join("Cargo.toml");
-    let root_manifest: toml::Value = std::fs::read_to_string(&root_manifest_path)
-        .with_context(|| format!("read {}", root_manifest_path.display()))?
-        .parse()
+    let root_manifest_contents = std::fs::read_to_string(&root_manifest_path)
+        .with_context(|| format!("read {}", root_manifest_path.display()))?;
+    let root_manifest: toml::Value = toml::from_str(&root_manifest_contents)
         .with_context(|| format!("parse {}", root_manifest_path.display()))?;
     let members = root_manifest
         .get("workspace")
@@ -86,9 +86,9 @@ fn workspace_packages(root: &Path) -> Result<BTreeSet<String>> {
             bail!("docs-current requires explicit workspace members, found {member}");
         }
         let manifest_path = root.join(member).join("Cargo.toml");
-        let manifest: toml::Value = std::fs::read_to_string(&manifest_path)
-            .with_context(|| format!("read workspace member {}", manifest_path.display()))?
-            .parse()
+        let manifest_contents = std::fs::read_to_string(&manifest_path)
+            .with_context(|| format!("read workspace member {}", manifest_path.display()))?;
+        let manifest: toml::Value = toml::from_str(&manifest_contents)
             .with_context(|| format!("parse workspace member {}", manifest_path.display()))?;
         let package = manifest
             .get("package")
