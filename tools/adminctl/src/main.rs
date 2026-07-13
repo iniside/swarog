@@ -62,12 +62,17 @@ async fn run() -> Result<()> {
     }
 }
 
-/// The username positional: the second token (`adminctl <cmd> <username>`).
+/// The username positional: the second token (`adminctl <cmd> <username>`), run
+/// through the SAME [`admin::normalize_username`] authority the lib verbs bind —
+/// so every echoed message prints the name the row was actually touched under,
+/// never the raw padded argv (the lib re-normalizes; on an already-normalized
+/// value that is a no-op).
 fn arg_username(args: &[String], verb: &str) -> Result<String> {
-    args.get(1)
+    let raw = args
+        .get(1)
         .filter(|s| !s.starts_with('-'))
-        .cloned()
-        .ok_or_else(|| anyhow!("adminctl: {verb} requires a <username>"))
+        .ok_or_else(|| anyhow!("adminctl: {verb} requires a <username>"))?;
+    admin::normalize_username(raw).map_err(|error| anyhow!("adminctl: {error}"))
 }
 
 /// Resolve the password from the two allowed channels: `--password-stdin` (one trimmed

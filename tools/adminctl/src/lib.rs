@@ -51,7 +51,11 @@ pub async fn ensure_schema(pool: &PgPool) -> Result<()> {
 /// raw argv value (the pre-fix behavior) could mint a row like `"  alice  "` that
 /// `login_submit`'s trim+cap would then never match, i.e. a permanently unusable
 /// ("zombie") account; `install.sh`/`install.ps1` pass argv straight through, so
-/// this is the only enforcement point.
+/// this is the only enforcement point. Legacy rows minted by the pre-normalization
+/// adminctl (padded/over-cap usernames) are unreachable by both login and normalized
+/// delete: find them with `SELECT username FROM admin.users WHERE username <>
+/// btrim(username)` and remove via psql or a schema wipe + reseed (wipe-over-migrations,
+/// no data-migration machinery).
 pub async fn create_user(pool: &PgPool, username: &str, password: &str) -> Result<bool> {
     let username = admin::normalize_username(username)
         .map_err(|error| anyhow!("adminctl: {error}"))?;
