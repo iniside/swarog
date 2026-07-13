@@ -28,7 +28,7 @@ pub fn monolith_modules() -> Vec<Box<dyn Module>> {
     server::modules(&checker_wiring(), None)
 }
 
-/// Every split process paired with its module set, in split-proof port order.
+/// Every split process paired with its module set.
 /// `gateway-svc` hosts no durable subscription, so its module set is included for
 /// completeness (a future validation may still want to see it) even though today's
 /// topic/require checks find nothing interesting there.

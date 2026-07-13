@@ -422,7 +422,8 @@ async fn run(bin_dir: PathBuf, root: PathBuf, run_dir: PathBuf) -> Result<u32> {
         environment,
     };
 
-    // Fleet-drift tripwire: the harness svc list must equal cmd/*-svc on disk.
+    // Fleet-drift tripwire: the centralized processctl fleet must equal
+    // cmd/*-svc on disk.
     preflight_fleet(&root, &ctx)?;
 
     // Build the fleet (svcs + monolith + adminctl) so a bare `cargo run -p splitproof`
@@ -453,7 +454,8 @@ async fn run(bin_dir: PathBuf, root: PathBuf, run_dir: PathBuf) -> Result<u32> {
     for svc in ctx.fleet.services() {
         println!("[splitproof] starting {} on :{} ...", svc.name, svc.http_port);
         // config-svc must boot AFTER the baseline reset (done above) so its first
-        // snapshot is the default; the ordering in `fleet()` already places it late.
+        // snapshot is the default; the centralized processctl fleet already
+        // places it late.
         fleet.push(ctx.spawn(svc)?);
         ctx.wait_healthy(svc).await?;
         println!("[splitproof] {} healthy", svc.name);
@@ -464,9 +466,10 @@ async fn run(bin_dir: PathBuf, root: PathBuf, run_dir: PathBuf) -> Result<u32> {
     assertions(&ctx, &pool, &mut p).await?;
 
     // [I-GATE] live security proof: the harness boots the whole fleet with
-    // INVENTORY_DEV_GRANT=1 (see `fleet()` above), so `assertions` structurally
-    // cannot see the split bypass Step 1 closed. Restart ONLY inventory-svc without
-    // the flag and prove a fully-authed grant call now 404s through the front door.
+    // INVENTORY_DEV_GRANT=1 (see the centralized Proof fleet above), so
+    // `assertions` structurally cannot see the split bypass Step 1 closed. Restart
+    // ONLY inventory-svc without the flag and prove a fully-authed grant call now
+    // 404s through the front door.
     i_gate(&ctx, &mut fleet, &mut p).await?;
 
     // --- Monolith parity: tear the split down (frees :8080 + :9100), boot cmd/server on

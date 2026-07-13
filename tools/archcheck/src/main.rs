@@ -622,8 +622,10 @@ fn missing_svc_violations(modules: &[String], cmds: &[String]) -> Vec<String> {
                 Some(format!(
                     "modules/{m} has no cmd/{svc} — every domain module must compile + boot \
                      as its own svc process (fortress rule, CLAUDE.md constraint 2); add \
-                     cmd/{svc} (and wire split-proof + the fortress build list) or discuss \
-                     a sanctioned exemption"
+                     cmd/{svc}, add its typed service to tools/processctl/src/fleet.rs, and add \
+                     a named tools/splitproof assertion (the fortress build derives its package \
+                     set from cmd/*-svc) \
+                     or discuss a sanctioned exemption"
                 ))
             }
         })

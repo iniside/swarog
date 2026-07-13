@@ -427,7 +427,8 @@ audit [AU1-AU3], scheduler/prune [SC/SP], metrics [MX], rate-limit [RL], player 
 process group / SIGTERM on unix → clean drain, no force-kill). **psql is REQUIRED** at
 `DATABASE_URL`; the preceding blocking build stage produces the fleet and the
 harness runs it without a nested build. A
-fleet-drift preflight fails loudly if the harness svc list != `cmd/*-svc` on disk.
+fleet-drift preflight fails loudly if the centralized `processctl` fleet !=
+`cmd/*-svc` on disk.
 Add a new module's typed service to `tools/processctl/src/fleet.rs` and add its
 named assertion to `tools/splitproof`; cross-process flows also need a named harness
 assertion. **Never ship a monolith-only feature** — both
