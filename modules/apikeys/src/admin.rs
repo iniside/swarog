@@ -169,9 +169,14 @@ pub(crate) async fn admin_content_full(svc: &Arc<Service>) -> anyhow::Result<adm
     let form = adminapi::Form {
         action: String::new(),
         fields,
+        hidden: Vec::new(),
         submit: Some(Arc::new(move |values: adminapi::Params| {
             let svc = submit_svc.clone();
-            Box::pin(async move { apply_edit(&svc, values).await })
+            Box::pin(async move {
+                apply_edit(&svc, values)
+                    .await
+                    .map_err(adminapi::SubmitError::from)
+            })
         })),
     };
 

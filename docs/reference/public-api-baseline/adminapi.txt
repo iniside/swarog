@@ -50,6 +50,24 @@ impl core::marker::Unpin for adminapi::ItemError
 impl core::marker::UnsafeUnpin for adminapi::ItemError
 impl core::panic::unwind_safe::RefUnwindSafe for adminapi::ItemError
 impl core::panic::unwind_safe::UnwindSafe for adminapi::ItemError
+pub enum adminapi::SubmitError
+pub adminapi::SubmitError::Conflict
+pub adminapi::SubmitError::Other(anyhow::Error)
+impl core::convert::From<anyhow::Error> for adminapi::SubmitError
+pub fn adminapi::SubmitError::from(anyhow::Error) -> Self
+impl core::error::Error for adminapi::SubmitError
+pub fn adminapi::SubmitError::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
+impl core::fmt::Debug for adminapi::SubmitError
+pub fn adminapi::SubmitError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for adminapi::SubmitError
+pub fn adminapi::SubmitError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for adminapi::SubmitError
+impl core::marker::Send for adminapi::SubmitError
+impl core::marker::Sync for adminapi::SubmitError
+impl core::marker::Unpin for adminapi::SubmitError
+impl core::marker::UnsafeUnpin for adminapi::SubmitError
+impl core::panic::unwind_safe::RefUnwindSafe for adminapi::SubmitError
+impl core::panic::unwind_safe::UnwindSafe for adminapi::SubmitError
 pub struct adminapi::Cell
 pub adminapi::Cell::badge: alloc::string::String
 pub adminapi::Cell::link: alloc::string::String
@@ -114,6 +132,7 @@ impl core::panic::unwind_safe::UnwindSafe for adminapi::Field
 pub struct adminapi::Form
 pub adminapi::Form::action: alloc::string::String
 pub adminapi::Form::fields: alloc::vec::Vec<adminapi::Field>
+pub adminapi::Form::hidden: alloc::vec::Vec<adminapi::HiddenField>
 pub adminapi::Form::submit: core::option::Option<adminapi::SubmitFn>
 impl core::clone::Clone for adminapi::Form
 pub fn adminapi::Form::clone(&self) -> adminapi::Form
@@ -130,6 +149,24 @@ impl core::marker::Unpin for adminapi::Form
 impl core::marker::UnsafeUnpin for adminapi::Form
 impl !core::panic::unwind_safe::RefUnwindSafe for adminapi::Form
 impl !core::panic::unwind_safe::UnwindSafe for adminapi::Form
+pub struct adminapi::HiddenField
+pub adminapi::HiddenField::name: alloc::string::String
+pub adminapi::HiddenField::value: alloc::string::String
+impl core::clone::Clone for adminapi::HiddenField
+pub fn adminapi::HiddenField::clone(&self) -> adminapi::HiddenField
+impl core::default::Default for adminapi::HiddenField
+pub fn adminapi::HiddenField::default() -> adminapi::HiddenField
+impl serde_core::ser::Serialize for adminapi::HiddenField
+pub fn adminapi::HiddenField::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for adminapi::HiddenField
+pub fn adminapi::HiddenField::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for adminapi::HiddenField
+impl core::marker::Send for adminapi::HiddenField
+impl core::marker::Sync for adminapi::HiddenField
+impl core::marker::Unpin for adminapi::HiddenField
+impl core::marker::UnsafeUnpin for adminapi::HiddenField
+impl core::panic::unwind_safe::RefUnwindSafe for adminapi::HiddenField
+impl core::panic::unwind_safe::UnwindSafe for adminapi::HiddenField
 pub struct adminapi::Item
 pub adminapi::Item::id: alloc::string::String
 pub adminapi::Item::label: alloc::string::String
@@ -204,11 +241,11 @@ impl core::marker::Unpin for adminapi::Table
 impl core::marker::UnsafeUnpin for adminapi::Table
 impl core::panic::unwind_safe::RefUnwindSafe for adminapi::Table
 impl core::panic::unwind_safe::UnwindSafe for adminapi::Table
-pub const adminapi::SLOT: &str
+pub const adminapi::SLOT: contrib::Slot<adminapi::Item>
 pub trait adminapi::AdminData: core::marker::Send + core::marker::Sync
 pub fn adminapi::AdminData::admin_data<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<adminapi::ItemData, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn adminapi::param<'a>(&'a adminapi::Params, &str) -> &'a str
 pub type adminapi::Params = std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>
 pub type adminapi::RemoteFetchFn = alloc::sync::Arc<(dyn core::ops::function::Fn(adminapi::Params) -> futures_core::future::BoxFuture<'static, core::result::Result<adminapi::ItemData, adminapi::ItemError>> + core::marker::Send + core::marker::Sync)>
 pub type adminapi::RenderFn = alloc::sync::Arc<(dyn core::ops::function::Fn(&adminapi::Params) -> anyhow::Result<adminapi::Content> + core::marker::Send + core::marker::Sync)>
-pub type adminapi::SubmitFn = alloc::sync::Arc<(dyn core::ops::function::Fn(adminapi::Params) -> futures_core::future::BoxFuture<'static, anyhow::Result<()>> + core::marker::Send + core::marker::Sync)>
+pub type adminapi::SubmitFn = alloc::sync::Arc<(dyn core::ops::function::Fn(adminapi::Params) -> futures_core::future::BoxFuture<'static, core::result::Result<(), adminapi::SubmitError>> + core::marker::Send + core::marker::Sync)>

@@ -304,6 +304,7 @@ async fn template_renders_kpis_table_csrf_and_escapes() {
                     label: "Note".into(),
                     value: String::new(),
                 }],
+                hidden: Vec::new(),
                 submit: None,
             }),
         }),
@@ -927,7 +928,7 @@ async fn csrf_rejects_before_editability_and_gates_local_submit() {
         Box::pin(async move {
             sink.lock().unwrap().push(values);
             Ok(())
-        }) as BoxFuture<'static, anyhow::Result<()>>
+        }) as BoxFuture<'static, Result<(), adminapi::SubmitError>>
     });
     ctx.contribute(
         adminapi::SLOT,
@@ -946,6 +947,7 @@ async fn csrf_rejects_before_editability_and_gates_local_submit() {
                             label: "Knob".into(),
                             value: String::new(),
                         }],
+                        hidden: Vec::new(),
                         submit: Some(submit.clone()),
                     }),
                 })
@@ -1044,7 +1046,7 @@ async fn admin_open_bypasses_sessions_and_csrf() {
         Box::pin(async move {
             sink.lock().unwrap().push(values);
             Ok(())
-        }) as BoxFuture<'static, anyhow::Result<()>>
+        }) as BoxFuture<'static, Result<(), adminapi::SubmitError>>
     });
     ctx.contribute(
         adminapi::SLOT,
@@ -1063,6 +1065,7 @@ async fn admin_open_bypasses_sessions_and_csrf() {
                             label: "Knob".into(),
                             value: String::new(),
                         }],
+                        hidden: Vec::new(),
                         submit: Some(submit.clone()),
                     }),
                 })

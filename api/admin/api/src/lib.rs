@@ -74,7 +74,20 @@ pub type RemoteFetchFn =
 /// A LOCAL form's submit: applies a posted edit. Async because it does DB I/O
 /// (Go's `Submit` is a sync signature over `database/sql`; in async Rust it is a
 /// future). Owns its [`Params`] so the returned future is `'static`.
-pub type SubmitFn = Arc<dyn Fn(Params) -> BoxFuture<'static, anyhow::Result<()>> + Send + Sync>;
+pub type SubmitFn =
+    Arc<dyn Fn(Params) -> BoxFuture<'static, Result<(), SubmitError>> + Send + Sync>;
+
+/// Errors a local [`SubmitFn`] can surface. [`SubmitError::Conflict`] means the
+/// form's posted expected-state evidence no longer matches the authoritative store;
+/// [`SubmitError::Other`] preserves the ordinary validation/infrastructure failure
+/// path.
+#[derive(Debug, thiserror::Error)]
+pub enum SubmitError {
+    #[error("the submitted form is stale")]
+    Conflict,
+    #[error(transparent)]
+    Other(#[from] anyhow::Error),
+}
 
 /// Errors a [`RemoteFetchFn`] can surface. [`ItemError::Absent`] is Go's
 /// `ErrItemAbsent`: the peer has no admin surface, so the portal drops the item
@@ -165,6 +178,11 @@ pub struct Form {
     /// Inputs to render, in order.
     #[serde(default)]
     pub fields: Vec<Field>,
+    /// Hidden values round-tripped through the browser. Optimistic-concurrency
+    /// evidence uses names beginning with `_expected_`; these values are not secrets
+    /// and are never included in the admin action's field-name audit detail.
+    #[serde(default)]
+    pub hidden: Vec<HiddenField>,
     /// LOCAL-only: applies the edit; `None` across the remote wire.
     #[serde(skip)]
     pub submit: Option<SubmitFn>,
@@ -176,6 +194,14 @@ pub struct Form {
 pub struct Field {
     pub name: String,
     pub label: String,
+    pub value: String,
+}
+
+/// One hidden form input. Unlike [`Field`], it has no operator-facing label and is
+/// not part of the visible-field audit trail.
+#[derive(Clone, Serialize, Deserialize, Default)]
+pub struct HiddenField {
+    pub name: String,
     pub value: String,
 }
 
@@ -268,6 +294,10 @@ mod tests {
                         label: "game / name".into(),
                         value: "arena".into(),
                     }],
+                    hidden: vec![HiddenField {
+                        name: "_expected_revision".into(),
+                        value: "7".into(),
+                    }],
                     submit: None,
                 }),
             },
@@ -276,6 +306,9 @@ mod tests {
         let back: ItemData = serde_json::from_str(&json).unwrap();
         assert_eq!(back.section, "Platform");
         assert_eq!(back.content.table.unwrap().rows[0][0].text, "game");
-        assert!(back.content.form.unwrap().submit.is_none());
+        let form = back.content.form.unwrap();
+        assert_eq!(form.hidden[0].name, "_expected_revision");
+        assert_eq!(form.hidden[0].value, "7");
+        assert!(form.submit.is_none());
     }
 }
