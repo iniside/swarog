@@ -71,7 +71,7 @@
 
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, LazyLock, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -120,6 +120,15 @@ const ADMIN_ITEM_ID: &str = "scheduler";
 const ADMIN_SECTION: &str = "Platform";
 const ADMIN_LABEL: &str = "Schedules";
 
+/// The largest `interval_seconds` PostgreSQL's `make_interval(secs => …)` accepts:
+/// 9_223_372_036_854 s, verified empirically against PG18 — `interval` stores
+/// microseconds in an int64; re-verify on a PG major-version bump. A row above this
+/// ceiling makes `make_interval` error ("interval out of range") for EVERY row in the
+/// due-scan SELECT, not just its own. The ONE authoritative copy: interpolated into
+/// [`SCHEMA_DDL`]'s CHECK and both scan filters ([`DUE_SQL`], [`FIRE_RECHECK_SQL`]);
+/// the anti-drift test pins its value in all three strings.
+const INTERVAL_SECONDS_CEILING: i64 = 9_223_372_036_854;
+
 /// Creates this module's OWN schema and seeds the bootstrap row — full logical
 /// isolation (#10). Idempotent. Verbatim from Go's `schemaDDL` (with `interval_seconds`
 /// widened to `bigint`). `last_fired` defaults to the epoch so a fresh schedule is
@@ -129,18 +138,19 @@ const ADMIN_LABEL: &str = "Schedules";
 /// name (`audit-prune`) is coupling-through-a-string, now pushed to a shared contract
 /// constant (`schedulerevents::schedule_names::AUDIT_PRUNE`) rather than eliminated:
 /// `seeded_schedule_names_are_contract` (`tests.rs`) links this literal to that const.
-const SCHEMA_DDL: &str = r#"
+/// A `LazyLock<String>` (not a `&str` const) so the CHECK's upper bound is
+/// interpolated from [`INTERVAL_SECONDS_CEILING`] instead of hand-duplicated. The
+/// named `schedules_interval_bounds` CHECK is the authority preventing an
+/// out-of-range interval from ever landing (see the ceiling const's docs).
+static SCHEMA_DDL: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        r#"
 CREATE SCHEMA IF NOT EXISTS scheduler;
 CREATE TABLE IF NOT EXISTS scheduler.schedules (
 	name             text        PRIMARY KEY,
-	-- 9_223_372_036_854 s verified empirically against PG18 make_interval — interval
-	-- stores microseconds in an int64; re-verify on a PG major-version bump. A row
-	-- above this ceiling makes make_interval(secs => interval_seconds) error
-	-- ("interval out of range") for EVERY row in the due-scan SELECT, not just its
-	-- own — this CHECK is the authority preventing that from ever landing.
 	interval_seconds bigint      NOT NULL
 		CONSTRAINT schedules_interval_bounds
-		CHECK (interval_seconds > 0 AND interval_seconds <= 9223372036854),
+		CHECK (interval_seconds > 0 AND interval_seconds <= {INTERVAL_SECONDS_CEILING}),
 	last_fired       timestamptz NOT NULL DEFAULT to_timestamp(0)
 );
 INSERT INTO scheduler.schedules (name, interval_seconds)
@@ -148,27 +158,41 @@ INSERT INTO scheduler.schedules (name, interval_seconds)
 	ON CONFLICT (name) DO NOTHING;
 INSERT INTO scheduler.schedules (name, interval_seconds)
 	VALUES ('accounts-sessions-prune', 86400)
-	ON CONFLICT (name) DO NOTHING;"#;
+	ON CONFLICT (name) DO NOTHING;"#
+    )
+});
 
-/// The due-check SQL for [`due_schedules`], extracted to a const so the anti-drift test
-/// (`tests.rs`) can assert `interval_seconds BETWEEN 1 AND 9223372036854` is present
-/// without re-parsing the function body — `CREATE TABLE IF NOT EXISTS` no-ops on an
-/// existing table, so an out-of-bounds row (non-positive, OR above the
-/// `make_interval` ceiling this same const's DDL now bounds) can still exist on an
-/// un-wiped DB until the CHECK constraint above is actually in place; this filter is
-/// the belt to that DDL's braces — it keeps ONE legacy row from poisoning the whole
-/// scan (`make_interval` errors the entire SELECT, not just its own row).
-const DUE_SQL: &str = "SELECT name FROM scheduler.schedules \
-     WHERE now() - last_fired >= make_interval(secs => interval_seconds) \
-     AND interval_seconds BETWEEN 1 AND 9223372036854 \
-     ORDER BY name COLLATE \"C\"";
+/// The due-check SQL for [`due_schedules`], extracted so the anti-drift test
+/// (`tests.rs`) can assert the bounds filter is present without re-parsing the
+/// function body — `CREATE TABLE IF NOT EXISTS` no-ops on an existing table, so an
+/// out-of-bounds row (non-positive, OR above [`INTERVAL_SECONDS_CEILING`]) can still
+/// exist on an un-wiped DB until the CHECK constraint above is actually in place;
+/// this filter is the belt to that DDL's braces — it keeps ONE legacy row from
+/// poisoning the whole scan (`make_interval` errors the entire SELECT, not just its
+/// own row). Deliberate tradeoff: such a legacy out-of-bounds row is silently
+/// never-due (visible on the admin Schedules page, no warn log) — a recorded
+/// decision, not an accident; the DDL CHECK keeps new rows from ever reaching that
+/// state.
+static DUE_SQL: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "SELECT name FROM scheduler.schedules \
+         WHERE now() - last_fired >= make_interval(secs => interval_seconds) \
+         AND interval_seconds BETWEEN 1 AND {INTERVAL_SECONDS_CEILING} \
+         ORDER BY name COLLATE \"C\""
+    )
+});
 
 /// The re-check SQL for [`fire_locked`] (run UNDER the per-schedule advisory lock),
-/// extracted to a const for the same anti-drift reason as [`DUE_SQL`]. A row outside
-/// the bounds simply never re-confirms as due (`fetch_optional` yields
-/// `None`/`Some(false)`), the same treatment as a row deleted between the scan and here.
-const FIRE_RECHECK_SQL: &str = "SELECT now() - last_fired >= make_interval(secs => interval_seconds) \
-     FROM scheduler.schedules WHERE name = $1 AND interval_seconds BETWEEN 1 AND 9223372036854";
+/// extracted for the same anti-drift reason as [`DUE_SQL`]. A row outside the bounds
+/// simply never re-confirms as due (`fetch_optional` yields `None`/`Some(false)`),
+/// the same treatment as a row deleted between the scan and here.
+static FIRE_RECHECK_SQL: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "SELECT now() - last_fired >= make_interval(secs => interval_seconds) \
+         FROM scheduler.schedules WHERE name = $1 \
+         AND interval_seconds BETWEEN 1 AND {INTERVAL_SECONDS_CEILING}"
+    )
+});
 
 // ============================================================================
 // Loop liveness — the `"scheduler"` /readyz probe (mirrors asyncevents' Liveness).
@@ -267,7 +291,7 @@ async fn due_schedules(pool: &PgPool, deadline: Duration) -> anyhow::Result<Vec<
     ))
     .execute(&mut *tx)
     .await?;
-    let rows: Vec<(String,)> = sqlx::query_as(DUE_SQL).fetch_all(&mut *tx).await?;
+    let rows: Vec<(String,)> = sqlx::query_as(&DUE_SQL).fetch_all(&mut *tx).await?;
     tx.commit().await?; // read-only tx; commit ends the SET LOCAL scope
     Ok(rows.into_iter().map(|(n,)| n).collect())
 }
@@ -445,7 +469,7 @@ async fn fire_locked(conn: &mut PgConnection, bus: &Bus, name: &str) -> anyhow::
     // Re-check UNDER the lock: a replica that held the lock just before us may already
     // have fired this schedule and moved `last_fired`. `fetch_optional` returns None when
     // the row vanished (deleted between the due-scan and here) — treat as not-due.
-    let still_due: Option<bool> = sqlx::query_scalar(FIRE_RECHECK_SQL)
+    let still_due: Option<bool> = sqlx::query_scalar(&FIRE_RECHECK_SQL)
         .bind(name)
         .fetch_optional(&mut *conn)
         .await?;
@@ -678,7 +702,7 @@ impl Module for Scheduler {
         let pool = ctx
             .db()
             .ok_or_else(|| anyhow::anyhow!("scheduler requires a DB pool"))?;
-        sqlx::raw_sql(SCHEMA_DDL).execute(pool).await?;
+        sqlx::raw_sql(&SCHEMA_DDL).execute(pool).await?;
         Ok(())
     }
 

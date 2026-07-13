@@ -38,7 +38,7 @@ fn dsn() -> String {
 async fn test_pool() -> Option<PgPool> {
     match PgPool::connect(&dsn()).await {
         Ok(pool) => {
-            sqlx::raw_sql(SCHEMA_DDL)
+            sqlx::raw_sql(&SCHEMA_DDL)
                 .execute(&pool)
                 .await
                 .expect("migrate scheduler schema");
@@ -250,20 +250,32 @@ fn seeded_schedule_names_are_contract() {
     }
 }
 
-/// [`DUE_SQL`] and [`FIRE_RECHECK_SQL`] both guard against an out-of-bounds
-/// `interval_seconds` at the SQL layer (belt to the DDL's `CHECK` braces — a row
-/// surviving on an un-wiped DB from before the CHECK existed, or from before the
-/// CHECK's ceiling was raised, must still never fire, and must never poison the
-/// whole due-scan by making `make_interval` error the entire SELECT). Anti-drift on
-/// the extracted consts, same style as `seeded_schedule_names_are_contract`.
+/// [`SCHEMA_DDL`]'s CHECK, [`DUE_SQL`], and [`FIRE_RECHECK_SQL`] all bound
+/// `interval_seconds` by the ONE authoritative [`INTERVAL_SECONDS_CEILING`] const
+/// (belt to the DDL's `CHECK` braces — a row surviving on an un-wiped DB from before
+/// the CHECK existed, or from before the CHECK's ceiling was added, must still never
+/// fire, and must never poison the whole due-scan by making `make_interval` error the
+/// entire SELECT). Pins the const's VALUE (the empirically-verified PG18 ceiling) and
+/// its presence in all three strings — same style as `seeded_schedule_names_are_contract`.
 #[test]
 fn due_checks_filter_out_of_bounds_intervals() {
+    assert_eq!(
+        INTERVAL_SECONDS_CEILING, 9_223_372_036_854,
+        "INTERVAL_SECONDS_CEILING drifted from the PG18-verified make_interval ceiling"
+    );
     assert!(
-        DUE_SQL.contains("interval_seconds BETWEEN 1 AND 9223372036854"),
+        SCHEMA_DDL.contains(&format!(
+            "interval_seconds <= {INTERVAL_SECONDS_CEILING}"
+        )),
+        "SCHEMA_DDL's CHECK no longer bounds interval_seconds to the make_interval ceiling"
+    );
+    let filter = format!("interval_seconds BETWEEN 1 AND {INTERVAL_SECONDS_CEILING}");
+    assert!(
+        DUE_SQL.contains(&filter),
         "DUE_SQL no longer bounds interval_seconds to the make_interval ceiling"
     );
     assert!(
-        FIRE_RECHECK_SQL.contains("interval_seconds BETWEEN 1 AND 9223372036854"),
+        FIRE_RECHECK_SQL.contains(&filter),
         "FIRE_RECHECK_SQL no longer bounds interval_seconds to the make_interval ceiling"
     );
 }
@@ -328,12 +340,13 @@ async fn huge_interval_insert_violates_check() {
     let name = unique_name(&pool).await;
 
     let err = sqlx::query(
-        "INSERT INTO scheduler.schedules (name, interval_seconds) VALUES ($1, 9223372036855)",
+        "INSERT INTO scheduler.schedules (name, interval_seconds) VALUES ($1, $2)",
     )
     .bind(&name)
+    .bind(INTERVAL_SECONDS_CEILING + 1)
     .execute(&pool)
     .await
-    .expect_err("interval_seconds = 9223372036855 must violate the CHECK constraint");
+    .expect_err("interval_seconds one above the ceiling must violate the CHECK constraint");
 
     let db_err = err.as_database_error().expect("expected a database error");
     assert_eq!(
@@ -363,6 +376,11 @@ async fn due_scan_survives_legacy_huge_interval_row() {
     let healthy = unique_name(&pool).await;
     let poison = unique_name(&pool).await;
 
+    // Panic residual: async drop guards can't run SQL, so if an assert between the
+    // DROP below and the restore at the end panics, the shared dev DB is left with
+    // the constraint dropped or NOT VALID (plus the temp rows). `test_pool`'s
+    // `CREATE TABLE IF NOT EXISTS` will NOT repair it — a schema wipe (`DROP SCHEMA
+    // scheduler CASCADE` + fresh boot) restores the fresh-DDL state.
     sqlx::query("ALTER TABLE scheduler.schedules DROP CONSTRAINT schedules_interval_bounds")
         .execute(&pool)
         .await
@@ -371,19 +389,21 @@ async fn due_scan_survives_legacy_huge_interval_row() {
     seed_schedule(&pool, &healthy, 60).await;
     sqlx::query(
         "INSERT INTO scheduler.schedules (name, interval_seconds, last_fired) \
-         VALUES ($1, 9223372036855, to_timestamp(0)) \
+         VALUES ($1, $2, to_timestamp(0)) \
          ON CONFLICT (name) DO UPDATE SET interval_seconds = $2, last_fired = to_timestamp(0)",
     )
     .bind(&poison)
-    .bind(9223372036855_i64)
+    .bind(INTERVAL_SECONDS_CEILING + 1)
     .execute(&pool)
     .await
     .expect("insert legacy poison row");
 
-    sqlx::query(
+    // NOT VALID so the poison row survives under the re-added CHECK — mirroring "the
+    // DDL now has the guard, but this row landed before it did".
+    sqlx::query(&format!(
         "ALTER TABLE scheduler.schedules ADD CONSTRAINT schedules_interval_bounds \
-         CHECK (interval_seconds > 0 AND interval_seconds <= 9223372036854) NOT VALID",
-    )
+         CHECK (interval_seconds > 0 AND interval_seconds <= {INTERVAL_SECONDS_CEILING}) NOT VALID",
+    ))
     .execute(&pool)
     .await
     .expect("re-add CHECK as NOT VALID (does not re-validate the legacy row)");
@@ -402,6 +422,13 @@ async fn due_scan_survives_legacy_huge_interval_row() {
 
     cleanup(&pool, &healthy).await;
     cleanup(&pool, &poison).await;
+    // Restore the fresh-DDL state: with the poison row gone, validating flips the
+    // constraint back to a plain VALID CHECK, so this test leaves no NOT VALID
+    // residue on the shared DB (barring the panic residual documented above).
+    sqlx::query("ALTER TABLE scheduler.schedules VALIDATE CONSTRAINT schedules_interval_bounds")
+        .execute(&pool)
+        .await
+        .expect("re-validate the CHECK after removing the poison row");
 }
 
 /// Two concurrent `fire` attempts (two replicas: two pools, two buses) against one due
