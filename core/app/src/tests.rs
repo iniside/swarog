@@ -53,6 +53,12 @@ fn rate_parser_table() {
             Err(RateParseError::NonFinite),
         ),
         (
+            "negative infinity",
+            Some("-inf"),
+            RateZeroPolicy::Allow,
+            Err(RateParseError::NonFinite),
+        ),
+        (
             "malformed",
             Some("fast"),
             RateZeroPolicy::Allow,
