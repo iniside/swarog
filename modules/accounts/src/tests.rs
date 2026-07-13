@@ -538,6 +538,34 @@ async fn registered_events(pool: &PgPool, player_id: &str) -> i64 {
         .unwrap()
 }
 
+/// Wait until `expected` real backends are blocked on this exact one-bigint
+/// advisory key. PostgreSQL exposes bigint keys as high/low unsigned OID halves
+/// with `objsubid = 1`; checking both halves avoids observing an unrelated lock.
+async fn wait_for_identity_lock_waiters(pool: &PgPool, key: i64, expected: i64) -> bool {
+    let bits = key as u64;
+    let high = i64::from((bits >> 32) as u32);
+    let low = i64::from(bits as u32);
+    for _ in 0..200 {
+        let waiting: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM pg_locks \
+             WHERE locktype = 'advisory' \
+               AND database = (SELECT oid FROM pg_database WHERE datname = current_database()) \
+               AND classid::bigint = $1 AND objid::bigint = $2 AND objsubid = 1 \
+               AND NOT granted",
+        )
+        .bind(high)
+        .bind(low)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        if waiting == expected {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    false
+}
+
 /// THE ATOMIC EMIT PROOF + the register/login/session round-trip: register writes
 /// the player+identity rows AND the `player.registered` log event in one tx;
 /// login verifies the stored argon2 hash; the minted session resolves back to the
@@ -733,27 +761,25 @@ async fn concurrent_first_logins_create_one_player_event_and_two_sessions() {
     let Some(pool) = test_pool().await else { return };
     let (_ctx, svc) = wired(&pool).await;
     let sub = format!("race-first-{}", suffix());
-    let barrier = Arc::new(tokio::sync::Barrier::new(3));
+    let key = store::identity_lock_key("epic", &sub);
+    let mut gate = pool.begin().await.unwrap();
+    svc.store
+        .lock_identity_tx(&mut gate, "epic", &sub)
+        .await
+        .unwrap();
 
     let first = {
         let svc = svc.clone();
         let sub = sub.clone();
-        let barrier = barrier.clone();
-        tokio::spawn(async move {
-            barrier.wait().await;
-            svc.external_login("epic", &sub, "Race first").await
-        })
+        tokio::spawn(async move { svc.external_login("epic", &sub, "Race first").await })
     };
     let second = {
         let svc = svc.clone();
         let sub = sub.clone();
-        let barrier = barrier.clone();
-        tokio::spawn(async move {
-            barrier.wait().await;
-            svc.external_login("epic", &sub, "Race first").await
-        })
+        tokio::spawn(async move { svc.external_login("epic", &sub, "Race first").await })
     };
-    barrier.wait().await;
+    let both_waiting = wait_for_identity_lock_waiters(&pool, key, 2).await;
+    gate.rollback().await.unwrap();
     let (first, second) = (first.await.unwrap().unwrap(), second.await.unwrap().unwrap());
     let sessions: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM accounts.sessions WHERE player_id = $1::uuid",
@@ -766,6 +792,7 @@ async fn concurrent_first_logins_create_one_player_event_and_two_sessions() {
 
     cleanup_player(&pool, &first.0.player_id).await;
 
+    assert!(both_waiting, "both first-logins must block on the exact identity key");
     assert_eq!(first.0.player_id, second.0.player_id);
     assert_ne!(first.0.token, second.0.token);
     assert_ne!(first.1, second.1, "exactly one concurrent login must create");
@@ -786,28 +813,26 @@ async fn link_racing_first_login_has_only_two_coherent_outcomes() {
         .await
         .unwrap();
     let sub = format!("link-race-{}", suffix());
-    let barrier = Arc::new(tokio::sync::Barrier::new(3));
+    let key = store::identity_lock_key("epic", &sub);
+    let mut gate = pool.begin().await.unwrap();
+    svc.store
+        .lock_identity_tx(&mut gate, "epic", &sub)
+        .await
+        .unwrap();
 
     let link = {
         let svc = svc.clone();
         let owner_id = owner.player_id.clone();
         let sub = sub.clone();
-        let barrier = barrier.clone();
-        tokio::spawn(async move {
-            barrier.wait().await;
-            svc.store.link_identity(&owner_id, "epic", &sub).await
-        })
+        tokio::spawn(async move { svc.store.link_identity(&owner_id, "epic", &sub).await })
     };
     let login = {
         let svc = svc.clone();
         let sub = sub.clone();
-        let barrier = barrier.clone();
-        tokio::spawn(async move {
-            barrier.wait().await;
-            svc.external_login("epic", &sub, "External racer").await
-        })
+        tokio::spawn(async move { svc.external_login("epic", &sub, "External racer").await })
     };
-    barrier.wait().await;
+    let both_waiting = wait_for_identity_lock_waiters(&pool, key, 2).await;
+    gate.rollback().await.unwrap();
     let link = link.await.unwrap();
     let (login_session, created) = login.await.unwrap().unwrap();
     let identity_owner: String = sqlx::query_scalar(
@@ -824,6 +849,7 @@ async fn link_racing_first_login_has_only_two_coherent_outcomes() {
         cleanup_player(&pool, &login_session.player_id).await;
     }
 
+    assert!(both_waiting, "link and first-login must block on the exact same key");
     match link {
         Ok(()) => {
             assert!(!created, "link winner must make login adopt its owner");
