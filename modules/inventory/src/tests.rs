@@ -860,3 +860,45 @@ async fn raw_sql_insert_above_check_is_rejected() {
 
     cleanup_owner(&pool, &oid).await;
 }
+
+/// (j) The accumulated-state ceiling on the HTTP path: a player whose stored holding
+/// legally reached 2_000_000 (each grant <= MAX_HOLDING_QTY, summed via ON CONFLICT)
+/// gets Conflict (409) on the next grant — a definitive answer about durable state,
+/// NEVER an undifferentiated Internal/500. Seeds the maxed holding via direct SQL
+/// (a legal state the CHECK permits), then grants qty 1 through the real service
+/// path, exercising the `is_holdings_cap_violation` mapping on the 23514 branch.
+#[tokio::test]
+async fn grant_at_holding_cap_maps_check_violation_to_conflict() {
+    let Some(pool) = test_pool().await else { return };
+    ensure_schema(&pool).await;
+    let pid = unique_uuid(&pool).await;
+    let inner = inner_with(pool.clone(), Arc::new(FakeConfig::new(STARTER_ITEM, STARTER_QTY)));
+
+    // Legal accumulated state: exactly at the DB CHECK ceiling.
+    sqlx::query(
+        "INSERT INTO inventory.holdings (owner_type, owner_id, item_id, quantity) \
+         VALUES ('player', $1::uuid, 'coin', 2000000)",
+    )
+    .bind(&pid)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // A per-grant-legal qty (1) trips the post-sum CHECK — must map to Conflict.
+    let e = inner
+        .grant(Identity::player(&pid), "coin".into(), 1)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        e.status,
+        Status::Conflict,
+        "a legal grant hitting the accumulated-state ceiling must be 409, never internal/500"
+    );
+
+    // The stored state is untouched — the failed grant did not partially apply.
+    let holdings = inner.store.list(&Owner::player(&pid)).await.unwrap();
+    assert_eq!(holdings.len(), 1);
+    assert_eq!(holdings[0].quantity, 2_000_000);
+
+    cleanup_owner(&pool, &pid).await;
+}

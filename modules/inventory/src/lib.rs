@@ -86,6 +86,16 @@ fn internal<E: std::fmt::Display>(e: E) -> Error {
     Error::internal(e.to_string())
 }
 
+/// True iff a store error is the holdings-quantity DB CHECK firing (SQLSTATE 23514
+/// on `holdings_quantity_check`): a LEGAL single grant pushed the accumulated
+/// `ON CONFLICT` sum past the 2_000_000 state ceiling. Matched narrowly on the
+/// constraint name so no unrelated future CHECK ever rides this mapping.
+fn is_holdings_cap_violation(e: &sqlx::Error) -> bool {
+    e.as_database_error().is_some_and(|db| {
+        db.code().as_deref() == Some("23514") && db.constraint() == Some("holdings_quantity_check")
+    })
+}
+
 /// Derives a stable 64-bit advisory-lock key for a character id via FNV-1a (the
 /// same hash discipline as `modules/scheduler`'s `lock_key`), reinterpreted as
 /// `i64` (pg advisory keys use the full signed bigint range). The seed is
@@ -214,6 +224,9 @@ impl Store {
         // callers (grant_starter via posture A, grant_pool via posture B) already
         // validate, so on today's paths this never fires — it surfaces a programming
         // error as an internal error, never a raw 22003/23514 from the DB.
+        // WARNING to future durable callers: on a delivery tx a belt failure maps to
+        // a bus transport error and PAUSES the subscription — which is exactly why
+        // posture A must degrade a bad value BEFORE it can ever reach this belt.
         validate_quantity(qty).map_err(|e| sqlx::Error::Protocol(e.to_string()))?;
         sqlx::query(
             "INSERT INTO inventory.holdings (owner_type, owner_id, item_id, quantity) \
@@ -530,7 +543,22 @@ impl Holdings for Inner {
             return Err(Error::invalid("unknown item"));
         }
         let owner = Owner::player(pid);
-        self.store.grant_pool(&owner, &item_id, qty).await.map_err(internal)?;
+        // The accumulated-state ceiling: a per-grant-LEGAL qty can still push the
+        // stored `ON CONFLICT` sum past the DB CHECK's 2_000_000 (repeated IAP
+        // grants) — SQLSTATE 23514 here is a definitive answer about durable state,
+        // not an infrastructure fault, so it maps to Conflict (409: "the request
+        // conflicts with existing durable state" — opsapi::Status docs; Invalid/400
+        // would mislabel a well-formed request as malformed). HTTP-path only: the
+        // durable grant_starter path CANNOT reach this CHECK — each character gets
+        // exactly one starter grant (exactly-once + the tombstone guard), so its
+        // stored quantity never accumulates toward the ceiling.
+        self.store.grant_pool(&owner, &item_id, qty).await.map_err(|e| {
+            if is_holdings_cap_violation(&e) {
+                Error::conflict("holding cap reached for this item")
+            } else {
+                internal(e)
+            }
+        })?;
         self.store.list(&owner).await.map_err(internal)
     }
 }
