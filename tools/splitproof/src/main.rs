@@ -341,21 +341,24 @@ async fn monolith_parity(ctx: &Ctx, pool: &PgPool, p: &mut Proof) -> Result<()> 
 }
 
 fn workspace_root() -> Result<PathBuf> {
-    // LAST-RESORT root derivation: splitproof.exe normally lives in
-    // <target>/debug, so the workspace root is two levels up. This is only a
-    // heuristic — if CARGO_TARGET_DIR points the build at an out-of-tree
-    // directory, that assumption is wrong. In practice splitproof is always
-    // launched with cwd == workspace root (verifyctl spawns it there; a direct
-    // `cargo run -p splitproof` runs from root), so binary LOOKUP is taken from
-    // the frozen build env via WorkspaceLayout, NOT from this exe position. Only
-    // the root path itself falls back here.
-    let exe = std::env::current_exe()?;
-    let root = exe
-        .parent()
-        .and_then(Path::parent)
-        .and_then(Path::parent)
-        .context("no workspace root two levels above the splitproof binary")?
+    // Compile-time root derivation (same pattern as devctl's workspace_root):
+    // splitproof lives at tools/splitproof, so the workspace root is two levels
+    // above the crate's manifest dir. This never depends on where the built
+    // binary sits, so an out-of-tree CARGO_TARGET_DIR cannot skew the root —
+    // binary LOOKUP comes from WorkspaceLayout, never from exe position.
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(2)
+        .context("no workspace root two levels above tools/splitproof")?
         .to_path_buf();
+    if !root.join("Cargo.toml").is_file() {
+        bail!(
+            "derived workspace root {} has no Cargo.toml — expected the GameBackend \
+             workspace two levels above the splitproof crate (tools/splitproof); was \
+             the repo moved or deleted after the binary was built?",
+            root.display()
+        );
+    }
     Ok(root)
 }
 

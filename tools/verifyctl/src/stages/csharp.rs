@@ -6,7 +6,9 @@ use std::{
 };
 
 use anyhow::Result;
-use processctl::{OutputDestination, OwnedChild, ProcessGroupPolicy, ShutdownPolicy, SpawnSpec};
+use processctl::{
+    OutputDestination, OwnedChild, ProcessGroupPolicy, ShutdownPolicy, SpawnSpec, WorkspaceLayout,
+};
 
 use crate::{
     model::{Outcome, SkipReason},
@@ -241,19 +243,7 @@ fn ports_occupied() -> bool {
 }
 
 fn server_executable(ctx: &Context<'_>) -> PathBuf {
-    let target = ctx
-        .environment()
-        .get("CARGO_TARGET_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| ctx.root.join("target"));
-    let target = if target.is_absolute() {
-        target
-    } else {
-        ctx.root.join(target)
-    };
-    target
-        .join("debug")
-        .join(format!("server{}", std::env::consts::EXE_SUFFIX))
+    WorkspaceLayout::from_root(ctx.root.clone(), ctx.environment()).binary("debug", "server")
 }
 
 fn wait_healthy(child: &mut OwnedChild) -> Result<bool> {
