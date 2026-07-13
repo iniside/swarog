@@ -197,10 +197,24 @@ fn lazy_service_with_verifier(verifier: Arc<dyn PasswordVerifier>) -> Arc<Servic
 }
 
 fn lazy_service_at(dsn: &str, verifier: Arc<dyn PasswordVerifier>) -> Arc<Service> {
+    lazy_service_with_pool(PgPool::connect_lazy(dsn).unwrap(), verifier)
+}
+
+/// A dead-DSN service whose store errors FAST: sqlx's acquire loop treats
+/// ConnectionRefused as "server starting up" and retries with backoff until the
+/// pool's acquire deadline (default 30s), so a test that actually exercises the
+/// Err branch needs a short `acquire_timeout` to resolve sub-second.
+fn dead_service_at(dsn: &str, verifier: Arc<dyn PasswordVerifier>) -> Arc<Service> {
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .acquire_timeout(Duration::from_millis(200))
+        .connect_lazy(dsn)
+        .unwrap();
+    lazy_service_with_pool(pool, verifier)
+}
+
+fn lazy_service_with_pool(pool: PgPool, verifier: Arc<dyn PasswordVerifier>) -> Arc<Service> {
     Arc::new(Service {
-        store: Store {
-            pool: PgPool::connect_lazy(dsn).unwrap(),
-        },
+        store: Store { pool },
         bus: Arc::new(Bus::new()),
         dev_auth: true,
         epic: OnceLock::new(),
@@ -1420,7 +1434,10 @@ fn binding_from_set_cookie(resp: &reqwest::Response) -> String {
 async fn epic_start_store_error_is_503_and_mints_no_state() {
     const DEAD_DSN: &str =
         "postgres://gamebackend:gamebackend@127.0.0.1:1/epic-start-store-error";
-    let svc = lazy_service_at(DEAD_DSN, Arc::new(ArgonVerifier));
+    // dead_service_at (not lazy_service_at): this test actually drives the pool
+    // to an Err, and sqlx retries connection refusals until the acquire deadline —
+    // without the short acquire_timeout the 503 would take the default 30s.
+    let svc = dead_service_at(DEAD_DSN, Arc::new(ArgonVerifier));
     let oauth = oauth_fixture(
         "http://localhost/accounts/epic/callback",
         "http://localhost/token",
