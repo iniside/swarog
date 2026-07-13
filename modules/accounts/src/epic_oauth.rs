@@ -141,6 +141,13 @@ impl EpicOAuth {
         states.remove(s).map(|st| st.session_token)
     }
 
+    /// Number of pending (un-redeemed, un-GCed) states — test-only, so a handler
+    /// test can assert that a failed `start` minted no redeemable state.
+    #[cfg(test)]
+    pub(crate) fn pending_states(&self) -> usize {
+        self.states.lock().unwrap().len()
+    }
+
     #[cfg(test)]
     pub(crate) fn take_state_at(
         &self,
@@ -261,8 +268,23 @@ async fn handle_start(
 ) -> Response {
     let mut session_token = String::new();
     if let Some(tok) = bearer(&headers) {
-        if matches!(svc.store.player_by_session(&tok).await, Ok(Some(_))) {
-            session_token = tok;
+        match svc.store.player_by_session(&tok).await {
+            // Valid session ⇒ LINK flow bound to that player.
+            Ok(Some(_)) => session_token = tok,
+            // No such session ⇒ genuine LOGIN flow (empty session_token).
+            Ok(None) => {}
+            // Store outage: DO NOT fold into "no session" — that would silently
+            // downgrade a LINK request (bearer present) into a LOGIN that
+            // PROVISIONS A NEW PLAYER at callback (duplicate-account risk). A
+            // transient lookup failure is retryable, never bad credentials, so
+            // fail closed with 503 (the gateway verifier.rs "503-not-401"
+            // precedent) BEFORE any state is minted — an unresolvable request
+            // leaves no redeemable state behind.
+            Err(err) => {
+                tracing::error!(%err, "epic start: session lookup failed");
+                return (StatusCode::SERVICE_UNAVAILABLE, "internal error, try again")
+                    .into_response();
+            }
         }
     }
     let browser_binding = jar
@@ -323,8 +345,20 @@ async fn handle_callback(
 
     // LINK flow: attach the Epic identity to the already-logged-in player.
     if !session_token.is_empty() {
-        let Ok(Some(p)) = svc.store.player_by_session(&session_token).await else {
-            return Redirect::to("/?epic=error").into_response();
+        let p = match svc.store.player_by_session(&session_token).await {
+            Ok(Some(p)) => p,
+            // Session gone (expired/revoked between start and callback): the
+            // link target no longer exists — visibly an error redirect.
+            Ok(None) => return Redirect::to("/?epic=error").into_response(),
+            // Store outage: the visible behavior stays an error redirect — a
+            // browser callback can't render a 503 meaningfully and there is no
+            // safe way to complete the LINK, so the redirect is correct; the
+            // LOG is the fix (the old `let Ok(Some(_)) else` swallowed this
+            // silently, indistinguishable from a truly-missing session).
+            Err(err) => {
+                tracing::error!(%err, "epic link: session lookup failed");
+                return Redirect::to("/?epic=error").into_response();
+            }
         };
         match svc.store.link_identity(&p.id, "epic", &subject).await {
             Ok(()) => {}

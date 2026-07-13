@@ -1395,6 +1395,123 @@ async fn oauth_start_reuses_hardened_binding_cookie_for_parallel_states() {
     assert!(secure_cookie.split("; ").any(|part| part == "Secure"), "{secure_cookie}");
 }
 
+/// Extracts the `epic_oauth_binding` value the `start` handler set on the response.
+fn binding_from_set_cookie(resp: &reqwest::Response) -> String {
+    resp.headers()
+        .get("set-cookie")
+        .expect("start must set the binding cookie")
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .strip_prefix("epic_oauth_binding=")
+        .expect("binding cookie name")
+        .to_string()
+}
+
+/// The security-boundary regression (Step 15a): a store outage during `start`
+/// with a Bearer present must NOT be folded into "no session" — that silently
+/// downgrades a LINK into a LOGIN that provisions a NEW player at callback
+/// (duplicate-account risk). It must fail closed with 503 (the verifier.rs
+/// "503-not-401" precedent) and mint NO redeemable state. On the old code this
+/// returned 200 with a LOGIN-mode state.
+#[tokio::test]
+async fn epic_start_store_error_is_503_and_mints_no_state() {
+    const DEAD_DSN: &str =
+        "postgres://gamebackend:gamebackend@127.0.0.1:1/epic-start-store-error";
+    let svc = lazy_service_at(DEAD_DSN, Arc::new(ArgonVerifier));
+    let oauth = oauth_fixture(
+        "http://localhost/accounts/epic/callback",
+        "http://localhost/token",
+    );
+    let base = serve_oauth_router(oauth.clone(), svc).await;
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .post(format!("{base}/accounts/epic/start"))
+        .header("Authorization", "Bearer some-live-session")
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(
+        resp.status().as_u16(),
+        503,
+        "store outage on a LINK start must fail closed with 503, not downgrade to LOGIN"
+    );
+    assert_eq!(
+        oauth.pending_states(),
+        0,
+        "an unresolvable start must leave no redeemable state behind"
+    );
+}
+
+/// Happy-path LINK: a healthy store + a valid bearer session ⇒ 200 and the minted
+/// state carries the NON-EMPTY session token (a genuine LINK flow bound to the
+/// caller's player).
+#[tokio::test(flavor = "multi_thread")]
+async fn epic_start_valid_session_mints_link_state() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let sess = svc
+        .register(format!("oauth-start-{}@test.local", suffix()), "pw".into(), "Linker".into())
+        .await
+        .unwrap();
+
+    let oauth = oauth_fixture(
+        "http://localhost/accounts/epic/callback",
+        "http://localhost/token",
+    );
+    let base = serve_oauth_router(oauth.clone(), svc.clone()).await;
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .post(format!("{base}/accounts/epic/start"))
+        .header("Authorization", format!("Bearer {}", sess.token))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+    let binding = binding_from_set_cookie(&resp);
+    let state = oauth_state_from_start(&resp.json().await.unwrap());
+    assert_eq!(
+        oauth.take_state(&state, Some(&binding)),
+        Some(sess.token.clone()),
+        "a valid bearer must mint a LINK state carrying the caller's session token"
+    );
+
+    cleanup_player(&pool, &sess.player_id).await;
+}
+
+/// Happy-path LOGIN: no bearer ⇒ 200 and the minted state carries an EMPTY session
+/// token (plain login flow, provisioning at callback). Pins the pre-existing
+/// behavior so the fail-closed LINK guard didn't perturb it.
+#[tokio::test]
+async fn epic_start_no_bearer_mints_login_state() {
+    let oauth = oauth_fixture(
+        "http://localhost/accounts/epic/callback",
+        "http://localhost/token",
+    );
+    // No bearer ⇒ the store is never consulted, so a lazy pool is fine.
+    let base = serve_oauth_router(oauth.clone(), lazy_service()).await;
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .post(format!("{base}/accounts/epic/start"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+    let binding = binding_from_set_cookie(&resp);
+    let state = oauth_state_from_start(&resp.json().await.unwrap());
+    assert_eq!(
+        oauth.take_state(&state, Some(&binding)),
+        Some(String::new()),
+        "no bearer must mint a LOGIN state with an empty session token"
+    );
+}
+
 #[tokio::test]
 async fn rejected_oauth_callback_never_reaches_token_endpoint_or_consumes_state() {
     let calls = Arc::new(AtomicUsize::new(0));
