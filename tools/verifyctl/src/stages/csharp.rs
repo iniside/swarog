@@ -38,7 +38,13 @@ pub fn run(ctx: &mut Context<'_>) -> Result<Outcome> {
     if ctx.command(
         "dotnet-build",
         dotnet.clone(),
-        ["build", "clients/csharp", "-c", "Release"]
+        [
+            "build",
+            "clients/csharp",
+            "-c",
+            "Release",
+            "--disable-build-servers",
+        ]
             .into_iter()
             .map(OsString::from)
             .collect(),

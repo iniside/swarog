@@ -158,7 +158,9 @@ Two independent `verifyctl` stages are deliberately split by runtime dependency:
   `clients/csharp/Generated`. Pure Rust — no `dotnet`, no QUIC — so it runs on
   every machine and catches a contract change that was not regenerated.
 - **`csharp-client` (advisory, SKIP-aware).** Builds `clients/csharp` with
-  `dotnet build -c Release`, boots a self-contained monolith
+  `dotnet build -c Release --disable-build-servers` so the verifier-owned process
+  tree exits with the build instead of waiting for a persistent compiler server,
+  then boots a self-contained monolith
   (the preceding blocking workspace build produces the `server` binary; the stage
   does not run a nested Cargo build, sets `PORT=:8099` and
   `PLAYER_EDGE_ADDR=:9100`, uses an ephemeral CA with
