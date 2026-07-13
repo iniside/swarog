@@ -1,6 +1,7 @@
 # Memory Index
 
 - [Plan reviewer must be session tier](plan-reviewer-must-be-session-tier.md) — never demote the step-5 reviewer below the plan author's tier; scoped model bans don't generalize across roles (2026-07-13: subagenty bez fable ⇒ review=opus, impl=sonnet)
+- [Core failure taxonomy](core-failure-taxonomy.md) — docs/reference evidence base: why double hostile review didn't fix core (fix-on-fix dominated, disease is symptom-first fixes); ~10 ranked failure classes + review attacks; source for planned core-implementer/core-reviewer agents
 - [Fix the authority, not the symptom](fix-the-authority-not-the-symptom.md) — implementation twin of adversarial review (CLAUDE.md MANDATORY): fix the deciding place, no hack-on-hack, minimal sufficient closure, record deviations, prove the failing branch, sweep siblings
 - [Adversarial subagent review](adversarial-subagent-review.md) — review subagent diffs by trying to break them at the fix's OWN new boundaries (per CLAUDE.md MANDATORY section); a zero-findings review of a non-trivial diff means re-review
 - [Verify the active session model before making claims](verify-session-model-before-claims.md) — never infer the current Codex model from the public API catalog or context size; separate model identity, nominal window, and product-level usable/remaining context
