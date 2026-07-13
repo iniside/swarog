@@ -606,11 +606,32 @@ pub(crate) fn teardown(
     children: &mut [OwnedChild],
     failed: bool,
 ) -> Result<()> {
+    teardown_with(store, state, children, failed, |child| {
+        child.shutdown(SHUTDOWN)?;
+        Ok(child
+            .try_wait()
+            .ok()
+            .flatten()
+            .and_then(|status| status.code()))
+    })
+}
+
+pub(crate) fn teardown_with<F>(
+    store: &StateStore,
+    state: &Arc<Mutex<FleetState>>,
+    children: &mut [OwnedChild],
+    failed: bool,
+    mut shutdown: F,
+) -> Result<()>
+where
+    F: FnMut(&mut OwnedChild) -> Result<Option<i32>>,
+{
     state
         .lock()
         .expect("state mutex poisoned")
         .set_status(FleetStatus::Stopping);
     let mut checkpoint_error = checkpoint(store, state, children, "stopping", None).err();
+    let mut cleanup_failures = Vec::new();
     for index in (0..children.len()).rev() {
         state.lock().expect("state mutex poisoned").processes_mut()[index]
             .set_status(ManagedStatus::Stopping);
@@ -621,20 +642,14 @@ pub(crate) fn teardown(
             checkpoint_error =
                 checkpoint(store, state, children, "process-stopping", Some(&label)).err();
         }
-        let outcome = children[index].shutdown(SHUTDOWN);
-        let status = match outcome {
-            Ok(_) => ManagedStatus::Exited {
-                code: children[index]
-                    .try_wait()
-                    .ok()
-                    .flatten()
-                    .and_then(|status| status.code()),
-            },
+        let status = match shutdown(&mut children[index]) {
+            Ok(code) => ManagedStatus::Exited { code },
             Err(error) => {
                 let label = state.lock().expect("state mutex poisoned").processes()[index]
                     .label()
                     .to_string();
                 eprintln!("devctl: cleanup {} failed: {error}", label);
+                cleanup_failures.push(format!("{label}: {error:#}"));
                 state
                     .lock()
                     .expect("state mutex poisoned")
@@ -652,7 +667,7 @@ pub(crate) fn teardown(
         }
     }
     state.lock().expect("state mutex poisoned").set_status(
-        if failed || checkpoint_error.is_some() {
+        if failed || checkpoint_error.is_some() || !cleanup_failures.is_empty() {
             FleetStatus::Failed
         } else {
             FleetStatus::Stopped
@@ -667,10 +682,15 @@ pub(crate) fn teardown(
             checkpoint_error = Some(error.into());
         }
     }
-    if let Some(error) = checkpoint_error {
-        return Err(error);
+    match (checkpoint_error, cleanup_failures.is_empty()) {
+        (None, true) => Ok(()),
+        (None, false) => bail!("cleanup failures: {}", cleanup_failures.join("; ")),
+        (Some(error), true) => Err(error),
+        (Some(error), false) => bail!(
+            "checkpoint failure: {error:#}; cleanup failures: {}",
+            cleanup_failures.join("; ")
+        ),
     }
-    Ok(())
 }
 
 fn checkpoint(

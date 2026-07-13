@@ -1,13 +1,13 @@
 use super::cli::{parse, Command, Topology};
 use super::control::{self, ControlServer};
 use super::supervisor::{
-    client_command, run_transient, service_specs, spawn_managed, teardown, wait_for_terminal,
-    wait_healthy, StepOutcome, TransientOutcome,
+    client_command, run_transient, service_specs, spawn_managed, teardown, teardown_with,
+    wait_for_terminal, wait_healthy, StepOutcome, TransientOutcome,
 };
 use processctl::{
     observe_process_identity, EnvironmentSnapshot, FleetState, FleetStatus, ManagedProcess,
     OutputDestination, OwnedChild, ProcessGroupPolicy, ProcessIdentity, ServiceSpec, SpawnSpec,
-    StartMarker, StateStore,
+    StartMarker, StateStore, ShutdownPolicy,
 };
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
@@ -453,6 +453,53 @@ fn requested_stop_during_health_finishes_stopped_and_reaps_child() {
         store.load().unwrap().unwrap().status(),
         FleetStatus::Stopped
     );
+    assert!(observe_process_identity(identity.pid).is_err());
+}
+
+#[test]
+fn failed_child_shutdown_persists_failed_cleanup_state() {
+    let directory = test_directory("cleanup-failure-transition");
+    let ready = directory.join("child.ready");
+    let child = OwnedChild::spawn(fake_child_spec(&ready)).unwrap();
+    wait_for_file(&ready);
+    let identity = child.identity().clone();
+    let mut fleet = FleetState::new("cleanup-failure", "monolith").unwrap();
+    fleet.push_process(
+        ManagedProcess::new(
+            "orphan-svc",
+            identity.clone(),
+            directory.join("orphan.out"),
+            directory.join("orphan.err"),
+        )
+        .unwrap(),
+    );
+    let state = Arc::new(Mutex::new(fleet));
+    let store = StateStore::new(directory.join("state.json"));
+    store.write_atomic(&state.lock().unwrap()).unwrap();
+    let mut children = vec![child];
+
+    let error = teardown_with(&store, &state, &mut children, false, |_| {
+        anyhow::bail!("injected shutdown failure")
+    })
+    .unwrap_err();
+    assert!(error.to_string().contains("orphan-svc"));
+    assert!(error.to_string().contains("injected shutdown failure"));
+
+    let terminal = store.load().unwrap().unwrap();
+    assert_eq!(terminal.status(), FleetStatus::Failed);
+    assert!(matches!(
+        terminal.processes()[0].status(),
+        processctl::ManagedStatus::Failed
+    ));
+    assert_eq!(terminal.failure().unwrap().stage(), "cleanup");
+    assert_eq!(terminal.failure().unwrap().process(), Some("orphan-svc"));
+
+    children[0]
+        .shutdown(ShutdownPolicy {
+            graceful_timeout: Duration::from_millis(100),
+            force_timeout: Duration::from_secs(1),
+        })
+        .unwrap();
     assert!(observe_process_identity(identity.pid).is_err());
 }
 
