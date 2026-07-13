@@ -7,11 +7,21 @@
 # `payload topic=<t> version=<n> <serde-key-path>:<type>` from each events crate's
 # hand-POPULATED golden_samples() (Some/non-empty everywhere), and
 # `rpc-body module=<crate::mod> method=<m> <serde-key-path>:<type>` from each generated
-# body_shapes() (http-bound request bodies only). The last two pin the serde WIRE SHAPE:
-# a silent #[serde(rename)] or a reshaped field lands as a golden diff.
-# KNOWN GAP (by design): rpc-body values come from <Request>::default(), so Option/Vec
-# fields default to None/empty and are ABSENT -- a rename on an Option/Vec HTTP body
-# field may not surface. Durable EVENT payloads have no such gap (samples are populated).
+# body_shapes() (http-bound request bodies only). The last two are a SAMPLED JSON
+# key/kind fingerprint -- one concrete value per contract, flattened -- so a silent
+# #[serde(rename)] or a reshaped field on a sampled key lands as a golden diff.
+# KNOWN GAPS (by design, of sampling one value):
+# - Scalar collapse: every numeric width and int-vs-float renders as `:number`; a
+#   u32->i64 or int->float change is invisible.
+# - Arrays traverse the FIRST element only; shapes beyond it are unpinned.
+# - Enum/variant shapes beyond the sampled variant are unpinned (only the variant the
+#   sample constructs is fingerprinted).
+# - A populated Some(...) event sample pins the key's Some-shape but cannot detect a
+#   later skip_serializing_if change to the None case.
+# - rpc-body values come from <Request>::default(), so an Option field samples as
+#   `:null` and a Vec as `:array[]` (absent only under skip_serializing_if); the key
+#   itself is still pinned, but its populated kind is not. Durable EVENT payloads avoid
+#   this via hand-populated samples.
 # ANY diff fails the blocking contract-golden verify stage: a removed line is BREAKING,
 # an added line is ADDITIVE.
 # Regenerate intentionally via cargo run -p verifyctl -- --bless-contract-golden.

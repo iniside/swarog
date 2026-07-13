@@ -287,11 +287,18 @@ fn expand(
             /// an external HTTP client can. Only http-bound bodies are pinned here.
             ///
             /// KNOWN GAP (by design): `Default` zeroes `Option` fields to `None` and
-            /// collections to empty, so those keys are ABSENT from the sample — a rename
-            /// on an `Option`/`Vec` HTTP body field may not surface. Durable event
-            /// payloads close this via hand-populated `golden_samples()`; HTTP bodies
-            /// accept the gap (an HTTP client rejects the wire mismatch synchronously,
-            /// unlike a retained event replayed into a consumer).
+            /// collections to empty, so an `Option` field samples as `:null` and a `Vec`
+            /// as `:array[]` (absent entirely only under `skip_serializing_if`) — a
+            /// rename on such a field still surfaces as a key change, but the value KIND
+            /// beyond the default variant is unpinned. Durable event payloads close this
+            /// via hand-populated `golden_samples()`; HTTP bodies accept the gap (an
+            /// HTTP client rejects a wire mismatch synchronously, unlike a retained
+            /// event replayed into a consumer).
+            ///
+            /// `#[doc(hidden)]`: tooling-only surface (consumed by topiccheck's
+            /// contract-golden gate), same convention as the events crates'
+            /// `golden_samples()` — deliberately kept out of the public-api baseline.
+            #[doc(hidden)]
             pub fn body_shapes() -> ::std::vec::Vec<(&'static str, ::serde_json::Value)> {
                 ::std::vec![ #(#body_shape_literals),* ]
             }
