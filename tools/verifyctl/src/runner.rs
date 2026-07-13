@@ -9,7 +9,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use anyhow::{bail, Context as _, Result};
 use processctl::{
     rollout_lock_path, EnvironmentSnapshot, OutputDestination, OwnedChild, OwnedLease,
-    ProcessGroupPolicy, RolloutLock, ShutdownPolicy, SpawnSpec,
+    ProcessGroupPolicy, RolloutLock, ShutdownPolicy, SpawnSpec, WorkspaceLayout,
 };
 use rand::RngCore as _;
 
@@ -347,18 +347,7 @@ fn os_environment(environment: &BTreeMap<String, String>) -> BTreeMap<OsString, 
 }
 
 fn splitproof_executable(root: &Path, environment: &BTreeMap<String, String>) -> PathBuf {
-    let target = environment
-        .get("CARGO_TARGET_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| root.join("target"));
-    let target = if target.is_absolute() {
-        target
-    } else {
-        root.join(target)
-    };
-    target
-        .join("debug")
-        .join(format!("splitproof{}", std::env::consts::EXE_SUFFIX))
+    WorkspaceLayout::from_root(root.to_path_buf(), environment).binary("debug", "splitproof")
 }
 
 fn find_on_path(name: &str, environment: &BTreeMap<String, String>) -> Option<PathBuf> {

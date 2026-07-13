@@ -1,4 +1,5 @@
 mod fleet;
+mod layout;
 mod lock;
 mod process;
 mod state;
@@ -29,6 +30,9 @@ pub use state::{
 
 #[cfg(test)]
 mod fleet_tests;
+
+#[cfg(test)]
+mod layout_tests;
 
 #[cfg(test)]
 mod lock_tests;
@@ -66,3 +70,4 @@ pub use fleet::{
     game_backend_monolith, runtime_environment, EnvironmentSnapshot, FleetError, FleetFlavor,
     FleetInputs, FleetSpec, ServiceSpec, BUILD_ENV_ALLOWLIST,
 };
+pub use layout::WorkspaceLayout;

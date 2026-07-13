@@ -21,7 +21,7 @@ use edge::{DevCA, PlayerClient};
 use processctl::{
     game_backend_fleet_with_environment, game_backend_monolith, rollout_lock_path, EnvironmentSnapshot, BorrowedLease, FleetFlavor,
     FleetInputs, FleetSpec, OutputDestination, OwnedChild, OwnedLease, ProcessGroupPolicy,
-    RolloutLock, ServiceSpec, ShutdownOutcome, ShutdownPolicy, SpawnSpec,
+    RolloutLock, ServiceSpec, ShutdownOutcome, ShutdownPolicy, SpawnSpec, WorkspaceLayout,
 };
 use sqlx::{PgPool, Row};
 
@@ -37,7 +37,7 @@ struct Running {
 }
 
 struct Ctx {
-    bin_dir: PathBuf,
+    layout: WorkspaceLayout,
     root: PathBuf,
     run_dir: PathBuf,
     ca_cert: PathBuf,
@@ -67,9 +67,7 @@ impl Ctx {
     }
 
     fn spawn(&self, svc: &ServiceSpec) -> Result<Running> {
-        let bin = self
-            .bin_dir
-            .join(format!("{}{}", svc.executable_package, std::env::consts::EXE_SUFFIX));
+        let bin = self.layout.binary("debug", svc.executable_package);
         if !bin.exists() {
             bail!("binary not found: {} (run `cargo build` first)", bin.display());
         }
@@ -214,7 +212,7 @@ async fn monolith_parity(ctx: &Ctx, pool: &PgPool, p: &mut Proof) -> Result<()> 
     println!("\n[splitproof] === MONOLITH PARITY (cmd/server, all Local) ===");
     sqlx::query("DELETE FROM admin.sessions").execute(pool).await.ok();
     sqlx::query("DELETE FROM admin.login_attempts").execute(pool).await.ok();
-    let bin = ctx.bin_dir.join(format!("server{}", std::env::consts::EXE_SUFFIX));
+    let bin = ctx.layout.binary("debug", "server");
     if !bin.exists() {
         bail!("monolith binary not found: {}", bin.display());
     }
@@ -342,17 +340,23 @@ async fn monolith_parity(ctx: &Ctx, pool: &PgPool, p: &mut Proof) -> Result<()> 
     Ok(())
 }
 
-fn workspace_dirs() -> Result<(PathBuf, PathBuf)> {
-    // splitproof.exe lives in target/debug (or target/release); its siblings are the
-    // svc binaries, and the workspace root is two levels up.
+fn workspace_root() -> Result<PathBuf> {
+    // LAST-RESORT root derivation: splitproof.exe normally lives in
+    // <target>/debug, so the workspace root is two levels up. This is only a
+    // heuristic — if CARGO_TARGET_DIR points the build at an out-of-tree
+    // directory, that assumption is wrong. In practice splitproof is always
+    // launched with cwd == workspace root (verifyctl spawns it there; a direct
+    // `cargo run -p splitproof` runs from root), so binary LOOKUP is taken from
+    // the frozen build env via WorkspaceLayout, NOT from this exe position. Only
+    // the root path itself falls back here.
     let exe = std::env::current_exe()?;
-    let bin_dir = exe.parent().context("no bin dir")?.to_path_buf();
-    let root = bin_dir
+    let root = exe
         .parent()
         .and_then(Path::parent)
-        .context("no workspace root")?
+        .and_then(Path::parent)
+        .context("no workspace root two levels above the splitproof binary")?
         .to_path_buf();
-    Ok((bin_dir, root))
+    Ok(root)
 }
 
 enum ActiveLease {
@@ -373,8 +377,8 @@ fn main() -> std::process::ExitCode {
     if let Some(exit) = processctl::dispatch_guardian_from_current_exe() {
         return exit;
     }
-    let (bin_dir, root) = match workspace_dirs() {
-        Ok(paths) => paths,
+    let root = match workspace_root() {
+        Ok(root) => root,
         Err(error) => {
             eprintln!("splitproof: fatal: {error:#}");
             return std::process::ExitCode::FAILURE;
@@ -412,7 +416,7 @@ fn main() -> std::process::ExitCode {
     };
     let (lease_kind, run_id) = lease.description();
     println!("[splitproof] rollout lease: {lease_kind} ({run_id})");
-    let result = runtime.block_on(run(bin_dir, root, run_dir));
+    let result = runtime.block_on(run(root, run_dir));
     drop(runtime);
     drop(lease);
     match result {
@@ -428,8 +432,11 @@ fn main() -> std::process::ExitCode {
     }
 }
 
-async fn run(bin_dir: PathBuf, root: PathBuf, run_dir: PathBuf) -> Result<u32> {
+async fn run(root: PathBuf, run_dir: PathBuf) -> Result<u32> {
     let environment = EnvironmentSnapshot::capture();
+    // Locate built binaries via the SAME frozen build env the fleet is built with
+    // (honors CARGO_TARGET_DIR); cwd stays `root` so build and lookup agree.
+    let layout = WorkspaceLayout::from_root(root.clone(), &environment.build_environment());
     let db_url = environment.value("DATABASE_URL").map(str::to_owned).unwrap_or_else(|| DEFAULT_DB.to_string());
     let fleet = game_backend_fleet_with_environment(
         &FleetInputs {
@@ -450,7 +457,7 @@ async fn run(bin_dir: PathBuf, root: PathBuf, run_dir: PathBuf) -> Result<u32> {
             .timeout(Duration::from_secs(5))
             .redirect(reqwest::redirect::Policy::none())
             .build()?,
-        bin_dir,
+        layout,
         root: root.clone(),
         run_dir,
         db_url,
@@ -576,7 +583,7 @@ fn preflight_fleet(root: &Path, ctx: &Ctx) -> Result<()> {
 /// Seed an admin login via adminctl (password in its supported private environment
 /// input, never argv). adminctl ensures its schema before admin-svc migrates.
 fn seed_admin(ctx: &Ctx, user: &str, pass: &str) -> Result<()> {
-    let bin = ctx.bin_dir.join(format!("adminctl{}", std::env::consts::EXE_SUFFIX));
+    let bin = ctx.layout.binary("debug", "adminctl");
     let mut env = ctx.environment.runtime_environment();
     env.insert("DATABASE_URL".into(), ctx.db_url.clone());
     env.insert("ADMINCTL_PASSWORD".into(), pass.to_string());

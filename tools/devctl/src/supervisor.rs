@@ -11,7 +11,7 @@ use processctl::{
     game_backend_fleet_with_environment, game_backend_monolith, observe_process_identity,
     rollout_lock_path, EnvironmentSnapshot, FleetFlavor, FleetInputs, FleetState, FleetStatus,
     ManagedProcess, ManagedStatus, OutputDestination, OwnedChild, ProcessGroupPolicy, RolloutLock,
-    ServiceSpec, ShutdownPolicy, SpawnSpec, StateStore,
+    ServiceSpec, ShutdownPolicy, SpawnSpec, StateStore, WorkspaceLayout,
 };
 use rand::RngCore as _;
 
@@ -178,6 +178,9 @@ fn supervise(
     skip_build: bool,
 ) -> Result<()> {
     let environment = EnvironmentSnapshot::capture();
+    // One authority for artifact lookup, built from the SAME frozen build env the
+    // build step spawns cargo with (honors CARGO_TARGET_DIR). cwd stays `root`.
+    let layout = WorkspaceLayout::from_root(root.to_path_buf(), &environment.build_environment());
     install_signal_handler()?;
     INTERRUPTED.store(false, Ordering::SeqCst);
     let run_id = run_id();
@@ -225,7 +228,7 @@ fn supervise(
                 .record_failure("edge-ca", None::<String>)?;
             return Err(anyhow::anyhow!(error.to_string()));
         }
-        match seed_admin(root, &db_url, &environment, &stop) {
+        match seed_admin(&layout, &db_url, &environment, &stop) {
             Ok(StepOutcome::Completed) => {}
             Ok(StepOutcome::RequestedStop) => return Ok(()),
             Err(error) => {
@@ -244,7 +247,7 @@ fn supervise(
                 "devctl: starting {} on :{}",
                 service.name, service.http_port
             );
-            spawn_managed(root, run_dir, service, store, &state, &mut children)?;
+            spawn_managed(&layout, run_dir, service, store, &state, &mut children)?;
             match wait_healthy(service, children.last_mut().expect("just pushed"), &stop) {
                 Ok(StepOutcome::Completed) => {}
                 Ok(StepOutcome::RequestedStop) => return Ok(()),
@@ -392,7 +395,7 @@ fn build(
 }
 
 fn seed_admin(
-    root: &Path,
+    layout: &WorkspaceLayout,
     db: &str,
     environment: &EnvironmentSnapshot,
     stop: &AtomicBool,
@@ -401,13 +404,13 @@ fn seed_admin(
     env.insert("DATABASE_URL".into(), db.into());
     let spec = SpawnSpec {
         label: "devctl-admin-seed".into(),
-        executable: binary(root, "adminctl"),
+        executable: layout.binary("debug", "adminctl"),
         args: ["create-user", "admin", "--password-stdin"]
             .into_iter()
             .map(OsString::from)
             .collect(),
         env: os_env(env),
-        cwd: root.into(),
+        cwd: layout.root.clone(),
         stdout: OutputDestination::Null,
         stderr: OutputDestination::Null,
         process_group: ProcessGroupPolicy::Owned,
@@ -463,14 +466,14 @@ pub(crate) fn run_transient(
 }
 
 pub(crate) fn spawn_managed(
-    root: &Path,
+    layout: &WorkspaceLayout,
     run_dir: &Path,
     service: &ServiceSpec,
     store: &StateStore,
     state: &Arc<Mutex<FleetState>>,
     children: &mut Vec<OwnedChild>,
 ) -> Result<()> {
-    let mut child = match OwnedChild::spawn(spawn_spec(root, run_dir, service)) {
+    let mut child = match OwnedChild::spawn(spawn_spec(layout, run_dir, service)) {
         Ok(child) => child,
         Err(error) => {
             state
@@ -523,13 +526,13 @@ pub(crate) fn spawn_managed(
     checkpoint(store, state, children, "spawn", Some(service.name))
 }
 
-fn spawn_spec(root: &Path, run_dir: &Path, service: &ServiceSpec) -> SpawnSpec {
+fn spawn_spec(layout: &WorkspaceLayout, run_dir: &Path, service: &ServiceSpec) -> SpawnSpec {
     SpawnSpec {
         label: service.name.into(),
-        executable: binary(root, service.executable_package),
+        executable: layout.binary("debug", service.executable_package),
         args: vec![],
         env: os_env(service.env.clone()),
-        cwd: root.into(),
+        cwd: layout.root.clone(),
         stdout: OutputDestination::File(run_dir.join(format!("{}.out.log", service.name))),
         stderr: OutputDestination::File(run_dir.join(format!("{}.err.log", service.name))),
         process_group: ProcessGroupPolicy::Owned,
@@ -718,10 +721,6 @@ fn stop_requested(stop: &AtomicBool) -> bool {
     stop.load(Ordering::SeqCst) || INTERRUPTED.load(Ordering::SeqCst)
 }
 
-fn binary(root: &Path, package: &str) -> PathBuf {
-    root.join("target/debug")
-        .join(format!("{package}{}", std::env::consts::EXE_SUFFIX))
-}
 fn os_env(env: BTreeMap<String, String>) -> BTreeMap<OsString, OsString> {
     env.into_iter().map(|(k, v)| (k.into(), v.into())).collect()
 }

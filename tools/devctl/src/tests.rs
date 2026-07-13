@@ -7,7 +7,7 @@ use super::supervisor::{
 use processctl::{
     observe_process_identity, EnvironmentSnapshot, FleetState, FleetStatus, ManagedProcess,
     OutputDestination, OwnedChild, ProcessGroupPolicy, ProcessIdentity, ServiceSpec, SpawnSpec,
-    StartMarker, StateStore, ShutdownPolicy,
+    StartMarker, StateStore, ShutdownPolicy, WorkspaceLayout,
 };
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
@@ -525,8 +525,9 @@ fn missing_service_executable_records_spawn_and_reaps_prefix() {
     let mut children = vec![prefix];
     let missing = fake_service("missing-svc", "definitely-missing", 65_001);
 
+    let layout = WorkspaceLayout::from_root(directory.clone(), &std::collections::BTreeMap::new());
     let primary = spawn_managed(
-        &directory,
+        &layout,
         &directory,
         &missing,
         &store,
