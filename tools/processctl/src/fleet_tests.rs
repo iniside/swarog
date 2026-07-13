@@ -132,6 +132,23 @@ fn hard_dependencies_must_appear_earlier_in_startup_order() {
 
 #[cfg(windows)]
 #[test]
+fn build_environment_preserves_appdata_case_insensitively() {
+    let environment = EnvironmentSnapshot::from_values([
+        ("appdata".into(), r"C:\Users\test\AppData\Roaming".into()),
+        ("localappdata".into(), r"C:\Users\test\AppData\Local".into()),
+    ]);
+
+    let env = environment.build_environment();
+
+    assert_eq!(
+        env.get("APPDATA").map(String::as_str),
+        Some(r"C:\Users\test\AppData\Roaming")
+    );
+    assert!(!env.contains_key("LOCALAPPDATA"));
+}
+
+#[cfg(windows)]
+#[test]
 fn sanitized_build_path_contains_the_discovered_msvc_linker() {
     let env = build_environment();
     assert_eq!(
