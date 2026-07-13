@@ -45,6 +45,42 @@ const DEFAULT_PLAYER_RATE_LIMIT_RPS: f64 = 20.0;
 const DEFAULT_PLAYER_RATE_LIMIT_BURST: u32 = 40;
 const DEFAULT_PLAYER_CONN_RATE_LIMIT_RPS: f64 = 10.0;
 const DEFAULT_PLAYER_CONN_RATE_LIMIT_BURST: u32 = 20;
+
+/// Whether an explicit zero rate disables a limiter or is invalid for an always-on
+/// surface. Kept at the process configuration boundary so the limiter implementations
+/// receive only finite, non-negative values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RateZeroPolicy {
+    Allow,
+    Reject,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RateParseError {
+    Malformed,
+    NonFinite,
+    Negative,
+    ZeroRejected,
+}
+
+impl std::fmt::Display for RateParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let reason = match self {
+            RateParseError::Malformed => "not a number",
+            RateParseError::NonFinite => "not finite",
+            RateParseError::Negative => "negative",
+            RateParseError::ZeroRejected => "zero is not allowed",
+        };
+        f.write_str(reason)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct ResolvedRate {
+    value: f64,
+    invalid: Option<RateParseError>,
+}
+
 /// Per-check budget for `/readyz` (the baseline DB ping AND each contributed
 /// `httpmw::ReadyCheck`, individually) — no env knob, a readiness-probe budget is not a
 /// tuning surface (config-as-code/anti-magic). LB probe timeouts are typically 5-10s, so
@@ -183,10 +219,22 @@ impl Config {
             std::env::var("PLAYER_MAX_CONNS").ok(),
             std::env::var("PLAYER_MAX_CONNS_PER_IP").ok(),
         );
-        cfg.player_rate_limit_rps = env_rate("PLAYER_RATE_LIMIT_RPS", DEFAULT_PLAYER_RATE_LIMIT_RPS);
-        cfg.player_rate_limit_burst = env_number("PLAYER_RATE_LIMIT_BURST", DEFAULT_PLAYER_RATE_LIMIT_BURST);
-        cfg.player_conn_rate_limit_rps = env_rate("PLAYER_CONN_RATE_LIMIT_RPS", DEFAULT_PLAYER_CONN_RATE_LIMIT_RPS);
-        cfg.player_conn_rate_limit_burst = env_number("PLAYER_CONN_RATE_LIMIT_BURST", DEFAULT_PLAYER_CONN_RATE_LIMIT_BURST);
+        cfg.player_rate_limit_rps = env_rate(
+            "PLAYER_RATE_LIMIT_RPS",
+            DEFAULT_PLAYER_RATE_LIMIT_RPS,
+            RateZeroPolicy::Allow,
+        );
+        cfg.player_rate_limit_burst =
+            env_number("PLAYER_RATE_LIMIT_BURST", DEFAULT_PLAYER_RATE_LIMIT_BURST);
+        cfg.player_conn_rate_limit_rps = env_rate(
+            "PLAYER_CONN_RATE_LIMIT_RPS",
+            DEFAULT_PLAYER_CONN_RATE_LIMIT_RPS,
+            RateZeroPolicy::Allow,
+        );
+        cfg.player_conn_rate_limit_burst = env_number(
+            "PLAYER_CONN_RATE_LIMIT_BURST",
+            DEFAULT_PLAYER_CONN_RATE_LIMIT_BURST,
+        );
         cfg
     }
 
@@ -328,15 +376,64 @@ where
     parse_number(std::env::var(name).ok().as_deref(), default)
 }
 
-fn env_rate(name: &str, default: f64) -> f64 {
-    std::env::var(name)
-        .ok()
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .and_then(|value| value.parse::<f64>().ok())
-        .filter(|value| value.is_finite() && *value >= 0.0)
-        .unwrap_or(default)
+/// Parses one optional rate without applying a surface-specific fallback. Unset and
+/// blank values are absent; malformed, non-finite, negative, and policy-rejected zero
+/// values are invalid.
+fn parse_rate(
+    value: Option<&str>,
+    zero_policy: RateZeroPolicy,
+) -> Result<Option<f64>, RateParseError> {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    let rate = value
+        .parse::<f64>()
+        .map_err(|_| RateParseError::Malformed)?;
+    if !rate.is_finite() {
+        return Err(RateParseError::NonFinite);
+    }
+    if rate < 0.0 {
+        return Err(RateParseError::Negative);
+    }
+    if rate == 0.0 && zero_policy == RateZeroPolicy::Reject {
+        return Err(RateParseError::ZeroRejected);
+    }
+    Ok(Some(rate))
+}
+
+/// Resolves one parsed rate against the owning surface's fallback while preserving the
+/// invalid reason for a value-less warning at the env boundary.
+fn resolve_rate(value: Option<&str>, default: f64, zero_policy: RateZeroPolicy) -> ResolvedRate {
+    match parse_rate(value, zero_policy) {
+        Ok(Some(value)) => ResolvedRate {
+            value,
+            invalid: None,
+        },
+        Ok(None) => ResolvedRate {
+            value: default,
+            invalid: None,
+        },
+        Err(error) => ResolvedRate {
+            value: default,
+            invalid: Some(error),
+        },
+    }
+}
+
+/// Reads and resolves one rate env knob. Warnings deliberately include the variable,
+/// fallback, and reason but never the operator-provided raw value.
+fn env_rate(name: &str, default: f64, zero_policy: RateZeroPolicy) -> f64 {
+    let raw = std::env::var(name).ok();
+    let resolved = resolve_rate(raw.as_deref(), default, zero_policy);
+    if let Some(reason) = resolved.invalid {
+        tracing::warn!(
+            variable = name,
+            fallback_rps = default,
+            %reason,
+            "invalid rate-limit configuration; using fallback"
+        );
+    }
+    resolved.value
 }
 
 fn parse_number<T>(value: Option<&str>, default: T) -> T
@@ -749,8 +846,14 @@ pub async fn run(
         // `/healthz|/readyz|/metrics` (`httpmw::skip_infra`); keys per resolved client IP
         // (trust-aware XFF walk over `TRUSTED_PROXY_CIDRS`). The QUIC planes are NOT wrapped —
         // rate limiting is an HTTP-plane concern (Go parity).
+        let gateway_always_on = cfg.rate_limit_default.is_some();
         let (default_rps, default_burst) = cfg.rate_limit_default.unwrap_or((0.0, 40));
-        let rps = env_f64("RATE_LIMIT_RPS").unwrap_or(default_rps);
+        let zero_policy = if gateway_always_on {
+            RateZeroPolicy::Reject
+        } else {
+            RateZeroPolicy::Allow
+        };
+        let rps = env_rate("RATE_LIMIT_RPS", default_rps, zero_policy);
         let burst = env_u32("RATE_LIMIT_BURST").unwrap_or(default_burst);
         let router = if rps > 0.0 {
             let trusted =
@@ -1087,17 +1190,6 @@ async fn readyz_response(
     } else {
         (StatusCode::SERVICE_UNAVAILABLE, axum::Json(failures)).into_response()
     }
-}
-
-/// Reads `key` as an `f64`, or `None` when unset/blank/unparseable — the caller supplies
-/// the default (Go's `envFloat` shape, split so the default is explicit at each site).
-fn env_f64(key: &str) -> Option<f64> {
-    let v = std::env::var(key).ok()?;
-    let v = v.trim();
-    if v.is_empty() {
-        return None;
-    }
-    v.parse().ok()
 }
 
 /// Reads `key` as a `u32`, or `None` when unset/blank/unparseable (Go's `envInt`).

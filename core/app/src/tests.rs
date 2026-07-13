@@ -1,16 +1,152 @@
 use super::*;
 
 #[test]
-fn player_request_limit_values_default_override_and_allow_zero() {
+fn player_request_limit_defaults_and_burst_semantics() {
     let cfg = Config::from_values(None, None, None, None, None, None, None, None, None, None);
     assert_eq!(cfg.player_rate_limit_rps, 20.0);
     assert_eq!(cfg.player_rate_limit_burst, 40);
     assert_eq!(cfg.player_conn_rate_limit_rps, 10.0);
     assert_eq!(cfg.player_conn_rate_limit_burst, 20);
-    assert_eq!(parse_number(Some(" 7.5 "), 20.0), 7.5);
-    assert_eq!(parse_number(Some("0"), 10.0), 0.0);
     assert_eq!(parse_number(Some("0"), 20u32), 0);
     assert_eq!(parse_number(Some("bad"), 40u32), 40);
+}
+
+#[test]
+fn rate_parser_table() {
+    let cases = [
+        ("unset", None, RateZeroPolicy::Allow, Ok(None)),
+        ("blank", Some("  "), RateZeroPolicy::Reject, Ok(None)),
+        (
+            "positive",
+            Some(" 7.5 "),
+            RateZeroPolicy::Allow,
+            Ok(Some(7.5)),
+        ),
+        (
+            "zero allowed",
+            Some("0"),
+            RateZeroPolicy::Allow,
+            Ok(Some(0.0)),
+        ),
+        (
+            "zero rejected",
+            Some("0"),
+            RateZeroPolicy::Reject,
+            Err(RateParseError::ZeroRejected),
+        ),
+        (
+            "negative",
+            Some("-0.25"),
+            RateZeroPolicy::Allow,
+            Err(RateParseError::Negative),
+        ),
+        (
+            "nan",
+            Some("NaN"),
+            RateZeroPolicy::Allow,
+            Err(RateParseError::NonFinite),
+        ),
+        (
+            "infinity",
+            Some("inf"),
+            RateZeroPolicy::Allow,
+            Err(RateParseError::NonFinite),
+        ),
+        (
+            "malformed",
+            Some("fast"),
+            RateZeroPolicy::Allow,
+            Err(RateParseError::Malformed),
+        ),
+    ];
+
+    for (name, value, zero_policy, expected) in cases {
+        assert_eq!(parse_rate(value, zero_policy), expected, "{name}");
+    }
+}
+
+#[test]
+fn rate_resolver_applies_surface_fallbacks_and_zero_policy() {
+    let cases = [
+        (
+            "gateway rejects zero",
+            Some("0"),
+            20.0,
+            RateZeroPolicy::Reject,
+            ResolvedRate {
+                value: 20.0,
+                invalid: Some(RateParseError::ZeroRejected),
+            },
+        ),
+        (
+            "gateway invalid falls back on",
+            Some("bad"),
+            20.0,
+            RateZeroPolicy::Reject,
+            ResolvedRate {
+                value: 20.0,
+                invalid: Some(RateParseError::Malformed),
+            },
+        ),
+        (
+            "module zero stays off",
+            Some("0"),
+            0.0,
+            RateZeroPolicy::Allow,
+            ResolvedRate {
+                value: 0.0,
+                invalid: None,
+            },
+        ),
+        (
+            "module invalid falls back off",
+            Some("-1"),
+            0.0,
+            RateZeroPolicy::Allow,
+            ResolvedRate {
+                value: 0.0,
+                invalid: Some(RateParseError::Negative),
+            },
+        ),
+        (
+            "player per-ip allows zero",
+            Some("0"),
+            20.0,
+            RateZeroPolicy::Allow,
+            ResolvedRate {
+                value: 0.0,
+                invalid: None,
+            },
+        ),
+        (
+            "player per-ip invalid uses default",
+            Some("NaN"),
+            20.0,
+            RateZeroPolicy::Allow,
+            ResolvedRate {
+                value: 20.0,
+                invalid: Some(RateParseError::NonFinite),
+            },
+        ),
+        (
+            "player per-connection invalid uses default",
+            Some("many"),
+            10.0,
+            RateZeroPolicy::Allow,
+            ResolvedRate {
+                value: 10.0,
+                invalid: Some(RateParseError::Malformed),
+            },
+        ),
+    ];
+
+    for (name, value, default, zero_policy, expected) in cases {
+        assert_eq!(
+            resolve_rate(value, default, zero_policy),
+            expected,
+            "{name}"
+        );
+    }
 }
 
 #[test]
