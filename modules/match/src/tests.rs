@@ -89,7 +89,9 @@ async fn service_with_reader(pool: &PgPool, reader: Arc<dyn MmrReader>) -> (Cont
 }
 
 fn service_without_database(reader: Arc<dyn MmrReader>) -> Arc<Service> {
-    let pool = PgPool::connect_lazy(DEFAULT_DSN).expect("lazy pool from a well-formed DSN");
+    const DEAD_DSN: &str =
+        "postgres://gamebackend:gamebackend@127.0.0.1:1/no-match-validation-test";
+    let pool = PgPool::connect_lazy(DEAD_DSN).expect("lazy pool from a well-formed DSN");
     let svc = Arc::new(Service {
         pool,
         bus: Arc::new(Bus::new()),
@@ -389,9 +391,12 @@ async fn invalid_report_id_is_rejected_before_database_or_rating() {
     let over_limit = "é".repeat(65);
 
     for bad in ["", "   ", over_limit.as_str()] {
-        let err = svc
-            .report(bad.into(), "erin".into(), "frank".into())
+        let err = tokio::time::timeout(
+            Duration::from_millis(100),
+            svc.report(bad.into(), "erin".into(), "frank".into()),
+        )
             .await
+            .expect("invalid ReportId touched the dead lazy pool")
             .expect_err("invalid ReportId must be rejected before lookup");
         assert_eq!(err.status, opsapi::Status::Invalid, "got: {}", err.msg);
     }
