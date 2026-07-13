@@ -90,7 +90,9 @@ pub(crate) const UNKNOWN_METHOD_PREFIX: &str = "edge: unknown method";
 /// boundary. [`Error::UnknownMethod`] — the peer answered but serves no such method —
 /// maps to [`opsapi::Status::NotFound`] (non-retryable: the peer will keep not knowing
 /// the method). Every OTHER edge-level failure is [`opsapi::Status::Unavailable`]
-/// (a retryable transport failure): the DOMAIN status of a completed operation rides
+/// (a peer-answered failure is NEVER replayed — `remote`'s provenance gate replays
+/// only connection-fatal failures, regardless of retry mode): the DOMAIN status of
+/// a completed operation rides
 /// INSIDE the response payload envelope (the `#[rpc]` layer, Step 5), not at this
 /// transport level, so a non-OK edge response here means the call did not complete.
 ///
@@ -276,7 +278,8 @@ mod e2e_tests {
             matches!(&err, Error::Remote(_)),
             "a handler that propagates an inner unknown-method must be Remote, got {err:?}"
         );
-        // And at the opsapi boundary it stays a retryable Unavailable, not a 404.
+        // And at the opsapi boundary it stays Unavailable — a non-replayed peer
+        // answer (FailureProvenance::PeerAnswer never replays) — not a lying 404.
         let ops: opsapi::Error = err.into();
         assert_eq!(ops.status, opsapi::Status::Unavailable);
 
