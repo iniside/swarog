@@ -62,11 +62,15 @@ fn client_commands_succeed_without_supervisor_state() {
 
     assert!(client_command(&store, "status").is_ok());
     assert!(client_command(&store, "down").is_ok());
+    assert!(client_command(&store, "bogus")
+        .unwrap_err()
+        .to_string()
+        .contains("unknown control command"));
 }
 
 #[test]
-fn client_commands_do_not_contact_terminal_supervisors() {
-    let directory = test_directory("inactive-terminal");
+fn client_commands_do_not_contact_stopped_or_cleanly_failed_supervisors() {
+    let directory = test_directory("inactive-clean-terminal");
     let store = StateStore::new(directory.join("state.json"));
     let unusable_supervisor = ProcessIdentity {
         pid: u32::MAX,
@@ -74,15 +78,73 @@ fn client_commands_do_not_contact_terminal_supervisors() {
         started: StartMarker(0),
     };
 
-    for status in [FleetStatus::Stopped, FleetStatus::Failed] {
-        let mut state = FleetState::new("terminal-test", "split").unwrap();
-        state.set_status(status);
-        state.set_supervisor(unusable_supervisor.clone());
-        state.set_control_endpoint(Some(PathBuf::from("unusable-control-endpoint")));
-        store.write_atomic(&state).unwrap();
+    let mut stopped = FleetState::new("stopped-test", "split").unwrap();
+    stopped.set_status(FleetStatus::Stopped);
+    stopped.set_supervisor(unusable_supervisor.clone());
+    stopped.set_control_endpoint(Some(PathBuf::from("unusable-control-endpoint")));
+    store.write_atomic(&stopped).unwrap();
+    assert!(client_command(&store, "status").is_ok());
+    assert!(client_command(&store, "down").is_ok());
 
-        assert!(client_command(&store, "status").is_ok());
-        assert!(client_command(&store, "down").is_ok());
+    let mut failed = FleetState::new("failed-test", "split").unwrap();
+    failed.set_status(FleetStatus::Failed);
+    failed.record_failure("build", None::<String>).unwrap();
+    failed.set_supervisor(unusable_supervisor);
+    failed.set_control_endpoint(Some(PathBuf::from("unusable-control-endpoint")));
+    store.write_atomic(&failed).unwrap();
+    assert!(client_command(&store, "status").is_ok());
+    assert!(client_command(&store, "down").is_ok());
+}
+
+#[test]
+fn client_commands_surface_terminal_cleanup_uncertainty_without_contact() {
+    let directory = test_directory("inactive-uncertain-terminal");
+    let store = StateStore::new(directory.join("state.json"));
+    let unusable_supervisor = ProcessIdentity {
+        pid: u32::MAX,
+        executable: PathBuf::from("unusable-devctl-supervisor"),
+        started: StartMarker(0),
+    };
+    let failed_process = |label: &str| {
+        let mut process = ManagedProcess::new(
+            label,
+            unusable_supervisor.clone(),
+            directory.join(format!("{label}.out")),
+            directory.join(format!("{label}.err")),
+        )
+        .unwrap();
+        process.set_status(processctl::ManagedStatus::Failed);
+        process
+    };
+
+    let mut cleanup_failed = FleetState::new("cleanup-failed-test", "split").unwrap();
+    cleanup_failed.set_status(FleetStatus::Failed);
+    cleanup_failed
+        .record_failure("cleanup", Some("orphan-svc"))
+        .unwrap();
+    cleanup_failed.push_process(failed_process("orphan-svc"));
+    cleanup_failed.set_supervisor(unusable_supervisor.clone());
+    cleanup_failed.set_control_endpoint(Some(PathBuf::from("unusable-control-endpoint")));
+    store.write_atomic(&cleanup_failed).unwrap();
+    for command in ["status", "down"] {
+        let error = client_command(&store, command).unwrap_err().to_string();
+        assert!(error.contains("cleanup"));
+        assert!(error.contains("orphan-svc"));
+    }
+
+    let mut checkpoint_failed = FleetState::new("checkpoint-failed-test", "split").unwrap();
+    checkpoint_failed.set_status(FleetStatus::Failed);
+    checkpoint_failed
+        .record_failure("checkpoint-final", None::<String>)
+        .unwrap();
+    checkpoint_failed.set_supervisor(unusable_supervisor.clone());
+    checkpoint_failed.set_control_endpoint(Some(PathBuf::from("unusable-control-endpoint")));
+    store.write_atomic(&checkpoint_failed).unwrap();
+    for command in ["status", "down"] {
+        assert!(client_command(&store, command)
+            .unwrap_err()
+            .to_string()
+            .contains("checkpoint-final"));
     }
 }
 

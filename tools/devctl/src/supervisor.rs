@@ -64,17 +64,54 @@ pub fn execute(command: Command) -> Result<()> {
 }
 
 pub(crate) fn client_command(store: &StateStore, command: &str) -> Result<()> {
+    if !matches!(command, "status" | "down") {
+        bail!("unknown control command {command:?}");
+    }
     let Some(state) = store.load()? else {
         println!("devctl: inactive (no supervisor state)");
         return Ok(());
     };
-    if matches!(state.status(), FleetStatus::Stopped | FleetStatus::Failed) {
-        println!(
-            "devctl: inactive (last {} {})",
-            state.topology(),
-            format!("{:?}", state.status()).to_lowercase()
-        );
-        return Ok(());
+    match state.status() {
+        FleetStatus::Stopped => {
+            println!("devctl: inactive (last {} stopped)", state.topology());
+            return Ok(());
+        }
+        FleetStatus::Failed => {
+            let failure = state
+                .failure()
+                .context("failed devctl state has no failure record")?;
+            let unreaped: Vec<_> = state
+                .processes()
+                .iter()
+                .filter(|process| !matches!(process.status(), ManagedStatus::Exited { .. }))
+                .map(|process| process.label())
+                .collect();
+            let cleanup_uncertain = failure.stage() == "cleanup"
+                || failure.stage().starts_with("checkpoint")
+                || !unreaped.is_empty();
+            if cleanup_uncertain {
+                bail!(
+                    "devctl: last {} run failed at {}; cleanup is not proven; unreaped entries: {unreaped:?}",
+                    state.topology(),
+                    failure.stage()
+                );
+            }
+            if let Some(process) = failure.process() {
+                println!(
+                    "devctl: inactive (last {} failed at {} for {process})",
+                    state.topology(),
+                    failure.stage()
+                );
+            } else {
+                println!(
+                    "devctl: inactive (last {} failed at {})",
+                    state.topology(),
+                    failure.stage()
+                );
+            }
+            return Ok(());
+        }
+        FleetStatus::Starting | FleetStatus::Running | FleetStatus::Stopping => {}
     }
     let endpoint = state
         .control_endpoint()
