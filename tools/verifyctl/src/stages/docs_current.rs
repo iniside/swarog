@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 const ROOT_DOCUMENTS: &[&str] = &["README.md", "CLAUDE.md", "AGENTS.md"];
-const RETIRED_COMMANDS: &[&str] = &["./run.sh", ".\\run.ps1", "./verify.sh", ".\\verify.ps1"];
+const RETIRED_COMMANDS: &[&str] = &["./run.sh", "./run.ps1", "./verify.sh", "./verify.ps1"];
 const RETIRED_LINKS: &[&str] = &["run.sh", "run.ps1", "verify.sh", "verify.ps1"];
 
 pub fn run(ctx: &mut Context<'_>) -> Result<Outcome> {
@@ -121,10 +121,8 @@ fn check_document(
         check_packages(&relative, line_number, line, packages, findings);
         if in_fence {
             check_retired_command(&relative, line_number, line.trim(), findings);
-        } else {
-            for snippet in inline_code(line) {
-                check_retired_command(&relative, line_number, snippet.trim(), findings);
-            }
+        } else if let Some(snippet) = standalone_inline_code(line) {
+            check_retired_command(&relative, line_number, snippet, findings);
         }
     }
 }
@@ -268,18 +266,10 @@ fn package_token(token: &str) -> Option<&str> {
     (end > 0).then_some(&token[..end])
 }
 
-fn inline_code(line: &str) -> Vec<&str> {
-    let mut snippets = Vec::new();
-    let mut remaining = line;
-    while let Some(start) = remaining.find('`') {
-        let after_start = &remaining[start + 1..];
-        let Some(end) = after_start.find('`') else {
-            break;
-        };
-        snippets.push(&after_start[..end]);
-        remaining = &after_start[end + 1..];
-    }
-    snippets
+fn standalone_inline_code(line: &str) -> Option<&str> {
+    let line = line.trim();
+    let snippet = line.strip_prefix('`')?.strip_suffix('`')?;
+    (!snippet.contains('`')).then_some(snippet.trim())
 }
 
 fn check_retired_command(
@@ -288,37 +278,28 @@ fn check_retired_command(
     snippet: &str,
     findings: &mut BTreeSet<String>,
 ) {
-    if let Some(command) = retired_command(snippet) {
+    if snippet.trim_start().starts_with('#') {
+        return;
+    }
+    for command in snippet
+        .split_whitespace()
+        .filter_map(retired_command_token)
+    {
         findings.insert(format!(
             "{relative}:{line_number}: retired executable command `{command}`"
         ));
     }
 }
 
-fn retired_command(snippet: &str) -> Option<&'static str> {
-    let mut tokens = snippet.split_whitespace();
-    let mut first = tokens.next()?;
-    if first == "$" {
-        first = tokens.next()?;
-    }
-    let command = match first {
-        "bash" | "sh" => {
-            let command = tokens.next()?;
-            command.ends_with(".sh").then_some(command)?
-        }
-        "pwsh" | "powershell" => {
-            let mut command = tokens.next()?;
-            if command == "-File" {
-                command = tokens.next()?;
-            }
-            command.ends_with(".ps1").then_some(command)?
-        }
-        command => command,
-    };
+fn retired_command_token(token: &str) -> Option<&'static str> {
+    let token = token
+        .trim_end_matches(';')
+        .trim_matches(|character| matches!(character, '\'' | '"'))
+        .replace('\\', "/");
     RETIRED_COMMANDS
         .iter()
         .copied()
-        .find(|retired| *retired == command)
+        .find(|retired| *retired == token.as_str())
 }
 
 fn display_path(root: &Path, path: &Path) -> String {
@@ -386,14 +367,18 @@ cargo run -p missing-package
     }
 
     #[test]
-    fn recognizes_launch_prefixes_and_prompt_without_matching_negative_prose() {
+    fn recognizes_retired_path_tokens_in_command_lines_only() {
         let positive = r#"```sh
-bash ./verify.sh --fast
-sh ./run.sh
-pwsh -File .\verify.ps1
-powershell .\run.ps1
+./verify.sh;
 $ ./run.sh
+& .\run.ps1
+bash -eux "./verify.sh"
+sh -x './run.sh'
+pwsh -NoProfile -File .\verify.ps1
+powershell -ExecutionPolicy Bypass .\run.ps1
+pwsh ./verify.ps1
 ```
+`bash "./verify.sh"`
 "#;
         let findings = check(positive, &[]);
         assert_eq!(
@@ -401,14 +386,17 @@ $ ./run.sh
                 .iter()
                 .filter(|finding| finding.contains("retired executable command"))
                 .count(),
-            5
+            9
         );
 
-        let negative = r#"`Do not run bash ./verify.sh --fast`
-`bash ./verify.sh.old --fast`
-`pwsh -File .\verify.ps1.example`
+        let negative = r#"Do not run `bash ./verify.sh --fast`; use verifyctl.
+The retired path `./verify.sh` is mentioned as prose.
 ```sh
 # bash ./verify.sh --fast is retired documentation
+  # pwsh -File .\verify.ps1 is retired documentation
+bash ./verify.sh.old --fast
+bash experiments/go-sketch/verify.sh
+pwsh .\experiments\go-sketch\verify.ps1
 ```
 "#;
         assert!(check(negative, &[]).is_empty());
