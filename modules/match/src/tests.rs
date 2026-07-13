@@ -88,6 +88,17 @@ async fn service_with_reader(pool: &PgPool, reader: Arc<dyn MmrReader>) -> (Cont
     (ctx, svc)
 }
 
+fn service_without_database(reader: Arc<dyn MmrReader>) -> Arc<Service> {
+    let pool = PgPool::connect_lazy(DEFAULT_DSN).expect("lazy pool from a well-formed DSN");
+    let svc = Arc::new(Service {
+        pool,
+        bus: Arc::new(Bus::new()),
+        rating: OnceLock::new(),
+    });
+    assert!(svc.rating.set(reader).is_ok(), "reader set once");
+    svc
+}
+
 struct CountingReader {
     calls: AtomicUsize,
     failure: Option<Error>,
@@ -142,6 +153,45 @@ async fn event_count(pool: &PgPool, match_id: &str) -> i64 {
     asyncevents::testing::events_count(pool, "match.finished", "match_id", match_id)
         .await
         .unwrap()
+}
+
+async fn report_count(pool: &PgPool, report_id: &str) -> i64 {
+    let (n,): (i64,) =
+        sqlx::query_as("SELECT count(*) FROM match.matches WHERE report_id = $1")
+            .bind(report_id)
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    n
+}
+
+async fn payload_event_count(pool: &PgPool, winner: &str, loser: &str) -> i64 {
+    let (n,): (i64,) = sqlx::query_as(
+        "SELECT count(*) FROM asyncevents.events \
+         WHERE topic = 'match.finished' \
+           AND payload->>'winner' = $1 AND payload->>'loser' = $2",
+    )
+    .bind(winner)
+    .bind(loser)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    n
+}
+
+#[test]
+fn report_validators_enforce_utf8_byte_boundaries() {
+    let at_limit = "é".repeat(64);
+    let over_limit = format!("{at_limit}a");
+    assert_eq!(at_limit.len(), 128);
+    assert_eq!(over_limit.len(), 129);
+
+    assert!(validate_report_id(&at_limit).is_ok());
+    assert!(validate_report_id(&over_limit).is_err());
+    for field in ["Winner", "Loser"] {
+        assert!(validate_participant(field, &at_limit).is_ok());
+        assert!(validate_participant(field, &over_limit).is_err());
+    }
 }
 
 /// THE ATOMIC EMIT PROOF: `report` writes BOTH a `match.matches` row AND an
@@ -326,20 +376,95 @@ async fn concurrent_payload_collision_accepts_exactly_one_payload() {
     cleanup(&pool, &id).await;
 }
 
-/// An empty (or whitespace) ReportId is rejected with `Invalid` — the idempotency key
-/// is REQUIRED; a missing key must fail loud, never silently degrade the dedup.
+/// ReportId syntax and its byte cap are checked before the replay lookup. A lazy pool
+/// plus a counting dependency makes any accidental DB/service work fail this test.
 #[tokio::test]
-async fn empty_report_id_is_invalid() {
-    let Some(pool) = test_pool().await else { return };
-    let (_ctx, svc) = wired(&pool).await;
+async fn invalid_report_id_is_rejected_before_database_or_rating() {
+    let reader = Arc::new(CountingReader {
+        calls: AtomicUsize::new(0),
+        failure: Some(Error::internal("rating must not be called")),
+        first_call_barrier: None,
+    });
+    let svc = service_without_database(reader.clone());
+    let over_limit = "é".repeat(65);
 
-    for bad in ["", "   "] {
+    for bad in ["", "   ", over_limit.as_str()] {
         let err = svc
             .report(bad.into(), "erin".into(), "frank".into())
             .await
-            .expect_err("empty ReportId must be rejected");
+            .expect_err("invalid ReportId must be rejected before lookup");
         assert_eq!(err.status, opsapi::Status::Invalid, "got: {}", err.msg);
     }
+    assert_eq!(reader.calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn invalid_new_participants_stop_after_replay_lookup_without_effects() {
+    let Some(pool) = test_pool().await else { return };
+    let reader = Arc::new(CountingReader {
+        calls: AtomicUsize::new(0),
+        failure: Some(Error::internal("rating must not be called")),
+        first_call_barrier: None,
+    });
+    let (_ctx, svc) = service_with_reader(&pool, reader.clone()).await;
+    let unique = rid("invalid-participant");
+    let over_limit = "é".repeat(65);
+    let equal = format!("{unique}-same");
+    let cases = vec![
+        (String::new(), format!("{unique}-empty-winner")),
+        (format!("{unique}-empty-loser"), String::new()),
+        (over_limit.clone(), format!("{unique}-winner-cap")),
+        (format!("{unique}-loser-cap"), over_limit),
+        (equal.clone(), equal),
+    ];
+
+    for (winner, loser) in cases {
+        let report_id = rid("invalid-new");
+        let err = svc
+            .report(report_id.clone(), winner.clone(), loser.clone())
+            .await
+            .expect_err("a new report with invalid participants must be rejected");
+        assert_eq!(err.status, opsapi::Status::Invalid, "got: {}", err.msg);
+        assert_eq!(report_count(&pool, &report_id).await, 0);
+        assert_eq!(payload_event_count(&pool, &winner, &loser).await, 0);
+    }
+    assert_eq!(reader.calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn legacy_invalid_payload_replays_exactly_and_different_raw_payload_conflicts() {
+    let Some(pool) = test_pool().await else { return };
+    ensure_schema(&pool).await;
+    let report_id = rid("legacy-invalid");
+    let (match_id,): (String,) = sqlx::query_as(
+        "INSERT INTO match.matches (report_id, winner, loser) VALUES ($1, '', '') \
+         RETURNING id::text",
+    )
+    .bind(&report_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    let reader = Arc::new(CountingReader {
+        calls: AtomicUsize::new(0),
+        failure: Some(Error::internal("rating must not be called")),
+        first_call_barrier: None,
+    });
+    let (_ctx, svc) = service_with_reader(&pool, reader.clone()).await;
+    svc.report(report_id.clone(), String::new(), String::new())
+        .await
+        .expect("an exact legacy-invalid raw payload remains idempotent success");
+
+    let err = svc
+        .report(report_id.clone(), String::new(), "different".into())
+        .await
+        .expect_err("a different raw payload must conflict before participant policy");
+    assert_eq!(err.status, opsapi::Status::Conflict);
+    assert_eq!(err.msg, Service::REPORT_ID_CONFLICT);
+    assert_eq!(reader.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(event_count(&pool, &match_id).await, 0);
+
+    cleanup(&pool, &match_id).await;
 }
 
 /// A process module set WITHOUT `rating` must fail `validate_requires` — match declares

@@ -29,6 +29,42 @@ use ratingapi::MmrReader;
 use registry::key;
 use sqlx::{PgConnection, PgPool};
 
+pub mod conformance;
+
+const MAX_REPORT_ID_BYTES: usize = 128;
+const MAX_PARTICIPANT_BYTES: usize = 128;
+
+/// Shared production validators. The request path and factual conformance probes call
+/// these same functions, so the probes exercise the real byte-count policy.
+fn validate_report_id(report_id: &str) -> Result<(), Error> {
+    if report_id.trim().is_empty() {
+        return Err(Error::invalid("ReportId must be a non-empty idempotency key"));
+    }
+    if report_id.len() > MAX_REPORT_ID_BYTES {
+        return Err(Error::invalid("ReportId exceeds the 128-byte limit"));
+    }
+    Ok(())
+}
+
+fn validate_participant(field: &str, participant: &str) -> Result<(), Error> {
+    if participant.is_empty() {
+        return Err(Error::invalid(format!("{field} must be non-empty")));
+    }
+    if participant.len() > MAX_PARTICIPANT_BYTES {
+        return Err(Error::invalid(format!("{field} exceeds the 128-byte limit")));
+    }
+    Ok(())
+}
+
+fn validate_new_participants(winner: &str, loser: &str) -> Result<(), Error> {
+    validate_participant("Winner", winner)?;
+    validate_participant("Loser", loser)?;
+    if winner == loser {
+        return Err(Error::invalid("Winner and Loser must be different"));
+    }
+    Ok(())
+}
+
 /// Creates this module's OWN schema and nothing else — full logical isolation (#10).
 /// Idempotent. The match row is the durable-rule tx source (`report` INSERTs it and
 /// `emit_tx`s `match.finished` on the same tx). `winner`/`loser` are plain player id
@@ -136,23 +172,23 @@ impl Service {
 impl Match for Service {
     /// Records that `winner` beat `loser`. `report_id` is the REQUIRED idempotency key
     /// (empty ⇒ `Invalid` — a missing key must never silently degrade the dedup). An
-    /// existing report is checked before the synchronous MMR dependency: the same
-    /// payload is an immediate 202 no-op, while reusing the id for a DIFFERENT
-    /// winner/loser pair is a 409 Conflict (`Error::conflict`).
-    /// For a new report the MMR read is SYNCHRONOUS (query rating right now — Go read the
-    /// winner's MMR; we read both to exercise the wire, doing nothing material with the
-    /// values). Then the domain INSERT + the `match.finished` durable event append
-    /// commit in ONE tx: the event is durable iff the match is. A duplicate `report_id`
+    /// existing report is checked before validating participants: the same raw payload
+    /// is an immediate 202 no-op (including a legacy payload that the current policy
+    /// would reject), while reusing the id for a DIFFERENT payload is a 409 Conflict
+    /// (`Error::conflict`). Only a new report must have non-empty, distinct winner/loser
+    /// values of at most 128 bytes each. Its MMR read is SYNCHRONOUS (query rating right
+    /// now — Go read the winner's MMR; we read both to exercise the wire, doing nothing
+    /// material with the values). Then the domain INSERT + the `match.finished` durable
+    /// event append commit in ONE tx: the event is durable iff the match is. A duplicate `report_id`
     /// (the explicitly retry-safe RPC may replay after a lost response) inserts nothing, emits nothing, and
     /// returns Ok — at-most-once effect per report. A rating transport failure surfaces
     /// as an error (the sync dep is required).
     async fn report(&self, report_id: String, winner: String, loser: String) -> Result<(), Error> {
-        if report_id.trim().is_empty() {
-            return Err(Error::invalid("ReportId must be a non-empty idempotency key"));
-        }
+        validate_report_id(&report_id)?;
         if let Some(existing) = self.existing_report(&report_id).await.map_err(internal)? {
             return Self::duplicate_result(&existing, &winner, &loser);
         }
+        validate_new_participants(&winner, &loser)?;
 
         let winner_mmr = self.rating().mmr(winner.clone()).await?;
         let loser_mmr = self.rating().mmr(loser.clone()).await?;
