@@ -89,6 +89,15 @@ fn proof_overlay_is_explicit_and_name_lookup_is_stable() {
     let development = game_backend_fleet(&inputs(), FleetFlavor::Development);
     let proof = game_backend_fleet(&inputs(), FleetFlavor::Proof);
     assert!(!development.service("accounts-svc").unwrap().env.contains_key("EPIC_TOKEN_URL"));
+    assert_eq!(
+        proof
+            .service("accounts-svc")
+            .unwrap()
+            .env
+            .get("EPIC_REDIRECT_URI")
+            .map(String::as_str),
+        Some("http://127.0.0.1:8082/accounts/epic/callback")
+    );
     assert_eq!(proof.service("scheduler-svc").unwrap().env.get("SCHEDULER_ENABLED").map(String::as_str), Some("1"));
     assert!(matches!(proof.service("missing"), Err(FleetError::UnknownService(_))));
 }

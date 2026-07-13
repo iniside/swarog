@@ -454,6 +454,10 @@ pub fn game_backend_fleet_with_environment(
             accounts.env.insert("ACCOUNTS_DEV_AUTH".into(), "1".into());
             accounts.env.insert("EPIC_CLIENT_ID".into(), "test".into());
             accounts.env.insert("EPIC_CLIENT_SECRET".into(), "test".into());
+            accounts.env.insert(
+                "EPIC_REDIRECT_URI".into(),
+                "http://127.0.0.1:8082/accounts/epic/callback".into(),
+            );
             accounts
                 .env
                 .insert("EPIC_TOKEN_URL".into(), "http://127.0.0.1:1/token".into());

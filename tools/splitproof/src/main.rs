@@ -719,8 +719,15 @@ async fn assertions(ctx: &Ctx, pool: &PgPool, p: &mut Proof) -> Result<()> {
     p.check("[A5] dev-<uuid> token -> 401", a5.status().as_u16() == 401, a5.status());
 
     // --- Epic OAuth passthrough (keyless; gateway proxies /accounts/epic/* to D). ---
+    // One browser-like client carries the host-only binding cookie across both
+    // requests while leaving the callback's relayed 303 observable.
+    let epic_http = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .redirect(reqwest::redirect::Policy::none())
+        .cookie_store(true)
+        .build()?;
     // [EP1] start -> authorize_url carrying a state param.
-    let ep1 = ctx.http.post(format!("{g}/accounts/epic/start")).send().await?;
+    let ep1 = epic_http.post(format!("{g}/accounts/epic/start")).send().await?;
     let ep1_body = ep1.text().await.unwrap_or_default();
     let state = ep1_body
         .split("state=")
@@ -733,8 +740,7 @@ async fn assertions(ctx: &Ctx, pool: &PgPool, p: &mut Proof) -> Result<()> {
     );
     // [EP2] callback with a bad code -> 303 relayed verbatim to /?epic=error (no follow).
     if let Some(st) = &state {
-        let ep2 = ctx
-            .http_noredirect
+        let ep2 = epic_http
             .get(format!("{g}/accounts/epic/callback?code=x&state={st}"))
             .send()
             .await?;
