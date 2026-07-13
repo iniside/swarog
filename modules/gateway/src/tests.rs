@@ -514,6 +514,52 @@ fn build_accepts_same_shape_different_literals() {
 }
 
 #[test]
+fn build_rejects_overlapping_route_with_literal_vs_wildcard() {
+    // The bug this step closes: `pattern_shape_eq` (Wild==Wild, Lit==Lit only) let
+    // GET /x/{id} and GET /x/me both register because their SHAPES differ (Wild vs
+    // Lit at position 2) — yet a request to `/x/me` matches both patterns, so
+    // `find()` silently picked whichever was contributed first. `pattern_overlaps`
+    // must reject this pair.
+    let slots = Slots::new();
+    let (op1, b1) = route_pair("x.byId", "/x/{id}");
+    let (op2, b2) = route_pair("x.me", "/x/me");
+    slots.contribute(opsapi::SLOT, op1);
+    slots.contribute(opsapi::BINDING_SLOT, b1);
+    slots.contribute(opsapi::SLOT, op2);
+    slots.contribute(opsapi::BINDING_SLOT, b2);
+
+    let err = RouteTable::build(&slots).err().expect("build must fail with a collision").to_string();
+    assert!(
+        err.contains("x.byId") && err.contains("x.me"),
+        "the bail must name BOTH colliding methods: {err}"
+    );
+    assert!(err.contains("/x/{id}") && err.contains("/x/me"), "the bail must name BOTH paths: {err}");
+}
+
+// ---- pattern_overlaps: the request-set-overlap matrix ----
+
+#[test]
+fn pattern_overlaps_matrix() {
+    // Lit vs Lit, equal → overlaps (the plain duplicate case `pattern_shape_eq` also
+    // caught — must stay caught).
+    assert!(pattern_overlaps(&parse_pattern("/x/me"), &parse_pattern("/x/me")));
+    // Lit vs Lit, different → no overlap.
+    assert!(!pattern_overlaps(&parse_pattern("/x/me"), &parse_pattern("/x/you")));
+    // Wild vs Wild → overlaps regardless of the wildcard's name.
+    assert!(pattern_overlaps(&parse_pattern("/char/{id}"), &parse_pattern("/char/{name}")));
+    // Lit vs Wild (either order) → overlaps: this is the case `pattern_shape_eq`
+    // missed (`/x/{id}` vs `/x/me`).
+    assert!(pattern_overlaps(&parse_pattern("/x/{id}"), &parse_pattern("/x/me")));
+    assert!(pattern_overlaps(&parse_pattern("/x/me"), &parse_pattern("/x/{id}")));
+    // Different lengths → never overlap, regardless of segment content.
+    assert!(!pattern_overlaps(&parse_pattern("/x/{id}"), &parse_pattern("/x/{id}/extra")));
+    assert!(!pattern_overlaps(&parse_pattern("/x"), &parse_pattern("/x/y")));
+    // Different literal PREFIX with the same wildcard shape → no overlap (disjoint
+    // request sets, not a collision).
+    assert!(!pattern_overlaps(&parse_pattern("/char/{id}"), &parse_pattern("/item/{id}")));
+}
+
+#[test]
 fn build_rejects_duplicate_peer_provider() {
     // Two PeerAddrs for one provider (different addresses) → two remote::Stubs wired
     // the same provider, an ambiguous dispatch target.

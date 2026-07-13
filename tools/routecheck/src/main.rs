@@ -40,6 +40,18 @@
 //!    contributions PANICS mid-run of routecheck's own profile build — a loud
 //!    backtrace surfacing from what looks like a "static checker" is the
 //!    intended failure mode here, not a bug in routecheck.
+//! 4. **OVERLAP** — no two `Operation`s fronted by the SAME process (the monolith
+//!    `server` or split `gateway-svc` — the only two processes that ever build an
+//!    `opsapi`-driven route table) may accept the same verb + request set, via the
+//!    SAME `opsapi::pattern_overlaps` predicate `gateway::RouteTable::build` uses at
+//!    startup. This is a static twin of that startup check, not a substitute for it:
+//!    routecheck runs `register`/`init` only (constraint 8, no I/O) and never calls
+//!    `RouteTable::build` itself, so without this invariant an overlapping pair would
+//!    pass `cargo test -p routecheck` clean and only fail the moment `gateway-svc`
+//!    or the monolith actually boots. `GET /x/{id}` vs `GET /x/me` is the
+//!    motivating case: their SHAPES differ (a literal vs a wildcard at one
+//!    position), so the narrower "identical shape" notion this predicate replaced
+//!    would have missed it — see [`opsapi::pattern_overlaps`]'s doc.
 //!
 //! ## Env configs (the gate matrix)
 //! Both invariant sets are asserted under TWO env configs, sequentially:
@@ -61,7 +73,7 @@ use std::sync::Arc;
 use bus::{AnyTx, Error as BusError, EventContract, HistoryPolicy, SubscriptionSpec, Transport, TxHandler};
 use checkmodules::DeploymentProfile;
 use lifecycle::{App, Context};
-use opsapi::Operation;
+use opsapi::{Operation, parse_pattern, pattern_overlaps};
 
 /// Dev-default DSN (mirrors CLAUDE.md). Only ever used to build a LAZY pool that
 /// never connects — `register`/`init` do no I/O.
@@ -212,7 +224,33 @@ fn observe_profile(profile: &DeploymentProfile) -> anyhow::Result<Vec<ProcessRou
     Ok(out)
 }
 
-/// Runs the three invariants over one env config's observations. `label` names the
+/// Invariant 4 (OVERLAP): pairwise-scans one process's contributed `Operation`s for
+/// a same-verb, overlapping-path pair, via the SAME `opsapi::pattern_overlaps`
+/// predicate `gateway::RouteTable::build` uses at real startup. `O(n^2)` over one
+/// process's op count (a few dozen today) — fine for a static checker.
+fn overlap_findings(label: &str, process: &str, ops: &[Operation]) -> Vec<String> {
+    let mut findings = Vec::new();
+    for i in 0..ops.len() {
+        for j in (i + 1)..ops.len() {
+            let a = &ops[i];
+            let b = &ops[j];
+            if !a.verb.eq_ignore_ascii_case(&b.verb) {
+                continue;
+            }
+            if pattern_overlaps(&parse_pattern(&a.path), &parse_pattern(&b.path)) {
+                findings.push(format!(
+                    "[{label}] OVERLAP: {process}: route {} {:?} and {} {:?} may overlap \
+                     — the same request could match both (methods {:?} and {:?}) — \
+                     this would fail gateway::RouteTable::build at real startup",
+                    a.verb, a.path, b.verb, b.path, a.method, b.method
+                ));
+            }
+        }
+    }
+    findings
+}
+
+/// Runs the four invariants over one env config's observations. `label` names the
 /// config in every finding.
 fn check(label: &str, monolith: &[ProcessRoutes], split: &[ProcessRoutes]) -> Vec<String> {
     let mut findings = Vec::new();
@@ -293,6 +331,14 @@ fn check(label: &str, monolith: &[ProcessRoutes], split: &[ProcessRoutes]) -> Ve
             ));
         }
     }
+
+    // 4. OVERLAP — the two real front doors (monolith "server", split "gateway-svc")
+    // must never contribute two same-verb, overlapping-path operations; see the
+    // module doc's invariant 4. Front-parity above already makes `server.ops` and
+    // `gateway.ops` equal on a clean tree, but each is checked independently so a
+    // hypothetical FRONT-PARITY bypass can't also hide an overlap.
+    findings.extend(overlap_findings(label, server.process, &server.ops));
+    findings.extend(overlap_findings(label, gateway.process, &gateway.ops));
 
     findings
 }

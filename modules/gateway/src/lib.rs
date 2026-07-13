@@ -75,7 +75,8 @@ use axum::Router;
 use contrib::Slots;
 use lifecycle::{Context, Module};
 use opsapi::{
-    AuthReq, Caller, Error, Identity, LocalInvoker, OpBinding, Operation, PathArgs, Status,
+    AuthReq, Caller, Error, Identity, LocalInvoker, OpBinding, Operation, PathArgs, Seg, Status,
+    parse_pattern, pattern_overlaps,
 };
 use serde_json::value::RawValue;
 
@@ -601,16 +602,12 @@ fn front_envelope(status: Status, err: &str) -> Vec<u8> {
 
 /// One matchable route: the `Operation`, its HTTP↔wire `OpBinding`, and the parsed
 /// path pattern (so matching + wildcard extraction avoid re-parsing per request).
+/// `Seg`/parsing/overlap-detection live in `opsapi` — the shared authority also
+/// used by `routecheck` (see [`pattern_overlaps`]'s doc).
 struct Route {
     op: Operation,
     binding: OpBinding,
     pattern: Vec<Seg>,
-}
-
-/// A parsed path segment: a literal or a `{name}` wildcard capturing one segment.
-enum Seg {
-    Lit(String),
-    Wild(String),
 }
 
 /// The gateway's operation route table + backend material, built once from the slots.
@@ -711,11 +708,13 @@ impl RouteTable {
             let pattern = parse_pattern(&op.path);
             if let Some(existing) = routes
                 .iter()
-                .find(|r| r.op.verb.eq_ignore_ascii_case(&op.verb) && pattern_shape_eq(&r.pattern, &pattern))
+                .find(|r| r.op.verb.eq_ignore_ascii_case(&op.verb) && pattern_overlaps(&r.pattern, &pattern))
             {
                 anyhow::bail!(
-                    "gateway: duplicate route {} {:?} — methods {:?} and {:?} match \
-                     the same request set (wildcard names are ignored)",
+                    "gateway: route {} {:?} and {} {:?} may overlap — the same request \
+                     could match both (methods {:?} and {:?})",
+                    existing.op.verb,
+                    existing.op.path,
                     op.verb,
                     op.path,
                     existing.op.method,
@@ -1084,39 +1083,14 @@ fn success_response(success: u16, body: Option<Vec<u8>>) -> Response {
 }
 
 // ---------------------------------------------------------------------------
-// Path pattern matching (the `{wild}` support the route table needs)
+// Path pattern matching (the `{wild}` support the route table needs). `Seg`,
+// `parse_pattern`, and the overlap predicate live in `opsapi` — the shared
+// authority `routecheck` also calls (see `opsapi::pattern_overlaps`'s doc).
 // ---------------------------------------------------------------------------
 
 /// Splits a path into its non-empty segments (`"/characters/42"` → `["characters","42"]`).
 fn path_segments(path: &str) -> Vec<&str> {
     path.split('/').filter(|s| !s.is_empty()).collect()
-}
-
-/// Parses a route pattern into segments: `{name}` (a trailing `...` matcher stripped)
-/// is a wildcard, everything else a literal.
-fn parse_pattern(path: &str) -> Vec<Seg> {
-    path.split('/')
-        .filter(|s| !s.is_empty())
-        .map(|s| match s.strip_prefix('{').and_then(|x| x.strip_suffix('}')) {
-            Some(name) => Seg::Wild(name.trim_end_matches("...").to_string()),
-            None => Seg::Lit(s.to_string()),
-        })
-        .collect()
-}
-
-/// Wildcard-name-blind pattern equality — two patterns are equal iff they accept the
-/// SAME request set, exactly [`match_pattern`]'s semantics: it never reads a wildcard's
-/// `{name}`, so `/char/{id}` and `/char/{name}` match identical requests and are a
-/// collision. Equal length required; literals compare by string; ANY `Wild` equals ANY
-/// `Wild`. (`Seg` deliberately derives no `PartialEq` — equality here is request-set
-/// equality, NOT structural: two differently-named wildcards must compare equal.)
-fn pattern_shape_eq(a: &[Seg], b: &[Seg]) -> bool {
-    a.len() == b.len()
-        && a.iter().zip(b).all(|(x, y)| match (x, y) {
-            (Seg::Lit(l), Seg::Lit(r)) => l == r,
-            (Seg::Wild(_), Seg::Wild(_)) => true,
-            _ => false,
-        })
 }
 
 /// Matches parsed pattern segments against request segments, returning the captured

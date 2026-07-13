@@ -430,5 +430,69 @@ pub struct RouteBinding {
     pub binding: OpBinding,
 }
 
+// ---------------------------------------------------------------------------
+// Path pattern parsing — the shared route-overlap authority
+// ---------------------------------------------------------------------------
+
+/// One parsed path segment of an [`Operation::path`] pattern: a literal or a
+/// `{name}` wildcard capturing exactly one path segment.
+///
+/// Deliberately derives no `PartialEq`/`Eq`: comparing two patterns is never
+/// structural identity, it is REQUEST-SET overlap — see [`pattern_overlaps`].
+#[derive(Clone, Debug)]
+pub enum Seg {
+    Lit(String),
+    Wild(String),
+}
+
+/// Parses a path pattern (e.g. `"/characters/{id}"`) into its segments. A
+/// `{name}` is a wildcard binding exactly one path segment; everything else is
+/// a literal. A trailing `...` inside the braces (`{rest...}`) is stripped from
+/// the captured NAME only. As of this writing no `#[http(...)]` binding in the
+/// tree contributes such a pattern (grep the `path = "..."` surface under
+/// `api/*/api/src/lib.rs`), so this is defensive parsing of an unused form, not
+/// a supported multi-segment-wildcard feature: [`pattern_overlaps`]'s
+/// equal-length premise assumes one wildcard binds exactly one segment, and
+/// would need re-deriving before a `{rest...}` pattern could ship safely (a
+/// trailing-rest wildcard overlaps ANY same-prefix path of equal-or-greater
+/// length, not just same-length ones).
+pub fn parse_pattern(path: &str) -> Vec<Seg> {
+    path.split('/')
+        .filter(|s| !s.is_empty())
+        .map(|s| match s.strip_prefix('{').and_then(|x| x.strip_suffix('}')) {
+            Some(name) => Seg::Wild(name.trim_end_matches("...").to_string()),
+            None => Seg::Lit(s.to_string()),
+        })
+        .collect()
+}
+
+/// True iff two parsed path patterns can match the SAME request: a wildcard
+/// accepts any literal, so it overlaps a literal at the same position AND
+/// another wildcard there — NOT only same-shaped patterns (a narrower, WRONG
+/// notion that let `GET /x/{id}` and `GET /x/me` both register while a request
+/// to `/x/me` matches both — first-contribution-order wins silently). Equal
+/// segment count is required; patterns of different length never overlap under
+/// today's one-wildcard-per-segment grammar (see [`parse_pattern`]'s doc on the
+/// `{rest...}` premise this would need revisiting for).
+///
+/// This is the SHARED authority behind two independent checks that must never
+/// drift apart: the gateway's `RouteTable::build` (startup-time, over the real
+/// contributed slots) and `routecheck`'s static per-verb pairwise scan
+/// (build-time, over every module combination across both deployment
+/// profiles — routecheck does NOT invoke `RouteTable::build`, so this
+/// predicate must live where both reach it rather than be duplicated).
+///
+/// Subsumes the narrower "identical shape" notion: a `Wild`/`Wild` position and
+/// a matching `Lit`/`Lit` position both overlap under either definition, but
+/// this one ALSO overlaps a `Lit`/`Wild` position (the case the narrower
+/// definition missed).
+pub fn pattern_overlaps(a: &[Seg], b: &[Seg]) -> bool {
+    a.len() == b.len()
+        && a.iter().zip(b).all(|(x, y)| match (x, y) {
+            (Seg::Lit(l), Seg::Lit(r)) => l == r,
+            _ => true,
+        })
+}
+
 #[cfg(test)]
 mod tests;
