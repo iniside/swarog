@@ -81,6 +81,9 @@ pub enum InputPolicy {
         cap: usize,
         basis: &'static str,
     },
+    // The clean real policy has zero gaps, but research mode and regression fixtures
+    // retain this state so a future discovered gap cannot be mislabeled as compliant.
+    #[allow(dead_code)]
     KnownGap {
         planned_cap: usize,
         remediation: &'static str,

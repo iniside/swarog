@@ -26,7 +26,10 @@ syn = { workspace = true }
 # Only modules that expose factual probes are direct dependencies. The complete
 # module inventory comes from checkmodules and the filesystem drift preflight.
 accounts = { workspace = true }
+accountsapi = { workspace = true }
 admin = { workspace = true }
 apikeys = { workspace = true }
 apikeysapi = { workspace = true }
+characters = { workspace = true }
 gateway = { workspace = true }
+match_module = { workspace = true }

@@ -973,15 +973,18 @@ name = "conformancecheck"
 version = "0.1.0"
 dependencies = [
  "accounts",
+ "accountsapi",
  "admin",
  "anyhow",
  "apikeys",
  "apikeysapi",
  "async-trait",
  "bus",
+ "characters",
  "checkmodules",
  "gateway",
  "lifecycle",
+ "match_module",
  "rpc-contract-model",
  "sqlx",
  "syn",

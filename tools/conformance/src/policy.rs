@@ -40,7 +40,7 @@ pub fn entries() -> Vec<Entry> {
 
 pub fn input_policies() -> Vec<(InputKey, InputPolicy)> {
     use Exposure::{External, Wire};
-    use InputPolicy::{KnownGap, Opaque, Validated};
+    use InputPolicy::{Opaque, Validated};
 
     let key = |method: &str, field: &str, exposure| InputKey {
         wire_method: method.to_owned(),
@@ -48,23 +48,23 @@ pub fn input_policies() -> Vec<(InputKey, InputPolicy)> {
         exposure,
     };
     vec![
-        (key("accounts.login", "email", External), Validated { cap: 320, basis: "accounts::valid_email_bytes is called by the production login path" }),
-        (key("accounts.login", "password", External), Validated { cap: 1024, basis: "accounts::valid_password_bytes is called by the production login path" }),
-        (key("accounts.loginEpic", "id_token", External), KnownGap { planned_cap: 65_536, remediation: "Step 17 adds the shared Epic token validator" }),
-        (key("accounts.register", "displayName", External), KnownGap { planned_cap: 128, remediation: "Step 17 adds the shared display-name validator" }),
-        (key("accounts.register", "email", External), Validated { cap: 320, basis: "accounts::valid_email_bytes is called by the production register path" }),
-        (key("accounts.register", "password", External), Validated { cap: 1024, basis: "accounts::valid_password_bytes is called by the production register path" }),
-        (key("accounts.verifySession", "token", Wire), KnownGap { planned_cap: 128, remediation: "Step 13 rejects oversized bearer tokens before SQL or remote lookup" }),
+        (key("accounts.login", "email", External), Validated { cap: 320, basis: "accounts::email_within_cap is called by the production login path" }),
+        (key("accounts.login", "password", External), Validated { cap: 1024, basis: "accounts::password_within_cap is called by the production login path" }),
+        (key("accounts.loginEpic", "id_token", External), Validated { cap: 65_536, basis: "accounts::epic_id_token_within_cap is called before provider/JWKS work" }),
+        (key("accounts.register", "displayName", External), Validated { cap: 128, basis: "accounts::display_name_within_cap validates the effective persisted display before Argon or SQL" }),
+        (key("accounts.register", "email", External), Validated { cap: 320, basis: "accounts::email_within_cap is called by the production register path" }),
+        (key("accounts.register", "password", External), Validated { cap: 1024, basis: "accounts::password_within_cap is called by the production register path" }),
+        (key("accounts.verifySession", "token", Wire), Validated { cap: accountsapi::MAX_SESSION_TOKEN_BYTES, basis: "accounts::session_token_within_cap rejects before session SQL and gateway dispatch uses the same contract cap" }),
         (key("apikeys.lookupKey", "key", Wire), Validated { cap: apikeysapi::MAX_KEY_BYTES, basis: "gateway lookup and apikeys creation both enforce apikeysapi::MAX_KEY_BYTES" }),
-        (key("characters.create", "class", External), KnownGap { planned_cap: 64, remediation: "Step 17 adds the shared character-class validator" }),
-        (key("characters.create", "name", External), KnownGap { planned_cap: 128, remediation: "Step 17 adds the shared character-name validator" }),
+        (key("characters.create", "class", External), Validated { cap: 64, basis: "characters::class_within_cap validates the defaulted persisted class before SQL" }),
+        (key("characters.create", "name", External), Validated { cap: 128, basis: "characters::name_within_cap validates the persisted name before SQL" }),
         (key("characters.delete", "character_id", External), Opaque { rationale: "opaque character UUID resolved by the characters store, not player-authored free text" }),
         (key("characters.ownerOf", "character_id", Wire), Opaque { rationale: "opaque character UUID passed between domain capabilities" }),
         (key("inventory.grant", "item_id", External), Opaque { rationale: "opaque catalog identifier accepted only when it exactly resolves to an existing inventory item" }),
         (key("inventory.listCharacter", "character_id", External), Opaque { rationale: "opaque character UUID authorized through characters::Ownership" }),
-        (key("match.report", "Loser", External), KnownGap { planned_cap: 128, remediation: "Step 17 adds the shared match participant validator" }),
-        (key("match.report", "ReportId", External), KnownGap { planned_cap: 128, remediation: "Step 17 adds the shared report-id validator" }),
-        (key("match.report", "Winner", External), KnownGap { planned_cap: 128, remediation: "Step 17 adds the shared match participant validator" }),
+        (key("match.report", "Loser", External), Validated { cap: 128, basis: "match_module::validate_participant is called for every new loser before rating or SQL" }),
+        (key("match.report", "ReportId", External), Validated { cap: 128, basis: "match_module::validate_report_id is called before the replay lookup" }),
+        (key("match.report", "Winner", External), Validated { cap: 128, basis: "match_module::validate_participant is called for every new winner before rating or SQL" }),
         (key("rating.mmr", "player_id", Wire), Opaque { rationale: "opaque player UUID passed between domain capabilities" }),
     ]
 }
@@ -79,10 +79,33 @@ fn accounts() -> Entry {
             ),
             (
                 Convention::InputByteCaps,
-                Stance::KnownGap {
-                    why: "accounts caps email and password, but the wire-reachable register display_name field remains uncapped",
-                    remediation: "Step 17 adds a shared production validator capping display_name at 128 bytes while retaining the existing email/password caps",
-                },
+                Stance::Applies(Fixture::InputByteCaps(vec![
+                    CapCase {
+                        name: "accounts login/register email",
+                        cap: 320,
+                        probe: Arc::new(accounts::conformance::conformance_email_rejected),
+                    },
+                    CapCase {
+                        name: "accounts login/register password",
+                        cap: 1024,
+                        probe: Arc::new(accounts::conformance::conformance_password_rejected),
+                    },
+                    CapCase {
+                        name: "accounts register effective display name",
+                        cap: 128,
+                        probe: Arc::new(accounts::conformance::conformance_display_name_rejected),
+                    },
+                    CapCase {
+                        name: "accounts Epic ID token",
+                        cap: 65_536,
+                        probe: Arc::new(accounts::conformance::conformance_epic_id_token_rejected),
+                    },
+                    CapCase {
+                        name: "accounts session token",
+                        cap: accountsapi::MAX_SESSION_TOKEN_BYTES,
+                        probe: Arc::new(accounts::conformance::conformance_session_token_rejected),
+                    },
+                ])),
             ),
             (
                 Convention::InfraOutage503,
@@ -223,10 +246,18 @@ fn characters() -> Entry {
             ),
             (
                 Convention::InputByteCaps,
-                Stance::KnownGap {
-                    why: "characters.create accepts wire-reachable name and class strings without enforced byte caps",
-                    remediation: "Step 17 adds shared production validators capping character name at 128 bytes and class at 64 bytes",
-                },
+                Stance::Applies(Fixture::InputByteCaps(vec![
+                    CapCase {
+                        name: "characters create name",
+                        cap: 128,
+                        probe: Arc::new(characters::conformance::conformance_name_rejected),
+                    },
+                    CapCase {
+                        name: "characters create class",
+                        cap: 64,
+                        probe: Arc::new(characters::conformance::conformance_class_rejected),
+                    },
+                ])),
             ),
             (
                 Convention::InfraOutage503,
@@ -333,10 +364,23 @@ fn match_module() -> Entry {
             ),
             (
                 Convention::InputByteCaps,
-                Stance::KnownGap {
-                    why: "/match/report accepts wire-reachable ReportId, Winner, and Loser strings without enforced byte caps",
-                    remediation: "Step 17 adds shared production validators capping ReportId, winner, and loser at 128 bytes",
-                },
+                Stance::Applies(Fixture::InputByteCaps(vec![
+                    CapCase {
+                        name: "match report id",
+                        cap: 128,
+                        probe: Arc::new(match_module::conformance::conformance_report_id_rejected),
+                    },
+                    CapCase {
+                        name: "match winner",
+                        cap: 128,
+                        probe: Arc::new(match_module::conformance::conformance_winner_rejected),
+                    },
+                    CapCase {
+                        name: "match loser",
+                        cap: 128,
+                        probe: Arc::new(match_module::conformance::conformance_loser_rejected),
+                    },
+                ])),
             ),
             (
                 Convention::InfraOutage503,

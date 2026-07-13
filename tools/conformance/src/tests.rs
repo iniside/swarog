@@ -250,7 +250,7 @@ fn real_entries_pass_the_completeness_matrix() {
 }
 
 #[test]
-fn real_policy_has_the_three_known_input_cap_gaps() {
+fn real_policy_has_no_known_input_cap_gaps() {
     let entries = crate::policy::entries();
     let gaps: Vec<(&str, Convention)> = entries
         .iter()
@@ -260,13 +260,9 @@ fn real_policy_has_the_three_known_input_cap_gaps() {
             })
         })
         .collect();
-    assert_eq!(
-        gaps,
-        vec![
-            ("accounts", Convention::InputByteCaps),
-            ("characters", Convention::InputByteCaps),
-            ("match", Convention::InputByteCaps),
-        ]
+    assert!(
+        gaps.is_empty(),
+        "known module-level input-cap gaps: {gaps:?}"
     );
 }
 
@@ -316,7 +312,7 @@ fn real_rpc_input_inventory_is_exactly_covered_and_matches_golden() {
 }
 
 #[test]
-fn real_input_policy_has_the_exact_eight_field_gaps() {
+fn real_input_policy_has_no_known_field_gaps() {
     let gaps = crate::policy::input_policies()
         .into_iter()
         .filter_map(|(key, policy)| {
@@ -324,18 +320,9 @@ fn real_input_policy_has_the_exact_eight_field_gaps() {
                 .then_some(crate::input_inventory::render_key(&key))
         })
         .collect::<Vec<_>>();
-    assert_eq!(
-        gaps,
-        [
-            "accounts.loginEpic\tid_token\texternal",
-            "accounts.register\tdisplayName\texternal",
-            "accounts.verifySession\ttoken\twire",
-            "characters.create\tclass\texternal",
-            "characters.create\tname\texternal",
-            "match.report\tLoser\texternal",
-            "match.report\tReportId\texternal",
-            "match.report\tWinner\texternal",
-        ]
+    assert!(
+        gaps.is_empty(),
+        "known field-level input-cap gaps: {gaps:?}"
     );
 }
 
