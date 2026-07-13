@@ -588,6 +588,60 @@ async fn register_login_session_roundtrip_with_durable_event() {
     cleanup_player(&pool, &sess.player_id).await;
 }
 
+#[tokio::test]
+async fn session_token_collision_rolls_back_registration_and_event() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let owner = svc
+        .register(
+            format!("owner-{}@test.local", suffix()),
+            "pw".into(),
+            "Collision owner".into(),
+        )
+        .await
+        .unwrap();
+    let attempted_email = format!("collision-{}@test.local", suffix());
+    let attempted_display = format!("Collision rollback {}", suffix());
+
+    let result = svc
+        .register_hashed_with_token(
+            &attempted_email,
+            &attempted_display,
+            "unused-test-hash",
+            owner.token.clone(),
+        )
+        .await;
+    let identity_rows: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM accounts.identities WHERE provider = 'dev' AND subject = $1",
+    )
+    .bind(&attempted_email)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let player_rows: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM accounts.players WHERE display_name = $1")
+            .bind(&attempted_display)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let event_rows = asyncevents::testing::events_count(
+        &pool,
+        "player.registered",
+        "display_name",
+        &attempted_display,
+    )
+    .await
+    .unwrap();
+
+    cleanup_player(&pool, &owner.player_id).await;
+    let _ = asyncevents::testing::cleanup_events(&pool, "display_name", &attempted_display).await;
+
+    assert!(result.is_err(), "duplicate session token must fail registration");
+    assert_eq!(identity_rows, 0, "identity insert must roll back");
+    assert_eq!(player_rows, 0, "player insert must roll back");
+    assert_eq!(event_rows, 0, "player.registered append must roll back");
+}
+
 /// An UNKNOWN email (valid input, no identity row) takes the decoy verify path:
 /// exactly one verifier call, against the DECOY hash with the FIXED decoy candidate
 /// — so unknown-email costs the same argon2 work as wrong-password (no timing

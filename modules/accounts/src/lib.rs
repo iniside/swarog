@@ -139,14 +139,70 @@ pub struct Service {
 }
 
 impl Service {
-    /// Mints a fresh bearer token for `p` (Go's `issueSession`). A session-store
-    /// failure propagates as `Internal` (→ 500).
-    async fn issue_session(&self, p: &Player) -> Result<accountsapi::Session, Error> {
-        let token = self.store.new_session(&p.id).await.map_err(internal)?;
+    async fn issue_session_tx(
+        &self,
+        conn: &mut PgConnection,
+        p: &Player,
+        token: String,
+    ) -> Result<accountsapi::Session, Error> {
+        self.store
+            .insert_session_tx(conn, &p.id, &token)
+            .await
+            .map_err(internal)?;
         Ok(accountsapi::Session {
             player_id: p.id.clone(),
             token,
         })
+    }
+
+    /// Mints a fresh bearer token for `p` in its own thin transaction. Password
+    /// login uses this path; registration/external login use their outer tx.
+    async fn issue_session(&self, p: &Player) -> Result<accountsapi::Session, Error> {
+        let mut tx = self.store.pool.begin().await.map_err(internal)?;
+        let session = self
+            .issue_session_tx(&mut tx, p, store::new_token())
+            .await?;
+        tx.commit().await.map_err(internal)?;
+        Ok(session)
+    }
+
+    async fn register_hashed_with_token(
+        &self,
+        email: &str,
+        display: &str,
+        hash: &str,
+        token: String,
+    ) -> Result<accountsapi::Session, Error> {
+        let mut tx = self.store.pool.begin().await.map_err(internal)?;
+        let p = match self
+            .store
+            .insert_player_with_identity_tx(&mut tx, "dev", email, display, Some(hash))
+            .await
+        {
+            Ok(p) => p,
+            Err(StoreError::Taken) => {
+                tx.rollback().await.map_err(internal)?;
+                return Err(Error::conflict("email already registered"));
+            }
+            Err(StoreError::Db(e)) => {
+                tx.rollback().await.ok();
+                tracing::error!(err = %e, "register failed");
+                return Err(internal(e));
+            }
+        };
+        if let Err(err) = self.emit_registered_tx(&mut tx, &p, "dev").await {
+            tx.rollback().await.ok();
+            return Err(err);
+        }
+        let session = match self.issue_session_tx(&mut tx, &p, token).await {
+            Ok(session) => session,
+            Err(err) => {
+                tx.rollback().await.ok();
+                return Err(err);
+            }
+        };
+        tx.commit().await.map_err(internal)?;
+        Ok(session)
     }
 
     /// Maps a verified external identity to a player, creating one on first sight
@@ -283,27 +339,8 @@ impl accountsapi::Auth for Service {
         .map_err(|e| Error::internal(format!("password hash task failed: {e}")))?
         .map_err(internal)?;
 
-        let mut tx = self.store.pool.begin().await.map_err(internal)?;
-        let p = match self
-            .store
-            .insert_player_with_identity_tx(&mut tx, "dev", &email, &display, Some(&hash))
+        self.register_hashed_with_token(&email, &display, &hash, store::new_token())
             .await
-        {
-            Ok(p) => p,
-            Err(StoreError::Taken) => {
-                tx.rollback().await.map_err(internal)?;
-                return Err(Error::conflict("email already registered"));
-            }
-            Err(StoreError::Db(e)) => {
-                tx.rollback().await.ok();
-                tracing::error!(err = %e, "register failed");
-                return Err(internal(e));
-            }
-        };
-        self.emit_registered_tx(&mut tx, &p, "dev").await?;
-        tx.commit().await.map_err(internal)?;
-
-        self.issue_session(&p).await
     }
 
     /// dev/password login (AuthNone). Bad credentials — an unknown email, a wrong

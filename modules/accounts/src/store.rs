@@ -165,20 +165,24 @@ impl Store {
         }
     }
 
-    /// Mints a fresh session for `player_id`: a 32-byte base64url token with the
-    /// 30-day TTL applied in SQL.
-    pub async fn new_session(&self, player_id: &str) -> Result<String, sqlx::Error> {
-        let token = new_token();
+    /// Inserts a caller-provided session token ON THE GIVEN CONNECTION, so session
+    /// issuance can commit atomically with registration or stand alone in a thin tx.
+    pub async fn insert_session_tx(
+        &self,
+        conn: &mut PgConnection,
+        player_id: &str,
+        token: &str,
+    ) -> Result<(), sqlx::Error> {
         sqlx::query(
             "INSERT INTO accounts.sessions (token, player_id, expires_at) \
              VALUES ($1, $2::uuid, now() + make_interval(days => $3))",
         )
-        .bind(&token)
+        .bind(token)
         .bind(player_id)
         .bind(SESSION_TTL_DAYS)
-        .execute(&self.pool)
+        .execute(&mut *conn)
         .await?;
-        Ok(token)
+        Ok(())
     }
 
     /// Resolves a bearer token to its player, ignoring expired sessions. `Ok(None)`
