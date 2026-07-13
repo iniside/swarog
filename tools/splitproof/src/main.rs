@@ -579,6 +579,13 @@ async fn run(root: PathBuf, run_dir: PathBuf) -> Result<u32> {
     // 404s through the front door.
     i_gate(&ctx, &mut fleet, &mut p).await?;
 
+    // [RDY-DEAD] readiness-accuracy proof for the /readyz amplification fix: gateway-svc
+    // holds a `remote::Stub` per fronted peer whose `/readyz` check reads a CACHED verdict
+    // stamped by a BACKGROUND probe. Kill one peer (characters-svc), assert gateway
+    // /readyz flips to 503 naming the dead stub from the probe alone, then respawn and
+    // assert recovery — restoring the fleet before [LV2]/parity run.
+    rdy_dead(&ctx, &mut fleet, &mut p).await?;
+
     // [LV2] fleet-wide liveness sweep immediately before the split fleet is torn down —
     // a service that died AFTER [LV1]'s post-boot check (e.g. mid-assertions) must not
     // silently drop out of the assertions that ran against it.
@@ -1403,6 +1410,109 @@ async fn i_gate(ctx: &Ctx, fleet: &mut Vec<Running>, p: &mut Proof) -> Result<()
     p.check(
         "[I-GATE] fully-authed grant -> 404 with INVENTORY_DEV_GRANT off",
         ok,
+        format!("last_code={last:?}"),
+    );
+    Ok(())
+}
+
+/// `[RDY-DEAD]` — proves the /readyz amplification fix (commits f5eea2d/1262d51/7f3e631)
+/// on the at-risk topology (split, where stubs exist; the monolith holds none). gateway-svc
+/// holds a `remote::Stub` per fronted domain provider (see cmd/gateway-svc/src/lib.rs), and
+/// each stub's `/readyz` check reads a CACHED reachability verdict stamped by a BACKGROUND
+/// probe loop in core/remote — never a request-driven dial. Kill ONE gateway peer
+/// (characters-svc — a stub gateway-svc holds, deliberately distinct from the inventory-svc
+/// that [I-GATE] restarts) with no respawn, and assert gateway `/readyz` flips to 503
+/// NAMING the dead `stub:characters` driven by the probe alone; then respawn and assert
+/// /readyz recovers to 200. No burst-latency assertion: a concurrent /readyz burst finishes
+/// in ~1s even against the OLD per-request-dial code (axum runs handlers concurrently), so it
+/// cannot distinguish fixed from unfixed — the anti-amplification proof is the sequential
+/// core/remote `readiness_verdict_*` unit tests.
+async fn rdy_dead(ctx: &Ctx, fleet: &mut Vec<Running>, p: &mut Proof) -> Result<()> {
+    println!("\n[splitproof] === [RDY-DEAD] kill characters-svc; gateway /readyz must flip via background probe ===");
+    let g = format!("http://127.0.0.1:{}", ctx.http_port("gateway-svc"));
+
+    // Baseline: full fleet healthy, so gateway /readyz is 200 before we kill the peer.
+    let base = ctx.http.get(format!("{g}/readyz")).send().await?;
+    p.check(
+        "[RDY-DEAD] baseline gateway /readyz 200",
+        base.status().is_success(),
+        base.status(),
+    );
+
+    let idx = fleet
+        .iter()
+        .position(|running| running.name == "characters-svc")
+        .context("characters-svc missing from fleet (preflight_fleet should have caught this)")?;
+
+    // Kill ONLY characters-svc (Drop kills + waits), NO respawn yet, and let the OS free
+    // its HTTP + edge ports so the recovery respawn below rebinds cleanly.
+    fleet.remove(idx);
+    tokio::time::sleep(Duration::from_millis(800)).await;
+
+    // Poll gateway /readyz until it flips to 503 naming the dead stub. The flip is driven by
+    // the stub's BACKGROUND probe loop (core/remote), NOT by these requests — each GET just
+    // OBSERVES the cached verdict. Budget must exceed core/remote PROBE_INTERVAL_READY (5s) +
+    // probe_peer dial timeout (1s); bump if those grow — this asserts the flip, not the exact
+    // interval, so it fails LOUD on drift rather than silently.
+    let deadline = Instant::now() + Duration::from_secs(12);
+    let mut got503 = false;
+    let mut names_stub = false;
+    let mut last: Option<u16> = None;
+    loop {
+        if let Ok(r) = ctx.http.get(format!("{g}/readyz")).send().await {
+            last = Some(r.status().as_u16());
+            if r.status() == reqwest::StatusCode::SERVICE_UNAVAILABLE {
+                got503 = true;
+                // The 503 body maps each failed check_name -> error string (httpmw readiness):
+                // assert it is characters' stub that flipped, not some other check.
+                let body = r.text().await.unwrap_or_default();
+                names_stub = body.contains("stub:characters");
+                if names_stub {
+                    break;
+                }
+            }
+        }
+        if Instant::now() >= deadline {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+    p.check(
+        "[RDY-DEAD] dead peer flips gateway /readyz to 503 (background probe)",
+        got503 && names_stub,
+        format!("last_code={last:?} names_stub={names_stub}"),
+    );
+
+    // Recovery: respawn characters-svc from its canonical spec and wait for it healthy.
+    let restarted = ctx.service("characters-svc").clone();
+    ensure_no_stale_listener(restarted.name, restarted.http_port)?;
+    let mut running = ctx.spawn(&restarted)?;
+    ctx.wait_healthy(&restarted, &mut running.child).await?;
+    fleet.insert(idx, running);
+    println!("[splitproof] characters-svc respawned; waiting for gateway /readyz to recover ...");
+
+    // Poll until gateway /readyz recovers to 200. The stub loop is in its 1s-unready cadence
+    // (core/remote PROBE_INTERVAL_UNREADY), so it re-probes and re-stamps ready within ~1-2s
+    // of the peer's edge coming back — 10s is generous headroom against CI jitter.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut recovered = false;
+    let mut last: Option<u16> = None;
+    loop {
+        if let Ok(r) = ctx.http.get(format!("{g}/readyz")).send().await {
+            last = Some(r.status().as_u16());
+            if r.status().is_success() {
+                recovered = true;
+                break;
+            }
+        }
+        if Instant::now() >= deadline {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+    p.check(
+        "[RDY-DEAD] gateway /readyz recovers to 200 after peer returns",
+        recovered,
         format!("last_code={last:?}"),
     );
     Ok(())
