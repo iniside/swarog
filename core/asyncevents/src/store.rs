@@ -60,6 +60,19 @@ const V2_MIGRATE_LOCK_TIMEOUT: &str = "60s";
 /// `AFTER INSERT` trigger fires the wake-up NOTIFY the Step-3 worker will LISTEN on.
 /// `tie_breaker` is a table-wide identity: within one transaction it is strictly
 /// increasing in append order, which is all the position ordering needs.
+/// The exact number of top-level statements in [`V2_DDL_TEMPLATE`], INCLUDING
+/// the literal `BEGIN;`/`COMMIT;` pair (which the executor skips). Pinned as a
+/// loud tripwire for [`split_sql_statements`]: the splitter is deliberately
+/// minimal (dollar-quote-aware only — it does not lex `--` comments or `'...'`
+/// string literals, because the template contains no top-level `;` inside
+/// either), so if a future edit to the template adds one, the count assert in
+/// [`ensure_schema_with_lock_timeout`] fails at the first migrate with a
+/// message naming this constant — a missplit statement must never reach
+/// Postgres half-parsed. UPDATE THIS COUNT (and re-check the splitter's
+/// assumptions) whenever a statement is added to or removed from the template
+/// in `core/asyncevents/src/store.rs`.
+const V2_DDL_STATEMENT_COUNT: usize = 14;
+
 const V2_DDL_TEMPLATE: &str = r#"
 BEGIN;
 SET LOCAL lock_timeout = '{lock_timeout}';
@@ -185,6 +198,24 @@ pub(crate) async fn ensure_schema(pool: &PgPool) -> anyhow::Result<()> {
 /// an early `?` return on ANY statement failure cleans up automatically —
 /// the pool never gets back a poisoned connection.
 ///
+/// ERRATA — invariant narrowing vs `4b7d41c` ("discard connection on failed
+/// rollback"): that commit's `raw_sql` executor handled the
+/// rollback-ITSELF-failed-but-connection-alive edge with an explicit
+/// `PoolConnection::detach()` so the unknown-state session could never serve
+/// a later borrower. This `sqlx::Transaction`-based executor delegates that
+/// edge to sqlx: `Transaction::drop`'s best-effort ROLLBACK has no
+/// explicit-detach fallback, so if the ROLLBACK itself errors, discarding
+/// the connection falls to the pool's DEFAULT `test_before_acquire` ping
+/// (a wire-level liveness check the next borrower runs; a session whose
+/// ROLLBACK failed is in practice a dead/protocol-broken connection the ping
+/// rejects and the pool closes). Note the asymmetry with the paragraph
+/// above: the ping does not clear a live-but-aborted transaction (why the
+/// Drop-ROLLBACK is still needed), but it DOES catch a dead connection
+/// (why the explicit detach no longer is). The production pools here are
+/// `PgPool::connect`/`PgPoolOptions` with defaults — `test_before_acquire`
+/// stays enabled — so the no-poisoned-borrower guarantee holds; a future
+/// custom pool that disables it would silently reopen this edge.
+///
 /// Individual `sqlx::query(stmt)` calls (extended/prepared-statement
 /// protocol) rather than one `sqlx::raw_sql(..)` multi-statement batch
 /// (simple-query protocol) — [`split_sql_statements`] below splits the
@@ -196,12 +227,14 @@ pub(crate) async fn ensure_schema(pool: &PgPool) -> anyhow::Result<()> {
 /// (every parameter owned, `'static`, no surrounding generator, no
 /// composition with any other future) and still hitting rustc's
 /// "implementation of Executor is not general enough" auto-trait leak check.
-/// `core/app::run` boxes itself (`Pin<Box<dyn Future + Send>>`) so
-/// `core/app`'s tests can `tokio::spawn` it, and this function sits on that
-/// call graph via `Plane::migrate`; `sqlx::query(..).execute(&mut
-/// PgConnection)` has no such problem (used pervasively elsewhere in this
-/// crate already — [`control_identity_on`], the `plane_meta` seed insert
-/// below). `raw_sql(..).execute(&Pool<DB>)` (the blanket impl every OTHER
+/// Nothing in production requires this function's future to be generally
+/// `Send` today (`core/app::run` is a plain `async fn` its callers `.await`
+/// or `select!` on one task), but the raw_sql form makes ANY future
+/// Send-requiring composition over `Plane::migrate`'s call graph
+/// unprovable; `sqlx::query(..).execute(&mut PgConnection)` has no such
+/// problem (used pervasively elsewhere in this crate already —
+/// [`control_identity_on`], the `plane_meta` seed insert below).
+/// `raw_sql(..).execute(&Pool<DB>)` (the blanket impl every OTHER
 /// `SCHEMA_DDL` migration in this workspace uses) also doesn't have the
 /// problem, but does not admit holding one connection for the whole batch.
 pub(crate) async fn ensure_schema_with_lock_timeout(
@@ -226,12 +259,28 @@ pub(crate) async fn ensure_schema_with_lock_timeout(
         .await
         .context("asyncevents: acquire V2 schema DDL connection")?;
 
+    // Splitter tripwire (see [`V2_DDL_STATEMENT_COUNT`]): a top-level `;`
+    // the minimal splitter does not understand (in a future `--` comment or
+    // `'...'` string literal) would missplit a statement — fail loudly here,
+    // before anything half-parsed reaches Postgres.
+    let statements = split_sql_statements(&ddl);
+    assert_eq!(
+        statements.len(),
+        V2_DDL_STATEMENT_COUNT,
+        "asyncevents: split_sql_statements produced {} statements from V2_DDL_TEMPLATE, \
+         expected V2_DDL_STATEMENT_COUNT = {} — either the template changed (update the \
+         constant in core/asyncevents/src/store.rs) or the template now contains a \
+         top-level ';' the splitter missplits (extend the splitter first)",
+        statements.len(),
+        V2_DDL_STATEMENT_COUNT,
+    );
+
     // `BEGIN`/`COMMIT` are literal statements in the template (it predates
     // this sqlx::Transaction-based executor and was written for
     // `raw_sql`'s simple-query protocol); `sqlx::Transaction` already owns
     // that lifecycle, so skip them here rather than edit the long-lived,
     // carefully reviewed DDL text.
-    for stmt in split_sql_statements(&ddl) {
+    for stmt in statements {
         let bare = stmt.trim_end_matches(';').trim();
         if bare.eq_ignore_ascii_case("BEGIN") || bare.eq_ignore_ascii_case("COMMIT") {
             continue;
@@ -304,6 +353,16 @@ fn split_sql_statements(script: &str) -> Vec<String> {
     if !tail.is_empty() {
         statements.push(tail.to_string());
     }
+    // Guard: an ODD number of `$$` markers means the scan ended inside what it
+    // believed was a dollar-quoted body — every split decision after the
+    // unmatched `$$` was made in the wrong mode. Fail loudly instead of
+    // returning silently-misgrouped statements.
+    assert!(
+        !in_dollar_quote,
+        "asyncevents: split_sql_statements ended inside an unterminated $$ dollar quote — \
+         the script's $$ markers are unbalanced (or use a tagged $tag$ form this minimal \
+         splitter does not understand)"
+    );
     statements
 }
 

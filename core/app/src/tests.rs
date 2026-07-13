@@ -576,7 +576,7 @@ async fn ordered_teardown_skips_module_stop_when_modules_never_started() {
     // No listeners, no planes, modules never started (`app` omitted) — e.g. a
     // migrate failure or an `App::start` Err: bus close still runs, module stop
     // does NOT.
-    ordered_teardown(None, None, std::time::Duration::from_millis(100), None, None, ctx, None).await;
+    ordered_teardown(None, None, std::time::Duration::from_millis(100), &mut None, &mut None, &ctx, None).await;
     assert!(log.lock().unwrap().is_empty(), "stop must not run: {log:?}");
 }
 
@@ -590,16 +590,7 @@ async fn ordered_teardown_stops_modules_after_a_successful_start() {
     let ctx = app.context().clone();
 
     // Modules started → `app` is passed → `App::stop` runs (last, after bus close).
-    ordered_teardown(
-        None,
-        None,
-        std::time::Duration::from_millis(100),
-        None,
-        None,
-        ctx,
-        Some(std::sync::Arc::new(app)),
-    )
-    .await;
+    ordered_teardown(None, None, std::time::Duration::from_millis(100), &mut None, &mut None, &ctx, Some(&app)).await;
     assert_eq!(*log.lock().unwrap(), vec!["stop:stoprec"]);
 }
 
@@ -723,7 +714,11 @@ async fn serve_https_files_serves_router_and_drains_on_signal() {
 /// The wiring through the REAL boot path: `app::run` with `with_tls(Files)` on an
 /// ephemeral port serves `/healthz` over HTTPS — proving `run` dispatches the TLS
 /// branch off `Config.tls` (DB-less, empty module set; `run` only returns on a
-/// process signal, so the task is aborted once the roundtrip proved the point).
+/// process signal, so it is DRIVEN via `select!` on this test's own task — never
+/// `tokio::spawn`ed, which would demand a generally-`Send` proof of `run`'s giant
+/// generator that rustc cannot make and production never needs (every `cmd/*`
+/// main just `.await`s it). The `select!` arm dropping `run`'s future when the
+/// probe body finishes replaces the old task-`abort()`.)
 #[tokio::test(flavor = "multi_thread")]
 async fn run_with_tls_files_serves_https() {
     let _ = rustls::crypto::ring::default_provider().install_default();
@@ -735,14 +730,15 @@ async fn run_with_tls_files_serves_https() {
     cfg.listen_addr = format!("127.0.0.1:{port}");
     let cfg = cfg.with_tls(Some(TlsFront::Files { cert, key }));
 
-    let server = tokio::spawn(run(cfg, Vec::new(), None, None));
-
-    let client = tls_client(&cert_pem);
-    let resp = get_when_up(&client, &format!("https://127.0.0.1:{port}/healthz")).await;
-    assert_eq!(resp.status(), reqwest::StatusCode::OK);
-    assert_eq!(resp.text().await.unwrap(), "ok");
-
-    server.abort();
+    tokio::select! {
+        res = run(cfg, Vec::new(), None, None) => panic!("server exited early: {res:?}"),
+        _ = async {
+            let client = tls_client(&cert_pem);
+            let resp = get_when_up(&client, &format!("https://127.0.0.1:{port}/healthz")).await;
+            assert_eq!(resp.status(), reqwest::StatusCode::OK);
+            assert_eq!(resp.text().await.unwrap(), "ok");
+        } => {}
+    }
 }
 
 // ============================================================================
@@ -791,24 +787,31 @@ async fn run_http_request_timeout_408s_slow_handler_but_not_fast() {
     cfg.listen_addr = format!("127.0.0.1:{port}");
     cfg.http_request_timeout = Some(std::time::Duration::from_millis(150));
 
-    let server = tokio::spawn(run(cfg, vec![Box::new(SlowRoutes { slow_ms: 5000 })], None, None));
-    let client = reqwest::Client::new();
+    // Driven via `select!` on this task, not `tokio::spawn` — see
+    // `run_with_tls_files_serves_https` for why (no `Send` proof of `run`'s
+    // generator required or wanted; select-drop replaces the old `abort()`).
+    tokio::select! {
+        res = run(cfg, vec![Box::new(SlowRoutes { slow_ms: 5000 })], None, None) => {
+            panic!("server exited early: {res:?}")
+        }
+        _ = async {
+            let client = reqwest::Client::new();
 
-    // A fast request is unaffected by the layer.
-    let fast = get_when_up(&client, &format!("http://127.0.0.1:{port}/fast")).await;
-    assert_eq!(fast.status(), reqwest::StatusCode::OK);
-    assert_eq!(fast.text().await.unwrap(), "fast");
+            // A fast request is unaffected by the layer.
+            let fast = get_when_up(&client, &format!("http://127.0.0.1:{port}/fast")).await;
+            assert_eq!(fast.status(), reqwest::StatusCode::OK);
+            assert_eq!(fast.text().await.unwrap(), "fast");
 
-    // The slow handler exceeds the 150ms budget → 408 Request Timeout (deliberately 408,
-    // not 504 — see the layer-site comment in `run`).
-    let slow = client
-        .get(format!("http://127.0.0.1:{port}/slow"))
-        .send()
-        .await
-        .expect("slow request");
-    assert_eq!(slow.status(), reqwest::StatusCode::REQUEST_TIMEOUT);
-
-    server.abort();
+            // The slow handler exceeds the 150ms budget → 408 Request Timeout
+            // (deliberately 408, not 504 — see the layer-site comment in `run`).
+            let slow = client
+                .get(format!("http://127.0.0.1:{port}/slow"))
+                .send()
+                .await
+                .expect("slow request");
+            assert_eq!(slow.status(), reqwest::StatusCode::REQUEST_TIMEOUT);
+        } => {}
+    }
 }
 
 /// `http_request_timeout = None` (env `HTTP_REQUEST_TIMEOUT_MS=0`) drops the layer:
@@ -821,15 +824,21 @@ async fn run_http_request_timeout_zero_disables_the_layer() {
     cfg.listen_addr = format!("127.0.0.1:{port}");
     cfg.http_request_timeout = None; // the `0` disables-case
 
-    let server = tokio::spawn(run(cfg, vec![Box::new(SlowRoutes { slow_ms: 300 })], None, None));
-    let client = reqwest::Client::new();
+    // Driven via `select!` on this task, not `tokio::spawn` — see
+    // `run_with_tls_files_serves_https` for why.
+    tokio::select! {
+        res = run(cfg, vec![Box::new(SlowRoutes { slow_ms: 300 })], None, None) => {
+            panic!("server exited early: {res:?}")
+        }
+        _ = async {
+            let client = reqwest::Client::new();
 
-    // With no layer, the 300ms handler completes instead of being timed out.
-    let slow = get_when_up(&client, &format!("http://127.0.0.1:{port}/slow")).await;
-    assert_eq!(slow.status(), reqwest::StatusCode::OK);
-    assert_eq!(slow.text().await.unwrap(), "slow");
-
-    server.abort();
+            // With no layer, the 300ms handler completes instead of being timed out.
+            let slow = get_when_up(&client, &format!("http://127.0.0.1:{port}/slow")).await;
+            assert_eq!(slow.status(), reqwest::StatusCode::OK);
+            assert_eq!(slow.text().await.unwrap(), "slow");
+        } => {}
+    }
 }
 
 // ============================================================================
@@ -1193,19 +1202,26 @@ async fn durable_delivery_starts_only_after_invalidation_first_refresh() {
         refreshes: refreshes.clone(),
         refreshes_at_delivery: at_delivery.clone(),
     };
-    let server = tokio::spawn(run(cfg, vec![Box::new(probe)], None, None));
-
-    // First refresh sleeps 2s, delivery polls at a 1s floor and frontier
-    // eligibility can lag behind unrelated transactions — poll generously.
-    let mut delivered = false;
-    for _ in 0..300 {
-        if at_delivery.load(Ordering::SeqCst) >= 0 {
-            delivered = true;
-            break;
+    // Driven via `select!` on this task, not `tokio::spawn` — see
+    // `run_with_tls_files_serves_https` for why. The polling arm completing
+    // drops `run`'s future (the old `abort()`), and the assertions + DB
+    // cleanup below run after the server is gone, exactly as before.
+    let delivered = tokio::select! {
+        res = run(cfg, vec![Box::new(probe)], None, None) => {
+            panic!("server exited early: {res:?}")
         }
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    }
-    server.abort();
+        delivered = async {
+            // First refresh sleeps 2s, delivery polls at a 1s floor and frontier
+            // eligibility can lag behind unrelated transactions — poll generously.
+            for _ in 0..300 {
+                if at_delivery.load(Ordering::SeqCst) >= 0 {
+                    return true;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+            false
+        } => delivered,
+    };
     assert!(delivered, "the probe event was never delivered");
     assert!(
         at_delivery.load(Ordering::SeqCst) >= 1,

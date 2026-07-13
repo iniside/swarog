@@ -11,9 +11,7 @@
 //! it), and it lives ABOVE `lifecycle` so [`validate_requires`] — a topology concern
 //! — stays here rather than in the foundation.
 
-use std::future::Future;
 use std::net::SocketAddr;
-use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
 use anyhow::Context as _;
@@ -581,43 +579,12 @@ fn apply_http_layers(ctx: &Context, mut router: axum::Router) -> axum::Router {
 /// can install the dispatch handler onto it during Build. After Build completes,
 /// `run` takes the fully-wired server out of the shared handle (via
 /// `std::mem::take`, the module never touches it again) and `listen`s it.
-///
-/// Returns a boxed, explicitly `Send`-typed future rather than being declared
-/// `async fn`. Production `cmd/*` mains only ever `.await` this directly (a
-/// `Pin<Box<dyn Future>>` is itself `Future`, so the call site is unchanged),
-/// but `core/app`'s own tests `tokio::spawn` it to drive a real server
-/// alongside the test body — see the `tokio::spawn(run(...))` sites in
-/// `tests.rs`, which fail to compile against the unboxed `async fn` form.
-///
-/// Getting that spawn to compile needed TWO things, not one: boxing `run`
-/// itself here (an explicit unsizing coercion rustc can check directly,
-/// rather than leaving Send-ness to opaque-type inference across this
-/// function's own huge generator), AND — inside the body — running
-/// `App::migrate`/`App::start`/`App::stop` and `Plane::migrate` each on
-/// their OWN `tokio::spawn`ed task rather than awaiting them in-line (see
-/// the comments at those call sites). Boxing `run` alone was not sufficient:
-/// those calls compose `#[async_trait]`-generated boxed dyn `Module` futures
-/// (over `App`'s module list) with plain async fns borrowing `App`/`Plane`/
-/// `Context`, and rustc's Send auto-trait leak checker could not prove that
-/// combination region-polymorphically once composed into `run`'s own
-/// generator — a genuine limitation ("implementation of Send is not general
-/// enough"), confirmed even after boxing `App`'s methods individually at
-/// their own definitions in `core/lifecycle` and proving `App: Send + Sync`
-/// trivially via a static assertion. `tokio::spawn` sidesteps the
-/// composition problem entirely: each spawned future proves `Send +
-/// 'static` once, in total isolation, and its `JoinHandle` is
-/// unconditionally `Send` regardless of what it's spawning. The matching fix
-/// for `asyncevents::store::ensure_schema_with_lock_timeout` — a DIFFERENT,
-/// unconditional defect (`sqlx::raw_sql(..).execute(&mut PgConnection)`
-/// simply never proves generally `Send` in this sqlx version, even spawned
-/// alone) — is documented at that function.
-pub fn run(
+pub async fn run(
     cfg: Config,
     modules: Vec<Box<dyn Module>>,
     edge_server: Option<Arc<Mutex<edge::Server>>>,
     player_server: Option<Arc<Mutex<edge::PlayerServer>>>,
-) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send>> {
-    Box::pin(async move {
+) -> anyhow::Result<()> {
     // 1. Open the pool when a DSN is configured; a pure-transport process (no DSN)
     //    skips it. `PgPool::connect` establishes an initial connection, so an
     //    unreachable DB fails here (Go's explicit ping equivalent).
@@ -673,10 +640,6 @@ pub fn run(
         app.add(m);
     }
     app.build().context("startup failed")?;
-    // Arc-wrapped from here on so `migrate`/`start` can run on their OWN
-    // spawned task (see the comment at their call sites below) — cheap,
-    // since `App` is built once and never mutated again.
-    let app = Arc::new(app);
 
     // The plane's worker-health probe joins `/readyz`: a process whose pull
     // workers died (panic) OR whose workers are alive but persistently failing
@@ -773,53 +736,16 @@ pub fn run(
     let mut running_player: Option<edge::RunningServer> = None;
     let mut modules_started = false;
     let outcome: anyhow::Result<()> = async {
-        if let Some(p) = plane.take() {
-            // Moved INTO its own spawned task and back out (see the
-            // `App::migrate`/`start` comment just below for why): `Plane` is
-            // fully owned/`'static`-safe (no borrowed fields), so it round-
-            // trips through `tokio::spawn` cleanly.
-            let (p, res) = tokio::spawn(async move {
-                let res = p.migrate().await;
-                (p, res)
-            })
-            .await
-            .context("asyncevents migrate task panicked")?;
-            plane = Some(p);
-            res.context("asyncevents migrate failed")?;
+        if let Some(p) = &plane {
+            p.migrate().await.context("asyncevents migrate failed")?;
         }
-        // Run on ITS OWN spawned task rather than awaited in-line: even with
-        // `App::migrate` boxed at its own definition (`Pin<Box<dyn Future +
-        // Send>>` — see its doc comment in `core/lifecycle`), awaiting it
-        // directly here still failed rustc's Send auto-trait leak check once
-        // composed into `run`'s own explicitly-boxed generator
-        // ("implementation of Send is not general enough" for `&App`/`&str`/
-        // `&String` — persisted through boxing at every call-site and
-        // definition-site variant tried). `tokio::spawn` sidesteps the
-        // region-composition problem entirely: it proves `Send + 'static`
-        // for ONE self-contained future in isolation (never composed with
-        // `run`'s own generator state) and returns a `JoinHandle` whose own
-        // `Future` impl is unconditionally `Send` regardless of the spawned
-        // future's internal complexity. `app` is `Arc`-wrapped so the
-        // spawned task can hold its own owned handle.
-        {
-            let app = app.clone();
-            tokio::spawn(async move { app.migrate().await })
-                .await
-                .context("migrate task panicked")?
-                .context("migrate failed")?;
-        }
+        app.migrate().await.context("migrate failed")?;
         // Double-stop rule: on Err, `App::start` has ALREADY stopped its started
         // prefix internally, so the unwind must skip `app.stop()` (which would run
         // `stop` on never-started modules) — `modules_started` stays false. A
         // migrate failure above skips it too (nothing started); only a failure
         // AFTER this line unwinds with `app.stop()`.
-        {
-            let app = app.clone();
-            tokio::spawn(async move { app.start().await })
-                .await
-                .context("start task panicked")?
-                .context("start failed")?;
-        }
+        app.start().await.context("start failed")?;
         modules_started = true;
         // After module start (so the snapshot sees every wiring-time `register`): run
         // each callback's FIRST refresh synchronously — a failure fails startup loudly —
@@ -1021,34 +947,19 @@ pub fn run(
         Ok(()) => tracing::info!("shutting down"),
         Err(err) => tracing::error!(err = %format!("{err:#}"), "startup failed; unwinding"),
     }
-    // `ordered_teardown` takes every remaining value BY OWNERSHIP (`plane`,
-    // `invalidation`, `ctx.clone()`, `app` itself) rather than by borrow —
-    // none of them are used again after this call. A borrowed-parameter form
-    // (`&mut Option<Plane>`, `&Context`, `Option<&App>`) still failed rustc's
-    // Send auto-trait leak check once composed into `run`'s own explicitly
-    // boxed generator ("implementation of Send is not general enough" for
-    // `&App`/`&str`/`&String` — persisted even after boxing `App::migrate`/
-    // `start`/`stop` individually at their OWN definitions in
-    // `core/lifecycle`, and even with `App` proven trivially `Send + Sync`
-    // by a static assertion; this is the same class of rustc region-
-    // polymorphism limitation as `store::ensure_schema_with_lock_timeout`'s
-    // fix, and erasing the borrow is what closes it there too). Passing
-    // owned values removes every non-`'static` lifetime this call could fail
-    // to unify against.
     ordered_teardown(
         running_player.take(),
         running_edge.take(),
         cfg.edge_drain_grace,
-        plane,
-        invalidation,
-        ctx.clone(),
-        modules_started.then_some(app),
+        &mut plane,
+        &mut invalidation,
+        &ctx,
+        modules_started.then_some(&app),
     )
     .await;
     outcome?;
     tracing::info!("bye");
     Ok(())
-    })
 }
 
 /// Ordered teardown shared by graceful shutdown and every startup-failure unwind:
@@ -1072,10 +983,10 @@ async fn ordered_teardown(
     running_player: Option<edge::RunningServer>,
     running_edge: Option<edge::RunningServer>,
     grace: std::time::Duration,
-    mut plane: Option<asyncevents::Plane>,
-    mut invalidation: Option<invalidation::InvalidationPlane>,
-    ctx: Arc<Context>,
-    app: Option<Arc<App>>,
+    plane: &mut Option<asyncevents::Plane>,
+    invalidation: &mut Option<invalidation::InvalidationPlane>,
+    ctx: &Context,
+    app: Option<&App>,
 ) {
     if let Some(running) = running_player {
         running.shutdown(grace).await;
@@ -1083,19 +994,15 @@ async fn ordered_teardown(
     if let Some(running) = running_edge {
         running.shutdown(grace).await;
     }
-    if let Some(p) = &mut plane {
+    if let Some(p) = plane {
         p.stop().await;
     }
-    if let Some(p) = &mut invalidation {
+    if let Some(p) = invalidation {
         p.stop().await;
     }
     ctx.bus().close().await;
-    // Spawned for the same reason as `App::migrate`/`App::start` in `run` —
-    // see the comment there.
     if let Some(app) = app {
-        if let Err(err) = tokio::spawn(async move { app.stop().await }).await {
-            tracing::error!(%err, "module stop task panicked");
-        }
+        app.stop().await;
     }
 }
 
