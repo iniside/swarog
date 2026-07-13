@@ -122,11 +122,12 @@ pub(crate) fn spawn(
     match spec.process_group {
         ProcessGroupPolicy::Owned => {}
     }
-    let executable =
-        std::fs::canonicalize(&spec.executable).map_err(|source| ProcessError::Io {
-            operation: "canonicalize process executable",
-            source,
-        })?;
+    // Validate the target without passing canonicalize's `\\?\` path through argv[0].
+    std::fs::canonicalize(&spec.executable).map_err(|source| ProcessError::Io {
+        operation: "canonicalize process executable",
+        source,
+    })?;
+    let executable = &spec.executable;
     let job = create_kill_on_close_job().map_err(|source| ProcessError::Io {
         operation: "create kill-on-close job",
         source,
@@ -162,7 +163,7 @@ pub(crate) fn spawn(
     startup.StartupInfo.hStdError = stderr.0;
     startup.lpAttributeList = attributes.as_mut_ptr();
 
-    let mut command_line = command_line(&executable, &spec.args)?;
+    let mut command_line = command_line(executable, &spec.args)?;
     let application = wide_nul(executable.as_os_str(), "executable path")?;
     let cwd = wide_nul(spec.cwd.as_os_str(), "working directory")?;
     let environment = environment_block(&spec.env)?;

@@ -105,6 +105,17 @@ fn child_entry() {
             std::io::stdin().read_to_end(&mut bytes).unwrap();
             std::fs::write(std::env::var_os("PROCESSCTL_TEST_READY").unwrap(), bytes).unwrap();
         }
+        "argv-zero" => {
+            std::fs::write(
+                std::env::var_os("PROCESSCTL_TEST_READY").unwrap(),
+                std::env::args_os()
+                    .next()
+                    .expect("test child has argv[0]")
+                    .to_string_lossy()
+                    .as_bytes(),
+            )
+            .unwrap();
+        }
         "optional-lease-direct" => {
             assert!(BorrowedLease::consume_inherited_if_present("splitproof")
                 .unwrap()
@@ -334,6 +345,28 @@ fn private_stdin_bytes_are_bounded_before_spawn() {
         .expect("oversized stdin must fail");
     assert!(error.to_string().contains("exceeds 4096 bytes"));
     assert!(!ready.exists());
+}
+
+#[test]
+fn owned_child_preserves_non_verbatim_argv_zero() {
+    let _serial = PROCESS_TEST_LOCK.lock().unwrap();
+    protect_test_harness();
+    let dir = test_dir("argv-zero");
+    let ready = dir.join("ready");
+    let executable = std::env::current_exe().unwrap();
+    let executable_text = executable.to_string_lossy().into_owned();
+    assert!(executable.is_absolute());
+    assert!(!executable_text.starts_with(r"\\?\"));
+
+    let mut child_spec = spec("argv-zero", &ready);
+    child_spec.executable = executable;
+    let mut child = OwnedChild::spawn(child_spec).unwrap();
+    wait_file(&ready);
+    let child_argv_zero = std::fs::read_to_string(&ready).unwrap();
+    assert_eq!(child_argv_zero, executable_text);
+    while child.try_wait().unwrap().is_none() {
+        std::thread::sleep(Duration::from_millis(10));
+    }
 }
 
 #[cfg(windows)]
