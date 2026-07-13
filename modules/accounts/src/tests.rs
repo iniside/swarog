@@ -193,9 +193,13 @@ fn lazy_service() -> Arc<Service> {
 /// The verifier-injecting twin (admin's `wired_with_verifier` shape): recording and
 /// gated fakes drive the decoy-path and permit-lifetime tests without real argon2.
 fn lazy_service_with_verifier(verifier: Arc<dyn PasswordVerifier>) -> Arc<Service> {
+    lazy_service_at(DEFAULT_DSN, verifier)
+}
+
+fn lazy_service_at(dsn: &str, verifier: Arc<dyn PasswordVerifier>) -> Arc<Service> {
     Arc::new(Service {
         store: Store {
-            pool: PgPool::connect_lazy(DEFAULT_DSN).unwrap(),
+            pool: PgPool::connect_lazy(dsn).unwrap(),
         },
         bus: Arc::new(Bus::new()),
         dev_auth: true,
@@ -255,18 +259,26 @@ async fn login_epic_requires_token_and_configured_provider() {
     let svc = lazy_service();
     let e = svc.login_epic(String::new()).await.unwrap_err();
     assert_eq!(e.status, opsapi::Status::Invalid);
+    let over_cap = format!("{}a", "é".repeat(MAX_EPIC_ID_TOKEN_BYTES / 2));
+    assert_eq!(over_cap.len(), MAX_EPIC_ID_TOKEN_BYTES + 1);
+    let e = svc.login_epic(over_cap).await.unwrap_err();
+    assert_eq!(
+        e.status,
+        opsapi::Status::Invalid,
+        "the byte cap must reject before provider/JWKS availability is consulted"
+    );
     // Provider not configured (epic OnceLock empty) → typed Unavailable, no panic.
     let e = svc.login_epic("some.jwt.here".into()).await.unwrap_err();
     assert_eq!(e.status, opsapi::Status::Unavailable);
 }
 
 #[tokio::test]
-async fn over_cap_session_tokens_short_circuit_before_sql_by_bytes() {
+async fn over_cap_session_tokens_short_circuit_handler_and_store_before_sql_by_bytes() {
+    const DEAD_DSN: &str =
+        "postgres://gamebackend:gamebackend@127.0.0.1:1/no-session-cap-test";
+    let svc = lazy_service_at(DEAD_DSN, Arc::new(ArgonVerifier));
     let store = Store {
-        pool: PgPool::connect_lazy(
-            "postgres://gamebackend:gamebackend@127.0.0.1:1/no-session-cap-test",
-        )
-        .unwrap(),
+        pool: PgPool::connect_lazy(DEAD_DSN).unwrap(),
     };
     let ascii = "a".repeat(accountsapi::MAX_SESSION_TOKEN_BYTES + 1);
     let multibyte = "é".repeat(accountsapi::MAX_SESSION_TOKEN_BYTES / 2 + 1);
@@ -275,12 +287,48 @@ async fn over_cap_session_tokens_short_circuit_before_sql_by_bytes() {
     for token in [ascii, multibyte] {
         let result = tokio::time::timeout(
             Duration::from_millis(100),
+            svc.verify_session(token.clone()),
+        )
+        .await
+        .expect("over-cap handler touched the dead lazy pool")
+        .unwrap();
+        assert!(result.is_none());
+
+        let result = tokio::time::timeout(
+            Duration::from_millis(100),
             store.player_by_session(&token),
         )
         .await
         .expect("over-cap lookup touched the dead lazy pool")
         .unwrap();
         assert!(result.is_none());
+    }
+}
+
+#[test]
+fn new_accounts_caps_count_utf8_bytes_at_boundary() {
+    let cases: [(&str, usize, fn(&str) -> bool); 3] = [
+        ("display name", MAX_DISPLAY_NAME_BYTES, display_name_within_cap),
+        ("Epic id_token", MAX_EPIC_ID_TOKEN_BYTES, epic_id_token_within_cap),
+        (
+            "session token",
+            accountsapi::MAX_SESSION_TOKEN_BYTES,
+            session_token_within_cap,
+        ),
+    ];
+
+    for (name, cap, within_cap) in cases {
+        let boundary = "é".repeat(cap / 2);
+        assert_eq!(boundary.len(), cap, "{name} boundary fixture");
+        assert!(within_cap(&boundary), "{name} must accept exactly {cap} bytes");
+
+        let over = format!("{boundary}a");
+        assert_eq!(over.len(), cap + 1, "{name} over-cap fixture");
+        assert!(
+            !within_cap(&over),
+            "{name} must reject {} UTF-8 bytes",
+            cap + 1
+        );
     }
 }
 
@@ -306,6 +354,37 @@ async fn register_rejects_over_cap_inputs() {
         .await
         .unwrap_err();
     assert_eq!(e.status, opsapi::Status::Invalid);
+}
+
+#[tokio::test]
+async fn register_rejects_effective_display_cap_before_argon_or_db() {
+    let svc = lazy_service();
+    svc.argon_permits.close();
+
+    let over_cap_display = format!("{}a", "é".repeat(MAX_DISPLAY_NAME_BYTES / 2));
+    assert_eq!(over_cap_display.len(), MAX_DISPLAY_NAME_BYTES + 1);
+    let e = svc
+        .register("a@x.io".into(), "pw".into(), over_cap_display)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        e.status,
+        opsapi::Status::Invalid,
+        "explicit display must reject before the closed Argon semaphore or DB"
+    );
+
+    let fallback_display = format!("{}@x.io", "a".repeat(MAX_DISPLAY_NAME_BYTES + 1));
+    assert!(fallback_display.len() <= MAX_EMAIL_BYTES);
+    assert!(fallback_display.len() > MAX_DISPLAY_NAME_BYTES);
+    let e = svc
+        .register(fallback_display, "pw".into(), String::new())
+        .await
+        .unwrap_err();
+    assert_eq!(
+        e.status,
+        opsapi::Status::Invalid,
+        "email fallback must be checked as the effective display before Argon or DB"
+    );
 }
 
 /// Invalid login input (over-cap email) still performs exactly ONE verify — against

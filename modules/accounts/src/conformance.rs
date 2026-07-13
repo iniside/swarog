@@ -11,7 +11,10 @@ use tokio::sync::Semaphore;
 
 use crate::password::ArgonVerifier;
 use crate::store::Store;
-use crate::{email_within_cap, password_within_cap, Service};
+use crate::{
+    display_name_within_cap, email_within_cap, epic_id_token_within_cap,
+    password_within_cap, session_token_within_cap, Service,
+};
 
 const DEFAULT_DSN: &str =
     "postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable";
@@ -39,6 +42,21 @@ pub fn conformance_email_rejected(len: usize) -> bool {
 #[doc(hidden)]
 pub fn conformance_password_rejected(len: usize) -> bool {
     !password_within_cap(&"a".repeat(len))
+}
+
+#[doc(hidden)]
+pub fn conformance_display_name_rejected(len: usize) -> bool {
+    !display_name_within_cap(&"a".repeat(len))
+}
+
+#[doc(hidden)]
+pub fn conformance_epic_id_token_rejected(len: usize) -> bool {
+    !epic_id_token_within_cap(&"a".repeat(len))
+}
+
+#[doc(hidden)]
+pub fn conformance_session_token_rejected(len: usize) -> bool {
+    !session_token_within_cap(&"a".repeat(len))
 }
 
 #[doc(hidden)]

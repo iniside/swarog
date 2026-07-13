@@ -45,11 +45,15 @@ use crate::epic::{short_id, OidcVerifier, VerifyError};
 use crate::password::{hash_password, ArgonVerifier, PasswordVerifier, DUMMY_HASH};
 use crate::store::{Player, Store, StoreError};
 
-/// Input caps enforced before any argon2 work: RFC 5321's total-address maximum
-/// for the email, 1 KiB for the password (argon2 cost scales with input length —
-/// an unauthenticated caller must not choose it).
+/// Input caps enforced before any expensive verifier, Argon2, RPC, or database work.
+/// Email follows RFC 5321's total-address maximum; password is capped at 1 KiB
+/// because Argon2 cost scales with input length. The remaining values are private
+/// accounts-domain policy except for the session-token cap, which is shared with
+/// the gateway through `accountsapi` for cross-layer fast rejection.
 const MAX_EMAIL_BYTES: usize = 320;
 const MAX_PASSWORD_BYTES: usize = 1024;
+const MAX_DISPLAY_NAME_BYTES: usize = 128;
+const MAX_EPIC_ID_TOKEN_BYTES: usize = 65_536;
 
 /// The SHARED cap checks — the register/login handlers and factual conformance probes
 /// call these same pure fns, so the probe
@@ -62,6 +66,18 @@ pub(crate) fn email_within_cap(email: &str) -> bool {
 
 pub(crate) fn password_within_cap(password: &str) -> bool {
     password.len() <= MAX_PASSWORD_BYTES
+}
+
+pub(crate) fn display_name_within_cap(display_name: &str) -> bool {
+    display_name.len() <= MAX_DISPLAY_NAME_BYTES
+}
+
+pub(crate) fn epic_id_token_within_cap(id_token: &str) -> bool {
+    id_token.len() <= MAX_EPIC_ID_TOKEN_BYTES
+}
+
+pub(crate) fn session_token_within_cap(token: &str) -> bool {
+    token.len() <= accountsapi::MAX_SESSION_TOKEN_BYTES
 }
 
 /// The fixed decoy candidate verified against [`DUMMY_HASH`] when the email is
@@ -302,6 +318,9 @@ impl accountsapi::Sessions for Service {
     /// `Ok(None)`; a store failure propagates as `Err` (Go's B2 fix) so a consumer
     /// can answer 503 on infrastructure failure rather than 401.
     async fn verify_session(&self, token: String) -> Result<Option<String>, Error> {
+        if !session_token_within_cap(&token) {
+            return Ok(None);
+        }
         Ok(self
             .store
             .player_by_session(&token)
@@ -337,6 +356,9 @@ impl accountsapi::Auth for Service {
         } else {
             display_name
         };
+        if !display_name_within_cap(&display) {
+            return Err(Error::invalid("display name too long"));
+        }
 
         let Ok(argon) = self.argon_permits.clone().acquire_owned().await else {
             return Err(Error::internal("argon2 semaphore closed"));
@@ -433,6 +455,9 @@ impl accountsapi::Auth for Service {
     async fn login_epic(&self, id_token: String) -> Result<accountsapi::Session, Error> {
         if id_token.is_empty() {
             return Err(Error::invalid("id_token is required"));
+        }
+        if !epic_id_token_within_cap(&id_token) {
+            return Err(Error::invalid("id_token too long"));
         }
         let Some(epic) = self.epic.get() else {
             return Err(Error::unavailable("epic provider not configured"));
