@@ -37,6 +37,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 # The Epic OAuth browser flow mounts two HTTP-native routes on the shared router.
 axum = { workspace = true }
+axum-extra = { workspace = true }
 # JWKS fetch + OAuth code exchange (rustls, json).
 reqwest = { workspace = true }
 # Identity stack: argon2id hashing (Go-compatible PHC strings), OIDC verification,

@@ -19,17 +19,23 @@ use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use axum_extra::extract::CookieJar;
+use base64::Engine as _;
+use url::Host;
 
 use crate::epic::{short_id, OidcVerifier};
 use crate::Service;
 
 /// How long an issued OAuth `state` stays redeemable (Go's `stateTTL`).
 const STATE_TTL: Duration = Duration::from_secs(10 * 60);
+const BINDING_COOKIE: &str = "epic_oauth_binding";
+const BINDING_TOKEN_LEN: usize = 43;
 
 /// One in-flight authorization. An empty `session_token` is a LOGIN flow; a set one
 /// is a LINK flow bound to that session's player.
 struct OauthState {
     session_token: String,
+    browser_binding: String,
     created_at: Instant,
 }
 
@@ -43,6 +49,7 @@ pub(crate) struct EpicOAuth {
     pub token_url: String,
     pub verifier: Arc<OidcVerifier>,
     pub http: reqwest::Client,
+    cookie_secure: bool,
     states: Mutex<HashMap<String, OauthState>>,
 }
 
@@ -56,6 +63,28 @@ impl EpicOAuth {
         token_url: String,
         verifier: Arc<OidcVerifier>,
     ) -> anyhow::Result<EpicOAuth> {
+        let parsed_redirect = url::Url::parse(&redirect_uri)
+            .map_err(|err| anyhow::anyhow!("invalid EPIC_REDIRECT_URI: {err}"))?;
+        if parsed_redirect.host().is_none() {
+            anyhow::bail!("invalid EPIC_REDIRECT_URI: host is required");
+        }
+        if parsed_redirect.path() != "/accounts/epic/callback" {
+            anyhow::bail!(
+                "invalid EPIC_REDIRECT_URI: path must be /accounts/epic/callback"
+            );
+        }
+        if parsed_redirect.fragment().is_some() {
+            anyhow::bail!("invalid EPIC_REDIRECT_URI: fragments are not allowed");
+        }
+        let cookie_secure = match parsed_redirect.scheme() {
+            "https" => true,
+            "http" if is_loopback(&parsed_redirect) => false,
+            "http" => anyhow::bail!(
+                "invalid EPIC_REDIRECT_URI: HTTP is allowed only for localhost or a loopback IP"
+            ),
+            _ => anyhow::bail!("invalid EPIC_REDIRECT_URI: scheme must be HTTPS or loopback HTTP"),
+        };
+
         Ok(EpicOAuth {
             client_id,
             client_secret,
@@ -66,13 +95,14 @@ impl EpicOAuth {
             http: reqwest::Client::builder()
                 .timeout(Duration::from_secs(10))
                 .build()?,
+            cookie_secure,
             states: Mutex::new(HashMap::new()),
         })
     }
 
     /// Issues a fresh `state` bound to `session_token` (empty = login flow),
     /// opportunistically GCing expired entries (Go's `newState`).
-    pub(crate) fn new_state(&self, session_token: String) -> String {
+    pub(crate) fn new_state(&self, session_token: String, browser_binding: String) -> String {
         let s = crate::store::new_token();
         let mut states = self.states.lock().unwrap();
         states.retain(|_, v| v.created_at.elapsed() <= STATE_TTL);
@@ -80,19 +110,45 @@ impl EpicOAuth {
             s.clone(),
             OauthState {
                 session_token,
+                browser_binding,
                 created_at: Instant::now(),
             },
         );
         s
     }
 
-    /// Redeems a `state` exactly once; an unknown or expired state is `None`.
-    pub(crate) fn take_state(&self, s: &str) -> Option<String> {
-        let st = self.states.lock().unwrap().remove(s)?;
-        if st.created_at.elapsed() > STATE_TTL {
+    /// Redeems a `state` exactly once from the browser that started it. A missing or
+    /// wrong binding does not consume an otherwise valid state.
+    pub(crate) fn take_state(&self, s: &str, browser_binding: Option<&str>) -> Option<String> {
+        self.take_state_at_inner(s, browser_binding, Instant::now())
+    }
+
+    fn take_state_at_inner(
+        &self,
+        s: &str,
+        browser_binding: Option<&str>,
+        now: Instant,
+    ) -> Option<String> {
+        let mut states = self.states.lock().unwrap();
+        let st = states.get(s)?;
+        if browser_binding != Some(st.browser_binding.as_str()) {
             return None;
         }
-        Some(st.session_token)
+        if now.saturating_duration_since(st.created_at) > STATE_TTL {
+            states.remove(s);
+            return None;
+        }
+        states.remove(s).map(|st| st.session_token)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn take_state_at(
+        &self,
+        s: &str,
+        browser_binding: Option<&str>,
+        now: Instant,
+    ) -> Option<String> {
+        self.take_state_at_inner(s, browser_binding, now)
     }
 
     /// The full authorize URL the page redirects the browser to.
@@ -139,6 +195,30 @@ impl EpicOAuth {
     }
 }
 
+fn is_loopback(url: &url::Url) -> bool {
+    match url.host() {
+        Some(Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
+        Some(Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(Host::Ipv6(ip)) => ip.is_loopback(),
+        None => false,
+    }
+}
+
+fn valid_binding(value: &str) -> bool {
+    value.len() == BINDING_TOKEN_LEN
+        && base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(value)
+            .is_ok_and(|bytes| bytes.len() == 32)
+}
+
+fn binding_set_cookie(binding: &str, secure: bool) -> axum::http::HeaderValue {
+    let secure = if secure { "; Secure" } else { "" };
+    axum::http::HeaderValue::from_str(&format!(
+        "{BINDING_COOKIE}={binding}; HttpOnly; SameSite=Lax; Path=/accounts/epic; Max-Age=600{secure}"
+    ))
+    .expect("generated OAuth binding is ASCII")
+}
+
 fn truncate(s: &str, n: usize) -> &str {
     match s.char_indices().nth(n) {
         Some((i, _)) => &s[..i],
@@ -154,18 +234,18 @@ pub(crate) fn router(oauth: Arc<EpicOAuth>, svc: Arc<Service>) -> Router {
     Router::new()
         .route(
             "/accounts/epic/start",
-            post(move |headers: HeaderMap| {
+            post(move |jar: CookieJar, headers: HeaderMap| {
                 let oauth = start_oauth.clone();
                 let svc = start_svc.clone();
-                async move { handle_start(oauth, svc, headers).await }
+                async move { handle_start(oauth, svc, jar, headers).await }
             }),
         )
         .route(
             "/accounts/epic/callback",
-            get(move |Query(q): Query<HashMap<String, String>>| {
+            get(move |jar: CookieJar, Query(q): Query<HashMap<String, String>>| {
                 let oauth = oauth.clone();
                 let svc = svc.clone();
-                async move { handle_callback(oauth, svc, q).await }
+                async move { handle_callback(oauth, svc, jar, q).await }
             }),
         )
 }
@@ -173,21 +253,37 @@ pub(crate) fn router(oauth: Arc<EpicOAuth>, svc: Arc<Service>) -> Router {
 /// Builds the authorize URL. Called via fetch with the user's bearer token: if
 /// present and valid, this becomes a LINK flow bound to that player; otherwise a
 /// plain login flow. Returns JSON so the page can redirect (Go's `handleEpicStart`).
-async fn handle_start(oauth: Arc<EpicOAuth>, svc: Arc<Service>, headers: HeaderMap) -> Response {
+async fn handle_start(
+    oauth: Arc<EpicOAuth>,
+    svc: Arc<Service>,
+    jar: CookieJar,
+    headers: HeaderMap,
+) -> Response {
     let mut session_token = String::new();
     if let Some(tok) = bearer(&headers) {
         if matches!(svc.store.player_by_session(&tok).await, Ok(Some(_))) {
             session_token = tok;
         }
     }
-    let state = oauth.new_state(session_token);
-    match oauth.authorize_url_for(&state) {
+    let browser_binding = jar
+        .get(BINDING_COOKIE)
+        .map(|cookie| cookie.value())
+        .filter(|value| valid_binding(value))
+        .map(str::to_owned)
+        .unwrap_or_else(crate::store::new_token);
+    let state = oauth.new_state(session_token, browser_binding.clone());
+    let mut response = match oauth.authorize_url_for(&state) {
         Ok(u) => Json(serde_json::json!({ "authorize_url": u })).into_response(),
         Err(err) => {
             tracing::error!(%err, "epic start: authorize url build failed");
             (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
         }
-    }
+    };
+    response.headers_mut().insert(
+        header::SET_COOKIE,
+        binding_set_cookie(&browser_binding, oauth.cookie_secure),
+    );
+    response
 }
 
 /// Where Epic redirects back. Exchanges the code, verifies the id_token, then LINKS
@@ -197,6 +293,7 @@ async fn handle_start(oauth: Arc<EpicOAuth>, svc: Arc<Service>, headers: HeaderM
 async fn handle_callback(
     oauth: Arc<EpicOAuth>,
     svc: Arc<Service>,
+    jar: CookieJar,
     q: HashMap<String, String>,
 ) -> Response {
     let code = q.get("code").cloned().unwrap_or_default();
@@ -204,7 +301,8 @@ async fn handle_callback(
     if code.is_empty() || state.is_empty() {
         return (StatusCode::BAD_REQUEST, "missing code or state").into_response();
     }
-    let Some(session_token) = oauth.take_state(&state) else {
+    let browser_binding = jar.get(BINDING_COOKIE).map(|cookie| cookie.value());
+    let Some(session_token) = oauth.take_state(&state, browser_binding) else {
         return (StatusCode::BAD_REQUEST, "invalid or expired state").into_response();
     };
 

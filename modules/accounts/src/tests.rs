@@ -8,8 +8,9 @@ use crate::password::verify_password;
 use rsa::pkcs8::EncodePrivateKey as _;
 use rsa::traits::PublicKeyParts as _;
 use sqlx::PgPool;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Fallback DSN for the lazy-pool unit tests (the live tests read `DATABASE_URL`).
 const DEFAULT_DSN: &str =
@@ -940,7 +941,7 @@ async fn epic_oauth_link_flow_end_to_end() {
         epic_oauth::EpicOAuth::new(
             CLIENT_ID.into(),
             "secret".into(),
-            "http://localhost/cb".into(),
+            "http://localhost/accounts/epic/callback".into(),
             "http://localhost/authorize".into(),
             token_url,
             verifier,
@@ -953,7 +954,8 @@ async fn epic_oauth_link_flow_end_to_end() {
         .register(format!("oauth-{}@test.local", suffix()), "pw".into(), "Linker".into())
         .await
         .unwrap();
-    let state = oauth.new_state(sess.token.clone()); // LINK flow bound to that session
+    let binding = store::new_token();
+    let state = oauth.new_state(sess.token.clone(), binding.clone()); // LINK flow bound to that session
 
     // Drive the callback route through the mounted router — the real HTTP surface.
     let app = epic_oauth::router(oauth, svc.clone());
@@ -968,6 +970,7 @@ async fn epic_oauth_link_flow_end_to_end() {
         .unwrap();
     let resp = client
         .get(format!("http://{addr}/accounts/epic/callback?code=abc&state={state}"))
+        .header("Cookie", format!("epic_oauth_binding={binding}"))
         .send()
         .await
         .unwrap();
@@ -1024,7 +1027,7 @@ async fn epic_link_harness(
         epic_oauth::EpicOAuth::new(
             CLIENT_ID.into(),
             "secret".into(),
-            "http://localhost/cb".into(),
+            "http://localhost/accounts/epic/callback".into(),
             "http://localhost/authorize".into(),
             token_url,
             verifier,
@@ -1072,10 +1075,12 @@ async fn epic_link_cross_player_collision_is_error() {
         .unwrap();
 
     let (client, base, oauth) = epic_link_harness(svc.clone(), &epic_acct).await;
-    let state = oauth.new_state(b.token.clone()); // LINK bound to B's session
+    let binding = store::new_token();
+    let state = oauth.new_state(b.token.clone(), binding.clone()); // LINK bound to B's session
 
     let resp = client
         .get(format!("{base}?code=abc&state={state}"))
+        .header("Cookie", format!("epic_oauth_binding={binding}"))
         .send()
         .await
         .unwrap();
@@ -1112,10 +1117,12 @@ async fn epic_link_same_player_is_idempotent() {
     svc.store.link_identity(&a.player_id, "epic", &epic_acct).await.unwrap();
 
     let (client, base, oauth) = epic_link_harness(svc.clone(), &epic_acct).await;
-    let state = oauth.new_state(a.token.clone()); // LINK bound to A's own session
+    let binding = store::new_token();
+    let state = oauth.new_state(a.token.clone(), binding.clone()); // LINK bound to A's own session
 
     let resp = client
         .get(format!("{base}?code=abc&state={state}"))
+        .header("Cookie", format!("epic_oauth_binding={binding}"))
         .send()
         .await
         .unwrap();
@@ -1136,21 +1143,238 @@ async fn epic_link_same_player_is_idempotent() {
     cleanup_player(&pool, &a.player_id).await;
 }
 
-/// An OAuth state is single-use and expires; an unknown state is rejected.
+/// OAuth state is both single-use and browser-bound. A wrong/missing binding must
+/// not burn a legitimate browser's state; a matching expired redemption removes it.
 #[test]
-fn oauth_state_is_single_use() {
+fn oauth_state_binding_is_non_consuming_and_expiry_is_consuming() {
     let verifier = Arc::new(OidcVerifier::new("http://localhost/jwks", "iss", "aud").unwrap());
     let oauth = epic_oauth::EpicOAuth::new(
         "cid".into(),
         "sec".into(),
-        "http://localhost/cb".into(),
+        "http://localhost/accounts/epic/callback".into(),
         "http://localhost/authorize".into(),
         "http://localhost/token".into(),
         verifier,
     )
     .unwrap();
-    let s = oauth.new_state("tok".into());
-    assert_eq!(oauth.take_state(&s), Some("tok".into()));
-    assert_eq!(oauth.take_state(&s), None, "state must be single-use");
-    assert_eq!(oauth.take_state("unknown"), None);
+    let binding = store::new_token();
+    let s = oauth.new_state("tok".into(), binding.clone());
+    assert_eq!(oauth.take_state(&s, None), None);
+    assert_eq!(oauth.take_state(&s, Some("wrong")), None);
+    assert_eq!(oauth.take_state(&s, Some(&binding)), Some("tok".into()));
+    assert_eq!(
+        oauth.take_state(&s, Some(&binding)),
+        None,
+        "state must be single-use"
+    );
+    assert_eq!(oauth.take_state("unknown", Some(&binding)), None);
+
+    let expired = oauth.new_state("old".into(), binding.clone());
+    let after_ttl = Instant::now() + Duration::from_secs(10 * 60 + 1);
+    assert_eq!(
+        oauth.take_state_at(&expired, Some("wrong"), after_ttl),
+        None,
+        "wrong binding must not consume even an expired entry"
+    );
+    assert_eq!(oauth.take_state_at(&expired, Some(&binding), after_ttl), None);
+    assert_eq!(
+        oauth.take_state(&expired, Some(&binding)),
+        None,
+        "matching expired redemption must remove the state"
+    );
+}
+
+fn oauth_fixture(redirect_uri: &str, token_url: &str) -> Arc<epic_oauth::EpicOAuth> {
+    let verifier = Arc::new(OidcVerifier::new("http://localhost/jwks", "iss", "aud").unwrap());
+    Arc::new(
+        epic_oauth::EpicOAuth::new(
+            "cid".into(),
+            "sec".into(),
+            redirect_uri.into(),
+            "http://localhost/authorize".into(),
+            token_url.into(),
+            verifier,
+        )
+        .unwrap(),
+    )
+}
+
+async fn serve_oauth_router(oauth: Arc<epic_oauth::EpicOAuth>, svc: Arc<Service>) -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, epic_oauth::router(oauth, svc)).await.unwrap();
+    });
+    format!("http://{addr}")
+}
+
+fn oauth_state_from_start(body: &serde_json::Value) -> String {
+    let authorize_url = body["authorize_url"].as_str().expect("authorize_url");
+    url::Url::parse(authorize_url)
+        .unwrap()
+        .query_pairs()
+        .find_map(|(key, value)| (key == "state").then(|| value.into_owned()))
+        .expect("state query parameter")
+}
+
+#[test]
+fn oauth_redirect_uri_validation_is_startup_scoped_and_representative() {
+    let verifier = Arc::new(OidcVerifier::new("http://localhost/jwks", "iss", "aud").unwrap());
+    let build = |redirect: &str| {
+        epic_oauth::EpicOAuth::new(
+            "cid".into(),
+            "sec".into(),
+            redirect.into(),
+            "http://localhost/authorize".into(),
+            "http://localhost/token".into(),
+            verifier.clone(),
+        )
+    };
+
+    for valid in [
+        "https://game.example/accounts/epic/callback",
+        "http://localhost:8080/accounts/epic/callback",
+        "http://127.0.0.1:8082/accounts/epic/callback",
+    ] {
+        assert!(build(valid).is_ok(), "valid redirect rejected: {valid}");
+    }
+    for invalid in [
+        "http://game.example/accounts/epic/callback",
+        "https://game.example/wrong",
+        "https://game.example/accounts/epic/callback#fragment",
+    ] {
+        assert!(build(invalid).is_err(), "invalid redirect accepted: {invalid}");
+    }
+}
+
+#[tokio::test]
+async fn oauth_start_reuses_hardened_binding_cookie_for_parallel_states() {
+    let oauth = oauth_fixture(
+        "http://localhost/accounts/epic/callback",
+        "http://localhost/token",
+    );
+    let base = serve_oauth_router(oauth.clone(), lazy_service()).await;
+    let client = reqwest::Client::new();
+
+    let first = client
+        .post(format!("{base}/accounts/epic/start"))
+        .send()
+        .await
+        .unwrap();
+    let first_cookie = first
+        .headers()
+        .get("set-cookie")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    for attr in [
+        "HttpOnly",
+        "SameSite=Lax",
+        "Path=/accounts/epic",
+        "Max-Age=600",
+    ] {
+        assert!(first_cookie.split("; ").any(|part| part == attr), "{first_cookie}");
+    }
+    assert!(!first_cookie.contains("Domain="), "{first_cookie}");
+    assert!(!first_cookie.split("; ").any(|part| part == "Secure"), "{first_cookie}");
+    let cookie_pair = first_cookie.split(';').next().unwrap().to_string();
+    let binding = cookie_pair
+        .strip_prefix("epic_oauth_binding=")
+        .expect("binding cookie")
+        .to_string();
+    let state_one = oauth_state_from_start(&first.json().await.unwrap());
+
+    let second = client
+        .post(format!("{base}/accounts/epic/start"))
+        .header("Cookie", &cookie_pair)
+        .send()
+        .await
+        .unwrap();
+    let second_cookie = second
+        .headers()
+        .get("set-cookie")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(second_cookie.split(';').next().unwrap(), cookie_pair);
+    let state_two = oauth_state_from_start(&second.json().await.unwrap());
+    assert_ne!(state_one, state_two);
+    assert_eq!(oauth.take_state(&state_one, Some(&binding)), Some(String::new()));
+    assert_eq!(oauth.take_state(&state_two, Some(&binding)), Some(String::new()));
+
+    let secure_oauth = oauth_fixture(
+        "https://game.example/accounts/epic/callback",
+        "http://localhost/token",
+    );
+    let secure_base = serve_oauth_router(secure_oauth, lazy_service()).await;
+    let secure = client
+        .post(format!("{secure_base}/accounts/epic/start"))
+        .send()
+        .await
+        .unwrap();
+    let secure_cookie = secure.headers().get("set-cookie").unwrap().to_str().unwrap();
+    assert!(secure_cookie.split("; ").any(|part| part == "Secure"), "{secure_cookie}");
+}
+
+#[tokio::test]
+async fn rejected_oauth_callback_never_reaches_token_endpoint_or_consumes_state() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let token_calls = calls.clone();
+    let token_app = axum::Router::new().route(
+        "/token",
+        axum::routing::post(move || {
+            let token_calls = token_calls.clone();
+            async move {
+                token_calls.fetch_add(1, Ordering::SeqCst);
+                (axum::http::StatusCode::BAD_REQUEST, "rejected test code")
+            }
+        }),
+    );
+    let token_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let token_url = format!("http://{}/token", token_listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        axum::serve(token_listener, token_app).await.unwrap();
+    });
+
+    let oauth = oauth_fixture("http://localhost/accounts/epic/callback", &token_url);
+    let binding = store::new_token();
+    let state = oauth.new_state(String::new(), binding.clone());
+    let base = serve_oauth_router(oauth, lazy_service()).await;
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let callback = format!("{base}/accounts/epic/callback?code=x&state={state}");
+
+    let missing = client.get(&callback).send().await.unwrap();
+    assert_eq!(missing.status().as_u16(), 400);
+    let wrong = client
+        .get(&callback)
+        .header("Cookie", format!("epic_oauth_binding={}", store::new_token()))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(wrong.status().as_u16(), 400);
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+    let matching = client
+        .get(&callback)
+        .header("Cookie", format!("epic_oauth_binding={binding}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(matching.status().as_u16(), 303);
+    assert_eq!(matching.headers().get("location").unwrap(), "/?epic=error");
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+    let replay = client
+        .get(&callback)
+        .header("Cookie", format!("epic_oauth_binding={binding}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(replay.status().as_u16(), 400);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
 }

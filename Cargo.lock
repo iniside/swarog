@@ -15,6 +15,7 @@ dependencies = [
  "async-trait",
  "asyncevents",
  "axum",
+ "axum-extra",
  "base64",
  "bus",
  "edge",
