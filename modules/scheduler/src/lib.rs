@@ -133,7 +133,14 @@ const SCHEMA_DDL: &str = r#"
 CREATE SCHEMA IF NOT EXISTS scheduler;
 CREATE TABLE IF NOT EXISTS scheduler.schedules (
 	name             text        PRIMARY KEY,
-	interval_seconds bigint      NOT NULL CHECK (interval_seconds > 0),
+	-- 9_223_372_036_854 s verified empirically against PG18 make_interval — interval
+	-- stores microseconds in an int64; re-verify on a PG major-version bump. A row
+	-- above this ceiling makes make_interval(secs => interval_seconds) error
+	-- ("interval out of range") for EVERY row in the due-scan SELECT, not just its
+	-- own — this CHECK is the authority preventing that from ever landing.
+	interval_seconds bigint      NOT NULL
+		CONSTRAINT schedules_interval_bounds
+		CHECK (interval_seconds > 0 AND interval_seconds <= 9223372036854),
 	last_fired       timestamptz NOT NULL DEFAULT to_timestamp(0)
 );
 INSERT INTO scheduler.schedules (name, interval_seconds)
@@ -144,21 +151,24 @@ INSERT INTO scheduler.schedules (name, interval_seconds)
 	ON CONFLICT (name) DO NOTHING;"#;
 
 /// The due-check SQL for [`due_schedules`], extracted to a const so the anti-drift test
-/// (`tests.rs`) can assert `interval_seconds > 0` is present without re-parsing the
-/// function body — `CREATE TABLE IF NOT EXISTS` no-ops on an existing table, so a
-/// non-positive row can still exist on an un-wiped DB until the CHECK constraint above
-/// is actually in place; this filter is the belt to that DDL's braces.
+/// (`tests.rs`) can assert `interval_seconds BETWEEN 1 AND 9223372036854` is present
+/// without re-parsing the function body — `CREATE TABLE IF NOT EXISTS` no-ops on an
+/// existing table, so an out-of-bounds row (non-positive, OR above the
+/// `make_interval` ceiling this same const's DDL now bounds) can still exist on an
+/// un-wiped DB until the CHECK constraint above is actually in place; this filter is
+/// the belt to that DDL's braces — it keeps ONE legacy row from poisoning the whole
+/// scan (`make_interval` errors the entire SELECT, not just its own row).
 const DUE_SQL: &str = "SELECT name FROM scheduler.schedules \
      WHERE now() - last_fired >= make_interval(secs => interval_seconds) \
-     AND interval_seconds > 0 \
+     AND interval_seconds BETWEEN 1 AND 9223372036854 \
      ORDER BY name COLLATE \"C\"";
 
 /// The re-check SQL for [`fire_locked`] (run UNDER the per-schedule advisory lock),
-/// extracted to a const for the same anti-drift reason as [`DUE_SQL`]. A row with a
-/// non-positive interval simply never re-confirms as due (`fetch_optional` yields
+/// extracted to a const for the same anti-drift reason as [`DUE_SQL`]. A row outside
+/// the bounds simply never re-confirms as due (`fetch_optional` yields
 /// `None`/`Some(false)`), the same treatment as a row deleted between the scan and here.
 const FIRE_RECHECK_SQL: &str = "SELECT now() - last_fired >= make_interval(secs => interval_seconds) \
-     FROM scheduler.schedules WHERE name = $1 AND interval_seconds > 0";
+     FROM scheduler.schedules WHERE name = $1 AND interval_seconds BETWEEN 1 AND 9223372036854";
 
 // ============================================================================
 // Loop liveness — the `"scheduler"` /readyz probe (mirrors asyncevents' Liveness).

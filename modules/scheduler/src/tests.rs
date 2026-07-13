@@ -250,19 +250,21 @@ fn seeded_schedule_names_are_contract() {
     }
 }
 
-/// [`DUE_SQL`] and [`FIRE_RECHECK_SQL`] both guard against a non-positive
+/// [`DUE_SQL`] and [`FIRE_RECHECK_SQL`] both guard against an out-of-bounds
 /// `interval_seconds` at the SQL layer (belt to the DDL's `CHECK` braces — a row
-/// surviving on an un-wiped DB from before the CHECK existed must still never fire).
-/// Anti-drift on the extracted consts, same style as `seeded_schedule_names_are_contract`.
+/// surviving on an un-wiped DB from before the CHECK existed, or from before the
+/// CHECK's ceiling was raised, must still never fire, and must never poison the
+/// whole due-scan by making `make_interval` error the entire SELECT). Anti-drift on
+/// the extracted consts, same style as `seeded_schedule_names_are_contract`.
 #[test]
-fn due_checks_filter_non_positive_intervals() {
+fn due_checks_filter_out_of_bounds_intervals() {
     assert!(
-        DUE_SQL.contains("interval_seconds > 0"),
-        "DUE_SQL no longer filters non-positive intervals"
+        DUE_SQL.contains("interval_seconds BETWEEN 1 AND 9223372036854"),
+        "DUE_SQL no longer bounds interval_seconds to the make_interval ceiling"
     );
     assert!(
-        FIRE_RECHECK_SQL.contains("interval_seconds > 0"),
-        "FIRE_RECHECK_SQL no longer filters non-positive intervals"
+        FIRE_RECHECK_SQL.contains("interval_seconds BETWEEN 1 AND 9223372036854"),
+        "FIRE_RECHECK_SQL no longer bounds interval_seconds to the make_interval ceiling"
     );
 }
 
@@ -311,6 +313,95 @@ async fn zero_interval_insert_violates_check() {
     );
 
     cleanup(&pool, &name).await;
+}
+
+/// One second above the DDL's `make_interval` ceiling — the empirically-verified point
+/// where PG18's `make_interval(secs => …)` starts erroring ("interval out of range")
+/// because `interval` stores microseconds in an `int64`. Must violate the named
+/// `schedules_interval_bounds` CHECK the same way `interval_seconds = 0` does.
+#[tokio::test(flavor = "multi_thread")]
+async fn huge_interval_insert_violates_check() {
+    let _tick_guard = TICK_TEST_LOCK.lock().await;
+    let Some(pool) = test_pool().await else {
+        return;
+    };
+    let name = unique_name(&pool).await;
+
+    let err = sqlx::query(
+        "INSERT INTO scheduler.schedules (name, interval_seconds) VALUES ($1, 9223372036855)",
+    )
+    .bind(&name)
+    .execute(&pool)
+    .await
+    .expect_err("interval_seconds = 9223372036855 must violate the CHECK constraint");
+
+    let db_err = err.as_database_error().expect("expected a database error");
+    assert_eq!(
+        db_err.code().as_deref(),
+        Some("23514"), // check_violation
+        "expected a check-violation SQLSTATE, got: {db_err}"
+    );
+
+    cleanup(&pool, &name).await;
+}
+
+/// THE failing-branch test: a legacy row above the `make_interval` ceiling (as could
+/// exist on a DB that predates the `schedules_interval_bounds` CHECK) must not poison
+/// the whole due-scan for every other schedule. Simulates that legacy state by
+/// dropping the named CHECK, inserting the poison row alongside a healthy due
+/// schedule, then re-adding the CHECK (mirroring "the DDL now has the guard, but this
+/// row survived from before it did") and asserting [`due_schedules`] still succeeds
+/// and reports the healthy schedule — proving [`DUE_SQL`]'s SQL-level filter belt, not
+/// just the DDL CHECK, is what keeps the scan alive. On OLD code (filter without the
+/// upper bound) this test is red: `make_interval` errors the whole SELECT.
+#[tokio::test(flavor = "multi_thread")]
+async fn due_scan_survives_legacy_huge_interval_row() {
+    let _tick_guard = TICK_TEST_LOCK.lock().await;
+    let Some(pool) = test_pool().await else {
+        return;
+    };
+    let healthy = unique_name(&pool).await;
+    let poison = unique_name(&pool).await;
+
+    sqlx::query("ALTER TABLE scheduler.schedules DROP CONSTRAINT schedules_interval_bounds")
+        .execute(&pool)
+        .await
+        .expect("drop CHECK to simulate a pre-CHECK legacy row");
+
+    seed_schedule(&pool, &healthy, 60).await;
+    sqlx::query(
+        "INSERT INTO scheduler.schedules (name, interval_seconds, last_fired) \
+         VALUES ($1, 9223372036855, to_timestamp(0)) \
+         ON CONFLICT (name) DO UPDATE SET interval_seconds = $2, last_fired = to_timestamp(0)",
+    )
+    .bind(&poison)
+    .bind(9223372036855_i64)
+    .execute(&pool)
+    .await
+    .expect("insert legacy poison row");
+
+    sqlx::query(
+        "ALTER TABLE scheduler.schedules ADD CONSTRAINT schedules_interval_bounds \
+         CHECK (interval_seconds > 0 AND interval_seconds <= 9223372036854) NOT VALID",
+    )
+    .execute(&pool)
+    .await
+    .expect("re-add CHECK as NOT VALID (does not re-validate the legacy row)");
+
+    let due = due_schedules(&pool, TICK_DEADLINE)
+        .await
+        .expect("due scan must survive a legacy out-of-bounds row, not error the whole SELECT");
+    assert!(
+        due.contains(&healthy),
+        "due scan must still report the healthy due schedule: {due:?}"
+    );
+    assert!(
+        !due.contains(&poison),
+        "the legacy poison row must never be reported as due: {due:?}"
+    );
+
+    cleanup(&pool, &healthy).await;
+    cleanup(&pool, &poison).await;
 }
 
 /// Two concurrent `fire` attempts (two replicas: two pools, two buses) against one due
