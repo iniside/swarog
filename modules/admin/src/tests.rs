@@ -575,6 +575,20 @@ async fn action_rows(pool: &PgPool, key: &str, value: &str, action: &str) -> i64
     n
 }
 
+async fn action_detail(pool: &PgPool, target: &str, action: &str) -> Option<String> {
+    sqlx::query_scalar(
+        "SELECT payload->>'detail' FROM asyncevents.events
+         WHERE topic = 'admin.action' AND payload->>'target' = $1
+           AND payload->>'action' = $2
+         LIMIT 1",
+    )
+    .bind(target)
+    .bind(action)
+    .fetch_optional(pool)
+    .await
+    .unwrap()
+}
+
 /// Builds a form request with the ConnectInfo extension `app::run` injects in
 /// production (`into_make_service_with_connect_info`).
 fn form_req(method: &str, uri: &str, peer: &str, cookie: Option<&str>, body: Option<String>) -> Request<Body> {
@@ -947,7 +961,10 @@ async fn csrf_rejects_before_editability_and_gates_local_submit() {
                             label: "Knob".into(),
                             value: String::new(),
                         }],
-                        hidden: Vec::new(),
+                        hidden: vec![adminapi::HiddenField {
+                            name: "_expected_revision".into(),
+                            value: "1".into(),
+                        }],
                         submit: Some(submit.clone()),
                     }),
                 })
@@ -1003,7 +1020,7 @@ async fn csrf_rejects_before_editability_and_gates_local_submit() {
             &format!("/admin/{local_slug}"),
             "203.0.113.17:9999",
             Some(&cookie),
-            Some(format!("knob=v&_csrf={csrf}")),
+            Some(format!("knob=v&_expected_revision=1&_csrf={csrf}")),
         ),
     )
     .await;
@@ -1013,9 +1030,18 @@ async fn csrf_rejects_before_editability_and_gates_local_submit() {
         let calls = submitted.lock().unwrap();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].get("knob").map(String::as_str), Some("v"));
+        assert_eq!(
+            calls[0].get("_expected_revision").map(String::as_str),
+            Some("1")
+        );
         assert!(!calls[0].contains_key("_csrf"), "_csrf never reaches the module");
     }
     assert_eq!(action_rows(&pool, "target", &local_slug, "form-submit").await, 1);
+    assert_eq!(
+        action_detail(&pool, &local_slug, "form-submit").await.as_deref(),
+        Some("knob"),
+        "hidden concurrency evidence must never enter the field-name audit trail"
+    );
 
     cleanup_user(&pool, &user).await;
     cleanup_ip(&pool, "203.0.113.17").await;
@@ -1025,6 +1051,142 @@ async fn csrf_rejects_before_editability_and_gates_local_submit() {
     .bind(&local_slug)
     .execute(&pool)
     .await;
+}
+
+/// The browser's original hidden expected-state value survives the POST-time
+/// re-render even when that render no longer declares the same dynamic row. The
+/// owning submit sees the stale token, rejects before mutation, and the portal maps
+/// that typed result to a stable 409 without appending `admin.action`.
+#[tokio::test(flavor = "multi_thread")]
+async fn stale_hidden_evidence_round_trips_to_conflict_without_audit() {
+    let Some(pool) = test_pool().await else { return };
+    let (ctx, st) = wired(&pool, false, true).await;
+    let user = uniq("t-stale-form");
+    let peer = "203.0.113.27:9999";
+    let peer_ip = "203.0.113.27";
+    create_user(&pool, &user, "right").await;
+
+    let authority = Arc::new(AtomicU64::new(1));
+    let applied = Arc::new(AtomicU64::new(0));
+    let submitted: Arc<Mutex<Vec<adminapi::Params>>> = Arc::new(Mutex::new(Vec::new()));
+
+    let submit_authority = authority.clone();
+    let submit_applied = applied.clone();
+    let submit_values = submitted.clone();
+    let submit: adminapi::SubmitFn = Arc::new(move |values: adminapi::Params| {
+        let authority = submit_authority.clone();
+        let applied = submit_applied.clone();
+        let submitted = submit_values.clone();
+        Box::pin(async move {
+            let expected = values
+                .get("_expected_deleted_row")
+                .and_then(|value| value.parse::<u64>().ok());
+            submitted.lock().unwrap().push(values);
+            if expected != Some(authority.load(Ordering::SeqCst)) {
+                return Err(adminapi::SubmitError::Conflict);
+            }
+            applied.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }) as BoxFuture<'static, Result<(), adminapi::SubmitError>>
+    });
+
+    let render_authority = authority.clone();
+    let label = uniq("Stale Form");
+    let slug = slugify(&label);
+    ctx.contribute(
+        adminapi::SLOT,
+        adminapi::Item::local(
+            "stale-form",
+            "S",
+            &label,
+            Arc::new(move |_p: &adminapi::Params| {
+                let revision = render_authority.load(Ordering::SeqCst);
+                let hidden_name = if revision == 1 {
+                    "_expected_deleted_row"
+                } else {
+                    "_expected_current_row"
+                };
+                Ok(adminapi::Content {
+                    kpis: Vec::new(),
+                    table: None,
+                    form: Some(adminapi::Form {
+                        action: String::new(),
+                        fields: vec![adminapi::Field {
+                            name: "knob".into(),
+                            label: "Knob".into(),
+                            value: "old".into(),
+                        }],
+                        hidden: vec![adminapi::HiddenField {
+                            name: hidden_name.into(),
+                            value: revision.to_string(),
+                        }],
+                        submit: Some(submit.clone()),
+                    }),
+                })
+            }),
+        ),
+    );
+
+    let login = post_login(&st, peer, &user, "right").await;
+    let token = token_of(&set_cookie(&login));
+    let cookie = format!("admin_session={token}");
+    let csrf = csrf_of(&pool, &token).await;
+
+    let get = send(
+        &st,
+        form_req(
+            "GET",
+            &format!("/admin/{slug}"),
+            peer,
+            Some(&cookie),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(get.status(), StatusCode::OK);
+    let html = body_string(get).await;
+    assert!(
+        html.contains(r#"type="hidden" name="_expected_deleted_row" value="1""#),
+        "GET must carry the original authority evidence: {html}"
+    );
+
+    // Simulate a concurrent authoritative change that also removes the original
+    // row from the POST-time declarative form.
+    authority.store(2, Ordering::SeqCst);
+    let post = send(
+        &st,
+        form_req(
+            "POST",
+            &format!("/admin/{slug}"),
+            peer,
+            Some(&cookie),
+            Some(format!(
+                "knob=new&_expected_deleted_row=1&undeclared=ignored&_csrf={csrf}"
+            )),
+        ),
+    )
+    .await;
+    assert_eq!(post.status(), StatusCode::CONFLICT);
+    let html = body_string(post).await;
+    assert!(html.contains(STALE_FORM_ERROR), "stable conflict message missing: {html}");
+    assert_eq!(applied.load(Ordering::SeqCst), 0, "conflict must not mutate authority");
+
+    {
+        let calls = submitted.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(
+            calls[0].get("_expected_deleted_row").map(String::as_str),
+            Some("1"),
+            "the original dynamic token must survive the fresh POST render"
+        );
+        assert_eq!(calls[0].get("knob").map(String::as_str), Some("new"));
+        assert!(!calls[0].contains_key("undeclared"), "visible values stay allowlisted");
+        assert!(!calls[0].contains_key("_csrf"), "CSRF never reaches the module");
+    }
+
+    assert_eq!(action_rows(&pool, "target", &slug, "form-submit").await, 0);
+    cleanup_user(&pool, &user).await;
+    cleanup_ip(&pool, peer_ip).await;
 }
 
 /// `ADMIN_OPEN=1` bypasses sessions AND CSRF: pages render with no cookie, and a

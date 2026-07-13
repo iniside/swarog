@@ -124,6 +124,15 @@ pub(crate) fn password_within_cap(password: &str) -> bool {
 /// locked are indistinguishable (no username/lock oracle).
 const GENERIC_LOGIN_ERROR: &str = "Invalid credentials.";
 
+/// Hidden optimistic-concurrency evidence is intentionally self-describing so a
+/// POST can retain tokens for rows that disappeared since the corresponding GET.
+/// The values are authenticated by the admin session + CSRF boundary, but are not
+/// secrets and remain subject to the owning module's authoritative comparison.
+const EXPECTED_FIELD_PREFIX: &str = "_expected_";
+
+/// Stable operator-facing response for an optimistic-concurrency miss.
+const STALE_FORM_ERROR: &str = "This form is stale. Reload the page and try again.";
+
 // ---------------------------------------------------------------------------
 // Schema — owned by this module (migrate touches ONLY schema `admin`).
 // ---------------------------------------------------------------------------
@@ -925,9 +934,10 @@ async fn item(
 /// `POST /admin/{slug}` — apply a LOCAL item's editable form. Order matters and is
 /// a contract the split-proof asserts: session gate → CSRF (403, BEFORE the
 /// local/remote editability decision — a remote item with a bad token is 403, not
-/// 405) → resolve → editability (405) → submit → durable `form-submit` (best-effort:
-/// the mutation already committed inside the opaque closure, so an emit failure is
-/// an error card, not a rollback) → 303 back to the GET.
+/// 405) → resolve → editability (405) → submit → conflict (409, no audit event) OR
+/// durable `form-submit` (best-effort: the mutation already committed inside the
+/// opaque closure, so an emit failure is an error card, not a rollback) → 303 back
+/// to the GET.
 async fn item_post(
     State(st): State<Arc<AdminState>>,
     Path(slug): Path<String>,
@@ -965,11 +975,23 @@ async fn item_post(
         return (StatusCode::METHOD_NOT_ALLOWED, "not editable").into_response();
     };
 
-    // Collect exactly the declared fields (`_csrf` is not declared, so it never
-    // reaches the owning module).
+    // Visible values remain allowlisted by the freshly rendered form. Hidden values
+    // use the POSTED value, never the fresh render's value: the browser must return
+    // the evidence it actually received on GET. Additionally retain every reserved
+    // `_expected_*` POST entry even when its row disappeared before this re-render;
+    // otherwise deleting a row would also delete the token needed to detect it.
+    // `_csrf` matches neither set and never reaches the owning module.
     let mut values = adminapi::Params::new();
     for f in &form.fields {
         values.insert(f.name.clone(), body.get(&f.name).cloned().unwrap_or_default());
+    }
+    for h in &form.hidden {
+        values.insert(h.name.clone(), body.get(&h.name).cloned().unwrap_or_default());
+    }
+    for (name, value) in &body {
+        if name.starts_with(EXPECTED_FIELD_PREFIX) {
+            values.insert(name.clone(), value.clone());
+        }
     }
 
     match submit(values).await {
@@ -996,8 +1018,29 @@ async fn item_post(
             }
             see_other(&format!("/admin/{slug}"))
         }
-        Err(e) => render_error(&st, cur, &slug, &items, &authed, format!("save failed: {e}")),
+        Err(adminapi::SubmitError::Conflict) => {
+            render_conflict(&st, cur, &slug, &items, &authed)
+        }
+        Err(adminapi::SubmitError::Other(e)) => {
+            render_error(&st, cur, &slug, &items, &authed, format!("save failed: {e}"))
+        }
     }
+}
+
+/// Renders the stable stale-form card with HTTP 409. A template failure remains the
+/// underlying 500 instead of being masked as a successful conflict render.
+fn render_conflict(
+    st: &AdminState,
+    cur: &Resolved,
+    slug: &str,
+    items: &[Resolved],
+    authed: &Authed,
+) -> Response {
+    let mut response = render_error(st, cur, slug, items, authed, STALE_FORM_ERROR.to_string());
+    if response.status().is_success() {
+        *response.status_mut() = StatusCode::CONFLICT;
+    }
+    response
 }
 
 /// Re-renders the current page with an error card (the POST failure path).
