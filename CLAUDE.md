@@ -590,8 +590,7 @@ Front-load the thinking. For any plan (plan mode / "write me a plan" / a
 `docs/plans/…-plan.md`), in order — no skipping for "it's small":
 
 1. **Ask how many research subagents** (2–4 / 4–8 / 8–12 bands). Ask **every time**,
-   even mid-session — count is task-specific. Choose an available execution profile
-   appropriate to the task; provider-specific model names do not belong in repo guidance.
+   even mid-session — count is task-specific. Pass `model:` explicitly.
 2. **Research subagents on 3 non-overlapping angles:** API surface / API usages /
    patterns. Synthesize in the main model — never write off one subagent.
 3. **Write concrete specifics:** exact files, signatures, API calls from step 2,
@@ -600,8 +599,7 @@ Front-load the thinking. For any plan (plan mode / "write me a plan" / a
 4. **Structure as an ordered `Step 1 → Step 2 → …` sequence, NOT a catalog.** Each
    step states **(a) what** is touched (exact files/symbols), **(b) why now / order** —
    the dependency forcing it before the next, **(c) how** — non-mechanical moves
-   spelled out, **(d) dispatch tag** — `[inline]`/`[subagent-complex]`/
-   `[subagent-mechanical]`. A
+   spelled out, **(d) dispatch tag** — `[inline]`/`[fable]`/`[opus]`/`[sonnet]`. A
    catalog that leaves order/topology/per-step actions to "figure as you go" is
    **banned**; steps need not each compile, but every step MUST be written out.
 5. **Dispatch one grumpy senior-engineer reviewer** at session tier (separate context
@@ -615,25 +613,31 @@ checklist): [docs/reference/plan-writing-workflow.md](docs/reference/plan-writin
 
 ## Implementation Mode — MANDATORY
 
-**Mixed dispatch — decided per plan step, not per session. Tags describe the kind
-of execution required, not a vendor or model.** Three lanes are set at plan-writing
-time (Plan Writing step 4d):
+**Mixed dispatch — decided per plan step, not per session. Tags name a CONCRETE
+model, not a tier alias.** Four lanes, each set at plan-writing time (Plan Writing
+step 4d):
 
 - `[inline]` — main model writes in this context. **No independent review** —
   reserved for mid-edit judgment that can't be handed off. Default complex work to a
   subagent lane, not `[inline]`.
-- `[subagent-complex]` — separate-context implementation for substantive or
-  correctness-critical work: new API design, bus/registry seams, lifecycle ordering,
-  cross-module behavior, security boundaries, or broad refactors.
-- `[subagent-mechanical]` — mechanical work: rename sweeps, scaffolding, N-similar
+- `[fable]` — Fable 5 subagent. Top tier; for complex/correctness-critical work (new
+  API design, the bus/registry seams, lifecycle ordering, cross-module context) **when
+  Fable is the session model**.
+- `[opus]` — Opus 4.8 subagent. Substantive implementation. **While the session is
+  Opus, `[opus]` is also the top-tier lane** — same tier as inline but a separate
+  context, the independent-reviewer boundary.
+- `[sonnet]` — Sonnet subagent. Mechanical: rename sweeps, scaffolding, N-similar
   edits, applying a fully-specified step, compile fixes, tests from a pattern,
-  and configuration. Visual/UI design is never `[subagent-mechanical]`.
+  config. **Never burn a higher tier on a rename.** Visual/UI design is never
+  `[sonnet]`.
 
-Choose the best available execution profile for each subagent lane. Do not encode
-provider-specific model names or versions in plans, prompts, tags, commits, or
-durable repository guidance. The dispatch prompt must still state the requested
-effort level and navigation guidance explicitly because neither is assumed to
-inherit.
+**Every code-writing Agent call passes an explicit `model:` matching its lane —
+NON-NEGOTIABLE** (there is no "inherit" path): `[fable]`→`model:"fable"`,
+`[opus]`→`model:"opus"`, `[sonnet]`→`model:"sonnet"` (listing-only research →
+`model:"haiku"`). Pre-flight every Agent call for the field. After a multi-subagent
+rollout, before "done": `git log -<N> --format="%h %B" | grep "Co-Authored"` and
+confirm trailers match each lane (`[fable]`→Fable 5, `[opus]`→Opus 4.8,
+`[sonnet]`→Sonnet 4.6) — surface mismatches immediately.
 
 The user approves the tags with the plan (called out at ExitPlanMode). Ask only for
 untagged/ad-hoc work, and if any step is a subagent lane also ask **"what effort
@@ -642,8 +646,8 @@ its plan step before dispatching the next; commit after each task or independent
 reviewable part of a larger task (subagents may commit their own work). Mid-rollout,
 don't silently flip a tag — ask.
 
-**Cross-cutting Agent-call invariants (effort/nav-guidance don't inherit, concise
-prompts) — shared by research + implementation:
+**Cross-cutting Agent-call invariants (explicit `model:`, effort/nav-guidance don't
+inherit, trailer, concise prompts) — shared by research + implementation:
 [docs/reference/subagent-dispatch.md](docs/reference/subagent-dispatch.md). Lane
 heuristic, dispatch rules, refactor safety:
 [docs/reference/implementation-mode.md](docs/reference/implementation-mode.md).**
@@ -759,8 +763,10 @@ feat/fix/refactor/test/docs/chore; `scope` = lowercased module/package, comma-se
 multiples (`fix(match,rating): …`). NOT bracketed `[Module]` scopes. Multi-step
 rollouts may note `(Step N — …)`.
 
-Do not require or invent model-specific `Co-Authored-By` trailers. If the active
-tooling adds an attribution trailer, it must describe the actual contributing tool
-or agent without a fabricated vendor, model family, or version.
+**`Co-Authored-By` trailer reflects the EXECUTING model**, overriding the harness
+default (which hardcodes Opus 4.8): Opus → `Claude Opus 4.8`, Fable → `Claude Fable
+5`, Sonnet subagent → `Claude Sonnet 4.6` (all `<noreply@anthropic.com>`). When
+dispatching a code-writing subagent, put **its model's** trailer in the prompt — this
+is what the trailer audit (Implementation Mode) checks.
 
 **Examples + scope conventions: [docs/reference/commit-format.md](docs/reference/commit-format.md).**
