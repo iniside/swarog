@@ -32,6 +32,10 @@ use crate::client::raw_from_bytes;
 use crate::frame::{read_frame_max, write_frame};
 use crate::server::{err_response, ok_response, run_caught, HandlerResult, RunningServer, ShutdownState};
 use crate::tls::{client_bind_addr, DevCA, TrustAnchor};
+// The reply envelope is shared with the internal plane, but the player plane never
+// sets its `code` field: it builds replies only via `err_response`/`ok_response`
+// (both `code: None`) and reads only `ok`/`error`/`payload` back, so the typed
+// unknown-method classification (internal-only) never leaks onto the player wire.
 use crate::wire::Response;
 use crate::Error;
 

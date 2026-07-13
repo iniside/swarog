@@ -383,6 +383,17 @@ peer-down → Unavailable → error card.
 
 **Weryfikacja:** `cargo test -p edge -p admin` + istniejące admin fan-out testy.
 
+> **ERRATA 2026-07-13:** Option C adopted after all — the text sentinel proved
+> false-positive-prone. A handler that itself calls another edge peer, receives a
+> genuine `UnknownMethod` (whose `Display` is the verbatim prefixed text) and
+> propagates it via `?` re-stamps the sentinel into its own error string, so the
+> OUTER client misclassified a handler failure as a typed 404. The reply envelope
+> (`wire::Response`) now carries a typed `code: Option<ResponseCode>` (enum
+> `ResponseCode::UnknownMethod`, serde `"unknown_method"`); `client.rs` classifies
+> off that field and `UNKNOWN_METHOD_PREFIX` is a message formatter only. The player
+> plane deliberately does NOT mirror it (no method table). See 2026-07-13 Step 16
+> commit.
+
 ---
 
 ## Step 8 — Proofy shutdown + drobne skryptowe/dokumentacyjne `[sonnet]`

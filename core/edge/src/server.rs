@@ -381,9 +381,15 @@ impl Dispatch {
         } else if let Some(fwd) = self.longest_prefix(&req.method) {
             run_caught(fwd(req.method.clone(), payload)).await
         } else {
-            // The shared sentinel (`crate::UNKNOWN_METHOD_PREFIX`) — the internal
-            // Client detects this prefix and types it as `Error::UnknownMethod`.
-            return err_response(&format!("{} {:?}", crate::UNKNOWN_METHOD_PREFIX, req.method));
+            // No handler for this method. The reply carries the TYPED
+            // `ResponseCode::UnknownMethod` — the internal Client classifies off that
+            // field, not the message text. The prefixed message stays in `error` for
+            // logs/debugging (`crate::UNKNOWN_METHOD_PREFIX` is now a formatter only).
+            return unknown_method_response(&format!(
+                "{} {:?}",
+                crate::UNKNOWN_METHOD_PREFIX,
+                req.method
+            ));
         };
 
         match result {
@@ -514,11 +520,26 @@ pub(crate) fn ok_response(bytes: Vec<u8>) -> Response {
             Err(_) => return err_response("edge: handler produced non-JSON response"),
         }
     };
-    Response { ok: true, payload, error: None }
+    Response { ok: true, payload, error: None, code: None }
 }
 
+/// An ordinary handler/dispatch error reply. `code` is deliberately `None`: only a
+/// genuine no-handler dispatch (never a handler that FAILED, even one propagating an
+/// inner peer's unknown-method text) may carry [`crate::ResponseCode::UnknownMethod`].
 pub(crate) fn err_response(msg: &str) -> Response {
-    Response { ok: false, payload: None, error: Some(msg.to_string()) }
+    Response { ok: false, payload: None, error: Some(msg.to_string()), code: None }
+}
+
+/// The no-handler reply: same shape as [`err_response`] but stamped with the typed
+/// [`crate::ResponseCode::UnknownMethod`] so the internal [`crate::Client`] can
+/// classify it without sniffing the (still human-readable) error text.
+pub(crate) fn unknown_method_response(msg: &str) -> Response {
+    Response {
+        ok: false,
+        payload: None,
+        error: Some(msg.to_string()),
+        code: Some(crate::ResponseCode::UnknownMethod),
+    }
 }
 
 #[cfg(test)]

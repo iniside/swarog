@@ -125,12 +125,13 @@ impl Client {
         let resp: Response = serde_json::from_slice(&resp_bytes).map_err(Error::Codec)?;
         if !resp.ok {
             let msg = resp.error.unwrap_or_default();
-            // The internal server's unknown-method sentinel (shared
-            // `crate::UNKNOWN_METHOD_PREFIX` — producer and detector cannot drift)
-            // becomes the typed variant; every other peer error stays `Remote`.
-            // Internal plane only: `player.rs` must NOT mirror this — the player
-            // server has no method table and never produces the sentinel.
-            if msg.starts_with(crate::UNKNOWN_METHOD_PREFIX) {
+            // Classify off the TYPED envelope code, never the error text. The internal
+            // dispatch sets `code: Some(UnknownMethod)` at the one no-handler branch;
+            // a handler that propagates an inner peer's unknown-method MESSAGE (which
+            // carries the same `UNKNOWN_METHOD_PREFIX` text) leaves the OUTER reply's
+            // code `None`, so it stays `Remote` — the false positive the text sniff
+            // used to produce. Internal plane only: `player.rs` never sets the code.
+            if resp.code == Some(crate::ResponseCode::UnknownMethod) {
                 return Err(Error::UnknownMethod(msg));
             }
             return Err(Error::Remote(msg));

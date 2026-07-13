@@ -35,7 +35,7 @@ pub use frame::{frame_bytes, read_frame, read_frame_max, write_frame, MAX_FRAME}
 pub use player::{PlayerClient, PlayerHandler, PlayerRequest, PlayerRequestLimits, PlayerServer, MAX_PLAYER_FRAME};
 pub use server::{ForwardHandler, Handler, HandlerResult, IdentityHandler, RunningServer, Server};
 pub use tls::{dev_ca_from_env, shared_dev_ca, DevCA, TrustAnchor, ALPN, PLAYER_ALPN};
-pub use wire::Response;
+pub use wire::{Response, ResponseCode};
 
 /// Errors from the edge transport.
 #[derive(Debug, thiserror::Error)]
@@ -64,23 +64,26 @@ pub enum Error {
     /// or a malformed request). Carries the peer's error string.
     #[error("edge: remote error: {0}")]
     Remote(String),
-    /// The peer's dispatch table has no handler for the requested method: the
-    /// internal server's unknown-method sentinel, detected by [`Client`] via the
-    /// shared [`UNKNOWN_METHOD_PREFIX`]. Typed apart from [`Error::Remote`] so
-    /// consumers (the admin fan-out's "peer has no admin surface" probe) never
-    /// string-sniff, and so the opsapi mapping can classify it as non-retryable.
-    /// Carries the peer's full error string (already sentinel-prefixed), displayed
-    /// verbatim. Internal plane only — the player plane has no method table and
-    /// never produces this.
+    /// The peer's dispatch table has no handler for the requested method: detected by
+    /// [`Client`] via the response envelope's typed [`ResponseCode::UnknownMethod`]
+    /// field (NOT the error text — see [`UNKNOWN_METHOD_PREFIX`]). Typed apart from
+    /// [`Error::Remote`] so consumers (the admin fan-out's "peer has no admin surface"
+    /// probe) never string-sniff, and so the opsapi mapping can classify it as
+    /// non-retryable. Carries the peer's full error string (still sentinel-prefixed
+    /// for readability), displayed verbatim. Internal plane only — the player plane
+    /// has no method table and never produces this.
     #[error("{0}")]
     UnknownMethod(String),
 }
 
-/// The sentinel prefix the internal [`Server`]'s dispatch stamps on an unmatched
-/// method (`server.rs`) and the [`Client`] detects when decoding an `ok:false`
-/// response (`client.rs`). Defined ONCE so producer and detector cannot drift.
-/// The player plane never produces it (no method table), so `player.rs` must NOT
-/// detect it — a relayed front string could only false-positive there.
+/// The human-readable prefix the internal [`Server`]'s dispatch puts on an unmatched
+/// method's `error` string (`server.rs`), for logs and debugging. It is NO LONGER
+/// load-bearing for classification: the [`Client`] types an unknown method off the
+/// envelope's [`ResponseCode::UnknownMethod`] field (`client.rs`), not this text.
+/// Sniffing the text was replaced because a handler that propagated an INNER peer's
+/// unknown-method message re-stamped this prefix and got misclassified as a typed
+/// 404 (2026-07-13 remediation Step 16 — reverses the 2026-07-11 Step 7 rejection of
+/// the envelope-code option). This constant is now a message formatter only.
 pub(crate) const UNKNOWN_METHOD_PREFIX: &str = "edge: unknown method";
 
 /// Maps an edge transport failure onto an [`opsapi::Error`] for the [`opsapi::Caller`]
@@ -212,6 +215,75 @@ mod e2e_tests {
 
         client.close();
         running.close();
+    }
+
+    // THE false-positive proof (Step 16, reverses 2026-07-11 Step 7): an OUTER edge
+    // server whose handler CALLS an inner edge peer with a nonexistent method, gets a
+    // genuine `Error::UnknownMethod` whose `Display` is the verbatim sentinel-prefixed
+    // text, and propagates it via `?`. The inner unknown-method text thus lands in the
+    // OUTER reply's `error` string — but the outer reply carries NO `code`, so the
+    // outer client MUST classify it as `Error::Remote` (a handler failure), not the
+    // typed `UnknownMethod`. On the old text-sniff code the outer client saw the
+    // prefix in `error` and misclassified it as `UnknownMethod` → NotFound (red).
+    #[tokio::test]
+    async fn handler_propagating_inner_unknown_method_is_remote_not_unknown_method() {
+        let ca = DevCA::generate().unwrap();
+
+        // Inner peer: serves ONLY "known" — any other method is a real unknown-method.
+        let mut inner = Server::new();
+        inner.handle("known", handler(|p| Box::pin(async move { Ok(p) })));
+        let inner_running = inner.listen(loopback(), &ca).unwrap();
+        let inner_client = Arc::new(Client::dial(inner_running.local_addr(), &ca).await.unwrap());
+
+        // Sanity: the inner peer genuinely produces a TYPED unknown-method for a
+        // missing method (this is the text the outer handler will propagate).
+        let inner_err = inner_client.call_raw("missing", b"null").await.unwrap_err();
+        assert!(matches!(&inner_err, Error::UnknownMethod(_)), "{inner_err:?}");
+        assert!(
+            inner_err.to_string().starts_with(UNKNOWN_METHOD_PREFIX),
+            "inner unknown-method Display must carry the sentinel prefix: {inner_err}"
+        );
+
+        // Outer peer: its "proxy" handler calls the inner peer's missing method and
+        // propagates the inner error via `?` — so the inner sentinel text becomes the
+        // outer handler's error string.
+        let mut outer = Server::new();
+        {
+            let inner_client = inner_client.clone();
+            outer.handle(
+                "proxy",
+                handler(move |_p| {
+                    let inner_client = inner_client.clone();
+                    Box::pin(async move {
+                        let bytes = inner_client.call_raw("missing", b"null").await?;
+                        Ok(bytes)
+                    })
+                }),
+            );
+        }
+        let outer_running = outer.listen(loopback(), &ca).unwrap();
+        let outer_client = Client::dial(outer_running.local_addr(), &ca).await.unwrap();
+
+        let err = outer_client.call_raw("proxy", b"null").await.unwrap_err();
+        // The outer reply's error text CONTAINS the sentinel (propagated from inner),
+        // proving the text sniff WOULD have fired here...
+        assert!(
+            err.to_string().contains(UNKNOWN_METHOD_PREFIX),
+            "the propagated inner text must carry the sentinel: {err}"
+        );
+        // ...yet the typed code makes it a Remote handler failure, never UnknownMethod.
+        assert!(
+            matches!(&err, Error::Remote(_)),
+            "a handler that propagates an inner unknown-method must be Remote, got {err:?}"
+        );
+        // And at the opsapi boundary it stays a retryable Unavailable, not a 404.
+        let ops: opsapi::Error = err.into();
+        assert_eq!(ops.status, opsapi::Status::Unavailable);
+
+        inner_client.close();
+        outer_client.close();
+        inner_running.close();
+        outer_running.close();
     }
 
     // The SPLIT scenario: server and client each independently `DevCA::load` the
