@@ -38,7 +38,7 @@ fn state_from(ctx: &Context) -> AdminState {
         login_slots: Arc::new(tokio::sync::Semaphore::new(32)),
         argon_permits: Arc::new(tokio::sync::Semaphore::new(2)),
         login_limiter: httpmw::IpLimiter::new(5.0, 20),
-        login_requests: AtomicU64::new(0),
+        login_attempt_gc_requests: AtomicU64::new(0),
         verifier: Arc::new(ArgonVerifier),
     }
 }
@@ -499,7 +499,7 @@ async fn wired_with_verifier(
         login_slots: Arc::new(tokio::sync::Semaphore::new(32)),
         argon_permits: Arc::new(tokio::sync::Semaphore::new(2)),
         login_limiter: httpmw::IpLimiter::new(1_000.0, 1_000),
-        login_requests: AtomicU64::new(0),
+        login_attempt_gc_requests: AtomicU64::new(0),
         verifier,
     });
     (ctx, st)
@@ -1313,8 +1313,22 @@ async fn zero_user_boot_is_allowed() {
     let ctx = Context::with_db(pool.clone());
     let admin = Admin::new();
     admin.register(&ctx).unwrap();
+    {
+        // `init` reads process env synchronously; participate in the env-test lock so
+        // this lifecycle test cannot observe another test's temporary dev knob.
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        admin.init(&ctx).unwrap();
+    }
+    assert!(
+        admin.login_reaper_started.get().is_none(),
+        "init must wire the limiter without spawning background work"
+    );
     admin.migrate(&ctx).await.unwrap();
     admin.start(&ctx).await.expect("start must succeed with zero users (warn only)");
+    assert!(
+        admin.login_reaper_started.get().is_some(),
+        "a successful start must launch the limiter reaper"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1363,7 +1377,7 @@ async fn login_ip_limiter_returns_exact_retry_after() {
         login_slots: Arc::new(tokio::sync::Semaphore::new(32)),
         argon_permits: Arc::new(tokio::sync::Semaphore::new(2)),
         login_limiter: httpmw::IpLimiter::new(0.0, 1),
-        login_requests: AtomicU64::new(0),
+        login_attempt_gc_requests: AtomicU64::new(0),
         verifier: Arc::new(ArgonVerifier),
     });
     let peer = "203.0.113.82:9999";

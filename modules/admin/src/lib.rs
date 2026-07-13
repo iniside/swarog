@@ -53,7 +53,6 @@ use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, OnceLock};
-use std::time::Instant;
 
 use axum::extract::{ConnectInfo, Path, Query, Request, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
@@ -179,6 +178,13 @@ ON admin.login_attempts(updated_at);"#;
 #[derive(Default)]
 pub struct Admin {
     deps: OnceLock<Deps>,
+    /// Created during wiring, shared with the router, and retained here so lifecycle
+    /// `start` can launch the existing process-lifetime idle-bucket reaper only after
+    /// every fallible startup check has succeeded.
+    login_limiter: OnceLock<Arc<httpmw::IpLimiter>>,
+    /// `App` starts a module once per process, but keep a repeated start on the same
+    /// instance from spawning duplicate process-lifetime reapers.
+    login_reaper_started: OnceLock<()>,
 }
 
 /// Phase-1 captures, shared into the [`AdminState`] built at `init`.
@@ -258,6 +264,11 @@ impl Module for Admin {
         let trusted = httpmw::parse_cidrs(&std::env::var("TRUSTED_PROXY_CIDRS").unwrap_or_default())
             .map_err(|e| anyhow::anyhow!("admin: parse TRUSTED_PROXY_CIDRS: {e}"))?;
 
+        let login_limiter = httpmw::IpLimiter::new(5.0, 20);
+        self.login_limiter
+            .set(login_limiter.clone())
+            .map_err(|_| anyhow::anyhow!("admin.init ran twice"))?;
+
         let state = Arc::new(AdminState {
             env,
             slots: ctx.slots().clone(),
@@ -268,8 +279,8 @@ impl Module for Admin {
             trusted,
             login_slots: Arc::new(Semaphore::new(32)),
             argon_permits: Arc::new(Semaphore::new(2)),
-            login_limiter: httpmw::IpLimiter::new(5.0, 20),
-            login_requests: AtomicU64::new(0),
+            login_limiter,
+            login_attempt_gc_requests: AtomicU64::new(0),
             verifier: Arc::new(ArgonVerifier),
         });
         ctx.mount(router(state));
@@ -296,6 +307,20 @@ impl Module for Admin {
             tracing::warn!(
                 "admin: no admin users exist — run ./install.sh (tools/adminctl create-user) to mint one; every login will fail until then"
             );
+        }
+
+        // `spawn_eviction` owns no DB/module resources and intentionally runs for the
+        // Tokio runtime's lifetime (the same contract as app-level HTTP limiting). The
+        // production lifecycle constructs one `Admin` per process; `stop` therefore
+        // needs no task choreography, and a process restart constructs a fresh module.
+        // Keep this LAST: a failed `start` is never followed by `stop`, so the reaper
+        // must not be detached before every fallible startup operation has succeeded.
+        let login_limiter = self
+            .login_limiter
+            .get()
+            .ok_or_else(|| anyhow::anyhow!("admin.init must run before start"))?;
+        if self.login_reaper_started.set(()).is_ok() {
+            login_limiter.spawn_eviction();
         }
         Ok(())
     }
@@ -329,7 +354,9 @@ struct AdminState {
     login_slots: Arc<Semaphore>,
     argon_permits: Arc<Semaphore>,
     login_limiter: Arc<httpmw::IpLimiter>,
-    login_requests: AtomicU64,
+    /// Request-path cadence only for bounded stale `login_attempts` row GC. Limiter
+    /// bucket reclamation belongs exclusively to `IpLimiter`'s background reaper.
+    login_attempt_gc_requests: AtomicU64,
     verifier: Arc<dyn PasswordVerifier>,
 }
 
@@ -761,14 +788,13 @@ async fn login_submit(
     if !st.login_limiter.allow(ip) {
         return too_many_logins();
     }
-    let request = st.login_requests.fetch_add(1, Ordering::Relaxed);
-    if request % 256 == 255 {
-        st.login_limiter.evict_idle(Instant::now());
-    }
+    let gc_request = st
+        .login_attempt_gc_requests
+        .fetch_add(1, Ordering::Relaxed);
     let Ok(_slot) = st.login_slots.clone().try_acquire_owned() else {
         return too_many_logins();
     };
-    if request % 256 == 255 {
+    if gc_request % 256 == 255 {
         st.cleanup_login_attempts().await;
     }
     let Ok(argon) = st.argon_permits.clone().acquire_owned().await else {
