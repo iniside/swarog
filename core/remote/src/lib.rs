@@ -93,7 +93,7 @@ pub const BOOT_SLOT: contrib::Slot<RemoteBoot> = contrib::Slot::new("remote.boot
 /// Constraint 1/5 in the workspace root doc); if a deployment ever needs a
 /// different value, thread it through [`Stub::new`] the way `peer_addr` already is,
 /// NOT env.
-pub const BOOT_TIMEOUT: Duration = Duration::from_secs(10);
+const BOOT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// A start-time async action bound to a provider, produced by a factory that needs a
 /// boot step the pure `register` swap cannot do (a `register` is synchronous + does no
@@ -396,7 +396,9 @@ impl Stub {
     /// Runs every [`RemoteBoot`] tagged with THIS stub's provider, each bounded by
     /// `boot_timeout`. Production always calls this via [`Module::start`] with
     /// [`BOOT_TIMEOUT`]; tests inject a short bound to prove the timeout branch
-    /// without sleeping 10s.
+    /// without sleeping 10s. The bound is PER HOOK: a provider contributing N boot
+    /// hooks bounds this stub's start at N x [`BOOT_TIMEOUT`] total (today the only
+    /// registrant, configrpc, contributes exactly one).
     async fn start_with_boot_timeout(
         &self,
         ctx: &Context,
