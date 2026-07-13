@@ -5,19 +5,24 @@
 # `wire module=<crate::mod> method=<m> retry=<r>` from every generated wire_ops()
 # (EVERY method, http-bound and wire-only),
 # `payload topic=<t> version=<n> <serde-key-path>:<type>` from each events crate's
-# hand-POPULATED golden_samples() (Some/non-empty everywhere), and
+# hand-written golden_samples() -- a fully-POPULATED sample (Some/non-empty everywhere)
+# plus, per CONVENTION (Step 5b), one extra sample per Option field with that field
+# None (so the :null shape is pinned AND the None literal compile-couples the
+# optionality: demoting Option<T> to T stops compiling) -- and
 # `rpc-body module=<crate::mod> method=<m> <serde-key-path>:<type>` from each generated
-# body_shapes() (http-bound request bodies only). The last two are a SAMPLED JSON
-# key/kind fingerprint -- one concrete value per contract, flattened -- so a silent
+# body_shapes() (http-bound request bodies only; PATH-WILDCARD args are excluded --
+# they travel in the route path, never the body). The last two are a SAMPLED JSON
+# key/kind fingerprint -- concrete values per contract, flattened -- so a silent
 # #[serde(rename)] or a reshaped field on a sampled key lands as a golden diff.
-# KNOWN GAPS (by design, of sampling one value):
+# KNOWN GAPS (by design, of sampling a finite value set):
 # - Scalar collapse: every numeric width and int-vs-float renders as `:number`; a
 #   u32->i64 or int->float change is invisible.
 # - Arrays traverse the FIRST element only; shapes beyond it are unpinned.
 # - Enum/variant shapes beyond the sampled variant are unpinned (only the variant the
 #   sample constructs is fingerprinted).
-# - A populated Some(...) event sample pins the key's Some-shape but cannot detect a
-#   later skip_serializing_if change to the None case.
+# - Event Option fields: BOTH cases are now pinned (populated sample -> Some-shape,
+#   None sample -> :null line); the residual gap is only a skip_serializing_if change
+#   would show as a REMOVED :null line, which the gate does catch as BREAKING.
 # - rpc-body values come from <Request>::default(), so an Option field samples as
 #   `:null` and a Vec as `:array[]` (absent only under skip_serializing_if); the key
 #   itself is still pinned, but its populated kind is not. Durable EVENT payloads avoid
@@ -47,6 +52,7 @@ payload topic=config.changed version=1 payload.key:string
 payload topic=config.changed version=1 payload.namespace:string
 payload topic=config.changed version=1 payload.operation:string
 payload topic=config.changed version=1 payload.revision:number
+payload topic=config.changed version=1 payload.value:null
 payload topic=config.changed version=1 payload.value:string
 payload topic=match.finished version=1 payload.loser:string
 payload topic=match.finished version=1 payload.match_id:string
@@ -76,11 +82,11 @@ rpc-body module=accountsapi::auth_rpc method=accounts.register body.email:string
 rpc-body module=accountsapi::auth_rpc method=accounts.register body.password:string
 rpc-body module=charactersapi::player_rpc method=characters.create body.class:string
 rpc-body module=charactersapi::player_rpc method=characters.create body.name:string
-rpc-body module=charactersapi::player_rpc method=characters.delete body.character_id:string
+rpc-body module=charactersapi::player_rpc method=characters.delete body:object{}
 rpc-body module=charactersapi::player_rpc method=characters.list body:object{}
 rpc-body module=inventoryapi::holdings_rpc method=inventory.grant body.item_id:string
 rpc-body module=inventoryapi::holdings_rpc method=inventory.grant body.qty:number
-rpc-body module=inventoryapi::holdings_rpc method=inventory.listCharacter body.character_id:string
+rpc-body module=inventoryapi::holdings_rpc method=inventory.listCharacter body:object{}
 rpc-body module=inventoryapi::holdings_rpc method=inventory.listMine body:object{}
 rpc-body module=leaderboardapi::leaderboard_rpc method=leaderboard.topScores body:object{}
 rpc-body module=matchapi::match_rpc method=match.report body.Loser:string

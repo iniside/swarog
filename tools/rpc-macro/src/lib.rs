@@ -273,7 +273,9 @@ fn expand(
             }
 
             /// The JSON wire body shape of each `#[http]`-bound method: the method's
-            /// wire name paired with `serde_json::to_value(<Method>Request::default())`.
+            /// wire name paired with `serde_json::to_value(<Method>Request::default())`,
+            /// with PATH-WILDCARD args removed (they travel in the route path, never the
+            /// body — `decode` sets them after body deserialization).
             /// The contract-golden stage flattens each value into serde-key paths, so a
             /// silent `#[serde(rename)]` (or added/removed field) on an HTTP request body
             /// shows up as a golden diff — the wire-shape blind spot `route_bindings`
@@ -810,15 +812,35 @@ fn gen_wire_op_literal(m: &MethodModel) -> TokenStream2 {
 /// One `(wire_method, serde_json::Value)` entry for `body_shapes()`. Only called for
 /// http-bound methods (whose `<Method>Request` derives `Default`), so the
 /// `to_value(<Request>::default())` is always constructible.
+///
+/// PATH-WILDCARD args are removed from the shape: the request STRUCT carries every
+/// arg, but a wildcard arg never travels in the HTTP body — `decode` populates it from
+/// the route path AFTER deserializing the body (see [`gen_decode`]'s `path_sets`), so
+/// including it under `body.` would pin a key no client ever sends. The same
+/// `wildcard.is_some()` classification `gen_decode` uses drives the exclusion; the
+/// removed key is the arg's serde key (rename if present, else the param name — path
+/// args keep their param-name key by convention).
 fn gen_body_shape_literal(m: &MethodModel) -> TokenStream2 {
     let const_ident = method_const_ident(m);
     let req_name = format_ident!("{}Request", m.pascal);
+    let wildcard_keys: Vec<String> = m
+        .args
+        .iter()
+        .filter(|a| a.wildcard.is_some())
+        .map(|a| a.rename.clone().unwrap_or_else(|| a.ident.to_string()))
+        .collect();
     quote! {
         (
             #const_ident,
-            ::serde_json::to_value(
-                <#req_name as ::core::default::Default>::default()
-            ).expect("http request struct serializes to json"),
+            {
+                let mut __v = ::serde_json::to_value(
+                    <#req_name as ::core::default::Default>::default()
+                ).expect("http request struct serializes to json");
+                if let ::serde_json::Value::Object(ref mut __m) = __v {
+                    #( __m.remove(#wildcard_keys); )*
+                }
+                __v
+            },
         )
     }
 }

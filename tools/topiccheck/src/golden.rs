@@ -46,19 +46,24 @@ const GOLDEN_HEADER: &str = "\
 # `wire module=<crate::mod> method=<m> retry=<r>` from every generated wire_ops()
 # (EVERY method, http-bound and wire-only),
 # `payload topic=<t> version=<n> <serde-key-path>:<type>` from each events crate's
-# hand-POPULATED golden_samples() (Some/non-empty everywhere), and
+# hand-written golden_samples() -- a fully-POPULATED sample (Some/non-empty everywhere)
+# plus, per CONVENTION (Step 5b), one extra sample per Option field with that field
+# None (so the :null shape is pinned AND the None literal compile-couples the
+# optionality: demoting Option<T> to T stops compiling) -- and
 # `rpc-body module=<crate::mod> method=<m> <serde-key-path>:<type>` from each generated
-# body_shapes() (http-bound request bodies only). The last two are a SAMPLED JSON
-# key/kind fingerprint -- one concrete value per contract, flattened -- so a silent
+# body_shapes() (http-bound request bodies only; PATH-WILDCARD args are excluded --
+# they travel in the route path, never the body). The last two are a SAMPLED JSON
+# key/kind fingerprint -- concrete values per contract, flattened -- so a silent
 # #[serde(rename)] or a reshaped field on a sampled key lands as a golden diff.
-# KNOWN GAPS (by design, of sampling one value):
+# KNOWN GAPS (by design, of sampling a finite value set):
 # - Scalar collapse: every numeric width and int-vs-float renders as `:number`; a
 #   u32->i64 or int->float change is invisible.
 # - Arrays traverse the FIRST element only; shapes beyond it are unpinned.
 # - Enum/variant shapes beyond the sampled variant are unpinned (only the variant the
 #   sample constructs is fingerprinted).
-# - A populated Some(...) event sample pins the key's Some-shape but cannot detect a
-#   later skip_serializing_if change to the None case.
+# - Event Option fields: BOTH cases are now pinned (populated sample -> Some-shape,
+#   None sample -> :null line); the residual gap is only a skip_serializing_if change
+#   would show as a REMOVED :null line, which the gate does catch as BREAKING.
 # - rpc-body values come from <Request>::default(), so an Option field samples as
 #   `:null` and a Vec as `:array[]` (absent only under skip_serializing_if); the key
 #   itself is still pinned, but its populated kind is not. Durable EVENT payloads avoid
@@ -165,6 +170,16 @@ fn rpc_modules() -> Vec<(
 /// so a renamed/removed `golden_samples` breaks this tool at compile time. Every
 /// `(topic, version)` a crate DEFINES must appear here (enforced by `live_lines`'
 /// didn't-forget check), and every sample here must map to a defined topic.
+///
+/// A `(topic, version)` may carry MULTIPLE samples — the emitted line set is the union.
+/// CONVENTION (Step 5b): every `Option` field in an event payload appears in at least
+/// one sample as `None`, alongside the fully-populated sample. That pins the `:null`
+/// shape as a golden line AND compile-couples the optionality itself: a populated
+/// `Some(x)` alone serializes identically to a required `T`, so demoting `Option<T>` to
+/// `T` would leave the gate green over retained `null` JSON — the `None` literal makes
+/// that demotion a compile error instead. Today the only Option field across all 6
+/// events crates is `configevents::Changed.value` (two samples: update/Some,
+/// delete/None).
 fn event_samples() -> Vec<(&'static str, u32, serde_json::Value)> {
     let mut all = Vec::new();
     all.extend(accountsevents::golden_samples());

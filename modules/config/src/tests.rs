@@ -321,6 +321,79 @@ async fn each_mutation_emits_one_event_with_operation_value_and_revision() {
     cleanup(&pool, &ns).await;
 }
 
+/// Step 5b, item 3 — SQL-trigger shape drift closure. `config.changed`'s PRODUCTION
+/// payload is hand-built JSON in the trigger's `jsonb_build_object` (see `SCHEMA_DDL`),
+/// NOT serialized from `configevents::Changed` — so the two could drift while the
+/// contract-golden gate (which fingerprints only the Rust-built samples) stayed green.
+/// This drives all three trigger branches (INSERT/UPDATE/DELETE) against live PG,
+/// captures each durable payload actually appended, and pins it to the Rust contract
+/// two ways:
+///
+/// 1. Deserializes the raw payload into `configevents::Changed` (field-name + kind
+///    compatibility, including DELETE's `value: null` → `None`).
+/// 2. Rebuilds the SAME logical `Changed` in Rust and asserts EXACT
+///    `serde_json::to_value` equality against the trigger's JSON — strictly stronger
+///    than the golden's flattened key:kind comparison (`flatten_shape` lives in the
+///    topiccheck bin and is not importable; exact value equality subsumes it).
+#[tokio::test]
+async fn trigger_payload_matches_rust_contract_shape() {
+    let _guard = CONFIG_DB_TEST_GUARD.lock().await;
+    let Some(pool) = test_pool().await else { return };
+    let ns = unique_ns(&pool).await;
+    let svc = Arc::new(Service::new(pool.clone()));
+
+    svc.set(&ns, "k", "1").await.unwrap(); // insert
+    svc.set(&ns, "k", "2").await.unwrap(); // update
+    sqlx::query("DELETE FROM config.settings WHERE namespace = $1 AND key = 'k'")
+        .bind(&ns)
+        .execute(&pool)
+        .await
+        .unwrap(); // delete
+
+    let raw: Vec<String> = sqlx::query_scalar(
+        "SELECT payload::text FROM asyncevents.events \
+         WHERE topic = 'config.changed' AND payload->>'namespace' = $1 \
+         ORDER BY generation, producer_xid, tie_breaker",
+    )
+    .bind(&ns)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(raw.len(), 3, "one durable event per mutation");
+
+    let expected = [("insert", Some("1")), ("update", Some("2")), ("delete", None)];
+    for (raw_payload, (op, value)) in raw.iter().zip(expected) {
+        // (1) The trigger's JSON deserializes into the Rust contract type — proves
+        // field-name compatibility and the DELETE null → Option::None round-trip.
+        let changed: configevents::Changed = serde_json::from_str(raw_payload)
+            .unwrap_or_else(|e| panic!("trigger payload must deserialize into configevents::Changed ({op}): {e}\n{raw_payload}"));
+        assert_eq!(changed.namespace, ns);
+        assert_eq!(changed.key, "k");
+        assert_eq!(changed.operation, op);
+        assert_eq!(changed.value.as_deref(), value, "value mismatch for {op}");
+
+        // (2) EXACT shape equality: a Rust-built Changed with the same logical values
+        // must serialize to byte-identical JSON structure (keys AND value kinds). Any
+        // trigger-vs-struct drift (renamed key, retyped field, added/dropped key)
+        // fails here even while the golden (Rust-samples-only) stays green.
+        let rust_built = configevents::Changed {
+            namespace: ns.clone(),
+            key: "k".to_string(),
+            value: value.map(str::to_string),
+            operation: op.to_string(),
+            revision: changed.revision,
+        };
+        let trigger_json: serde_json::Value = serde_json::from_str(raw_payload).unwrap();
+        assert_eq!(
+            serde_json::to_value(&rust_built).unwrap(),
+            trigger_json,
+            "trigger jsonb_build_object shape drifted from configevents::Changed ({op})"
+        );
+    }
+
+    cleanup(&pool, &ns).await;
+}
+
 /// A config value larger than `pg_notify`'s 8000-byte payload cap must NOT abort the
 /// writing transaction: the NOTIFY payload is value-less by design (the invalidation
 /// callback re-reads the whole snapshot and never reads the NOTIFY payload itself), so

@@ -127,3 +127,56 @@ fn event_sample_drift_names_a_defined_topic_with_no_sample() {
 fn self_check_event_samples_passes_on_real_crate() {
     self_check_event_samples().expect("every defined topic must have a populated sample");
 }
+
+/// Step 5b, item 2 — body_shapes() excludes PATH-WILDCARD args (they travel in the
+/// route path, never the HTTP body) while keeping genuine body keys. Asserted over the
+/// real generated modules: match.report keeps its Go-parity body keys
+/// ReportId/Winner/Loser; inventory.listCharacter (whose only arg `character_id` is the
+/// `{id}` path wildcard) has an EMPTY body shape.
+#[test]
+fn body_shapes_exclude_path_wildcards_but_keep_body_keys() {
+    let report = matchapi::match_rpc::body_shapes()
+        .into_iter()
+        .find(|(m, _)| *m == "match.report")
+        .expect("match.report body shape present")
+        .1;
+    let obj = report.as_object().expect("match.report body is an object");
+    for key in ["ReportId", "Winner", "Loser"] {
+        assert!(obj.contains_key(key), "match.report body must keep key {key}: {obj:?}");
+    }
+
+    let list_character = inventoryapi::holdings_rpc::body_shapes()
+        .into_iter()
+        .find(|(m, _)| *m == "inventory.listCharacter")
+        .expect("inventory.listCharacter body shape present")
+        .1;
+    let obj = list_character
+        .as_object()
+        .expect("inventory.listCharacter body is an object");
+    assert!(
+        !obj.contains_key("character_id"),
+        "path-wildcard character_id must not appear under body.: {obj:?}"
+    );
+    assert!(
+        obj.is_empty(),
+        "listCharacter's only arg is the path wildcard, so its body shape is empty: {obj:?}"
+    );
+}
+
+/// Step 5b, item 1 — the Option-None convention materializes: config.changed carries a
+/// delete-shaped sample with `value: None`, so BOTH the Some-shape (`value:string`) and
+/// the None-shape (`value:null`) are pinned lines. (The compile-coupling half — the
+/// `value: None` literal failing to compile if the field became `String` — is enforced
+/// by the compiler itself.)
+#[test]
+fn config_changed_pins_both_option_value_shapes() {
+    let lines = live_lines().expect("live lines");
+    assert!(
+        lines.contains("payload topic=config.changed version=1 payload.value:string"),
+        "Some-shape line missing"
+    );
+    assert!(
+        lines.contains("payload topic=config.changed version=1 payload.value:null"),
+        "None-shape line missing (the Option-None sample convention)"
+    );
+}

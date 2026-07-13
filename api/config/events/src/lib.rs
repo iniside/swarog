@@ -52,23 +52,43 @@ pub struct Changed {
 pub static CHANGED: LazyLock<EventType<Changed>> =
     LazyLock::new(|| define("config.changed", 1, HistoryPolicy::MinRetention { days: 7 }));
 
-/// Fully-POPULATED wire sample for the contract-golden fingerprint (Step 5): every
-/// field set — crucially `value = Some(...)` so the `Option<String>` field appears in
-/// the golden (a `None` would collapse to `null`/absent and hide a rename). A silent
-/// `#[serde(rename)]` or a reshaped field then fails the blocking contract-golden stage
-/// instead of poisoning retained durable JSON.
+/// Wire samples for the contract-golden fingerprint (Step 5/5b). TWO samples:
+///
+/// 1. Fully POPULATED — every field set, `value = Some(...)`, so the `Option<String>`
+///    field's Some-shape (`payload.value:string`) appears in the golden and a silent
+///    `#[serde(rename)]` fails the blocking contract-golden stage.
+/// 2. The `None` case (`value: None`, the DELETE shape) — CONVENTION (Step 5b): every
+///    `Option` field in an event payload appears in at least one sample as `None`.
+///    This pins `payload.value:null` in the golden AND compile-couples the optionality
+///    itself: if `value` ever became a required `String`, the `value: None` literal
+///    below would stop compiling — a loud break instead of a green gate over retained
+///    `null` JSON.
 #[doc(hidden)]
 pub fn golden_samples() -> Vec<(&'static str, u32, serde_json::Value)> {
-    vec![(
-        "config.changed",
-        1,
-        serde_json::to_value(Changed {
-            namespace: "gameplay".to_string(),
-            key: "max_level".to_string(),
-            value: Some("100".to_string()),
-            operation: "update".to_string(),
-            revision: 42,
-        })
-        .expect("Changed serializes to json"),
-    )]
+    vec![
+        (
+            "config.changed",
+            1,
+            serde_json::to_value(Changed {
+                namespace: "gameplay".to_string(),
+                key: "max_level".to_string(),
+                value: Some("100".to_string()),
+                operation: "update".to_string(),
+                revision: 42,
+            })
+            .expect("Changed serializes to json"),
+        ),
+        (
+            "config.changed",
+            1,
+            serde_json::to_value(Changed {
+                namespace: "gameplay".to_string(),
+                key: "max_level".to_string(),
+                value: None,
+                operation: "delete".to_string(),
+                revision: 43,
+            })
+            .expect("Changed serializes to json"),
+        ),
+    ]
 }
