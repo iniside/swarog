@@ -424,10 +424,11 @@ async fn first_refresh_failure_fails_start() {
 // ============================================================================
 // Step 13 / DEFECT 2 (+ C20): `InvalidationPlane::new` env resolution is the fail-loud
 // decision authority for `INVALIDATION_POLL_INTERVAL_MS`/`INVALIDATION_CALLBACK_TIMEOUT_MS`,
-// mirroring `asyncevents::retention::Config`'s posture exactly: absent → default,
-// malformed → default (garbage tolerated), EXPLICIT zero → fail construction (never a
-// silent default). These are boot-level tests: construction does no I/O, so no DB is
-// needed to prove a bad knob aborts startup before a connection is ever attempted.
+// mirroring `asyncevents::retention::Config`'s posture: absent → default, malformed →
+// default (garbage tolerated), EXPLICIT zero → fail, numeric OVERFLOW → fail (never a
+// silent default). These are construction-level tests (no I/O, no DB needed); the TRUE
+// boot-level propagation proof — that `run()` itself aborts startup — is
+// `run_fails_startup_when_invalidation_poll_interval_is_zero` in core/app's tests.
 // ============================================================================
 
 static ENV_LOCK: Mutex<()> = Mutex::new(());
@@ -498,6 +499,27 @@ fn poll_interval_malformed_falls_back_to_default() {
 }
 
 #[test]
+fn poll_interval_overflow_fails_construction_naming_the_var() {
+    // Overflow is parseable-but-invalid operator INPUT (an all-digits number past
+    // u64::MAX milliseconds), not garbage — like retention's parser, it fails loud
+    // instead of folding into the malformed→default fallback.
+    with_env(
+        "INVALIDATION_POLL_INTERVAL_MS",
+        Some("99999999999999999999999"),
+        || {
+            let err = InvalidationPlane::new("postgres://unused".to_string())
+                .err()
+                .expect("an overflowing poll interval must fail construction");
+            let msg = format!("{err:#}");
+            assert!(
+                msg.contains("INVALIDATION_POLL_INTERVAL_MS"),
+                "error should name the var: {msg}"
+            );
+        },
+    );
+}
+
+#[test]
 fn callback_timeout_zero_fails_construction_naming_the_var() {
     with_env("INVALIDATION_CALLBACK_TIMEOUT_MS", Some("0"), || {
         let err = InvalidationPlane::new("postgres://unused".to_string())
@@ -527,4 +549,22 @@ fn callback_timeout_malformed_falls_back_to_default() {
             .expect("malformed callback timeout must fall back, not fail");
         assert_eq!(plane.callback_timeout, DEFAULT_CALLBACK_TIMEOUT);
     });
+}
+
+#[test]
+fn callback_timeout_overflow_fails_construction_naming_the_var() {
+    with_env(
+        "INVALIDATION_CALLBACK_TIMEOUT_MS",
+        Some("99999999999999999999999"),
+        || {
+            let err = InvalidationPlane::new("postgres://unused".to_string())
+                .err()
+                .expect("an overflowing callback timeout must fail construction");
+            let msg = format!("{err:#}");
+            assert!(
+                msg.contains("INVALIDATION_CALLBACK_TIMEOUT_MS"),
+                "error should name the var: {msg}"
+            );
+        },
+    );
 }

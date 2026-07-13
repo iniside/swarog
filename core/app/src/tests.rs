@@ -483,8 +483,12 @@ fn db_pool_max_below_floor_fails_startup() {
 //
 // Each test below sets env vars under UNIQUE names (never the real
 // `RATE_LIMIT_*`/`PLAYER_RATE_LIMIT_*` knobs) so tests can run in parallel with the
-// rest of the suite without a cross-test lock: isolation is by construction (the
-// var names are the test's own), not a mutex.
+// rest of the suite without a cross-test lock: `env_rate_pair` takes its var NAMES
+// as parameters, so per-test-unique names give isolation by construction — no
+// other test ever reads or writes them, which is exactly why no ENV_LOCK is needed
+// here (a test that mutates a REAL, fixed var name — see
+// `run_fails_startup_when_invalidation_poll_interval_is_zero` — must serialize
+// instead).
 // ============================================================================
 
 /// Sets `vars` for the duration of `f`, restoring prior values after — including on
@@ -576,6 +580,34 @@ fn env_rate_pair_reject_lone_rps_zero_warns_and_defaults_unchanged() {
 }
 
 #[test]
+fn env_rate_pair_reject_explicit_rps_zero_and_burst_zero_still_fails() {
+    // The error message's advice must not be circular: `rps=0` under `Reject` cannot
+    // disable the limiter (it warns and falls back to the surface default, here 20.0),
+    // so an operator who sets BOTH knobs to 0 hoping to turn the front's limiter off
+    // still ends up with an effective rps>0 + burst==0 — the capacity-0 bucket — and
+    // must get the pair failure, not a silently mounted block-all limiter.
+    with_env_vars(
+        [
+            ("T13_GW_RPS_E", Some("0")),
+            ("T13_GW_BURST_E", Some("0")),
+        ],
+        || {
+            let err = env_rate_pair(
+                "T13_GW_RPS_E",
+                "T13_GW_BURST_E",
+                20.0,
+                40,
+                RateZeroPolicy::Reject,
+            )
+            .expect_err("rps=0 falls back to the nonzero default, so burst=0 must still fail");
+            let msg = format!("{err:#}");
+            assert!(msg.contains("T13_GW_RPS_E"));
+            assert!(msg.contains("T13_GW_BURST_E"));
+        },
+    );
+}
+
+#[test]
 fn env_rate_pair_allow_zero_burst_passes_through_as_disable() {
     // The player plane's own semantics: `burst==0` under `Allow` is that plane's
     // "disable this layer" signal and must pass through unchanged, never rejected.
@@ -597,6 +629,88 @@ fn env_rate_pair_allow_zero_burst_passes_through_as_disable() {
             assert_eq!(burst, 0, "burst=0 under Allow stays the player plane's disable signal");
         },
     );
+}
+
+/// Serializes the tests that mutate REAL (fixed-name) env vars `run()` itself reads —
+/// unlike the `env_rate_pair` tests above, whose parameterized per-test-unique var
+/// names need no lock.
+static RUN_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Restores an env var to its prior state on drop — including on panic, so a failed
+/// assertion (or the select! safety-net) never leaks the mutation into a later test.
+struct EnvRestore {
+    key: &'static str,
+    prev: Option<String>,
+}
+
+impl EnvRestore {
+    fn set(key: &'static str, val: &str) -> EnvRestore {
+        let prev = std::env::var(key).ok();
+        std::env::set_var(key, val);
+        EnvRestore { key, prev }
+    }
+}
+
+impl Drop for EnvRestore {
+    fn drop(&mut self) {
+        match &self.prev {
+            Some(v) => std::env::set_var(self.key, v),
+            None => std::env::remove_var(self.key),
+        }
+    }
+}
+
+/// C20 propagation, proven at the TRUE boot level: `run()` itself — not
+/// `InvalidationPlane::new` called in isolation — fails startup on an explicit
+/// `INVALIDATION_POLL_INTERVAL_MS=0`, because the plane is constructed inside `run`
+/// (DB ⇒ plane) and its `Result` is threaded with `?`. The plane only exists when a
+/// pool was opened, so this needs a live Postgres and skips cleanly (the invalidation
+/// crate's DB-test pattern) when unreachable. Awaited directly on this task (not
+/// `tokio::spawn` — no `Send` proof of `run`'s future required or wanted, same as the
+/// other `run()` tests), with a select! deadline as the safety net: a regression that
+/// silently swallows the construction error would otherwise boot a full server here
+/// and hang the suite.
+#[tokio::test(flavor = "multi_thread")]
+// The guard MUST span the `run()` await — `run` reads the var mid-flight, so releasing
+// earlier would let a parallel mutator race the read. Safe here: `#[tokio::test]`
+// drives this future via `block_on` on one thread (no `Send` requirement), so the
+// std MutexGuard is never moved across threads and cannot deadlock the runtime's
+// worker pool the way the lint guards against.
+#[allow(clippy::await_holding_lock)]
+async fn run_fails_startup_when_invalidation_poll_interval_is_zero() {
+    let dsn = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string());
+    let probe = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        sqlx::PgPool::connect(&dsn),
+    )
+    .await;
+    if !matches!(probe, Ok(Ok(_))) {
+        eprintln!("SKIP: postgres unreachable at {dsn} — run()-level invalidation env test skipped");
+        return;
+    }
+
+    // This test mutates the REAL var name `run()` reads, so it must serialize.
+    let _guard = RUN_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let _restore = EnvRestore::set("INVALIDATION_POLL_INTERVAL_MS", "0");
+
+    let mut cfg =
+        Config::from_values(Some(dsn), None, None, None, None, None, None, None, None, None);
+    cfg.listen_addr = format!("127.0.0.1:{}", free_port());
+
+    tokio::select! {
+        res = run(cfg, vec![], None, None) => {
+            let err = res
+                .expect_err("run() must fail startup when the invalidation poll interval is 0");
+            let msg = format!("{err:#}");
+            assert!(
+                msg.contains("INVALIDATION_POLL_INTERVAL_MS"),
+                "startup error should name the var: {msg}"
+            );
+        }
+        _ = tokio::time::sleep(std::time::Duration::from_secs(30)) => {
+            panic!("run() did not fail startup — the invalidation env error was swallowed");
+        }
+    }
 }
 
 // ============================================================================
@@ -1306,10 +1420,17 @@ impl Module for OrderProbe {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+// Holds `RUN_ENV_LOCK` across the `run()` await: this DB-backed boot READS the real
+// `INVALIDATION_*` env vars mid-flight, so it must not overlap the test that mutates
+// them (`run_fails_startup_when_invalidation_poll_interval_is_zero`). Safe for the
+// same reason as there: `#[tokio::test]` drives this future via `block_on` on one
+// thread, so the std MutexGuard never crosses threads.
+#[allow(clippy::await_holding_lock)]
 async fn durable_delivery_starts_only_after_invalidation_first_refresh() {
     use std::sync::atomic::{AtomicI32, AtomicU32, Ordering};
     use std::sync::Arc;
 
+    let _env_guard = RUN_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let dsn = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string());
     let pool = match tokio::time::timeout(
         std::time::Duration::from_secs(3),

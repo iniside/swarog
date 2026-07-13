@@ -501,7 +501,7 @@ fn env_rate(name: &str, default: f64, zero_policy: RateZeroPolicy) -> f64 {
 /// same value). `rps` keeps today's per-value policy unchanged: a LONE
 /// `rps_var=0` under `Reject` still warns and falls back to `default_rps` (existing
 /// [`env_rate`]/[`RateZeroPolicy::Reject`] behavior, pinned by
-/// `gateway_lone_rps_zero_reject_warns_and_defaults`). The hard failure this function
+/// `env_rate_pair_reject_lone_rps_zero_warns_and_defaults_unchanged`). The hard failure this function
 /// adds is narrower and pair-specific: under `Reject`, an EFFECTIVE (post-fallback)
 /// `rps > 0.0` combined with an explicit `burst == 0` is rejected outright, because
 /// that combination — not a lone zero — is what silently mounts the capacity-0
@@ -520,8 +520,9 @@ fn env_rate_pair(
     if policy == RateZeroPolicy::Reject && rps > 0.0 && burst == 0 {
         anyhow::bail!(
             "{rps_var}/{burst_var}: a positive rate paired with a zero burst mounts a \
-             capacity-0 token bucket that blocks all traffic on this always-on surface; \
-             set {burst_var} to a positive burst or set {rps_var}=0 to disable the limiter"
+             capacity-0 token bucket that blocks all traffic; this always-on front's \
+             limiter cannot be disabled via env ({rps_var}=0 only warns and falls back \
+             to the surface default), so set {burst_var} to a positive burst"
         );
     }
     Ok((rps, burst))

@@ -257,10 +257,11 @@ pub struct InvalidationPlane {
 impl InvalidationPlane {
     /// No I/O — construction is wiring-safe; the first DB touch is
     /// [`start`](Self::start). Fails loudly (never silently defaults) on an EXPLICIT
-    /// zero or out-of-range `INVALIDATION_POLL_INTERVAL_MS`/`INVALIDATION_CALLBACK_TIMEOUT_MS`
+    /// zero or overflowing `INVALIDATION_POLL_INTERVAL_MS`/`INVALIDATION_CALLBACK_TIMEOUT_MS`
     /// (mirroring `asyncevents::retention::Config`'s posture: absent → default, malformed
-    /// → default, explicit zero → fail) — so `core/app::run` propagates a bad knob into a
-    /// boot failure instead of a plane that silently reverts to the default poll/timeout.
+    /// → default, explicit zero → fail, overflow → fail) — so `core/app::run` propagates a
+    /// bad knob into a boot failure instead of a plane that silently reverts to the default
+    /// poll/timeout.
     pub fn new(listen_dsn: String) -> anyhow::Result<InvalidationPlane> {
         Ok(InvalidationPlane {
             registrar: Arc::new(Invalidation::new()),
@@ -447,12 +448,15 @@ fn callback_timeout_from_env() -> anyhow::Result<Duration> {
 }
 
 /// The shared decision authority for both millisecond-duration env knobs on this
-/// plane. Mirrors `asyncevents::retention::Config`'s posture exactly: absent (unset
-/// or blank) → `default`; malformed (unparseable as `u64`) → `default` (the
-/// historical "garbage is tolerated" fallback); an EXPLICIT zero is a distinct,
-/// invalid case that fails loudly rather than silently reverting to the default —
-/// zero would otherwise busy-loop the poller/callback deadline with no operator
-/// signal that their setting was ignored.
+/// plane. Mirrors `asyncevents::retention::Config`'s posture: absent (unset or
+/// blank) → `default`; malformed (non-numeric garbage) → `default` (the historical
+/// "garbage is tolerated" fallback); an EXPLICIT zero fails loudly rather than
+/// silently reverting to the default — zero would otherwise busy-loop the
+/// poller/callback deadline with no operator signal that their setting was ignored;
+/// and a numeric OVERFLOW likewise fails loudly (retention bails on overflow too):
+/// an all-digits value past `u64::MAX` milliseconds is parseable-but-invalid
+/// operator INPUT, not a typo, so folding it into the garbage fallback would
+/// silently ignore a value the operator clearly meant.
 fn parse_ms_env(name: &str, default: Duration) -> anyhow::Result<Duration> {
     let raw = match std::env::var(name) {
         Ok(raw) => raw,
@@ -472,8 +476,14 @@ fn parse_ms_env(name: &str, default: Duration) -> anyhow::Result<Duration> {
              value or unset {name} entirely"
         ),
         Ok(ms) => Ok(Duration::from_millis(ms)),
-        // Malformed (non-numeric, negative, overflow) mirrors the historical "garbage
-        // is tolerated" knob convention: fall back to the default, never fail.
+        // Overflow is a deliberate huge number, not garbage — fail loud (the same
+        // posture as the retention parser, which bails on overflow).
+        Err(err) if *err.kind() == std::num::IntErrorKind::PosOverflow => anyhow::bail!(
+            "{name} overflows u64 milliseconds: set a smaller positive value or \
+             unset {name} entirely (default {default:?})"
+        ),
+        // Malformed (non-numeric, negative) mirrors the historical "garbage is
+        // tolerated" knob convention: fall back to the default, never fail.
         Err(_) => Ok(default),
     }
 }
