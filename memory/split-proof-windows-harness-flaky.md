@@ -1,15 +1,20 @@
 ---
 name: split-proof-windows-harness-flaky
-description: "Both split-proof harnesses are flaky on Windows independent of the code under test — .ps1 winctrl Start-Svc false-throws, .sh bash-parallel jobs hang under git-bash"
+description: "Postmortem of the retired shell split-proof harnesses; current verification uses the Rust harness through verifyctl"
 metadata: 
   node_type: memory
   type: project
   originSessionId: 38ae0b55-88ea-4c50-814e-ca71f55c726d
 ---
 
-Running the live split-proof on this Windows box is unreliable for reasons in the
-HARNESS, not the services — don't misattribute a harness hang to the code under test.
-Discovered 2026-07-11 while verifying the all-findings remediation.
+> **CURRENT STATUS (2026-07-13): historical postmortem, not recovery guidance.**
+> Both shell harnesses and `winctrl` were deleted. The Rust `tools/splitproof`
+> harness uses the centralized `processctl` fleet and runs inside exactly one
+> terminal `verifyctl` manifest. Do not bypass it with the historical fallback below.
+
+The retired live split-proof shell harnesses were unreliable on this Windows box for
+reasons in the harness, not the services. Discovered 2026-07-11 while verifying the
+all-findings remediation; the details below explain the deleted implementation.
 
 **`split-proof.ps1` (native Windows harness):** `Start-Svc` spawns each service via
 `winctrl` (added in af26dc5 for the graceful-shutdown W1/W2 proof) and throws
@@ -31,7 +36,7 @@ the assertion that fires 12 parallel logins via bash background `&` + `wait`: gi
 the requests weren't even all dispatched). Any split-proof.sh assertion using
 bash-parallel jobs is suspect on Windows.
 
-**How to apply / recover:**
+**Historical recovery used before replacement:**
 - To verify the CODE without a green split-proof: per-package `cargo test` (plane pkgs
   `--test-threads=1`, see [[asyncevents-single-invocation-parallelism-deadlocks]]) +
   archcheck + topiccheck --durability-strict + requirecheck --strict + confirm no
@@ -43,17 +48,19 @@ bash-parallel jobs is suspect on Windows.
 - Recovery: kill `*-svc`/`winctrl`/`server`/`curl` (spare `cowork-svc`), then
   `pg_terminate_backend` all non-psql gamebackend sessions, then re-run.
 **DONE (2026-07-11): a Rust harness REPLACED both scripts; they + tools/winctrl are
-deleted.** `cargo run -p splitproof` (`tools/splitproof`) spawns the 12-svc fleet via
-`std::process::Command` (typed env map + kill-on-drop guard — no shell, so the whole
+deleted.** The blocking split-proof stage in `verifyctl` drives `tools/splitproof`,
+which spawns the 12-svc fleet through `processctl` (typed env map + owned cleanup — no shell, so the whole
 bug class is structurally gone: no quoting, no MSYS `wait`, no winctrl, no orphans),
 health-checks over reqwest, asserts DB via sqlx, and drives the player QUIC front
-through `edge::PlayerClient` as a library. It self-builds its fleet (`build_fleet`),
-has a fleet-drift preflight (`fleet()` == `cmd/*-svc`), and is exempt in archcheck's
+through `edge::PlayerClient` as a library. The canonical fleet lives in
+`tools/processctl/src/fleet.rs`; its drift preflight validates that fleet against
+`cmd/*-svc`, and the harness is exempt in archcheck's
 asyncevents-SQL allowlist (it asserts plane state like the scripts' `pg`). Full parity
 reached: **66 named assertions** across the split (A/K/EP/[1-5]/C/MT/P/AD/AU/SC/SP/MX/RL)
 + monolith parity (M0-M3b, boots cmd/server on the same front) + native graceful
 shutdown ([W2]: Ctrl-Break to the monolith's process group on Windows / SIGTERM on
-unix). `verify.sh`/`.ps1` split-proof stage now runs `cargo run -p splitproof`. Commits
+unix). Current entry point: one selected `cargo run -p verifyctl -- <level>` manifest;
+do not rehearse `--fast` before a broader terminal run. Commits
 b0bacb2..e9ff199 (Batches A-G). Plan:
 docs/plans/2026-07-11-1730-rust-splitproof-harness-plan.md.
 

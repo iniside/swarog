@@ -26,8 +26,8 @@ Characters/Inventory sub-pages with "‹ Players" back header, character-card `�
 View Inventory modals). Adopting the new colour scheme is IN SCOPE of the admin-extensibility
 work. The mockup is a spec, not runnable — port it, keeping dynamic data via the template engine.
 
-**Dispatch (user-mandated, emphatic):** UI translation of this mockup must NEVER go to a
-`[sonnet]` lane. `[opus]` is the right lane for the mockup-rewrite work (user: "do przepisywania
-pliku opus starczy" — don't burn Fable on it); this is a hard per-user rule on top of CLAUDE.md's
-"Visual/UI design is never [sonnet]".
+**Dispatch (user-mandated, emphatic):** UI translation of this mockup is substantive,
+judgment-heavy work, so use `[subagent-complex]`, never `[subagent-mechanical]`. Choose
+the best available execution profile at dispatch time; do not encode provider/model names
+in durable lanes or prompts.
 See [[gamebackend-north-star-and-jvm-exploration]].

@@ -19,10 +19,12 @@ claim is true.
 
 **How to apply:**
 - Ask "what does this change put at risk, and in which deployment/topology?" This repo
-  has two: monolith (`cmd/server`) and split (`cmd/*-svc`, run via `run.sh microservices`).
+  has two: monolith (`cmd/server`) and split (`cmd/*-svc`, exercised by the blocking
+  split-proof stage in `verifyctl`).
   A change touching cross-service/foundation behavior MUST be driven in the split.
-- Prefer a committed script that fails loud (exit!=0) over a one-time manual drive —
-  e.g. `scripts/smoke-split-config.sh`. Capture output into a `docs/…-verified.md`.
+- Prefer a committed named assertion in `tools/splitproof` that fails loud over a
+  one-time manual drive. Run it as part of the one selected terminal `verifyctl`
+  manifest; do not add a second standalone fleet supervisor.
 - Don't conflate "no value set for a key" with "the service isn't deployed" — a missing
   dependency should fail loud ([[work-on-master-no-branches]] repo prefers hard-require),
   not silently degrade.
