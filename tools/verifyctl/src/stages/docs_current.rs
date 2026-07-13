@@ -255,7 +255,7 @@ fn check_packages(
 }
 
 fn package_token(token: &str) -> Option<&str> {
-    let token = token.trim_start_matches(|character| matches!(character, '`' | '\'' | '"'));
+    let token = token.trim_start_matches(['`', '\'', '"']);
     let end = token
         .char_indices()
         .find_map(|(index, character)| {
