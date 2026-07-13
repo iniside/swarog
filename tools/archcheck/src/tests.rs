@@ -4,10 +4,10 @@
 //! and WHICH cmd binaries may host the `gateway` crate.
 
 use super::{
-    classify, cmd_is_a_main, contains_boundary_checked, cross_schema_fk_violations,
-    forbidden_api_deps, has_non_dev_dep, is_inline_test_mod, missing_svc_violations,
-    mod_test_ident_end, Kind, DEMO_HOST, FORBIDDEN_API_DEPS, FRONT_DOOR_HOSTS, GATEWAY_CRATE,
-    SVC_EXEMPT_MODULES,
+    classify, cmd_is_a_main, contains_boundary_checked, core_bus_sqlx_violations,
+    cross_schema_fk_violations, forbidden_api_deps, has_non_dev_dep, is_inline_test_mod,
+    missing_svc_violations, mod_test_ident_end, Kind, DEMO_HOST, FORBIDDEN_API_DEPS,
+    FRONT_DOOR_HOSTS, GATEWAY_CRATE, SVC_EXEMPT_MODULES,
 };
 
 #[test]
@@ -245,36 +245,77 @@ fn classifies_events_contract_manifest() {
 }
 
 // --- Rule C: core/bus stays sqlx-free (no dep kind is skipped) --------------
+//
+// These call the REAL gate (`core_bus_sqlx_violations`) against a fixture package
+// list, not a hand-built deps array — the previous version of these tests asserted
+// on serde_json filtering directly and would pass whether or not the gate's own
+// `Kind` filter was broken (it was: classify() returns `Kind::Core("bus")` for
+// core/bus/Cargo.toml, but the gate required `Kind::Other`, so the loop never ran
+// against the real package — dead since 70674db).
 
 #[test]
-fn bus_with_normal_sqlx_dep_is_detected() {
-    let deps = serde_json::json!([
-        { "name": "tokio", "kind": null },
-        { "name": "sqlx", "kind": null },
+fn bus_depending_on_sqlx_is_flagged_by_the_real_scan() {
+    let packages = serde_json::json!([
+        {
+            "name": "bus",
+            "manifest_path": "/repo/core/bus/Cargo.toml",
+            "dependencies": [
+                { "name": "sqlx", "kind": null },
+            ],
+        },
     ]);
-    let deps = deps.as_array().unwrap();
-    assert!(deps.iter().any(|d| d["name"].as_str() == Some("sqlx")));
+    let packages = packages.as_array().unwrap();
+    let violations = core_bus_sqlx_violations(packages);
+    assert_eq!(violations.len(), 1, "violations: {violations:?}");
 }
 
 #[test]
-fn bus_with_dev_only_sqlx_dep_is_still_detected() {
-    // Rule C deliberately does NOT skip dev deps (unlike has_non_dev_dep) — bus must
-    // stay sqlx-free under every dep kind, including a "just for tests" dev-dep.
-    let deps = serde_json::json!([
-        { "name": "sqlx", "kind": "dev" },
+fn bus_depending_on_sqlx_via_windows_manifest_path_is_still_flagged() {
+    // Confirms classify()'s backslash normalization ('\\' -> '/') holds inside the
+    // real gate, not just in isolated classify() unit tests.
+    let packages = serde_json::json!([
+        {
+            "name": "bus",
+            "manifest_path": r"C:\repo\core\bus\Cargo.toml",
+            "dependencies": [
+                { "name": "sqlx", "kind": "dev" },
+            ],
+        },
     ]);
-    let deps = deps.as_array().unwrap();
-    assert!(deps.iter().any(|d| d["name"].as_str() == Some("sqlx")));
+    let packages = packages.as_array().unwrap();
+    let violations = core_bus_sqlx_violations(packages);
+    assert_eq!(violations.len(), 1, "violations: {violations:?}");
 }
 
 #[test]
-fn bus_with_no_sqlx_dep_is_clean() {
-    let deps = serde_json::json!([
-        { "name": "tokio", "kind": null },
-        { "name": "tokio", "kind": "dev" },
+fn bus_without_sqlx_is_clean_via_the_real_scan() {
+    let packages = serde_json::json!([
+        {
+            "name": "bus",
+            "manifest_path": "/repo/core/bus/Cargo.toml",
+            "dependencies": [
+                { "name": "tokio", "kind": null },
+            ],
+        },
     ]);
-    let deps = deps.as_array().unwrap();
-    assert!(!deps.iter().any(|d| d["name"].as_str() == Some("sqlx")));
+    let packages = packages.as_array().unwrap();
+    assert!(core_bus_sqlx_violations(packages).is_empty());
+}
+
+#[test]
+fn non_bus_core_crate_with_sqlx_is_not_flagged() {
+    // The rule is scoped to core/bus specifically, not every core/* crate.
+    let packages = serde_json::json!([
+        {
+            "name": "asyncevents",
+            "manifest_path": "/repo/core/asyncevents/Cargo.toml",
+            "dependencies": [
+                { "name": "sqlx", "kind": null },
+            ],
+        },
+    ]);
+    let packages = packages.as_array().unwrap();
+    assert!(core_bus_sqlx_violations(packages).is_empty());
 }
 
 // --- Rule D: modules never runtime-dep the durable-events plane -------------

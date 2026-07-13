@@ -337,22 +337,7 @@ fn main() {
     // AnyTx/Delivery seam is what makes the durable contract engine-neutral, and a
     // stray dev-dep on sqlx (e.g. a "quick test") would re-couple the bus to one
     // engine even though nothing in the runtime graph depends on it.
-    for pkg in packages {
-        let manifest = pkg["manifest_path"].as_str().unwrap_or_default();
-        if pkg["name"].as_str() != Some("bus") {
-            continue;
-        }
-        if !matches!(classify(manifest), Kind::Other) {
-            continue; // sanity: only the core/bus package (Kind::Other) is in scope
-        }
-        for dep in pkg["dependencies"].as_array().into_iter().flatten() {
-            if dep["name"].as_str() == Some("sqlx") {
-                violations.push(
-                    "core/bus must stay engine-free (AnyTx seam): found dep `sqlx`".to_string(),
-                );
-            }
-        }
-    }
+    violations.extend(core_bus_sqlx_violations(packages));
 
     // --- 10: modules never runtime-dep the durable-events plane ----------------
     // The plane (`asyncevents`) is app-owned infrastructure injected at `Context`
@@ -610,6 +595,30 @@ fn crate_dirs(dir: &Path) -> Vec<String> {
 /// [`SVC_EXEMPT_MODULES`]) must have a `cmd/<name>-svc` composition root. Inputs are
 /// the module dir names and cmd dir names from a [`crate_dirs`] filesystem scan, so
 /// the check follows the folders themselves — no per-module list to maintain.
+/// Rule 9: `core/bus` (package name `bus`, classified `Kind::Core("bus")`) must never
+/// depend on `sqlx` under ANY dep kind (normal/dev/build) — see the call site's comment
+/// for the AnyTx/Delivery-seam rationale.
+fn core_bus_sqlx_violations(packages: &[serde_json::Value]) -> Vec<String> {
+    let mut violations = Vec::new();
+    for pkg in packages {
+        if pkg["name"].as_str() != Some("bus") {
+            continue;
+        }
+        let manifest = pkg["manifest_path"].as_str().unwrap_or_default();
+        if !matches!(classify(manifest), Kind::Core(ref n) if n == "bus") {
+            continue; // sanity: only the core/bus package is in scope
+        }
+        for dep in pkg["dependencies"].as_array().into_iter().flatten() {
+            if dep["name"].as_str() == Some("sqlx") {
+                violations.push(
+                    "core/bus must stay engine-free (AnyTx seam): found dep `sqlx`".to_string(),
+                );
+            }
+        }
+    }
+    violations
+}
+
 fn missing_svc_violations(modules: &[String], cmds: &[String]) -> Vec<String> {
     modules
         .iter()
