@@ -62,10 +62,8 @@ impl Store {
     }
 
     // --- Transactional writes (`*_tx`) --------------------------------------
-    // The store's write API takes a caller-supplied connection so the admin `apply_edit`
-    // can batch a whole posted form into ONE transaction that commits (or rolls back) as
-    // a unit — no per-statement autocommit, no partial write. Pool-based convenience
-    // wrappers (test-only, below) delegate to these for terse test setup.
+    // The admin write API takes a caller-supplied connection so `apply_edit` can batch
+    // a whole posted form into ONE transaction that commits (or rolls back) as a unit.
 
     /// Inserts a new key over a caller's connection. A duplicate `name` (primary key) or
     /// `key` (unique) surfaces as the underlying sqlx error for the caller to map. A
@@ -108,22 +106,6 @@ impl Store {
             .bind(name)
             .bind(key)
             .bind(policy)
-            .execute(conn)
-            .await?;
-        Ok(())
-    }
-
-    /// Replaces a key's policy string over a caller's connection. A missing name is a
-    /// no-op (0 rows).
-    pub async fn set_policy_tx(
-        &self,
-        conn: &mut PgConnection,
-        name: &str,
-        policy: &str,
-    ) -> Result<(), sqlx::Error> {
-        sqlx::query("UPDATE apikeys.keys SET policy = $1 WHERE name = $2")
-            .bind(policy)
-            .bind(name)
             .execute(conn)
             .await?;
         Ok(())
@@ -178,21 +160,9 @@ impl Store {
         Ok(result.rows_affected())
     }
 
-    /// Revokes a key by name (`revoked_at = now()`) over a caller's connection, after
-    /// which `lookup` treats it as unknown. A missing name is a no-op.
-    pub async fn revoke_tx(&self, conn: &mut PgConnection, name: &str) -> Result<(), sqlx::Error> {
-        sqlx::query("UPDATE apikeys.keys SET revoked_at = now() WHERE name = $1 AND revoked_at IS NULL")
-            .bind(name)
-            .execute(conn)
-            .await?;
-        Ok(())
-    }
-
     // --- Pool-based convenience wrappers (test-only) ------------------------
-    // Terse `&self.pool` setup for the store's own tests; production writes go through
-    // the transactional twins above. Gated `#[cfg(test)]` because the sole non-test
-    // caller (admin `apply_edit`) uses the `*_tx` variants — an ungated pool-based
-    // method here would be dead code (crate-private `Store`).
+    // Terse setup helpers for this crate's live-Postgres tests. Gated `#[cfg(test)]`
+    // because an ungated pool-based method here would be dead code (`Store` is private).
 
     /// [`Store::insert_tx`] over a freshly acquired pooled connection.
     #[cfg(test)]
@@ -201,18 +171,27 @@ impl Store {
         self.insert_tx(&mut conn, name, key, policy).await
     }
 
-    /// [`Store::set_policy_tx`] over a freshly acquired pooled connection.
+    /// Replaces a key's policy for test setup/assertions.
     #[cfg(test)]
     pub async fn set_policy(&self, name: &str, policy: &str) -> Result<(), sqlx::Error> {
-        let mut conn = self.pool.acquire().await?;
-        self.set_policy_tx(&mut conn, name, policy).await
+        sqlx::query("UPDATE apikeys.keys SET policy = $1 WHERE name = $2")
+            .bind(policy)
+            .bind(name)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
     }
 
-    /// [`Store::revoke_tx`] over a freshly acquired pooled connection.
+    /// Revokes a key for test setup/assertions.
     #[cfg(test)]
     pub async fn revoke(&self, name: &str) -> Result<(), sqlx::Error> {
-        let mut conn = self.pool.acquire().await?;
-        self.revoke_tx(&mut conn, name).await
+        sqlx::query(
+            "UPDATE apikeys.keys SET revoked_at = now() WHERE name = $1 AND revoked_at IS NULL",
+        )
+        .bind(name)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 
     /// Self-healing dev-seed upsert (Decision 7): inserts the well-known dev key, or —

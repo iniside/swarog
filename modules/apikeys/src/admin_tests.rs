@@ -10,7 +10,7 @@
 use super::*;
 use crate::admin::{admin_content_full, apply_edit};
 use crate::store::Store;
-use crate::store_tests::{cleanup, test_pool, unique_name};
+use crate::store_tests::{cleanup, db_test_lock, test_pool, unique_name};
 use std::sync::Arc;
 
 /// Finds a table row by its Name cell (column 0).
@@ -18,8 +18,26 @@ fn find_row<'a>(table: &'a adminapi::Table, name: &str) -> Option<&'a Vec<admina
     table.rows.iter().find(|r| r[0].text == name)
 }
 
+async fn rendered_params(svc: &Arc<Service>) -> adminapi::Params {
+    let form = admin_content_full(svc)
+        .await
+        .unwrap()
+        .form
+        .expect("local API key admin form");
+    form.fields
+        .into_iter()
+        .map(|field| (field.name, field.value))
+        .chain(
+            form.hidden
+                .into_iter()
+                .map(|field| (field.name, field.value)),
+        )
+        .collect()
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn render_shows_rows_kpis_and_fields() {
+    let _guard = db_test_lock().await;
     let Some(pool) = test_pool().await else { return };
     let svc = Arc::new(Service { store: Store { pool: pool.clone() } });
     let base = unique_name(&pool).await;
@@ -76,6 +94,7 @@ async fn render_shows_rows_kpis_and_fields() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn submit_policy_edit_add_and_revoke() {
+    let _guard = db_test_lock().await;
     let Some(pool) = test_pool().await else { return };
     let svc = Arc::new(Service { store: Store { pool: pool.clone() } });
     let base = unique_name(&pool).await;
@@ -84,7 +103,7 @@ async fn submit_policy_edit_add_and_revoke() {
     svc.store.insert(&name, &key, "accounts.login").await.unwrap();
 
     // Policy edit: posting a changed value re-writes the policy.
-    let mut edit = adminapi::Params::new();
+    let mut edit = rendered_params(&svc).await;
     edit.insert(name.clone(), "full".into());
     apply_edit(&svc, edit).await.unwrap();
     assert_eq!(svc.store.lookup(&key).await.unwrap().unwrap().policy, "full");
@@ -92,7 +111,7 @@ async fn submit_policy_edit_add_and_revoke() {
     // Add-new: the full triple inserts a new key.
     let new_name = format!("{base}-new");
     let new_key = format!("{base}-new-key");
-    let mut add = adminapi::Params::new();
+    let mut add = rendered_params(&svc).await;
     add.insert("_new_name".into(), new_name.clone());
     add.insert("_new_key".into(), new_key.clone());
     add.insert("_new_policy".into(), "characters.create".into());
@@ -103,7 +122,7 @@ async fn submit_policy_edit_add_and_revoke() {
     );
 
     // Revoke: naming a key in `_revoke_name` revokes it (lookup then misses).
-    let mut rev = adminapi::Params::new();
+    let mut rev = rendered_params(&svc).await;
     rev.insert("_revoke_name".into(), new_name.clone());
     apply_edit(&svc, rev).await.unwrap();
     assert_eq!(svc.store.lookup(&new_key).await.unwrap(), None);
@@ -117,6 +136,7 @@ async fn submit_policy_edit_add_and_revoke() {
 /// regression where the admin face silently went unregistered.
 #[tokio::test(flavor = "multi_thread")]
 async fn edge_serves_admin_data() {
+    let _guard = db_test_lock().await;
     let Some(pool) = test_pool().await else { return };
     let svc = Arc::new(Service { store: Store { pool: pool.clone() } });
     let base = unique_name(&pool).await;
@@ -151,6 +171,7 @@ async fn edge_serves_admin_data() {
 /// as it was — no partial commit of the valid edit or the add-row.
 #[tokio::test(flavor = "multi_thread")]
 async fn submit_mixed_valid_and_invalid_is_atomic() {
+    let _guard = db_test_lock().await;
     let Some(pool) = test_pool().await else { return };
     let svc = Arc::new(Service { store: Store { pool: pool.clone() } });
     let base = unique_name(&pool).await;
@@ -164,7 +185,7 @@ async fn submit_mixed_valid_and_invalid_is_atomic() {
     // One submit: VALID policy change for X, INVALID (blank) policy for Y, VALID add-row.
     let new_name = format!("{base}-new");
     let new_key = format!("{base}-new-key");
-    let mut edit = adminapi::Params::new();
+    let mut edit = rendered_params(&svc).await;
     edit.insert(x_name.clone(), "full".into());
     edit.insert(y_name.clone(), "   ".into());
     edit.insert("_new_name".into(), new_name.clone());
@@ -184,6 +205,7 @@ async fn submit_mixed_valid_and_invalid_is_atomic() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn submit_rejects_invalid_policy_without_writing() {
+    let _guard = db_test_lock().await;
     let Some(pool) = test_pool().await else { return };
     let svc = Arc::new(Service { store: Store { pool: pool.clone() } });
     let base = unique_name(&pool).await;
@@ -192,7 +214,7 @@ async fn submit_rejects_invalid_policy_without_writing() {
     svc.store.insert(&name, &key, "accounts.login").await.unwrap();
 
     // A blank policy is invalid; apply_edit returns an error and leaves the policy intact.
-    let mut edit = adminapi::Params::new();
+    let mut edit = rendered_params(&svc).await;
     edit.insert(name.clone(), "   ".into());
     let err = apply_edit(&svc, edit).await.unwrap_err();
     assert!(err.to_string().contains("invalid policy"), "got: {err}");
@@ -203,6 +225,7 @@ async fn submit_rejects_invalid_policy_without_writing() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn submit_rejects_underscore_prefixed_new_name_without_writing() {
+    let _guard = db_test_lock().await;
     let Some(pool) = test_pool().await else { return };
     let svc = Arc::new(Service { store: Store { pool: pool.clone() } });
     let base = unique_name(&pool).await;
@@ -211,7 +234,7 @@ async fn submit_rejects_underscore_prefixed_new_name_without_writing() {
     let new_name = format!("_{base}-new");
     let new_key = format!("{base}-new-key");
 
-    let mut add = adminapi::Params::new();
+    let mut add = rendered_params(&svc).await;
     add.insert("_new_name".into(), new_name.clone());
     add.insert("_new_key".into(), new_key.clone());
     add.insert("_new_policy".into(), "full".into());
