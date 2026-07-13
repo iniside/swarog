@@ -173,6 +173,11 @@ fn check_links(
 /// `baas-feature-gap-matrix.md`), the section is lying and must drop the link
 /// (or the marker must be removed because the doc really is current again).
 /// Mechanical check only: it looks for the marker string, never judges content.
+///
+/// Fails loud when it has nothing to scan: if the `## Current reference`
+/// heading is missing (renamed) or the section contains no local links, the
+/// tripwire would otherwise be silently disabled forever — this function is
+/// the only reader of that section, so nothing else would notice.
 fn check_current_reference_archival(root: &Path, findings: &mut BTreeSet<String>) -> Result<()> {
     let document = root.join("docs/README.md");
     if !document.is_file() {
@@ -182,11 +187,14 @@ fn check_current_reference_archival(root: &Path, findings: &mut BTreeSet<String>
         .with_context(|| format!("read {}", document.display()))?;
     let relative = display_path(root, &document);
     let mut in_section = false;
+    let mut section_seen = false;
+    let mut links_inspected = 0usize;
     for (index, line) in contents.lines().enumerate() {
         let line_number = index + 1;
         let trimmed = line.trim();
         if trimmed.starts_with("## ") {
             in_section = trimmed.trim_start_matches('#').trim().eq_ignore_ascii_case("Current reference");
+            section_seen |= in_section;
             continue;
         }
         if !in_section {
@@ -206,6 +214,7 @@ fn check_current_reference_archival(root: &Path, findings: &mut BTreeSet<String>
             } else {
                 document.parent().unwrap_or(root).join(portable_target)
             };
+            links_inspected += 1;
             if !resolved.is_file() {
                 // Missing-link reporting is check_links's job.
                 continue;
@@ -221,14 +230,23 @@ fn check_current_reference_archival(root: &Path, findings: &mut BTreeSet<String>
             }
         }
     }
+    if !section_seen || links_inspected == 0 {
+        findings.insert(format!(
+            "{relative}: \"Current reference\" section not found or contains no local links — \
+             the archival tripwire has nothing to scan; restore the heading or update docs_current.rs"
+        ));
+    }
     Ok(())
 }
 
 /// Matches this repo's existing archival-marker precedent (e.g.
 /// `baas-feature-gap-matrix.md:1`): an English `> **ARCHIVED` blockquote or the
-/// earlier Polish `ARCHIWALNE` wording, either as the first non-empty line.
+/// earlier Polish `ARCHIWALNE` wording, case-insensitively. Deliberately scoped
+/// to the FIRST non-empty line only (the caller enforces that scope) — scanning
+/// the whole document for marker-shaped text would drift from a mechanical
+/// marker match into a content heuristic.
 fn is_archived_marker(line: &str) -> bool {
-    let trimmed = line.trim_start();
+    let trimmed = line.trim_start().to_ascii_uppercase();
     trimmed.starts_with("> **ARCHIVED") || trimmed.contains("ARCHIWALNE")
 }
 
@@ -591,6 +609,63 @@ cargo run `-p` prose-only
             .any(|finding| finding.contains("docs/README.md")
                 && finding.contains("archived document `reference/retired.md`")));
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn current_reference_marker_match_is_case_insensitive() {
+        let root = fixture_root("archived-case-insensitive");
+        std::fs::write(
+            root.join("docs/reference/retired.md"),
+            "> **Archived (JVM/Quarkus-era)** — not current. Current state: CLAUDE.md.\n\n# Retired\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("docs/README.md"),
+            "# Documentation map\n\n## Current reference\n\n- [Retired](reference/retired.md)\n",
+        )
+        .unwrap();
+        let mut found = BTreeSet::new();
+        check_current_reference_archival(&root, &mut found).unwrap();
+        assert_eq!(found.len(), 1, "unexpected findings: {found:?}");
+        assert!(found
+            .iter()
+            .any(|finding| finding.contains("archived document `reference/retired.md`")));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn current_reference_dead_gate_fails_loud() {
+        // Renamed heading: the section is never entered => finding.
+        let renamed_root = fixture_root("dead-gate-renamed");
+        std::fs::write(renamed_root.join("docs/reference/live.md"), "# Live\n").unwrap();
+        std::fs::write(
+            renamed_root.join("docs/README.md"),
+            "# Documentation map\n\n## Reference material\n\n- [Live](reference/live.md)\n",
+        )
+        .unwrap();
+        let mut found = BTreeSet::new();
+        check_current_reference_archival(&renamed_root, &mut found).unwrap();
+        assert_eq!(found.len(), 1, "unexpected findings: {found:?}");
+        assert!(found
+            .iter()
+            .any(|finding| finding.contains("section not found or contains no local links")));
+        let _ = std::fs::remove_dir_all(renamed_root);
+
+        // Present-but-linkless section: zero local links inspected => finding.
+        // An external link must not count as a scanned target.
+        let linkless_root = fixture_root("dead-gate-linkless");
+        std::fs::write(
+            linkless_root.join("docs/README.md"),
+            "# Documentation map\n\n## Current reference\n\nProse only, and one\n[external](https://example.com/doc.md) link.\n\n## Historical material\n",
+        )
+        .unwrap();
+        let mut found = BTreeSet::new();
+        check_current_reference_archival(&linkless_root, &mut found).unwrap();
+        assert_eq!(found.len(), 1, "unexpected findings: {found:?}");
+        assert!(found
+            .iter()
+            .any(|finding| finding.contains("section not found or contains no local links")));
+        let _ = std::fs::remove_dir_all(linkless_root);
     }
 
     #[test]
