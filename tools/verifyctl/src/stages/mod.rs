@@ -4,6 +4,7 @@ pub mod command;
 pub mod conformance;
 pub mod contract_golden;
 pub mod csharp;
+pub mod docs_current;
 pub mod fortress;
 pub mod fuzz;
 pub mod mutants;
@@ -69,6 +70,11 @@ pub const BLOCKING: &[Stage] = &[
         id: StageId::Conformance,
         class: StageClass::Blocking,
         run: conformance::run,
+    },
+    Stage {
+        id: StageId::DocsCurrent,
+        class: StageClass::Blocking,
+        run: docs_current::run,
     },
     Stage {
         id: StageId::SplitProof,
@@ -254,15 +260,16 @@ mod tests {
                 "codegen-freshness",
                 "contract-golden",
                 "conformance",
+                "docs-current",
                 "split-proof"
             ]
         );
         assert_eq!(
-            &names(crate::cli::Level::All)[10..],
+            &names(crate::cli::Level::All)[11..],
             &["public-api", "fuzz", "csharp-client", "topiccheck"]
         );
         assert_eq!(names(crate::cli::Level::Slow).last(), Some(&"mutants"));
-        assert_eq!(manifest(crate::cli::Level::Fast, true).len(), 14);
+        assert_eq!(manifest(crate::cli::Level::Fast, true).len(), 15);
     }
 
     #[test]

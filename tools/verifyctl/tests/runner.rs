@@ -40,6 +40,9 @@ impl FakeRun {
         std::fs::create_dir_all(target.join("debug")).unwrap();
         std::fs::create_dir_all(&bin).unwrap();
         std::fs::write(root.join("Cargo.toml"), "[workspace]\n").unwrap();
+        for document in ["README.md", "CLAUDE.md", "AGENTS.md"] {
+            std::fs::write(root.join(document), "").unwrap();
+        }
         for directory in [
             "api",
             "clients/csharp/Generated",
@@ -102,6 +105,7 @@ fn fake_path_covers_outcomes_audit_install_lease_and_summary_exits() {
     assert_exit(&output, 0);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("build                | PASS"));
+    assert!(stdout.contains("docs-current         | PASS"));
     assert!(stdout.contains("split-proof          | PASS"));
     assert!(std::fs::read_to_string(&pass.record)
         .unwrap()
