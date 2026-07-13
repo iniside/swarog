@@ -11,6 +11,7 @@
 //! event append commit in ONE transaction, via `bus::emit_tx` on the same `&mut *tx` — the
 //! event is durable iff the character is. An impl crate: no other module imports it.
 
+pub mod conformance;
 
 use std::sync::{Arc, OnceLock};
 
@@ -26,6 +27,17 @@ use sqlx::{PgConnection, PgPool};
 const ADMIN_ITEM_ID: &str = "characters";
 const ADMIN_SECTION: &str = "Game Content";
 const ADMIN_LABEL: &str = "Characters";
+
+const MAX_NAME_BYTES: usize = 128;
+const MAX_CLASS_BYTES: usize = 64;
+
+pub(crate) fn name_within_cap(name: &str) -> bool {
+    name.len() <= MAX_NAME_BYTES
+}
+
+pub(crate) fn class_within_cap(class: &str) -> bool {
+    class.len() <= MAX_CLASS_BYTES
+}
 
 /// Creates this module's OWN schema and nothing else — full logical isolation (#10).
 /// Idempotent. Verbatim from Go's `schemaDDL`: `player_id` is a plain ref to
@@ -193,7 +205,8 @@ impl Player for Service {
     /// Adds a character owned by the caller (player_id from `identity`, NEVER an
     /// argument). The domain INSERT + the `character.created` durable event append commit in
     /// ONE tx: the event is durable iff the character is. A missing identity or empty
-    /// name is `Status::Invalid`; class defaults to `"novice"`.
+    /// name is `Status::Invalid`; class defaults to `"novice"`. The persisted name
+    /// and class are capped at 128 and 64 UTF-8 bytes respectively.
     async fn create(&self, identity: Identity, name: String, class: String) -> Result<Character, Error> {
         let player_id = identity
             .player_id()
@@ -203,6 +216,17 @@ impl Player for Service {
             return Err(Error::invalid("name is required"));
         }
         let class = if class.is_empty() { "novice".to_string() } else { class };
+
+        if !name_within_cap(&name) {
+            return Err(Error::invalid(format!(
+                "name exceeds {MAX_NAME_BYTES} bytes"
+            )));
+        }
+        if !class_within_cap(&class) {
+            return Err(Error::invalid(format!(
+                "class exceeds {MAX_CLASS_BYTES} bytes"
+            )));
+        }
 
         let mut tx = self.store.pool.begin().await.map_err(internal)?;
         let c = self

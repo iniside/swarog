@@ -34,6 +34,43 @@ async fn create_rejects_missing_identity_and_empty_name() {
     assert_eq!(e.status, Status::Invalid);
 }
 
+#[test]
+fn character_text_caps_count_utf8_bytes_at_boundary_and_one_over() {
+    let name_boundary = "é".repeat(MAX_NAME_BYTES / 2);
+    let name_over = format!("{name_boundary}a");
+    assert_eq!(name_boundary.len(), MAX_NAME_BYTES);
+    assert_eq!(name_over.len(), MAX_NAME_BYTES + 1);
+    assert!(name_within_cap(&name_boundary));
+    assert!(!name_within_cap(&name_over));
+
+    let class_boundary = "é".repeat(MAX_CLASS_BYTES / 2);
+    let class_over = format!("{class_boundary}a");
+    assert_eq!(class_boundary.len(), MAX_CLASS_BYTES);
+    assert_eq!(class_over.len(), MAX_CLASS_BYTES + 1);
+    assert!(class_within_cap(&class_boundary));
+    assert!(!class_within_cap(&class_over));
+}
+
+/// Both caps reject before `pool.begin()`; the lazy service needs no reachable DB.
+#[tokio::test]
+async fn create_rejects_over_cap_name_and_class_before_db() {
+    let svc = lazy_service();
+
+    let over_name = format!("{}a", "é".repeat(MAX_NAME_BYTES / 2));
+    let e = svc
+        .create(Identity::player("p1"), over_name, String::new())
+        .await
+        .unwrap_err();
+    assert_eq!(e.status, Status::Invalid);
+
+    let over_class = format!("{}a", "é".repeat(MAX_CLASS_BYTES / 2));
+    let e = svc
+        .create(Identity::player("p1"), "Aragorn".into(), over_class)
+        .await
+        .unwrap_err();
+    assert_eq!(e.status, Status::Invalid);
+}
+
 /// list/delete also reject a missing identity before any DB work.
 #[tokio::test]
 async fn list_and_delete_require_identity() {
