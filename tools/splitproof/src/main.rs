@@ -90,6 +90,10 @@ impl Ctx {
     /// can answer 200 on `svc.http_port` even though the NEW child already died on
     /// bind (EADDRINUSE) — checking `try_wait` before trusting the HTTP probe turns
     /// that into an immediate, loud failure instead of a proof running against old code.
+    /// Liveness alone cannot prove the child OWNS the listener (a bind-failed child
+    /// that hangs without exiting is invisible to `try_wait` while a stale listener
+    /// answers 200) — `ensure_no_stale_listener`'s pre-spawn probe is the guard for
+    /// that class.
     async fn wait_healthy(&self, svc: &ServiceSpec, child: &mut OwnedChild) -> Result<()> {
         let url = format!("http://127.0.0.1:{}/readyz", svc.http_port);
         let deadline = Instant::now() + Duration::from_secs(30);
@@ -112,6 +116,23 @@ impl Ctx {
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
     }
+}
+
+/// Pre-spawn stale-listener probe: before a service is spawned, its readyz port must
+/// have NO listener — anything accepting a TCP connect there is a stale process from a
+/// previous hung run (or an unrelated port conflict), and the health gate would then
+/// probe the OLD listener while the NEW child dies or hangs on bind. Connection
+/// refused is the good case. This closes the whole stale-listener class regardless of
+/// what the new child later does (exit, hang, or anything in between).
+fn ensure_no_stale_listener(svc_name: &str, port: u16) -> Result<()> {
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    if std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(250)).is_ok() {
+        bail!(
+            "port :{port} already has a listener before spawn ({svc_name}) — stale \
+             process from a previous run or port conflict; clean up and retry"
+        );
+    }
+    Ok(())
 }
 
 /// Returns one description per fleet child that is no longer alive (`try_wait`
@@ -531,6 +552,7 @@ async fn run(root: PathBuf, run_dir: PathBuf) -> Result<u32> {
         // config-svc must boot AFTER the baseline reset (done above) so its first
         // snapshot is the default; the centralized processctl fleet already
         // places it late.
+        ensure_no_stale_listener(svc.name, svc.http_port)?;
         let mut running = ctx.spawn(svc)?;
         ctx.wait_healthy(svc, &mut running.child).await?;
         fleet.push(running);
@@ -1331,6 +1353,9 @@ async fn i_gate(ctx: &Ctx, fleet: &mut Vec<Running>, p: &mut Proof) -> Result<()
     let mut restarted = original.clone();
     restarted.env = env;
     println!("[splitproof] restarting {} on :{} without the dev-grant flag ...", restarted.name, restarted.http_port);
+    // Same stale-listener guard as the boot loop: the killed inventory-svc must have
+    // actually released its port before the respawn is trusted.
+    ensure_no_stale_listener(restarted.name, restarted.http_port)?;
     let mut running = ctx.spawn(&restarted)?;
     ctx.wait_healthy(&restarted, &mut running.child).await?;
     fleet.insert(idx, running);

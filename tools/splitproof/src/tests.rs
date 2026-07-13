@@ -78,6 +78,12 @@ fn fleet_liveness_reports_a_child_that_already_exited() {
         dead[0].contains("fixture-svc"),
         "detail must name the dead service: {dead:?}"
     );
+    // The detail must also carry the exit status ("exited with exit code: 3" on
+    // Windows / "exit status: 3" on unix), not just the name.
+    assert!(
+        dead[0].contains("exit") && dead[0].contains('3'),
+        "detail must carry the exit status: {dead:?}"
+    );
 }
 
 /// A still-running child must NOT be reported dead (the positive control for the
@@ -87,9 +93,12 @@ fn fleet_liveness_ignores_a_still_running_child() {
     let cwd = std::env::temp_dir();
     let sleep_spec = {
         let mut spec = exit_soon_spec(&cwd);
+        // NB: `timeout /T` refuses redirected stdin (OwnedChild wires stdin to NUL,
+        // processctl platform/windows.rs) and exits immediately with an error —
+        // `ping -n` is stdin-agnostic, so this fixture genuinely stays alive.
         #[cfg(windows)]
         {
-            spec.args = vec![OsString::from("/C"), OsString::from("timeout /T 30 /NOBREAK >NUL")];
+            spec.args = vec![OsString::from("/C"), OsString::from("ping -n 31 127.0.0.1 >NUL")];
         }
         #[cfg(not(windows))]
         {
@@ -105,4 +114,25 @@ fn fleet_liveness_ignores_a_still_running_child() {
 
     // `fleet` drops here: OwnedChild's Drop force-kills the still-running fixture, so
     // the test leaves no orphaned process behind.
+}
+
+/// The failing branch of the pre-spawn probe: a port that already has a listener
+/// (a stale process from a previous hung run) must bail loudly, naming the port and
+/// the service about to be spawned.
+#[test]
+fn stale_listener_probe_bails_when_the_port_is_already_bound() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+    let port = listener.local_addr().expect("local addr").port();
+
+    let error = super::ensure_no_stale_listener("probe-svc", port)
+        .expect_err("occupied port must be rejected");
+    let message = format!("{error:#}");
+    assert!(
+        message.contains(&format!(":{port}")) && message.contains("probe-svc"),
+        "error must name the port and service: {message}"
+    );
+
+    // Positive control: once the listener is gone, the same port passes.
+    drop(listener);
+    super::ensure_no_stale_listener("probe-svc", port).expect("freed port must pass");
 }
