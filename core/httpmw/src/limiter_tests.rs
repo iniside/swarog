@@ -67,3 +67,32 @@ fn evict_idle_reaps_only_stale_buckets() {
     assert!(lim.has_bucket(fresh), "fresh visitor should remain");
     assert_eq!(lim.bucket_count(), 1);
 }
+
+#[test]
+fn visitor_cap_rejects_only_new_ips_until_reaper_frees_space() {
+    let before = table_saturated_total().get();
+    let lim = IpLimiter::with_max_visitors(0.0, 2, 2);
+    let existing = ip(1, 1, 1, 1);
+    let stale = ip(2, 2, 2, 2);
+    let newcomer = ip(3, 3, 3, 3);
+
+    assert!(lim.allow(existing));
+    assert!(lim.allow(stale));
+    assert_eq!(lim.bucket_count(), 2);
+
+    // Existing entries still consult their bucket at capacity. A new address is
+    // rejected without insertion, so the table cannot grow beyond its immutable cap.
+    assert!(lim.allow(existing));
+    assert!(!lim.allow(newcomer));
+    assert!(!lim.has_bucket(newcomer));
+    assert_eq!(lim.bucket_count(), 2);
+    assert_eq!(table_saturated_total().get(), before + 1);
+
+    // Capacity is recovered only by the existing reaper path.
+    lim.backdate(stale, EVICT_AFTER + Duration::from_secs(1));
+    lim.evict_idle(Instant::now());
+    assert_eq!(lim.bucket_count(), 1);
+    assert!(lim.allow(newcomer));
+    assert!(lim.has_bucket(newcomer));
+    assert_eq!(lim.bucket_count(), 2);
+}

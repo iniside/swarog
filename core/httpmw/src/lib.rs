@@ -27,8 +27,8 @@
 //!   op traffic by pattern instead of the fixed `"unmatched"`. The shared seam both the
 //!   gateway and `metrics` import.
 //!
-//! Leaf rule: this crate imports only `axum` + `ipnet` + `tokio` (+ `tracing`); it never
-//! reaches a module or an `api/` contract crate — same tier as `bus`/`registry`/`metrics`.
+//! Leaf rule: this crate imports only core infrastructure dependencies; it never reaches
+//! a module or an `api/` contract crate — same tier as `bus`/`registry`/`metrics`.
 
 mod client_ip;
 mod layer;
@@ -40,6 +40,8 @@ mod route_pattern;
 pub use client_ip::{client_ip, parse_cidrs};
 pub use layer::{HttpLayer, LAYER_SLOT};
 pub use limiter::IpLimiter;
+#[doc(hidden)]
+pub use limiter::table_saturation_collector;
 pub use middleware::mount;
 pub use readiness::{ReadyCheck, READINESS_SLOT};
 pub use route_pattern::RoutePattern;

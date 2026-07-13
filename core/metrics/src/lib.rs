@@ -12,11 +12,13 @@
 //! earlier gateway exemption was Go parity that lost its rationale once peers stopped
 //! fronting HTTP).
 //!
-//! Two collectors, both labeled `{method, path, status}`:
+//! Two request collectors, both labeled `{method, path, status}`:
 //! - `http_requests_total` — request count,
 //! - `http_request_duration_seconds` — latency histogram, on prometheus's default
 //!   buckets, which are byte-identical to Go's `prometheus.DefBuckets`
 //!   (`.005,.01,.025,.05,.1,.25,.5,1,2.5,5,10`).
+//! The same private registry also carries the unlabeled, `httpmw`-owned
+//! `http_rate_limit_table_saturated_total` counter.
 //!
 //! **The `path` label is the MATCHED ROUTE PATTERN, never the raw URL** — the cardinality
 //! guard Go implemented by reading `r.Pattern` after the mux matched. The axum analogue is
@@ -95,6 +97,9 @@ fn metrics() -> &'static Collectors {
         registry
             .register(Box::new(request_duration.clone()))
             .expect("register http_request_duration_seconds");
+        registry
+            .register(httpmw::table_saturation_collector())
+            .expect("register http_rate_limit_table_saturated_total");
         Collectors {
             registry,
             requests_total,

@@ -9,6 +9,7 @@ publish = false
 contrib = { workspace = true }
 axum = { workspace = true }
 ipnet = { workspace = true }
+prometheus = { workspace = true }
 # tokio for the background idle-bucket eviction loop (spawn + interval) — Go ran a
 # goroutine; we spawn a task. `rt` for spawn, `time` for the interval.
 tokio = { workspace = true, features = ["rt", "time"] }

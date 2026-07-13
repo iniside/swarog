@@ -5,12 +5,34 @@
 
 use std::collections::HashMap;
 use std::net::IpAddr;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 /// How long a per-IP bucket may sit idle before the cleanup task reaps it (Go's
 /// `evictAfter`).
 const EVICT_AFTER: Duration = Duration::from_secs(3 * 60);
+
+/// Hard ceiling for distinct live client buckets. Idle entries leave only through the
+/// existing minute reaper; a new address arriving at the ceiling is rejected in O(1).
+const DEFAULT_MAX_VISITORS: usize = 65_536;
+
+fn table_saturated_total() -> &'static prometheus::IntCounter {
+    static COUNTER: OnceLock<prometheus::IntCounter> = OnceLock::new();
+    COUNTER.get_or_init(|| {
+        prometheus::IntCounter::new(
+            "http_rate_limit_table_saturated_total",
+            "HTTP requests rejected because the per-IP rate-limit table was full.",
+        )
+        .expect("valid http_rate_limit_table_saturated_total metric")
+    })
+}
+
+/// Returns the rate-limit table saturation collector for registration in the process's
+/// private metrics registry. The counter remains owned and updated by `httpmw`.
+#[doc(hidden)]
+pub fn table_saturation_collector() -> Box<dyn prometheus::core::Collector> {
+    Box::new(table_saturated_total().clone())
+}
 
 /// A single token bucket, a faithful-enough port of `x/time/rate.Limiter`: `tokens`
 /// refill continuously at `rate` per second up to `burst`, and each admitted request
@@ -66,6 +88,7 @@ pub struct IpLimiter {
     visitors: Mutex<HashMap<IpAddr, Visitor>>,
     rate: f64,
     burst: f64,
+    max_visitors: usize,
 }
 
 impl IpLimiter {
@@ -74,11 +97,26 @@ impl IpLimiter {
     /// once inside an async context (the boot layer does; unit tests drive
     /// [`IpLimiter::evict_idle`] directly, deterministically, as Go's tests do).
     pub fn new(rate: f64, burst: u32) -> Arc<IpLimiter> {
+        Self::with_capacity(rate, burst, DEFAULT_MAX_VISITORS)
+    }
+
+    fn with_capacity(rate: f64, burst: u32, max_visitors: usize) -> Arc<IpLimiter> {
         Arc::new(IpLimiter {
             visitors: Mutex::new(HashMap::new()),
             rate,
             burst: f64::from(burst),
+            max_visitors,
         })
+    }
+
+    /// Test-only constructor with a tiny deterministic visitor ceiling.
+    #[cfg(test)]
+    pub(crate) fn with_max_visitors(
+        rate: f64,
+        burst: u32,
+        max_visitors: usize,
+    ) -> Arc<IpLimiter> {
+        Self::with_capacity(rate, burst, max_visitors)
     }
 
     /// Reports whether a request from `ip` may proceed now, spending one token from that
@@ -87,12 +125,24 @@ impl IpLimiter {
     pub fn allow(&self, ip: IpAddr) -> bool {
         let now = Instant::now();
         let mut visitors = self.visitors.lock().unwrap();
-        let visitor = visitors.entry(ip).or_insert_with(|| Visitor {
+
+        if let Some(visitor) = visitors.get_mut(&ip) {
+            visitor.last_seen = now;
+            return visitor.bucket.allow_at(now);
+        }
+
+        if visitors.len() >= self.max_visitors {
+            table_saturated_total().inc();
+            return false;
+        }
+
+        let mut visitor = Visitor {
             bucket: TokenBucket::new(self.rate, self.burst, now),
             last_seen: now,
-        });
-        visitor.last_seen = now;
-        visitor.bucket.allow_at(now)
+        };
+        let allowed = visitor.bucket.allow_at(now);
+        visitors.insert(ip, visitor);
+        allowed
     }
 
     /// Drops every bucket idle longer than [`EVICT_AFTER`] as of `now`. Split from the

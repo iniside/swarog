@@ -114,6 +114,10 @@ async fn metrics_endpoint_renders_exposition() {
         body.contains("http_request_duration_seconds"),
         "got:\n{body}"
     );
+    assert!(
+        body.contains("http_rate_limit_table_saturated_total"),
+        "got:\n{body}"
+    );
 }
 
 /// Infra endpoints are exempt from recording: hitting `/healthz` must never produce a
