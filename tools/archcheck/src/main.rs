@@ -591,16 +591,17 @@ fn crate_dirs(dir: &Path) -> Vec<String> {
         .collect()
 }
 
-/// Fortress-parity check (rule 12): every `modules/<name>` (minus the sanctioned
-/// [`SVC_EXEMPT_MODULES`]) must have a `cmd/<name>-svc` composition root. Inputs are
-/// the module dir names and cmd dir names from a [`crate_dirs`] filesystem scan, so
-/// the check follows the folders themselves — no per-module list to maintain.
 /// Rule 9: `core/bus` (package name `bus`, classified `Kind::Core("bus")`) must never
 /// depend on `sqlx` under ANY dep kind (normal/dev/build) — see the call site's comment
-/// for the AnyTx/Delivery-seam rationale.
+/// for the AnyTx/Delivery-seam rationale. If NO package matches the target (rename/move),
+/// that absence is itself a violation — the rule must fail loudly, never silently scan
+/// nothing (the original `Kind::Other` regression).
 fn core_bus_sqlx_violations(packages: &[serde_json::Value]) -> Vec<String> {
     let mut violations = Vec::new();
+    let mut target_found = false;
     for pkg in packages {
+        // Name + path must stay in sync with the real crate; the exactly-one-target
+        // check below is the tripwire that turns a rename/move into a loud FAIL.
         if pkg["name"].as_str() != Some("bus") {
             continue;
         }
@@ -608,6 +609,7 @@ fn core_bus_sqlx_violations(packages: &[serde_json::Value]) -> Vec<String> {
         if !matches!(classify(manifest), Kind::Core(ref n) if n == "bus") {
             continue; // sanity: only the core/bus package is in scope
         }
+        target_found = true;
         for dep in pkg["dependencies"].as_array().into_iter().flatten() {
             if dep["name"].as_str() == Some("sqlx") {
                 violations.push(
@@ -616,9 +618,21 @@ fn core_bus_sqlx_violations(packages: &[serde_json::Value]) -> Vec<String> {
             }
         }
     }
+    if !target_found {
+        violations.push(
+            "archcheck rule 9 found no core/bus package to scan (package `bus` at \
+             core/bus/Cargo.toml) — the crate was renamed or moved; update the rule's \
+             target or restore core/bus"
+                .to_string(),
+        );
+    }
     violations
 }
 
+/// Fortress-parity check (rule 12): every `modules/<name>` (minus the sanctioned
+/// [`SVC_EXEMPT_MODULES`]) must have a `cmd/<name>-svc` composition root. Inputs are
+/// the module dir names and cmd dir names from a [`crate_dirs`] filesystem scan, so
+/// the check follows the folders themselves — no per-module list to maintain.
 fn missing_svc_violations(modules: &[String], cmds: &[String]) -> Vec<String> {
     modules
         .iter()

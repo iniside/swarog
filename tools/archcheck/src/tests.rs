@@ -304,7 +304,8 @@ fn bus_without_sqlx_is_clean_via_the_real_scan() {
 
 #[test]
 fn non_bus_core_crate_with_sqlx_is_not_flagged() {
-    // The rule is scoped to core/bus specifically, not every core/* crate.
+    // The rule is scoped to core/bus specifically, not every core/* crate. A clean
+    // bus package is included so the missing-target tripwire stays quiet here.
     let packages = serde_json::json!([
         {
             "name": "asyncevents",
@@ -313,9 +314,36 @@ fn non_bus_core_crate_with_sqlx_is_not_flagged() {
                 { "name": "sqlx", "kind": null },
             ],
         },
+        {
+            "name": "bus",
+            "manifest_path": "/repo/core/bus/Cargo.toml",
+            "dependencies": [
+                { "name": "tokio", "kind": null },
+            ],
+        },
     ]);
     let packages = packages.as_array().unwrap();
     assert!(core_bus_sqlx_violations(packages).is_empty());
+}
+
+#[test]
+fn missing_core_bus_target_is_itself_a_violation() {
+    // Rename/move tripwire: if NO package matches (name `bus` classified
+    // Kind::Core("bus")), the rule must fail loudly instead of silently scanning
+    // nothing — the same silent-skip class as the original Kind::Other regression.
+    let packages = serde_json::json!([
+        {
+            "name": "core-bus", // renamed — no longer matches the rule's target
+            "manifest_path": "/repo/core/bus/Cargo.toml",
+            "dependencies": [
+                { "name": "sqlx", "kind": null },
+            ],
+        },
+    ]);
+    let packages = packages.as_array().unwrap();
+    let violations = core_bus_sqlx_violations(packages);
+    assert_eq!(violations.len(), 1, "violations: {violations:?}");
+    assert!(violations[0].contains("found no core/bus package"));
 }
 
 // --- Rule D: modules never runtime-dep the durable-events plane -------------
