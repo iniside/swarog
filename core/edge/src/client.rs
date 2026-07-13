@@ -9,7 +9,7 @@ use std::time::Duration;
 use quinn::crypto::rustls::QuicClientConfig;
 use serde_json::value::RawValue;
 
-use crate::frame::{read_frame, write_frame};
+use crate::frame::{frame_bytes, MAX_FRAME};
 use crate::tls::{client_bind_addr, DevCA};
 use crate::wire::{Request, Response};
 use crate::Error;
@@ -116,12 +116,12 @@ impl Client {
 
         // Fresh stream on the persistent connection (stream-per-call).
         let (mut send, mut recv) = self.conn.open_bi().await.map_err(|e| Error::Connection(e.to_string()))?;
-        write_frame(&mut send, &env_bytes).await?;
+        write_call_frame(&mut send, &env_bytes).await?;
         // Finish the write side: signals the stream is complete so the server reads
         // the full frame then EOF.
         send.finish().map_err(|e| Error::Stream(e.to_string()))?;
 
-        let resp_bytes = read_frame(&mut recv).await?;
+        let resp_bytes = read_call_frame(&mut recv).await?;
         let resp: Response = serde_json::from_slice(&resp_bytes).map_err(Error::Codec)?;
         if !resp.ok {
             let msg = resp.error.unwrap_or_default();
@@ -163,6 +163,48 @@ impl opsapi::Caller for Client {
         self.call_raw_id(method, identity, payload)
             .await
             .map_err(opsapi::Error::from)
+    }
+}
+
+/// Writes one call frame without erasing Quinn's stream-vs-connection failure.
+/// Only an explicit `ConnectionLost` proves the shared connection is unusable;
+/// STOPPED, closed/cancelled streams, and 0-RTT rejection belong to this call.
+async fn write_call_frame(send: &mut quinn::SendStream, bytes: &[u8]) -> Result<(), Error> {
+    let framed = frame_bytes(bytes)?;
+    send.write_all(&framed).await.map_err(map_write_error)
+}
+
+fn map_write_error(error: quinn::WriteError) -> Error {
+    let message = error.to_string();
+    match error {
+        quinn::WriteError::ConnectionLost(_) => Error::Connection(message),
+        _ => Error::Stream(message),
+    }
+}
+
+/// Reads one call frame through Quinn's inherent API so `ConnectionLost` remains
+/// typed. A reset, closed/cancelled stream, or early finish is stream-local; an
+/// oversized frame retains the existing typed `FrameTooLarge` error.
+async fn read_call_frame(recv: &mut quinn::RecvStream) -> Result<Vec<u8>, Error> {
+    let mut len = [0u8; 4];
+    recv.read_exact(&mut len).await.map_err(map_read_error)?;
+    let size = u32::from_be_bytes(len) as usize;
+    if size > MAX_FRAME {
+        return Err(Error::FrameTooLarge { size, max: MAX_FRAME });
+    }
+
+    let mut bytes = vec![0u8; size];
+    recv.read_exact(&mut bytes).await.map_err(map_read_error)?;
+    Ok(bytes)
+}
+
+fn map_read_error(error: quinn::ReadExactError) -> Error {
+    let message = error.to_string();
+    match error {
+        quinn::ReadExactError::ReadError(quinn::ReadError::ConnectionLost(_)) => {
+            Error::Connection(message)
+        }
+        _ => Error::Stream(message),
     }
 }
 
