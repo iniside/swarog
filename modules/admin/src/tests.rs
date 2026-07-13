@@ -43,6 +43,36 @@ fn state_from(ctx: &Context) -> AdminState {
     }
 }
 
+fn login_reaper_is_owned(admin: &Admin) -> bool {
+    admin
+        .login_reaper
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .is_some()
+}
+
+#[tokio::test]
+async fn login_reaper_stops_and_restarts_without_clock_coordination() {
+    let admin = Admin::new();
+    assert!(
+        admin
+            .login_limiter
+            .set(httpmw::IpLimiter::new(5.0, 20))
+            .is_ok()
+    );
+    let ctx = Context::new();
+
+    admin.start_login_reaper().unwrap();
+    assert!(login_reaper_is_owned(&admin));
+    admin.stop(&ctx).await.unwrap();
+    assert!(!login_reaper_is_owned(&admin));
+
+    admin.start_login_reaper().unwrap();
+    assert!(login_reaper_is_owned(&admin));
+    admin.stop(&ctx).await.unwrap();
+    assert!(!login_reaper_is_owned(&admin));
+}
+
 /// A LOCAL item contributing an empty render closure (Go's `Render` stand-in).
 fn local_item(id: &str, section: &str, label: &str) -> adminapi::Item {
     adminapi::Item::local(
@@ -1319,16 +1349,12 @@ async fn zero_user_boot_is_allowed() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         admin.init(&ctx).unwrap();
     }
-    assert!(
-        admin.login_reaper_started.get().is_none(),
-        "init must wire the limiter without spawning background work"
-    );
+    assert!(!login_reaper_is_owned(&admin), "init must wire without spawning background work");
     admin.migrate(&ctx).await.unwrap();
     admin.start(&ctx).await.expect("start must succeed with zero users (warn only)");
-    assert!(
-        admin.login_reaper_started.get().is_some(),
-        "a successful start must launch the limiter reaper"
-    );
+    assert!(login_reaper_is_owned(&admin), "a successful start must own the limiter reaper");
+    admin.stop(&ctx).await.unwrap();
+    assert!(!login_reaper_is_owned(&admin), "stop must await and release the limiter reaper");
 }
 
 #[tokio::test(flavor = "multi_thread")]

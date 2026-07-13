@@ -154,10 +154,10 @@ impl IpLimiter {
             .retain(|_, v| now.saturating_duration_since(v.last_seen) <= EVICT_AFTER);
     }
 
-    /// Spawns the background task that evicts idle buckets once a minute for the process
-    /// lifetime (Go's `cleanupLoop` goroutine). Requires a Tokio runtime — the boot
-    /// layer calls it from inside `app::run`.
-    pub fn spawn_eviction(self: &Arc<Self>) {
+    /// Spawns the background task that evicts idle buckets once a minute and returns
+    /// its lifecycle handle. Module owners retain this handle so `stop` can abort and
+    /// await the task; process-lifetime owners may use [`IpLimiter::spawn_eviction`].
+    pub fn spawn_eviction_task(self: &Arc<Self>) -> tokio::task::JoinHandle<()> {
         let this = self.clone();
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(Duration::from_secs(60));
@@ -168,7 +168,14 @@ impl IpLimiter {
                 ticker.tick().await;
                 this.evict_idle(Instant::now());
             }
-        });
+        })
+    }
+
+    /// Spawns a detached process-lifetime reaper (Go's `cleanupLoop` goroutine).
+    /// Requires a Tokio runtime — the app-level HTTP boot layer uses this convenience;
+    /// lifecycle modules should retain [`IpLimiter::spawn_eviction_task`] instead.
+    pub fn spawn_eviction(self: &Arc<Self>) {
+        std::mem::drop(self.spawn_eviction_task());
     }
 
     /// Test-only: how many buckets are currently held.

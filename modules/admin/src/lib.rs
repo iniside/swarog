@@ -52,7 +52,7 @@
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, LazyLock, OnceLock};
+use std::sync::{Arc, LazyLock, Mutex, OnceLock};
 
 use axum::extract::{ConnectInfo, Path, Query, Request, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
@@ -179,12 +179,13 @@ ON admin.login_attempts(updated_at);"#;
 pub struct Admin {
     deps: OnceLock<Deps>,
     /// Created during wiring, shared with the router, and retained here so lifecycle
-    /// `start` can launch the existing process-lifetime idle-bucket reaper only after
-    /// every fallible startup check has succeeded.
+    /// `start` can launch its idle-bucket reaper only after every fallible startup
+    /// check has succeeded.
     login_limiter: OnceLock<Arc<httpmw::IpLimiter>>,
-    /// `App` starts a module once per process, but keep a repeated start on the same
-    /// instance from spawning duplicate process-lifetime reapers.
-    login_reaper_started: OnceLock<()>,
+    /// Owned lifecycle task: `start` installs exactly one handle; `stop` takes, aborts,
+    /// and awaits it, leaving the same module instance restartable after normal teardown
+    /// or a later module's start-unwind.
+    login_reaper: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 /// Phase-1 captures, shared into the [`AdminState`] built at `init`.
@@ -202,6 +203,38 @@ impl Admin {
         self.deps
             .get()
             .ok_or_else(|| anyhow::anyhow!("admin.register must run before this phase"))
+    }
+
+    fn start_login_reaper(&self) -> anyhow::Result<()> {
+        let login_limiter = self
+            .login_limiter
+            .get()
+            .ok_or_else(|| anyhow::anyhow!("admin.init must run before start"))?;
+        let mut reaper = self
+            .login_reaper
+            .lock()
+            .map_err(|_| anyhow::anyhow!("admin login reaper lock poisoned"))?;
+        if reaper.is_none() {
+            *reaper = Some(login_limiter.spawn_eviction_task());
+        }
+        Ok(())
+    }
+
+    async fn stop_login_reaper(&self) -> anyhow::Result<()> {
+        let reaper = self
+            .login_reaper
+            .lock()
+            .map_err(|_| anyhow::anyhow!("admin login reaper lock poisoned"))?
+            .take();
+        let Some(reaper) = reaper else {
+            return Ok(());
+        };
+        reaper.abort();
+        match reaper.await {
+            Ok(()) => Ok(()),
+            Err(error) if error.is_cancelled() => Ok(()),
+            Err(error) => Err(anyhow::anyhow!("admin login reaper failed: {error}")),
+        }
     }
 }
 
@@ -309,20 +342,15 @@ impl Module for Admin {
             );
         }
 
-        // `spawn_eviction` owns no DB/module resources and intentionally runs for the
-        // Tokio runtime's lifetime (the same contract as app-level HTTP limiting). The
-        // production lifecycle constructs one `Admin` per process; `stop` therefore
-        // needs no task choreography, and a process restart constructs a fresh module.
-        // Keep this LAST: a failed `start` is never followed by `stop`, so the reaper
-        // must not be detached before every fallible startup operation has succeeded.
-        let login_limiter = self
-            .login_limiter
-            .get()
-            .ok_or_else(|| anyhow::anyhow!("admin.init must run before start"))?;
-        if self.login_reaper_started.set(()).is_ok() {
-            login_limiter.spawn_eviction();
-        }
+        // Keep this LAST: the module owns the returned task until `stop`, while an error
+        // in this module's own `start` is not followed by `stop`. A later module's start
+        // failure does stop this successfully-started prefix, aborting the task below.
+        self.start_login_reaper()?;
         Ok(())
+    }
+
+    async fn stop(&self, _ctx: &Context) -> anyhow::Result<()> {
+        self.stop_login_reaper().await
     }
 }
 
