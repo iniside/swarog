@@ -24,6 +24,7 @@ use adminapi::*;
 use opsapi::Error;
 
 adminapi::admin_admin_data_meta!(rpc_macro::generate_glue);
+adminapi::admin_admin_submit_meta!(rpc_macro::generate_glue);
 
 /// Installs the `admin.adminData` edge handler for `svc` on `server` — the server
 /// side of the fan-out. A provider registers this on its internal edge (via the
@@ -32,6 +33,19 @@ adminapi::admin_admin_data_meta!(rpc_macro::generate_glue);
 /// `adminrpc` directly.
 pub fn register_admin(server: &mut edge::Server, svc: Arc<dyn AdminData>) {
     admin_data_rpc::register_server(server, svc);
+}
+
+/// Installs the `admin.adminSubmit` edge handler for `svc` on `server` — the OPT-IN
+/// write half of the fan-out. A provider that supports remote admin writes registers
+/// this ALONGSIDE [`register_admin`] on its internal edge (via `edge::EDGE_SLOT`), so a
+/// remote admin process can POST a form edit; a provider that does not implement
+/// [`adminapi::AdminSubmit`] simply omits this call and the wire method stays absent
+/// (`UnknownMethod` → `NotFound`, remote item degrades to read-only). Providers reach
+/// it through their OWN `<name>rpc` re-export, never by importing `adminrpc` directly.
+/// Kept a SIBLING of [`register_admin`] (not folded into it) so the read-only fan-out
+/// providers keep their existing single-argument registration unchanged.
+pub fn register_admin_submit(server: &mut edge::Server, svc: Arc<dyn AdminSubmit>) {
+    admin_submit_rpc::register_server(server, svc);
 }
 
 /// Builds the client-side [`remote::RemoteFactory`] that contributes a REMOTE admin
@@ -63,6 +77,29 @@ pub fn admin_remote_factory(provider: &str) -> remote::RemoteFactory {
                 remote_fetch: Some(fetch),
             },
         );
+    })
+}
+
+/// Builds the client-side [`remote::RemoteFactory`] that provides an edge-backed
+/// `admin.adminSubmit` [`adminapi::AdminSubmit`] client for `provider` — the write
+/// mirror of [`admin_remote_factory`]. Applied by the owning `remote::Stub` in
+/// `register`, it `provide`s the generated `admin_submit_rpc::Client` (over the stub's
+/// edge-backed [`opsapi::Caller`]) into the registry under the capability's canonical
+/// key (`registry::key("admin", "admin_submit")`) via the generated
+/// `provide_remote`, so a co-hosted admin can resolve `dyn AdminSubmit` and dispatch a
+/// posted form edit to the peer over QUIC. `remote` stays `api/`-free: the closure
+/// arrives boxed, `core/remote` never names `adminapi`.
+///
+/// Exposed here for `cmd/admin-svc` to consume in a later step. NOTE: unlike
+/// [`admin_remote_factory`] (which contributes a PER-PROVIDER [`adminapi::Item`] to a
+/// multi-value slot), this uses the SINGLE canonical registry key, so at most ONE
+/// provider's submit client may be registered per process — the composition root
+/// decides which. `provider` is retained for symmetry/diagnostics.
+pub fn admin_submit_remote_factory(provider: &str) -> remote::RemoteFactory {
+    let provider = provider.to_string();
+    Box::new(move |ctx, caller| {
+        let _ = &provider;
+        admin_submit_rpc::provide_remote(ctx.registry(), caller);
     })
 }
 

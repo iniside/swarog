@@ -48,6 +48,33 @@ pub trait AdminData: Send + Sync {
     async fn admin_data(&self) -> Result<ItemData, Error>;
 }
 
+/// The OPT-IN write companion to [`AdminData`]: a provider that supports REMOTE admin
+/// WRITES implements this so a remote admin process can POST a form edit over the same
+/// QUIC edge (the wire method is `admin.adminSubmit`). WIRE-ONLY (no `#[http]`) and
+/// process-authenticated exactly like [`AdminData`] — the operator's session + CSRF are
+/// enforced IN the admin process BEFORE this edge call; the edge itself carries no
+/// player identity.
+///
+/// The single method is a MUTATION, so it is deliberately NOT `#[retry_safe]`: it
+/// defaults to `opsapi::RetryMode::Never` (fail-closed), so a lost response is never
+/// silently replayed. `id` names the provider's page (the admin slug); `params` is the
+/// flattened posted form — the SAME [`Params`] a LOCAL [`SubmitFn`] receives — and the
+/// success value is a [`SubmitOutcome`] (carrying any show-once `reveal`).
+///
+/// A provider that does NOT implement this simply never registers the wire method, so
+/// the edge answers `edge::Error::UnknownMethod` → [`opsapi::Status::NotFound`] and the
+/// remote admin degrades that item to read-only — the existing graceful-absent
+/// behaviour, no bespoke signalling.
+///
+/// Like [`AdminData`], the generated transport glue (`Client`, `register_server`) lives
+/// in the sibling `adminrpc` crate (which expands this crate's `admin_admin_submit_meta!`
+/// callback) — so THIS crate never depends on `edge`.
+#[rpc(prefix = "admin")]
+#[async_trait]
+pub trait AdminSubmit: Send + Sync {
+    async fn admin_submit(&self, id: String, params: Params) -> Result<SubmitOutcome, Error>;
+}
+
 /// A request's flattened query parameters (first value per key), handed to a LOCAL
 /// item's [`Item::render`]. The Rust stand-in for what Go carries on `context.Context`
 /// via `WithParams`/`Params`, so a render can switch on a drill-down parameter (e.g.
@@ -75,7 +102,7 @@ pub type RemoteFetchFn =
 /// (Go's `Submit` is a sync signature over `database/sql`; in async Rust it is a
 /// future). Owns its [`Params`] so the returned future is `'static`.
 pub type SubmitFn =
-    Arc<dyn Fn(Params) -> BoxFuture<'static, Result<(), SubmitError>> + Send + Sync>;
+    Arc<dyn Fn(Params) -> BoxFuture<'static, Result<SubmitOutcome, SubmitError>> + Send + Sync>;
 
 /// Errors a local [`SubmitFn`] can surface. [`SubmitError::Conflict`] means the
 /// form's posted expected-state evidence no longer matches the authoritative store;
@@ -87,6 +114,25 @@ pub enum SubmitError {
     Conflict,
     #[error(transparent)]
     Other(#[from] anyhow::Error),
+}
+
+/// The successful result of a [`SubmitFn`] (or a remote [`AdminSubmit::admin_submit`]).
+/// Ordinarily EMPTY (`SubmitOutcome::default()`); a form that MINTS a one-time secret
+/// (e.g. a freshly generated API key) returns it in `reveal` so the admin can show it
+/// EXACTLY ONCE after the POST — the value is never re-derivable from a later read. An
+/// empty `reveal` means "nothing to show; redirect as before".
+#[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct SubmitOutcome {
+    #[serde(default)]
+    pub reveal: Vec<RevealItem>,
+}
+
+/// One show-once value surfaced by a [`SubmitOutcome`]: an operator-facing `label` and
+/// the `value` to display exactly once (never persisted for re-display).
+#[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct RevealItem {
+    pub label: String,
+    pub value: String,
 }
 
 /// Errors a [`RemoteFetchFn`] can surface. [`ItemError::Absent`] is Go's
@@ -188,13 +234,47 @@ pub struct Form {
     pub submit: Option<SubmitFn>,
 }
 
-/// One input in a [`Form`]: a labelled text box pre-filled with `value`, whose
-/// `name` is both the HTML input name and the key in the submit values map.
+/// The widget a [`Field`] renders as. Additive over the wire: the default is
+/// [`FieldKind::Text`], so every historical `Field` (which never sets `kind`)
+/// deserialises and renders as a plain text box exactly as before.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub enum FieldKind {
+    /// A single-line text input (the historical `Field` behaviour).
+    #[default]
+    Text,
+    /// A single-choice dropdown over [`Field::options`]; the submitted value is the
+    /// chosen option's `value`.
+    Select,
+    /// A set of independent checkboxes over [`Field::options`]; the submitted value is
+    /// the comma-joined list of checked option `value`s (the owning module does the join).
+    CheckboxGroup,
+}
+
+/// One choice in a [`FieldKind::Select`]/[`FieldKind::CheckboxGroup`] field: the wire
+/// `value`, the operator-facing `label`, and whether it starts checked/selected.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct FieldOption {
+    pub value: String,
+    pub label: String,
+    #[serde(default)]
+    pub checked: bool,
+}
+
+/// One input in a [`Form`]: a labelled widget pre-filled with `value`, whose `name` is
+/// both the HTML input name and the key in the submit values map. `kind` selects the
+/// widget ([`FieldKind::Text`] by default); `options` supplies the choices for a
+/// `Select`/`CheckboxGroup` (empty for a plain text field).
 #[derive(Clone, Serialize, Deserialize, Default)]
 pub struct Field {
     pub name: String,
     pub label: String,
     pub value: String,
+    /// The widget kind; defaults to [`FieldKind::Text`] (additive over the wire).
+    #[serde(default)]
+    pub kind: FieldKind,
+    /// Choices for a `Select`/`CheckboxGroup`; empty for a `Text` field.
+    #[serde(default)]
+    pub options: Vec<FieldOption>,
 }
 
 /// One hidden form input. Unlike [`Field`], it has no operator-facing label and is
@@ -289,11 +369,53 @@ mod tests {
                 }),
                 form: Some(Form {
                     action: String::new(),
-                    fields: vec![Field {
-                        name: "game:name".into(),
-                        label: "game / name".into(),
-                        value: "arena".into(),
-                    }],
+                    fields: vec![
+                        // A plain text field (kind defaults to Text, no options).
+                        Field {
+                            name: "game:name".into(),
+                            label: "game / name".into(),
+                            value: "arena".into(),
+                            ..Default::default()
+                        },
+                        // A single-choice dropdown carrying options + a preselection.
+                        Field {
+                            name: "role".into(),
+                            label: "Role".into(),
+                            value: "client".into(),
+                            kind: FieldKind::Select,
+                            options: vec![
+                                FieldOption {
+                                    value: "client".into(),
+                                    label: "Client".into(),
+                                    checked: true,
+                                },
+                                FieldOption {
+                                    value: "server".into(),
+                                    label: "Server".into(),
+                                    checked: false,
+                                },
+                            ],
+                        },
+                        // A checkbox group carrying options + checked flags.
+                        Field {
+                            name: "methods".into(),
+                            label: "Methods".into(),
+                            value: String::new(),
+                            kind: FieldKind::CheckboxGroup,
+                            options: vec![
+                                FieldOption {
+                                    value: "leaderboard.topScores".into(),
+                                    label: "leaderboard.topScores".into(),
+                                    checked: true,
+                                },
+                                FieldOption {
+                                    value: "match.report".into(),
+                                    label: "match.report".into(),
+                                    checked: false,
+                                },
+                            ],
+                        },
+                    ],
                     hidden: vec![HiddenField {
                         name: "_expected_revision".into(),
                         value: "7".into(),
@@ -309,6 +431,51 @@ mod tests {
         let form = back.content.form.unwrap();
         assert_eq!(form.hidden[0].name, "_expected_revision");
         assert_eq!(form.hidden[0].value, "7");
+        // `submit` is `#[serde(skip)]`, so a deserialized (remote) form is read-only.
         assert!(form.submit.is_none());
+
+        // The plain text field survives with the default kind and no options.
+        assert_eq!(form.fields[0].kind, FieldKind::Text);
+        assert!(form.fields[0].options.is_empty());
+
+        // The Select field's typed kind + options (with the preselected flag) marshal.
+        let role = &form.fields[1];
+        assert_eq!(role.kind, FieldKind::Select);
+        assert_eq!(role.options.len(), 2);
+        assert_eq!(role.options[0].value, "client");
+        assert_eq!(role.options[0].label, "Client");
+        assert!(role.options[0].checked);
+        assert!(!role.options[1].checked);
+
+        // The CheckboxGroup field's typed kind + per-option checked flags marshal.
+        let methods = &form.fields[2];
+        assert_eq!(methods.kind, FieldKind::CheckboxGroup);
+        assert_eq!(methods.options.len(), 2);
+        assert!(methods.options[0].checked);
+        assert_eq!(methods.options[0].value, "leaderboard.topScores");
+        assert!(!methods.options[1].checked);
+    }
+
+    #[test]
+    fn submit_outcome_reveal_roundtrips() {
+        // A show-once reveal survives the wire (the `AdminSubmit::admin_submit` success
+        // value), and an empty outcome is the ordinary "nothing to show" default.
+        let outcome = SubmitOutcome {
+            reveal: vec![RevealItem {
+                label: "secret".into(),
+                value: "ak_generated_secret_value".into(),
+            }],
+        };
+        let back: SubmitOutcome =
+            serde_json::from_str(&serde_json::to_string(&outcome).unwrap()).unwrap();
+        assert_eq!(back.reveal.len(), 1);
+        assert_eq!(back.reveal[0].label, "secret");
+        assert_eq!(back.reveal[0].value, "ak_generated_secret_value");
+        assert_eq!(back, outcome);
+
+        let empty: SubmitOutcome =
+            serde_json::from_str(&serde_json::to_string(&SubmitOutcome::default()).unwrap())
+                .unwrap();
+        assert!(empty.reveal.is_empty());
     }
 }

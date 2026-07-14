@@ -115,6 +115,12 @@ fn rpc_modules() -> Vec<(
             adminapi::admin_data_rpc::body_shapes(),
         ),
         (
+            "adminapi::admin_submit_rpc",
+            adminapi::admin_submit_rpc::route_bindings(),
+            adminapi::admin_submit_rpc::wire_ops(),
+            adminapi::admin_submit_rpc::body_shapes(),
+        ),
+        (
             "apikeysapi::keys_rpc",
             apikeysapi::keys_rpc::route_bindings(),
             apikeysapi::keys_rpc::wire_ops(),

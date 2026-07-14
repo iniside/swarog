@@ -98,6 +98,7 @@ wire module=accountsapi::auth_rpc method=accounts.me retry=OnceAfterReconnect
 wire module=accountsapi::auth_rpc method=accounts.register retry=Never
 wire module=accountsapi::sessions_rpc method=accounts.verifySession retry=OnceAfterReconnect
 wire module=adminapi::admin_data_rpc method=admin.adminData retry=OnceAfterReconnect
+wire module=adminapi::admin_submit_rpc method=admin.adminSubmit retry=Never
 wire module=apikeysapi::keys_rpc method=apikeys.lookupKey retry=OnceAfterReconnect
 wire module=charactersapi::ownership_rpc method=characters.ownerOf retry=OnceAfterReconnect
 wire module=charactersapi::player_rpc method=characters.create retry=Never

@@ -39,7 +39,7 @@ async fn key_row(store: &Store, name: &str) -> crate::store::KeyRow {
         .unwrap_or_else(|| panic!("missing API key row {name}"))
 }
 
-fn assert_conflict(result: Result<(), adminapi::SubmitError>) {
+fn assert_conflict<T: std::fmt::Debug>(result: Result<T, adminapi::SubmitError>) {
     assert!(
         matches!(result, Err(adminapi::SubmitError::Conflict)),
         "expected stale-form conflict, got {result:?}"

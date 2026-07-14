@@ -333,6 +333,7 @@ async fn template_renders_kpis_table_csrf_and_escapes() {
                     name: "note".into(),
                     label: "Note".into(),
                     value: String::new(),
+                    ..Default::default()
                 }],
                 hidden: Vec::new(),
                 submit: None,
@@ -1009,8 +1010,8 @@ async fn csrf_rejects_before_editability_and_gates_local_submit() {
         let sink = sink.clone();
         Box::pin(async move {
             sink.lock().unwrap().push(values);
-            Ok(())
-        }) as BoxFuture<'static, Result<(), adminapi::SubmitError>>
+            Ok(adminapi::SubmitOutcome::default())
+        }) as BoxFuture<'static, Result<adminapi::SubmitOutcome, adminapi::SubmitError>>
     });
     ctx.contribute(
         adminapi::SLOT,
@@ -1028,6 +1029,7 @@ async fn csrf_rejects_before_editability_and_gates_local_submit() {
                             name: "knob".into(),
                             label: "Knob".into(),
                             value: String::new(),
+                            ..Default::default()
                         }],
                         hidden: vec![adminapi::HiddenField {
                             name: "_expected_revision".into(),
@@ -1154,8 +1156,8 @@ async fn stale_hidden_evidence_round_trips_to_conflict_without_audit() {
                 return Err(adminapi::SubmitError::Conflict);
             }
             applied.fetch_add(1, Ordering::SeqCst);
-            Ok(())
-        }) as BoxFuture<'static, Result<(), adminapi::SubmitError>>
+            Ok(adminapi::SubmitOutcome::default())
+        }) as BoxFuture<'static, Result<adminapi::SubmitOutcome, adminapi::SubmitError>>
     });
 
     let render_authority = authority.clone();
@@ -1183,6 +1185,7 @@ async fn stale_hidden_evidence_round_trips_to_conflict_without_audit() {
                             name: "knob".into(),
                             label: "Knob".into(),
                             value: "old".into(),
+                            ..Default::default()
                         }],
                         hidden: vec![adminapi::HiddenField {
                             name: hidden_name.into(),
@@ -1275,8 +1278,8 @@ async fn admin_open_bypasses_sessions_and_csrf() {
         let sink = sink.clone();
         Box::pin(async move {
             sink.lock().unwrap().push(values);
-            Ok(())
-        }) as BoxFuture<'static, Result<(), adminapi::SubmitError>>
+            Ok(adminapi::SubmitOutcome::default())
+        }) as BoxFuture<'static, Result<adminapi::SubmitOutcome, adminapi::SubmitError>>
     });
     ctx.contribute(
         adminapi::SLOT,
@@ -1294,6 +1297,7 @@ async fn admin_open_bypasses_sessions_and_csrf() {
                             name: "knob".into(),
                             label: "Knob".into(),
                             value: String::new(),
+                            ..Default::default()
                         }],
                         hidden: Vec::new(),
                         submit: Some(submit.clone()),

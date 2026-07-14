@@ -458,6 +458,7 @@ fn admin_render(svc: &Arc<Service>, _params: &adminapi::Params) -> anyhow::Resul
             name: format!("{}:{}", r.namespace, r.key),
             label: format!("{} / {}", r.namespace, r.key),
             value: r.value.clone(),
+            ..Default::default()
         });
     }
     // Add-new triple: config owns the "" -> insert semantics; the adminapi::Form
@@ -466,16 +467,19 @@ fn admin_render(svc: &Arc<Service>, _params: &adminapi::Params) -> anyhow::Resul
         name: "_new_namespace".into(),
         label: "New namespace".into(),
         value: String::new(),
+        ..Default::default()
     });
     fields.push(adminapi::Field {
         name: "_new_key".into(),
         label: "New key".into(),
         value: String::new(),
+        ..Default::default()
     });
     fields.push(adminapi::Field {
         name: "_new_value".into(),
         label: "New value".into(),
         value: String::new(),
+        ..Default::default()
     });
 
     let submit_svc = svc.clone();
@@ -488,7 +492,10 @@ fn admin_render(svc: &Arc<Service>, _params: &adminapi::Params) -> anyhow::Resul
         }],
         submit: Some(Arc::new(move |values: adminapi::Params| {
             let svc = submit_svc.clone();
-            Box::pin(async move { apply_edit(&svc, values).await })
+            Box::pin(async move {
+                apply_edit(&svc, values).await?;
+                Ok(adminapi::SubmitOutcome::default())
+            })
         })),
     };
 

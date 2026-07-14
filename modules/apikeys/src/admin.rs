@@ -158,6 +158,7 @@ pub(crate) async fn admin_content_full(svc: &Arc<Service>) -> anyhow::Result<adm
             name: r.name.clone(),
             label: r.name.clone(),
             value: r.policy.clone(),
+            ..Default::default()
         });
     }
     // Add-row triple: apikeys owns the "all three non-empty -> insert" semantics; the
@@ -166,22 +167,26 @@ pub(crate) async fn admin_content_full(svc: &Arc<Service>) -> anyhow::Result<adm
         name: "_new_name".into(),
         label: "New key name".into(),
         value: String::new(),
+        ..Default::default()
     });
     fields.push(adminapi::Field {
         name: "_new_key".into(),
         label: "New key secret".into(),
         value: String::new(),
+        ..Default::default()
     });
     fields.push(adminapi::Field {
         name: "_new_policy".into(),
         label: "New key policy".into(),
         value: String::new(),
+        ..Default::default()
     });
     // Revoke: type an existing key name to revoke it.
     fields.push(adminapi::Field {
         name: "_revoke_name".into(),
         label: "Revoke key (name)".into(),
         value: String::new(),
+        ..Default::default()
     });
 
     let submit_svc = svc.clone();
@@ -194,7 +199,10 @@ pub(crate) async fn admin_content_full(svc: &Arc<Service>) -> anyhow::Result<adm
         }],
         submit: Some(Arc::new(move |values: adminapi::Params| {
             let svc = submit_svc.clone();
-            Box::pin(async move { apply_edit(&svc, values).await })
+            Box::pin(async move {
+                apply_edit(&svc, values).await?;
+                Ok(adminapi::SubmitOutcome::default())
+            })
         })),
     };
 

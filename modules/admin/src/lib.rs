@@ -1075,7 +1075,9 @@ async fn item_post(
     }
 
     match submit(values).await {
-        Ok(()) => {
+        // Step 1: the submit's `SubmitOutcome` (any show-once reveal) is not yet
+        // rendered — the redirect behaviour is unchanged. Rendering the reveal is Step 3.
+        Ok(_outcome) => {
             // Durable trail AFTER the mutation committed. Field NAMES only — never
             // submitted values (they may hold secrets).
             let names: Vec<&str> = form.fields.iter().map(|f| f.name.as_str()).collect();
