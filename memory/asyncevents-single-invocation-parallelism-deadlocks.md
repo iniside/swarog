@@ -31,3 +31,16 @@ idle-in-tx session is enough to wedge the rest.
   kill OS `cargo`/`rustc`/`asyncevents-*`/`app-*` processes, THEN re-run serially.
 - Tell every test-running subagent this, not just "one run at a time" — the trap is a
   single invocation, so the generic rule doesn't cover it. See [[verify-the-at-risk-path-not-the-safe-one]].
+
+**Also (2026-07-14): a timing-flaky plane test under FULL-workspace `cargo test` load.**
+`verifyctl`'s `test` stage runs the whole workspace in parallel; under that CPU
+saturation `core/asyncevents` `retention_tests::healthy_sweeps_keep_retention_unstalled`
+can FAIL ("a continuously succeeding sweep must keep retention un-stalled") because its
+spawned 50ms-interval sweep task gets scheduling-starved past the test's 2s staleness
+window — no `mark_retention_ok` lands in time, so `retention_stalled(2s)` reads true. It
+PASSES in isolation (`cargo test -p asyncevents -- --test-threads=1 healthy_sweeps…` →
+ok, ~3.2s). So a lone `test`-stage FAIL on THIS test in a verify run is a load-timing
+artifact, not a regression — confirm by isolation before treating it as real. Root cause
+is the test's fixed 2s window vs unbounded scheduler starvation (a genuine pre-existing
+test fragility worth widening/yielding if it keeps biting), independent of any
+characters/inventory/cap change.
