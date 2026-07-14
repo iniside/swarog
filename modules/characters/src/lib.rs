@@ -142,24 +142,29 @@ impl Store {
         }
     }
 
-    /// Deletes a character only if it belongs to `player_id`; returns whether a row
-    /// was removed. A malformed id is "nothing deleted" (Go's behaviour).
+    /// Deletes a character only if it belongs to `player_id`; returns the removed
+    /// row's canonical id, or `None` if nothing matched. A malformed id is "nothing
+    /// deleted" (Go's behaviour). The `RETURNING id::text` yields the DB-canonical
+    /// uuid (lowercase, unbraced), so the caller emits the event with the canonical
+    /// form regardless of how the client spelled the id argument.
     async fn delete_owned_tx(
         &self,
         conn: &mut PgConnection,
         id: &str,
         player_id: &str,
-    ) -> Result<bool, sqlx::Error> {
-        let res = sqlx::query(
-            "DELETE FROM characters.characters WHERE id = $1::uuid AND player_id = $2::uuid",
+    ) -> Result<Option<String>, sqlx::Error> {
+        let res = sqlx::query_as::<_, (String,)>(
+            "DELETE FROM characters.characters WHERE id = $1::uuid AND player_id = $2::uuid \
+             RETURNING id::text",
         )
         .bind(id)
         .bind(player_id)
-        .execute(&mut *conn)
+        .fetch_optional(&mut *conn)
         .await;
         match res {
-            Ok(r) => Ok(r.rows_affected() > 0),
-            Err(e) if is_invalid_uuid(&e) => Ok(false),
+            Ok(Some(row)) => Ok(Some(row.0)),
+            Ok(None) => Ok(None),
+            Err(e) if is_invalid_uuid(&e) => Ok(None),
             Err(e) => Err(e),
         }
     }
@@ -275,21 +280,28 @@ impl Player for Service {
             .to_string();
 
         let mut tx = self.store.pool.begin().await.map_err(internal)?;
-        let deleted = self
+        let removed = self
             .store
             .delete_owned_tx(&mut tx, &character_id, &player_id)
             .await
             .map_err(internal)?;
-        if !deleted {
-            // Nothing deleted (not found or not owned) → no event, 404. Roll back
-            // EXPLICITLY (not via drop): sqlx defers a dropped tx's ROLLBACK, which
-            // can leave the DELETE's locks held and deadlock a following writer. This
-            // is the deterministic twin of Go's `defer tx.Rollback()`.
-            tx.rollback().await.map_err(internal)?;
-            return Err(Error::not_found("character not found"));
-        }
+        let canonical_id = match removed {
+            None => {
+                // Nothing deleted (not found or not owned) → no event, 404. Roll back
+                // EXPLICITLY (not via drop): sqlx defers a dropped tx's ROLLBACK, which
+                // can leave the DELETE's locks held and deadlock a following writer. This
+                // is the deterministic twin of Go's `defer tx.Rollback()`.
+                tx.rollback().await.map_err(internal)?;
+                return Err(Error::not_found("character not found"));
+            }
+            // Emit the DB-canonical id (the `RETURNING` value), NOT the client-echoed
+            // `character_id` argument — so `character.deleted` matches the canonical
+            // `character.created` for the same row (inventory lock_key + audit stay
+            // consistent even when the client spelled the id uppercased/braced).
+            Some(canonical_id) => canonical_id,
+        };
         let evt = charactersevents::Deleted {
-            character_id: character_id.clone(),
+            character_id: canonical_id,
             player_id,
         };
         self.bus

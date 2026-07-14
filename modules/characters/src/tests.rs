@@ -249,6 +249,46 @@ async fn delete_emits_event_owned_and_is_notfound_unowned() {
     cleanup(&pool, &[&owner, &other]).await;
 }
 
+/// A delete issued with a NON-canonical spelling of the id (uppercase) still deletes
+/// via `$1::uuid`, but the emitted `character.deleted` must carry the DB-canonical
+/// (lowercase) id from `RETURNING id::text` — NOT the client echo. Pre-fix the event
+/// carried the raw uppercase argument, diverging from the canonical `character.created`
+/// and breaking inventory's lock_key + audit consistency.
+#[tokio::test]
+async fn delete_emits_canonical_id_for_noncanonical_input() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let owner = unique_player(&pool).await;
+
+    let c = svc
+        .create(Identity::player(&owner), "Gimli".into(), "warrior".into())
+        .await
+        .unwrap();
+
+    // Delete with the uppercased id — Postgres normalises via `::uuid`, so the row
+    // still matches and the delete succeeds.
+    let upper = c.id.to_uppercase();
+    assert_ne!(upper, c.id, "uppercase must differ from the canonical id");
+    svc.delete(Identity::player(&owner), upper.clone())
+        .await
+        .unwrap();
+
+    // The event carries the canonical (lowercase) id, NOT the uppercase client echo.
+    assert_eq!(
+        event_count(&pool, "character.deleted", &c.id).await,
+        1,
+        "character.deleted must carry the canonical (RETURNING) id"
+    );
+    assert_eq!(
+        event_count(&pool, "character.deleted", &upper).await,
+        0,
+        "character.deleted must NOT carry the raw uppercase client echo (fails pre-fix)"
+    );
+    assert_eq!(char_count(&pool, &c.id).await, 0, "row must be gone");
+
+    cleanup(&pool, &[&owner]).await;
+}
+
 /// owner_of: a hit returns the owner, a valid-but-absent uuid AND a malformed uuid
 /// both return `Ok(None)` (distinct from an infra error).
 #[tokio::test]
