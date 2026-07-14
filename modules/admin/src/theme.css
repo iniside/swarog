@@ -129,6 +129,8 @@ body { margin:0; background:var(--bg); color:var(--text);
 .badge.epic      { color:#a563d6;        background:rgba(165,99,214,0.14); }
 .badge.rare      { color:#5fa8d6;        background:rgba(95,168,214,0.14); }
 .badge.common    { color:var(--muted);   background:rgba(138,144,156,0.14); }
+/* rarity badges are text-only in the mockup (no status dot) */
+.badge.legendary .dot, .badge.epic .dot, .badge.rare .dot, .badge.common .dot { display:none; }
 
 /* ---- card grid (scoped-view characters/inventory) ------------------------ */
 .card-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:16px; }
@@ -156,10 +158,13 @@ body { margin:0; background:var(--bg); color:var(--text);
 .av-0 { background:#e0823d !important; } .av-1 { background:#3d8be0 !important; }
 .av-2 { background:#4caf8e !important; } .av-3 { background:#a563d6 !important; }
 .av-4 { background:#d6635f !important; } .av-5 { background:#5fa8d6 !important; }
-/* small square avatar chip used inside table cells */
+/* small square avatar chip used inside table cells (mockup iconStyle: 34px/15px) */
 .cell-avatar { width:34px; height:34px; border-radius:9px; flex-shrink:0;
-  display:flex; align-items:center; justify-content:center; font-size:13px; font-weight:700;
+  display:flex; align-items:center; justify-content:center; font-size:15px; font-weight:700;
   color:var(--on-amber); background:#3d8be0; }
+/* ITEM cell layout: icon chip + label inline with a gap (mockup inventory row) */
+.cell-icon-wrap { display:inline-flex; align-items:center; gap:12px; min-width:0; }
+.cell-icon-label { font-weight:600; }
 
 /* ---- dropdown row/card menu (⋯) ------------------------------------------ */
 .menu-wrap { position:relative; display:inline-flex; }

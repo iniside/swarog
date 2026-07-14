@@ -227,23 +227,14 @@ pub(crate) fn build_character_detail(c: &Character) -> adminapi::Content {
             avatar_text: initial(&c.name),
             avatar_color_key: palette(&c.id),
             title: c.name.clone(),
-            subtitle_mono: format!("character:{}", c.id),
+            // The full guid + created stamp ride the mono subtitle (mockup: neither the
+            // guid nor created is a KPI cell — the six KPIs are the stat grid below).
+            subtitle_mono: format!("character:{} · created {}", c.id, short_ts(&c.created_at)),
             right_note: c.class.clone(),
         }),
-        // The class rides the header's `right_note` (the modal renders it as the tag
-        // beside the name, mockup rarity-badge position) — no duplicate KPI cell.
-        kpis: vec![
-            adminapi::Kpi {
-                label: "Character ID".into(),
-                value: short_uuid(&c.id).into(),
-                sub: String::new(),
-            },
-            adminapi::Kpi {
-                label: "Created".into(),
-                value: short_ts(&c.created_at).to_string(),
-                sub: String::new(),
-            },
-        ],
+        // The mockup's six-stat grid. DECORATIVE FAKE (user-mandated) — see
+        // [`character_stats`]; the class rides the header's `right_note`.
+        kpis: character_stats(&c.id),
         modal_point: charactersapi::admin::CHARACTER_MODAL_ACTIONS.id.into(),
         context: HashMap::from([
             ("id".into(), format!("character:{}", c.id)),
@@ -251,6 +242,57 @@ pub(crate) fn build_character_detail(c: &Character) -> adminapi::Content {
         ]),
         ..Default::default()
     }
+}
+
+/// DECORATIVE FAKE STATS (user-mandated) — the backend has NO combat stats, but the
+/// mockup's character modal shows six. Each is derived deterministically from the
+/// character uuid via a per-stat hash (`fnv(uuid#k)`), so two characters differ while
+/// ONE character is stable across every render and BOTH topologies (pure, no
+/// randomness, no clock). Labels + value shapes match the mockup exactly. NOT domain
+/// data — cosmetic only, never a gameplay input.
+pub(crate) fn character_stats(id: &str) -> Vec<adminapi::Kpi> {
+    // Each stat draws from its OWN hash of the id, so the six are decorrelated.
+    let span = |k: u64, lo: u64, hi: u64| lo + (fnv(&format!("{id}#{k}")) % (hi - lo + 1));
+    let kpi = |label: &str, value: String| adminapi::Kpi {
+        label: label.into(),
+        value,
+        sub: String::new(),
+    };
+    vec![
+        kpi("POWER", thousands(span(1, 2_000, 13_000))),
+        kpi("GEAR SCORE", span(2, 400, 900).to_string()),
+        kpi("HEALTH", thousands(span(3, 15_000, 50_000))),
+        kpi("MANA", thousands(span(4, 1_000, 10_000))),
+        kpi("CRIT RATE", format!("{}%", span(5, 5, 65))),
+        kpi("PLAYTIME", format!("{} h", span(6, 20, 1_300))),
+    ]
+}
+
+/// A stable 64-bit FNV-1a fold of a seed — the deterministic basis for the decorative
+/// fake stats (a per-stat suffix decorrelates the six).
+fn fnv(s: &str) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in s.bytes() {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h
+}
+
+/// Thousands-separated decimal (`12480` → `"12,480"`) — presentation for the decorative
+/// fake stats, matching the mockup's `12,480` / `48,200` shapes.
+fn thousands(n: u64) -> String {
+    let s = n.to_string();
+    let bytes = s.as_bytes();
+    let len = bytes.len();
+    let mut out = String::with_capacity(len + len / 3);
+    for (i, b) in bytes.iter().enumerate() {
+        if i > 0 && (len - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(*b as char);
+    }
+    out
 }
 
 /// Renders a single message as an error card (a lone KPI), so a bad/foreign owner

@@ -669,11 +669,44 @@ fn admin_character_detail_sets_modal_point_and_context() {
     assert_eq!(content.context.get("name").map(String::as_str), Some("VoidR4nger"));
     let header = content.header.expect("detail header");
     assert_eq!(header.title, "VoidR4nger");
-    // The class rides `right_note` (the modal's name-side tag); KPIs are the remaining
-    // REAL fields.
+    // The class rides `right_note` (the modal's name-side tag).
     assert_eq!(header.right_note, "Warlock");
-    assert!(content.kpis.iter().any(|k| k.label == "Character ID"));
-    assert!(content.kpis.iter().any(|k| k.label == "Created"));
+    // Created moved UNDER the full guid in the mono subtitle (mockup: no Created/ID KPI).
+    assert_eq!(
+        header.subtitle_mono,
+        format!("character:{ADMIN_UUID} · created Jan 01, 00:00")
+    );
+    assert!(header.subtitle_mono.contains("· created"));
+
+    // The six decorative-fake stats fill the modal's 3-col grid — exact mockup labels.
+    let labels: Vec<&str> = content.kpis.iter().map(|k| k.label.as_str()).collect();
+    assert_eq!(
+        labels,
+        vec!["POWER", "GEAR SCORE", "HEALTH", "MANA", "CRIT RATE", "PLAYTIME"]
+    );
+    // The old Character ID / Created KPI cells are gone.
+    assert!(!content.kpis.iter().any(|k| k.label == "Character ID"));
+    assert!(!content.kpis.iter().any(|k| k.label == "Created"));
+}
+
+/// The decorative-fake stats are DETERMINISTIC (pure, no randomness): the same uuid
+/// yields the same six values across renders/topologies, and two different uuids
+/// differ — the two properties the fake-data mandate rests on.
+#[test]
+fn admin_character_stats_are_deterministic_and_id_specific() {
+    let a1 = crate::admin::character_stats(ADMIN_UUID);
+    let a2 = crate::admin::character_stats(ADMIN_UUID);
+    let b = crate::admin::character_stats("cccccccc-0000-0000-0000-000000000001");
+
+    // Same id → byte-identical stats (stable across renders + monolith/split).
+    let vals = |ks: &[adminapi::Kpi]| ks.iter().map(|k| k.value.clone()).collect::<Vec<_>>();
+    assert_eq!(vals(&a1), vals(&a2), "same uuid must be stable");
+    // Two different ids differ (not a constant fill) — at least one stat diverges.
+    assert_ne!(vals(&a1), vals(&b), "different uuids must differ");
+    // Value shapes match the mockup: thousands-separated POWER, %-suffixed crit, h-suffixed playtime.
+    assert!(a1[0].value.contains(',') || a1[0].value.len() <= 4, "POWER thousands shape");
+    assert!(a1[4].value.ends_with('%'), "CRIT RATE ends with %");
+    assert!(a1[5].value.ends_with(" h"), "PLAYTIME ends with ' h'");
 }
 
 #[test]

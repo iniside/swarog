@@ -572,6 +572,16 @@ pub struct Cell {
     /// Optional drill-down target: admin renders `text` as `<a href="/admin/{link}">`.
     #[serde(default)]
     pub link: String,
+    /// Optional leading icon-chip glyph rendered before `text` (e.g. an item-type
+    /// rune). Empty = no chip. Additive over the wire (`#[serde(default)]`), so a peer
+    /// predating the field still deserialises.
+    #[serde(default)]
+    pub icon_text: String,
+    /// Palette/rarity class for the icon chip (e.g. `"legendary"`); pairs with
+    /// [`Cell::icon_text`] and selects a `.cell-avatar.<key>` colour variant. Empty =
+    /// the base chip colour.
+    #[serde(default)]
+    pub icon_color_key: String,
 }
 
 impl Cell {

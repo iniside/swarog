@@ -2,7 +2,7 @@
      htmx request; swapped into #modal-root. The overlay + Close are wired by admin.js
      (data-modal-overlay / data-modal-close) and htmx handles footer fragment swaps. -->
 {%- macro cellinner(c) -%}
-{%- if c.badge %}<span class="badge {{ c.badge }}"><span class="dot"></span>{{ c.text }}</span>{% elif c.mono %}<span class="mono dim">{{ c.text }}</span>{% else %}{{ c.text }}{% endif -%}
+{%- if c.icon_text %}<span class="cell-icon-wrap"><span class="cell-avatar {{ c.icon_color_key }}">{{ c.icon_text }}</span><span class="cell-icon-label">{{ c.text }}</span></span>{% elif c.badge %}<span class="badge {{ c.badge }}"><span class="dot"></span>{{ c.text }}</span>{% elif c.mono %}<span class="mono dim">{{ c.text }}</span>{% else %}{{ c.text }}{% endif -%}
 {%- endmacro -%}
 {%- macro render_cell(c) -%}
 {%- if c.link %}<a class="cell-link" href="/admin/{{ c.link }}">{{ cellinner(c) }}</a>{% else %}{{ cellinner(c) }}{% endif -%}

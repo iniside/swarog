@@ -67,6 +67,17 @@ pub(crate) struct OwnerStat {
     pub(crate) qty: i64,
 }
 
+/// One holdings row enriched for the admin item-detail view: the item's REAL `kind`
+/// (from the in-module `items` join) alongside id/name/quantity. Admin-only — the
+/// player-facing `inventoryapi::Holding` contract stays unchanged (`kind` is a
+/// presentation concern for the admin table, not a wire field).
+pub(crate) struct HoldingDetail {
+    pub(crate) item_id: String,
+    pub(crate) item_name: String,
+    pub(crate) kind: String,
+    pub(crate) quantity: i64,
+}
+
 impl Store {
     /// Grants `qty` of `item_id` to `owner` on the given connection (a tx, so the
     /// grant + the checkpoint commit together in the delivery tx). ON CONFLICT ADDS to the existing
@@ -128,6 +139,33 @@ impl Store {
                 owner_id,
                 item_id,
                 item_name,
+                quantity,
+            })
+            .collect())
+    }
+
+    /// The admin item-detail list: every holding of an owner enriched with the item's
+    /// REAL `kind` (the in-module `items` join), for the ITEM/TYPE/RARITY/QTY table.
+    /// Same shape/ordering/limit as [`Store::list`] — a distinct method so the
+    /// player-facing `Holding` contract needn't grow a `kind` field.
+    pub(crate) async fn list_detail(&self, owner: &Owner) -> Result<Vec<HoldingDetail>, sqlx::Error> {
+        let rows: Vec<(String, String, String, i64)> = sqlx::query_as(&format!(
+            "SELECT h.item_id, i.name, i.kind, h.quantity::bigint \
+               FROM inventory.holdings h \
+               JOIN inventory.items i ON i.id = h.item_id \
+              WHERE h.owner_type = $1 AND h.owner_id = $2::uuid \
+              ORDER BY h.item_id LIMIT {HOLDINGS_HARD_LIMIT}"
+        ))
+        .bind(&owner.otype)
+        .bind(&owner.id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|(item_id, item_name, kind, quantity)| HoldingDetail {
+                item_id,
+                item_name,
+                kind,
                 quantity,
             })
             .collect())

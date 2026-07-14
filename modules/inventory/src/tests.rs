@@ -1053,3 +1053,74 @@ async fn admin_malformed_owner_is_error_content_not_err() {
         assert_eq!(content.kpis[0].label, "Error", "owner={owner}");
     }
 }
+
+/// The DECORATIVE rarity helper is DETERMINISTIC (pure, no randomness): the same item
+/// id maps to the same rarity every time, and the glyph map keys the REAL kinds with a
+/// fallback. Two DIFFERENT ids are exercised so the fake is per-id, not a constant fill.
+#[test]
+fn admin_rarity_is_deterministic_and_glyphs_key_real_kinds() {
+    assert_eq!(
+        crate::admin::rarity("starter_sword"),
+        crate::admin::rarity("starter_sword"),
+        "same id must be stable across calls/renders/topologies"
+    );
+    let a = crate::admin::rarity("starter_sword");
+    let b = crate::admin::rarity("health_potion");
+    for r in [a, b] {
+        assert!(
+            ["Legendary", "Epic", "Rare", "Common"].contains(&r),
+            "unexpected rarity {r}"
+        );
+    }
+    // The two chosen ids land on distinct rarities — guards a collapsed/constant hash.
+    assert_ne!(a, b, "distinct ids should not always share one rarity");
+
+    // Glyphs are keyed by the REAL `inventory.items.kind`; unknown kinds fall back.
+    assert_eq!(crate::admin::kind_glyph("weapon"), "⚔");
+    assert_eq!(crate::admin::kind_glyph("currency"), "◈");
+    assert_eq!(crate::admin::kind_glyph("consumable"), "⚗");
+    assert_eq!(crate::admin::kind_glyph("something-else"), "◆");
+}
+
+/// The owner item-detail table renders the mockup's ITEM/TYPE/RARITY/QTY columns: a
+/// REAL type from the `items` join, a rarity-tinted icon chip on the ITEM cell, and a
+/// rarity badge cell. Seeds a real holding so the enriched `list_detail` join runs.
+#[tokio::test]
+async fn admin_owner_detail_table_has_rarity_columns_and_icon() {
+    let Some(pool) = test_pool().await else { return };
+    ensure_schema(&pool).await;
+    let store = Store { pool: pool.clone() };
+
+    let owner_id = unique_uuid(&pool).await;
+    let owner = Owner::character(&owner_id);
+    store.grant_pool(&owner, "starter_sword", 3).await.unwrap();
+
+    let mut params = adminapi::Params::new();
+    params.insert("owner".into(), format!("character:{owner_id}"));
+    let content = crate::admin::admin_content(&store, &params).await.unwrap();
+
+    let table = content.table.expect("owner detail renders an item table");
+    let cols: Vec<&str> = table.columns.iter().map(String::as_str).collect();
+    assert_eq!(cols, vec!["ITEM", "TYPE", "RARITY", "QTY"]);
+
+    let row = &table.rows[0];
+    assert_eq!(row.len(), 4);
+    // ITEM: real name + rarity-tinted item-type glyph chip.
+    assert_eq!(row[0].text, "Starter Sword");
+    assert_eq!(row[0].icon_text, crate::admin::kind_glyph("weapon"));
+    assert_eq!(
+        row[0].icon_color_key,
+        crate::admin::rarity("starter_sword").to_ascii_lowercase()
+    );
+    // TYPE: REAL (the `weapon` kind, title-cased for display).
+    assert_eq!(row[1].text, "Weapon");
+    // RARITY: a FAKE badge — text capitalised, class lower-cased (drives .badge.<key>).
+    assert_eq!(row[2].text, crate::admin::rarity("starter_sword"));
+    assert_eq!(
+        row[2].badge,
+        crate::admin::rarity("starter_sword").to_ascii_lowercase()
+    );
+    assert_eq!(row[3].text, "3");
+
+    cleanup_owner(&pool, &owner_id).await;
+}

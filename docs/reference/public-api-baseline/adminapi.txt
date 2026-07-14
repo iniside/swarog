@@ -256,6 +256,8 @@ impl core::panic::unwind_safe::RefUnwindSafe for adminapi::CardStat
 impl core::panic::unwind_safe::UnwindSafe for adminapi::CardStat
 pub struct adminapi::Cell
 pub adminapi::Cell::badge: alloc::string::String
+pub adminapi::Cell::icon_color_key: alloc::string::String
+pub adminapi::Cell::icon_text: alloc::string::String
 pub adminapi::Cell::link: alloc::string::String
 pub adminapi::Cell::mono: bool
 pub adminapi::Cell::text: alloc::string::String

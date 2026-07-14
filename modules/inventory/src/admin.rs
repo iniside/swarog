@@ -134,15 +134,32 @@ async fn admin_owner_detail(
         return Ok(error_content("Invalid owner id — not a uuid."));
     }
 
-    let holdings = store.list(&Owner::new(otype, id)).await?;
+    let holdings = store.list_detail(&Owner::new(otype, id)).await?;
     let mut table = adminapi::Table {
-        columns: vec!["ITEM".into(), "QTY".into()],
+        columns: vec!["ITEM".into(), "TYPE".into(), "RARITY".into(), "QTY".into()],
         rows: Vec::with_capacity(holdings.len()),
         ..Default::default()
     };
     for h in &holdings {
+        // RARITY is DECORATIVE FAKE (user-mandated) — the icon chip is tinted by it.
+        let rar = rarity(&h.item_id);
+        let rar_key = rar.to_ascii_lowercase();
         table.rows.push(vec![
-            adminapi::Cell::text(&h.item_name),
+            // ITEM: a rarity-tinted item-type glyph chip + the real item name.
+            adminapi::Cell {
+                text: h.item_name.clone(),
+                icon_text: kind_glyph(&h.kind).into(),
+                icon_color_key: rar_key.clone(),
+                ..Default::default()
+            },
+            // TYPE: REAL — the item's `kind` (title-cased for display).
+            adminapi::Cell::text(title_case(&h.kind)),
+            // RARITY: FAKE badge (text capitalised, class lower-cased).
+            adminapi::Cell {
+                text: rar.into(),
+                badge: rar_key,
+                ..Default::default()
+            },
             adminapi::Cell::text(h.quantity.to_string()),
         ]);
     }
@@ -169,6 +186,49 @@ async fn admin_owner_detail(
         table: Some(table),
         ..Default::default()
     })
+}
+
+/// DECORATIVE FAKE (user-mandated) — NOT domain data. The backend has no rarity
+/// column, but the mockup shows a rarity badge per inventory item. We derive a STABLE
+/// pseudo-rarity from the item id: same id → same rarity across every render and BOTH
+/// topologies (pure fold, no randomness, no clock). Purely cosmetic; never persisted,
+/// never a gameplay input.
+pub(crate) fn rarity(seed: &str) -> &'static str {
+    let h = seed
+        .bytes()
+        .fold(0u32, |a, b| a.wrapping_mul(31).wrapping_add(b as u32));
+    match h % 4 {
+        0 => "Legendary",
+        1 => "Epic",
+        2 => "Rare",
+        _ => "Common",
+    }
+}
+
+/// The item-type glyph per the mockup's `itemTypeRef`, keyed by the REAL
+/// `inventory.items.kind` (lowercase in this repo). Fallback `◆` for any kind the
+/// mockup doesn't enumerate — presentation only.
+pub(crate) fn kind_glyph(kind: &str) -> &'static str {
+    match kind {
+        "weapon" => "⚔",
+        "armor" => "⛨",
+        "consumable" => "⚗",
+        "currency" => "◈",
+        "material" => "✧",
+        "mount" => "⚘",
+        "accessory" => "◈",
+        _ => "◆",
+    }
+}
+
+/// Title-cases the first character of a real `kind` for the TYPE cell (`weapon` →
+/// `Weapon`), matching the mockup's capitalised type labels. Display only.
+fn title_case(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
 }
 
 /// The first hex group of a uuid — the short header title.
