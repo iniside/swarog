@@ -38,5 +38,19 @@ suffices ("do przepisywania pliku opus starczy") — don't burn the top tier.
 4. Interactivity under CSP `default-src 'self'`: same-origin script FILES are already
    allowed (only inline is blocked) — vendored `htmx.min.js` (no npm) + ~60 lines
    vanilla `admin.js` (data-* delegation), NO inline handlers, NO `hx-on:` (eval).
-5. Where the mockup invents data the backend lacks (LEVEL/REGION/POWER), visual
-   fidelity is per-component styling with REAL columns — never fabricate data.
+5. **Data-gap default (user-settled 2026-07-15, after I got it wrong):** the mockup
+   is the spec for the DATA SHAPE too. When the backend lacks a field the mockup
+   shows (RARITY/POWER/LEVEL/icons), the default is a DETERMINISTIC decorative fake
+   (pure hash of the entity id — no clock/rand, identical across topologies),
+   clearly commented as fake. If unsure, ask ONE question listing all gaps
+   ("fake or drop?") BEFORE implementing. NEVER silently drop a mockup element and
+   NEVER substitute my own filler (the "Character ID"/"Created" KPIs I invented for
+   the character modal were exactly this failure — "copy the mockup" means copy the
+   mockup, not creative invention).
+6. Every render-vs-mockup deviation (element added, dropped, or data substituted)
+   must be explicitly declared in the report — an undeclared deviation is treated
+   as a violation, same class as fabricating.
+7. The loop is closed only by a LIVE render comparison against the mockup section
+   (boot, fetch the changed views full + fragment, element-by-element) — green
+   tests are not a visual smoke. Mind `include_str!`: templates/CSS are embedded,
+   a running fleet needs a rebuild to show edits.
