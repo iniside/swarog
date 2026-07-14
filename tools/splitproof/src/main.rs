@@ -996,6 +996,30 @@ async fn assertions(ctx: &Ctx, pool: &PgPool, p: &mut Proof) -> Result<()> {
             p.check("[5b] post-delete inventory -> 404", w2 == 404, format!("code={w2}"));
         }
 
+        // [4c] delete via a NON-canonical (uppercased) id spelling and prove the durable
+        // character.deleted event carries the DB-CANONICAL id — the split path (G -> A ->
+        // emit) canonicalizes regardless of how the client spelled the URL id.
+        if let Some(cidc) = create_character(ctx, &g, &tok, "Canon").await {
+            let upper = cidc.to_uppercase();
+            let delc = ctx.http.delete(format!("{g}/characters/{upper}"))
+                .header("X-Api-Key", "dev-key-client")
+                .header("Authorization", format!("Bearer {tok}"))
+                .send().await?;
+            p.check("[4c] delete via uppercased id -> 204", delc.status().as_u16() == 204, delc.status());
+            // canonical (lowercase) event present ...
+            let canon_present = poll_count(
+                pool,
+                "SELECT count(*) FROM asyncevents.events WHERE topic='character.deleted' AND payload->>'character_id'=$1",
+                &cidc, 1,
+            ).await;
+            p.check("[4c] character.deleted carries canonical id", canon_present, format!("cid={cidc}"));
+            // ... and the uppercase spelling was NOT emitted (one-shot after canonical confirmed).
+            let upper_count: Option<i64> = sqlx::query_scalar(
+                "SELECT count(*) FROM asyncevents.events WHERE topic='character.deleted' AND payload->>'character_id'=$1",
+            ).bind(&upper).fetch_optional(pool).await.ok().flatten();
+            p.check("[4c] no non-canonical id emitted", upper_count == Some(0), format!("rows={upper_count:?}"));
+        }
+
         // --- Config live-reload (C1-C3, C4b): revision + NOTIFY + durable config.changed. ---
         // [C1] baseline: B booted with no config row -> default starter_sword.
         if let Some(bcid) = create_character(ctx, &g, &tok, "Baseline").await {
@@ -1026,6 +1050,34 @@ async fn assertions(ctx: &Ctx, pool: &PgPool, p: &mut Proof) -> Result<()> {
             poll_fresh_grant(ctx, &g, &tok, "Reverted", "starter_sword").await,
             "",
         );
+
+        // [6] configurable per-player cap enforced through G -> A, cap value resolved via the
+        // split's REMOTE CachedConfig (the at-risk path the unit tests can't cover).
+        let c6 = sqlx::query(
+            "INSERT INTO config.settings (namespace,key,value) VALUES ('characters','max_per_player','2') \
+             ON CONFLICT (namespace,key) DO UPDATE SET value=excluded.value",
+        ).execute(pool).await;
+        p.check("[6] set characters/max_per_player=2", c6.is_ok(), "");
+        // The cap propagates to A via CachedConfig invalidation (revision-gated, eventually
+        // consistent). Each attempt uses a fresh player (0 chars) and creates 2 (allowed) then
+        // probes a 3rd: a 409 can occur ONLY once the cap propagated to <= 2, so a 409 within
+        // the bound proves remote-config enforcement.
+        let cap_enforced = {
+            let mut ok = false;
+            for i in 0..30 {
+                if let Ok(ptok) = register_login(ctx, &g, &format!("cap-{suffix}-{i}@test.local")).await {
+                    let _ = create_character(ctx, &g, &ptok, "Cap1").await;
+                    let _ = create_character(ctx, &g, &ptok, "Cap2").await;
+                    if create_character_status(ctx, &g, &ptok, "Cap3").await == 409 { ok = true; break; }
+                }
+                tokio::time::sleep(Duration::from_millis(300)).await;
+            }
+            ok
+        };
+        p.check("[6] create past remote-resolved cap -> 409", cap_enforced, "");
+        // RESET so cap=2 cannot leak into later split assertions or the fresh monolith re-run.
+        sqlx::query("DELETE FROM config.settings WHERE namespace='characters' AND key='max_per_player'")
+            .execute(pool).await.ok();
     }
 
     // --- Match / rating / leaderboard: durable match.finished projection + idempotency. ---
@@ -1644,6 +1696,27 @@ async fn create_character(ctx: &Ctx, g: &str, token: &str, name: &str) -> Option
         }
     }
     None
+}
+
+/// Like `create_character` but returns the final HTTP status (retrying only past the
+/// always-on 429), so a caller can assert the cap-rejection 409.
+async fn create_character_status(ctx: &Ctx, g: &str, token: &str, name: &str) -> u16 {
+    for _ in 0..15 {
+        let r = ctx.http.post(format!("{g}/characters"))
+            .header("X-Api-Key", "dev-key-client")
+            .header("Authorization", format!("Bearer {token}"))
+            .json(&serde_json::json!({"name": name, "class": "mage"}))
+            .send().await;
+        match r {
+            Ok(resp) => {
+                let code = resp.status().as_u16();
+                if code == 429 { tokio::time::sleep(Duration::from_millis(300)).await; continue; }
+                return code;
+            }
+            Err(_) => return 0,
+        }
+    }
+    429
 }
 
 /// GET a character's inventory through G -> B: (status, body).
