@@ -33,6 +33,9 @@ const STARTER_QTY: i64 = 1;
 
 /// Hard safety-belt ceiling on a single holdings-list response (same rationale as
 /// characters' LIST_HARD_LIMIT): unbounded fetch_all diverges monolith vs split frame caps.
+/// KNOWN GAP (recorded, not fixed here): there is no per-owner distinct-item cap, so an owner
+/// holding more than HOLDINGS_HARD_LIMIT distinct items has the surplus silently truncated
+/// from list views. Acceptable because the item catalogue is small; revisit if item variety grows.
 const HOLDINGS_HARD_LIMIT: i64 = 1000;
 
 /// The admin surface ids (Section groups it in the sidebar; Label is the entry).

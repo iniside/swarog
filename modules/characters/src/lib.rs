@@ -31,9 +31,12 @@ const ADMIN_LABEL: &str = "Characters";
 const MAX_NAME_BYTES: usize = 128;
 const MAX_CLASS_BYTES: usize = 64;
 
-/// Hard safety-belt ceiling on a single list response. NOT the per-player limit — that is
-/// the configurable cap enforced in create(). Guards against pathological state (cap lowered
-/// after growth, pre-cap data) so no list response is ever unbounded across topologies.
+/// Hard safety-belt ceiling on a single list response so it is never unbounded across
+/// topologies (monolith direct call has no frame; split has 16 MiB internal / 1 MiB player
+/// frame caps). A belt, not the policy limit: the configurable per-player cap in `create()`
+/// (added by the P2 cap step, and clamped to this ceiling so `create` can never admit more
+/// characters than `list` can return) is the primary bound. Until that cap lands this ceiling
+/// is also the de-facto per-player limit and truncates silently beyond it.
 const LIST_HARD_LIMIT: i64 = 1000;
 
 pub(crate) fn name_within_cap(name: &str) -> bool {
