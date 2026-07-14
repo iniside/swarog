@@ -1522,37 +1522,62 @@ async fn assertions(ctx: &Ctx, pool: &PgPool, p: &mut Proof) -> Result<()> {
     // and no column holds the plaintext secret.
     use base64::Engine as _;
     use sha2::{Digest as _, Sha256};
-    let key_row = sqlx::query(
-        "SELECT secret_hash::text AS h, prefix::text AS p, role::text AS r, revision AS rev, \
-                name::text AS n, created_at::text AS c, updated_at::text AS u, \
-                coalesce(revoked_at::text, '') AS rv \
-           FROM apikeys.keys WHERE name = $1",
+    // The two typed reads the specific checks need: the stored hash (for the digest
+    // equality) and the FK role.
+    let key_meta: Option<(String, String)> =
+        sqlx::query_as("SELECT secret_hash::text, role::text FROM apikeys.keys WHERE name = $1")
+            .bind(&key_name)
+            .fetch_optional(pool)
+            .await
+            .ok()
+            .flatten();
+    // The no-cleartext scan is SCHEMA-DRIFT-PROOF: reflect the LIVE column set of
+    // apikeys.keys from information_schema (so a future cleartext-bearing column can't
+    // silently escape the secret-secrecy invariant) and assert the scraped secret appears
+    // in NONE of the row's column values. Each column is cast to text and joined with
+    // chr(31) (unit separator, which a base64url secret can't contain, so it can't mask a
+    // match straddling a column boundary); concat_ws skips NULLs.
+    let key_columns: Vec<String> = sqlx::query_scalar(
+        "SELECT column_name FROM information_schema.columns \
+          WHERE table_schema = 'apikeys' AND table_name = 'keys' ORDER BY ordinal_position",
     )
-    .bind(&key_name)
-    .fetch_optional(pool)
+    .fetch_all(pool)
     .await
-    .ok()
-    .flatten();
-    let (hash_ok, role_fk_ok, no_cleartext) = if let Some(row) = &key_row {
-        let stored_hash: String = row.get("h");
-        let prefix: String = row.get("p");
-        let role_col: String = row.get("r");
-        let name_col: String = row.get("n");
-        let created: String = row.get("c");
-        let updated: String = row.get("u");
-        let revoked: String = row.get("rv");
-        let recomputed =
-            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(Sha256::digest(secret.as_bytes()));
-        let columns = [stored_hash.clone(), prefix, role_col.clone(), name_col, created, updated, revoked];
-        let no_cleartext = !secret.is_empty() && columns.iter().all(|c| !c.contains(&secret));
-        (stored_hash == recomputed, role_col == role_name, no_cleartext)
+    .unwrap_or_default();
+    let combined: Option<String> = if key_columns.is_empty() {
+        None
     } else {
-        (false, false, false)
+        let casts = key_columns
+            .iter()
+            .map(|c| format!("\"{c}\"::text"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        sqlx::query_scalar(&format!(
+            "SELECT concat_ws(chr(31), {casts}) FROM apikeys.keys WHERE name = $1"
+        ))
+        .bind(&key_name)
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten()
     };
+    let recomputed =
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(Sha256::digest(secret.as_bytes()));
+    let hash_ok = key_meta.as_ref().map(|(h, _)| h == &recomputed).unwrap_or(false);
+    let role_fk_ok = key_meta.as_ref().map(|(_, r)| r == &role_name).unwrap_or(false);
+    // Require a reflected, non-empty column set AND a present row: a scan that found no
+    // columns (or no row) is a FAILURE, never a vacuous pass.
+    let no_cleartext = !secret.is_empty()
+        && !key_columns.is_empty()
+        && combined.as_ref().map(|c| !c.contains(&secret)).unwrap_or(false);
     p.check(
-        "[AD6d] key row: secret_hash==base64url(sha256), role FK, no cleartext",
+        "[AD6d] key row: secret_hash==base64url(sha256), role FK, no cleartext (reflected cols)",
         hash_ok && role_fk_ok && no_cleartext,
-        format!("present={} hash_ok={hash_ok} role_fk={role_fk_ok} no_cleartext={no_cleartext}", key_row.is_some()),
+        format!(
+            "present={} cols={} hash_ok={hash_ok} role_fk={role_fk_ok} no_cleartext={no_cleartext}",
+            key_meta.is_some(),
+            key_columns.len(),
+        ),
     );
 
     // [AD6e] the minted key authenticates across processes: 200 on the allowed op,
