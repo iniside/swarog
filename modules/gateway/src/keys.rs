@@ -268,10 +268,11 @@ impl RealKeyVerifier {
 impl KeyVerifier for RealKeyVerifier {
     async fn lookup(&self, key: &str) -> Result<Option<KeyRecord>, LookupUnavailable> {
         if key.len() > apikeysapi::MAX_KEY_BYTES {
-            // An over-length string is definitively NOT a key (the store never holds
-            // one — apikeysapi::MAX_KEY_BYTES is the same limit enforced at creation
-            // time, `modules/apikeys/src/store.rs::insert_tx` + its DDL CHECK) — a
-            // credential verdict (→ 401), not an outage.
+            // An over-length string is definitively NOT a key: secrets are
+            // server-generated (`modules/apikeys/src/store.rs::generate_secret`) and
+            // well under this cap by construction, and the stored value is a SHA-256
+            // digest, never the presented string itself — a credential verdict
+            // (→ 401), not an outage.
             return Ok(None);
         }
         if let Some(record) = self.cached(key) {

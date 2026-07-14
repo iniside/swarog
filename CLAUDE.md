@@ -275,10 +275,14 @@ never a silent last-writer-wins overwrite.
   (`rating.ratings`, ±15 from 1000, upserted in the delivery tx — restarts
   preserve MMR) provided as wire-only `MmrReader`; leaderboard upserts wins in
   the delivery tx, serves `GET /leaderboard`.
-- **apikeys** — per-key API access policy (à la Supabase anon/service key): table
-  `apikeys.keys(name, key, policy, revoked_at)`, plaintext keys (sessions-token
-  trust model), policy = `full` or comma-separated wire-method list. Provides
-  `apikeysapi::Keys` (`apikeys.keys`); the gateway REQUIRES an `X-Api-Key` header
+- **apikeys** — per-key API access policy (à la Supabase anon/service key): normalized
+  schema `apikeys.roles(name, policy, revision)` + `apikeys.keys(name, secret_hash,
+  prefix, role → roles.name, revision, revoked_at)` (sessions-token trust model, CAS by
+  `revision`). Secrets are server-generated and stored ONLY as a SHA-256 digest plus a
+  display prefix — the plaintext is shown exactly once on create, never re-derivable
+  from a read. A key references a role; editing a role's policy immediately re-scopes
+  every key pointing at it (JOIN, no denormalized policy). Provides `apikeysapi::Keys`
+  (`apikeys.keys`); the gateway REQUIRES an `X-Api-Key` header
   (HTTP) / `api_key` envelope field (player-QUIC) on every op-dispatched request
   and enforces the key's policy post-match (401 missing/invalid, 403 denied;
   503 — distinct from 401 — when the verifier itself is load-shedding, e.g. a
@@ -289,7 +293,9 @@ never a silent last-writer-wins overwrite.
   (player-facing list, NO `match.report`) + `dev-key-server` (`full`) seed ONLY
   when `APIKEYS_DEV_SEED` is explicitly truthy (self-healing upsert); a gateway
   process without the capability FAILS STARTUP unless `APIKEYS_DEV_ALLOW=1`
-  (allow-all, loud warn). Admin page "API Keys" (list/edit/add/revoke).
+  (allow-all, loud warn). Admin page "API Keys" is a rich, remotely-editable
+  configurator (role + key CRUD, typed fields, show-once secret reveal via
+  `adminapi::AdminSubmit`/`admin.adminSubmit` — editable in both topologies).
 - **gateway** — the front-door module: HTTP ops routing (Local vs Remote purely by
   slot presence; peer addresses are injected by `cmd/*` via `remote::Stub` →
   `opsapi::PEER_SLOT` contributions — the gateway module itself never reads env),

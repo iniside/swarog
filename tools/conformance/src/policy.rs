@@ -55,7 +55,7 @@ pub fn input_policies() -> Vec<(InputKey, InputPolicy)> {
         (key("accounts.register", "email", External), Validated { cap: 320, basis: "accounts::email_within_cap is called by the production register path" }),
         (key("accounts.register", "password", External), Validated { cap: 1024, basis: "accounts::password_within_cap is called by the production register path" }),
         (key("accounts.verifySession", "token", Wire), Validated { cap: accountsapi::MAX_SESSION_TOKEN_BYTES, basis: "accounts::session_token_within_cap rejects before session SQL and gateway dispatch uses the same contract cap" }),
-        (key("apikeys.lookupKey", "key", Wire), Validated { cap: apikeysapi::MAX_KEY_BYTES, basis: "gateway lookup and apikeys creation both enforce apikeysapi::MAX_KEY_BYTES" }),
+        (key("apikeys.lookupKey", "key", Wire), Validated { cap: apikeysapi::MAX_KEY_BYTES, basis: "gateway::RealKeyVerifier::lookup rejects a presented key over apikeysapi::MAX_KEY_BYTES before any store round-trip; secrets are server-generated, so there is no caller-supplied creation path to cap" }),
         (key("characters.create", "class", External), Validated { cap: 64, basis: "characters::class_within_cap validates the defaulted persisted class before SQL" }),
         (key("characters.create", "name", External), Validated { cap: 128, basis: "characters::name_within_cap validates the persisted name before SQL" }),
         (key("characters.delete", "character_id", External), Opaque { rationale: "opaque character UUID resolved by the characters store, not player-authored free text" }),
@@ -186,7 +186,7 @@ fn apikeys() -> Entry {
             (
                 Convention::InputByteCaps,
                 Stance::Applies(Fixture::InputByteCaps(vec![CapCase {
-                    name: "apikeys key secret",
+                    name: "apikeys gateway presented-key lookup",
                     cap: apikeysapi::MAX_KEY_BYTES,
                     probe: Arc::new(apikeys::conformance::conformance_key_rejected),
                 }])),
@@ -197,7 +197,7 @@ fn apikeys() -> Entry {
             ),
             (
                 Convention::ArgonParity,
-                na("apikeys stores plaintext key secrets and performs no password hashing"),
+                na("apikeys hashes high-entropy, server-generated secrets with SHA-256 for O(1) indexed lookup, not a password-KDF — argon2 parity does not apply"),
             ),
         ],
     }
