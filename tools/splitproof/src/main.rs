@@ -999,7 +999,9 @@ async fn assertions(ctx: &Ctx, pool: &PgPool, p: &mut Proof) -> Result<()> {
         // [4c] delete via a NON-canonical (uppercased) id spelling and prove the durable
         // character.deleted event carries the DB-CANONICAL id — the split path (G -> A ->
         // emit) canonicalizes regardless of how the client spelled the URL id.
-        if let Some(cidc) = create_character(ctx, &g, &tok, "Canon").await {
+        let canon_cid = create_character(ctx, &g, &tok, "Canon").await;
+        p.check("[4c] Canon character created", canon_cid.is_some(), format!("cid={canon_cid:?}"));
+        if let Some(cidc) = canon_cid {
             let upper = cidc.to_uppercase();
             let delc = ctx.http.delete(format!("{g}/characters/{upper}"))
                 .header("X-Api-Key", "dev-key-client")
@@ -1014,10 +1016,14 @@ async fn assertions(ctx: &Ctx, pool: &PgPool, p: &mut Proof) -> Result<()> {
             ).await;
             p.check("[4c] character.deleted carries canonical id", canon_present, format!("cid={cidc}"));
             // ... and the uppercase spelling was NOT emitted (one-shot after canonical confirmed).
-            let upper_count: Option<i64> = sqlx::query_scalar(
-                "SELECT count(*) FROM asyncevents.events WHERE topic='character.deleted' AND payload->>'character_id'=$1",
-            ).bind(&upper).fetch_optional(pool).await.ok().flatten();
-            p.check("[4c] no non-canonical id emitted", upper_count == Some(0), format!("rows={upper_count:?}"));
+            // Guarded: uppercase is a no-op for an all-digit uuid, so only assert this when the
+            // spelling actually differs (else it degenerates into re-checking the canonical id).
+            if upper != cidc {
+                let upper_count: Option<i64> = sqlx::query_scalar(
+                    "SELECT count(*) FROM asyncevents.events WHERE topic='character.deleted' AND payload->>'character_id'=$1",
+                ).bind(&upper).fetch_optional(pool).await.ok().flatten();
+                p.check("[4c] no non-canonical id emitted", upper_count == Some(0), format!("rows={upper_count:?}"));
+            }
         }
 
         // --- Config live-reload (C1-C3, C4b): revision + NOTIFY + durable config.changed. ---
@@ -1075,9 +1081,29 @@ async fn assertions(ctx: &Ctx, pool: &PgPool, p: &mut Proof) -> Result<()> {
             ok
         };
         p.check("[6] create past remote-resolved cap -> 409", cap_enforced, "");
+        // NOTE: the shared `poll_fresh_grant` helper creates one live character per iteration
+        // on the passed player, so against the DEFAULT cap (10) a very slow grant propagation
+        // could accumulate chars toward the cap — flagged as a known consideration for the live
+        // run, not rewritten here (touching the working config-reload helper risks more than it
+        // fixes).
         // RESET so cap=2 cannot leak into later split assertions or the fresh monolith re-run.
         sqlx::query("DELETE FROM config.settings WHERE namespace='characters' AND key='max_per_player'")
             .execute(pool).await.ok();
+        // Barrier: confirm the cap reverted on characters-svc (remote CachedConfig is eventually
+        // consistent) BEFORE any later main-player create ([AD0]) — else a stale cap=2 false-fails it.
+        let reverted = {
+            let mut ok = false;
+            for i in 0..30 {
+                if let Ok(rtok) = register_login(ctx, &g, &format!("capreset-{suffix}-{i}@test.local")).await {
+                    let _ = create_character(ctx, &g, &rtok, "R1").await;
+                    let _ = create_character(ctx, &g, &rtok, "R2").await;
+                    if create_character_status(ctx, &g, &rtok, "R3").await == 201 { ok = true; break; }
+                }
+                tokio::time::sleep(Duration::from_millis(300)).await;
+            }
+            ok
+        };
+        p.check("[6r] cap reverted to default on characters-svc", reverted, "");
     }
 
     // --- Match / rating / leaderboard: durable match.finished projection + idempotency. ---
