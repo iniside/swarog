@@ -66,6 +66,16 @@ impl FakeRun {
             "# cargo-public-api fixture\n",
         )
         .unwrap();
+        // The committed ops-catalog artifact the codegen-freshness stage diffs against.
+        // The fake cargo copies these exact bytes to its `--out` file, so the freshness
+        // check compares equal -> PASS (mirrors the empty clients/csharp/Generated dir).
+        let opscatalog_src = root.join("opscatalog/src");
+        std::fs::create_dir_all(&opscatalog_src).unwrap();
+        std::fs::write(
+            opscatalog_src.join("generated.rs"),
+            "// fixture ops catalog\n",
+        )
+        .unwrap();
         copy_as(&fixture(), &bin, "cargo");
         if audit_present {
             copy_as(&fixture(), &bin, "cargo-audit");

@@ -49,12 +49,22 @@ fn cargo(executable: PathBuf) -> ExitCode {
     }
     if let Some(index) = args.iter().position(|arg| arg == "--out") {
         let out = PathBuf::from(&args[index + 1]);
-        copy_tree(
-            &std::env::current_dir()
-                .expect("fixture cwd")
-                .join("clients/csharp/Generated"),
-            &out,
-        );
+        let cwd = std::env::current_dir().expect("fixture cwd");
+        if args.iter().any(|arg| arg == "opscatalog-gen") {
+            // opscatalog-gen's `--out` is a FILE (opscatalog/src/generated.rs), unlike
+            // csharp-client-gen's `--out` DIRECTORY. Writing it as a file (mirroring the
+            // committed artifact) makes the freshness diff match -> PASS; treating it as a
+            // dir (copy_tree) would create `generated.rs` as a directory, and the stage's
+            // `std::fs::read` of a directory fails "Access is denied (os error 5)".
+            if let Some(parent) = out.parent() {
+                std::fs::create_dir_all(parent).expect("create fake opscatalog out dir");
+            }
+            let committed = cwd.join("opscatalog/src/generated.rs");
+            let bytes = std::fs::read(&committed).unwrap_or_default();
+            std::fs::write(&out, bytes).expect("write fake opscatalog generated.rs");
+        } else {
+            copy_tree(&cwd.join("clients/csharp/Generated"), &out);
+        }
     }
     if control("sleep-build") && args.join(" ").contains("build --workspace") {
         record("sleeping");
