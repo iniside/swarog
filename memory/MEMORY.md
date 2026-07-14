@@ -33,3 +33,4 @@
 - [Go parity (historical, superseded)](go-parity-additive-dual-deploy.md) — retired Go backend reached dual-deploy parity additively (core/ untouched) before the Rust migration; archived, no forward action
 - [Local Postgres](reference_local_postgres.md) — role/db/DSN + superuser (postgres/qwerty); tests target this local PG directly, never Docker/Testcontainers
 - [Module reference pair](module-reference-pair.md) — characters (basic provider/emitter) + inventory (advanced consumer) are the blessed reference; docs/reference/module-reference.md guides new-module work, copy-first + "do NOT copy"
+- [Generic remote-admin-write seam](generic-remote-admin-write-seam.md) — a remotely-editable (split) admin page = enrich generic adminapi (typed Field, SubmitOutcome show-once, opt-in AdminSubmit, per-provider Item.remote_submit), NEVER a bespoke module-coupled page; admin stays domain-agnostic (apikeys configurator 2026-07-14)
