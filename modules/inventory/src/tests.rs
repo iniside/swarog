@@ -752,6 +752,9 @@ async fn concurrent_grant_and_wipe_serialize_across_uuid_spelling() {
     ensure_schema(&pool).await;
     let cid = unique_uuid(&pool).await;
     let cid_upper = cid.to_uppercase();
+    // A random uuid could (prob ~5e-7) contain no a-f nibble, making to_uppercase a
+    // no-op and the proof vacuous (cid_upper == cid passes even pre-fix). Fail LOUD.
+    assert_ne!(cid_upper, cid, "test needs a uuid with a hex letter to exercise case-normalization");
     let inner = inner_with(pool.clone(), Arc::new(FakeConfig::new(STARTER_ITEM, STARTER_QTY)));
 
     // Tx 1: grant on the CANONICAL id, NOT committed — holds the per-character xact-lock.
