@@ -198,6 +198,52 @@ fn segment_after(path: &str, marker: &str) -> Option<String> {
     path.split(marker).nth(1)?.split('/').next().map(String::from)
 }
 
+/// Rules 1+2 — the fortress rule, **no exceptions**: a `modules/<a>` impl crate may
+/// never depend on another module's impl crate (`modules/<b>`), nor on a FOREIGN
+/// domain's generated `<name>rpc` glue (`api/<b>/rpc`). It may import only its OWN
+/// `<name>rpc`.
+///
+/// The edge is illegal over EVERY dependency kind — normal, build, AND dev. A test-only
+/// (`kind == "dev"`) reach into a sibling module or a foreign `<name>rpc` still couples
+/// two fortresses, so it is a violation exactly like a runtime import. (Legal dev-deps
+/// are unaffected: a `module → core` dep — e.g. asyncevents/invalidation/app — and a
+/// `module → <name>events` dep — e.g. audit's dev-deps on foreign `*events` crates —
+/// classify as `Kind::Core`/`Kind::Events` and fall through the catch-all `_ => {}`
+/// arm below, so they stay legal at any dep kind.)
+fn module_import_violations(packages: &[serde_json::Value]) -> Vec<String> {
+    // name -> Kind, so a dependency (named by crate name) resolves to its manifest.
+    let mut by_name: HashMap<String, Kind> = HashMap::new();
+    for pkg in packages {
+        let name = pkg["name"].as_str().unwrap_or_default().to_string();
+        let manifest = pkg["manifest_path"].as_str().unwrap_or_default();
+        by_name.insert(name, classify(manifest));
+    }
+
+    let mut violations = Vec::new();
+    for pkg in packages {
+        let manifest = pkg["manifest_path"].as_str().unwrap_or_default();
+        let Kind::Module(dm) = classify(manifest) else {
+            continue; // only modules are constrained as consumers
+        };
+        for dep in pkg["dependencies"].as_array().into_iter().flatten() {
+            // No dep-kind exception: a dev-dependency (tests) that reaches a sibling
+            // module or a foreign `<name>rpc` couples two fortresses just as a runtime
+            // import does, so BOTH arms fire regardless of `dep["kind"]`.
+            let dep_name = dep["name"].as_str().unwrap_or_default();
+            match by_name.get(dep_name) {
+                Some(Kind::Module(other)) if other != &dm => violations.push(format!(
+                    "modules/{dm} depends on modules/{other} — a module must never import another module's impl crate (use the bus or a contract)"
+                )),
+                Some(Kind::Rpc(domain)) if domain != &dm => violations.push(format!(
+                    "modules/{dm} depends on {dep_name} (api/{domain}/rpc) — a module may import only its OWN <name>rpc glue, never a foreign domain's"
+                )),
+                _ => {}
+            }
+        }
+    }
+    violations
+}
+
 fn main() {
     let mut violations: Vec<String> = Vec::new();
 
@@ -231,29 +277,10 @@ fn main() {
     // per-root cargo-tree invocation can drift as composition roots are added.
     violations.extend(shipping_conformance_violations(packages));
 
-    for pkg in packages {
-        let manifest = pkg["manifest_path"].as_str().unwrap_or_default();
-        let Kind::Module(dm) = classify(manifest) else {
-            continue; // only modules are constrained as consumers
-        };
-        for dep in pkg["dependencies"].as_array().into_iter().flatten() {
-            // Only normal/build deps carry the runtime import graph; a dev-dependency
-            // (tests) may legitimately reach a core crate like asyncevents.
-            if dep["kind"].as_str() == Some("dev") {
-                continue;
-            }
-            let dep_name = dep["name"].as_str().unwrap_or_default();
-            match by_name.get(dep_name) {
-                Some(Kind::Module(other)) if other != &dm => violations.push(format!(
-                    "modules/{dm} depends on modules/{other} — a module must never import another module's impl crate (use the bus or a contract)"
-                )),
-                Some(Kind::Rpc(domain)) if domain != &dm => violations.push(format!(
-                    "modules/{dm} depends on {dep_name} (api/{domain}/rpc) — a module may import only its OWN <name>rpc glue, never a foreign domain's"
-                )),
-                _ => {}
-            }
-        }
-    }
+    // --- 1+2: the fortress rule (no exceptions) — a module may never import
+    // another module's impl crate, nor a FOREIGN domain's `<name>rpc` glue, over ANY
+    // dependency kind (normal, build, OR dev). See `module_import_violations`.
+    violations.extend(module_import_violations(packages));
 
     // --- 3: single front door — only the front processes may host the gateway ---
     // Every `cmd/*-svc` other than gateway-svc + the monolith must serve its ops ONLY

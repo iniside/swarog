@@ -6,8 +6,8 @@
 use super::{
     classify, cmd_is_a_main, contains_boundary_checked, core_bus_sqlx_violations,
     cross_schema_fk_violations, forbidden_api_deps, has_non_dev_dep, is_inline_test_mod,
-    missing_svc_violations, mod_test_ident_end, Kind, DEMO_HOST, FORBIDDEN_API_DEPS,
-    FRONT_DOOR_HOSTS, GATEWAY_CRATE, SVC_EXEMPT_MODULES,
+    missing_svc_violations, mod_test_ident_end, module_import_violations, Kind, DEMO_HOST,
+    FORBIDDEN_API_DEPS, FRONT_DOOR_HOSTS, GATEWAY_CRATE, SVC_EXEMPT_MODULES,
 };
 
 #[test]
@@ -1054,5 +1054,104 @@ fn other_slot_constructor_is_not_the_canonical_token() {
     let text = "const X: OtherSlot<u32> = OtherSlot::new(\"x\");";
     assert!(
         super::slot_constructor_violations("modules/demo/src/lib.rs", text).is_empty()
+    );
+}
+
+// --- Rules 1+2: the fortress rule (no exceptions) covers dev-dependencies -----
+// The authority is `module_import_violations`. Before the no-exceptions tightening it
+// `continue`d on any `kind == "dev"` dep, so a test-only reach into a sibling module or
+// a foreign `<name>rpc` silently passed. These four tests pin BOTH the newly-illegal
+// branches (module→module dev, module→foreign-rpc dev) AND the regression boundary that
+// must stay legal at dev kind (module→core, module→events).
+
+/// Builds a package-graph fixture: `consumer` is a `modules/<name>` impl crate with a
+/// single dependency on `dep_name` of the given cargo dep `kind` (`"dev"`, `"build"`, or
+/// `null` for normal), and `dep_manifest` places the dependency crate so `classify`
+/// resolves its `Kind`. Shaped exactly like real `cargo metadata` output.
+fn module_dep_fixture(
+    consumer: &str,
+    dep_name: &str,
+    dep_manifest: &str,
+    kind: serde_json::Value,
+) -> serde_json::Value {
+    serde_json::json!([
+        {
+            "name": consumer,
+            "manifest_path": format!("/repo/modules/{consumer}/Cargo.toml"),
+            "dependencies": [
+                { "name": dep_name, "kind": kind },
+            ],
+        },
+        {
+            "name": dep_name,
+            "manifest_path": dep_manifest,
+            "dependencies": [],
+        },
+    ])
+}
+
+#[test]
+fn module_to_module_dev_dependency_is_a_violation() {
+    // THE branch that silently passed before the no-exceptions tightening: a test-only
+    // (`kind == "dev"`) edge from one fortress impl crate into another's.
+    let pkgs = module_dep_fixture(
+        "match",
+        "rating",
+        "/repo/modules/rating/Cargo.toml",
+        serde_json::json!("dev"),
+    );
+    let v = module_import_violations(pkgs.as_array().unwrap());
+    assert_eq!(v.len(), 1, "{v:?}");
+    assert!(v[0].contains("modules/match depends on modules/rating"), "{v:?}");
+}
+
+#[test]
+fn module_to_foreign_rpc_dev_dependency_is_a_violation() {
+    // A test-only edge into a FOREIGN domain's generated `<name>rpc` glue — e.g. the
+    // removed apikeys→adminrpc dev-dep — is a fortress breach exactly like the runtime
+    // form, so it must be flagged at `kind == "dev"`.
+    let pkgs = module_dep_fixture(
+        "apikeys",
+        "adminrpc",
+        "/repo/api/admin/rpc/Cargo.toml",
+        serde_json::json!("dev"),
+    );
+    let v = module_import_violations(pkgs.as_array().unwrap());
+    assert_eq!(v.len(), 1, "{v:?}");
+    assert!(v[0].contains("modules/apikeys depends on adminrpc"), "{v:?}");
+    assert!(v[0].contains("api/admin/rpc"), "{v:?}");
+}
+
+#[test]
+fn module_to_core_dev_dependency_is_clean() {
+    // Regression boundary: the sanctioned test-wiring pattern — a module dev-deps a core
+    // crate (asyncevents/invalidation/app) to spin the plane in its own test suite. This
+    // classifies `Kind::Core` and MUST stay legal at dev kind.
+    let pkgs = module_dep_fixture(
+        "config",
+        "asyncevents",
+        "/repo/core/asyncevents/Cargo.toml",
+        serde_json::json!("dev"),
+    );
+    assert!(
+        module_import_violations(pkgs.as_array().unwrap()).is_empty(),
+        "module→core dev-dep must stay legal"
+    );
+}
+
+#[test]
+fn module_to_events_dev_dependency_is_clean() {
+    // Regression boundary: audit dev-deps five FOREIGN `<name>events` crates to build
+    // typed deliveries in its tests. `<name>events` classifies `Kind::Events` and MUST
+    // stay legal at dev kind — the no-exceptions change must not start flagging it.
+    let pkgs = module_dep_fixture(
+        "audit",
+        "matchevents",
+        "/repo/api/match/events/Cargo.toml",
+        serde_json::json!("dev"),
+    );
+    assert!(
+        module_import_violations(pkgs.as_array().unwrap()).is_empty(),
+        "module→events dev-dep must stay legal"
     );
 }
