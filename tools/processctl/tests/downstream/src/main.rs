@@ -124,6 +124,17 @@ mod linux_fixture {
                 )?;
                 Ok(())
             }
+            "argv-zero" => {
+                // Report the argv[0] this child was exec'd with. The guardian must
+                // preserve the ORIGINAL (symlink) path here, not the canonicalized
+                // real binary, so a `cargo -> rustup` shim dispatches on basename
+                // `cargo`. See argv_zero_symlink_test.
+                let argv0 = std::env::args_os()
+                    .next()
+                    .ok_or("child was exec'd without argv[0]")?;
+                std::fs::write(ready, argv0.to_string_lossy().as_bytes())?;
+                Ok(())
+            }
             _ => Err(format!("unknown child mode {mode}").into()),
         }
     }
@@ -220,6 +231,7 @@ mod linux_fixture {
             return Err("target signal wait status was not preserved".into());
         }
 
+        argv_zero_symlink_test(&dir)?;
         crash_cleanup_test(&dir)?;
         checkpoint_rollback_test(&dir)?;
         stale_state_identity_test(&dir)?;
@@ -240,6 +252,42 @@ mod linux_fixture {
         std::fs::write(supervisor_ready, owned.identity().pid.to_string())?;
         std::mem::forget(owned);
         std::process::abort();
+    }
+
+    fn argv_zero_symlink_test(dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
+        // Reproduces the `cargo -> rustup` shim case: a symlink whose canonicalized
+        // target differs from its own path. The guardian must exec the child with
+        // argv[0] == the symlink path (so the rustup proxy dispatches on basename
+        // `cargo`), NOT the canonicalized real binary. Pre-fix the guardian ran
+        // `Command::new(canonicalize(symlink))` with no arg0, so the child observed
+        // the resolved binary path and a rustup shim would misdispatch.
+        let cargo_link = dir.join("cargo");
+        std::os::unix::fs::symlink(std::env::current_exe()?, &cargo_link)?;
+        let ready = dir.join("argv-zero.ready");
+        let mut child =
+            spawn_executable(&cargo_link, ["child", "argv-zero", path_str(&ready)?])?;
+        wait_file(&ready)?;
+        let observed = std::fs::read_to_string(&ready)?;
+        let expected = path_str(&cargo_link)?;
+        if observed != expected {
+            wait_exit(&mut child)?;
+            return Err(format!(
+                "guardian did not preserve symlink argv[0]: child saw {observed:?}, expected {expected:?}"
+            )
+            .into());
+        }
+        // The exact failing branch: pre-fix argv[0] equalled the canonicalized target.
+        let resolved = std::fs::canonicalize(&cargo_link)?;
+        if resolved.as_path() == Path::new(&observed) {
+            wait_exit(&mut child)?;
+            return Err(format!(
+                "child argv[0] {observed:?} was the canonicalized target {resolved:?}; a cargo->rustup shim would misdispatch"
+            )
+            .into());
+        }
+        wait_exit(&mut child)?;
+        std::fs::remove_file(&cargo_link)?;
+        Ok(())
     }
 
     fn crash_cleanup_test(dir: &Path) -> Result<(), Box<dyn std::error::Error>> {

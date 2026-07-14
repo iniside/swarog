@@ -45,10 +45,14 @@ fn run_inner(status_pipe: &mut std::fs::File) -> std::io::Result<(ExitStatus, bo
     if args.next().as_deref() != Some(std::ffi::OsStr::new("--")) {
         return Err(invalid("expected `-- <executable> [args...]`"));
     }
-    let executable = args
+    let original_executable = args
         .next()
         .ok_or_else(|| invalid("missing target executable"))?;
-    let executable = std::fs::canonicalize(executable)?;
+    // Canonicalize only to validate existence with a precise error; hand the ORIGINAL
+    // path to the child as argv[0]. A `cargo -> rustup` shim dispatches on argv[0]'s
+    // basename, so exec'ing the resolved `rustup` path would make it run as rustup.
+    // Mirrors the Windows split in platform/windows.rs:125-130.
+    let resolved_executable = std::fs::canonicalize(&original_executable)?;
     let target_args: Vec<_> = args.collect();
 
     close_unrelated_fds()?;
@@ -71,7 +75,8 @@ fn run_inner(status_pipe: &mut std::fs::File) -> std::io::Result<(ExitStatus, bo
     set_cloexec(STATUS_FD)?;
 
     let guardian_pid = unsafe { libc::getpid() };
-    let mut command = Command::new(&executable);
+    let mut command = Command::new(&resolved_executable);
+    command.arg0(&original_executable);
     command.args(target_args);
     unsafe {
         command.pre_exec(move || {
