@@ -208,7 +208,6 @@ name = "apikeys"
 version = "0.1.0"
 dependencies = [
  "adminapi",
- "adminrpc",
  "anyhow",
  "apikeysapi",
  "apikeysrpc",
@@ -1995,10 +1994,8 @@ dependencies = [
  "bus",
  "charactersapi",
  "charactersevents",
- "config",
  "configapi",
  "edge",
- "invalidation",
  "inventoryapi",
  "inventoryrpc",
  "lifecycle",
@@ -2334,7 +2331,6 @@ dependencies = [
  "matchevents",
  "matchrpc",
  "opsapi",
- "rating",
  "ratingapi",
  "registry",
  "serde",
