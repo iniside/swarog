@@ -12,11 +12,12 @@ const ADMIN_OWNERS_LIMIT: i64 = 200;
 #[async_trait]
 impl adminapi::AdminData for Inner {
     /// The admin fan-out (`admin.adminData` on the edge): this module's page as
-    /// `adminapi::ItemData`. The REMOTE view is the owners LIST (no `?owner=`
-    /// drill-down — that interactive view is LOCAL-only, driven by the portal's query
-    /// params which do not ride this wire call).
-    async fn admin_data(&self) -> Result<adminapi::ItemData, Error> {
-        let content = admin_content(&self.store, &adminapi::Params::new())
+    /// `adminapi::ItemData`, scoped by the request `params` (which now ride the wire).
+    /// No params → owners LIST; `?owner=<type>:<id>` → that owner's items — the same
+    /// dispatch LOCAL and REMOTE. A malformed/foreign `owner` renders error-content,
+    /// never an `Err` (the foreign-params tolerance contract on `AdminData`).
+    async fn admin_data(&self, params: adminapi::Params) -> Result<adminapi::ItemData, Error> {
+        let content = admin_content(&self.store, &params)
             .await
             .map_err(internal)?;
         Ok(adminapi::ItemData {
@@ -24,6 +25,7 @@ impl adminapi::AdminData for Inner {
             section: ADMIN_SECTION.into(),
             label: ADMIN_LABEL.into(),
             content,
+            ..Default::default()
         })
     }
 }
@@ -47,6 +49,7 @@ async fn admin_owners_list(store: &Store) -> anyhow::Result<adminapi::Content> {
     let mut table = adminapi::Table {
         columns: vec!["OWNER".into(), "OWNER ID".into(), "ITEMS".into(), "TOTAL QTY".into()],
         rows: Vec::with_capacity(rows.len()),
+        ..Default::default()
     };
     for o in rows {
         table.rows.push(vec![
@@ -73,6 +76,7 @@ async fn admin_owners_list(store: &Store) -> anyhow::Result<adminapi::Content> {
         ],
         table: Some(table),
         form: None,
+        ..Default::default()
     })
 }
 
@@ -93,6 +97,7 @@ async fn admin_owner_detail(store: &Store, owner: &str) -> anyhow::Result<admina
     let mut table = adminapi::Table {
         columns: vec!["ITEM".into(), "QTY".into()],
         rows: Vec::with_capacity(holdings.len()),
+        ..Default::default()
     };
     for h in &holdings {
         table.rows.push(vec![
@@ -109,6 +114,7 @@ async fn admin_owner_detail(store: &Store, owner: &str) -> anyhow::Result<admina
         ],
         table: Some(table),
         form: None,
+        ..Default::default()
     })
 }
 
@@ -154,5 +160,6 @@ fn error_content(msg: &str) -> adminapi::Content {
         kpis: vec![adminapi::Kpi { label: "Error".into(), value: msg.into(), sub: String::new() }],
         table: None,
         form: None,
+        ..Default::default()
     }
 }

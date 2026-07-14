@@ -445,6 +445,7 @@ fn admin_render(svc: &Arc<Service>, _params: &adminapi::Params) -> anyhow::Resul
     let mut table = adminapi::Table {
         columns: vec!["Namespace".into(), "Key".into(), "Value".into()],
         rows: Vec::with_capacity(rows.len()),
+        ..Default::default()
     };
     let mut fields: Vec<adminapi::Field> = Vec::with_capacity(rows.len() + 3);
     for r in &rows {
@@ -514,6 +515,7 @@ fn admin_render(svc: &Arc<Service>, _params: &adminapi::Params) -> anyhow::Resul
         ],
         table: Some(table),
         form: Some(form),
+        ..Default::default()
     })
 }
 
@@ -525,6 +527,7 @@ fn admin_content_ro(svc: &Service) -> adminapi::Content {
     let mut table = adminapi::Table {
         columns: vec!["Namespace".into(), "Key".into(), "Value".into()],
         rows: Vec::with_capacity(rows.len()),
+        ..Default::default()
     };
     for r in &rows {
         namespaces.insert(r.namespace.as_str());
@@ -541,6 +544,7 @@ fn admin_content_ro(svc: &Service) -> adminapi::Content {
         ],
         table: Some(table),
         form: None,
+        ..Default::default()
     }
 }
 
@@ -549,12 +553,13 @@ impl adminapi::AdminData for Service {
     /// The admin fan-out (`admin.adminData` on the edge): the config page as
     /// `adminapi::ItemData`. Read-only over the wire (the editable form is LOCAL-only),
     /// same Section/Label the local `Item` carries.
-    async fn admin_data(&self) -> Result<adminapi::ItemData, opsapi::Error> {
+    async fn admin_data(&self, _params: adminapi::Params) -> Result<adminapi::ItemData, opsapi::Error> {
         Ok(adminapi::ItemData {
             id: "config".into(),
             section: "Platform".into(),
             label: "Game Config & Flags".into(),
             content: admin_content_ro(self),
+            ..Default::default()
         })
     }
 }

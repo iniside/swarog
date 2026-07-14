@@ -2,6 +2,7 @@
 pub mod adminapi
 pub mod adminapi::admin_data_rpc
 pub struct adminapi::admin_data_rpc::AdminDataRequest
+pub adminapi::admin_data_rpc::AdminDataRequest::params: adminapi::Params
 impl serde_core::ser::Serialize for adminapi::admin_data_rpc::AdminDataRequest
 pub fn adminapi::admin_data_rpc::AdminDataRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for adminapi::admin_data_rpc::AdminDataRequest
@@ -66,6 +67,29 @@ pub const adminapi::admin_submit_rpc::METHOD_ADMIN_SUBMIT: &str
 pub fn adminapi::admin_submit_rpc::operations(alloc::sync::Arc<(dyn adminapi::AdminSubmit + core::marker::Send + core::marker::Sync)>) -> alloc::vec::Vec<opsapi::OpSet>
 pub fn adminapi::admin_submit_rpc::route_bindings() -> alloc::vec::Vec<opsapi::RouteBinding>
 pub fn adminapi::admin_submit_rpc::wire_ops() -> alloc::vec::Vec<opsapi::WireOp>
+pub enum adminapi::ExtensionKind
+pub adminapi::ExtensionKind::EntityMenu
+pub adminapi::ExtensionKind::ModalActions
+impl core::clone::Clone for adminapi::ExtensionKind
+pub fn adminapi::ExtensionKind::clone(&self) -> adminapi::ExtensionKind
+impl core::cmp::Eq for adminapi::ExtensionKind
+impl core::cmp::PartialEq for adminapi::ExtensionKind
+pub fn adminapi::ExtensionKind::eq(&self, &adminapi::ExtensionKind) -> bool
+impl core::fmt::Debug for adminapi::ExtensionKind
+pub fn adminapi::ExtensionKind::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for adminapi::ExtensionKind
+impl core::marker::StructuralPartialEq for adminapi::ExtensionKind
+impl serde_core::ser::Serialize for adminapi::ExtensionKind
+pub fn adminapi::ExtensionKind::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for adminapi::ExtensionKind
+pub fn adminapi::ExtensionKind::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for adminapi::ExtensionKind
+impl core::marker::Send for adminapi::ExtensionKind
+impl core::marker::Sync for adminapi::ExtensionKind
+impl core::marker::Unpin for adminapi::ExtensionKind
+impl core::marker::UnsafeUnpin for adminapi::ExtensionKind
+impl core::panic::unwind_safe::RefUnwindSafe for adminapi::ExtensionKind
+impl core::panic::unwind_safe::UnwindSafe for adminapi::ExtensionKind
 pub enum adminapi::FieldKind
 pub adminapi::FieldKind::CheckboxGroup
 pub adminapi::FieldKind::Select
@@ -109,6 +133,31 @@ impl core::marker::Unpin for adminapi::ItemError
 impl core::marker::UnsafeUnpin for adminapi::ItemError
 impl core::panic::unwind_safe::RefUnwindSafe for adminapi::ItemError
 impl core::panic::unwind_safe::UnwindSafe for adminapi::ItemError
+pub enum adminapi::Present
+pub adminapi::Present::Modal
+pub adminapi::Present::Navigate
+impl core::clone::Clone for adminapi::Present
+pub fn adminapi::Present::clone(&self) -> adminapi::Present
+impl core::cmp::Eq for adminapi::Present
+impl core::cmp::PartialEq for adminapi::Present
+pub fn adminapi::Present::eq(&self, &adminapi::Present) -> bool
+impl core::default::Default for adminapi::Present
+pub fn adminapi::Present::default() -> adminapi::Present
+impl core::fmt::Debug for adminapi::Present
+pub fn adminapi::Present::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for adminapi::Present
+impl core::marker::StructuralPartialEq for adminapi::Present
+impl serde_core::ser::Serialize for adminapi::Present
+pub fn adminapi::Present::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for adminapi::Present
+pub fn adminapi::Present::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for adminapi::Present
+impl core::marker::Send for adminapi::Present
+impl core::marker::Sync for adminapi::Present
+impl core::marker::Unpin for adminapi::Present
+impl core::marker::UnsafeUnpin for adminapi::Present
+impl core::panic::unwind_safe::RefUnwindSafe for adminapi::Present
+impl core::panic::unwind_safe::UnwindSafe for adminapi::Present
 pub enum adminapi::SubmitError
 pub adminapi::SubmitError::Conflict
 pub adminapi::SubmitError::Other(anyhow::Error)
@@ -127,6 +176,84 @@ impl core::marker::Unpin for adminapi::SubmitError
 impl core::marker::UnsafeUnpin for adminapi::SubmitError
 impl core::panic::unwind_safe::RefUnwindSafe for adminapi::SubmitError
 impl core::panic::unwind_safe::UnwindSafe for adminapi::SubmitError
+pub struct adminapi::Card
+pub adminapi::Card::badge: alloc::string::String
+pub adminapi::Card::color_key: alloc::string::String
+pub adminapi::Card::context: std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>
+pub adminapi::Card::icon_text: alloc::string::String
+pub adminapi::Card::menu: alloc::vec::Vec<adminapi::MenuEntry>
+pub adminapi::Card::stats: alloc::vec::Vec<adminapi::CardStat>
+pub adminapi::Card::subtitle: alloc::string::String
+pub adminapi::Card::title: alloc::string::String
+impl core::clone::Clone for adminapi::Card
+pub fn adminapi::Card::clone(&self) -> adminapi::Card
+impl core::cmp::Eq for adminapi::Card
+impl core::cmp::PartialEq for adminapi::Card
+pub fn adminapi::Card::eq(&self, &adminapi::Card) -> bool
+impl core::default::Default for adminapi::Card
+pub fn adminapi::Card::default() -> adminapi::Card
+impl core::fmt::Debug for adminapi::Card
+pub fn adminapi::Card::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for adminapi::Card
+impl serde_core::ser::Serialize for adminapi::Card
+pub fn adminapi::Card::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for adminapi::Card
+pub fn adminapi::Card::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for adminapi::Card
+impl core::marker::Send for adminapi::Card
+impl core::marker::Sync for adminapi::Card
+impl core::marker::Unpin for adminapi::Card
+impl core::marker::UnsafeUnpin for adminapi::Card
+impl core::panic::unwind_safe::RefUnwindSafe for adminapi::Card
+impl core::panic::unwind_safe::UnwindSafe for adminapi::Card
+pub struct adminapi::CardGrid
+pub adminapi::CardGrid::cards: alloc::vec::Vec<adminapi::Card>
+pub adminapi::CardGrid::menu_point: alloc::string::String
+impl core::clone::Clone for adminapi::CardGrid
+pub fn adminapi::CardGrid::clone(&self) -> adminapi::CardGrid
+impl core::cmp::Eq for adminapi::CardGrid
+impl core::cmp::PartialEq for adminapi::CardGrid
+pub fn adminapi::CardGrid::eq(&self, &adminapi::CardGrid) -> bool
+impl core::default::Default for adminapi::CardGrid
+pub fn adminapi::CardGrid::default() -> adminapi::CardGrid
+impl core::fmt::Debug for adminapi::CardGrid
+pub fn adminapi::CardGrid::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for adminapi::CardGrid
+impl serde_core::ser::Serialize for adminapi::CardGrid
+pub fn adminapi::CardGrid::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for adminapi::CardGrid
+pub fn adminapi::CardGrid::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for adminapi::CardGrid
+impl core::marker::Send for adminapi::CardGrid
+impl core::marker::Sync for adminapi::CardGrid
+impl core::marker::Unpin for adminapi::CardGrid
+impl core::marker::UnsafeUnpin for adminapi::CardGrid
+impl core::panic::unwind_safe::RefUnwindSafe for adminapi::CardGrid
+impl core::panic::unwind_safe::UnwindSafe for adminapi::CardGrid
+pub struct adminapi::CardStat
+pub adminapi::CardStat::label: alloc::string::String
+pub adminapi::CardStat::value: alloc::string::String
+impl core::clone::Clone for adminapi::CardStat
+pub fn adminapi::CardStat::clone(&self) -> adminapi::CardStat
+impl core::cmp::Eq for adminapi::CardStat
+impl core::cmp::PartialEq for adminapi::CardStat
+pub fn adminapi::CardStat::eq(&self, &adminapi::CardStat) -> bool
+impl core::default::Default for adminapi::CardStat
+pub fn adminapi::CardStat::default() -> adminapi::CardStat
+impl core::fmt::Debug for adminapi::CardStat
+pub fn adminapi::CardStat::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for adminapi::CardStat
+impl serde_core::ser::Serialize for adminapi::CardStat
+pub fn adminapi::CardStat::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for adminapi::CardStat
+pub fn adminapi::CardStat::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for adminapi::CardStat
+impl core::marker::Send for adminapi::CardStat
+impl core::marker::Sync for adminapi::CardStat
+impl core::marker::Unpin for adminapi::CardStat
+impl core::marker::UnsafeUnpin for adminapi::CardStat
+impl core::panic::unwind_safe::RefUnwindSafe for adminapi::CardStat
+impl core::panic::unwind_safe::UnwindSafe for adminapi::CardStat
 pub struct adminapi::Cell
 pub adminapi::Cell::badge: alloc::string::String
 pub adminapi::Cell::link: alloc::string::String
@@ -151,8 +278,12 @@ impl core::marker::UnsafeUnpin for adminapi::Cell
 impl core::panic::unwind_safe::RefUnwindSafe for adminapi::Cell
 impl core::panic::unwind_safe::UnwindSafe for adminapi::Cell
 pub struct adminapi::Content
+pub adminapi::Content::cards: core::option::Option<adminapi::CardGrid>
+pub adminapi::Content::context: std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>
 pub adminapi::Content::form: core::option::Option<adminapi::Form>
+pub adminapi::Content::header: core::option::Option<adminapi::ContextHeader>
 pub adminapi::Content::kpis: alloc::vec::Vec<adminapi::Kpi>
+pub adminapi::Content::modal_point: alloc::string::String
 pub adminapi::Content::table: core::option::Option<adminapi::Table>
 impl core::clone::Clone for adminapi::Content
 pub fn adminapi::Content::clone(&self) -> adminapi::Content
@@ -169,6 +300,77 @@ impl core::marker::Unpin for adminapi::Content
 impl core::marker::UnsafeUnpin for adminapi::Content
 impl !core::panic::unwind_safe::RefUnwindSafe for adminapi::Content
 impl !core::panic::unwind_safe::UnwindSafe for adminapi::Content
+pub struct adminapi::ContextHeader
+pub adminapi::ContextHeader::avatar_color_key: alloc::string::String
+pub adminapi::ContextHeader::avatar_text: alloc::string::String
+pub adminapi::ContextHeader::right_note: alloc::string::String
+pub adminapi::ContextHeader::subtitle_mono: alloc::string::String
+pub adminapi::ContextHeader::title: alloc::string::String
+impl core::clone::Clone for adminapi::ContextHeader
+pub fn adminapi::ContextHeader::clone(&self) -> adminapi::ContextHeader
+impl core::cmp::Eq for adminapi::ContextHeader
+impl core::cmp::PartialEq for adminapi::ContextHeader
+pub fn adminapi::ContextHeader::eq(&self, &adminapi::ContextHeader) -> bool
+impl core::default::Default for adminapi::ContextHeader
+pub fn adminapi::ContextHeader::default() -> adminapi::ContextHeader
+impl core::fmt::Debug for adminapi::ContextHeader
+pub fn adminapi::ContextHeader::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for adminapi::ContextHeader
+impl serde_core::ser::Serialize for adminapi::ContextHeader
+pub fn adminapi::ContextHeader::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for adminapi::ContextHeader
+pub fn adminapi::ContextHeader::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for adminapi::ContextHeader
+impl core::marker::Send for adminapi::ContextHeader
+impl core::marker::Sync for adminapi::ContextHeader
+impl core::marker::Unpin for adminapi::ContextHeader
+impl core::marker::UnsafeUnpin for adminapi::ContextHeader
+impl core::panic::unwind_safe::RefUnwindSafe for adminapi::ContextHeader
+impl core::panic::unwind_safe::UnwindSafe for adminapi::ContextHeader
+pub struct adminapi::ExtensionEntry
+pub adminapi::ExtensionEntry::icon: alloc::string::String
+pub adminapi::ExtensionEntry::label: alloc::string::String
+pub adminapi::ExtensionEntry::link: alloc::string::String
+pub adminapi::ExtensionEntry::point: alloc::string::String
+pub adminapi::ExtensionEntry::present: adminapi::Present
+pub adminapi::ExtensionEntry::priority: i32
+impl core::clone::Clone for adminapi::ExtensionEntry
+pub fn adminapi::ExtensionEntry::clone(&self) -> adminapi::ExtensionEntry
+impl core::cmp::Eq for adminapi::ExtensionEntry
+impl core::cmp::PartialEq for adminapi::ExtensionEntry
+pub fn adminapi::ExtensionEntry::eq(&self, &adminapi::ExtensionEntry) -> bool
+impl core::default::Default for adminapi::ExtensionEntry
+pub fn adminapi::ExtensionEntry::default() -> adminapi::ExtensionEntry
+impl core::fmt::Debug for adminapi::ExtensionEntry
+pub fn adminapi::ExtensionEntry::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for adminapi::ExtensionEntry
+impl serde_core::ser::Serialize for adminapi::ExtensionEntry
+pub fn adminapi::ExtensionEntry::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for adminapi::ExtensionEntry
+pub fn adminapi::ExtensionEntry::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for adminapi::ExtensionEntry
+impl core::marker::Send for adminapi::ExtensionEntry
+impl core::marker::Sync for adminapi::ExtensionEntry
+impl core::marker::Unpin for adminapi::ExtensionEntry
+impl core::marker::UnsafeUnpin for adminapi::ExtensionEntry
+impl core::panic::unwind_safe::RefUnwindSafe for adminapi::ExtensionEntry
+impl core::panic::unwind_safe::UnwindSafe for adminapi::ExtensionEntry
+pub struct adminapi::ExtensionPoint
+pub adminapi::ExtensionPoint::context_keys: &'static [&'static str]
+pub adminapi::ExtensionPoint::id: &'static str
+pub adminapi::ExtensionPoint::kind: adminapi::ExtensionKind
+impl core::clone::Clone for adminapi::ExtensionPoint
+pub fn adminapi::ExtensionPoint::clone(&self) -> adminapi::ExtensionPoint
+impl core::fmt::Debug for adminapi::ExtensionPoint
+pub fn adminapi::ExtensionPoint::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for adminapi::ExtensionPoint
+impl core::marker::Freeze for adminapi::ExtensionPoint
+impl core::marker::Send for adminapi::ExtensionPoint
+impl core::marker::Sync for adminapi::ExtensionPoint
+impl core::marker::Unpin for adminapi::ExtensionPoint
+impl core::marker::UnsafeUnpin for adminapi::ExtensionPoint
+impl core::panic::unwind_safe::RefUnwindSafe for adminapi::ExtensionPoint
+impl core::panic::unwind_safe::UnwindSafe for adminapi::ExtensionPoint
 pub struct adminapi::Field
 pub adminapi::Field::kind: adminapi::FieldKind
 pub adminapi::Field::label: alloc::string::String
@@ -254,6 +456,7 @@ impl core::marker::UnsafeUnpin for adminapi::HiddenField
 impl core::panic::unwind_safe::RefUnwindSafe for adminapi::HiddenField
 impl core::panic::unwind_safe::UnwindSafe for adminapi::HiddenField
 pub struct adminapi::Item
+pub adminapi::Item::extensions: alloc::vec::Vec<adminapi::ExtensionEntry>
 pub adminapi::Item::id: alloc::string::String
 pub adminapi::Item::label: alloc::string::String
 pub adminapi::Item::remote_fetch: core::option::Option<adminapi::RemoteFetchFn>
@@ -262,6 +465,7 @@ pub adminapi::Item::render: core::option::Option<adminapi::RenderFn>
 pub adminapi::Item::section: alloc::string::String
 impl adminapi::Item
 pub fn adminapi::Item::local(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, adminapi::RenderFn) -> adminapi::Item
+pub fn adminapi::Item::with_extensions(self, alloc::vec::Vec<adminapi::ExtensionEntry>) -> adminapi::Item
 impl core::clone::Clone for adminapi::Item
 pub fn adminapi::Item::clone(&self) -> adminapi::Item
 impl core::marker::Freeze for adminapi::Item
@@ -273,6 +477,7 @@ impl !core::panic::unwind_safe::RefUnwindSafe for adminapi::Item
 impl !core::panic::unwind_safe::UnwindSafe for adminapi::Item
 pub struct adminapi::ItemData
 pub adminapi::ItemData::content: adminapi::Content
+pub adminapi::ItemData::extensions: alloc::vec::Vec<adminapi::ExtensionEntry>
 pub adminapi::ItemData::id: alloc::string::String
 pub adminapi::ItemData::label: alloc::string::String
 pub adminapi::ItemData::section: alloc::string::String
@@ -310,6 +515,34 @@ impl core::marker::Unpin for adminapi::Kpi
 impl core::marker::UnsafeUnpin for adminapi::Kpi
 impl core::panic::unwind_safe::RefUnwindSafe for adminapi::Kpi
 impl core::panic::unwind_safe::UnwindSafe for adminapi::Kpi
+pub struct adminapi::MenuEntry
+pub adminapi::MenuEntry::danger: bool
+pub adminapi::MenuEntry::disabled: bool
+pub adminapi::MenuEntry::icon: alloc::string::String
+pub adminapi::MenuEntry::label: alloc::string::String
+pub adminapi::MenuEntry::link: core::option::Option<alloc::string::String>
+pub adminapi::MenuEntry::present: adminapi::Present
+impl core::clone::Clone for adminapi::MenuEntry
+pub fn adminapi::MenuEntry::clone(&self) -> adminapi::MenuEntry
+impl core::cmp::Eq for adminapi::MenuEntry
+impl core::cmp::PartialEq for adminapi::MenuEntry
+pub fn adminapi::MenuEntry::eq(&self, &adminapi::MenuEntry) -> bool
+impl core::default::Default for adminapi::MenuEntry
+pub fn adminapi::MenuEntry::default() -> adminapi::MenuEntry
+impl core::fmt::Debug for adminapi::MenuEntry
+pub fn adminapi::MenuEntry::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for adminapi::MenuEntry
+impl serde_core::ser::Serialize for adminapi::MenuEntry
+pub fn adminapi::MenuEntry::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for adminapi::MenuEntry
+pub fn adminapi::MenuEntry::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for adminapi::MenuEntry
+impl core::marker::Send for adminapi::MenuEntry
+impl core::marker::Sync for adminapi::MenuEntry
+impl core::marker::Unpin for adminapi::MenuEntry
+impl core::marker::UnsafeUnpin for adminapi::MenuEntry
+impl core::panic::unwind_safe::RefUnwindSafe for adminapi::MenuEntry
+impl core::panic::unwind_safe::UnwindSafe for adminapi::MenuEntry
 pub struct adminapi::RevealItem
 pub adminapi::RevealItem::label: alloc::string::String
 pub adminapi::RevealItem::value: alloc::string::String
@@ -334,6 +567,30 @@ impl core::marker::Unpin for adminapi::RevealItem
 impl core::marker::UnsafeUnpin for adminapi::RevealItem
 impl core::panic::unwind_safe::RefUnwindSafe for adminapi::RevealItem
 impl core::panic::unwind_safe::UnwindSafe for adminapi::RevealItem
+pub struct adminapi::RowMeta
+pub adminapi::RowMeta::context: std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>
+pub adminapi::RowMeta::menu: alloc::vec::Vec<adminapi::MenuEntry>
+impl core::clone::Clone for adminapi::RowMeta
+pub fn adminapi::RowMeta::clone(&self) -> adminapi::RowMeta
+impl core::cmp::Eq for adminapi::RowMeta
+impl core::cmp::PartialEq for adminapi::RowMeta
+pub fn adminapi::RowMeta::eq(&self, &adminapi::RowMeta) -> bool
+impl core::default::Default for adminapi::RowMeta
+pub fn adminapi::RowMeta::default() -> adminapi::RowMeta
+impl core::fmt::Debug for adminapi::RowMeta
+pub fn adminapi::RowMeta::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for adminapi::RowMeta
+impl serde_core::ser::Serialize for adminapi::RowMeta
+pub fn adminapi::RowMeta::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for adminapi::RowMeta
+pub fn adminapi::RowMeta::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for adminapi::RowMeta
+impl core::marker::Send for adminapi::RowMeta
+impl core::marker::Sync for adminapi::RowMeta
+impl core::marker::Unpin for adminapi::RowMeta
+impl core::marker::UnsafeUnpin for adminapi::RowMeta
+impl core::panic::unwind_safe::RefUnwindSafe for adminapi::RowMeta
+impl core::panic::unwind_safe::UnwindSafe for adminapi::RowMeta
 pub struct adminapi::SubmitOutcome
 pub adminapi::SubmitOutcome::reveal: alloc::vec::Vec<adminapi::RevealItem>
 impl core::clone::Clone for adminapi::SubmitOutcome
@@ -359,6 +616,8 @@ impl core::panic::unwind_safe::RefUnwindSafe for adminapi::SubmitOutcome
 impl core::panic::unwind_safe::UnwindSafe for adminapi::SubmitOutcome
 pub struct adminapi::Table
 pub adminapi::Table::columns: alloc::vec::Vec<alloc::string::String>
+pub adminapi::Table::menu_point: alloc::string::String
+pub adminapi::Table::row_meta: alloc::vec::Vec<adminapi::RowMeta>
 pub adminapi::Table::rows: alloc::vec::Vec<alloc::vec::Vec<adminapi::Cell>>
 impl core::clone::Clone for adminapi::Table
 pub fn adminapi::Table::clone(&self) -> adminapi::Table
@@ -377,7 +636,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for adminapi::Table
 impl core::panic::unwind_safe::UnwindSafe for adminapi::Table
 pub const adminapi::SLOT: contrib::Slot<adminapi::Item>
 pub trait adminapi::AdminData: core::marker::Send + core::marker::Sync
-pub fn adminapi::AdminData::admin_data<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<adminapi::ItemData, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn adminapi::AdminData::admin_data<'life0, 'async_trait>(&'life0 self, adminapi::Params) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<adminapi::ItemData, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub trait adminapi::AdminSubmit: core::marker::Send + core::marker::Sync
 pub fn adminapi::AdminSubmit::admin_submit<'life0, 'async_trait>(&'life0 self, alloc::string::String, adminapi::Params) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<adminapi::SubmitOutcome, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn adminapi::param<'a>(&'a adminapi::Params, &str) -> &'a str

@@ -1,5 +1,7 @@
 # cargo-public-api 0.52.0 -- regenerate via cargo run -p verifyctl -- --bless-public-api
 pub mod accountsapi
+pub mod accountsapi::admin
+pub const accountsapi::admin::PLAYERS_ROW_MENU: adminapi::ExtensionPoint
 pub mod accountsapi::auth_rpc
 pub struct accountsapi::auth_rpc::LoginEpicRequest
 pub accountsapi::auth_rpc::LoginEpicRequest::id_token: alloc::string::String

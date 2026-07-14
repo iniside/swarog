@@ -73,9 +73,9 @@ pub fn admin_remote_factory(provider: &str) -> remote::RemoteFactory {
     let provider = provider.to_string();
     Box::new(move |ctx, caller| {
         let fetch_caller = caller.clone();
-        let fetch: adminapi::RemoteFetchFn = Arc::new(move |_params: adminapi::Params| {
+        let fetch: adminapi::RemoteFetchFn = Arc::new(move |params: adminapi::Params| {
             let caller = fetch_caller.clone();
-            Box::pin(fetch_remote_admin(caller))
+            Box::pin(fetch_remote_admin(caller, params))
         });
         let submit_caller = caller.clone();
         let submit_id = provider.clone();
@@ -93,6 +93,7 @@ pub fn admin_remote_factory(provider: &str) -> remote::RemoteFactory {
                 render: None,
                 remote_fetch: Some(fetch),
                 remote_submit: Some(submit),
+                extensions: Vec::new(),
             },
         );
     })
@@ -108,9 +109,10 @@ pub fn admin_remote_factory(provider: &str) -> remote::RemoteFactory {
 /// Absent) is accepted — `admin_data` has no domain not-found.
 async fn fetch_remote_admin(
     caller: Arc<dyn opsapi::Caller>,
+    params: adminapi::Params,
 ) -> Result<adminapi::ItemData, adminapi::ItemError> {
     let client = admin_data_rpc::Client::new(caller);
-    match client.admin_data().await {
+    match client.admin_data(params).await {
         Ok(data) => Ok(data),
         Err(e) if e.status == opsapi::Status::NotFound => Err(adminapi::ItemError::Absent),
         Err(e) => Err(adminapi::ItemError::Other(anyhow::anyhow!("{e}"))),

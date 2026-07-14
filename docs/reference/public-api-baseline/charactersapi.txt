@@ -1,5 +1,8 @@
 # cargo-public-api 0.52.0 -- regenerate via cargo run -p verifyctl -- --bless-public-api
 pub mod charactersapi
+pub mod charactersapi::admin
+pub const charactersapi::admin::CHARACTERS_CARD_MENU: adminapi::ExtensionPoint
+pub const charactersapi::admin::CHARACTER_MODAL_ACTIONS: adminapi::ExtensionPoint
 pub mod charactersapi::ownership_rpc
 pub struct charactersapi::ownership_rpc::OwnerOfRequest
 pub charactersapi::ownership_rpc::OwnerOfRequest::character_id: alloc::string::String

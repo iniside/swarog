@@ -16,6 +16,10 @@ publish = false
 # impl crate and never the glue crate.
 [dependencies]
 opsapi = { workspace = true }
+# TYPES-ONLY: the admin extension-point vocabulary (ExtensionPoint/ExtensionKind
+# consts declared in `admin` below). api→api edge; archcheck's FORBIDDEN_API_DEPS is
+# transport-only, so this is legal (verified in the plan).
+adminapi = { workspace = true }
 rpc-macro = { workspace = true }
 async-trait = { workspace = true }
 serde = { workspace = true }

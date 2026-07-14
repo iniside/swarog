@@ -201,6 +201,7 @@ fn build_keys_table(keys: &[KeySummary]) -> adminapi::Table {
     let mut table = adminapi::Table {
         columns: vec!["Name".into(), "Prefix".into(), "Role".into(), "Created".into(), "Status".into()],
         rows: Vec::with_capacity(keys.len()),
+        ..Default::default()
     };
     for k in keys {
         let (text, badge) = if k.revoked { ("revoked", "red") } else { ("active", "green") };
@@ -286,6 +287,7 @@ async fn build_form_data(svc: &Service) -> anyhow::Result<adminapi::Content> {
         kpis: build_kpis(&roles, &keys),
         table: Some(build_keys_table(&keys)),
         form: Some(build_form(&roles, &keys)),
+        ..Default::default()
     })
 }
 
@@ -479,7 +481,7 @@ impl adminapi::AdminData for Service {
     /// The admin fan-out READ (`admin.adminData` on the edge): the API Keys page as
     /// [`adminapi::ItemData`], typed fields + current values, `form.submit == None` (the
     /// write is driven remotely via `admin.adminSubmit`).
-    async fn admin_data(&self) -> Result<adminapi::ItemData, opsapi::Error> {
+    async fn admin_data(&self, _params: adminapi::Params) -> Result<adminapi::ItemData, opsapi::Error> {
         let content = build_form_data(self)
             .await
             .map_err(|e| opsapi::Error::internal(e.to_string()))?;
@@ -488,6 +490,7 @@ impl adminapi::AdminData for Service {
             section: ADMIN_SECTION.into(),
             label: ADMIN_LABEL.into(),
             content,
+            ..Default::default()
         })
     }
 }

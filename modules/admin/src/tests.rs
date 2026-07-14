@@ -107,6 +107,7 @@ fn remote_item(
         render: None,
         remote_fetch: Some(fetch),
         remote_submit: None,
+        extensions: Vec::new(),
     }
 }
 
@@ -142,6 +143,7 @@ fn remote_writable_item(
         render: None,
         remote_fetch: Some(fetch),
         remote_submit: Some(submit),
+        extensions: Vec::new(),
     }
 }
 
@@ -167,7 +169,9 @@ fn remote_item_data_with_form(id: &str, label: &str) -> adminapi::ItemData {
                 hidden: Vec::new(),
                 submit: None,
             }),
+            ..Default::default()
         },
+        ..Default::default()
     }
 }
 
@@ -235,6 +239,7 @@ async fn remote_success_carries_peer_metadata() {
                     }],
                     ..Default::default()
                 },
+                ..Default::default()
             }),
             None,
         ),
@@ -294,6 +299,7 @@ async fn local_and_remote_dispatch_together() {
                 section: "Game Content".into(),
                 label: "Characters".into(),
                 content: adminapi::Content::default(),
+                ..Default::default()
             }),
             None,
         ),
@@ -389,6 +395,7 @@ async fn template_renders_kpis_table_csrf_and_escapes() {
                         ..Default::default()
                     }],
                 ],
+                ..Default::default()
             }),
             form: Some(adminapi::Form {
                 action: "/admin/characters".into(),
@@ -1166,6 +1173,7 @@ async fn csrf_rejects_before_editability_and_gates_local_submit() {
                 section: "S".into(),
                 label: remote_label.clone(),
                 content: adminapi::Content::default(),
+                ..Default::default()
             }),
             None,
         ),
@@ -1205,6 +1213,7 @@ async fn csrf_rejects_before_editability_and_gates_local_submit() {
                         }],
                         submit: Some(submit.clone()),
                     }),
+                    ..Default::default()
                 })
             }),
         ),
@@ -1410,7 +1419,9 @@ async fn remote_submit_joins_checkboxes_and_flashes_reveal_via_redirect() {
                 hidden: Vec::new(),
                 submit: None,
             }),
+            ..Default::default()
         },
+        ..Default::default()
     };
     ctx.contribute(
         adminapi::SLOT,
@@ -1582,6 +1593,7 @@ async fn stale_hidden_evidence_round_trips_to_conflict_without_audit() {
                         }],
                         submit: Some(submit.clone()),
                     }),
+                    ..Default::default()
                 })
             }),
         ),
@@ -1691,6 +1703,7 @@ async fn admin_open_bypasses_sessions_and_csrf() {
                         hidden: Vec::new(),
                         submit: Some(submit.clone()),
                     }),
+                    ..Default::default()
                 })
             }),
         ),

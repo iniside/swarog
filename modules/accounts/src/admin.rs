@@ -23,7 +23,7 @@ impl adminapi::AdminData for Service {
     /// The admin fan-out: this module's page as `adminapi::ItemData` (same
     /// Section/Label the local `Item` carries), served on the edge as
     /// `admin.adminData` so a remote admin process renders the Players page.
-    async fn admin_data(&self) -> Result<adminapi::ItemData, Error> {
+    async fn admin_data(&self, _params: adminapi::Params) -> Result<adminapi::ItemData, Error> {
         let content = admin_content(&self.store)
             .await
             .map_err(|e| Error::internal(e.to_string()))?;
@@ -32,6 +32,7 @@ impl adminapi::AdminData for Service {
             section: ADMIN_SECTION.into(),
             label: ADMIN_LABEL.into(),
             content,
+            ..Default::default()
         })
     }
 }
@@ -51,6 +52,7 @@ pub(crate) async fn admin_content(store: &Store) -> anyhow::Result<adminapi::Con
             "CREATED".into(),
         ],
         rows: Vec::with_capacity(rows.len()),
+        ..Default::default()
     };
     for p in rows {
         let status = if p.online {
@@ -95,6 +97,7 @@ pub(crate) async fn admin_content(store: &Store) -> anyhow::Result<adminapi::Con
         ],
         table: Some(table),
         form: None,
+        ..Default::default()
     })
 }
 

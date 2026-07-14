@@ -11,7 +11,7 @@ use crate::{fetch_remote_admin, submit_remote_admin};
 /// `unwrap_err` needs `T: Debug` and `adminapi::ItemData` has no `Debug` — unwrap
 /// the error arm by hand.
 async fn fetch_err(caller: Arc<dyn opsapi::Caller>) -> adminapi::ItemError {
-    match fetch_remote_admin(caller).await {
+    match fetch_remote_admin(caller, adminapi::Params::new()).await {
         Err(e) => e,
         Ok(_) => panic!("expected the fetch to fail"),
     }

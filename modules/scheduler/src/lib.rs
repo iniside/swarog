@@ -557,6 +557,7 @@ impl Service {
         let mut table = adminapi::Table {
             columns: vec!["Schedule".into(), "Interval (s)".into(), "Last fired".into()],
             rows: Vec::with_capacity(rows.len()),
+            ..Default::default()
         };
         for (name, interval, last_fired) in rows {
             table.rows.push(vec![
@@ -569,6 +570,7 @@ impl Service {
             kpis: Vec::new(),
             table: Some(table),
             form: None,
+            ..Default::default()
         })
     }
 }
@@ -578,7 +580,7 @@ impl adminapi::AdminData for Service {
     /// The admin fan-out: this module's "Schedules" page as [`adminapi::ItemData`] (same
     /// Section/Label the local `Item` carries), served on the edge as `admin.adminData`
     /// so a remote admin process renders it cross-process.
-    async fn admin_data(&self) -> Result<adminapi::ItemData, opsapi::Error> {
+    async fn admin_data(&self, _params: adminapi::Params) -> Result<adminapi::ItemData, opsapi::Error> {
         let content = self
             .admin_content()
             .await
@@ -588,6 +590,7 @@ impl adminapi::AdminData for Service {
             section: ADMIN_SECTION.into(),
             label: ADMIN_LABEL.into(),
             content,
+            ..Default::default()
         })
     }
 }

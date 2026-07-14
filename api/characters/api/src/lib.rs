@@ -82,3 +82,29 @@ pub trait Player: Send + Sync {
 // `#[rpc]` trait (Step 7): the characters `Service` implements it and exposes it on
 // its edge as `admin.adminData`, so a remote admin process pulls this page over the
 // QUIC edge. No per-domain `Admin` trait remains.
+
+/// The admin extension POINTS characters OWNS on its portal pages. A contributor
+/// (inventory) imports THESE consts to target a point by id — it never imports the
+/// characters impl, and characters never learns who extends it (the same Open/Closed
+/// inversion the bus/registry seams enforce).
+pub mod admin {
+    use adminapi::{ExtensionKind, ExtensionPoint};
+
+    /// The `⋯` menu on each character CARD of the scoped (`?owner=player:<uuid>`)
+    /// Characters view. Contributors add entries ("View Inventory"); the card
+    /// `context` supplies `id` as `"character:<uuid>"`.
+    pub const CHARACTERS_CARD_MENU: ExtensionPoint = ExtensionPoint {
+        id: "characters.characters.card-menu",
+        kind: ExtensionKind::EntityMenu,
+        context_keys: &["id"],
+    };
+
+    /// The action strip in the character-detail MODAL footer. Contributors add modal
+    /// actions ("View Inventory"); `Content.context` supplies `id` as
+    /// `"character:<uuid>"`.
+    pub const CHARACTER_MODAL_ACTIONS: ExtensionPoint = ExtensionPoint {
+        id: "characters.character-modal.actions",
+        kind: ExtensionKind::ModalActions,
+        context_keys: &["id"],
+    };
+}

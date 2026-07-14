@@ -221,7 +221,7 @@ async fn admin_data_remote_has_typed_fields_and_no_submit_closure() {
     let Some(pool) = test_pool().await else { return };
     let svc = Arc::new(Service { store: Store { pool: pool.clone() } });
 
-    let data = svc.admin_data().await.unwrap();
+    let data = svc.admin_data(adminapi::Params::new()).await.unwrap();
     assert_eq!(data.id, "apikeys");
     let form = data.content.form.expect("remote form structure present");
     assert!(form.submit.is_none(), "remote form carries no submit closure");

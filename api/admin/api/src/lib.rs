@@ -44,8 +44,19 @@ pub const SLOT: contrib::Slot<Item> = contrib::Slot::new("admin.item");
 #[rpc(prefix = "admin")]
 #[async_trait]
 pub trait AdminData: Send + Sync {
+    /// Returns this provider's admin page ([`ItemData`]) for a request carrying the
+    /// flattened query `params` (e.g. `?owner=player:<uuid>`), so a scoped drill-down
+    /// renders identically LOCAL and REMOTE (the params now ride this wire call).
+    ///
+    /// CONTRACT — foreign-params tolerance: implementations MUST tolerate arbitrary,
+    /// foreign, or malformed params and NEVER `Err` on them. The portal forwards
+    /// EVERY page's params to EVERY resolved provider on every request (an
+    /// `/admin/characters?owner=player:X` GET reaches inventory-svc, apikeys-svc, …
+    /// too), so an `Err` on an unrecognized param becomes an error card on an
+    /// unrelated page — split-only. Ignore params you don't understand; render an
+    /// error-content card (not an `Err`) for a malformed value you DO consume.
     #[retry_safe]
-    async fn admin_data(&self) -> Result<ItemData, Error>;
+    async fn admin_data(&self, params: Params) -> Result<ItemData, Error>;
 }
 
 /// The OPT-IN write companion to [`AdminData`]: a provider that supports REMOTE admin
@@ -161,6 +172,180 @@ pub enum ItemError {
     Other(#[from] anyhow::Error),
 }
 
+/// The closed taxonomy of extension points a page owner can declare. `EntityMenu`
+/// is a per-row/per-card `⋯` menu (Players row, Characters card); `ModalActions` is
+/// the footer-action strip of an entity modal (the character detail modal). Closed
+/// on purpose — the portal renders each kind with fixed chrome and no domain
+/// knowledge.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ExtensionKind {
+    /// A per-entity `⋯` dropdown (table row or card).
+    EntityMenu,
+    /// The action strip in an entity modal's footer.
+    ModalActions,
+}
+
+/// An extension point a PAGE OWNER declares as a `'static` const in its OWN api crate
+/// (e.g. `accountsapi::admin::PLAYERS_ROW_MENU`). Contributors target it by [`id`];
+/// [`context_keys`] names the interpolation keys the owner promises to fill in each
+/// row/card/modal `context` (e.g. `["id"]` for `{"id": "player:<uuid>"}`). The portal
+/// merges every [`ExtensionEntry`] whose [`ExtensionEntry::point`] matches [`id`].
+///
+/// [`id`]: ExtensionPoint::id
+/// [`context_keys`]: ExtensionPoint::context_keys
+#[derive(Clone, Copy, Debug)]
+pub struct ExtensionPoint {
+    /// Globally unique point id, e.g. `"accounts.players.row-menu"`.
+    pub id: &'static str,
+    /// What kind of point this is; constrains contributors' [`Present`].
+    pub kind: ExtensionKind,
+    /// The interpolation keys the owner fills per row/card/modal, e.g. `["id"]`.
+    pub context_keys: &'static [&'static str],
+}
+
+/// How a merged menu entry (native or extension) renders. `Navigate` is a plain
+/// drill-down anchor; `Modal` fetches a fragment (`?partial=modal`) into the modal
+/// root (degrading to a plain anchor without JS). The default is [`Present::Navigate`]
+/// so a contributor that omits `present` gets ordinary navigation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum Present {
+    /// A drill-down anchor to `/admin/<interpolated link>`.
+    #[default]
+    Navigate,
+    /// An htmx modal-fragment fetch; degrades to a Navigate anchor without JS.
+    Modal,
+}
+
+/// A CONTRIBUTOR's extension: pure data a module ships on its [`Item`] /[`ItemData`]
+/// to add an entry to ANOTHER module's [`ExtensionPoint`]. It imports only the owner's
+/// api crate (for the point id const), never the owner's impl. The [`link`] is a
+/// `"slug?query"` template with `{key}` interpolation against the owner's row/card/
+/// modal context; the portal appends `from=<current-page>` for back-navigation.
+///
+/// [`link`]: ExtensionEntry::link
+#[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct ExtensionEntry {
+    /// The target [`ExtensionPoint::id`], e.g. `"accounts.players.row-menu"`.
+    pub point: String,
+    /// Operator-facing menu label, e.g. `"View Characters"`.
+    pub label: String,
+    /// A named icon key (the portal maps it to a glyph); never raw markup.
+    pub icon: String,
+    /// A `"slug?query"` template with `{key}` interpolation, e.g.
+    /// `"characters?owner={id}"`.
+    pub link: String,
+    /// How the entry renders; defaults to [`Present::Navigate`].
+    #[serde(default)]
+    pub present: Present,
+    /// Sort priority within the point's extension block (lower first); ties break on
+    /// `label`.
+    #[serde(default)]
+    pub priority: i32,
+}
+
+/// A PAGE OWNER's own native menu item on one of its rows/cards (rendered BEFORE the
+/// separator and the merged extensions). Owner-authored, never client input.
+#[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct MenuEntry {
+    /// Operator-facing label, e.g. `"View"`, `"Edit"`, `"Delete"`.
+    pub label: String,
+    /// A named icon key (the portal maps it to a glyph).
+    pub icon: String,
+    /// Drill-down target template (`{key}` interpolation), or `None` for an inert item.
+    #[serde(default)]
+    pub link: Option<String>,
+    /// How the entry renders; defaults to [`Present::Navigate`].
+    #[serde(default)]
+    pub present: Present,
+    /// Red/destructive styling (e.g. Delete).
+    #[serde(default)]
+    pub danger: bool,
+    /// `true` renders the item visibly INERT (the mockup's not-yet-wired Edit/Delete);
+    /// default (`false`) is an active entry.
+    #[serde(default)]
+    pub disabled: bool,
+}
+
+/// Per-row interpolation context + native menu, attached in parallel to a [`Table`]'s
+/// `rows` (same index). `context` supplies the `{key}` values (e.g.
+/// `{"id": "player:<uuid>"}`) the portal interpolates into BOTH native `menu` links
+/// and the point's matching extension links.
+#[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct RowMeta {
+    /// Interpolation source for this row (`ExtensionPoint::context_keys`).
+    #[serde(default)]
+    pub context: HashMap<String, String>,
+    /// The owner's native menu items for this row (rendered before extensions).
+    #[serde(default)]
+    pub menu: Vec<MenuEntry>,
+}
+
+/// One headline stat on a [`Card`] (mockup: class/level pairs). `label` names it,
+/// `value` is the datum.
+#[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct CardStat {
+    pub label: String,
+    pub value: String,
+}
+
+/// One card in a [`CardGrid`]: an avatar glyph + title/subtitle, an optional badge, a
+/// stat strip, and its own interpolation `context` + native `menu` (same role as
+/// [`RowMeta`] but for the card layout). `color_key` selects the avatar palette slot.
+#[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct Card {
+    /// Short avatar text (e.g. initials / class glyph).
+    #[serde(default)]
+    pub icon_text: String,
+    /// Avatar palette key (the portal maps it to a color).
+    #[serde(default)]
+    pub color_key: String,
+    pub title: String,
+    #[serde(default)]
+    pub subtitle: String,
+    /// Optional status pill text.
+    #[serde(default)]
+    pub badge: String,
+    #[serde(default)]
+    pub stats: Vec<CardStat>,
+    /// Interpolation source for this card (`ExtensionPoint::context_keys`).
+    #[serde(default)]
+    pub context: HashMap<String, String>,
+    /// The owner's native menu items for this card (rendered before extensions).
+    #[serde(default)]
+    pub menu: Vec<MenuEntry>,
+}
+
+/// A grid of [`Card`]s bound to an [`ExtensionKind::EntityMenu`] point via
+/// `menu_point` (each card's `⋯` menu merges native entries + that point's
+/// extensions). The scoped-view analogue of a [`Table`] with `menu_point`.
+#[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct CardGrid {
+    /// The [`ExtensionPoint::id`] every card's menu binds to.
+    #[serde(default)]
+    pub menu_point: String,
+    pub cards: Vec<Card>,
+}
+
+/// The owner-rendered entity header for a scoped page (mockup: avatar + name + mono
+/// subtitle + right note, e.g. "Players · VoidR4nger"). The owner looked the entity
+/// up anyway; the portal only styles it and derives the breadcrumb from `title`.
+#[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct ContextHeader {
+    /// Avatar text (initials / short glyph).
+    #[serde(default)]
+    pub avatar_text: String,
+    /// Avatar palette key.
+    #[serde(default)]
+    pub avatar_color_key: String,
+    pub title: String,
+    /// Monospaced subtitle (e.g. the entity uuid).
+    #[serde(default)]
+    pub subtitle_mono: String,
+    /// A small right-aligned note (e.g. a status).
+    #[serde(default)]
+    pub right_note: String,
+}
+
 /// One clickable entry in the admin sidebar, contributed by a module. The admin
 /// groups items by [`Item::section`] into the menu; opening an item renders its
 /// [`Content`] into the content area.
@@ -189,6 +374,11 @@ pub struct Item {
     /// by the same per-provider factory, so one provider ⇒ one [`Item`] ⇒ both closures
     /// target that provider's edge.
     pub remote_submit: Option<RemoteSubmitFn>,
+    /// Cross-page extension entries this module contributes to OTHER modules' pages
+    /// (pure data — they ride the contribution slot LOCAL and [`ItemData::extensions`]
+    /// REMOTE). A page owner never learns its extenders; the portal indexes these by
+    /// [`ExtensionEntry::point`] per request. Empty for an item that extends nothing.
+    pub extensions: Vec<ExtensionEntry>,
 }
 
 impl Item {
@@ -206,7 +396,16 @@ impl Item {
             render: Some(render),
             remote_fetch: None,
             remote_submit: None,
+            extensions: vec![],
         }
+    }
+
+    /// Attaches cross-page [`ExtensionEntry`] contributions to this item (builder
+    /// form). A contributor pairs this with the SAME entries on its
+    /// [`ItemData::extensions`] so local and remote can't drift.
+    pub fn with_extensions(mut self, extensions: Vec<ExtensionEntry>) -> Item {
+        self.extensions = extensions;
+        self
     }
 }
 
@@ -219,6 +418,11 @@ pub struct ItemData {
     pub section: String,
     pub label: String,
     pub content: Content,
+    /// Cross-page extension entries this provider contributes (the REMOTE mirror of
+    /// [`Item::extensions`]). `#[serde(default)]` so a peer that predates the field
+    /// still deserializes.
+    #[serde(default)]
+    pub extensions: Vec<ExtensionEntry>,
 }
 
 /// What a section renders into: an optional KPI row, an optional table, and an
@@ -232,6 +436,25 @@ pub struct Content {
     /// Optional editable form; `None` = read-only.
     #[serde(default)]
     pub form: Option<Form>,
+    /// Optional card grid (the scoped-view layout, e.g. a player's characters).
+    #[serde(default)]
+    pub cards: Option<CardGrid>,
+    /// Optional owner-rendered entity header (avatar + name + mono subtitle); drives
+    /// the `"<section> · <title>"` breadcrumb when present.
+    #[serde(default)]
+    pub header: Option<ContextHeader>,
+    /// Binds this page's modal footer to an [`ExtensionKind::ModalActions`] point:
+    /// the portal renders that point's extensions in the modal footer, interpolated
+    /// against [`Content::context`]. Empty = no modal actions.
+    #[serde(default)]
+    pub modal_point: String,
+    /// Interpolation source for [`Content::modal_point`] entries (e.g.
+    /// `{"id": "character:<uuid>"}`) — the owner's detail render fills it, same
+    /// convention as [`RowMeta::context`]/[`Card::context`]. Without it the modal
+    /// footer's `{id}` has no source (the portal is domain-blind and can't derive it
+    /// from the request's `owner` param).
+    #[serde(default)]
+    pub context: HashMap<String, String>,
 }
 
 /// An editable widget a LOCAL item can attach to its [`Content`]. The admin renders
@@ -324,6 +547,13 @@ pub struct Kpi {
 pub struct Table {
     pub columns: Vec<String>,
     pub rows: Vec<Vec<Cell>>,
+    /// Binds each row's `⋯` menu to an [`ExtensionKind::EntityMenu`] point; empty =
+    /// no per-row menu. Paired index-for-index with [`Table::row_meta`].
+    #[serde(default)]
+    pub menu_point: String,
+    /// Per-row interpolation context + native menu, index-aligned with [`Table::rows`].
+    #[serde(default)]
+    pub row_meta: Vec<RowMeta>,
 }
 
 /// One table value. `badge` (one of `"green"`,`"amber"`,`"red"`,`"blue"`,`"grey"`)
@@ -392,6 +622,7 @@ mod tests {
                 table: Some(Table {
                     columns: vec!["Namespace".into(), "Key".into(), "Value".into()],
                     rows: vec![vec![Cell::mono("game"), Cell::mono("name"), Cell::text("arena")]],
+                    ..Default::default()
                 }),
                 form: Some(Form {
                     action: String::new(),
@@ -448,7 +679,9 @@ mod tests {
                     }],
                     submit: None,
                 }),
+                ..Default::default()
             },
+            ..Default::default()
         };
         let json = serde_json::to_string(&data).unwrap();
         let back: ItemData = serde_json::from_str(&json).unwrap();
@@ -503,5 +736,94 @@ mod tests {
             serde_json::from_str(&serde_json::to_string(&SubmitOutcome::default()).unwrap())
                 .unwrap();
         assert!(empty.reveal.is_empty());
+    }
+
+    #[test]
+    fn extension_vocabulary_roundtrips_and_defaults() {
+        // A contributor's ItemData carries extensions + a scoped view (cards + header +
+        // modal_point/context) — all survive the wire, and `present`/`priority` default.
+        let data = ItemData {
+            id: "characters".into(),
+            section: "Player Data".into(),
+            label: "Characters".into(),
+            content: Content {
+                header: Some(ContextHeader {
+                    avatar_text: "VR".into(),
+                    avatar_color_key: "violet".into(),
+                    title: "VoidR4nger".into(),
+                    subtitle_mono: "b3f1…".into(),
+                    right_note: "online".into(),
+                }),
+                cards: Some(CardGrid {
+                    menu_point: "characters.characters.card-menu".into(),
+                    cards: vec![Card {
+                        icon_text: "W".into(),
+                        color_key: "amber".into(),
+                        title: "Warlock".into(),
+                        subtitle: "level 12".into(),
+                        badge: "active".into(),
+                        stats: vec![CardStat { label: "Class".into(), value: "Warlock".into() }],
+                        context: HashMap::from([("id".into(), "character:abc".into())]),
+                        menu: vec![MenuEntry {
+                            label: "View".into(),
+                            icon: "eye".into(),
+                            link: Some("characters?owner=character:{id}".into()),
+                            present: Present::Modal,
+                            danger: false,
+                            disabled: false,
+                        }],
+                    }],
+                }),
+                modal_point: "characters.character-modal.actions".into(),
+                context: HashMap::from([("id".into(), "character:abc".into())]),
+                ..Default::default()
+            },
+            extensions: vec![ExtensionEntry {
+                point: "accounts.players.row-menu".into(),
+                label: "View Characters".into(),
+                icon: "users".into(),
+                link: "characters?owner={id}".into(),
+                // present + priority omitted below to prove defaults on deserialize.
+                ..Default::default()
+            }],
+        };
+        let json = serde_json::to_string(&data).unwrap();
+        let back: ItemData = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.extensions.len(), 1);
+        assert_eq!(back.extensions[0].point, "accounts.players.row-menu");
+        assert_eq!(back.extensions[0].present, Present::Navigate); // default
+        assert_eq!(back.extensions[0].priority, 0); // default
+        assert_eq!(back.content.modal_point, "characters.character-modal.actions");
+        assert_eq!(back.content.context.get("id").map(String::as_str), Some("character:abc"));
+        let cards = back.content.cards.unwrap();
+        assert_eq!(cards.menu_point, "characters.characters.card-menu");
+        assert_eq!(cards.cards[0].menu[0].present, Present::Modal);
+        assert_eq!(back.content.header.unwrap().title, "VoidR4nger");
+    }
+
+    #[test]
+    fn legacy_itemdata_json_without_new_fields_deserializes() {
+        // A peer that predates the extension vocabulary sends an ItemData with NO
+        // `extensions` and a Content with NO cards/header/modal_point/context, and a
+        // Table with NO menu_point/row_meta — every new field must `#[serde(default)]`.
+        let legacy = r#"{
+            "id": "config",
+            "section": "Platform",
+            "label": "Game Config & Flags",
+            "content": {
+                "kpis": [],
+                "table": { "columns": ["K","V"], "rows": [] }
+            }
+        }"#;
+        let data: ItemData = serde_json::from_str(legacy).unwrap();
+        assert_eq!(data.id, "config");
+        assert!(data.extensions.is_empty());
+        assert!(data.content.cards.is_none());
+        assert!(data.content.header.is_none());
+        assert_eq!(data.content.modal_point, "");
+        assert!(data.content.context.is_empty());
+        let table = data.content.table.unwrap();
+        assert_eq!(table.menu_point, "");
+        assert!(table.row_meta.is_empty());
     }
 }
