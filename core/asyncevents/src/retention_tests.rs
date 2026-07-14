@@ -714,24 +714,30 @@ async fn healthy_sweeps_keep_retention_unstalled() {
 
     let (_stop_tx, stop_rx) = tokio::sync::watch::channel(false);
     let task = tokio::spawn(run(pool, Duration::from_millis(50), liveness.clone(), stop_rx));
+    let start = tokio::time::Instant::now();
 
     // A healthy idle sweep stamps mark_retention_ok() every ~50ms, so retention must
     // read un-stalled. Under verifyctl's full-workspace parallel `cargo test`, the
     // spawned sweep task can be CPU-starved past a fixed real-time window, so asserting
     // !stalled on every tick false-fails on scheduling latency, not a real stall.
     // Instead poll for the un-stalled condition to hold across several CONSECUTIVE
-    // checks: a transient starvation blip resets the streak, but a genuinely broken
-    // sweep (one that stops marking) keeps the clock stalled forever and never reaches
-    // the streak, so the test still fails on a real regression.
+    // checks. Critically, the streak is only ACCEPTED once we are past the point the
+    // line-713 seed alone would have aged out (2×window = 4s): for the first ~2s the
+    // seed keeps retention_stalled(2s) FALSE regardless of whether `run` ever re-marks,
+    // so an early streak proves nothing. Past 4s an un-stalled read can ONLY come from
+    // an ACTIVE re-mark by a healthy sweep. A broken sweep (never re-marks) reads
+    // stalled on every tick after ~2s, so its streak resets each tick and can never
+    // complete → the test fails, catching the regression. A healthy sweep keeps
+    // marking, so the streak re-forms after any starvation blip and completes.
     let mut streak = 0;
     let mut healthy = false;
-    for _ in 0..200 {
+    for _ in 0..300 {
         tokio::time::sleep(Duration::from_millis(100)).await;
         if liveness.retention_stalled(Duration::from_secs(2)) {
             streak = 0;
         } else {
             streak += 1;
-            if streak >= 5 {
+            if streak >= 5 && start.elapsed() >= Duration::from_secs(4) {
                 healthy = true;
                 break;
             }
@@ -739,7 +745,7 @@ async fn healthy_sweeps_keep_retention_unstalled() {
     }
     assert!(
         healthy,
-        "a continuously succeeding sweep must read un-stalled across consecutive checks"
+        "a continuously succeeding sweep must read un-stalled across consecutive checks past the seed window"
     );
     task.abort();
 }
