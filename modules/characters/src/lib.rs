@@ -37,8 +37,10 @@ const MAX_CLASS_BYTES: usize = 64;
 /// topologies (monolith direct call has no frame; split has 16 MiB internal / 1 MiB player
 /// frame caps). A belt, not the policy limit: the configurable per-player cap in `create()`
 /// (added by the P2 cap step, and clamped to this ceiling so `create` can never admit more
-/// characters than `list` can return) is the primary bound. Until that cap lands this ceiling
-/// is also the de-facto per-player limit and truncates silently beyond it.
+/// characters than `list` can return) is the primary bound. KNOWN GAP (recorded, not fixed
+/// here, same shape as inventory's `HOLDINGS_HARD_LIMIT` at `modules/inventory/src/store.rs:6-10`):
+/// there is no cursor / `has_more` on this list, so until the per-player cap lands this ceiling
+/// is also the de-facto per-player limit and silently truncates any surplus beyond it.
 const LIST_HARD_LIMIT: i64 = 1000;
 
 /// Default per-player character cap when `characters/max_per_player` is unset in

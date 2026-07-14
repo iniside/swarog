@@ -85,6 +85,17 @@ impl Holdings for Inner {
     /// non-positive or out-of-range qty, or an unknown item, is Invalid (→ 400).
     /// Returns the updated holdings, matching the old handler's respond-with-list
     /// behaviour.
+    ///
+    /// NOT a reference-grade mutation pattern — DEV-ONLY (gated by
+    /// `INVENTORY_DEV_GRANT`, simulated IAP) and deliberately unhardened. It runs
+    /// three SEPARATE pool-connection autocommits (`item_exists` → `grant_pool` →
+    /// `list`; see `store.rs:107-110,162-165`), carries NO idempotency key, and
+    /// `grant_pool` accumulates (`ON CONFLICT ... quantity = quantity +
+    /// EXCLUDED.quantity`, `store.rs:93-94`) — so if the final `list` read fails
+    /// AFTER `grant_pool` already committed, the caller sees an error despite the
+    /// mutation having applied, and a manual retry double-grants. The starter-grant
+    /// path (`Inner::grant_starter` in `projection.rs`) is the reference pattern:
+    /// one handed delivery tx, exactly-once via the durable subscription.
     async fn grant(&self, identity: Identity, item_id: String, qty: i64) -> Result<Vec<Holding>, Error> {
         // The dev-grant gate, checked FIRST (before any input handling or DB touch):
         // the op is contributed/served unconditionally in both topologies, so this

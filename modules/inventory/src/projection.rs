@@ -82,7 +82,10 @@ impl Inner {
     /// the per-character advisory xact-lock, a tombstone in
     /// `inventory.wiped_characters` means the character is gone: skip the grant
     /// and return Ok — the checkpoint still commits (exactly-once preserved).
-    /// UUIDs never recur, so the tombstone is permanent truth.
+    /// UUIDs never recur, so the tombstone is permanent truth. Cost: the table
+    /// grows monotonically, one permanent row per deleted character, with no GC /
+    /// retention / watermark. Acceptable in the current "wipe-is-migration" phase;
+    /// a long-lived deployment would need a retention policy.
     ///
     /// Config validation guard: the config-read starter spec is VALIDATED here, on
     /// the read path, and a bad value degrades to the compiled defaults with a warn
@@ -152,7 +155,9 @@ impl Inner {
     /// per-character advisory xact-lock first, then plants the permanent tombstone
     /// (idempotent — redelivery hits ON CONFLICT DO NOTHING) BEFORE the delete, in
     /// the SAME delivery tx, so a grant delivered after this commit (or blocked on
-    /// the lock until it) always sees the tombstone.
+    /// the lock until it) always sees the tombstone. Every plant here is a permanent
+    /// row (see the growth-cost note on `grant_starter` above) — this is the only
+    /// writer of `inventory.wiped_characters`.
     pub(crate) async fn wipe_character(&self, conn: &mut PgConnection, character_id: &str) -> Result<(), bus::Error> {
         lock_character(conn, character_id).await.map_err(bus::Error::transport)?;
         sqlx::query(
