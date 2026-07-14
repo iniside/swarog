@@ -322,13 +322,16 @@ impl Player for Service {
             .execute(&mut *tx)
             .await
             .map_err(internal)?;
-        // Clamp to LIST_HARD_LIMIT so `create` can never admit more than `list` returns.
+        // Clamp to [0, LIST_HARD_LIMIT]: the upper bound so `create` can never admit
+        // more than `list` returns; the lower bound 0 (NOT 1) so `max_per_player = 0`
+        // means "freeze creation" — the gate `n >= cap` rejects even the first create —
+        // and a nonsensical negative also clamps to 0 (fail-CLOSED, never "allow 1").
         let cap = self
             .config
             .get()
             .expect("characters.init must resolve config before create")
             .get_int("characters", "max_per_player", MAX_PER_PLAYER)
-            .clamp(1, LIST_HARD_LIMIT);
+            .clamp(0, LIST_HARD_LIMIT);
         let n = self
             .store
             .count_owned_tx(&mut tx, &player_id)

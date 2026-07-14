@@ -298,6 +298,30 @@ async fn create_enforces_per_player_cap() {
     cleanup(&pool, &[&pid, &other]).await;
 }
 
+/// THE FLOOR PROOF: `characters/max_per_player = 0` means "freeze creation", NOT the
+/// clamped-to-1 surprise. With cap = 0 the gate `n >= cap` rejects even the FIRST
+/// create (0 >= 0), so no character is ever admitted. Pins the clamp's lower bound at
+/// 0 (fail-closed) and executes the n==0 branch.
+#[tokio::test]
+async fn create_with_zero_cap_rejects_first() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired_with_cap(&pool, 0).await;
+    let pid = unique_player(&pool).await;
+
+    let e = svc
+        .create(Identity::player(&pid), "Nobody".into(), String::new())
+        .await
+        .unwrap_err();
+    assert_eq!(e.status, Status::Conflict, "cap=0 must freeze creation — the first create is a 409");
+    assert_eq!(
+        char_count_by_player(&pool, &pid).await,
+        0,
+        "cap=0 must admit zero rows (no clamp-to-1 floor)"
+    );
+
+    cleanup(&pool, &[&pid]).await;
+}
+
 /// THE ADVISORY-LOCK PROOF (race failing branch): with cap = 1, two creates for the
 /// SAME player race concurrently. The per-player transaction-scoped advisory lock in
 /// `create` serializes their count-then-insert, so EXACTLY ONE succeeds and the other
