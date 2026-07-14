@@ -319,6 +319,10 @@ timeout** (nie shell-loop) by nie wskrzesić deadlocku AD2b/AD2c (`:1228-1306`).
   usunięte. Kierunek fail-safe (zawęża autoryzację; CAS + empty-guard chronią przed korupcją),
   ale wart poprawy: per-target render z pre-checkiem bieżącej polityki (wymaga per-role rows
   zamiast jednego współdzielonego formularza). `modules/apikeys/src/admin.rs:121-161`.
+- **Name CapCase parytet (recenzja Step 8-fold, INFO):** role/key `name` (cap 128B w
+  `validate_name`) też jest admin-writable przez `admin.adminSubmit`, ale JUŻ ograniczony —
+  brak realnego bloat vectora, więc CapCase dla nazw to czysta parytetowa dokumentacja
+  (nie dodane; policy field był jedynym nieograniczonym). Odnotowane, nie luka.
 - **Self-check generatora (recenzja Step 7, INFO):** `rpc_modules_from_fs` skanuje tekstowo tylko
   `api/*/api/src/lib.rs` — trzyma pod konwencją „każdy `#[rpc]` trait literalnie w lib.rs"
   (dziś prawda dla wszystkich 12). Trait w innym pliku/makro-generowany byłby niewidoczny.
