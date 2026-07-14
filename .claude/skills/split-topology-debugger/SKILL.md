@@ -60,9 +60,13 @@ Postgres log. So cross-process event bugs are one of:
    validates per deployment profile; also check the consumer svc actually
    hosts the subscribing module.
 3. **Subscription paused (poison event)** — a failing handler backs off and
-   pauses ITS subscription (never auto-skipped). Inspect:
-   `cargo run -p eventctl -- list` (lag/retry/pause state), then
-   retry/skip/resume deliberately.
+   pauses ITS subscription (never auto-skipped). Inspect with the
+   already-built operator binary — `target/debug/eventctl.exe -- list`
+   (`target/debug/eventctl` on Unix; adjust for `CARGO_TARGET_DIR`), NOT
+   `cargo run -p eventctl`: when you're diagnosing a live split the foreground
+   `devctl up` fleet already owns Cargo, and a second Cargo command violates
+   "one test rollout at a time" (same rule as `devctl status/down`). Read
+   lag/retry/pause state, then retry/skip/resume deliberately.
 4. **Checkpoint position** — a new subscription with `StartPosition::End`
    won't see events emitted before it first ran. Check the spec's `start` and
    the checkpoint row.
@@ -96,6 +100,8 @@ service in `tools/processctl/src/fleet.rs`.
 ## Output
 
 Report the trace: each hop checked, evidence (command output, file:line of the
-wiring), and the FIRST broken hop. Fix that hop; then re-run the relevant named
-split-proof path through verifyctl (respect the safe-verification protocol), not
-just the monolith.
+wiring), and the FIRST broken hop. Fix that hop; then re-verify on the split, not
+just the monolith. verifyctl has no scenario/stage filter — it runs one whole
+manifest (`--fast|--all|--slow`), and the blocking split-proof stage is part of
+it — so the terminal check is a full `cargo run -p verifyctl -- --fast` (respect
+the safe-verification protocol), which reruns every named split-proof assertion.
