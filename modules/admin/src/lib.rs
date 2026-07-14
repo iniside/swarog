@@ -92,6 +92,15 @@ const MODAL_TEMPLATE: &str = include_str!("modal.html.tmpl");
 /// The embedded dark GameOps theme. Served ungated at `/admin/theme.css`.
 const THEME_CSS: &str = include_str!("theme.css");
 
+/// The portal's only client script (vanilla: kebab-menu delegation + modal dismiss).
+/// Served ungated at `/admin/admin.js`, same-origin so the strict CSP permits it.
+const ADMIN_JS: &str = include_str!("admin.js");
+
+/// Vendored, pinned htmx (2.0.4) — a single minified same-origin file (no npm/build
+/// step). Drives the modal fragment swaps declaratively via `hx-*` attributes (no
+/// `hx-on:`, which would need eval). Served ungated at `/admin/htmx.min.js`.
+const HTMX_JS: &str = include_str!("htmx.min.js");
+
 /// The session cookie name.
 const SESSION_COOKIE: &str = "admin_session";
 
@@ -502,6 +511,8 @@ enum LoginOutcome {
 fn router(state: Arc<AdminState>) -> Router {
     Router::new()
         .route("/admin/theme.css", get(theme_css))
+        .route("/admin/admin.js", get(admin_js))
+        .route("/admin/htmx.min.js", get(htmx_js))
         .route("/admin/login", get(login_page).post(login_submit))
         .route("/admin/logout", post(logout))
         .route("/admin", get(index))
@@ -1029,6 +1040,25 @@ async fn theme_css() -> Response {
     (
         [(header::CONTENT_TYPE, "text/css; charset=utf-8")],
         THEME_CSS,
+    )
+        .into_response()
+}
+
+/// `GET /admin/admin.js` — the embedded portal script, ungated like the stylesheet
+/// (a static asset leaks nothing; the CSP `default-src 'self'` requires it be a file).
+async fn admin_js() -> Response {
+    (
+        [(header::CONTENT_TYPE, "application/javascript; charset=utf-8")],
+        ADMIN_JS,
+    )
+        .into_response()
+}
+
+/// `GET /admin/htmx.min.js` — the vendored htmx runtime, ungated.
+async fn htmx_js() -> Response {
+    (
+        [(header::CONTENT_TYPE, "application/javascript; charset=utf-8")],
+        HTMX_JS,
     )
         .into_response()
 }
