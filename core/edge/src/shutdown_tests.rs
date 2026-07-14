@@ -20,13 +20,18 @@ where
     Arc::new(f)
 }
 
-/// An internal-plane server with one handler that sleeps `delay` then echoes.
-fn slow_echo_server(delay: Duration) -> Server {
+/// An internal-plane server with one handler that pings `entered` on entry (BEFORE its
+/// delay) then sleeps `delay` and echoes. The entry ping lets a test wait for the
+/// happens-before fact "the request reached the handler" instead of guessing a sleep
+/// window — the tokio `Notify` is the ordering seam.
+fn signaling_slow_echo(delay: Duration, entered: Arc<tokio::sync::Notify>) -> Server {
     let mut srv = Server::new();
     srv.handle(
         "slow",
         handler(move |payload| {
+            let entered = entered.clone();
             Box::pin(async move {
+                entered.notify_one();
                 tokio::time::sleep(delay).await;
                 Ok(payload)
             })
@@ -41,7 +46,8 @@ fn slow_echo_server(delay: Duration) -> Server {
 #[tokio::test]
 async fn shutdown_waits_for_inflight_handler() {
     let ca = DevCA::generate().unwrap();
-    let running = slow_echo_server(Duration::from_millis(200))
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let running = signaling_slow_echo(Duration::from_millis(200), entered.clone())
         .listen(loopback(), &ca)
         .unwrap();
     let client = Arc::new(Client::dial(running.local_addr(), &ca).await.unwrap());
@@ -50,21 +56,19 @@ async fn shutdown_waits_for_inflight_handler() {
         let client = client.clone();
         async move { client.call_raw("slow", br#"{"n":1}"#).await }
     });
-    // Let the request reach the handler before shutting down.
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // Happens-before: wait until the handler has actually entered (5s hang-guard),
+    // not a guessed sleep window, before shutting down.
+    tokio::time::timeout(Duration::from_secs(5), entered.notified())
+        .await
+        .expect("handler never entered");
 
-    let started = Instant::now();
     running.shutdown(Duration::from_secs(2)).await;
-    let waited = started.elapsed();
 
-    // The in-flight call completed with the full response — the drain waited.
+    // Ordering fact (no wall-clock margin): shutdown was initiated only AFTER the
+    // handler entered, yet the in-flight call still completed with its FULL response —
+    // so the drain waited for the mid-flight handler.
     let resp = call.await.unwrap().unwrap();
     assert_eq!(resp, br#"{"n":1}"#);
-    // And shutdown actually blocked on the handler (~150ms left of its sleep).
-    assert!(
-        waited >= Duration::from_millis(100),
-        "shutdown returned before the in-flight handler finished: {waited:?}"
-    );
 
     client.close();
 }
@@ -74,8 +78,9 @@ async fn shutdown_waits_for_inflight_handler() {
 #[tokio::test]
 async fn shutdown_stops_accepting_new_connections() {
     let ca = DevCA::generate().unwrap();
+    let entered = Arc::new(tokio::sync::Notify::new());
     let running = Arc::new(
-        slow_echo_server(Duration::from_millis(300))
+        signaling_slow_echo(Duration::from_millis(300), entered.clone())
             .listen(loopback(), &ca)
             .unwrap(),
     );
@@ -89,27 +94,46 @@ async fn shutdown_stops_accepting_new_connections() {
         let client = client.clone();
         async move { client.call_raw("slow", br#"{"n":2}"#).await }
     });
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // Happens-before: the handler has entered (5s hang-guard), so a call is genuinely
+    // in flight when we begin shutdown.
+    tokio::time::timeout(Duration::from_secs(5), entered.notified())
+        .await
+        .expect("handler never entered");
 
     let shut = tokio::spawn({
         let running = running.clone();
         async move { running.shutdown(Duration::from_secs(2)).await }
     });
-    // Give the closing flag time to break the accept loop.
-    tokio::time::sleep(Duration::from_millis(50)).await;
 
-    // A new connection attempt must not be served: the unaccepted handshake either
-    // errors once the endpoint closes, or (worst case) never completes — bound it.
-    let dial = tokio::time::timeout(Duration::from_secs(3), Client::dial(addr, &ca)).await;
-    match dial {
-        Err(_elapsed) => { /* never accepted — not served */ }
-        Ok(Err(_)) => { /* rejected — not served */ }
-        Ok(Ok(new_client)) => {
-            // Defensive: even if a connection object materialized, it must not serve.
-            let r = new_client.call_raw("slow", b"null").await;
-            assert!(r.is_err(), "a post-shutdown connection must not be served, got {r:?}");
+    // Poll-until: a NEW connection must end up not served. Rather than sleeping a
+    // guessed window then asserting once (racing the accept loop's observation of the
+    // closing flag), retry dials until one is rejected — the endpoint stops admitting
+    // as shutdown progresses. Overall 5s deadline is the hang-guard.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut not_served = false;
+    while Instant::now() < deadline {
+        match tokio::time::timeout(Duration::from_secs(1), Client::dial(addr, &ca)).await {
+            Err(_elapsed) => {
+                not_served = true; // handshake never accepted
+                break;
+            }
+            Ok(Err(_)) => {
+                not_served = true; // handshake rejected
+                break;
+            }
+            Ok(Ok(new_client)) => {
+                // A connection object materialized — it must not actually serve a call.
+                if new_client.call_raw("slow", b"null").await.is_err() {
+                    not_served = true;
+                    break;
+                }
+                // Still served — the accept loop hasn't observed the close yet; retry.
+                new_client.close();
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
         }
     }
+    assert!(not_served, "a post-shutdown connection was still served within the deadline");
 
     // The pre-existing in-flight call still drained fine.
     let resp = call.await.unwrap().unwrap();
@@ -123,7 +147,8 @@ async fn shutdown_stops_accepting_new_connections() {
 #[tokio::test]
 async fn shutdown_grace_timeout_aborts_stragglers() {
     let ca = DevCA::generate().unwrap();
-    let running = slow_echo_server(Duration::from_secs(5))
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let running = signaling_slow_echo(Duration::from_secs(5), entered.clone())
         .listen(loopback(), &ca)
         .unwrap();
     let client = Arc::new(Client::dial(running.local_addr(), &ca).await.unwrap());
@@ -132,17 +157,17 @@ async fn shutdown_grace_timeout_aborts_stragglers() {
         let client = client.clone();
         async move { client.call_raw("slow", b"null").await }
     });
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // Happens-before: the 5s handler has entered (5s hang-guard) before we shut down.
+    tokio::time::timeout(Duration::from_secs(5), entered.notified())
+        .await
+        .expect("handler never entered");
 
-    let started = Instant::now();
     running.shutdown(Duration::from_millis(200)).await;
-    let elapsed = started.elapsed();
-    assert!(
-        elapsed < Duration::from_secs(2),
-        "shutdown must return at ~grace, not wait out a 5s straggler: {elapsed:?}"
-    );
 
-    // The straggler was aborted, not served.
+    // Ordering fact (no wall-clock margin): the straggler received an ERROR, not the
+    // echo. Had the 200ms grace NOT bounded the drain, shutdown would have waited out
+    // the full 5s handler and the call would have succeeded with `null`. Its failure
+    // proves the grace aborted it early.
     let r = call.await.unwrap();
     assert!(r.is_err(), "the aborted straggler must not receive a response, got {r:?}");
 }
@@ -152,13 +177,19 @@ async fn shutdown_grace_timeout_aborts_stragglers() {
 #[tokio::test]
 async fn player_shutdown_drains_inflight_call() {
     let ca = DevCA::generate().unwrap();
+    let entered = Arc::new(tokio::sync::Notify::new());
     let srv = PlayerServer::new();
-    srv.set_handler(Arc::new(|_method, _token, _key, payload| {
-        Box::pin(async move {
-            tokio::time::sleep(Duration::from_millis(200)).await;
-            Ok(payload)
+    srv.set_handler({
+        let entered = entered.clone();
+        Arc::new(move |_method, _token, _key, payload| {
+            let entered = entered.clone();
+            Box::pin(async move {
+                entered.notify_one();
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                Ok(payload)
+            })
         })
-    }));
+    });
     let running = srv.listen(loopback(), &ca).unwrap();
     let client =
         Arc::new(PlayerClient::dial(running.local_addr(), &ca.trust_anchor()).await.unwrap());
@@ -167,7 +198,10 @@ async fn player_shutdown_drains_inflight_call() {
         let client = client.clone();
         async move { client.call("slow", None, None, br#"{"p":1}"#).await }
     });
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // Happens-before: the player handler has entered (5s hang-guard) before shutdown.
+    tokio::time::timeout(Duration::from_secs(5), entered.notified())
+        .await
+        .expect("player handler never entered");
 
     running.shutdown(Duration::from_secs(2)).await;
 

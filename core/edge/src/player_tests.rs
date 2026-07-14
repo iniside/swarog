@@ -410,7 +410,12 @@ async fn request_denial_is_exact_and_handler_is_not_called() {
     let ca = DevCA::generate().unwrap();
     let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let seen = calls.clone();
-    let srv = PlayerServer::new().with_request_limits(0.0, 0, 1.0, 1);
+    // per_conn_rps 0.01 (burst 1): the first call spends the one token; refilling a
+    // second at 0.01/s would take ~100s, far beyond the two back-to-back calls, so the
+    // second is denied deterministically with no dependence on the real gap staying
+    // under a refill window. (0.0 would DISABLE the limiter — see player.rs:372's
+    // `per_conn_rps > 0.0` gate — which is why the sibling test at :360 also uses 0.01.)
+    let srv = PlayerServer::new().with_request_limits(0.0, 0, 0.01, 1);
     srv.set_handler(Arc::new(move |_method, _token, _key, payload| {
         seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Box::pin(async move { Ok(payload) })
