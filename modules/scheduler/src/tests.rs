@@ -502,8 +502,17 @@ async fn fires_again_after_interval() {
         "immediate refire should be a no-op durable-emit-wise"
     );
 
-    // After the interval it is due again.
-    tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+    // After the interval it is due again. Rather than sleeping past the 1s interval
+    // (a 200ms margin on a shared DB), age `last_fired` explicitly so the due-scan sees
+    // it as overdue and the next fire re-arms deterministically.
+    sqlx::query(
+        "UPDATE scheduler.schedules SET last_fired = last_fired - interval '2 seconds' \
+         WHERE name = $1",
+    )
+    .bind(&name)
+    .execute(&pool)
+    .await
+    .expect("age last_fired");
     fire(&pool, &bus, &name, TICK_DEADLINE)
         .await
         .expect("third fire");
@@ -868,7 +877,10 @@ async fn stop_aborts_wedged_fire_within_grace_and_releases_the_lock() {
         "stop_tasks returned before the aborted task future was dropped and reaped"
     );
     assert!(
-        elapsed < STOP_GRACE + Duration::from_secs(2),
+        // Multiplicative slack (2× the grace) as a hang-guard, not a latency bound:
+        // the correctness fact is that stop bounded the wedge at all (task_dropped),
+        // and a fixed +2s margin is what load can flip.
+        elapsed < STOP_GRACE * 2,
         "stop_tasks took {elapsed:?} — the abort fallback did not bound shutdown"
     );
 

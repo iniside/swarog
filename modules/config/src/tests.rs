@@ -497,9 +497,13 @@ async fn psql_style_write_emits_event_and_notify() {
         .unwrap();
 
     // The channel is process-global (concurrent tests write other namespaces), so
-    // recv until we see OUR namespace's notification, or time out.
+    // recv until we see OUR namespace's notification, or a generous overall deadline
+    // expires. A lone recv timeout is keep-waiting (the contended shared Postgres can
+    // exceed one 200ms window for a NOTIFY round-trip) — we only give up past the 5s
+    // deadline, so this can't collapse to a single 200ms window under load.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     let mut got = false;
-    for _ in 0..50 {
+    while tokio::time::Instant::now() < deadline {
         match tokio::time::timeout(Duration::from_millis(200), listener.recv()).await {
             Ok(Ok(notif)) => {
                 if notif.payload().contains(&ns) {
@@ -511,8 +515,10 @@ async fn psql_style_write_emits_event_and_notify() {
                     got = true;
                     break;
                 }
+                // A different namespace's notification — skip and keep waiting.
             }
-            _ => break, // recv error or timeout
+            Ok(Err(e)) => panic!("config_changed listener errored: {e}"),
+            Err(_timeout) => continue, // no notification this window — keep waiting
         }
     }
     assert!(got, "a raw write did not deliver a config_changed NOTIFY for {ns}");
