@@ -32,3 +32,4 @@
 - [Store-launch auth deferred to SDK](store-launch-auth-deferred-to-sdk.md) — backend stays a verifier; web=EAS(account id), native/store=Connect(PUID) needs a 2nd verifier later
 - [Go parity (historical, superseded)](go-parity-additive-dual-deploy.md) — retired Go backend reached dual-deploy parity additively (core/ untouched) before the Rust migration; archived, no forward action
 - [Local Postgres](reference_local_postgres.md) — role/db/DSN + superuser (postgres/qwerty); tests target this local PG directly, never Docker/Testcontainers
+- [Module reference pair](module-reference-pair.md) — characters (basic provider/emitter) + inventory (advanced consumer) are the blessed reference; docs/reference/module-reference.md guides new-module work, copy-first + "do NOT copy"
