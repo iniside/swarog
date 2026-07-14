@@ -366,6 +366,10 @@ async fn seed_upsert_roles_and_keys_self_heal() {
     store.set_role_policy(&role, role_revision(&pool, &role).await.unwrap(), "accounts.login").await.unwrap();
     assert!(store.lookup(&secret).await.unwrap().is_none(), "revoked before re-seed");
 
+    // Capture the CAS tokens right before the re-seed to prove they advance.
+    let role_rev_before = role_revision(&pool, &role).await.unwrap();
+    let key_rev_before = key_summary(&store, &key).await.unwrap().revision;
+
     store.upsert_seed_role(&role, "full").await.unwrap();
     store.upsert_seed_key(&key, &secret, &role).await.unwrap();
     assert_eq!(
@@ -380,6 +384,20 @@ async fn seed_upsert_roles_and_keys_self_heal() {
         .await
         .unwrap();
     assert_eq!(count, 1);
+
+    // FOLD (Step 7): a re-seed BUMPS the CAS revision on both rows, so a form rendered
+    // against the pre-seed revision now correctly conflicts instead of clobbering the
+    // freshly-seeded state.
+    assert_eq!(
+        role_revision(&pool, &role).await.unwrap(),
+        role_rev_before + 1,
+        "re-seed advances the role CAS token"
+    );
+    assert_eq!(
+        key_summary(&store, &key).await.unwrap().revision,
+        key_rev_before + 1,
+        "re-seed advances the key CAS token"
+    );
 
     cleanup(&pool, &base).await;
 }

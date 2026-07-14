@@ -39,7 +39,17 @@ pub(crate) const ADMIN_LABEL: &str = "API Keys";
 
 const ACTION_FIELD: &str = "_action";
 const ROLE_NAME_FIELD: &str = "role_name";
+/// The CheckboxGroup of catalog (served `#[http]`) method names — the primary policy
+/// composition surface. Its checked values arrive comma-joined (the admin portal joins the
+/// repeated posts).
 const ROLE_POLICY_FIELD: &str = "role_policy";
+/// A one-option checkbox expressing the literal `full` sentinel (all methods). When
+/// checked, it wins over any selected method — the policy becomes exactly `full`.
+const ROLE_POLICY_FULL_FIELD: &str = "role_policy_full";
+/// Free-text "additional methods" — the LOOSE / pre-authorization path: an operator may
+/// name a method the catalog does not (yet) list. Comma-separated, unioned with the checked
+/// options.
+const ROLE_POLICY_EXTRA_FIELD: &str = "role_policy_extra";
 const ROLE_TARGET_FIELD: &str = "role_target";
 const KEY_NAME_FIELD: &str = "key_name";
 const KEY_ROLE_FIELD: &str = "key_role";
@@ -49,6 +59,10 @@ const KEY_TARGET_FIELD: &str = "key_target";
 /// what the admin portal's allowlist retains even when a row vanishes before re-render).
 const ROLE_REV_PREFIX: &str = "_expected_role_rev_";
 const KEY_REV_PREFIX: &str = "_expected_key_rev_";
+
+/// The wildcard-policy sentinel (a distinguished value in the policy grammar, NOT a wire
+/// method): a role whose policy is exactly `full` authorizes every method.
+const POLICY_FULL: &str = "full";
 
 const ACTION_CREATE_ROLE: &str = "create_role";
 const ACTION_SET_ROLE_POLICY: &str = "set_role_policy";
@@ -104,6 +118,60 @@ fn action_options() -> Vec<adminapi::FieldOption> {
     ]
 }
 
+/// The role-policy CheckboxGroup: one option per served `#[http]` method, sourced ONLY
+/// from [`opscatalog::OPERATIONS`] (the freshness-gated catalog — the authority), PLUS one
+/// extra option per method that some existing role's policy references but the catalog does
+/// NOT list. That extra set keeps the checkbox vocabulary from ever being narrower than
+/// what's in use, so an operator re-composing a policy can still select an already-authorized
+/// non-catalog method rather than only being able to re-type it. Options render UNCHECKED:
+/// the generic form edits whichever target the operator picks at submit, so there is no single
+/// role whose current policy could be pre-checked at render time (the loose free-text field
+/// preserves anything the operator wants to carry forward). Sorted, deduplicated.
+fn policy_method_options(roles: &[RoleSummary]) -> Vec<adminapi::FieldOption> {
+    use std::collections::BTreeSet;
+    let catalog: BTreeSet<&str> = opscatalog::OPERATIONS.iter().map(|op| op.method).collect();
+    // Methods currently authorized by SOME role but absent from the catalog (excluding the
+    // `full` sentinel, which is its own checkbox — not a method).
+    let mut extra: BTreeSet<String> = BTreeSet::new();
+    for r in roles {
+        if r.policy.trim() == POLICY_FULL {
+            continue;
+        }
+        for m in r.policy.split(',') {
+            let m = m.trim();
+            if !m.is_empty() && m != POLICY_FULL && !catalog.contains(m) {
+                extra.insert(m.to_string());
+            }
+        }
+    }
+    let mut options: Vec<adminapi::FieldOption> = opscatalog::OPERATIONS
+        .iter()
+        .map(|op| adminapi::FieldOption {
+            value: op.method.into(),
+            label: format!("{} — {} {}", op.method, op.verb, op.path),
+            checked: false,
+        })
+        .collect();
+    options.extend(extra.into_iter().map(|m| adminapi::FieldOption {
+        value: m.clone(),
+        label: format!("{m} (in use; not in the served op catalog)"),
+        checked: false,
+    }));
+    options
+}
+
+/// A CheckboxGroup field over the given options (each posts the shared `name`; the admin
+/// portal comma-joins the checked values into one submit param).
+fn checkbox_group_field(name: &str, label: &str, options: Vec<adminapi::FieldOption>) -> adminapi::Field {
+    adminapi::Field {
+        name: name.into(),
+        label: label.into(),
+        value: String::new(),
+        kind: adminapi::FieldKind::CheckboxGroup,
+        options,
+    }
+}
+
 fn role_name_options(roles: &[RoleSummary]) -> Vec<adminapi::FieldOption> {
     roles
         .iter()
@@ -151,13 +219,14 @@ fn build_keys_table(keys: &[KeySummary]) -> adminapi::Table {
 /// One `_action` Select drives dispatch; the create/edit/target fields coexist and are
 /// read per-action. `_expected_*_rev_*` hidden fields carry per-row CAS evidence.
 fn build_form(roles: &[RoleSummary], keys: &[KeySummary]) -> adminapi::Form {
-    // The action selector doubles as the operator hint surface (finding #13 recovery +
-    // the free-text-policy note) since the generic form has no free-text region.
+    // The action selector doubles as the operator hint surface (finding #13 recovery)
+    // since the generic form has no free-text region.
     //
-    // TODO(Step 7): swap the ROLE_POLICY_FIELD free-text field for a
-    // FieldKind::CheckboxGroup whose options come from the generated ops-catalog artefact
-    // (`opscatalog::OPERATIONS`); loose validation stays so an operator may still
-    // pre-authorize an unserved method.
+    // Role policy is composed from THREE coordinated fields (see `compose_policy`): a
+    // CheckboxGroup of served methods (the catalog authority), a one-box `full` sentinel,
+    // and a free-text field for pre-authorizing methods the catalog does not list (the
+    // loose path). All three are applied to whichever action reads the policy (Create role
+    // / Edit role policy).
     let fields = vec![
         adminapi::Field {
             name: ACTION_FIELD.into(),
@@ -169,9 +238,23 @@ fn build_form(roles: &[RoleSummary], keys: &[KeySummary]) -> adminapi::Form {
             options: action_options(),
         },
         text_field(ROLE_NAME_FIELD, "New role name (Create role)"),
-        text_field(
+        checkbox_group_field(
             ROLE_POLICY_FIELD,
-            "Role policy — `full` or comma-separated methods (Create role / Edit role policy)",
+            "Role policy — allowed methods (Create role / Edit role policy)",
+            policy_method_options(roles),
+        ),
+        checkbox_group_field(
+            ROLE_POLICY_FULL_FIELD,
+            "…or grant ALL methods",
+            vec![adminapi::FieldOption {
+                value: POLICY_FULL.into(),
+                label: "full — every method (overrides the checkboxes above)".into(),
+                checked: false,
+            }],
+        ),
+        text_field(
+            ROLE_POLICY_EXTRA_FIELD,
+            "Additional methods (comma) — pre-authorize methods not yet in the catalog",
         ),
         select_field(ROLE_TARGET_FIELD, "Target role (Edit role policy / Delete role)", role_name_options(roles)),
         text_field(KEY_NAME_FIELD, "New key name (Create key)"),
@@ -252,6 +335,46 @@ fn required<'a>(
     Ok(v)
 }
 
+/// Composes the effective role policy from the three coordinated policy fields (pure — no
+/// I/O, unit-testable). Precedence: the `full` checkbox wins (policy = `full`); otherwise
+/// the effective policy is the order-preserving, de-duplicated union of the checked catalog
+/// methods (`ROLE_POLICY_FIELD`, already comma-joined by the portal) and the free-text
+/// additional methods (`ROLE_POLICY_EXTRA_FIELD`). The catalog is a HINT, never a gate: a
+/// method typed in the free-text field is carried through unchecked (`store::validate_policy`
+/// applies the same loose rule it always did). An empty result is returned as-is and rejected
+/// by the caller as an explicit "no methods selected".
+pub(crate) fn compose_policy(values: &adminapi::Params) -> String {
+    if adminapi::param(values, ROLE_POLICY_FULL_FIELD)
+        .split(',')
+        .any(|v| v.trim() == POLICY_FULL)
+    {
+        return POLICY_FULL.to_string();
+    }
+    let mut methods: Vec<String> = Vec::new();
+    let checked = adminapi::param(values, ROLE_POLICY_FIELD);
+    let extra = adminapi::param(values, ROLE_POLICY_EXTRA_FIELD);
+    for m in checked.split(',').chain(extra.split(',')) {
+        let m = m.trim();
+        if !m.is_empty() && !methods.iter().any(|kept| kept == m) {
+            methods.push(m.to_string());
+        }
+    }
+    methods.join(",")
+}
+
+/// Reads the composed role policy, rejecting an empty selection explicitly (never a silent
+/// no-op): the operator picked no method, no `full`, and typed nothing.
+fn required_policy(values: &adminapi::Params, action: &str) -> Result<String, adminapi::SubmitError> {
+    let policy = compose_policy(values);
+    if policy.is_empty() {
+        return Err(adminapi::SubmitError::Other(anyhow::anyhow!(
+            "apikeys: action {action:?} requires at least one method (check a box, type an \
+             additional method, or choose `full`)"
+        )));
+    }
+    Ok(policy)
+}
+
 /// Reads the CAS `revision` evidence for `target` under `prefix`. A missing/unparseable
 /// value means the target vanished (or the form is stale) since GET — a
 /// [`adminapi::SubmitError::Conflict`], never a silent write.
@@ -288,16 +411,16 @@ pub(crate) async fn apply_submit(
     let action = adminapi::param(&values, ACTION_FIELD).trim().to_string();
     match action.as_str() {
         ACTION_CREATE_ROLE => {
-            let name = required(&values, ROLE_NAME_FIELD, ACTION_CREATE_ROLE)?;
-            let policy = required(&values, ROLE_POLICY_FIELD, ACTION_CREATE_ROLE)?;
-            svc.create_role(name, policy).await.map_err(to_submit_error)?;
+            let name = required(&values, ROLE_NAME_FIELD, ACTION_CREATE_ROLE)?.to_string();
+            let policy = required_policy(&values, ACTION_CREATE_ROLE)?;
+            svc.create_role(&name, &policy).await.map_err(to_submit_error)?;
             Ok(adminapi::SubmitOutcome::default())
         }
         ACTION_SET_ROLE_POLICY => {
-            let role = required(&values, ROLE_TARGET_FIELD, ACTION_SET_ROLE_POLICY)?;
-            let policy = required(&values, ROLE_POLICY_FIELD, ACTION_SET_ROLE_POLICY)?;
-            let rev = expected_rev(&values, ROLE_REV_PREFIX, role)?;
-            svc.set_role_policy(role, rev, policy).await.map_err(to_submit_error)?;
+            let role = required(&values, ROLE_TARGET_FIELD, ACTION_SET_ROLE_POLICY)?.to_string();
+            let policy = required_policy(&values, ACTION_SET_ROLE_POLICY)?;
+            let rev = expected_rev(&values, ROLE_REV_PREFIX, &role)?;
+            svc.set_role_policy(&role, rev, &policy).await.map_err(to_submit_error)?;
             Ok(adminapi::SubmitOutcome::default())
         }
         ACTION_DELETE_ROLE => {

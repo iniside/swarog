@@ -1,0 +1,28 @@
+[package]
+name = "opscatalog-gen"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# Generator for the `opscatalog` data crate. Links the pure `api/*/api` contract crates
+# and calls each generated `<snake>_rpc::route_bindings()` — the impl-free authoritative
+# `#[http]`-bound `opsapi::Operation` set (verb/path/auth) — exactly as topiccheck's
+# contract-golden and the csharp client generator do. No edge, no DB, no tokio:
+# route_bindings() is synchronous and impl-free. `tools/*` is unconstrained by archcheck,
+# so linking many api crates is legal (a tool is not a module). Writes a deterministic,
+# sorted `opscatalog/src/generated.rs`; `codegen-freshness` diffs it against the commit.
+[dependencies]
+opsapi = { workspace = true }
+accountsapi = { workspace = true }
+adminapi = { workspace = true }
+apikeysapi = { workspace = true }
+charactersapi = { workspace = true }
+configapi = { workspace = true }
+inventoryapi = { workspace = true }
+leaderboardapi = { workspace = true }
+matchapi = { workspace = true }
+ratingapi = { workspace = true }
+anyhow = { workspace = true }
+
+[dev-dependencies]

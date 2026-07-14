@@ -365,11 +365,14 @@ impl Store {
     // --- Dev seed (self-healing upsert) -------------------------------------
 
     /// Upserts a well-known dev ROLE (Decision 7): resets the policy on conflict so a
-    /// stray edit on a shared dev DB can't poison the harness. Idempotent.
+    /// stray edit on a shared dev DB can't poison the harness. Idempotent. The `revision`
+    /// bumps on every upsert so a form rendered before a re-seed correctly CAS-conflicts
+    /// instead of clobbering the freshly-seeded row.
     pub async fn upsert_seed_role(&self, name: &str, policy: &str) -> Result<(), sqlx::Error> {
         sqlx::query(
             "INSERT INTO apikeys.roles (name, policy) VALUES ($1, $2) \
-             ON CONFLICT (name) DO UPDATE SET policy = EXCLUDED.policy, updated_at = now()",
+             ON CONFLICT (name) DO UPDATE \
+               SET policy = EXCLUDED.policy, revision = apikeys.roles.revision + 1, updated_at = now()",
         )
         .bind(name)
         .bind(policy)
@@ -380,8 +383,9 @@ impl Store {
 
     /// Upserts a well-known dev KEY (Decision 7) with a KNOWN plaintext `secret` so
     /// `X-Api-Key: <secret>` keeps resolving: stores `sha256(secret)` + prefix + role, and
-    /// on conflict resets the hash/prefix/role and clears any stray `revoked_at`. Must be
-    /// called AFTER its role is seeded (FK order). Self-healing, idempotent.
+    /// on conflict resets the hash/prefix/role, clears any stray `revoked_at`, and bumps
+    /// `revision` (so a form rendered before a re-seed CAS-conflicts). Must be called AFTER
+    /// its role is seeded (FK order). Self-healing, idempotent.
     pub async fn upsert_seed_key(
         &self,
         name: &str,
@@ -394,7 +398,8 @@ impl Store {
             "INSERT INTO apikeys.keys (name, secret_hash, prefix, role) VALUES ($1, $2, $3, $4) \
              ON CONFLICT (name) DO UPDATE \
                SET secret_hash = EXCLUDED.secret_hash, prefix = EXCLUDED.prefix, \
-                   role = EXCLUDED.role, revoked_at = NULL, updated_at = now()",
+                   role = EXCLUDED.role, revoked_at = NULL, \
+                   revision = apikeys.keys.revision + 1, updated_at = now()",
         )
         .bind(name)
         .bind(&hash)

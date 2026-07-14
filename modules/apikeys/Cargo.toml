@@ -18,6 +18,10 @@ edge = { workspace = true }
 apikeysapi = { workspace = true }
 apikeysrpc = { workspace = true }
 adminapi = { workspace = true }
+# The generated ops catalog (neutral leaf data crate): the SINGLE source of the
+# role-policy editor's checkbox options — the served #[http] op surface, never a
+# hand-maintained list. Freshness-gated by verifyctl's codegen-freshness stage.
+opscatalog = { workspace = true }
 sqlx = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
 anyhow = { workspace = true }

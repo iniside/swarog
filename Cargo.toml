@@ -77,6 +77,10 @@ members = [
     # External C# client generator (Step 2): scrapes the player-reachable API (runtime
     # route_bindings() ∪ syn source parse) into a typed manifest; the C# emitter is Step 3.
     "tools/csharp-client-gen",
+    # Ops-catalog generator (Faza C): links every api/*/api crate and projects their
+    # #[http]-bound route_bindings() into the neutral `opscatalog` data crate. Freshness
+    # is gated by verifyctl's codegen-freshness stage.
+    "tools/opscatalog-gen",
     # Contract surfaces, grouped by domain (Go's api/<name>/ tree); import no module.
     # `<name>api` = pure trait + wire surface (transport-free); `<name>rpc` = the
     # generated edge glue (impl-tier, may import edge).
@@ -119,6 +123,10 @@ members = [
     "modules/match",
     "modules/rating",
     "modules/leaderboard",
+    # Generated, dependency-free ops catalog (Faza C): the (method, verb, path, auth) rows
+    # of every #[http]-bound op, produced by tools/opscatalog-gen. A neutral leaf data
+    # crate importable by any module (like opsapi); imports nothing itself.
+    "opscatalog",
     # Non-shipping demo crates — compiled + runnable, monolith-only by design.
     "demos/webui",
     # Process entrypoints (Go's cmd/).
@@ -279,6 +287,9 @@ ratingapi = { path = "api/rating/api" }
 ratingrpc = { path = "api/rating/rpc" }
 leaderboardapi = { path = "api/leaderboard/api" }
 leaderboardrpc = { path = "api/leaderboard/rpc" }
+
+# ---- Generated ops catalog (neutral leaf data crate; imports nothing). ----
+opscatalog = { path = "opscatalog" }
 
 # ---- Module implementations (modules/): private impl, reachable only from cmd/. ----
 config = { path = "modules/config" }

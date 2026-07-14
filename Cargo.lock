@@ -218,6 +218,7 @@ dependencies = [
  "edge",
  "lifecycle",
  "opsapi",
+ "opscatalog",
  "rand 0.8.6",
  "registry",
  "serde",
@@ -2584,6 +2585,27 @@ dependencies = [
  "serde_json",
  "thiserror 1.0.69",
  "tokio",
+]
+
+[[package]]
+name = "opscatalog"
+version = "0.1.0"
+
+[[package]]
+name = "opscatalog-gen"
+version = "0.1.0"
+dependencies = [
+ "accountsapi",
+ "adminapi",
+ "anyhow",
+ "apikeysapi",
+ "charactersapi",
+ "configapi",
+ "inventoryapi",
+ "leaderboardapi",
+ "matchapi",
+ "opsapi",
+ "ratingapi",
 ]
 
 [[package]]

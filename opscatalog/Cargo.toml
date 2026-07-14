@@ -1,0 +1,15 @@
+[package]
+name = "opscatalog"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# A generated, dependency-FREE leaf data crate: the catalog of every gateway-dispatched
+# (`#[http]`-bound) wire operation, as (method, verb, path, auth) rows. `src/generated.rs`
+# is written by `tools/opscatalog-gen` from the SAME `route_bindings()` rpc metadata the
+# gateway route table and topiccheck read, so the list can NEVER drift from the real op
+# surface. It imports nothing (no core, no api, no module) — a neutral data table that any
+# module may depend on (like opsapi), with zero cycle risk. Staleness is caught by the
+# `codegen-freshness` verify stage; regenerate with `cargo run -p opscatalog-gen`.
+[dependencies]

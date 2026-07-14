@@ -230,3 +230,102 @@ async fn admin_data_remote_has_typed_fields_and_no_submit_closure() {
         "typed action selector marshals to the remote render"
     );
 }
+
+// ---- Ops-catalog checkbox source (Step 7) ----------------------------------
+
+/// The role-policy editor's checkbox options are sourced ONLY from the generated
+/// `opscatalog::OPERATIONS` — proving the authority: no hand-maintained method list. The
+/// `full` sentinel and the free-text pre-authorization field are present alongside it.
+#[tokio::test(flavor = "multi_thread")]
+async fn role_policy_checkboxes_come_from_the_ops_catalog() {
+    let _guard = db_test_lock().await;
+    let Some(pool) = test_pool().await else { return };
+    let svc = Arc::new(Service { store: Store { pool: pool.clone() } });
+
+    let form = content(&svc).await.form.expect("local form");
+    let policy = form.fields.iter().find(|f| f.name == "role_policy").expect("role_policy field");
+    assert_eq!(policy.kind, adminapi::FieldKind::CheckboxGroup);
+    // Every checkbox value is a real catalog method (or an in-use non-catalog extra) — never
+    // an ad-hoc hardcoded name. At minimum, every catalog op appears as an option.
+    for op in opscatalog::OPERATIONS {
+        assert!(
+            policy.options.iter().any(|o| o.value == op.method),
+            "catalog method {} is missing from the checkbox options",
+            op.method
+        );
+    }
+    assert!(
+        !opscatalog::OPERATIONS.is_empty()
+            && policy.options.iter().any(|o| o.value == "leaderboard.topScores"),
+        "the served op surface drives the option list"
+    );
+    // The `full` sentinel checkbox + the free-text loose path both exist.
+    assert!(
+        form.fields.iter().any(|f| f.name == "role_policy_full"
+            && f.kind == adminapi::FieldKind::CheckboxGroup
+            && f.options.iter().any(|o| o.value == "full")),
+        "the `full` sentinel checkbox is present"
+    );
+    assert!(
+        form.fields.iter().any(|f| f.name == "role_policy_extra" && f.kind == adminapi::FieldKind::Text),
+        "the free-text additional-methods field is present"
+    );
+}
+
+/// Loose validation is preserved: a policy naming a method NOT in the catalog (typed into the
+/// free-text field) is accepted end-to-end, and that role resolves for a key. The catalog is a
+/// UI hint, never a hard gate.
+#[tokio::test(flavor = "multi_thread")]
+async fn free_text_method_not_in_catalog_is_accepted() {
+    let _guard = db_test_lock().await;
+    let Some(pool) = test_pool().await else { return };
+    let svc = Arc::new(Service { store: Store { pool: pool.clone() } });
+    let base = unique_name(&pool).await;
+    let role = format!("{base}-role");
+    let unserved = "some.futureMethodNotYetServed";
+    assert!(
+        !opscatalog::OPERATIONS.iter().any(|op| op.method == unserved),
+        "precondition: the method is genuinely absent from the catalog"
+    );
+
+    let mut p = form_params(&svc).await;
+    p.insert("_action".into(), "create_role".into());
+    p.insert("role_name".into(), role.clone());
+    p.insert("role_policy_extra".into(), unserved.into());
+    apply_submit(&svc, p).await.unwrap();
+
+    let key = format!("{base}-key");
+    let mut p = form_params(&svc).await;
+    p.insert("_action".into(), "create_key".into());
+    p.insert("key_name".into(), key.clone());
+    p.insert("key_role".into(), role.clone());
+    let secret = apply_submit(&svc, p).await.unwrap().reveal[0].value.clone();
+    assert_eq!(
+        svc.store.lookup(&secret).await.unwrap().unwrap().policy,
+        unserved,
+        "a pre-authorized non-catalog method is stored and resolved verbatim (loose validation)"
+    );
+
+    cleanup(&pool, &base).await;
+}
+
+/// `compose_policy` (pure) — precedence + union + dedup, no DB. Proves the composition
+/// branch-by-branch without a rollout.
+#[test]
+fn compose_policy_precedence_union_and_dedup() {
+    let policy = |pairs: &[(&str, &str)]| {
+        let map: adminapi::Params = pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        crate::admin::compose_policy(&map)
+    };
+    // `full` checkbox wins over any checked method.
+    assert_eq!(policy(&[("role_policy_full", "full"), ("role_policy", "characters.create")]), "full");
+    // Checked catalog methods + free-text extras union, order-preserving, de-duplicated.
+    assert_eq!(
+        policy(&[("role_policy", "characters.create,leaderboard.topScores"), ("role_policy_extra", "leaderboard.topScores, some.future ")]),
+        "characters.create,leaderboard.topScores,some.future"
+    );
+    // Nothing selected → empty (the caller rejects it explicitly).
+    assert_eq!(policy(&[]), "");
+    // Free-text only (loose path) survives with no checkboxes.
+    assert_eq!(policy(&[("role_policy_extra", "only.oneMethod")]), "only.oneMethod");
+}
