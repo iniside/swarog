@@ -1,220 +1,232 @@
-//! Live-Postgres tests for the "API Keys" admin page: the render (KPIs, table, fields)
-//! over seeded rows, and the submit round-trip (policy edit, add-new, revoke, invalid
-//! policy rejected). Every fixture uses a `test-`-prefixed unique key name and deletes
-//! its own rows, so the shared local Postgres never has the harness's dev rows touched.
+//! Live-Postgres tests for the "API Keys" configurator: the typed render (keys table with
+//! a display prefix — never the secret, the `_action` Select, role/key Selects), the
+//! submit DISPATCH (each action, explicit rejection of partial/empty input), CAS conflict
+//! on a stale form, the SHOW-ONCE secret, and the remote seams — including finding #2
+//! (a domain-missing target surfaces as `Conflict`, never `NotFound`).
 //!
-//! The KPI totals count the WHOLE (shared) table, so the assertions check internal
-//! consistency (total == table rows, active <= total) and that the seeded rows render as
-//! expected — never an absolute global count.
+//! Every fixture uses a `test-`-prefixed unique base and deletes its own rows, so the
+//! shared local Postgres never has the harness's dev rows touched.
 
 use super::*;
-use crate::admin::{admin_content_full, apply_edit};
+use crate::admin::{admin_content_local, apply_submit};
 use crate::store::Store;
 use crate::store_tests::{cleanup, db_test_lock, test_pool, unique_name};
+use adminapi::{AdminData as _, AdminSubmit as _};
+use sqlx::PgPool;
 use std::sync::Arc;
 
-/// Finds a table row by its Name cell (column 0).
-fn find_row<'a>(table: &'a adminapi::Table, name: &str) -> Option<&'a Vec<adminapi::Cell>> {
-    table.rows.iter().find(|r| r[0].text == name)
+async fn content(svc: &Arc<Service>) -> adminapi::Content {
+    admin_content_local(svc).await.unwrap()
 }
 
-async fn rendered_params(svc: &Arc<Service>) -> adminapi::Params {
-    let form = admin_content_full(svc)
-        .await
-        .unwrap()
-        .form
-        .expect("local API key admin form");
+/// The full posted-form param map: every visible field + hidden CAS-evidence field, as a
+/// browser would echo it (the caller overrides the action + the fields it drives).
+async fn form_params(svc: &Arc<Service>) -> adminapi::Params {
+    let form = content(svc).await.form.expect("local form");
     form.fields
-        .into_iter()
-        .map(|field| (field.name, field.value))
-        .chain(
-            form.hidden
-                .into_iter()
-                .map(|field| (field.name, field.value)),
-        )
+        .iter()
+        .map(|f| (f.name.clone(), f.value.clone()))
+        .chain(form.hidden.iter().map(|h| (h.name.clone(), h.value.clone())))
         .collect()
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn render_shows_rows_kpis_and_fields() {
-    let _guard = db_test_lock().await;
-    let Some(pool) = test_pool().await else { return };
-    let svc = Arc::new(Service { store: Store { pool: pool.clone() } });
-    let base = unique_name(&pool).await;
-    let active_name = format!("{base}-active");
-    let active_key = format!("{base}-active-key");
-    let revoked_name = format!("{base}-revoked");
-    let revoked_key = format!("{base}-revoked-key");
-    svc.store.insert(&active_name, &active_key, "accounts.login").await.unwrap();
-    svc.store.insert(&revoked_name, &revoked_key, "full").await.unwrap();
-    svc.store.revoke(&revoked_name).await.unwrap();
-
-    let content = admin_content_full(&svc).await.unwrap();
-
-    // KPIs: internally consistent with the rendered table (shared DB ⇒ no absolute count).
-    let table = content.table.as_ref().expect("table present");
-    assert_eq!(content.kpis[0].label, "Keys");
-    assert_eq!(content.kpis[1].label, "Active");
-    let total: usize = content.kpis[0].value.parse().unwrap();
-    let active: usize = content.kpis[1].value.parse().unwrap();
-    assert_eq!(total, table.rows.len(), "Keys KPI must equal the table row count");
-    assert!(active <= total, "Active must not exceed Keys");
-    assert_eq!(
-        active,
-        table.rows.iter().filter(|r| r[4].text == "active").count(),
-        "Active KPI must match the green-badge rows"
-    );
-
-    // Table columns + the two seeded rows (active green, revoked red; key rendered mono).
-    assert_eq!(
-        table.columns,
-        vec!["Name", "Key", "Policy", "Created", "Status"]
-    );
-    let arow = find_row(table, &active_name).expect("active row present");
-    assert_eq!(arow[1].text, active_key);
-    assert!(arow[1].mono, "key cell is monospaced");
-    assert_eq!(arow[2].text, "accounts.login");
-    assert_eq!((arow[4].text.as_str(), arow[4].badge.as_str()), ("active", "green"));
-    let rrow = find_row(table, &revoked_name).expect("revoked row present");
-    assert_eq!((rrow[4].text.as_str(), rrow[4].badge.as_str()), ("revoked", "red"));
-
-    // Form: one policy field per key (name == key name, value == policy) + reserved fields.
-    let form = content.form.as_ref().expect("editable form present");
-    let field = form.fields.iter().find(|f| f.name == active_name).expect("policy field present");
-    assert_eq!(field.value, "accounts.login");
-    for reserved in ["_new_name", "_new_key", "_new_policy", "_revoke_name"] {
-        assert!(
-            form.fields.iter().any(|f| f.name == reserved),
-            "reserved field {reserved} present"
-        );
-    }
-
-    cleanup(&pool, &base).await;
+async fn role_rev(pool: &PgPool, name: &str) -> i64 {
+    sqlx::query_scalar("SELECT revision FROM apikeys.roles WHERE name = $1")
+        .bind(name)
+        .fetch_one(pool)
+        .await
+        .unwrap()
 }
 
+async fn seed_role(svc: &Arc<Service>, name: &str, policy: &str) {
+    svc.store.create_role(name, policy).await.unwrap();
+}
+
+// ---- Render ----------------------------------------------------------------
+
 #[tokio::test(flavor = "multi_thread")]
-async fn submit_policy_edit_add_and_revoke() {
+async fn render_shows_keys_table_prefix_and_typed_action_select() {
     let _guard = db_test_lock().await;
     let Some(pool) = test_pool().await else { return };
     let svc = Arc::new(Service { store: Store { pool: pool.clone() } });
     let base = unique_name(&pool).await;
-    let name = format!("{base}-a");
+    let role = format!("{base}-role");
     let key = format!("{base}-key");
-    svc.store.insert(&name, &key, "accounts.login").await.unwrap();
+    seed_role(&svc, &role, "full").await;
+    let (secret, prefix) = svc.store.create_key(&key, &role).await.unwrap();
 
-    // Policy edit: posting a changed value re-writes the policy.
-    let mut edit = rendered_params(&svc).await;
-    edit.insert(name.clone(), "full".into());
-    apply_edit(&svc, edit).await.unwrap();
-    assert_eq!(svc.store.lookup(&key).await.unwrap().unwrap().policy, "full");
+    let c = content(&svc).await;
+    let table = c.table.as_ref().expect("table");
+    assert_eq!(table.columns, vec!["Name", "Prefix", "Role", "Created", "Status"]);
+    let row = table.rows.iter().find(|r| r[0].text == key).expect("key row");
+    assert_eq!(row[1].text, prefix, "prefix column shows the prefix");
+    assert!(row[1].mono, "prefix is monospaced");
+    assert_ne!(row[1].text, secret, "the table NEVER shows the full secret");
+    assert_eq!(row[2].text, role);
+    assert_eq!((row[4].text.as_str(), row[4].badge.as_str()), ("active", "green"));
 
-    // Add-new: the full triple inserts a new key.
-    let new_name = format!("{base}-new");
-    let new_key = format!("{base}-new-key");
-    let mut add = rendered_params(&svc).await;
-    add.insert("_new_name".into(), new_name.clone());
-    add.insert("_new_key".into(), new_key.clone());
-    add.insert("_new_policy".into(), "characters.create".into());
-    apply_edit(&svc, add).await.unwrap();
-    assert_eq!(
-        svc.store.lookup(&new_key).await.unwrap(),
-        Some(apikeysapi::KeyRecord { name: new_name.clone(), policy: "characters.create".into() })
+    // The typed action selector + role/key Selects carry the current rows as options.
+    let form = c.form.as_ref().expect("form");
+    let action = form.fields.iter().find(|f| f.name == "_action").expect("_action field");
+    assert_eq!(action.kind, adminapi::FieldKind::Select);
+    assert!(action.options.iter().any(|o| o.value == "create_key"));
+    let key_role = form.fields.iter().find(|f| f.name == "key_role").expect("key_role select");
+    assert_eq!(key_role.kind, adminapi::FieldKind::Select);
+    assert!(key_role.options.iter().any(|o| o.value == role));
+    // CAS evidence is present for the row.
+    assert!(form.hidden.iter().any(|h| h.name == format!("_expected_key_rev_{key}")));
+
+    cleanup(&pool, &base).await;
+}
+
+// ---- Submit dispatch + show-once -------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn submit_create_role_then_create_key_reveals_secret_once() {
+    let _guard = db_test_lock().await;
+    let Some(pool) = test_pool().await else { return };
+    let svc = Arc::new(Service { store: Store { pool: pool.clone() } });
+    let base = unique_name(&pool).await;
+    let role = format!("{base}-role");
+    let key = format!("{base}-key");
+
+    // create_role → empty reveal.
+    let mut p = form_params(&svc).await;
+    p.insert("_action".into(), "create_role".into());
+    p.insert("role_name".into(), role.clone());
+    p.insert("role_policy".into(), "full".into());
+    assert!(apply_submit(&svc, p).await.unwrap().reveal.is_empty());
+
+    // create_key → the secret, exactly once.
+    let mut p = form_params(&svc).await;
+    p.insert("_action".into(), "create_key".into());
+    p.insert("key_name".into(), key.clone());
+    p.insert("key_role".into(), role.clone());
+    let out = apply_submit(&svc, p).await.unwrap();
+    assert_eq!(out.reveal.len(), 1);
+    assert_eq!(out.reveal[0].label, "secret");
+    let secret = out.reveal[0].value.clone();
+    assert!(secret.starts_with("ak_"), "secret shape: {secret}");
+
+    // The secret resolves to the role policy — and no READ path ever holds it.
+    assert_eq!(svc.store.lookup(&secret).await.unwrap().unwrap().policy, "full");
+    assert!(
+        svc.store.list_keys().await.unwrap().iter().all(|k| k.prefix != secret),
+        "list_keys never carries the full secret"
+    );
+    let rerender = content(&svc).await.form.unwrap();
+    assert!(
+        rerender.fields.iter().all(|f| !f.value.contains(&secret))
+            && rerender.hidden.iter().all(|h| !h.value.contains(&secret)),
+        "a re-render never echoes the show-once secret"
     );
 
-    // Revoke: naming a key in `_revoke_name` revokes it (lookup then misses).
-    let mut rev = rendered_params(&svc).await;
-    rev.insert("_revoke_name".into(), new_name.clone());
-    apply_edit(&svc, rev).await.unwrap();
-    assert_eq!(svc.store.lookup(&new_key).await.unwrap(), None);
-
     cleanup(&pool, &base).await;
 }
 
-// The edge admin fan-out (the split `admin.adminData` path — apikeys' admin face
-// registered on the internal edge and reachable over QUIC) is asserted end-to-end,
-// cross-process, by splitproof [AD3b] (`GET /admin/api-keys` through gateway →
-// admin-svc → apikeys-svc, two hops, 200 + `dev-client` rendered). The former
-// in-crate wire round-trip (`edge_serves_admin_data`) was removed here to keep
-// apikeys off the foreign `adminrpc` glue crate: apikeys cannot generate admin's
-// `admin.adminData` Client itself, so dialing its own admin face in-crate meant a
-// dev-dependency on another domain's `<name>rpc`, which the fortress rule forbids.
-
-/// Atomicity of a MIXED submit: one call carrying a valid policy edit, an INVALID policy
-/// for another key, AND a valid add-row triple. Phase-1 validation fails on the invalid
-/// policy before ANY write, so the whole form is rejected and the store is left exactly
-/// as it was — no partial commit of the valid edit or the add-row.
 #[tokio::test(flavor = "multi_thread")]
-async fn submit_mixed_valid_and_invalid_is_atomic() {
+async fn submit_partial_create_key_rejected_without_writing() {
     let _guard = db_test_lock().await;
     let Some(pool) = test_pool().await else { return };
     let svc = Arc::new(Service { store: Store { pool: pool.clone() } });
     let base = unique_name(&pool).await;
-    let x_name = format!("{base}-x");
-    let x_key = format!("{base}-x-key");
-    let y_name = format!("{base}-y");
-    let y_key = format!("{base}-y-key");
-    svc.store.insert(&x_name, &x_key, "accounts.login").await.unwrap();
-    svc.store.insert(&y_name, &y_key, "characters.create").await.unwrap();
+    let role = format!("{base}-role");
+    seed_role(&svc, &role, "full").await;
 
-    // One submit: VALID policy change for X, INVALID (blank) policy for Y, VALID add-row.
-    let new_name = format!("{base}-new");
-    let new_key = format!("{base}-new-key");
-    let mut edit = rendered_params(&svc).await;
-    edit.insert(x_name.clone(), "full".into());
-    edit.insert(y_name.clone(), "   ".into());
-    edit.insert("_new_name".into(), new_name.clone());
-    edit.insert("_new_key".into(), new_key.clone());
-    edit.insert("_new_policy".into(), "leaderboard.topScores".into());
-
-    let err = apply_edit(&svc, edit).await.unwrap_err();
-    assert!(err.to_string().contains("invalid policy"), "got: {err}");
-
-    // Nothing committed: X and Y policies unchanged, no new row inserted.
-    assert_eq!(svc.store.lookup(&x_key).await.unwrap().unwrap().policy, "accounts.login");
-    assert_eq!(svc.store.lookup(&y_key).await.unwrap().unwrap().policy, "characters.create");
-    assert_eq!(svc.store.lookup(&new_key).await.unwrap(), None, "add-row must not have committed");
+    // Action chosen, role chosen, but the key NAME left blank — explicit rejection, not a
+    // silent no-op (the bug the old flat-form design had).
+    let mut p = form_params(&svc).await;
+    p.insert("_action".into(), "create_key".into());
+    p.insert("key_role".into(), role.clone());
+    let err = apply_submit(&svc, p).await.unwrap_err();
+    assert!(matches!(err, adminapi::SubmitError::Other(_)), "got {err:?}");
+    assert!(
+        svc.store.list_keys().await.unwrap().iter().all(|k| !k.name.starts_with(&base)),
+        "no key written on partial input"
+    );
 
     cleanup(&pool, &base).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn submit_rejects_invalid_policy_without_writing() {
+async fn submit_empty_action_rejected() {
+    let _guard = db_test_lock().await;
+    let Some(pool) = test_pool().await else { return };
+    let svc = Arc::new(Service { store: Store { pool: pool.clone() } });
+
+    let mut p = adminapi::Params::new();
+    p.insert("_action".into(), String::new());
+    assert!(matches!(apply_submit(&svc, p).await.unwrap_err(), adminapi::SubmitError::Other(_)));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn submit_stale_role_revision_conflicts_and_preserves_out_of_band_write() {
     let _guard = db_test_lock().await;
     let Some(pool) = test_pool().await else { return };
     let svc = Arc::new(Service { store: Store { pool: pool.clone() } });
     let base = unique_name(&pool).await;
-    let name = format!("{base}-a");
-    let key = format!("{base}-key");
-    svc.store.insert(&name, &key, "accounts.login").await.unwrap();
+    let role = format!("{base}-role");
+    seed_role(&svc, &role, "accounts.login").await;
 
-    // A blank policy is invalid; apply_edit returns an error and leaves the policy intact.
-    let mut edit = rendered_params(&svc).await;
-    edit.insert(name.clone(), "   ".into());
-    let err = apply_edit(&svc, edit).await.unwrap_err();
-    assert!(err.to_string().contains("invalid policy"), "got: {err}");
-    assert_eq!(svc.store.lookup(&key).await.unwrap().unwrap().policy, "accounts.login");
+    // Render captures `_expected_role_rev_<role>` = 1.
+    let mut p = form_params(&svc).await;
+    p.insert("_action".into(), "set_role_policy".into());
+    p.insert("role_target".into(), role.clone());
+    p.insert("role_policy".into(), "characters.create".into());
+
+    // Out-of-band edit bumps the revision to 2 and sets policy "full".
+    let rev1 = role_rev(&pool, &role).await;
+    svc.store.set_role_policy(&role, rev1, "full").await.unwrap();
+
+    // The stale submit conflicts and does NOT overwrite the out-of-band value.
+    let err = apply_submit(&svc, p).await.unwrap_err();
+    assert!(matches!(err, adminapi::SubmitError::Conflict), "got {err:?}");
+    assert_eq!(
+        svc.store.list_roles().await.unwrap().into_iter().find(|r| r.name == role).unwrap().policy,
+        "full",
+        "out-of-band write preserved; stale submit wrote nothing"
+    );
 
     cleanup(&pool, &base).await;
 }
 
+// ---- Remote seams ----------------------------------------------------------
+
+/// Finding #2: a domain-missing target through the REMOTE `admin_submit` surfaces as
+/// `Conflict` (409), NEVER `NotFound` (which the edge would make indistinguishable from
+/// UnknownMethod → the admin masking the real error as read-only 405).
 #[tokio::test(flavor = "multi_thread")]
-async fn submit_rejects_underscore_prefixed_new_name_without_writing() {
+async fn admin_submit_create_key_missing_role_is_conflict_not_notfound() {
     let _guard = db_test_lock().await;
     let Some(pool) = test_pool().await else { return };
     let svc = Arc::new(Service { store: Store { pool: pool.clone() } });
     let base = unique_name(&pool).await;
-    // A `_`-prefixed name would collide with the form's own `_new_*`/`_revoke_name`
-    // control fields on the next render — apply_edit must reject it before any write.
-    let new_name = format!("_{base}-new");
-    let new_key = format!("{base}-new-key");
 
-    let mut add = rendered_params(&svc).await;
-    add.insert("_new_name".into(), new_name.clone());
-    add.insert("_new_key".into(), new_key.clone());
-    add.insert("_new_policy".into(), "full".into());
-    let err = apply_edit(&svc, add).await.unwrap_err();
-    assert!(err.to_string().contains("must not start with '_'"), "got: {err}");
-    assert_eq!(svc.store.lookup(&new_key).await.unwrap(), None, "insert must not have committed");
+    let mut p = adminapi::Params::new();
+    p.insert("_action".into(), "create_key".into());
+    p.insert("key_name".into(), format!("{base}-key"));
+    p.insert("key_role".into(), format!("{base}-no-such-role"));
+    let err = svc.admin_submit("apikeys".into(), p).await.unwrap_err();
+    assert_eq!(err.status, opsapi::Status::Conflict, "domain conflict, not {:?}", err.status);
+    assert_ne!(err.status, opsapi::Status::NotFound);
 
     cleanup(&pool, &base).await;
+}
+
+/// The remote READ (`admin_data`) returns the SAME typed structure with NO submit closure
+/// (the wire can't carry it) — the admin drives writes via `admin_submit`.
+#[tokio::test(flavor = "multi_thread")]
+async fn admin_data_remote_has_typed_fields_and_no_submit_closure() {
+    let _guard = db_test_lock().await;
+    let Some(pool) = test_pool().await else { return };
+    let svc = Arc::new(Service { store: Store { pool: pool.clone() } });
+
+    let data = svc.admin_data().await.unwrap();
+    assert_eq!(data.id, "apikeys");
+    let form = data.content.form.expect("remote form structure present");
+    assert!(form.submit.is_none(), "remote form carries no submit closure");
+    assert!(
+        form.fields.iter().any(|f| f.name == "_action" && f.kind == adminapi::FieldKind::Select),
+        "typed action selector marshals to the remote render"
+    );
 }

@@ -172,6 +172,11 @@ rand = "0.8"
 base64 = "0.22"
 url = "2"
 
+# SHA-256 for the apikeys module: API-key secrets are high-entropy, so they are
+# stored as a deterministic SHA-256 digest (indexable O(1) lookup + show-once +
+# prefix), NOT a password-KDF (argon2 can't be indexed). RustCrypto, ring-free.
+sha2 = "0.10"
+
 # Duplicate-preserving urlencoded parsing for the admin portal's form POSTs: a
 # CheckboxGroup field posts its shared name once per checked option, so the admin
 # parses the body as ORDERED pairs (axum's `Form<HashMap>` collapses duplicates) and

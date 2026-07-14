@@ -22,10 +22,11 @@ use opsapi::Error;
 
 apikeysapi::apikeys_keys_meta!(rpc_macro::generate_glue);
 
-/// The admin fan-out's server-side registration, re-exported from `adminrpc` so the
-/// `apikeys` module registers `admin.adminData` through its OWN glue crate (never a
-/// foreign rpc import — archcheck-clean). Wired into the edge face in Step 6.
-pub use adminrpc::register_admin;
+/// The admin fan-out's server-side registrations, re-exported from `adminrpc` so the
+/// `apikeys` module registers `admin.adminData` (read) AND `admin.adminSubmit` (opt-in
+/// remote write) through its OWN glue crate (never a foreign rpc import —
+/// archcheck-clean). Both are wired into the edge face in `init`.
+pub use adminrpc::{register_admin, register_admin_submit};
 
 /// The apikeys provider's client-registration closure for a process where the provider
 /// lives in a PEER process (apikeys-svc). Consumed by [`remote::Stub`]: the composition
