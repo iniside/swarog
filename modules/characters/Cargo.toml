@@ -20,6 +20,10 @@ edge = { workspace = true }
 charactersapi = { workspace = true }
 charactersrpc = { workspace = true }
 charactersevents = { workspace = true }
+# The config CONTRACT trait only (never `configrpc` glue — archcheck forbids a module
+# importing a foreign rpc crate). Backs `create`'s per-player cap; in the split a
+# `remote::Stub` swaps a CachedConfig under the same registry key.
+configapi = { workspace = true }
 adminapi = { workspace = true }
 sqlx = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }

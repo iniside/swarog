@@ -493,8 +493,9 @@ pub fn game_backend_fleet_with_environment(
     let leaderboard = service("leaderboard-svc", 8090, Some(9008), vec![]);
     let mut matches = service("match-svc", 8088, Some(9006), vec!["rating-svc"]);
     peer(&mut matches.env, "RATING", 9007);
-    let characters = service("characters-svc", 8080, Some(9000), vec![]);
     let config = service("config-svc", 8083, Some(9002), vec![]);
+    let mut characters = service("characters-svc", 8080, Some(9000), vec!["config-svc"]);
+    peer(&mut characters.env, "CONFIG", 9002);
     let mut inventory = service(
         "inventory-svc",
         8081,
@@ -599,7 +600,7 @@ pub fn game_backend_fleet_with_environment(
     }
 
     FleetSpec::new(vec![
-        accounts, apikeys, audit, scheduler, rating, leaderboard, matches, characters, config,
+        accounts, apikeys, audit, scheduler, rating, leaderboard, matches, config, characters,
         inventory, gateway, admin,
     ])
     .expect("the built-in game backend fleet is internally valid")

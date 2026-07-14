@@ -5,11 +5,13 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
-# Process A of the split: hosts ONLY characters, and stands up a single
-# shared QUIC edge server so a peer's inventory can resolve `characters.ownerOf` over the
-# mutually-authenticated edge. It hosts NO gateway (FrontDoor) — the single public front
-# door lives only in gateway-svc + the monolith, so no accounts stub is needed either. It
-# imports neither inventory nor config — so the linker drops every package it never names.
+# Process A of the split: hosts characters, and stands up a single shared QUIC edge
+# server so a peer's inventory can resolve `characters.ownerOf` over the
+# mutually-authenticated edge. It fills characters' `config` dependency with a
+# `remote::Stub` that dials config-svc, so it imports the `configrpc` glue (passed into
+# the stub) but NEVER the config IMPL crate. It hosts NO gateway (FrontDoor) — the single
+# public front door lives only in gateway-svc + the monolith, so no accounts stub is
+# needed. It never imports inventory.
 [[bin]]
 name = "characters-svc"
 path = "src/main.rs"
@@ -20,6 +22,11 @@ edge = { workspace = true }
 lifecycle = { workspace = true }
 metrics = { workspace = true }
 characters = { workspace = true }
+remote = { workspace = true }
+# The config glue: this cmd/ root passes config's `remote_factories()` into the generic
+# `remote::Stub`. rule 5 sanctions cmd/* importing the glue; it still never names the
+# config IMPL crate.
+configrpc = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync"] }
 anyhow = { workspace = true }
 tracing = { workspace = true }

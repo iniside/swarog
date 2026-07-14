@@ -18,8 +18,10 @@ use std::sync::{Arc, OnceLock};
 use async_trait::async_trait;
 use bus::{AnyTx, Bus};
 use charactersapi::{Character, Ownership, Player};
+use configapi::Config;
 use lifecycle::{Context, Module};
 use opsapi::{Error, Identity};
+use registry::key;
 use sqlx::{PgConnection, PgPool};
 
 /// The admin surface ids — shared by the contributed `Item` and the `Admin::admin_data`
@@ -38,6 +40,45 @@ const MAX_CLASS_BYTES: usize = 64;
 /// characters than `list` can return) is the primary bound. Until that cap lands this ceiling
 /// is also the de-facto per-player limit and truncates silently beyond it.
 const LIST_HARD_LIMIT: i64 = 1000;
+
+/// Default per-player character cap when `characters/max_per_player` is unset in
+/// config. Clamped to [`LIST_HARD_LIMIT`] at read so `create` can never admit more
+/// characters than `list` can return.
+const MAX_PER_PLAYER: i64 = 10;
+
+/// Per-PLAYER transaction-scoped advisory-lock key for `create`'s cap gate: two
+/// concurrent creates for one player must serialize their count-then-insert, or both
+/// SELECT `count` below the cap (neither committed yet, READ COMMITTED) and both
+/// insert past it. FNV-1a over a DISTINCT namespace prefix (`characters.player/`) so
+/// the key can NEVER collide with inventory's `inventory.character/` keys or
+/// scheduler's plain-name keys — a collision would only serialize unrelated players,
+/// never break correctness.
+///
+/// The player_id is normalized to Postgres's uuid-EQUALITY form BEFORE hashing (the
+/// same discipline as inventory's `lock_key`, DELIBERATELY DUPLICATED across the two
+/// fortresses — characters cannot import inventory's impl crate, so a shared helper
+/// is impossible and this small copy is correct): the row SQL is `$1::uuid`, so a
+/// differently-spelled but DB-equal id (uppercase / braced / unhyphenated) must yield
+/// the SAME lock. Two inputs Postgres's `::uuid` treats as equal share the same 32
+/// ascii-hex digits ignoring case/hyphens/braces; a non-uuid input (never on the
+/// identity-validated path) falls back to its raw bytes — still stable, only ever
+/// over-serializes, never breaks.
+fn player_lock_key(player_id: &str) -> i64 {
+    const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    let hex: Vec<u8> = player_id
+        .bytes()
+        .filter(u8::is_ascii_hexdigit)
+        .map(|b| b.to_ascii_lowercase())
+        .collect();
+    let normalized: &[u8] = if hex.len() == 32 { &hex } else { player_id.as_bytes() };
+    let mut h = OFFSET_BASIS;
+    for b in b"characters.player/".iter().copied().chain(normalized.iter().copied()) {
+        h ^= b as u64;
+        h = h.wrapping_mul(PRIME);
+    }
+    h as i64
+}
 
 pub(crate) fn name_within_cap(name: &str) -> bool {
     name.len() <= MAX_NAME_BYTES
@@ -178,6 +219,23 @@ impl Store {
         Ok(n)
     }
 
+    /// Counts how many characters a player owns, ON THE GIVEN connection (the create
+    /// tx) so the count runs AFTER and UNDER the per-player advisory lock, within the
+    /// same snapshot as the subsequent insert — the cap gate is only race-safe if this
+    /// count and the `create_tx` insert share one serialized transaction.
+    async fn count_owned_tx(
+        &self,
+        conn: &mut PgConnection,
+        player_id: &str,
+    ) -> Result<i64, sqlx::Error> {
+        let (n,): (i64,) =
+            sqlx::query_as("SELECT count(*) FROM characters.characters WHERE player_id = $1::uuid")
+                .bind(player_id)
+                .fetch_one(&mut *conn)
+                .await?;
+        Ok(n)
+    }
+
     async fn list_all(&self, limit: i64) -> Result<Vec<Character>, sqlx::Error> {
         let rows: Vec<Row> = sqlx::query_as(&format!(
             "SELECT {COLS} FROM characters.characters ORDER BY created_at DESC LIMIT $1"
@@ -199,6 +257,12 @@ impl Store {
 pub struct Service {
     store: Store,
     bus: Arc<Bus>,
+    /// The mandatory `config` reader backing `create`'s per-player cap
+    /// (`characters/max_per_player`); resolved in `init` (phase 2). This is a
+    /// replica-local `CachedConfig`/`Service` kept fresh by the app-owned broadcast
+    /// invalidation plane, so `create` reads it directly — no characters-owned second
+    /// cache (which would only add staleness).
+    config: OnceLock<Arc<dyn Config>>,
 }
 
 #[async_trait]
@@ -245,6 +309,39 @@ impl Player for Service {
         }
 
         let mut tx = self.store.pool.begin().await.map_err(internal)?;
+
+        // Per-player cap gate, race-safe by construction. Take the per-player
+        // transaction-scoped advisory lock FIRST (released at commit/rollback), so two
+        // concurrent creates for the same player serialize their count-then-insert:
+        // whichever acquires the lock second sees the committed count and is rejected.
+        // Without the lock both would SELECT `count` below the cap under READ COMMITTED
+        // (neither committed yet) and both insert past it. The lock is taken ON THE TX
+        // CONNECTION (`&mut *tx`) — a separate pool connection would lose serialization.
+        sqlx::query("SELECT pg_advisory_xact_lock($1)")
+            .bind(player_lock_key(&player_id))
+            .execute(&mut *tx)
+            .await
+            .map_err(internal)?;
+        // Clamp to LIST_HARD_LIMIT so `create` can never admit more than `list` returns.
+        let cap = self
+            .config
+            .get()
+            .expect("characters.init must resolve config before create")
+            .get_int("characters", "max_per_player", MAX_PER_PLAYER)
+            .clamp(1, LIST_HARD_LIMIT);
+        let n = self
+            .store
+            .count_owned_tx(&mut tx, &player_id)
+            .await
+            .map_err(internal)?;
+        if n >= cap {
+            // Roll back EXPLICITLY (not via drop): sqlx defers a dropped tx's ROLLBACK,
+            // which can leave the advisory lock held and stall a following writer — the
+            // same deterministic-teardown rationale as delete's not-found arm.
+            tx.rollback().await.map_err(internal)?;
+            return Err(Error::conflict(format!("character limit reached ({cap})")));
+        }
+
         let c = self
             .store
             .create_tx(&mut tx, &player_id, &name, &class)
@@ -407,6 +504,13 @@ impl Module for Characters {
         "characters"
     }
 
+    /// `config` is a hard sync dependency: `create`'s per-player cap reads
+    /// `characters/max_per_player` on every call. A process hosting characters without
+    /// the config capability FAILS STARTUP (`app::validate_requires`).
+    fn requires(&self) -> Vec<String> {
+        vec!["config".into()]
+    }
+
     /// Phase 1, BEFORE any `init`: builds the store-backed service (from `ctx.db()` +
     /// `ctx.bus()`) and offers it under BOTH capability keys — `characters.ownership`
     /// (inventory resolves it) and `characters.player` (the gateway routes it) — so a
@@ -419,6 +523,7 @@ impl Module for Characters {
         let svc = Arc::new(Service {
             store: Store { pool },
             bus: ctx.bus().clone(),
+            config: OnceLock::new(),
         });
         self.svc
             .set(svc.clone())
@@ -447,6 +552,13 @@ impl Module for Characters {
     /// serves an internal edge.
     fn init(&self, ctx: &Context) -> anyhow::Result<()> {
         let svc = self.svc();
+
+        // Resolve the mandatory `config` reader (phase 2 — provided in some module's
+        // `register` in phase 1, so it is always present here). `create`'s cap gate
+        // reads it directly; in the split a `remote::Stub` swaps a `CachedConfig` under
+        // the SAME key, so this line is topology-blind.
+        let cfg = ctx.registry().require::<dyn Config>(&key("config", "reader"));
+        let _ = svc.config.set(cfg);
 
         // (a) Player operations: the generated `operations()` yields one OpSet per
         // #[http] method; contribute each half to its slot (LocalBackend + the future

@@ -16,6 +16,16 @@ use std::sync::{Arc, Mutex};
 
 use lifecycle::ProcessWiring;
 
+/// Reads `env_key`, falling back to `default` when unset or blank — a NUMERIC
+/// `host:port` (Rust's `SocketAddr` needs a literal IP). The run scripts set the peer
+/// edge addresses.
+fn env_addr(env_key: &str, default: &str) -> String {
+    std::env::var(env_key)
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| default.to_string())
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt().init();
@@ -27,9 +37,12 @@ async fn main() -> anyhow::Result<()> {
     // legitimate topology knowledge — the modules never see it.
     let edge_server = Arc::new(Mutex::new(edge::Server::new()));
 
-    // No accounts stub: without a gateway there is no bearer verifier to feed, so this
-    // process never dials accounts-svc.
-    let mods = characters_svc::modules(&ProcessWiring::new());
+    // Dials config-svc for characters' `dyn Config` capability (create's per-player
+    // cap). No accounts stub: without a gateway there is no bearer verifier to feed, so
+    // this process never dials accounts-svc; it still hosts no gateway (FrontDoor).
+    let wiring = ProcessWiring::new()
+        .with_peer("config", env_addr("CONFIG_EDGE_ADDR", "127.0.0.1:9002"));
+    let mods = characters_svc::modules(&wiring);
 
     // No player front: A serves peers over the internal mutual-TLS edge, not players.
     app::run(app::Config::from_env(), mods, Some(edge_server), None).await

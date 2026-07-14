@@ -6,15 +6,43 @@ use std::time::Duration;
 const DEFAULT_DSN: &str =
     "postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable";
 
+/// A minimal `configapi::Config` returning a fixed `characters/max_per_player` and
+/// default-passthrough for every other key — enough to drive `create`'s cap gate.
+struct FakeConfig {
+    cap: i64,
+}
+impl Config for FakeConfig {
+    fn get_string(&self, _ns: &str, _key: &str, def: &str) -> String {
+        def.into()
+    }
+    fn get_bool(&self, _ns: &str, _key: &str, def: bool) -> bool {
+        def
+    }
+    fn get_int(&self, ns: &str, key: &str, def: i64) -> i64 {
+        if ns == "characters" && key == "max_per_player" {
+            self.cap
+        } else {
+            def
+        }
+    }
+    fn get(&self, _ns: &str, _key: &str) -> Option<String> {
+        None
+    }
+}
+
 /// A service over a lazy pool + a transport-less bus — for the validation tests
-/// that return BEFORE any DB work or emit.
+/// that return BEFORE any DB work or emit. Config is set (cap large) so the struct is
+/// complete; the validation tests reject before the cap gate is reached anyway.
 fn lazy_service() -> Arc<Service> {
-    Arc::new(Service {
+    let svc = Service {
         store: Store {
             pool: PgPool::connect_lazy(DEFAULT_DSN).unwrap(),
         },
         bus: Arc::new(Bus::new()),
-    })
+        config: OnceLock::new(),
+    };
+    let _ = svc.config.set(Arc::new(FakeConfig { cap: LIST_HARD_LIMIT }));
+    Arc::new(svc)
 }
 
 /// create validates identity then name BEFORE touching the DB, so a lazy pool
@@ -132,9 +160,19 @@ async fn ensure_schema(pool: &PgPool) {
 /// construction (needed before any `emit_tx`), and characters registers/inits against
 /// the same ctx. Returns the ctx (owns the bus + registry) and the wired service.
 async fn wired(pool: &PgPool) -> (Context, Arc<Service>) {
+    wired_with_cap(pool, LIST_HARD_LIMIT).await
+}
+
+/// Like [`wired`] but provides a `FakeConfig` returning `cap` for
+/// `characters/max_per_player` under `config.reader` BEFORE `init` — so `init`'s real
+/// `require::<dyn Config>` resolves it and `create`'s cap gate reads exactly `cap`.
+/// Exercises the true init wiring (no direct private-field poke).
+async fn wired_with_cap(pool: &PgPool, cap: i64) -> (Context, Arc<Service>) {
     ensure_schema(pool).await;
     let transport = asyncevents::testing::transport(pool.clone());
     let ctx = Context::with_db_and_transport(pool.clone(), transport.handle());
+    ctx.registry()
+        .provide::<dyn Config>(key("config", "reader"), Arc::new(FakeConfig { cap }));
 
     let chars = Characters::new();
     chars.register(&ctx).unwrap();
@@ -216,6 +254,89 @@ async fn create_persists_character_and_durable_event_atomically() {
         event_count(&pool, "character.created", &c.id).await,
         1,
         "log event (character.created) must exist — atomic emit_tx"
+    );
+
+    cleanup(&pool, &[&pid]).await;
+}
+
+/// THE CAP PROOF (sequential failing branch): with `characters/max_per_player` = 3,
+/// a player's first 3 creates succeed and the 4th is rejected `Conflict` (409). A
+/// DIFFERENT player is unaffected — the cap is PER-PLAYER. Pre-fix the 4th succeeded
+/// (no cap existed at all).
+#[tokio::test]
+async fn create_enforces_per_player_cap() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired_with_cap(&pool, 3).await;
+    let pid = unique_player(&pool).await;
+    let other = unique_player(&pool).await;
+
+    for i in 0..3 {
+        svc.create(Identity::player(&pid), format!("Hero{i}"), String::new())
+            .await
+            .unwrap_or_else(|e| panic!("create {i} under the cap must succeed, got {e:?}"));
+    }
+    assert_eq!(char_count_by_player(&pool, &pid).await, 3);
+
+    // The 4th crosses the cap → Conflict (409), NOT a 500 or a silent extra row.
+    let e = svc
+        .create(Identity::player(&pid), "Overflow".into(), String::new())
+        .await
+        .unwrap_err();
+    assert_eq!(e.status, Status::Conflict, "creating past the cap must be a 409 Conflict");
+    assert_eq!(
+        char_count_by_player(&pool, &pid).await,
+        3,
+        "the rejected create must have rolled back — no row past the cap"
+    );
+
+    // The cap is per-player: a different player can still create.
+    svc.create(Identity::player(&other), "Fresh".into(), String::new())
+        .await
+        .expect("a different player is unaffected by the first player's cap");
+    assert_eq!(char_count_by_player(&pool, &other).await, 1);
+
+    cleanup(&pool, &[&pid, &other]).await;
+}
+
+/// THE ADVISORY-LOCK PROOF (race failing branch): with cap = 1, two creates for the
+/// SAME player race concurrently. The per-player transaction-scoped advisory lock in
+/// `create` serializes their count-then-insert, so EXACTLY ONE succeeds and the other
+/// is rejected `Conflict`, leaving exactly one row. WITHOUT the lock both would SELECT
+/// `count` == 0 under READ COMMITTED (neither tx committed yet) and both insert — two
+/// rows over the cap=1. Run on the multi-thread runtime so the two spawned tasks can
+/// truly overlap on separate connections. The post-fix outcome (one ok, one conflict,
+/// one row) is deterministic regardless of which task wins the lock.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_creates_respect_cap_under_advisory_lock() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired_with_cap(&pool, 1).await;
+    let pid = unique_player(&pool).await;
+
+    let a = tokio::spawn({
+        let (svc, pid) = (svc.clone(), pid.clone());
+        async move { svc.create(Identity::player(&pid), "Elrond".into(), String::new()).await }
+    });
+    let b = tokio::spawn({
+        let (svc, pid) = (svc.clone(), pid.clone());
+        async move { svc.create(Identity::player(&pid), "Arwen".into(), String::new()).await }
+    });
+    let ra = a.await.unwrap();
+    let rb = b.await.unwrap();
+
+    let oks = [&ra, &rb].iter().filter(|r| r.is_ok()).count();
+    let conflicts = [&ra, &rb]
+        .iter()
+        .filter(|r| matches!(r, Err(e) if e.status == Status::Conflict))
+        .count();
+    assert_eq!(oks, 1, "exactly one concurrent create may pass the cap=1 gate");
+    assert_eq!(
+        conflicts, 1,
+        "the other concurrent create must be rejected Conflict under the advisory lock"
+    );
+    assert_eq!(
+        char_count_by_player(&pool, &pid).await,
+        1,
+        "exactly one row — the per-player advisory lock prevented a double-admit"
     );
 
     cleanup(&pool, &[&pid]).await;
