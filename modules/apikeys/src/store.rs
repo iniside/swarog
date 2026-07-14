@@ -66,14 +66,33 @@ pub(crate) fn generate_secret() -> Result<(String, String, String), WriteError> 
     Ok((secret, hash, prefix))
 }
 
-/// Loose policy validation (Decision 4): non-empty, and either the literal `full` or a
-/// comma-separated list whose every entry is non-blank. Deliberately NOT a strict
-/// method-name check — ops evolve, and an operator may pre-authorize a method no process
-/// serves yet (Step 7 turns this into a CheckboxGroup sourced from the ops catalog).
+/// The upper bound on a role's policy string. `roles.policy` is admin-writable
+/// (`create_role`/`set_role_policy` over `admin.adminSubmit`) and rides EVERY gateway key
+/// lookup response — `lookup` returns `r.policy`, which the gateway caches for 5s per key
+/// — so an unbounded policy would bloat each lookup + the cache. This bounds it the same
+/// way [`validate_name`] bounds the (hidden-field) name: a byte cap (`str::len()`). 4 KiB
+/// comfortably fits a comma-list of every real wire method (~12 today, ~30 bytes each)
+/// with large headroom for future ops and operator pre-authorization; it is purely an
+/// anti-bloat ceiling, not a functional limit anyone should hit.
+const MAX_POLICY_BYTES: usize = 4096;
+
+/// Loose policy validation (Decision 4): non-empty, either the literal `full` or a
+/// comma-separated list whose every entry is non-blank, AND within [`MAX_POLICY_BYTES`].
+/// Deliberately NOT a strict method-name check — ops evolve, and an operator may
+/// pre-authorize a method no process serves yet (Step 7 turns this into a CheckboxGroup
+/// sourced from the ops catalog). The byte cap is an ADDITIONAL upper bound on the loose
+/// rule, not a replacement.
 fn validate_policy(policy: &str) -> Result<(), WriteError> {
     if policy.trim().is_empty() || policy.split(',').any(|m| m.trim().is_empty()) {
         return Err(WriteError::Invalid(format!(
             "apikeys: invalid policy {policy:?} (must be `full` or a comma-separated method list)"
+        )));
+    }
+    if policy.len() > MAX_POLICY_BYTES {
+        return Err(WriteError::Invalid(format!(
+            "apikeys: policy is {} bytes, exceeding the {MAX_POLICY_BYTES}-byte cap — the policy \
+             rides every gateway key-lookup response and its 5s cache, so it must stay bounded",
+            policy.len()
         )));
     }
     Ok(())

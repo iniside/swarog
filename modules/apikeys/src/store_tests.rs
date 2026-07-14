@@ -344,6 +344,33 @@ async fn invalid_policy_rejected() {
     cleanup(&pool, &base).await;
 }
 
+/// An over-cap policy string is an `Invalid` (never Conflict/NotFound) and writes nothing
+/// — bounding the string that rides every gateway key-lookup response + 5s cache. Covers
+/// BOTH admin-reachable write paths: create_role (no row created) and set_role_policy (the
+/// existing policy preserved).
+#[tokio::test]
+async fn over_cap_policy_rejected_without_writing() {
+    let _guard = db_test_lock().await;
+    let Some(pool) = test_pool().await else { return };
+    let store = Store { pool: pool.clone() };
+    let base = unique_name(&pool).await;
+    let role = format!("{base}-role");
+    // A single comma-free method name well past the 4 KiB cap (loose-valid but too big).
+    let huge = "a".repeat(9000);
+
+    // create_role rejects it and creates no row.
+    assert!(matches!(store.create_role(&role, &huge).await, Err(WriteError::Invalid(_))));
+    assert!(role_policy(&store, &role).await.is_none(), "no role written on over-cap policy");
+
+    // set_role_policy rejects it and preserves the existing policy.
+    store.create_role(&role, "full").await.unwrap();
+    let rev = role_revision(&pool, &role).await.unwrap();
+    assert!(matches!(store.set_role_policy(&role, rev, &huge).await, Err(WriteError::Invalid(_))));
+    assert_eq!(role_policy(&store, &role).await.unwrap(), "full", "policy unchanged on over-cap edit");
+
+    cleanup(&pool, &base).await;
+}
+
 // ---- Seed mechanism (test-prefixed; never touches the shared dev rows) ------
 
 #[tokio::test]
