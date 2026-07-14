@@ -1164,29 +1164,10 @@ async fn item_post(
         };
         let values = collect_submit_params(&form.fields, &form.hidden, &pairs, &single);
         return match submit(values).await {
-            Ok(outcome) => {
-                // Durable trail AFTER the mutation committed (LOCAL, co-hosted). Field
-                // NAMES only — never submitted values (they may hold secrets).
-                let names: Vec<&str> = form.fields.iter().map(|f| f.name.as_str()).collect();
-                let evt = adminevents::AdminAction {
-                    actor: authed.username.clone(),
-                    action: "form-submit".into(),
-                    target: slug.clone(),
-                    detail: names.join(","),
-                };
-                if let Err(e) = st.emit_action(&evt).await {
-                    tracing::error!(err = %e, slug, "admin.action form-submit append failed");
-                    return render_error(
-                        &st,
-                        cur,
-                        &slug,
-                        &items,
-                        &authed,
-                        "action applied but audit append failed".to_string(),
-                    );
-                }
-                render_after_submit(&st, &slug, outcome)
-            }
+            Ok(outcome) => match emit_form_submit(&st, cur, &slug, &items, &authed, &form.fields).await {
+                Ok(()) => render_after_submit(&st, &slug, outcome),
+                Err(resp) => resp,
+            },
             Err(adminapi::SubmitError::Conflict) => {
                 render_conflict(&st, cur, &slug, &items, &authed)
             }
@@ -1211,7 +1192,14 @@ async fn item_post(
     };
     let values = collect_submit_params(&form.fields, &form.hidden, &pairs, &single);
     match remote_submit(values).await {
-        Ok(outcome) => render_after_submit(&st, &slug, outcome),
+        // Audit UNIFORMLY with the local branch: admin-svc (and the monolith) host the
+        // durable plane, so the admin records the operator's form-submit here regardless
+        // of which process executed the mutation — no audit asymmetry, no reliance on the
+        // provider emitting anything.
+        Ok(outcome) => match emit_form_submit(&st, cur, &slug, &items, &authed, &form.fields).await {
+            Ok(()) => render_after_submit(&st, &slug, outcome),
+            Err(resp) => resp,
+        },
         // The peer never registered `admin.adminSubmit` (UnknownMethod → NotFound): the
         // item has no write surface, so it degrades to read-only exactly like a local
         // non-editable item — the graceful-absent contract, no bespoke signalling.
@@ -1264,6 +1252,44 @@ fn collect_submit_params(
         }
     }
     values
+}
+
+/// Emits the durable `admin.action{form-submit}` trail after a SUCCESSFUL submit,
+/// UNIFORMLY for the LOCAL and REMOTE branches — admin-svc and the monolith both host
+/// the durable plane, so a remote submit is audited symmetrically with a local one
+/// instead of relying on the provider's process to emit (closing the audit-asymmetry
+/// gap). The detail is field NAMES only, never submitted values or show-once reveals
+/// (they may hold secrets), per CLAUDE.md. On an emit failure it returns the same
+/// "action applied but audit append failed" error card the local branch has always
+/// shown (best-effort: the mutation already committed, so this is an error card, never a
+/// rollback) — identical semantics regardless of which process executed the mutation.
+async fn emit_form_submit(
+    st: &AdminState,
+    cur: &Resolved,
+    slug: &str,
+    items: &[Resolved],
+    authed: &Authed,
+    fields: &[adminapi::Field],
+) -> Result<(), Response> {
+    let names: Vec<&str> = fields.iter().map(|f| f.name.as_str()).collect();
+    let evt = adminevents::AdminAction {
+        actor: authed.username.clone(),
+        action: "form-submit".into(),
+        target: slug.to_string(),
+        detail: names.join(","),
+    };
+    if let Err(e) = st.emit_action(&evt).await {
+        tracing::error!(err = %e, slug, "admin.action form-submit append failed");
+        return Err(render_error(
+            st,
+            cur,
+            slug,
+            items,
+            authed,
+            "action applied but audit append failed".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 /// After a successful submit (LOCAL or REMOTE), ALWAYS Post/Redirect/Get — never an

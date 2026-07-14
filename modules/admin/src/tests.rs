@@ -1352,6 +1352,12 @@ async fn remote_submit_not_found_is_405_and_csrf_gates_before_edge() {
         "a NotFound peer degrades the item to read-only"
     );
     assert_eq!(calls.lock().unwrap().len(), 1, "the edge was dialed exactly once");
+    // A FAILED remote submit is never audited (audit only on Ok).
+    assert_eq!(
+        action_rows(&pool, "target", &slug, "form-submit").await,
+        0,
+        "no audit row for a failed remote submit"
+    );
 
     cleanup_user(&pool, &user).await;
     cleanup_ip(&pool, "203.0.113.28").await;
@@ -1458,6 +1464,20 @@ async fn remote_submit_joins_checkboxes_and_flashes_reveal_via_redirect() {
         assert!(!calls[0].contains_key("_csrf"), "_csrf never reaches the module");
     }
 
+    // Finding #3: a REMOTE submit is audited SYMMETRICALLY with a local one — a durable
+    // `admin.action{form-submit}` row targets this slug, detail = field NAMES only (never
+    // the reveal secret).
+    assert_eq!(
+        action_rows(&pool, "target", &slug, "form-submit").await,
+        1,
+        "remote submit must be audited like a local one"
+    );
+    assert_eq!(
+        action_detail(&pool, &slug, "form-submit").await.as_deref(),
+        Some("methods"),
+        "audit detail is field-names-only, never the reveal value"
+    );
+
     // First GET of the token renders the reveal exactly once.
     let get1 = send(
         &st,
@@ -1484,6 +1504,12 @@ async fn remote_submit_joins_checkboxes_and_flashes_reveal_via_redirect() {
 
     cleanup_user(&pool, &user).await;
     cleanup_ip(&pool, "203.0.113.29").await;
+    let _ = sqlx::query(
+        "DELETE FROM asyncevents.events WHERE topic = 'admin.action' AND payload->>'target' = $1",
+    )
+    .bind(&slug)
+    .execute(&pool)
+    .await;
 }
 
 /// The browser's original hidden expected-state value survives the POST-time

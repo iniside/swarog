@@ -223,11 +223,11 @@ Store (zastępuje business-column-CAS `store.rs:114-161` przez CAS-by-`revision`
   `NotFound` nierozróżnialnym od `UnknownMethod`, więc admin zmapowałby to na 405 read-only i
   zamaskował realny błąd/literówkę wiring. Dla domenowych braków użyj `Conflict` albo generycznego
   błędu (→ error card). Test: domenowo-brakujący target → error **card**, nie 405.
-- **WYMÓG z recenzji Step 3 (finding #3 — audit asymmetry):** remote form-submit NIE emituje
-  lokalnego `admin.action` w admin-svc; więc `admin_submit` apikeys **MUSI** emitować durable
-  `admin.action{action="key-create"/"key-revoke"/"role-edit"}` w SWOIM procesie (apikeys-svc),
-  inaczej remote-write jest nieaudytowany (a local jest). Dołóż AD5-style asercję w splitproof
-  (Step 9): remote form-submit → wiersz `audit.log`/`admin.action` przez gateway.
+- **WYMÓG z recenzji Step 3 (finding #3 — audit asymmetry) — ROZWIĄZANE w module admin
+  (Step 3 follow-up `<pending>`):** zamiast obarczać każdego prowidera, **admin emituje
+  `admin.action{form-submit}` JEDNOLICIE dla local ORAZ remote** udanych submitów (admin-svc/monolith
+  ma plane). Uniform, bez per-provider obowiązku audytu. Step 9 asertuje AD5-style: remote
+  form-submit → wiersz `audit.log`/`admin.action` przez gateway. (apikeys NIE musi emitować.)
 
 ---
 
