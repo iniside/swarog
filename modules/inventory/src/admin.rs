@@ -25,9 +25,40 @@ impl adminapi::AdminData for Inner {
             section: ADMIN_SECTION.into(),
             label: ADMIN_LABEL.into(),
             content,
-            ..Default::default()
+            extensions: extension_entries(),
         })
     }
+}
+
+/// The cross-page extension entries inventory contributes to OTHER modules' pages.
+/// ONE source of truth: the LOCAL `Item` attaches these via `with_extensions` and the
+/// REMOTE `ItemData` carries the SAME vec, so a split admin sees the identical menu.
+/// inventory drops a "View Inventory" drill-down onto THREE owner-declared points:
+/// the accounts Players row menu (Navigate), the characters card menu (Modal), and the
+/// character-modal footer (Modal). Each interpolates `{id}` from that point's context.
+pub(crate) fn extension_entries() -> Vec<adminapi::ExtensionEntry> {
+    let entry = |point: &str, present| adminapi::ExtensionEntry {
+        point: point.into(),
+        label: "View Inventory".into(),
+        icon: "inventory".into(),
+        link: format!("{ADMIN_ITEM_ID}?owner={{id}}"),
+        present,
+        priority: 10,
+    };
+    vec![
+        entry(
+            accountsapi::admin::PLAYERS_ROW_MENU.id,
+            adminapi::Present::Navigate,
+        ),
+        entry(
+            charactersapi::admin::CHARACTERS_CARD_MENU.id,
+            adminapi::Present::Modal,
+        ),
+        entry(
+            charactersapi::admin::CHARACTER_MODAL_ACTIONS.id,
+            adminapi::Present::Modal,
+        ),
+    ]
 }
 
 /// Renders the owners list (no `?owner=`) or one owner's items (`?owner=<type>:<id>`).
@@ -107,15 +138,43 @@ async fn admin_owner_detail(store: &Store, owner: &str) -> anyhow::Result<admina
     }
 
     Ok(adminapi::Content {
+        // Owner-rendered header (avatar + short id + owner-type note): this view is
+        // reached as a modal/drill-down FROM another page, so it carries its own
+        // context header. `context` matches the `owner` ref (`<type>:<uuid>`).
+        header: Some(adminapi::ContextHeader {
+            avatar_text: initial(id),
+            avatar_color_key: palette(id),
+            title: short_id(id).into(),
+            subtitle_mono: format!("{otype}:{id}"),
+            right_note: owner_badge_sub(otype).into(),
+        }),
+        context: std::collections::HashMap::from([("id".into(), format!("{otype}:{id}"))]),
         kpis: vec![
             adminapi::Kpi { label: "Owner".into(), value: otype.into(), sub: owner_badge_sub(otype).into() },
             adminapi::Kpi { label: "Owner ID".into(), value: id.into(), sub: String::new() },
             adminapi::Kpi { label: "Items".into(), value: holdings.len().to_string(), sub: String::new() },
         ],
         table: Some(table),
-        form: None,
         ..Default::default()
     })
+}
+
+/// The first hex group of a uuid — the short header title.
+fn short_id(id: &str) -> &str {
+    id.split('-').next().unwrap_or(id)
+}
+
+/// The first character (uppercased) of an id as avatar text.
+fn initial(s: &str) -> String {
+    s.chars()
+        .next()
+        .map(|c| c.to_uppercase().to_string())
+        .unwrap_or_else(|| "?".into())
+}
+
+/// Deterministic cycling-palette key (`av-0`..`av-5`) from a stable seed.
+fn palette(seed: &str) -> String {
+    format!("av-{}", seed.bytes().map(|b| b as usize).sum::<usize>() % 6)
 }
 
 /// A canonical 8-4-4-4-12 hex uuid check — guards the drill-down param before it

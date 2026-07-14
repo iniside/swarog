@@ -293,7 +293,10 @@ impl Module for Inventory {
                         tokio::runtime::Handle::current().block_on(admin_content(&render_inner.store, params))
                     })
                 }),
-            ),
+            )
+            // The cross-page contributions (Players menu + Characters card menu +
+            // character-modal footer); the SAME vec `admin_data` sends over the wire.
+            .with_extensions(admin::extension_entries()),
         );
 
         // Edge exposure, contributed UNCONDITIONALLY — topology-blind: `app::run`

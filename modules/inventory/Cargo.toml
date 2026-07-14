@@ -26,6 +26,11 @@ charactersapi = { workspace = true }
 charactersevents = { workspace = true }
 configapi = { workspace = true }
 adminapi = { workspace = true }
+# The accounts + characters admin CONTRACTS only (`accountsapi::admin::PLAYERS_ROW_MENU`,
+# `charactersapi::admin::{CHARACTERS_CARD_MENU, CHARACTER_MODAL_ACTIONS}`): inventory
+# contributes "View Inventory" entries to those owner-declared points. Pure api-crate
+# consts — never the owner impls.
+accountsapi = { workspace = true }
 sqlx = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
 anyhow = { workspace = true }

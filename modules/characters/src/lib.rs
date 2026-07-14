@@ -180,13 +180,18 @@ impl Module for Characters {
                 ADMIN_ITEM_ID,
                 ADMIN_SECTION,
                 ADMIN_LABEL,
-                Arc::new(move |_params: &adminapi::Params| {
+                Arc::new(move |params: &adminapi::Params| {
                     let svc = render_svc.clone();
+                    let params = params.clone();
                     tokio::task::block_in_place(|| {
-                        tokio::runtime::Handle::current().block_on(admin_content(&svc.store))
+                        tokio::runtime::Handle::current()
+                            .block_on(admin_content(&svc.store, &params))
                     })
                 }),
-            ),
+            )
+            // The cross-page contribution to the accounts Players row menu; the SAME
+            // vec `admin_data` sends over the wire (one shared `extension_entries`).
+            .with_extensions(admin::extension_entries()),
         );
 
         // (c) Edge exposure, contributed UNCONDITIONALLY — topology-blind: `app::run`

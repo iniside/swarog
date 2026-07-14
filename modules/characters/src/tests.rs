@@ -585,3 +585,97 @@ async fn list_is_capped_at_hard_limit() {
 
     cleanup(&pool, &[&pid]).await;
 }
+
+// ---- Admin extension points (Step 4) ---------------------------------------
+// Pure-view tests over the admin builders — no DB (the malformed-owner path
+// returns error-content BEFORE any store call).
+
+/// A real `Character` fixture with only the fields the schema actually has (no
+/// invented level/power).
+fn admin_char(id: &str, name: &str, class: &str) -> charactersapi::Character {
+    charactersapi::Character {
+        id: id.into(),
+        player_id: "00000000-0000-0000-0000-0000000000aa".into(),
+        name: name.into(),
+        class: class.into(),
+        created_at: "Jan 01, 00:00".into(),
+    }
+}
+
+const ADMIN_UUID: &str = "b3f1a2c4-1111-2222-3333-444455556666";
+
+#[test]
+fn admin_extension_entry_targets_players_row_menu() {
+    // The ONE shared vec both the local Item and admin_data's ItemData carry.
+    let ents = crate::admin::extension_entries();
+    assert_eq!(ents.len(), 1);
+    let e = &ents[0];
+    assert_eq!(e.point, accountsapi::admin::PLAYERS_ROW_MENU.id);
+    assert_eq!(e.label, "View Characters");
+    assert_eq!(e.present, adminapi::Present::Navigate);
+    assert_eq!(e.link, "characters?owner={id}");
+}
+
+#[test]
+fn admin_player_scoped_render_has_header_and_cards() {
+    let chars = [
+        admin_char(ADMIN_UUID, "VoidR4nger", "Warlock"),
+        admin_char("cccccccc-0000-0000-0000-000000000001", "Aria", "Ranger"),
+    ];
+    let content = crate::admin::build_player_scoped(ADMIN_UUID, &chars);
+
+    let header = content.header.expect("scoped view carries a context header");
+    // characters doesn't know account names → the short uuid form is the title.
+    assert_eq!(header.title, "b3f1a2c4");
+    assert_eq!(header.subtitle_mono, format!("player:{ADMIN_UUID}"));
+
+    let grid = content.cards.expect("scoped view is a card grid");
+    assert_eq!(grid.menu_point, charactersapi::admin::CHARACTERS_CARD_MENU.id);
+    assert_eq!(grid.cards.len(), 2);
+
+    let card = &grid.cards[0];
+    assert_eq!(card.title, "VoidR4nger");
+    assert_eq!(card.subtitle, "Warlock"); // REAL class only (no level column)
+    assert_eq!(
+        card.context.get("id").map(String::as_str),
+        Some(format!("character:{ADMIN_UUID}").as_str())
+    );
+    // Native card menu: View (Modal) + inert Edit/Delete.
+    assert_eq!(card.menu[0].label, "View");
+    assert_eq!(card.menu[0].present, adminapi::Present::Modal);
+    assert_eq!(card.menu[0].link.as_deref(), Some("characters?owner=character:{id}"));
+    assert!(card.menu[1].disabled, "Edit inert");
+    assert!(card.menu[2].disabled && card.menu[2].danger, "Delete inert + danger");
+}
+
+#[test]
+fn admin_character_detail_sets_modal_point_and_context() {
+    let c = admin_char(ADMIN_UUID, "VoidR4nger", "Warlock");
+    let content = crate::admin::build_character_detail(&c);
+
+    assert_eq!(content.modal_point, charactersapi::admin::CHARACTER_MODAL_ACTIONS.id);
+    assert_eq!(
+        content.context.get("id").map(String::as_str),
+        Some(format!("character:{ADMIN_UUID}").as_str())
+    );
+    assert_eq!(content.header.expect("detail header").title, "VoidR4nger");
+    // KPI stats from REAL fields only.
+    assert!(content.kpis.iter().any(|k| k.label == "Class" && k.value == "Warlock"));
+}
+
+#[tokio::test]
+async fn admin_malformed_owner_yields_error_content_not_err() {
+    // Both a bad-uuid owner and a foreign owner shape must render error-content, never
+    // Err (foreign-params tolerance) — resolved BEFORE any store I/O, so a lazy pool is
+    // never dialled.
+    let svc = lazy_service();
+    for owner in ["player:not-a-uuid", "character:zzz", "something-else"] {
+        let mut params = adminapi::Params::new();
+        params.insert("owner".into(), owner.into());
+        let content = crate::admin::admin_content(&svc.store, &params)
+            .await
+            .expect("never Err on a foreign/malformed owner");
+        assert_eq!(content.kpis[0].label, "Error", "owner={owner}");
+        assert!(content.cards.is_none());
+    }
+}

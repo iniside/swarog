@@ -52,7 +52,10 @@ pub(crate) async fn admin_content(store: &Store) -> anyhow::Result<adminapi::Con
             "CREATED".into(),
         ],
         rows: Vec::with_capacity(rows.len()),
-        ..Default::default()
+        // Bind each row's `⋯` menu to the accounts-owned point so contributors
+        // (characters, inventory) can drop "View …" drill-downs onto it.
+        menu_point: accountsapi::admin::PLAYERS_ROW_MENU.id.into(),
+        row_meta: Vec::with_capacity(rows.len()),
     };
     for p in rows {
         let status = if p.online {
@@ -75,6 +78,10 @@ pub(crate) async fn admin_content(store: &Store) -> anyhow::Result<adminapi::Con
             status,
             adminapi::Cell::text(&p.created_at),
         ]);
+        // Index-aligned per-row metadata: the `{id}` interpolation source plus the
+        // owner's own inert native entries (Edit/Delete are visible-but-inert per the
+        // mockup — wiring them is a later op-backed phase).
+        table.row_meta.push(player_row_meta(&p.id));
     }
 
     Ok(adminapi::Content {
@@ -106,5 +113,30 @@ fn or_dash(s: &str) -> &str {
         "—"
     } else {
         s
+    }
+}
+
+/// The per-row interpolation context + native menu for one Players-page row. The
+/// `context` supplies `id` as the entity-ref composite `"player:<uuid>"` (the
+/// convention every point uses); the native menu is the mockup's inert Edit/Delete
+/// (`disabled` — rendered visibly but with no link, no op wired yet).
+pub(crate) fn player_row_meta(player_id: &str) -> adminapi::RowMeta {
+    adminapi::RowMeta {
+        context: std::collections::HashMap::from([("id".into(), format!("player:{player_id}"))]),
+        menu: vec![
+            adminapi::MenuEntry {
+                label: "Edit".into(),
+                icon: "edit".into(),
+                disabled: true,
+                ..Default::default()
+            },
+            adminapi::MenuEntry {
+                label: "Delete".into(),
+                icon: "delete".into(),
+                danger: true,
+                disabled: true,
+                ..Default::default()
+            },
+        ],
     }
 }

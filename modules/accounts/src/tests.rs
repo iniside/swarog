@@ -1589,3 +1589,42 @@ async fn rejected_oauth_callback_never_reaches_token_endpoint_or_consumes_state(
     assert_eq!(replay.status().as_u16(), 400);
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 }
+
+// ---- Admin extension points (Step 4) ---------------------------------------
+
+#[test]
+fn admin_player_row_meta_is_inert_with_player_context() {
+    let pid = "b3f1a2c4-1111-2222-3333-444455556666";
+    let rm = crate::admin::player_row_meta(pid);
+    // The `{id}` interpolation source is the entity-ref composite.
+    assert_eq!(
+        rm.context.get("id").map(String::as_str),
+        Some(format!("player:{pid}").as_str())
+    );
+    // Native menu: inert Edit + inert danger Delete (per the mockup, no op wired yet).
+    assert_eq!(rm.menu.len(), 2);
+    assert_eq!(rm.menu[0].label, "Edit");
+    assert!(rm.menu[0].disabled);
+    assert!(rm.menu[0].link.is_none());
+    assert_eq!(rm.menu[1].label, "Delete");
+    assert!(rm.menu[1].disabled);
+    assert!(rm.menu[1].danger);
+}
+
+/// The Players table binds the accounts-owned row-menu point and carries one `row_meta`
+/// per row (index-aligned), so contributors' entries interpolate against the right row.
+#[tokio::test]
+async fn admin_players_table_binds_menu_point_with_aligned_row_meta() {
+    let Some(pool) = test_pool().await else { return };
+    ensure_schema(&pool).await;
+    let store = Store { pool };
+
+    let content = crate::admin::admin_content(&store).await.unwrap();
+    let table = content.table.expect("Players page has a table");
+    assert_eq!(table.menu_point, accountsapi::admin::PLAYERS_ROW_MENU.id);
+    assert_eq!(
+        table.row_meta.len(),
+        table.rows.len(),
+        "row_meta index-aligned with rows"
+    );
+}

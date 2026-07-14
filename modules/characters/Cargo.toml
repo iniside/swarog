@@ -25,6 +25,11 @@ charactersevents = { workspace = true }
 # `remote::Stub` swaps a CachedConfig under the same registry key.
 configapi = { workspace = true }
 adminapi = { workspace = true }
+# The accounts admin CONTRACT only (`accountsapi::admin::PLAYERS_ROW_MENU`): characters
+# contributes a "View Characters" entry to the accounts-owned Players row menu. A pure
+# api-crate const — never the accounts impl (Open/Closed: the owner never learns its
+# extenders).
+accountsapi = { workspace = true }
 sqlx = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
 anyhow = { workspace = true }

@@ -981,3 +981,65 @@ async fn holdings_list_is_capped_at_hard_limit() {
         .execute(&pool)
         .await;
 }
+
+// ---- Admin extension points (Step 4) ---------------------------------------
+
+#[test]
+fn admin_extension_entries_target_all_three_points() {
+    // The ONE shared vec both the local Item and admin_data's ItemData carry.
+    let ents = crate::admin::extension_entries();
+    assert_eq!(ents.len(), 3);
+    assert!(ents.iter().all(|e| e.label == "View Inventory"));
+    assert!(ents.iter().all(|e| e.link == "inventory?owner={id}"));
+
+    let by = |p: &str| ents.iter().find(|e| e.point == p).expect("point present");
+    assert_eq!(
+        by(accountsapi::admin::PLAYERS_ROW_MENU.id).present,
+        adminapi::Present::Navigate
+    );
+    assert_eq!(
+        by(charactersapi::admin::CHARACTERS_CARD_MENU.id).present,
+        adminapi::Present::Modal
+    );
+    assert_eq!(
+        by(charactersapi::admin::CHARACTER_MODAL_ACTIONS.id).present,
+        adminapi::Present::Modal
+    );
+}
+
+/// The owner-detail view (reached as a drill-down/modal) carries a ContextHeader and a
+/// `context` matching the `owner` ref, so the modal footer's `{id}` has a source.
+#[tokio::test]
+async fn admin_owner_detail_carries_header_and_context() {
+    let Some(pool) = test_pool().await else { return };
+    ensure_schema(&pool).await;
+    let store = Store { pool };
+
+    let uuid = "b3f1a2c4-1111-2222-3333-444455556666";
+    let mut params = adminapi::Params::new();
+    params.insert("owner".into(), format!("character:{uuid}"));
+
+    let content = crate::admin::admin_content(&store, &params).await.unwrap();
+    let header = content.header.expect("owner detail carries a header");
+    assert_eq!(header.subtitle_mono, format!("character:{uuid}"));
+    assert_eq!(
+        content.context.get("id").map(String::as_str),
+        Some(format!("character:{uuid}").as_str())
+    );
+}
+
+#[tokio::test]
+async fn admin_malformed_owner_is_error_content_not_err() {
+    // Foreign-params tolerance: a bad owner never Errs (would poison an unrelated page).
+    // The malformed-owner path returns error-content BEFORE any store I/O, so a lazy
+    // pool is never dialled.
+    let inner = gated_inner(false);
+    for owner in ["not-an-owner", "player:zzz", "widget:123"] {
+        let mut params = adminapi::Params::new();
+        params.insert("owner".into(), owner.into());
+        let content = crate::admin::admin_content(&inner.store, &params)
+            .await
+            .expect("never Err on a foreign/malformed owner");
+        assert_eq!(content.kpis[0].label, "Error", "owner={owner}");
+    }
+}
