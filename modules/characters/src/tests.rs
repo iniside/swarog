@@ -169,6 +169,12 @@ async fn event_count(pool: &PgPool, topic: &str, character_id: &str) -> i64 {
         .unwrap()
 }
 
+async fn events_count_by_player(pool: &PgPool, topic: &str, player_id: &str) -> i64 {
+    asyncevents::testing::events_count(pool, topic, "player_id", player_id)
+        .await
+        .unwrap()
+}
+
 async fn char_count(pool: &PgPool, id: &str) -> i64 {
     let (n,): (i64,) = sqlx::query_as("SELECT count(*) FROM characters.characters WHERE id = $1::uuid")
         .bind(id)
@@ -249,13 +255,16 @@ async fn delete_emits_event_owned_and_is_notfound_unowned() {
     cleanup(&pool, &[&owner, &other]).await;
 }
 
-/// A delete issued with a NON-canonical spelling of the id (uppercase) still deletes
-/// via `$1::uuid`, but the emitted `character.deleted` must carry the DB-canonical
-/// (lowercase) id from `RETURNING id::text` — NOT the client echo. Pre-fix the event
-/// carried the raw uppercase argument, diverging from the canonical `character.created`
-/// and breaking inventory's lock_key + audit consistency.
+/// A delete issued with NON-canonical spellings of BOTH the character id and the
+/// identity's player_id (braces — `{uuid}`, which Postgres accepts and normalises via
+/// `::uuid`) still deletes, but the emitted `character.deleted` must carry the
+/// DB-canonical (lowercase, unbraced) values from `RETURNING id::text, player_id::text`
+/// — NOT the client echo. Pre-fix the event carried the raw argument, diverging from
+/// the canonical `character.created` and breaking inventory's lock_key + audit
+/// consistency. Braces are a GUARANTEED non-canonical form (unlike `to_uppercase`,
+/// which is a no-op on an all-numeric-hex uuid), so the divergence is deterministic.
 #[tokio::test]
-async fn delete_emits_canonical_id_for_noncanonical_input() {
+async fn delete_emits_canonical_ids_for_noncanonical_input() {
     let Some(pool) = test_pool().await else { return };
     let (_ctx, svc) = wired(&pool).await;
     let owner = unique_player(&pool).await;
@@ -265,25 +274,38 @@ async fn delete_emits_canonical_id_for_noncanonical_input() {
         .await
         .unwrap();
 
-    // Delete with the uppercased id — Postgres normalises via `::uuid`, so the row
-    // still matches and the delete succeeds.
-    let upper = c.id.to_uppercase();
-    assert_ne!(upper, c.id, "uppercase must differ from the canonical id");
-    svc.delete(Identity::player(&owner), upper.clone())
+    // Delete with the braced id AND a braced player_id in the Identity — Postgres
+    // normalises both via `::uuid`, so the row still matches and the delete succeeds.
+    let braced_id = format!("{{{}}}", c.id);
+    let braced_player = format!("{{{}}}", owner);
+    svc.delete(Identity::player(&braced_player), braced_id.clone())
         .await
         .unwrap();
 
-    // The event carries the canonical (lowercase) id, NOT the uppercase client echo.
+    // The event carries the canonical (unbraced) character_id, NOT the braced echo.
     assert_eq!(
         event_count(&pool, "character.deleted", &c.id).await,
         1,
-        "character.deleted must carry the canonical (RETURNING) id"
+        "character.deleted must carry the canonical (RETURNING) character_id"
     );
     assert_eq!(
-        event_count(&pool, "character.deleted", &upper).await,
+        event_count(&pool, "character.deleted", &braced_id).await,
         0,
-        "character.deleted must NOT carry the raw uppercase client echo (fails pre-fix)"
+        "character.deleted must NOT carry the raw braced character_id echo (fails pre-fix)"
     );
+
+    // The event carries the canonical (unbraced) player_id too — the sibling branch.
+    assert_eq!(
+        events_count_by_player(&pool, "character.deleted", &c.player_id).await,
+        1,
+        "character.deleted must carry the canonical (RETURNING) player_id"
+    );
+    assert_eq!(
+        events_count_by_player(&pool, "character.deleted", &braced_player).await,
+        0,
+        "character.deleted must NOT carry the raw braced player_id echo (fails pre-fix)"
+    );
+
     assert_eq!(char_count(&pool, &c.id).await, 0, "row must be gone");
 
     cleanup(&pool, &[&owner]).await;
