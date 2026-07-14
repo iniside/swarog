@@ -150,6 +150,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "admincheck"
+version = "0.1.0"
+dependencies = [
+ "accountsapi",
+ "adminapi",
+ "anyhow",
+ "async-trait",
+ "bus",
+ "charactersapi",
+ "checkmodules",
+ "lifecycle",
+ "sqlx",
+ "tokio",
+]
+
+[[package]]
 name = "adminctl"
 version = "0.1.0"
 dependencies = [

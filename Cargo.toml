@@ -46,6 +46,11 @@ members = [
     # Topic drift check (Step 14b): builds the monolith module set with a recording bus
     # transport and flags any `bus::define`d topic that no module subscribes to.
     "tools/topiccheck",
+    # Admin extension-point contract check (admin extension points, Step 5): builds
+    # both deployment profiles (register->init, lazy pool, no-op transport), reads
+    # adminapi::SLOT contributions, and validates every contributed ExtensionEntry
+    # against the extension POINTS the page owners declare as consts.
+    "tools/admincheck",
     # Registry require-vs-declare drift check: builds the monolith module set with a
     # require-observer installed and flags any mandatory `require()` whose provider is
     # not declared in the caller's `requires()` (under-declaration).

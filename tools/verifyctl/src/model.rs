@@ -17,6 +17,7 @@ pub enum StageId {
     Fuzz,
     CSharp,
     Topiccheck,
+    Admincheck,
     Mutants,
 }
 
@@ -38,6 +39,7 @@ impl StageId {
             Self::Fuzz => "fuzz",
             Self::CSharp => "csharp-client",
             Self::Topiccheck => "topiccheck",
+            Self::Admincheck => "admincheck",
             Self::Mutants => "mutants",
         }
     }

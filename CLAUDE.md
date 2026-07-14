@@ -335,6 +335,7 @@ cargo run -p verifyctl -- --fast
 cargo run -p verifyctl -- --all
 cargo run -p verifyctl -- --all --strict
 cargo run -p verifyctl -- --slow
+cargo run -p admincheck        # extension-point contract validation (points vs contributed entries)
 ```
 
 `devctl up` is the owned foreground supervisor. It builds, seeds, starts, and
@@ -361,7 +362,7 @@ blocking failure:
   never green SKIP;
   only a missing tool with explicit `--no-install` is labeled SKIP.
 - ADVISORY (`--all`, or included and blocking with `--strict`): public-api, fuzz,
-  external C# client, and topiccheck.
+  external C# client, topiccheck, and admincheck.
 - SLOW (`--slow`): the blocking and advisory manifests plus `cargo mutants`;
   advisory failures remain non-blocking unless `--strict` is also present.
 

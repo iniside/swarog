@@ -1,3 +1,4 @@
+pub mod admincheck;
 pub mod audit;
 pub mod codegen;
 pub mod command;
@@ -103,6 +104,11 @@ pub const ADVISORY: &[Stage] = &[
         id: StageId::Topiccheck,
         class: StageClass::Advisory,
         run: topiccheck::run,
+    },
+    Stage {
+        id: StageId::Admincheck,
+        class: StageClass::Advisory,
+        run: admincheck::run,
     },
 ];
 
@@ -266,10 +272,10 @@ mod tests {
         );
         assert_eq!(
             &names(crate::cli::Level::All)[11..],
-            &["public-api", "fuzz", "csharp-client", "topiccheck"]
+            &["public-api", "fuzz", "csharp-client", "topiccheck", "admincheck"]
         );
         assert_eq!(names(crate::cli::Level::Slow).last(), Some(&"mutants"));
-        assert_eq!(manifest(crate::cli::Level::Fast, true).len(), 15);
+        assert_eq!(manifest(crate::cli::Level::Fast, true).len(), 16);
     }
 
     #[test]
