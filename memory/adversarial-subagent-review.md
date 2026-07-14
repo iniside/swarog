@@ -36,6 +36,20 @@ boundary (same session context = zero independence). **Lukasz's rule:** the suba
 review, and ALSO run a second audit (`proof-auditor`) checking whether BOTH the implementer AND
 the reviewer cheated/hand-waved — re-derive test soundness from code, distrust the summary and
 the self-review. A "failure-mode: none" on a test-bearing diff is exactly the case that goes to
-proof-auditor. Related: [[scope-claims-to-what-was-verified]],
+proof-auditor.
+
+**Repeat again 2026-07-14 (fortress-no-exceptions rollout):** ran the ENTIRE 6-step rollout
+(3 test dev-dep swaps, an archcheck verify-gate change, a durable-plane negative test, doc
+edits) reviewing every subagent diff INLINE — read the diff, verified claims against code,
+called it done. Same violation at rollout scale: green `verifyctl --fast` is NOT the review
+(the rule literally says green-tests-that-look-like-the-plan is what it exists to catch). Two
+compounding errors: (1) no per-diff `core-reviewer`/`proof-auditor` pass until the user forced
+it; (2) when I finally dispatched, I reached for `general-purpose` — user rejected it: "teraz
+poprawnego sub agenta". **Rule:** the pass is the REGISTERED specialized subagent
+(`core-reviewer`; + `proof-auditor` when the diff touches a verify stage or the test/gate IS
+the risk surface). If the specialized agent_type looks unavailable, that is a signal to
+check/enable it — NEVER a license to substitute general-purpose or inline. The boundary must
+exist BEFORE the commit, routed per-diff, not retrofitted after challenge ("it came back CLEAN
+anyway" is not the point). Related: [[scope-claims-to-what-was-verified]],
 [[verify-the-at-risk-path-not-the-safe-one]], [[specialized-core-agents]],
 [[core-failure-taxonomy]].
