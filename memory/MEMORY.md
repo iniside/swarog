@@ -2,6 +2,8 @@
 
 ## Process / discipline / behavior
 - [Adversarial subagent review](adversarial-subagent-review.md) — try to break a diff at its OWN new seams (method in CLAUDE.md); ONE pass by a different method, a clean verdict is valid with the class list — don't loop reviews; applies to my own scaffolding too
+- [Codex review = visible subagent](codex-review-use-visible-subagent.md) — run per-commit codex adversarial-review as the visible codex:codex-rescue Agent (--wait --fresh --effort high), NOT the background companion CLI (hangs/zombies on this Windows box)
+- [Amplification proof → unit tests](amplification-proof-belongs-in-unit-tests.md) — prove no-I/O/anti-amplification fixes in SEQUENTIAL unit tests + a pure decision fn (zero-I/O by construction); split-proof can't distinguish fixed/unfixed (killed peer's port fast-fails), scope it to accuracy+recovery
 - [Fix authority via taxonomy](core-failure-taxonomy.md) — docs/reference evidence base: why double hostile review didn't fix core (fix-on-fix dominated); ~10 ranked failure classes + review attacks; source for the specialized agents
 - [Specialized core agents](specialized-core-agents.md) — .claude/agents/: core-implementer (authority-first), core-reviewer (class-keyed), proof-auditor (audits proof/gates); thin, single-source-of-rules, one review pass, when to use each
 - [Plan reviewer at session tier](plan-reviewer-must-be-session-tier.md) — reviewer >= author tier, never silently demoted; don't extend a scoped model ban to another role (2026-07-13: fable banned ⇒ review=opus, impl=sonnet)
