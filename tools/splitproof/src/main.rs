@@ -1219,10 +1219,13 @@ async fn assertions(ctx: &Ctx, pool: &PgPool, p: &mut Proof) -> Result<()> {
         .redirect(reqwest::redirect::Policy::none())
         .build()?;
     let aproof = format!("AdminProof-{suffix}");
-    // [AD0] a character for the admin table to render (through G -> A).
+    // [AD0] a character for the admin table to render (through G -> A). Its uuid is
+    // reused by [ADX3]'s character-modal fetch (`?owner=character:<uuid>&partial=modal`).
+    let mut ad0_char_id: Option<String> = None;
     if let Some(tok) = token.clone() {
         let acid = create_character(ctx, &g, &tok, &aproof).await;
         p.check("[AD0] admin-proof character created", acid.is_some(), format!("id={acid:?}"));
+        ad0_char_id = acid;
     }
     // [AD1] unauthenticated /admin -> 303 to /admin/login (session gate live on E).
     let ad1 = ctx.http_noredirect.get(format!("{g}/admin")).send().await?;
@@ -1339,6 +1342,80 @@ async fn assertions(ctx: &Ctx, pool: &PgPool, p: &mut Proof) -> Result<()> {
     let ad3a = admin.get(format!("{g}/admin/characters")).send().await?;
     let (ad3a_code, ad3a_body) = (ad3a.status().as_u16(), ad3a.text().await.unwrap_or_default());
     p.check("[AD3a] /admin/characters -> 200 + AProof", ad3a_code == 200 && ad3a_body.contains(&aproof), format!("code={ad3a_code}"));
+
+    // --- [ADX] Cross-process admin EXTENSION POINTS through the REAL split. ---
+    // The at-risk topology: extension entries (`ExtensionEntry`) declared by
+    // characters-svc / inventory-svc ride `admin.adminData` (ItemData.extensions) over
+    // the edge into admin-svc, which merges them into the OWNER page's render (accounts'
+    // Players page). The whole cross-process menu/modal seam is monolith-only unless
+    // proven here. Params now cross the wire too, so a remote drill-down renders SCOPED.
+    //
+    // [ADX1] /admin/players (accounts page, slug = slugify("Players")) -> 200 carrying
+    // BOTH extension labels — "View Characters" (from characters-svc) and "View
+    // Inventory" (from inventory-svc) — proving extensions travel the edge into the
+    // owner's row `⋯` menu.
+    let adx1 = admin.get(format!("{g}/admin/players")).send().await?;
+    let (adx1_code, adx1_body) = (adx1.status().as_u16(), adx1.text().await.unwrap_or_default());
+    let adx1_chars = adx1_body.contains("View Characters");
+    let adx1_inv = adx1_body.contains("View Inventory");
+    p.check(
+        "[ADX1] /admin/players -> 200 + cross-process row-menu extensions",
+        adx1_code == 200 && adx1_chars && adx1_inv,
+        format!("code={adx1_code} view_characters={adx1_chars} view_inventory={adx1_inv}"),
+    );
+
+    // [ADX2] scoped remote render: register a SECOND player + character (every character
+    // seeded above belongs to the one AD0 test player, so the negative has no fixture
+    // without this), then GET the characters page scoped to the AD0 player. The AD0 proof
+    // character MUST appear and the second player's character MUST NOT — proving the
+    // `owner` param crosses the wire and characters-svc renders per-player.
+    let adx_other = format!("AdxOther-{suffix}");
+    let adx2 = if let Some(pid) = player_id.as_deref() {
+        if let Ok(other_tok) = register_login(ctx, &g, &format!("adxother-{suffix}@test.local")).await {
+            let _ = create_character(ctx, &g, &other_tok, &adx_other).await;
+        }
+        let r = admin.get(format!("{g}/admin/characters?owner=player:{pid}")).send().await?;
+        let (code, body) = (r.status().as_u16(), r.text().await.unwrap_or_default());
+        (code, body.contains(&aproof), body.contains(&adx_other))
+    } else {
+        (0, false, false)
+    };
+    p.check(
+        "[ADX2] /admin/characters?owner=player:<pid> -> scoped remote render",
+        adx2.0 == 200 && adx2.1 && !adx2.2,
+        format!("code={} has_aproof={} has_other={}", adx2.0, adx2.1, adx2.2),
+    );
+
+    // [ADX3] modal fragment vs no-JS degradation. WITH `HX-Request: true`, the
+    // character-detail URL `?partial=modal` returns a FRAGMENT (modal chrome + the
+    // inventory-svc "View Inventory" ModalActions footer, NO page shell). WITHOUT the
+    // header the SAME URL degrades to the full page (progressive enhancement).
+    let adx3 = if let Some(cid) = ad0_char_id.as_deref() {
+        let url = format!("{g}/admin/characters?owner=character:{cid}&partial=modal");
+        let frag = admin.get(&url).header("HX-Request", "true").send().await?;
+        let (fc, fb) = (frag.status().as_u16(), frag.text().await.unwrap_or_default());
+        let frag_ok = fc == 200
+            && fb.contains("class=\"modal\"")
+            && fb.contains("View Inventory")
+            && !fb.contains("class=\"sidebar\"");
+        let full = admin.get(&url).send().await?;
+        let (pc, pb) = (full.status().as_u16(), full.text().await.unwrap_or_default());
+        let full_ok = pc == 200 && pb.contains("class=\"sidebar\"");
+        (fc, frag_ok, pc, full_ok)
+    } else {
+        (0, false, 0, false)
+    };
+    p.check(
+        "[ADX3] modal fragment (HX-Request) -> chrome + inventory action, no shell",
+        adx3.1,
+        format!("frag_code={} ok={}", adx3.0, adx3.1),
+    );
+    p.check(
+        "[ADX3b] no-HX-Request same URL -> full page (no-JS degradation)",
+        adx3.3,
+        format!("full_code={} ok={}", adx3.2, adx3.3),
+    );
+
     // [AD3b] /admin/api-keys WITH session -> 200 + the RICH roles/keys configurator (E -> L
     // QUIC, two hops). The page content changed from the old flat "dev-client" checkbox +
     // plaintext-key form to the rich form: a keys TABLE with a Prefix column (never the
