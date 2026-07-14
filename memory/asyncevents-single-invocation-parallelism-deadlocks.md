@@ -40,7 +40,20 @@ spawned 50ms-interval sweep task gets scheduling-starved past the test's 2s stal
 window — no `mark_retention_ok` lands in time, so `retention_stalled(2s)` reads true. It
 PASSES in isolation (`cargo test -p asyncevents -- --test-threads=1 healthy_sweeps…` →
 ok, ~3.2s). So a lone `test`-stage FAIL on THIS test in a verify run is a load-timing
-artifact, not a regression — confirm by isolation before treating it as real. Root cause
-is the test's fixed 2s window vs unbounded scheduler starvation (a genuine pre-existing
-test fragility worth widening/yielding if it keeps biting), independent of any
-characters/inventory/cap change.
+artifact, not a regression — confirm by isolation before treating it as real.
+
+**Deflaked 2026-07-14 (`341500f`) — and the deflake TRAP that double-review caught.**
+The test seeds `mark_retention_ok()` ONCE before spawning `retention::run` (so the clock
+starts fresh), then must prove a healthy sweep keeps `retention_stalled(2s)` false while
+STILL failing if `run` stops re-marking. The naive deflakes ALL false-pass a broken
+sweep: widening the window, OR polling for N-consecutive un-stalled reads and breaking
+early — because the pre-spawn seed alone keeps `retention_stalled(2s)` FALSE for the first
+~2s, so any streak that completes inside that window proves nothing (a broken sweep that
+never re-marks passes identically to a healthy one). First deflake attempt shipped exactly
+this vacuity; core-reviewer + proof-auditor caught it by tracing the coarse-clock. CORRECT
+fix: only ACCEPT the un-stalled streak once `start.elapsed() >= 2×window` (4s) past the
+seed — past there an un-stalled read can ONLY come from an active re-mark, so a broken
+sweep (stalled every tick after ~2s) resets the streak forever and the test fails.
+**Lesson: when deflaking a liveness/staleness test, the un-stalled observation must occur
+AFTER the initial seed would have aged out, or the test can't fail on the regression it
+guards.** Independent of any characters/inventory/cap change.
