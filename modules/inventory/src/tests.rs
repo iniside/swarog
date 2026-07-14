@@ -491,103 +491,60 @@ async fn grant_on_created_via_on_tx() {
 }
 
 /// (d) Step 8's replacement for the removed inventory-owned `config.changed` cache:
-/// `grant_starter`
-/// reads the config reader DIRECTLY, so freshness rides the app-owned broadcast
-/// invalidation plane. Wires up the REAL `config` module + a REAL
-/// `invalidation::InvalidationPlane` (dev-dependency, mirrors `modules/match`'s use of
-/// `rating`), does a raw SQL write to `config.settings` — exactly what the admin form /
-/// `psql` do — polls the reader for the trigger's `pg_notify` to land, then proves the
-/// NEXT grant (not the one already in flight) uses the new item.
+/// inventory `init` resolves `dyn Config` via `require::<dyn Config>(key("config",
+/// "reader"))`, and `grant_starter`/`starter_spec` read the starter item straight off
+/// that injected reader — so a fresh grant always reflects the reader's current value.
+///
+/// SCOPE: this unit narrows to that inventory-LOCAL config resolution + read only,
+/// against a fake `configapi::Config`. The end-to-end live-reload path — a raw SQL /
+/// admin write to `config.settings` → Postgres trigger `pg_notify(config_changed)` →
+/// the app-owned broadcast invalidation plane refreshing the reader → the NEXT grant
+/// picking up the new value — is asserted CROSS-PROCESS in split-proof [C1]-[C4b]
+/// (`tools/splitproof/src/main.rs`), where the real trigger and invalidation plane
+/// exist. Driving the real `config` module + `invalidation` plane here would only
+/// re-prove that flow with a module->module dev-dep, so we deliberately don't.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn grant_starter_reflects_config_after_invalidation_refresh() {
+async fn grant_starter_reflects_current_config_reader_value() {
     let Some(pool) = test_pool().await else { return };
     ensure_schema(&pool).await;
 
-    let dsn = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string());
-
     // inventory.init registers its durable on_tx subscriptions unconditionally, so the
-    // Context needs a durable transport too (that events plane is never started —
-    // this test exercises only the invalidation path; the subs just need somewhere
-    // to record).
-    let events_plane = asyncevents::Plane::new(pool.clone(), dsn.clone()).unwrap();
-    let mut inv_plane = invalidation::InvalidationPlane::new(dsn).unwrap();
-    let ctx = Context::with_db_and_transport(pool.clone(), events_plane.transport())
-        .with_invalidation(inv_plane.handle());
+    // Context needs a durable transport for the subs to record into. The plane is
+    // never started — this unit exercises only the direct config-read path.
+    let dsn = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string());
+    let events_plane = asyncevents::Plane::new(pool.clone(), dsn).unwrap();
+    let ctx = Context::with_db_and_transport(pool.clone(), events_plane.transport());
 
-    // config's own schema (asyncevents is already migrated by ensure_schema, and
-    // config's trigger only ever calls the plane-owned `append_event` function).
-    let cfg_module = config::Config::new();
-    Module::register(&cfg_module, &ctx).unwrap();
-    Module::migrate(&cfg_module, &ctx).await.unwrap();
-
-    // The fixed (namespace, key) `grant_starter` reads is process-wide, not
-    // per-test-unique (it names a real code path, not a fixture id) — start from a
-    // known-clean row so a previous run/split-proof pass cannot leak into this one.
-    sqlx::query("DELETE FROM config.settings WHERE namespace = 'inventory' AND key = 'starter_item'")
-        .execute(&pool)
-        .await
-        .unwrap();
-
-    Module::init(&cfg_module, &ctx).unwrap(); // registers the config_changed callback
-    Module::start(&cfg_module, &ctx).await.unwrap(); // boot-fill
-
+    // A mutable fake reader provided under the SAME registry key the real `config`
+    // module would use — inventory.init resolves it there, exactly as in the split.
+    let cfg = Arc::new(FakeConfig::new(STARTER_ITEM, STARTER_QTY));
     ctx.registry()
         .provide::<dyn Ownership>(key("characters", "ownership"), Arc::new(FakeOwnership::Miss) as Arc<dyn Ownership>);
+    ctx.registry()
+        .provide::<dyn Config>(key("config", "reader"), cfg.clone() as Arc<dyn Config>);
 
     let inv = Inventory::new();
     inv.register(&ctx).unwrap();
-    inv.init(&ctx).unwrap(); // resolves the config reader config.register just provided
+    inv.init(&ctx).unwrap(); // resolves the config reader we just provided
 
-    // Starts the callback's first (synchronous) refresh, then the NOTIFY listener.
-    inv_plane.start().await.unwrap();
-
-    // Before any config row exists, a grant uses the code default.
+    // With the reader at its default, a grant uses the compiled STARTER_ITEM.
     let cid_before = unique_uuid(&pool).await;
     let mut conn = pool.acquire().await.unwrap();
     inv.inner().grant_starter(&mut conn, &cid_before).await.unwrap();
     let before = inv.inner().store.list(&Owner::character(&cid_before)).await.unwrap();
     assert_eq!(before[0].item_id, STARTER_ITEM);
 
-    // The raw SQL write — same trigger path as the admin form / a `psql` edit — bumps
-    // the revision, `pg_notify`s `config_changed`, and appends the durable audit event.
-    sqlx::query(
-        "INSERT INTO config.settings (namespace, key, value) VALUES ('inventory', 'starter_item', 'health_potion') \
-         ON CONFLICT (namespace, key) DO UPDATE SET value = excluded.value",
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
+    // Change what the reader returns (the effect the invalidation refresh has in
+    // production, minus the wire), then prove the NEXT grant reads the new value.
+    *cfg.item.lock().unwrap() = "health_potion".to_string();
 
-    // Poll the READER (not a grant) for the invalidation plane's NOTIFY-driven refresh
-    // to land — the revision application this test's name promises.
-    let cfg_reader = ctx.registry().require::<dyn Config>(&key("config", "reader"));
-    let mut synced = false;
-    for _ in 0..50 {
-        if cfg_reader.get_string("inventory", "starter_item", "") == "health_potion" {
-            synced = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    assert!(synced, "invalidation refresh did not propagate the new starter_item within timeout");
-
-    // The NEXT grant (a fresh character, never touched before) uses the new item.
     let cid_after = unique_uuid(&pool).await;
     inv.inner().grant_starter(&mut conn, &cid_after).await.unwrap();
     let after = inv.inner().store.list(&Owner::character(&cid_after)).await.unwrap();
     assert_eq!(after[0].item_id, "health_potion");
 
-    inv_plane.stop().await;
-
-    // Cleanup: both holdings, the config row (leave it clean for the next run), and the
-    // durable config.changed audit event this write appended.
     cleanup_owner(&pool, &cid_before).await;
     cleanup_owner(&pool, &cid_after).await;
-    sqlx::query("DELETE FROM config.settings WHERE namespace = 'inventory' AND key = 'starter_item'")
-        .execute(&pool)
-        .await
-        .unwrap();
-    let _ = asyncevents::testing::cleanup_events(&pool, "namespace", "inventory").await;
 }
 
 /// (e) THE REORDER CASE, through the real plane: `character.created` and

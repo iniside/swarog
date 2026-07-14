@@ -12,7 +12,6 @@ use std::{
 };
 
 use super::*;
-use rating::Rating;
 
 const DEFAULT_DSN: &str =
     "postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable";
@@ -53,19 +52,27 @@ async fn ensure_schema(pool: &PgPool) {
         .await;
 }
 
-/// Builds a real durable plane over the live pool with a REAL in-memory `rating` module
-/// filling match's `MmrReader` dependency: schemas migrated once, the asyncevents
-/// transport is injected at `Context` construction, rating provides `MmrReader`, then
-/// match registers/inits against the same ctx. Returns the ctx (owns the bus + registry)
-/// and the wired match service.
+/// Builds a real durable plane over the live pool with a FAKE `MmrReader` filling
+/// match's sync `rating` dependency: schemas migrated once, the asyncevents transport is
+/// injected at `Context` construction, a `CountingReader` (returns `Ok(1000)` — the same
+/// value the real `rating` yields for an unseen player; these tests never assert the MMR
+/// value, only that the sync seam resolves) is provided into the registry under rating's
+/// `key("rating", "mmr_reader")`, exactly where the real `rating` module's `register`
+/// would put it, then match registers/inits against the same ctx and resolves it. Keeping
+/// the fake off the real `rating` impl crate preserves the fortress rule (no test-time
+/// module→module impl dep). Returns the ctx (owns the bus + registry) and the wired match
+/// service.
 async fn wired(pool: &PgPool) -> (Context, Arc<Service>) {
     ensure_schema(pool).await;
     let transport = asyncevents::testing::transport(pool.clone());
     let ctx = Context::with_db_and_transport(pool.clone(), transport.handle());
 
-    let rating = Rating::new();
-    rating.register(&ctx).unwrap();
-    rating.init(&ctx).unwrap();
+    let reader: Arc<dyn MmrReader> = Arc::new(CountingReader {
+        calls: AtomicUsize::new(0),
+        failure: None,
+        first_call_barrier: None,
+    });
+    ctx.registry().provide(key("rating", "mmr_reader"), reader);
 
     let mm = MatchModule::new();
     mm.register(&ctx).unwrap();
@@ -487,7 +494,26 @@ fn match_requires_rating_and_fails_validate_without_it() {
         "validate_requires should name the missing 'rating' provider, got: {msg}"
     );
 
-    // Adding a rating provider satisfies the manifest.
-    let ok: Vec<Box<dyn Module>> = vec![Box::new(MatchModule::new()), Box::new(Rating::new())];
+    // Adding a rating provider satisfies the manifest. `validate_requires` matches
+    // providers purely by `Module::name()`, so a name-only stub named "rating" (never
+    // the real `rating` impl crate — the fortress rule bans that test dep) stands in for
+    // the provider exactly as a `remote::Stub` would in a split process.
+    let ok: Vec<Box<dyn Module>> = vec![Box::new(MatchModule::new()), Box::new(RatingNameStub)];
     app::validate_requires(&ok).expect("match's requires are satisfied with rating present");
+}
+
+/// A name-only `Module` stand-in reporting the "rating" provider name. `validate_requires`
+/// checks the manifest by `name()` alone, so this stub satisfies match's `requires()`
+/// without pulling in the real `rating` impl crate (fortress rule). All other lifecycle
+/// methods keep their trait defaults.
+struct RatingNameStub;
+
+#[async_trait]
+impl Module for RatingNameStub {
+    fn name(&self) -> &str {
+        "rating"
+    }
+    fn init(&self, _ctx: &Context) -> anyhow::Result<()> {
+        Ok(())
+    }
 }

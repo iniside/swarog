@@ -35,5 +35,4 @@ serde_json = { workspace = true }
 [dev-dependencies]
 app = { workspace = true }
 asyncevents = { workspace = true }
-rating = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
