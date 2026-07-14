@@ -317,9 +317,13 @@ async fn stop_terminates_active_backend_and_rolls_back_effect_and_checkpoint() {
     ctx.bus().emit_tx(AnyTx::new(&mut *tx), &event, &serde_json::json!({"tag": tag}))
         .await.unwrap();
     tx.commit().await.unwrap();
-    tokio::time::timeout(Duration::from_secs(5), entered.notified()).await.unwrap();
+    // Hang-guard, not a latency bound: first delivery rides the 1s poll fallback
+    // plus shared-Postgres contention under a full-crate parallel run.
+    tokio::time::timeout(Duration::from_secs(30), entered.notified()).await.unwrap();
 
-    tokio::time::timeout(Duration::from_secs(2), plane.stop()).await.unwrap();
+    // Hang-guard over the 800ms stop grace (correctness is proven by the
+    // rollback/checkpoint asserts below, not by how fast stop returns).
+    tokio::time::timeout(Duration::from_secs(10), plane.stop()).await.unwrap();
     // A controlled stop never reads as a stall — even at max_age zero.
     assert!(
         !plane.liveness().delivery_stalled(Duration::ZERO),

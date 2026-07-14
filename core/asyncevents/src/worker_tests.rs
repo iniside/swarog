@@ -182,7 +182,10 @@ async fn two_workers_make_progress_past_two_continuously_hot_subscriptions() {
     let (stop_tx, stop_rx) = watch::channel(false);
     let first = tokio::spawn(run(0, ctx.clone(), stop_rx.clone()));
     let second = tokio::spawn(run(1, ctx, stop_rx));
-    tokio::time::timeout(Duration::from_secs(5), async {
+    // Hang-guard, not a latency bound: under full-crate parallel load the two
+    // workers contend with every other test on the shared Postgres, so reaching
+    // the later subscription can take well over the idle-machine seconds.
+    tokio::time::timeout(Duration::from_secs(30), async {
         while later_calls.load(Ordering::SeqCst) == 0 {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
