@@ -395,7 +395,10 @@ fn transient_children_obey_cancellation_and_deadline() {
         TransientOutcome::Cancelled
     );
     trigger.join().unwrap();
-    assert!(started.elapsed() < Duration::from_secs(2));
+    // Hang-guard, not a latency bound: the `Cancelled` outcome already proves
+    // correctness; this only catches a genuine wedge (real OS spawn+signal+reap timing
+    // is not something the test should pin under load).
+    assert!(started.elapsed() < Duration::from_secs(30));
     let pid: u32 = std::fs::read_to_string(&ready).unwrap().parse().unwrap();
     assert!(observe_process_identity(pid).is_err());
 

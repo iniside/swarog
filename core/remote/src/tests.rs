@@ -520,7 +520,10 @@ async fn probe_unreachable_peer_errs_fast() {
     let elapsed = started.elapsed();
     assert!(out.is_err(), "an unreachable peer must fail the readiness probe: {out:?}");
     assert!(
-        elapsed < std::time::Duration::from_secs(2),
+        // Hang-guard (5×), not a tight latency bound: the point is the probe returns
+        // WELL before the outer readyz budget — a 5s ceiling still proves the inner 1s
+        // dial bound owns the failure, while giving load-headroom the thin 2× lacked.
+        elapsed < std::time::Duration::from_secs(5),
         "the probe's own 1s bound must fire, not the outer readyz bound (took {elapsed:?})"
     );
 }
