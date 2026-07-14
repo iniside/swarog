@@ -53,6 +53,7 @@ use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use axum::extract::{ConnectInfo, Path, Query, Request, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
@@ -151,6 +152,64 @@ const EXPECTED_FIELD_PREFIX: &str = "_expected_";
 
 /// Stable operator-facing response for an optimistic-concurrency miss.
 const STALE_FORM_ERROR: &str = "This form is stale. Reload the page and try again.";
+
+/// Show-once reveal flash: TTL + entry cap. A reveal is minted by a NON-idempotent,
+/// non-CAS create (e.g. an API-key add), so the success page must NOT be a POST render
+/// a browser refresh would re-submit. Instead the value is stashed here and the POST
+/// 303s to a GET carrying a one-shot token — a refresh re-issues the (idempotent) GET,
+/// finds the token consumed, and renders no reveal. Bounded + short-lived: this is a
+/// single-operator dev portal, so a few minutes and a small cap suffice.
+const REVEAL_TTL: Duration = Duration::from_secs(300);
+const REVEAL_MAX_ENTRIES: usize = 256;
+
+/// The in-memory one-shot reveal store backing PRG-with-flash. Owned by [`AdminState`]
+/// — the admin module handles the POST in BOTH topologies (monolith + admin-svc), so no
+/// cross-process store is needed. Every access sweeps expired entries; an insert past
+/// [`REVEAL_MAX_ENTRIES`] evicts the soonest-expiring entry to stay bounded.
+#[derive(Default)]
+struct RevealStore {
+    entries: HashMap<String, RevealEntry>,
+}
+
+struct RevealEntry {
+    reveal: Vec<adminapi::RevealItem>,
+    expires_at: Instant,
+}
+
+impl RevealStore {
+    /// Stashes `reveal` under `token` with a fresh TTL, after sweeping expired entries
+    /// and (if still at the cap) evicting the soonest-to-expire.
+    fn insert(&mut self, token: String, reveal: Vec<adminapi::RevealItem>) {
+        let now = Instant::now();
+        self.entries.retain(|_, e| e.expires_at > now);
+        if self.entries.len() >= REVEAL_MAX_ENTRIES {
+            if let Some(evict) = self
+                .entries
+                .iter()
+                .min_by_key(|(_, e)| e.expires_at)
+                .map(|(k, _)| k.clone())
+            {
+                self.entries.remove(&evict);
+            }
+        }
+        self.entries.insert(
+            token,
+            RevealEntry {
+                reveal,
+                expires_at: now + REVEAL_TTL,
+            },
+        );
+    }
+
+    /// CONSUMES the reveal for `token` (one-shot): removes and returns it iff present
+    /// and unexpired. A second call for the same token — or a refresh after consumption
+    /// — returns `None`.
+    fn take(&mut self, token: &str) -> Option<Vec<adminapi::RevealItem>> {
+        let now = Instant::now();
+        self.entries.retain(|_, e| e.expires_at > now);
+        self.entries.remove(token).map(|e| e.reveal)
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Schema — owned by this module (migrate touches ONLY schema `admin`).
@@ -335,6 +394,7 @@ impl Module for Admin {
             login_limiter,
             login_attempt_gc_requests: AtomicU64::new(0),
             verifier: Arc::new(ArgonVerifier),
+            reveals: Arc::new(Mutex::new(RevealStore::default())),
         });
         ctx.mount(router(state));
         Ok(())
@@ -406,6 +466,9 @@ struct AdminState {
     /// bucket reclamation belongs exclusively to `IpLimiter`'s background reaper.
     login_attempt_gc_requests: AtomicU64,
     verifier: Arc<dyn PasswordVerifier>,
+    /// One-shot show-once reveal flash (PRG-with-flash): a successful create stashes its
+    /// reveal here and 303s to a token GET, so a POST-refresh can never re-mint.
+    reveals: Arc<Mutex<RevealStore>>,
 }
 
 trait PasswordVerifier: Send + Sync {
@@ -552,6 +615,26 @@ impl AdminState {
             .await?;
         tx.commit().await?;
         Ok(())
+    }
+
+    /// Stashes a show-once `reveal` and returns its one-shot token (for the PRG
+    /// redirect target `?reveal=<token>`).
+    fn stash_reveal(&self, reveal: Vec<adminapi::RevealItem>) -> String {
+        let token = new_token();
+        self.reveals
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(token.clone(), reveal);
+        token
+    }
+
+    /// CONSUMES the reveal for `token` (removes it): `Some` exactly once, `None` on a
+    /// refresh/replay — the property that makes the flash safe against a POST re-submit.
+    fn take_reveal(&self, token: &str) -> Option<Vec<adminapi::RevealItem>> {
+        self.reveals
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take(token)
     }
 
     async fn cleanup_login_attempts(&self) {
@@ -995,7 +1078,15 @@ async fn item(
         return (StatusCode::NOT_FOUND, "not found").into_response();
     };
 
-    let page = page_view(cur, &params, &slug);
+    let mut page = page_view(cur, &params, &slug);
+    // PRG-with-flash: a `?reveal=<token>` from a just-completed submit is CONSUMED here
+    // (one-shot) and rendered once. A refresh of this GET re-issues without a live token
+    // (already consumed) and shows no reveal — and, being a GET, mints nothing.
+    if let Some(token) = params.get("reveal") {
+        if let Some(reveal) = st.take_reveal(token) {
+            page.reveal = reveal;
+        }
+    }
     let groups = build_groups(&items, &slug);
     render_page(
         &st,
@@ -1094,7 +1185,7 @@ async fn item_post(
                         "action applied but audit append failed".to_string(),
                     );
                 }
-                render_after_submit(&st, cur, &params, &slug, &items, &authed, outcome)
+                render_after_submit(&st, &slug, outcome)
             }
             Err(adminapi::SubmitError::Conflict) => {
                 render_conflict(&st, cur, &slug, &items, &authed)
@@ -1120,7 +1211,7 @@ async fn item_post(
     };
     let values = collect_submit_params(&form.fields, &form.hidden, &pairs, &single);
     match remote_submit(values).await {
-        Ok(outcome) => render_after_submit(&st, cur, &params, &slug, &items, &authed, outcome),
+        Ok(outcome) => render_after_submit(&st, &slug, outcome),
         // The peer never registered `admin.adminSubmit` (UnknownMethod → NotFound): the
         // item has no write surface, so it degrades to read-only exactly like a local
         // non-editable item — the graceful-absent contract, no bespoke signalling.
@@ -1175,38 +1266,20 @@ fn collect_submit_params(
     values
 }
 
-/// After a successful submit (LOCAL or REMOTE): a [`adminapi::SubmitOutcome`] carrying
-/// show-once `reveal` values renders the page INLINE (200) with a one-time reveal panel
-/// — a 303 redirect would drop those values, which are never persisted or re-derivable.
-/// An empty outcome 303s back to the GET (the historical behaviour). The inline page
-/// re-renders the current item so the operator sees updated state beside the reveal.
-fn render_after_submit(
-    st: &AdminState,
-    cur: &Resolved,
-    params: &adminapi::Params,
-    slug: &str,
-    items: &[Resolved],
-    authed: &Authed,
-    outcome: adminapi::SubmitOutcome,
-) -> Response {
+/// After a successful submit (LOCAL or REMOTE), ALWAYS Post/Redirect/Get — never an
+/// inline POST render. An empty outcome 303s straight back to the item's GET. A
+/// [`adminapi::SubmitOutcome`] carrying show-once `reveal` values is stashed in the
+/// one-shot flash store and the 303 targets `GET /admin/{slug}?reveal=<token>`: the GET
+/// consumes the token and renders the reveal exactly once. This closes the POST-refresh
+/// double-mint — a reveal is minted by a NON-idempotent create, so an inline 200 would
+/// let a browser refresh re-submit the identical body and mint a second one; a GET
+/// refresh (token already consumed) mints nothing.
+fn render_after_submit(st: &AdminState, slug: &str, outcome: adminapi::SubmitOutcome) -> Response {
     if outcome.reveal.is_empty() {
         return see_other(&format!("/admin/{slug}"));
     }
-    let mut page = page_view(cur, params, slug);
-    page.reveal = outcome.reveal;
-    let groups = build_groups(items, slug);
-    render_page(
-        st,
-        PageData {
-            crumb: cur.section.clone(),
-            title: cur.label.clone(),
-            env: "Local".into(),
-            user: authed.user.clone(),
-            csrf: authed.csrf.clone(),
-            groups,
-            page: Some(page),
-        },
-    )
+    let token = st.stash_reveal(outcome.reveal);
+    see_other(&format!("/admin/{slug}?reveal={token}"))
 }
 
 /// Renders the stable stale-form card with HTTP 409. A template failure remains the

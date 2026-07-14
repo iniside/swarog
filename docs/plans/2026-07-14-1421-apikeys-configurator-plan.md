@@ -218,6 +218,16 @@ Store (zastępuje business-column-CAS `store.rs:114-161` przez CAS-by-`revision`
 - **Autoryzacja (uwaga #14):** `admin.adminSubmit` (wire-only, process-trust, mTLS) niesie teraz
   mutacje — ten sam model zaufania co `admin.adminData`, tylko zapis; auth operatora
   (sesja/CSRF) egzekwowany w admin-svc PRZED edge-call.
+- **WYMÓG z recenzji Step 3 (finding #2 — NotFound trap):** `admin_submit` apikeys **NIE MOŻE**
+  zwracać `opsapi::Status::NotFound` dla warunków domenowych (brak klucza/roli) — edge czyni
+  `NotFound` nierozróżnialnym od `UnknownMethod`, więc admin zmapowałby to na 405 read-only i
+  zamaskował realny błąd/literówkę wiring. Dla domenowych braków użyj `Conflict` albo generycznego
+  błędu (→ error card). Test: domenowo-brakujący target → error **card**, nie 405.
+- **WYMÓG z recenzji Step 3 (finding #3 — audit asymmetry):** remote form-submit NIE emituje
+  lokalnego `admin.action` w admin-svc; więc `admin_submit` apikeys **MUSI** emitować durable
+  `admin.action{action="key-create"/"key-revoke"/"role-edit"}` w SWOIM procesie (apikeys-svc),
+  inaczej remote-write jest nieaudytowany (a local jest). Dołóż AD5-style asercję w splitproof
+  (Step 9): remote form-submit → wiersz `audit.log`/`admin.action` przez gateway.
 
 ---
 

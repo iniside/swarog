@@ -40,6 +40,7 @@ fn state_from(ctx: &Context) -> AdminState {
         login_limiter: httpmw::IpLimiter::new(5.0, 20),
         login_attempt_gc_requests: AtomicU64::new(0),
         verifier: Arc::new(ArgonVerifier),
+        reveals: Arc::new(Mutex::new(RevealStore::default())),
     }
 }
 
@@ -736,6 +737,7 @@ async fn wired_with_verifier(
         login_limiter: httpmw::IpLimiter::new(1_000.0, 1_000),
         login_attempt_gc_requests: AtomicU64::new(0),
         verifier,
+        reveals: Arc::new(Mutex::new(RevealStore::default())),
     });
     (ctx, st)
 }
@@ -1355,12 +1357,14 @@ async fn remote_submit_not_found_is_405_and_csrf_gates_before_edge() {
     cleanup_ip(&pool, "203.0.113.28").await;
 }
 
-/// The REMOTE-write success branch: a CheckboxGroup posts its shared name once per
-/// checked option and the admin comma-joins them into ONE param before dispatching; a
-/// `SubmitOutcome` carrying a reveal renders INLINE (200, never a 303 that would drop
-/// the one-time value); `_csrf` never reaches the module.
+/// The REMOTE-write success branch + PRG-with-flash: a CheckboxGroup posts its shared
+/// name once per checked option and the admin comma-joins them into ONE param before
+/// dispatching; a `SubmitOutcome` carrying a reveal 303s (NOT an inline 200) to
+/// `?reveal=<token>`; the token GET renders the reveal EXACTLY ONCE and a second GET of
+/// the same token renders no reveal (so a browser refresh can't re-POST/double-mint);
+/// `_csrf` never reaches the module.
 #[tokio::test(flavor = "multi_thread")]
-async fn remote_submit_joins_checkboxes_and_renders_reveal_inline() {
+async fn remote_submit_joins_checkboxes_and_flashes_reveal_via_redirect() {
     let Some(pool) = test_pool().await else { return };
     let (ctx, st) = wired(&pool, false, true).await;
     let user = uniq("t-remote-ok");
@@ -1433,10 +1437,15 @@ async fn remote_submit_joins_checkboxes_and_renders_reveal_inline() {
         ),
     )
     .await;
-    assert_eq!(resp.status(), StatusCode::OK, "a reveal renders inline, never redirects");
-    let html = body_string(resp).await;
-    assert!(html.contains("Generated — shown once"), "reveal panel rendered");
-    assert!(html.contains(r#"value="ak_once""#), "one-time value shown inline");
+    // A reveal 303s to a one-shot token GET — never an inline 200 a refresh could re-POST.
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER, "a reveal must PRG, never inline-render");
+    let loc = location_of(&resp);
+    let prefix = format!("/admin/{slug}?reveal=");
+    let token = loc
+        .strip_prefix(&prefix)
+        .unwrap_or_else(|| panic!("303 target must carry the flash token, got {loc:?}"))
+        .to_string();
+    assert!(!token.is_empty(), "flash token must be non-empty");
 
     {
         let calls = calls.lock().unwrap();
@@ -1448,6 +1457,30 @@ async fn remote_submit_joins_checkboxes_and_renders_reveal_inline() {
         );
         assert!(!calls[0].contains_key("_csrf"), "_csrf never reaches the module");
     }
+
+    // First GET of the token renders the reveal exactly once.
+    let get1 = send(
+        &st,
+        form_req("GET", &loc, peer, Some(&cookie), None),
+    )
+    .await;
+    assert_eq!(get1.status(), StatusCode::OK);
+    let html1 = body_string(get1).await;
+    assert!(html1.contains("Generated — shown once"), "reveal panel on the flashed GET");
+    assert!(html1.contains(r#"value="ak_once""#), "one-time value rendered once");
+
+    // A second GET of the SAME token (a refresh) renders the page with NO reveal — and,
+    // being a GET, mints nothing (calls unchanged).
+    let get2 = send(
+        &st,
+        form_req("GET", &format!("/admin/{slug}?reveal={token}"), peer, Some(&cookie), None),
+    )
+    .await;
+    assert_eq!(get2.status(), StatusCode::OK);
+    let html2 = body_string(get2).await;
+    assert!(!html2.contains("Generated — shown once"), "reveal is one-shot: gone on refresh");
+    assert!(!html2.contains("ak_once"), "the secret never reappears after consumption");
+    assert_eq!(calls.lock().unwrap().len(), 1, "a GET refresh never re-mints");
 
     cleanup_user(&pool, &user).await;
     cleanup_ip(&pool, "203.0.113.29").await;
@@ -1777,6 +1810,7 @@ async fn login_ip_limiter_returns_exact_retry_after() {
         login_limiter: httpmw::IpLimiter::new(0.0, 1),
         login_attempt_gc_requests: AtomicU64::new(0),
         verifier: Arc::new(ArgonVerifier),
+        reveals: Arc::new(Mutex::new(RevealStore::default())),
     });
     let peer = "203.0.113.82:9999";
     assert_eq!(post_login(&st, peer, "ghost", "wrong").await.status(), StatusCode::UNAUTHORIZED);
