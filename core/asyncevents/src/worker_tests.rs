@@ -469,7 +469,17 @@ async fn poison_backs_off_then_pauses_never_skips() {
     let (state, failures, _, cursor_tie) = sub_row(&pool, sub_id).await;
     assert_eq!((state.as_str(), failures, cursor_tie), ("active", 1, 0));
 
-    // Backing off: not due, so the next attempt skips (no busy retry).
+    // Backing off: not due, so the next attempt skips (no busy retry). Pin the
+    // persisted deadline an hour out so the assert can't race the 1s backoff window
+    // under load (the pause path below sets next_attempt_at explicitly the same way).
+    sqlx::query(
+        "UPDATE asyncevents.subscriptions \
+         SET next_attempt_at = now() + interval '1 hour' WHERE subscription_id = $1",
+    )
+    .bind(sub_id)
+    .execute(&pool)
+    .await
+    .unwrap();
     assert_eq!(deliver_one(&ctx, &e).await.unwrap(), Step::Skipped);
 
     // Fast-forward to the pause threshold: one more failure pauses the
