@@ -2311,13 +2311,14 @@ fn status_or_err(r: &Result<serde_json::Value>, want: &str) -> bool {
 }
 
 /// [P6] one persistent player connection depletes the per-connection bucket (burst 20)
-/// by CONCURRENCY, not call speed: it fans out 25 simultaneous calls on the one
-/// connection, so the limiter is observable regardless of machine load (the old
+/// by CONCURRENCY, not call speed: it fans out 60 simultaneous calls on the one
+/// connection, so the limiter is observable under any realistic load (the old
 /// sequential 22-call version only ever saw a denial if avg call latency stayed
-/// <5ms — green on an idle box, red under load). At least one call must be
-/// rate-limited. Then, after a refill pause, a single sequential call must succeed
-/// again — proving the limiter is per-connection and transient, not sticky. Same
-/// fan-out idiom as `burst_429` / [AD2b]/[AD2c].
+/// <5ms — green on an idle box, red under load; a 60-wide burst would need the
+/// server to spread admission over >4s of refill to dodge every denial). At least
+/// one call must be rate-limited. Then, after a refill pause, a single sequential
+/// call must succeed again — proving the limiter is per-connection and transient,
+/// not sticky. Same fan-out idiom as `burst_429` / [AD2b]/[AD2c].
 async fn player_burst(ctx: &Ctx) -> bool {
     let Some(ca) = ctx.ca_cert.to_str() else { return false };
     let Ok(trust) = DevCA::load_cert_only(ca) else { return false };
@@ -2325,11 +2326,13 @@ async fn player_burst(ctx: &Ctx) -> bool {
     let Ok(client) = PlayerClient::dial(addr, &trust).await else { return false };
     let client = std::sync::Arc::new(client);
 
-    // Fan out 25 concurrent calls on the ONE connection. With the per-conn refill
-    // (10 rps) negligible over the burst's wall-clock, ~20 pass and the rest are
-    // denied — at least one denial is guaranteed independent of load.
+    // Fan out 60 concurrent calls on the ONE connection (burst 20, refill 10 rps).
+    // For ALL of them to pass, the server would have to spread admission over >4s
+    // of refill — margin against load, not a guarantee (a wall-clock-free proof
+    // would need a clock seam in the limiter); 60 vs the old 25 turns "the server
+    // stalls >500ms and the denial vanishes" into "the server stalls >4s".
     let mut hs = Vec::new();
-    for _ in 0..25 {
+    for _ in 0..60 {
         let client = client.clone();
         hs.push(tokio::spawn(async move {
             client.call("leaderboard.topScores", None, Some("dev-key-client"), b"{}").await

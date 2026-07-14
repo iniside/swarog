@@ -37,6 +37,7 @@ thiserror = { workspace = true }
 anyhow = { workspace = true }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync"] }
+# test-util: start_paused virtual clock for the flight-lock parallelism proof.
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "test-util"] }
 tower = { version = "0.5", features = ["util"] }
 futures = { workspace = true }

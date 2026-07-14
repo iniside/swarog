@@ -123,13 +123,26 @@ async fn shutdown_stops_accepting_new_connections() {
             }
             Ok(Ok(new_client)) => {
                 // A connection object materialized — it must not actually serve a call.
-                if new_client.call_raw("slow", b"null").await.is_err() {
-                    not_served = true;
-                    break;
+                // The call itself is timeout-bounded too: a call that never completes
+                // mid-shutdown is "not served" (and must not hang this loop past the
+                // deadline). The healthy-path handler answers in ~200ms, so 1s is a
+                // clean split, and the outer deadline stays the overall hang-guard.
+                match tokio::time::timeout(
+                    Duration::from_secs(1),
+                    new_client.call_raw("slow", b"null"),
+                )
+                .await
+                {
+                    Err(_) | Ok(Err(_)) => {
+                        not_served = true; // hung or rejected — either way, not served
+                        break;
+                    }
+                    Ok(Ok(_)) => {
+                        // Still served — the accept loop hasn't observed the close yet.
+                        new_client.close();
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                    }
                 }
-                // Still served — the accept loop hasn't observed the close yet; retry.
-                new_client.close();
-                tokio::time::sleep(Duration::from_millis(50)).await;
             }
         }
     }

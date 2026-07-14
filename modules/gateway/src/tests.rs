@@ -1511,7 +1511,12 @@ async fn hung_session_verifier_player_front_is_unavailable_within_budget() {
 /// second queues on that flight — and BOTH must resolve within ~one budget (it is
 /// admissible for both to time out concurrently; what is banned is the second
 /// serially waiting 2x behind the first's dropped flight).
-#[tokio::test]
+///
+/// PAUSED CLOCK: everything here is in-process (tower `oneshot`, a pending-future
+/// backend, `tokio::time`-based admission timeouts), so virtual time makes the
+/// parallel-vs-serial distinction exact — parallel resolves at virtual ~100ms,
+/// a serial accumulation at virtual ~200ms — with zero real-clock race.
+#[tokio::test(start_paused = true)]
 async fn flight_lock_second_caller_is_bounded_too() {
     let real = Arc::new(RealKeyVerifier::new(Arc::new(HangingKeys)));
     let front = admission_front_door(
@@ -1519,7 +1524,7 @@ async fn flight_lock_second_caller_is_bounded_too() {
         Arc::new(DevSessionVerifier::new()),
         Duration::from_millis(100),
     );
-    let started = std::time::Instant::now();
+    let started = tokio::time::Instant::now();
     let (a, b) = tokio::join!(
         front.router().oneshot(demo_http_request()),
         front.router().oneshot(demo_http_request()),
@@ -1527,17 +1532,14 @@ async fn flight_lock_second_caller_is_bounded_too() {
     let elapsed = started.elapsed();
     let (status_a, body_a) = body_string(a.unwrap()).await;
     let (status_b, body_b) = body_string(b.unwrap()).await;
-    // Both callers must resolve, and within a bound well under any UNBOUNDED wait.
-    // Tradeoff (named): the honest anti-serial signal for TWO callers is a ~100ms gap
-    // (parallel ~100ms vs serial ~200ms), which a loaded machine can flip — so we no
-    // longer pin that 100ms distinction. We widen to 1s (10× the budget), midway to
-    // the file's own BOUNDED (2s): still proves the second caller does NOT block on a
-    // full second budget behind the first (a true serial accumulation would compound
-    // past this under any real hang), without racing the parallel-vs-serial margin.
+    // Virtual time: both callers share ONE 100ms budget window (a serial wait
+    // behind the first's flight would read ~200ms). 150ms splits the two cases
+    // deterministically — the paused clock advances only when tasks are idle,
+    // so machine load cannot move this measurement.
     assert!(
-        elapsed < Duration::from_millis(1000),
-        "both same-key callers must resolve within a small multiple of one budget, \
-         never an accumulating serial wait (elapsed: {elapsed:?})"
+        elapsed < Duration::from_millis(150),
+        "the second same-key caller must resolve within the FIRST caller's budget \
+         window, never serially behind it (virtual elapsed: {elapsed:?})"
     );
     assert_eq!(status_a, StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(status_b, StatusCode::SERVICE_UNAVAILABLE);
