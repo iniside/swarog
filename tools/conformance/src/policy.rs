@@ -239,11 +239,6 @@ fn audit() -> Entry {
 fn characters() -> Entry {
     Entry {
         module: "characters",
-        // The per-player character cap (characters/max_per_player) is a STATEFUL DB-count
-        // admission gate, not a static input-byte cap, so no Convention here covers it — it
-        // is proven by characters' unit tests + split-proof [6]. The config dependency added
-        // for it is read from config.settings via the Config trait (not process env), so the
-        // EnvValidation NotApplicable below remains accurate.
         stances: vec![
             (
                 Convention::EnvValidation,
