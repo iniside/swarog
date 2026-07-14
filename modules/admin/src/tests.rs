@@ -321,6 +321,7 @@ fn resolved(section: &str, label: &str, slug: &str) -> Resolved {
         slug: slug.into(),
         item: local_item("x", section, label),
         remote: None,
+        extensions: Vec::new(),
     }
 }
 
@@ -377,6 +378,7 @@ async fn template_renders_kpis_table_csrf_and_escapes() {
                 active: true,
             }],
         }],
+        back: None,
         page: Some(PageView {
             title: "Characters".into(),
             err: String::new(),
@@ -409,6 +411,7 @@ async fn template_renders_kpis_table_csrf_and_escapes() {
                 submit: None,
             }),
             reveal: Vec::new(),
+            ..Default::default()
         }),
     };
     let html = st
@@ -443,6 +446,7 @@ async fn template_renders_empty_shell_without_csrf() {
         user: UserView::new(""),
         csrf: String::new(),
         groups: Vec::new(),
+        back: None,
         page: None,
     };
     let html = st
@@ -473,6 +477,7 @@ async fn template_renders_select_checkboxgroup_and_reveal() {
         user: UserView::new("Ops"),
         csrf: "tok".into(),
         groups: Vec::new(),
+        back: None,
         page: Some(PageView {
             title: "API Keys".into(),
             err: String::new(),
@@ -531,6 +536,7 @@ async fn template_renders_select_checkboxgroup_and_reveal() {
                 label: "secret".into(),
                 value: "ak_shown_once".into(),
             }],
+            ..Default::default()
         }),
     };
     let html = st.env.get_template("admin.html").unwrap().render(&data).unwrap();
@@ -559,6 +565,320 @@ async fn template_renders_select_checkboxgroup_and_reveal() {
     // Show-once reveal panel.
     assert!(html.contains("Generated — shown once"), "reveal panel");
     assert!(html.contains(r#"value="ak_shown_once""#), "reveal value shown inline");
+}
+
+// ---- extension merge / interpolation / from-nav / modal partial --------------
+
+/// A `Resolved` carrying only extension entries (for `collect_extensions` ordering
+/// tests), no render/remote.
+fn resolved_with_ext(exts: Vec<adminapi::ExtensionEntry>) -> Resolved {
+    Resolved {
+        section: "S".into(),
+        label: "L".into(),
+        slug: "s".into(),
+        item: local_item("x", "S", "L"),
+        remote: None,
+        extensions: exts,
+    }
+}
+
+/// A state whose session gate is active (`open = false`) but whose pool is lazy — used
+/// by the fragment-redirect test where a MISSING cookie short-circuits the gate before
+/// any DB I/O.
+fn state_with_open(ctx: &Context, open: bool) -> AdminState {
+    let mut st = state_from(ctx);
+    st.open = open;
+    st
+}
+
+#[test]
+fn interpolate_substitutes_and_skips_on_missing_key() {
+    let ctx = HashMap::from([("id".to_string(), "character:abc".to_string())]);
+    assert_eq!(
+        interpolate("inventory?owner={id}", &ctx).as_deref(),
+        Some("inventory?owner=character:abc")
+    );
+    // Any unresolved key aborts the whole entry (the caller SKIPs it).
+    assert_eq!(interpolate("x={id}&y={missing}", &ctx), None);
+    // No braces → verbatim.
+    assert_eq!(interpolate("no-braces", &ctx).as_deref(), Some("no-braces"));
+}
+
+#[test]
+fn build_menu_merges_natives_separator_then_extensions() {
+    let ctx = HashMap::from([("id".to_string(), "player:X".to_string())]);
+    let natives = vec![
+        adminapi::MenuEntry {
+            label: "Edit".into(),
+            icon: "pen".into(),
+            link: None, // inert — still rendered, no href
+            disabled: true,
+            ..Default::default()
+        },
+        adminapi::MenuEntry {
+            label: "View".into(),
+            icon: "eye".into(),
+            link: Some("characters?owner={id}".into()),
+            ..Default::default()
+        },
+    ];
+    let exts = vec![adminapi::ExtensionEntry {
+        point: "accounts.players.row-menu".into(),
+        label: "View Inventory".into(),
+        icon: "box".into(),
+        link: "inventory?owner={id}".into(),
+        ..Default::default()
+    }];
+
+    let menu = build_menu(&natives, &ctx, &exts, "players");
+    assert_eq!(menu.len(), 4, "Edit, View, separator, View Inventory");
+    // Natives first, uniform interpolation + `from` append.
+    assert_eq!(menu[0].label, "Edit");
+    assert!(menu[0].href.is_empty(), "inert native has no href");
+    assert_eq!(menu[1].label, "View");
+    assert!(menu[1].href.contains("characters?owner=player:X"));
+    assert!(menu[1].href.contains("from=players"), "from appended: {}", menu[1].href);
+    // Separator between blocks.
+    assert!(menu[2].separator);
+    // Extension last.
+    assert_eq!(menu[3].label, "View Inventory");
+    assert!(menu[3].href.contains("inventory?owner=player:X"));
+    assert!(menu[3].href.contains("from=players"));
+}
+
+#[test]
+fn build_menu_skips_native_with_unresolved_key_uniformly() {
+    // Interpolation is uniform: a NATIVE link with a missing key is skipped exactly like
+    // an extension would be (no panic, entry dropped).
+    let ctx = HashMap::new();
+    let natives = vec![adminapi::MenuEntry {
+        label: "View".into(),
+        link: Some("characters?owner={id}".into()),
+        ..Default::default()
+    }];
+    assert!(build_menu(&natives, &ctx, &[], "players").is_empty());
+}
+
+#[test]
+fn build_menu_no_separator_when_one_block_empty() {
+    let ctx = HashMap::from([("id".to_string(), "player:X".to_string())]);
+    let natives = vec![adminapi::MenuEntry {
+        label: "View".into(),
+        link: Some("characters?owner={id}".into()),
+        ..Default::default()
+    }];
+    // Natives only → no separator.
+    let m = build_menu(&natives, &ctx, &[], "players");
+    assert_eq!(m.len(), 1);
+    assert!(!m[0].separator);
+    // Extensions only → no separator.
+    let exts = vec![adminapi::ExtensionEntry {
+        point: "p".into(),
+        label: "Ext".into(),
+        link: "inventory?owner={id}".into(),
+        ..Default::default()
+    }];
+    let m2 = build_menu(&[], &ctx, &exts, "players");
+    assert_eq!(m2.len(), 1);
+    assert!(!m2[0].separator);
+}
+
+#[test]
+fn modal_present_native_gets_hx_url_alongside_href() {
+    let ctx = HashMap::from([("id".to_string(), "character:abc".to_string())]);
+    let natives = vec![adminapi::MenuEntry {
+        label: "View".into(),
+        link: Some("characters?owner={id}".into()),
+        present: adminapi::Present::Modal,
+        ..Default::default()
+    }];
+    let menu = build_menu(&natives, &ctx, &[], "characters");
+    assert_eq!(menu.len(), 1);
+    assert!(menu[0].hx_url.contains("partial=modal"), "modal hx_url: {}", menu[0].hx_url);
+    assert!(menu[0].href.contains("from="), "plain href fallback keeps from");
+    assert!(!menu[0].href.contains("partial=modal"), "href fallback is a plain navigate");
+}
+
+#[test]
+fn collect_extensions_ordering_stable_regardless_of_contributor_order() {
+    let entry = |label: &str, prio: i32| adminapi::ExtensionEntry {
+        point: "p".into(),
+        label: label.into(),
+        priority: prio,
+        ..Default::default()
+    };
+    // Two contributors to one point, inserted in [Beta, Alpha] order at equal priority.
+    let items = [
+        resolved_with_ext(vec![entry("Beta", 0)]),
+        resolved_with_ext(vec![entry("Alpha", 0)]),
+    ];
+    let out = collect_extensions(&items);
+    let list = out.get("p").expect("point present");
+    // Equal priority → deterministic label tiebreak, independent of insertion order.
+    assert_eq!(list[0].label, "Alpha");
+    assert_eq!(list[1].label, "Beta");
+}
+
+#[tokio::test]
+async fn collect_extensions_merges_remote_itemdata_and_sorts_by_priority() {
+    let ctx = Context::new();
+    // A LOCAL contributor's extension (priority 10).
+    let local = local_item("inv", "S", "Inventory").with_extensions(vec![adminapi::ExtensionEntry {
+        point: "accounts.players.row-menu".into(),
+        label: "View Inventory".into(),
+        link: "inventory?owner={id}".into(),
+        priority: 10,
+        ..Default::default()
+    }]);
+    ctx.contribute(adminapi::SLOT, local);
+    // A REMOTE contributor's extension carried on ItemData (priority 5 → sorts first).
+    ctx.contribute(
+        adminapi::SLOT,
+        remote_item(
+            "characters",
+            Ok(adminapi::ItemData {
+                id: "characters".into(),
+                section: "S".into(),
+                label: "Characters".into(),
+                content: adminapi::Content::default(),
+                extensions: vec![adminapi::ExtensionEntry {
+                    point: "accounts.players.row-menu".into(),
+                    label: "View Characters".into(),
+                    link: "characters?owner={id}".into(),
+                    priority: 5,
+                    ..Default::default()
+                }],
+            }),
+            None,
+        ),
+    );
+    let st = state_from(&ctx);
+    let items = resolve_items(&st, &adminapi::Params::new()).await;
+    let exts = collect_extensions(&items);
+    let list = exts.get("accounts.players.row-menu").expect("remote+local merged");
+    assert_eq!(list.len(), 2);
+    assert_eq!(list[0].label, "View Characters", "priority 5 before 10");
+    assert_eq!(list[1].label, "View Inventory");
+}
+
+#[test]
+fn modal_footer_interpolated_from_content_context() {
+    let content = adminapi::Content {
+        modal_point: "characters.character-modal.actions".into(),
+        context: HashMap::from([("id".to_string(), "character:abc".to_string())]),
+        ..Default::default()
+    };
+    let mut exts: HashMap<String, Vec<adminapi::ExtensionEntry>> = HashMap::new();
+    exts.insert(
+        "characters.character-modal.actions".into(),
+        vec![adminapi::ExtensionEntry {
+            point: "characters.character-modal.actions".into(),
+            label: "View Inventory".into(),
+            icon: "box".into(),
+            link: "inventory?owner={id}".into(),
+            present: adminapi::Present::Modal,
+            priority: 0,
+        }],
+    );
+    let pv = build_page_view(content, "Char".into(), "characters", &adminapi::Params::new(), &exts);
+    assert_eq!(pv.modal_footer.len(), 1);
+    let e = &pv.modal_footer[0];
+    assert_eq!(e.label, "View Inventory");
+    // Interpolated against Content.context (not the request's params).
+    assert!(e.href.contains("inventory?owner=character:abc"), "footer href: {}", e.href);
+    assert!(e.hx_url.contains("partial=modal"));
+}
+
+#[test]
+fn build_back_validates_slug_and_reencodes_query() {
+    let items = [
+        resolved("S", "Players", "players"),
+        resolved("S", "Characters", "characters"),
+    ];
+    // Known slug + query → re-serialized href, label = the target item's label.
+    let mut p = adminapi::Params::new();
+    p.insert("from".into(), "characters?owner=player:X".into());
+    let back = build_back(&p, &items).expect("known slug yields a chip");
+    assert_eq!(back.label, "Characters");
+    assert_eq!(back.href, "/admin/characters?owner=player%3AX", "query re-encoded");
+    // Unknown slug → NO chip (raw input never reflected).
+    let mut bad = adminapi::Params::new();
+    bad.insert("from".into(), "evil?x=1".into());
+    assert!(build_back(&bad, &items).is_none());
+    // No query half → plain href.
+    let mut plain = adminapi::Params::new();
+    plain.insert("from".into(), "players".into());
+    assert_eq!(build_back(&plain, &items).unwrap().href, "/admin/players");
+    // No `from` at all → no chip.
+    assert!(build_back(&adminapi::Params::new(), &items).is_none());
+}
+
+#[test]
+fn current_page_ref_excludes_portal_params() {
+    let mut p = adminapi::Params::new();
+    p.insert("owner".into(), "player:X".into());
+    p.insert("partial".into(), "modal".into());
+    p.insert("reveal".into(), "tok".into());
+    p.insert("from".into(), "players".into());
+    // Only the owner-scoping param survives; portal chrome is stripped.
+    assert_eq!(current_page_ref("characters", &p), "characters?owner=player:X");
+    // No owner params → bare slug.
+    assert_eq!(current_page_ref("players", &adminapi::Params::new()), "players");
+}
+
+#[tokio::test]
+async fn partial_modal_renders_fragment_only_with_hx_request() {
+    let ctx = Context::new();
+    ctx.contribute(adminapi::SLOT, local_item("d", "S", "Detail"));
+    let st = Arc::new(state_from(&ctx)); // open = true → session gate bypassed
+
+    // HX-Request present → modal fragment (chrome only, no page shell).
+    let req = Request::builder()
+        .method("GET")
+        .uri("/admin/detail?partial=modal")
+        .header("hx-request", "true")
+        .body(Body::empty())
+        .unwrap();
+    let resp = router(st.clone()).oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let html = body_string(resp).await;
+    assert!(html.contains(r#"class="modal"#), "fragment renders modal chrome");
+    assert!(!html.contains(r#"class="sidebar"#), "fragment has no page shell");
+
+    // No HX-Request → the SAME URL degrades to the FULL page (never a naked fragment).
+    let req2 = Request::builder()
+        .method("GET")
+        .uri("/admin/detail?partial=modal")
+        .body(Body::empty())
+        .unwrap();
+    let resp2 = router(st).oneshot(req2).await.unwrap();
+    assert_eq!(resp2.status(), StatusCode::OK);
+    let html2 = body_string(resp2).await;
+    assert!(html2.contains(r#"class="sidebar"#), "no HX-Request degrades to full page");
+}
+
+#[tokio::test]
+async fn expired_session_fragment_answers_hx_redirect() {
+    let ctx = Context::new();
+    ctx.contribute(adminapi::SLOT, local_item("d", "S", "Detail"));
+    let st = Arc::new(state_with_open(&ctx, false)); // session gate active
+
+    // A missing cookie short-circuits the gate (no DB I/O); on an HX-Request fragment the
+    // portal answers HX-Redirect instead of a 303 that would swap /admin/login into the
+    // modal root.
+    let req = Request::builder()
+        .method("GET")
+        .uri("/admin/detail?partial=modal")
+        .header("hx-request", "true")
+        .body(Body::empty())
+        .unwrap();
+    let resp = router(st).oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        resp.headers().get("hx-redirect").and_then(|v| v.to_str().ok()),
+        Some("/admin/login"),
+        "fragment session-miss → HX-Redirect, not 303"
+    );
 }
 
 // ---- env-knob parsing (dev knobs, explicit-only conventions) ------------------

@@ -56,7 +56,7 @@ use std::sync::{Arc, LazyLock, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use axum::extract::{ConnectInfo, Path, Query, Request, State};
-use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
+use axum::http::{header, HeaderMap, HeaderName, HeaderValue, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -83,6 +83,11 @@ const TEMPLATE: &str = include_str!("admin.html.tmpl");
 
 /// The login page (same theme, `.html` for auto-escape of the error line).
 const LOGIN_TEMPLATE: &str = include_str!("login.html.tmpl");
+
+/// The modal fragment template (`.html` for auto-escape). Rendered for
+/// `GET /admin/{slug}?partial=modal` on an htmx request — modal chrome only, NO page
+/// shell (the step-3 visual layer restyles it).
+const MODAL_TEMPLATE: &str = include_str!("modal.html.tmpl");
 
 /// The embedded dark GameOps theme. Served ungated at `/admin/theme.css`.
 const THEME_CSS: &str = include_str!("theme.css");
@@ -441,6 +446,8 @@ fn template_env() -> anyhow::Result<minijinja::Environment<'static>> {
         .map_err(|e| anyhow::anyhow!("admin: template compile: {e}"))?;
     env.add_template("login.html", LOGIN_TEMPLATE)
         .map_err(|e| anyhow::anyhow!("admin: login template compile: {e}"))?;
+    env.add_template("modal.html", MODAL_TEMPLATE)
+        .map_err(|e| anyhow::anyhow!("admin: modal template compile: {e}"))?;
     Ok(env)
 }
 
@@ -1048,6 +1055,7 @@ async fn index(
                 user: authed.user.clone(),
                 csrf: authed.csrf.clone(),
                 groups: Vec::new(),
+                back: None,
                 page: None,
             },
         );
@@ -1067,18 +1075,41 @@ async fn item(
     State(st): State<Arc<AdminState>>,
     Path(slug): Path<String>,
     jar: CookieJar,
+    headers: HeaderMap,
     Query(params): Query<HashMap<String, String>>,
 ) -> Response {
+    // A modal FRAGMENT is requested only when htmx sets `HX-Request` AND `?partial=modal`
+    // is present. Without the header the SAME URL falls back to the FULL page render (a
+    // degraded anchor click never yields a naked fragment).
+    let hx_request = headers.contains_key("hx-request");
+    let want_modal = adminapi::param(&params, "partial") == "modal";
+    let fragment = want_modal && hx_request;
+
     let authed = match st.gate(&jar, false).await {
         Ok(a) => a,
-        Err(resp) => return resp,
+        // An expired/absent session on an HX-Request fragment must NOT 303 the login page
+        // INTO `#modal-root`: answer `HX-Redirect` so htmx performs a full-page redirect.
+        // Only a session-miss redirect (303) is converted; a 500 passes through untouched.
+        Err(resp) => {
+            if fragment && resp.status() == StatusCode::SEE_OTHER {
+                return hx_redirect("/admin/login");
+            }
+            return resp;
+        }
     };
     let items = resolve_items(&st, &params).await;
     let Some(cur) = items.iter().find(|r| r.slug == slug) else {
         return (StatusCode::NOT_FOUND, "not found").into_response();
     };
 
-    let mut page = page_view(cur, &params, &slug);
+    let extensions = collect_extensions(&items);
+    let mut page = page_view(cur, &params, &slug, &extensions);
+
+    // Modal fragment: modal chrome only, no shell (same session gate as the full page).
+    if fragment {
+        return render_modal(&st, &page);
+    }
+
     // PRG-with-flash: a `?reveal=<token>` from a just-completed submit is CONSUMED here
     // (one-shot) and rendered once. A refresh of this GET re-issues without a live token
     // (already consumed) and shows no reveal — and, being a GET, mints nothing.
@@ -1087,16 +1118,24 @@ async fn item(
             page.reveal = reveal;
         }
     }
+    // The crumb gains the entity name when the owner rendered a ContextHeader
+    // (mockup: "Players · VoidR4nger"); otherwise it is the section alone.
+    let crumb = match &page.header {
+        Some(h) => format!("{} · {}", cur.section, h.title),
+        None => cur.section.clone(),
+    };
+    let back = build_back(&params, &items);
     let groups = build_groups(&items, &slug);
     render_page(
         &st,
         PageData {
-            crumb: cur.section.clone(),
+            crumb,
             title: cur.label.clone(),
             env: "Local".into(),
             user: authed.user.clone(),
             csrf: authed.csrf.clone(),
             groups,
+            back,
             page: Some(page),
         },
     )
@@ -1343,13 +1382,11 @@ fn render_error(
             user: authed.user.clone(),
             csrf: authed.csrf.clone(),
             groups,
+            back: None,
             page: Some(PageView {
                 title: cur.label.clone(),
                 err: msg,
-                kpis: Vec::new(),
-                table: None,
-                form: None,
-                reveal: Vec::new(),
+                ..Default::default()
             }),
         },
     )
@@ -1362,7 +1399,9 @@ fn render_error(
 /// A remote item's fetched outcome: the content, or the transport error string that
 /// becomes an "unavailable" error card.
 enum RemoteResult {
-    Ok(adminapi::Content),
+    /// Boxed: [`adminapi::Content`] is large (scoped-view + extension fields), so the
+    /// enum is kept small by indirection on the common variant.
+    Ok(Box<adminapi::Content>),
     Err(String),
 }
 
@@ -1375,6 +1414,10 @@ struct Resolved {
     slug: String,
     item: adminapi::Item,
     remote: Option<RemoteResult>,
+    /// The cross-page extension entries this resolved item contributes (local
+    /// `Item::extensions`, or a remote peer's `ItemData::extensions`). Indexed per
+    /// request into a point→entries map by [`collect_extensions`].
+    extensions: Vec<adminapi::ExtensionEntry>,
 }
 
 /// Resolves the contributed admin items into ordered [`Resolved`] entries with unique
@@ -1389,14 +1432,24 @@ async fn resolve_items(st: &AdminState, params: &adminapi::Params) -> Vec<Resolv
     let mut out: Vec<Resolved> = Vec::new();
 
     for it in items {
-        let (section, label, remote) = if let Some(fetch) = it.remote_fetch.clone() {
+        let (section, label, remote, extensions) = if let Some(fetch) = it.remote_fetch.clone() {
             match fetch(params.clone()).await {
                 Err(adminapi::ItemError::Absent) => continue, // no admin surface → skip
-                Err(e) => (it.id.clone(), it.id.clone(), Some(RemoteResult::Err(format!("{e}")))),
-                Ok(data) => (data.section, data.label, Some(RemoteResult::Ok(data.content))),
+                Err(e) => (
+                    it.id.clone(),
+                    it.id.clone(),
+                    Some(RemoteResult::Err(format!("{e}"))),
+                    Vec::new(),
+                ),
+                Ok(data) => (
+                    data.section,
+                    data.label,
+                    Some(RemoteResult::Ok(Box::new(data.content))),
+                    data.extensions,
+                ),
             }
         } else {
-            (it.section.clone(), it.label.clone(), None)
+            (it.section.clone(), it.label.clone(), None, it.extensions.clone())
         };
 
         let mut base = slugify(&label);
@@ -1417,22 +1470,250 @@ async fn resolve_items(st: &AdminState, params: &adminapi::Params) -> Vec<Resolv
             slug,
             item: it,
             remote,
+            extensions,
         });
     }
     out
 }
 
+/// Indexes every resolved item's [`adminapi::ExtensionEntry`] by its target point id
+/// into a per-request map, each point's list sorted by `(priority, label)` so the merge
+/// order is deterministic regardless of contributor resolution order. A page owner never
+/// learns its extenders — the portal is the only party that sees the whole set.
+fn collect_extensions(items: &[Resolved]) -> HashMap<String, Vec<adminapi::ExtensionEntry>> {
+    let mut map: HashMap<String, Vec<adminapi::ExtensionEntry>> = HashMap::new();
+    for it in items {
+        for ext in &it.extensions {
+            map.entry(ext.point.clone()).or_default().push(ext.clone());
+        }
+    }
+    for entries in map.values_mut() {
+        entries.sort_by(|a, b| a.priority.cmp(&b.priority).then_with(|| a.label.cmp(&b.label)));
+    }
+    map
+}
+
+/// Substitutes every `{key}` in `template` with `ctx[key]`. Returns `None` the moment a
+/// referenced key is ABSENT from `ctx` (the caller SKIPs that menu entry with a warn —
+/// never a panic). An unterminated `{` is treated as literal text. Uniform across native
+/// menu links and extension links — both interpolate through this one helper.
+fn interpolate(template: &str, ctx: &HashMap<String, String>) -> Option<String> {
+    let mut out = String::new();
+    let mut rest = template;
+    while let Some(open) = rest.find('{') {
+        out.push_str(&rest[..open]);
+        let after = &rest[open + 1..];
+        let Some(close) = after.find('}') else {
+            // No closing brace — the remainder is literal (defensive; owner templates
+            // are well-formed).
+            out.push_str(&rest[open..]);
+            return Some(out);
+        };
+        let key = &after[..close];
+        let value = ctx.get(key)?; // absent key → skip the whole entry
+        out.push_str(value);
+        rest = &after[close + 1..];
+    }
+    out.push_str(rest);
+    Some(out)
+}
+
+/// The current page reference used as the `from=` value on every menu link: the slug
+/// plus a deterministic (sorted) rebuild of the owner-scoping query, EXCLUDING portal
+/// chrome params (`partial`/`reveal`/`from`). e.g. `characters?owner=player:X`. The
+/// whole string is urlencoded as ONE param value by [`append_query`].
+fn current_page_ref(slug: &str, params: &adminapi::Params) -> String {
+    let mut kv: Vec<(&str, &str)> = params
+        .iter()
+        .filter(|(k, _)| !matches!(k.as_str(), "partial" | "reveal" | "from"))
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
+    if kv.is_empty() {
+        return slug.to_string();
+    }
+    kv.sort();
+    let query = kv
+        .iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect::<Vec<_>>()
+        .join("&");
+    format!("{slug}?{query}")
+}
+
+/// Appends `key=<urlencoded value>` to `url`, choosing `?` or `&` by whether `url`
+/// already carries a query.
+fn append_query(url: &str, key: &str, value: &str) -> String {
+    let sep = if url.contains('?') { '&' } else { '?' };
+    let encoded: String = form_urlencoded::byte_serialize(value.as_bytes()).collect();
+    format!("{url}{sep}{key}={encoded}")
+}
+
+/// A merged-menu view-model entry: a native item, an extension, or a separator between
+/// the two blocks. `href`/`hx_url` are slug-relative (`characters?owner=…`); the template
+/// prefixes `/admin/`. `href` empty ⇒ an inert entry (no link); `hx_url` empty ⇒ not a
+/// modal entry.
+#[derive(Serialize, Default, Clone)]
+struct MenuEntryView {
+    /// `true` renders the visual divider between natives and extensions (no other field
+    /// is meaningful).
+    #[serde(default)]
+    separator: bool,
+    label: String,
+    icon: String,
+    /// Slug-relative navigate/fallback href (interpolated link + `from`); empty = inert.
+    href: String,
+    /// Slug-relative htmx modal-fetch URL (interpolated link + `partial=modal`); empty
+    /// for a Navigate entry.
+    hx_url: String,
+    #[serde(default)]
+    danger: bool,
+    #[serde(default)]
+    disabled: bool,
+}
+
+/// Builds one row/card menu: owner natives (interpolated) → separator → matching
+/// extensions (interpolated), the separator present only when BOTH blocks are non-empty.
+/// Every link is interpolated against the SAME `ctx` (uniform for natives and
+/// extensions); an unresolved `{key}` SKIPs that entry. `current` is the `from=` value.
+fn build_menu(
+    natives: &[adminapi::MenuEntry],
+    ctx: &HashMap<String, String>,
+    extensions: &[adminapi::ExtensionEntry],
+    current: &str,
+) -> Vec<MenuEntryView> {
+    let mut out: Vec<MenuEntryView> = Vec::new();
+    for n in natives {
+        if let Some(v) = native_menu_view(n, ctx, current) {
+            out.push(v);
+        }
+    }
+    let mut ext_views: Vec<MenuEntryView> = Vec::new();
+    for e in extensions {
+        if let Some(v) = extension_menu_view(e, ctx, current) {
+            ext_views.push(v);
+        }
+    }
+    if !out.is_empty() && !ext_views.is_empty() {
+        out.push(MenuEntryView {
+            separator: true,
+            ..Default::default()
+        });
+    }
+    out.extend(ext_views);
+    out
+}
+
+/// One owner-native menu entry → view. A `None` link is an inert (unlinked) item, still
+/// rendered; a link with an unresolved `{key}` SKIPs the entry (warn). A `Modal` entry
+/// gets an `hx_url` alongside the plain `href` fallback.
+fn native_menu_view(
+    n: &adminapi::MenuEntry,
+    ctx: &HashMap<String, String>,
+    current: &str,
+) -> Option<MenuEntryView> {
+    let (href, hx_url) = match &n.link {
+        Some(link) => {
+            let interpolated = match interpolate(link, ctx) {
+                Some(s) => s,
+                None => {
+                    tracing::warn!(link, "admin: native menu entry skipped — unresolved {{key}}");
+                    return None;
+                }
+            };
+            let href = append_query(&interpolated, "from", current);
+            let hx_url = if n.present == adminapi::Present::Modal {
+                append_query(&interpolated, "partial", "modal")
+            } else {
+                String::new()
+            };
+            (href, hx_url)
+        }
+        None => (String::new(), String::new()),
+    };
+    Some(MenuEntryView {
+        separator: false,
+        label: n.label.clone(),
+        icon: n.icon.clone(),
+        href,
+        hx_url,
+        danger: n.danger,
+        disabled: n.disabled,
+    })
+}
+
+/// One contributor extension entry → view. An unresolved `{key}` SKIPs the entry (warn).
+fn extension_menu_view(
+    e: &adminapi::ExtensionEntry,
+    ctx: &HashMap<String, String>,
+    current: &str,
+) -> Option<MenuEntryView> {
+    let interpolated = match interpolate(&e.link, ctx) {
+        Some(s) => s,
+        None => {
+            tracing::warn!(link = %e.link, "admin: extension entry skipped — unresolved {{key}}");
+            return None;
+        }
+    };
+    let href = append_query(&interpolated, "from", current);
+    let hx_url = if e.present == adminapi::Present::Modal {
+        append_query(&interpolated, "partial", "modal")
+    } else {
+        String::new()
+    };
+    Some(MenuEntryView {
+        separator: false,
+        label: e.label.clone(),
+        icon: e.icon.clone(),
+        href,
+        hx_url,
+        danger: false,
+        disabled: false,
+    })
+}
+
+/// The back-navigation chip from a `from=` param the portal auto-appended to the link
+/// that reached this page. The value is `slug` + optional `?query`; the slug half is
+/// validated against the resolved slugs (an UNKNOWN slug yields NO chip — raw input is
+/// never reflected), and the query half is re-serialized through `form_urlencoded`
+/// before it is emitted. The label is the target item's own label.
+fn build_back(params: &adminapi::Params, items: &[Resolved]) -> Option<BackNav> {
+    let raw = params.get("from")?;
+    let (slug, query) = match raw.split_once('?') {
+        Some((s, q)) => (s, Some(q)),
+        None => (raw.as_str(), None),
+    };
+    let target = items.iter().find(|r| r.slug == slug)?; // unknown slug → no chip
+    let href = match query {
+        Some(q) => {
+            let pairs: Vec<(String, String)> = form_urlencoded::parse(q.as_bytes())
+                .map(|(k, v)| (k.into_owned(), v.into_owned()))
+                .collect();
+            let requery = form_urlencoded::Serializer::new(String::new())
+                .extend_pairs(pairs)
+                .finish();
+            format!("/admin/{slug}?{requery}")
+        }
+        None => format!("/admin/{slug}"),
+    };
+    Some(BackNav {
+        label: target.label.clone(),
+        href,
+    })
+}
+
 /// Builds the [`PageView`] for one resolved item: the remote content (or its fetch
 /// error), else the LOCAL render closure called with the request's query params.
-fn page_view(cur: &Resolved, params: &adminapi::Params, slug: &str) -> PageView {
+fn page_view(
+    cur: &Resolved,
+    params: &adminapi::Params,
+    slug: &str,
+    extensions: &HashMap<String, Vec<adminapi::ExtensionEntry>>,
+) -> PageView {
     match &cur.remote {
         Some(RemoteResult::Err(msg)) => PageView {
             title: cur.label.clone(),
             err: format!("unavailable: {msg}"),
-            kpis: Vec::new(),
-            table: None,
-            form: None,
-            reveal: Vec::new(),
+            ..Default::default()
         },
         // A remote item's form arrives with `submit == None` (a closure can't marshal),
         // but the peer may still expose a WRITE surface (`admin.adminSubmit`): render its
@@ -1441,55 +1722,133 @@ fn page_view(cur: &Resolved, params: &adminapi::Params, slug: &str) -> PageView 
         // never registered the wire method answers 405 (read-only). A remote content with
         // `form: None` still renders read-only (KPIs + table only), as before.
         Some(RemoteResult::Ok(content)) => {
-            let form = content.form.clone().map(|mut f| {
-                f.action = format!("/admin/{slug}");
-                f
-            });
-            PageView {
-                title: cur.label.clone(),
-                err: String::new(),
-                kpis: content.kpis.clone(),
-                table: content.table.clone(),
-                form,
-                reveal: Vec::new(),
-            }
+            build_page_view(content.as_ref().clone(), cur.label.clone(), slug, params, extensions)
         }
         None => match &cur.item.render {
             Some(render) => match render(params) {
                 Ok(content) => {
-                    let form = content.form.map(|mut f| {
-                        f.action = format!("/admin/{slug}");
-                        f
-                    });
-                    PageView {
-                        title: cur.label.clone(),
-                        err: String::new(),
-                        kpis: content.kpis,
-                        table: content.table,
-                        form,
-                        reveal: Vec::new(),
-                    }
+                    build_page_view(content, cur.label.clone(), slug, params, extensions)
                 }
                 Err(e) => PageView {
                     title: cur.label.clone(),
                     err: format!("failed to load: {e}"),
-                    kpis: Vec::new(),
-                    table: None,
-                    form: None,
-                    reveal: Vec::new(),
+                    ..Default::default()
                 },
             },
             // Neither a closure nor a remote result (a metadata-only local item).
             None => PageView {
                 title: cur.label.clone(),
-                err: String::new(),
-                kpis: Vec::new(),
-                table: None,
-                form: None,
-                reveal: Vec::new(),
+                ..Default::default()
             },
         },
     }
+}
+
+/// Turns a rendered [`adminapi::Content`] into the [`PageView`] the template sees,
+/// building the merged per-row/per-card menus + the modal footer from the per-request
+/// `extensions` map. `menu_point`/`row_meta` (and `CardGrid.menu_point`) select the
+/// point; interpolation is UNIFORM against `RowMeta.context`/`Card.context`/
+/// `Content.context`; the `from=` value is this page's own reference.
+fn build_page_view(
+    content: adminapi::Content,
+    title: String,
+    slug: &str,
+    params: &adminapi::Params,
+    extensions: &HashMap<String, Vec<adminapi::ExtensionEntry>>,
+) -> PageView {
+    let current = current_page_ref(slug, params);
+
+    // Per-row menus: index-aligned with `table.rows`, built only when the table binds a
+    // point AND carries row metadata (else empty ⇒ the template renders no menu column).
+    let row_menus: Vec<Vec<MenuEntryView>> = match &content.table {
+        Some(t) if !t.menu_point.is_empty() && !t.row_meta.is_empty() => {
+            let point = extensions.get(&t.menu_point).map(Vec::as_slice).unwrap_or_default();
+            t.row_meta
+                .iter()
+                .map(|rm| build_menu(&rm.menu, &rm.context, point, &current))
+                .collect()
+        }
+        _ => Vec::new(),
+    };
+
+    // Card grid: each card's `⋯` menu merges its natives with the grid's bound point.
+    let cards = content.cards.as_ref().map(|grid| {
+        let point = extensions.get(&grid.menu_point).map(Vec::as_slice).unwrap_or_default();
+        CardGridView {
+            cards: grid
+                .cards
+                .iter()
+                .map(|c| CardView {
+                    icon_text: c.icon_text.clone(),
+                    color_key: c.color_key.clone(),
+                    title: c.title.clone(),
+                    subtitle: c.subtitle.clone(),
+                    badge: c.badge.clone(),
+                    stats: c.stats.clone(),
+                    menu: build_menu(&c.menu, &c.context, point, &current),
+                })
+                .collect(),
+        }
+    });
+
+    // Modal footer: the `modal_point`'s extensions ONLY (no natives), interpolated
+    // against `Content.context`.
+    let modal_footer = if content.modal_point.is_empty() {
+        Vec::new()
+    } else {
+        let point = extensions
+            .get(&content.modal_point)
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        build_menu(&[], &content.context, point, &current)
+    };
+
+    let form = content.form.map(|mut f| {
+        f.action = format!("/admin/{slug}");
+        f
+    });
+
+    PageView {
+        title,
+        err: String::new(),
+        kpis: content.kpis,
+        table: content.table,
+        row_menus,
+        cards,
+        header: content.header,
+        modal_footer,
+        form,
+        reveal: Vec::new(),
+    }
+}
+
+/// Renders the modal FRAGMENT (`modal.html`) — chrome + body + footer only, no page
+/// shell — for an htmx `?partial=modal` request. A template error is a 500 (the template
+/// is compile-time embedded).
+fn render_modal(st: &AdminState, page: &PageView) -> Response {
+    match st.env.get_template("modal.html").and_then(|t| t.render(page)) {
+        Ok(html) => (
+            [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+            html,
+        )
+            .into_response(),
+        Err(e) => {
+            tracing::error!(err = %e, "admin modal render failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, "render failed").into_response()
+        }
+    }
+}
+
+/// An htmx full-page redirect: a 200 carrying `HX-Redirect`, so an expired-session
+/// fragment fetch navigates the whole window to the login page instead of swapping the
+/// login markup into `#modal-root`.
+fn hx_redirect(loc: &str) -> Response {
+    let mut resp = StatusCode::OK.into_response();
+    resp.headers_mut().insert(
+        HeaderName::from_static("hx-redirect"),
+        HeaderValue::from_str(loc).expect("redirect location is ASCII"),
+    );
+    resp
 }
 
 /// Groups items by section preserving first-seen section order, marking the item
@@ -1632,12 +1991,53 @@ struct NavGroup {
     items: Vec<NavItem>,
 }
 
-#[derive(Serialize)]
+/// One card's render view-model (its `⋯` menu already merged into [`CardView::menu`]).
+#[derive(Serialize, Default)]
+struct CardView {
+    icon_text: String,
+    color_key: String,
+    title: String,
+    subtitle: String,
+    badge: String,
+    stats: Vec<adminapi::CardStat>,
+    menu: Vec<MenuEntryView>,
+}
+
+/// A card grid render view-model (the scoped-view layout, e.g. a player's characters).
+#[derive(Serialize, Default)]
+struct CardGridView {
+    cards: Vec<CardView>,
+}
+
+/// The back-navigation chip: a validated `from=` target the template renders as
+/// `‹ <label>` linking to `<href>`.
+#[derive(Serialize, Default)]
+struct BackNav {
+    label: String,
+    href: String,
+}
+
+#[derive(Serialize, Default)]
 struct PageView {
     title: String,
     err: String,
     kpis: Vec<adminapi::Kpi>,
     table: Option<adminapi::Table>,
+    /// Per-row merged menus, index-aligned with `table.rows`. Empty ⇒ the table renders
+    /// no menu column (the historical no-menu table).
+    #[serde(default)]
+    row_menus: Vec<Vec<MenuEntryView>>,
+    /// Optional card grid (scoped view), each card carrying its merged menu.
+    #[serde(default)]
+    cards: Option<CardGridView>,
+    /// Optional owner-rendered entity header (avatar + name + mono subtitle); drives the
+    /// `"<section> · <title>"` crumb in the handler.
+    #[serde(default)]
+    header: Option<adminapi::ContextHeader>,
+    /// The modal footer's action strip (a `modal_point`'s extensions), rendered only by
+    /// `modal.html`. Empty on a page with no `modal_point`.
+    #[serde(default)]
+    modal_footer: Vec<MenuEntryView>,
     form: Option<adminapi::Form>,
     /// SHOW-ONCE values surfaced right after a successful submit (e.g. a freshly minted
     /// API-key secret). Rendered inline — never persisted, never re-derivable — which is
@@ -1658,6 +2058,9 @@ struct PageData {
     /// `ADMIN_OPEN=1` — the CSRF check is skipped there too.
     csrf: String,
     groups: Vec<NavGroup>,
+    /// The optional back-navigation chip derived from the `from=` param.
+    #[serde(default)]
+    back: Option<BackNav>,
     page: Option<PageView>,
 }
 

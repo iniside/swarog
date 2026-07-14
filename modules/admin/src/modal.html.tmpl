@@ -1,0 +1,26 @@
+<!-- Modal fragment (no page shell). Rendered for GET /admin/{slug}?partial=modal on an
+     htmx request. Structural markup only — the step-3 visual layer restyles it. -->
+{%- macro cellinner(c) -%}
+{%- if c.badge %}<span class="badge {{ c.badge }}"><span class="dot"></span>{{ c.text }}</span>{% elif c.mono %}<span class="mono dim">{{ c.text }}</span>{% else %}{{ c.text }}{% endif -%}
+{%- endmacro -%}
+{%- macro render_cell(c) -%}
+{%- if c.link %}<a class="cell-link" href="/admin/{{ c.link }}">{{ cellinner(c) }}</a>{% else %}{{ cellinner(c) }}{% endif -%}
+{%- endmacro -%}
+{%- macro render_menu(menu) -%}
+{%- if menu %}<div class="menu">{% for m in menu %}{% if m.separator %}<div class="menu-sep"></div>{% elif m.href %}<a class="menu-item{% if m.danger %} danger{% endif %}{% if m.disabled %} disabled{% endif %}"{% if m.hx_url %} data-hx-url="/admin/{{ m.hx_url }}"{% endif %} href="/admin/{{ m.href }}">{{ m.label }}</a>{% else %}<span class="menu-item disabled">{{ m.label }}</span>{% endif %}{% endfor %}</div>{% endif -%}
+{%- endmacro -%}
+<div class="modal" id="modal">
+  <div class="modal-header">
+    {% if header %}<div class="ctx-title">{{ header.title }}</div><div class="ctx-subtitle mono">{{ header.subtitle_mono }}</div>{% else %}<div class="ctx-title">{{ title }}</div>{% endif %}
+  </div>
+  <div class="modal-body">
+    {% if err %}<div class="empty">{{ err }}</div>{% endif %}
+    {% if kpis %}<div class="kpi-grid">{% for k in kpis %}<div class="kpi"><div class="kpi-label">{{ k.label }}</div><div class="kpi-value">{{ k.value }}</div>{% if k.sub %}<div class="kpi-sub">{{ k.sub }}</div>{% endif %}</div>{% endfor %}</div>{% endif %}
+    {% if table %}{% if table.rows %}<table class="table"><thead><tr>{% for c in table.columns %}<th>{{ c }}</th>{% endfor %}{% if row_menus %}<th></th>{% endif %}</tr></thead><tbody>{% for row in table.rows %}<tr>{% for cell in row %}<td>{{ render_cell(cell) }}</td>{% endfor %}{% if row_menus %}<td class="row-menu">{{ render_menu(row_menus[loop.index0]) }}</td>{% endif %}</tr>{% endfor %}</tbody></table>{% else %}<div class="empty">No rows yet.</div>{% endif %}{% endif %}
+    {% if cards %}<div class="card-grid">{% for c in cards.cards %}<div class="card"><div class="card-avatar {{ c.color_key }}">{{ c.icon_text }}</div><div class="card-title">{{ c.title }}</div>{% if c.subtitle %}<div class="card-subtitle">{{ c.subtitle }}</div>{% endif %}{% if c.badge %}<span class="badge">{{ c.badge }}</span>{% endif %}{% for s in c.stats %}<div class="card-stat"><span>{{ s.label }}</span><span>{{ s.value }}</span></div>{% endfor %}{{ render_menu(c.menu) }}</div>{% endfor %}</div>{% endif %}
+  </div>
+  <div class="modal-footer">
+    {% for m in modal_footer %}{% if m.separator %}{% elif m.href %}<a class="menu-item"{% if m.hx_url %} data-hx-url="/admin/{{ m.hx_url }}"{% endif %} href="/admin/{{ m.href }}">{{ m.label }}</a>{% else %}<span class="menu-item disabled">{{ m.label }}</span>{% endif %}{% endfor %}
+    <button type="button" class="btn" data-modal-close>Close</button>
+  </div>
+</div>

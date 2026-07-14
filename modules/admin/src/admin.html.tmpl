@@ -16,6 +16,9 @@
 {%- macro render_cell(c) -%}
 {%- if c.link %}<a class="cell-link" href="/admin/{{ c.link }}">{{ cellinner(c) }}</a>{% else %}{{ cellinner(c) }}{% endif -%}
 {%- endmacro -%}
+{%- macro render_menu(menu) -%}
+{%- if menu %}<div class="menu">{% for m in menu %}{% if m.separator %}<div class="menu-sep"></div>{% elif m.href %}<a class="menu-item{% if m.danger %} danger{% endif %}{% if m.disabled %} disabled{% endif %}"{% if m.hx_url %} data-hx-url="/admin/{{ m.hx_url }}"{% endif %} href="/admin/{{ m.href }}">{{ m.label }}</a>{% else %}<span class="menu-item disabled">{{ m.label }}</span>{% endif %}{% endfor %}</div>{% endif -%}
+{%- endmacro -%}
 <div class="app">
 
   <aside class="sidebar">
@@ -76,6 +79,7 @@
   <div class="main">
     <div class="header">
       <div>
+        {% if back %}<a class="back-chip" href="{{ back.href }}">‹ {{ back.label }}</a>{% endif %}
         <div class="crumb">{{ crumb }}</div>
         <div class="title">{{ title }}</div>
       </div>
@@ -98,8 +102,10 @@
           {% if page.err %}<div class="panel"><div class="empty">{{ page.err }}</div></div>
           {% else %}
             {% if page.reveal %}<div class="panel"><div class="panel-title">Generated — shown once</div>{% for r in page.reveal %}<div class="form-row"><label>{{ r.label }}</label><input type="text" class="mono" name="reveal_{{ loop.index }}" value="{{ r.value }}" readonly></div>{% endfor %}<div class="empty">Copy now — these values are not stored and cannot be shown again.</div></div>{% endif %}
+            {% if page.header %}<div class="context-header"><div class="ctx-avatar {{ page.header.avatar_color_key }}">{{ page.header.avatar_text }}</div><div class="ctx-meta"><div class="ctx-title">{{ page.header.title }}</div>{% if page.header.subtitle_mono %}<div class="ctx-subtitle mono">{{ page.header.subtitle_mono }}</div>{% endif %}</div>{% if page.header.right_note %}<div class="ctx-note">{{ page.header.right_note }}</div>{% endif %}</div>{% endif %}
             {% if page.kpis %}<div class="kpi-grid">{% for k in page.kpis %}<div class="kpi"><div class="kpi-label">{{ k.label }}</div><div class="kpi-value">{{ k.value }}</div>{% if k.sub %}<div class="kpi-sub">{{ k.sub }}</div>{% endif %}</div>{% endfor %}</div>{% endif %}
-            {% if page.table %}<div class="panel"><div class="panel-title">{{ page.title }}</div>{% if page.table.rows %}<table class="table"><thead><tr>{% for c in page.table.columns %}<th>{{ c }}</th>{% endfor %}</tr></thead><tbody>{% for row in page.table.rows %}<tr>{% for cell in row %}<td>{{ render_cell(cell) }}</td>{% endfor %}</tr>{% endfor %}</tbody></table>{% else %}<div class="empty">No rows yet.</div>{% endif %}</div>{% endif %}
+            {% if page.table %}<div class="panel"><div class="panel-title">{{ page.title }}</div>{% if page.table.rows %}<table class="table"><thead><tr>{% for c in page.table.columns %}<th>{{ c }}</th>{% endfor %}{% if page.row_menus %}<th></th>{% endif %}</tr></thead><tbody>{% for row in page.table.rows %}<tr>{% for cell in row %}<td>{{ render_cell(cell) }}</td>{% endfor %}{% if page.row_menus %}<td class="row-menu">{{ render_menu(page.row_menus[loop.index0]) }}</td>{% endif %}</tr>{% endfor %}</tbody></table>{% else %}<div class="empty">No rows yet.</div>{% endif %}</div>{% endif %}
+            {% if page.cards %}<div class="panel"><div class="card-grid">{% for c in page.cards.cards %}<div class="card"><div class="card-avatar {{ c.color_key }}">{{ c.icon_text }}</div><div class="card-title">{{ c.title }}</div>{% if c.subtitle %}<div class="card-subtitle">{{ c.subtitle }}</div>{% endif %}{% if c.badge %}<span class="badge">{{ c.badge }}</span>{% endif %}{% for s in c.stats %}<div class="card-stat"><span>{{ s.label }}</span><span>{{ s.value }}</span></div>{% endfor %}{{ render_menu(c.menu) }}</div>{% endfor %}</div></div>{% endif %}
             {% if page.form %}<div class="panel"><div class="panel-title">Edit</div><form method="post" action="{{ page.form.action }}">{% if csrf %}<input type="hidden" name="_csrf" value="{{ csrf }}">{% endif %}{% for h in page.form.hidden %}<input type="hidden" name="{{ h.name }}" value="{{ h.value }}">{% endfor %}{% for f in page.form.fields %}<div class="form-row"><label>{{ f.label }}</label>{% if f.kind == "Select" %}<select name="{{ f.name }}">{% for o in f.options %}<option value="{{ o.value }}"{% if o.checked %} selected{% endif %}>{{ o.label }}</option>{% endfor %}</select>{% elif f.kind == "CheckboxGroup" %}<div class="checkbox-group">{% for o in f.options %}<label class="checkbox"><input type="checkbox" name="{{ f.name }}" value="{{ o.value }}"{% if o.checked %} checked{% endif %}> {{ o.label }}</label>{% endfor %}</div>{% else %}<input type="text" name="{{ f.name }}" value="{{ f.value }}">{% endif %}</div>{% endfor %}<button type="submit" class="btn">Save</button></form></div>{% endif %}
           {% endif %}
         {% else %}
