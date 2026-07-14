@@ -244,6 +244,10 @@ filtr `#[http]`), generowany neutralny data-crate `opscatalog` (`pub const OPERA
 verifyctl freshness stage (diff jak contract-golden), `modules/apikeys/Cargo.toml` (+dep
 `opscatalog`), `modules/apikeys/src/admin.rs` (CheckboxGroup opcje z `opscatalog::OPERATIONS`).
 **(b) dlaczego po Fazie B:** apikeys form konsumuje katalog; generator/artefakt muszą istnieć.
+> **FOLD z recenzji Fazy B (LOW):** przy okazji dotykania apikeys — dev-seed `upsert_seed_role`/
+> `upsert_seed_key` (`store.rs:369-406`) NIE bumpuje `revision` w `DO UPDATE`; dołóż
+> `revision = <tab>.revision + 1` by CAS-token po re-seedzie odzwierciedlał stan. Digest to
+> **base64url(sha256)** (nie hex) — Step 9 musi liczyć identycznie.
 **(c) jak:** generator emituje deterministyczny `OPERATIONS` (method/verb/path/auth z
 `opsapi::Operation`, `lib.rs:265`); freshness stage FAIL gdy artefakt != regeneracja (re-bless
 komendą). apikeys renderuje checkboxy z tej listy; luźna walidacja pozostaje (operator może
@@ -307,6 +311,18 @@ timeout** (nie shell-loop) by nie wskrzesić deadlocku AD2b/AD2c (`:1228-1306`).
 5. **Ręczny smoke (monolith, `devctl up monolith`):** zaloguj do `/admin`; utwórz rolę z polityką
    zawierającą `leaderboard.topScores` (uwaga #15), utwórz klucz tej roli, potwierdź show-once;
    `curl localhost:8080/leaderboard -H "X-Api-Key: <nowy-sekret>"` → 200; po revoke → 401.
+
+## Znane follow-upy (nie blokujące, poza zakresem tego rolloutu)
+- **UX footgun (recenzja Step 7, LOW, pre-existing):** edytor polityki roli to blind
+  full-replace — renderuje checkboxy odznaczone i nie pokazuje bieżącej polityki wybranej roli,
+  więc operator dodający jedną metodę musi ręcznie zaznaczyć wszystkie istniejące albo zostaną
+  usunięte. Kierunek fail-safe (zawęża autoryzację; CAS + empty-guard chronią przed korupcją),
+  ale wart poprawy: per-target render z pre-checkiem bieżącej polityki (wymaga per-role rows
+  zamiast jednego współdzielonego formularza). `modules/apikeys/src/admin.rs:121-161`.
+- **Self-check generatora (recenzja Step 7, INFO):** `rpc_modules_from_fs` skanuje tekstowo tylko
+  `api/*/api/src/lib.rs` — trzyma pod konwencją „każdy `#[rpc]` trait literalnie w lib.rs"
+  (dziś prawda dla wszystkich 12). Trait w innym pliku/makro-generowany byłby niewidoczny.
+  Silniejszy autorytet = skompilowany zbiór `*_rpc` modułów; proxy tekstowy akceptowalny.
 
 ## Self-check przed „done"
 adminapi/admin/apikeys build+test zielone w monolicie i splicie; admin **bez** importu
