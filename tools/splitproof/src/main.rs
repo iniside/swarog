@@ -327,8 +327,14 @@ async fn monolith_parity(ctx: &Ctx, pool: &PgPool, p: &mut Proof) -> Result<()> 
         format!("login={} chars={m3c}", m3l.status().as_u16()),
     );
 
-    // [M3b] LOCAL apikeys form-submit WITH _csrf -> a NEW admin.action{form-submit} event
-    // (remote forms in the split are read-only, so this is the only place it's exercised).
+    // [M3b] LOCAL apikeys RICH-form submit WITH _csrf -> a NEW admin.action{form-submit}
+    // event + the created role row. The rich configurator requires an explicit `_action`
+    // (a blind resubmit of the rendered fields is a deliberate no-op — a half-filled row is
+    // never silently applied), so this creates a role with a unique name. It is the
+    // monolith-LOCAL parity for the split's [AD6b] (cross-process create) / [AD6g] (uniform
+    // audit) — the same submit path, driven in-process instead of over the edge.
+    let m3b_role = format!("m3b-role-{suffix}");
+    sqlx::query("DELETE FROM apikeys.roles WHERE name = $1").bind(&m3b_role).execute(pool).await.ok();
     let before: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM asyncevents.events \
          WHERE topic='admin.action' \
@@ -339,10 +345,22 @@ async fn monolith_parity(ctx: &Ctx, pool: &PgPool, p: &mut Proof) -> Result<()> 
     .fetch_one(pool)
     .await?;
     let page = jar.get(format!("{m}/admin/api-keys")).send().await?.text().await.unwrap_or_default();
-    let fields = extract_form_fields(&page);
-    if fields.iter().any(|(k, _)| k == "_csrf") {
-        let form: Vec<(&str, &str)> = fields.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
-        let response = jar.post(format!("{m}/admin/api-keys")).form(&form).send().await?;
+    let csrf = extract_form_fields(&page)
+        .into_iter()
+        .find(|(k, _)| k == "_csrf")
+        .map(|(_, v)| v)
+        .unwrap_or_default();
+    if !csrf.is_empty() {
+        let response = jar
+            .post(format!("{m}/admin/api-keys"))
+            .form(&[
+                ("_csrf", csrf.as_str()),
+                ("_action", "create_role"),
+                ("role_name", m3b_role.as_str()),
+                ("role_policy", "leaderboard.topScores"),
+            ])
+            .send()
+            .await?;
         let post_status = response.status();
         let after: Option<i64> = if post_status.as_u16() == 303 {
             Some(
@@ -359,11 +377,20 @@ async fn monolith_parity(ctx: &Ctx, pool: &PgPool, p: &mut Proof) -> Result<()> 
         } else {
             None
         };
-        let ok = post_status.as_u16() == 303 && after.is_some_and(|after| after > before);
+        let role_rows: Option<i64> =
+            sqlx::query_scalar("SELECT count(*) FROM apikeys.roles WHERE name = $1")
+                .bind(&m3b_role)
+                .fetch_optional(pool)
+                .await
+                .ok()
+                .flatten();
+        let ok = post_status.as_u16() == 303
+            && after.is_some_and(|after| after > before)
+            && role_rows == Some(1);
         p.check(
-            "[M3b] local form-submit -> new admin.action event",
+            "[M3b] local rich-form create-role -> 303 + new admin.action event + row",
             ok,
-            format!("post={post_status} before={before} after={after:?}"),
+            format!("post={post_status} before={before} after={after:?} role_rows={role_rows:?}"),
         );
     } else {
         p.check("[M3b] local form-submit form present (_csrf)", false, "no _csrf field on apikeys page");
@@ -1312,10 +1339,32 @@ async fn assertions(ctx: &Ctx, pool: &PgPool, p: &mut Proof) -> Result<()> {
     let ad3a = admin.get(format!("{g}/admin/characters")).send().await?;
     let (ad3a_code, ad3a_body) = (ad3a.status().as_u16(), ad3a.text().await.unwrap_or_default());
     p.check("[AD3a] /admin/characters -> 200 + AProof", ad3a_code == 200 && ad3a_body.contains(&aproof), format!("code={ad3a_code}"));
-    // [AD3b] /admin/api-keys WITH session -> 200 + dev-client (E -> L QUIC, two hops).
+    // [AD3b] /admin/api-keys WITH session -> 200 + the RICH roles/keys configurator (E -> L
+    // QUIC, two hops). The page content changed from the old flat "dev-client" checkbox +
+    // plaintext-key form to the rich form: a keys TABLE with a Prefix column (never the
+    // secret), a role Select, and the create-key action that reveals a one-time secret.
+    // Assert the NEW structure the OLD flat form could not have: the "Prefix" table column
+    // header and the create-key action label are present, real role/key data ("dev-client")
+    // resolved over the edge, AND — crucially — the full dev-server plaintext secret
+    // ("dev-key-server", whose 12-char prefix "dev-key-serv" is all the table may show) never
+    // appears (the old form rendered raw keys; the rich form hashes + shows only the prefix).
     let ad3b = admin.get(format!("{g}/admin/api-keys")).send().await?;
     let (ad3b_code, ad3b_body) = (ad3b.status().as_u16(), ad3b.text().await.unwrap_or_default());
-    p.check("[AD3b] /admin/api-keys -> 200 + dev-client", ad3b_code == 200 && ad3b_body.contains("dev-client"), format!("code={ad3b_code}"));
+    let ad3b_ok = ad3b_code == 200
+        && ad3b_body.contains("dev-client")
+        && ad3b_body.contains("Prefix")
+        && ad3b_body.contains("reveals a one-time secret")
+        && !ad3b_body.contains("dev-key-server");
+    p.check(
+        "[AD3b] /admin/api-keys -> rich configurator (Prefix col, create-key action, no plaintext secret)",
+        ad3b_ok,
+        format!(
+            "code={ad3b_code} prefix={} action={} plaintext_leak={}",
+            ad3b_body.contains("Prefix"),
+            ad3b_body.contains("reveals a one-time secret"),
+            ad3b_body.contains("dev-key-server"),
+        ),
+    );
     // [AD4] POST /admin/api-keys with session but NO _csrf -> 403 (CSRF before editability).
     let ad4 = admin.post(format!("{g}/admin/api-keys")).form(&[("dummy", "1")]).send().await?;
     p.check("[AD4] no-CSRF admin POST -> 403", ad4.status().as_u16() == 403, ad4.status());
@@ -1326,6 +1375,267 @@ async fn assertions(ctx: &Ctx, pool: &PgPool, p: &mut Proof) -> Result<()> {
         "[AD5] admin.action durable trail",
         ad5_events.map(|e| e >= 2).unwrap_or(false) && ad5_audit.map(|a| a >= 1).unwrap_or(false),
         format!("events={ad5_events:?} audit={ad5_audit:?}"),
+    );
+
+    // --- [AD6] Cross-process rich-form key/role write through the REAL split. ---
+    // The at-risk topology: gateway-svc (/admin passthrough) -> admin-svc (session/CSRF,
+    // renders the REMOTE form fetched over the edge, submit=None) -> edge `admin.adminSubmit`
+    // -> apikeys-svc (runs `apply_submit` server-side, store-local). The whole generic
+    // remote-admin-write seam is monolith-only unless proven here. Each sub-check pins:
+    //   [AD6a] an authenticated configurator session (login parity with AD3).
+    //   [AD6b] a role CREATED across processes — DB row with the exact policy + rev=1.
+    //   [AD6c] a key CREATED remotely, its show-once secret revealed via PRG-flash (303 to
+    //          ?reveal=<token>, GET consumes the one-shot token, secret in the reveal panel).
+    //   [AD6d] the stored `secret_hash` == base64url(sha256(<revealed secret>)) recomputed
+    //          identically to modules/apikeys/src/store.rs, the FK `role` points at the new
+    //          role, and NO column of the row holds the secret in cleartext (finding #11).
+    //   [AD6e] the minted key AUTHENTICATES end-to-end — 200 on an allowed op, 403 on a
+    //          disallowed one — proving the keys->roles JOIN resolves the effective policy
+    //          across processes (edit the role, every key follows).
+    //   [AD6f] finding #2: a create-key on a MISSING role surfaces as a 409 conflict card,
+    //          NOT a 405 "read-only" (a domain-missing target must never collapse to the
+    //          edge's UnknownMethod->NotFound->405) — and writes no row.
+    //   [AD6g] finding #3: a successful REMOTE submit is audited uniformly by admin-svc's
+    //          plane (admin.action{form-submit}), not left to the provider process.
+    // A long-timeout, cookie-bearing, redirect-none client (like AD2b/AD2c's `slow`, plus a
+    // cookie jar) drives it sequentially — never a shell-loop / short-timeout client that
+    // could resurrect the AD2b/AD2c deadlock class.
+    let role_name = format!("proofrole-{suffix}");
+    let key_name = format!("proofkey-{suffix}");
+    let orphan_role = format!("ghostrole-{suffix}");
+    let orphan_key = format!("orphankey-{suffix}");
+    // Pre-clean (keys before roles: FK NO-ACTION order) so a reused pid can't 409 a create.
+    for n in [&key_name, &orphan_key] {
+        sqlx::query("DELETE FROM apikeys.keys WHERE name = $1").bind(n).execute(pool).await.ok();
+    }
+    for n in [&role_name, &orphan_role] {
+        sqlx::query("DELETE FROM apikeys.roles WHERE name = $1").bind(n).execute(pool).await.ok();
+    }
+    // Baseline the audit count BEFORE any successful submit (finding #3 delta).
+    let audit_before: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM asyncevents.events \
+         WHERE topic='admin.action' AND payload->>'actor'='proofadmin' \
+           AND payload->>'target'='api-keys' AND payload->>'action'='form-submit'",
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap_or(0);
+
+    let cfg = reqwest::Client::builder()
+        .timeout(Duration::from_secs(60))
+        .cookie_store(true)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()?;
+    let cfg_login = cfg
+        .post(format!("{g}/admin/login"))
+        .form(&[("username", "proofadmin"), ("password", "proofpass")])
+        .send()
+        .await?;
+    p.check("[AD6a] configurator admin session", cfg_login.status().as_u16() == 303, cfg_login.status());
+
+    // A fresh `_csrf` (per-session, stable) scraped from the rendered form each POST.
+    async fn admin_csrf(cfg: &reqwest::Client, g: &str) -> Result<String> {
+        let page = cfg
+            .get(format!("{g}/admin/api-keys"))
+            .send()
+            .await?
+            .text()
+            .await
+            .unwrap_or_default();
+        Ok(extract_form_fields(&page)
+            .into_iter()
+            .find(|(k, _)| k == "_csrf")
+            .map(|(_, v)| v)
+            .unwrap_or_default())
+    }
+
+    // [AD6b] create a role whose policy allows exactly `leaderboard.topScores`.
+    let csrf = admin_csrf(&cfg, &g).await?;
+    let create_role = cfg
+        .post(format!("{g}/admin/api-keys"))
+        .form(&[
+            ("_csrf", csrf.as_str()),
+            ("_action", "create_role"),
+            ("role_name", role_name.as_str()),
+            ("role_policy", "leaderboard.topScores"),
+        ])
+        .send()
+        .await?;
+    let cr_status = create_role.status().as_u16();
+    let role_row: Option<(String, i64)> =
+        sqlx::query_as("SELECT policy, revision FROM apikeys.roles WHERE name = $1")
+            .bind(&role_name)
+            .fetch_optional(pool)
+            .await
+            .ok()
+            .flatten();
+    let role_ok = cr_status == 303
+        && role_row
+            .as_ref()
+            .map(|(policy, rev)| policy == "leaderboard.topScores" && *rev == 1)
+            .unwrap_or(false);
+    p.check(
+        "[AD6b] remote create-role -> 303 + apikeys.roles row (policy, rev=1)",
+        role_ok,
+        format!("status={cr_status} row={role_row:?}"),
+    );
+
+    // [AD6c] create a key referencing that role; capture the show-once secret via PRG-flash.
+    let csrf = admin_csrf(&cfg, &g).await?;
+    let create_key = cfg
+        .post(format!("{g}/admin/api-keys"))
+        .form(&[
+            ("_csrf", csrf.as_str()),
+            ("_action", "create_key"),
+            ("key_name", key_name.as_str()),
+            ("key_role", role_name.as_str()),
+        ])
+        .send()
+        .await?;
+    let ck_status = create_key.status().as_u16();
+    let reveal_loc = create_key
+        .headers()
+        .get("location")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    // Follow the 303 to ?reveal=<token>; the GET consumes the one-shot token and renders
+    // the secret once in a readonly `reveal_1` input (scraped like any other form field).
+    let reveal_url = if reveal_loc.starts_with("http") {
+        reveal_loc.clone()
+    } else {
+        format!("{g}{reveal_loc}")
+    };
+    let reveal_page = cfg.get(&reveal_url).send().await?.text().await.unwrap_or_default();
+    let secret = extract_form_fields(&reveal_page)
+        .into_iter()
+        .find(|(k, _)| k == "reveal_1")
+        .map(|(_, v)| v)
+        .unwrap_or_default();
+    p.check(
+        "[AD6c] remote create-key -> 303 + show-once secret revealed",
+        ck_status == 303 && reveal_loc.contains("reveal=") && secret.starts_with("ak_"),
+        format!("status={ck_status} loc={reveal_loc} secret_len={}", secret.len()),
+    );
+
+    // [AD6d] the persisted row: secret_hash == base64url(sha256(secret)), role FK correct,
+    // and no column holds the plaintext secret.
+    use base64::Engine as _;
+    use sha2::{Digest as _, Sha256};
+    let key_row = sqlx::query(
+        "SELECT secret_hash::text AS h, prefix::text AS p, role::text AS r, revision AS rev, \
+                name::text AS n, created_at::text AS c, updated_at::text AS u, \
+                coalesce(revoked_at::text, '') AS rv \
+           FROM apikeys.keys WHERE name = $1",
+    )
+    .bind(&key_name)
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten();
+    let (hash_ok, role_fk_ok, no_cleartext) = if let Some(row) = &key_row {
+        let stored_hash: String = row.get("h");
+        let prefix: String = row.get("p");
+        let role_col: String = row.get("r");
+        let name_col: String = row.get("n");
+        let created: String = row.get("c");
+        let updated: String = row.get("u");
+        let revoked: String = row.get("rv");
+        let recomputed =
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(Sha256::digest(secret.as_bytes()));
+        let columns = [stored_hash.clone(), prefix, role_col.clone(), name_col, created, updated, revoked];
+        let no_cleartext = !secret.is_empty() && columns.iter().all(|c| !c.contains(&secret));
+        (stored_hash == recomputed, role_col == role_name, no_cleartext)
+    } else {
+        (false, false, false)
+    };
+    p.check(
+        "[AD6d] key row: secret_hash==base64url(sha256), role FK, no cleartext",
+        hash_ok && role_fk_ok && no_cleartext,
+        format!("present={} hash_ok={hash_ok} role_fk={role_fk_ok} no_cleartext={no_cleartext}", key_row.is_some()),
+    );
+
+    // [AD6e] the minted key authenticates across processes: 200 on the allowed op,
+    // 403 on a disallowed one (transient gateway 429s retried past, never counted).
+    let mut auth_code = 0u16;
+    for _ in 0..10 {
+        auth_code = ctx
+            .http
+            .get(format!("{g}/leaderboard"))
+            .header("X-Api-Key", secret.as_str())
+            .send()
+            .await?
+            .status()
+            .as_u16();
+        if auth_code != 429 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+    let mut deny_code = 0u16;
+    for _ in 0..10 {
+        deny_code = ctx
+            .http
+            .post(format!("{g}/match/report"))
+            .header("X-Api-Key", secret.as_str())
+            .json(&serde_json::json!({"ReportId": format!("ad6-{suffix}"), "Winner": "w", "Loser": "l"}))
+            .send()
+            .await?
+            .status()
+            .as_u16();
+        if deny_code != 429 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+    p.check(
+        "[AD6e] minted key authenticates cross-process: leaderboard 200, match.report 403",
+        auth_code == 200 && deny_code == 403,
+        format!("leaderboard={auth_code} report={deny_code}"),
+    );
+
+    // [AD6f] finding #2: create-key on a MISSING role -> 409 conflict card, NOT 405
+    // read-only, and NO row written (the FK 23503 -> WriteError::Conflict -> Status::Conflict
+    // -> 409, never the edge UnknownMethod->NotFound->405 collapse).
+    let csrf = admin_csrf(&cfg, &g).await?;
+    let orphan = cfg
+        .post(format!("{g}/admin/api-keys"))
+        .form(&[
+            ("_csrf", csrf.as_str()),
+            ("_action", "create_key"),
+            ("key_name", orphan_key.as_str()),
+            ("key_role", orphan_role.as_str()),
+        ])
+        .send()
+        .await?;
+    let orphan_status = orphan.status().as_u16();
+    let orphan_rows: Option<i64> =
+        sqlx::query_scalar("SELECT count(*) FROM apikeys.keys WHERE name = $1")
+            .bind(&orphan_key)
+            .fetch_optional(pool)
+            .await
+            .ok()
+            .flatten();
+    p.check(
+        "[AD6f] create-key on missing role -> 409 (NOT 405), no row",
+        orphan_status == 409 && orphan_status != 405 && orphan_rows == Some(0),
+        format!("status={orphan_status} rows={orphan_rows:?}"),
+    );
+
+    // [AD6g] finding #3: both successful REMOTE submits (role + key) audited by admin-svc's
+    // plane; the failed orphan submit (409) emits nothing.
+    let audit_after: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM asyncevents.events \
+         WHERE topic='admin.action' AND payload->>'actor'='proofadmin' \
+           AND payload->>'target'='api-keys' AND payload->>'action'='form-submit'",
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap_or(0);
+    p.check(
+        "[AD6g] remote form-submit audited: >=2 new admin.action{form-submit} rows",
+        audit_after >= audit_before + 2,
+        format!("before={audit_before} after={audit_after}"),
     );
 
     // --- Audit ledger (F pulls six subscriptions from the shared log). ---
