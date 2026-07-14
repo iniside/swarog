@@ -328,13 +328,17 @@ fn down_waits_for_stopped_checkpoint_and_reports_failed_cleanup() {
         std::thread::sleep(Duration::from_millis(75));
         writer_store.write_atomic(&stopped).unwrap();
     });
-    assert!(wait_for_terminal(&store, &supervisor, Duration::from_secs(1)).is_ok());
+    // Hang-guard, not a latency bound: the writer thread's 75ms sleep + file
+    // write can be starved well past 1s under a full-workspace parallel run.
+    assert!(wait_for_terminal(&store, &supervisor, Duration::from_secs(15)).is_ok());
     writer.join().unwrap();
 
     state.set_status(FleetStatus::Failed);
     store.write_atomic(&state).unwrap();
+    // The Failed state is already on disk; the budget only guards against a
+    // starved file read misreporting as a timeout instead of "shutdown failed".
     assert!(
-        wait_for_terminal(&store, &supervisor, Duration::from_millis(100))
+        wait_for_terminal(&store, &supervisor, Duration::from_secs(5))
             .unwrap_err()
             .to_string()
             .contains("shutdown failed")
