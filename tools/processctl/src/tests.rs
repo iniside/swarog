@@ -15,6 +15,13 @@ use crate::{
 
 static NEXT_DIR: AtomicU64 = AtomicU64::new(0);
 static PROCESS_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+/// Serializes the process-spawning tests. Poisoning is deliberately ignored:
+/// one panicking test must not cascade PoisonErrors into every later test in
+/// the queue (the guarded state is `()` — there is nothing to corrupt).
+fn process_test_lock() -> std::sync::MutexGuard<'static, ()> {
+    PROCESS_TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 #[cfg(windows)]
 static PROTECT_TEST_HARNESS: Once = Once::new();
 
@@ -64,17 +71,37 @@ fn child_entry() {
             #[cfg(windows)]
             {
                 use windows_sys::Win32::Foundation::GetHandleInformation;
+                use windows_sys::Win32::Storage::FileSystem::GetFinalPathNameByHandleW;
                 let handle = std::env::var("PROCESSCTL_TEST_SENTINEL_HANDLE")
                     .unwrap()
                     .parse::<usize>()
                     .unwrap() as *mut std::ffi::c_void;
+                // A live handle at the sentinel's numeric VALUE is not yet a leak:
+                // this child's own table can reuse that slot for an unrelated handle
+                // (stdio, heap, ...), and the layout shifts with system load. Only a
+                // handle that RESOLVES to the sentinel file proves inheritance.
+                let mut verdict = "closed";
                 let mut flags = 0u32;
-                let closed = unsafe { GetHandleInformation(handle, &mut flags) } == 0;
-                std::fs::write(
-                    std::env::var_os("PROCESSCTL_TEST_READY").unwrap(),
-                    if closed { "closed" } else { "leaked" },
-                )
-                .unwrap();
+                if unsafe { GetHandleInformation(handle, &mut flags) } != 0 {
+                    let mut buf = [0u16; 1024];
+                    let n = unsafe {
+                        GetFinalPathNameByHandleW(handle, buf.as_mut_ptr(), buf.len() as u32, 0)
+                    };
+                    if n > 0 && (n as usize) < buf.len() {
+                        let path = String::from_utf16_lossy(&buf[..n as usize]);
+                        let expected = std::env::var("PROCESSCTL_TEST_SENTINEL_PATH").unwrap();
+                        let expected = std::fs::canonicalize(&expected)
+                            .map(|p| p.to_string_lossy().into_owned())
+                            .unwrap_or(expected);
+                        if path.eq_ignore_ascii_case(&expected) {
+                            verdict = "leaked";
+                        }
+                    }
+                    // n == 0 (not a file handle / error) or truncated (path longer
+                    // than any temp sentinel): the slot holds something else — closed.
+                }
+                std::fs::write(std::env::var_os("PROCESSCTL_TEST_READY").unwrap(), verdict)
+                    .unwrap();
             }
         }
         "nested-supervisor" => {
@@ -164,7 +191,7 @@ fn child_entry() {
 
 #[test]
 fn graceful_exit_and_repeated_shutdown_are_idempotent() {
-    let _serial = PROCESS_TEST_LOCK.lock().unwrap();
+    let _serial = process_test_lock();
     protect_test_harness();
     let dir = test_dir("graceful");
     let ready = dir.join("ready");
@@ -178,7 +205,7 @@ fn graceful_exit_and_repeated_shutdown_are_idempotent() {
 
 #[test]
 fn ignored_graceful_signal_forces_the_owned_process() {
-    let _serial = PROCESS_TEST_LOCK.lock().unwrap();
+    let _serial = process_test_lock();
     protect_test_harness();
     let dir = test_dir("force");
     let ready = dir.join("ready");
@@ -190,7 +217,7 @@ fn ignored_graceful_signal_forces_the_owned_process() {
 
 #[test]
 fn already_exited_child_is_observed_without_signalling() {
-    let _serial = PROCESS_TEST_LOCK.lock().unwrap();
+    let _serial = process_test_lock();
     protect_test_harness();
     let dir = test_dir("exited");
     let ready = dir.join("unused");
@@ -208,7 +235,7 @@ fn already_exited_child_is_observed_without_signalling() {
 
 #[test]
 fn force_kills_and_reaps_descendants_but_not_a_decoy() {
-    let _serial = PROCESS_TEST_LOCK.lock().unwrap();
+    let _serial = process_test_lock();
     protect_test_harness();
     let dir = test_dir("tree");
     let ready = dir.join("tree.ready");
@@ -230,7 +257,7 @@ fn force_kills_and_reaps_descendants_but_not_a_decoy() {
 
 #[test]
 fn graceful_root_with_live_descendant_forces_job_remainder() {
-    let _serial = PROCESS_TEST_LOCK.lock().unwrap();
+    let _serial = process_test_lock();
     protect_test_harness();
     let dir = test_dir("graceful-descendant");
     let ready = dir.join("tree.ready");
@@ -249,7 +276,7 @@ fn startup_handle_list_excludes_unrelated_inheritable_handle() {
     use windows_sys::Win32::Foundation::{DuplicateHandle, DUPLICATE_SAME_ACCESS};
     use windows_sys::Win32::System::Threading::GetCurrentProcess;
 
-    let _serial = PROCESS_TEST_LOCK.lock().unwrap();
+    let _serial = process_test_lock();
     protect_test_harness();
     let dir = test_dir("handles");
     let ready = dir.join("ready");
@@ -275,6 +302,10 @@ fn startup_handle_list_excludes_unrelated_inheritable_handle() {
         OsString::from("PROCESSCTL_TEST_SENTINEL_HANDLE"),
         OsString::from((inheritable as usize).to_string()),
     );
+    child_spec.env.insert(
+        OsString::from("PROCESSCTL_TEST_SENTINEL_PATH"),
+        dir.join("sentinel").into_os_string(),
+    );
     let mut child = OwnedChild::spawn(child_spec).unwrap();
     unsafe { windows_sys::Win32::Foundation::CloseHandle(inheritable) };
     wait_file(&ready);
@@ -286,7 +317,7 @@ fn startup_handle_list_excludes_unrelated_inheritable_handle() {
 
 #[test]
 fn process_already_inside_owned_job_can_create_nested_owned_job() {
-    let _serial = PROCESS_TEST_LOCK.lock().unwrap();
+    let _serial = process_test_lock();
     protect_test_harness();
     let dir = test_dir("nested-job");
     let ready = dir.join("ready");
@@ -300,7 +331,7 @@ fn process_already_inside_owned_job_can_create_nested_owned_job() {
 
 #[test]
 fn failed_post_spawn_checkpoint_reaps_new_child_and_started_prefix() {
-    let _serial = PROCESS_TEST_LOCK.lock().unwrap();
+    let _serial = process_test_lock();
     protect_test_harness();
     let dir = test_dir("checkpoint-rollback");
     let first_ready = dir.join("first.ready");
@@ -323,7 +354,7 @@ fn failed_post_spawn_checkpoint_reaps_new_child_and_started_prefix() {
 
 #[test]
 fn private_stdin_bytes_are_delivered_without_argv_or_environment() {
-    let _serial = PROCESS_TEST_LOCK.lock().unwrap();
+    let _serial = process_test_lock();
     protect_test_harness();
     let dir = test_dir("stdin-bytes");
     let ready = dir.join("ready");
@@ -350,7 +381,7 @@ fn private_stdin_bytes_are_bounded_before_spawn() {
 #[cfg(windows)]
 #[test]
 fn owned_child_preserves_non_verbatim_argv_zero() {
-    let _serial = PROCESS_TEST_LOCK.lock().unwrap();
+    let _serial = process_test_lock();
     protect_test_harness();
     let dir = test_dir("argv-zero");
     let ready = dir.join("ready");
@@ -403,7 +434,7 @@ fn initial_state_publish_survives_process_crash_without_placeholder() {
 
 #[test]
 fn supervisor_crash_kills_owned_tree_and_preserves_decoy() {
-    let _serial = PROCESS_TEST_LOCK.lock().unwrap();
+    let _serial = process_test_lock();
     protect_test_harness();
     let dir = test_dir("crash");
     let supervisor_ready = dir.join("supervisor.ready");
@@ -436,7 +467,7 @@ fn supervisor_crash_kills_owned_tree_and_preserves_decoy() {
 #[cfg(target_os = "linux")]
 #[test]
 fn target_cannot_inherit_guardian_control_pipe_descriptors() {
-    let _serial = PROCESS_TEST_LOCK.lock().unwrap();
+    let _serial = process_test_lock();
     protect_test_harness();
     let dir = test_dir("fds");
     let ready = dir.join("ready");
@@ -448,7 +479,7 @@ fn target_cannot_inherit_guardian_control_pipe_descriptors() {
 
 #[test]
 fn direct_process_without_borrower_pipe_observes_no_inherited_lease() {
-    let _serial = PROCESS_TEST_LOCK.lock().unwrap();
+    let _serial = process_test_lock();
     protect_test_harness();
     let dir = test_dir("optional-lease-direct");
     let ready = dir.join("ready");
