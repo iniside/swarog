@@ -471,10 +471,56 @@ impl Plane {
 pub mod testing {
     use std::sync::Arc;
 
-    use bus::Transport;
+    use bus::{
+        AnyTx, Error, EventContract, HistoryPolicy, SubscriptionSpec, Transport, TxHandler,
+    };
     use sqlx::PgPool;
 
     use crate::LogTransport;
+
+    /// A durable transport whose `enqueue_tx` (the append) ALWAYS fails — for
+    /// proving the FAILURE direction of `emit_tx` atomicity: an emitter that opens
+    /// a tx, writes its domain row, then calls `bus.emit_tx` must see that append
+    /// error propagate and roll the domain row back (the tx drops/rolls back
+    /// unmigrated). It injects the failure at the TRANSPORT seam (the append
+    /// itself), NOT by poisoning shared DB state — so it never touches the
+    /// `asyncevents.history_contracts`/`events` tables and cannot contaminate a
+    /// sibling test emitting the same FIXED, SHARED topic in the same parallel
+    /// binary. Each test builds its own ctx over its own handle, so this failure
+    /// is scoped to the one ctx it backs. `subscribe_tx` is an unreachable no-op:
+    /// an emitter-atomicity test never subscribes.
+    struct FailingTransport;
+
+    #[async_trait::async_trait]
+    impl Transport for FailingTransport {
+        async fn enqueue_tx(
+            &self,
+            _tx: AnyTx<'_>,
+            _contract: &EventContract,
+            _payload: &[u8],
+        ) -> Result<(), Error> {
+            Err(Error::transport(std::io::Error::other(
+                "injected durable-append failure (asyncevents::testing::failing_transport)",
+            )))
+        }
+
+        fn subscribe_tx(
+            &self,
+            _spec: SubscriptionSpec,
+            _topic: &str,
+            _version: u32,
+            _history: Option<HistoryPolicy>,
+            _handler: Arc<dyn TxHandler>,
+        ) {
+        }
+    }
+
+    /// A `bus::Transport` handle whose durable append always fails — hand it to
+    /// `Context::with_db_and_transport` to drive the emit-fails branch. See
+    /// [`FailingTransport`].
+    pub fn failing_transport() -> Arc<dyn Transport> {
+        Arc::new(FailingTransport)
+    }
 
     /// Counts durable log events for a topic whose JSON payload has
     /// `payload_key == payload_value` (the V2 replacement for the old

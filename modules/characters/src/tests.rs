@@ -259,6 +259,58 @@ async fn create_persists_character_and_durable_event_atomically() {
     cleanup(&pool, &[&pid]).await;
 }
 
+/// THE ATOMIC EMIT PROOF, FAILURE DIRECTION (the branch the success test can't
+/// reach): the durable append inside `create`'s tx FAILS, so the whole tx must roll
+/// back — no `characters.characters` row survives. Failure is injected at the
+/// TRANSPORT seam via `asyncevents::testing::failing_transport()` (its `enqueue_tx`
+/// returns `Err`), landing exactly where `create` calls `bus.emit_tx(AnyTx::new(&mut
+/// *tx), …)` AFTER the domain INSERT — so the error early-returns and `tx` drops
+/// without commit → implicit ROLLBACK. This pins the emit_tx atomicity contract from
+/// the other side: the character is durable IFF its event is. It would go RED if the
+/// INSERT were ever committed before (or independently of) the emit — e.g. moving
+/// `tx.commit()` above the `emit_tx` call, or writing the row on a separate pool
+/// connection outside the tx: then the row would persist despite the append failing
+/// and `char_count_by_player` would be 1, not 0.
+///
+/// Each test builds its OWN ctx over its OWN transport handle (this one gets the
+/// failing handle, the positive test gets the real appending one), so the injected
+/// failure cannot leak across tests — no shared DB state is poisoned.
+///
+/// SCOPE: inventory gets NO analogous emitter-atomicity test — it never emits its own
+/// events (it is a durable CONSUMER: `on_tx` grant_starter/wipe_character, and there
+/// is no `api/inventory/events`), so emitter-side emit_tx rollback does not apply; its
+/// atomicity is the different handler-write + checkpoint shape, out of scope here.
+#[tokio::test]
+async fn create_rolls_back_domain_row_when_durable_append_fails() {
+    let Some(pool) = test_pool().await else { return };
+    ensure_schema(&pool).await;
+
+    // Same wiring as `wired_with_cap`, but the transport's append always errors.
+    let ctx = Context::with_db_and_transport(pool.clone(), asyncevents::testing::failing_transport());
+    ctx.registry()
+        .provide::<dyn Config>(key("config", "reader"), Arc::new(FakeConfig { cap: LIST_HARD_LIMIT }));
+    let chars = Characters::new();
+    chars.register(&ctx).unwrap();
+    chars.init(&ctx).unwrap();
+    let svc = chars.svc();
+
+    let pid = unique_player(&pool).await;
+
+    let e = svc
+        .create(Identity::player(&pid), "Somebody".into(), String::new())
+        .await
+        .expect_err("emit_tx append failed, so create must return Err");
+    assert_eq!(e.status, Status::Internal, "a durable-append failure surfaces as Internal");
+
+    assert_eq!(
+        char_count_by_player(&pool, &pid).await,
+        0,
+        "the failed durable append must roll back the domain INSERT — no character row survives"
+    );
+
+    cleanup(&pool, &[&pid]).await;
+}
+
 /// THE CAP PROOF (sequential failing branch): with `characters/max_per_player` = 3,
 /// a player's first 3 creates succeed and the 4th is rejected `Conflict` (409). A
 /// DIFFERENT player is unaffected — the cap is PER-PLAYER. Pre-fix the 4th succeeded
