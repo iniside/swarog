@@ -352,6 +352,24 @@ fn lock_key_is_stable_and_namespaced() {
     assert_ne!(lock_key(id), plain, "inventory keys must not collide with scheduler's for equal strings");
 }
 
+/// `lock_key` is representation-invariant across the spellings Postgres's `::uuid`
+/// treats as EQUAL (case, braces, hyphenation): the row SQL normalizes via `::uuid`,
+/// so a grant and a wipe for the one character MUST derive the SAME advisory key or
+/// they fail to serialize and commit an orphan holding alongside a tombstone. A
+/// genuinely different uuid must still diverge. Fails on the pre-fix raw-byte hash.
+#[test]
+fn lock_key_is_representation_invariant() {
+    let canon = "a2b7e8c1-0000-4000-8000-000000000001";
+    assert_eq!(lock_key(canon), lock_key(&canon.to_uppercase()), "case must not change the key");
+    assert_eq!(lock_key(canon), lock_key(&format!("{{{canon}}}")), "braces must not change the key");
+    assert_eq!(lock_key(canon), lock_key(&canon.replace('-', "")), "hyphenation must not change the key");
+    assert_ne!(
+        lock_key(canon),
+        lock_key("a2b7e8c1-0000-4000-8000-000000000002"),
+        "a genuinely different uuid must still take a different key"
+    );
+}
+
 /// (b) list_character authz mapping with a FAKE Ownership: err→503, None→404,
 /// mismatch→403, match→lists.
 #[tokio::test]
@@ -707,6 +725,60 @@ async fn concurrent_grant_and_wipe_serialize_on_advisory_lock() {
     );
 
     // Commit releases the xact-lock; the wipe proceeds and wins (it runs second).
+    tx1.commit().await.unwrap();
+    tokio::time::timeout(Duration::from_secs(5), wipe).await.unwrap().unwrap();
+    assert!(done.load(std::sync::atomic::Ordering::SeqCst));
+
+    let holdings = inner.store.list(&Owner::character(&cid)).await.unwrap();
+    assert!(holdings.is_empty(), "the serialized wipe must have cleared the committed grant");
+    assert!(tombstone_exists(&pool, &cid).await, "the wipe must have planted the tombstone");
+
+    cleanup_owner(&pool, &cid).await;
+}
+
+/// (f2) Same serialization guarantee as (f), but the two deliveries spell the ONE
+/// character id DIFFERENTLY — grant on the canonical uuid, wipe on its uppercased
+/// form. Postgres's `::uuid` treats them as equal (the row SQL agrees), so the
+/// advisory lock MUST too: the wipe has to block on the grant's xact-lock exactly as
+/// in (f). Pre-fix, the raw-byte hash gave the two spellings DIFFERENT keys, the wipe
+/// would NOT block, and both txs would commit an orphan holding beside a tombstone.
+///
+/// This is a CONSTRUCTED injection: Step 2 makes production emit canonical ids, so
+/// this divergence does not occur on today's producer path. It proves the authority
+/// holds for a future producer / a raw psql write that spells the id non-canonically.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn concurrent_grant_and_wipe_serialize_across_uuid_spelling() {
+    let Some(pool) = test_pool().await else { return };
+    ensure_schema(&pool).await;
+    let cid = unique_uuid(&pool).await;
+    let cid_upper = cid.to_uppercase();
+    let inner = inner_with(pool.clone(), Arc::new(FakeConfig::new(STARTER_ITEM, STARTER_QTY)));
+
+    // Tx 1: grant on the CANONICAL id, NOT committed — holds the per-character xact-lock.
+    let mut tx1 = pool.begin().await.unwrap();
+    inner.grant_starter(&mut tx1, &cid).await.unwrap();
+
+    // Tx 2: wipe on a NON-canonical (uppercased) spelling of the SAME id — must block.
+    let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let wipe = tokio::spawn({
+        let pool = pool.clone();
+        let inner = inner.clone();
+        let cid_upper = cid_upper.clone();
+        let done = done.clone();
+        async move {
+            let mut tx2 = pool.begin().await.unwrap();
+            inner.wipe_character(&mut tx2, &cid_upper).await.unwrap();
+            done.store(true, std::sync::atomic::Ordering::SeqCst);
+            tx2.commit().await.unwrap();
+        }
+    });
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(
+        !done.load(std::sync::atomic::Ordering::SeqCst),
+        "the differently-spelled wipe must still block on the per-character advisory lock"
+    );
+
     tx1.commit().await.unwrap();
     tokio::time::timeout(Duration::from_secs(5), wipe).await.unwrap().unwrap();
     assert!(done.load(std::sync::atomic::Ordering::SeqCst));

@@ -110,12 +110,29 @@ fn is_holdings_cap_violation(e: &sqlx::Error) -> bool {
 /// id, so inventory's keys cannot collide with scheduler's plain-name keys (or
 /// any future module that namespaces differently). Two ids CAN still hash to the
 /// same key — they then merely serialize their deliveries, never break anything.
+///
+/// The id is normalized to Postgres's uuid-EQUALITY form BEFORE hashing so a
+/// differently-spelled but DB-equal id (uppercase / braced / unhyphenated) yields
+/// the SAME lock: the row SQL is `$1::uuid`-normalized, and this lock MUST agree
+/// with it — otherwise a grant and a wipe for the one character take DIFFERENT
+/// advisory keys, fail to serialize, and commit an orphan holding alongside a
+/// tombstone. Dependency-free (no `uuid` crate — the module deliberately keeps ids
+/// as `String` with `::text`/`::uuid` casts): two inputs Postgres's `::uuid` treats
+/// as equal share the same 32 ascii-hex digits ignoring case/hyphens/braces. A
+/// non-uuid input (never on the DB-validated path) falls back to its raw bytes —
+/// still stable, only ever over-serializes, never breaks.
 fn lock_key(character_id: &str) -> i64 {
     const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
     const PRIME: u64 = 0x0000_0100_0000_01b3;
+    let hex: Vec<u8> = character_id
+        .bytes()
+        .filter(u8::is_ascii_hexdigit)
+        .map(|b| b.to_ascii_lowercase())
+        .collect();
+    let normalized: &[u8] = if hex.len() == 32 { &hex } else { character_id.as_bytes() };
     let mut h = OFFSET_BASIS;
-    for b in b"inventory.character/".iter().chain(character_id.as_bytes()) {
-        h ^= *b as u64;
+    for b in b"inventory.character/".iter().copied().chain(normalized.iter().copied()) {
+        h ^= b as u64;
         h = h.wrapping_mul(PRIME);
     }
     h as i64
