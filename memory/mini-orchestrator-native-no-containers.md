@@ -1,11 +1,16 @@
 ---
 name: mini-orchestrator-native-no-containers
-description: "Future mini-orchestrator runs NATIVE processes, no containers/Docker/k8s; GW1-2005 is the reference point that this is feasible"
+description: "WELES — the future mini-orchestrator (top-level weles/) runs NATIVE processes, no containers/Docker/k8s; agent name reserved: Rarog"
 metadata: 
   node_type: memory
   type: project
   originSessionId: fb10aade-7f3e-4b87-9d35-e9f2dfc074bf
 ---
+
+**Named WELES (2026-07-15, Lukasz):** Slavic god of herds — it shepherds the
+process flock (the backend is Swaróg). Top-level crate/binary `weles/`, CLI
+`weles up/status/down`. If master and per-machine agent ever get separate names:
+master = `weles`, agent = `rarog` (Swaróg's fire falcon) — reserved, not decided.
 
 Decision (2026-07-09): the future mini-orchestrator for this backend will manage
 **native OS processes — explicitly NO containers, no Docker, no Kubernetes**.
