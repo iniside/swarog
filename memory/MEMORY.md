@@ -1,7 +1,7 @@
 # Memory Index
 
 ## Process / discipline / behavior
-- [Adversarial subagent review](adversarial-subagent-review.md) — try to break a diff at its OWN new seams (method in CLAUDE.md); ONE pass by a different method, a clean verdict is valid with the class list — don't loop reviews; applies to my own scaffolding too
+- [Adversarial subagent review](adversarial-subagent-review.md) — try to break a diff at its OWN new seams (method in CLAUDE.md); ONE pass by a different method, a clean verdict is valid with the class list — don't loop reviews; applies to my own scaffolding too; NEVER inline even for "trivial" diffs (2026-07-14 violation) — review = core-reviewer subagent + a proof-auditor second audit checking whether implementer AND reviewer cheated
 - [Codex review = visible subagent](codex-review-use-visible-subagent.md) — run per-commit codex adversarial-review as the visible codex:codex-rescue Agent (--wait --fresh --effort high), NOT the background companion CLI (hangs/zombies on this Windows box)
 - [Amplification proof → unit tests](amplification-proof-belongs-in-unit-tests.md) — prove no-I/O/anti-amplification fixes in SEQUENTIAL unit tests + a pure decision fn (zero-I/O by construction); split-proof can't distinguish fixed/unfixed (killed peer's port fast-fails), scope it to accuracy+recovery
 - [Fix authority via taxonomy](core-failure-taxonomy.md) — docs/reference evidence base: why double hostile review didn't fix core (fix-on-fix dominated); ~10 ranked failure classes + review attacks; source for the specialized agents

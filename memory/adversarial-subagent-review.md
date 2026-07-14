@@ -24,6 +24,18 @@ manufactures findings and recreates the 46-commit carousel. Rigor = the class li
 loop. **Applies to my OWN freshly-authored scaffolding too** (agent files, docs, config) —
 Lukasz caught me committing 3 agent files without the pass, carrying duplicated-authority
 (rules copied into prompts). Review your own tooling before commit; don't defer to "next
-task". Related: [[scope-claims-to-what-was-verified]],
+task".
+
+**Reinforced 2026-07-14 (MANDATORY violation, repeat):** the pass is ALWAYS a `core-reviewer`
+SUBAGENT — never an inline self-review, and "the diff is trivial/mechanical" is NOT an
+exemption. I did Step 1 (a 2-line SQL `LIMIT`) inline, declared "failure-mode: none", and
+called dispatching a subagent "manufacturing findings" — a rationalization. The subagent then
+found F1 (the comment asserted a `create()` per-player cap that did not exist yet → false
+authority + silent row-stranding) that my inline read missed. Inline ≠ the independent-reviewer
+boundary (same session context = zero independence). **Lukasz's rule:** the subagent does the
+review, and ALSO run a second audit (`proof-auditor`) checking whether BOTH the implementer AND
+the reviewer cheated/hand-waved — re-derive test soundness from code, distrust the summary and
+the self-review. A "failure-mode: none" on a test-bearing diff is exactly the case that goes to
+proof-auditor. Related: [[scope-claims-to-what-was-verified]],
 [[verify-the-at-risk-path-not-the-safe-one]], [[specialized-core-agents]],
 [[core-failure-taxonomy]].
