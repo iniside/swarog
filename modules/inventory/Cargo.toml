@@ -35,10 +35,9 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 
 [dev-dependencies]
+# Inventory's config-read tests inject a fake `configapi::Config` under the registry
+# key the real `config` module would use — no module->module dev-dep needed. The
+# end-to-end live-reload path (SQL write -> trigger NOTIFY -> invalidation refresh) is
+# asserted cross-process in split-proof [C1]-[C4b], where the real trigger/plane exist.
 asyncevents = { workspace = true }
-# The live-reload test drives the REAL config module + invalidation plane end-to-end
-# (a dev-dependency — the fortress rule only fences non-dev module->module edges, the
-# same pattern `modules/match` already uses for `rating`).
-config = { workspace = true }
-invalidation = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
