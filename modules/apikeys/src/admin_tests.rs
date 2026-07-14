@@ -130,40 +130,14 @@ async fn submit_policy_edit_add_and_revoke() {
     cleanup(&pool, &base).await;
 }
 
-/// The edge admin fan-out end-to-end (the split `admin.adminData` path): register BOTH
-/// the keys face and the admin face on one edge server exactly as `init` does, then dial
-/// with the generated admin Client and assert the page comes back. Guards the Step 6
-/// regression where the admin face silently went unregistered.
-#[tokio::test(flavor = "multi_thread")]
-async fn edge_serves_admin_data() {
-    let _guard = db_test_lock().await;
-    let Some(pool) = test_pool().await else { return };
-    let svc = Arc::new(Service { store: Store { pool: pool.clone() } });
-    let base = unique_name(&pool).await;
-    let name = format!("{base}-a");
-    let key = format!("{base}-key");
-    svc.store.insert(&name, &key, "full").await.unwrap();
-
-    let ca = edge::DevCA::generate().unwrap();
-    let mut server = edge::Server::new();
-    apikeysrpc::keys_rpc::register_server(&mut server, svc.clone());
-    apikeysrpc::register_admin(&mut server, svc.clone());
-    let running = server.listen("127.0.0.1:0".parse().unwrap(), &ca).unwrap();
-    let addr = running.local_addr();
-
-    let client = edge::Client::dial(addr, &ca).await.unwrap();
-    let admin_client = adminrpc::admin_data_rpc::Client::new(std::sync::Arc::new(client));
-    let data = adminapi::AdminData::admin_data(&admin_client).await.unwrap();
-    assert_eq!(data.id, "apikeys");
-    assert_eq!(data.section, "Platform");
-    assert!(data.content.form.is_none(), "remote content is read-only");
-    assert!(
-        data.content.table.unwrap().rows.iter().any(|r| r[0].text == name),
-        "seeded key renders in the remote admin table"
-    );
-
-    cleanup(&pool, &base).await;
-}
+// The edge admin fan-out (the split `admin.adminData` path — apikeys' admin face
+// registered on the internal edge and reachable over QUIC) is asserted end-to-end,
+// cross-process, by splitproof [AD3b] (`GET /admin/api-keys` through gateway →
+// admin-svc → apikeys-svc, two hops, 200 + `dev-client` rendered). The former
+// in-crate wire round-trip (`edge_serves_admin_data`) was removed here to keep
+// apikeys off the foreign `adminrpc` glue crate: apikeys cannot generate admin's
+// `admin.adminData` Client itself, so dialing its own admin face in-crate meant a
+// dev-dependency on another domain's `<name>rpc`, which the fortress rule forbids.
 
 /// Atomicity of a MIXED submit: one call carrying a valid policy edit, an INVALID policy
 /// for another key, AND a valid add-row triple. Phase-1 validation fails on the invalid
