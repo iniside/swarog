@@ -578,4 +578,4 @@ pub fn parse_xid8(text: &str) -> anyhow::Result<u64> {
 
 #[cfg(test)]
 #[path = "store_tests.rs"]
-mod store_tests;
+pub(crate) mod store_tests;

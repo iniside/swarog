@@ -36,14 +36,25 @@ CREATE TABLE IF NOT EXISTS asyncevents.t (id int);
     );
 }
 
-/// Serializes the two tests that choreograph the WRITER advisory lock with an
-/// open transaction held across awaits. If they interleave, Postgres lock
-/// fairness deadlocks them: the frontier test holds tx A's SHARED lock while
-/// awaiting tx B's append; the bump test's pending EXCLUSIVE makes B queue
-/// behind it; A never commits, so the exclusive never grants — a Rust-await ↔
-/// DB-lock cycle Postgres cannot detect. Any new test that holds an appended
-/// tx open across further lock-taking awaits must take this guard too.
-static WRITER_LOCK_CHOREOGRAPHY: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+/// Serializes the tests that choreograph a lock whose GRANT depends on another
+/// connection's progress, while a transaction is held open across Rust awaits.
+/// If they interleave, Postgres lock fairness deadlocks them: the frontier test
+/// holds tx A's SHARED lock while awaiting tx B's append; the bump test's pending
+/// EXCLUSIVE makes B queue behind it; A never commits, so the exclusive never
+/// grants — a Rust-await ↔ DB-lock cycle Postgres cannot detect.
+///
+/// The same cycle exists against TABLE locks, not just advisory ones: the
+/// retention tests' `CREATE/DROP TRIGGER … ON asyncevents.events` needs ACCESS
+/// EXCLUSIVE, which queues behind an open appended tx (RowExclusive) and makes
+/// every other append queue behind IT — if the open tx's client is itself
+/// awaiting one of those queued appends, the whole suite wedges (observed live:
+/// 20 sessions behind one `DROP TRIGGER retention_midsweep_trg…`). So the rule
+/// is: any test that either (a) holds an appended-but-uncommitted tx across a
+/// lock-taking await on ANOTHER connection, or (b) takes a lock on the shared
+/// `asyncevents.events` table that conflicts with concurrent writers (trigger
+/// DDL's ACCESS EXCLUSIVE), must take this guard.
+pub(crate) static WRITER_LOCK_CHOREOGRAPHY: tokio::sync::Mutex<()> =
+    tokio::sync::Mutex::const_new(());
 
 /// Opens the local Postgres and ensures the V2 schema; returns `None` (printing a
 /// skip line) when it's unreachable, so the suite degrades to a no-op without a DB.

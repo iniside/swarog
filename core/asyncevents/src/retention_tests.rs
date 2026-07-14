@@ -12,6 +12,31 @@ use sqlx::PgPool;
 const DEFAULT_DSN: &str =
     "postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable";
 
+/// Runs trigger DDL against the SHARED `asyncevents.events` table with a bounded
+/// `lock_timeout` and a short retry, inside one tx (`SET LOCAL` cannot poison the
+/// pooled connection). Trigger DDL needs ACCESS EXCLUSIVE on the table every other
+/// test writes to; an unbounded wait behind a wedged queue turns one bad interleave
+/// into a whole-suite hang (see `store_tests::WRITER_LOCK_CHOREOGRAPHY`, which the
+/// calling tests must hold). The timeout converts any future choreography violation
+/// into a loud, fast failure instead of a wedge — and lets teardown still run.
+async fn events_trigger_ddl(pool: &PgPool, sql: &str) {
+    for attempt in 1..=3u32 {
+        let mut tx = pool.begin().await.unwrap();
+        sqlx::raw_sql("SET LOCAL lock_timeout = '5s'").execute(&mut *tx).await.unwrap();
+        match sqlx::raw_sql(sql).execute(&mut *tx).await {
+            Ok(_) => {
+                tx.commit().await.unwrap();
+                return;
+            }
+            Err(err) if attempt < 3 => {
+                drop(tx);
+                eprintln!("events trigger DDL attempt {attempt} failed ({err}); retrying: {sql}");
+            }
+            Err(err) => panic!("events trigger DDL failed after {attempt} attempts: {err}\n{sql}"),
+        }
+    }
+}
+
 /// The sweep interval and readiness threshold are one checked configuration:
 /// malformed input falls back, while zero, overflow, and clock-unobservable
 /// thresholds fail startup.
@@ -371,6 +396,10 @@ async fn topic_without_contract_is_never_deleted() {
 /// still swept; the aggregate error identifies the failed topic.
 #[tokio::test]
 async fn sweep_continues_after_topic_failure_and_returns_contextual_error() {
+    // Trigger DDL on the shared events table takes ACCESS EXCLUSIVE — hold the
+    // choreography guard so it can never queue behind (and wedge against) a
+    // store test's open appended tx. See the guard's doc for the observed cycle.
+    let _choreo = crate::store::store_tests::WRITER_LOCK_CHOREOGRAPHY.lock().await;
     let Some(pool) = test_pool().await else { return };
     let bad_topic = unique("ret.fail.00-bad");
     let good_topic = unique("ret.fail.01-good");
@@ -416,14 +445,15 @@ async fn sweep_continues_after_topic_failure_and_returns_contextual_error() {
         .fetch_one(&fault_pool)
         .await
         .unwrap();
-    sqlx::raw_sql(&format!(
-        "CREATE TRIGGER {trigger} BEFORE DELETE ON asyncevents.events \
-         FOR EACH ROW EXECUTE FUNCTION asyncevents.{function}(\
-           '{bad_topic}', '{good_topic}', '{backend_pid}')"
-    ))
-    .execute(&pool)
-    .await
-    .unwrap();
+    events_trigger_ddl(
+        &pool,
+        &format!(
+            "CREATE TRIGGER {trigger} BEFORE DELETE ON asyncevents.events \
+             FOR EACH ROW EXECUTE FUNCTION asyncevents.{function}(\
+               '{bad_topic}', '{good_topic}', '{backend_pid}')"
+        ),
+    )
+    .await;
     let result = sweep(&fault_pool).await;
     let bad_remaining = count_events(&pool, bad_topic).await;
     let good_remaining = count_events(&pool, good_topic).await;
@@ -431,10 +461,7 @@ async fn sweep_continues_after_topic_failure_and_returns_contextual_error() {
 
     // Remove the fault injection and all test data before asserting, so a failed
     // assertion cannot poison later retention tests sharing this database.
-    sqlx::raw_sql(&format!("DROP TRIGGER {trigger} ON asyncevents.events"))
-        .execute(&pool)
-        .await
-        .unwrap();
+    events_trigger_ddl(&pool, &format!("DROP TRIGGER {trigger} ON asyncevents.events")).await;
     sqlx::raw_sql(&format!("DROP FUNCTION asyncevents.{function}()"))
         .execute(&pool)
         .await
@@ -513,6 +540,10 @@ async fn count_events_at_or_above(pool: &PgPool, topic: &str, cursor: &(i64, Str
 /// autocommit DELETEs and the trigger's insert rides each statement's own tx.)
 #[tokio::test]
 async fn mid_sweep_registered_subscription_survives_stale_floor() {
+    // Trigger DDL on the shared events table takes ACCESS EXCLUSIVE — hold the
+    // choreography guard (same reasoning as
+    // `sweep_continues_after_topic_failure_and_returns_contextual_error`).
+    let _choreo = crate::store::store_tests::WRITER_LOCK_CHOREOGRAPHY.lock().await;
     let Some(pool) = test_pool().await else { return };
     let topic = unique("ret.midsweep");
     // 1500 > BATCH (1000): GC needs at least two DELETE statements, so a between-batch
@@ -567,15 +598,16 @@ async fn mid_sweep_registered_subscription_survives_stale_floor() {
     .execute(&pool)
     .await
     .unwrap();
-    sqlx::raw_sql(&format!(
-        "CREATE TRIGGER {trigger} BEFORE DELETE ON asyncevents.events \
-         FOR EACH ROW EXECUTE FUNCTION asyncevents.{function}(\
-           '{injected_id}', '{topic}', '{}', '{}', '{}', '{backend_pid}')",
-        inj.0, inj.1, inj.2
-    ))
-    .execute(&pool)
-    .await
-    .unwrap();
+    events_trigger_ddl(
+        &pool,
+        &format!(
+            "CREATE TRIGGER {trigger} BEFORE DELETE ON asyncevents.events \
+             FOR EACH ROW EXECUTE FUNCTION asyncevents.{function}(\
+               '{injected_id}', '{topic}', '{}', '{}', '{}', '{backend_pid}')",
+            inj.0, inj.1, inj.2
+        ),
+    )
+    .await;
 
     // Capture the GC result instead of unwrapping here: the trigger/function live on
     // the SHARED events table, so teardown must run UNCONDITIONALLY — an early unwrap
@@ -588,10 +620,8 @@ async fn mid_sweep_registered_subscription_survives_stale_floor() {
 
     // Tear the fixture down before ANY assertion/unwrap so a failure can't poison
     // later tests. IF EXISTS keeps teardown itself non-panicking on a partial setup.
-    sqlx::raw_sql(&format!("DROP TRIGGER IF EXISTS {trigger} ON asyncevents.events"))
-        .execute(&pool)
-        .await
-        .unwrap();
+    events_trigger_ddl(&pool, &format!("DROP TRIGGER IF EXISTS {trigger} ON asyncevents.events"))
+        .await;
     sqlx::raw_sql(&format!("DROP FUNCTION IF EXISTS asyncevents.{function}()"))
         .execute(&pool)
         .await
