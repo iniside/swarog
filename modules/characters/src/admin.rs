@@ -30,13 +30,15 @@ impl adminapi::AdminData for Service {
 /// ONE source of truth: the LOCAL `Item` attaches these via `with_extensions` and the
 /// REMOTE `ItemData` carries the SAME vec, so a split admin sees the identical menu.
 /// characters extends the accounts Players row `⋯` menu with a "View Characters"
-/// drill-down (`characters?owner=player:<uuid>`, interpolated from the row `context`).
+/// drill-down (`characters?owner=player:<uuid>&owner_name=<display name>`,
+/// interpolated from the row `context` — the name rides the link so the scoped page
+/// can title itself without knowing the accounts module).
 pub(crate) fn extension_entries() -> Vec<adminapi::ExtensionEntry> {
     vec![adminapi::ExtensionEntry {
         point: accountsapi::admin::PLAYERS_ROW_MENU.id.into(),
         label: "View Characters".into(),
         icon: "characters".into(),
-        link: format!("{ADMIN_ITEM_ID}?owner={{id}}"),
+        link: format!("{ADMIN_ITEM_ID}?owner={{id}}&owner_name={{name}}"),
         present: adminapi::Present::Navigate,
         priority: 0,
     }]
@@ -68,7 +70,10 @@ pub(crate) async fn admin_content(
             return Ok(error_content("Invalid owner id — not a uuid."));
         }
         let chars = store.list_by_player(uuid).await?;
-        return Ok(build_player_scoped(uuid, &chars));
+        // Display-only: the owner's name rides the drill-down link (the accounts row
+        // context) — characters itself never learns account display names.
+        let owner_name = adminapi::param(params, "owner_name");
+        return Ok(build_player_scoped(uuid, owner_name, &chars));
     }
     if let Some(uuid) = owner.strip_prefix("character:") {
         if !is_uuid(uuid) {
@@ -106,7 +111,7 @@ async fn admin_all_characters(store: &Store) -> anyhow::Result<adminapi::Content
                 ..Default::default()
             },
             adminapi::Cell::mono(&c.player_id),
-            adminapi::Cell::text(&c.created_at),
+            adminapi::Cell::text(short_ts(&c.created_at)),
         ]);
     }
 
@@ -122,22 +127,32 @@ async fn admin_all_characters(store: &Store) -> anyhow::Result<adminapi::Content
     })
 }
 
-/// The player-scoped view (`?owner=player:<uuid>`): a context header (owner-rendered —
-/// characters only knows the uuid, so the title is the short form) plus one card per
+/// The player-scoped view (`?owner=player:<uuid>`): a context header (title = the
+/// player's display name when the drill-down link carried `owner_name`, else the uuid
+/// short form — characters itself doesn't know account names) plus one card per
 /// character, the card grid bound to the characters-owned card `⋯` point. Pure over an
 /// already-fetched character list so it is unit-testable without the DB.
-pub(crate) fn build_player_scoped(player_uuid: &str, chars: &[Character]) -> adminapi::Content {
+pub(crate) fn build_player_scoped(
+    player_uuid: &str,
+    owner_name: &str,
+    chars: &[Character],
+) -> adminapi::Content {
     let cards = chars
         .iter()
         .enumerate()
         .map(|(i, c)| character_card(i, c))
         .collect();
 
+    let title = if owner_name.is_empty() {
+        short_uuid(player_uuid).to_string()
+    } else {
+        owner_name.to_string()
+    };
     adminapi::Content {
         header: Some(adminapi::ContextHeader {
-            avatar_text: initial(short_uuid(player_uuid)),
+            avatar_text: initial(&title),
             avatar_color_key: palette(player_uuid),
-            title: short_uuid(player_uuid).into(),
+            title,
             subtitle_mono: format!("player:{player_uuid}"),
             right_note: format!("{} character(s)", chars.len()),
         }),
@@ -167,15 +182,21 @@ fn character_card(idx: usize, c: &Character) -> adminapi::Card {
             },
             adminapi::CardStat {
                 label: "Created".into(),
-                value: c.created_at.clone(),
+                value: short_ts(&c.created_at).to_string(),
             },
         ],
-        context: HashMap::from([("id".into(), format!("character:{}", c.id))]),
+        context: HashMap::from([
+            // `id` is already the full entity ref (`character:<uuid>`) — link templates
+            // use `owner={id}` verbatim, never re-prefix (a double `character:character:`
+            // fails the uuid guard).
+            ("id".into(), format!("character:{}", c.id)),
+            ("name".into(), c.name.clone()),
+        ]),
         menu: vec![
             adminapi::MenuEntry {
                 label: "View".into(),
                 icon: "view".into(),
-                link: Some(format!("{ADMIN_ITEM_ID}?owner=character:{{id}}")),
+                link: Some(format!("{ADMIN_ITEM_ID}?owner={{id}}")),
                 present: adminapi::Present::Modal,
                 ..Default::default()
             },
@@ -209,12 +230,9 @@ pub(crate) fn build_character_detail(c: &Character) -> adminapi::Content {
             subtitle_mono: format!("character:{}", c.id),
             right_note: c.class.clone(),
         }),
+        // The class rides the header's `right_note` (the modal renders it as the tag
+        // beside the name, mockup rarity-badge position) — no duplicate KPI cell.
         kpis: vec![
-            adminapi::Kpi {
-                label: "Class".into(),
-                value: c.class.clone(),
-                sub: String::new(),
-            },
             adminapi::Kpi {
                 label: "Character ID".into(),
                 value: short_uuid(&c.id).into(),
@@ -222,12 +240,15 @@ pub(crate) fn build_character_detail(c: &Character) -> adminapi::Content {
             },
             adminapi::Kpi {
                 label: "Created".into(),
-                value: c.created_at.clone(),
+                value: short_ts(&c.created_at).to_string(),
                 sub: String::new(),
             },
         ],
         modal_point: charactersapi::admin::CHARACTER_MODAL_ACTIONS.id.into(),
-        context: HashMap::from([("id".into(), format!("character:{}", c.id))]),
+        context: HashMap::from([
+            ("id".into(), format!("character:{}", c.id)),
+            ("name".into(), c.name.clone()),
+        ]),
         ..Default::default()
     }
 }
@@ -262,6 +283,13 @@ fn is_uuid(s: &str) -> bool {
         }
     }
     true
+}
+
+/// The store's raw `created_at::text` (`2026-07-08 16:17:45.286964+00`) truncated to
+/// minutes for display (`2026-07-08 16:17`) — presentation only; `Character.created_at`
+/// is a contract field consumed by HTTP clients, so the STORE never reformats it.
+pub(crate) fn short_ts(ts: &str) -> &str {
+    ts.get(..16).unwrap_or(ts)
 }
 
 /// The first hex group of a uuid (`b3f1a2c4`), the short form the header/KPI show

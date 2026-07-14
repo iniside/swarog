@@ -190,13 +190,37 @@ body { margin:0; background:var(--bg); color:var(--text);
   display:flex; align-items:center; justify-content:center; font-size:27px; font-weight:700;
   color:var(--on-amber); background:#3d8be0; }
 .modal-heading { flex:1; min-width:0; }
+.modal-name-row { display:flex; align-items:center; gap:9px; }
 .modal-name { font-size:19px; font-weight:800; letter-spacing:-0.3px; }
+/* the badge beside the modal name (mockup: rarity badge position — here real data:
+   class / item count) */
+.modal-tag { display:inline-flex; align-items:center; gap:6px; padding:3px 9px; border-radius:6px;
+  font-size:12px; font-weight:600; color:var(--muted); background:rgba(138,144,156,0.12); white-space:nowrap; }
 .modal-sub { font-size:12.5px; color:var(--muted2); margin-top:3px; }
 .modal-close { display:flex; align-items:center; justify-content:center; width:32px; height:32px;
   border:1px solid var(--scroll); border-radius:8px; cursor:pointer; color:var(--muted); background:none; }
 .modal-close:hover { background:rgba(255,255,255,0.05); }
 .modal-body { padding:22px 24px; }
 .modal-footer { display:flex; gap:10px; padding:0 24px 22px; }
+.modal-footer .btn, .modal-footer .btn-ghost { padding:10px 18px; font-size:13.5px; }
+/* modal stat cells (mockup modalStats): 3-col grid of small-label/18px-value boxes —
+   NOT the page-level 27px KPI cards (a full-width KPI inside a 560px modal is the
+   exact mockup divergence this override kills) */
+.modal .kpi-grid { grid-template-columns:repeat(3,1fr); gap:12px; }
+.modal .kpi { background:var(--chip-bg); border:1px solid var(--border2); border-radius:10px; padding:13px 15px; }
+.modal .kpi-label { font-size:10.5px; color:var(--muted3); font-weight:400; letter-spacing:0.5px; text-transform:uppercase; }
+.modal .kpi-value { font-size:18px; font-weight:800; margin-top:5px; letter-spacing:-0.4px; }
+.modal .kpi-sub { font-size:11px; color:var(--muted3); margin-top:3px; }
+/* modal item list (mockup modalItems): headerless rows, bold name left, amber ×qty
+   right — the modal renders a Table as this list, never as the page spreadsheet.
+   NOTE: this styles EVERY table fetched as a modal fragment; today the only
+   Modal-presented table is inventory's ITEM/QTY (where × is the mockup glyph) — give
+   the list a dedicated class before pointing another table page at a Modal entry. */
+.modal .table thead { display:none; }
+.modal .table td { padding:11px 0; border-top:1px solid var(--row); font-size:13.5px; }
+.modal .table td:first-child { font-weight:600; }
+.modal .table td:last-child:not(:first-child) { color:var(--amber); font-weight:700; text-align:right; }
+.modal .table td:last-child:not(:first-child)::before { content:"×"; } /* mockup quantity glyph */
 
 /* ---- forms + buttons ----------------------------------------------------- */
 .form-row { display:flex; flex-direction:column; gap:6px; margin-bottom:14px; }

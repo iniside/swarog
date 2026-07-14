@@ -35,13 +35,15 @@ impl adminapi::AdminData for Inner {
 /// REMOTE `ItemData` carries the SAME vec, so a split admin sees the identical menu.
 /// inventory drops a "View Inventory" drill-down onto THREE owner-declared points:
 /// the accounts Players row menu (Navigate), the characters card menu (Modal), and the
-/// character-modal footer (Modal). Each interpolates `{id}` from that point's context.
+/// character-modal footer (Modal). Each interpolates `{id}`/`{name}` from that point's
+/// context — the owner's display name rides the link so the scoped view can title
+/// itself without knowing the owning module.
 pub(crate) fn extension_entries() -> Vec<adminapi::ExtensionEntry> {
     let entry = |point: &str, present| adminapi::ExtensionEntry {
         point: point.into(),
         label: "View Inventory".into(),
         icon: "inventory".into(),
-        link: format!("{ADMIN_ITEM_ID}?owner={{id}}"),
+        link: format!("{ADMIN_ITEM_ID}?owner={{id}}&owner_name={{name}}"),
         present,
         priority: 10,
     };
@@ -67,7 +69,10 @@ pub(crate) async fn admin_content(store: &Store, params: &adminapi::Params) -> a
     if owner.is_empty() {
         admin_owners_list(store).await
     } else {
-        admin_owner_detail(store, owner).await
+        // Display-only: the owner's name rides the drill-down link (`owner_name=`,
+        // filled from the owning page's context) — inventory itself never learns
+        // account/character display names.
+        admin_owner_detail(store, owner, adminapi::param(params, "owner_name")).await
     }
 }
 
@@ -111,9 +116,14 @@ async fn admin_owners_list(store: &Store) -> anyhow::Result<adminapi::Content> {
     })
 }
 
-/// The drill-down view for one owner (`"<type>:<id>"`): its items. A malformed owner
-/// param renders an error card (not a 500).
-async fn admin_owner_detail(store: &Store, owner: &str) -> anyhow::Result<adminapi::Content> {
+/// The drill-down view for one owner (`"<type>:<id>"`): its items. The header titles
+/// itself with `owner_name` (carried by the drill-down link) when present, else the
+/// uuid short form. A malformed owner param renders an error card (not a 500).
+async fn admin_owner_detail(
+    store: &Store,
+    owner: &str,
+    owner_name: &str,
+) -> anyhow::Result<adminapi::Content> {
     let Some((otype, id)) = owner.split_once(':') else {
         return Ok(error_content("Invalid owner — expected player:<uuid> or character:<uuid>."));
     };
@@ -137,23 +147,25 @@ async fn admin_owner_detail(store: &Store, owner: &str) -> anyhow::Result<admina
         ]);
     }
 
+    let title = if owner_name.is_empty() {
+        short_id(id).to_string()
+    } else {
+        owner_name.to_string()
+    };
     Ok(adminapi::Content {
-        // Owner-rendered header (avatar + short id + owner-type note): this view is
-        // reached as a modal/drill-down FROM another page, so it carries its own
-        // context header. `context` matches the `owner` ref (`<type>:<uuid>`).
+        // Owner-rendered header (avatar + display name/short id + item count): this
+        // view is reached as a modal/drill-down FROM another page, so it carries its
+        // own context header — the header alone identifies the owner (name + the mono
+        // `<type>:<uuid>` ref); no KPI duplicates it (a full uuid in a 27px KPI cell
+        // is exactly the mockup-divergence the restyle fixed).
         header: Some(adminapi::ContextHeader {
-            avatar_text: initial(id),
+            avatar_text: initial(&title),
             avatar_color_key: palette(id),
-            title: short_id(id).into(),
+            title,
             subtitle_mono: format!("{otype}:{id}"),
-            right_note: owner_badge_sub(otype).into(),
+            right_note: format!("{} item(s)", holdings.len()),
         }),
         context: std::collections::HashMap::from([("id".into(), format!("{otype}:{id}"))]),
-        kpis: vec![
-            adminapi::Kpi { label: "Owner".into(), value: otype.into(), sub: owner_badge_sub(otype).into() },
-            adminapi::Kpi { label: "Owner ID".into(), value: id.into(), sub: String::new() },
-            adminapi::Kpi { label: "Items".into(), value: holdings.len().to_string(), sub: String::new() },
-        ],
         table: Some(table),
         ..Default::default()
     })
@@ -201,14 +213,6 @@ fn owner_badge(owner_type: &str) -> &'static str {
         "blue"
     } else {
         "grey"
-    }
-}
-
-fn owner_badge_sub(owner_type: &str) -> &'static str {
-    if owner_type == "character" {
-        "character-scoped"
-    } else {
-        "player-scoped"
     }
 }
 

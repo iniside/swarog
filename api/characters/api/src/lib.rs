@@ -92,19 +92,20 @@ pub mod admin {
 
     /// The `⋯` menu on each character CARD of the scoped (`?owner=player:<uuid>`)
     /// Characters view. Contributors add entries ("View Inventory"); the card
-    /// `context` supplies `id` as `"character:<uuid>"`.
+    /// `context` supplies `id` as `"character:<uuid>"` and `name` as the character's
+    /// name (so a drill-down can show WHO it is scoped to).
     pub const CHARACTERS_CARD_MENU: ExtensionPoint = ExtensionPoint {
         id: "characters.characters.card-menu",
         kind: ExtensionKind::EntityMenu,
-        context_keys: &["id"],
+        context_keys: &["id", "name"],
     };
 
     /// The action strip in the character-detail MODAL footer. Contributors add modal
     /// actions ("View Inventory"); `Content.context` supplies `id` as
-    /// `"character:<uuid>"`.
+    /// `"character:<uuid>"` and `name` as the character's name.
     pub const CHARACTER_MODAL_ACTIONS: ExtensionPoint = ExtensionPoint {
         id: "characters.character-modal.actions",
         kind: ExtensionKind::ModalActions,
-        context_keys: &["id"],
+        context_keys: &["id", "name"],
     };
 }

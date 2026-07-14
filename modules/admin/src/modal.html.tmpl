@@ -12,7 +12,7 @@
     <div class="modal-header">
       {% if header %}<div class="modal-avatar {{ header.avatar_color_key }}">{{ header.avatar_text }}</div>{% endif %}
       <div class="modal-heading">
-        <div class="modal-name">{% if header %}{{ header.title }}{% else %}{{ title }}{% endif %}</div>
+        <div class="modal-name-row"><span class="modal-name">{% if header %}{{ header.title }}{% else %}{{ title }}{% endif %}</span>{% if header and header.right_note %}<span class="modal-tag">{{ header.right_note }}</span>{% endif %}</div>
         {% if header and header.subtitle_mono %}<div class="modal-sub mono">{{ header.subtitle_mono }}</div>{% endif %}
       </div>
       <button type="button" class="modal-close" data-modal-close aria-label="Close">
@@ -25,9 +25,11 @@
       {% if table %}{% if table.rows %}<table class="table"><thead><tr>{% for c in table.columns %}<th>{{ c }}</th>{% endfor %}</tr></thead><tbody>{% for row in table.rows %}<tr>{% for cell in row %}<td>{{ render_cell(cell) }}</td>{% endfor %}</tr>{% endfor %}</tbody></table>{% else %}<div class="empty">No rows yet.</div>{% endif %}{% endif %}
       {% if cards %}<div class="card-grid">{% for c in cards.cards %}<div class="card"><div class="card-head"><div class="card-avatar {{ c.color_key }}">{{ c.icon_text }}</div><div class="card-meta"><div class="card-title">{{ c.title }}</div>{% if c.subtitle %}<div class="card-subtitle">{{ c.subtitle }}</div>{% endif %}</div>{% if c.badge %}<span class="badge {{ c.color_key }}">{{ c.badge }}</span>{% endif %}</div>{% if c.stats %}<div class="card-stats">{% for s in c.stats %}<div class="card-stat"><span class="stat-k">{{ s.label }}</span><span class="stat-v">{{ s.value }}</span></div>{% endfor %}</div>{% endif %}</div>{% endfor %}</div>{% endif %}
     </div>
-    <div class="modal-footer">
+    {# footer only when the content binds ModalActions entries — the mockup's list
+       modal (inventory) has no button strip, only the X close #}
+    {% if modal_footer %}<div class="modal-footer">
       {% for m in modal_footer %}{% if m.separator %}{% elif m.href %}<a class="btn" href="/admin/{{ m.href }}"{% if m.hx_url %} hx-get="/admin/{{ m.hx_url }}" hx-target="#modal-root" hx-swap="innerHTML"{% endif %}>{{ m.label }}</a>{% else %}<span class="btn-ghost" style="opacity:.5;">{{ m.label }}</span>{% endif %}{% endfor %}
       <button type="button" class="btn-ghost" data-modal-close>Close</button>
-    </div>
+    </div>{% endif %}
   </div>
 </div>

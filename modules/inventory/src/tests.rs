@@ -990,7 +990,8 @@ fn admin_extension_entries_target_all_three_points() {
     let ents = crate::admin::extension_entries();
     assert_eq!(ents.len(), 3);
     assert!(ents.iter().all(|e| e.label == "View Inventory"));
-    assert!(ents.iter().all(|e| e.link == "inventory?owner={id}"));
+    // The display name rides the link so the scoped view can title itself.
+    assert!(ents.iter().all(|e| e.link == "inventory?owner={id}&owner_name={name}"));
 
     let by = |p: &str| ents.iter().find(|e| e.point == p).expect("point present");
     assert_eq!(
@@ -1021,11 +1022,20 @@ async fn admin_owner_detail_carries_header_and_context() {
 
     let content = crate::admin::admin_content(&store, &params).await.unwrap();
     let header = content.header.expect("owner detail carries a header");
+    // No `owner_name` on the request → the uuid short form titles the view.
+    assert_eq!(header.title, "b3f1a2c4");
     assert_eq!(header.subtitle_mono, format!("character:{uuid}"));
     assert_eq!(
         content.context.get("id").map(String::as_str),
         Some(format!("character:{uuid}").as_str())
     );
+    // A full uuid must never sit in a KPI cell (27px) — the header alone identifies
+    // the owner; the drill-down link's `owner_name` titles it with the display name.
+    assert!(content.kpis.is_empty(), "owner detail renders no KPI cells");
+
+    params.insert("owner_name".into(), "VoidR4nger".into());
+    let named = crate::admin::admin_content(&store, &params).await.unwrap();
+    assert_eq!(named.header.expect("header").title, "VoidR4nger");
 }
 
 #[tokio::test]

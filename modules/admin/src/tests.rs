@@ -593,10 +593,19 @@ fn state_with_open(ctx: &Context, open: bool) -> AdminState {
 
 #[test]
 fn interpolate_substitutes_and_skips_on_missing_key() {
-    let ctx = HashMap::from([("id".to_string(), "character:abc".to_string())]);
+    let ctx = HashMap::from([
+        ("id".to_string(), "character:abc".to_string()),
+        ("name".to_string(), "Void R&nger".to_string()),
+    ]);
+    // Substituted values are percent-encoded as query values (`:` → %3A).
     assert_eq!(
         interpolate("inventory?owner={id}", &ctx).as_deref(),
-        Some("inventory?owner=character:abc")
+        Some("inventory?owner=character%3Aabc")
+    );
+    // Display names with spaces/`&` cannot break the query shape.
+    assert_eq!(
+        interpolate("inventory?owner={id}&owner_name={name}", &ctx).as_deref(),
+        Some("inventory?owner=character%3Aabc&owner_name=Void+R%26nger")
     );
     // Any unresolved key aborts the whole entry (the caller SKIPs it).
     assert_eq!(interpolate("x={id}&y={missing}", &ctx), None);
@@ -636,13 +645,13 @@ fn build_menu_merges_natives_separator_then_extensions() {
     assert_eq!(menu[0].label, "Edit");
     assert!(menu[0].href.is_empty(), "inert native has no href");
     assert_eq!(menu[1].label, "View");
-    assert!(menu[1].href.contains("characters?owner=player:X"));
+    assert!(menu[1].href.contains("characters?owner=player%3AX"));
     assert!(menu[1].href.contains("from=players"), "from appended: {}", menu[1].href);
     // Separator between blocks.
     assert!(menu[2].separator);
     // Extension last.
     assert_eq!(menu[3].label, "View Inventory");
-    assert!(menu[3].href.contains("inventory?owner=player:X"));
+    assert!(menu[3].href.contains("inventory?owner=player%3AX"));
     assert!(menu[3].href.contains("from=players"));
 }
 
@@ -784,8 +793,8 @@ fn modal_footer_interpolated_from_content_context() {
     assert_eq!(pv.modal_footer.len(), 1);
     let e = &pv.modal_footer[0];
     assert_eq!(e.label, "View Inventory");
-    // Interpolated against Content.context (not the request's params).
-    assert!(e.href.contains("inventory?owner=character:abc"), "footer href: {}", e.href);
+    // Interpolated against Content.context (not the request's params), value encoded.
+    assert!(e.href.contains("inventory?owner=character%3Aabc"), "footer href: {}", e.href);
     assert!(e.hx_url.contains("partial=modal"));
 }
 
@@ -820,10 +829,38 @@ fn current_page_ref_excludes_portal_params() {
     p.insert("partial".into(), "modal".into());
     p.insert("reveal".into(), "tok".into());
     p.insert("from".into(), "players".into());
-    // Only the owner-scoping param survives; portal chrome is stripped.
-    assert_eq!(current_page_ref("characters", &p), "characters?owner=player:X");
+    // Only the owner-scoping param survives; portal chrome is stripped. The query half
+    // is form_urlencoded (build_back's decode contract), so `:` → %3A.
+    assert_eq!(current_page_ref("characters", &p), "characters?owner=player%3AX");
     // No owner params → bare slug.
     assert_eq!(current_page_ref("players", &adminapi::Params::new()), "players");
+}
+
+/// The `from=` roundtrip with a hostile display name: `current_page_ref` (producer)
+/// and `build_back` (consumer) must agree on the query encoding, or a name containing
+/// `&`/`+`/`%` corrupts the back-chip (the literal `&` splits, `+` turns to space).
+#[test]
+fn current_page_ref_roundtrips_hostile_owner_name_through_build_back() {
+    let items = [resolved("S", "Characters", "characters")];
+    let mut p = adminapi::Params::new();
+    p.insert("owner".into(), "player:X".into());
+    p.insert("owner_name".into(), "Void R&nger +100%".into());
+
+    // Producer: the from= value as every menu link carries it (append_query encodes it
+    // once more as ONE param value; the request layer decodes that on arrival, so
+    // build_back receives current_page_ref's output verbatim).
+    let from = current_page_ref("characters", &p);
+    let mut back_params = adminapi::Params::new();
+    back_params.insert("from".into(), from);
+    let back = build_back(&back_params, &items).expect("known slug yields a chip");
+
+    // Consumer: the name survives byte-exact through decode + re-serialize.
+    let query = back.href.split_once('?').expect("query half").1;
+    let name = form_urlencoded::parse(query.as_bytes())
+        .find(|(k, _)| k == "owner_name")
+        .map(|(_, v)| v.into_owned())
+        .expect("owner_name survives");
+    assert_eq!(name, "Void R&nger +100%");
 }
 
 #[tokio::test]

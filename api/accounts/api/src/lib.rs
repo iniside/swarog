@@ -113,10 +113,11 @@ pub mod admin {
 
     /// The `⋯` menu on each Players-page row. Contributors add drill-down entries
     /// ("View Characters", "View Inventory"); the row `context` supplies `id` as
-    /// `"player:<uuid>"`.
+    /// `"player:<uuid>"` and `name` as the player's display name (so a drill-down
+    /// page can show WHO it is scoped to without knowing the accounts module).
     pub const PLAYERS_ROW_MENU: ExtensionPoint = ExtensionPoint {
         id: "accounts.players.row-menu",
         kind: ExtensionKind::EntityMenu,
-        context_keys: &["id"],
+        context_keys: &["id", "name"],
     };
 }

@@ -81,7 +81,7 @@ pub(crate) async fn admin_content(store: &Store) -> anyhow::Result<adminapi::Con
         // Index-aligned per-row metadata: the `{id}` interpolation source plus the
         // owner's own inert native entries (Edit/Delete are visible-but-inert per the
         // mockup — wiring them is a later op-backed phase).
-        table.row_meta.push(player_row_meta(&p.id));
+        table.row_meta.push(player_row_meta(&p.id, &p.display_name));
     }
 
     Ok(adminapi::Content {
@@ -118,11 +118,16 @@ fn or_dash(s: &str) -> &str {
 
 /// The per-row interpolation context + native menu for one Players-page row. The
 /// `context` supplies `id` as the entity-ref composite `"player:<uuid>"` (the
-/// convention every point uses); the native menu is the mockup's inert Edit/Delete
-/// (`disabled` — rendered visibly but with no link, no op wired yet).
-pub(crate) fn player_row_meta(player_id: &str) -> adminapi::RowMeta {
+/// convention every point uses) and `name` as the display name (the
+/// `PLAYERS_ROW_MENU.context_keys` promise — drill-down pages show it instead of a
+/// bare uuid); the native menu is the mockup's inert Edit/Delete (`disabled` —
+/// rendered visibly but with no link, no op wired yet).
+pub(crate) fn player_row_meta(player_id: &str, display_name: &str) -> adminapi::RowMeta {
     adminapi::RowMeta {
-        context: std::collections::HashMap::from([("id".into(), format!("player:{player_id}"))]),
+        context: std::collections::HashMap::from([
+            ("id".into(), format!("player:{player_id}")),
+            ("name".into(), display_name.to_string()),
+        ]),
         menu: vec![
             adminapi::MenuEntry {
                 label: "Edit".into(),

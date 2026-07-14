@@ -1595,12 +1595,14 @@ async fn rejected_oauth_callback_never_reaches_token_endpoint_or_consumes_state(
 #[test]
 fn admin_player_row_meta_is_inert_with_player_context() {
     let pid = "b3f1a2c4-1111-2222-3333-444455556666";
-    let rm = crate::admin::player_row_meta(pid);
-    // The `{id}` interpolation source is the entity-ref composite.
+    let rm = crate::admin::player_row_meta(pid, "VoidR4nger");
+    // The `{id}` interpolation source is the entity-ref composite; `{name}` is the
+    // display name (the PLAYERS_ROW_MENU context_keys promise).
     assert_eq!(
         rm.context.get("id").map(String::as_str),
         Some(format!("player:{pid}").as_str())
     );
+    assert_eq!(rm.context.get("name").map(String::as_str), Some("VoidR4nger"));
     // Native menu: inert Edit + inert danger Delete (per the mockup, no op wired yet).
     assert_eq!(rm.menu.len(), 2);
     assert_eq!(rm.menu[0].label, "Edit");

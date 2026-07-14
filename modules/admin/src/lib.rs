@@ -1523,10 +1523,13 @@ fn collect_extensions(items: &[Resolved]) -> HashMap<String, Vec<adminapi::Exten
     map
 }
 
-/// Substitutes every `{key}` in `template` with `ctx[key]`. Returns `None` the moment a
-/// referenced key is ABSENT from `ctx` (the caller SKIPs that menu entry with a warn —
-/// never a panic). An unterminated `{` is treated as literal text. Uniform across native
-/// menu links and extension links — both interpolate through this one helper.
+/// Substitutes every `{key}` in `template` with `ctx[key]`, URLENCODED — templates are
+/// `slug?query` links and context values (entity refs, display names with spaces/`&`)
+/// land in query-value position, so each substitution is percent-encoded as one query
+/// value. Returns `None` the moment a referenced key is ABSENT from `ctx` (the caller
+/// SKIPs that menu entry with a warn — never a panic). An unterminated `{` is treated
+/// as literal text. Uniform across native menu links and extension links — both
+/// interpolate through this one helper.
 fn interpolate(template: &str, ctx: &HashMap<String, String>) -> Option<String> {
     let mut out = String::new();
     let mut rest = template;
@@ -1541,7 +1544,7 @@ fn interpolate(template: &str, ctx: &HashMap<String, String>) -> Option<String> 
         };
         let key = &after[..close];
         let value = ctx.get(key)?; // absent key → skip the whole entry
-        out.push_str(value);
+        out.extend(form_urlencoded::byte_serialize(value.as_bytes()));
         rest = &after[close + 1..];
     }
     out.push_str(rest);
@@ -1550,8 +1553,11 @@ fn interpolate(template: &str, ctx: &HashMap<String, String>) -> Option<String> 
 
 /// The current page reference used as the `from=` value on every menu link: the slug
 /// plus a deterministic (sorted) rebuild of the owner-scoping query, EXCLUDING portal
-/// chrome params (`partial`/`reveal`/`from`). e.g. `characters?owner=player:X`. The
-/// whole string is urlencoded as ONE param value by [`append_query`].
+/// chrome params (`partial`/`reveal`/`from`). e.g. `characters?owner=player%3AX`. The
+/// query half is serialized through `form_urlencoded` — [`build_back`] re-parses it as
+/// urlencoded, so a raw join would corrupt any param value containing `&`/`+`/`%`
+/// (display names ride here as `owner_name` since the name-titled drill-downs). The
+/// whole string is then urlencoded AGAIN as ONE param value by [`append_query`].
 fn current_page_ref(slug: &str, params: &adminapi::Params) -> String {
     let mut kv: Vec<(&str, &str)> = params
         .iter()
@@ -1562,11 +1568,9 @@ fn current_page_ref(slug: &str, params: &adminapi::Params) -> String {
         return slug.to_string();
     }
     kv.sort();
-    let query = kv
-        .iter()
-        .map(|(k, v)| format!("{k}={v}"))
-        .collect::<Vec<_>>()
-        .join("&");
+    let query = form_urlencoded::Serializer::new(String::new())
+        .extend_pairs(kv)
+        .finish();
     format!("{slug}?{query}")
 }
 

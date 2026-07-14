@@ -613,7 +613,8 @@ fn admin_extension_entry_targets_players_row_menu() {
     assert_eq!(e.point, accountsapi::admin::PLAYERS_ROW_MENU.id);
     assert_eq!(e.label, "View Characters");
     assert_eq!(e.present, adminapi::Present::Navigate);
-    assert_eq!(e.link, "characters?owner={id}");
+    // The display name rides the link so the scoped page can title itself.
+    assert_eq!(e.link, "characters?owner={id}&owner_name={name}");
 }
 
 #[test]
@@ -622,12 +623,16 @@ fn admin_player_scoped_render_has_header_and_cards() {
         admin_char(ADMIN_UUID, "VoidR4nger", "Warlock"),
         admin_char("cccccccc-0000-0000-0000-000000000001", "Aria", "Ranger"),
     ];
-    let content = crate::admin::build_player_scoped(ADMIN_UUID, &chars);
+    let content = crate::admin::build_player_scoped(ADMIN_UUID, "PlayerOne", &chars);
 
     let header = content.header.expect("scoped view carries a context header");
-    // characters doesn't know account names → the short uuid form is the title.
-    assert_eq!(header.title, "b3f1a2c4");
+    // The drill-down link carried the display name → it is the header title.
+    assert_eq!(header.title, "PlayerOne");
     assert_eq!(header.subtitle_mono, format!("player:{ADMIN_UUID}"));
+
+    // Without an `owner_name` the title falls back to the uuid short form.
+    let anon = crate::admin::build_player_scoped(ADMIN_UUID, "", &chars);
+    assert_eq!(anon.header.expect("header").title, "b3f1a2c4");
 
     let grid = content.cards.expect("scoped view is a card grid");
     assert_eq!(grid.menu_point, charactersapi::admin::CHARACTERS_CARD_MENU.id);
@@ -640,10 +645,13 @@ fn admin_player_scoped_render_has_header_and_cards() {
         card.context.get("id").map(String::as_str),
         Some(format!("character:{ADMIN_UUID}").as_str())
     );
-    // Native card menu: View (Modal) + inert Edit/Delete.
+    assert_eq!(card.context.get("name").map(String::as_str), Some("VoidR4nger"));
+    // Native card menu: View (Modal) + inert Edit/Delete. The context `id` is already
+    // the full `character:<uuid>` entity ref, so the link is `owner={id}` verbatim —
+    // re-prefixing would yield `character:character:<uuid>` and fail the uuid guard.
     assert_eq!(card.menu[0].label, "View");
     assert_eq!(card.menu[0].present, adminapi::Present::Modal);
-    assert_eq!(card.menu[0].link.as_deref(), Some("characters?owner=character:{id}"));
+    assert_eq!(card.menu[0].link.as_deref(), Some("characters?owner={id}"));
     assert!(card.menu[1].disabled, "Edit inert");
     assert!(card.menu[2].disabled && card.menu[2].danger, "Delete inert + danger");
 }
@@ -658,9 +666,22 @@ fn admin_character_detail_sets_modal_point_and_context() {
         content.context.get("id").map(String::as_str),
         Some(format!("character:{ADMIN_UUID}").as_str())
     );
-    assert_eq!(content.header.expect("detail header").title, "VoidR4nger");
-    // KPI stats from REAL fields only.
-    assert!(content.kpis.iter().any(|k| k.label == "Class" && k.value == "Warlock"));
+    assert_eq!(content.context.get("name").map(String::as_str), Some("VoidR4nger"));
+    let header = content.header.expect("detail header");
+    assert_eq!(header.title, "VoidR4nger");
+    // The class rides `right_note` (the modal's name-side tag); KPIs are the remaining
+    // REAL fields.
+    assert_eq!(header.right_note, "Warlock");
+    assert!(content.kpis.iter().any(|k| k.label == "Character ID"));
+    assert!(content.kpis.iter().any(|k| k.label == "Created"));
+}
+
+#[test]
+fn admin_short_ts_truncates_store_timestamp_to_minutes() {
+    // The real store shape (`created_at::text`) → minute granularity for display.
+    assert_eq!(crate::admin::short_ts("2026-07-08 16:17:45.286964+00"), "2026-07-08 16:17");
+    // Anything shorter than 16 bytes (e.g. already-formatted fixtures) passes through.
+    assert_eq!(crate::admin::short_ts("Jan 01, 00:00"), "Jan 01, 00:00");
 }
 
 #[tokio::test]
