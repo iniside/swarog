@@ -105,6 +105,68 @@ fn remote_item(
         label: String::new(),
         render: None,
         remote_fetch: Some(fetch),
+        remote_submit: None,
+    }
+}
+
+/// A REMOTE item that is BOTH readable (fetch yields `data`, whose `content.form` the
+/// admin renders as an editable form) AND writable over the edge: its `remote_submit`
+/// records every call into `calls` and answers `result` (an `Ok(SubmitOutcome)` or a
+/// raw `opsapi::Error` — a `NotFound` stands in for a peer that never registered
+/// `admin.adminSubmit`, a `Conflict` for a CAS miss). Lets the item_post remote branch
+/// be driven with zero network.
+fn remote_writable_item(
+    id: &str,
+    data: adminapi::ItemData,
+    result: Result<adminapi::SubmitOutcome, opsapi::Error>,
+    calls: Arc<Mutex<Vec<adminapi::Params>>>,
+) -> adminapi::Item {
+    let fetch_data = data.clone();
+    let fetch: adminapi::RemoteFetchFn = Arc::new(move |_p: adminapi::Params| {
+        let out: Result<adminapi::ItemData, adminapi::ItemError> = Ok(fetch_data.clone());
+        Box::pin(async move { out }) as BoxFuture<'static, _>
+    });
+    let submit: adminapi::RemoteSubmitFn = Arc::new(move |params: adminapi::Params| {
+        let calls = calls.clone();
+        let result = result.clone();
+        Box::pin(async move {
+            calls.lock().unwrap().push(params);
+            result
+        }) as BoxFuture<'static, Result<adminapi::SubmitOutcome, opsapi::Error>>
+    });
+    adminapi::Item {
+        id: id.into(),
+        section: String::new(),
+        label: String::new(),
+        render: None,
+        remote_fetch: Some(fetch),
+        remote_submit: Some(submit),
+    }
+}
+
+/// An [`adminapi::ItemData`] whose content carries an editable one-field form (so the
+/// admin renders a POSTable form for the remote item). `form.submit` is `None` across
+/// the wire; the admin dispatches the POST via the item's `remote_submit`.
+fn remote_item_data_with_form(id: &str, label: &str) -> adminapi::ItemData {
+    adminapi::ItemData {
+        id: id.into(),
+        section: "S".into(),
+        label: label.into(),
+        content: adminapi::Content {
+            kpis: Vec::new(),
+            table: None,
+            form: Some(adminapi::Form {
+                action: String::new(),
+                fields: vec![adminapi::Field {
+                    name: "knob".into(),
+                    label: "Knob".into(),
+                    value: String::new(),
+                    ..Default::default()
+                }],
+                hidden: Vec::new(),
+                submit: None,
+            }),
+        },
     }
 }
 
@@ -338,6 +400,7 @@ async fn template_renders_kpis_table_csrf_and_escapes() {
                 hidden: Vec::new(),
                 submit: None,
             }),
+            reveal: Vec::new(),
         }),
     };
     let html = st
@@ -385,6 +448,109 @@ async fn template_renders_empty_shell_without_csrf() {
     // No session → no CSRF input, no logout form (ADMIN_OPEN mode).
     assert!(!html.contains("_csrf"));
     assert!(!html.contains(r#"action="/admin/logout""#));
+}
+
+/// The typed-field render: a `Select` becomes `<select>`/`<option>` with the
+/// preselected option marked, a `CheckboxGroup` becomes one checkbox per option (all
+/// sharing the field name) with the pre-checked flag, a plain `Text` stays an input,
+/// and a `SubmitOutcome` reveal renders its one-time value inline.
+#[tokio::test]
+async fn template_renders_select_checkboxgroup_and_reveal() {
+    let ctx = Context::new();
+    let st = state_from(&ctx);
+    let data = PageData {
+        crumb: "Access".into(),
+        title: "API Keys".into(),
+        env: "Local".into(),
+        user: UserView::new("Ops"),
+        csrf: "tok".into(),
+        groups: Vec::new(),
+        page: Some(PageView {
+            title: "API Keys".into(),
+            err: String::new(),
+            kpis: Vec::new(),
+            table: None,
+            form: Some(adminapi::Form {
+                action: "/admin/api-keys".into(),
+                fields: vec![
+                    adminapi::Field {
+                        name: "role".into(),
+                        label: "Role".into(),
+                        value: "client".into(),
+                        kind: adminapi::FieldKind::Select,
+                        options: vec![
+                            adminapi::FieldOption {
+                                value: "client".into(),
+                                label: "Client".into(),
+                                checked: true,
+                            },
+                            adminapi::FieldOption {
+                                value: "server".into(),
+                                label: "Server".into(),
+                                checked: false,
+                            },
+                        ],
+                    },
+                    adminapi::Field {
+                        name: "methods".into(),
+                        label: "Methods".into(),
+                        value: String::new(),
+                        kind: adminapi::FieldKind::CheckboxGroup,
+                        options: vec![
+                            adminapi::FieldOption {
+                                value: "leaderboard.topScores".into(),
+                                label: "leaderboard.topScores".into(),
+                                checked: true,
+                            },
+                            adminapi::FieldOption {
+                                value: "match.report".into(),
+                                label: "match.report".into(),
+                                checked: false,
+                            },
+                        ],
+                    },
+                    adminapi::Field {
+                        name: "note".into(),
+                        label: "Note".into(),
+                        value: "hi".into(),
+                        ..Default::default()
+                    },
+                ],
+                hidden: Vec::new(),
+                submit: None,
+            }),
+            reveal: vec![adminapi::RevealItem {
+                label: "secret".into(),
+                value: "ak_shown_once".into(),
+            }],
+        }),
+    };
+    let html = st.env.get_template("admin.html").unwrap().render(&data).unwrap();
+
+    // Select: <select> with the preselected option marked, the other plain.
+    assert!(html.contains(r#"<select name="role">"#), "select element: {html}");
+    assert!(
+        html.contains(r#"<option value="client" selected>Client</option>"#),
+        "preselected option marked"
+    );
+    assert!(
+        html.contains(r#"<option value="server">Server</option>"#),
+        "unselected option unmarked"
+    );
+    // CheckboxGroup: one checkbox per option, shared name, checked flag on the first only.
+    assert!(
+        html.contains(r#"<input type="checkbox" name="methods" value="leaderboard.topScores" checked>"#),
+        "checked box"
+    );
+    assert!(
+        html.contains(r#"<input type="checkbox" name="methods" value="match.report">"#),
+        "unchecked box"
+    );
+    // Text stays a plain input.
+    assert!(html.contains(r#"<input type="text" name="note" value="hi">"#), "text input");
+    // Show-once reveal panel.
+    assert!(html.contains("Generated — shown once"), "reveal panel");
+    assert!(html.contains(r#"value="ak_shown_once""#), "reveal value shown inline");
 }
 
 // ---- env-knob parsing (dev knobs, explicit-only conventions) ------------------
@@ -1121,6 +1287,170 @@ async fn csrf_rejects_before_editability_and_gates_local_submit() {
     .bind(&local_slug)
     .execute(&pool)
     .await;
+}
+
+/// The REMOTE-write failing branch: a peer that never registered `admin.adminSubmit`
+/// answers `NotFound`, so a POST with a valid CSRF token dispatches to the edge, gets
+/// NotFound, and degrades to 405 (read-only). A POST WITHOUT `_csrf` is rejected 403
+/// BEFORE `remote_submit` is ever dialed — proving the ordering contract AND that a bad
+/// token never reaches the edge (calls stays empty).
+#[tokio::test(flavor = "multi_thread")]
+async fn remote_submit_not_found_is_405_and_csrf_gates_before_edge() {
+    let Some(pool) = test_pool().await else { return };
+    let (ctx, st) = wired(&pool, false, true).await;
+    let user = uniq("t-remote-write");
+    let peer = "203.0.113.28:9999";
+    create_user(&pool, &user, "right").await;
+
+    let calls: Arc<Mutex<Vec<adminapi::Params>>> = Arc::new(Mutex::new(Vec::new()));
+    let label = uniq("Remote Writable");
+    let slug = slugify(&label);
+    ctx.contribute(
+        adminapi::SLOT,
+        remote_writable_item(
+            "apikeys",
+            remote_item_data_with_form("apikeys", &label),
+            Err(opsapi::Error::not_found("edge: unknown method admin.adminSubmit")),
+            calls.clone(),
+        ),
+    );
+
+    let login = post_login(&st, peer, &user, "right").await;
+    let token = token_of(&set_cookie(&login));
+    let cookie = format!("admin_session={token}");
+    let csrf = csrf_of(&pool, &token).await;
+
+    // No _csrf → 403 BEFORE any edge dispatch (calls must stay empty).
+    let no_csrf = send(
+        &st,
+        form_req("POST", &format!("/admin/{slug}"), peer, Some(&cookie), Some("knob=v".to_string())),
+    )
+    .await;
+    assert_eq!(no_csrf.status(), StatusCode::FORBIDDEN, "CSRF must reject before the edge");
+    assert!(
+        calls.lock().unwrap().is_empty(),
+        "remote_submit must not be dialed on a CSRF miss"
+    );
+
+    // Valid _csrf → the edge is dialed once and NotFound degrades to 405 read-only.
+    let with_csrf = send(
+        &st,
+        form_req(
+            "POST",
+            &format!("/admin/{slug}"),
+            peer,
+            Some(&cookie),
+            Some(format!("knob=v&_csrf={csrf}")),
+        ),
+    )
+    .await;
+    assert_eq!(
+        with_csrf.status(),
+        StatusCode::METHOD_NOT_ALLOWED,
+        "a NotFound peer degrades the item to read-only"
+    );
+    assert_eq!(calls.lock().unwrap().len(), 1, "the edge was dialed exactly once");
+
+    cleanup_user(&pool, &user).await;
+    cleanup_ip(&pool, "203.0.113.28").await;
+}
+
+/// The REMOTE-write success branch: a CheckboxGroup posts its shared name once per
+/// checked option and the admin comma-joins them into ONE param before dispatching; a
+/// `SubmitOutcome` carrying a reveal renders INLINE (200, never a 303 that would drop
+/// the one-time value); `_csrf` never reaches the module.
+#[tokio::test(flavor = "multi_thread")]
+async fn remote_submit_joins_checkboxes_and_renders_reveal_inline() {
+    let Some(pool) = test_pool().await else { return };
+    let (ctx, st) = wired(&pool, false, true).await;
+    let user = uniq("t-remote-ok");
+    let peer = "203.0.113.29:9999";
+    create_user(&pool, &user, "right").await;
+
+    let calls: Arc<Mutex<Vec<adminapi::Params>>> = Arc::new(Mutex::new(Vec::new()));
+    let label = uniq("Remote Reveal");
+    let slug = slugify(&label);
+    let data = adminapi::ItemData {
+        id: "apikeys".into(),
+        section: "S".into(),
+        label: label.clone(),
+        content: adminapi::Content {
+            kpis: Vec::new(),
+            table: None,
+            form: Some(adminapi::Form {
+                action: String::new(),
+                fields: vec![adminapi::Field {
+                    name: "methods".into(),
+                    label: "Methods".into(),
+                    value: String::new(),
+                    kind: adminapi::FieldKind::CheckboxGroup,
+                    options: vec![
+                        adminapi::FieldOption {
+                            value: "a".into(),
+                            label: "A".into(),
+                            checked: false,
+                        },
+                        adminapi::FieldOption {
+                            value: "b".into(),
+                            label: "B".into(),
+                            checked: false,
+                        },
+                    ],
+                }],
+                hidden: Vec::new(),
+                submit: None,
+            }),
+        },
+    };
+    ctx.contribute(
+        adminapi::SLOT,
+        remote_writable_item(
+            "apikeys",
+            data,
+            Ok(adminapi::SubmitOutcome {
+                reveal: vec![adminapi::RevealItem {
+                    label: "secret".into(),
+                    value: "ak_once".into(),
+                }],
+            }),
+            calls.clone(),
+        ),
+    );
+
+    let login = post_login(&st, peer, &user, "right").await;
+    let token = token_of(&set_cookie(&login));
+    let cookie = format!("admin_session={token}");
+    let csrf = csrf_of(&pool, &token).await;
+
+    let resp = send(
+        &st,
+        form_req(
+            "POST",
+            &format!("/admin/{slug}"),
+            peer,
+            Some(&cookie),
+            Some(format!("methods=a&methods=b&_csrf={csrf}")),
+        ),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::OK, "a reveal renders inline, never redirects");
+    let html = body_string(resp).await;
+    assert!(html.contains("Generated — shown once"), "reveal panel rendered");
+    assert!(html.contains(r#"value="ak_once""#), "one-time value shown inline");
+
+    {
+        let calls = calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(
+            calls[0].get("methods").map(String::as_str),
+            Some("a,b"),
+            "the checkbox group's repeated posts are comma-joined"
+        );
+        assert!(!calls[0].contains_key("_csrf"), "_csrf never reaches the module");
+    }
+
+    cleanup_user(&pool, &user).await;
+    cleanup_ip(&pool, "203.0.113.29").await;
 }
 
 /// The browser's original hidden expected-state value survives the POST-time

@@ -172,6 +172,12 @@ rand = "0.8"
 base64 = "0.22"
 url = "2"
 
+# Duplicate-preserving urlencoded parsing for the admin portal's form POSTs: a
+# CheckboxGroup field posts its shared name once per checked option, so the admin
+# parses the body as ORDERED pairs (axum's `Form<HashMap>` collapses duplicates) and
+# comma-joins the group. Tiny, transitive already (via `url`/axum), pinned once here.
+form_urlencoded = "1"
+
 # Cookie parsing for the admin portal's session auth (axum 0.7 line). Only the
 # `cookie` feature — the admin module reads `admin_session` via `CookieJar` and
 # writes Set-Cookie headers itself (exact flag control, no extra `time` dep).

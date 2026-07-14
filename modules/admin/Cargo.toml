@@ -17,6 +17,10 @@ publish = false
 [dependencies]
 adminapi = { workspace = true }
 adminevents = { workspace = true }
+# Core (foundations) only — `opsapi` for the typed remote-submit `Error::status` →
+# HTTP mapping (NotFound→405 read-only, Conflict→409). NOT a domain `<name>api` crate,
+# so archcheck's admin-stays-domain-agnostic rule is preserved.
+opsapi = { workspace = true }
 lifecycle = { workspace = true }
 async-trait = { workspace = true }
 contrib = { workspace = true }
@@ -33,6 +37,8 @@ futures = { workspace = true }
 base64 = { workspace = true }
 argon2 = { workspace = true }
 rand = { workspace = true }
+# Duplicate-preserving urlencoded parse for CheckboxGroup form POSTs (see workspace dep).
+form_urlencoded = { workspace = true }
 # Trusted-proxy-aware client-IP resolution for the login lockout (core infra crate,
 # same helpers `core/app`'s rate limiter uses; honors TRUSTED_PROXY_CIDRS).
 httpmw = { workspace = true }

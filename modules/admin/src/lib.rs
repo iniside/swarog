@@ -1011,25 +1011,45 @@ async fn item(
     )
 }
 
-/// `POST /admin/{slug}` — apply a LOCAL item's editable form. Order matters and is
-/// a contract the split-proof asserts: session gate → CSRF (403, BEFORE the
-/// local/remote editability decision — a remote item with a bad token is 403, not
-/// 405) → resolve → editability (405) → submit → conflict (409, no audit event) OR
-/// durable `form-submit` (best-effort: the mutation already committed inside the
-/// opaque closure, so an emit failure is an error card, not a rollback) → 303 back
-/// to the GET.
+/// `POST /admin/{slug}` — apply an item's editable form, LOCAL or REMOTE. Order matters
+/// and is a contract the split-proof asserts: session gate → CSRF (403, BEFORE the
+/// local/remote editability decision — a remote item with a bad token is 403, not 405,
+/// and its `remote_submit` is never dialed) → resolve → editability →
+///   • LOCAL: in-process `submit` closure → conflict (409, no audit) OR durable
+///     `form-submit` (best-effort: the mutation already committed inside the opaque
+///     closure, so an emit failure is an error card, not a rollback);
+///   • REMOTE: dispatch over the edge via the per-provider `remote_submit` → `NotFound`
+///     (peer has no write surface) is 405 read-only, `Conflict` is 409; the provider's
+///     OWN co-hosted process emits its `admin.action`, so the admin never fabricates one
+///     for a write it merely forwarded.
+/// On success a [`adminapi::SubmitOutcome`] carrying show-once `reveal` values renders
+/// INLINE (200) so they are seen exactly once; an empty outcome 303s back to the GET.
 async fn item_post(
     State(st): State<Arc<AdminState>>,
     Path(slug): Path<String>,
     jar: CookieJar,
     Query(params): Query<HashMap<String, String>>,
-    Form(body): Form<HashMap<String, String>>,
+    body: axum::body::Bytes,
 ) -> Response {
+    // Parse the urlencoded body preserving DUPLICATE keys: a CheckboxGroup field posts
+    // its shared name once per checked option, and `Form<HashMap>` would collapse those
+    // to one. `pairs` is the ordered multimap (checkbox collection); `single` is the
+    // last-wins map for the CSRF token, hidden evidence, and Text/Select fields.
+    let pairs: Vec<(String, String)> = form_urlencoded::parse(&body)
+        .map(|(k, v)| (k.into_owned(), v.into_owned()))
+        .collect();
+    let mut single: HashMap<String, String> = HashMap::new();
+    for (k, v) in &pairs {
+        single.insert(k.clone(), v.clone());
+    }
+
     let authed = match st.gate(&jar, true).await {
         Ok(a) => a,
         Err(resp) => return resp,
     };
-    if let Some(resp) = st.check_csrf(&authed, &body) {
+    // CSRF BEFORE the local/remote editability decision (ordering contract, split-proof
+    // AD4). A remote item with a bad token is 403, never 405, and never reaches the edge.
+    if let Some(resp) = st.check_csrf(&authed, &single) {
         return resp;
     }
     let items = resolve_items(&st, &params).await;
@@ -1037,76 +1057,156 @@ async fn item_post(
         return (StatusCode::NOT_FOUND, "not found").into_response();
     };
 
-    // Only LOCAL items with a render closure can be edited.
-    let Some(render) = cur.item.render.clone() else {
+    // LOCAL item: an in-process render + submit closure, applied here.
+    if let Some(render) = cur.item.render.clone() {
+        let content = match render(&params) {
+            Ok(c) => c,
+            Err(e) => {
+                return render_error(&st, cur, &slug, &items, &authed, format!("failed to load: {e}"))
+            }
+        };
+        let Some(form) = content.form else {
+            return (StatusCode::METHOD_NOT_ALLOWED, "not editable").into_response();
+        };
+        let Some(submit) = form.submit.clone() else {
+            return (StatusCode::METHOD_NOT_ALLOWED, "not editable").into_response();
+        };
+        let values = collect_submit_params(&form.fields, &form.hidden, &pairs, &single);
+        return match submit(values).await {
+            Ok(outcome) => {
+                // Durable trail AFTER the mutation committed (LOCAL, co-hosted). Field
+                // NAMES only — never submitted values (they may hold secrets).
+                let names: Vec<&str> = form.fields.iter().map(|f| f.name.as_str()).collect();
+                let evt = adminevents::AdminAction {
+                    actor: authed.username.clone(),
+                    action: "form-submit".into(),
+                    target: slug.clone(),
+                    detail: names.join(","),
+                };
+                if let Err(e) = st.emit_action(&evt).await {
+                    tracing::error!(err = %e, slug, "admin.action form-submit append failed");
+                    return render_error(
+                        &st,
+                        cur,
+                        &slug,
+                        &items,
+                        &authed,
+                        "action applied but audit append failed".to_string(),
+                    );
+                }
+                render_after_submit(&st, cur, &params, &slug, &items, &authed, outcome)
+            }
+            Err(adminapi::SubmitError::Conflict) => {
+                render_conflict(&st, cur, &slug, &items, &authed)
+            }
+            Err(adminapi::SubmitError::Other(e)) => {
+                render_error(&st, cur, &slug, &items, &authed, format!("save failed: {e}"))
+            }
+        };
+    }
+
+    // REMOTE item: no in-process render. Dispatch the edit over the edge iff the peer
+    // exposed a write surface (`remote_submit`) AND returned an editable form; otherwise
+    // it is read-only (405).
+    let Some(remote_submit) = cur.item.remote_submit.clone() else {
         return (StatusCode::METHOD_NOT_ALLOWED, "not editable").into_response();
     };
-
-    let content = match render(&params) {
-        Ok(c) => c,
-        Err(e) => {
-            return render_error(&st, cur, &slug, &items, &authed, format!("failed to load: {e}"))
+    let form = match &cur.remote {
+        Some(RemoteResult::Ok(content)) => content.form.clone(),
+        _ => None,
+    };
+    let Some(form) = form else {
+        return (StatusCode::METHOD_NOT_ALLOWED, "not editable").into_response();
+    };
+    let values = collect_submit_params(&form.fields, &form.hidden, &pairs, &single);
+    match remote_submit(values).await {
+        Ok(outcome) => render_after_submit(&st, cur, &params, &slug, &items, &authed, outcome),
+        // The peer never registered `admin.adminSubmit` (UnknownMethod → NotFound): the
+        // item has no write surface, so it degrades to read-only exactly like a local
+        // non-editable item — the graceful-absent contract, no bespoke signalling.
+        Err(e) if e.status == opsapi::Status::NotFound => {
+            (StatusCode::METHOD_NOT_ALLOWED, "not editable").into_response()
         }
-    };
-    let Some(form) = content.form else {
-        return (StatusCode::METHOD_NOT_ALLOWED, "not editable").into_response();
-    };
-    let Some(submit) = form.submit.clone() else {
-        return (StatusCode::METHOD_NOT_ALLOWED, "not editable").into_response();
-    };
+        Err(e) if e.status == opsapi::Status::Conflict => {
+            render_conflict(&st, cur, &slug, &items, &authed)
+        }
+        Err(e) => render_error(&st, cur, &slug, &items, &authed, format!("save failed: {e}")),
+    }
+}
 
-    // Visible values remain allowlisted by the freshly rendered form. Hidden values
-    // use the POSTED value, never the fresh render's value: the browser must return
-    // the evidence it actually received on GET. Additionally retain every reserved
-    // `_expected_*` POST entry even when its row disappeared before this re-render;
-    // otherwise deleting a row would also delete the token needed to detect it.
-    // `_csrf` matches neither set and never reaches the owning module.
+/// Builds the allowlisted submit [`adminapi::Params`] from the posted body, given the
+/// (freshly rendered or freshly fetched) form's declared `fields`/`hidden`. Visible
+/// fields are allowlisted by name: a [`adminapi::FieldKind::CheckboxGroup`] comma-joins
+/// every value posted under its shared name (checked boxes only — the ordered `pairs`
+/// preserve the duplicates a HashMap would collapse), and every other kind takes the
+/// single last-wins value. Hidden fields use the POSTED value (the browser echoes the
+/// evidence it received on GET, never the fresh render's), and every reserved
+/// `_expected_*` entry is retained even when its row vanished before the re-render —
+/// otherwise deleting a row would also delete the token needed to detect it. `_csrf`
+/// matches neither set and never reaches the owning module.
+fn collect_submit_params(
+    fields: &[adminapi::Field],
+    hidden: &[adminapi::HiddenField],
+    pairs: &[(String, String)],
+    single: &HashMap<String, String>,
+) -> adminapi::Params {
     let mut values = adminapi::Params::new();
-    for f in &form.fields {
-        values.insert(f.name.clone(), body.get(&f.name).cloned().unwrap_or_default());
+    for f in fields {
+        if f.kind == adminapi::FieldKind::CheckboxGroup {
+            let joined = pairs
+                .iter()
+                .filter(|(k, _)| *k == f.name)
+                .map(|(_, v)| v.as_str())
+                .collect::<Vec<_>>()
+                .join(",");
+            values.insert(f.name.clone(), joined);
+        } else {
+            values.insert(f.name.clone(), single.get(&f.name).cloned().unwrap_or_default());
+        }
     }
-    for h in &form.hidden {
-        values.insert(h.name.clone(), body.get(&h.name).cloned().unwrap_or_default());
+    for h in hidden {
+        values.insert(h.name.clone(), single.get(&h.name).cloned().unwrap_or_default());
     }
-    for (name, value) in &body {
+    for (name, value) in single {
         if name.starts_with(EXPECTED_FIELD_PREFIX) {
             values.insert(name.clone(), value.clone());
         }
     }
+    values
+}
 
-    match submit(values).await {
-        // Step 1: the submit's `SubmitOutcome` (any show-once reveal) is not yet
-        // rendered — the redirect behaviour is unchanged. Rendering the reveal is Step 3.
-        Ok(_outcome) => {
-            // Durable trail AFTER the mutation committed. Field NAMES only — never
-            // submitted values (they may hold secrets).
-            let names: Vec<&str> = form.fields.iter().map(|f| f.name.as_str()).collect();
-            let evt = adminevents::AdminAction {
-                actor: authed.username.clone(),
-                action: "form-submit".into(),
-                target: slug.clone(),
-                detail: names.join(","),
-            };
-            if let Err(e) = st.emit_action(&evt).await {
-                tracing::error!(err = %e, slug, "admin.action form-submit append failed");
-                return render_error(
-                    &st,
-                    cur,
-                    &slug,
-                    &items,
-                    &authed,
-                    "action applied but audit append failed".to_string(),
-                );
-            }
-            see_other(&format!("/admin/{slug}"))
-        }
-        Err(adminapi::SubmitError::Conflict) => {
-            render_conflict(&st, cur, &slug, &items, &authed)
-        }
-        Err(adminapi::SubmitError::Other(e)) => {
-            render_error(&st, cur, &slug, &items, &authed, format!("save failed: {e}"))
-        }
+/// After a successful submit (LOCAL or REMOTE): a [`adminapi::SubmitOutcome`] carrying
+/// show-once `reveal` values renders the page INLINE (200) with a one-time reveal panel
+/// — a 303 redirect would drop those values, which are never persisted or re-derivable.
+/// An empty outcome 303s back to the GET (the historical behaviour). The inline page
+/// re-renders the current item so the operator sees updated state beside the reveal.
+fn render_after_submit(
+    st: &AdminState,
+    cur: &Resolved,
+    params: &adminapi::Params,
+    slug: &str,
+    items: &[Resolved],
+    authed: &Authed,
+    outcome: adminapi::SubmitOutcome,
+) -> Response {
+    if outcome.reveal.is_empty() {
+        return see_other(&format!("/admin/{slug}"));
     }
+    let mut page = page_view(cur, params, slug);
+    page.reveal = outcome.reveal;
+    let groups = build_groups(items, slug);
+    render_page(
+        st,
+        PageData {
+            crumb: cur.section.clone(),
+            title: cur.label.clone(),
+            env: "Local".into(),
+            user: authed.user.clone(),
+            csrf: authed.csrf.clone(),
+            groups,
+            page: Some(page),
+        },
+    )
 }
 
 /// Renders the stable stale-form card with HTTP 409. A template failure remains the
@@ -1150,6 +1250,7 @@ fn render_error(
                 kpis: Vec::new(),
                 table: None,
                 form: None,
+                reveal: Vec::new(),
             }),
         },
     )
@@ -1232,16 +1333,28 @@ fn page_view(cur: &Resolved, params: &adminapi::Params, slug: &str) -> PageView 
             kpis: Vec::new(),
             table: None,
             form: None,
+            reveal: Vec::new(),
         },
-        // A remote item's form arrives read-only (its `submit` cannot marshal), so
-        // remote pages render KPIs + table only (Go dropped the remote form too).
-        Some(RemoteResult::Ok(content)) => PageView {
-            title: cur.label.clone(),
-            err: String::new(),
-            kpis: content.kpis.clone(),
-            table: content.table.clone(),
-            form: None,
-        },
+        // A remote item's form arrives with `submit == None` (a closure can't marshal),
+        // but the peer may still expose a WRITE surface (`admin.adminSubmit`): render its
+        // typed fields with the POST action `/admin/{slug}`, exactly like a local form.
+        // The POST is dispatched over the edge via the item's `remote_submit`; a peer that
+        // never registered the wire method answers 405 (read-only). A remote content with
+        // `form: None` still renders read-only (KPIs + table only), as before.
+        Some(RemoteResult::Ok(content)) => {
+            let form = content.form.clone().map(|mut f| {
+                f.action = format!("/admin/{slug}");
+                f
+            });
+            PageView {
+                title: cur.label.clone(),
+                err: String::new(),
+                kpis: content.kpis.clone(),
+                table: content.table.clone(),
+                form,
+                reveal: Vec::new(),
+            }
+        }
         None => match &cur.item.render {
             Some(render) => match render(params) {
                 Ok(content) => {
@@ -1255,6 +1368,7 @@ fn page_view(cur: &Resolved, params: &adminapi::Params, slug: &str) -> PageView 
                         kpis: content.kpis,
                         table: content.table,
                         form,
+                        reveal: Vec::new(),
                     }
                 }
                 Err(e) => PageView {
@@ -1263,6 +1377,7 @@ fn page_view(cur: &Resolved, params: &adminapi::Params, slug: &str) -> PageView 
                     kpis: Vec::new(),
                     table: None,
                     form: None,
+                    reveal: Vec::new(),
                 },
             },
             // Neither a closure nor a remote result (a metadata-only local item).
@@ -1272,6 +1387,7 @@ fn page_view(cur: &Resolved, params: &adminapi::Params, slug: &str) -> PageView 
                 kpis: Vec::new(),
                 table: None,
                 form: None,
+                reveal: Vec::new(),
             },
         },
     }
@@ -1424,6 +1540,12 @@ struct PageView {
     kpis: Vec<adminapi::Kpi>,
     table: Option<adminapi::Table>,
     form: Option<adminapi::Form>,
+    /// SHOW-ONCE values surfaced right after a successful submit (e.g. a freshly minted
+    /// API-key secret). Rendered inline — never persisted, never re-derivable — which is
+    /// why a submit that carries a reveal renders the page INLINE (200) instead of the
+    /// usual 303 redirect (a redirect would drop these values). Empty on every plain page.
+    #[serde(default)]
+    reveal: Vec<adminapi::RevealItem>,
 }
 
 #[derive(Serialize)]

@@ -51,21 +51,38 @@ pub fn register_admin_submit(server: &mut edge::Server, svc: Arc<dyn AdminSubmit
 /// Builds the client-side [`remote::RemoteFactory`] that contributes a REMOTE admin
 /// [`adminapi::Item`] for `provider`. Applied by the owning `remote::Stub` in
 /// `register`: it captures the stub's edge-backed [`opsapi::Caller`] and contributes
-/// an `Item { id: provider, remote_fetch }` to [`adminapi::SLOT`], so this provider
-/// still appears in a remote admin's sidebar — its Section/Label/Content fetched
-/// lazily over the QUIC edge (no bespoke HTTP endpoint).
+/// an `Item { id: provider, remote_fetch, remote_submit }` to [`adminapi::SLOT`], so
+/// this provider still appears in a remote admin's sidebar — its Section/Label/Content
+/// fetched lazily over the QUIC edge (no bespoke HTTP endpoint) AND its form editable
+/// over that SAME edge.
 ///
-/// The fetch maps a peer with no admin surface (the edge's typed unknown-method
-/// error, surfaced as [`opsapi::Status::NotFound`]) to [`adminapi::ItemError::Absent`]
-/// so the admin drops the item silently; every other error propagates so the admin
-/// shows an "unavailable" card (Go's `fetchAdmin`).
+/// Both closures target THIS provider's `caller` (shared, cloned per call — one lazy
+/// edge connection): `remote_fetch` dials `admin.adminData`, `remote_submit` dials
+/// `admin.adminSubmit`. Carrying the write on the per-provider [`adminapi::Item`] — NOT
+/// a single `dyn AdminSubmit` under one registry key — is the whole authority: a shared
+/// key would panic on the 2nd provider (`registry::provide`) and, in a split, misroute a
+/// POST for config's form to apikeys-svc. One provider ⇒ one Item ⇒ both closures.
+///
+/// The fetch maps a peer with no admin surface (the edge's typed unknown-method error,
+/// surfaced as [`opsapi::Status::NotFound`]) to [`adminapi::ItemError::Absent`] so the
+/// admin drops the item silently; every other error propagates so the admin shows an
+/// "unavailable" card (Go's `fetchAdmin`). The submit returns the RAW [`opsapi::Error`]
+/// (see [`adminapi::RemoteSubmitFn`]) so the admin can map `NotFound`→405 (peer has no
+/// write surface, read-only) / `Conflict`→409 / else→error card.
 pub fn admin_remote_factory(provider: &str) -> remote::RemoteFactory {
     let provider = provider.to_string();
     Box::new(move |ctx, caller| {
-        let provider = provider.clone();
+        let fetch_caller = caller.clone();
         let fetch: adminapi::RemoteFetchFn = Arc::new(move |_params: adminapi::Params| {
-            let caller = caller.clone();
+            let caller = fetch_caller.clone();
             Box::pin(fetch_remote_admin(caller))
+        });
+        let submit_caller = caller.clone();
+        let submit_id = provider.clone();
+        let submit: adminapi::RemoteSubmitFn = Arc::new(move |params: adminapi::Params| {
+            let caller = submit_caller.clone();
+            let id = submit_id.clone();
+            Box::pin(submit_remote_admin(caller, id, params))
         });
         ctx.contribute(
             adminapi::SLOT,
@@ -75,31 +92,9 @@ pub fn admin_remote_factory(provider: &str) -> remote::RemoteFactory {
                 label: String::new(),
                 render: None,
                 remote_fetch: Some(fetch),
+                remote_submit: Some(submit),
             },
         );
-    })
-}
-
-/// Builds the client-side [`remote::RemoteFactory`] that provides an edge-backed
-/// `admin.adminSubmit` [`adminapi::AdminSubmit`] client for `provider` — the write
-/// mirror of [`admin_remote_factory`]. Applied by the owning `remote::Stub` in
-/// `register`, it `provide`s the generated `admin_submit_rpc::Client` (over the stub's
-/// edge-backed [`opsapi::Caller`]) into the registry under the capability's canonical
-/// key (`registry::key("admin", "admin_submit")`) via the generated
-/// `provide_remote`, so a co-hosted admin can resolve `dyn AdminSubmit` and dispatch a
-/// posted form edit to the peer over QUIC. `remote` stays `api/`-free: the closure
-/// arrives boxed, `core/remote` never names `adminapi`.
-///
-/// Exposed here for `cmd/admin-svc` to consume in a later step. NOTE: unlike
-/// [`admin_remote_factory`] (which contributes a PER-PROVIDER [`adminapi::Item`] to a
-/// multi-value slot), this uses the SINGLE canonical registry key, so at most ONE
-/// provider's submit client may be registered per process — the composition root
-/// decides which. `provider` is retained for symmetry/diagnostics.
-pub fn admin_submit_remote_factory(provider: &str) -> remote::RemoteFactory {
-    let provider = provider.to_string();
-    Box::new(move |ctx, caller| {
-        let _ = &provider;
-        admin_submit_rpc::provide_remote(ctx.registry(), caller);
     })
 }
 
@@ -120,6 +115,23 @@ async fn fetch_remote_admin(
         Err(e) if e.status == opsapi::Status::NotFound => Err(adminapi::ItemError::Absent),
         Err(e) => Err(adminapi::ItemError::Other(anyhow::anyhow!("{e}"))),
     }
+}
+
+/// One remote admin-submit over `caller`: dispatches a posted form edit to the peer's
+/// `admin.adminSubmit`, passing the provider `id` (the ItemData id the fetch returns)
+/// and the flattened `params`. The RAW [`opsapi::Error`] is returned UNMAPPED
+/// (`RetryMode::Never` — a mutation is never replayed): the admin process turns
+/// `status` into HTTP, so a peer that never registered the wire method surfaces as
+/// [`opsapi::Status::NotFound`] (via the edge `UnknownMethod` mapping) and the admin
+/// degrades the item to read-only, while a CAS miss surfaces as
+/// [`opsapi::Status::Conflict`].
+async fn submit_remote_admin(
+    caller: Arc<dyn opsapi::Caller>,
+    id: String,
+    params: adminapi::Params,
+) -> Result<adminapi::SubmitOutcome, Error> {
+    let client = admin_submit_rpc::Client::new(caller);
+    client.admin_submit(id, params).await
 }
 
 #[cfg(test)]

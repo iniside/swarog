@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use crate::fetch_remote_admin;
+use crate::{fetch_remote_admin, submit_remote_admin};
 
 /// `unwrap_err` needs `T: Debug` and `adminapi::ItemData` has no `Debug` — unwrap
 /// the error arm by hand.
@@ -57,4 +57,25 @@ impl opsapi::Caller for DownCaller {
 async fn peer_down_maps_to_other_error_card() {
     let err = fetch_err(Arc::new(DownCaller)).await;
     assert!(matches!(err, adminapi::ItemError::Other(_)), "{err:?}");
+}
+
+/// The write mirror: a peer that is UP but never registered `admin.adminSubmit` (a
+/// provider that does NOT implement [`adminapi::AdminSubmit`]) must surface the RAW
+/// [`opsapi::Status::NotFound`] — the edge's `UnknownMethod` mapping — so the admin
+/// process can degrade the item to read-only (405). Proves the failing branch at the
+/// rpc seam over a real loopback edge, not a hand-rolled `Caller`.
+#[tokio::test]
+async fn submit_to_peer_without_write_surface_maps_to_not_found() {
+    let ca = edge::DevCA::generate().unwrap();
+    let running = edge::Server::new()
+        .listen("127.0.0.1:0".parse().unwrap(), &ca)
+        .unwrap();
+    let client = edge::Client::dial(running.local_addr(), &ca).await.unwrap();
+
+    let err = submit_remote_admin(Arc::new(client), "apikeys".into(), adminapi::Params::new())
+        .await
+        .expect_err("a peer with no admin.adminSubmit must fail");
+    assert_eq!(err.status, opsapi::Status::NotFound, "{err:?}");
+
+    running.close();
 }

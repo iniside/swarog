@@ -98,6 +98,21 @@ pub type RenderFn = Arc<dyn Fn(&Params) -> anyhow::Result<Content> + Send + Sync
 pub type RemoteFetchFn =
     Arc<dyn Fn(Params) -> BoxFuture<'static, Result<ItemData, ItemError>> + Send + Sync>;
 
+/// A REMOTE item's admin WRITE: hops the edge to POST a form edit to the peer's
+/// `admin.adminSubmit` — the write mirror of [`RemoteFetchFn`], carried PER-PROVIDER on
+/// the same [`Item`] (never a single shared registry key, which would panic on the 2nd
+/// provider and misroute in a split). Async (a network round-trip) and owns its
+/// [`Params`] so the returned future is `'static`.
+///
+/// It surfaces the RAW [`opsapi::Error`], NOT [`SubmitError`], deliberately: the admin
+/// process maps `Error::status` onto an HTTP status, and only the raw error can express
+/// the two remote-specific outcomes [`SubmitError`] cannot — a provider that never
+/// registered the wire method ([`opsapi::Status::NotFound`], via the edge's
+/// `UnknownMethod` mapping) degrades the item to read-only (405), and a CAS miss
+/// ([`opsapi::Status::Conflict`]) becomes a 409.
+pub type RemoteSubmitFn =
+    Arc<dyn Fn(Params) -> BoxFuture<'static, Result<SubmitOutcome, Error>> + Send + Sync>;
+
 /// A LOCAL form's submit: applies a posted edit. Async because it does DB I/O
 /// (Go's `Submit` is a sync signature over `database/sql`; in async Rust it is a
 /// future). Owns its [`Params`] so the returned future is `'static`.
@@ -168,6 +183,12 @@ pub struct Item {
     /// REMOTE: fetches [`ItemData`] over the edge; `None` for local items.
     /// [`ItemError::Absent`] ⇒ the portal skips the item.
     pub remote_fetch: Option<RemoteFetchFn>,
+    /// REMOTE WRITE: POSTs a form edit over the edge to the peer's `admin.adminSubmit`.
+    /// `None` for a LOCAL item (it uses `render`'s [`Form::submit`] instead) and for a
+    /// remote peer that serves no write surface. Set ALONGSIDE [`Item::remote_fetch`]
+    /// by the same per-provider factory, so one provider ⇒ one [`Item`] ⇒ both closures
+    /// target that provider's edge.
+    pub remote_submit: Option<RemoteSubmitFn>,
 }
 
 impl Item {
@@ -184,6 +205,7 @@ impl Item {
             label: label.into(),
             render: Some(render),
             remote_fetch: None,
+            remote_submit: None,
         }
     }
 }
@@ -245,8 +267,12 @@ pub enum FieldKind {
     /// A single-choice dropdown over [`Field::options`]; the submitted value is the
     /// chosen option's `value`.
     Select,
-    /// A set of independent checkboxes over [`Field::options`]; the submitted value is
-    /// the comma-joined list of checked option `value`s (the owning module does the join).
+    /// A set of independent checkboxes over [`Field::options`], all sharing the field's
+    /// `name`. Each checked box posts that shared name once; the admin PORTAL collects
+    /// the repeated posts and comma-joins the checked `value`s into ONE submit-param
+    /// entry, so the owning module's [`SubmitFn`] receives a single comma-separated
+    /// string under [`Field::name`] (it splits on `,`). No checkbox posts ⇒ the empty
+    /// string.
     CheckboxGroup,
 }
 

@@ -257,6 +257,7 @@ pub struct adminapi::Item
 pub adminapi::Item::id: alloc::string::String
 pub adminapi::Item::label: alloc::string::String
 pub adminapi::Item::remote_fetch: core::option::Option<adminapi::RemoteFetchFn>
+pub adminapi::Item::remote_submit: core::option::Option<adminapi::RemoteSubmitFn>
 pub adminapi::Item::render: core::option::Option<adminapi::RenderFn>
 pub adminapi::Item::section: alloc::string::String
 impl adminapi::Item
@@ -382,5 +383,6 @@ pub fn adminapi::AdminSubmit::admin_submit<'life0, 'async_trait>(&'life0 self, a
 pub fn adminapi::param<'a>(&'a adminapi::Params, &str) -> &'a str
 pub type adminapi::Params = std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>
 pub type adminapi::RemoteFetchFn = alloc::sync::Arc<(dyn core::ops::function::Fn(adminapi::Params) -> futures_core::future::BoxFuture<'static, core::result::Result<adminapi::ItemData, adminapi::ItemError>> + core::marker::Send + core::marker::Sync)>
+pub type adminapi::RemoteSubmitFn = alloc::sync::Arc<(dyn core::ops::function::Fn(adminapi::Params) -> futures_core::future::BoxFuture<'static, core::result::Result<adminapi::SubmitOutcome, opsapi::Error>> + core::marker::Send + core::marker::Sync)>
 pub type adminapi::RenderFn = alloc::sync::Arc<(dyn core::ops::function::Fn(&adminapi::Params) -> anyhow::Result<adminapi::Content> + core::marker::Send + core::marker::Sync)>
 pub type adminapi::SubmitFn = alloc::sync::Arc<(dyn core::ops::function::Fn(adminapi::Params) -> futures_core::future::BoxFuture<'static, core::result::Result<adminapi::SubmitOutcome, adminapi::SubmitError>> + core::marker::Send + core::marker::Sync)>
