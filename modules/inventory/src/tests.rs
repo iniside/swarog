@@ -902,3 +902,50 @@ async fn grant_at_holding_cap_maps_check_violation_to_conflict() {
 
     cleanup_owner(&pool, &pid).await;
 }
+
+/// (k) list is capped by `HOLDINGS_HARD_LIMIT` — the safety belt, not the per-grant
+/// quantity policy: an owner holding more DISTINCT items than the ceiling (seeded
+/// directly via SQL, bypassing `grant`, to prove the belt fires regardless of how
+/// the rows got there) still gets a bounded response instead of an unbounded
+/// `fetch_all`. Each holding needs a distinct `item_id` (the holdings PK is
+/// `(owner_type, owner_id, item_id)`, and `item_id` carries an in-module FK to
+/// `inventory.items`), so distinct synthetic items are seeded first.
+#[tokio::test]
+async fn holdings_list_is_capped_at_hard_limit() {
+    let Some(pool) = test_pool().await else { return };
+    ensure_schema(&pool).await;
+    let pid = unique_uuid(&pool).await;
+    let inner = inner_with(pool.clone(), Arc::new(FakeConfig::new(STARTER_ITEM, STARTER_QTY)));
+
+    let over = HOLDINGS_HARD_LIMIT + 5;
+
+    // Distinct synthetic items so each holding row can carry a unique item_id.
+    sqlx::query(
+        "INSERT INTO inventory.items (id, name, kind) \
+         SELECT 'cap_test_' || g, 'Cap Test ' || g, 'misc' FROM generate_series(1, $1) g \
+         ON CONFLICT (id) DO NOTHING",
+    )
+    .bind(over)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // One holding per synthetic item, all for the same owner.
+    sqlx::query(
+        "INSERT INTO inventory.holdings (owner_type, owner_id, item_id, quantity) \
+         SELECT 'player', $1::uuid, 'cap_test_' || g, 1 FROM generate_series(1, $2) g",
+    )
+    .bind(&pid)
+    .bind(over)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let holdings = inner.store.list(&Owner::player(&pid)).await.unwrap();
+    assert_eq!(holdings.len(), HOLDINGS_HARD_LIMIT as usize);
+
+    cleanup_owner(&pool, &pid).await;
+    let _ = sqlx::query("DELETE FROM inventory.items WHERE id LIKE 'cap_test_%'")
+        .execute(&pool)
+        .await;
+}

@@ -178,6 +178,16 @@ async fn char_count(pool: &PgPool, id: &str) -> i64 {
     n
 }
 
+async fn char_count_by_player(pool: &PgPool, player_id: &str) -> i64 {
+    let (n,): (i64,) =
+        sqlx::query_as("SELECT count(*) FROM characters.characters WHERE player_id = $1::uuid")
+            .bind(player_id)
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    n
+}
+
 /// THE ATOMIC EMIT PROOF: create writes BOTH a `characters.characters` row AND an
 /// `asyncevents.events` row (topic `character.created`) in one tx — proving
 /// `emit_tx` rode the domain transaction. Also proves the class default.
@@ -286,4 +296,33 @@ async fn list_returns_only_callers_characters() {
     assert!(mine.iter().all(|c| c.player_id == me));
 
     cleanup(&pool, &[&me, &them]).await;
+}
+
+/// list is capped by `LIST_HARD_LIMIT` — the safety belt, not the per-player create
+/// cap: a player with more rows than the ceiling (bulk-inserted directly, bypassing
+/// `create`, to prove the belt fires regardless of how the rows got there) still
+/// gets a bounded response instead of an unbounded `fetch_all`.
+#[tokio::test]
+async fn list_is_capped_at_hard_limit() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let pid = unique_player(&pool).await;
+
+    let over = LIST_HARD_LIMIT + 5;
+    sqlx::query(
+        "INSERT INTO characters.characters (player_id, name, class) \
+         SELECT $1::uuid, 'n' || g, 'novice' FROM generate_series(1, $2) g",
+    )
+    .bind(&pid)
+    .bind(over)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    assert_eq!(char_count_by_player(&pool, &pid).await, over);
+
+    let mine = svc.list(Identity::player(&pid)).await.unwrap();
+    assert_eq!(mine.len(), LIST_HARD_LIMIT as usize);
+
+    cleanup(&pool, &[&pid]).await;
 }

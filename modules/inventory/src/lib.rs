@@ -31,6 +31,10 @@ use sqlx::{PgConnection, PgPool};
 const STARTER_ITEM: &str = "starter_sword";
 const STARTER_QTY: i64 = 1;
 
+/// Hard safety-belt ceiling on a single holdings-list response (same rationale as
+/// characters' LIST_HARD_LIMIT): unbounded fetch_all diverges monolith vs split frame caps.
+const HOLDINGS_HARD_LIMIT: i64 = 1000;
+
 /// The admin surface ids (Section groups it in the sidebar; Label is the entry).
 const ADMIN_ITEM_ID: &str = "inventory";
 const ADMIN_SECTION: &str = "Game Content";
@@ -251,13 +255,13 @@ impl Store {
     }
 
     async fn list(&self, owner: &Owner) -> Result<Vec<Holding>, sqlx::Error> {
-        let rows: Vec<(String, String, String, String, i64)> = sqlx::query_as(
+        let rows: Vec<(String, String, String, String, i64)> = sqlx::query_as(&format!(
             "SELECT h.owner_type, h.owner_id::text, h.item_id, i.name, h.quantity::bigint \
                FROM inventory.holdings h \
                JOIN inventory.items i ON i.id = h.item_id \
               WHERE h.owner_type = $1 AND h.owner_id = $2::uuid \
-              ORDER BY h.item_id",
-        )
+              ORDER BY h.item_id LIMIT {HOLDINGS_HARD_LIMIT}"
+        ))
         .bind(&owner.otype)
         .bind(&owner.id)
         .fetch_all(&self.pool)

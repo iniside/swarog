@@ -31,6 +31,11 @@ const ADMIN_LABEL: &str = "Characters";
 const MAX_NAME_BYTES: usize = 128;
 const MAX_CLASS_BYTES: usize = 64;
 
+/// Hard safety-belt ceiling on a single list response. NOT the per-player limit — that is
+/// the configurable cap enforced in create(). Guards against pathological state (cap lowered
+/// after growth, pre-cap data) so no list response is ever unbounded across topologies.
+const LIST_HARD_LIMIT: i64 = 1000;
+
 pub(crate) fn name_within_cap(name: &str) -> bool {
     name.len() <= MAX_NAME_BYTES
 }
@@ -109,7 +114,8 @@ impl Store {
 
     async fn list_by_player(&self, player_id: &str) -> Result<Vec<Character>, sqlx::Error> {
         let rows: Vec<Row> = sqlx::query_as(&format!(
-            "SELECT {COLS} FROM characters.characters WHERE player_id = $1::uuid ORDER BY created_at"
+            "SELECT {COLS} FROM characters.characters WHERE player_id = $1::uuid \
+             ORDER BY created_at, id LIMIT {LIST_HARD_LIMIT}"
         ))
         .bind(player_id)
         .fetch_all(&self.pool)
