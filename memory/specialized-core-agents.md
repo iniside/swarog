@@ -7,8 +7,10 @@ metadata:
   originSessionId: 88cdd953-b406-40a0-8ab2-6c7eb07acece
 ---
 
-`.claude/agents/` holds three specialized personas, built 2026-07-13 from
-[[core-failure-taxonomy]] to close the two gaps generic agents missed:
+`.claude/agents/` holds four specialized personas — three built 2026-07-13 from
+[[core-failure-taxonomy]], plus **mockup-implementer** (2026-07-15, built after the
+mockup-fidelity failures in [[follow-uilayout-mockup-faithfully]]) — to close the
+gaps generic agents missed:
 
 - **core-implementer** — authority-first implementation of a fully-specified step/fix.
   Locate the deciding place BEFORE writing; STOP on hack-on-hack; prove the failing
@@ -20,6 +22,12 @@ metadata:
 - **proof-auditor** — audits the PROOF not the code (coverage-gap/false-pass/
   notapplicable — the verify-net class that ships bugs green). Use on diffs touching
   tests or verify stages, or that claim "proven".
+- **mockup-implementer** — UI work against `UILayout/*.dc.html`: mockup = exact spec
+  for layout AND data shape; data gap ⇒ deterministic decorative fake (or stop and
+  ask), deviations declared, live render-vs-mockup smoke. Dispatch at [opus]+, never
+  mechanical. Orchestration lives in the `mockup-implementation` skill
+  (`.claude/skills/mockup-implementation/SKILL.md`) — invoke it for any "make it
+  look like the mockup" task.
 
 **Why:** the remediation showed double hostile review WORKED but was costly (46 commits);
 the real disease was authorless multi-commit chains (lock/lease 8x) + gates going green.
