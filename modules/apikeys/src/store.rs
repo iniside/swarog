@@ -74,7 +74,7 @@ pub(crate) fn generate_secret() -> Result<(String, String, String), WriteError> 
 /// comfortably fits a comma-list of every real wire method (~12 today, ~30 bytes each)
 /// with large headroom for future ops and operator pre-authorization; it is purely an
 /// anti-bloat ceiling, not a functional limit anyone should hit.
-const MAX_POLICY_BYTES: usize = 4096;
+pub const MAX_POLICY_BYTES: usize = 4096;
 
 /// Loose policy validation (Decision 4): non-empty, either the literal `full` or a
 /// comma-separated list whose every entry is non-blank, AND within [`MAX_POLICY_BYTES`].

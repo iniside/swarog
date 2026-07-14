@@ -185,11 +185,18 @@ fn apikeys() -> Entry {
             ),
             (
                 Convention::InputByteCaps,
-                Stance::Applies(Fixture::InputByteCaps(vec![CapCase {
-                    name: "apikeys gateway presented-key lookup",
-                    cap: apikeysapi::MAX_KEY_BYTES,
-                    probe: Arc::new(apikeys::conformance::conformance_key_rejected),
-                }])),
+                Stance::Applies(Fixture::InputByteCaps(vec![
+                    CapCase {
+                        name: "apikeys gateway presented-key lookup",
+                        cap: apikeysapi::MAX_KEY_BYTES,
+                        probe: Arc::new(apikeys::conformance::conformance_key_rejected),
+                    },
+                    CapCase {
+                        name: "apikeys role policy",
+                        cap: apikeys::conformance::MAX_POLICY_BYTES,
+                        probe: Arc::new(apikeys::conformance::conformance_policy_rejected),
+                    },
+                ])),
             ),
             (
                 Convention::InfraOutage503,
