@@ -2310,37 +2310,53 @@ fn status_or_err(r: &Result<serde_json::Value>, want: &str) -> bool {
     }
 }
 
-/// [P6] one persistent player connection fires a 22-call burst (per-connection limit is
-/// burst 20): the burst must be rate-limited at least once, then — after a refill pause
-/// before the last call — succeed again (>=21 Ok). Proves the limiter is per-connection
-/// and transient, not sticky.
+/// [P6] one persistent player connection depletes the per-connection bucket (burst 20)
+/// by CONCURRENCY, not call speed: it fans out 25 simultaneous calls on the one
+/// connection, so the limiter is observable regardless of machine load (the old
+/// sequential 22-call version only ever saw a denial if avg call latency stayed
+/// <5ms — green on an idle box, red under load). At least one call must be
+/// rate-limited. Then, after a refill pause, a single sequential call must succeed
+/// again — proving the limiter is per-connection and transient, not sticky. Same
+/// fan-out idiom as `burst_429` / [AD2b]/[AD2c].
 async fn player_burst(ctx: &Ctx) -> bool {
     let Some(ca) = ctx.ca_cert.to_str() else { return false };
     let Ok(trust) = DevCA::load_cert_only(ca) else { return false };
     let Ok(addr) = format!("127.0.0.1:{}", ctx.player_port()).parse() else { return false };
     let Ok(client) = PlayerClient::dial(addr, &trust).await else { return false };
-    let mut ok = 0u32;
+    let client = std::sync::Arc::new(client);
+
+    // Fan out 25 concurrent calls on the ONE connection. With the per-conn refill
+    // (10 rps) negligible over the burst's wall-clock, ~20 pass and the rest are
+    // denied — at least one denial is guaranteed independent of load.
+    let mut hs = Vec::new();
+    for _ in 0..25 {
+        let client = client.clone();
+        hs.push(tokio::spawn(async move {
+            client.call("leaderboard.topScores", None, Some("dev-key-client"), b"{}").await
+        }));
+    }
     let mut limited = false;
-    for i in 0..22 {
-        if i == 21 {
-            tokio::time::sleep(Duration::from_millis(2000)).await;
-        }
-        match client.call("leaderboard.topScores", None, Some("dev-key-client"), b"{}").await {
-            Ok(resp) => {
-                let is_ok = serde_json::from_slice::<serde_json::Value>(&resp)
-                    .ok()
-                    .and_then(|v| v.get("status").and_then(|s| s.as_str()).map(|s| s == "Ok"))
-                    .unwrap_or(false);
-                if is_ok {
-                    ok += 1;
-                }
-            }
-            Err(e) => {
-                if e.to_string().contains("rate limit") {
-                    limited = true;
-                }
+    for h in hs {
+        if let Ok(Err(e)) = h.await {
+            if e.to_string().contains("rate limit") {
+                limited = true;
             }
         }
     }
-    limited && ok >= 21
+
+    // Refill pause, then ONE sequential call must succeed again — the bucket refilled,
+    // so the earlier denials were transient, not a sticky per-connection ban.
+    tokio::time::sleep(Duration::from_millis(2000)).await;
+    let refilled = match client
+        .call("leaderboard.topScores", None, Some("dev-key-client"), b"{}")
+        .await
+    {
+        Ok(resp) => serde_json::from_slice::<serde_json::Value>(&resp)
+            .ok()
+            .and_then(|v| v.get("status").and_then(|s| s.as_str()).map(|s| s == "Ok"))
+            .unwrap_or(false),
+        Err(_) => false,
+    };
+
+    limited && refilled
 }
