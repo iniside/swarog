@@ -19,6 +19,8 @@ pub enum Command {
     TestChild {
         spawn_grandchild: bool,
         ignore_graceful: bool,
+        /// The grandchild (implies spawning one) ignores the graceful signal.
+        stubborn_grandchild: bool,
     },
 }
 
@@ -78,16 +80,19 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command> {
         "__test-child" => {
             let mut spawn_grandchild = false;
             let mut ignore_graceful = false;
+            let mut stubborn_grandchild = false;
             for arg in args {
                 match arg.as_str() {
                     "--spawn-grandchild" => spawn_grandchild = true,
                     "--ignore-graceful" => ignore_graceful = true,
+                    "--stubborn-grandchild" => stubborn_grandchild = true,
                     other => bail!("unknown argument {other:?}\n\n{USAGE}"),
                 }
             }
             Ok(Command::TestChild {
                 spawn_grandchild,
                 ignore_graceful,
+                stubborn_grandchild,
             })
         }
         other => bail!("unknown command {other:?}\n\n{USAGE}"),

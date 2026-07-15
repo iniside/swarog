@@ -98,6 +98,16 @@ fn wait_for_marker(fixture: &Fixture, needle: &str) -> String {
     }
 }
 
+fn parse_grandchild_pid(stdout_contents: &str) -> u32 {
+    stdout_contents
+        .lines()
+        .find_map(|line| line.strip_prefix("test-child: grandchild="))
+        .expect("fixture must print the grandchild pid")
+        .trim()
+        .parse()
+        .expect("grandchild pid must parse")
+}
+
 fn wait_dead(pid: u32) {
     let deadline = Instant::now() + Duration::from_secs(10);
     while process_alive(pid) {
@@ -178,13 +188,7 @@ fn force_kills_the_whole_tree() {
     let _guard = sequential();
     let mut fixture = spawn_fixture("kill-tree", &["--spawn-grandchild"]);
     let contents = wait_for_marker(&fixture, "test-child: ready");
-    let grandchild_pid: u32 = contents
-        .lines()
-        .find_map(|line| line.strip_prefix("test-child: grandchild="))
-        .expect("fixture must print the grandchild pid")
-        .trim()
-        .parse()
-        .expect("grandchild pid must parse");
+    let grandchild_pid = parse_grandchild_pid(&contents);
     let root_pid = fixture.proc.pid();
     assert!(process_alive(grandchild_pid), "grandchild must be alive");
     // The grandchild is inside the container by construction: children of a
@@ -210,6 +214,54 @@ fn shutdown_reports_graceful_for_a_cooperating_child() {
         }
         Outcome::Forced(status) => panic!("expected Graceful, got Forced({status:?})"),
     }
+}
+
+/// Pins F2's whole-unit exit semantics: shutdown() may report Graceful only
+/// once the ENTIRE containment unit is done, so the (cooperative) grandchild
+/// must already be dead — not merely dying — when Graceful comes back.
+#[test]
+fn whole_tree_is_gone_when_shutdown_reports_graceful() {
+    let _guard = sequential();
+    let mut fixture = spawn_fixture("graceful-tree", &["--spawn-grandchild"]);
+    let contents = wait_for_marker(&fixture, "test-child: ready");
+    let grandchild_pid = parse_grandchild_pid(&contents);
+    assert!(process_alive(grandchild_pid), "grandchild must be alive");
+    let outcome = fixture
+        .proc
+        .shutdown(Duration::from_secs(15), Duration::from_secs(10))
+        .expect("shutdown");
+    match outcome {
+        Outcome::Graceful(status) => {
+            assert_eq!(status.code(), Some(0), "cooperative exit must be code 0");
+        }
+        Outcome::Forced(status) => panic!("expected Graceful, got Forced({status:?})"),
+    }
+    wait_dead(grandchild_pid);
+}
+
+/// Pins F1's kill/reap ordering on Unix: the root cooperates with SIGTERM but
+/// the grandchild ignores it — observing the root's exit must SIGKILL-sweep
+/// the group BEFORE the reap, so neither shutdown() nor drop() can orphan the
+/// survivor. (Unix-only scenario: on Windows the job stays non-empty, so the
+/// same input is a Forced outcome by design.)
+#[cfg(unix)]
+#[test]
+fn shutdown_and_drop_reap_a_stubborn_grandchild() {
+    let _guard = sequential();
+    let mut fixture = spawn_fixture("stubborn-grandchild", &["--stubborn-grandchild"]);
+    let contents = wait_for_marker(&fixture, "test-child: ready");
+    let grandchild_pid = parse_grandchild_pid(&contents);
+    assert!(process_alive(grandchild_pid), "grandchild must be alive");
+    let outcome = fixture
+        .proc
+        .shutdown(Duration::from_secs(15), Duration::from_secs(10))
+        .expect("shutdown");
+    assert!(
+        matches!(outcome, Outcome::Graceful(_)),
+        "root cooperates, so the outcome is Graceful (got {outcome:?})"
+    );
+    drop(fixture);
+    wait_dead(grandchild_pid);
 }
 
 #[test]

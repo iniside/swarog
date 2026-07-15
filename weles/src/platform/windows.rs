@@ -25,9 +25,10 @@ use windows_sys::Win32::Storage::FileSystem::{
 };
 use windows_sys::Win32::System::Console::{GenerateConsoleCtrlEvent, CTRL_BREAK_EVENT};
 use windows_sys::Win32::System::JobObjects::{
-    AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
-    SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    AssignProcessToJobObject, CreateJobObjectW, JobObjectBasicAccountingInformation,
+    JobObjectExtendedLimitInformation, QueryInformationJobObject, SetInformationJobObject,
+    TerminateJobObject, JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 };
 use windows_sys::Win32::System::Threading::{
     CreateProcessW, GetCurrentProcess, GetExitCodeProcess, ResumeThread, TerminateProcess,
@@ -44,6 +45,9 @@ pub(super) struct PlatformProc {
     process: OwnedHandle,
     job: OwnedHandle,
     pid: u32,
+    /// Root exit status, cached once observed; [`Self::try_wait`] still
+    /// returns `None` until the JOB is empty (whole-unit exit semantics).
+    root_status: Option<ExitInfo>,
 }
 
 struct OwnedHandle(HANDLE);
@@ -109,9 +113,14 @@ pub(super) fn spawn(spec: SpawnSpec) -> Result<PlatformProc> {
     // anything outside the job before containment applies.
     // SAFETY: both handles are valid and owned by this function.
     if unsafe { AssignProcessToJobObject(job.0, process.0) } == 0 {
-        let source = std::io::Error::last_os_error();
-        terminate_unassigned(&process).context("clean up unassigned suspended process")?;
-        return Err(source).context("assign suspended process to job");
+        let assign_error = std::io::Error::last_os_error();
+        // A suspended process outside the job has NO containment backstop: if
+        // this cleanup also fails we may leak a suspended orphan, so surface
+        // BOTH errors (the cleanup failure chained with the assign error).
+        terminate_unassigned(&process).with_context(|| {
+            format!("clean up unassigned suspended process (after assign to job failed: {assign_error})")
+        })?;
+        return Err(assign_error).context("assign suspended process to job");
     }
     // SAFETY: thread is the valid primary-thread handle from CreateProcessW.
     if unsafe { ResumeThread(thread.0) } == u32::MAX {
@@ -126,6 +135,7 @@ pub(super) fn spawn(spec: SpawnSpec) -> Result<PlatformProc> {
         process,
         job,
         pid: info.dwProcessId,
+        root_status: None,
     })
 }
 
@@ -134,24 +144,38 @@ impl PlatformProc {
         self.pid
     }
 
+    /// Non-blocking exit probe. "Exited" means the WHOLE containment unit is
+    /// done: the root has exited AND the job holds no active processes —
+    /// descendants can outlive the root, and reporting exit while they still
+    /// run would let a caller (e.g. a restart map keeping this handle alive)
+    /// leak port-holding survivors until the job handle finally drops.
     pub(super) fn try_wait(&mut self) -> std::io::Result<Option<ExitInfo>> {
-        // SAFETY: process is a valid handle with SYNCHRONIZE access owned by us.
-        match unsafe { WaitForSingleObject(self.process.0, 0) } {
-            WAIT_OBJECT_0 => {
-                let mut code = 0u32;
-                // SAFETY: process is a valid handle; code is out storage.
-                if unsafe { GetExitCodeProcess(self.process.0, &mut code) } == 0 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                Ok(Some(ExitInfo {
-                    code: Some(code as i32),
-                }))
+        if self.root_status.is_none() {
+            // SAFETY: process is a valid handle with SYNCHRONIZE access owned
+            // by us; zero timeout makes this a non-blocking poll.
+            match unsafe { WaitForSingleObject(self.process.0, 0) } {
+                WAIT_OBJECT_0 => self.root_status = Some(exit_info(self.process.0)?),
+                WAIT_TIMEOUT => {}
+                _ => return Err(std::io::Error::last_os_error()),
             }
-            WAIT_TIMEOUT => Ok(None),
-            _ => Err(std::io::Error::last_os_error()),
+        }
+        if job_active_processes(self.job.0)? == 0 {
+            if self.root_status.is_none() {
+                // The job emptied between the two probes — the root must have
+                // exited; read its (now final) exit code.
+                self.root_status = Some(exit_info(self.process.0)?);
+            }
+            Ok(self.root_status)
+        } else {
+            Ok(None)
         }
     }
 
+    /// Sends CTRL_BREAK to the child's console process group. NOTE:
+    /// `GenerateConsoleCtrlEvent` only reaches processes sharing THIS
+    /// process's console — a console-less weles (e.g. detached/service-style)
+    /// cannot deliver it, and every shutdown degrades to Forced;
+    /// `OwnedProc::shutdown` logs that degradation when this errors.
     pub(super) fn graceful(&mut self) -> std::io::Result<()> {
         // SAFETY: pid was created with CREATE_NEW_PROCESS_GROUP, so it names a
         // console process group we own; no handle is involved.
@@ -170,6 +194,39 @@ impl PlatformProc {
         } else {
             Ok(())
         }
+    }
+}
+
+fn exit_info(process: HANDLE) -> std::io::Result<ExitInfo> {
+    let mut code = 0u32;
+    // SAFETY: process is a valid handle; code is out storage.
+    if unsafe { GetExitCodeProcess(process, &mut code) } == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(ExitInfo {
+            code: Some(code as i32),
+        })
+    }
+}
+
+fn job_active_processes(job: HANDLE) -> std::io::Result<u32> {
+    // SAFETY: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION is plain-old-data out
+    // storage matching the queried information class and declared size.
+    let mut info: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION = unsafe { zeroed() };
+    // SAFETY: job is our valid job handle; info matches class + size.
+    if unsafe {
+        QueryInformationJobObject(
+            job,
+            JobObjectBasicAccountingInformation,
+            (&raw mut info).cast(),
+            size_of::<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION>() as u32,
+            std::ptr::null_mut(),
+        )
+    } == 0
+    {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(info.ActiveProcesses)
     }
 }
 

@@ -13,15 +13,21 @@ use anyhow::{Context, Result};
 static IGNORE_GRACEFUL: AtomicBool = AtomicBool::new(false);
 static TERM_REQUESTED: AtomicBool = AtomicBool::new(false);
 
-pub fn run(spawn_grandchild: bool, ignore_graceful: bool) -> Result<()> {
+pub fn run(spawn_grandchild: bool, ignore_graceful: bool, stubborn_grandchild: bool) -> Result<()> {
     IGNORE_GRACEFUL.store(ignore_graceful, Ordering::SeqCst);
     install_graceful_handler()?;
-    if spawn_grandchild {
+    if spawn_grandchild || stubborn_grandchild {
         let exe = std::env::current_exe().context("resolve test-child executable")?;
         // A plain child: no new process group / no job breakaway, so it stays
-        // inside the parent's containment unit by construction.
-        let grandchild = std::process::Command::new(exe)
-            .arg("__test-child")
+        // inside the parent's containment unit by construction. A stubborn
+        // grandchild additionally ignores the graceful signal, pinning that
+        // group survivors are reaped by containment, not by cooperation.
+        let mut command = std::process::Command::new(exe);
+        command.arg("__test-child");
+        if stubborn_grandchild {
+            command.arg("--ignore-graceful");
+        }
+        let grandchild = command
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()

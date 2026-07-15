@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fs::File;
 use std::path::PathBuf;
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
@@ -64,8 +65,20 @@ pub struct OwnedProc {
     status: Option<ExitInfo>,
 }
 
+/// Serialized-spawn invariant: the Windows spawn uses `bInheritHandles = 1`
+/// WITHOUT a `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` allow-list, so two concurrent
+/// spawns would cross-inherit each other's transient inheritable stdio
+/// duplicates (child A pinning child B's log file open). Holding this lock
+/// across the inheritable-duplicate creation + `CreateProcessW` window makes
+/// that impossible; Unix takes it too for symmetry.
+static SPAWN_LOCK: Mutex<()> = Mutex::new(());
+
 /// Spawns `spec` inside a fresh containment unit (Job Object / process group).
+/// Spawns are serialized process-wide (see [`SPAWN_LOCK`]).
 pub fn spawn(spec: SpawnSpec) -> Result<OwnedProc> {
+    let _spawn_guard = SPAWN_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let inner = imp::spawn(spec)?;
     Ok(OwnedProc {
         inner,
@@ -79,6 +92,9 @@ impl OwnedProc {
     }
 
     /// Non-blocking status probe; caches the exit status once observed.
+    /// `Some` means the WHOLE containment unit is done, not just the root:
+    /// on Windows the root has exited AND the job is empty; on Unix the root
+    /// has exited and any group survivor was SIGKILL-swept before the reap.
     pub fn try_wait(&mut self) -> Result<Option<ExitInfo>> {
         if self.status.is_none() {
             self.status = self
@@ -113,11 +129,21 @@ impl OwnedProc {
         if let Some(status) = self.try_wait()? {
             return Ok(Outcome::Graceful(status));
         }
-        // A failed graceful signal (e.g. the child died concurrently) falls
-        // through to force rather than aborting the shutdown.
-        if self.graceful().is_ok() {
-            if let Some(status) = self.wait_for(graceful_timeout)? {
-                return Ok(Outcome::Graceful(status));
+        // A failed graceful signal falls through to force rather than
+        // aborting the shutdown — but visibly: e.g. a console-less weles on
+        // Windows cannot deliver CTRL_BREAK at all, silently degrading EVERY
+        // shutdown to Forced.
+        match self.graceful() {
+            Ok(()) => {
+                if let Some(status) = self.wait_for(graceful_timeout)? {
+                    return Ok(Outcome::Graceful(status));
+                }
+            }
+            Err(error) => {
+                eprintln!(
+                    "weles: graceful stop of pid {} failed ({error:#}); degrading to forced shutdown",
+                    self.pid()
+                );
             }
         }
         self.force()?;
@@ -148,6 +174,8 @@ impl OwnedProc {
 
 impl Drop for OwnedProc {
     fn drop(&mut self) {
+        // A cached status proves the WHOLE unit already exited (Windows: job
+        // empty; Unix: group swept before the reap) — nothing left to kill.
         if self.status.is_some() {
             return;
         }

@@ -34,7 +34,8 @@ fn run(command: Command) -> Result<()> {
         Command::TestChild {
             spawn_grandchild,
             ignore_graceful,
-        } => fixture::run(spawn_grandchild, ignore_graceful),
+            stubborn_grandchild,
+        } => fixture::run(spawn_grandchild, ignore_graceful, stubborn_grandchild),
     }
 }
 

@@ -99,6 +99,7 @@ fn test_child_defaults() {
         Command::TestChild {
             spawn_grandchild: false,
             ignore_graceful: false,
+            stubborn_grandchild: false,
         }
     );
 }
@@ -111,6 +112,7 @@ fn test_child_spawn_grandchild() {
         Command::TestChild {
             spawn_grandchild: true,
             ignore_graceful: false,
+            stubborn_grandchild: false,
         }
     );
 }
@@ -123,6 +125,20 @@ fn test_child_ignore_graceful() {
         Command::TestChild {
             spawn_grandchild: false,
             ignore_graceful: true,
+            stubborn_grandchild: false,
+        }
+    );
+}
+
+#[test]
+fn test_child_stubborn_grandchild() {
+    let cmd = parse(args(&["__test-child", "--stubborn-grandchild"])).unwrap();
+    assert_eq!(
+        cmd,
+        Command::TestChild {
+            spawn_grandchild: false,
+            ignore_graceful: false,
+            stubborn_grandchild: true,
         }
     );
 }
