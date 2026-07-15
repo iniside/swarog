@@ -10,6 +10,14 @@
 //! are expressed implicitly by position (a service's peers appear earlier),
 //! matching `fleet.rs`'s `dependencies` ordering constraint without needing
 //! a separate graph here.
+//!
+//! Deliberate semantic delta vs the fleet.rs Development flavor: weles's
+//! composed env is fully deterministic — the `overrideable_env` seam
+//! (`tools/processctl/src/fleet.rs:568-584`, which lets ambient
+//! `SCHEDULER_ENABLED`/`ACCOUNTS_DEV_AUTH`/`ADMIN_COOKIE_SECURE`/… override
+//! the manifest) was consciously NOT ported, per the config-as-code
+//! decision: what a service gets is exactly what this file says, plus the
+//! fixed [`SERVICE_ENV_ALLOWLIST`] passthrough.
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -406,47 +414,49 @@ fn service_pg_budget(svc: &ServiceDef) -> (u32, u32) {
         return (0, 0);
     }
     let mut dedicated = PLANE_DEDICATED_SESSIONS;
-    if svc.name == "scheduler-svc" {
+    // The scheduler's dedicated per-fire connection is charged wherever the
+    // scheduler module runs: its own svc in the split, the "server" package
+    // in the monolith (one process hosts every module).
+    if svc.name == "scheduler-svc" || svc.pkg == "server" {
         dedicated += SCHEDULER_FIRE_SESSIONS;
     }
     (svc.pool_max, dedicated)
 }
 
-/// Sums pool_max + dedicated across every split-fleet process (and,
-/// separately, the monolith) and fails if either exceeds
+/// The one budget authority: sums pool_max + dedicated across `services`
+/// and fails with the itemized breakdown if the total exceeds
 /// [`PG_SESSION_BUDGET`]. Full fleet.rs arithmetic — NOT a pool-only
 /// shortcut: the dedicated term (plane workers + listeners, scheduler's
-/// fire connection) is charged too.
-pub fn validate_pg_budget() -> Result<(), ManifestError> {
+/// fire connection) is charged too. Takes a slice so the failing branch is
+/// exercisable with a synthetic fleet in tests (the public wrapper feeds
+/// the real manifests).
+fn fleet_pg_budget(services: &[ServiceDef]) -> Result<(), ManifestError> {
     let mut breakdown = String::new();
-    let mut split_total = 0u32;
-    for svc in split_fleet() {
-        let (pool, dedicated) = service_pg_budget(&svc);
-        split_total += pool + dedicated;
+    let mut total = 0u32;
+    for svc in services {
+        let (pool, dedicated) = service_pg_budget(svc);
+        total += pool + dedicated;
         breakdown.push_str(&format!(
             "  {name}: pool={pool} dedicated={dedicated}\n",
             name = svc.name
         ));
     }
-    if split_total > PG_SESSION_BUDGET {
+    if total > PG_SESSION_BUDGET {
         return Err(ManifestError::PoolBudgetExceeded {
-            total: split_total,
+            total,
             budget: PG_SESSION_BUDGET,
             breakdown,
         });
     }
-
-    let mono = monolith();
-    let mono_total = mono.pool_max + PLANE_DEDICATED_SESSIONS + SCHEDULER_FIRE_SESSIONS;
-    if mono_total > PG_SESSION_BUDGET {
-        return Err(ManifestError::PoolBudgetExceeded {
-            total: mono_total,
-            budget: PG_SESSION_BUDGET,
-            breakdown: format!("  monolith: pool={} dedicated={}\n", mono.pool_max, PLANE_DEDICATED_SESSIONS + SCHEDULER_FIRE_SESSIONS),
-        });
-    }
-
     Ok(())
+}
+
+/// Validates BOTH real manifests against [`PG_SESSION_BUDGET`]: the split
+/// fleet as one deployment, the monolith as another (each topology runs
+/// alone against the shared local Postgres).
+pub fn validate_pg_budget() -> Result<(), ManifestError> {
+    fleet_pg_budget(&split_fleet())?;
+    fleet_pg_budget(&[monolith()])
 }
 
 #[cfg(test)]
