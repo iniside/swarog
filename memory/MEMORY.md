@@ -22,7 +22,7 @@
 - [Team = solo + agents, never humans](team-is-solo-plus-agents-forever.md) — scaling means more AI agents (Codex/Claude), don't hedge advice on "if a human joins"; speak as we/our
 
 ## Project / architecture / decisions
-- [OPEN BUG: edge stub no reconnect after peer restart](edge-stub-no-reconnect-after-peer-restart.md) — module→module Ownership call (inventory→characters) pada trwale po restarcie peera (ciche 404), gateway path się odzyskuje; fix w core/remote/edge + splitproof assertion; znaleziony przez chaos test Welesa 2026-07-15
+- [B1 zamknięty: stub redial NIE był zbugowany](edge-stub-no-reconnect-after-peer-restart.md) — hipoteza transportowa OBALONA (2026-07-15): oba kształty teardownu → ConnectionFatal → recovery, testy regresyjne w cde5282; żywy split: kill → ~30s wiszący call/408 → 200, zero 404; jeśli trwałe 404 wróci — podejrzewaj dane/środowisko (gałąź D), nie core/remote
 - [DECIDED + DONE: everything is Rust](decision-migrate-everything-to-rust.md) — migration decided AND completed 2026-07-08; Rust workspace at repo root is the only project; go/jvm sketches archived. Don't re-litigate Go/Quarkus/JVM
 - [Never monolith-only features](never-monolith-only-features.md) — split is a supported compilation path; feature MUST work in both topologies (repeat-offense correction; mechanics are in CLAUDE.md)
 - [Don't descope transport for simplicity](dont-descope-transport-for-simplicity.md) — never cut gateway/durable-messaging/RPC-codegen to "minimum viable"; port the full seam, it produces per-module hacks otherwise
