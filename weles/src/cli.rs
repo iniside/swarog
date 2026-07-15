@@ -36,7 +36,8 @@ USAGE:
   weles down
 
 up defaults to the split topology. weles never builds — it executes only the
-binaries staged into <root>/deploy by `weles deploy`.";
+binaries staged into <root>/deploy by `weles deploy` (<src-dir> resolves
+relative to the current directory).";
 
 pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command> {
     let mut args = args.into_iter();

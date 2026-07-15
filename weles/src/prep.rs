@@ -127,25 +127,50 @@ pub fn validate_binaries(layout: &Layout, packages: &[&str]) -> Result<()> {
 }
 
 /// `weles deploy <src_dir>`: stages the fleet binaries ([`deploy_packages`])
-/// from `src_dir` into `layout.bin_dir` (`<root>/deploy`, created if absent).
-/// Prints a per-file report line (copied / missing). This IS a redeploy: an
-/// existing staged binary is OVERWRITTEN.
+/// from `src_dir` (resolved relative to the CURRENT directory, not the repo
+/// root) into `layout.bin_dir` (`<root>/deploy`, created if absent). Prints a
+/// per-file report line (copied / missing / copy FAILED). This IS a redeploy:
+/// an existing staged binary is OVERWRITTEN.
 ///
-/// Failure semantics: ANY missing source binary makes this return an error
-/// listing every missing source; the files ALREADY copied this run REMAIN
-/// staged (no rollback in M0 — a redeploy simply re-copies everything).
+/// Self-copy guard: `src_dir` and `bin_dir` are canonicalized up front and a
+/// deploy FROM the deploy dir itself is rejected — on Unix `fs::copy` onto the
+/// same inode truncates first, so `weles deploy deploy` would zero every
+/// staged binary while reporting success (Windows errors loudly; the guard
+/// makes both platforms fail the same way, before any file is touched).
+///
+/// Failure semantics: the loop never aborts mid-way — a missing source or a
+/// failed copy is recorded and the remaining files are still processed; the
+/// final error enumerates EVERY missing source and EVERY failed copy, one per
+/// line, and the files that DID copy this run REMAIN staged (no rollback in
+/// M0 — a redeploy simply re-copies everything).
 ///
 /// Live-fleet safety is deliberately NOT enforced in M0: `deploy` takes no
 /// rollout lock. On Windows a running service holds an exclusive lock on its
-/// own `.exe`, so overwriting a live binary FAILS LOUDLY (the copy errors); on
-/// Unix the copy SUCCEEDS silently (the running process keeps its now-unlinked
-/// inode). This asymmetry is accepted for M0 — a proper rolling redeploy under
-/// a live fleet is M1's job.
+/// own `.exe`, so overwriting a live binary FAILS LOUDLY (recorded in the
+/// failed-copy list); on Unix the copy SUCCEEDS silently (the running process
+/// keeps its now-unlinked inode). This asymmetry is accepted for M0 — a proper
+/// rolling redeploy under a live fleet is M1's job.
 pub fn deploy(layout: &Layout, src_dir: &Path) -> Result<()> {
     std::fs::create_dir_all(&layout.bin_dir)
         .with_context(|| format!("create deploy dir {}", layout.bin_dir.display()))?;
 
+    // Canonicalize BOTH sides (handles relative-to-CWD paths and symlinks)
+    // before touching any file: src == dst would corrupt, not stage.
+    let src_canonical = std::fs::canonicalize(src_dir)
+        .with_context(|| format!("resolve source dir {}", src_dir.display()))?;
+    let bin_canonical = std::fs::canonicalize(&layout.bin_dir)
+        .with_context(|| format!("resolve deploy dir {}", layout.bin_dir.display()))?;
+    if src_canonical == bin_canonical {
+        bail!(
+            "source dir {} IS the deploy dir {} — deploying deploy/ onto itself would \
+             truncate every staged binary; pass your build output dir instead",
+            src_dir.display(),
+            layout.bin_dir.display()
+        );
+    }
+
     let mut missing: Vec<PathBuf> = Vec::new();
+    let mut failed: Vec<String> = Vec::new();
     for pkg in deploy_packages() {
         let file = format!("{pkg}{}", std::env::consts::EXE_SUFFIX);
         let src = src_dir.join(&file);
@@ -155,17 +180,24 @@ pub fn deploy(layout: &Layout, src_dir: &Path) -> Result<()> {
             missing.push(src);
             continue;
         }
-        std::fs::copy(&src, &dst)
-            .with_context(|| format!("copy {} -> {}", src.display(), dst.display()))?;
-        println!("weles: {pkg}: copied -> {}", dst.display());
+        match std::fs::copy(&src, &dst) {
+            Ok(_) => println!("weles: {pkg}: copied -> {}", dst.display()),
+            Err(error) => {
+                println!("weles: {pkg}: copy FAILED -> {} ({error})", dst.display());
+                failed.push(format!("{} ({error})", dst.display()));
+            }
+        }
     }
 
-    if !missing.is_empty() {
+    if !missing.is_empty() || !failed.is_empty() {
         let mut message = String::from(
-            "weles deploy: source binaries missing (already-copied files remain staged, no rollback):\n",
+            "weles deploy: incomplete (files that DID copy remain staged, no rollback):\n",
         );
         for path in &missing {
-            message.push_str(&format!("  {}\n", path.display()));
+            message.push_str(&format!("  missing source: {}\n", path.display()));
+        }
+        for entry in &failed {
+            message.push_str(&format!("  copy failed: {entry}\n"));
         }
         bail!("{message}");
     }

@@ -6,9 +6,10 @@
 //!
 //! `run_up` sequence (the rollout lock comes FIRST — before any validation or
 //! prep — per the Step-4 review finding): (1) discover layout + acquire
-//! `run/rollout.lock`; (2) validate the DEPLOYED binaries exist in
-//! `<root>/deploy` (weles never builds), then the manifest against disk and the
-//! Postgres session budget; (3) prep (mint CA, seed admin); (4) install the
+//! `run/rollout.lock`; (2) validate the manifest against `cmd/*-svc` on disk
+//! (drift reported AS drift), then the DEPLOYED binaries in `<root>/deploy`
+//! (weles never builds), then the Postgres session budget; (3) prep (mint CA,
+//! seed admin); (4) install the
 //! Ctrl-C/SIGTERM handler; (5) boot each service in manifest order behind a
 //! readyz gate; (6) a single non-blocking monitor loop; (7) teardown in reverse
 //! spawn order, lock dropped last.
@@ -363,7 +364,13 @@ pub fn run_up(topology: Topology) -> Result<()> {
     let run_id = format!("{:016x}", rand::random::<u64>());
     let _lock = lock::acquire(&layout.root, &run_id)?;
 
-    // Pre-flight: every binary this run needs must already be staged in
+    // Manifest-vs-disk drift FIRST: if the manifest disagrees with cmd/*-svc
+    // (the source of truth), report it AS drift — not as a "missing binary"
+    // symptom from the staged-artifact check below.
+    manifest::validate_disk(&layout.root.join("cmd"))
+        .context("validate fleet manifest against cmd/*-svc on disk")?;
+
+    // Then: every binary this run needs must already be staged in
     // <root>/deploy — weles never builds. Dies here (per-line missing list)
     // before any further validation if the deploy dir is incomplete.
     let mut packages: Vec<&str> = match topology {
@@ -376,8 +383,6 @@ pub fn run_up(topology: Topology) -> Result<()> {
     prep::validate_binaries(&layout, &packages)
         .context("validate deployed fleet binaries")?;
 
-    manifest::validate_disk(&layout.root.join("cmd"))
-        .context("validate fleet manifest against cmd/*-svc on disk")?;
     manifest::validate_pg_budget().context("validate fleet Postgres session budget")?;
 
     let ca = prep::mint_ca(&layout)?;

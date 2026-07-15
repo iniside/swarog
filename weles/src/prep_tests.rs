@@ -161,6 +161,65 @@ fn deploy_copies_every_package_and_overwrites() {
 }
 
 #[test]
+fn deploy_rejects_the_deploy_dir_as_its_own_source() {
+    // `weles deploy deploy` (src == bin_dir): on Unix fs::copy truncates the
+    // destination before reading the SAME inode, zeroing every staged binary
+    // while reporting success. The canonicalize guard must reject this before
+    // any file is touched, on both platforms.
+    let layout = temp_layout("deploy-self");
+    stage_fake(&layout, "edgeca");
+    let original = std::fs::read(layout.binary("edgeca")).expect("read staged");
+
+    let error = deploy(&layout, &layout.bin_dir).expect_err("self-deploy must be rejected");
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("IS the deploy dir"),
+        "must name the self-copy condition: {message}"
+    );
+    assert_eq!(
+        std::fs::read(layout.binary("edgeca")).expect("read staged after"),
+        original,
+        "staged bytes must be untouched by a rejected self-deploy"
+    );
+}
+
+#[test]
+fn deploy_enumerates_every_failed_copy_and_stages_the_rest() {
+    // Cross-platform copy-failure injection: a DIRECTORY squatting on a
+    // destination file path makes fs::copy fail on every platform. The loop
+    // must continue past the failure and the final error must enumerate it
+    // while the other files got staged.
+    let layout = temp_layout("deploy-copyfail");
+    let src = temp_dir("deploy-copyfail-src");
+    for pkg in deploy_packages() {
+        let file = format!("{pkg}{}", std::env::consts::EXE_SUFFIX);
+        std::fs::write(src.join(&file), b"payload").expect("write source binary");
+    }
+    let blocked = layout.binary("edgeca");
+    std::fs::create_dir_all(&blocked).expect("squat a directory on the destination path");
+
+    let error = deploy(&layout, &src).expect_err("a failed copy must fail the deploy");
+    let message = format!("{error:#}");
+    assert!(
+        message.contains(&blocked.display().to_string()),
+        "must enumerate the failed destination: {message}"
+    );
+    assert!(
+        message.contains("copy failed"),
+        "must label the failure class: {message}"
+    );
+    // Every OTHER package must still have been staged despite the mid-loop failure.
+    for pkg in deploy_packages() {
+        if pkg == "edgeca" {
+            continue;
+        }
+        let dst = layout.binary(pkg);
+        assert!(dst.is_file(), "{} must be staged past the failure", dst.display());
+        assert_eq!(std::fs::read(&dst).expect("read staged"), b"payload");
+    }
+}
+
+#[test]
 fn deploy_lists_every_missing_source_and_keeps_copied_files() {
     let layout = temp_layout("deploy-missing");
     let src = temp_dir("deploy-src-missing");
