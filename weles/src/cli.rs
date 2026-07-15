@@ -11,7 +11,9 @@ pub enum Topology {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Command {
-    Up { topology: Topology, skip_build: bool },
+    Up { topology: Topology },
+    /// Stage the fleet binaries from `src_dir` into `<root>/deploy`.
+    Deploy { src_dir: String },
     Status,
     Down,
     /// Hidden test fixture for the platform containment tests — not listed
@@ -28,11 +30,13 @@ pub const USAGE: &str = "\
 weles - standalone fleet-supervisor CLI
 
 USAGE:
-  weles up [split|monolith] [--skip-build]
+  weles deploy <src-dir>
+  weles up [split|monolith]
   weles status
   weles down
 
-up defaults to the split topology.";
+up defaults to the split topology. weles never builds — it executes only the
+binaries staged into <root>/deploy by `weles deploy`.";
 
 pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command> {
     let mut args = args.into_iter();
@@ -43,7 +47,6 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command> {
         "up" => {
             let mut topology = Topology::Split;
             let mut topology_seen = false;
-            let mut skip_build = false;
             for arg in args {
                 match arg.as_str() {
                     "split" | "monolith" => {
@@ -57,17 +60,17 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command> {
                             Topology::Monolith
                         };
                     }
-                    // Policy: repeating a boolean flag is idempotent and
-                    // accepted (only conflicting values — two topologies —
-                    // are rejected). Pinned by cli_tests.
-                    "--skip-build" => skip_build = true,
                     other => bail!("unknown argument {other:?}\n\n{USAGE}"),
                 }
             }
-            Ok(Command::Up {
-                topology,
-                skip_build,
-            })
+            Ok(Command::Up { topology })
+        }
+        "deploy" => {
+            let Some(src_dir) = args.next() else {
+                bail!("deploy requires a source directory\n\n{USAGE}");
+            };
+            expect_no_more_args(args)?;
+            Ok(Command::Deploy { src_dir })
         }
         "status" => {
             expect_no_more_args(args)?;

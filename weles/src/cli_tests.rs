@@ -7,37 +7,13 @@ fn args(items: &[&str]) -> Vec<String> {
 #[test]
 fn up_defaults_to_split() {
     let cmd = parse(args(&["up"])).unwrap();
-    assert_eq!(
-        cmd,
-        Command::Up {
-            topology: Topology::Split,
-            skip_build: false,
-        }
-    );
+    assert_eq!(cmd, Command::Up { topology: Topology::Split });
 }
 
 #[test]
 fn up_monolith() {
     let cmd = parse(args(&["up", "monolith"])).unwrap();
-    assert_eq!(
-        cmd,
-        Command::Up {
-            topology: Topology::Monolith,
-            skip_build: false,
-        }
-    );
-}
-
-#[test]
-fn up_skip_build() {
-    let cmd = parse(args(&["up", "split", "--skip-build"])).unwrap();
-    assert_eq!(
-        cmd,
-        Command::Up {
-            topology: Topology::Split,
-            skip_build: true,
-        }
-    );
+    assert_eq!(cmd, Command::Up { topology: Topology::Monolith });
 }
 
 #[test]
@@ -46,29 +22,30 @@ fn up_rejects_duplicate_topology() {
 }
 
 #[test]
-fn up_flag_before_topology_is_order_independent() {
-    let cmd = parse(args(&["up", "--skip-build", "monolith"])).unwrap();
+fn up_rejects_the_removed_skip_build_flag() {
+    // `--skip-build` no longer exists — weles never builds, so there is nothing
+    // to skip. It must parse as an unknown argument, not silently succeed.
+    assert!(parse(args(&["up", "--skip-build"])).is_err());
+}
+
+#[test]
+fn deploy_parses_with_src_dir() {
+    let cmd = parse(args(&["deploy", "some/build/out"])).unwrap();
     assert_eq!(
         cmd,
-        Command::Up {
-            topology: Topology::Monolith,
-            skip_build: true,
-        }
+        Command::Deploy { src_dir: "some/build/out".to_string() }
     );
 }
 
 #[test]
-fn up_accepts_idempotent_duplicate_flag() {
-    // Pins the chosen policy: repeating a boolean flag is idempotent and
-    // accepted; only conflicting values (two topologies) are rejected.
-    let cmd = parse(args(&["up", "--skip-build", "--skip-build"])).unwrap();
-    assert_eq!(
-        cmd,
-        Command::Up {
-            topology: Topology::Split,
-            skip_build: true,
-        }
-    );
+fn deploy_requires_a_src_dir() {
+    let err = parse(args(&["deploy"])).unwrap_err();
+    assert!(err.to_string().contains("USAGE"), "must print USAGE: {err}");
+}
+
+#[test]
+fn deploy_rejects_trailing_args() {
+    assert!(parse(args(&["deploy", "dir-a", "dir-b"])).is_err());
 }
 
 #[test]

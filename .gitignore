@@ -5,6 +5,8 @@
 /bin/
 /dist/
 /target/
+# weles orchestrator artifact staging dir (`weles deploy`)
+/deploy/
 
 # Test / coverage
 *.out

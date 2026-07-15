@@ -1,9 +1,9 @@
 use super::*;
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
-/// `CARGO_TARGET_DIR`/`DATABASE_URL` are process-global env vars — tests that
-/// touch them must not interleave with each other (or with any other test in
-/// this binary that reads them), matching the mutex pattern in
+/// `DATABASE_URL`/proxy vars are process-global env vars — tests that touch
+/// them must not interleave with each other (or with any other test in this
+/// binary that reads them), matching the mutex pattern in
 /// `tests/platform.rs::sequential`.
 fn env_guard() -> MutexGuard<'static, ()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -53,9 +53,12 @@ fn temp_dir(name: &str) -> PathBuf {
 }
 
 #[test]
-fn discover_defaults_target_debug_under_root_target() {
+fn discover_fixes_bin_dir_at_root_deploy() {
+    // No env var influences bin_dir: it is ALWAYS <root>/deploy (config-as-code,
+    // no CARGO_TARGET_DIR, no debug/release heuristic). Set CARGO_TARGET_DIR to
+    // prove it is ignored.
     let _guard = env_guard();
-    let _unset = EnvVarGuard::unset("CARGO_TARGET_DIR");
+    let _set = EnvVarGuard::set("CARGO_TARGET_DIR", "should-be-ignored");
 
     let root = temp_dir("discover-default");
     let layout = Layout::discover(root.clone()).expect("discover layout");
@@ -63,43 +66,132 @@ fn discover_defaults_target_debug_under_root_target() {
     assert_eq!(layout.root, root);
     assert_eq!(layout.run_dir, root.join("run").join("weles"));
     assert!(layout.run_dir.is_dir(), "run_dir must be created");
-    assert_eq!(layout.target_debug, root.join("target").join("debug"));
+    assert_eq!(layout.bin_dir, root.join("deploy"));
 }
 
 #[test]
-fn discover_honors_absolute_cargo_target_dir() {
-    let _guard = env_guard();
-    let target_root = temp_dir("discover-abs-target");
-    let _set = EnvVarGuard::set("CARGO_TARGET_DIR", target_root.to_str().unwrap());
-
-    let root = temp_dir("discover-abs-root");
-    let layout = Layout::discover(root).expect("discover layout");
-
-    assert_eq!(layout.target_debug, target_root.join("debug"));
-}
-
-#[test]
-fn discover_honors_relative_cargo_target_dir() {
-    let _guard = env_guard();
-    let _set = EnvVarGuard::set("CARGO_TARGET_DIR", "my-target");
-
-    let root = temp_dir("discover-rel-root");
-    let layout = Layout::discover(root.clone()).expect("discover layout");
-
-    assert_eq!(layout.target_debug, root.join("my-target").join("debug"));
-}
-
-#[test]
-fn binary_appends_platform_exe_suffix() {
+fn binary_appends_platform_exe_suffix_under_deploy() {
     let layout = Layout {
         root: PathBuf::from("/root"),
         run_dir: PathBuf::from("/root/run/weles"),
-        target_debug: PathBuf::from("/root/target/debug"),
+        bin_dir: PathBuf::from("/root/deploy"),
     };
     let expected = layout
-        .target_debug
+        .bin_dir
         .join(format!("edgeca{}", std::env::consts::EXE_SUFFIX));
     assert_eq!(layout.binary("edgeca"), expected);
+}
+
+/// Builds a `Layout` whose `bin_dir` is a real temp dir (created), so
+/// validate/deploy tests can stage fake exes in it.
+fn temp_layout(tag: &str) -> Layout {
+    let root = temp_dir(tag);
+    let run_dir = root.join("run").join("weles");
+    std::fs::create_dir_all(&run_dir).expect("create run_dir");
+    let bin_dir = root.join("deploy");
+    std::fs::create_dir_all(&bin_dir).expect("create bin_dir");
+    Layout { root, run_dir, bin_dir }
+}
+
+fn stage_fake(layout: &Layout, pkg: &str) {
+    std::fs::write(layout.binary(pkg), b"fake exe").expect("stage fake binary");
+}
+
+#[test]
+fn validate_binaries_ok_when_all_present() {
+    let layout = temp_layout("validate-ok");
+    let packages = ["edgeca", "adminctl", "server"];
+    for pkg in packages {
+        stage_fake(&layout, pkg);
+    }
+    validate_binaries(&layout, &packages).expect("all staged ⇒ Ok");
+}
+
+#[test]
+fn validate_binaries_lists_every_missing_binary() {
+    let layout = temp_layout("validate-missing");
+    // Stage only one of three; the other two must BOTH be listed.
+    stage_fake(&layout, "edgeca");
+    let packages = ["edgeca", "adminctl", "server"];
+
+    let error = validate_binaries(&layout, &packages).expect_err("missing ⇒ Err");
+    let message = format!("{error:#}");
+    assert!(
+        message.contains(&layout.binary("adminctl").display().to_string()),
+        "must list the missing adminctl path: {message}"
+    );
+    assert!(
+        message.contains(&layout.binary("server").display().to_string()),
+        "must list the missing server path: {message}"
+    );
+    assert!(
+        !message.contains(&layout.binary("edgeca").display().to_string()),
+        "the present binary must NOT be listed: {message}"
+    );
+    assert!(
+        message.contains("weles deploy"),
+        "must hint at `weles deploy`: {message}"
+    );
+}
+
+#[test]
+fn deploy_copies_every_package_and_overwrites() {
+    let layout = temp_layout("deploy-copy");
+    let src = temp_dir("deploy-src");
+    // Stage EVERY deployable package in the source so deploy succeeds fully.
+    for pkg in deploy_packages() {
+        let file = format!("{pkg}{}", std::env::consts::EXE_SUFFIX);
+        std::fs::write(src.join(&file), b"v1 source").expect("write source binary");
+    }
+    // Pre-existing stale artifact in deploy/ to prove overwrite-is-redeploy.
+    std::fs::write(layout.binary("edgeca"), b"stale v0").expect("write stale");
+
+    deploy(&layout, &src).expect("deploy should copy every package");
+
+    for pkg in deploy_packages() {
+        let dst = layout.binary(pkg);
+        assert!(dst.is_file(), "{} must be staged", dst.display());
+        assert_eq!(
+            std::fs::read(&dst).expect("read staged"),
+            b"v1 source",
+            "{} must be overwritten with the source bytes",
+            dst.display()
+        );
+    }
+}
+
+#[test]
+fn deploy_lists_every_missing_source_and_keeps_copied_files() {
+    let layout = temp_layout("deploy-missing");
+    let src = temp_dir("deploy-src-missing");
+    // Stage all but two packages; both omissions must be listed, and the
+    // packages that WERE present must remain staged (no rollback).
+    let all = deploy_packages();
+    let omit = ["edgeca", "adminctl"];
+    for pkg in &all {
+        if omit.contains(pkg) {
+            continue;
+        }
+        let file = format!("{pkg}{}", std::env::consts::EXE_SUFFIX);
+        std::fs::write(src.join(&file), b"present").expect("write source binary");
+    }
+
+    let error = deploy(&layout, &src).expect_err("missing sources ⇒ Err");
+    let message = format!("{error:#}");
+    for pkg in omit {
+        let missing_src = src.join(format!("{pkg}{}", std::env::consts::EXE_SUFFIX));
+        assert!(
+            message.contains(&missing_src.display().to_string()),
+            "must list missing source {}: {message}",
+            missing_src.display()
+        );
+    }
+    // A package that WAS present must remain staged despite the overall error.
+    let present = all.iter().find(|p| !omit.contains(p)).expect("some present");
+    assert!(
+        layout.binary(present).is_file(),
+        "already-copied {present} must remain staged after the error"
+    );
 }
 
 #[test]
@@ -119,20 +211,6 @@ fn database_url_honors_env_override() {
     let _set = EnvVarGuard::set("DATABASE_URL", "postgres://custom/db");
 
     assert_eq!(database_url(), "postgres://custom/db");
-}
-
-#[test]
-fn resolve_on_path_finds_cargo() {
-    // cargo is guaranteed present on PATH in this dev/CI environment (this
-    // very test binary was built by it).
-    let resolved = resolve_on_path("cargo").expect("cargo must resolve on PATH");
-    assert!(resolved.is_file(), "resolved cargo path must exist: {}", resolved.display());
-}
-
-#[test]
-fn resolve_on_path_errors_on_nonsense_name() {
-    let result = resolve_on_path("definitely-not-a-real-executable-name-xyz123");
-    assert!(result.is_err(), "a bogus executable name must not resolve");
 }
 
 #[cfg(windows)]
@@ -177,11 +255,11 @@ fn mint_ca_skips_spawn_when_both_files_already_exist() {
     let layout = Layout {
         root: root.clone(),
         run_dir: run_dir.clone(),
-        // Deliberately points at a nonexistent binary: if mint_ca attempted
+        // Deliberately points at a nonexistent deploy dir: if mint_ca attempted
         // to spawn despite the skip-if-exists branch, the spawn would fail
         // loudly (and this test would catch it as an Err), so the ONLY way
         // this passes is via the early skip.
-        target_debug: root.join("no-such-target").join("debug"),
+        bin_dir: root.join("no-such-deploy"),
     };
 
     let paths = mint_ca(&layout).expect("mint_ca should skip and succeed");

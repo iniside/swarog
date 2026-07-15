@@ -1,8 +1,9 @@
-//! Weles is a standalone fleet-supervisor CLI (M0): it builds, boots,
-//! health-checks, and tears down a game-backend fleet (monolith or split
-//! topology) as an independent top-level crate — zero-sharing by design, no
-//! dependency on any workspace crate (core/*, api/*, modules/*, tools/*),
-//! std-only (no tokio). It shares exactly one convention with `devctl`: the
+//! Weles is a standalone fleet-orchestrator CLI (M0): it boots, health-checks,
+//! and tears down a game-backend fleet (monolith or split topology) as an
+//! independent top-level crate — zero-sharing by design, no dependency on any
+//! workspace crate (core/*, api/*, modules/*, tools/*), std-only (no tokio).
+//! weles never builds; it executes artifacts staged in `<root>/deploy` via
+//! `weles deploy`. It shares exactly one convention with `devctl`: the
 //! `run/rollout.lock` protocol that keeps at most one rollout-bearing command
 //! running against the shared local Postgres at a time.
 //!

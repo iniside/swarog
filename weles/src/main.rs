@@ -10,7 +10,7 @@ mod fixture;
 use anyhow::{bail, Context, Result};
 use weles::cli::{self, Command, Topology};
 use weles::state::{self, FleetState};
-use weles::{control, supervisor};
+use weles::{control, prep, supervisor};
 
 /// Matches `tools/devctl/src/supervisor.rs::DOWN_TIMEOUT`: how long `weles down`
 /// polls for the fleet to reach a terminal state before giving up.
@@ -36,10 +36,8 @@ fn main() -> ExitCode {
 
 fn run(command: Command) -> Result<()> {
     match command {
-        Command::Up {
-            topology,
-            skip_build,
-        } => up(topology, skip_build),
+        Command::Up { topology } => up(topology),
+        Command::Deploy { src_dir } => deploy(&src_dir),
         Command::Status => status(),
         Command::Down => down(),
         Command::TestChild {
@@ -50,8 +48,14 @@ fn run(command: Command) -> Result<()> {
     }
 }
 
-fn up(topology: Topology, skip_build: bool) -> Result<()> {
-    supervisor::run_up(topology, skip_build)
+fn up(topology: Topology) -> Result<()> {
+    supervisor::run_up(topology)
+}
+
+/// `weles deploy <src-dir>`: stage the fleet binaries into `<root>/deploy`.
+fn deploy(src_dir: &str) -> Result<()> {
+    let layout = supervisor::discover_layout()?;
+    prep::deploy(&layout, Path::new(src_dir))
 }
 
 /// `weles status`: reports the recorded fleet, connecting to a live supervisor

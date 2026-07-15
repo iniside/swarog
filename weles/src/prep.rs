@@ -1,14 +1,22 @@
-//! Prep pipeline: decides HOW the fleet gets buildable/spawnable — binary
-//! paths, filtered build/seed env, and the transient helper runs (`cargo
-//! build`, `edgeca`, `adminctl create-user`) that must succeed before any
-//! long-lived service is spawned. Consumes [`crate::manifest`] (the WHAT —
-//! process names/ports/env) and [`crate::platform::spawn`] (the ONLY spawn
-//! mechanism in this crate — see the crate-wide invariant documented beside
-//! `SPAWN_LOCK` in `platform::mod`). Never `std::process::Command` directly:
-//! the Windows spawn path uses blanket handle inheritance with no
-//! `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` allow-list, so a `std::process::Command`
-//! spawn racing a concurrent `platform::spawn` could cross-inherit the other's
-//! transient inheritable stdio duplicates.
+//! Prep pipeline: decides HOW the fleet gets spawnable — deployed binary
+//! paths, artifact staging (`weles deploy`), pre-flight binary validation, and
+//! the transient helper runs (`edgeca`, `adminctl create-user`) that must
+//! succeed before any long-lived service is spawned. Consumes
+//! [`crate::manifest`] (the WHAT — process names/ports/env) and
+//! [`crate::platform::spawn`] (the ONLY spawn mechanism in this crate — see the
+//! crate-wide invariant documented beside `SPAWN_LOCK` in `platform::mod`).
+//! Never `std::process::Command` directly: the Windows spawn path uses blanket
+//! handle inheritance with no `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` allow-list,
+//! so a `std::process::Command` spawn racing a concurrent `platform::spawn`
+//! could cross-inherit the other's transient inheritable stdio duplicates.
+//!
+//! weles is an orchestrator, not a build system: it never invokes `cargo` and
+//! never reads `target/`. It executes ONLY artifacts staged in `<root>/deploy`
+//! by `weles deploy`. (Because that removed the old `cargo build` child, this
+//! crate no longer carries a `BUILD_ENV_ALLOWLIST`. The sibling
+//! `tools/processctl/src/fleet.rs:8-14` allowlist — which devctl DOES use to
+//! build — still omits `SYSTEMDRIVE`/`ProgramData`, a latent linker-env gap
+//! recorded here as a known sibling; do NOT touch processctl for it.)
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -20,101 +28,50 @@ use anyhow::{bail, Context, Result};
 
 use crate::platform::{self, SpawnSpec};
 
-/// Parent-process env vars a `cargo build` child may inherit — a superset of
-/// [`crate::manifest::SERVICE_ENV_ALLOWLIST`] covering toolchain/proxy
-/// plumbing a build (but not a running service) needs. Ported verbatim from
-/// `tools/processctl/src/fleet.rs::BUILD_ENV_ALLOWLIST` (that list is itself
-/// the canonical source — copied, not imported, per weles's zero-sharing
-/// rule).
-pub const BUILD_ENV_ALLOWLIST: &[&str] = &[
-    "ALL_PROXY",
-    "APPDATA",
-    "CARGO_HOME",
-    "CARGO_HTTP_CAINFO",
-    "CARGO_HTTP_PROXY",
-    "CARGO_NET_GIT_FETCH_WITH_CLI",
-    "CARGO_TARGET_DIR",
-    "COMSPEC",
-    "GIT_SSL_CAINFO",
-    "HOME",
-    "HTTP_PROXY",
-    "HTTPS_PROXY",
-    "NO_PROXY",
-    "PATH",
-    "PATHEXT",
-    "RUSTFLAGS",
-    "ProgramFiles(x86)",
-    "RUSTUP_HOME",
-    "SSL_CERT_DIR",
-    "SSL_CERT_FILE",
-    "SYSTEMROOT",
-    "TEMP",
-    "TMP",
-    "USERPROFILE",
-    "WINDIR",
-    "all_proxy",
-    "http_proxy",
-    "https_proxy",
-    "no_proxy",
-];
-
 /// Dev-mode Postgres DSN — matches `tools/devctl/src/supervisor.rs::DEFAULT_DB`
 /// exactly (the same local dev role/db/password `devctl` uses).
 const DEFAULT_DATABASE_URL: &str =
     "postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable";
 
-const BUILD_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const HELPER_SHUTDOWN_GRACE: Duration = Duration::from_secs(0);
 const HELPER_SHUTDOWN_FORCE: Duration = Duration::from_secs(5);
 const MINT_CA_TIMEOUT: Duration = Duration::from_secs(30);
 const SEED_ADMIN_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The workspace's on-disk layout as weles cares about it: the repo root, its
-/// own `run/weles` scratch dir (created on discovery), and the `target/debug`
-/// directory holding every `cargo build`-produced binary.
+/// own `run/weles` scratch dir (created on discovery), and `bin_dir` —
+/// `<root>/deploy`, the FIXED directory weles executes staged artifacts from.
+/// weles never builds and never reads `target/`; an operator stages binaries
+/// into `bin_dir` with `weles deploy`.
 pub struct Layout {
     pub root: PathBuf,
     pub run_dir: PathBuf,
-    pub target_debug: PathBuf,
+    pub bin_dir: PathBuf,
 }
 
 impl Layout {
-    /// Discovers the layout under `root`, creating `root/run/weles` if
-    /// absent. `target_debug` honors `CARGO_TARGET_DIR` (absolute, or
-    /// resolved relative to `root`) exactly like Cargo itself does; absent,
-    /// it falls back to `root/target`. NOTE: resolving a RELATIVE
-    /// `CARGO_TARGET_DIR` against `root` here is only correct because
-    /// [`build`] pins the `cargo build` child's cwd to `layout.root` — Cargo
-    /// resolves a relative `CARGO_TARGET_DIR` against its invocation cwd.
+    /// Discovers the layout under `root`, creating `root/run/weles` if absent.
+    /// `bin_dir` is fixed at `root/deploy` (config-as-code: no env override, no
+    /// debug/release heuristic, no `CARGO_TARGET_DIR`) — weles executes ONLY
+    /// what `weles deploy` staged there.
     pub fn discover(root: PathBuf) -> Result<Self> {
         let run_dir = root.join("run").join("weles");
         std::fs::create_dir_all(&run_dir)
             .with_context(|| format!("create run dir {}", run_dir.display()))?;
 
-        let target_root = match std::env::var_os("CARGO_TARGET_DIR") {
-            Some(value) => {
-                let dir = PathBuf::from(value);
-                if dir.is_absolute() {
-                    dir
-                } else {
-                    root.join(dir)
-                }
-            }
-            None => root.join("target"),
-        };
-        let target_debug = target_root.join("debug");
+        let bin_dir = root.join("deploy");
 
         Ok(Layout {
             root,
             run_dir,
-            target_debug,
+            bin_dir,
         })
     }
 
-    /// Path to a built binary for cargo package `pkg` (`<pkg>[.exe]` under
-    /// `target_debug`).
+    /// Path to the deployed binary for cargo package `pkg`
+    /// (`deploy/<pkg>[.exe]`).
     pub fn binary(&self, pkg: &str) -> PathBuf {
-        self.target_debug
+        self.bin_dir
             .join(format!("{pkg}{}", std::env::consts::EXE_SUFFIX))
     }
 }
@@ -125,56 +82,94 @@ pub fn database_url() -> String {
     std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DATABASE_URL.to_string())
 }
 
-/// Runs `cargo build -p <pkg>...` (one spawn, every package at once) via
-/// [`platform::spawn`] with the [`BUILD_ENV_ALLOWLIST`]-filtered environment.
-/// Logs go to `run_dir/build.{out,err}.log`. Waits up to 10 minutes
-/// (poll `try_wait` every 100ms); on timeout the build is shut down
-/// (0s grace, 5s force) and an error is returned; a nonzero exit is also an
-/// error, both naming the log paths for the operator to inspect.
-pub fn build(layout: &Layout, packages: &[&str]) -> Result<()> {
-    let cargo = resolve_on_path("cargo").context("resolve cargo on PATH")?;
+/// The full set of binaries weles stages and may execute: the union of the
+/// split and monolith fleet packages plus the two prep helpers (`edgeca`,
+/// `adminctl`). Deterministic, deduped, sorted — the authority for `weles
+/// deploy`'s copy set.
+pub fn deploy_packages() -> Vec<&'static str> {
+    let mut pkgs: Vec<&'static str> = crate::manifest::split_fleet()
+        .iter()
+        .map(|svc| svc.pkg)
+        .collect();
+    pkgs.push(crate::manifest::monolith().pkg);
+    pkgs.push("edgeca");
+    pkgs.push("adminctl");
+    pkgs.sort_unstable();
+    pkgs.dedup();
+    pkgs
+}
 
-    let mut args: Vec<OsString> = vec![OsString::from("build")];
-    for package in packages {
-        args.push(OsString::from("-p"));
-        args.push(OsString::from(*package));
+/// Pre-flight gate (didn't-forget style): every binary the chosen run needs
+/// must already be staged in `layout.bin_dir` (`<root>/deploy`). Lists EVERY
+/// missing binary, one per line, and points the operator at `weles deploy` —
+/// weles executes only deployed artifacts and never builds. Called right after
+/// the rollout lock, before any other validation, so a run with an incomplete
+/// deploy dir dies pre-work instead of half-booting.
+pub fn validate_binaries(layout: &Layout, packages: &[&str]) -> Result<()> {
+    let mut missing: Vec<PathBuf> = Vec::new();
+    for pkg in packages {
+        let path = layout.binary(pkg);
+        if !path.is_file() {
+            missing.push(path);
+        }
+    }
+    if missing.is_empty() {
+        return Ok(());
+    }
+    let mut message = String::from(
+        "missing staged binaries — weles executes only what was deployed, it never builds:\n",
+    );
+    for path in &missing {
+        message.push_str(&format!("  {}\n", path.display()));
+    }
+    message.push_str("build them and stage with: weles deploy <your-build-output-dir>");
+    bail!("{message}")
+}
+
+/// `weles deploy <src_dir>`: stages the fleet binaries ([`deploy_packages`])
+/// from `src_dir` into `layout.bin_dir` (`<root>/deploy`, created if absent).
+/// Prints a per-file report line (copied / missing). This IS a redeploy: an
+/// existing staged binary is OVERWRITTEN.
+///
+/// Failure semantics: ANY missing source binary makes this return an error
+/// listing every missing source; the files ALREADY copied this run REMAIN
+/// staged (no rollback in M0 — a redeploy simply re-copies everything).
+///
+/// Live-fleet safety is deliberately NOT enforced in M0: `deploy` takes no
+/// rollout lock. On Windows a running service holds an exclusive lock on its
+/// own `.exe`, so overwriting a live binary FAILS LOUDLY (the copy errors); on
+/// Unix the copy SUCCEEDS silently (the running process keeps its now-unlinked
+/// inode). This asymmetry is accepted for M0 — a proper rolling redeploy under
+/// a live fleet is M1's job.
+pub fn deploy(layout: &Layout, src_dir: &Path) -> Result<()> {
+    std::fs::create_dir_all(&layout.bin_dir)
+        .with_context(|| format!("create deploy dir {}", layout.bin_dir.display()))?;
+
+    let mut missing: Vec<PathBuf> = Vec::new();
+    for pkg in deploy_packages() {
+        let file = format!("{pkg}{}", std::env::consts::EXE_SUFFIX);
+        let src = src_dir.join(&file);
+        let dst = layout.bin_dir.join(&file);
+        if !src.is_file() {
+            println!("weles: {pkg}: MISSING in {}", src_dir.display());
+            missing.push(src);
+            continue;
+        }
+        std::fs::copy(&src, &dst)
+            .with_context(|| format!("copy {} -> {}", src.display(), dst.display()))?;
+        println!("weles: {pkg}: copied -> {}", dst.display());
     }
 
-    let env = filtered_env(BUILD_ENV_ALLOWLIST);
-
-    let out_path = layout.run_dir.join("build.out.log");
-    let err_path = layout.run_dir.join("build.err.log");
-    let stdout = File::create(&out_path)
-        .with_context(|| format!("create {}", out_path.display()))?;
-    let stderr = File::create(&err_path)
-        .with_context(|| format!("create {}", err_path.display()))?;
-
-    let mut proc = platform::spawn(SpawnSpec {
-        program: cargo,
-        args,
-        env,
-        cwd: Some(layout.root.clone()),
-        stdout: Some(stdout),
-        stderr: Some(stderr),
-    })
-    .context("spawn cargo build")?;
-
-    match wait_for_helper(&mut proc, BUILD_TIMEOUT)? {
-        Some(status) if status.success() => Ok(()),
-        Some(status) => bail!(
-            "cargo build exited with status {:?} — see {} / {}",
-            status.code(),
-            out_path.display(),
-            err_path.display()
-        ),
-        None => Err(helper_timeout_failure(
-            &mut proc,
-            "cargo build",
-            BUILD_TIMEOUT,
-            &out_path,
-            &err_path,
-        )),
+    if !missing.is_empty() {
+        let mut message = String::from(
+            "weles deploy: source binaries missing (already-copied files remain staged, no rollback):\n",
+        );
+        for path in &missing {
+            message.push_str(&format!("  {}\n", path.display()));
+        }
+        bail!("{message}");
     }
+    Ok(())
 }
 
 /// The internal mTLS CA cert/key pair minted for the fleet.
@@ -184,7 +179,7 @@ pub struct CaPaths {
 }
 
 /// Mints the fleet's internal-edge CA material at `run/weles/edge-ca.{crt,key}`
-/// via the built `edgeca` binary, unless BOTH files already exist (idempotent
+/// via the deployed `edgeca` binary, unless BOTH files already exist (idempotent
 /// re-up — a second `weles up` must not rotate the CA under a running fleet).
 /// 30s deadline; logs to `run_dir/edgeca.{out,err}.log`; verifies both files
 /// exist after the helper exits successfully.
@@ -252,7 +247,7 @@ pub fn mint_ca(layout: &Layout) -> Result<CaPaths> {
 }
 
 /// Seeds (or password-resets) the dev admin login `admin`/`admin` via the
-/// built `adminctl` binary. Password crosses ONLY via `ADMINCTL_PASSWORD` env
+/// deployed `adminctl` binary. Password crosses ONLY via `ADMINCTL_PASSWORD` env
 /// — never argv (house rule). 30s deadline; logs to
 /// `run_dir/adminctl.{out,err}.log`; a nonzero exit is an error naming the
 /// log paths.
@@ -319,7 +314,7 @@ pub fn wait_for_helper(
     }
 }
 
-/// The shared timeout branch for every transient helper (`build`, `mint_ca`,
+/// The shared timeout branch for every transient helper (`mint_ca`,
 /// `seed_admin`): forcibly stops the still-running helper (0s grace / 5s
 /// force — it already blew its deadline) and produces the operator-facing
 /// error naming BOTH log paths. Public so the integration test in
@@ -384,41 +379,6 @@ fn lookup_env(key: &str) -> Option<OsString> {
 #[cfg(not(windows))]
 fn lookup_env(key: &str) -> Option<OsString> {
     std::env::var_os(key)
-}
-
-/// Resolves a bare executable name (e.g. `"cargo"`) to an absolute path by
-/// searching `PATH` (with `PATHEXT` on Windows). Required because
-/// `platform::spawn` calls `CreateProcessW`/`Command::new` with an explicit
-/// `program` path: on Windows, `CreateProcessW` given a non-null
-/// `lpApplicationName` searches only the current directory, NOT `PATH` — it
-/// does not fall back to execvp-style PATH search the way a NULL
-/// `lpApplicationName` + bare command-line token would. Mirrors
-/// `tools/devctl/src/supervisor.rs::executable_on_path`.
-pub fn resolve_on_path(name: &str) -> Result<PathBuf> {
-    let path = std::env::var_os("PATH").context("PATH is not set in this process's environment")?;
-    let extensions: Vec<String> = if cfg!(windows) {
-        std::env::var_os("PATHEXT")
-            .map(|value| {
-                value
-                    .to_string_lossy()
-                    .split(';')
-                    .map(str::to_string)
-                    .collect()
-            })
-            .unwrap_or_else(|| vec![".EXE".to_string(), ".CMD".to_string(), ".BAT".to_string()])
-    } else {
-        vec![String::new()]
-    };
-
-    for directory in std::env::split_paths(&path) {
-        for extension in &extensions {
-            let candidate: PathBuf = directory.join(format!("{name}{extension}"));
-            if candidate.is_file() {
-                return Ok(candidate);
-            }
-        }
-    }
-    bail!("{name} not found on PATH")
 }
 
 #[cfg(test)]

@@ -4,13 +4,14 @@
 //! a service that keeps failing is given up on ALONE while the rest of the
 //! fleet keeps running.
 //!
-//! `run_up` sequence (the rollout lock comes FIRST — before any build/prep —
-//! per the Step-4 review finding): (1) discover layout + acquire
-//! `run/rollout.lock`; (2) validate the manifest against disk and the
-//! Postgres session budget; (3) prep (build, mint CA, seed admin);
-//! (4) install the Ctrl-C/SIGTERM handler; (5) boot each service in manifest
-//! order behind a readyz gate; (6) a single non-blocking monitor loop;
-//! (7) teardown in reverse spawn order, lock dropped last.
+//! `run_up` sequence (the rollout lock comes FIRST — before any validation or
+//! prep — per the Step-4 review finding): (1) discover layout + acquire
+//! `run/rollout.lock`; (2) validate the DEPLOYED binaries exist in
+//! `<root>/deploy` (weles never builds), then the manifest against disk and the
+//! Postgres session budget; (3) prep (mint CA, seed admin); (4) install the
+//! Ctrl-C/SIGTERM handler; (5) boot each service in manifest order behind a
+//! readyz gate; (6) a single non-blocking monitor loop; (7) teardown in reverse
+//! spawn order, lock dropped last.
 //!
 //! Every restart DECISION is a pure function over an injected `now`
 //! ([`next_restart`], [`step`]) — the loop merely executes directives — so
@@ -341,36 +342,43 @@ impl Reporter {
     }
 }
 
-/// The whole `weles up` lifecycle. Returns when the fleet has been torn down
-/// (operator stop) or a boot failure was unwound.
-pub fn run_up(topology: Topology, skip_build: bool) -> Result<()> {
-    // weles's Cargo.toml sits directly at the repo root (unlike tools/*), so
-    // the workspace root is exactly one parent up.
+/// Discovers the workspace layout from weles's own crate location. weles's
+/// Cargo.toml sits directly at the repo root (unlike tools/*), so the workspace
+/// root is exactly one parent up. Shared by `up` and `deploy`.
+pub fn discover_layout() -> Result<prep::Layout> {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .context("weles crate has no parent directory")?
         .to_path_buf();
-    let layout = prep::Layout::discover(root)?;
+    prep::Layout::discover(root)
+}
 
-    // Lock FIRST (Step-4 review finding): nothing rollout-bearing — not even
-    // `cargo build` — may run before this process owns run/rollout.lock.
+/// The whole `weles up` lifecycle. Returns when the fleet has been torn down
+/// (operator stop) or a boot failure was unwound.
+pub fn run_up(topology: Topology) -> Result<()> {
+    let layout = discover_layout()?;
+
+    // Lock FIRST (Step-4 review finding): nothing rollout-bearing may run
+    // before this process owns run/rollout.lock.
     let run_id = format!("{:016x}", rand::random::<u64>());
     let _lock = lock::acquire(&layout.root, &run_id)?;
+
+    // Pre-flight: every binary this run needs must already be staged in
+    // <root>/deploy — weles never builds. Dies here (per-line missing list)
+    // before any further validation if the deploy dir is incomplete.
+    let mut packages: Vec<&str> = match topology {
+        Topology::Split => manifest::split_fleet().iter().map(|svc| svc.pkg).collect(),
+        Topology::Monolith => vec![manifest::monolith().pkg],
+    };
+    packages.extend(["adminctl", "edgeca"]);
+    packages.sort_unstable();
+    packages.dedup();
+    prep::validate_binaries(&layout, &packages)
+        .context("validate deployed fleet binaries")?;
 
     manifest::validate_disk(&layout.root.join("cmd"))
         .context("validate fleet manifest against cmd/*-svc on disk")?;
     manifest::validate_pg_budget().context("validate fleet Postgres session budget")?;
-
-    if !skip_build {
-        let mut packages: Vec<&str> = match topology {
-            Topology::Split => manifest::split_fleet().iter().map(|svc| svc.pkg).collect(),
-            Topology::Monolith => vec![manifest::monolith().pkg],
-        };
-        packages.extend(["adminctl", "edgeca"]);
-        packages.sort_unstable();
-        packages.dedup();
-        prep::build(&layout, &packages)?;
-    }
 
     let ca = prep::mint_ca(&layout)?;
     let database_url = prep::database_url();
