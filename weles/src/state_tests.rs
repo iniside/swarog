@@ -19,6 +19,7 @@ fn sample_state() -> FleetState {
             started_unix: 1_752_500_000,
         },
         topology: "split".to_string(),
+        status: FleetStatus::Running,
         control_endpoint: None,
         services: vec![
             ServiceState {
@@ -80,6 +81,34 @@ fn checkpoint_writes_parseable_state() {
     let back: FleetState = serde_json::from_str(&contents).expect("valid JSON on disk");
     assert_eq!(back, state);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn load_returns_none_when_no_state_file_exists() {
+    let dir = temp_dir("load-missing");
+    let path = dir.join("state.json");
+    assert!(load(&path).expect("load").is_none());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn load_roundtrips_a_checkpointed_state() {
+    let dir = temp_dir("load-roundtrip");
+    let path = dir.join("state.json");
+    let state = sample_state();
+    checkpoint(&path, &state).expect("checkpoint");
+    let back = load(&path).expect("load").expect("some state");
+    assert_eq!(back, state);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn fleet_status_terminality_matches_the_lifecycle() {
+    assert!(!FleetStatus::Starting.is_terminal());
+    assert!(!FleetStatus::Running.is_terminal());
+    assert!(!FleetStatus::Stopping.is_terminal());
+    assert!(FleetStatus::Stopped.is_terminal());
+    assert!(FleetStatus::Failed.is_terminal());
 }
 
 #[test]

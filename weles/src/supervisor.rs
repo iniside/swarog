@@ -17,20 +17,23 @@
 //! the crash → backoff → respawn / give-up policy is unit-testable without
 //! real processes or a real clock (timing-tests doctrine).
 
+use std::cell::{Cell, RefCell};
 use std::fs::File;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
 
 use crate::cli::Topology;
+use crate::control::ControlServer;
 use crate::health::{self, ProbeResult};
 use crate::lock;
 use crate::manifest::{self, RuntimeInputs, ServiceDef};
 use crate::platform::{self, Outcome, OwnedProc, SpawnSpec};
 use crate::prep;
-use crate::state::{self, FleetState, ProcessIdentity, ServiceState, Status};
+use crate::state::{self, FleetState, FleetStatus, ProcessIdentity, ServiceState, Status};
 
 /// How long a service gets to turn `/readyz` 200 after every (re)spawn.
 pub const HEALTH_DEADLINE: Duration = Duration::from_secs(30);
@@ -54,11 +57,20 @@ const HUNG_GRACE: Duration = Duration::from_secs(0);
 const HUNG_FORCE: Duration = Duration::from_secs(5);
 
 /// Flipped (only) by the Ctrl-C/SIGTERM handler; observed at the top of every
-/// boot step and monitor tick, and inside every respawn decision.
+/// boot step and monitor tick, and inside every respawn decision. The OS
+/// signal handler can touch ONLY a static atomic, so this stays a static.
 static STOP: AtomicBool = AtomicBool::new(false);
+
+/// The control endpoint's stop flag, registered once by [`run_up`] so a
+/// `weles down` request flows into [`stop_requested`] exactly like a Ctrl-C.
+/// Separate from `STOP` because the control thread owns it via an `Arc`.
+static CONTROL_STOP: OnceLock<Arc<AtomicBool>> = OnceLock::new();
 
 fn stop_requested() -> bool {
     STOP.load(Ordering::SeqCst)
+        || CONTROL_STOP
+            .get()
+            .is_some_and(|stop| stop.load(Ordering::SeqCst))
 }
 
 // ---------------------------------------------------------------------------
@@ -265,21 +277,44 @@ impl Supervised {
 }
 
 /// Owns everything a checkpoint needs besides the fleet itself. Checkpoint
-/// failures are reported but never take the fleet down.
+/// failures are reported but never take the fleet down. The mutable
+/// fleet-level status and control endpoint live here (single-threaded interior
+/// mutability — the `Reporter` is only ever touched by the supervisor thread);
+/// `shared` is the ONE cross-thread handle: the control thread reads it to
+/// render a `status` reply.
 struct Reporter {
     state_path: PathBuf,
     run_id: String,
     topology: &'static str,
     supervisor: ProcessIdentity,
+    status: Cell<FleetStatus>,
+    control_endpoint: RefCell<Option<String>>,
+    /// The last checkpointed snapshot, republished on every `checkpoint` so a
+    /// `weles status` reply reads current in-memory state without adding any
+    /// blocking to the monitor tick (a brief lock to clone in / out).
+    shared: Arc<Mutex<FleetState>>,
 }
 
 impl Reporter {
-    fn checkpoint(&self, fleet: &[Supervised]) {
-        let snapshot = FleetState {
+    fn set_status(&self, status: FleetStatus) {
+        self.status.set(status);
+    }
+
+    fn set_control_endpoint(&self, endpoint: Option<String>) {
+        *self.control_endpoint.borrow_mut() = endpoint;
+    }
+
+    fn shared(&self) -> Arc<Mutex<FleetState>> {
+        Arc::clone(&self.shared)
+    }
+
+    fn snapshot(&self, fleet: &[Supervised]) -> FleetState {
+        FleetState {
             run_id: self.run_id.clone(),
             supervisor: self.supervisor,
             topology: self.topology.to_string(),
-            control_endpoint: None, // lands in M0 Step 6
+            status: self.status.get(),
+            control_endpoint: self.control_endpoint.borrow().clone(),
             services: fleet
                 .iter()
                 .map(|svc| ServiceState {
@@ -289,7 +324,14 @@ impl Reporter {
                     restarts: svc.restarts,
                 })
                 .collect(),
-        };
+        }
+    }
+
+    fn checkpoint(&self, fleet: &[Supervised]) {
+        let snapshot = self.snapshot(fleet);
+        // Publish the in-memory snapshot for the control thread FIRST (a status
+        // reply must never lag the persisted file), then persist.
+        *self.shared.lock().expect("state mutex poisoned") = snapshot.clone();
         if let Err(error) = state::checkpoint(&self.state_path, &snapshot) {
             eprintln!(
                 "weles: state checkpoint to {} failed: {error:#}",
@@ -346,30 +388,93 @@ pub fn run_up(topology: Topology, skip_build: bool) -> Result<()> {
         Topology::Monolith => vec![manifest::monolith()],
     };
     let mut fleet: Vec<Supervised> = defs.into_iter().map(Supervised::new).collect();
+    let topology_name = match topology {
+        Topology::Split => "split",
+        Topology::Monolith => "monolith",
+    };
+    let supervisor = ProcessIdentity {
+        pid: std::process::id(),
+        started_unix: unix_now(),
+    };
     let reporter = Reporter {
         state_path: layout.run_dir.join("state.json"),
         run_id,
-        topology: match topology {
-            Topology::Split => "split",
-            Topology::Monolith => "monolith",
-        },
-        supervisor: ProcessIdentity {
-            pid: std::process::id(),
-            started_unix: unix_now(),
-        },
+        topology: topology_name,
+        supervisor,
+        status: Cell::new(FleetStatus::Starting),
+        control_endpoint: RefCell::new(None),
+        // Placeholder overwritten by the first `checkpoint` below.
+        shared: Arc::new(Mutex::new(FleetState {
+            run_id: String::new(),
+            supervisor,
+            topology: topology_name.to_string(),
+            status: FleetStatus::Starting,
+            control_endpoint: None,
+            services: Vec::new(),
+        })),
     };
     reporter.checkpoint(&fleet);
 
     let boot_result = boot(&layout, &inputs, &mut fleet, &reporter);
     if boot_result.is_ok() && !stop_requested() {
-        println!("weles: fleet healthy — press Ctrl-C to stop");
+        // Fleet is healthy: bring up the control endpoint so `weles status` /
+        // `weles down` can reach us, then flip to Running and publish it.
+        let endpoint = control_endpoint_path(&layout, &reporter.run_id);
+        let control_stop = Arc::new(AtomicBool::new(false));
+        let _ = CONTROL_STOP.set(Arc::clone(&control_stop));
+        let control = match ControlServer::bind(endpoint.clone(), reporter.shared(), control_stop) {
+            Ok(server) => {
+                reporter.set_control_endpoint(Some(endpoint.to_string_lossy().into_owned()));
+                Some(server)
+            }
+            Err(error) => {
+                eprintln!(
+                    "weles: control endpoint unavailable ({error:#}); \
+                     `weles status`/`down` will not work for this run"
+                );
+                None
+            }
+        };
+        reporter.set_status(FleetStatus::Running);
+        // Checkpoint AFTER the endpoint is live so a client that reads the file
+        // and connects cannot beat the listener.
+        reporter.checkpoint(&fleet);
+        println!("weles: fleet healthy — press Ctrl-C or run `weles down` to stop");
         monitor(&layout, &inputs, &mut fleet, &reporter);
+        // Stop and join the control thread before teardown starts.
+        drop(control);
     }
     // Runs for every exit path: operator stop, boot failure (unwinding
-    // exactly what started, in reverse), or STOP during boot.
-    teardown(&mut fleet, &reporter);
+    // exactly what started, in reverse), or STOP during boot. A boot failure
+    // lands the fleet in Failed; any clean stop lands Stopped.
+    let terminal = if boot_result.is_ok() {
+        FleetStatus::Stopped
+    } else {
+        FleetStatus::Failed
+    };
+    teardown(&mut fleet, &reporter, terminal);
     // `_lock` drops here — strictly after teardown.
     boot_result
+}
+
+/// The bounded loopback control endpoint for this run: a named pipe on Windows
+/// (keyed by `run_id`), a UDS under `run/weles` on Linux. Mirrors
+/// `tools/devctl/src/supervisor.rs::control_endpoint`.
+fn control_endpoint_path(layout: &prep::Layout, run_id: &str) -> PathBuf {
+    #[cfg(windows)]
+    {
+        let _ = layout;
+        PathBuf::from(format!(r"\\.\pipe\gamebackend-weles-{run_id}"))
+    }
+    #[cfg(target_os = "linux")]
+    {
+        layout.run_dir.join(format!("control-{run_id}.sock"))
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
+    {
+        let _ = run_id;
+        layout.run_dir.join("unsupported-control")
+    }
 }
 
 /// Spawns each service in manifest order and gates on its readyz before
@@ -596,22 +701,39 @@ fn apply(
 }
 
 /// Stops live services in REVERSE spawn order (graceful 5s, force 5s each),
-/// checkpointing every transition. Also serves as the boot-failure unwind:
-/// services boot never reached simply have no process to stop.
-fn teardown(fleet: &mut [Supervised], reporter: &Reporter) {
+/// checkpointing every transition, then records the terminal fleet status.
+/// Also serves as the boot-failure unwind: services boot never reached simply
+/// have no process to stop.
+fn teardown(fleet: &mut [Supervised], reporter: &Reporter, terminal: FleetStatus) {
+    reporter.set_status(FleetStatus::Stopping);
+    reporter.checkpoint(fleet);
     for index in (0..fleet.len()).rev() {
         let name = fleet[index].def.name;
         match fleet[index].proc.take() {
             Some(mut proc) => {
-                fleet[index].status = Status::Stopping;
-                reporter.checkpoint(fleet);
-                match proc.shutdown(STOP_GRACE, STOP_FORCE) {
-                    Ok(Outcome::Graceful(_)) => println!("weles: {name} stopped"),
-                    Ok(Outcome::Forced(_)) => println!("weles: {name} force-stopped"),
-                    Err(error) => eprintln!("weles: stopping {name} failed: {error:#}"),
+                // A service that died during its OWN boot gate (boot bailed with
+                // the process still held) is already dead here — record that as
+                // Exited, never relabel it Stopped: the status table must not
+                // misstate history (Step-5 review Info #3).
+                let already_dead = matches!(proc.try_wait(), Ok(Some(_)));
+                if already_dead {
+                    // shutdown() returns immediately for an already-exited proc;
+                    // it still closes/reaps the containment handle.
+                    let _ = proc.shutdown(STOP_GRACE, STOP_FORCE);
+                    fleet[index].status = Status::Exited;
+                    reporter.checkpoint(fleet);
+                    println!("weles: {name} had already exited");
+                } else {
+                    fleet[index].status = Status::Stopping;
+                    reporter.checkpoint(fleet);
+                    match proc.shutdown(STOP_GRACE, STOP_FORCE) {
+                        Ok(Outcome::Graceful(_)) => println!("weles: {name} stopped"),
+                        Ok(Outcome::Forced(_)) => println!("weles: {name} force-stopped"),
+                        Err(error) => eprintln!("weles: stopping {name} failed: {error:#}"),
+                    }
+                    fleet[index].status = Status::Stopped;
+                    reporter.checkpoint(fleet);
                 }
-                fleet[index].status = Status::Stopped;
-                reporter.checkpoint(fleet);
             }
             None => {
                 let final_status = match fleet[index].status {
@@ -630,6 +752,7 @@ fn teardown(fleet: &mut [Supervised], reporter: &Reporter) {
             }
         }
     }
+    reporter.set_status(terminal);
     reporter.checkpoint(fleet);
     println!("weles: fleet stopped");
 }

@@ -33,6 +33,29 @@ pub enum Status {
     Stopped,
 }
 
+/// The whole fleet's lifecycle status (distinct from a single service's
+/// [`Status`]) — lets a `weles status`/`down` client tell a running fleet from
+/// one that is tearing down or already finished. Set by the supervisor:
+/// `Starting` while booting, `Running` once every service is healthy,
+/// `Stopping` when teardown begins, and the terminal `Stopped`/`Failed` at the
+/// end (a boot failure lands `Failed`, an ordinary stop lands `Stopped`).
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum FleetStatus {
+    Starting,
+    Running,
+    Stopping,
+    Stopped,
+    Failed,
+}
+
+impl FleetStatus {
+    /// A terminal status means the supervisor has finished and no control
+    /// endpoint is live — a `weles down` client stops polling here.
+    pub fn is_terminal(self) -> bool {
+        matches!(self, FleetStatus::Stopped | FleetStatus::Failed)
+    }
+}
+
 /// The supervisor process's own identity, recorded so a later
 /// `weles status`/`down` can tell a live supervisor from a stale file.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -56,7 +79,11 @@ pub struct FleetState {
     pub run_id: String,
     pub supervisor: ProcessIdentity,
     pub topology: String,
-    /// Bounded loopback control endpoint — `None` until M0 Step 6 lands it.
+    /// The fleet's lifecycle status — the top-level authority a `weles down`
+    /// client polls for a terminal transition.
+    pub status: FleetStatus,
+    /// Bounded loopback control endpoint (named pipe / UDS path). `None` until
+    /// the supervisor has booted the fleet and bound the control server.
     pub control_endpoint: Option<String>,
     pub services: Vec<ServiceState>,
 }
@@ -78,6 +105,21 @@ pub fn checkpoint(path: &Path, state: &FleetState) -> Result<()> {
     std::fs::rename(&tmp, path)
         .with_context(|| format!("rename {} over {}", tmp.display(), path.display()))?;
     Ok(())
+}
+
+/// Loads and parses the checkpointed fleet state from `path`. `Ok(None)` means
+/// no state file exists yet (no fleet has ever run in this workspace); `Err`
+/// is reserved for an unreadable or malformed file — the caller distinguishes
+/// "nothing recorded" from "recorded but broken".
+pub fn load(path: &Path) -> Result<Option<FleetState>> {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error).with_context(|| format!("read {}", path.display())),
+    };
+    let state = serde_json::from_slice(&bytes)
+        .with_context(|| format!("parse fleet state at {}", path.display()))?;
+    Ok(Some(state))
 }
 
 #[cfg(test)]
