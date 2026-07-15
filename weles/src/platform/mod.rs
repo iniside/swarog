@@ -70,7 +70,10 @@ pub struct OwnedProc {
 /// spawns would cross-inherit each other's transient inheritable stdio
 /// duplicates (child A pinning child B's log file open). Holding this lock
 /// across the inheritable-duplicate creation + `CreateProcessW` window makes
-/// that impossible; Unix takes it too for symmetry.
+/// that impossible; Unix takes it too for symmetry. Crate-wide invariant: for
+/// this reason, ALL in-process spawns anywhere in `weles` must go through
+/// [`spawn`] — never `std::process::Command` directly, which would bypass
+/// this lock and reintroduce the cross-contamination window.
 static SPAWN_LOCK: Mutex<()> = Mutex::new(());
 
 /// Spawns `spec` inside a fresh containment unit (Job Object / process group).
