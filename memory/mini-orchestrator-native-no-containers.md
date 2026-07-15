@@ -12,6 +12,21 @@ process flock (the backend is Swaróg). Top-level crate/binary `weles/`, CLI
 `weles up/status/down`. If master and per-machine agent ever get separate names:
 master = `weles`, agent = `rarog` (Swaróg's fire falcon) — reserved, not decided.
 
+**M0 SHIPPED (2026-07-15):** crate `weles/` live — supervisor with per-svc
+restart-on-crash (expo backoff 1s..30s, GiveUp at 5, fleet survives), rollout.lock
+bit-compat (1 byte at 1<<63 + owner-only DACL), control endpoint (status/down),
+state.json, `weles deploy <src-dir>` → `<root>/deploy/`. TWO design corrections by
+Lukasz mid-rollout, now binding: (a) **the orchestrator NEVER builds** — no cargo,
+no BUILD_ENV_ALLOWLIST (linker failure exposed the creep; latent allowlist gap
+SYSTEMDRIVE/ProgramData stays in processctl fleet.rs:8-14); (b) **own artifact dir**
+`deploy/`, never target/debug (no Cargo-isms). Acceptance: split 12/12, smoke,
+chaos-restart ~2s, lock coexistence with devctl, kill-on-drop, monolith — all
+passed; found [[edge-stub-no-reconnect-after-peer-restart]] (open backend bug) and
+a devctl test flake under full-workspace parallelism (down_waits_for_stopped…,
+passes in isolation — uninvestigated). Plan+errata:
+docs/plans/2026-07-15-1055-weles-m0-plan.md. M1 next: hello/resolve contract,
+SQLite, port minting, replica-safety prerequisites.
+
 Decision (2026-07-09): the future mini-orchestrator for this backend will manage
 **native OS processes — explicitly NO containers, no Docker, no Kubernetes**.
 Scope sketch (not started): supervisor (spawn/restart/backoff off `/readyz`) +
