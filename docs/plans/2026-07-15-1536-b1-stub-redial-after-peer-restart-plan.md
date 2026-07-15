@@ -268,4 +268,20 @@ RetryMode, sibling sweep, rezygnacja z unifikacji z mechanizmem gatewaya.
 
 ## Errata
 
-(uzupełniane w trakcie rolloutu)
+- **2026-07-15, po Step 1:** repro (`core/remote/src/redial_tests.rs`,
+  niezacommitowany) wybrał **gałąź (C)** — warstwa połączenia odzyskuje się
+  SAMA: po primingu i teardownie serwera pierwszy call pada jako
+  `edge: connection: closed by peer …` → `Unavailable`/**ConnectionFatal** →
+  reset → następny call (Never) lub replay (OnceAfterReconnect) trafia w nowy
+  serwer. `test result: ok. 5 passed`. **Zastrzeżenie nazwane przez
+  implementera:** repro pokrywa wyłącznie GRACEFUL close —
+  zwolnienie portu do rebindu strukturalnie wymaga `RunningServer::close()`
+  (accept-task trzyma klon endpointu, `core/edge/src/server.rs:202-232`),
+  a `close()` wysyła jawny QUIC CONNECTION_CLOSE, stąd czysty ConnectionFatal.
+  Twardy kill (taskkill/SIGKILL — to robi chaos Welesa) nie wysyła ramki
+  zamknięcia; detekcja martwego połączenia idzie wtedy przez failed
+  `open_bi`/write/read albo 30s idle — ścieżka, która MOŻE klasyfikować się
+  jako `Error::Stream`/StreamLocal (pinning-concern) i pozostaje NIEZBADANA
+  na warstwie połączenia (rebind-same-port nie umie jej odtworzyć w jednym
+  procesie). Zgodnie z tabelą: STOP + raport do Lukasza przed jakąkolwiek
+  decyzją o Step 2.
