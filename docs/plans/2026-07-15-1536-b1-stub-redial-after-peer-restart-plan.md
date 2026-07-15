@@ -285,3 +285,22 @@ RetryMode, sibling sweep, rezygnacja z unifikacji z mechanizmem gatewaya.
   na warstwie połączenia (rebind-same-port nie umie jej odtworzyć w jednym
   procesie). Zgodnie z tabelą: STOP + raport do Lukasza przed jakąkolwiek
   decyzją o Step 2.
+- **2026-07-15, po rozszerzeniu Step 1 (abrupt-kill):** za zgodą Lukasza
+  dołożony wariant twardego killa — helper-peer w procesie potomnym
+  (integration test `core/remote/tests/abrupt_kill_redial.rs`, re-exec binarki
+  testowej w trybie helper przez `REDIAL_PEER_PORT`; test seam
+  `#[doc(hidden)] pub test_only_reconnecting_edge_caller` w
+  `core/remote/src/lib.rs`; wspólny CA parent↔child przez
+  `EDGE_CA_CERT`/`EDGE_CA_KEY`, bo `shared_dev_ca()` memoizuje per proces).
+  Wynik: **StreamLocal-pinning NIE występuje także przy twardym killu** —
+  pierwszy call blokuje ~30s w `open_bi` (keepalive bez odpowiedzi → 30s
+  `CLIENT_IDLE_TIMEOUT_MS` uznaje połączenie za stracone), po czym
+  `ConnectionLost` → **ConnectionFatal** → reset → recovery (Never: 1 iteracja;
+  OnceAfterReconnect: recovery w tym samym callu). `cargo test -p remote`:
+  28 unit + 3 integration, wszystkie zielone; binarka integracyjna dodaje
+  ~60s wall-time. **Obie postaci teardownu = gałąź (C).** Warstwa
+  core/remote/core/edge NIE wyjaśnia trwałego 404 z chaosu Welesa — dowody
+  wskazują na gałąź (D) (środowisko chaosu / ścieżka danych characters).
+  Step 2 (gate) w wersji „fix B1" jest bezpodstawny. Nota operacyjna: przez
+  ~30s okna detekcji calle na martwym połączeniu WISZĄ (nie fast-failują) —
+  upstream wygląda to jak 408/503.
