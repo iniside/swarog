@@ -27,6 +27,29 @@ passes in isolation — uninvestigated). Plan+errata:
 docs/plans/2026-07-15-1055-weles-m0-plan.md. M1 next: hello/resolve contract,
 SQLite, port minting, replica-safety prerequisites.
 
+**Pre-M1 backlog (Lukasz, 2026-07-15, ordered — approved direction, not started):**
+1. FIRST, backend rollout: stub re-dial after peer incarnation change
+   ([[edge-stub-no-reconnect-after-peer-restart]]) — restart-on-crash is dishonest
+   without it; connection-layer fix in core/remote/edge, does NOT wait for M1
+   resolve; committed splitproof assertion module→module-after-peer-restart.
+2. Control endpoint binds BEFORE boot (supervisor.rs currently binds after fleet
+   healthy) — down/status must work on a stuck boot; boot loop already checks STOP.
+3. Post-healthy readyz monitoring → `Degraded` status, NEVER auto-restart on 503
+   (readyz aggregates DB/peers — a Postgres blip flips 11 svc at once = restart
+   storm; restarts stay tied to process death only). Requires a probe budget per
+   tick (round-robin) — synchronous probes cost up to ~800ms/svc.
+4. Deploy generations: deploy/gen-N/ + atomic `current` switch + artifact hashes
+   (kills partial-deploy observability + the Windows live-exe overwrite asymmetry;
+   rollback = repoint; foundation for rolling deploy). Scope guard: NOT a package
+   manager — no signatures/remote fetch/registry.
+5. Narrative discipline: today's manifest is deliberately a DEV flavor (static
+   ports, dev seeds, admin/admin, fleet.rs parity) — Weles is a dev-environment
+   supervisor with a production-grade skeleton, not a small Nomad yet; M1 must not
+   leak production knobs into the dev flavor or vice versa.
+Also queued from Step 7 leftovers: devctl flake under workspace parallelism
+(down_waits_for_stopped…) and the one-line processctl BUILD_ENV_ALLOWLIST gap
+(SYSTEMDRIVE/ProgramData).
+
 Decision (2026-07-09): the future mini-orchestrator for this backend will manage
 **native OS processes — explicitly NO containers, no Docker, no Kubernetes**.
 Scope sketch (not started): supervisor (spawn/restart/backoff off `/readyz`) +
