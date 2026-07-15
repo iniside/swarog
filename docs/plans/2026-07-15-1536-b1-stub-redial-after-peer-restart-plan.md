@@ -124,7 +124,7 @@ peera), nie kod. Konsolidacja obu mechanizmów to osobna, większa refaktoryzacj
   wall-time w blocking stage `test`. Test na obecnym kodzie MA prawo być
   czerwony — commit dopiero razem ze Step 2 (nie zostawiamy czerwonego
   mastera).
-- **(d) Dispatch:** `[fable]` — `core-implementer`, effort: high.
+- **(d) Dispatch:** `[opus]` — `core-implementer`, effort: high.
 
 ### Step 2 — fix autorytetu: gate resetu w `Reconnecting::call`
 - **(a) Co:** `core/remote/src/lib.rs` — semantyka trzystopniowa zamiast
@@ -165,7 +165,7 @@ peera), nie kod. Konsolidacja obu mechanizmów to osobna, większa refaktoryzacj
   trzyma mutex przez cały `dial()` (`lib.rs:191-196`, bounded 5s) — częstszy
   evict = częstsze okna serializacji wołających za 5-sekundowym dialem;
   reviewer atakuje tę klasę (resource-owned-by-wrong-scope) w Step 5.
-- **(d) Dispatch:** `[fable]` — `core-implementer`, effort: high. Commit razem
+- **(d) Dispatch:** `[opus]` — `core-implementer`, effort: high. Commit razem
   ze Step 1 (`fix(remote): ...`).
 
 ### Step 3 — committed splitproof assertion `[B1-REDIAL]`
@@ -222,7 +222,8 @@ peera), nie kod. Konsolidacja obu mechanizmów to osobna, większa refaktoryzacj
 
 ### Step 5 — adversarial review diffu + dokumentacja + pamięć
 - **(a) Co:** (1) jeden pass `core-reviewer` (diff core/remote + splitproof,
-  metoda inna niż implementerów, model ≥ fable; klasy do ataku: patrz (c));
+  metoda inna niż implementerów, model ≥ opus (tier implementerów); klasy do
+  ataku: patrz (c));
   (2) `proof-auditor` na Step 1+3 — diff dotyka blocking-verify surface
   (splitproof); pytania wprost: „czy test Step 1 byłby czerwony na unfixed
   HEAD?", „czy `[B1-REDIAL]` primuje cache przed killem?", „czy nota
