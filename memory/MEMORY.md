@@ -2,6 +2,7 @@
 
 ## Process / discipline / behavior
 - [Adversarial subagent review](adversarial-subagent-review.md) — try to break a diff at its OWN new seams (method in CLAUDE.md); ONE pass by a different method, a clean verdict is valid with the class list — don't loop reviews; applies to my own scaffolding too; NEVER inline even for "trivial" diffs (2026-07-14 violation) — review = core-reviewer subagent + a proof-auditor second audit checking whether implementer AND reviewer cheated
+- [Live acceptance: report, don't fix](live-acceptance-report-dont-fix.md) — awaria w fazie akceptacji na żywo = stop + diagnoza + raport z opcjami, NIGDY pętla fixów; przedwczesny fix utrwala złą warstwę (dowód: linker weles → design "orchestrator never builds")
 - [No inline ad-hoc fixes](no-inline-adhoc-fixes.md) — ad-hoc/untagged work ⇒ ASK for the dispatch lane BEFORE editing; complex fixes default to a subagent lane, inline needs explicit consent; post-review tweaks go through the lane too (repeat offense 2026-07-14)
 - [Codex review = visible subagent](codex-review-use-visible-subagent.md) — run per-commit codex adversarial-review as the visible codex:codex-rescue Agent (--wait --fresh --effort high), NOT the background companion CLI (hangs/zombies on this Windows box)
 - [Amplification proof → unit tests](amplification-proof-belongs-in-unit-tests.md) — prove no-I/O/anti-amplification fixes in SEQUENTIAL unit tests + a pure decision fn (zero-I/O by construction); split-proof can't distinguish fixed/unfixed (killed peer's port fast-fails), scope it to accuracy+recovery
