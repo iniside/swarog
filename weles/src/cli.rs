@@ -14,8 +14,12 @@ pub enum Command {
     Up { topology: Topology, skip_build: bool },
     Status,
     Down,
-    /// Hidden test fixture for a later step — not listed in USAGE.
-    TestChild { spawn_grandchild: bool },
+    /// Hidden test fixture for the platform containment tests — not listed
+    /// in USAGE.
+    TestChild {
+        spawn_grandchild: bool,
+        ignore_graceful: bool,
+    },
 }
 
 pub const USAGE: &str = "\
@@ -51,6 +55,9 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command> {
                             Topology::Monolith
                         };
                     }
+                    // Policy: repeating a boolean flag is idempotent and
+                    // accepted (only conflicting values — two topologies —
+                    // are rejected). Pinned by cli_tests.
                     "--skip-build" => skip_build = true,
                     other => bail!("unknown argument {other:?}\n\n{USAGE}"),
                 }
@@ -70,13 +77,18 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command> {
         }
         "__test-child" => {
             let mut spawn_grandchild = false;
+            let mut ignore_graceful = false;
             for arg in args {
                 match arg.as_str() {
                     "--spawn-grandchild" => spawn_grandchild = true,
+                    "--ignore-graceful" => ignore_graceful = true,
                     other => bail!("unknown argument {other:?}\n\n{USAGE}"),
                 }
             }
-            Ok(Command::TestChild { spawn_grandchild })
+            Ok(Command::TestChild {
+                spawn_grandchild,
+                ignore_graceful,
+            })
         }
         other => bail!("unknown command {other:?}\n\n{USAGE}"),
     }

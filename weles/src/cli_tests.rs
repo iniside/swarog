@@ -46,6 +46,32 @@ fn up_rejects_duplicate_topology() {
 }
 
 #[test]
+fn up_flag_before_topology_is_order_independent() {
+    let cmd = parse(args(&["up", "--skip-build", "monolith"])).unwrap();
+    assert_eq!(
+        cmd,
+        Command::Up {
+            topology: Topology::Monolith,
+            skip_build: true,
+        }
+    );
+}
+
+#[test]
+fn up_accepts_idempotent_duplicate_flag() {
+    // Pins the chosen policy: repeating a boolean flag is idempotent and
+    // accepted; only conflicting values (two topologies) are rejected.
+    let cmd = parse(args(&["up", "--skip-build", "--skip-build"])).unwrap();
+    assert_eq!(
+        cmd,
+        Command::Up {
+            topology: Topology::Split,
+            skip_build: true,
+        }
+    );
+}
+
+#[test]
 fn status_parses() {
     assert_eq!(parse(args(&["status"])).unwrap(), Command::Status);
 }
@@ -66,12 +92,13 @@ fn down_rejects_trailing_args() {
 }
 
 #[test]
-fn test_child_defaults_to_no_grandchild() {
+fn test_child_defaults() {
     let cmd = parse(args(&["__test-child"])).unwrap();
     assert_eq!(
         cmd,
         Command::TestChild {
-            spawn_grandchild: false
+            spawn_grandchild: false,
+            ignore_graceful: false,
         }
     );
 }
@@ -82,7 +109,20 @@ fn test_child_spawn_grandchild() {
     assert_eq!(
         cmd,
         Command::TestChild {
-            spawn_grandchild: true
+            spawn_grandchild: true,
+            ignore_graceful: false,
+        }
+    );
+}
+
+#[test]
+fn test_child_ignore_graceful() {
+    let cmd = parse(args(&["__test-child", "--ignore-graceful"])).unwrap();
+    assert_eq!(
+        cmd,
+        Command::TestChild {
+            spawn_grandchild: false,
+            ignore_graceful: true,
         }
     );
 }

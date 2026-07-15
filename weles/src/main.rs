@@ -1,25 +1,12 @@
-//! Weles is a standalone fleet-supervisor CLI (M0): it builds, boots, health-checks,
-//! and tears down a game-backend fleet (monolith or split topology) as an
-//! independent top-level crate — zero-sharing by design, no dependency on any
-//! workspace crate (core/*, api/*, modules/*, tools/*), std-only (no tokio). It
-//! shares exactly one convention with `devctl`: the `run/rollout.lock` protocol
-//! that keeps at most one rollout-bearing command running against the shared local
-//! Postgres at a time.
+//! Binary entrypoint for `weles` — see the crate docs in `lib.rs`. Includes
+//! the hidden `__test-child` fixture used by the platform containment tests.
 
 use std::process::ExitCode;
 
-mod cli;
-mod control;
-mod health;
-mod lock;
-mod manifest;
-mod platform;
-mod prep;
-mod state;
-mod supervisor;
+mod fixture;
 
 use anyhow::{bail, Result};
-use cli::Command;
+use weles::cli::{self, Command};
 
 fn main() -> ExitCode {
     let command = match cli::parse(std::env::args().skip(1)) {
@@ -44,22 +31,25 @@ fn run(command: Command) -> Result<()> {
         Command::Up { .. } => up(),
         Command::Status => status(),
         Command::Down => down(),
-        Command::TestChild { spawn_grandchild } => test_child(spawn_grandchild),
+        Command::TestChild {
+            spawn_grandchild,
+            ignore_graceful,
+        } => fixture::run(spawn_grandchild, ignore_graceful),
     }
 }
 
 fn up() -> Result<()> {
-    bail!("not implemented yet (Step N)")
+    bail!("not implemented yet (M0 Step 5)")
 }
 
 fn status() -> Result<()> {
-    bail!("not implemented yet (Step N)")
+    bail!("not implemented yet (M0 Step 6)")
 }
 
 fn down() -> Result<()> {
-    bail!("not implemented yet (Step N)")
+    bail!("not implemented yet (M0 Step 6)")
 }
 
-fn test_child(_spawn_grandchild: bool) -> Result<()> {
-    bail!("not implemented yet (Step N)")
-}
+#[cfg(test)]
+#[path = "main_tests.rs"]
+mod main_tests;
