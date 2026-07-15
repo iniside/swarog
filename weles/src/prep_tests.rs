@@ -135,6 +135,35 @@ fn resolve_on_path_errors_on_nonsense_name() {
     assert!(result.is_err(), "a bogus executable name must not resolve");
 }
 
+#[cfg(windows)]
+#[test]
+fn filtered_env_dedupes_case_variant_allowlist_entries_on_windows() {
+    let _guard = env_guard();
+    // Windows env is case-insensitive-preserving: HTTP_PROXY and http_proxy
+    // name the SAME variable, and both allowlist spellings would resolve to
+    // it — only one spelling may survive into the child env block.
+    let _set = EnvVarGuard::set("HTTP_PROXY", "http://proxy.example:3128");
+    let env = filtered_env(&["HTTP_PROXY", "http_proxy"]);
+    assert_eq!(
+        env.len(),
+        1,
+        "case-variant allowlist entries must dedupe to one env pair, got: {env:?}"
+    );
+}
+
+#[cfg(not(windows))]
+#[test]
+fn filtered_env_keeps_distinct_case_variants_on_unix() {
+    let _guard = env_guard();
+    // Exact-case lookup: the two spellings are genuinely different variables
+    // and BOTH must pass through (deduping here would drop a real var).
+    let _upper = EnvVarGuard::set("HTTP_PROXY", "http://upper.example:3128");
+    std::env::set_var("http_proxy", "http://lower.example:3128");
+    let env = filtered_env(&["HTTP_PROXY", "http_proxy"]);
+    std::env::remove_var("http_proxy");
+    assert_eq!(env.len(), 2, "unix case variants are distinct vars, got: {env:?}");
+}
+
 #[test]
 fn mint_ca_skips_spawn_when_both_files_already_exist() {
     let root = temp_dir("mint-ca-skip-root");

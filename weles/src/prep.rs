@@ -13,7 +13,7 @@
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fs::File;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
@@ -82,7 +82,10 @@ impl Layout {
     /// Discovers the layout under `root`, creating `root/run/weles` if
     /// absent. `target_debug` honors `CARGO_TARGET_DIR` (absolute, or
     /// resolved relative to `root`) exactly like Cargo itself does; absent,
-    /// it falls back to `root/target`.
+    /// it falls back to `root/target`. NOTE: resolving a RELATIVE
+    /// `CARGO_TARGET_DIR` against `root` here is only correct because
+    /// [`build`] pins the `cargo build` child's cwd to `layout.root` — Cargo
+    /// resolves a relative `CARGO_TARGET_DIR` against its invocation cwd.
     pub fn discover(root: PathBuf) -> Result<Self> {
         let run_dir = root.join("run").join("weles");
         std::fs::create_dir_all(&run_dir)
@@ -164,14 +167,13 @@ pub fn build(layout: &Layout, packages: &[&str]) -> Result<()> {
             out_path.display(),
             err_path.display()
         ),
-        None => {
-            let _ = proc.shutdown(HELPER_SHUTDOWN_GRACE, HELPER_SHUTDOWN_FORCE);
-            bail!(
-                "cargo build did not finish within {BUILD_TIMEOUT:?} — see {} / {}",
-                out_path.display(),
-                err_path.display()
-            )
-        }
+        None => Err(helper_timeout_failure(
+            &mut proc,
+            "cargo build",
+            BUILD_TIMEOUT,
+            &out_path,
+            &err_path,
+        )),
     }
 }
 
@@ -228,12 +230,13 @@ pub fn mint_ca(layout: &Layout) -> Result<CaPaths> {
             err_path.display()
         ),
         None => {
-            let _ = proc.shutdown(HELPER_SHUTDOWN_GRACE, HELPER_SHUTDOWN_FORCE);
-            bail!(
-                "edgeca did not finish within {MINT_CA_TIMEOUT:?} — see {} / {}",
-                out_path.display(),
-                err_path.display()
-            )
+            return Err(helper_timeout_failure(
+                &mut proc,
+                "edgeca",
+                MINT_CA_TIMEOUT,
+                &out_path,
+                &err_path,
+            ))
         }
     }
 
@@ -286,20 +289,21 @@ pub fn seed_admin(layout: &Layout, database_url: &str) -> Result<()> {
             out_path.display(),
             err_path.display()
         ),
-        None => {
-            let _ = proc.shutdown(HELPER_SHUTDOWN_GRACE, HELPER_SHUTDOWN_FORCE);
-            bail!(
-                "adminctl create-user did not finish within {SEED_ADMIN_TIMEOUT:?} — see {} / {}",
-                out_path.display(),
-                err_path.display()
-            )
-        }
+        None => Err(helper_timeout_failure(
+            &mut proc,
+            "adminctl create-user",
+            SEED_ADMIN_TIMEOUT,
+            &out_path,
+            &err_path,
+        )),
     }
 }
 
 /// Poll-with-deadline wait on a transient helper (never a blocking platform
-/// wait, so it can never hang past `timeout`).
-fn wait_for_helper(
+/// wait, so it can never hang past `timeout`). Public so the integration
+/// test in `tests/prep.rs` can drive the timeout branch with the
+/// `__test-child` fixture.
+pub fn wait_for_helper(
     proc: &mut platform::OwnedProc,
     timeout: Duration,
 ) -> Result<Option<platform::ExitInfo>> {
@@ -315,6 +319,29 @@ fn wait_for_helper(
     }
 }
 
+/// The shared timeout branch for every transient helper (`build`, `mint_ca`,
+/// `seed_admin`): forcibly stops the still-running helper (0s grace / 5s
+/// force — it already blew its deadline) and produces the operator-facing
+/// error naming BOTH log paths. Public so the integration test in
+/// `tests/prep.rs` can pin the branch: the error names the logs AND the
+/// child is dead afterwards.
+pub fn helper_timeout_failure(
+    proc: &mut platform::OwnedProc,
+    what: &str,
+    timeout: Duration,
+    out_path: &Path,
+    err_path: &Path,
+) -> anyhow::Error {
+    if let Err(error) = proc.shutdown(HELPER_SHUTDOWN_GRACE, HELPER_SHUTDOWN_FORCE) {
+        eprintln!("weles: stopping timed-out {what} failed: {error:#}");
+    }
+    anyhow::anyhow!(
+        "{what} did not finish within {timeout:?} — see {} / {}",
+        out_path.display(),
+        err_path.display()
+    )
+}
+
 /// Builds a child environment from the parent process's env, keeping only
 /// `allowlist` keys (case-insensitive on Windows to match `%VAR%` lookup
 /// semantics, exact-case on Unix).
@@ -322,6 +349,22 @@ fn filtered_env(allowlist: &[&str]) -> BTreeMap<OsString, OsString> {
     let mut env = BTreeMap::new();
     for key in allowlist {
         if let Some(value) = lookup_env(key) {
+            // On Windows the lookup above is case-insensitive, so
+            // case-variant allowlist entries (`HTTP_PROXY` / `http_proxy`)
+            // resolve to the SAME parent variable — keep only the
+            // first-inserted spelling instead of emitting a pair differing
+            // only by case in the child's environment block. On Unix the
+            // lookup is exact-case and the variants are genuinely distinct
+            // variables, so no dedupe.
+            if cfg!(windows)
+                && env.keys().any(|existing: &OsString| {
+                    existing
+                        .to_str()
+                        .is_some_and(|existing| existing.eq_ignore_ascii_case(key))
+                })
+            {
+                continue;
+            }
             env.insert(OsString::from(*key), value);
         }
     }

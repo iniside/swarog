@@ -7,14 +7,12 @@ fn status_stub_bails() {
     assert!(err.to_string().contains("not implemented yet (M0 Step"));
 }
 
-// `up` is no longer a pure stub as of M0 Step 4: it runs the real prep
-// pipeline (manifest validation, `cargo build`, CA mint, admin seed) against
-// the actual repo root and local Postgres before bailing with the
-// remaining-work message. That makes it a live/integration path (real
-// process spawns + DB access), not a fast unit test — it is exercised
-// manually per the Step 4 hand-off ("weles up split" smoke test) and will
-// gain a committed harness assertion when the supervisor loop lands
-// (M0 Step 5+/Step 7), not here.
+// `up` is the real supervisor as of M0 Step 5 (`supervisor::run_up`: rollout
+// lock, prep, boot, monitor/restart loop, teardown) against the actual repo
+// root and local Postgres. That makes it a live/integration path (real
+// process spawns + DB access), not a fast unit test — the restart policy is
+// unit-tested in `supervisor_tests`, and the live path gets its acceptance
+// run in M0 Step 7, not here.
 
 #[test]
 fn down_stub_bails() {
