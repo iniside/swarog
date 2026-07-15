@@ -4,15 +4,26 @@ Stan po zamknięciu rolloutu Weles M0 (2026-07-15; plan z erratą:
 [2026-07-15-1055-weles-m0-plan.md](../plans/2026-07-15-1055-weles-m0-plan.md)).
 Kierunek zatwierdzony przez Lukasza; NIC z poniższego nie jest rozpoczęte.
 
+> **ERRATA 2026-07-15 (po diagnozie B1):** punkt 1 backlogu („stub re-dial —
+> NAJPIERW") jest **bezprzedmiotowy jako rollout backendowy** — B1 nie
+> reprodukuje się, hipoteza transportowa obalona (patrz
+> [2026-07-15-1745-b1-stub-redial-diagnosis-status.md](2026-07-15-1745-b1-stub-redial-diagnosis-status.md),
+> commity `cde5282`/`db0d65b`, pamięć
+> `memory/edge-stub-no-reconnect-after-peer-restart.md`). Realny backlog
+> zaczyna się od **punktu 2 (control endpoint przed bootem)**. Numeracja
+> poniżej zachowana historycznie; pkt 1 przekreślony, nie usunięty.
+
 ## Backlog przed-M1 (kolejność wiążąca)
 
-1. **Stub re-dial po zmianie inkarnacji peera — NAJPIERW, rollout backendowy.**
-   Restart-on-crash Welesa jest niewiarygodny, dopóki backend nie traktuje
-   restartu pojedynczego peera jako normalnego stanu pracy (bug #1 niżej).
-   Fix w warstwie połączenia (`core/remote`/`core/edge` client) — świadomie NIE
-   czeka na M1-owy resolve (własność connection-layer, potrzebna w obu światach).
-   Obowiązkowo: committed splitproof assertion „wywołanie module→module po
-   restarcie peera".
+1. ~~**Stub re-dial po zmianie inkarnacji peera — NAJPIERW, rollout
+   backendowy.**~~ **ZAMKNIĘTY jako bezprzedmiotowy (2026-07-15).** Warstwa
+   połączenia (`core/remote`/`core/edge`) odzyskuje się poprawnie po restarcie
+   peera w obu kształtach teardownu; brak trwałego 404 na żywym splicie (jeden
+   call wisi ~30 s → 408, potem 200). Własność recovery przypięta testami
+   regresyjnymi (`cde5282`). Restart-on-crash Welesa NIE jest blokowany. Jeśli
+   trwałe 404 wróci — pierwszy podejrzany to dane/środowisko (gałąź D), nie
+   transport. Ewentualna asercja splitproof `[B1-REDIAL]` pozostaje opcjonalna
+   (nie dyskryminuje fixed/unfixed).
 2. **Control endpoint bindowany PRZED bootem** (dziś: po fleet-healthy,
    `weles/src/supervisor.rs` — bind po pętli boot). `down`/`status` muszą działać
    na flocie utkniętej w boocie; pętla boot już sprawdza STOP, więc zmiana jest
@@ -38,7 +49,15 @@ Kierunek zatwierdzony przez Lukasza; NIC z poniższego nie jest rozpoczęte.
 
 ## Odkryte bugi (wszystkie POZA Welesem, żaden nienaprawiony)
 
-### B1 — backend: stub module→module nie robi re-dial po restarcie peera (OTWARTY, krytyczny dla restartów)
+### B1 — backend: stub module→module nie robi re-dial po restarcie peera (ZAMKNIĘTY 2026-07-15 — NIE reprodukuje się, hipoteza transportowa obalona)
+> **Rozstrzygnięcie:** diagnoza wykazała, że warstwa połączenia odzyskuje się
+> poprawnie po restarcie peera (oba kształty teardownu → `ConnectionFatal` →
+> recovery); żywy split nie produkuje trwałego 404 (call wisi ~30 s → 408,
+> potem 200). Oryginalna obserwacja „trwałe 404" była artefaktem środowiska
+> tamtej sesji chaosu. Pełna diagnoza + dowody:
+> [2026-07-15-1745-b1-stub-redial-diagnosis-status.md](2026-07-15-1745-b1-stub-redial-diagnosis-status.md).
+> Poniższy opis zachowany historycznie (stan wiedzy z chwili odkrycia).
+
 Znaleziony przez chaos-test Welesa (Step 7.3): kill + auto-restart
 characters-svc pod żywym ruchem — topologia, której nic wcześniej nie
 produkowało (devctl przy crashu ubija całą flotę; splitproof `rdy_dead`
