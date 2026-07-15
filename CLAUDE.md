@@ -331,12 +331,24 @@ cargo run -p devctl -- up monolith
 cargo run -p devctl -- up split
 cargo run -p devctl -- status
 cargo run -p devctl -- down
+weles deploy target/debug        # stage built binaries into deploy/ (weles never builds)
+weles up split|monolith          # standalone supervisor: restart-on-crash, weles status / weles down
 cargo run -p verifyctl -- --fast
 cargo run -p verifyctl -- --all
 cargo run -p verifyctl -- --all --strict
 cargo run -p verifyctl -- --slow
 cargo run -p admincheck        # extension-point contract validation (points vs contributed entries)
 ```
+
+**`weles/`** (top-level crate, binary `weles`) is the standalone mini-orchestrator
+(M0): zero-sharing (no workspace-crate imports — patterns copied from
+devctl/processctl, never imported), native processes only, NEVER builds — it
+executes artifacts staged in `<root>/deploy/` via `weles deploy <src-dir>`.
+Differentiator vs devctl: per-service restart-on-crash with capped backoff (devctl
+tears the whole fleet down). It participates in `run/rollout.lock` bit-compatibly
+(Windows: 1-byte lock at offset `1<<63`, owner-only DACL on creation) — weles and
+devctl/verifyctl can never run fleets concurrently. Runtime state under
+`run/weles/` (state.json, per-svc logs, control endpoint).
 
 `devctl up` is the owned foreground supervisor. It builds, seeds, starts, and
 health-checks the selected topology, writes bounded state/control metadata and
@@ -512,6 +524,8 @@ api/<name>/                # contract surface per domain
   <name>rpc/               #   generated glue (Client/register_server/factories)
 modules/                   # private impls — 11 fortresses + gateway (see above)
 demos/                     # non-shipping demo crates (webui) — cmd/server only
+weles/                     # standalone mini-orchestrator (zero-sharing; deploy/ artifacts,
+                           # restart-on-crash supervisor; see Commands)
 tools/                     # devctl/verifyctl/processctl/splitproof, rpc-macro,
                            # architecture checkers, generators, edgeca, playercli
 experiments/               # archived sketches: go-sketch (the ported original),
