@@ -143,23 +143,23 @@ fn status_and_down_roundtrip_over_the_real_transport() {
 }
 
 // ---------------------------------------------------------------------------
-// Server thread shuts down cleanly (and promptly) once STOP is set
+// Server teardown: prompt join, and NEVER a store into the fleet stop
 // ---------------------------------------------------------------------------
 
 #[cfg(any(windows, target_os = "linux"))]
 #[test]
-fn server_thread_joins_promptly_after_stop() {
+fn server_drop_joins_promptly_and_never_sets_the_fleet_stop() {
     let endpoint = test_endpoint("shutdown");
     let state = Arc::new(Mutex::new(sample_state(
         FleetStatus::Running,
         std::process::id(),
     )));
-    let stop = Arc::new(AtomicBool::new(false));
-    let server =
-        ControlServer::bind(endpoint.path.clone(), state, Arc::clone(&stop)).expect("bind");
+    let fleet_stop = Arc::new(AtomicBool::new(false));
+    let server = ControlServer::bind(endpoint.path.clone(), state, Arc::clone(&fleet_stop))
+        .expect("bind");
 
-    // Signal shutdown; dropping the server must join the serve thread bounded.
-    stop.store(true, Ordering::SeqCst);
+    // Dropping the server alone must stop and join the serve thread (bounded),
+    // via its PRIVATE shutdown flag — the fleet stop is not its to touch.
     let joined = Arc::new(AtomicBool::new(false));
     let joined_flag = Arc::clone(&joined);
     let joiner = std::thread::spawn(move || {
@@ -169,9 +169,128 @@ fn server_thread_joins_promptly_after_stop() {
     poll_until(
         Duration::from_secs(5),
         || joined.load(Ordering::SeqCst),
-        "control server thread did not join within 5s of STOP",
+        "control server thread did not join within 5s of drop",
     );
     joiner.join().expect("join the drop helper");
+    assert!(
+        !fleet_stop.load(Ordering::SeqCst),
+        "server teardown must never store into the fleet stop (single stop authority)"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Bind failure: loud error, and the fleet stop stays FALSE (the MAJOR pin —
+// a control-plane failure must never masquerade as an operator `down`)
+// ---------------------------------------------------------------------------
+
+#[cfg(target_os = "linux")]
+#[test]
+fn bind_failure_errors_without_setting_the_fleet_stop() {
+    // A UDS path inside a nonexistent directory cannot bind.
+    let endpoint = std::env::temp_dir()
+        .join(format!("weles-control-nonexistent-{}", unique()))
+        .join("control.sock");
+    let state = Arc::new(Mutex::new(sample_state(
+        FleetStatus::Running,
+        std::process::id(),
+    )));
+    let fleet_stop = Arc::new(AtomicBool::new(false));
+    let result = ControlServer::bind(endpoint, state, Arc::clone(&fleet_stop));
+    assert!(result.is_err(), "bind into a nonexistent dir must fail");
+    assert!(
+        !fleet_stop.load(Ordering::SeqCst),
+        "a bind failure must never store into the fleet stop"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn bind_failure_errors_without_setting_the_fleet_stop() {
+    // FIRST_PIPE_INSTANCE: a second server on an already-owned pipe name fails.
+    let endpoint = test_endpoint("bind-conflict");
+    let state = Arc::new(Mutex::new(sample_state(
+        FleetStatus::Running,
+        std::process::id(),
+    )));
+    let first_stop = Arc::new(AtomicBool::new(false));
+    let _first = ControlServer::bind(
+        endpoint.path.clone(),
+        Arc::clone(&state),
+        Arc::clone(&first_stop),
+    )
+    .expect("first bind");
+
+    let second_stop = Arc::new(AtomicBool::new(false));
+    let result = ControlServer::bind(endpoint.path.clone(), state, Arc::clone(&second_stop));
+    assert!(result.is_err(), "a second bind on an owned pipe name must fail");
+    assert!(
+        !second_stop.load(Ordering::SeqCst),
+        "a bind failure must never store into the fleet stop"
+    );
+    assert!(
+        !first_stop.load(Ordering::SeqCst),
+        "the healthy server's fleet stop must be untouched by the failed bind"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// wait_for_terminal: terminal outcomes + the write-then-exit race guard
+// ---------------------------------------------------------------------------
+
+/// A pid that is not a live process on Windows or Linux (huge and 4-aligned).
+const DEAD_PID: u32 = 0x3FFF_FFFC;
+
+fn write_state_file(tag: &str, status: FleetStatus, pid: u32) -> (PathBuf, PathBuf) {
+    let dir = std::env::temp_dir().join(format!("weles-terminal-{tag}-{}", unique()));
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let path = dir.join("state.json");
+    crate::state::checkpoint(&path, &sample_state(status, pid)).expect("write state");
+    (dir, path)
+}
+
+#[test]
+fn wait_for_terminal_returns_ok_on_a_stopped_state() {
+    let (dir, path) = write_state_file("stopped", FleetStatus::Stopped, DEAD_PID);
+    let supervisor = ProcessIdentity {
+        pid: DEAD_PID,
+        started_unix: 1,
+    };
+    // Dead supervisor + terminal Stopped state: the terminal check (and the
+    // dead-supervisor re-read guard behind it) resolves Ok, never an error.
+    wait_for_terminal(&path, &supervisor, Duration::from_secs(5)).expect("stopped is success");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn wait_for_terminal_returns_err_on_a_failed_state() {
+    let (dir, path) = write_state_file("failed", FleetStatus::Failed, DEAD_PID);
+    let supervisor = ProcessIdentity {
+        pid: DEAD_PID,
+        started_unix: 1,
+    };
+    let error = wait_for_terminal(&path, &supervisor, Duration::from_secs(5))
+        .expect_err("a Failed terminal state is an error");
+    assert!(error.to_string().contains("failed"), "{error:#}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn wait_for_terminal_reports_a_supervisor_that_exited_without_a_terminal_state() {
+    // The race-guard's failing branch: non-terminal state + dead supervisor.
+    // The guard re-reads once (still Running) and must report the premature
+    // exit — not spin to the timeout, not claim success.
+    let (dir, path) = write_state_file("premature", FleetStatus::Running, DEAD_PID);
+    let supervisor = ProcessIdentity {
+        pid: DEAD_PID,
+        started_unix: 1,
+    };
+    let error = wait_for_terminal(&path, &supervisor, Duration::from_secs(5))
+        .expect_err("dead supervisor + non-terminal state is an error");
+    assert!(
+        error.to_string().contains("before publishing"),
+        "must name the premature exit, got: {error:#}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 // ---------------------------------------------------------------------------

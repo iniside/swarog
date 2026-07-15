@@ -415,46 +415,48 @@ pub fn run_up(topology: Topology, skip_build: bool) -> Result<()> {
     };
     reporter.checkpoint(&fleet);
 
-    let boot_result = boot(&layout, &inputs, &mut fleet, &reporter);
-    if boot_result.is_ok() && !stop_requested() {
+    let mut run_result = boot(&layout, &inputs, &mut fleet, &reporter);
+    if run_result.is_ok() && !stop_requested() {
         // Fleet is healthy: bring up the control endpoint so `weles status` /
-        // `weles down` can reach us, then flip to Running and publish it.
+        // `weles down` can reach us. `CONTROL_STOP` is the fleet-stop atomic a
+        // received `down` request sets — the ONLY writer besides the signal
+        // handler's `STOP`; no control-plane failure path may store into it.
         let endpoint = control_endpoint_path(&layout, &reporter.run_id);
-        let control_stop = Arc::new(AtomicBool::new(false));
-        let _ = CONTROL_STOP.set(Arc::clone(&control_stop));
-        let control = match ControlServer::bind(endpoint.clone(), reporter.shared(), control_stop) {
-            Ok(server) => {
+        let fleet_stop = Arc::new(AtomicBool::new(false));
+        let _ = CONTROL_STOP.set(Arc::clone(&fleet_stop));
+        match ControlServer::bind(endpoint.clone(), reporter.shared(), fleet_stop) {
+            Ok(control) => {
                 reporter.set_control_endpoint(Some(endpoint.to_string_lossy().into_owned()));
-                Some(server)
+                reporter.set_status(FleetStatus::Running);
+                // Checkpoint AFTER the endpoint is live so a client that reads
+                // the file and connects cannot beat the listener.
+                reporter.checkpoint(&fleet);
+                println!("weles: fleet healthy — press Ctrl-C or run `weles down` to stop");
+                monitor(&layout, &inputs, &mut fleet, &reporter, &control);
+                // Stop and join the control thread before teardown starts.
+                drop(control);
             }
             Err(error) => {
-                eprintln!(
-                    "weles: control endpoint unavailable ({error:#}); \
-                     `weles status`/`down` will not work for this run"
-                );
-                None
+                // A control endpoint that cannot bind is a boot failure, loud
+                // and immediate (devctl parity): a fleet nobody can `status`/
+                // `down` is not the tool weles promises.
+                run_result = Err(error).with_context(|| {
+                    format!("bind control endpoint {}", endpoint.display())
+                });
             }
-        };
-        reporter.set_status(FleetStatus::Running);
-        // Checkpoint AFTER the endpoint is live so a client that reads the file
-        // and connects cannot beat the listener.
-        reporter.checkpoint(&fleet);
-        println!("weles: fleet healthy — press Ctrl-C or run `weles down` to stop");
-        monitor(&layout, &inputs, &mut fleet, &reporter);
-        // Stop and join the control thread before teardown starts.
-        drop(control);
+        }
     }
-    // Runs for every exit path: operator stop, boot failure (unwinding
-    // exactly what started, in reverse), or STOP during boot. A boot failure
-    // lands the fleet in Failed; any clean stop lands Stopped.
-    let terminal = if boot_result.is_ok() {
+    // Runs for every exit path: operator stop, boot/bind failure (unwinding
+    // exactly what started, in reverse), or STOP during boot. A failure lands
+    // the fleet in Failed; any clean stop lands Stopped.
+    let terminal = if run_result.is_ok() {
         FleetStatus::Stopped
     } else {
         FleetStatus::Failed
     };
     teardown(&mut fleet, &reporter, terminal);
     // `_lock` drops here — strictly after teardown.
-    boot_result
+    run_result
 }
 
 /// The bounded loopback control endpoint for this run: a named pipe on Windows
@@ -555,10 +557,21 @@ fn monitor(
     inputs: &RuntimeInputs,
     fleet: &mut [Supervised],
     reporter: &Reporter,
+    control: &ControlServer,
 ) {
+    let mut control_death_reported = false;
     loop {
         if stop_requested() {
             return;
+        }
+        // A dead control thread is a reported degradation, NEVER a fleet stop
+        // (the fleet keeps running; Ctrl-C remains the stop path).
+        if !control_death_reported && control.dead() {
+            control_death_reported = true;
+            eprintln!(
+                "weles: the control endpoint is dead — `weles status`/`down` are unavailable; \
+                 the fleet keeps running (stop it with Ctrl-C)"
+            );
         }
         for index in 0..fleet.len() {
             let Some(phase) = fleet[index].phase else {

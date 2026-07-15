@@ -104,10 +104,12 @@ fn connect_target() -> Result<Target> {
         control::Disposition::Stale(message) => Ok(Target::Report(Err(anyhow::anyhow!(message)))),
         control::Disposition::Connect => match state.control_endpoint.clone() {
             Some(endpoint) => Ok(Target::Connect { state, endpoint }),
-            // Live and non-terminal but no endpoint published yet: the fleet is
-            // still booting (the endpoint is bound only once healthy).
+            // Live and non-terminal but no endpoint published: the fleet is
+            // still booting — the control endpoint binds only AFTER boot
+            // completes, so retrying mid-boot won't help.
             None => Ok(Target::Report(Err(anyhow::anyhow!(
-                "weles: the {} fleet is still starting (no control endpoint yet) — retry shortly",
+                "weles: the {} fleet is still booting; the control endpoint is not up yet — \
+                 use Ctrl-C on the supervisor to abort a boot",
                 state.topology
             )))),
         },

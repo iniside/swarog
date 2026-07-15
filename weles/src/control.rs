@@ -65,8 +65,19 @@ pub enum Disposition {
 }
 
 /// Owns the control-endpoint serve thread; dropping it stops and joins it.
+///
+/// Stop-authority invariant (single ownership of fleet-stop): the ONLY code
+/// that ever stores into the supervisor's fleet-stop atomic is a received
+/// `down` request ([`response`]). The server's own lifecycle (bind timeout,
+/// teardown via `Drop`, a dead serve thread) flows through the PRIVATE
+/// `shutdown` atomic — a control-plane failure must never look like an
+/// operator `down` and tear a healthy fleet down.
 pub struct ControlServer {
-    stop: Arc<AtomicBool>,
+    /// Private serve-loop/teardown flag — never the fleet stop.
+    shutdown: Arc<AtomicBool>,
+    /// Set (only) when the serve thread died irrecoverably: the endpoint is
+    /// gone but the fleet keeps running.
+    dead: Arc<AtomicBool>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
@@ -74,26 +85,38 @@ impl ControlServer {
     /// Binds the control endpoint and spawns the serve thread. Blocks until
     /// the thread reports the endpoint is actually listening (or fails within
     /// [`BIND_DEADLINE`]). `state` is the shared snapshot a `status` reply
-    /// renders; `stop` is the supervisor's stop atomic a `down` request sets.
+    /// renders; `fleet_stop` is the supervisor's stop atomic — stored to ONLY
+    /// when a `down` request arrives, never by any failure path in here.
     pub fn bind(
         endpoint: PathBuf,
         state: Arc<Mutex<FleetState>>,
-        stop: Arc<AtomicBool>,
+        fleet_stop: Arc<AtomicBool>,
     ) -> Result<Self> {
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let dead = Arc::new(AtomicBool::new(false));
         let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
-        let thread_stop = Arc::clone(&stop);
+        let thread_shutdown = Arc::clone(&shutdown);
+        let thread_dead = Arc::clone(&dead);
         let thread = std::thread::Builder::new()
             .name("weles-control".into())
             .spawn(move || {
-                if let Err(error) = serve(&endpoint, state, &thread_stop, ready_tx) {
-                    eprintln!("weles: control endpoint failed: {error:#}");
-                    thread_stop.store(true, Ordering::SeqCst);
+                if let Err(error) = serve(&endpoint, state, &thread_shutdown, &fleet_stop, ready_tx)
+                {
+                    // Irrecoverable control-plane death: report it and flag it,
+                    // but do NOT stop the fleet — a lost status/down endpoint
+                    // is a degradation, never a phantom operator-down.
+                    eprintln!(
+                        "weles: control endpoint died: {error:#} — `weles status`/`down` are \
+                         unavailable for this run; stop the fleet with Ctrl-C"
+                    );
+                    thread_dead.store(true, Ordering::SeqCst);
                 }
             })
             .context("spawn control endpoint")?;
         match ready_rx.recv_timeout(BIND_DEADLINE) {
             Ok(Ok(())) => Ok(Self {
-                stop,
+                shutdown,
+                dead,
                 thread: Some(thread),
             }),
             Ok(Err(error)) => {
@@ -101,17 +124,23 @@ impl ControlServer {
                 Err(error)
             }
             Err(_) => {
-                stop.store(true, Ordering::SeqCst);
+                shutdown.store(true, Ordering::SeqCst);
                 let _ = thread.join();
                 bail!("control endpoint did not become ready within {BIND_DEADLINE:?}")
             }
         }
     }
+
+    /// Whether the serve thread died irrecoverably (endpoint gone, fleet
+    /// unaffected). The supervisor reports this once, loudly.
+    pub fn dead(&self) -> bool {
+        self.dead.load(Ordering::SeqCst)
+    }
 }
 
 impl Drop for ControlServer {
     fn drop(&mut self) {
-        self.stop.store(true, Ordering::SeqCst);
+        self.shutdown.store(true, Ordering::SeqCst);
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
@@ -252,8 +281,9 @@ fn render_status(state: &FleetState) -> String {
 }
 
 /// Builds the reply bytes for a received request frame. `status` renders the
-/// shared snapshot; `down` sets the supervisor stop atomic then acknowledges.
-fn response(bytes: &[u8], state: &Arc<Mutex<FleetState>>, stop: &AtomicBool) -> Vec<u8> {
+/// shared snapshot; `down` sets the supervisor's fleet-stop atomic then
+/// acknowledges — the ONE place in this module allowed to store into it.
+fn response(bytes: &[u8], state: &Arc<Mutex<FleetState>>, fleet_stop: &AtomicBool) -> Vec<u8> {
     let response = match serde_json::from_slice::<Request>(bytes) {
         Ok(request) if request.command == "status" => {
             let state = state.lock().expect("state mutex poisoned");
@@ -263,7 +293,7 @@ fn response(bytes: &[u8], state: &Arc<Mutex<FleetState>>, stop: &AtomicBool) -> 
             }
         }
         Ok(request) if request.command == "down" => {
-            stop.store(true, Ordering::SeqCst);
+            fleet_stop.store(true, Ordering::SeqCst);
             Response {
                 ok: true,
                 message: "weles: shutdown requested".into(),
@@ -422,7 +452,8 @@ pub fn supervisor_alive(_: &ProcessIdentity) -> bool {
 fn serve(
     endpoint: &Path,
     state: Arc<Mutex<FleetState>>,
-    stop: &AtomicBool,
+    shutdown: &AtomicBool,
+    fleet_stop: &AtomicBool,
     ready: std::sync::mpsc::SyncSender<Result<()>>,
 ) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
@@ -440,14 +471,20 @@ fn serve(
     std::fs::set_permissions(endpoint, std::fs::Permissions::from_mode(0o600))?;
     listener.set_nonblocking(true)?;
     let _ = ready.send(Ok(()));
-    while !stop.load(Ordering::SeqCst) {
+    while !shutdown.load(Ordering::SeqCst) {
         let mut stream = match listener.accept() {
             Ok((stream, _)) => stream,
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 std::thread::sleep(POLL);
                 continue;
             }
-            Err(error) => return Err(error).context("accept Unix control client"),
+            Err(error) => {
+                // A per-accept hiccup must never kill the endpoint (let alone
+                // the fleet): report and keep accepting.
+                eprintln!("weles: control accept failed ({error:#}); continuing");
+                std::thread::sleep(Duration::from_secs(1));
+                continue;
+            }
         };
         // SO_PEERCRED: only our own euid may drive the endpoint (mode 0600 also
         // enforces this, but the credential check is the authoritative gate).
@@ -466,18 +503,26 @@ fn serve(
         {
             continue;
         }
-        stream.set_nonblocking(true)?;
-        if let Ok(request) = read_frame(&mut stream, stop) {
+        if stream.set_nonblocking(true).is_err() {
+            continue; // per-connection failure: drop this client, keep serving
+        }
+        if let Ok(request) = read_frame(&mut stream, shutdown) {
             // A fresh always-false flag so writing the reply is never cancelled
-            // by a `down` request having just set the real stop.
+            // by a `down` request having just set the fleet stop.
             let response_stop = AtomicBool::new(false);
-            let _ = write_frame(&mut stream, &response(&request, &state, stop), &response_stop);
+            let _ = write_frame(
+                &mut stream,
+                &response(&request, &state, fleet_stop),
+                &response_stop,
+            );
         }
     }
     let _ = std::fs::remove_file(endpoint);
     Ok(())
 }
 
+// The client-side (`request_raw`) never touches any stop atomic — its bounded
+// I/O uses a local always-false flag.
 #[cfg(target_os = "linux")]
 fn request_raw(endpoint: &Path, command: &str, expected: &ProcessIdentity) -> Result<String> {
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -529,7 +574,8 @@ fn request_raw(endpoint: &Path, command: &str, expected: &ProcessIdentity) -> Re
 fn serve(
     endpoint: &Path,
     state: Arc<Mutex<FleetState>>,
-    stop: &AtomicBool,
+    shutdown: &AtomicBool,
+    fleet_stop: &AtomicBool,
     ready: std::sync::mpsc::SyncSender<Result<()>>,
 ) -> Result<()> {
     use std::os::windows::ffi::OsStrExt;
@@ -572,7 +618,7 @@ fn serve(
     }
     let name: Vec<u16> = endpoint.as_os_str().encode_wide().chain(Some(0)).collect();
     let mut first = true;
-    while !stop.load(Ordering::SeqCst) {
+    while !shutdown.load(Ordering::SeqCst) {
         let attributes = windows_sys::Win32::Security::SECURITY_ATTRIBUTES {
             nLength: std::mem::size_of::<windows_sys::Win32::Security::SECURITY_ATTRIBUTES>()
                 as u32,
@@ -593,20 +639,26 @@ fn serve(
         };
         if pipe == INVALID_HANDLE_VALUE {
             let error = std::io::Error::last_os_error();
-            unsafe { windows_sys::Win32::Foundation::LocalFree(descriptor as _) };
             if first {
+                // The FIRST instance failing means the endpoint never came up:
+                // fail the bind loudly (the caller decides what that means).
+                unsafe { windows_sys::Win32::Foundation::LocalFree(descriptor as _) };
                 let message = error.to_string();
                 let _ = ready.send(Err(error).context("create named pipe"));
                 bail!(message);
             }
-            return Err(error).context("create named pipe");
+            // A MID-RUN re-create failure is a control-plane hiccup: report and
+            // retry — never kill the endpoint (let alone the fleet) over it.
+            eprintln!("weles: recreate control pipe failed ({error}); retrying");
+            std::thread::sleep(Duration::from_secs(1));
+            continue;
         }
         if first {
             first = false;
             let _ = ready.send(Ok(()));
         }
         loop {
-            if stop.load(Ordering::SeqCst) {
+            if shutdown.load(Ordering::SeqCst) {
                 unsafe { CloseHandle(pipe) };
                 break;
             }
@@ -616,10 +668,13 @@ fn serve(
                     == Some(ERROR_PIPE_CONNECTED as i32)
             {
                 let mut file = unsafe { std::fs::File::from_raw_handle(pipe.cast()) };
-                if let Ok(request) = read_frame(&mut file, stop) {
+                if let Ok(request) = read_frame(&mut file, shutdown) {
                     let response_stop = AtomicBool::new(false);
-                    let _ =
-                        write_frame(&mut file, &response(&request, &state, stop), &response_stop);
+                    let _ = write_frame(
+                        &mut file,
+                        &response(&request, &state, fleet_stop),
+                        &response_stop,
+                    );
                 }
                 break;
             }
@@ -628,12 +683,20 @@ fn serve(
                 std::thread::sleep(POLL);
                 continue;
             }
-            unsafe { CloseHandle(pipe) };
-            if code == Some(ERROR_NO_DATA as i32) {
-                break;
+            // Capture the error INTO the message from the already-saved `code`
+            // BEFORE CloseHandle — the syscalls in cleanup overwrite
+            // last_os_error(), so re-fetching after them reports the wrong
+            // error (devctl's control.rs has exactly that bug; deliberately
+            // not copied). An unexpected connect error is per-connection:
+            // report, drop this instance, recreate — never kill the endpoint.
+            if code != Some(ERROR_NO_DATA as i32) {
+                eprintln!(
+                    "weles: connect control pipe failed (os error {code:?}); \
+                     recreating the pipe instance"
+                );
             }
-            unsafe { windows_sys::Win32::Foundation::LocalFree(descriptor as _) };
-            bail!("connect named pipe: {}", std::io::Error::last_os_error());
+            unsafe { CloseHandle(pipe) };
+            break;
         }
     }
     unsafe { windows_sys::Win32::Foundation::LocalFree(descriptor as _) };
