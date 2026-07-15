@@ -134,6 +134,10 @@ members = [
     "opscatalog",
     # Non-shipping demo crates — compiled + runnable, monolith-only by design.
     "demos/webui",
+    # orchestrator — Weles, a standalone fleet-supervisor CLI (M0). Zero-sharing by
+    # design: no workspace-crate dependencies, only external deps + std. Lives in
+    # this workspace for convenience only; it shares no code with core/tools/*.
+    "weles",
     # Process entrypoints (Go's cmd/).
     "cmd/server",
     "cmd/characters-svc",

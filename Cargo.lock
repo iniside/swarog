@@ -4739,6 +4739,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "weles"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "libc",
+ "rand 0.8.6",
+ "serde",
+ "serde_json",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
 name = "whoami"
 version = "1.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
