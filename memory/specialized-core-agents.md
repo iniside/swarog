@@ -16,6 +16,11 @@ gaps generic agents missed:
   Locate the deciding place BEFORE writing; STOP on hack-on-hack; prove the failing
   branch on the at-risk topology (split, not just monolith). Use for [opus]/[fable]
   implementation lanes on core/* or cross-seam work — NOT mechanical rename sweeps.
+  **Scope corrected (2026-07-15, recydywa caught by Lukasz during Weles M0):** ALL
+  substantive implementation lanes in this repo go through core-implementer — also
+  NEW standalone crates (weles platform containment counted), not only literal
+  `core/*` paths; `general-purpose` agents are for research only, never a
+  code-writing lane. "It's not core/" is not an exemption.
 - **core-reviewer** — class-keyed adversarial review routed by files-touched to the
   taxonomy classes; attacks the fix's OWN new seam. The reliable local "second
   independent reviewer" (Codex was flaky, ~70%). Use after any core/cross-seam diff.
