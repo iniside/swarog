@@ -325,6 +325,22 @@ impl Conn for edge::Client {
     }
 }
 
+/// TEST-ONLY seam (B1 Step 1 abrupt-kill repro, `tests/abrupt_kill_redial.rs`): builds
+/// the crate-private `Reconnecting<EdgeDialer>` — the EXACT caller a production
+/// [`Stub`] shares with every generated client — and returns it as `Arc<dyn Caller>`.
+/// The abrupt-kill repro must run in its OWN process (an integration test): the peer
+/// is a killed-and-respawned CHILD process, so both sides must resolve the same
+/// on-disk CA via `EDGE_CA_CERT`/`EDGE_CA_KEY`, and `edge::shared_dev_ca()` memoizes
+/// on first use — inside the unit-test binary other tests already resolve a GENERATED
+/// anchor first. Never call this from production code; it exists only so that
+/// integration test can reach the private connection cache under test.
+#[doc(hidden)]
+pub fn test_only_reconnecting_edge_caller(peer: &str) -> Arc<dyn Caller> {
+    Arc::new(Reconnecting::new(EdgeDialer {
+        peer: peer.to_string(),
+    }))
+}
+
 // ---------------------------------------------------------------------------
 // The per-stub readiness probe (the `/readyz` contribution).
 // ---------------------------------------------------------------------------
@@ -714,3 +730,12 @@ impl Module for Stub {
 // ===========================================================================
 #[cfg(test)]
 mod tests;
+
+// Step 1 (B1 repro): a real-edge redial test that boots an `edge::Server`, primes the
+// crate-private `Reconnecting<EdgeDialer>` cache with a live call, tears the peer down,
+// and re-boots it on the SAME port — then loops until the reconnecting caller recovers
+// (or a bounded hang-guard fires with the full observed error sequence). Separate file
+// per the tests-in-separate-files rule; same crate so it reaches the private seam.
+#[cfg(test)]
+#[path = "redial_tests.rs"]
+mod redial_tests;
