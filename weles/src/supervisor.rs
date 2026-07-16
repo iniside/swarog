@@ -11,8 +11,10 @@
 //! (weles never builds), then the Postgres session budget; (3) prep (mint CA,
 //! seed admin); (4) install the
 //! Ctrl-C/SIGTERM handler; (5) boot each service in manifest order behind a
-//! readyz gate; (6) a single non-blocking monitor loop; (7) teardown in reverse
-//! spawn order, lock dropped last.
+//! readyz gate; (6) a single non-blocking monitor loop, with an out-of-band
+//! `weles-readiness` poller thread recording post-healthy `/readyz` freshness
+//! (a checkpoint-only dimension that NEVER restarts a service); (7) teardown in
+//! reverse spawn order, lock dropped last.
 //!
 //! Every restart DECISION is a pure function over an injected `now`
 //! ([`next_restart`], [`step`]) — the loop merely executes directives — so
@@ -35,7 +37,7 @@ use crate::lock;
 use crate::manifest::{self, RuntimeInputs, ServiceDef};
 use crate::platform::{self, Outcome, OwnedProc, SpawnSpec};
 use crate::prep;
-use crate::state::{self, FleetState, FleetStatus, ProcessIdentity, ServiceState, Status};
+use crate::state::{self, FleetState, FleetStatus, ProcessIdentity, Readiness, ServiceState, Status};
 
 /// How long a service gets to turn `/readyz` 200 after every (re)spawn.
 pub const HEALTH_DEADLINE: Duration = Duration::from_secs(30);
@@ -50,6 +52,14 @@ pub const BACKOFF_CAP: Duration = Duration::from_secs(30);
 
 const BOOT_PROBE_INTERVAL: Duration = Duration::from_millis(250);
 const MONITOR_TICK: Duration = Duration::from_millis(100);
+/// The readiness poller issues ONE `/readyz` probe per this interval, round-robin
+/// across the currently-`Healthy` services (see [`readiness_poller`]). Kept off
+/// the monitor thread precisely so this (blocking, up to ~800ms) probe never
+/// delays crash detection or the `down`/Ctrl-C response.
+const READINESS_PROBE_INTERVAL: Duration = Duration::from_millis(250);
+/// Chunk the poller's inter-probe sleep so it observes its own shutdown flag
+/// promptly (join before teardown) without a probe-length wait.
+const READINESS_STOP_POLL: Duration = Duration::from_millis(50);
 /// Teardown per-service shutdown budget (graceful, then force).
 const STOP_GRACE: Duration = Duration::from_secs(5);
 const STOP_FORCE: Duration = Duration::from_secs(5);
@@ -249,6 +259,167 @@ fn status_of(phase: Phase) -> Status {
 }
 
 // ---------------------------------------------------------------------------
+// Readiness: a post-healthy `/readyz` freshness dimension, structurally
+// DISJOINT from the restart decision. The three pure functions below are the
+// whole authority — none of them can touch `phase`/`status`/`history`, so a
+// 503/torn/unreachable probe records `Degraded`/`Unreachable` and NOTHING else.
+// The poller writes into a shared Vec; the monitor folds that Vec into each
+// `Supervised.readiness` for the checkpoint; `observe`/`step` never see a probe.
+// ---------------------------------------------------------------------------
+
+/// Maps a single readiness probe to the recorded [`Readiness`]. This is the ONE
+/// place a `ProbeResult` becomes a readiness verdict — and it produces nothing
+/// but a `Readiness`, so no probe outcome can ever synthesize an `Observed` or a
+/// restart `Directive`.
+fn readiness_for(probe: ProbeResult) -> Readiness {
+    match probe {
+        ProbeResult::Ready => Readiness::Ready,
+        ProbeResult::NotReady => Readiness::Degraded,
+        ProbeResult::ConnectFailed => Readiness::Unreachable,
+    }
+}
+
+/// The round-robin cursor: the first `Healthy` index strictly after `cursor`,
+/// wrapping once, or `None` when no service is `Healthy` (including an empty
+/// fleet — no div-by-zero, no panic). Non-`Healthy` indices are skipped so the
+/// poller only ever probes a service the supervisor believes is up.
+fn next_probe_index(healthy: &[bool], cursor: usize) -> Option<usize> {
+    let len = healthy.len();
+    if len == 0 {
+        return None;
+    }
+    (1..=len)
+        .map(|offset| (cursor + offset) % len)
+        .find(|&idx| healthy[idx])
+}
+
+/// Folds the poller's latest readiness verdicts into the fleet, returning whether
+/// anything changed (→ a checkpoint so `weles status` sees the freshness). This
+/// is the ENTIRE effect a probe has on supervised state: it writes ONLY
+/// `readiness`. It has no access to `phase`, `status`, `history`, or any
+/// `Directive`, so a readiness change is provably not a restart input — the
+/// authority that keeps "503 never restarts" true.
+fn fold_readiness(fleet: &mut [Supervised], latest: &[Readiness]) -> bool {
+    let mut changed = false;
+    for (svc, &readiness) in fleet.iter_mut().zip(latest) {
+        if svc.readiness != readiness {
+            svc.readiness = readiness;
+            changed = true;
+        }
+    }
+    changed
+}
+
+/// Owns the `weles-readiness` poller thread; dropping it stops and joins it.
+///
+/// Runs on its OWN thread (never the monitor thread) so a blocking `/readyz`
+/// probe (up to ~800ms for a hung service) cannot delay crash detection, the
+/// respawn of another service, or the `down`/Ctrl-C response — the monitor tick
+/// must stay non-blocking. Stop-authority: it flows through a PRIVATE `shutdown`
+/// atomic (flipped on `Drop`), NEVER the fleet stop — a poller lifecycle event
+/// must never look like an operator `down`.
+struct ReadinessPoller {
+    shutdown: Arc<AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl ReadinessPoller {
+    /// Spawns the poller. `shared` is read (never written) to learn which
+    /// indices are `Healthy`; `readiness` (indexed like the fleet) is the poller's
+    /// write target and the monitor's read source; `ports` maps each index to its
+    /// `/readyz` port.
+    fn spawn(
+        shared: Arc<Mutex<FleetState>>,
+        readiness: Arc<Mutex<Vec<Readiness>>>,
+        ports: Vec<u16>,
+    ) -> Self {
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let thread_shutdown = Arc::clone(&shutdown);
+        let thread = std::thread::Builder::new()
+            .name("weles-readiness".into())
+            .spawn(move || readiness_poller(&shared, &readiness, &ports, &thread_shutdown))
+            .ok();
+        ReadinessPoller { shutdown, thread }
+    }
+}
+
+impl Drop for ReadinessPoller {
+    fn drop(&mut self) {
+        self.shutdown.store(true, Ordering::SeqCst);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+/// The poller loop: each [`READINESS_PROBE_INTERVAL`], read the `Healthy` mask
+/// from `shared`, blank every non-`Healthy` index to `Unknown`, then issue ONE
+/// probe against the next `Healthy` index (round-robin via [`next_probe_index`])
+/// and record its verdict. Stops promptly on the private `shutdown` flag (checked
+/// between chunked sleeps, so join never waits a whole probe interval).
+fn readiness_poller(
+    shared: &Arc<Mutex<FleetState>>,
+    readiness: &Arc<Mutex<Vec<Readiness>>>,
+    ports: &[u16],
+    shutdown: &AtomicBool,
+) {
+    // Start the cursor at the last index so the first probe lands on index 0.
+    let mut cursor = ports.len().saturating_sub(1);
+    while !shutdown.load(Ordering::SeqCst) {
+        // Snapshot which indices the supervisor currently believes are Healthy.
+        let healthy: Vec<bool> = {
+            let state = shared.lock().expect("state mutex poisoned");
+            (0..ports.len())
+                .map(|i| {
+                    state
+                        .services
+                        .get(i)
+                        .is_some_and(|svc| svc.status == Status::Healthy)
+                })
+                .collect()
+        };
+        // Non-Healthy services have no meaningful readiness: blank them so a
+        // stale `Degraded` from before a crash can't linger in `weles status`.
+        {
+            let mut slots = readiness.lock().expect("readiness mutex poisoned");
+            for (i, is_healthy) in healthy.iter().enumerate() {
+                if !is_healthy {
+                    if let Some(slot) = slots.get_mut(i) {
+                        *slot = Readiness::Unknown;
+                    }
+                }
+            }
+        }
+        // One probe per interval, round-robin over the Healthy services.
+        if let Some(index) = next_probe_index(&healthy, cursor) {
+            cursor = index;
+            let verdict = readiness_for(health::probe(ports[index]));
+            if let Some(slot) = readiness
+                .lock()
+                .expect("readiness mutex poisoned")
+                .get_mut(index)
+            {
+                *slot = verdict;
+            }
+        }
+        sleep_until_stopped(shutdown, READINESS_PROBE_INTERVAL);
+    }
+}
+
+/// Sleeps up to `total`, waking early (within [`READINESS_STOP_POLL`]) once
+/// `shutdown` is set — so the poller joins promptly at teardown.
+fn sleep_until_stopped(shutdown: &AtomicBool, total: Duration) {
+    let deadline = Instant::now() + total;
+    while Instant::now() < deadline {
+        if shutdown.load(Ordering::SeqCst) {
+            return;
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        std::thread::sleep(remaining.min(READINESS_STOP_POLL));
+    }
+}
+
+// ---------------------------------------------------------------------------
 // The supervisor proper (thin execution around the pure policy)
 // ---------------------------------------------------------------------------
 
@@ -262,6 +433,11 @@ struct Supervised {
     /// teardown vocabulary: Starting/Restarting/Stopping/Exited/Stopped).
     status: Status,
     restarts: u32,
+    /// Post-healthy `/readyz` freshness, folded in from the out-of-band
+    /// readiness poller ([`fold_readiness`]). A checkpoint-only dimension —
+    /// structurally disjoint from `phase`/`status`/`history`, so a `Degraded`
+    /// probe can never restart the service.
+    readiness: Readiness,
 }
 
 impl Supervised {
@@ -273,6 +449,7 @@ impl Supervised {
             history: RestartHistory::default(),
             status: Status::Starting,
             restarts: 0,
+            readiness: Readiness::Unknown,
         }
     }
 }
@@ -323,6 +500,7 @@ impl Reporter {
                     status: svc.status,
                     pid: svc.proc.as_ref().map(OwnedProc::pid),
                     restarts: svc.restarts,
+                    readiness: svc.readiness,
                 })
                 .collect(),
         }
@@ -456,15 +634,35 @@ pub fn run_up(topology: Topology) -> Result<()> {
     reporter.set_control_endpoint(Some(endpoint.to_string_lossy().into_owned()));
     reporter.checkpoint(&fleet);
 
+    // Spawn the readiness poller alongside the control endpoint (before boot, so
+    // it starts reflecting `/readyz` freshness as services turn Healthy). It runs
+    // on its OWN thread — a blocking probe must never delay the monitor tick — and
+    // reads Healthy-ness from `reporter.shared()`. `readiness` is indexed like the
+    // fleet; the monitor folds it in for the checkpoint. The poller NEVER writes
+    // the fleet stop (stop-authority); its own lifecycle is its private flag.
+    let readiness: Arc<Mutex<Vec<Readiness>>> =
+        Arc::new(Mutex::new(vec![Readiness::Unknown; fleet.len()]));
+    let ports: Vec<u16> = fleet.iter().map(|svc| svc.def.http_port).collect();
+    let poller = ReadinessPoller::spawn(reporter.shared(), Arc::clone(&readiness), ports);
+
     let run_result = boot(&layout, &inputs, &mut fleet, &reporter, &fleet_stop);
     if run_result.is_ok() && !stop_requested(&fleet_stop) {
         reporter.set_status(FleetStatus::Running);
         reporter.checkpoint(&fleet);
         println!("weles: fleet healthy — press Ctrl-C or run `weles down` to stop");
-        monitor(&layout, &inputs, &mut fleet, &reporter, &control, &fleet_stop);
+        monitor(
+            &layout,
+            &inputs,
+            &mut fleet,
+            &reporter,
+            &control,
+            &readiness,
+            &fleet_stop,
+        );
     }
-    // Stop and join the control thread before teardown starts (every path that
-    // bound it reaches here — the bind-failure path returned above).
+    // Stop and join the poller + control threads before teardown starts (every
+    // path that spawned them reaches here — the bind-failure path returned above).
+    drop(poller);
     drop(control);
     // Runs for every exit path: operator stop, boot failure (unwinding exactly
     // what started, in reverse), or STOP during boot. A failure lands the fleet
@@ -579,6 +777,7 @@ fn monitor(
     fleet: &mut [Supervised],
     reporter: &Reporter,
     control: &ControlServer,
+    readiness: &Arc<Mutex<Vec<Readiness>>>,
     fleet_stop: &AtomicBool,
 ) {
     let mut control_death_reported = false;
@@ -595,6 +794,11 @@ fn monitor(
                  the fleet keeps running (stop it with Ctrl-C)"
             );
         }
+        // Fold in the poller's latest readiness (a brief lock to clone — never a
+        // probe on this thread). This ONLY writes `readiness`; the restart loop
+        // below runs the same pure `step` over liveness, untouched by it.
+        let latest = readiness.lock().expect("readiness mutex poisoned").clone();
+        let readiness_changed = fold_readiness(fleet, &latest);
         for index in 0..fleet.len() {
             let Some(phase) = fleet[index].phase else {
                 continue; // never started (impossible after a full boot)
@@ -612,6 +816,11 @@ fn monitor(
             if changed {
                 reporter.checkpoint(fleet);
             }
+        }
+        // Publish a readiness-only change (no phase transition this tick) so
+        // `weles status` reflects the freshness promptly.
+        if readiness_changed {
+            reporter.checkpoint(fleet);
         }
         std::thread::sleep(MONITOR_TICK);
     }

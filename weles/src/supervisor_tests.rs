@@ -377,3 +377,167 @@ fn boot_with_the_fleet_stop_set_on_entry_spawns_nothing() {
         "the service never advanced past Starting"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Readiness (#3): a post-healthy `/readyz` dimension that NEVER restarts.
+// The authority is structural — the probe becomes a `Readiness` (never an
+// `Observed`/`Directive`), and `fold_readiness` writes ONLY `readiness`. These
+// prove the at-risk wiring where it lives, not with a tautological `step()`.
+// ---------------------------------------------------------------------------
+
+/// A `Supervised` pinned into a chosen phase/status for the readiness tests.
+fn supervised_in(phase: Phase, status: Status) -> Supervised {
+    let mut svc = Supervised::new(dummy_def());
+    svc.phase = Some(phase);
+    svc.status = status;
+    svc
+}
+
+#[test]
+fn probe_result_maps_to_readiness_on_every_variant() {
+    // The ONE place a probe becomes a verdict — and it yields nothing but a
+    // `Readiness`, so no probe outcome can synthesize a restart input.
+    assert_eq!(readiness_for(ProbeResult::Ready), Readiness::Ready);
+    assert_eq!(readiness_for(ProbeResult::NotReady), Readiness::Degraded);
+    assert_eq!(
+        readiness_for(ProbeResult::ConnectFailed),
+        Readiness::Unreachable
+    );
+}
+
+#[test]
+fn healthy_service_probed_not_ready_records_degraded_without_touching_the_restart_state() {
+    // The pinned failing branch: a Healthy service whose `/readyz` answers a 503
+    // (ProbeResult::NotReady) must record Degraded and NOTHING else — no phase
+    // change, no failure count, no respawn. Folding is the WHOLE effect a probe
+    // has on supervised state.
+    let t0 = base();
+    let mut svc = Supervised::new(dummy_def());
+    svc.phase = Some(Phase::Healthy { healthy_since: t0 });
+    svc.status = Status::Healthy;
+    svc.history.record_healthy(t0);
+
+    let latest = vec![readiness_for(ProbeResult::NotReady)];
+    let mut fleet = vec![svc];
+    let changed = fold_readiness(&mut fleet, &latest);
+
+    assert!(changed, "a readiness change must request a checkpoint");
+    assert_eq!(fleet[0].readiness, Readiness::Degraded, "503 → Degraded");
+    // The restart lifecycle is UNTOUCHED — the invariant "503 never restarts".
+    assert_eq!(
+        fleet[0].phase,
+        Some(Phase::Healthy { healthy_since: t0 }),
+        "readiness must not advance the phase"
+    );
+    assert_eq!(fleet[0].status, Status::Healthy);
+    assert_eq!(fleet[0].restarts, 0);
+    assert_eq!(fleet[0].history.consecutive_failures, 0);
+    assert_eq!(fleet[0].history.healthy_since, Some(t0));
+
+    // And the ONLY thing that CAN restart this service — the liveness `step` —
+    // is driven by `Observed`, never the probe: an Alive tick is a no-op even
+    // though readiness is now Degraded (no Respawn/Kill directive).
+    let directive = step(
+        Phase::Healthy { healthy_since: t0 },
+        Observed::Alive,
+        false,
+        t0 + secs(1),
+        &mut fleet[0].history,
+    );
+    assert_eq!(
+        directive,
+        Directive::Stay(Phase::Healthy { healthy_since: t0 }),
+        "a Degraded readiness must not turn a live Healthy service into a Respawn"
+    );
+}
+
+#[test]
+fn folding_readiness_never_perturbs_phase_status_or_the_failure_count() {
+    // Poller ⊥ monitor: updating the readiness vector across a fleet spanning
+    // every phase mutates ONLY `readiness`; the restart-lifecycle fields are
+    // byte-for-byte unchanged, and `fold_readiness` returns a bool — never a
+    // `Directive` (the type system already forbids it from restarting anything).
+    let t0 = base();
+    let mut fleet = vec![
+        supervised_in(Phase::Healthy { healthy_since: t0 }, Status::Healthy),
+        supervised_in(
+            Phase::Backoff {
+                respawn_at: t0 + secs(1),
+            },
+            Status::Backoff,
+        ),
+        supervised_in(
+            Phase::WaitingHealthy {
+                deadline: t0 + HEALTH_DEADLINE,
+            },
+            Status::WaitingHealthy,
+        ),
+        supervised_in(Phase::Failed, Status::Failed),
+    ];
+    let before: Vec<_> = fleet
+        .iter()
+        .map(|svc| {
+            (
+                svc.phase,
+                svc.status,
+                svc.restarts,
+                svc.history.consecutive_failures,
+            )
+        })
+        .collect();
+
+    let latest = vec![
+        Readiness::Degraded,
+        Readiness::Unreachable,
+        Readiness::Ready,
+        Readiness::Unknown,
+    ];
+    let changed = fold_readiness(&mut fleet, &latest);
+    assert!(changed);
+
+    for (index, svc) in fleet.iter().enumerate() {
+        assert_eq!(
+            (
+                svc.phase,
+                svc.status,
+                svc.restarts,
+                svc.history.consecutive_failures
+            ),
+            before[index],
+            "fold_readiness perturbed the restart lifecycle of service {index}"
+        );
+        assert_eq!(svc.readiness, latest[index], "readiness must be applied");
+    }
+}
+
+#[test]
+fn next_probe_index_round_robins_over_healthy_and_skips_the_rest() {
+    // Services 0 and 2 Healthy, 1 not: the cursor visits only Healthy indices.
+    let healthy = [true, false, true];
+    assert_eq!(next_probe_index(&healthy, 2), Some(0), "cursor 2 → wrap to 0");
+    assert_eq!(next_probe_index(&healthy, 0), Some(2), "skip non-Healthy 1");
+    assert_eq!(next_probe_index(&healthy, 2), Some(0), "wrap back to 0");
+
+    // Over N cycles each Healthy service is probed the same number of times and
+    // the non-Healthy one is never probed.
+    let mut cursor = healthy.len() - 1;
+    let mut hits = [0usize; 3];
+    for _ in 0..6 {
+        let index = next_probe_index(&healthy, cursor).expect("a Healthy service exists");
+        hits[index] += 1;
+        cursor = index;
+    }
+    assert_eq!(hits, [3, 0, 3], "each Healthy probed equally, non-Healthy never");
+}
+
+#[test]
+fn next_probe_index_handles_no_healthy_and_empty_without_panicking() {
+    assert_eq!(next_probe_index(&[false, false], 0), None, "no Healthy → None");
+    assert_eq!(
+        next_probe_index(&[], 0),
+        None,
+        "empty fleet → None, never a div-by-zero"
+    );
+    // A cursor past the end must wrap, not panic.
+    assert_eq!(next_probe_index(&[true], 999), Some(0));
+}

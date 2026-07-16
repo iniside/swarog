@@ -27,18 +27,21 @@ fn sample_state() -> FleetState {
                 status: Status::Healthy,
                 pid: Some(1001),
                 restarts: 0,
+                readiness: Readiness::Ready,
             },
             ServiceState {
                 name: "gateway-svc".to_string(),
                 status: Status::Backoff,
                 pid: None,
                 restarts: 3,
+                readiness: Readiness::Unknown,
             },
             ServiceState {
                 name: "admin-svc".to_string(),
                 status: Status::Failed,
                 pid: None,
                 restarts: 5,
+                readiness: Readiness::Unknown,
             },
         ],
     }

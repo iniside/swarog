@@ -64,6 +64,26 @@ pub struct ProcessIdentity {
     pub started_unix: u64,
 }
 
+/// Post-healthy freshness of a service's `/readyz`, a dimension SEPARATE from
+/// [`Status`]: `Status` is the restart lifecycle (a probe never drives it),
+/// `Readiness` is what the out-of-band poller last saw. A `Degraded`/`Unreachable`
+/// readiness NEVER restarts the service — it is recorded and rendered only.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub enum Readiness {
+    /// Not yet probed, or the service is not `Healthy` (the poller only probes
+    /// `Healthy` services and blanks the rest).
+    #[default]
+    Unknown,
+    /// Last probe answered `/readyz` 200 ([`crate::health::ProbeResult::Ready`]).
+    Ready,
+    /// Last probe connected but did not answer 200 — a 503 while degraded, or a
+    /// torn response ([`crate::health::ProbeResult::NotReady`]).
+    Degraded,
+    /// Last probe could not connect at all
+    /// ([`crate::health::ProbeResult::ConnectFailed`]).
+    Unreachable,
+}
+
 /// One supervised service's checkpointed state.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ServiceState {
@@ -71,6 +91,9 @@ pub struct ServiceState {
     pub status: Status,
     pub pid: Option<u32>,
     pub restarts: u32,
+    /// Post-healthy `/readyz` freshness (checkpoint-only; never a restart input).
+    #[serde(default)]
+    pub readiness: Readiness,
 }
 
 /// The whole checkpointed fleet.

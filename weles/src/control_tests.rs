@@ -9,7 +9,7 @@ use super::*;
 
 use std::sync::atomic::AtomicU32;
 
-use crate::state::ServiceState;
+use crate::state::{Readiness, ServiceState};
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -36,12 +36,14 @@ fn sample_state(status: FleetStatus, supervisor_pid: u32) -> FleetState {
                 status: Status::Healthy,
                 pid: Some(1001),
                 restarts: 0,
+                readiness: Readiness::Ready,
             },
             ServiceState {
                 name: "gateway-svc".to_string(),
                 status: Status::Backoff,
                 pid: None,
                 restarts: 2,
+                readiness: Readiness::Unknown,
             },
         ],
     }

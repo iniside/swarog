@@ -26,7 +26,7 @@ use std::time::{Duration, Instant};
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::state::{self, FleetState, FleetStatus, ProcessIdentity, Status};
+use crate::state::{self, FleetState, FleetStatus, ProcessIdentity, Readiness, Status};
 
 /// Upper bound on a single control frame (header + body). Copied intent from
 /// devctl; sized generously (64 KiB) — a status table is far smaller.
@@ -268,13 +268,21 @@ fn render_status(state: &FleetState) -> String {
             .pid
             .map(|pid| pid.to_string())
             .unwrap_or_else(|| "-".to_string());
+        // Annotate a Healthy service with its post-healthy `/readyz` freshness;
+        // omit it for non-Healthy services (readiness is Unknown there).
+        let mut status = format!("{:?}", svc.status).to_lowercase();
+        if svc.status == Status::Healthy {
+            match svc.readiness {
+                Readiness::Ready => status.push_str(" [ready]"),
+                Readiness::Degraded => status.push_str(" [degraded]"),
+                Readiness::Unreachable => status.push_str(" [unreachable]"),
+                Readiness::Unknown => {}
+            }
+        }
         let _ = write!(
             out,
-            "\n  {:<16} {:<14} pid {:<8} restarts {}",
-            svc.name,
-            format!("{:?}", svc.status).to_lowercase(),
-            pid,
-            svc.restarts
+            "\n  {:<16} {:<24} pid {:<8} restarts {}",
+            svc.name, status, pid, svc.restarts
         );
     }
     out
