@@ -621,10 +621,14 @@ fn apply_http_layers(ctx: &Context, mut router: axum::Router) -> axum::Router {
 ///    probe contributed to `/readyz`,
 /// 5. the plane's own-schema migration, then [`App::migrate`] — the event log
 ///    exists before any module's first `emit_tx`,
-/// 6. [`App::start`], then the durable plane's start (subscription reconcile — the
-///    snapshot is taken AFTER all module inits and stub registers — pull workers,
-///    NOTIFY wake-up, metrics), then the invalidation plane's start (each refresh
-///    callback's first run synchronously — fail loud — then its NOTIFY listener + poll),
+/// 6. [`App::start`], then the invalidation plane's start (each refresh callback's
+///    first run synchronously — fail loud — then its NOTIFY listener + poll), THEN
+///    the durable plane's start (subscription reconcile — the snapshot is taken
+///    AFTER all module inits and stub registers — pull workers, NOTIFY wake-up,
+///    metrics): invalidation must win this race so a durable handler can never read
+///    a cold replica-local cache. This is the OPPOSITE order from teardown (step 10
+///    below halts the durable plane before the invalidation plane) — do not "fix"
+///    one order to match the other; they are deliberately asymmetric.
 /// 7. if `edge_server` is `Some`, bind the internal mutual-TLS QUIC listener, and if
 ///    `player_server` is `Some`, bind the player-facing server-cert-only QUIC listener
 ///    — both AFTER build (so every handler a module registered during init exists),

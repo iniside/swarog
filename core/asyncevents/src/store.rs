@@ -1,8 +1,10 @@
 //! V2 event-log storage: the XID-ordered shared log (`asyncevents.events`), the
 //! commit-safe append protocol, and the plane's identity/generation metadata.
-//! Additive at Step 2 — the legacy `outbox`/`inbox` push path in
-//! [`crate::producer`] stays the live delivery mechanism until the pull-worker
-//! cutover (plan Step 3); nothing here is wired into `Transport::enqueue_tx` yet.
+//! This is the LIVE append path: [`crate::transport::LogTransport::enqueue_tx`]
+//! calls [`ensure_history_contract`] then [`append`] directly on the producer's
+//! own transaction. The legacy `outbox`/`inbox` push path has been dropped
+//! ([`crate::LEGACY_DROP_DDL`] tears down those tables plus the pre-rename
+//! `messaging` schema) — there is no separate producer module anymore.
 //!
 //! Correctness model (docs/plans/2026-07-09-2234-durable-event-log-fresh-plan.md):
 //! a position is `(generation, producer_xid, tie_breaker)` — `bigserial` is never
@@ -369,8 +371,8 @@ fn split_sql_statements(script: &str) -> Vec<String> {
 /// Appends one durable event by calling `asyncevents.append_event` — the single
 /// writer implementation (shared advisory lock, generation read, xid8 stamp) —
 /// on the CALLER's open transaction connection, so the event commits iff the
-/// producer's domain change commits. Returns the stable `event_id`.
-/// Not wired into `Transport::enqueue_tx` until the plan-Step-3 cutover.
+/// producer's domain change commits. Returns the stable `event_id`. This is
+/// the live call made from [`crate::transport::LogTransport::enqueue_tx`].
 pub async fn append(
     conn: &mut PgConnection,
     contract: &EventContract,
