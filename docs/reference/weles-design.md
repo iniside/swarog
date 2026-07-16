@@ -243,10 +243,14 @@ Consequences, accepted deliberately:
   separate processes** — the agent stays up holding its job objects — **not from
   re-attach.** Re-attach would only buy "the agent itself can restart without
   downtime", a much narrower prize.
-- **The agent is stateless.** It mints ports locally and reports them up (the
-  master persists them for the record); it need not remember them, because an
-  agent restart takes the fleet with it and everything is re-minted on the way
-  back.
+- **The agent is stateless about the WORKLOAD.** It mints ports locally and
+  reports them up (the master persists them for the record); it need not remember
+  them, because an agent restart takes the fleet with it and everything is
+  re-minted on the way back. **"Stateless" scopes to the workload — processes,
+  ports, assignments — and NOT to the agent's own configuration.** A daemon has
+  config. In particular the agent persists *who its master is* (see master
+  migration below); that is config, not workload state, and the two must not be
+  conflated when reading the word "stateless" here.
 
 ### Master unavailable = orchestration is down. Accepted.
 
@@ -256,10 +260,32 @@ remembers no assignment, so a machine whose agent restarts during a master outag
 stays dark. At this scale (a handful of machines, ~12 services) that is a fair
 trade; the machinery Nomad builds to avoid it solves a problem we do not have.
 
+**Why the SPOF is affordable: a cold start of the orchestrator plus the fleet is
+seconds.** Rust binaries, native processes, no image pulls. Proper HA — Raft,
+re-attach, caches — is a large problem we are deliberately not solving, and the
+boot path is what makes not solving it survivable.
+
+The consequence worth naming: **boot simplicity and boot speed are not UX, they
+are disaster recovery.** That is an independent argument for keeping the boot path
+short and uncomplicated, and for M2 (binding control before the slow prep
+helpers). Two honest qualifications:
+- Fleet recovery time is **Σ of per-service healthy times, not max** — boot is
+  deliberately sequential (one service spawned and gated at a time). If this ever
+  hurts, the lever is a **parallel boot**, not HA.
+- The 30–60s prep window (`edgeca` + `seed_admin`) is a **fresh-install** cost,
+  not a recovery cost: `mint_ca` short-circuits when both CA files already exist.
+  So "prep is eating the recovery budget" is NOT a valid argument for M2; the
+  Σ-boot one is.
+
 Corollary: caching in the agent is **not foreclosed** — the service-facing
 contract below is identical whether the agent knows the answer or forwards the
 question, so a cache stays a pure optimization, addable when a second machine
 makes it hurt.
+
+**On one machine the question does not even arise:** the agent minted the ports
+and spawned the processes, so it IS the source of truth for everything local. The
+master is only needed for peers on *other* machines. Local resolve therefore never
+touches the master, cache or no cache.
 
 ## The service-facing contract: services only ever talk to their local agent
 
@@ -297,6 +323,38 @@ more invasive than the architecture we cite. We go further on purpose — we wan
 re-render + signal/restart the task. That is a defensible call, but it is OURS,
 not inherited. Do not justify the pull contract by pointing at Nomad.
 
+## Who deploys Weles itself (decided 2026-07-16)
+
+A human, with a script in this repo. `weles deploy` stages the *fleet's* binaries;
+nothing stages weles. The upgrade is: **stop weles → the fleet dies with it (by
+design) → swap the binary → start → the fleet comes back up the normal boot path.**
+
+Self-upgrade therefore inherits "the recovery path IS the normal boot path" for
+free — there is no separate upgrade machinery to rot. On a slave the shape is
+identical, just driven through the system service manager. The script must
+**self-check and refuse to run while weles is alive** (swapping a binary under a
+live fleet is the one way to get this wrong).
+
+## Master migration: live-repoint the agents (decided 2026-07-16)
+
+Moving the master to another machine is a **repoint of the agents**, not a DNS
+flip. A flip assumes control of a resolver we do not have on a home LAN; a repoint
+avoids the question entirely and reuses the master-restart path we already have.
+
+- **The repoint persists.** The agent keeps a small file with its last-known
+  master address; the startup flag is **bootstrap only**, consulted when the file
+  is absent. Without persistence an agent restart would march back to a
+  decommissioned master. (This is config, not workload state — see "stateless"
+  above.)
+- **Runbook order prevents split-brain:** stop the old master → move the `.db` and
+  the CA → start the new master → repoint the agents. There is never a window with
+  two masters.
+- **Identity is the certificate, not the address** — which is what makes the
+  repoint safe: the agent does not trust a host, it trusts a cert. Hence the CA
+  travels with the `.db`.
+- The repoint command lands on the agent's **local** control endpoint (operator
+  trust domain). N agents = a loop in the same script as the self-deploy.
+
 ## Transport: HTTPS + JSON + mTLS, not QUIC (decided 2026-07-16)
 
 The internal edge is QUIC, so QUIC is the tempting default. It is the wrong tool
@@ -315,10 +373,31 @@ here:
   blocking parity stage merely because weles hand-copied `fleet.rs` (ports and
   env). Raw quinn with our own framing would share only the transport's name.
 
-Authorization on the agent↔master hop is mTLS with client certs from the CA weles
-already mints (by shelling out to the deployed `edgeca` binary — a process
-contract, not an import). `reqwest` is already in the workspace for the backend
-side.
+### The orchestrator needs its OWN CA — not the backend's edge CA
+
+Authorization on the agent↔master hop is mTLS. The tempting shortcut — reuse the
+CA weles already mints via `edgeca` — is **wrong, and it follows from
+zero-sharing** (a case the rule catches that no checker would: it hides in a file
+path and an env var, never in a `Cargo.toml`).
+
+Concretely: `manifest::compose_env` hands **`EDGE_CA_KEY` — the CA private key —
+to every DB-backed service and to the gateway** (they mint their own edge certs
+from it). If the control plane trusted that same CA, any service on the box could
+issue itself an agent certificate and speak to the master as an agent. The mTLS
+would be encryption, not an authorization boundary — the same two-trust-domains
+mistake as unifying the operator pipe.
+
+So weles mints **two** CAs, for two purposes:
+1. **Its own**, for agent↔master. Minted by weles itself (`rcgen` is an external
+   crate — allowed). **Not** via `edgeca`: that is a *backend artifact* staged in
+   `deploy/`, and the orchestrator's identity must not depend on the workload's
+   binaries being deployed first.
+2. **The backend's edge CA**, which it keeps provisioning via `edgeca` as part of
+   preparing the fleet — that is workload setup, not orchestrator identity.
+
+Master migration moves the **orchestrator's** CA with the `.db`, not the backend's.
+
+`reqwest` is already in the workspace for the backend side.
 
 ## Tokio: the runtime arrives WITH the HTTPS server (decided 2026-07-16)
 
@@ -396,6 +475,14 @@ not weakening local auth everywhere.
 
 ## Rejected — do not re-propose
 
+- **Adopting Nomad (or Consul/etcd/Agones/k8s) instead of building this.** Nomad
+  is the **reference architecture, not a candidate**. The owner wants his own
+  orchestrator; that is a sufficient and non-negotiable reason on its own, and it
+  is not open to re-litigation by a fresh context trying to be helpful. (For the
+  record, adoption would also collide with decisions above — no containers, native
+  processes, zero-sharing, Windows-first, one small binary — but those are
+  supporting facts, not the reason.) Do not propose adoption. Do mine Nomad for
+  shape, and say when we deviate.
 - **Containers / Docker / k8s / containerd** — see Non-negotiables.
 - **Weles using the backend's Postgres** (registry table + LISTEN/NOTIFY) —
   superseded; violates zero-sharing.
@@ -428,23 +515,81 @@ not weakening local auth everywhere.
 - **How binaries reach a second machine.** `weles deploy` stages into a local
   `deploy/`. Nomad clients fetch artifacts themselves. Ours does not address this
   at all. No idea yet — revisit when the second machine is real.
-- **Port minting vs the parity gate.** The blocking `weles-fleet-parity` stage
-  asserts static ports equal to processctl's. Minting requires reframing "static
-  ports" as "requested defaults" and redefining what the gate asserts — otherwise
-  minting fails `--fast`. See [weles-fleet-parity](weles-fleet-parity.md).
+- **Port minting vs the parity gate — the first M1 design task, not a footnote.**
+  The blocking `weles-fleet-parity` stage asserts weles's static ports equal
+  processctl's. A minted port has no static value to compare, and a managed
+  service's peer env (`*_EDGE_ADDR`) does not exist at all — it resolves. So the
+  gate loses exactly the comparison it was built for (peer wiring), and weles has
+  no other gate. Note the replacement is NOT a weaker static assertion "modulo
+  ports" — it is a **live test of managed mode**.
+
+  **The ordering constraint that makes this tractable:** *a service's port cannot
+  be minted until every consumer of it resolves.* Give inventory a random port and
+  gateway/admin still hold `INVENTORY_EDGE_ADDR` in env. So managed mode spreads
+  along dependency edges, consumer-first, and minting is the LAST step, not the
+  first. Consequence: the gate need not fall all at once — a service leaves the
+  port assertion exactly when it goes managed, each departure paid for by a live
+  proof of that service, and everything still standalone stays fully asserted.
+  Natural first managed service: **gateway** — it dials six peers and nothing dials
+  its edge, so it can start resolving without forcing anyone else to move (its own
+  port stays static regardless; it is the public front door and must be
+  predictable). See [weles-fleet-parity](weles-fleet-parity.md).
+- **Minting × master-down.** With minted ports, a crash during a master outage
+  means the agent restarts the service on a NEW port that nobody can discover
+  until the master returns — so "running processes keep running" quietly becomes
+  "…until one crashes". This is the first real argument for an agent-side cache:
+  with minting, the cache stops being a pure optimization and becomes a
+  *consequence* of the minting decision. **Not a day-one problem:** on one machine
+  the agent minted the ports itself and is the local source of truth, so this only
+  bites for *remote* peers at machine two. Record it so M1 does not design it away
+  by accident.
 - **Replica-safety is a module prerequisite**, not a Weles feature: before any
   `replicas: 2`, rating's MMR must be DB-backed and the relay needs an advisory
   lock per `EVENTS_ORIGIN`.
+- **Round-robin LB is not "a field change".** Re-resolution is cheap — `Stub`
+  holds `peer_addr` as an unparsed `String` and parses at dial, so swapping the
+  string for a resolver call is small. **Load balancing is not:** N live instances
+  means a connection pool per instance, a selection policy, a notion of instance
+  health, and an interaction with `RetryMode` when an instance dies mid-request.
+  Estimate them separately or the estimate is wrong.
 
-## M1 scope
+## M1 scope — what it actually is
 
-`weles rollback` (generations + `current` + sha256 already exist — one CLI verb),
-`hello`/`resolve`, SQLite, port minting.
+**M1 is a shape-proving milestone, not a feature milestone. Say so out loud.** At
+one machine with twelve services on static ports, minting solves nothing that is
+broken today (it exists for replicas, which are out of scope pending module
+prerequisites) and `resolve` answers what env already answers. The point is to
+build the master/agent seam and the managed contract **while the stakes are low** —
+that is a legitimate reason, but it is the reason, and nobody should later hunt for
+the feature that minting delivered.
 
-Carried into M1 from the readiness review
-([status](../status/2026-07-16-1342-weles-m1-readiness-review-2-status.md)):
-bind the control endpoint before the slow prep helpers (today a 30–60s window
-where `weles down` cannot stop the fleet, and M1 lengthens it); take the
-readiness probe off the monitor thread before replicas; derive `DOWN_TIMEOUT`
-from fleet size; verify sha256 on read (the integrity half of rollback); treat
-retention's live pins as a set once overlapping supervisors are possible.
+**M1 has no network hop at all.** Master and agent are one process, so there is
+nothing between them to secure; services reach the agent over localhost, where the
+contract deliberately uses no certificates. So M1 is: a **local** HTTP+JSON
+contract, no TLS, no orchestrator CA. The decisions above (network transport,
+HTTPS, mTLS, own CA) stand — they simply have no hop to run on until machine two.
+
+In M1:
+- The master/agent role split, internally — one binary, two roles (Nomad's shape).
+- The local service-facing contract (`hello`/`resolve`) served by the agent, and
+  the client in `core/remote` — with tokio arriving as the contained I/O island
+  behind that server.
+- **Port minting**, agent-side — ordered by the consumers-resolve-first constraint
+  above, so it lands per-service rather than fleet-wide.
+- **SQLite** for master runtime state (minted ports reported up, deploy history,
+  instance records).
+- **`weles rollback`** — independent of everything else and cheap (generations,
+  `current` and sha256 already exist); it needs **sha-verify-on-read**, which is
+  its integrity half, not a separate feature.
+- **The managed-mode proof** — weles has no other gate, and every service that goes
+  managed leaves the parity gate's port assertion.
+- Along the way: **M2** (bind control before the slow prep helpers) and
+  `DOWN_TIMEOUT` derived from fleet size.
+
+Deferred to machine two (recorded, not forgotten): the network hop and mTLS, the
+orchestrator's own CA, agent-side caching for remote peers, master migration by
+repoint, and how binaries reach a second machine.
+
+Not in M1: replicas (module prerequisites), round-robin LB, gateway
+routing-as-data via `describe()` (which still has an open research question), and
+re-attach (rejected outright).
