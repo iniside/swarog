@@ -27,28 +27,41 @@ passes in isolation — uninvestigated). Plan+errata:
 docs/plans/2026-07-15-1055-weles-m0-plan.md. M1 next: hello/resolve contract,
 SQLite, port minting, replica-safety prerequisites.
 
-**Pre-M1 backlog (Lukasz, 2026-07-15, ordered — approved direction, not started):**
-1. FIRST, backend rollout: stub re-dial after peer incarnation change
-   ([[edge-stub-no-reconnect-after-peer-restart]]) — restart-on-crash is dishonest
-   without it; connection-layer fix in core/remote/edge, does NOT wait for M1
-   resolve; committed splitproof assertion module→module-after-peer-restart.
-2. Control endpoint binds BEFORE boot (supervisor.rs currently binds after fleet
-   healthy) — down/status must work on a stuck boot; boot loop already checks STOP.
-3. Post-healthy readyz monitoring → `Degraded` status, NEVER auto-restart on 503
-   (readyz aggregates DB/peers — a Postgres blip flips 11 svc at once = restart
-   storm; restarts stay tied to process death only). Requires a probe budget per
-   tick (round-robin) — synchronous probes cost up to ~800ms/svc.
-4. Deploy generations: deploy/gen-N/ + atomic `current` switch + artifact hashes
-   (kills partial-deploy observability + the Windows live-exe overwrite asymmetry;
-   rollback = repoint; foundation for rolling deploy). Scope guard: NOT a package
-   manager — no signatures/remote fetch/registry.
-5. Narrative discipline: today's manifest is deliberately a DEV flavor (static
-   ports, dev seeds, admin/admin, fleet.rs parity) — Weles is a dev-environment
-   supervisor with a production-grade skeleton, not a small Nomad yet; M1 must not
-   leak production knobs into the dev flavor or vice versa.
-Also queued from Step 7 leftovers: devctl flake under workspace parallelism
-(down_waits_for_stopped…) and the one-line processctl BUILD_ENV_ALLOWLIST gap
-(SYSTEMDRIVE/ProgramData).
+**Pre-M1 backlog #2-#5 SHIPPED (2026-07-16).** Plan
+docs/plans/2026-07-15-1840-weles-pre-m1-backlog-plan.md, completion
+docs/status/2026-07-16-0930-weles-pre-m1-backlog-complete-status.md. Each part
+got an independent adversarial pass; C and D needed follow-ups closing real
+authority defects found at the fix's own seam. What landed:
+- **#1 dropped** — B1 (stub re-dial) closed as non-reproducible, transport
+  hypothesis refuted ([[edge-stub-no-reconnect-after-peer-restart]]); restart-on
+  -crash is NOT blocked by the connection layer.
+- **#2** (`52f3cb7`): control endpoint binds BEFORE boot; `fleet_stop` threaded
+  as an `Arc` (the `CONTROL_STOP` OnceLock was removed — a process-global bled a
+  stale stop into a 2nd run_up). `down`/`status` now reach a booting fleet.
+- **#3** (`d82d551`): readiness poller on a DEDICATED thread (a ~800ms probe must
+  never block the monitor tick); new `Readiness` dimension (Degraded/Unreachable/
+  Ready) that is STRUCTURALLY disjoint from restart — `step()`/`observe()` for
+  Healthy unchanged, so a 503/Postgres blip can never restart-storm the fleet.
+- **#4** (`205b38a`+`ff4ba7f`+`6e33336`): deploy generations — `deploy/gen-N/` +
+  `current` pointer PINNED once at `Layout::discover` (per-call would mix
+  generations on respawn) + SHA-256 manifest + atomic flip. Retention protects
+  the generation pinned by a LIVE supervisor by NAME (via `state.pinned_generation`
+  + `supervisor_alive`), not the numeric current-1 — on Unix `remove_dir_all` over
+  a running exe succeeds silently, so a naive prune broke crash-respawn (the HIGH).
+  Pin recorded before the prep helpers so a concurrent deploy sees it.
+- **#5** (`ff88c09`+`9495322`): BLOCKING verifyctl stage `weles-fleet-parity` —
+  weles is NOT exercised by split-proof, so this is its only parity gate. Machine
+  -checks weles↔processctl Development fleet: name/ports/has_db/pool/dependencies
+  + full normalized composed env + the PG session budget (`dedicated`/
+  `PG_SESSION_BUDGET`) + `SERVICE_ENV_ALLOWLIST`. Closes the
+  [[didnt-forget-scripts-must-self-check]] gap — every "Mirrors fleet.rs" const
+  now cross-checked, not just commented. HEAD parity full, zero latent drift.
+Still open (tracked, NOT weles-core): devctl flake under workspace parallelism
+(down_waits_for_stopped…, passes in isolation) and the one-line processctl
+BUILD_ENV_ALLOWLIST gap (SYSTEMDRIVE/ProgramData). Deliberately deferred: a
+`weles rollback` CLI (M1), a deploy-scoped lock for concurrent `weles deploy`
+(one-deploy-at-a-time is operator discipline for now), clearing
+`control_endpoint` on teardown (pre-existing stale-endpoint window).
 
 Decision (2026-07-09): the future mini-orchestrator for this backend will manage
 **native OS processes — explicitly NO containers, no Docker, no Kubernetes**.
