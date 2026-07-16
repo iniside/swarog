@@ -1,190 +1,44 @@
 ---
 name: mini-orchestrator-native-no-containers
-description: "WELES — the future mini-orchestrator (top-level weles/) runs NATIVE processes, no containers/Docker/k8s; agent name reserved: Rarog"
+description: "WELES — the mini-orchestrator (top-level weles/): design now lives in docs/reference/weles-design.md; M0+pre-M1 shipped, M1 next"
 metadata: 
   node_type: memory
   type: project
   originSessionId: fb10aade-7f3e-4b87-9d35-e9f2dfc074bf
 ---
 
-**Named WELES (2026-07-15, Lukasz):** Slavic god of herds — it shepherds the
-process flock (the backend is Swaróg). Top-level crate/binary `weles/`, CLI
-`weles up/status/down`. If master and per-machine agent ever get separate names:
-master = `weles`, agent = `rarog` (Swaróg's fire falcon) — reserved, not decided.
+**The design is in the repo, not here: `docs/reference/weles-design.md`** (written
+2026-07-16). It carries the settled shape — native processes/no containers,
+zero-sharing via a wire-only JSON contract, the two disjoint boot modes
+(`ORCHESTRATOR_URL` set ⇒ managed, unset ⇒ standalone first-class), the client in
+`core/remote` (NOT a weles crate — so `Stub` can re-resolve), resolve scoped to the
+consumer's declared deps, client-side round-robin LB, gateway routing-as-data via
+`describe()`, SQLite for runtime state only, master+agents with no overlay/no
+election, the rejected list, and the open points. **Read that file before proposing
+any Weles shape** — this memory is a pointer, not a second copy.
 
-**M0 SHIPPED (2026-07-15):** crate `weles/` live — supervisor with per-svc
-restart-on-crash (expo backoff 1s..30s, GiveUp at 5, fleet survives), rollout.lock
-bit-compat (1 byte at 1<<63 + owner-only DACL), control endpoint (status/down),
-state.json, `weles deploy <src-dir>` → `<root>/deploy/`. TWO design corrections by
-Lukasz mid-rollout, now binding: (a) **the orchestrator NEVER builds** — no cargo,
-no BUILD_ENV_ALLOWLIST (linker failure exposed the creep; latent allowlist gap
-SYSTEMDRIVE/ProgramData stays in processctl fleet.rs:8-14); (b) **own artifact dir**
-`deploy/`, never target/debug (no Cargo-isms). Acceptance: split 12/12, smoke,
-chaos-restart ~2s, lock coexistence with devctl, kill-on-drop, monolith — all
-passed; found [[edge-stub-no-reconnect-after-peer-restart]] (open backend bug) and
-a devctl test flake under full-workspace parallelism (down_waits_for_stopped…,
-passes in isolation — uninvestigated). Plan+errata:
-docs/plans/2026-07-15-1055-weles-m0-plan.md. M1 next: hello/resolve contract,
-SQLite, port minting, replica-safety prerequisites.
+Why the file exists: the design lived only in memory for a week, so a fresh context
+proposed a client crate in `weles/` imported by the backend — contradicting the
+decided wire-only contract. Memory is per-machine and invisible to whoever writes
+the plan. Durable design belongs in `docs/reference/`.
 
-**Pre-M1 backlog #2-#5 SHIPPED (2026-07-16).** Plan
-docs/plans/2026-07-15-1840-weles-pre-m1-backlog-plan.md, completion
-docs/status/2026-07-16-0930-weles-pre-m1-backlog-complete-status.md. Each part
-got an independent adversarial pass; C and D needed follow-ups closing real
-authority defects found at the fix's own seam. What landed:
-- **#1 dropped** — B1 (stub re-dial) closed as non-reproducible, transport
-  hypothesis refuted ([[edge-stub-no-reconnect-after-peer-restart]]); restart-on
-  -crash is NOT blocked by the connection layer.
-- **#2** (`52f3cb7`): control endpoint binds BEFORE boot; `fleet_stop` threaded
-  as an `Arc` (the `CONTROL_STOP` OnceLock was removed — a process-global bled a
-  stale stop into a 2nd run_up). `down`/`status` now reach a booting fleet.
-- **#3** (`d82d551`): readiness poller on a DEDICATED thread (a ~800ms probe must
-  never block the monitor tick); new `Readiness` dimension (Degraded/Unreachable/
-  Ready) that is STRUCTURALLY disjoint from restart — `step()`/`observe()` for
-  Healthy unchanged, so a 503/Postgres blip can never restart-storm the fleet.
-- **#4** (`205b38a`+`ff4ba7f`+`6e33336`): deploy generations — `deploy/gen-N/` +
-  `current` pointer PINNED once at `Layout::discover` (per-call would mix
-  generations on respawn) + SHA-256 manifest + atomic flip. Retention protects
-  the generation pinned by a LIVE supervisor by NAME (via `state.pinned_generation`
-  + `supervisor_alive`), not the numeric current-1 — on Unix `remove_dir_all` over
-  a running exe succeeds silently, so a naive prune broke crash-respawn (the HIGH).
-  Pin recorded before the prep helpers so a concurrent deploy sees it.
-- **#5** (`ff88c09`+`9495322`): BLOCKING verifyctl stage `weles-fleet-parity` —
-  weles is NOT exercised by split-proof, so this is its only parity gate. Machine
-  -checks weles↔processctl Development fleet: name/ports/has_db/pool/dependencies
-  + full normalized composed env + the PG session budget (`dedicated`/
-  `PG_SESSION_BUDGET`) + `SERVICE_ENV_ALLOWLIST`. Closes the
-  [[didnt-forget-scripts-must-self-check]] gap — every "Mirrors fleet.rs" const
-  now cross-checked, not just commented. HEAD parity full, zero latent drift.
-Still open (tracked, NOT weles-core): devctl flake under workspace parallelism
-(down_waits_for_stopped…, passes in isolation) and the one-line processctl
-BUILD_ENV_ALLOWLIST gap (SYSTEMDRIVE/ProgramData). Deliberately deferred: a
-`weles rollback` CLI (M1), a deploy-scoped lock for concurrent `weles deploy`
-(one-deploy-at-a-time is operator discipline for now), clearing
-`control_endpoint` on teardown (pre-existing stale-endpoint window).
+**Status:** M0 shipped 2026-07-15 (`docs/plans/2026-07-15-1055-weles-m0-plan.md`);
+pre-M1 backlog #2-#5 + hardening P1-P6 + review punch-list A1-A3 all shipped by
+2026-07-16 (`docs/status/2026-07-16-1342-weles-m1-readiness-review-2-status.md` is
+the current readiness verdict + carried-in items). M1 = rollback / hello+resolve /
+SQLite / port minting — not started.
 
-Decision (2026-07-09): the future mini-orchestrator for this backend will manage
-**native OS processes — explicitly NO containers, no Docker, no Kubernetes**.
-Scope sketch (not started): supervisor (spawn/restart/backoff off `/readyz`) +
-multi-peer round-robin in `remote::Stub` + rolling deploy with QUIC drain.
-Prerequisite before any `replicas: 2`: module replica-safety (rating MMR to DB,
-advisory lock on relay per EVENTS_ORIGIN).
+Two design corrections made mid-M0 by Lukasz, now binding and easy to re-violate:
+(a) **the orchestrator NEVER builds** (a linker failure exposed the creep);
+(b) **own artifact dir `deploy/`**, never `target/debug` — no Cargo-isms.
 
-**Why:** Rust ships static binaries — containers would wrap one file for
-ceremony; native supervision is simpler (no containerd, no PID-1 traps); resource
-limits, if ever needed, are direct cgroups. Reference point: Guild Wars 1 (2005)
-ran a custom native-process orchestrator with live no-downtime updates — small
-team, no container tooling. Sized at ~10 agent iterations over a few days.
+**Open, tracked, NOT weles-core:** devctl test flake under full-workspace
+parallelism (`down_waits_for_stopped…`, passes in isolation, uninvestigated); the
+one-line `processctl` BUILD_ENV_ALLOWLIST gap (SYSTEMDRIVE/ProgramData). Deferred
+by decision: deploy-scoped lock for concurrent `weles deploy` (one-deploy-at-a-time
+is operator discipline for now).
 
-**Separate application with ZERO sharing** (decided 2026-07-09, Lukasz explicit:
-"zero współdzielenia poza folderem głównym"): own crate + binary (likely top-level
-`orchestrator/`, not `core/`, not a lifecycle::Module — it embodies topology while
-modules are topology-blind, and it outlives the processes it spawns). No shared
-crates, **no use of the backend's Postgres** (the earlier registry-table +
-LISTEN/NOTIFY idea is SUPERSEDED — don't re-propose it). It knows the backend only
-via the external process contract: spawn binary with env vars (`*_EDGE_ADDR`,
-`EVENTS_SUBSCRIBERS`, `EVENTS_ORIGIN`, `DATABASE_URL`), poll `GET /readyz`,
-signal/kill + exit codes. **Config/discovery model: control-plane PULL, Lukasz's preferred shape
-(2026-07-10, supersedes the env-template-manifest sketch):** each process is
-spawned with ONE bootstrap env (`ORCHESTRATOR_URL` + service/instance identity)
-and phones home ("centrala") with a small wire client — hello/registration +
-`resolve(peer:plane)` for the addresses its stubs need (the kubelet/Envoy-xDS
-pattern). Knowledge of dependencies stays in the consumer (its stubs already
-declare them) — no env-name mapping in any manifest; manifest shrinks to
-services/binaries/replicas. The client is backend-owned code in `core/`
-(likely `core/remote`, so Stub can re-resolve → replicas/address changes without
-consumer restarts); wire-only JSON contract, own types on each side — zero shared
-crates preserved. Registration proper only matters for processes the centrala
-didn't spawn (future game servers). **Convention over configuration — RESOLVED
-(2026-07-10, Lukasz): the contract is OPT-IN per process, backend-side optional.**
-Two disjoint boot modes with a deterministic switch — `ORCHESTRATOR_URL` set ⇒
-managed mode (pull config from centrala); unset ⇒ standalone mode (classic
-`*_EDGE_ADDR` env, exactly today's path, stays a supported first-class mode like
-monolith-vs-split). NOT config layering/precedence — one decision at process
-start ([[config-as-code-anti-magic]]). An unmanaged process simply gets no
-management (no restarts/replicas/rolling deploy) — no other penalty. The managed
-convention is a tiny language-neutral contract: (1) read `ORCHESTRATOR_URL` +
-identity, (2) hello + resolve peers, (3) expose `/readyz`, (4) drain on a
-**wire command from the centrala** (NOT SIGTERM — platform-neutral, see
-cross-platform below; signal/TerminateProcess is only the unresponsive-process
-fallback);
-any-language service (e.g. future Go svc) implements it itself — the orchestrator
-supports nothing per-service; `core/remote` is merely our Rust client.
-`cmd/server` (monolith) satisfies it trivially (no peers to resolve). Its own
-state lives in **SQLite** (decided 2026-07-10; rusqlite `bundled` — embedded,
-no server, cross-platform, keeps the one-binary deploy): runtime state only
-(minted ports, instances/PIDs/versions, deploy generations) — desired state is
-the git manifest, and most runtime state is soft (reconcilable from agent
-reports after master restart, kubelet-style); SQLite persists what live
-processes can't tell you (deploy history, port assignments of dead instances,
-API-mutated desired state). No state replication — master migration = move the
-.db file or rebuild from manifest + reconciliation. Open design
-point: env is read at spawn, so a peer address change = consumer restart (or
-later stub re-resolve). Platform-side pieces still land at existing seams:
-multi-peer round-robin in `core/remote`, drain in `core/edge`/`httpmw`,
-replica-safety in modules.
-
-**Manual-vs-automatic split (2026-07-10):** automatic runtime state = ports
-(agent-minted), addresses (agent IP + port), discovery (consumer's stubs declare
-needs, resolve answers), client-side round-robin LB in `core/remote` (resolve
-returns all live instances), process identity (injected at spawn). Manual = the
-MANIFEST only: services, binary/version, replicas, placement, and static env the
-orchestrator doesn't own (`DATABASE_URL`, secrets, feature flags) as literals.
-Source of truth is the git-versioned Rust manifest + `orchestrator plan/apply`
-(Terraform-style diff) — NOT a mutating admin panel (UI-edited topology recreates
-the where-did-this-value-come-from drift, [[config-as-code-anti-magic]]).
-Panel/CLI is read-only observability + imperative ops (status/restart/deploy);
-CLI first, own tiny web UI later at most — never a page in the backend's `admin`
-module (zero-sharing both ways). Only runtime-mutable desired state: future game
--server `replicas` via API from the server-management module.
-
-**Cross-platform REQUIREMENT (2026-07-10, Lukasz): the orchestrator must run on
-Windows/Linux/macOS.** All platform abstraction lives ONLY in the agent — a small
-trait (`spawn_supervised`/`kill_tree`/`alive`) with cfg impls: process
-groups (unix) vs Job Objects (windows); master and the wire contract are
-platform-free. Graceful drain goes through the wire contract (not signals —
-SIGTERM doesn't exist on Windows); resource limits are an optional capability
-(cgroups/Job Objects, mac none) the agent applies best-effort and reports
-unsupported. Verify: Windows (dev box) + Linux blocking; a real MacBook sits next to the dev
-box (2026-07-10) — mac is a live test platform AND the second physical machine
-for the multi-machine proof (master on Windows + agent on mac over real LAN:
-non-loopback resolve, mTLS across a physical network, mixed-platform fleet).
-Bonus argument: one Rust binary replaces the duplicated `.sh`/`.ps1` operational
-scripts — it reduces the repo's platform surface.
-
-**Multi-machine (2026-07-10): master + per-machine agents (the Nomad
-server/client shape), NO overlay network, NO master election.** Overlay exists in
-k8s only for IP-per-pod; our native processes share host networking, so resolve
-just returns real `host:port` — plain LAN/VPC routing, and the mTLS QUIC edge
-already assumes an untrusted network (cross-internet fleets at most get a flat
-host-level WireGuard, never per-process overlay). Master holds
-manifest/desired-state/resolve API; agents are dumb spawn/kill/status executors
-connecting outbound to the master; processes still see only `ORCHESTRATOR_URL`
-(contract unchanged). Single master, local-disk state, no Raft — replicated
-consensus is the threshold where you start rewriting Consul; master down =
-running processes keep running (addresses resolved, agents supervise locally),
-only management degrades until restart. Placement = manifest annotation, not
-scheduling.
-
-**Gateway route discovery is part of this project (2026-07-10, Lukasz):** the
-hand-listed `remote::Stub` set in `cmd/gateway-svc/src/lib.rs` should be replaced
-by **routing-as-data**: each svc serves a reserved `describe()` op over its edge
-returning a manifest of its `#[http]` ops (verb, path pattern, method id, param
-mapping — data the `#[rpc]` macro already has at glue-gen time); the gateway
-builds its route table at runtime from peers' manifests (peer list from the
-centrala's resolve), with the same loud collision-fail at manifest merge. Adding
-a module then requires ZERO gateway changes. Link-time auto-registration
-(linkme/inventory distributed slices) was considered and REJECTED — it only moves
-the hand list from lib.rs to Cargo.toml, same forget-risk; don't re-propose it.
-Open point to research first: whether every existing OpBinding decode/encode is
-declaratively describable (e.g. match's Go-parity `Winner`/`Loser` mapping) or
-whether HTTP decode moves svc-side (gateway as pure reverse proxy). Gateway's own
-typed capability deps (`accountsapi::Sessions`, `apikeysapi::Keys`) stay
-compiled-in — they're its sync deps, not routing. Until this lands, the interim
-safeguard is a checker tripwire diffing the stub list against `api/*/rpc` crates
-on the filesystem ([[didnt-forget-scripts-must-self-check]]).
-
-**How to apply:** when the orchestrator work starts, don't propose
-Docker/k8s/containerd anywhere in the design and don't fold the orchestrator into
-`core/` or the module system; deploy = copy binary + supervisor.
-Related: [[server-management-is-a-domain-module]], [[team-is-solo-plus-agents-forever]].
+**How to apply:** never propose Docker/k8s/containerd, never fold Weles into
+`core/` or the module system, never let a crate cross the Weles↔backend boundary.
+Related: [[server-management-is-a-domain-module]], [[config-as-code-anti-magic]],
+[[didnt-forget-scripts-must-self-check]], [[team-is-solo-plus-agents-forever]].
