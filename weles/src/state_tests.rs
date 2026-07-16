@@ -21,6 +21,7 @@ fn sample_state() -> FleetState {
         topology: "split".to_string(),
         status: FleetStatus::Running,
         control_endpoint: None,
+        pinned_generation: Some("gen-3".to_string()),
         services: vec![
             ServiceState {
                 name: "accounts-svc".to_string(),

@@ -313,6 +313,7 @@ fn dummy_reporter() -> Reporter {
         run_id: "a3-test".to_string(),
         topology: "split",
         supervisor,
+        pinned_generation: None,
         status: Cell::new(FleetStatus::Starting),
         control_endpoint: RefCell::new(None),
         shared: Arc::new(Mutex::new(FleetState {
@@ -321,6 +322,7 @@ fn dummy_reporter() -> Reporter {
             topology: "split".to_string(),
             status: FleetStatus::Starting,
             control_endpoint: None,
+            pinned_generation: None,
             services: Vec::new(),
         })),
     }

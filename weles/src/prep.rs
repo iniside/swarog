@@ -39,10 +39,20 @@
 //! Because each generation is a fresh directory the live fleet never holds open,
 //! staging needs no rollout lock — `deploy` deliberately does NOT take the
 //! exclusive up-lock (which `up` holds for its whole life; blocking on it would
-//! defeat "deploy under a live fleet"). Retention keeps the current and previous
-//! generation (a concurrently-running `up` may have pinned the previous) and
-//! prunes older ones tolerantly (a still-held directory is logged and skipped,
-//! never fatal — closing "overwrite live exe" must not open "delete live exe").
+//! defeat "deploy under a live fleet"). Retention protects the LIVE-PINNED
+//! generation by NAME: an `up` records its pinned `gen-N` into `state.json`, and
+//! deploy's prune reads it (via weles's own `state::load` +
+//! `control::supervisor_alive`) and refuses to delete a live, non-terminal
+//! supervisor's generation regardless of how far `current` has advanced. It also
+//! protects the new current and the PRE-FLIP current (never a numeric
+//! `current-1`, which an abandoned partial can poison). Everything else is
+//! pruned tolerantly (a still-held directory is logged and skipped, never
+//! fatal). This is deploy↔up coupling through `state.json` — the authority for
+//! "in use" is "pinned by a live supervisor", leveraging the one-up-at-a-time
+//! invariant (exactly one supervisor, one pinned generation). Keying it off the
+//! live pin — not a generation number — is what stops a Unix `remove_dir_all`
+//! from silently deleting the running fleet's binaries (closing "overwrite live
+//! exe" must not open "delete live exe").
 
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
@@ -149,6 +159,21 @@ impl Layout {
     pub fn binary(&self, pkg: &str) -> PathBuf {
         self.active_bin_dir
             .join(format!("{pkg}{}", std::env::consts::EXE_SUFFIX))
+    }
+
+    /// The `gen-N` name this layout is pinned to, IFF `active_bin_dir` is a
+    /// generation directly under the deploy root (the `up` path). Returns `None`
+    /// for a deploy-path layout (where `active_bin_dir` is the inert `deploy/`
+    /// placeholder). Recorded into `state.json` so a concurrent deploy's
+    /// retention can protect the live generation by name.
+    pub fn pinned_generation(&self) -> Option<String> {
+        if self.active_bin_dir.parent() == Some(self.bin_dir.as_path()) {
+            self.active_bin_dir
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+        } else {
+            None
+        }
     }
 }
 
@@ -272,10 +297,22 @@ pub fn validate_binaries(layout: &Layout, packages: &[&str]) -> Result<()> {
 /// EVERY missing source and EVERY failed copy, one per line. A running `up`
 /// pinned the old generation and is unaffected.
 ///
-/// Retention: after a successful flip, the current and previous generation are
-/// kept (a concurrently-running `up` may have pinned the previous) and older
-/// generations are pruned tolerantly — an undeletable directory is logged and
-/// skipped, never fatal.
+/// Retention: after a successful flip, retention protects the new current, the
+/// PRE-FLIP current (captured before the flip — the generation a live `up` may
+/// have pinned, robust to an abandoned partial that bumped the counter), and —
+/// authoritatively — whatever generation a live, non-terminal supervisor
+/// recorded pinning in `state.json`. Everything else is pruned tolerantly (an
+/// undeletable directory is logged and skipped, never fatal). Keying "in use"
+/// off the LIVE PIN BY NAME, not a numeric position, is what stops a Unix
+/// `remove_dir_all` from silently deleting the running fleet's `gen-N/` (which
+/// would leave crash-respawn — weles's differentiator — unable to find the
+/// binary).
+///
+/// Concurrency: this is deploy↔up coupling (deploy reads `state.json`), but
+/// deploy takes NO lock. Two concurrent `weles deploy` invocations share a
+/// computed `next_generation` and can corrupt a generation — run at most ONE
+/// `weles deploy` at a time (an operator discipline for M0; a deploy-scoped
+/// guard is M1's job, tracked with `weles rollback`).
 pub fn deploy(layout: &Layout, src_dir: &Path) -> Result<()> {
     std::fs::create_dir_all(&layout.bin_dir)
         .with_context(|| format!("create deploy dir {}", layout.bin_dir.display()))?;
@@ -294,6 +331,13 @@ pub fn deploy(layout: &Layout, src_dir: &Path) -> Result<()> {
             layout.bin_dir.display()
         );
     }
+
+    // Capture the generation `current` names BEFORE this deploy flips it — the
+    // one a live `up` may have pinned. Retention keys "keep previous" off THIS
+    // value, never `new_gen - 1` (an abandoned partial deploy permanently bumps
+    // the counter, so `new_gen - 1` can name a manifest-less abandoned dir while
+    // the real live generation is older).
+    let pre_flip_current = read_current_generation(&layout.bin_dir);
 
     let gen = next_generation(&layout.bin_dir)?;
     let gen_name = format!("gen-{gen}");
@@ -356,7 +400,19 @@ pub fn deploy(layout: &Layout, src_dir: &Path) -> Result<()> {
     flip_current(&layout.bin_dir, &gen_name)?;
     println!("weles: deployed {gen_name}, current -> {gen_name}");
 
-    prune_stale_generations(&layout.bin_dir, gen);
+    // Retention protects, by NUMBER: the new current, the pre-flip current (the
+    // generation a live `up` may have pinned across intervening deploys), and —
+    // authoritatively — whatever generation a live, non-terminal supervisor
+    // recorded pinning in `state.json`. The last one closes the case where the
+    // live up pinned a generation now several deploys behind current.
+    let mut protected: Vec<u64> = vec![gen];
+    if let Some(previous) = pre_flip_current {
+        protected.push(previous);
+    }
+    if let Some(pinned) = live_pinned_generation(&layout.run_dir) {
+        protected.push(pinned);
+    }
+    prune_stale_generations(&layout.bin_dir, &protected);
     Ok(())
 }
 
@@ -427,22 +483,49 @@ fn flip_current(bin_dir: &Path, gen_name: &str) -> Result<()> {
     Ok(())
 }
 
-/// Which existing generations should be pruned, keeping `current` and its
-/// immediate predecessor. Pure (no I/O) so the retention policy is unit-testable
-/// in isolation: prune every `gen-<N>` with `N < current - 1`.
-fn generations_to_prune(present: &[u64], current: u64) -> Vec<u64> {
-    let keep_floor = current.saturating_sub(1);
-    let mut stale: Vec<u64> = present.iter().copied().filter(|&n| n < keep_floor).collect();
+/// Reads `deploy/current` and parses the generation number it names, if any.
+/// `None` when nothing is deployed yet or `current` is unparseable.
+fn read_current_generation(bin_dir: &Path) -> Option<u64> {
+    let contents = std::fs::read_to_string(bin_dir.join("current")).ok()?;
+    parse_generation(OsStr::new(contents.trim()))
+}
+
+/// The generation number a LIVE, non-terminal supervisor recorded pinning in
+/// `run_dir/state.json`, if any. This is the authority for "in use": the
+/// one-up-at-a-time invariant means at most one supervisor pins one generation,
+/// so a concurrent deploy protects exactly that one by name. `None` when no
+/// state file exists, its supervisor is dead or terminal, or it recorded no
+/// pin (a legacy/monolith file). Reuses weles's OWN `state::load` +
+/// `control::supervisor_alive` (zero-sharing — nothing new imported).
+fn live_pinned_generation(run_dir: &Path) -> Option<u64> {
+    let state = crate::state::load(&run_dir.join("state.json")).ok()??;
+    if state.status.is_terminal() || !crate::control::supervisor_alive(&state.supervisor) {
+        return None;
+    }
+    parse_generation(OsStr::new(state.pinned_generation.as_deref()?))
+}
+
+/// Which existing generations to prune: everything NOT in `protected`. Pure (no
+/// I/O) so the retention policy is unit-testable in isolation. The authority for
+/// "keep" is membership in `protected` (by number) — NOT a numeric position
+/// relative to current, which cannot see a live up that pinned an older
+/// generation or an abandoned partial that bumped the counter.
+fn generations_to_prune(present: &[u64], protected: &[u64]) -> Vec<u64> {
+    let mut stale: Vec<u64> = present
+        .iter()
+        .copied()
+        .filter(|n| !protected.contains(n))
+        .collect();
     stale.sort_unstable();
     stale
 }
 
-/// Deletes generations older than the current+previous pair. TOLERANT by
-/// design: a directory that can't be removed (a live fleet on Windows may still
-/// hold a `.exe`, or the entry is otherwise undeletable) is logged and skipped —
-/// NEVER an error. Closing "overwrite live exe" must not open "delete live exe".
-/// Returns the directories actually removed (for observability/tests).
-fn prune_stale_generations(bin_dir: &Path, current: u64) -> Vec<PathBuf> {
+/// Deletes every generation not in `protected`. TOLERANT by design: a directory
+/// that can't be removed (a live fleet on Windows may still hold a `.exe`, or
+/// the entry is otherwise undeletable) is logged and skipped — NEVER an error.
+/// Closing "overwrite live exe" must not open "delete live exe". Returns the
+/// directories actually removed (for observability/tests).
+fn prune_stale_generations(bin_dir: &Path, protected: &[u64]) -> Vec<PathBuf> {
     let mut present = Vec::new();
     match std::fs::read_dir(bin_dir) {
         Ok(entries) => {
@@ -459,7 +542,7 @@ fn prune_stale_generations(bin_dir: &Path, current: u64) -> Vec<PathBuf> {
     }
 
     let mut removed = Vec::new();
-    for n in generations_to_prune(&present, current) {
+    for n in generations_to_prune(&present, protected) {
         let path = bin_dir.join(format!("gen-{n}"));
         match std::fs::remove_dir_all(&path) {
             Ok(()) => {

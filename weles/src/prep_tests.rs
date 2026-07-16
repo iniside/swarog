@@ -242,6 +242,40 @@ fn three_deploys_retain_only_the_two_newest_generations() {
 }
 
 #[test]
+fn abandoned_partial_is_pruned_while_the_previous_good_generation_survives() {
+    // Scenario B: an abandoned partial bumps the counter, so a position-based
+    // "keep current-1" would keep the useless abandoned gen and delete the real
+    // previous good one. Keying retention off the PRE-FLIP current closes it.
+    let root = temp_dir("deploy-abandoned");
+    let layout = deploy_layout(&root);
+    let good = temp_dir("deploy-abandoned-good");
+    stage_full_source(&good, b"good");
+    deploy(&layout, &good).expect("gen-1 good");
+
+    // Partial-fail gen-2 (omit one pkg): bails before flip, current stays gen-1,
+    // gen-2 dir is abandoned (no manifest).
+    let broken = temp_dir("deploy-abandoned-broken");
+    for pkg in deploy_packages() {
+        if pkg == "adminctl" {
+            continue;
+        }
+        let file = format!("{pkg}{}", std::env::consts::EXE_SUFFIX);
+        std::fs::write(broken.join(&file), b"broken").expect("write source binary");
+    }
+    deploy(&layout, &broken).expect_err("gen-2 partial fails");
+
+    // gen-3 good: retention protects pre-flip current (gen-1), NOT gen-3-1=gen-2.
+    deploy(&layout, &good).expect("gen-3 good");
+
+    let deploy_dir = root.join("deploy");
+    assert!(deploy_dir.join("gen-1").is_dir(), "previous good gen-1 must survive");
+    assert!(!deploy_dir.join("gen-2").exists(), "abandoned partial gen-2 must be pruned");
+    assert!(deploy_dir.join("gen-3").is_dir(), "current gen-3 is kept");
+    // gen-1 is the good previous generation with a real manifest.
+    assert!(deploy_dir.join("gen-1").join("manifest.json").is_file());
+}
+
+#[test]
 fn deploy_rejects_the_deploy_dir_as_its_own_source() {
     // `weles deploy deploy` (src == deploy root) is refused before any file is
     // touched, on both platforms.
@@ -333,13 +367,15 @@ fn parse_and_next_generation_ignore_non_gen_entries() {
 }
 
 #[test]
-fn generations_to_prune_keeps_current_and_previous() {
-    // Keep current + previous; prune everything older.
-    assert_eq!(generations_to_prune(&[1, 2, 3], 3), vec![1]);
-    assert_eq!(generations_to_prune(&[1, 2, 3, 4], 4), vec![1, 2]);
-    // First two deploys keep both.
-    assert!(generations_to_prune(&[1], 1).is_empty());
-    assert!(generations_to_prune(&[1, 2], 2).is_empty());
+fn generations_to_prune_keeps_exactly_the_protected_set() {
+    // Everything not protected is stale; membership (by number), not position.
+    assert_eq!(generations_to_prune(&[1, 2, 3], &[2, 3]), vec![1]);
+    // A live pin on gen-1 far behind current protects it even though 2 is also
+    // protected and 1 < current-1 — the position rule would have deleted it.
+    assert_eq!(generations_to_prune(&[1, 2, 3, 4], &[1, 3, 4]), vec![2]);
+    // Nothing protected ⇒ everything prunes; everything protected ⇒ nothing.
+    assert_eq!(generations_to_prune(&[1, 2], &[]), vec![1, 2]);
+    assert!(generations_to_prune(&[1, 2], &[1, 2]).is_empty());
 }
 
 #[test]
@@ -367,12 +403,13 @@ fn prune_tolerates_an_undeletable_generation_and_removes_the_rest() {
     std::fs::create_dir_all(deploy.join("gen-2")).expect("gen-2 dir");
     std::fs::create_dir_all(deploy.join("gen-4")).expect("gen-4 dir (current)");
 
-    // current = gen-4 ⇒ keep gen-4 + gen-3; prune gen-1, gen-2.
-    let removed = prune_stale_generations(&deploy, 4);
+    // Protect gen-4 only ⇒ gen-1 and gen-2 are both stale; gen-1 is undeletable
+    // (a file), gen-2 removes cleanly.
+    let removed = prune_stale_generations(&deploy, &[4]);
 
     assert!(deploy.join("gen-1").exists(), "undeletable gen-1 is skipped, not fatal");
     assert!(!deploy.join("gen-2").exists(), "gen-2 must be pruned");
-    assert!(deploy.join("gen-4").exists(), "current generation is kept");
+    assert!(deploy.join("gen-4").exists(), "protected generation is kept");
     assert_eq!(removed, vec![deploy.join("gen-2")], "only gen-2 was removed");
 }
 

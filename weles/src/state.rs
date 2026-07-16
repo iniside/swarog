@@ -111,6 +111,15 @@ pub struct FleetState {
     /// then boots. `None` only in the narrow prep window between the first
     /// `Starting` checkpoint and the post-bind checkpoint.
     pub control_endpoint: Option<String>,
+    /// The deploy generation (`gen-N`) this supervisor pinned at
+    /// `Layout::discover` and is executing for its whole life. Recorded so a
+    /// concurrent `weles deploy`'s retention can PROTECT the live-pinned
+    /// generation by NAME — the one-up-at-a-time invariant means at most one
+    /// supervisor pins one generation (both split and monolith `up` pin one).
+    /// `None` for a legacy state file written before this field existed
+    /// (serde-defaulted).
+    #[serde(default)]
+    pub pinned_generation: Option<String>,
     pub services: Vec<ServiceState>,
 }
 

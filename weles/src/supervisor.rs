@@ -465,6 +465,9 @@ struct Reporter {
     run_id: String,
     topology: &'static str,
     supervisor: ProcessIdentity,
+    /// The `gen-N` this fleet pinned at `Layout::discover`, recorded into every
+    /// checkpoint so a concurrent `weles deploy` protects it from retention.
+    pinned_generation: Option<String>,
     status: Cell<FleetStatus>,
     control_endpoint: RefCell<Option<String>>,
     /// The last checkpointed snapshot, republished on every `checkpoint` so a
@@ -493,6 +496,7 @@ impl Reporter {
             topology: self.topology.to_string(),
             status: self.status.get(),
             control_endpoint: self.control_endpoint.borrow().clone(),
+            pinned_generation: self.pinned_generation.clone(),
             services: fleet
                 .iter()
                 .map(|svc| ServiceState {
@@ -596,11 +600,15 @@ pub fn run_up(topology: Topology) -> Result<()> {
         pid: std::process::id(),
         started_unix: unix_now(),
     };
+    // The generation this fleet pinned at discover — recorded so a concurrent
+    // `weles deploy`'s retention can protect the live generation by name.
+    let pinned_generation = layout.pinned_generation();
     let reporter = Reporter {
         state_path: layout.run_dir.join("state.json"),
         run_id,
         topology: topology_name,
         supervisor,
+        pinned_generation: pinned_generation.clone(),
         status: Cell::new(FleetStatus::Starting),
         control_endpoint: RefCell::new(None),
         // Placeholder overwritten by the first `checkpoint` below.
@@ -610,6 +618,7 @@ pub fn run_up(topology: Topology) -> Result<()> {
             topology: topology_name.to_string(),
             status: FleetStatus::Starting,
             control_endpoint: None,
+            pinned_generation,
             services: Vec::new(),
         })),
     };

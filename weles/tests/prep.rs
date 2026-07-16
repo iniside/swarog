@@ -81,6 +81,63 @@ fn discover_pins_a_generation_that_survives_a_later_deploy() {
 }
 
 #[test]
+fn deploy_retention_protects_a_live_supervisors_pinned_generation() {
+    use weles::state::{checkpoint, FleetState, FleetStatus, ProcessIdentity};
+
+    // A live `up` pinned gen-1. After enough deploys that gen-1 is neither the
+    // current nor the pre-flip previous, ONLY the live-pin (read from
+    // state.json by number's NAME) can protect it — a position-based rule would
+    // silently delete the running fleet's binaries (fatal on Unix, where
+    // remove_dir_all on a live exe's dir succeeds).
+    let (root, src) = workspace_with_source("livepin", b"payload");
+    let deploy_layout = Layout::discover_for_deploy(root.clone()).expect("deploy layout");
+
+    deploy(&deploy_layout, &src).expect("gen-1");
+    deploy(&deploy_layout, &src).expect("gen-2");
+
+    // Record a live, non-terminal supervisor pinning gen-1 (now behind current).
+    let state = FleetState {
+        run_id: "live-up".to_string(),
+        supervisor: ProcessIdentity {
+            pid: std::process::id(),
+            started_unix: 1_752_000_000,
+        },
+        topology: "split".to_string(),
+        status: FleetStatus::Running,
+        control_endpoint: None,
+        pinned_generation: Some("gen-1".to_string()),
+        services: Vec::new(),
+    };
+    let state_path = root.join("run").join("weles").join("state.json");
+    checkpoint(&state_path, &state).expect("write state.json");
+
+    // gen-3: current=gen-3, pre-flip=gen-2. gen-1 is protected ONLY by live-pin.
+    deploy(&deploy_layout, &src).expect("gen-3");
+
+    let deploy_dir = root.join("deploy");
+    assert!(
+        deploy_dir.join("gen-1").is_dir(),
+        "the live supervisor's pinned gen-1 must survive retention"
+    );
+    assert!(deploy_dir.join("gen-3").is_dir(), "current gen-3 is kept");
+
+    // A DEAD supervisor's pin must NOT protect: flip status to terminal and
+    // deploy again ⇒ gen-1 (no longer current/pre-flip and no longer live) is pruned.
+    let dead = FleetState {
+        status: FleetStatus::Stopped,
+        ..state
+    };
+    checkpoint(&state_path, &dead).expect("rewrite state.json terminal");
+    deploy(&deploy_layout, &src).expect("gen-4");
+    assert!(
+        !deploy_dir.join("gen-1").exists(),
+        "a terminal supervisor's pin must NOT protect gen-1 — it is pruned"
+    );
+
+    let _ = std::fs::remove_dir_all(root.parent().unwrap());
+}
+
+#[test]
 fn manifest_records_the_sha256_of_each_staged_artifact() {
     let (root, src) = workspace_with_source("hash", b"artifact bytes to hash");
     let deploy_layout = Layout::discover_for_deploy(root.clone()).expect("deploy layout");
