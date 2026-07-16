@@ -396,12 +396,33 @@ fn the_early_checkpoint_records_the_pin_with_an_empty_fleet() {
 /// `--test-threads=1` in this repo, so a test that flips `STOP` would otherwise
 /// race any `STOP`-sensitive reader. Same `OnceLock<Mutex<()>>` shape as
 /// `prep_tests.rs::env_guard` — copied with provenance, not imported (zero-sharing).
-/// Poison-tolerant: a panicking guarded test must not wedge the rest.
-fn stop_guard() -> MutexGuard<'static, ()> {
+/// Poison-tolerant: a panicking guarded test must not wedge the rest. It ALSO
+/// resets `STOP` to `false` on drop (before releasing the lock), so a guarded
+/// test that panics mid-body — after setting `STOP=true` but before its own
+/// manual reset — cannot leave a stale `STOP=true` to wedge the next holder.
+fn stop_guard() -> StopGuard {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
+    let held = LOCK
+        .get_or_init(|| Mutex::new(()))
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    StopGuard { _held: held }
+}
+
+/// RAII guard returned by `stop_guard`. Drop order is the fix: a struct's own
+/// `Drop::drop` runs BEFORE its fields are dropped, so `STOP` is reset to
+/// `false` while the mutex is still held — the reset happens-before the next
+/// holder acquires the lock, so it can never observe a stale `STOP`.
+struct StopGuard {
+    _held: MutexGuard<'static, ()>,
+}
+
+impl Drop for StopGuard {
+    fn drop(&mut self) {
+        // Reset first (while `_held` still owns the lock); `_held` drops after,
+        // releasing the lock only once `STOP` is already clear.
+        STOP.store(false, Ordering::SeqCst);
+    }
 }
 
 #[test]
@@ -469,8 +490,9 @@ fn boot_with_the_signal_stop_set_on_entry_spawns_nothing() {
     // stop_requested's ||). The sibling above pins the fleet_stop arm; this pins
     // the OTHER arm by flipping the process-global signal `STOP` static directly
     // (fleet_stop stays false), so it is `STOP` — not fleet_stop — that halts
-    // boot. Guarded because it WRITES the process-global STOP (A3), and reset to
-    // false under the held guard so no later test observes a stale STOP.
+    // boot. Guarded because it WRITES the process-global STOP (A3); the guard's
+    // Drop resets STOP=false under the held lock (even on panic), so no later
+    // test observes a stale STOP — no manual reset needed.
     let _guard = stop_guard();
     STOP.store(true, Ordering::SeqCst);
 
@@ -501,8 +523,8 @@ fn boot_with_the_signal_stop_set_on_entry_spawns_nothing() {
         fleet[0].phase.is_none(),
         "the service never advanced past Starting"
     );
-
-    STOP.store(false, Ordering::SeqCst);
+    // No manual STOP reset: `_guard`'s Drop clears STOP (under the held lock)
+    // whether this test returns normally or unwinds on a failed assertion.
 }
 
 // ---------------------------------------------------------------------------
