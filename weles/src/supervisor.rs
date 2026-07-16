@@ -310,13 +310,27 @@ fn phase_after_kill(shutdown: &Result<Outcome>, intended: Phase) -> Phase {
 // whole authority — none of them can touch `phase`/`status`/`history`, so a
 // 503/torn/unreachable probe records `Degraded`/`Unreachable` and NOTHING else.
 // The poller writes into a shared Vec; the monitor folds that Vec into each
-// `Supervised.readiness` for the checkpoint; `observe`/`step` never see a probe.
+// `Supervised.readiness` for the checkpoint.
+//
+// A probe DOES reach `step` — but ONLY through `observe` in `WaitingHealthy`,
+// where it becomes `Observed::Ready`/`NotReady` by design (a service that never
+// comes up must be killed). What keeps a probe inert for a service that is
+// already up is three mechanisms, each pinned by a test:
+//   (a) `readiness_for` is the only poller probe → verdict map, and its output
+//       type (`Readiness`) has no constructor into `Observed`/`Directive`;
+//       `fold_readiness` writes only `readiness` and returns a bool;
+//   (b) `step`'s `Phase::Healthy` arm restarts on `Observed::Exited` ALONE —
+//       every other observation, probe-derived included, is `Stay(phase)`;
+//   (c) `Observed::Exited` is unforgeable from a probe: `observe` derives it
+//       from `try_wait` only, and a `ConnectFailed` (nothing listening at all)
+//       becomes `NotReady`, never `Exited`.
 // ---------------------------------------------------------------------------
 
 /// Maps a single readiness probe to the recorded [`Readiness`]. This is the ONE
-/// place a `ProbeResult` becomes a readiness verdict — and it produces nothing
-/// but a `Readiness`, so no probe outcome can ever synthesize an `Observed` or a
-/// restart `Directive`.
+/// place a POLLER `ProbeResult` becomes a readiness verdict — and it produces
+/// nothing but a `Readiness`, so no poller probe can synthesize an `Observed` or
+/// a restart `Directive`. (`observe` runs its own, separate probe in
+/// `WaitingHealthy`; that boot-gate path never applies to a `Healthy` service.)
 fn readiness_for(probe: ProbeResult) -> Readiness {
     match probe {
         ProbeResult::Ready => Readiness::Ready,

@@ -4,6 +4,7 @@
 //! timing dependence (timing-tests doctrine).
 
 use super::*;
+use std::path::Path;
 use std::sync::{MutexGuard, OnceLock};
 
 fn base() -> Instant {
@@ -659,9 +660,11 @@ fn phase_after_kill_gives_up_on_an_unconfirmed_kill_instead_of_respawning() {
 
 // ---------------------------------------------------------------------------
 // Readiness (#3): a post-healthy `/readyz` dimension that NEVER restarts.
-// The authority is structural — the probe becomes a `Readiness` (never an
+// The authority is structural — a POLLER probe becomes a `Readiness` (never an
 // `Observed`/`Directive`), and `fold_readiness` writes ONLY `readiness`. These
 // prove the at-risk wiring where it lives, not with a tautological `step()`.
+// The other two mechanisms (`step`'s Healthy catch-all, `observe` never forging
+// an `Exited`) are pinned at the bottom of this file.
 // ---------------------------------------------------------------------------
 
 /// A `Supervised` pinned into a chosen phase/status for the readiness tests.
@@ -819,4 +822,228 @@ fn next_probe_index_handles_no_healthy_and_empty_without_panicking() {
     );
     // A cursor past the end must wrap, not panic.
     assert_eq!(next_probe_index(&[true], 999), Some(0));
+}
+
+// ---------------------------------------------------------------------------
+// The other two mechanisms behind "readiness never restarts" (the readiness
+// POLLER thread is not one of them — it exists for latency): `step`'s
+// `Phase::Healthy` catch-all, and `observe` never forging an `Observed::Exited`
+// out of a probe. Both are pure-authority guards a future refactor (M1: probe
+// I/O onto a runtime) could silently break, so they are pinned here.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_healthy_service_restarts_on_a_real_exit_alone_and_ignores_every_probe_derived_observation() {
+    // Mechanism (b): the `Phase::Healthy` arm of `step` is a catch-all around
+    // `Observed::Exited`. Feed it every observation a probe could possibly
+    // produce — a 200 (`Ready`) and a 503/unreachable (`NotReady`) — and the
+    // service must simply stay Healthy: no Respawn, no Kill, no failure counted,
+    // no `healthy_since` cleared. (Mirrors `failed_stays_failed_no_matter_what`
+    // for the phase where a `/readyz` blip actually happens.)
+    let t0 = base();
+    let phase = Phase::Healthy { healthy_since: t0 };
+    for observed in [Observed::Alive, Observed::Ready, Observed::NotReady] {
+        for stop in [false, true] {
+            let mut history = RestartHistory::default();
+            history.record_healthy(t0);
+            let directive = step(phase, observed, stop, t0 + secs(1), &mut history);
+            assert_eq!(
+                directive,
+                Directive::Stay(phase),
+                "{observed:?} (stop={stop}) must leave a Healthy service alone"
+            );
+            assert_eq!(
+                history.consecutive_failures, 0,
+                "{observed:?} must not count a failure"
+            );
+            assert_eq!(
+                history.healthy_since,
+                Some(t0),
+                "{observed:?} must not clear healthy_since"
+            );
+        }
+    }
+
+    // The contrast that proves the assertions above are not vacuous: a REAL
+    // process exit — the one observation a probe cannot forge (see `observe`) —
+    // does restart the same service from the same state.
+    let mut history = RestartHistory::default();
+    history.record_healthy(t0);
+    let crash_at = t0 + secs(1);
+    assert_eq!(
+        step(phase, Observed::Exited, false, crash_at, &mut history),
+        Directive::Stay(Phase::Backoff {
+            respawn_at: crash_at + secs(1)
+        }),
+        "only a real process exit restarts a Healthy service"
+    );
+    assert_eq!(history.consecutive_failures, 1);
+    assert_eq!(history.healthy_since, None);
+}
+
+/// The blocking child for the `observe` test: a REAL process that stays alive
+/// and listens on NOTHING. `#[ignore]`d, so an ordinary `cargo test` never runs
+/// it — `spawn_live_child` re-execs this very test binary with
+/// `--ignored --exact <this test>` to obtain a live `OwnedProc`. (Re-exec-self
+/// rather than `tests/platform.rs`'s `__test-child`: `CARGO_BIN_EXE_weles` is
+/// defined for integration-test targets only, and `observe` is private to this
+/// module, so it can only be called from an in-crate unit test.)
+#[test]
+#[ignore = "spawned as a child process by the observe test; not a test itself"]
+fn blocking_child_fixture_for_the_observe_test() {
+    println!("observe-fixture: ready");
+    std::io::Write::flush(&mut std::io::stdout()).ok();
+    // Hang guard: never outlive the test run (mirrors `fixture.rs`'s 60s).
+    std::thread::sleep(secs(60));
+}
+
+const OBSERVE_FIXTURE_TEST: &str = concat!(
+    "supervisor::supervisor_tests::",
+    "blocking_child_fixture_for_the_observe_test"
+);
+
+/// Removes a scratch dir on drop (declared BEFORE the `OwnedProc` holder, so
+/// the child — and its stdout handle — is gone before the removal runs).
+struct ScratchDir {
+    path: PathBuf,
+}
+
+impl Drop for ScratchDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
+fn scratch_dir(name: &str) -> ScratchDir {
+    let path = std::env::temp_dir().join(format!("weles-observe-{}-{name}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&path);
+    std::fs::create_dir_all(&path).expect("create scratch dir");
+    ScratchDir { path }
+}
+
+/// Spawns [`blocking_child_fixture_for_the_observe_test`] as a real child and
+/// returns once it has printed its ready marker — so "the process is alive" is
+/// guaranteed by construction, not by a sleep.
+fn spawn_live_child(dir: &Path) -> OwnedProc {
+    let stdout_path = dir.join("child.log");
+    let stdout = File::create(&stdout_path).expect("create child log");
+    let stderr = File::create(dir.join("child.err.log")).expect("create child err log");
+    // Minimal deliberate environment (SystemRoot is required by Win32 for a
+    // working child), same shape as `tests/platform.rs::fixture_env`.
+    let mut env = std::collections::BTreeMap::new();
+    for key in ["SystemRoot", "TEMP", "TMP", "TMPDIR"] {
+        if let Some(value) = std::env::var_os(key) {
+            env.insert(std::ffi::OsString::from(key), value);
+        }
+    }
+    let proc = platform::spawn(SpawnSpec {
+        program: std::env::current_exe().expect("resolve this test binary"),
+        args: vec![
+            "--exact".into(),
+            OBSERVE_FIXTURE_TEST.into(),
+            "--ignored".into(),
+            "--nocapture".into(),
+        ],
+        env,
+        cwd: Some(dir.to_path_buf()),
+        stdout: Some(stdout),
+        stderr: Some(stderr),
+    })
+    .expect("spawn the blocking child fixture");
+
+    // Bounded poll for the marker: the deadline only bounds a condition the
+    // fixture reaches unconditionally (it prints before blocking), so this is
+    // never a race against a real clock. A filter typo makes the child exit
+    // without the marker → a loud, self-explaining failure here.
+    let deadline = Instant::now() + secs(20);
+    loop {
+        let contents = std::fs::read_to_string(&stdout_path).unwrap_or_default();
+        if contents.contains("observe-fixture: ready") {
+            return proc;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the child fixture never signalled ready (is {OBSERVE_FIXTURE_TEST} still named that?); \
+             child stdout: {contents:?}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// A port with NOTHING listening on it: claimed from the ephemeral range by the
+/// OS, then released. This is the `ProbeResult::ConnectFailed` input.
+fn port_with_no_listener() -> u16 {
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind an ephemeral port");
+    let port = listener.local_addr().expect("local addr").port();
+    drop(listener);
+    port
+}
+
+#[test]
+fn a_live_service_whose_readyz_refuses_the_connection_is_observed_not_ready_never_exited() {
+    // Mechanism (c): `Observed::Exited` — the ONE observation that restarts a
+    // service — is unforgeable from a probe. This drives `observe` with the most
+    // extreme probe failure there is (nothing listening AT ALL, worse than the
+    // 503 a Postgres blip yields) against a process that is very much alive, on
+    // a REAL `OwnedProc` and a REAL refused TCP connect. It must read NotReady;
+    // reading Exited would restart a service whose only sin is a cold /readyz.
+    let dir = scratch_dir("refused");
+    let port = port_with_no_listener();
+    assert_eq!(
+        health::probe(port),
+        ProbeResult::ConnectFailed,
+        "precondition: nothing may listen on :{port}"
+    );
+
+    let mut svc = Supervised::new(ServiceDef {
+        http_port: port,
+        ..dummy_def()
+    });
+    svc.proc = Some(spawn_live_child(&dir.path));
+    assert!(
+        svc.proc
+            .as_mut()
+            .expect("fixture proc")
+            .try_wait()
+            .expect("try_wait")
+            .is_none(),
+        "precondition: the child fixture must be alive"
+    );
+
+    let t0 = base();
+    // The boot gate DOES probe (by design — a service that never comes up must
+    // be killed), and a refused connect there is NotReady, never Exited.
+    assert_eq!(
+        observe(&mut svc, Phase::WaitingHealthy { deadline: t0 + HEALTH_DEADLINE }),
+        Observed::NotReady,
+        "a refused /readyz on a LIVE process is NotReady, never Exited"
+    );
+    // Past the gate, the probe is not even consulted: bare liveness. This is
+    // what makes a `Healthy` service's readiness a checkpoint-only dimension.
+    assert_eq!(
+        observe(&mut svc, Phase::Healthy { healthy_since: t0 }),
+        Observed::Alive,
+        "a Healthy service reports bare liveness, not a probe verdict"
+    );
+
+    // Contrast (so the NotReady/Alive above are not constants): real death — and
+    // ONLY real death — is Exited. Forcing the container guarantees the exit, so
+    // the deadline below bounds a condition, it does not race one.
+    let proc = svc.proc.as_mut().expect("fixture proc");
+    proc.force().expect("force the child fixture");
+    let deadline = Instant::now() + secs(10);
+    while proc.try_wait().expect("try_wait").is_none() {
+        assert!(Instant::now() < deadline, "the forced child never exited");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(
+        observe(&mut svc, Phase::Healthy { healthy_since: t0 }),
+        Observed::Exited,
+        "a dead process is Exited"
+    );
+    assert_eq!(
+        observe(&mut svc, Phase::WaitingHealthy { deadline: t0 + HEALTH_DEADLINE }),
+        Observed::Exited,
+        "liveness wins over the probe: a dead process is Exited in the boot gate too"
+    );
 }
