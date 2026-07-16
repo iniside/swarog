@@ -329,6 +329,68 @@ fn dummy_reporter() -> Reporter {
 }
 
 #[test]
+fn the_early_checkpoint_records_the_pin_with_an_empty_fleet() {
+    // The pin must be persisted at the EARLIEST safe point (empty fleet, status
+    // Starting, live pid) so a concurrent deploy sees it DURING the slow prep
+    // helpers — not only after mint_ca/seed_admin. This drives that early write
+    // directly (no helpers) and asserts state.json carries exactly what
+    // `live_pinned_generation` needs: a non-terminal status, the live pid, and
+    // the pinned generation name.
+    let dir = std::env::temp_dir().join(format!(
+        "weles-early-pin-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let state_path = dir.join("state.json");
+    let supervisor = ProcessIdentity {
+        pid: std::process::id(),
+        started_unix: unix_now(),
+    };
+    let reporter = Reporter {
+        state_path: state_path.clone(),
+        run_id: "early-pin".to_string(),
+        topology: "split",
+        supervisor,
+        pinned_generation: Some("gen-1".to_string()),
+        status: Cell::new(FleetStatus::Starting),
+        control_endpoint: RefCell::new(None),
+        shared: Arc::new(Mutex::new(FleetState {
+            run_id: String::new(),
+            supervisor,
+            topology: "split".to_string(),
+            status: FleetStatus::Starting,
+            control_endpoint: None,
+            pinned_generation: None,
+            services: Vec::new(),
+        })),
+    };
+
+    // The early write: an EMPTY fleet, exactly as run_up does before the helpers.
+    reporter.checkpoint(&[]);
+
+    let loaded = crate::state::load(&state_path)
+        .expect("load state")
+        .expect("state file exists after the early checkpoint");
+    assert_eq!(
+        loaded.pinned_generation.as_deref(),
+        Some("gen-1"),
+        "the early checkpoint must carry the pinned generation"
+    );
+    assert!(
+        !loaded.status.is_terminal(),
+        "the early checkpoint is non-terminal (Starting) so a deploy protects the pin"
+    );
+    assert_eq!(loaded.supervisor.pid, std::process::id(), "carries the live pid");
+    assert!(loaded.services.is_empty(), "the fleet is not built yet at the early write");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn stop_requested_honors_the_threaded_fleet_stop() {
     // The threaded fleet stop is sufficient on its own: a `weles down` request
     // (which flips only this Arc, never the signal-handler `STOP` static) still

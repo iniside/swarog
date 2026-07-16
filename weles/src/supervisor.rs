@@ -555,6 +555,49 @@ pub fn run_up(topology: Topology) -> Result<()> {
     let run_id = format!("{:016x}", rand::random::<u64>());
     let _lock = lock::acquire(&layout.root, &run_id)?;
 
+    // Record the pinned generation at the EARLIEST safe point — right after the
+    // lock + discover, BEFORE the slow prep helpers (mint_ca can spawn edgeca
+    // for ~30s if the CA is absent; seed_admin does a Postgres round-trip). The
+    // pin is available from `layout` here, and this early `Starting` checkpoint
+    // carries the live pid + `pinned_generation`, so a concurrent `weles deploy`
+    // sees the live pin and won't prune this booting up's generation. Without
+    // this, the pin was invisible across the whole helper window (state.json
+    // absent or stale/terminal), and a deploy could delete the booting up's
+    // gen-N out from under it (a loud spawn failure, not silent loss, but still
+    // this fix's own new seam). The control endpoint is still bound later, before
+    // boot (Part A) — only this state write moves ahead of the helpers.
+    let topology_name = match topology {
+        Topology::Split => "split",
+        Topology::Monolith => "monolith",
+    };
+    let supervisor = ProcessIdentity {
+        pid: std::process::id(),
+        started_unix: unix_now(),
+    };
+    let pinned_generation = layout.pinned_generation();
+    let reporter = Reporter {
+        state_path: layout.run_dir.join("state.json"),
+        run_id,
+        topology: topology_name,
+        supervisor,
+        pinned_generation: pinned_generation.clone(),
+        status: Cell::new(FleetStatus::Starting),
+        control_endpoint: RefCell::new(None),
+        // Placeholder overwritten by the early `checkpoint` below.
+        shared: Arc::new(Mutex::new(FleetState {
+            run_id: String::new(),
+            supervisor,
+            topology: topology_name.to_string(),
+            status: FleetStatus::Starting,
+            control_endpoint: None,
+            pinned_generation,
+            services: Vec::new(),
+        })),
+    };
+    // Empty fleet: the services aren't built yet, but the supervisor identity +
+    // pin ARE — that is all `live_pinned_generation` needs to protect this gen.
+    reporter.checkpoint(&[]);
+
     // Manifest-vs-disk drift FIRST: if the manifest disagrees with cmd/*-svc
     // (the source of truth), report it AS drift — not as a "missing binary"
     // symptom from the staged-artifact check below.
@@ -592,37 +635,10 @@ pub fn run_up(topology: Topology) -> Result<()> {
         Topology::Monolith => vec![manifest::monolith()],
     };
     let mut fleet: Vec<Supervised> = defs.into_iter().map(Supervised::new).collect();
-    let topology_name = match topology {
-        Topology::Split => "split",
-        Topology::Monolith => "monolith",
-    };
-    let supervisor = ProcessIdentity {
-        pid: std::process::id(),
-        started_unix: unix_now(),
-    };
-    // The generation this fleet pinned at discover — recorded so a concurrent
-    // `weles deploy`'s retention can protect the live generation by name.
-    let pinned_generation = layout.pinned_generation();
-    let reporter = Reporter {
-        state_path: layout.run_dir.join("state.json"),
-        run_id,
-        topology: topology_name,
-        supervisor,
-        pinned_generation: pinned_generation.clone(),
-        status: Cell::new(FleetStatus::Starting),
-        control_endpoint: RefCell::new(None),
-        // Placeholder overwritten by the first `checkpoint` below.
-        shared: Arc::new(Mutex::new(FleetState {
-            run_id: String::new(),
-            supervisor,
-            topology: topology_name.to_string(),
-            status: FleetStatus::Starting,
-            control_endpoint: None,
-            pinned_generation,
-            services: Vec::new(),
-        })),
-    };
-    reporter.checkpoint(&fleet); // status Starting, endpoint None
+    // Re-checkpoint now that the fleet exists (the pin was already recorded by
+    // the early checkpoint above): status still Starting, endpoint still None,
+    // services now populated.
+    reporter.checkpoint(&fleet);
 
     // Bind the control endpoint BEFORE boot so `weles status`/`down` reach the
     // fleet DURING startup (a mid-boot `down` flips `fleet_stop`, which

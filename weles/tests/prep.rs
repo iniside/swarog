@@ -138,6 +138,46 @@ fn deploy_retention_protects_a_live_supervisors_pinned_generation() {
 }
 
 #[test]
+fn an_early_window_pin_starting_status_empty_services_protects_across_deploys() {
+    use weles::state::{checkpoint, FleetState, FleetStatus, ProcessIdentity};
+
+    // Mirrors the EARLY checkpoint run_up writes before the slow prep helpers:
+    // status Starting, NO services yet, live pid, pinned gen-1. Two deploys that
+    // advance current past gen-1 must not prune it — proving the pin recorded
+    // pre-helpers is sufficient for retention protection during the boot window.
+    let (root, src) = workspace_with_source("earlywindow", b"payload");
+    let deploy_layout = Layout::discover_for_deploy(root.clone()).expect("deploy layout");
+    deploy(&deploy_layout, &src).expect("gen-1");
+
+    let early = FleetState {
+        run_id: "booting".to_string(),
+        supervisor: ProcessIdentity {
+            pid: std::process::id(),
+            started_unix: 1_752_000_000,
+        },
+        topology: "split".to_string(),
+        status: FleetStatus::Starting,
+        control_endpoint: None,
+        pinned_generation: Some("gen-1".to_string()),
+        services: Vec::new(),
+    };
+    checkpoint(&root.join("run").join("weles").join("state.json"), &early)
+        .expect("write early-window state.json");
+
+    // current: gen-1 -> gen-2 -> gen-3. gen-1 is neither current nor pre-flip on
+    // the third deploy; only the early-window pin protects it.
+    deploy(&deploy_layout, &src).expect("gen-2");
+    deploy(&deploy_layout, &src).expect("gen-3");
+
+    assert!(
+        root.join("deploy").join("gen-1").is_dir(),
+        "an early-window (Starting, no services) pin must protect gen-1 across deploys"
+    );
+
+    let _ = std::fs::remove_dir_all(root.parent().unwrap());
+}
+
+#[test]
 fn manifest_records_the_sha256_of_each_staged_artifact() {
     let (root, src) = workspace_with_source("hash", b"artifact bytes to hash");
     let deploy_layout = Layout::discover_for_deploy(root.clone()).expect("deploy layout");
