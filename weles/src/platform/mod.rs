@@ -43,6 +43,14 @@ pub struct ExitInfo {
 }
 
 impl ExitInfo {
+    /// Test-only constructor: the field is otherwise set only by the platform
+    /// `try_wait` paths from a real child. Lets the pure `stop_outcome` case
+    /// table build an `Outcome` without spawning a process.
+    #[cfg(test)]
+    pub(crate) fn from_code(code: Option<i32>) -> Self {
+        ExitInfo { code }
+    }
+
     pub fn code(&self) -> Option<i32> {
         self.code
     }

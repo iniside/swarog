@@ -29,7 +29,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 
 use crate::cli::Topology;
 use crate::control::ControlServer;
@@ -256,6 +256,27 @@ fn status_of(phase: Phase) -> Status {
         Phase::Healthy { .. } => Status::Healthy,
         Phase::Backoff { .. } => Status::Backoff,
         Phase::Failed => Status::Failed,
+    }
+}
+
+/// PURE map from a teardown `shutdown` result to (the service's checkpoint
+/// status, whether the stop was CLEAN — the process is confirmed gone). This is
+/// the ONE authority deciding a teardown outcome's accuracy; `teardown` folds
+/// the bool into the fleet's exit code (devctl parity: an unconfirmed stop is a
+/// non-zero exit, not a silent `Stopped`).
+///
+/// `Forced` MUST count as clean: `Outcome::Forced` is returned only AFTER
+/// `force()` + a `wait_for(force_timeout)` that CONFIRMED the exit
+/// (`platform/mod.rs`), so it is a real stop, not an orphan. Critically, a
+/// console-less weles on Windows cannot deliver CTRL_BREAK and therefore
+/// DEGRADES EVERY shutdown to `Forced` (`platform/mod.rs`); flagging `Forced` as
+/// unclean would give every such stop a false non-zero exit. Only an `Err` —
+/// force could not confirm the exit — is unclean: the process may be orphaned,
+/// so the service is `Failed` and the fleet's exit is non-zero.
+fn stop_outcome(result: &Result<Outcome>) -> (Status, bool) {
+    match result {
+        Ok(Outcome::Graceful(_) | Outcome::Forced(_)) => (Status::Stopped, true),
+        Err(_) => (Status::Failed, false),
     }
 }
 
@@ -674,7 +695,7 @@ pub fn run_up(topology: Topology) -> Result<()> {
             // (devctl parity — a fleet nobody can `status`/`down` is not the
             // tool weles promises). The early return means this path runs
             // teardown exactly once.
-            teardown(&mut fleet, &reporter, FleetStatus::Failed);
+            let _ = teardown(&mut fleet, &reporter, FleetStatus::Failed);
             return Err(error)
                 .with_context(|| format!("bind control endpoint {}", endpoint.display()));
         }
@@ -722,8 +743,18 @@ pub fn run_up(topology: Topology) -> Result<()> {
     } else {
         FleetStatus::Failed
     };
-    teardown(&mut fleet, &reporter, terminal);
+    let clean = teardown(&mut fleet, &reporter, terminal);
     // `_lock` drops here — strictly after teardown.
+    // A run that otherwise succeeded but whose teardown could not confirm every
+    // service stopped is escalated to an error so the exit code is non-zero
+    // (devctl parity — a possibly-orphaned service must not report success). The
+    // persisted terminal was already set to Failed by `teardown` in this case.
+    if run_result.is_ok() && !clean {
+        return Err(anyhow!(
+            "weles: teardown could not confirm all services stopped — see logs \
+             (a service may be orphaned)"
+        ));
+    }
     run_result
 }
 
@@ -997,10 +1028,13 @@ fn apply(
 /// Stops live services in REVERSE spawn order (graceful 5s, force 5s each),
 /// checkpointing every transition, then records the terminal fleet status.
 /// Also serves as the boot-failure unwind: services boot never reached simply
-/// have no process to stop.
-fn teardown(fleet: &mut [Supervised], reporter: &Reporter, terminal: FleetStatus) {
+/// have no process to stop. Returns whether the teardown was CLEAN — every live
+/// service was confirmed stopped ([`stop_outcome`]); an unconfirmed stop (a
+/// possible orphan) makes the fleet's exit non-zero (devctl parity).
+fn teardown(fleet: &mut [Supervised], reporter: &Reporter, terminal: FleetStatus) -> bool {
     reporter.set_status(FleetStatus::Stopping);
     reporter.checkpoint(fleet);
+    let mut clean_all = true;
     for index in (0..fleet.len()).rev() {
         let name = fleet[index].def.name;
         match fleet[index].proc.take() {
@@ -1020,12 +1054,22 @@ fn teardown(fleet: &mut [Supervised], reporter: &Reporter, terminal: FleetStatus
                 } else {
                     fleet[index].status = Status::Stopping;
                     reporter.checkpoint(fleet);
-                    match proc.shutdown(STOP_GRACE, STOP_FORCE) {
+                    let result = proc.shutdown(STOP_GRACE, STOP_FORCE);
+                    match &result {
                         Ok(Outcome::Graceful(_)) => println!("weles: {name} stopped"),
                         Ok(Outcome::Forced(_)) => println!("weles: {name} force-stopped"),
-                        Err(error) => eprintln!("weles: stopping {name} failed: {error:#}"),
+                        Err(error) => eprintln!(
+                            "weles: stopping {name} failed: {error:#} — the process may be \
+                             ORPHANED (force could not confirm it exited); check for a stray \
+                             {name} before the next run"
+                        ),
                     }
-                    fleet[index].status = Status::Stopped;
+                    // The one authority for "was this stop clean": an unconfirmed
+                    // stop records Failed (never a false Stopped) and drops the
+                    // fleet-clean bit.
+                    let (status, clean) = stop_outcome(&result);
+                    fleet[index].status = status;
+                    clean_all &= clean;
                     reporter.checkpoint(fleet);
                 }
             }
@@ -1046,9 +1090,20 @@ fn teardown(fleet: &mut [Supervised], reporter: &Reporter, terminal: FleetStatus
             }
         }
     }
-    reporter.set_status(terminal);
+    // Persist a terminal that AGREES with the returned clean bit (and thus with
+    // run_up's exit code): a nominally-Stopped run whose teardown could not
+    // confirm every service stopped is persisted Failed, so `weles down`'s
+    // wait_for_terminal and run_up never disagree. A run that already failed
+    // stays Failed regardless.
+    let final_terminal = if clean_all {
+        terminal
+    } else {
+        FleetStatus::Failed
+    };
+    reporter.set_status(final_terminal);
     reporter.checkpoint(fleet);
     println!("weles: fleet stopped");
+    clean_all
 }
 
 /// Spawns one service via [`platform::spawn`] (the crate's only spawn seam):

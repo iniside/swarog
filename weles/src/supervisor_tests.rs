@@ -444,6 +444,40 @@ fn boot_with_the_fleet_stop_set_on_entry_spawns_nothing() {
 }
 
 // ---------------------------------------------------------------------------
+// stop_outcome (#P2): the one authority for teardown accuracy.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn stop_outcome_maps_every_shutdown_result_to_status_and_cleanliness() {
+    // A pure case table: a fixture cannot reproduce a shutdown-`Err` (force is a
+    // non-blockable SIGKILL / TerminateJobObject from userspace), so the
+    // previously-wrong branch is pinned purely, not by an integration process.
+    use crate::platform::ExitInfo;
+
+    // Both Ok variants mean the process is CONFIRMED gone → Stopped, clean.
+    assert_eq!(
+        stop_outcome(&Ok(Outcome::Graceful(ExitInfo::from_code(Some(0))))),
+        (Status::Stopped, true),
+        "a graceful exit is a clean Stopped"
+    );
+    assert_eq!(
+        stop_outcome(&Ok(Outcome::Forced(ExitInfo::from_code(None)))),
+        (Status::Stopped, true),
+        "Forced is a confirmed exit — a console-less weles degrades EVERY stop to \
+         Forced, so it must count as clean"
+    );
+
+    // The previously-WRONG branch: an Err (force could not confirm the exit)
+    // was reported as an unconditional Stopped. It is now Failed AND unclean —
+    // a possible orphan the fleet's exit code must surface.
+    assert_eq!(
+        stop_outcome(&Err(anyhow::anyhow!("force timed out"))),
+        (Status::Failed, false),
+        "an unconfirmed stop is Failed and unclean, never a false Stopped"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Readiness (#3): a post-healthy `/readyz` dimension that NEVER restarts.
 // The authority is structural — the probe becomes a `Readiness` (never an
 // `Observed`/`Directive`), and `fold_readiness` writes ONLY `readiness`. These
