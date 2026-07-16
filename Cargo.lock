@@ -4553,6 +4553,7 @@ dependencies = [
  "reqwest",
  "tokio",
  "toml",
+ "weles",
  "windows-sys 0.59.0",
 ]
 

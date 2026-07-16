@@ -10,6 +10,7 @@ default-run = "verifyctl"
 anyhow.workspace = true
 rand.workspace = true
 processctl = { path = "../processctl" }
+weles = { path = "../../weles" }
 reqwest.workspace = true
 tokio.workspace = true
 toml = "1.1"

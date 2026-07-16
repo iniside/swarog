@@ -18,6 +18,7 @@ pub enum StageId {
     CSharp,
     Topiccheck,
     Admincheck,
+    WelesFleetParity,
     Mutants,
 }
 
@@ -40,6 +41,7 @@ impl StageId {
             Self::CSharp => "csharp-client",
             Self::Topiccheck => "topiccheck",
             Self::Admincheck => "admincheck",
+            Self::WelesFleetParity => "weles-fleet-parity",
             Self::Mutants => "mutants",
         }
     }
