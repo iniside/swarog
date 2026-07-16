@@ -150,6 +150,122 @@ async fn close_is_idempotent_on_no_subscribers() {
     bus.close().await;
 }
 
+// ---- Bounded local plane: drop-on-full + deadline close -----------------
+
+use std::sync::atomic::AtomicBool;
+use std::sync::Condvar;
+
+/// A gate a handler can block on, released by the test. Used to wedge a
+/// subscriber's task deterministically so the mailbox fills / the drain stalls.
+#[derive(Default)]
+struct Gate {
+    open: Mutex<bool>,
+    cvar: Condvar,
+}
+impl Gate {
+    fn block(&self) {
+        let mut open = self.open.lock().unwrap();
+        while !*open {
+            open = self.cvar.wait(open).unwrap();
+        }
+    }
+    fn release(&self) {
+        *self.open.lock().unwrap() = true;
+        self.cvar.notify_all();
+    }
+}
+
+/// The drop-on-full branch of `publish`: a subscriber wedged on its FIRST
+/// delivery lets its bounded mailbox fill; publishing far more than
+/// `LOCAL_BUS_CAP` must NOT block the publisher and must DROP the excess. If
+/// `try_send` blocked (the old unbounded-vs-blocking bug), publishing into the
+/// wedged subscriber would hang here and the test would never reach its
+/// assertions — so completing at all proves the publisher is non-blocking.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn publish_drops_excess_when_subscriber_lags_past_cap() {
+    let bus = Bus::new();
+    let et = def::<u32>("lag");
+    let seen = Arc::new(AtomicU32::new(0));
+    let gate = Arc::new(Gate::default());
+    let first = Arc::new(AtomicBool::new(true));
+    {
+        let seen = seen.clone();
+        let gate = gate.clone();
+        let first = first.clone();
+        bus.on(&et, move |_v| {
+            seen.fetch_add(1, Ordering::SeqCst);
+            // Block only on the first delivery: the task pulls exactly one event
+            // out of the mailbox, then wedges — the mailbox fills behind it.
+            if first.swap(false, Ordering::SeqCst) {
+                gate.block();
+            }
+        });
+    }
+
+    let published = LOCAL_BUS_CAP as u32 * 3;
+    for i in 0..published {
+        bus.emit(&et, i); // non-blocking: past CAP the excess is dropped with a warn
+    }
+
+    // Let the wedged handler finish, then drain. The subscriber can have seen at
+    // most one in-flight event plus a full mailbox (LOCAL_BUS_CAP); everything
+    // else was dropped — decisively fewer than `published`.
+    gate.release();
+    bus.close().await;
+
+    let got = seen.load(Ordering::SeqCst);
+    assert!(
+        got <= LOCAL_BUS_CAP as u32 + 2,
+        "subscriber must see at most one in-flight + a full mailbox, got {got}"
+    );
+    assert!(
+        got < published,
+        "excess past the bounded mailbox must be dropped: got {got} of {published}"
+    );
+}
+
+/// The deadline branch of `close`: a handler wedged forever (never yields back to
+/// `rx.recv()`) must NOT stall shutdown. `close_within` waits its grace, then
+/// aborts the straggler and returns — bounded, not wait-forever. The assertion is
+/// a real time bound: the drain returns around the (short, test-only) grace, far
+/// under the 30s hang ceiling the old unbounded `for task { task.await }` had.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn close_aborts_a_wedged_handler_within_grace() {
+    let bus = Bus::new();
+    let et = def::<u32>("wedge");
+    let gate = Arc::new(Gate::default()); // never released: the handler wedges forever
+    {
+        let gate = gate.clone();
+        bus.on(&et, move |_v| gate.block());
+    }
+    bus.emit(&et, 1);
+
+    // Give the subscriber task a moment to pick up the event and wedge in the
+    // handler, so `close` is draining a genuinely-stuck task.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let grace = Duration::from_millis(300);
+    let start = std::time::Instant::now();
+    bus.close_within(grace).await;
+    let elapsed = start.elapsed();
+
+    // Release the wedged handler AFTER measuring: `close` returned while the task
+    // was genuinely stuck, and the abort takes effect only when the now-unblocked
+    // task next reaches `rx.recv().await`, so the leaked worker thread can park and
+    // this test's runtime shuts down cleanly instead of hanging on it.
+    gate.release();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    assert!(
+        elapsed >= grace,
+        "close must wait its grace before aborting, returned after {elapsed:?}"
+    );
+    assert!(
+        elapsed < grace + Duration::from_secs(5),
+        "close must abort the wedged handler and return, not hang: {elapsed:?}"
+    );
+}
+
 // ---- Durable plane -----------------------------------------------------
 
 use serde::Deserialize;

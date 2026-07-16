@@ -4,14 +4,24 @@
 //! [`Bus::publish`] never blocks and never returns a result: if you need a
 //! synchronous answer, that's a service interface (see [`registry`](../registry)),
 //! not an event. Each subscriber gets its OWN tokio task and its OWN FIFO mailbox
-//! (an unbounded mpsc channel), so:
+//! (a BOUNDED mpsc channel of [`LOCAL_BUS_CAP`]), so:
 //!   - delivery to a single subscriber preserves publish order,
 //!   - a slow subscriber can't stall the publisher or other subscribers,
 //!   - a panicking handler is contained ([`std::panic::catch_unwind`]), never
 //!     killing the subscriber loop or anyone else.
 //!
+//! **Local delivery is BEST-EFFORT and LOSSY under sustained overload.** The
+//! mailbox is bounded because a same-module reaction bus must not be an
+//! unbounded memory sink behind a lagging subscriber. [`Bus::publish`] is
+//! fire-and-forget with drop-on-full backpressure: past [`LOCAL_BUS_CAP`]
+//! un-drained events for one subscriber, the excess is DROPPED with a warn
+//! (`try_send`), never buffered without bound and never blocking the publisher.
+//! A consumer that must not lose an event uses the DURABLE plane
+//! ([`Bus::emit_tx`]/[`Bus::on_tx`]) instead — the in-process plane makes no
+//! delivery guarantee under overload.
+//!
 //! State built from events is therefore eventually consistent — a read right
-//! after a `publish` may not see its effect yet.
+//! after a `publish` may not see its effect yet, and under overload may never.
 //!
 //! ## Durable transport seam (the [`Transport`] plane)
 //! Alongside the async in-process core, the bus carries an optional
@@ -39,6 +49,19 @@ use serde::{de::DeserializeOwned, Serialize};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
+/// Per-subscriber mailbox capacity for the in-process plane. Bounded so a lagging
+/// subscriber cannot turn the bus into an unbounded memory sink: past this many
+/// un-drained events, [`Bus::publish`] drops the excess with a warn rather than
+/// buffer without bound or block the publisher (fire-and-forget backpressure).
+const LOCAL_BUS_CAP: usize = 1024;
+
+/// How long [`Bus::close`] waits for a single subscriber task to drain its mailbox
+/// before aborting it — mirrors the `EDGE_DRAIN_GRACE_MS` house idiom. A wedged
+/// handler (one that never yields back to `rx.recv()`) is a synchronous spin that
+/// `abort()` cannot preempt, so `close` aborts and moves on rather than waiting
+/// forever; any events still queued behind that handler are dropped.
+const LOCAL_BUS_CLOSE_GRACE_MS: u64 = 5000;
+
 /// A topic plus its erased payload. Topics are plain strings (`"match.finished"`).
 /// The payload is an `Arc<dyn Any>` so one published value can be handed to every
 /// subscriber's mailbox by cloning the `Arc`, not the payload.
@@ -54,8 +77,9 @@ pub type Handler = Box<dyn Fn(&Event) + Send>;
 
 #[derive(Default)]
 struct Inner {
-    /// topic -> one sender per subscriber (each feeds a dedicated task).
-    subs: HashMap<String, Vec<mpsc::UnboundedSender<Event>>>,
+    /// topic -> one sender per subscriber (each feeds a dedicated task). Bounded
+    /// ([`LOCAL_BUS_CAP`]): `publish` drops on a full mailbox.
+    subs: HashMap<String, Vec<mpsc::Sender<Event>>>,
     /// every subscriber task, awaited on [`Bus::close`].
     tasks: Vec<JoinHandle<()>>,
 }
@@ -116,10 +140,12 @@ impl Bus {
     where
         F: Fn(&Event) + Send + 'static,
     {
-        let (tx, mut rx) = mpsc::unbounded_channel::<Event>();
+        let (tx, mut rx) = mpsc::channel::<Event>(LOCAL_BUS_CAP);
         let task = tokio::spawn(async move {
             // Loop ends when every sender is dropped AND the mailbox has drained
-            // (see `close`), so shutdown is lossless and ordered.
+            // (see `close`). Delivery is ordered per subscriber but NOT lossless:
+            // `publish` drops on a full mailbox, and `close` may abort a wedged
+            // handler with events still queued behind it.
             while let Some(event) = rx.recv().await {
                 let topic = event.topic.clone();
                 // Contain a handler panic to this one delivery, mirroring Go's
@@ -141,9 +167,23 @@ impl Bus {
         let inner = self.inner.lock().unwrap();
         if let Some(boxes) = inner.subs.get(&event.topic) {
             for tx in boxes {
-                // Unbounded send is non-blocking; only errors if the subscriber
-                // task is gone (after close), which is a benign race at shutdown.
-                let _ = tx.send(event.clone());
+                // Non-blocking fire-and-forget with drop-on-full backpressure:
+                //  - `Full`   → the subscriber is lagging past LOCAL_BUS_CAP; drop
+                //               this event with a warn (the bus is best-effort,
+                //               not an unbounded memory sink — durable delivery is
+                //               the plane for must-not-lose consumers).
+                //  - `Closed` → the subscriber task is gone (benign shutdown race);
+                //               drop quietly.
+                match tx.try_send(event.clone()) {
+                    Ok(()) => {}
+                    Err(mpsc::error::TrySendError::Full(_)) => {
+                        tracing::warn!(
+                            topic = %event.topic,
+                            "bus: local subscriber lagging; dropping event"
+                        );
+                    }
+                    Err(mpsc::error::TrySendError::Closed(_)) => {}
+                }
             }
         }
     }
@@ -214,18 +254,42 @@ impl Bus {
             .collect()
     }
 
-    /// Stops every subscriber once its mailbox has drained, then waits for all
-    /// tasks to finish. Dropping the stored senders (by clearing `subs`) is what
-    /// lets each `rx.recv()` return `None` after its queue empties. Call after the
-    /// HTTP server has stopped so no new events arrive mid-drain.
+    /// Stops every subscriber once its mailbox has drained, then waits — up to
+    /// [`LOCAL_BUS_CLOSE_GRACE_MS`] per task — for it to finish. Dropping the
+    /// stored senders (by clearing `subs`) is what lets each `rx.recv()` return
+    /// `None` after its queue empties. Call after the HTTP server has stopped so
+    /// no new events arrive mid-drain.
+    ///
+    /// The drain is BOUNDED, not lossless-wait-forever: a wedged handler (one
+    /// that never yields back to `rx.recv()`) is a synchronous spin `abort()`
+    /// cannot preempt, so on grace-timeout we `abort()` and RETURN immediately —
+    /// no await after abort, or a wedged handler would re-stall shutdown here (the
+    /// same trap the invalidation-plane drain avoids). Events still queued behind
+    /// an aborted handler are dropped.
     pub async fn close(&self) {
+        self.close_within(std::time::Duration::from_millis(LOCAL_BUS_CLOSE_GRACE_MS))
+            .await
+    }
+
+    /// The grace-parameterized drain that [`Bus::close`] drives with
+    /// [`LOCAL_BUS_CLOSE_GRACE_MS`]. Factored out so a test can pin the
+    /// abort-at-grace branch on a short deadline without a multi-second wait; the
+    /// production path always passes the const.
+    async fn close_within(&self, grace: std::time::Duration) {
         let tasks = {
             let mut inner = self.inner.lock().unwrap();
             inner.subs.clear();
             std::mem::take(&mut inner.tasks)
         };
-        for task in tasks {
-            let _ = task.await;
+        for mut task in tasks {
+            match tokio::time::timeout(grace, &mut task).await {
+                // Drained (or the handler panicked and the loop exited) within grace.
+                Ok(_) => {}
+                // Straggler wedged past grace: abort it and move on — do NOT await
+                // after abort (a sync-spinning handler cannot be preempted, so the
+                // await would hang shutdown exactly like the unbounded drain did).
+                Err(_) => task.abort(),
+            }
         }
     }
 
