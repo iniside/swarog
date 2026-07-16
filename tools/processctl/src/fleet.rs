@@ -13,7 +13,7 @@ pub const BUILD_ENV_ALLOWLIST: &[&str] = &[
     "TMP", "USERPROFILE", "WINDIR", "all_proxy", "http_proxy", "https_proxy", "no_proxy",
 ];
 
-const SERVICE_ENV_ALLOWLIST: &[&str] = &[
+pub const SERVICE_ENV_ALLOWLIST: &[&str] = &[
     "COMSPEC", "HOME", "PATH", "PATHEXT", "RUST_BACKTRACE", "RUST_LOG", "SYSTEMROOT",
     "TEMP", "TMP", "USERPROFILE", "WINDIR",
 ];
@@ -42,7 +42,7 @@ const HARNESS_RESERVE: u32 = 4 + 1 + 1 + AE_TRANSIENT_POISON_SESSIONS + 2;
 /// PG-side configurable — an operator who raised `max_connections` has strictly MORE
 /// headroom, so this is a conservative floor, not a hard platform limit. [`HARNESS_RESERVE`]
 /// is subtracted so the fleet is charged only its own share.
-pub(crate) const PG_SESSION_BUDGET: u32 = 97 - HARNESS_RESERVE;
+pub const PG_SESSION_BUDGET: u32 = 97 - HARNESS_RESERVE;
 
 // Local `u32` mirrors of the plane/module session constants that own the real
 // mechanism. Kept as plain numbers so the RUNTIME fleet build carries no dependency on

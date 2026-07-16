@@ -408,7 +408,7 @@ pub const PG_SESSION_BUDGET: u32 = 97 - HARNESS_RESERVE;
 /// out as its own function so the arithmetic is unit-testable independent of
 /// the real fleet data (see `manifest_tests`'s synthetic-numbers case proving
 /// the dedicated term matters, not just the pool sum).
-fn service_pg_budget(svc: &ServiceDef) -> (u32, u32) {
+pub fn service_pg_budget(svc: &ServiceDef) -> (u32, u32) {
     if !svc.has_db {
         // Pure-transport front door: no pool, no plane.
         return (0, 0);

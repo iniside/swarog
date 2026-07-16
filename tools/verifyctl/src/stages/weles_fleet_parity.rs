@@ -45,51 +45,35 @@ const DUMMY_DB: &str = "postgres://parity:parity@localhost:5432/parity";
 const DUMMY_CA_CERT: &str = "dummy-ca-cert.pem";
 const DUMMY_CA_KEY: &str = "dummy-ca-key.pem";
 
-/// A single environment key deliberately excluded from the composed-env diff,
-/// with a concrete per-field reason. The ONLY legitimate exclusions are the
-/// ambient `SERVICE_ENV_ALLOWLIST` passthrough keys: weles reads them from the
-/// real process environment (`std::env::var_os`) while processctl reads them
-/// from an injected snapshot, so their value reflects the operator's live shell
-/// — not a topology/wiring decision either manifest makes. A key is NOT
-/// excluded merely because it currently mismatches; an unexplained mismatch is
-/// a real drift FAIL.
-struct EnvExclusion {
-    key: &'static str,
-    reason: &'static str,
-}
-
+/// The ONLY legitimate env-diff exclusions are the ambient
+/// `SERVICE_ENV_ALLOWLIST` passthrough keys: weles reads them from the real
+/// process environment (`std::env::var_os`) while processctl reads them from an
+/// injected snapshot, so their value reflects the operator's live shell — not a
+/// topology/wiring decision either manifest makes. The exclusion predicate is
+/// DERIVED from `weles::manifest::SERVICE_ENV_ALLOWLIST` (not a parallel
+/// hardcode), and [`allowlist_diffs`] separately proves that list equals
+/// processctl's — so a 12th allowlist key cannot silently widen the exclusion
+/// set, and allowlist drift between the two copies is itself a FAIL. A key is
+/// NOT excluded merely because it currently mismatches; an unexplained mismatch
+/// is a real drift FAIL.
 const ALLOWLIST_REASON: &str = "ambient interpreter/toolchain passthrough — both manifests \
      filter the identical SERVICE_ENV_ALLOWLIST from the live environment; weles reads it from \
      real ambient env, processctl from an injected snapshot, so its value is the operator's shell, \
      not a topology decision";
 
-const ENV_EXCLUSIONS: &[EnvExclusion] = &[
-    EnvExclusion { key: "COMSPEC", reason: ALLOWLIST_REASON },
-    EnvExclusion { key: "HOME", reason: ALLOWLIST_REASON },
-    EnvExclusion { key: "PATH", reason: ALLOWLIST_REASON },
-    EnvExclusion { key: "PATHEXT", reason: ALLOWLIST_REASON },
-    EnvExclusion { key: "RUST_BACKTRACE", reason: ALLOWLIST_REASON },
-    EnvExclusion { key: "RUST_LOG", reason: ALLOWLIST_REASON },
-    EnvExclusion { key: "SYSTEMROOT", reason: ALLOWLIST_REASON },
-    EnvExclusion { key: "TEMP", reason: ALLOWLIST_REASON },
-    EnvExclusion { key: "TMP", reason: ALLOWLIST_REASON },
-    EnvExclusion { key: "USERPROFILE", reason: ALLOWLIST_REASON },
-    EnvExclusion { key: "WINDIR", reason: ALLOWLIST_REASON },
-];
-
 fn is_excluded(key: &str) -> bool {
-    ENV_EXCLUSIONS
+    weles::manifest::SERVICE_ENV_ALLOWLIST
         .iter()
-        .any(|exclusion| exclusion.key.eq_ignore_ascii_case(key))
+        .any(|allowed| allowed.eq_ignore_ascii_case(key))
 }
 
-/// Human-readable rendering of the exclusion table (key + concrete reason),
-/// printed alongside any drift so the excluded set is auditable rather than
-/// invisible.
+/// Human-readable rendering of the exclusion set (each allowlist key + the
+/// shared reason), printed alongside any drift so the excluded set is auditable
+/// rather than invisible.
 fn exclusion_policy() -> String {
     let mut out = String::from("env keys excluded from the parity diff (by design):");
-    for exclusion in ENV_EXCLUSIONS {
-        out.push_str(&format!("\n  {}: {}", exclusion.key, exclusion.reason));
+    for key in weles::manifest::SERVICE_ENV_ALLOWLIST {
+        out.push_str(&format!("\n  {key}: {ALLOWLIST_REASON}"));
     }
     out
 }
@@ -106,6 +90,11 @@ struct ServiceView {
     player_port: Option<u16>,
     has_db: bool,
     pool_max: u32,
+    /// Dedicated Postgres sessions held OUTSIDE the pool (plane workers +
+    /// listeners, plus the scheduler's per-fire connection). Both manifests
+    /// HAND-COPY the constants this is built from — comparing it closes the
+    /// "Mirrors tools/processctl/src/fleet.rs::…" gap on the budget arithmetic.
+    dedicated: u32,
     env: BTreeMap<String, String>,
 }
 
@@ -135,6 +124,10 @@ fn view_from_weles(def: &weles::manifest::ServiceDef) -> ServiceView {
     let env = weles::manifest::compose_env(def, &weles_inputs())
         .into_iter()
         .map(|(k, v)| (k.to_string_lossy().into_owned(), v.to_string_lossy().into_owned()));
+    // Same authority weles's own `validate_pg_budget` charges against
+    // PG_SESSION_BUDGET — so a drift here is exactly what would make weles
+    // under-reserve the shared Postgres.
+    let (_pool, dedicated) = weles::manifest::service_pg_budget(def);
     ServiceView {
         name: def.name.to_string(),
         pkg: def.pkg.to_string(),
@@ -143,6 +136,7 @@ fn view_from_weles(def: &weles::manifest::ServiceDef) -> ServiceView {
         player_port: def.player_port,
         has_db: def.has_db,
         pool_max: def.pool_max,
+        dedicated,
         env: strip_excluded(env),
     }
 }
@@ -163,6 +157,7 @@ fn view_from_processctl(spec: &processctl::ServiceSpec) -> ServiceView {
         // `has_db` for every service.
         has_db: spec.pool_budget.pool_max > 0,
         pool_max: spec.pool_budget.pool_max,
+        dedicated: spec.pool_budget.dedicated,
         env: strip_excluded(env),
     }
 }
@@ -273,6 +268,12 @@ fn diff_view(topology: &str, weles: &ServiceView, processctl: &ServiceView, comp
             weles.pool_max, processctl.pool_max
         ));
     }
+    if weles.dedicated != processctl.dedicated {
+        diffs.push(format!(
+            "{topology} {label}: dedicated (Postgres sessions) weles={} processctl={}",
+            weles.dedicated, processctl.dedicated
+        ));
+    }
     diffs.extend(diff_env(topology, label, &weles.env, &processctl.env));
     diffs
 }
@@ -361,7 +362,45 @@ fn dependency_order_diffs(
     diffs
 }
 
-/// The full parity diff over both topologies against the real HEAD manifests.
+/// Compares the two HAND-COPIED `PG_SESSION_BUDGET` constants. weles labels its
+/// copy "Mirrors tools/processctl/src/fleet.rs::PG_SESSION_BUDGET" with no
+/// machine check; this is that check. A drift here means one manifest computes
+/// a stale fleet-fit total against the shared local Postgres.
+fn budget_diffs(weles: u32, processctl: u32) -> Vec<String> {
+    if weles == processctl {
+        Vec::new()
+    } else {
+        vec![format!(
+            "budget: PG_SESSION_BUDGET weles={weles} processctl={processctl} \
+             (weles's hand-copied 'Mirrors …' constant drifted)"
+        )]
+    }
+}
+
+/// Compares the two HAND-COPIED `SERVICE_ENV_ALLOWLIST` slices (order-insensitive:
+/// the passthrough set, not its order, is the contract). Because processctl is
+/// fed an empty snapshot, allowlist content never reaches the per-service env
+/// diff — so without this explicit check the two copies could silently diverge
+/// (weles adds `APPDATA`, or drops `WINDIR`, and processctl does not).
+fn allowlist_diffs(weles: &[&str], processctl: &[&str]) -> Vec<String> {
+    let weles_set: BTreeSet<&str> = weles.iter().copied().collect();
+    let processctl_set: BTreeSet<&str> = processctl.iter().copied().collect();
+    let mut diffs = Vec::new();
+    for key in weles_set.difference(&processctl_set) {
+        diffs.push(format!(
+            "allowlist: SERVICE_ENV_ALLOWLIST key {key} in weles but not processctl"
+        ));
+    }
+    for key in processctl_set.difference(&weles_set) {
+        diffs.push(format!(
+            "allowlist: SERVICE_ENV_ALLOWLIST key {key} in processctl but not weles"
+        ));
+    }
+    diffs
+}
+
+/// The full parity diff over both topologies against the real HEAD manifests,
+/// PLUS the fleet-wide hand-copied constants (session budget + allowlist).
 fn parity_diffs() -> Vec<String> {
     let mut diffs = diff_split(
         &weles_split_views(),
@@ -375,6 +414,14 @@ fn parity_diffs() -> Vec<String> {
         &weles_monolith_view(),
         &processctl_monolith_view(),
         false,
+    ));
+    diffs.extend(budget_diffs(
+        weles::manifest::PG_SESSION_BUDGET,
+        processctl::PG_SESSION_BUDGET,
+    ));
+    diffs.extend(allowlist_diffs(
+        weles::manifest::SERVICE_ENV_ALLOWLIST,
+        processctl::SERVICE_ENV_ALLOWLIST,
     ));
     diffs
 }

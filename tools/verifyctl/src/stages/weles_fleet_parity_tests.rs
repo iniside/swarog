@@ -13,27 +13,15 @@ fn head_fleets_are_in_parity() {
     );
 }
 
-/// The exclusion table only ever excludes ambient allowlist passthrough keys —
-/// never a topology/wiring key. A regression that quietly excluded, say, a
-/// peer `*_EDGE_ADDR` would blind the stage; pin that no excluded key is a
-/// manifest-synthesized or peer-wiring key.
+/// The exclusion predicate is DERIVED from the allowlist, so it can only ever
+/// exclude an ambient passthrough key — never a topology/wiring key. Pin that a
+/// peer `*_EDGE_ADDR` is not excluded and an allowlist key is.
 #[test]
-fn exclusions_are_only_ambient_allowlist_keys() {
-    for exclusion in ENV_EXCLUSIONS {
-        assert!(
-            weles::manifest::SERVICE_ENV_ALLOWLIST
-                .iter()
-                .any(|a| a.eq_ignore_ascii_case(exclusion.key)),
-            "{} is excluded but is not a SERVICE_ENV_ALLOWLIST key — an exclusion must be an \
-             ambient passthrough, never a topology decision",
-            exclusion.key
-        );
-        assert!(
-            !exclusion.reason.is_empty(),
-            "{} excluded without a reason",
-            exclusion.key
-        );
-    }
+fn exclusion_predicate_is_the_allowlist() {
+    assert!(is_excluded("PATH"));
+    assert!(is_excluded("windir")); // case-insensitive
+    assert!(!is_excluded("CONFIG_EDGE_ADDR"));
+    assert!(!is_excluded("DATABASE_POOL_MAX_CONNECTIONS"));
 }
 
 /// FAIL-ON-DRIFT (port): mutate one service's http_port in a copy of the real
@@ -144,6 +132,96 @@ fn comparator_detects_boot_order_violation() {
             .iter()
             .any(|d| d.contains("config-svc") && d.contains("must appear before")),
         "boot-order violation not detected: {diffs:?}"
+    );
+}
+
+/// FAIL-ON-DRIFT (dedicated Postgres sessions): the hand-copied budget
+/// arithmetic is compared per service. Bumping one side's `dedicated` (as a
+/// processctl `AE_WORKERS`/plane change would) must be reported — this is the
+/// twin the first cut left uncovered.
+#[test]
+fn comparator_detects_dedicated_drift() {
+    let mut weles = weles_split_views();
+    let processctl = processctl_split_views();
+    let deps = processctl_split_dependencies();
+    assert!(diff_split(&weles, &processctl, &deps).is_empty(), "control: HEAD must be clean");
+
+    weles
+        .iter_mut()
+        .find(|v| v.name == "accounts-svc")
+        .expect("accounts-svc present")
+        .dedicated += 1;
+
+    let diffs = diff_split(&weles, &processctl, &deps);
+    assert!(
+        diffs.iter().any(|d| d.contains("dedicated")),
+        "dedicated-session drift not detected: {diffs:?}"
+    );
+}
+
+/// FAIL-ON-DRIFT (env present in weles but absent in processctl): the
+/// asymmetric direction of the env diff (the mirror of the dropped-key test).
+#[test]
+fn comparator_detects_weles_only_env_key() {
+    let mut weles = weles_split_views();
+    let processctl = processctl_split_views();
+    let deps = processctl_split_dependencies();
+
+    weles
+        .iter_mut()
+        .find(|v| v.name == "config-svc")
+        .expect("config-svc present")
+        .env
+        .insert("WELES_ONLY_KEY".into(), "x".into());
+
+    let diffs = diff_split(&weles, &processctl, &deps);
+    assert!(
+        diffs
+            .iter()
+            .any(|d| d.contains("WELES_ONLY_KEY") && d.contains("absent in processctl")),
+        "weles-only env key not detected: {diffs:?}"
+    );
+}
+
+/// PASS-AT-HEAD + FAIL-ON-DRIFT for the hand-copied `PG_SESSION_BUDGET`
+/// constants. HEAD equal → no diff; a mutated pair → a named diff. Consts can't
+/// be mutated in place, so the pure comparator is driven with explicit values.
+#[test]
+fn budget_constant_parity_and_drift() {
+    assert!(budget_diffs(87, 87).is_empty());
+    assert_eq!(
+        weles::manifest::PG_SESSION_BUDGET,
+        processctl::PG_SESSION_BUDGET,
+        "hand-copied PG_SESSION_BUDGET drifted at HEAD"
+    );
+    let diffs = budget_diffs(87, 88);
+    assert!(
+        diffs.iter().any(|d| d.contains("PG_SESSION_BUDGET")),
+        "budget drift not detected: {diffs:?}"
+    );
+}
+
+/// PASS-AT-HEAD + FAIL-ON-DRIFT for the hand-copied `SERVICE_ENV_ALLOWLIST`
+/// slices, in both directions (added / dropped key).
+#[test]
+fn allowlist_parity_and_drift() {
+    assert!(
+        allowlist_diffs(
+            weles::manifest::SERVICE_ENV_ALLOWLIST,
+            processctl::SERVICE_ENV_ALLOWLIST,
+        )
+        .is_empty(),
+        "hand-copied SERVICE_ENV_ALLOWLIST drifted at HEAD"
+    );
+    let added = allowlist_diffs(&["PATH", "APPDATA"], &["PATH"]);
+    assert!(
+        added.iter().any(|d| d.contains("APPDATA") && d.contains("not processctl")),
+        "allowlist add not detected: {added:?}"
+    );
+    let dropped = allowlist_diffs(&["PATH"], &["PATH", "WINDIR"]);
+    assert!(
+        dropped.iter().any(|d| d.contains("WINDIR") && d.contains("not weles")),
+        "allowlist drop not detected: {dropped:?}"
     );
 }
 
