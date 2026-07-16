@@ -832,6 +832,75 @@ pub async fn run(
     let mut running_edge: Option<edge::RunningServer> = None;
     let mut running_player: Option<edge::RunningServer> = None;
     let mut modules_started = false;
+
+    // ── Panic-capable, non-I/O finalization — done BEFORE migrate/start ─────────
+    // INVARIANT: `edge::Server::handle`/`handle_identity` PANIC on a duplicate wire
+    // method (core/edge) and axum `Router::route` PANICs on a duplicate path — the
+    // documented "loud boot failure" convention for a deterministic WIRING error (a
+    // collision is caught in dev/split-proof, never a runtime condition). A PANIC
+    // unwinds the stack and NEVER reaches `ordered_teardown` (that runs only on the
+    // `outcome` `Err` path below), so a collision applied AFTER modules/planes were
+    // started would SKIP graceful teardown. We therefore APPLY every contributed
+    // edge/player registration and BUILD the `/healthz`+`/readyz` router HERE — right
+    // after `App::build` (module `init`, inside Build, has contributed every edge
+    // face, route, and readyz check; none are contributed during migrate/start) and
+    // BEFORE any migrate/start — so a collision fires with `modules_started == false`
+    // and nothing started: there is nothing to tear down. The actual socket binds
+    // (`Server::listen`, `serve_http`) stay post-start (first I/O per the lifecycle
+    // law); only the registration-application and router construction move earlier.
+    let mut edge_built: Option<edge::Server> = match &edge_server {
+        Some(shared) => {
+            // Take the server out of the shared handle (`mem::take` leaves an empty
+            // one behind), then install every contributed registration on it —
+            // `edge::Server::handle` PANICS here on a duplicate wire method.
+            let mut server = std::mem::take(&mut *shared.lock().unwrap());
+            let applied = apply_edge_registrations(&ctx, &mut server);
+            tracing::info!(applied, "installed contributed edge registrations");
+            Some(server)
+        }
+        None => None,
+    };
+    let mut player_built: Option<edge::PlayerServer> = match &player_server {
+        Some(shared) => {
+            // The gateway registered its dispatch handler onto this shared handle
+            // during Build; `mem::take` hands us the fully-wired server. The limit
+            // chain is pure configuration (binds nothing).
+            let player = std::mem::take(&mut *shared.lock().unwrap())
+                .with_conn_limits(cfg.player_max_conns, cfg.player_max_conns_per_ip)
+                .with_request_limits(
+                    cfg.player_rate_limit_rps,
+                    cfg.player_rate_limit_burst,
+                    cfg.player_conn_rate_limit_rps,
+                    cfg.player_conn_rate_limit_burst,
+                );
+            Some(player)
+        }
+        None => None,
+    };
+    // Build the served router now: `take_router` drains the modules' merged routes and
+    // `.route("/healthz"|"/readyz")` PANICS on a collision with a module that mounted
+    // either path. The `/readyz` closure captures `pool.clone()` + `readiness_checks`,
+    // both already live here. Held in an `Option` and `.take()`n post-start, where the
+    // rate-limit / timeout / metrics layers wrap it before serve.
+    let mut base_router: Option<axum::Router> = {
+        let ready_pool = pool.clone();
+        let ready_checks = readiness_checks.clone();
+        Some(
+            ctx.take_router()
+                .route("/healthz", get(|| async { "ok" }))
+                .route(
+                    "/readyz",
+                    get(move || {
+                        let pool = ready_pool.clone();
+                        let checks = ready_checks.clone();
+                        async move {
+                            readyz_response(pool.as_ref(), checks, READY_CHECK_TIMEOUT).await
+                        }
+                    }),
+                ),
+        )
+    };
+
     let outcome: anyhow::Result<()> = async {
         if let Some(p) = &plane {
             p.migrate().await.context("asyncevents migrate failed")?;
@@ -857,19 +926,13 @@ pub async fn run(
             p.start().await.context("asyncevents start failed")?;
         }
 
-        // 7. Bring up the shared edge server AFTER every module init has contributed
-        //    its registrations. One listener, all edge methods, mutual TLS via the
-        //    shared dev CA. This is where the EDGE_SLOT contributions land: modules
-        //    contributed unconditionally during init; only a process that actually has
-        //    an edge server applies them (the monolith reaches the `None` arm and they
-        //    are dropped).
-        running_edge = match edge_server {
-            Some(shared) => {
-                // Take the server out of the shared handle (`mem::take` leaves an empty
-                // one behind), then install every contributed registration on it.
-                let mut server = std::mem::take(&mut *shared.lock().unwrap());
-                let applied = apply_edge_registrations(&ctx, &mut server);
-                tracing::info!(applied, "installed contributed edge registrations");
+        // 7. Bind the shared edge server (first I/O). The fully-registered `Server`
+        //    was built pre-start above (registrations already applied — a duplicate
+        //    wire method already panicked with nothing started); only the socket bind
+        //    happens here. One listener, all edge methods, mutual TLS via the shared
+        //    dev CA. `None` (the monolith / a process without an edge) is a no-op.
+        running_edge = match edge_built.take() {
+            Some(server) => {
                 let ca = edge::shared_dev_ca().context("edge ca")?;
                 let edge_bind: SocketAddr = to_bind_addr(&cfg.edge_addr)
                     .parse()
@@ -881,22 +944,14 @@ pub async fn run(
             None => None,
         };
 
-        // 7b. Bring up the player-facing QUIC front, same lifecycle as the internal
-        //     edge: the gateway registered its dispatch handler onto this shared handle
-        //     during Build, so `mem::take` hands `listen` the fully-wired server.
-        //     Server-cert-only TLS (no client cert) off the SAME dev CA —
+        // 7b. Bind the player-facing QUIC front (first I/O), same lifecycle as the
+        //     internal edge: the fully-wired `PlayerServer` (dispatch handler + conn/
+        //     request limits) was built pre-start above; only the socket bind happens
+        //     here. Server-cert-only TLS (no client cert) off the SAME dev CA —
         //     `server_tls_public` derives from it — so external players can handshake;
         //     per-call auth is the front's job.
-        running_player = match player_server {
-            Some(shared) => {
-                let player = std::mem::take(&mut *shared.lock().unwrap())
-                    .with_conn_limits(cfg.player_max_conns, cfg.player_max_conns_per_ip)
-                    .with_request_limits(
-                        cfg.player_rate_limit_rps,
-                        cfg.player_rate_limit_burst,
-                        cfg.player_conn_rate_limit_rps,
-                        cfg.player_conn_rate_limit_burst,
-                    );
+        running_player = match player_built.take() {
+            Some(player) => {
                 let ca = edge::shared_dev_ca().context("edge ca")?;
                 let player_bind: SocketAddr = to_bind_addr(&cfg.player_edge_addr)
                     .parse()
@@ -908,31 +963,16 @@ pub async fn run(
             None => None,
         };
 
-        // 8. Serve HTTP: the router the modules merged into the Context, plus liveness
-        //    (`/healthz`, always 200 — a restart can't fix a down DB) and readiness
-        //    (`/readyz`). Readiness pings the DB when a pool exists (controls whether a
-        //    load balancer sends traffic); a DB-less process has nothing to ping, so it
-        //    answers a plain 200. Modules must not themselves mount these two routes (axum
-        //    `merge`/`route` panics on a duplicate, exactly like Go's ServeMux).
-        // `/readyz` folds in the baseline DB ping (when a pool exists) PLUS the startup
-        // snapshot of every `httpmw::ReadyCheck` contributed during wiring. Membership
-        // is fixed before migrate/start; each Arc-backed check closure still runs live on
-        // every request. Any failure → 503 with a per-failed-check JSON body.
-        let ready_pool = pool.clone();
-        let ready_checks = readiness_checks.clone();
-        let router = ctx
-            .take_router()
-            .route("/healthz", get(|| async { "ok" }))
-            .route(
-                "/readyz",
-                get(move || {
-                    let pool = ready_pool.clone();
-                    let checks = ready_checks.clone();
-                    async move {
-                        readyz_response(pool.as_ref(), checks, READY_CHECK_TIMEOUT).await
-                    }
-                }),
-            );
+        // 8. Serve HTTP: the router built pre-start above (the modules' merged routes
+        //    plus liveness `/healthz` — always 200, a restart can't fix a down DB — and
+        //    readiness `/readyz`; a collision with a module-mounted route already
+        //    panicked pre-start with nothing started). Readiness pings the DB when a
+        //    pool exists (controls whether a load balancer sends traffic); a DB-less
+        //    process has nothing to ping, so it answers a plain 200. `/readyz` folds in
+        //    the baseline DB ping PLUS the startup snapshot of every
+        //    `httpmw::ReadyCheck` — membership fixed before migrate/start, each
+        //    Arc-backed closure still runs live per request.
+        let router = base_router.take().expect("router built before start");
 
         // Rate limiting (Step 13): OPT-IN for module hosts (`RATE_LIMIT_RPS` default 0 = off —
         // a split peer runs BEHIND the gateway, so limiting here would double-count and

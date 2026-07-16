@@ -856,6 +856,82 @@ async fn ordered_teardown_stops_modules_after_a_successful_start() {
     assert_eq!(*log.lock().unwrap(), vec!["stop:stoprec"]);
 }
 
+// ============================================================================
+// Boot-sequence hardening: the panic-capable, non-I/O finalization (edge/player
+// registration application + the `/healthz`+`/readyz` router build) runs BEFORE
+// migrate/start, so a duplicate-registration PANIC — the documented loud boot
+// failure (`edge::Server::handle` / axum `route`) — fires with NOTHING started.
+// A panic UNWINDS the stack and never reaches `ordered_teardown` (that runs only
+// on the `outcome` Err path), so applying these registrations post-start would let
+// a collision skip graceful teardown after modules/planes were already running.
+// This test pins the REORDER, not merely that a panic happens: the probe's `start`
+// flips `started`, and the collision must fire with it STILL false — before the
+// reorder `app.start()` ran first, so it would be `true`.
+// ============================================================================
+
+/// A probe module that mounts a route COLLIDING with the app's `/readyz` (built
+/// during finalization) and records whether its `start` ran.
+struct ReadyzCollider {
+    started: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+#[async_trait::async_trait]
+impl Module for ReadyzCollider {
+    fn name(&self) -> &str {
+        "readyzcollider"
+    }
+    fn init(&self, ctx: &Context) -> anyhow::Result<()> {
+        // Mounted during Build (`init`); the app's own `.route("/readyz", …)`
+        // collides with it during finalization → axum `Router::route` PANICS.
+        ctx.mount(axum::Router::new().route("/readyz", get(|| async { "collide" })));
+        Ok(())
+    }
+    async fn start(&self, _ctx: &Context) -> anyhow::Result<()> {
+        self.started
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+/// DB-less boot: the `/readyz` collision must PANIC during finalization BEFORE the
+/// probe's `start` runs, proving the finalization was reordered ahead of start.
+#[tokio::test]
+async fn finalization_panics_before_module_start_on_route_collision() {
+    use futures::FutureExt;
+    use std::sync::atomic::Ordering;
+
+    let started = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let cfg = Config::from_values(None, None, None, None, None, None, None, None, None, None)
+        .without_db();
+
+    // The panic is EXPECTED — silence the default hook's stderr noise for this test.
+    let prev = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let outcome = std::panic::AssertUnwindSafe(run(
+        cfg,
+        vec![Box::new(ReadyzCollider {
+            started: started.clone(),
+        })],
+        None,
+        None,
+    ))
+    .catch_unwind()
+    .await;
+    std::panic::set_hook(prev);
+
+    // The `/readyz` collision PANICS (the loud boot-failure convention) …
+    assert!(
+        outcome.is_err(),
+        "expected a panic on the /readyz route collision, got: {outcome:?}"
+    );
+    // … and it fires with `modules_started == false`: the probe's `start` never ran.
+    // Before the reorder, `app.start()` ran first and this flag would be `true`.
+    assert!(
+        !started.load(Ordering::SeqCst),
+        "finalization panic must fire BEFORE module start (start ran → reorder regressed)"
+    );
+}
+
 #[test]
 fn to_bind_addr_expands_colon_port() {
     assert_eq!(to_bind_addr(":9000"), "0.0.0.0:9000");
