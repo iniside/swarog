@@ -6,6 +6,7 @@
 use super::*;
 use futures::future::BoxFuture;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -21,18 +22,28 @@ where
 }
 
 /// An internal-plane server with one handler that pings `entered` on entry (BEFORE its
-/// delay) then sleeps `delay` and echoes. The entry ping lets a test wait for the
+/// delay), sleeps `delay`, sets `resumed` (AFTER the sleep resolves but BEFORE the echo
+/// write leaves the handler), then echoes. The entry ping lets a test wait for the
 /// happens-before fact "the request reached the handler" instead of guessing a sleep
-/// window — the tokio `Notify` is the ordering seam.
-fn signaling_slow_echo(delay: Duration, entered: Arc<tokio::sync::Notify>) -> Server {
+/// window — the tokio `Notify` is the ordering seam. `resumed` is the drop-vs-abort
+/// distinction: it flips ONLY if the handler future ran past its sleep, so a straggler
+/// whose future was dropped mid-sleep leaves it false while a merely stream-aborted
+/// (but still-executing) handler flips it when the sleep elapses.
+fn signaling_slow_echo(
+    delay: Duration,
+    entered: Arc<tokio::sync::Notify>,
+    resumed: Arc<AtomicBool>,
+) -> Server {
     let mut srv = Server::new();
     srv.handle(
         "slow",
         handler(move |payload| {
             let entered = entered.clone();
+            let resumed = resumed.clone();
             Box::pin(async move {
                 entered.notify_one();
                 tokio::time::sleep(delay).await;
+                resumed.store(true, Ordering::SeqCst);
                 Ok(payload)
             })
         }),
@@ -47,7 +58,8 @@ fn signaling_slow_echo(delay: Duration, entered: Arc<tokio::sync::Notify>) -> Se
 async fn shutdown_waits_for_inflight_handler() {
     let ca = DevCA::generate().unwrap();
     let entered = Arc::new(tokio::sync::Notify::new());
-    let running = signaling_slow_echo(Duration::from_millis(200), entered.clone())
+    let resumed = Arc::new(AtomicBool::new(false));
+    let running = signaling_slow_echo(Duration::from_millis(200), entered.clone(), resumed)
         .listen(loopback(), &ca)
         .unwrap();
     let client = Arc::new(Client::dial(running.local_addr(), &ca).await.unwrap());
@@ -79,8 +91,9 @@ async fn shutdown_waits_for_inflight_handler() {
 async fn shutdown_stops_accepting_new_connections() {
     let ca = DevCA::generate().unwrap();
     let entered = Arc::new(tokio::sync::Notify::new());
+    let resumed = Arc::new(AtomicBool::new(false));
     let running = Arc::new(
-        signaling_slow_echo(Duration::from_millis(300), entered.clone())
+        signaling_slow_echo(Duration::from_millis(300), entered.clone(), resumed)
             .listen(loopback(), &ca)
             .unwrap(),
     );
@@ -161,7 +174,8 @@ async fn shutdown_stops_accepting_new_connections() {
 async fn shutdown_grace_timeout_aborts_stragglers() {
     let ca = DevCA::generate().unwrap();
     let entered = Arc::new(tokio::sync::Notify::new());
-    let running = signaling_slow_echo(Duration::from_secs(5), entered.clone())
+    let resumed = Arc::new(AtomicBool::new(false));
+    let running = signaling_slow_echo(Duration::from_secs(5), entered.clone(), resumed)
         .listen(loopback(), &ca)
         .unwrap();
     let client = Arc::new(Client::dial(running.local_addr(), &ca).await.unwrap());
@@ -221,4 +235,126 @@ async fn player_shutdown_drains_inflight_call() {
     let resp = call.await.unwrap().unwrap();
     assert_eq!(resp, br#"{"p":1}"#);
     client.close();
+}
+
+// (iv) The straggler's HANDLER FUTURE is dropped at grace — not merely its stream.
+// `endpoint.close()` alone resets the quinn streams but leaves a detached
+// `tokio::spawn`'d handler running; the abort registry drops the future itself.
+// `resumed` is the proof seam: it flips ONLY when the handler runs PAST its 5s sleep.
+#[tokio::test]
+async fn shutdown_grace_drops_straggler_future_which_never_resumes() {
+    let ca = DevCA::generate().unwrap();
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let resumed = Arc::new(AtomicBool::new(false));
+    let running = signaling_slow_echo(Duration::from_secs(5), entered.clone(), resumed.clone())
+        .listen(loopback(), &ca)
+        .unwrap();
+    let client = Arc::new(Client::dial(running.local_addr(), &ca).await.unwrap());
+
+    let call = tokio::spawn({
+        let client = client.clone();
+        async move { client.call_raw("slow", b"null").await }
+    });
+    // Happens-before: the 5s handler has entered before we shut down (5s hang-guard).
+    tokio::time::timeout(Duration::from_secs(5), entered.notified())
+        .await
+        .expect("handler never entered");
+
+    running.shutdown(Duration::from_millis(200)).await;
+
+    // Wait comfortably past the handler's own 5s sleep (measured from entry). On the
+    // OLD code `endpoint.close()` only reset the stream while the detached handler
+    // kept sleeping, so `resumed` would flip at t≈5s. Post-fix its FUTURE was dropped
+    // mid-sleep at the 200ms grace, so it never reaches the post-sleep store.
+    tokio::time::sleep(Duration::from_secs(6)).await;
+    assert!(
+        !resumed.load(Ordering::SeqCst),
+        "straggler handler future must be dropped mid-sleep, not run to completion after shutdown"
+    );
+
+    let _ = call.await;
+}
+
+// (v) The player-plane analog of (iv): the shared `ShutdownState` tracks the player
+// stream-spawn site too, so a mid-flight player handler's future is dropped at grace.
+// Proven server-side via the same `resumed` seam (CLAUDE.md names BOTH planes).
+#[tokio::test]
+async fn player_shutdown_grace_drops_straggler_future_which_never_resumes() {
+    let ca = DevCA::generate().unwrap();
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let resumed = Arc::new(AtomicBool::new(false));
+    let srv = PlayerServer::new();
+    srv.set_handler({
+        let entered = entered.clone();
+        let resumed = resumed.clone();
+        Arc::new(move |_method, _token, _key, payload| {
+            let entered = entered.clone();
+            let resumed = resumed.clone();
+            Box::pin(async move {
+                entered.notify_one();
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                resumed.store(true, Ordering::SeqCst);
+                Ok(payload)
+            })
+        })
+    });
+    let running = srv.listen(loopback(), &ca).unwrap();
+    let client =
+        Arc::new(PlayerClient::dial(running.local_addr(), &ca.trust_anchor()).await.unwrap());
+
+    let call = tokio::spawn({
+        let client = client.clone();
+        async move { client.call("slow", None, None, b"null").await }
+    });
+    tokio::time::timeout(Duration::from_secs(5), entered.notified())
+        .await
+        .expect("player handler never entered");
+
+    running.shutdown(Duration::from_millis(200)).await;
+
+    tokio::time::sleep(Duration::from_secs(6)).await;
+    assert!(
+        !resumed.load(Ordering::SeqCst),
+        "player straggler handler future must be dropped mid-sleep, not run to completion after shutdown"
+    );
+
+    let _ = call.await;
+}
+
+// (vi) No-leak: a burst of normally-completing requests must leave the abort registry
+// EMPTY. `enter()` inserts an entry and `track()` fills it; if a fast task's guard
+// dropped before `track` ran the fill must be a no-op — otherwise every request leaks
+// one AbortHandle, growing the map unboundedly (worse than the bug). After the burst
+// drains AND the connection closes, `tracked_len()` must return to 0.
+#[tokio::test]
+async fn completed_handlers_leave_no_tracked_abort_handles() {
+    let ca = DevCA::generate().unwrap();
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let resumed = Arc::new(AtomicBool::new(false));
+    // Zero-delay echo: each call returns immediately, maximizing the track()-after-fast-
+    // completion race the no-leak invariant must survive.
+    let running = signaling_slow_echo(Duration::from_millis(0), entered.clone(), resumed)
+        .listen(loopback(), &ca)
+        .unwrap();
+    let client = Client::dial(running.local_addr(), &ca).await.unwrap();
+
+    for i in 0..2000u32 {
+        let payload = format!(r#"{{"n":{i}}}"#);
+        let resp = client.call_raw("slow", payload.as_bytes()).await.unwrap();
+        assert_eq!(resp, payload.as_bytes());
+    }
+
+    // Close the connection so its connection-level guard also drops, then poll: every
+    // stream task's guard AND the connection guard must have removed their entry.
+    client.close();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut len = running.shutdown.tracked_len();
+    while len != 0 && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        len = running.shutdown.tracked_len();
+    }
+    assert_eq!(
+        len, 0,
+        "completed handlers left {len} tracked abort handles behind (unbounded-growth leak)"
+    );
 }

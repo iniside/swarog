@@ -292,7 +292,10 @@ impl PlayerServer {
                         // Guard created at the ACCEPT arm and moved into the task —
                         // see [`ShutdownState::enter`].
                         let guard = accept_state.enter();
-                        tokio::spawn(async move {
+                        let id = guard.id();
+                        // track() AFTER spawn — a task that finished before track runs
+                        // already removed `id`, so the fill is a no-op (no leak).
+                        let jh = tokio::spawn(async move {
                             let _guard = guard;
                             // Held for the connection's whole life; dropping it frees the
                             // global + per-IP slot (also on a failed handshake below).
@@ -302,6 +305,7 @@ impl PlayerServer {
                                 Err(e) => tracing::debug!(error = %e, "edge: player handshake failed"),
                             }
                         });
+                        accept_state.track(id, jh.abort_handle());
                     }
                     // Graceful shutdown: stop admitting NEW connections.
                     _ = closing.wait_for(|c| *c) => break,
@@ -492,6 +496,7 @@ async fn serve_conn(
                 Ok((send, recv)) => {
                     let handler = handler.clone();
                     let guard = state.enter();
+                    let id = guard.id();
                     let limiter = request_guard.limiter.clone();
                     let ip = request_guard.ip;
                     let connection_id = request_guard.id;
@@ -500,11 +505,14 @@ async fn serve_conn(
                     // request-bucket guard alive through that stream task so its
                     // admission cannot observe a prematurely removed conn bucket.
                     let request_guard = request_guard.clone();
-                    tokio::spawn(async move {
+                    // Aborting a connection-level guard does NOT reach its already-spawned
+                    // stream tasks, so each stream is tracked at its own level too.
+                    let jh = tokio::spawn(async move {
                         let _guard = guard;
                         let _request_guard = request_guard;
                         serve_stream(send, recv, handler, limiter, ip, connection_id, stream_grace).await;
                     });
+                    state.track(id, jh.abort_handle());
                 }
                 // Peer closed, idle timeout, or shutdown.
                 Err(_) => return,

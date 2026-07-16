@@ -16,7 +16,7 @@
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -215,7 +215,10 @@ impl Server {
                         // task, so an accepted-but-unstarted connection is never
                         // invisible to the drain.
                         let guard = accept_state.enter();
-                        tokio::spawn(async move {
+                        let id = guard.id();
+                        // track() AFTER spawn — if this task finishes before track runs,
+                        // its guard removed `id` and the fill is a no-op (no leak).
+                        let jh = tokio::spawn(async move {
                             let _guard = guard;
                             match incoming.await {
                                 Ok(conn) => serve_conn(conn, dispatch, conn_state, stream_grace).await,
@@ -224,6 +227,7 @@ impl Server {
                                 Err(e) => tracing::debug!(error = %e, "edge: connection handshake failed"),
                             }
                         });
+                        accept_state.track(id, jh.abort_handle());
                     }
                     // Graceful shutdown: stop admitting NEW connections.
                     _ = closing.wait_for(|c| *c) => break,
@@ -243,10 +247,23 @@ impl Server {
 /// polls. `in_flight` counts RAII [`InFlightGuard`]s — one per
 /// accepted-but-not-yet-handshaken connection and one per accepted stream, each
 /// created at its ACCEPT site and moved into the spawned task.
+///
+/// `handles` mirrors `in_flight` EXACTLY (membership == counter): a single
+/// `enter()` allocates an `id`, bumps `in_flight`, and inserts `id -> None`
+/// together; a single [`InFlightGuard::drop`] removes the `id` and decrements
+/// together. It holds the spawned task's [`tokio::task::AbortHandle`] so
+/// [`RunningServer::shutdown`] can abort the straggler HANDLER FUTURES at grace —
+/// `endpoint.close()` alone only resets the quinn STREAMS, leaving a detached
+/// `tokio::spawn`'d handler (DB / sleep / CPU work) running past teardown, racing
+/// module and pool shutdown. A std [`std::sync::Mutex`] LEAF lock — never held
+/// across an `.await`, and dropped before any `abort()` (an aborted task's
+/// `InFlightGuard::drop` contends on this same lock).
 pub(crate) struct ShutdownState {
     closing: watch::Sender<bool>,
     in_flight: AtomicUsize,
     idle_notify: Notify,
+    handles: std::sync::Mutex<HashMap<u64, Option<tokio::task::AbortHandle>>>,
+    next_id: AtomicU64,
 }
 
 impl ShutdownState {
@@ -255,6 +272,8 @@ impl ShutdownState {
             closing: watch::Sender::new(false),
             in_flight: AtomicUsize::new(0),
             idle_notify: Notify::new(),
+            handles: std::sync::Mutex::new(HashMap::new()),
+            next_id: AtomicU64::new(0),
         })
     }
 
@@ -268,9 +287,47 @@ impl ShutdownState {
     /// MOVE it into the task performing the work — creating it inside the task body
     /// leaves a window where accepted-but-unstarted work is invisible to the drain
     /// and gets aborted by `endpoint.close()`.
+    ///
+    /// Allocates the id, bumps `in_flight`, and inserts `id -> None` into `handles`
+    /// as one logical step — the counter and the map enter membership together. The
+    /// caller [`ShutdownState::track`]s the spawned task's abort handle AFTER the
+    /// spawn; if the task already finished (its guard removed the id) that fill is a
+    /// no-op, so a fast request never leaks a stale AbortHandle.
     pub(crate) fn enter(self: &Arc<Self>) -> InFlightGuard {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         self.in_flight.fetch_add(1, Ordering::AcqRel);
-        InFlightGuard(self.clone())
+        self.handles.lock().unwrap().insert(id, None);
+        InFlightGuard { state: self.clone(), id }
+    }
+
+    /// Fills in the spawned task's abort handle for `id` — but ONLY if the id is
+    /// still present (i.e. its guard has not already dropped). Never re-inserts: a
+    /// task that completed before `track` ran left no entry, and re-inserting would
+    /// leak an AbortHandle for a dead task, growing the map unboundedly under fast
+    /// traffic — the very defect this closes. Membership stays == `in_flight`.
+    pub(crate) fn track(&self, id: u64, abort: tokio::task::AbortHandle) {
+        if let Some(slot) = self.handles.lock().unwrap().get_mut(&id) {
+            *slot = Some(abort);
+        }
+    }
+
+    /// Snapshots the still-live abort handles by value (cloned under the lock). The
+    /// caller aborts each AFTER releasing the lock — an aborted task's
+    /// [`InFlightGuard::drop`] contends on this same leaf lock.
+    fn take_abort_handles(&self) -> Vec<tokio::task::AbortHandle> {
+        self.handles
+            .lock()
+            .unwrap()
+            .values()
+            .filter_map(|h| h.clone())
+            .collect()
+    }
+
+    /// Test seam: the number of tracked in-flight entries — must return to 0 once a
+    /// burst of normally-completing tasks has drained (no leaked AbortHandles).
+    #[cfg(test)]
+    pub(crate) fn tracked_len(&self) -> usize {
+        self.handles.lock().unwrap().len()
     }
 
     fn begin_closing(&self) {
@@ -299,13 +356,30 @@ impl ShutdownState {
     }
 }
 
-/// RAII in-flight marker; dropping the last one wakes [`ShutdownState::idle`] waiters.
-pub(crate) struct InFlightGuard(Arc<ShutdownState>);
+/// RAII in-flight marker; dropping the last one wakes [`ShutdownState::idle`]
+/// waiters. Carries the `id` its [`ShutdownState::enter`] allocated so drop can
+/// remove exactly its own `handles` entry — keeping map membership == `in_flight`.
+pub(crate) struct InFlightGuard {
+    state: Arc<ShutdownState>,
+    id: u64,
+}
+
+impl InFlightGuard {
+    /// The id to hand [`ShutdownState::track`] after spawning the task this guard is
+    /// moved into.
+    pub(crate) fn id(&self) -> u64 {
+        self.id
+    }
+}
 
 impl Drop for InFlightGuard {
     fn drop(&mut self) {
-        if self.0.in_flight.fetch_sub(1, Ordering::AcqRel) == 1 {
-            self.0.idle_notify.notify_waiters();
+        // Remove THIS entry from the abort registry before decrementing — the two
+        // leave membership together, so `track` racing after a fast completion finds
+        // nothing to fill.
+        self.state.handles.lock().unwrap().remove(&self.id);
+        if self.state.in_flight.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.state.idle_notify.notify_waiters();
         }
     }
 }
@@ -336,18 +410,28 @@ impl RunningServer {
     /// Graceful shutdown: (1) flip the closing flag — the endpoint-accept loop and
     /// every per-connection stream-accept loop stop admitting new work; (2) wait up
     /// to `grace` for in-flight work (handshakes + stream handlers) to drain —
-    /// already-idle returns immediately, a timeout warns with the straggler count;
-    /// (3) close the endpoint (aborting any stragglers) and wait — bounded by
-    /// `min(grace, 3s)` so a dead peer cannot hang teardown — for the close
-    /// notifications to flush.
+    /// already-idle returns immediately; (3) on a timeout, ABORT every straggler
+    /// handler FUTURE (`endpoint.close()` alone resets the quinn streams but leaves a
+    /// detached `tokio::spawn`'d handler running, racing module/pool teardown); then
+    /// (4) close the endpoint and wait — bounded by `min(grace, 3s)` so a dead peer
+    /// cannot hang teardown — for the close notifications to flush.
     pub async fn shutdown(&self, grace: Duration) {
         self.shutdown.begin_closing();
         if tokio::time::timeout(grace, self.shutdown.idle()).await.is_err() {
+            // Snapshot the live abort handles UNDER the lock, then RELEASE it before
+            // aborting: each aborted task's `InFlightGuard::drop` contends on the same
+            // leaf lock (see `take_abort_handles`). Aborting drops the guards, so
+            // `in_flight` falls to 0 and the futures stop executing.
+            let stragglers = self.shutdown.take_abort_handles();
             tracing::warn!(
                 in_flight = self.shutdown.in_flight_count(),
+                stragglers = stragglers.len(),
                 grace_ms = grace.as_millis() as u64,
-                "edge: drain grace expired; aborting in-flight work"
+                "edge: drain grace expired; aborting in-flight handler futures"
             );
+            for h in stragglers {
+                h.abort();
+            }
         }
         self.endpoint.close(0u32.into(), b"server shutting down");
         let bound = grace.min(Duration::from_secs(3));
@@ -431,10 +515,14 @@ async fn serve_conn(
                 Ok((send, recv)) => {
                     let dispatch = dispatch.clone();
                     let guard = state.enter();
-                    tokio::spawn(async move {
+                    let id = guard.id();
+                    // Aborting a connection-level guard does NOT reach its already-spawned
+                    // stream tasks, so each stream is tracked at its own level too.
+                    let jh = tokio::spawn(async move {
                         let _guard = guard;
                         serve_stream(send, recv, dispatch, stream_grace).await;
                     });
+                    state.track(id, jh.abort_handle());
                 }
                 // Peer closed, idle timeout, or shutdown.
                 Err(_) => return,
