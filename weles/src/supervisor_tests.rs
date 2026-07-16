@@ -4,6 +4,7 @@
 //! timing dependence (timing-tests doctrine).
 
 use super::*;
+use std::sync::{MutexGuard, OnceLock};
 
 fn base() -> Instant {
     Instant::now()
@@ -390,8 +391,25 @@ fn the_early_checkpoint_records_the_pin_with_an_empty_fleet() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Serializes every test in this binary that reads or writes the process-global
+/// `STOP` static. `cargo test` runs tests concurrently and there is no
+/// `--test-threads=1` in this repo, so a test that flips `STOP` would otherwise
+/// race any `STOP`-sensitive reader. Same `OnceLock<Mutex<()>>` shape as
+/// `prep_tests.rs::env_guard` — copied with provenance, not imported (zero-sharing).
+/// Poison-tolerant: a panicking guarded test must not wedge the rest.
+fn stop_guard() -> MutexGuard<'static, ()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 #[test]
 fn stop_requested_honors_the_threaded_fleet_stop() {
+    // Reads `STOP` through `stop_requested` (the `!stop_requested(&clear)` arm
+    // asserts STOP is clear), so it must hold `stop_guard` against any concurrent
+    // test that sets STOP=true — otherwise that assertion flakes.
+    let _guard = stop_guard();
     // The threaded fleet stop is sufficient on its own: a `weles down` request
     // (which flips only this Arc, never the signal-handler `STOP` static) still
     // requests a stop. And with neither flag set, no stop is requested.
@@ -409,6 +427,8 @@ fn stop_requested_honors_the_threaded_fleet_stop() {
 
 #[test]
 fn boot_with_the_fleet_stop_set_on_entry_spawns_nothing() {
+    // Robust to STOP because fleet_stop=true already forces the gate; no guard
+    // needed unless this is made STOP-sensitive.
     // The mid-boot-down branch (supervisor.rs boot loop: `if stop_requested`
     // FIRST, before ensure_no_stale_listener / spawn). A `fleet_stop` already
     // true on entry — as a `down` received before boot reaches the service would
@@ -441,6 +461,48 @@ fn boot_with_the_fleet_stop_set_on_entry_spawns_nothing() {
         fleet[0].phase.is_none(),
         "the service never advanced past Starting"
     );
+}
+
+#[test]
+fn boot_with_the_signal_stop_set_on_entry_spawns_nothing() {
+    // proves STOP is observed by boot's entry gate (the STOP arm of
+    // stop_requested's ||). The sibling above pins the fleet_stop arm; this pins
+    // the OTHER arm by flipping the process-global signal `STOP` static directly
+    // (fleet_stop stays false), so it is `STOP` — not fleet_stop — that halts
+    // boot. Guarded because it WRITES the process-global STOP (A3), and reset to
+    // false under the held guard so no later test observes a stale STOP.
+    let _guard = stop_guard();
+    STOP.store(true, Ordering::SeqCst);
+
+    let layout = prep::Layout {
+        root: std::env::temp_dir(),
+        run_dir: std::env::temp_dir(),
+        bin_dir: std::env::temp_dir(),
+        active_bin_dir: std::env::temp_dir(),
+    };
+    let inputs = RuntimeInputs {
+        database_url: String::new(),
+        ca_cert: PathBuf::new(),
+        ca_key: PathBuf::new(),
+    };
+    let reporter = dummy_reporter();
+    let mut fleet = vec![Supervised::new(dummy_def())];
+    // fleet_stop is CLEAR: only the signal STOP may halt boot here.
+    let fleet_stop = Arc::new(AtomicBool::new(false));
+
+    let result = boot(&layout, &inputs, &mut fleet, &reporter, &fleet_stop);
+
+    assert!(result.is_ok(), "a signal STOP on boot entry is a clean interrupt, not an error");
+    assert!(
+        fleet[0].proc.is_none(),
+        "boot must spawn nothing once the signal STOP is set on entry"
+    );
+    assert!(
+        fleet[0].phase.is_none(),
+        "the service never advanced past Starting"
+    );
+
+    STOP.store(false, Ordering::SeqCst);
 }
 
 // ---------------------------------------------------------------------------

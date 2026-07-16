@@ -798,6 +798,8 @@ pub fn run_up(topology: Topology) -> Result<()> {
     let clean = teardown(&mut fleet, &reporter, terminal);
     // Now that the terminal status is published, stop and join the control
     // server. `_lock` drops at the end of the function — strictly after teardown.
+    // MUST stay after teardown — control serves status/down through the teardown
+    // window; moving this before teardown blinds concurrent status/down (P6).
     drop(control);
     // A run that otherwise succeeded but whose teardown could not confirm every
     // service stopped is escalated to an error so the exit code is non-zero
