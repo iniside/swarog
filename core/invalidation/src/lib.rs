@@ -70,6 +70,13 @@ pub const LISTEN_SESSIONS: usize = 1;
 /// `READY_CHECK_TIMEOUT`): teardown promptness is not a per-deployment tuning surface.
 const DEFAULT_STOP_GRACE_MS: u64 = 5000;
 
+/// Bounded grace to await an already-aborted task's unwind before moving on. A
+/// cooperative future drops its `PgListener`/lock at the abort's `.await` point and joins
+/// within this window; a non-cooperative (CPU-spinning, never-yielding) future — which
+/// `abort()` cannot preempt anyway — is left detached rather than stalling teardown, so
+/// this stays a bound, not an unbounded join. A small fraction of [`DEFAULT_STOP_GRACE_MS`].
+const POST_ABORT_JOIN_GRACE_MS: u64 = 500;
+
 /// Readiness threshold: a callback with no successful refresh in this long → unready.
 pub const STALE_AFTER: Duration = Duration::from_secs(60);
 
@@ -77,13 +84,23 @@ type RefreshFuture = Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send>>;
 type RefreshFn = Arc<dyn Fn() -> RefreshFuture + Send + Sync>;
 
 /// One registered refresh: a NOTIFY `channel`, a stable `name` (readiness/metrics
-/// label), and the authoritative reload closure. `Clone` is cheap — the closure is an
-/// `Arc` — so the plane snapshots registrations by clone at `start`.
+/// label), the authoritative reload closure, and a per-callback serialization lock.
+/// `Clone` is cheap — both the closure and the lock are `Arc`s — so the plane snapshots
+/// registrations by clone at `start` and every clone shares the SAME `lock` (an `Arc`
+/// clone is a refcount bump). The lock is created ONCE at [`Invalidation::register`], so
+/// the `Clone` fanning a registration into `RunCtx::all` and `RunCtx::by_channel`
+/// serializes the callback against itself across the listener, poll, and reconnect tasks.
 #[derive(Clone)]
 struct Registration {
     channel: String,
     name: String,
     refresh: RefreshFn,
+    /// Held for the duration of one refresh so a given callback never overlaps itself.
+    /// Different callbacks hold different locks and still run concurrently. Shared across
+    /// every `Clone` of this registration (Arc), so the listener and poll tasks contend on
+    /// the same lock for the same callback — the reorder window (an older snapshot landing
+    /// after a newer one) closes when combined with the callback's own monotonic guard.
+    lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl Registration {
@@ -119,6 +136,24 @@ impl Invalidation {
     /// `channel` (plus reconnect heals and the poll fallback). `name` labels the callback
     /// in readiness and metrics. Wiring-only: the closure does not run until the plane
     /// starts.
+    ///
+    /// **The callback MUST be idempotent and apply-only-newer (monotonic).** The plane
+    /// serializes a callback against ITSELF (a per-callback lock: two of the listener,
+    /// poll, and reconnect tasks never run the same callback concurrently), but it does
+    /// NOT order a refresh against a newer EXTERNAL write — a refresh that queried before
+    /// the latest commit can still finish after a later refresh that saw it. So the
+    /// callback owns freshness: build a fresh snapshot, then apply it only if it is newer
+    /// than what the cache already holds (config's `revision <= guard.revision` guard),
+    /// swapping the whole cache in one step (see the module doc — "atomicity is the
+    /// callback's job"). Without the callback's own monotonic guard the plane alone does
+    /// not prevent an older snapshot from overwriting a newer one.
+    ///
+    /// **Head-of-line bound.** Because same-callback runs QUEUE on the lock (never skip),
+    /// a poll pass reaching callback A while the listener holds A's lock waits up to A's
+    /// remaining `INVALIDATION_CALLBACK_TIMEOUT_MS` before running A — bounded and
+    /// acceptable for a freshness floor. Queueing (not `try_lock`-skip) is deliberate:
+    /// skipping could drop the newest snapshot, since the in-flight run may have queried
+    /// before the latest commit.
     pub fn register<F, Fut>(&self, channel: &str, name: &str, callback: F)
     where
         F: Fn() -> Fut + Send + Sync + 'static,
@@ -142,6 +177,9 @@ impl Invalidation {
             channel: channel.to_string(),
             name: name.to_string(),
             refresh: Arc::new(move || Box::pin(callback())),
+            // Created ONCE here, then shared (Arc) across every `Clone` into `all` and
+            // `by_channel` — a fresh Mutex per clone would serialize nothing.
+            lock: Arc::new(tokio::sync::Mutex::new(())),
         });
     }
 
@@ -206,8 +244,14 @@ struct RunCtx {
 impl RunCtx {
     /// Runs one callback, isolating its outcome: success marks the health clock; an
     /// error (including a deadline timeout) is logged and counted, never propagated (a
-    /// sibling must still run).
+    /// sibling must still run). Holds the callback's per-registration lock across the
+    /// (timeout-wrapped) refresh so a given callback never overlaps itself across the
+    /// listener/poll/reconnect tasks — the second invocation reads a fresh snapshot only
+    /// after the first completes. Different callbacks contend on different locks and still
+    /// run concurrently. The wait for a contended lock is bounded by the in-flight run's
+    /// remaining `callback_timeout` (the head-of-line bound documented on `register`).
     async fn run_one(&self, reg: &Registration) {
+        let _serialize = reg.lock.lock().await;
         match reg.run(self.callback_timeout).await {
             Ok(()) => self.health.mark(&reg.name),
             Err(err) => {
@@ -357,13 +401,25 @@ impl InvalidationPlane {
     /// [`DEFAULT_STOP_GRACE_MS`] (e.g. blocked in a hung callback mid-refresh) is aborted
     /// so one wedged callback can't stall teardown — safe because a task only holds a
     /// `PgListener`, dropped at the abort's await point.
+    ///
+    /// After `abort()` we await the task once more, BOUNDED by
+    /// [`POST_ABORT_JOIN_GRACE_MS`]: a cooperative future unwinds (dropping its
+    /// `PgListener`/lock) and joins within that window, so a subsequent `Module::stop`
+    /// does not race a still-unwinding task. The bound is essential — an UNBOUNDED
+    /// `(&mut t).await` here would re-introduce the very stall the pre-abort timeout
+    /// exists to prevent, because `abort()` cannot preempt a non-cooperative
+    /// (CPU-spinning) future; such a future is left detached rather than stalling teardown.
     pub async fn stop(&mut self) {
         if let Some((stop_tx, tasks)) = self.stop.take() {
             let _ = stop_tx.send(true);
             let grace = Duration::from_millis(DEFAULT_STOP_GRACE_MS);
+            let post_abort = Duration::from_millis(POST_ABORT_JOIN_GRACE_MS);
             for mut t in tasks {
                 if tokio::time::timeout(grace, &mut t).await.is_err() {
                     t.abort();
+                    // Bounded confirm-unwind: cooperative tasks join fast; a
+                    // non-cooperative one is left detached rather than stalling teardown.
+                    let _ = tokio::time::timeout(post_abort, &mut t).await;
                 }
             }
         }

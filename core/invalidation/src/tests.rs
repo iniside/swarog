@@ -73,7 +73,7 @@ fn duplicate_panic_does_not_poison_registry_or_replace_first() {
     assert_eq!(registrations[1].channel, "other");
     assert_eq!(registrations[1].name, "unique");
 }
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use sqlx::PgPool;
 
@@ -231,6 +231,94 @@ async fn poll_fallback_refreshes_without_notify() {
     assert!(
         after > baseline,
         "poll fallback did not re-run the callback (baseline={baseline}, after={after})"
+    );
+}
+
+/// A callback is serialized against ITSELF across the concurrent driver paths (a NOTIFY
+/// fan-out via `run_channel` and a full refresh via `refresh_all`): the per-registration
+/// lock means the same callback never overlaps itself, so an older snapshot can't land
+/// after a newer one. Without the lock both invocations enter concurrently and the
+/// observed max in-flight is 2 — this test pins that the max is exactly 1. Drives the
+/// fan-out primitives directly (no DB): the two clones of the registration (into `all`
+/// and `by_channel`) must share the SAME lock `Arc`, or nothing is serialized.
+#[tokio::test]
+async fn same_callback_never_overlaps_itself_across_driver_paths() {
+    let inflight = Arc::new(AtomicUsize::new(0));
+    let max_seen = Arc::new(AtomicUsize::new(0));
+
+    let inv = Invalidation::new();
+    {
+        let inflight = inflight.clone();
+        let max_seen = max_seen.clone();
+        inv.register("c", "cb", move || {
+            let inflight = inflight.clone();
+            let max_seen = max_seen.clone();
+            async move {
+                let now = inflight.fetch_add(1, Ordering::SeqCst) + 1;
+                max_seen.fetch_max(now, Ordering::SeqCst);
+                // Hold the in-flight window open so a concurrent invocation WOULD overlap
+                // if the callback were not serialized against itself.
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                inflight.fetch_sub(1, Ordering::SeqCst);
+                Ok(())
+            }
+        });
+    }
+
+    let regs = inv.snapshot();
+    let mut by_channel: HashMap<String, Vec<Registration>> = HashMap::new();
+    for reg in &regs {
+        by_channel.entry(reg.channel.clone()).or_default().push(reg.clone());
+    }
+    let ctx = RunCtx {
+        all: regs,
+        by_channel,
+        health: Health::default(),
+        gauges: gauges::Gauges::new(),
+        callback_timeout: Duration::from_secs(10),
+    };
+
+    // The NOTIFY path and the poll/reconnect path hit the SAME callback concurrently.
+    tokio::join!(ctx.run_channel("c"), ctx.refresh_all());
+
+    assert_eq!(
+        max_seen.load(Ordering::SeqCst),
+        1,
+        "the same callback overlapped itself — per-callback serialization is missing \
+         (max in-flight {})",
+        max_seen.load(Ordering::SeqCst)
+    );
+}
+
+/// `stop()` stays BOUNDED even when an aborted task never yields — the post-abort join
+/// must be time-bounded, not an unbounded `(&mut t).await`. A task in a tight non-yielding
+/// spin cannot be preempted by `abort()` (abort only takes effect at an await point), so an
+/// unbounded post-abort await would hang teardown forever. Injects such a task directly into
+/// the plane's `stop` slot (no DB) and asserts `stop()` returns within the pre-abort grace +
+/// post-abort grace + margin; an `AtomicBool` flag then releases the spinner so the test
+/// runtime can shut down.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stop_is_bounded_when_aborted_task_never_yields() {
+    let mut plane = new_plane("postgres://unused".to_string()).unwrap();
+
+    let run = Arc::new(AtomicBool::new(true));
+    let run_in_task = run.clone();
+    // A non-cooperative task: it spins without any `.await`, so `abort()` cannot preempt
+    // it. The `run` flag lets the TEST (not `stop`) end it afterward for clean teardown.
+    let spinner = tokio::spawn(async move {
+        while run_in_task.load(Ordering::SeqCst) {
+            std::hint::spin_loop();
+        }
+    });
+    let (stop_tx, _stop_rx) = watch::channel(false);
+    plane.stop = Some((stop_tx, vec![spinner]));
+
+    let bound = Duration::from_millis(DEFAULT_STOP_GRACE_MS + POST_ABORT_JOIN_GRACE_MS + 2000);
+    let result = tokio::time::timeout(bound, plane.stop()).await;
+    // Release the spinner regardless of outcome so the runtime can shut down cleanly.
+    run.store(false, Ordering::SeqCst);
+    result.expect(
+        "stop() hung on a non-cooperative aborted task — the post-abort await is unbounded",
     );
 }
 
