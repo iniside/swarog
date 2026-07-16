@@ -970,13 +970,55 @@ fn spawn_live_child(dir: &Path) -> OwnedProc {
     }
 }
 
-/// A port with NOTHING listening on it: claimed from the ephemeral range by the
-/// OS, then released. This is the `ProbeResult::ConnectFailed` input.
-fn port_with_no_listener() -> u16 {
-    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind an ephemeral port");
-    let port = listener.local_addr().expect("local addr").port();
-    drop(listener);
-    port
+/// An ephemeral port HELD against every other binder, to be released only at the
+/// point of use. This is the `ProbeResult::ConnectFailed` input for `observe`.
+///
+/// Bind-then-immediately-release (the `health_tests::closed_port` pattern) would
+/// leave the port up for grabs across this test's whole setup — a `spawn` plus a
+/// marker poll, hundreds of ms. That window has a concrete in-suite adversary:
+/// `health_tests::serve_once` binds `("127.0.0.1", 0)` concurrently in THIS test
+/// binary, and `probe_reports_ready_on_200` has one of those answer a literal
+/// `HTTP/1.1 200 OK`. Were it handed this port, `observe` would see `Ready` and
+/// the test would go red for a reason unrelated to the invariant.
+///
+/// Holding the listener bound closes that window structurally rather than
+/// probabilistically: a bound port cannot be handed to another `bind(port 0)`,
+/// so for the entire setup the collision is impossible, not merely unlikely.
+/// Nothing probes the port before `observe`, so an unaccepting listener costs
+/// nothing. [`PortClaim::release_and_assert_refused`] then drops it and asserts
+/// the refusal AT the point of use, leaving only CPU between the check and
+/// `observe` — and a residual squatter hits that assert with a self-explaining
+/// message instead of corrupting the verdict.
+struct PortClaim {
+    listener: std::net::TcpListener,
+    port: u16,
+}
+
+impl PortClaim {
+    fn claim() -> Self {
+        let listener =
+            std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind an ephemeral port");
+        let port = listener.local_addr().expect("local addr").port();
+        PortClaim { listener, port }
+    }
+
+    fn port(&self) -> u16 {
+        self.port
+    }
+
+    /// Releases the claim and asserts the port now refuses. Call this
+    /// IMMEDIATELY before the `observe` under test: it consumes the claim, so
+    /// the hold cannot be accidentally extended past the assert, and the assert
+    /// cannot be accidentally hoisted back above the setup.
+    fn release_and_assert_refused(self) {
+        let port = self.port;
+        drop(self.listener);
+        assert_eq!(
+            health::probe(port),
+            ProbeResult::ConnectFailed,
+            "precondition: :{port} must refuse the moment the claim is released"
+        );
+    }
 }
 
 #[test]
@@ -988,15 +1030,12 @@ fn a_live_service_whose_readyz_refuses_the_connection_is_observed_not_ready_neve
     // a REAL `OwnedProc` and a REAL refused TCP connect. It must read NotReady;
     // reading Exited would restart a service whose only sin is a cold /readyz.
     let dir = scratch_dir("refused");
-    let port = port_with_no_listener();
-    assert_eq!(
-        health::probe(port),
-        ProbeResult::ConnectFailed,
-        "precondition: nothing may listen on :{port}"
-    );
+    // Held (not merely sampled) across the spawn + marker poll below, so no
+    // concurrent binder in this test binary can be handed the same port.
+    let claim = PortClaim::claim();
 
     let mut svc = Supervised::new(ServiceDef {
-        http_port: port,
+        http_port: claim.port(),
         ..dummy_def()
     });
     svc.proc = Some(spawn_live_child(&dir.path));
@@ -1011,6 +1050,9 @@ fn a_live_service_whose_readyz_refuses_the_connection_is_observed_not_ready_neve
     );
 
     let t0 = base();
+    // The last statement before the call under test: from here to `observe`
+    // there is no I/O and no scheduling point, only this frame's own CPU.
+    claim.release_and_assert_refused();
     // The boot gate DOES probe (by design — a service that never comes up must
     // be killed), and a refused connect there is NotReady, never Exited.
     assert_eq!(

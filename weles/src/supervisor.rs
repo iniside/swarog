@@ -308,9 +308,9 @@ fn phase_after_kill(shutdown: &Result<Outcome>, intended: Phase) -> Phase {
 // Readiness: a post-healthy `/readyz` freshness dimension, structurally
 // DISJOINT from the restart decision. The three pure functions below are the
 // whole authority — none of them can touch `phase`/`status`/`history`, so a
-// 503/torn/unreachable probe records `Degraded`/`Unreachable` and NOTHING else.
-// The poller writes into a shared Vec; the monitor folds that Vec into each
-// `Supervised.readiness` for the checkpoint.
+// 503/torn/unreachable POLLER probe records `Degraded`/`Unreachable` and
+// NOTHING else. The poller writes into a shared Vec; the monitor folds that Vec
+// into each `Supervised.readiness` for the checkpoint.
 //
 // A probe DOES reach `step` — but ONLY through `observe` in `WaitingHealthy`,
 // where it becomes `Observed::Ready`/`NotReady` by design (a service that never
@@ -322,8 +322,10 @@ fn phase_after_kill(shutdown: &Result<Outcome>, intended: Phase) -> Phase {
 //   (b) `step`'s `Phase::Healthy` arm restarts on `Observed::Exited` ALONE —
 //       every other observation, probe-derived included, is `Stay(phase)`;
 //   (c) `Observed::Exited` is unforgeable from a probe: `observe` derives it
-//       from `try_wait` only, and a `ConnectFailed` (nothing listening at all)
-//       becomes `NotReady`, never `Exited`.
+//       from LIVENESS alone (`try_wait`, or no process at all — the
+//       `Backoff`/`Failed` case, see `Observed::Exited`'s own doc), and a
+//       `ConnectFailed` (nothing listening at all) becomes `NotReady`, never
+//       `Exited`.
 // ---------------------------------------------------------------------------
 
 /// Maps a single readiness probe to the recorded [`Readiness`]. This is the ONE
