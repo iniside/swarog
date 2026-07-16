@@ -444,6 +444,59 @@ fn boot_with_the_fleet_stop_set_on_entry_spawns_nothing() {
 }
 
 // ---------------------------------------------------------------------------
+// checkpoint_critical (#P3): the early pin write is fail-closed.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn checkpoint_critical_fails_closed_where_checkpoint_swallows() {
+    // The previously-swallowed branch: `checkpoint` eprintln!s and returns `()`
+    // on a write failure, so a fleet whose initial pin cannot be persisted would
+    // start blind (no retention protection). `checkpoint_critical` must instead
+    // return Err so run_up refuses to start. A state_path inside a nonexistent
+    // directory cannot be written — exercising exactly that branch, no process,
+    // no clock. The contrast (`checkpoint` swallowing the SAME path) is asserted
+    // too, pinning that only the critical variant is fatal.
+    let missing = std::env::temp_dir()
+        .join(format!("weles-p3-missing-{}", std::process::id()))
+        .join("does-not-exist")
+        .join("state.json");
+    let supervisor = ProcessIdentity {
+        pid: std::process::id(),
+        started_unix: 1,
+    };
+    let reporter = Reporter {
+        state_path: missing,
+        run_id: "p3".to_string(),
+        topology: "split",
+        supervisor,
+        pinned_generation: Some("gen-1".to_string()),
+        status: Cell::new(FleetStatus::Starting),
+        control_endpoint: RefCell::new(None),
+        shared: Arc::new(Mutex::new(FleetState {
+            run_id: String::new(),
+            supervisor,
+            topology: "split".to_string(),
+            status: FleetStatus::Starting,
+            control_endpoint: None,
+            pinned_generation: None,
+            services: Vec::new(),
+        })),
+    };
+
+    let error = reporter
+        .checkpoint_critical(&[])
+        .expect_err("checkpoint_critical must fail when the state dir is unwritable");
+    assert!(
+        error.to_string().contains("persist initial state"),
+        "the error must name the failed persist, got: {error:#}"
+    );
+
+    // The best-effort variant swallows the SAME failure (returns `()`, no panic):
+    // it is the reason the fatal variant had to exist.
+    reporter.checkpoint(&[]);
+}
+
+// ---------------------------------------------------------------------------
 // stop_outcome (#P2): the one authority for teardown accuracy.
 // ---------------------------------------------------------------------------
 

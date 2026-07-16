@@ -544,6 +544,22 @@ impl Reporter {
             );
         }
     }
+
+    /// Like [`Reporter::checkpoint`] but FATAL: propagates the `state::checkpoint`
+    /// error instead of swallowing it. Used for the EARLY pin write only — a
+    /// fleet that cannot persist its initial pin has no retention protection (a
+    /// concurrent `weles deploy` would not see the pin and could prune this
+    /// booting run's generation), so it must refuse to start (fail-closed) rather
+    /// than run blind. Publishes the in-memory snapshot for the control thread
+    /// before persisting, exactly like `checkpoint`. Residual known gap (M3): the
+    /// later best-effort `checkpoint`s still swallow a state-dir that breaks
+    /// MID-RUN — a separate signal, out of scope here.
+    fn checkpoint_critical(&self, fleet: &[Supervised]) -> Result<()> {
+        let snapshot = self.snapshot(fleet);
+        *self.shared.lock().expect("state mutex poisoned") = snapshot.clone();
+        state::checkpoint(&self.state_path, &snapshot)
+            .with_context(|| format!("persist initial state to {}", self.state_path.display()))
+    }
 }
 
 /// Discovers the workspace layout from weles's own crate location. weles's
@@ -634,7 +650,13 @@ pub fn run_up(topology: Topology) -> Result<()> {
     };
     // Empty fleet: the services aren't built yet, but the supervisor identity +
     // pin ARE — that is all `live_pinned_generation` needs to protect this gen.
-    reporter.checkpoint(&[]);
+    // FAIL-CLOSED: if this initial pin can't be persisted, refuse to start rather
+    // than run without retention protection (a silent fail here + a concurrent
+    // deploy = a deleted live generation, the exact loss the pin prevents). The
+    // `_lock` is released by Drop on this return.
+    reporter
+        .checkpoint_critical(&[])
+        .context("could not persist initial state / pin protection — refusing to start")?;
 
     // Manifest-vs-disk drift FIRST: if the manifest disagrees with cmd/*-svc
     // (the source of truth), report it AS drift — not as a "missing binary"
