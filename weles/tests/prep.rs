@@ -96,11 +96,16 @@ fn deploy_retention_protects_a_live_supervisors_pinned_generation() {
     deploy(&deploy_layout, &src).expect("gen-2");
 
     // Record a live, non-terminal supervisor pinning gen-1 (now behind current).
+    // `started_unix` must be >= this process's real creation time to model a
+    // genuine live supervisor: run_up captures the start via SystemTime::now()
+    // AFTER the OS creates the process, so a real start is never BEFORE creation.
+    // Windows `supervisor_alive` reads the creation time and treats a recorded
+    // start earlier than creation (a hardcoded past constant) as pid reuse.
     let state = FleetState {
         run_id: "live-up".to_string(),
         supervisor: ProcessIdentity {
             pid: std::process::id(),
-            started_unix: 1_752_000_000,
+            started_unix: weles::control::now_unix(),
         },
         topology: "split".to_string(),
         status: FleetStatus::Running,
@@ -149,11 +154,14 @@ fn an_early_window_pin_starting_status_empty_services_protects_across_deploys() 
     let deploy_layout = Layout::discover_for_deploy(root.clone()).expect("deploy layout");
     deploy(&deploy_layout, &src).expect("gen-1");
 
+    // `started_unix` >= this process's creation time (see the sibling test):
+    // Windows `supervisor_alive` reads the process creation time and treats a
+    // recorded start earlier than creation as pid reuse (not a live supervisor).
     let early = FleetState {
         run_id: "booting".to_string(),
         supervisor: ProcessIdentity {
             pid: std::process::id(),
-            started_unix: 1_752_000_000,
+            started_unix: weles::control::now_unix(),
         },
         topology: "split".to_string(),
         status: FleetStatus::Starting,

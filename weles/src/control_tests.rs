@@ -405,9 +405,72 @@ fn a_wrong_pid_running_state_is_classified_stale_end_to_end() {
 
 #[test]
 fn supervisor_alive_is_true_for_this_process() {
+    // `started_unix` = now: this process's real creation time is <= now, so the
+    // Windows asymmetric reuse check sees `actual <= recorded` and never rejects
+    // it. (A `started_unix` of 1 — before this process was created — would look
+    // like pid reuse on Windows; that fixture was unrealistic vs run_up, which
+    // records the start AFTER the OS creates the process.)
     let me = ProcessIdentity {
         pid: std::process::id(),
-        started_unix: 1,
+        started_unix: now_unix(),
     };
     assert!(supervisor_alive(&me));
+}
+
+// ---------------------------------------------------------------------------
+// Windows asymmetric pid-reuse guard (pure fns — no real process / FFI)
+// ---------------------------------------------------------------------------
+
+#[cfg(windows)]
+#[test]
+fn filetime_to_unix_maps_known_instants() {
+    // The 1601 FILETIME epoch is Unix time 0 (and saturates, never underflows).
+    assert_eq!(filetime_to_unix(0), 0);
+    // A hand-computed instant: Unix 1_000_000_000 s == (1e9 + 11_644_473_600) s
+    // of 100ns ticks == 126_444_736_000_000_000 ticks.
+    assert_eq!(filetime_to_unix(126_444_736_000_000_000), 1_000_000_000);
+    // Sub-epoch tick counts saturate to 0 rather than wrapping.
+    assert_eq!(filetime_to_unix(10_000_000), 0);
+}
+
+#[cfg(windows)]
+#[test]
+fn is_reused_pid_rejects_only_a_strictly_later_creation() {
+    // Reused: the process behind the pid was created AFTER the recorded start
+    // (beyond skew) — a different, later process holding the same pid.
+    assert!(is_reused_pid(1_000, 1_010, 3), "created 10s later ⇒ reused");
+    // Live, started before the recorded stamp (the common case: creation time
+    // precedes the SystemTime::now() captured just after spawn).
+    assert!(
+        !is_reused_pid(1_000, 900, 3),
+        "created before the recorded start ⇒ live, never reused"
+    );
+    // Live slow-start within skew (the H1/H2 regression guard): a creation
+    // second one past the recorded start, absorbed by skew, must NOT reject —
+    // a symmetric |Δ|<=TOL check would, and would false-kill a live supervisor.
+    assert!(
+        !is_reused_pid(1_000, 1_001, 3),
+        "one second past, within skew ⇒ still live"
+    );
+    // Exactly at the skew boundary is still live (strict `>`).
+    assert!(
+        !is_reused_pid(1_000, 1_003, 3),
+        "creation at recorded+skew is the boundary, not reuse"
+    );
+}
+
+#[cfg(any(windows, target_os = "linux"))]
+#[test]
+fn classify_connects_for_a_live_slow_start_supervisor() {
+    // H2 regression: model a live-but-slow-start supervisor — recorded
+    // `started_unix` is well BEFORE `now` (a long-running fleet), and the
+    // supervisor pid (this process) is alive. The asymmetric Windows check must
+    // NOT report it reused (its real creation precedes the recorded start), so
+    // `supervisor_alive` stays true and classify yields Connect — status/down
+    // never break on a live fleet.
+    let mut state = sample_state(FleetStatus::Running, std::process::id());
+    state.supervisor.started_unix = now_unix();
+    let alive = supervisor_alive(&state.supervisor);
+    assert!(alive, "a live supervisor must probe alive under the reuse check");
+    assert_eq!(classify(&state, now_unix(), alive), Disposition::Connect);
 }

@@ -417,13 +417,43 @@ fn decode_response(bytes: &[u8]) -> Result<String> {
 /// supervisor beside a non-terminal state file means the state is stale. This
 /// is only the PRE-connect check; the transport peer-identity check at connect
 /// time is what actually guards against a reused pid answering.
+///
+/// Windows adds an ASYMMETRIC process-creation-time check to defeat pid reuse:
+/// see [`supervisor_alive`]'s body. Linux/other stay pid-only — a documented
+/// known gap: `/proc/<pid>/stat` starttime is in clock ticks since boot, which
+/// needs `/proc/stat btime` + `sysconf(_SC_CLK_TCK)` epoch arithmetic with no
+/// prior art in this repo to copy, so it is deliberately deferred. The failure
+/// mode of pid-only liveness is benign OVER-protection (a stale file's reused
+/// pid is treated as live), and the connect-time peer check still rejects a
+/// wrong peer answering the endpoint; only the pre-connect classification is
+/// slightly conservative there.
+///
+/// Windows: after opening the process (its
+/// `PROCESS_QUERY_LIMITED_INFORMATION` handle already suffices for
+/// `GetProcessTimes`), fetch the creation time and reject the pid as reused
+/// ONLY when the process was created strictly LATER than the recorded start.
+/// The asymmetry is the whole point — never false-declare a LIVE supervisor
+/// dead: `identity.started_unix` is `SystemTime::now()` captured INSIDE
+/// `run_up`, strictly AFTER the OS created the process, with an unbounded gap
+/// (AV scan, loaded box, debug build) plus ~1s `as_secs()` truncation. So a
+/// real live supervisor always has `actual_creation_unix <= started_unix`; a
+/// reused pid belongs to a process created LATER, so
+/// `actual_creation_unix > started_unix`. A symmetric `|Δ| <= TOL` check would
+/// false-kill a live slow-start supervisor — flipping retention from benign
+/// over-protection to DELETING THE LIVE GENERATION — so we reject only the
+/// strictly-later side. See [`is_reused_pid`].
 #[cfg(windows)]
 pub fn supervisor_alive(identity: &ProcessIdentity) -> bool {
-    use windows_sys::Win32::Foundation::{CloseHandle, WAIT_TIMEOUT};
+    use windows_sys::Win32::Foundation::{CloseHandle, FILETIME, WAIT_TIMEOUT};
     use windows_sys::Win32::System::Threading::{
-        OpenProcess, WaitForSingleObject, PROCESS_QUERY_LIMITED_INFORMATION,
+        GetProcessTimes, OpenProcess, WaitForSingleObject, PROCESS_QUERY_LIMITED_INFORMATION,
     };
     const SYNCHRONIZE_ACCESS: u32 = 0x0010_0000;
+    // A few seconds of skew absorbs the `as_secs()` truncation on both the
+    // recorded start and the computed creation second; distinct in MEANING from
+    // `identity_plausible`'s SKEW (that one bounds a FUTURE recorded start vs
+    // wall-clock — this one bounds actual-creation vs recorded-start).
+    const CREATION_SKEW: u64 = 5;
     // SAFETY: probing an arbitrary pid; a null handle (gone / access denied) is
     // treated as dead, and the opened handle is closed before returning.
     unsafe {
@@ -435,15 +465,63 @@ pub fn supervisor_alive(identity: &ProcessIdentity) -> bool {
         if handle.is_null() {
             return false;
         }
-        let alive = WaitForSingleObject(handle, 0) == WAIT_TIMEOUT;
+        let pid_alive = WaitForSingleObject(handle, 0) == WAIT_TIMEOUT;
+        // Combine the creation FILETIME's Hi/Lo halves into 100ns ticks, exactly
+        // as `tools/processctl/src/platform/windows.rs:549` does (copied, not
+        // imported — zero-sharing). If GetProcessTimes fails we cannot judge
+        // reuse, so we DON'T reject (benign over-protection over false-kill).
+        let mut created: FILETIME = std::mem::zeroed();
+        let mut exited: FILETIME = std::mem::zeroed();
+        let mut kernel: FILETIME = std::mem::zeroed();
+        let mut user: FILETIME = std::mem::zeroed();
+        let reused = if GetProcessTimes(
+            handle,
+            &mut created,
+            &mut exited,
+            &mut kernel,
+            &mut user,
+        ) != 0
+        {
+            let ticks =
+                (u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime);
+            is_reused_pid(
+                identity.started_unix,
+                filetime_to_unix(ticks),
+                CREATION_SKEW,
+            )
+        } else {
+            false
+        };
         CloseHandle(handle);
-        alive
+        pid_alive && !reused
     }
+}
+
+/// Convert a Windows creation FILETIME (100ns ticks since 1601-01-01 UTC,
+/// already combined as `Hi << 32 | Lo`) to Unix seconds. The 1601→1970 epoch
+/// offset is 11_644_473_600 seconds; a pre-epoch value saturates to 0.
+#[cfg(windows)]
+fn filetime_to_unix(ticks: u64) -> u64 {
+    const EPOCH_OFFSET_SECS: u64 = 11_644_473_600;
+    (ticks / 10_000_000).saturating_sub(EPOCH_OFFSET_SECS)
+}
+
+/// Asymmetric pid-reuse test. A process behind a recorded pid is a REUSE only
+/// when its actual creation time is strictly LATER than the recorded start
+/// (plus `skew`). This one-sided comparison is deliberate: the recorded
+/// `started_unix` is captured AFTER the OS created the process, so a live
+/// supervisor always satisfies `actual <= recorded` and is NEVER reported
+/// reused — no matter how slow its start was. Saturating add so a huge recorded
+/// start can't wrap.
+#[cfg(windows)]
+fn is_reused_pid(recorded_started_unix: u64, actual_creation_unix: u64, skew: u64) -> bool {
+    actual_creation_unix > recorded_started_unix.saturating_add(skew)
 }
 
 #[cfg(unix)]
 pub fn supervisor_alive(identity: &ProcessIdentity) -> bool {
     // SAFETY: signal 0 only checks existence/permission, sends nothing.
+    // Pid-only (no start-time asymmetry) — documented known gap on the fn above.
     unsafe { libc::kill(identity.pid as libc::pid_t, 0) == 0 }
 }
 
