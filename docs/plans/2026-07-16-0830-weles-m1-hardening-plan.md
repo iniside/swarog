@@ -287,3 +287,22 @@ DB) — warto raz odpalić blokującą `weles-fleet-parity` przy okazji.
   - **L1** P2: cytat dlaczego `Forced`=clean (console-less degraduje każdy stop do Forced).
   - **L2/L3** P1: orphan platform-asymetryczny; korzyść = anty-sierota, nie responsywność.
   - **L4** P6: reorder strukturalny, `DOWN_TIMEOUT`>teardown zweryfikowane.
+- **Rev 2 (2026-07-16, po core-reviewer + proof-auditor na P5):**
+  - **Zamknięta luka nietestowanego FFI-seamu (proof-auditor):** dodany
+    `#[cfg(windows)]` test `supervisor_alive_is_false_for_a_reused_pid_through_real_getprocesstimes`
+    prowadzi gałąź reuse→dead przez REALNE `GetProcessTimes` na żywym pid
+    (`started_unix: 1`). Wcześniej PIERWOTNA gałąź (reuse→dead przez prawdziwe FFI)
+    była pokryta tylko przez czystą `is_reused_pid` — under-read czasu utworzenia
+    (odczyt wyzerowanego `exited`/`kernel` zamiast `created`, albo Hi/Lo swap w
+    kierunku reuse) był NIEWIDOCZNY (`filetime_to_unix(0)=0 > recorded+5` = false →
+    nie-reused → wszystkie testy nadal zielone). Test failuje, gdy FFI czyta złe
+    pole FILETIME. Fix komentarza w `classify_connects_for_a_live_slow_start_supervisor`
+    (mówił „well BEFORE now", kod ustawia `started_unix = now_unix()`; ćwiczony jest
+    `actual_creation < recorded`). BEZ zmian logiki `supervisor_alive`.
+  - **KNOWN RESIDUAL (core-reviewer L2):** utrwalony WSTECZNY skok zegara ściennego
+    `> CREATION_SKEW` (5s), który wyląduje w podsekundowym oknie między utworzeniem
+    procesu OS a przechwyceniem `unix_now()`, mógłby fałszywie uznać ŻYWEGO
+    supervisora za martwego — jedyna teoretyczna ścieżka z powrotem do H1;
+    akceptowalna, nazwana, skrajnie wąska.
+  - **Linux:** P5 daje ZERO ochrony przed reuse na Linuksie (tylko pid; over-protection
+    jest benign — nigdy w niebezpiecznym kierunku fałszywego zabicia żywego).

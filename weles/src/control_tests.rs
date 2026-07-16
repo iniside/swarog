@@ -459,15 +459,40 @@ fn is_reused_pid_rejects_only_a_strictly_later_creation() {
     );
 }
 
+#[cfg(windows)]
+#[test]
+fn supervisor_alive_is_false_for_a_reused_pid_through_real_getprocesstimes() {
+    // Real-FFI coverage of the PRIMARY reuse→dead branch. Every OTHER reuse test
+    // drives the pure `is_reused_pid`, so a creation-time UNDER-READ inside the
+    // FFI path — reading the zeroed `exited`/`kernel`/`user` out-param instead of
+    // `created`, or a Hi/Lo swap in the reuse direction — would compute
+    // `filetime_to_unix(0) = 0`, make `0 > recorded+5` false (not reused), and
+    // still PASS every pure-fn test. This drives `supervisor_alive` to FALSE
+    // through the REAL `GetProcessTimes` on a live pid: the current process is
+    // alive, but `started_unix: 1` (1970) is impossibly early — a real
+    // supervisor stamps `started_unix` AFTER its own OS creation — so real
+    // `GetProcessTimes` returns a creation ~now, `is_reused_pid(1, ~now, 5)` is
+    // true, and the reuse→dead branch fires through real FFI. If the FFI read
+    // the wrong FILETIME field (creation under-read → 0), this assertion FAILS.
+    let identity = ProcessIdentity {
+        pid: std::process::id(),
+        started_unix: 1,
+    };
+    assert!(
+        !supervisor_alive(&identity),
+        "own live pid + impossibly-early recorded start reads as a reused pid → dead"
+    );
+}
+
 #[cfg(any(windows, target_os = "linux"))]
 #[test]
 fn classify_connects_for_a_live_slow_start_supervisor() {
-    // H2 regression: model a live-but-slow-start supervisor — recorded
-    // `started_unix` is well BEFORE `now` (a long-running fleet), and the
-    // supervisor pid (this process) is alive. The asymmetric Windows check must
-    // NOT report it reused (its real creation precedes the recorded start), so
-    // `supervisor_alive` stays true and classify yields Connect — status/down
-    // never break on a live fleet.
+    // H2 regression: model a live supervisor whose real OS creation precedes its
+    // recorded `started_unix` — the common case, since `run_up` stamps the start
+    // (here `now_unix()`) seconds AFTER the OS created the process. The
+    // asymmetric Windows check must NOT report it reused (`actual_creation <
+    // recorded`), so `supervisor_alive` stays true and classify yields Connect —
+    // status/down never break on a live fleet.
     let mut state = sample_state(FleetStatus::Running, std::process::id());
     state.supervisor.started_unix = now_unix();
     let alive = supervisor_alive(&state.supervisor);
