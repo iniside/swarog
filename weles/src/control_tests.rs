@@ -343,6 +343,19 @@ fn classify_connects_for_a_live_running_fleet() {
 }
 
 #[test]
+fn classify_connects_while_the_fleet_is_stopping_with_a_live_supervisor() {
+    // P6: control is kept alive THROUGH teardown, so teardown checkpoints carry a
+    // non-terminal `Stopping` status, a live supervisor, AND a live
+    // `control_endpoint`. A concurrent `status`/`down` must classify Connect (dial
+    // the LIVE endpoint and see Stopping) — never Inactive (Stopping is not
+    // terminal) and never Stale (the supervisor is alive). classify ignores the
+    // endpoint field, so Some(...) here only models the real teardown snapshot.
+    let mut state = sample_state(FleetStatus::Stopping, std::process::id());
+    state.control_endpoint = Some(r"\\.\pipe\gamebackend-weles-p6".to_string());
+    assert_eq!(classify(&state, now_unix(), true), Disposition::Connect);
+}
+
+#[test]
 fn classify_reports_inactive_for_a_terminal_fleet() {
     // A finished fleet (even with a dead supervisor) is inactive, not stale.
     let state = sample_state(FleetStatus::Stopped, std::process::id());

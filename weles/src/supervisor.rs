@@ -753,10 +753,16 @@ pub fn run_up(topology: Topology) -> Result<()> {
             &fleet_stop,
         );
     }
-    // Stop and join the poller + control threads before teardown starts (every
-    // path that spawned them reaches here — the bind-failure path returned above).
+    // Stop and join the POLLER before teardown (it probes the services being torn
+    // down — stop it first). The CONTROL server is kept ALIVE THROUGH teardown
+    // (dropped only after): the teardown checkpoints still carry
+    // `control_endpoint: Some(...)`, so a concurrent `weles status`/`down` reaches
+    // a LIVE endpoint and sees `Stopping` — rather than classifying `Connect`
+    // (classify ignores the endpoint) and dialling a dead pipe, or reading a
+    // misleading "very early startup" from a `None` endpoint. `wait_for_terminal`
+    // (DOWN_TIMEOUT 130s > worst-case teardown ~110s) then observes the terminal
+    // from the end of teardown.
     drop(poller);
-    drop(control);
     // Runs for every exit path: operator stop, boot failure (unwinding exactly
     // what started, in reverse), or STOP during boot. A failure lands the fleet
     // in Failed; any clean stop lands Stopped.
@@ -766,7 +772,9 @@ pub fn run_up(topology: Topology) -> Result<()> {
         FleetStatus::Failed
     };
     let clean = teardown(&mut fleet, &reporter, terminal);
-    // `_lock` drops here — strictly after teardown.
+    // Now that the terminal status is published, stop and join the control
+    // server. `_lock` drops at the end of the function — strictly after teardown.
+    drop(control);
     // A run that otherwise succeeded but whose teardown could not confirm every
     // service stopped is escalated to an error so the exit code is non-zero
     // (devctl parity — a possibly-orphaned service must not report success). The
