@@ -45,6 +45,24 @@ pub struct App {
     stop_grace: Duration,
 }
 
+/// Owns the DETACHED module-migrate lock connection so the session-scoped
+/// [`MODULE_MIGRATE_LOCK_KEY`] advisory lock is released by CONNECTION OWNERSHIP,
+/// not by a fall-through statement. Dropping a detached [`sqlx::PgConnection`]
+/// closes its socket, ending the Postgres backend session, which auto-releases
+/// the session lock — the ONLY release path a panic or cancellation between lock
+/// and unlock can rely on, since an async `pg_advisory_unlock` cannot run from a
+/// sync `Drop`. There is no `defuse`/double-unlock model: the happy path still
+/// calls `pg_advisory_unlock` explicitly for prompt release and then drops this
+/// guard, but that explicit unlock is a promptness optimization, not correctness
+/// — Drop would release via session teardown either way.
+struct LockConn(sqlx::PgConnection);
+
+impl LockConn {
+    fn conn(&mut self) -> &mut sqlx::PgConnection {
+        &mut self.0
+    }
+}
+
 impl App {
     pub fn new(ctx: Arc<Context>) -> Self {
         App {
@@ -131,22 +149,36 @@ impl App {
         // is held while every module's `migrate` acquires FURTHER pool connections,
         // so the pool max MUST be >= 2 during migrate or the process self-deadlocks
         // (the default pool size is comfortably above 2).
-        let mut lock_conn = pool
-            .acquire()
-            .await
-            .context("acquire module-migrate lock connection")?;
+        //
+        // The connection is DETACHED from the pool (`LockConn`): unlike a pooled
+        // connection — which returns to the pool on drop WITHOUT releasing its
+        // session advisory lock, so a panic/cancel between lock and unlock would
+        // strand the lock on a pooled backend and deadlock EVERY later migrate —
+        // a detached `PgConnection` is CLOSED on drop, ending its Postgres backend
+        // session, which auto-releases the session-scoped advisory lock. Release
+        // is thus tied to connection OWNERSHIP, not to a fall-through statement
+        // that unwind skips. A detached connection no longer counts toward the
+        // pool's live set, so the >= 2 invariant above is unaffected (module
+        // migrations acquire fresh pool connections regardless).
+        let mut lock_conn = LockConn(
+            pool.acquire()
+                .await
+                .context("acquire module-migrate lock connection")?
+                .detach(),
+        );
 
         // Bound the upcoming lock wait only — `SET` cannot take a bind parameter,
         // and `t` is trusted (crate-internal const or test literal), never
-        // external input.
+        // external input. (No later `RESET`: this connection never re-enters the
+        // pool — it is detached and dropped — so the GUC cannot ride back.)
         sqlx::query(&format!("SET lock_timeout = '{t}'"))
-            .execute(&mut *lock_conn)
+            .execute(lock_conn.conn())
             .await
             .context("set module-migrate lock_timeout")?;
 
         let lock_result = sqlx::query("SELECT pg_advisory_lock($1)")
             .bind(MODULE_MIGRATE_LOCK_KEY)
-            .execute(&mut *lock_conn)
+            .execute(lock_conn.conn())
             .await;
 
         if let Err(e) = lock_result {
@@ -154,11 +186,8 @@ impl App {
                 &e,
                 sqlx::Error::Database(db) if db.code().as_deref() == Some("55P03")
             );
-            // RESET before returning: sqlx does not reset session GUCs on
-            // release, and this connection is about to go back to the pool.
-            let _ = sqlx::query("RESET lock_timeout")
-                .execute(&mut *lock_conn)
-                .await;
+            // The lock was NEVER taken, so there is nothing to release; dropping
+            // the detached connection just closes its (lock-free) session.
             drop(lock_conn);
             return if timed_out {
                 Err(e).with_context(|| {
@@ -172,25 +201,20 @@ impl App {
             };
         }
 
-        // Run the loop, capture its Result, then ALWAYS unlock on the same
-        // connection — success and error alike — before propagating.
+        // Run the loop. If it PANICS (a module's `migrate` panicking) or the
+        // future is cancelled here, `lock_conn` is dropped on unwind — closing
+        // the session and releasing the advisory lock via Postgres. The explicit
+        // unlock below is a PROMPTNESS optimization for the normal path (Drop
+        // would release via session teardown regardless), not correctness.
         let loop_result = self.run_migrations().await;
         let unlock_result = sqlx::query("SELECT pg_advisory_unlock($1)")
             .bind(MODULE_MIGRATE_LOCK_KEY)
-            .execute(&mut *lock_conn)
+            .execute(lock_conn.conn())
             .await;
-        // RESET before the connection returns to the pool — sqlx does not reset
-        // session GUCs on release, so without this the 60s (or test) cap would
-        // ride back into the pool and silently apply to later statements on
-        // this connection.
-        let reset_result = sqlx::query("RESET lock_timeout")
-            .execute(&mut *lock_conn)
-            .await;
-        drop(lock_conn); // return the connection to the pool after unlock + reset
+        drop(lock_conn); // close the detached session; it never returns to the pool
 
         loop_result?;
         unlock_result.context("release module-migrate advisory lock")?;
-        reset_result.context("reset module-migrate lock_timeout")?;
         Ok(())
     }
 

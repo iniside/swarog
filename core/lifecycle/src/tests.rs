@@ -356,6 +356,100 @@ async fn migrate_times_out_when_lock_is_held() {
         .expect("migrate must succeed once the lock is free");
 }
 
+/// A module whose `migrate` PANICS — the one live panic/cancel point in the boot
+/// path between the migrate lock and its unlock. Used to prove the lock is still
+/// released when a module blows up mid-migrate.
+struct PanicMigrate;
+
+#[async_trait::async_trait]
+impl Module for PanicMigrate {
+    fn name(&self) -> &str {
+        "panic-migrate"
+    }
+    fn init(&self, _ctx: &Context) -> anyhow::Result<()> {
+        Ok(())
+    }
+    async fn migrate(&self, _ctx: &Context) -> anyhow::Result<()> {
+        panic!("module migrate blew up while holding the migrate lock");
+    }
+}
+
+/// Polls, from throwaway pool connections, until `MODULE_MIGRATE_LOCK_KEY` is
+/// free (`pg_try_advisory_lock` succeeds, then immediately releases). FLAKE PIN:
+/// the panicking run releases the lock by socket-close→backend-EOF, which is fast
+/// but NOT instantaneous — asserting right after the panic would measure "released
+/// within N ms of socket close", not "released". Polling for actual release (≈6s
+/// cap) removes that latency race.
+async fn wait_for_migrate_lock_release(pool: &PgPool) {
+    for _ in 0..300 {
+        let mut c = pool.acquire().await.expect("probe conn");
+        let free: bool = sqlx::query_scalar("SELECT pg_try_advisory_lock($1)")
+            .bind(MODULE_MIGRATE_LOCK_KEY)
+            .fetch_one(&mut *c)
+            .await
+            .expect("try advisory lock");
+        if free {
+            sqlx::query("SELECT pg_advisory_unlock($1)")
+                .bind(MODULE_MIGRATE_LOCK_KEY)
+                .execute(&mut *c)
+                .await
+                .expect("release probe lock");
+            return;
+        }
+        drop(c);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("module-migrate advisory lock was not released within ~6s of the panic");
+}
+
+/// The release-on-panic guarantee: when a module's `migrate` PANICS while the
+/// session-scoped `MODULE_MIGRATE_LOCK_KEY` is held, the DETACHED lock connection
+/// is dropped on unwind — closing its socket, ending the Postgres backend session,
+/// and auto-releasing the advisory lock. A SECOND migrate on the SAME pool must
+/// then ACQUIRE the lock, proving the panicking run released it. Without the
+/// detach+drop guard the panicking run returns its POOLED connection with the lock
+/// still held → the second migrate would block its whole `lock_timeout` and fail
+/// 55P03 (permanent deadlock in production, where every process shares the DB).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn migrate_lock_released_when_module_migrate_panics() {
+    // See LOCK_TESTS: this holds the GLOBAL module-migrate advisory lock, so it
+    // serializes against the other lock tests (the `763f1d9` lesson).
+    let _choreo = LOCK_TESTS.lock().await;
+    let Some(pool) = test_pool().await else {
+        return;
+    };
+
+    // First migrate panics mid-loop while holding the lock. Run it on a spawned
+    // task so the panic is caught (JoinHandle → Err) and the test process
+    // survives; the panic unwinds through `migrate_with_lock_timeout`, dropping
+    // the detached lock connection.
+    let first = {
+        let pool = pool.clone();
+        tokio::spawn(async move {
+            let mut app = App::new(Arc::new(Context::with_db(pool)));
+            app.add(Box::new(PanicMigrate));
+            app.migrate().await
+        })
+        .await
+    };
+    assert!(
+        first.is_err() && first.as_ref().unwrap_err().is_panic(),
+        "the module-migrate panic should have unwound the first migrate as a task panic, got {first:?}"
+    );
+
+    // FLAKE PIN: wait for the lock to actually clear (socket-close latency), then
+    // assert. Belt: the asserting migrate also uses a generous 5s lock_timeout —
+    // with the fix the lock is already free; without it, it would block the full
+    // 5s and fail 55P03.
+    wait_for_migrate_lock_release(&pool).await;
+
+    let mut app = App::new(Arc::new(Context::with_db(pool.clone())));
+    app.add(RecMod::boxed("after-panic", &Arc::new(Mutex::new(Vec::new()))));
+    app.migrate_with_lock_timeout("5s")
+        .await
+        .expect("second migrate must ACQUIRE the lock the panicking run released");
+}
+
 #[tokio::test]
 #[should_panic(expected = "registered twice")]
 async fn duplicate_name_panics() {
