@@ -404,13 +404,75 @@ fn prune_tolerates_an_undeletable_generation_and_removes_the_rest() {
     std::fs::create_dir_all(deploy.join("gen-4")).expect("gen-4 dir (current)");
 
     // Protect gen-4 only ⇒ gen-1 and gen-2 are both stale; gen-1 is undeletable
-    // (a file), gen-2 removes cleanly.
-    let removed = prune_stale_generations(&deploy, &[4]);
+    // (a file), gen-2 removes cleanly. No state.json under run_dir ⇒ no live pin.
+    let run_dir = root.join("run");
+    std::fs::create_dir_all(&run_dir).expect("run_dir");
+    let removed = prune_stale_generations(&deploy, &run_dir, &[4]);
 
     assert!(deploy.join("gen-1").exists(), "undeletable gen-1 is skipped, not fatal");
     assert!(!deploy.join("gen-2").exists(), "gen-2 must be pruned");
     assert!(deploy.join("gen-4").exists(), "protected generation is kept");
     assert_eq!(removed, vec![deploy.join("gen-2")], "only gen-2 was removed");
+}
+
+/// Writes a minimal but VALID `state.json` recording a live, non-terminal
+/// supervisor (this test process's own pid + a fresh `started_unix`, so
+/// `supervisor_alive` sees it live and S5's pid-reuse start-time check passes)
+/// pinning `gen-<pinned>`. Returns the run_dir it wrote under.
+fn write_live_pin_state(run_dir: &std::path::Path, pinned: u64) {
+    std::fs::create_dir_all(run_dir).expect("run_dir");
+    let state = crate::state::FleetState {
+        run_id: "test-run".to_string(),
+        supervisor: crate::state::ProcessIdentity {
+            pid: std::process::id(),
+            started_unix: crate::control::now_unix(),
+        },
+        topology: "split".to_string(),
+        status: crate::state::FleetStatus::Running,
+        control_endpoint: None,
+        pinned_generation: Some(format!("gen-{pinned}")),
+        services: Vec::new(),
+    };
+    crate::state::checkpoint(&run_dir.join("state.json"), &state).expect("write state.json");
+}
+
+#[test]
+fn prune_rechecks_live_pin_and_spares_a_generation_the_snapshot_missed() {
+    // THE TOCTOU branch: a concurrent `up` pins gen-3 AFTER `deploy` built its
+    // `protected` snapshot but BEFORE the delete loop reaches it. The snapshot
+    // (`protected`) does NOT list gen-3, so the pre-fix code (delete everything
+    // not in `protected`) would remove the LIVE generation's directory and
+    // invalidate the pinned `.exe` path — killing every crash-respawn. The fresh
+    // live-pin re-read right before destruction must SPARE gen-3.
+    let root = temp_dir("prune-live-pin");
+    let deploy = root.join("deploy");
+    std::fs::create_dir_all(&deploy).expect("deploy");
+    // Put a real binary under gen-3 so we can assert the pinned path still
+    // resolves after the prune, not merely that the directory lingers.
+    std::fs::create_dir_all(deploy.join("gen-3")).expect("gen-3 dir");
+    std::fs::write(deploy.join("gen-3").join("server.exe"), b"live-binary").expect("gen-3 exe");
+    std::fs::create_dir_all(deploy.join("gen-2")).expect("gen-2 dir");
+    std::fs::create_dir_all(deploy.join("gen-4")).expect("gen-4 dir (current)");
+
+    // Live supervisor (this process) pins gen-3; the retention snapshot missed it.
+    let run_dir = root.join("run");
+    write_live_pin_state(&run_dir, 3);
+
+    // protected = {4} only. gen-3 is NOT protected — only the fresh live-pin
+    // re-read inside prune keeps it. gen-2 is genuinely dead and must be pruned.
+    let removed = prune_stale_generations(&deploy, &run_dir, &[4]);
+
+    assert!(
+        !removed.contains(&deploy.join("gen-3")),
+        "the freshly-pinned live generation must not be in the removed list"
+    );
+    assert!(
+        deploy.join("gen-3").join("server.exe").exists(),
+        "the pinned binary path must still resolve after prune (the live-pin branch)"
+    );
+    assert!(!deploy.join("gen-2").exists(), "the genuinely-dead gen-2 must be pruned");
+    assert!(deploy.join("gen-4").exists(), "the protected current generation is kept");
+    assert_eq!(removed, vec![deploy.join("gen-2")], "only the dead gen-2 was removed");
 }
 
 #[test]

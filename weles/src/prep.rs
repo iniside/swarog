@@ -412,7 +412,7 @@ pub fn deploy(layout: &Layout, src_dir: &Path) -> Result<()> {
     if let Some(pinned) = live_pinned_generation(&layout.run_dir) {
         protected.push(pinned);
     }
-    prune_stale_generations(&layout.bin_dir, &protected);
+    prune_stale_generations(&layout.bin_dir, &layout.run_dir, &protected);
     Ok(())
 }
 
@@ -525,7 +525,25 @@ fn generations_to_prune(present: &[u64], protected: &[u64]) -> Vec<u64> {
 /// the entry is otherwise undeletable) is logged and skipped — NEVER an error.
 /// Closing "overwrite live exe" must not open "delete live exe". Returns the
 /// directories actually removed (for observability/tests).
-fn prune_stale_generations(bin_dir: &Path, protected: &[u64]) -> Vec<PathBuf> {
+///
+/// The authority for "in use" is the LIVE PIN: immediately before each
+/// `remove_dir_all` we re-read `live_pinned_generation(run_dir)` and skip a
+/// generation that equals the fresh pin. This closes the TOCTOU window between
+/// the caller's `protected` snapshot (built in `deploy`) and this delete loop —
+/// a concurrent `up` could pin a generation AFTER the snapshot was taken but
+/// BEFORE we reach its directory. We do NOT rename-first: on Windows a running
+/// image is opened `FILE_SHARE_DELETE`, so renaming a LIVE generation's dir can
+/// SUCCEED and invalidate the pinned `active_bin_dir` (`Layout::discover`), so
+/// every crash-respawn would then fail to find its `.exe` — strictly worse than
+/// today's partial delete, which at least leaves the locked live `.exe` in place.
+///
+/// A partial `remove_dir_all` of a genuinely-DEAD generation (not in
+/// `protected`, not the live pin) is HARMLESS and self-healing: it is garbage no
+/// fleet reads, `next_generation` ignores a partial dir when advancing the
+/// counter, and the next prune finishes the `remove_dir_all`. The only case that
+/// ever mattered is the LIVE generation, which the pin (+ the Windows liveness
+/// check in `supervisor_alive`) protects.
+fn prune_stale_generations(bin_dir: &Path, run_dir: &Path, protected: &[u64]) -> Vec<PathBuf> {
     let mut present = Vec::new();
     match std::fs::read_dir(bin_dir) {
         Ok(entries) => {
@@ -543,6 +561,14 @@ fn prune_stale_generations(bin_dir: &Path, protected: &[u64]) -> Vec<PathBuf> {
 
     let mut removed = Vec::new();
     for n in generations_to_prune(&present, protected) {
+        // Fresh live-pin re-read right before destruction: a concurrent `up` may
+        // have pinned this generation AFTER the caller's `protected` snapshot.
+        if live_pinned_generation(run_dir) == Some(n) {
+            eprintln!(
+                "weles: generation {n} became the live pin since the retention snapshot — keeping it"
+            );
+            continue;
+        }
         let path = bin_dir.join(format!("gen-{n}"));
         match std::fs::remove_dir_all(&path) {
             Ok(()) => {
