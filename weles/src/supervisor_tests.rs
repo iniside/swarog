@@ -531,6 +531,49 @@ fn stop_outcome_maps_every_shutdown_result_to_status_and_cleanliness() {
 }
 
 // ---------------------------------------------------------------------------
+// phase_after_kill (#A1): the Kill-loop policy layered on stop_outcome's
+// confirmed-gone authority — an unconfirmed kill gives up (`Failed`) rather than
+// respawning a second instance over a possible orphan.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn phase_after_kill_gives_up_on_an_unconfirmed_kill_instead_of_respawning() {
+    use crate::platform::ExitInfo;
+
+    let respawn_at = base() + secs(1);
+    let backoff = Phase::Backoff { respawn_at };
+
+    // The previously-WRONG branch: an Err (force could not confirm the exit) was
+    // adopted UNCONDITIONALLY as the intended `Backoff`, which the monitor would
+    // later Respawn — a second process over a possible orphan. It is now `Failed`.
+    assert_eq!(
+        phase_after_kill(&Err(anyhow::anyhow!("force timed out")), backoff),
+        Phase::Failed,
+        "an unconfirmed kill gives up (Failed), never Backoff — no respawn over an orphan"
+    );
+
+    // A CONFIRMED stop adopts the intended phase unchanged: Forced is a real,
+    // confirmed exit (console-less weles degrades every stop to Forced).
+    assert_eq!(
+        phase_after_kill(&Ok(Outcome::Forced(ExitInfo::from_code(Some(1)))), backoff),
+        backoff,
+        "a confirmed (Forced) kill adopts the intended Backoff"
+    );
+    assert_eq!(
+        phase_after_kill(&Ok(Outcome::Graceful(ExitInfo::from_code(Some(0)))), Phase::Failed),
+        Phase::Failed,
+        "a confirmed (Graceful) kill adopts the intended phase, here Failed"
+    );
+
+    // The status table must show Failed, not Backoff, for the unconfirmed kill.
+    assert_eq!(
+        status_of(phase_after_kill(&Err(anyhow::anyhow!("x")), backoff)),
+        Status::Failed,
+        "the checkpoint status of an unconfirmed kill is Failed, not Backoff"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Readiness (#3): a post-healthy `/readyz` dimension that NEVER restarts.
 // The authority is structural — the probe becomes a `Readiness` (never an
 // `Observed`/`Directive`), and `fold_readiness` writes ONLY `readiness`. These

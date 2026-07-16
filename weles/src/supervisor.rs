@@ -280,6 +280,30 @@ fn stop_outcome(result: &Result<Outcome>) -> (Status, bool) {
     }
 }
 
+/// A hung service's kill was requested. If the stop was CONFIRMED
+/// (`stop_outcome`'s clean bit), adopt the `intended` post-kill phase; if it was
+/// UNCONFIRMED (an `Err` — force could not confirm the exit, the process may be
+/// ORPHANED and still holding its port), give up on the service (`Failed`)
+/// instead of `Backoff`, so the monitor NEVER respawns a second instance over a
+/// possible orphan. This reuses the ONE authority (`stop_outcome`) for "confirmed
+/// gone" and layers only the Kill-loop policy on top — no second decision site.
+///
+/// Deliberate availability trade-off (never smuggled): a *transient* force-timeout
+/// (`shutdown` bails after force + its timeout, `platform/mod.rs`) strands the
+/// service `Failed` for the whole run even though `OwnedProc::Drop`
+/// (`platform/mod.rs:186-199`, plus Windows `KILL_ON_JOB_CLOSE`) usually reaps
+/// that same process moments later. That is the conservative-correct choice:
+/// never double-spawn over a POSSIBLE orphan. "Orphan still holds the port" is the
+/// Unix-leaning worst case, not a guarantee (the Drop backstop typically clears
+/// it) — but the phase decision cannot depend on a best-effort backstop it can't
+/// observe, so it fails closed.
+fn phase_after_kill(shutdown: &Result<Outcome>, intended: Phase) -> Phase {
+    match stop_outcome(shutdown) {
+        (_, true) => intended,
+        (_, false) => Phase::Failed,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Readiness: a post-healthy `/readyz` freshness dimension, structurally
 // DISJOINT from the restart decision. The three pure functions below are the
@@ -1043,11 +1067,25 @@ fn apply(
             eprintln!(
                 "weles: {name} did not become healthy within {HEALTH_DEADLINE:?} — stopping it"
             );
-            if let Some(mut proc) = svc.proc.take() {
-                if let Err(error) = proc.shutdown(HUNG_GRACE, HUNG_FORCE) {
-                    eprintln!("weles: stopping hung {name} failed: {error:#}");
+            let new_phase = match svc.proc.take() {
+                Some(mut proc) => {
+                    let result = proc.shutdown(HUNG_GRACE, HUNG_FORCE);
+                    if let Err(error) = &result {
+                        eprintln!(
+                            "weles: stopping hung {name} failed: {error:#} — the process may be \
+                             ORPHANED (force could not confirm it exited); giving up on {name} \
+                             (NOT respawning over a possible orphan) — check for a stray {name}"
+                        );
+                    }
+                    // Route through the ONE stop authority: an unconfirmed kill
+                    // gives up (`Failed`) instead of `Backoff`, so the monitor
+                    // never Respawns a second instance over a possible orphan.
+                    phase_after_kill(&result, new_phase)
                 }
-            }
+                // observe() found it Alive to reach Kill, so this is unreachable;
+                // stay defensive and adopt the intended phase.
+                None => new_phase,
+            };
             svc.phase = Some(new_phase);
             svc.status = status_of(new_phase);
             true
