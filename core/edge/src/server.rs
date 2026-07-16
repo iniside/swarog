@@ -400,9 +400,13 @@ impl RunningServer {
         self.local_addr
     }
 
-    /// Hard stop: aborts the accept loop and every live connection immediately,
-    /// in-flight work included. The graceful superset is [`RunningServer::shutdown`];
-    /// this stays as the abort path (and the tests' quick teardown).
+    /// Hard endpoint close: resets every live connection and its streams immediately.
+    /// It does NOT abort the detached `tokio::spawn`'d handler FUTURES — a handler
+    /// parked in DB / sleep / CPU work keeps running after `close()` returns (only its
+    /// stream is gone). For true handler-future cancellation use
+    /// [`RunningServer::shutdown`], which drains within a grace and then aborts the
+    /// stragglers. This stays as the fast endpoint-close path (and the tests' quick
+    /// teardown).
     pub fn close(&self) {
         self.endpoint.close(0u32.into(), b"server shutting down");
     }

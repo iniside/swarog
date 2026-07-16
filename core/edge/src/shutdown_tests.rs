@@ -321,6 +321,35 @@ async fn player_shutdown_grace_drops_straggler_future_which_never_resumes() {
     let _ = call.await;
 }
 
+// (vi-a) Drop-before-track, by CONSTRUCTION: the (vi) live test's sequential+awaited
+// calls always let track() win the race (fill path), so it never exercises the
+// get_mut→None branch and would still pass if track() did an unconditional insert().
+// This zero-I/O unit test forces the losing order — guard dropped BEFORE track() —
+// and pins that track() then skips (no re-insert). Reasoned counterexample: replace
+// track()'s `if let Some(slot) = get_mut { *slot = .. }` with `insert(id, Some(..))`
+// and this asserts tracked_len()==1, FAILING — the exact unbounded-growth regression.
+#[tokio::test]
+async fn track_after_guard_drop_is_a_noop_no_leak() {
+    let state = crate::server::ShutdownState::new();
+    // A real AbortHandle from a trivial task (its target completing is irrelevant —
+    // we only need a handle to hand track()).
+    let jh = tokio::spawn(async {});
+    let ah = jh.abort_handle();
+
+    let guard = state.enter();
+    let id = guard.id();
+    assert_eq!(state.tracked_len(), 1, "enter() must insert exactly one entry");
+    drop(guard); // guard removes `id` BEFORE track() runs
+    assert_eq!(state.tracked_len(), 0, "drop must remove the entry");
+
+    state.track(id, ah); // must hit get_mut → None → skip (never re-insert)
+    assert_eq!(
+        state.tracked_len(),
+        0,
+        "track() after the guard dropped must be a no-op — an unconditional insert would leak here"
+    );
+}
+
 // (vi) No-leak: a burst of normally-completing requests must leave the abort registry
 // EMPTY. `enter()` inserts an entry and `track()` fills it; if a fast task's guard
 // dropped before `track` ran the fill must be a no-op — otherwise every request leaks
