@@ -6,14 +6,15 @@
 //!
 //! `run_up` sequence (the rollout lock comes FIRST — before any validation or
 //! prep — per the Step-4 review finding): (1) discover layout + acquire
-//! `run/rollout.lock`; (2) validate the manifest against `cmd/*-svc` on disk
+//! `run/rollout.lock`, then install the Ctrl-C/SIGTERM handler immediately (P1:
+//! so an interrupt during the slow prep window can't orphan a helper on the
+//! unwind); (2) validate the manifest against `cmd/*-svc` on disk
 //! (drift reported AS drift), then the DEPLOYED binaries in `<root>/deploy`
 //! (weles never builds), then the Postgres session budget; (3) prep (mint CA,
-//! seed admin); (4) install the
-//! Ctrl-C/SIGTERM handler; (5) boot each service in manifest order behind a
-//! readyz gate; (6) a single non-blocking monitor loop, with an out-of-band
+//! seed admin); (4) boot each service in manifest order behind a
+//! readyz gate; (5) a single non-blocking monitor loop, with an out-of-band
 //! `weles-readiness` poller thread recording post-healthy `/readyz` freshness
-//! (a checkpoint-only dimension that NEVER restarts a service); (7) teardown in
+//! (a checkpoint-only dimension that NEVER restarts a service); (6) teardown in
 //! reverse spawn order, lock dropped last.
 //!
 //! Every restart DECISION is a pure function over an injected `now`
@@ -555,6 +556,22 @@ pub fn run_up(topology: Topology) -> Result<()> {
     let run_id = format!("{:016x}", rand::random::<u64>());
     let _lock = lock::acquire(&layout.root, &run_id)?;
 
+    // Install the stop handler immediately after acquiring the lock — BEFORE the
+    // slow prep helpers (mint_ca can spawn edgeca for ~30s if the CA is absent;
+    // seed_admin does a Postgres round-trip). A Ctrl-C/SIGTERM in that ~60s prep
+    // window would otherwise take the OS default disposition; installed here it
+    // flips `STOP`, which `boot` observes at the top of every step. The benefit
+    // is orphan PREVENTION on the unwind (both prep helpers ignore `STOP` and run
+    // to completion, so the stop is deferred to the end of the window — this is
+    // not about responsiveness), and is platform-asymmetric: on Windows the
+    // helpers share the console and largely die with an unhandled Ctrl-C anyway;
+    // the real orphan is a Unix helper in its own group when weles dies unreaped.
+    // Reset the shared static FIRST: `STOP` is process-global, so a prior `run_up`
+    // in the same process (the test harness) could have left it set (devctl resets
+    // INTERRUPTED the same way before installing its handler).
+    STOP.store(false, Ordering::SeqCst);
+    install_ctrl_handler()?;
+
     // Record the pinned generation at the EARLIEST safe point — right after the
     // lock + discover, BEFORE the slow prep helpers (mint_ca can spawn edgeca
     // for ~30s if the CA is absent; seed_admin does a Postgres round-trip). The
@@ -622,8 +639,6 @@ pub fn run_up(topology: Topology) -> Result<()> {
     let ca = prep::mint_ca(&layout)?;
     let database_url = prep::database_url();
     prep::seed_admin(&layout, &database_url)?;
-
-    install_ctrl_handler()?;
 
     let inputs = RuntimeInputs {
         database_url,
