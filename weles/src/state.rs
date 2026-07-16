@@ -82,8 +82,11 @@ pub struct FleetState {
     /// The fleet's lifecycle status — the top-level authority a `weles down`
     /// client polls for a terminal transition.
     pub status: FleetStatus,
-    /// Bounded loopback control endpoint (named pipe / UDS path). `None` until
-    /// the supervisor has booted the fleet and bound the control server.
+    /// Bounded loopback control endpoint (named pipe / UDS path). Published
+    /// BEFORE boot — the supervisor binds the control server first (so `weles
+    /// status`/`down` reach the fleet DURING startup, status still `Starting`),
+    /// then boots. `None` only in the narrow prep window between the first
+    /// `Starting` checkpoint and the post-bind checkpoint.
     pub control_endpoint: Option<String>,
     pub services: Vec<ServiceState>,
 }

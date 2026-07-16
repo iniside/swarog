@@ -273,3 +273,107 @@ fn crash_backoff_respawn_scenario_with_stop_denying_the_respawn() {
         Directive::Respawn
     );
 }
+
+// ---------------------------------------------------------------------------
+// The reversed control-endpoint contract (#2): the fleet stop is a threaded
+// `Arc`, and a `down` DURING boot exits boot before it spawns anything. These
+// pin the mid-boot-down branch by construction — no real binaries, no clock.
+// The `down`-flips-the-Arc and bind-fail-before-boot halves live beside the
+// transport in `control_tests.rs`
+// (`status_and_down_roundtrip_over_the_real_transport`,
+// `bind_failure_errors_without_setting_the_fleet_stop`); composed with the
+// boot exit here they prove "`down` during boot exits boot".
+// ---------------------------------------------------------------------------
+
+/// A `ServiceDef` whose only job is to give `boot` a non-empty fleet to iterate
+/// — its ports/name are never read because the stop check precedes any spawn.
+fn dummy_def() -> ServiceDef {
+    ServiceDef {
+        name: "dummy-svc",
+        pkg: "dummy-svc",
+        http_port: 65000,
+        edge_port: None,
+        player_port: None,
+        has_db: false,
+        pool_max: 0,
+        env_extra: &[],
+    }
+}
+
+/// A `Reporter` that boot never actually checkpoints through (it returns before
+/// the first checkpoint when stop is set on entry), so its state path is a
+/// never-written scratch path.
+fn dummy_reporter() -> Reporter {
+    let supervisor = ProcessIdentity {
+        pid: std::process::id(),
+        started_unix: 1,
+    };
+    Reporter {
+        state_path: std::env::temp_dir().join("weles-a3-unused-state.json"),
+        run_id: "a3-test".to_string(),
+        topology: "split",
+        supervisor,
+        status: Cell::new(FleetStatus::Starting),
+        control_endpoint: RefCell::new(None),
+        shared: Arc::new(Mutex::new(FleetState {
+            run_id: String::new(),
+            supervisor,
+            topology: "split".to_string(),
+            status: FleetStatus::Starting,
+            control_endpoint: None,
+            services: Vec::new(),
+        })),
+    }
+}
+
+#[test]
+fn stop_requested_honors_the_threaded_fleet_stop() {
+    // The threaded fleet stop is sufficient on its own: a `weles down` request
+    // (which flips only this Arc, never the signal-handler `STOP` static) still
+    // requests a stop. And with neither flag set, no stop is requested.
+    let set = AtomicBool::new(true);
+    assert!(
+        stop_requested(&set),
+        "a set fleet_stop must request a stop even with the signal STOP clear"
+    );
+    let clear = AtomicBool::new(false);
+    assert!(
+        !stop_requested(&clear),
+        "no stop is requested when neither the signal STOP nor fleet_stop is set"
+    );
+}
+
+#[test]
+fn boot_with_the_fleet_stop_set_on_entry_spawns_nothing() {
+    // The mid-boot-down branch (supervisor.rs boot loop: `if stop_requested`
+    // FIRST, before ensure_no_stale_listener / spawn). A `fleet_stop` already
+    // true on entry — as a `down` received before boot reaches the service would
+    // leave it — must return Ok(()) with the process still unspawned. A NON-empty
+    // fleet is used deliberately so the loop actually reaches (and returns from)
+    // the stop check, rather than trivially skipping an empty range.
+    let layout = prep::Layout {
+        root: std::env::temp_dir(),
+        run_dir: std::env::temp_dir(),
+        bin_dir: std::env::temp_dir(),
+    };
+    let inputs = RuntimeInputs {
+        database_url: String::new(),
+        ca_cert: PathBuf::new(),
+        ca_key: PathBuf::new(),
+    };
+    let reporter = dummy_reporter();
+    let mut fleet = vec![Supervised::new(dummy_def())];
+    let fleet_stop = Arc::new(AtomicBool::new(true));
+
+    let result = boot(&layout, &inputs, &mut fleet, &reporter, &fleet_stop);
+
+    assert!(result.is_ok(), "a stop on boot entry is a clean interrupt, not an error");
+    assert!(
+        fleet[0].proc.is_none(),
+        "boot must spawn nothing once the fleet stop is set on entry"
+    );
+    assert!(
+        fleet[0].phase.is_none(),
+        "the service never advanced past Starting"
+    );
+}

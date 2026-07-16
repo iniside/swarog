@@ -23,7 +23,7 @@ use std::cell::{Cell, RefCell};
 use std::fs::File;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
@@ -63,16 +63,15 @@ const HUNG_FORCE: Duration = Duration::from_secs(5);
 /// signal handler can touch ONLY a static atomic, so this stays a static.
 static STOP: AtomicBool = AtomicBool::new(false);
 
-/// The control endpoint's stop flag, registered once by [`run_up`] so a
-/// `weles down` request flows into [`stop_requested`] exactly like a Ctrl-C.
-/// Separate from `STOP` because the control thread owns it via an `Arc`.
-static CONTROL_STOP: OnceLock<Arc<AtomicBool>> = OnceLock::new();
-
-fn stop_requested() -> bool {
-    STOP.load(Ordering::SeqCst)
-        || CONTROL_STOP
-            .get()
-            .is_some_and(|stop| stop.load(Ordering::SeqCst))
+/// A stop is requested when EITHER the signal handler flipped the process-wide
+/// `STOP` static OR a `weles down` request flipped this run's `fleet_stop`
+/// atomic. `fleet_stop` is threaded as an `Arc` (owned by the control server
+/// for the life of the run) rather than a process-global `OnceLock`: a global
+/// set before boot would bleed a stale stop flag into a second `run_up` in the
+/// same process (the test harness), and the control thread must own the sole
+/// non-signal writer of the fleet stop.
+fn stop_requested(fleet_stop: &AtomicBool) -> bool {
+    STOP.load(Ordering::SeqCst) || fleet_stop.load(Ordering::SeqCst)
 }
 
 // ---------------------------------------------------------------------------
@@ -426,42 +425,50 @@ pub fn run_up(topology: Topology) -> Result<()> {
             services: Vec::new(),
         })),
     };
+    reporter.checkpoint(&fleet); // status Starting, endpoint None
+
+    // Bind the control endpoint BEFORE boot so `weles status`/`down` reach the
+    // fleet DURING startup (a mid-boot `down` flips `fleet_stop`, which
+    // `boot`/`monitor` observe through `stop_requested`). `fleet_stop` is the
+    // ONLY fleet-stop writer besides the signal handler's `STOP`; no
+    // control-plane failure path may store into it (stop-authority separation).
+    let endpoint = control_endpoint_path(&layout, &reporter.run_id);
+    let fleet_stop = Arc::new(AtomicBool::new(false));
+    let control = match ControlServer::bind(
+        endpoint.clone(),
+        reporter.shared(),
+        Arc::clone(&fleet_stop),
+    ) {
+        Ok(control) => control,
+        Err(error) => {
+            // Nothing has spawned yet: teardown just records the terminal
+            // status (a no-op over an unspawned fleet), then fail loudly
+            // (devctl parity — a fleet nobody can `status`/`down` is not the
+            // tool weles promises). The early return means this path runs
+            // teardown exactly once.
+            teardown(&mut fleet, &reporter, FleetStatus::Failed);
+            return Err(error)
+                .with_context(|| format!("bind control endpoint {}", endpoint.display()));
+        }
+    };
+    // Bind Ok = the listener accepts: publish the endpoint now (status still
+    // Starting) so a client that reads the file cannot beat the listener.
+    reporter.set_control_endpoint(Some(endpoint.to_string_lossy().into_owned()));
     reporter.checkpoint(&fleet);
 
-    let mut run_result = boot(&layout, &inputs, &mut fleet, &reporter);
-    if run_result.is_ok() && !stop_requested() {
-        // Fleet is healthy: bring up the control endpoint so `weles status` /
-        // `weles down` can reach us. `CONTROL_STOP` is the fleet-stop atomic a
-        // received `down` request sets — the ONLY writer besides the signal
-        // handler's `STOP`; no control-plane failure path may store into it.
-        let endpoint = control_endpoint_path(&layout, &reporter.run_id);
-        let fleet_stop = Arc::new(AtomicBool::new(false));
-        let _ = CONTROL_STOP.set(Arc::clone(&fleet_stop));
-        match ControlServer::bind(endpoint.clone(), reporter.shared(), fleet_stop) {
-            Ok(control) => {
-                reporter.set_control_endpoint(Some(endpoint.to_string_lossy().into_owned()));
-                reporter.set_status(FleetStatus::Running);
-                // Checkpoint AFTER the endpoint is live so a client that reads
-                // the file and connects cannot beat the listener.
-                reporter.checkpoint(&fleet);
-                println!("weles: fleet healthy — press Ctrl-C or run `weles down` to stop");
-                monitor(&layout, &inputs, &mut fleet, &reporter, &control);
-                // Stop and join the control thread before teardown starts.
-                drop(control);
-            }
-            Err(error) => {
-                // A control endpoint that cannot bind is a boot failure, loud
-                // and immediate (devctl parity): a fleet nobody can `status`/
-                // `down` is not the tool weles promises.
-                run_result = Err(error).with_context(|| {
-                    format!("bind control endpoint {}", endpoint.display())
-                });
-            }
-        }
+    let run_result = boot(&layout, &inputs, &mut fleet, &reporter, &fleet_stop);
+    if run_result.is_ok() && !stop_requested(&fleet_stop) {
+        reporter.set_status(FleetStatus::Running);
+        reporter.checkpoint(&fleet);
+        println!("weles: fleet healthy — press Ctrl-C or run `weles down` to stop");
+        monitor(&layout, &inputs, &mut fleet, &reporter, &control, &fleet_stop);
     }
-    // Runs for every exit path: operator stop, boot/bind failure (unwinding
-    // exactly what started, in reverse), or STOP during boot. A failure lands
-    // the fleet in Failed; any clean stop lands Stopped.
+    // Stop and join the control thread before teardown starts (every path that
+    // bound it reaches here — the bind-failure path returned above).
+    drop(control);
+    // Runs for every exit path: operator stop, boot failure (unwinding exactly
+    // what started, in reverse), or STOP during boot. A failure lands the fleet
+    // in Failed; any clean stop lands Stopped.
     let terminal = if run_result.is_ok() {
         FleetStatus::Stopped
     } else {
@@ -500,9 +507,10 @@ fn boot(
     inputs: &RuntimeInputs,
     fleet: &mut [Supervised],
     reporter: &Reporter,
+    fleet_stop: &AtomicBool,
 ) -> Result<()> {
     for index in 0..fleet.len() {
-        if stop_requested() {
+        if stop_requested(fleet_stop) {
             return Ok(());
         }
         let name = fleet[index].def.name;
@@ -524,7 +532,7 @@ fn boot(
 
         let deadline = Instant::now() + HEALTH_DEADLINE;
         loop {
-            if stop_requested() {
+            if stop_requested(fleet_stop) {
                 return Ok(());
             }
             // try_wait FIRST each tick: a dead child wins over whatever a
@@ -571,10 +579,11 @@ fn monitor(
     fleet: &mut [Supervised],
     reporter: &Reporter,
     control: &ControlServer,
+    fleet_stop: &AtomicBool,
 ) {
     let mut control_death_reported = false;
     loop {
-        if stop_requested() {
+        if stop_requested(fleet_stop) {
             return;
         }
         // A dead control thread is a reported degradation, NEVER a fleet stop
@@ -592,7 +601,7 @@ fn monitor(
             };
             let now = Instant::now();
             let observed = observe(&mut fleet[index], phase);
-            let directive = step(phase, observed, stop_requested(), now, &mut fleet[index].history);
+            let directive = step(phase, observed, stop_requested(fleet_stop), now, &mut fleet[index].history);
             if directive == Directive::Respawn {
                 // Make the transient Restarting status observable in the
                 // checkpoint before the (bounded, but real) spawn work.

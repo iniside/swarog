@@ -89,35 +89,55 @@ enum Target {
     Report(Result<()>),
 }
 
+/// How many times [`connect_target`] re-loads the state file waiting for a live
+/// supervisor to publish its (pre-boot) control endpoint, and the gap between
+/// tries. The endpoint is bound BEFORE boot, so a missing endpoint beside a live
+/// non-terminal supervisor is only the sub-second prep window between the first
+/// `Starting` checkpoint and the post-bind checkpoint — a brief retry closes it.
+const ENDPOINT_RETRIES: u32 = 3;
+const ENDPOINT_RETRY_GAP: Duration = Duration::from_millis(100);
+
 /// Loads the state file and classifies it: connectable (live, non-terminal) or
-/// a message to print / error to raise (inactive / stale / no state / booting).
+/// a message to print / error to raise (inactive / stale / no state / pre-bind).
 fn connect_target() -> Result<Target> {
     let path = state_path()?;
-    let Some(state) = state::load(&path)? else {
-        bail!(
-            "no weles fleet recorded (no {}) — run `weles up` first",
-            path.display()
-        );
-    };
-    let alive = control::supervisor_alive(&state.supervisor);
-    match control::classify(&state, control::now_unix(), alive) {
-        control::Disposition::Inactive(message) => {
-            println!("{message}");
-            Ok(Target::Report(Ok(())))
+    for attempt in 0..=ENDPOINT_RETRIES {
+        let Some(state) = state::load(&path)? else {
+            bail!(
+                "no weles fleet recorded (no {}) — run `weles up` first",
+                path.display()
+            );
+        };
+        let alive = control::supervisor_alive(&state.supervisor);
+        match control::classify(&state, control::now_unix(), alive) {
+            control::Disposition::Inactive(message) => {
+                println!("{message}");
+                return Ok(Target::Report(Ok(())));
+            }
+            control::Disposition::Stale(message) => {
+                return Ok(Target::Report(Err(anyhow::anyhow!(message))));
+            }
+            control::Disposition::Connect => match state.control_endpoint.clone() {
+                Some(endpoint) => return Ok(Target::Connect { state, endpoint }),
+                // Live and non-terminal but no endpoint yet: the fleet is in the
+                // narrow pre-bind prep window (the endpoint is published BEFORE
+                // boot, so this closes in well under a second). Re-load and retry
+                // a few times before treating it as real.
+                None => {
+                    if attempt < ENDPOINT_RETRIES {
+                        std::thread::sleep(ENDPOINT_RETRY_GAP);
+                        continue;
+                    }
+                    return Ok(Target::Report(Err(anyhow::anyhow!(
+                        "weles: the {} fleet is in very early startup; the control endpoint \
+                         is not bound yet — try `weles status`/`down` again in a moment",
+                        state.topology
+                    ))));
+                }
+            },
         }
-        control::Disposition::Stale(message) => Ok(Target::Report(Err(anyhow::anyhow!(message)))),
-        control::Disposition::Connect => match state.control_endpoint.clone() {
-            Some(endpoint) => Ok(Target::Connect { state, endpoint }),
-            // Live and non-terminal but no endpoint published: the fleet is
-            // still booting — the control endpoint binds only AFTER boot
-            // completes, so retrying mid-boot won't help.
-            None => Ok(Target::Report(Err(anyhow::anyhow!(
-                "weles: the {} fleet is still booting; the control endpoint is not up yet — \
-                 use Ctrl-C on the supervisor to abort a boot",
-                state.topology
-            )))),
-        },
     }
+    unreachable!("connect_target loop returns on every attempt")
 }
 
 /// `run/weles/state.json` under the repo root — discovered exactly like `up`
