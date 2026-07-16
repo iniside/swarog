@@ -17,14 +17,43 @@
 //! `tools/processctl/src/fleet.rs:8-14` allowlist — which devctl DOES use to
 //! build — still omits `SYSTEMDRIVE`/`ProgramData`, a latent linker-env gap
 //! recorded here as a known sibling; do NOT touch processctl for it.)
+//!
+//! # Deploy generations and the deploy↔up contract
+//!
+//! `weles deploy` no longer overwrites files in place. Each deploy stages a
+//! fresh, immutable generation directory `<root>/deploy/gen-N/` (binaries +
+//! a `manifest.json` recording each artifact's SHA-256 and byte length), and
+//! ONLY once every copy+hash succeeds does it atomically flip the pointer file
+//! `<root>/deploy/current` (write `current.tmp`, rename over `current`) to name
+//! the new generation. A partial deploy leaves `current` untouched — it still
+//! names the previous generation — and abandons `gen-N` as an observable stale
+//! directory (no rollback needed: the live fleet's binary source never moved).
+//!
+//! CONTRACT CHANGE (recorded per Fix-the-Authority rule 4): `deploy` now mutates
+//! the running fleet's binary *source of record* (`current`) while an `up` may be
+//! live. This is made safe by PIN-AT-DISCOVER: [`Layout::discover`] reads
+//! `current` exactly ONCE and pins `active_bin_dir = deploy/<gen>/` for the whole
+//! life of that `up`. A running `up` never re-reads `current`, so a concurrent
+//! `deploy` flipping it cannot affect the live fleet (and cannot mix generations
+//! across a respawn — every service of one `up` runs one coherent generation).
+//! Because each generation is a fresh directory the live fleet never holds open,
+//! staging needs no rollout lock — `deploy` deliberately does NOT take the
+//! exclusive up-lock (which `up` holds for its whole life; blocking on it would
+//! defeat "deploy under a live fleet"). Retention keeps the current and previous
+//! generation (a concurrently-running `up` may have pinned the previous) and
+//! prunes older ones tolerantly (a still-held directory is logged and skipped,
+//! never fatal — closing "overwrite live exe" must not open "delete live exe").
 
 use std::collections::BTreeMap;
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fs::File;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::platform::{self, SpawnSpec};
 
@@ -39,41 +68,138 @@ const MINT_CA_TIMEOUT: Duration = Duration::from_secs(30);
 const SEED_ADMIN_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The workspace's on-disk layout as weles cares about it: the repo root, its
-/// own `run/weles` scratch dir (created on discovery), and `bin_dir` —
-/// `<root>/deploy`, the FIXED directory weles executes staged artifacts from.
-/// weles never builds and never reads `target/`; an operator stages binaries
-/// into `bin_dir` with `weles deploy`.
+/// own `run/weles` scratch dir (created on discovery), `bin_dir` —
+/// `<root>/deploy`, the FIXED directory `weles deploy` stages generations into
+/// — and `active_bin_dir`, the ONE generation directory
+/// (`<root>/deploy/gen-N/`) this layout is pinned to. weles never builds and
+/// never reads `target/`.
+///
+/// PIN-AT-DISCOVER (authority): `active_bin_dir` is resolved from
+/// `deploy/current` exactly once, in [`Layout::discover`], and never re-read.
+/// Every binary path the fleet spawns from goes through [`Layout::binary`],
+/// which resolves against this pinned directory — so the whole fleet of one
+/// `up` (including any crash-respawn) runs one coherent generation even if a
+/// concurrent `deploy` flips `current` underneath.
+#[derive(Debug)]
 pub struct Layout {
     pub root: PathBuf,
     pub run_dir: PathBuf,
+    /// `<root>/deploy` — the generations root (`weles deploy` writes `gen-N/`
+    /// and the `current` pointer here).
     pub bin_dir: PathBuf,
+    /// `<root>/deploy/<gen>/` — the pinned active generation this layout
+    /// resolves binaries from. On the deploy path (which stages a NEW
+    /// generation and never spawns) this is an inert placeholder equal to
+    /// `bin_dir`; see [`Layout::discover_for_deploy`].
+    pub active_bin_dir: PathBuf,
 }
 
 impl Layout {
-    /// Discovers the layout under `root`, creating `root/run/weles` if absent.
-    /// `bin_dir` is fixed at `root/deploy` (config-as-code: no env override, no
-    /// debug/release heuristic, no `CARGO_TARGET_DIR`) — weles executes ONLY
-    /// what `weles deploy` staged there.
+    /// Discovers the layout under `root` for an `up`, creating `root/run/weles`
+    /// if absent and PINNING the active generation from `deploy/current`
+    /// (config-as-code: no env override, no debug/release heuristic, no
+    /// `CARGO_TARGET_DIR`). A missing/empty `deploy/current` (a fresh checkout,
+    /// nothing ever deployed) is a clear error here — pointing the operator at
+    /// `weles deploy` — rather than a raw missing-file symptom later in
+    /// `validate_binaries`.
     pub fn discover(root: PathBuf) -> Result<Self> {
-        let run_dir = root.join("run").join("weles");
-        std::fs::create_dir_all(&run_dir)
-            .with_context(|| format!("create run dir {}", run_dir.display()))?;
-
-        let bin_dir = root.join("deploy");
-
+        let (run_dir, bin_dir) = Self::scaffold(&root)?;
+        let active_bin_dir = pin_generation(&bin_dir)?;
         Ok(Layout {
             root,
             run_dir,
             bin_dir,
+            active_bin_dir,
         })
     }
 
-    /// Path to the deployed binary for cargo package `pkg`
-    /// (`deploy/<pkg>[.exe]`).
+    /// Discovers the layout under `root` for a `deploy`. Unlike [`discover`],
+    /// this does NOT require `deploy/current` to exist — a fresh checkout must
+    /// be able to run its first `weles deploy`. `deploy` stages a brand-new
+    /// generation and never resolves [`binary`], so `active_bin_dir` is set to
+    /// an inert placeholder (`bin_dir`) that must never be spawned from.
+    ///
+    /// [`discover`]: Layout::discover
+    /// [`binary`]: Layout::binary
+    pub fn discover_for_deploy(root: PathBuf) -> Result<Self> {
+        let (run_dir, bin_dir) = Self::scaffold(&root)?;
+        let active_bin_dir = bin_dir.clone();
+        Ok(Layout {
+            root,
+            run_dir,
+            bin_dir,
+            active_bin_dir,
+        })
+    }
+
+    /// Shared discovery scaffolding: create `run/weles`, resolve `deploy`.
+    fn scaffold(root: &Path) -> Result<(PathBuf, PathBuf)> {
+        let run_dir = root.join("run").join("weles");
+        std::fs::create_dir_all(&run_dir)
+            .with_context(|| format!("create run dir {}", run_dir.display()))?;
+        let bin_dir = root.join("deploy");
+        Ok((run_dir, bin_dir))
+    }
+
+    /// Path to the pinned-generation binary for cargo package `pkg`
+    /// (`deploy/<gen>/<pkg>[.exe]`). Infallible by design: the generation was
+    /// pinned once at [`discover`] time, so respawn resolves the SAME path.
+    ///
+    /// [`discover`]: Layout::discover
     pub fn binary(&self, pkg: &str) -> PathBuf {
-        self.bin_dir
+        self.active_bin_dir
             .join(format!("{pkg}{}", std::env::consts::EXE_SUFFIX))
     }
+}
+
+/// Reads `deploy/current` (a small TEXT FILE naming the active generation dir,
+/// e.g. `gen-3` — deliberately NOT a symlink: Windows symlink creation needs a
+/// privilege dev machines usually lack) and resolves the pinned
+/// `deploy/<gen>/`. A missing or empty pointer, or one naming a non-existent
+/// directory, is a clear operator-facing error naming `weles deploy`.
+fn pin_generation(bin_dir: &Path) -> Result<PathBuf> {
+    let current = bin_dir.join("current");
+    let gen = match std::fs::read_to_string(&current) {
+        Ok(contents) => contents.trim().to_string(),
+        Err(_) => bail!(
+            "nothing deployed under {} — run `weles deploy <build-dir>` first",
+            bin_dir.display()
+        ),
+    };
+    if gen.is_empty() {
+        bail!(
+            "{} is empty — run `weles deploy <build-dir>` to stage a generation",
+            current.display()
+        );
+    }
+    let active = bin_dir.join(&gen);
+    if !active.is_dir() {
+        bail!(
+            "{} names generation {gen}, but {} is not a directory — re-run `weles deploy`",
+            current.display(),
+            active.display()
+        );
+    }
+    Ok(active)
+}
+
+/// One deployed generation's manifest (`deploy/gen-N/manifest.json`): a
+/// greenfield record of exactly what was staged, for provenance and (M1)
+/// rollback. There is nothing to migrate — a new deploy writes a new manifest.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct GenerationManifest {
+    pub gen: u64,
+    pub artifacts: Vec<Artifact>,
+}
+
+/// One staged binary within a generation: its package, on-disk file name, the
+/// SHA-256 of the bytes actually written, and the byte length.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Artifact {
+    pub pkg: String,
+    pub file: String,
+    pub sha256: String,
+    pub bytes: u64,
 }
 
 /// Resolves `database_url()` — `DATABASE_URL` env if set, else the same dev
@@ -128,70 +254,88 @@ pub fn validate_binaries(layout: &Layout, packages: &[&str]) -> Result<()> {
 
 /// `weles deploy <src_dir>`: stages the fleet binaries ([`deploy_packages`])
 /// from `src_dir` (resolved relative to the CURRENT directory, not the repo
-/// root) into `layout.bin_dir` (`<root>/deploy`, created if absent). Prints a
-/// per-file report line (copied / missing / copy FAILED). This IS a redeploy:
-/// an existing staged binary is OVERWRITTEN.
+/// root) into a FRESH generation directory `<root>/deploy/gen-N/` and, only
+/// once every copy+hash succeeds, atomically flips `<root>/deploy/current` to
+/// name it. Prints a per-file report line (copied / missing / copy FAILED).
+/// See the module doc for the deploy↔up contract and PIN-AT-DISCOVER.
 ///
 /// Self-copy guard: `src_dir` and `bin_dir` are canonicalized up front and a
-/// deploy FROM the deploy dir itself is rejected — on Unix `fs::copy` onto the
-/// same inode truncates first, so `weles deploy deploy` would zero every
-/// staged binary while reporting success (Windows errors loudly; the guard
-/// makes both platforms fail the same way, before any file is touched).
+/// deploy FROM the deploy dir itself is rejected — passing `deploy/` as the
+/// source would recursively stage generations. The guard makes both platforms
+/// fail the same way, before any file is touched.
 ///
-/// Failure semantics: the loop never aborts mid-way — a missing source or a
-/// failed copy is recorded and the remaining files are still processed; the
-/// final error enumerates EVERY missing source and EVERY failed copy, one per
-/// line, and the files that DID copy this run REMAIN staged (no rollback in
-/// M0 — a redeploy simply re-copies everything).
+/// Failure semantics (atomic, rollback-free): the copy loop never aborts
+/// mid-way — a missing source or a failed copy is recorded and the remaining
+/// files are still processed. If ANY file was missing or failed, `current` is
+/// left UNTOUCHED (still naming the previous generation) and the partial
+/// `gen-N` is abandoned as an observable stale directory; the error enumerates
+/// EVERY missing source and EVERY failed copy, one per line. A running `up`
+/// pinned the old generation and is unaffected.
 ///
-/// Live-fleet safety is deliberately NOT enforced in M0: `deploy` takes no
-/// rollout lock. On Windows a running service holds an exclusive lock on its
-/// own `.exe`, so overwriting a live binary FAILS LOUDLY (recorded in the
-/// failed-copy list); on Unix the copy SUCCEEDS silently (the running process
-/// keeps its now-unlinked inode). This asymmetry is accepted for M0 — a proper
-/// rolling redeploy under a live fleet is M1's job.
+/// Retention: after a successful flip, the current and previous generation are
+/// kept (a concurrently-running `up` may have pinned the previous) and older
+/// generations are pruned tolerantly — an undeletable directory is logged and
+/// skipped, never fatal.
 pub fn deploy(layout: &Layout, src_dir: &Path) -> Result<()> {
     std::fs::create_dir_all(&layout.bin_dir)
         .with_context(|| format!("create deploy dir {}", layout.bin_dir.display()))?;
 
     // Canonicalize BOTH sides (handles relative-to-CWD paths and symlinks)
-    // before touching any file: src == dst would corrupt, not stage.
+    // before touching any file: src == deploy root would recursively stage.
     let src_canonical = std::fs::canonicalize(src_dir)
         .with_context(|| format!("resolve source dir {}", src_dir.display()))?;
     let bin_canonical = std::fs::canonicalize(&layout.bin_dir)
         .with_context(|| format!("resolve deploy dir {}", layout.bin_dir.display()))?;
     if src_canonical == bin_canonical {
         bail!(
-            "source dir {} IS the deploy dir {} — deploying deploy/ onto itself would \
-             truncate every staged binary; pass your build output dir instead",
+            "source dir {} IS the deploy dir {} — deploying deploy/ onto itself is \
+             refused; pass your build output dir instead",
             src_dir.display(),
             layout.bin_dir.display()
         );
     }
 
+    let gen = next_generation(&layout.bin_dir)?;
+    let gen_name = format!("gen-{gen}");
+    let gen_dir = layout.bin_dir.join(&gen_name);
+    std::fs::create_dir_all(&gen_dir)
+        .with_context(|| format!("create generation dir {}", gen_dir.display()))?;
+
     let mut missing: Vec<PathBuf> = Vec::new();
     let mut failed: Vec<String> = Vec::new();
+    let mut artifacts: Vec<Artifact> = Vec::new();
     for pkg in deploy_packages() {
         let file = format!("{pkg}{}", std::env::consts::EXE_SUFFIX);
         let src = src_dir.join(&file);
-        let dst = layout.bin_dir.join(&file);
+        let dst = gen_dir.join(&file);
         if !src.is_file() {
             println!("weles: {pkg}: MISSING in {}", src_dir.display());
             missing.push(src);
             continue;
         }
-        match std::fs::copy(&src, &dst) {
-            Ok(_) => println!("weles: {pkg}: copied -> {}", dst.display()),
+        match copy_and_hash(&src, &dst) {
+            Ok((sha256, bytes)) => {
+                println!("weles: {pkg}: copied -> {} (sha256 {sha256})", dst.display());
+                artifacts.push(Artifact {
+                    pkg: pkg.to_string(),
+                    file,
+                    sha256,
+                    bytes,
+                });
+            }
             Err(error) => {
-                println!("weles: {pkg}: copy FAILED -> {} ({error})", dst.display());
-                failed.push(format!("{} ({error})", dst.display()));
+                println!("weles: {pkg}: copy FAILED -> {} ({error:#})", dst.display());
+                failed.push(format!("{} ({error:#})", dst.display()));
             }
         }
     }
 
     if !missing.is_empty() || !failed.is_empty() {
-        let mut message = String::from(
-            "weles deploy: incomplete (files that DID copy remain staged, no rollback):\n",
+        // Do NOT flip `current`: it still names the previous generation, so a
+        // live `up` is untouched. `gen-N` is left as an observable stale dir.
+        let mut message = format!(
+            "weles deploy: incomplete — {gen_name} abandoned, `current` unchanged \
+             (still the previous generation, no rollback needed):\n",
         );
         for path in &missing {
             message.push_str(&format!("  missing source: {}\n", path.display()));
@@ -201,7 +345,136 @@ pub fn deploy(layout: &Layout, src_dir: &Path) -> Result<()> {
         }
         bail!("{message}");
     }
+
+    // All copies+hashes succeeded — record the manifest, THEN atomically flip.
+    let manifest = GenerationManifest { gen, artifacts };
+    let manifest_path = gen_dir.join("manifest.json");
+    let json = serde_json::to_vec_pretty(&manifest).context("serialize generation manifest")?;
+    std::fs::write(&manifest_path, json)
+        .with_context(|| format!("write {}", manifest_path.display()))?;
+
+    flip_current(&layout.bin_dir, &gen_name)?;
+    println!("weles: deployed {gen_name}, current -> {gen_name}");
+
+    prune_stale_generations(&layout.bin_dir, gen);
     Ok(())
+}
+
+/// Streams `src` to `dst`, computing the SHA-256 of the bytes written as it
+/// copies. Returns `(hex_sha256, byte_len)`.
+fn copy_and_hash(src: &Path, dst: &Path) -> Result<(String, u64)> {
+    let mut reader = File::open(src).with_context(|| format!("open {}", src.display()))?;
+    let mut writer = File::create(dst).with_context(|| format!("create {}", dst.display()))?;
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 64 * 1024];
+    let mut total: u64 = 0;
+    loop {
+        let read = reader
+            .read(&mut buf)
+            .with_context(|| format!("read {}", src.display()))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buf[..read]);
+        writer
+            .write_all(&buf[..read])
+            .with_context(|| format!("write {}", dst.display()))?;
+        total += read as u64;
+    }
+    writer
+        .flush()
+        .with_context(|| format!("flush {}", dst.display()))?;
+    let digest = hasher.finalize();
+    let mut hex = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        hex.push_str(&format!("{byte:02x}"));
+    }
+    Ok((hex, total))
+}
+
+/// Parses a `gen-<N>` directory name into `N`. Returns `None` for anything
+/// else (`current`, `current.tmp`, stray files).
+fn parse_generation(name: &OsStr) -> Option<u64> {
+    name.to_str()?.strip_prefix("gen-")?.parse::<u64>().ok()
+}
+
+/// Scans `deploy/` for the highest existing `gen-<N>` and returns `N+1` (1 when
+/// none exist). Never re-reads `current`: the next number is a max over dirs,
+/// so an abandoned partial `gen-N` still advances the counter (its number is
+/// never silently reused).
+fn next_generation(bin_dir: &Path) -> Result<u64> {
+    let mut max = 0u64;
+    if let Ok(entries) = std::fs::read_dir(bin_dir) {
+        for entry in entries.flatten() {
+            if let Some(n) = parse_generation(&entry.file_name()) {
+                max = max.max(n);
+            }
+        }
+    }
+    Ok(max + 1)
+}
+
+/// Atomically points `deploy/current` at `gen_name`: write `current.tmp`, then
+/// rename over `current` (std's rename replaces on both platforms). Mirrors
+/// `state::checkpoint`'s tmp→rename discipline — a torn `current` is never
+/// observable.
+fn flip_current(bin_dir: &Path, gen_name: &str) -> Result<()> {
+    let current = bin_dir.join("current");
+    let tmp = bin_dir.join("current.tmp");
+    std::fs::write(&tmp, gen_name).with_context(|| format!("write {}", tmp.display()))?;
+    std::fs::rename(&tmp, &current)
+        .with_context(|| format!("rename {} over {}", tmp.display(), current.display()))?;
+    Ok(())
+}
+
+/// Which existing generations should be pruned, keeping `current` and its
+/// immediate predecessor. Pure (no I/O) so the retention policy is unit-testable
+/// in isolation: prune every `gen-<N>` with `N < current - 1`.
+fn generations_to_prune(present: &[u64], current: u64) -> Vec<u64> {
+    let keep_floor = current.saturating_sub(1);
+    let mut stale: Vec<u64> = present.iter().copied().filter(|&n| n < keep_floor).collect();
+    stale.sort_unstable();
+    stale
+}
+
+/// Deletes generations older than the current+previous pair. TOLERANT by
+/// design: a directory that can't be removed (a live fleet on Windows may still
+/// hold a `.exe`, or the entry is otherwise undeletable) is logged and skipped —
+/// NEVER an error. Closing "overwrite live exe" must not open "delete live exe".
+/// Returns the directories actually removed (for observability/tests).
+fn prune_stale_generations(bin_dir: &Path, current: u64) -> Vec<PathBuf> {
+    let mut present = Vec::new();
+    match std::fs::read_dir(bin_dir) {
+        Ok(entries) => {
+            for entry in entries.flatten() {
+                if let Some(n) = parse_generation(&entry.file_name()) {
+                    present.push(n);
+                }
+            }
+        }
+        Err(error) => {
+            eprintln!("weles: could not scan {} for retention ({error}) — skipping prune", bin_dir.display());
+            return Vec::new();
+        }
+    }
+
+    let mut removed = Vec::new();
+    for n in generations_to_prune(&present, current) {
+        let path = bin_dir.join(format!("gen-{n}"));
+        match std::fs::remove_dir_all(&path) {
+            Ok(()) => {
+                println!("weles: pruned stale generation {}", path.display());
+                removed.push(path);
+            }
+            Err(error) => {
+                eprintln!(
+                    "weles: could not prune {} ({error}) — skipping (a live fleet may hold it)",
+                    path.display()
+                );
+            }
+        }
+    }
+    removed
 }
 
 /// The internal mTLS CA cert/key pair minted for the fleet.

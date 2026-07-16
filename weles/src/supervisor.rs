@@ -524,11 +524,21 @@ impl Reporter {
 /// Cargo.toml sits directly at the repo root (unlike tools/*), so the workspace
 /// root is exactly one parent up. Shared by `up` and `deploy`.
 pub fn discover_layout() -> Result<prep::Layout> {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    prep::Layout::discover(workspace_root()?)
+}
+
+/// Like [`discover_layout`] but for the `deploy` path: does NOT require a
+/// pinned generation (`deploy/current`), so a fresh checkout can run its first
+/// `weles deploy`.
+pub fn discover_layout_for_deploy() -> Result<prep::Layout> {
+    prep::Layout::discover_for_deploy(workspace_root()?)
+}
+
+fn workspace_root() -> Result<PathBuf> {
+    Ok(PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .context("weles crate has no parent directory")?
-        .to_path_buf();
-    prep::Layout::discover(root)
+        .to_path_buf())
 }
 
 /// The whole `weles up` lifecycle. Returns when the fleet has been torn down

@@ -355,6 +355,7 @@ fn boot_with_the_fleet_stop_set_on_entry_spawns_nothing() {
         root: std::env::temp_dir(),
         run_dir: std::env::temp_dir(),
         bin_dir: std::env::temp_dir(),
+        active_bin_dir: std::env::temp_dir(),
     };
     let inputs = RuntimeInputs {
         database_url: String::new(),

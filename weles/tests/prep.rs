@@ -11,7 +11,104 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use weles::platform::{spawn, SpawnSpec};
-use weles::prep::{helper_timeout_failure, wait_for_helper};
+use weles::prep::{
+    deploy, deploy_packages, helper_timeout_failure, wait_for_helper, GenerationManifest, Layout,
+};
+
+use sha2::{Digest, Sha256};
+
+/// A fresh temp workspace root with an empty `deploy/` dir, plus a source dir
+/// staged with every deployable package carrying `bytes`.
+fn workspace_with_source(tag: &str, bytes: &[u8]) -> (PathBuf, PathBuf) {
+    let base = std::env::temp_dir().join(format!(
+        "weles-prep-int-{}-{tag}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let root = base.join("root");
+    let src = base.join("src");
+    std::fs::create_dir_all(root.join("deploy")).expect("create deploy dir");
+    std::fs::create_dir_all(&src).expect("create src dir");
+    for pkg in deploy_packages() {
+        let file = format!("{pkg}{}", std::env::consts::EXE_SUFFIX);
+        std::fs::write(src.join(&file), bytes).expect("write source binary");
+    }
+    (root, src)
+}
+
+#[test]
+fn discover_pins_a_generation_that_survives_a_later_deploy() {
+    // AUTHORITY proof: a running `up` pins its generation ONCE at discover. A
+    // concurrent `deploy` that flips `current` to gen-2 must NOT change the
+    // already-pinned Layout — the live fleet keeps resolving gen-1 (no
+    // mixed-generation fleet across a respawn).
+    let (root, src_v1) = workspace_with_source("pin-v1", b"gen-1 bytes");
+    let deploy_layout = Layout::discover_for_deploy(root.clone()).expect("deploy layout");
+    deploy(&deploy_layout, &src_v1).expect("deploy gen-1");
+
+    // The "running up" pins gen-1 here.
+    let pinned = Layout::discover(root.clone()).expect("pin gen-1");
+    assert_eq!(pinned.active_bin_dir, root.join("deploy").join("gen-1"));
+
+    // A later deploy flips current -> gen-2 AFTER the pin.
+    let src_v2 = root.parent().unwrap().join("src-v2");
+    std::fs::create_dir_all(&src_v2).expect("create v2 src");
+    for pkg in deploy_packages() {
+        let file = format!("{pkg}{}", std::env::consts::EXE_SUFFIX);
+        std::fs::write(src_v2.join(&file), b"gen-2 bytes").expect("write v2 source");
+    }
+    deploy(&deploy_layout, &src_v2).expect("deploy gen-2");
+    assert_eq!(
+        std::fs::read_to_string(root.join("deploy").join("current"))
+            .expect("read current")
+            .trim(),
+        "gen-2",
+        "the deploy flipped current to gen-2"
+    );
+
+    // The pinned layout STILL resolves gen-1 bytes — it never re-read current.
+    assert_eq!(pinned.active_bin_dir, root.join("deploy").join("gen-1"));
+    assert_eq!(
+        std::fs::read(pinned.binary("edgeca")).expect("read pinned edgeca"),
+        b"gen-1 bytes",
+        "a pinned layout must keep executing its own generation after a redeploy"
+    );
+
+    let _ = std::fs::remove_dir_all(root.parent().unwrap());
+}
+
+#[test]
+fn manifest_records_the_sha256_of_each_staged_artifact() {
+    let (root, src) = workspace_with_source("hash", b"artifact bytes to hash");
+    let deploy_layout = Layout::discover_for_deploy(root.clone()).expect("deploy layout");
+    deploy(&deploy_layout, &src).expect("deploy gen-1");
+
+    let manifest_path = root.join("deploy").join("gen-1").join("manifest.json");
+    let manifest: GenerationManifest =
+        serde_json::from_slice(&std::fs::read(&manifest_path).expect("read manifest"))
+            .expect("parse manifest");
+    assert_eq!(manifest.gen, 1);
+    assert_eq!(manifest.artifacts.len(), deploy_packages().len());
+
+    for artifact in &manifest.artifacts {
+        let staged = root.join("deploy").join("gen-1").join(&artifact.file);
+        let bytes = std::fs::read(&staged).expect("read staged artifact");
+        let mut hasher = Sha256::new();
+        hasher.update(&bytes);
+        let recomputed: String = hasher.finalize().iter().map(|b| format!("{b:02x}")).collect();
+        assert_eq!(
+            artifact.sha256, recomputed,
+            "manifest sha256 for {} must match a fresh recompute",
+            artifact.pkg
+        );
+        assert_eq!(artifact.bytes, bytes.len() as u64, "byte length must match");
+    }
+
+    let _ = std::fs::remove_dir_all(root.parent().unwrap());
+}
 
 #[test]
 fn helper_timeout_branch_kills_the_child_and_names_both_logs() {

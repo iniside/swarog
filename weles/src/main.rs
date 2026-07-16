@@ -54,7 +54,7 @@ fn up(topology: Topology) -> Result<()> {
 
 /// `weles deploy <src-dir>`: stage the fleet binaries into `<root>/deploy`.
 fn deploy(src_dir: &str) -> Result<()> {
-    let layout = supervisor::discover_layout()?;
+    let layout = supervisor::discover_layout_for_deploy()?;
     prep::deploy(&layout, Path::new(src_dir))
 }
 
