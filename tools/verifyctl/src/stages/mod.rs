@@ -12,6 +12,7 @@ pub mod mutants;
 pub mod public_api;
 pub mod splitproof;
 pub mod topiccheck;
+pub mod weles_async_island;
 pub mod weles_fleet_parity;
 
 use crate::model::{StageClass, StageId};
@@ -82,6 +83,11 @@ pub const BLOCKING: &[Stage] = &[
         id: StageId::WelesFleetParity,
         class: StageClass::Blocking,
         run: weles_fleet_parity::run,
+    },
+    Stage {
+        id: StageId::WelesAsyncIsland,
+        class: StageClass::Blocking,
+        run: weles_async_island::run,
     },
     Stage {
         id: StageId::SplitProof,
@@ -274,15 +280,16 @@ mod tests {
                 "conformance",
                 "docs-current",
                 "weles-fleet-parity",
+                "weles-async-island",
                 "split-proof"
             ]
         );
         assert_eq!(
-            &names(crate::cli::Level::All)[12..],
+            &names(crate::cli::Level::All)[13..],
             &["public-api", "fuzz", "csharp-client", "topiccheck", "admincheck"]
         );
         assert_eq!(names(crate::cli::Level::Slow).last(), Some(&"mutants"));
-        assert_eq!(manifest(crate::cli::Level::Fast, true).len(), 17);
+        assert_eq!(manifest(crate::cli::Level::Fast, true).len(), 18);
     }
 
     #[test]

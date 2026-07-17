@@ -29,6 +29,9 @@ fn cargo(executable: PathBuf) -> ExitCode {
         std::thread::sleep(Duration::from_secs(30));
         return ExitCode::SUCCESS;
     }
+    if args.first().map(String::as_str) == Some("tree") {
+        return tree(&args);
+    }
     if args.iter().any(|arg| arg == "public-api") {
         if let Some(index) = args.iter().position(|arg| arg == "-p") {
             let root = std::env::current_dir().expect("fixture cwd");
@@ -93,6 +96,47 @@ fn cargo(executable: PathBuf) -> ExitCode {
         && !args.iter().any(|arg| arg == "--version")
     {
         return ExitCode::FAILURE;
+    }
+    ExitCode::SUCCESS
+}
+
+/// Fake `cargo tree -e features` output for the `weles-async-island` stage.
+///
+/// Shaped like the real rendering (`<crate> feature "<name>"`) and, by default,
+/// CLEAN — so the fake path exercises the stage's pass branch. Each variant
+/// emits the positive control that stage half insists on, because a stage that
+/// cannot see its control correctly refuses to pass: `-p weles` must show
+/// weles's own `net`, and the workspace-wide inverted tree must show core/app's
+/// `signal`. The `island-*` controls drive the failing branches.
+fn tree(args: &[String]) -> ExitCode {
+    if control("tree-fail") {
+        return ExitCode::FAILURE;
+    }
+    // `island-no-control` omits the positive control each half depends on,
+    // simulating a changed cargo rendering: the stage must FAIL rather than
+    // pass on a check that can no longer see anything.
+    let control_present = !control("island-no-control");
+    if args.iter().any(|arg| arg == "--workspace") {
+        // `cargo tree -i tokio`: who enables tokio, and with what features.
+        println!("tokio v1.52.3");
+        if control_present {
+            println!("├── tokio feature \"signal\"");
+            println!("│   └── app v0.1.0 (fake/core/app)");
+        }
+        if control("island-workspace-process") {
+            println!("├── tokio feature \"process\"");
+            println!("│   └── someone v0.1.0 (fake/someone)");
+        }
+        return ExitCode::SUCCESS;
+    }
+    println!("weles v0.1.0 (fake/weles)");
+    if control_present {
+        println!("├── tokio feature \"net\"");
+        println!("│   └── tokio v1.52.3");
+    }
+    println!("└── tokio feature \"rt-multi-thread\"");
+    if control("island-weles-signal") {
+        println!("├── tokio feature \"signal\"");
     }
     ExitCode::SUCCESS
 }

@@ -236,89 +236,83 @@ fn there_are_no_verbs_yet_every_other_path_is_a_404() {
 }
 
 // ---------------------------------------------------------------------------
-// The tokio feature ban — MECHANICAL, because a comment is not a guard
+// The accept loop's recovery arm
 // ---------------------------------------------------------------------------
 
-/// Runs `cargo tree` and returns its stdout, failing loudly on a non-zero exit
-/// (a checker that reports green because its own tooling broke is the failure
-/// class this repo has a scar from).
-fn cargo_tree(args: &[&str]) -> String {
-    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
-    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
-    let output = std::process::Command::new(cargo)
-        .arg("tree")
-        .args(args)
-        .arg("--manifest-path")
-        .arg(&manifest)
-        .output()
-        .expect("run cargo tree");
-    assert!(
-        output.status.success(),
-        "cargo tree {args:?} failed ({}): {}",
-        output.status,
-        String::from_utf8_lossy(&output.stderr)
-    );
-    String::from_utf8(output.stdout).expect("cargo tree output is UTF-8")
+/// Injected accept failures. Deliberately far ABOVE the 64-consecutive-error
+/// count this loop used to give up on: the point is that a burst which would
+/// have deleted the endpoint for the rest of the run is now just noise.
+const FAULT_BURST: usize = 200;
+
+#[test]
+fn the_accept_loop_recovers_from_a_burst_of_accept_failures() {
+    let _guard = agent_guard();
+    // A burst of accept() failures is an ambient transient — fd pressure while
+    // weles spawns a 12-service fleet with stdio pipes, which is exactly what
+    // happens right after this endpoint binds. It clears in milliseconds, so
+    // the endpoint must RECOVER, never give up: an agent deleted for the rest
+    // of the run is a far worse outcome than a few retried accepts.
+    //
+    // The delay is injected (1ms, not the real 1s) so this test does not sit
+    // through 200 real seconds; the loop under test is otherwise the production
+    // one, sleep and all. The delay's VALUE is not the invariant — recovery is.
+    let agent = AgentServer::bind_faulty(0, FAULT_BURST, Duration::from_millis(1))
+        .expect("bind the agent");
+    let port = agent.addr().port();
+
+    // The endpoint still serves AFTER the burst. This is the assertion that a
+    // count-based give-up rule cannot pass: it would have bailed at 64, killed
+    // the runtime thread, and left this connect refused.
+    let (status, body) = request(port, "GET", "/healthz");
+    assert_eq!(status, 200, "the endpoint must survive {FAULT_BURST} accept failures");
+    assert_eq!(body, "ok\n");
+    assert!(!agent.dead(), "a burst of transient accept failures must not kill the endpoint");
 }
 
 #[test]
-fn weles_tokio_never_gets_the_process_or_signal_feature() {
-    // `process` installs a SIGCHLD handler that reaps children out from under
-    // platform::OwnedProc::try_wait, destroying Observed::Exited — the sole
-    // authority for "the process is gone" — fleet-wide. `signal` would fight
-    // the raw libc::signal(SIGINT) handler in supervisor.rs; last writer wins.
-    //
-    // This is a TEST and not a comment in Cargo.toml because resolver-2 unifies
-    // features across the build graph: weles/Cargo.toml is not the authority on
-    // what weles's tokio actually resolves to. `--target all` so a Windows run
-    // still covers the Unix-only SIGCHLD mine.
-    let tree = cargo_tree(&["-e", "features", "-p", "weles", "--target", "all"]);
-
-    // Fail-proof for the test ITSELF: if cargo's rendering ever changes, the
-    // bans below would silently match nothing and go green forever. `net` is a
-    // feature we KNOW is enabled, so this line proves the pattern shape is live.
-    assert!(
-        tree.contains(r#"tokio feature "net""#),
-        "cargo tree's feature rendering changed — the bans below are no longer \
-         checking anything. Output:\n{tree}"
-    );
-    for banned in ["process", "signal"] {
-        assert!(
-            !tree.contains(&format!(r#"tokio feature "{banned}""#)),
-            "weles's tokio resolved WITH the banned `{banned}` feature — the async island \
-             may never own process or signal handling (see agentapi's module doc)"
-        );
-    }
+fn a_clean_stop_is_not_reported_as_a_death() {
+    let _guard = agent_guard();
+    let agent = AgentServer::bind(0).expect("bind the agent");
+    assert!(!agent.dead(), "a live endpoint is not dead");
+    // The runtime thread ENDING is what arms the death flag, so the clean-stop
+    // path must disarm it — otherwise every ordinary teardown would report a
+    // dead endpoint. (The panic path, which cannot be provoked without a fault
+    // injector inside the runtime, is covered by the same RAII guard: it is
+    // armed by default and only `Ok(())` disarms it.)
+    within_budget("AgentServer::drop", move || drop(agent));
 }
 
 #[test]
-fn no_workspace_crate_arms_the_tokio_process_feature() {
-    // The scope the previous test cannot reach: `cargo tree -p weles` resolves
-    // features for weles's own selection, so it would NOT see a sibling crate
-    // enabling `process` — yet `cargo build --workspace` unifies features
-    // across selected packages, which is exactly how that mine gets armed
-    // inside the weles binary. So the `process` ban is checked graph-wide.
-    //
-    // KNOWN, DELIBERATE ASYMMETRY: `signal` cannot be banned graph-wide —
-    // core/app legitimately owns it (core/app/Cargo.toml, tokio::signal for
-    // graceful shutdown). It is banned for weles's own resolve (above) only.
-    let tree = cargo_tree(&["-e", "features", "--workspace", "--target", "all", "-i", "tokio"]);
+fn the_death_flag_arms_on_any_thread_exit_and_only_a_clean_stop_disarms() {
+    // The authority for "the endpoint is gone" is the thread ENDING, not one
+    // particular way of ending. Armed by default:
+    let errored = Arc::new(AtomicBool::new(false));
+    drop(DeathFlag::new(Arc::clone(&errored)));
+    assert!(errored.load(Ordering::SeqCst), "an Err exit must report the endpoint dead");
 
-    // Fail-proof + the asymmetry's positive control in ONE assertion: core/app's
-    // `signal` MUST be visible here. If it is not, either the rendering changed
-    // or the inverted tree stopped covering the workspace — and the `process`
-    // ban below would be checking nothing.
+    // Only an explicit clean stop disarms:
+    let stopped = Arc::new(AtomicBool::new(false));
+    let mut flag = DeathFlag::new(Arc::clone(&stopped));
+    flag.disarm();
+    drop(flag);
+    assert!(!stopped.load(Ordering::SeqCst), "a clean stop is not a death");
+
+    // THE branch that a `thread_dead.store(true)` inside an `if let Err(...)`
+    // arm misses: a panic unwinds straight past that arm, so the thread is
+    // gone, the port is released, join()'s Err is swallowed — and dead() would
+    // answer `false` forever. RAII catches the unwind; a store in one arm does
+    // not. (control::ControlServer::bind still has this exact hole — recorded
+    // as a known gap on DeathFlag, deliberately not fixed here.)
+    let panicked = Arc::new(AtomicBool::new(false));
+    let flagged = Arc::clone(&panicked);
+    let joined = std::thread::spawn(move || {
+        let _flag = DeathFlag::new(flagged);
+        panic!("the runtime thread panicked");
+    })
+    .join();
+    assert!(joined.is_err(), "the helper thread must really have panicked");
     assert!(
-        tree.contains(r#"tokio feature "signal""#),
-        "expected core/app's tokio `signal` feature in the workspace-wide tree — the \
-         `process` ban below is no longer checking anything. Output:\n{tree}"
-    );
-    assert!(
-        !tree.contains(r#"tokio feature "process""#),
-        "a workspace crate enabled tokio's `process` feature. Resolver-2 unifies features \
-         across the build graph, so this arms the SIGCHLD mine inside the weles binary too: \
-         tokio::process reaps children out from under platform::OwnedProc::try_wait, which \
-         is the sole authority for Observed::Exited. Remove it or move that crate's \
-         subprocess work off tokio::process."
+        panicked.load(Ordering::SeqCst),
+        "a PANICKING runtime thread must report the endpoint dead"
     );
 }

@@ -399,3 +399,37 @@ fn assert_exit(output: &Output, expected: i32) {
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+/// The `weles-async-island` stage FAILS, through the real runner, on each
+/// condition it exists to catch — and each failure is BLOCKING (exit 1).
+///
+/// The unit tests in `weles_async_island_tests.rs` pin the predicates over
+/// synthetic trees; this pins that the stage is actually wired in, actually
+/// blocking, and actually reads the tree it asked for. `island-no-control` is
+/// the important one: it proves the stage refuses to pass when it can no longer
+/// see the positive control it relies on, rather than going green-and-vacuous.
+#[test]
+fn weles_async_island_fails_on_a_banned_feature_and_on_a_vacuous_check() {
+    let _serial = VERIFY_RUN_LOCK.lock().unwrap();
+    for (label, control) in [
+        // A sibling crate arming tokio's `process` feature: resolver-2 unifies
+        // it into the weles binary, reaping children out from under try_wait.
+        ("island-workspace-process", "island-workspace-process"),
+        // weles's own resolve carrying `signal`.
+        ("island-weles-signal", "island-weles-signal"),
+        // cargo's rendering changed / the tree no longer covers the workspace:
+        // the bans would match nothing, so the stage must FAIL, not pass.
+        ("island-no-control", "island-no-control"),
+        // cargo tree itself failed: an error, never "no findings".
+        ("island-tree-fail", "tree-fail"),
+    ] {
+        let run = FakeRun::new(label, true);
+        let output = run.command(&[]).env("RUSTFLAGS", control).output().unwrap();
+        assert_exit(&output, 1);
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("weles-async-island   | FAIL"),
+            "{label}: expected the async-island stage to FAIL\nstdout:\n{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+    }
+}

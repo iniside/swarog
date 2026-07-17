@@ -47,6 +47,10 @@
 //!    dropped entirely on its own thread ([`run_runtime`]); dropping it on the
 //!    supervisor thread would stall teardown and, behind it, the `_lock`
 //!    release.
+//!
+//! The accept loop's failure handling, by contrast, IS `ControlServer`'s
+//! verbatim — report, sleep [`ACCEPT_RETRY_DELAY`], retry forever — because an
+//! accept failure means the same thing on both endpoints.
 
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -67,22 +71,34 @@ use tokio::sync::oneshot;
 /// independent endpoints that happen to agree).
 const BIND_DEADLINE: Duration = Duration::from_secs(2);
 
-/// Upper bound on the runtime's own shutdown once the accept loop has stopped:
-/// in-flight connection tasks are given this long, then abandoned. This is what
-/// keeps `Runtime::drop`'s blocking wait from becoming unbounded on the one
-/// thread that is allowed to block on it.
+/// Upper bound on `Runtime::shutdown_timeout` once the accept loop has stopped.
+///
+/// This does NOT give in-flight connection tasks a grace period: a
+/// `tokio::spawn`ed async task is dropped at its current await point the moment
+/// the runtime shuts down, so every connection here is abandoned at once — this
+/// timeout can never elapse on their account. What it actually bounds is the
+/// thing `Runtime::drop` really waits for (blocking tasks and worker parking),
+/// so a task that somehow refuses to yield cannot wedge the join forever. There
+/// are no blocking tasks on this runtime today, which is precisely why this is
+/// an escape hatch and not a mechanism anything may rely on.
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
 
-/// Consecutive `accept()` failures after which the endpoint gives up and dies
-/// (reported, never a fleet stop).
+/// Delay between accept retries, so a persistently failing `accept()` (EMFILE
+/// under fd pressure) cannot spin this thread. Copied verbatim in value and
+/// intent from `control::serve`'s accept loop: report, wait, retry — FOREVER.
 ///
-/// `ControlServer` sleeps 1s between accept hiccups and retries forever; that
-/// needs a timer, which here would mean tokio's `time` feature. A bounded
-/// consecutive-failure count needs no clock at all and is strictly stronger
-/// than an unbounded retry: a permanently failing accept (EMFILE) cannot spin
-/// this thread forever. Any success resets the count, so an ordinary
-/// per-connection hiccup (ECONNABORTED) is still absorbed.
-const MAX_CONSECUTIVE_ACCEPT_ERRORS: u32 = 64;
+/// Retrying forever is the point. An accept failure is an ambient, transient
+/// condition (weles spawns a 12-service fleet with stdio pipes right after this
+/// endpoint binds, so fd pressure is plausible here specifically) that clears in
+/// milliseconds. Giving up would delete the agent for the rest of the run over a
+/// condition that has already passed.
+const ACCEPT_RETRY_DELAY: Duration = Duration::from_secs(1);
+
+/// Whole-request bound on reading a client's headers. hyper's own default is
+/// 30s but is INERT without a `Timer` installed — so the timer is installed and
+/// this is set explicitly, rather than left as a bound that silently does not
+/// exist.
+const HEADER_READ_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Live agent runtime threads.
 ///
@@ -108,6 +124,44 @@ impl RuntimeThreadToken {
 impl Drop for RuntimeThreadToken {
     fn drop(&mut self) {
         RUNTIME_THREADS.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Flags the endpoint dead when the runtime thread ENDS, unless disarmed.
+///
+/// The authority for "the endpoint is gone" is the thread ending — not one
+/// particular way of ending. Storing the flag from inside an `if let Err(...)`
+/// arm misses the other way out: a panic unwinds straight past it, so the
+/// thread is gone, the port is released, `join()`'s `Err` is swallowed, and
+/// `dead()` still answers `false` forever. RAII covers both exits, so only a
+/// CLEAN stop (`run_runtime` returned `Ok`, i.e. we asked it to stop) disarms.
+///
+/// KNOWN GAP, deliberately not fixed here: `control::ControlServer::bind` has
+/// this identical hole — its `thread_dead.store(true, …)` also lives only in
+/// the `if let Err(…)` arm, so a panicking control serve thread reports
+/// `dead() == false` too. Pre-existing and out of this step's scope; recorded
+/// rather than silently left as a twin of the bug fixed here.
+struct DeathFlag {
+    dead: Arc<AtomicBool>,
+    armed: bool,
+}
+
+impl DeathFlag {
+    fn new(dead: Arc<AtomicBool>) -> Self {
+        Self { dead, armed: true }
+    }
+
+    /// The thread is ending because it was ASKED to. Not a death.
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for DeathFlag {
+    fn drop(&mut self) {
+        if self.armed {
+            self.dead.store(true, Ordering::SeqCst);
+        }
     }
 }
 
@@ -145,6 +199,20 @@ impl AgentServer {
     /// `Err` from here never leaves a thread (or a runtime) behind — pinned by
     /// `bind_on_a_taken_port_fails_without_leaking_the_runtime_thread`.
     pub fn bind(port: u16) -> Result<Self> {
+        Self::bind_inner(port, ACCEPT_RETRY_DELAY, 0)
+    }
+
+    /// [`AgentServer::bind`] with the accept loop's recovery arm drivable:
+    /// `accept_faults` accepts fail before the real listener is consulted, and
+    /// `retry_delay` replaces [`ACCEPT_RETRY_DELAY`] so a test need not sit
+    /// through real seconds. Test-only — production always passes `0` and the
+    /// real delay.
+    #[cfg(test)]
+    fn bind_faulty(port: u16, accept_faults: usize, retry_delay: Duration) -> Result<Self> {
+        Self::bind_inner(port, retry_delay, accept_faults)
+    }
+
+    fn bind_inner(port: u16, retry_delay: Duration, accept_faults: usize) -> Result<Self> {
         let dead = Arc::new(AtomicBool::new(false));
         let thread_dead = Arc::clone(&dead);
         let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
@@ -153,15 +221,20 @@ impl AgentServer {
             .name("weles-agent".into())
             .spawn(move || {
                 let _live = RuntimeThreadToken::new();
-                if let Err(error) = run_runtime(port, ready_tx, shutdown_rx) {
-                    // Irrecoverable endpoint death: report it and flag it, but
-                    // do NOT stop the fleet — a lost agent endpoint is a
-                    // degradation, never a phantom operator-down.
-                    eprintln!(
+                // Armed: any exit from here on — Err OR panic — means the
+                // endpoint is gone and `dead()` must say so.
+                let mut death = DeathFlag::new(thread_dead);
+                match run_runtime(port, retry_delay, accept_faults, ready_tx, shutdown_rx) {
+                    // Asked to stop: the endpoint ending is the expected
+                    // outcome, not a death.
+                    Ok(()) => death.disarm(),
+                    // Irrecoverable endpoint death: report it, but do NOT stop
+                    // the fleet — a lost agent endpoint is a degradation, never
+                    // a phantom operator-down. The flag stays armed.
+                    Err(error) => eprintln!(
                         "weles: agent endpoint died: {error:#} — services cannot reach the \
                          agent for this run; the fleet keeps running"
-                    );
-                    thread_dead.store(true, Ordering::SeqCst);
+                    ),
                 }
             })
             .context("spawn agent endpoint")?;
@@ -173,6 +246,15 @@ impl AgentServer {
                 addr,
             }),
             Ok(Err(error)) => {
+                // Signal before joining, exactly as the timeout arm does. Today
+                // every `ready.send(Err(_))` site bails immediately after, so
+                // this join would return anyway — but that is an UNSTATED
+                // invariant of code elsewhere, and this join has no deadline.
+                // A future failure path that reports an error without exiting
+                // (Step 2b adds verbs and new failure paths) would hang `bind`
+                // forever. Uniform: every arm that abandons the thread signals
+                // it first.
+                drop(shutdown_tx);
                 let _ = thread.join();
                 Err(error)
             }
@@ -226,18 +308,22 @@ impl Drop for AgentServer {
 /// would panic).
 fn run_runtime(
     port: u16,
+    retry_delay: Duration,
+    accept_faults: usize,
     ready: std::sync::mpsc::SyncSender<Result<SocketAddr>>,
     shutdown: oneshot::Receiver<()>,
 ) -> Result<()> {
-    // One worker: this endpoint answers a handful of loopback requests. `io` is
-    // the only driver enabled — deliberately no timer, and NEVER the process or
-    // signal drivers (see the module doc; the ban is enforced mechanically by
-    // `agentapi_tests::weles_tokio_never_gets_the_process_or_signal_feature`,
-    // because a comment cannot survive a feature-unification change elsewhere).
+    // One worker: this endpoint answers a handful of loopback requests. `io`
+    // drives the listener; `time` drives the accept-retry delay and hyper's
+    // header-read timeout. NEVER the process or signal drivers (see the module
+    // doc; the ban is enforced mechanically by verifyctl's `weles-async-island`
+    // stage, because a comment cannot survive a feature-unification change
+    // elsewhere).
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .worker_threads(1)
         .thread_name("weles-agent-rt")
         .enable_io()
+        .enable_time()
         .build()
     {
         Ok(runtime) => runtime,
@@ -247,9 +333,33 @@ fn run_runtime(
             bail!(message);
         }
     };
-    let result = runtime.block_on(serve(port, ready, shutdown));
+    let result = runtime.block_on(serve(port, retry_delay, accept_faults, ready, shutdown));
     runtime.shutdown_timeout(SHUTDOWN_GRACE);
     result
+}
+
+/// Where the accept loop gets its next connection.
+///
+/// Production always consults the real listener. `pending_faults` lets a test
+/// drive the loop's RECOVERY arm — the one that used to give up — through the
+/// real production loop, sleep and all, rather than around it. The loop never
+/// inspects the error, so a constructed error exercises exactly the same arm an
+/// EMFILE would.
+struct AcceptSource {
+    listener: tokio::net::TcpListener,
+    pending_faults: usize,
+}
+
+impl AcceptSource {
+    /// Cancel-safe: `TcpListener::accept` is, and the fault arm returns without
+    /// awaiting at all, so `select!` dropping this future loses no connection.
+    async fn accept(&mut self) -> std::io::Result<tokio::net::TcpStream> {
+        if self.pending_faults > 0 {
+            self.pending_faults -= 1;
+            return Err(std::io::Error::other("injected accept failure (EMFILE-shaped)"));
+        }
+        self.listener.accept().await.map(|(stream, _peer)| stream)
+    }
 }
 
 /// Binds the listener, reports readiness, then accepts until cancelled.
@@ -259,6 +369,8 @@ fn run_runtime(
 /// a bind failure can never be a silent hang on the caller's side.
 async fn serve(
     port: u16,
+    retry_delay: Duration,
+    accept_faults: usize,
     ready: std::sync::mpsc::SyncSender<Result<SocketAddr>>,
     mut shutdown: oneshot::Receiver<()>,
 ) -> Result<()> {
@@ -277,28 +389,22 @@ async fn serve(
     let local = listener.local_addr().unwrap_or(addr);
     let _ = ready.send(Ok(local));
 
-    let mut consecutive_errors = 0u32;
+    let mut source = AcceptSource { listener, pending_faults: accept_faults };
     loop {
         tokio::select! {
             // Resolves on send OR on the sender being dropped: either is a
             // stop. This arm is why cancellation reaches a parked accept.
             _ = &mut shutdown => break,
-            accepted = listener.accept() => match accepted {
-                Ok((stream, _peer)) => {
-                    consecutive_errors = 0;
+            accepted = source.accept() => match accepted {
+                Ok(stream) => {
                     tokio::spawn(async move {
                         let served = hyper::server::conn::http1::Builder::new()
-                            // Explicitly OFF, not left at hyper's 30s default:
-                            // that default needs a `Timer` this runtime does
-                            // not have (no tokio `time` feature), so leaving it
-                            // set would be an inert timeout plus a log warning —
-                            // a bound that silently does not exist. A client
-                            // that connects and never sends headers therefore
-                            // holds its task until teardown's SHUTDOWN_GRACE
-                            // reclaims it. Accepted: this is a loopback dev-
-                            // tooling endpoint under a trusted local operator
-                            // (CLAUDE.md, "Dev tooling scope").
-                            .header_read_timeout(None)
+                            // The timer makes the timeout REAL. Without one,
+                            // hyper's own 30s default is inert (it warns and
+                            // never fires) — a bound that silently does not
+                            // exist. Set explicitly rather than inherited.
+                            .timer(hyper_util::rt::TokioTimer::new())
+                            .header_read_timeout(Some(HEADER_READ_TIMEOUT))
                             .serve_connection(TokioIo::new(stream), service_fn(route))
                             .await;
                         if let Err(error) = served {
@@ -306,15 +412,17 @@ async fn serve(
                         }
                     });
                 }
+                // Report, wait, retry — FOREVER, exactly as control::serve
+                // does. A per-accept failure is an ambient transient (fd
+                // pressure while the fleet spawns): never kill the endpoint
+                // over it, and never let it spin. Giving up after N would
+                // delete the agent for the whole run over a condition that
+                // clears in milliseconds — and a count cannot tell "N errors in
+                // 10µs" from "N over a minute", which is exactly what the delay
+                // does distinguish.
                 Err(error) => {
-                    consecutive_errors += 1;
                     eprintln!("weles: agent accept failed ({error}); continuing");
-                    if consecutive_errors >= MAX_CONSECUTIVE_ACCEPT_ERRORS {
-                        bail!(
-                            "agent endpoint gave up after {consecutive_errors} consecutive \
-                             accept failures; last error: {error}"
-                        );
-                    }
+                    tokio::time::sleep(retry_delay).await;
                 }
             },
         }

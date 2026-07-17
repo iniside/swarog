@@ -55,11 +55,20 @@ pub const SERVICE_ENV_ALLOWLIST: &[&str] = &[
 /// through the `'static` [`ServiceDef::env_extra`], and a second port-writing
 /// site would be a second authority for "where does the fleet listen".
 ///
-/// Deliberately outside both fleet bands — above the services' HTTP range
-/// (8080..=8091, leaving room for new services) and far below the edge range
-/// (9000..=9009, 9100). Pinned by `agent_port_collides_with_no_fleet_port`,
-/// which derives the bands from the manifest rather than restating them.
-pub const AGENT_PORT: u16 = 8099;
+/// Deliberately clear of every port claimed anywhere in this repo: the fleet's
+/// HTTP range (8080..=8091, plus headroom for new services), the edge range
+/// (9000..=9009) and the player plane (9100..=9101), the metrics-shaped 9090,
+/// and — the one that bit — **8099, which `tools/verifyctl`'s C# fixture server
+/// binds** (`stages/csharp.rs`, `docs/reference/csharp-client.md`). That is not
+/// a live race (both hold `run/rollout.lock`), but sharing it means a leftover
+/// fixture makes `weles up` die naming the wrong culprit, and vice versa.
+///
+/// Two tests pin this, because neither alone can: this crate's
+/// `agent_port_collides_with_no_fleet_port` derives the FLEET's ports from the
+/// manifest — but weles can only ever see its own fleet, which is the one place
+/// this port was never going to collide. The cross-tool half lives in
+/// verifyctl's `weles-async-island` stage, which can see both constants.
+pub const AGENT_PORT: u16 = 8300;
 
 /// Which of a provider's two port fields a peer address is formatted from.
 ///

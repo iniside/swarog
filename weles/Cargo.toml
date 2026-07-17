@@ -27,10 +27,17 @@ sha2.workspace = true
 # NEVER `process` (its SIGCHLD handler would reap children out from under
 # platform::OwnedProc::try_wait, destroying Observed::Exited fleet-wide) and
 # NEVER `signal` (it would fight the raw libc::signal handler in supervisor.rs).
+# Those two are banned because a real invariant sits behind each. `time` is NOT
+# in that class — it has no such invariant, and omitting it forced two
+# independent compromises (a clockless accept-retry that could not recover, and
+# an inert header-read timeout). Both are gone now that the accept loop can
+# sleep and hyper has a Timer.
+#
 # This comment is NOT the guard: resolver-2 unifies features across the build
 # graph, so this file is not the authority on what weles's tokio actually gets.
-# The guard is agentapi_tests::{weles_tokio_never_gets_the_process_or_signal_feature,
-# no_workspace_crate_arms_the_tokio_process_feature}.
+# The guard is verifyctl's blocking `weles-async-island` stage — cargo is that
+# stage's house tool, so the check does not nest cargo inside `cargo test` nor
+# couple weles's own suite to core/app's feature list.
 #
 # No TLS feature anywhere here: plaintext loopback only, which keeps
 # rustls/ring/aws-lc-rs out of the question rather than merely unused.
@@ -39,6 +46,7 @@ tokio = { version = "1", default-features = false, features = [
     "macros",
     "net",
     "io-util",
+    "time",
 ] }
 hyper = { version = "1", default-features = false, features = ["server", "http1"] }
 hyper-util = { version = "0.1", default-features = false, features = ["tokio"] }

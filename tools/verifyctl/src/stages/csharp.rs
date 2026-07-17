@@ -15,8 +15,12 @@ use crate::{
     runner::Context,
 };
 
-const HTTP_PORT: u16 = 8099;
-const PLAYER_PORT: u16 = 9100;
+/// Ports the C# fixture server binds. `pub(crate)` so `weles_async_island` can
+/// diff them against `weles::manifest::AGENT_PORT`: weles is zero-sharing and
+/// cannot see this constant, so the collision check belongs where both are
+/// visible.
+pub(crate) const HTTP_PORT: u16 = 8099;
+pub(crate) const PLAYER_PORT: u16 = 9100;
 const DEFAULT_DSN: &str =
     "postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable";
 const SHUTDOWN: ShutdownPolicy = ShutdownPolicy {

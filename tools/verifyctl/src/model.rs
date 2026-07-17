@@ -19,6 +19,7 @@ pub enum StageId {
     Topiccheck,
     Admincheck,
     WelesFleetParity,
+    WelesAsyncIsland,
     Mutants,
 }
 
@@ -42,6 +43,7 @@ impl StageId {
             Self::Topiccheck => "topiccheck",
             Self::Admincheck => "admincheck",
             Self::WelesFleetParity => "weles-fleet-parity",
+            Self::WelesAsyncIsland => "weles-async-island",
             Self::Mutants => "mutants",
         }
     }
