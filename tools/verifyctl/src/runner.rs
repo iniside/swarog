@@ -452,12 +452,13 @@ pub(crate) fn interrupted() -> bool {
     INTERRUPTED.load(Ordering::SeqCst)
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 fn install_interrupt_handler() -> Result<()> {
     unsafe extern "C" fn handler(_: libc::c_int) {
         INTERRUPTED.store(true, Ordering::SeqCst);
     }
-    let result = unsafe { libc::signal(libc::SIGINT, handler as libc::sighandler_t) };
+    let result =
+        unsafe { libc::signal(libc::SIGINT, handler as *const () as libc::sighandler_t) };
     if result == libc::SIG_ERR {
         bail!(
             "install SIGINT handler: {}",
@@ -489,9 +490,9 @@ fn install_interrupt_handler() -> Result<()> {
     Ok(())
 }
 
-#[cfg(not(any(windows, target_os = "linux")))]
+#[cfg(not(any(windows, unix)))]
 fn install_interrupt_handler() -> Result<()> {
-    bail!("verifyctl supports only Windows and Linux")
+    bail!("verifyctl supports only Windows and Unix")
 }
 
 #[cfg(test)]

@@ -70,17 +70,9 @@ fn atomic_replace(source: &Path, destination: &Path) -> std::io::Result<()> {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 fn atomic_replace(source: &Path, destination: &Path) -> std::io::Result<()> {
     std::fs::rename(source, destination)
-}
-
-#[cfg(not(any(windows, target_os = "linux")))]
-fn atomic_replace(_: &Path, _: &Path) -> std::io::Result<()> {
-    Err(std::io::Error::new(
-        std::io::ErrorKind::Unsupported,
-        "edgeca supports only Windows and Linux",
-    ))
 }
 
 struct Cleanup(Vec<PathBuf>);
