@@ -114,9 +114,13 @@ pub const BLOCKING: &[Stage] = &[
     },
     // Cross-target typecheck of the two rollout-tooling crates that rotted, from
     // whatever box runs verify. BLOCKING and runs on every platform (no
-    // exemption): it is the only tripwire against E0061-class platform rot in a
-    // repo with no CI. Placed after the cheap checks and before the fleet-booting
-    // stages — it builds no fleet and touches no Postgres, only `cargo check`.
+    // exemption): the tripwire against E0061-class platform rot in
+    // `processctl`/`weles` PRODUCTION code, in a repo with no CI. Scope is
+    // deliberately bounded — devctl/verifyctl/edgeca (which pull `ring`) and
+    // cfg-gated TEST modules (no `--all-targets`) are NOT cross-checked; see the
+    // named gaps in `supported_targets.rs`. Placed after the cheap checks and
+    // before the fleet-booting stages — it builds no fleet and touches no
+    // Postgres, only `cargo check`.
     Stage {
         id: StageId::SupportedTargets,
         class: StageClass::Blocking,
