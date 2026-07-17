@@ -148,6 +148,22 @@ impl Drop for FakeRun {
 /// still pin that cast here.
 const LIVE_ONLY_STAGE: &str = "weles-managed-gateway";
 
+/// The stage right beside [`LIVE_ONLY_STAGE`] that a fake root ALSO cannot
+/// satisfy — for a different reason.
+///
+/// `supported-targets` cross-target-typechecks `processctl`/`weles` via
+/// `cargo check -p processctl -p weles --target <triple>`. The fake root is a
+/// minimal temp workspace (`[workspace]\n`, no members) with no
+/// `processctl`/`weles` crates on disk, so `cargo check -p processctl -p
+/// weles` genuinely has nothing to check — the fixture `cargo` stands in for
+/// I/O, not for "these packages exist". This is the stage correctly reporting
+/// FAIL against an honestly-incomplete tree, the same shape as
+/// [`LIVE_ONLY_STAGE`]: a live-repo stage that a synthetic fake root cannot
+/// host. It runs BEFORE `weles-managed-gateway` in the `BLOCKING` manifest
+/// (`tools/verifyctl/src/stages/mod.rs`), so it appears first in every
+/// fail-row set below.
+const LIVE_ONLY_STAGE_2: &str = "supported-targets";
+
 /// The OTHER stage a fake root cannot satisfy — and the reason the row sets below
 /// are worth reading twice.
 ///
@@ -201,14 +217,19 @@ fn fail_rows(stdout: &str) -> Vec<String> {
 
 #[test]
 fn fake_path_covers_outcomes_audit_install_lease_and_summary_exits() {
-    let _serial = VERIFY_RUN_LOCK.lock().unwrap();
+    // Poison-tolerant: this mutex only serializes test execution against the
+    // shared fixture/PATH environment, it guards no shared data. A sibling
+    // test panicking while holding it must not cascade-fail every other test
+    // in this file via `PoisonError` — each test's own assertions are what
+    // decides its result.
+    let _serial = VERIFY_RUN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let pass = FakeRun::new("pass", true);
     let output = pass.command(&[]).output().unwrap();
     assert_exit(&output, 1);
     let stdout = String::from_utf8_lossy(&output.stdout);
     // The live-only stage is the ONLY red: this is what the old exit-0 assertion
     // said, said per row.
-    assert_eq!(fail_rows(&stdout), [LIVE_ONLY_STAGE]);
+    assert_eq!(fail_rows(&stdout), [LIVE_ONLY_STAGE_2, LIVE_ONLY_STAGE]);
     assert!(stdout.contains("build                | PASS"));
     assert!(stdout.contains("docs-current         | PASS"));
     assert!(stdout.contains("split-proof          | PASS"));
@@ -243,7 +264,10 @@ fn fake_path_covers_outcomes_audit_install_lease_and_summary_exits() {
     let strict_stdout = String::from_utf8_lossy(&output.stdout);
     // A missing tool under `--no-install` is a SKIP row, not a FAIL row, even
     // under `--strict` — that it is also not a red EXIT is `verdict`'s matrix.
-    assert_eq!(fail_rows(&strict_stdout), [LIVE_ONLY_STAGE]);
+    assert_eq!(
+        fail_rows(&strict_stdout),
+        [LIVE_ONLY_STAGE_2, LIVE_ONLY_STAGE]
+    );
     assert!(strict_stdout.contains("audit                | SKIP"));
     assert!(strict_stdout.contains("public-api           | PASS"));
     assert!(strict_stdout.contains("fuzz                 | SKIP"));
@@ -257,7 +281,7 @@ fn fake_path_covers_outcomes_audit_install_lease_and_summary_exits() {
     // only red.
     assert_eq!(
         fail_rows(&String::from_utf8_lossy(&output.stdout)),
-        [LIVE_ONLY_STAGE]
+        [LIVE_ONLY_STAGE_2, LIVE_ONLY_STAGE]
     );
     assert!(std::fs::read_to_string(&install.record)
         .unwrap()
@@ -277,7 +301,7 @@ fn fake_path_covers_outcomes_audit_install_lease_and_summary_exits() {
     // scenario would now be indistinguishable from the install that worked.
     assert_eq!(
         fail_rows(&String::from_utf8_lossy(&output.stdout)),
-        ["audit", LIVE_ONLY_STAGE]
+        ["audit", LIVE_ONLY_STAGE_2, LIVE_ONLY_STAGE]
     );
 
     let network = FakeRun::new("network", true);
@@ -291,7 +315,7 @@ fn fake_path_covers_outcomes_audit_install_lease_and_summary_exits() {
     assert!(String::from_utf8_lossy(&output.stdout).contains("audit                | FAIL"));
     assert_eq!(
         fail_rows(&String::from_utf8_lossy(&output.stdout)),
-        ["audit", LIVE_ONLY_STAGE]
+        ["audit", LIVE_ONLY_STAGE_2, LIVE_ONLY_STAGE]
     );
 
     let route_fail = FakeRun::new("route-fail", true);
@@ -303,7 +327,7 @@ fn fake_path_covers_outcomes_audit_install_lease_and_summary_exits() {
     assert_exit(&output, 1);
     assert_eq!(
         fail_rows(&String::from_utf8_lossy(&output.stdout)),
-        ["routecheck", LIVE_ONLY_STAGE]
+        ["routecheck", LIVE_ONLY_STAGE_2, LIVE_ONLY_STAGE]
     );
 
     // `--all` runs the advisory manifest and `--strict` promotes it. The pair
@@ -319,7 +343,7 @@ fn fake_path_covers_outcomes_audit_install_lease_and_summary_exits() {
         .unwrap();
     assert_exit(&output, 1);
     let advisory_stdout = String::from_utf8_lossy(&output.stdout);
-    let mut expected = vec![LIVE_ONLY_STAGE, "public-api"];
+    let mut expected = vec![LIVE_ONLY_STAGE_2, LIVE_ONLY_STAGE, "public-api"];
     expected.extend(csharp_fail_rows());
     assert_eq!(fail_rows(&advisory_stdout), expected);
     assert!(advisory_stdout.contains("public-api           | FAIL"));
@@ -332,7 +356,7 @@ fn fake_path_covers_outcomes_audit_install_lease_and_summary_exits() {
         .output()
         .unwrap();
     assert_exit(&output, 1);
-    let mut expected = vec![LIVE_ONLY_STAGE, "public-api"];
+    let mut expected = vec![LIVE_ONLY_STAGE_2, LIVE_ONLY_STAGE, "public-api"];
     expected.extend(csharp_fail_rows());
     assert_eq!(
         fail_rows(&String::from_utf8_lossy(&output.stdout)),
@@ -347,7 +371,7 @@ fn fake_path_covers_outcomes_audit_install_lease_and_summary_exits() {
         .unwrap();
     assert_exit(&output, 1);
     assert!(String::from_utf8_lossy(&output.stdout).contains("mutants              | FAIL"));
-    let mut expected = vec![LIVE_ONLY_STAGE];
+    let mut expected = vec![LIVE_ONLY_STAGE_2, LIVE_ONLY_STAGE];
     expected.extend(csharp_fail_rows());
     expected.push("mutants");
     assert_eq!(
@@ -367,7 +391,12 @@ fn fake_path_covers_outcomes_audit_install_lease_and_summary_exits() {
 
 #[test]
 fn verify_and_bless_actions_share_one_rollout_lock() {
-    let _serial = VERIFY_RUN_LOCK.lock().unwrap();
+    // Poison-tolerant: this mutex only serializes test execution against the
+    // shared fixture/PATH environment, it guards no shared data. A sibling
+    // test panicking while holding it must not cascade-fail every other test
+    // in this file via `PoisonError` — each test's own assertions are what
+    // decides its result.
+    let _serial = VERIFY_RUN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     for (label, args) in [
         ("verify", &[][..]),
         ("public-api-bless", &["--bless-public-api"][..]),
@@ -550,7 +579,12 @@ fn assert_exit(output: &Output, expected: i32) {
 /// see the positive control it relies on, rather than going green-and-vacuous.
 #[test]
 fn weles_async_island_fails_on_a_banned_feature_and_on_a_vacuous_check() {
-    let _serial = VERIFY_RUN_LOCK.lock().unwrap();
+    // Poison-tolerant: this mutex only serializes test execution against the
+    // shared fixture/PATH environment, it guards no shared data. A sibling
+    // test panicking while holding it must not cascade-fail every other test
+    // in this file via `PoisonError` — each test's own assertions are what
+    // decides its result.
+    let _serial = VERIFY_RUN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     for (label, control) in [
         // A sibling crate arming tokio's `process` feature: resolver-2 unifies
         // it into the weles binary, reaping children out from under try_wait.
