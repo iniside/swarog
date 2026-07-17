@@ -195,6 +195,22 @@ fn force_kills_the_whole_tree() {
     // job member join the job (no breakaway) / a plain fork stays in the
     // process group. Killing the container must reap BOTH.
     fixture.proc.force().expect("force the container");
+    // force() deliberately does not reap (see its doc comment) — every real
+    // caller follows it with a reap (shutdown()/Drop do). A force-killed-but-
+    // unreaped root is a zombie on Unix, and `kill(pid, 0)` reports a zombie
+    // as alive, so reap it here via try_wait the same way a real caller
+    // would before checking liveness.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if fixture.proc.try_wait().expect("try_wait").is_some() {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "root did not report exited after force()"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
     wait_dead(root_pid);
     wait_dead(grandchild_pid);
 }
