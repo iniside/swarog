@@ -613,7 +613,8 @@ fn spawn_suspended(
         let flags = (libc::POSIX_SPAWN_START_SUSPENDED
             | libc::POSIX_SPAWN_SETPGROUP
             | libc::POSIX_SPAWN_CLOEXEC_DEFAULT
-            | libc::POSIX_SPAWN_SETSIGMASK) as libc::c_short;
+            | libc::POSIX_SPAWN_SETSIGMASK
+            | libc::POSIX_SPAWN_SETSIGDEF) as libc::c_short;
         let rc = libc::posix_spawnattr_setflags(&mut attr, flags);
         if rc != 0 {
             libc::posix_spawnattr_destroy(&mut attr);
@@ -626,14 +627,37 @@ fn spawn_suspended(
             libc::posix_spawnattr_destroy(&mut attr);
             return Err(std::io::Error::from_raw_os_error(rc));
         }
-        // The guardian BLOCKS the control signals so its own kqueue observes them;
-        // without an explicit empty mask the target would INHERIT that block and
-        // silently ignore a forwarded SIGTERM/SIGINT. Reset the target's mask to
-        // empty — the exact analogue of the Linux guardian's pre_exec
-        // sigprocmask(SIG_SETMASK, <empty>).
+        // The Linux target is spawned via `std::process::Command`, which resets the
+        // child BOTH ways before exec: an empty signal MASK *and* default signal
+        // DISPOSITIONS (notably Rust's startup `SIGPIPE = SIG_IGN` back to
+        // `SIG_DFL`). This raw `posix_spawn` must reproduce both, or the darwin
+        // target silently diverges from its Linux twin — the exact monolith-parity
+        // split this port exists to prevent.
+        //
+        // Mask: the guardian BLOCKS the control signals so its own kqueue observes
+        // them; without an explicit empty mask the target would INHERIT that block
+        // and silently ignore a forwarded SIGTERM/SIGINT.
         let mut empty_mask: libc::sigset_t = std::mem::zeroed();
         libc::sigemptyset(&mut empty_mask);
         let rc = libc::posix_spawnattr_setsigmask(&mut attr, &empty_mask);
+        if rc != 0 {
+            libc::posix_spawnattr_destroy(&mut attr);
+            return Err(std::io::Error::from_raw_os_error(rc));
+        }
+        // Dispositions: reset to SIG_DFL at least SIGPIPE (the guardian process is
+        // a Rust binary, so it carries the runtime's `SIGPIPE = SIG_IGN`, which a
+        // raw spawn would otherwise leak into the target where a Linux `Command`
+        // child gets `SIG_DFL`), plus the control signals the guardian forwards
+        // (SIGTERM/SIGINT) and maps to force (SIGUSR1) — so the target has clean
+        // default dispositions like a Linux `Command` child regardless of what
+        // this guardian process has installed.
+        let mut default_dispositions: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut default_dispositions);
+        libc::sigaddset(&mut default_dispositions, libc::SIGPIPE);
+        libc::sigaddset(&mut default_dispositions, libc::SIGTERM);
+        libc::sigaddset(&mut default_dispositions, libc::SIGINT);
+        libc::sigaddset(&mut default_dispositions, libc::SIGUSR1);
+        let rc = libc::posix_spawnattr_setsigdefault(&mut attr, &default_dispositions);
         if rc != 0 {
             libc::posix_spawnattr_destroy(&mut attr);
             return Err(std::io::Error::from_raw_os_error(rc));

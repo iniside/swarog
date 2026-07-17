@@ -126,7 +126,8 @@ type PlatformChild = crate::platform::PlatformChild;
 
 impl OwnedChild {
     pub fn spawn(spec: SpawnSpec) -> Result<Self, ProcessError> {
-        let (inner, identity) = crate::platform::spawn(&spec, None)?;
+        let guard = crate::platform::spawn_guard();
+        let (inner, identity) = crate::platform::spawn(&spec, None, &guard)?;
         Ok(Self {
             label: spec.label,
             identity,
@@ -148,8 +149,13 @@ impl OwnedChild {
                 ),
             });
         }
+        // One critical section spanning the private-stdin pipe's non-atomic
+        // create+cloexec AND the fork, so a concurrent spawn cannot inherit the
+        // writer end in the cloexec gap (see platform::SPAWN_LOCK).
+        let guard = crate::platform::spawn_guard();
         let (input, mut writer) = private_stdin_pipe()?;
-        let (inner, identity) = crate::platform::spawn(&spec, Some(input))?;
+        let (inner, identity) = crate::platform::spawn(&spec, Some(input), &guard)?;
+        drop(guard);
         let mut child = Self {
             label: spec.label,
             identity,
@@ -167,12 +173,17 @@ impl OwnedChild {
         Ok(child)
     }
 
+    /// The `guard` is passed in (not acquired here) because the caller creates the
+    /// would-be-inherited credential pipe BEFORE this call; that fd's non-atomic
+    /// create+cloexec and this fork must share ONE critical section (see
+    /// platform::SPAWN_LOCK), so the caller holds the guard across both.
     #[cfg(any(windows, unix))]
     pub(crate) fn spawn_with_input(
         spec: SpawnSpec,
         input: crate::platform::InheritedInput,
+        guard: &crate::platform::SpawnGuard,
     ) -> Result<Self, ProcessError> {
-        let (inner, identity) = crate::platform::spawn(&spec, Some(input))?;
+        let (inner, identity) = crate::platform::spawn(&spec, Some(input), guard)?;
         Ok(Self {
             label: spec.label,
             identity,
@@ -273,7 +284,10 @@ fn private_stdin_pipe() -> Result<(crate::platform::InheritedInput, std::fs::Fil
 }
 
 // macOS has no `pipe2`; create the pipe and set `FD_CLOEXEC` on both ends in a
-// second, non-atomic step. See the same note on `platform::darwin::pipe_cloexec`.
+// second, non-atomic step. The sole caller (`spawn_with_stdin_bytes`) holds
+// `platform::SpawnGuard` across this create+cloexec AND the following fork, so a
+// concurrent spawn cannot inherit the writer in the cloexec gap. See the same
+// note on `platform::darwin::pipe_cloexec`.
 #[cfg(target_os = "macos")]
 fn private_stdin_pipe() -> Result<(crate::platform::InheritedInput, std::fs::File), ProcessError> {
     use std::os::fd::{AsRawFd as _, FromRawFd as _};

@@ -287,9 +287,14 @@ impl OwnedLease {
                 "borrower credential exceeds its bound".into(),
             ));
         }
+        // One critical section spanning the credential pipe's non-atomic
+        // create+cloexec AND the fork, so a concurrent spawn cannot inherit the
+        // writer end in the cloexec gap (see platform::SPAWN_LOCK).
+        let guard = crate::platform::spawn_guard();
         let (input, writer) = credential_pipe()?;
         spec.args.push(OsString::from(BORROWED_LEASE_ARG));
-        let mut child = OwnedChild::spawn_with_input(spec, input)?;
+        let mut child = OwnedChild::spawn_with_input(spec, input, &guard)?;
+        drop(guard);
         let delivery = deliver_credential(writer, bytes, CREDENTIAL_DELIVERY_TIMEOUT, &mut child);
         if let Err(error) = delivery {
             let cleanup = child.shutdown(crate::ShutdownPolicy {
@@ -1009,7 +1014,8 @@ fn credential_pipe() -> Result<(crate::platform::InheritedInput, File), LeaseErr
 /// `MAX_CREDENTIAL_BYTES` at both the write (`spawn_borrower`) and read
 /// (`read_credential_to_eof`) sides. `deliver_credential` writes from a thread,
 /// so as with Linux a concurrent fork/exec elsewhere could observe the ends
-/// before the flag is set; processctl does not run concurrent spawns.
+/// before the flag is set; the sole caller holds `platform::SpawnGuard` across
+/// this create+cloexec AND the borrower fork, so no such racing spawn can occur.
 #[cfg(target_os = "macos")]
 fn credential_pipe() -> Result<(crate::platform::InheritedInput, File), LeaseError> {
     use std::os::fd::{AsRawFd, FromRawFd};

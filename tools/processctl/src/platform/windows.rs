@@ -118,6 +118,7 @@ impl Drop for AttributeList {
 pub(crate) fn spawn(
     spec: &SpawnSpec,
     input: Option<crate::platform::InheritedInput>,
+    _guard: &crate::platform::SpawnGuard,
 ) -> Result<(PlatformChild, ProcessIdentity), ProcessError> {
     match spec.process_group {
         ProcessGroupPolicy::Owned => {}

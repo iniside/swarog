@@ -22,6 +22,7 @@ pub(crate) struct PlatformChild {
 pub(crate) fn spawn(
     spec: &SpawnSpec,
     input: Option<crate::platform::InheritedInput>,
+    _guard: &crate::platform::SpawnGuard,
 ) -> Result<(PlatformChild, ProcessIdentity), ProcessError> {
     let guardian_path = std::env::current_exe().map_err(|source| ProcessError::Io {
         operation: "locate current executable for guardian dispatch",

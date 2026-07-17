@@ -34,6 +34,7 @@ pub(crate) struct PlatformChild {
 pub(crate) fn spawn(
     spec: &SpawnSpec,
     input: Option<crate::platform::InheritedInput>,
+    _guard: &crate::platform::SpawnGuard,
 ) -> Result<(PlatformChild, ProcessIdentity), ProcessError> {
     let guardian_path = std::env::current_exe().map_err(|source| ProcessError::Io {
         operation: "locate current executable for guardian dispatch",
@@ -154,9 +155,9 @@ fn signal_guardian(guardian: &Child, sig: i32) -> std::io::Result<()> {
 /// `pipe(2)` + `FD_CLOEXEC` on both ends. macOS has no `pipe2`, so setting the
 /// close-on-exec flag is a second syscall and therefore not atomic with the
 /// pipe creation the way `pipe2(O_CLOEXEC)` is; a concurrent fork/exec in
-/// another thread could observe the ends before the flag is set. processctl
-/// spawns are driven from a single thread per child, so no such racing spawn
-/// exists here.
+/// another thread could observe the ends before the flag is set. This runs only
+/// inside [`spawn`], which holds [`crate::platform::SpawnGuard`] across the whole
+/// create-pipes→fork window, so no such racing spawn can occur.
 fn pipe_cloexec() -> std::io::Result<(OwnedFd, OwnedFd)> {
     let mut fds = [-1; 2];
     if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {

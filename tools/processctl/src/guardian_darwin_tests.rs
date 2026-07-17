@@ -82,6 +82,12 @@ impl Drop for Testee {
 }
 
 fn spawn_testee(target: &str, args: &[&str]) -> Testee {
+    // Route the harness fork through the PRODUCT spawn lock, exactly as
+    // `platform::darwin::spawn` does: hold it across the non-atomic pipe
+    // create+cloexec AND the fork so two concurrent `spawn_testee` calls cannot
+    // cross-inherit each other's `live_write` in the cloexec gap. This is what
+    // `concurrent_spawns_each_force_kill_their_own_target` exercises.
+    let spawn_guard = crate::platform::spawn_guard();
     let (live_read, live_write) = pipe_cloexec();
     let (status_read, status_write) = pipe_cloexec();
     let live_read_fd = live_read.as_raw_fd();
@@ -118,6 +124,9 @@ fn spawn_testee(target: &str, args: &[&str]) -> Testee {
         });
     }
     let child = command.spawn().expect("spawn guardian testee");
+    // The fork is done; the cloexec gap is closed. Release the lock BEFORE the
+    // blocking identity read so a peer thread's fork can proceed concurrently.
+    drop(spawn_guard);
     drop(live_read);
     drop(status_write);
 
@@ -203,7 +212,10 @@ fn group_kill_reaches_a_forked_descendant() {
     let _serial = serial();
     let dir = test_dir("tree");
     let pidfile = dir.join("grandchild.pid");
-    // The shell backgrounds a sleep into its own group, records the pid, and waits.
+    // A non-interactive `sh -c` runs with job control OFF, so `sleep &` does NOT
+    // get its own process group — the backgrounded sleep stays in the TARGET's
+    // group. That is exactly why the guardian's `kill(-pgid)` reaches it and this
+    // test is valid: the shell records the child's pid and waits.
     let script = format!(
         "sleep 30 & echo $! > {}; wait",
         pidfile.to_string_lossy()
@@ -285,4 +297,161 @@ fn graceful_signal_is_forwarded_to_the_target() {
         "a single-process target leaves no live group remainder after reap"
     );
     wait_dead(target);
+}
+
+/// SIGUSR1 to the guardian maps to FORCE (SIGKILL of the group), NOT a forward.
+/// A guardian that mis-routed SIGUSR1 through the SIGTERM/SIGINT forward arm would
+/// deliver a catchable SIGUSR1 the target could ignore; this pins the force route.
+#[test]
+fn sigusr1_forces_the_target_with_sigkill() {
+    let _serial = serial();
+    let mut testee = spawn_testee("/bin/sleep", &["30"]);
+    let target = testee.target_pid;
+    wait_alive(target);
+
+    assert_eq!(
+        unsafe { libc::kill(testee.guardian_pid(), libc::SIGUSR1) },
+        0,
+        "signal guardian"
+    );
+
+    let (raw, _forced) = testee.read_completion();
+    assert!(
+        libc::WIFSIGNALED(raw) && libc::WTERMSIG(raw) == libc::SIGKILL,
+        "SIGUSR1 must FORCE the target (SIGKILL), not forward a catchable SIGUSR1, raw={raw:#x}"
+    );
+    wait_dead(target);
+}
+
+/// Accepted non-guarantee #1 (named in the module doc): macOS has no
+/// `PR_SET_PDEATHSIG`, so a hard-`SIGKILL`ed guardian ORPHANS its target — the
+/// dead guardian can no longer force anything. This pins that documented boundary
+/// so a future change (e.g. a re-parenting watcher) can't silently alter it
+/// without updating the test and the doc together.
+#[test]
+fn guardian_sigkill_orphans_the_target() {
+    let _serial = serial();
+    let mut testee = spawn_testee("/bin/sleep", &["30"]);
+    let target = testee.target_pid;
+    wait_alive(target);
+
+    // Hard-kill the guardian itself (not a liveness drop): no watcher remains.
+    assert_eq!(
+        unsafe { libc::kill(testee.guardian_pid(), libc::SIGKILL) },
+        0,
+        "sigkill guardian"
+    );
+    // Reap the dead guardian so it is not a zombie, then confirm the target
+    // outlives it for a bounded window: the orphan is NOT taken down.
+    let _ = testee.child.wait();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline {
+        assert!(
+            process_alive(target),
+            "a SIGKILLed guardian must ORPHAN its target on macOS (no PDEATHSIG), \
+             but the target died"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    // The orphan is untracked now; kill it so the test leaks nothing.
+    unsafe { libc::kill(target as i32, libc::SIGKILL) };
+    wait_dead(target);
+}
+
+/// Accepted non-guarantee #2 (named in the module doc): macOS has no
+/// `PR_SET_CHILD_SUBREAPER`, so a descendant that `setsid()`s out of the target's
+/// process group reparents to `launchd` and is UNREACHABLE by `kill(-pgid)` — the
+/// `forced_adopted` half of `forced_remainder` the macOS backend structurally
+/// cannot compute. This pins that boundary: the escapee survives group teardown.
+#[test]
+fn setsid_escapee_survives_group_kill() {
+    let _serial = serial();
+    let dir = test_dir("escapee");
+    let pidfile = dir.join("escapee.pid");
+    // The target (perl) forks a child that `setsid()`s itself into a NEW session
+    // (leaving the target's process group), records its pid, and sleeps. The
+    // parent sleeps too, so the target stays alive until teardown.
+    let script = "\
+        my $pf = $ARGV[0];\
+        use POSIX qw(setsid);\
+        my $pid = fork();\
+        if ($pid == 0) { setsid(); open(my $f, '>', $pf) or die; print $f $$; close($f); sleep 300; exit 0; }\
+        sleep 300;";
+    let mut testee = spawn_testee(
+        "/usr/bin/perl",
+        &["-e", script, pidfile.to_str().unwrap()],
+    );
+    let root = testee.target_pid;
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !pidfile.exists() {
+        assert!(Instant::now() < deadline, "escapee pidfile never appeared");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let escapee: u32 = std::fs::read_to_string(&pidfile)
+        .unwrap()
+        .trim()
+        .parse()
+        .expect("escapee pid");
+    wait_alive(escapee);
+
+    // Tear the target down via liveness drop; the guardian `kill(-pgid)`s the group.
+    testee.drop_liveness();
+    wait_dead(root);
+    let _ = testee.read_completion();
+
+    // The setsid'd grandchild left the group and reparented to launchd, so the
+    // group kill could not reach it: it survives (no subreaper on macOS).
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline {
+        assert!(
+            process_alive(escapee),
+            "a setsid() escapee must SURVIVE group teardown on macOS (no subreaper), \
+             but it was killed"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    unsafe { libc::kill(escapee as i32, libc::SIGKILL) };
+    wait_dead(escapee);
+}
+
+/// The product spawn lock (`platform::SpawnGuard`, held by `spawn_testee` exactly
+/// as `platform::darwin::spawn` holds it) must serialize the non-atomic
+/// pipe-create→fork window: two GENUINELY concurrent spawns must not cross-inherit
+/// each other's `live_write` in the cloexec gap, so EACH guardian still sees its
+/// own liveness EOF and force-kills its own target. Without the lock this races
+/// (a peer's fork can pin one guardian's `live_write` open, and that guardian
+/// never observes EOF); with it, deterministic. The two worker threads run
+/// concurrently on purpose — only `serial()` (held here on the main thread)
+/// isolates the pair from other forking tests; it does NOT serialize the pair.
+#[test]
+fn concurrent_spawns_each_force_kill_their_own_target() {
+    let _serial = serial();
+    std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..2)
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut testee = spawn_testee("/bin/sleep", &["30"]);
+                    let target = testee.target_pid;
+                    wait_alive(target);
+                    testee.drop_liveness();
+                    // If a peer thread's fork leaked a copy of THIS live_write in
+                    // the cloexec gap, the guardian never sees EOF and this hangs
+                    // until wait_dead's deadline fires — the race the lock closes.
+                    wait_dead(target);
+                    let (raw, _forced) = testee.read_completion();
+                    assert!(
+                        libc::WIFSIGNALED(raw) && libc::WTERMSIG(raw) == libc::SIGKILL,
+                        "each concurrently-spawned target must be force-killed on its \
+                         own liveness EOF, raw={raw:#x}"
+                    );
+                })
+            })
+            .collect();
+        for worker in workers {
+            worker.join().expect("spawn worker");
+        }
+    });
 }
