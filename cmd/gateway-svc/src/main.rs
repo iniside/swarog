@@ -23,22 +23,10 @@
 
 use std::sync::{Arc, Mutex};
 
-use lifecycle::ProcessWiring;
-
+mod addrs;
 mod tlsenv;
 #[cfg(test)]
 mod tlsenv_tests;
-
-/// Reads `env_key`, falling back to `default` when unset or blank — generalizes
-/// `characters-svc`'s bespoke `characters_edge_addr()` to any provider's peer
-/// address (a NUMERIC `host:port`, e.g. `127.0.0.1:9000`; Rust's `SocketAddr` needs a
-/// literal IP, unlike Go's dialer).
-fn env_addr(env_key: &str, default: &str) -> String {
-    std::env::var(env_key)
-        .ok()
-        .filter(|v| !v.trim().is_empty())
-        .unwrap_or_else(|| default.to_string())
-}
 
 /// Parses `CREDENTIAL_ADMISSION_TIMEOUT_MS` — the front door's whole-credential-
 /// admission deadline (api-key check + session verify, both public planes). Env is
@@ -105,27 +93,34 @@ async fn main() -> anyhow::Result<()> {
     // provider. It reaches the two `<name>rpc` glue crates (sanctioned for `cmd/*`,
     // rule 5) but never the provider IMPL crates.
     //
-    // Passthrough origins are resolved HERE (the composition root owns topology), not
-    // read inside the module: `/admin` → admin-svc, `/accounts/epic` → the Epic web
-    // OAuth flow on accounts-svc. A blank default drops the prefix (the proxy table
-    // skips empties), so an unset var leaves that route a 404.
+    // Peer edge addresses and passthrough origins are resolved HERE (the composition
+    // root owns topology), never read inside the module: `/admin` → admin-svc,
+    // `/accounts/epic` → the Epic web OAuth flow on accounts-svc.
+    //
+    // WHERE those eight addresses come from is `addrs`'s one decision, made once:
+    // `ORCHESTRATOR_URL` set ⇒ managed (ask the local weles agent over
+    // `remote::resolve_peer`), unset ⇒ standalone (the eight env vars, byte-identical
+    // to before). The modes are disjoint — a managed boot never falls back to env —
+    // and everything below this line is blind to which one ran: `ResolvedAddrs::to_wiring`
+    // builds the same `ProcessWiring`, so `gateway_svc::modules` and its `Stub`s are
+    // handed addresses exactly as they always were.
     //
     // The credential-admission budget (`CREDENTIAL_ADMISSION_TIMEOUT_MS`) is likewise
     // resolved here: one deadline bounding the front door's api-key + session verify
-    // on both planes (unset → the gateway module's 5s default).
-    let mut wiring = ProcessWiring::new()
-        .with_peer("characters", env_addr("CHARACTERS_EDGE_ADDR", "127.0.0.1:9000"))
-        .with_peer("inventory", env_addr("INVENTORY_EDGE_ADDR", "127.0.0.1:9001"))
-        .with_peer("accounts", env_addr("ACCOUNTS_EDGE_ADDR", "127.0.0.1:9003"))
-        .with_peer("apikeys", env_addr("APIKEYS_EDGE_ADDR", "127.0.0.1:9009"))
-        // Step 10: match + leaderboard front-door routing. Their `remote_factories`
-        // contribute only `route_bindings` (no provide), so the front routes
-        // `POST /match/report` -> match-svc (:9006) and `GET /leaderboard` ->
-        // leaderboard-svc (:9008) Remote over the mTLS edge.
-        .with_peer("match", env_addr("MATCH_EDGE_ADDR", "127.0.0.1:9006"))
-        .with_peer("leaderboard", env_addr("LEADERBOARD_EDGE_ADDR", "127.0.0.1:9008"))
-        .with_passthrough("/admin", env_addr("ADMIN_HTTP_ADDR", ""))
-        .with_passthrough("/accounts/epic", env_addr("ACCOUNTS_HTTP_ADDR", ""));
+    // on both planes (unset → the gateway module's 5s default). It, `PLAYER_EDGE_ADDR`
+    // and the TLS front stay env-sourced in BOTH modes — they are this process's own
+    // config, not a peer's address, so the agent has nothing to say about them.
+    let source = addrs::addr_source_from_env()?;
+    // Empty in standalone, where the closure below is never called (`AddrSource::Env`
+    // carries no URL — the mode is structurally unable to ask anyone).
+    let agent_url = source.agent_url().unwrap_or_default().to_string();
+    let mut wiring = addrs::gateway_addrs(
+        &source,
+        |env_key| std::env::var(env_key).ok(),
+        |provider, kind| remote::resolve_peer(&agent_url, provider, kind),
+    )
+    .await?
+    .to_wiring();
     if let Some(budget) = admission_budget_from_env()? {
         wiring = wiring.with_admission_budget(budget);
     }

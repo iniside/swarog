@@ -12,11 +12,22 @@
 //! Precisely: every [`AddrKind::Edge`] entry in a service's
 //! [`ServiceDef::peers`] appears strictly EARLIER in the Vec. An
 //! [`AddrKind::Http`] entry carries NO such constraint — it is a passthrough
-//! ORIGIN, dialed per request rather than at boot: gateway-svc names
-//! admin-svc as `ADMIN_HTTP_ADDR`, and admin-svc boots LAST. Both halves are
-//! pinned by tests (`boot_order_respects_edge_peer_dependencies` /
-//! `an_http_peer_carries_no_boot_order_constraint`), derived from the `peers`
+//! ORIGIN, dialed per request rather than at boot. Pinned by
+//! `boot_order_respects_edge_peer_dependencies`, derived from the `peers`
 //! field rather than hand-listed beside it.
+//!
+//! **Recorded semantic change (M1 Step 4):** gateway-svc is now
+//! [`ServiceDef::managed`] — it asks the agent where its peers are instead of
+//! being told by env — so it declares NO `peers`, and with that the fleet lost
+//! six Edge entries and its ONLY two `AddrKind::Http` entries. Two
+//! consequences, neither hidden: the boot-order rule no longer constrains
+//! gateway-svc from its own declaration (its position in the Vec is unchanged,
+//! so the booted order is not), and the Http-vs-Edge asymmetry has no live
+//! example left in the real fleet. The tests that pinned both ON GATEWAY'S DATA
+//! (`an_http_peer_carries_no_boot_order_constraint`, the real-fleet half of
+//! `the_two_kinds_read_different_port_fields`, the gateway env golden, the
+//! `checked == 17` count) are RED pending the plan's Step 7, which owns
+//! re-pointing them and the `weles-fleet-parity` exclusion.
 //!
 //! Deliberate semantic delta vs the fleet.rs Development flavor: weles's
 //! composed env is fully deterministic — the `overrideable_env` seam
@@ -71,6 +82,25 @@ pub const SERVICE_ENV_ALLOWLIST: &[&str] = &[
 /// this port was never going to collide. The cross-tool half lives in
 /// verifyctl's `weles-async-island` stage, which can see both constants.
 pub const AGENT_PORT: u16 = 8300;
+
+/// The env key a [`ServiceDef::managed`] process is handed the agent's URL
+/// through. `cmd/gateway-svc`'s main reads exactly this name (its own copy —
+/// zero-sharing), and the VALUE is derived from [`AGENT_PORT`] by [`agent_url`],
+/// never written beside it.
+const ORCHESTRATOR_URL_ENV: &str = "ORCHESTRATOR_URL";
+
+/// Where a managed service reaches the agent. Derived from [`AGENT_PORT`] — the
+/// one authority for the agent's port — rather than spelled as a literal in
+/// [`ServiceDef::env_extra`], which would be the same fact twice and free to
+/// drift the day the port moves. It is also why this cannot BE an `env_extra`
+/// entry: those are `&'static str` pairs, and this value is built from a number.
+///
+/// The host is `127.0.0.1` by the same construction [`service_addr`] relies on:
+/// [`crate::agentapi::AgentServer::bind`] binds loopback, so the URL handed to a
+/// service is the address that endpoint actually took.
+fn agent_url() -> String {
+    format!("http://127.0.0.1:{AGENT_PORT}")
+}
 
 /// Which of a provider's two port fields a peer address is formatted from.
 ///
@@ -134,6 +164,24 @@ pub struct ServiceDef {
     /// Never write an address literal here or in [`ServiceDef::env_extra`] —
     /// that is the two-authorities drift this field replaced.
     pub peers: &'static [(&'static str, &'static str, AddrKind)],
+    /// Whether this process ASKS the agent where its peers are instead of being
+    /// told by env: [`compose_env`] hands a managed service
+    /// [`ORCHESTRATOR_URL_ENV`] (derived from [`AGENT_PORT`]), and it resolves
+    /// its own addresses over [`crate::agentapi`]'s `resolve`.
+    ///
+    /// A managed service therefore declares NO [`ServiceDef::peers`], and the
+    /// two are mutually exclusive BY TEST (`managed_services_declare_no_peers`),
+    /// not by convention: composing peer env for a process that resolves would
+    /// put two authorities in one environment — and since the consumer
+    /// (`cmd/gateway-svc`) reads exactly one source per mode and never both, the
+    /// dead half would drift unnoticed until someone believed it.
+    ///
+    /// This is data about the process, not a topology branch: a managed
+    /// service's addresses come from the SAME booting fleet
+    /// ([`PeerAddrs::from_fleet`]) that [`compose_env_with_fleet`] would have
+    /// composed them from, so the two sources cannot disagree — only the moment
+    /// the service learns them differs.
+    pub managed: bool,
     /// Literal, address-free env: dev-mode opt-ins and this process's own
     /// config (`TLS_MODE`, `PLAYER_EDGE_ADDR` — its own bind, not a peer's).
     ///
@@ -175,6 +223,7 @@ pub fn split_fleet() -> Vec<ServiceDef> {
             player_port: None,
             has_db: true,
             pool_max: SPLIT_SERVICE_POOL_MAX,
+            managed: false,
             peers: &[],
             env_extra: &[("ACCOUNTS_DEV_AUTH", "1")],
         },
@@ -187,6 +236,7 @@ pub fn split_fleet() -> Vec<ServiceDef> {
             player_port: None,
             has_db: true,
             pool_max: SPLIT_SERVICE_POOL_MAX,
+            managed: false,
             peers: &[],
             env_extra: &[("APIKEYS_DEV_SEED", "1")],
         },
@@ -199,6 +249,7 @@ pub fn split_fleet() -> Vec<ServiceDef> {
             player_port: None,
             has_db: true,
             pool_max: SPLIT_SERVICE_POOL_MAX,
+            managed: false,
             peers: &[],
             env_extra: &[],
         },
@@ -214,6 +265,7 @@ pub fn split_fleet() -> Vec<ServiceDef> {
             // Deliberately NO SCHEDULER_ENABLED here — this manifest is the
             // Development flavor of tools/processctl/src/fleet.rs, which
             // only sets SCHEDULER_ENABLED under FleetFlavor::Proof.
+            managed: false,
             peers: &[],
             env_extra: &[],
         },
@@ -226,6 +278,7 @@ pub fn split_fleet() -> Vec<ServiceDef> {
             player_port: None,
             has_db: true,
             pool_max: SPLIT_SERVICE_POOL_MAX,
+            managed: false,
             peers: &[],
             env_extra: &[],
         },
@@ -238,6 +291,7 @@ pub fn split_fleet() -> Vec<ServiceDef> {
             player_port: None,
             has_db: true,
             pool_max: SPLIT_SERVICE_POOL_MAX,
+            managed: false,
             peers: &[],
             env_extra: &[],
         },
@@ -250,6 +304,7 @@ pub fn split_fleet() -> Vec<ServiceDef> {
             player_port: None,
             has_db: true,
             pool_max: SPLIT_SERVICE_POOL_MAX,
+            managed: false,
             peers: &[("RATING_EDGE_ADDR", "rating", AddrKind::Edge)],
             env_extra: &[],
         },
@@ -262,6 +317,7 @@ pub fn split_fleet() -> Vec<ServiceDef> {
             player_port: None,
             has_db: true,
             pool_max: SPLIT_SERVICE_POOL_MAX,
+            managed: false,
             peers: &[],
             env_extra: &[],
         },
@@ -274,6 +330,7 @@ pub fn split_fleet() -> Vec<ServiceDef> {
             player_port: None,
             has_db: true,
             pool_max: SPLIT_SERVICE_POOL_MAX,
+            managed: false,
             peers: &[("CONFIG_EDGE_ADDR", "config", AddrKind::Edge)],
             env_extra: &[],
         },
@@ -286,6 +343,7 @@ pub fn split_fleet() -> Vec<ServiceDef> {
             player_port: None,
             has_db: true,
             pool_max: SPLIT_SERVICE_POOL_MAX,
+            managed: false,
             peers: &[
                 ("CHARACTERS_EDGE_ADDR", "characters", AddrKind::Edge),
                 ("CONFIG_EDGE_ADDR", "config", AddrKind::Edge),
@@ -301,18 +359,16 @@ pub fn split_fleet() -> Vec<ServiceDef> {
             player_port: Some(9100),
             has_db: false,
             pool_max: 0,
-            peers: &[
-                ("CHARACTERS_EDGE_ADDR", "characters", AddrKind::Edge),
-                ("INVENTORY_EDGE_ADDR", "inventory", AddrKind::Edge),
-                ("ACCOUNTS_EDGE_ADDR", "accounts", AddrKind::Edge),
-                ("MATCH_EDGE_ADDR", "match", AddrKind::Edge),
-                ("LEADERBOARD_EDGE_ADDR", "leaderboard", AddrKind::Edge),
-                ("APIKEYS_EDGE_ADDR", "apikeys", AddrKind::Edge),
-                // The two passthrough ORIGINS, not edges: admin-svc has no
-                // edge at all, and accounts-svc is dialed as both kinds.
-                ("ADMIN_HTTP_ADDR", "admin", AddrKind::Http),
-                ("ACCOUNTS_HTTP_ADDR", "accounts", AddrKind::Http),
-            ],
+            // M1's first managed process, and the natural first: it calls
+            // peers, and nobody calls it (it serves no edge), so it can start
+            // resolving without forcing another service to move. Instead of
+            // the eight address keys it used to carry — six `*_EDGE_ADDR` plus
+            // the two passthrough ORIGINS (`ADMIN_HTTP_ADDR`,
+            // `ACCOUNTS_HTTP_ADDR`: admin-svc has no edge at all, and
+            // accounts-svc is dialed as both kinds) — it is handed
+            // ORCHESTRATOR_URL and asks the agent for each of the eight.
+            managed: true,
+            peers: &[],
             // PLAYER_EDGE_ADDR is this process's OWN player-plane bind, not a
             // peer's address — it stays a literal.
             env_extra: &[("PLAYER_EDGE_ADDR", ":9100"), ("TLS_MODE", "off")],
@@ -326,6 +382,7 @@ pub fn split_fleet() -> Vec<ServiceDef> {
             player_port: None,
             has_db: true,
             pool_max: SPLIT_SERVICE_POOL_MAX,
+            managed: false,
             peers: &[
                 ("CHARACTERS_EDGE_ADDR", "characters", AddrKind::Edge),
                 ("INVENTORY_EDGE_ADDR", "inventory", AddrKind::Edge),
@@ -356,6 +413,7 @@ pub fn monolith() -> ServiceDef {
         pool_max: MONOLITH_POOL_MAX,
         // One process hosts every module: there are no peers to dial, so the
         // monolith is trivially free of derived addresses.
+        managed: false,
         peers: &[],
         env_extra: &[
             ("PLAYER_EDGE_ADDR", ":9100"),
@@ -552,6 +610,16 @@ pub(crate) fn compose_env_with_fleet(
             OsString::from(*key),
             OsString::from(peer_addr(fleet, svc.name, provider, *kind)),
         );
+    }
+
+    // A managed process is told WHO to ask, never WHERE its peers are: the
+    // addresses it would have been handed above it resolves for itself over the
+    // agent's `resolve`, which answers from `PeerAddrs::from_fleet(fleet)` — the
+    // same slice, formatted by the same `service_addr`. That shared derivation
+    // is why env and `resolve` cannot disagree about the fleet; only the moment
+    // the service learns an address differs.
+    if svc.managed {
+        env.insert(OsString::from(ORCHESTRATOR_URL_ENV), OsString::from(agent_url()));
     }
 
     for (key, value) in svc.env_extra {

@@ -258,6 +258,7 @@ fn no_manifest_key_collides_with_the_allowlist() {
         "DATABASE_POOL_MAX_CONNECTIONS",
         "EDGE_CA_CERT",
         "EDGE_CA_KEY",
+        ORCHESTRATOR_URL_ENV,
     ];
     for svc in &services {
         for key in synthesized
@@ -290,6 +291,7 @@ fn synthetic_peer_fleet(provider_edge: Option<u16>, provider_http: u16) -> Vec<S
             player_port: None,
             has_db: false,
             pool_max: 0,
+            managed: false,
             peers: &[],
             env_extra: &[],
         },
@@ -302,6 +304,7 @@ fn synthetic_peer_fleet(provider_edge: Option<u16>, provider_http: u16) -> Vec<S
             player_port: None,
             has_db: false,
             pool_max: 0,
+            managed: false,
             peers: &[
                 ("PROVIDER_EDGE_ADDR", "provider", AddrKind::Edge),
                 ("PROVIDER_HTTP_ADDR", "provider", AddrKind::Http),
@@ -433,6 +436,7 @@ fn two_instances_of_one_provider_resolve_to_two_distinct_addresses() {
         player_port: None,
         has_db: true,
         pool_max: 3,
+        managed: false,
         peers: &[],
         env_extra: &[],
     };
@@ -499,6 +503,85 @@ fn no_env_extra_key_shadows_a_derived_peer_key() {
             );
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// managed — the process asks the agent instead of being told by env
+// ---------------------------------------------------------------------------
+
+/// A managed process is handed the agent's URL and NONE of the addresses it used
+/// to be told: gateway-svc's eight keys are gone, `ORCHESTRATOR_URL` is there.
+///
+/// The URL is asserted against `AGENT_PORT` rather than the literal `8300`, so
+/// moving the port moves this expectation with it — a hardcoded URL here would
+/// restore exactly the two-authorities drift the `peers` seam was built to kill.
+#[test]
+fn a_managed_service_is_handed_the_agent_url_and_no_peer_addresses() {
+    let fleet = split_fleet();
+    let gateway = fleet.iter().find(|svc| svc.name == "gateway-svc").unwrap();
+    assert!(gateway.managed, "fixture assumption: gateway-svc is the managed one");
+    let env = strip_allowlist(&compose_env(gateway, &fake_inputs()));
+
+    assert_eq!(
+        env.get(&OsString::from("ORCHESTRATOR_URL")),
+        Some(&OsString::from(format!("http://127.0.0.1:{AGENT_PORT}"))),
+    );
+    for key in [
+        "CHARACTERS_EDGE_ADDR",
+        "INVENTORY_EDGE_ADDR",
+        "ACCOUNTS_EDGE_ADDR",
+        "MATCH_EDGE_ADDR",
+        "LEADERBOARD_EDGE_ADDR",
+        "APIKEYS_EDGE_ADDR",
+        "ADMIN_HTTP_ADDR",
+        "ACCOUNTS_HTTP_ADDR",
+    ] {
+        assert!(
+            !env.contains_key(&OsString::from(key)),
+            "a managed process must not ALSO be told {key} by env: it resolves that address, \
+             so the env copy is a second authority nobody reads — and an unread value drifts \
+             silently until someone believes it"
+        );
+    }
+}
+
+/// An unmanaged process is handed no URL: the two modes are disjoint, and every
+/// other service is still told by env exactly as before.
+#[test]
+fn an_unmanaged_service_is_handed_no_agent_url() {
+    let fleet = split_fleet();
+    let inventory = fleet.iter().find(|svc| svc.name == "inventory-svc").unwrap();
+    let env = compose_env(inventory, &fake_inputs());
+
+    assert!(!inventory.managed);
+    assert!(!env.contains_key(&OsString::from("ORCHESTRATOR_URL")));
+    assert_eq!(
+        env.get(&OsString::from("CHARACTERS_EDGE_ADDR")),
+        Some(&OsString::from("127.0.0.1:9000")),
+    );
+    // The monolith has no peers to resolve and no map to be answered from
+    // (`provider: None` ⇒ empty `PeerAddrs` ⇒ every resolve 404s), so it must
+    // never be managed.
+    assert!(!monolith().managed);
+}
+
+/// `managed` and `peers` are mutually exclusive BY TEST, not by convention: both
+/// at once would put two authorities in one process's environment, and because
+/// the consumer reads exactly one per mode, the dead half would drift unnoticed.
+#[test]
+fn managed_services_declare_no_peers() {
+    let mut services = split_fleet();
+    services.push(monolith());
+    for svc in &services {
+        assert!(
+            !svc.managed || svc.peers.is_empty(),
+            "{}: a managed process resolves its peers over the agent — the `peers` env it \
+             would ALSO be handed is a second authority nothing reads",
+            svc.name
+        );
+    }
+    // Fail-proof: the sweep must have a managed service to be about at all.
+    assert!(services.iter().any(|svc| svc.managed), "no managed service left to check");
 }
 
 /// The monolith is nameable as no single domain (it hosts all of them), which
@@ -671,6 +754,7 @@ fn synthetic_db_svc(name: &'static str, pool_max: u32) -> ServiceDef {
         player_port: None,
         has_db: true,
         pool_max,
+        managed: false,
         peers: &[],
         env_extra: &[],
     }
@@ -709,6 +793,7 @@ fn service_pg_budget_charges_nothing_for_dbless_service() {
         player_port: None,
         has_db: false,
         pool_max: 0,
+        managed: false,
         peers: &[],
         env_extra: &[],
     };
