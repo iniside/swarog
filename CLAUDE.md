@@ -458,8 +458,9 @@ audit [AU1-AU3], scheduler/prune [SC/SP], metrics [MX], rate-limit [RL], player 
 [P1-P6]), then re-runs the monolith (`cmd/server`) on the same player front for parity
 ([M0-M3b]) and proves native graceful shutdown ([W2]: the platform's native
 cooperative stop to the monolith's process group → clean drain, no force-kill —
-see [platform notes](docs/reference/platform-notes.md)). **psql is REQUIRED** at
-`DATABASE_URL`; the preceding blocking build stage produces the fleet, harness,
+see [platform notes](docs/reference/platform-notes.md)). A reachable Postgres with
+the `gamebackend` role is REQUIRED at `DATABASE_URL` (the harness uses sqlx, not the
+`psql` binary); the preceding blocking build stage produces the fleet, harness,
 and C# fixture server, so the live stages run without nested Cargo builds. A
 fleet-drift preflight fails loudly if the centralized `processctl` fleet !=
 `cmd/*-svc` on disk.

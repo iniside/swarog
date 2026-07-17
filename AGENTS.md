@@ -441,9 +441,11 @@ driven through the `edge` crate as a library. It asserts the same named scenario
 accumulation, 429 rate-limit, api-key policy [K1-K5], admin session auth [AD1-AD5],
 audit [AU1-AU3], scheduler/prune [SC/SP], metrics [MX], rate-limit [RL], player QUIC
 [P1-P6]), then re-runs the monolith (`cmd/server`) on the same player front for parity
-([M0-M3b]) and proves native graceful shutdown ([W2]: Ctrl-Break to the monolith's
-process group / SIGTERM on unix → clean drain, no force-kill). **psql is REQUIRED** at
-`DATABASE_URL`; the preceding blocking build stage produces the fleet, harness,
+([M0-M3b]) and proves native graceful shutdown ([W2]: the platform's native
+cooperative stop to the monolith's process group → clean drain, no force-kill —
+see [platform notes](docs/reference/platform-notes.md)). A reachable Postgres with
+the `gamebackend` role is REQUIRED at `DATABASE_URL` (the harness uses sqlx, not the
+`psql` binary); the preceding blocking build stage produces the fleet, harness,
 and C# fixture server, so the live stages run without nested Cargo builds. A
 fleet-drift preflight fails loudly if the centralized `processctl` fleet !=
 `cmd/*-svc` on disk.
