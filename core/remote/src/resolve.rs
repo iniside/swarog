@@ -13,14 +13,19 @@
 //! observe the other**, so nothing in THIS crate can catch a drift between the
 //! two spellings.
 //!
-//! That the two agree end-to-end is pinned by the live `weles-managed-gateway`
-//! verify stage (the plan's Step 6) — today the only thing that pins it at all.
-//! A cheap `--fast` drift gate is also possible and is planned as its own step:
-//! `verifyctl` MAY import weles (the narrow verification-tooling exception), so
-//! a stage that sits above both can serialize weles's type and deserialize it
-//! into this crate's. That gate is not written yet; until it lands, the live
-//! stage is the whole proof, and weakening it leaves the wire contract with
-//! none.
+//! **A stage that sits above both does.** `verifyctl` MAY import weles (the
+//! narrow verification-tooling exception), and its BLOCKING `weles-wire-contract`
+//! stage (`tools/verifyctl/src/stages/weles_wire_contract.rs`) imports this
+//! crate AND weles, then drives the real derives on both sides: every
+//! [`AddrKind`]/[`ErrorCode`] variant's wire bytes are compared, weles's
+//! [`ErrorCode`] bytes are deserialized INTO this crate's enum (the property
+//! that actually matters — that this client can read what that server writes),
+//! and each body is round-tripped through the far side's parser so the FIELD
+//! names (`provider`/`kind`/`addrs`/`code`/`error`) are pinned too. It is
+//! in-memory, so it runs under `--fast`. The live `weles-managed-gateway` stage
+//! (the plan's Step 6) remains the end-to-end proof; the drift gate is the cheap
+//! one that fails first. The `drift_probe_*` functions at the bottom of this
+//! file are that stage's seam into this crate's private wire types.
 //!
 //! # The wire (as the server implements it)
 //!
@@ -100,14 +105,15 @@ const MAX_ANSWER_BYTES: usize = 8 * 1024;
 ///
 /// This is deliberately a SECOND spelling of `weles::manifest::AddrKind`, which
 /// weles keeps as the single serde authority on its side. Zero-sharing forbids
-/// sharing the type across the two, so no test in either crate can catch a
-/// drift between the spellings; a `verifyctl` drift gate above both can, and is
-/// planned (see the module doc). Until then, change either at your peril —
-/// `lowercase` here vs weles's `lowercase` is currently UNFALSIFIABLE, because
-/// `Edge`/`Http` render identically under `lowercase` and `snake_case`. The
-/// first multi-word variant (`ServiceDef` already carries a `player_port`) is
+/// sharing the type across the two, so no test in EITHER crate can catch a drift
+/// between the spellings — the `weles-wire-contract` verify stage above both is
+/// what catches it (see the module doc), and it is why `lowercase` here is no
+/// longer unfalsifiable. `Edge`/`Http` still render identically under
+/// `lowercase` and `snake_case`, so the spelling only becomes observable at the
+/// first multi-word variant (`ServiceDef` already carries a `player_port`),
 /// where a copied `snake_case` would silently diverge `"playeredge"` from
-/// `"player_edge"`.
+/// `"player_edge"`. That stage compares this enum's bytes against weles's
+/// variant-by-variant, so that day is a FAIL and not an outage.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AddrKind {
@@ -317,6 +323,44 @@ async fn read_capped(
         body.extend_from_slice(&chunk);
     }
     Ok(body)
+}
+
+// ---------------------------------------------------------------------------
+// Drift-gate seams for `verifyctl`'s `weles-wire-contract` stage.
+//
+// The mirror image of `weles::agentapi`'s `drift_probe_*` trio, and they exist
+// for the reason the module doc opens with: nothing IN this crate can observe
+// weles, so nothing in this crate can catch a drift. The stage above both can,
+// and these are the smallest surface that lets it drive the REAL derives here —
+// the wire structs stay private, so what the stage pins is what this client
+// actually writes and reads, not a fourth copy of the field names. Never called
+// by production code (`resolve_peer` builds the same types directly).
+// ---------------------------------------------------------------------------
+
+/// Renders a `resolve` question exactly as [`resolve_peer_within`] puts it on
+/// the wire (`.json(&ResolveRequest { .. })` is `serde_json::to_vec`).
+#[doc(hidden)]
+pub fn drift_probe_encode_resolve_request(provider: &str, kind: AddrKind) -> Vec<u8> {
+    serde_json::to_vec(&ResolveRequest { provider, kind })
+        .expect("ResolveRequest is a &str plus a Copy enum — serializing it cannot fail")
+}
+
+/// Parses a 2xx `resolve` answer exactly as [`resolve_peer_within`] does.
+#[doc(hidden)]
+pub fn drift_probe_parse_resolve_response(body: &[u8]) -> Result<Vec<String>, String> {
+    serde_json::from_slice::<ResolveResponse>(body)
+        .map(|answer| answer.addrs)
+        .map_err(|error| error.to_string())
+}
+
+/// Parses a refusal envelope exactly as [`resolve_peer_within`] does, handing
+/// back the two fields it reads. An [`ErrorCode`] this client does not know is
+/// an `Err` here for the same reason it is [`ResolveError::Malformed`] there.
+#[doc(hidden)]
+pub fn drift_probe_parse_error_envelope(body: &[u8]) -> Result<(ErrorCode, String), String> {
+    serde_json::from_slice::<ErrorEnvelope>(body)
+        .map(|envelope| (envelope.code, envelope.error))
+        .map_err(|error| error.to_string())
 }
 
 #[cfg(test)]

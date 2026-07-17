@@ -553,9 +553,15 @@ async fn serve(
 /// silently empty passthrough instead of failing loudly. Status alone cannot
 /// carry that, so the discriminator is a closed enum with its own serde
 /// spelling, not a shape a client has to infer.
+///
+/// `pub` for ONE reason: `verifyctl`'s `weles-wire-contract` stage is the only
+/// place in the repo that may see both this type and its hand-copied twin
+/// `remote::ErrorCode` (zero-sharing forbids the two crates seeing each other;
+/// verification tooling is the narrow sanctioned exception). Nothing outside
+/// weles constructs one — the widening buys a drift gate, not a client API.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(rename_all = "snake_case")]
-enum ErrorCode {
+pub enum ErrorCode {
     /// No such route: this endpoint does not serve that (method, path). To a
     /// client, this means the agent does not speak the contract it expected —
     /// NEVER a fact about a service.
@@ -738,6 +744,44 @@ fn reply(status: StatusCode, body: &'static str) -> Response<Full<Bytes>> {
     let mut response = Response::new(Full::new(Bytes::from_static(body.as_bytes())));
     *response.status_mut() = status;
     response
+}
+
+// ---------------------------------------------------------------------------
+// Drift-gate seams for `verifyctl`'s `weles-wire-contract` stage.
+//
+// Zero-sharing means this server and its client (`core/remote`'s `resolve`)
+// cannot see each other, so NEITHER crate's tests can catch a drift between the
+// two hand-copied spellings of this contract — see this module's doc and
+// `remote::resolve`'s. `verifyctl` may import both (the narrow verification-
+// tooling exception), and these three functions are the smallest surface that
+// lets it drive the REAL derives on this side: the wire types themselves stay
+// private, so the stage pins what the server actually reads/writes rather than a
+// fourth copy of the field names. Nothing in weles calls them.
+// ---------------------------------------------------------------------------
+
+/// Parses a `resolve` question exactly as [`resolve`] does — the real
+/// [`ResolveRequest`] derive, `deny_unknown_fields` included — and hands back
+/// the two values the verb reads. A field the server does not know is an `Err`
+/// here for the same reason it is a 400 there.
+#[doc(hidden)]
+pub fn drift_probe_parse_resolve_request(body: &[u8]) -> std::result::Result<(String, AddrKind), String> {
+    serde_json::from_slice::<ResolveRequest>(body)
+        .map(|question| (question.provider, question.kind))
+        .map_err(|error| error.to_string())
+}
+
+/// Renders a `resolve` answer exactly as [`json_ok`] does.
+#[doc(hidden)]
+pub fn drift_probe_encode_resolve_response(addrs: Vec<String>) -> Vec<u8> {
+    serde_json::to_vec(&ResolveResponse { addrs })
+        .expect("ResolveResponse is a Vec<String> — serializing it cannot fail")
+}
+
+/// Renders a refusal envelope exactly as [`json_error`] does.
+#[doc(hidden)]
+pub fn drift_probe_encode_error_response(code: ErrorCode, message: &str) -> Vec<u8> {
+    serde_json::to_vec(&ErrorResponse { code, error: message })
+        .expect("ErrorResponse is a Copy enum plus a &str — serializing it cannot fail")
 }
 
 #[cfg(test)]

@@ -11,7 +11,15 @@ anyhow.workspace = true
 rand.workspace = true
 processctl = { path = "../processctl" }
 weles = { path = "../../weles" }
+# The `weles-wire-contract` stage is the ONLY place that may see both halves of
+# the agent wire contract: weles is zero-sharing, so `core/remote` (the client)
+# and `weles::agentapi` (the server) cannot import each other. verifyctl is the
+# narrow verification-tooling exception to that rule — the same one that already
+# lets `weles-fleet-parity` import weles beside processctl.
+remote = { path = "../../core/remote" }
 reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 tokio.workspace = true
 toml = "1.1"
 
