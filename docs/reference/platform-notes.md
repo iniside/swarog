@@ -88,9 +88,24 @@ These are real per-OS differences in what the code does, not spelling:
   makes the same distinction, and deliberately degrades to a forced stop *visibly*
   when the graceful signal cannot be delivered (a console-less Windows process
   cannot send `CTRL_BREAK` at all).
-- **Containment unit** — a Windows Job Object vs a Unix process group. Ownership
-  is always the platform handle itself; no path ever falls back to a PID or name
-  lookup, so a reused PID can never be signalled by mistake.
+- **Containment unit** — a Windows Job Object vs a Unix process group. The kill
+  paths themselves DO use PIDs: Linux's `pidfd_open` (`platform/linux.rs:163`)
+  takes a pid, and the guardian signals the target's process group with
+  `kill(-target_pid, SIGKILL)` (`guardian.rs:242`/`248`) — a pgid is a pid. Safety
+  comes from POSIX zombie pinning, not handle-only addressing: the guardian is
+  held as an unreaped `std::process::Child` (`platform/linux.rs:15`) and, inside
+  the guardian, the target is held as an unreaped `std::process::Child`
+  (`guardian.rs:112`) until `target.wait()` (`guardian.rs:245`) — an unreaped
+  child's pid cannot be recycled by the kernel. `process.rs` only reaps via
+  `try_wait`, and both `shutdown` (`process.rs:261`) and `Drop` (`process.rs:368`)
+  bail out once a status is latched, so the kill paths become unreachable once a
+  reap has happened. pidfd is belt over an already-load-bearing pinning
+  guarantee, not the source of the guarantee. **Known gap:** `guardian.rs:245-250`
+  calls `target.wait()` (releasing the pid) and only then
+  `kill(-target_pid, SIGKILL)` at `:248` — outside the pinning guarantee. This is
+  narrow (needs a recycled pid that is also a group leader) but is a real bug on
+  Linux today; tracked as Step 7b in
+  `docs/plans/2026-07-17-1601-macos-rollout-port-plan.md`.
 - **`run/rollout.lock`** — `weles` participates bit-compatibly with devctl/verifyctl
   **on Windows**: both implementations take a 1-byte `LockFileEx` lock at offset
   `1 << 63`, with an owner-only DACL on creation (`weles/src/lock.rs`,
@@ -102,14 +117,20 @@ These are real per-OS differences in what the code does, not spelling:
   there is no offset. "Bit-compatible" is a per-platform pact (both tools use the
   same primitive on the same OS), not a cross-OS wire format.
 - **Local control endpoints** — a Windows named pipe with an owner-only DACL and
-  server-pid peer validation; a loopback socket elsewhere. Both are bounded so
-  partial input cannot hang a rollout, per the trusted-local-operator model in
-  the dev-tooling scope rule.
+  server-pid peer validation; on Linux, a filesystem-path Unix domain socket
+  (`weles/src/control.rs:548`: `remove_file` then `UnixListener::bind`, mode
+  `0o600`), with peer identity checked via `SO_PEERCRED` (`control.rs:577`) —
+  `devctl` follows the identical pattern (`tools/devctl/src/control.rs:211-285`).
+  `SO_PEERCRED` does not exist on darwin, and neither `weles` nor `devctl` has a
+  macOS control-endpoint transport today — this is the same darwin gap recorded
+  above, not a third platform actually covered. Both existing transports are
+  bounded so partial input cannot hang a rollout, per the trusted-local-operator
+  model in the dev-tooling scope rule.
 
 ## Errata
 
-**2026-07-17** — two claims in this file were written from reading `cfg` gates, not
-from a compiler, and were false:
+**2026-07-17** — four claims in this file were overstated or false. The first two
+were written from reading `cfg` gates, not from a compiler:
 
 - Earlier revisions of the table above and the "Consequence" line claimed `weles`
   "builds and supervises natively on macOS" because
@@ -135,5 +156,24 @@ from a compiler, and were false:
   "(Windows: 1-byte lock at offset `1<<63`, owner-only DACL on creation)"; this
   file lost that precision when it generalized the claim to "both platforms".
 
+Two further claims were overstated in a follow-up pass the same day:
+
+- The "Containment unit" bullet claimed a reused PID "can never be signalled by
+  mistake" via handle-only addressing. The kill paths themselves DO take PIDs
+  (`pidfd_open(pid)`, `kill(-target_pid, …)`); the actual safety mechanism is
+  that the target and guardian are held unreaped (so their pids cannot be
+  recycled) until the code paths that would kill them are no longer reachable.
+  The bullet now states that mechanism and names the one place it is NOT true
+  today: `guardian.rs:245-250` waits (releasing the pid) and only then signals
+  the now-stale pid — a real, narrow bug, tracked as Step 7b in the macOS
+  rollout-port plan, not fixed here.
+- The "Local control endpoints" bullet said "a loopback socket elsewhere",
+  implying macOS coverage and misnaming the Linux transport (a filesystem-path
+  Unix domain socket with `SO_PEERCRED` peer validation, not a loopback TCP/UDP
+  socket). Corrected, and made explicit that macOS has no control-endpoint
+  transport in either `weles` or `devctl` today — the same darwin gap the rest
+  of this file already documents, not a new one.
+
 Lesson: a claim about compilation requires a compiler, not a reading of `cfg`
-gates.
+gates — and a claim about a safety mechanism requires reading the mechanism, not
+inferring it from the absence of an obviously wrong one.
