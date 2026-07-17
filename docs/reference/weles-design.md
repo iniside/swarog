@@ -409,11 +409,17 @@ serving N clients, which did not exist. M1 does not violate the decision; it
 outgrows its premise. (An earlier revision of this file called std-only an
 *invariant*. That was an overstatement, copied from a readiness review.)
 
-The runtime arrives when it becomes unavoidable — with M1's HTTPS server — as a
-**contained I/O island on its own thread**, not as a whole-crate migration and
-not as a separate no-feature refactor first. Weighed against and rejected:
-unifying the operator pipe onto HTTPS (see below), and a tokio-first refactor
-whose honest prize is ~60 lines plus concurrent probes.
+The runtime arrives when it becomes unavoidable — with the first server weles has
+to host — as a **contained I/O island on its own thread**, not as a whole-crate
+migration and not as a separate no-feature refactor first. Weighed against and
+rejected: unifying the operator pipe onto HTTPS (see below), and a tokio-first
+refactor whose honest prize is ~60 lines plus concurrent probes.
+
+**Precision (corrected 2026-07-17):** an earlier revision said "with M1's HTTPS
+server". That contradicts "M1 scope" below — M1 has **no network hop**, so the
+server it actually brings is a **plaintext localhost** one (services → their local
+agent). HTTPS and mTLS arrive with the agent↔master hop at machine two. The
+runtime lands in M1 regardless; only the transport it carries was misstated.
 
 **The line the runtime may not cross.** It may own the probe and network I/O and
 hand results back as plain values. It must never own:

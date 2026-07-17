@@ -141,6 +141,14 @@ całym ryzykiem i musi być udowodniony sam, zanim dołożymy do niego kontrakt.
   miejsce, gdzie w welesie wolno pisać port (`manifest.rs:5-7`). Objąć go
   `ensure_no_stale_listener` (dziś tylko `http_port`, `supervisor.rs:873`). To
   usuwa problem „URL jest runtime'owy, a `env_extra` jest `'static`".
+  **Wybór wartości musi być sprawdzony wobec CAŁEGO repo, nie tylko floty welesa**
+  (rev 2): `8099` jest już wzięte przez fixture C# (`tools/verifyctl/src/stages/
+  csharp.rs:18`, `docs/reference/csharp-client.md:165`). Test wyprowadzony z
+  manifestu widzi tylko flotę welesa — czyli jedyne miejsce, gdzie kolizji i tak by
+  nie było. Kolizja nie jest wyścigiem (oba narzędzia biorą `rollout.lock`), ale
+  daje mylące „stale process" wskazujące nie tego winowajcę, w obie strony. Test
+  przekrojowy ląduje w tej samej stage'y verifyctl co zakazy feature'ów — ona widzi
+  obie stałe.
 - **Wzorzec: `ControlServer`** (`control.rs:75-148`) — skopiować uzgodnienie
   gotowości `sync_channel(1)` (`:97,116`) z `BIND_DEADLINE` i **wszystkimi trzema
   ramionami** (`:116-130`), oraz rozdział autorytetu stopu: prywatny `shutdown` +
@@ -152,15 +160,37 @@ całym ryzykiem i musi być udowodniony sam, zanim dołożymy do niego kontrakt.
   wątku supervisora — inaczej stalluje `_lock` (`:831`).
 - **Drop: PO teardownie** (obok `:819`, control-shaped), bo usługa w drenażu może
   jeszcze wołać. Zapisać przy komentarzu P6.
-- **Tokio features: `rt-multi-thread`, `macros`, `net`, `io-util`. NIGDY `signal`,
-  NIGDY `process`.** `process` instaluje handler SIGCHLD i reapuje dzieci spod
-  `try_wait` (`supervisor.rs:988-998`) — psuje `Observed::Exited` w całej flocie.
-- **Ten zakaz NIE może być komentarzem.** Resolver-2 unifikuje feature'y w całym
-  grafie builda, więc `weles/Cargo.toml` **nie jest autorytetem** dla feature'ów
-  tokio, które weles dostanie. Dowodem jest **test** wołający
-  `cargo tree -e features -p weles` i failujący na obecności `process`/`signal`.
-  (To repo ma świeżą lekcję, że komentarz nie jest strażnikiem —
-  `weles-design.md:455-459`.)
+- **Tokio features: `rt-multi-thread`, `macros`, `net`, `io-util`, `time`. NIGDY
+  `signal`, NIGDY `process`.** `process` instaluje handler SIGCHLD i reapuje dzieci
+  spod `try_wait` (`supervisor.rs:988-998`) — psuje `Observed::Exited` w całej
+  flocie. **`time` JEST potrzebny** (rev 2 — patrz Changelog): bez niego nie ma
+  zegara, więc nie ma ani retry-z-odstępem na `accept`, ani działającego
+  `header_read_timeout`. Zakazy `process`/`signal` mają za sobą realne inwarianty;
+  `time` nie ma żadnego — jego brak wymuszał dwa niezależne kompromisy naraz, co
+  jest sygnałem, że zły był zakaz, nie kod.
+- **Retry na `accept` kopiuje `ControlServer` dosłownie** (`control.rs:567-573`:
+  sleep 1s, retry bez limitu). Licznik kolejnych błędów **bez zegara jest gorszy**:
+  EMFILE wraca natychmiast, więc dowolny limit spala się w mikrosekundy i zabija
+  endpoint na cały run przez warunek, który mija po milisekundach — a weles
+  spawnuje 12-procesową flotę z potokami stdio **zaraz po tym bindzie**, więc
+  presja na deskryptory jest realna.
+- **Zakaz feature'ów NIE może być komentarzem** — resolver-2 unifikuje feature'y w
+  całym grafie builda, więc `weles/Cargo.toml` **nie jest autorytetem** dla tego,
+  co weles dostanie. (To repo ma świeżą lekcję, że komentarz nie jest strażnikiem —
+  `weles-design.md:455-459`.) Mechanizm: `cargo tree -e features`, **z pozytywną
+  kontrolą** (obecność `net` musi być asertowana), żeby zmiana renderowania cargo
+  failowała głośno zamiast przechodzić pusto.
+- **Ale ten test NIE mieszka w welesie** (rev 2). To **stage w `verifyctl`** —
+  precedensem jest dosłownie `weles_fleet_parity`, który istnieje **właśnie
+  dlatego**, że twierdzenie o welesie przekrojowe wobec workspace'u nie może żyć w
+  welesie. Powody: (i) `cargo tree` w środku `cargo test` to cargo w cargo — dziś
+  nie zakleszcza się wyłącznie dzięki temu, jak cargo 1.96 scope'uje lock package
+  cache'a, co jest szczegółem implementacyjnym, nie kontraktem; (ii) blokująca
+  stage `test` woła `cargo test --workspace`, a weles jest członkiem, więc każdy
+  verify zagnieżdżałby cargo w swoim własnym lease; (iii) test sprawdzający
+  feature'y `core/app` **failowałby w suicie welesa** — czyli sprzęgałby crate
+  zero-sharing z workspace'em. verifyctl importujący welesa jest legalny
+  (zero-sharing jest jednokierunkowe), a cargo to jego narzędzie domowe.
 - **Bez TLS = bez pytania o `ring`/`aws-lc-rs`:** `hyper`/`hyper-util` bez feature'a
   TLS nie dotykają rustls. `aws-lc-rs` nie ma w `Cargo.lock`. `hyper` 1.x jest.
 - **Zasięg do nazwania w commicie:** dodanie `net` do pinu tokio (root
@@ -388,6 +418,30 @@ uzbroi.** Zapisane, nierozwiązane.
 
 ## Changelog
 
+- **Rev 2 (2026-07-17, po review Stepu 2a — trzy z sześciu znalezisk to błędy TEGO
+  planu, nie implementacji):**
+  - **`time` DOPISANY do feature'ów tokio.** Rev 1 podała listę bez niego, stawiając
+    go obok `process`/`signal`, jakby też miał inwariant. Nie ma żadnego. Brak
+    zegara wymusił dwa niezależne kompromisy naraz (licznik błędów `accept` bez
+    odstępu; `header_read_timeout(None)`) — klasyczny sygnał, że zły jest autorytet,
+    nie kod pod nim.
+  - **Retry na `accept` = kopia `ControlServer` (sleep 1s, bez limitu).** Licznik bez
+    zegara jest **gorszy niż nieograniczony retry**: EMFILE wraca natychmiast, więc
+    limit spala się w mikrosekundy i zabija endpoint na cały run przez warunek
+    trwający milisekundy — a fd-pressure jest tu realne, bo weles spawnuje 12
+    procesów z potokami stdio zaraz po tym bindzie.
+  - **Zakazy feature'ów przenoszą się do stage'y `verifyctl`.** Rev 1 kazała je
+    testować w welesie, co daje cargo-w-cargo (dziś nie zakleszcza się tylko dzięki
+    szczegółowi implementacyjnemu cargo 1.96), zagnieżdża cargo w lease verifyctl na
+    każdym verify, i **sprzęga crate zero-sharing z `core/app`** (test feature'ów
+    core/app failujący w suicie welesa). Precedens: `weles_fleet_parity` istnieje
+    właśnie dlatego, że twierdzenie przekrojowe o welesie nie może żyć w welesie.
+  - **`AGENT_PORT` sprawdzany wobec całego repo**, nie tylko floty welesa — `8099`
+    jest wzięte przez fixture C# (`csharp.rs:18`).
+  - **`shutdown_timeout` nie robi tego, co rev 1 zakładała:** czeka na zadania
+    *blokujące*, a `tokio::spawn`owane async są porzucane natychmiast w punkcie
+    await. Nie zmienia to zachowania (wynik jest nawet lepszy), ale unieważnia
+    uzasadnienie, na którym stał `header_read_timeout(None)`.
 - **Rev 1 (2026-07-16, po grumpy review opus/think-hard):**
   - **B1** verb `resolve(provider)` → **`resolve(provider, kind)`** i pole `peers`
     dostaje `AddrKind` (gateway potrzebuje 8 adresów 2 klas; `accounts` obu naraz;
