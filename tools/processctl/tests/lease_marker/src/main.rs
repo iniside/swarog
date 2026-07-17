@@ -58,27 +58,95 @@ fn self_test() -> Result<(), Box<dyn std::error::Error>> {
         return Err("marker without credential pipe did not fail closed".into());
     }
 
+    // verifyctl's real lease shape: ONE lease, several roles, lent in turn.
     let mut owner = RolloutLock::acquire(
         directory.join("rollout.lock"),
         "marker-fixture",
-        ["splitproof"],
+        ["splitproof", "weles"],
     )?;
-    let ready = directory.join("borrower.ready");
-    let mut borrower = owner.spawn_borrower(
+    borrow_once(&mut owner, &directory, "splitproof")?;
+    if markers(&directory)? != 1 {
+        return Err("the splitproof borrow did not claim exactly its own marker".into());
+    }
+
+    // The SAME lease, lent again to a DIFFERENT role, through the REAL delivery
+    // path — spawn, argv marker, private stdin pipe, child-side consume. This is
+    // the step verifyctl's weles stage depends on, and the one a single-role
+    // lease refused outright.
+    borrow_once(&mut owner, &directory, "weles")?;
+    if markers(&directory)? != 2 {
+        return Err("each role must burn its OWN one-shot, not a shared one".into());
+    }
+
+    // Re-lending the SAME role is the stage-code bug the marker still catches:
+    // the parent hands the credential out (only two borrowers ALIVE at once are
+    // barred, by the borrow checker), and the child dies on the claimed marker.
+    let replay_ready = directory.join("replay.ready");
+    let mut replay = owner.spawn_borrower(
         spec(
             "borrower",
-            vec!["borrower".into(), ready.as_os_str().to_owned()],
+            vec![
+                "borrower".into(),
+                replay_ready.as_os_str().to_owned(),
+                "splitproof".into(),
+            ],
             &directory,
         ),
         "splitproof",
+    )?;
+    if wait_exit_borrowed(&mut replay)?.success() || replay_ready.exists() {
+        return Err("a re-lent credential for the same role was consumed twice".into());
+    }
+    drop(replay);
+
+    drop(owner);
+    if markers(&directory)? != 0 {
+        return Err("the owner must reap EVERY role's marker on drop".into());
+    }
+    Ok(())
+}
+
+/// Lends `owner` to one real child claiming `role`, and waits for it to prove it
+/// consumed the credential.
+fn borrow_once(
+    owner: &mut processctl::OwnedLease,
+    directory: &Path,
+    role: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let ready = directory.join(format!("{role}.ready"));
+    let mut borrower = owner.spawn_borrower(
+        spec(
+            "borrower",
+            vec![
+                "borrower".into(),
+                ready.as_os_str().to_owned(),
+                OsString::from(role),
+            ],
+            directory,
+        ),
+        role,
     )?;
     wait_file(&ready)?;
     if std::fs::read_to_string(&ready)? != "borrowed-ok"
         || !wait_exit_borrowed(&mut borrower)?.success()
     {
-        return Err("real borrower did not consume the marked credential".into());
+        return Err(format!("real borrower {role} did not consume the marked credential").into());
     }
     Ok(())
+}
+
+/// One-shot markers currently sitting beside the fixture's lock.
+fn markers(directory: &Path) -> Result<usize, Box<dyn std::error::Error>> {
+    Ok(std::fs::read_dir(directory)?
+        .filter(|entry| {
+            entry.as_ref().is_ok_and(|entry| {
+                entry
+                    .path()
+                    .extension()
+                    .is_some_and(|value| value == "borrowed")
+            })
+        })
+        .count())
 }
 
 fn direct_pipe_child() -> Result<(), Box<dyn std::error::Error>> {
@@ -101,7 +169,13 @@ fn marker_no_pipe_child() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn borrower_child() -> Result<(), Box<dyn std::error::Error>> {
-    let lease = BorrowedLease::consume_inherited_if_present("splitproof")?
+    // The role this child CLAIMS is passed by its parent: one lease now serves
+    // several roles, and the claim is what keys the per-role one-shot marker.
+    let role = std::env::args_os()
+        .nth(3)
+        .and_then(|arg| arg.to_str().map(str::to_string))
+        .ok_or("borrower role was absent")?;
+    let lease = BorrowedLease::consume_inherited_if_present(&role)?
         .ok_or("marked borrower did not receive a lease")?;
     if lease.run_id() != "marker-fixture" {
         return Err("borrower received the wrong lease".into());

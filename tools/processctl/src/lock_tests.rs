@@ -100,6 +100,52 @@ fn one_lease_serves_each_of_its_roles_in_turn() {
 }
 
 #[test]
+fn a_foreign_version_is_refused_by_version_not_by_field_shape() {
+    // `weles deploy` stages binaries that may lag the tree, so a v1 credential
+    // meeting this v2 processctl is real. Both the credential and the metadata
+    // are `deny_unknown_fields`, so a typed parse first would report whichever
+    // field v2 renamed and the version gate would never run. The gate therefore
+    // reads `version` off the raw bytes BEFORE the typed parse — this pins that
+    // ordering, on the v1 shape as it actually was (singular
+    // `allowed_borrower_role`, `nonce`).
+    let v1 = serde_json::to_vec(&serde_json::json!({
+        "version": 1,
+        "lock_path": "/tmp/run/rollout.lock",
+        "metadata": {
+            "version": 1,
+            "owner": { "pid": 17, "executable": "/tmp/verifyctl", "started": 99 },
+            "run_id": "abc",
+            "lease_started_unix_nanos": 5,
+            "allowed_borrower_role": "splitproof"
+        },
+        "nonce": vec![0u8; 32]
+    }))
+    .unwrap();
+    assert!(
+        matches!(
+            crate::lock::credential_from_bytes(&v1, "splitproof"),
+            Err(LeaseError::UnsupportedVersion(1))
+        ),
+        "a v1 credential must refuse by VERSION — a Serialize error would mean the gate is dead"
+    );
+
+    // A future version is the same story from the other side.
+    let v3 = serde_json::to_vec(&serde_json::json!({
+        "version": 3,
+        "lock_path": "/tmp/run/rollout.lock",
+        "metadata": {
+            "version": 3,
+            "a_field_a_later_processctl_grew": true
+        }
+    }))
+    .unwrap();
+    assert!(matches!(
+        crate::lock::credential_from_bytes(&v3, "splitproof"),
+        Err(LeaseError::UnsupportedVersion(3))
+    ));
+}
+
+#[test]
 fn a_lease_with_no_roles_lends_to_nobody() {
     let path = lock_path("no-roles");
     let owner = RolloutLock::acquire(&path, "run-1", Vec::<String>::new()).unwrap();

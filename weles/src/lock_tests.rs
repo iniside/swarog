@@ -351,12 +351,15 @@ fn a_credential_of_an_unknown_version_is_refused() {
 #[test]
 fn a_v1_credential_meeting_this_v2_weles_refuses_by_version_not_by_parse_error() {
     // `weles deploy` stages binaries that may lag the tree, so a v1 credential
-    // meeting a v2 weles is a real pairing, not a hypothetical. Without the
-    // version bump, `deny_unknown_fields` would still refuse — but as an opaque
-    // parse error about `allowed_borrower_role`. The bump is what makes the
-    // refusal legible. The v1 shape (single `allowed_borrower_role`, `nonce`) is
-    // spelled out literally: weles no longer has a type for it.
-    let v1 = serde_json::json!({
+    // meeting a v2 weles is a real pairing, not a hypothetical. The refusal must
+    // name the VERSION — that is the whole justification for bumping it. Both
+    // structs are `deny_unknown_fields`, so a typed parse first would report
+    // whichever field v2 renamed and the version gate would never run; the gate
+    // therefore reads `version` off the raw bytes BEFORE the typed parse.
+    //
+    // The v1 shape (singular `allowed_borrower_role`, `nonce`) is spelled out
+    // literally: weles deliberately no longer has a type for it.
+    let v1_credential = serde_json::to_vec(&serde_json::json!({
         "version": 1,
         "lock_path": "/tmp/run/rollout.lock",
         "metadata": {
@@ -367,18 +370,20 @@ fn a_v1_credential_meeting_this_v2_weles_refuses_by_version_not_by_parse_error()
             "allowed_borrower_role": "weles"
         },
         "nonce": vec![0u8; 32]
-    });
-    // A v1 credential cannot even be parsed into the v2 shape — so the version
-    // check must be reachable from a value weles CAN hold, which is what the
-    // typed test above pins. What this test proves is the other half: the v1
-    // wire bytes are not silently readable as v2.
+    }))
+    .expect("serialize a v1 credential");
+
+    let error = credential_from_bytes(&v1_credential, BORROWER_ROLE)
+        .expect_err("a v1 credential must not be borrowed by a v2 weles");
+    let message = format!("{error:#}");
     assert!(
-        serde_json::from_value::<BorrowCredential>(v1).is_err(),
-        "a v1 credential must never deserialize as v2 — the fields it lacks are load-bearing"
+        message.contains("unsupported rollout lease version 1"),
+        "the refusal must name the VERSION, not a field shape — that is what the bump buys. \
+         got: {message}"
     );
 
-    // And the owner-side twin: a v1 lease sitting in the lock file is refused by
-    // the VERSION check with a legible message, not by a field-shape surprise.
+    // And the owner-side twin: a v1 lease sitting in the lock file, met by a
+    // credential this build CAN hold. Same gate, other entry point.
     let owner = StagedOwner::new("borrow-v1-lease", &[BORROWER_ROLE]);
     std::fs::write(
         &owner.lock_path,
@@ -396,7 +401,7 @@ fn a_v1_credential_meeting_this_v2_weles_refuses_by_version_not_by_parse_error()
         .expect_err("a v1 lease must not be borrowed by a v2 weles");
     let message = format!("{error:#}");
     assert!(
-        message.contains("lease version 1") || message.contains("parse the owning tool's lease"),
+        message.contains("unsupported rollout lease version 1"),
         "got: {message}"
     );
     assert_eq!(acquire_calls(), 0);

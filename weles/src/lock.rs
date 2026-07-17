@@ -171,7 +171,7 @@ thread_local! {
 pub const BORROWER_ROLE: &str = "weles";
 
 /// The argv marker processctl appends to a borrower's command line
-/// (`tools/processctl/src/lock.rs:29`, `pub(crate)` there — hence the copy).
+/// (`processctl::lock::BORROWED_LEASE_ARG`, `pub(crate)` there — hence the copy).
 /// Its presence is the ONLY thing that makes this process look for an
 /// inherited credential at all; without it `weles up` behaves exactly as it
 /// does from an operator shell.
@@ -179,11 +179,11 @@ const BORROWED_LEASE_ARG: &str = "--processctl-borrowed-lease-v1";
 
 /// The exact bytes processctl writes into its one-shot marker — and requires to
 /// read back before deleting it on the owner's drop
-/// (`tools/processctl/src/lock.rs:28`, `cleanup_consumption_marker`). Any other
+/// (`processctl::lock::CONSUMED_MARKER`, read back by its `cleanup_consumption_marker`). Any other
 /// byte string here would leave weles's marker behind forever.
 const CONSUMED_MARKER: &[u8] = b"processctl-borrowed-v1\n";
 
-/// `processctl::ROLLOUT_LOCK_VERSION` (`tools/processctl/src/lock.rs:23`).
+/// `processctl::ROLLOUT_LOCK_VERSION`.
 ///
 /// v2: the lease carries a SET of permitted borrower roles
 /// (`allowed_borrower_roles`) and dropped the dead `nonce`. `weles deploy`
@@ -191,22 +191,22 @@ const CONSUMED_MARKER: &[u8] = b"processctl-borrowed-v1\n";
 /// the version check below is what makes that a legible refusal instead of a
 /// `deny_unknown_fields` parse error.
 const OWNER_LEASE_VERSION: u32 = 2;
-/// `processctl::lock::MAX_CREDENTIAL_BYTES` / `MAX_METADATA_BYTES` (`:24-25`).
+/// `processctl::lock::MAX_CREDENTIAL_BYTES` / `MAX_METADATA_BYTES`.
 const MAX_CREDENTIAL_BYTES: u64 = 64 * 1024;
 const MAX_METADATA_BYTES: u64 = 64 * 1024;
 
 /// Process-local one-shot guard, mirroring
-/// `processctl::lock::INHERITED_CREDENTIAL_CONSUMED` (`:30`): stdin is a
+/// `processctl::lock::INHERITED_CREDENTIAL_CONSUMED`: stdin is a
 /// process-global, so a second consume attempt would read an already-drained
 /// pipe rather than fail honestly.
 static INHERITED_CREDENTIAL_CONSUMED: AtomicBool = AtomicBool::new(false);
 
-/// Mirror of `processctl::StartMarker` (`tools/processctl/src/process.rs:62-63`)
+/// Mirror of `processctl::StartMarker` (`tools/processctl/src/process.rs`)
 /// — a serde newtype, so it is a bare integer on the wire.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 struct StartMarker(u64);
 
-/// Mirror of `processctl::ProcessIdentity` (`tools/processctl/src/process.rs:54-60`).
+/// Mirror of `processctl::ProcessIdentity` (`tools/processctl/src/process.rs`).
 /// `pid` alone would be a recycled-PID hazard; `started` (Windows process
 /// creation FILETIME / Linux `/proc/<pid>/stat` field 22) is what makes the
 /// identity a real one.
@@ -218,7 +218,7 @@ struct OwnerIdentity {
     started: StartMarker,
 }
 
-/// Mirror of processctl's PRIVATE `LockMetadata` (`tools/processctl/src/lock.rs:38-46`)
+/// Mirror of processctl's PRIVATE `LockMetadata` (`tools/processctl/src/lock.rs`)
 /// — the JSON an `OwnedLease` writes at offset 0 of the lock file. Weles's own
 /// [`LockMetadata`] is a DIFFERENT schema: each tool truncates and rewrites on
 /// its own `acquire` and never reads foreign metadata, so the two only ever
@@ -240,7 +240,7 @@ struct OwnerLease {
     allowed_borrower_roles: BTreeSet<String>,
 }
 
-/// Mirror of `processctl::lock::BorrowCredential` (`tools/processctl/src/lock.rs:48-55`),
+/// Mirror of `processctl::lock::BorrowCredential`,
 /// as delivered over the private stdin pipe.
 ///
 /// It names no role: weles CLAIMS [`BORROWER_ROLE`], that claim is checked
@@ -256,6 +256,36 @@ struct BorrowCredential {
     metadata: OwnerLease,
 }
 
+/// Copied from `processctl::lock::VersionProbe` — reads ONLY `version` out of a
+/// lease or credential document.
+///
+/// Deliberately NOT `deny_unknown_fields`, and deliberately parsed BEFORE the
+/// typed shape: every other field is what changes between versions, so a typed
+/// parse first would turn every cross-version pairing into an opaque
+/// unknown-field error and leave the version check unreachable. `version` is the
+/// one field that must mean the same thing in every version.
+#[derive(Deserialize)]
+struct VersionProbe {
+    version: u32,
+}
+
+/// Copied from `processctl::lock::check_version` — the version gate, run on
+/// BYTES before any typed parse. This is what makes a stale `deploy/weles`
+/// meeting a newer lease say "unsupported rollout lease version N" instead of
+/// complaining about a field name.
+fn check_version(bytes: &[u8], what: &str) -> Result<()> {
+    let probe: VersionProbe = serde_json::from_slice(bytes)
+        .with_context(|| format!("read the rollout lease version from {what}"))?;
+    if probe.version != OWNER_LEASE_VERSION {
+        bail!(
+            "unsupported rollout lease version {} in {what} (weles speaks {OWNER_LEASE_VERSION}) \
+             — refusing to borrow",
+            probe.version
+        );
+    }
+    Ok(())
+}
+
 /// A validated one-shot borrow of a parent's rollout lease.
 ///
 /// It holds the lock file OPEN but deliberately UNLOCKED — the parent still
@@ -263,7 +293,7 @@ struct BorrowCredential {
 /// release); the rollout ends when the PARENT's lease drops.
 ///
 /// `PhantomData<Rc<()>>` (copied from `processctl::BorrowedLease`'s
-/// `_not_transferable`, `tools/processctl/src/lock.rs:107`) makes this — and
+/// `_not_transferable`) makes this — and
 /// therefore [`Lease`] — `!Send`. Be precise about what that buys, because the
 /// tempting claim is false: `!Send` prevents this value from being TRANSFERRED
 /// TO ANOTHER THREAD (moved into a `std::thread::spawn`/`tokio::spawn` body, or
@@ -352,7 +382,7 @@ fn lease_from(
 }
 
 /// Copied from `processctl::BorrowedLease::consume_inherited_if_present`
-/// (`tools/processctl/src/lock.rs:477-485`); the caller shape is
+/// (`processctl::BorrowedLease::consume_inherited_if_present`); the caller shape is
 /// `tools/splitproof/src/main.rs:472-480`.
 ///
 /// `Ok(None)` — and ONLY `Ok(None)` — means "no borrow in this environment".
@@ -372,22 +402,34 @@ fn borrow_inherited_if_present(expected_role: &str) -> Result<Option<BorrowedLea
     consume_inherited(expected_role).map(Some)
 }
 
-/// Copied from `processctl::BorrowedLease::consume_inherited` (`:487-496`).
+/// Copied from `processctl::BorrowedLease::consume_inherited`.
 fn consume_inherited(expected_role: &str) -> Result<BorrowedLease> {
     validate_identifier("borrower role", expected_role)?;
     if INHERITED_CREDENTIAL_CONSUMED.swap(true, Ordering::AcqRel) {
         bail!("the inherited borrower credential was already consumed by this process");
     }
     let bytes = imp::consume_credential_stdin().context("consume inherited borrower credential")?;
+    credential_from_bytes(&bytes, expected_role)
+}
+
+/// Copied from `processctl::lock::credential_from_bytes` — the wire entry point:
+/// bound, then the version gate on the RAW BYTES, then the typed parse, then
+/// validation against the live world.
+///
+/// Split out of [`consume_inherited`] so the version gate is reachable from a
+/// test: `consume_inherited` can only be driven through a real inherited stdin
+/// pipe, which cargo owns in a unit test.
+fn credential_from_bytes(bytes: &[u8], expected_role: &str) -> Result<BorrowedLease> {
     if bytes.len() as u64 > MAX_CREDENTIAL_BYTES {
         bail!("inherited borrower credential exceeds its {MAX_CREDENTIAL_BYTES}-byte bound");
     }
+    check_version(bytes, "the inherited borrower credential")?;
     let credential: BorrowCredential =
-        serde_json::from_slice(&bytes).context("parse inherited borrower credential")?;
+        serde_json::from_slice(bytes).context("parse inherited borrower credential")?;
     validate_credential(credential, expected_role)
 }
 
-/// Copied from `processctl::lock::validate_credential` (`:549-582`) — the whole
+/// Copied from `processctl::lock::validate_credential` — the whole
 /// point of the copy is that these checks are the ones processctl's own borrower
 /// makes, in the same order:
 ///
@@ -483,7 +525,7 @@ fn validate_credential(credential: BorrowCredential, expected_role: &str) -> Res
     })
 }
 
-/// Copied from `processctl::lock::read_metadata` (`:605-628`).
+/// Copied from `processctl::lock::read_metadata`.
 fn read_owner_lease(file: &mut File, path: &Path) -> Result<OwnerLease> {
     file.seek(SeekFrom::Start(0))
         .with_context(|| format!("rewind {}", path.display()))?;
@@ -497,19 +539,17 @@ fn read_owner_lease(file: &mut File, path: &Path) -> Result<OwnerLease> {
             path.display()
         );
     }
+    // Version BEFORE shape. `deny_unknown_fields` on `OwnerLease` would
+    // otherwise fire first on any foreign version and report a field name
+    // instead of the version — which is the ONE thing a stale `deploy/weles`
+    // meeting a newer processctl needs to be told.
+    check_version(&bytes, &format!("rollout lock {}", path.display()))?;
     let metadata: OwnerLease = serde_json::from_slice(&bytes).with_context(|| {
         format!(
             "parse the owning tool's lease metadata from {} — refusing to borrow",
             path.display()
         )
     })?;
-    if metadata.version != OWNER_LEASE_VERSION {
-        bail!(
-            "rollout lock {} carries lease version {} (weles speaks {OWNER_LEASE_VERSION})",
-            path.display(),
-            metadata.version
-        );
-    }
     Ok(metadata)
 }
 
@@ -531,19 +571,17 @@ fn borrow_marker_path(lock: &Path, metadata: &OwnerLease, role: &str) -> PathBuf
 
 /// Copied from `processctl::lock::describe_roles` — renders a lease's permitted
 /// role set for a refusal message; empty is the borrowing-disabled sentinel.
+/// Rendered exactly as processctl renders it (bare, comma-separated), so the two
+/// halves of this hand-copied pair read identically in a log.
 fn describe_roles(roles: &BTreeSet<String>) -> String {
     if roles.is_empty() {
         "<borrowing-disabled>".to_string()
     } else {
-        roles
-            .iter()
-            .map(|role| format!("{role:?}"))
-            .collect::<Vec<_>>()
-            .join(", ")
+        roles.iter().cloned().collect::<Vec<_>>().join(", ")
     }
 }
 
-/// Copied from `processctl::lock::is_locked_by_other` (`:818-825`): the only
+/// Copied from `processctl::lock::is_locked_by_other`: the only
 /// portable probe is to TRY the lock — success means nobody holds it, so undo it
 /// at once. This is not [`acquire`]: it takes no ownership, writes no metadata,
 /// and on the success path of a borrow it never keeps the lock (the parent holds
@@ -558,7 +596,7 @@ fn is_locked_by_other(file: &File) -> Result<bool> {
 }
 
 /// Copied from `processctl::state::validate_identifier`
-/// (`tools/processctl/src/state.rs:967-984`) — the same charset processctl
+/// (`processctl::state::validate_identifier`) — the same charset processctl
 /// enforces on a role, so weles cannot claim a role processctl could never issue.
 fn validate_identifier(field: &str, value: &str) -> Result<()> {
     if value.is_empty() || value.len() > 128 {
@@ -615,7 +653,7 @@ mod imp {
     }
 
     /// Copied from `processctl::platform::linux::observe_process_identity`
-    /// (`tools/processctl/src/platform/linux.rs:222-246`). Field 22 of
+    /// (`tools/processctl/src/platform/linux.rs`). Field 22 of
     /// `/proc/<pid>/stat` (index 19 AFTER the `)` that closes the comm field —
     /// the comm may itself contain spaces and parens, which is why the parse
     /// starts at the LAST `)`) is the start time in clock ticks: the half of
@@ -644,7 +682,7 @@ mod imp {
     }
 
     /// processctl supports Windows and Linux only
-    /// (`tools/processctl/src/process.rs:126-129`), so a lease minted anywhere
+    /// (`processctl::process`'s platform gate), so a lease minted anywhere
     /// else cannot exist — and an unverifiable owner must never be borrowed from.
     #[cfg(not(target_os = "linux"))]
     pub(super) fn observe_process_identity(_pid: u32) -> std::io::Result<super::OwnerIdentity> {
@@ -658,7 +696,7 @@ mod imp {
     }
 
     /// Copied from `processctl::lock::inherited_credential_present`
-    /// (`tools/processctl/src/lock.rs:507-518`): the parent hands the credential
+    /// (`processctl::lock::inherited_credential_present`): the parent hands the credential
     /// over an anonymous pipe on stdin, so "stdin is a FIFO" is exactly the
     /// question. An operator shell leaves stdin a tty or a file.
     pub(super) fn inherited_credential_present() -> std::io::Result<bool> {
@@ -670,7 +708,7 @@ mod imp {
         Ok(stat.st_mode & libc::S_IFMT == libc::S_IFIFO)
     }
 
-    /// Copied from `processctl::lock::consume_credential_stdin` (`:958-994`).
+    /// Copied from `processctl::lock::consume_credential_stdin`.
     /// The pipe is drained to EOF and stdin is then REPLACED by `/dev/null`:
     /// the credential must not be re-readable, and fd 0 must not be left closed
     /// (the next `open` would silently become this process's stdin). The
@@ -709,7 +747,7 @@ mod imp {
     /// The one-shot claim: `O_CREAT | O_EXCL` is the whole mechanism — the
     /// SECOND borrower of the same lease loses the create and is refused.
     /// Contents and mode are processctl's (`create_consumption_marker`,
-    /// `tools/processctl/src/lock.rs:1075-1103`) because the OWNER deletes this
+    /// its Linux arm) because the OWNER deletes this
     /// file on its own drop and only after re-reading exactly these bytes from a
     /// file at exactly mode 0600.
     ///
@@ -830,7 +868,7 @@ mod imp {
     }
 
     /// Copied from `processctl::platform::windows::observe_process_identity` +
-    /// `observe_process` (`tools/processctl/src/platform/windows.rs:534-565`).
+    /// `observe_process` (`tools/processctl/src/platform/windows.rs`).
     /// The process creation FILETIME is the half of the identity a recycled PID
     /// cannot forge; `PROCESS_QUERY_LIMITED_INFORMATION` is enough for both
     /// queries and is the least the parent can be opened with.
@@ -877,7 +915,7 @@ mod imp {
     }
 
     /// Copied from `processctl::lock::inherited_credential_present`
-    /// (`tools/processctl/src/lock.rs:520-539`): the parent hands the credential
+    /// (`processctl::lock::inherited_credential_present`): the parent hands the credential
     /// over an anonymous pipe on stdin, so `FILE_TYPE_PIPE` is exactly the
     /// question. An operator shell leaves stdin a console or a file.
     pub(super) fn inherited_credential_present() -> std::io::Result<bool> {
@@ -904,7 +942,7 @@ mod imp {
     }
 
     /// Copied from `processctl::lock::consume_credential_stdin` +
-    /// `install_consumed_stdin` (`tools/processctl/src/lock.rs:996-1056`). The
+    /// `install_consumed_stdin`). The
     /// pipe is drained to EOF and stdin is then REPLACED by `NUL`: the
     /// credential must not be re-readable, and stdin must not be left dangling
     /// for the 12-process fleet this supervisor is about to spawn. The `NUL`
@@ -962,7 +1000,7 @@ mod imp {
     }
 
     /// Keeps the replacement `NUL` stdin handle alive for the life of the
-    /// process (`processctl::lock::CONSUMED_STDIN`, `tools/processctl/src/lock.rs:32`).
+    /// process (`processctl::lock::CONSUMED_STDIN`).
     static CONSUMED_STDIN: std::sync::OnceLock<File> = std::sync::OnceLock::new();
 
     /// The one-shot claim: `CREATE_NEW` is the whole mechanism — the SECOND
@@ -970,7 +1008,7 @@ mod imp {
     /// std maps to `ErrorKind::AlreadyExists`) and is refused. Contents, sharing
     /// mode and the owner-only DACL are processctl's
     /// (`create_consumption_marker`/`super_private_create_new`,
-    /// `tools/processctl/src/lock.rs:1105-1168`) because the OWNER deletes this
+    /// its Windows arm) because the OWNER deletes this
     /// file on its own drop and only after re-reading exactly these bytes from a
     /// file it still validates as owner-only. processctl's post-create
     /// re-validation is same-user hardening, deliberately not copied (CLAUDE.md,

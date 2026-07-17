@@ -71,6 +71,30 @@ pub(crate) struct BorrowCredential {
     metadata: LockMetadata,
 }
 
+/// Reads ONLY `version` out of a lease or credential document.
+///
+/// Deliberately NOT `deny_unknown_fields`, and deliberately parsed BEFORE the
+/// typed shape: every other field is what changes between versions, so a typed
+/// parse first would turn every cross-version pairing into an opaque
+/// unknown-field error and leave the version gate below unreachable. `version`
+/// is the one field that must mean the same thing in every version, so it is
+/// the only one this probe knows about.
+#[derive(Deserialize)]
+struct VersionProbe {
+    version: u32,
+}
+
+/// The version gate. Runs on BYTES, before any typed parse, so a document from
+/// another `ROLLOUT_LOCK_VERSION` is refused by version rather than by whatever
+/// field shape happened to change.
+fn check_version(bytes: &[u8]) -> Result<(), LeaseError> {
+    let probe: VersionProbe = serde_json::from_slice(bytes)?;
+    if probe.version != ROLLOUT_LOCK_VERSION {
+        return Err(LeaseError::UnsupportedVersion(probe.version));
+    }
+    Ok(())
+}
+
 #[derive(Debug, Error)]
 pub enum LeaseError {
     #[error("invalid rollout lock field: {0}")]
@@ -524,8 +548,7 @@ impl BorrowedLease {
             return Err(LeaseError::BorrowerReplay);
         }
         let bytes = consume_credential_stdin()?;
-        let credential: BorrowCredential = serde_json::from_slice(&bytes)?;
-        validate_credential(credential, expected_role)
+        credential_from_bytes(&bytes, expected_role)
     }
 
     pub fn owner(&self) -> &ProcessIdentity {
@@ -579,10 +602,27 @@ fn inherited_credential_present() -> Result<bool, LeaseError> {
     )))
 }
 
+/// The wire entry point for an inherited credential: version gate on the raw
+/// bytes, THEN the typed parse, then validation against the live world.
+///
+/// Split out of `consume_inherited` so the version gate is reachable from a
+/// test — `consume_inherited` can only be driven through a real inherited stdin
+/// pipe, which a unit test cannot stage.
+pub(crate) fn credential_from_bytes(
+    bytes: &[u8],
+    expected_role: &str,
+) -> Result<BorrowedLease, LeaseError> {
+    check_version(bytes)?;
+    let credential: BorrowCredential = serde_json::from_slice(bytes)?;
+    validate_credential(credential, expected_role)
+}
+
 pub(crate) fn validate_credential(
     credential: BorrowCredential,
     expected_role: &str,
 ) -> Result<BorrowedLease, LeaseError> {
+    // Defence in depth for an in-process credential; the gate that actually
+    // meets foreign bytes is `check_version` in `credential_from_bytes`.
     if credential.version != ROLLOUT_LOCK_VERSION {
         return Err(LeaseError::UnsupportedVersion(credential.version));
     }
@@ -654,11 +694,10 @@ fn read_metadata(file: &mut File) -> Result<LockMetadata, LeaseError> {
             "rollout lock metadata exceeds its bound".into(),
         ));
     }
-    let metadata: LockMetadata = serde_json::from_slice(&bytes)?;
-    if metadata.version != ROLLOUT_LOCK_VERSION {
-        return Err(LeaseError::UnsupportedVersion(metadata.version));
-    }
-    Ok(metadata)
+    // Version BEFORE shape: a v1 lease must refuse as "unsupported version 1",
+    // not as an unknown-field error about whichever field v2 renamed.
+    check_version(&bytes)?;
+    Ok(serde_json::from_slice(&bytes)?)
 }
 
 /// The one-shot marker for ONE role of one lease. `run_id` +
