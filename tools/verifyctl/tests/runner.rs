@@ -107,13 +107,89 @@ impl Drop for FakeRun {
     }
 }
 
+/// The one stage a fake root cannot host, and the reason the exit code is no
+/// longer this test's discriminator.
+///
+/// `weles-managed-gateway` BOOTS THE REAL SPLIT FLEET (`weles up split`, a live
+/// gateway, the shared Postgres). A fake root is a temp directory whose `cargo`
+/// is a fixture that builds nothing, so the stage's first question — did the
+/// build stage produce a `weles` binary? — is honestly answered NO, and it
+/// reports FAIL. **That is the stage being right, not the harness being
+/// unlucky**, and it is not fixable from here:
+///
+/// * every other stage in the manifest is either pure (`weles-fleet-parity`,
+///   `weles-wire-contract`) or delegates its I/O to a binary the fixture stands
+///   in for (`cargo`, `cargo-audit`, `splitproof`) — which is exactly why a fake
+///   `splitproof` that exits 0 yields `split-proof | PASS`. This stage keeps its
+///   proof IN-PROCESS by design, so there is no binary boundary to fake at;
+/// * staging a fixture `weles` only moves the failure to
+///   `prep::Layout::discover` on a `deploy/` nothing deployed; faking that too
+///   leads to a mock 12-service fleet, i.e. a second implementation of the very
+///   contract the stage exists to check;
+/// * a fixture/skip mode inside the stage is the green-SKIP-wearing-a-PASS shape
+///   its own module doc refuses to copy, and it would hollow out the live proof
+///   that `weles-fleet-parity`'s managed-gateway exclusion is charged against.
+///
+/// The cost is paid, not absorbed. One permanently-red BLOCKING row means every
+/// fake run exits 1 whatever else happened, so:
+///
+/// * each scenario is discriminated by its FAIL ROW SET ([`fail_rows`]) instead —
+///   strictly more informative than the exit code it replaces, and `pass`
+///   asserting this row is the ONLY red is what "everything else went green" now
+///   means here;
+/// * the green/advisory/strict rules the exit pair used to carry belong to
+///   `runner::verdict`'s matrix, which fails every stage of the real manifest in
+///   turn in both strict modes — more than this path ever proved.
+///
+/// Residual gap, named rather than hidden: no test now runs the real binary to a
+/// zero exit through the manifest. `Exit::Green as u8 == 0` and `main`'s
+/// `ExitCode::from(exit as u8)` are the only unproven link, and exits 1/2/130
+/// still pin that cast here.
+const LIVE_ONLY_STAGE: &str = "weles-managed-gateway";
+
+/// The OTHER stage a fake root cannot satisfy — and the reason the row sets below
+/// are worth reading twice.
+///
+/// The fake `PATH` holds one directory of fixtures and no `dotnet`, so
+/// `csharp::run` reports FAIL rather than a green SKIP whenever the run may
+/// install (the same fail-closed rule as `audit`; `--no-install` is what turns it
+/// into an honest SKIP). It has always done this on the fake path. Nothing
+/// noticed, because it is ADVISORY and the assertion here was `exit == 0` —
+/// which an advisory FAIL correctly does not change. Only the row set says it
+/// out loud.
+///
+/// Note the contrast that makes this stage's placement matter: an advisory
+/// live-only stage costs the fake path nothing, while a BLOCKING one
+/// ([`LIVE_ONLY_STAGE`]) costs it every exit assertion it had.
+const NO_DOTNET_STAGE: &str = "csharp-client";
+
+/// The stages the summary table reported FAIL for, in table order.
+///
+/// Reads the rendered table, not the exit code: with [`LIVE_ONLY_STAGE`]
+/// permanently red, `assert_exit(_, 1)` is satisfied by that row alone and can
+/// no longer tell one scenario's failure from another. This can.
+fn fail_rows(stdout: &str) -> Vec<String> {
+    stdout
+        .lines()
+        .skip_while(|line| !line.starts_with("=== verify summary ==="))
+        .filter_map(|line| {
+            let mut fields = line.split('|').map(str::trim);
+            let stage = fields.next()?;
+            (fields.next()? == "FAIL").then(|| stage.to_string())
+        })
+        .collect()
+}
+
 #[test]
 fn fake_path_covers_outcomes_audit_install_lease_and_summary_exits() {
     let _serial = VERIFY_RUN_LOCK.lock().unwrap();
     let pass = FakeRun::new("pass", true);
     let output = pass.command(&[]).output().unwrap();
-    assert_exit(&output, 0);
+    assert_exit(&output, 1);
     let stdout = String::from_utf8_lossy(&output.stdout);
+    // The live-only stage is the ONLY red: this is what the old exit-0 assertion
+    // said, said per row.
+    assert_eq!(fail_rows(&stdout), [LIVE_ONLY_STAGE]);
     assert!(stdout.contains("build                | PASS"));
     assert!(stdout.contains("docs-current         | PASS"));
     assert!(stdout.contains("split-proof          | PASS"));
@@ -144,8 +220,11 @@ fn fake_path_covers_outcomes_audit_install_lease_and_summary_exits() {
         .command(&["--no-install", "--strict"])
         .output()
         .unwrap();
-    assert_exit(&output, 0);
+    assert_exit(&output, 1);
     let strict_stdout = String::from_utf8_lossy(&output.stdout);
+    // A missing tool under `--no-install` is a SKIP row, not a FAIL row, even
+    // under `--strict` — that it is also not a red EXIT is `verdict`'s matrix.
+    assert_eq!(fail_rows(&strict_stdout), [LIVE_ONLY_STAGE]);
     assert!(strict_stdout.contains("audit                | SKIP"));
     assert!(strict_stdout.contains("public-api           | PASS"));
     assert!(strict_stdout.contains("fuzz                 | SKIP"));
@@ -154,7 +233,13 @@ fn fake_path_covers_outcomes_audit_install_lease_and_summary_exits() {
 
     let install = FakeRun::new("install", false);
     let output = install.command(&[]).output().unwrap();
-    assert_exit(&output, 0);
+    assert_exit(&output, 1);
+    // The install SUCCEEDED: audit is green, and the live-only stage is again the
+    // only red.
+    assert_eq!(
+        fail_rows(&String::from_utf8_lossy(&output.stdout)),
+        [LIVE_ONLY_STAGE]
+    );
     assert!(std::fs::read_to_string(&install.record)
         .unwrap()
         .contains("install cargo-audit --locked"));
@@ -169,6 +254,12 @@ fn fake_path_covers_outcomes_audit_install_lease_and_summary_exits() {
         .output()
         .unwrap();
     assert_exit(&output, 1);
+    // A failed install is audit's OWN failure, and blocking. Without the row this
+    // scenario would now be indistinguishable from the install that worked.
+    assert_eq!(
+        fail_rows(&String::from_utf8_lossy(&output.stdout)),
+        ["audit", LIVE_ONLY_STAGE]
+    );
 
     let network = FakeRun::new("network", true);
     let output = network
@@ -177,7 +268,12 @@ fn fake_path_covers_outcomes_audit_install_lease_and_summary_exits() {
         .output()
         .unwrap();
     assert_exit(&output, 1);
+    // FAIL, never a green SKIP.
     assert!(String::from_utf8_lossy(&output.stdout).contains("audit                | FAIL"));
+    assert_eq!(
+        fail_rows(&String::from_utf8_lossy(&output.stdout)),
+        ["audit", LIVE_ONLY_STAGE]
+    );
 
     let route_fail = FakeRun::new("route-fail", true);
     let output = route_fail
@@ -186,15 +282,28 @@ fn fake_path_covers_outcomes_audit_install_lease_and_summary_exits() {
         .output()
         .unwrap();
     assert_exit(&output, 1);
+    assert_eq!(
+        fail_rows(&String::from_utf8_lossy(&output.stdout)),
+        ["routecheck", LIVE_ONLY_STAGE]
+    );
 
+    // `--all` runs the advisory manifest and `--strict` promotes it. The pair
+    // used to prove the promotion end to end (exit 0 vs 1); with a blocking row
+    // permanently red both exit 1 and both render the same rows, so what survives
+    // here is that each level composes the manifest and reaches the advisory
+    // control at all. The promotion itself is `runner::verdict`'s matrix.
     let advisory = FakeRun::new("advisory-fail", true);
     let output = advisory
         .command(&["--all"])
         .env("RUSTFLAGS", "advisory-fail")
         .output()
         .unwrap();
-    assert_exit(&output, 0);
+    assert_exit(&output, 1);
     let advisory_stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(
+        fail_rows(&advisory_stdout),
+        [LIVE_ONLY_STAGE, "public-api", NO_DOTNET_STAGE]
+    );
     assert!(advisory_stdout.contains("public-api           | FAIL"));
     assert!(advisory_stdout.contains("topiccheck           | PASS"));
 
@@ -205,6 +314,10 @@ fn fake_path_covers_outcomes_audit_install_lease_and_summary_exits() {
         .output()
         .unwrap();
     assert_exit(&output, 1);
+    assert_eq!(
+        fail_rows(&String::from_utf8_lossy(&output.stdout)),
+        [LIVE_ONLY_STAGE, "public-api", NO_DOTNET_STAGE]
+    );
 
     let slow = FakeRun::new("slow-fail", true);
     let output = slow
@@ -214,6 +327,10 @@ fn fake_path_covers_outcomes_audit_install_lease_and_summary_exits() {
         .unwrap();
     assert_exit(&output, 1);
     assert!(String::from_utf8_lossy(&output.stdout).contains("mutants              | FAIL"));
+    assert_eq!(
+        fail_rows(&String::from_utf8_lossy(&output.stdout)),
+        [LIVE_ONLY_STAGE, NO_DOTNET_STAGE, "mutants"]
+    );
 
     let cli = Command::new(verifyctl())
         .arg("--fast")

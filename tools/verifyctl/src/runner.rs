@@ -101,11 +101,28 @@ pub fn execute(options: Options) -> Result<Exit> {
         }
     }
     summary.print();
-    Ok(if summary.failed(options.strict) {
+    Ok(verdict(&summary, options.strict))
+}
+
+/// The run's exit, and the ONE place that decides it.
+///
+/// Extracted from [`execute`] because the fake-path harness can no longer reach
+/// the GREEN branch. `weles-managed-gateway` boots the real split fleet, so in a
+/// temp root whose `cargo` is a fixture that builds nothing it is honestly FAIL
+/// (`tests/runner.rs`) — and one permanently-red BLOCKING row makes every fake
+/// run exit 1 whatever else happened. The end-to-end pair that used to
+/// discriminate the classes (an advisory FAIL is green; `--strict` turns it red)
+/// collapsed with it.
+///
+/// So the discrimination lives HERE now, and is proven better than it was: the
+/// matrix below fails every stage of the REAL manifest in turn, in both strict
+/// modes, rather than the two stages the fake path happened to be able to drive.
+pub(crate) fn verdict(summary: &Summary, strict: bool) -> Exit {
+    if summary.failed(strict) {
         Exit::Failed
     } else {
         Exit::Green
-    })
+    }
 }
 
 fn stage_outcome(
@@ -480,6 +497,81 @@ fn install_interrupt_handler() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::{StageClass, StageId};
+
+    /// A summary shaped like a real run of `level`/`strict`: every stage of the
+    /// real manifest, carrying its REAL class, with the outcome `outcome` gives
+    /// it. Classes are not restated here — a copy would drift from
+    /// `stages::manifest`, and the class is the whole input to the verdict.
+    fn manifest_summary(
+        level: crate::cli::Level,
+        strict: bool,
+        outcome: impl Fn(StageId) -> Outcome,
+    ) -> Summary {
+        let mut summary = Summary::default();
+        for stage in stages::manifest(level, strict) {
+            summary.push(StageResult {
+                id: stage.id,
+                class: stage.class,
+                outcome: outcome(stage.id),
+            });
+        }
+        summary
+    }
+
+    /// The green/advisory/strict discrimination the fake path used to prove by
+    /// exit code and cannot any more (`weles-managed-gateway` is honestly FAIL in
+    /// a temp root, so every fake run exits 1 — see `verdict` and
+    /// `tests/runner.rs`).
+    ///
+    /// Stronger than the pair it replaces: it fails EVERY stage of the real
+    /// manifest in turn, so each stage's blocking-ness is proven individually,
+    /// where the fake path could only ever drive the handful its fixture had
+    /// controls for.
+    #[test]
+    fn the_verdict_is_green_exactly_when_no_blocking_stage_failed() {
+        let all_green = manifest_summary(crate::cli::Level::Slow, true, |_| Outcome::Pass);
+        assert_eq!(verdict(&all_green, false), Exit::Green);
+        assert_eq!(verdict(&all_green, true), Exit::Green);
+
+        for stage in stages::manifest(crate::cli::Level::Slow, true) {
+            let one_red = manifest_summary(crate::cli::Level::Slow, true, |id| {
+                if id == stage.id {
+                    Outcome::Fail
+                } else {
+                    Outcome::Pass
+                }
+            });
+            let advisory = stage.class == StageClass::Advisory;
+            assert_eq!(
+                verdict(&one_red, false),
+                if advisory { Exit::Green } else { Exit::Failed },
+                "{} FAIL without --strict",
+                stage.id.name()
+            );
+            assert_eq!(
+                verdict(&one_red, true),
+                Exit::Failed,
+                "{} FAIL under --strict",
+                stage.id.name()
+            );
+        }
+    }
+
+    /// A skipped stage is not a failure — including the BLOCKING `audit` skip the
+    /// fake path drives with `--no-install --strict`, whose exit-0 assertion the
+    /// permanently-red live stage took with it.
+    #[test]
+    fn a_skip_never_makes_the_run_red_even_under_strict() {
+        let skipped = manifest_summary(crate::cli::Level::All, true, |id| {
+            if id == StageId::Audit {
+                Outcome::Skip(crate::model::SkipReason::ExplicitNoInstallMissingTool)
+            } else {
+                Outcome::Pass
+            }
+        });
+        assert_eq!(verdict(&skipped, true), Exit::Green);
+    }
 
     #[test]
     fn stage_error_is_a_logged_failure_outcome() {
