@@ -79,7 +79,14 @@ pub fn execute(options: Options) -> Result<Exit> {
     for stage in stages::manifest(options.level, options.strict) {
         context.stage = stage.id;
         println!("== {} ==", stage.id.name());
-        let result = (stage.run)(&mut context);
+        // Applicability is decided from the STATIC declaration in the stage
+        // table, BEFORE `run` — never sniffed at runtime from the exit code of
+        // the program under test. A stage declared not-applicable here skips
+        // without booting anything.
+        let result = match stage.platform_short_circuit() {
+            Some(skip) => Ok(skip),
+            None => (stage.run)(&mut context),
+        };
         let outcome = stage_outcome(stage.id, result, |message| {
             eprintln!("verifyctl: {message}");
             if let Err(error) = context.note(message) {

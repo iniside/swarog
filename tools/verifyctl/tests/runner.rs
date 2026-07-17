@@ -162,7 +162,25 @@ const LIVE_ONLY_STAGE: &str = "weles-managed-gateway";
 /// Note the contrast that makes this stage's placement matter: an advisory
 /// live-only stage costs the fake path nothing, while a BLOCKING one
 /// ([`LIVE_ONLY_STAGE`]) costs it every exit assertion it had.
+///
+/// Host-dependent since the Step 11 port: csharp-client is declared
+/// not-applicable on macOS (msquic ships no macOS build), so THERE the runner
+/// short-circuits it to a platform SKIP before ever resolving `dotnet` — it is
+/// not a FAIL row on macOS. On Windows/Linux it still runs and FAILs. Use
+/// [`csharp_fail_rows`] rather than the bare constant in a fail-row set.
 const NO_DOTNET_STAGE: &str = "csharp-client";
+
+/// The csharp-client contribution to a fail-row set — empty on macOS (a declared
+/// platform SKIP), `[NO_DOTNET_STAGE]` elsewhere (an honest FAIL when `dotnet` is
+/// missing and the run may install). Mirrors `model::Platform::current`'s macOS
+/// arm.
+fn csharp_fail_rows() -> Vec<&'static str> {
+    if std::env::consts::OS == "macos" {
+        Vec::new()
+    } else {
+        vec![NO_DOTNET_STAGE]
+    }
+}
 
 /// The stages the summary table reported FAIL for, in table order.
 ///
@@ -301,10 +319,9 @@ fn fake_path_covers_outcomes_audit_install_lease_and_summary_exits() {
         .unwrap();
     assert_exit(&output, 1);
     let advisory_stdout = String::from_utf8_lossy(&output.stdout);
-    assert_eq!(
-        fail_rows(&advisory_stdout),
-        [LIVE_ONLY_STAGE, "public-api", NO_DOTNET_STAGE]
-    );
+    let mut expected = vec![LIVE_ONLY_STAGE, "public-api"];
+    expected.extend(csharp_fail_rows());
+    assert_eq!(fail_rows(&advisory_stdout), expected);
     assert!(advisory_stdout.contains("public-api           | FAIL"));
     assert!(advisory_stdout.contains("topiccheck           | PASS"));
 
@@ -315,9 +332,11 @@ fn fake_path_covers_outcomes_audit_install_lease_and_summary_exits() {
         .output()
         .unwrap();
     assert_exit(&output, 1);
+    let mut expected = vec![LIVE_ONLY_STAGE, "public-api"];
+    expected.extend(csharp_fail_rows());
     assert_eq!(
         fail_rows(&String::from_utf8_lossy(&output.stdout)),
-        [LIVE_ONLY_STAGE, "public-api", NO_DOTNET_STAGE]
+        expected
     );
 
     let slow = FakeRun::new("slow-fail", true);
@@ -328,9 +347,12 @@ fn fake_path_covers_outcomes_audit_install_lease_and_summary_exits() {
         .unwrap();
     assert_exit(&output, 1);
     assert!(String::from_utf8_lossy(&output.stdout).contains("mutants              | FAIL"));
+    let mut expected = vec![LIVE_ONLY_STAGE];
+    expected.extend(csharp_fail_rows());
+    expected.push("mutants");
     assert_eq!(
         fail_rows(&String::from_utf8_lossy(&output.stdout)),
-        [LIVE_ONLY_STAGE, NO_DOTNET_STAGE, "mutants"]
+        expected
     );
 
     let cli = Command::new(verifyctl())

@@ -5,9 +5,8 @@ use crate::{
 use anyhow::Result;
 
 pub fn run(ctx: &mut Context<'_>) -> Result<Outcome> {
-    if cfg!(windows) {
-        return Ok(Outcome::Skip(SkipReason::NotApplicablePlatform));
-    }
+    // The Windows not-applicable declaration lives in the stage table
+    // (`stages::mod`), resolved by the runner before this runs.
     if ctx.cargo("cargo-fuzz-tool", &["fuzz", "--help"])? != Outcome::Pass {
         if !ctx.options.install {
             return Ok(Outcome::Skip(SkipReason::ExplicitNoInstallMissingTool));

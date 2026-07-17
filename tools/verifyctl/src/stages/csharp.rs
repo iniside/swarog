@@ -212,10 +212,6 @@ pub fn run(ctx: &mut Context<'_>) -> Result<Outcome> {
             std::fs::read_to_string(ctx.stage_log(label, "out")).unwrap_or_default(),
             std::fs::read_to_string(ctx.stage_log(label, "err")).unwrap_or_default()
         );
-        if label == "c1" && code == Some(3) {
-            result = Outcome::Skip(SkipReason::NotApplicablePlatform);
-            break;
-        }
         if !code.is_some_and(|code| predicate(code, &output, expected)) {
             result = Outcome::Fail;
         }

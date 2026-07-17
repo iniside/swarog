@@ -18,7 +18,7 @@ pub mod weles_fleet_parity;
 pub mod weles_managed_gateway;
 pub mod weles_wire_contract;
 
-use crate::model::{StageClass, StageId};
+use crate::model::{Outcome, Platform, SkipReason, StageClass, StageId};
 use anyhow::{bail, Context as _, Result};
 use std::path::{Path, PathBuf};
 
@@ -28,78 +28,111 @@ pub type StageFn = fn(&mut crate::runner::Context<'_>) -> anyhow::Result<crate::
 pub struct Stage {
     pub id: StageId,
     pub class: StageClass,
+    /// Platforms on which this stage is DECLARED not-applicable — a static
+    /// property of (stage, platform), auditable in this table rather than
+    /// discovered at runtime from the exit code of the program under test. The
+    /// runner short-circuits to `Skip(NotApplicablePlatform)` WITHOUT calling
+    /// `run` when the current platform is listed here. Only ADVISORY stages may
+    /// carry an entry and stay green (see `Summary::failed`).
+    pub not_applicable_on: &'static [Platform],
     pub run: StageFn,
+}
+
+impl Stage {
+    /// The outcome the runner records WITHOUT running `run`, when this stage is
+    /// declared not-applicable on the current platform; `None` means "run it".
+    /// This is the single decision point for the platform short-circuit — the
+    /// runner calls it in place of `run`, and it never touches `run`.
+    pub fn platform_short_circuit(&self) -> Option<Outcome> {
+        Platform::current()
+            .is_some_and(|current| self.not_applicable_on.contains(&current))
+            .then_some(Outcome::Skip(SkipReason::NotApplicablePlatform))
+    }
 }
 
 pub const BLOCKING: &[Stage] = &[
     Stage {
         id: StageId::Build,
         class: StageClass::Blocking,
+        not_applicable_on: &[],
         run: command::build,
     },
     Stage {
         id: StageId::Clippy,
         class: StageClass::Blocking,
+        not_applicable_on: &[],
         run: command::clippy,
     },
     Stage {
         id: StageId::Test,
         class: StageClass::Blocking,
+        not_applicable_on: &[],
         run: command::test,
     },
     Stage {
         id: StageId::Audit,
         class: StageClass::Blocking,
+        not_applicable_on: &[],
         run: audit::run,
     },
     Stage {
         id: StageId::Fortress,
         class: StageClass::Blocking,
+        not_applicable_on: &[],
         run: fortress::run,
     },
     Stage {
         id: StageId::Routecheck,
         class: StageClass::Blocking,
+        not_applicable_on: &[],
         run: command::routecheck,
     },
     Stage {
         id: StageId::CodegenFreshness,
         class: StageClass::Blocking,
+        not_applicable_on: &[],
         run: codegen::run,
     },
     Stage {
         id: StageId::ContractGolden,
         class: StageClass::Blocking,
+        not_applicable_on: &[],
         run: contract_golden::run,
     },
     Stage {
         id: StageId::Conformance,
         class: StageClass::Blocking,
+        not_applicable_on: &[],
         run: conformance::run,
     },
     Stage {
         id: StageId::DocsCurrent,
         class: StageClass::Blocking,
+        not_applicable_on: &[],
         run: docs_current::run,
     },
     Stage {
         id: StageId::WelesFleetParity,
         class: StageClass::Blocking,
+        not_applicable_on: &[],
         run: weles_fleet_parity::run,
     },
     Stage {
         id: StageId::WelesAsyncIsland,
         class: StageClass::Blocking,
+        not_applicable_on: &[],
         run: weles_async_island::run,
     },
     Stage {
         id: StageId::WelesWireContract,
         class: StageClass::Blocking,
+        not_applicable_on: &[],
         run: weles_wire_contract::run,
     },
     Stage {
         id: StageId::SplitProof,
         class: StageClass::Blocking,
+        not_applicable_on: &[],
         run: splitproof::run,
     },
     // LAST, and after split-proof deliberately: both boot a fleet against the
@@ -109,6 +142,7 @@ pub const BLOCKING: &[Stage] = &[
     Stage {
         id: StageId::WelesManagedGateway,
         class: StageClass::Blocking,
+        not_applicable_on: &[],
         run: weles_managed_gateway::run,
     },
 ];
@@ -117,26 +151,36 @@ pub const ADVISORY: &[Stage] = &[
     Stage {
         id: StageId::PublicApi,
         class: StageClass::Advisory,
+        not_applicable_on: &[],
         run: public_api::run,
     },
     Stage {
         id: StageId::Fuzz,
         class: StageClass::Advisory,
+        // cargo-fuzz's runtime ships for Unix only; declared, not sniffed.
+        not_applicable_on: &[Platform::Windows],
         run: fuzz::run,
     },
     Stage {
         id: StageId::CSharp,
         class: StageClass::Advisory,
+        // msquic (the QUIC transport the C# fixture needs) ships Windows/Linux
+        // only — no macOS build. Declared here so the stage short-circuits
+        // BEFORE booting a monolith, instead of the old runtime exit-3 sniff
+        // that could not tell a platform gap from a real client bug.
+        not_applicable_on: &[Platform::MacOs],
         run: csharp::run,
     },
     Stage {
         id: StageId::Topiccheck,
         class: StageClass::Advisory,
+        not_applicable_on: &[],
         run: topiccheck::run,
     },
     Stage {
         id: StageId::Admincheck,
         class: StageClass::Advisory,
+        not_applicable_on: &[],
         run: admincheck::run,
     },
 ];
@@ -144,6 +188,7 @@ pub const ADVISORY: &[Stage] = &[
 pub const SLOW: &[Stage] = &[Stage {
     id: StageId::Mutants,
     class: StageClass::Slow,
+    not_applicable_on: &[],
     run: mutants::run,
 }];
 
@@ -322,6 +367,71 @@ mod tests {
         assert!(BLOCKING.iter().all(|s| s.class == StageClass::Blocking));
         assert!(ADVISORY.iter().all(|s| s.class == StageClass::Advisory));
         assert!(SLOW.iter().all(|s| s.class == StageClass::Slow));
+    }
+
+    #[test]
+    fn a_stage_not_applicable_here_short_circuits_without_running() {
+        // A stage whose `run` panics: if the short-circuit ever reached `run`,
+        // this test would panic instead of asserting.
+        fn boom(_: &mut crate::runner::Context<'_>) -> anyhow::Result<Outcome> {
+            panic!("run must not execute for a platform-exempt stage");
+        }
+        let all_platforms = &[Platform::Windows, Platform::Linux, Platform::MacOs];
+        let exempt = Stage {
+            id: StageId::Fuzz,
+            class: StageClass::Advisory,
+            not_applicable_on: all_platforms,
+            run: boom,
+        };
+        // Declared not-applicable on every platform → short-circuit on any host,
+        // WITHOUT touching `run`. The runner records exactly this in place of it.
+        assert_eq!(
+            exempt.platform_short_circuit(),
+            Some(Outcome::Skip(SkipReason::NotApplicablePlatform))
+        );
+
+        // An applicable stage has no short-circuit → the runner calls `run`.
+        let applicable = Stage {
+            not_applicable_on: &[],
+            ..exempt
+        };
+        assert_eq!(applicable.platform_short_circuit(), None);
+    }
+
+    #[test]
+    fn platform_declarations_resolve_per_os() {
+        let stage = |id| {
+            BLOCKING
+                .iter()
+                .chain(ADVISORY)
+                .chain(SLOW)
+                .find(|s| s.id == id)
+                .unwrap()
+        };
+        // The two declared exemptions, the whole set of them.
+        assert_eq!(stage(StageId::Fuzz).not_applicable_on, &[Platform::Windows]);
+        assert_eq!(stage(StageId::CSharp).not_applicable_on, &[Platform::MacOs]);
+        // fuzz short-circuits ONLY on Windows; csharp ONLY on macOS. On the
+        // current host, at most one of these declares itself exempt.
+        let on_windows = Platform::current() == Some(Platform::Windows);
+        let on_macos = Platform::current() == Some(Platform::MacOs);
+        assert_eq!(
+            stage(StageId::Fuzz).platform_short_circuit().is_some(),
+            on_windows
+        );
+        assert_eq!(
+            stage(StageId::CSharp).platform_short_circuit().is_some(),
+            on_macos
+        );
+        // No BLOCKING (or SLOW) stage may carry a platform exemption: only an
+        // ADVISORY stage may platform-escape green (`Summary::failed`).
+        for s in BLOCKING.iter().chain(SLOW) {
+            assert!(
+                s.not_applicable_on.is_empty(),
+                "{} is not ADVISORY and must not declare a platform exemption",
+                s.id.name()
+            );
+        }
     }
 
     #[test]

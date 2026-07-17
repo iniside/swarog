@@ -60,6 +60,31 @@ pub enum StageClass {
     Slow,
 }
 
+/// The host a stage runs on. Applicability is declared as DATA on the `Stage`
+/// table (`stages::Stage::not_applicable_on`) and resolved against
+/// `Platform::current()` by the runner BEFORE `run` — never sniffed at runtime
+/// from the exit code of the program under test.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Platform {
+    Windows,
+    Linux,
+    MacOs,
+}
+
+impl Platform {
+    /// The platform this process is running on, or `None` for an OS the port
+    /// does not model (in which case no stage is treated as platform-exempt —
+    /// it runs and is scored honestly).
+    pub fn current() -> Option<Self> {
+        match std::env::consts::OS {
+            "windows" => Some(Self::Windows),
+            "linux" => Some(Self::Linux),
+            "macos" => Some(Self::MacOs),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SkipReason {
     ExplicitNoInstallMissingTool,
@@ -103,7 +128,20 @@ impl Summary {
     pub fn failed(&self, strict: bool) -> bool {
         self.results.iter().any(|result| match result.outcome {
             Outcome::Fail => result.class != StageClass::Advisory || strict,
-            Outcome::Skip(SkipReason::NotApplicablePlatform) => false,
+            // A platform exemption is only legitimate for a non-required stage.
+            // A BLOCKING (or SLOW) stage must run on every platform it is asked
+            // to run on; declaring it not-applicable here is a contradiction and
+            // must not pass silently — default OR --strict. An ADVISORY stage
+            // (fuzz on Windows) legitimately declares the exemption and stays
+            // green in both modes: making it fail under --strict would
+            // permanently red-wall the Windows dev box on `--all --strict`.
+            Outcome::Skip(SkipReason::NotApplicablePlatform) => {
+                result.class != StageClass::Advisory
+            }
+            // Deliberately kept green: CLAUDE.md sanctions a SKIP only for a
+            // missing tool under explicit --no-install ("only a missing tool
+            // with explicit --no-install is labeled SKIP"). Not to be
+            // re-litigated with the NotApplicablePlatform rule above.
             Outcome::Skip(SkipReason::ExplicitNoInstallMissingTool) => false,
             Outcome::Pass => false,
         })
@@ -155,23 +193,43 @@ mod tests {
 
     #[test]
     fn summary_exit_matrix_preserves_strict_and_platform_rules() {
+        // Advisory FAIL: green by default, red under --strict (unchanged).
         let mut summary = Summary::default();
         summary.push(result(StageClass::Advisory, Outcome::Fail));
         assert!(!summary.failed(false));
         assert!(summary.failed(true));
 
-        let mut platform = Summary::default();
-        platform.push(result(
+        // ADVISORY + NotApplicablePlatform → green, default AND --strict. This is
+        // fuzz-on-Windows's legitimate exemption; the branch a naive "fail under
+        // strict" fix would break, permanently red-walling `--all --strict`.
+        let mut advisory_platform = Summary::default();
+        advisory_platform.push(result(
             StageClass::Advisory,
             Outcome::Skip(SkipReason::NotApplicablePlatform),
         ));
-        assert!(!platform.failed(true));
+        assert!(!advisory_platform.failed(false));
+        assert!(!advisory_platform.failed(true));
 
+        // BLOCKING + NotApplicablePlatform → FAIL, default AND --strict. The new
+        // rule: a blocking stage must run everywhere; a platform escape is a
+        // contradiction that must not green-pass (the reversal recorded in the
+        // commit and Step 11 erratum).
+        let mut blocking_platform = Summary::default();
+        blocking_platform.push(result(
+            StageClass::Blocking,
+            Outcome::Skip(SkipReason::NotApplicablePlatform),
+        ));
+        assert!(blocking_platform.failed(false));
+        assert!(blocking_platform.failed(true));
+
+        // BLOCKING + ExplicitNoInstallMissingTool → green (unchanged,
+        // deliberately kept — CLAUDE.md's sanctioned SKIP).
         let mut no_install = Summary::default();
         no_install.push(result(
             StageClass::Blocking,
             Outcome::Skip(SkipReason::ExplicitNoInstallMissingTool),
         ));
+        assert!(!no_install.failed(false));
         assert!(!no_install.failed(true));
 
         let mut slow = Summary::default();

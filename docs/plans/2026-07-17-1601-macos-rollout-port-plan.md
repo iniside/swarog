@@ -635,6 +635,25 @@ BLOCKING+`ExplicitNoInstallMissingTool` → false (unchanged, deliberately). The
 this Mac, assert the C# stage FAILs on an injected exit 3 that is not a platform
 declaration.
 
+#### Step 11 erratum (implemented 2026-07-17)
+
+Recorded semantic reversal (CLAUDE.md "recorded, never smuggled"): `model.rs`'s
+`failed()` previously scored `Skip(NotApplicablePlatform) => false` for **every**
+class — a not-applicable declaration never failed a run. It now scores
+`result.class != StageClass::Advisory` for that reason: a **BLOCKING (or SLOW)**
+stage declared not-applicable-here now **FAILs** (default and `--strict`), while an
+**ADVISORY** stage stays green in both modes (fuzz-on-Windows's legitimate use). A
+blocking stage must run on every platform it is asked to; a platform escape there is
+a contradiction, not a pass.
+
+Applicability moved from the two runtime checks (`fuzz.rs`'s `cfg!(windows)` early
+return and `csharp.rs`'s `label=="c1" && code==Some(3)` exit-3 sniff) to a static
+`Stage::not_applicable_on: &[Platform]` field in the stage table, resolved by the
+runner against `Platform::current()` **before** `run` (short-circuit — no monolith
+boot). fuzz declares `[Windows]`, csharp declares `[MacOs]`; both runtime checks are
+deleted. Consequence recorded: a real C# client bug that happens to exit 3 is now a
+FAIL, no longer silently reclassified as a platform skip.
+
 ### Step 12 — The `supported-targets` tripwire `[opus]`
 
 **(a) What.** New BLOCKING stage `tools/verifyctl/src/stages/supported_targets.rs`
