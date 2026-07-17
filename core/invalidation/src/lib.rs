@@ -461,19 +461,21 @@ async fn listen(
         // and this LISTEN): a full refresh catches anything missed while disconnected.
         ctx.refresh_all().await;
         loop {
-            // `try_recv` (not `recv`) is deliberate and platform-load-bearing. A terminated
-            // backend must surface as a reconnect trigger HERE so the outer loop re-LISTENs
-            // and `refresh_all`s (the heal). `recv` masks that: it internally loops
-            // `try_recv`, and when the connection drops it transparently reconnects and
-            // blocks on the fresh (healthy) session — so on darwin, where a graceful FIN
-            // from `pg_terminate_backend` surfaces only as an I/O close (never as a Linux
-            // FATAL `ErrorResponse` that `recv` would forward as `Err`), `recv` heals the
-            // socket silently and NEVER returns, and the reconnect-refresh never fires.
-            // `try_recv` instead returns `Ok(None)` on that I/O close (observed ~12ms on
-            // darwin) and `Err` on a Linux FATAL message; both break to the outer loop and
-            // refresh. A NOTIFY still wakes `try_recv` immediately, so happy-path latency is
-            // unchanged; the 30s poll remains the freshness floor for a silent (no-FIN)
-            // partition that neither path can observe promptly.
+            // `try_recv` (not `recv`) is deliberate and load-bearing. A terminated backend
+            // must surface as a reconnect trigger HERE so the outer loop re-LISTENs and
+            // `refresh_all`s (the heal). `recv` masks that: with sqlx's default eager
+            // reconnect it internally loops `try_recv`, transparently reconnects on a drop,
+            // and blocks on the fresh (healthy) session — so the disconnect NEVER surfaces
+            // and the reconnect-refresh never fires (observed on darwin: `recv` blocks
+            // indefinitely past `pg_terminate_backend`). With `eager_reconnect(false)`,
+            // `try_recv` surfaces a dropped connection as `Ok(None)` — on BOTH platforms:
+            // sqlx's `try_recv` reads via `recv_unchecked`, which does NOT decode a FATAL
+            // `ErrorResponse` into `Err` (only the blocking `recv` path does), so a
+            // `pg_terminate_backend` is seen as the subsequent I/O close → `Ok(None)`
+            // (~12ms on darwin). The `Err` arm is the catch-all for any other error. Both
+            // break to the outer loop and refresh. A NOTIFY still wakes `try_recv`
+            // immediately, so happy-path latency is unchanged; the 30s poll remains the
+            // freshness floor for a silent (no-FIN) partition neither path observes promptly.
             tokio::select! {
                 _ = stop.changed() => return,
                 res = listener.try_recv() => match res {
