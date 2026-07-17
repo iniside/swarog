@@ -30,9 +30,21 @@ tracing = { workspace = true }
 # Boxed boot futures for the `RemoteBoot` start hook (Step 5): a factory registers an
 # async boot closure the `Stub` runs at `start`.
 futures = { workspace = true }
+# `resolve_peer` (the orchestrator agent's `resolve` client). NAMED COST: `remote` had
+# only `tokio = features=["sync"]`; reqwest pulls hyper (and the workspace's rustls-tls
+# pin) into every `cmd/*-svc` that holds a Stub. Accepted: `remote` is where the design
+# puts this client so `Stub` can use it at re-resolve, and rustls is already in the graph
+# via `edge`/quinn. `rustls-tls` is ring-backed — `aws-lc-rs` must never enter the tree.
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
 
 [dev-dependencies]
 # The swap is proven with LOCAL test fakes (no api/ crate): fake factories provide a
 # fake capability under a registry key. registry is a core crate, not an api/ crate.
 registry = { workspace = true }
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync"] }
+# `net`/`io-util` are for `resolve_tests`'s OWN fake agent (a raw TCP HTTP/1.1 canner):
+# `remote` is in the SHIPPING graph, so it may never dev-dep `weles` to test against the
+# real server — see `resolve::resolve_peer`'s doc. `time` bounds the tests' hang guards.
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "net", "io-util", "time"] }

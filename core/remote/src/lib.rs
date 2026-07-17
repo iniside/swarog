@@ -59,6 +59,16 @@ use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
 // ---------------------------------------------------------------------------
+// The orchestrator agent's `resolve` client. It lives here (rather than in a
+// `cmd/*` root) because it is `Stub`'s eventual re-resolve source; in M1 only
+// `cmd/gateway-svc`'s main calls it, and `Stub` is untouched (re-resolve needs
+// `RouteTable.peers` plus the three frozen address copies below — a separate
+// plan).
+// ---------------------------------------------------------------------------
+pub mod resolve;
+pub use resolve::{resolve_peer, AddrKind, ErrorCode, ResolveError};
+
+// ---------------------------------------------------------------------------
 // The injected provider-swap action (the Step-4 generic-`remote` seam).
 // ---------------------------------------------------------------------------
 
