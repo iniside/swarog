@@ -847,3 +847,23 @@ and cannot capture the target before it runs. Superseded by Q1.
 **Net:** post-exec image identity is secured on darwin at Linux-equivalent strength;
 pid-reuse safety was never at stake here (zombie pinning). No new `[W2]`-class
 degradation is introduced by the spawn mechanism.
+
+## Deferred to a Linux run (must re-confirm before the port is "done" on Linux)
+
+Steps 6/7/7b were implemented and verified on macOS; two items are structurally
+unverifiable from this Mac and MUST be re-confirmed on a Linux box:
+
+1. **splitproof `[W2]` on Linux.** Step 7b changed the Linux `forced_remainder`
+   derivation (enumerate-group-before-reap). Reviewed clean on darwin + Linux
+   compiles, but `[W2]` is a Linux runtime assertion — run `cargo run -p verifyctl
+   -- --fast` (or splitproof directly) on Linux and confirm `[W2]` still scores
+   clean (no spurious force-kill from a `forced_group` that should be false).
+2. **A unit test for the Linux `/proc` pgrp parse** (`guardian.rs:495`
+   `list_process_group`). The darwin `proc_listpgrppids` variant is tested; the Linux
+   `/proc/<pid>/stat` field-5 parse is asserted only by code review today. Add a
+   Linux-gated test feeding a synthetic stat line whose comm contains spaces and `)`
+   (e.g. `1234 (weird )name) S 1 5678 ...`) and assert the extracted pgrp is `5678` —
+   pins the last-`)` + `nth(2)` field index against a one-char regression that would
+   compile and only surface on `[W2]`. Do this on the Linux box where it runs, not
+   here (refactoring the parse to add the test would trade a review-verified path for
+   a compile-only-verified one on a machine that cannot run it).
