@@ -54,7 +54,11 @@ pub fn execute(options: Options) -> Result<Exit> {
     }
 
     let environment = FrozenEnvironment::from_snapshot(&snapshot);
-    let mut lease = RolloutLock::acquire(rollout_lock_path(&root), &run_id, "splitproof")
+    // One lease, lent to each of these roles in turn (one borrower alive at a
+    // time — enforced by `BorrowedChild`'s borrow of the lease). splitproof is
+    // the long-standing borrower; weles borrows the same rollout rather than
+    // deadlocking on `run/rollout.lock` against this very lease.
+    let mut lease = RolloutLock::acquire(rollout_lock_path(&root), &run_id, ["splitproof", "weles"])
         .context("acquire shared rollout lease")?;
     let log_dir = root.join("run").join("verify").join(&run_id);
     std::fs::create_dir_all(&log_dir)

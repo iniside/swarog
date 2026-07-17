@@ -24,14 +24,15 @@
 //! # The borrowed half
 //!
 //! [`acquire`] is the operator path: weles owns the rollout. But verifyctl
-//! holds ONE `processctl::OwnedLease` for its whole manifest
-//! (`tools/verifyctl/src/runner.rs:57`) and hands a child a one-shot borrow of
-//! it (`spawn_borrower(spec, "splitproof")`, `:252`). A verifyctl stage that
-//! booted weles would therefore deadlock on `run/rollout.lock` against
-//! verifyctl's own lease — so [`acquire_or_borrow`] extends weles's existing
-//! bit-compatibility claim to that borrow protocol. Same rule as the lock
-//! itself: the shape is COPIED from `tools/processctl/src/lock.rs`, never
-//! imported (zero-sharing), and must match what processctl actually writes:
+//! holds ONE `processctl::OwnedLease` for its whole manifest and lends it to
+//! each of the roles it named at acquire — `["splitproof", "weles"]`
+//! (`tools/verifyctl/src/runner.rs:57`) — one borrower alive at a time. A
+//! verifyctl stage that booted weles would otherwise deadlock on
+//! `run/rollout.lock` against verifyctl's own lease — so [`acquire_or_borrow`]
+//! extends weles's existing bit-compatibility claim to that borrow protocol.
+//! Same rule as the lock itself: the shape is COPIED from
+//! `tools/processctl/src/lock.rs`, never imported (zero-sharing), and must
+//! match what processctl actually writes:
 //!
 //! * The parent appends [`BORROWED_LEASE_ARG`] to the child's argv and writes
 //!   the JSON [`BorrowCredential`] into a private pipe on the child's stdin
@@ -39,8 +40,10 @@
 //! * The child validates the credential AGAINST THE LIVE WORLD
 //!   (`validate_credential`), then keeps the lock file open WITHOUT locking it.
 //!   A borrower never takes the byte-range lock — the parent still holds it.
-//! * One-shot is enforced by an exclusive-create marker beside the lock
-//!   (`borrow_marker_path`); the parent deletes it when its own lease drops.
+//! * The one-shot marker beside the lock (`borrow_marker_path`) is keyed PER
+//!   ROLE, so weles's borrow and splitproof's borrow of the same lease never
+//!   collide; the parent deletes every role's marker when its own lease drops.
+//!   Within one role it is still one-shot: a re-lent credential is refused.
 //!
 //! Anything that fails to validate REFUSES — a borrow never falls back to
 //! [`acquire`] and never proceeds unlocked.
@@ -53,6 +56,7 @@
 //! trusted-local-operator model (CLAUDE.md, "Dev tooling scope"), and a strict
 //! path equality would falsely refuse over path spelling (case/UNC/symlink).
 
+use std::collections::BTreeSet;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::marker::PhantomData;
@@ -159,10 +163,11 @@ thread_local! {
     static ACQUIRE_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-/// The borrower role weles claims. A parent must have named EXACTLY this role
-/// in processctl's `RolloutLock::acquire(path, run_id, allowed_borrower_role)`;
-/// a lease issued for any other role (verifyctl's current lease names
-/// `"splitproof"`, `tools/verifyctl/src/runner.rs:57`) is refused.
+/// The borrower role weles claims. A parent must have INCLUDED this role in the
+/// set it named in processctl's `RolloutLock::acquire(path, run_id, roles)`;
+/// a lease whose set omits it (e.g. one naming only `"splitproof"`) is refused.
+/// verifyctl's lease names `["splitproof", "weles"]`
+/// (`tools/verifyctl/src/runner.rs:57`).
 pub const BORROWER_ROLE: &str = "weles";
 
 /// The argv marker processctl appends to a borrower's command line
@@ -179,7 +184,13 @@ const BORROWED_LEASE_ARG: &str = "--processctl-borrowed-lease-v1";
 const CONSUMED_MARKER: &[u8] = b"processctl-borrowed-v1\n";
 
 /// `processctl::ROLLOUT_LOCK_VERSION` (`tools/processctl/src/lock.rs:23`).
-const OWNER_LEASE_VERSION: u32 = 1;
+///
+/// v2: the lease carries a SET of permitted borrower roles
+/// (`allowed_borrower_roles`) and dropped the dead `nonce`. `weles deploy`
+/// stages binaries that may lag the tree, so a stale weles speaking v1 is real —
+/// the version check below is what makes that a legible refusal instead of a
+/// `deny_unknown_fields` parse error.
+const OWNER_LEASE_VERSION: u32 = 2;
 /// `processctl::lock::MAX_CREDENTIAL_BYTES` / `MAX_METADATA_BYTES` (`:24-25`).
 const MAX_CREDENTIAL_BYTES: u64 = 64 * 1024;
 const MAX_METADATA_BYTES: u64 = 64 * 1024;
@@ -216,6 +227,9 @@ struct OwnerIdentity {
 /// `deny_unknown_fields` + the `PartialEq` comparison against the credential is
 /// deliberate fail-closed behaviour: if processctl's schema ever changes, weles
 /// REFUSES to borrow instead of guessing.
+/// `allowed_borrower_roles` is a SET (processctl v2): one verifyctl lease serves
+/// splitproof AND weles over its life. An EMPTY set means borrowing is disabled
+/// (processctl's `acquire_exclusive`, devctl's shape).
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 struct OwnerLease {
@@ -223,25 +237,23 @@ struct OwnerLease {
     owner: OwnerIdentity,
     run_id: String,
     lease_started_unix_nanos: u64,
-    allowed_borrower_role: Option<String>,
+    allowed_borrower_roles: BTreeSet<String>,
 }
 
 /// Mirror of `processctl::lock::BorrowCredential` (`tools/processctl/src/lock.rs:48-55`),
 /// as delivered over the private stdin pipe.
 ///
-/// `nonce` is carried because `deny_unknown_fields` on the producer's twin means
-/// it is part of the wire shape — but it is NOT a secret to check: processctl
-/// itself discards it (`create_consumption_marker` does `let _ = nonce;`, and
-/// the marker it writes is the fixed [`CONSUMED_MARKER`], not the nonce). Weles
-/// ignores it identically rather than inventing a check the producer's marker
-/// could never satisfy.
+/// It names no role: weles CLAIMS [`BORROWER_ROLE`], that claim is checked
+/// against `metadata.allowed_borrower_roles`, and the claim is what keys the
+/// per-role marker. (processctl v1 also carried a `nonce` here; it was dead on
+/// the producer side — never checked, never written to the marker — and v2
+/// deleted it rather than leave a field a reader would assume mattered.)
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct BorrowCredential {
     version: u32,
     lock_path: PathBuf,
     metadata: OwnerLease,
-    nonce: [u8; 32],
 }
 
 /// A validated one-shot borrow of a parent's rollout lease.
@@ -380,7 +392,8 @@ fn consume_inherited(expected_role: &str) -> Result<BorrowedLease> {
 /// makes, in the same order:
 ///
 /// 1. the wire version is one weles understands;
-/// 2. the lease was issued FOR THIS ROLE (not, say, `"splitproof"`);
+/// 2. the lease PERMITS THIS ROLE (its role set contains `"weles"`; a lease
+///    naming only `"splitproof"`, or none at all, is refused);
 /// 3. the lock file's metadata still matches the credential FIELD-FOR-FIELD
 ///    after parsing (processctl's own comparison — byte equality would be
 ///    brittle against pretty-printed JSON whitespace) — a re-acquired lock
@@ -389,10 +402,11 @@ fn consume_inherited(expected_role: &str) -> Result<BorrowedLease> {
 ///    (pid + executable + start marker, so a recycled PID is not the owner);
 /// 5. the owner still HOLDS the advisory lock — the identity being live is not
 ///    enough, the lease itself must be;
-/// 6. the borrow has not already been consumed (exclusive-create marker).
+/// 6. THIS ROLE's borrow has not already been consumed (exclusive-create marker
+///    keyed per role — another role's borrow of the same lease is irrelevant).
 ///
 /// Only then does a `BorrowedLease` exist. Note there is no `spawn_borrower`
-/// twin on this side: a borrow is one-shot and CANNOT be re-lent.
+/// twin on this side: weles is a borrower, never a lender.
 fn validate_credential(credential: BorrowCredential, expected_role: &str) -> Result<BorrowedLease> {
     if credential.version != OWNER_LEASE_VERSION {
         bail!(
@@ -401,15 +415,15 @@ fn validate_credential(credential: BorrowCredential, expected_role: &str) -> Res
             credential.version
         );
     }
-    if credential.metadata.allowed_borrower_role.as_deref() != Some(expected_role) {
+    if !credential
+        .metadata
+        .allowed_borrower_roles
+        .contains(expected_role)
+    {
         bail!(
-            "borrower role mismatch: this lease permits {:?}, weles claims {expected_role:?} — \
+            "borrower role mismatch: this lease permits {}, weles claims {expected_role:?} — \
              refusing to borrow",
-            credential
-                .metadata
-                .allowed_borrower_role
-                .as_deref()
-                .unwrap_or("<borrowing-disabled>")
+            describe_roles(&credential.metadata.allowed_borrower_roles)
         );
     }
 
@@ -446,12 +460,12 @@ fn validate_credential(credential: BorrowCredential, expected_role: &str) -> Res
         );
     }
 
-    let marker = borrow_marker_path(&credential.lock_path, &metadata);
+    let marker = borrow_marker_path(&credential.lock_path, &metadata, expected_role);
     if let Err(error) = imp::create_consumption_marker(&marker) {
         if error.kind() == std::io::ErrorKind::AlreadyExists {
             bail!(
-                "rollout lease {} has already been borrowed once (the one-shot marker {} exists) \
-                 — refusing to borrow it again",
+                "rollout lease {} has already been borrowed once as {expected_role:?} (the \
+                 one-shot marker {} exists) — refusing to borrow it again",
                 metadata.run_id,
                 marker.display()
             );
@@ -499,17 +513,34 @@ fn read_owner_lease(file: &mut File, path: &Path) -> Result<OwnerLease> {
     Ok(metadata)
 }
 
-/// Copied from `processctl::lock::borrow_marker_path` (`:630-639`) — the path
-/// MUST match, because the owner deletes exactly this name when its lease drops.
-fn borrow_marker_path(lock: &Path, metadata: &OwnerLease) -> PathBuf {
+/// Copied from `processctl::lock::borrow_marker_path` — the path MUST match,
+/// because the owner deletes exactly this name (for every role in its set) when
+/// its lease drops. `role` is part of the name: `run_id` and
+/// `lease_started_unix_nanos` are constant for a lease's whole life, so without
+/// it splitproof's borrow would consume weles's one-shot too.
+fn borrow_marker_path(lock: &Path, metadata: &OwnerLease, role: &str) -> PathBuf {
     let file_name = lock
         .file_name()
         .map(|name| name.to_string_lossy())
         .unwrap_or_default();
     lock.with_file_name(format!(
-        ".{file_name}.{}.{}.borrowed",
+        ".{file_name}.{}.{}.{role}.borrowed",
         metadata.run_id, metadata.lease_started_unix_nanos
     ))
+}
+
+/// Copied from `processctl::lock::describe_roles` — renders a lease's permitted
+/// role set for a refusal message; empty is the borrowing-disabled sentinel.
+fn describe_roles(roles: &BTreeSet<String>) -> String {
+    if roles.is_empty() {
+        "<borrowing-disabled>".to_string()
+    } else {
+        roles
+            .iter()
+            .map(|role| format!("{role:?}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
 }
 
 /// Copied from `processctl::lock::is_locked_by_other` (`:818-825`): the only

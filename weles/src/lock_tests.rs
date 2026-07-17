@@ -74,7 +74,9 @@ struct StagedOwner {
 }
 
 impl StagedOwner {
-    fn new(name: &str, role: Option<&str>) -> Self {
+    /// `roles` is the lease's permitted-role SET, exactly as processctl v2
+    /// writes it; empty means borrowing is disabled.
+    fn new(name: &str, roles: &[&str]) -> Self {
         let root = temp_root(name);
         std::fs::create_dir_all(root.join("run")).expect("create run dir");
         let lock_path = root.join("run").join("rollout.lock");
@@ -85,7 +87,7 @@ impl StagedOwner {
                 .expect("observe this process's own identity"),
             run_id: "parent-run".into(),
             lease_started_unix_nanos: 42,
-            allowed_borrower_role: role.map(str::to_string),
+            allowed_borrower_roles: roles.iter().map(|role| role.to_string()).collect(),
         };
 
         let mut held = imp::open_lock_file(&lock_path).expect("open the staged lock");
@@ -110,7 +112,6 @@ impl StagedOwner {
             version: OWNER_LEASE_VERSION,
             lock_path: self.lock_path.clone(),
             metadata: self.metadata.clone(),
-            nonce: [7; 32],
         }
     }
 
@@ -133,7 +134,7 @@ fn acquire_calls() -> usize {
 
 #[test]
 fn a_valid_borrow_never_re_acquires_the_lock() {
-    let owner = StagedOwner::new("borrow-valid", Some(BORROWER_ROLE));
+    let owner = StagedOwner::new("borrow-valid", &[BORROWER_ROLE]);
     let before = owner.on_disk();
 
     let borrowed = validate_credential(owner.credential(), BORROWER_ROLE).expect("valid borrow");
@@ -168,8 +169,9 @@ fn a_valid_borrow_never_re_acquires_the_lock() {
 
 #[test]
 fn a_borrow_naming_a_different_role_is_refused() {
-    // verifyctl's live lease says exactly this (runner.rs:57).
-    let owner = StagedOwner::new("borrow-role", Some("splitproof"));
+    // A lease that permits borrowing, but not by US: membership in the set is
+    // the authority, so a non-empty set that omits `weles` is still a refusal.
+    let owner = StagedOwner::new("borrow-role", &["splitproof"]);
     let error = validate_credential(owner.credential(), BORROWER_ROLE)
         .expect_err("a lease minted for another role must be refused");
     let message = format!("{error:#}");
@@ -181,8 +183,30 @@ fn a_borrow_naming_a_different_role_is_refused() {
 }
 
 #[test]
+fn weles_borrows_the_lease_verifyctl_actually_mints() {
+    // verifyctl's live lease (runner.rs:57) names BOTH roles. This is the
+    // shape weles meets in the Step 6 stage: `splitproof` is present alongside
+    // `weles`, and weles's claim must succeed anyway — set membership, not
+    // equality with a single permitted role (which is what v1 required, and
+    // why this borrow was impossible).
+    let owner = StagedOwner::new("borrow-verifyctl-shape", &["splitproof", "weles"]);
+    let borrowed = validate_credential(owner.credential(), BORROWER_ROLE)
+        .expect("weles must borrow a lease that also permits splitproof");
+    assert_eq!(borrowed.run_id(), "parent-run");
+    assert_eq!(acquire_calls(), 0, "a borrow must never reach acquire");
+
+    // weles claimed only ITS OWN one-shot: splitproof's borrow of the same
+    // lease is untouched, which is exactly what the per-role key buys.
+    assert!(borrow_marker_path(&owner.lock_path, &owner.metadata, BORROWER_ROLE).exists());
+    assert!(
+        !borrow_marker_path(&owner.lock_path, &owner.metadata, "splitproof").exists(),
+        "weles's borrow must not consume splitproof's one-shot on the same lease"
+    );
+}
+
+#[test]
 fn a_borrow_from_a_lease_that_forbids_borrowing_is_refused() {
-    let owner = StagedOwner::new("borrow-disabled", None);
+    let owner = StagedOwner::new("borrow-disabled", &[]);
     let error = validate_credential(owner.credential(), BORROWER_ROLE)
         .expect_err("a lease that permits no borrower must be refused");
     assert!(
@@ -194,7 +218,7 @@ fn a_borrow_from_a_lease_that_forbids_borrowing_is_refused() {
 
 #[test]
 fn a_borrow_whose_parent_identity_is_absent_is_refused() {
-    let owner = StagedOwner::new("borrow-dead", Some(BORROWER_ROLE));
+    let owner = StagedOwner::new("borrow-dead", &[BORROWER_ROLE]);
     let mut credential = owner.credential();
     // A pid above every OS's pid_max: observably not a live process, on either
     // platform, without racing a real one.
@@ -219,14 +243,14 @@ fn a_borrow_whose_parent_identity_is_absent_is_refused() {
     // claimed last, strictly after every check. Were that order reversed, a
     // transient refusal would permanently poison a lease that is otherwise fine.
     assert!(
-        !borrow_marker_path(&owner.lock_path, &owner.metadata).exists(),
+        !borrow_marker_path(&owner.lock_path, &owner.metadata, BORROWER_ROLE).exists(),
         "a refused borrow must not consume the lease's one-shot marker"
     );
 }
 
 #[test]
 fn a_borrow_whose_parent_identity_is_wrong_is_refused() {
-    let owner = StagedOwner::new("borrow-recycled", Some(BORROWER_ROLE));
+    let owner = StagedOwner::new("borrow-recycled", &[BORROWER_ROLE]);
     let mut credential = owner.credential();
     // The pid IS live (it is us) but it is NOT the process that took the lease:
     // the recycled-pid case, which pid alone could never catch.
@@ -249,7 +273,7 @@ fn a_borrow_whose_parent_identity_is_wrong_is_refused() {
 
 #[test]
 fn a_borrow_whose_credential_disagrees_with_the_lock_file_is_refused() {
-    let owner = StagedOwner::new("borrow-stale", Some(BORROWER_ROLE));
+    let owner = StagedOwner::new("borrow-stale", &[BORROWER_ROLE]);
     let mut credential = owner.credential();
     credential.metadata.run_id = "a-lease-that-has-since-been-replaced".into();
 
@@ -266,7 +290,7 @@ fn a_borrow_whose_credential_disagrees_with_the_lock_file_is_refused() {
 fn a_borrow_is_refused_once_the_parent_has_released_the_lock() {
     // The parent identity is live and the metadata matches — only the LEASE is
     // over. Identity alone is not the lease; this is the branch that says so.
-    let owner = StagedOwner::new("borrow-unlocked", Some(BORROWER_ROLE));
+    let owner = StagedOwner::new("borrow-unlocked", &[BORROWER_ROLE]);
     imp::unlock(&owner.held).expect("release the staged owner's lock");
 
     let error = validate_credential(owner.credential(), BORROWER_ROLE)
@@ -279,24 +303,25 @@ fn a_borrow_is_refused_once_the_parent_has_released_the_lock() {
 }
 
 #[test]
-fn a_borrow_is_one_shot() {
-    let owner = StagedOwner::new("borrow-once", Some(BORROWER_ROLE));
+fn a_borrow_is_one_shot_within_its_own_role() {
+    let owner = StagedOwner::new("borrow-once", &[BORROWER_ROLE]);
     let first = validate_credential(owner.credential(), BORROWER_ROLE).expect("first borrow");
 
     let error = validate_credential(owner.credential(), BORROWER_ROLE)
-        .expect_err("the same lease must not be borrowable twice");
+        .expect_err("the same lease must not be borrowable twice as the same role");
     assert!(
         format!("{error:#}").contains("already been borrowed once"),
         "got: {error:#}"
     );
 
     // The marker's NAME is processctl's, because the owner deletes exactly this
-    // path when its lease drops; the CONTENTS are processctl's, because the
-    // owner re-reads and compares them before deleting.
-    let marker = borrow_marker_path(&owner.lock_path, &owner.metadata);
+    // path (for every role in its set) when its lease drops; the CONTENTS are
+    // processctl's, because the owner re-reads and compares them before
+    // deleting. The `.weles.` segment is the per-role key.
+    let marker = borrow_marker_path(&owner.lock_path, &owner.metadata, BORROWER_ROLE);
     assert_eq!(
         marker.file_name().expect("marker file name").to_string_lossy(),
-        ".rollout.lock.parent-run.42.borrowed"
+        ".rollout.lock.parent-run.42.weles.borrowed"
     );
     assert_eq!(
         std::fs::read(&marker).expect("read the one-shot marker"),
@@ -309,23 +334,29 @@ fn a_borrow_is_one_shot() {
 
 #[test]
 fn a_credential_of_an_unknown_version_is_refused() {
-    let owner = StagedOwner::new("borrow-version", Some(BORROWER_ROLE));
-    let mut credential = owner.credential();
-    credential.version = OWNER_LEASE_VERSION + 1;
-    let error = validate_credential(credential, BORROWER_ROLE)
-        .expect_err("an unknown wire version must be refused, never guessed at");
-    assert!(format!("{error:#}").contains("unsupported rollout lease version 2"), "got: {error:#}");
+    let owner = StagedOwner::new("borrow-version", &[BORROWER_ROLE]);
+    for version in [OWNER_LEASE_VERSION - 1, OWNER_LEASE_VERSION + 1] {
+        let mut credential = owner.credential();
+        credential.version = version;
+        let error = validate_credential(credential, BORROWER_ROLE)
+            .expect_err("an unknown wire version must be refused, never guessed at");
+        assert!(
+            format!("{error:#}").contains(&format!("unsupported rollout lease version {version}")),
+            "got: {error:#}"
+        );
+    }
     assert_eq!(acquire_calls(), 0);
 }
 
 #[test]
-fn the_credential_wire_shape_is_processctls() {
-    // Zero-sharing means this shape exists twice, hand-copied. Pin the exact
-    // JSON weles must be able to read; the producer is
-    // `processctl::lock::BorrowCredential` + its `LockMetadata`/`ProcessIdentity`
-    // (deny_unknown_fields on both sides, so any drift is a loud refusal).
-    let nonce = vec![0u8; 32];
-    let json = serde_json::json!({
+fn a_v1_credential_meeting_this_v2_weles_refuses_by_version_not_by_parse_error() {
+    // `weles deploy` stages binaries that may lag the tree, so a v1 credential
+    // meeting a v2 weles is a real pairing, not a hypothetical. Without the
+    // version bump, `deny_unknown_fields` would still refuse — but as an opaque
+    // parse error about `allowed_borrower_role`. The bump is what makes the
+    // refusal legible. The v1 shape (single `allowed_borrower_role`, `nonce`) is
+    // spelled out literally: weles no longer has a type for it.
+    let v1 = serde_json::json!({
         "version": 1,
         "lock_path": "/tmp/run/rollout.lock",
         "metadata": {
@@ -335,34 +366,100 @@ fn the_credential_wire_shape_is_processctls() {
             "lease_started_unix_nanos": 5,
             "allowed_borrower_role": "weles"
         },
-        "nonce": nonce
+        "nonce": vec![0u8; 32]
+    });
+    // A v1 credential cannot even be parsed into the v2 shape — so the version
+    // check must be reachable from a value weles CAN hold, which is what the
+    // typed test above pins. What this test proves is the other half: the v1
+    // wire bytes are not silently readable as v2.
+    assert!(
+        serde_json::from_value::<BorrowCredential>(v1).is_err(),
+        "a v1 credential must never deserialize as v2 — the fields it lacks are load-bearing"
+    );
+
+    // And the owner-side twin: a v1 lease sitting in the lock file is refused by
+    // the VERSION check with a legible message, not by a field-shape surprise.
+    let owner = StagedOwner::new("borrow-v1-lease", &[BORROWER_ROLE]);
+    std::fs::write(
+        &owner.lock_path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "version": 1,
+            "owner": { "pid": 17, "executable": "/tmp/verifyctl", "started": 99 },
+            "run_id": "abc",
+            "lease_started_unix_nanos": 5,
+            "allowed_borrower_role": "weles"
+        }))
+        .expect("serialize a v1 lease"),
+    )
+    .expect("stage a v1 lease");
+    let error = validate_credential(owner.credential(), BORROWER_ROLE)
+        .expect_err("a v1 lease must not be borrowed by a v2 weles");
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("lease version 1") || message.contains("parse the owning tool's lease"),
+        "got: {message}"
+    );
+    assert_eq!(acquire_calls(), 0);
+}
+
+#[test]
+fn the_credential_wire_shape_is_processctls() {
+    // Zero-sharing means this shape exists twice, hand-copied. Pin the exact
+    // JSON weles must be able to read; the producer is
+    // `processctl::lock::BorrowCredential` + its `LockMetadata`/`ProcessIdentity`
+    // (deny_unknown_fields on both sides, so any drift is a loud refusal).
+    // This is verifyctl's real lease on the wire: version 2, a role SET holding
+    // both borrowers, and no `nonce`.
+    let json = serde_json::json!({
+        "version": 2,
+        "lock_path": "/tmp/run/rollout.lock",
+        "metadata": {
+            "version": 2,
+            "owner": { "pid": 17, "executable": "/tmp/verifyctl", "started": 99 },
+            "run_id": "abc",
+            "lease_started_unix_nanos": 5,
+            "allowed_borrower_roles": ["splitproof", "weles"]
+        }
     });
     let credential: BorrowCredential =
         serde_json::from_value(json).expect("weles must parse processctl's credential shape");
     assert_eq!(credential.metadata.owner.started, StartMarker(99));
-    assert_eq!(credential.metadata.allowed_borrower_role.as_deref(), Some("weles"));
+    assert!(credential.metadata.allowed_borrower_roles.contains("weles"));
+    assert!(credential.metadata.allowed_borrower_roles.contains("splitproof"));
 
-    // A lease that permits no borrower is `null`, not an absent field.
+    // A lease that permits no borrower is an EMPTY array, not `null` and not an
+    // absent field (processctl's `acquire_exclusive` serializes a BTreeSet).
     let disabled: OwnerLease = serde_json::from_value(serde_json::json!({
-        "version": 1,
+        "version": 2,
         "owner": { "pid": 17, "executable": "/tmp/verifyctl", "started": 99 },
         "run_id": "abc",
         "lease_started_unix_nanos": 5,
-        "allowed_borrower_role": null
+        "allowed_borrower_roles": []
     }))
     .expect("parse a borrowing-disabled lease");
-    assert_eq!(disabled.allowed_borrower_role, None);
+    assert!(disabled.allowed_borrower_roles.is_empty());
 
     // Fail-closed on drift rather than guess.
     let drifted = serde_json::from_value::<OwnerLease>(serde_json::json!({
-        "version": 1,
+        "version": 2,
         "owner": { "pid": 17, "executable": "/tmp/verifyctl", "started": 99 },
         "run_id": "abc",
         "lease_started_unix_nanos": 5,
-        "allowed_borrower_role": "weles",
+        "allowed_borrower_roles": ["weles"],
         "a_field_processctl_grew_later": true
     }));
     assert!(drifted.is_err(), "an unknown field must refuse, not be ignored");
+
+    // The v1 field name is now drift like any other — not a silently tolerated
+    // legacy alias.
+    let v1_shape = serde_json::from_value::<OwnerLease>(serde_json::json!({
+        "version": 2,
+        "owner": { "pid": 17, "executable": "/tmp/verifyctl", "started": 99 },
+        "run_id": "abc",
+        "lease_started_unix_nanos": 5,
+        "allowed_borrower_role": "weles"
+    }));
+    assert!(v1_shape.is_err(), "the v1 singular field must not parse as v2");
 }
 
 #[test]
@@ -435,7 +532,7 @@ fn a_borrow_that_failed_to_validate_never_becomes_an_acquire() {
 
 #[test]
 fn a_validated_borrow_yields_a_borrowed_lease_without_acquiring() {
-    let owner = StagedOwner::new("lease-from-borrowed", Some(BORROWER_ROLE));
+    let owner = StagedOwner::new("lease-from-borrowed", &[BORROWER_ROLE]);
     let borrowed = validate_credential(owner.credential(), BORROWER_ROLE).expect("valid borrow");
     let before = acquire_calls();
 

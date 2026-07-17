@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -7,7 +8,6 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -20,7 +20,12 @@ pub fn rollout_lock_path(workspace_root: &Path) -> PathBuf {
     workspace_root.join("run").join("rollout.lock")
 }
 
-pub const ROLLOUT_LOCK_VERSION: u32 = 1;
+/// Bumped 1 -> 2 when the lease grew from ONE permitted borrower role to a SET
+/// of them (`LockMetadata::allowed_borrower_roles`). The wire shape changed, and
+/// `weles deploy` stages binaries that may lag the tree — a stale `deploy/weles`
+/// speaking v1 meeting a v2 lease must refuse with a legible version message
+/// rather than a `deny_unknown_fields` parse error.
+pub const ROLLOUT_LOCK_VERSION: u32 = 2;
 const MAX_CREDENTIAL_BYTES: u64 = 64 * 1024;
 const MAX_METADATA_BYTES: u64 = 64 * 1024;
 const CREDENTIAL_DELIVERY_TIMEOUT: Duration = Duration::from_secs(2);
@@ -35,6 +40,13 @@ type OwnerDropHook = (PathBuf, Box<dyn FnOnce() + Send>);
 #[cfg(test)]
 static OWNER_DROP_HOOK: std::sync::Mutex<Option<OwnerDropHook>> = std::sync::Mutex::new(None);
 
+/// The set of roles this lease may be lent to. EMPTY means borrowing is
+/// disabled — the `acquire_exclusive` (devctl) shape.
+///
+/// A set, not a single `Option<String>`: verifyctl's one lease must serve more
+/// than one borrower over its life (splitproof AND weles). The roles are frozen
+/// at acquire and are the sole authority on who may borrow; the marker below is
+/// keyed per role, so one role's borrow never consumes another's.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 struct LockMetadata {
@@ -42,16 +54,21 @@ struct LockMetadata {
     owner: ProcessIdentity,
     run_id: String,
     lease_started_unix_nanos: u64,
-    allowed_borrower_role: Option<String>,
+    allowed_borrower_roles: BTreeSet<String>,
 }
 
+/// The credential handed to a borrower over the private stdin pipe.
+///
+/// It names no role of its own: the borrower CLAIMS a role
+/// (`consume_inherited(expected_role)`), that claim is checked against
+/// `metadata.allowed_borrower_roles`, and the claim is what keys the per-role
+/// one-shot marker. One authority for the role, not two that could disagree.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct BorrowCredential {
     version: u32,
     lock_path: PathBuf,
     metadata: LockMetadata,
-    nonce: [u8; 32],
 }
 
 #[derive(Debug, Error)]
@@ -60,8 +77,6 @@ pub enum LeaseError {
     InvalidField(String),
     #[error("rollout lock is already owned")]
     AlreadyOwned,
-    #[error("borrower credential was already issued")]
-    BorrowerAlreadyIssued,
     #[error("this rollout lease does not permit borrowing")]
     BorrowingDisabled,
     #[error("borrower role mismatch: expected {expected}, received {received}")]
@@ -98,7 +113,6 @@ pub struct OwnedLease {
     file: Option<File>,
     path: PathBuf,
     metadata: LockMetadata,
-    borrower_issued: bool,
 }
 
 pub struct BorrowedLease {
@@ -113,33 +127,37 @@ pub struct BorrowedChild<'lease> {
 }
 
 impl RolloutLock {
+    /// A lease that may never be lent — the devctl shape.
     pub fn acquire_exclusive(
         path: impl Into<PathBuf>,
         run_id: impl Into<String>,
     ) -> Result<OwnedLease, LeaseError> {
-        Self::acquire_inner(path.into(), run_id.into(), None)
+        Self::acquire_inner(path.into(), run_id.into(), BTreeSet::new())
     }
 
+    /// A lease lendable, one borrower alive at a time, to each of `roles` —
+    /// re-issuable per role over the lease's whole life. An empty `roles`
+    /// disables borrowing exactly as [`Self::acquire_exclusive`] does.
     pub fn acquire(
         path: impl Into<PathBuf>,
         run_id: impl Into<String>,
-        allowed_borrower_role: impl Into<String>,
+        roles: impl IntoIterator<Item = impl Into<String>>,
     ) -> Result<OwnedLease, LeaseError> {
         Self::acquire_inner(
             path.into(),
             run_id.into(),
-            Some(allowed_borrower_role.into()),
+            roles.into_iter().map(Into::into).collect(),
         )
     }
 
     fn acquire_inner(
         path: PathBuf,
         run_id: String,
-        allowed_borrower_role: Option<String>,
+        allowed_borrower_roles: BTreeSet<String>,
     ) -> Result<OwnedLease, LeaseError> {
         validate_identifier("run id", &run_id)
             .map_err(|error| LeaseError::InvalidField(error.to_string()))?;
-        if let Some(role) = &allowed_borrower_role {
+        for role in &allowed_borrower_roles {
             validate_identifier("borrower role", role)
                 .map_err(|error| LeaseError::InvalidField(error.to_string()))?;
         }
@@ -173,7 +191,7 @@ impl RolloutLock {
             owner,
             run_id,
             lease_started_unix_nanos: started,
-            allowed_borrower_role,
+            allowed_borrower_roles,
         };
         if let Err(error) = write_metadata(&mut file, &metadata) {
             let _ = unlock(&file);
@@ -183,7 +201,6 @@ impl RolloutLock {
             file: Some(file),
             path,
             metadata,
-            borrower_issued: false,
         })
     }
 }
@@ -197,30 +214,37 @@ impl OwnedLease {
         &self.metadata.run_id
     }
 
-    pub fn allowed_borrower_role(&self) -> Option<&str> {
-        self.metadata.allowed_borrower_role.as_deref()
+    pub fn allowed_borrower_roles(&self) -> &BTreeSet<String> {
+        &self.metadata.allowed_borrower_roles
     }
 
+    /// Lends this lease to one child running as `role`.
+    ///
+    /// "At most one borrower alive at a time" is the BORROW CHECKER's: the
+    /// returned [`BorrowedChild`] holds `&'lease mut self`, so a second
+    /// `spawn_borrower` cannot even be named while the first child lives. There
+    /// is deliberately no `borrower_issued` flag beside that — a second
+    /// mechanism for a property the lifetime already enforces would be a hack on
+    /// a hack. Once the child is dropped, the lease can be lent again.
+    ///
+    /// What remains one-shot is the per-role consumption MARKER: it catches
+    /// stage code that accidentally re-lends the SAME role's credential, loudly
+    /// and cross-process (the child dies with [`LeaseError::BorrowerReplay`]).
     pub fn spawn_borrower<'lease>(
         &'lease mut self,
         mut spec: SpawnSpec,
         role: &str,
     ) -> Result<BorrowedChild<'lease>, LeaseError> {
-        if self.borrower_issued {
-            return Err(LeaseError::BorrowerAlreadyIssued);
-        }
-        let Some(expected_role) = self.metadata.allowed_borrower_role.as_deref() else {
+        if self.metadata.allowed_borrower_roles.is_empty() {
             return Err(LeaseError::BorrowingDisabled);
-        };
-        if role != expected_role {
+        }
+        if !self.metadata.allowed_borrower_roles.contains(role) {
             return Err(LeaseError::WrongRole {
-                expected: expected_role.to_string(),
+                expected: describe_roles(&self.metadata.allowed_borrower_roles),
                 received: role.to_string(),
             });
         }
-        let mut nonce = [0u8; 32];
-        rand::rngs::OsRng.fill_bytes(&mut nonce);
-        let credential = self.credential(nonce);
+        let credential = self.credential();
         let bytes = serde_json::to_vec(&credential)?;
         if bytes.len() as u64 > MAX_CREDENTIAL_BYTES {
             return Err(LeaseError::InvalidField(
@@ -229,14 +253,7 @@ impl OwnedLease {
         }
         let (input, writer) = credential_pipe()?;
         spec.args.push(OsString::from(BORROWED_LEASE_ARG));
-        self.borrower_issued = true;
-        let mut child = match OwnedChild::spawn_with_input(spec, input) {
-            Ok(child) => child,
-            Err(error) => {
-                self.borrower_issued = false;
-                return Err(error.into());
-            }
-        };
+        let mut child = OwnedChild::spawn_with_input(spec, input)?;
         let delivery = deliver_credential(writer, bytes, CREDENTIAL_DELIVERY_TIMEOUT, &mut child);
         if let Err(error) = delivery {
             let cleanup = child.shutdown(crate::ShutdownPolicy {
@@ -247,9 +264,11 @@ impl OwnedLease {
             if let Err(cleanup) = cleanup {
                 return Err(cleanup.into());
             }
-            let marker = borrow_marker_path(&self.path, &self.metadata);
-            cleanup_consumption_marker(&marker);
-            self.borrower_issued = false;
+            // A child that never received the whole credential never claimed the
+            // marker — but it MAY have, if it died between claiming and our
+            // delivery error. Clear this role's marker so the retry that follows
+            // a delivery failure is not refused as a replay.
+            cleanup_consumption_marker(&borrow_marker_path(&self.path, &self.metadata, role));
             return Err(error);
         }
         Ok(BorrowedChild {
@@ -258,18 +277,27 @@ impl OwnedLease {
         })
     }
 
-    fn credential(&self, nonce: [u8; 32]) -> BorrowCredential {
+    fn credential(&self) -> BorrowCredential {
         BorrowCredential {
             version: ROLLOUT_LOCK_VERSION,
             lock_path: self.path.clone(),
             metadata: self.metadata.clone(),
-            nonce,
         }
     }
 
     #[cfg(test)]
     pub(crate) fn credential_for_test(&self) -> BorrowCredential {
-        self.credential([7; 32])
+        self.credential()
+    }
+}
+
+/// Renders the permitted role set for an error message. Empty renders as the
+/// borrowing-disabled sentinel rather than an empty string.
+fn describe_roles(roles: &BTreeSet<String>) -> String {
+    if roles.is_empty() {
+        "<borrowing-disabled>".to_string()
+    } else {
+        roles.iter().cloned().collect::<Vec<_>>().join(", ")
     }
 }
 
@@ -458,7 +486,12 @@ impl Drop for OwnedLease {
         if let Some(hook) = hook {
             hook();
         }
-        cleanup_consumption_marker(&borrow_marker_path(&self.path, &self.metadata));
+        // Every role's marker, not just one: the set is bounded and enumerable,
+        // and the owner is the ONLY reliable reaper. A borrower cannot clean up
+        // after itself — `kill -9` defeats any child-side drop.
+        for role in &self.metadata.allowed_borrower_roles {
+            cleanup_consumption_marker(&borrow_marker_path(&self.path, &self.metadata, role));
+        }
     }
 }
 
@@ -553,12 +586,13 @@ pub(crate) fn validate_credential(
     if credential.version != ROLLOUT_LOCK_VERSION {
         return Err(LeaseError::UnsupportedVersion(credential.version));
     }
-    if credential.metadata.allowed_borrower_role.as_deref() != Some(expected_role) {
+    if !credential
+        .metadata
+        .allowed_borrower_roles
+        .contains(expected_role)
+    {
         return Err(LeaseError::WrongRole {
-            expected: credential
-                .metadata
-                .allowed_borrower_role
-                .unwrap_or_else(|| "<borrowing-disabled>".into()),
+            expected: describe_roles(&credential.metadata.allowed_borrower_roles),
             received: expected_role.to_string(),
         });
     }
@@ -572,8 +606,8 @@ pub(crate) fn validate_credential(
     if observed != metadata.owner || !is_locked_by_other(&lock_file)? {
         return Err(LeaseError::OwnerNotLive);
     }
-    let marker = borrow_marker_path(&credential.lock_path, &metadata);
-    create_consumption_marker(&marker, &credential.nonce)?;
+    let marker = borrow_marker_path(&credential.lock_path, &metadata, expected_role);
+    create_consumption_marker(&marker)?;
     Ok(BorrowedLease {
         _lock_file: lock_file,
         metadata,
@@ -627,13 +661,17 @@ fn read_metadata(file: &mut File) -> Result<LockMetadata, LeaseError> {
     Ok(metadata)
 }
 
-fn borrow_marker_path(lock: &Path, metadata: &LockMetadata) -> PathBuf {
+/// The one-shot marker for ONE role of one lease. `run_id` +
+/// `lease_started_unix_nanos` are constant for the lease's whole life, so
+/// without `role` in the name every borrower of a lease would share a single
+/// marker and the second role would be refused as a replay.
+fn borrow_marker_path(lock: &Path, metadata: &LockMetadata, role: &str) -> PathBuf {
     let file_name = lock
         .file_name()
         .map(|name| name.to_string_lossy())
         .unwrap_or_default();
     lock.with_file_name(format!(
-        ".{file_name}.{}.{}.borrowed",
+        ".{file_name}.{}.{}.{role}.borrowed",
         metadata.run_id, metadata.lease_started_unix_nanos
     ))
 }
@@ -1073,7 +1111,7 @@ fn read_credential_to_eof(input: &mut File) -> Result<Vec<u8>, LeaseError> {
 }
 
 #[cfg(target_os = "linux")]
-fn create_consumption_marker(path: &Path, nonce: &[u8; 32]) -> Result<(), LeaseError> {
+fn create_consumption_marker(path: &Path) -> Result<(), LeaseError> {
     use std::os::unix::fs::OpenOptionsExt;
     let mut file = std::fs::OpenOptions::new()
         .create_new(true)
@@ -1091,7 +1129,6 @@ fn create_consumption_marker(path: &Path, nonce: &[u8; 32]) -> Result<(), LeaseE
                 }
             }
         })?;
-    let _ = nonce;
     file.write_all(CONSUMED_MARKER)
         .map_err(|source| LeaseError::Io {
             operation: "write one-shot borrower marker",
@@ -1103,7 +1140,7 @@ fn create_consumption_marker(path: &Path, nonce: &[u8; 32]) -> Result<(), LeaseE
 }
 
 #[cfg(windows)]
-fn create_consumption_marker(path: &Path, nonce: &[u8; 32]) -> Result<(), LeaseError> {
+fn create_consumption_marker(path: &Path) -> Result<(), LeaseError> {
     use std::os::windows::io::FromRawHandle;
     let security = crate::state::OwnerOnlySecurity::new().map_err(|source| LeaseError::Io {
         operation: "build borrower marker owner DACL",
@@ -1120,7 +1157,6 @@ fn create_consumption_marker(path: &Path, nonce: &[u8; 32]) -> Result<(), LeaseE
         }
     })?;
     let mut file = unsafe { File::from_raw_handle(handle) };
-    let _ = nonce;
     file.write_all(CONSUMED_MARKER)
         .map_err(|source| LeaseError::Io {
             operation: "write one-shot borrower marker",

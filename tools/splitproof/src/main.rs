@@ -474,7 +474,7 @@ fn main() -> std::process::ExitCode {
         Ok(None) => match RolloutLock::acquire(
             rollout_lock_path(&root),
             format!("splitproof-{}", std::process::id()),
-            "splitproof",
+            ["splitproof"],
         ) {
             Ok(lease) => ActiveLease::Owned(lease),
             Err(error) => {

@@ -61,7 +61,7 @@ fn self_test() -> Result<(), Box<dyn std::error::Error>> {
     let mut owner = RolloutLock::acquire(
         directory.join("rollout.lock"),
         "marker-fixture",
-        "splitproof",
+        ["splitproof"],
     )?;
     let ready = directory.join("borrower.ready");
     let mut borrower = owner.spawn_borrower(

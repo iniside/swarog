@@ -377,8 +377,12 @@ mod linux_fixture {
     }
 
     fn inherited_lease_test(dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
-        let mut owner =
-            RolloutLock::acquire(dir.join("rollout.lock"), "fixture-borrow", "splitproof")?;
+        // verifyctl's real lease shape: ONE lease, several roles.
+        let mut owner = RolloutLock::acquire(
+            dir.join("rollout.lock"),
+            "fixture-borrow",
+            ["splitproof", "weles"],
+        )?;
         let ready = dir.join("borrower.ready");
         let error_log = ready.with_extension("err");
         assert!(matches!(
@@ -387,7 +391,7 @@ mod linux_fixture {
         ));
         let mut borrower = owner.spawn_borrower(borrower_spec(&ready)?, "splitproof")?;
         assert!(matches!(
-            RolloutLock::acquire(dir.join("rollout.lock"), "competing-run", "splitproof"),
+            RolloutLock::acquire(dir.join("rollout.lock"), "competing-run", ["splitproof"]),
             Err(LeaseError::AlreadyOwned)
         ));
         let deadline = Instant::now() + Duration::from_secs(10);
@@ -411,24 +415,55 @@ mod linux_fixture {
             return Err("borrower did not consume the inherited lease".into());
         }
         drop(borrower);
-        assert!(
-            std::fs::read_dir(dir)?.any(|entry| entry.is_ok_and(|entry| entry
-                .path()
-                .extension()
-                .is_some_and(|value| value == "borrowed")))
-        );
-        assert!(matches!(
-            owner.spawn_borrower(borrower_spec(&ready)?, "splitproof"),
-            Err(LeaseError::BorrowerAlreadyIssued)
-        ));
+        assert_eq!(markers(dir)?, 1, "the splitproof borrow claimed its own marker");
+
+        // The SAME lease, lent again to a DIFFERENT role — impossible before the
+        // role set + per-role marker, and the whole point of both. Live and
+        // cross-process: a real child really consumes a real second credential.
+        let weles_ready = dir.join("weles-borrower.ready");
+        let mut weles = owner.spawn_borrower(borrower_spec_as(&weles_ready, "weles")?, "weles")?;
+        wait_file(&weles_ready)?;
+        if std::fs::read_to_string(&weles_ready)? != "borrowed-ok"
+            || !wait_borrowed_status(&mut weles)?.success()
+        {
+            let detail = std::fs::read_to_string(weles_ready.with_extension("err"))?;
+            return Err(format!("second role could not borrow the same lease: {detail}").into());
+        }
+        drop(weles);
+        assert_eq!(markers(dir)?, 2, "each role burned its OWN one-shot, not a shared one");
+
+        // Re-lending the SAME role is the stage-code bug the marker still
+        // catches: the parent hands out the credential (the borrow checker only
+        // forbids two borrowers ALIVE at once), and the child dies on the
+        // already-claimed marker rather than joining a rollout twice.
+        let replay_ready = dir.join("replay-borrower.ready");
+        let mut replay = owner.spawn_borrower(borrower_spec(&replay_ready)?, "splitproof")?;
+        if wait_borrowed_status(&mut replay)?.success() || replay_ready.exists() {
+            return Err("a re-lent credential for the same role was consumed twice".into());
+        }
+        drop(replay);
+
         drop(owner);
-        assert!(
-            !std::fs::read_dir(dir)?.any(|entry| entry.is_ok_and(|entry| entry
-                .path()
-                .extension()
-                .is_some_and(|value| value == "borrowed")))
+        assert_eq!(
+            markers(dir)?,
+            0,
+            "the owner reaps EVERY role's marker on drop — a borrower cannot clean up after itself"
         );
         Ok(())
+    }
+
+    /// One-shot markers currently sitting beside the fixture's lock.
+    fn markers(dir: &Path) -> Result<usize, Box<dyn std::error::Error>> {
+        Ok(std::fs::read_dir(dir)?
+            .filter(|entry| {
+                entry.as_ref().is_ok_and(|entry| {
+                    entry
+                        .path()
+                        .extension()
+                        .is_some_and(|value| value == "borrowed")
+                })
+            })
+            .count())
     }
 
     fn oversized_credential_delivery_test(dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
@@ -439,7 +474,7 @@ mod linux_fixture {
         std::fs::create_dir_all(&long_dir)?;
         let lock_path = long_dir.join("rollout.lock");
         assert!(lock_path.as_os_str().len() > 3650);
-        let mut owner = RolloutLock::acquire(&lock_path, "fixture-borrow", "splitproof")?;
+        let mut owner = RolloutLock::acquire(&lock_path, "fixture-borrow", ["splitproof"])?;
         let ignored_ready = dir.join("oversized-ignored.ready");
         let ignored_spec = SpawnSpec {
             label: "credential-non-reader".into(),
@@ -492,6 +527,12 @@ mod linux_fixture {
     }
 
     fn borrower_spec(ready: &Path) -> Result<SpawnSpec, Box<dyn std::error::Error>> {
+        borrower_spec_as(ready, "splitproof")
+    }
+
+    /// A borrower that CLAIMS `role`. The role is an argument because one lease
+    /// now serves several roles, and each child must claim its own.
+    fn borrower_spec_as(ready: &Path, role: &str) -> Result<SpawnSpec, Box<dyn std::error::Error>> {
         let mut env = BTreeMap::new();
         if let Some(path) = std::env::var_os("PATH") {
             env.insert(OsString::from("PATH"), path);
@@ -502,6 +543,7 @@ mod linux_fixture {
             args: vec![
                 OsString::from("lease-borrower"),
                 ready.as_os_str().to_owned(),
+                OsString::from(role),
             ],
             env,
             cwd: std::env::current_dir()?,
@@ -512,11 +554,14 @@ mod linux_fixture {
     }
 
     fn lease_borrower(args: Vec<OsString>) -> Result<(), Box<dyn std::error::Error>> {
-        let lease = BorrowedLease::consume_inherited_if_present("splitproof")?
+        let role = args
+            .get(1)
+            .and_then(|arg| arg.to_str())
+            .unwrap_or("splitproof")
+            .to_string();
+        let lease = BorrowedLease::consume_inherited_if_present(&role)?
             .ok_or("borrower marker was not detected")?;
-        if lease.run_id() != "fixture-borrow"
-            || BorrowedLease::consume_inherited("splitproof").is_ok()
-        {
+        if lease.run_id() != "fixture-borrow" || BorrowedLease::consume_inherited(&role).is_ok() {
             return Err("borrower credential was wrong or consumable twice".into());
         }
         let ready = args
