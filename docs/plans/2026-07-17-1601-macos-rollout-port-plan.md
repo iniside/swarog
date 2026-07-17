@@ -783,3 +783,67 @@ the process group and reparents to launchd. Note the baseline: Windows already
 hardcodes `completion_forced_remainder → false` (`windows.rs:278`), so darwin with
 `forced_group` is **stronger** than the platform `[W2]` has always run on — the honest
 framing is "weaker than Linux, stronger than Windows", not "quietly weaker".
+
+## Step 5 erratum
+
+**Decision: Plan A adopted — `posix_spawn` with `POSIX_SPAWN_START_SUSPENDED |
+POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_CLOEXEC_DEFAULT`. Plan B not taken.** Proven on
+this Mac (macOS 26.5.1, aarch64) with a throwaway libc-only probe; every symbol
+verified against the pinned `libc-0.2.186` apple module before use. The probe was
+re-run independently by the main context — output reproduces exactly.
+
+**Q1 (exec-boundary handshake) — confirmed.** A suspended `posix_spawn` lets the
+parent read `(pid, proc_pidpath, PROC_PIDTBSDINFO start-time)` while the child is
+`SSTOP`, *before its image runs* (a marker pipe the child writes on entry returns
+`EAGAIN`/errno 35 pre-resume, `"STARTED"` post-`SIGCONT`), then resumes via
+`kill(pid, SIGCONT)`. Exact replacement for Linux's `PTRACE_TRACEME` +
+`waitpid(WUNTRACED)` SIGTRAP-at-exec (`guardian.rs:100-124,169-189`), and cleaner in
+one respect: the guardian can register `EVFILT_PROC`/`NOTE_EXIT` on its kqueue
+*before* `SIGCONT`, removing the spawn→watch race.
+
+**Q2 (zombie identity read-back) — NO, and it is a non-issue (parity with Linux).**
+On a confirmed unreaped zombie (`waitid(P_PID, WEXITED|WNOWAIT)`), both
+`proc_pidinfo(PROC_PIDTBSDINFO)` and `proc_pidpath` fail with `ESRCH` (n=0); libproc
+drops task/BSD info at exit, before reaping. Linux's `observe_process_identity`
+begins with `read_link(/proc/<pid>/exe)` (`linux.rs:228`), which also fails on a
+zombie (mm gone) → `OwnerNotLive`. **Correction to Step 5's original call-site claim
+(main-context verify):** `observe_process_identity` has MORE than the two processctl
+sites — it is also called in devctl (`supervisor.rs:163/199`, `control.rs:274/457`),
+and `devctl/src/tests.rs:407/463/510/558` explicitly `assert!(...is_err())` for a
+dead/reused pid. Every one of these reads a process expected *live* and treats
+failure as "not live / not the same process" — so darwin's ESRCH→`OwnerNotLive` is
+the required behaviour, and the darwin `observe_process_identity` (Step 6) MUST return
+`Ok(identity)` for any live pid and `Err` for a dead one, so those devctl tests pass.
+No path re-reads an exited target expecting success — the "post-exit re-check on a
+zombie" this plan's Step 5(a)/6 anticipated does not exist and could not be built on
+Linux either. `StartMarker` may pack `pbi_start_tvsec`/`pbi_start_tvusec` freely
+(opaque, serde-persisted, never cross-platform compared).
+
+**Q3 (argv0 vs exec path) — confirmed.** `posix_spawn` takes argv explicitly:
+spawning the real binary with `argv[0]="cargo"` yields a child observing
+`argv[0]="cargo"`. The rustup-shim basename dispatch (`guardian.rs:51-54`) survives;
+darwin form of `command.arg0(original_executable)`.
+
+**Q4 (`CLOEXEC_DEFAULT` vs the fd sweep) — confirmed, with a caveat.** The flag closes
+inherited fds across the spawn (extra fd 30 `open` without it, `closed` with it), so
+`close_unrelated_fds` (`guardian.rs:255`, `/proc/self/fd`) is **unnecessary on darwin
+— delete it, no `/dev/fd` sweep**. Caveat: it also closes 0/1/2, so stdio (and, for
+the guardian-spawn, the fd-3 liveness + fd-4 status pipes) must be re-established via
+`posix_spawn_file_actions_adddup2`. Free, since Plan A already routes stdio through
+file actions.
+
+**Cost Step 6/7 must carry (named, not a guarantee loss):** Plan A replaces
+`std::process::Command` wholesale for the guardian's target spawn — stdio + fd 3/4 via
+`posix_spawn_file_actions_t`, envp built by hand (`env_clear` semantics), `setpgid`
+via `POSIX_SPAWN_SETPGROUP`, argv0 explicit — and the guardian must `waitpid` the raw
+pid itself to hold the zombie (the pid-reuse invariant, which needs no handshake).
+
+**Plan B (two-read exec detector) — proven to work but strictly weaker, not adopted.**
+A shim that execs a second binary shows `proc_pidpath` changing across the exec while
+the start-marker stays constant, so two reads *can* detect an intervening exec — but
+the detector has an irreducible race (both reads can land the same side of the exec)
+and cannot capture the target before it runs. Superseded by Q1.
+
+**Net:** post-exec image identity is secured on darwin at Linux-equivalent strength;
+pid-reuse safety was never at stake here (zombie pinning). No new `[W2]`-class
+degradation is introduced by the spawn mechanism.
