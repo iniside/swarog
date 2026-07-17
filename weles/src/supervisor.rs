@@ -732,7 +732,11 @@ pub fn run_up(topology: Topology) -> Result<()> {
         Topology::Split => manifest::split_fleet(),
         Topology::Monolith => vec![manifest::monolith()],
     };
-    let mut fleet: Vec<Supervised> = defs.into_iter().map(Supervised::new).collect();
+    // `defs` outlives the move into `fleet`: it IS the booting topology, and
+    // every peer address handed to a service is derived from it (never from
+    // `split_fleet()` re-derived deeper down, which would silently hand out
+    // split addresses under a monolith).
+    let mut fleet: Vec<Supervised> = defs.iter().cloned().map(Supervised::new).collect();
     // Re-checkpoint now that the fleet exists (the pin was already recorded by
     // the early checkpoint above): status still Starting, endpoint still None,
     // services now populated.
@@ -778,14 +782,14 @@ pub fn run_up(topology: Topology) -> Result<()> {
     let ports: Vec<u16> = fleet.iter().map(|svc| svc.def.http_port).collect();
     let poller = ReadinessPoller::spawn(reporter.shared(), Arc::clone(&readiness), ports);
 
-    let run_result = boot(&layout, &inputs, &mut fleet, &reporter, &fleet_stop);
+    let spawn_ctx = SpawnCtx { layout: &layout, inputs: &inputs, defs: &defs };
+    let run_result = boot(&spawn_ctx, &mut fleet, &reporter, &fleet_stop);
     if run_result.is_ok() && !stop_requested(&fleet_stop) {
         reporter.set_status(FleetStatus::Running);
         reporter.checkpoint(&fleet);
         println!("weles: fleet healthy — press Ctrl-C or run `weles down` to stop");
         monitor(
-            &layout,
-            &inputs,
+            &spawn_ctx,
             &mut fleet,
             &reporter,
             &control,
@@ -852,14 +856,25 @@ fn control_endpoint_path(layout: &prep::Layout, run_id: &str) -> PathBuf {
 
 /// Spawns each service in manifest order and gates on its readyz before
 /// moving to the next. `Ok(())` with STOP set means "operator interrupted the
+/// The three things every service spawn needs, travelling as one: where the
+/// staged artifacts and logs live, the runtime-only values, and the BOOTING
+/// fleet that peer addresses are derived from. Grouped because `defs` is only
+/// meaningful together with the topology `run_up` chose — passing them
+/// separately invites a caller that has `inputs` but re-derives the fleet.
+struct SpawnCtx<'a> {
+    layout: &'a prep::Layout,
+    inputs: &'a RuntimeInputs,
+    defs: &'a [ServiceDef],
+}
+
 /// boot" — the caller goes straight to teardown of what already started.
 fn boot(
-    layout: &prep::Layout,
-    inputs: &RuntimeInputs,
+    ctx: &SpawnCtx<'_>,
     fleet: &mut [Supervised],
     reporter: &Reporter,
     fleet_stop: &AtomicBool,
 ) -> Result<()> {
+    let layout = ctx.layout;
     for index in 0..fleet.len() {
         if stop_requested(fleet_stop) {
             return Ok(());
@@ -872,7 +887,7 @@ fn boot(
         // just-killed incarnation's TIME_WAIT would false-positive.
         health::ensure_no_stale_listener(name, http_port)?;
 
-        let proc = spawn_service(layout, &fleet[index].def, inputs, false)
+        let proc = spawn_service(ctx, &fleet[index].def, false)
             .with_context(|| format!("spawn {name}"))?;
         fleet[index].proc = Some(proc);
         fleet[index].phase = Some(Phase::WaitingHealthy {
@@ -925,8 +940,7 @@ fn boot(
 /// is requested. Every wait in here is bounded (probe timeouts, the hung-kill
 /// shutdown budget) — nothing can block a tick indefinitely.
 fn monitor(
-    layout: &prep::Layout,
-    inputs: &RuntimeInputs,
+    ctx: &SpawnCtx<'_>,
     fleet: &mut [Supervised],
     reporter: &Reporter,
     control: &ControlServer,
@@ -965,7 +979,7 @@ fn monitor(
                 fleet[index].status = Status::Restarting;
                 reporter.checkpoint(fleet);
             }
-            let changed = apply(layout, inputs, &mut fleet[index], phase, directive, now);
+            let changed = apply(ctx, &mut fleet[index], phase, directive, now);
             if changed {
                 reporter.checkpoint(fleet);
             }
@@ -1014,13 +1028,13 @@ fn observe(svc: &mut Supervised, phase: Phase) -> Observed {
 /// Executes one directive for one service. Returns whether anything about
 /// the service changed (→ checkpoint).
 fn apply(
-    layout: &prep::Layout,
-    inputs: &RuntimeInputs,
+    ctx: &SpawnCtx<'_>,
     svc: &mut Supervised,
     phase: Phase,
     directive: Directive,
     now: Instant,
 ) -> bool {
+    let layout = ctx.layout;
     let name = svc.def.name;
     match directive {
         Directive::Stay(new_phase) => {
@@ -1062,7 +1076,7 @@ fn apply(
             true
         }
         Directive::Respawn => {
-            match spawn_service(layout, &svc.def, inputs, true) {
+            match spawn_service(ctx, &svc.def, true) {
                 Ok(proc) => {
                     svc.proc = Some(proc);
                     svc.restarts += 1;
@@ -1198,11 +1212,11 @@ fn teardown(fleet: &mut [Supervised], reporter: &Reporter, terminal: FleetStatus
 /// run's logs; a respawn APPENDS so the crash evidence from the previous
 /// incarnation survives the restart.
 fn spawn_service(
-    layout: &prep::Layout,
+    ctx: &SpawnCtx<'_>,
     def: &ServiceDef,
-    inputs: &RuntimeInputs,
     append_logs: bool,
 ) -> Result<OwnedProc> {
+    let layout = ctx.layout;
     let open = |path: PathBuf| -> Result<File> {
         let file = if append_logs {
             File::options().create(true).append(true).open(&path)
@@ -1216,7 +1230,9 @@ fn spawn_service(
     platform::spawn(SpawnSpec {
         program: layout.binary(def.pkg),
         args: Vec::new(),
-        env: manifest::compose_env(def, inputs),
+        // Peers resolve against `defs` — the topology run_up actually chose —
+        // not a re-derived split_fleet().
+        env: manifest::compose_env_with_fleet(def, ctx.inputs, ctx.defs),
         cwd: Some(layout.root.clone()),
         stdout: Some(stdout),
         stderr: Some(stderr),

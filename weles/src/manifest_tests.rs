@@ -284,6 +284,7 @@ fn synthetic_peer_fleet(provider_edge: Option<u16>, provider_http: u16) -> Vec<S
         ServiceDef {
             name: "provider-svc",
             pkg: "provider-svc",
+            provider: Some("provider"),
             http_port: provider_http,
             edge_port: provider_edge,
             player_port: None,
@@ -295,14 +296,15 @@ fn synthetic_peer_fleet(provider_edge: Option<u16>, provider_http: u16) -> Vec<S
         ServiceDef {
             name: "consumer-svc",
             pkg: "consumer-svc",
+            provider: Some("consumer"),
             http_port: 1,
             edge_port: None,
             player_port: None,
             has_db: false,
             pool_max: 0,
             peers: &[
-                ("PROVIDER_EDGE_ADDR", "provider-svc", AddrKind::Edge),
-                ("PROVIDER_HTTP_ADDR", "provider-svc", AddrKind::Http),
+                ("PROVIDER_EDGE_ADDR", "provider", AddrKind::Edge),
+                ("PROVIDER_HTTP_ADDR", "provider", AddrKind::Http),
             ],
             env_extra: &[],
         },
@@ -348,7 +350,7 @@ fn moving_a_providers_port_propagates_to_its_consumers_env() {
 }
 
 /// The kinds are not interchangeable: the same provider, dialed both ways,
-/// must yield its two DIFFERENT ports (real case: accounts-svc, edge 9003 +
+/// must yield its two DIFFERENT ports (real case: `accounts`, edge 9003 +
 /// http 8084). A derivation that read one field for both would pass the
 /// propagation test above and fail here.
 #[test]
@@ -366,101 +368,186 @@ fn the_two_kinds_read_different_port_fields() {
 }
 
 /// `AddrKind::Edge` against a service with `edge_port: None` (real case:
-/// admin-svc, an HTTP passthrough origin that serves no internal edge) is a
+/// `admin`, an HTTP passthrough origin that serves no internal edge) is a
 /// programmer error while adding a service — it must fail LOUDLY and name the
 /// offender, never silently synthesize an address nobody listens on.
+///
+/// The `expected` substring is unique to the TARGET panic (it quotes the
+/// offender inside the edge-specific sentence), so an unrelated panic that
+/// merely mentions the name cannot green this test.
 #[test]
-#[should_panic(expected = "provider-svc")]
+#[should_panic(expected = "peer \"provider\" as AddrKind::Edge")]
 fn edge_kind_against_a_service_without_an_edge_panics() {
     let fleet = synthetic_peer_fleet(None, 8080);
     composed_value(&fleet, "consumer-svc", "PROVIDER_EDGE_ADDR");
 }
 
 /// The same, phrased against the REAL def that has `edge_port: None`: nothing
-/// about admin-svc lets it be dialed as an edge peer.
+/// about `admin` lets it be dialed as an edge peer.
+///
+/// The fixture guard below deliberately does NOT name admin: a `should_panic`
+/// matching only the bare name would be satisfied by the guard's OWN panic if
+/// admin-svc ever gained an edge_port, greening a test that proved nothing.
 #[test]
-#[should_panic(expected = "admin-svc")]
+#[should_panic(expected = "peer \"admin\" as AddrKind::Edge")]
 fn edge_kind_against_real_admin_svc_panics() {
     let fleet = split_fleet();
-    let admin = fleet.iter().find(|svc| svc.name == "admin-svc").unwrap();
-    assert!(admin.edge_port.is_none(), "fixture assumption: admin-svc serves no edge");
-    peer_addr(&fleet, "some-consumer-svc", "admin-svc", AddrKind::Edge);
+    let admin = fleet.iter().find(|svc| svc.provider == Some("admin")).unwrap();
+    assert!(admin.edge_port.is_none(), "fixture assumption broken: it now serves an edge");
+    peer_addr(&fleet, "some-consumer-svc", "admin", AddrKind::Edge);
 }
 
 /// An unknown provider is the other half of the same programmer error.
 #[test]
-#[should_panic(expected = "ghost-svc")]
+#[should_panic(expected = "peer \"ghost\", which no service in this fleet provides")]
 fn an_unknown_provider_panics() {
-    peer_addr(&split_fleet(), "gateway-svc", "ghost-svc", AddrKind::Edge);
+    peer_addr(&split_fleet(), "gateway-svc", "ghost", AddrKind::Edge);
 }
 
-/// Guards the derivation against erosion: `env_extra` is for LITERALS only, so
-/// no value there may be a peer address. Reintroducing e.g.
-/// `("CHARACTERS_EDGE_ADDR", "127.0.0.1:9000")` beside the `peers` entry
-/// recreates the two-authorities drift and fails here — the `peers` field
-/// alone cannot prevent someone adding a second, competing declaration.
+/// `env_extra` is applied AFTER the derived peer addresses, so an `env_extra`
+/// key that repeats a `peers` key silently overrides the derivation and
+/// restores the two-authorities drift — invisibly, because the composed env
+/// still contains a plausible address.
 ///
-/// Deliberately matches on the VALUE (`127.0.0.1:`), not the key's spelling:
-/// gateway/monolith's `PLAYER_EDGE_ADDR` (`:9100`, its own bind) and
-/// admin's `TRUSTED_PROXY_CIDRS` (`127.0.0.1/32`, not an address) are
-/// legitimate literals and must stay green.
+/// The check is KEY-shaped (`peers` keys ∩ `env_extra` keys = ∅), not a scan
+/// for address-looking values: a value scan has holes (`localhost:9000`,
+/// `[::1]:9000`, `10.0.0.5:9000`, any hostname) that this cannot have.
+///
+/// Together with `full_fleet_env_goldens` the two guards leave no gap: the
+/// goldens fail on any env_extra addition that CHANGES a composed value, and
+/// this fails on one that shadows a derived key without changing it.
 #[test]
-fn env_extra_holds_no_peer_address_literal() {
+fn no_env_extra_key_shadows_a_derived_peer_key() {
     let mut services = split_fleet();
     services.push(monolith());
     for svc in &services {
         for (key, value) in svc.env_extra {
             assert!(
-                !value.contains("127.0.0.1:"),
-                "{}: env_extra key {key} = {value:?} looks like a peer address — \
-                 declare it in `peers` so it derives from the provider's port field",
+                !svc.peers.iter().any(|(peer_key, _, _)| peer_key == key),
+                "{}: env_extra {key} = {value:?} shadows the SAME key derived from \
+                 `peers` — env_extra is applied last, so the derived address would be \
+                 silently discarded. Delete the literal; `peers` is the authority.",
                 svc.name
             );
         }
     }
 }
 
+/// The monolith is nameable as no single domain (it hosts all of them), which
+/// is what makes it structurally unresolvable as a peer — the data fact the
+/// future topology-aware `resolve` map rests on.
 #[test]
-fn boot_order_respects_edge_dependencies() {
+fn the_monolith_provides_no_short_name_and_dials_no_peers() {
+    let mono = monolith();
+    assert_eq!(mono.provider, None);
+    assert!(mono.peers.is_empty());
+}
+
+/// Every split service IS nameable, and uniquely — `peers` and `resolve` key
+/// on this, so a duplicate or missing short name would make a lookup ambiguous
+/// or impossible.
+#[test]
+fn every_split_service_has_a_unique_short_provider_name() {
+    let fleet = split_fleet();
+    let mut seen = std::collections::BTreeSet::new();
+    for svc in &fleet {
+        let provider = svc.provider.unwrap_or_else(|| panic!("{}: no provider name", svc.name));
+        assert!(seen.insert(provider), "duplicate provider short name {provider:?}");
+        // The short name is the module/api directory name the wire already
+        // uses (`Stub::new("characters", …)`) — pinned against `name` here so
+        // the two can't drift into two naming authorities.
+        assert_eq!(
+            svc.name,
+            format!("{provider}-svc"),
+            "{}: provider short name must be the process's own domain",
+            svc.name
+        );
+    }
+}
+
+/// `compose_env` resolves a def against the manifest that def belongs to, NOT
+/// against `split_fleet()` by assumption. A monolith-shaped def that declared
+/// a split-only peer must therefore FAIL rather than silently hand out a split
+/// address for a process the monolith topology never starts.
+#[test]
+#[should_panic(expected = "no service in this fleet provides")]
+fn a_monolith_def_may_not_silently_resolve_a_split_only_provider() {
+    let mono = ServiceDef {
+        peers: &[("CHARACTERS_EDGE_ADDR", "characters", AddrKind::Edge)],
+        ..monolith()
+    };
+    compose_env(&mono, &fake_inputs());
+}
+
+/// A def from neither real manifest has no discoverable home fleet; the public
+/// convenience must say so rather than guess one.
+#[test]
+#[should_panic(expected = "belongs to neither")]
+fn compose_env_refuses_a_def_from_no_real_manifest() {
+    compose_env(&synthetic_db_svc("stranger-svc", 1), &fake_inputs());
+}
+
+/// Boot order is DERIVED from the `peers` field, never hand-listed beside it:
+/// a copied list would drift from the declaration it copies — the exact defect
+/// class `peers` exists to kill.
+///
+/// Only `AddrKind::Edge` peers constrain boot order (see
+/// `an_http_peer_carries_no_boot_order_constraint` for the other half — a
+/// sweep that forgot this filter would fail on gateway→admin).
+#[test]
+fn boot_order_respects_edge_peer_dependencies() {
+    let fleet = split_fleet();
+    let position = |provider: &str| {
+        fleet
+            .iter()
+            .position(|svc| svc.provider == Some(provider))
+            .unwrap_or_else(|| panic!("no service provides {provider:?}"))
+    };
+
+    let mut checked = 0;
+    for (index, svc) in fleet.iter().enumerate() {
+        for (key, provider, kind) in svc.peers {
+            if *kind != AddrKind::Edge {
+                continue;
+            }
+            assert!(
+                position(provider) < index,
+                "{}: edge peer {provider:?} ({key}) must appear earlier in split_fleet() — \
+                 the Vec order IS the boot order",
+                svc.name
+            );
+            checked += 1;
+        }
+    }
+    // The loop must actually have run: a `peers` field emptied by a bad
+    // refactor would make every assertion above vacuous.
+    assert_eq!(checked, 17, "expected 17 edge peer declarations across the fleet");
+}
+
+/// The asymmetry the boot-order rule depends on: an `AddrKind::Http` peer is a
+/// passthrough ORIGIN dialed per request, not a boot dependency, so it may
+/// boot LATER than its consumer. gateway-svc names `admin` as
+/// `ADMIN_HTTP_ADDR`, and admin-svc boots LAST — a universal
+/// "peers boot earlier" sweep would fail on exactly this entry, which is why
+/// `boot_order_respects_edge_peer_dependencies` filters on the kind.
+#[test]
+fn an_http_peer_carries_no_boot_order_constraint() {
     let fleet = split_fleet();
     let index = |name: &str| fleet.iter().position(|svc| svc.name == name).unwrap();
 
-    // config-svc before characters-svc before inventory-svc (each dials the
-    // previous over its own EDGE_ADDR).
-    assert!(index("config-svc") < index("characters-svc"));
-    assert!(index("characters-svc") < index("inventory-svc"));
+    assert_eq!(fleet.last().unwrap().name, "admin-svc", "admin-svc boots last");
+    assert!(
+        index("admin-svc") > index("gateway-svc"),
+        "fixture: admin must boot AFTER the gateway that names it"
+    );
 
-    // gateway-svc dials 6 peers (characters/inventory/accounts/match/
-    // leaderboard/apikeys) — all must boot earlier.
-    let gateway = index("gateway-svc");
-    for peer in [
-        "characters-svc",
-        "inventory-svc",
-        "accounts-svc",
-        "match-svc",
-        "leaderboard-svc",
-        "apikeys-svc",
-    ] {
-        assert!(index(peer) < gateway, "{peer} must boot before gateway-svc");
-    }
-
-    // admin-svc dials 7 peers — all must boot earlier — and boots last.
-    assert_eq!(fleet.last().unwrap().name, "admin-svc");
-    let admin = index("admin-svc");
-    for peer in [
-        "characters-svc",
-        "inventory-svc",
-        "config-svc",
-        "accounts-svc",
-        "audit-svc",
-        "scheduler-svc",
-        "apikeys-svc",
-    ] {
-        assert!(index(peer) < admin, "{peer} must boot before admin-svc");
-    }
-
-    // match-svc dials rating-svc.
-    assert!(index("rating-svc") < index("match-svc"));
+    let gateway = fleet.iter().find(|svc| svc.name == "gateway-svc").unwrap();
+    let (_, _, kind) = gateway
+        .peers
+        .iter()
+        .find(|(key, _, _)| *key == "ADMIN_HTTP_ADDR")
+        .expect("gateway must declare ADMIN_HTTP_ADDR as a peer");
+    assert_eq!(*kind, AddrKind::Http, "a LATER-booting peer is only legal as an Http origin");
 }
 
 #[test]
@@ -510,6 +597,7 @@ fn synthetic_db_svc(name: &'static str, pool_max: u32) -> ServiceDef {
     ServiceDef {
         name,
         pkg: "synthetic-svc",
+        provider: Some("synthetic"),
         http_port: 1,
         edge_port: None,
         player_port: None,
@@ -547,6 +635,7 @@ fn service_pg_budget_charges_nothing_for_dbless_service() {
     let svc = ServiceDef {
         name: "gateway-svc",
         pkg: "gateway-svc",
+        provider: Some("gateway"),
         http_port: 1,
         edge_port: None,
         player_port: None,

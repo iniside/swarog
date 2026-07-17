@@ -293,6 +293,7 @@ fn dummy_def() -> ServiceDef {
     ServiceDef {
         name: "dummy-svc",
         pkg: "dummy-svc",
+        provider: Some("dummy"),
         http_port: 65000,
         edge_port: None,
         player_port: None,
@@ -473,7 +474,9 @@ fn boot_with_the_fleet_stop_set_on_entry_spawns_nothing() {
     let mut fleet = vec![Supervised::new(dummy_def())];
     let fleet_stop = Arc::new(AtomicBool::new(true));
 
-    let result = boot(&layout, &inputs, &mut fleet, &reporter, &fleet_stop);
+    let defs = [dummy_def()];
+    let ctx = SpawnCtx { layout: &layout, inputs: &inputs, defs: &defs };
+    let result = boot(&ctx, &mut fleet, &reporter, &fleet_stop);
 
     assert!(result.is_ok(), "a stop on boot entry is a clean interrupt, not an error");
     assert!(
@@ -514,7 +517,9 @@ fn boot_with_the_signal_stop_set_on_entry_spawns_nothing() {
     // fleet_stop is CLEAR: only the signal STOP may halt boot here.
     let fleet_stop = Arc::new(AtomicBool::new(false));
 
-    let result = boot(&layout, &inputs, &mut fleet, &reporter, &fleet_stop);
+    let defs = [dummy_def()];
+    let ctx = SpawnCtx { layout: &layout, inputs: &inputs, defs: &defs };
+    let result = boot(&ctx, &mut fleet, &reporter, &fleet_stop);
 
     assert!(result.is_ok(), "a signal STOP on boot entry is a clean interrupt, not an error");
     assert!(
