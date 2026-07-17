@@ -21,6 +21,7 @@ pub enum StageId {
     WelesFleetParity,
     WelesAsyncIsland,
     WelesWireContract,
+    WelesManagedGateway,
     Mutants,
 }
 
@@ -46,6 +47,7 @@ impl StageId {
             Self::WelesFleetParity => "weles-fleet-parity",
             Self::WelesAsyncIsland => "weles-async-island",
             Self::WelesWireContract => "weles-wire-contract",
+            Self::WelesManagedGateway => "weles-managed-gateway",
             Self::Mutants => "mutants",
         }
     }

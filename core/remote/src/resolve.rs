@@ -26,13 +26,20 @@
 //! functions at the bottom of this file are that stage's seam into this crate's
 //! private wire types.
 //!
-//! That gate is, today, the WHOLE proof — not the cheap half of one. The live
-//! `weles-managed-gateway` stage (the plan's Step 6) is planned and **not yet
-//! written**: there is no `StageId` and no file. So nothing currently boots this
-//! client against that server, and the HTTP method + status↔code pairing are
-//! pinned by nobody (a drift there answers `404 unknown_route`, which is at
-//! least loud and fatal at boot — see below). Do not read this doc as saying a
-//! live stage has your back.
+//! That gate is the CHEAP, EARLY half — it runs under `--fast` and catches a
+//! drift before anything boots — but it is no longer the whole proof. The
+//! blocking `weles-managed-gateway` stage
+//! (`tools/verifyctl/src/stages/weles_managed_gateway.rs`) boots weles on the
+//! real split fleet and asserts that `cmd/gateway-svc`, handed only
+//! `ORCHESTRATOR_URL`, reaches `/readyz`, serves an op across a resolved EDGE
+//! address, and serves a passthrough across a resolved `Http` origin. That is
+//! what pins the two things the in-memory gate structurally cannot: the HTTP
+//! METHOD and the status↔code pairing (a drift in either answers
+//! `404 unknown_route` — loud and fatal at gateway boot, which is why it was
+//! acceptable to carry unpinned until this stage existed), and that this client
+//! is wired into that main AT ALL. The stage proves its own falsifiability by
+//! running the same binary against a DEAD agent port and requiring it to die
+//! here, in [`ResolveError::Unreachable`].
 //!
 //! # The wire (as the server implements it)
 //!

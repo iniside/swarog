@@ -164,6 +164,36 @@ impl Context<'_> {
             .map(String::as_str)
     }
 
+    /// The frozen environment for a child that BOOTS A FLEET: the build
+    /// environment plus the captured `DATABASE_URL`. Exactly what
+    /// [`Context::splitproof`] hands its child — a fleet-booting stage needs the
+    /// same values, and re-deriving them would be a second authority for what a
+    /// rollout child's world is.
+    pub fn rollout_environment(&self) -> &BTreeMap<String, String> {
+        &self.environment.splitproof
+    }
+
+    /// Lends this run's ONE lease to a child claiming `role`.
+    ///
+    /// The roles are frozen at acquire above (`["splitproof", "weles"]`), and
+    /// `spawn_borrower` refuses any other — so this is not a widening: it is
+    /// `Context::splitproof`'s borrow, reachable by the stage that needs a
+    /// DIFFERENT role. A stage may not acquire the lock itself: verifyctl holds
+    /// it for the whole manifest, so an acquire would deadlock against this very
+    /// lease.
+    ///
+    /// The returned child borrows `self` mutably for its life — one borrower
+    /// alive at a time, enforced by the borrow checker rather than by review.
+    /// A stage therefore resolves its paths and environment BEFORE calling this
+    /// and reports its findings after the child is gone.
+    pub fn borrow_rollout<'child>(
+        &'child mut self,
+        spec: SpawnSpec,
+        role: &str,
+    ) -> Result<processctl::BorrowedChild<'child>> {
+        Ok(self.lease.spawn_borrower(spec, role)?)
+    }
+
     pub fn stage_log(&self, label: &str, stream: &str) -> PathBuf {
         self.command_log(label, stream)
     }
@@ -343,7 +373,7 @@ impl FrozenEnvironment {
     }
 }
 
-fn os_environment(environment: &BTreeMap<String, String>) -> BTreeMap<OsString, OsString> {
+pub(crate) fn os_environment(environment: &BTreeMap<String, String>) -> BTreeMap<OsString, OsString> {
     environment
         .iter()
         .map(|(key, value)| (key.into(), value.into()))
@@ -401,7 +431,7 @@ fn record_cleanup<E: std::fmt::Display>(
     }
 }
 
-fn interrupted() -> bool {
+pub(crate) fn interrupted() -> bool {
     INTERRUPTED.load(Ordering::SeqCst)
 }
 

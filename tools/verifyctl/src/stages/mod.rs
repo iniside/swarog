@@ -14,6 +14,7 @@ pub mod splitproof;
 pub mod topiccheck;
 pub mod weles_async_island;
 pub mod weles_fleet_parity;
+pub mod weles_managed_gateway;
 pub mod weles_wire_contract;
 
 use crate::model::{StageClass, StageId};
@@ -99,6 +100,15 @@ pub const BLOCKING: &[Stage] = &[
         id: StageId::SplitProof,
         class: StageClass::Blocking,
         run: splitproof::run,
+    },
+    // LAST, and after split-proof deliberately: both boot a fleet against the
+    // one shared Postgres (one rollout at a time), and this is the newer of the
+    // two — a wedge here must not be able to cost the long-established proof its
+    // run. Both borrow the same lease, in turn.
+    Stage {
+        id: StageId::WelesManagedGateway,
+        class: StageClass::Blocking,
+        run: weles_managed_gateway::run,
     },
 ];
 
@@ -288,15 +298,16 @@ mod tests {
                 "weles-fleet-parity",
                 "weles-async-island",
                 "weles-wire-contract",
-                "split-proof"
+                "split-proof",
+                "weles-managed-gateway"
             ]
         );
         assert_eq!(
-            &names(crate::cli::Level::All)[14..],
+            &names(crate::cli::Level::All)[15..],
             &["public-api", "fuzz", "csharp-client", "topiccheck", "admincheck"]
         );
         assert_eq!(names(crate::cli::Level::Slow).last(), Some(&"mutants"));
-        assert_eq!(manifest(crate::cli::Level::Fast, true).len(), 19);
+        assert_eq!(manifest(crate::cli::Level::Fast, true).len(), 20);
     }
 
     #[test]

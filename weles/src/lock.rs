@@ -175,7 +175,14 @@ pub const BORROWER_ROLE: &str = "weles";
 /// Its presence is the ONLY thing that makes this process look for an
 /// inherited credential at all; without it `weles up` behaves exactly as it
 /// does from an operator shell.
-const BORROWED_LEASE_ARG: &str = "--processctl-borrowed-lease-v1";
+///
+/// `pub(crate)` for ONE reader besides [`borrow_inherited_if_present`]:
+/// [`crate::cli::parse`], which must let it through rather than reject it as an
+/// unknown argument. The parent APPENDS this to `weles up split`'s argv
+/// (`OwnedLease::spawn_borrower`), so the CLI is the first thing a borrowed run
+/// meets — and a second literal over there would be a spelling free to drift
+/// from the one this module actually matches on.
+pub(crate) const BORROWED_LEASE_ARG: &str = "--processctl-borrowed-lease-v1";
 
 /// The exact bytes processctl writes into its one-shot marker — and requires to
 /// read back before deleting it on the owner's drop

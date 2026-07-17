@@ -50,6 +50,19 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command> {
             let mut topology_seen = false;
             for arg in args {
                 match arg.as_str() {
+                    // The rollout-lease borrow marker, APPENDED to this argv by
+                    // the parent that lent us its lease
+                    // (`processctl::OwnedLease::spawn_borrower`). It is
+                    // `crate::lock`'s to read (`borrow_inherited_if_present`
+                    // scans `args_os` itself), not this parser's to interpret —
+                    // but it lands here first, and rejecting it would make the
+                    // whole borrow path unreachable from `weles up`: the very
+                    // command that takes a lease. Accepted silently and ONLY on
+                    // `up`, the only verb that is rollout-bearing; on `status`/
+                    // `down`/`deploy` it stays an unknown argument, because
+                    // there it means the caller is confused about what it
+                    // spawned.
+                    _ if arg == crate::lock::BORROWED_LEASE_ARG => {}
                     "split" | "monolith" => {
                         if topology_seen {
                             bail!("topology given more than once\n\n{USAGE}");

@@ -29,6 +29,40 @@ fn up_rejects_the_removed_skip_build_flag() {
 }
 
 #[test]
+fn up_accepts_the_borrowed_lease_marker_a_lender_appends() {
+    // The branch that used to be wrong: `spawn_borrower` APPENDS this to the
+    // child's argv, so before this arm existed `weles up split` under a lender
+    // died in the parser with "unknown argument" — and `lock::acquire_or_borrow`
+    // (which reads the same marker off `args_os`) was unreachable from the only
+    // verb that takes a lease. Both spellings and both positions, because the
+    // marker lands after whatever the parent wrote.
+    assert_eq!(
+        parse(args(&["up", "split", crate::lock::BORROWED_LEASE_ARG])).unwrap(),
+        Command::Up { topology: Topology::Split }
+    );
+    assert_eq!(
+        parse(args(&["up", crate::lock::BORROWED_LEASE_ARG, "monolith"])).unwrap(),
+        Command::Up { topology: Topology::Monolith }
+    );
+    assert_eq!(
+        parse(args(&["up", crate::lock::BORROWED_LEASE_ARG])).unwrap(),
+        Command::Up { topology: Topology::Split }
+    );
+}
+
+#[test]
+fn only_up_tolerates_the_borrowed_lease_marker() {
+    // Narrow on purpose: `up` is the one rollout-bearing verb, so it is the one
+    // that can be lent a lease. On any other verb the marker means the caller is
+    // confused about what it spawned — say so rather than run something that
+    // will never consume the credential it was handed.
+    for verb in ["status", "down"] {
+        assert!(parse(args(&[verb, crate::lock::BORROWED_LEASE_ARG])).is_err());
+    }
+    assert!(parse(args(&["deploy", "dir", crate::lock::BORROWED_LEASE_ARG])).is_err());
+}
+
+#[test]
 fn deploy_parses_with_src_dir() {
     let cmd = parse(args(&["deploy", "some/build/out"])).unwrap();
     assert_eq!(
