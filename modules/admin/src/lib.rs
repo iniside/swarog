@@ -242,15 +242,16 @@ CREATE TABLE IF NOT EXISTS admin.users (
 );"#;
 
 /// Sessions + login-attempt bookkeeping (module-private tables).
+///
+/// LOCK ORDER (deliberate): `login_attempts` is created BEFORE `sessions`, matching
+/// the order the login write path acquires table locks (`authenticate_and_mint`
+/// DELETEs `login_attempts` before INSERTing `sessions`). A re-run of this idempotent
+/// DDL (`CREATE INDEX IF NOT EXISTS` still takes a ShareLock even on an existing
+/// index) therefore acquires the two tables in the SAME order as a concurrent login,
+/// so the two transactions can only serialize — never form a deadlock cycle. The
+/// reverse order deadlocked a live login against a concurrent migrate under parallel
+/// test load (login killed → 500, or migrate killed → "deadlock detected").
 const AUTH_DDL: &str = r#"
-CREATE TABLE IF NOT EXISTS admin.sessions (
-	token      text PRIMARY KEY,
-	username   text NOT NULL REFERENCES admin.users(username) ON DELETE CASCADE,
-	csrf_token text NOT NULL,
-	created_at timestamptz NOT NULL DEFAULT now(),
-	expires_at timestamptz NOT NULL
-);
-CREATE INDEX IF NOT EXISTS admin_sessions_expires_idx ON admin.sessions(expires_at);
 CREATE TABLE IF NOT EXISTS admin.login_attempts (
 	subject      text PRIMARY KEY,   -- 'user:<name>' | 'ip:<addr>'
 	fails        int  NOT NULL DEFAULT 0,
@@ -258,7 +259,15 @@ CREATE TABLE IF NOT EXISTS admin.login_attempts (
 	updated_at   timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS admin_login_attempts_updated_idx
-ON admin.login_attempts(updated_at);"#;
+ON admin.login_attempts(updated_at);
+CREATE TABLE IF NOT EXISTS admin.sessions (
+	token      text PRIMARY KEY,
+	username   text NOT NULL REFERENCES admin.users(username) ON DELETE CASCADE,
+	csrf_token text NOT NULL,
+	created_at timestamptz NOT NULL DEFAULT now(),
+	expires_at timestamptz NOT NULL
+);
+CREATE INDEX IF NOT EXISTS admin_sessions_expires_idx ON admin.sessions(expires_at);"#;
 
 // ---------------------------------------------------------------------------
 // Module
