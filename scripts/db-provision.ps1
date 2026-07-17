@@ -148,11 +148,18 @@ Write-Host "db-provision: target role/database '$DbUser'/'$DbName'"
 # unreliable across psql builds, so the literal is built directly instead of
 # via `:varname`.
 
+$dbPassLiteral = $DbPass.Replace("'", "''")
+
 $roleExists = Invoke-PsqlSuperCapture -PsqlArgs @('-c', "SELECT 1 FROM pg_roles WHERE rolname = '$DbUser'")
 if ($roleExists -eq '1') {
-    Write-Host "db-provision: role '$DbUser' already exists -- skipping create"
+    # "provisioned" means the role exists WITH the DSN's password, not merely
+    # that the row exists -- an existing role whose password has drifted from
+    # the DSN must still be re-idempotent. ALTER ROLE converges both LOGIN (in
+    # case an existing role lacks it) and PASSWORD unconditionally; this is
+    # cheap and always correct to re-apply.
+    Invoke-PsqlSuper -PsqlArgs @('-c', "ALTER ROLE ""$DbUser"" LOGIN PASSWORD '$dbPassLiteral'")
+    Write-Host "db-provision: role '$DbUser' already exists -- converged password"
 } else {
-    $dbPassLiteral = $DbPass.Replace("'", "''")
     Invoke-PsqlSuper -PsqlArgs @('-c', "CREATE ROLE ""$DbUser"" LOGIN PASSWORD '$dbPassLiteral'")
     Write-Host "db-provision: created role '$DbUser'"
 }

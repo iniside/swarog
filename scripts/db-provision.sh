@@ -110,11 +110,18 @@ echo "db-provision: target role/database '$DB_USER'/'$DB_NAME'"
 # `-v name=value` variable interpolation with `-c`, only when reading a script,
 # so the literal is built directly rather than via `:varname`.
 
+DB_PASS_LITERAL=$(printf '%s' "$DB_PASS" | awk '{gsub(/\x27/,"\x27\x27"); print}')
+
 ROLE_EXISTS="$(psql_super -tAc "SELECT 1 FROM pg_roles WHERE rolname = '$DB_USER'")"
 if [ "$ROLE_EXISTS" = "1" ]; then
-  echo "db-provision: role '$DB_USER' already exists -- skipping create"
+  # "provisioned" means the role exists WITH the DSN's password, not merely
+  # that the row exists -- an existing role whose password has drifted from
+  # the DSN must still be re-idempotent. ALTER ROLE converges both LOGIN (in
+  # case an existing role lacks it) and PASSWORD unconditionally; this is
+  # cheap and always correct to re-apply.
+  psql_super -c "ALTER ROLE \"$DB_USER\" LOGIN PASSWORD '$DB_PASS_LITERAL'"
+  echo "db-provision: role '$DB_USER' already exists -- converged password"
 else
-  DB_PASS_LITERAL=$(printf '%s' "$DB_PASS" | awk '{gsub(/\x27/,"\x27\x27"); print}')
   psql_super -c "CREATE ROLE \"$DB_USER\" LOGIN PASSWORD '$DB_PASS_LITERAL'"
   echo "db-provision: created role '$DB_USER'"
 fi
