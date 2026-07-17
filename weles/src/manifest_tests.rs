@@ -48,6 +48,10 @@ fn expected(pairs: &[(&str, &str)]) -> BTreeMap<OsString, OsString> {
 #[test]
 fn full_fleet_env_goldens() {
     let inputs = fake_inputs();
+    // Derived from AGENT_PORT, not spelled `http://127.0.0.1:8300`: a literal
+    // here would be a second authority for the agent's port, free to drift the
+    // day the port moves — the exact inversion this file exists to prevent.
+    let agent = agent_url();
     let goldens: &[(&str, &[(&str, &str)])] = &[
         (
             "accounts-svc",
@@ -171,6 +175,14 @@ fn full_fleet_env_goldens() {
             // Pure-transport front door: no EDGE_ADDR of its own, no
             // DATABASE_URL/DATABASE_POOL_MAX_CONNECTIONS, but DOES get the
             // CA material (dials every peer's internal mTLS edge).
+            //
+            // The MANAGED one (M1 Step 4, `Addrs::Asks`): none of the eight
+            // address keys it used to carry — six `*_EDGE_ADDR` plus the two
+            // passthrough origins — only ORCHESTRATOR_URL, which it asks for
+            // each of them. This golden is where that shows up as a complete
+            // env, and it is the weles half of the deliberate weles<->processctl
+            // divergence `weles-fleet-parity` excludes and
+            // `weles-managed-gateway` pays for.
             "gateway-svc",
             &[
                 ("PORT", ":8082"),
@@ -178,14 +190,7 @@ fn full_fleet_env_goldens() {
                 ("EDGE_CA_KEY", FAKE_KEY),
                 ("PLAYER_EDGE_ADDR", ":9100"),
                 ("TLS_MODE", "off"),
-                ("CHARACTERS_EDGE_ADDR", "127.0.0.1:9000"),
-                ("INVENTORY_EDGE_ADDR", "127.0.0.1:9001"),
-                ("ACCOUNTS_EDGE_ADDR", "127.0.0.1:9003"),
-                ("MATCH_EDGE_ADDR", "127.0.0.1:9006"),
-                ("LEADERBOARD_EDGE_ADDR", "127.0.0.1:9008"),
-                ("APIKEYS_EDGE_ADDR", "127.0.0.1:9009"),
-                ("ADMIN_HTTP_ADDR", "127.0.0.1:8085"),
-                ("ACCOUNTS_HTTP_ADDR", "127.0.0.1:8084"),
+                ("ORCHESTRATOR_URL", agent.as_str()),
             ],
         ),
         (
@@ -312,6 +317,41 @@ fn synthetic_peer_fleet(provider_edge: Option<u16>, provider_http: u16) -> Vec<S
     ]
 }
 
+/// consumer-svc FIRST, provider-svc LAST — a consumer that boots BEFORE the one
+/// peer it names, declared as `kind`. The fleet the real one no longer contains:
+/// gateway-svc was the only consumer naming a later-booting peer, and M1 Step 4
+/// made it `Addrs::Asks`.
+fn consumer_before_provider(kind: AddrKind) -> Vec<ServiceDef> {
+    let consumer = ServiceDef {
+        name: "consumer-svc",
+        pkg: "consumer-svc",
+        provider: Some("consumer"),
+        http_port: 1,
+        edge_port: None,
+        player_port: None,
+        has_db: false,
+        pool_max: 0,
+        addrs: match kind {
+            AddrKind::Edge => Addrs::Told(&[("PROVIDER_EDGE_ADDR", "provider", AddrKind::Edge)]),
+            AddrKind::Http => Addrs::Told(&[("PROVIDER_HTTP_ADDR", "provider", AddrKind::Http)]),
+        },
+        env_extra: &[],
+    };
+    let provider = ServiceDef {
+        name: "provider-svc",
+        pkg: "provider-svc",
+        provider: Some("provider"),
+        http_port: 8080,
+        edge_port: Some(9000),
+        player_port: None,
+        has_db: false,
+        pool_max: 0,
+        addrs: Addrs::Told(&[]),
+        env_extra: &[],
+    };
+    vec![consumer, provider]
+}
+
 fn composed_value(fleet: &[ServiceDef], svc_name: &str, key: &str) -> String {
     let svc = fleet.iter().find(|svc| svc.name == svc_name).unwrap();
     compose_env_with_fleet(svc, &fake_inputs(), fleet)
@@ -362,10 +402,16 @@ fn the_two_kinds_read_different_port_fields() {
         composed_value(&fleet, "consumer-svc", "PROVIDER_HTTP_ADDR"),
     );
 
-    // ...and the real fleet's dual-kind provider proves it on live data.
-    let real = split_fleet();
-    assert_eq!(composed_value(&real, "gateway-svc", "ACCOUNTS_EDGE_ADDR"), "127.0.0.1:9003");
-    assert_eq!(composed_value(&real, "gateway-svc", "ACCOUNTS_HTTP_ADDR"), "127.0.0.1:8084");
+    // ...and the real fleet's dual-kind provider still proves it on LIVE data —
+    // read where the gateway now actually reads it. `accounts` is dialed both
+    // ways (edge 9003 + http 8084), but no longer through a composed env:
+    // gateway-svc, the only consumer that named it twice, became `Addrs::Asks`
+    // in M1 Step 4, so it asks the agent for both. The resolve map is formatted
+    // by the SAME `service_addr` the composed env is, so this is the same fact
+    // at its new reading point, not a weaker substitute.
+    let real = PeerAddrs::from_fleet(&split_fleet());
+    assert_eq!(real.lookup("accounts", AddrKind::Edge), vec!["127.0.0.1:9003".to_string()]);
+    assert_eq!(real.lookup("accounts", AddrKind::Http), vec!["127.0.0.1:8084".to_string()]);
 }
 
 /// `AddrKind::Edge` against a service with `edge_port: None` (real case:
@@ -616,68 +662,105 @@ fn compose_env_refuses_a_def_from_no_real_manifest() {
     compose_env(&synthetic_db_svc("stranger-svc", 1), &fake_inputs());
 }
 
-/// Boot order is DERIVED from the `peers` field, never hand-listed beside it:
-/// a copied list would drift from the declaration it copies — the exact defect
-/// class `peers` exists to kill.
+/// THE boot-order rule, as ONE function both tests below drive: every
+/// `AddrKind::Edge` peer must appear strictly earlier in the Vec than the
+/// service that declares it. Returns the violations and HOW MANY declarations it
+/// actually examined — a rule whose loop never ran is vacuous, not green.
 ///
-/// Only `AddrKind::Edge` peers constrain boot order (see
-/// `an_http_peer_carries_no_boot_order_constraint` for the other half — a
-/// sweep that forgot this filter would fail on gateway→admin).
-#[test]
-fn boot_order_respects_edge_peer_dependencies() {
-    let fleet = split_fleet();
-    let position = |provider: &str| {
-        fleet
-            .iter()
-            .position(|svc| svc.provider == Some(provider))
-            .unwrap_or_else(|| panic!("no service provides {provider:?}"))
-    };
-
+/// Shared rather than written twice so the real-fleet assertion and the
+/// kind-asymmetry assertion cannot drift apart into two rules.
+fn edge_peer_order_violations(fleet: &[ServiceDef]) -> (Vec<String>, usize) {
+    let mut violations = Vec::new();
     let mut checked = 0;
     for (index, svc) in fleet.iter().enumerate() {
         for (key, provider, kind) in svc.addrs.told() {
             if *kind != AddrKind::Edge {
                 continue;
             }
-            assert!(
-                position(provider) < index,
-                "{}: edge peer {provider:?} ({key}) must appear earlier in split_fleet() — \
-                 the Vec order IS the boot order",
-                svc.name
-            );
             checked += 1;
+            let position = fleet
+                .iter()
+                .position(|peer| peer.provider == Some(*provider))
+                .unwrap_or_else(|| panic!("no service provides {provider:?}"));
+            if position >= index {
+                violations.push(format!(
+                    "{}: edge peer {provider:?} ({key}) must appear earlier in the fleet — \
+                     the Vec order IS the boot order",
+                    svc.name
+                ));
+            }
         }
     }
+    (violations, checked)
+}
+
+/// Boot order is DERIVED from the `peers` field, never hand-listed beside it:
+/// a copied list would drift from the declaration it copies — the exact defect
+/// class `peers` exists to kill.
+///
+/// Only `AddrKind::Edge` peers constrain boot order (see
+/// `an_http_peer_carries_no_boot_order_constraint` for the other half).
+#[test]
+fn boot_order_respects_edge_peer_dependencies() {
+    let (violations, checked) = edge_peer_order_violations(&split_fleet());
+    assert!(violations.is_empty(), "boot order violates a declared edge peer:\n{violations:#?}");
     // The loop must actually have run: a `peers` field emptied by a bad
-    // refactor would make every assertion above vacuous.
-    assert_eq!(checked, 17, "expected 17 edge peer declarations across the fleet");
+    // refactor would make the assertion above vacuous.
+    //
+    // ELEVEN, not the seventeen this said before M1 Step 4: gateway-svc's six
+    // edge declarations legitimately left the field when it became
+    // `Addrs::Asks` — a managed consumer declares no peers BY DESIGN, and it
+    // now learns those six addresses from the agent. Restoring the old number
+    // (by re-adding a peer list beside `Asks`, or by counting something else)
+    // would re-assert a fact that is no longer true. What remains: match(1) +
+    // characters(1) + inventory(2) + admin(7).
+    assert_eq!(checked, 11, "expected 11 edge peer declarations across the fleet");
 }
 
 /// The asymmetry the boot-order rule depends on: an `AddrKind::Http` peer is a
-/// passthrough ORIGIN dialed per request, not a boot dependency, so it may
-/// boot LATER than its consumer. gateway-svc names `admin` as
-/// `ADMIN_HTTP_ADDR`, and admin-svc boots LAST — a universal
-/// "peers boot earlier" sweep would fail on exactly this entry, which is why
-/// `boot_order_respects_edge_peer_dependencies` filters on the kind.
+/// passthrough ORIGIN dialed per request, not a boot dependency, so it may boot
+/// LATER than its consumer. A universal "peers boot earlier" sweep would fail on
+/// such an entry, which is why the rule filters on the kind.
+///
+/// **Recorded gap (M1 Step 4):** the real fleet has NO `AddrKind::Http` entry
+/// left — gateway-svc was the only consumer that named one (`ADMIN_HTTP_ADDR`,
+/// with admin-svc booting last), and it now ASKS. So this proves the asymmetry
+/// against the rule itself on synthetic data, both ways, and guards below that
+/// the day an Http peer returns to the real fleet, someone is told to re-point
+/// the live half here. The Http class is not unproven meanwhile: it is live in
+/// `PeerAddrs` (`peer_addrs_omits_a_kind_a_service_does_not_serve`,
+/// `the_two_kinds_read_different_port_fields`) and end-to-end in verifyctl's
+/// `weles-managed-gateway` stage, which drives a passthrough.
 #[test]
 fn an_http_peer_carries_no_boot_order_constraint() {
-    let fleet = split_fleet();
-    let index = |name: &str| fleet.iter().position(|svc| svc.name == name).unwrap();
-
-    assert_eq!(fleet.last().unwrap().name, "admin-svc", "admin-svc boots last");
+    // consumer-svc FIRST, provider-svc LAST: a consumer booting BEFORE the peer
+    // it names. Illegal for Edge, legal for Http — same fleet shape, one field
+    // different, so the KIND is the only thing under test.
+    let (edge_violations, edge_checked) =
+        edge_peer_order_violations(&consumer_before_provider(AddrKind::Edge));
+    assert_eq!(edge_checked, 1, "the Edge declaration must be examined");
     assert!(
-        index("admin-svc") > index("gateway-svc"),
-        "fixture: admin must boot AFTER the gateway that names it"
+        edge_violations.iter().any(|v| v.contains("provider")),
+        "an Edge peer booting AFTER its consumer must be a violation: {edge_violations:?}"
     );
 
-    let gateway = fleet.iter().find(|svc| svc.name == "gateway-svc").unwrap();
-    let (_, _, kind) = gateway
-        .addrs
-        .told()
-        .iter()
-        .find(|(key, _, _)| *key == "ADMIN_HTTP_ADDR")
-        .expect("gateway must declare ADMIN_HTTP_ADDR as a peer");
-    assert_eq!(*kind, AddrKind::Http, "a LATER-booting peer is only legal as an Http origin");
+    let (http_violations, http_checked) =
+        edge_peer_order_violations(&consumer_before_provider(AddrKind::Http));
+    assert!(
+        http_violations.is_empty(),
+        "an Http peer is a passthrough ORIGIN dialed per request, not a boot dependency — it \
+         may boot later than its consumer: {http_violations:?}"
+    );
+    assert_eq!(http_checked, 0, "an Http peer must not be counted as a boot dependency at all");
+
+    assert!(
+        split_fleet()
+            .iter()
+            .all(|svc| svc.addrs.told().iter().all(|(_, _, kind)| *kind == AddrKind::Edge)),
+        "an AddrKind::Http peer is back in the real fleet — this test's live half was dropped \
+         in M1 Step 4 when gateway-svc became Addrs::Asks and took the fleet's only two Http \
+         declarations with it. Re-point the assertions above at the real entry."
+    );
 }
 
 #[test]

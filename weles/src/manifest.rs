@@ -23,11 +23,13 @@
 //! consequences, neither hidden: the boot-order rule no longer constrains
 //! gateway-svc from its own declaration (its position in the Vec is unchanged,
 //! so the booted order is not), and the Http-vs-Edge asymmetry has no live
-//! example left in the real fleet. The tests that pinned both ON GATEWAY'S DATA
-//! (`an_http_peer_carries_no_boot_order_constraint`, the real-fleet half of
-//! `the_two_kinds_read_different_port_fields`, the gateway env golden, the
-//! `checked == 17` count) are RED pending the plan's Step 7, which owns
-//! re-pointing them and the `weles-fleet-parity` exclusion.
+//! example left in the real fleet. Step 7 re-pointed the tests that pinned both
+//! ON GATEWAY'S DATA: the boot-order count is 11 (not 17 — gateway's six edge
+//! declarations legitimately left the field, and restoring the number would
+//! assert a fact that is no longer true), the Http asymmetry is now proven on
+//! synthetic data with a guard that fires if an Http peer ever returns to the
+//! real fleet, and the dual-kind provider (`accounts`) is proven through
+//! [`PeerAddrs`] — where the gateway now actually reads it.
 //!
 //! Deliberate semantic delta vs the fleet.rs Development flavor: weles's
 //! composed env is fully deterministic — the `overrideable_env` seam
@@ -87,7 +89,14 @@ pub const AGENT_PORT: u16 = 8300;
 /// through. `cmd/gateway-svc`'s main reads exactly this name (its own copy —
 /// zero-sharing), and the VALUE is derived from [`AGENT_PORT`] by [`agent_url`],
 /// never written beside it.
-const ORCHESTRATOR_URL_ENV: &str = "ORCHESTRATOR_URL";
+///
+/// `pub` because verifyctl's `weles-fleet-parity` stage must name the key that
+/// carries the delegation in order to EXCLUDE it from its diff against
+/// processctl (which has no managed mode). That exclusion is derived from this
+/// const and [`agent_url`] rather than re-spelling the string, so the day the
+/// key is renamed the exclusion follows it instead of quietly widening to a name
+/// nothing composes any more.
+pub const ORCHESTRATOR_URL_ENV: &str = "ORCHESTRATOR_URL";
 
 /// Where a managed service reaches the agent. Derived from [`AGENT_PORT`] — the
 /// one authority for the agent's port — rather than spelled as a literal in
@@ -98,7 +107,12 @@ const ORCHESTRATOR_URL_ENV: &str = "ORCHESTRATOR_URL";
 /// The host is `127.0.0.1` by the same construction [`service_addr`] relies on:
 /// [`crate::agentapi::AgentServer::bind`] binds loopback, so the URL handed to a
 /// service is the address that endpoint actually took.
-fn agent_url() -> String {
+///
+/// `pub` for the same reason as [`ORCHESTRATOR_URL_ENV`]: verifyctl's parity
+/// stage excludes the exact PAIR (key AND value) this composes, not the key
+/// alone — so an `ORCHESTRATOR_URL` carrying anything other than this URL is
+/// still a FAIL there.
+pub fn agent_url() -> String {
     format!("http://127.0.0.1:{AGENT_PORT}")
 }
 
@@ -550,6 +564,21 @@ impl PeerAddrs {
             }
         }
         Self { entries }
+    }
+
+    /// Every address this map can hand out, of any kind, for any provider —
+    /// exactly the strings a `resolve` can answer with under this topology.
+    ///
+    /// The question it exists to answer, for verifyctl's `weles-fleet-parity`
+    /// stage: "is this address one the agent would serve?" That stage excludes a
+    /// managed process's peer-address env from its diff against processctl, and
+    /// keys the exclusion on THIS — so an address processctl composes that the
+    /// agent could NOT hand out is not a delegation, it is drift, and stays a
+    /// FAIL. Reading the answer out of the resolve map itself (rather than
+    /// re-deriving the set beside it) is what keeps that check honest: it is the
+    /// same entries `lookup` answers from.
+    pub fn addresses(&self) -> impl Iterator<Item = &str> {
+        self.entries.iter().map(|(_, _, addr)| addr.as_str())
     }
 
     /// Every address of `kind` for `provider`. Never falls back to the other
