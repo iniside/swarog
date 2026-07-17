@@ -265,6 +265,50 @@ Result<Vec<String>>`. HTTP+JSON, bounded timeout, bez retry.
 
 **(d) Dispatch:** `[opus]` core-implementer.
 
+## Step 3b — bramka na rozjazd kontraktu (DODANY po review Stepu 3) `[opus]`
+
+**(a) Co:** blokująca stage `weles-wire-contract` w `tools/verifyctl`.
+
+**(b) Dlaczego — krok nieprzewidziany, wymuszony przez Step 3:** zero-sharing każe
+kontraktowi istnieć **dwa razy**, ręcznie przepisanemu — `AddrKind` (`manifest.rs`),
+`ErrorCode` + kształty żądań (`agentapi.rs`) i ich bliźniaki w
+`core/remote/src/resolve.rs`. Rev 1 zakładała, że rozjazd może złapać wyłącznie Step
+6, czyli żywy rollout. To nieprawda: **verifyctl importuje welesa już dziś**
+(`Cargo.toml:13`) i może zaimportować `remote` — czyli to jest dokładnie wzorzec
+`weles-fleet-parity`, który istnieje **właśnie dlatego**, że twierdzenie przekrojowe
+o welesie nie może żyć w welesie. Bramka kupuje **wczesność** (`--fast` zamiast
+rolloutu), nie poprawność — każdy rozjazd jest dziś fail-closed i głośny.
+
+**Dlaczego to nie kosmetyka:** pisownia `lowercase` w `AddrKind` jest **dziś
+niefalsyfikowalna** — `Edge`/`Http` renderują się identycznie pod `lowercase` i
+`snake_case`. `ServiceDef` już nosi `player_port`; w dniu, w którym dojdzie
+`AddrKind::PlayerEdge`, naturalnym błędem jest skopiowanie `snake_case` z enuma
+kilkanaście linii niżej — i `"playeredge"` rozjeżdża się z `"player_edge"`.
+
+**(c) Jak:** shimy `#[doc(hidden)] pub drift_probe_*` po obu stronach (precedens:
+`test_only_reconnecting_edge_caller`) — **funkcje, nie publiczne struktury**, żeby
+zbiór nazw pól nie stał się API, a bramka ćwiczyła **prawdziwe derive'y**, nie
+czwartą kopię. Dla `ErrorCode`: zserializować wariant welesa i **zdeserializować do
+typu remote** — to dowodzi, że klient *umie przeczytać* to, co serwer pisze; równość
+bajtów jest tylko przybliżeniem tej własności. Zbiór wariantów czytany
+**strukturalnie** (przechwytujący `Deserializer` łapiący `VARIANTS` po `rename_all`),
+nie z prozy błędu serde. Ścieżka `/resolve` jest `pub const` **używaną przez** ramię
+matcha w `route` i przez `format!` klienta — nie deklarowaną obok nich.
+
+**Prove-the-branch — lekcja, którą ten krok wniósł:** synteza pary z rozjazdem **nie
+wystarcza**, bo wchodzi *poniżej* kolektora. Bramka mogła się wyłączyć jedną
+literówką (`wire_of(&weles, …)` w kolumnę remote) i zostać zielona na zawsze.
+Zamknięte przez round-trip **po wszystkich wariantach przez typy produkcyjne**, bez
+ręcznie budowanej kolumny pośrodku. Dowód: zainscenizować oba defekty naraz i
+pokazać, że stare testy są zielone, a round-trip czerwony.
+
+**Znany rezydualny gap (zapisany, nie przemycony):** metoda + parowanie
+status↔code — rozjazd jest głośnym `404 unknown_route` przy starcie gatewaya, więc
+akceptowany; `hello` — nie ma drugiej kopii, bo `remote` nie ma dla niego klienta.
+
+**(d) Dispatch:** `[opus]` core-implementer. **Review:** core-reviewer +
+proof-auditor (diff JEST bramką).
+
 ## Step 4 — `cmd/gateway-svc`: ścieżka bootu zarządzanego `[opus]`
 
 **(a) Co:** `cmd/gateway-svc/src/main.rs:116-131`. `ORCHESTRATOR_URL` ustawiony ⇒
