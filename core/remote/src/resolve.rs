@@ -21,11 +21,18 @@
 //! [`ErrorCode`] bytes are deserialized INTO this crate's enum (the property
 //! that actually matters — that this client can read what that server writes),
 //! and each body is round-tripped through the far side's parser so the FIELD
-//! names (`provider`/`kind`/`addrs`/`code`/`error`) are pinned too. It is
-//! in-memory, so it runs under `--fast`. The live `weles-managed-gateway` stage
-//! (the plan's Step 6) remains the end-to-end proof; the drift gate is the cheap
-//! one that fails first. The `drift_probe_*` functions at the bottom of this
-//! file are that stage's seam into this crate's private wire types.
+//! names (`provider`/`kind`/`addrs`/`code`/`error`) and [`RESOLVE_PATH`] are
+//! pinned too. It is in-memory, so it runs under `--fast`. The `drift_probe_*`
+//! functions at the bottom of this file are that stage's seam into this crate's
+//! private wire types.
+//!
+//! That gate is, today, the WHOLE proof — not the cheap half of one. The live
+//! `weles-managed-gateway` stage (the plan's Step 6) is planned and **not yet
+//! written**: there is no `StageId` and no file. So nothing currently boots this
+//! client against that server, and the HTTP method + status↔code pairing are
+//! pinned by nobody (a drift there answers `404 unknown_route`, which is at
+//! least loud and fatal at boot — see below). Do not read this doc as saying a
+//! live stage has your back.
 //!
 //! # The wire (as the server implements it)
 //!
@@ -96,6 +103,21 @@ const RESOLVE_TIMEOUT: Duration = Duration::from_secs(5);
 /// is [`ResolveError::Malformed`] — the answer is not this contract — never a
 /// truncated parse.
 const MAX_ANSWER_BYTES: usize = 8 * 1024;
+
+/// The path this client POSTs the question to — the third hand-copied fact of
+/// this contract, after [`AddrKind`] and [`ErrorCode`]. The server's copy is
+/// `weles::agentapi::RESOLVE_PATH`, and the `weles-wire-contract` verify stage
+/// compares the two (see the module doc).
+///
+/// A drift here is not silent — weles would answer `404 unknown_route`, which
+/// [`ErrorCode::UnknownRoute`] exists to make fatal-and-loud at gateway boot
+/// rather than mistakable for a fact about a service. It is pinned anyway
+/// because it costs one const to turn a boot-time outage into a `--fast` FAIL.
+///
+/// `pub` so the stage can read it: this is the value [`resolve_peer_within`]
+/// actually builds its URL from, never a copy declared beside it.
+#[doc(hidden)]
+pub const RESOLVE_PATH: &str = "/resolve";
 
 /// Which of a provider's addresses is being asked for.
 ///
@@ -237,7 +259,7 @@ async fn resolve_peer_within(
     kind: AddrKind,
     budget: Duration,
 ) -> Result<Vec<String>, ResolveError> {
-    let endpoint = format!("{}/resolve", orchestrator_url.trim_end_matches('/'));
+    let endpoint = format!("{}{RESOLVE_PATH}", orchestrator_url.trim_end_matches('/'));
     // Per call, not cached: this runs a handful of times at boot, and a free
     // function with no hidden state is the smaller surface. `timeout` covers
     // the WHOLE call (connect through body), which is what makes "never a

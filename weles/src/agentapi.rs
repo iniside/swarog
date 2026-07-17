@@ -184,6 +184,20 @@ const HEADER_READ_TIMEOUT: Duration = Duration::from_secs(30);
 /// tiny enum. A bound is only worth having at the size of the thing it bounds.
 const MAX_BODY_BYTES: usize = 8 * 1024;
 
+/// The `resolve` verb's path, hand-copied on the client side as
+/// `remote::resolve::RESOLVE_PATH`.
+///
+/// A const rather than a literal in [`route`]'s match arm for ONE reason: it
+/// gives `verifyctl`'s `weles-wire-contract` stage something to compare. A
+/// `&'static str` const is a legal pattern, so the route table below still reads
+/// as a table and this cannot become a second authority that drifts from the arm
+/// it names. `pub` on the same narrow grounds as [`ErrorCode`].
+///
+/// `/hello` and `/healthz` deliberately stay literals: `remote` has no client
+/// for either, so there is no second copy to drift against.
+#[doc(hidden)]
+pub const RESOLVE_PATH: &str = "/resolve";
+
 /// Live agent runtime threads.
 ///
 /// This exists so "the runtime thread was not leaked" is provable rather than
@@ -622,7 +636,7 @@ async fn route(
 ) -> std::result::Result<Response<Full<Bytes>>, std::convert::Infallible> {
     let response = match (request.method(), request.uri().path()) {
         (&Method::GET, "/healthz") => reply(StatusCode::OK, "ok\n"),
-        (&Method::POST, "/resolve") => resolve(request, &peers).await,
+        (&Method::POST, RESOLVE_PATH) => resolve(request, &peers).await,
         (&Method::POST, "/hello") => hello(request).await,
         // `unknown_route`, NOT `unknown_peer`: this is a statement about the
         // AGENT, not about a service. A client must be able to tell the two

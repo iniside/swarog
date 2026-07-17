@@ -10,9 +10,11 @@
 //! (`weles::agentapi` / `remote::resolve`), and the field names of the request,
 //! the answer and the refusal envelope. Both files say so in prose, and both say
 //! that neither crate's tests can catch a drift: each side is tested against a
-//! fake of the other. Until this stage, the ONLY thing that pinned the two
-//! together was the live `weles-managed-gateway` rollout — a boot, a fleet and a
-//! database late.
+//! fake of the other. Until this stage, NOTHING pinned the two together at all:
+//! the live `weles-managed-gateway` stage that is supposed to catch it live is
+//! PLANNED (plan Step 6) and not yet written — there is no `StageId` and no
+//! file. So a drift's first symptom today would be a `cmd/gateway-svc` that will
+//! not boot.
 //!
 //! `verifyctl` is the one place allowed to see both (`docs/reference/
 //! weles-design.md`, Non-negotiables: the shipping graph may never import weles;
@@ -52,20 +54,41 @@
 //!   round-tripping each body through the FAR side's real parser
 //!   ([`request_diffs`], [`response_diffs`], [`envelope_diffs`]). weles's
 //!   `deny_unknown_fields` is what makes the request direction bite.
+//! * **The `resolve` path** ([`path_diffs`]) — weles's `route` match arm against
+//!   the URL remote's `format!` actually builds.
+//! * **The `AddrKind` pairing itself**, end to end and with no column this stage
+//!   hand-copied in between: [`contract_diffs`] drives remote's real `Serialize`
+//!   into weles's real `Deserialize` once per variant. This is the check that
+//!   holds if [`addr_kind_spellings`] is ever miscollected.
 //!
-//! NOT pinned (deliberate, and the honest limits):
-//! * **HTTP-level facts**: the paths (`/resolve`, `/hello`), the methods, and
-//!   which status pairs with which `ErrorCode`. Those are behaviour, not a
-//!   serde spelling, and `weles-managed-gateway` boots the real endpoint.
-//! * **`hello`'s body** (`service`/`pid`): `remote` has no client for it — there
-//!   is no second copy to drift against yet. When one is written, it belongs
-//!   here.
-//! * **A variant added to `remote`'s `AddrKind` alone.** That enum derives
-//!   `Serialize` only, so serde has no declared set to read back (see
-//!   [`declared_variants`]), and its variant list here is derived from weles's
-//!   via [`addr_kind_peer`]. Adding one is still a compile error in this file
-//!   (that match is exhaustive), which is the point at which it gets noticed;
-//!   the direction that actually drifts is weles-first, and that one is closed.
+//! ## NOT pinned — read this before assuming a gap
+//!
+//! This list is the least-audited part of the file and the place a future reader
+//! stops looking, so each entry states the REASON, not just the fact. If a
+//! reason below is false, that is a bug in this stage.
+//!
+//! * **The HTTP method and the status↔`ErrorCode` pairing.** Both are
+//!   hand-copied (weles `(&Method::POST, …)`; remote `.post(…)`), so this is a
+//!   real gap, accepted rather than overlooked: pinning them means importing
+//!   hyper's and reqwest's method types into a serde-spelling stage to compare
+//!   two constants. A drift makes weles answer `404 unknown_route`, which
+//!   `remote::resolve`'s doc calls fatal-for-every-caller — a `cmd/gateway-svc`
+//!   that refuses to boot, loudly, on the first dial. Cheap to add if that ever
+//!   stops being true.
+//! * **`hello`'s body** (`service`/`pid`) and the `/hello` + `/healthz` paths:
+//!   `remote` has no client for any of them, so there is no second copy to drift
+//!   against. When one is written, it belongs here.
+//! * **A variant added to `remote::AddrKind` alone** is caught, but ONLY as a
+//!   compile error in [`addr_kind_peer_back`] — not by any runtime check. That
+//!   enum is `Serialize`-only, so [`declared_variants`] cannot read its set back
+//!   the way it can for both `ErrorCode`s, and every runtime `AddrKind` check
+//!   here enumerates from weles's side. Deriving `Deserialize` on it would close
+//!   this properly, and is deliberately NOT done: that widens a shipping crate's
+//!   surface to serve a verify stage. The compile error is the trade.
+//!
+//! Everything else about the endpoint — that it binds, serves, and answers the
+//! live gateway — is Step 6's `weles-managed-gateway`, which does not exist yet.
+//! Nothing in this file should be read as claiming otherwise.
 
 use crate::{model::Outcome, runner::Context};
 use anyhow::Result;
@@ -102,6 +125,27 @@ fn addr_kind_peer(kind: WAddrKind) -> RAddrKind {
     match kind {
         WAddrKind::Edge => RAddrKind::Edge,
         WAddrKind::Http => RAddrKind::Http,
+    }
+}
+
+/// Exhaustive on `remote::AddrKind` — the OTHER direction, and it exists purely
+/// to be a compile error.
+///
+/// [`addr_kind_peer`] matches on weles's enum, so it says nothing about remote's:
+/// a `RAddrKind::PlayerEdge` added alone would compile straight past it. And
+/// remote's `AddrKind` is `Serialize`-only, so [`declared_variants`] cannot read
+/// its set back either — meaning a remote-only variant would otherwise be
+/// invisible to this entire stage. This match is what makes "you cannot add a
+/// variant to either enum without touching this file" true by construction
+/// rather than by hope.
+///
+/// It is also load-bearing at runtime, via [`bijection_diffs`]: mapping across
+/// and back must land where it started, so a transposed arm (`Edge => Http`) is
+/// a FAIL and not a silently mirrored mistake.
+fn addr_kind_peer_back(kind: RAddrKind) -> WAddrKind {
+    match kind {
+        RAddrKind::Edge => WAddrKind::Edge,
+        RAddrKind::Http => WAddrKind::Http,
     }
 }
 
@@ -232,6 +276,45 @@ struct Spelling {
     weles: String,
     /// Exactly what remote's derive writes.
     remote: String,
+}
+
+/// The `resolve` path, hand-copied on both sides (weles's `route` match arm vs
+/// remote's URL `format!`). Pure, so a test can drive it with a drifted pair.
+///
+/// A drift is admittedly NOT silent at runtime — weles answers `404
+/// unknown_route`, which is fatal-loud at gateway boot by design. It is pinned
+/// because one const turns that boot-time outage into a `--fast` FAIL, not
+/// because the risk was unbounded.
+fn path_diffs(weles: &str, remote: &str) -> Vec<String> {
+    if weles == remote {
+        return Vec::new();
+    }
+    vec![format!(
+        "resolve path: weles serves {weles:?}, remote POSTs to {remote:?} — every question \
+         would come back 404 unknown_route (\"this agent does not speak the contract\")"
+    )]
+}
+
+/// Mapping a weles variant across to remote and back must land where it started.
+///
+/// [`addr_kind_peer`] and [`addr_kind_peer_back`] are two independent hand-
+/// written matches; a transposed arm in either (`Edge => Http`) is a real
+/// possibility and would otherwise be invisible, since `Edge` and `Http` render
+/// identically-shaped bytes. Composing them is what turns two exhaustive matches
+/// into an actual bijection.
+fn bijection_diffs(pairs: &[(WAddrKind, RAddrKind)]) -> Vec<String> {
+    let mut diffs = Vec::new();
+    for (weles, remote) in pairs {
+        let back = addr_kind_peer_back(*remote);
+        if back != *weles {
+            diffs.push(format!(
+                "AddrKind::{weles:?}: pairs to remote {remote:?}, which maps BACK to \
+                 weles {back:?} — `addr_kind_peer`/`addr_kind_peer_back` disagree, so one \
+                 of the two tables has a transposed arm"
+            ));
+        }
+    }
+    diffs
 }
 
 /// Byte-level agreement, variant by variant, plus the guard that the loop ran.
@@ -451,7 +534,14 @@ fn error_code_read_backs() -> std::result::Result<Vec<ReadBack>, String> {
 fn contract_diffs() -> Vec<String> {
     let mut diffs = Vec::new();
 
+    // --- The one hand-copied fact that is not serde's: the path.
+    diffs.extend(path_diffs(
+        weles::agentapi::RESOLVE_PATH,
+        remote::resolve::RESOLVE_PATH,
+    ));
+
     // --- AddrKind: bytes, both sides, every variant.
+    diffs.extend(bijection_diffs(&addr_kind_pairs()));
     match addr_kind_spellings() {
         Ok(spellings) => {
             diffs.extend(spelling_diffs("AddrKind", &spellings));
@@ -499,11 +589,27 @@ fn contract_diffs() -> Vec<String> {
     }
 
     // --- The field names, in all three directions that have two copies.
-    diffs.extend(request_diffs(
-        &remote::resolve::drift_probe_encode_resolve_request("characters", RAddrKind::Edge),
-        "characters",
-        WAddrKind::Edge,
-    ));
+    //
+    // Over EVERY `AddrKind` pair, not just one: this is remote's real
+    // `Serialize` driven into weles's real `Deserialize`, with no column this
+    // stage hand-copied in between. That matters twice over.
+    //
+    //   * It is the only AddrKind check with no collector seam. `spelling_diffs`
+    //     reads two columns `addr_kind_spellings` built; if that collector ever
+    //     read the wrong side's type into the `remote` column (a one-word slip,
+    //     in exactly the wrong-sided direction this stage exists to catch), the
+    //     columns would agree with each other forever and every test would stay
+    //     green. This loop cannot be fooled that way, because there is no
+    //     column — a `PlayerEdge` spelling drift makes weles's parser reject the
+    //     body its own client sent.
+    //   * It round-trips `Http`, which nothing else did.
+    for (weles_kind, remote_kind) in addr_kind_pairs() {
+        diffs.extend(request_diffs(
+            &remote::resolve::drift_probe_encode_resolve_request("characters", remote_kind),
+            "characters",
+            weles_kind,
+        ));
+    }
     let addrs = vec!["127.0.0.1:9000".to_string()];
     diffs.extend(response_diffs(
         &weles::agentapi::drift_probe_encode_resolve_response(addrs.clone()),
@@ -535,12 +641,15 @@ pub fn run(ctx: &mut Context<'_>) -> Result<Outcome> {
         ctx.note(diff)?;
     }
     let scope = "the two copies are `weles::{manifest::AddrKind, agentapi::{ErrorCode, \
-                 ResolveRequest, ResolveResponse, ErrorResponse}}` and \
-                 `remote::resolve::{AddrKind, ErrorCode, ResolveRequest, ResolveResponse, \
-                 ErrorEnvelope}`. Zero-sharing forbids sharing the types, so the fix is to make \
-                 the two agree — never to relax this stage. NOT checked here (by design): the \
-                 HTTP paths/methods/statuses and `hello`'s body, which have no second copy to \
-                 drift against; `weles-managed-gateway` boots the real endpoint.";
+                 RESOLVE_PATH, ResolveRequest, ResolveResponse, ErrorResponse}}` and \
+                 `remote::resolve::{AddrKind, ErrorCode, RESOLVE_PATH, ResolveRequest, \
+                 ResolveResponse, ErrorEnvelope}`. Zero-sharing forbids sharing the types, so \
+                 the fix is to make the two agree — never to relax this stage. This is the ONLY \
+                 gate on that contract: the live `weles-managed-gateway` stage is planned (plan \
+                 Step 6) and NOT yet written, so a drift left in place next surfaces as a \
+                 cmd/gateway-svc that will not boot. Not checked here: the HTTP method and the \
+                 status<->code pairing (a drift there is a loud 404 unknown_route at boot), and \
+                 `hello`'s body (no second copy exists yet).";
     eprintln!("{scope}");
     ctx.note(scope)?;
     Ok(Outcome::Fail)

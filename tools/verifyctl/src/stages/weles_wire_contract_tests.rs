@@ -70,17 +70,19 @@ fn every_error_code_survives_the_trip_from_weles_into_remote() {
 
 #[test]
 fn a_player_edge_variant_under_the_wrong_rename_all_is_caught() {
-    // THE scenario. `AddrKind` is `rename_all = "lowercase"`; `ErrorCode`
-    // fifteen lines below it is `snake_case`. `ServiceDef` already carries a
-    // `player_port`, so `AddrKind::PlayerEdge` is the next variant, and copying
-    // the wrong derive renders it `"playeredge"` instead of `"player_edge"`.
-    // Today `Edge`/`Http` render identically under both, which is exactly what
-    // makes the mistake invisible — and why this must be driven synthetically
-    // rather than waited for.
+    // THE scenario, with the sides the way round they would actually happen.
+    // BOTH `AddrKind`s are `rename_all = "lowercase"`, and in `remote/resolve.rs`
+    // `ErrorCode` — `snake_case` — sits fifteen lines below `AddrKind`. So the
+    // mistake is copying `snake_case` onto REMOTE's `AddrKind`: weles keeps
+    // emitting `"playeredge"` and remote starts emitting `"player_edge"`.
+    // `ServiceDef` already carries a `player_port`, so `PlayerEdge` is the next
+    // variant. Today `Edge`/`Http` render identically under both derives, which
+    // is exactly what makes the mistake invisible — and why this must be driven
+    // synthetically rather than waited for.
     let drifted = vec![
         spelling("Edge", "edge", "edge"),
         spelling("Http", "http", "http"),
-        spelling("PlayerEdge", "player_edge", "playeredge"),
+        spelling("PlayerEdge", "playeredge", "player_edge"),
     ];
     let diffs = spelling_diffs("AddrKind", &drifted);
     assert_eq!(diffs.len(), 1, "{diffs:?}");
@@ -93,7 +95,7 @@ fn a_player_edge_variant_under_the_wrong_rename_all_is_caught() {
     let agreed = vec![
         spelling("Edge", "edge", "edge"),
         spelling("Http", "http", "http"),
-        spelling("PlayerEdge", "player_edge", "player_edge"),
+        spelling("PlayerEdge", "playeredge", "playeredge"),
     ];
     assert_eq!(spelling_diffs("AddrKind", &agreed), Vec::<String>::new());
 }
@@ -228,6 +230,88 @@ fn a_renamed_envelope_error_field_is_caught_even_though_remote_defaults_it() {
     );
     assert_eq!(renamed_code.len(), 1, "{renamed_code:?}");
     assert!(renamed_code[0].contains("CANNOT parse"), "{renamed_code:?}");
+}
+
+// ---------------------------------------------------------------------------
+// The collector seam: the checks that survive a miscollected column.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn every_addr_kind_round_trips_through_the_production_types() {
+    // The check with NO hand-copied column in between: remote's real `Serialize`
+    // into weles's real `Deserialize`, once per variant. If `addr_kind_spellings`
+    // ever miscollected (reading weles's type into BOTH columns — a one-word
+    // slip that would leave `spelling_diffs` comparing a value to itself and
+    // every other test green), this is what still fails.
+    for (weles_kind, remote_kind) in addr_kind_pairs() {
+        let body = remote::resolve::drift_probe_encode_resolve_request("characters", remote_kind);
+        assert_eq!(
+            request_diffs(&body, "characters", weles_kind),
+            Vec::<String>::new(),
+            "{weles_kind:?} -> {}",
+            String::from_utf8_lossy(&body)
+        );
+    }
+    assert_eq!(addr_kind_pairs().len(), 2);
+}
+
+#[test]
+fn the_round_trip_discriminates_kinds_rather_than_accepting_any_body() {
+    // Proves the loop above can fail. `Edge`/`Http` render identically under
+    // both derives at HEAD, so a spelling drift cannot be staged with the real
+    // types — a transposed pair is the observable equivalent, and it exercises
+    // the same comparison (weles parsed a kind that is not the one remote meant)
+    // through the same production `Serialize`/`Deserialize` path a `PlayerEdge`
+    // drift would take.
+    let body = remote::resolve::drift_probe_encode_resolve_request("characters", RAddrKind::Http);
+    let diffs = request_diffs(&body, "characters", WAddrKind::Edge);
+    assert_eq!(diffs.len(), 1, "{diffs:?}");
+    assert!(diffs[0].contains("weles read kind=Http"), "{diffs:?}");
+    assert!(diffs[0].contains("remote sent Edge"), "{diffs:?}");
+}
+
+#[test]
+fn a_transposed_pair_table_is_caught_by_the_bijection() {
+    // `addr_kind_peer` and `addr_kind_peer_back` are two independent hand-written
+    // matches; composing them is what makes them an actual bijection rather than
+    // two tables free to mirror the same mistake.
+    assert_eq!(bijection_diffs(&addr_kind_pairs()), Vec::<String>::new());
+
+    let transposed = vec![
+        (WAddrKind::Edge, RAddrKind::Http),
+        (WAddrKind::Http, RAddrKind::Edge),
+    ];
+    let diffs = bijection_diffs(&transposed);
+    assert_eq!(diffs.len(), 2, "{diffs:?}");
+    assert!(diffs[0].contains("transposed arm"), "{diffs:?}");
+}
+
+#[test]
+fn remote_only_addr_kind_variants_are_a_compile_error_not_a_runtime_check() {
+    // States the trade the module doc records, so it cannot be quietly lost:
+    // `remote::AddrKind` is Serialize-only, so serde declares no set to read
+    // back and no runtime check here enumerates from remote's side. What holds
+    // the line is `addr_kind_peer_back`'s exhaustive match — this call is the
+    // reason a `RAddrKind::PlayerEdge` cannot compile without touching this file.
+    assert_eq!(addr_kind_peer_back(RAddrKind::Edge), WAddrKind::Edge);
+    assert_eq!(addr_kind_peer_back(RAddrKind::Http), WAddrKind::Http);
+    // The asymmetry itself, asserted rather than asserted-in-prose: weles's enum
+    // has a declared set, remote's does not.
+    assert!(declared_variants::<WAddrKind>().is_ok());
+}
+
+#[test]
+fn a_drifted_resolve_path_is_caught() {
+    assert_eq!(
+        path_diffs(
+            weles::agentapi::RESOLVE_PATH,
+            remote::resolve::RESOLVE_PATH
+        ),
+        Vec::<String>::new()
+    );
+    let diffs = path_diffs("/resolve", "/v2/resolve");
+    assert_eq!(diffs.len(), 1, "{diffs:?}");
+    assert!(diffs[0].contains("404 unknown_route"), "{diffs:?}");
 }
 
 // ---------------------------------------------------------------------------

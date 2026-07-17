@@ -300,6 +300,19 @@ mod tests {
     }
 
     #[test]
+    fn every_stage_class_matches_the_manifest_it_lives_in() {
+        // Which array a stage sits in is NOT what makes it blocking: `Summary`
+        // keys off `result.class`, copied from `stage.class` in the runner. So
+        // flipping a `class` to `Advisory` while leaving the stage in `BLOCKING`
+        // would silently make it non-blocking — and `stage_manifest_is_frozen`,
+        // which only reads names, would stay green. This is the assertion that
+        // makes the two agree.
+        assert!(BLOCKING.iter().all(|s| s.class == StageClass::Blocking));
+        assert!(ADVISORY.iter().all(|s| s.class == StageClass::Advisory));
+        assert!(SLOW.iter().all(|s| s.class == StageClass::Slow));
+    }
+
+    #[test]
     fn recoverable_replace_rolls_back_every_completed_write() {
         let root = temp_dir(&std::env::temp_dir(), "verifyctl-rollback").unwrap();
         std::fs::create_dir_all(root.join("tracked")).unwrap();
