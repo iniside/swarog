@@ -12,6 +12,7 @@ pub mod fuzz;
 pub mod mutants;
 pub mod public_api;
 pub mod splitproof;
+pub mod supported_targets;
 pub mod topiccheck;
 pub mod weles_async_island;
 pub mod weles_fleet_parity;
@@ -110,6 +111,17 @@ pub const BLOCKING: &[Stage] = &[
         class: StageClass::Blocking,
         not_applicable_on: &[],
         run: docs_current::run,
+    },
+    // Cross-target typecheck of the two rollout-tooling crates that rotted, from
+    // whatever box runs verify. BLOCKING and runs on every platform (no
+    // exemption): it is the only tripwire against E0061-class platform rot in a
+    // repo with no CI. Placed after the cheap checks and before the fleet-booting
+    // stages — it builds no fleet and touches no Postgres, only `cargo check`.
+    Stage {
+        id: StageId::SupportedTargets,
+        class: StageClass::Blocking,
+        not_applicable_on: &[],
+        run: supported_targets::run,
     },
     Stage {
         id: StageId::WelesFleetParity,
@@ -341,6 +353,7 @@ mod tests {
                 "contract-golden",
                 "conformance",
                 "docs-current",
+                "supported-targets",
                 "weles-fleet-parity",
                 "weles-async-island",
                 "weles-wire-contract",
@@ -349,11 +362,11 @@ mod tests {
             ]
         );
         assert_eq!(
-            &names(crate::cli::Level::All)[15..],
+            &names(crate::cli::Level::All)[16..],
             &["public-api", "fuzz", "csharp-client", "topiccheck", "admincheck"]
         );
         assert_eq!(names(crate::cli::Level::Slow).last(), Some(&"mutants"));
-        assert_eq!(manifest(crate::cli::Level::Fast, true).len(), 20);
+        assert_eq!(manifest(crate::cli::Level::Fast, true).len(), 21);
     }
 
     #[test]

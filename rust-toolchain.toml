@@ -1,0 +1,16 @@
+# Pins the toolchain AND the platforms this repo PROMISES compile, so the
+# BLOCKING `supported-targets` verify stage is self-provisioning: `rustup`
+# auto-installs these targets on first use. `SUPPORTED_TARGETS` in
+# tools/verifyctl/src/stages/supported_targets.rs is kept equal to this list by
+# a unit test — the checked promise and the declarative provisioning cannot drift.
+#
+# `channel = "stable"` does NOT break the `fuzz` / `public-api` stages: they use
+# an explicit `cargo +nightly` / `rustup toolchain install nightly` override,
+# which rustup honors regardless of this pin.
+[toolchain]
+channel = "stable"
+targets = [
+    "aarch64-apple-darwin",
+    "x86_64-unknown-linux-gnu",
+    "x86_64-pc-windows-gnu",
+]
