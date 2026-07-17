@@ -14,6 +14,8 @@ Start with the repository-level documents:
 - [Event-plane operations](reference/event-plane-ops.md)
 - [External C# client](reference/csharp-client.md)
 - [Hetzner deploy checklist](reference/hetzner-deploy-checklist.md)
+- [Platform notes](reference/platform-notes.md) — per-OS command spellings and
+  where rollouts can actually run
 - [Commit format](reference/commit-format.md)
 - [Research mode](reference/research-mode.md),
   [implementation mode](reference/implementation-mode.md), and

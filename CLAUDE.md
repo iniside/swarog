@@ -242,7 +242,7 @@ never a silent last-writer-wins overwrite.
   admin CASCADE`, fresh boot, then user reseed with `adminctl` — no data migration,
   backfill, or compatibility bridge. Admin users are created by **`cargo run -p adminctl`**
   (`create-user` upsert = also password reset, `--password-stdin`/`ADMINCTL_PASSWORD`,
-  never argv) wrapped by **`./install.sh` / `install.ps1`**; zero-user boot warns
+  never argv) wrapped by the **`install`** script for your shell; zero-user boot warns
   instead of failing; `ADMIN_OPEN=1` bypasses sessions AND CSRF (deliberately open
   local portal, loud warn). `ADMIN_USER`/`ADMIN_PASS` no longer exist. Emits durable
   `admin.action` (login-succeeded/login-locked/logout — local in BOTH topologies —
@@ -345,9 +345,8 @@ cargo run -p admincheck        # extension-point contract validation (points vs 
 devctl/processctl, never imported), native processes only, NEVER builds — it
 executes artifacts staged in `<root>/deploy/` via `weles deploy <src-dir>`.
 Differentiator vs devctl: per-service restart-on-crash with capped backoff (devctl
-tears the whole fleet down). It participates in `run/rollout.lock` bit-compatibly
-(Windows: 1-byte lock at offset `1<<63`, owner-only DACL on creation) — weles and
-devctl/verifyctl can never run fleets concurrently. Runtime state under
+tears the whole fleet down). It participates in `run/rollout.lock` bit-compatibly —
+weles and devctl/verifyctl can never run fleets concurrently. Runtime state under
 `run/weles/` (state.json, per-svc logs, control endpoint).
 
 `devctl up` is the owned foreground supervisor. It builds, seeds, starts, and
@@ -360,10 +359,10 @@ selected by name or a reused PID.
 
 `cargo run -p devctl -- up ...` keeps its parent Cargo process active for the life
 of the foreground supervisor. While it is running, do not start another Cargo
-command. Inspect or stop that fleet with the already-built direct binary:
-`target/debug/devctl.exe status` / `down` on Windows or
-`target/debug/devctl status` / `down` on Unix (under the configured
-`CARGO_TARGET_DIR` when it differs).
+command. Inspect or stop that fleet with the already-built direct binary
+(`target/debug/devctl status` / `down`, under the configured `CARGO_TARGET_DIR`
+when it differs — per-OS spelling in
+[platform notes](docs/reference/platform-notes.md)).
 
 `verifyctl` prints a PASS/FAIL/SKIP table and exits non-zero for every applicable
 blocking failure:
@@ -413,14 +412,16 @@ all share the one local Postgres, and
 concurrent runs contend on the events plane's migrate advisory lock and on
 concurrent DDL (`CREATE OR REPLACE`), which looks like a hang or fails with
 `tuple concurrently updated`. This bites on EVERY rollout, so it is a hard
-protocol, not a tip:
+protocol, not a tip. Rollout tooling itself runs on Windows and Linux ONLY —
+`processctl` has no Darwin backend, so a Mac can build and review but never
+verify ([platform notes](docs/reference/platform-notes.md)):
 
-- **Before any Cargo-launched rollout**: first check
-  `Get-Process | Where-Object { $_.ProcessName -match '^cargo$|^rustc$' }`
-  (or `pgrep -x cargo; pgrep -x rustc` in bash). If either is active, never start
-  a second Cargo command. To inspect or stop an already-running foreground
-  `devctl` fleet, use the already-built direct binary (`target/debug/devctl.exe`
-  on Windows or `target/debug/devctl` on Unix, adjusted for `CARGO_TARGET_DIR`),
+- **Before any Cargo-launched rollout**: first check for a live `cargo`/`rustc`
+  (`pgrep -x cargo; pgrep -x rustc` — PowerShell form in
+  [platform notes](docs/reference/platform-notes.md)). If either is active, never
+  start a second Cargo command. To inspect or stop an already-running foreground
+  `devctl` fleet, use the already-built direct binary (`target/debug/devctl`,
+  adjusted for `CARGO_TARGET_DIR`),
   then WAIT for or stop the owning rollout as appropriate. When Cargo/rustc are
   clear, run `cargo run -p devctl -- status` and require no active fleet. After
   status exits, re-check Cargo/rustc before launching exactly one selected
@@ -455,8 +456,9 @@ driven through the `edge` crate as a library. It asserts the same named scenario
 accumulation, 429 rate-limit, api-key policy [K1-K5], admin session auth [AD1-AD5],
 audit [AU1-AU3], scheduler/prune [SC/SP], metrics [MX], rate-limit [RL], player QUIC
 [P1-P6]), then re-runs the monolith (`cmd/server`) on the same player front for parity
-([M0-M3b]) and proves native graceful shutdown ([W2]: Ctrl-Break to the monolith's
-process group / SIGTERM on unix → clean drain, no force-kill). **psql is REQUIRED** at
+([M0-M3b]) and proves native graceful shutdown ([W2]: the platform's native
+cooperative stop to the monolith's process group → clean drain, no force-kill —
+see [platform notes](docs/reference/platform-notes.md)). **psql is REQUIRED** at
 `DATABASE_URL`; the preceding blocking build stage produces the fleet, harness,
 and C# fixture server, so the live stages run without nested Cargo builds. A
 fleet-drift preflight fails loudly if the centralized `processctl` fleet !=
@@ -484,7 +486,7 @@ Connection from `DATABASE_URL`, default
 `postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable`.
 Integration tests target this local Postgres directly (no Docker/testcontainers).
 (Admin/superuser credentials for provisioning are in local agent memory, not
-committed.) psql:
+committed.)
 
 **No data migrations — wipe is the migration strategy (current phase).** This is
 pre-production with no persistent users yet: when a schema or event-contract
@@ -497,8 +499,11 @@ fake data (like the `APIKEYS_DEV_SEED` dev-keys upsert), not a migration.
 Revisit only if this ever grows real persistent users.
 
 ```
-PGPASSWORD=gamebackend "/c/Program Files/PostgreSQL/18/bin/psql.exe" -U gamebackend -h localhost -d gamebackend
+PGPASSWORD=gamebackend psql -U gamebackend -h localhost -d gamebackend
 ```
+
+Installers that keep `psql` off `PATH` (Windows, Homebrew) need the full path —
+see [platform notes](docs/reference/platform-notes.md).
 
 ## Layout
 
@@ -774,12 +779,14 @@ The Claude Code project memory lives OUTSIDE the repo
 mirrored into the repo at `memory/` so it survives across machines via git.
 
 - **After ANY change to memory** (write/update/delete a memory file or `MEMORY.md`),
-  run `scripts/memory-sync.sh push` (or `.ps1`) — it mirrors live → `memory/` and
+  run `scripts/memory-sync.sh push` — it mirrors live → `memory/` and
   commits `chore(memory): …`. Don't hand-copy; the script handles deletions too.
 - **After a `git pull`/sync**, run `scripts/memory-sync.sh pull` — it mirrors the
   git copy back to this machine's live memory dir. Do this before relying on recall.
 - The live path is derived (repo abspath → non-alnum→`-`), so scripts are portable;
   override with `CLAUDE_MEMORY_DIR` if detection is ever wrong. `… path` prints it.
+- The `.ps1` twin and the no-exec-bit invocation form are in
+  [platform notes](docs/reference/platform-notes.md).
 
 ## Commit After Every Task — MANDATORY
 
