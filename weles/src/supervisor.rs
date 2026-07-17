@@ -630,9 +630,17 @@ pub fn run_up(topology: Topology) -> Result<()> {
     let layout = discover_layout()?;
 
     // Lock FIRST (Step-4 review finding): nothing rollout-bearing may run
-    // before this process owns run/rollout.lock.
+    // before this process is inside run/rollout.lock's one permitted rollout —
+    // by owning it (the operator path, unchanged) or by consuming a one-shot
+    // lease borrowed from the parent that spawned us (a verifyctl stage, which
+    // holds that same lock for its whole manifest and would otherwise deadlock
+    // against us). `lock::acquire_or_borrow` refuses rather than fall back.
+    //
+    // `_lock` stays an RAII local on THIS thread and drops LAST — after
+    // teardown, after `control`, after the agent island. `lock::Lease` is
+    // `!Send`, so that placement is now the compiler's business, not a comment's.
     let run_id = format!("{:016x}", rand::random::<u64>());
-    let _lock = lock::acquire(&layout.root, &run_id)?;
+    let _lock = lock::acquire_or_borrow(&layout.root, &run_id)?;
 
     // Install the stop handler immediately after acquiring the lock — BEFORE the
     // slow prep helpers (mint_ca can spawn edgeca for ~30s if the CA is absent;

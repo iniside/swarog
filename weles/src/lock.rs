@@ -20,14 +20,49 @@
 //! metadata schema (`{version, tool, pid, run_id, started_unix}`); devctl
 //! never reads foreign metadata — it truncates on its own acquire the same
 //! way.
+//!
+//! # The borrowed half
+//!
+//! [`acquire`] is the operator path: weles owns the rollout. But verifyctl
+//! holds ONE `processctl::OwnedLease` for its whole manifest
+//! (`tools/verifyctl/src/runner.rs:57`) and hands a child a one-shot borrow of
+//! it (`spawn_borrower(spec, "splitproof")`, `:252`). A verifyctl stage that
+//! booted weles would therefore deadlock on `run/rollout.lock` against
+//! verifyctl's own lease — so [`acquire_or_borrow`] extends weles's existing
+//! bit-compatibility claim to that borrow protocol. Same rule as the lock
+//! itself: the shape is COPIED from `tools/processctl/src/lock.rs`, never
+//! imported (zero-sharing), and must match what processctl actually writes:
+//!
+//! * The parent appends [`BORROWED_LEASE_ARG`] to the child's argv and writes
+//!   the JSON [`BorrowCredential`] into a private pipe on the child's stdin
+//!   (`OwnedLease::spawn_borrower` → `credential_pipe`/`deliver_credential`).
+//! * The child validates the credential AGAINST THE LIVE WORLD
+//!   (`validate_credential`), then keeps the lock file open WITHOUT locking it.
+//!   A borrower never takes the byte-range lock — the parent still holds it.
+//! * One-shot is enforced by an exclusive-create marker beside the lock
+//!   (`borrow_marker_path`); the parent deletes it when its own lease drops.
+//!
+//! Anything that fails to validate REFUSES — a borrow never falls back to
+//! [`acquire`] and never proceeds unlocked.
+//!
+//! **Deliberate non-check (recorded, not smuggled):** the credential's
+//! `lock_path` is trusted as the authority for WHICH lock is being borrowed; it
+//! is not required to equal `<root>/run/rollout.lock`. Validation still proves a
+//! live owner holds that lock. A parent rooted in a different checkout would
+//! thus lend a lock protecting a different tree — out of scope under the
+//! trusted-local-operator model (CLAUDE.md, "Dev tooling scope"), and a strict
+//! path equality would falsely refuse over path spelling (case/UNC/symlink).
 
 use std::fs::File;
-use std::io::{Seek, SeekFrom, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// weles's own lock-metadata schema. Purely informational for a human (or a
 /// later `weles status`) inspecting who owns the rollout.
@@ -67,6 +102,8 @@ impl Drop for RolloutLock {
 /// A lock owned by anyone else — devctl, verifyctl, or another weles — is a
 /// loud, immediate error naming the path.
 pub fn acquire(root: &Path, run_id: &str) -> Result<RolloutLock> {
+    #[cfg(test)]
+    ACQUIRE_CALLS.with(|calls| calls.set(calls.get() + 1));
     let run_dir = root.join("run");
     std::fs::create_dir_all(&run_dir)
         .with_context(|| format!("create lock directory {}", run_dir.display()))?;
@@ -113,6 +150,368 @@ pub fn acquire(root: &Path, run_id: &str) -> Result<RolloutLock> {
     Ok(RolloutLock { file, path })
 }
 
+// Counts entries into `acquire` on THIS thread. `cargo test` runs each test on
+// its own thread, so the count is per-test and unaffected by tests running in
+// parallel. The borrow tests assert it stays at ZERO — proving the borrow path
+// never reaches `acquire`, rather than merely proving it raised no error.
+#[cfg(test)]
+thread_local! {
+    static ACQUIRE_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// The borrower role weles claims. A parent must have named EXACTLY this role
+/// in processctl's `RolloutLock::acquire(path, run_id, allowed_borrower_role)`;
+/// a lease issued for any other role (verifyctl's current lease names
+/// `"splitproof"`, `tools/verifyctl/src/runner.rs:57`) is refused.
+pub const BORROWER_ROLE: &str = "weles";
+
+/// The argv marker processctl appends to a borrower's command line
+/// (`tools/processctl/src/lock.rs:29`, `pub(crate)` there — hence the copy).
+/// Its presence is the ONLY thing that makes this process look for an
+/// inherited credential at all; without it `weles up` behaves exactly as it
+/// does from an operator shell.
+const BORROWED_LEASE_ARG: &str = "--processctl-borrowed-lease-v1";
+
+/// The exact bytes processctl writes into its one-shot marker — and requires to
+/// read back before deleting it on the owner's drop
+/// (`tools/processctl/src/lock.rs:28`, `cleanup_consumption_marker`). Any other
+/// byte string here would leave weles's marker behind forever.
+const CONSUMED_MARKER: &[u8] = b"processctl-borrowed-v1\n";
+
+/// `processctl::ROLLOUT_LOCK_VERSION` (`tools/processctl/src/lock.rs:23`).
+const OWNER_LEASE_VERSION: u32 = 1;
+/// `processctl::lock::MAX_CREDENTIAL_BYTES` / `MAX_METADATA_BYTES` (`:24-25`).
+const MAX_CREDENTIAL_BYTES: u64 = 64 * 1024;
+const MAX_METADATA_BYTES: u64 = 64 * 1024;
+
+/// Process-local one-shot guard, mirroring
+/// `processctl::lock::INHERITED_CREDENTIAL_CONSUMED` (`:30`): stdin is a
+/// process-global, so a second consume attempt would read an already-drained
+/// pipe rather than fail honestly.
+static INHERITED_CREDENTIAL_CONSUMED: AtomicBool = AtomicBool::new(false);
+
+/// Mirror of `processctl::StartMarker` (`tools/processctl/src/process.rs:62-63`)
+/// — a serde newtype, so it is a bare integer on the wire.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+struct StartMarker(u64);
+
+/// Mirror of `processctl::ProcessIdentity` (`tools/processctl/src/process.rs:54-60`).
+/// `pid` alone would be a recycled-PID hazard; `started` (Windows process
+/// creation FILETIME / Linux `/proc/<pid>/stat` field 22) is what makes the
+/// identity a real one.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct OwnerIdentity {
+    pid: u32,
+    executable: PathBuf,
+    started: StartMarker,
+}
+
+/// Mirror of processctl's PRIVATE `LockMetadata` (`tools/processctl/src/lock.rs:38-46`)
+/// — the JSON an `OwnedLease` writes at offset 0 of the lock file. Weles's own
+/// [`LockMetadata`] is a DIFFERENT schema: each tool truncates and rewrites on
+/// its own `acquire` and never reads foreign metadata, so the two only ever
+/// meet here, on the borrow path, where weles is the reader of processctl's.
+///
+/// `deny_unknown_fields` + the `PartialEq` comparison against the credential is
+/// deliberate fail-closed behaviour: if processctl's schema ever changes, weles
+/// REFUSES to borrow instead of guessing.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct OwnerLease {
+    version: u32,
+    owner: OwnerIdentity,
+    run_id: String,
+    lease_started_unix_nanos: u64,
+    allowed_borrower_role: Option<String>,
+}
+
+/// Mirror of `processctl::lock::BorrowCredential` (`tools/processctl/src/lock.rs:48-55`),
+/// as delivered over the private stdin pipe.
+///
+/// `nonce` is carried because `deny_unknown_fields` on the producer's twin means
+/// it is part of the wire shape — but it is NOT a secret to check: processctl
+/// itself discards it (`create_consumption_marker` does `let _ = nonce;`, and
+/// the marker it writes is the fixed [`CONSUMED_MARKER`], not the nonce). Weles
+/// ignores it identically rather than inventing a check the producer's marker
+/// could never satisfy.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct BorrowCredential {
+    version: u32,
+    lock_path: PathBuf,
+    metadata: OwnerLease,
+    nonce: [u8; 32],
+}
+
+/// A validated one-shot borrow of a parent's rollout lease.
+///
+/// It holds the lock file OPEN but deliberately UNLOCKED — the parent still
+/// holds the byte-range/flock. Dropping it releases nothing (there is nothing to
+/// release); the rollout ends when the PARENT's lease drops.
+///
+/// `PhantomData<Rc<()>>` (copied from `processctl::BorrowedLease`'s
+/// `_not_transferable`, `tools/processctl/src/lock.rs:107`) makes this — and
+/// therefore [`Lease`] — `!Send`. That is load-bearing, not decoration: flock is
+/// per open-file-description and `LockFileEx` per handle, so the lease's
+/// lifetime is the supervisor thread's stack frame. The compiler now refuses any
+/// attempt to move it into a task, a thread, or an `Arc`.
+#[derive(Debug)]
+pub struct BorrowedLease {
+    _lock_file: File,
+    metadata: OwnerLease,
+    _not_transferable: PhantomData<Rc<()>>,
+}
+
+impl BorrowedLease {
+    /// The OWNING run's id (verifyctl's), not weles's own.
+    pub fn run_id(&self) -> &str {
+        &self.metadata.run_id
+    }
+
+    /// PID of the process whose lease this is.
+    pub fn owner_pid(&self) -> u32 {
+        self.metadata.owner.pid
+    }
+}
+
+/// Whichever way this process came to be inside the one permitted rollout.
+///
+/// Kept as ONE RAII value so [`crate::supervisor::run_up`] holds a single
+/// `_lock` local that drops last, unchanged in either mode. `!Send` via
+/// [`BorrowedLease`].
+#[derive(Debug)]
+pub enum Lease {
+    /// weles acquired `run/rollout.lock` itself — the operator path.
+    Owned(RolloutLock),
+    /// weles is running INSIDE a parent's rollout (a verifyctl stage).
+    Borrowed(BorrowedLease),
+}
+
+/// The one entry point for `weles up`: consume an inherited one-shot lease if
+/// this process was spawned as a borrower, otherwise [`acquire`] exactly as
+/// before.
+///
+/// Fail-closed by construction: the `?` on the borrow attempt means a malformed
+/// credential, a dead/mismatched parent, or a wrong role RETURNS THE ERROR. It
+/// never degrades into `acquire` (which would deadlock against the very parent
+/// that spawned us) and never proceeds unlocked.
+pub fn acquire_or_borrow(root: &Path, run_id: &str) -> Result<Lease> {
+    match borrow_inherited_if_present(BORROWER_ROLE)? {
+        Some(borrowed) => {
+            println!(
+                "weles: running inside rollout {} borrowed from pid {} — that lease, not this \
+                 process, owns run/rollout.lock",
+                borrowed.run_id(),
+                borrowed.owner_pid()
+            );
+            Ok(Lease::Borrowed(borrowed))
+        }
+        None => acquire(root, run_id).map(Lease::Owned),
+    }
+}
+
+/// Copied from `processctl::BorrowedLease::consume_inherited_if_present`
+/// (`tools/processctl/src/lock.rs:477-485`); the caller shape is
+/// `tools/splitproof/src/main.rs:472-480`.
+///
+/// `Ok(None)` — and ONLY `Ok(None)` — means "no borrow in this environment".
+/// The argv marker without the private stdin pipe is an error, not a `None`: it
+/// means the credential delivery this process depends on did not happen.
+fn borrow_inherited_if_present(expected_role: &str) -> Result<Option<BorrowedLease>> {
+    if !std::env::args_os().any(|arg| arg == BORROWED_LEASE_ARG) {
+        return Ok(None);
+    }
+    if !imp::inherited_credential_present().context("inspect inherited borrower credential")? {
+        bail!(
+            "{BORROWED_LEASE_ARG} was present on the command line without its private credential \
+             pipe on stdin — refusing to run: this process was told it is a borrower but was \
+             never handed the lease"
+        );
+    }
+    consume_inherited(expected_role).map(Some)
+}
+
+/// Copied from `processctl::BorrowedLease::consume_inherited` (`:487-496`).
+fn consume_inherited(expected_role: &str) -> Result<BorrowedLease> {
+    validate_identifier("borrower role", expected_role)?;
+    if INHERITED_CREDENTIAL_CONSUMED.swap(true, Ordering::AcqRel) {
+        bail!("the inherited borrower credential was already consumed by this process");
+    }
+    let bytes = imp::consume_credential_stdin().context("consume inherited borrower credential")?;
+    if bytes.len() as u64 > MAX_CREDENTIAL_BYTES {
+        bail!("inherited borrower credential exceeds its {MAX_CREDENTIAL_BYTES}-byte bound");
+    }
+    let credential: BorrowCredential =
+        serde_json::from_slice(&bytes).context("parse inherited borrower credential")?;
+    validate_credential(credential, expected_role)
+}
+
+/// Copied from `processctl::lock::validate_credential` (`:549-582`) — the whole
+/// point of the copy is that these checks are the ones processctl's own borrower
+/// makes, in the same order:
+///
+/// 1. the wire version is one weles understands;
+/// 2. the lease was issued FOR THIS ROLE (not, say, `"splitproof"`);
+/// 3. the lock file's metadata still matches the credential BYTE-FOR-BYTE after
+///    parsing — a re-acquired lock rewrites this, so a stale credential dies here;
+/// 4. the named owner process is STILL LIVE and still the same process
+///    (pid + executable + start marker, so a recycled PID is not the owner);
+/// 5. the owner still HOLDS the advisory lock — the identity being live is not
+///    enough, the lease itself must be;
+/// 6. the borrow has not already been consumed (exclusive-create marker).
+///
+/// Only then does a `BorrowedLease` exist. Note there is no `spawn_borrower`
+/// twin on this side: a borrow is one-shot and CANNOT be re-lent.
+fn validate_credential(credential: BorrowCredential, expected_role: &str) -> Result<BorrowedLease> {
+    if credential.version != OWNER_LEASE_VERSION {
+        bail!(
+            "unsupported rollout lease version {} (weles speaks {OWNER_LEASE_VERSION}) — refusing \
+             to borrow",
+            credential.version
+        );
+    }
+    if credential.metadata.allowed_borrower_role.as_deref() != Some(expected_role) {
+        bail!(
+            "borrower role mismatch: this lease permits {:?}, weles claims {expected_role:?} — \
+             refusing to borrow",
+            credential
+                .metadata
+                .allowed_borrower_role
+                .as_deref()
+                .unwrap_or("<borrowing-disabled>")
+        );
+    }
+
+    let mut lock_file = imp::open_lock_file(&credential.lock_path)
+        .with_context(|| format!("open borrowed lock {}", credential.lock_path.display()))?;
+    let metadata = read_owner_lease(&mut lock_file, &credential.lock_path)?;
+    if metadata != credential.metadata {
+        bail!(
+            "rollout lock {} no longer carries the lease named by the inherited credential — \
+             refusing to borrow",
+            credential.lock_path.display()
+        );
+    }
+
+    let observed = imp::observe_process_identity(metadata.owner.pid).with_context(|| {
+        format!(
+            "rollout lease owner pid {} is not live — refusing to borrow",
+            metadata.owner.pid
+        )
+    })?;
+    if observed != metadata.owner {
+        bail!(
+            "rollout lease owner pid {} is a DIFFERENT process than the one that took the lease \
+             (a recycled pid) — refusing to borrow",
+            metadata.owner.pid
+        );
+    }
+    if !is_locked_by_other(&lock_file)? {
+        bail!(
+            "rollout lease owner pid {} no longer holds {} — refusing to borrow a lease that is \
+             already over",
+            metadata.owner.pid,
+            credential.lock_path.display()
+        );
+    }
+
+    let marker = borrow_marker_path(&credential.lock_path, &metadata);
+    if let Err(error) = imp::create_consumption_marker(&marker) {
+        if error.kind() == std::io::ErrorKind::AlreadyExists {
+            bail!(
+                "rollout lease {} has already been borrowed once (the one-shot marker {} exists) \
+                 — refusing to borrow it again",
+                metadata.run_id,
+                marker.display()
+            );
+        }
+        return Err(anyhow::Error::new(error).context(format!(
+            "claim the one-shot borrow of rollout lease {}",
+            metadata.run_id
+        )));
+    }
+
+    Ok(BorrowedLease {
+        _lock_file: lock_file,
+        metadata,
+        _not_transferable: PhantomData,
+    })
+}
+
+/// Copied from `processctl::lock::read_metadata` (`:605-628`).
+fn read_owner_lease(file: &mut File, path: &Path) -> Result<OwnerLease> {
+    file.seek(SeekFrom::Start(0))
+        .with_context(|| format!("rewind {}", path.display()))?;
+    let mut bytes = Vec::new();
+    file.take(MAX_METADATA_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .with_context(|| format!("read lease metadata from {}", path.display()))?;
+    if bytes.len() as u64 > MAX_METADATA_BYTES {
+        bail!(
+            "rollout lock {} carries more than {MAX_METADATA_BYTES} bytes of metadata",
+            path.display()
+        );
+    }
+    let metadata: OwnerLease = serde_json::from_slice(&bytes).with_context(|| {
+        format!(
+            "parse the owning tool's lease metadata from {} — refusing to borrow",
+            path.display()
+        )
+    })?;
+    if metadata.version != OWNER_LEASE_VERSION {
+        bail!(
+            "rollout lock {} carries lease version {} (weles speaks {OWNER_LEASE_VERSION})",
+            path.display(),
+            metadata.version
+        );
+    }
+    Ok(metadata)
+}
+
+/// Copied from `processctl::lock::borrow_marker_path` (`:630-639`) — the path
+/// MUST match, because the owner deletes exactly this name when its lease drops.
+fn borrow_marker_path(lock: &Path, metadata: &OwnerLease) -> PathBuf {
+    let file_name = lock
+        .file_name()
+        .map(|name| name.to_string_lossy())
+        .unwrap_or_default();
+    lock.with_file_name(format!(
+        ".{file_name}.{}.{}.borrowed",
+        metadata.run_id, metadata.lease_started_unix_nanos
+    ))
+}
+
+/// Copied from `processctl::lock::is_locked_by_other` (`:818-825`): the only
+/// portable probe is to TRY the lock — success means nobody holds it, so undo it
+/// at once. This is not [`acquire`]: it takes no ownership, writes no metadata,
+/// and on the success path of a borrow it never keeps the lock (the parent holds
+/// it, so the try fails, which is the answer we want).
+fn is_locked_by_other(file: &File) -> Result<bool> {
+    if imp::try_lock_exclusive(file).context("probe the rollout lock owner")? {
+        imp::unlock(file).context("release the rollout-lock probe")?;
+        Ok(false)
+    } else {
+        Ok(true)
+    }
+}
+
+/// Copied from `processctl::state::validate_identifier`
+/// (`tools/processctl/src/state.rs:967-984`) — the same charset processctl
+/// enforces on a role, so weles cannot claim a role processctl could never issue.
+fn validate_identifier(field: &str, value: &str) -> Result<()> {
+    if value.is_empty() || value.len() > 128 {
+        bail!("{field} must contain 1..=128 bytes, got {value:?}");
+    }
+    if !value
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    {
+        bail!("{field} may contain only ASCII letters, digits, dot, underscore, and dash, got {value:?}");
+    }
+    Ok(())
+}
+
 #[cfg(unix)]
 mod imp {
     use std::fs::File;
@@ -152,6 +551,118 @@ mod imp {
         } else {
             Err(std::io::Error::last_os_error())
         }
+    }
+
+    /// Copied from `processctl::platform::linux::observe_process_identity`
+    /// (`tools/processctl/src/platform/linux.rs:222-246`). Field 22 of
+    /// `/proc/<pid>/stat` (index 19 AFTER the `)` that closes the comm field —
+    /// the comm may itself contain spaces and parens, which is why the parse
+    /// starts at the LAST `)`) is the start time in clock ticks: the half of
+    /// the identity a recycled PID cannot forge.
+    #[cfg(target_os = "linux")]
+    pub(super) fn observe_process_identity(pid: u32) -> std::io::Result<super::OwnerIdentity> {
+        let proc_dir = Path::new("/proc").join(pid.to_string());
+        let executable = std::fs::read_link(proc_dir.join("exe"))?;
+        let stat = std::fs::read_to_string(proc_dir.join("stat"))?;
+        let close = stat.rfind(')').ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, "malformed /proc stat")
+        })?;
+        let started = stat[close + 1..]
+            .split_whitespace()
+            .nth(19)
+            .ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::InvalidData, "missing process starttime")
+            })?
+            .parse::<u64>()
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+        Ok(super::OwnerIdentity {
+            pid,
+            executable,
+            started: super::StartMarker(started),
+        })
+    }
+
+    /// processctl supports Windows and Linux only
+    /// (`tools/processctl/src/process.rs:126-129`), so a lease minted anywhere
+    /// else cannot exist — and an unverifiable owner must never be borrowed from.
+    #[cfg(not(target_os = "linux"))]
+    pub(super) fn observe_process_identity(_pid: u32) -> std::io::Result<super::OwnerIdentity> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            format!(
+                "rollout-lease owner identity cannot be observed on {}",
+                std::env::consts::OS
+            ),
+        ))
+    }
+
+    /// Copied from `processctl::lock::inherited_credential_present`
+    /// (`tools/processctl/src/lock.rs:507-518`): the parent hands the credential
+    /// over an anonymous pipe on stdin, so "stdin is a FIFO" is exactly the
+    /// question. An operator shell leaves stdin a tty or a file.
+    pub(super) fn inherited_credential_present() -> std::io::Result<bool> {
+        let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+        if unsafe { libc::fstat(0, stat.as_mut_ptr()) } != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let stat = unsafe { stat.assume_init() };
+        Ok(stat.st_mode & libc::S_IFMT == libc::S_IFIFO)
+    }
+
+    /// Copied from `processctl::lock::consume_credential_stdin` (`:958-994`).
+    /// The pipe is drained to EOF and stdin is then REPLACED by `/dev/null`:
+    /// the credential must not be re-readable, and fd 0 must not be left closed
+    /// (the next `open` would silently become this process's stdin). The
+    /// `null_fd != 0` arm is the case where `/dev/null` lands on fd 0 by itself.
+    pub(super) fn consume_credential_stdin() -> std::io::Result<Vec<u8>> {
+        use std::io::Read;
+        use std::os::fd::{FromRawFd, IntoRawFd};
+
+        if unsafe { libc::fcntl(0, libc::F_GETFD) } < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let mut input = unsafe { File::from_raw_fd(0) };
+        let mut bytes = Vec::new();
+        let read = input
+            .by_ref()
+            .take(super::MAX_CREDENTIAL_BYTES + 1)
+            .read_to_end(&mut bytes);
+        drop(input);
+        read?;
+
+        let null = File::open("/dev/null")?;
+        let null_fd = null.into_raw_fd();
+        if null_fd != 0 {
+            let duplicated = unsafe { libc::dup2(null_fd, 0) };
+            unsafe { libc::close(null_fd) };
+            if duplicated < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+        }
+        if unsafe { libc::fcntl(0, libc::F_SETFD, libc::FD_CLOEXEC) } < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(bytes)
+    }
+
+    /// The one-shot claim: `O_CREAT | O_EXCL` is the whole mechanism — the
+    /// SECOND borrower of the same lease loses the create and is refused.
+    /// Contents and mode are processctl's (`create_consumption_marker`,
+    /// `tools/processctl/src/lock.rs:1075-1103`) because the OWNER deletes this
+    /// file on its own drop and only after re-reading exactly these bytes at
+    /// exactly mode 0600. processctl's `O_NOFOLLOW` and its re-validation of the
+    /// created file are same-user hardening, deliberately not copied (CLAUDE.md,
+    /// "Dev tooling scope": trusted local operator).
+    pub(super) fn create_consumption_marker(path: &Path) -> std::io::Result<()> {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut file = std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .mode(0o600)
+            .open(path)?;
+        file.write_all(super::CONSUMED_MARKER)?;
+        file.sync_all()
     }
 }
 
@@ -239,6 +750,178 @@ mod imp {
         } else {
             Err(std::io::Error::last_os_error())
         }
+    }
+
+    /// Copied from `processctl::platform::windows::observe_process_identity` +
+    /// `observe_process` (`tools/processctl/src/platform/windows.rs:534-565`).
+    /// The process creation FILETIME is the half of the identity a recycled PID
+    /// cannot forge; `PROCESS_QUERY_LIMITED_INFORMATION` is enough for both
+    /// queries and is the least the parent can be opened with.
+    pub(super) fn observe_process_identity(pid: u32) -> std::io::Result<super::OwnerIdentity> {
+        use std::os::windows::ffi::OsStringExt;
+        use windows_sys::Win32::Foundation::FILETIME;
+        use windows_sys::Win32::System::Threading::{
+            GetProcessTimes, OpenProcess, QueryFullProcessImageNameW,
+            PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+
+        let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        if process.is_null() {
+            return Err(std::io::Error::last_os_error());
+        }
+        let identity = (|| {
+            let mut path = vec![0u16; 32_768];
+            let mut len = path.len() as u32;
+            if unsafe { QueryFullProcessImageNameW(process, 0, path.as_mut_ptr(), &mut len) } == 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            path.truncate(len as usize);
+
+            let mut created: FILETIME = unsafe { std::mem::zeroed() };
+            let mut exited: FILETIME = unsafe { std::mem::zeroed() };
+            let mut kernel: FILETIME = unsafe { std::mem::zeroed() };
+            let mut user: FILETIME = unsafe { std::mem::zeroed() };
+            if unsafe {
+                GetProcessTimes(process, &mut created, &mut exited, &mut kernel, &mut user)
+            } == 0
+            {
+                return Err(std::io::Error::last_os_error());
+            }
+            let marker =
+                (u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime);
+            Ok(super::OwnerIdentity {
+                pid,
+                executable: std::path::PathBuf::from(std::ffi::OsString::from_wide(&path)),
+                started: super::StartMarker(marker),
+            })
+        })();
+        unsafe { CloseHandle(process) };
+        identity
+    }
+
+    /// Copied from `processctl::lock::inherited_credential_present`
+    /// (`tools/processctl/src/lock.rs:520-539`): the parent hands the credential
+    /// over an anonymous pipe on stdin, so `FILE_TYPE_PIPE` is exactly the
+    /// question. An operator shell leaves stdin a console or a file.
+    pub(super) fn inherited_credential_present() -> std::io::Result<bool> {
+        use windows_sys::Win32::Storage::FileSystem::{
+            GetFileType, FILE_TYPE_PIPE, FILE_TYPE_UNKNOWN,
+        };
+        use windows_sys::Win32::System::Console::{GetStdHandle, STD_INPUT_HANDLE};
+
+        let handle = unsafe { GetStdHandle(STD_INPUT_HANDLE) };
+        if handle.is_null() || handle == INVALID_HANDLE_VALUE {
+            return Ok(false);
+        }
+        let kind = unsafe { GetFileType(handle) };
+        if kind == FILE_TYPE_UNKNOWN {
+            // FILE_TYPE_UNKNOWN is ambiguous: it is also the legitimate answer
+            // for an exotic-but-valid handle, which GetFileType reports with
+            // GetLastError left at NO_ERROR.
+            let error = std::io::Error::last_os_error();
+            if error.raw_os_error().unwrap_or(0) != 0 {
+                return Err(error);
+            }
+        }
+        Ok(kind == FILE_TYPE_PIPE)
+    }
+
+    /// Copied from `processctl::lock::consume_credential_stdin` +
+    /// `install_consumed_stdin` (`tools/processctl/src/lock.rs:996-1056`). The
+    /// pipe is drained to EOF and stdin is then REPLACED by `NUL`: the
+    /// credential must not be re-readable, and stdin must not be left dangling
+    /// for the 12-process fleet this supervisor is about to spawn. The `NUL`
+    /// file is parked in a `OnceLock` because dropping it would close the very
+    /// handle just installed as `STD_INPUT_HANDLE`.
+    pub(super) fn consume_credential_stdin() -> std::io::Result<Vec<u8>> {
+        use std::io::Read;
+        use windows_sys::Win32::System::Console::{GetStdHandle, STD_INPUT_HANDLE};
+
+        let handle = unsafe { GetStdHandle(STD_INPUT_HANDLE) };
+        if handle.is_null() || handle == INVALID_HANDLE_VALUE {
+            return Err(std::io::Error::last_os_error());
+        }
+        let mut input = unsafe { File::from_raw_handle(handle) };
+        let mut bytes = Vec::new();
+        let read = input
+            .by_ref()
+            .take(super::MAX_CREDENTIAL_BYTES + 1)
+            .read_to_end(&mut bytes);
+        drop(input);
+        read?;
+        install_consumed_stdin()?;
+        Ok(bytes)
+    }
+
+    fn install_consumed_stdin() -> std::io::Result<()> {
+        use windows_sys::Win32::Foundation::{SetHandleInformation, HANDLE_FLAG_INHERIT};
+        use windows_sys::Win32::Storage::FileSystem::OPEN_EXISTING;
+        use windows_sys::Win32::System::Console::{SetStdHandle, STD_INPUT_HANDLE};
+
+        let nul: Vec<u16> = "NUL\0".encode_utf16().collect();
+        let handle = unsafe {
+            CreateFileW(
+                nul.as_ptr(),
+                GENERIC_READ,
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                std::ptr::null(),
+                OPEN_EXISTING,
+                FILE_ATTRIBUTE_NORMAL,
+                std::ptr::null_mut(),
+            )
+        };
+        if handle == INVALID_HANDLE_VALUE {
+            return Err(std::io::Error::last_os_error());
+        }
+        let file = unsafe { File::from_raw_handle(handle) };
+        if unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0) } == 0
+            || unsafe { SetStdHandle(STD_INPUT_HANDLE, handle) } == 0
+        {
+            return Err(std::io::Error::last_os_error());
+        }
+        CONSUMED_STDIN.set(file).map_err(|_| {
+            std::io::Error::other("the retained borrower stdin was already installed")
+        })
+    }
+
+    /// Keeps the replacement `NUL` stdin handle alive for the life of the
+    /// process (`processctl::lock::CONSUMED_STDIN`, `tools/processctl/src/lock.rs:32`).
+    static CONSUMED_STDIN: std::sync::OnceLock<File> = std::sync::OnceLock::new();
+
+    /// The one-shot claim: `CREATE_NEW` is the whole mechanism — the SECOND
+    /// borrower of the same lease loses the create (`ERROR_FILE_EXISTS`, which
+    /// std maps to `ErrorKind::AlreadyExists`) and is refused. Contents, sharing
+    /// mode and the owner-only DACL are processctl's
+    /// (`create_consumption_marker`/`super_private_create_new`,
+    /// `tools/processctl/src/lock.rs:1105-1168`) because the OWNER deletes this
+    /// file on its own drop and only after re-reading exactly these bytes from a
+    /// file it still validates as owner-only. processctl's post-create
+    /// re-validation is same-user hardening, deliberately not copied (CLAUDE.md,
+    /// "Dev tooling scope": trusted local operator).
+    pub(super) fn create_consumption_marker(path: &Path) -> std::io::Result<()> {
+        use std::io::Write;
+        use windows_sys::Win32::Storage::FileSystem::{CREATE_NEW, FILE_FLAG_OPEN_REPARSE_POINT};
+
+        let security = OwnerOnlySecurity::new()?;
+        let wide = wide_path(path)?;
+        let attributes = security.attributes();
+        let handle = unsafe {
+            CreateFileW(
+                wide.as_ptr(),
+                GENERIC_READ | GENERIC_WRITE,
+                FILE_SHARE_READ,
+                &attributes,
+                CREATE_NEW,
+                FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
+                std::ptr::null_mut(),
+            )
+        };
+        if handle == INVALID_HANDLE_VALUE {
+            return Err(std::io::Error::last_os_error());
+        }
+        let mut file = unsafe { File::from_raw_handle(handle) };
+        file.write_all(super::CONSUMED_MARKER)?;
+        file.sync_all()
     }
 
     fn lock_overlapped() -> windows_sys::Win32::System::IO::OVERLAPPED {
