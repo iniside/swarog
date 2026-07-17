@@ -160,6 +160,9 @@ command. Inspect or stop that fleet with the already-built direct binary:
 `target/debug/devctl status` / `down` on Unix (under the configured
 `CARGO_TARGET_DIR` when it differs).
 
+Rollouts do not run on macOS today — `processctl` has no Darwin backend — see
+[docs/reference/platform-notes.md](docs/reference/platform-notes.md).
+
 ## Verify
 
 ```sh
