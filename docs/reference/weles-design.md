@@ -17,8 +17,21 @@ Lukasz unless dated otherwise; they are settled, not open questions.
   binary + supervise. Resource limits, if ever needed, are direct cgroups/Job
   Objects. Reference point: Guild Wars 1 (2005) ran a custom native-process
   orchestrator with live no-downtime updates, small team, no container tooling.
-- **Zero-sharing, both directions.** Weles never imports a workspace crate; the
-  workspace never imports a Weles crate. The only coupling is a **wire-only JSON
+- **Zero-sharing, both directions — stated precisely (corrected 2026-07-17).**
+  Weles never imports a workspace crate, in any direction, ever. The reverse arrow
+  is narrower than earlier revisions of this file claimed: **the shipping graph
+  (`core/`, `api/`, `modules/`, `cmd/`, `demos/`) never imports Weles** — *verify
+  tooling may*, and does: `tools/verifyctl/Cargo.toml:13` has
+  `weles = { path = "../../weles" }`, which is what makes the `weles-fleet-parity`
+  and `weles-async-island` stages possible at all. A cross-cutting claim ABOUT
+  weles cannot be checked from inside weles.
+
+  This distinction is load-bearing, not pedantry: **the shipping-graph half is why
+  `core/remote` cannot dev-dep weles**, hence why each side of the wire is tested
+  only against its own fake, hence why the managed-mode proof is the ONLY thing
+  gating interop. Read it as "one-directional" and that whole chain collapses.
+
+  The only coupling between weles and the shipping graph is a **wire-only JSON
   contract with its own types on each side**. Weles is not a `lifecycle::Module`
   and never lives in `core/` — it embodies topology while modules are
   topology-blind, and it outlives the processes it spawns.

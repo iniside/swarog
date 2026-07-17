@@ -59,8 +59,12 @@ zostaje 404. To zachowanie musi przeżyć.
 
 ## Inwarianty (każdy krok)
 
-**Zero-sharing jest DWUKIERUNKOWE** (`weles-design.md:20-21`): weles nie importuje
-crate'a workspace'u ORAZ workspace nie importuje welesa. Konsekwencja, która rządzi
+**Zero-sharing, precyzyjnie** (`weles-design.md`, poprawione 2026-07-17): weles nie
+importuje crate'a workspace'u NIGDY; a w drugą stronę — **graf shippowany
+(`core/`, `api/`, `modules/`, `cmd/`) nie importuje welesa**, natomiast *tooling
+weryfikacyjny może* i już to robi (`tools/verifyctl/Cargo.toml:13`). To rozróżnienie
+jest niosące: połowa o grafie shippowanym jest **powodem, dla którego `core/remote`
+nie może wziąć welesa jako dev-dep**. Konsekwencja, która rządzi
 dowodami: **`core/remote` nie może testować przeciw serwerowi welesa, a weles nie
 może testować przeciw klientowi** — każda strona ma własną atrapę, a zgodność stron
 pinuje WYŁĄCZNIE Step 6.
@@ -250,9 +254,11 @@ Result<Vec<String>>`. HTTP+JSON, bounded timeout, bez retry.
   `FORBIDDEN_API_DEPS` (`:92-94`) dotyczy wyłącznie crate'ów `<name>api`.
 - **Koszt do nazwania:** `core/remote` ma dziś `tokio = features=["sync"]`;
   `reqwest` wciąga hyper do **każdego** `cmd/*-svc`. Świadomy koszt.
-- **DOWÓD TYLKO PRZECIW WŁASNEJ ATRAPIE.** Zero-sharing jest dwukierunkowe, więc
-  `core/remote` nie może wziąć welesa jako dev-dep. Test stawia własny mini-serwer
-  HTTP w dev-deps. **Zgodność stron pinuje wyłącznie Step 6** — zapisać to w
+- **DOWÓD TYLKO PRZECIW WŁASNEJ ATRAPIE.** `core/remote` jest w grafie
+  shippowanym, więc **nie może** wziąć welesa jako dev-dep (to, że verifyctl może,
+  jest wyjątkiem dla toolingu weryfikacyjnego i NIE rozciąga się tutaj). Test stawia
+  własny mini-serwer HTTP w dev-deps. **Zgodność stron pinuje wyłącznie Step 6** —
+  zapisać to w
   doc-komentarzu klienta, bo inaczej ktoś uzna te testy za dowód interop.
 **Prove-the-branch:** nieznany provider → typowany błąd; orchestrator nieosiągalny
 → błąd w budżecie czasu, nie zawieszenie; kształt JSON-a niezgodny → typowany błąd.
@@ -418,6 +424,17 @@ uzbroi.** Zapisane, nierozwiązane.
 
 ## Changelog
 
+- **Rev 3 (2026-07-17, sprzeczność zgłoszona przez implementera Stepu 2a):**
+  - **„Zero-sharing dwukierunkowe" było nieprecyzyjne i kod to obalał od dni.**
+    `tools/verifyctl/Cargo.toml:13` ma `weles = { path = "../../weles" }` od czasu
+    `weles_fleet_parity`. Reguła zgodna z kodem jest węższa: weles nie importuje
+    workspace'u NIGDY; **graf shippowany** (`core/`, `api/`, `modules/`, `cmd/`) nie
+    importuje welesa, ale **tooling weryfikacyjny może**. Bez tego rozróżnienia
+    stage'y `weles-fleet-parity` i `weles-async-island` są nielegalne, a z naiwnym
+    „jednokierunkowe" **pada B2 razem z uzasadnieniem Stepu 6** — bo to właśnie
+    przynależność `core/remote` do grafu shippowanego zabrania mu dev-depa na
+    welesa. Rev 1 miała rację co do skutku, myliła się co do powodu.
+    *(Wpis rev 1 poniżej zostaje jako zapis historii — nie przepisujemy archiwum.)*
 - **Rev 2 (2026-07-17, po review Stepu 2a — trzy z sześciu znalezisk to błędy TEGO
   planu, nie implementacji):**
   - **`time` DOPISANY do feature'ów tokio.** Rev 1 podała listę bez niego, stawiając
