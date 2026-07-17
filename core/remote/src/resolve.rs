@@ -30,16 +30,24 @@
 //! drift before anything boots — but it is no longer the whole proof. The
 //! blocking `weles-managed-gateway` stage
 //! (`tools/verifyctl/src/stages/weles_managed_gateway.rs`) boots weles on the
-//! real split fleet and asserts that `cmd/gateway-svc`, handed only
-//! `ORCHESTRATOR_URL`, reaches `/readyz`, serves an op across a resolved EDGE
-//! address, and serves a passthrough across a resolved `Http` origin. That is
-//! what pins the two things the in-memory gate structurally cannot: the HTTP
-//! METHOD and the status↔code pairing (a drift in either answers
-//! `404 unknown_route` — loud and fatal at gateway boot, which is why it was
-//! acceptable to carry unpinned until this stage existed), and that this client
-//! is wired into that main AT ALL. The stage proves its own falsifiability by
-//! running the same binary against a DEAD agent port and requiring it to die
-//! here, in [`ResolveError::Unreachable`].
+//! real split fleet and drives this client over a real socket. What THAT adds,
+//! precisely — the claim is worth being exact about, because an overstatement
+//! here is the same disease as the understatement it replaced:
+//!
+//! * the HTTP **method**. A `GET` here against the server's `(&Method::POST,
+//!   RESOLVE_PATH)` arm is a `404 unknown_route` no in-memory comparison of
+//!   types can see.
+//! * that `cmd/gateway-svc`'s `main` is wired to THIS function at all.
+//!   `addrs::gateway_addrs` is proven with an injected resolver, so its own tests
+//!   cannot see whether the real main passes the real one.
+//!
+//! **NOT the status↔code pairing — nothing pins that, and nothing needs to.**
+//! [`resolve_peer_within`] branches on the `code` field ALONE (`status` is
+//! carried for logs), and so does `cmd/gateway-svc`'s `managed_addr`. If weles
+//! moved `unknown_peer` from 404 to 400 tomorrow, every caller would behave
+//! identically: there is no pairing to break. The live stage could not reach a
+//! refusal arm anyway — a healthy fleet resolves all eight, and its dead-port
+//! decoy exercises [`ResolveError::Unreachable`], not a refusal.
 //!
 //! # The wire (as the server implements it)
 //!

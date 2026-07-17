@@ -6,6 +6,7 @@ pub mod conformance;
 pub mod contract_golden;
 pub mod csharp;
 pub mod docs_current;
+pub(crate) mod fake_http;
 pub mod fortress;
 pub mod fuzz;
 pub mod mutants;

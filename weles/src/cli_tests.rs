@@ -34,8 +34,16 @@ fn up_accepts_the_borrowed_lease_marker_a_lender_appends() {
     // child's argv, so before this arm existed `weles up split` under a lender
     // died in the parser with "unknown argument" — and `lock::acquire_or_borrow`
     // (which reads the same marker off `args_os`) was unreachable from the only
-    // verb that takes a lease. Both spellings and both positions, because the
-    // marker lands after whatever the parent wrote.
+    // verb that takes a lease. Both positions, because the marker lands after
+    // whatever the parent wrote.
+    //
+    // WHAT THIS TEST CANNOT DO, and where that lives instead: it parses weles's
+    // OWN copy of the marker, so it stays green if processctl RENAMES the
+    // argument weles is hand-copying — which re-creates the exact bug above,
+    // silently. Zero-sharing means this crate cannot see processctl to compare;
+    // verifyctl's `weles-wire-contract` stage can, and does
+    // (`borrow_marker_diffs`). This test pins the parser; that one pins the
+    // spelling.
     assert_eq!(
         parse(args(&["up", "split", crate::lock::BORROWED_LEASE_ARG])).unwrap(),
         Command::Up { topology: Topology::Split }

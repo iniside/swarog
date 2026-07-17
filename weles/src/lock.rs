@@ -176,13 +176,25 @@ pub const BORROWER_ROLE: &str = "weles";
 /// inherited credential at all; without it `weles up` behaves exactly as it
 /// does from an operator shell.
 ///
-/// `pub(crate)` for ONE reader besides [`borrow_inherited_if_present`]:
-/// [`crate::cli::parse`], which must let it through rather than reject it as an
-/// unknown argument. The parent APPENDS this to `weles up split`'s argv
-/// (`OwnedLease::spawn_borrower`), so the CLI is the first thing a borrowed run
-/// meets — and a second literal over there would be a spelling free to drift
-/// from the one this module actually matches on.
-pub(crate) const BORROWED_LEASE_ARG: &str = "--processctl-borrowed-lease-v1";
+/// Two readers besides [`borrow_inherited_if_present`], and each is why this is
+/// not private:
+///
+/// * `pub(crate)` reach for [`crate::cli::parse`], which must let this argument
+///   through rather than reject it as unknown. The parent APPENDS it to
+///   `weles up split`'s argv (`OwnedLease::spawn_borrower`), so the CLI is the
+///   first thing a borrowed run meets — and a second literal over there would be
+///   a spelling free to drift from the one this module matches on.
+/// * `pub` reach (`#[doc(hidden)]`) for verifyctl's `weles-wire-contract` stage,
+///   the only place that may see this AND `processctl::BORROWED_LEASE_ARG`.
+///   THIS const is a HAND-COPY (zero-sharing: weles imports no workspace crate),
+///   so nothing in either crate can tell that it still matches. If processctl
+///   renamed its marker, weles would keep spelling `…-v1`, `cli::parse` would
+///   reject the real appended argument, and the borrow path would silently
+///   become unreachable from the one verb that takes a lease — exactly the bug
+///   this const's own tolerance arm exists to fix. A test that parses THIS value
+///   cannot catch that; only a comparison against processctl's can.
+#[doc(hidden)]
+pub const BORROWED_LEASE_ARG: &str = "--processctl-borrowed-lease-v1";
 
 /// The exact bytes processctl writes into its one-shot marker — and requires to
 /// read back before deleting it on the owner's drop

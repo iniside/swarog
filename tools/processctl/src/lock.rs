@@ -31,7 +31,19 @@ const MAX_METADATA_BYTES: u64 = 64 * 1024;
 const CREDENTIAL_DELIVERY_TIMEOUT: Duration = Duration::from_secs(2);
 const BORROWER_FORCE_TIMEOUT: Duration = Duration::from_secs(5);
 const CONSUMED_MARKER: &[u8] = b"processctl-borrowed-v1\n";
-pub(crate) const BORROWED_LEASE_ARG: &str = "--processctl-borrowed-lease-v1";
+/// The argv marker appended to a borrower's command line by
+/// [`OwnedLease::spawn_borrower`], and the ONLY thing that makes a child look
+/// for an inherited credential.
+///
+/// `#[doc(hidden)] pub` for ONE reader: verifyctl's `weles-wire-contract` stage,
+/// which is the only place allowed to see this AND `weles::lock`'s hand-copy of
+/// it (zero-sharing: weles may never import this crate). Renaming this const
+/// without renaming weles's copy would make `weles up` under a lender die in its
+/// argv parser again — the marker would no longer be recognised, so
+/// `acquire_or_borrow` would never be reached. That drift is invisible to both
+/// crates' own tests; the widening buys the gate that sees it, not an API.
+#[doc(hidden)]
+pub const BORROWED_LEASE_ARG: &str = "--processctl-borrowed-lease-v1";
 static INHERITED_CREDENTIAL_CONSUMED: AtomicBool = AtomicBool::new(false);
 #[cfg(windows)]
 static CONSUMED_STDIN: std::sync::OnceLock<File> = std::sync::OnceLock::new();

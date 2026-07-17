@@ -29,6 +29,32 @@ fn head_agrees_on_the_whole_wire_contract() {
 }
 
 #[test]
+fn a_renamed_borrow_marker_is_a_finding_naming_the_consequence() {
+    // The staged drift: processctl bumps its marker, weles's hand-copy does not.
+    // Neither crate's own tests can see this — weles would keep parsing its own
+    // spelling green — and the symptom is the bug this arm was added for: a
+    // borrowed `weles up` dies in argv parsing, so nothing can borrow a lease.
+    let diffs = borrow_marker_diffs(
+        "--processctl-borrowed-lease-v1",
+        "--processctl-borrowed-lease-v2",
+    );
+    assert_eq!(diffs.len(), 1, "{diffs:?}");
+    assert!(diffs[0].contains("unknown argument"), "{diffs:?}");
+    assert!(diffs[0].contains("acquire_or_borrow"), "{diffs:?}");
+}
+
+#[test]
+fn head_agrees_on_the_borrow_marker_through_the_real_consts() {
+    // Not a re-assertion of the literal: these are the two values the two crates
+    // actually use — processctl's is what `spawn_borrower` appends, weles's is
+    // what `cli::parse` and `borrow_inherited_if_present` match on.
+    assert_eq!(
+        borrow_marker_diffs(weles::lock::BORROWED_LEASE_ARG, processctl::BORROWED_LEASE_ARG),
+        Vec::<String>::new()
+    );
+}
+
+#[test]
 fn the_stage_actually_compares_every_variant_both_enums_declare() {
     // The count guard. `head_agrees_on_the_whole_wire_contract` would pass just
     // as happily over empty tables, so the tables' size is pinned against what

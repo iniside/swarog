@@ -10,11 +10,16 @@
 //! (`weles::agentapi` / `remote::resolve`), and the field names of the request,
 //! the answer and the refusal envelope. Both files say so in prose, and both say
 //! that neither crate's tests can catch a drift: each side is tested against a
-//! fake of the other. Until this stage, NOTHING pinned the two together at all:
-//! the live `weles-managed-gateway` stage that is supposed to catch it live is
-//! PLANNED (plan Step 6) and not yet written — there is no `StageId` and no
-//! file. So a drift's first symptom today would be a `cmd/gateway-svc` that will
-//! not boot.
+//! fake of the other. Until this stage, NOTHING pinned the two together at all.
+//!
+//! It is now the EARLY gate rather than the only one: `weles-managed-gateway`
+//! (also BLOCKING, same manifest) boots the real fleet and drives this contract
+//! over a socket. The division is deliberate — this stage is in-memory and runs
+//! under `--fast`, so a drift FAILs in seconds instead of surviving to a rollout;
+//! that one costs a fleet boot but reaches what no in-memory check can (the HTTP
+//! method, and that `cmd/gateway-svc`'s main is wired to this client at all).
+//! Neither subsumes the other, and a drift caught here is a drift that never
+//! reaches a boot.
 //!
 //! `verifyctl` is the one place allowed to see both (`docs/reference/
 //! weles-design.md`, Non-negotiables: the shipping graph may never import weles;
@@ -87,8 +92,8 @@
 //!   surface to serve a verify stage. The compile error is the trade.
 //!
 //! Everything else about the endpoint — that it binds, serves, and answers the
-//! live gateway — is Step 6's `weles-managed-gateway`, which does not exist yet.
-//! Nothing in this file should be read as claiming otherwise.
+//! live gateway — belongs to `weles-managed-gateway`, which does that against a
+//! real fleet. Nothing in this file should be read as claiming it.
 
 use crate::{model::Outcome, runner::Context};
 use anyhow::Result;
@@ -292,6 +297,32 @@ fn path_diffs(weles: &str, remote: &str) -> Vec<String> {
     vec![format!(
         "resolve path: weles serves {weles:?}, remote POSTs to {remote:?} — every question \
          would come back 404 unknown_route (\"this agent does not speak the contract\")"
+    )]
+}
+
+/// The rollout-lease borrow marker, weles's copy against processctl's original.
+///
+/// Not the `resolve` contract — this argument crosses a different seam (a spawn's
+/// argv, not an HTTP body) — but it is the SAME hand-copy problem, with the same
+/// pair of crates, and this stage is the same one place that may see both halves.
+/// It lives here rather than in a new stage because a second stage would be a
+/// second answer to "who checks weles's hand-copies".
+///
+/// The drift is silent by construction and has already bitten once. weles's
+/// `cli::parse` must let this argument through (a borrowed `weles up` meets the
+/// parser before `lock::acquire_or_borrow` ever reads argv); before that arm
+/// existed, every borrowed run died with "unknown argument". A rename on
+/// processctl's side re-creates exactly that — and a test in EITHER crate would
+/// still pass, since each would be parsing its own spelling.
+fn borrow_marker_diffs(weles: &str, processctl: &str) -> Vec<String> {
+    if weles == processctl {
+        return Vec::new();
+    }
+    vec![format!(
+        "rollout-lease borrow marker: processctl appends {processctl:?} to a borrower's argv, \
+         weles recognises {weles:?} — a borrowed `weles up` would die in its argv parser with \
+         \"unknown argument\", so lock::acquire_or_borrow could never be reached and the \
+         weles-managed-gateway stage could never borrow verifyctl's lease"
     )]
 }
 
@@ -540,6 +571,12 @@ fn contract_diffs() -> Vec<String> {
         remote::resolve::RESOLVE_PATH,
     ));
 
+    // --- The OTHER hand-copied wire between weles and this workspace.
+    diffs.extend(borrow_marker_diffs(
+        weles::lock::BORROWED_LEASE_ARG,
+        processctl::BORROWED_LEASE_ARG,
+    ));
+
     // --- AddrKind: bytes, both sides, every variant.
     diffs.extend(bijection_diffs(&addr_kind_pairs()));
     match addr_kind_spellings() {
@@ -644,12 +681,14 @@ pub fn run(ctx: &mut Context<'_>) -> Result<Outcome> {
                  RESOLVE_PATH, ResolveRequest, ResolveResponse, ErrorResponse}}` and \
                  `remote::resolve::{AddrKind, ErrorCode, RESOLVE_PATH, ResolveRequest, \
                  ResolveResponse, ErrorEnvelope}`. Zero-sharing forbids sharing the types, so \
-                 the fix is to make the two agree — never to relax this stage. This is the ONLY \
-                 gate on that contract: the live `weles-managed-gateway` stage is planned (plan \
-                 Step 6) and NOT yet written, so a drift left in place next surfaces as a \
-                 cmd/gateway-svc that will not boot. Not checked here: the HTTP method and the \
-                 status<->code pairing (a drift there is a loud 404 unknown_route at boot), and \
-                 `hello`'s body (no second copy exists yet).";
+                 the fix is to make the two agree — never to relax this stage. This is the EARLY \
+                 gate on that contract: the blocking `weles-managed-gateway` stage drives the \
+                 same contract over a socket against a real fleet, so a drift left in place \
+                 fails there too — but far later and only after a fleet boot. Not checked here: \
+                 the HTTP method (which `weles-managed-gateway` does reach), the status<->code \
+                 pairing (which NOTHING pins — both sides branch on the `code` field alone and \
+                 carry `status` only for logs, so there is no pairing to break), and `hello`'s \
+                 body (no second copy exists yet).";
     eprintln!("{scope}");
     ctx.note(scope)?;
     Ok(Outcome::Fail)

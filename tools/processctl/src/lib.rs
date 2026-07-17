@@ -16,7 +16,7 @@ mod protocol_tests;
 
 pub use lock::{
     rollout_lock_path, BorrowedChild, BorrowedLease, LeaseError, OwnedLease, RolloutLock,
-    ROLLOUT_LOCK_VERSION,
+    BORROWED_LEASE_ARG, ROLLOUT_LOCK_VERSION,
 };
 pub use process::{
     observe_process_identity, OutputDestination, OwnedChild, ProcessError, ProcessGroupPolicy,
