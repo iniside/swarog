@@ -593,6 +593,26 @@ In M1:
 - The local service-facing contract (`hello`/`resolve`) served by the agent, and
   the client in `core/remote` — with tokio arriving as the contained I/O island
   behind that server.
+
+  **`resolve`'s two "no address" answers are different, and the line is drawn
+  now** (agent side shipped 2026-07-17, `weles/src/agentapi.rs`) — because
+  `resolve` returns *all live instances*, "nothing is live" is a natural value
+  in that shape and must not be conflated with "no such thing":
+
+  | answer | means | who produces it |
+  |---|---|---|
+  | `404 {"code":"unknown_peer"}` | this `(provider, kind)` is **not a thing in this topology** — closed-world, derived from the manifest, and not coming | M1 (the only one it can produce) |
+  | `200 {"addrs":[]}` | it **is** a thing; **nothing is live right now** | M2, once liveness exists |
+
+  A client may treat 404 as fatal-and-final; it may not treat `[]` that way. M2
+  puts zero instances in the list, never in the 404.
+
+  Every non-2xx also carries `{"code":…,"error":…}` with `code` a closed enum
+  (`unknown_route` / `unknown_peer` / `bad_request` / `internal`). `code` is the
+  only thing a client may branch on — `unknown_route` (an agent that does not
+  speak the contract) and `unknown_peer` (a fact about the fleet) share status
+  404 and must never be confused, since the first is fatal for the caller and
+  the second may be a legitimately absent passthrough origin.
 - **Port minting**, agent-side — ordered by the consumers-resolve-first constraint
   above, so it lands per-service rather than fleet-wide.
 - **SQLite** for master runtime state (minted ports reported up, deploy history,

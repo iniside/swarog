@@ -404,6 +404,74 @@ fn an_unknown_provider_panics() {
     peer_addr(&split_fleet(), "gateway-svc", "ghost", AddrKind::Edge);
 }
 
+// ---------------------------------------------------------------------------
+// PeerAddrs — what the agent's `resolve` answers from
+// ---------------------------------------------------------------------------
+
+/// TWO instances of one provider must render as two DISTINCT addresses.
+///
+/// This is the whole point of the list shape, and the branch that a name
+/// round-trip breaks: `find(|svc| svc.provider == Some(provider))` takes the
+/// FIRST match, so a map that re-looked-up the provider it already held would
+/// format both entries from the first def's port — `["127.0.0.1:9000",
+/// "127.0.0.1:9000"]`, a list that looks like two healthy instances and is one
+/// address twice, sending half an LB's traffic at a port nobody is on.
+///
+/// Unreachable in the real fleet today (`every_split_service_has_a_unique_short_
+/// provider_name`) — but that guard is precisely what M2's replicas must
+/// delete, and this test is what stays behind when it goes. Synthetic by
+/// necessity: the branch cannot be expressed by real data that a sibling test
+/// forbids.
+#[test]
+fn two_instances_of_one_provider_resolve_to_two_distinct_addresses() {
+    let instance = |http_port, edge_port| ServiceDef {
+        name: "characters-svc",
+        pkg: "characters-svc",
+        provider: Some("characters"),
+        http_port,
+        edge_port: Some(edge_port),
+        player_port: None,
+        has_db: true,
+        pool_max: 3,
+        peers: &[],
+        env_extra: &[],
+    };
+    let fleet = vec![instance(8080, 9000), instance(8180, 9100)];
+    let map = PeerAddrs::from_fleet(&fleet);
+
+    assert_eq!(
+        map.lookup("characters", AddrKind::Edge),
+        vec!["127.0.0.1:9000".to_string(), "127.0.0.1:9100".to_string()],
+        "each instance's address must come from its OWN edge_port"
+    );
+    assert_eq!(
+        map.lookup("characters", AddrKind::Http),
+        vec!["127.0.0.1:8080".to_string(), "127.0.0.1:8180".to_string()],
+        "each instance's address must come from its OWN http_port"
+    );
+}
+
+/// The kinds a def actually has, and no others: `edge_port: None` yields no
+/// Edge entry at all, so the lookup finds nothing rather than falling back to
+/// the HTTP port.
+#[test]
+fn peer_addrs_omits_a_kind_a_service_does_not_serve() {
+    let map = PeerAddrs::from_fleet(&split_fleet());
+    assert!(
+        map.lookup("admin", AddrKind::Edge).is_empty(),
+        "admin serves no edge — there is no address to give out"
+    );
+    assert_eq!(map.lookup("admin", AddrKind::Http), vec!["127.0.0.1:8085".to_string()]);
+    // The monolith is unresolvable as DATA (provider: None), not by a branch.
+    let mono = PeerAddrs::from_fleet(&[monolith()]);
+    for kind in [AddrKind::Edge, AddrKind::Http] {
+        assert!(
+            mono.lookup("characters", kind).is_empty() && mono.lookup("server", kind).is_empty(),
+            "the monolith hosts every domain in-process — it is nameable as no provider"
+        );
+    }
+}
+
 /// `env_extra` is applied AFTER the derived peer addresses, so an `env_extra`
 /// key that repeats a `peers` key silently overrides the derivation and
 /// restores the two-authorities drift — invisibly, because the composed env

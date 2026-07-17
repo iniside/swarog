@@ -369,11 +369,27 @@ pub fn monolith() -> ServiceDef {
     }
 }
 
-/// Formats one peer address from the PROVIDER'S OWN port field — the single
-/// authority for where that service listens.
+/// THE address formatter: `def`'s own address of `kind`, or `None` where `def`
+/// has no such address (`edge_port: None` — admin-svc serves no internal edge).
+///
+/// Every caller that answers "where does this service listen" goes through
+/// here, taking the def IN HAND rather than a name to look up again: a
+/// `format!("127.0.0.1:{port}")` anywhere else is a second authority, and a
+/// re-lookup by name is a chance to format the WRONG def's port (see
+/// [`PeerAddrs::from_fleet`], which must not re-find what it already holds).
 ///
 /// Every fleet process binds loopback (`PORT`/`EDGE_ADDR` are `:<port>`), so
-/// the host is `127.0.0.1` by construction, not per-peer data.
+/// the host is `127.0.0.1` by construction, not per-service data.
+fn service_addr(def: &ServiceDef, kind: AddrKind) -> Option<String> {
+    let port = match kind {
+        AddrKind::Edge => def.edge_port?,
+        AddrKind::Http => def.http_port,
+    };
+    Some(format!("127.0.0.1:{port}"))
+}
+
+/// Formats one peer address for a CONSUMER that names a provider: the lookup by
+/// name is the point here — a consumer knows only the short name it declared.
 ///
 /// PANICS, naming the offender, on an unknown provider or `Edge` against a
 /// service with no edge — both are programmer errors committed while adding a
@@ -387,16 +403,15 @@ fn peer_addr(fleet: &[ServiceDef], consumer: &str, provider: &str, kind: AddrKin
              this fleet provides"
         )
     });
-    let port = match kind {
-        AddrKind::Edge => def.edge_port.unwrap_or_else(|| {
-            panic!(
-                "fleet manifest: {consumer} declares peer {provider:?} as AddrKind::Edge, \
-                 but {provider} has edge_port: None (it serves no internal edge)"
-            )
-        }),
-        AddrKind::Http => def.http_port,
-    };
-    format!("127.0.0.1:{port}")
+    service_addr(def, kind).unwrap_or_else(|| {
+        // `AddrKind::{kind:?}` names the Rust variant, not the wire spelling:
+        // this is a programmer error in this file, read by whoever is editing
+        // it. (`edge_kind_against_real_admin_svc_panics` pins this wording.)
+        panic!(
+            "fleet manifest: {consumer} declares peer {provider:?} as AddrKind::{kind:?}, \
+             but {provider} has edge_port: None (it serves no internal edge)"
+        )
+    })
 }
 
 /// Every address the agent can answer a `resolve` with, for ONE booting
@@ -406,10 +421,10 @@ fn peer_addr(fleet: &[ServiceDef], consumer: &str, provider: &str, kind: AddrKin
 ///
 /// It is built from the SAME [`ServiceDef`] slice the supervisor hands
 /// [`compose_env_with_fleet`], and each address is formatted by the SAME
-/// [`peer_addr`] — so "where is characters" has one authority whether a service
-/// is told by env or asks over the wire. A map assembled anywhere else (a second
-/// `format!("127.0.0.1:{}")`, a lookup keyed off `name`) would be a second
-/// authority whose first drift from the composed env is invisible.
+/// [`service_addr`] — so "where is characters" has one authority whether a
+/// service is told by env or asks over the wire. A map assembled anywhere else
+/// (a second `format!("127.0.0.1:{}")`, a lookup keyed off `name`) would be a
+/// second authority whose first drift from the composed env is invisible.
 ///
 /// # Why the monolith is empty, without a topology `if`
 ///
@@ -439,37 +454,42 @@ pub struct PeerAddrs {
 
 impl PeerAddrs {
     /// Derives the map from the fleet that is actually booting.
+    ///
+    /// Each entry is formatted from the def IN HAND via [`service_addr`], never
+    /// by looking its provider name back up in `fleet`. The round-trip would be
+    /// a first-match lookup, so the day two defs share a provider (M2's
+    /// replicas — the day this map's list shape starts to matter) every entry
+    /// would format from the FIRST def's port: two instances rendered as one
+    /// address twice, which looks exactly like a healthy 2-element answer and
+    /// would send half the LB's traffic to a port that isn't there.
     pub fn from_fleet(fleet: &[ServiceDef]) -> Self {
         let mut entries = Vec::new();
         for svc in fleet {
             // No short name ⇒ not resolvable as a peer. See the type doc: this
             // is the monolith, and it is data, not a special case.
             let Some(provider) = svc.provider else { continue };
-            // Only the kinds this service actually HAS. `edge_port: None`
-            // (admin-svc) means there is no edge address to give out — the
-            // lookup must 404 rather than fall back to the HTTP port, so no
-            // Edge entry is ever created for it. Routing through `peer_addr`
-            // keeps the formatting single-authority; the `is_some` guard is
-            // what keeps it from being the panic path.
-            if svc.edge_port.is_some() {
-                entries.push((
-                    provider,
-                    AddrKind::Edge,
-                    peer_addr(fleet, "the resolve map", provider, AddrKind::Edge),
-                ));
+            // Only the kinds this service actually HAS: `service_addr` answers
+            // `None` for Edge against `edge_port: None` (admin-svc), so no Edge
+            // entry is ever created for it and the lookup 404s instead of
+            // falling back to the HTTP port.
+            for kind in [AddrKind::Edge, AddrKind::Http] {
+                if let Some(addr) = service_addr(svc, kind) {
+                    entries.push((provider, kind, addr));
+                }
             }
-            entries.push((
-                provider,
-                AddrKind::Http,
-                peer_addr(fleet, "the resolve map", provider, AddrKind::Http),
-            ));
         }
         Self { entries }
     }
 
-    /// Every address of `kind` for `provider`. EMPTY means "no answer" — an
-    /// unknown provider and a provider with no address of that kind are both
-    /// the caller's 404. Never falls back to the other kind.
+    /// Every address of `kind` for `provider`. Never falls back to the other
+    /// kind.
+    ///
+    /// EMPTY means "no such (provider, kind) in this topology" — an unknown
+    /// provider, or a provider with no address of that kind — which is the
+    /// caller's 404. It does NOT mean "known, but nothing live": that state
+    /// does not exist yet (this map is derived from the manifest, not from
+    /// liveness) and when M2 introduces it, it belongs in the wire's `addrs`
+    /// list as `[]`, not here. See [`crate::agentapi`] for that boundary.
     pub fn lookup(&self, provider: &str, kind: AddrKind) -> Vec<String> {
         self.entries
             .iter()

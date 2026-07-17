@@ -23,6 +23,19 @@
 //!   round-robin LB is client-side; a scalar would bake in a shape LB must
 //!   break — in the milestone whose entire purpose is getting the shape right.
 //!   LB itself is out of scope.
+//! * **404 and `{"addrs":[]}` are different answers, and the line is drawn
+//!   HERE** rather than by whichever a client meets first (also recorded in
+//!   `weles-design.md`, "M1 scope"):
+//!   * **404 `unknown_peer`** — *this `(provider, kind)` is not a thing in this
+//!     topology.* A closed-world fact: the map is derived from the manifest, so
+//!     an unknown provider or a kind a service does not serve is knowably not
+//!     coming. M1 only ever produces this one.
+//!   * **200 `{"addrs":[]}`** — *it is a thing; nothing is live right now.* A
+//!     liveness fact, which M1 has no source for and therefore never answers.
+//!     When M2 adds liveness, zero instances belongs here — inside the list
+//!     shape LB already handles — and must NOT be widened into the 404.
+//!
+//!   A client may treat 404 as fatal-and-final; it may not treat `[]` that way.
 //! * **`kind` is a parameter** because the gateway needs eight addresses of TWO
 //!   classes: six edge peers plus two HTTP passthrough origins. `accounts` is
 //!   both at once (edge 9003, http 8084) and `admin` has `edge_port: None` and
@@ -32,11 +45,16 @@
 //! * **`hello` is shape, not mechanism.** It logs and returns `{}`. It is here
 //!   so the contract is whole; registration only starts to matter for processes
 //!   weles did not spawn. See "What this island may NEVER own".
-//! * **`POST` for both**, even though `resolve` is a read: one wire style, and
-//!   `kind`'s spelling stays an attribute of `AddrKind`'s serde derive. A
-//!   `GET ?kind=edge` would need a hand-written string match (a second spelling
-//!   authority) plus a hand-rolled query/percent-decoding parser. This is a
-//!   "wire-only JSON contract" (`weles-design.md`), not a REST API.
+//! * **Every non-2xx carries `{"code":…,"error":…}`** — see [`ErrorCode`]. The
+//!   code is the only thing a client may branch on; the prose is for operators.
+//! * **`POST` for both**, even though `resolve` is a read: one wire style for
+//!   what the design calls a "wire-only JSON contract" (not a REST API), no new
+//!   dependency, and a body that `serde` can reject whole with
+//!   `deny_unknown_fields`. This is a preference, not a forced move — a
+//!   `GET ?provider=…&kind=edge` would deserialize into [`AddrKind`] through
+//!   the same derive via `serde_urlencoded`, so it would NOT have cost a second
+//!   spelling authority (an earlier draft of this doc claimed it would; it was
+//!   wrong).
 //!
 //! **Deliberate deviation from the design, recorded** (`weles-design.md`:
 //! *resolve is scoped per-consumer, never "give me the fleet map"*): M1 serves
@@ -158,6 +176,12 @@ const HEADER_READ_TIMEOUT: Duration = Duration::from_secs(30);
 /// caller's is, and `collect()`ing an unbounded body would let one confused
 /// client grow this process's memory without limit. Over the cap is a 400 (the
 /// request is malformed by contract), never a truncated parse.
+///
+/// Deliberately TIGHTER than `control::MAX_FRAME` (64 KiB) rather than copied
+/// from it, unlike this module's other borrowings from `control.rs`
+/// ([`BIND_DEADLINE`], [`ACCEPT_RETRY_DELAY`]): that bound covers a status
+/// table listing a whole fleet, while these two bodies are a short name plus a
+/// tiny enum. A bound is only worth having at the size of the thing it bounds.
 const MAX_BODY_BYTES: usize = 8 * 1024;
 
 /// Live agent runtime threads.
@@ -517,6 +541,43 @@ async fn serve(
     Ok(())
 }
 
+/// Why a request was refused — the ONE thing a client is allowed to branch on.
+///
+/// Every non-2xx answer carries one of these in `{"code":…,"error":…}`; `error`
+/// is prose for an operator and no client may parse it. This exists because the
+/// two 404s are otherwise indistinguishable: an unknown PATH (an agent that
+/// predates the verb, a typo'd URL) and an unknown PROVIDER (a well-formed
+/// question this topology has no answer to) are the same status code, and a
+/// client that could not tell them apart would read "this agent does not speak
+/// the contract" as "admin has no HTTP origin" — then boot a gateway with a
+/// silently empty passthrough instead of failing loudly. Status alone cannot
+/// carry that, so the discriminator is a closed enum with its own serde
+/// spelling, not a shape a client has to infer.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+enum ErrorCode {
+    /// No such route: this endpoint does not serve that (method, path). To a
+    /// client, this means the agent does not speak the contract it expected —
+    /// NEVER a fact about a service.
+    UnknownRoute,
+    /// The route exists and the question was well-formed; this topology has no
+    /// such (provider, kind). A FACT about the fleet.
+    UnknownPeer,
+    /// The question itself was malformed (unparseable, unknown `kind`,
+    /// missing/extra field, over the body cap).
+    BadRequest,
+    /// The agent failed on its own account. Never the caller's fault.
+    Internal,
+}
+
+/// The body of every non-2xx answer.
+#[derive(Debug, Serialize)]
+struct ErrorResponse<'a> {
+    code: ErrorCode,
+    /// Operator prose. Deliberately unstructured — nothing may branch on it.
+    error: &'a str,
+}
+
 /// A `resolve` question. `deny_unknown_fields` so a typo'd or renamed field is
 /// a loud 400 rather than a silently defaulted one — this is a versionless
 /// contract on one machine, so strictness costs nothing and catches drift on the
@@ -557,7 +618,14 @@ async fn route(
         (&Method::GET, "/healthz") => reply(StatusCode::OK, "ok\n"),
         (&Method::POST, "/resolve") => resolve(request, &peers).await,
         (&Method::POST, "/hello") => hello(request).await,
-        _ => reply(StatusCode::NOT_FOUND, "not found\n"),
+        // `unknown_route`, NOT `unknown_peer`: this is a statement about the
+        // AGENT, not about a service. A client must be able to tell the two
+        // apart without parsing prose — see [`ErrorCode`].
+        (method, path) => json_error(
+            StatusCode::NOT_FOUND,
+            ErrorCode::UnknownRoute,
+            &format!("no route {method} {path}"),
+        ),
     };
     Ok(response)
 }
@@ -581,12 +649,13 @@ async fn resolve(
 ) -> Response<Full<Bytes>> {
     let question: ResolveRequest = match read_json(request).await {
         Ok(question) => question,
-        Err(error) => return json_error(StatusCode::BAD_REQUEST, &error),
+        Err(error) => return json_error(StatusCode::BAD_REQUEST, ErrorCode::BadRequest, &error),
     };
     let addrs = peers.lookup(&question.provider, question.kind);
     if addrs.is_empty() {
         return json_error(
             StatusCode::NOT_FOUND,
+            ErrorCode::UnknownPeer,
             &format!(
                 "no {:?} address for provider {:?} in the booting topology",
                 question.kind, question.provider
@@ -606,7 +675,7 @@ async fn resolve(
 async fn hello(request: Request<hyper::body::Incoming>) -> Response<Full<Bytes>> {
     let greeting: HelloRequest = match read_json(request).await {
         Ok(greeting) => greeting,
-        Err(error) => return json_error(StatusCode::BAD_REQUEST, &error),
+        Err(error) => return json_error(StatusCode::BAD_REQUEST, ErrorCode::BadRequest, &error),
     };
     println!("weles: hello from service={} pid={}", greeting.service, greeting.pid);
     json_response(StatusCode::OK, Bytes::from_static(b"{}"))
@@ -635,16 +704,24 @@ fn json_ok<T: Serialize>(value: &T) -> Response<Full<Bytes>> {
         // broken body.
         Err(error) => {
             eprintln!("weles: agent could not serialize a response: {error}");
-            json_error(StatusCode::INTERNAL_SERVER_ERROR, "response serialization failed")
+            json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ErrorCode::Internal,
+                "response serialization failed",
+            )
         }
     }
 }
 
-/// An error body carries a reason, so an operator can tell a 404 from `resolve`
-/// (unknown provider) apart from a 404 from an unknown path.
-fn json_error(status: StatusCode, message: &str) -> Response<Full<Bytes>> {
-    let body = serde_json::to_vec(&serde_json::json!({ "error": message }))
-        .unwrap_or_else(|_| b"{\"error\":\"unprintable\"}".to_vec());
+/// The one way to answer a non-2xx: a machine-readable [`ErrorCode`] plus prose
+/// for the operator. There is no other refusal path — a bare status with no
+/// envelope would put a client back to guessing.
+fn json_error(status: StatusCode, code: ErrorCode, message: &str) -> Response<Full<Bytes>> {
+    let body = serde_json::to_vec(&ErrorResponse { code, error: message })
+        // Serializing a copy enum + a &str cannot fail; if it somehow did, the
+        // envelope's CODE is the part that must survive, since it is the part a
+        // client is allowed to read.
+        .unwrap_or_else(|_| br#"{"code":"internal","error":"unprintable"}"#.to_vec());
     json_response(status, Bytes::from(body))
 }
 

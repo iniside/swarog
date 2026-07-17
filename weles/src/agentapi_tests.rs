@@ -393,9 +393,10 @@ fn fake_inputs() -> RuntimeInputs {
 /// composed env are the two ways a service can learn where a peer lives; the
 /// only thing that makes them one fact rather than two is that `PeerAddrs` and
 /// `compose_env_with_fleet` are fed the same `ServiceDef` slice and format
-/// through the same `peer_addr`. A second `format!("127.0.0.1:{port}")` on
+/// through the same `service_addr`. A second `format!("127.0.0.1:{port}")` on
 /// either side passes every other test in this file and fails this one — but
-/// only because this compares them VALUE BY VALUE over all 18 real peer edges,
+/// only because this compares them VALUE BY VALUE over all 19 real peer edges
+/// (match 1, characters 1, inventory 2, gateway 8, admin 7),
 /// rather than asserting a spot-checked literal that both sides could drift away
 /// from together.
 #[test]
@@ -506,6 +507,46 @@ fn resolve_404s_for_an_unknown_provider() {
         let (status, body) = post_resolve(port, unknown, AddrKind::Edge);
         assert_eq!(status, 404, "{unknown:?} is not a provider: {body}");
     }
+}
+
+/// The discriminator Step 3's client will branch on: both 404s carry a machine
+/// readable `code`, so "this agent does not speak the contract" (`unknown_route`
+/// — an agent predating the verb, a typo'd path) can never be read as "admin has
+/// no HTTP origin" (`unknown_peer` — a fact about the fleet).
+///
+/// The failing branch: with status alone, Step 4's per-class policy would take
+/// an unknown ROUTE for a legitimately absent passthrough origin and boot a
+/// gateway whose routes silently 404, instead of dying on an agent that cannot
+/// answer it. Prose is not a discriminator — nothing may parse `error`.
+#[test]
+fn both_404s_are_told_apart_by_code_not_by_prose() {
+    let _guard = agent_guard();
+    let agent = split_agent();
+    let port = agent.addr().port();
+
+    // A fact about the FLEET.
+    let (status, body) = post_resolve(port, "ghost", AddrKind::Edge);
+    assert_eq!(status, 404);
+    assert_eq!(body["code"], "unknown_peer", "an unknown provider is a fact about the fleet");
+
+    // A fact about the AGENT — same status, different meaning.
+    for (method, path) in [("POST", "/resolv"), ("GET", "/resolve"), ("POST", "/nope")] {
+        let (status, raw) = request_with_body(port, method, path, "{}");
+        assert_eq!(status, 404, "{method} {path}");
+        let parsed: serde_json::Value = serde_json::from_str(&raw)
+            .unwrap_or_else(|e| panic!("every non-2xx carries an envelope, got {raw:?}: {e}"));
+        assert_eq!(
+            parsed["code"], "unknown_route",
+            "{method} {path} is the AGENT not speaking the contract — never a fact about a \
+             service: {raw}"
+        );
+    }
+
+    // A malformed question is neither.
+    let (status, raw) = request_with_body(port, "POST", "/resolve", "{}");
+    assert_eq!(status, 400);
+    let parsed: serde_json::Value = serde_json::from_str(&raw).expect("an envelope");
+    assert_eq!(parsed["code"], "bad_request");
 }
 
 /// THE topology branch. Under the monolith, `resolve` answers NOTHING — and it
