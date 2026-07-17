@@ -4744,11 +4744,15 @@ name = "weles"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
  "libc",
  "rand 0.8.6",
  "serde",
  "serde_json",
  "sha2",
+ "tokio",
  "windows-sys 0.59.0",
 ]
 

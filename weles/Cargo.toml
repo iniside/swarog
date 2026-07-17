@@ -14,6 +14,36 @@ serde_json.workspace = true
 rand.workspace = true
 sha2.workspace = true
 
+# The agent's async island (src/agentapi.rs) — a runtime on its own thread
+# hosting a loopback HTTP endpoint beside the sync supervisor.
+#
+# Pinned LOCALLY, not via `.workspace = true`: the workspace pin (root
+# Cargo.toml) lacks `net`/`io-util`, and widening it would reach every crate in
+# the build graph. weles is zero-sharing — it may depend on external crates
+# freely, never on a workspace crate — so a local pin is the narrower move.
+# hyper/hyper-util/http-body-util are likewise weles's own pins (they are not in
+# [workspace.dependencies]; the versions match what axum/reqwest already resolve).
+#
+# NEVER `process` (its SIGCHLD handler would reap children out from under
+# platform::OwnedProc::try_wait, destroying Observed::Exited fleet-wide) and
+# NEVER `signal` (it would fight the raw libc::signal handler in supervisor.rs).
+# This comment is NOT the guard: resolver-2 unifies features across the build
+# graph, so this file is not the authority on what weles's tokio actually gets.
+# The guard is agentapi_tests::{weles_tokio_never_gets_the_process_or_signal_feature,
+# no_workspace_crate_arms_the_tokio_process_feature}.
+#
+# No TLS feature anywhere here: plaintext loopback only, which keeps
+# rustls/ring/aws-lc-rs out of the question rather than merely unused.
+tokio = { version = "1", default-features = false, features = [
+    "rt-multi-thread",
+    "macros",
+    "net",
+    "io-util",
+] }
+hyper = { version = "1", default-features = false, features = ["server", "http1"] }
+hyper-util = { version = "0.1", default-features = false, features = ["tokio"] }
+http-body-util = { version = "0.1", default-features = false }
+
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 

@@ -707,3 +707,38 @@ fn fleet_pg_budget_rejects_an_oversized_monolith() {
         other => panic!("expected PoolBudgetExceeded, got {other}"),
     }
 }
+
+// ---------------------------------------------------------------------------
+// AGENT_PORT — the agent endpoint's slot in the one port authority
+// ---------------------------------------------------------------------------
+
+#[test]
+fn agent_port_collides_with_no_fleet_port() {
+    // DERIVED from the manifest, never a hand-listed copy of the port bands: a
+    // service added with http_port 8099 must fail HERE, at the one place ports
+    // are decided, rather than as a bind conflict at boot. (`weles up` also
+    // checks AGENT_PORT for a stale listener before binding, but that catches a
+    // foreign process — not a manifest that collides with itself.)
+    let mut taken: Vec<(&str, &str, u16)> = Vec::new();
+    for svc in split_fleet().iter().chain(std::iter::once(&monolith())) {
+        taken.push((svc.name, "http_port", svc.http_port));
+        if let Some(port) = svc.edge_port {
+            taken.push((svc.name, "edge_port", port));
+        }
+        if let Some(port) = svc.player_port {
+            taken.push((svc.name, "player_port", port));
+        }
+    }
+    // Fail-proof: an empty/near-empty list would make the loop below vacuous.
+    assert!(
+        taken.len() > 20,
+        "expected the real fleet's ports here, got {taken:?}"
+    );
+    for (name, field, port) in taken {
+        assert_ne!(
+            port, AGENT_PORT,
+            "{name}'s {field} collides with AGENT_PORT ({AGENT_PORT}) — the agent and that \
+             service would race for the same loopback port at boot"
+        );
+    }
+}

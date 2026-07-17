@@ -31,6 +31,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, bail, Context, Result};
 
+use crate::agentapi;
 use crate::cli::Topology;
 use crate::control::ControlServer;
 use crate::health::{self, ProbeResult};
@@ -771,6 +772,40 @@ pub fn run_up(topology: Topology) -> Result<()> {
     reporter.set_control_endpoint(Some(endpoint.to_string_lossy().into_owned()));
     reporter.checkpoint(&fleet);
 
+    // Bind the agent endpoint here too — after the Reporter exists, BEFORE
+    // `boot`. `boot` is sequential and readyz-gated (one service at a time,
+    // each gated on its own /readyz), so a service that needs the agent to
+    // reach readyz must find it ALREADY listening. Binding it later would not
+    // deadlock — HEALTH_DEADLINE gates the wait and `bail!`s — but it would
+    // turn into a bounded startup FAILURE of the first service that asks. Same
+    // conclusion as the control endpoint, different reason.
+    //
+    // Stale-listener check first, exactly as `boot` does before a service's
+    // first spawn: anything already on AGENT_PORT is a stale process from a
+    // previous hung run, and binding would fail (or, worse, a service would
+    // resolve against the OLD agent).
+    //
+    // Both failures — stale listener and bind — take ONE exit: chained here so
+    // neither can grow its own terminal status. A bare `?` on the stale check
+    // would return with the state still `Starting`, so `weles status` would
+    // report "stale state" for what is really a clean, known startup failure —
+    // while the identical failure 20 lines up (control bind) publishes `Failed`.
+    let agent = match health::ensure_no_stale_listener("weles-agent", manifest::AGENT_PORT)
+        .and_then(|()| agentapi::AgentServer::bind(manifest::AGENT_PORT))
+    {
+        Ok(agent) => agent,
+        Err(error) => {
+            // Nothing has spawned yet (same position as the control bind
+            // failure above): record the terminal status over an unspawned
+            // fleet, then fail loudly. `control` is a local — it drops on this
+            // return, i.e. strictly AFTER this teardown, preserving P6.
+            let _ = teardown(&mut fleet, &reporter, FleetStatus::Failed);
+            return Err(error).with_context(|| {
+                format!("start the agent endpoint on 127.0.0.1:{}", manifest::AGENT_PORT)
+            });
+        }
+    };
+
     // Spawn the readiness poller alongside the control endpoint (before boot, so
     // it starts reflecting `/readyz` freshness as services turn Healthy). It runs
     // on its OWN thread — a blocking probe must never delay the monitor tick — and
@@ -793,6 +828,7 @@ pub fn run_up(topology: Topology) -> Result<()> {
             &mut fleet,
             &reporter,
             &control,
+            &agent,
             &readiness,
             &fleet_stop,
         );
@@ -821,6 +857,13 @@ pub fn run_up(topology: Topology) -> Result<()> {
     // MUST stay after teardown — control serves status/down through the teardown
     // window; moving this before teardown blinds concurrent status/down (P6).
     drop(control);
+    // The agent is dropped here for the SAME reason (P6, service-facing half): a
+    // service still draining may call the agent, so the endpoint outlives every
+    // service. Its drop is bounded — the accept loop stops on a oneshot (a flag
+    // could never reach an accept parked on `.await`) and the runtime is dropped
+    // on its OWN thread under SHUTDOWN_GRACE — so `_lock`, which drops at the end
+    // of this function, is never stalled behind a blocking `Runtime::drop`.
+    drop(agent);
     // A run that otherwise succeeded but whose teardown could not confirm every
     // service stopped is escalated to an error so the exit code is non-zero
     // (devctl parity — a possibly-orphaned service must not report success). The
@@ -944,10 +987,12 @@ fn monitor(
     fleet: &mut [Supervised],
     reporter: &Reporter,
     control: &ControlServer,
+    agent: &agentapi::AgentServer,
     readiness: &Arc<Mutex<Vec<Readiness>>>,
     fleet_stop: &AtomicBool,
 ) {
     let mut control_death_reported = false;
+    let mut agent_death_reported = false;
     loop {
         if stop_requested(fleet_stop) {
             return;
@@ -958,6 +1003,16 @@ fn monitor(
             control_death_reported = true;
             eprintln!(
                 "weles: the control endpoint is dead — `weles status`/`down` are unavailable; \
+                 the fleet keeps running (stop it with Ctrl-C)"
+            );
+        }
+        // Likewise a dead agent endpoint: reported once, never a fleet stop.
+        // The agent serves services, not the operator, so the degradation is
+        // different — but the stop-authority rule is identical.
+        if !agent_death_reported && agent.dead() {
+            agent_death_reported = true;
+            eprintln!(
+                "weles: the agent endpoint is dead — services can no longer reach it; \
                  the fleet keeps running (stop it with Ctrl-C)"
             );
         }

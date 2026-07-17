@@ -48,6 +48,19 @@ pub const SERVICE_ENV_ALLOWLIST: &[&str] = &[
     "WINDIR",
 ];
 
+/// The loopback port weles's own agent HTTP endpoint ([`crate::agentapi`])
+/// binds. This file is the ONE place in weles allowed to write a port (see the
+/// module doc), which is why the agent's port lives here rather than beside the
+/// server that binds it: a runtime-minted port could not be handed to a service
+/// through the `'static` [`ServiceDef::env_extra`], and a second port-writing
+/// site would be a second authority for "where does the fleet listen".
+///
+/// Deliberately outside both fleet bands — above the services' HTTP range
+/// (8080..=8091, leaving room for new services) and far below the edge range
+/// (9000..=9009, 9100). Pinned by `agent_port_collides_with_no_fleet_port`,
+/// which derives the bands from the manifest rather than restating them.
+pub const AGENT_PORT: u16 = 8099;
+
 /// Which of a provider's two port fields a peer address is formatted from.
 ///
 /// This is a FIELD on every [`ServiceDef::peers`] entry, never inferred from
