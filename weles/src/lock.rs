@@ -700,10 +700,56 @@ mod imp {
         })
     }
 
-    /// processctl supports Windows and Linux only
+    /// Copied from `processctl::platform::darwin::observe_process_identity` +
+    /// `proc_start_marker`/`proc_pidpath` (`tools/processctl/src/platform/darwin.rs`).
+    /// `proc_pidpath` yields the executable; `proc_pidinfo(PROC_PIDTBSDINFO)`
+    /// yields `pbi_start_tvsec`/`pbi_start_tvusec`, packed into one `u64` of
+    /// microseconds since the epoch — the half of the identity a recycled PID
+    /// cannot forge, the darwin analogue of Linux's `/proc/<pid>/stat` field 22.
+    ///
+    /// The packing MUST stay byte-for-byte identical to processctl's: the lender
+    /// (processctl on darwin) wrote `metadata.owner.started` with this exact
+    /// formula, and [`super::validate_credential`] compares the two
+    /// `OwnerIdentity`s field-for-field. Both libproc calls fail with `ESRCH`
+    /// once the task is gone or a zombie — the fail-closed `OwnerNotLive` the
+    /// borrow path expects, so a dead owner is never borrowed from.
+    #[cfg(target_os = "macos")]
+    pub(super) fn observe_process_identity(pid: u32) -> std::io::Result<super::OwnerIdentity> {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+
+        let cpid = pid as libc::c_int;
+
+        let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+        let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+        let read = unsafe {
+            libc::proc_pidinfo(cpid, libc::PROC_PIDTBSDINFO, 0, (&raw mut info).cast(), size)
+        };
+        if read != size {
+            return Err(std::io::Error::last_os_error());
+        }
+        let started = info.pbi_start_tvsec * 1_000_000 + info.pbi_start_tvusec;
+
+        let mut buf = vec![0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
+        let written =
+            unsafe { libc::proc_pidpath(cpid, buf.as_mut_ptr().cast(), buf.len() as u32) };
+        if written <= 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        buf.truncate(written as usize);
+        let executable = std::path::PathBuf::from(OsString::from_vec(buf));
+
+        Ok(super::OwnerIdentity {
+            pid,
+            executable,
+            started: super::StartMarker(started),
+        })
+    }
+
+    /// processctl supports Windows, Linux, and macOS
     /// (`processctl::process`'s platform gate), so a lease minted anywhere
     /// else cannot exist — and an unverifiable owner must never be borrowed from.
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     pub(super) fn observe_process_identity(_pid: u32) -> std::io::Result<super::OwnerIdentity> {
         Err(std::io::Error::new(
             std::io::ErrorKind::Unsupported,

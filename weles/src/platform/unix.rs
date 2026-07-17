@@ -124,11 +124,25 @@ impl PlatformProc {
         self.sweep_group()
     }
 
-    /// SIGKILLs the whole group, tolerating ESRCH (no signalable member left,
-    /// e.g. only the root zombie remains — zombies cannot receive signals).
+    /// SIGKILLs the whole group, tolerating "no signalable member left" — the
+    /// intended non-error when only the root zombie remains (zombies cannot
+    /// receive signals). This branch runs BEFORE the reap (the kill/reap
+    /// ordering authority): the zombie still pins the pid/pgid, so the sweep can
+    /// never hit a reused group, and the tolerated outcome only means the group
+    /// held nothing but that pinned zombie.
+    ///
+    /// Linux reports that condition as `ESRCH`. macOS/BSD report it as `EPERM`
+    /// instead: `kill(-pgid)` there finds the group non-empty (the zombie is a
+    /// member) but unsignalable, and returns `EPERM` rather than `ESRCH`. Both
+    /// mean the same "nothing signalable left" here. For OUR OWN child's group we
+    /// always have permission to signal a LIVE member, so an `EPERM` cannot be
+    /// masking a surviving grandchild — a live member would have been signalled
+    /// and `kill` would have returned success.
     fn sweep_group(&mut self) -> io::Result<()> {
         match self.signal_group(libc::SIGKILL) {
             Err(error) if error.raw_os_error() == Some(libc::ESRCH) => Ok(()),
+            #[cfg(not(target_os = "linux"))]
+            Err(error) if error.raw_os_error() == Some(libc::EPERM) => Ok(()),
             other => other,
         }
     }
