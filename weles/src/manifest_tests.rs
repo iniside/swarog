@@ -264,7 +264,7 @@ fn no_manifest_key_collides_with_the_allowlist() {
         for key in synthesized
             .iter()
             .copied()
-            .chain(svc.peers.iter().map(|(k, _, _)| *k))
+            .chain(svc.addrs.told().iter().map(|(k, _, _)| *k))
             .chain(svc.env_extra.iter().map(|(k, _)| *k))
         {
             assert!(
@@ -291,8 +291,7 @@ fn synthetic_peer_fleet(provider_edge: Option<u16>, provider_http: u16) -> Vec<S
             player_port: None,
             has_db: false,
             pool_max: 0,
-            managed: false,
-            peers: &[],
+            addrs: Addrs::Told(&[]),
             env_extra: &[],
         },
         ServiceDef {
@@ -304,11 +303,10 @@ fn synthetic_peer_fleet(provider_edge: Option<u16>, provider_http: u16) -> Vec<S
             player_port: None,
             has_db: false,
             pool_max: 0,
-            managed: false,
-            peers: &[
+            addrs: Addrs::Told(&[
                 ("PROVIDER_EDGE_ADDR", "provider", AddrKind::Edge),
                 ("PROVIDER_HTTP_ADDR", "provider", AddrKind::Http),
-            ],
+            ]),
             env_extra: &[],
         },
     ]
@@ -436,8 +434,7 @@ fn two_instances_of_one_provider_resolve_to_two_distinct_addresses() {
         player_port: None,
         has_db: true,
         pool_max: 3,
-        managed: false,
-        peers: &[],
+        addrs: Addrs::Told(&[]),
         env_extra: &[],
     };
     let fleet = vec![instance(8080, 9000), instance(8180, 9100)];
@@ -495,7 +492,7 @@ fn no_env_extra_key_shadows_a_derived_peer_key() {
     for svc in &services {
         for (key, value) in svc.env_extra {
             assert!(
-                !svc.peers.iter().any(|(peer_key, _, _)| peer_key == key),
+                !svc.addrs.told().iter().any(|(peer_key, _, _)| peer_key == key),
                 "{}: env_extra {key} = {value:?} shadows the SAME key derived from \
                  `peers` — env_extra is applied last, so the derived address would be \
                  silently discarded. Delete the literal; `peers` is the authority.",
@@ -519,7 +516,7 @@ fn no_env_extra_key_shadows_a_derived_peer_key() {
 fn a_managed_service_is_handed_the_agent_url_and_no_peer_addresses() {
     let fleet = split_fleet();
     let gateway = fleet.iter().find(|svc| svc.name == "gateway-svc").unwrap();
-    assert!(gateway.managed, "fixture assumption: gateway-svc is the managed one");
+    assert!(gateway.addrs == Addrs::Asks, "fixture assumption: gateway-svc is the one that asks");
     let env = strip_allowlist(&compose_env(gateway, &fake_inputs()));
 
     assert_eq!(
@@ -553,7 +550,7 @@ fn an_unmanaged_service_is_handed_no_agent_url() {
     let inventory = fleet.iter().find(|svc| svc.name == "inventory-svc").unwrap();
     let env = compose_env(inventory, &fake_inputs());
 
-    assert!(!inventory.managed);
+    assert_ne!(inventory.addrs, Addrs::Asks);
     assert!(!env.contains_key(&OsString::from("ORCHESTRATOR_URL")));
     assert_eq!(
         env.get(&OsString::from("CHARACTERS_EDGE_ADDR")),
@@ -562,26 +559,7 @@ fn an_unmanaged_service_is_handed_no_agent_url() {
     // The monolith has no peers to resolve and no map to be answered from
     // (`provider: None` ⇒ empty `PeerAddrs` ⇒ every resolve 404s), so it must
     // never be managed.
-    assert!(!monolith().managed);
-}
-
-/// `managed` and `peers` are mutually exclusive BY TEST, not by convention: both
-/// at once would put two authorities in one process's environment, and because
-/// the consumer reads exactly one per mode, the dead half would drift unnoticed.
-#[test]
-fn managed_services_declare_no_peers() {
-    let mut services = split_fleet();
-    services.push(monolith());
-    for svc in &services {
-        assert!(
-            !svc.managed || svc.peers.is_empty(),
-            "{}: a managed process resolves its peers over the agent — the `peers` env it \
-             would ALSO be handed is a second authority nothing reads",
-            svc.name
-        );
-    }
-    // Fail-proof: the sweep must have a managed service to be about at all.
-    assert!(services.iter().any(|svc| svc.managed), "no managed service left to check");
+    assert_ne!(monolith().addrs, Addrs::Asks);
 }
 
 /// The monolith is nameable as no single domain (it hosts all of them), which
@@ -591,7 +569,7 @@ fn managed_services_declare_no_peers() {
 fn the_monolith_provides_no_short_name_and_dials_no_peers() {
     let mono = monolith();
     assert_eq!(mono.provider, None);
-    assert!(mono.peers.is_empty());
+    assert!(mono.addrs.told().is_empty());
 }
 
 /// Every split service IS nameable, and uniquely — `peers` and `resolve` key
@@ -624,7 +602,7 @@ fn every_split_service_has_a_unique_short_provider_name() {
 #[should_panic(expected = "no service in this fleet provides")]
 fn a_monolith_def_may_not_silently_resolve_a_split_only_provider() {
     let mono = ServiceDef {
-        peers: &[("CHARACTERS_EDGE_ADDR", "characters", AddrKind::Edge)],
+        addrs: Addrs::Told(&[("CHARACTERS_EDGE_ADDR", "characters", AddrKind::Edge)]),
         ..monolith()
     };
     compose_env(&mono, &fake_inputs());
@@ -657,7 +635,7 @@ fn boot_order_respects_edge_peer_dependencies() {
 
     let mut checked = 0;
     for (index, svc) in fleet.iter().enumerate() {
-        for (key, provider, kind) in svc.peers {
+        for (key, provider, kind) in svc.addrs.told() {
             if *kind != AddrKind::Edge {
                 continue;
             }
@@ -694,7 +672,8 @@ fn an_http_peer_carries_no_boot_order_constraint() {
 
     let gateway = fleet.iter().find(|svc| svc.name == "gateway-svc").unwrap();
     let (_, _, kind) = gateway
-        .peers
+        .addrs
+        .told()
         .iter()
         .find(|(key, _, _)| *key == "ADMIN_HTTP_ADDR")
         .expect("gateway must declare ADMIN_HTTP_ADDR as a peer");
@@ -754,8 +733,7 @@ fn synthetic_db_svc(name: &'static str, pool_max: u32) -> ServiceDef {
         player_port: None,
         has_db: true,
         pool_max,
-        managed: false,
-        peers: &[],
+        addrs: Addrs::Told(&[]),
         env_extra: &[],
     }
 }
@@ -793,8 +771,7 @@ fn service_pg_budget_charges_nothing_for_dbless_service() {
         player_port: None,
         has_db: false,
         pool_max: 0,
-        managed: false,
-        peers: &[],
+        addrs: Addrs::Told(&[]),
         env_extra: &[],
     };
     assert_eq!(service_pg_budget(&svc), (0, 0));

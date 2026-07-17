@@ -299,8 +299,7 @@ fn dummy_def() -> ServiceDef {
         player_port: None,
         has_db: false,
         pool_max: 0,
-        managed: false,
-        peers: &[],
+        addrs: manifest::Addrs::Told(&[]),
         env_extra: &[],
     }
 }

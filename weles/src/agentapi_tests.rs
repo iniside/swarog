@@ -385,50 +385,105 @@ fn fake_inputs() -> RuntimeInputs {
     }
 }
 
-/// THE authority test: for EVERY peer edge in the real split fleet, the address
-/// `resolve` hands out is the address `compose_env` composes for that same
-/// `(provider, kind)`.
+/// THE authority test: for EVERY address in the booting fleet, the address
+/// `resolve` hands out is the address that service actually BINDS.
 ///
 /// This is the fix-the-authority proof, not a smoke test. `resolve` and the
 /// composed env are the two ways a service can learn where a peer lives; the
 /// only thing that makes them one fact rather than two is that `PeerAddrs` and
-/// `compose_env_with_fleet` are fed the same `ServiceDef` slice and format
-/// through the same `service_addr`. A second `format!("127.0.0.1:{port}")` on
-/// either side passes every other test in this file and fails this one — but
-/// only because this compares them VALUE BY VALUE over all 19 real peer edges
-/// (match 1, characters 1, inventory 2, gateway 8, admin 7),
-/// rather than asserting a spot-checked literal that both sides could drift away
-/// from together.
+/// `compose_env_with_fleet` are fed the same `ServiceDef` slice and read the
+/// same port fields. A second `format!("127.0.0.1:{port}")` on either side
+/// passes every other test in this file and fails this one — but only because it
+/// compares them VALUE BY VALUE across the whole fleet rather than spot-checking
+/// a literal both sides could drift away from together.
+///
+/// # Why this iterates PROVIDERS and not consumers' `peers` (M1 Step 4)
+///
+/// It used to walk every consumer's peer list (`ServiceDef`'s `peers` field,
+/// now [`Addrs::Told`]) and compare `resolve`
+/// against the peer address composed into that consumer's env — 19 edges, of
+/// which gateway-svc contributed 8. When gateway went `managed` it stopped
+/// declaring peers, and this proof silently shrank to 11 — taking with it the
+/// fleet's ONLY two `AddrKind::Http` comparisons, i.e. all coverage of the class
+/// that the managed gateway's passthrough origins now depend on. The count guard
+/// below is what caught that; the lesson is that a proof keyed on CONSUMERS'
+/// declarations shrinks as consumers stop declaring, and shrinks quietest
+/// exactly when a consumer switches to the mechanism under test.
+///
+/// So it is keyed on the PROVIDERS instead — every `(provider, kind)` the fleet
+/// has, derived from the port fields themselves. That set cannot shrink when a
+/// consumer changes how it learns an address, and it is strictly larger (22 vs
+/// 19). The comparand is each provider's OWN bind (`PORT` / `EDGE_ADDR`,
+/// composed by a different expression than `service_addr`'s), which is the fact
+/// that actually matters and the one no consumer's env states anymore now that
+/// nobody is TOLD an `*_HTTP_ADDR`: *the agent must send callers to the address
+/// the service really listens on.*
 #[test]
-fn resolve_answers_exactly_what_compose_env_composes_for_the_same_pair() {
+fn resolve_answers_exactly_what_each_service_composes_as_its_own_bind() {
     let _guard = agent_guard();
     let agent = split_agent();
     let port = agent.addr().port();
 
     let fleet = split_fleet();
     let inputs = fake_inputs();
-    let mut compared = 0;
-    for consumer in &fleet {
-        let env = compose_env_with_fleet(consumer, &inputs, &fleet);
-        for (key, provider, kind) in consumer.peers {
-            let composed = env
-                .get(std::ffi::OsStr::new(*key))
-                .unwrap_or_else(|| panic!("{} composes no {key}", consumer.name))
+    let mut compared: Vec<(&str, AddrKind)> = Vec::new();
+    for def in &fleet {
+        // No short name ⇒ not resolvable as a peer (the monolith; never in this
+        // fleet). Driven off the DEF's own ports, never off `PeerAddrs`: a map
+        // that WRONGLY omitted an entry would make a map-driven loop skip it
+        // silently, while here it surfaces as a 404 where a 200 is required.
+        let Some(provider) = def.provider else { continue };
+        let env = compose_env_with_fleet(def, &inputs, &fleet);
+        for kind in [AddrKind::Edge, AddrKind::Http] {
+            // The kinds this service HAS. `edge_port: None` (admin, gateway) is
+            // a 404 instead — proven by `resolve_404s_for_a_provider_that_serves_
+            // no_edge`, which is why it is not re-asserted here.
+            if kind == AddrKind::Edge && def.edge_port.is_none() {
+                continue;
+            }
+            // The service's OWN bind, as its own composed env states it
+            // (`PORT=":8085"`, `EDGE_ADDR=":9003"`) — the loopback host is the
+            // construction every fleet process binds under, so the answer is
+            // that host joined to the port the service was told to listen on.
+            let bind_key = match kind {
+                AddrKind::Edge => "EDGE_ADDR",
+                AddrKind::Http => "PORT",
+            };
+            let bound = env
+                .get(std::ffi::OsStr::new(bind_key))
+                .unwrap_or_else(|| panic!("{} composes no {bind_key}", def.name))
                 .to_string_lossy()
                 .into_owned();
             assert_eq!(
-                resolve_addrs(port, provider, *kind),
-                vec![composed.clone()],
-                "{}: resolve({provider:?}, {kind:?}) must be the SAME fact as its {key}={composed} \
-                 — two authorities for where a peer lives is the drift this seam exists to kill",
-                consumer.name
+                resolve_addrs(port, provider, kind),
+                vec![format!("127.0.0.1{bound}")],
+                "{}: resolve({provider:?}, {kind:?}) must be the SAME fact as the \
+                 {bind_key}={bound} it is told to bind — two authorities for where a service \
+                 lives is the drift this seam exists to kill",
+                def.name
             );
-            compared += 1;
+            compared.push((provider, kind));
         }
     }
-    // A guard against the loop silently comparing nothing (an empty `peers`
-    // field would make the assertions above vacuous and this test green).
-    assert_eq!(compared, 19, "the real split fleet's peer edges must all be compared");
+
+    // Fail-proof, and deliberately NOT just a count: a count alone is what let
+    // the Http class vanish while the number merely got smaller and a human
+    // "restored" it. 12 http_ports + 10 edge_ports (admin and gateway have none).
+    assert_eq!(compared.len(), 22, "every address in the real split fleet must be compared");
+    assert!(
+        compared.iter().any(|(_, kind)| *kind == AddrKind::Edge),
+        "the Edge class must never silently vanish from this proof"
+    );
+    assert!(
+        compared.iter().any(|(_, kind)| *kind == AddrKind::Http),
+        "the Http class must never silently vanish from this proof — it did once, when the \
+         only consumer declaring an Http peer stopped declaring peers at all"
+    );
+    // The two the managed gateway's passthrough origins depend on BY NAME: if
+    // either stopped being resolvable, `/admin` and `/accounts/epic` would 404
+    // in the managed split while standalone still routed them.
+    assert!(compared.contains(&("admin", AddrKind::Http)), "{compared:?}");
+    assert!(compared.contains(&("accounts", AddrKind::Http)), "{compared:?}");
 }
 
 /// The wire spelling of `kind`, pinned ONCE, against a literal — everything else
