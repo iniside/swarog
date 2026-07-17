@@ -199,7 +199,7 @@ fn decode_response(bytes: &[u8]) -> Result<String> {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 fn serve(
     endpoint: &Path,
     state: Arc<Mutex<FleetState>>,
@@ -230,20 +230,12 @@ fn serve(
             }
             Err(error) => return Err(error).context("accept Unix control client"),
         };
-        let mut credentials: libc::ucred = unsafe { std::mem::zeroed() };
-        let mut length = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
-        if unsafe {
-            libc::getsockopt(
-                stream.as_raw_fd(),
-                libc::SOL_SOCKET,
-                libc::SO_PEERCRED,
-                (&raw mut credentials).cast(),
-                &mut length,
-            )
-        } != 0
-            || credentials.uid != unsafe { libc::geteuid() }
-        {
-            continue;
+        // The peer's uid is the authoritative gate on who may drive the endpoint;
+        // the socket's 0o600 mode is belt-and-braces. Silently drop any client
+        // that is not our own euid (or whose credentials we cannot read).
+        match peer_credentials(stream.as_raw_fd()) {
+            Ok((_pid, uid)) if uid == unsafe { libc::geteuid() } => {}
+            _ => continue,
         }
         stream.set_nonblocking(true)?;
         if let Ok(request) = read_frame(&mut stream, stop) {
@@ -259,7 +251,7 @@ fn serve(
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 fn request_raw(endpoint: &Path, command: &str, expected: &ProcessIdentity) -> Result<String> {
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
     use std::os::unix::io::AsRawFd;
@@ -276,20 +268,14 @@ fn request_raw(endpoint: &Path, command: &str, expected: &ProcessIdentity) -> Re
         bail!("supervisor identity no longer matches state");
     }
     let mut stream = UnixStream::connect(endpoint)?;
-    let mut credentials: libc::ucred = unsafe { std::mem::zeroed() };
-    let mut length = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
-    if unsafe {
-        libc::getsockopt(
-            stream.as_raw_fd(),
-            libc::SOL_SOCKET,
-            libc::SO_PEERCRED,
-            (&raw mut credentials).cast(),
-            &mut length,
-        )
-    } != 0
-        || credentials.pid as u32 != expected.pid
-        || credentials.uid != unsafe { libc::geteuid() }
-    {
+    // Pin BOTH the peer pid (the anti-reused-pid guard) and the peer uid to the
+    // recorded supervisor. Any failure to read credentials fails closed the same
+    // way a mismatch does.
+    let (pid, uid) = match peer_credentials(stream.as_raw_fd()) {
+        Ok(credentials) => credentials,
+        Err(_) => bail!("Unix control peer is not the recorded supervisor"),
+    };
+    if pid != expected.pid || uid != unsafe { libc::geteuid() } {
         bail!("Unix control peer is not the recorded supervisor");
     }
     stream.set_nonblocking(true)?;
@@ -302,6 +288,76 @@ fn request_raw(endpoint: &Path, command: &str, expected: &ProcessIdentity) -> Re
         &never_stop,
     )?;
     decode_response(&read_frame(&mut stream, &never_stop)?)
+}
+
+/// The single authority that decides peer identity on a Unix control socket:
+/// it maps a connected socket fd to `(pid, uid)`. Both `serve` (uid gate) and
+/// `request_raw` (pid + uid gate) route through here, so the comparison logic
+/// lives in exactly one place per call site and never forks per platform — only
+/// the OS credential-extraction syscall below differs.
+#[cfg(target_os = "linux")]
+fn peer_credentials(fd: std::os::unix::io::RawFd) -> Result<(u32, u32)> {
+    let mut credentials: libc::ucred = unsafe { std::mem::zeroed() };
+    let mut length = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    if unsafe {
+        libc::getsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            (&raw mut credentials).cast(),
+            &mut length,
+        )
+    } != 0
+    {
+        return Err(std::io::Error::last_os_error()).context("read SO_PEERCRED");
+    }
+    Ok((credentials.pid as u32, credentials.uid))
+}
+
+/// macOS does NOT bundle the peer pid into its credential struct the way Linux's
+/// `ucred` does, so this takes TWO `getsockopt` calls at `SOL_LOCAL` (not
+/// `SOL_SOCKET`): `LOCAL_PEERCRED` yields an `xucred` carrying the uid but no pid,
+/// and `LOCAL_PEERPID` yields the pid on its own. A `cr_version` mismatch means the
+/// kernel handed back a struct we cannot interpret, so the credentials are unusable.
+#[cfg(target_os = "macos")]
+fn peer_credentials(fd: std::os::unix::io::RawFd) -> Result<(u32, u32)> {
+    let mut credentials: libc::xucred = unsafe { std::mem::zeroed() };
+    let mut length = std::mem::size_of::<libc::xucred>() as libc::socklen_t;
+    if unsafe {
+        libc::getsockopt(
+            fd,
+            libc::SOL_LOCAL,
+            libc::LOCAL_PEERCRED,
+            (&raw mut credentials).cast(),
+            &mut length,
+        )
+    } != 0
+    {
+        return Err(std::io::Error::last_os_error()).context("read LOCAL_PEERCRED");
+    }
+    if credentials.cr_version != libc::XUCRED_VERSION {
+        bail!("LOCAL_PEERCRED returned an unrecognized xucred version");
+    }
+    let mut pid: libc::pid_t = 0;
+    let mut length = std::mem::size_of::<libc::pid_t>() as libc::socklen_t;
+    if unsafe {
+        libc::getsockopt(
+            fd,
+            libc::SOL_LOCAL,
+            libc::LOCAL_PEERPID,
+            (&raw mut pid).cast(),
+            &mut length,
+        )
+    } != 0
+    {
+        return Err(std::io::Error::last_os_error()).context("read LOCAL_PEERPID");
+    }
+    Ok((pid as u32, credentials.cr_uid))
+}
+
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
+fn peer_credentials(_: std::os::unix::io::RawFd) -> Result<(u32, u32)> {
+    bail!("devctl has no peer-credential support for this Unix variant")
 }
 
 #[cfg(windows)]
@@ -514,7 +570,7 @@ fn current_sid() -> Result<String> {
     Ok(result)
 }
 
-#[cfg(not(any(windows, target_os = "linux")))]
+#[cfg(not(any(windows, unix)))]
 fn serve(
     _: &Path,
     _: Arc<Mutex<FleetState>>,
@@ -522,11 +578,11 @@ fn serve(
     ready: std::sync::mpsc::SyncSender<Result<()>>,
 ) -> Result<()> {
     let _ = ready.send(Err(anyhow::anyhow!(
-        "devctl supports only Windows and Linux"
+        "devctl supports only Windows and Unix"
     )));
-    bail!("devctl supports only Windows and Linux")
+    bail!("devctl supports only Windows and Unix")
 }
-#[cfg(not(any(windows, target_os = "linux")))]
+#[cfg(not(any(windows, unix)))]
 fn request_raw(_: &Path, _: &str, _: &ProcessIdentity) -> Result<String> {
-    bail!("devctl supports only Windows and Linux")
+    bail!("devctl supports only Windows and Unix")
 }

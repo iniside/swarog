@@ -2,8 +2,10 @@ use super::cli::{parse, Command, Topology};
 use super::control::{self, ControlServer};
 use super::supervisor::{
     client_command, run_transient, service_specs, spawn_managed, teardown, teardown_with,
-    wait_for_terminal, wait_healthy, StepOutcome, TransientOutcome,
+    wait_healthy, StepOutcome, TransientOutcome,
 };
+#[cfg(windows)]
+use super::supervisor::wait_for_terminal;
 use processctl::{
     observe_process_identity, EnvironmentSnapshot, FleetState, FleetStatus, ManagedProcess,
     OutputDestination, OwnedChild, PoolBudget, ProcessGroupPolicy, ProcessIdentity, ServiceSpec, SpawnSpec,
@@ -228,6 +230,74 @@ fn topology_specs_are_isolated_and_unknown_overrides_fail_closed() {
             .map(String::as_str),
         Some("0")
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn unix_control_round_trips_and_rejects_reused_pid() {
+    // A DIRECT filesystem UDS test (Postgres-free, no fleet): bind + connect +
+    // peer-cred check. The socket path must stay under darwin's 104-byte
+    // `sun_path`, so it lives directly in temp_dir under a short name rather than
+    // in a nested per-test directory.
+    let endpoint = std::env::temp_dir().join(format!("dc{}.sock", std::process::id()));
+    let _ = std::fs::remove_file(&endpoint);
+    let identity = observe_process_identity(std::process::id()).unwrap();
+    let mut fleet = FleetState::new("control-unix", "monolith").unwrap();
+    fleet.set_supervisor(identity.clone());
+    fleet.set_control_endpoint(Some(endpoint.clone()));
+    let state = Arc::new(Mutex::new(fleet));
+    let stop = Arc::new(AtomicBool::new(false));
+    let server = ControlServer::bind(endpoint.clone(), state, Arc::clone(&stop)).unwrap();
+
+    // Accept path: our own pid+uid round-trips a status.
+    let status = retry_control_unix(&endpoint, "status", &identity).unwrap();
+    assert!(status.starts_with("monolith"));
+
+    // Reject path: the anti-reused-pid guard. A DIFFERENT but live process passes
+    // the observe_process_identity() precheck (its identity is genuine), yet the
+    // connecting peer is us, so the peer pid (LOCAL_PEERPID on darwin) will not
+    // match `expected.pid`. A Linux->darwin port that dropped the second
+    // getsockopt — reading only the pid-less `xucred` — would silently ACCEPT
+    // this reused-pid impostor; this assertion pins that it is refused.
+    let mut impostor = std::process::Command::new("sleep")
+        .arg("30")
+        .spawn()
+        .expect("spawn impostor process");
+    let impostor_identity = observe_process_identity(impostor.id()).unwrap();
+    assert_ne!(impostor_identity.pid, std::process::id());
+    let error = control::request(&endpoint, "status", &impostor_identity)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("not the recorded supervisor"),
+        "expected peer-cred rejection, got: {error}"
+    );
+
+    assert_eq!(
+        retry_control_unix(&endpoint, "down", &identity).unwrap(),
+        "shutdown requested"
+    );
+    drop(server);
+    let _ = impostor.kill();
+    let _ = impostor.wait();
+    let _ = std::fs::remove_file(&endpoint);
+}
+
+#[cfg(unix)]
+fn retry_control_unix(
+    endpoint: &std::path::Path,
+    command: &str,
+    identity: &processctl::ProcessIdentity,
+) -> anyhow::Result<String> {
+    let mut last = None;
+    for _ in 0..50 {
+        match control::request(endpoint, command, identity) {
+            Ok(response) => return Ok(response),
+            Err(error) => last = Some(error),
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    Err(last.expect("at least one attempt"))
 }
 
 #[cfg(windows)]

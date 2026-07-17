@@ -767,11 +767,11 @@ fn control_endpoint(run_dir: &Path, run_id: &str) -> PathBuf {
         let _ = run_dir;
         PathBuf::from(format!(r"\\.\pipe\gamebackend-devctl-{run_id}"))
     }
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     {
         run_dir.join(format!("control-{run_id}.sock"))
     }
-    #[cfg(not(any(windows, target_os = "linux")))]
+    #[cfg(not(any(windows, unix)))]
     {
         run_dir.join("unsupported-control")
     }
@@ -790,19 +790,19 @@ fn install_signal_handler() -> Result<()> {
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 fn install_signal_handler() -> Result<()> {
     extern "C" fn handler(_: i32) {
         INTERRUPTED.store(true, Ordering::SeqCst);
     }
     unsafe {
-        libc::signal(libc::SIGINT, handler as libc::sighandler_t);
-        libc::signal(libc::SIGTERM, handler as libc::sighandler_t);
+        libc::signal(libc::SIGINT, handler as *const () as libc::sighandler_t);
+        libc::signal(libc::SIGTERM, handler as *const () as libc::sighandler_t);
     }
     Ok(())
 }
 
-#[cfg(not(any(windows, target_os = "linux")))]
+#[cfg(not(any(windows, unix)))]
 fn install_signal_handler() -> Result<()> {
-    bail!("devctl supports only Windows and Linux")
+    bail!("devctl supports only Windows and Unix")
 }
