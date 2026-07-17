@@ -116,6 +116,31 @@ fn liveness_closed() -> std::io::Result<bool> {
     Ok(fd.revents & (libc::POLLHUP | libc::POLLERR) != 0)
 }
 
+/// Derive the `forced_group` remainder oracle and tear the target's process group
+/// down in the ONE reuse-safe way (shared by both guardian backends).
+///
+/// **Invariant: `target_pid` must still be UNREAPED when this is called.** An
+/// unreaped process (alive or zombie) pins its pid — and therefore the pgid it
+/// leads, since it is its own group leader — so `kill(-target_pid)` here can only
+/// ever reach the target's own group. The old code derived the oracle from a
+/// `kill(-target_pid) == 0` *after* the reap, when the reap had already released
+/// the pid and the pgid could have been recycled onto an unrelated group leader —
+/// the one place the zombie-pinning guarantee did not hold (Step 7b).
+///
+/// The oracle is taken from the group enumeration `members` (excluding the target
+/// itself — the target is a member of its own group but is not a "survivor"),
+/// NOT from the kill's return value: after the reorder a post-kill enumeration
+/// would be racy and a pre-reap `kill` returns 0 unconditionally (the unreaped
+/// target is a valid signal target), so kill-return can no longer be the oracle.
+/// Returns whether any non-target member survived the target's exit; the caller
+/// reaps `target_pid` only AFTER this returns.
+fn drain_group_before_reap(target_pid: i32, members: &[i32]) -> bool {
+    let survived = members.iter().any(|&pid| pid > 0 && pid != target_pid);
+    // pid still pinned by the unreaped target => this reaches only its own group.
+    let _ = unsafe { libc::kill(-target_pid, libc::SIGKILL) };
+    survived
+}
+
 // ======================================================================== Linux
 
 #[cfg(target_os = "linux")]
@@ -333,14 +358,19 @@ fn supervise(
                 let _ = unsafe { libc::kill(-target_pid, signal as i32) };
             }
         }
-        if force {
-            let _ = unsafe { libc::kill(-target_pid, libc::SIGKILL) };
-        }
         if force || pollfds[1].revents & libc::POLLIN != 0 {
+            // The target is still UNREAPED here (alive on the force path, a zombie
+            // on the exit path), so its pid — and the pgid it leads — is pinned:
+            // enumerate the group and force-kill it BEFORE the reap releases the
+            // pid. Deriving `forced_group` from a post-reap kill risked signalling
+            // a recycled pgid, and a pre-reap kill's return is not a valid oracle
+            // (the unreaped target is itself a member), so the remainder comes from
+            // the enumeration minus the target (Step 7b).
+            let members = list_process_group(target_pid);
+            let forced_group = drain_group_before_reap(target_pid, &members);
             let status = target.wait()?;
-            // A target may leave ordinary descendants alive. Kill its owned group,
-            // then reap children reparented to this subreaper before exiting.
-            let forced_group = unsafe { libc::kill(-target_pid, libc::SIGKILL) } == 0;
+            // Then reap children reparented to this subreaper (the forced_adopted
+            // half — a `setsid()` escapee `kill(-pgid)` could not reach).
             let forced_adopted = reap_descendants(Duration::from_secs(5))?;
             return Ok((status, forced_group || forced_adopted));
         }
@@ -454,6 +484,43 @@ fn reap_descendants(timeout: Duration) -> std::io::Result<bool> {
         }
         std::thread::sleep(Duration::from_millis(10));
     }
+}
+
+/// Enumerate every member of process group `pgid` by scanning `/proc` for
+/// processes whose stat `pgrp` (field 5) matches. Zombies are still listed (their
+/// `/proc/<pid>/stat` survives until reaped), so a member that has exited but not
+/// yet been reaped still counts — exactly what `drain_group_before_reap` needs to
+/// decide `forced_group`. Best-effort: an unreadable/vanished entry is skipped.
+#[cfg(target_os = "linux")]
+fn list_process_group(pgid: i32) -> Vec<i32> {
+    let mut members = Vec::new();
+    let entries = match std::fs::read_dir("/proc") {
+        Ok(entries) => entries,
+        Err(_) => return members,
+    };
+    for entry in entries.flatten() {
+        let Ok(pid) = entry.file_name().to_string_lossy().parse::<i32>() else {
+            continue;
+        };
+        // pgrp is field 5 (1-indexed) of /proc/<pid>/stat; after the ')' closing
+        // comm, split_whitespace yields state, ppid, pgrp, ... => nth(2). Same
+        // parse shape as `proc_start_marker`.
+        let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+            continue;
+        };
+        let Some(close) = stat.rfind(')') else {
+            continue;
+        };
+        if stat[close + 1..]
+            .split_whitespace()
+            .nth(2)
+            .and_then(|field| field.parse::<i32>().ok())
+            == Some(pgid)
+        {
+            members.push(pid);
+        }
+    }
+    members
 }
 
 #[cfg(target_os = "linux")]
@@ -749,10 +816,11 @@ fn kevent_change(ident: libc::uintptr_t, filter: i16, fflags: u32) -> libc::keve
 
 /// The kqueue supervise loop. Mirrors the Linux `supervise` decision structure:
 /// liveness EOF or SIGUSR1 forces; SIGTERM/SIGINT are forwarded to the target
-/// group; NOTE_EXIT ends it. On force or exit, reap the target THEN probe the
-/// group — deliberately the same reap-then-kill order as Linux (`forced_remainder`
-/// semantics; the reorder is Step 7b, not here). `forced_adopted` has no macOS
-/// analogue, so the remainder is `forced_group` alone.
+/// group; NOTE_EXIT ends it. On force or exit, enumerate the group and force-kill
+/// it while the target is still UNREAPED (its pid — and the pgid it leads — pinned
+/// against reuse), THEN reap — the reuse-safe order shared with Linux via
+/// `drain_group_before_reap` (Step 7b). `forced_adopted` has no macOS analogue
+/// (no subreaper), so the remainder is `forced_group` alone.
 #[cfg(target_os = "macos")]
 fn supervise_kqueue(kq: &OwnedFd, target_pid: i32) -> std::io::Result<(ExitStatus, bool)> {
     let mut force = false;
@@ -801,15 +869,47 @@ fn supervise_kqueue(kq: &OwnedFd, target_pid: i32) -> std::io::Result<(ExitStatu
             }
             _ => {}
         }
-        if force {
-            let _ = unsafe { libc::kill(-target_pid, libc::SIGKILL) };
-        }
         if force || target_exited {
+            // The target is still UNREAPED here (alive on the force path, a zombie
+            // after NOTE_EXIT), so its pid — and the pgid it leads — is pinned:
+            // enumerate the group and force-kill it BEFORE the reap releases the
+            // pid, deriving `forced_group` from the enumeration minus the target
+            // rather than from a post-reap kill of a possibly-recycled pgid
+            // (Step 7b). No `forced_adopted` half — macOS has no subreaper.
+            let members = list_process_group(target_pid);
+            let forced_group = drain_group_before_reap(target_pid, &members);
             let status = reap_target(target_pid)?;
-            let forced_group = unsafe { libc::kill(-target_pid, libc::SIGKILL) } == 0;
             return Ok((status, forced_group));
         }
     }
+}
+
+/// Enumerate every member of process group `pgid` via `proc_listpgrppids`.
+/// Zombies are still listed until reaped, so a member that has exited but not been
+/// reaped still counts — exactly what `drain_group_before_reap` needs to decide
+/// `forced_group`. Best-effort: a libproc error yields an empty list.
+#[cfg(target_os = "macos")]
+fn list_process_group(pgid: i32) -> Vec<i32> {
+    // A NULL/0 call returns an upper-bound buffer size in BYTES (enough for every
+    // pid on the system). A buffer call returns the number of PIDS written (verified
+    // on macOS 26.5.1 — not bytes; the two calls are asymmetric). We do NOT rely on
+    // that unit: the buffer is zero-initialized, the returned length is clamped to
+    // the slot count, and non-positive slots are filtered out, so the result is the
+    // same whether the return is interpreted as a pid count or a byte count.
+    let needed = unsafe { libc::proc_listpgrppids(pgid, std::ptr::null_mut(), 0) };
+    if needed <= 0 {
+        return Vec::new();
+    }
+    // Over-allocate against a member forking between the sizing and the read.
+    let slots = needed as usize / std::mem::size_of::<i32>() + 16;
+    let mut pids = vec![0i32; slots];
+    let cap_bytes = (slots * std::mem::size_of::<i32>()) as libc::c_int;
+    let written = unsafe { libc::proc_listpgrppids(pgid, pids.as_mut_ptr().cast(), cap_bytes) };
+    if written <= 0 {
+        return Vec::new();
+    }
+    pids.truncate((written as usize).min(slots));
+    pids.into_iter().filter(|&pid| pid > 0).collect()
 }
 
 #[cfg(target_os = "macos")]

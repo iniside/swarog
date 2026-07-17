@@ -270,6 +270,69 @@ fn teardown_spares_an_unrelated_decoy() {
     let _ = testee.read_completion();
 }
 
+/// Step 7b, negative value: a target that leaves NO other group member behind must
+/// report `forced_group == false` — even on the FORCE path (liveness EOF), where a
+/// naive kill-before-reap reorder would report `true` unconditionally because the
+/// unreaped zombie target is itself a valid `kill(-pgid)` target. The oracle comes
+/// from the group enumeration minus the target, so a lone target is `false`.
+#[test]
+fn teardown_without_survivors_reports_forced_false() {
+    let _serial = serial();
+    let mut testee = spawn_testee("/bin/sleep", &["30"]);
+    let target = testee.target_pid;
+    wait_alive(target);
+
+    // Force teardown (not a graceful signal): the branch a naive reorder breaks.
+    testee.drop_liveness();
+    wait_dead(target);
+
+    let (_raw, forced) = testee.read_completion();
+    assert!(
+        !forced,
+        "a lone target that leaves no group member must report forced_group == false"
+    );
+}
+
+/// Step 7b, positive value: the target exits while a member it spawned into its own
+/// process group is still alive, so `forced_group == true` — AND the survivor is
+/// actually force-killed, not leaked. A guardian that always returned `false` fails
+/// this; one that always returned `true` fails the negative test above.
+#[test]
+fn teardown_with_live_group_member_reports_forced_true() {
+    let _serial = serial();
+    let dir = test_dir("remainder");
+    let pidfile = dir.join("member.pid");
+    // `sh -c` with job control OFF keeps `sleep &` in the TARGET's process group;
+    // the shell records the member's pid and `wait`s, so both stay alive until
+    // teardown — a live non-target group member at the target's exit.
+    let script = format!("sleep 30 & echo $! > {}; wait", pidfile.to_string_lossy());
+    let mut testee = spawn_testee("/bin/sh", &["-c", &script]);
+    let root = testee.target_pid;
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !pidfile.exists() {
+        assert!(Instant::now() < deadline, "member pidfile never appeared");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let member: u32 = std::fs::read_to_string(&pidfile)
+        .unwrap()
+        .trim()
+        .parse()
+        .expect("member pid");
+    wait_alive(member);
+
+    testee.drop_liveness();
+    wait_dead(root);
+
+    let (_raw, forced) = testee.read_completion();
+    assert!(
+        forced,
+        "a live non-target group member at the target's exit must report forced_group == true"
+    );
+    // The remainder must be killed by the pinned-pgid teardown, not leaked.
+    wait_dead(member);
+}
+
 /// A graceful signal to the guardian is forwarded to the target GROUP: the target
 /// dies by SIGTERM (the forwarded signal), distinct from the SIGKILL of a force,
 /// and a clean single-process exit leaves no forced group remainder.
