@@ -31,13 +31,13 @@ const SHUTDOWN: ShutdownPolicy = ShutdownPolicy {
 static INTERRUPTED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum StepOutcome {
+pub enum StepOutcome {
     Completed,
     RequestedStop,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum TransientOutcome {
+pub enum TransientOutcome {
     Completed,
     Cancelled,
 }
@@ -423,7 +423,7 @@ fn seed_admin(
     }
 }
 
-pub(crate) fn run_transient(
+pub fn run_transient(
     spec: SpawnSpec,
     stdin: Option<&[u8]>,
     stop: &AtomicBool,
@@ -465,7 +465,7 @@ pub(crate) fn run_transient(
     }
 }
 
-pub(crate) fn spawn_managed(
+pub fn spawn_managed(
     layout: &WorkspaceLayout,
     run_dir: &Path,
     service: &ServiceSpec,
@@ -539,7 +539,7 @@ fn spawn_spec(layout: &WorkspaceLayout, run_dir: &Path, service: &ServiceSpec) -
     }
 }
 
-pub(crate) fn wait_healthy(
+pub fn wait_healthy(
     service: &ServiceSpec,
     child: &mut OwnedChild,
     stop: &AtomicBool,
@@ -603,7 +603,7 @@ fn monitor(
     }
 }
 
-pub(crate) fn teardown(
+pub fn teardown(
     store: &StateStore,
     state: &Arc<Mutex<FleetState>>,
     children: &mut [OwnedChild],
@@ -619,7 +619,7 @@ pub(crate) fn teardown(
     })
 }
 
-pub(crate) fn teardown_with<F>(
+pub fn teardown_with<F>(
     store: &StateStore,
     state: &Arc<Mutex<FleetState>>,
     children: &mut [OwnedChild],

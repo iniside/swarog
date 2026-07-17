@@ -1,8 +1,6 @@
-mod cli;
-mod control;
-mod supervisor;
-
 use std::process::ExitCode;
+
+use devctl::{cli, supervisor};
 
 fn main() -> ExitCode {
     if let Some(code) = processctl::dispatch_guardian_from_current_exe() {
@@ -16,6 +14,3 @@ fn main() -> ExitCode {
         }
     }
 }
-
-#[cfg(test)]
-mod tests;

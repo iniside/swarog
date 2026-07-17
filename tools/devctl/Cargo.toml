@@ -26,3 +26,13 @@ windows-sys = { workspace = true, features = [
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+# Supervised-child tests drive processctl's production spawn path, which on unix
+# re-execs `current_exe --__processctl-guardian-v1`; only a `harness = false`
+# target can dispatch that guardian before the tests run (a libtest binary has no
+# such early hook and exits 101 on the re-exec). Same shape as processctl's
+# downstream / lease_marker fixtures.
+[[test]]
+name = "supervised"
+path = "tests/supervised.rs"
+harness = false
