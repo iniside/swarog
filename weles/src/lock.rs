@@ -252,10 +252,20 @@ struct BorrowCredential {
 ///
 /// `PhantomData<Rc<()>>` (copied from `processctl::BorrowedLease`'s
 /// `_not_transferable`, `tools/processctl/src/lock.rs:107`) makes this — and
-/// therefore [`Lease`] — `!Send`. That is load-bearing, not decoration: flock is
-/// per open-file-description and `LockFileEx` per handle, so the lease's
-/// lifetime is the supervisor thread's stack frame. The compiler now refuses any
-/// attempt to move it into a task, a thread, or an `Arc`.
+/// therefore [`Lease`] — `!Send`. Be precise about what that buys, because the
+/// tempting claim is false: `!Send` prevents this value from being TRANSFERRED
+/// TO ANOTHER THREAD (moved into a `std::thread::spawn`/`tokio::spawn` body, or
+/// shared via an `Arc` that must itself be `Send`). It says NOTHING about *when*
+/// the value is dropped on the thread that owns it. The lock's own lifetime does
+/// not care about threads at all — flock is per open-file-description and
+/// `LockFileEx` per handle, both of which survive a thread move — so this is
+/// cheap defense-in-depth and faithfulness to processctl, not the thing that
+/// keeps the lease alive until teardown finishes.
+///
+/// That ordering — `_lock` declared first in `run_up` and dropped LAST, after
+/// teardown, `control`, and the agent island — is an invariant held by REVIEW
+/// and by the comment at its declaration site. No type-system mechanism enforces
+/// it; releasing the rollout lock while 12 services still drain would compile.
 #[derive(Debug)]
 pub struct BorrowedLease {
     _lock_file: File,
@@ -279,7 +289,8 @@ impl BorrowedLease {
 ///
 /// Kept as ONE RAII value so [`crate::supervisor::run_up`] holds a single
 /// `_lock` local that drops last, unchanged in either mode. `!Send` via
-/// [`BorrowedLease`].
+/// [`BorrowedLease`] — which bars a thread transfer, NOT an early drop; see
+/// there.
 #[derive(Debug)]
 pub enum Lease {
     /// weles acquired `run/rollout.lock` itself — the operator path.
@@ -292,12 +303,29 @@ pub enum Lease {
 /// this process was spawned as a borrower, otherwise [`acquire`] exactly as
 /// before.
 ///
-/// Fail-closed by construction: the `?` on the borrow attempt means a malformed
-/// credential, a dead/mismatched parent, or a wrong role RETURNS THE ERROR. It
-/// never degrades into `acquire` (which would deadlock against the very parent
-/// that spawned us) and never proceeds unlocked.
+/// Fail-closed: a malformed credential, a dead/mismatched parent, or a wrong
+/// role RETURNS THE ERROR. It never degrades into `acquire` (which would
+/// deadlock against the very parent that spawned us) and never proceeds
+/// unlocked.
 pub fn acquire_or_borrow(root: &Path, run_id: &str) -> Result<Lease> {
-    match borrow_inherited_if_present(BORROWER_ROLE)? {
+    lease_from(borrow_inherited_if_present(BORROWER_ROLE), root, run_id)
+}
+
+/// [`acquire_or_borrow`]'s decision, with the borrow attempt's outcome as an
+/// argument so a test can hand it the one thing it cannot stage: this process's
+/// argv and stdin belong to cargo, so a REAL inherited credential — or a real
+/// failure to validate one — is unreachable from a unit test.
+///
+/// Production calls this unconditionally through [`acquire_or_borrow`]; the seam
+/// is an argument, not a `#[cfg(test)]` branch in the control flow. (Same shape
+/// as [`crate::agentapi::AgentServer::bind`] → `bind_inner`.) The `Err` arm is
+/// the whole point: it is what must NOT become an `acquire`.
+fn lease_from(
+    borrow: Result<Option<BorrowedLease>>,
+    root: &Path,
+    run_id: &str,
+) -> Result<Lease> {
+    match borrow? {
         Some(borrowed) => {
             println!(
                 "weles: running inside rollout {} borrowed from pid {} — that lease, not this \
@@ -353,8 +381,10 @@ fn consume_inherited(expected_role: &str) -> Result<BorrowedLease> {
 ///
 /// 1. the wire version is one weles understands;
 /// 2. the lease was issued FOR THIS ROLE (not, say, `"splitproof"`);
-/// 3. the lock file's metadata still matches the credential BYTE-FOR-BYTE after
-///    parsing — a re-acquired lock rewrites this, so a stale credential dies here;
+/// 3. the lock file's metadata still matches the credential FIELD-FOR-FIELD
+///    after parsing (processctl's own comparison — byte equality would be
+///    brittle against pretty-printed JSON whitespace) — a re-acquired lock
+///    rewrites this, so a stale credential dies here;
 /// 4. the named owner process is STILL LIVE and still the same process
 ///    (pid + executable + start marker, so a recycled PID is not the owner);
 /// 5. the owner still HOLDS the advisory lock — the identity being live is not
@@ -649,18 +679,34 @@ mod imp {
     /// SECOND borrower of the same lease loses the create and is refused.
     /// Contents and mode are processctl's (`create_consumption_marker`,
     /// `tools/processctl/src/lock.rs:1075-1103`) because the OWNER deletes this
-    /// file on its own drop and only after re-reading exactly these bytes at
-    /// exactly mode 0600. processctl's `O_NOFOLLOW` and its re-validation of the
-    /// created file are same-user hardening, deliberately not copied (CLAUDE.md,
-    /// "Dev tooling scope": trusted local operator).
+    /// file on its own drop and only after re-reading exactly these bytes from a
+    /// file at exactly mode 0600.
+    ///
+    /// `.mode(0o600)` is only a REQUEST — the umask masks it, and a umask
+    /// carrying owner-triad bits would land this at e.g. 0500, which the owner's
+    /// `cleanup_consumption_marker` refuses to delete forever. So the mode is
+    /// SET, then verified, mirroring what processctl does for the lock file
+    /// itself (`open_lock_file`, `:669-676`: create, `set_permissions`,
+    /// `validate_private_regular_linux`). That is a self-check on what we just
+    /// wrote, not the `O_NOFOLLOW`-class same-user hardening deliberately not
+    /// copied (CLAUDE.md, "Dev tooling scope": trusted local operator).
     pub(super) fn create_consumption_marker(path: &Path) -> std::io::Result<()> {
         use std::io::Write;
-        use std::os::unix::fs::OpenOptionsExt;
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
         let mut file = std::fs::OpenOptions::new()
             .create_new(true)
             .write(true)
             .mode(0o600)
             .open(path)?;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        let mode = file.metadata()?.permissions().mode() & 0o777;
+        if mode != 0o600 {
+            return Err(std::io::Error::other(format!(
+                "one-shot borrower marker {} is mode {mode:04o}, not 0600 — its owner would never \
+                 reap it",
+                path.display()
+            )));
+        }
         file.write_all(super::CONSUMED_MARKER)?;
         file.sync_all()
     }

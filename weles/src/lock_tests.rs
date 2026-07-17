@@ -397,6 +397,61 @@ fn without_a_borrow_in_the_environment_weles_acquires_exactly_as_before() {
 }
 
 #[test]
+fn a_borrow_that_failed_to_validate_never_becomes_an_acquire() {
+    // THE fall-through this whole step exists to forbid. `acquire_or_borrow`
+    // cannot be driven here (cargo owns this process's argv and stdin), so the
+    // decision is exercised through `lease_from` — which production calls
+    // unconditionally — with the outcome production would have handed it.
+    let root = temp_root("no-fallthrough");
+    let before = acquire_calls();
+
+    let error = lease_from(
+        Err(anyhow::anyhow!("the parent could not be validated")),
+        &root,
+        "run-a",
+    )
+    .expect_err("a borrow that failed to validate must not yield a lease");
+    assert!(format!("{error:#}").contains("could not be validated"), "got: {error:#}");
+    assert_eq!(
+        acquire_calls(),
+        before,
+        "a borrower that cannot validate its parent must DIE, not acquire — acquiring here would \
+         deadlock against the very lease it failed to borrow"
+    );
+    assert!(
+        !root.join("run").join("rollout.lock").exists(),
+        "and it must not have touched the lock file at all"
+    );
+
+    // Same function, `Ok(None)`: this is the arm that MAY acquire, so the
+    // assertion above is about the Err arm specifically and not about
+    // `lease_from` being inert.
+    let lease = lease_from(Ok(None), &root, "run-a").expect("no borrow => acquire");
+    assert!(matches!(lease, Lease::Owned(_)));
+    assert_eq!(acquire_calls(), before + 1);
+    drop(lease);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_validated_borrow_yields_a_borrowed_lease_without_acquiring() {
+    let owner = StagedOwner::new("lease-from-borrowed", Some(BORROWER_ROLE));
+    let borrowed = validate_credential(owner.credential(), BORROWER_ROLE).expect("valid borrow");
+    let before = acquire_calls();
+
+    // `root` here is a directory `lease_from` must never reach for.
+    let root = temp_root("lease-from-unused");
+    let lease = lease_from(Ok(Some(borrowed)), &root, "run-a").expect("a validated borrow");
+    assert!(matches!(lease, Lease::Borrowed(_)), "a borrow must not be upgraded to an acquire");
+    assert_eq!(acquire_calls(), before, "a valid borrow must not reach acquire");
+    assert!(
+        !root.join("run").exists(),
+        "a borrowed weles must not create its own rollout lock"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn a_role_processctl_could_never_issue_is_refused() {
     // processctl validates the role charset when MINTING the lease
     // (state.rs:967); weles validates the role it CLAIMS by the same rule, so a

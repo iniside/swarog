@@ -636,9 +636,15 @@ pub fn run_up(topology: Topology) -> Result<()> {
     // holds that same lock for its whole manifest and would otherwise deadlock
     // against us). `lock::acquire_or_borrow` refuses rather than fall back.
     //
-    // `_lock` stays an RAII local on THIS thread and drops LAST — after
-    // teardown, after `control`, after the agent island. `lock::Lease` is
-    // `!Send`, so that placement is now the compiler's business, not a comment's.
+    // `_lock` MUST stay an RAII local declared here and dropped LAST — after
+    // teardown, after `control`, after the agent island — because releasing the
+    // rollout lock while services still drain lets a devctl/verifyctl rollout
+    // start against the shared Postgres mid-teardown.
+    //
+    // NOTHING ENFORCES THAT BUT THIS COMMENT AND REVIEW. `lock::Lease` is
+    // `!Send`, which bars moving it to another thread; it does NOT constrain
+    // drop order on this one. Moving `drop(_lock)` above `teardown` would
+    // compile and would be a silent regression — do not.
     let run_id = format!("{:016x}", rand::random::<u64>());
     let _lock = lock::acquire_or_borrow(&layout.root, &run_id)?;
 
