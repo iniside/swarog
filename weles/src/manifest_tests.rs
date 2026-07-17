@@ -260,11 +260,160 @@ fn no_manifest_key_collides_with_the_allowlist() {
         "EDGE_CA_KEY",
     ];
     for svc in &services {
-        for key in synthesized.iter().copied().chain(svc.env_extra.iter().map(|(k, _)| *k)) {
+        for key in synthesized
+            .iter()
+            .copied()
+            .chain(svc.peers.iter().map(|(k, _, _)| *k))
+            .chain(svc.env_extra.iter().map(|(k, _)| *k))
+        {
             assert!(
                 !SERVICE_ENV_ALLOWLIST.iter().any(|a| a.eq_ignore_ascii_case(key)),
                 "{}: manifest key {key} collides with SERVICE_ENV_ALLOWLIST — \
                  strip_allowlist would hide it from the goldens",
+                svc.name
+            );
+        }
+    }
+}
+
+/// A two-service synthetic fleet: `provider-svc` (both ports) and
+/// `consumer-svc`, which is handed the provider's address by both kinds. Only
+/// the ports vary, so a test can move a port and watch the consumer's env.
+fn synthetic_peer_fleet(provider_edge: Option<u16>, provider_http: u16) -> Vec<ServiceDef> {
+    vec![
+        ServiceDef {
+            name: "provider-svc",
+            pkg: "provider-svc",
+            http_port: provider_http,
+            edge_port: provider_edge,
+            player_port: None,
+            has_db: false,
+            pool_max: 0,
+            peers: &[],
+            env_extra: &[],
+        },
+        ServiceDef {
+            name: "consumer-svc",
+            pkg: "consumer-svc",
+            http_port: 1,
+            edge_port: None,
+            player_port: None,
+            has_db: false,
+            pool_max: 0,
+            peers: &[
+                ("PROVIDER_EDGE_ADDR", "provider-svc", AddrKind::Edge),
+                ("PROVIDER_HTTP_ADDR", "provider-svc", AddrKind::Http),
+            ],
+            env_extra: &[],
+        },
+    ]
+}
+
+fn composed_value(fleet: &[ServiceDef], svc_name: &str, key: &str) -> String {
+    let svc = fleet.iter().find(|svc| svc.name == svc_name).unwrap();
+    compose_env_with_fleet(svc, &fake_inputs(), fleet)
+        .get(&OsString::from(key))
+        .unwrap_or_else(|| panic!("{svc_name} composed env has no {key}"))
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// THE previously-broken branch. Before `peers`, a consumer's peer address
+/// was a hand-written literal in `env_extra`: moving the provider's port left
+/// the consumer pointing at the old one, silently. Prove the port field is now
+/// the authority — move it, and the consumer's COMPOSED env moves with it.
+///
+/// Driven against a synthetic fleet because the real fleet is `'static` and a
+/// port therefore cannot be moved in-process (same reason `fleet_pg_budget`
+/// takes a slice). Reintroducing a literal for `PROVIDER_EDGE_ADDR` freezes
+/// the value and fails this test.
+#[test]
+fn moving_a_providers_port_propagates_to_its_consumers_env() {
+    let before = synthetic_peer_fleet(Some(9000), 8080);
+    assert_eq!(composed_value(&before, "consumer-svc", "PROVIDER_EDGE_ADDR"), "127.0.0.1:9000");
+    assert_eq!(composed_value(&before, "consumer-svc", "PROVIDER_HTTP_ADDR"), "127.0.0.1:8080");
+
+    // Move BOTH of the provider's ports; change nothing about the consumer.
+    let after = synthetic_peer_fleet(Some(9999), 8888);
+    assert_eq!(
+        composed_value(&after, "consumer-svc", "PROVIDER_EDGE_ADDR"),
+        "127.0.0.1:9999",
+        "edge_port is the authority: moving it must reach the consumer's env"
+    );
+    assert_eq!(
+        composed_value(&after, "consumer-svc", "PROVIDER_HTTP_ADDR"),
+        "127.0.0.1:8888",
+        "http_port is the authority: moving it must reach the consumer's env"
+    );
+}
+
+/// The kinds are not interchangeable: the same provider, dialed both ways,
+/// must yield its two DIFFERENT ports (real case: accounts-svc, edge 9003 +
+/// http 8084). A derivation that read one field for both would pass the
+/// propagation test above and fail here.
+#[test]
+fn the_two_kinds_read_different_port_fields() {
+    let fleet = synthetic_peer_fleet(Some(9000), 8080);
+    assert_ne!(
+        composed_value(&fleet, "consumer-svc", "PROVIDER_EDGE_ADDR"),
+        composed_value(&fleet, "consumer-svc", "PROVIDER_HTTP_ADDR"),
+    );
+
+    // ...and the real fleet's dual-kind provider proves it on live data.
+    let real = split_fleet();
+    assert_eq!(composed_value(&real, "gateway-svc", "ACCOUNTS_EDGE_ADDR"), "127.0.0.1:9003");
+    assert_eq!(composed_value(&real, "gateway-svc", "ACCOUNTS_HTTP_ADDR"), "127.0.0.1:8084");
+}
+
+/// `AddrKind::Edge` against a service with `edge_port: None` (real case:
+/// admin-svc, an HTTP passthrough origin that serves no internal edge) is a
+/// programmer error while adding a service — it must fail LOUDLY and name the
+/// offender, never silently synthesize an address nobody listens on.
+#[test]
+#[should_panic(expected = "provider-svc")]
+fn edge_kind_against_a_service_without_an_edge_panics() {
+    let fleet = synthetic_peer_fleet(None, 8080);
+    composed_value(&fleet, "consumer-svc", "PROVIDER_EDGE_ADDR");
+}
+
+/// The same, phrased against the REAL def that has `edge_port: None`: nothing
+/// about admin-svc lets it be dialed as an edge peer.
+#[test]
+#[should_panic(expected = "admin-svc")]
+fn edge_kind_against_real_admin_svc_panics() {
+    let fleet = split_fleet();
+    let admin = fleet.iter().find(|svc| svc.name == "admin-svc").unwrap();
+    assert!(admin.edge_port.is_none(), "fixture assumption: admin-svc serves no edge");
+    peer_addr(&fleet, "some-consumer-svc", "admin-svc", AddrKind::Edge);
+}
+
+/// An unknown provider is the other half of the same programmer error.
+#[test]
+#[should_panic(expected = "ghost-svc")]
+fn an_unknown_provider_panics() {
+    peer_addr(&split_fleet(), "gateway-svc", "ghost-svc", AddrKind::Edge);
+}
+
+/// Guards the derivation against erosion: `env_extra` is for LITERALS only, so
+/// no value there may be a peer address. Reintroducing e.g.
+/// `("CHARACTERS_EDGE_ADDR", "127.0.0.1:9000")` beside the `peers` entry
+/// recreates the two-authorities drift and fails here — the `peers` field
+/// alone cannot prevent someone adding a second, competing declaration.
+///
+/// Deliberately matches on the VALUE (`127.0.0.1:`), not the key's spelling:
+/// gateway/monolith's `PLAYER_EDGE_ADDR` (`:9100`, its own bind) and
+/// admin's `TRUSTED_PROXY_CIDRS` (`127.0.0.1/32`, not an address) are
+/// legitimate literals and must stay green.
+#[test]
+fn env_extra_holds_no_peer_address_literal() {
+    let mut services = split_fleet();
+    services.push(monolith());
+    for svc in &services {
+        for (key, value) in svc.env_extra {
+            assert!(
+                !value.contains("127.0.0.1:"),
+                "{}: env_extra key {key} = {value:?} looks like a peer address — \
+                 declare it in `peers` so it derives from the provider's port field",
                 svc.name
             );
         }
@@ -366,6 +515,7 @@ fn synthetic_db_svc(name: &'static str, pool_max: u32) -> ServiceDef {
         player_port: None,
         has_db: true,
         pool_max,
+        peers: &[],
         env_extra: &[],
     }
 }
@@ -402,6 +552,7 @@ fn service_pg_budget_charges_nothing_for_dbless_service() {
         player_port: None,
         has_db: false,
         pool_max: 0,
+        peers: &[],
         env_extra: &[],
     };
     assert_eq!(service_pg_budget(&svc), (0, 0));

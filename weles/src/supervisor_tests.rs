@@ -298,6 +298,7 @@ fn dummy_def() -> ServiceDef {
         player_port: None,
         has_db: false,
         pool_max: 0,
+        peers: &[],
         env_extra: &[],
     }
 }
