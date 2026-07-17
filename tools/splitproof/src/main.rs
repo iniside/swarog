@@ -24,17 +24,13 @@ use processctl::{
     RolloutLock, ServiceSpec, ShutdownOutcome, ShutdownPolicy, SpawnSpec, WorkspaceLayout,
 };
 use sqlx::{PgPool, Row};
+use splitproof::{fleet_liveness, Running};
 
 #[cfg(test)]
 mod tests;
 
 const DEFAULT_DB: &str =
     "postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable";
-
-struct Running {
-    name: &'static str,
-    child: OwnedChild,
-}
 
 struct Ctx {
     layout: WorkspaceLayout,
@@ -133,22 +129,6 @@ fn ensure_no_stale_listener(svc_name: &str, port: u16) -> Result<()> {
         );
     }
     Ok(())
-}
-
-/// Returns one description per fleet child that is no longer alive (`try_wait`
-/// returned `Some`, or the liveness probe itself errored). Shared by the `[LV1]`
-/// (post-boot) and `[LV2]` (pre-teardown) liveness assertions so a service that dies
-/// AFTER clearing its health gate can't silently drop out of later assertions.
-fn fleet_liveness(fleet: &mut [Running]) -> Vec<String> {
-    let mut dead = Vec::new();
-    for running in fleet.iter_mut() {
-        match running.child.try_wait() {
-            Ok(Some(status)) => dead.push(format!("{} exited with {status}", running.name)),
-            Ok(None) => {}
-            Err(error) => dead.push(format!("{} liveness check failed: {error}", running.name)),
-        }
-    }
-    dead
 }
 
 /// Tiny assertion recorder: prints PASS/FAIL per check, keeps a failure list, and the

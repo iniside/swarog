@@ -24,3 +24,13 @@ reqwest = { workspace = true, features = ["cookies"] }
 # modules/apikeys/src/store.rs::secret_hash (URL_SAFE_NO_PAD, NOT hex).
 sha2 = { workspace = true }
 base64 = { workspace = true }
+
+# The fleet-liveness tests drive processctl's production spawn path, which on unix
+# re-execs `current_exe --__processctl-guardian-v1`; only a `harness = false`
+# target can dispatch that guardian before the tests run (a libtest binary has no
+# such early hook and exits 101 on the re-exec). Same shape as devctl's
+# `supervised` fixture (Step 8b).
+[[test]]
+name = "fleet_liveness"
+path = "tests/fleet_liveness.rs"
+harness = false
