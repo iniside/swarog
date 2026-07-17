@@ -790,8 +790,16 @@ pub fn run_up(topology: Topology) -> Result<()> {
     // would return with the state still `Starting`, so `weles status` would
     // report "stale state" for what is really a clean, known startup failure —
     // while the identical failure 20 lines up (control bind) publishes `Failed`.
+    // The `resolve` map is derived from `defs` — the SAME slice `spawn_ctx`
+    // threads into `compose_env_with_fleet` below. One authority: a service
+    // told an address by env and a service that asks for it over the wire
+    // cannot be told different things, and under a monolith `defs` has no
+    // `provider`, so the map is empty and every resolve 404s (no topology
+    // branch: see `manifest::PeerAddrs`).
     let agent = match health::ensure_no_stale_listener("weles-agent", manifest::AGENT_PORT)
-        .and_then(|()| agentapi::AgentServer::bind(manifest::AGENT_PORT))
+        .and_then(|()| {
+            agentapi::AgentServer::bind(manifest::AGENT_PORT, manifest::PeerAddrs::from_fleet(&defs))
+        })
     {
         Ok(agent) => agent,
         Err(error) => {

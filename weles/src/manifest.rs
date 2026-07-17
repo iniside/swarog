@@ -30,6 +30,8 @@ use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
+use serde::{Deserialize, Serialize};
+
 /// Parent-process env vars a spawned service may inherit. Mirrors
 /// `tools/processctl/src/fleet.rs::SERVICE_ENV_ALLOWLIST` exactly — topology
 /// wiring and bind addresses are never inherited, only ambient
@@ -78,7 +80,14 @@ pub const AGENT_PORT: u16 = 8300;
 /// `peers` seam exists to kill. `accounts` is dialed as BOTH kinds
 /// (`ACCOUNTS_EDGE_ADDR` → 9003, `ACCOUNTS_HTTP_ADDR` → 8084), so the two
 /// classes are not a property of the provider either.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+///
+/// This is ALSO the `kind` on the agent's `resolve` wire ([`crate::agentapi`]):
+/// the serde derive here is what keeps the spelling (`"edge"`/`"http"`) an
+/// attribute of this one enum rather than a `match` on strings beside it. A
+/// wire-only twin would be exactly the second discriminator this type exists to
+/// prevent, and it would be free to drift.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum AddrKind {
     /// The provider's internal mTLS QUIC edge — [`ServiceDef::edge_port`].
     Edge,
@@ -388,6 +397,86 @@ fn peer_addr(fleet: &[ServiceDef], consumer: &str, provider: &str, kind: AddrKin
         AddrKind::Http => def.http_port,
     };
     format!("127.0.0.1:{port}")
+}
+
+/// Every address the agent can answer a `resolve` with, for ONE booting
+/// topology: `(provider, kind) -> addresses`.
+///
+/// # Why this is derived, and derived HERE
+///
+/// It is built from the SAME [`ServiceDef`] slice the supervisor hands
+/// [`compose_env_with_fleet`], and each address is formatted by the SAME
+/// [`peer_addr`] — so "where is characters" has one authority whether a service
+/// is told by env or asks over the wire. A map assembled anywhere else (a second
+/// `format!("127.0.0.1:{}")`, a lookup keyed off `name`) would be a second
+/// authority whose first drift from the composed env is invisible.
+///
+/// # Why the monolith is empty, without a topology `if`
+///
+/// The map is keyed on [`ServiceDef::provider`], which is `None` for the
+/// monolith: one process hosting all 12 domains is nameable as none of them. So
+/// `PeerAddrs::from_fleet(&[monolith()])` is EMPTY and every `resolve` under the
+/// monolith 404s — a property of the data, not a branch. That is the correct
+/// answer, not a degradation: a monolith has no peers to resolve
+/// (`weles-design.md`, "the monolith satisfies this trivially"). A map built
+/// from `split_fleet()` regardless of topology would instead hand out addresses
+/// for twelve processes that are not running.
+///
+/// # Shape
+///
+/// [`PeerAddrs::lookup`] returns a LIST because the design's `resolve` returns
+/// *all live instances* (round-robin LB is client-side, and out of M1's scope).
+/// In M1 a provider has exactly one instance, so every non-empty answer has
+/// exactly one element — but the shape LB will need is here from the start
+/// rather than broken into later.
+#[derive(Clone, Debug, Default)]
+pub struct PeerAddrs {
+    /// `(provider, kind, addr)`. A Vec, not a map: multiple instances of one
+    /// provider are the eventual shape, and at twelve services a scan is not a
+    /// data structure worth having an opinion about.
+    entries: Vec<(&'static str, AddrKind, String)>,
+}
+
+impl PeerAddrs {
+    /// Derives the map from the fleet that is actually booting.
+    pub fn from_fleet(fleet: &[ServiceDef]) -> Self {
+        let mut entries = Vec::new();
+        for svc in fleet {
+            // No short name ⇒ not resolvable as a peer. See the type doc: this
+            // is the monolith, and it is data, not a special case.
+            let Some(provider) = svc.provider else { continue };
+            // Only the kinds this service actually HAS. `edge_port: None`
+            // (admin-svc) means there is no edge address to give out — the
+            // lookup must 404 rather than fall back to the HTTP port, so no
+            // Edge entry is ever created for it. Routing through `peer_addr`
+            // keeps the formatting single-authority; the `is_some` guard is
+            // what keeps it from being the panic path.
+            if svc.edge_port.is_some() {
+                entries.push((
+                    provider,
+                    AddrKind::Edge,
+                    peer_addr(fleet, "the resolve map", provider, AddrKind::Edge),
+                ));
+            }
+            entries.push((
+                provider,
+                AddrKind::Http,
+                peer_addr(fleet, "the resolve map", provider, AddrKind::Http),
+            ));
+        }
+        Self { entries }
+    }
+
+    /// Every address of `kind` for `provider`. EMPTY means "no answer" — an
+    /// unknown provider and a provider with no address of that kind are both
+    /// the caller's 404. Never falls back to the other kind.
+    pub fn lookup(&self, provider: &str, kind: AddrKind) -> Vec<String> {
+        self.entries
+            .iter()
+            .filter(|(name, entry_kind, _)| *name == provider && *entry_kind == kind)
+            .map(|(_, _, addr)| addr.clone())
+            .collect()
+    }
 }
 
 /// [`compose_env`]'s core, resolving `svc`'s peers against an EXPLICIT fleet:
