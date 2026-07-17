@@ -47,6 +47,7 @@ impl FakeRun {
             "api",
             "clients/csharp/Generated",
             "cmd",
+            "core/edge",
             "run",
             "tools/processctl",
         ] {
@@ -472,7 +473,7 @@ fn prepare_interruptible(command: &mut Command) {
     command.creation_flags(windows_sys::Win32::System::Threading::CREATE_NEW_PROCESS_GROUP);
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 fn prepare_interruptible(_command: &mut Command) {}
 
 #[cfg(windows)]
@@ -491,7 +492,7 @@ fn send_interrupt(pid: u32) {
     );
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 fn send_interrupt(pid: u32) {
     let result = unsafe { libc::kill(pid as libc::pid_t, libc::SIGINT) };
     assert_eq!(

@@ -59,6 +59,7 @@ pub const SERVICE_ENV_ALLOWLIST: &[&str] = &[
     "SYSTEMROOT",
     "TEMP",
     "TMP",
+    "TMPDIR",
     "USERPROFILE",
     "WINDIR",
 ];

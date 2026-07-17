@@ -32,6 +32,15 @@ fn cargo(executable: PathBuf) -> ExitCode {
     if args.first().map(String::as_str) == Some("tree") {
         return tree(&args);
     }
+    if args == ["fuzz", "--help"] {
+        // Simulates `cargo-fuzz` NOT being on PATH: the real `cargo fuzz --help`
+        // fails this way when the subcommand plugin is missing. The fuzz stage
+        // never re-probes after a successful `cargo install cargo-fuzz` (it
+        // trusts the install and proceeds straight to the run loop below), so a
+        // constant FAILURE here still lets `ctx.options.install` decide
+        // skip-vs-install exactly like production.
+        return ExitCode::FAILURE;
+    }
     if args.iter().any(|arg| arg == "public-api") {
         if let Some(index) = args.iter().position(|arg| arg == "-p") {
             let root = std::env::current_dir().expect("fixture cwd");
