@@ -1,6 +1,6 @@
 //! Control-endpoint tests. The transport tests run a same-process client and
-//! server over a REAL named pipe / UDS with a temp run dir (cfg'd to the two
-//! supported targets; they compile on both). Every wait is a poll-with-deadline
+//! server over a REAL named pipe / UDS with a temp run dir (cfg'd to the
+//! supported targets — Windows + unix (Linux, darwin)). Every wait is a poll-with-deadline
 //! loop — never a sleep-as-correctness (timing-tests doctrine). The frame
 //! codec, identity classification, and liveness probe are platform-neutral
 //! unit tests that pin the previously-wrong branches by construction.
@@ -75,21 +75,13 @@ fn test_endpoint(tag: &str) -> TestEndpoint {
             dir: None,
         }
     }
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     {
         let dir = std::env::temp_dir().join(format!("weles-control-{tag}-{}", unique()));
         std::fs::create_dir_all(&dir).expect("create control test temp dir");
         TestEndpoint {
             path: dir.join("control.sock"),
             dir: Some(dir),
-        }
-    }
-    #[cfg(not(any(windows, target_os = "linux")))]
-    {
-        let _ = tag;
-        TestEndpoint {
-            path: PathBuf::from("unsupported"),
-            dir: None,
         }
     }
 }
@@ -106,7 +98,7 @@ fn poll_until(deadline: Duration, mut done: impl FnMut() -> bool, message: &str)
 // Real-transport roundtrip (status + down) — the pipe/UDS path
 // ---------------------------------------------------------------------------
 
-#[cfg(any(windows, target_os = "linux"))]
+#[cfg(any(windows, unix))]
 #[test]
 fn status_and_down_roundtrip_over_the_real_transport() {
     let endpoint = test_endpoint("roundtrip");
@@ -149,7 +141,7 @@ fn status_and_down_roundtrip_over_the_real_transport() {
 // Server teardown: prompt join, and NEVER a store into the fleet stop
 // ---------------------------------------------------------------------------
 
-#[cfg(any(windows, target_os = "linux"))]
+#[cfg(any(windows, unix))]
 #[test]
 fn server_drop_joins_promptly_and_never_sets_the_fleet_stop() {
     let endpoint = test_endpoint("shutdown");
@@ -186,7 +178,7 @@ fn server_drop_joins_promptly_and_never_sets_the_fleet_stop() {
 // a control-plane failure must never masquerade as an operator `down`)
 // ---------------------------------------------------------------------------
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 #[test]
 fn bind_failure_errors_without_setting_the_fleet_stop() {
     // A UDS path inside a nonexistent directory cannot bind.
@@ -484,7 +476,7 @@ fn supervisor_alive_is_false_for_a_reused_pid_through_real_getprocesstimes() {
     );
 }
 
-#[cfg(any(windows, target_os = "linux"))]
+#[cfg(any(windows, unix))]
 #[test]
 fn classify_connects_for_a_live_slow_start_supervisor() {
     // H2 regression: model a live supervisor whose real OS creation precedes its

@@ -900,22 +900,17 @@ pub fn run_up(topology: Topology) -> Result<()> {
 }
 
 /// The bounded loopback control endpoint for this run: a named pipe on Windows
-/// (keyed by `run_id`), a UDS under `run/weles` on Linux. Mirrors
-/// `tools/devctl/src/supervisor.rs::control_endpoint`.
+/// (keyed by `run_id`), a filesystem-path UDS under `run/weles` on unix
+/// (Linux + darwin). Mirrors `tools/devctl/src/supervisor.rs::control_endpoint`.
 fn control_endpoint_path(layout: &prep::Layout, run_id: &str) -> PathBuf {
     #[cfg(windows)]
     {
         let _ = layout;
         PathBuf::from(format!(r"\\.\pipe\gamebackend-weles-{run_id}"))
     }
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     {
         layout.run_dir.join(format!("control-{run_id}.sock"))
-    }
-    #[cfg(not(any(windows, target_os = "linux")))]
-    {
-        let _ = run_id;
-        layout.run_dir.join("unsupported-control")
     }
 }
 
