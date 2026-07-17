@@ -44,31 +44,50 @@
 //!    Step 4 weles spawns gateway-svc [`weles::manifest::Addrs::Asks`]: it is
 //!    handed `ORCHESTRATOR_URL` and asks the agent for each peer address, while
 //!    processctl still composes the eight address keys for split-proof's
-//!    standalone topology. That divergence is DELIBERATE and permanent, and it
-//!    is paid for by the BLOCKING `weles-managed-gateway` stage, which boots the
-//!    real fleet and proves the resolved addresses are actually used. This
-//!    exclusion is NOT a key list and NOT a service name: it is keyed on the
-//!    def's [`weles::manifest::Addrs`], so it follows the data — the day
-//!    gateway-svc stops asking (or another service starts), the set moves with
-//!    it. A hardcoded set could not shrink, and a permanently-widened green gate
-//!    is worse than a red one.
+//!    standalone topology, which runs no agent. That divergence is DELIBERATE
+//!    and permanent. This exclusion is NOT a key list and NOT a service name: it
+//!    is keyed on the def's [`weles::manifest::Addrs`], so it follows the data —
+//!    the day gateway-svc stops asking (or another service starts), the set
+//!    moves with it. A hardcoded set could not shrink, and a permanently-widened
+//!    green gate is worse than a red one.
+//!
+//! ### What pays for exclusion 2 — TWO stages, one per arm
+//!
+//! The design's law is that each departure from this gate is paid for by a live
+//! proof. Exclusion 2 gives up ground on BOTH sides of the diff, and the two
+//! halves are paid for by DIFFERENT stages. Crediting both to one is an unpaid
+//! departure with a receipt stapled to it:
+//!
+//! * The **weles-only** arm (`ORCHESTRATOR_URL`, and weles composing no
+//!   addresses at all) is paid for by the BLOCKING `weles-managed-gateway`,
+//!   which boots `weles up split` and proves the managed gateway resolved an
+//!   address from the agent and USED it.
+//! * The **processctl-only** arm (the eight address keys — the bulk of the
+//!   ground given up) is NOT covered by that stage: it boots weles's fleet and
+//!   never reads a processctl `ServiceSpec`, so it is structurally blind to a
+//!   defect in `tools/processctl/src/fleet.rs`'s `gateway_env`. What covers that
+//!   is the BLOCKING **split-proof** stage, which boots the processctl fleet and
+//!   drives ops through gateway-svc at :8082.
 //!
 //! Exclusion 2 is narrower than "skip those keys on gateway": only the two
-//! ASYMMETRIC directions are excluded, and each only for a value the delegation
+//! ASYMMETRIC directions are excluded, and each only for a pair the delegation
 //! actually explains — `ORCHESTRATOR_URL` bearing exactly
-//! [`weles::manifest::agent_url`], and a processctl-only key whose value the
-//! agent's own resolve map would hand out
-//! ([`weles::manifest::PeerAddrs::addresses`]). So a processctl peer address
-//! that drifted to a port the agent does NOT serve still FAILs, as does any
-//! non-address key, any value mismatch on a key both sides compose, and any of
-//! it on a service that is not managed.
+//! [`weles::manifest::agent_url`], and a processctl-only key whose OWN
+//! `(provider, kind)` ([`claimed_peer`]) the agent's resolve map answers with
+//! exactly that address. So a processctl peer address that drifted to a port the
+//! agent does not serve still FAILs; so does one pointing at ANOTHER service's
+//! real address (the copy-paste class); so does any non-address key, any value
+//! mismatch on a key both sides compose, and any of it on a service that is not
+//! managed.
 //!
-//! **Residual gap, recorded not smuggled:** exclusion 2's processctl-only arm is
-//! key-BLIND by necessity (a managed def declares no peer keys, so there is no
-//! key to match a processctl key against), so a hypothetical NEW processctl-only
-//! key on a managed service whose value happened to equal a resolvable address
-//! would be excluded too. It is bounded to managed services and to values the
-//! agent really serves.
+//! **Residual gap, recorded not smuggled:** if processctl DROPPED one of the
+//! eight keys, it would be in neither map, enter no union, and produce no diff —
+//! before Step 4 that was an `absent in processctl` FAIL. Nothing here can catch
+//! it: a managed def declares no peer keys, so this gate no longer knows which
+//! keys to expect. split-proof is a weak net for it, since `cmd/gateway-svc`'s
+//! `ADDR_SPECS` carry standalone defaults equal to the real addresses — a dropped
+//! key would silently fall back and still work. Closing it needs a declared
+//! expectation of gateway's key set (its `ADDR_SPECS`), which is a separate step.
 //!
 //! Everything else — `PORT`, `EDGE_ADDR`, `DATABASE_POOL_MAX_CONNECTIONS`, every
 //! peer `*_EDGE_ADDR`/`*_HTTP_ADDR` on the eleven told services,
@@ -118,11 +137,15 @@ fn is_excluded(key: &str) -> bool {
 
 const DELEGATION_REASON: &str = "MANAGED by weles (weles::manifest::Addrs::Asks): weles hands it \
      ORCHESTRATOR_URL and it resolves each peer address from the agent, while processctl composes \
-     those addresses at spawn for split-proof's standalone topology. Deliberate and permanent (M1 \
-     Step 4); paid for by the BLOCKING weles-managed-gateway stage, which boots the real fleet and \
-     proves the resolved addresses are used. ONLY the asymmetric directions are excluded, and only \
-     for values the delegation explains: ORCHESTRATOR_URL bearing exactly the agent's URL, and a \
-     processctl-only key whose value the agent's resolve map would itself hand out";
+     those addresses at spawn for split-proof's standalone topology, which runs no agent. \
+     Deliberate and permanent (M1 Step 4). Paid for by TWO live stages, one per arm: the \
+     weles-only arm (ORCHESTRATOR_URL) by weles-managed-gateway, which boots weles's fleet and \
+     proves a resolved address is used; the processctl-only arm (the eight address keys) by \
+     split-proof, which boots the processctl fleet and drives ops through gateway-svc — \
+     weles-managed-gateway never reads a processctl ServiceSpec and cannot cover it. ONLY the \
+     asymmetric directions are excluded, and only for pairs the delegation explains: \
+     ORCHESTRATOR_URL bearing exactly the agent's URL, and a processctl-only key whose own \
+     (provider, kind) the agent's resolve map answers with exactly that address";
 
 /// How a weles-spawned process learns where its peers are — read off the def's
 /// [`weles::manifest::Addrs`], which is THE authority for that decision. This is
@@ -139,9 +162,33 @@ enum Delegation {
     /// at all). Excludes nothing: every env key is compared.
     TellAtSpawn,
     /// ASKS the agent at boot. `url` is the exact value weles composes for
-    /// [`weles::manifest::ORCHESTRATOR_URL_ENV`]; `resolvable` is every address
-    /// the agent could answer a `resolve` with under this topology.
-    AskTheAgent { url: String, resolvable: BTreeSet<String> },
+    /// [`weles::manifest::ORCHESTRATOR_URL_ENV`]; `resolve` is the agent's own
+    /// map — the same one it would answer this process's `resolve` calls from.
+    AskTheAgent { url: String, resolve: weles::manifest::PeerAddrs },
+}
+
+/// Reads processctl's OWN key spelling as the `(provider, kind)` that key claims
+/// to carry: `CHARACTERS_EDGE_ADDR` → `("characters", Edge)`,
+/// `ADMIN_HTTP_ADDR` → `("admin", Http)`.
+///
+/// Key-name parsing is the exact inversion `weles::manifest::AddrKind`-as-a-field
+/// exists to prevent — so read the difference carefully. That ban is on DECIDING
+/// where a service lives from a key's spelling. This decides nothing and composes
+/// nothing: it interprets the OTHER tool's data in order to ask the agent's map a
+/// question it could not otherwise be asked — *would you answer THIS key with
+/// THIS address?* The answer still comes from `lookup`, which is the authority.
+///
+/// Fail-closed at every step: a key that does not parse, or names a provider or
+/// kind the agent does not serve, is simply NOT explained by the delegation and
+/// stays a FAIL.
+fn claimed_peer(key: &str) -> Option<(String, weles::manifest::AddrKind)> {
+    let (provider, kind) = key.strip_suffix("_ADDR")?.rsplit_once('_')?;
+    let kind = match kind {
+        "EDGE" => weles::manifest::AddrKind::Edge,
+        "HTTP" => weles::manifest::AddrKind::Http,
+        _ => return None,
+    };
+    Some((provider.to_ascii_lowercase(), kind))
 }
 
 impl Delegation {
@@ -157,18 +204,25 @@ impl Delegation {
         }
     }
 
-    /// Does this delegation explain a key present ONLY in processctl? Only if
-    /// the agent would really hand that exact address out — i.e. processctl is
-    /// telling the process something weles arranges for it to resolve instead.
+    /// Does this delegation explain a key present ONLY in processctl? Only if the
+    /// agent would answer THAT key's own `(provider, kind)` with EXACTLY that
+    /// address — i.e. processctl is telling the process the same thing weles
+    /// arranges for it to resolve.
     ///
-    /// Value-keyed, not key-keyed, and that is the strength: a processctl peer
-    /// address drifted to a port the agent does not serve is NOT explained by
-    /// the delegation and stays a FAIL — which a "skip these eight keys"
-    /// exclusion would have missed.
-    fn explains_processctl_only(&self, value: &str) -> bool {
+    /// Keyed on `(provider, kind)`, NOT on "is this any address in the fleet".
+    /// The any-address form (this arm's first cut) accepted any fleet address
+    /// under any key, which swallowed the whole COPY-PASTE class — gateway's
+    /// `CHARACTERS_EDGE_ADDR` pointing at inventory's edge, or `ADMIN_HTTP_ADDR`
+    /// at gateway's own port, are all resolvable addresses and would have gone
+    /// green. That class is likelier than the typo class, and it is exactly what
+    /// a parity gate is for.
+    fn explains_processctl_only(&self, key: &str, value: &str) -> bool {
         match self {
             Delegation::TellAtSpawn => false,
-            Delegation::AskTheAgent { resolvable, .. } => resolvable.contains(value),
+            Delegation::AskTheAgent { resolve, .. } => claimed_peer(key)
+                .is_some_and(|(provider, kind)| {
+                    resolve.lookup(&provider, kind).iter().any(|addr| addr == value)
+                }),
         }
     }
 }
@@ -212,14 +266,18 @@ struct ServiceView {
     /// HAND-COPY the constants this is built from — comparing it closes the
     /// "Mirrors tools/processctl/src/fleet.rs::…" gap on the budget arithmetic.
     dedicated: u32,
-    /// How THIS manifest has the process learn its peers. The ONE field
-    /// [`diff_view`] does not compare, because it IS the sanctioned divergence:
-    /// weles manages gateway-svc and processctl does not, deliberately and
-    /// permanently (module doc, exclusion 2). Comparing it would assert a parity
-    /// that Step 4 removed on purpose. It is not dead weight either — it is the
-    /// exclusion key, it is printed by [`exclusion_policy`], and processctl's
-    /// side is a truthful [`Delegation::TellAtSpawn`] rather than a placeholder:
-    /// if processctl ever grew a managed mode, this field would say so.
+    /// How this process learns its peers, read off `weles::manifest::Addrs` —
+    /// the exclusion key (module doc, exclusion 2). The ONE field [`diff_view`]
+    /// does not compare, because it IS the sanctioned divergence: comparing it
+    /// would assert a parity Step 4 removed on purpose.
+    ///
+    /// **Only the weles side is derived, and only the weles side is read.**
+    /// [`view_from_processctl`] fills a CONSTANT [`Delegation::TellAtSpawn`]
+    /// here: it is derived from nothing and nothing reads it ([`diff_view`]
+    /// passes the weles view's). It exists solely because both manifests are
+    /// normalized into one view type. Do NOT read processctl's copy as a claim
+    /// about processctl — if processctl ever grew a managed mode, this field
+    /// would keep saying `TellAtSpawn`.
     delegation: Delegation,
     env: BTreeMap<String, String>,
 }
@@ -265,10 +323,7 @@ fn view_from_weles(
         weles::manifest::Addrs::Told(_) => Delegation::TellAtSpawn,
         weles::manifest::Addrs::Asks => Delegation::AskTheAgent {
             url: weles::manifest::agent_url(),
-            resolvable: weles::manifest::PeerAddrs::from_fleet(fleet)
-                .addresses()
-                .map(str::to_owned)
-                .collect(),
+            resolve: weles::manifest::PeerAddrs::from_fleet(fleet),
         },
     };
     // Same authority weles's own `validate_pg_budget` charges against
@@ -306,9 +361,10 @@ fn view_from_processctl(spec: &processctl::ServiceSpec) -> ServiceView {
         has_db: spec.pool_budget.pool_max > 0,
         pool_max: spec.pool_budget.pool_max,
         dedicated: spec.pool_budget.dedicated,
-        // processctl composes every peer address into the spawn env for every
-        // service — it has no managed mode, and split-proof's standalone
-        // topology runs no agent to ask. Truthful, not a placeholder.
+        // A CONSTANT, not a derivation, and nothing reads it — see the field's
+        // doc. processctl has no managed mode to read one from: it composes every
+        // peer address at spawn for every service, because split-proof's
+        // standalone topology runs no agent to ask.
         delegation: Delegation::TellAtSpawn,
         env: strip_excluded(env),
     }
@@ -426,11 +482,11 @@ fn diff_view(topology: &str, weles: &ServiceView, processctl: &ServiceView, comp
         ));
     }
     // `delegation` is deliberately NOT compared — it is the sanctioned
-    // divergence itself (see the field's doc). It is passed DOWN instead, because
-    // `diff_env` is the only place with both the service and the key in hand, and
-    // the exclusion is per-service AND per-key. weles's side governs: it is the
-    // manifest that departed, and if processctl ever departed instead, weles
-    // would still read `TellAtSpawn` and every diff would stay a FAIL.
+    // divergence itself (see the field's doc). The WELES side is passed DOWN
+    // instead (processctl's copy is an unread constant), because `diff_env` is
+    // the only place with both the service and the key in hand, and the exclusion
+    // is per-service AND per-key. weles is the manifest that departed, so weles's
+    // side is the one that may explain a difference.
     diffs.extend(diff_env(topology, label, &weles.delegation, &weles.env, &processctl.env));
     diffs
 }
@@ -456,7 +512,7 @@ fn diff_env(
             (Some(w), None) => diffs.push(format!(
                 "{topology} {label}: env {key} present in weles ({w:?}) but absent in processctl"
             )),
-            (None, Some(p)) if delegation.explains_processctl_only(p) => {}
+            (None, Some(p)) if delegation.explains_processctl_only(key, p) => {}
             (None, Some(p)) => diffs.push(format!(
                 "{topology} {label}: env {key} present in processctl ({p:?}) but absent in weles"
             )),

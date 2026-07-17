@@ -7,9 +7,15 @@ not an import. The BLOCKING verifyctl stage `weles-fleet-parity`
 against the real processctl source of truth on every `--fast` run — per
 service: name/pkg, http/edge/player ports, `has_db`, `pool_max`, the full
 normalized composed env (peer `*_EDGE_ADDR`/`*_HTTP_ADDR`, `DATABASE_POOL_MAX_CONNECTIONS`,
-dev-seeds, `TLS_MODE`, security CIDR), and boot-order-vs-dependency-graph
-consistency. It is pure in-memory (no DB, no rollout), so it is cheap and safe
-under `--fast` — hence blocking.
+dev-seeds, `TLS_MODE`, security CIDR — **with one deliberate exception for the
+managed gateway, below**), and boot-order-vs-dependency-graph consistency. It is
+pure in-memory (no DB, no rollout), so it is cheap and safe under `--fast` —
+hence blocking.
+
+> Nothing enforces this document: `docs_current.rs` does not reference it, so
+> every claim below is unenforced prose. The enforced statements live in
+> `weles_fleet_parity.rs`'s module doc and its tests; this file must be read as
+> a guide to them, never as the authority.
 
 ## What is NOT compared (read this hostilely)
 
@@ -41,12 +47,21 @@ peer addresses. processctl still composes those eight keys at spawn, because
 split-proof's standalone topology runs no agent. **That divergence is deliberate
 and permanent** — the two tools are no longer supposed to agree here.
 
-**What pays for it:** the BLOCKING `weles-managed-gateway` stage (plan Step 6,
-which landed BEFORE this exclusion for exactly this reason — the design's rule is
-that every service leaving this gate's assertion is paid for by a live proof).
-It boots the real fleet under weles and asserts an operation travelling through
-Remote to a peer plus one through a passthrough origin — so a resolved address is
-proven *used*, not merely fetched.
+**What pays for it — two stages, one per arm.** The design's law is that every
+service leaving this gate's assertion is paid for by a live proof (which is why
+the proofs landed BEFORE this exclusion). This exclusion gives up ground on both
+sides of the diff, and the two halves are paid for by **different** stages —
+crediting both to one would be an unpaid departure with a receipt stapled to it:
+
+| arm | ground given up | paid for by |
+|---|---|---|
+| weles-only | `ORCHESTRATOR_URL`; weles composing no addresses | `weles-managed-gateway` — boots `weles up split` and proves the managed gateway resolved an address from the agent and **used** it |
+| processctl-only | the eight address keys | **split-proof** — boots the processctl fleet and drives ops through gateway-svc at :8082 |
+
+`weles-managed-gateway` boots *weles's* fleet and never reads a processctl
+`ServiceSpec`, so it is **structurally incapable** of detecting a defect in
+`tools/processctl/src/fleet.rs`'s `gateway_env`. It cannot pay for the
+processctl-only arm, which is the bulk of the ground given up.
 
 **Why it cannot silently widen:**
 
@@ -54,28 +69,39 @@ proven *used*, not merely fetched.
   on a key list**. A hardcoded set could not shrink when a service stops being
   managed; this one follows the data, and a permanently-widened green gate is
   worse than the red one it replaced.
-- Only the two **asymmetric** directions are excluded, each only for a value the
+- Only the two **asymmetric** directions are excluded, each only for a pair the
   delegation actually explains: `ORCHESTRATOR_URL` bearing exactly the agent's
-  own URL, and a processctl-only key whose value the agent's resolve map would
-  really hand out. So a processctl peer address drifted to a port the agent does
-  **not** serve still FAILs — narrower than skipping the eight keys by name.
+  own URL, and a processctl-only key whose **own `(provider, kind)`**, read from
+  the key's spelling, the agent's resolve map answers with **exactly** that
+  address. So a peer address drifted to a port the agent does not serve still
+  FAILs — and so does one pointing at *another service's real address*
+  (`CHARACTERS_EDGE_ADDR` → inventory's edge), or at the right provider's *wrong
+  kind* (`ACCOUNTS_EDGE_ADDR` → accounts' http port). That copy-paste class is
+  likelier than the typo class, and an "is this any fleet address" check —
+  this exclusion's first cut — went green on all of it.
 - Everything else about the managed service is still compared in full: ports,
   `has_db`, `pool_max`, dedicated sessions, `TLS_MODE`, `PLAYER_EDGE_ADDR`,
   `PORT`, the CA material, and its boot-order position.
 
-Six tests pin the narrowness (`weles_fleet_parity_tests.rs`): drift on an
+Seven tests pin the narrowness (`weles_fleet_parity_tests.rs`): drift on an
 unmanaged service still fails *even when its value is a resolvable address*; a
-non-address key drift on the managed service still fails; an unresolvable peer
-address on the managed service still fails; the exclusion **evaporates** when the
-def stops asking (driven through `view_from_weles` from a real def, so what is
-tested is the derivation from `Addrs`); `ORCHESTRATOR_URL` on an unmanaged
-service still fails; and a wrong agent URL on the managed service still fails.
+non-address key on the managed service still fails *in both asymmetric
+directions*; a key/value mispair among the fleet's own addresses still fails
+(three cases, including the wrong-kind one); an unresolvable peer address still
+fails; the exclusion **evaporates** when the def stops asking (driven through
+`view_from_weles` from a real def, so what is tested is the derivation from
+`Addrs`); `ORCHESTRATOR_URL` on an unmanaged service still fails; and a wrong
+agent URL on the managed service still fails.
 
-**Residual gap, recorded not smuggled:** exclusion 2's processctl-only arm is
-key-blind by necessity (a managed def declares no peer keys, so there is no key
-to match against), so a hypothetical new processctl-only key on a managed service
-whose value happened to equal a resolvable address would be excluded too. Bounded
-to managed services and to addresses the agent really serves.
+**Residual gap, recorded not smuggled:** if processctl **dropped** one of
+gateway's eight keys, the key would be in neither map, enter no union, and
+produce no diff at all — before Step 4 that was an `absent in processctl` FAIL.
+Nothing in this gate can catch it: a managed def declares no peer keys, so the
+gate no longer knows which keys to expect. split-proof is a weak net for it,
+because `cmd/gateway-svc`'s `ADDR_SPECS` carry standalone defaults equal to the
+real addresses — a dropped key would silently fall back and still work. Closing
+it needs a declared expectation of gateway's key set (its `ADDR_SPECS`); that is
+a separate step, not smuggled in here.
 
 ## The dev/prod seam (an M1 warning, not a today problem)
 

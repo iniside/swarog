@@ -529,7 +529,7 @@ fn peer_addr(fleet: &[ServiceDef], consumer: &str, provider: &str, kind: AddrKin
 /// In M1 a provider has exactly one instance, so every non-empty answer has
 /// exactly one element — but the shape LB will need is here from the start
 /// rather than broken into later.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PeerAddrs {
     /// `(provider, kind, addr)`. A Vec, not a map: multiple instances of one
     /// provider are the eventual shape, and at twelve services a scan is not a
@@ -564,21 +564,6 @@ impl PeerAddrs {
             }
         }
         Self { entries }
-    }
-
-    /// Every address this map can hand out, of any kind, for any provider —
-    /// exactly the strings a `resolve` can answer with under this topology.
-    ///
-    /// The question it exists to answer, for verifyctl's `weles-fleet-parity`
-    /// stage: "is this address one the agent would serve?" That stage excludes a
-    /// managed process's peer-address env from its diff against processctl, and
-    /// keys the exclusion on THIS — so an address processctl composes that the
-    /// agent could NOT hand out is not a delegation, it is drift, and stays a
-    /// FAIL. Reading the answer out of the resolve map itself (rather than
-    /// re-deriving the set beside it) is what keeps that check honest: it is the
-    /// same entries `lookup` answers from.
-    pub fn addresses(&self) -> impl Iterator<Item = &str> {
-        self.entries.iter().map(|(_, _, addr)| addr.as_str())
     }
 
     /// Every address of `kind` for `provider`. Never falls back to the other

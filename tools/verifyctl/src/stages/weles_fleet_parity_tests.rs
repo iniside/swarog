@@ -79,13 +79,19 @@ fn peer_env_drift_in_an_unmanaged_service_still_fails() {
     );
 }
 
-/// A NON-address key on the managed service is compared in full: both sides
-/// compose `TLS_MODE`, so a value drift is a plain mismatch the delegation must
-/// not explain away.
+/// A NON-address key on the managed service is not delegated, in EITHER
+/// asymmetric direction — the only two arms a widening of exclusion 2 can reach.
+///
+/// Deliberately not phrased on `TLS_MODE`: both sides compose it, so a drift
+/// there lands in the `(Some, Some)` arm, which no delegation widening can reach
+/// — it would only discriminate a hypothetical "skip the whole managed service"
+/// rewrite, and asserting it here would dress a vacuous check as a narrowness
+/// proof. (`TLS_MODE` parity is held by `head_fleets_are_in_parity` and
+/// `comparator_detects_env_drift`.)
 #[test]
-fn a_non_address_key_drift_on_the_managed_service_still_fails() {
+fn a_non_address_key_on_the_managed_service_still_fails() {
     let mut weles = weles_split_views();
-    let processctl = processctl_split_views();
+    let mut processctl = processctl_split_views();
     let deps = processctl_split_dependencies();
 
     let gateway = weles.iter_mut().find(|v| v.name == "gateway-svc").expect("gateway-svc present");
@@ -93,19 +99,65 @@ fn a_non_address_key_drift_on_the_managed_service_still_fails() {
         matches!(gateway.delegation, Delegation::AskTheAgent { .. }),
         "fixture: gateway-svc is the managed one"
     );
-    gateway.env.insert("TLS_MODE".into(), "acme".into());
-    // ...and a weles-only key that is NOT the delegation's own key.
+    // weles-only, and NOT the delegation's own key -> `explains_weles_only`.
     gateway.env.insert("WELES_ONLY_KEY".into(), "x".into());
+    // processctl-only, and not a peer address key at all -> `claimed_peer` must
+    // refuse to parse it rather than let the delegation swallow it.
+    processctl
+        .iter_mut()
+        .find(|v| v.name == "gateway-svc")
+        .expect("gateway-svc present")
+        .env
+        .insert("PROCESSCTL_ONLY_KEY".into(), "1".into());
 
     let diffs = diff_split(&weles, &processctl, &deps);
-    assert!(
-        diffs.iter().any(|d| d.contains("gateway-svc") && d.contains("TLS_MODE")),
-        "a non-address value drift on the MANAGED service must still fail: {diffs:?}"
-    );
     assert!(
         diffs.iter().any(|d| d.contains("WELES_ONLY_KEY") && d.contains("absent in processctl")),
         "a weles-only key that is not ORCHESTRATOR_URL must still fail: {diffs:?}"
     );
+    assert!(
+        diffs.iter().any(|d| d.contains("PROCESSCTL_ONLY_KEY") && d.contains("absent in weles")),
+        "a processctl-only key that names no (provider, kind) must still fail: {diffs:?}"
+    );
+}
+
+/// THE COPY-PASTE CLASS: a processctl key pointing at ANOTHER service's real
+/// address. Every value here is one the agent genuinely serves, so an
+/// "is this any fleet address" arm — this exclusion's first cut — went green on
+/// all of it. Keying on the key's own `(provider, kind)` is what closes it.
+///
+/// Both mispairs are drawn from the fleet's own addresses on purpose: that is
+/// what makes them invisible to a value-only check, and it is a likelier drift
+/// than the typo class (`…:9999`) that a value-only check does catch.
+#[test]
+fn a_key_value_mispair_among_the_fleets_own_addresses_still_fails() {
+    let weles = weles_split_views();
+    let deps = processctl_split_dependencies();
+
+    for (key, value, whose) in [
+        // characters' key, inventory's edge address.
+        ("CHARACTERS_EDGE_ADDR", "127.0.0.1:9001", "inventory's edge"),
+        // admin's passthrough origin, pointed at gateway's own http port.
+        ("ADMIN_HTTP_ADDR", "127.0.0.1:8082", "gateway's own http port"),
+        // the right provider, the WRONG kind: accounts serves both, so this is
+        // the pair a provider-only (kind-blind) check would miss.
+        ("ACCOUNTS_EDGE_ADDR", "127.0.0.1:8084", "accounts' http port, not its edge"),
+    ] {
+        let mut processctl = processctl_split_views();
+        let gateway = processctl
+            .iter_mut()
+            .find(|v| v.name == "gateway-svc")
+            .expect("gateway-svc present");
+        assert!(gateway.env.contains_key(key), "fixture: processctl composes {key}");
+        gateway.env.insert(key.into(), value.into());
+
+        let diffs = diff_split(&weles, &processctl, &deps);
+        assert!(
+            diffs.iter().any(|d| d.contains("gateway-svc") && d.contains(key)),
+            "{key} pointing at {whose} ({value}) is a resolvable address under the WRONG \
+             (provider, kind) — it must still fail: {diffs:?}"
+        );
+    }
 }
 
 /// The exclusion is value-keyed against the agent's OWN resolve map, so it is
