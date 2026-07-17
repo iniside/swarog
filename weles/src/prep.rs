@@ -440,6 +440,28 @@ fn copy_and_hash(src: &Path, dst: &Path) -> Result<(String, u64)> {
     writer
         .flush()
         .with_context(|| format!("flush {}", dst.display()))?;
+
+    // `File::create` gives `dst` the default mode (0644 on unix), dropping
+    // any executable bit the source had. Every artifact staged here IS an
+    // executable weles later execs directly (`platform::spawn`), so mirror
+    // the source's mode onto the destination before it's ever eligible to be
+    // pointed at by `current` (this runs inside the copy loop, before
+    // `flip_current` — a half-deployed generation can never be `current`).
+    // Windows has no executable-bit mode concept (executability is the file
+    // extension), so this is a unix-only step; the Windows path is
+    // unchanged.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let src_mode = std::fs::metadata(src)
+            .with_context(|| format!("stat {}", src.display()))?
+            .permissions()
+            .mode();
+        writer
+            .set_permissions(std::fs::Permissions::from_mode(src_mode))
+            .with_context(|| format!("set permissions on {}", dst.display()))?;
+    }
+
     let digest = hasher.finalize();
     let mut hex = String::with_capacity(digest.len() * 2);
     for byte in digest {

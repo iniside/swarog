@@ -389,6 +389,64 @@ fn copy_and_hash_errors_when_source_is_a_directory() {
     assert!(copy_and_hash(&src, &dst).is_err(), "dir source must fail the copy");
 }
 
+#[cfg(unix)]
+#[test]
+fn copy_and_hash_mirrors_the_source_executable_bit_on_unix() {
+    // `File::create` gives dst the default 0644 mode, dropping any source +x
+    // bit — the deployed binary would then be un-exec'able (`Permission
+    // denied (os error 13)`) when weles later tries to spawn it. Proves the
+    // fix: an executable source stays executable at the destination.
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = temp_dir("copyhash-exec-bit");
+    let src = root.join("fake-exe");
+    std::fs::write(&src, b"#!/bin/sh\necho hi\n").expect("write source binary");
+    std::fs::set_permissions(&src, std::fs::Permissions::from_mode(0o755))
+        .expect("chmod source +x");
+    let dst = root.join("staged-exe");
+
+    copy_and_hash(&src, &dst).expect("copy_and_hash succeeds");
+
+    let dst_mode = std::fs::metadata(&dst).expect("stat dst").permissions().mode();
+    assert!(
+        dst_mode & 0o111 != 0,
+        "staged binary must be executable, got mode {dst_mode:o}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn deploy_stages_binaries_executable_on_unix() {
+    // The end-to-end regression: a real `weles deploy` run must leave every
+    // staged binary in the new generation executable, not just byte-correct
+    // — this is what let weles exec them at all on darwin/linux.
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = temp_dir("deploy-exec-bit");
+    let layout = deploy_layout(&root);
+    let src = temp_dir("deploy-exec-bit-src");
+    for pkg in deploy_packages() {
+        let file = format!("{pkg}{}", std::env::consts::EXE_SUFFIX);
+        let path = src.join(&file);
+        std::fs::write(&path, b"#!/bin/sh\necho hi\n").expect("write source binary");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod source +x");
+    }
+
+    deploy(&layout, &src).expect("deploy succeeds");
+
+    let up = Layout::discover(root.clone()).expect("discover pins gen-1");
+    for pkg in deploy_packages() {
+        let dst = up.binary(pkg);
+        let mode = std::fs::metadata(&dst).expect("stat staged").permissions().mode();
+        assert!(
+            mode & 0o111 != 0,
+            "{} must be executable after deploy, got mode {mode:o}",
+            dst.display()
+        );
+    }
+}
+
 #[test]
 fn prune_tolerates_an_undeletable_generation_and_removes_the_rest() {
     // Delete must be TOLERANT (close "overwrite live exe" without opening
