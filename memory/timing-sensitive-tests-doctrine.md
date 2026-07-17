@@ -42,3 +42,20 @@ full `verifyctl --all --strict` run flushed out the next-tightest bound.
 Full-workspace `cargo test` on the shared Postgres is the best fragility detector —
 every red was a real test defect, never bad luck. See
 [[admin-extension-points-shipped]].
+
+**Extension (2026-07-17, macOS port on an M4 Max):** the fragility detector scales
+with the machine, COUNTERINTUITIVELY. `cargo test` runs a binary's tests
+test-threads=cores wide; a 16-core box runs ~16 admin tests at once, so a latent
+concurrency defect fires far more often than on the fewer-core Windows dev box (which
+had MASKED it). A more powerful machine surfaces MORE concurrency bugs, not fewer —
+"contention" here is threads colliding on the same DB locks, not CPU cycles running
+out. And not every flake is a *timing* defect: `modules/admin`'s ~25%-red runs were a
+genuine **deadlock** — `AUTH_DDL` created `sessions` before `login_attempts`, the
+inverse of the login write path's lock order (`authenticate_and_mint` DELETEs
+`login_attempts` then INSERTs `sessions`), so a concurrent `migrate` + login formed a
+cycle Postgres broke by killing one party (login→500 or migrate→"deadlock detected").
+Fix = order the DDL to match the DML; a real product bug (would deadlock a rolling
+deploy), not a test artifact. Lesson: when a "flaky" test class has a varying victim
+each run, suspect ONE shared-lock/lock-order root cause before assuming N independent
+timing races — reproduce wide (`cargo test -p <crate>` 15-30×), diagnose, then fix the
+authority.
