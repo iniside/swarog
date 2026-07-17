@@ -21,6 +21,15 @@ gaps generic agents missed:
   NEW standalone crates (weles platform containment counted), not only literal
   `core/*` paths; `general-purpose` agents are for research only, never a
   code-writing lane. "It's not core/" is not an exemption.
+  **Recydywa #2 (2026-07-17, macOS-port rollout):** dispatched a `[sonnet]`-tagged
+  code lane (a Postgres provisioning shell script) to `general-purpose`, rationalising
+  "docs/shell aren't core" — the exact banned exemption above. The operative rule,
+  no ambiguity left: a plan tag names the MODEL, never the agent type. `[sonnet]`
+  code lane = `core-implementer` with `model:"sonnet"`; `[opus]` = `core-implementer`
+  with `model:"opus"`. `core-implementer` accepts mechanical work too — the "NOT
+  mechanical rename sweeps" note is tier-economy guidance, NOT a route back to
+  `general-purpose`. There is NO code-writing lane that legitimately uses
+  `general-purpose`. Docs-only edits are the sole non-code exception.
 - **core-reviewer** — class-keyed adversarial review routed by files-touched to the
   taxonomy classes; attacks the fix's OWN new seam. The reliable local "second
   independent reviewer" (Codex was flaky, ~70%). Use after any core/cross-seam diff.
