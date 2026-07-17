@@ -272,6 +272,18 @@ pub fn run(ctx: &mut Context<'_>) -> Result<Outcome> {
         // Only ask the rest if the fleet is up: probing a fleet that never
         // booted produces three findings for one fact.
         let (leaderboard, passthrough, swap) = if readyz == Ok(200) {
+            // The gateway's /readyz is a PLAIN 200 (`without_db`) and reflects
+            // nothing about the two passthrough origins (admin-svc, accounts-svc):
+            // they are HTTP proxy TARGETS, not `remote::Stub` peers, so no
+            // readiness probe stands for them — and weles boots admin-svc LAST, AFTER
+            // the gateway. Gating the `/admin/login` positive control on the
+            // gateway's readyz alone therefore RACES admin-svc's boot and answers
+            // 502 (proven live: pause admin-svc → gateway /readyz stays 200 while
+            // /admin/login 502s). Wait for the whole fleet to actually serve before
+            // probing, so the positive control tests the passthrough — not the boot
+            // clock. Order-independent (every service, not just the last one) so a
+            // future manifest reorder or a new passthrough cannot reopen this race.
+            wait_fleet_serving(&mut fleet, &runtime, &client)?;
             (
                 get(&runtime, &client, &format!("{base}/leaderboard"), &[("X-Api-Key", DEV_KEY)]),
                 get(&runtime, &client, &format!("{base}/admin/login"), &[]),
@@ -907,6 +919,53 @@ fn wait_ready(
             return Ok(Err(format!(
                 "the gateway did not answer /readyz within {BOOT_DEADLINE:?}"
             )));
+        }
+        std::thread::sleep(PROBE_INTERVAL);
+    }
+}
+
+/// Polls EVERY fleet service's own `/readyz` until all answer 200, the fleet
+/// dies, or [`BOOT_DEADLINE`].
+///
+/// [`wait_ready`] gates only on the gateway's `/readyz`, which is a plain 200
+/// (`without_db`) that says nothing about the two passthrough origins the
+/// positive controls dial: admin-svc and accounts-svc are HTTP proxy TARGETS,
+/// not `remote::Stub` peers, so no readiness probe on the gateway represents
+/// them, and weles boots admin-svc LAST — after the gateway. Without this second
+/// gate the `/admin/login` positive control fires before admin-svc has bound
+/// its port and answers 502 (a race, not a resolve fault — the managed origin is
+/// correct at steady state).
+///
+/// It asks each service's OWN port straight from weles's manifest (the same
+/// authority the fleet listens on), so it is order-independent: it needs no
+/// knowledge of which services are passthrough origins or of the boot order, and
+/// a future manifest reorder cannot reopen the race. weles already health-gates
+/// each service on its `/readyz` before booting the next, so once the fleet is up
+/// every port answers 200 and this adds no real wait — only correctness.
+///
+/// Same rule as [`wait_ready`]: a weles that EXITED is its own fact, not a timeout.
+fn wait_fleet_serving(
+    fleet: &mut processctl::BorrowedChild<'_>,
+    runtime: &tokio::runtime::Runtime,
+    client: &reqwest::Client,
+) -> Result<()> {
+    let bases: Vec<String> = weles::manifest::split_fleet()
+        .into_iter()
+        .map(|svc| format!("http://127.0.0.1:{}", svc.http_port))
+        .collect();
+    let deadline = Instant::now() + BOOT_DEADLINE;
+    loop {
+        if fleet.try_wait()?.is_some() || runner::interrupted() {
+            // The fleet is gone or the run was interrupted — stop waiting and let
+            // the probes below report the real finding rather than sitting out the
+            // whole budget.
+            return Ok(());
+        }
+        let all_ready = bases
+            .iter()
+            .all(|base| matches!(get(runtime, client, &format!("{base}/readyz"), &[]), Ok(200)));
+        if all_ready || Instant::now() >= deadline {
+            return Ok(());
         }
         std::thread::sleep(PROBE_INTERVAL);
     }
