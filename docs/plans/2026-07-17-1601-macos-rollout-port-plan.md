@@ -4,7 +4,11 @@
 `splitproof`, and `weles up` run natively on Apple Silicon, with every degraded
 guarantee named rather than discovered later.
 
-**Status:** research complete (10 parallel subagents, 2026-07-17), plan not started.
+**Status: COMPLETE (2026-07-17).** All steps landed; `verifyctl --fast` passes 16/16
+on Apple Silicon (incl. split-proof + weles-managed-gateway), and `cargo test
+--workspace` + `devctl up monolith` + smoke pass. Outcome, commit map, deferred
+Linux-run items, and the surfaced admin deadlock:
+[`docs/status/2026-07-17-2348-macos-port-complete-status.md`](../status/2026-07-17-2348-macos-port-complete-status.md).
 
 ---
 
