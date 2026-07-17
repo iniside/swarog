@@ -412,9 +412,9 @@ all share the one local Postgres, and
 concurrent runs contend on the events plane's migrate advisory lock and on
 concurrent DDL (`CREATE OR REPLACE`), which looks like a hang or fails with
 `tuple concurrently updated`. This bites on EVERY rollout, so it is a hard
-protocol, not a tip. Rollout tooling itself runs on Windows and Linux ONLY —
-`processctl` has no Darwin backend, so a Mac can build and review but never
-verify ([platform notes](docs/reference/platform-notes.md)):
+protocol, not a tip. Rollout tooling runs on all three platforms — Windows, Linux,
+and macOS (the darwin port landed 2026-07-17; `verifyctl --fast` passes 16/16 on
+Apple Silicon — see [platform notes](docs/reference/platform-notes.md)):
 
 - **Before any Cargo-launched rollout**: first check for a live `cargo`/`rustc`
   (`pgrep -x cargo; pgrep -x rustc` — PowerShell form in

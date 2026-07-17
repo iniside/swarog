@@ -399,14 +399,16 @@ all share the one local Postgres, and
 concurrent runs contend on the events plane's migrate advisory lock and on
 concurrent DDL (`CREATE OR REPLACE`), which looks like a hang or fails with
 `tuple concurrently updated`. This bites on EVERY rollout, so it is a hard
-protocol, not a tip:
+protocol, not a tip. Rollout tooling runs on all three platforms — Windows, Linux,
+and macOS (the darwin port landed 2026-07-17; `verifyctl --fast` passes 16/16 on
+Apple Silicon — see [platform notes](docs/reference/platform-notes.md)):
 
-- **Before any Cargo-launched rollout**: first check
-  `Get-Process | Where-Object { $_.ProcessName -match '^cargo$|^rustc$' }`
-  (or `pgrep -x cargo; pgrep -x rustc` in bash). If either is active, never start
-  a second Cargo command. To inspect or stop an already-running foreground
-  `devctl` fleet, use the already-built direct binary (`target/debug/devctl.exe`
-  on Windows or `target/debug/devctl` on Unix, adjusted for `CARGO_TARGET_DIR`),
+- **Before any Cargo-launched rollout**: first check for a live `cargo`/`rustc`
+  (`pgrep -x cargo; pgrep -x rustc` — PowerShell form in
+  [platform notes](docs/reference/platform-notes.md)). If either is active, never
+  start a second Cargo command. To inspect or stop an already-running foreground
+  `devctl` fleet, use the already-built direct binary (`target/debug/devctl`,
+  adjusted for `CARGO_TARGET_DIR`),
   then WAIT for or stop the owning rollout as appropriate. When Cargo/rustc are
   clear, run `cargo run -p devctl -- status` and require no active fleet. After
   status exits, re-check Cargo/rustc before launching exactly one selected
