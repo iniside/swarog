@@ -867,3 +867,33 @@ unverifiable from this Mac and MUST be re-confirmed on a Linux box:
    compile and only surface on `[W2]`. Do this on the Linux box where it runs, not
    here (refactoring the parse to add the test would trade a review-verified path for
    a compile-only-verified one on a machine that cannot run it).
+
+## Discovered sub-steps (8b, 9b, 9c) — the plan under-scoped test harnesses + weles's own platform
+
+Implementing Steps 8/9 surfaced three darwin gaps the plan did not anticipate, each
+fixed as its own committed step (all verified green on darwin, cross-target compiled):
+
+- **Step 8b (`a62274c`)** — devctl's 4 supervised-child integration tests ran in the
+  libtest harness, which cannot serve as a processctl guardian on the unix re-exec
+  (`current_exe --__processctl-guardian-v1` → libtest exit 101). They never passed on
+  ANY unix (only Windows, via Job Objects). Relocated to a `harness = false`
+  `tests/supervised.rs` whose `main` dispatches the guardian first — the established
+  `processctl/tests/downstream` pattern. Required adding a thin `devctl/src/lib.rs`
+  (was binary-only) + widening 7 items to `pub`.
+- **Step 9b (`a6d3764`)** — weles's OWN lock/platform layer (zero-shared copy of
+  processctl's) had no darwin `observe_process_identity` (returned Unsupported) and
+  its `sweep_group` hit EPERM. Probe finding: darwin `waitid(…WNOWAIT)` is FINE
+  (non-reaping preserved); the EPERM is `kill(-pgid, SIGKILL)` on a group whose only
+  member is the unreaped zombie root returning EPERM where Linux returns ESRCH — both
+  mean "nothing signalable left". Fixed by mirroring processctl's darwin observe +
+  tolerating EPERM in `sweep_group`. weles `--lib` 151/13 → 164/0.
+- **Step 9c (`089728d`)** — weles's `force_kills_the_whole_tree` test called raw
+  `force()` (which by design does not reap) then probed liveness via `kill(pid,0)`,
+  which reports a zombie as alive on every unix. Fixed the TEST to reap the root via
+  `try_wait` (as every production caller does); `force()`/`process_alive` untouched.
+  Full weles suite green (lib 164, platform 7, prep 5, main 1).
+
+Lesson for the remaining steps: a crate compiling on darwin does not mean its TEST
+suite passes on darwin — Windows-semantics tests (Job Objects, no zombies) surface as
+unix failures. Steps 10-14 should budget for the same on verifyctl if it has
+process-spawning tests.
