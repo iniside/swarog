@@ -3,7 +3,7 @@ use std::ffi::OsString;
 use std::io::Write as _;
 use std::path::PathBuf;
 use std::process::ExitStatus;
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -18,7 +18,7 @@ pub enum OutputDestination {
 }
 
 impl OutputDestination {
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     pub(crate) fn open(&self) -> Result<Stdio, ProcessError> {
         match self {
             Self::Inherit => Ok(Stdio::inherit()),
@@ -116,114 +116,58 @@ pub struct OwnedChild {
 }
 
 pub fn observe_process_identity(pid: u32) -> Result<ProcessIdentity, ProcessError> {
-    #[cfg(any(windows, target_os = "linux"))]
-    {
-        crate::platform::observe_process_identity(pid).map_err(|source| ProcessError::Io {
-            operation: "observe process identity",
-            source,
-        })
-    }
-    #[cfg(not(any(windows, target_os = "linux")))]
-    {
-        let _ = pid;
-        Err(ProcessError::UnsupportedPlatform(std::env::consts::OS))
-    }
+    crate::platform::observe_process_identity(pid).map_err(|source| ProcessError::Io {
+        operation: "observe process identity",
+        source,
+    })
 }
 
-#[cfg(any(windows, target_os = "linux"))]
 type PlatformChild = crate::platform::PlatformChild;
-
-#[cfg(not(any(windows, target_os = "linux")))]
-struct PlatformChild;
-
-#[cfg(not(any(windows, target_os = "linux")))]
-impl PlatformChild {
-    fn try_wait(&mut self) -> std::io::Result<Option<ExitStatus>> {
-        Err(unsupported_io())
-    }
-
-    fn graceful(&mut self) -> std::io::Result<()> {
-        Err(unsupported_io())
-    }
-
-    fn completion_forced_remainder(&self, _status: ExitStatus) -> bool {
-        false
-    }
-
-    fn force(&mut self) -> std::io::Result<()> {
-        Err(unsupported_io())
-    }
-}
-
-#[cfg(not(any(windows, target_os = "linux")))]
-fn unsupported_io() -> std::io::Error {
-    std::io::Error::new(
-        std::io::ErrorKind::Unsupported,
-        "processctl supports only Windows and Linux",
-    )
-}
 
 impl OwnedChild {
     pub fn spawn(spec: SpawnSpec) -> Result<Self, ProcessError> {
-        #[cfg(any(windows, target_os = "linux"))]
-        {
-            let (inner, identity) = crate::platform::spawn(&spec, None)?;
-            Ok(Self {
-                label: spec.label,
-                identity,
-                inner: Some(inner),
-                status: None,
-            })
-        }
-
-        #[cfg(not(any(windows, target_os = "linux")))]
-        {
-            let _ = spec;
-            Err(ProcessError::UnsupportedPlatform(std::env::consts::OS))
-        }
+        let (inner, identity) = crate::platform::spawn(&spec, None)?;
+        Ok(Self {
+            label: spec.label,
+            identity,
+            inner: Some(inner),
+            status: None,
+        })
     }
 
     /// Spawns an owned process with a bounded byte sequence delivered through an
     /// anonymous, non-nameable stdin pipe. The bytes never enter argv or the child
     /// environment and the write end is closed before this function returns.
     pub fn spawn_with_stdin_bytes(spec: SpawnSpec, bytes: &[u8]) -> Result<Self, ProcessError> {
-        #[cfg(any(windows, target_os = "linux"))]
-        {
-            if bytes.len() > 4096 {
-                return Err(ProcessError::Io {
-                    operation: "validate child stdin",
-                    source: std::io::Error::new(
-                        std::io::ErrorKind::InvalidInput,
-                        "private child stdin exceeds 4096 bytes",
-                    ),
-                });
-            }
-            let (input, mut writer) = private_stdin_pipe()?;
-            let (inner, identity) = crate::platform::spawn(&spec, Some(input))?;
-            let mut child = Self {
-                label: spec.label,
-                identity,
-                inner: Some(inner),
-                status: None,
-            };
-            if let Err(source) = writer.write_all(bytes) {
-                let _ = child.shutdown(ShutdownPolicy::default());
-                return Err(ProcessError::Io {
-                    operation: "write child stdin",
-                    source,
-                });
-            }
-            drop(writer);
-            Ok(child)
+        if bytes.len() > 4096 {
+            return Err(ProcessError::Io {
+                operation: "validate child stdin",
+                source: std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "private child stdin exceeds 4096 bytes",
+                ),
+            });
         }
-        #[cfg(not(any(windows, target_os = "linux")))]
-        {
-            let _ = (spec, bytes);
-            Err(ProcessError::UnsupportedPlatform(std::env::consts::OS))
+        let (input, mut writer) = private_stdin_pipe()?;
+        let (inner, identity) = crate::platform::spawn(&spec, Some(input))?;
+        let mut child = Self {
+            label: spec.label,
+            identity,
+            inner: Some(inner),
+            status: None,
+        };
+        if let Err(source) = writer.write_all(bytes) {
+            let _ = child.shutdown(ShutdownPolicy::default());
+            return Err(ProcessError::Io {
+                operation: "write child stdin",
+                source,
+            });
         }
+        drop(writer);
+        Ok(child)
     }
 
-    #[cfg(any(windows, target_os = "linux"))]
+    #[cfg(any(windows, unix))]
     pub(crate) fn spawn_with_input(
         spec: SpawnSpec,
         input: crate::platform::InheritedInput,
@@ -326,6 +270,36 @@ fn private_stdin_pipe() -> Result<(crate::platform::InheritedInput, std::fs::Fil
             std::fs::File::from_raw_fd(fds[1]),
         )
     })
+}
+
+// macOS has no `pipe2`; create the pipe and set `FD_CLOEXEC` on both ends in a
+// second, non-atomic step. See the same note on `platform::darwin::pipe_cloexec`.
+#[cfg(target_os = "macos")]
+fn private_stdin_pipe() -> Result<(crate::platform::InheritedInput, std::fs::File), ProcessError> {
+    use std::os::fd::{AsRawFd as _, FromRawFd as _};
+    let mut fds = [-1; 2];
+    if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
+        return Err(ProcessError::Io {
+            operation: "create child stdin pipe",
+            source: std::io::Error::last_os_error(),
+        });
+    }
+    let ends = unsafe {
+        (
+            crate::platform::InheritedInput(std::fs::File::from_raw_fd(fds[0])),
+            std::fs::File::from_raw_fd(fds[1]),
+        )
+    };
+    for fd in [ends.0 .0.as_raw_fd(), ends.1.as_raw_fd()] {
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+        if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) } != 0 {
+            return Err(ProcessError::Io {
+                operation: "set close-on-exec on child stdin pipe",
+                source: std::io::Error::last_os_error(),
+            });
+        }
+    }
+    Ok(ends)
 }
 
 #[cfg(windows)]

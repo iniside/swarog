@@ -9,6 +9,7 @@ static NEXT_DIR: AtomicU64 = AtomicU64::new(0);
 
 #[test]
 fn concurrent_owner_is_rejected_and_release_allows_next_owner() {
+    let _serial = crate::fork_flock_serial();
     let path = lock_path("concurrent");
     let owner = RolloutLock::acquire(&path, "run-1", ["splitproof"]).unwrap();
     assert!(matches!(
@@ -21,6 +22,7 @@ fn concurrent_owner_is_rejected_and_release_allows_next_owner() {
 
 #[test]
 fn devctl_exclusive_and_splitproof_lendable_contend_on_canonical_path() {
+    let _serial = crate::fork_flock_serial();
     let dir = lock_path("cross-tool")
         .parent()
         .expect("lock fixture parent")
@@ -179,6 +181,7 @@ fn borrowed_markers(lock: &std::path::Path) -> Vec<PathBuf> {
 
 #[test]
 fn borrower_role_one_shot_replay_and_dead_owner_are_fail_closed() {
+    let _serial = crate::fork_flock_serial();
     let path = lock_path("borrow");
     let owner = RolloutLock::acquire(&path, "run-1", ["splitproof"]).unwrap();
     let credential = owner.credential_for_test();
@@ -247,7 +250,7 @@ fn metadata_is_private_and_contains_no_credential_or_secret_fields() {
         );
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         assert_eq!(
@@ -259,7 +262,7 @@ fn metadata_is_private_and_contains_no_credential_or_secret_fields() {
     assert_owner_only_dacl(&path);
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 #[test]
 fn lock_rejects_symlinks_directories_and_insecure_existing_files() {
     use std::os::unix::fs::{symlink, PermissionsExt};

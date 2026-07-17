@@ -1,7 +1,7 @@
 use std::io::Cursor;
 use std::os::unix::process::ExitStatusExt;
 
-use super::linux::{read_completion, read_handshake};
+use super::posix::{read_completion, read_handshake};
 use crate::protocol::{write_frame, Frame};
 
 #[test]

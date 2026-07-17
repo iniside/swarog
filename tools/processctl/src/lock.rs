@@ -376,7 +376,7 @@ fn deliver_credential(
     result
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 fn cleanup_consumption_marker(path: &Path) {
     use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
     let Ok(mut file) = std::fs::OpenOptions::new()
@@ -386,7 +386,7 @@ fn cleanup_consumption_marker(path: &Path) {
     else {
         return;
     };
-    if validate_private_regular_linux(&file, "borrower marker").is_err() {
+    if validate_private_regular_posix(&file, "borrower marker").is_err() {
         return;
     }
     let mut content = Vec::new();
@@ -413,7 +413,7 @@ fn cleanup_consumption_marker(path: &Path) {
         return;
     }
     if std::fs::remove_file(path).is_ok() {
-        let _ = sync_parent_directory_linux(path, "sync borrower marker removal");
+        let _ = sync_parent_directory_posix(path, "sync borrower marker removal");
     }
 }
 
@@ -572,7 +572,7 @@ impl BorrowedLease {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 fn inherited_credential_present() -> Result<bool, LeaseError> {
     let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
     if unsafe { libc::fstat(0, stat.as_mut_ptr()) } != 0 {
@@ -604,14 +604,6 @@ fn inherited_credential_present() -> Result<bool, LeaseError> {
         }
     }
     Ok(kind == FILE_TYPE_PIPE)
-}
-
-#[cfg(not(any(windows, target_os = "linux")))]
-fn inherited_credential_present() -> Result<bool, LeaseError> {
-    Err(LeaseError::InvalidField(format!(
-        "processctl supports only Windows and Linux, not {}",
-        std::env::consts::OS
-    )))
 }
 
 /// The wire entry point for an inherited credential: version gate on the raw
@@ -727,7 +719,7 @@ fn borrow_marker_path(lock: &Path, metadata: &LockMetadata, role: &str) -> PathB
     ))
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 fn open_lock_file(path: &Path) -> Result<File, LeaseError> {
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
     let options = || {
@@ -762,19 +754,19 @@ fn open_lock_file(path: &Path) -> Result<File, LeaseError> {
                 source,
             })?;
     }
-    validate_private_regular_linux(&file, "rollout lock")?;
+    validate_private_regular_posix(&file, "rollout lock")?;
     if created {
         file.sync_all().map_err(|source| LeaseError::Io {
             operation: "sync new rollout lock",
             source,
         })?;
-        sync_parent_directory_linux(path, "sync rollout lock parent directory")?;
+        sync_parent_directory_posix(path, "sync rollout lock parent directory")?;
     }
     Ok(file)
 }
 
-#[cfg(target_os = "linux")]
-fn validate_private_regular_linux(file: &File, kind: &'static str) -> Result<(), LeaseError> {
+#[cfg(unix)]
+fn validate_private_regular_posix(file: &File, kind: &'static str) -> Result<(), LeaseError> {
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
     let metadata = file.metadata().map_err(|source| LeaseError::Io {
         operation: "inspect private processctl file",
@@ -791,8 +783,8 @@ fn validate_private_regular_linux(file: &File, kind: &'static str) -> Result<(),
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
-fn sync_parent_directory_linux(path: &Path, operation: &'static str) -> Result<(), LeaseError> {
+#[cfg(unix)]
+fn sync_parent_directory_posix(path: &Path, operation: &'static str) -> Result<(), LeaseError> {
     use std::os::unix::fs::OpenOptionsExt;
     let parent = path.parent().ok_or_else(|| {
         LeaseError::InvalidField("processctl file must have a parent directory".into())
@@ -851,7 +843,7 @@ fn open_lock_file(path: &Path) -> Result<File, LeaseError> {
     Ok(unsafe { File::from_raw_handle(handle) })
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 fn try_lock_exclusive(file: &File) -> Result<bool, LeaseError> {
     use std::os::fd::AsRawFd;
     let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
@@ -913,7 +905,7 @@ fn is_locked_by_other(file: &File) -> Result<bool, LeaseError> {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 fn unlock(file: &File) -> Result<(), LeaseError> {
     use std::os::fd::AsRawFd;
     if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_UN) } == 0 {
@@ -958,7 +950,7 @@ fn lock_overlapped() -> windows_sys::Win32::System::IO::OVERLAPPED {
     overlapped
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 fn flush_file(file: &File, operation: &'static str) -> Result<(), LeaseError> {
     file.sync_all()
         .map_err(|source| LeaseError::Io { operation, source })
@@ -1009,6 +1001,43 @@ fn credential_pipe() -> Result<(crate::platform::InheritedInput, File), LeaseErr
     })
 }
 
+/// macOS lacks both `pipe2` (so `FD_CLOEXEC` is a separate, non-atomic `fcntl` on
+/// each end — see `platform::darwin::pipe_cloexec`) and Linux's `F_SETPIPE_SZ`.
+/// The 4096-byte sizing on the Linux arm is a resource bound, not part of the
+/// handshake, and is dropped here: the credential is a few hundred bytes of
+/// `LockMetadata` JSON and its real size ceiling is enforced independently by
+/// `MAX_CREDENTIAL_BYTES` at both the write (`spawn_borrower`) and read
+/// (`read_credential_to_eof`) sides. `deliver_credential` writes from a thread,
+/// so as with Linux a concurrent fork/exec elsewhere could observe the ends
+/// before the flag is set; processctl does not run concurrent spawns.
+#[cfg(target_os = "macos")]
+fn credential_pipe() -> Result<(crate::platform::InheritedInput, File), LeaseError> {
+    use std::os::fd::{AsRawFd, FromRawFd};
+    let mut fds = [-1; 2];
+    if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
+        return Err(LeaseError::Io {
+            operation: "create one-shot borrower pipe",
+            source: std::io::Error::last_os_error(),
+        });
+    }
+    let ends = unsafe {
+        (
+            crate::platform::InheritedInput(File::from_raw_fd(fds[0])),
+            File::from_raw_fd(fds[1]),
+        )
+    };
+    for fd in [ends.0 .0.as_raw_fd(), ends.1.as_raw_fd()] {
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+        if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) } != 0 {
+            return Err(LeaseError::Io {
+                operation: "set close-on-exec on one-shot borrower pipe",
+                source: std::io::Error::last_os_error(),
+            });
+        }
+    }
+    Ok(ends)
+}
+
 #[cfg(windows)]
 fn credential_pipe() -> Result<(crate::platform::InheritedInput, File), LeaseError> {
     use std::os::windows::io::FromRawHandle;
@@ -1044,7 +1073,7 @@ fn credential_pipe() -> Result<(crate::platform::InheritedInput, File), LeaseErr
     })
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 fn consume_credential_stdin() -> Result<Vec<u8>, LeaseError> {
     use std::os::fd::{FromRawFd, IntoRawFd};
     if unsafe { libc::fcntl(0, libc::F_GETFD) } < 0 {
@@ -1161,7 +1190,7 @@ fn read_credential_to_eof(input: &mut File) -> Result<Vec<u8>, LeaseError> {
     Ok(bytes)
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 fn create_consumption_marker(path: &Path) -> Result<(), LeaseError> {
     use std::os::unix::fs::OpenOptionsExt;
     let mut file = std::fs::OpenOptions::new()
@@ -1186,8 +1215,8 @@ fn create_consumption_marker(path: &Path) -> Result<(), LeaseError> {
             source,
         })?;
     flush_file(&file, "flush one-shot borrower marker")?;
-    validate_private_regular_linux(&file, "borrower marker")?;
-    sync_parent_directory_linux(path, "sync borrower marker parent directory")
+    validate_private_regular_posix(&file, "borrower marker")?;
+    sync_parent_directory_posix(path, "sync borrower marker parent directory")
 }
 
 #[cfg(windows)]

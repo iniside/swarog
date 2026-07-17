@@ -171,7 +171,7 @@ fn initial_write_failure_never_exposes_partial_state() {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 #[test]
 fn state_file_is_owner_read_write_only() {
     use std::os::unix::fs::PermissionsExt;
@@ -190,7 +190,7 @@ fn state_file_is_owner_read_write_only() {
     );
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 #[test]
 fn state_load_and_replace_reject_symlinks_directories_and_insecure_modes() {
     use std::os::unix::fs::{symlink, PermissionsExt};
@@ -366,14 +366,11 @@ fn identity(pid: u32) -> ProcessIdentity {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 fn write_private_test_file(path: &std::path::Path, bytes: &[u8]) {
     std::fs::write(path, bytes).unwrap();
-    #[cfg(target_os = "linux")]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
-    }
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
 }
 
 fn test_dir(name: &str) -> PathBuf {

@@ -10,12 +10,12 @@ pub const BUILD_ENV_ALLOWLIST: &[&str] = &[
     "CARGO_NET_GIT_FETCH_WITH_CLI", "CARGO_TARGET_DIR", "COMSPEC", "GIT_SSL_CAINFO",
     "HOME", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "PATH", "PATHEXT", "RUSTFLAGS",
     "ProgramFiles(x86)", "RUSTUP_HOME", "SSL_CERT_DIR", "SSL_CERT_FILE", "SYSTEMROOT", "TEMP",
-    "TMP", "USERPROFILE", "WINDIR", "all_proxy", "http_proxy", "https_proxy", "no_proxy",
+    "TMP", "TMPDIR", "USERPROFILE", "WINDIR", "all_proxy", "http_proxy", "https_proxy", "no_proxy",
 ];
 
 pub const SERVICE_ENV_ALLOWLIST: &[&str] = &[
     "COMSPEC", "HOME", "PATH", "PATHEXT", "RUST_BACKTRACE", "RUST_LOG", "SYSTEMROOT",
-    "TEMP", "TMP", "USERPROFILE", "WINDIR",
+    "TEMP", "TMP", "TMPDIR", "USERPROFILE", "WINDIR",
 ];
 
 /// Sessions the local Postgres reserves for dev tooling running ALONGSIDE the fleet,
@@ -163,9 +163,13 @@ impl EnvironmentSnapshot {
     }
 
     pub fn build_environment(&self) -> BTreeMap<String, String> {
-        let mut env = self.filtered(BUILD_ENV_ALLOWLIST);
         // LIB and INCLUDE are synthesized from the locally discovered toolchain.
         // They are not inherited authorities and therefore are not allowlist entries.
+        // Only the Windows arm mutates `env`, so the binding is `mut` only there.
+        #[cfg(windows)]
+        let mut env = self.filtered(BUILD_ENV_ALLOWLIST);
+        #[cfg(not(windows))]
+        let env = self.filtered(BUILD_ENV_ALLOWLIST);
         #[cfg(windows)]
         append_msvc_linker_path(&mut env);
         env

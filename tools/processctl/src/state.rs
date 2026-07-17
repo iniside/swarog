@@ -375,24 +375,13 @@ impl StateStore {
     }
 
     fn write_platform(&self, temp: &Path, _parent: &Path, bytes: &[u8]) -> Result<(), StateError> {
-        #[cfg(target_os = "linux")]
+        #[cfg(unix)]
         {
-            self.write_linux(temp, _parent, bytes)
+            self.write_posix(temp, _parent, bytes)
         }
         #[cfg(windows)]
         {
             self.write_windows(temp, bytes)
-        }
-        #[cfg(not(any(windows, target_os = "linux")))]
-        {
-            let _ = (temp, _parent, bytes);
-            Err(StateError::Io {
-                operation: "write process state",
-                source: std::io::Error::new(
-                    std::io::ErrorKind::Unsupported,
-                    "processctl state supports only Windows and Linux",
-                ),
-            })
         }
     }
 
@@ -412,8 +401,8 @@ impl StateStore {
         Ok(())
     }
 
-    #[cfg(target_os = "linux")]
-    fn write_linux(&self, temp: &Path, parent: &Path, bytes: &[u8]) -> Result<(), StateError> {
+    #[cfg(unix)]
+    fn write_posix(&self, temp: &Path, parent: &Path, bytes: &[u8]) -> Result<(), StateError> {
         use std::io::Write;
         use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
@@ -434,7 +423,7 @@ impl StateStore {
                 operation: "secure state temp file",
                 source,
             })?;
-        validate_private_regular_linux(&file).map_err(|source| StateError::Io {
+        validate_private_regular_posix(&file).map_err(|source| StateError::Io {
             operation: "validate private state temp file",
             source,
         })?;
@@ -461,7 +450,7 @@ impl StateStore {
         })?;
         cleanup.disarm();
         self.inject(StateFailurePoint::SyncParent)?;
-        open_directory_linux(parent)
+        open_directory_posix(parent)
             .and_then(|directory| directory.sync_all())
             .map_err(|source| StateError::Io {
                 operation: "sync state parent directory",
@@ -562,19 +551,19 @@ impl StateStore {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 fn open_state_for_read(path: &Path) -> std::io::Result<File> {
     use std::os::unix::fs::OpenOptionsExt;
     let file = std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
         .open(path)?;
-    validate_private_regular_linux(&file)?;
+    validate_private_regular_posix(&file)?;
     Ok(file)
 }
 
-#[cfg(target_os = "linux")]
-fn validate_private_regular_linux(file: &File) -> std::io::Result<()> {
+#[cfg(unix)]
+fn validate_private_regular_posix(file: &File) -> std::io::Result<()> {
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
     let metadata = file.metadata()?;
     if !metadata.file_type().is_file() {
@@ -598,8 +587,8 @@ fn validate_private_regular_linux(file: &File) -> std::io::Result<()> {
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
-fn open_directory_linux(path: &Path) -> std::io::Result<File> {
+#[cfg(unix)]
+fn open_directory_posix(path: &Path) -> std::io::Result<File> {
     use std::os::unix::fs::OpenOptionsExt;
     std::fs::OpenOptions::new()
         .read(true)
@@ -637,14 +626,6 @@ pub(crate) fn validate_private_test_path(path: &Path) -> std::io::Result<()> {
     let result = validate_private_regular_windows(handle);
     unsafe { windows_sys::Win32::Foundation::CloseHandle(handle) };
     result
-}
-
-#[cfg(not(any(windows, target_os = "linux")))]
-fn open_state_for_read(_path: &Path) -> std::io::Result<File> {
-    Err(std::io::Error::new(
-        std::io::ErrorKind::Unsupported,
-        "processctl state supports only Windows and Linux",
-    ))
 }
 
 struct TempCleanup<'a> {
