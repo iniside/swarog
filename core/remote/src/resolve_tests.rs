@@ -33,7 +33,17 @@ const TEST_BUDGET: Duration = Duration::from_millis(300);
 // ---------------------------------------------------------------------------
 
 /// Answers one request. `None` = never answer at all (the hung-agent case).
-type Answer = Arc<dyn Fn(&Seen) -> Option<(u16, String)> + Send + Sync>;
+type Answer = Arc<dyn Fn(&Seen) -> Option<Reply> + Send + Sync>;
+
+/// One canned answer.
+#[derive(Clone, Debug)]
+struct Reply {
+    status: u16,
+    body: String,
+    /// Set only by the redirect canner — the one header a test needs beyond the
+    /// fixed two.
+    location: Option<String>,
+}
 
 /// One request as it actually arrived.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -80,7 +90,23 @@ impl FakeAgent {
     /// A canner that answers every request the same way.
     async fn always(status: u16, body: impl Into<String>) -> Self {
         let body = body.into();
-        Self::start(Arc::new(move |_| Some((status, body.clone())))).await
+        Self::start(Arc::new(move |_| Some(Reply {
+            status,
+            body: body.clone(),
+            location: None,
+        })))
+        .await
+    }
+
+    /// A canner that answers every request with a redirect.
+    async fn redirecting(status: u16, location: impl Into<String>) -> Self {
+        let location = location.into();
+        Self::start(Arc::new(move |_| Some(Reply {
+            status,
+            body: String::new(),
+            location: Some(location.clone()),
+        })))
+        .await
     }
 
     /// A canner that accepts the connection and never answers.
@@ -111,20 +137,25 @@ impl Drop for FakeAgent {
 async fn serve_one(mut stream: TcpStream, answer: Answer, seen: Arc<Mutex<Vec<Seen>>>) {
     let Some(request) = read_request(&mut stream).await else { return };
     seen.lock().expect("record request").push(request.clone());
-    let Some((status, reply)) = answer(&request) else {
+    let Some(reply) = answer(&request) else {
         // The hung agent: hold the connection open and never write. The client
         // must decide on its own budget, not on ours.
         std::future::pending::<()>().await;
         return;
     };
+    let location = match &reply.location {
+        Some(to) => format!("Location: {to}\r\n"),
+        None => String::new(),
+    };
     let head = format!(
-        "HTTP/1.1 {status} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
+        "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\n{location}Content-Length: {}\r\n\
          Connection: close\r\n\r\n",
-        reason(status),
-        reply.len()
+        reply.status,
+        reason(reply.status),
+        reply.body.len()
     );
     let _ = stream.write_all(head.as_bytes()).await;
-    let _ = stream.write_all(reply.as_bytes()).await;
+    let _ = stream.write_all(reply.body.as_bytes()).await;
     let _ = stream.flush().await;
     let _ = stream.shutdown().await;
 }
@@ -178,10 +209,48 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 fn reason(status: u16) -> &'static str {
     match status {
         200 => "OK",
+        302 => "Found",
+        307 => "Temporary Redirect",
         400 => "Bad Request",
         404 => "Not Found",
         500 => "Internal Server Error",
         _ => "Status",
+    }
+}
+
+/// Serializes the tests that touch process-global env (precedent:
+/// `weles::agentapi_tests::agent_guard`). Only the proxy tests need it — after
+/// `.no_proxy()`, no other client built here reads proxy env at all, which is
+/// the very property under test.
+static ENV_GUARD: Mutex<()> = Mutex::new(());
+
+/// Sets env vars and restores them on drop — including on a panicking
+/// assertion, so a failing test never leaks `http_proxy` into a sibling.
+struct EnvVars {
+    prior: Vec<(&'static str, Option<String>)>,
+    _guard: std::sync::MutexGuard<'static, ()>,
+}
+
+impl EnvVars {
+    fn set(vars: &[(&'static str, &str)]) -> Self {
+        let guard = ENV_GUARD.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let prior =
+            vars.iter().map(|(key, _)| (*key, std::env::var(key).ok())).collect::<Vec<_>>();
+        for (key, value) in vars {
+            std::env::set_var(key, value);
+        }
+        Self { prior, _guard: guard }
+    }
+}
+
+impl Drop for EnvVars {
+    fn drop(&mut self) {
+        for (key, value) in self.prior.drain(..) {
+            match value {
+                Some(value) => std::env::set_var(key, value),
+                None => std::env::remove_var(key),
+            }
+        }
     }
 }
 
@@ -333,9 +402,16 @@ async fn an_agent_that_never_answers_fails_inside_its_own_budget() {
     let verdict = ask(&agent.url(), "characters", AddrKind::Edge).await;
 
     assert_eq!(verdict, Verdict::NoAnswer);
+    // Against TEST_BUDGET, not HANG_GUARD: `ask` already dies at the guard, so
+    // a guard-sized bound here could never fail — and it would wave through the
+    // one edit that matters, `resolve_peer_within` ignoring its `budget`
+    // parameter and using the real 5s constant (still under a 10s guard: green
+    // suite, dead seam). 33x headroom over the 300ms budget keeps this a
+    // correctness assertion rather than a race with the machine.
     assert!(
-        started.elapsed() < HANG_GUARD,
-        "the budget, not the guard, must be what ended this call"
+        started.elapsed() < TEST_BUDGET * 4,
+        "the call's own budget must be what ended it, not the hang guard: {:?}",
+        started.elapsed()
     );
     // The request DID reach the agent, so this is a real hang on the answer and
     // not a connection that never happened.
@@ -400,4 +476,89 @@ async fn a_trailing_slash_in_the_url_is_not_a_different_endpoint() {
 
     assert_eq!(verdict, Verdict::Addrs(vec!["127.0.0.1:9000".to_string()]));
     assert_eq!(agent.requests()[0].target, "POST /resolve", "the path must not double its slash");
+}
+
+/// The env var that hijacks this call is forwarded into gateway-svc BY DESIGN
+/// (`processctl`'s fleet env, copied into `weles::manifest`'s allowlist), and
+/// `reqwest`'s default builder honours it with no loopback bypass. So this test
+/// has TWO halves, and the first is what makes the second worth anything:
+///
+/// 1. **The control** — a default `reqwest` client really does route through
+///    `http_proxy`. Without this, a typo'd var name would make the second half
+///    pass vacuously against a client that was never tempted.
+/// 2. **The claim** — `resolve_peer` ignores it, because `core/*` never reads
+///    env, not even one dependency deep.
+///
+/// If the fix regresses, the resolve question lands at the proxy — which here
+/// answers a perfectly well-formed `200` carrying an address the agent never
+/// authored. That is the failure this closes: not an error, a WRONG ANSWER.
+#[tokio::test]
+async fn a_proxy_in_the_env_cannot_hijack_the_resolve_question() {
+    let impostor = FakeAgent::always(200, r#"{"addrs":["10.9.9.9:1"]}"#).await;
+    let agent = FakeAgent::always(200, r#"{"addrs":["127.0.0.1:9000"]}"#).await;
+    // `no_proxy` is cleared too: this box (or a CI runner) having a
+    // `no_proxy=127.0.0.1` would silently defeat the control half.
+    let _env = EnvVars::set(&[
+        ("http_proxy", &format!("http://{}", impostor.addr)),
+        ("HTTP_PROXY", &format!("http://{}", impostor.addr)),
+        ("no_proxy", ""),
+        ("NO_PROXY", ""),
+    ]);
+
+    // Half 1: the control. A stock client — the one `resolve_peer` would be if
+    // `.no_proxy()` were dropped — obeys the env.
+    let stock = reqwest::Client::builder().build().expect("stock client");
+    let _ = stock.post(format!("{}/resolve", agent.url())).body("{}").send().await;
+    assert_eq!(
+        impostor.requests().len(),
+        1,
+        "control failed: the env proxy was not honoured even by a default client, so this \
+         test could not have caught the real thing either"
+    );
+
+    // Half 2: the claim.
+    let verdict = ask(&agent.url(), "characters", AddrKind::Edge).await;
+
+    assert_eq!(verdict, Verdict::Addrs(vec!["127.0.0.1:9000".to_string()]));
+    assert_eq!(agent.requests().len(), 1, "the question must reach the agent itself");
+    assert_eq!(impostor.requests().len(), 1, "only the control's request may reach the proxy");
+}
+
+/// A followed redirect is two lies waiting: `302` becomes a GET with the body
+/// dropped (weles serves no `GET /resolve` ⇒ `404 unknown_route` ⇒ "the agent
+/// does not speak the contract", about an agent that does), and `307` replays
+/// the body somewhere else and answers `Ok` from a host that is not the agent.
+/// Unfollowed, a 3xx carries no envelope and is `Malformed` — the truth.
+#[tokio::test]
+async fn a_redirect_is_never_followed_off_the_agent() {
+    for status in [302_u16, 307] {
+        // Answers exactly what a caller wants to hear — if it is ever asked.
+        let elsewhere = FakeAgent::always(200, r#"{"addrs":["10.9.9.9:1"]}"#).await;
+        let agent = FakeAgent::redirecting(status, format!("{}/resolve", elsewhere.url())).await;
+
+        let verdict = ask(&agent.url(), "characters", AddrKind::Edge).await;
+
+        assert_eq!(verdict, Verdict::NotThisContract, "{status}");
+        assert!(
+            elsewhere.requests().is_empty(),
+            "{status}: the client left the agent and asked somewhere else"
+        );
+    }
+}
+
+/// The cap is proven by the PAIR: the same answer shape passes just under it
+/// and is refused just over it, so this cannot pass for the wrong reason (a
+/// body that merely fails to parse).
+#[tokio::test]
+async fn an_answer_over_the_cap_is_refused_and_one_under_it_is_not() {
+    let under = format!(r#"{{"addrs":["{}"]}}"#, "a".repeat(1024));
+    let over = format!(r#"{{"addrs":["{}"]}}"#, "a".repeat(16 * 1024));
+    let small = FakeAgent::always(200, under).await;
+    let flood = FakeAgent::always(200, over).await;
+
+    let small_verdict = ask(&small.url(), "characters", AddrKind::Edge).await;
+    let flood_verdict = ask(&flood.url(), "characters", AddrKind::Edge).await;
+
+    assert_eq!(small_verdict, Verdict::Addrs(vec!["a".repeat(1024)]));
+    assert_eq!(flood_verdict, Verdict::NotThisContract);
 }

@@ -10,10 +10,17 @@
 //! the *narrow* exception, and it does not extend here). So this client is
 //! tested against a fake agent this crate stands up itself, and weles's server
 //! is tested against a fake client of its own. **Neither side's tests can
-//! observe the other.** That the two agree about the wire is pinned ONLY by the
-//! live `weles-managed-gateway` verify stage (the plan's Step 6). If that stage
-//! is ever weakened, the wire contract has no proof at all — these tests do not
-//! substitute for it.
+//! observe the other**, so nothing in THIS crate can catch a drift between the
+//! two spellings.
+//!
+//! That the two agree end-to-end is pinned by the live `weles-managed-gateway`
+//! verify stage (the plan's Step 6) — today the only thing that pins it at all.
+//! A cheap `--fast` drift gate is also possible and is planned as its own step:
+//! `verifyctl` MAY import weles (the narrow verification-tooling exception), so
+//! a stage that sits above both can serialize weles's type and deserialize it
+//! into this crate's. That gate is not written yet; until it lands, the live
+//! stage is the whole proof, and weakening it leaves the wire contract with
+//! none.
 //!
 //! # The wire (as the server implements it)
 //!
@@ -72,6 +79,19 @@ use serde::{Deserialize, Serialize};
 /// asks again itself; the shipped callers fail closed instead.
 const RESOLVE_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Cap on the agent's answer, enforced as it arrives rather than after.
+///
+/// Same value and the same argument as the server's own `MAX_BODY_BYTES`
+/// (`weles::agentapi`): *a body cannot be trusted to be small just because
+/// every honest peer's is*. That argument is symmetric, and the code must be
+/// too — this half is SHIPPING code (`core/remote` links into every
+/// `cmd/*-svc`), so weles's trusted-local-operator threat model does not cover
+/// it. An unbounded read is capped only by [`RESOLVE_TIMEOUT`], which is five
+/// seconds of whatever a confused (or hostile) URL cares to send. Over the cap
+/// is [`ResolveError::Malformed`] — the answer is not this contract — never a
+/// truncated parse.
+const MAX_ANSWER_BYTES: usize = 8 * 1024;
+
 /// Which of a provider's addresses is being asked for.
 ///
 /// A provider can have both: `accounts` is an edge peer (9003) AND an HTTP
@@ -80,9 +100,14 @@ const RESOLVE_TIMEOUT: Duration = Duration::from_secs(5);
 ///
 /// This is deliberately a SECOND spelling of `weles::manifest::AddrKind`, which
 /// weles keeps as the single serde authority on its side. Zero-sharing forbids
-/// sharing the type across the two, and no test on either side can catch a
-/// drift between the spellings — only the live stage can. Change either at your
-/// peril.
+/// sharing the type across the two, so no test in either crate can catch a
+/// drift between the spellings; a `verifyctl` drift gate above both can, and is
+/// planned (see the module doc). Until then, change either at your peril —
+/// `lowercase` here vs weles's `lowercase` is currently UNFALSIFIABLE, because
+/// `Edge`/`Http` render identically under `lowercase` and `snake_case`. The
+/// first multi-word variant (`ServiceDef` already carries a `player_port`) is
+/// where a copied `snake_case` would silently diverge `"playeredge"` from
+/// `"player_edge"`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AddrKind {
@@ -213,19 +238,42 @@ async fn resolve_peer_within(
     // hang" a property of this function rather than of its caller.
     let client = reqwest::Client::builder()
         .timeout(budget)
+        // `reqwest::Client::builder()` defaults `auto_sys_proxy: true`, which
+        // reads `ALL_PROXY`/`HTTP_PROXY`/`http_proxy`/… at `build()` and has NO
+        // automatic loopback bypass (only an explicit `NO_PROXY` grants one).
+        // That would make "core/* never reads env" a lie told one dependency
+        // deep, and it is not hypothetical: `processctl`'s fleet env
+        // deliberately forwards `http_proxy`/`all_proxy` into every spawned
+        // process (and `weles::manifest::SERVICE_ENV_ALLOWLIST` copies that
+        // list — the `weles-fleet-parity` stage proves them equal), so the one
+        // env var that hijacks this call is plumbed into gateway-svc BY DESIGN.
+        // A local dev proxy would send the resolve question to whatever it
+        // pleases — including the gateway's own HTTP port — and any 200 whose
+        // body happens to carry `addrs` would hand back addresses the agent
+        // never authored. A wrong address is strictly worse than no address.
+        // Pinned by `a_proxy_in_the_env_cannot_hijack_the_resolve_question`.
+        .no_proxy()
+        // The house convention every other `reqwest::Client::builder()` in this
+        // repo follows (`modules/gateway/src/proxy.rs`, `tools/splitproof`,
+        // `modules/accounts`), and it is load-bearing HERE specifically: a
+        // followed `302` becomes a GET (reqwest drops the body), weles serves
+        // no `GET /resolve`, and the answer comes back `404 unknown_route` —
+        // i.e. "this agent does not speak the contract", a lie about the agent,
+        // which is the exact confusion `ErrorCode` exists to prevent. A `307`
+        // would be worse: it replays the body and yields `Ok(addrs)` from a
+        // host that is not the agent. Unfollowed, a 3xx carries no envelope and
+        // lands in `Malformed` — "not this contract", which is the truth.
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|error| ResolveError::Unreachable(format!("build http client: {error}")))?;
-    let response = client
+    let mut response = client
         .post(&endpoint)
         .json(&ResolveRequest { provider, kind })
         .send()
         .await
         .map_err(|error| ResolveError::Unreachable(format!("POST {endpoint}: {error}")))?;
     let status = response.status().as_u16();
-    let body = response
-        .bytes()
-        .await
-        .map_err(|error| ResolveError::Unreachable(format!("read {endpoint} answer: {error}")))?;
+    let body = read_capped(&mut response, &endpoint).await?;
     if (200..300).contains(&status) {
         let answer: ResolveResponse = serde_json::from_slice(&body).map_err(|error| {
             ResolveError::Malformed(format!("{status} body is not {{\"addrs\":[…]}}: {error}"))
@@ -242,6 +290,33 @@ async fn resolve_peer_within(
         ))
     })?;
     Err(ResolveError::Refused { status, code: envelope.code, message: envelope.error })
+}
+
+/// Reads the answer chunk-by-chunk, refusing at [`MAX_ANSWER_BYTES`] BEFORE the
+/// over-cap bytes are retained — the point of a cap is to not hold the thing
+/// it caps, so this can never be a `bytes()` followed by a length check.
+///
+/// A cap breach is [`ResolveError::Malformed`], not `Unreachable`: the peer did
+/// answer, and what it answered is not this contract (both bodies in it are one
+/// short name and a tiny list).
+async fn read_capped(
+    response: &mut reqwest::Response,
+    endpoint: &str,
+) -> Result<Vec<u8>, ResolveError> {
+    let mut body: Vec<u8> = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| ResolveError::Unreachable(format!("read {endpoint} answer: {error}")))?
+    {
+        if body.len() + chunk.len() > MAX_ANSWER_BYTES {
+            return Err(ResolveError::Malformed(format!(
+                "answer exceeds {MAX_ANSWER_BYTES} bytes"
+            )));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
 }
 
 #[cfg(test)]
