@@ -429,7 +429,9 @@ impl InvalidationPlane {
 /// Keeps one dedicated `PgListener` LISTENing on every registered channel. Never dies on
 /// a DB outage: each (re)connect backs off on failure. Every connect does a full refresh
 /// (the reconnect heal — PG queues no NOTIFY for a dead session), then fans each NOTIFY
-/// out to its channel's callbacks.
+/// out to its channel's callbacks. A lost connection (a terminated backend / dropped
+/// session) surfaces from `try_recv` as `Ok(None)` or `Err` and drives a reconnect +
+/// heal; see the inner-loop comment for why `try_recv` (not `recv`) is required on darwin.
 async fn listen(
     dsn: String,
     channels: Vec<String>,
@@ -445,6 +447,11 @@ async fn listen(
                 continue;
             }
         };
+        // We own reconnection via THIS outer loop (each connect re-LISTENs and refreshes),
+        // so disable `PgListener`'s transparent auto-reconnect — see the `try_recv` comment
+        // in the inner loop for why surfacing the loss to us (rather than sqlx silently
+        // healing it) is load-bearing on darwin.
+        listener.eager_reconnect(false);
         if let Err(err) = listener.listen_all(channels.iter().map(String::as_str)).await {
             tracing::error!(%err, "invalidation LISTEN failed");
             backoff(&mut stop).await;
@@ -454,10 +461,27 @@ async fn listen(
         // and this LISTEN): a full refresh catches anything missed while disconnected.
         ctx.refresh_all().await;
         loop {
+            // `try_recv` (not `recv`) is deliberate and platform-load-bearing. A terminated
+            // backend must surface as a reconnect trigger HERE so the outer loop re-LISTENs
+            // and `refresh_all`s (the heal). `recv` masks that: it internally loops
+            // `try_recv`, and when the connection drops it transparently reconnects and
+            // blocks on the fresh (healthy) session — so on darwin, where a graceful FIN
+            // from `pg_terminate_backend` surfaces only as an I/O close (never as a Linux
+            // FATAL `ErrorResponse` that `recv` would forward as `Err`), `recv` heals the
+            // socket silently and NEVER returns, and the reconnect-refresh never fires.
+            // `try_recv` instead returns `Ok(None)` on that I/O close (observed ~12ms on
+            // darwin) and `Err` on a Linux FATAL message; both break to the outer loop and
+            // refresh. A NOTIFY still wakes `try_recv` immediately, so happy-path latency is
+            // unchanged; the 30s poll remains the freshness floor for a silent (no-FIN)
+            // partition that neither path can observe promptly.
             tokio::select! {
                 _ = stop.changed() => return,
-                res = listener.recv() => match res {
-                    Ok(notif) => ctx.run_channel(notif.channel()).await,
+                res = listener.try_recv() => match res {
+                    Ok(Some(notif)) => ctx.run_channel(notif.channel()).await,
+                    Ok(None) => {
+                        tracing::warn!("invalidation listener connection lost; reconnecting");
+                        break; // reconnect via the outer loop (conn dropped on break)
+                    }
                     Err(err) => {
                         tracing::error!(%err, "invalidation listener recv failed");
                         break; // reconnect via the outer loop (conn dropped on break)
