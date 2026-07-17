@@ -9,29 +9,40 @@ and the places where a platform actually differs in kind, not just in syntax.
 
 | | Windows | Linux | macOS |
 | --- | --- | --- | --- |
-| Build the workspace (`cargo build`, `clippy`, unit tests) | yes | yes | yes, except the crates below |
-| Fleet rollouts (`devctl`, `verifyctl`, `splitproof`) | yes | yes | **no** |
-| `weles` supervisor | yes | yes | **no** (compile error — see Errata) |
+| Build the workspace (`cargo build`, `clippy`, unit tests) | yes | yes | yes |
+| Fleet rollouts (`devctl`, `verifyctl`, `splitproof`) | yes | yes | yes |
+| `weles` supervisor | yes | yes | yes |
+
+**macOS is a first-class rollout + verification platform (as of 2026-07-17).** The
+darwin port landed (plan: `docs/plans/2026-07-17-1601-macos-rollout-port-plan.md`);
+`cargo run -p verifyctl -- --fast` passes **16/16 blocking stages** on Apple Silicon,
+including `split-proof` (the 12-service split fleet) and `weles-managed-gateway`, and
+`devctl up monolith` + the smoke flow work. Provision Postgres once
+(`scripts/db-provision.sh`) and install `rustup` (the three targets self-install via
+`rust-toolchain.toml`); `verifyctl` self-installs `cargo-audit`/`cargo-fuzz`/nightly.
 
 `tools/processctl` — the owned-process containment layer every rollout tool spawns
-through — has exactly two backends: `tools/processctl/src/platform/linux.rs` and
-`.../windows.rs`, selected by `#[cfg(target_os = "linux")]` / `#[cfg(windows)]` in
-`platform/mod.rs`. There is no Darwin backend, so on macOS `spawn` and
-`PlatformChild` simply do not exist and the crate fails to compile (14 errors, all
-in `lock.rs`). `devctl`, `verifyctl`, `splitproof`, and `edgeca` have no errors of
-their own but fail to build on darwin regardless, because each depends on
-`processctl` (e.g. `tools/edgeca/Cargo.toml:14`). `weles` fails separately, with its
-own single error unrelated to processctl — see Errata below. **Six crates do not
-build on darwin: `processctl`, `weles`, `devctl`, `verifyctl`, `splitproof`,
-`edgeca`.**
+through — now has three backends: `platform/{linux,windows,darwin}.rs`. The darwin
+backend replaces Linux's guardian+pidfd with a kqueue supervisor
+(`EVFILT_PROC`/`NOTE_EXIT` + `EVFILT_SIGNAL`) and a suspended `posix_spawn`
+(`POSIX_SPAWN_START_SUSPENDED|SETPGROUP|CLOEXEC_DEFAULT`) for race-free identity
+capture — parity with the Linux ptrace exec-trap. The PID-reuse invariant transfers
+unchanged (it was always POSIX zombie pinning, never pidfd).
 
-**Consequence: macOS is a read/edit/review machine, not a verification machine.**
-Do not claim a rollout result from a Mac — run it on Windows or Linux.
+**Two containment backstops are structurally weaker on macOS — named, not hidden:**
+`PR_SET_PDEATHSIG` has no darwin equivalent, so a SIGKILLed guardian orphans its
+target; `PR_SET_CHILD_SUBREAPER` has none either, so a descendant that `setsid()`s
+out of the process group escapes `kill(-pgid)`. The primary paths (group kill,
+liveness-EOF on supervisor death) keep full strength; `[W2]`'s `forced_remainder`
+reports `forced_group` only (stronger than Windows, which hardcodes `false`; weaker
+than Linux). See the guardian module doc and the plan's Step 5/7 errata.
 
-Adding a Darwin backend to `processctl` (kqueue/`EVFILT_PROC` in place of Linux
-pidfd, process groups as the containment unit) is the single change that would
-unblock macOS rollouts. It is not currently planned — record it as a gap, don't
-half-build it.
+**Two items are proven only on Linux hardware, not from a Mac** (recorded in the plan
+under "Deferred to a Linux run"): splitproof `[W2]` as a Linux *runtime* assertion,
+and a unit test for the Linux `/proc` pgrp parse. Cross-target `cargo check` of
+`devctl`/`verifyctl`/`edgeca` also cannot run from a Mac (they pull `ring`, needing a
+cross-cc) — the `supported-targets` verify stage scopes its tripwire to the ring-free
+`processctl`/`weles` for exactly this reason.
 
 ## Command equivalents
 
@@ -100,37 +111,49 @@ These are real per-OS differences in what the code does, not spelling:
   `try_wait`, and both `shutdown` (`process.rs:261`) and `Drop` (`process.rs:368`)
   bail out once a status is latched, so the kill paths become unreachable once a
   reap has happened. pidfd is belt over an already-load-bearing pinning
-  guarantee, not the source of the guarantee. **Known gap:** `guardian.rs:245-250`
-  calls `target.wait()` (releasing the pid) and only then
-  `kill(-target_pid, SIGKILL)` at `:248` — outside the pinning guarantee. This is
-  narrow (needs a recycled pid that is also a group leader) but is a real bug on
-  Linux today; tracked as Step 7b in
-  `docs/plans/2026-07-17-1601-macos-rollout-port-plan.md`.
+  guarantee, not the source of the guarantee. On darwin the same containment is a
+  kqueue supervisor; the reused-pid safety is identical (zombie pinning, no pidfd).
+  The old reap-then-kill window at `guardian.rs:245-250` was fixed (Step 7b):
+  `forced_group` is now derived from enumerating the group *before* the reap, and
+  the group kill happens while the target's pid is still pinned — on both platforms.
 - **`run/rollout.lock`** — `weles` participates bit-compatibly with devctl/verifyctl
   **on Windows**: both implementations take a 1-byte `LockFileEx` lock at offset
   `1 << 63`, with an owner-only DACL on creation (`weles/src/lock.rs`,
   `tools/processctl/src/lock.rs:952`). The offset is a Windows-only device —
   `LockFileEx` is a mandatory byte-range lock and the metadata JSON lives at offset
   0 (`write_metadata`/`read_metadata` seek to 0), so the lock byte is parked out of
-  the way at the top of the address space. On Linux (and would-be darwin) the lock
-  is whole-file `flock(LOCK_EX | LOCK_NB)` (`tools/processctl/src/lock.rs:857`) —
-  there is no offset. "Bit-compatible" is a per-platform pact (both tools use the
-  same primitive on the same OS), not a cross-OS wire format.
+  the way at the top of the address space. On Linux AND darwin the lock is
+  whole-file `flock(LOCK_EX | LOCK_NB)` (`tools/processctl/src/lock.rs:857`, now
+  `cfg(unix)`) — there is no offset. "Bit-compatible" is a per-platform pact (both
+  tools use the same primitive on the same OS), not a cross-OS wire format.
 - **Local control endpoints** — a Windows named pipe with an owner-only DACL and
-  server-pid peer validation; on Linux, a filesystem-path Unix domain socket
+  server-pid peer validation; on Unix, a filesystem-path Unix domain socket
   (`weles/src/control.rs:548`: `remove_file` then `UnixListener::bind`, mode
-  `0o600`), with peer identity checked via `SO_PEERCRED` (`control.rs:577`) —
-  `devctl` follows the identical pattern (`tools/devctl/src/control.rs:211-285`).
-  `SO_PEERCRED` does not exist on darwin, and neither `weles` nor `devctl` has a
-  macOS control-endpoint transport today — this is the same darwin gap recorded
-  above, not a third platform actually covered. Both existing transports are
-  bounded so partial input cannot hang a rollout, per the trusted-local-operator
-  model in the dev-tooling scope rule.
+  `0o600`), with peer identity checked from the socket. Linux uses `SO_PEERCRED`
+  (one `ucred` struct carrying pid+uid); **darwin** uses two `getsockopt` calls at
+  `SOL_LOCAL` — `LOCAL_PEERCRED` → `xucred` (uid, no pid field) plus `LOCAL_PEERPID`
+  → the pid separately (`xucred` does not bundle the pid the way `ucred` does).
+  Both `weles` and `devctl` carry their own copy of this peer-cred helper (separate
+  fortresses — mirror, not shared). All transports are bounded so partial input
+  cannot hang a rollout, per the trusted-local-operator model in the dev-tooling
+  scope rule.
 
 ## Errata
 
-**2026-07-17** — four claims in this file were overstated or false. The first two
-were written from reading `cfg` gates, not from a compiler:
+**2026-07-17 (port landed)** — the entries below documented the *pre-port* state
+(macOS could not build the rollout tools / could not verify). That state is now
+history: the darwin port shipped and `verifyctl --fast` passes 16/16 on this M4 Max,
+so the "Where the workspace runs" table and the removed "read/edit/review machine"
+consequence have been rewritten to reflect it. The `weles` `E0061` and the six
+non-building crates below were all real *at the time* and were fixed by the port; the
+older corrections are kept for the record (a claim about compilation still requires a
+compiler, not a reading of `cfg` gates — the lesson that stands). One product bug the
+port surfaced along the way: an `AUTH_DDL` lock-order inversion in `modules/admin`
+that could deadlock a concurrent `migrate` against the login path — exposed by this
+machine's high test parallelism, not caused by it, and fixed.
+
+**2026-07-17 (pre-port corrections)** — four claims in this file were overstated or
+false. The first two were written from reading `cfg` gates, not from a compiler:
 
 - Earlier revisions of the table above and the "Consequence" line claimed `weles`
   "builds and supervises natively on macOS" because
