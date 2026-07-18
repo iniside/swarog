@@ -69,9 +69,8 @@
 //! and answers with addresses IT owns, which are not any default by construction.
 //! (The alternative — moving a peer's port in `weles::manifest` so it differs
 //! from the default — was rejected: it would diverge weles's fleet from
-//! processctl's for no operational reason, forcing a second exclusion in the
-//! `weles-fleet-parity` gate. The divergence belongs inside this stage, not in
-//! the fleet everything else runs.)
+//! processctl's for no operational reason. The divergence belongs inside this
+//! stage, not in the fleet everything else runs.)
 //!
 //! # What is asserted, and how each part can fail on its own
 //!

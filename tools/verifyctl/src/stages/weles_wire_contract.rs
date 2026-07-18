@@ -23,8 +23,8 @@
 //!
 //! `verifyctl` is the one place allowed to see both (`docs/reference/
 //! weles-design.md`, Non-negotiables: the shipping graph may never import weles;
-//! verification tooling is the narrow exception, already exercised by
-//! `weles-fleet-parity`). This stage is that gate. It is BLOCKING because a
+//! verification tooling is the narrow exception, also exercised by the other
+//! `weles-*` stages). This stage is that gate. It is BLOCKING because a
 //! drift here is a boot-time outage in `cmd/gateway-svc`, and it is pure
 //! in-memory (no DB, no rollout, no process), so it is cheap and safe under
 //! `--fast`.

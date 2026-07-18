@@ -118,7 +118,7 @@ impl Drop for FakeRun {
 /// reports FAIL. **That is the stage being right, not the harness being
 /// unlucky**, and it is not fixable from here:
 ///
-/// * every other stage in the manifest is either pure (`weles-fleet-parity`,
+/// * every other stage in the manifest is either pure (`weles-async-island`,
 ///   `weles-wire-contract`) or delegates its I/O to a binary the fixture stands
 ///   in for (`cargo`, `cargo-audit`, `splitproof`) — which is exactly why a fake
 ///   `splitproof` that exits 0 yields `split-proof | PASS`. This stage keeps its
@@ -129,7 +129,7 @@ impl Drop for FakeRun {
 ///   contract the stage exists to check;
 /// * a fixture/skip mode inside the stage is the green-SKIP-wearing-a-PASS shape
 ///   its own module doc refuses to copy, and it would hollow out the live proof
-///   that `weles-fleet-parity`'s managed-gateway exclusion is charged against.
+///   this managed-gateway stage exists to provide.
 ///
 /// The cost is paid, not absorbed. One permanently-red BLOCKING row means every
 /// fake run exits 1 whatever else happened, so:

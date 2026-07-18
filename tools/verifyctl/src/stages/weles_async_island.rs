@@ -2,13 +2,12 @@
 //! on weles's tokio island (`weles/src/agentapi.rs`) that weles CANNOT guard
 //! from inside itself.
 //!
-//! Both checks are here for the same structural reason, and it is the reason
-//! `weles_fleet_parity` exists too: **a cross-cutting claim about weles cannot
-//! live inside weles.** Zero-sharing means weles imports no workspace crate, so
-//! from its own test suite weles can see neither `core/app`'s tokio features nor
-//! `stages::csharp`'s port. verifyctl sees everything (it already depends on
-//! `weles` — see `weles_fleet_parity`), and cargo is a verify stage's house
-//! tool, so:
+//! Both checks are here for the same structural reason the other `weles-*`
+//! stages exist: **a cross-cutting claim about weles cannot live inside weles.**
+//! Zero-sharing means weles imports no workspace crate, so from its own test
+//! suite weles can see neither `core/app`'s tokio features nor `stages::csharp`'s
+//! port. verifyctl sees everything (it already depends on `weles`), and cargo is
+//! a verify stage's house tool, so:
 //!
 //! * no nested cargo — these `cargo tree` calls would otherwise run INSIDE
 //!   `cargo test --workspace` (weles is a workspace member), i.e. inside
