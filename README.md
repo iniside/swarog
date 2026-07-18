@@ -132,6 +132,7 @@ modules/        private impls — the fortresses
 demos/          dev demo SPA (monolith-only)
 tools/          devctl/verifyctl/processctl/splitproof, architecture checkers,
                 generators, edgeca, playercli
+weles/          standalone mini-orchestrator (restart-on-crash supervisor)
 experiments/    archived sketches (Go original, JVM explorations)
 ```
 
@@ -167,6 +168,26 @@ and `cargo run -p verifyctl -- --fast` passes all 16 blocking stages — includi
 weaker on Darwin (no `PR_SET_PDEATHSIG`/`PR_SET_CHILD_SUBREAPER` equivalents); the
 per-OS command spellings and the exact trade-offs are in
 [docs/reference/platform-notes.md](docs/reference/platform-notes.md).
+
+### weles — the standalone supervisor
+
+`devctl` is the dev harness; **`weles`** is a separate, zero-sharing
+mini-orchestrator for supervising the same fleet in a more production-shaped way.
+Its one differentiator over `devctl` is **per-service restart-on-crash with capped
+backoff** — `devctl up` tears the whole fleet down on a failure, `weles` restarts
+just the crashed process. It runs **native processes only** (no containers) and
+**never builds**: it executes binaries you first stage into `deploy/`.
+
+```sh
+weles deploy target/debug     # stage built binaries into deploy/
+weles up split                # or: weles up monolith  — supervise, restart-on-crash
+weles status
+weles down
+```
+
+It shares the same `run/rollout.lock` as `devctl`/`verifyctl`, so it can never run
+a fleet concurrently with them. See [`weles/README.md`](weles/README.md) and the
+[design doc](docs/reference/weles-design.md).
 
 ## Verify
 
