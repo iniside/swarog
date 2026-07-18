@@ -487,10 +487,12 @@ Unifying does not merge them — it forces operator cert issuance, storage, and
 revocation, and costs `weles down` its OS-verified caller just to stop a local
 fleet.
 
-**Known gap surfaced by that review:** the operator control endpoint supports
-Windows and Linux only, despite weles claiming macOS support — and macOS is the
-planned second machine. The fix is a native macOS UDS peer-cred implementation,
-not weakening local auth everywhere.
+**Gap surfaced by that review — closed by the macOS port (2026-07-17):** the
+operator control endpoint originally supported Windows and Linux only, despite
+weles claiming macOS support. The fix was a native macOS UDS peer-cred backend
+(`LOCAL_PEERCRED` + `LOCAL_PEERPID`, `weles/src/control.rs` under
+`#[cfg(target_os = "macos")]`), not weakening local auth everywhere. `weles up`
+and the `weles-managed-gateway` verify stage now run on macOS.
 
 ## Rejected — do not re-propose
 

@@ -160,7 +160,12 @@ command. Inspect or stop that fleet with the already-built direct binary:
 `target/debug/devctl status` / `down` on Unix (under the configured
 `CARGO_TARGET_DIR` when it differs).
 
-Rollouts do not run on macOS today — `processctl` has no Darwin backend — see
+Rollouts run natively on Windows, Linux, and macOS. The macOS (Apple Silicon)
+port landed 2026-07-17: `processctl` grew a kqueue/`posix_spawn` Darwin backend,
+and `cargo run -p verifyctl -- --fast` passes all 16 blocking stages — including the
+12-service split proof — on a Mac. Two containment backstops are structurally
+weaker on Darwin (no `PR_SET_PDEATHSIG`/`PR_SET_CHILD_SUBREAPER` equivalents); the
+per-OS command spellings and the exact trade-offs are in
 [docs/reference/platform-notes.md](docs/reference/platform-notes.md).
 
 ## Verify
