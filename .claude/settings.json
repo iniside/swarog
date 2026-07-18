@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Agent",
+        "hooks": [
+          {
+            "type": "prompt",
+            "statusMessage": "Sprawdzam typ agenta pod zadanie...",
+            "timeout": 30,
+            "prompt": "You are a hard guardrail for the swarog repo. A subagent is about to be dispatched via the Agent tool. Decide whether the chosen `subagent_type` fits the actual task, using ONLY these role rules:\n\n- general-purpose, Explore, Plan: research, code-search, reading, mapping an API surface, locating callers/wiring, planning. STRICTLY READ-ONLY. Must NEVER be dispatched to implement, fix, edit, refactor, or write code/files.\n- core-implementer: implementing / fixing / writing / refactoring backend Rust code (a fully-specified plan step or fix). This is the ONLY sanctioned lane for writing non-UI code — general-purpose is research-only and must not do it.\n- mockup-implementer: implementing or adjusting admin/UI views against a UILayout/*.dc.html mockup (templates, theme.css, a module's admin_content render).\n- core-reviewer: ONE adversarial review pass over a code diff (between commits) or over a plan.\n- proof-auditor: auditing whether tests actually exercise the previously-wrong branch, whether a verify gate really gates what it claims, or proving the code genuinely works rather than pretends to.\n\nJudge the `subagent_type` field in the call against the task described by its `description` and `prompt` fields.\n\nPASS (ok = true) when the subagent_type matches the task, OR when the intent is genuinely ambiguous — when in doubt, PASS. Do not block on style.\n\nFAIL (ok = false) ONLY on a clear, unambiguous mismatch, for example:\n- a read-only type (general-purpose, Explore, Plan) told to implement / fix / edit / write / refactor code;\n- core-implementer or mockup-implementer told to only research / search / read (no writing);\n- a code-diff or plan review sent to general-purpose instead of core-reviewer;\n- a test-honesty / proof / gate audit sent to general-purpose instead of proof-auditor;\n- backend code work sent to mockup-implementer, or UI/mockup work sent to core-implementer.\n\nWhen you FAIL, the reason MUST state the mismatch in one sentence AND name the correct subagent_type to use instead.\n\nThe pending Agent call:\n$ARGUMENTS"
+          }
+        ]
+      }
+    ]
+  }
+}
