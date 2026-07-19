@@ -14,6 +14,19 @@ serde_json.workspace = true
 rand.workspace = true
 sha2.workspace = true
 
+# Strict TOML parsing for the operator-authored `fleet.toml` (src/fleet_toml.rs).
+# Pinned LOCALLY, not via `.workspace = true`: there is no `toml` entry in the
+# workspace [dependencies] pin, and adding one would widen the build graph for
+# every crate. weles is zero-sharing — it may depend on external crates freely —
+# so a local pin is the narrower move. Parse-only: `default-features = false`
+# drops `display` (TOML serialization, which weles never does) and keeps the
+# `parse` + `serde` deserialization path the fleet loader needs.
+toml = { version = "1", default-features = false, features = [
+    "std",
+    "serde",
+    "parse",
+] }
+
 # The agent's async island (src/agentapi.rs) — a runtime on its own thread
 # hosting a loopback HTTP endpoint beside the sync supervisor.
 #

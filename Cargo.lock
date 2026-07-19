@@ -4759,6 +4759,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "tokio",
+ "toml",
  "windows-sys 0.59.0",
 ]
 

@@ -23,6 +23,7 @@
 pub mod agentapi;
 pub mod cli;
 pub mod control;
+pub mod fleet_toml;
 pub mod health;
 pub mod lock;
 pub mod manifest;

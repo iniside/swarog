@@ -454,7 +454,13 @@ pub fn monolith() -> ServiceDef {
 ///
 /// Every fleet process binds loopback (`PORT`/`EDGE_ADDR` are `:<port>`), so
 /// the host is `127.0.0.1` by construction, not per-service data.
-fn service_addr(def: &ServiceDef, kind: AddrKind) -> Option<String> {
+///
+/// `pub(crate)` so [`crate::fleet_toml::validate`] can ask "does this provider
+/// actually serve an address of this kind?" through the SAME formatter the
+/// composed env and `resolve` map use — a `None` here IS the validator's "peer
+/// requests a kind the provider has not got" error. Reusing it keeps one
+/// authority for address resolution rather than a second copy in the validator.
+pub(crate) fn service_addr(def: &ServiceDef, kind: AddrKind) -> Option<String> {
     let port = match kind {
         AddrKind::Edge => def.edge_port?,
         AddrKind::Http => def.http_port,
