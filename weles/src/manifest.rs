@@ -45,10 +45,16 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-/// Parent-process env vars a spawned service may inherit. Mirrors
-/// `tools/processctl/src/fleet.rs::SERVICE_ENV_ALLOWLIST` exactly — topology
-/// wiring and bind addresses are never inherited, only ambient
-/// interpreter/toolchain plumbing.
+/// The minimal, always-on floor of parent-process env vars every spawned
+/// process inherits — the ambient interpreter/toolchain plumbing a binary needs
+/// to exec at all. It carries NO domain meaning: topology wiring and bind
+/// addresses are never inherited here.
+///
+/// Anything beyond this floor reaches a service two domain-blind ways: its
+/// per-service `env` table, or a per-fleet PASSTHROUGH list naming env KEYS
+/// weles forwards from its OWN environment (threaded into
+/// [`compose_env_with_fleet`] and [`crate::prep::run_prepare`]). weles knows the
+/// key NAME, never its meaning.
 pub const SERVICE_ENV_ALLOWLIST: &[&str] = &[
     "COMSPEC",
     "HOME",
@@ -67,8 +73,8 @@ pub const SERVICE_ENV_ALLOWLIST: &[&str] = &[
 /// The loopback port weles's own agent HTTP endpoint ([`crate::agentapi`])
 /// binds. This file is the ONE place in weles allowed to write a port (see the
 /// module doc), which is why the agent's port lives here rather than beside the
-/// server that binds it: a runtime-minted port could not be handed to a service
-/// through the `'static` [`ServiceDef::env_extra`], and a second port-writing
+/// server that binds it: a runtime-minted port belongs to weles's derivation,
+/// not the operator's [`ServiceDef::env`] table, and a second port-writing
 /// site would be a second authority for "where does the fleet listen".
 ///
 /// Deliberately clear of every port claimed anywhere in this repo: the fleet's
@@ -100,10 +106,9 @@ pub const AGENT_PORT: u16 = 8300;
 pub const ORCHESTRATOR_URL_ENV: &str = "ORCHESTRATOR_URL";
 
 /// Where a managed service reaches the agent. Derived from [`AGENT_PORT`] — the
-/// one authority for the agent's port — rather than spelled as a literal in
-/// [`ServiceDef::env_extra`], which would be the same fact twice and free to
-/// drift the day the port moves. It is also why this cannot BE an `env_extra`
-/// entry: those are `&'static str` pairs, and this value is built from a number.
+/// one authority for the agent's port — rather than spelled as a literal in a
+/// service's [`ServiceDef::env`] table, which would be the same fact twice and
+/// free to drift the day the port moves.
 ///
 /// The host is `127.0.0.1` by the same construction [`service_addr`] relies on:
 /// [`crate::agentapi::AgentServer::bind`] binds loopback, so the URL handed to a
@@ -145,8 +150,8 @@ pub enum AddrKind {
 /// because they are one decision and a process makes it once.
 ///
 /// This is deliberately not `peers: &[…]` beside `managed: bool`: that pair can
-/// spell `managed: true` WITH peers, and [`compose_env`] would then hand a
-/// process both authorities — the addresses it resolves for itself AND an env
+/// spell `managed: true` WITH peers, and [`compose_env_with_fleet`] would then
+/// hand a process both authorities — the addresses it resolves for itself AND an env
 /// copy it never reads. An unread value is the worst kind: it drifts silently
 /// until someone believes it. Here that state cannot be written down, so no test
 /// has to forbid it (an earlier `managed_services_declare_no_peers` did exactly
@@ -156,17 +161,20 @@ pub enum AddrKind {
 /// — `Env` or `Agent(url)`, likewise two variants and no third. The two spellings
 /// are hand-copied (zero-sharing), which is fine: what must agree between them is
 /// the WIRE, not this shape.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+///
+/// Owned (no longer `Copy`): the peer list is parsed from the operator's
+/// `fleet.toml` into an owned `Vec`, not a `&'static` literal.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Addrs {
     /// TOLD, at spawn: `(env key, provider, kind)` per peer, each address
-    /// DERIVED in [`compose_env`] from that provider's own port field — so the
-    /// port declaration is the one authority for "where is X" and a port change
-    /// propagates to every consumer by construction.
+    /// DERIVED in [`compose_env_with_fleet`] from that provider's own port field
+    /// — so the port declaration is the one authority for "where is X" and a
+    /// port change propagates to every consumer by construction.
     ///
-    /// Never write an address literal here or in [`ServiceDef::env_extra`] —
-    /// that is the two-authorities drift this seam replaced.
-    Told(&'static [(&'static str, &'static str, AddrKind)]),
-    /// ASKS the agent, at boot: [`compose_env`] hands this process
+    /// Never write an address literal here or in [`ServiceDef::env`] — that is
+    /// the two-authorities drift this seam replaced.
+    Told(Vec<(String, String, AddrKind)>),
+    /// ASKS the agent, at boot: [`compose_env_with_fleet`] hands this process
     /// [`ORCHESTRATOR_URL_ENV`] (derived from [`AGENT_PORT`]) and NONE of the
     /// addresses above, and it resolves each for itself over
     /// [`crate::agentapi`]'s `resolve`.
@@ -181,8 +189,8 @@ pub enum Addrs {
 impl Addrs {
     /// The peer declarations, empty for a process that asks. Lets a sweep read
     /// "what is this told" uniformly; nothing may infer "not managed" from an
-    /// empty slice (`Told(&[])` — most services — is not `Asks`).
-    pub fn told(&self) -> &'static [(&'static str, &'static str, AddrKind)] {
+    /// empty slice (`Told(vec![])` — most services — is not `Asks`).
+    pub fn told(&self) -> &[(String, String, AddrKind)] {
         match self {
             Addrs::Told(peers) => peers,
             Addrs::Asks => &[],
@@ -190,13 +198,17 @@ impl Addrs {
     }
 }
 
-/// A single fleet process: its identity, ports, whether it owns a Postgres
-/// pool, how it learns its peers, and the env pairs unique to it (dev-mode
-/// opt-ins, own-process config).
+/// A single fleet process: its identity, ports, how it learns its peers, and
+/// the env pairs unique to it (dev-mode opt-ins, own-process config).
+///
+/// Owned (parsed from `fleet.toml`), and domain-BLIND: weles no longer knows
+/// which processes own a Postgres pool or how large. DSN, pool caps, CA paths
+/// and secrets are ordinary keys in `env` (or forwarded by passthrough), never
+/// weles concepts.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ServiceDef {
-    pub name: &'static str,
-    pub pkg: &'static str,
+    pub name: String,
+    pub pkg: String,
     /// The SHORT domain name this process is dialed by — the one name the
     /// wire and the service registry already use (`remote::Stub::new(
     /// "characters", …)`, which archcheck rule 17 text-scans; the
@@ -211,185 +223,162 @@ pub struct ServiceDef {
     /// EVERY domain in one process, so it is nameable as none of them. That
     /// is data, not an accident — it is why the monolith is structurally
     /// unresolvable as a peer.
-    pub provider: Option<&'static str>,
+    pub provider: Option<String>,
     pub http_port: u16,
     pub edge_port: Option<u16>,
     pub player_port: Option<u16>,
-    pub has_db: bool,
-    /// `DATABASE_POOL_MAX_CONNECTIONS` for this process. Ignored when
-    /// `has_db` is false (gateway-svc: pure-transport, no pool).
-    pub pool_max: u32,
     /// How this process learns where its peers are: TOLD the addresses at
     /// spawn, or ASKS the agent for them at boot. One field, because it is one
     /// decision — see [`Addrs`].
     pub addrs: Addrs,
-    /// Literal, address-free env: dev-mode opt-ins and this process's own
-    /// config (`TLS_MODE`, `PLAYER_EDGE_ADDR` — its own bind, not a peer's).
+    /// Literal, operator-authored env: dev-mode opt-ins, this process's own
+    /// config (`TLS_MODE`, `PLAYER_EDGE_ADDR` — its own bind, not a peer's), and
+    /// any opaque values weles is domain-blind to (`DATABASE_URL`,
+    /// `DATABASE_POOL_MAX_CONNECTIONS`, `EDGE_CA_CERT`/`EDGE_CA_KEY`).
     ///
-    /// Keys here are DISJOINT from [`Addrs::Told`] keys: `env_extra` is
-    /// applied last and would silently override a derived address (pinned by
+    /// Keys here are DISJOINT from [`Addrs::Told`] keys: `env` is applied last
+    /// and would silently override a derived address (pinned by
     /// `no_env_extra_key_shadows_a_derived_peer_key`).
-    pub env_extra: &'static [(&'static str, &'static str)],
+    pub env: BTreeMap<String, String>,
 }
 
-/// Runtime values only known at supervisor start (never hardcoded here):
-/// the local Postgres DSN and the mTLS CA material path.
-pub struct RuntimeInputs {
-    pub database_url: String,
-    pub ca_cert: PathBuf,
-    pub ca_key: PathBuf,
+/// Builds an owned env map from literal pairs (temporary Step-1 helper for the
+/// hardcoded fleets below, deleted with them in Step 4 once `fleet.toml`
+/// fixtures replace them).
+fn env_map(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+    pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
 }
 
-/// Per-DB-process pooled-connection cap in the split. Mirrors
-/// `tools/processctl/src/fleet.rs::SPLIT_SERVICE_POOL_MAX`.
-const SPLIT_SERVICE_POOL_MAX: u32 = 3;
-
-/// Pooled-connection cap for the monolith. Mirrors
-/// `tools/processctl/src/fleet.rs::MONOLITH_POOL_MAX`.
-const MONOLITH_POOL_MAX: u32 = 20;
+/// Builds an owned `Addrs::Told` from literal peer tuples (temporary Step-1
+/// helper, deleted with the hardcoded fleets in Step 4).
+fn told(peers: &[(&str, &str, AddrKind)]) -> Addrs {
+    Addrs::Told(peers.iter().map(|(k, p, kind)| (k.to_string(), p.to_string(), *kind)).collect())
+}
 
 /// The 12-process split fleet, in boot order. Each dependency (a peer a
 /// service dials over the internal mTLS edge) appears strictly earlier in
 /// this list than its dependent, matching
 /// `tools/processctl/src/fleet.rs::game_backend_fleet`'s `dependencies`
 /// constraint by construction.
+///
+/// TEMPORARY: this hardcoded table is deleted in Step 4 once
+/// `weles/fleet.split.toml` replaces it; it survives Step 1 only so
+/// `cargo build -p weles` stays green while the owned `ServiceDef` shape lands.
 pub fn split_fleet() -> Vec<ServiceDef> {
     vec![
         ServiceDef {
-            name: "accounts-svc",
-            pkg: "accounts-svc",
-            provider: Some("accounts"),
+            name: "accounts-svc".to_string(),
+            pkg: "accounts-svc".to_string(),
+            provider: Some("accounts".to_string()),
             http_port: 8084,
             edge_port: Some(9003),
             player_port: None,
-            has_db: true,
-            pool_max: SPLIT_SERVICE_POOL_MAX,
-            addrs: Addrs::Told(&[]),
-            env_extra: &[("ACCOUNTS_DEV_AUTH", "1")],
+            addrs: told(&[]),
+            env: env_map(&[("ACCOUNTS_DEV_AUTH", "1")]),
         },
         ServiceDef {
-            name: "apikeys-svc",
-            pkg: "apikeys-svc",
-            provider: Some("apikeys"),
+            name: "apikeys-svc".to_string(),
+            pkg: "apikeys-svc".to_string(),
+            provider: Some("apikeys".to_string()),
             http_port: 8091,
             edge_port: Some(9009),
             player_port: None,
-            has_db: true,
-            pool_max: SPLIT_SERVICE_POOL_MAX,
-            addrs: Addrs::Told(&[]),
-            env_extra: &[("APIKEYS_DEV_SEED", "1")],
+            addrs: told(&[]),
+            env: env_map(&[("APIKEYS_DEV_SEED", "1")]),
         },
         ServiceDef {
-            name: "audit-svc",
-            pkg: "audit-svc",
-            provider: Some("audit"),
+            name: "audit-svc".to_string(),
+            pkg: "audit-svc".to_string(),
+            provider: Some("audit".to_string()),
             http_port: 8086,
             edge_port: Some(9004),
             player_port: None,
-            has_db: true,
-            pool_max: SPLIT_SERVICE_POOL_MAX,
-            addrs: Addrs::Told(&[]),
-            env_extra: &[],
+            addrs: told(&[]),
+            env: env_map(&[]),
         },
         ServiceDef {
-            name: "scheduler-svc",
-            pkg: "scheduler-svc",
-            provider: Some("scheduler"),
+            name: "scheduler-svc".to_string(),
+            pkg: "scheduler-svc".to_string(),
+            provider: Some("scheduler".to_string()),
             http_port: 8087,
             edge_port: Some(9005),
             player_port: None,
-            has_db: true,
-            pool_max: SPLIT_SERVICE_POOL_MAX,
             // Deliberately NO SCHEDULER_ENABLED here — this manifest is the
             // Development flavor of tools/processctl/src/fleet.rs, which
             // only sets SCHEDULER_ENABLED under FleetFlavor::Proof.
-            addrs: Addrs::Told(&[]),
-            env_extra: &[],
+            addrs: told(&[]),
+            env: env_map(&[]),
         },
         ServiceDef {
-            name: "rating-svc",
-            pkg: "rating-svc",
-            provider: Some("rating"),
+            name: "rating-svc".to_string(),
+            pkg: "rating-svc".to_string(),
+            provider: Some("rating".to_string()),
             http_port: 8089,
             edge_port: Some(9007),
             player_port: None,
-            has_db: true,
-            pool_max: SPLIT_SERVICE_POOL_MAX,
-            addrs: Addrs::Told(&[]),
-            env_extra: &[],
+            addrs: told(&[]),
+            env: env_map(&[]),
         },
         ServiceDef {
-            name: "leaderboard-svc",
-            pkg: "leaderboard-svc",
-            provider: Some("leaderboard"),
+            name: "leaderboard-svc".to_string(),
+            pkg: "leaderboard-svc".to_string(),
+            provider: Some("leaderboard".to_string()),
             http_port: 8090,
             edge_port: Some(9008),
             player_port: None,
-            has_db: true,
-            pool_max: SPLIT_SERVICE_POOL_MAX,
-            addrs: Addrs::Told(&[]),
-            env_extra: &[],
+            addrs: told(&[]),
+            env: env_map(&[]),
         },
         ServiceDef {
-            name: "match-svc",
-            pkg: "match-svc",
-            provider: Some("match"),
+            name: "match-svc".to_string(),
+            pkg: "match-svc".to_string(),
+            provider: Some("match".to_string()),
             http_port: 8088,
             edge_port: Some(9006),
             player_port: None,
-            has_db: true,
-            pool_max: SPLIT_SERVICE_POOL_MAX,
-            addrs: Addrs::Told(&[("RATING_EDGE_ADDR", "rating", AddrKind::Edge)]),
-            env_extra: &[],
+            addrs: told(&[("RATING_EDGE_ADDR", "rating", AddrKind::Edge)]),
+            env: env_map(&[]),
         },
         ServiceDef {
-            name: "config-svc",
-            pkg: "config-svc",
-            provider: Some("config"),
+            name: "config-svc".to_string(),
+            pkg: "config-svc".to_string(),
+            provider: Some("config".to_string()),
             http_port: 8083,
             edge_port: Some(9002),
             player_port: None,
-            has_db: true,
-            pool_max: SPLIT_SERVICE_POOL_MAX,
-            addrs: Addrs::Told(&[]),
-            env_extra: &[],
+            addrs: told(&[]),
+            env: env_map(&[]),
         },
         ServiceDef {
-            name: "characters-svc",
-            pkg: "characters-svc",
-            provider: Some("characters"),
+            name: "characters-svc".to_string(),
+            pkg: "characters-svc".to_string(),
+            provider: Some("characters".to_string()),
             http_port: 8080,
             edge_port: Some(9000),
             player_port: None,
-            has_db: true,
-            pool_max: SPLIT_SERVICE_POOL_MAX,
-            addrs: Addrs::Told(&[("CONFIG_EDGE_ADDR", "config", AddrKind::Edge)]),
-            env_extra: &[],
+            addrs: told(&[("CONFIG_EDGE_ADDR", "config", AddrKind::Edge)]),
+            env: env_map(&[]),
         },
         ServiceDef {
-            name: "inventory-svc",
-            pkg: "inventory-svc",
-            provider: Some("inventory"),
+            name: "inventory-svc".to_string(),
+            pkg: "inventory-svc".to_string(),
+            provider: Some("inventory".to_string()),
             http_port: 8081,
             edge_port: Some(9001),
             player_port: None,
-            has_db: true,
-            pool_max: SPLIT_SERVICE_POOL_MAX,
-            addrs: Addrs::Told(&[
+            addrs: told(&[
                 ("CHARACTERS_EDGE_ADDR", "characters", AddrKind::Edge),
                 ("CONFIG_EDGE_ADDR", "config", AddrKind::Edge),
             ]),
-            env_extra: &[("INVENTORY_DEV_GRANT", "1")],
+            env: env_map(&[("INVENTORY_DEV_GRANT", "1")]),
         },
         ServiceDef {
-            name: "gateway-svc",
-            pkg: "gateway-svc",
-            provider: Some("gateway"),
+            name: "gateway-svc".to_string(),
+            pkg: "gateway-svc".to_string(),
+            provider: Some("gateway".to_string()),
             http_port: 8082,
             edge_port: None,
             player_port: Some(9100),
-            has_db: false,
-            pool_max: 0,
             // M1's first managed process, and the natural first: it calls
             // peers, and nobody calls it (it serves no edge), so it can start
             // resolving without forcing another service to move. Instead of
@@ -401,18 +390,16 @@ pub fn split_fleet() -> Vec<ServiceDef> {
             addrs: Addrs::Asks,
             // PLAYER_EDGE_ADDR is this process's OWN player-plane bind, not a
             // peer's address — it stays a literal.
-            env_extra: &[("PLAYER_EDGE_ADDR", ":9100"), ("TLS_MODE", "off")],
+            env: env_map(&[("PLAYER_EDGE_ADDR", ":9100"), ("TLS_MODE", "off")]),
         },
         ServiceDef {
-            name: "admin-svc",
-            pkg: "admin-svc",
-            provider: Some("admin"),
+            name: "admin-svc".to_string(),
+            pkg: "admin-svc".to_string(),
+            provider: Some("admin".to_string()),
             http_port: 8085,
             edge_port: None,
             player_port: None,
-            has_db: true,
-            pool_max: SPLIT_SERVICE_POOL_MAX,
-            addrs: Addrs::Told(&[
+            addrs: told(&[
                 ("CHARACTERS_EDGE_ADDR", "characters", AddrKind::Edge),
                 ("INVENTORY_EDGE_ADDR", "inventory", AddrKind::Edge),
                 ("CONFIG_EDGE_ADDR", "config", AddrKind::Edge),
@@ -421,29 +408,30 @@ pub fn split_fleet() -> Vec<ServiceDef> {
                 ("SCHEDULER_EDGE_ADDR", "scheduler", AddrKind::Edge),
                 ("APIKEYS_EDGE_ADDR", "apikeys", AddrKind::Edge),
             ]),
-            env_extra: &[
+            env: env_map(&[
                 ("ADMIN_COOKIE_SECURE", "0"),
                 ("TRUSTED_PROXY_CIDRS", "127.0.0.1/32"),
-            ],
+            ]),
         },
     ]
 }
 
 /// The single-process monolith topology (`cmd/server`, package `server`).
+///
+/// TEMPORARY: deleted in Step 4 with [`split_fleet`] once the `fleet.toml`
+/// fixtures replace both.
 pub fn monolith() -> ServiceDef {
     ServiceDef {
-        name: "server",
-        pkg: "server",
+        name: "server".to_string(),
+        pkg: "server".to_string(),
         provider: None,
         http_port: 8080,
         edge_port: None,
         player_port: Some(9100),
-        has_db: true,
-        pool_max: MONOLITH_POOL_MAX,
         // One process hosts every module: there are no peers to dial, so the
         // monolith is trivially free of derived addresses.
-        addrs: Addrs::Told(&[]),
-        env_extra: &[
+        addrs: told(&[]),
+        env: env_map(&[
             ("PLAYER_EDGE_ADDR", ":9100"),
             ("APIKEYS_DEV_SEED", "1"),
             ("ACCOUNTS_DEV_AUTH", "1"),
@@ -451,7 +439,7 @@ pub fn monolith() -> ServiceDef {
             ("TLS_MODE", "off"),
             ("ADMIN_COOKIE_SECURE", "0"),
             ("TRUSTED_PROXY_CIDRS", "127.0.0.1/32"),
-        ],
+        ]),
     }
 }
 
@@ -483,7 +471,7 @@ fn service_addr(def: &ServiceDef, kind: AddrKind) -> Option<String> {
 /// registration PANICs" convention: a wiring mistake is a loud boot failure,
 /// never a silently wrong address that surfaces as a peer that isn't there.
 fn peer_addr(fleet: &[ServiceDef], consumer: &str, provider: &str, kind: AddrKind) -> String {
-    let def = fleet.iter().find(|svc| svc.provider == Some(provider)).unwrap_or_else(|| {
+    let def = fleet.iter().find(|svc| svc.provider.as_deref() == Some(provider)).unwrap_or_else(|| {
         panic!(
             "fleet manifest: {consumer} declares peer {provider:?}, which no service in \
              this fleet provides"
@@ -535,7 +523,7 @@ pub struct PeerAddrs {
     /// `(provider, kind, addr)`. A Vec, not a map: multiple instances of one
     /// provider are the eventual shape, and at twelve services a scan is not a
     /// data structure worth having an opinion about.
-    entries: Vec<(&'static str, AddrKind, String)>,
+    entries: Vec<(String, AddrKind, String)>,
 }
 
 impl PeerAddrs {
@@ -553,14 +541,14 @@ impl PeerAddrs {
         for svc in fleet {
             // No short name ⇒ not resolvable as a peer. See the type doc: this
             // is the monolith, and it is data, not a special case.
-            let Some(provider) = svc.provider else { continue };
+            let Some(provider) = &svc.provider else { continue };
             // Only the kinds this service actually HAS: `service_addr` answers
             // `None` for Edge against `edge_port: None` (admin-svc), so no Edge
             // entry is ever created for it and the lookup 404s instead of
             // falling back to the HTTP port.
             for kind in [AddrKind::Edge, AddrKind::Http] {
                 if let Some(addr) = service_addr(svc, kind) {
-                    entries.push((provider, kind, addr));
+                    entries.push((provider.clone(), kind, addr));
                 }
             }
         }
@@ -579,58 +567,51 @@ impl PeerAddrs {
     pub fn lookup(&self, provider: &str, kind: AddrKind) -> Vec<String> {
         self.entries
             .iter()
-            .filter(|(name, entry_kind, _)| *name == provider && *entry_kind == kind)
+            .filter(|(name, entry_kind, _)| name.as_str() == provider && *entry_kind == kind)
             .map(|(_, _, addr)| addr.clone())
             .collect()
     }
 }
 
-/// [`compose_env`]'s core, resolving `svc`'s peers against an EXPLICIT fleet:
-/// peer addresses are a property of the topology being booted, so the caller
-/// that chose the topology passes the fleet it chose rather than this function
-/// re-deriving (and possibly disagreeing with) it. `supervisor::run_up` picks
-/// the defs by `Topology` and threads them here; the future `resolve` map is
+/// Builds `svc`'s full spawn environment, resolving its peers against an
+/// EXPLICIT fleet: peer addresses are a property of the topology being booted,
+/// so the caller that chose the fleet passes it rather than this function
+/// re-deriving (and possibly disagreeing with) it. The future `resolve` map is
 /// built from the same slice, so env and `resolve` cannot diverge.
 ///
-/// Taking a slice is also what makes the derivation exercisable with synthetic
-/// data (same shape as [`fleet_pg_budget`]) — in particular the
-/// previously-broken branch "a provider's port change reaches its consumers'
-/// env", which a `'static` real fleet cannot express.
+/// Composition ORDER (each layer overrides the one above it):
+/// 1. the always-on [`SERVICE_ENV_ALLOWLIST`] floor plus the per-fleet
+///    `passthrough` KEYS, both forwarded from weles's OWN environment (this is
+///    how opaque operator values — `DATABASE_URL`, `EDGE_CA_*`, secrets — reach
+///    a service without weles knowing their meaning);
+/// 2. `PORT`, and `EDGE_ADDR` for a service that serves an edge;
+/// 3. the peer addresses (TOLD) DERIVED from each provider's own port field, or
+///    `ORCHESTRATOR_URL` (ASKS);
+/// 4. the service's own `env` table LAST — so an operator-authored value always
+///    wins over anything synthesized above it.
+///
+/// weles injects NO `DATABASE_URL`/`EDGE_CA_*`/`DATABASE_POOL_MAX_CONNECTIONS`
+/// of its own: those are ordinary keys the operator supplies via `env` or
+/// `passthrough`, or they do not reach the service at all. That is the domain
+/// knowledge this function shed.
 pub(crate) fn compose_env_with_fleet(
     svc: &ServiceDef,
-    inputs: &RuntimeInputs,
+    passthrough: &[String],
     fleet: &[ServiceDef],
 ) -> BTreeMap<OsString, OsString> {
     let mut env: BTreeMap<OsString, OsString> = BTreeMap::new();
 
-    for key in SERVICE_ENV_ALLOWLIST {
+    // The always-on floor plus the operator's passthrough KEYS, forwarded from
+    // weles's own environment. weles knows the key NAME, never its meaning.
+    for key in SERVICE_ENV_ALLOWLIST.iter().copied().chain(passthrough.iter().map(String::as_str)) {
         if let Some(value) = std::env::var_os(key) {
-            env.insert(OsString::from(*key), value);
+            env.insert(OsString::from(key), value);
         }
     }
 
     env.insert(OsString::from("PORT"), OsString::from(format!(":{}", svc.http_port)));
     if let Some(port) = svc.edge_port {
         env.insert(OsString::from("EDGE_ADDR"), OsString::from(format!(":{port}")));
-    }
-
-    if svc.has_db {
-        env.insert(OsString::from("DATABASE_URL"), OsString::from(inputs.database_url.clone()));
-        env.insert(
-            OsString::from("DATABASE_POOL_MAX_CONNECTIONS"),
-            OsString::from(svc.pool_max.to_string()),
-        );
-        env.insert(OsString::from("EDGE_CA_CERT"), inputs.ca_cert.clone().into_os_string());
-        env.insert(OsString::from("EDGE_CA_KEY"), inputs.ca_key.clone().into_os_string());
-    } else if svc.name == "gateway-svc" {
-        // Pure-transport front door: no pool, but it still dials every peer
-        // over the internal mTLS edge, so it needs the CA material despite
-        // has_db == false. Verified against tools/processctl/src/fleet.rs
-        // game_backend_fleet's `gateway_env` (inserts EDGE_CA_CERT/EDGE_CA_KEY
-        // directly, never routes gateway through the DB-only `base()` helper
-        // that also injects DATABASE_POOL_MAX_CONNECTIONS).
-        env.insert(OsString::from("EDGE_CA_CERT"), inputs.ca_cert.clone().into_os_string());
-        env.insert(OsString::from("EDGE_CA_KEY"), inputs.ca_key.clone().into_os_string());
     }
 
     // One decision, one match: a process is TOLD its peers or ASKS for them,
@@ -641,12 +622,12 @@ pub(crate) fn compose_env_with_fleet(
     // `service_addr`. That shared derivation is why env and `resolve` cannot
     // disagree about the fleet; only the moment a service learns an address
     // differs.
-    match svc.addrs {
+    match &svc.addrs {
         Addrs::Told(peers) => {
             for (key, provider, kind) in peers {
                 env.insert(
-                    OsString::from(*key),
-                    OsString::from(peer_addr(fleet, svc.name, provider, *kind)),
+                    OsString::from(key),
+                    OsString::from(peer_addr(fleet, &svc.name, provider, *kind)),
                 );
             }
         }
@@ -655,51 +636,11 @@ pub(crate) fn compose_env_with_fleet(
         }
     }
 
-    for (key, value) in svc.env_extra {
-        env.insert(OsString::from(*key), OsString::from(*value));
+    for (key, value) in &svc.env {
+        env.insert(OsString::from(key), OsString::from(value));
     }
 
     env
-}
-
-/// Builds the full spawn environment for `svc`: parent-env allowlist, then
-/// `PORT`/`EDGE_ADDR`, then (if DB-backed, or gateway-svc which dials mTLS
-/// edges without owning a pool) `DATABASE_URL`/`DATABASE_POOL_MAX_CONNECTIONS`/
-/// `EDGE_CA_CERT`/`EDGE_CA_KEY`, then the `peers` addresses DERIVED from each
-/// provider's own port field, then `env_extra` last (so a service's own wiring
-/// always wins over anything synthesized above it).
-///
-/// Convenience for callers holding a def but not its fleet (the goldens,
-/// verifyctl's parity stage): `svc`'s peers resolve against the manifest
-/// `svc` ITSELF belongs to, found by identity — never against `split_fleet()`
-/// by assumption. A monolith-shaped def is therefore resolved against the
-/// monolith, where a split-only provider is absent and fails loudly instead of
-/// silently picking up a split address for a process that isn't running.
-///
-/// The supervisor does NOT use this: it knows the topology it chose and calls
-/// [`compose_env_with_fleet`] with that fleet.
-///
-/// PANICS if `svc` belongs to neither real manifest — a synthetic def has no
-/// discoverable fleet, so it must go through [`compose_env_with_fleet`].
-pub fn compose_env(svc: &ServiceDef, inputs: &RuntimeInputs) -> BTreeMap<OsString, OsString> {
-    compose_env_with_fleet(svc, inputs, &home_fleet(svc))
-}
-
-/// The real manifest `svc` is a member of, by `name`.
-fn home_fleet(svc: &ServiceDef) -> Vec<ServiceDef> {
-    let split = split_fleet();
-    if split.iter().any(|peer| peer.name == svc.name) {
-        return split;
-    }
-    let mono = monolith();
-    if svc.name == mono.name {
-        return vec![mono];
-    }
-    panic!(
-        "fleet manifest: {:?} belongs to neither split_fleet() nor monolith(); a synthetic \
-         def must resolve its peers through compose_env_with_fleet with an explicit fleet",
-        svc.name
-    )
 }
 
 /// Fleet-manifest errors. Kept local to `weles` (zero-sharing: never reuses
@@ -712,7 +653,6 @@ pub enum ManifestError {
     DiskDrift { missing_on_disk: Vec<String>, missing_in_manifest: Vec<String> },
     ReadDir { path: PathBuf, source: std::io::Error },
     ReadEntry { path: PathBuf, source: std::io::Error },
-    PoolBudgetExceeded { total: u32, budget: u32, breakdown: String },
 }
 
 impl std::fmt::Display for ManifestError {
@@ -733,12 +673,6 @@ impl std::fmt::Display for ManifestError {
             }
             ManifestError::ReadEntry { path, source } => {
                 write!(f, "read entry in service directory {}: {source}", path.display())
-            }
-            ManifestError::PoolBudgetExceeded { total, budget, breakdown } => {
-                write!(
-                    f,
-                    "fleet Postgres session reservation {total} exceeds budget {budget}\n{breakdown}"
-                )
             }
         }
     }
@@ -782,85 +716,6 @@ fn validate_names(names: impl IntoIterator<Item = String>) -> Result<(), Manifes
     } else {
         Err(ManifestError::DiskDrift { missing_on_disk, missing_in_manifest })
     }
-}
-
-/// Per-DB-process dedicated Postgres sessions held OUTSIDE the pool: both
-/// durable-event-plane and invalidation-plane are constructed in any process
-/// with a DB (DB ⇒ plane — see CLAUDE.md), so every DB-backed process
-/// reserves the delivery workers + the wake-up listener + the invalidation
-/// listener. Mirrors `tools/processctl/src/fleet.rs::PLANE_DEDICATED_SESSIONS`
-/// (`AE_WORKERS`(2) + `AE_WAKEUP_SESSIONS`(1) + `INVALIDATION_LISTEN_SESSIONS`(1)).
-const PLANE_DEDICATED_SESSIONS: u32 = 4;
-
-/// scheduler-svc's one dedicated per-fire connection, beyond the two planes.
-/// Mirrors `tools/processctl/src/fleet.rs::SCHEDULER_FIRE_SESSIONS`.
-const SCHEDULER_FIRE_SESSIONS: u32 = 1;
-
-/// Sessions reserved for dev tooling running ALONGSIDE the fleet (splitproof's
-/// own sqlx pool, devctl/adminctl seeding, eventctl, asyncevents poison-burst
-/// headroom, slack). Mirrors `tools/processctl/src/fleet.rs::HARNESS_RESERVE`
-/// (itemized there; not re-derived here).
-const HARNESS_RESERVE: u32 = 10;
-
-/// Usable Postgres sessions the whole fleet + monolith must fit within.
-/// Mirrors `tools/processctl/src/fleet.rs::PG_SESSION_BUDGET`
-/// (`max_connections`(100) - `superuser_reserved_connections`(3) -
-/// `HARNESS_RESERVE`).
-pub const PG_SESSION_BUDGET: u32 = 97 - HARNESS_RESERVE;
-
-/// Per-process (pool_max, dedicated) reservation for a manifest entry. Split
-/// out as its own function so the arithmetic is unit-testable independent of
-/// the real fleet data (see `manifest_tests`'s synthetic-numbers case proving
-/// the dedicated term matters, not just the pool sum).
-pub fn service_pg_budget(svc: &ServiceDef) -> (u32, u32) {
-    if !svc.has_db {
-        // Pure-transport front door: no pool, no plane.
-        return (0, 0);
-    }
-    let mut dedicated = PLANE_DEDICATED_SESSIONS;
-    // The scheduler's dedicated per-fire connection is charged wherever the
-    // scheduler module runs: its own svc in the split, the "server" package
-    // in the monolith (one process hosts every module).
-    if svc.name == "scheduler-svc" || svc.pkg == "server" {
-        dedicated += SCHEDULER_FIRE_SESSIONS;
-    }
-    (svc.pool_max, dedicated)
-}
-
-/// The one budget authority: sums pool_max + dedicated across `services`
-/// and fails with the itemized breakdown if the total exceeds
-/// [`PG_SESSION_BUDGET`]. Full fleet.rs arithmetic — NOT a pool-only
-/// shortcut: the dedicated term (plane workers + listeners, scheduler's
-/// fire connection) is charged too. Takes a slice so the failing branch is
-/// exercisable with a synthetic fleet in tests (the public wrapper feeds
-/// the real manifests).
-fn fleet_pg_budget(services: &[ServiceDef]) -> Result<(), ManifestError> {
-    let mut breakdown = String::new();
-    let mut total = 0u32;
-    for svc in services {
-        let (pool, dedicated) = service_pg_budget(svc);
-        total += pool + dedicated;
-        breakdown.push_str(&format!(
-            "  {name}: pool={pool} dedicated={dedicated}\n",
-            name = svc.name
-        ));
-    }
-    if total > PG_SESSION_BUDGET {
-        return Err(ManifestError::PoolBudgetExceeded {
-            total,
-            budget: PG_SESSION_BUDGET,
-            breakdown,
-        });
-    }
-    Ok(())
-}
-
-/// Validates BOTH real manifests against [`PG_SESSION_BUDGET`]: the split
-/// fleet as one deployment, the monolith as another (each topology runs
-/// alone against the shared local Postgres).
-pub fn validate_pg_budget() -> Result<(), ManifestError> {
-    fleet_pg_budget(&split_fleet())?;
-    fleet_pg_budget(&[monolith()])
 }
 
 #[cfg(test)]

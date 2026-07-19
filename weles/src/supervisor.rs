@@ -36,7 +36,7 @@ use crate::cli::Topology;
 use crate::control::ControlServer;
 use crate::health::{self, ProbeResult};
 use crate::lock;
-use crate::manifest::{self, RuntimeInputs, ServiceDef};
+use crate::manifest::{self, ServiceDef};
 use crate::platform::{self, Outcome, OwnedProc, SpawnSpec};
 use crate::prep;
 use crate::state::{self, FleetState, FleetStatus, ProcessIdentity, Readiness, ServiceState, Status};
@@ -722,31 +722,27 @@ pub fn run_up(topology: Topology) -> Result<()> {
     // Then: every binary this run needs must already be staged in
     // <root>/deploy — weles never builds. Dies here (per-line missing list)
     // before any further validation if the deploy dir is incomplete.
-    let mut packages: Vec<&str> = match topology {
-        Topology::Split => manifest::split_fleet().iter().map(|svc| svc.pkg).collect(),
+    let mut packages: Vec<String> = match topology {
+        Topology::Split => manifest::split_fleet().iter().map(|svc| svc.pkg.clone()).collect(),
         Topology::Monolith => vec![manifest::monolith().pkg],
     };
-    packages.extend(["adminctl", "edgeca"]);
+    packages.extend(["adminctl".to_string(), "edgeca".to_string()]);
     packages.sort_unstable();
     packages.dedup();
     prep::validate_binaries(&layout, &packages)
         .context("validate deployed fleet binaries")?;
 
-    manifest::validate_pg_budget().context("validate fleet Postgres session budget")?;
-
-    let ca = prep::mint_ca(&layout)?;
-    let database_url = prep::database_url();
-    prep::seed_admin(&layout, &database_url)?;
-
-    let inputs = RuntimeInputs {
-        database_url,
-        ca_cert: ca.cert,
-        ca_key: ca.key,
-    };
+    // Step 3 will call `prep::run_prepare(fleet.prepare, &layout)` here — the
+    // slot the old `mint_ca`/`database_url`/`seed_admin` block held. Step 1 has
+    // no `fleet.toml` to source those hooks from yet, so nothing runs between
+    // binary validation and the spawn loop.
     let defs = match topology {
         Topology::Split => manifest::split_fleet(),
         Topology::Monolith => vec![manifest::monolith()],
     };
+    // Passthrough env KEYS are sourced from `fleet.toml` in Step 3; empty until
+    // then. `compose_env_with_fleet` forwards each from weles's own environment.
+    let passthrough: Vec<String> = Vec::new();
     // `defs` outlives the move into `fleet`: it IS the booting topology, and
     // every peer address handed to a service is derived from it (never from
     // `split_fleet()` re-derived deeper down, which would silently hand out
@@ -839,7 +835,7 @@ pub fn run_up(topology: Topology) -> Result<()> {
     let ports: Vec<u16> = fleet.iter().map(|svc| svc.def.http_port).collect();
     let poller = ReadinessPoller::spawn(reporter.shared(), Arc::clone(&readiness), ports);
 
-    let spawn_ctx = SpawnCtx { layout: &layout, inputs: &inputs, defs: &defs };
+    let spawn_ctx = SpawnCtx { layout: &layout, passthrough: &passthrough, defs: &defs };
     let run_result = boot(&spawn_ctx, &mut fleet, &reporter, &fleet_stop);
     if run_result.is_ok() && !stop_requested(&fleet_stop) {
         reporter.set_status(FleetStatus::Running);
@@ -923,7 +919,9 @@ fn control_endpoint_path(layout: &prep::Layout, run_id: &str) -> PathBuf {
 /// separately invites a caller that has `inputs` but re-derives the fleet.
 struct SpawnCtx<'a> {
     layout: &'a prep::Layout,
-    inputs: &'a RuntimeInputs,
+    /// Env KEYS forwarded from weles's own environment into every service
+    /// (per-fleet passthrough; sourced from `fleet.toml` in Step 3).
+    passthrough: &'a [String],
     defs: &'a [ServiceDef],
 }
 
@@ -939,13 +937,13 @@ fn boot(
         if stop_requested(fleet_stop) {
             return Ok(());
         }
-        let name = fleet[index].def.name;
+        let name = fleet[index].def.name.clone();
         let http_port = fleet[index].def.http_port;
 
         // First spawn only: a listener on the port is a stale process from a
         // previous hung run. Never re-checked on a crash respawn — the
         // just-killed incarnation's TIME_WAIT would false-positive.
-        health::ensure_no_stale_listener(name, http_port)?;
+        health::ensure_no_stale_listener(&name, http_port)?;
 
         let proc = spawn_service(ctx, &fleet[index].def, false)
             .with_context(|| format!("spawn {name}"))?;
@@ -1107,7 +1105,7 @@ fn apply(
     now: Instant,
 ) -> bool {
     let layout = ctx.layout;
-    let name = svc.def.name;
+    let name = svc.def.name.clone();
     match directive {
         Directive::Stay(new_phase) => {
             if new_phase == phase {
@@ -1208,7 +1206,7 @@ fn teardown(fleet: &mut [Supervised], reporter: &Reporter, terminal: FleetStatus
     reporter.checkpoint(fleet);
     let mut clean_all = true;
     for index in (0..fleet.len()).rev() {
-        let name = fleet[index].def.name;
+        let name = fleet[index].def.name.clone();
         match fleet[index].proc.take() {
             Some(mut proc) => {
                 // A service that died during its OWN boot gate (boot bailed with
@@ -1300,11 +1298,11 @@ fn spawn_service(
     let stdout = open(layout.run_dir.join(format!("{}.out.log", def.name)))?;
     let stderr = open(layout.run_dir.join(format!("{}.err.log", def.name)))?;
     platform::spawn(SpawnSpec {
-        program: layout.binary(def.pkg),
+        program: layout.binary(&def.pkg),
         args: Vec::new(),
         // Peers resolve against `defs` — the topology run_up actually chose —
         // not a re-derived split_fleet().
-        env: manifest::compose_env_with_fleet(def, ctx.inputs, ctx.defs),
+        env: manifest::compose_env_with_fleet(def, ctx.passthrough, ctx.defs),
         cwd: Some(layout.root.clone()),
         stdout: Some(stdout),
         stderr: Some(stderr),

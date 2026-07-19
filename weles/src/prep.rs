@@ -67,15 +67,12 @@ use sha2::{Digest, Sha256};
 
 use crate::platform::{self, SpawnSpec};
 
-/// Dev-mode Postgres DSN — matches `tools/devctl/src/supervisor.rs::DEFAULT_DB`
-/// exactly (the same local dev role/db/password `devctl` uses).
-const DEFAULT_DATABASE_URL: &str =
-    "postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable";
-
 const HELPER_SHUTDOWN_GRACE: Duration = Duration::from_secs(0);
 const HELPER_SHUTDOWN_FORCE: Duration = Duration::from_secs(5);
-const MINT_CA_TIMEOUT: Duration = Duration::from_secs(30);
-const SEED_ADMIN_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// The per-command deadline applied to a [`PrepareCmd`] that declares none
+/// (`timeout_secs == 0`). Matches the old fixed `mint_ca`/`seed_admin` 30s.
+const DEFAULT_PREPARE_TIMEOUT_SECS: u64 = 30;
 
 /// The workspace's on-disk layout as weles cares about it: the repo root, its
 /// own `run/weles` scratch dir (created on discovery), `bin_dir` —
@@ -227,24 +224,24 @@ pub struct Artifact {
     pub bytes: u64,
 }
 
-/// Resolves `database_url()` — `DATABASE_URL` env if set, else the same dev
-/// default `devctl` uses (`tools/devctl/src/supervisor.rs::DEFAULT_DB`).
-pub fn database_url() -> String {
-    std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DATABASE_URL.to_string())
-}
-
 /// The full set of binaries weles stages and may execute: the union of the
 /// split and monolith fleet packages plus the two prep helpers (`edgeca`,
 /// `adminctl`). Deterministic, deduped, sorted — the authority for `weles
 /// deploy`'s copy set.
-pub fn deploy_packages() -> Vec<&'static str> {
-    let mut pkgs: Vec<&'static str> = crate::manifest::split_fleet()
+///
+/// TEMPORARY (Step 1): still derived from the hardcoded
+/// [`crate::manifest::split_fleet`]/[`crate::manifest::monolith`]. Step 3
+/// re-derives it from the deployed `fleet.toml` (its `[[service]]` pkgs ∪ its
+/// `[[prepare]]` runs) so `edgeca`/`adminctl` stay staged because a hook
+/// references them, not because they are hardcoded.
+pub fn deploy_packages() -> Vec<String> {
+    let mut pkgs: Vec<String> = crate::manifest::split_fleet()
         .iter()
-        .map(|svc| svc.pkg)
+        .map(|svc| svc.pkg.clone())
         .collect();
     pkgs.push(crate::manifest::monolith().pkg);
-    pkgs.push("edgeca");
-    pkgs.push("adminctl");
+    pkgs.push("edgeca".to_string());
+    pkgs.push("adminctl".to_string());
     pkgs.sort_unstable();
     pkgs.dedup();
     pkgs
@@ -256,7 +253,7 @@ pub fn deploy_packages() -> Vec<&'static str> {
 /// weles executes only deployed artifacts and never builds. Called right after
 /// the rollout lock, before any other validation, so a run with an incomplete
 /// deploy dir dies pre-work instead of half-booting.
-pub fn validate_binaries(layout: &Layout, packages: &[&str]) -> Result<()> {
+pub fn validate_binaries(layout: &Layout, packages: &[String]) -> Result<()> {
     let mut missing: Vec<PathBuf> = Vec::new();
     for pkg in packages {
         let path = layout.binary(pkg);
@@ -361,7 +358,7 @@ pub fn deploy(layout: &Layout, src_dir: &Path) -> Result<()> {
             Ok((sha256, bytes)) => {
                 println!("weles: {pkg}: copied -> {} (sha256 {sha256})", dst.display());
                 artifacts.push(Artifact {
-                    pkg: pkg.to_string(),
+                    pkg: pkg.clone(),
                     file,
                     sha256,
                     bytes,
@@ -608,122 +605,116 @@ fn prune_stale_generations(bin_dir: &Path, run_dir: &Path, protected: &[u64]) ->
     removed
 }
 
-/// The internal mTLS CA cert/key pair minted for the fleet.
-pub struct CaPaths {
-    pub cert: PathBuf,
-    pub key: PathBuf,
+/// One provisioning command the fleet declares to run — in declared order —
+/// BEFORE any long-lived service is spawned. weles knows the command NAME (a
+/// staged package to exec), never its MEANING: `edgeca` mints the internal-edge
+/// CA, `adminctl create-user` seeds the dev admin, and weles treats both the
+/// same way — "spawn a process I was told to, with a deadline, and abort the
+/// whole `up` if it fails." This is the same domain-blind philosophy as the
+/// passthrough env list.
+///
+/// A plain runtime struct in Step 1 (the supervisor builds it directly). The
+/// serde/TOML derive that lets the fleet AUTHOR one of these — as a `[[prepare]]`
+/// table — lands in Step 2.
+#[derive(Clone, Debug)]
+pub struct PrepareCmd {
+    /// Label + the `run_dir/<name>.{out,err}.log` stem.
+    pub name: String,
+    /// The staged package to execute (`layout.binary(&run)`).
+    pub run: String,
+    /// Verbatim argv handed to the command.
+    pub args: Vec<String>,
+    /// Literal env pairs, applied LAST — so an explicit value wins over a
+    /// forwarded `passthrough` key of the same name.
+    pub env: BTreeMap<String, String>,
+    /// Env KEYS forwarded from weles's OWN environment (e.g. `DATABASE_URL` for
+    /// the admin seed). weles knows the key name, never its meaning.
+    pub passthrough: Vec<String>,
+    /// Per-command deadline in seconds; `0` uses
+    /// [`DEFAULT_PREPARE_TIMEOUT_SECS`].
+    pub timeout_secs: u64,
 }
 
-/// Mints the fleet's internal-edge CA material at `run/weles/edge-ca.{crt,key}`
-/// via the deployed `edgeca` binary, unless BOTH files already exist (idempotent
-/// re-up — a second `weles up` must not rotate the CA under a running fleet).
-/// 30s deadline; logs to `run_dir/edgeca.{out,err}.log`; verifies both files
-/// exist after the helper exits successfully.
-pub fn mint_ca(layout: &Layout) -> Result<CaPaths> {
-    let cert = layout.run_dir.join("edge-ca.crt");
-    let key = layout.run_dir.join("edge-ca.key");
-
-    if cert.is_file() && key.is_file() {
-        return Ok(CaPaths { cert, key });
+/// Runs each [`PrepareCmd`] in `commands`, in declared order, BEFORE the fleet
+/// is spawned, aborting the whole `up` on the FIRST nonzero exit or timeout
+/// (nothing is spawned past a failed hook).
+///
+/// Each command runs with `cwd = layout.root` (so a relative output path like
+/// `run/weles/edge-ca.crt` resolves exactly as a spawned service's would),
+/// stdout/stderr captured to `run_dir/<name>.{out,err}.log`, and an environment
+/// built from the always-on [`crate::manifest::SERVICE_ENV_ALLOWLIST`] floor,
+/// plus the `passthrough` keys forwarded from weles's own environment, plus the
+/// literal `env` pairs applied last.
+///
+/// NO idempotency / file-existence short-circuit (the reversal recorded in the
+/// plan's B1): a command that must tolerate re-running — `edgeca` regenerates
+/// the CA each `up`, `adminctl create-user` upserts — is the fleet author's
+/// responsibility. weles just runs what it was told, every `up`.
+///
+/// Defined in Step 1; the supervisor wires it into `run_up` (in the slot the old
+/// `mint_ca`/`seed_admin` block held) in Step 3.
+pub fn run_prepare(commands: &[PrepareCmd], layout: &Layout) -> Result<()> {
+    for cmd in commands {
+        run_one_prepare(cmd, layout)
+            .with_context(|| format!("prepare command {:?}", cmd.name))?;
     }
+    Ok(())
+}
 
-    let edgeca = layout.binary("edgeca");
-    let args: Vec<OsString> = vec![
-        OsString::from("--cert"),
-        cert.clone().into_os_string(),
-        OsString::from("--key"),
-        key.clone().into_os_string(),
-    ];
+/// Runs a single [`PrepareCmd`] to completion (or its deadline). Factored out so
+/// `run_prepare`'s per-command `with_context` names the offender uniformly.
+fn run_one_prepare(cmd: &PrepareCmd, layout: &Layout) -> Result<()> {
+    let program = layout.binary(&cmd.run);
+    let args: Vec<OsString> = cmd.args.iter().map(OsString::from).collect();
 
-    let out_path = layout.run_dir.join("edgeca.out.log");
-    let err_path = layout.run_dir.join("edgeca.err.log");
-    let stdout = File::create(&out_path)
-        .with_context(|| format!("create {}", out_path.display()))?;
-    let stderr = File::create(&err_path)
-        .with_context(|| format!("create {}", err_path.display()))?;
-
-    let mut proc = platform::spawn(SpawnSpec {
-        program: edgeca,
-        args,
-        env: filtered_env(crate::manifest::SERVICE_ENV_ALLOWLIST),
-        cwd: Some(layout.root.clone()),
-        stdout: Some(stdout),
-        stderr: Some(stderr),
-    })
-    .context("spawn edgeca")?;
-
-    match wait_for_helper(&mut proc, MINT_CA_TIMEOUT)? {
-        Some(status) if status.success() => {}
-        Some(status) => bail!(
-            "edgeca exited with status {:?} — see {} / {}",
-            status.code(),
-            out_path.display(),
-            err_path.display()
-        ),
-        None => {
-            return Err(helper_timeout_failure(
-                &mut proc,
-                "edgeca",
-                MINT_CA_TIMEOUT,
-                &out_path,
-                &err_path,
-            ))
+    // Floor first, then forwarded passthrough keys, then the literal env last —
+    // so an explicit `env` value always wins over a forwarded one.
+    let mut env = filtered_env(crate::manifest::SERVICE_ENV_ALLOWLIST);
+    for key in &cmd.passthrough {
+        if let Some(value) = lookup_env(key) {
+            env.insert(OsString::from(key), value);
         }
     }
-
-    if !cert.is_file() || !key.is_file() {
-        bail!(
-            "edgeca reported success but did not produce both {} and {}",
-            cert.display(),
-            key.display()
-        );
+    for (key, value) in &cmd.env {
+        env.insert(OsString::from(key), OsString::from(value));
     }
 
-    Ok(CaPaths { cert, key })
-}
-
-/// Seeds (or password-resets) the dev admin login `admin`/`admin` via the
-/// deployed `adminctl` binary. Password crosses ONLY via `ADMINCTL_PASSWORD` env
-/// — never argv (house rule). 30s deadline; logs to
-/// `run_dir/adminctl.{out,err}.log`; a nonzero exit is an error naming the
-/// log paths.
-pub fn seed_admin(layout: &Layout, database_url: &str) -> Result<()> {
-    let adminctl = layout.binary("adminctl");
-    let args: Vec<OsString> = vec![OsString::from("create-user"), OsString::from("admin")];
-
-    let mut env = filtered_env(crate::manifest::SERVICE_ENV_ALLOWLIST);
-    env.insert(OsString::from("DATABASE_URL"), OsString::from(database_url));
-    env.insert(OsString::from("ADMINCTL_PASSWORD"), OsString::from("admin"));
-
-    let out_path = layout.run_dir.join("adminctl.out.log");
-    let err_path = layout.run_dir.join("adminctl.err.log");
+    let out_path = layout.run_dir.join(format!("{}.out.log", cmd.name));
+    let err_path = layout.run_dir.join(format!("{}.err.log", cmd.name));
     let stdout = File::create(&out_path)
         .with_context(|| format!("create {}", out_path.display()))?;
     let stderr = File::create(&err_path)
         .with_context(|| format!("create {}", err_path.display()))?;
 
     let mut proc = platform::spawn(SpawnSpec {
-        program: adminctl,
+        program,
         args,
         env,
         cwd: Some(layout.root.clone()),
         stdout: Some(stdout),
         stderr: Some(stderr),
     })
-    .context("spawn adminctl create-user")?;
+    .with_context(|| format!("spawn prepare command {:?} ({})", cmd.name, cmd.run))?;
 
-    match wait_for_helper(&mut proc, SEED_ADMIN_TIMEOUT)? {
+    let timeout = Duration::from_secs(if cmd.timeout_secs == 0 {
+        DEFAULT_PREPARE_TIMEOUT_SECS
+    } else {
+        cmd.timeout_secs
+    });
+
+    match wait_for_helper(&mut proc, timeout)? {
         Some(status) if status.success() => Ok(()),
         Some(status) => bail!(
-            "adminctl create-user exited with status {:?} — see {} / {}",
+            "prepare command {:?} exited with status {:?} — see {} / {}",
+            cmd.name,
             status.code(),
             out_path.display(),
             err_path.display()
         ),
         None => Err(helper_timeout_failure(
             &mut proc,
-            "adminctl create-user",
-            SEED_ADMIN_TIMEOUT,
+            &cmd.name,
+            timeout,
             &out_path,
             &err_path,
         )),
@@ -750,8 +741,8 @@ pub fn wait_for_helper(
     }
 }
 
-/// The shared timeout branch for every transient helper (`mint_ca`,
-/// `seed_admin`): forcibly stops the still-running helper (0s grace / 5s
+/// The shared timeout branch for every transient helper (a [`PrepareCmd`] via
+/// [`run_prepare`]): forcibly stops the still-running helper (0s grace / 5s
 /// force — it already blew its deadline) and produces the operator-facing
 /// error naming BOTH log paths. Public so the integration test in
 /// `tests/prep.rs` can pin the branch: the error names the logs AND the
