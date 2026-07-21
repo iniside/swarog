@@ -56,6 +56,20 @@
 //! after ALL module `init`s — eagerly calls [`FrontDoor::build_table`] once, turning
 //! any such collision into a loud startup failure in BOTH topologies. The lazy path
 //! then rebuilds without re-checking (validation has already passed).
+//!
+//! ## D2 routing-as-data (managed `cmd/gateway-svc`) — the dynamic table
+//! A dedicated front-door process hosts no provider module, so its slots carry NO
+//! `Operation`s: there is nothing to build a route from at compile time. When the
+//! composition root calls [`Gateway::with_describe_routing`], the [`FrontDoor`] instead
+//! holds a SWAPPABLE table ([`TableCell::Dynamic`]) that a `start`-driven loop rebuilds
+//! from each peer's runtime `__describe` manifest (`opsapi::databind` turns every
+//! `OpManifest` into an `Operation`+`OpBinding`), re-fetched on [`DESCRIBE_REFRESH_INTERVAL`]
+//! so a peer that was DOWN at boot is routed once it comes up. The first pass runs
+//! synchronously in `start` (routes ready before serving; a collision across
+//! describe-contributed peers fails startup loudly via the SAME `build_from_parts`
+//! authority), a describe FETCH failure is tolerated (error-keeps-last per peer). The
+//! module stays topology-blind — the composition root decides the mode, exactly as it
+//! decides [`Gateway::with_player_edge`]. The monolith/standalone path above is UNCHANGED.
 
 mod backend;
 pub mod conformance;
@@ -65,7 +79,7 @@ mod verifier;
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex, OnceLock, Weak};
+use std::sync::{Arc, Mutex, OnceLock, RwLock, Weak};
 use std::time::Duration;
 
 use axum::body::Body;
@@ -104,6 +118,14 @@ const MAX_BODY_BYTES: usize = 1 << 20;
 /// and override it via [`Gateway::with_admission_budget`]; the module never reads env.
 const DEFAULT_ADMISSION_BUDGET: Duration = Duration::from_millis(5000);
 
+/// How often the describe-driven route table (D2, managed `cmd/gateway-svc`) re-fetches
+/// each peer's `__describe` manifest and rebuilds itself. Mirrors `remote`'s
+/// `POOL_REFRESH_INTERVAL` (5s) cadence: frequent enough that a peer that was DOWN at boot
+/// (or a describe change) is picked up within seconds without restarting the front door, but
+/// not per-request. A core-leaf constant (never reads env — Hard Constraint 1/5); this is
+/// dev-fleet scaffolding, so a fixed value is sufficient.
+const DESCRIBE_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
+
 // ---------------------------------------------------------------------------
 // Module
 // ---------------------------------------------------------------------------
@@ -141,6 +163,14 @@ pub struct Gateway {
     /// `None` (the [`Gateway::new`] default) leaves the [`FrontDoor`] on
     /// [`DEFAULT_ADMISSION_BUDGET`]. Topology/env lives in `cmd/*`, never read here.
     admission_budget: Option<Duration>,
+    /// D2 routing-as-data: when set (by the managed `cmd/gateway-svc` via
+    /// [`Gateway::with_describe_routing`]), the route table is NOT built from the process
+    /// slots (which carry no `Operation`s in that process) but from each peer's runtime
+    /// `__describe` manifest, re-fetched on [`DESCRIBE_REFRESH_INTERVAL`]. The module stays
+    /// topology-blind: the composition root decides this exactly as it decides
+    /// [`Gateway::with_player_edge`]/passthroughs — the module never reads env. `false` (the
+    /// default) is the monolith/standalone lazy-from-slots path, UNCHANGED.
+    describe_routing: bool,
     /// The [`FrontDoor`] built and mounted in `init`, stored so `start` can eagerly
     /// validate the route table (a collision then fails startup, not the first
     /// request). Interior-mutable because `Module` phases take `&self`; set exactly
@@ -160,6 +190,7 @@ impl Gateway {
             player_edge: None,
             passthroughs: Vec::new(),
             admission_budget: None,
+            describe_routing: false,
             front_door: OnceLock::new(),
         }
     }
@@ -173,8 +204,21 @@ impl Gateway {
             player_edge: None,
             passthroughs: Vec::new(),
             admission_budget: None,
+            describe_routing: false,
             front_door: OnceLock::new(),
         }
+    }
+
+    /// Switches this gateway to D2 routing-as-data (builder-style, cmd-injected like
+    /// [`Gateway::with_player_edge`]): the route table is built from each peer's runtime
+    /// `__describe` manifest instead of the process slots, and re-fetched on
+    /// [`DESCRIBE_REFRESH_INTERVAL`] so a peer that was DOWN at boot is routed once it comes
+    /// up. The managed `cmd/gateway-svc` calls this; the monolith/standalone never does (its
+    /// modules contribute `Operation`s to the slots directly). The module stays
+    /// topology-blind — it does not decide the mode, the composition root does.
+    pub fn with_describe_routing(mut self) -> Self {
+        self.describe_routing = true;
+        self
     }
 
     /// Overrides the API-key verifier — bypasses the `init`-time resolution of the
@@ -258,6 +302,12 @@ impl Module for Gateway {
         if let Some(budget) = self.admission_budget {
             front_door = front_door.with_admission_budget(budget);
         }
+        if self.describe_routing {
+            // D2: the table is swapped in by the `start`-driven describe refresh, not built
+            // lazily from the (op-less) slots. Seeded empty → un-routable (404) until the
+            // first successful describe fetch installs real routes (fail-closed cold start).
+            front_door = front_door.into_dynamic_routing();
+        }
         let front_door = Arc::new(front_door);
         ctx.mount(front_door.router());
         if let Some(shared) = &self.player_edge {
@@ -275,12 +325,30 @@ impl Module for Gateway {
     /// gateway-svc), instead of a silent last-write-wins hybrid discovered on the
     /// first request. The built table is discarded; the [`FrontDoor`] rebuilds it
     /// lazily on first request (validation has passed by then).
-    async fn start(&self, _ctx: &Context) -> anyhow::Result<()> {
+    async fn start(&self, ctx: &Context) -> anyhow::Result<()> {
         let front_door = self
             .front_door
             .get()
-            .expect("gateway: init runs before start and sets the FrontDoor");
-        front_door.build_table()?;
+            .expect("gateway: init runs before start and sets the FrontDoor")
+            .clone();
+        if self.describe_routing {
+            // D2 managed path: the route table comes from each peer's runtime `__describe`,
+            // not the slots. The peer address SET per provider is the `PEER_SLOT` the
+            // composition root's `remote::Stub`s contributed (present by now — start runs
+            // after every module's init). Run one refresh SYNCHRONOUSLY so routes are ready
+            // before serving AND so a collision across describe-contributed entries fails
+            // startup loudly (build error propagates); a peer merely DOWN at boot is tolerated
+            // (its routes are simply absent, picked up by the loop when it comes up). Then
+            // spawn the periodic re-fetch.
+            let peers: Vec<opsapi::PeerAddr> = ctx.slots().contributions(opsapi::PEER_SLOT);
+            let mut router = DescribeRouter::new(front_door, peers, production_describe_fetcher());
+            router.refresh_once().await?;
+            router.spawn();
+        } else {
+            // Monolith/standalone: eager validation of the slot-built table (a collision is a
+            // loud startup failure, not a first-request surprise). UNCHANGED.
+            front_door.build_table()?;
+        }
         Ok(())
     }
 }
@@ -304,7 +372,10 @@ pub struct FrontDoor {
     /// (default [`DEFAULT_ADMISSION_BUDGET`], overridden from
     /// `CREDENTIAL_ADMISSION_TIMEOUT_MS` via [`Gateway::with_admission_budget`]).
     admission_budget: Duration,
-    table: OnceLock<Arc<RouteTable>>,
+    /// The route table, in one of two modes (see [`TableCell`]): built ONCE lazily from the
+    /// process slots (monolith/standalone), or an externally-refreshed swappable table
+    /// (managed describe gateway, D2).
+    table: TableCell,
     /// The HTTP reverse-proxy passthrough for non-operation routes (`/admin`,
     /// `/accounts/epic`), built from the routes the composition root wired via
     /// [`Gateway::with_passthrough`]. Empty when nothing is configured, so an
@@ -329,7 +400,7 @@ impl FrontDoor {
             verifier,
             key_verifier,
             admission_budget: DEFAULT_ADMISSION_BUDGET,
-            table: OnceLock::new(),
+            table: TableCell::Slots(OnceLock::new()),
             proxy: proxy::ProxyTable::from_routes(passthroughs),
         }
     }
@@ -343,17 +414,47 @@ impl FrontDoor {
         self
     }
 
+    /// Switches the table to the D2 dynamic mode (builder-style): a swappable
+    /// [`TableCell::Dynamic`] the `start`-driven describe refresh rebuilds, seeded with an
+    /// EMPTY table so requests before the first fetch are un-routable (404) rather than
+    /// reading the (op-less) slots. The lazy-from-slots build is never used in this mode.
+    fn into_dynamic_routing(mut self) -> FrontDoor {
+        let empty = Arc::new(
+            RouteTable::build_from_parts(Vec::new(), Vec::new(), Vec::new(), Vec::new())
+                .expect("empty route table cannot collide"),
+        );
+        self.table = TableCell::Dynamic(RwLock::new(empty));
+        self
+    }
+
+    /// Swaps in a freshly-built route table (D2 describe refresh). A no-op on a
+    /// [`TableCell::Slots`] front door — the monolith/standalone table is immutable once
+    /// built, so a stray call cannot corrupt it.
+    fn install_table(&self, table: Arc<RouteTable>) {
+        if let TableCell::Dynamic(cell) = &self.table {
+            *cell.write().unwrap() = table;
+        }
+    }
+
     /// The route table, built from the slots on first access. By first-request time
     /// every module's `init` (where `OpSet`s are contributed) has completed AND
     /// [`Gateway::start`] has already validated the same slots via [`build_table`],
     /// so the lazy build here cannot surface a NEW collision — hence the `expect`.
     ///
     /// [`build_table`]: FrontDoor::build_table
-    fn table(&self) -> &Arc<RouteTable> {
-        self.table.get_or_init(|| {
-            self.build_table()
-                .expect("route table already validated in Gateway::start")
-        })
+    fn table(&self) -> Arc<RouteTable> {
+        match &self.table {
+            // Monolith/standalone: build once from the slots (validated in `Gateway::start`).
+            TableCell::Slots(cell) => cell
+                .get_or_init(|| {
+                    self.build_table()
+                        .expect("route table already validated in Gateway::start")
+                })
+                .clone(),
+            // Managed describe gateway: whatever the last successful refresh installed (seeded
+            // empty until the first fetch). Never held across an await — cloned out here.
+            TableCell::Dynamic(cell) => cell.read().unwrap().clone(),
+        }
     }
 
     /// Builds the route table from the current slots, failing on any collision (see
@@ -654,11 +755,27 @@ impl RouteTable {
     /// different wiring bug and is skipped rather than bound to an undecodable route
     /// (mirrors Go's `buildOpsMux`).
     fn build(slots: &Slots) -> anyhow::Result<RouteTable> {
-        let operations: Vec<Operation> = slots.contributions(opsapi::SLOT);
-        let bindings: Vec<OpBinding> = slots.contributions(opsapi::BINDING_SLOT);
-        let locals: Vec<opsapi::LocalOp> = slots.contributions(opsapi::LOCAL_SLOT);
-        let peer_addrs: Vec<opsapi::PeerAddr> = slots.contributions(opsapi::PEER_SLOT);
+        RouteTable::build_from_parts(
+            slots.contributions(opsapi::SLOT),
+            slots.contributions(opsapi::BINDING_SLOT),
+            slots.contributions(opsapi::LOCAL_SLOT),
+            slots.contributions(opsapi::PEER_SLOT),
+        )
+    }
 
+    /// Assembles the table from the explicit contribution vectors, FAILING on any collision
+    /// (the shared authority both the slot-built path — [`RouteTable::build`] — and the D2
+    /// describe-built path ([`build_describe_table`]) run through, so the collision-`bail!`
+    /// fires identically no matter where the `Operation`s came from). The describe path
+    /// passes `locals` empty (every stub-fronted op is Remote) and rebuilds this on EVERY
+    /// re-fetch, so a duplicated method across describe-contributed peers is caught on each
+    /// pass, not only at boot.
+    fn build_from_parts(
+        operations: Vec<Operation>,
+        bindings: Vec<OpBinding>,
+        locals: Vec<opsapi::LocalOp>,
+        peer_addrs: Vec<opsapi::PeerAddr>,
+    ) -> anyhow::Result<RouteTable> {
         let mut binding_by_method: HashMap<String, OpBinding> = HashMap::new();
         for b in bindings {
             if binding_by_method.contains_key(&b.method) {
@@ -887,6 +1004,179 @@ impl RouteTable {
         let lock = Arc::new(tokio::sync::Mutex::new(()));
         flights.insert(provider.to_string(), Arc::downgrade(&lock));
         lock
+    }
+}
+
+// ---------------------------------------------------------------------------
+// TableCell — the two route-table storage modes
+// ---------------------------------------------------------------------------
+
+/// How a [`FrontDoor`] stores its route table. Two disjoint modes so the monolith path is
+/// untouched while the managed describe gateway (D2) gets a refreshable table:
+///
+/// * [`TableCell::Slots`] — built ONCE lazily from the process contribution slots
+///   (`opsapi::SLOT`/…) on first access, then immutable. The monolith and every standalone
+///   domain svc use this; `Gateway::start` validates it eagerly. UNCHANGED from before D2.
+/// * [`TableCell::Dynamic`] — a swappable `Arc<RouteTable>` an external refresh loop (the
+///   `start`-driven describe re-fetch) rebuilds on each successful pass. Read out (cloned)
+///   per request; the `RwLock` is never held across an await.
+enum TableCell {
+    Slots(OnceLock<Arc<RouteTable>>),
+    Dynamic(RwLock<Arc<RouteTable>>),
+}
+
+// ---------------------------------------------------------------------------
+// DescribeRouter — the D2 periodic describe re-fetch driving the dynamic table
+// ---------------------------------------------------------------------------
+
+/// Fetches one peer's `__describe` manifest given its provider name and address SET. Injected
+/// so the refresh loop is testable with an in-process fake (production dials the real edge via
+/// [`production_describe_fetcher`]).
+type DescribeFuture = std::pin::Pin<
+    Box<dyn std::future::Future<Output = Result<opsapi::DescribeManifest, opsapi::Error>> + Send>,
+>;
+type DescribeFetcher = Arc<dyn Fn(String, Vec<String>) -> DescribeFuture + Send + Sync>;
+
+/// The production [`DescribeFetcher`]: builds (and reuses) one self-healing `remote::Pool`
+/// per provider over its address set and calls `remote::describe` on it. A persistent per-
+/// provider caller is what makes the "peer DOWN at boot, UP later" property work — the Pool
+/// reconnects internally, so a later refresh's describe succeeds without rebuilding anything.
+fn production_describe_fetcher() -> DescribeFetcher {
+    let callers: Arc<Mutex<HashMap<String, Arc<dyn Caller>>>> = Arc::new(Mutex::new(HashMap::new()));
+    Arc::new(move |provider: String, addrs: Vec<String>| {
+        let callers = callers.clone();
+        Box::pin(async move {
+            // Reuse this provider's caller across refreshes; build it once on first sight.
+            let caller = {
+                let mut map = callers.lock().unwrap();
+                map.entry(provider.clone())
+                    .or_insert_with(|| {
+                        let list: remote::PeerListResolver = {
+                            let addrs = addrs.clone();
+                            Arc::new(move || {
+                                let addrs = addrs.clone();
+                                Box::pin(async move { Ok(addrs.clone()) })
+                            })
+                        };
+                        Arc::new(remote::Pool::new(list)) as Arc<dyn Caller>
+                    })
+                    .clone()
+            };
+            remote::describe(caller.as_ref()).await
+        })
+    })
+}
+
+/// Builds a route table PURELY from describe data (no compile-time `<name>rpc` import): each
+/// `OpManifest` becomes an `Operation` + `OpBinding` via `opsapi::databind`, and each fetched
+/// provider contributes its address SET as a `PeerAddr`. `locals` is empty — every route here
+/// is Remote (dispatched to the owning peer). Returns the SAME collision `Err` as the
+/// slot-built path (via `build_from_parts`), so a duplicated method across peers is loud.
+fn build_describe_table(
+    fetched: &HashMap<String, (Vec<String>, opsapi::DescribeManifest)>,
+) -> anyhow::Result<RouteTable> {
+    let mut operations: Vec<Operation> = Vec::new();
+    let mut bindings: Vec<OpBinding> = Vec::new();
+    let mut peer_addrs: Vec<opsapi::PeerAddr> = Vec::new();
+    for (provider, (addrs, manifest)) in fetched {
+        for m in &manifest.ops {
+            operations.push(opsapi::databind::operation(m));
+            bindings.push(opsapi::databind::binding(m));
+        }
+        peer_addrs.push(opsapi::PeerAddr {
+            provider: provider.clone(),
+            addrs: addrs.clone(),
+        });
+    }
+    RouteTable::build_from_parts(operations, bindings, Vec::new(), peer_addrs)
+}
+
+/// Drives the D2 describe-driven route table: on each pass it re-fetches every peer's
+/// `__describe` (error-keeps-last per peer — a transient describe failure keeps that peer's
+/// last-known routes, exactly like `remote::Pool::refresh` keeps its last instance set on a
+/// resolver error), rebuilds the table, and swaps it into the [`FrontDoor`]. Built once in
+/// `Gateway::start`, its first pass run synchronously (so routes are ready + a collision fails
+/// startup), then [`DescribeRouter::spawn`] runs the periodic loop.
+struct DescribeRouter {
+    front: Arc<FrontDoor>,
+    peers: Vec<opsapi::PeerAddr>,
+    fetch: DescribeFetcher,
+    /// Last-known-good manifest per provider (provider → (addrs, manifest)). Only successful
+    /// fetches update it; a failed fetch leaves the prior entry, so the rebuilt table keeps
+    /// that peer's routes until the next success (error-keeps-last).
+    last_known: HashMap<String, (Vec<String>, opsapi::DescribeManifest)>,
+    /// The `last_known` snapshot the CURRENTLY-installed table was built from (`None` until the
+    /// first build). A pass whose `last_known` is unchanged skips the rebuild+swap entirely —
+    /// so in steady state (describe stable) the installed table (and its permanent per-provider
+    /// dispatch `Pool`s + round-robin cursors, the C2 no-evict invariant) survives untouched;
+    /// only an actual describe change (a peer appearing, an op added/removed) rebuilds.
+    last_built: Option<HashMap<String, (Vec<String>, opsapi::DescribeManifest)>>,
+}
+
+impl DescribeRouter {
+    fn new(front: Arc<FrontDoor>, peers: Vec<opsapi::PeerAddr>, fetch: DescribeFetcher) -> Self {
+        DescribeRouter {
+            front,
+            peers,
+            fetch,
+            last_known: HashMap::new(),
+            last_built: None,
+        }
+    }
+
+    /// One re-fetch pass: fetch each peer's describe (keep-last on failure), rebuild the table
+    /// from all last-known manifests, and swap it in. A describe FETCH failure is tolerated
+    /// (logged, that peer keeps its prior routes / stays absent if never seen). A BUILD failure
+    /// (a method collision across describe-contributed peers) is returned as `Err` so the
+    /// synchronous first pass can fail startup loudly; the periodic loop logs it and keeps the
+    /// last good table (no swap).
+    async fn refresh_once(&mut self) -> anyhow::Result<()> {
+        for p in &self.peers {
+            match (self.fetch)(p.provider.clone(), p.addrs.clone()).await {
+                Ok(manifest) => {
+                    self.last_known
+                        .insert(p.provider.clone(), (p.addrs.clone(), manifest));
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        provider = %p.provider,
+                        error = %e,
+                        "gateway: describe fetch failed; keeping this peer's last-known routes"
+                    );
+                }
+            }
+        }
+        // Nothing changed since the installed table was built → keep it (and its permanent
+        // pools/cursors). `last_built` is `None` on the first pass, so the initial build (and
+        // its collision check) always runs.
+        if self.last_built.as_ref() == Some(&self.last_known) {
+            return Ok(());
+        }
+        let table = build_describe_table(&self.last_known)?;
+        self.front.install_table(Arc::new(table));
+        self.last_built = Some(self.last_known.clone());
+        Ok(())
+    }
+
+    /// Spawns the periodic re-fetch loop on the [`DESCRIBE_REFRESH_INTERVAL`] cadence. A build
+    /// collision on a later pass is logged and skips the swap (keep-last) — it cannot retro-
+    /// actively fail an already-serving process, but it never installs a corrupt table either.
+    fn spawn(mut self) {
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(DESCRIBE_REFRESH_INTERVAL);
+            // The first tick fires immediately; skip it — the synchronous `refresh_once` in
+            // `Gateway::start` already ran one pass before serving began.
+            ticker.tick().await;
+            loop {
+                ticker.tick().await;
+                if let Err(e) = self.refresh_once().await {
+                    tracing::error!(
+                        error = %e,
+                        "gateway: describe route rebuild failed (collision); keeping last table"
+                    );
+                }
+            }
+        });
     }
 }
 

@@ -3,9 +3,12 @@
 //! plane — the plane is app-owned and exists only where there is a DB (DB ⇒ plane);
 //! durable events live in the shared Postgres log and are pulled svc-side, bypassing
 //! the front door entirely. It hosts
-//! NO provider module, only `remote::Stub`s for `characters`, `inventory` and
-//! `accounts`, so EVERY op it fronts resolves `BackendKind::Remote` and is dialed
-//! over the mTLS edge to the owning peer. The `accounts` stub is MANDATORY (Step 6):
+//! NO provider module, only `remote::Stub`s (characters, inventory, accounts, apikeys,
+//! match, leaderboard), so EVERY op it fronts resolves `BackendKind::Remote` and is dialed
+//! over the mTLS edge to the owning peer. Under D2 the route table is built from each peer's
+//! runtime `__describe` (routing-as-data), so the stubs contribute only their PEER_SLOT
+//! address set — except accounts/apikeys, which also provide their sync capability client.
+//! The `accounts` stub is MANDATORY (Step 6):
 //! its factory provides the `accounts.sessions` edge client the gateway's verifier
 //! resolves at init — real bearer verification against accounts-svc, no `dev-`
 //! tokens (absent the capability the gateway fails startup unless
@@ -86,12 +89,14 @@ async fn main() -> anyhow::Result<()> {
     // `listen`s the same handle after Build — this IS the QUIC player front door.
     let player = Arc::new(Mutex::new(edge::PlayerServer::new()));
 
-    // No provider modules: `Stub`s stand in for both `characters` and `inventory`, so
-    // this process hosts no schema and every op dispatches Remote over the edge.
-    // `remote` is generic (Step 4): this composition root injects each provider's
-    // swap closures (`<name>rpc::remote_factories()`) explicitly, so `remote` names no
-    // provider. It reaches the two `<name>rpc` glue crates (sanctioned for `cmd/*`,
-    // rule 5) but never the provider IMPL crates.
+    // No provider modules: `Stub`s stand in for every fronted provider, so this process
+    // hosts no schema and every op dispatches Remote over the edge. `remote` is generic
+    // (Step 4): this composition root injects each provider's swap closures explicitly, so
+    // `remote` names no provider. Under D2 the pure-HTTP providers pass NO factories (their
+    // routes arrive via each peer's runtime `__describe`, not a compile-time import); only
+    // `accountsrpc`/`apikeysrpc::provide_factories()` are reached — for the Sessions/Keys
+    // sync CAPABILITY clients (never routes), sanctioned for `cmd/*` (rule 5), never the
+    // provider IMPL crates.
     //
     // Peer edge addresses and passthrough origins are resolved HERE (the composition
     // root owns topology), never read inside the module: `/admin` → admin-svc,

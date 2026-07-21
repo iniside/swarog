@@ -22,12 +22,12 @@ lifecycle = { workspace = true }
 metrics = { workspace = true }
 gateway = { workspace = true }
 remote = { workspace = true }
-charactersrpc = { workspace = true }
-inventoryrpc = { workspace = true }
+# D2 routing-as-data: the pure-HTTP providers' routes arrive at RUNTIME via each peer's
+# `__describe` manifest, so this binary imports NO `charactersrpc`/`inventoryrpc`/`matchrpc`/
+# `leaderboardrpc` glue. Only accounts/apikeys keep a glue dep — for their sync CAPABILITY
+# client (`provide_factories`), NOT routes.
 accountsrpc = { workspace = true }
 apikeysrpc = { workspace = true }
-matchrpc = { workspace = true }
-leaderboardrpc = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync"] }
 # Pins the process-global crypto provider to ring at main start (admin hardening
 # Step 4) — the default-provider builders inside axum-server/rustls-acme then resolve
@@ -38,11 +38,14 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
-# The generic `remote::Stub` swap integration test (`tests/stub_swap.rs`) names the
-# PURE api traits + route bindings and the registry key helper; the glue crates it
-# feeds are already normal deps above. These stay dev-only — the binary itself never
-# needs the api crates.
+# The generic `remote::Stub` swap integration test (`tests/stub_swap.rs`) names the PURE api
+# traits + route bindings, the registry key helper, and the `<name>rpc` glue crates it feeds.
+# Under D2 the BINARY no longer imports `charactersrpc`/`inventoryrpc` (routes come from
+# `__describe`), so they move HERE — the generic-Stub swap mechanism they exercise is still
+# worth a dev test, independent of how gateway-svc wires its own routes.
 charactersapi = { workspace = true }
 inventoryapi = { workspace = true }
+charactersrpc = { workspace = true }
+inventoryrpc = { workspace = true }
 opsapi = { workspace = true }
 registry = { workspace = true }

@@ -47,7 +47,13 @@ pub fn modules(
     // harness — a single fixed conn, no pool, no re-resolve.
     edge_list_resolver: Option<&dyn Fn(&'static str) -> remote::PeerListResolver>,
 ) -> Vec<Box<dyn Module>> {
-    let mut gw = gateway::Gateway::new();
+    // D2 routing-as-data: this front door builds its op route table from each peer's runtime
+    // `__describe` manifest (re-fetched periodically), NOT from a compile-time `<name>rpc`
+    // route import. So the stubs below contribute only their PEER_SLOT address set (+ the
+    // accounts/apikeys sync CAPABILITY clients via `provide_factories`, never routes), and the
+    // gateway module drives the describe fetch. A new `#[http]` op on any svc lights up here
+    // with zero changes to this process.
+    let mut gw = gateway::Gateway::new().with_describe_routing();
     if let Some(p) = player {
         gw = gw.with_player_edge(p);
     }
@@ -63,37 +69,42 @@ pub fn modules(
     vec![
         Box::new(metrics::Metrics::new()), // core-infra: mounts GET /metrics + contributes the record layer
         Box::new(gw),
-        // `remote` is generic (Step 4): this composition root injects each provider's
-        // swap closures explicitly, so `remote` never names a provider.
+        // `remote` is generic (Step 4): this composition root injects each provider's swap
+        // closures explicitly, so `remote` never names a provider. Under D2, the pure-HTTP
+        // providers (characters/inventory/match/leaderboard) pass NO factories — their routes
+        // arrive via `__describe`; the stub still contributes its PEER_SLOT address set, which
+        // the describe fetch + dispatch both read. accounts/apikeys additionally provide their
+        // sync capability CLIENT (`provide_factories` — Sessions/Keys, NO routes, so they can't
+        // collide with the describe pass that supplies accounts's `#[http]` routes).
         Box::new(remote::Stub::new(
             "characters",
             edge_peer(wiring, edge_list_resolver, "characters", "127.0.0.1:9000"),
-            charactersrpc::remote_factories(),
+            Vec::new(),
         )),
         Box::new(remote::Stub::new(
             "inventory",
             edge_peer(wiring, edge_list_resolver, "inventory", "127.0.0.1:9001"),
-            inventoryrpc::remote_factories(),
+            Vec::new(),
         )),
         Box::new(remote::Stub::new(
             "accounts",
             edge_peer(wiring, edge_list_resolver, "accounts", "127.0.0.1:9003"),
-            accountsrpc::remote_factories(),
+            accountsrpc::provide_factories(),
         )),
         Box::new(remote::Stub::new(
             "apikeys",
             edge_peer(wiring, edge_list_resolver, "apikeys", "127.0.0.1:9009"),
-            apikeysrpc::remote_factories(),
+            apikeysrpc::provide_factories(),
         )),
         Box::new(remote::Stub::new(
             "match",
             edge_peer(wiring, edge_list_resolver, "match", "127.0.0.1:9006"),
-            matchrpc::remote_factories(),
+            Vec::new(),
         )),
         Box::new(remote::Stub::new(
             "leaderboard",
             edge_peer(wiring, edge_list_resolver, "leaderboard", "127.0.0.1:9008"),
-            leaderboardrpc::remote_factories(),
+            Vec::new(),
         )),
     ]
 }

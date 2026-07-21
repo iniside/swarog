@@ -66,9 +66,9 @@ pub fn remote_factories() -> Vec<remote::RemoteFactory> {
 /// pass (`RouteTable::build` bails on a duplicate provider/method). The `Auth` ops
 /// (register/login/loginEpic/me) are therefore NEITHER provided as a `dyn Auth` client
 /// NOR route-contributed here — the D2 front routes them over the edge from the describe
-/// manifest, never via a typed capability `require`. Non-D2 consumers (the current
-/// `cmd/gateway-svc`) keep using [`remote_factories`] (provide + routes); this is
-/// ADDITIVE, not a replacement.
+/// manifest, never via a typed capability `require`. Non-describe consumers keep using
+/// [`remote_factories`] (provide + routes); this is ADDITIVE, not a replacement. (As of D2
+/// `cmd/gateway-svc` is a describe consumer and calls THIS entry point.)
 pub fn provide_factories() -> Vec<remote::RemoteFactory> {
     vec![Box::new(|ctx, caller| {
         sessions_rpc::provide_remote(ctx.registry(), caller)

@@ -33,7 +33,7 @@ axum = { workspace = true }
 # response body back (`bytes_stream`). The request body streams via `Body::wrap` (axum
 # `Body` is an `http_body::Body`), no extra crate needed.
 reqwest = { workspace = true, features = ["stream"] }
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 async-trait = { workspace = true }

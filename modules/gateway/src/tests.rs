@@ -1647,3 +1647,276 @@ async fn generous_budget_leaves_happy_path_unaffected() {
     assert!(body.contains(r#""status":"Ok""#), "{body}");
     assert!(body.contains(r#""pid":"alice""#), "{body}");
 }
+
+// ---------------------------------------------------------------------------
+// D2 routing-as-data: a route table built PURELY from describe manifests
+// ---------------------------------------------------------------------------
+
+/// `match.report` as a describe manifest: POST /match/report, public, 202,
+/// `#[retry_safe]` (OnceAfterReconnect), three Go-parity body args.
+fn manifest_match_report() -> opsapi::OpManifest {
+    opsapi::OpManifest {
+        method: "match.report".into(),
+        verb: "POST".into(),
+        path: "/match/report".into(),
+        auth: AuthReq::None,
+        success: 202,
+        retry_mode: RetryMode::OnceAfterReconnect,
+        args: vec![
+            opsapi::ArgMapping { param: "report_id".into(), wire_key: "ReportId".into(), source: opsapi::ArgSource::Body },
+            opsapi::ArgMapping { param: "winner".into(), wire_key: "Winner".into(), source: opsapi::ArgSource::Body },
+            opsapi::ArgMapping { param: "loser".into(), wire_key: "Loser".into(), source: opsapi::ArgSource::Body },
+        ],
+    }
+}
+
+/// `characters.delete` as a describe manifest: DELETE /characters/{id}, player-auth,
+/// 204, one PATH arg (`id` wildcard → `character_id`).
+fn manifest_characters_delete() -> opsapi::OpManifest {
+    opsapi::OpManifest {
+        method: "characters.delete".into(),
+        verb: "DELETE".into(),
+        path: "/characters/{id}".into(),
+        auth: AuthReq::Player,
+        success: 204,
+        retry_mode: RetryMode::Never,
+        args: vec![opsapi::ArgMapping {
+            param: "character_id".into(),
+            wire_key: "character_id".into(),
+            source: opsapi::ArgSource::Path { wildcard: "id".into() },
+        }],
+    }
+}
+
+/// Assembles a `fetched` map (provider → (addrs, manifest)) from a compact spec.
+fn fetched(
+    entries: Vec<(&str, Vec<&str>, Vec<opsapi::OpManifest>)>,
+) -> HashMap<String, (Vec<String>, opsapi::DescribeManifest)> {
+    entries
+        .into_iter()
+        .map(|(provider, addrs, ops)| {
+            (
+                provider.to_string(),
+                (
+                    addrs.into_iter().map(String::from).collect(),
+                    opsapi::DescribeManifest { ops },
+                ),
+            )
+        })
+        .collect()
+}
+
+/// A `Caller` that records everything it was handed (incl. `retry_mode`) so a test can
+/// prove a describe-built route reaches the transport seam with the right shape.
+#[derive(Default)]
+struct RecordingCaller {
+    seen: std::sync::Mutex<Option<(String, Option<String>, Vec<u8>, RetryMode)>>,
+}
+
+#[async_trait::async_trait]
+impl Caller for RecordingCaller {
+    async fn call(
+        &self,
+        method: &str,
+        identity: Option<&str>,
+        payload: &[u8],
+        retry_mode: RetryMode,
+    ) -> Result<Vec<u8>, Error> {
+        *self.seen.lock().unwrap() = Some((
+            method.to_string(),
+            identity.map(str::to_string),
+            payload.to_vec(),
+            retry_mode,
+        ));
+        Ok(br#"{"status":"Ok","relayed":true}"#.to_vec())
+    }
+}
+
+/// A route built PURELY from describe data (no compile-time `<name>rpc` import) carries the
+/// full op shape and reaches the owning peer with the right verb/path/auth/success/**retry_mode**
+/// and wire request — the whole point of routing-as-data.
+#[tokio::test]
+async fn describe_built_route_reaches_the_right_peer_with_full_op_shape() {
+    let map = fetched(vec![
+        ("match", vec!["127.0.0.1:9006"], vec![manifest_match_report()]),
+        ("characters", vec!["127.0.0.1:9000"], vec![manifest_characters_delete()]),
+    ]);
+    let table = Arc::new(build_describe_table(&map).expect("describe table builds"));
+
+    // Op shape rebuilt from data — including the FAITHFUL retry_mode (D1.5a).
+    let (report, _) = table.find("POST", "/match/report").expect("match.report route");
+    assert_eq!(report.op.method, "match.report");
+    assert_eq!(report.op.success, 202);
+    assert_eq!(report.op.auth, AuthReq::None);
+    assert_eq!(report.op.retry_mode, RetryMode::OnceAfterReconnect);
+    let report_op = report.op.clone();
+    let report_decode = report.binding.decode.clone();
+
+    // The path-wildcard op: the `{id}` segment is extracted and the route matched.
+    let (del, del_args) = table
+        .find("DELETE", "/characters/char-9")
+        .expect("characters.delete route matches a concrete path");
+    assert_eq!(del.op.method, "characters.delete");
+    assert_eq!(del.op.auth, AuthReq::Player);
+    assert_eq!(del.op.success, 204);
+    assert_eq!(del.op.retry_mode, RetryMode::Never);
+    assert_eq!(del_args.get("id").map(String::as_str), Some("char-9"));
+
+    // Reaches the right peer: intercept "match" with a recording caller and dispatch a
+    // describe-decoded body. dispatch → Remote (no local invoker) → provider_of("match.report").
+    let caller = Arc::new(RecordingCaller::default());
+    table.remotes.lock().unwrap().insert("match".into(), caller.clone() as Arc<dyn Caller>);
+    let wire = (report_decode)(
+        Some(br#"{"Winner":"alice","Loser":"bob","ReportId":"r-1"}"#),
+        &PathArgs::new(),
+    )
+    .expect("body decodes");
+    let resp = table
+        .dispatch(&report_op, Identity::none(), wire)
+        .await
+        .expect("describe-built route dispatches to its peer");
+    assert_eq!(resp, br#"{"status":"Ok","relayed":true}"#);
+
+    let seen = caller.seen.lock().unwrap().clone().expect("caller was reached");
+    assert_eq!(seen.0, "match.report", "the wire method reaches the right peer");
+    assert_eq!(seen.3, RetryMode::OnceAfterReconnect, "retry_mode is carried to the transport");
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&seen.2).unwrap(),
+        serde_json::json!({"Winner": "alice", "Loser": "bob", "ReportId": "r-1"}),
+        "the body args are relayed under their wire keys"
+    );
+}
+
+/// The collision-`bail!` still fires over DESCRIBE-contributed entries: two peers whose
+/// manifests both declare the same method id is a peer-config bug that must not resolve to a
+/// silent last-write-wins hybrid — `build_from_parts` is the shared authority, so the bail is
+/// identical to the slot-built path and re-checked on EVERY re-fetch.
+#[test]
+fn describe_table_bails_on_duplicate_method_across_peers() {
+    let clash = |verb: &str, path: &str| opsapi::OpManifest {
+        method: "clash.op".into(),
+        verb: verb.into(),
+        path: path.into(),
+        auth: AuthReq::None,
+        success: 200,
+        retry_mode: RetryMode::Never,
+        args: vec![],
+    };
+    let map = fetched(vec![
+        ("p1", vec!["127.0.0.1:1"], vec![clash("GET", "/a")]),
+        ("p2", vec!["127.0.0.1:2"], vec![clash("GET", "/b")]),
+    ]);
+    let err = build_describe_table(&map)
+        .err()
+        .expect("a duplicate method across describe peers must bail")
+        .to_string();
+    assert!(err.contains("clash.op"), "the bail must name the colliding method: {err}");
+}
+
+/// The periodic-refresh property — the WHOLE point of Option A: a peer DOWN at boot
+/// contributes no route, and once it answers `__describe` on a later pass its route is
+/// installed WITHOUT restarting the front door. Also pins error-keeps-last: a peer that goes
+/// down AGAIN keeps its last-known route rather than losing it on the transient failure.
+#[tokio::test]
+async fn peer_down_at_boot_is_routed_after_a_refetch() {
+    use std::sync::atomic::AtomicBool;
+
+    let slots = Arc::new(Slots::new());
+    let front = Arc::new(
+        FrontDoor::new(slots, Arc::new(DevSessionVerifier::new()), demo_keys(), Vec::new())
+            .into_dynamic_routing(),
+    );
+
+    // A fetcher whose reachability the test toggles: down → describe Unavailable.
+    let down = Arc::new(AtomicBool::new(true));
+    let fetch: DescribeFetcher = {
+        let down = down.clone();
+        Arc::new(move |_provider: String, _addrs: Vec<String>| {
+            let down = down.clone();
+            Box::pin(async move {
+                if down.load(Ordering::SeqCst) {
+                    Err(opsapi::Error::unavailable("peer down"))
+                } else {
+                    Ok(opsapi::DescribeManifest { ops: vec![manifest_match_report()] })
+                }
+            })
+        })
+    };
+    let peers = vec![opsapi::PeerAddr { provider: "match".into(), addrs: vec!["127.0.0.1:9006".into()] }];
+    let mut router = DescribeRouter::new(front.clone(), peers, fetch);
+
+    // Pass 1 (down): tolerated (not an Err), but the route is absent — fail-closed.
+    router.refresh_once().await.expect("a down peer is tolerated at boot");
+    assert!(
+        front.table().find_by_method("match.report").is_none(),
+        "a peer down at boot contributes no route"
+    );
+
+    // Peer comes up; pass 2 installs the route — no restart.
+    down.store(false, Ordering::SeqCst);
+    router.refresh_once().await.expect("second pass builds");
+    assert!(
+        front.table().find_by_method("match.report").is_some(),
+        "once the peer answers describe, the re-fetch installs its route"
+    );
+
+    // Peer flaps down again; pass 3 KEEPS the last-known route (error-keeps-last).
+    down.store(true, Ordering::SeqCst);
+    router.refresh_once().await.expect("a later failure is tolerated");
+    assert!(
+        front.table().find_by_method("match.report").is_some(),
+        "a transient describe failure must keep the peer's last-known route, not drop it"
+    );
+}
+
+/// Change-detection: an unchanged describe pass must NOT rebuild/swap the table, so the
+/// installed table (and its permanent per-provider dispatch pools + round-robin cursors, the
+/// C2 no-evict invariant) survives the 5s cadence untouched in steady state. Only an actual
+/// describe change rebuilds.
+#[tokio::test]
+async fn unchanged_describe_pass_preserves_the_installed_table() {
+    let slots = Arc::new(Slots::new());
+    let front = Arc::new(
+        FrontDoor::new(slots, Arc::new(DevSessionVerifier::new()), demo_keys(), Vec::new())
+            .into_dynamic_routing(),
+    );
+    // An always-up fetcher returning the SAME manifest every pass.
+    let fetch: DescribeFetcher = Arc::new(|_provider: String, _addrs: Vec<String>| {
+        Box::pin(async { Ok(opsapi::DescribeManifest { ops: vec![manifest_match_report()] }) })
+    });
+    let peers = vec![opsapi::PeerAddr { provider: "match".into(), addrs: vec!["127.0.0.1:9006".into()] }];
+    let mut router = DescribeRouter::new(front.clone(), peers, fetch);
+
+    router.refresh_once().await.expect("first build");
+    let t1 = front.table();
+    assert!(t1.find_by_method("match.report").is_some(), "first pass installs the route");
+
+    // A second, identical pass: no change → the SAME table Arc must still be installed.
+    router.refresh_once().await.expect("unchanged pass");
+    let t2 = front.table();
+    assert!(
+        Arc::ptr_eq(&t1, &t2),
+        "an unchanged describe pass must not rebuild/swap the table (pools stay permanent)"
+    );
+}
+
+/// A `TableCell::Slots` front door ignores `install_table` — the monolith/standalone table is
+/// immutable once built, so a stray dynamic swap cannot corrupt it.
+#[test]
+fn install_table_is_a_noop_on_a_slots_front_door() {
+    let slots = Arc::new(Slots::new());
+    let op = demo_opset();
+    slots.contribute(opsapi::SLOT, op.operation);
+    slots.contribute(opsapi::BINDING_SLOT, op.binding);
+    slots.contribute(opsapi::LOCAL_SLOT, op.local);
+    let front = front_door_with_keys(slots, demo_keys());
+
+    // A swap attempt with an EMPTY table must not take effect on the slots-mode front door.
+    front.install_table(Arc::new(
+        RouteTable::build_from_parts(Vec::new(), Vec::new(), Vec::new(), Vec::new()).unwrap(),
+    ));
+    assert!(
+        front.table().find_by_method("demo.echo").is_some(),
+        "the slots-built table is immutable; install_table is a no-op here"
+    );
+}
