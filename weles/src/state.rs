@@ -115,9 +115,9 @@ pub struct FleetState {
     /// `Layout::discover` and is executing for its whole life. Recorded so a
     /// concurrent `weles deploy`'s retention can PROTECT the live-pinned
     /// generation by NAME — the one-up-at-a-time invariant means at most one
-    /// supervisor pins one generation (both split and monolith `up` pin one).
-    /// `None` for a legacy state file written before this field existed
-    /// (serde-defaulted).
+    /// supervisor pins one generation (every `weles up` pins exactly one,
+    /// whatever fleet it booted). `None` for a legacy state file written before
+    /// this field existed (serde-defaulted).
     #[serde(default)]
     pub pinned_generation: Option<String>,
     pub services: Vec<ServiceState>,

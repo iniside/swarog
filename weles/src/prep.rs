@@ -99,6 +99,13 @@ pub struct Layout {
     /// generation and never spawns) this is an inert placeholder equal to
     /// `bin_dir`; see [`Layout::discover_for_deploy`].
     pub active_bin_dir: PathBuf,
+    /// The deployed fleet, parsed AND validated from
+    /// `active_bin_dir/fleet.toml` exactly ONCE at [`Layout::discover`]
+    /// (PIN-AT-DISCOVER — never re-read), so the whole `up` boots one coherent
+    /// fleet definition. `None` on the deploy path
+    /// ([`Layout::discover_for_deploy`]), which stages a new generation and
+    /// never reads a pinned fleet. Read through [`Layout::fleet`].
+    fleet: Option<crate::fleet_toml::Fleet>,
 }
 
 impl Layout {
@@ -112,11 +119,22 @@ impl Layout {
     pub fn discover(root: PathBuf) -> Result<Self> {
         let (run_dir, bin_dir) = Self::scaffold(&root)?;
         let active_bin_dir = pin_generation(&bin_dir)?;
+        // PIN-AT-DISCOVER for the fleet too: read+parse+VALIDATE the deployed
+        // `fleet.toml` from the pinned generation exactly ONCE here, so a
+        // running `up` boots one coherent fleet definition and never re-reads
+        // it (a concurrent `deploy` flipping `current` cannot change what this
+        // `up` runs). A bad/absent fleet file fails the discover loudly, before
+        // the lock is even acquired.
+        let fleet_path = active_bin_dir.join("fleet.toml");
+        let fleet = crate::fleet_toml::load(&fleet_path)?;
+        crate::fleet_toml::validate(&fleet)
+            .with_context(|| format!("validate deployed fleet {}", fleet_path.display()))?;
         Ok(Layout {
             root,
             run_dir,
             bin_dir,
             active_bin_dir,
+            fleet: Some(fleet),
         })
     }
 
@@ -136,6 +154,10 @@ impl Layout {
             run_dir,
             bin_dir,
             active_bin_dir,
+            // The deploy path stages its OWN chosen `--fleet` file and never
+            // reads a pinned fleet: there may not even be a `deploy/current`
+            // yet (first deploy on a fresh checkout).
+            fleet: None,
         })
     }
 
@@ -171,6 +193,16 @@ impl Layout {
         } else {
             None
         }
+    }
+
+    /// The fleet pinned at [`discover`] (parsed + validated once). `None` on a
+    /// deploy-path layout ([`discover_for_deploy`]). The `up` path always has
+    /// `Some` — `discover` fails rather than return a layout without a fleet.
+    ///
+    /// [`discover`]: Layout::discover
+    /// [`discover_for_deploy`]: Layout::discover_for_deploy
+    pub fn fleet(&self) -> Option<&crate::fleet_toml::Fleet> {
+        self.fleet.as_ref()
     }
 }
 
@@ -212,10 +244,18 @@ fn pin_generation(bin_dir: &Path) -> Result<PathBuf> {
 pub struct GenerationManifest {
     pub gen: u64,
     pub artifacts: Vec<Artifact>,
+    /// The `fleet.toml` stamped into this generation, tracked (SHA-256 + byte
+    /// length) exactly like a staged binary — it is a first-class artifact of
+    /// the deploy: `up` reads it back from the pinned generation to learn what
+    /// to boot, so a torn or swapped fleet file is as fatal as a torn binary.
+    /// Its copy+hash happens BEFORE the atomic `current` flip, so a missing or
+    /// unreadable `--fleet` aborts the flip like a missing binary.
+    pub fleet: Artifact,
 }
 
-/// One staged binary within a generation: its package, on-disk file name, the
-/// SHA-256 of the bytes actually written, and the byte length.
+/// One staged artifact within a generation: its package (or `"fleet.toml"` for
+/// the stamped fleet file), on-disk file name, the SHA-256 of the bytes
+/// actually written, and the byte length.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Artifact {
     pub pkg: String,
@@ -224,24 +264,15 @@ pub struct Artifact {
     pub bytes: u64,
 }
 
-/// The full set of binaries weles stages and may execute: the union of the
-/// split and monolith fleet packages plus the two prep helpers (`edgeca`,
-/// `adminctl`). Deterministic, deduped, sorted — the authority for `weles
-/// deploy`'s copy set.
-///
-/// TEMPORARY (Step 1): still derived from the hardcoded
-/// [`crate::manifest::split_fleet`]/[`crate::manifest::monolith`]. Step 3
-/// re-derives it from the deployed `fleet.toml` (its `[[service]]` pkgs ∪ its
-/// `[[prepare]]` runs) so `edgeca`/`adminctl` stay staged because a hook
-/// references them, not because they are hardcoded.
-pub fn deploy_packages() -> Vec<String> {
-    let mut pkgs: Vec<String> = crate::manifest::split_fleet()
-        .iter()
-        .map(|svc| svc.pkg.clone())
-        .collect();
-    pkgs.push(crate::manifest::monolith().pkg);
-    pkgs.push("edgeca".to_string());
-    pkgs.push("adminctl".to_string());
+/// The full set of binaries a fleet stages and may execute: every
+/// `[[service]]` `pkg` UNION every `[[prepare]]` `run`. Deterministic, deduped,
+/// sorted — the authority for `weles deploy`'s copy set AND for `up`'s
+/// pre-flight [`validate_binaries`] gate. Derived from the deployed
+/// `fleet.toml`, never hardcoded: `edgeca`/`adminctl` stay staged because a
+/// `[[prepare]]` hook references them, not because weles knows their names.
+pub fn deploy_packages(fleet: &crate::fleet_toml::Fleet) -> Vec<String> {
+    let mut pkgs: Vec<String> = fleet.services.iter().map(|svc| svc.pkg.clone()).collect();
+    pkgs.extend(fleet.prepare.iter().map(|hook| hook.run.clone()));
     pkgs.sort_unstable();
     pkgs.dedup();
     pkgs
@@ -274,12 +305,15 @@ pub fn validate_binaries(layout: &Layout, packages: &[String]) -> Result<()> {
     bail!("{message}")
 }
 
-/// `weles deploy <src_dir>`: stages the fleet binaries ([`deploy_packages`])
-/// from `src_dir` (resolved relative to the CURRENT directory, not the repo
-/// root) into a FRESH generation directory `<root>/deploy/gen-N/` and, only
-/// once every copy+hash succeeds, atomically flips `<root>/deploy/current` to
-/// name it. Prints a per-file report line (copied / missing / copy FAILED).
-/// See the module doc for the deploy↔up contract and PIN-AT-DISCOVER.
+/// `weles deploy <src_dir> --fleet <fleet_path>`: parses+validates
+/// `fleet_path`, then stages the binaries it needs ([`deploy_packages`]) from
+/// `src_dir` (resolved relative to the CURRENT directory, not the repo root)
+/// AND the `fleet.toml` itself into a FRESH generation directory
+/// `<root>/deploy/gen-N/` and, only once every copy+hash succeeds (the fleet
+/// file included), atomically flips `<root>/deploy/current` to name it. `up`
+/// later reads that stamped `fleet.toml` back to learn what to boot. Prints a
+/// per-file report line (copied / missing / copy FAILED). See the module doc
+/// for the deploy↔up contract and PIN-AT-DISCOVER.
 ///
 /// Self-copy guard: `src_dir` and `bin_dir` are canonicalized up front and a
 /// deploy FROM the deploy dir itself is rejected — passing `deploy/` as the
@@ -310,7 +344,15 @@ pub fn validate_binaries(layout: &Layout, packages: &[String]) -> Result<()> {
 /// computed `next_generation` and can corrupt a generation — run at most ONE
 /// `weles deploy` at a time (an operator discipline for M0; a deploy-scoped
 /// guard is M1's job, tracked with `weles rollback`).
-pub fn deploy(layout: &Layout, src_dir: &Path) -> Result<()> {
+pub fn deploy(layout: &Layout, src_dir: &Path, fleet_path: &Path) -> Result<()> {
+    // Parse AND validate the chosen fleet FIRST — before staging anything: a
+    // bad fleet must abort the deploy loudly (naming the offending rule), not
+    // stamp an invalid fleet a later `up` would only reject at discover. This
+    // also tells us which binaries to stage ([`deploy_packages`]).
+    let fleet = crate::fleet_toml::load(fleet_path)?;
+    crate::fleet_toml::validate(&fleet)
+        .with_context(|| format!("validate fleet {}", fleet_path.display()))?;
+
     std::fs::create_dir_all(&layout.bin_dir)
         .with_context(|| format!("create deploy dir {}", layout.bin_dir.display()))?;
 
@@ -345,7 +387,7 @@ pub fn deploy(layout: &Layout, src_dir: &Path) -> Result<()> {
     let mut missing: Vec<PathBuf> = Vec::new();
     let mut failed: Vec<String> = Vec::new();
     let mut artifacts: Vec<Artifact> = Vec::new();
-    for pkg in deploy_packages() {
+    for pkg in deploy_packages(&fleet) {
         let file = format!("{pkg}{}", std::env::consts::EXE_SUFFIX);
         let src = src_dir.join(&file);
         let dst = gen_dir.join(&file);
@@ -371,6 +413,29 @@ pub fn deploy(layout: &Layout, src_dir: &Path) -> Result<()> {
         }
     }
 
+    // Stamp the chosen fleet into the generation as `fleet.toml`, tracked +
+    // hashed like a binary. Accumulated into the same missing/failed model so a
+    // copy failure here abandons `gen-N` and leaves `current` untouched, exactly
+    // like a missing binary. (The parse+validate above already proved the source
+    // is a readable, well-formed fleet, so this copy failing means an I/O fault.)
+    let fleet_dst = gen_dir.join("fleet.toml");
+    let fleet_artifact = match copy_and_hash(fleet_path, &fleet_dst) {
+        Ok((sha256, bytes)) => {
+            println!("weles: fleet.toml: copied -> {} (sha256 {sha256})", fleet_dst.display());
+            Some(Artifact {
+                pkg: "fleet.toml".to_string(),
+                file: "fleet.toml".to_string(),
+                sha256,
+                bytes,
+            })
+        }
+        Err(error) => {
+            println!("weles: fleet.toml: copy FAILED -> {} ({error:#})", fleet_dst.display());
+            failed.push(format!("{} ({error:#})", fleet_dst.display()));
+            None
+        }
+    };
+
     if !missing.is_empty() || !failed.is_empty() {
         // Do NOT flip `current`: it still names the previous generation, so a
         // live `up` is untouched. `gen-N` is left as an observable stale dir.
@@ -388,7 +453,11 @@ pub fn deploy(layout: &Layout, src_dir: &Path) -> Result<()> {
     }
 
     // All copies+hashes succeeded — record the manifest, THEN atomically flip.
-    let manifest = GenerationManifest { gen, artifacts };
+    // `fleet_artifact` is `Some` here: it is `None` only when its copy failed,
+    // which would have pushed to `failed` and bailed above.
+    let fleet_artifact = fleet_artifact
+        .expect("fleet.toml artifact is Some when no copy failed (checked above)");
+    let manifest = GenerationManifest { gen, artifacts, fleet: fleet_artifact };
     let manifest_path = gen_dir.join("manifest.json");
     let json = serde_json::to_vec_pretty(&manifest).context("serialize generation manifest")?;
     std::fs::write(&manifest_path, json)
@@ -793,8 +862,17 @@ fn filtered_env(allowlist: &[&str]) -> BTreeMap<OsString, OsString> {
     env
 }
 
+/// Reads one env var from weles's OWN environment, case-insensitively on
+/// Windows (to match `%VAR%` lookup semantics) and exact-case on Unix. This is
+/// the SINGLE passthrough-lookup authority: both prepare hooks
+/// ([`run_one_prepare`]) and services
+/// ([`crate::manifest::compose_env_with_fleet`]) forward passthrough KEYS
+/// through it, so a Windows case-variant passthrough key resolves identically
+/// for a service and for a prepare hook (Step-1-review deferred finding: the
+/// two used to disagree — `compose_env_with_fleet` used exact-case
+/// `std::env::var_os`).
 #[cfg(windows)]
-fn lookup_env(key: &str) -> Option<OsString> {
+pub(crate) fn lookup_env(key: &str) -> Option<OsString> {
     std::env::vars_os().find_map(|(candidate, value)| {
         candidate
             .to_str()
@@ -804,7 +882,7 @@ fn lookup_env(key: &str) -> Option<OsString> {
 }
 
 #[cfg(not(windows))]
-fn lookup_env(key: &str) -> Option<OsString> {
+pub(crate) fn lookup_env(key: &str) -> Option<OsString> {
     std::env::var_os(key)
 }
 

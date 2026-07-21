@@ -3,17 +3,16 @@
 
 use anyhow::{bail, Result};
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Topology {
-    Split,
-    Monolith,
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Command {
-    Up { topology: Topology },
-    /// Stage the fleet binaries from `src_dir` into `<root>/deploy`.
-    Deploy { src_dir: String },
+    /// Boot the deployed fleet. `dry_run` validates the deployed `fleet.toml`
+    /// and exits WITHOUT acquiring the rollout lock, running any prepare hook,
+    /// or spawning a service.
+    Up { dry_run: bool },
+    /// Stage the fleet binaries from `src_dir` into `<root>/deploy`, stamping
+    /// the chosen `fleet.toml` (`fleet`) into the generation as the fleet `up`
+    /// will boot.
+    Deploy { src_dir: String, fleet: String },
     Status,
     Down,
     /// Hidden test fixture for the platform containment tests — not listed
@@ -30,14 +29,18 @@ pub const USAGE: &str = "\
 weles - standalone fleet-supervisor CLI
 
 USAGE:
-  weles deploy <src-dir>
-  weles up [split|monolith]
+  weles deploy <src-dir> --fleet <fleet.toml>
+  weles up [--dry-run]
   weles status
   weles down
 
-up defaults to the split topology. weles never builds — it executes only the
-binaries staged into <root>/deploy by `weles deploy` (<src-dir> resolves
-relative to the current directory).";
+weles has no concept of split/monolith — it boots whatever fleet was deployed.
+`deploy` stamps the chosen --fleet <fleet.toml> into the generation; `up` reads
+it back from <root>/deploy and boots it. `up --dry-run` validates the deployed
+fleet.toml and exits without acquiring the rollout lock, running a prepare hook,
+or spawning. weles never builds — it executes only the binaries staged into
+<root>/deploy by `weles deploy` (<src-dir> resolves relative to the current
+directory).";
 
 pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command> {
     let mut args = args.into_iter();
@@ -46,8 +49,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command> {
     };
     match verb.as_str() {
         "up" => {
-            let mut topology = Topology::Split;
-            let mut topology_seen = false;
+            let mut dry_run = false;
             for arg in args {
                 match arg.as_str() {
                     // The rollout-lease borrow marker, APPENDED to this argv by
@@ -63,28 +65,49 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command> {
                     // there it means the caller is confused about what it
                     // spawned.
                     _ if arg == crate::lock::BORROWED_LEASE_ARG => {}
-                    "split" | "monolith" => {
-                        if topology_seen {
-                            bail!("topology given more than once\n\n{USAGE}");
+                    "--dry-run" => {
+                        if dry_run {
+                            bail!("--dry-run given more than once\n\n{USAGE}");
                         }
-                        topology_seen = true;
-                        topology = if arg == "split" {
-                            Topology::Split
-                        } else {
-                            Topology::Monolith
-                        };
+                        dry_run = true;
                     }
                     other => bail!("unknown argument {other:?}\n\n{USAGE}"),
                 }
             }
-            Ok(Command::Up { topology })
+            Ok(Command::Up { dry_run })
         }
         "deploy" => {
-            let Some(src_dir) = args.next() else {
+            let mut src_dir: Option<String> = None;
+            let mut fleet: Option<String> = None;
+            while let Some(arg) = args.next() {
+                match arg.as_str() {
+                    "--fleet" => {
+                        if fleet.is_some() {
+                            bail!("--fleet given more than once\n\n{USAGE}");
+                        }
+                        let Some(path) = args.next() else {
+                            bail!("--fleet requires a path\n\n{USAGE}");
+                        };
+                        fleet = Some(path);
+                    }
+                    other if other.starts_with("--") => {
+                        bail!("unknown argument {other:?}\n\n{USAGE}")
+                    }
+                    _ => {
+                        if src_dir.is_some() {
+                            bail!("deploy takes a single source directory\n\n{USAGE}");
+                        }
+                        src_dir = Some(arg);
+                    }
+                }
+            }
+            let Some(src_dir) = src_dir else {
                 bail!("deploy requires a source directory\n\n{USAGE}");
             };
-            expect_no_more_args(args)?;
-            Ok(Command::Deploy { src_dir })
+            let Some(fleet) = fleet else {
+                bail!("deploy requires --fleet <fleet.toml>\n\n{USAGE}");
+            };
+            Ok(Command::Deploy { src_dir, fleet })
         }
         "status" => {
             expect_no_more_args(args)?;

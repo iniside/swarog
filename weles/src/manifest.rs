@@ -609,8 +609,15 @@ pub(crate) fn compose_env_with_fleet(
 
     // The always-on floor plus the operator's passthrough KEYS, forwarded from
     // weles's own environment. weles knows the key NAME, never its meaning.
+    //
+    // Forwarded through `crate::prep::lookup_env` — the SAME helper
+    // `prep::run_one_prepare` uses for a prepare hook's passthrough — so a
+    // passthrough key resolves identically for a service and for a prepare hook
+    // (on Windows both are case-insensitive; a service used to use exact-case
+    // `std::env::var_os` while hooks were case-insensitive — Step-1-review
+    // deferred finding, now closed with one lookup authority).
     for key in SERVICE_ENV_ALLOWLIST.iter().copied().chain(passthrough.iter().map(String::as_str)) {
-        if let Some(value) = std::env::var_os(key) {
+        if let Some(value) = crate::prep::lookup_env(key) {
             env.insert(OsString::from(key), value);
         }
     }

@@ -5,13 +5,14 @@
 //! fleet keeps running.
 //!
 //! `run_up` sequence (the rollout lock comes FIRST — before any validation or
-//! prep — per the Step-4 review finding): (1) discover layout + acquire
-//! `run/rollout.lock`, then install the Ctrl-C/SIGTERM handler immediately (P1:
-//! so an interrupt during the slow prep window can't orphan a helper on the
-//! unwind); (2) validate the manifest against `cmd/*-svc` on disk
-//! (drift reported AS drift), then the DEPLOYED binaries in `<root>/deploy`
-//! (weles never builds), then the Postgres session budget; (3) prep (mint CA,
-//! seed admin); (4) boot each service in manifest order behind a
+//! prep — per the Step-4 review finding): (1) discover layout (which pins +
+//! validates the deployed `fleet.toml`) + acquire `run/rollout.lock`, then
+//! install the Ctrl-C/SIGTERM handler immediately (P1: so an interrupt during
+//! the slow prepare window can't orphan a hook on the unwind); (2) validate the
+//! manifest against `cmd/*-svc` on disk (drift reported AS drift), then the
+//! DEPLOYED binaries in `<root>/deploy` the fleet needs (weles never builds);
+//! (3) run the fleet's declared `[[prepare]]` hooks (CA mint, admin seed —
+//! weles runs them domain-blind); (4) boot each service in fleet order behind a
 //! readyz gate; (5) a single non-blocking monitor loop, with an out-of-band
 //! `weles-readiness` poller thread recording post-healthy `/readyz` freshness
 //! (a checkpoint-only dimension that NEVER restarts a service); (6) teardown in
@@ -32,7 +33,6 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use anyhow::{anyhow, bail, Context, Result};
 
 use crate::agentapi;
-use crate::cli::Topology;
 use crate::control::ControlServer;
 use crate::health::{self, ProbeResult};
 use crate::lock;
@@ -526,7 +526,10 @@ impl Supervised {
 struct Reporter {
     state_path: PathBuf,
     run_id: String,
-    topology: &'static str,
+    /// A plain human label for the deployed fleet (weles has no split/monolith
+    /// concept) — derived from the fleet, e.g. its process count. Rendered by
+    /// `weles status`/`down` and recorded into [`FleetState::topology`].
+    topology: String,
     supervisor: ProcessIdentity,
     /// The `gen-N` this fleet pinned at `Layout::discover`, recorded into every
     /// checkpoint so a concurrent `weles deploy` protects it from retention.
@@ -556,7 +559,7 @@ impl Reporter {
         FleetState {
             run_id: self.run_id.clone(),
             supervisor: self.supervisor,
-            topology: self.topology.to_string(),
+            topology: self.topology.clone(),
             status: self.status.get(),
             control_endpoint: self.control_endpoint.borrow().clone(),
             pinned_generation: self.pinned_generation.clone(),
@@ -626,8 +629,21 @@ fn workspace_root() -> Result<PathBuf> {
 
 /// The whole `weles up` lifecycle. Returns when the fleet has been torn down
 /// (operator stop) or a boot failure was unwound.
-pub fn run_up(topology: Topology) -> Result<()> {
+pub fn run_up() -> Result<()> {
     let layout = discover_layout()?;
+
+    // The deployed fleet was parsed + validated ONCE at discover
+    // (PIN-AT-DISCOVER); the `up` path always has it — `discover` fails rather
+    // than hand back a fleet-less layout — so this `expect` names an invariant,
+    // not a runtime branch. `deployed` (and everything borrowed from it: `defs`,
+    // `passthrough`, `prepare`) borrows `layout` immutably for the whole run,
+    // alongside every other `&layout` use.
+    let deployed = layout
+        .fleet()
+        .expect("Layout::discover pins a validated fleet on the up path");
+    // weles has NO split/monolith concept — it boots whatever fleet was
+    // deployed. Label it by process count for `weles status`/`down`.
+    let fleet_label = format!("{}-process", deployed.services.len());
 
     // Lock FIRST (Step-4 review finding): nothing rollout-bearing may run
     // before this process is inside run/rollout.lock's one permitted rollout —
@@ -665,20 +681,16 @@ pub fn run_up(topology: Topology) -> Result<()> {
     install_ctrl_handler()?;
 
     // Record the pinned generation at the EARLIEST safe point — right after the
-    // lock + discover, BEFORE the slow prep helpers (mint_ca can spawn edgeca
-    // for ~30s if the CA is absent; seed_admin does a Postgres round-trip). The
-    // pin is available from `layout` here, and this early `Starting` checkpoint
-    // carries the live pid + `pinned_generation`, so a concurrent `weles deploy`
-    // sees the live pin and won't prune this booting up's generation. Without
-    // this, the pin was invisible across the whole helper window (state.json
-    // absent or stale/terminal), and a deploy could delete the booting up's
-    // gen-N out from under it (a loud spawn failure, not silent loss, but still
-    // this fix's own new seam). The control endpoint is still bound later, before
-    // boot (Part A) — only this state write moves ahead of the helpers.
-    let topology_name = match topology {
-        Topology::Split => "split",
-        Topology::Monolith => "monolith",
-    };
+    // lock + discover, BEFORE the fleet's prepare hooks (edgeca can run for
+    // ~30s; an admin-seed hook does a Postgres round-trip). The pin is available
+    // from `layout` here, and this early `Starting` checkpoint carries the live
+    // pid + `pinned_generation`, so a concurrent `weles deploy` sees the live
+    // pin and won't prune this booting up's generation. Without this, the pin
+    // was invisible across the whole hook window (state.json absent or
+    // stale/terminal), and a deploy could delete the booting up's gen-N out from
+    // under it (a loud spawn failure, not silent loss, but still this fix's own
+    // new seam). The control endpoint is still bound later, before boot (Part A)
+    // — only this state write moves ahead of the hooks.
     let supervisor = ProcessIdentity {
         pid: std::process::id(),
         started_unix: unix_now(),
@@ -687,7 +699,7 @@ pub fn run_up(topology: Topology) -> Result<()> {
     let reporter = Reporter {
         state_path: layout.run_dir.join("state.json"),
         run_id,
-        topology: topology_name,
+        topology: fleet_label.clone(),
         supervisor,
         pinned_generation: pinned_generation.clone(),
         status: Cell::new(FleetStatus::Starting),
@@ -696,7 +708,7 @@ pub fn run_up(topology: Topology) -> Result<()> {
         shared: Arc::new(Mutex::new(FleetState {
             run_id: String::new(),
             supervisor,
-            topology: topology_name.to_string(),
+            topology: fleet_label,
             status: FleetStatus::Starting,
             control_endpoint: None,
             pinned_generation,
@@ -720,33 +732,32 @@ pub fn run_up(topology: Topology) -> Result<()> {
         .context("validate fleet manifest against cmd/*-svc on disk")?;
 
     // Then: every binary this run needs must already be staged in
-    // <root>/deploy — weles never builds. Dies here (per-line missing list)
-    // before any further validation if the deploy dir is incomplete.
-    let mut packages: Vec<String> = match topology {
-        Topology::Split => manifest::split_fleet().iter().map(|svc| svc.pkg.clone()).collect(),
-        Topology::Monolith => vec![manifest::monolith().pkg],
-    };
-    packages.extend(["adminctl".to_string(), "edgeca".to_string()]);
-    packages.sort_unstable();
-    packages.dedup();
+    // <root>/deploy — weles never builds. The set is derived from the deployed
+    // fleet (`[[service]]` pkgs ∪ `[[prepare]]` runs), so a hook's binary
+    // (edgeca/adminctl) is staged because a hook references it. Dies here
+    // (per-line missing list) before any further work if the deploy dir is
+    // incomplete.
+    let packages = prep::deploy_packages(deployed);
     prep::validate_binaries(&layout, &packages)
         .context("validate deployed fleet binaries")?;
 
-    // Step 3 will call `prep::run_prepare(fleet.prepare, &layout)` here — the
-    // slot the old `mint_ca`/`database_url`/`seed_admin` block held. Step 1 has
-    // no `fleet.toml` to source those hooks from yet, so nothing runs between
-    // binary validation and the spawn loop.
-    let defs = match topology {
-        Topology::Split => manifest::split_fleet(),
-        Topology::Monolith => vec![manifest::monolith()],
-    };
-    // Passthrough env KEYS are sourced from `fleet.toml` in Step 3; empty until
-    // then. `compose_env_with_fleet` forwards each from weles's own environment.
-    let passthrough: Vec<String> = Vec::new();
-    // `defs` outlives the move into `fleet`: it IS the booting topology, and
-    // every peer address handed to a service is derived from it (never from
-    // `split_fleet()` re-derived deeper down, which would silently hand out
-    // split addresses under a monolith).
+    // Run the fleet's declared `[[prepare]]` hooks (CA mint, admin seed) — in
+    // declared order, BEFORE any service is spawned. A nonzero exit or timeout
+    // aborts the whole `up` HERE: nothing is spawned past a failed hook (the
+    // fleet below isn't even built yet). This occupies the slot the old
+    // `mint_ca`/`seed_admin` block held; weles runs each hook domain-blind,
+    // knowing only the command name it was told.
+    prep::run_prepare(&deployed.prepare, &layout).context("run fleet prepare hooks")?;
+
+    // `defs` IS the booting fleet, borrowed straight from the pinned+validated
+    // `deployed` — never re-derived. Every peer address handed to a service is
+    // derived from this exact slice (in `compose_env_with_fleet` and
+    // `PeerAddrs::from_fleet`), so a service told an address by env and a
+    // service that asks for it over the agent cannot be told different things.
+    // `passthrough` (env KEYS forwarded from weles's own env) comes from the
+    // same fleet.
+    let defs: &[ServiceDef] = &deployed.services;
+    let passthrough: &[String] = &deployed.passthrough;
     let mut fleet: Vec<Supervised> = defs.iter().cloned().map(Supervised::new).collect();
     // Re-checkpoint now that the fleet exists (the pin was already recorded by
     // the early checkpoint above): status still Starting, endpoint still None,
@@ -803,12 +814,12 @@ pub fn run_up(topology: Topology) -> Result<()> {
     // The `resolve` map is derived from `defs` — the SAME slice `spawn_ctx`
     // threads into `compose_env_with_fleet` below. One authority: a service
     // told an address by env and a service that asks for it over the wire
-    // cannot be told different things, and under a monolith `defs` has no
-    // `provider`, so the map is empty and every resolve 404s (no topology
-    // branch: see `manifest::PeerAddrs`).
+    // cannot be told different things, and a fleet whose services declare no
+    // `provider` (e.g. a single-process fleet) yields an empty map so every
+    // resolve 404s (no topology branch: see `manifest::PeerAddrs`).
     let agent = match health::ensure_no_stale_listener("weles-agent", manifest::AGENT_PORT)
         .and_then(|()| {
-            agentapi::AgentServer::bind(manifest::AGENT_PORT, manifest::PeerAddrs::from_fleet(&defs))
+            agentapi::AgentServer::bind(manifest::AGENT_PORT, manifest::PeerAddrs::from_fleet(defs))
         })
     {
         Ok(agent) => agent,
@@ -835,7 +846,7 @@ pub fn run_up(topology: Topology) -> Result<()> {
     let ports: Vec<u16> = fleet.iter().map(|svc| svc.def.http_port).collect();
     let poller = ReadinessPoller::spawn(reporter.shared(), Arc::clone(&readiness), ports);
 
-    let spawn_ctx = SpawnCtx { layout: &layout, passthrough: &passthrough, defs: &defs };
+    let spawn_ctx = SpawnCtx { layout: &layout, passthrough, defs };
     let run_result = boot(&spawn_ctx, &mut fleet, &reporter, &fleet_stop);
     if run_result.is_ok() && !stop_requested(&fleet_stop) {
         reporter.set_status(FleetStatus::Running);
@@ -913,14 +924,15 @@ fn control_endpoint_path(layout: &prep::Layout, run_id: &str) -> PathBuf {
 /// Spawns each service in manifest order and gates on its readyz before
 /// moving to the next. `Ok(())` with STOP set means "operator interrupted the
 /// The three things every service spawn needs, travelling as one: where the
-/// staged artifacts and logs live, the runtime-only values, and the BOOTING
-/// fleet that peer addresses are derived from. Grouped because `defs` is only
-/// meaningful together with the topology `run_up` chose — passing them
-/// separately invites a caller that has `inputs` but re-derives the fleet.
+/// staged artifacts and logs live, the per-fleet passthrough KEYS, and the
+/// BOOTING fleet that peer addresses are derived from. Grouped because peer
+/// addresses are only meaningful against the exact fleet `run_up` pinned —
+/// passing them separately invites a caller that composes env against a
+/// re-derived fleet.
 struct SpawnCtx<'a> {
     layout: &'a prep::Layout,
     /// Env KEYS forwarded from weles's own environment into every service
-    /// (per-fleet passthrough; sourced from `fleet.toml` in Step 3).
+    /// (per-fleet passthrough; from the deployed `fleet.toml`).
     passthrough: &'a [String],
     defs: &'a [ServiceDef],
 }
@@ -1300,8 +1312,8 @@ fn spawn_service(
     platform::spawn(SpawnSpec {
         program: layout.binary(&def.pkg),
         args: Vec::new(),
-        // Peers resolve against `defs` — the topology run_up actually chose —
-        // not a re-derived split_fleet().
+        // Peers resolve against `defs` — the exact fleet run_up pinned from the
+        // deployed fleet.toml — never a re-derived one.
         env: manifest::compose_env_with_fleet(def, ctx.passthrough, ctx.defs),
         cwd: Some(layout.root.clone()),
         stdout: Some(stdout),

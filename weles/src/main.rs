@@ -8,7 +8,7 @@ use std::time::Duration;
 mod fixture;
 
 use anyhow::{bail, Context, Result};
-use weles::cli::{self, Command, Topology};
+use weles::cli::{self, Command};
 use weles::state::{self, FleetState};
 use weles::{control, prep, supervisor};
 
@@ -36,8 +36,8 @@ fn main() -> ExitCode {
 
 fn run(command: Command) -> Result<()> {
     match command {
-        Command::Up { topology } => up(topology),
-        Command::Deploy { src_dir } => deploy(&src_dir),
+        Command::Up { dry_run } => up(dry_run),
+        Command::Deploy { src_dir, fleet } => deploy(&src_dir, &fleet),
         Command::Status => status(),
         Command::Down => down(),
         Command::TestChild {
@@ -48,14 +48,44 @@ fn run(command: Command) -> Result<()> {
     }
 }
 
-fn up(topology: Topology) -> Result<()> {
-    supervisor::run_up(topology)
+fn up(dry_run: bool) -> Result<()> {
+    if dry_run {
+        return dry_run_fleet();
+    }
+    supervisor::run_up()
 }
 
-/// `weles deploy <src-dir>`: stage the fleet binaries into `<root>/deploy`.
-fn deploy(src_dir: &str) -> Result<()> {
+/// `weles up --dry-run`: load + validate the DEPLOYED `fleet.toml` and print a
+/// summary, WITHOUT acquiring the rollout lock, running any `[[prepare]]` hook,
+/// or spawning a service. `discover_layout` pins the deployed generation and
+/// parses+validates its `fleet.toml` (the same load+validate `up` performs),
+/// so this reuses the one deployed-fleet authority rather than re-locating the
+/// file. Side-effect-free beyond ensuring `run/weles` exists.
+fn dry_run_fleet() -> Result<()> {
+    let layout = supervisor::discover_layout()?;
+    let fleet = layout
+        .fleet()
+        .expect("discover_layout pins a validated fleet");
+    println!(
+        "weles: deployed fleet is valid — {} service(s), {} prepare hook(s), {} passthrough key(s)",
+        fleet.services.len(),
+        fleet.prepare.len(),
+        fleet.passthrough.len()
+    );
+    for svc in &fleet.services {
+        println!("  service {} (pkg {}, http :{})", svc.name, svc.pkg, svc.http_port);
+    }
+    for hook in &fleet.prepare {
+        println!("  prepare {} (run {})", hook.name, hook.run);
+    }
+    Ok(())
+}
+
+/// `weles deploy <src-dir> --fleet <fleet.toml>`: stage the fleet binaries and
+/// stamp the chosen `fleet.toml` into `<root>/deploy`.
+fn deploy(src_dir: &str, fleet: &str) -> Result<()> {
     let layout = supervisor::discover_layout_for_deploy()?;
-    prep::deploy(&layout, Path::new(src_dir))
+    prep::deploy(&layout, Path::new(src_dir), Path::new(fleet))
 }
 
 /// `weles status`: reports the recorded fleet, connecting to a live supervisor
