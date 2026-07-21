@@ -326,11 +326,12 @@ pub const PEER_SLOT: contrib::Slot<PeerAddr> = contrib::Slot::new("opsapi.peers"
 /// a per-request [`Status::Unavailable`] (503) rather than a construction-time panic in
 /// every stub-wiring process (mirrors `remote::EdgeDialer`'s lazy-parse contract).
 ///
-/// `addrs` is a `Vec` sized for the multi-instance (round-robin) end-state, but in the
-/// single-address phase it carries EXACTLY ONE element (the one address the stub was
-/// wired with, or boot-resolved). The gateway route table reads the first element; the
-/// client-side load-balancing that spreads across the whole set is a later phase. The
-/// shape is landed as the SET now so that phase extends it rather than re-shaping it.
+/// `addrs` carries ALL of the provider's live instances (C2 round-robin): a managed
+/// front door's boot fills the whole `resolve` answer, and the gateway route table builds
+/// a `remote::Pool` over the SET so HTTP-dispatched Remote ops spread across instances. A
+/// single-instance provider (monolith / standalone) is a one-element set — a pool-of-1,
+/// byte-identical to the old single path. An EMPTY set is a deliberate "known but nothing
+/// live" answer the pool renders un-routable (503), never a silent first-pick.
 /// `Clone` is required by [`crate::Caller`]'s slot reader (`contributions<T: Clone>`).
 #[derive(Clone)]
 pub struct PeerAddr {

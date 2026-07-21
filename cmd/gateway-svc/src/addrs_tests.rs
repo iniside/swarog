@@ -222,12 +222,12 @@ async fn standalone_unset_env_is_todays_defaults() {
     let addrs = gateway_addrs(&AddrSource::Env, env_unset(), decoy_agent()).await.unwrap();
     let wiring = addrs.to_wiring();
 
-    assert_eq!(wiring.peer_or("characters", "unset"), "127.0.0.1:9000");
-    assert_eq!(wiring.peer_or("inventory", "unset"), "127.0.0.1:9001");
-    assert_eq!(wiring.peer_or("accounts", "unset"), "127.0.0.1:9003");
-    assert_eq!(wiring.peer_or("apikeys", "unset"), "127.0.0.1:9009");
-    assert_eq!(wiring.peer_or("match", "unset"), "127.0.0.1:9006");
-    assert_eq!(wiring.peer_or("leaderboard", "unset"), "127.0.0.1:9008");
+    assert_eq!(wiring.peer_set_or("characters", &["unset"]), vec!["127.0.0.1:9000"]);
+    assert_eq!(wiring.peer_set_or("inventory", &["unset"]), vec!["127.0.0.1:9001"]);
+    assert_eq!(wiring.peer_set_or("accounts", &["unset"]), vec!["127.0.0.1:9003"]);
+    assert_eq!(wiring.peer_set_or("apikeys", &["unset"]), vec!["127.0.0.1:9009"]);
+    assert_eq!(wiring.peer_set_or("match", &["unset"]), vec!["127.0.0.1:9006"]);
+    assert_eq!(wiring.peer_set_or("leaderboard", &["unset"]), vec!["127.0.0.1:9008"]);
     assert_eq!(
         passthroughs(&addrs),
         vec![
@@ -250,8 +250,12 @@ async fn standalone_reads_the_env_var_and_treats_blank_as_unset() {
     .await;
 
     let wiring = addrs.to_wiring();
-    assert_eq!(wiring.peer_or("characters", "unset"), "10.0.0.5:9000");
-    assert_eq!(wiring.peer_or("inventory", "unset"), "127.0.0.1:9001", "blank means unset");
+    assert_eq!(wiring.peer_set_or("characters", &["unset"]), vec!["10.0.0.5:9000"]);
+    assert_eq!(
+        wiring.peer_set_or("inventory", &["unset"]),
+        vec!["127.0.0.1:9001"],
+        "blank means unset"
+    );
     assert_eq!(passthroughs(&addrs)[0], ("/admin".to_string(), "127.0.0.1:8085".to_string()));
 }
 
@@ -261,7 +265,7 @@ async fn standalone_reads_the_env_var_and_treats_blank_as_unset() {
 #[tokio::test]
 async fn env_mode_asks_no_agent() {
     let addrs = resolve_env(FLEET).await;
-    assert_eq!(addrs.to_wiring().peer_or("characters", "unset"), "127.0.0.1:9000");
+    assert_eq!(addrs.to_wiring().peer_set_or("characters", &["unset"]), vec!["127.0.0.1:9000"]);
 }
 
 // ---------------------------------------------------------------------------
@@ -347,7 +351,10 @@ async fn unknown_peer_on_a_passthrough_is_an_empty_origin() {
 
     // The OTHER seven are untouched: a fatal-vs-blank decision is per address,
     // never a whole-boot switch.
-    assert_eq!(from_agent.to_wiring().peer_or("characters", "unset"), "127.0.0.1:9000");
+    assert_eq!(
+        from_agent.to_wiring().peer_set_or("characters", &["unset"]),
+        vec!["127.0.0.1:9000"]
+    );
     assert_eq!(
         passthroughs(&from_agent)[1],
         ("/accounts/epic".to_string(), "127.0.0.1:8084".to_string()),
@@ -432,16 +439,36 @@ async fn a_blank_address_is_not_an_address() {
     assert!(error.contains("BLANK"), "{error}");
 }
 
-/// Two instances is M2's LB shape, which this front door does not implement:
-/// taking the first would look healthy while half the traffic went nowhere.
+/// C2: two EDGE instances are ACCEPTED and carried through as a SET (the property the old
+/// `exactly_one` `n>1` refusal destroyed). The whole set reaches `with_peer_set` so a
+/// `remote::Pool` round-robins across both — the pool's distribution across `[A,B]` is
+/// proven in `core/remote`, this pins that the boot path stops collapsing the list.
 #[tokio::test]
-async fn two_addresses_are_refused_rather_than_silently_halved() {
+async fn two_edge_addresses_are_accepted_and_carried_as_a_set() {
     let agent = FakeAgent::healthy().with(
         "characters",
         AddrKind::Edge,
         Ok(vec!["127.0.0.1:9000".to_string(), "127.0.0.1:9100".to_string()]),
     );
+    let resolved = resolve_managed(&agent).await.expect("two edge instances are a LIST, not a refusal");
+    assert_eq!(
+        resolved.to_wiring().peer_set_or("characters", &["unset"]),
+        vec!["127.0.0.1:9000".to_string(), "127.0.0.1:9100".to_string()],
+        "both instances must reach the wiring for the pool to load-balance across them",
+    );
+}
+
+/// A PASSTHROUGH origin is a single reverse-proxy target, so two origins IS still refused
+/// (unlike an edge peer, a proxy does not load-balance here) — the `exactly_one` `n>1`
+/// guard survives for passthroughs even as edge peers accept the set.
+#[tokio::test]
+async fn two_passthrough_origins_are_refused() {
+    let agent = FakeAgent::healthy().with(
+        "admin",
+        AddrKind::Http,
+        Ok(vec!["127.0.0.1:8085".to_string(), "127.0.0.1:8185".to_string()]),
+    );
     let error = resolve_managed(&agent).await.unwrap_err().to_string();
-    assert!(error.contains("2 addresses"), "{error}");
-    assert!(error.contains("load balancing"), "{error}");
+    assert!(error.contains("2 origins"), "{error}");
+    assert!(error.contains("single reverse-proxy target"), "{error}");
 }

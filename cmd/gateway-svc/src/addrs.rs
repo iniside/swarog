@@ -47,15 +47,24 @@
 //! # `404 unknown_peer` is not `200 {"addrs":[]}`, and neither is defaulted away
 //!
 //! `resolve_peer` hands back `Ok(vec![])` for "it is a thing; nothing is live
-//! right now" — a LIVENESS answer that M1's agent never emits and that a caller
-//! may not treat as final. So [`exactly_one`] refuses it loudly instead of
+//! right now" — a LIVENESS answer that M1's agent never emits and that a boot
+//! path may not treat as final. So the BOOT snapshot refuses it loudly (edge:
+//! [`nonempty_list`]; passthrough: [`exactly_one`]) instead of
 //! `.first().cloned().unwrap_or_default()`-ing it into an empty address string:
 //! an empty list is not an address, and folding it into the passthrough's
 //! empty-origin rule would answer a liveness question with a topology decision.
-//! Acting on it (waiting, re-resolving) is M2's job. Two addresses is refused for
-//! the same reason from the other side: choosing between instances is load
-//! balancing, which M1 does not do — and silently taking the first would send
-//! half a fleet's traffic nowhere while looking healthy.
+//! Acting on it (waiting, re-resolving) is M2's job.
+//!
+//! # Two addresses is a LIST, not a refusal (C2 round-robin)
+//!
+//! An EDGE peer that resolves to TWO or more instances is the replica/round-robin
+//! shape: [`nonempty_list`] hands the WHOLE set through to a `remote::Pool` (in
+//! the capability stub) and into `opsapi::PEER_SLOT` (for the gateway route
+//! table's own per-provider pool), so client-side load balancing spreads the
+//! traffic across every live instance. The old `exactly_one` `n>1` refusal ("M1
+//! does not load balance") is gone for edge peers. A PASSTHROUGH origin is still a
+//! single reverse-proxy target, so [`exactly_one`] still refuses `n>1` there — two
+//! `/admin` origins is a genuine ambiguity this front door cannot resolve.
 
 use std::future::Future;
 
@@ -246,16 +255,18 @@ fn addr_source_from_value(raw: Option<&str>) -> Result<AddrSource> {
 pub(crate) struct ResolvedAddrs {
     /// Keyed by env key even in managed mode: the key is this table's stable
     /// identity for an address, and naming it that way keeps the two modes'
-    /// answers comparable pair-for-pair.
-    pairs: Vec<(&'static str, String)>,
+    /// answers comparable pair-for-pair. The VALUE is a SET (C2): an edge peer
+    /// carries ALL its live instances (N ≥ 1); a passthrough carries its single
+    /// origin (0 elements = "no origin", the blank/drop case).
+    pairs: Vec<(&'static str, Vec<String>)>,
 }
 
 impl ResolvedAddrs {
-    fn addr(&self, env_key: &str) -> &str {
+    fn addrs(&self, env_key: &str) -> &[String] {
         self.pairs
             .iter()
             .find(|(key, _)| *key == env_key)
-            .map(|(_, addr)| addr.as_str())
+            .map(|(_, addrs)| addrs.as_slice())
             .unwrap_or_else(|| panic!("{env_key} was never resolved (not in ADDR_SPECS?)"))
     }
 
@@ -264,13 +275,21 @@ impl ResolvedAddrs {
     /// this line: `cmd/gateway-svc/src/lib.rs` (whose literal `Stub::new("<domain>"`
     /// calls archcheck rule 17 text-scans) and every `Stub` under it are handed
     /// addresses exactly as before, and stay blind to where they came from.
+    ///
+    /// An edge peer's whole instance SET goes to `with_peer_set` (a `remote::Pool`
+    /// then round-robins across it, and the same set reaches the gateway route
+    /// table via `PEER_SLOT`); a passthrough's single origin goes to
+    /// `with_passthrough` (a 0-element set is the blank origin the proxy table
+    /// drops — byte-identical to an unset env var).
     pub(crate) fn to_wiring(&self) -> ProcessWiring {
         let mut wiring = ProcessWiring::new();
         for spec in ADDR_SPECS {
-            let addr = self.addr(spec.env_key);
+            let addrs = self.addrs(spec.env_key);
             wiring = match spec.class {
-                AddrClass::Edge => wiring.with_peer(spec.provider, addr),
-                AddrClass::Passthrough { prefix } => wiring.with_passthrough(prefix, addr),
+                AddrClass::Edge => wiring.with_peer_set(spec.provider, addrs.to_vec()),
+                AddrClass::Passthrough { prefix } => {
+                    wiring.with_passthrough(prefix, addrs.first().cloned().unwrap_or_default())
+                }
             };
         }
         wiring
@@ -297,15 +316,34 @@ where
 {
     let mut pairs = Vec::with_capacity(ADDR_SPECS.len());
     for spec in ADDR_SPECS {
-        let addr = match source {
-            AddrSource::Env => addr_or_default(env_lookup(spec.env_key), spec.env_default),
+        let addrs = match source {
+            AddrSource::Env => env_addrs(spec, env_lookup(spec.env_key)),
             AddrSource::Agent(_) => {
-                managed_addr(spec, ask_agent(spec.provider, spec.class.kind()).await)?
+                managed_addrs(spec, ask_agent(spec.provider, spec.class.kind()).await)?
             }
         };
-        pairs.push((spec.env_key, addr));
+        pairs.push((spec.env_key, addrs));
     }
     Ok(ResolvedAddrs { pairs })
+}
+
+/// Standalone's per-spec set. An edge peer is a ONE-element set (the env value or its
+/// default) — byte-identical to before, and `to_wiring` hands it to `with_peer_set` as a
+/// pool-of-1 (`fixed`/`Reconnecting` downstream, no re-resolve). A passthrough is one
+/// element, or ZERO when unset/blank (the blank-origin/drop case the proxy table renders
+/// a 404 — preserved exactly).
+fn env_addrs(spec: &AddrSpec, raw: Option<String>) -> Vec<String> {
+    let addr = addr_or_default(raw, spec.env_default);
+    match spec.class {
+        AddrClass::Edge => vec![addr],
+        AddrClass::Passthrough { .. } => {
+            if addr.trim().is_empty() {
+                Vec::new()
+            } else {
+                vec![addr]
+            }
+        }
+    }
 }
 
 /// Standalone's rule, unchanged: the env value, falling back to `default` when
@@ -324,9 +362,14 @@ fn addr_or_default(raw: Option<String>, default: &str) -> String {
 /// server — the taxonomy is the whole reason this is decidable at all (nothing
 /// here reads [`ResolveError`]'s prose; `code` is the discriminator, `message`
 /// is for the operator).
-fn managed_addr(spec: &AddrSpec, answer: WireAnswer) -> Result<String> {
+fn managed_addrs(spec: &AddrSpec, answer: WireAnswer) -> Result<Vec<String>> {
     match answer {
-        Ok(addrs) => exactly_one(spec, addrs),
+        // An edge peer takes the WHOLE instance set (C2 — a `remote::Pool` load-balances
+        // across it); a passthrough collapses to its single reverse-proxy origin.
+        Ok(addrs) => match spec.class {
+            AddrClass::Edge => nonempty_list(spec, addrs),
+            AddrClass::Passthrough { .. } => exactly_one(spec, addrs).map(|a| vec![a]),
+        },
         // The ONE code the per-class policy branches on: a fact about the fleet.
         Err(ResolveError::Refused { code: ErrorCode::UnknownPeer, status, message }) => {
             match spec.class {
@@ -343,6 +386,7 @@ fn managed_addr(spec: &AddrSpec, answer: WireAnswer) -> Result<String> {
                 // the proxy table drops a blank-origin route, so the prefix is
                 // unrouted and 404s. The agent said this origin is not a thing in
                 // this topology — which is the same fact an unset env var states.
+                // A ZERO-element set is that blank origin.
                 AddrClass::Passthrough { prefix } => {
                     tracing::warn!(
                         prefix,
@@ -353,7 +397,7 @@ fn managed_addr(spec: &AddrSpec, answer: WireAnswer) -> Result<String> {
                          answered unknown_peer; same as an unset {})",
                         spec.env_key,
                     );
-                    Ok(String::new())
+                    Ok(Vec::new())
                 }
             }
         }
@@ -372,61 +416,85 @@ fn managed_addr(spec: &AddrSpec, answer: WireAnswer) -> Result<String> {
     }
 }
 
-/// A dial-time re-resolver for a MANAGED edge peer (A5): a [`remote::PeerResolver`] that
-/// re-asks the orchestrator agent for `provider`'s edge address on EVERY dial, so a
-/// moved peer is picked up by the stub's reconnecting caller without restarting this
+/// A dial-time re-resolver for a MANAGED edge peer's INSTANCE LIST (A5 + C2): a
+/// [`remote::PeerListResolver`] that re-asks the orchestrator agent for ALL of
+/// `provider`'s live edge instances on the pool's refresh cadence, so both a moved peer
+/// AND a scale up/down are picked up by the stub's `remote::Pool` without restarting this
 /// front door. The boot snapshot the gateway route table reads is still the one
-/// [`gateway_addrs`] resolved at start; THIS drives the capability stub's live dials.
+/// [`gateway_addrs`] resolved at start; THIS drives the capability stub's live pool.
 ///
-/// Single-address in this phase: it reduces the agent's answer through the SAME
-/// [`exactly_one`] policy the boot path uses, so a topology that grew a second instance
-/// fails one dial at a time (503) rather than silently sending half the traffic nowhere
-/// — the load-balancing that would accept the list is a later phase. A resolve failure
-/// (unreachable agent, `unknown_peer`, malformed) is a `host:port`-string error the
-/// dialer maps to a 503, which is exactly what an unresolvable peer is.
-pub(crate) fn edge_resolver(agent_url: &str, provider: &'static str) -> remote::PeerResolver {
+/// It hands the agent's answer through VERBATIM (the old `exactly_one` collapse is gone):
+/// the whole set is the pool's instance list, so it round-robins across every live
+/// instance. An empty `[]` is passed through un-collapsed — the pool renders it
+/// un-routable (503) rather than a silent first-pick, preserving the "not-yet-live is not
+/// an address" boot signal at the LIVE layer too. A resolve failure (unreachable agent,
+/// `unknown_peer`, malformed) is a human-string error the pool's refresh keeps the
+/// existing set for and retries — an unresolvable list is as unavailable as an
+/// unreachable one.
+pub(crate) fn edge_list_resolver(
+    agent_url: &str,
+    provider: &'static str,
+) -> remote::PeerListResolver {
     let agent_url = agent_url.to_string();
     std::sync::Arc::new(move || {
         let agent_url = agent_url.clone();
         let fut = async move {
-            let answer = remote::resolve_peer(&agent_url, provider, AddrKind::Edge).await;
-            let spec = edge_spec(provider);
-            match answer {
-                Ok(addrs) => exactly_one(spec, addrs).map_err(|e| e.to_string()),
+            match remote::resolve_peer(&agent_url, provider, AddrKind::Edge).await {
+                Ok(addrs) => Ok(addrs),
                 Err(error) => Err(format!(
                     "re-resolve edge peer {provider:?} from the orchestrator: {error}"
                 )),
             }
         };
         let boxed: std::pin::Pin<
-            Box<dyn std::future::Future<Output = std::result::Result<String, String>> + Send>,
+            Box<
+                dyn std::future::Future<Output = std::result::Result<Vec<String>, String>> + Send,
+            >,
         > = Box::pin(fut);
         boxed
     })
 }
 
-/// The [`AddrSpec`] for an EDGE `provider` (a peer with a `_EDGE_ADDR`). `accounts` is
-/// both an edge peer and a passthrough origin, so the class filter is load-bearing —
-/// [`edge_resolver`] only ever resolves the edge address.
-fn edge_spec(provider: &str) -> &'static AddrSpec {
-    ADDR_SPECS
-        .iter()
-        .find(|s| s.provider == provider && s.class == AddrClass::Edge)
-        .unwrap_or_else(|| panic!("edge_resolver called for non-edge provider {provider:?}"))
+/// The EDGE boot-snapshot shape (C2): ANY non-empty set is accepted — the whole list
+/// flows to a `remote::Pool` (capability stub) and `PEER_SLOT` (route table) so client-side
+/// round-robin spreads traffic across every live instance. Only the un-actionable answers
+/// are refused: an EMPTY list (a liveness answer M1 never emits and this boot path cannot
+/// act on — M2's territory) and a BLANK member (not an address a Stub can dial). The old
+/// `exactly_one` `n>1` refusal is intentionally absent — two instances is a LIST now.
+fn nonempty_list(spec: &AddrSpec, addrs: Vec<String>) -> Result<Vec<String>> {
+    if addrs.is_empty() {
+        bail!(
+            "the agent answered an EMPTY address list for {} ({:?}): that is a LIVENESS \
+             answer (\"it is a thing; nothing is live right now\"), NOT the topology \
+             refusal a 404 carries, and it is not an address. M1's agent never emits it \
+             and this boot path cannot act on it — waiting/re-resolving is M2's job.",
+            spec.env_key,
+            spec.provider,
+        );
+    }
+    if addrs.iter().any(|a| a.trim().is_empty()) {
+        bail!(
+            "the agent answered a BLANK address among the instances for {} ({:?}): a blank \
+             is not an address a Stub can dial.",
+            spec.env_key,
+            spec.provider,
+        );
+    }
+    Ok(addrs)
 }
 
-/// The list shape, decided rather than defaulted (see the module doc): M1 answers
-/// exactly one address, and neither zero nor many is an address this boot path
-/// can act on.
+/// The single-origin shape for a PASSTHROUGH: a reverse-proxy origin is one target, so
+/// zero (a liveness answer M1 never emits), a blank, or MANY (a genuine ambiguity this
+/// front door cannot resolve — unlike an edge peer, a proxy does not load-balance here)
+/// are all refused. Edge peers use [`nonempty_list`] instead, which accepts the set.
 fn exactly_one(spec: &AddrSpec, addrs: Vec<String>) -> Result<String> {
     match addrs.len() {
         1 => {
             let addr = addrs.into_iter().next().expect("len == 1");
             if addr.trim().is_empty() {
                 bail!(
-                    "the agent answered a BLANK address for {} ({:?}): a blank is not an \
-                     address — for a passthrough it would silently unroute the prefix, and \
-                     for an edge peer it is a Stub that cannot dial.",
+                    "the agent answered a BLANK origin for {} ({:?}): a blank is not an \
+                     address — for a passthrough it would silently unroute the prefix.",
                     spec.env_key,
                     spec.provider,
                 );
@@ -442,9 +510,10 @@ fn exactly_one(spec: &AddrSpec, addrs: Vec<String>) -> Result<String> {
             spec.provider,
         ),
         n => bail!(
-            "the agent answered {n} addresses for {} ({:?}): choosing between instances is \
-             load balancing, which this front door does not do in M1 — silently taking the \
-             first would look healthy while sending part of the traffic nowhere.",
+            "the agent answered {n} origins for {} ({:?}): a passthrough is a single \
+             reverse-proxy target — choosing between origins is not something this front \
+             door does, and silently taking the first would send part of the traffic \
+             nowhere while looking healthy.",
             spec.env_key,
             spec.provider,
         ),

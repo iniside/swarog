@@ -577,6 +577,54 @@ fn build_rejects_duplicate_peer_provider() {
     assert!(err.contains("characters"), "the bail must name the colliding provider: {err}");
 }
 
+/// C2: a provider that resolved to TWO instances carries the WHOLE set into the route
+/// table's `peers` map — the property the old `.into_iter().next()` collapse (and, one
+/// layer up, gateway-svc's `exactly_one`) destroyed. `remote_caller` then builds a
+/// `remote::Pool` over this set so HTTP-dispatched Remote ops round-robin across both.
+/// (The pool's distribution across `[A,B]` is proven in `core/remote`'s
+/// `pool_distributes_round_robin_across_two_instances`; the wire-level spread through the
+/// gateway is the C4 splitproof assertion — an in-process test cannot fake the two edge
+/// servers a real Pool dials.)
+#[test]
+fn build_carries_the_full_instance_set_for_a_multi_instance_provider() {
+    let slots = Slots::new();
+    slots.contribute(
+        opsapi::PEER_SLOT,
+        opsapi::PeerAddr {
+            provider: "characters".into(),
+            addrs: vec!["127.0.0.1:9000".into(), "127.0.0.1:9100".into()],
+        },
+    );
+    let table = RouteTable::build(&slots).expect("multi-instance peer set builds");
+    assert_eq!(
+        table.peers.get("characters"),
+        Some(&vec!["127.0.0.1:9000".to_string(), "127.0.0.1:9100".to_string()]),
+        "the whole instance set must reach `peers` (not a collapsed first element)"
+    );
+}
+
+/// C2: a single-instance provider is a one-element set — a pool-of-1, byte-identical to
+/// the monolith/standalone path. `remote_caller` builds a caller (a `remote::Pool`) and
+/// caches it without dialing (construction is synchronous).
+#[tokio::test]
+async fn remote_caller_builds_and_caches_a_pool_for_a_single_instance_provider() {
+    let slots = Slots::new();
+    slots.contribute(
+        opsapi::PEER_SLOT,
+        opsapi::PeerAddr { provider: "characters".into(), addrs: vec!["127.0.0.1:9000".into()] },
+    );
+    let table = RouteTable::build(&slots).expect("single-instance peer set builds");
+    // Construction is sync (no dial), so this resolves promptly and caches the pool.
+    let caller = table.remote_caller("characters").await.expect("a pool is built for a wired peer");
+    assert!(
+        table.cached_remote("characters").is_some(),
+        "the built pool must be cached for reuse across requests"
+    );
+    // A second call reuses the SAME cached pool (Arc identity), never rebuilding.
+    let again = table.remote_caller("characters").await.unwrap();
+    assert!(Arc::ptr_eq(&caller, &again), "a cached pool must be reused, not rebuilt");
+}
+
 // ---- the player handler: the pinned {status, err} grammar on every outcome ----
 
 /// Drives the player handler exactly as the `edge::PlayerServer` would, returning

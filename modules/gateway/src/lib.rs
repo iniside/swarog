@@ -615,14 +615,17 @@ struct RouteTable {
     routes: Vec<Route>,
     /// In-process invokers (method → invoker). Presence decides Local vs Remote.
     invokers: Arc<HashMap<String, LocalInvoker>>,
-    /// Peer edge addresses per provider (provider → UNPARSED `host:port`), collected
-    /// from `opsapi::PEER_SLOT` — one entry per `remote::Stub` the composition root
-    /// wired. `remote_caller` looks a provider up here (and parses lazily) instead of
-    /// reading a per-provider edge-address env var: topology is injected by the
-    /// composition root, never read inside this module.
-    peers: HashMap<String, String>,
-    /// Lazily-dialed edge clients per provider, shared across requests to that peer.
-    /// An entry is EVICTED when a call through it fails (see [`RouteTable::dispatch`]).
+    /// Peer edge address SET per provider (provider → ALL its live instances as UNPARSED
+    /// `host:port` strings), collected from `opsapi::PEER_SLOT` — one entry per
+    /// `remote::Stub` the composition root wired. `remote_caller` looks a provider up here
+    /// and builds a round-robin `remote::Pool` over the set (C2), instead of reading a
+    /// per-provider edge-address env var: topology is injected by the composition root,
+    /// never read inside this module. A single-instance provider is a one-element set — a
+    /// pool-of-1.
+    peers: HashMap<String, Vec<String>>,
+    /// Lazily-built per-provider callers (a `remote::Pool` over the instance set), shared
+    /// across requests to that provider. An entry is EVICTED when a call through it fails
+    /// non-definitively (see [`RouteTable::dispatch`]) — a fresh pool re-resolves + re-probes.
     /// A `std::sync::Mutex` locked only for synchronous get/insert/remove — never
     /// held across an await (the `keys.rs` cache rule), so a slow dial to one
     /// provider can never block cache hits for the others.
@@ -678,7 +681,7 @@ impl RouteTable {
             invokers.insert(l.method.clone(), l.invoke);
         }
 
-        let mut peers: HashMap<String, String> = HashMap::new();
+        let mut peers: HashMap<String, Vec<String>> = HashMap::new();
         for p in peer_addrs {
             if let Some(existing) = peers.get(&p.provider) {
                 anyhow::bail!(
@@ -689,13 +692,11 @@ impl RouteTable {
                     p.addrs
                 );
             }
-            // Single-address phase: the SET carries exactly one address; take it. The
-            // client-side load-balancing that would spread across the whole set is a
-            // later phase (this route table's Remote HTTP dispatch stays single-instance
-            // until then). An empty set surfaces as a per-request 503 at dial, mirroring
-            // the lazy-parse contract.
-            let addr = p.addrs.into_iter().next().unwrap_or_default();
-            peers.insert(p.provider, addr);
+            // Carry the WHOLE instance set (C2): `remote_caller` builds a round-robin
+            // `remote::Pool` over it so HTTP-dispatched Remote ops spread across every live
+            // instance. An empty set surfaces as a per-request 503 (the pool is un-routable),
+            // mirroring the lazy-resolve contract.
+            peers.insert(p.provider, p.addrs);
         }
 
         let mut routes: Vec<Route> = Vec::new();
@@ -835,23 +836,39 @@ impl RouteTable {
         if let Some(c) = self.cached_remote(provider) {
             return Ok(c);
         }
-        let addr_str = self.peers.get(provider).ok_or_else(|| {
-            Error::unavailable(format!(
-                "gateway: no peer contributed for provider {provider:?} \
-                 (wire a remote::Stub in this process's main)"
-            ))
-        })?;
-        let addr: SocketAddr = addr_str.parse().map_err(|e| {
-            Error::unavailable(format!(
-                "gateway: bad peer addr {addr_str:?} for provider {provider:?}: {e}"
-            ))
-        })?;
-        let ca = edge::shared_dev_ca()
-            .map_err(|e| Error::unavailable(format!("gateway: edge CA: {e}")))?;
-        let client = edge::Client::dial(addr, &ca)
-            .await
-            .map_err(|e| Error::unavailable(format!("gateway: dial {provider}: {e}")))?;
-        let caller: Arc<dyn Caller> = Arc::new(client);
+        let addrs = self
+            .peers
+            .get(provider)
+            .ok_or_else(|| {
+                Error::unavailable(format!(
+                    "gateway: no peer contributed for provider {provider:?} \
+                     (wire a remote::Stub in this process's main)"
+                ))
+            })?
+            .clone();
+        // Build a client-side round-robin `remote::Pool` over this provider's resolved
+        // instance SET (C2). Construction is synchronous (no dial): the pool dials +
+        // probes each instance lazily on its first `call`, so a slow/dead instance is a
+        // per-request 503 inside the pool, never a construction-time hang here. A
+        // single-instance provider degenerates to a pool-of-1 — behaviourally the same
+        // self-healing dial the bare `edge::Client` gave, plus retry-mode-honouring replay.
+        //
+        // [SHARED-VS-SEPARATE — flagged] This pool is DISTINCT from the capability stub's
+        // pool (in `remote::Stub`): they cannot share a live object across the
+        // module/`core` boundary (the stub contributes DATA to PEER_SLOT, not its Pool).
+        // The stub's pool re-resolves the LIST live off the agent; this one round-robins
+        // over the BOOT snapshot PEER_SLOT carries (contributed in `init` before any I/O,
+        // so it cannot re-resolve). Both spread across every instance the boot resolve saw
+        // — a scale event reaches HTTP dispatch on the next process boot, the capability
+        // path live. Deliberate for C2; a live route-table re-resolve is out of scope.
+        let list: remote::PeerListResolver = {
+            let addrs = addrs.clone();
+            Arc::new(move || {
+                let addrs = addrs.clone();
+                Box::pin(async move { Ok(addrs.clone()) })
+            })
+        };
+        let caller: Arc<dyn Caller> = Arc::new(remote::Pool::new(list));
         self.remotes.lock().unwrap().insert(provider.to_string(), caller.clone());
         Ok(caller)
     }

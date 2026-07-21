@@ -124,19 +124,21 @@ async fn main() -> anyhow::Result<()> {
     if let Some(budget) = admission_budget_from_env()? {
         wiring = wiring.with_admission_budget(budget);
     }
-    // Managed boot (A5): hand each edge stub a live re-resolver bound to the agent URL,
-    // so its reconnecting caller picks up a moved peer without restarting this front
-    // door. Standalone boot (`AddrSource::Env`, `agent_url()` is `None`) passes `None`
-    // — constant resolvers, byte-identical to before. The boot snapshot the gateway
-    // route table reads was already resolved once above by `gateway_addrs`.
+    // Managed boot (A5 + C2): hand each edge stub a live LIST re-resolver bound to the
+    // agent URL, so its capability caller is a `remote::Pool` that round-robins across the
+    // provider's live instances and picks up a moved peer OR a scale event without
+    // restarting this front door. Standalone boot (`AddrSource::Env`, `agent_url()` is
+    // `None`) passes `None` — a single fixed conn, byte-identical to before. The boot
+    // snapshot the gateway route table reads was already resolved once above by
+    // `gateway_addrs` (the whole instance set per edge peer).
     let edge_mk = if source.agent_url().is_some() {
-        Some(move |provider: &'static str| addrs::edge_resolver(&agent_url, provider))
+        Some(move |provider: &'static str| addrs::edge_list_resolver(&agent_url, provider))
     } else {
         None
     };
-    let edge_mk_ref: Option<&dyn Fn(&'static str) -> remote::PeerResolver> = edge_mk
+    let edge_mk_ref: Option<&dyn Fn(&'static str) -> remote::PeerListResolver> = edge_mk
         .as_ref()
-        .map(|f| f as &dyn Fn(&'static str) -> remote::PeerResolver);
+        .map(|f| f as &dyn Fn(&'static str) -> remote::PeerListResolver);
     let mods = gateway_svc::modules(&wiring, Some(player.clone()), edge_mk_ref);
 
     // No edge server: this process serves no provider over the internal mTLS edge, it

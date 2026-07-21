@@ -916,8 +916,8 @@ async fn readyz_check_does_no_io() {
     // Seed the cache DIRECTLY (same crate — private fields are reachable). A cache read
     // returns this exact sentinel; a live dial never would. Fresh stamp so the
     // staleness guard does NOT fire and force an unready verdict of its own.
-    *stub.verdict.lock().unwrap() = Err("SENTINEL-cached".to_string());
-    stub.last_probe_at
+    *stub.single_verdict().lock().unwrap() = Err("SENTINEL-cached".to_string());
+    stub.single_last_probe_at()
         .store(coarse_now_secs().max(1), Ordering::SeqCst);
 
     // `init` contributes the `stub:<provider>` ReadyCheck to READINESS_SLOT.
@@ -962,7 +962,7 @@ async fn background_probe_updates_verdict() {
     let mut became_ready = false;
     let deadline = std::time::Instant::now() + Duration::from_secs(2);
     while std::time::Instant::now() < deadline {
-        let v = stub.verdict.lock().unwrap().clone();
+        let v = stub.single_verdict().lock().unwrap().clone();
         if v.is_ok() {
             became_ready = true;
             break;
@@ -971,7 +971,7 @@ async fn background_probe_updates_verdict() {
     }
     assert!(became_ready, "background probe never stamped Ok for a live peer");
     assert_ne!(
-        stub.last_probe_at.load(Ordering::SeqCst),
+        stub.single_last_probe_at().load(Ordering::SeqCst),
         0,
         "a completed probe must stamp last_probe_at"
     );
@@ -981,7 +981,7 @@ async fn background_probe_updates_verdict() {
     let mut became_err = false;
     let deadline = std::time::Instant::now() + Duration::from_secs(2);
     while std::time::Instant::now() < deadline {
-        let v = stub.verdict.lock().unwrap().clone();
+        let v = stub.single_verdict().lock().unwrap().clone();
         if v.is_err() {
             became_err = true;
             break;
@@ -1392,4 +1392,85 @@ fn instance_health_selectable_and_healthy_branches() {
     let later = now + PROBE_STALL_MAX.as_secs() + 1;
     assert!(!stale.healthy(later), "stale Ok flips to not-healthy");
     assert!(!stale.is_selectable(later), "a stale-Ok instance is skipped by selection");
+}
+
+// ---- C2: a POOLED stub wires a `Pool` capability caller + full-set PEER_SLOT ----
+//
+// A `PeerSource::pooled` stub is the managed multi-instance wiring: its capability caller
+// is a `Pool` (whose round-robin distribution across `[A,B]` is proven by
+// `pool_distributes_round_robin_across_two_instances` above — the property `exactly_one`
+// structurally refused), and its boot snapshot carries ALL instances into `PEER_SLOT` so a
+// co-hosted gateway route table pools across the SAME set. These pin the STUB wiring; the
+// pool's own behaviour is the C1 block.
+
+/// The full-set PEER_SLOT population (C2): a pooled stub contributes ALL its boot instances
+/// to `PEER_SLOT`, not a collapsed first element. This is the set the gateway route table
+/// reads to build its own per-provider `Pool`.
+#[test]
+fn pooled_stub_contributes_full_instance_set_to_peer_slot() {
+    let ctx = Context::new();
+    let stub = Stub::new(
+        "fake",
+        PeerSource::pooled(
+            vec!["127.0.0.1:9000".to_string(), "127.0.0.1:9100".to_string()],
+            list_of(&["127.0.0.1:9000", "127.0.0.1:9100"]),
+        ),
+        vec![Box::new(|_ctx, _caller| {})],
+    );
+    stub.init(&ctx).unwrap();
+    let peers: Vec<opsapi::PeerAddr> = ctx.contributions(opsapi::PEER_SLOT);
+    let found = peers.iter().find(|p| p.provider == "fake").expect("PEER_SLOT contribution");
+    assert_eq!(
+        found.addrs,
+        vec!["127.0.0.1:9000".to_string(), "127.0.0.1:9100".to_string()],
+        "a pooled stub carries the WHOLE instance set into PEER_SLOT (not the first only)"
+    );
+}
+
+/// A pooled stub's `register` still applies every injected factory (topology-blind), handing
+/// each the `Pool` as the `opsapi::Caller` — the consumer's `require` resolves to a pool
+/// exactly as it would a single `Reconnecting` conn, unaware which it got.
+#[test]
+fn pooled_stub_runs_every_factory_over_the_pool_caller() {
+    let ctx = Context::new();
+    let hits = Arc::new(AtomicUsize::new(0));
+    let captured: Arc<StdMutex<Option<Arc<dyn Caller>>>> = Arc::new(StdMutex::new(None));
+
+    let h = hits.clone();
+    let cap = captured.clone();
+    let factories: Vec<RemoteFactory> = vec![Box::new(move |_ctx: &Context, caller| {
+        h.fetch_add(1, Ordering::SeqCst);
+        *cap.lock().unwrap() = Some(caller);
+    })];
+
+    let stub = Stub::new(
+        "fake",
+        PeerSource::pooled(vec!["127.0.0.1:9000".to_string()], list_of(&["127.0.0.1:9000"])),
+        factories,
+    );
+    stub.register(&ctx).unwrap();
+    assert_eq!(hits.load(Ordering::SeqCst), 1, "register must run the factory for a pooled stub");
+    assert!(captured.lock().unwrap().is_some(), "the factory was handed the pool caller");
+}
+
+/// A pooled stub's `/readyz` is `Pool::readyz` (some-down-vs-all-down over the per-instance
+/// verdicts), contributed under the SAME `stub:<provider>` name a single stub uses — and it
+/// is fail-closed DOWN at cold start (no instance resolved/probed yet), mirroring the single
+/// stub's `Err("probe pending")` seed. Zero I/O: it reads the empty instance set.
+#[tokio::test]
+async fn pooled_stub_readyz_is_pool_readyz_and_cold_start_down() {
+    let ctx = Context::new();
+    let stub = Stub::new(
+        "fake",
+        PeerSource::pooled(vec!["127.0.0.1:9000".to_string()], list_of(&["127.0.0.1:9000"])),
+        vec![Box::new(|_ctx, _caller| {})],
+    );
+    stub.init(&ctx).unwrap();
+    let check = ctx
+        .contributions::<httpmw::ReadyCheck>(httpmw::READINESS_SLOT)
+        .into_iter()
+        .find(|c| c.name() == "stub:fake")
+        .expect("a pooled stub must contribute a `stub:fake` readiness check");
+    let err = check.run().await.expect_err("cold-start pool (no instances resolved) is down");
+    assert!(err.contains("no resolved instances"), "cold-start down verdict: {err}");
 }

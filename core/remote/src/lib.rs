@@ -60,10 +60,10 @@ use tokio::task::JoinHandle;
 
 // ---------------------------------------------------------------------------
 // The orchestrator agent's `resolve` client. It lives here (rather than in a
-// `cmd/*` root) because it is `Stub`'s eventual re-resolve source; in M1 only
-// `cmd/gateway-svc`'s main calls it, and `Stub` is untouched (re-resolve needs
-// `RouteTable.peers` plus the three frozen address copies below — a separate
-// plan).
+// `cmd/*` root) because it is `Stub`'s re-resolve source: `cmd/gateway-svc`'s main
+// binds it into a [`PeerResolver`] (A5, single) or [`PeerListResolver`] (C2, the
+// instance list) and threads it through [`PeerSource`], so a `Stub`'s
+// [`Reconnecting`] conn or [`Pool`] re-resolves live without a consumer restart.
 // ---------------------------------------------------------------------------
 pub mod resolve;
 pub use resolve::{resolve_peer, AddrKind, ErrorCode, ResolveError};
@@ -103,17 +103,35 @@ pub type RemoteFactory = Box<dyn Fn(&Context, Arc<dyn Caller>) + Send + Sync>;
 pub type PeerResolver =
     Arc<dyn Fn() -> BoxFuture<'static, Result<String, String>> + Send + Sync>;
 
-/// Where a [`Stub`]'s address comes from: a boot-time SNAPSHOT (fed to the gateway route
-/// table via [`opsapi::PEER_SLOT`], which is contributed in `init` before any I/O and so
-/// cannot re-resolve in this phase) plus a [`PeerResolver`] driving every dial (and the
-/// reachability probe). [`PeerSource::fixed`] ties both to one constant address (the
-/// standalone case — byte-identical boot, no re-resolve); [`PeerSource::resolving`]
-/// carries a boot snapshot for the slot and a live resolver for dials (the managed
-/// case). `impl Into<PeerSource>` for the string types keeps every existing
-/// `Stub::new(provider, "host:port", …)` call site unchanged.
-pub struct PeerSource {
-    boot_addr: String,
-    resolver: PeerResolver,
+/// Where a [`Stub`]'s address(es) come from — and, with it, whether the stub's capability
+/// caller is a single self-healing [`Reconnecting`] conn or a round-robin [`Pool`] across
+/// N instances. Each variant carries a boot SNAPSHOT (fed to the gateway route table via
+/// [`opsapi::PEER_SLOT`], contributed in `init` before any I/O — so it cannot itself
+/// re-resolve):
+///
+/// * [`PeerSource::fixed`] — one constant address, [`Reconnecting`] over a
+///   [`constant_resolver`]. The STANDALONE wiring: byte-identical boot, no re-resolve, no
+///   pool. (Also the monolith / checker path via the `impl Into<PeerSource>` string
+///   conversions, which keep every existing `Stub::new(provider, "host:port", …)` call
+///   site unchanged.)
+/// * [`PeerSource::resolving`] — one boot address plus a live single-address
+///   [`PeerResolver`] (A5). Still a single [`Reconnecting`] conn; kept for the
+///   single-instance managed re-resolve case and its regression tests.
+/// * [`PeerSource::pooled`] — the boot instance SET plus a live [`PeerListResolver`] (C2).
+///   The stub's capability caller becomes a [`Pool`] that round-robins across the
+///   provider's live instances and re-resolves the LIST live. The MANAGED multi-instance
+///   wiring. A one-element set degenerates to a pool-of-1.
+pub enum PeerSource {
+    /// A single self-healing connection over one live-resolving address.
+    Single {
+        boot_addr: String,
+        resolver: PeerResolver,
+    },
+    /// A round-robin pool over the provider's live instance SET.
+    Pooled {
+        boot_addrs: Vec<String>,
+        list: PeerListResolver,
+    },
 }
 
 impl PeerSource {
@@ -121,21 +139,30 @@ impl PeerSource {
     /// so nothing re-resolves. The standalone wiring (a fixed env `host:port`).
     pub fn fixed(addr: impl Into<String>) -> PeerSource {
         let addr = addr.into();
-        PeerSource {
+        PeerSource::Single {
             boot_addr: addr.clone(),
             resolver: constant_resolver(addr),
         }
     }
 
     /// A boot snapshot (for the PEER_SLOT contribution the gateway route table reads)
-    /// plus a live [`PeerResolver`] invoked on every dial — the managed wiring, where an
-    /// orchestrator may move the peer and the reconnecting caller must pick it up
-    /// without a consumer restart.
+    /// plus a live [`PeerResolver`] invoked on every dial — the managed single-instance
+    /// wiring, where an orchestrator may move the one peer and the reconnecting caller
+    /// must pick it up without a consumer restart.
     pub fn resolving(boot_addr: impl Into<String>, resolver: PeerResolver) -> PeerSource {
-        PeerSource {
+        PeerSource::Single {
             boot_addr: boot_addr.into(),
             resolver,
         }
+    }
+
+    /// A boot instance SET (contributed to PEER_SLOT so a co-hosted gateway route table
+    /// pools across the same set) plus a live [`PeerListResolver`] — the managed
+    /// multi-instance wiring (C2). The stub's capability caller is a [`Pool`] that
+    /// round-robins across the live instances and re-resolves the list on its own
+    /// cadence.
+    pub fn pooled(boot_addrs: Vec<String>, list: PeerListResolver) -> PeerSource {
+        PeerSource::Pooled { boot_addrs, list }
     }
 }
 
@@ -996,28 +1023,47 @@ pub struct Stub {
     /// The provider name — also the [`Module::name`], so `validate_requires` matches.
     provider: String,
     /// The peer's edge address SET as UNPARSED strings — the BOOT SNAPSHOT (one element
-    /// in the single-address phase). Contributed to [`opsapi::PEER_SLOT`] in `init` so a
-    /// co-hosted gateway front door dials this provider Remote without reading env — the
-    /// topology this composition root injected via [`Stub::new`]. This slot is filled in
-    /// `init` (before any I/O), so it cannot itself re-resolve; the LIVE re-resolution is
-    /// the [`resolver`](Stub::resolver) the [`EdgeDialer`] and probe hold.
+    /// for a [`Backing::Single`] stub, ALL live instances for a [`Backing::Pooled`] one).
+    /// Contributed to [`opsapi::PEER_SLOT`] in `init` so a co-hosted gateway front door
+    /// dials this provider Remote without reading env — the topology this composition root
+    /// injected via [`Stub::new`]. This slot is filled in `init` (before any I/O), so it
+    /// cannot itself re-resolve; the LIVE re-resolution is the resolver the [`EdgeDialer`]
+    /// (single) or [`Pool`] (pooled) holds.
     peer_addrs: Vec<String>,
-    /// The dial-time peer resolver — the SAME one the [`EdgeDialer`] inside `conn` and
-    /// the background probe loop use, so a moved peer is picked up on the next reconnect
-    /// without a consumer restart.
-    resolver: PeerResolver,
-    /// The lazily-dialed, self-healing caller shared by every generated client below.
-    conn: Arc<Reconnecting<EdgeDialer>>,
+    /// The capability caller + its liveness machinery — a single self-healing
+    /// [`Reconnecting`] conn ([`Backing::Single`]) or a round-robin [`Pool`] over N
+    /// instances ([`Backing::Pooled`]). The variant is decided by the [`PeerSource`] at
+    /// [`Stub::new`].
+    backing: Backing,
     /// The provider-swap closures this stub applies in `register`. Injected by the
     /// composition root from the provider's `<name>rpc::remote_factories()` — `remote`
     /// never names the provider itself.
     factories: Vec<RemoteFactory>,
-    /// The cached peer-reachability verdict, stamped by [`probe_loop`] and READ (zero
-    /// I/O) by the `/readyz` [`httpmw::ReadyCheck`]. Seeded fail-closed
-    /// (`Err("probe pending")`) so an unknown-reachability cold start reports unready.
+}
+
+/// The stub's capability caller + liveness machinery. Single vs pooled is the whole
+/// topology difference between the standalone/monolith path and a managed multi-instance
+/// front door — every other Stub method (`name`, `requires`, boot hooks, the PEER_SLOT
+/// contribution) is backing-agnostic.
+enum Backing {
+    /// One self-healing connection (STANDALONE / managed single instance).
+    Single(SingleBacking),
+    /// A round-robin [`Pool`] across the provider's live instances (MANAGED, C2).
+    Pooled(PooledBacking),
+}
+
+/// The single-connection backing: a [`Reconnecting`] conn plus the background reachability
+/// probe that feeds a cached `/readyz` verdict (unchanged from the pre-pool Stub).
+struct SingleBacking {
+    /// The dial-time peer resolver — the SAME one the [`EdgeDialer`] inside `conn` and the
+    /// background probe loop use, so a moved peer is picked up on the next reconnect.
+    resolver: PeerResolver,
+    /// The lazily-dialed, self-healing caller shared by every generated client.
+    conn: Arc<Reconnecting<EdgeDialer>>,
+    /// The cached peer-reachability verdict, stamped by [`probe_loop`] and READ (zero I/O)
+    /// by the `/readyz` [`httpmw::ReadyCheck`]. Seeded fail-closed (`Err("probe pending")`).
     verdict: Arc<StdMutex<Result<(), String>>>,
-    /// Coarse seconds of the last COMPLETED probe (`0` = never). Backs the readyz
-    /// staleness guard: a frozen verdict from a dead probe task flips unready.
+    /// Coarse seconds of the last COMPLETED probe (`0` = never) — the readyz staleness guard.
     last_probe_at: Arc<AtomicU64>,
     /// Stop signal for the background probe task (`None` until `start`).
     probe_stop: StdMutex<Option<watch::Sender<bool>>>,
@@ -1025,56 +1071,133 @@ pub struct Stub {
     probe_task: StdMutex<Option<JoinHandle<()>>>,
 }
 
+/// The pooled backing (C2): a [`Pool`] whose per-instance probes + `/readyz` it owns, plus
+/// a background loop that drives [`Pool::refresh`] on the same cadence the single probe
+/// runs — so the pool populates its instance set + probes even with no capability calls yet
+/// (the readyz cold-start otherwise stays down until the first request).
+struct PooledBacking {
+    pool: Arc<Pool>,
+    /// Stop signal for the background refresh loop (`None` until `start`).
+    refresh_stop: StdMutex<Option<watch::Sender<bool>>>,
+    /// The background refresh task handle, torn down in `stop` (`None` until `start`).
+    refresh_task: StdMutex<Option<JoinHandle<()>>>,
+}
+
+/// Drives [`Pool::refresh`] on the [`POOL_REFRESH_INTERVAL`] cadence so a pooled stub's
+/// instance set + per-instance probes come up (and stay reconciled) independently of
+/// request traffic — the pooled mirror of [`probe_loop`]. `refresh` is internally
+/// throttled, so the first pass populates immediately and later passes pick up scale
+/// events; teardown is the same grace-then-abort `stop` uses.
+async fn pool_refresh_loop(pool: Arc<Pool>, mut stop: watch::Receiver<bool>) {
+    loop {
+        pool.refresh().await;
+        tokio::select! {
+            _ = stop.changed() => return,
+            _ = tokio::time::sleep(POOL_REFRESH_INTERVAL) => {}
+        }
+    }
+}
+
 impl Stub {
-    /// Builds a stub for `provider` from a `peer` address source — either a fixed
-    /// `host:port` string (`"127.0.0.1:9000"`, via `impl Into<PeerSource>`) for the
-    /// standalone case, or a [`PeerSource::resolving`] carrying a boot snapshot plus a
-    /// live [`PeerResolver`] for the managed case. The peer is RESOLVED lazily on every
-    /// dial (re-resolving on reconnect for free), and `factories` (the provider's
-    /// `<name>rpc::remote_factories()`) are applied at `register`. An EMPTY `factories`
-    /// vec is a wiring bug — the stub would provide nothing — and fails loudly at
-    /// `register`.
+    /// Builds a stub for `provider` from a [`PeerSource`]: a fixed `host:port` string
+    /// (`"127.0.0.1:9000"`, via `impl Into<PeerSource>`) or [`PeerSource::resolving`] →
+    /// a [`Backing::Single`] self-healing [`Reconnecting`] conn (standalone / managed
+    /// single instance); [`PeerSource::pooled`] → a [`Backing::Pooled`] round-robin
+    /// [`Pool`] over the provider's live instance SET (managed multi-instance, C2). The
+    /// address(es) are RESOLVED lazily (re-resolving on reconnect / refresh for free), and
+    /// `factories` (the provider's `<name>rpc::remote_factories()`) are applied at
+    /// `register`. An EMPTY `factories` vec is a wiring bug — the stub would provide
+    /// nothing — and fails loudly at `register`.
     pub fn new(
         provider: &str,
         peer: impl Into<PeerSource>,
         factories: Vec<RemoteFactory>,
     ) -> Stub {
-        let PeerSource {
-            boot_addr,
-            resolver,
-        } = peer.into();
+        let (peer_addrs, backing) = match peer.into() {
+            PeerSource::Single { boot_addr, resolver } => {
+                let backing = Backing::Single(SingleBacking {
+                    resolver: resolver.clone(),
+                    conn: Arc::new(Reconnecting::new(EdgeDialer { resolve: resolver })),
+                    // Fail-closed seed: unknown reachability = not ready until the first
+                    // probe completes.
+                    verdict: Arc::new(StdMutex::new(Err("probe pending".to_string()))),
+                    last_probe_at: Arc::new(AtomicU64::new(0)),
+                    probe_stop: StdMutex::new(None),
+                    probe_task: StdMutex::new(None),
+                });
+                (vec![boot_addr], backing)
+            }
+            PeerSource::Pooled { boot_addrs, list } => {
+                let backing = Backing::Pooled(PooledBacking {
+                    pool: Arc::new(Pool::new(list)),
+                    refresh_stop: StdMutex::new(None),
+                    refresh_task: StdMutex::new(None),
+                });
+                (boot_addrs, backing)
+            }
+        };
         Stub {
             provider: provider.to_string(),
-            peer_addrs: vec![boot_addr],
-            resolver: resolver.clone(),
-            conn: Arc::new(Reconnecting::new(EdgeDialer { resolve: resolver })),
+            peer_addrs,
+            backing,
             factories,
-            // Fail-closed seed: unknown reachability = not ready until the first probe
-            // completes.
-            verdict: Arc::new(StdMutex::new(Err("probe pending".to_string()))),
-            last_probe_at: Arc::new(AtomicU64::new(0)),
-            probe_stop: StdMutex::new(None),
-            probe_task: StdMutex::new(None),
         }
     }
 
-    /// Spawns the background reachability probe loop (idempotent-callee contract: call
-    /// exactly once, from `start`). Splits the spawn out of `start` so tests can drive
-    /// it with short intervals via [`Stub::spawn_probe`] without threading them through
-    /// [`Stub::new`]. Production calls it with the const cadence; the loop is the sole
-    /// runtime caller of [`probe_peer`].
+    /// Spawns the background reachability probe loop for a [`Backing::Single`] stub
+    /// (idempotent-callee contract: call exactly once, from `start`). Splits the spawn
+    /// out of `start` so tests can drive it with short intervals without threading them
+    /// through [`Stub::new`]. Production calls it with the const cadence; the loop is the
+    /// sole runtime caller of [`probe_peer`]. A no-op on a pooled stub (whose per-instance
+    /// probes the [`Pool`] owns) — `start` routes a pooled stub to [`Stub::spawn_pool_refresh`].
     pub(crate) fn spawn_probe(&self, ready: Duration, unready: Duration) {
+        let Backing::Single(s) = &self.backing else {
+            return;
+        };
         let (stop_tx, stop_rx) = watch::channel(false);
         let handle = tokio::spawn(probe_loop(
-            self.resolver.clone(),
-            self.verdict.clone(),
-            self.last_probe_at.clone(),
+            s.resolver.clone(),
+            s.verdict.clone(),
+            s.last_probe_at.clone(),
             ready,
             unready,
             stop_rx,
         ));
-        *self.probe_stop.lock().unwrap_or_else(|e| e.into_inner()) = Some(stop_tx);
-        *self.probe_task.lock().unwrap_or_else(|e| e.into_inner()) = Some(handle);
+        *s.probe_stop.lock().unwrap_or_else(|e| e.into_inner()) = Some(stop_tx);
+        *s.probe_task.lock().unwrap_or_else(|e| e.into_inner()) = Some(handle);
+    }
+
+    /// Spawns the background [`Pool::refresh`] loop for a [`Backing::Pooled`] stub — the
+    /// pooled mirror of [`Stub::spawn_probe`]. A no-op on a single stub.
+    fn spawn_pool_refresh(&self) {
+        let Backing::Pooled(p) = &self.backing else {
+            return;
+        };
+        let (stop_tx, stop_rx) = watch::channel(false);
+        let handle = tokio::spawn(pool_refresh_loop(p.pool.clone(), stop_rx));
+        *p.refresh_stop.lock().unwrap_or_else(|e| e.into_inner()) = Some(stop_tx);
+        *p.refresh_task.lock().unwrap_or_else(|e| e.into_inner()) = Some(handle);
+    }
+
+    /// TEST-ONLY: the cached single-conn probe verdict (a [`Backing::Single`] stub).
+    /// Lets the readyz-wiring and background-probe tests seed/read the verdict without
+    /// exposing the backing enum's shape. Panics on a pooled stub (those tests use
+    /// [`Pool::readyz`]).
+    #[cfg(test)]
+    pub(crate) fn single_verdict(&self) -> &Arc<StdMutex<Result<(), String>>> {
+        match &self.backing {
+            Backing::Single(s) => &s.verdict,
+            Backing::Pooled(_) => panic!("single_verdict on a pooled stub"),
+        }
+    }
+
+    /// TEST-ONLY: the single-conn probe timestamp (see [`Stub::single_verdict`]).
+    #[cfg(test)]
+    pub(crate) fn single_last_probe_at(&self) -> &Arc<AtomicU64> {
+        match &self.backing {
+            Backing::Single(s) => &s.last_probe_at,
+            Backing::Pooled(_) => panic!("single_last_probe_at on a pooled stub"),
+        }
     }
 
     /// Runs every [`RemoteBoot`] tagged with THIS stub's provider, each bounded by
@@ -1146,12 +1269,18 @@ impl Module for Stub {
                 self.provider
             );
         }
-        // Hand each injected factory the reconnecting conn AS an `opsapi::Caller`, so
-        // the glue depends on the transport seam, never remote's concrete type. Each
-        // factory `provide`s a generated capability `Client` under the provider's
-        // capability key and/or contributes the provider's front-door route bindings
-        // (Operation+OpBinding, no LocalOp — `select_kind` resolves them Remote).
-        let caller: Arc<dyn Caller> = self.conn.clone();
+        // Hand each injected factory the capability caller AS an `opsapi::Caller`, so
+        // the glue depends on the transport seam, never remote's concrete type. A single
+        // stub hands its self-healing [`Reconnecting`] conn; a pooled stub hands its
+        // round-robin [`Pool`] — the factory (and the consumer that `require`s the
+        // capability) is unchanged and unaware which it got. Each factory `provide`s a
+        // generated capability `Client` under the provider's capability key and/or
+        // contributes the provider's front-door route bindings (Operation+OpBinding, no
+        // LocalOp — `select_kind` resolves them Remote).
+        let caller: Arc<dyn Caller> = match &self.backing {
+            Backing::Single(s) => s.conn.clone(),
+            Backing::Pooled(p) => p.pool.clone(),
+        };
         for f in &self.factories {
             f(ctx, caller.clone());
         }
@@ -1203,27 +1332,47 @@ impl Module for Stub {
                 addrs: self.peer_addrs.clone(),
             },
         );
-        // Zero-I/O readyz: read the cached verdict stamped by the background probe loop,
-        // with a staleness guard so a dead probe task can't freeze a stale-green verdict.
-        let verdict = self.verdict.clone();
-        let last_probe_at = self.last_probe_at.clone();
-        ctx.contribute(
-            httpmw::READINESS_SLOT,
-            httpmw::ReadyCheck::new(format!("stub:{}", self.provider), move || {
-                let verdict = verdict.clone();
-                let last_probe_at = last_probe_at.clone();
-                async move {
-                    let now = coarse_now_secs();
-                    let stamp = last_probe_at.load(Ordering::SeqCst);
-                    // Clone the cached verdict OUT and drop the std guard before computing
-                    // the decision — the guard must never cross an `.await` (and this
-                    // closure has none). The verdict is then a PURE function of the cached
-                    // result + the staleness clock (see `readiness_verdict`).
-                    let cached = verdict.lock().unwrap_or_else(|e| e.into_inner()).clone();
-                    readiness_verdict(&cached, stamp, now)
-                }
-            }),
-        );
+        // Zero-I/O readyz. A single stub reads the cached probe verdict (staleness-guarded
+        // so a dead probe task can't freeze a stale-green verdict); a pooled stub delegates
+        // to `Pool::readyz` (some-down-vs-all-down over the per-instance verdicts, also zero
+        // I/O). Same slot, same `stub:<provider>` name in both — a stub-holding process's
+        // `/readyz` reflects its peers either way.
+        let name = format!("stub:{}", self.provider);
+        match &self.backing {
+            Backing::Single(s) => {
+                let verdict = s.verdict.clone();
+                let last_probe_at = s.last_probe_at.clone();
+                ctx.contribute(
+                    httpmw::READINESS_SLOT,
+                    httpmw::ReadyCheck::new(name, move || {
+                        let verdict = verdict.clone();
+                        let last_probe_at = last_probe_at.clone();
+                        async move {
+                            let now = coarse_now_secs();
+                            let stamp = last_probe_at.load(Ordering::SeqCst);
+                            // Clone the cached verdict OUT and drop the std guard before
+                            // computing the decision — the guard must never cross an
+                            // `.await` (and this closure has none). The verdict is then a
+                            // PURE function of the cached result + staleness clock.
+                            let cached = verdict.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                            readiness_verdict(&cached, stamp, now)
+                        }
+                    }),
+                );
+            }
+            Backing::Pooled(p) => {
+                let pool = p.pool.clone();
+                ctx.contribute(
+                    httpmw::READINESS_SLOT,
+                    httpmw::ReadyCheck::new(name, move || {
+                        let pool = pool.clone();
+                        // `Pool::readyz` is a pure read of the cached per-instance verdicts
+                        // (no dial), so this closure has no `.await` of its own.
+                        async move { pool.readyz() }
+                    }),
+                );
+            }
+        }
         Ok(())
     }
 
@@ -1239,8 +1388,13 @@ impl Module for Stub {
     async fn start(&self, ctx: &Context) -> anyhow::Result<()> {
         // Boot hooks first (ordered, and they fail-loud on a dead hard dependency)…
         self.start_with_boot_timeout(ctx, BOOT_TIMEOUT).await?;
-        // …then arm the background reachability probe that feeds the cached readyz verdict.
-        self.spawn_probe(PROBE_INTERVAL_READY, PROBE_INTERVAL_UNREADY);
+        // …then arm the liveness machinery: a single stub's background reachability probe,
+        // or a pooled stub's background refresh loop (which brings the pool's instance set +
+        // per-instance probes up independently of request traffic).
+        match &self.backing {
+            Backing::Single(_) => self.spawn_probe(PROBE_INTERVAL_READY, PROBE_INTERVAL_UNREADY),
+            Backing::Pooled(_) => self.spawn_pool_refresh(),
+        }
         Ok(())
     }
 
@@ -1249,31 +1403,43 @@ impl Module for Stub {
     /// probe was never spawned (start-unwind before this stub started): the `Option::take`
     /// guards leave `None`.
     async fn stop(&self, _ctx: &Context) -> anyhow::Result<()> {
-        if let Some(tx) = self
-            .probe_stop
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .take()
-        {
-            let _ = tx.send(true);
-        }
-        // Take the handle out into a local so the std guard is dropped BEFORE the await
-        // below (a `MutexGuard` is not `Send` and must never cross an `.await`).
-        let task = self
-            .probe_task
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .take();
-        if let Some(mut task) = task {
-            match tokio::time::timeout(PROBE_STOP_GRACE, &mut task).await {
-                Ok(_) => {}
-                Err(_) => {
-                    task.abort();
-                    let _ = task.await; // await the abort so we don't leak the task
+        match &self.backing {
+            Backing::Single(s) => {
+                if let Some(tx) = s.probe_stop.lock().unwrap_or_else(|e| e.into_inner()).take() {
+                    let _ = tx.send(true);
                 }
+                // Take the handle out into a local so the std guard is dropped BEFORE the
+                // await below (a `MutexGuard` is not `Send` and must never cross `.await`).
+                let task = s.probe_task.lock().unwrap_or_else(|e| e.into_inner()).take();
+                if let Some(mut task) = task {
+                    match tokio::time::timeout(PROBE_STOP_GRACE, &mut task).await {
+                        Ok(_) => {}
+                        Err(_) => {
+                            task.abort();
+                            let _ = task.await; // await the abort so we don't leak the task
+                        }
+                    }
+                }
+                s.conn.close().await;
+            }
+            Backing::Pooled(p) => {
+                if let Some(tx) = p.refresh_stop.lock().unwrap_or_else(|e| e.into_inner()).take() {
+                    let _ = tx.send(true);
+                }
+                let task = p.refresh_task.lock().unwrap_or_else(|e| e.into_inner()).take();
+                if let Some(mut task) = task {
+                    match tokio::time::timeout(PROBE_STOP_GRACE, &mut task).await {
+                        Ok(_) => {}
+                        Err(_) => {
+                            task.abort();
+                            let _ = task.await;
+                        }
+                    }
+                }
+                // Grace-then-abort the per-instance probes + close every instance conn.
+                p.pool.stop().await;
             }
         }
-        self.conn.close().await;
         Ok(())
     }
 }

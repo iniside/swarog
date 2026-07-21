@@ -17,6 +17,11 @@ accountsapi = { workspace = true }
 # adapter. NEVER the apikeys impl crate, never apikeysrpc (archcheck enforces).
 apikeysapi = { workspace = true }
 edge = { workspace = true }
+# `remote::Pool` — the client-side round-robin caller the route table builds per provider
+# to load-balance HTTP-dispatched Remote ops across a provider's resolved instance set
+# (C2). A core transport crate (not a module), so no fortress violation; `remote` imports
+# no `api/` crate, no cycle.
+remote = { workspace = true }
 contrib = { workspace = true }
 # The shared route-pattern label seam (`httpmw::RoutePattern`): the front door stamps a
 # matched op's route pattern onto the response so `core/metrics` labels op traffic by

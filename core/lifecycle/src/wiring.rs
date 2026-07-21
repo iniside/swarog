@@ -17,6 +17,13 @@ use std::collections::HashMap;
 #[derive(Default, Clone, Debug)]
 pub struct ProcessWiring {
     peers: HashMap<String, String>,
+    /// A provider's peer edge address SET (round-robin end-state, C2). Distinct from
+    /// [`ProcessWiring::peers`] (the single-address map every standalone svc still wires
+    /// via [`ProcessWiring::with_peer`]): only the front door's managed boot populates a
+    /// SET, so a co-hosted `remote::Stub` can be handed ALL of a provider's live
+    /// instances (fed to a `remote::Pool`) instead of one. A single-instance provider is
+    /// a one-element set — byte-identical to the old single path.
+    peer_sets: HashMap<String, Vec<String>>,
     passthrough: Vec<(String, String)>,
     /// The front door's credential-admission budget (`CREDENTIAL_ADMISSION_TIMEOUT_MS`),
     /// parsed from env by the front processes' `main.rs` (the same place passthrough
@@ -45,6 +52,29 @@ impl ProcessWiring {
             .get(provider)
             .cloned()
             .unwrap_or_else(|| default.to_string())
+    }
+
+    /// Records the resolved edge address SET for `provider` — ALL its live instances
+    /// (C2 round-robin). The front door's managed boot calls this per edge peer with the
+    /// whole `resolve` answer; a `remote::Stub` reads it back via [`peer_set_or`] and
+    /// feeds a `remote::Pool`.
+    ///
+    /// [`peer_set_or`]: ProcessWiring::peer_set_or
+    pub fn with_peer_set(mut self, provider: &str, addrs: Vec<String>) -> Self {
+        self.peer_sets.insert(provider.to_string(), addrs);
+        self
+    }
+
+    /// The resolved edge address SET for `provider`, or `default` (mapped to owned
+    /// strings) when `main.rs` never set one (checker mode / an empty `ProcessWiring` /
+    /// the standalone single-address path, which passes a one-element default). A stored
+    /// EMPTY set is returned as-is (a deliberate "known but nothing live" answer the
+    /// caller's `Pool` renders un-routable), NOT replaced by the default.
+    pub fn peer_set_or(&self, provider: &str, default: &[&str]) -> Vec<String> {
+        self.peer_sets
+            .get(provider)
+            .cloned()
+            .unwrap_or_else(|| default.iter().map(|s| s.to_string()).collect())
     }
 
     /// Records an HTTP passthrough origin (gateway front door: `/admin`,
