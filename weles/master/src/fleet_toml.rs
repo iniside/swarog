@@ -1,12 +1,12 @@
 //! The operator-authored `fleet.toml` — weles's fleet definition as strict data
 //! rather than a hardcoded Rust table. This module is the ONE place that turns
 //! that file into the owned runtime types the supervisor already operates on
-//! ([`ServiceDef`], [`Addrs`], [`crate::prep::PrepareCmd`]); nothing downstream
+//! ([`ServiceDef`], [`Addrs`], [`PrepareCmd`]); nothing downstream
 //! learns that the fleet came from TOML.
 //!
 //! **Strict per the anti-magic rule.** Every deserialized struct is
 //! `#[serde(deny_unknown_fields)]` (the same discipline as
-//! [`crate::agentapi`]'s wire structs): a typo'd or renamed key is a loud parse
+//! `agentapi`'s wire structs): a typo'd or renamed key is a loud parse
 //! error, never a silently defaulted one. There is NO layering, NO templating,
 //! NO fleet-wide `[env]` table — shared values reach a service via the
 //! per-fleet `passthrough` list (env KEYS forwarded from weles's own
@@ -28,7 +28,6 @@ use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 
 use crate::manifest::{self, Addrs, AddrKind, ServiceDef, AGENT_PORT};
-use crate::prep::PrepareCmd;
 
 /// The whole `fleet.toml`, as authored. Converted to [`Fleet`] by [`load`];
 /// this shape exists only to carry the serde/TOML surface (defaults,
@@ -49,6 +48,32 @@ struct FleetToml {
     /// The fleet processes, in boot order — a `[[service]]` table each. The
     /// Vec order IS the boot order (see [`validate`]'s edge boot-order rule).
     service: Vec<ServiceEntry>,
+}
+
+/// A provisioning command the fleet runs BEFORE any service spawns (CA mint,
+/// admin seed) — the owned, schema-free runtime DATA the agent's `prep`
+/// executes. It lives master-side (the parsed fleet is master's data); only its
+/// EXECUTION (`prep::run_prepare`, which needs `platform::spawn`) is agent-side.
+/// `PrepareEntry` below is its TOML face — the serde defaults +
+/// `deny_unknown_fields` stay a schema concern here rather than being smuggled
+/// onto this runtime type.
+#[derive(Clone, Debug)]
+pub struct PrepareCmd {
+    /// Label + the `run_dir/<name>.{out,err}.log` stem.
+    pub name: String,
+    /// The staged package to execute (`layout.binary(&run)`).
+    pub run: String,
+    /// Verbatim argv handed to the command.
+    pub args: Vec<String>,
+    /// Literal env pairs, applied LAST — so an explicit value wins over a
+    /// forwarded `passthrough` key of the same name.
+    pub env: BTreeMap<String, String>,
+    /// Env KEYS forwarded from weles's OWN environment (e.g. `DATABASE_URL` for
+    /// the admin seed). weles knows the key name, never its meaning.
+    pub passthrough: Vec<String>,
+    /// Per-command deadline in seconds; `0` uses the agent's
+    /// `prep::DEFAULT_PREPARE_TIMEOUT_SECS`.
+    pub timeout_secs: u64,
 }
 
 /// One `[[prepare]]` table. Mirrors [`PrepareCmd`] rather than deriving
@@ -413,13 +438,15 @@ fn validate_peers(fleet: &Fleet) -> Result<()> {
 }
 
 /// Loads `weles/fleet.split.toml` — the committed 12-process split fixture,
-/// resolved from `CARGO_MANIFEST_DIR` so it is found regardless of the test's
-/// working directory. Test-only, shared across the crate's `*_tests.rs` modules
-/// (which all lost their `split_fleet()`/`monolith()` source in Step 4): the
-/// fixture is now the single source of the fleet's shape.
+/// resolved from `CARGO_MANIFEST_DIR`'s PARENT so it is found regardless of the
+/// test's working directory. `weles-master`'s manifest dir is `weles/master`,
+/// so the committed fixtures (which live beside the `weles` crate, shared with
+/// verifyctl's `weles-managed-gateway` stage) are one level up. Test-only,
+/// shared across this crate's `*_tests.rs` modules: the fixture is the single
+/// source of the fleet's shape.
 #[cfg(test)]
 pub(crate) fn load_split_fixture() -> Fleet {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fleet.split.toml");
+    let path = weles_dir().join("fleet.split.toml");
     load(&path).expect("weles/fleet.split.toml must load")
 }
 
@@ -427,8 +454,18 @@ pub(crate) fn load_split_fixture() -> Fleet {
 /// fixture. See [`load_split_fixture`].
 #[cfg(test)]
 pub(crate) fn load_monolith_fixture() -> Fleet {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fleet.monolith.toml");
+    let path = weles_dir().join("fleet.monolith.toml");
     load(&path).expect("weles/fleet.monolith.toml must load")
+}
+
+/// The `weles` crate directory (this crate's parent), where the committed fleet
+/// fixtures live.
+#[cfg(test)]
+fn weles_dir() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("weles-master's manifest dir has a parent (the weles crate)")
+        .to_path_buf()
 }
 
 #[cfg(test)]

@@ -1,0 +1,38 @@
+[package]
+name = "weles-master"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# weles-master is the PLATFORM-FREE half of weles: the future-master role
+# (fleet composition, the strict `fleet.toml` loader/validator, the persisted
+# supervisor state schema, the resolve/hello answer derivation). It draws the
+# internal master/agent role boundary COMPILER-ENFORCED — a real Rust crate
+# boundary. The dependency only ever points agent (`weles`) -> master
+# (`weles-master`); master can NEVER name the agent's platform I/O
+# (`platform`/`supervisor`/`lock`), because this crate does not — and, being an
+# ancestor in the dep graph, structurally CANNOT — depend on the `weles` crate
+# that owns them. That absence IS the enforcement (see `src/lib.rs`'s
+# compile_fail proof); a source-string grep would not be.
+#
+# This is NOT a zero-sharing violation: `weles` stays free of core/api/modules/
+# tools deps. A weles-INTERNAL sub-crate is the sanctioned way to model the
+# future single-binary -> two-process master/agent split without splitting the
+# process yet (Nomad's dev shape: one binary, an internal role seam).
+#
+# External deps only, like `weles` itself: serde/serde_json for the state
+# schema + resolve wire types, `toml` (parse-only, local-pinned) for the
+# operator-authored fleet definition.
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+# Parse-only strict TOML for `fleet.toml` (src/fleet_toml.rs), pinned to match
+# the `weles` crate's own local pin exactly (there is no workspace `toml` entry).
+toml = { version = "1", default-features = false, features = [
+    "std",
+    "serde",
+    "parse",
+] }

@@ -5,9 +5,14 @@ edition.workspace = true
 license.workspace = true
 publish.workspace = true
 
-# Zero-sharing: weles is a standalone fleet-supervisor CLI. It must never depend on
-# a workspace crate (core/*, api/*, modules/*, tools/*) — only external deps.
+# Zero-sharing: weles is a standalone fleet-supervisor CLI. It must never depend
+# on a SHARED workspace crate (core/*, api/*, modules/*, tools/*) — only external
+# deps. The one exception is its OWN internal sub-crate `weles-master` (under
+# `master/`): the platform-free master role, split out to draw the master/agent
+# boundary compiler-enforced (agent -> master only). A weles-internal crate is
+# not sharing — it ships with weles and imports nothing weles may not.
 [dependencies]
+weles-master = { path = "master" }
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true

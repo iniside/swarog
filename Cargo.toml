@@ -138,6 +138,10 @@ members = [
     # design: no workspace-crate dependencies, only external deps + std. Lives in
     # this workspace for convenience only; it shares no code with core/tools/*.
     "weles",
+    # weles's internal platform-free master role (fleet composition, fleet.toml
+    # loader/validator, persisted state schema). Split out to draw the internal
+    # master/agent boundary compiler-enforced; imported only by `weles`.
+    "weles/master",
     # Process entrypoints (Go's cmd/).
     "cmd/server",
     "cmd/characters-svc",

@@ -65,6 +65,8 @@ use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::fleet_toml::PrepareCmd;
+use crate::manifest::lookup_env;
 use crate::platform::{self, SpawnSpec};
 
 const HELPER_SHUTDOWN_GRACE: Duration = Duration::from_secs(0);
@@ -979,28 +981,6 @@ fn prune_stale_generations(bin_dir: &Path, run_dir: &Path, protected: &[u64]) ->
 /// whole `up` if it fails." This is the same domain-blind philosophy as the
 /// passthrough env list.
 ///
-/// A plain runtime struct in Step 1 (the supervisor builds it directly). The
-/// serde/TOML derive that lets the fleet AUTHOR one of these — as a `[[prepare]]`
-/// table — lands in Step 2.
-#[derive(Clone, Debug)]
-pub struct PrepareCmd {
-    /// Label + the `run_dir/<name>.{out,err}.log` stem.
-    pub name: String,
-    /// The staged package to execute (`layout.binary(&run)`).
-    pub run: String,
-    /// Verbatim argv handed to the command.
-    pub args: Vec<String>,
-    /// Literal env pairs, applied LAST — so an explicit value wins over a
-    /// forwarded `passthrough` key of the same name.
-    pub env: BTreeMap<String, String>,
-    /// Env KEYS forwarded from weles's OWN environment (e.g. `DATABASE_URL` for
-    /// the admin seed). weles knows the key name, never its meaning.
-    pub passthrough: Vec<String>,
-    /// Per-command deadline in seconds; `0` uses
-    /// [`DEFAULT_PREPARE_TIMEOUT_SECS`].
-    pub timeout_secs: u64,
-}
-
 /// Runs each [`PrepareCmd`] in `commands`, in declared order, BEFORE the fleet
 /// is spawned, aborting the whole `up` on the FIRST nonzero exit or timeout
 /// (nothing is spawned past a failed hook).
@@ -1157,30 +1137,6 @@ fn filtered_env(allowlist: &[&str]) -> BTreeMap<OsString, OsString> {
         }
     }
     env
-}
-
-/// Reads one env var from weles's OWN environment, case-insensitively on
-/// Windows (to match `%VAR%` lookup semantics) and exact-case on Unix. This is
-/// the SINGLE passthrough-lookup authority: both prepare hooks
-/// ([`run_one_prepare`]) and services
-/// ([`crate::manifest::compose_env_with_fleet`]) forward passthrough KEYS
-/// through it, so a Windows case-variant passthrough key resolves identically
-/// for a service and for a prepare hook (Step-1-review deferred finding: the
-/// two used to disagree — `compose_env_with_fleet` used exact-case
-/// `std::env::var_os`).
-#[cfg(windows)]
-pub(crate) fn lookup_env(key: &str) -> Option<OsString> {
-    std::env::vars_os().find_map(|(candidate, value)| {
-        candidate
-            .to_str()
-            .is_some_and(|candidate| candidate.eq_ignore_ascii_case(key))
-            .then_some(value)
-    })
-}
-
-#[cfg(not(windows))]
-pub(crate) fn lookup_env(key: &str) -> Option<OsString> {
-    std::env::var_os(key)
 }
 
 #[cfg(test)]

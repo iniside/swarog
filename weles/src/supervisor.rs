@@ -623,21 +623,85 @@ pub fn discover_layout_for_deploy(root: Option<PathBuf>) -> Result<prep::Layout>
 /// The whole `weles up` lifecycle. Returns when the fleet has been torn down
 /// (operator stop) or a boot failure was unwound. `root` is the optional
 /// `--root <path>` override threaded from `cli`.
+///
+/// Structured as a MASTER-shaped prologue ([`prepare_fleet`] — discover, pin +
+/// validate the deployed fleet, derive the `resolve` answers) followed by the
+/// AGENT-shaped body ([`run_fleet`] — lock, signal handler, spawn, boot,
+/// monitor, teardown). The two roles hand off ONE owned [`PreparedFleet`] value
+/// — the seam shaped like the future master->agent RPC boundary, an in-process
+/// move today.
 pub fn run_up(root: Option<PathBuf>) -> Result<()> {
+    run_fleet(prepare_fleet(root)?)
+}
+
+/// The MASTER-shaped prologue: discover the layout (which pins + validates the
+/// deployed `fleet.toml`), then derive — from the pinned fleet ONLY — the owned
+/// values the agent body boots from: the human fleet label and the
+/// [`manifest::PeerAddrs`] that `resolve` answers with. Pure over the pinned
+/// fleet; it acquires no lock, spawns nothing, and touches no platform I/O.
+///
+/// `PeerAddrs::from_fleet` is derived HERE and handed across as an owned value
+/// (never re-derived in the body) — the same value MOVE the async agent island
+/// already relies on, now made the explicit prologue->body seam. It is
+/// deterministic over the pinned `defs`, so computing it before the lock rather
+/// than mid-boot is byte-identical in behavior.
+fn prepare_fleet(root: Option<PathBuf>) -> Result<PreparedFleet> {
     let layout = discover_layout(root)?;
 
     // The deployed fleet was parsed + validated ONCE at discover
     // (PIN-AT-DISCOVER); the `up` path always has it — `discover` fails rather
     // than hand back a fleet-less layout — so this `expect` names an invariant,
-    // not a runtime branch. `deployed` (and everything borrowed from it: `defs`,
-    // `passthrough`, `prepare`) borrows `layout` immutably for the whole run,
-    // alongside every other `&layout` use.
+    // not a runtime branch. Borrow it just long enough to derive the owned
+    // outputs, then release the borrow so `layout` can move into the seam.
+    let (fleet_label, peers) = {
+        let deployed = layout
+            .fleet()
+            .expect("Layout::discover pins a validated fleet on the up path");
+        // weles has NO split/monolith concept — it boots whatever fleet was
+        // deployed. Label it by process count for `weles status`/`down`.
+        let fleet_label = format!("{}-process", deployed.services.len());
+        // The map `resolve` answers from, derived from the SAME slice the body
+        // composes spawn env against — so env and `resolve` cannot diverge.
+        let peers = manifest::PeerAddrs::from_fleet(&deployed.services);
+        (fleet_label, peers)
+    };
+    Ok(PreparedFleet { layout, fleet_label, peers })
+}
+
+/// The owned hand-off from the master-shaped [`prepare_fleet`] prologue to the
+/// agent-shaped [`run_fleet`] body: the pinned+validated fleet (as a `Layout`),
+/// its label, and the derived `resolve` answers. ONE owned value crossing the
+/// seam models the future master->agent RPC boundary — today an in-process move
+/// (the same value MOVE the agent island already uses for `PeerAddrs`), the
+/// wire deferred to the process split.
+struct PreparedFleet {
+    layout: prep::Layout,
+    fleet_label: String,
+    peers: manifest::PeerAddrs,
+}
+
+/// The AGENT-shaped body: everything with platform I/O or ordering
+/// significance — acquire the rollout lock, install the signal handler, spawn +
+/// boot the fleet behind readyz gates, run the monitor loop, tear down. Returns
+/// when the fleet has been torn down (operator stop) or a boot failure was
+/// unwound.
+///
+/// `_lock`'s drop-order invariant is UNCHANGED by the prologue/body split: the
+/// lock is still an RAII local of THIS one function, acquired here and dropped
+/// LAST (after teardown, control, agent), all on the one supervisor thread. The
+/// extraction moved the pure derivation OUT ahead of the lock; it added no
+/// channel and no thread that could reorder the drop.
+fn run_fleet(prepared: PreparedFleet) -> Result<()> {
+    let PreparedFleet { layout, fleet_label, peers } = prepared;
+
+    // Re-borrow the pinned fleet the prologue validated: `deployed` (and
+    // everything borrowed from it — `defs`, `passthrough`, `prepare`) borrows
+    // `layout` immutably for the whole run, alongside every other `&layout`
+    // use. Same invariant the prologue named; the fleet was validated ONCE at
+    // discover, so this `expect` names it, not a runtime branch.
     let deployed = layout
         .fleet()
         .expect("Layout::discover pins a validated fleet on the up path");
-    // weles has NO split/monolith concept — it boots whatever fleet was
-    // deployed. Label it by process count for `weles status`/`down`.
-    let fleet_label = format!("{}-process", deployed.services.len());
 
     // Lock FIRST (Step-4 review finding): nothing rollout-bearing may run
     // before this process is inside run/rollout.lock's one permitted rollout —
@@ -807,7 +871,10 @@ pub fn run_up(root: Option<PathBuf>) -> Result<()> {
     // resolve 404s (no topology branch: see `manifest::PeerAddrs`).
     let agent = match health::ensure_no_stale_listener("weles-agent", manifest::AGENT_PORT)
         .and_then(|()| {
-            agentapi::AgentServer::bind(manifest::AGENT_PORT, manifest::PeerAddrs::from_fleet(defs))
+            // `peers` was derived in the prologue from this exact `defs` slice
+            // and MOVED across the seam — resolve answers the same addresses the
+            // env composer derives, without a second `from_fleet` here.
+            agentapi::AgentServer::bind(manifest::AGENT_PORT, peers)
         })
     {
         Ok(agent) => agent,

@@ -42,7 +42,7 @@ use serde::{Deserialize, Serialize};
 /// Anything beyond this floor reaches a service two domain-blind ways: its
 /// per-service `env` table, or a per-fleet PASSTHROUGH list naming env KEYS
 /// weles forwards from its OWN environment (threaded into
-/// [`compose_env_with_fleet`] and [`crate::prep::run_prepare`]). weles knows the
+/// [`compose_env_with_fleet`] and `prep::run_prepare`). weles knows the
 /// key NAME, never its meaning.
 pub const SERVICE_ENV_ALLOWLIST: &[&str] = &[
     "COMSPEC",
@@ -59,7 +59,7 @@ pub const SERVICE_ENV_ALLOWLIST: &[&str] = &[
     "WINDIR",
 ];
 
-/// The loopback port weles's own agent HTTP endpoint ([`crate::agentapi`])
+/// The loopback port weles's own agent HTTP endpoint (`agentapi`)
 /// binds. This file is the ONE place in weles allowed to write a port (see the
 /// module doc), which is why the agent's port lives here rather than beside the
 /// server that binds it: a runtime-minted port belongs to weles's derivation,
@@ -100,7 +100,7 @@ pub const ORCHESTRATOR_URL_ENV: &str = "ORCHESTRATOR_URL";
 /// free to drift the day the port moves.
 ///
 /// The host is `127.0.0.1` by the same construction [`service_addr`] relies on:
-/// [`crate::agentapi::AgentServer::bind`] binds loopback, so the URL handed to a
+/// `agentapi::AgentServer::bind` binds loopback, so the URL handed to a
 /// service is the address that endpoint actually took.
 ///
 /// `pub` for the same reason as [`ORCHESTRATOR_URL_ENV`] — originally
@@ -121,7 +121,7 @@ pub fn agent_url() -> String {
 /// (`ACCOUNTS_EDGE_ADDR` → 9003, `ACCOUNTS_HTTP_ADDR` → 8084), so the two
 /// classes are not a property of the provider either.
 ///
-/// This is ALSO the `kind` on the agent's `resolve` wire ([`crate::agentapi`]):
+/// This is ALSO the `kind` on the agent's `resolve` wire (`agentapi`):
 /// the serde derive here is what keeps the spelling (`"edge"`/`"http"`) an
 /// attribute of this one enum rather than a `match` on strings beside it. A
 /// wire-only twin would be exactly the second discriminator this type exists to
@@ -167,7 +167,7 @@ pub enum Addrs {
     /// ASKS the agent, at boot: [`compose_env_with_fleet`] hands this process
     /// [`ORCHESTRATOR_URL_ENV`] (derived from [`AGENT_PORT`]) and NONE of the
     /// addresses above, and it resolves each for itself over
-    /// [`crate::agentapi`]'s `resolve`.
+    /// `agentapi`'s `resolve`.
     ///
     /// Not a topology branch, and not a different fleet: `resolve` answers from
     /// [`PeerAddrs::from_fleet`] over the SAME booting slice
@@ -369,7 +369,7 @@ impl PeerAddrs {
     /// caller's 404. It does NOT mean "known, but nothing live": that state
     /// does not exist yet (this map is derived from the manifest, not from
     /// liveness) and when M2 introduces it, it belongs in the wire's `addrs`
-    /// list as `[]`, not here. See [`crate::agentapi`] for that boundary.
+    /// list as `[]`, not here. See `agentapi` for that boundary.
     pub fn lookup(&self, provider: &str, kind: AddrKind) -> Vec<String> {
         self.entries
             .iter()
@@ -400,7 +400,7 @@ impl PeerAddrs {
 /// of its own: those are ordinary keys the operator supplies via `env` or
 /// `passthrough`, or they do not reach the service at all. That is the domain
 /// knowledge this function shed.
-pub(crate) fn compose_env_with_fleet(
+pub fn compose_env_with_fleet(
     svc: &ServiceDef,
     passthrough: &[String],
     fleet: &[ServiceDef],
@@ -410,14 +410,14 @@ pub(crate) fn compose_env_with_fleet(
     // The always-on floor plus the operator's passthrough KEYS, forwarded from
     // weles's own environment. weles knows the key NAME, never its meaning.
     //
-    // Forwarded through `crate::prep::lookup_env` — the SAME helper
-    // `prep::run_one_prepare` uses for a prepare hook's passthrough — so a
-    // passthrough key resolves identically for a service and for a prepare hook
-    // (on Windows both are case-insensitive; a service used to use exact-case
-    // `std::env::var_os` while hooks were case-insensitive — Step-1-review
-    // deferred finding, now closed with one lookup authority).
+    // Forwarded through [`lookup_env`] — the SAME helper the agent's
+    // `prep::run_one_prepare` uses for a prepare hook's passthrough (it imports
+    // this one) — so a passthrough key resolves identically for a service and
+    // for a prepare hook (on Windows both are case-insensitive; a service used
+    // to use exact-case `std::env::var_os` while hooks were case-insensitive —
+    // Step-1-review deferred finding, now closed with one lookup authority).
     for key in SERVICE_ENV_ALLOWLIST.iter().copied().chain(passthrough.iter().map(String::as_str)) {
-        if let Some(value) = crate::prep::lookup_env(key) {
+        if let Some(value) = lookup_env(key) {
             env.insert(OsString::from(key), value);
         }
     }
@@ -454,6 +454,34 @@ pub(crate) fn compose_env_with_fleet(
     }
 
     env
+}
+
+/// Reads one env var from weles's OWN environment, case-insensitively on
+/// Windows (to match `%VAR%` lookup semantics) and exact-case on Unix. This is
+/// the SINGLE passthrough-lookup authority: both [`compose_env_with_fleet`]
+/// (services) and the agent's `prep::run_one_prepare` (prepare hooks) forward
+/// passthrough KEYS through it, so a Windows case-variant passthrough key
+/// resolves identically for a service and for a prepare hook.
+///
+/// It lives master-side because env COMPOSITION is master's job — reading the
+/// orchestrator's own environment is not the platform I/O (`spawn`/`try_wait`)
+/// that the agent boundary fences off. The agent's `prep` imports THIS function
+/// rather than keeping a second copy, which is what keeps the two callers in
+/// lockstep (they used to disagree — `compose_env_with_fleet` once used
+/// exact-case `std::env::var_os`).
+#[cfg(windows)]
+pub fn lookup_env(key: &str) -> Option<OsString> {
+    std::env::vars_os().find_map(|(candidate, value)| {
+        candidate
+            .to_str()
+            .is_some_and(|candidate| candidate.eq_ignore_ascii_case(key))
+            .then_some(value)
+    })
+}
+
+#[cfg(not(windows))]
+pub fn lookup_env(key: &str) -> Option<OsString> {
+    std::env::var_os(key)
 }
 
 #[cfg(test)]

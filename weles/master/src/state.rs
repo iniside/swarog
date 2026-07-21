@@ -74,13 +74,13 @@ pub enum Readiness {
     /// `Healthy` services and blanks the rest).
     #[default]
     Unknown,
-    /// Last probe answered `/readyz` 200 ([`crate::health::ProbeResult::Ready`]).
+    /// Last probe answered `/readyz` 200 (`health::ProbeResult::Ready`).
     Ready,
     /// Last probe connected but did not answer 200 — a 503 while degraded, or a
-    /// torn response ([`crate::health::ProbeResult::NotReady`]).
+    /// torn response (`health::ProbeResult::NotReady`).
     Degraded,
     /// Last probe could not connect at all
-    /// ([`crate::health::ProbeResult::ConnectFailed`]).
+    /// (`health::ProbeResult::ConnectFailed`).
     Unreachable,
 }
 

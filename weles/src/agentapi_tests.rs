@@ -23,12 +23,12 @@ use crate::manifest::{compose_env_with_fleet, ServiceDef};
 
 /// The committed split fixture's services (was `manifest::split_fleet()`).
 fn split_fleet() -> Vec<ServiceDef> {
-    crate::fleet_toml::load_split_fixture().services
+    crate::test_fixtures::load_split_fixture().services
 }
 
 /// The committed monolith fixture's single service (was `manifest::monolith()`).
 fn monolith() -> ServiceDef {
-    crate::fleet_toml::load_monolith_fixture().services.into_iter().next().unwrap()
+    crate::test_fixtures::load_monolith_fixture().services.into_iter().next().unwrap()
 }
 
 /// Budget for an operation that must be BOUNDED. Deliberately far above any

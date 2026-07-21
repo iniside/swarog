@@ -158,7 +158,7 @@ fn stage_fake(layout: &Layout, pkg: &str) {
 /// staging/retention, so the concrete fleet only has to be a real, validating
 /// one — the shipped split fixture is the obvious choice.
 fn split_fleet() -> crate::fleet_toml::Fleet {
-    crate::fleet_toml::load_split_fixture()
+    crate::test_fixtures::load_split_fixture()
 }
 
 fn split_fleet_path() -> PathBuf {
