@@ -732,6 +732,42 @@ and the `weles-managed-gateway` verify stage now run on macOS.
 - **Replica-safety is a module prerequisite**, not a Weles feature: before any
   `replicas: 2`, rating's MMR must be DB-backed and the relay needs an advisory
   lock per `EVENTS_ORIGIN`.
+
+  **Errata (2026-07-21) — the `EVENTS_ORIGIN` advisory-lock line above is STALE;
+  the durable plane is ALREADY replica-safe.** An 11-subagent survey (Weles M1
+  planning) against the current code found the bullet above describes a *superseded*
+  push/relay architecture that no longer exists. In today's pull plane:
+  - **There is no relay and no `EVENTS_ORIGIN`.** `grep EVENTS_ORIGIN` hits ONLY this
+    design doc; `core/asyncevents/src/transport.rs` states outright "no outbox, no
+    relay, no `POST /events` sink and no per-process origin." Do NOT build the
+    advisory lock this bullet asks for — the architecture it belonged to was deleted.
+  - **Two replicas sharing one subscription id form a consumer group BY
+    CONSTRUCTION.** The worker claims each `asyncevents.subscriptions` row with
+    `FOR UPDATE SKIP LOCKED` (`core/asyncevents/src/worker.rs`): one replica delivers
+    + advances the cursor in one tx, the other's claim skips the locked row. No
+    double-effect, no checkpoint race. The at-least-once/exactly-once-for-
+    `TransactionalPg` contract is per-subscription, not per-process.
+  - **rating's precondition is already met** — MMR is DB-backed (`rating.ratings`,
+    upsert in the delivery tx); `scheduler` is already advisory-locked per fire.
+  - The ONLY genuine `replicas: 2` blockers are **request-spanning in-memory
+    redemption stores** in two modules: `accounts` Epic web-OAuth (`epic_oauth.rs`
+    `states: Mutex<HashMap>`) and `admin` show-once reveal (`admin/src/lib.rs`
+    `RevealStore`) — a callback/GET landing on the wrong replica loses the token.
+    Fixed by moving each to a shared DELETE-RETURNING DB table (Weles M1 Phase B).
+    Plus two SOFT (non-correctness) rate-limit dilutions: `admin`/`gateway`
+    per-process limiters multiply ×N under replicas.
+
+  **Errata (2026-07-21b) — single-host replicas need only distinct loopback ports.**
+  `manifest::PeerAddrs::from_fleet` already returns ALL instances per `(provider,
+  kind)` (not a first-match map), and the resolve wire already carries `Vec<String>`.
+  The mTLS `localhost` fiction and the missing DNS path are **multi-machine-only**
+  gaps (both sides collude on `127.0.0.1` on one host), NOT single-host-replica
+  blockers. So single-host `replicas: 2` is: author two `[[service]]` with the same
+  `provider` + distinct ports (already legal/validated), fix the two redemption
+  stores above, and build the round-robin client (`Stub` re-resolve landed A5; the
+  pool/selection/health is the real remaining work). Do NOT add a `host` field to
+  `fleet.toml` — the address authority is the agent's resolve answer, not the
+  manifest (see the 2026-07-21b single-host errata at the top of this file).
 - **Round-robin LB is not "a field change".** Re-resolution is cheap — `Stub`
   holds `peer_addr` as an unparsed `String` and parses at dial, so swapping the
   string for a resolver call is small. **Load balancing is not:** N live instances
