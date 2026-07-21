@@ -24,7 +24,9 @@
 //! real processes or a real clock (timing-tests doctrine).
 
 use std::cell::{Cell, RefCell};
+use std::collections::HashSet;
 use std::fs::File;
+use std::net::TcpListener;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -36,10 +38,11 @@ use crate::agentapi;
 use crate::control::ControlServer;
 use crate::health::{self, ProbeResult};
 use crate::lock;
-use crate::manifest::{self, ServiceDef};
+use crate::manifest::{self, Port, ServiceDef};
 use crate::platform::{self, Outcome, OwnedProc, SpawnSpec};
 use crate::prep;
 use crate::state::{self, FleetState, FleetStatus, ProcessIdentity, Readiness, ServiceState, Status};
+use crate::store::{PortAssignment, Store};
 
 /// How long a service gets to turn `/readyz` 200 after every (re)spawn.
 pub const HEALTH_DEADLINE: Duration = Duration::from_secs(30);
@@ -635,49 +638,49 @@ pub fn run_up(root: Option<PathBuf>) -> Result<()> {
 }
 
 /// The MASTER-shaped prologue: discover the layout (which pins + validates the
-/// deployed `fleet.toml`), then derive — from the pinned fleet ONLY — the owned
-/// values the agent body boots from: the human fleet label and the
-/// [`manifest::PeerAddrs`] that `resolve` answers with. Pure over the pinned
-/// fleet; it acquires no lock, spawns nothing, and touches no platform I/O.
+/// deployed `fleet.toml`), then derive — from the pinned fleet ONLY — the human
+/// fleet label the agent body boots from. Pure over the pinned fleet; it
+/// acquires no lock, spawns nothing, and touches no platform I/O.
 ///
-/// `PeerAddrs::from_fleet` is derived HERE and handed across as an owned value
-/// (never re-derived in the body) — the same value MOVE the async agent island
-/// already relies on, now made the explicit prologue->body seam. It is
-/// deterministic over the pinned `defs`, so computing it before the lock rather
-/// than mid-boot is byte-identical in behavior.
+/// # Why `PeerAddrs` is NOT derived here (A4)
+///
+/// Before A4 this prologue also derived [`manifest::PeerAddrs::from_fleet`] and
+/// handed it across in [`PreparedFleet`]. A4 makes ports MINTABLE, and minting
+/// (binding a free OS port) is agent-side platform I/O that must run AFTER the
+/// rollout lock. The `resolve` map must reflect the MINTED ports, so its
+/// derivation moved INTO [`run_fleet`], immediately after the mint pass. This
+/// does not weaken the A2 boundary: `PeerAddrs::from_fleet` is still a pure
+/// `weles-master` function, and `run_fleet` (agent) is allowed to call
+/// `weles-master` (the dependency points agent -> master). Only the CALL SITE
+/// moved — to where the minted ports it consumes are produced.
 fn prepare_fleet(root: Option<PathBuf>) -> Result<PreparedFleet> {
     let layout = discover_layout(root)?;
 
     // The deployed fleet was parsed + validated ONCE at discover
     // (PIN-AT-DISCOVER); the `up` path always has it — `discover` fails rather
     // than hand back a fleet-less layout — so this `expect` names an invariant,
-    // not a runtime branch. Borrow it just long enough to derive the owned
-    // outputs, then release the borrow so `layout` can move into the seam.
-    let (fleet_label, peers) = {
+    // not a runtime branch.
+    let fleet_label = {
         let deployed = layout
             .fleet()
             .expect("Layout::discover pins a validated fleet on the up path");
         // weles has NO split/monolith concept — it boots whatever fleet was
         // deployed. Label it by process count for `weles status`/`down`.
-        let fleet_label = format!("{}-process", deployed.services.len());
-        // The map `resolve` answers from, derived from the SAME slice the body
-        // composes spawn env against — so env and `resolve` cannot diverge.
-        let peers = manifest::PeerAddrs::from_fleet(&deployed.services);
-        (fleet_label, peers)
+        format!("{}-process", deployed.services.len())
     };
-    Ok(PreparedFleet { layout, fleet_label, peers })
+    Ok(PreparedFleet { layout, fleet_label })
 }
 
 /// The owned hand-off from the master-shaped [`prepare_fleet`] prologue to the
-/// agent-shaped [`run_fleet`] body: the pinned+validated fleet (as a `Layout`),
-/// its label, and the derived `resolve` answers. ONE owned value crossing the
-/// seam models the future master->agent RPC boundary — today an in-process move
-/// (the same value MOVE the agent island already uses for `PeerAddrs`), the
-/// wire deferred to the process split.
+/// agent-shaped [`run_fleet`] body: the pinned+validated fleet (as a `Layout`)
+/// and its label. The derived `resolve` answers are NOT carried here anymore —
+/// A4's mint pass runs agent-side (after the lock), so `run_fleet` derives
+/// [`manifest::PeerAddrs`] itself from the minted fleet (see [`prepare_fleet`]'s
+/// doc). This value still models the future master->agent RPC boundary — today
+/// an in-process move, the wire deferred to the process split.
 struct PreparedFleet {
     layout: prep::Layout,
     fleet_label: String,
-    peers: manifest::PeerAddrs,
 }
 
 /// The AGENT-shaped body: everything with platform I/O or ordering
@@ -692,7 +695,7 @@ struct PreparedFleet {
 /// extraction moved the pure derivation OUT ahead of the lock; it added no
 /// channel and no thread that could reorder the drop.
 fn run_fleet(prepared: PreparedFleet) -> Result<()> {
-    let PreparedFleet { layout, fleet_label, peers } = prepared;
+    let PreparedFleet { layout, fleet_label } = prepared;
 
     // Re-borrow the pinned fleet the prologue validated: `deployed` (and
     // everything borrowed from it — `defs`, `passthrough`, `prepare`) borrows
@@ -801,15 +804,51 @@ fn run_fleet(prepared: PreparedFleet) -> Result<()> {
     // knowing only the command name it was told.
     prep::run_prepare(&deployed.prepare, &layout).context("run fleet prepare hooks")?;
 
-    // `defs` IS the booting fleet, borrowed straight from the pinned+validated
-    // `deployed` — never re-derived. Every peer address handed to a service is
-    // derived from this exact slice (in `compose_env_with_fleet` and
-    // `PeerAddrs::from_fleet`), so a service told an address by env and a
-    // service that asks for it over the agent cannot be told different things.
-    // `passthrough` (env KEYS forwarded from weles's own env) comes from the
-    // same fleet.
-    let defs: &[ServiceDef] = &deployed.services;
+    // MINT PASS (A4) — agent-side, AFTER the lock and prepare hooks, BEFORE any
+    // address is derived. `deployed.services` is the pinned fleet as authored
+    // (some ports may be `Port::Mint`); we take an OWNED copy and patch every
+    // `Mint` to the free OS port the agent binds. `minted` is the fleet from
+    // here on: every peer address (env-composed OR resolve-answered) is derived
+    // from THIS slice, so a minted port reaches a Told service's env and an
+    // Asking service's `resolve` identically. `passthrough` (env KEYS forwarded
+    // from weles's own env) comes from the same deployed fleet.
     let passthrough: &[String] = &deployed.passthrough;
+    let mut minted: Vec<ServiceDef> = deployed.services.clone();
+    let assignments = mint_fleet_ports(&mut minted, bind_free_port)
+        .context("mint agent-side ports")?;
+    // Persist each minted port in the durable master store (A3's writerless
+    // table gets its production writer here). LOG-AND-CONTINUE, never `?`: the
+    // in-memory `minted` slice is the live source of truth for THIS run; the
+    // store row is durable provenance, so a transient store failure (locked or
+    // unwritable state.db, disk full) must not fail a boot whose ports are
+    // already bound — same stance as `prep`'s deploy-history write.
+    if !assignments.is_empty() {
+        match Store::open(&layout.run_dir.join("state.db")) {
+            Ok(store) => {
+                for assignment in &assignments {
+                    if let Err(error) = store.record_port_assignment(assignment) {
+                        eprintln!(
+                            "weles: WARN port assignment for {} not recorded: {error:#}",
+                            assignment.instance_id
+                        );
+                    }
+                }
+            }
+            Err(error) => eprintln!(
+                "weles: WARN master store unavailable, minted ports not persisted: {error:#}"
+            ),
+        }
+    }
+
+    // The `resolve` map, derived HERE (moved out of `prepare_fleet` — A4) from
+    // the MINTED slice: `resolve` must answer minted addresses. Same
+    // `weles-master` derivation over the same slice `compose_env_with_fleet`
+    // reads, so env and `resolve` cannot diverge; a fleet whose services declare
+    // no `provider` (a single-process fleet) yields an empty map so every
+    // resolve 404s (no topology branch — see `manifest::PeerAddrs`).
+    let peers = manifest::PeerAddrs::from_fleet(&minted);
+
+    let defs: &[ServiceDef] = &minted;
     let mut fleet: Vec<Supervised> = defs.iter().cloned().map(Supervised::new).collect();
     // Re-checkpoint now that the fleet exists (the pin was already recorded by
     // the early checkpoint above): status still Starting, endpoint still None,
@@ -871,9 +910,10 @@ fn run_fleet(prepared: PreparedFleet) -> Result<()> {
     // resolve 404s (no topology branch: see `manifest::PeerAddrs`).
     let agent = match health::ensure_no_stale_listener("weles-agent", manifest::AGENT_PORT)
         .and_then(|()| {
-            // `peers` was derived in the prologue from this exact `defs` slice
-            // and MOVED across the seam — resolve answers the same addresses the
-            // env composer derives, without a second `from_fleet` here.
+            // `peers` was derived just above from the MINTED `defs` slice (A4
+            // moved this out of the prologue so it reflects the bound minted
+            // ports) — resolve answers the same addresses the env composer
+            // derives, without a second `from_fleet` here.
             agentapi::AgentServer::bind(manifest::AGENT_PORT, peers)
         })
     {
@@ -898,7 +938,7 @@ fn run_fleet(prepared: PreparedFleet) -> Result<()> {
     // the fleet stop (stop-authority); its own lifecycle is its private flag.
     let readiness: Arc<Mutex<Vec<Readiness>>> =
         Arc::new(Mutex::new(vec![Readiness::Unknown; fleet.len()]));
-    let ports: Vec<u16> = fleet.iter().map(|svc| svc.def.http_port).collect();
+    let ports: Vec<u16> = fleet.iter().map(|svc| svc.def.http_port.resolved()).collect();
     let poller = ReadinessPoller::spawn(reporter.shared(), Arc::clone(&readiness), ports);
 
     let spawn_ctx = SpawnCtx { layout: &layout, passthrough, defs };
@@ -976,6 +1016,128 @@ fn control_endpoint_path(layout: &prep::Layout, run_id: &str) -> PathBuf {
     }
 }
 
+/// The bound-attempt ceiling for one minted port. A single bind of
+/// `127.0.0.1:0` almost always yields a free, non-reserved port; the only reason
+/// to retry is that the OS happened to hand back a port a literal fleet field,
+/// [`manifest::AGENT_PORT`], or an earlier mint this pass already claimed. A
+/// handful of collisions is conceivable on a busy box; 1000 is a fail-closed
+/// ceiling that can only be hit by a pathological allocator (a test's scripted
+/// source), never by real ephemeral allocation.
+const MINT_MAX_ATTEMPTS: usize = 1000;
+
+/// Binds `127.0.0.1:0`, reads the OS-assigned port, and drops the listener —
+/// the raw agent-side free-port source. The tiny bind-close-rebind window before
+/// the service actually binds the port is an accepted TOCTOU under the
+/// dev-tooling threat model (one trusted local operator); intra-fleet
+/// uniqueness — the property that actually matters — is guaranteed by
+/// [`mint_fleet_ports`]'s reserved set, not by holding the listener.
+fn bind_free_port() -> Result<u16> {
+    let listener =
+        TcpListener::bind(("127.0.0.1", 0)).context("bind an ephemeral port for minting")?;
+    let port = listener
+        .local_addr()
+        .context("read the OS-assigned minted port")?
+        .port();
+    drop(listener);
+    Ok(port)
+}
+
+/// THE agent-side mint pass: patches every `Port::Mint` field in `defs` to the
+/// free OS port `raw_alloc` yields, and returns one [`PortAssignment`] per
+/// minted port for the durable store. Runs ONCE, up front, before any address
+/// is derived — on a single machine the agent is the sole source of truth for
+/// free ports, so it can mint them all before boot.
+///
+/// # The minted-uniqueness guarantee
+///
+/// Every port this hands out is distinct from (a) every LITERAL fleet port, (b)
+/// [`manifest::AGENT_PORT`] (weles's own control endpoint), and (c) every port
+/// already minted THIS pass. The reserved set seeds with (a)+(b), and each mint
+/// is `insert`ed before it is handed out — so `raw_alloc` returning a port
+/// already reserved (a literal the OS re-offered, or a prior mint) is SKIPPED
+/// and re-drawn. This is the runtime half of the split
+/// [`crate::fleet_toml::validate_unique_ports`] performs statically for
+/// literals: a minted port has no TOML value to check, so its uniqueness is
+/// enforced HERE, at bind time.
+///
+/// `raw_alloc` is injected (rather than calling [`bind_free_port`] directly) so
+/// a test can script a source that returns a reserved port first and assert the
+/// skip — the uniqueness guard is the code under test, not the OS allocator.
+fn mint_fleet_ports<F>(defs: &mut [ServiceDef], mut raw_alloc: F) -> Result<Vec<PortAssignment>>
+where
+    F: FnMut() -> Result<u16>,
+{
+    // Seed the reserved set with every literal port + the agent's own port.
+    let mut reserved: HashSet<u16> = HashSet::new();
+    reserved.insert(manifest::AGENT_PORT);
+    for def in defs.iter() {
+        if let Some(port) = def.http_port.literal() {
+            reserved.insert(port);
+        }
+        if let Some(port) = def.edge_port.as_ref().and_then(Port::literal) {
+            reserved.insert(port);
+        }
+        if let Some(port) = def.player_port {
+            reserved.insert(port);
+        }
+    }
+
+    let mut assignments = Vec::new();
+    for def in defs.iter_mut() {
+        // `instance_id` = "<name>:<kind>": `name` is fleet-unique (the supervisor
+        // state key), so name+kind is a unique row key even for a service that
+        // mints BOTH ports. `provider` falls back to `name` for a provider-less
+        // service (the monolith is never mintable, but a future front might be).
+        let provider = def.provider.clone().unwrap_or_else(|| def.name.clone());
+
+        if def.http_port.is_mint() {
+            let port = draw_free_port(&mut raw_alloc, &mut reserved)?;
+            def.http_port = Port::Literal(port);
+            assignments.push(PortAssignment {
+                instance_id: format!("{}:http", def.name),
+                provider: provider.clone(),
+                port,
+                alive: true,
+            });
+        }
+
+        // Borrow-split: read the mint flag, THEN mutate the field.
+        let edge_is_mint = def.edge_port.as_ref().is_some_and(Port::is_mint);
+        if edge_is_mint {
+            let port = draw_free_port(&mut raw_alloc, &mut reserved)?;
+            def.edge_port = Some(Port::Literal(port));
+            assignments.push(PortAssignment {
+                instance_id: format!("{}:edge", def.name),
+                provider,
+                port,
+                alive: true,
+            });
+        }
+    }
+    Ok(assignments)
+}
+
+/// Draws one free port from `raw_alloc` that is not already in `reserved`,
+/// inserting it so no later draw this pass can repeat it. Skips a reserved or
+/// zero port and re-draws, bailing after [`MINT_MAX_ATTEMPTS`].
+fn draw_free_port<F>(raw_alloc: &mut F, reserved: &mut HashSet<u16>) -> Result<u16>
+where
+    F: FnMut() -> Result<u16>,
+{
+    for _ in 0..MINT_MAX_ATTEMPTS {
+        let port = raw_alloc()?;
+        // Port 0 is never a real bind target; `reserved.insert` returns false if
+        // the port is a literal, AGENT_PORT, or a prior mint — either way, skip.
+        if port != 0 && reserved.insert(port) {
+            return Ok(port);
+        }
+    }
+    bail!(
+        "could not mint a free port distinct from every literal fleet port, AGENT_PORT, and \
+         every prior mint after {MINT_MAX_ATTEMPTS} attempts"
+    );
+}
+
 /// Spawns each service in manifest order and gates on its readyz before
 /// moving to the next. `Ok(())` with STOP set means "operator interrupted the
 /// The three things every service spawn needs, travelling as one: where the
@@ -1005,7 +1167,7 @@ fn boot(
             return Ok(());
         }
         let name = fleet[index].def.name.clone();
-        let http_port = fleet[index].def.http_port;
+        let http_port = fleet[index].def.http_port.resolved();
 
         // First spawn only: a listener on the port is a stale process from a
         // previous hung run. Never re-checked on a crash respawn — the
@@ -1153,7 +1315,7 @@ fn observe(svc: &mut Supervised, phase: Phase) -> Observed {
         Phase::WaitingHealthy { .. } => {
             if liveness == Observed::Exited {
                 Observed::Exited
-            } else if health::probe(svc.def.http_port) == ProbeResult::Ready {
+            } else if health::probe(svc.def.http_port.resolved()) == ProbeResult::Ready {
                 Observed::Ready
             } else {
                 Observed::NotReady

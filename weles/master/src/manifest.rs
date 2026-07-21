@@ -136,6 +136,115 @@ pub enum AddrKind {
     Http,
 }
 
+/// A service's port field ([`ServiceDef::http_port`] / [`ServiceDef::edge_port`]):
+/// either an operator-authored LITERAL, or the explicit marker `"mint"` asking
+/// the agent to bind a free OS port at spawn (A4).
+///
+/// # Explicit, never magic
+///
+/// Per the config-as-code / anti-magic rule there is NO "0 means mint" overload:
+/// `0` is just an (invalid) literal, and ONLY the string `"mint"` requests
+/// minting. The two forms are distinct at parse time — an integer deserializes
+/// to [`Port::Literal`], the exact string `"mint"` to [`Port::Mint`], and any
+/// other string is a loud error (a typo never silently falls through to a
+/// literal or to mint).
+///
+/// # The resolved-before-read invariant
+///
+/// A `Mint` field is a PROMISE, not an address. The agent's up-front mint pass
+/// (`supervisor::mint_fleet_ports`) binds a free OS port and PATCHES every
+/// `Mint` to a [`Port::Literal`] BEFORE any address is derived — so
+/// [`service_addr`], [`PeerAddrs::from_fleet`] and [`compose_env_with_fleet`]
+/// only ever see resolved literals. Reading a port through [`Port::resolved`]
+/// before the mint pass PANICS, on purpose: it is a programmer error (an address
+/// derived off an unminted fleet), not a runtime condition to tolerate.
+///
+/// The static validator (`fleet_toml::validate`) is the ONE reader that runs
+/// PRE-mint; it asks only [`Port::literal`]/[`Port::is_mint`], never
+/// [`Port::resolved`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Port {
+    /// An operator-authored fixed port.
+    Literal(u16),
+    /// `"mint"` — the agent binds a free OS port at spawn and patches this to
+    /// [`Port::Literal`] before any consumer reads it.
+    Mint,
+}
+
+impl Port {
+    /// `true` for a not-yet-bound [`Port::Mint`]. The mint pass consumes this;
+    /// the validator uses it to reject a Told consumer of a mintable provider.
+    pub fn is_mint(&self) -> bool {
+        matches!(self, Port::Mint)
+    }
+
+    /// The operator-authored literal, or `None` for [`Port::Mint`]. The
+    /// pre-mint reader (`fleet_toml::validate`'s uniqueness check) uses this: a
+    /// minted field has no literal to validate for collisions (its uniqueness is
+    /// the agent's bind-time invariant).
+    pub fn literal(&self) -> Option<u16> {
+        match self {
+            Port::Literal(port) => Some(*port),
+            Port::Mint => None,
+        }
+    }
+
+    /// The bound port. PANICS on [`Port::Mint`] — see the type doc's
+    /// resolved-before-read invariant: an address must never be derived off a
+    /// fleet whose mint pass has not yet run.
+    pub fn resolved(&self) -> u16 {
+        match self {
+            Port::Literal(port) => *port,
+            Port::Mint => panic!(
+                "Port::resolved() on an unminted \"mint\" port — the agent's mint pass must \
+                 patch every Mint to a literal before any address is derived"
+            ),
+        }
+    }
+}
+
+impl std::fmt::Display for Port {
+    /// The literal number, or `mint` for a not-yet-bound field — for the
+    /// operator-facing `weles validate` fleet dump, which runs pre-mint.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Port::Literal(port) => write!(f, "{port}"),
+            Port::Mint => f.write_str("mint"),
+        }
+    }
+}
+
+impl From<u16> for Port {
+    fn from(port: u16) -> Self {
+        Port::Literal(port)
+    }
+}
+
+impl<'de> Deserialize<'de> for Port {
+    /// An integer becomes [`Port::Literal`]; the exact string `"mint"` becomes
+    /// [`Port::Mint`]; any other string is a loud error. `deny_unknown_fields`
+    /// on the enclosing [`crate::fleet_toml`] structs still holds — this only
+    /// widens the single field's value space from "u16" to "u16 | \"mint\"".
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Repr {
+            Literal(u16),
+            Tag(String),
+        }
+        match Repr::deserialize(deserializer)? {
+            Repr::Literal(port) => Ok(Port::Literal(port)),
+            Repr::Tag(tag) if tag == "mint" => Ok(Port::Mint),
+            Repr::Tag(tag) => Err(serde::de::Error::custom(format!(
+                "port must be an integer or the string \"mint\", got {tag:?}"
+            ))),
+        }
+    }
+}
+
 /// HOW a process learns where its peers are — the two ways, as ONE field,
 /// because they are one decision and a process makes it once.
 ///
@@ -225,8 +334,16 @@ pub struct ServiceDef {
     /// exists yet — fail closed rather than silently no-op). Host derivation
     /// from placement is the future multi-machine seam.
     pub placement: Option<String>,
-    pub http_port: u16,
-    pub edge_port: Option<u16>,
+    /// The HTTP bind port — a [`Port::Literal`] or [`Port::Mint`] (the agent
+    /// binds a free OS port at spawn). Resolved to a literal by the mint pass
+    /// before any address is derived.
+    pub http_port: Port,
+    /// The internal-edge bind port, `None` where the service serves no edge
+    /// (admin/gateway). `Some(Port::Mint)` is a mintable edge.
+    pub edge_port: Option<Port>,
+    /// The player-QUIC bind port, `None` for a non-front service. NOT mintable:
+    /// the one player front is a fixed public port, so this stays a plain
+    /// literal.
     pub player_port: Option<u16>,
     /// How this process learns where its peers are: TOLD the addresses at
     /// spawn, or ASKS the agent for them at boot. One field, because it is one
@@ -255,17 +372,37 @@ pub struct ServiceDef {
 /// Every fleet process binds loopback (`PORT`/`EDGE_ADDR` are `:<port>`), so
 /// the host is `127.0.0.1` by construction, not per-service data.
 ///
-/// `pub(crate)` so [`crate::fleet_toml::validate`] can ask "does this provider
-/// actually serve an address of this kind?" through the SAME formatter the
-/// composed env and `resolve` map use — a `None` here IS the validator's "peer
-/// requests a kind the provider has not got" error. Reusing it keeps one
-/// authority for address resolution rather than a second copy in the validator.
+/// `pub(crate)` for the composed-env and `resolve`-map paths, both of which run
+/// AFTER the mint pass, so every port here is a resolved literal (a `Mint` would
+/// PANIC via [`Port::resolved`] — the resolved-before-read invariant on
+/// [`Port`]). A `None` return means the service has no address of this kind
+/// (`edge_port: None`), not "not yet minted".
+///
+/// The validator does NOT go through here for its "does this provider serve this
+/// kind?" question — it runs pre-mint and asks [`serves_kind`] instead (which
+/// never reads a port value), so a mintable provider is not tripped into a
+/// `resolved()` panic during validation.
 pub(crate) fn service_addr(def: &ServiceDef, kind: AddrKind) -> Option<String> {
     let port = match kind {
-        AddrKind::Edge => def.edge_port?,
-        AddrKind::Http => def.http_port,
+        AddrKind::Edge => def.edge_port.as_ref()?.resolved(),
+        AddrKind::Http => def.http_port.resolved(),
     };
     Some(format!("127.0.0.1:{port}"))
+}
+
+/// Whether `def` serves an address of `kind` AT ALL — a PORT-FIELD-PRESENCE
+/// question that never reads the port value, so it is safe pre-mint (a mintable
+/// provider still "serves" the kind; only its literal is not yet known).
+///
+/// This is [`crate::fleet_toml::validate`]'s kind-existence authority, split
+/// from [`service_addr`] precisely so the validator (which runs before the mint
+/// pass) can ask "peer requests a kind this provider has not got" without
+/// resolving a `Mint` port.
+pub(crate) fn serves_kind(def: &ServiceDef, kind: AddrKind) -> bool {
+    match kind {
+        AddrKind::Edge => def.edge_port.is_some(),
+        AddrKind::Http => true,
+    }
 }
 
 /// Formats one peer address for a CONSUMER that names a provider: the lookup by
@@ -422,9 +559,12 @@ pub fn compose_env_with_fleet(
         }
     }
 
-    env.insert(OsString::from("PORT"), OsString::from(format!(":{}", svc.http_port)));
-    if let Some(port) = svc.edge_port {
-        env.insert(OsString::from("EDGE_ADDR"), OsString::from(format!(":{port}")));
+    // Ports are resolved literals here: this runs AFTER the agent's mint pass,
+    // which patched every `Mint` field. `resolved()` panics on an unminted port
+    // rather than silently emitting `:mint` into a service's env.
+    env.insert(OsString::from("PORT"), OsString::from(format!(":{}", svc.http_port.resolved())));
+    if let Some(port) = &svc.edge_port {
+        env.insert(OsString::from("EDGE_ADDR"), OsString::from(format!(":{}", port.resolved())));
     }
 
     // One decision, one match: a process is TOLD its peers or ASKS for them,

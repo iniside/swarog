@@ -47,8 +47,11 @@ fn owned_svc(
         pkg: name.to_string(),
         provider: provider.map(str::to_string),
         placement: None,
-        http_port,
-        edge_port,
+        // Test fleets are literal-port; the `Port` wrap keeps the helper's u16
+        // callers unchanged. Minting is exercised in the weles crate's
+        // supervisor tests (where the mint pass lives).
+        http_port: Port::Literal(http_port),
+        edge_port: edge_port.map(Port::Literal),
         player_port: None,
         addrs,
         env: BTreeMap::new(),
@@ -699,9 +702,9 @@ fn agent_port_collides_with_no_fleet_port() {
     let mono = monolith();
     let mut taken: Vec<(String, &str, u16)> = Vec::new();
     for svc in split().iter().chain(std::iter::once(&mono)) {
-        taken.push((svc.name.clone(), "http_port", svc.http_port));
-        if let Some(port) = svc.edge_port {
-            taken.push((svc.name.clone(), "edge_port", port));
+        taken.push((svc.name.clone(), "http_port", svc.http_port.resolved()));
+        if let Some(port) = &svc.edge_port {
+            taken.push((svc.name.clone(), "edge_port", port.resolved()));
         }
         if let Some(port) = svc.player_port {
             taken.push((svc.name.clone(), "player_port", port));

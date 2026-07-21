@@ -295,7 +295,7 @@ fn dummy_def() -> ServiceDef {
         pkg: "dummy-svc".to_string(),
         provider: Some("dummy".to_string()),
         placement: None,
-        http_port: 65000,
+        http_port: manifest::Port::Literal(65000),
         edge_port: None,
         player_port: None,
         addrs: manifest::Addrs::Told(Vec::new()),
@@ -1030,7 +1030,7 @@ fn a_live_service_whose_readyz_refuses_the_connection_is_observed_not_ready_neve
     let claim = PortClaim::claim();
 
     let mut svc = Supervised::new(ServiceDef {
-        http_port: claim.port(),
+        http_port: manifest::Port::Literal(claim.port()),
         ..dummy_def()
     });
     svc.proc = Some(spawn_live_child(&dir.path));
@@ -1083,4 +1083,123 @@ fn a_live_service_whose_readyz_refuses_the_connection_is_observed_not_ready_neve
         Observed::Exited,
         "liveness wins over the probe: a dead process is Exited in the boot gate too"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Port minting (A4) — the agent-side mint pass, its uniqueness guarantee, and
+// the consumer-first property that a minted port reaches an Asks consumer's
+// resolve map as the exact bound port (never a literal).
+// ---------------------------------------------------------------------------
+
+/// A minimal owned `ServiceDef` for the mint tests (empty env, Told-nothing).
+fn mintable_def(name: &str, provider: Option<&str>, http: Port, edge: Option<Port>) -> ServiceDef {
+    ServiceDef {
+        name: name.to_string(),
+        pkg: name.to_string(),
+        provider: provider.map(str::to_string),
+        placement: None,
+        http_port: http,
+        edge_port: edge,
+        player_port: None,
+        addrs: manifest::Addrs::Told(Vec::new()),
+        env: std::collections::BTreeMap::new(),
+    }
+}
+
+#[test]
+fn a_minted_provider_resolves_its_bound_port_via_peeraddrs() {
+    // A provider with BOTH ports minted. Run the real OS allocator, then derive
+    // the resolve map from the MINTED slice and assert the consumer would
+    // resolve exactly the bound ports — the consumer-first property the design
+    // leans on: `resolve` answers the minted address, not a literal.
+    let mut defs = vec![mintable_def(
+        "characters-svc",
+        Some("characters"),
+        Port::Mint,
+        Some(Port::Mint),
+    )];
+    let assignments = mint_fleet_ports(&mut defs, bind_free_port).expect("mint");
+
+    let http = defs[0].http_port.resolved();
+    let edge = defs[0].edge_port.as_ref().expect("edge stays Some").resolved();
+    assert_ne!(http, 0, "a bound http port is non-zero");
+    assert_ne!(edge, 0, "a bound edge port is non-zero");
+    assert_ne!(http, edge, "the two minted ports are distinct");
+
+    let peers = manifest::PeerAddrs::from_fleet(&defs);
+    assert_eq!(
+        peers.lookup("characters", manifest::AddrKind::Http),
+        vec![format!("127.0.0.1:{http}")],
+        "resolve answers the MINTED http port"
+    );
+    assert_eq!(
+        peers.lookup("characters", manifest::AddrKind::Edge),
+        vec![format!("127.0.0.1:{edge}")],
+        "resolve answers the MINTED edge port"
+    );
+
+    // Each minted port is recorded for the durable store, keyed name:kind.
+    assert!(
+        assignments
+            .iter()
+            .any(|a| a.instance_id == "characters-svc:http" && a.port == http && a.alive),
+        "http assignment records the bound port: {assignments:?}"
+    );
+    assert!(
+        assignments
+            .iter()
+            .any(|a| a.instance_id == "characters-svc:edge" && a.port == edge && a.alive),
+        "edge assignment records the bound port: {assignments:?}"
+    );
+}
+
+#[test]
+fn minting_skips_a_port_already_taken_by_a_literal_or_prior_mint() {
+    // A literal service on 8080, plus two mintable services. A SCRIPTED raw
+    // allocator (popped from the back) hands back, in order: 8080 (literal
+    // collision) then 9000 for the first mint; then 9000 again (prior-mint
+    // collision) then 9001 for the second. The uniqueness guard must SKIP both
+    // collisions — the property this closes is exactly what a static check of a
+    // minted port cannot give, so it is enforced here at draw time.
+    let mut defs = vec![
+        mintable_def("literal-svc", Some("lit"), Port::Literal(8080), None),
+        mintable_def("mint-a", Some("a"), Port::Mint, None),
+        mintable_def("mint-b", Some("b"), Port::Mint, None),
+    ];
+    // Stack: pop() returns the LAST element first ⇒ draw sequence 8080, 9000,
+    // 9000, 9001.
+    let mut script = vec![9001u16, 9000, 9000, 8080];
+    let assignments =
+        mint_fleet_ports(&mut defs, || Ok(script.pop().expect("script exhausted"))).expect("mint");
+
+    assert_eq!(
+        defs[1].http_port.resolved(),
+        9000,
+        "mint-a skips the 8080 literal collision and takes 9000"
+    );
+    assert_eq!(
+        defs[2].http_port.resolved(),
+        9001,
+        "mint-b skips the 9000 prior-mint collision and takes 9001"
+    );
+    assert_eq!(script.len(), 0, "every scripted draw was consumed (both collisions were re-drawn)");
+
+    // No minted port equals the literal or AGENT_PORT, and the two are distinct.
+    let minted: Vec<u16> = assignments.iter().map(|a| a.port).collect();
+    assert_eq!(minted, vec![9000, 9001]);
+    assert!(!minted.contains(&8080), "never re-uses a literal port");
+    assert!(!minted.contains(&manifest::AGENT_PORT), "never mints AGENT_PORT");
+}
+
+#[test]
+fn a_fleet_with_no_mint_ports_mints_nothing() {
+    // The common case: an all-literal fleet. The pass is a no-op — no draw, no
+    // assignment — so opening the store is correctly skipped by the caller.
+    let mut defs = vec![mintable_def("config-svc", Some("config"), Port::Literal(8083), None)];
+    let assignments = mint_fleet_ports(&mut defs, || {
+        panic!("an all-literal fleet must never draw a port")
+    })
+    .expect("mint");
+    assert!(assignments.is_empty(), "nothing minted for an all-literal fleet");
+    assert_eq!(defs[0].http_port, Port::Literal(8083), "the literal is untouched");
 }

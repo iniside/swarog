@@ -86,8 +86,8 @@ fn good_fleet_parses_to_expected_owned_types() {
     let config = &fleet.services[0];
     assert_eq!(config.name, "config-svc");
     assert_eq!(config.provider.as_deref(), Some("config"));
-    assert_eq!(config.http_port, 8083);
-    assert_eq!(config.edge_port, Some(9002));
+    assert_eq!(config.http_port, Port::Literal(8083));
+    assert_eq!(config.edge_port, Some(Port::Literal(9002)));
     assert_eq!(config.player_port, None);
     assert_eq!(config.addrs, Addrs::Told(vec![]), "no peers, no resolve ⇒ empty Told");
 
@@ -527,6 +527,139 @@ http_port = 8081
         "both are provider = None (monolith shape)"
     );
     validate(&fleet).expect("two None-provider services must not trip the replicated-provider guard");
+}
+
+// ---------------------------------------------------------------------------
+// Minting (A4): a `"mint"` port parses to Port::Mint, a bogus string is a loud
+// error, and a Told consumer of a mintable provider fails closed (only an Asks
+// consumer can learn a not-yet-bound minted address).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_mint_port_parses_to_the_mint_variant() {
+    // Both port fields authored as the explicit marker `"mint"` — anti-magic:
+    // no "0 means mint", the string is the ONLY request. A literal integer still
+    // parses to Port::Literal (the happy-path test above pins that).
+    let text = r#"
+[[service]]
+name = "gateway-svc"
+pkg = "gateway-svc"
+provider = "gateway"
+http_port = "mint"
+edge_port = "mint"
+"#;
+    let fleet = parsed(text);
+    assert_eq!(fleet.services[0].http_port, Port::Mint, "http \"mint\" ⇒ Port::Mint");
+    assert_eq!(
+        fleet.services[0].edge_port,
+        Some(Port::Mint),
+        "edge \"mint\" ⇒ Some(Port::Mint)"
+    );
+}
+
+#[test]
+fn a_bogus_port_string_is_rejected() {
+    // Any string other than "mint" is a loud parse error — a typo must never
+    // silently fall through to a literal or to mint.
+    let text = r#"
+[[service]]
+name = "gateway-svc"
+pkg = "gateway-svc"
+provider = "gateway"
+http_port = "ephemeral"
+"#;
+    let err = parse(text).expect_err("a non-\"mint\" port string must fail");
+    let msg = chain(&err);
+    assert!(msg.contains("mint"), "names the only accepted marker: {msg}");
+    assert!(msg.contains("ephemeral"), "echoes the offending value: {msg}");
+}
+
+#[test]
+fn a_told_peer_to_a_mintable_provider_is_rejected() {
+    // config's EDGE port is minted (not known until the agent binds it), and
+    // characters is TOLD config's edge address — a literal env value that cannot
+    // carry a not-yet-bound port. Must fail closed; the fix is resolve = "asks".
+    // config (position 0) is earlier than characters, so the boot-order rule
+    // passes and the mintable-provider rule is the one that fires.
+    let text = r#"
+[[service]]
+name = "config-svc"
+pkg = "config-svc"
+provider = "config"
+http_port = 8083
+edge_port = "mint"
+
+[[service]]
+name = "characters-svc"
+pkg = "characters-svc"
+provider = "characters"
+http_port = 8080
+
+[[service.peer]]
+env_key = "CONFIG_EDGE_ADDR"
+provider = "config"
+kind = "edge"
+"#;
+    let err = validate(&parsed(text)).expect_err("a Told peer to a mintable provider must fail");
+    let msg = chain(&err);
+    assert!(msg.contains("CONFIG_EDGE_ADDR"), "names the offending Told peer key: {msg}");
+    assert!(msg.contains("config"), "names the mintable provider: {msg}");
+    assert!(msg.contains("mint"), "names the minted kind as the cause: {msg}");
+    assert!(
+        msg.contains("resolve = \"asks\""),
+        "points at the fix (consume a mintable provider via asks): {msg}"
+    );
+}
+
+#[test]
+fn asks_consuming_a_mintable_provider_stays_legal() {
+    // Same mintable config edge, but the consumer ASKS — its address is resolved
+    // at boot over the agent (from PeerAddrs derived AFTER the mint pass), so the
+    // not-yet-bound port is representable and the guard must NOT fire.
+    let text = r#"
+[[service]]
+name = "config-svc"
+pkg = "config-svc"
+provider = "config"
+http_port = 8083
+edge_port = "mint"
+
+[[service]]
+name = "gateway-svc"
+pkg = "gateway-svc"
+provider = "gateway"
+http_port = 8082
+resolve = "asks"
+"#;
+    validate(&parsed(text)).expect("a mintable provider consumed via asks is legal");
+}
+
+#[test]
+fn a_told_peer_to_a_providers_literal_kind_stays_legal_while_another_kind_mints() {
+    // config mints its HTTP port but its EDGE port is a literal. A Told peer on
+    // the LITERAL edge is fine — only the minted KIND is unrepresentable in a
+    // Told env value, so the guard is per-(provider, kind), not per-provider.
+    let text = r#"
+[[service]]
+name = "config-svc"
+pkg = "config-svc"
+provider = "config"
+http_port = "mint"
+edge_port = 9002
+
+[[service]]
+name = "characters-svc"
+pkg = "characters-svc"
+provider = "characters"
+http_port = 8080
+
+[[service.peer]]
+env_key = "CONFIG_EDGE_ADDR"
+provider = "config"
+kind = "edge"
+"#;
+    validate(&parsed(text))
+        .expect("a Told peer on a provider's LITERAL kind is legal even if another kind mints");
 }
 
 // ---------------------------------------------------------------------------

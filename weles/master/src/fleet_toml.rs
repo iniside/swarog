@@ -27,7 +27,7 @@ use std::path::Path;
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 
-use crate::manifest::{self, Addrs, AddrKind, ServiceDef, AGENT_PORT};
+use crate::manifest::{self, Addrs, AddrKind, Port, ServiceDef, AGENT_PORT};
 
 /// The whole `fleet.toml`, as authored. Converted to [`Fleet`] by [`load`];
 /// this shape exists only to carry the serde/TOML surface (defaults,
@@ -133,9 +133,15 @@ struct ServiceEntry {
     /// closed, never a silent no-op).
     #[serde(default)]
     placement: Option<String>,
-    http_port: u16,
+    /// A literal port (`http_port = 8080`) or the explicit marker
+    /// (`http_port = "mint"`) asking the agent to bind a free OS port at spawn —
+    /// parsed by [`Port`]'s own deserializer. `deny_unknown_fields` still holds;
+    /// this only widens the value from an integer to `integer | "mint"`.
+    http_port: Port,
     #[serde(default)]
-    edge_port: Option<u16>,
+    edge_port: Option<Port>,
+    /// The player-QUIC port — NOT mintable (the one public player front is a
+    /// fixed port), so this stays a plain literal.
     #[serde(default)]
     player_port: Option<u16>,
     /// The ONLY accepted value is `"asks"` ([`Addrs::Asks`]); absent means
@@ -259,10 +265,13 @@ fn to_service_def(entry: ServiceEntry) -> Result<ServiceDef> {
 /// stage (minus its dropped pg-budget check, which was domain knowledge weles
 /// no longer holds):
 ///
-/// (i) every http/edge/player port is UNIQUE across the fleet AND distinct from
-///     [`AGENT_PORT`] (weles's own endpoint) — two services on one port, or a
-///     service squatting the agent's port, is a boot collision, not a runtime
-///     surprise;
+/// (i) every LITERAL http/edge/player port is UNIQUE across the fleet AND
+///     distinct from [`AGENT_PORT`] (weles's own endpoint) — two services on one
+///     port, or a service squatting the agent's port, is a boot collision, not a
+///     runtime surprise. A `"mint"` port has NO literal to collide here: its
+///     uniqueness is the agent's BIND-TIME invariant (the mint pass binds a free
+///     OS port distinct from every literal, [`AGENT_PORT`], and every prior
+///     mint), enforced at runtime rather than in this static check;
 /// (ii) every TOLD peer names a `provider` that some service in the fleet
 ///     provides AND that actually serves the requested [`AddrKind`] — checked
 ///     through the same [`manifest::service_addr`] the composed env uses, so a
@@ -282,7 +291,51 @@ pub fn validate(fleet: &Fleet) -> Result<()> {
     validate_unique_names(fleet)?;
     validate_peers(fleet)?;
     validate_no_told_peer_to_replicated_provider(fleet)?;
+    validate_no_told_peer_to_mintable_provider(fleet)?;
     validate_placement(fleet)?;
+    Ok(())
+}
+
+/// (vii) NO Told peer may name a provider whose port OF THAT KIND is `"mint"`. A
+///     minted port is not known until the agent binds it at spawn (A4), and a
+///     Told peer is handed a LITERAL address in an env var at compose time
+///     ([`manifest::compose_env_with_fleet`]) — it cannot carry a not-yet-bound
+///     port. Only a `resolve = "asks"` consumer learns a minted address, over
+///     the agent's `resolve` (answered from [`manifest::PeerAddrs::from_fleet`],
+///     which the agent derives AFTER the mint pass). So a mintable provider must
+///     be consumed exclusively via `asks`. This is the counting shape of
+///     [`validate_no_told_peer_to_replicated_provider`] — a per-Told-peer scan
+///     against a per-provider fact — checked at the (provider, kind) granularity
+///     the address itself has: telling a provider's HTTP address is fine while
+///     its EDGE port is minted, and vice versa; only the minted kind is
+///     unrepresentable in a Told env value. [`validate_peers`] has already
+///     proven the provider exists and serves the kind, so the find here cannot
+///     dangle (a missing provider is that check's error, not this one's).
+fn validate_no_told_peer_to_mintable_provider(fleet: &Fleet) -> Result<()> {
+    for svc in &fleet.services {
+        for (env_key, provider, kind) in svc.addrs.told() {
+            let Some(prov) = fleet
+                .services
+                .iter()
+                .find(|def| def.provider.as_deref() == Some(provider.as_str()))
+            else {
+                continue;
+            };
+            let minted = match kind {
+                AddrKind::Http => prov.http_port.is_mint(),
+                AddrKind::Edge => prov.edge_port.as_ref().is_some_and(Port::is_mint),
+            };
+            if minted {
+                bail!(
+                    "service {:?}: Told peer {env_key:?} names provider {provider:?} as \
+                     AddrKind::{kind:?}, whose {kind:?} port is \"mint\" — a Told peer receives a \
+                     literal address and cannot carry a not-yet-bound minted port; consume a \
+                     mintable provider with resolve = \"asks\"",
+                    svc.name
+                );
+            }
+        }
+    }
     Ok(())
 }
 
@@ -347,29 +400,45 @@ fn validate_placement(fleet: &Fleet) -> Result<()> {
     Ok(())
 }
 
+/// LITERAL-port uniqueness only. A `"mint"` field has no operator-authored value
+/// to collide — the mint pass guarantees a bound minted port is distinct from
+/// every literal, [`AGENT_PORT`], and every prior mint at BIND time (see
+/// `supervisor::mint_fleet_ports`), which this static check cannot see.
 fn validate_unique_ports(fleet: &Fleet) -> Result<()> {
-    // port -> the label of the first service to claim it.
+    // literal port -> the label of the first service to claim it.
     let mut seen: HashMap<u16, String> = HashMap::new();
 
     for svc in &fleet.services {
-        let ports = [
-            Some(("http", svc.http_port)),
-            svc.edge_port.map(|p| ("edge", p)),
-            svc.player_port.map(|p| ("player", p)),
-        ];
-        for (label, port) in ports.into_iter().flatten() {
-            if port == AGENT_PORT {
-                bail!(
-                    "service {:?}: {label} port {port} collides with weles's own agent port \
-                     (AGENT_PORT = {AGENT_PORT})",
-                    svc.name
-                );
-            }
-            let owner = format!("{}({label})", svc.name);
-            if let Some(prev) = seen.insert(port, owner.clone()) {
-                bail!("port {port} is claimed by both {prev} and {owner}");
-            }
+        if let Some(port) = svc.http_port.literal() {
+            claim_literal_port(&mut seen, &svc.name, "http", port)?;
         }
+        if let Some(port) = svc.edge_port.as_ref().and_then(Port::literal) {
+            claim_literal_port(&mut seen, &svc.name, "edge", port)?;
+        }
+        if let Some(port) = svc.player_port {
+            claim_literal_port(&mut seen, &svc.name, "player", port)?;
+        }
+    }
+    Ok(())
+}
+
+/// Claims one literal port for `label` of `svc_name`, rejecting a clash with
+/// [`AGENT_PORT`] or a port a previous field already took.
+fn claim_literal_port(
+    seen: &mut HashMap<u16, String>,
+    svc_name: &str,
+    label: &str,
+    port: u16,
+) -> Result<()> {
+    if port == AGENT_PORT {
+        bail!(
+            "service {svc_name:?}: {label} port {port} collides with weles's own agent port \
+             (AGENT_PORT = {AGENT_PORT})"
+        );
+    }
+    let owner = format!("{svc_name}({label})");
+    if let Some(prev) = seen.insert(port, owner.clone()) {
+        bail!("port {port} is claimed by both {prev} and {owner}");
     }
     Ok(())
 }
@@ -414,7 +483,13 @@ fn validate_peers(fleet: &Fleet) -> Result<()> {
                     svc.name
                 );
             };
-            if manifest::service_addr(prov_def, *kind).is_none() {
+            // Kind-EXISTENCE via `serves_kind` (a port-field-presence question),
+            // not `service_addr` (which resolves the port value): the validator
+            // runs pre-mint, so a mintable provider must not be tripped into a
+            // `Port::resolved()` panic here. A mintable provider still SERVES the
+            // kind; whether a Told peer may name it is
+            // `validate_no_told_peer_to_mintable_provider`'s call.
+            if !manifest::serves_kind(prov_def, *kind) {
                 bail!(
                     "service {:?} declares peer {env_key:?} → provider {provider:?} as \
                      AddrKind::{kind:?}, but {provider:?} has no address of that kind (e.g. \
