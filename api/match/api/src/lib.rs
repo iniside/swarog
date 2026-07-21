@@ -47,3 +47,6 @@ pub trait Match: Send + Sync {
     #[retry_safe]
     async fn report(&self, report_id: String, winner: String, loser: String) -> Result<(), Error>;
 }
+
+#[cfg(test)]
+mod tests;

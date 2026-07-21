@@ -1670,3 +1670,73 @@ async fn retry_safe_failover_is_bounded_to_one_cross_instance_attempt() {
         "bounded: at most one cross-instance retry, no third attempt"
     );
 }
+
+// --- describe() client helper (routing-as-data, D1) -------------------------
+
+/// A fake `Caller` that records the method/identity/payload/retry it was called with
+/// and answers with a fixed body — enough to prove `remote::describe` calls the
+/// reserved op correctly and deserializes the manifest.
+struct DescribeCaller {
+    body: Vec<u8>,
+    seen: std::sync::Mutex<Option<(String, bool, usize, RetryMode)>>,
+}
+
+#[async_trait]
+impl Caller for DescribeCaller {
+    async fn call(
+        &self,
+        method: &str,
+        identity: Option<&str>,
+        payload: &[u8],
+        retry_mode: RetryMode,
+    ) -> Result<Vec<u8>, Error> {
+        *self.seen.lock().unwrap() =
+            Some((method.to_string(), identity.is_some(), payload.len(), retry_mode));
+        Ok(self.body.clone())
+    }
+}
+
+fn sample_manifest() -> opsapi::DescribeManifest {
+    opsapi::DescribeManifest {
+        ops: vec![opsapi::OpManifest {
+            method: "match.report".into(),
+            verb: "POST".into(),
+            path: "/match/report".into(),
+            auth: opsapi::AuthReq::None,
+            success: 202,
+            args: vec![opsapi::ArgMapping {
+                param: "report_id".into(),
+                wire_key: "ReportId".into(),
+                source: opsapi::ArgSource::Body,
+            }],
+        }],
+    }
+}
+
+#[tokio::test]
+async fn describe_calls_reserved_op_no_identity_no_body_retry_safe() {
+    let manifest = sample_manifest();
+    let caller = DescribeCaller {
+        body: serde_json::to_vec(&manifest).unwrap(),
+        seen: std::sync::Mutex::new(None),
+    };
+    let got = crate::describe(&caller).await.unwrap();
+    assert_eq!(got, manifest);
+
+    let (method, had_identity, payload_len, retry) = caller.seen.lock().unwrap().clone().unwrap();
+    assert_eq!(method, opsapi::DESCRIBE_METHOD);
+    assert!(!had_identity, "describe is unauthenticated");
+    assert_eq!(payload_len, 0, "describe takes no arguments");
+    // Read-only/idempotent: allowed one replay after reconnect (like a `#[retry_safe]` read).
+    assert_eq!(retry, RetryMode::OnceAfterReconnect);
+}
+
+#[tokio::test]
+async fn describe_surfaces_malformed_manifest_as_internal_error() {
+    let caller = DescribeCaller {
+        body: b"not json".to_vec(),
+        seen: std::sync::Mutex::new(None),
+    };
+    let err = crate::describe(&caller).await.unwrap_err();
+    assert_eq!(err.status, opsapi::Status::Internal);
+}

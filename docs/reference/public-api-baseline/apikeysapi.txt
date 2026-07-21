@@ -30,6 +30,7 @@ impl core::marker::UnsafeUnpin for apikeysapi::keys_rpc::LookupKeyResponse
 impl core::panic::unwind_safe::RefUnwindSafe for apikeysapi::keys_rpc::LookupKeyResponse
 impl core::panic::unwind_safe::UnwindSafe for apikeysapi::keys_rpc::LookupKeyResponse
 pub const apikeysapi::keys_rpc::METHOD_LOOKUP_KEY: &str
+pub fn apikeysapi::keys_rpc::describe() -> opsapi::DescribeManifest
 pub fn apikeysapi::keys_rpc::operations(alloc::sync::Arc<(dyn apikeysapi::Keys + core::marker::Send + core::marker::Sync)>) -> alloc::vec::Vec<opsapi::OpSet>
 pub fn apikeysapi::keys_rpc::route_bindings() -> alloc::vec::Vec<opsapi::RouteBinding>
 pub fn apikeysapi::keys_rpc::wire_ops() -> alloc::vec::Vec<opsapi::WireOp>

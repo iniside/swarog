@@ -33,6 +33,7 @@ impl core::marker::UnsafeUnpin for charactersapi::ownership_rpc::OwnerOfResponse
 impl core::panic::unwind_safe::RefUnwindSafe for charactersapi::ownership_rpc::OwnerOfResponse
 impl core::panic::unwind_safe::UnwindSafe for charactersapi::ownership_rpc::OwnerOfResponse
 pub const charactersapi::ownership_rpc::METHOD_OWNER_OF: &str
+pub fn charactersapi::ownership_rpc::describe() -> opsapi::DescribeManifest
 pub fn charactersapi::ownership_rpc::operations(alloc::sync::Arc<(dyn charactersapi::Ownership + core::marker::Send + core::marker::Sync)>) -> alloc::vec::Vec<opsapi::OpSet>
 pub fn charactersapi::ownership_rpc::route_bindings() -> alloc::vec::Vec<opsapi::RouteBinding>
 pub fn charactersapi::ownership_rpc::wire_ops() -> alloc::vec::Vec<opsapi::WireOp>
@@ -129,6 +130,7 @@ impl core::panic::unwind_safe::UnwindSafe for charactersapi::player_rpc::ListRes
 pub const charactersapi::player_rpc::METHOD_CREATE: &str
 pub const charactersapi::player_rpc::METHOD_DELETE: &str
 pub const charactersapi::player_rpc::METHOD_LIST: &str
+pub fn charactersapi::player_rpc::describe() -> opsapi::DescribeManifest
 pub fn charactersapi::player_rpc::operations(alloc::sync::Arc<(dyn charactersapi::Player + core::marker::Send + core::marker::Sync)>) -> alloc::vec::Vec<opsapi::OpSet>
 pub fn charactersapi::player_rpc::route_bindings() -> alloc::vec::Vec<opsapi::RouteBinding>
 pub fn charactersapi::player_rpc::wire_ops() -> alloc::vec::Vec<opsapi::WireOp>

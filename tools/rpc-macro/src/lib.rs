@@ -16,7 +16,10 @@
 //!   - `METHOD_<NAME>: &str = "<prefix>.<lowerCamel(name)>"` consts,
 //!   - for `#[http(...)]`-annotated methods only, `operations(impl) ->
 //!     Vec<opsapi::OpSet>` and `route_bindings() -> Vec<opsapi::RouteBinding>` (the
-//!     decode/encode/local glue the gateway routes over),
+//!     decode/encode/local glue the gateway routes over), plus `describe() ->
+//!     opsapi::DescribeManifest` — the SAME `HttpBind` as pure serializable DATA, the
+//!     payload a svc serves under `opsapi::DESCRIBE_METHOD` so a data-driven gateway
+//!     rebuilds its route table at runtime without importing this glue,
 //!   - for EVERY method (http-bound and wire-only), `wire_ops() ->
 //!     Vec<opsapi::WireOp>` — each method's name + `RetryMode`, so a wire-only
 //!     method's `#[retry_safe]` surfaces as a contract-golden value.
@@ -200,6 +203,8 @@ fn expand(
     // body_shapes covers ONLY http-bound methods (their `<Method>Request` derives
     // Default; wire-only request structs do not — see gen_request_struct).
     let body_shape_literals = bound.iter().map(|m| gen_body_shape_literal(m)).collect::<Vec<_>>();
+    // describe() covers ONLY http-bound methods (wire-only ops are never gateway-routed).
+    let manifest_literals = bound.iter().map(|m| gen_manifest_literal(m)).collect::<Vec<_>>();
 
     // The metadata-callback macro. `$crate` cannot name this crate from a proc
     // macro, so the api crate's name comes from the build env (Cargo sets
@@ -303,6 +308,23 @@ fn expand(
             #[doc(hidden)]
             pub fn body_shapes() -> ::std::vec::Vec<(&'static str, ::serde_json::Value)> {
                 ::std::vec![ #(#body_shape_literals),* ]
+            }
+
+            /// This contract's `#[http]`-bound ops as pure serializable DATA — the
+            /// payload of the reserved `opsapi::DESCRIBE_METHOD` op (routing-as-data).
+            /// A data-driven gateway fetches this over the svc's edge and rebuilds its
+            /// route table WITHOUT importing this crate's `<name>rpc` glue at compile
+            /// time: each `OpManifest` carries exactly the `HttpBind`
+            /// (`verb`/`path`/`auth`/`success`) plus a per-arg `wire_key`/`source`
+            /// mapping — the same source `operations()`/`route_bindings()` are emitted
+            /// from, so a describe manifest and a route binding for the same op are
+            /// verb/path/auth/success-identical by construction. WIRE-ONLY methods (no
+            /// `#[http]`) are DELIBERATELY excluded — only player-facing HTTP ops are
+            /// gateway-routed. Deterministic order (methods sorted by name).
+            pub fn describe() -> ::opsapi::DescribeManifest {
+                ::opsapi::DescribeManifest {
+                    ops: ::std::vec![ #(#manifest_literals),* ],
+                }
             }
         }
 
@@ -735,6 +757,51 @@ fn gen_operation_literal(m: &MethodModel) -> TokenStream2 {
             auth: ::opsapi::AuthReq::#auth,
             success: #success,
             retry_mode: #retry_mode,
+        }
+    }
+}
+
+/// One `opsapi::ArgMapping` literal for a method arg: its param name, the JSON wire
+/// key it occupies (`body_names` rename, else the param name — path args keep their
+/// param-name key), and whether it is a body arg or a path wildcard. Uses the SAME
+/// `wildcard`/`rename` classification as [`gen_decode`] and [`gen_body_shape_literal`],
+/// so the describe manifest can never disagree with the generated decode.
+fn gen_arg_mapping_literal(a: &rpc_contract_model::Arg) -> TokenStream2 {
+    let param = a.ident.to_string();
+    let wire_key = a.rename.clone().unwrap_or_else(|| a.ident.to_string());
+    let source = match &a.wildcard {
+        Some(w) => quote! { ::opsapi::ArgSource::Path { wildcard: #w.to_string() } },
+        None => quote! { ::opsapi::ArgSource::Body },
+    };
+    quote! {
+        ::opsapi::ArgMapping {
+            param: #param.to_string(),
+            wire_key: #wire_key.to_string(),
+            source: #source,
+        }
+    }
+}
+
+/// The `opsapi::OpManifest` literal for one `#[http]`-bound method: the wire method
+/// const paired with its `HttpBind` (verb/path/auth/success) and per-arg mappings —
+/// the serializable half of `describe()`. Mirrors [`gen_operation_literal`]'s
+/// verb/path/auth/success selection over the SAME `m.http`, so the two never drift.
+fn gen_manifest_literal(m: &MethodModel) -> TokenStream2 {
+    let const_ident = method_const_ident(m);
+    let b = m.http.as_ref().expect("bound method");
+    let verb = &b.verb;
+    let path = &b.path;
+    let success = b.success;
+    let auth = format_ident!("{}", b.auth);
+    let arg_mappings = m.args.iter().map(gen_arg_mapping_literal);
+    quote! {
+        ::opsapi::OpManifest {
+            method: #const_ident.to_string(),
+            verb: #verb.to_string(),
+            path: #path.to_string(),
+            auth: ::opsapi::AuthReq::#auth,
+            success: #success,
+            args: ::std::vec![ #(#arg_mappings),* ],
         }
     }
 }

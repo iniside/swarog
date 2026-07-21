@@ -248,7 +248,12 @@ pub fn status_of(err: Option<&Error>) -> Status {
 /// What identity guarantee an operation needs the gateway to establish before it
 /// dispatches. Declared per operation so the auth requirement lives beside the
 /// route.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+///
+/// `Serialize`/`Deserialize` are derived so the auth requirement can ride inside the
+/// serializable [`OpManifest`] the reserved [`DESCRIBE_METHOD`] op carries (each
+/// variant encodes by its name — a self-consistent Rust-only wire, both ends
+/// macro/`opsapi`-generated).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum AuthReq {
     /// The operation is public; the gateway dispatches without a bearer (e.g.
     /// `match/report`, login/register, leaderboard).
@@ -297,6 +302,99 @@ pub struct HttpBind {
     /// Overrides the external JSON key of a BODY arg where it differs from the param
     /// name, e.g. `{"item_id": "item_id"}`. An unlisted body arg uses its param name.
     pub body_names: HashMap<String, String>,
+}
+
+// ---------------------------------------------------------------------------
+// describe() — the `#[http]` op manifest as serializable DATA (routing-as-data)
+// ---------------------------------------------------------------------------
+
+/// The reserved wire method a svc serves so a data-driven gateway can fetch its
+/// `#[http]` op manifest at RUNTIME (over the internal edge) instead of importing the
+/// provider's `<name>rpc` glue at COMPILE time. Registered on the svc's edge with
+/// [`crate::DESCRIBE_METHOD`] as the well-known method id; the gateway dials it and
+/// rebuilds its route table from the returned [`DescribeManifest`]. A single shared
+/// const so client and server never drift.
+///
+/// The `__` prefix sits OUTSIDE every `<prefix>.<method>` domain namespace the
+/// `#[rpc]` macro emits (a wire method is always `prefix.lowerCamel`, never
+/// underscore-led), so this reserved op can never collide with a generated domain
+/// method — the edge's duplicate-registration panic still guards accidental reuse.
+pub const DESCRIBE_METHOD: &str = "__describe";
+
+/// Where one method argument is sourced from when a data-driven gateway rebuilds the
+/// wire request — the serializable twin of [`HttpBind`]'s `path_args`/`body_names`
+/// split. A body arg is read from the JSON request body; a path arg is lifted from a
+/// path wildcard and injected into the wire request under its `wire_key` (exactly what
+/// the generated `decode` does).
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum ArgSource {
+    /// The arg is read from the JSON request body under its [`ArgMapping::wire_key`].
+    Body,
+    /// The arg is taken from the path wildcard `{wildcard}` and written into the wire
+    /// request under its [`ArgMapping::wire_key`].
+    Path { wildcard: String },
+}
+
+/// One method argument's mapping from HTTP input to the wire request field — enough
+/// for a data-driven gateway to rebuild the SAME wire request the generated `decode`
+/// builds: a default request object, the raw body deserialized over it, then each
+/// path wildcard written under its `wire_key`.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ArgMapping {
+    /// The Rust method parameter name (the wire request struct field ident).
+    pub param: String,
+    /// The JSON key this arg occupies in the wire request: a `body_names` rename when
+    /// present, else the param name (a path arg keeps its param-name key by
+    /// convention — it is populated after body deserialization, never sent by a
+    /// client under the wildcard name).
+    pub wire_key: String,
+    /// Whether the value comes from the body or a path wildcard.
+    pub source: ArgSource,
+}
+
+/// One `#[http]`-bound op described as pure serializable DATA: exactly the
+/// [`HttpBind`] a data-driven gateway needs to reconstruct the generic decode/encode
+/// (`verb`/`path`/`auth`/`success` + per-arg `wire_key`/`source`), plus the wire
+/// method id. The exact same source the `#[rpc]` macro emits `operations()` /
+/// `route_bindings()` from — a describe manifest and a route binding for the same op
+/// carry identical `verb`/`path`/`auth`/`success` by construction.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct OpManifest {
+    /// The rpc wire method name, e.g. `"match.report"` (the `METHOD_*` const value).
+    pub method: String,
+    /// HTTP verb the gateway binds, e.g. `"POST"`.
+    pub verb: String,
+    /// HTTP path pattern, e.g. `"/characters/{id}"`.
+    pub path: String,
+    /// Identity the gateway must establish before dispatch.
+    pub auth: AuthReq,
+    /// HTTP status the gateway writes on a [`Status::Ok`] outcome (e.g. 201/200/204/202).
+    pub success: u16,
+    /// Per-arg source mapping, in method-declaration order.
+    pub args: Vec<ArgMapping>,
+}
+
+/// A process's `#[http]` op manifest — the payload of the reserved [`DESCRIBE_METHOD`]
+/// op. Serializable both ways: a svc serves the JSON, a gateway reconstructs its route
+/// table from it with NO compile-time `<name>rpc` import. Wire-only methods (no
+/// `#[http]`) are excluded — only player-facing HTTP ops are gateway-routed.
+#[derive(Clone, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub struct DescribeManifest {
+    pub ops: Vec<OpManifest>,
+}
+
+impl DescribeManifest {
+    /// Concatenates several contracts' manifests into one — a svc that serves multiple
+    /// `#[rpc]` traits aggregates each trait's generated `describe()` into the single
+    /// manifest its ONE reserved [`DESCRIBE_METHOD`] op returns (the reserved op is
+    /// registered once per process, so its payload must be the union).
+    pub fn concat(manifests: impl IntoIterator<Item = DescribeManifest>) -> DescribeManifest {
+        let mut ops = Vec::new();
+        for m in manifests {
+            ops.extend(m.ops);
+        }
+        DescribeManifest { ops }
+    }
 }
 
 /// Contribution slot the gateway reads to build its route table (the [`Operation`]

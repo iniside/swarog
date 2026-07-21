@@ -30,6 +30,7 @@ impl core::marker::UnsafeUnpin for adminapi::admin_data_rpc::AdminDataResponse
 impl core::panic::unwind_safe::RefUnwindSafe for adminapi::admin_data_rpc::AdminDataResponse
 impl core::panic::unwind_safe::UnwindSafe for adminapi::admin_data_rpc::AdminDataResponse
 pub const adminapi::admin_data_rpc::METHOD_ADMIN_DATA: &str
+pub fn adminapi::admin_data_rpc::describe() -> opsapi::DescribeManifest
 pub fn adminapi::admin_data_rpc::operations(alloc::sync::Arc<(dyn adminapi::AdminData + core::marker::Send + core::marker::Sync)>) -> alloc::vec::Vec<opsapi::OpSet>
 pub fn adminapi::admin_data_rpc::route_bindings() -> alloc::vec::Vec<opsapi::RouteBinding>
 pub fn adminapi::admin_data_rpc::wire_ops() -> alloc::vec::Vec<opsapi::WireOp>
@@ -64,6 +65,7 @@ impl core::marker::UnsafeUnpin for adminapi::admin_submit_rpc::AdminSubmitRespon
 impl core::panic::unwind_safe::RefUnwindSafe for adminapi::admin_submit_rpc::AdminSubmitResponse
 impl core::panic::unwind_safe::UnwindSafe for adminapi::admin_submit_rpc::AdminSubmitResponse
 pub const adminapi::admin_submit_rpc::METHOD_ADMIN_SUBMIT: &str
+pub fn adminapi::admin_submit_rpc::describe() -> opsapi::DescribeManifest
 pub fn adminapi::admin_submit_rpc::operations(alloc::sync::Arc<(dyn adminapi::AdminSubmit + core::marker::Send + core::marker::Sync)>) -> alloc::vec::Vec<opsapi::OpSet>
 pub fn adminapi::admin_submit_rpc::route_bindings() -> alloc::vec::Vec<opsapi::RouteBinding>
 pub fn adminapi::admin_submit_rpc::wire_ops() -> alloc::vec::Vec<opsapi::WireOp>

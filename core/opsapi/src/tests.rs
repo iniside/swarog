@@ -93,3 +93,87 @@ async fn opset_closures_compose() {
     let err = (op.local.invoke)(Identity::none(), wire_req).await.unwrap_err();
     assert_eq!(err.status, Status::Invalid);
 }
+
+// ---------------------------------------------------------------------------
+// describe() manifest — serializable DATA (routing-as-data, D1)
+// ---------------------------------------------------------------------------
+
+/// The reserved describe method id is stable and lives OUTSIDE every
+/// `<prefix>.<method>` domain namespace, so it can never collide with a generated
+/// domain wire method (all of which are `prefix.lowerCamel`, never underscore-led).
+#[test]
+fn describe_method_is_reserved_and_stable() {
+    assert_eq!(DESCRIBE_METHOD, "__describe");
+    assert!(DESCRIBE_METHOD.starts_with("__"));
+    assert!(!DESCRIBE_METHOD.contains('.'));
+}
+
+/// A manifest carrying both a `body_names`-renamed body arg AND a path-wildcard arg
+/// round-trips through JSON field-identically — the property the reserved
+/// `DESCRIBE_METHOD` op relies on (a svc serializes, a gateway deserializes).
+#[test]
+fn describe_manifest_json_round_trips_both_arg_sources() {
+    let manifest = DescribeManifest {
+        ops: vec![
+            OpManifest {
+                method: "match.report".into(),
+                verb: "POST".into(),
+                path: "/match/report".into(),
+                auth: AuthReq::None,
+                success: 202,
+                args: vec![ArgMapping {
+                    param: "report_id".into(),
+                    wire_key: "ReportId".into(),
+                    source: ArgSource::Body,
+                }],
+            },
+            OpManifest {
+                method: "characters.delete".into(),
+                verb: "DELETE".into(),
+                path: "/characters/{id}".into(),
+                auth: AuthReq::Player,
+                success: 204,
+                args: vec![ArgMapping {
+                    param: "character_id".into(),
+                    wire_key: "character_id".into(),
+                    source: ArgSource::Path { wildcard: "id".into() },
+                }],
+            },
+        ],
+    };
+    let bytes = serde_json::to_vec(&manifest).unwrap();
+    let back: DescribeManifest = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(back, manifest);
+}
+
+/// `concat` is the svc-side aggregation authority: a process serving N traits unions
+/// each trait's `describe()` into the single reserved-op payload, order-preserving.
+#[test]
+fn describe_manifest_concat_unions_ops_in_order() {
+    let a = DescribeManifest {
+        ops: vec![OpManifest {
+            method: "characters.create".into(),
+            verb: "POST".into(),
+            path: "/characters".into(),
+            auth: AuthReq::Player,
+            success: 201,
+            args: vec![],
+        }],
+    };
+    let b = DescribeManifest {
+        ops: vec![OpManifest {
+            method: "characters.list".into(),
+            verb: "GET".into(),
+            path: "/characters".into(),
+            auth: AuthReq::Player,
+            success: 200,
+            args: vec![],
+        }],
+    };
+    let merged = DescribeManifest::concat([a.clone(), b.clone(), DescribeManifest::default()]);
+    assert_eq!(merged.ops.len(), 2);
+    assert_eq!(merged.ops[0], a.ops[0]);
+    assert_eq!(merged.ops[1], b.ops[0]);
+    // Empty is the identity: concat of nothing is an empty (un-routable) manifest.
+    assert!(DescribeManifest::concat([]).ops.is_empty());
+}

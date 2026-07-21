@@ -68,6 +68,30 @@ use tokio::task::JoinHandle;
 pub mod resolve;
 pub use resolve::{resolve_peer, AddrKind, ErrorCode, ResolveError};
 
+/// Fetches a peer's `#[http]` op manifest by calling the reserved
+/// [`opsapi::DESCRIBE_METHOD`] op over `caller` — the CLIENT half of routing-as-data.
+/// The gateway (D2) calls this once per resolved peer at boot and rebuilds its route
+/// table from the returned [`opsapi::DescribeManifest`], so a new `#[http]` op on any
+/// svc surfaces with zero gateway changes.
+///
+/// The op takes no arguments (empty payload, no identity) and is a read-only,
+/// idempotent query, so it is allowed one replay after reconnect
+/// ([`RetryMode::OnceAfterReconnect`]) — the same replay policy a `#[retry_safe]`
+/// read gets. A malformed manifest is surfaced as an [`opsapi::Error`] with
+/// [`opsapi::Status::Internal`], not silently dropped.
+pub async fn describe(caller: &dyn Caller) -> Result<opsapi::DescribeManifest, Error> {
+    let bytes = caller
+        .call(
+            opsapi::DESCRIBE_METHOD,
+            None,
+            &[],
+            RetryMode::OnceAfterReconnect,
+        )
+        .await?;
+    serde_json::from_slice(&bytes)
+        .map_err(|e| Error::internal(format!("describe: malformed manifest: {e}")))
+}
+
 // ---------------------------------------------------------------------------
 // The injected provider-swap action (the Step-4 generic-`remote` seam).
 // ---------------------------------------------------------------------------

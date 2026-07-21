@@ -33,6 +33,7 @@ impl core::marker::UnsafeUnpin for matchapi::match_rpc::ReportResponse
 impl core::panic::unwind_safe::RefUnwindSafe for matchapi::match_rpc::ReportResponse
 impl core::panic::unwind_safe::UnwindSafe for matchapi::match_rpc::ReportResponse
 pub const matchapi::match_rpc::METHOD_REPORT: &str
+pub fn matchapi::match_rpc::describe() -> opsapi::DescribeManifest
 pub fn matchapi::match_rpc::operations(alloc::sync::Arc<(dyn matchapi::Match + core::marker::Send + core::marker::Sync)>) -> alloc::vec::Vec<opsapi::OpSet>
 pub fn matchapi::match_rpc::route_bindings() -> alloc::vec::Vec<opsapi::RouteBinding>
 pub fn matchapi::match_rpc::wire_ops() -> alloc::vec::Vec<opsapi::WireOp>

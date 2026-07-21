@@ -109,3 +109,6 @@ pub mod admin {
         context_keys: &["id", "name"],
     };
 }
+
+#[cfg(test)]
+mod tests;

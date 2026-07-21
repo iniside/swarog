@@ -31,6 +31,7 @@ impl core::marker::UnsafeUnpin for leaderboardapi::leaderboard_rpc::TopScoresRes
 impl core::panic::unwind_safe::RefUnwindSafe for leaderboardapi::leaderboard_rpc::TopScoresResponse
 impl core::panic::unwind_safe::UnwindSafe for leaderboardapi::leaderboard_rpc::TopScoresResponse
 pub const leaderboardapi::leaderboard_rpc::METHOD_TOP_SCORES: &str
+pub fn leaderboardapi::leaderboard_rpc::describe() -> opsapi::DescribeManifest
 pub fn leaderboardapi::leaderboard_rpc::operations(alloc::sync::Arc<(dyn leaderboardapi::Leaderboard + core::marker::Send + core::marker::Sync)>) -> alloc::vec::Vec<opsapi::OpSet>
 pub fn leaderboardapi::leaderboard_rpc::route_bindings() -> alloc::vec::Vec<opsapi::RouteBinding>
 pub fn leaderboardapi::leaderboard_rpc::wire_ops() -> alloc::vec::Vec<opsapi::WireOp>

@@ -129,6 +129,7 @@ pub const accountsapi::auth_rpc::METHOD_LOGIN: &str
 pub const accountsapi::auth_rpc::METHOD_LOGIN_EPIC: &str
 pub const accountsapi::auth_rpc::METHOD_ME: &str
 pub const accountsapi::auth_rpc::METHOD_REGISTER: &str
+pub fn accountsapi::auth_rpc::describe() -> opsapi::DescribeManifest
 pub fn accountsapi::auth_rpc::operations(alloc::sync::Arc<(dyn accountsapi::Auth + core::marker::Send + core::marker::Sync)>) -> alloc::vec::Vec<opsapi::OpSet>
 pub fn accountsapi::auth_rpc::route_bindings() -> alloc::vec::Vec<opsapi::RouteBinding>
 pub fn accountsapi::auth_rpc::wire_ops() -> alloc::vec::Vec<opsapi::WireOp>
@@ -162,6 +163,7 @@ impl core::marker::UnsafeUnpin for accountsapi::sessions_rpc::VerifySessionRespo
 impl core::panic::unwind_safe::RefUnwindSafe for accountsapi::sessions_rpc::VerifySessionResponse
 impl core::panic::unwind_safe::UnwindSafe for accountsapi::sessions_rpc::VerifySessionResponse
 pub const accountsapi::sessions_rpc::METHOD_VERIFY_SESSION: &str
+pub fn accountsapi::sessions_rpc::describe() -> opsapi::DescribeManifest
 pub fn accountsapi::sessions_rpc::operations(alloc::sync::Arc<(dyn accountsapi::Sessions + core::marker::Send + core::marker::Sync)>) -> alloc::vec::Vec<opsapi::OpSet>
 pub fn accountsapi::sessions_rpc::route_bindings() -> alloc::vec::Vec<opsapi::RouteBinding>
 pub fn accountsapi::sessions_rpc::wire_ops() -> alloc::vec::Vec<opsapi::WireOp>

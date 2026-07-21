@@ -147,6 +147,33 @@ impl Server {
         self.prefixes.push((prefix.into(), fwd));
     }
 
+    /// Registers the reserved [`opsapi::DESCRIBE_METHOD`] op, whose handler returns
+    /// `manifest` serialized as JSON — the payload a data-driven gateway fetches to
+    /// rebuild its route table without importing the provider's `<name>rpc` glue at
+    /// compile time (routing-as-data). A svc serving multiple `#[rpc]` traits calls
+    /// this ONCE with the union of every trait's generated `describe()`
+    /// ([`opsapi::DescribeManifest::concat`]), because the reserved method is a single
+    /// wire name per process.
+    ///
+    /// The manifest is serialized once here; the handler ignores its request payload
+    /// (the op takes no arguments) and returns the cached bytes.
+    ///
+    /// # Panics
+    /// If the reserved method is already registered — this reuses [`Server::handle`],
+    /// so a duplicate `register_describe` (or a domain method colliding with the
+    /// reserved name) is a loud boot failure, exactly the uniqueness contract every
+    /// other registration obeys.
+    pub fn register_describe(&mut self, manifest: opsapi::DescribeManifest) {
+        let bytes = Arc::new(
+            serde_json::to_vec(&manifest).expect("opsapi::DescribeManifest serializes to json"),
+        );
+        let h: Handler = Arc::new(move |_req: Vec<u8>| {
+            let bytes = bytes.clone();
+            Box::pin(async move { Ok((*bytes).clone()) }) as BoxFuture<'static, HandlerResult>
+        });
+        self.handle(opsapi::DESCRIBE_METHOD, h);
+    }
+
     /// The method names registered on this builder — the exact-match handlers
     /// ([`Server::handle`]) plus the identity handlers ([`Server::handle_identity`]),
     /// sorted. Prefix registrations are excluded: they match by prefix, not by

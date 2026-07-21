@@ -307,3 +307,52 @@ fn edge_timing_invariants() {
     assert_eq!(EDGE_STREAM_GRACE, Duration::from_secs(30));
     assert_eq!(MAX_EDGE_BIDI_STREAMS, 16);
 }
+
+// --- Reserved describe() op (routing-as-data, D1) ---------------------------
+
+/// `register_describe` serves the reserved `opsapi::DESCRIBE_METHOD` op whose handler
+/// returns the manifest as JSON, ignoring its request payload. This is the server half
+/// a data-driven gateway dials to rebuild its route table.
+#[test]
+fn register_describe_serves_the_reserved_op() {
+    let mut srv = Server::new();
+    let manifest = opsapi::DescribeManifest {
+        ops: vec![opsapi::OpManifest {
+            method: "match.report".into(),
+            verb: "POST".into(),
+            path: "/match/report".into(),
+            auth: opsapi::AuthReq::None,
+            success: 202,
+            args: vec![opsapi::ArgMapping {
+                param: "report_id".into(),
+                wire_key: "ReportId".into(),
+                source: opsapi::ArgSource::Body,
+            }],
+        }],
+    };
+    srv.register_describe(manifest.clone());
+
+    assert!(srv.methods().contains(&opsapi::DESCRIBE_METHOD.to_string()));
+
+    let h = srv
+        .handlers
+        .get(opsapi::DESCRIBE_METHOD)
+        .expect("reserved describe handler registered");
+    let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+    // The op takes no arguments: a non-empty payload is ignored, the cached manifest
+    // bytes come back regardless.
+    let bytes = rt.block_on(h(b"ignored".to_vec())).unwrap();
+    let back: opsapi::DescribeManifest = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(back, manifest);
+}
+
+/// The reserved op is a single wire name per process — a second `register_describe`
+/// (or any collision on the reserved name) is a loud boot failure, the same uniqueness
+/// contract every other registration obeys.
+#[test]
+#[should_panic(expected = "registered twice")]
+fn register_describe_twice_panics() {
+    let mut srv = Server::new();
+    srv.register_describe(opsapi::DescribeManifest::default());
+    srv.register_describe(opsapi::DescribeManifest::default());
+}

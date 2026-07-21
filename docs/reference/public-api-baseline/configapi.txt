@@ -29,6 +29,7 @@ impl core::marker::UnsafeUnpin for configapi::config_snapshot_rpc::SnapshotRespo
 impl core::panic::unwind_safe::RefUnwindSafe for configapi::config_snapshot_rpc::SnapshotResponse
 impl core::panic::unwind_safe::UnwindSafe for configapi::config_snapshot_rpc::SnapshotResponse
 pub const configapi::config_snapshot_rpc::METHOD_SNAPSHOT: &str
+pub fn configapi::config_snapshot_rpc::describe() -> opsapi::DescribeManifest
 pub fn configapi::config_snapshot_rpc::operations(alloc::sync::Arc<(dyn configapi::ConfigSnapshot + core::marker::Send + core::marker::Sync)>) -> alloc::vec::Vec<opsapi::OpSet>
 pub fn configapi::config_snapshot_rpc::route_bindings() -> alloc::vec::Vec<opsapi::RouteBinding>
 pub fn configapi::config_snapshot_rpc::wire_ops() -> alloc::vec::Vec<opsapi::WireOp>

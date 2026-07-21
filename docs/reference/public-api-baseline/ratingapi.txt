@@ -30,6 +30,7 @@ impl core::marker::UnsafeUnpin for ratingapi::mmr_reader_rpc::MmrResponse
 impl core::panic::unwind_safe::RefUnwindSafe for ratingapi::mmr_reader_rpc::MmrResponse
 impl core::panic::unwind_safe::UnwindSafe for ratingapi::mmr_reader_rpc::MmrResponse
 pub const ratingapi::mmr_reader_rpc::METHOD_MMR: &str
+pub fn ratingapi::mmr_reader_rpc::describe() -> opsapi::DescribeManifest
 pub fn ratingapi::mmr_reader_rpc::operations(alloc::sync::Arc<(dyn ratingapi::MmrReader + core::marker::Send + core::marker::Sync)>) -> alloc::vec::Vec<opsapi::OpSet>
 pub fn ratingapi::mmr_reader_rpc::route_bindings() -> alloc::vec::Vec<opsapi::RouteBinding>
 pub fn ratingapi::mmr_reader_rpc::wire_ops() -> alloc::vec::Vec<opsapi::WireOp>
