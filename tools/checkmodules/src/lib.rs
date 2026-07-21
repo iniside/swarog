@@ -37,7 +37,7 @@ fn split_process_modules() -> Vec<(&'static str, Vec<Box<dyn Module>>)> {
     vec![
         ("characters-svc", characters_svc::modules(&w)),
         ("inventory-svc", inventory_svc::modules(&w)),
-        ("gateway-svc", gateway_svc::modules(&w, None)),
+        ("gateway-svc", gateway_svc::modules(&w, None, None)),
         ("config-svc", config_svc::modules(&w)),
         ("apikeys-svc", apikeys_svc::modules(&w)),
         ("accounts-svc", accounts_svc::modules(&w)),

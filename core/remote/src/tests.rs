@@ -443,6 +443,141 @@ async fn stream_local_failure_preserves_concurrent_call_and_cached_connection() 
     assert_eq!(calls.load(Ordering::SeqCst), 3);
 }
 
+// ---- A5: dial-time re-resolution via the resolver seam -------------------
+//
+// The property the design leans on: a `Stub`/`Reconnecting` picks up a MOVED peer on
+// reconnect WITHOUT a consumer restart, because the address is re-resolved inside
+// `EdgeDialer::dial` on every dial (frozen-string code could not do this). Proven at
+// two levels: the real `EdgeDialer` re-invokes its resolver per dial, and `Reconnecting`
+// drives a fresh resolve after a connection-fatal reset.
+
+/// The REAL `EdgeDialer` re-resolves on EVERY dial: a resolver returning a different
+/// (unparseable) address each call makes each dial's error name the CURRENT address —
+/// a frozen string would name the same one both times. No network: parse fails before
+/// any edge dial.
+#[tokio::test]
+async fn edge_dialer_reresolves_the_address_on_each_dial() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let seen = calls.clone();
+    let resolver: PeerResolver = Arc::new(move || {
+        let n = seen.fetch_add(1, Ordering::SeqCst);
+        let addr = if n == 0 { "addr-ONE-unparseable" } else { "addr-TWO-unparseable" }.to_string();
+        Box::pin(async move { Ok(addr) })
+    });
+    let dialer = EdgeDialer { resolve: resolver };
+
+    // `Arc<dyn Conn>` is not `Debug`, so pattern-match rather than `unwrap_err`.
+    let Err(e1) = dialer.dial().await else { panic!("unparseable addr must not dial") };
+    assert_eq!(e1.status, opsapi::Status::Unavailable);
+    assert!(e1.to_string().contains("addr-ONE-unparseable"), "first dial names A: {e1}");
+
+    let Err(e2) = dialer.dial().await else { panic!("unparseable addr must not dial") };
+    assert!(e2.to_string().contains("addr-TWO-unparseable"), "second dial names B: {e2}");
+    assert_eq!(calls.load(Ordering::SeqCst), 2, "resolver invoked once per dial");
+}
+
+/// A resolver ERROR (unresolvable peer) is mapped to `Unavailable` (503) by the dialer —
+/// the same class as a bad address, so a consumer sees "peer not there", not a panic.
+#[tokio::test]
+async fn edge_dialer_maps_resolver_error_to_unavailable() {
+    let resolver: PeerResolver =
+        Arc::new(|| Box::pin(async { Err("agent said no".to_string()) }));
+    let dialer = EdgeDialer { resolve: resolver };
+    let Err(err) = dialer.dial().await else { panic!("resolver error must not dial") };
+    assert_eq!(err.status, opsapi::Status::Unavailable);
+    assert!(err.to_string().contains("agent said no"), "{err}");
+}
+
+/// A test dialer mirroring `EdgeDialer`'s contract over the fake `Conn` seam: each dial
+/// consults the resolver and records the address it dialed, so the reset→redial path can
+/// be proven without QUIC.
+struct ResolvingFakeDialer {
+    resolve: PeerResolver,
+    dialed: Arc<StdMutex<Vec<String>>>,
+    dials: Arc<AtomicUsize>,
+    closes: Arc<AtomicUsize>,
+    calls: Arc<AtomicUsize>,
+    heal_after: usize,
+}
+
+#[async_trait]
+impl Dialer for ResolvingFakeDialer {
+    async fn dial(&self) -> Result<Arc<dyn Conn>, Error> {
+        let addr = (self.resolve)().await.map_err(Error::unavailable)?;
+        self.dialed.lock().unwrap().push(addr);
+        let n = self.dials.fetch_add(1, Ordering::SeqCst);
+        Ok(Arc::new(FakeConn {
+            ok: n + 1 >= self.heal_after,
+            failure: FakeFailure {
+                status: opsapi::Status::Unavailable,
+                provenance: FailureProvenance::ConnectionFatal,
+            },
+            closes: self.closes.clone(),
+            calls: self.calls.clone(),
+        }))
+    }
+}
+
+/// The re-resolve-on-reconnect property, end to end through `Reconnecting`: ONE caller
+/// (constructed once — no consumer restart), a resolver returning addr A then addr B,
+/// and a forced connection-fatal reset between them. The retry re-dials, the dialer
+/// re-resolves, and the SECOND dial targets B. A pre-A5 frozen-string dialer would have
+/// dialed A twice.
+#[tokio::test]
+async fn reconnecting_reresolves_to_the_new_address_after_reset() {
+    let flip = Arc::new(AtomicUsize::new(0));
+    let seen = flip.clone();
+    let resolver: PeerResolver = Arc::new(move || {
+        let n = seen.fetch_add(1, Ordering::SeqCst);
+        let addr = if n == 0 { "10.0.0.1:1" } else { "10.0.0.2:2" }.to_string();
+        Box::pin(async move { Ok(addr) })
+    });
+    let dialed = Arc::new(StdMutex::new(Vec::new()));
+    let r = Reconnecting::new(ResolvingFakeDialer {
+        resolve: resolver,
+        dialed: dialed.clone(),
+        dials: Arc::new(AtomicUsize::new(0)),
+        closes: Arc::new(AtomicUsize::new(0)),
+        calls: Arc::new(AtomicUsize::new(0)),
+        heal_after: 2, // dial #0 fatal → reset → dial #1 ok
+    });
+
+    let out = r
+        .call("characters.ownerOf", None, b"{}", RetryMode::OnceAfterReconnect)
+        .await
+        .unwrap();
+    assert_eq!(out, b"ok");
+    assert_eq!(
+        *dialed.lock().unwrap(),
+        vec!["10.0.0.1:1".to_string(), "10.0.0.2:2".to_string()],
+        "reset re-dialed AND re-resolved to B — the same caller, no restart"
+    );
+}
+
+/// The standalone constant resolver: a fixed address is returned unchanged on every
+/// call — no re-resolution, byte-identical to the pre-A5 frozen string.
+#[tokio::test]
+async fn constant_resolver_returns_the_same_addr_each_call() {
+    let r = constant_resolver("127.0.0.1:9000".to_string());
+    assert_eq!(r().await.unwrap(), "127.0.0.1:9000");
+    assert_eq!(r().await.unwrap(), "127.0.0.1:9000");
+}
+
+/// `init` contributes the peer address to `PEER_SLOT` as a SINGLE-ELEMENT SET (the A5
+/// shape C2/D2 extend): the boot snapshot the gateway route table reads.
+#[test]
+fn init_contributes_peer_addr_as_single_element_set() {
+    let ctx = Context::new();
+    let stub = Stub::new("fake", "127.0.0.1:9000", vec![Box::new(|_ctx, _caller| {})]);
+    stub.init(&ctx).unwrap();
+    let peers: Vec<opsapi::PeerAddr> = ctx.contributions(opsapi::PEER_SLOT);
+    let found = peers
+        .iter()
+        .find(|p| p.provider == "fake")
+        .expect("peer address contributed to PEER_SLOT");
+    assert_eq!(found.addrs, vec!["127.0.0.1:9000".to_string()]);
+}
+
 // ---- The injected-factory swap: register runs every factory --------------
 //
 // `remote` is generic and imports no `api/` crate, so these tests use LOCAL fake
@@ -609,7 +744,7 @@ async fn hung_boot_hook_times_out_naming_provider_and_bound() {
         }),
     );
 
-    let stub = Stub::new("hangy", &addr.to_string(), vec![Box::new(|_ctx, _caller| {})]);
+    let stub = Stub::new("hangy", addr.to_string(), vec![Box::new(|_ctx, _caller| {})]);
     let short_bound = Duration::from_millis(200);
 
     let started = std::time::Instant::now();
@@ -817,7 +952,7 @@ async fn background_probe_updates_verdict() {
 
     let stub = Stub::new(
         "fake",
-        &running.local_addr().to_string(),
+        running.local_addr().to_string(),
         vec![Box::new(|_ctx, _caller| {})],
     );
     // Short cadence both rates so the test observes flips within its budget.

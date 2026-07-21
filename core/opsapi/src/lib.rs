@@ -320,16 +320,22 @@ pub const LOCAL_SLOT: contrib::Slot<LocalOp> = contrib::Slot::new("ops.local");
 /// process with no gateway, the contributions sit inert.
 pub const PEER_SLOT: contrib::Slot<PeerAddr> = contrib::Slot::new("opsapi.peers");
 
-/// One provider's peer edge address, contributed by a `remote::Stub` into [`PEER_SLOT`].
-/// Transport-free: just the provider name and the address as an UNPARSED string — the
-/// gateway parses it lazily in `remote_caller`, so a bad address surfaces as a
-/// per-request [`Status::Unavailable`] (503) rather than a construction-time panic in
+/// One provider's peer edge address SET, contributed by a `remote::Stub` into
+/// [`PEER_SLOT`]. Transport-free: the provider name plus its addresses as UNPARSED
+/// strings — the gateway parses lazily in `remote_caller`, so a bad address surfaces as
+/// a per-request [`Status::Unavailable`] (503) rather than a construction-time panic in
 /// every stub-wiring process (mirrors `remote::EdgeDialer`'s lazy-parse contract).
+///
+/// `addrs` is a `Vec` sized for the multi-instance (round-robin) end-state, but in the
+/// single-address phase it carries EXACTLY ONE element (the one address the stub was
+/// wired with, or boot-resolved). The gateway route table reads the first element; the
+/// client-side load-balancing that spreads across the whole set is a later phase. The
+/// shape is landed as the SET now so that phase extends it rather than re-shaping it.
 /// `Clone` is required by [`crate::Caller`]'s slot reader (`contributions<T: Clone>`).
 #[derive(Clone)]
 pub struct PeerAddr {
     pub provider: String,
-    pub addr: String,
+    pub addrs: Vec<String>,
 }
 
 /// The matched path-wildcard values handed to [`OpBinding::decode`], e.g.

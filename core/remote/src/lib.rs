@@ -85,6 +85,86 @@ pub use resolve::{resolve_peer, AddrKind, ErrorCode, ResolveError};
 pub type RemoteFactory = Box<dyn Fn(&Context, Arc<dyn Caller>) + Send + Sync>;
 
 // ---------------------------------------------------------------------------
+// The peer resolver seam — late-binding of a stub's address.
+// ---------------------------------------------------------------------------
+
+/// Resolves a peer's edge address `host:port` AT DIAL TIME (not frozen at boot), so an
+/// address change is picked up without restarting the consumer. Invoked inside
+/// [`EdgeDialer::dial`] where the frozen string used to be parsed, and by the stub's
+/// background probe loop; because [`Reconnecting::get`] re-dials after a proven
+/// connection-fatal reset, a resolver that returns a NEW address on the next call makes
+/// re-resolve-on-reconnect fall out for free.
+///
+/// Returns an unparsed `host:port` string (parsed lazily by the dialer, preserving the
+/// Unavailable-not-panic taxonomy) or a human error the dialer maps to
+/// [`opsapi::Status::Unavailable`] (503) — an unresolvable peer is exactly as
+/// unavailable as an unreachable one. In the single-address phase the resolver returns
+/// one address; the LIST/load-balancing is a later phase.
+pub type PeerResolver =
+    Arc<dyn Fn() -> BoxFuture<'static, Result<String, String>> + Send + Sync>;
+
+/// Where a [`Stub`]'s address comes from: a boot-time SNAPSHOT (fed to the gateway route
+/// table via [`opsapi::PEER_SLOT`], which is contributed in `init` before any I/O and so
+/// cannot re-resolve in this phase) plus a [`PeerResolver`] driving every dial (and the
+/// reachability probe). [`PeerSource::fixed`] ties both to one constant address (the
+/// standalone case — byte-identical boot, no re-resolve); [`PeerSource::resolving`]
+/// carries a boot snapshot for the slot and a live resolver for dials (the managed
+/// case). `impl Into<PeerSource>` for the string types keeps every existing
+/// `Stub::new(provider, "host:port", …)` call site unchanged.
+pub struct PeerSource {
+    boot_addr: String,
+    resolver: PeerResolver,
+}
+
+impl PeerSource {
+    /// A constant address: the boot snapshot AND every dial resolve to the same value,
+    /// so nothing re-resolves. The standalone wiring (a fixed env `host:port`).
+    pub fn fixed(addr: impl Into<String>) -> PeerSource {
+        let addr = addr.into();
+        PeerSource {
+            boot_addr: addr.clone(),
+            resolver: constant_resolver(addr),
+        }
+    }
+
+    /// A boot snapshot (for the PEER_SLOT contribution the gateway route table reads)
+    /// plus a live [`PeerResolver`] invoked on every dial — the managed wiring, where an
+    /// orchestrator may move the peer and the reconnecting caller must pick it up
+    /// without a consumer restart.
+    pub fn resolving(boot_addr: impl Into<String>, resolver: PeerResolver) -> PeerSource {
+        PeerSource {
+            boot_addr: boot_addr.into(),
+            resolver,
+        }
+    }
+}
+
+impl From<&str> for PeerSource {
+    fn from(addr: &str) -> Self {
+        PeerSource::fixed(addr)
+    }
+}
+impl From<&String> for PeerSource {
+    fn from(addr: &String) -> Self {
+        PeerSource::fixed(addr.clone())
+    }
+}
+impl From<String> for PeerSource {
+    fn from(addr: String) -> Self {
+        PeerSource::fixed(addr)
+    }
+}
+
+/// A [`PeerResolver`] that always yields `addr` — no re-resolution. Backs
+/// [`PeerSource::fixed`] and the test-only edge caller.
+fn constant_resolver(addr: String) -> PeerResolver {
+    Arc::new(move || {
+        let addr = addr.clone();
+        Box::pin(async move { Ok(addr) })
+    })
+}
+
+// ---------------------------------------------------------------------------
 // The boot hook (Step 5) — a start-time async action a factory registers, run by
 // the owning `Stub` in `start`.
 // ---------------------------------------------------------------------------
@@ -104,7 +184,7 @@ pub const BOOT_SLOT: contrib::Slot<RemoteBoot> = contrib::Slot::new("remote.boot
 /// sequentially and unbounded, every module started after this stub never gets a
 /// chance to run either. This is a core-leaf constant (never reads env — Hard
 /// Constraint 1/5 in the workspace root doc); if a deployment ever needs a
-/// different value, thread it through [`Stub::new`] the way `peer_addr` already is,
+/// different value, thread it through [`Stub::new`] the way the `peer` source already is,
 /// NOT env.
 const BOOT_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -279,17 +359,25 @@ impl<D: Dialer> Caller for Reconnecting<D> {
 // ---------------------------------------------------------------------------
 
 /// Dials the peer's QUIC edge with the shared dev CA, producing an [`edge::Client`].
-/// The address is parsed lazily (at dial time) so a bad `*_EDGE_ADDR` surfaces as an
-/// `Unavailable` error the consumer maps to 503, not a construction-time panic.
+/// The address is RESOLVED and parsed lazily (at dial time) via [`EdgeDialer::resolve`],
+/// so an address change is picked up on the next dial and a bad address surfaces as an
+/// `Unavailable` error the consumer maps to 503, not a construction-time panic. Because
+/// [`Reconnecting::get`] re-dials after a connection-fatal reset, the re-resolution
+/// happens for free on every reconnect.
 struct EdgeDialer {
-    peer: String,
+    resolve: PeerResolver,
 }
 
 #[async_trait]
 impl Dialer for EdgeDialer {
     async fn dial(&self) -> Result<Arc<dyn Conn>, Error> {
-        let addr: SocketAddr = self.peer.parse().map_err(|e| {
-            Error::unavailable(format!("remote: bad peer edge addr {:?}: {e}", self.peer))
+        // Re-resolve at dial time — the whole point of the resolver seam. A frozen
+        // string could not target a moved peer without restarting the consumer.
+        let peer = (self.resolve)().await.map_err(|e| {
+            Error::unavailable(format!("remote: cannot resolve peer edge addr: {e}"))
+        })?;
+        let addr: SocketAddr = peer.parse().map_err(|e| {
+            Error::unavailable(format!("remote: bad peer edge addr {peer:?}: {e}"))
         })?;
         // Mutual TLS: present this process's CA-signed client leaf and verify the peer
         // against the shared CA (no InsecureSkipVerify). `shared_dev_ca` resolves the
@@ -347,7 +435,7 @@ impl Conn for edge::Client {
 #[doc(hidden)]
 pub fn test_only_reconnecting_edge_caller(peer: &str) -> Arc<dyn Caller> {
     Arc::new(Reconnecting::new(EdgeDialer {
-        peer: peer.to_string(),
+        resolve: constant_resolver(peer.to_string()),
     }))
 }
 
@@ -405,7 +493,7 @@ fn readiness_verdict(
 /// (`probe_peer` is awaited BEFORE the lock). The `/readyz` [`httpmw::ReadyCheck`]
 /// only READS that cache, so probe cost is decoupled from request rate.
 async fn probe_loop(
-    peer_addr: String,
+    resolve: PeerResolver,
     verdict: Arc<StdMutex<Result<(), String>>>,
     last_probe_at: Arc<AtomicU64>,
     ready: Duration,
@@ -413,8 +501,10 @@ async fn probe_loop(
     mut stop: watch::Receiver<bool>,
 ) {
     loop {
-        // Dial OUTSIDE any lock — the std guard must never cross an `.await`.
-        let v = probe_peer(peer_addr.clone()).await;
+        // Dial OUTSIDE any lock — the std guard must never cross an `.await`. Re-resolve
+        // each pass through the SAME resolver the dialer uses, so a moved peer flips the
+        // readyz verdict too; an unresolvable peer is itself an unready verdict.
+        let v = probe_via_resolver(&resolve).await;
         let is_err = v.is_err();
         *verdict.lock().unwrap_or_else(|e| e.into_inner()) = v;
         // `.max(1)` so a completed probe at t=0 is distinguishable from "never probed".
@@ -425,6 +515,16 @@ async fn probe_loop(
             _ = tokio::time::sleep(wait) => {}
         }
     }
+}
+
+/// Resolves the peer address through the SAME [`PeerResolver`] the dialer uses, then
+/// runs the bounded connectivity [`probe_peer`] against it. A resolver failure is itself
+/// an unready verdict — a peer whose address cannot be resolved is not reachable.
+async fn probe_via_resolver(resolve: &PeerResolver) -> Result<(), String> {
+    let addr = resolve()
+        .await
+        .map_err(|e| format!("cannot resolve peer edge addr: {e}"))?;
+    probe_peer(addr).await
 }
 
 /// The bounded connectivity probe backing each stub's `/readyz` [`httpmw::ReadyCheck`].
@@ -465,11 +565,17 @@ async fn probe_peer(peer_addr: String) -> Result<(), String> {
 pub struct Stub {
     /// The provider name — also the [`Module::name`], so `validate_requires` matches.
     provider: String,
-    /// The peer's edge address as an UNPARSED string (the one [`EdgeDialer`] holds).
-    /// Contributed to [`opsapi::PEER_SLOT`] in `init` so a co-hosted gateway front door
-    /// dials this provider Remote without reading env — the topology this composition
-    /// root injected via [`Stub::new`].
-    peer_addr: String,
+    /// The peer's edge address SET as UNPARSED strings — the BOOT SNAPSHOT (one element
+    /// in the single-address phase). Contributed to [`opsapi::PEER_SLOT`] in `init` so a
+    /// co-hosted gateway front door dials this provider Remote without reading env — the
+    /// topology this composition root injected via [`Stub::new`]. This slot is filled in
+    /// `init` (before any I/O), so it cannot itself re-resolve; the LIVE re-resolution is
+    /// the [`resolver`](Stub::resolver) the [`EdgeDialer`] and probe hold.
+    peer_addrs: Vec<String>,
+    /// The dial-time peer resolver — the SAME one the [`EdgeDialer`] inside `conn` and
+    /// the background probe loop use, so a moved peer is picked up on the next reconnect
+    /// without a consumer restart.
+    resolver: PeerResolver,
     /// The lazily-dialed, self-healing caller shared by every generated client below.
     conn: Arc<Reconnecting<EdgeDialer>>,
     /// The provider-swap closures this stub applies in `register`. Injected by the
@@ -490,17 +596,28 @@ pub struct Stub {
 }
 
 impl Stub {
-    /// Builds a stub for `provider`, dialing `peer_addr` (a numeric `host:port`, e.g.
-    /// `127.0.0.1:9000`) lazily on first use, applying `factories` (the provider's
-    /// `<name>rpc::remote_factories()`) at `register`. An EMPTY `factories` vec is a
-    /// wiring bug — the stub would provide nothing — and fails loudly at `register`.
-    pub fn new(provider: &str, peer_addr: &str, factories: Vec<RemoteFactory>) -> Stub {
+    /// Builds a stub for `provider` from a `peer` address source — either a fixed
+    /// `host:port` string (`"127.0.0.1:9000"`, via `impl Into<PeerSource>`) for the
+    /// standalone case, or a [`PeerSource::resolving`] carrying a boot snapshot plus a
+    /// live [`PeerResolver`] for the managed case. The peer is RESOLVED lazily on every
+    /// dial (re-resolving on reconnect for free), and `factories` (the provider's
+    /// `<name>rpc::remote_factories()`) are applied at `register`. An EMPTY `factories`
+    /// vec is a wiring bug — the stub would provide nothing — and fails loudly at
+    /// `register`.
+    pub fn new(
+        provider: &str,
+        peer: impl Into<PeerSource>,
+        factories: Vec<RemoteFactory>,
+    ) -> Stub {
+        let PeerSource {
+            boot_addr,
+            resolver,
+        } = peer.into();
         Stub {
             provider: provider.to_string(),
-            peer_addr: peer_addr.to_string(),
-            conn: Arc::new(Reconnecting::new(EdgeDialer {
-                peer: peer_addr.to_string(),
-            })),
+            peer_addrs: vec![boot_addr],
+            resolver: resolver.clone(),
+            conn: Arc::new(Reconnecting::new(EdgeDialer { resolve: resolver })),
             factories,
             // Fail-closed seed: unknown reachability = not ready until the first probe
             // completes.
@@ -519,7 +636,7 @@ impl Stub {
     pub(crate) fn spawn_probe(&self, ready: Duration, unready: Duration) {
         let (stop_tx, stop_rx) = watch::channel(false);
         let handle = tokio::spawn(probe_loop(
-            self.peer_addr.clone(),
+            self.resolver.clone(),
             self.verdict.clone(),
             self.last_probe_at.clone(),
             ready,
@@ -653,7 +770,7 @@ impl Module for Stub {
             opsapi::PEER_SLOT,
             opsapi::PeerAddr {
                 provider: self.provider.clone(),
-                addr: self.peer_addr.clone(),
+                addrs: self.peer_addrs.clone(),
             },
         );
         // Zero-I/O readyz: read the cached verdict stamped by the background probe loop,

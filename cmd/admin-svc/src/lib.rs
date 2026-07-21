@@ -14,7 +14,7 @@ use lifecycle::{Module, ProcessWiring};
 fn admin_stub(provider: &str, wiring: &ProcessWiring, default: &str) -> Box<dyn Module> {
     Box::new(remote::Stub::new(
         provider,
-        &wiring.peer_or(provider, default),
+        wiring.peer_or(provider, default),
         vec![adminrpc::admin_remote_factory(provider)],
     ))
 }

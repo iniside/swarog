@@ -566,11 +566,11 @@ fn build_rejects_duplicate_peer_provider() {
     let slots = Slots::new();
     slots.contribute(
         opsapi::PEER_SLOT,
-        opsapi::PeerAddr { provider: "characters".into(), addr: "127.0.0.1:9000".into() },
+        opsapi::PeerAddr { provider: "characters".into(), addrs: vec!["127.0.0.1:9000".into()] },
     );
     slots.contribute(
         opsapi::PEER_SLOT,
-        opsapi::PeerAddr { provider: "characters".into(), addr: "127.0.0.1:9001".into() },
+        opsapi::PeerAddr { provider: "characters".into(), addrs: vec!["127.0.0.1:9001".into()] },
     );
 
     let err = RouteTable::build(&slots).err().expect("build must fail with a collision").to_string();
@@ -1283,7 +1283,7 @@ async fn hung_dial_to_one_provider_does_not_block_another() {
     let slots = Slots::new();
     slots.contribute(
         opsapi::PEER_SLOT,
-        opsapi::PeerAddr { provider: "slowprov".into(), addr: silent_addr.to_string() },
+        opsapi::PeerAddr { provider: "slowprov".into(), addrs: vec![silent_addr.to_string()] },
     );
     let table = Arc::new(RouteTable::build(&slots).expect("peer-only slots build"));
 

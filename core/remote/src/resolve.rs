@@ -104,6 +104,16 @@ use serde::{Deserialize, Serialize};
 /// now, or is not there. There is NO retry behind it. A retry policy here would
 /// be a second authority beside `opsapi::RetryMode`, so a caller that wants one
 /// asks again itself; the shipped callers fail closed instead.
+///
+/// **Contract shift (A5 — runtime re-resolve).** This call is NO LONGER
+/// boot-only. `cmd/gateway-svc` binds it into a `remote::PeerResolver`
+/// (`addrs::edge_resolver`) that the managed edge stubs invoke on EVERY dial, so
+/// a moved peer is picked up without restarting the front door. The bound still
+/// fits that path: a per-dial resolve is the same "answer about now or you are
+/// not there" question, and the fail-closed no-retry stance is exactly right for
+/// the dial path — an unresolved dial is a 503 and the reconnecting caller simply
+/// re-dials (and re-resolves) later, rather than this function papering over the
+/// outage with an internal retry that would shadow `opsapi::RetryMode`.
 const RESOLVE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Cap on the agent's answer, enforced as it arrives rather than after.
@@ -275,8 +285,9 @@ async fn resolve_peer_within(
     budget: Duration,
 ) -> Result<Vec<String>, ResolveError> {
     let endpoint = format!("{}{RESOLVE_PATH}", orchestrator_url.trim_end_matches('/'));
-    // Per call, not cached: this runs a handful of times at boot, and a free
-    // function with no hidden state is the smaller surface. `timeout` covers
+    // Per call, not cached: this runs a handful of times at boot AND once per
+    // managed-stub dial at runtime (A5 re-resolve), and a free function with no
+    // hidden state is the smaller surface. `timeout` covers
     // the WHOLE call (connect through body), which is what makes "never a
     // hang" a property of this function rather than of its caller.
     let client = reqwest::Client::builder()

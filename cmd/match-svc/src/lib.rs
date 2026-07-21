@@ -16,7 +16,7 @@ pub fn modules(wiring: &ProcessWiring) -> Vec<Box<dyn Module>> {
         // match's sync pre-emit read dials rating-svc over mTLS (lazy dial).
         Box::new(remote::Stub::new(
             "rating",
-            &wiring.peer_or("rating", "127.0.0.1:9007"),
+            wiring.peer_or("rating", "127.0.0.1:9007"),
             ratingrpc::remote_factories(),
         )),
     ]

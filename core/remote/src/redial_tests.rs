@@ -116,7 +116,9 @@ async fn run_redial_repro(mode: RetryMode) -> Vec<String> {
     // successful call. Without this live call the cache is empty, the kill leaves nothing
     // stale, and the post-respawn call would trivially dial fresh — never exercising the
     // risky "dead cached connection" branch B1 is about.
-    let reconnecting = Reconnecting::new(EdgeDialer { peer });
+    let reconnecting = Reconnecting::new(EdgeDialer {
+        resolve: constant_resolver(peer),
+    });
     let primed = reconnecting
         .call("echo", None, b"{}", mode)
         .await

@@ -372,6 +372,49 @@ fn managed_addr(spec: &AddrSpec, answer: WireAnswer) -> Result<String> {
     }
 }
 
+/// A dial-time re-resolver for a MANAGED edge peer (A5): a [`remote::PeerResolver`] that
+/// re-asks the orchestrator agent for `provider`'s edge address on EVERY dial, so a
+/// moved peer is picked up by the stub's reconnecting caller without restarting this
+/// front door. The boot snapshot the gateway route table reads is still the one
+/// [`gateway_addrs`] resolved at start; THIS drives the capability stub's live dials.
+///
+/// Single-address in this phase: it reduces the agent's answer through the SAME
+/// [`exactly_one`] policy the boot path uses, so a topology that grew a second instance
+/// fails one dial at a time (503) rather than silently sending half the traffic nowhere
+/// — the load-balancing that would accept the list is a later phase. A resolve failure
+/// (unreachable agent, `unknown_peer`, malformed) is a `host:port`-string error the
+/// dialer maps to a 503, which is exactly what an unresolvable peer is.
+pub(crate) fn edge_resolver(agent_url: &str, provider: &'static str) -> remote::PeerResolver {
+    let agent_url = agent_url.to_string();
+    std::sync::Arc::new(move || {
+        let agent_url = agent_url.clone();
+        let fut = async move {
+            let answer = remote::resolve_peer(&agent_url, provider, AddrKind::Edge).await;
+            let spec = edge_spec(provider);
+            match answer {
+                Ok(addrs) => exactly_one(spec, addrs).map_err(|e| e.to_string()),
+                Err(error) => Err(format!(
+                    "re-resolve edge peer {provider:?} from the orchestrator: {error}"
+                )),
+            }
+        };
+        let boxed: std::pin::Pin<
+            Box<dyn std::future::Future<Output = std::result::Result<String, String>> + Send>,
+        > = Box::pin(fut);
+        boxed
+    })
+}
+
+/// The [`AddrSpec`] for an EDGE `provider` (a peer with a `_EDGE_ADDR`). `accounts` is
+/// both an edge peer and a passthrough origin, so the class filter is load-bearing —
+/// [`edge_resolver`] only ever resolves the edge address.
+fn edge_spec(provider: &str) -> &'static AddrSpec {
+    ADDR_SPECS
+        .iter()
+        .find(|s| s.provider == provider && s.class == AddrClass::Edge)
+        .unwrap_or_else(|| panic!("edge_resolver called for non-edge provider {provider:?}"))
+}
+
 /// The list shape, decided rather than defaulted (see the module doc): M1 answers
 /// exactly one address, and neither zero nor many is an address this boot path
 /// can act on.

@@ -686,10 +686,16 @@ impl RouteTable {
                      contributed (two remote::Stubs for one provider)",
                     p.provider,
                     existing,
-                    p.addr
+                    p.addrs
                 );
             }
-            peers.insert(p.provider, p.addr);
+            // Single-address phase: the SET carries exactly one address; take it. The
+            // client-side load-balancing that would spread across the whole set is a
+            // later phase (this route table's Remote HTTP dispatch stays single-instance
+            // until then). An empty set surfaces as a per-request 503 at dial, mirroring
+            // the lazy-parse contract.
+            let addr = p.addrs.into_iter().next().unwrap_or_default();
+            peers.insert(p.provider, addr);
         }
 
         let mut routes: Vec<Route> = Vec::new();

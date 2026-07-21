@@ -17,9 +17,31 @@ use std::sync::{Arc, Mutex};
 
 use lifecycle::{Module, ProcessWiring};
 
+/// Builds a stub's [`remote::PeerSource`] for an EDGE `provider`. The boot snapshot the
+/// gateway route table reads is `wiring.peer_or` in BOTH modes (resolved once at start).
+/// In MANAGED mode `edge_resolver` is `Some`, so the stub's reconnecting caller also
+/// re-resolves on every dial (A5 — a moved peer is picked up with no restart); in
+/// STANDALONE mode it is `None`, giving a constant resolver and byte-identical boot.
+fn edge_peer(
+    wiring: &ProcessWiring,
+    edge_resolver: Option<&dyn Fn(&'static str) -> remote::PeerResolver>,
+    provider: &'static str,
+    default: &str,
+) -> remote::PeerSource {
+    let boot = wiring.peer_or(provider, default);
+    match edge_resolver {
+        Some(make) => remote::PeerSource::resolving(boot, make(provider)),
+        None => remote::PeerSource::fixed(boot),
+    }
+}
+
 pub fn modules(
     wiring: &ProcessWiring,
     player: Option<Arc<Mutex<edge::PlayerServer>>>,
+    // `Some` only in managed boot (`main.rs` owns `addrs::edge_resolver`, bound to the
+    // agent URL): each edge stub then re-resolves its peer on reconnect. `None` in
+    // standalone and in the `checkmodules` harness — constant resolvers, no re-resolve.
+    edge_resolver: Option<&dyn Fn(&'static str) -> remote::PeerResolver>,
 ) -> Vec<Box<dyn Module>> {
     let mut gw = gateway::Gateway::new();
     if let Some(p) = player {
@@ -41,32 +63,32 @@ pub fn modules(
         // swap closures explicitly, so `remote` never names a provider.
         Box::new(remote::Stub::new(
             "characters",
-            &wiring.peer_or("characters", "127.0.0.1:9000"),
+            edge_peer(wiring, edge_resolver, "characters", "127.0.0.1:9000"),
             charactersrpc::remote_factories(),
         )),
         Box::new(remote::Stub::new(
             "inventory",
-            &wiring.peer_or("inventory", "127.0.0.1:9001"),
+            edge_peer(wiring, edge_resolver, "inventory", "127.0.0.1:9001"),
             inventoryrpc::remote_factories(),
         )),
         Box::new(remote::Stub::new(
             "accounts",
-            &wiring.peer_or("accounts", "127.0.0.1:9003"),
+            edge_peer(wiring, edge_resolver, "accounts", "127.0.0.1:9003"),
             accountsrpc::remote_factories(),
         )),
         Box::new(remote::Stub::new(
             "apikeys",
-            &wiring.peer_or("apikeys", "127.0.0.1:9009"),
+            edge_peer(wiring, edge_resolver, "apikeys", "127.0.0.1:9009"),
             apikeysrpc::remote_factories(),
         )),
         Box::new(remote::Stub::new(
             "match",
-            &wiring.peer_or("match", "127.0.0.1:9006"),
+            edge_peer(wiring, edge_resolver, "match", "127.0.0.1:9006"),
             matchrpc::remote_factories(),
         )),
         Box::new(remote::Stub::new(
             "leaderboard",
-            &wiring.peer_or("leaderboard", "127.0.0.1:9008"),
+            edge_peer(wiring, edge_resolver, "leaderboard", "127.0.0.1:9008"),
             leaderboardrpc::remote_factories(),
         )),
     ]

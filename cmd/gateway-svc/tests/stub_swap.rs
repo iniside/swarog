@@ -111,5 +111,9 @@ fn stub_contributes_peer_addr_for_remote_dispatch() {
         .iter()
         .find(|p| p.provider == "characters")
         .expect("characters peer address contributed to PEER_SLOT");
-    assert_eq!(found.addr, "127.0.0.1:9000", "the address the gateway dials Remote");
+    assert_eq!(
+        found.addrs,
+        vec!["127.0.0.1:9000".to_string()],
+        "the address set the gateway dials Remote (one element in the single-address phase)"
+    );
 }

@@ -24,7 +24,7 @@ pub fn modules(wiring: &ProcessWiring) -> Vec<Box<dyn Module>> {
         // `config` and this crate never imports the config IMPL crate.
         Box::new(remote::Stub::new(
             "config",
-            &wiring.peer_or("config", "127.0.0.1:9002"),
+            wiring.peer_or("config", "127.0.0.1:9002"),
             configrpc::remote_factories(),
         )),
     ]

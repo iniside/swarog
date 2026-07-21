@@ -118,7 +118,7 @@ fn each_svc_constructs_its_own_module() {
 /// capability) are fine -- only a gap fails.
 #[test]
 fn gateway_stubs_every_http_domain() {
-    let gateway_names: BTreeSet<String> = gateway_svc::modules(&checker_wiring(), None)
+    let gateway_names: BTreeSet<String> = gateway_svc::modules(&checker_wiring(), None, None)
         .iter()
         .map(|m| m.name().to_string())
         .collect();

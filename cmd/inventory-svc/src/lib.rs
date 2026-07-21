@@ -16,12 +16,12 @@ pub fn modules(wiring: &ProcessWiring) -> Vec<Box<dyn Module>> {
         // swap closures explicitly, so `remote` never names `characters`/`config`.
         Box::new(remote::Stub::new(
             "characters",
-            &wiring.peer_or("characters", "127.0.0.1:9000"),
+            wiring.peer_or("characters", "127.0.0.1:9000"),
             charactersrpc::remote_factories(),
         )),
         Box::new(remote::Stub::new(
             "config",
-            &wiring.peer_or("config", "127.0.0.1:9002"),
+            wiring.peer_or("config", "127.0.0.1:9002"),
             configrpc::remote_factories(),
         )),
     ]
