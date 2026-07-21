@@ -1474,3 +1474,199 @@ async fn pooled_stub_readyz_is_pool_readyz_and_cold_start_down() {
     let err = check.run().await.expect_err("cold-start pool (no instances resolved) is down");
     assert!(err.contains("no resolved instances"), "cold-start down verdict: {err}");
 }
+
+// ---- C3: RetryMode-gated cross-instance failover ----------------------------
+//
+// The pool's `call` may fail over to a DIFFERENT instance ONLY when three orthogonal
+// conditions all hold: (1) RetryMode::OnceAfterReconnect (WHETHER — a mutation NEVER
+// re-sends), (2) the failure is a PROVEN connection-death class (`!is_definitive_answer`
+// — a peer that ANSWERED ran the op), and (3) a different instance exists (WHERE — the
+// cursor advances OFF the dead addr). These prove each condition's failing branch with a
+// per-instance INVOCATION COUNTER, so a double-send is observable by construction.
+//
+// The failure representatives mirror the ONLY errors that reach the Caller boundary as
+// `Err` (a domain error rides in-envelope as `Ok(bytes)`): `Error::unavailable` = every
+// transport fault incl. a connection death (`!is_definitive_answer`), and
+// `Error::not_found` = `UnknownMethod`, the sole "peer answered" definitive Err.
+
+/// Per-instance outcome for the C3 fake transport. `ConnDeath` is the proven
+/// connection-death class (maps to `Unavailable`, `!is_definitive_answer`); `AppAnswer` is
+/// a definitive peer answer (`NotFound`, `is_definitive_answer` — the op RAN); `Succeed`
+/// echoes the addr.
+#[derive(Clone)]
+enum C3Behavior {
+    ConnDeath,
+    AppAnswer,
+    Succeed,
+}
+
+/// A fake per-instance caller that COUNTS its invocations (so a double-send is observable)
+/// and returns its preset outcome. `RetryMode` is intentionally ignored here — the C3
+/// decision lives in `Pool::call`, one level ABOVE this per-instance caller (which is a
+/// `Reconnecting` in production; its own single-conn `RetryMode` handling is unchanged).
+struct FailoverCaller {
+    addr: String,
+    calls: Arc<AtomicUsize>,
+    behavior: C3Behavior,
+}
+
+#[async_trait]
+impl Caller for FailoverCaller {
+    async fn call(
+        &self,
+        _method: &str,
+        _identity: Option<&str>,
+        _payload: &[u8],
+        _retry_mode: RetryMode,
+    ) -> Result<Vec<u8>, Error> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        match self.behavior {
+            C3Behavior::ConnDeath => Err(Error::unavailable(format!("{}: connection dead", self.addr))),
+            C3Behavior::AppAnswer => Err(Error::not_found(format!("{}: no such method", self.addr))),
+            C3Behavior::Succeed => Ok(self.addr.clone().into_bytes()),
+        }
+    }
+}
+
+/// A C3 fake factory: every instance is HEALTHY/selectable (the failure is discovered at
+/// CALL time, exactly like a mid-request instance death — the probe verdict has NOT
+/// flipped), so selection reaches the failing instance and the retry decision is driven by
+/// `call`'s gate, not by `is_selectable`. Each instance's outcome comes from `behaviors`
+/// (default `Succeed`); the shared `recorder` counts per-addr invocations.
+fn failover_factory(
+    recorder: Recorder,
+    behaviors: std::collections::HashMap<String, C3Behavior>,
+) -> InstanceFactory {
+    Arc::new(move |addr: &str| {
+        let addr = addr.to_string();
+        recorder.note_build(&addr);
+        let calls = recorder.call_counter(&addr);
+        let behavior = behaviors.get(&addr).cloned().unwrap_or(C3Behavior::Succeed);
+        let caller: Arc<dyn Caller> = Arc::new(FailoverCaller {
+            addr: addr.clone(),
+            calls,
+            behavior,
+        });
+        let health = Arc::new(InstanceHealth::seed());
+        *health.verdict.lock().unwrap() = Ok(());
+        health
+            .last_probe_at
+            .store(coarse_now_secs().max(1), Ordering::SeqCst);
+        let close: InstanceCloser = Arc::new(|| Box::pin(async {}));
+        Instance {
+            addr,
+            caller,
+            health,
+            probe: None,
+            close,
+        }
+    })
+}
+
+fn behaviors(pairs: &[(&str, C3Behavior)]) -> std::collections::HashMap<String, C3Behavior> {
+    pairs.iter().map(|(a, b)| (a.to_string(), b.clone())).collect()
+}
+
+/// THE double-execute guard (the branch that would double-send if C3 cross-retried a
+/// mutation): a `RetryMode::Never` op whose selected instance dies with the connection-death
+/// class returns the error and NEVER re-sends to another instance — the exactly-once (at
+/// most once) side-effect property. The cursor starts at 0, so the first (index-0)
+/// instance `dead` is selected; the second `live` must receive ZERO calls.
+#[tokio::test]
+async fn mutation_never_cross_retries_on_connection_death() {
+    let recorder = Recorder::default();
+    let pool = Pool::with_factory(
+        list_of(&["dead", "live"]),
+        failover_factory(recorder.clone(), behaviors(&[("dead", C3Behavior::ConnDeath)])),
+    );
+
+    let err = pool
+        .call("m", None, b"{}", RetryMode::Never)
+        .await
+        .expect_err("a mutation onto a dying instance returns the error");
+
+    assert_eq!(err.status, opsapi::Status::Unavailable, "the connection-death error is returned verbatim");
+    assert_eq!(recorder.hits("dead"), 1, "the selected instance was invoked exactly once");
+    assert_eq!(
+        recorder.hits("live"),
+        0,
+        "a MUTATION must NEVER be re-sent to another instance (double-execute hazard)"
+    );
+}
+
+/// The failover the single-conn path structurally cannot do: a `RetryMode::OnceAfterReconnect`
+/// (`#[retry_safe]`) op whose selected instance is a proven connection death transparently
+/// retries on a DIFFERENT instance and succeeds. `dead` (index 0) is selected first and dies;
+/// the retry advances the cursor OFF `dead` to `live`, which serves the request.
+#[tokio::test]
+async fn retry_safe_read_fails_over_to_a_different_instance() {
+    let recorder = Recorder::default();
+    let pool = Pool::with_factory(
+        list_of(&["dead", "live"]),
+        failover_factory(recorder.clone(), behaviors(&[("dead", C3Behavior::ConnDeath)])),
+    );
+
+    let out = pool
+        .call("m", None, b"{}", RetryMode::OnceAfterReconnect)
+        .await
+        .expect("a retry-safe read fails over to a healthy instance");
+
+    assert_eq!(out, b"live", "the retry landed on the DIFFERENT (cursor-advanced) instance");
+    assert_eq!(recorder.hits("dead"), 1, "the dead instance was tried once");
+    assert_eq!(recorder.hits("live"), 1, "the failover reached a different instance");
+}
+
+/// An application (definitive-answer) error is NOT cross-retried even for a retry-safe op:
+/// re-running an op the peer already RAN elsewhere is the double-execute hazard. `ans`
+/// (index 0) answers `NotFound` (`is_definitive_answer` — a real `UnknownMethod`); the pool
+/// returns it verbatim and NEVER touches `live`.
+#[tokio::test]
+async fn application_error_is_not_cross_retried_even_retry_safe() {
+    let recorder = Recorder::default();
+    let pool = Pool::with_factory(
+        list_of(&["ans", "live"]),
+        failover_factory(recorder.clone(), behaviors(&[("ans", C3Behavior::AppAnswer)])),
+    );
+
+    let err = pool
+        .call("m", None, b"{}", RetryMode::OnceAfterReconnect)
+        .await
+        .expect_err("a definitive peer answer is an error the op RAN into, returned verbatim");
+
+    assert_eq!(err.status, opsapi::Status::NotFound, "the application answer is returned verbatim");
+    assert_eq!(recorder.hits("ans"), 1, "the answering instance was invoked once");
+    assert_eq!(
+        recorder.hits("live"),
+        0,
+        "an op the peer ANSWERED must NOT be re-run on another instance"
+    );
+}
+
+/// The cross-instance retry is BOUNDED to exactly one attempt: with `[d1 dead, d2 dead]` and
+/// a retry-safe op, the pool tries `d1` then fails over ONCE to `d2` (never a third / never a
+/// loop), and returns `d2`'s error. Each dead instance is invoked exactly once.
+#[tokio::test]
+async fn retry_safe_failover_is_bounded_to_one_cross_instance_attempt() {
+    let recorder = Recorder::default();
+    let pool = Pool::with_factory(
+        list_of(&["d1", "d2"]),
+        failover_factory(
+            recorder.clone(),
+            behaviors(&[("d1", C3Behavior::ConnDeath), ("d2", C3Behavior::ConnDeath)]),
+        ),
+    );
+
+    let err = pool
+        .call("m", None, b"{}", RetryMode::OnceAfterReconnect)
+        .await
+        .expect_err("both instances dead → the final failover error is returned");
+
+    assert_eq!(err.status, opsapi::Status::Unavailable);
+    assert_eq!(recorder.hits("d1"), 1, "the first instance is tried exactly once");
+    assert_eq!(recorder.hits("d2"), 1, "the failover instance is tried exactly once (no loop)");
+    assert_eq!(
+        recorder.hits("d1") + recorder.hits("d2"),
+        2,
+        "bounded: at most one cross-instance retry, no third attempt"
+    );
+}

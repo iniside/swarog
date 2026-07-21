@@ -887,6 +887,22 @@ impl Pool {
     /// (known-dead / stale) instances. `None` = empty set OR every instance known-down,
     /// which [`call`](Pool::call) maps to `Unavailable`.
     fn select(&self, instances: &[Instance], now: u64) -> Option<usize> {
+        self.select_excluding(instances, now, None)
+    }
+
+    /// [`select`](Pool::select) with an OPTIONAL excluded address — the cursor half of the
+    /// C3 cross-instance failover. On a permitted retry the pool must land on a DIFFERENT
+    /// instance than the one that just died, so `exclude` names the dead instance's addr
+    /// (matched by addr, not index, so a concurrent refresh reconciling the set cannot make
+    /// the exclusion target the wrong slot). Advances the cursor exactly as `select` does —
+    /// the cursor is the WHERE-a-retry-lands input, orthogonal to `RetryMode`'s WHETHER.
+    /// `None` = no selectable instance OTHER than `exclude` exists.
+    fn select_excluding(
+        &self,
+        instances: &[Instance],
+        now: u64,
+        exclude: Option<&str>,
+    ) -> Option<usize> {
         let n = instances.len();
         if n == 0 {
             return None;
@@ -894,6 +910,9 @@ impl Pool {
         let start = (self.cursor.fetch_add(1, Ordering::SeqCst) % n as u64) as usize;
         for off in 0..n {
             let i = (start + off) % n;
+            if exclude == Some(instances[i].addr.as_str()) {
+                continue;
+            }
             if instances[i].health.is_selectable(now) {
                 return Some(i);
             }
@@ -942,17 +961,35 @@ impl Pool {
 #[async_trait]
 impl Caller for Pool {
     /// Refresh (throttled) ⇒ select a healthy instance round-robin ⇒ delegate to that
-    /// instance's own self-healing [`Reconnecting::call`].
+    /// instance's own self-healing [`Reconnecting::call`] ⇒ on a PROVEN connection death of
+    /// a `#[retry_safe]` read, fail over ONCE to a DIFFERENT instance.
     ///
-    /// **[C3 SEAM — do NOT implement here]** C1 delegates and returns the delegated
-    /// error verbatim: NO retry onto another instance. C3 will slot the cross-instance
-    /// retry in RIGHT HERE, gated on `retry_mode` (the WHETHER-to-retry authority stays
-    /// `opsapi::RetryMode`, matching `Reconnecting::call` — never a new pool knob): a
-    /// `RetryMode::OnceAfterReconnect` (read / `#[retry_safe]`) failure may ADVANCE the
-    /// cursor off the failed instance (`select` again) and replay once on a DIFFERENT
-    /// instance; a `RetryMode::Never` (mutation) MUST return the error with no
-    /// cross-instance replay (double-execute hazard). C1 must not change `Reconnecting`'s
-    /// own single-conn `RetryMode` semantics.
+    /// **Two orthogonal authorities, mirrored from [`Reconnecting::call`] one level up:**
+    /// * `retry_mode` decides WHETHER a failure may be retried at all. It stays the sole
+    ///   WHETHER authority — `opsapi::RetryMode`, never a new pool knob. `RetryMode::Never`
+    ///   (a mutation) is NEVER retried onto another instance: a mid-call instance death may
+    ///   have executed the mutation, so re-sending it to a peer risks a double-execute. The
+    ///   error is returned verbatim (the side effect ran AT MOST once).
+    /// * the round-robin `cursor` decides WHERE a PERMITTED (`OnceAfterReconnect`) retry
+    ///   lands. It is the legitimate SECOND input the cross-instance retry needs — it must
+    ///   advance OFF the dead instance (`select_excluding`) or the replay hits the same
+    ///   corpse. It is NOT a smuggled "retry" knob; it only chooses the target of a retry
+    ///   `retry_mode` already permitted.
+    ///
+    /// The cross-instance retry fires ONLY when ALL of:
+    /// 1. `retry_mode == RetryMode::OnceAfterReconnect` (a read / `#[retry_safe]` op); AND
+    /// 2. the failure is a PROVEN CONNECTION-DEATH class — `!status.is_definitive_answer()`,
+    ///    the SAME authority `edge`/`Reconnecting` use to decide reset-vs-keep. A definitive
+    ///    answer (`NotFound` = `UnknownMethod`, the peer answered) means the op RAN on a
+    ///    HEALTHY instance; re-running it elsewhere would double-execute, so it is returned
+    ///    verbatim. (A domain error rides INSIDE the response envelope as `Ok(bytes)` at this
+    ///    boundary — it never reaches this gate.) AND
+    /// 3. a DIFFERENT selectable instance exists (`select_excluding` off the dead addr).
+    ///
+    /// The retry is BOUNDED to exactly one cross-instance attempt — J's result (success or
+    /// error) is returned as-is; there is no third instance, no loop. [`Reconnecting`]'s own
+    /// single-conn `RetryMode` semantics are UNCHANGED — this only adds the pool's outer,
+    /// cross-instance failover on top of it.
     async fn call(
         &self,
         method: &str,
@@ -962,23 +999,50 @@ impl Caller for Pool {
     ) -> Result<Vec<u8>, Error> {
         self.refresh().await;
         let now = coarse_now_secs();
-        // Clone the selected instance's caller OUT and drop the set lock before delegating
-        // (a std guard must never cross an `.await`). finding-5: a concurrent refresh may
-        // reconcile this instance away and close it between this clone and the delegated
-        // call, yielding a fail-closed `ConnectionFatal`/503 in that tiny window —
-        // self-limited (the next request re-selects a live instance), no state corruption.
-        let caller = {
+        // Clone the selected instance's caller + addr OUT and drop the set lock before
+        // delegating (a std guard must never cross an `.await`). The addr is the exclusion
+        // target for a permitted cross-instance retry (matched by addr, not slot, so a
+        // concurrent reconcile cannot make the exclusion target the wrong instance).
+        // finding-5: a concurrent refresh may reconcile this instance away and close it
+        // between this clone and the delegated call, yielding a fail-closed
+        // `ConnectionFatal`/503 in that tiny window — self-limited (the next request
+        // re-selects a live instance), no state corruption.
+        let first = {
             let g = self.instances.lock().unwrap_or_else(|e| e.into_inner());
-            self.select(&g, now).map(|i| g[i].caller.clone())
+            self.select(&g, now).map(|i| (g[i].caller.clone(), g[i].addr.clone()))
         };
-        let Some(caller) = caller else {
+        let Some((first_caller, first_addr)) = first else {
             return Err(Error::unavailable(
                 "remote pool: no reachable instance (all resolved instances down, or none resolved yet)",
             ));
         };
-        // [C3 SEAM] on `Err` here, C3 (for OnceAfterReconnect only) re-selects a DIFFERENT
-        // instance and replays once; C1 returns the delegated result as-is.
-        caller.call(method, identity, payload, retry_mode).await
+        let first_err = match first_caller.call(method, identity, payload, retry_mode).await {
+            Ok(v) => return Ok(v),
+            Err(e) => e,
+        };
+
+        // C3 cross-instance failover gate. WHETHER (retry_mode) — a mutation (`Never`) is
+        // returned verbatim, never re-sent (double-execute hazard). And only a PROVEN
+        // connection death (non-definitive answer) is a corpse worth failing over; a peer
+        // that answered (`is_definitive_answer`, e.g. UnknownMethod→NotFound) ran the op, so
+        // return it verbatim rather than re-running it elsewhere.
+        if retry_mode != RetryMode::OnceAfterReconnect || first_err.status.is_definitive_answer()
+        {
+            return Err(first_err);
+        }
+
+        // WHERE (cursor): advance OFF the dead instance to a DIFFERENT one. If none exists,
+        // return the first instance's error verbatim — the failover had nowhere to land.
+        let second_caller = {
+            let g = self.instances.lock().unwrap_or_else(|e| e.into_inner());
+            self.select_excluding(&g, now, Some(&first_addr))
+                .map(|i| g[i].caller.clone())
+        };
+        let Some(second_caller) = second_caller else {
+            return Err(first_err);
+        };
+        // Bounded to ONE cross-instance attempt: J's result (success or error) is final.
+        second_caller.call(method, identity, payload, retry_mode).await
     }
 }
 
