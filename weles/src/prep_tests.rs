@@ -25,11 +25,6 @@ impl EnvVarGuard {
         EnvVarGuard { key, previous }
     }
 
-    fn unset(key: &'static str) -> Self {
-        let previous = std::env::var_os(key);
-        std::env::remove_var(key);
-        EnvVarGuard { key, previous }
-    }
 }
 
 impl Drop for EnvVarGuard {
@@ -61,9 +56,15 @@ fn discover_fixes_bin_dir_at_root_deploy() {
     let _set = EnvVarGuard::set("CARGO_TARGET_DIR", "should-be-ignored");
 
     let root = temp_dir("discover-default");
-    // Stage a generation so discover can pin it (discover requires deploy/current).
+    // Stage a generation so discover can pin it (discover requires deploy/current
+    // AND a valid deployed fleet.toml, which it reads+validates once at pin time).
     std::fs::create_dir_all(root.join("deploy").join("gen-1")).expect("gen-1");
     std::fs::write(root.join("deploy").join("current"), "gen-1").expect("current");
+    std::fs::write(
+        root.join("deploy").join("gen-1").join("fleet.toml"),
+        "[[service]]\nname = \"server\"\npkg = \"server\"\nhttp_port = 8080\n",
+    )
+    .expect("stage a minimal fleet.toml");
     let layout = Layout::discover(root.clone()).expect("discover layout");
 
     assert_eq!(layout.root, root);
@@ -81,12 +82,12 @@ fn discover_fixes_bin_dir_at_root_deploy() {
 fn binary_resolves_against_the_pinned_generation_dir() {
     // binary() resolves against active_bin_dir (the pinned generation), NOT the
     // deploy root — so the fleet spawns one coherent generation.
-    let layout = Layout {
-        root: PathBuf::from("/root"),
-        run_dir: PathBuf::from("/root/run/weles"),
-        bin_dir: PathBuf::from("/root/deploy"),
-        active_bin_dir: PathBuf::from("/root/deploy/gen-2"),
-    };
+    let layout = Layout::for_test(
+        PathBuf::from("/root"),
+        PathBuf::from("/root/run/weles"),
+        PathBuf::from("/root/deploy"),
+        PathBuf::from("/root/deploy/gen-2"),
+    );
     let expected = layout
         .active_bin_dir
         .join(format!("edgeca{}", std::env::consts::EXE_SUFFIX));
@@ -107,12 +108,7 @@ fn temp_layout(tag: &str) -> Layout {
     std::fs::create_dir_all(&run_dir).expect("create run_dir");
     let bin_dir = root.join("deploy");
     std::fs::create_dir_all(&bin_dir).expect("create bin_dir");
-    Layout {
-        root,
-        run_dir,
-        active_bin_dir: bin_dir.clone(),
-        bin_dir,
-    }
+    Layout::for_test(root, run_dir, bin_dir.clone(), bin_dir)
 }
 
 /// A deploy-path layout for `root` (no pinned generation required — deploy
@@ -125,11 +121,29 @@ fn stage_fake(layout: &Layout, pkg: &str) {
     std::fs::write(layout.binary(pkg), b"fake exe").expect("stage fake binary");
 }
 
+/// The committed split fixture, loaded (its `[[service]]` pkgs ∪ `[[prepare]]`
+/// runs are the deploy set). These deploy mechanics tests exercise
+/// staging/retention, so the concrete fleet only has to be a real, validating
+/// one — the shipped split fixture is the obvious choice.
+fn split_fleet() -> crate::fleet_toml::Fleet {
+    crate::fleet_toml::load_split_fixture()
+}
+
+fn split_fleet_path() -> PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fleet.split.toml")
+}
+
+/// `deploy` with the fleet arg fixed to the committed split fixture (the file
+/// `deploy` stamps into the generation and `up` reads back).
+fn deploy_fx(layout: &Layout, src: &Path) -> Result<()> {
+    deploy(layout, src, &split_fleet_path())
+}
+
 #[test]
 fn validate_binaries_ok_when_all_present() {
     let layout = temp_layout("validate-ok");
-    let packages = ["edgeca", "adminctl", "server"];
-    for pkg in packages {
+    let packages = ["edgeca", "adminctl", "server"].map(String::from);
+    for pkg in &packages {
         stage_fake(&layout, pkg);
     }
     validate_binaries(&layout, &packages).expect("all staged ⇒ Ok");
@@ -140,7 +154,7 @@ fn validate_binaries_lists_every_missing_binary() {
     let layout = temp_layout("validate-missing");
     // Stage only one of three; the other two must BOTH be listed.
     stage_fake(&layout, "edgeca");
-    let packages = ["edgeca", "adminctl", "server"];
+    let packages = ["edgeca", "adminctl", "server"].map(String::from);
 
     let error = validate_binaries(&layout, &packages).expect_err("missing ⇒ Err");
     let message = format!("{error:#}");
@@ -165,7 +179,7 @@ fn validate_binaries_lists_every_missing_binary() {
 /// Stages every deployable package in `src` with the given bytes so a deploy
 /// succeeds fully.
 fn stage_full_source(src: &Path, bytes: &[u8]) {
-    for pkg in deploy_packages() {
+    for pkg in deploy_packages(&split_fleet()) {
         let file = format!("{pkg}{}", std::env::consts::EXE_SUFFIX);
         std::fs::write(src.join(&file), bytes).expect("write source binary");
     }
@@ -178,7 +192,7 @@ fn deploy_stages_gen_1_and_flips_current() {
     let src = temp_dir("deploy-gen1-src");
     stage_full_source(&src, b"v1 source");
 
-    deploy(&layout, &src).expect("first deploy stages gen-1");
+    deploy_fx(&layout, &src).expect("first deploy stages gen-1");
 
     // current names gen-1, and the pinned Layout resolves gen-1 binaries.
     assert_eq!(
@@ -189,8 +203,8 @@ fn deploy_stages_gen_1_and_flips_current() {
     );
     let up = Layout::discover(root.clone()).expect("discover pins gen-1");
     assert_eq!(up.active_bin_dir, root.join("deploy").join("gen-1"));
-    for pkg in deploy_packages() {
-        let dst = up.binary(pkg);
+    for pkg in deploy_packages(&split_fleet()) {
+        let dst = up.binary(&pkg);
         assert!(dst.is_file(), "{} must be staged in gen-1", dst.display());
         assert_eq!(std::fs::read(&dst).expect("read staged"), b"v1 source");
     }
@@ -205,8 +219,8 @@ fn second_deploy_creates_gen_2_and_repoints_current() {
     let src = temp_dir("deploy-gen2-src");
     stage_full_source(&src, b"payload");
 
-    deploy(&layout, &src).expect("gen-1");
-    deploy(&layout, &src).expect("gen-2");
+    deploy_fx(&layout, &src).expect("gen-1");
+    deploy_fx(&layout, &src).expect("gen-2");
 
     assert!(root.join("deploy").join("gen-1").is_dir());
     assert!(root.join("deploy").join("gen-2").is_dir());
@@ -225,9 +239,9 @@ fn three_deploys_retain_only_the_two_newest_generations() {
     let src = temp_dir("deploy-retain-src");
     stage_full_source(&src, b"payload");
 
-    deploy(&layout, &src).expect("gen-1");
-    deploy(&layout, &src).expect("gen-2");
-    deploy(&layout, &src).expect("gen-3");
+    deploy_fx(&layout, &src).expect("gen-1");
+    deploy_fx(&layout, &src).expect("gen-2");
+    deploy_fx(&layout, &src).expect("gen-3");
 
     let deploy_dir = root.join("deploy");
     assert!(!deploy_dir.join("gen-1").exists(), "gen-1 must be pruned");
@@ -250,22 +264,22 @@ fn abandoned_partial_is_pruned_while_the_previous_good_generation_survives() {
     let layout = deploy_layout(&root);
     let good = temp_dir("deploy-abandoned-good");
     stage_full_source(&good, b"good");
-    deploy(&layout, &good).expect("gen-1 good");
+    deploy_fx(&layout, &good).expect("gen-1 good");
 
     // Partial-fail gen-2 (omit one pkg): bails before flip, current stays gen-1,
     // gen-2 dir is abandoned (no manifest).
     let broken = temp_dir("deploy-abandoned-broken");
-    for pkg in deploy_packages() {
+    for pkg in deploy_packages(&split_fleet()) {
         if pkg == "adminctl" {
             continue;
         }
         let file = format!("{pkg}{}", std::env::consts::EXE_SUFFIX);
         std::fs::write(broken.join(&file), b"broken").expect("write source binary");
     }
-    deploy(&layout, &broken).expect_err("gen-2 partial fails");
+    deploy_fx(&layout, &broken).expect_err("gen-2 partial fails");
 
     // gen-3 good: retention protects pre-flip current (gen-1), NOT gen-3-1=gen-2.
-    deploy(&layout, &good).expect("gen-3 good");
+    deploy_fx(&layout, &good).expect("gen-3 good");
 
     let deploy_dir = root.join("deploy");
     assert!(deploy_dir.join("gen-1").is_dir(), "previous good gen-1 must survive");
@@ -283,7 +297,7 @@ fn deploy_rejects_the_deploy_dir_as_its_own_source() {
     let layout = deploy_layout(&root);
     std::fs::create_dir_all(&layout.bin_dir).expect("create deploy dir");
 
-    let error = deploy(&layout, &layout.bin_dir).expect_err("self-deploy must be rejected");
+    let error = deploy_fx(&layout, &layout.bin_dir).expect_err("self-deploy must be rejected");
     let message = format!("{error:#}");
     assert!(
         message.contains("IS the deploy dir"),
@@ -300,18 +314,18 @@ fn partial_fail_missing_source_abandons_gen_and_keeps_current() {
     let layout = deploy_layout(&root);
     let good = temp_dir("deploy-partial-good");
     stage_full_source(&good, b"good v1");
-    deploy(&layout, &good).expect("gen-1 succeeds");
+    deploy_fx(&layout, &good).expect("gen-1 succeeds");
 
     // Second source omits one package ⇒ deploy bails.
     let broken = temp_dir("deploy-partial-broken");
-    for pkg in deploy_packages() {
+    for pkg in deploy_packages(&split_fleet()) {
         if pkg == "adminctl" {
             continue;
         }
         let file = format!("{pkg}{}", std::env::consts::EXE_SUFFIX);
         std::fs::write(broken.join(&file), b"broken v2").expect("write source binary");
     }
-    let error = deploy(&layout, &broken).expect_err("missing source ⇒ Err");
+    let error = deploy_fx(&layout, &broken).expect_err("missing source ⇒ Err");
     let message = format!("{error:#}");
     assert!(
         message.contains("adminctl"),
@@ -425,7 +439,7 @@ fn deploy_stages_binaries_executable_on_unix() {
     let root = temp_dir("deploy-exec-bit");
     let layout = deploy_layout(&root);
     let src = temp_dir("deploy-exec-bit-src");
-    for pkg in deploy_packages() {
+    for pkg in deploy_packages(&split_fleet()) {
         let file = format!("{pkg}{}", std::env::consts::EXE_SUFFIX);
         let path = src.join(&file);
         std::fs::write(&path, b"#!/bin/sh\necho hi\n").expect("write source binary");
@@ -433,11 +447,11 @@ fn deploy_stages_binaries_executable_on_unix() {
             .expect("chmod source +x");
     }
 
-    deploy(&layout, &src).expect("deploy succeeds");
+    deploy_fx(&layout, &src).expect("deploy succeeds");
 
     let up = Layout::discover(root.clone()).expect("discover pins gen-1");
-    for pkg in deploy_packages() {
-        let dst = up.binary(pkg);
+    for pkg in deploy_packages(&split_fleet()) {
+        let dst = up.binary(&pkg);
         let mode = std::fs::metadata(&dst).expect("stat staged").permissions().mode();
         assert!(
             mode & 0o111 != 0,
@@ -533,25 +547,6 @@ fn prune_rechecks_live_pin_and_spares_a_generation_the_snapshot_missed() {
     assert_eq!(removed, vec![deploy.join("gen-2")], "only the dead gen-2 was removed");
 }
 
-#[test]
-fn database_url_defaults_to_dev_dsn() {
-    let _guard = env_guard();
-    let _unset = EnvVarGuard::unset("DATABASE_URL");
-
-    assert_eq!(
-        database_url(),
-        "postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable"
-    );
-}
-
-#[test]
-fn database_url_honors_env_override() {
-    let _guard = env_guard();
-    let _set = EnvVarGuard::set("DATABASE_URL", "postgres://custom/db");
-
-    assert_eq!(database_url(), "postgres://custom/db");
-}
-
 #[cfg(windows)]
 #[test]
 fn filtered_env_dedupes_case_variant_allowlist_entries_on_windows() {
@@ -581,32 +576,3 @@ fn filtered_env_keeps_distinct_case_variants_on_unix() {
     assert_eq!(env.len(), 2, "unix case variants are distinct vars, got: {env:?}");
 }
 
-#[test]
-fn mint_ca_skips_spawn_when_both_files_already_exist() {
-    let root = temp_dir("mint-ca-skip-root");
-    let run_dir = root.join("run").join("weles");
-    std::fs::create_dir_all(&run_dir).expect("create run_dir");
-    let cert = run_dir.join("edge-ca.crt");
-    let key = run_dir.join("edge-ca.key");
-    std::fs::write(&cert, b"fake cert").expect("write fake cert");
-    std::fs::write(&key, b"fake key").expect("write fake key");
-
-    let layout = Layout {
-        root: root.clone(),
-        run_dir: run_dir.clone(),
-        // Deliberately points at a nonexistent deploy dir: if mint_ca attempted
-        // to spawn despite the skip-if-exists branch, the spawn would fail
-        // loudly (and this test would catch it as an Err), so the ONLY way
-        // this passes is via the early skip.
-        bin_dir: root.join("no-such-deploy"),
-        active_bin_dir: root.join("no-such-deploy"),
-    };
-
-    let paths = mint_ca(&layout).expect("mint_ca should skip and succeed");
-    assert_eq!(paths.cert, cert);
-    assert_eq!(paths.key, key);
-
-    // No spawn attempted ⇒ no log files written.
-    assert!(!run_dir.join("edgeca.out.log").exists());
-    assert!(!run_dir.join("edgeca.err.log").exists());
-}

@@ -1,0 +1,198 @@
+# The 12-process split fleet, as operator-authored strict data. This is the
+# file `weles up` boots after `weles deploy target/debug --fleet
+# weles/fleet.split.toml`, and the one verifyctl's `weles-managed-gateway`
+# stage loads. It is the faithful successor of the deleted Rust
+# `manifest::split_fleet()` table (Development flavor of
+# tools/processctl/src/fleet.rs): same names, packages, ports, peer wiring and
+# dev-mode opt-ins.
+#
+# The `[[service]]` order IS the boot order: every `kind = "edge"` peer's
+# provider appears strictly earlier than its consumer, so its edge is already
+# listening (enforced by `fleet_toml::validate`).
+#
+# Env that used to be INJECTED by weles is now explicit, because weles is
+# domain-blind:
+#   * DATABASE_URL           — fleet-level `passthrough` (weles forwards it from
+#                              its OWN environment to every service; harmless to
+#                              one that ignores it).
+#   * DATABASE_POOL_MAX_CONNECTIONS = "3" — per DB service `[service.env]`
+#                              (the old SPLIT_SERVICE_POOL_MAX).
+#   * EDGE_CA_CERT / EDGE_CA_KEY — a literal RELATIVE path under `[service.env]`
+#                              for every service that dials the edge (every DB
+#                              service + gateway-svc). The path resolves against
+#                              cwd = repo root, where the `edge-ca` prepare hook
+#                              writes it and services spawn.
+
+passthrough = ["DATABASE_URL"]
+
+# CA FIRST: mint the internal-edge CA every service reads, THEN seed the dev
+# admin. `run` names a staged package (edgeca / adminctl); weles knows the name,
+# never the meaning. Re-run every `up` (edgeca regenerates, adminctl upserts).
+[[prepare]]
+name = "edge-ca"
+run = "edgeca"
+args = ["--cert", "run/weles/edge-ca.crt", "--key", "run/weles/edge-ca.key"]
+
+[[prepare]]
+name = "admin-seed"
+run = "adminctl"
+args = ["create-user", "admin"]
+passthrough = ["DATABASE_URL"]
+env = { ADMINCTL_PASSWORD = "admin" }
+
+[[service]]
+name = "accounts-svc"
+pkg = "accounts-svc"
+provider = "accounts"
+http_port = 8084
+edge_port = 9003
+env = { ACCOUNTS_DEV_AUTH = "1", DATABASE_POOL_MAX_CONNECTIONS = "3", EDGE_CA_CERT = "run/weles/edge-ca.crt", EDGE_CA_KEY = "run/weles/edge-ca.key" }
+
+[[service]]
+name = "apikeys-svc"
+pkg = "apikeys-svc"
+provider = "apikeys"
+http_port = 8091
+edge_port = 9009
+env = { APIKEYS_DEV_SEED = "1", DATABASE_POOL_MAX_CONNECTIONS = "3", EDGE_CA_CERT = "run/weles/edge-ca.crt", EDGE_CA_KEY = "run/weles/edge-ca.key" }
+
+[[service]]
+name = "audit-svc"
+pkg = "audit-svc"
+provider = "audit"
+http_port = 8086
+edge_port = 9004
+env = { DATABASE_POOL_MAX_CONNECTIONS = "3", EDGE_CA_CERT = "run/weles/edge-ca.crt", EDGE_CA_KEY = "run/weles/edge-ca.key" }
+
+# Deliberately NO SCHEDULER_ENABLED — this is the Development flavor of
+# tools/processctl/src/fleet.rs, which only sets it under FleetFlavor::Proof.
+[[service]]
+name = "scheduler-svc"
+pkg = "scheduler-svc"
+provider = "scheduler"
+http_port = 8087
+edge_port = 9005
+env = { DATABASE_POOL_MAX_CONNECTIONS = "3", EDGE_CA_CERT = "run/weles/edge-ca.crt", EDGE_CA_KEY = "run/weles/edge-ca.key" }
+
+[[service]]
+name = "rating-svc"
+pkg = "rating-svc"
+provider = "rating"
+http_port = 8089
+edge_port = 9007
+env = { DATABASE_POOL_MAX_CONNECTIONS = "3", EDGE_CA_CERT = "run/weles/edge-ca.crt", EDGE_CA_KEY = "run/weles/edge-ca.key" }
+
+[[service]]
+name = "leaderboard-svc"
+pkg = "leaderboard-svc"
+provider = "leaderboard"
+http_port = 8090
+edge_port = 9008
+env = { DATABASE_POOL_MAX_CONNECTIONS = "3", EDGE_CA_CERT = "run/weles/edge-ca.crt", EDGE_CA_KEY = "run/weles/edge-ca.key" }
+
+[[service]]
+name = "match-svc"
+pkg = "match-svc"
+provider = "match"
+http_port = 8088
+edge_port = 9006
+env = { DATABASE_POOL_MAX_CONNECTIONS = "3", EDGE_CA_CERT = "run/weles/edge-ca.crt", EDGE_CA_KEY = "run/weles/edge-ca.key" }
+
+  [[service.peer]]
+  env_key = "RATING_EDGE_ADDR"
+  provider = "rating"
+  kind = "edge"
+
+[[service]]
+name = "config-svc"
+pkg = "config-svc"
+provider = "config"
+http_port = 8083
+edge_port = 9002
+env = { DATABASE_POOL_MAX_CONNECTIONS = "3", EDGE_CA_CERT = "run/weles/edge-ca.crt", EDGE_CA_KEY = "run/weles/edge-ca.key" }
+
+[[service]]
+name = "characters-svc"
+pkg = "characters-svc"
+provider = "characters"
+http_port = 8080
+edge_port = 9000
+env = { DATABASE_POOL_MAX_CONNECTIONS = "3", EDGE_CA_CERT = "run/weles/edge-ca.crt", EDGE_CA_KEY = "run/weles/edge-ca.key" }
+
+  [[service.peer]]
+  env_key = "CONFIG_EDGE_ADDR"
+  provider = "config"
+  kind = "edge"
+
+[[service]]
+name = "inventory-svc"
+pkg = "inventory-svc"
+provider = "inventory"
+http_port = 8081
+edge_port = 9001
+env = { INVENTORY_DEV_GRANT = "1", DATABASE_POOL_MAX_CONNECTIONS = "3", EDGE_CA_CERT = "run/weles/edge-ca.crt", EDGE_CA_KEY = "run/weles/edge-ca.key" }
+
+  [[service.peer]]
+  env_key = "CHARACTERS_EDGE_ADDR"
+  provider = "characters"
+  kind = "edge"
+
+  [[service.peer]]
+  env_key = "CONFIG_EDGE_ADDR"
+  provider = "config"
+  kind = "edge"
+
+# The managed front door: `resolve = "asks"` — it asks the agent where its
+# peers are (ORCHESTRATOR_URL) instead of being told, so it declares NO peers.
+# It serves no internal edge (no edge_port) but dials every peer's, so it still
+# needs the CA. PLAYER_EDGE_ADDR is its OWN player-plane bind, not a peer.
+[[service]]
+name = "gateway-svc"
+pkg = "gateway-svc"
+provider = "gateway"
+http_port = 8082
+player_port = 9100
+resolve = "asks"
+env = { PLAYER_EDGE_ADDR = ":9100", TLS_MODE = "off", EDGE_CA_CERT = "run/weles/edge-ca.crt", EDGE_CA_KEY = "run/weles/edge-ca.key" }
+
+[[service]]
+name = "admin-svc"
+pkg = "admin-svc"
+provider = "admin"
+http_port = 8085
+env = { ADMIN_COOKIE_SECURE = "0", TRUSTED_PROXY_CIDRS = "127.0.0.1/32", DATABASE_POOL_MAX_CONNECTIONS = "3", EDGE_CA_CERT = "run/weles/edge-ca.crt", EDGE_CA_KEY = "run/weles/edge-ca.key" }
+
+  [[service.peer]]
+  env_key = "CHARACTERS_EDGE_ADDR"
+  provider = "characters"
+  kind = "edge"
+
+  [[service.peer]]
+  env_key = "INVENTORY_EDGE_ADDR"
+  provider = "inventory"
+  kind = "edge"
+
+  [[service.peer]]
+  env_key = "CONFIG_EDGE_ADDR"
+  provider = "config"
+  kind = "edge"
+
+  [[service.peer]]
+  env_key = "ACCOUNTS_EDGE_ADDR"
+  provider = "accounts"
+  kind = "edge"
+
+  [[service.peer]]
+  env_key = "AUDIT_EDGE_ADDR"
+  provider = "audit"
+  kind = "edge"
+
+  [[service.peer]]
+  env_key = "SCHEDULER_EDGE_ADDR"
+  provider = "scheduler"
+  kind = "edge"
+
+  [[service.peer]]
+  env_key = "APIKEYS_EDGE_ADDR"
+  provider = "apikeys"
+  kind = "edge"

@@ -340,6 +340,25 @@ fn validate_peers(fleet: &Fleet) -> Result<()> {
     Ok(())
 }
 
+/// Loads `weles/fleet.split.toml` — the committed 12-process split fixture,
+/// resolved from `CARGO_MANIFEST_DIR` so it is found regardless of the test's
+/// working directory. Test-only, shared across the crate's `*_tests.rs` modules
+/// (which all lost their `split_fleet()`/`monolith()` source in Step 4): the
+/// fixture is now the single source of the fleet's shape.
+#[cfg(test)]
+pub(crate) fn load_split_fixture() -> Fleet {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fleet.split.toml");
+    load(&path).expect("weles/fleet.split.toml must load")
+}
+
+/// Loads `weles/fleet.monolith.toml` — the committed single-process monolith
+/// fixture. See [`load_split_fixture`].
+#[cfg(test)]
+pub(crate) fn load_monolith_fixture() -> Fleet {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fleet.monolith.toml");
+    load(&path).expect("weles/fleet.monolith.toml must load")
+}
+
 #[cfg(test)]
 #[path = "fleet_toml_tests.rs"]
 mod fleet_toml_tests;

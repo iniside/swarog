@@ -161,6 +161,19 @@ impl Layout {
         })
     }
 
+    /// Test-only bare constructor (no discovery, no pinned fleet) so unit tests
+    /// in sibling modules can build a `Layout` pointing at scratch dirs. `fleet`
+    /// is `None`: a test that never spawns/pins never reads it.
+    #[cfg(test)]
+    pub(crate) fn for_test(
+        root: PathBuf,
+        run_dir: PathBuf,
+        bin_dir: PathBuf,
+        active_bin_dir: PathBuf,
+    ) -> Self {
+        Layout { root, run_dir, bin_dir, active_bin_dir, fleet: None }
+    }
+
     /// Shared discovery scaffolding: create `run/weles`, resolve `deploy`.
     fn scaffold(root: &Path) -> Result<(PathBuf, PathBuf)> {
         let run_dir = root.join("run").join("weles");

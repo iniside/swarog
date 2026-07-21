@@ -17,6 +17,25 @@ use weles::prep::{
 
 use sha2::{Digest, Sha256};
 
+/// Path to the committed split fixture — the fleet these deploy mechanics tests
+/// stamp into the generation. Integration tests cannot see the crate's
+/// `#[cfg(test)]` fixture loader, so they load the real file by its absolute
+/// path (relative to `CARGO_MANIFEST_DIR`).
+fn split_fleet_path() -> PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fleet.split.toml")
+}
+
+/// The committed split fixture, loaded via the public parser — its pkgs ∪
+/// prepare runs are the deploy set.
+fn split_fleet() -> weles::fleet_toml::Fleet {
+    weles::fleet_toml::load(&split_fleet_path()).expect("load split fixture")
+}
+
+/// `deploy` with the fleet arg fixed to the committed split fixture.
+fn deploy_fx(layout: &Layout, src: &std::path::Path) -> anyhow::Result<()> {
+    deploy(layout, src, &split_fleet_path())
+}
+
 /// A fresh temp workspace root with an empty `deploy/` dir, plus a source dir
 /// staged with every deployable package carrying `bytes`.
 fn workspace_with_source(tag: &str, bytes: &[u8]) -> (PathBuf, PathBuf) {
@@ -32,7 +51,7 @@ fn workspace_with_source(tag: &str, bytes: &[u8]) -> (PathBuf, PathBuf) {
     let src = base.join("src");
     std::fs::create_dir_all(root.join("deploy")).expect("create deploy dir");
     std::fs::create_dir_all(&src).expect("create src dir");
-    for pkg in deploy_packages() {
+    for pkg in deploy_packages(&split_fleet()) {
         let file = format!("{pkg}{}", std::env::consts::EXE_SUFFIX);
         std::fs::write(src.join(&file), bytes).expect("write source binary");
     }
@@ -47,7 +66,7 @@ fn discover_pins_a_generation_that_survives_a_later_deploy() {
     // mixed-generation fleet across a respawn).
     let (root, src_v1) = workspace_with_source("pin-v1", b"gen-1 bytes");
     let deploy_layout = Layout::discover_for_deploy(root.clone()).expect("deploy layout");
-    deploy(&deploy_layout, &src_v1).expect("deploy gen-1");
+    deploy_fx(&deploy_layout, &src_v1).expect("deploy gen-1");
 
     // The "running up" pins gen-1 here.
     let pinned = Layout::discover(root.clone()).expect("pin gen-1");
@@ -56,11 +75,11 @@ fn discover_pins_a_generation_that_survives_a_later_deploy() {
     // A later deploy flips current -> gen-2 AFTER the pin.
     let src_v2 = root.parent().unwrap().join("src-v2");
     std::fs::create_dir_all(&src_v2).expect("create v2 src");
-    for pkg in deploy_packages() {
+    for pkg in deploy_packages(&split_fleet()) {
         let file = format!("{pkg}{}", std::env::consts::EXE_SUFFIX);
         std::fs::write(src_v2.join(&file), b"gen-2 bytes").expect("write v2 source");
     }
-    deploy(&deploy_layout, &src_v2).expect("deploy gen-2");
+    deploy_fx(&deploy_layout, &src_v2).expect("deploy gen-2");
     assert_eq!(
         std::fs::read_to_string(root.join("deploy").join("current"))
             .expect("read current")
@@ -92,8 +111,8 @@ fn deploy_retention_protects_a_live_supervisors_pinned_generation() {
     let (root, src) = workspace_with_source("livepin", b"payload");
     let deploy_layout = Layout::discover_for_deploy(root.clone()).expect("deploy layout");
 
-    deploy(&deploy_layout, &src).expect("gen-1");
-    deploy(&deploy_layout, &src).expect("gen-2");
+    deploy_fx(&deploy_layout, &src).expect("gen-1");
+    deploy_fx(&deploy_layout, &src).expect("gen-2");
 
     // Record a live, non-terminal supervisor pinning gen-1 (now behind current).
     // `started_unix` must be >= this process's real creation time to model a
@@ -117,7 +136,7 @@ fn deploy_retention_protects_a_live_supervisors_pinned_generation() {
     checkpoint(&state_path, &state).expect("write state.json");
 
     // gen-3: current=gen-3, pre-flip=gen-2. gen-1 is protected ONLY by live-pin.
-    deploy(&deploy_layout, &src).expect("gen-3");
+    deploy_fx(&deploy_layout, &src).expect("gen-3");
 
     let deploy_dir = root.join("deploy");
     assert!(
@@ -133,7 +152,7 @@ fn deploy_retention_protects_a_live_supervisors_pinned_generation() {
         ..state
     };
     checkpoint(&state_path, &dead).expect("rewrite state.json terminal");
-    deploy(&deploy_layout, &src).expect("gen-4");
+    deploy_fx(&deploy_layout, &src).expect("gen-4");
     assert!(
         !deploy_dir.join("gen-1").exists(),
         "a terminal supervisor's pin must NOT protect gen-1 — it is pruned"
@@ -152,7 +171,7 @@ fn an_early_window_pin_starting_status_empty_services_protects_across_deploys() 
     // pre-helpers is sufficient for retention protection during the boot window.
     let (root, src) = workspace_with_source("earlywindow", b"payload");
     let deploy_layout = Layout::discover_for_deploy(root.clone()).expect("deploy layout");
-    deploy(&deploy_layout, &src).expect("gen-1");
+    deploy_fx(&deploy_layout, &src).expect("gen-1");
 
     // `started_unix` >= this process's creation time (see the sibling test):
     // Windows `supervisor_alive` reads the process creation time and treats a
@@ -174,8 +193,8 @@ fn an_early_window_pin_starting_status_empty_services_protects_across_deploys() 
 
     // current: gen-1 -> gen-2 -> gen-3. gen-1 is neither current nor pre-flip on
     // the third deploy; only the early-window pin protects it.
-    deploy(&deploy_layout, &src).expect("gen-2");
-    deploy(&deploy_layout, &src).expect("gen-3");
+    deploy_fx(&deploy_layout, &src).expect("gen-2");
+    deploy_fx(&deploy_layout, &src).expect("gen-3");
 
     assert!(
         root.join("deploy").join("gen-1").is_dir(),
@@ -189,14 +208,14 @@ fn an_early_window_pin_starting_status_empty_services_protects_across_deploys() 
 fn manifest_records_the_sha256_of_each_staged_artifact() {
     let (root, src) = workspace_with_source("hash", b"artifact bytes to hash");
     let deploy_layout = Layout::discover_for_deploy(root.clone()).expect("deploy layout");
-    deploy(&deploy_layout, &src).expect("deploy gen-1");
+    deploy_fx(&deploy_layout, &src).expect("deploy gen-1");
 
     let manifest_path = root.join("deploy").join("gen-1").join("manifest.json");
     let manifest: GenerationManifest =
         serde_json::from_slice(&std::fs::read(&manifest_path).expect("read manifest"))
             .expect("parse manifest");
     assert_eq!(manifest.gen, 1);
-    assert_eq!(manifest.artifacts.len(), deploy_packages().len());
+    assert_eq!(manifest.artifacts.len(), deploy_packages(&split_fleet()).len());
 
     for artifact in &manifest.artifacts {
         let staged = root.join("deploy").join("gen-1").join(&artifact.file);
@@ -211,6 +230,20 @@ fn manifest_records_the_sha256_of_each_staged_artifact() {
         );
         assert_eq!(artifact.bytes, bytes.len() as u64, "byte length must match");
     }
+
+    // The fleet.toml is a first-class tracked artifact of the generation (Step 3):
+    // stamped into `manifest.fleet`, hashed like a binary, and staged as
+    // gen-1/fleet.toml. It is NOT in `artifacts` (so the count above is unchanged)
+    // — verify its own sha256 matches the staged copy.
+    assert_eq!(manifest.fleet.pkg, "fleet.toml");
+    assert_eq!(manifest.fleet.file, "fleet.toml");
+    let staged_fleet = root.join("deploy").join("gen-1").join(&manifest.fleet.file);
+    let fleet_bytes = std::fs::read(&staged_fleet).expect("read staged fleet.toml");
+    let mut hasher = Sha256::new();
+    hasher.update(&fleet_bytes);
+    let recomputed: String = hasher.finalize().iter().map(|b| format!("{b:02x}")).collect();
+    assert_eq!(manifest.fleet.sha256, recomputed, "fleet.toml sha256 must match a recompute");
+    assert_eq!(manifest.fleet.bytes, fleet_bytes.len() as u64, "fleet.toml byte length must match");
 
     let _ = std::fs::remove_dir_all(root.parent().unwrap());
 }

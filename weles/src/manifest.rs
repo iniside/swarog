@@ -1,47 +1,36 @@
-//! Fleet manifest — the single deciding place for WHAT the game-backend fleet
-//! is: process names, ports, boot order, and per-process env. This is a
-//! faithful, config-as-code PORT of `tools/processctl/src/fleet.rs`'s
-//! `game_backend_fleet`/`game_backend_monolith` (Development flavor) —
-//! copied, not imported (weles is zero-sharing: it may never depend on a
-//! workspace crate). Nothing else in `weles` may hardcode a port or env
-//! name; every other module reads the manifest.
+//! Fleet composition machinery — the runtime TYPES and wiring for a fleet, now
+//! that the fleet DATA (process names, ports, boot order, per-process env) lives
+//! in an operator-authored `fleet.toml` parsed by [`crate::fleet_toml`]. This
+//! module owns [`ServiceDef`]/[`Addrs`]/[`AddrKind`], the one address formatter
+//! [`service_addr`], the peer-address derivation ([`peer_addr`],
+//! [`PeerAddrs`]), and the env composer [`compose_env_with_fleet`] — everything
+//! that turns a parsed fleet slice into what a service is spawned with. It no
+//! longer holds the fleet itself: `fleet_toml::load` produces the `Vec` this
+//! machinery operates on.
 //!
-//! The `Vec` returned by [`split_fleet`] IS the boot order — dependencies
-//! are expressed implicitly by position, matching `fleet.rs`'s
-//! `dependencies` ordering constraint without needing a separate graph here.
-//! Precisely: every [`AddrKind::Edge`] entry in a service's
-//! [`Addrs::Told`] list appears strictly EARLIER in the Vec. An
-//! [`AddrKind::Http`] entry carries NO such constraint — it is a passthrough
-//! ORIGIN, dialed per request rather than at boot. Pinned by
-//! `boot_order_respects_edge_peer_dependencies`, derived from the `peers`
-//! field rather than hand-listed beside it.
+//! The `Vec` order IS the boot order — dependencies are expressed implicitly by
+//! position: every [`AddrKind::Edge`] entry in a service's [`Addrs::Told`] list
+//! must appear strictly EARLIER in the Vec (enforced by
+//! [`crate::fleet_toml::validate`]). An [`AddrKind::Http`] entry carries NO such
+//! constraint — it is a passthrough ORIGIN, dialed per request rather than at
+//! boot.
 //!
-//! **Recorded semantic change (M1 Step 4):** gateway-svc is now
-//! [`Addrs::Asks`] — it asks the agent where its peers are instead of being
-//! told by env — so it declares no peer list, and with that the fleet lost
-//! six Edge entries and its ONLY two `AddrKind::Http` entries. Two
-//! consequences, neither hidden: the boot-order rule no longer constrains
-//! gateway-svc from its own declaration (its position in the Vec is unchanged,
-//! so the booted order is not), and the Http-vs-Edge asymmetry has no live
-//! example left in the real fleet. Step 7 re-pointed the tests that pinned both
-//! ON GATEWAY'S DATA: the boot-order count is 11 (not 17 — gateway's six edge
-//! declarations legitimately left the field, and restoring the number would
-//! assert a fact that is no longer true), the Http asymmetry is now proven on
-//! synthetic data with a guard that fires if an Http peer ever returns to the
-//! real fleet, and the dual-kind provider (`accounts`) is proven through
-//! [`PeerAddrs`] — where the gateway now actually reads it.
+//! **`Addrs::Asks` (the managed front door):** gateway-svc asks the agent where
+//! its peers are (via [`ORCHESTRATOR_URL_ENV`]) instead of being told by env, so
+//! it declares no peer list. The boot-order rule does not constrain a service
+//! from its own declaration when it declares none, and the dual-kind provider
+//! (`accounts`, edge + http) is proven through [`PeerAddrs`] — where the gateway
+//! now actually reads it.
 //!
-//! Deliberate semantic delta vs the fleet.rs Development flavor: weles's
-//! composed env is fully deterministic — the `overrideable_env` seam
-//! (`tools/processctl/src/fleet.rs:568-584`, which lets ambient
-//! `SCHEDULER_ENABLED`/`ACCOUNTS_DEV_AUTH`/`ADMIN_COOKIE_SECURE`/… override
-//! the manifest) was consciously NOT ported, per the config-as-code
-//! decision: what a service gets is exactly what this file says, plus the
-//! fixed [`SERVICE_ENV_ALLOWLIST`] passthrough.
+//! Deliberate delta vs `tools/processctl/src/fleet.rs`'s Development flavor:
+//! weles's composed env is fully deterministic — the `overrideable_env` seam
+//! (which lets ambient `SCHEDULER_ENABLED`/… override the manifest) was
+//! consciously NOT ported, per the config-as-code decision: what a service gets
+//! is exactly what its `fleet.toml` `[service.env]` says, plus the always-on
+//! [`SERVICE_ENV_ALLOWLIST`] floor and the fleet's `passthrough` keys.
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
-use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -238,209 +227,8 @@ pub struct ServiceDef {
     ///
     /// Keys here are DISJOINT from [`Addrs::Told`] keys: `env` is applied last
     /// and would silently override a derived address (pinned by
-    /// `no_env_extra_key_shadows_a_derived_peer_key`).
+    /// `no_env_key_shadows_a_derived_peer_key`).
     pub env: BTreeMap<String, String>,
-}
-
-/// Builds an owned env map from literal pairs (temporary Step-1 helper for the
-/// hardcoded fleets below, deleted with them in Step 4 once `fleet.toml`
-/// fixtures replace them).
-fn env_map(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
-    pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
-}
-
-/// Builds an owned `Addrs::Told` from literal peer tuples (temporary Step-1
-/// helper, deleted with the hardcoded fleets in Step 4).
-fn told(peers: &[(&str, &str, AddrKind)]) -> Addrs {
-    Addrs::Told(peers.iter().map(|(k, p, kind)| (k.to_string(), p.to_string(), *kind)).collect())
-}
-
-/// The 12-process split fleet, in boot order. Each dependency (a peer a
-/// service dials over the internal mTLS edge) appears strictly earlier in
-/// this list than its dependent, matching
-/// `tools/processctl/src/fleet.rs::game_backend_fleet`'s `dependencies`
-/// constraint by construction.
-///
-/// TEMPORARY: this hardcoded table is deleted in Step 4 once
-/// `weles/fleet.split.toml` replaces it; it survives Step 1 only so
-/// `cargo build -p weles` stays green while the owned `ServiceDef` shape lands.
-pub fn split_fleet() -> Vec<ServiceDef> {
-    vec![
-        ServiceDef {
-            name: "accounts-svc".to_string(),
-            pkg: "accounts-svc".to_string(),
-            provider: Some("accounts".to_string()),
-            http_port: 8084,
-            edge_port: Some(9003),
-            player_port: None,
-            addrs: told(&[]),
-            env: env_map(&[("ACCOUNTS_DEV_AUTH", "1")]),
-        },
-        ServiceDef {
-            name: "apikeys-svc".to_string(),
-            pkg: "apikeys-svc".to_string(),
-            provider: Some("apikeys".to_string()),
-            http_port: 8091,
-            edge_port: Some(9009),
-            player_port: None,
-            addrs: told(&[]),
-            env: env_map(&[("APIKEYS_DEV_SEED", "1")]),
-        },
-        ServiceDef {
-            name: "audit-svc".to_string(),
-            pkg: "audit-svc".to_string(),
-            provider: Some("audit".to_string()),
-            http_port: 8086,
-            edge_port: Some(9004),
-            player_port: None,
-            addrs: told(&[]),
-            env: env_map(&[]),
-        },
-        ServiceDef {
-            name: "scheduler-svc".to_string(),
-            pkg: "scheduler-svc".to_string(),
-            provider: Some("scheduler".to_string()),
-            http_port: 8087,
-            edge_port: Some(9005),
-            player_port: None,
-            // Deliberately NO SCHEDULER_ENABLED here — this manifest is the
-            // Development flavor of tools/processctl/src/fleet.rs, which
-            // only sets SCHEDULER_ENABLED under FleetFlavor::Proof.
-            addrs: told(&[]),
-            env: env_map(&[]),
-        },
-        ServiceDef {
-            name: "rating-svc".to_string(),
-            pkg: "rating-svc".to_string(),
-            provider: Some("rating".to_string()),
-            http_port: 8089,
-            edge_port: Some(9007),
-            player_port: None,
-            addrs: told(&[]),
-            env: env_map(&[]),
-        },
-        ServiceDef {
-            name: "leaderboard-svc".to_string(),
-            pkg: "leaderboard-svc".to_string(),
-            provider: Some("leaderboard".to_string()),
-            http_port: 8090,
-            edge_port: Some(9008),
-            player_port: None,
-            addrs: told(&[]),
-            env: env_map(&[]),
-        },
-        ServiceDef {
-            name: "match-svc".to_string(),
-            pkg: "match-svc".to_string(),
-            provider: Some("match".to_string()),
-            http_port: 8088,
-            edge_port: Some(9006),
-            player_port: None,
-            addrs: told(&[("RATING_EDGE_ADDR", "rating", AddrKind::Edge)]),
-            env: env_map(&[]),
-        },
-        ServiceDef {
-            name: "config-svc".to_string(),
-            pkg: "config-svc".to_string(),
-            provider: Some("config".to_string()),
-            http_port: 8083,
-            edge_port: Some(9002),
-            player_port: None,
-            addrs: told(&[]),
-            env: env_map(&[]),
-        },
-        ServiceDef {
-            name: "characters-svc".to_string(),
-            pkg: "characters-svc".to_string(),
-            provider: Some("characters".to_string()),
-            http_port: 8080,
-            edge_port: Some(9000),
-            player_port: None,
-            addrs: told(&[("CONFIG_EDGE_ADDR", "config", AddrKind::Edge)]),
-            env: env_map(&[]),
-        },
-        ServiceDef {
-            name: "inventory-svc".to_string(),
-            pkg: "inventory-svc".to_string(),
-            provider: Some("inventory".to_string()),
-            http_port: 8081,
-            edge_port: Some(9001),
-            player_port: None,
-            addrs: told(&[
-                ("CHARACTERS_EDGE_ADDR", "characters", AddrKind::Edge),
-                ("CONFIG_EDGE_ADDR", "config", AddrKind::Edge),
-            ]),
-            env: env_map(&[("INVENTORY_DEV_GRANT", "1")]),
-        },
-        ServiceDef {
-            name: "gateway-svc".to_string(),
-            pkg: "gateway-svc".to_string(),
-            provider: Some("gateway".to_string()),
-            http_port: 8082,
-            edge_port: None,
-            player_port: Some(9100),
-            // M1's first managed process, and the natural first: it calls
-            // peers, and nobody calls it (it serves no edge), so it can start
-            // resolving without forcing another service to move. Instead of
-            // the eight address keys it used to carry — six `*_EDGE_ADDR` plus
-            // the two passthrough ORIGINS (`ADMIN_HTTP_ADDR`,
-            // `ACCOUNTS_HTTP_ADDR`: admin-svc has no edge at all, and
-            // accounts-svc is dialed as both kinds) — it is handed
-            // ORCHESTRATOR_URL and asks the agent for each of the eight.
-            addrs: Addrs::Asks,
-            // PLAYER_EDGE_ADDR is this process's OWN player-plane bind, not a
-            // peer's address — it stays a literal.
-            env: env_map(&[("PLAYER_EDGE_ADDR", ":9100"), ("TLS_MODE", "off")]),
-        },
-        ServiceDef {
-            name: "admin-svc".to_string(),
-            pkg: "admin-svc".to_string(),
-            provider: Some("admin".to_string()),
-            http_port: 8085,
-            edge_port: None,
-            player_port: None,
-            addrs: told(&[
-                ("CHARACTERS_EDGE_ADDR", "characters", AddrKind::Edge),
-                ("INVENTORY_EDGE_ADDR", "inventory", AddrKind::Edge),
-                ("CONFIG_EDGE_ADDR", "config", AddrKind::Edge),
-                ("ACCOUNTS_EDGE_ADDR", "accounts", AddrKind::Edge),
-                ("AUDIT_EDGE_ADDR", "audit", AddrKind::Edge),
-                ("SCHEDULER_EDGE_ADDR", "scheduler", AddrKind::Edge),
-                ("APIKEYS_EDGE_ADDR", "apikeys", AddrKind::Edge),
-            ]),
-            env: env_map(&[
-                ("ADMIN_COOKIE_SECURE", "0"),
-                ("TRUSTED_PROXY_CIDRS", "127.0.0.1/32"),
-            ]),
-        },
-    ]
-}
-
-/// The single-process monolith topology (`cmd/server`, package `server`).
-///
-/// TEMPORARY: deleted in Step 4 with [`split_fleet`] once the `fleet.toml`
-/// fixtures replace both.
-pub fn monolith() -> ServiceDef {
-    ServiceDef {
-        name: "server".to_string(),
-        pkg: "server".to_string(),
-        provider: None,
-        http_port: 8080,
-        edge_port: None,
-        player_port: Some(9100),
-        // One process hosts every module: there are no peers to dial, so the
-        // monolith is trivially free of derived addresses.
-        addrs: told(&[]),
-        env: env_map(&[
-            ("PLAYER_EDGE_ADDR", ":9100"),
-            ("APIKEYS_DEV_SEED", "1"),
-            ("ACCOUNTS_DEV_AUTH", "1"),
-            ("INVENTORY_DEV_GRANT", "1"),
-            ("TLS_MODE", "off"),
-            ("ADMIN_COOKIE_SECURE", "0"),
-            ("TRUSTED_PROXY_CIDRS", "127.0.0.1/32"),
-        ]),
-    }
 }
 
 /// THE address formatter: `def`'s own address of `kind`, or `None` where `def`
@@ -654,81 +442,6 @@ pub(crate) fn compose_env_with_fleet(
     }
 
     env
-}
-
-/// Fleet-manifest errors. Kept local to `weles` (zero-sharing: never reuses
-/// `tools/processctl`'s `FleetError`).
-#[derive(Debug)]
-pub enum ManifestError {
-    /// `cmd/*-svc` on disk disagrees with the canonical [`split_fleet`]
-    /// names, in either direction. Lists EVERY drifted entry, not just the
-    /// first — a didn't-forget tool dies pre-work with a per-entry log.
-    DiskDrift { missing_on_disk: Vec<String>, missing_in_manifest: Vec<String> },
-    ReadDir { path: PathBuf, source: std::io::Error },
-    ReadEntry { path: PathBuf, source: std::io::Error },
-}
-
-impl std::fmt::Display for ManifestError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ManifestError::DiskDrift { missing_on_disk, missing_in_manifest } => {
-                writeln!(f, "fleet manifest drift against cmd/*-svc on disk:")?;
-                for name in missing_on_disk {
-                    writeln!(f, "  on disk but not in manifest: {name}")?;
-                }
-                for name in missing_in_manifest {
-                    writeln!(f, "  in manifest but not on disk: {name}")?;
-                }
-                Ok(())
-            }
-            ManifestError::ReadDir { path, source } => {
-                write!(f, "read service directory {}: {source}", path.display())
-            }
-            ManifestError::ReadEntry { path, source } => {
-                write!(f, "read entry in service directory {}: {source}", path.display())
-            }
-        }
-    }
-}
-
-impl std::error::Error for ManifestError {}
-
-/// Diffs the canonical [`split_fleet`] names against the `*-svc` directories
-/// under `cmd_dir`. Fails loudly, listing every drifted entry, in EITHER
-/// direction (a service added to the manifest without its `cmd/*-svc` root,
-/// or a `cmd/*-svc` root nobody wired into the manifest).
-pub fn validate_disk(cmd_dir: &Path) -> Result<(), ManifestError> {
-    let entries = std::fs::read_dir(cmd_dir)
-        .map_err(|source| ManifestError::ReadDir { path: cmd_dir.to_path_buf(), source })?;
-    let mut on_disk = Vec::new();
-    for entry in entries {
-        let entry = entry
-            .map_err(|source| ManifestError::ReadEntry { path: cmd_dir.to_path_buf(), source })?;
-        let file_type = entry
-            .file_type()
-            .map_err(|source| ManifestError::ReadEntry { path: entry.path(), source })?;
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if file_type.is_dir() && name.ends_with("-svc") {
-            on_disk.push(name);
-        }
-    }
-    validate_names(on_disk)
-}
-
-fn validate_names(names: impl IntoIterator<Item = String>) -> Result<(), ManifestError> {
-    use std::collections::BTreeSet;
-    let on_disk: BTreeSet<String> = names.into_iter().collect();
-    let canonical: BTreeSet<String> =
-        split_fleet().into_iter().map(|svc| svc.name.to_string()).collect();
-
-    let missing_on_disk: Vec<String> = canonical.difference(&on_disk).cloned().collect();
-    let missing_in_manifest: Vec<String> = on_disk.difference(&canonical).cloned().collect();
-
-    if missing_on_disk.is_empty() && missing_in_manifest.is_empty() {
-        Ok(())
-    } else {
-        Err(ManifestError::DiskDrift { missing_on_disk, missing_in_manifest })
-    }
 }
 
 #[cfg(test)]

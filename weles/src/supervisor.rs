@@ -725,13 +725,7 @@ pub fn run_up() -> Result<()> {
         .checkpoint_critical(&[])
         .context("could not persist initial state / pin protection — refusing to start")?;
 
-    // Manifest-vs-disk drift FIRST: if the manifest disagrees with cmd/*-svc
-    // (the source of truth), report it AS drift — not as a "missing binary"
-    // symptom from the staged-artifact check below.
-    manifest::validate_disk(&layout.root.join("cmd"))
-        .context("validate fleet manifest against cmd/*-svc on disk")?;
-
-    // Then: every binary this run needs must already be staged in
+    // Every binary this run needs must already be staged in
     // <root>/deploy — weles never builds. The set is derived from the deployed
     // fleet (`[[service]]` pkgs ∪ `[[prepare]]` runs), so a hook's binary
     // (edgeca/adminctl) is staged because a hook references it. Dies here

@@ -5,20 +5,29 @@ fn args(items: &[&str]) -> Vec<String> {
 }
 
 #[test]
-fn up_defaults_to_split() {
+fn up_parses_without_dry_run() {
     let cmd = parse(args(&["up"])).unwrap();
-    assert_eq!(cmd, Command::Up { topology: Topology::Split });
+    assert_eq!(cmd, Command::Up { dry_run: false });
 }
 
 #[test]
-fn up_monolith() {
-    let cmd = parse(args(&["up", "monolith"])).unwrap();
-    assert_eq!(cmd, Command::Up { topology: Topology::Monolith });
+fn up_dry_run() {
+    let cmd = parse(args(&["up", "--dry-run"])).unwrap();
+    assert_eq!(cmd, Command::Up { dry_run: true });
 }
 
 #[test]
-fn up_rejects_duplicate_topology() {
-    assert!(parse(args(&["up", "split", "monolith"])).is_err());
+fn up_rejects_duplicate_dry_run() {
+    assert!(parse(args(&["up", "--dry-run", "--dry-run"])).is_err());
+}
+
+#[test]
+fn up_rejects_a_topology_token() {
+    // weles has NO concept of split/monolith anymore — it boots whatever fleet
+    // was deployed. The old `up split`/`up monolith` tokens must now parse as
+    // unknown arguments, not silently succeed.
+    assert!(parse(args(&["up", "split"])).is_err());
+    assert!(parse(args(&["up", "monolith"])).is_err());
 }
 
 #[test]
@@ -31,30 +40,27 @@ fn up_rejects_the_removed_skip_build_flag() {
 #[test]
 fn up_accepts_the_borrowed_lease_marker_a_lender_appends() {
     // The branch that used to be wrong: `spawn_borrower` APPENDS this to the
-    // child's argv, so before this arm existed `weles up split` under a lender
-    // died in the parser with "unknown argument" — and `lock::acquire_or_borrow`
-    // (which reads the same marker off `args_os`) was unreachable from the only
-    // verb that takes a lease. Both positions, because the marker lands after
-    // whatever the parent wrote.
+    // child's argv, so before this arm existed `weles up` under a lender died in
+    // the parser with "unknown argument" — and `lock::acquire_or_borrow` (which
+    // reads the same marker off `args_os`) was unreachable from the only verb
+    // that takes a lease.
     //
     // WHAT THIS TEST CANNOT DO, and where that lives instead: it parses weles's
     // OWN copy of the marker, so it stays green if processctl RENAMES the
-    // argument weles is hand-copying — which re-creates the exact bug above,
-    // silently. Zero-sharing means this crate cannot see processctl to compare;
-    // verifyctl's `weles-wire-contract` stage can, and does
-    // (`borrow_marker_diffs`). This test pins the parser; that one pins the
-    // spelling.
-    assert_eq!(
-        parse(args(&["up", "split", crate::lock::BORROWED_LEASE_ARG])).unwrap(),
-        Command::Up { topology: Topology::Split }
-    );
-    assert_eq!(
-        parse(args(&["up", crate::lock::BORROWED_LEASE_ARG, "monolith"])).unwrap(),
-        Command::Up { topology: Topology::Monolith }
-    );
+    // argument weles is hand-copying. verifyctl's `weles-wire-contract` stage
+    // pins the spelling; this pins the parser.
     assert_eq!(
         parse(args(&["up", crate::lock::BORROWED_LEASE_ARG])).unwrap(),
-        Command::Up { topology: Topology::Split }
+        Command::Up { dry_run: false }
+    );
+    // Coexists with --dry-run regardless of order.
+    assert_eq!(
+        parse(args(&["up", "--dry-run", crate::lock::BORROWED_LEASE_ARG])).unwrap(),
+        Command::Up { dry_run: true }
+    );
+    assert_eq!(
+        parse(args(&["up", crate::lock::BORROWED_LEASE_ARG, "--dry-run"])).unwrap(),
+        Command::Up { dry_run: true }
     );
 }
 
@@ -62,32 +68,42 @@ fn up_accepts_the_borrowed_lease_marker_a_lender_appends() {
 fn only_up_tolerates_the_borrowed_lease_marker() {
     // Narrow on purpose: `up` is the one rollout-bearing verb, so it is the one
     // that can be lent a lease. On any other verb the marker means the caller is
-    // confused about what it spawned — say so rather than run something that
-    // will never consume the credential it was handed.
+    // confused about what it spawned.
     for verb in ["status", "down"] {
         assert!(parse(args(&[verb, crate::lock::BORROWED_LEASE_ARG])).is_err());
     }
-    assert!(parse(args(&["deploy", "dir", crate::lock::BORROWED_LEASE_ARG])).is_err());
+    assert!(parse(args(&["deploy", "dir", "--fleet", "f.toml", crate::lock::BORROWED_LEASE_ARG]))
+        .is_err());
 }
 
 #[test]
-fn deploy_parses_with_src_dir() {
-    let cmd = parse(args(&["deploy", "some/build/out"])).unwrap();
+fn deploy_parses_with_src_dir_and_fleet() {
+    let cmd = parse(args(&["deploy", "some/build/out", "--fleet", "weles/fleet.split.toml"]))
+        .unwrap();
     assert_eq!(
         cmd,
-        Command::Deploy { src_dir: "some/build/out".to_string() }
+        Command::Deploy {
+            src_dir: "some/build/out".to_string(),
+            fleet: "weles/fleet.split.toml".to_string(),
+        }
     );
 }
 
 #[test]
 fn deploy_requires_a_src_dir() {
-    let err = parse(args(&["deploy"])).unwrap_err();
+    let err = parse(args(&["deploy", "--fleet", "f.toml"])).unwrap_err();
     assert!(err.to_string().contains("USAGE"), "must print USAGE: {err}");
 }
 
 #[test]
+fn deploy_requires_a_fleet() {
+    let err = parse(args(&["deploy", "some/build/out"])).unwrap_err();
+    assert!(err.to_string().contains("--fleet"), "must demand --fleet: {err}");
+}
+
+#[test]
 fn deploy_rejects_trailing_args() {
-    assert!(parse(args(&["deploy", "dir-a", "dir-b"])).is_err());
+    assert!(parse(args(&["deploy", "dir-a", "dir-b", "--fleet", "f.toml"])).is_err());
 }
 
 #[test]

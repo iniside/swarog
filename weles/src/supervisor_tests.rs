@@ -291,16 +291,14 @@ fn crash_backoff_respawn_scenario_with_stop_denying_the_respawn() {
 /// — its ports/name are never read because the stop check precedes any spawn.
 fn dummy_def() -> ServiceDef {
     ServiceDef {
-        name: "dummy-svc",
-        pkg: "dummy-svc",
-        provider: Some("dummy"),
+        name: "dummy-svc".to_string(),
+        pkg: "dummy-svc".to_string(),
+        provider: Some("dummy".to_string()),
         http_port: 65000,
         edge_port: None,
         player_port: None,
-        has_db: false,
-        pool_max: 0,
-        addrs: manifest::Addrs::Told(&[]),
-        env_extra: &[],
+        addrs: manifest::Addrs::Told(Vec::new()),
+        env: std::collections::BTreeMap::new(),
     }
 }
 
@@ -315,7 +313,7 @@ fn dummy_reporter() -> Reporter {
     Reporter {
         state_path: std::env::temp_dir().join("weles-a3-unused-state.json"),
         run_id: "a3-test".to_string(),
-        topology: "split",
+        topology: "split".to_string(),
         supervisor,
         pinned_generation: None,
         status: Cell::new(FleetStatus::Starting),
@@ -357,7 +355,7 @@ fn the_early_checkpoint_records_the_pin_with_an_empty_fleet() {
     let reporter = Reporter {
         state_path: state_path.clone(),
         run_id: "early-pin".to_string(),
-        topology: "split",
+        topology: "split".to_string(),
         supervisor,
         pinned_generation: Some("gen-1".to_string()),
         status: Cell::new(FleetStatus::Starting),
@@ -459,23 +457,18 @@ fn boot_with_the_fleet_stop_set_on_entry_spawns_nothing() {
     // leave it — must return Ok(()) with the process still unspawned. A NON-empty
     // fleet is used deliberately so the loop actually reaches (and returns from)
     // the stop check, rather than trivially skipping an empty range.
-    let layout = prep::Layout {
-        root: std::env::temp_dir(),
-        run_dir: std::env::temp_dir(),
-        bin_dir: std::env::temp_dir(),
-        active_bin_dir: std::env::temp_dir(),
-    };
-    let inputs = RuntimeInputs {
-        database_url: String::new(),
-        ca_cert: PathBuf::new(),
-        ca_key: PathBuf::new(),
-    };
+    let layout = prep::Layout::for_test(
+        std::env::temp_dir(),
+        std::env::temp_dir(),
+        std::env::temp_dir(),
+        std::env::temp_dir(),
+    );
     let reporter = dummy_reporter();
     let mut fleet = vec![Supervised::new(dummy_def())];
     let fleet_stop = Arc::new(AtomicBool::new(true));
 
     let defs = [dummy_def()];
-    let ctx = SpawnCtx { layout: &layout, inputs: &inputs, defs: &defs };
+    let ctx = SpawnCtx { layout: &layout, passthrough: &[], defs: &defs };
     let result = boot(&ctx, &mut fleet, &reporter, &fleet_stop);
 
     assert!(result.is_ok(), "a stop on boot entry is a clean interrupt, not an error");
@@ -501,24 +494,19 @@ fn boot_with_the_signal_stop_set_on_entry_spawns_nothing() {
     let _guard = stop_guard();
     STOP.store(true, Ordering::SeqCst);
 
-    let layout = prep::Layout {
-        root: std::env::temp_dir(),
-        run_dir: std::env::temp_dir(),
-        bin_dir: std::env::temp_dir(),
-        active_bin_dir: std::env::temp_dir(),
-    };
-    let inputs = RuntimeInputs {
-        database_url: String::new(),
-        ca_cert: PathBuf::new(),
-        ca_key: PathBuf::new(),
-    };
+    let layout = prep::Layout::for_test(
+        std::env::temp_dir(),
+        std::env::temp_dir(),
+        std::env::temp_dir(),
+        std::env::temp_dir(),
+    );
     let reporter = dummy_reporter();
     let mut fleet = vec![Supervised::new(dummy_def())];
     // fleet_stop is CLEAR: only the signal STOP may halt boot here.
     let fleet_stop = Arc::new(AtomicBool::new(false));
 
     let defs = [dummy_def()];
-    let ctx = SpawnCtx { layout: &layout, inputs: &inputs, defs: &defs };
+    let ctx = SpawnCtx { layout: &layout, passthrough: &[], defs: &defs };
     let result = boot(&ctx, &mut fleet, &reporter, &fleet_stop);
 
     assert!(result.is_ok(), "a signal STOP on boot entry is a clean interrupt, not an error");
@@ -558,7 +546,7 @@ fn checkpoint_critical_fails_closed_where_checkpoint_swallows() {
     let reporter = Reporter {
         state_path: missing,
         run_id: "p3".to_string(),
-        topology: "split",
+        topology: "split".to_string(),
         supervisor,
         pinned_generation: Some("gen-1".to_string()),
         status: Cell::new(FleetStatus::Starting),

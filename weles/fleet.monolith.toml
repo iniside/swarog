@@ -1,0 +1,33 @@
+# The single-process monolith fleet (`cmd/server`, package `server`) as
+# operator-authored strict data — the faithful successor of the deleted Rust
+# `manifest::monolith()`. One process hosts every domain, so it declares no
+# provider (nameable as no single domain) and dials no peers.
+#
+# Formerly-injected env, now explicit (weles is domain-blind):
+#   * DATABASE_URL                  — fleet-level `passthrough`.
+#   * DATABASE_POOL_MAX_CONNECTIONS = "20" — the old MONOLITH_POOL_MAX.
+#   * EDGE_CA_CERT / EDGE_CA_KEY     — literal RELATIVE paths (`[service.env]`),
+#                                     minted by the `edge-ca` prepare hook.
+
+passthrough = ["DATABASE_URL"]
+
+# Same CA-first provisioning as the split fleet: mint the edge CA, then seed the
+# dev admin login the monolith's /admin portal uses.
+[[prepare]]
+name = "edge-ca"
+run = "edgeca"
+args = ["--cert", "run/weles/edge-ca.crt", "--key", "run/weles/edge-ca.key"]
+
+[[prepare]]
+name = "admin-seed"
+run = "adminctl"
+args = ["create-user", "admin"]
+passthrough = ["DATABASE_URL"]
+env = { ADMINCTL_PASSWORD = "admin" }
+
+[[service]]
+name = "server"
+pkg = "server"
+http_port = 8080
+player_port = 9100
+env = { PLAYER_EDGE_ADDR = ":9100", APIKEYS_DEV_SEED = "1", ACCOUNTS_DEV_AUTH = "1", INVENTORY_DEV_GRANT = "1", TLS_MODE = "off", ADMIN_COOKIE_SECURE = "0", TRUSTED_PROXY_CIDRS = "127.0.0.1/32", DATABASE_POOL_MAX_CONNECTIONS = "20", EDGE_CA_CERT = "run/weles/edge-ca.crt", EDGE_CA_KEY = "run/weles/edge-ca.key" }

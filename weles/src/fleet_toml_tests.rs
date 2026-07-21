@@ -363,3 +363,54 @@ http_port = 8083
         "omitted timeout_secs stays the 0 sentinel (prep maps 0→30 at runtime)"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The two SHIPPED fixtures must parse AND validate — they are the exact files
+// `weles up` boots and verifyctl's `weles-managed-gateway` loads, so a typo or
+// a boot-order/port mistake in either must fail HERE, not at a live rollout.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_split_fixture_parses_and_validates() {
+    let fleet = super::load_split_fixture();
+    validate(&fleet).expect("weles/fleet.split.toml must validate");
+    assert_eq!(fleet.services.len(), 12, "the split fleet is 12 processes");
+    // The CA-first ordering the D-PREPARE contract requires, and the argv the
+    // hooks were recovered with (44b653c prep.rs).
+    assert_eq!(fleet.prepare.len(), 2, "edge-ca then admin-seed");
+    assert_eq!(fleet.prepare[0].run, "edgeca");
+    assert_eq!(
+        fleet.prepare[0].args,
+        vec![
+            "--cert".to_string(),
+            "run/weles/edge-ca.crt".to_string(),
+            "--key".to_string(),
+            "run/weles/edge-ca.key".to_string()
+        ]
+    );
+    assert_eq!(fleet.prepare[1].run, "adminctl");
+    assert_eq!(
+        fleet.prepare[1].args,
+        vec!["create-user".to_string(), "admin".to_string()]
+    );
+    assert_eq!(fleet.prepare[1].passthrough, vec!["DATABASE_URL".to_string()]);
+    assert_eq!(
+        fleet.prepare[1].env.get("ADMINCTL_PASSWORD"),
+        Some(&"admin".to_string())
+    );
+    assert_eq!(fleet.passthrough, vec!["DATABASE_URL".to_string()]);
+}
+
+#[test]
+fn the_monolith_fixture_parses_and_validates() {
+    let fleet = super::load_monolith_fixture();
+    validate(&fleet).expect("weles/fleet.monolith.toml must validate");
+    assert_eq!(fleet.services.len(), 1, "the monolith is one process");
+    assert_eq!(fleet.services[0].name, "server");
+    assert!(fleet.services[0].provider.is_none(), "the monolith names no single domain");
+    assert_eq!(
+        fleet.services[0].env.get("DATABASE_POOL_MAX_CONNECTIONS"),
+        Some(&"20".to_string()),
+        "the monolith carries the old MONOLITH_POOL_MAX in its env"
+    );
+}

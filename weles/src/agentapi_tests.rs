@@ -19,7 +19,17 @@ use std::io::{Read as _, Write as _};
 use std::net::TcpStream;
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
-use crate::manifest::{compose_env_with_fleet, monolith, split_fleet, RuntimeInputs};
+use crate::manifest::{compose_env_with_fleet, ServiceDef};
+
+/// The committed split fixture's services (was `manifest::split_fleet()`).
+fn split_fleet() -> Vec<ServiceDef> {
+    crate::fleet_toml::load_split_fixture().services
+}
+
+/// The committed monolith fixture's single service (was `manifest::monolith()`).
+fn monolith() -> ServiceDef {
+    crate::fleet_toml::load_monolith_fixture().services.into_iter().next().unwrap()
+}
 
 /// Budget for an operation that must be BOUNDED. Deliberately far above any
 /// real duration (SHUTDOWN_GRACE is 2s): this can only fire on a true hang, so
@@ -377,14 +387,6 @@ fn resolve_addrs(port: u16, provider: &str, kind: AddrKind) -> Vec<String> {
         .collect()
 }
 
-fn fake_inputs() -> RuntimeInputs {
-    RuntimeInputs {
-        database_url: "postgres://fake/db".to_string(),
-        ca_cert: std::path::PathBuf::from("/fake/ca-cert.pem"),
-        ca_key: std::path::PathBuf::from("/fake/ca-key.pem"),
-    }
-}
-
 /// THE authority test: for EVERY address in the booting fleet, the address
 /// `resolve` hands out is the address that service actually BINDS.
 ///
@@ -425,15 +427,14 @@ fn resolve_answers_exactly_what_each_service_composes_as_its_own_bind() {
     let port = agent.addr().port();
 
     let fleet = split_fleet();
-    let inputs = fake_inputs();
     let mut compared: Vec<(&str, AddrKind)> = Vec::new();
     for def in &fleet {
         // No short name ⇒ not resolvable as a peer (the monolith; never in this
         // fleet). Driven off the DEF's own ports, never off `PeerAddrs`: a map
         // that WRONGLY omitted an entry would make a map-driven loop skip it
         // silently, while here it surfaces as a 404 where a 200 is required.
-        let Some(provider) = def.provider else { continue };
-        let env = compose_env_with_fleet(def, &inputs, &fleet);
+        let Some(provider) = def.provider.as_deref() else { continue };
+        let env = compose_env_with_fleet(def, &[], &fleet);
         for kind in [AddrKind::Edge, AddrKind::Http] {
             // The kinds this service HAS. `edge_port: None` (admin, gateway) is
             // a 404 instead — proven by `resolve_404s_for_a_provider_that_serves_
@@ -622,7 +623,8 @@ fn under_the_monolith_every_resolve_404s() {
 
     // Derived from the split fleet, not hand-listed: a service added there is
     // automatically asked for here.
-    let providers: Vec<&str> = split_fleet().iter().filter_map(|svc| svc.provider).collect();
+    let split = split_fleet();
+    let providers: Vec<&str> = split.iter().filter_map(|svc| svc.provider.as_deref()).collect();
     assert_eq!(providers.len(), 12, "the split fleet's providers");
     for provider in providers {
         for kind in [AddrKind::Edge, AddrKind::Http] {
