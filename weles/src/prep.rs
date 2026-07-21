@@ -554,11 +554,14 @@ pub fn deploy(layout: &Layout, src_dir: &Path, fleet_path: &Path) -> Result<()> 
     // AFTER the atomic `current` flip — history reflects generations that
     // actually became live. `sha_root` folds every artifact's SHA (already in the
     // manifest) into one deterministic root hash, so the recorded row pins the
-    // exact bytes this generation staged. A store failure here is surfaced (the
-    // flip already succeeded; history is provenance, and a silent drop would rot
-    // the record `rollback` reasons over).
-    record_deploy_history(layout, &gen_name, &manifest)
-        .context("record deploy history in the master store")?;
+    // exact bytes this generation staged. LOG-AND-CONTINUE, never `?`: the flip
+    // already succeeded and stdout already announced this generation live, so a
+    // transient store failure (locked/unwritable state.db, disk full) must NOT
+    // fail a completed deploy nor skip the retention sweep below — history is
+    // provenance, not correctness. It is a LOUD warn, not a silent swallow.
+    if let Err(error) = record_deploy_history(layout, &gen_name, &manifest) {
+        eprintln!("weles: WARN deploy history not recorded: {error:#}");
+    }
 
     // Retention protects, by NUMBER: the new current, the pre-flip current (the
     // generation a live `up` may have pinned across intervening deploys), and —

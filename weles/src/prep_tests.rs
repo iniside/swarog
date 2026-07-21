@@ -332,6 +332,48 @@ fn three_deploys_retain_only_the_two_newest_generations() {
 }
 
 #[test]
+fn deploy_history_write_failure_neither_fails_the_deploy_nor_skips_retention() {
+    // The deploy-history write is provenance, LOG-AND-CONTINUE: a store failure
+    // must not fail a completed deploy (the flip already ran) nor short-circuit
+    // the retention sweep. Force the failure by making `<run_dir>/state.db`
+    // UNWRITABLE — replace it with a DIRECTORY so `Store::open` can't open it.
+    let root = temp_dir("deploy-history-fail");
+    let layout = deploy_layout(&root);
+    let src = temp_dir("deploy-history-fail-src");
+    stage_full_source(&src, b"payload");
+
+    // Two good deploys first (they create state.db as a file); gen-1 is the
+    // prunable stale generation once gen-3 lands.
+    deploy_fx(&layout, &src).expect("gen-1");
+    deploy_fx(&layout, &src).expect("gen-2");
+
+    // Sabotage the store: remove the state.db file and put a directory in its
+    // place, so the gen-3 history write's `Store::open` fails.
+    let state_db = layout.run_dir.join("state.db");
+    if state_db.exists() {
+        std::fs::remove_file(&state_db).expect("remove state.db file");
+    }
+    std::fs::create_dir(&state_db).expect("create state.db as a directory (unwritable store)");
+
+    // The deploy STILL succeeds despite the unrecordable history.
+    deploy_fx(&layout, &src).expect("gen-3 deploy succeeds even when history is unwritable");
+
+    let deploy_dir = root.join("deploy");
+    // current flipped to the new generation.
+    assert_eq!(
+        std::fs::read_to_string(deploy_dir.join("current"))
+            .expect("read current")
+            .trim(),
+        "gen-3"
+    );
+    // Retention STILL ran (not short-circuited by the history-write failure):
+    // gen-1 pruned, gen-2 (pre-flip current) + gen-3 (current) kept.
+    assert!(!deploy_dir.join("gen-1").exists(), "gen-1 must be pruned — retention ran");
+    assert!(deploy_dir.join("gen-2").is_dir(), "gen-2 (previous) is kept");
+    assert!(deploy_dir.join("gen-3").is_dir(), "gen-3 (current) is kept");
+}
+
+#[test]
 fn abandoned_partial_is_pruned_while_the_previous_good_generation_survives() {
     // Scenario B: an abandoned partial bumps the counter, so a position-based
     // "keep current-1" would keep the useless abandoned gen and delete the real
