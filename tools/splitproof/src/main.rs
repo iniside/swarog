@@ -593,13 +593,14 @@ async fn run(root: PathBuf, run_dir: PathBuf) -> Result<u32> {
     // assert recovery — restoring the fleet before [LV2]/parity run.
     rdy_dead(&ctx, &mut fleet, &mut p).await?;
 
-    // [REPLICAS] contended consumer-group exactly-once regression guard: boot a SECOND
-    // leaderboard-svc against the same Postgres (both workers hold
-    // `leaderboard.match-finished.v1`), bring both healthy FIRST, then drive a backlog of N
-    // match.finished events so both contend on the subscription row — DB-asserting the
-    // `FOR UPDATE SKIP LOCKED` consumer group keeps durable delivery exactly-once (wins == N,
-    // never 2N) under replicas. The second instance is scenario-local (never in the fleet).
-    replicas_exactly_once(&ctx, &pool, &mut p).await?;
+    // [REPLICAS] durable-plane replica belt: boot a SECOND leaderboard-svc against the same
+    // Postgres (both processes hold `leaderboard.match-finished.v1`), drive a batch of N
+    // match.finished events and DB-assert exactly-once (wins == N, never 2N) across two REAL
+    // processes; THEN kill instance #1 and drive M more, asserting #2 alone climbs wins to N+M
+    // (a deterministic failover witness that #2 is a genuine delivering participant). The
+    // deterministic lock/contention proof lives in worker_tests.rs:317; this is the e2e belt.
+    // The second instance is scenario-local (never in the fleet); #1 is restored before [LV2].
+    replicas_exactly_once(&ctx, &pool, &mut fleet, &mut p).await?;
 
     // [LV2] fleet-wide liveness sweep immediately before the split fleet is torn down —
     // a service that died AFTER [LV1]'s post-boot check (e.g. mid-assertions) must not
@@ -2038,31 +2039,51 @@ async fn rdy_dead(ctx: &Ctx, fleet: &mut Vec<Running>, p: &mut Proof) -> Result<
     Ok(())
 }
 
-/// `[REPLICAS]` — contended consumer-group exactly-once regression guard on the at-risk
-/// topology (split). The durable event plane is a consumer group BY CONSTRUCTION:
-/// `core/asyncevents/src/worker.rs` claims each subscription's checkpoint row with
-/// `FOR UPDATE SKIP LOCKED` (`:199-215`) before reading the cursor and delivering, so two
-/// replicas of one module sharing a subscription id serialize on that row and deliver each
-/// event EXACTLY once. This scenario PINS that invariant: it boots a SECOND leaderboard-svc
-/// against the SAME Postgres — so two workers hold `leaderboard.match-finished.v1` — brings
-/// BOTH healthy FIRST, THEN drives a BACKLOG of N `match.finished` events (N `POST
-/// /match/report` through gateway-svc, SAME winner, distinct `ReportId`s) so both workers are
-/// already polling one backlog and genuinely CONTEND on the subscription row. leaderboard's
-/// durable effect is a DB-observable `wins+1` upsert per delivered event, so the aggregate is
-/// falsifiable: exactly-once => `leaderboard.scores.wins == N`; if the row-lock serialization
-/// were absent, both workers would read the same cursor and deliver every event => `wins ==
-/// 2N` and the assertion FAILS. This is the failing branch the guard pins.
+/// `[REPLICAS]` — an END-TO-END BELT for durable-plane replica safety on the at-risk
+/// topology (split, TWO real processes of one module). It is NOT the primary
+/// contention/lock proof: the deterministic by-construction proof already exists in
+/// `core/asyncevents/src/worker_tests.rs:317`
+/// (`skip_locked_single_owner_and_failover_from_checkpoint` — worker A holds the
+/// subscription row via `pg_sleep`, worker B's `deliver_one` is asserted `== Step::Skipped`;
+/// remove the `FOR UPDATE SKIP LOCKED` and B delivers → that unit test fails
+/// deterministically). This split scenario BELTS that authority end-to-end, proving two
+/// things over two REAL processes sharing `leaderboard.match-finished.v1`:
 ///
-/// Framed honestly (reviewer finding 5): a REGRESSION GUARD, not a fix's failing branch — the
-/// plane is already safe; B3 pins that it stays safe. It is NOT spawn-drain-then-spawn (which
-/// would pass by sequencing even with no lock): both instances are up and polling BEFORE the
-/// batch is enqueued. The second `ServiceSpec` is built INLINE from the canonical spec (like
-/// `i_gate` builds its respawn spec) and is NEVER added to the centralized processctl fleet —
-/// that would trip the fleet-drift preflight; two runtime leaderboard processes sharing one
-/// subscription id are replicas (same module, one host) and do NOT trip topiccheck either.
-async fn replicas_exactly_once(ctx: &Ctx, pool: &PgPool, p: &mut Proof) -> Result<()> {
-    println!("\n[splitproof] === [REPLICAS] second leaderboard-svc; contended consumer-group exactly-once ===");
+/// - **(a) exactly-once aggregate.** A SECOND leaderboard-svc boots against the SAME Postgres
+///   and a batch of N `match.finished` events is driven concurrently (N `POST /match/report`,
+///   SAME winner, distinct `ReportId`s). leaderboard's durable effect is a DB-observable
+///   `wins+1` upsert per delivered event, so `leaderboard.scores.wins == N` (never overshoots)
+///   is a falsifiable aggregate: a plane that double-delivered would reach 2N and FAIL it.
+///   (Honest caveat: `/readyz` is seeded green at plane start BEFORE any worker polls —
+///   `core/asyncevents/src/lib.rs:332` `mark_pass_ok()` runs before the worker tasks spawn at
+///   `:333` — so "both /readyz 200" certifies HTTP + plane-started, NOT that both durable
+///   workers are already polling. Contention here is timing-emergent, not forced; the FORCED,
+///   deterministic contention proof is the cited unit test, not this belt.)
+/// - **(b) `#2` is a genuine failover-capable delivering participant** — a DETERMINISTIC
+///   witness (no scheduling-outcome flake). After (a) settles at N, KILL instance `#1` (the
+///   base leaderboard-svc), then drive M MORE events with the same winner: only `#2` remains
+///   alive, so `wins` MUST climb to N+M. A decoy `#2` that never delivered would leave `wins`
+///   stuck at N (the base's own two workers can't run once `#1` is dead) → the assertion FAILS.
+///   This pins that the second REAL process actually consumes the shared subscription, which
+///   (a) alone cannot show (the base's `WORKERS = 2` could deliver all N by itself).
+///
+/// Deliberately NOT asserted: "both instances each deliver ≥1" — a correct system may have one
+/// process win every race, so asserting a scheduling outcome would be flaky (timing-sensitive-
+/// tests doctrine). The failover witness is the deterministic substitute.
+///
+/// The second `ServiceSpec` is built INLINE from the canonical spec (like `i_gate` builds its
+/// respawn spec) and is NEVER added to the centralized processctl fleet — that would trip the
+/// fleet-drift preflight; two runtime leaderboard processes sharing one subscription id are
+/// replicas (same module, one host) and do NOT trip topiccheck either.
+async fn replicas_exactly_once(
+    ctx: &Ctx,
+    pool: &PgPool,
+    fleet: &mut Vec<Running>,
+    p: &mut Proof,
+) -> Result<()> {
+    println!("\n[splitproof] === [REPLICAS] second leaderboard-svc; exactly-once + failover witness ===");
     const N: u32 = 20;
+    const M: u32 = 10;
     // Distinct bind ports for the second instance — collide with nothing in the fleet
     // (http 8080-8091, edge 9000-9009, player 9100). Same executable + same DATABASE_URL as
     // the base instance, so both run a durable worker holding the SAME subscription id; only
@@ -2077,16 +2098,15 @@ async fn replicas_exactly_once(ctx: &Ctx, pool: &PgPool, p: &mut Proof) -> Resul
     replica.env.insert("PORT".into(), format!(":{REPLICA_HTTP}"));
     replica.env.insert("EDGE_ADDR".into(), format!(":{REPLICA_EDGE}"));
 
-    // Base leaderboard-svc is already up in `fleet`. Bring the SECOND instance up and wait
-    // for its OWN /readyz — so BOTH workers are alive and polling before the batch is driven.
+    // Base leaderboard-svc is already up in `fleet`. Bring the SECOND instance up and wait for
+    // its OWN /readyz — both processes then serve (HTTP + plane started; see the caveat above,
+    // this does NOT certify both durable workers are polling).
     ensure_no_stale_listener(replica.name, replica.http_port)?;
     let mut replica_running = ctx.spawn(&replica)?;
     ctx.wait_healthy(&replica, &mut replica_running.child).await?;
     println!("[splitproof] second leaderboard-svc healthy on :{REPLICA_HTTP}");
 
-    // [REPLICAS-1] BOTH instances SERVE (both /readyz 200) BEFORE the contended batch —
-    // the "both up and polling first" precondition that makes the row lock genuinely
-    // contended rather than passing by sequencing.
+    // [REPLICAS-1] BOTH instances SERVE (both /readyz 200) before the batch.
     let base_url = format!("http://127.0.0.1:{}/readyz", ctx.http_port("leaderboard-svc"));
     let repl_url = format!("http://127.0.0.1:{REPLICA_HTTP}/readyz");
     let base_rdy = ctx.http.get(&base_url).send().await.map(|r| r.status().is_success()).unwrap_or(false);
@@ -2097,20 +2117,74 @@ async fn replicas_exactly_once(ctx: &Ctx, pool: &PgPool, p: &mut Proof) -> Resul
         format!("base={base_rdy} replica={repl_rdy}"),
     );
 
-    // Enqueue the BACKLOG: N match.finished events (SAME winner, distinct ReportIds), fired
-    // CONCURRENTLY so a backlog piles into the shared event log while BOTH workers are already
-    // polling — forcing genuine contention on the one subscription row, not sequencing. Each
-    // task retries past a transient gateway 429 (mirrors `report`).
     let winner = format!("replicas-{}", std::process::id());
     let loser = format!("replicas-loser-{}", std::process::id());
     let g = format!("http://127.0.0.1:{}", ctx.http_port("gateway-svc"));
+
+    // Phase (a): enqueue the batch of N events (concurrently, so a backlog piles into the
+    // shared log) with both processes up, then DB-assert the exactly-once aggregate.
+    let accepted = drive_reports(ctx, &g, &winner, &loser, &format!("replicas-{}", std::process::id()), N).await;
+    p.check(
+        "[REPLICAS-2] all N match reports accepted (batch enqueued, both instances up)",
+        accepted == N,
+        format!("accepted={accepted}/{N}"),
+    );
+    let (final_wins, max_seen) = settle_wins(pool, &winner, N as i64).await;
+    p.check(
+        "[REPLICAS-3] two-process durable delivery is exactly-once: wins == N, never 2N",
+        final_wins == N as i64 && max_seen == N as i64,
+        format!("final_wins={final_wins} max_seen={max_seen} N={N} (a double-apply would reach {})", 2 * N),
+    );
+
+    // Phase (b): FAILOVER witness (deterministic). Kill instance #1 (the base leaderboard-svc
+    // in `fleet`), then drive M MORE events. With #1 dead, ONLY #2 can deliver — so wins MUST
+    // climb to N+M. A decoy #2 leaves wins stuck at N. Mirrors the rdy_dead kill pattern.
+    let base_idx = fleet
+        .iter()
+        .position(|running| running.name == "leaderboard-svc")
+        .context("leaderboard-svc missing from fleet (preflight_fleet should have caught this)")?;
+    println!("[splitproof] killing base leaderboard-svc (#1); only #2 (:{REPLICA_HTTP}) can deliver now");
+    fleet.remove(base_idx); // Drop kills + waits.
+    tokio::time::sleep(Duration::from_millis(800)).await; // let the OS free #1's ports.
+
+    let fo_accepted = drive_reports(ctx, &g, &winner, &loser, &format!("replicas-fo-{}", std::process::id()), M).await;
+    p.check(
+        "[REPLICAS-4a] M failover reports accepted (base #1 dead; match-svc still routes)",
+        fo_accepted == M,
+        format!("accepted={fo_accepted}/{M}"),
+    );
+    let target = (N + M) as i64;
+    let (fo_final, fo_max) = settle_wins(pool, &winner, target).await;
+    p.check(
+        "[REPLICAS-4b] #2 delivers after #1 dies: wins climbs to N+M (decoy #2 => stuck at N)",
+        fo_final == target && fo_max == target,
+        format!("final_wins={fo_final} max_seen={fo_max} target={target} (a dead/decoy #2 leaves {N})"),
+    );
+
+    // Restore the fleet: respawn base leaderboard-svc from its canonical spec and re-insert it
+    // so [LV2]'s liveness sweep sees a complete fleet. THEN tear the scenario-local #2 down
+    // (kill-on-drop). Order matters only for tidiness — both ports are distinct.
+    let restarted = ctx.service("leaderboard-svc").clone();
+    ensure_no_stale_listener(restarted.name, restarted.http_port)?;
+    let mut running = ctx.spawn(&restarted)?;
+    ctx.wait_healthy(&restarted, &mut running.child).await?;
+    fleet.insert(base_idx, running);
+    println!("[splitproof] base leaderboard-svc restored");
+    drop(replica_running);
+    Ok(())
+}
+
+/// Fire `count` concurrent match reports (SAME winner, distinct `ReportId`s from `id_prefix`),
+/// each retrying past a transient gateway 429 (mirrors `report`). Returns the count accepted
+/// (202). A concurrent burst piles a real backlog into the shared event log.
+async fn drive_reports(ctx: &Ctx, g: &str, winner: &str, loser: &str, id_prefix: &str, count: u32) -> u32 {
     let mut handles = Vec::new();
-    for i in 0..N {
+    for i in 0..count {
         let http = ctx.http.clone();
-        let g = g.clone();
-        let winner = winner.clone();
-        let loser = loser.clone();
-        let rid = format!("replicas-{}-{i}", std::process::id());
+        let g = g.to_string();
+        let winner = winner.to_string();
+        let loser = loser.to_string();
+        let rid = format!("{id_prefix}-{i}");
         handles.push(tokio::spawn(async move {
             for _ in 0..15 {
                 let code = match http
@@ -2138,28 +2212,23 @@ async fn replicas_exactly_once(ctx: &Ctx, pool: &PgPool, p: &mut Proof) -> Resul
             accepted += 1;
         }
     }
-    p.check(
-        "[REPLICAS-2] all N match reports accepted (backlog enqueued for both workers)",
-        accepted == N,
-        format!("accepted={accepted}/{N}"),
-    );
+    accepted
+}
 
-    // Bounded settle WITHOUT racing the clock: poll `leaderboard.scores.wins` for this
-    // winner. Exactly-once => it climbs to N and STAYS; a double-deliver (row-lock absent) =>
-    // it overshoots toward 2N. Wait until wins REACHES N, THEN hold a settle window so a
-    // would-be overshoot has time to manifest, tracking the max ever observed. The final
-    // assertion is `wins == N AND max_seen == N` (never exceeded N) — a 2N double-apply fails
-    // it in BOTH the max-seen and final-equality terms.
+/// Bounded settle WITHOUT racing the clock: poll `leaderboard.scores.wins` for `player` until
+/// it reaches `target`, THEN hold a settle window so a would-be OVERSHOOT (a double-apply) has
+/// time to manifest, tracking the max ever observed. Returns `(final_wins, max_seen)`. Callers
+/// assert `final_wins == target && max_seen == target` — the equality catches under-delivery,
+/// the max catches over-delivery.
+async fn settle_wins(pool: &PgPool, player: &str, target: i64) -> (i64, i64) {
     let deadline = Instant::now() + Duration::from_secs(45);
     let mut max_seen: i64 = 0;
     let mut reached_at: Option<Instant> = None;
     loop {
-        let wins = leaderboard_wins(pool, &winner).await;
+        let wins = leaderboard_wins(pool, player).await;
         max_seen = max_seen.max(wins);
-        if wins >= N as i64 {
+        if wins >= target {
             let since = *reached_at.get_or_insert_with(Instant::now);
-            // Hold a settle window AFTER first reaching N so a would-be overshoot to 2N
-            // surfaces (max_seen catches it) before we assert.
             if since.elapsed() >= Duration::from_secs(5) {
                 break;
             }
@@ -2171,22 +2240,12 @@ async fn replicas_exactly_once(ctx: &Ctx, pool: &PgPool, p: &mut Proof) -> Resul
         }
         tokio::time::sleep(Duration::from_millis(400)).await;
     }
-    let final_wins = leaderboard_wins(pool, &winner).await;
-    max_seen = max_seen.max(final_wins);
-    p.check(
-        "[REPLICAS-3] contended delivery is exactly-once: wins == N, never 2N",
-        final_wins == N as i64 && max_seen == N as i64,
-        format!("final_wins={final_wins} max_seen={max_seen} N={N} (a double-apply would reach {})", 2 * N),
-    );
-
-    // Tear the second instance down cleanly (kill-on-drop guard). The base leaderboard-svc
-    // stays in `fleet` for the remaining assertions / [LV2] liveness sweep.
-    drop(replica_running);
-    Ok(())
+    let final_wins = leaderboard_wins(pool, player).await;
+    (final_wins, max_seen.max(final_wins))
 }
 
 /// Reads `leaderboard.scores.wins` for one player (0 if absent) — the DB-observable
-/// durable effect the `[REPLICAS]` exactly-once guard asserts an exact aggregate over.
+/// durable effect the `[REPLICAS]` belt asserts an exact aggregate over.
 async fn leaderboard_wins(pool: &PgPool, player: &str) -> i64 {
     sqlx::query_scalar::<_, i64>("SELECT wins FROM leaderboard.scores WHERE player=$1")
         .bind(player)
