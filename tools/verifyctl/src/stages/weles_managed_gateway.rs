@@ -93,12 +93,20 @@
 //!    as a port the STAGE serves, and the marker in the body can only come from
 //!    there. Neither the blank default nor a hypothetical `:8085` default could
 //!    produce it.
-//! 5. **the resolved `Edge` address is USED** — the agent answers `leaderboard`'s
-//!    edge as a port the STAGE owns (no QUIC server on it). Two independent
+//! 5. **the resolved `Edge` address is USED, and the whole resolved SET is
+//!    load-balanced (C4 round-robin)** — the agent answers `leaderboard`'s edge as
+//!    a SET of TWO ports the STAGE owns (no QUIC server on either). Three
 //!    observations: `/leaderboard` must NOT answer 200 (a 200 means it dialled
 //!    9008, the default, i.e. fetched-and-discarded), and a UDP datagram must
-//!    ARRIVE at that port (a positive: bytes went to the address the agent
-//!    chose — proof by construction, not by absence of errors).
+//!    ARRIVE at BOTH ports (a positive: bytes went to the addresses the agent
+//!    chose — proof by construction, not by absence of errors). The SECOND
+//!    datagram is the round-robin proof: a managed gateway that consumed the whole
+//!    resolved set (the `remote::Pool` C2 built to replace `exactly_one`) spreads
+//!    across both instances, so a single-instance collapse leaves the second port
+//!    silent. NB: this is a DIAL-LEVEL distribution proof (the provider serves ops
+//!    over the QUIC edge, never HTTP, so a domain instance's `http_requests_total`
+//!    never moves for a routed op — see the C4 hand-off note); the strict
+//!    A,B,A,B cursor is unit-proven in `core/remote` (C1).
 //!
 //! # Proving the gate can fail (a gate that cannot fail is theatre)
 //!
@@ -167,6 +175,15 @@ const SWAP_REQUEST_TIMEOUT: Duration = Duration::from_secs(45);
 /// datagram already sitting in the socket buffer is read immediately — this
 /// bounds only the case where NOTHING was ever sent.
 const EDGE_DIAL_WAIT: Duration = Duration::from_secs(5);
+
+/// How many `/leaderboard` requests the round-robin distribution probe drives
+/// through the managed front door. One would already dial BOTH resolved
+/// instances (a retry-safe read fails over off the first, and the per-instance
+/// probe fan-out dials each independently), so this is not a threshold — it is a
+/// burst that literally exercises the round-robin cursor across many calls, so a
+/// gateway that pinned every request to one instance is caught by more than a
+/// single selection.
+const ROUND_ROBIN_REQUESTS: usize = 12;
 
 /// The dev API key seeded by `APIKEYS_DEV_SEED=1` (which weles's manifest sets on
 /// apikeys-svc) whose policy covers the player-facing list — `/leaderboard`
@@ -419,9 +436,17 @@ pub(crate) struct SwapProbe {
     /// port with no QUIC server. A 200 means the gateway reached the REAL
     /// leaderboard-svc on the default 9008 — fetched and discarded.
     leaderboard: Probe,
-    /// Did a datagram arrive at the port the fake agent named as leaderboard's
-    /// edge? The positive half: bytes went where the agent said.
+    /// Did a datagram arrive at the FIRST port the fake agent named as
+    /// leaderboard's edge? The positive half: bytes went where the agent said.
     edge_dialled: bool,
+    /// Did a datagram arrive at the SECOND port the fake agent named as
+    /// leaderboard's edge? The round-robin / replica half: the agent answered
+    /// leaderboard's edge with a SET of two stage-owned ports, and a managed
+    /// gateway that load-balanced across the whole resolved set dials this one
+    /// TOO. A single-instance pool (or an `exactly_one`-style collapse to the
+    /// first) leaves this at `false` — so this is what discriminates round-robin
+    /// distribution from single-instance dispatch.
+    edge_second_dialled: bool,
 }
 
 /// Everything the live run observed. Separated from [`findings`] so the verdict
@@ -532,9 +557,30 @@ fn swap_findings(swap: &std::result::Result<SwapProbe, String>) -> Vec<String> {
         }
         if !swap.edge_dialled {
             findings.push(
-                "nothing ever dialled the resolved EDGE address: the fake agent named a port \
-                 this stage owns and no datagram arrived at it. Absence of a 200 is not proof \
-                 the resolved address was used — this is the positive half, and it is missing"
+                "nothing ever dialled the FIRST resolved EDGE address: the fake agent named a \
+                 port this stage owns and no datagram arrived at it. Absence of a 200 is not \
+                 proof the resolved address was used — this is the positive half, and it is \
+                 missing"
+                    .to_string(),
+            );
+        }
+        // The round-robin / replica half. The fake agent answered leaderboard's
+        // edge with a SET of TWO stage-owned ports (the shape C2 taught the managed
+        // route table to pool over instead of `exactly_one`-refusing). If the pool
+        // load-balances across the whole resolved set, BOTH ports see a datagram;
+        // if it kept only the first instance, this second one stays silent. So this
+        // is the assertion the single-instance path structurally could not pass —
+        // and it discriminates: with only one resolved address (or an
+        // `exactly_one`-style collapse) `edge_second_dialled` is `false`.
+        if !swap.edge_second_dialled {
+            findings.push(
+                "the managed route table did not distribute across the resolved instance SET: \
+                 the fake agent answered leaderboard's edge with TWO addresses this stage owns \
+                 (the round-robin / replica shape), a burst of requests went through the front \
+                 door, yet no datagram ever arrived at the SECOND. gateway-svc dispatched only \
+                 to the first resolved instance — the single-instance behaviour C2 replaced \
+                 with a round-robin `remote::Pool` — instead of spreading across both. A \
+                 single-instance pool would leave this at zero"
                     .to_string(),
             );
         }
@@ -691,15 +737,18 @@ const ORIGIN_MARKER: &str = "weles-managed-gateway-swap-origin";
 /// USED, or merely fetched?**
 ///
 /// On the real fleet it cannot be asked — the agent's answer and the standalone
-/// default are the same bytes. Here the stage IS the agent, so it answers two of
-/// the eight with addresses it owns and nothing could have guessed:
+/// default are the same bytes. Here the stage IS the agent, so it answers with
+/// addresses it owns and nothing could have guessed:
 ///
 /// * `admin`'s HTTP origin → a port this stage SERVES. The marker can only come
 ///   from there.
-/// * `leaderboard`'s EDGE → a port this stage OWNS but serves no QUIC on. So
-///   `/leaderboard` must fail (a 200 means the real 9008 was dialled, i.e. the
-///   default) AND a datagram must arrive (the resolved address really was
-///   dialled).
+/// * `leaderboard`'s EDGE → a SET of TWO ports this stage OWNS but serves no QUIC
+///   on (the round-robin / replica shape). So `/leaderboard` must fail (a 200
+///   means the real 9008 was dialled, i.e. the default) AND a datagram must
+///   arrive at BOTH — the used-vs-fetched proof (the resolved address was dialled)
+///   AND the round-robin proof (the managed route table's `remote::Pool` spread
+///   across the WHOLE resolved set, not just the first instance `exactly_one`
+///   would have kept).
 ///
 /// The other six answers are the REAL fleet's addresses, straight from weles's
 /// manifest — the gateway must boot and its key check must reach the real
@@ -719,19 +768,34 @@ fn swap_probe(input: &SwapInput) -> Result<SwapProbe> {
         (200, ORIGIN_MARKER.as_bytes().to_vec())
     })
     .context("start the fake admin origin")?;
-    // A socket the stage OWNS and never serves QUIC on. Held for the whole probe:
-    // dropping it would free the port the agent is about to advertise.
-    let edge = UdpSocket::bind(("127.0.0.1", 0)).context("bind the fake edge port")?;
-    edge.set_read_timeout(Some(EDGE_DIAL_WAIT))
-        .context("bound the wait for a datagram")?;
+    // TWO sockets the stage OWNS and never serves QUIC on — the round-robin /
+    // replica shape. `leaderboard`'s edge is answered as a SET of two instances,
+    // both stage-owned ports no default could be, so a MANAGED gateway that
+    // consumed the WHOLE resolved set (the `remote::Pool` C2 built to replace
+    // `exactly_one`) dials BOTH; a gateway that kept only the first would leave the
+    // second silent. Held for the whole probe: dropping either frees the port the
+    // agent advertised for it.
+    let edge = UdpSocket::bind(("127.0.0.1", 0)).context("bind the first fake edge port")?;
+    let edge_second =
+        UdpSocket::bind(("127.0.0.1", 0)).context("bind the second fake edge port")?;
+    for socket in [&edge, &edge_second] {
+        socket
+            .set_read_timeout(Some(EDGE_DIAL_WAIT))
+            .context("bound the wait for a datagram")?;
+    }
     let edge_addr = format!("127.0.0.1:{}", edge.local_addr()?.port());
+    let edge_second_addr = format!("127.0.0.1:{}", edge_second.local_addr()?.port());
 
     let swaps = vec![
-        ("admin".to_string(), weles::manifest::AddrKind::Http, origin.addr()),
+        (
+            "admin".to_string(),
+            weles::manifest::AddrKind::Http,
+            vec![origin.addr()],
+        ),
         (
             "leaderboard".to_string(),
             weles::manifest::AddrKind::Edge,
-            edge_addr.clone(),
+            vec![edge_addr.clone(), edge_second_addr.clone()],
         ),
     ];
     let agent = fake_http::FakeHttp::start(move |route, body| {
@@ -788,22 +852,39 @@ fn swap_probe(input: &SwapInput) -> Result<SwapProbe> {
                 origin_marker: Err(NOT_PROBED.into()),
                 leaderboard: Err(NOT_PROBED.into()),
                 edge_dialled: false,
+                edge_second_dialled: false,
             });
         }
         let origin_marker = body_of(&runtime, &client, &format!("{base}/admin/login"), &[])
             .map(|body| body.contains(ORIGIN_MARKER));
-        // Fire the op, THEN look for the datagram: the dial happens while this
-        // request is in flight (it fails at the edge's dial deadline), and UDP
-        // datagrams sit in the socket's buffer until read — so this is a
-        // happens-before, not a race with a clock.
-        let leaderboard = get(
-            &runtime,
-            &client,
-            &format!("{base}/leaderboard"),
-            &[("X-Api-Key", DEV_KEY)],
-        );
+        // Drive a burst of the op, THEN look for the datagrams: each read
+        // round-robin-selects one of the two resolved leaderboard instances and,
+        // being retry-safe, fails over to the OTHER, and the per-instance probe
+        // fan-out dials each on its own cadence — so a gateway that spread across
+        // the whole resolved set dials BOTH stage-owned ports. The dials happen
+        // while these requests are in flight (they fail at the edge's dial
+        // deadline), and UDP datagrams sit in the socket buffer until read — a
+        // happens-before, not a race with a clock. Every answer is the same (both
+        // instances are black holes, so the op fails identically), so the last one
+        // stands for all.
+        let mut leaderboard = Err(NOT_PROBED.into());
+        for _ in 0..ROUND_ROBIN_REQUESTS {
+            leaderboard = get(
+                &runtime,
+                &client,
+                &format!("{base}/leaderboard"),
+                &[("X-Api-Key", DEV_KEY)],
+            );
+        }
         let edge_dialled = edge.recv_from(&mut [0u8; 2048]).is_ok();
-        Ok(SwapProbe { serving, origin_marker, leaderboard, edge_dialled })
+        let edge_second_dialled = edge_second.recv_from(&mut [0u8; 2048]).is_ok();
+        Ok(SwapProbe {
+            serving,
+            origin_marker,
+            leaderboard,
+            edge_dialled,
+            edge_second_dialled,
+        })
     })();
 
     let _ = child.shutdown(ShutdownPolicy {
@@ -830,7 +911,7 @@ fn swap_probe(input: &SwapInput) -> Result<SwapProbe> {
 fn agent_answer(
     route: &str,
     body: &[u8],
-    swaps: &[(String, weles::manifest::AddrKind, String)],
+    swaps: &[(String, weles::manifest::AddrKind, Vec<String>)],
     real: &weles::manifest::PeerAddrs,
 ) -> fake_http::Answer {
     // Method AND path, exactly as weles matches them: a client that drifted to
@@ -861,7 +942,10 @@ fn agent_answer(
         .iter()
         .find(|(name, swapped, _)| *name == provider && *swapped == kind)
     {
-        Some((_, _, addr)) => vec![addr.clone()],
+        // The whole SET, verbatim — a provider may be swapped to MORE than one
+        // address (the round-robin / replica shape), and the wire already carries
+        // `Vec<String>` (`PeerAddrs::lookup` returns every instance).
+        Some((_, _, addrs)) => addrs.clone(),
         None => real.lookup(&provider, kind),
     };
     if addrs.is_empty() {

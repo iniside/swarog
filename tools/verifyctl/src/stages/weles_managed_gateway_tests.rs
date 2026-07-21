@@ -29,10 +29,13 @@ fn healthy() -> Observed {
             // answer here, and it is still an answer.
             serving: Ok(503),
             origin_marker: Ok(true),
-            // The swapped edge points at a port serving no QUIC, so the op MUST
-            // fail — and a datagram must have arrived there.
+            // The swapped edge points at ports serving no QUIC, so the op MUST
+            // fail — and a datagram must have arrived at BOTH resolved instances
+            // (the round-robin / replica shape: gateway-svc pooled over the whole
+            // resolved set instead of collapsing to the first).
             leaderboard: Ok(502),
             edge_dialled: true,
+            edge_second_dialled: true,
         }),
     }
 }
@@ -224,6 +227,26 @@ fn a_resolved_edge_address_that_nothing_dialled_is_a_finding_even_when_the_op_fa
 }
 
 #[test]
+fn a_gateway_that_did_not_round_robin_the_resolved_set_is_caught() {
+    // THE C4 assertion: the fake agent answered leaderboard's edge with a SET of
+    // two stage-owned ports (the round-robin / replica shape). A managed gateway
+    // that pooled over the whole set dials BOTH; one that collapsed to the first
+    // instance (the `exactly_one` behaviour C2 replaced) leaves the second silent.
+    // So `edge_second_dialled = false` is the world where round-robin regressed to
+    // single-instance dispatch, and it must be a finding on its own — the first
+    // instance still being dialled makes it invisible to every OTHER assertion.
+    let mut observed = healthy();
+    observed.swap.as_mut().unwrap().edge_second_dialled = false;
+    let findings = findings(&observed);
+    assert_eq!(findings.len(), 1, "{findings:?}");
+    assert!(
+        findings[0].contains("did not distribute across the resolved instance SET"),
+        "{findings:?}"
+    );
+    assert!(findings[0].contains("round-robin"), "{findings:?}");
+}
+
+#[test]
 fn a_resolved_http_origin_that_was_not_used_is_a_finding() {
     // The marker can only come from the port the fake agent named. Neither the
     // blank default (route dropped) nor a hypothetical :8085 default (the real
@@ -273,7 +296,9 @@ fn a_swap_probe_that_could_not_run_is_a_finding_not_a_silent_pass() {
 // So it is driven here by the REAL client, over a REAL socket.
 // ---------------------------------------------------------------------------
 
-fn fake_agent(swaps: Vec<(String, weles::manifest::AddrKind, String)>) -> fake_http::FakeHttp {
+fn fake_agent(
+    swaps: Vec<(String, weles::manifest::AddrKind, Vec<String>)>,
+) -> fake_http::FakeHttp {
     // A UNIT test runs with cwd = tools/verifyctl, so `ctx.root` is unavailable;
     // resolve the split fixture relative to THIS crate's manifest dir instead
     // (CARGO_MANIFEST_DIR = tools/verifyctl → ../../weles/fleet.split.toml).
@@ -317,7 +342,7 @@ fn the_fake_agent_swaps_exactly_what_it_was_told_to_and_nothing_else() {
     let agent = fake_agent(vec![(
         "leaderboard".to_string(),
         weles::manifest::AddrKind::Edge,
-        "127.0.0.1:65001".to_string(),
+        vec!["127.0.0.1:65001".to_string()],
     )]);
     assert_eq!(
         ask(&agent, "leaderboard", remote::AddrKind::Edge).unwrap(),
@@ -334,6 +359,26 @@ fn the_fake_agent_swaps_exactly_what_it_was_told_to_and_nothing_else() {
     assert_eq!(
         ask(&agent, "accounts", remote::AddrKind::Http).unwrap(),
         vec!["127.0.0.1:8084".to_string()]
+    );
+}
+
+#[test]
+fn the_fake_agent_answers_a_two_instance_set_through_the_real_client() {
+    // The C4 core change: the fake agent resolves a provider to a SET, not a single
+    // address, and the REAL client (`remote::resolve_peer`, the exact code
+    // cmd/gateway-svc runs) reads the whole list back through weles's real encoder.
+    // This is what makes the round-robin swap a fair instrument: the two stage-owned
+    // ports the managed gateway pools over really do arrive over the wire, in order,
+    // and neither is the 9008 default.
+    let agent = fake_agent(vec![(
+        "leaderboard".to_string(),
+        weles::manifest::AddrKind::Edge,
+        vec!["127.0.0.1:65001".to_string(), "127.0.0.1:65002".to_string()],
+    )]);
+    assert_eq!(
+        ask(&agent, "leaderboard", remote::AddrKind::Edge).unwrap(),
+        vec!["127.0.0.1:65001".to_string(), "127.0.0.1:65002".to_string()],
+        "the whole two-instance set must round-trip, in order, and NOT the 9008 default"
     );
 }
 
