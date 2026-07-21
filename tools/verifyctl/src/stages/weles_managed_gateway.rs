@@ -74,7 +74,8 @@
 //!
 //! # What is asserted, and how each part can fail on its own
 //!
-//! On the REAL fleet (weles up split), the front door works end to end:
+//! On the REAL fleet (weles up, booting the deployed fleet.toml), the front door
+//! works end to end:
 //!
 //! 1. **`/readyz` 200** — it booted managed at all, handed only `ORCHESTRATOR_URL`.
 //! 2. **`GET /leaderboard` + dev key → 200** — a POSITIVE CONTROL, and it is
@@ -202,21 +203,38 @@ pub fn run(ctx: &mut Context<'_>) -> Result<Outcome> {
         .parent()
         .context("weles executable has no parent directory")?
         .to_path_buf();
+
+    // The operator fleet weles deploys AND boots — the file that replaced the
+    // deleted `manifest::split_fleet()` table. The stage reads the SAME file to
+    // learn where the fleet listens (ports/peers), so its assertions and the
+    // booted fleet share one authority. `deploy` stamps it into the generation
+    // (`--fleet`); `up` reads it back and boots it. Loaded once here and threaded
+    // to the two probes below, never re-parsed.
+    let fleet_fixture = root.join("weles/fleet.split.toml");
+    let fleet_def = weles::fleet_toml::load(&fleet_fixture)
+        .context("load weles/fleet.split.toml — the fleet this stage boots and asserts on")?;
+
     if ctx.command(
         "deploy",
         weles_exe.clone(),
-        vec![OsString::from("deploy"), build_dir.into_os_string()],
+        vec![
+            OsString::from("deploy"),
+            build_dir.into_os_string(),
+            OsString::from("--fleet"),
+            fleet_fixture.into_os_string(),
+        ],
     )? != Outcome::Pass
     {
         ctx.note("weles deploy failed — see the stage log; the fleet was never booted")?;
         return Ok(Outcome::Fail);
     }
 
-    // The gateway's OWN identity comes from weles's manifest, never a literal
-    // here: the manifest is the authority for where the fleet listens, and this
+    // The gateway's OWN identity comes from the deployed fleet, never a literal
+    // here: the fleet file is the authority for where the fleet listens, and this
     // stage is asserting on that fleet.
-    let gateway = weles::manifest::split_fleet()
-        .into_iter()
+    let gateway = fleet_def
+        .services
+        .iter()
         .find(|svc| svc.name == "gateway-svc")
         .context("weles's split fleet no longer contains gateway-svc")?;
     let base = format!("http://127.0.0.1:{}", gateway.http_port);
@@ -224,17 +242,20 @@ pub fn run(ctx: &mut Context<'_>) -> Result<Outcome> {
     // same file `weles up` would spawn, resolved the same way.
     let staged_gateway = weles::prep::Layout::discover(root.clone())
         .context("discover the deployed generation weles just staged")?
-        .binary(gateway.pkg);
+        .binary(&gateway.pkg);
 
     let environment = ctx.rollout_environment().clone();
     let decoy = decoy_run(ctx, &staged_gateway, &environment, &base)?;
 
     // The swap probe's world, resolved now: once the lease is lent, `ctx` is
-    // borrowed. The CA is the one weles mints for THIS fleet
-    // (`prep::mint_ca` → run/weles/edge-ca.*), so the probe's gateway dials the
-    // real peers with the same material they trust.
+    // borrowed. The CA is the one weles mints for THIS fleet — its `edgeca`
+    // `[[prepare]]` hook writes run/weles/edge-ca.{crt,key} before any service
+    // spawns — so the probe's gateway dials the real peers with the same
+    // material they trust. The stage runs NO separate CA pre-step; `weles up`
+    // provisions it.
     let swap_input = SwapInput {
         gateway: staged_gateway,
+        services: fleet_def.services.clone(),
         root: ctx.root.clone(),
         environment: environment.clone(),
         ca_cert: ctx.root.join("run/weles/edge-ca.crt"),
@@ -246,7 +267,7 @@ pub fn run(ctx: &mut Context<'_>) -> Result<Outcome> {
     let spec = SpawnSpec {
         label: "verify-weles-managed-gateway-up".into(),
         executable: weles_exe,
-        args: vec![OsString::from("up"), OsString::from("split")],
+        args: vec![OsString::from("up")],
         env: runner::os_environment(&environment),
         cwd: root,
         stdout: OutputDestination::File(ctx.stage_log("up", "out")),
@@ -282,7 +303,7 @@ pub fn run(ctx: &mut Context<'_>) -> Result<Outcome> {
             // probing, so the positive control tests the passthrough — not the boot
             // clock. Order-independent (every service, not just the last one) so a
             // future manifest reorder or a new passthrough cannot reopen this race.
-            wait_fleet_serving(&mut fleet, &runtime, &client)?;
+            wait_fleet_serving(&mut fleet, &runtime, &client, &fleet_def.services)?;
             (
                 get(&runtime, &client, &format!("{base}/leaderboard"), &[("X-Api-Key", DEV_KEY)]),
                 get(&runtime, &client, &format!("{base}/admin/login"), &[]),
@@ -693,7 +714,7 @@ fn swap_probe(input: &SwapInput) -> Result<SwapProbe> {
     // of the contract, free to drift from the server this stage is standing in
     // for — and the drift would show up as this stage failing to prove anything,
     // which is the worst possible place for it.
-    let real = weles::manifest::PeerAddrs::from_fleet(&weles::manifest::split_fleet());
+    let real = weles::manifest::PeerAddrs::from_fleet(&input.services);
     let origin = fake_http::FakeHttp::start(|_route, _body| {
         (200, ORIGIN_MARKER.as_bytes().to_vec())
     })
@@ -858,6 +879,10 @@ fn agent_answer(
 /// Everything [`swap_probe`] needs, resolved before the lease is lent.
 struct SwapInput {
     gateway: PathBuf,
+    /// The deployed fleet's services — the authority for the REAL peer addresses
+    /// the fake agent answers with (`PeerAddrs::from_fleet`). Cloned from the
+    /// once-loaded fleet so the probe never re-parses the fixture.
+    services: Vec<weles::manifest::ServiceDef>,
     root: PathBuf,
     environment: BTreeMap<String, String>,
     ca_cert: PathBuf,
@@ -947,9 +972,10 @@ fn wait_fleet_serving(
     fleet: &mut processctl::BorrowedChild<'_>,
     runtime: &tokio::runtime::Runtime,
     client: &reqwest::Client,
+    services: &[weles::manifest::ServiceDef],
 ) -> Result<()> {
-    let bases: Vec<String> = weles::manifest::split_fleet()
-        .into_iter()
+    let bases: Vec<String> = services
+        .iter()
         .map(|svc| format!("http://127.0.0.1:{}", svc.http_port))
         .collect();
     let deadline = Instant::now() + BOOT_DEADLINE;

@@ -274,7 +274,13 @@ fn a_swap_probe_that_could_not_run_is_a_finding_not_a_silent_pass() {
 // ---------------------------------------------------------------------------
 
 fn fake_agent(swaps: Vec<(String, weles::manifest::AddrKind, String)>) -> fake_http::FakeHttp {
-    let real = weles::manifest::PeerAddrs::from_fleet(&weles::manifest::split_fleet());
+    // A UNIT test runs with cwd = tools/verifyctl, so `ctx.root` is unavailable;
+    // resolve the split fixture relative to THIS crate's manifest dir instead
+    // (CARGO_MANIFEST_DIR = tools/verifyctl → ../../weles/fleet.split.toml).
+    let fixture =
+        std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../weles/fleet.split.toml"));
+    let fleet = weles::fleet_toml::load(fixture).expect("load weles/fleet.split.toml fixture");
+    let real = weles::manifest::PeerAddrs::from_fleet(&fleet.services);
     fake_http::FakeHttp::start(move |route, body| agent_answer(route, body, &swaps, &real)).unwrap()
 }
 
