@@ -66,6 +66,67 @@ fn describe_guard_fails_a_http_module_that_forgot_to_contribute() {
     );
 }
 
+/// Builds a `ProcessRoutes` fixture. `op_methods` doubles as `bind_methods`/
+/// `local_methods` so the integrity invariants stay quiet; the DESCRIBE-COMPLETE
+/// invariant reads `edge_methods` and `describe_methods` independently.
+fn proc_routes(
+    process: &'static str,
+    ops: Vec<Operation>,
+    op_methods: &[&str],
+    edge_methods: &[&str],
+    describe_methods: &[&str],
+) -> ProcessRoutes {
+    ProcessRoutes {
+        process,
+        ops,
+        op_methods: methods(op_methods),
+        bind_methods: methods(op_methods),
+        local_methods: methods(op_methods),
+        edge_methods: methods(edge_methods),
+        describe_methods: methods(describe_methods),
+    }
+}
+
+/// Drives the REAL `check()` — and thus the production source-of-truth line
+/// `served_http = p.edge_methods.intersection(global_http)` (`main.rs`) — to a
+/// DESCRIBE-FORGOT, rather than hand-feeding sets to `describe_completeness_findings`
+/// like the leaf tests. A domain svc SERVES `x.foo` on its internal edge (it is in
+/// `edge_methods`) and the monolith front fronts it locally (so it is in `global_http`),
+/// but the svc's `describe_methods` is missing it — the missed-forget the guard exists
+/// to catch. If a mutation WEAKENS `served_http` (e.g. intersecting with
+/// `describe_methods`, or an accidental empty set), `served_http ⊆ describe_methods`
+/// holds vacuously, ZERO findings fire, and this assertion turns RED — so the guard can
+/// never silently become decorative.
+#[test]
+fn describe_guard_fires_through_the_real_served_http_computation() {
+    // Monolith front door: fronts `x.foo` locally — this op set IS `global_http`.
+    let server = proc_routes(
+        "server",
+        vec![fixture_op("x.foo", "GET", "/x/foo")],
+        &["x.foo"],
+        &[],
+        &["x.foo"],
+    );
+    // Split: gateway-svc (required present by `check`) + a domain svc that SERVES `x.foo`
+    // on its edge but FORGOT to contribute it to DESCRIBE_SLOT.
+    let gateway = proc_routes("gateway-svc", vec![], &[], &[], &[]);
+    let forgetful = proc_routes("x-svc", vec![], &[], &["x.foo"], &[]);
+
+    let findings = check("fixture", &[server], &[gateway, forgetful]);
+    let forgot: Vec<&String> =
+        findings.iter().filter(|f| f.contains("DESCRIBE-FORGOT")).collect();
+    assert_eq!(
+        forgot.len(),
+        1,
+        "exactly one DESCRIBE-FORGOT via the real served_http path: {findings:?}"
+    );
+    assert!(
+        forgot[0].contains("x.foo") && forgot[0].contains("x-svc"),
+        "{}",
+        forgot[0]
+    );
+}
+
 /// A process whose describe manifest EXACTLY covers its `#[http]` ops passes clean — the
 /// property every real edge-serving process must hold on a clean tree.
 #[test]
