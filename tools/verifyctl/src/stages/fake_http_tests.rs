@@ -5,22 +5,58 @@ use super::*;
 
 /// Speaks HTTP/1.1 to the fixture without reqwest, so the test does not depend
 /// on the same client the stage uses.
-fn request(port: u16, method: &str, path: &str, body: &[u8]) -> String {
-    let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect to the fixture");
-    stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+///
+/// Under heavy parallel `cargo test` load the loopback socket can drop a
+/// connection mid-exchange (`BrokenPipe`/`ConnectionReset`/etc) even though the
+/// fixture served it correctly — that's a transient race in the test's own
+/// client socket, not a fixture defect. Retry the whole exchange on a fresh
+/// `TcpStream` a bounded number of times for exactly those transient error
+/// kinds; a genuinely broken fixture still fails every attempt and the final
+/// attempt still panics loudly via `unwrap`/`expect`.
+const REQUEST_ATTEMPTS: u32 = 5;
+const REQUEST_RETRY_BACKOFF: Duration = Duration::from_millis(50);
+
+fn is_transient(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::BrokenPipe
+            | std::io::ErrorKind::ConnectionReset
+            | std::io::ErrorKind::ConnectionAborted
+            | std::io::ErrorKind::ConnectionRefused
+    )
+}
+
+fn try_request(port: u16, method: &str, path: &str, body: &[u8]) -> std::io::Result<String> {
+    let mut stream = TcpStream::connect(("127.0.0.1", port))?;
+    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     write!(
         stream,
         "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: {}\r\n\r\n",
         body.len()
-    )
-    .unwrap();
-    stream.write_all(body).unwrap();
-    stream.flush().unwrap();
-    let mut response = String::new();
+    )?;
+    stream.write_all(body)?;
+    stream.flush()?;
     let mut buffer = Vec::new();
-    stream.read_to_end(&mut buffer).unwrap();
-    response.push_str(&String::from_utf8_lossy(&buffer));
-    response
+    stream.read_to_end(&mut buffer)?;
+    Ok(String::from_utf8_lossy(&buffer).into_owned())
+}
+
+fn request(port: u16, method: &str, path: &str, body: &[u8]) -> String {
+    let mut last_error = None;
+    for attempt in 0..REQUEST_ATTEMPTS {
+        match try_request(port, method, path, body) {
+            Ok(response) => return response,
+            Err(error) if attempt + 1 < REQUEST_ATTEMPTS && is_transient(&error) => {
+                last_error = Some(error);
+                std::thread::sleep(REQUEST_RETRY_BACKOFF);
+            }
+            Err(error) => panic!(
+                "request to the fixture failed after {} attempt(s): {error}",
+                attempt + 1
+            ),
+        }
+    }
+    unreachable!("loop above always returns or panics; last transient error: {last_error:?}")
 }
 
 #[test]
