@@ -43,6 +43,11 @@ use std::sync::Arc;
 
 use futures::future::BoxFuture;
 
+/// Routing-as-data: rebuild an [`Operation`]/[`OpBinding`]/[`RouteBinding`] from a
+/// serializable [`OpManifest`] alone (no compile-time `<name>rpc` import) — the DATA half
+/// of D2's data-driven gateway. See the module docs for the three faithfulness caveats.
+pub mod databind;
+
 // ---------------------------------------------------------------------------
 // Identity — port of WithPlayerID / PlayerID
 // ---------------------------------------------------------------------------
