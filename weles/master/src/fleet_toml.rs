@@ -153,6 +153,34 @@ struct ServiceEntry {
     peer: Vec<PeerEntry>,
     #[serde(default)]
     env: BTreeMap<String, String>,
+    /// Run N copies of this service — convenience sugar that [`expand_service`]
+    /// unfolds into N owned [`ServiceDef`]s with distinct `name`s
+    /// (`<name>#1`..`<name>#N`) and distinct MINTED ports. Absent or `1` ⇒ a
+    /// single instance (the common case, no ceremony). `> 1` REQUIRES
+    /// [`replica_safe`](Self::replica_safe) AND every present port field set to
+    /// `"mint"` (a literal port cannot be reused across instances and weles will
+    /// NOT invent a per-replica offset — anti-magic, fail closed).
+    ///
+    /// weles stays domain-BLIND: it knows how to run N of something, never which
+    /// modules are safe to. That is the operator's assertion — see
+    /// [`replica_safe`](Self::replica_safe).
+    #[serde(default)]
+    replicas: Option<u32>,
+    /// The operator's explicit, fail-closed assertion that running MORE THAN ONE
+    /// instance of this service is correct — i.e. the module holds NO
+    /// request-spanning in-memory state that a load-balanced follow-up request
+    /// could land on the wrong replica for (an in-flight OAuth-`state` map, a
+    /// single-redemption show-once token store — the exact class that had to move
+    /// to a shared DELETE-RETURNING table before replicas were safe).
+    ///
+    /// weles CANNOT audit a module for that state (it is domain-blind), so it
+    /// refuses to fan a service out to `replicas > 1` unless this assertion is
+    /// present — a NEW module with that bug class cannot silently inherit
+    /// replicas. `false` (the default) with `replicas > 1` is a loud
+    /// [`expand_service`] error; the flag is a no-op for a single instance
+    /// (always safe).
+    #[serde(default)]
+    replica_safe: bool,
 }
 
 // NOTE: no per-service `passthrough` field. The Step-1 owned `ServiceDef` has
@@ -207,10 +235,108 @@ fn parse(text: &str) -> Result<Fleet> {
 
     let mut services = Vec::with_capacity(raw.service.len());
     for entry in raw.service {
-        services.push(to_service_def(entry)?);
+        services.extend(expand_service(entry)?);
     }
 
     Ok(Fleet { prepare, passthrough: raw.passthrough, services })
+}
+
+/// Unfolds one authored [`ServiceEntry`] into the owned [`ServiceDef`]s the
+/// supervisor spawns, applying the `replicas` sugar and its fail-closed guard.
+///
+/// This is the AUTHORITY for "may this entry run N instances" — a property of
+/// the entry itself, checked HERE (where `replicas`, `replica_safe` and the port
+/// fields all coexist), the same per-entry conversion seam that already rejects
+/// `resolve = "asks"` carrying peers in [`to_service_def`]. It is NOT a
+/// cross-service [`validate`] rule: nothing about another service decides it.
+/// (The cross-service consequence — a Told peer to the now-replicated provider —
+/// is [`validate_no_told_peer_to_replicated_provider`]'s job, and fires on the
+/// expansion this produces.)
+///
+/// Rules for `replicas > 1`:
+/// - `replica_safe = true` MUST be set (weles is domain-blind and cannot audit
+///   the module for request-spanning in-memory state — the operator asserts it);
+/// - every present port field MUST be `"mint"` — an OS-assigned free port per
+///   instance is the ONE way weles produces distinct ports without inventing a
+///   per-replica offset (anti-magic). A literal port would collide across
+///   instances; `player_port` is not mintable (the one public player front is a
+///   fixed port), so a service carrying one cannot be replicated.
+///
+/// Absent / `1` ⇒ exactly one def, name and ports untouched (the common case).
+fn expand_service(entry: ServiceEntry) -> Result<Vec<ServiceDef>> {
+    let replicas = entry.replicas.unwrap_or(1);
+    let replica_safe = entry.replica_safe;
+    // Convert first: `base` carries the resolved name/ports/addrs the checks and
+    // the clones both read (`resolve`/`peer` are already folded into `Addrs`).
+    let base = to_service_def(entry)?;
+
+    if replicas == 0 {
+        bail!(
+            "service {:?}: replicas = 0 runs nothing — omit the key (or set 1) for a single \
+             instance",
+            base.name
+        );
+    }
+    if replicas == 1 {
+        // A single instance is always safe: `replica_safe` (if the operator set
+        // it) is a harmless no-op here, and the ports stay exactly as authored.
+        return Ok(vec![base]);
+    }
+
+    // replicas >= 2 — the fail-closed future-guard. weles does NOT carry a
+    // per-module "replica-safe" list (that would be domain knowledge in a
+    // domain-blind orchestrator); it enforces that the operator's assertion
+    // EXISTS.
+    if !replica_safe {
+        bail!(
+            "service {:?}: replicas = {replicas} but replica_safe is not set. Running more than \
+             one instance requires an explicit `replica_safe = true` assertion — the operator \
+             confirming this module holds NO request-spanning in-memory state (an in-flight \
+             OAuth-state map, a single-redemption show-once token store) that a load-balanced \
+             follow-up request could land on the wrong replica for. weles is domain-blind and \
+             cannot audit the module itself; set replica_safe = true only after verifying such \
+             state lives in a shared store.",
+            base.name
+        );
+    }
+
+    // Distinct ports come from minting: each instance binds its own free OS port
+    // at spawn (`supervisor::mint_fleet_ports`, which already draws a distinct
+    // port per Mint field). weles will NOT guess a per-replica literal offset.
+    if !base.http_port.is_mint() {
+        bail!(
+            "service {:?}: replicas = {replicas} requires http_port = \"mint\" — instances need \
+             distinct ports and weles mints one per instance rather than inventing a per-replica \
+             literal offset (a literal http_port would collide across instances)",
+            base.name
+        );
+    }
+    if base.edge_port.is_some_and(|port| !port.is_mint()) {
+        bail!(
+            "service {:?}: replicas = {replicas} requires edge_port = \"mint\" (or omitted) — a \
+             literal edge port would collide across instances",
+            base.name
+        );
+    }
+    if base.player_port.is_some() {
+        bail!(
+            "service {:?}: replicas = {replicas} but player_port is set — the player-QUIC front \
+             is a single fixed public port (not mintable), so a service serving it cannot be \
+             replicated",
+            base.name
+        );
+    }
+
+    // N copies: distinct `#i` names (the supervisor state/log key), same
+    // provider (so the expansion IS a replicated provider — the Told-peer guard
+    // fires on it), same addrs/env/ports (each Mint port mints independently).
+    let mut defs = Vec::with_capacity(replicas as usize);
+    for i in 1..=replicas {
+        let mut def = base.clone();
+        def.name = format!("{}#{i}", base.name);
+        defs.push(def);
+    }
+    Ok(defs)
 }
 
 /// Converts one authored [`ServiceEntry`] into an owned [`ServiceDef`],

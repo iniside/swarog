@@ -663,6 +663,199 @@ kind = "edge"
 }
 
 // ---------------------------------------------------------------------------
+// `replicas` sugar + the fail-closed `replica_safe` future-guard (B2). weles is
+// DOMAIN-BLIND: it carries no per-module "replica-safe" list; it enforces that
+// the operator's `replica_safe = true` assertion EXISTS before fanning a service
+// out to N instances. Distinct ports come from minting (`"mint"` per port
+// field), never a guessed per-replica literal offset.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn replicas_without_replica_safe_fails_closed() {
+    // The FUTURE-GUARD's branch: a service asks for two instances but does NOT
+    // assert replica_safe. A new module with request-spanning in-memory state
+    // must not silently inherit replicas — this fails closed at expansion.
+    let text = r#"
+[[service]]
+name = "characters-svc"
+pkg = "characters-svc"
+provider = "characters"
+http_port = "mint"
+replicas = 2
+"#;
+    let err = parse(text).expect_err("replicas > 1 without replica_safe must fail closed");
+    let msg = chain(&err);
+    assert!(msg.contains("characters-svc"), "names the offending service: {msg}");
+    assert!(msg.contains("replica_safe"), "names the missing assertion: {msg}");
+    assert!(
+        msg.contains("domain-blind"),
+        "explains weles cannot audit the module itself: {msg}"
+    );
+}
+
+#[test]
+fn replicas_with_replica_safe_expands_to_distinct_minted_instances() {
+    // The permitted branch: replica_safe asserted AND every port field "mint".
+    // One [[service]] unfolds into TWO owned ServiceDefs with distinct #-suffixed
+    // names, each carrying Port::Mint (the agent binds a distinct free port per
+    // instance), and the whole fleet validates.
+    let text = r#"
+[[service]]
+name = "characters-svc"
+pkg = "characters-svc"
+provider = "characters"
+http_port = "mint"
+edge_port = "mint"
+replicas = 2
+replica_safe = true
+"#;
+    let fleet = parsed(text);
+    let chars: Vec<_> = fleet
+        .services
+        .iter()
+        .filter(|s| s.provider.as_deref() == Some("characters"))
+        .collect();
+    assert_eq!(chars.len(), 2, "replicas = 2 expands to two ServiceDefs");
+    let names: Vec<&str> = chars.iter().map(|s| s.name.as_str()).collect();
+    assert!(names.contains(&"characters-svc#1"), "distinct #1 name: {names:?}");
+    assert!(names.contains(&"characters-svc#2"), "distinct #2 name: {names:?}");
+    assert!(
+        chars.iter().all(|s| s.http_port == Port::Mint && s.edge_port == Some(Port::Mint)),
+        "each instance keeps its Mint ports so the agent binds distinct free ports"
+    );
+    validate(&fleet).expect("two minted replica instances must validate");
+}
+
+#[test]
+fn a_told_peer_to_a_replicas_expanded_provider_is_rejected() {
+    // The existing replicated-provider guard fires on the EXPANSION: replicas = 2
+    // produces two same-provider defs, so a THIRD service Told that provider over
+    // HTTP resolves to only the first replica and must fail. (HTTP so there is no
+    // boot-order rule and the replicated-provider branch is the one that fires,
+    // ahead of the mintable-provider check in validate's order.)
+    let text = r#"
+[[service]]
+name = "characters-svc"
+pkg = "characters-svc"
+provider = "characters"
+http_port = "mint"
+replicas = 2
+replica_safe = true
+
+[[service]]
+name = "consumer-svc"
+pkg = "consumer-svc"
+provider = "consumer"
+http_port = 8082
+
+[[service.peer]]
+env_key = "CHARACTERS_HTTP_ADDR"
+provider = "characters"
+kind = "http"
+"#;
+    let err =
+        validate(&parsed(text)).expect_err("a Told peer to a replicas-expanded provider must fail");
+    let msg = chain(&err);
+    assert!(msg.contains("consumer-svc"), "names the consumer: {msg}");
+    assert!(msg.contains("CHARACTERS_HTTP_ADDR"), "names the peer env_key: {msg}");
+    assert!(msg.contains('2'), "names the instance count from the expansion: {msg}");
+    assert!(
+        msg.contains("resolve=\"asks\""),
+        "points at the fix for a replicated provider: {msg}"
+    );
+}
+
+#[test]
+fn replicas_unset_or_one_stays_a_single_def_with_no_flag() {
+    // Absent replicas ⇒ one def, name untouched, no replica_safe needed.
+    let unset = r#"
+[[service]]
+name = "characters-svc"
+pkg = "characters-svc"
+provider = "characters"
+http_port = 8080
+"#;
+    let fleet = parsed(unset);
+    assert_eq!(fleet.services.len(), 1, "absent replicas ⇒ one instance");
+    assert_eq!(fleet.services[0].name, "characters-svc", "single instance keeps its bare name");
+    validate(&fleet).expect("a single-instance service needs no replica_safe");
+
+    // replicas = 1 is the same: single def, literal port fine (no minting forced),
+    // no replica_safe assertion required.
+    let one = r#"
+[[service]]
+name = "characters-svc"
+pkg = "characters-svc"
+provider = "characters"
+http_port = 8080
+replicas = 1
+"#;
+    let fleet = parsed(one);
+    assert_eq!(fleet.services.len(), 1, "replicas = 1 ⇒ one instance");
+    assert_eq!(fleet.services[0].name, "characters-svc", "no #-suffix for a single instance");
+    assert_eq!(fleet.services[0].http_port, Port::Literal(8080), "literal port kept as authored");
+    validate(&fleet).expect("replicas = 1 needs no replica_safe");
+}
+
+#[test]
+fn replicas_with_a_literal_port_fails_closed() {
+    // Sibling guard: replica_safe is asserted, but http_port is a LITERAL. weles
+    // will NOT reuse or guess per-replica ports (anti-magic) — replicas need
+    // minted ports, so this fails closed rather than colliding two instances on
+    // one port.
+    let text = r#"
+[[service]]
+name = "characters-svc"
+pkg = "characters-svc"
+provider = "characters"
+http_port = 8080
+replicas = 2
+replica_safe = true
+"#;
+    let err = parse(text).expect_err("replicas on a literal port must fail closed");
+    let msg = chain(&err);
+    assert!(msg.contains("characters-svc"), "names the offending service: {msg}");
+    assert!(msg.contains("http_port = \"mint\""), "points at minting as the fix: {msg}");
+}
+
+#[test]
+fn replicas_with_a_player_port_fails_closed() {
+    // A player-QUIC front is a single fixed public port (not mintable), so a
+    // service serving one cannot be replicated — fail closed rather than collide.
+    let text = r#"
+[[service]]
+name = "gateway-svc"
+pkg = "gateway-svc"
+provider = "gateway"
+http_port = "mint"
+player_port = 9100
+replicas = 2
+replica_safe = true
+"#;
+    let err = parse(text).expect_err("replicas with a player_port must fail closed");
+    let msg = chain(&err);
+    assert!(msg.contains("gateway-svc"), "names the offending service: {msg}");
+    assert!(msg.contains("player_port"), "names the un-mintable fixed front port: {msg}");
+}
+
+#[test]
+fn replicas_zero_is_rejected() {
+    // replicas = 0 would run nothing — a loud error, never a silent no-op.
+    let text = r#"
+[[service]]
+name = "characters-svc"
+pkg = "characters-svc"
+provider = "characters"
+http_port = "mint"
+replicas = 0
+"#;
+    let err = parse(text).expect_err("replicas = 0 must fail");
+    let msg = chain(&err);
+    assert!(msg.contains("characters-svc"), "names the offending service: {msg}");
+    assert!(msg.contains("runs nothing"), "explains why zero is rejected: {msg}");
+}
+
+// ---------------------------------------------------------------------------
 // The two SHIPPED fixtures must parse AND validate — they are the exact files
 // `weles up` boots and verifyctl's `weles-managed-gateway` loads, so a typo or
 // a boot-order/port mistake in either must fail HERE, not at a live rollout.
