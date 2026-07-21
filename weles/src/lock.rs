@@ -154,6 +154,55 @@ pub fn acquire(root: &Path, run_id: &str) -> Result<RolloutLock> {
     Ok(RolloutLock { file, path })
 }
 
+/// RAII ownership of the `deploy/`-scoped mutator lock. Dropping it releases the
+/// flock/byte-range lock and closes the handle.
+#[derive(Debug)]
+pub struct DeployLock {
+    // Held open — closing it releases the lock on both platforms. Read in `Drop`
+    // for the best-effort explicit unlock (so the field is live, not dead).
+    file: File,
+}
+
+impl Drop for DeployLock {
+    fn drop(&mut self) {
+        let _ = imp::unlock(&self.file);
+    }
+}
+
+/// Acquires `<deploy>/.deploy.lock` exclusively and non-blockingly (creating the
+/// deploy directory if absent), serializing the two `current`-pointer mutators —
+/// `weles deploy` and `weles rollback` — against each other so they can never
+/// interleave a generation stage / `current` flip. A second concurrent mutator
+/// gets a loud, immediate error naming the path.
+///
+/// DISTINCT from `run/rollout.lock` (the one-Postgres rollout mutex `acquire`
+/// takes): a live `up` never stages or flips `current` (PIN-AT-DISCOVER), so it
+/// never contends here — a `deploy`/`rollback` under a live fleet stays
+/// non-blocking. Reuses the same platform primitives as the rollout lock
+/// (`imp::open_lock_file` → owner-only DACL on Windows / mode 0600 on Unix, then
+/// `imp::try_lock_exclusive`), on a SEPARATE file, so the two never contend.
+/// flock is per open-file-description and `LockFileEx` per handle, so even a
+/// second handle in the SAME process contends — the mutual exclusion holds
+/// across separate `weles` invocations exactly as it does across threads.
+pub fn acquire_deploy(deploy_dir: &Path) -> Result<DeployLock> {
+    std::fs::create_dir_all(deploy_dir)
+        .with_context(|| format!("create deploy directory {}", deploy_dir.display()))?;
+    let path = deploy_dir.join(".deploy.lock");
+
+    let file =
+        imp::open_lock_file(&path).with_context(|| format!("open {}", path.display()))?;
+    let acquired = imp::try_lock_exclusive(&file)
+        .with_context(|| format!("acquire deploy lock {}", path.display()))?;
+    if !acquired {
+        bail!(
+            "another `weles deploy`/`weles rollback` owns {} — only one may mutate the \
+             `current` pointer at a time; wait for it to finish before re-running",
+            path.display()
+        );
+    }
+    Ok(DeployLock { file })
+}
+
 // Counts entries into `acquire` on THIS thread. `cargo test` runs each test on
 // its own thread, so the count is per-test and unaffected by tests running in
 // parallel. The borrow tests assert it stays at ZERO — proving the borrow path

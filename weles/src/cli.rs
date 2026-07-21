@@ -18,6 +18,11 @@ pub enum Command {
     Deploy { src_dir: String, fleet: String, root: Option<PathBuf> },
     Status { root: Option<PathBuf> },
     Down { root: Option<PathBuf> },
+    /// Repoint `<root>/deploy/current` at an earlier generation. `generation` is
+    /// the optional target (`gen-<N>` or a bare `<N>`); when omitted, rollback
+    /// picks the highest good generation below the current one. `root` is the
+    /// optional `--root <path>` override.
+    Rollback { generation: Option<String>, root: Option<PathBuf> },
     /// Hidden test fixture for the platform containment tests — not listed
     /// in USAGE.
     TestChild {
@@ -34,6 +39,7 @@ weles - standalone fleet-supervisor CLI
 USAGE:
   weles deploy <src-dir> --fleet <fleet.toml> [--root <path>]
   weles up [--dry-run] [--root <path>]
+  weles rollback [<generation>] [--root <path>]
   weles status [--root <path>]
   weles down [--root <path>]
 
@@ -43,7 +49,9 @@ it back from <root>/deploy and boots it. `up --dry-run` validates the deployed
 fleet.toml and exits without acquiring the rollout lock, running a prepare hook,
 or spawning. weles never builds — it executes only the binaries staged into
 <root>/deploy by `weles deploy` (<src-dir> resolves relative to the current
-directory).
+directory). `rollback` repoints <root>/deploy/current at an earlier staged
+generation (verifying its integrity against the recorded manifest first); with
+no <generation> it picks the highest good generation below the current one.
 
 --root <path> pins the fleet root (state/lock/deploy live under it); without it,
 WELES_ROOT then a walk up from the current directory to the repo marker decide
@@ -119,6 +127,25 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command> {
                 bail!("deploy requires --fleet <fleet.toml>\n\n{USAGE}");
             };
             Ok(Command::Deploy { src_dir, fleet, root })
+        }
+        "rollback" => {
+            let mut generation: Option<String> = None;
+            let mut root: Option<PathBuf> = None;
+            while let Some(arg) = args.next() {
+                match arg.as_str() {
+                    "--root" => take_root(&mut root, &mut args)?,
+                    other if other.starts_with("--") => {
+                        bail!("unknown argument {other:?}\n\n{USAGE}")
+                    }
+                    _ => {
+                        if generation.is_some() {
+                            bail!("rollback takes a single target generation\n\n{USAGE}");
+                        }
+                        generation = Some(arg);
+                    }
+                }
+            }
+            Ok(Command::Rollback { generation, root })
         }
         "status" => Ok(Command::Status { root: parse_root_only(args)? }),
         "down" => Ok(Command::Down { root: parse_root_only(args)? }),

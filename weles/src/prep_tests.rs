@@ -94,6 +94,9 @@ fn discover_fixes_bin_dir_at_root_deploy() {
         "[[service]]\nname = \"server\"\npkg = \"server\"\nhttp_port = 8080\n",
     )
     .expect("stage a minimal fleet.toml");
+    // discover now verifies the pinned generation against its manifest, so a
+    // manually-staged generation needs a matching manifest.json.
+    write_manifest_for(&root.join("deploy").join("gen-1"));
     let layout = Layout::discover(root.clone()).expect("discover layout");
 
     assert_eq!(layout.root, root);
@@ -676,5 +679,244 @@ fn resolve_root_no_marker_no_flag_no_env_errors() {
         message.contains("--root") && message.contains("WELES_ROOT"),
         "error must guide the operator to --root/WELES_ROOT: {message}"
     );
+}
+
+// ---- A1: sha-verify-on-read + `weles rollback` ---------------------------
+
+/// Writes a `manifest.json` into `gen_dir` covering every regular file present
+/// (except `manifest.json` itself), with REAL SHA-256/lengths — so a
+/// manually-staged generation passes [`verify_generation`], exactly as one
+/// staged by `deploy` would. The generation number is parsed from the dir name.
+fn write_manifest_for(gen_dir: &Path) {
+    let gen = parse_generation(gen_dir.file_name().expect("gen dir name"))
+        .expect("gen-<N> dir name");
+    let mut artifacts = Vec::new();
+    let mut fleet = None;
+    for entry in std::fs::read_dir(gen_dir).expect("read gen dir") {
+        let entry = entry.expect("dir entry");
+        if !entry.path().is_file() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name == "manifest.json" {
+            continue;
+        }
+        let (sha256, bytes) = hash_file(&entry.path()).expect("hash artifact");
+        let artifact = Artifact { pkg: name.clone(), file: name.clone(), sha256, bytes };
+        if name == "fleet.toml" {
+            fleet = Some(artifact);
+        } else {
+            artifacts.push(artifact);
+        }
+    }
+    let manifest = GenerationManifest {
+        gen,
+        artifacts,
+        fleet: fleet.expect("a fleet.toml artifact"),
+    };
+    std::fs::write(
+        gen_dir.join("manifest.json"),
+        serde_json::to_vec_pretty(&manifest).expect("serialize manifest"),
+    )
+    .expect("write manifest.json");
+}
+
+#[test]
+fn verify_generation_fails_on_a_tampered_artifact() {
+    // THE dead-hash path now lives: flip a byte in a staged binary AFTER the
+    // manifest recorded its digest ⇒ verify_generation must catch the mismatch.
+    let root = temp_dir("verify-tamper");
+    let layout = deploy_layout(&root);
+    let src = temp_dir("verify-tamper-src");
+    stage_full_source(&src, b"original artifact bytes");
+    deploy_fx(&layout, &src).expect("deploy gen-1");
+
+    let gen_dir = root.join("deploy").join("gen-1");
+    verify_generation(&gen_dir).expect("a freshly-staged generation verifies clean");
+
+    let pkg = deploy_packages(&split_fleet())[0].clone();
+    let victim = gen_dir.join(format!("{pkg}{}", std::env::consts::EXE_SUFFIX));
+    let mut bytes = std::fs::read(&victim).expect("read staged binary");
+    bytes[0] ^= 0xff; // same length ⇒ a pure content/digest mismatch
+    std::fs::write(&victim, &bytes).expect("tamper the staged binary");
+
+    let error = verify_generation(&gen_dir).expect_err("tampered artifact must fail verification");
+    let message = format!("{error:#}");
+    assert!(
+        message.contains(&pkg) && message.contains("sha256"),
+        "must name the offending artifact and the hash mismatch: {message}"
+    );
+}
+
+#[test]
+fn verify_generation_fails_on_a_missing_manifest() {
+    // A generation dir with binaries but no manifest.json has nothing to verify
+    // against ⇒ fail closed (never silently trust an unrecorded generation).
+    let root = temp_dir("verify-nomanifest");
+    let gen_dir = root.join("deploy").join("gen-1");
+    std::fs::create_dir_all(&gen_dir).expect("gen-1");
+    std::fs::write(gen_dir.join("server.exe"), b"binary").expect("stage a binary");
+
+    let error = verify_generation(&gen_dir).expect_err("missing manifest must fail");
+    assert!(
+        format!("{error:#}").contains("manifest"),
+        "error must name the manifest: {error:#}"
+    );
+}
+
+#[test]
+fn discover_verifies_the_pinned_generation_and_rejects_tampering() {
+    // The wired authority: Layout::discover runs verify_generation before it
+    // hands back a bootable layout, so a tampered pinned generation fails the
+    // discover (before the rollout lock is even taken), not as an opaque exec
+    // crash later.
+    let root = temp_dir("discover-verify");
+    let layout = deploy_layout(&root);
+    let src = temp_dir("discover-verify-src");
+    stage_full_source(&src, b"good bytes");
+    deploy_fx(&layout, &src).expect("deploy gen-1");
+    Layout::discover(root.clone()).expect("a clean generation discovers fine");
+
+    let pkg = deploy_packages(&split_fleet())[0].clone();
+    let victim = root
+        .join("deploy")
+        .join("gen-1")
+        .join(format!("{pkg}{}", std::env::consts::EXE_SUFFIX));
+    let mut bytes = std::fs::read(&victim).expect("read staged");
+    bytes[0] ^= 0xff;
+    std::fs::write(&victim, &bytes).expect("tamper");
+
+    let error = Layout::discover(root).expect_err("discover must reject a tampered generation");
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("integrity") || message.contains(&pkg),
+        "discover error must reflect the integrity failure: {message}"
+    );
+}
+
+#[test]
+fn rollback_repoints_current_to_the_predecessor_and_up_boots_it() {
+    let root = temp_dir("rollback-predecessor");
+    let layout = deploy_layout(&root);
+    let v1 = temp_dir("rb-v1");
+    stage_full_source(&v1, b"v1 bytes");
+    deploy_fx(&layout, &v1).expect("gen-1");
+    let v2 = temp_dir("rb-v2");
+    stage_full_source(&v2, b"v2 bytes");
+    deploy_fx(&layout, &v2).expect("gen-2");
+
+    // current is gen-2; a no-target rollback picks gen-1 (highest good below).
+    rollback(&deploy_layout(&root), None).expect("rollback to predecessor");
+    assert_eq!(
+        std::fs::read_to_string(root.join("deploy").join("current")).unwrap().trim(),
+        "gen-1"
+    );
+
+    // A subsequent boot pins + verifies gen-1 and resolves the OLDER bytes.
+    let up = Layout::discover(root.clone()).expect("discover pins gen-1 after rollback");
+    assert_eq!(up.active_bin_dir, root.join("deploy").join("gen-1"));
+    let pkg = deploy_packages(&split_fleet())[0].clone();
+    assert_eq!(std::fs::read(up.binary(&pkg)).unwrap(), b"v1 bytes");
+}
+
+#[test]
+fn rollback_accepts_an_explicit_bare_number_target() {
+    let root = temp_dir("rollback-explicit");
+    let layout = deploy_layout(&root);
+    let v1 = temp_dir("rbx-v1");
+    stage_full_source(&v1, b"one");
+    deploy_fx(&layout, &v1).expect("gen-1");
+    let v2 = temp_dir("rbx-v2");
+    stage_full_source(&v2, b"two");
+    deploy_fx(&layout, &v2).expect("gen-2");
+
+    // Bare "1" normalizes to gen-1 (proves normalize_generation_name).
+    rollback(&deploy_layout(&root), Some("1")).expect("explicit bare-number target");
+    assert_eq!(
+        std::fs::read_to_string(root.join("deploy").join("current")).unwrap().trim(),
+        "gen-1"
+    );
+}
+
+#[test]
+fn rollback_refuses_a_target_with_a_corrupt_manifest_and_leaves_current() {
+    let root = temp_dir("rollback-corrupt");
+    let layout = deploy_layout(&root);
+    let v1 = temp_dir("rbc-v1");
+    stage_full_source(&v1, b"one");
+    deploy_fx(&layout, &v1).expect("gen-1");
+    let v2 = temp_dir("rbc-v2");
+    stage_full_source(&v2, b"two");
+    deploy_fx(&layout, &v2).expect("gen-2");
+
+    // Corrupt gen-1's manifest ⇒ verify_generation fails ⇒ rollback refused.
+    std::fs::write(
+        root.join("deploy").join("gen-1").join("manifest.json"),
+        b"{ not valid json",
+    )
+    .expect("corrupt gen-1 manifest");
+
+    let error = rollback(&deploy_layout(&root), Some("gen-1"))
+        .expect_err("a corrupt-manifest target must be refused");
+    assert!(
+        format!("{error:#}").contains("gen-1"),
+        "error must name the refused target: {error:#}"
+    );
+    // current was NOT flipped — still gen-2.
+    assert_eq!(
+        std::fs::read_to_string(root.join("deploy").join("current")).unwrap().trim(),
+        "gen-2",
+        "a refused rollback must not repoint current"
+    );
+}
+
+#[test]
+fn rollback_predecessor_skips_a_manifestless_generation() {
+    let root = temp_dir("rollback-skip");
+    let layout = deploy_layout(&root);
+    let src = temp_dir("rbs-src");
+    stage_full_source(&src, b"bytes");
+    deploy_fx(&layout, &src).expect("gen-1");
+    deploy_fx(&layout, &src).expect("gen-2");
+    deploy_fx(&layout, &src).expect("gen-3");
+    // Retention kept gen-2 + gen-3 (gen-1 pruned). Remove gen-2's manifest so it
+    // is no longer a valid predecessor (an abandoned-partial shape).
+    std::fs::remove_file(root.join("deploy").join("gen-2").join("manifest.json"))
+        .expect("remove gen-2 manifest");
+
+    // Predecessor of gen-3 is gen-2 (skipped: manifest-less) and gen-1 is gone ⇒
+    // nothing good to roll back to.
+    let error = rollback(&deploy_layout(&root), None)
+        .expect_err("no good predecessor ⇒ rollback refused");
+    assert!(
+        format!("{error:#}").contains("nothing to roll back to"),
+        "error must say there is nothing to roll back to: {error:#}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("deploy").join("current")).unwrap().trim(),
+        "gen-3",
+        "a refused predecessor rollback must not repoint current"
+    );
+}
+
+#[test]
+fn deploy_lock_serializes_current_mutators() {
+    // The deploy/-scoped mutator lock (DISTINCT from run/rollout.lock) is held
+    // exclusively: a second acquire while the first is live fails loudly, and it
+    // is re-acquirable once released. flock/LockFileEx contend even between two
+    // handles in ONE process, so this same mutual exclusion holds across
+    // separate `weles deploy`/`rollback` invocations.
+    let root = temp_dir("deploy-lock");
+    let deploy = root.join("deploy");
+    let first = crate::lock::acquire_deploy(&deploy).expect("first acquire creates + locks");
+    let error = crate::lock::acquire_deploy(&deploy)
+        .expect_err("a second concurrent mutator must be refused");
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("deploy") && message.contains("rollback"),
+        "must name the deploy/rollback mutator contention: {message}"
+    );
+    drop(first);
+    crate::lock::acquire_deploy(&deploy).expect("re-acquire succeeds after release");
 }
 

@@ -38,6 +38,7 @@ fn run(command: Command) -> Result<()> {
     match command {
         Command::Up { dry_run, root } => up(dry_run, root),
         Command::Deploy { src_dir, fleet, root } => deploy(&src_dir, &fleet, root),
+        Command::Rollback { generation, root } => rollback(generation.as_deref(), root),
         Command::Status { root } => status(root),
         Command::Down { root } => down(root),
         Command::TestChild {
@@ -86,6 +87,16 @@ fn dry_run_fleet(root: Option<PathBuf>) -> Result<()> {
 fn deploy(src_dir: &str, fleet: &str, root: Option<PathBuf>) -> Result<()> {
     let layout = supervisor::discover_layout_for_deploy(root)?;
     prep::deploy(&layout, Path::new(src_dir), Path::new(fleet))
+}
+
+/// `weles rollback [<generation>]`: repoint `<root>/deploy/current` at an
+/// earlier staged generation. Like `deploy`, it mutates `current` without
+/// requiring a pinned generation, so it uses the deploy-path layout (a fresh
+/// checkout with nothing deployed simply has nothing to roll back to, which
+/// `prep::rollback` reports).
+fn rollback(generation: Option<&str>, root: Option<PathBuf>) -> Result<()> {
+    let layout = supervisor::discover_layout_for_deploy(root)?;
+    prep::rollback(&layout, generation)
 }
 
 /// `weles status`: reports the recorded fleet, connecting to a live supervisor

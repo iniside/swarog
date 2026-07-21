@@ -168,6 +168,17 @@ impl Layout {
     pub fn discover(root: PathBuf) -> Result<Self> {
         let (run_dir, bin_dir) = Self::scaffold(&root)?;
         let active_bin_dir = pin_generation(&bin_dir)?;
+        // Integrity gate (M1): before this `up` spawns anything, recompute every
+        // staged artifact's SHA-256 from disk and compare to the pinned
+        // generation's manifest. This is the read-back of the hash `deploy`
+        // records (dead until now), so a torn/tampered binary is a legible
+        // pre-boot failure — before the lock is even acquired — instead of an
+        // opaque exec crash. `deploy` writes the manifest only after every
+        // copy+hash succeeds and BEFORE it flips `current`, so a `current` that
+        // names this generation always has a complete manifest to verify.
+        verify_generation(&active_bin_dir).with_context(|| {
+            format!("verify the pinned generation {}", active_bin_dir.display())
+        })?;
         // PIN-AT-DISCOVER for the fleet too: read+parse+VALIDATE the deployed
         // `fleet.toml` from the pinned generation exactly ONCE here, so a
         // running `up` boots one coherent fleet definition and never re-reads
@@ -402,11 +413,20 @@ pub fn validate_binaries(layout: &Layout, packages: &[String]) -> Result<()> {
 /// binary).
 ///
 /// Concurrency: this is deploy↔up coupling (deploy reads `state.json`), but
-/// deploy takes NO lock. Two concurrent `weles deploy` invocations share a
-/// computed `next_generation` and can corrupt a generation — run at most ONE
-/// `weles deploy` at a time (an operator discipline for M0; a deploy-scoped
-/// guard is M1's job, tracked with `weles rollback`).
+/// deploy takes NO rollout lock. It DOES take the `deploy/`-scoped mutator lock
+/// ([`crate::lock::acquire_deploy`]) — shared with `weles rollback` — so two
+/// `current`-pointer mutators can never interleave a `next_generation` /
+/// `current` flip and corrupt a generation (the M0 "run at most ONE `weles
+/// deploy` at a time" operator discipline, now enforced; the M1 guard the module
+/// doc tracked). A live `up` never contends on it (PIN-AT-DISCOVER: it neither
+/// stages nor flips `current`), so a deploy under a live fleet stays
+/// non-blocking.
 pub fn deploy(layout: &Layout, src_dir: &Path, fleet_path: &Path) -> Result<()> {
+    // Serialize against a concurrent `deploy`/`rollback` (the only other
+    // `current`-mutators) for the whole stage-and-flip. DISTINCT from
+    // run/rollout.lock; held for this function's lifetime by the RAII guard.
+    let _mutator_lock = crate::lock::acquire_deploy(&layout.bin_dir)?;
+
     // Parse AND validate the chosen fleet FIRST — before staging anything: a
     // bad fleet must abort the deploy loudly (naming the offending rule), not
     // stamp an invalid fleet a later `up` would only reject at discover. This
@@ -544,6 +564,133 @@ pub fn deploy(layout: &Layout, src_dir: &Path, fleet_path: &Path) -> Result<()> 
     Ok(())
 }
 
+/// `weles rollback [<target>]`: repoint `deploy/current` at an earlier staged
+/// generation. `target` is either an explicit `gen-<N>` / bare `<N>`
+/// ([`normalize_generation_name`]) or, when `None`, the highest good generation
+/// strictly below the current one ([`predecessor_generation`]).
+///
+/// The target is VALIDATED before the flip: it must exist AND pass
+/// [`verify_generation`] (a torn/tampered/manifest-less generation is refused so
+/// rollback never repoints `current` at a generation the next `up` would only
+/// reject at discover). Only then does [`flip_current`] atomically repoint
+/// `current` — so a failed rollback leaves the live source of record untouched,
+/// exactly like a partial deploy.
+///
+/// Concurrency: like `deploy`, rollback takes the `deploy/`-scoped mutator lock
+/// (NOT the rollout lock) so it can never interleave with a concurrent
+/// `deploy`/`rollback`. A live `up` is immune (PIN-AT-DISCOVER).
+///
+/// Retention: after the flip, rollback prunes with the SAME authority as
+/// `deploy` — protecting the new current, the PRE-FLIP current (the roll-forward
+/// target), and whatever generation a live, non-terminal supervisor recorded
+/// pinning in `state.json` (via [`live_pinned_generation`]) — so rollback never
+/// deletes the running fleet's binaries.
+pub fn rollback(layout: &Layout, target: Option<&str>) -> Result<()> {
+    // Serialize against a concurrent `deploy`/`rollback` for the whole
+    // validate-and-flip. DISTINCT from run/rollout.lock; RAII-held.
+    let _mutator_lock = crate::lock::acquire_deploy(&layout.bin_dir)?;
+
+    let pre_flip_current = read_current_generation(&layout.bin_dir);
+
+    let target_name = match target {
+        Some(explicit) => normalize_generation_name(explicit)?,
+        None => {
+            let current = pre_flip_current.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "nothing is deployed under {} — there is no `current` to roll back FROM; \
+                     run `weles deploy` first",
+                    layout.bin_dir.display()
+                )
+            })?;
+            let previous = predecessor_generation(&layout.bin_dir, current).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "no earlier good generation exists below gen-{current} under {} — nothing to \
+                     roll back to",
+                    layout.bin_dir.display()
+                )
+            })?;
+            format!("gen-{previous}")
+        }
+    };
+
+    let target_dir = layout.bin_dir.join(&target_name);
+    if !target_dir.is_dir() {
+        bail!(
+            "rollback target {target_name} does not exist under {} — inspect deploy/ for the \
+             available generations",
+            layout.bin_dir.display()
+        );
+    }
+
+    // Integrity gate BEFORE the flip: a torn/tampered/manifest-less generation
+    // must never become `current`. This is the same read-back `Layout::discover`
+    // runs at boot, run here so a bad rollback fails loudly instead of arming the
+    // next `up` to fail.
+    verify_generation(&target_dir)
+        .with_context(|| format!("refusing to roll back to {target_name}"))?;
+
+    let target_gen = parse_generation(OsStr::new(&target_name))
+        .expect("normalize_generation_name/predecessor_generation produce a gen-<N> name");
+
+    flip_current(&layout.bin_dir, &target_name)?;
+    println!("weles: rolled back, current -> {target_name}");
+
+    // Same retention authority as deploy: protect the new current, the pre-flip
+    // current (roll-forward target), and whatever a live supervisor pinned.
+    let mut protected: Vec<u64> = vec![target_gen];
+    if let Some(previous) = pre_flip_current {
+        protected.push(previous);
+    }
+    if let Some(pinned) = live_pinned_generation(&layout.run_dir) {
+        protected.push(pinned);
+    }
+    prune_stale_generations(&layout.bin_dir, &layout.run_dir, &protected);
+    Ok(())
+}
+
+/// Parses an operator-supplied rollback target into a `gen-<N>` directory name.
+/// Accepts the full `gen-<N>` spelling OR a bare `<N>` (both unambiguous); any
+/// other token is a fail-closed error rather than a silent mis-target
+/// (anti-magic — never guess which generation was meant).
+fn normalize_generation_name(target: &str) -> Result<String> {
+    let target = target.trim();
+    if let Some(n) = parse_generation(OsStr::new(target)) {
+        return Ok(format!("gen-{n}"));
+    }
+    if let Ok(n) = target.parse::<u64>() {
+        return Ok(format!("gen-{n}"));
+    }
+    bail!("rollback target {target:?} is not a generation — pass `gen-<N>` or a bare `<N>`");
+}
+
+/// The highest existing, MANIFEST-BEARING generation strictly below `current` —
+/// the default `weles rollback` target. Skips the current generation, any
+/// abandoned partial (a `gen-N` dir whose `manifest.json` is absent or
+/// unparseable — never a rollback target), and any non-`gen-N` entry. `None`
+/// when there is no earlier good generation to fall back to. The full
+/// hash-level [`verify_generation`] still runs on the chosen target before the
+/// flip; this is only the "is it a plausible generation" filter.
+fn predecessor_generation(bin_dir: &Path, current: u64) -> Option<u64> {
+    let mut best: Option<u64> = None;
+    for entry in std::fs::read_dir(bin_dir).ok()?.flatten() {
+        let Some(n) = parse_generation(&entry.file_name()) else {
+            continue;
+        };
+        if n >= current {
+            continue;
+        }
+        let manifest_path = bin_dir.join(format!("gen-{n}")).join("manifest.json");
+        let Ok(bytes) = std::fs::read(&manifest_path) else {
+            continue;
+        };
+        if serde_json::from_slice::<GenerationManifest>(&bytes).is_err() {
+            continue;
+        }
+        best = Some(best.map_or(n, |b| b.max(n)));
+    }
+    best
+}
+
 /// Streams `src` to `dst`, computing the SHA-256 of the bytes written as it
 /// copies. Returns `(hex_sha256, byte_len)`.
 fn copy_and_hash(src: &Path, dst: &Path) -> Result<(String, u64)> {
@@ -590,12 +737,100 @@ fn copy_and_hash(src: &Path, dst: &Path) -> Result<(String, u64)> {
             .with_context(|| format!("set permissions on {}", dst.display()))?;
     }
 
-    let digest = hasher.finalize();
+    Ok((hex_digest(hasher.finalize()), total))
+}
+
+/// Streams `path` through SHA-256 WITHOUT copying it — the read-only twin of
+/// [`copy_and_hash`]. Returns `(hex_sha256, byte_len)`. Used by
+/// [`verify_generation`] to re-derive an artifact's digest from the bytes on
+/// disk NOW, so the hash `deploy` recorded is finally read back.
+fn hash_file(path: &Path) -> Result<(String, u64)> {
+    let mut reader = File::open(path).with_context(|| format!("open {}", path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 64 * 1024];
+    let mut total: u64 = 0;
+    loop {
+        let read = reader
+            .read(&mut buf)
+            .with_context(|| format!("read {}", path.display()))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buf[..read]);
+        total += read as u64;
+    }
+    Ok((hex_digest(hasher.finalize()), total))
+}
+
+/// Renders a finalized SHA-256 digest as lowercase hex. The single formatting
+/// authority shared by [`copy_and_hash`] (write path) and [`hash_file`] (verify
+/// path), so a staged and a re-derived digest are spelled identically.
+fn hex_digest(digest: impl AsRef<[u8]>) -> String {
+    let digest = digest.as_ref();
     let mut hex = String::with_capacity(digest.len() * 2);
     for byte in digest {
         hex.push_str(&format!("{byte:02x}"));
     }
-    Ok((hex, total))
+    hex
+}
+
+/// Verifies a staged generation directory against its `manifest.json`: LOADS the
+/// manifest, recomputes the SHA-256 and byte length of every recorded artifact
+/// (binaries + the stamped `fleet.toml`) from the bytes on disk, and compares to
+/// the recorded values. This is the READ-BACK of the hash `deploy` writes but
+/// nothing consumed before M1 — a torn, truncated, or tampered artifact (a bit
+/// flipped after staging, a half-written copy an OS crash left behind, a manual
+/// edit) is caught HERE, before the generation is ever spawned or made
+/// `current`, instead of surfacing as an opaque crash when weles execs a corrupt
+/// binary.
+///
+/// Fails loudly, enumerating every offender, on: a missing / unreadable /
+/// unparseable `manifest.json`, a manifest artifact whose file is absent or
+/// unreadable, or any length/digest mismatch.
+pub fn verify_generation(gen_dir: &Path) -> Result<()> {
+    let manifest_path = gen_dir.join("manifest.json");
+    let bytes = std::fs::read(&manifest_path).with_context(|| {
+        format!(
+            "read generation manifest {} — cannot verify the integrity of {}",
+            manifest_path.display(),
+            gen_dir.display()
+        )
+    })?;
+    let manifest: GenerationManifest = serde_json::from_slice(&bytes)
+        .with_context(|| format!("parse generation manifest {}", manifest_path.display()))?;
+
+    // Every artifact the manifest records — the staged binaries plus the stamped
+    // fleet.toml (a first-class artifact `up` reads back to learn what to boot).
+    let artifacts = manifest.artifacts.iter().chain(std::iter::once(&manifest.fleet));
+
+    let mut problems: Vec<String> = Vec::new();
+    for artifact in artifacts {
+        let path = gen_dir.join(&artifact.file);
+        match hash_file(&path) {
+            Ok((_, bytes)) if bytes != artifact.bytes => problems.push(format!(
+                "{}: byte length {bytes} != manifest {} (truncated or overwritten)",
+                artifact.file, artifact.bytes
+            )),
+            Ok((sha256, _)) if sha256 != artifact.sha256 => problems.push(format!(
+                "{}: sha256 {sha256} != manifest {} (contents changed since deploy)",
+                artifact.file, artifact.sha256
+            )),
+            Ok(_) => {}
+            Err(error) => problems.push(format!("{}: {error:#}", artifact.file)),
+        }
+    }
+
+    if problems.is_empty() {
+        return Ok(());
+    }
+    let mut message = format!(
+        "generation {} failed integrity verification against its manifest:\n",
+        gen_dir.display()
+    );
+    for problem in &problems {
+        message.push_str(&format!("  {problem}\n"));
+    }
+    bail!("{message}")
 }
 
 /// Parses a `gen-<N>` directory name into `N`. Returns `None` for anything
