@@ -528,8 +528,8 @@ struct Reporter {
     run_id: String,
     /// A plain human label for the deployed fleet (weles has no split/monolith
     /// concept) — derived from the fleet, e.g. its process count. Rendered by
-    /// `weles status`/`down` and recorded into [`FleetState::topology`].
-    topology: String,
+    /// `weles status`/`down` and recorded into [`FleetState::fleet_label`].
+    fleet_label: String,
     supervisor: ProcessIdentity,
     /// The `gen-N` this fleet pinned at `Layout::discover`, recorded into every
     /// checkpoint so a concurrent `weles deploy` protects it from retention.
@@ -559,7 +559,7 @@ impl Reporter {
         FleetState {
             run_id: self.run_id.clone(),
             supervisor: self.supervisor,
-            topology: self.topology.clone(),
+            fleet_label: self.fleet_label.clone(),
             status: self.status.get(),
             control_endpoint: self.control_endpoint.borrow().clone(),
             pinned_generation: self.pinned_generation.clone(),
@@ -693,7 +693,7 @@ pub fn run_up(root: Option<PathBuf>) -> Result<()> {
     let reporter = Reporter {
         state_path: layout.run_dir.join("state.json"),
         run_id,
-        topology: fleet_label.clone(),
+        fleet_label: fleet_label.clone(),
         supervisor,
         pinned_generation: pinned_generation.clone(),
         status: Cell::new(FleetStatus::Starting),
@@ -702,7 +702,7 @@ pub fn run_up(root: Option<PathBuf>) -> Result<()> {
         shared: Arc::new(Mutex::new(FleetState {
             run_id: String::new(),
             supervisor,
-            topology: fleet_label,
+            fleet_label,
             status: FleetStatus::Starting,
             control_endpoint: None,
             pinned_generation,

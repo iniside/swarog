@@ -314,7 +314,7 @@ fn dummy_reporter() -> Reporter {
     Reporter {
         state_path: std::env::temp_dir().join("weles-a3-unused-state.json"),
         run_id: "a3-test".to_string(),
-        topology: "split".to_string(),
+        fleet_label: "split".to_string(),
         supervisor,
         pinned_generation: None,
         status: Cell::new(FleetStatus::Starting),
@@ -322,7 +322,7 @@ fn dummy_reporter() -> Reporter {
         shared: Arc::new(Mutex::new(FleetState {
             run_id: String::new(),
             supervisor,
-            topology: "split".to_string(),
+            fleet_label: "split".to_string(),
             status: FleetStatus::Starting,
             control_endpoint: None,
             pinned_generation: None,
@@ -356,7 +356,7 @@ fn the_early_checkpoint_records_the_pin_with_an_empty_fleet() {
     let reporter = Reporter {
         state_path: state_path.clone(),
         run_id: "early-pin".to_string(),
-        topology: "split".to_string(),
+        fleet_label: "split".to_string(),
         supervisor,
         pinned_generation: Some("gen-1".to_string()),
         status: Cell::new(FleetStatus::Starting),
@@ -364,7 +364,7 @@ fn the_early_checkpoint_records_the_pin_with_an_empty_fleet() {
         shared: Arc::new(Mutex::new(FleetState {
             run_id: String::new(),
             supervisor,
-            topology: "split".to_string(),
+            fleet_label: "split".to_string(),
             status: FleetStatus::Starting,
             control_endpoint: None,
             pinned_generation: None,
@@ -547,7 +547,7 @@ fn checkpoint_critical_fails_closed_where_checkpoint_swallows() {
     let reporter = Reporter {
         state_path: missing,
         run_id: "p3".to_string(),
-        topology: "split".to_string(),
+        fleet_label: "split".to_string(),
         supervisor,
         pinned_generation: Some("gen-1".to_string()),
         status: Cell::new(FleetStatus::Starting),
@@ -555,7 +555,7 @@ fn checkpoint_critical_fails_closed_where_checkpoint_swallows() {
         shared: Arc::new(Mutex::new(FleetState {
             run_id: String::new(),
             supervisor,
-            topology: "split".to_string(),
+            fleet_label: "split".to_string(),
             status: FleetStatus::Starting,
             control_endpoint: None,
             pinned_generation: None,

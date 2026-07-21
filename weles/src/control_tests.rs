@@ -27,7 +27,7 @@ fn sample_state(status: FleetStatus, supervisor_pid: u32) -> FleetState {
             pid: supervisor_pid,
             started_unix: 1,
         },
-        topology: "split".to_string(),
+        fleet_label: "split".to_string(),
         status,
         control_endpoint: None,
         pinned_generation: None,

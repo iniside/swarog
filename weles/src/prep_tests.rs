@@ -528,7 +528,7 @@ fn write_live_pin_state(run_dir: &std::path::Path, pinned: u64) {
             pid: std::process::id(),
             started_unix: crate::control::now_unix(),
         },
-        topology: "split".to_string(),
+        fleet_label: "split".to_string(),
         status: crate::state::FleetStatus::Running,
         control_endpoint: None,
         pinned_generation: Some(format!("gen-{pinned}")),

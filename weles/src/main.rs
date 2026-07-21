@@ -161,7 +161,7 @@ fn connect_target(root: Option<PathBuf>) -> Result<Target> {
                     return Ok(Target::Report(Err(anyhow::anyhow!(
                         "weles: the {} fleet is in very early startup; the control endpoint \
                          is not bound yet — try `weles status`/`down` again in a moment",
-                        state.topology
+                        state.fleet_label
                     ))));
                 }
             },

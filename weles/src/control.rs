@@ -161,7 +161,7 @@ pub fn classify(state: &FleetState, now_unix: u64, alive: bool) -> Disposition {
     if state.status.is_terminal() {
         return Disposition::Inactive(format!(
             "weles: inactive (last {} run {})",
-            state.topology,
+            state.fleet_label,
             format!("{:?}", state.status).to_lowercase()
         ));
     }
@@ -169,7 +169,7 @@ pub fn classify(state: &FleetState, now_unix: u64, alive: bool) -> Disposition {
         return Disposition::Stale(format!(
             "weles: stale state — {} run recorded {} but its supervisor (pid {}) is not \
              running; the fleet is not up",
-            state.topology,
+            state.fleet_label,
             format!("{:?}", state.status).to_lowercase(),
             state.supervisor.pid
         ));
@@ -235,14 +235,14 @@ fn terminal_outcome(state: &FleetState) -> Option<Result<()>> {
         FleetStatus::Stopped => {
             println!(
                 "weles: {} stopped ({} services reaped)",
-                state.topology,
+                state.fleet_label,
                 state.services.len()
             );
             Some(Ok(()))
         }
         FleetStatus::Failed => Some(Err(anyhow::anyhow!(
             "weles: {} shutdown ended in a failed state",
-            state.topology
+            state.fleet_label
         ))),
         FleetStatus::Starting | FleetStatus::Running | FleetStatus::Stopping => None,
     }
@@ -258,7 +258,7 @@ fn render_status(state: &FleetState) -> String {
         .count();
     let mut out = format!(
         "weles {} — {} ({}/{} healthy)",
-        state.topology,
+        state.fleet_label,
         format!("{:?}", state.status).to_lowercase(),
         healthy,
         state.services.len()

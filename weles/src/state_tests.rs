@@ -18,7 +18,7 @@ fn sample_state() -> FleetState {
             pid: 4242,
             started_unix: 1_752_500_000,
         },
-        topology: "split".to_string(),
+        fleet_label: "split".to_string(),
         status: FleetStatus::Running,
         control_endpoint: None,
         pinned_generation: Some("gen-3".to_string()),

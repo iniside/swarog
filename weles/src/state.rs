@@ -101,7 +101,7 @@ pub struct ServiceState {
 pub struct FleetState {
     pub run_id: String,
     pub supervisor: ProcessIdentity,
-    pub topology: String,
+    pub fleet_label: String,
     /// The fleet's lifecycle status — the top-level authority a `weles down`
     /// client polls for a terminal transition.
     pub status: FleetStatus,
