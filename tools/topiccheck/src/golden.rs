@@ -52,7 +52,13 @@ const GOLDEN_HEADER: &str = "\
 # optionality: demoting Option<T> to T stops compiling) -- and
 # `rpc-body module=<crate::mod> method=<m> <serde-key-path>:<type>` from each generated
 # body_shapes() (http-bound request bodies only; PATH-WILDCARD args are excluded --
-# they travel in the route path, never the body). The last two are a SAMPLED JSON
+# they travel in the route path, never the body), and
+# `rpc-arg module=<crate::mod> method=<m> param=<p> wire_key=<k> source=<body|path:{wildcard}>`
+# from each generated describe() -- the per-arg mapping a data-driven gateway (D2)
+# reconstructs the wire request from: this is the ONLY line pinning a path-wildcard
+# arg's {wildcard} string and its wire_key (route_bindings' decode is an opaque
+# closure; rpc-body strips path-wildcard args), so a silent path_args rebind FAILs
+# here. The `payload`/`rpc-body` lines are a SAMPLED JSON
 # key/kind fingerprint -- concrete values per contract, flattened -- so a silent
 # #[serde(rename)] or a reshaped field on a sampled key lands as a golden diff.
 # KNOWN GAPS (by design, of sampling a finite value set):
@@ -84,89 +90,107 @@ fn workspace_root() -> PathBuf {
 
 /// The generated rpc modules, each referenced DIRECTLY (so a renamed/removed trait
 /// breaks this tool at compile time, the `defined_topics` idiom) and labeled with its
-/// `crate::module` path for the golden lines and the filesystem self-check. Each entry
-/// carries both `route_bindings()` (http-bound `Operation`s) and `wire_ops()` (every
-/// method's `RetryMode`, incl. wire-only) from the SAME module — one hand-list, one
-/// self-check, both value sources.
-#[allow(clippy::type_complexity)]
-fn rpc_modules() -> Vec<(
+/// `crate::module` path. Each entry carries FOUR value sources from the SAME module —
+/// `route_bindings()` (http-bound `Operation`s), `wire_ops()` (every method's
+/// `RetryMode`, incl. wire-only), `body_shapes()` (http-bound request bodies), and
+/// `describe().ops` (the `#[http]` op manifest, whose per-arg `wire_key`/`source`
+/// path-wildcard mapping NEITHER route_bindings' opaque decode closure NOR
+/// body_shapes' path-wildcard-stripped body pins — the pre-existing blind spot D2
+/// routes on). One hand-list, one self-check ([`self_check_rpc_list`]), all four
+/// value sources.
+type RpcModule = (
     &'static str,
     Vec<opsapi::RouteBinding>,
     Vec<opsapi::WireOp>,
     Vec<(&'static str, serde_json::Value)>,
-)> {
+    Vec<opsapi::OpManifest>,
+);
+
+fn rpc_modules() -> Vec<RpcModule> {
     vec![
         (
             "accountsapi::auth_rpc",
             accountsapi::auth_rpc::route_bindings(),
             accountsapi::auth_rpc::wire_ops(),
             accountsapi::auth_rpc::body_shapes(),
+            accountsapi::auth_rpc::describe().ops,
         ),
         (
             "accountsapi::sessions_rpc",
             accountsapi::sessions_rpc::route_bindings(),
             accountsapi::sessions_rpc::wire_ops(),
             accountsapi::sessions_rpc::body_shapes(),
+            accountsapi::sessions_rpc::describe().ops,
         ),
         (
             "adminapi::admin_data_rpc",
             adminapi::admin_data_rpc::route_bindings(),
             adminapi::admin_data_rpc::wire_ops(),
             adminapi::admin_data_rpc::body_shapes(),
+            adminapi::admin_data_rpc::describe().ops,
         ),
         (
             "adminapi::admin_submit_rpc",
             adminapi::admin_submit_rpc::route_bindings(),
             adminapi::admin_submit_rpc::wire_ops(),
             adminapi::admin_submit_rpc::body_shapes(),
+            adminapi::admin_submit_rpc::describe().ops,
         ),
         (
             "apikeysapi::keys_rpc",
             apikeysapi::keys_rpc::route_bindings(),
             apikeysapi::keys_rpc::wire_ops(),
             apikeysapi::keys_rpc::body_shapes(),
+            apikeysapi::keys_rpc::describe().ops,
         ),
         (
             "charactersapi::ownership_rpc",
             charactersapi::ownership_rpc::route_bindings(),
             charactersapi::ownership_rpc::wire_ops(),
             charactersapi::ownership_rpc::body_shapes(),
+            charactersapi::ownership_rpc::describe().ops,
         ),
         (
             "charactersapi::player_rpc",
             charactersapi::player_rpc::route_bindings(),
             charactersapi::player_rpc::wire_ops(),
             charactersapi::player_rpc::body_shapes(),
+            charactersapi::player_rpc::describe().ops,
         ),
         (
             "configapi::config_snapshot_rpc",
             configapi::config_snapshot_rpc::route_bindings(),
             configapi::config_snapshot_rpc::wire_ops(),
             configapi::config_snapshot_rpc::body_shapes(),
+            configapi::config_snapshot_rpc::describe().ops,
         ),
         (
             "inventoryapi::holdings_rpc",
             inventoryapi::holdings_rpc::route_bindings(),
             inventoryapi::holdings_rpc::wire_ops(),
             inventoryapi::holdings_rpc::body_shapes(),
+            inventoryapi::holdings_rpc::describe().ops,
         ),
         (
             "leaderboardapi::leaderboard_rpc",
             leaderboardapi::leaderboard_rpc::route_bindings(),
             leaderboardapi::leaderboard_rpc::wire_ops(),
             leaderboardapi::leaderboard_rpc::body_shapes(),
+            leaderboardapi::leaderboard_rpc::describe().ops,
         ),
         (
             "matchapi::match_rpc",
             matchapi::match_rpc::route_bindings(),
             matchapi::match_rpc::wire_ops(),
             matchapi::match_rpc::body_shapes(),
+            matchapi::match_rpc::describe().ops,
         ),
         (
             "ratingapi::mmr_reader_rpc",
             ratingapi::mmr_reader_rpc::route_bindings(),
             ratingapi::mmr_reader_rpc::wire_ops(),
             ratingapi::mmr_reader_rpc::body_shapes(),
+            ratingapi::mmr_reader_rpc::describe().ops,
         ),
     ]
 }
@@ -520,8 +544,8 @@ pub fn live_lines() -> anyhow::Result<BTreeSet<String>> {
         }
     }
     let modules = rpc_modules();
-    self_check_rpc_list(&modules.iter().map(|(l, _, _, _)| *l).collect::<Vec<_>>())?;
-    for (label, bindings, wire_ops, body_shapes) in modules {
+    self_check_rpc_list(&modules.iter().map(|(l, _, _, _, _)| *l).collect::<Vec<_>>())?;
+    for (label, bindings, wire_ops, body_shapes, manifest_ops) in modules {
         for rb in bindings {
             let op = rb.operation;
             lines.insert(format!(
@@ -542,6 +566,26 @@ pub fn live_lines() -> anyhow::Result<BTreeSet<String>> {
             flatten_shape("body", &value, &mut shape);
             for path in shape {
                 lines.insert(format!("rpc-body module={label} method={method} {path}"));
+            }
+        }
+        // describe() per-arg mappings (D1): the `param -> wire_key` binding and each
+        // arg's SOURCE (`body`, or `path:{wildcard}` for a `path_args` arg). This is
+        // the ONLY golden line pinning the path-wildcard string and the arg wire_key —
+        // `rpc` pins the opaque Operation (its decode is a closure), and `rpc-body`
+        // deliberately STRIPS path-wildcard args. A silent `path_args(x = "id")` ->
+        // `("wrong")` edit (which leaves verb/path/body untouched) surfaces HERE, so
+        // the data-driven gateway (D2) that routes on this mapping cannot regress
+        // through a green golden.
+        for op in manifest_ops {
+            for arg in op.args {
+                let source = match arg.source {
+                    opsapi::ArgSource::Body => "body".to_string(),
+                    opsapi::ArgSource::Path { wildcard } => format!("path:{wildcard}"),
+                };
+                lines.insert(format!(
+                    "rpc-arg module={label} method={} param={} wire_key={} source={source}",
+                    op.method, arg.param, arg.wire_key
+                ));
             }
         }
     }

@@ -70,6 +70,26 @@ pub trait Sample: Send + Sync {
         character_id: String,
     ) -> Result<Vec<Holding>, Error>;
 
+    /// HTTP-bound with BOTH a PATH wildcard arg AND a body arg carrying a `body_names`
+    /// rename — no real op in the tree combines them today, so this fixture pins that
+    /// the macro emits the two `describe()` arg mappings ORTHOGONALLY: `character_id`
+    /// from the `{id}` wildcard (`ArgSource::Path`, param-name wire key) and `note_text`
+    /// from the body under the renamed wire key `Note` (`ArgSource::Body`).
+    #[http(
+        verb = "POST",
+        path = "/sample/character/{id}/note",
+        auth = "player",
+        success = 200,
+        path_args(character_id = "id"),
+        body_names(note_text = "Note")
+    )]
+    async fn annotate(
+        &self,
+        caller: Identity,
+        character_id: String,
+        note_text: String,
+    ) -> Result<(), Error>;
+
     /// Wire-only (no `#[http]`), unauthenticated: no identity param, marshals all
     /// args. Mirrors characters' `OwnerOf`.
     #[retry_safe]

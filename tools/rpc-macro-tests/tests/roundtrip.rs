@@ -90,6 +90,18 @@ impl Sample for SampleImpl {
         }])
     }
 
+    async fn annotate(
+        &self,
+        caller: Identity,
+        _character_id: String,
+        _note_text: String,
+    ) -> Result<(), Error> {
+        caller
+            .player_id()
+            .ok_or_else(|| Error::invalid("no identity"))?;
+        Ok(())
+    }
+
     async fn owner_of(&self, character_id: String) -> Result<Owner, Error> {
         if character_id == "missing" {
             return Err(Error::not_found("no such character"));
@@ -195,8 +207,8 @@ fn client_close(_c: &sample_rpc::Client) {}
 #[test]
 fn operations_expose_only_http_methods() {
     let ops = sample_rpc::operations(Arc::new(SampleImpl));
-    // Two #[http] methods (grant, list_character); owner_of is wire-only.
-    assert_eq!(ops.len(), 2);
+    // Three #[http] methods (grant, list_character, annotate); owner_of is wire-only.
+    assert_eq!(ops.len(), 3);
 
     let grant = ops
         .iter()
@@ -221,7 +233,7 @@ fn operations_expose_only_http_methods() {
 
     // route_bindings mirrors operations minus the LocalOp.
     let rb = sample_rpc::route_bindings();
-    assert_eq!(rb.len(), 2);
+    assert_eq!(rb.len(), 3);
     assert!(rb.iter().any(|r| r.operation.method == "sample.grant"));
 
     // The consts carry the wire names.
@@ -229,6 +241,53 @@ fn operations_expose_only_http_methods() {
     assert_eq!(sample_rpc::METHOD_LIST_CHARACTER, "sample.listCharacter");
     assert_eq!(sample_rpc::METHOD_OWNER_OF, "sample.ownerOf");
     assert_eq!(sample_rpc::METHOD_FAILING_VALUE, "sample.failingValue");
+}
+
+/// `describe()` (D1) surfaces every `#[http]` op's `HttpBind` as DATA, including the
+/// per-arg `wire_key`/`source` mapping a data-driven gateway routes on. The crux this
+/// fixture pins — combined nowhere in the real tree — is one op (`annotate`) carrying
+/// BOTH a path-wildcard arg AND a `body_names`-renamed body arg: the macro must emit
+/// the two mappings orthogonally.
+#[test]
+fn describe_surfaces_orthogonal_path_and_renamed_body_args() {
+    let manifest = sample_rpc::describe();
+
+    // describe() covers exactly the #[http] ops (grant, list_character, annotate) —
+    // wire-only owner_of/find_owner/failing_value are excluded, so a new #[http] op
+    // auto-appears with no route change.
+    let described: std::collections::BTreeSet<String> =
+        manifest.ops.iter().map(|o| o.method.clone()).collect();
+    assert_eq!(
+        described,
+        ["sample.grant", "sample.listCharacter", "sample.annotate"]
+            .into_iter()
+            .map(String::from)
+            .collect()
+    );
+
+    let annotate = manifest
+        .ops
+        .iter()
+        .find(|o| o.method == "sample.annotate")
+        .expect("annotate op present");
+    assert_eq!(annotate.verb, "POST");
+    assert_eq!(annotate.path, "/sample/character/{id}/note");
+    assert_eq!(annotate.auth, AuthReq::Player);
+    assert_eq!(annotate.success, 200);
+
+    // The leading Identity param is stripped from the wire request, so exactly two arg
+    // mappings remain — one Path, one renamed Body, orthogonal.
+    assert_eq!(annotate.args.len(), 2);
+    let by_param: std::collections::HashMap<&str, &opsapi::ArgMapping> =
+        annotate.args.iter().map(|a| (a.param.as_str(), a)).collect();
+
+    let path_arg = by_param["character_id"];
+    assert_eq!(path_arg.wire_key, "character_id"); // path arg keeps its param-name key
+    assert_eq!(path_arg.source, opsapi::ArgSource::Path { wildcard: "id".into() });
+
+    let body_arg = by_param["note_text"];
+    assert_eq!(body_arg.wire_key, "Note"); // body_names rename
+    assert_eq!(body_arg.source, opsapi::ArgSource::Body);
 }
 
 #[tokio::test]

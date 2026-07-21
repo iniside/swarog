@@ -388,6 +388,12 @@ impl DescribeManifest {
     /// `#[rpc]` traits aggregates each trait's generated `describe()` into the single
     /// manifest its ONE reserved [`DESCRIBE_METHOD`] op returns (the reserved op is
     /// registered once per process, so its payload must be the union).
+    ///
+    /// This is a plain append — it does NOT dedup or enforce method uniqueness across
+    /// the concatenated manifests. Wire-method uniqueness is an EDGE invariant, not a
+    /// `concat` guarantee: `edge::Server::handle` panics on a duplicate wire method at
+    /// registration, so two `#[http]` ops claiming the same method are a loud boot
+    /// failure there, independent of how their manifests were assembled here.
     pub fn concat(manifests: impl IntoIterator<Item = DescribeManifest>) -> DescribeManifest {
         let mut ops = Vec::new();
         for m in manifests {

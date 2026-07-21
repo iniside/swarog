@@ -27,15 +27,16 @@ fn rpc_module_hand_list_matches_filesystem() {
     // `live_lines` runs the self-check internally; surface it directly so a drift
     // failure names this test rather than the golden diff.
     let modules = rpc_modules();
-    let labels: Vec<&'static str> = modules.iter().map(|(l, _, _, _)| *l).collect();
+    let labels: Vec<&'static str> = modules.iter().map(|(l, _, _, _, _)| *l).collect();
     self_check_rpc_list(&labels).expect("rpc_modules() hand-list must match api/*/api");
 }
 
-/// The golden must cover all five kinds: at least one `event` line (seven topics
+/// The golden must cover all six kinds: at least one `event` line (seven topics
 /// today), one `rpc` line (the HTTP-bound operations), one `wire` line (every method's
 /// retry semantics, incl. wire-only), one `payload` line (a populated durable-event
-/// wire shape), and one `rpc-body` line (an http-bound request body shape), so an
-/// accidentally emptied source can't silently produce a trivially-matching golden.
+/// wire shape), one `rpc-body` line (an http-bound request body shape), and one
+/// `rpc-arg` line (a describe() per-arg mapping), so an accidentally emptied source
+/// can't silently produce a trivially-matching golden.
 #[test]
 fn live_lines_cover_events_and_rpc() {
     let lines = live_lines().expect("live lines");
@@ -44,6 +45,25 @@ fn live_lines_cover_events_and_rpc() {
     assert!(lines.iter().any(|l| l.starts_with("wire ")), "no wire lines: {lines:?}");
     assert!(lines.iter().any(|l| l.starts_with("payload ")), "no payload lines: {lines:?}");
     assert!(lines.iter().any(|l| l.starts_with("rpc-body ")), "no rpc-body lines: {lines:?}");
+    assert!(lines.iter().any(|l| l.starts_with("rpc-arg ")), "no rpc-arg lines: {lines:?}");
+}
+
+/// The path-wildcard arg mapping — the pre-existing blind spot this closes — must be a
+/// concrete golden line: `inventory.list_character` binds `path_args(character_id =
+/// "id")`, so the golden pins `source=path:id`. A silent rebind to another wildcard
+/// (e.g. `"wrong"`) changes this line's `source=path:<name>` and FAILs the diff, where
+/// `rpc`/`rpc-body` stay green (they never record the wildcard string). This asserts
+/// the LINE the drift moves, so the coverage can't be silently emptied.
+#[test]
+fn rpc_arg_pins_path_wildcard_binding() {
+    let lines = live_lines().expect("live lines");
+    let want = "rpc-arg module=inventoryapi::holdings_rpc method=inventory.listCharacter \
+                param=character_id wire_key=character_id source=path:id";
+    assert!(
+        lines.contains(want),
+        "path-wildcard arg mapping not pinned; rpc-arg lines: {:?}",
+        lines.iter().filter(|l| l.starts_with("rpc-arg ")).collect::<Vec<_>>()
+    );
 }
 
 /// `flatten_shape` renders the serde WIRE key (post-`#[serde(rename)]`), not the Rust

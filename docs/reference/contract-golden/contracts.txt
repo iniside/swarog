@@ -11,7 +11,13 @@
 # optionality: demoting Option<T> to T stops compiling) -- and
 # `rpc-body module=<crate::mod> method=<m> <serde-key-path>:<type>` from each generated
 # body_shapes() (http-bound request bodies only; PATH-WILDCARD args are excluded --
-# they travel in the route path, never the body). The last two are a SAMPLED JSON
+# they travel in the route path, never the body), and
+# `rpc-arg module=<crate::mod> method=<m> param=<p> wire_key=<k> source=<body|path:{wildcard}>`
+# from each generated describe() -- the per-arg mapping a data-driven gateway (D2)
+# reconstructs the wire request from: this is the ONLY line pinning a path-wildcard
+# arg's {wildcard} string and its wire_key (route_bindings' decode is an opaque
+# closure; rpc-body strips path-wildcard args), so a silent path_args rebind FAILs
+# here. The `payload`/`rpc-body` lines are a SAMPLED JSON
 # key/kind fingerprint -- concrete values per contract, flattened -- so a silent
 # #[serde(rename)] or a reshaped field on a sampled key lands as a golden diff.
 # KNOWN GAPS (by design, of sampling a finite value set):
@@ -73,6 +79,21 @@ rpc module=inventoryapi::holdings_rpc method=inventory.listCharacter verb=GET pa
 rpc module=inventoryapi::holdings_rpc method=inventory.listMine verb=GET path=/inventory/me auth=Player success=200 retry=OnceAfterReconnect
 rpc module=leaderboardapi::leaderboard_rpc method=leaderboard.topScores verb=GET path=/leaderboard auth=None success=200 retry=OnceAfterReconnect
 rpc module=matchapi::match_rpc method=match.report verb=POST path=/match/report auth=None success=202 retry=OnceAfterReconnect
+rpc-arg module=accountsapi::auth_rpc method=accounts.login param=email wire_key=email source=body
+rpc-arg module=accountsapi::auth_rpc method=accounts.login param=password wire_key=password source=body
+rpc-arg module=accountsapi::auth_rpc method=accounts.loginEpic param=id_token wire_key=id_token source=body
+rpc-arg module=accountsapi::auth_rpc method=accounts.register param=display_name wire_key=displayName source=body
+rpc-arg module=accountsapi::auth_rpc method=accounts.register param=email wire_key=email source=body
+rpc-arg module=accountsapi::auth_rpc method=accounts.register param=password wire_key=password source=body
+rpc-arg module=charactersapi::player_rpc method=characters.create param=class wire_key=class source=body
+rpc-arg module=charactersapi::player_rpc method=characters.create param=name wire_key=name source=body
+rpc-arg module=charactersapi::player_rpc method=characters.delete param=character_id wire_key=character_id source=path:id
+rpc-arg module=inventoryapi::holdings_rpc method=inventory.grant param=item_id wire_key=item_id source=body
+rpc-arg module=inventoryapi::holdings_rpc method=inventory.grant param=qty wire_key=qty source=body
+rpc-arg module=inventoryapi::holdings_rpc method=inventory.listCharacter param=character_id wire_key=character_id source=path:id
+rpc-arg module=matchapi::match_rpc method=match.report param=loser wire_key=Loser source=body
+rpc-arg module=matchapi::match_rpc method=match.report param=report_id wire_key=ReportId source=body
+rpc-arg module=matchapi::match_rpc method=match.report param=winner wire_key=Winner source=body
 rpc-body module=accountsapi::auth_rpc method=accounts.login body.email:string
 rpc-body module=accountsapi::auth_rpc method=accounts.login body.password:string
 rpc-body module=accountsapi::auth_rpc method=accounts.loginEpic body.id_token:string
