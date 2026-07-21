@@ -52,3 +52,28 @@ pub fn remote_factories() -> Vec<remote::RemoteFactory> {
         }),
     ]
 }
+
+/// The accounts provider's CAPABILITY-ONLY client-registration closures for a
+/// data-driven front door (the D2 routing-as-data path). Dials the peer over the edge
+/// EXACTLY as [`remote_factories`] does (same registry key, same generated `Client`),
+/// but provides ONLY the capability the gateway resolves as a SYNC dep —
+/// `accounts.sessions`, the [`Sessions`] client its bearer-verifier adapter `require`s —
+/// and contributes NO `#[http]` route bindings.
+///
+/// Why a distinct entry point: a D2 gateway rebuilds its route table from each svc's
+/// runtime `describe()`, so a factory that ALSO re-contributed the auth ops' static
+/// routes to [`opsapi::SLOT`]/[`opsapi::BINDING_SLOT`] would collide with that describe
+/// pass (`RouteTable::build` bails on a duplicate provider/method). The `Auth` ops
+/// (register/login/loginEpic/me) are therefore NEITHER provided as a `dyn Auth` client
+/// NOR route-contributed here — the D2 front routes them over the edge from the describe
+/// manifest, never via a typed capability `require`. Non-D2 consumers (the current
+/// `cmd/gateway-svc`) keep using [`remote_factories`] (provide + routes); this is
+/// ADDITIVE, not a replacement.
+pub fn provide_factories() -> Vec<remote::RemoteFactory> {
+    vec![Box::new(|ctx, caller| {
+        sessions_rpc::provide_remote(ctx.registry(), caller)
+    })]
+}
+
+#[cfg(test)]
+mod tests;

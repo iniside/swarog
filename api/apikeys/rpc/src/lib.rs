@@ -40,3 +40,20 @@ pub fn remote_factories() -> Vec<remote::RemoteFactory> {
         keys_rpc::provide_remote(ctx.registry(), caller)
     })]
 }
+
+/// The apikeys provider's CAPABILITY-ONLY client-registration closure for a data-driven
+/// front door (the D2 routing-as-data path). Because [`Keys`] is WIRE-ONLY (no `#[http]`),
+/// apikeys already contributes no routes, so this is byte-identical to
+/// [`remote_factories`] — but it is exposed under the SAME name `accountsrpc` uses so a
+/// D2 gateway obtains every capability-without-routes provider through ONE uniform
+/// `provide_factories()` seam, with no per-provider special-case for "the one that
+/// happened to already be routeless". It provides `apikeys.keys` (the [`Keys`] client the
+/// gateway's key-verifier adapter `require`s) and contributes NO route bindings.
+pub fn provide_factories() -> Vec<remote::RemoteFactory> {
+    vec![Box::new(|ctx, caller| {
+        keys_rpc::provide_remote(ctx.registry(), caller)
+    })]
+}
+
+#[cfg(test)]
+mod tests;
