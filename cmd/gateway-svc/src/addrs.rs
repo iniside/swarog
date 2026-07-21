@@ -431,6 +431,13 @@ fn managed_addrs(spec: &AddrSpec, answer: WireAnswer) -> Result<Vec<String>> {
 /// `unknown_peer`, malformed) is a human-string error the pool's refresh keeps the
 /// existing set for and retries — an unresolvable list is as unavailable as an
 /// unreachable one.
+///
+/// F2 (latent, M2): a LIVE `Ok(vec![])` is MORE destructive than an `Err` here —
+/// `Pool::refresh` reconciles to the empty set, tearing down every HEALTHY instance's
+/// conn + probe (503), whereas an `Err` KEEPS the existing set for a retry. This is
+/// dormant on M1's fleet (the agent never emits `[]`); when liveness-tracked `resolve`
+/// (`200 {addrs:[]}`) lands in M2, the `[]` case needs revisiting so a transient "nothing
+/// live right now" does not tear down a working pool.
 pub(crate) fn edge_list_resolver(
     agent_url: &str,
     provider: &'static str,

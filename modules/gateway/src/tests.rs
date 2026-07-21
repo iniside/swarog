@@ -1227,17 +1227,18 @@ async fn local_backend_missing_invoker_is_internal_error() {
     assert_eq!(err.status, Status::Internal);
 }
 
-// ---- evict-on-error: a dead cached remote conn heals on the next request ----
+// ---- C2 (F1): a self-healing pool survives a per-instance failure, NOT evicted ----
 
-/// A `Caller` that always fails, counting how many times it was tried — the
-/// stand-in for a cached edge conn whose peer restarted.
-#[derive(Default)]
-struct FailingCaller {
+/// Simulates a self-healing `remote::Pool`: the FIRST call lands on a dead instance and
+/// fails (`Unavailable`), but every later call is served by a healthy instance (the pool's
+/// internal skip-dead engaging once its probe marks the corpse non-selectable). Counts
+/// calls so the test can prove the SAME cached caller kept serving (never rebuilt).
+struct SelfHealingPoolFake {
     calls: AtomicUsize,
 }
 
 #[async_trait::async_trait]
-impl Caller for FailingCaller {
+impl Caller for SelfHealingPoolFake {
     async fn call(
         &self,
         _m: &str,
@@ -1245,14 +1246,26 @@ impl Caller for FailingCaller {
         _p: &[u8],
         _retry_mode: RetryMode,
     ) -> Result<Vec<u8>, Error> {
-        self.calls.fetch_add(1, Ordering::SeqCst);
-        Err(Error::unavailable("fake: connection lost"))
+        let n = self.calls.fetch_add(1, Ordering::SeqCst);
+        if n == 0 {
+            // First request hits the dead instance (cursor start, cold-start optimism).
+            Err(Error::unavailable("fake pool: instance A down"))
+        } else {
+            // Skip-dead has engaged: a healthy instance serves.
+            Ok(br#"{"status":"Ok","relayed":true}"#.to_vec())
+        }
     }
 }
 
+/// F1: the route table must keep a self-healing pool PERMANENT across a per-instance
+/// failure — NOT evict it. Evicting the whole pool would abort the probe that marks the
+/// dead instance non-selectable AND reset the round-robin cursor to 0, re-picking the dead
+/// first instance every request → 100% failure to a provider one of whose N instances is
+/// down, the exact "part of the traffic nowhere" C2 removes. This pins: (a) after the
+/// first-instance failure the provider still serves (not 100%-down), and (b) the cached
+/// `Arc` is STABLE across the failure (`Arc::ptr_eq` — the pool is never evicted/rebuilt).
 #[tokio::test]
-async fn remote_dispatch_evicts_failed_caller_so_next_request_redials() {
-    // A table with NO local invokers → every dispatch selects Remote.
+async fn remote_dispatch_keeps_self_healing_pool_across_a_per_instance_failure() {
     let table = RouteTable::build(&Slots::new()).expect("empty slots build");
     let op = Operation {
         method: "fakeprov.op".into(),
@@ -1263,42 +1276,31 @@ async fn remote_dispatch_evicts_failed_caller_so_next_request_redials() {
         retry_mode: RetryMode::Never,
     };
 
-    // Seed the cache as if a previous request had dialed this provider.
-    let failing = Arc::new(FailingCaller::default());
-    table
-        .remotes
-        .lock()
-        .unwrap()
-        .insert("fakeprov".into(), failing.clone() as Arc<dyn Caller>);
+    // Seed the cache with a self-healing pool stand-in (as `remote_caller` would build a
+    // real `remote::Pool`).
+    let pool = Arc::new(SelfHealingPoolFake { calls: AtomicUsize::new(0) });
+    table.remotes.lock().unwrap().insert("fakeprov".into(), pool.clone() as Arc<dyn Caller>);
+    let before = table.cached_remote("fakeprov").expect("pool cached");
 
-    // First request: the cached caller fails → the error propagates AND the
-    // dead entry is evicted.
+    // Request 1: the dead instance fails (Unavailable, non-definitive) — the OLD
+    // evict-on-error would have torn the pool down here.
     let err = table.dispatch(&op, Identity::none(), b"{}".to_vec()).await.unwrap_err();
     assert_eq!(err.status, Status::Unavailable);
-    assert_eq!(failing.calls.load(Ordering::SeqCst), 1);
+
+    // (b) The pool is NOT evicted — same Arc still cached.
+    let after_fail = table.cached_remote("fakeprov").expect("pool must survive the failure");
     assert!(
-        !table.remotes.lock().unwrap().contains_key("fakeprov"),
-        "failed caller must be evicted"
+        Arc::ptr_eq(&before, &after_fail),
+        "a self-healing pool must NOT be evicted on a per-instance/transient error"
     );
 
-    // Second request goes back through remote_caller (re-dial). With no PeerAddr
-    // contributed for `fakeprov` the re-dial path itself errors — and crucially the
-    // DEAD caller was NOT reused (its call count is unchanged).
-    let err = table.dispatch(&op, Identity::none(), b"{}".to_vec()).await.unwrap_err();
-    assert!(err.msg.contains("no peer contributed"), "{}", err.msg);
-    assert_eq!(failing.calls.load(Ordering::SeqCst), 1, "dead caller must not be reused");
-
-    // And once a re-dial succeeds (simulated: a fresh healthy caller lands in the
-    // cache, exactly what remote_caller does after dialing), the route works again
-    // — the self-heal, with exactly one failed request in between.
-    let healthy = Arc::new(FakeCaller { seen: std::sync::Mutex::new(None) });
-    table.remotes.lock().unwrap().insert("fakeprov".into(), healthy as Arc<dyn Caller>);
+    // (a) The provider still serves: the next request routes to a healthy instance (the
+    // pool's skip-dead), over the SAME permanent pool.
     let resp = table.dispatch(&op, Identity::none(), b"{}".to_vec()).await.unwrap();
     assert_eq!(resp, br#"{"status":"Ok","relayed":true}"#);
-    assert!(
-        table.remotes.lock().unwrap().contains_key("fakeprov"),
-        "a successful call must keep its caller cached"
-    );
+    let after_ok = table.cached_remote("fakeprov").expect("pool still cached");
+    assert!(Arc::ptr_eq(&before, &after_ok), "the same pool served the recovery — never rebuilt");
+    assert_eq!(pool.calls.load(Ordering::SeqCst), 2, "both requests went through the one pool");
 }
 
 // ---- per-provider dial singleflight: no lock held across the dial await ----

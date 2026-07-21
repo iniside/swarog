@@ -33,9 +33,10 @@
 //!      the op's `OpBinding::decode`.
 //!   5. **Dispatch** on the topology-correct backend (`RouteTable::dispatch`): a
 //!      [`LocalBackend`] when this process holds the op's `LocalInvoker`, else a
-//!      [`RemoteBackend`] dialing the owning peer (a Remote *transport* failure
-//!      evicts the cached connection so the next request re-dials; a definitive
-//!      peer answer keeps it).
+//!      [`RemoteBackend`] over the provider's self-healing `remote::Pool` (round-robin
+//!      across the resolved instance set; a dead instance recovers internally via the
+//!      pool's per-instance reconnect + probe skip-dead — the pool is permanent, never
+//!      evicted on a call error).
 //!   6. Reduce the wire response via `OpBinding::encode` — an encode-`Err` carries the
 //!      domain `Status` (→ its HTTP code); an `Ok` writes the op's declared `success`
 //!      code with the domain body.
@@ -623,9 +624,10 @@ struct RouteTable {
     /// never read inside this module. A single-instance provider is a one-element set — a
     /// pool-of-1.
     peers: HashMap<String, Vec<String>>,
-    /// Lazily-built per-provider callers (a `remote::Pool` over the instance set), shared
-    /// across requests to that provider. An entry is EVICTED when a call through it fails
-    /// non-definitively (see [`RouteTable::dispatch`]) — a fresh pool re-resolves + re-probes.
+    /// Lazily-built per-provider callers (a self-healing `remote::Pool` over the instance
+    /// set), shared across requests to that provider and PERMANENT for the process life —
+    /// an entry is NEVER evicted on a call error (the pool recovers a dead instance
+    /// internally; see [`RouteTable::dispatch`]). Torn down only when the table drops.
     /// A `std::sync::Mutex` locked only for synchronous get/insert/remove — never
     /// held across an await (the `keys.rs` cache rule), so a slow dial to one
     /// provider can never block cache hits for the others.
@@ -763,21 +765,24 @@ impl RouteTable {
     }
 
     /// Dispatches `op` on the topology-correct backend: a [`LocalBackend`] when this
-    /// process holds the invoker, else a [`RemoteBackend`] over the cached edge
-    /// caller. Serves BOTH planes — the HTTP handler and the player handler funnel
-    /// through here, so the eviction rule below protects both.
+    /// process holds the invoker, else a [`RemoteBackend`] over the provider's cached
+    /// `remote::Pool`. Serves BOTH planes — the HTTP handler and the player handler
+    /// funnel through here.
     ///
-    /// **Evict-on-transport-error:** a Remote *transport* failure drops that
-    /// provider's cached `Arc<dyn Caller>`, so the NEXT request re-dials instead of
-    /// reusing a dead connection forever (a provider restart would otherwise brick
-    /// the route permanently). A DEFINITIVE peer answer
-    /// ([`opsapi::Status::is_definitive_answer`], e.g. the typed unknown-method →
-    /// `NotFound`) proves the connection is healthy and is NOT evicted; anything
-    /// else — `Unavailable`, `Internal`, any future status — still evicts (the safe
-    /// default). This is the reset idea of `remote::Reconnecting` WITHOUT the
-    /// inline retry: one failed request, then self-heal. Eviction is guarded by
-    /// pointer identity so a concurrent request's freshly-dialed replacement is
-    /// never discarded by a stale failure.
+    /// **No evict-on-error (C2).** The cached per-provider caller is a self-healing
+    /// `remote::Pool` (per-instance `Reconnecting` reconnect + probe-fed skip-dead), so
+    /// it is PERMANENT for the process life — built once by [`remote_caller`], torn down
+    /// only when the [`RouteTable`] drops (`remote::Pool`'s own `Drop`). A per-instance
+    /// or transient call error must NOT tear the whole pool down: doing so would defeat
+    /// the pool's skip-dead (the aborted probe never completes to mark the dead instance
+    /// non-selectable) and, worse, a fresh pool resets the round-robin cursor to 0 —
+    /// re-picking a dead first instance every request, 100% failure to a provider one of
+    /// whose N instances is down. The pool recovers a dead instance internally within a
+    /// probe cycle, exactly like the capability-stub pool. This mirrors the pre-pool
+    /// evict-and-redial logic being subsumed by the pool's OWN reconnect; there is no
+    /// error class a rebuild fixes that the pool doesn't already handle (a definitive
+    /// `NotFound`/unknown-method is a ROUTING fact, not peer health — rebuilding the pool
+    /// changes nothing).
     async fn dispatch(
         &self,
         op: &Operation,
@@ -791,30 +796,19 @@ impl RouteTable {
             BackendKind::Remote => {
                 let provider = provider_of(&op.method);
                 let caller = self.remote_caller(provider).await?;
-                let result = RemoteBackend::new(caller.clone()).invoke(op, identity, req).await;
-                // Skip eviction ONLY on a definitive peer answer (the connection
-                // demonstrably carried a round trip); every other error — including
-                // any future status — evicts, keeping eviction the safe default.
-                if matches!(&result, Err(e) if !e.status.is_definitive_answer()) {
-                    let mut cache = self.remotes.lock().unwrap();
-                    if let Some(cached) = cache.get(provider) {
-                        if Arc::ptr_eq(cached, &caller) {
-                            cache.remove(provider);
-                        }
-                    }
-                }
-                result
+                RemoteBackend::new(caller).invoke(op, identity, req).await
             }
         }
     }
 
-    /// Gets (or lazily dials + caches) an edge client to `provider`. The peer's QUIC
-    /// address comes from the `opsapi::PEER_SLOT` contribution the composition root's
-    /// `remote::Stub` wired (collected into [`RouteTable::peers`] at build); the
-    /// connection is reused across requests (until a failed call evicts it — see
-    /// [`RouteTable::dispatch`]). The address is parsed HERE, lazily, so a bad address
-    /// is a per-request `Unavailable` (503), never a startup panic — the `remote::Stub`
-    /// contributes the raw string for exactly this reason. In M1's per-svc topology
+    /// Gets (or lazily builds + caches) the provider's round-robin `remote::Pool`. The
+    /// peer's QUIC instance SET comes from the `opsapi::PEER_SLOT` contribution the
+    /// composition root's `remote::Stub` wired (collected into [`RouteTable::peers`] at
+    /// build); the pool is reused across requests and PERMANENT — never evicted on a call
+    /// error (see [`RouteTable::dispatch`]). Each instance's address is parsed lazily by
+    /// the pool at dial time, so a bad address is a per-request `Unavailable` (503), never
+    /// a startup panic — the `remote::Stub` contributes the raw strings for exactly this
+    /// reason. In M1's per-svc topology
     /// every op a process serves is local, so this is the seam that lets a unified
     /// front-door route cross-provider without any per-module HTTP shim — exercised
     /// directly in the `RemoteBackend` tests.
@@ -1007,8 +1001,8 @@ async fn dispatch_matched_op(
     };
 
     // (5) Dispatch on the topology-correct backend (Local in-process, else the Remote
-    // peer; a Remote transport failure evicts the cached conn so the next request
-    // re-dials).
+    // peer over its self-healing round-robin pool — the pool recovers a dead instance
+    // internally, so it is never evicted on a call error).
     let wire_resp = match front.table().dispatch(&op, identity, wire_req).await {
         Ok(r) => r,
         Err(e) => return op_error_response(&e),
