@@ -34,14 +34,24 @@ Three rules define it:
 ## Commands
 
 ```sh
-weles deploy target/debug     # stage already-built binaries into deploy/ (weles never builds)
-weles up split                # supervise the split fleet, restart-on-crash
-weles up monolith             # supervise the single cmd/server process
+weles deploy target/debug --fleet <fleet.toml>   # stage already-built binaries into deploy/, stamping
+                                                  # the chosen fleet def (weles never builds)
+weles up                      # boot whatever fleet was deployed — no split/monolith argument
+weles up --dry-run            # validate the deployed fleet.toml; no rollout lock, no prepare, no spawn
 weles status                  # query the running supervisor
 weles down                    # stop the fleet it owns
 ```
 
-Typical flow: build with Cargo, `weles deploy target/debug`, then `weles up <topology>`.
+`weles` has no concept of monolith/split — it supervises *a fleet*, and monolith
+vs split is just a fleet of one process vs twelve. The fleet definition is a
+hand-authored, strict `fleet.toml` (`#[serde(deny_unknown_fields)]`, no
+layering, no templating): per-service ports/peers plus fleet-level `[[prepare]]`
+hooks (opaque commands run once before the fleet boots — e.g. minting the edge
+CA with `edgeca`, seeding the admin account with `adminctl`). `deploy --fleet`
+stamps that file into the generation; `up` reads it back from `<root>/deploy`.
+
+Typical flow: build with Cargo, `weles deploy target/debug --fleet weles/fleet.split.toml`,
+then `weles up`.
 
 ## Rollout safety
 

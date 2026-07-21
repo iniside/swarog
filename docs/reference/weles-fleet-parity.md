@@ -1,5 +1,21 @@
 # weles ↔ processctl fleet parity
 
+> **REMOVED (2026-07-21).** The blocking `weles-fleet-parity` verifyctl stage
+> described in this document no longer exists (deleted in Step 5a of
+> [`docs/plans/2026-07-18-1048-weles-fleet-from-toml-plan.md`](../plans/2026-07-18-1048-weles-fleet-from-toml-plan.md)).
+> Its entire premise evaporated: it existed to machine-check weles's
+> HAND-COPY of `tools/processctl/src/fleet.rs` against the real processctl
+> source of truth. That hand-copy is gone — the fleet definition (services,
+> ports, peers) now lives in an operator-authored `fleet.toml`
+> (`weles/src/fleet_toml.rs`), not in a second Rust literal weles maintains in
+> parallel with processctl's. There is nothing left to keep in sync, so there
+> is nothing left for a parity gate to prove. `fleet.toml`'s own
+> topology-generic invariants (unique ports, peers name a declared provider,
+> boot-order) are enforced instead by `fleet_toml::validate` (`weles up
+> --dry-run` runs it without spawning). The body below is kept as the
+> historical record of why the stage existed and what it covered — do not
+> treat any statement below as describing current behavior.
+
 weles is zero-sharing: its fleet manifest (`weles/src/manifest.rs`) is a
 hand-copied port of `tools/processctl/src/fleet.rs` (the Development flavor),
 not an import. The BLOCKING verifyctl stage `weles-fleet-parity`

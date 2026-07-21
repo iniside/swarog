@@ -179,11 +179,18 @@ just the crashed process. It runs **native processes only** (no containers) and
 **never builds**: it executes binaries you first stage into `deploy/`.
 
 ```sh
-weles deploy target/debug     # stage built binaries into deploy/
-weles up split                # or: weles up monolith  — supervise, restart-on-crash
+weles deploy target/debug --fleet <fleet.toml>   # stage built binaries + stamp the fleet def
+weles up                      # boots whatever fleet was deployed — no split/monolith arg
+weles up --dry-run            # validate the deployed fleet.toml, no spawn
 weles status
 weles down
 ```
+
+weles has no concept of monolith/split: the fleet is a hand-authored, strict
+`fleet.toml` (services, ports, peers, and `[[prepare]]` hooks like minting the
+edge CA or seeding the admin account) that `deploy --fleet` stamps into the
+generation and `up` reads back — monolith is just a fleet of one process, split a
+fleet of twelve.
 
 It shares the same `run/rollout.lock` as `devctl`/`verifyctl`, so it can never run
 a fleet concurrently with them. See [`weles/README.md`](weles/README.md) and the

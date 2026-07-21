@@ -331,8 +331,8 @@ cargo run -p devctl -- up monolith
 cargo run -p devctl -- up split
 cargo run -p devctl -- status
 cargo run -p devctl -- down
-weles deploy target/debug        # stage built binaries into deploy/ (weles never builds)
-weles up split|monolith          # standalone supervisor: restart-on-crash, weles status / weles down
+weles deploy target/debug --fleet <fleet.toml>   # stage built binaries + stamp the fleet def (weles never builds)
+weles up                         # standalone supervisor: restart-on-crash, weles status / weles down
 cargo run -p verifyctl -- --fast
 cargo run -p verifyctl -- --all
 cargo run -p verifyctl -- --all --strict

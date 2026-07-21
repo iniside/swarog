@@ -86,12 +86,12 @@ pub const AGENT_PORT: u16 = 8300;
 /// zero-sharing), and the VALUE is derived from [`AGENT_PORT`] by [`agent_url`],
 /// never written beside it.
 ///
-/// `pub` because verifyctl's `weles-fleet-parity` stage must name the key that
-/// carries the delegation in order to EXCLUDE it from its diff against
-/// processctl (which has no managed mode). That exclusion is derived from this
-/// const and [`agent_url`] rather than re-spelling the string, so the day the
-/// key is renamed the exclusion follows it instead of quietly widening to a name
-/// nothing composes any more.
+/// `pub` originally because verifyctl's now-DELETED `weles-fleet-parity` stage
+/// (2026-07-21 errata: the fleet moved to `fleet.toml`, and that stage was
+/// removed with it) named this key to EXCLUDE it from its diff against
+/// processctl. That cross-crate reason is gone; it is now used only within this
+/// crate (`compose_env_with_fleet`'s `Asks` branch + `manifest_tests.rs`), so
+/// `pub(crate)` would now suffice.
 pub const ORCHESTRATOR_URL_ENV: &str = "ORCHESTRATOR_URL";
 
 /// Where a managed service reaches the agent. Derived from [`AGENT_PORT`] — the
@@ -103,10 +103,11 @@ pub const ORCHESTRATOR_URL_ENV: &str = "ORCHESTRATOR_URL";
 /// [`crate::agentapi::AgentServer::bind`] binds loopback, so the URL handed to a
 /// service is the address that endpoint actually took.
 ///
-/// `pub` for the same reason as [`ORCHESTRATOR_URL_ENV`]: verifyctl's parity
-/// stage excludes the exact PAIR (key AND value) this composes, not the key
-/// alone — so an `ORCHESTRATOR_URL` carrying anything other than this URL is
-/// still a FAIL there.
+/// `pub` for the same reason as [`ORCHESTRATOR_URL_ENV`] — originally
+/// verifyctl's now-deleted `weles-fleet-parity` stage excluded the exact PAIR
+/// (key AND value) this composes, not the key alone. That gate is gone
+/// (2026-07-21 errata); it is now used only within this crate
+/// (`compose_env_with_fleet` + `manifest_tests.rs`), so `pub(crate)` would suffice.
 pub fn agent_url() -> String {
     format!("http://127.0.0.1:{AGENT_PORT}")
 }

@@ -10,6 +10,47 @@ generations, control endpoint, `rollout.lock` bit-compat. Pre-M1 hardening close
 (2026-07-16). M1 not started. Decisions below were taken 2026-07-09..07-10 by
 Lukasz unless dated otherwise; they are settled, not open questions.
 
+## Errata (2026-07-21) — fleet definition moved to `fleet.toml`
+
+The fleet's DATA (service names, ports, peers, per-process env) moved out of the
+hardcoded `weles/src/manifest.rs::split_fleet()`/`monolith()` Rust literals and
+into an operator-authored, strict `fleet.toml` (`weles/src/fleet_toml.rs`,
+`#[serde(deny_unknown_fields)]`, no layering, no templating — the anti-magic
+rule's one recorded exception, because the fleet must be readable at a deploy
+site that does not compile weles). `weles deploy <src-dir> --fleet <path>`
+stamps the chosen file into the generation; `weles up` (no topology argument —
+`enum Topology` and `up [split|monolith]` are both deleted) reads it back and
+boots whatever fleet was deployed. `weles up --dry-run` runs
+`fleet_toml::validate` without acquiring the rollout lock, running a prepare
+hook, or spawning anything.
+
+This is a source-of-truth change, not a widening of what "the manifest" means
+below: the **git-versioned manifest** claim (`## Discovery, and who knows
+what`) still holds — `fleet.toml` is checked in and diffed the same way the
+Rust literals were; it is a deployed, closed-world file `resolve` derives from,
+just no longer compiled into the weles binary.
+
+Composition/wiring logic (`compose_env_with_fleet`, `PeerAddrs`, `peer_addr`,
+`service_addr`, `Addrs::Told`/`Asks`) stayed in Rust, now operating on owned
+types parsed from the TOML rather than `&'static` literals — only the source of
+the DATA changed.
+
+weles lost DOMAIN KNOWLEDGE it should never have carried in the first place —
+the Postgres session-budget machinery, the hardcoded `edgeca`/`adminctl`
+binary names and argv, the DB/CA env-injection special-case — while KEEPING the
+generic capability underneath each: `[[prepare]]` is a fleet-declared list of
+opaque commands (name/run/args/env/passthrough/timeout) run once before the
+fleet boots, so "mint the CA" and "seed the admin" still happen, just as data
+instead of a hardcoded call. The blocking `weles-fleet-parity` verify stage
+(referenced several times below as the live parity gate) was DELETED — its
+premise, guarding weles's hand-copy of `processctl`'s fleet table, evaporated
+once that hand-copy was replaced by `fleet.toml`; see
+[weles-fleet-parity.md](weles-fleet-parity.md) for the removal note and the
+historical record of what it checked. Below, every mention of
+`weles-fleet-parity`, `split_fleet()`, or `weles up split|monolith` as CURRENT
+is historical — read against this errata, not deleted, per this repo's
+"historical docs are archives" convention.
+
 ## Non-negotiables
 
 - **Native OS processes. No containers, no Docker, no Kubernetes.** Rust ships
@@ -22,9 +63,10 @@ Lukasz unless dated otherwise; they are settled, not open questions.
   is narrower than earlier revisions of this file claimed: **the shipping graph
   (`core/`, `api/`, `modules/`, `cmd/`, `demos/`) never imports Weles** — *verify
   tooling may*, and does: `tools/verifyctl/Cargo.toml:13` has
-  `weles = { path = "../../weles" }`, which is what makes the `weles-fleet-parity`
-  and `weles-async-island` stages possible at all. A cross-cutting claim ABOUT
-  weles cannot be checked from inside weles.
+  `weles = { path = "../../weles" }`, which is what makes the (since-deleted)
+  `weles-fleet-parity` stage and the still-live `weles-async-island` stage
+  possible at all. A cross-cutting claim ABOUT weles cannot be checked from
+  inside weles.
 
   This distinction is load-bearing, not pedantry: **the shipping-graph half is why
   `core/remote` cannot dev-dep weles**, hence why each side of the wire is tested
@@ -105,8 +147,11 @@ services / binaries / replicas.
 
 Today's env push already enforces this least-knowledge shape and M1 must preserve
 it: `match-svc` receives only `RATING_EDGE_ADDR` and has no idea leaderboard
-exists (`weles/src/manifest.rs`, `split_fleet`/`compose_env`). So `resolve` is
-scoped per-consumer — never "give me the fleet map".
+exists (`weles/src/fleet_toml.rs` parses the per-service peer list,
+`weles/src/manifest.rs::compose_env_with_fleet` composes the env from it — the
+2026-07-21 errata's `fleet.toml` move; the machinery was `split_fleet()`/
+`compose_env` before that). So `resolve` is scoped per-consumer — never "give me
+the fleet map".
 
 `resolve` returns **all live instances**, and **round-robin load balancing is
 client-side** in `core/remote`.
@@ -120,8 +165,9 @@ client-side** in `core/remote`.
   replicas, placement, and the static env Weles does not own (`DATABASE_URL`,
   secrets, feature flags) as literals.
 
-Source of truth is the **git-versioned Rust manifest** + `plan`/`apply`
-(Terraform-style diff) — **not** a mutating admin panel, which would recreate the
+Source of truth is the **git-versioned manifest** (the operator-authored
+`fleet.toml`, 2026-07-21 errata — was a Rust literal before that) + `plan`/`apply`
+(Terraform-style diff, not yet built) — **not** a mutating admin panel, which would recreate the
 where-did-this-value-come-from drift. Panel/CLI is read-only observability plus
 imperative ops (status/restart/deploy); CLI first, a tiny own web UI later at
 most — **never** a page in the backend's `admin` module (zero-sharing both ways).
@@ -156,7 +202,9 @@ becomes a pure reverse proxy.
 Until this lands, the interim safeguard is a checker tripwire diffing the stub
 list against `api/*/rpc` crates on disk — any tool resting on a hand-maintained
 list must diff it against the real source of truth and die pre-work with a
-per-entry drift log (same discipline as `weles-fleet-parity`).
+per-entry drift log (the discipline the now-deleted `weles-fleet-parity` stage
+used to exemplify; `fleet_toml::validate`'s peer-name-must-be-a-declared-provider
+check is today's instance of the same discipline).
 
 ## State: SQLite, runtime only
 
@@ -537,7 +585,13 @@ and the `weles-managed-gateway` verify stage now run on macOS.
   `deploy/`. Nomad clients fetch artifacts themselves. Ours does not address this
   at all. No idea yet — revisit when the second machine is real.
 - **Port minting vs the parity gate — the first M1 design task, not a footnote.**
-  The blocking `weles-fleet-parity` stage asserts weles's static ports equal
+  *(Superseded framing, 2026-07-21 errata: `weles-fleet-parity` no longer exists
+  at all — it was deleted when the fleet definition moved to `fleet.toml`, not
+  eroded service-by-service as managed mode landed. The reasoning below is kept
+  for the still-open question it argues — how minted/managed peers interact
+  with whatever proves fleet correctness — but its anchor is now
+  `fleet_toml::validate`, not a live parity stage.)* The now-deleted, formerly
+  blocking `weles-fleet-parity` stage asserted weles's static ports equal
   processctl's. A minted port has no static value to compare, and a managed
   service's peer env (`*_EDGE_ADDR`) does not exist at all — it resolves. So the
   gate loses exactly the comparison it was built for (peer wiring), and weles has

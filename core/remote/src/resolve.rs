@@ -287,9 +287,12 @@ async fn resolve_peer_within(
         // That would make "core/* never reads env" a lie told one dependency
         // deep, and it is not hypothetical: `processctl`'s fleet env
         // deliberately forwards `http_proxy`/`all_proxy` into every spawned
-        // process (and `weles::manifest::SERVICE_ENV_ALLOWLIST` copies that
-        // list — the `weles-fleet-parity` stage proves them equal), so the one
-        // env var that hijacks this call is plumbed into gateway-svc BY DESIGN.
+        // process. weles's floor (`weles::manifest::SERVICE_ENV_ALLOWLIST`)
+        // does NOT forward proxy vars, but an operator CAN opt a service into
+        // the same forwarding via a fleet's per-fleet `passthrough` list
+        // (naming e.g. `http_proxy` as a key to forward from weles's own env).
+        // Either way, the one env var that hijacks this call CAN be plumbed
+        // into gateway-svc BY DESIGN, deliberately.
         // A local dev proxy would send the resolve question to whatever it
         // pleases — including the gateway's own HTTP port — and any 200 whose
         // body happens to carry `addrs` would hand back addresses the agent
