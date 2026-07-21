@@ -582,11 +582,14 @@ pub fn deploy(layout: &Layout, src_dir: &Path, fleet_path: &Path) -> Result<()> 
 /// (NOT the rollout lock) so it can never interleave with a concurrent
 /// `deploy`/`rollback`. A live `up` is immune (PIN-AT-DISCOVER).
 ///
-/// Retention: after the flip, rollback prunes with the SAME authority as
-/// `deploy` — protecting the new current, the PRE-FLIP current (the roll-forward
-/// target), and whatever generation a live, non-terminal supervisor recorded
-/// pinning in `state.json` (via [`live_pinned_generation`]) — so rollback never
-/// deletes the running fleet's binaries.
+/// Retention: after the flip, rollback protects EVERY staged generation
+/// numerically >= the target (via [`present_generations`]) — DISTINCT from
+/// `deploy`, which keeps only current + pre-flip — so a safety rollback never
+/// destroys the newer generations an operator may roll FORWARD to. It still also
+/// protects the pre-flip current and whatever generation a live, non-terminal
+/// supervisor recorded pinning in `state.json` (via [`live_pinned_generation`]),
+/// so rollback never deletes the running fleet's binaries. Only generations
+/// strictly OLDER than the target are pruned (ordinary tail retention).
 pub fn rollback(layout: &Layout, target: Option<&str>) -> Result<()> {
     // Serialize against a concurrent `deploy`/`rollback` for the whole
     // validate-and-flip. DISTINCT from run/rollout.lock; RAII-held.
@@ -637,9 +640,20 @@ pub fn rollback(layout: &Layout, target: Option<&str>) -> Result<()> {
     flip_current(&layout.bin_dir, &target_name)?;
     println!("weles: rolled back, current -> {target_name}");
 
-    // Same retention authority as deploy: protect the new current, the pre-flip
-    // current (roll-forward target), and whatever a live supervisor pinned.
-    let mut protected: Vec<u64> = vec![target_gen];
+    // Roll-forward preservation (the deciding authority for rollback retention):
+    // rollback protects EVERY staged generation numerically >= the target — not
+    // just the target and pre-flip current — so a safety rollback never destroys
+    // the newer generations an operator may still roll FORWARD to. Only
+    // generations strictly OLDER than the target are pruned (ordinary retention,
+    // consistent with deploy, which trims the tail). The pre-flip current (always
+    // >= target in a normal rollback, but tracked explicitly to also cover an
+    // explicit roll-forward target) and whatever a live, non-terminal supervisor
+    // pinned in state.json stay protected as before. Deploy's own retention is
+    // UNCHANGED — only rollback widens its protected set this way.
+    let mut protected: Vec<u64> = present_generations(&layout.bin_dir)
+        .into_iter()
+        .filter(|n| *n >= target_gen)
+        .collect();
     if let Some(previous) = pre_flip_current {
         protected.push(previous);
     }
@@ -839,6 +853,24 @@ pub fn verify_generation(gen_dir: &Path) -> Result<()> {
 /// else (`current`, `current.tmp`, stray files).
 fn parse_generation(name: &OsStr) -> Option<u64> {
     name.to_str()?.strip_prefix("gen-")?.parse::<u64>().ok()
+}
+
+/// The set of `gen-<N>` numbers currently present under `deploy/` (ignores
+/// `current`, `current.tmp`, and any non-`gen-N` entry). Shared by rollback's
+/// roll-forward retention, which must protect every present generation
+/// numerically >= the rollback target so the newer roll-forward candidates
+/// survive. A directory read error yields an empty set — the caller then
+/// protects only its explicit pins, and prune tolerates the rest.
+fn present_generations(bin_dir: &Path) -> Vec<u64> {
+    let mut present = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(bin_dir) {
+        for entry in entries.flatten() {
+            if let Some(n) = parse_generation(&entry.file_name()) {
+                present.push(n);
+            }
+        }
+    }
+    present
 }
 
 /// Scans `deploy/` for the highest existing `gen-<N>` and returns `N+1` (1 when

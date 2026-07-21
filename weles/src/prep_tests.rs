@@ -721,6 +721,23 @@ fn write_manifest_for(gen_dir: &Path) {
     .expect("write manifest.json");
 }
 
+/// Manually stages a COMPLETE, verifiable generation `gen-<n>` under `deploy/`:
+/// every deployable package plus the split `fleet.toml`, then a real manifest —
+/// so [`verify_generation`] passes exactly as a `deploy`-staged generation would.
+/// Used to build a deep history (gen-1..gen-5) directly, which sequential
+/// `deploy_fx` cannot: deploy's own tail retention keeps only current + pre-flip,
+/// so it never leaves five generations on disk at once.
+fn stage_manual_generation(deploy_dir: &Path, n: u64, bytes: &[u8]) {
+    let gen_dir = deploy_dir.join(format!("gen-{n}"));
+    std::fs::create_dir_all(&gen_dir).expect("create gen dir");
+    for pkg in deploy_packages(&split_fleet()) {
+        let file = format!("{pkg}{}", std::env::consts::EXE_SUFFIX);
+        std::fs::write(gen_dir.join(&file), bytes).expect("write gen binary");
+    }
+    std::fs::copy(split_fleet_path(), gen_dir.join("fleet.toml")).expect("stamp fleet.toml");
+    write_manifest_for(&gen_dir);
+}
+
 #[test]
 fn verify_generation_fails_on_a_tampered_artifact() {
     // THE dead-hash path now lives: flip a byte in a staged binary AFTER the
@@ -897,6 +914,46 @@ fn rollback_predecessor_skips_a_manifestless_generation() {
         "gen-3",
         "a refused predecessor rollback must not repoint current"
     );
+}
+
+#[test]
+fn rollback_protects_generations_newer_than_the_target_so_roll_forward_survives() {
+    // The branch the OLD protected set got wrong: rolling back from gen-5 to
+    // gen-2 with NO live `up`. The old code protected {target, pre-flip current,
+    // live-pin} = {2, 5}, so the intermediate gen-3/gen-4 (real roll-forward
+    // candidates) were PRUNED — destroying roll-forward. The new authority
+    // protects EVERY present generation >= target, so gen-3/gen-4 survive and
+    // only the strictly-older gen-1 is pruned.
+    let root = temp_dir("rollback-rollforward");
+    let deploy_dir = root.join("deploy");
+    for n in 1..=5 {
+        stage_manual_generation(&deploy_dir, n, format!("gen-{n} bytes").as_bytes());
+    }
+    std::fs::write(deploy_dir.join("current"), "gen-5").expect("current -> gen-5");
+
+    // No state.json ⇒ no live pin: the only thing keeping gen-3/gen-4 is the new
+    // >= target retention, not a live supervisor.
+    rollback(&deploy_layout(&root), Some("gen-2")).expect("rollback to gen-2");
+
+    assert_eq!(
+        std::fs::read_to_string(deploy_dir.join("current")).unwrap().trim(),
+        "gen-2",
+        "rollback repoints current at the target"
+    );
+    // Survivors: EXACTLY {gen-2, gen-3, gen-4, gen-5}. gen-3/gen-4 are the
+    // intermediates the OLD code deleted; they must now survive (roll-forward
+    // preserved). gen-1 (strictly older than the target) is pruned by ordinary
+    // tail retention.
+    assert!(
+        !deploy_dir.join("gen-1").exists(),
+        "gen-1 (older than the target) must be pruned"
+    );
+    for n in 2..=5 {
+        assert!(
+            deploy_dir.join(format!("gen-{n}")).is_dir(),
+            "gen-{n} (>= target) must survive the rollback retention"
+        );
+    }
 }
 
 #[test]
