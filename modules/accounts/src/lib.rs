@@ -113,7 +113,20 @@ CREATE TABLE IF NOT EXISTS accounts.sessions (
 	expires_at timestamptz NOT NULL
 );
 CREATE INDEX IF NOT EXISTS sessions_player_idx ON accounts.sessions(player_id);
-CREATE INDEX IF NOT EXISTS sessions_expires_idx ON accounts.sessions(expires_at);"#;
+CREATE INDEX IF NOT EXISTS sessions_expires_idx ON accounts.sessions(expires_at);
+
+-- Epic web-OAuth in-flight redemption store (Step B1). Shared, NOT process memory,
+-- so the /accounts/epic/callback can LB-route to ANY replica: new_state INSERTs and
+-- take_state is a DELETE ... RETURNING (cross-replica exactly-once single-redemption,
+-- 10-min TTL as a created_at predicate). An empty session_token is a LOGIN flow; a
+-- set one is a LINK flow bound to that session's player.
+CREATE TABLE IF NOT EXISTS accounts.oauth_states (
+	state           text PRIMARY KEY,
+	session_token   text        NOT NULL,
+	browser_binding text        NOT NULL,
+	created_at      timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS oauth_states_created_idx ON accounts.oauth_states(created_at);"#;
 
 /// Folds any lower-level error into an `Internal` operation error.
 fn internal<E: std::fmt::Display>(e: E) -> Error {
@@ -706,6 +719,7 @@ impl Module for Accounts {
                             env_or("EPIC_AUTHORIZE_URL", "https://www.epicgames.com/id/authorize"),
                             env_or("EPIC_TOKEN_URL", "https://api.epicgames.dev/epic/oauth/v1/token"),
                             v,
+                            svc.store.pool.clone(),
                         )?;
                         ctx.mount(epic_oauth::router(Arc::new(oauth), svc.clone()));
                         tracing::info!(redirect = %redirect, "epic OAuth enabled");

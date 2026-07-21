@@ -1,8 +1,11 @@
 //! The Epic Account Services authorization-code flow (port of Go's
 //! `modules/accounts/epic_oauth.go`). The backend is the confidential client (holds
-//! the secret); the browser only ever sees the redirect. A short-lived in-memory
-//! state store binds an in-flight authorization to the session that started it, so
-//! the callback knows whether to LINK (bearer present at start) or LOG IN.
+//! the secret); the browser only ever sees the redirect. A short-lived state store
+//! (shared Postgres, `accounts.oauth_states`) binds an in-flight authorization to
+//! the session that started it, so the callback knows whether to LINK (bearer
+//! present at start) or LOG IN. The store lives in Postgres — NOT process memory —
+//! so the callback can LB-route to ANY replica: `new_state` INSERTs and `take_state`
+//! is a `DELETE ... RETURNING` (cross-replica exactly-once single-redemption).
 //!
 //! These two routes are HTTP-NATIVE (a browser redirect flow with an external
 //! contract), NOT typed operations: they are mounted on the shared `Context` router
@@ -11,8 +14,8 @@
 //! alike (the gateway HTTP passthrough for the split front lands in Step 7).
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::sync::Arc;
+use std::time::Duration;
 
 use axum::extract::Query;
 use axum::http::{header, HeaderMap, StatusCode};
@@ -21,26 +24,20 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use axum_extra::extract::CookieJar;
 use base64::Engine as _;
+use sqlx::PgPool;
 use url::Host;
 
 use crate::epic::{short_id, OidcVerifier};
 use crate::Service;
 
-/// How long an issued OAuth `state` stays redeemable (Go's `stateTTL`).
-const STATE_TTL: Duration = Duration::from_secs(10 * 60);
+/// How long an issued OAuth `state` stays redeemable (Go's `stateTTL`). Enforced as
+/// a `created_at` predicate in SQL (`STATE_TTL_SQL`), not an in-process clock.
+const STATE_TTL_SQL: &str = "10 minutes";
 const BINDING_COOKIE: &str = "epic_oauth_binding";
 const BINDING_TOKEN_LEN: usize = 43;
 
-/// One in-flight authorization. An empty `session_token` is a LOGIN flow; a set one
-/// is a LINK flow bound to that session's player.
-struct OauthState {
-    session_token: String,
-    browser_binding: String,
-    created_at: Instant,
-}
-
 /// The confidential-client half of the EAS web OAuth flow: builds authorize URLs,
-/// tracks states, exchanges codes for id_tokens.
+/// persists/redeems states in shared Postgres, exchanges codes for id_tokens.
 pub(crate) struct EpicOAuth {
     pub client_id: String,
     pub client_secret: String,
@@ -50,7 +47,9 @@ pub(crate) struct EpicOAuth {
     pub verifier: Arc<OidcVerifier>,
     pub http: reqwest::Client,
     cookie_secure: bool,
-    states: Mutex<HashMap<String, OauthState>>,
+    /// The shared Postgres pool backing `accounts.oauth_states` — the redemption
+    /// authority. Any replica INSERTs on start and any replica redeems on callback.
+    pool: PgPool,
 }
 
 impl EpicOAuth {
@@ -62,6 +61,7 @@ impl EpicOAuth {
         authorize_url: String,
         token_url: String,
         verifier: Arc<OidcVerifier>,
+        pool: PgPool,
     ) -> anyhow::Result<EpicOAuth> {
         let parsed_redirect = url::Url::parse(&redirect_uri)
             .map_err(|err| anyhow::anyhow!("invalid EPIC_REDIRECT_URI: {err}"))?;
@@ -96,66 +96,79 @@ impl EpicOAuth {
                 .timeout(Duration::from_secs(10))
                 .build()?,
             cookie_secure,
-            states: Mutex::new(HashMap::new()),
+            pool,
         })
     }
 
-    /// Issues a fresh `state` bound to `session_token` (empty = login flow),
-    /// opportunistically GCing expired entries (Go's `newState`).
-    pub(crate) fn new_state(&self, session_token: String, browser_binding: String) -> String {
+    /// Issues a fresh `state` bound to `session_token` (empty = login flow) by
+    /// INSERTing it into shared Postgres, opportunistically pruning expired rows
+    /// first (piggyback GC — no background task; Go's `newState`). Any replica can
+    /// later redeem it. A persistence failure is a transient/retryable condition the
+    /// caller surfaces as 503.
+    pub(crate) async fn new_state(
+        &self,
+        session_token: String,
+        browser_binding: String,
+    ) -> anyhow::Result<String> {
+        self.prune_expired().await;
         let s = crate::store::new_token();
-        let mut states = self.states.lock().unwrap();
-        states.retain(|_, v| v.created_at.elapsed() <= STATE_TTL);
-        states.insert(
-            s.clone(),
-            OauthState {
-                session_token,
-                browser_binding,
-                created_at: Instant::now(),
-            },
-        );
-        s
+        sqlx::query(
+            "INSERT INTO accounts.oauth_states (state, session_token, browser_binding) \
+             VALUES ($1, $2, $3)",
+        )
+        .bind(&s)
+        .bind(&session_token)
+        .bind(&browser_binding)
+        .execute(&self.pool)
+        .await?;
+        Ok(s)
     }
 
-    /// Redeems a `state` exactly once from the browser that started it. A missing or
-    /// wrong binding does not consume an otherwise valid state.
-    pub(crate) fn take_state(&self, s: &str, browser_binding: Option<&str>) -> Option<String> {
-        self.take_state_at_inner(s, browser_binding, Instant::now())
-    }
-
-    fn take_state_at_inner(
+    /// Redeems a `state` exactly once from the browser that started it via
+    /// `DELETE ... RETURNING`: whichever replica runs the DELETE first wins, the rest
+    /// get zero rows → `None`. A missing binding never consumes a state (early
+    /// `None`); a wrong binding or an expired row fails the `WHERE` so no row is
+    /// deleted and the state survives (matches the pre-shared behavior). The 10-min
+    /// TTL is the `created_at` predicate. A store error fails closed to `None`
+    /// (surfaced by the caller as "invalid or expired state").
+    pub(crate) async fn take_state(
         &self,
         s: &str,
         browser_binding: Option<&str>,
-        now: Instant,
     ) -> Option<String> {
-        let mut states = self.states.lock().unwrap();
-        let st = states.get(s)?;
-        if browser_binding != Some(st.browser_binding.as_str()) {
-            return None;
+        // A missing binding cookie can never consume a state.
+        let binding = browser_binding?;
+        let redeemed = sqlx::query_scalar::<_, String>(&format!(
+            "DELETE FROM accounts.oauth_states \
+             WHERE state = $1 AND browser_binding = $2 \
+               AND created_at > now() - interval '{STATE_TTL_SQL}' \
+             RETURNING session_token"
+        ))
+        .bind(s)
+        .bind(binding)
+        .fetch_optional(&self.pool)
+        .await;
+        match redeemed {
+            Ok(row) => row,
+            Err(err) => {
+                tracing::error!(%err, "epic oauth: state redemption query failed");
+                None
+            }
         }
-        if now.saturating_duration_since(st.created_at) > STATE_TTL {
-            states.remove(s);
-            return None;
-        }
-        states.remove(s).map(|st| st.session_token)
     }
 
-    /// Number of pending (un-redeemed, un-GCed) states — test-only, so a handler
-    /// test can assert that a failed `start` minted no redeemable state.
-    #[cfg(test)]
-    pub(crate) fn pending_states(&self) -> usize {
-        self.states.lock().unwrap().len()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn take_state_at(
-        &self,
-        s: &str,
-        browser_binding: Option<&str>,
-        now: Instant,
-    ) -> Option<String> {
-        self.take_state_at_inner(s, browser_binding, now)
+    /// Opportunistic GC of expired states (piggybacked on `new_state`, no background
+    /// task). Best-effort: a prune failure is logged, never fatal to minting.
+    async fn prune_expired(&self) {
+        if let Err(err) = sqlx::query(&format!(
+            "DELETE FROM accounts.oauth_states \
+             WHERE created_at <= now() - interval '{STATE_TTL_SQL}'"
+        ))
+        .execute(&self.pool)
+        .await
+        {
+            tracing::warn!(%err, "epic oauth: expired-state prune failed");
+        }
     }
 
     /// The full authorize URL the page redirects the browser to.
@@ -293,7 +306,17 @@ async fn handle_start(
         .filter(|value| valid_binding(value))
         .map(str::to_owned)
         .unwrap_or_else(crate::store::new_token);
-    let state = oauth.new_state(session_token, browser_binding.clone());
+    let state = match oauth.new_state(session_token, browser_binding.clone()).await {
+        Ok(s) => s,
+        // Persisting the state failed (store outage) — retryable, never bad input.
+        // Fail closed with 503 (the session-lookup 503 precedent above) BEFORE any
+        // authorize redirect, so the browser never leaves with an un-redeemable state.
+        Err(err) => {
+            tracing::error!(%err, "epic start: state persistence failed");
+            return (StatusCode::SERVICE_UNAVAILABLE, "internal error, try again")
+                .into_response();
+        }
+    };
     let mut response = match oauth.authorize_url_for(&state) {
         Ok(u) => Json(serde_json::json!({ "authorize_url": u })).into_response(),
         Err(err) => {
@@ -324,7 +347,7 @@ async fn handle_callback(
         return (StatusCode::BAD_REQUEST, "missing code or state").into_response();
     }
     let browser_binding = jar.get(BINDING_COOKIE).map(|cookie| cookie.value());
-    let Some(session_token) = oauth.take_state(&state, browser_binding) else {
+    let Some(session_token) = oauth.take_state(&state, browser_binding).await else {
         return (StatusCode::BAD_REQUEST, "invalid or expired state").into_response();
     };
 

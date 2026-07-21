@@ -10,7 +10,7 @@ use rsa::traits::PublicKeyParts as _;
 use sqlx::PgPool;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// Fallback DSN for the lazy-pool unit tests (the live tests read `DATABASE_URL`).
 const DEFAULT_DSN: &str =
@@ -1036,6 +1036,7 @@ async fn epic_oauth_link_flow_end_to_end() {
             "http://localhost/authorize".into(),
             token_url,
             verifier,
+            pool.clone(),
         )
         .unwrap(),
     );
@@ -1046,7 +1047,8 @@ async fn epic_oauth_link_flow_end_to_end() {
         .await
         .unwrap();
     let binding = store::new_token();
-    let state = oauth.new_state(sess.token.clone(), binding.clone()); // LINK flow bound to that session
+    // LINK flow bound to that session.
+    let state = oauth.new_state(sess.token.clone(), binding.clone()).await.unwrap();
 
     // Drive the callback route through the mounted router — the real HTTP surface.
     let app = epic_oauth::router(oauth, svc.clone());
@@ -1122,6 +1124,7 @@ async fn epic_link_harness(
             "http://localhost/authorize".into(),
             token_url,
             verifier,
+            svc.store.pool.clone(),
         )
         .unwrap(),
     );
@@ -1167,7 +1170,8 @@ async fn epic_link_cross_player_collision_is_error() {
 
     let (client, base, oauth) = epic_link_harness(svc.clone(), &epic_acct).await;
     let binding = store::new_token();
-    let state = oauth.new_state(b.token.clone(), binding.clone()); // LINK bound to B's session
+    // LINK bound to B's session.
+    let state = oauth.new_state(b.token.clone(), binding.clone()).await.unwrap();
 
     let resp = client
         .get(format!("{base}?code=abc&state={state}"))
@@ -1209,7 +1213,8 @@ async fn epic_link_same_player_is_idempotent() {
 
     let (client, base, oauth) = epic_link_harness(svc.clone(), &epic_acct).await;
     let binding = store::new_token();
-    let state = oauth.new_state(a.token.clone(), binding.clone()); // LINK bound to A's own session
+    // LINK bound to A's own session.
+    let state = oauth.new_state(a.token.clone(), binding.clone()).await.unwrap();
 
     let resp = client
         .get(format!("{base}?code=abc&state={state}"))
@@ -1234,48 +1239,125 @@ async fn epic_link_same_player_is_idempotent() {
     cleanup_player(&pool, &a.player_id).await;
 }
 
-/// OAuth state is both single-use and browser-bound. A wrong/missing binding must
-/// not burn a legitimate browser's state; a matching expired redemption removes it.
-#[test]
-fn oauth_state_binding_is_non_consuming_and_expiry_is_consuming() {
-    let verifier = Arc::new(OidcVerifier::new("http://localhost/jwks", "iss", "aud").unwrap());
-    let oauth = epic_oauth::EpicOAuth::new(
-        "cid".into(),
-        "sec".into(),
-        "http://localhost/accounts/epic/callback".into(),
-        "http://localhost/authorize".into(),
-        "http://localhost/token".into(),
-        verifier,
+/// Backdates a state's `created_at` past the TTL so a redemption sees it as expired
+/// (the shared-store equivalent of the old `take_state_at(now + TTL)` clock probe).
+async fn expire_state(pool: &PgPool, state: &str) {
+    sqlx::query(
+        "UPDATE accounts.oauth_states SET created_at = now() - interval '11 minutes' \
+         WHERE state = $1",
     )
+    .bind(state)
+    .execute(pool)
+    .await
     .unwrap();
+}
+
+/// OAuth state is both single-use and browser-bound, now over the SHARED store. A
+/// wrong/missing binding must not burn a legitimate browser's state; a single redeem
+/// consumes it; an unknown state is `None`.
+#[tokio::test(flavor = "multi_thread")]
+async fn oauth_state_binding_is_non_consuming_and_single_use() {
+    let Some(pool) = test_pool().await else { return };
+    ensure_schema(&pool).await;
+    let oauth = oauth_fixture(
+        pool.clone(),
+        "http://localhost/accounts/epic/callback",
+        "http://localhost/token",
+    );
+
     let binding = store::new_token();
-    let s = oauth.new_state("tok".into(), binding.clone());
-    assert_eq!(oauth.take_state(&s, None), None);
-    assert_eq!(oauth.take_state(&s, Some("wrong")), None);
-    assert_eq!(oauth.take_state(&s, Some(&binding)), Some("tok".into()));
+    let s = oauth.new_state("tok".into(), binding.clone()).await.unwrap();
+    // A missing binding never consumes; a wrong binding never consumes.
+    assert_eq!(oauth.take_state(&s, None).await, None);
+    assert_eq!(oauth.take_state(&s, Some("wrong")).await, None);
+    // The legitimate browser still redeems (the two misses above did not burn it).
+    assert_eq!(oauth.take_state(&s, Some(&binding)).await, Some("tok".into()));
     assert_eq!(
-        oauth.take_state(&s, Some(&binding)),
+        oauth.take_state(&s, Some(&binding)).await,
         None,
         "state must be single-use"
     );
-    assert_eq!(oauth.take_state("unknown", Some(&binding)), None);
+    assert_eq!(oauth.take_state("unknown", Some(&binding)).await, None);
+}
 
-    let expired = oauth.new_state("old".into(), binding.clone());
-    let after_ttl = Instant::now() + Duration::from_secs(10 * 60 + 1);
-    assert_eq!(
-        oauth.take_state_at(&expired, Some("wrong"), after_ttl),
-        None,
-        "wrong binding must not consume even an expired entry"
+/// The cross-replica property the old `Mutex<HashMap>` could NOT provide: a `state`
+/// minted on ONE replica's pool is redeemable on a SECOND, independent pool
+/// (simulating the callback LB-routing to the other replica) — exactly once. This is
+/// the actual `replicas: 2` blocker Step B1 closes.
+#[tokio::test(flavor = "multi_thread")]
+async fn oauth_state_redeems_exactly_once_across_replicas() {
+    let Some(pool_a) = test_pool().await else { return };
+    ensure_schema(&pool_a).await;
+    // A SECOND, fully independent pool — the "other replica" that never saw the INSERT
+    // in its process memory; only the shared Postgres row ties them together.
+    let dsn = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string());
+    let pool_b = PgPool::connect(&dsn).await.unwrap();
+
+    let oauth_a = oauth_fixture(
+        pool_a.clone(),
+        "http://localhost/accounts/epic/callback",
+        "http://localhost/token",
     );
-    assert_eq!(oauth.take_state_at(&expired, Some(&binding), after_ttl), None);
+    let oauth_b = oauth_fixture(
+        pool_b.clone(),
+        "http://localhost/accounts/epic/callback",
+        "http://localhost/token",
+    );
+
+    let binding = store::new_token();
+    // Replica A mints the state.
+    let state = oauth_a.new_state("sess-xyz".into(), binding.clone()).await.unwrap();
+
+    // Replica B (a DIFFERENT process/pool) redeems it — impossible under the old
+    // in-memory map, which lived only in replica A.
     assert_eq!(
-        oauth.take_state(&expired, Some(&binding)),
+        oauth_b.take_state(&state, Some(&binding)).await,
+        Some("sess-xyz".into()),
+        "the OTHER replica must redeem the shared-store state"
+    );
+    // A second redemption on EITHER replica now yields nothing (single-redemption).
+    assert_eq!(
+        oauth_a.take_state(&state, Some(&binding)).await,
         None,
-        "matching expired redemption must remove the state"
+        "a second take on the minting replica must find the row already deleted"
+    );
+    assert_eq!(
+        oauth_b.take_state(&state, Some(&binding)).await,
+        None,
+        "a second take on the redeeming replica must find the row already deleted"
     );
 }
 
-fn oauth_fixture(redirect_uri: &str, token_url: &str) -> Arc<epic_oauth::EpicOAuth> {
+/// An expired state (its `created_at` older than the 10-min TTL) is not redeemable,
+/// even with the correct binding — the TTL is enforced by the `created_at` predicate
+/// in the DELETE, on whichever replica serves the callback.
+#[tokio::test(flavor = "multi_thread")]
+async fn oauth_state_expired_row_is_not_redeemable() {
+    let Some(pool) = test_pool().await else { return };
+    ensure_schema(&pool).await;
+    let oauth = oauth_fixture(
+        pool.clone(),
+        "http://localhost/accounts/epic/callback",
+        "http://localhost/token",
+    );
+
+    let binding = store::new_token();
+    let state = oauth.new_state("old".into(), binding.clone()).await.unwrap();
+    expire_state(&pool, &state).await;
+    assert_eq!(
+        oauth.take_state(&state, Some(&binding)).await,
+        None,
+        "an expired state must not redeem even with the correct binding"
+    );
+    // Clean up the intentionally-orphaned expired row.
+    sqlx::query("DELETE FROM accounts.oauth_states WHERE state = $1")
+        .bind(&state)
+        .execute(&pool)
+        .await
+        .unwrap();
+}
+
+fn oauth_fixture(pool: PgPool, redirect_uri: &str, token_url: &str) -> Arc<epic_oauth::EpicOAuth> {
     let verifier = Arc::new(OidcVerifier::new("http://localhost/jwks", "iss", "aud").unwrap());
     Arc::new(
         epic_oauth::EpicOAuth::new(
@@ -1285,9 +1367,16 @@ fn oauth_fixture(redirect_uri: &str, token_url: &str) -> Arc<epic_oauth::EpicOAu
             "http://localhost/authorize".into(),
             token_url.into(),
             verifier,
+            pool,
         )
         .unwrap(),
     )
+}
+
+/// A lazy pool over the default DSN — for OAuth fixtures whose test never reaches a
+/// state INSERT/redeem (redirect-URI validation, cookie shape, store-error branch).
+fn lazy_oauth_pool() -> PgPool {
+    PgPool::connect_lazy(DEFAULT_DSN).unwrap()
 }
 
 async fn serve_oauth_router(oauth: Arc<epic_oauth::EpicOAuth>, svc: Arc<Service>) -> String {
@@ -1308,9 +1397,12 @@ fn oauth_state_from_start(body: &serde_json::Value) -> String {
         .expect("state query parameter")
 }
 
-#[test]
-fn oauth_redirect_uri_validation_is_startup_scoped_and_representative() {
+#[tokio::test]
+async fn oauth_redirect_uri_validation_is_startup_scoped_and_representative() {
     let verifier = Arc::new(OidcVerifier::new("http://localhost/jwks", "iss", "aud").unwrap());
+    // Validation runs entirely in `new`, before any query, so a lazy pool suffices
+    // (a Tokio context is still required to construct the pool handle).
+    let pool = lazy_oauth_pool();
     let build = |redirect: &str| {
         epic_oauth::EpicOAuth::new(
             "cid".into(),
@@ -1319,6 +1411,7 @@ fn oauth_redirect_uri_validation_is_startup_scoped_and_representative() {
             "http://localhost/authorize".into(),
             "http://localhost/token".into(),
             verifier.clone(),
+            pool.clone(),
         )
     };
 
@@ -1338,9 +1431,12 @@ fn oauth_redirect_uri_validation_is_startup_scoped_and_representative() {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn oauth_start_reuses_hardened_binding_cookie_for_parallel_states() {
+    let Some(pool) = test_pool().await else { return };
+    ensure_schema(&pool).await;
     let oauth = oauth_fixture(
+        pool.clone(),
         "http://localhost/accounts/epic/callback",
         "http://localhost/token",
     );
@@ -1392,10 +1488,11 @@ async fn oauth_start_reuses_hardened_binding_cookie_for_parallel_states() {
     assert_eq!(second_cookie.split(';').next().unwrap(), cookie_pair);
     let state_two = oauth_state_from_start(&second.json().await.unwrap());
     assert_ne!(state_one, state_two);
-    assert_eq!(oauth.take_state(&state_one, Some(&binding)), Some(String::new()));
-    assert_eq!(oauth.take_state(&state_two, Some(&binding)), Some(String::new()));
+    assert_eq!(oauth.take_state(&state_one, Some(&binding)).await, Some(String::new()));
+    assert_eq!(oauth.take_state(&state_two, Some(&binding)).await, Some(String::new()));
 
     let secure_oauth = oauth_fixture(
+        pool.clone(),
         "https://game.example/accounts/epic/callback",
         "http://localhost/token",
     );
@@ -1430,15 +1527,23 @@ fn binding_from_set_cookie(resp: &reqwest::Response) -> String {
 /// (duplicate-account risk). It must fail closed with 503 (the verifier.rs
 /// "503-not-401" precedent) and mint NO redeemable state. On the old code this
 /// returned 200 with a LOGIN-mode state.
-#[tokio::test]
+///
+/// The oauth `state` store is given a HEALTHY pool while only the SERVICE session
+/// store is dead — so the 503-vs-200 outcome discriminates correct-vs-regressed: a
+/// regressed "fold into no-session" would reach `new_state`, INSERT successfully on
+/// the healthy pool, and return 200. Correct behavior fails closed BEFORE `new_state`.
+#[tokio::test(flavor = "multi_thread")]
 async fn epic_start_store_error_is_503_and_mints_no_state() {
+    let Some(pool) = test_pool().await else { return };
+    ensure_schema(&pool).await;
     const DEAD_DSN: &str =
         "postgres://gamebackend:gamebackend@127.0.0.1:1/epic-start-store-error";
-    // dead_service_at (not lazy_service_at): this test actually drives the pool
-    // to an Err, and sqlx retries connection refusals until the acquire deadline —
+    // dead_service_at (not lazy_service_at): this test actually drives the SESSION
+    // pool to an Err, and sqlx retries connection refusals until the acquire deadline —
     // without the short acquire_timeout the 503 would take the default 30s.
     let svc = dead_service_at(DEAD_DSN, Arc::new(ArgonVerifier));
     let oauth = oauth_fixture(
+        pool.clone(),
         "http://localhost/accounts/epic/callback",
         "http://localhost/token",
     );
@@ -1455,12 +1560,8 @@ async fn epic_start_store_error_is_503_and_mints_no_state() {
     assert_eq!(
         resp.status().as_u16(),
         503,
-        "store outage on a LINK start must fail closed with 503, not downgrade to LOGIN"
-    );
-    assert_eq!(
-        oauth.pending_states(),
-        0,
-        "an unresolvable start must leave no redeemable state behind"
+        "store outage on a LINK start must fail closed with 503 BEFORE minting a state, \
+         not downgrade to LOGIN (which would INSERT on the healthy oauth pool → 200)"
     );
 }
 
@@ -1477,6 +1578,7 @@ async fn epic_start_valid_session_mints_link_state() {
         .unwrap();
 
     let oauth = oauth_fixture(
+        pool.clone(),
         "http://localhost/accounts/epic/callback",
         "http://localhost/token",
     );
@@ -1493,7 +1595,7 @@ async fn epic_start_valid_session_mints_link_state() {
     let binding = binding_from_set_cookie(&resp);
     let state = oauth_state_from_start(&resp.json().await.unwrap());
     assert_eq!(
-        oauth.take_state(&state, Some(&binding)),
+        oauth.take_state(&state, Some(&binding)).await,
         Some(sess.token.clone()),
         "a valid bearer must mint a LINK state carrying the caller's session token"
     );
@@ -1504,13 +1606,17 @@ async fn epic_start_valid_session_mints_link_state() {
 /// Happy-path LOGIN: no bearer ⇒ 200 and the minted state carries an EMPTY session
 /// token (plain login flow, provisioning at callback). Pins the pre-existing
 /// behavior so the fail-closed LINK guard didn't perturb it.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn epic_start_no_bearer_mints_login_state() {
+    let Some(pool) = test_pool().await else { return };
+    ensure_schema(&pool).await;
     let oauth = oauth_fixture(
+        pool.clone(),
         "http://localhost/accounts/epic/callback",
         "http://localhost/token",
     );
-    // No bearer ⇒ the store is never consulted, so a lazy pool is fine.
+    // No bearer ⇒ the SESSION store is never consulted, so a lazy service is fine;
+    // the oauth `state` store still needs the real pool to INSERT/redeem.
     let base = serve_oauth_router(oauth.clone(), lazy_service()).await;
     let client = reqwest::Client::new();
 
@@ -1523,14 +1629,16 @@ async fn epic_start_no_bearer_mints_login_state() {
     let binding = binding_from_set_cookie(&resp);
     let state = oauth_state_from_start(&resp.json().await.unwrap());
     assert_eq!(
-        oauth.take_state(&state, Some(&binding)),
+        oauth.take_state(&state, Some(&binding)).await,
         Some(String::new()),
         "no bearer must mint a LOGIN state with an empty session token"
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn rejected_oauth_callback_never_reaches_token_endpoint_or_consumes_state() {
+    let Some(pool) = test_pool().await else { return };
+    ensure_schema(&pool).await;
     let calls = Arc::new(AtomicUsize::new(0));
     let token_calls = calls.clone();
     let token_app = axum::Router::new().route(
@@ -1549,9 +1657,9 @@ async fn rejected_oauth_callback_never_reaches_token_endpoint_or_consumes_state(
         axum::serve(token_listener, token_app).await.unwrap();
     });
 
-    let oauth = oauth_fixture("http://localhost/accounts/epic/callback", &token_url);
+    let oauth = oauth_fixture(pool.clone(), "http://localhost/accounts/epic/callback", &token_url);
     let binding = store::new_token();
-    let state = oauth.new_state(String::new(), binding.clone());
+    let state = oauth.new_state(String::new(), binding.clone()).await.unwrap();
     let base = serve_oauth_router(oauth, lazy_service()).await;
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
