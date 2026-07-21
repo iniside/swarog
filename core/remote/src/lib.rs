@@ -725,6 +725,16 @@ pub struct Pool {
     /// Coarse seconds of the last list re-resolution (`0` = never), backing the
     /// [`POOL_REFRESH_INTERVAL`] throttle so `call` does not re-resolve every request.
     last_refresh: AtomicU64,
+    /// Monotonic per-resolve generation, assigned at the START of each resolve so a SLOW
+    /// resolve (window N) cannot clobber a NEWER one (window N+1) that finished first: a
+    /// resolve applies its reconcile ONLY if its generation is newer than the last APPLIED
+    /// generation. Without this, a resolve taking longer than [`POOL_REFRESH_INTERVAL`]
+    /// could land its stale list over a fresher set (transient staleness up to one interval).
+    resolve_seq: AtomicU64,
+    /// The generation of the resolve whose reconcile last WON (latest-resolve-wins). Read +
+    /// written under the `instances` lock, so the generation check and the reconcile are
+    /// atomic against a concurrent resolve.
+    applied_gen: AtomicU64,
 }
 
 impl Pool {
@@ -747,6 +757,8 @@ impl Pool {
             instances: StdMutex::new(Vec::new()),
             cursor: AtomicU64::new(0),
             last_refresh: AtomicU64::new(0),
+            resolve_seq: AtomicU64::new(0),
+            applied_gen: AtomicU64::new(0),
         }
     }
 
@@ -770,6 +782,19 @@ impl Pool {
         {
             return;
         }
+        self.refresh_once().await;
+    }
+
+    /// One resolve + reconcile, unthrottled (the [`refresh`](Pool::refresh) throttle gates
+    /// how OFTEN this runs; the generation guard here handles ORDER when two do overlap).
+    /// Assigns a generation at the start, resolves OUTSIDE the set lock, then applies the
+    /// reconcile only if this is still the newest resolve — a slower older resolve is
+    /// DROPPED (latest-resolve-wins). Vanished-instance teardown is DETACHED so it never
+    /// sits on the request path (a scale-down removing K instances must not add
+    /// K × [`PROBE_STOP_GRACE`] to the one request that won the refresh).
+    async fn refresh_once(&self) {
+        // Generation assigned BEFORE the resolve await, so claim order = generation order.
+        let my_gen = self.resolve_seq.fetch_add(1, Ordering::SeqCst) + 1;
         let addrs = match (self.list)().await {
             Ok(a) => a,
             // Keep the existing set; the next refresh (>= one interval later) retries.
@@ -777,12 +802,28 @@ impl Pool {
         };
         let removed = {
             let mut g = self.instances.lock().unwrap_or_else(|e| e.into_inner());
-            self.reconcile(&mut g, addrs)
+            // Latest-resolve-wins: if a NEWER resolve already applied, drop this stale
+            // result rather than clobbering the fresher set. The check + store + reconcile
+            // are atomic under the set lock. (finding-5: a `call` may already hold a clone
+            // of an instance's caller that reconcile drops here; a concurrent close then
+            // yields a fail-closed 503 in a tiny window — self-limited, no corruption.)
+            if my_gen <= self.applied_gen.load(Ordering::SeqCst) {
+                Vec::new()
+            } else {
+                self.applied_gen.store(my_gen, Ordering::SeqCst);
+                self.reconcile(&mut g, addrs)
+            }
         };
-        // Tear down vanished instances OUTSIDE the set lock (stop_probe/close await).
-        for mut inst in removed {
-            inst.stop_probe().await;
-            (inst.close)().await;
+        // Tear down vanished instances OFF the request path: detach so a slow
+        // stop_probe/close (up to PROBE_STOP_GRACE each) never delays the caller. Each
+        // task is bounded per instance and self-completes.
+        if !removed.is_empty() {
+            tokio::spawn(async move {
+                for mut inst in removed {
+                    inst.stop_probe().await;
+                    (inst.close)().await;
+                }
+            });
         }
     }
 
@@ -894,6 +935,11 @@ impl Caller for Pool {
     ) -> Result<Vec<u8>, Error> {
         self.refresh().await;
         let now = coarse_now_secs();
+        // Clone the selected instance's caller OUT and drop the set lock before delegating
+        // (a std guard must never cross an `.await`). finding-5: a concurrent refresh may
+        // reconcile this instance away and close it between this clone and the delegated
+        // call, yielding a fail-closed `ConnectionFatal`/503 in that tiny window —
+        // self-limited (the next request re-selects a live instance), no state corruption.
         let caller = {
             let g = self.instances.lock().unwrap_or_else(|e| e.into_inner());
             self.select(&g, now).map(|i| g[i].caller.clone())
@@ -906,6 +952,23 @@ impl Caller for Pool {
         // [C3 SEAM] on `Err` here, C3 (for OnceAfterReconnect only) re-selects a DIFFERENT
         // instance and replays once; C1 returns the delegated result as-is.
         caller.call(method, identity, payload, retry_mode).await
+    }
+}
+
+/// Safety net for the leak class: a `Pool` dropped WITHOUT [`stop`](Pool::stop) (the
+/// graceful path C2 wires) would otherwise leave every per-instance probe `JoinHandle`
+/// running detached. Drop ABORTS them synchronously — abort is sync-safe and Drop must
+/// never block/await, so this only aborts the tasks (connections close as their `Arc`s
+/// drop); [`stop`](Pool::stop) stays the graceful grace-then-abort path.
+impl Drop for Pool {
+    fn drop(&mut self) {
+        if let Ok(g) = self.instances.get_mut() {
+            for inst in g.iter() {
+                if let Some(p) = inst.probe.as_ref() {
+                    p.task.abort();
+                }
+            }
+        }
     }
 }
 

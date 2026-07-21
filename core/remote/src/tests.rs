@@ -1179,10 +1179,152 @@ async fn pool_all_down_reports_not_ready() {
     dead.insert("B".to_string());
     let pool = Pool::with_factory(list_of(&["A", "B"]), fake_factory(recorder, dead));
 
-    // A refresh populates the (all-dead) set.
-    let _ = pool.call("m", None, b"{}", RetryMode::Never).await;
+    // A refresh populates the (all-dead) set; the call selects None on a POPULATED set
+    // (the `select`→None branch, distinct from the n==0 empty-list branch) → Unavailable.
+    let err = pool
+        .call("m", None, b"{}", RetryMode::Never)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        err.status,
+        opsapi::Status::Unavailable,
+        "a populated but all-down set must select None → Unavailable"
+    );
     let msg = pool.readyz().expect_err("all-down pool must be unready");
     assert!(msg.contains("all"), "all-down verdict must name it: {msg}");
+}
+
+/// finding-1 (latest-resolve-wins): a SLOW older resolve must NOT clobber a fresher set.
+/// The first resolve returns `[A,B]` but is held parked past a second resolve that returns
+/// `[A]` and applies; when the slow resolve finally lands, its stale `[A,B]` is DROPPED by
+/// the generation guard, so the final set is `[A]`. Without the guard it would be `[A,B]`.
+#[tokio::test]
+async fn pool_slow_resolve_does_not_clobber_newer_set() {
+    let recorder = Recorder::default();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let entered = Arc::new(tokio::sync::Notify::new()); // first resolve has started
+    let release = Arc::new(tokio::sync::Notify::new()); // let the first resolve finish
+
+    let c = calls.clone();
+    let e = entered.clone();
+    let r = release.clone();
+    let list: PeerListResolver = Arc::new(move || {
+        let n = c.fetch_add(1, Ordering::SeqCst);
+        let e = e.clone();
+        let r = r.clone();
+        Box::pin(async move {
+            if n == 0 {
+                // The SLOW, OLDER resolve: signal it started (its generation is claimed),
+                // then park until released — it returns the STALE list [A,B].
+                e.notify_one();
+                r.notified().await;
+                Ok(vec!["A".to_string(), "B".to_string()])
+            } else {
+                // The FAST, NEWER resolve: returns [A] immediately.
+                Ok(vec!["A".to_string()])
+            }
+        })
+    });
+
+    let pool = Arc::new(Pool::with_factory(
+        list,
+        fake_factory(recorder, Default::default()),
+    ));
+
+    // t1 claims generation 1, then parks inside its (slow) resolve.
+    let p1 = pool.clone();
+    let t1 = tokio::spawn(async move { p1.refresh_once().await });
+    entered.notified().await; // gen 1 is claimed and parked
+
+    // t2 (inline) claims generation 2, resolves [A] fast, and APPLIES it.
+    pool.refresh_once().await;
+    {
+        let g = pool.instances.lock().unwrap();
+        assert_eq!(
+            g.iter().map(|i| i.addr.clone()).collect::<Vec<_>>(),
+            vec!["A".to_string()],
+            "the newer resolve applied [A]"
+        );
+    }
+
+    // Release the slow older resolve; its stale [A,B] must be DROPPED, not clobber [A].
+    release.notify_one();
+    t1.await.unwrap();
+    let g = pool.instances.lock().unwrap();
+    assert_eq!(
+        g.iter().map(|i| i.addr.clone()).collect::<Vec<_>>(),
+        vec!["A".to_string()],
+        "the slow older resolve must not clobber the newer set"
+    );
+}
+
+/// finding-2 (detached teardown): tearing down removed instances must NOT sit on the
+/// request path. A scale-down whose removed instances have a SLOW `close` still returns
+/// the triggering `call` promptly — the teardown is detached.
+#[tokio::test]
+async fn pool_teardown_is_detached_off_the_request_path() {
+    let recorder = Recorder::default();
+    // The list answers [A,B,C] first (seed), then [] (scale to zero → 3 removals).
+    let calls = Arc::new(AtomicUsize::new(0));
+    let c = calls.clone();
+    let list: PeerListResolver = Arc::new(move || {
+        let n = c.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async move {
+            if n == 0 {
+                Ok(vec!["A".to_string(), "B".to_string(), "C".to_string()])
+            } else {
+                Ok(Vec::new())
+            }
+        })
+    });
+    // A factory whose instances have a `close` that blocks a LONG time — if teardown were
+    // on the request path the triggering call would wait for all three.
+    let factory: InstanceFactory = Arc::new(move |addr: &str| {
+        let addr = addr.to_string();
+        let calls = recorder.call_counter(&addr);
+        let caller: Arc<dyn Caller> = Arc::new(RecordingCaller {
+            addr: addr.clone(),
+            calls,
+        });
+        let health = Arc::new(InstanceHealth::seed());
+        *health.verdict.lock().unwrap() = Ok(());
+        health
+            .last_probe_at
+            .store(coarse_now_secs().max(1), Ordering::SeqCst);
+        let close: InstanceCloser = Arc::new(|| {
+            Box::pin(async {
+                // Far longer than the test's promptness bound; the detached task is
+                // aborted when the test runtime shuts down, so it never hangs the test.
+                tokio::time::sleep(Duration::from_secs(30)).await
+            })
+        });
+        Instance {
+            addr,
+            caller,
+            health,
+            probe: None,
+            close,
+        }
+    });
+
+    let pool = Pool::with_factory(list, factory);
+
+    // Seed [A,B,C] (does not set the throttle, so the next `call` will refresh).
+    pool.refresh_once().await;
+
+    // The triggering call: refresh resolves [] → removes A,B,C (slow closes) → detached.
+    let started = std::time::Instant::now();
+    let err = pool
+        .call("m", None, b"{}", RetryMode::Never)
+        .await
+        .unwrap_err();
+    let elapsed = started.elapsed();
+
+    assert_eq!(err.status, opsapi::Status::Unavailable, "scaled to zero → Unavailable");
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "the triggering call must not serialize behind the 3 slow closes (took {elapsed:?})"
+    );
 }
 
 /// The set reconciliation: `[A,B]` seeds two; `[A,B] -> [A]` drops B (and returns it for
