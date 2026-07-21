@@ -995,3 +995,259 @@ async fn background_probe_updates_verdict() {
     let ctx = Context::new();
     stub.stop(&ctx).await.expect("stop tears the probe loop down cleanly");
 }
+
+// ---- C1: the client-side round-robin connection pool ---------------------
+//
+// `Pool` holds ONE per-instance caller per resolved address and spreads calls across
+// the healthy ones — the property `exactly_one`/a single conn structurally cannot give.
+// These prove it with a FAKE per-instance transport (no QUIC, no probe tasks): a fake
+// factory builds a `RecordingCaller` per addr (recording which instance received the
+// call) with a preset health verdict, so distribution, skip-dead, empty, and set
+// reconciliation are asserted by construction, not inferred.
+
+/// Records per-addr call counts AND per-addr build counts across a pool's lifetime, so a
+/// test can assert BOTH that traffic spread across instances and that a kept instance was
+/// not rebuilt on refresh.
+#[derive(Clone, Default)]
+struct Recorder {
+    calls: Arc<StdMutex<std::collections::HashMap<String, Arc<AtomicUsize>>>>,
+    builds: Arc<StdMutex<std::collections::HashMap<String, Arc<AtomicUsize>>>>,
+}
+
+impl Recorder {
+    fn call_counter(&self, addr: &str) -> Arc<AtomicUsize> {
+        self.calls
+            .lock()
+            .unwrap()
+            .entry(addr.to_string())
+            .or_insert_with(|| Arc::new(AtomicUsize::new(0)))
+            .clone()
+    }
+    fn hits(&self, addr: &str) -> usize {
+        self.call_counter(addr).load(Ordering::SeqCst)
+    }
+    fn note_build(&self, addr: &str) {
+        self.builds
+            .lock()
+            .unwrap()
+            .entry(addr.to_string())
+            .or_insert_with(|| Arc::new(AtomicUsize::new(0)))
+            .fetch_add(1, Ordering::SeqCst);
+    }
+    fn builds(&self, addr: &str) -> usize {
+        self.builds
+            .lock()
+            .unwrap()
+            .get(addr)
+            .map(|c| c.load(Ordering::SeqCst))
+            .unwrap_or(0)
+    }
+}
+
+/// A fake per-instance caller: records that THIS instance's address received the call
+/// and echoes the address back as the response body, so a test can see which instance
+/// served each request.
+struct RecordingCaller {
+    addr: String,
+    calls: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl Caller for RecordingCaller {
+    async fn call(
+        &self,
+        _method: &str,
+        _identity: Option<&str>,
+        _payload: &[u8],
+        _retry_mode: RetryMode,
+    ) -> Result<Vec<u8>, Error> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Ok(self.addr.clone().into_bytes())
+    }
+}
+
+/// A fake pool instance factory (no QUIC, no probe task). Every instance is HEALTHY
+/// (a completed `Ok` probe, fresh) unless its addr is in `dead`, in which case its
+/// cached verdict is a fresh `Err` so both selection AND readyz treat it as down.
+fn fake_factory(recorder: Recorder, dead: std::collections::HashSet<String>) -> InstanceFactory {
+    Arc::new(move |addr: &str| {
+        let addr = addr.to_string();
+        recorder.note_build(&addr);
+        let calls = recorder.call_counter(&addr);
+        let caller: Arc<dyn Caller> = Arc::new(RecordingCaller {
+            addr: addr.clone(),
+            calls,
+        });
+        let health = Arc::new(InstanceHealth::seed());
+        // Stamp a COMPLETED probe verdict so `healthy()`/`is_selectable()` see a definite
+        // answer, not the fail-closed pending seed.
+        if dead.contains(&addr) {
+            *health.verdict.lock().unwrap() = Err("preset dead".to_string());
+        } else {
+            *health.verdict.lock().unwrap() = Ok(());
+        }
+        health
+            .last_probe_at
+            .store(coarse_now_secs().max(1), Ordering::SeqCst);
+        let close: InstanceCloser = Arc::new(|| Box::pin(async {}));
+        Instance {
+            addr,
+            caller,
+            health,
+            probe: None,
+            close,
+        }
+    })
+}
+
+fn list_of(addrs: &[&str]) -> PeerListResolver {
+    let addrs: Vec<String> = addrs.iter().map(|s| s.to_string()).collect();
+    Arc::new(move || {
+        let addrs = addrs.clone();
+        Box::pin(async move { Ok(addrs) })
+    })
+}
+
+/// The distribution property `exactly_one`/a single conn cannot provide: with a resolver
+/// answering `[A, B]`, repeated calls SPREAD across BOTH instances round-robin (not always
+/// the first), and every call is served by exactly one instance.
+#[tokio::test]
+async fn pool_distributes_round_robin_across_two_instances() {
+    let recorder = Recorder::default();
+    let pool = Pool::with_factory(
+        list_of(&["A", "B"]),
+        fake_factory(recorder.clone(), Default::default()),
+    );
+
+    for _ in 0..6 {
+        pool.call("m", None, b"{}", RetryMode::Never).await.unwrap();
+    }
+
+    assert!(recorder.hits("A") > 0, "A must receive traffic (A={})", recorder.hits("A"));
+    assert!(recorder.hits("B") > 0, "B must receive traffic (B={})", recorder.hits("B"));
+    assert_eq!(
+        recorder.hits("A") + recorder.hits("B"),
+        6,
+        "every call is served by exactly one instance"
+    );
+}
+
+/// A dead instance is SKIPPED by selection: with `[A healthy, B dead]`, every call routes
+/// to A (never B), and the pool stays READY because >= 1 instance is up.
+#[tokio::test]
+async fn pool_skips_dead_instance_and_stays_ready() {
+    let recorder = Recorder::default();
+    let mut dead = std::collections::HashSet::new();
+    dead.insert("B".to_string());
+    let pool = Pool::with_factory(list_of(&["A", "B"]), fake_factory(recorder.clone(), dead));
+
+    for _ in 0..6 {
+        let out = pool.call("m", None, b"{}", RetryMode::Never).await.unwrap();
+        assert_eq!(out, b"A", "traffic must route only to the healthy instance A");
+    }
+
+    assert_eq!(recorder.hits("B"), 0, "the dead instance must never be selected");
+    assert_eq!(recorder.hits("A"), 6);
+    assert!(
+        pool.readyz().is_ok(),
+        "a pool with >= 1 healthy instance stays Ready (some-down, not all-down)"
+    );
+}
+
+/// An empty instance list is Unavailable, not a panic — and the pool reports `/readyz`
+/// down (all-down / none-resolved).
+#[tokio::test]
+async fn pool_empty_list_returns_unavailable_not_panic() {
+    let recorder = Recorder::default();
+    let pool = Pool::with_factory(list_of(&[]), fake_factory(recorder, Default::default()));
+
+    let err = pool
+        .call("m", None, b"{}", RetryMode::Never)
+        .await
+        .unwrap_err();
+    assert_eq!(err.status, opsapi::Status::Unavailable);
+    assert!(pool.readyz().is_err(), "an empty pool is not ready");
+}
+
+/// A pool where ALL instances are down reports readyz down (the all-down arm), distinct
+/// from the some-down Ready arm above.
+#[tokio::test]
+async fn pool_all_down_reports_not_ready() {
+    let recorder = Recorder::default();
+    let mut dead = std::collections::HashSet::new();
+    dead.insert("A".to_string());
+    dead.insert("B".to_string());
+    let pool = Pool::with_factory(list_of(&["A", "B"]), fake_factory(recorder, dead));
+
+    // A refresh populates the (all-dead) set.
+    let _ = pool.call("m", None, b"{}", RetryMode::Never).await;
+    let msg = pool.readyz().expect_err("all-down pool must be unready");
+    assert!(msg.contains("all"), "all-down verdict must name it: {msg}");
+}
+
+/// The set reconciliation: `[A,B]` seeds two; `[A,B] -> [A]` drops B (and returns it for
+/// teardown); `[A] -> [A,C]` adds C and KEEPS A (A is not rebuilt — its connection +
+/// probe survive the refresh).
+#[test]
+fn pool_reconcile_adds_and_drops_and_keeps_instances() {
+    let recorder = Recorder::default();
+    let pool = Pool::with_factory(list_of(&[]), fake_factory(recorder.clone(), Default::default()));
+
+    fn addrs(pool: &Pool) -> Vec<String> {
+        pool.instances
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|i| i.addr.clone())
+            .collect()
+    }
+
+    let _ = pool.reconcile_for_test(vec!["A".into(), "B".into()]);
+    assert_eq!(addrs(&pool), vec!["A".to_string(), "B".to_string()]);
+
+    // [A,B] -> [A]: B is dropped and returned for teardown.
+    let removed = pool.reconcile_for_test(vec!["A".into()]);
+    assert_eq!(addrs(&pool), vec!["A".to_string()]);
+    assert_eq!(
+        removed.iter().map(|i| i.addr.clone()).collect::<Vec<_>>(),
+        vec!["B".to_string()],
+        "the vanished instance is returned so the caller tears its probe/conn down"
+    );
+
+    // [A] -> [A,C]: C is added, A is kept (not rebuilt).
+    let _ = pool.reconcile_for_test(vec!["A".into(), "C".into()]);
+    assert_eq!(addrs(&pool), vec!["A".to_string(), "C".to_string()]);
+    assert_eq!(recorder.builds("A"), 1, "kept instance A must not be rebuilt on refresh");
+    assert_eq!(recorder.builds("B"), 1);
+    assert_eq!(recorder.builds("C"), 1);
+}
+
+/// The per-instance health predicates that drive selection + readyz: pending (never
+/// probed) is selectable but not healthy (optimistic cold start, fail-closed readyz); a
+/// fresh `Ok` is both; a fresh `Err` corpse is neither; a stale `Ok` (dead probe task)
+/// flips to neither.
+#[test]
+fn instance_health_selectable_and_healthy_branches() {
+    let now = 1000u64;
+
+    let pending = InstanceHealth::seed();
+    assert!(!pending.healthy(now), "never-probed is not healthy (fail-closed)");
+    assert!(pending.is_selectable(now), "never-probed is selectable (optimistic cold start)");
+
+    let ok = InstanceHealth::seed();
+    *ok.verdict.lock().unwrap() = Ok(());
+    ok.last_probe_at.store(now, Ordering::SeqCst);
+    assert!(ok.healthy(now) && ok.is_selectable(now), "fresh Ok is healthy + selectable");
+
+    let dead = InstanceHealth::seed();
+    *dead.verdict.lock().unwrap() = Err("down".into());
+    dead.last_probe_at.store(now, Ordering::SeqCst);
+    assert!(!dead.healthy(now) && !dead.is_selectable(now), "a fresh corpse is neither");
+
+    let stale = InstanceHealth::seed();
+    *stale.verdict.lock().unwrap() = Ok(());
+    stale.last_probe_at.store(now, Ordering::SeqCst);
+    let later = now + PROBE_STALL_MAX.as_secs() + 1;
+    assert!(!stale.healthy(later), "stale Ok flips to not-healthy");
+    assert!(!stale.is_selectable(later), "a stale-Ok instance is skipped by selection");
+}

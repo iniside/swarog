@@ -552,6 +552,373 @@ async fn probe_peer(peer_addr: String) -> Result<(), String> {
     }
 }
 
+// ===========================================================================
+// The client-side connection POOL (C1) — round-robin across a provider's live
+// instances. It sits BESIDE `Reconnecting`: where `Reconnecting` holds ONE
+// self-healing connection to ONE peer, a `Pool` holds ONE `Reconnecting` PER
+// instance and spreads calls across the healthy ones. `Pool` is itself an
+// `opsapi::Caller`, so it is a drop-in for a capability EXACTLY the way
+// `Reconnecting` is — the gateway/consumer code that `require`s the capability is
+// unchanged and unaware it got a pool.
+//
+// The seam that makes it work: each instance's edge address is FIXED (an instance
+// does not move — it is the LIST of instances that changes as the orchestrator scales
+// up/down), so each per-instance `Reconnecting<EdgeDialer>` dials a CONSTANT address
+// (a `constant_resolver`, re-resolving nothing). It is the POOL that re-resolves the
+// LIST — via a [`PeerListResolver`], the multi-address generalization of the single
+// [`PeerResolver`] — and reconciles its instance set: a new address gets a fresh
+// per-instance connection + probe, a removed address is dropped and its probe torn
+// down. Per-instance health comes from a probe fan-out (one [`probe_loop`] per
+// instance, one verdict each) so selection skips a known-dead instance.
+// ===========================================================================
+
+/// Resolves ALL live instance addresses of a provider — the load-balancing
+/// generalization of [`PeerResolver`]. In managed mode this wraps `resolve_peer`
+/// WITHOUT the gateway's old `exactly_one` collapse (C2), so it answers the whole
+/// `Vec<String>`; standalone it is a constant one-element list. Invoked by
+/// [`Pool::refresh`] to reconcile the instance set; an `Err` (agent unreachable) leaves
+/// the existing set in place for a later retry rather than tearing every instance down.
+pub type PeerListResolver =
+    Arc<dyn Fn() -> BoxFuture<'static, Result<Vec<String>, String>> + Send + Sync>;
+
+/// How often [`Pool::call`] will RE-RESOLVE the instance list. The per-instance dialers
+/// re-dial on their own reconnect and the per-instance probes flip health on their own
+/// (1–5s) cadence; the LIST (which instances exist) changes only when the orchestrator
+/// scales, so re-resolving it every request would hammer the agent for no benefit. The
+/// throttle keeps `call` cheap in the common case (a claimed-slot compare-exchange, no
+/// network) while still picking up a scale event within this bound. C2 may additionally
+/// drive a background refresh; the throttle makes the two idempotent.
+const POOL_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
+
+/// Per-instance health, stamped by that instance's own [`probe_loop`] and READ (zero
+/// I/O) by pool selection + the pool's `/readyz`. One of these PER instance — the
+/// fan-out of the single-`Stub` verdict cache. Reuses [`readiness_verdict`] so the
+/// dead-probe-task staleness guard applies per instance too.
+struct InstanceHealth {
+    verdict: Arc<StdMutex<Result<(), String>>>,
+    last_probe_at: Arc<AtomicU64>,
+}
+
+impl InstanceHealth {
+    /// The fail-closed seed: unknown reachability = not healthy until the first probe
+    /// completes (mirrors the single `Stub`'s verdict seed).
+    fn seed() -> InstanceHealth {
+        InstanceHealth {
+            verdict: Arc::new(StdMutex::new(Err("probe pending".to_string()))),
+            last_probe_at: Arc::new(AtomicU64::new(0)),
+        }
+    }
+
+    /// A COMPLETED probe verdict of `Ok`, fresh (not stale-flipped). Drives the pool's
+    /// `/readyz` some-down-vs-all-down decision.
+    fn healthy(&self, now: u64) -> bool {
+        let cached = self.verdict.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let stamp = self.last_probe_at.load(Ordering::SeqCst);
+        readiness_verdict(&cached, stamp, now).is_ok()
+    }
+
+    /// Whether pool SELECTION may route to this instance. Selectable = never-probed
+    /// (`stamp == 0`, the optimistic cold-start — the single-conn caller likewise always
+    /// ATTEMPTS a dial rather than gating on the probe) OR currently [`healthy`]. A
+    /// completed-and-failed (or stale) probe makes an instance non-selectable, so
+    /// selection skips a known corpse instead of routing part of the traffic nowhere.
+    fn is_selectable(&self, now: u64) -> bool {
+        let stamp = self.last_probe_at.load(Ordering::SeqCst);
+        stamp == 0 || self.healthy(now)
+    }
+}
+
+/// The teardown handle for one instance's background probe task (present only for a
+/// real edge instance; a test/fake instance has `None`).
+struct ProbeHandle {
+    stop: watch::Sender<bool>,
+    task: JoinHandle<()>,
+}
+
+/// Closes an instance's underlying edge connection on teardown. Boxed because [`Pool`]
+/// holds each instance's caller as `Arc<dyn Caller>` (for fake-injectability) and
+/// `Caller` has no `close` — the edge factory captures the concrete `Reconnecting` in
+/// this closure so the pool can still drain a dropped instance's connection.
+type InstanceCloser = Arc<dyn Fn() -> BoxFuture<'static, ()> + Send + Sync>;
+
+/// One pooled instance: a FIXED edge address, its own self-healing caller (a
+/// `Reconnecting<EdgeDialer>` on a constant resolver in production), its own probe-fed
+/// [`InstanceHealth`], and the teardown handles for the probe + connection.
+struct Instance {
+    addr: String,
+    caller: Arc<dyn Caller>,
+    health: Arc<InstanceHealth>,
+    probe: Option<ProbeHandle>,
+    close: InstanceCloser,
+}
+
+impl Instance {
+    /// Grace-then-abort the probe task (mirrors [`Stub::stop`]) — called when this
+    /// instance is dropped from the set (scaled away) or the whole pool stops.
+    async fn stop_probe(&mut self) {
+        if let Some(p) = self.probe.take() {
+            let _ = p.stop.send(true);
+            let mut task = p.task;
+            match tokio::time::timeout(PROBE_STOP_GRACE, &mut task).await {
+                Ok(_) => {}
+                Err(_) => {
+                    task.abort();
+                    let _ = task.await;
+                }
+            }
+        }
+    }
+}
+
+/// Builds a per-instance [`Instance`] factory over the REAL edge transport: a fixed
+/// address ⇒ a `constant_resolver` ⇒ a `Reconnecting<EdgeDialer>` caller + a spawned
+/// [`probe_loop`] stamping that instance's health. Injected into [`Pool::with_factory`]
+/// so tests can swap a fake transport for it.
+type InstanceFactory = Arc<dyn Fn(&str) -> Instance + Send + Sync>;
+
+fn edge_instance_factory(ready: Duration, unready: Duration) -> InstanceFactory {
+    Arc::new(move |addr: &str| {
+        let addr = addr.to_string();
+        let resolver = constant_resolver(addr.clone());
+        let recon = Arc::new(Reconnecting::new(EdgeDialer {
+            resolve: resolver.clone(),
+        }));
+        let caller: Arc<dyn Caller> = recon.clone();
+        let health = Arc::new(InstanceHealth::seed());
+        // One probe loop PER instance (the fan-out), dialing this instance's fixed addr.
+        let (stop, stop_rx) = watch::channel(false);
+        let task = tokio::spawn(probe_loop(
+            resolver,
+            health.verdict.clone(),
+            health.last_probe_at.clone(),
+            ready,
+            unready,
+            stop_rx,
+        ));
+        let close: InstanceCloser = Arc::new(move || {
+            let recon = recon.clone();
+            Box::pin(async move { recon.close().await })
+        });
+        Instance {
+            addr,
+            caller,
+            health,
+            probe: Some(ProbeHandle { stop, task }),
+            close,
+        }
+    })
+}
+
+/// A round-robin [`Caller`] over N per-instance connections. Holds a [`PeerListResolver`]
+/// (the LIST source), the current instance set, an atomic round-robin cursor, and (via
+/// each instance) probe-fed per-instance health. `call` refreshes the set (throttled),
+/// picks the next SELECTABLE instance round-robin, and delegates to that instance's own
+/// self-healing caller.
+pub struct Pool {
+    list: PeerListResolver,
+    factory: InstanceFactory,
+    /// The current instance set, reconciled by [`refresh`](Pool::refresh). A `std` mutex
+    /// (never held across an `.await`): the delegated call happens AFTER the guard drops.
+    instances: StdMutex<Vec<Instance>>,
+    /// The round-robin cursor — advanced once per `call`, `% len` selects the start slot.
+    cursor: AtomicU64,
+    /// Coarse seconds of the last list re-resolution (`0` = never), backing the
+    /// [`POOL_REFRESH_INTERVAL`] throttle so `call` does not re-resolve every request.
+    last_refresh: AtomicU64,
+}
+
+impl Pool {
+    /// Builds a pool over the REAL edge transport (production). The instance set starts
+    /// EMPTY and is populated on the first [`call`](Pool::call) refresh; until a probe
+    /// completes the pool reports `/readyz` down (fail-closed cold start).
+    pub fn new(list: PeerListResolver) -> Pool {
+        Pool::with_factory(
+            list,
+            edge_instance_factory(PROBE_INTERVAL_READY, PROBE_INTERVAL_UNREADY),
+        )
+    }
+
+    /// The factory-injectable constructor — production passes [`edge_instance_factory`];
+    /// tests pass a fake-transport factory.
+    fn with_factory(list: PeerListResolver, factory: InstanceFactory) -> Pool {
+        Pool {
+            list,
+            factory,
+            instances: StdMutex::new(Vec::new()),
+            cursor: AtomicU64::new(0),
+            last_refresh: AtomicU64::new(0),
+        }
+    }
+
+    /// Re-resolves the instance LIST (throttled by [`POOL_REFRESH_INTERVAL`]) and
+    /// reconciles the set: add addresses that appeared, drop (and tear down) addresses
+    /// that vanished, keep the rest untouched (so an existing instance's connection +
+    /// cursor position + probe survive a refresh). A single concurrent caller wins the
+    /// refresh (compare-exchange on `last_refresh`); the resolve runs OUTSIDE the set
+    /// lock. A resolver error leaves the existing set in place.
+    async fn refresh(&self) {
+        let now = coarse_now_secs();
+        let last = self.last_refresh.load(Ordering::SeqCst);
+        if last != 0 && now.saturating_sub(last) < POOL_REFRESH_INTERVAL.as_secs() {
+            return;
+        }
+        // Claim the refresh slot so two concurrent calls do not both resolve + rebuild.
+        if self
+            .last_refresh
+            .compare_exchange(last, now.max(1), Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return;
+        }
+        let addrs = match (self.list)().await {
+            Ok(a) => a,
+            // Keep the existing set; the next refresh (>= one interval later) retries.
+            Err(_e) => return,
+        };
+        let removed = {
+            let mut g = self.instances.lock().unwrap_or_else(|e| e.into_inner());
+            self.reconcile(&mut g, addrs)
+        };
+        // Tear down vanished instances OUTSIDE the set lock (stop_probe/close await).
+        for mut inst in removed {
+            inst.stop_probe().await;
+            (inst.close)().await;
+        }
+    }
+
+    /// Reconciles `current` toward `addrs` (deduped, order-preserving): keep an existing
+    /// instance whose addr is still wanted, build a fresh one for a new addr, and RETURN
+    /// the instances whose addr vanished (the caller tears them down). Pure set algebra —
+    /// spawning happens inside the factory, no `.await` here, so it runs under the lock.
+    fn reconcile(&self, current: &mut Vec<Instance>, addrs: Vec<String>) -> Vec<Instance> {
+        let mut seen = std::collections::HashSet::new();
+        let wanted: Vec<String> = addrs.into_iter().filter(|a| seen.insert(a.clone())).collect();
+        let mut removed = Vec::new();
+        let mut kept: Vec<Instance> = Vec::new();
+        for inst in current.drain(..) {
+            if wanted.contains(&inst.addr) {
+                kept.push(inst);
+            } else {
+                removed.push(inst);
+            }
+        }
+        let mut result: Vec<Instance> = Vec::with_capacity(wanted.len());
+        for addr in &wanted {
+            if let Some(pos) = kept.iter().position(|i| &i.addr == addr) {
+                result.push(kept.remove(pos));
+            } else {
+                result.push((self.factory)(addr));
+            }
+        }
+        *current = result;
+        removed
+    }
+
+    /// Picks the next SELECTABLE instance round-robin. Advances the cursor ONCE (so calls
+    /// spread even across a stable set), then scans from that slot, skipping non-selectable
+    /// (known-dead / stale) instances. `None` = empty set OR every instance known-down,
+    /// which [`call`](Pool::call) maps to `Unavailable`.
+    fn select(&self, instances: &[Instance], now: u64) -> Option<usize> {
+        let n = instances.len();
+        if n == 0 {
+            return None;
+        }
+        let start = (self.cursor.fetch_add(1, Ordering::SeqCst) % n as u64) as usize;
+        for off in 0..n {
+            let i = (start + off) % n;
+            if instances[i].health.is_selectable(now) {
+                return Some(i);
+            }
+        }
+        None
+    }
+
+    /// The pool's `/readyz` verdict — some-down vs all-down. Zero I/O: reads the current
+    /// instance set + each instance's cached probe verdict, resolving nothing. Ready iff
+    /// at least one instance is [`healthy`](InstanceHealth::healthy); Down only when EVERY resolved
+    /// instance is down (or none resolved yet — the fail-closed cold start). This is the
+    /// rethink C1 requires: a pool with one dead instance out of three is still Ready.
+    fn readiness_at(&self, now: u64) -> Result<(), String> {
+        let g = self.instances.lock().unwrap_or_else(|e| e.into_inner());
+        if g.is_empty() {
+            return Err("remote pool: no resolved instances yet".to_string());
+        }
+        let total = g.len();
+        let healthy = g.iter().filter(|i| i.health.healthy(now)).count();
+        if healthy == 0 {
+            return Err(format!("remote pool: all {total} instance(s) down"));
+        }
+        Ok(())
+    }
+
+    /// [`readiness_at`](Pool::readiness_at) at the current coarse time — the entry point a
+    /// C2 `httpmw::ReadyCheck` will call (zero I/O, reads the cached verdicts only).
+    pub fn readyz(&self) -> Result<(), String> {
+        self.readiness_at(coarse_now_secs())
+    }
+
+    /// Tears down every instance (probe task + connection) — the pool's `stop`, wired by
+    /// the owning `Stub` in C2.
+    pub async fn stop(&self) {
+        let taken: Vec<Instance> = {
+            let mut g = self.instances.lock().unwrap_or_else(|e| e.into_inner());
+            std::mem::take(&mut *g)
+        };
+        for mut inst in taken {
+            inst.stop_probe().await;
+            (inst.close)().await;
+        }
+    }
+}
+
+#[async_trait]
+impl Caller for Pool {
+    /// Refresh (throttled) ⇒ select a healthy instance round-robin ⇒ delegate to that
+    /// instance's own self-healing [`Reconnecting::call`].
+    ///
+    /// **[C3 SEAM — do NOT implement here]** C1 delegates and returns the delegated
+    /// error verbatim: NO retry onto another instance. C3 will slot the cross-instance
+    /// retry in RIGHT HERE, gated on `retry_mode` (the WHETHER-to-retry authority stays
+    /// `opsapi::RetryMode`, matching `Reconnecting::call` — never a new pool knob): a
+    /// `RetryMode::OnceAfterReconnect` (read / `#[retry_safe]`) failure may ADVANCE the
+    /// cursor off the failed instance (`select` again) and replay once on a DIFFERENT
+    /// instance; a `RetryMode::Never` (mutation) MUST return the error with no
+    /// cross-instance replay (double-execute hazard). C1 must not change `Reconnecting`'s
+    /// own single-conn `RetryMode` semantics.
+    async fn call(
+        &self,
+        method: &str,
+        identity: Option<&str>,
+        payload: &[u8],
+        retry_mode: RetryMode,
+    ) -> Result<Vec<u8>, Error> {
+        self.refresh().await;
+        let now = coarse_now_secs();
+        let caller = {
+            let g = self.instances.lock().unwrap_or_else(|e| e.into_inner());
+            self.select(&g, now).map(|i| g[i].caller.clone())
+        };
+        let Some(caller) = caller else {
+            return Err(Error::unavailable(
+                "remote pool: no reachable instance (all resolved instances down, or none resolved yet)",
+            ));
+        };
+        // [C3 SEAM] on `Err` here, C3 (for OnceAfterReconnect only) re-selects a DIFFERENT
+        // instance and replays once; C1 returns the delegated result as-is.
+        caller.call(method, identity, payload, retry_mode).await
+    }
+}
+
+#[cfg(test)]
+impl Pool {
+    /// Directly reconcile the set (bypassing the throttle/resolver) so a unit test can
+    /// prove the add/keep/drop structure without driving `call`.
+    fn reconcile_for_test(&self, addrs: Vec<String>) -> Vec<Instance> {
+        let mut g = self.instances.lock().unwrap_or_else(|e| e.into_inner());
+        self.reconcile(&mut g, addrs)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // The Stub module — the swap.
 // ---------------------------------------------------------------------------
