@@ -25,6 +25,14 @@ impl EnvVarGuard {
         EnvVarGuard { key, previous }
     }
 
+    /// Removes `key` for the test's duration, restoring the prior value on drop.
+    /// Used to prove the cwd-walk branch of `resolve_root` fires only when
+    /// `WELES_ROOT` is absent.
+    fn unset(key: &'static str) -> Self {
+        let previous = std::env::var_os(key);
+        std::env::remove_var(key);
+        EnvVarGuard { key, previous }
+    }
 }
 
 impl Drop for EnvVarGuard {
@@ -33,6 +41,27 @@ impl Drop for EnvVarGuard {
             Some(value) => std::env::set_var(self.key, value),
             None => std::env::remove_var(self.key),
         }
+    }
+}
+
+/// RAII restore of the process-global current directory across a test that
+/// changes it. Like `WELES_ROOT`, cwd is process-global, so a test that sets it
+/// must hold [`env_guard`] and restore on drop.
+struct CwdGuard {
+    previous: PathBuf,
+}
+
+impl CwdGuard {
+    fn set(dir: &Path) -> Self {
+        let previous = std::env::current_dir().expect("read current dir");
+        std::env::set_current_dir(dir).expect("set current dir");
+        CwdGuard { previous }
+    }
+}
+
+impl Drop for CwdGuard {
+    fn drop(&mut self) {
+        let _ = std::env::set_current_dir(&self.previous);
     }
 }
 
@@ -574,5 +603,78 @@ fn filtered_env_keeps_distinct_case_variants_on_unix() {
     let env = filtered_env(&["HTTP_PROXY", "http_proxy"]);
     std::env::remove_var("http_proxy");
     assert_eq!(env.len(), 2, "unix case variants are distinct vars, got: {env:?}");
+}
+
+/// Creates a fresh temp directory tree carrying the repo marker
+/// (`Cargo.toml` + `tools/processctl/`) at its top plus a nested subdirectory,
+/// returning `(marker_root, nested_subdir)`. Both are canonicalized so they can
+/// be compared against `resolve_root`'s output (which is derived from
+/// `current_dir`, already canonical on macOS where /var → /private/var).
+fn marker_tree(name: &str) -> (PathBuf, PathBuf) {
+    let root = temp_dir(name);
+    std::fs::write(root.join("Cargo.toml"), b"[package]\nname=\"x\"\n")
+        .expect("write marker Cargo.toml");
+    std::fs::create_dir_all(root.join("tools").join("processctl"))
+        .expect("create tools/processctl marker dir");
+    let nested = root.join("nested").join("deep");
+    std::fs::create_dir_all(&nested).expect("create nested subdir");
+    let root = std::fs::canonicalize(&root).expect("canonicalize marker root");
+    let nested = std::fs::canonicalize(&nested).expect("canonicalize nested subdir");
+    (root, nested)
+}
+
+#[test]
+fn resolve_root_flag_wins_over_env_and_cwd() {
+    let _guard = env_guard();
+    // Even with a conflicting WELES_ROOT set and cwd inside a marker tree, an
+    // explicit --root value is returned verbatim: it is the highest authority.
+    let _env = EnvVarGuard::set("WELES_ROOT", "/env/should/lose");
+    let (_root, nested) = marker_tree("flag-wins");
+    let _cwd = CwdGuard::set(&nested);
+    let flag = PathBuf::from("/operator/pinned/root");
+    assert_eq!(resolve_root(Some(flag.clone())).unwrap(), flag);
+}
+
+#[test]
+fn resolve_root_env_var_overrides_cwd() {
+    let _guard = env_guard();
+    // No flag: WELES_ROOT beats the cwd marker-walk.
+    let (_root, nested) = marker_tree("env-wins");
+    let _cwd = CwdGuard::set(&nested);
+    let _env = EnvVarGuard::set("WELES_ROOT", "/env/authored/root");
+    assert_eq!(resolve_root(None).unwrap(), PathBuf::from("/env/authored/root"));
+}
+
+#[test]
+fn resolve_root_walks_cwd_up_to_the_marker() {
+    let _guard = env_guard();
+    // THE failing-branch pin (Finding 1): from a NESTED subdir with no flag and
+    // no WELES_ROOT, resolve_root must return the repo-marker ancestor — NOT the
+    // flat nested cwd — so weles's `<root>/run/rollout.lock` path stays identical
+    // to devctl/verifyctl and the one-Postgres mutual exclusion holds.
+    let _env = EnvVarGuard::unset("WELES_ROOT");
+    let (root, nested) = marker_tree("marker-walk");
+    let _cwd = CwdGuard::set(&nested);
+    let resolved = resolve_root(None).expect("resolve via marker walk");
+    assert_eq!(resolved, root, "must return the marker root, not the nested cwd");
+    assert_ne!(resolved, nested, "must not stop at the flat nested cwd");
+}
+
+#[test]
+fn resolve_root_no_marker_no_flag_no_env_errors() {
+    let _guard = env_guard();
+    // A real off-checkout deploy: a temp dir with no marker above it, no flag, no
+    // WELES_ROOT. resolve_root must FAIL CLOSED (never a silent flat-cwd fallback
+    // that would mis-locate state/lock/deploy).
+    let _env = EnvVarGuard::unset("WELES_ROOT");
+    let bare = temp_dir("no-marker");
+    let bare = std::fs::canonicalize(&bare).expect("canonicalize bare dir");
+    let _cwd = CwdGuard::set(&bare);
+    let err = resolve_root(None).expect_err("no marker/flag/env must error");
+    let message = format!("{err:#}");
+    assert!(
+        message.contains("--root") && message.contains("WELES_ROOT"),
+        "error must guide the operator to --root/WELES_ROOT: {message}"
+    );
 }
 

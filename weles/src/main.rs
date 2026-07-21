@@ -7,7 +7,7 @@ use std::time::Duration;
 
 mod fixture;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Result};
 use weles::cli::{self, Command};
 use weles::state::{self, FleetState};
 use weles::{control, prep, supervisor};
@@ -36,10 +36,10 @@ fn main() -> ExitCode {
 
 fn run(command: Command) -> Result<()> {
     match command {
-        Command::Up { dry_run } => up(dry_run),
-        Command::Deploy { src_dir, fleet } => deploy(&src_dir, &fleet),
-        Command::Status => status(),
-        Command::Down => down(),
+        Command::Up { dry_run, root } => up(dry_run, root),
+        Command::Deploy { src_dir, fleet, root } => deploy(&src_dir, &fleet, root),
+        Command::Status { root } => status(root),
+        Command::Down { root } => down(root),
         Command::TestChild {
             spawn_grandchild,
             ignore_graceful,
@@ -48,11 +48,11 @@ fn run(command: Command) -> Result<()> {
     }
 }
 
-fn up(dry_run: bool) -> Result<()> {
+fn up(dry_run: bool, root: Option<PathBuf>) -> Result<()> {
     if dry_run {
-        return dry_run_fleet();
+        return dry_run_fleet(root);
     }
-    supervisor::run_up()
+    supervisor::run_up(root)
 }
 
 /// `weles up --dry-run`: load + validate the DEPLOYED `fleet.toml` and print a
@@ -61,8 +61,8 @@ fn up(dry_run: bool) -> Result<()> {
 /// parses+validates its `fleet.toml` (the same load+validate `up` performs),
 /// so this reuses the one deployed-fleet authority rather than re-locating the
 /// file. Side-effect-free beyond ensuring `run/weles` exists.
-fn dry_run_fleet() -> Result<()> {
-    let layout = supervisor::discover_layout()?;
+fn dry_run_fleet(root: Option<PathBuf>) -> Result<()> {
+    let layout = supervisor::discover_layout(root)?;
     let fleet = layout
         .fleet()
         .expect("discover_layout pins a validated fleet");
@@ -83,15 +83,15 @@ fn dry_run_fleet() -> Result<()> {
 
 /// `weles deploy <src-dir> --fleet <fleet.toml>`: stage the fleet binaries and
 /// stamp the chosen `fleet.toml` into `<root>/deploy`.
-fn deploy(src_dir: &str, fleet: &str) -> Result<()> {
-    let layout = supervisor::discover_layout_for_deploy()?;
+fn deploy(src_dir: &str, fleet: &str, root: Option<PathBuf>) -> Result<()> {
+    let layout = supervisor::discover_layout_for_deploy(root)?;
     prep::deploy(&layout, Path::new(src_dir), Path::new(fleet))
 }
 
 /// `weles status`: reports the recorded fleet, connecting to a live supervisor
 /// for a fresh per-service table and exiting 0.
-fn status() -> Result<()> {
-    let (state, endpoint) = match connect_target()? {
+fn status(root: Option<PathBuf>) -> Result<()> {
+    let (state, endpoint) = match connect_target(root)? {
         Target::Connect { state, endpoint } => (state, endpoint),
         Target::Report(result) => return result,
     };
@@ -102,14 +102,14 @@ fn status() -> Result<()> {
 
 /// `weles down`: asks a live supervisor to stop, then polls the state file
 /// until the fleet reaches a terminal status (or the shutdown deadline).
-fn down() -> Result<()> {
-    let (state, endpoint) = match connect_target()? {
+fn down(root: Option<PathBuf>) -> Result<()> {
+    let (state, endpoint) = match connect_target(root.clone())? {
         Target::Connect { state, endpoint } => (state, endpoint),
         Target::Report(result) => return result,
     };
     let message = control::request(Path::new(&endpoint), "down", &state.supervisor)?;
     println!("{message}");
-    control::wait_for_terminal(&state_path()?, &state.supervisor, DOWN_TIMEOUT)
+    control::wait_for_terminal(&state_path(root)?, &state.supervisor, DOWN_TIMEOUT)
 }
 
 /// A resolved control target: either connect to a live supervisor, or a
@@ -129,8 +129,8 @@ const ENDPOINT_RETRY_GAP: Duration = Duration::from_millis(100);
 
 /// Loads the state file and classifies it: connectable (live, non-terminal) or
 /// a message to print / error to raise (inactive / stale / no state / pre-bind).
-fn connect_target() -> Result<Target> {
-    let path = state_path()?;
+fn connect_target(root: Option<PathBuf>) -> Result<Target> {
+    let path = state_path(root)?;
     for attempt in 0..=ENDPOINT_RETRIES {
         let Some(state) = state::load(&path)? else {
             bail!(
@@ -170,13 +170,12 @@ fn connect_target() -> Result<Target> {
     unreachable!("connect_target loop returns on every attempt")
 }
 
-/// `run/weles/state.json` under the repo root — discovered exactly like `up`
-/// (this crate's `Cargo.toml` sits at the repo root, one parent up).
-fn state_path() -> Result<PathBuf> {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .context("weles crate has no parent directory")?
-        .to_path_buf();
+/// `run/weles/state.json` under the runtime-resolved fleet root — the SAME
+/// [`prep::resolve_root`] authority `up`/`deploy` use, so `status`/`down` and the
+/// supervisor agree on the root (and therefore on the `rollout.lock` path)
+/// without a second compile-time derivation.
+fn state_path(root: Option<PathBuf>) -> Result<PathBuf> {
+    let root = prep::resolve_root(root)?;
     Ok(root.join("run").join("weles").join("state.json"))
 }
 

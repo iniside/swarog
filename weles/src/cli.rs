@@ -1,20 +1,23 @@
 //! Hand-rolled CLI parsing for `weles` (house style — no clap; see
 //! `tools/verifyctl/src/cli.rs` for the pattern this file copies).
 
+use std::path::PathBuf;
+
 use anyhow::{bail, Result};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Command {
     /// Boot the deployed fleet. `dry_run` validates the deployed `fleet.toml`
     /// and exits WITHOUT acquiring the rollout lock, running any prepare hook,
-    /// or spawning a service.
-    Up { dry_run: bool },
+    /// or spawning a service. `root` is the optional `--root <path>` override
+    /// for the fleet root (see [`crate::prep::resolve_root`]).
+    Up { dry_run: bool, root: Option<PathBuf> },
     /// Stage the fleet binaries from `src_dir` into `<root>/deploy`, stamping
     /// the chosen `fleet.toml` (`fleet`) into the generation as the fleet `up`
-    /// will boot.
-    Deploy { src_dir: String, fleet: String },
-    Status,
-    Down,
+    /// will boot. `root` is the optional `--root <path>` override.
+    Deploy { src_dir: String, fleet: String, root: Option<PathBuf> },
+    Status { root: Option<PathBuf> },
+    Down { root: Option<PathBuf> },
     /// Hidden test fixture for the platform containment tests — not listed
     /// in USAGE.
     TestChild {
@@ -29,10 +32,10 @@ pub const USAGE: &str = "\
 weles - standalone fleet-supervisor CLI
 
 USAGE:
-  weles deploy <src-dir> --fleet <fleet.toml>
-  weles up [--dry-run]
-  weles status
-  weles down
+  weles deploy <src-dir> --fleet <fleet.toml> [--root <path>]
+  weles up [--dry-run] [--root <path>]
+  weles status [--root <path>]
+  weles down [--root <path>]
 
 weles has no concept of split/monolith — it boots whatever fleet was deployed.
 `deploy` stamps the chosen --fleet <fleet.toml> into the generation; `up` reads
@@ -40,7 +43,11 @@ it back from <root>/deploy and boots it. `up --dry-run` validates the deployed
 fleet.toml and exits without acquiring the rollout lock, running a prepare hook,
 or spawning. weles never builds — it executes only the binaries staged into
 <root>/deploy by `weles deploy` (<src-dir> resolves relative to the current
-directory).";
+directory).
+
+--root <path> pins the fleet root (state/lock/deploy live under it); without it,
+WELES_ROOT then a walk up from the current directory to the repo marker decide
+the root (see resolve_root). Accepted on up/deploy/status/down alike.";
 
 pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command> {
     let mut args = args.into_iter();
@@ -50,7 +57,8 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command> {
     match verb.as_str() {
         "up" => {
             let mut dry_run = false;
-            for arg in args {
+            let mut root: Option<PathBuf> = None;
+            while let Some(arg) = args.next() {
                 match arg.as_str() {
                     // The rollout-lease borrow marker, APPENDED to this argv by
                     // the parent that lent us its lease
@@ -71,14 +79,16 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command> {
                         }
                         dry_run = true;
                     }
+                    "--root" => take_root(&mut root, &mut args)?,
                     other => bail!("unknown argument {other:?}\n\n{USAGE}"),
                 }
             }
-            Ok(Command::Up { dry_run })
+            Ok(Command::Up { dry_run, root })
         }
         "deploy" => {
             let mut src_dir: Option<String> = None;
             let mut fleet: Option<String> = None;
+            let mut root: Option<PathBuf> = None;
             while let Some(arg) = args.next() {
                 match arg.as_str() {
                     "--fleet" => {
@@ -90,6 +100,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command> {
                         };
                         fleet = Some(path);
                     }
+                    "--root" => take_root(&mut root, &mut args)?,
                     other if other.starts_with("--") => {
                         bail!("unknown argument {other:?}\n\n{USAGE}")
                     }
@@ -107,16 +118,10 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command> {
             let Some(fleet) = fleet else {
                 bail!("deploy requires --fleet <fleet.toml>\n\n{USAGE}");
             };
-            Ok(Command::Deploy { src_dir, fleet })
+            Ok(Command::Deploy { src_dir, fleet, root })
         }
-        "status" => {
-            expect_no_more_args(args)?;
-            Ok(Command::Status)
-        }
-        "down" => {
-            expect_no_more_args(args)?;
-            Ok(Command::Down)
-        }
+        "status" => Ok(Command::Status { root: parse_root_only(args)? }),
+        "down" => Ok(Command::Down { root: parse_root_only(args)? }),
         "__test-child" => {
             let mut spawn_grandchild = false;
             let mut ignore_graceful = false;
@@ -139,11 +144,32 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command> {
     }
 }
 
-fn expect_no_more_args(args: impl IntoIterator<Item = String>) -> Result<()> {
-    if let Some(other) = args.into_iter().next() {
-        bail!("unknown argument {other:?}\n\n{USAGE}");
+/// Consumes the value after a `--root` flag into `slot`, rejecting a repeat or a
+/// missing path. `slot` is the per-verb root accumulator so every verb parses
+/// `--root <path>` identically.
+fn take_root(slot: &mut Option<PathBuf>, args: &mut impl Iterator<Item = String>) -> Result<()> {
+    if slot.is_some() {
+        bail!("--root given more than once\n\n{USAGE}");
     }
+    let Some(path) = args.next() else {
+        bail!("--root requires a path\n\n{USAGE}");
+    };
+    *slot = Some(PathBuf::from(path));
     Ok(())
+}
+
+/// Parses the tail of a verb that takes ONLY an optional `--root <path>`
+/// (`status`/`down`): any other token is an unknown argument.
+fn parse_root_only(args: impl IntoIterator<Item = String>) -> Result<Option<PathBuf>> {
+    let mut args = args.into_iter();
+    let mut root: Option<PathBuf> = None;
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--root" => take_root(&mut root, &mut args)?,
+            other => bail!("unknown argument {other:?}\n\n{USAGE}"),
+        }
+    }
+    Ok(root)
 }
 
 #[cfg(test)]

@@ -7,13 +7,13 @@ fn args(items: &[&str]) -> Vec<String> {
 #[test]
 fn up_parses_without_dry_run() {
     let cmd = parse(args(&["up"])).unwrap();
-    assert_eq!(cmd, Command::Up { dry_run: false });
+    assert_eq!(cmd, Command::Up { dry_run: false, root: None });
 }
 
 #[test]
 fn up_dry_run() {
     let cmd = parse(args(&["up", "--dry-run"])).unwrap();
-    assert_eq!(cmd, Command::Up { dry_run: true });
+    assert_eq!(cmd, Command::Up { dry_run: true, root: None });
 }
 
 #[test]
@@ -51,16 +51,16 @@ fn up_accepts_the_borrowed_lease_marker_a_lender_appends() {
     // pins the spelling; this pins the parser.
     assert_eq!(
         parse(args(&["up", crate::lock::BORROWED_LEASE_ARG])).unwrap(),
-        Command::Up { dry_run: false }
+        Command::Up { dry_run: false, root: None }
     );
     // Coexists with --dry-run regardless of order.
     assert_eq!(
         parse(args(&["up", "--dry-run", crate::lock::BORROWED_LEASE_ARG])).unwrap(),
-        Command::Up { dry_run: true }
+        Command::Up { dry_run: true, root: None }
     );
     assert_eq!(
         parse(args(&["up", crate::lock::BORROWED_LEASE_ARG, "--dry-run"])).unwrap(),
-        Command::Up { dry_run: true }
+        Command::Up { dry_run: true, root: None }
     );
 }
 
@@ -85,6 +85,7 @@ fn deploy_parses_with_src_dir_and_fleet() {
         Command::Deploy {
             src_dir: "some/build/out".to_string(),
             fleet: "weles/fleet.split.toml".to_string(),
+            root: None,
         }
     );
 }
@@ -108,7 +109,7 @@ fn deploy_rejects_trailing_args() {
 
 #[test]
 fn status_parses() {
-    assert_eq!(parse(args(&["status"])).unwrap(), Command::Status);
+    assert_eq!(parse(args(&["status"])).unwrap(), Command::Status { root: None });
 }
 
 #[test]
@@ -118,12 +119,47 @@ fn status_rejects_trailing_args() {
 
 #[test]
 fn down_parses() {
-    assert_eq!(parse(args(&["down"])).unwrap(), Command::Down);
+    assert_eq!(parse(args(&["down"])).unwrap(), Command::Down { root: None });
 }
 
 #[test]
 fn down_rejects_trailing_args() {
     assert!(parse(args(&["down", "extra"])).is_err());
+}
+
+#[test]
+fn root_flag_parses_on_every_verb() {
+    // `--root <path>` is accepted on up/deploy/status/down alike and carries the
+    // operator-pinned fleet root into each Command variant (threaded to
+    // resolve_root). A missing value or a repeat is rejected.
+    assert_eq!(
+        parse(args(&["up", "--root", "/srv/fleet"])).unwrap(),
+        Command::Up { dry_run: false, root: Some(PathBuf::from("/srv/fleet")) }
+    );
+    assert_eq!(
+        parse(args(&["deploy", "out", "--fleet", "f.toml", "--root", "/srv/fleet"])).unwrap(),
+        Command::Deploy {
+            src_dir: "out".to_string(),
+            fleet: "f.toml".to_string(),
+            root: Some(PathBuf::from("/srv/fleet")),
+        }
+    );
+    assert_eq!(
+        parse(args(&["status", "--root", "/srv/fleet"])).unwrap(),
+        Command::Status { root: Some(PathBuf::from("/srv/fleet")) }
+    );
+    assert_eq!(
+        parse(args(&["down", "--root", "/srv/fleet"])).unwrap(),
+        Command::Down { root: Some(PathBuf::from("/srv/fleet")) }
+    );
+}
+
+#[test]
+fn root_flag_requires_a_value_and_rejects_repeats() {
+    assert!(parse(args(&["up", "--root"])).is_err());
+    assert!(parse(args(&["status", "--root"])).is_err());
+    assert!(parse(args(&["up", "--root", "/a", "--root", "/b"])).is_err());
+    assert!(parse(args(&["down", "--root", "/a", "--root", "/b"])).is_err());
 }
 
 #[test]

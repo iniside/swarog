@@ -74,6 +74,55 @@ const HELPER_SHUTDOWN_FORCE: Duration = Duration::from_secs(5);
 /// (`timeout_secs == 0`). Matches the old fixed `mint_ca`/`seed_admin` 30s.
 const DEFAULT_PREPARE_TIMEOUT_SECS: u64 = 30;
 
+/// THE single runtime authority for weles's fleet root — the directory under
+/// which `run/` (state + `rollout.lock`), `deploy/`, and every spawned service's
+/// cwd live. Every entry point (`up`/`deploy`/`status`/`down`) resolves the root
+/// through here, replacing the two duplicated compile-time
+/// `env!("CARGO_MANIFEST_DIR").parent()` derivations that used to live in
+/// `main::state_path` and `supervisor::workspace_root` (identical only by
+/// construction — nothing enforced their agreement).
+///
+/// Resolution chain, first match wins:
+///   1. `flag` — the `--root <path>` value, parsed ONCE in `cli` and threaded in
+///      (never re-read from argv here, which would be a second argv authority);
+///   2. else `WELES_ROOT` (a non-empty value);
+///   3. else walk the current directory UP to the repo marker — a directory
+///      holding BOTH `Cargo.toml` and `tools/processctl/`. This matches
+///      `tools/verifyctl/src/runner.rs::workspace_root` byte-for-byte so weles's
+///      `<root>/run/rollout.lock` path stays identical to devctl/verifyctl and
+///      the one-Postgres mutual exclusion (`crate::lock`) is preserved from any
+///      subdirectory of the checkout;
+///   4. else — a real off-checkout deploy with no marker above cwd — `bail!`
+///      (fail-closed, never a silent flat-cwd that would mis-locate
+///      state/lock/deploy), telling the operator to pass `--root` or set
+///      `WELES_ROOT`.
+///
+/// `current_exe` is deliberately NOT consulted: a deployed weles binary installs
+/// separately from the fleet's `deploy/`, so its own location is unrelated to the
+/// root.
+pub fn resolve_root(flag: Option<PathBuf>) -> Result<PathBuf> {
+    if let Some(root) = flag {
+        return Ok(root);
+    }
+    if let Some(env) = std::env::var_os("WELES_ROOT").filter(|value| !value.is_empty()) {
+        return Ok(PathBuf::from(env));
+    }
+    let mut directory = std::env::current_dir().context("resolve the current directory")?;
+    loop {
+        if directory.join("Cargo.toml").is_file() && directory.join("tools/processctl").is_dir() {
+            return Ok(directory);
+        }
+        if !directory.pop() {
+            bail!(
+                "weles could not locate the fleet root: no --root <path> was given, WELES_ROOT is \
+                 unset, and no ancestor of the current directory holds a Cargo.toml beside \
+                 tools/processctl (the repo marker). Pass --root <path> or set WELES_ROOT to the \
+                 root that holds run/ and deploy/."
+            );
+        }
+    }
+}
+
 /// The workspace's on-disk layout as weles cares about it: the repo root, its
 /// own `run/weles` scratch dir (created on discovery), `bin_dir` —
 /// `<root>/deploy`, the FIXED directory `weles deploy` stages generations into

@@ -606,31 +606,25 @@ impl Reporter {
     }
 }
 
-/// Discovers the workspace layout from weles's own crate location. weles's
-/// Cargo.toml sits directly at the repo root (unlike tools/*), so the workspace
-/// root is exactly one parent up. Shared by `up` and `deploy`.
-pub fn discover_layout() -> Result<prep::Layout> {
-    prep::Layout::discover(workspace_root()?)
+/// Discovers the workspace layout under the runtime-resolved fleet root
+/// ([`prep::resolve_root`] — `--root` flag, else `WELES_ROOT`, else a walk up to
+/// the repo marker). Shared by `up` and `deploy`.
+pub fn discover_layout(root: Option<PathBuf>) -> Result<prep::Layout> {
+    prep::Layout::discover(prep::resolve_root(root)?)
 }
 
 /// Like [`discover_layout`] but for the `deploy` path: does NOT require a
 /// pinned generation (`deploy/current`), so a fresh checkout can run its first
 /// `weles deploy`.
-pub fn discover_layout_for_deploy() -> Result<prep::Layout> {
-    prep::Layout::discover_for_deploy(workspace_root()?)
-}
-
-fn workspace_root() -> Result<PathBuf> {
-    Ok(PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .context("weles crate has no parent directory")?
-        .to_path_buf())
+pub fn discover_layout_for_deploy(root: Option<PathBuf>) -> Result<prep::Layout> {
+    prep::Layout::discover_for_deploy(prep::resolve_root(root)?)
 }
 
 /// The whole `weles up` lifecycle. Returns when the fleet has been torn down
-/// (operator stop) or a boot failure was unwound.
-pub fn run_up() -> Result<()> {
-    let layout = discover_layout()?;
+/// (operator stop) or a boot failure was unwound. `root` is the optional
+/// `--root <path>` override threaded from `cli`.
+pub fn run_up(root: Option<PathBuf>) -> Result<()> {
+    let layout = discover_layout(root)?;
 
     // The deployed fleet was parsed + validated ONCE at discover
     // (PIN-AT-DISCOVER); the `up` path always has it — `discover` fails rather
