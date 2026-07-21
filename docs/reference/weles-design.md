@@ -7,8 +7,12 @@ This file is the source of truth; memory points here.
 
 **Status:** M0 shipped (2026-07-15) — supervisor, restart-on-crash, `deploy/`
 generations, control endpoint, `rollout.lock` bit-compat. Pre-M1 hardening closed
-(2026-07-16). M1 not started. Decisions below were taken 2026-07-09..07-10 by
-Lukasz unless dated otherwise; they are settled, not open questions.
+(2026-07-16). M1 partially shipped — the agent hello/resolve endpoint (2026-07-17)
+and the `weles-managed-gateway` verify stage are live; the fleet definition moved
+to `fleet.toml` (2026-07-21). Single-host authorities hardened 2026-07-21 (runtime
+root resolution, placement annotation, Told/Asks replica validator) — see the
+two dated errata below. Decisions below were taken 2026-07-09..07-10 by Lukasz
+unless dated otherwise; they are settled, not open questions.
 
 ## Errata (2026-07-21) — fleet definition moved to `fleet.toml`
 
@@ -50,6 +54,88 @@ historical record of what it checked. Below, every mention of
 `weles-fleet-parity`, `split_fleet()`, or `weles up split|monolith` as CURRENT
 is historical — read against this errata, not deleted, per this repo's
 "historical docs are archives" convention.
+
+## Errata (2026-07-21b) — single-host authorities fixed; remaining single-host known-gaps
+
+Two compile-time/hardcoded *authorities* were removed while the crate is small, so
+later milestones read from data instead of inheriting a single-host `if`. What
+changed, and — more importantly — the single-host assumptions that DELIBERATELY
+remain, consolidated here because they were previously assemblable only from four
+scattered places.
+
+**Fixed now.**
+- **Root is a runtime authority, not a compile-time literal.** The two duplicated
+  `env!("CARGO_MANIFEST_DIR").parent()` derivations (`main::state_path`,
+  `supervisor::workspace_root`) are gone; one `prep::resolve_root(flag)` decides the
+  fleet root: `--root` → `WELES_ROOT` → walk cwd up to the repo marker (`Cargo.toml`
+  + `tools/processctl/`, byte-matching `verifyctl`'s `workspace_root` so
+  `<root>/run/rollout.lock` stays identical and the one-Postgres mutual exclusion
+  holds) → else fail closed. This is what makes "run the weles binary somewhere
+  other than the build checkout" honest: pass `--root`/`WELES_ROOT`. `current_exe`
+  is deliberately NOT consulted (a deployed weles installs separately from the
+  fleet's `deploy/`).
+- **Placement, not a raw host, is the manifest datum.** `fleet.toml` services may
+  carry `placement: Option<String>` (the design-sanctioned annotation, "Placement is
+  a manifest annotation, not scheduling" below). Legal single-machine values are
+  absent or the sentinel `"local"`; any real node name fails validation closed (no
+  node registry exists yet). A raw `host`/address field was deliberately NOT added —
+  see the next point.
+
+**The address authority is the agent, not the manifest (do not add a `host` field).**
+The `## Discovery` section classifies **addresses as AUTOMATIC — runtime state the
+agent owns**; at machine two `resolve` returns real `host:port` derived from the
+agent's observed IP, never an operator-authored literal. So `manifest::service_addr`'s
+`127.0.0.1:{port}` is **correct for one machine** and its multi-machine successor is
+the agent's resolve answer — NOT a TOML field. A per-service `host` in `fleet.toml`
+would be a *second, conflicting* address authority the day resolve grows real
+answers. `placement` is the seam host-derivation will hang off (node → the agent
+running it → that agent's observed address); the manifest annotates WHERE a service
+runs, the agent discovers its ADDRESS.
+
+**What still assumes one machine (known-gaps, not defects).** These become failing
+assertions the moment the planned real-hardware multi-machine proof runs (see "The
+multi-machine proof is planned against real hardware" below — master on the Windows
+box + agent on the MacBook over a real LAN). Until then they are the correct M1
+shape, deliberately deferred:
+- **weles's own agent endpoint binds loopback + plaintext** (`agentapi.rs`) — by
+  design; the service→agent hop stays local even multi-machine (the OS confirms the
+  caller, no certs). The new hop at machine two is **agent↔master mTLS, which does
+  not exist yet**. The present-tense master/agent-split prose in "## Multi-machine"
+  describes that DESIGNED split; read it as "designed, not yet built" per this errata
+  — today master and agent are one process (the section's own "role split" text says
+  so).
+- **The backend edge's mTLS identity is a `localhost` fiction.** `core/edge`'s
+  `DevCA::leaf` mints every server leaf with fixed SANs `localhost`/`127.0.0.1`/`::1`
+  and `Client::dial` always presents `ServerName="localhost"`. A real LAN dial passes
+  verification only because both sides collude on the same fake identity — zero real
+  per-host identity; it will break silently if ever hardened. (`core/remote`'s
+  `EdgeDialer` itself dials any numeric `host:port` fine — but `SocketAddr::parse`
+  only, so a hostname/DNS answer has no path yet.)
+- **Port allocation is one global namespace.** All fleet ports are `fleet.toml`
+  literals validated for global uniqueness against a single `AGENT_PORT` (8300);
+  "port-minting" is design vocabulary, unbuilt. Multi-machine needs per-(host,port)
+  uniqueness or an explicit host-local statement.
+- **The operator control plane assumes one local disk + one OS account.**
+  `rollout.lock` (`flock`/`LockFileEx` + stdin-pipe lease inheritance) and the
+  loopback control endpoint cannot cross a machine. This is correct and stays — it
+  coordinates operator invocations against one shared local dev Postgres — but it is
+  NOT a distribution mechanism, and nothing here states the **root/privilege**
+  requirement for installing the agent as a system service (the one gap the
+  "## Not unifying the operator control plane" section leaves unstated).
+
+**Process contract, named honestly.** weles is generic over *domains* (it knows
+nothing of accounts/config/admin) but NOT over *process shape*: it assumes the Swaróg
+process contract — `PORT`/`EDGE_ADDR` env, a single HTTP listener plus optional
+edge/player planes, `GET /readyz` on the HTTP port, `Edge|Http` peer kinds, loopback.
+An arbitrary (e.g. C#) service must adopt this contract to be supervised. This is a
+stated platform contract, not a bug — but it bounds the "drop in any binary" claim.
+
+Cross-references (these gaps are already reasoned about elsewhere — this errata
+consolidates, it does not supersede): loopback-only resolve and the local-only
+service→agent hop ("## The service-facing contract: services only ever talk to their
+local agent"); the mTLS/CA transport plan ("## Transport: HTTPS + JSON + mTLS, not
+QUIC"); port-minting × master-down ("## Open design points"); M1's no-network-hop
+scope ("## Tokio: the runtime arrives WITH the HTTPS server").
 
 ## Non-negotiables
 
