@@ -10,27 +10,46 @@
 //! Rust types. This module is that reconstruction — it consumes only `opsapi`'s own types,
 //! so it links into a front-door process that names no provider crate.
 //!
-//! ## Faithful, with three recorded caveats
+//! ## Faithful for VALID bodies, with four recorded caveats
 //! The generated closures serialize/deserialize the exact typed structs; these rebuild the
-//! wire request/response as untyped [`serde_json::Value`]. That is WIRE-JSON-EQUIVALENT,
-//! not byte-identical, and the difference is deliberate:
+//! wire request/response as untyped [`serde_json::Value`]. That is WIRE-JSON-EQUIVALENT for a
+//! WELL-TYPED body, not byte-identical, and the difference is deliberate:
 //!
-//!   (i)   **Typeless passthrough is wire-JSON-EQUIVALENT, not byte-identical.** The typed
-//!         path emits `to_vec(&Request)`; here we emit `to_vec(&Value)` assembled from the
-//!         raw body + path wildcards. The two deserialize to the SAME `Request` svc-side,
-//!         but their bytes can differ in number formatting (`1.0` vs `1`) and whitespace.
-//!         No consumer compares the wire bytes, only decodes them, so this is invisible.
-//!   (ii)  **Malformed-JSON 400 stays at the gateway.** We keep the body PARSE (rather than
-//!         relaying opaque bytes), so a malformed body is [`Error::invalid`] here — a 400 at
-//!         the front door, exactly where the typed decode raised it. Relaying unparsed bytes
-//!         would have pushed the failure to the peer and surfaced it as a 503 instead.
+//!   (i)   **Typeless passthrough is wire-JSON-EQUIVALENT, not byte-identical (VALID bodies).**
+//!         The typed path emits `to_vec(&Request)`; here we emit `to_vec(&Value)` assembled
+//!         from the raw body + path wildcards. For a WELL-TYPED body the two deserialize to
+//!         the SAME `Request` svc-side, but their bytes can differ in number formatting
+//!         (`1.0` vs `1`) and whitespace. No consumer compares the wire bytes, only decodes
+//!         them, so this is invisible. (An ILL-typed body is caveat (iv).)
+//!   (ii)  **A MALFORMED-JSON (unparseable) or non-object body is a 400 at the gateway.** For
+//!         an op with a body arg we keep the PARSE (rather than relaying opaque bytes), so an
+//!         unparseable/non-object body is [`Error::invalid`] here — a 400 at the front door,
+//!         exactly where the typed decode raised it. This covers JSON WELL-FORMEDNESS only,
+//!         NOT field types (caveat (iv)). Relaying unparsed bytes would have pushed the
+//!         failure to the peer and surfaced it as a 503 instead.
 //!   (iii) **Empty-body default synthesis is resolved svc-side via serde defaults.** An
 //!         absent/empty body decodes to `{}`; every `<Method>Request` derives `Default` +
 //!         `#[serde(default)]`, so the svc zero-fills `{}` into `Request::default()` —
 //!         identical to the typed path's `Request::default()` starting point. No deviation:
 //!         `body_names` renames cancel symmetrically HTTP↔wire (the external HTTP key already
 //!         equals the wire key), so a BODY arg needs no key-rename here; `wire_key` is
-//!         load-bearing ONLY to inject a PATH arg into the wire request.
+//!         load-bearing ONLY to inject a PATH arg into the wire request. Correspondingly, a
+//!         PATH-ONLY op (no body arg) NEVER parses the body — mirroring `gen_decode`'s
+//!         `has_body` gating, so a garbage body on `DELETE /characters/{id}` is IGNORED and
+//!         routes (204), never a spurious 400.
+//!   (iv)  **INHERENT type-validation gap: an ill-typed body is a svc-side 5xx, not a gateway
+//!         400.** The generated `gen_decode` deserializes the body INTO the typed `Request`
+//!         (`tools/rpc-macro/src/lib.rs`), so a TYPE-mismatched-but-well-formed body
+//!         (`{"Winner": 123}` where `winner: String`) is rejected AT THE GATEWAY as a 400.
+//!         This data-driven decode holds NO Rust types — [`OpManifest`] carries each arg's
+//!         SOURCE (body/path) and wire key but NOT its field type — so it can only check that
+//!         the body is a JSON object, never that fields are well-TYPED. An ill-typed body
+//!         therefore passes through and fails at the svc's `from_slice::<Request>` as a
+//!         `Status::Internal` (5xx), NOT at the gateway as a 400. Same request, DIFFERENT
+//!         front-door status by topology (monolith/local: 400; describe gateway: 5xx). This
+//!         is inherent to typeless routing and is NOT fixable without carrying field types in
+//!         the manifest; D4/splitproof SHOULD assert the ill-typed body's front-door status
+//!         so the contract's topology-dependence is pinned rather than silently drifting.
 
 use std::sync::Arc;
 
@@ -71,11 +90,17 @@ fn decode(m: &OpManifest) -> DecodeFn {
             ArgSource::Body => None,
         })
         .collect();
+    // Mirror `gen_decode`'s `has_body` gating (`tools/rpc-macro`): a PATH-ONLY op's typed
+    // decode never touches the body, so we must not either — otherwise a garbage body on a
+    // bodyless op (`DELETE /characters/{id}`) would be a spurious 400 here but a 204 there
+    // (caveat (iii)). Only an op with a BODY arg parses; a bodyless op treats the body as `{}`.
+    let has_body = m.args.iter().any(|a| matches!(a.source, ArgSource::Body));
     Arc::new(move |body: Option<&[u8]>, path: &crate::PathArgs| {
-        // Absent/empty body → an empty object; the svc zero-fills it via serde defaults
-        // (caveat (iii)). A present-but-malformed or non-object body is a 400 at the front.
+        // Absent/empty body (or a bodyless op) → an empty object; the svc zero-fills it via
+        // serde defaults (caveat (iii)). For an op WITH a body arg, a present-but-malformed or
+        // non-object body is a 400 at the front (caveat (ii)) — but NOT a type check (iv).
         let mut obj = match body {
-            Some(b) if !b.is_empty() => match serde_json::from_slice::<Value>(b) {
+            Some(b) if has_body && !b.is_empty() => match serde_json::from_slice::<Value>(b) {
                 Ok(Value::Object(map)) => map,
                 Ok(_) => return Err(Error::invalid("request body must be a json object")),
                 Err(_) => return Err(Error::invalid("invalid json")),

@@ -124,6 +124,108 @@ fn decode_non_object_body_is_invalid() {
     assert_eq!(err.status, Status::Invalid);
 }
 
+#[test]
+fn decode_wrong_type_body_passes_through_not_400() {
+    // Caveat (iv): the data-driven decode holds no field TYPES, so an ill-typed body
+    // (`Winner` as a number where the svc wants a String) is NOT a gateway 400 — it passes
+    // through and fails svc-side as a 5xx. This pins the recorded topology-dependence; do NOT
+    // "fix" it (opsapi carries arg source, never field type).
+    let binding = databind::binding(&match_report_manifest());
+    let wire = (binding.decode)(Some(br#"{"Winner":123,"Loser":"bob","ReportId":"r"}"#), &HashMap::new())
+        .expect("ill-typed but well-formed body is relayed, not rejected at the gateway");
+    let got: Value = serde_json::from_slice(&wire).unwrap();
+    assert_eq!(got, json!({"Winner": 123, "Loser": "bob", "ReportId": "r"}));
+}
+
+// ---- decode: mixed-shape op (body args + a path wildcard) equals the typed wire form ----
+
+/// A synthetic mixed op — two BODY args (`name: String`, `count: u32`) plus one PATH arg
+/// (`widget_id`, lifted from `{id}`) — the untested D1 shape. `POST /widgets/{id}/make`.
+fn widgets_make_manifest() -> OpManifest {
+    OpManifest {
+        method: "widgets.make".to_string(),
+        verb: "POST".to_string(),
+        path: "/widgets/{id}/make".to_string(),
+        auth: AuthReq::Player,
+        success: 201,
+        retry_mode: RetryMode::Never,
+        args: vec![
+            ArgMapping {
+                param: "widget_id".to_string(),
+                wire_key: "widget_id".to_string(),
+                source: ArgSource::Path { wildcard: "id".to_string() },
+            },
+            ArgMapping {
+                param: "name".to_string(),
+                wire_key: "name".to_string(),
+                source: ArgSource::Body,
+            },
+            ArgMapping {
+                param: "count".to_string(),
+                wire_key: "count".to_string(),
+                source: ArgSource::Body,
+            },
+        ],
+    }
+}
+
+/// The typed request struct the svc deserializes into — `#[serde(default)]` + `Default`,
+/// exactly like every generated `<Method>Request`. Proves the generic decode's untyped wire
+/// bytes zero-fill into the SAME typed value the compile-time path would (caveats (i)/(iii)):
+/// wire-JSON-EQUIVALENT, not byte-identical, so the assertion is on the DESERIALIZED value.
+#[derive(serde::Deserialize, Default, PartialEq, Eq, Debug)]
+#[serde(default)]
+struct MakeReq {
+    widget_id: String,
+    name: String,
+    count: u32,
+}
+
+#[test]
+fn decode_mixed_shape_matches_typed_wire_form() {
+    let binding = databind::binding(&widgets_make_manifest());
+    let mut path = HashMap::new();
+    path.insert("id".to_string(), "w-9".to_string());
+    let wire = (binding.decode)(Some(br#"{"name":"gizmo","count":3}"#), &path)
+        .expect("mixed decode");
+    let got: MakeReq = serde_json::from_slice(&wire).expect("svc deserializes the wire request");
+    assert_eq!(
+        got,
+        MakeReq { widget_id: "w-9".to_string(), name: "gizmo".to_string(), count: 3 }
+    );
+}
+
+#[test]
+fn decode_mixed_shape_omitted_body_field_zero_fills_svc_side() {
+    // Caveat (iii): an omitted body field is absent from the generic `{}`-seeded wire object;
+    // the svc's `#[serde(default)]` zero-fills it — identical to the typed `Request::default()`.
+    let binding = databind::binding(&widgets_make_manifest());
+    let mut path = HashMap::new();
+    path.insert("id".to_string(), "w-1".to_string());
+    let wire = (binding.decode)(Some(br#"{"name":"gizmo"}"#), &path).expect("decode");
+    let got: MakeReq = serde_json::from_slice(&wire).expect("svc deserializes");
+    assert_eq!(
+        got,
+        MakeReq { widget_id: "w-1".to_string(), name: "gizmo".to_string(), count: 0 }
+    );
+}
+
+#[test]
+fn decode_path_only_op_ignores_a_present_garbage_body() {
+    // Finding 2 / caveat (iii): a PATH-ONLY op (no body arg) mirrors `gen_decode`'s
+    // `has_body = false` — the body is NEVER parsed, so garbage/whitespace/non-object bodies
+    // are IGNORED and the op routes, never a spurious 400 (which the typed path never raises).
+    let binding = databind::binding(&characters_delete_manifest());
+    let mut path = HashMap::new();
+    path.insert("id".to_string(), "c-7".to_string());
+    for garbage in [&b"   "[..], &b"[1,2,3]"[..], &b"{not json"[..], &b"\"nope\""[..]] {
+        let wire = (binding.decode)(Some(garbage), &path)
+            .expect("path-only op ignores the body, never 400s on it");
+        let got: Value = serde_json::from_slice(&wire).unwrap();
+        assert_eq!(got, json!({"character_id": "c-7"}));
+    }
+}
+
 // ---- decode: path wildcard injected under its wire_key ----------------------
 
 #[test]
