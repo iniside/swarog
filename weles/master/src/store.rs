@@ -31,7 +31,23 @@
 //! and both commit" is the precise property whole-file JSON could not give (it
 //! had no lock to wait on — it simply overwrote), and it is the whole reason this
 //! store exists. It is the same guarantee the previous SQLite (WAL +
-//! `busy_timeout`) store gave, restated in redb's terms.
+//! `busy_timeout`) store gave, restated in redb's terms — but ONLY for in-process
+//! threads sharing this one `Database`.
+//!
+//! ## Cross-process: rejected, not blocked (weaker than SQLite, on purpose)
+//!
+//! redb holds an EXCLUSIVE file lock, so a concurrent open of a SECOND `Store`
+//! (a second `Database`) on the same path — the cross-process shape, `weles
+//! deploy` writing `deploy_history` while `weles up`'s agent writes
+//! `port_assignment` — is REJECTED immediately at [`Store::open`] with a
+//! `redb::DatabaseError::DatabaseAlreadyOpen`-class error, NOT blocked-then-
+//! committed the way SQLite's `busy_timeout` would. Both production call sites
+//! open the store briefly and treat an open/write failure as log-and-continue
+//! (never `?`), so this degrades to a WARN and the provenance row is lost for
+//! that narrow boot/mint overlap window — an accepted trade for the pure-Rust
+//! cross-compile (see the crate `Cargo.toml`), documented so nothing relies on
+//! the old cross-process block-and-commit. Pinned by
+//! `store_tests::second_open_on_live_path_is_rejected_not_blocked`.
 
 use std::path::Path;
 

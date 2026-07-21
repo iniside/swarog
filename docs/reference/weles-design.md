@@ -305,11 +305,19 @@ check is today's instance of the same discipline).
 > **write concurrency** (see "The real driver" below), never SQLite specifically;
 > `redb` satisfies it in pure Rust — it serializes write transactions (a second
 > `begin_write` blocks until the first commits), giving the same "two disjoint
-> writers both commit, no loss" guarantee the old WAL + `busy_timeout` gave, with
-> zero C dependency and clean cross-compilation. One structural consequence: redb
-> holds a single `Send + Sync` `Database` per file shared across writer threads,
-> replacing SQLite's `!Sync` connection-per-writer model. (Store:
-> `weles/master/src/store.rs`.)
+> writers both commit, no loss" guarantee the old WAL + `busy_timeout` gave **for
+> IN-PROCESS threads sharing one `Database`**, with zero C dependency and clean
+> cross-compilation. One structural consequence: redb holds a single
+> `Send + Sync` `Database` per file shared across writer threads, replacing
+> SQLite's `!Sync` connection-per-writer model. **Cross-process concurrency is
+> WEAKER than SQLite's, deliberately:** redb takes an exclusive file lock, so a
+> concurrent second-PROCESS open (`weles deploy` writing `deploy_history` while
+> `weles up`'s agent writes `port_assignment`) is REJECTED outright
+> (`DatabaseError::DatabaseAlreadyOpen`) rather than blocked-and-committed like
+> SQLite's `busy_timeout`. Both call sites already log-and-continue on a store
+> error, so this degrades to a WARN and the provenance row is lost for that narrow
+> boot/mint overlap window — an accepted trade for the pure-Rust cross-compile,
+> not a silent equivalence. (Store: `weles/master/src/store.rs`.)
 
 Weles's own state is SQLite (`rusqlite`, `bundled` — embedded, no server,
 cross-platform, preserves the one-binary deploy). Scope is deliberately narrow:

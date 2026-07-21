@@ -198,3 +198,38 @@ fn two_writers_disjoint_rows_both_commit() {
         );
     }
 }
+
+/// Pins the DOCUMENTED cross-process contract that actually regressed vs SQLite:
+/// with SQLite (WAL + `busy_timeout`) a second connection/process opening the same
+/// file would BLOCK and then commit; redb takes an EXCLUSIVE file lock, so a second
+/// [`Store::open`] on a path whose first `Store` is still LIVE is REJECTED outright
+/// with a `DatabaseError::DatabaseAlreadyOpen`-class error. This is the
+/// weaker-but-accepted behavior recorded in the module docs and the design errata
+/// — the two production writers are separate PROCESSES, and both call sites
+/// log-and-continue on this error rather than blocking. Asserting the reject (not
+/// the easy in-process thread case above) pins what changed.
+#[test]
+fn second_open_on_live_path_is_rejected_not_blocked() {
+    let db = TempDb::new("second-open-rejected");
+
+    // First handle stays alive (holds redb's exclusive file lock) for the whole
+    // test — this is the cross-process shape modeled in-process.
+    let _first = Store::open(&db.path()).expect("first open acquires the lock");
+
+    // `Store` is not `Debug`, so match rather than `expect_err`.
+    let error = match Store::open(&db.path()) {
+        Ok(_) => panic!(
+            "a second open on a live redb path must be REJECTED (exclusive lock), \
+             not block-and-commit like SQLite's busy_timeout"
+        ),
+        Err(error) => error,
+    };
+    // redb's DatabaseAlreadyOpen Display is "Database already open. Cannot acquire
+    // lock." — assert on that stable text through the anyhow context chain so the
+    // test pins the specific reject class, not merely "some error".
+    let rendered = format!("{error:#}").to_ascii_lowercase();
+    assert!(
+        rendered.contains("already open"),
+        "expected a DatabaseAlreadyOpen-class reject, got: {error:#}",
+    );
+}

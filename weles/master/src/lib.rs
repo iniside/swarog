@@ -15,7 +15,7 @@
 //!   ([`fleet_toml::PrepareCmd`]) the agent later executes.
 //! * [`state`] — the persisted supervisor-state schema
 //!   ([`state::FleetState`] and friends) + its atomic checkpoint/load.
-//! * [`store`] — the DURABLE runtime store ([`store::Store`], SQLite/WAL):
+//! * [`store`] — the DURABLE runtime store ([`store::Store`], `redb`):
 //!   deploy history and (future, A4) agent-minted port assignments — the
 //!   multi-writer facts a whole-file JSON rewrite cannot arbitrate.
 //!
