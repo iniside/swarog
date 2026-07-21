@@ -46,6 +46,7 @@ fn owned_svc(
         name: name.to_string(),
         pkg: name.to_string(),
         provider: provider.map(str::to_string),
+        placement: None,
         http_port,
         edge_port,
         player_port: None,

@@ -214,6 +214,17 @@ pub struct ServiceDef {
     /// is data, not an accident — it is why the monolith is structurally
     /// unresolvable as a peer.
     pub provider: Option<String>,
+    /// Which node runs this service — a manifest ANNOTATION, not scheduling
+    /// (`weles-design.md:245`). It names a node; it is NOT an address (a raw
+    /// address here would be a second address authority — addresses stay
+    /// agent-resolved via [`service_addr`], loopback on one machine). On the
+    /// current single-machine deployment (master ≡ agent, one node) placement
+    /// is degenerate: `None` or the reserved sentinel `"local"` are the only
+    /// legal values, and neither changes any address. A real node name is
+    /// rejected at [`crate::fleet_toml::validate`] time (no node registry
+    /// exists yet — fail closed rather than silently no-op). Host derivation
+    /// from placement is the future multi-machine seam.
+    pub placement: Option<String>,
     pub http_port: u16,
     pub edge_port: Option<u16>,
     pub player_port: Option<u16>,

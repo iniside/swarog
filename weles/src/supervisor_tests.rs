@@ -294,6 +294,7 @@ fn dummy_def() -> ServiceDef {
         name: "dummy-svc".to_string(),
         pkg: "dummy-svc".to_string(),
         provider: Some("dummy".to_string()),
+        placement: None,
         http_port: 65000,
         edge_port: None,
         player_port: None,

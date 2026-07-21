@@ -365,6 +365,69 @@ http_port = 8083
 }
 
 // ---------------------------------------------------------------------------
+// Placement — a manifest ANNOTATION (weles-design.md:245), NOT an address.
+// Single-machine: absent or the reserved "local" sentinel is legal and changes
+// NO address; any real node name fails closed (no node registry yet).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn placement_local_validates_and_leaves_the_address_untouched() {
+    let text = r#"
+[[service]]
+name = "config-svc"
+pkg = "config-svc"
+provider = "config"
+placement = "local"
+http_port = 8083
+edge_port = 9002
+"#;
+    let fleet = parsed(text);
+    let config = &fleet.services[0];
+    assert_eq!(config.placement.as_deref(), Some("local"), "the sentinel is carried verbatim");
+    validate(&fleet).expect("placement = \"local\" is a legal single-machine value");
+    // The whole point: a placement annotation does NOT touch the address — the
+    // address stays agent-resolved (loopback on one node).
+    assert_eq!(
+        manifest::service_addr(config, AddrKind::Http).as_deref(),
+        Some("127.0.0.1:8083"),
+        "placement is an annotation, not an address — service_addr is unchanged"
+    );
+}
+
+#[test]
+fn omitted_placement_defaults_to_none_and_validates() {
+    // GOOD_FLEET declares no placement on either service.
+    let fleet = parsed(GOOD_FLEET);
+    assert!(
+        fleet.services.iter().all(|svc| svc.placement.is_none()),
+        "an omitted placement key is None, never a defaulted sentinel"
+    );
+    validate(&fleet).expect("a fleet with no placement must validate");
+}
+
+#[test]
+fn a_real_node_name_placement_is_rejected() {
+    // Any value other than "local" names a node with nowhere to resolve — there
+    // is no node registry yet, so it fails closed rather than silently no-oping.
+    let text = r#"
+[[service]]
+name = "config-svc"
+pkg = "config-svc"
+provider = "config"
+placement = "node-b"
+http_port = 8083
+"#;
+    let err = validate(&parsed(text)).expect_err("a real node name must fail closed");
+    let msg = chain(&err);
+    assert!(msg.contains("config-svc"), "names the offending service: {msg}");
+    assert!(msg.contains("node-b"), "echoes the rejected placement value: {msg}");
+    assert!(
+        msg.contains("multi-node placement is not supported yet"),
+        "names why it is rejected: {msg}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // The two SHIPPED fixtures must parse AND validate — they are the exact files
 // `weles up` boots and verifyctl's `weles-managed-gateway` loads, so a typo or
 // a boot-order/port mistake in either must fail HERE, not at a live rollout.

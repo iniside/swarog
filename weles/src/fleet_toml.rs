@@ -100,6 +100,14 @@ struct ServiceEntry {
     pkg: String,
     #[serde(default)]
     provider: Option<String>,
+    /// Which node runs this service — a manifest ANNOTATION, not scheduling
+    /// (`weles-design.md:245`). It names a node, NOT an address (addresses stay
+    /// agent-resolved). Omitted ⇒ `None`; on the single-machine deployment the
+    /// only other legal value is the reserved sentinel `"local"`. Any real node
+    /// name is rejected by [`validate`] (no node registry exists yet — fail
+    /// closed, never a silent no-op).
+    #[serde(default)]
+    placement: Option<String>,
     http_port: u16,
     #[serde(default)]
     edge_port: Option<u16>,
@@ -212,6 +220,7 @@ fn to_service_def(entry: ServiceEntry) -> Result<ServiceDef> {
         name: entry.name,
         pkg: entry.pkg,
         provider: entry.provider,
+        placement: entry.placement,
         http_port: entry.http_port,
         edge_port: entry.edge_port,
         player_port: entry.player_port,
@@ -247,6 +256,31 @@ pub fn validate(fleet: &Fleet) -> Result<()> {
     validate_unique_ports(fleet)?;
     validate_unique_names(fleet)?;
     validate_peers(fleet)?;
+    validate_placement(fleet)?;
+    Ok(())
+}
+
+/// (v) `placement` is a manifest ANNOTATION naming which node runs a service
+///     (`weles-design.md:245`), NOT an address — the address stays
+///     agent-resolved (loopback on one machine, see [`manifest::service_addr`]).
+///     On the current single-machine deployment (master ≡ agent, one node) the
+///     ONLY legal values are absent (`None`) or the reserved sentinel `"local"`.
+///     A real node name has nowhere to resolve — there is no node registry yet —
+///     so it is rejected here rather than silently no-oping, per the repo's
+///     loud-boot-failure convention. Host derivation from placement is the
+///     future multi-machine seam.
+fn validate_placement(fleet: &Fleet) -> Result<()> {
+    for svc in &fleet.services {
+        if let Some(node) = &svc.placement {
+            if node != "local" {
+                bail!(
+                    "service {:?}: placement {node:?} names a node, but multi-node placement is \
+                     not supported yet — omit placement or use \"local\"",
+                    svc.name
+                );
+            }
+        }
+    }
     Ok(())
 }
 
