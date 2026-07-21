@@ -1,18 +1,20 @@
 //! Store tests. The headline is [`two_writers_disjoint_rows_both_commit`]: two
-//! threads, each with its OWN connection, writing DISJOINT rows concurrently —
-//! both must land with no loss and no `SQLITE_BUSY` failure. That is the exact
-//! race whole-file JSON loses (a second whole-document rewrite clobbers the
-//! first), and it is the entire reason SQLite replaces the JSON checkpoint for
-//! these facts.
+//! threads sharing ONE `redb` store, each opening its OWN write transaction to
+//! write DISJOINT rows concurrently — both must land with no loss and no error.
+//! That is the exact race whole-file JSON loses (a second whole-document rewrite
+//! clobbers the first), and it is the entire reason this transactional store
+//! replaces the JSON checkpoint for these facts. redb serializes write
+//! transactions (a second `begin_write` blocks until the first commits), so the
+//! losing writer waits its turn and commits rather than being lost.
 
 use std::sync::{Arc, Barrier};
 use std::thread;
 
 use super::{DeployRecord, PortAssignment, Store};
 
-/// A throwaway on-disk DB path under the OS temp dir (SQLite WAL needs a real
-/// file, not `:memory:`, for the multi-connection contract to mean anything —
-/// each `:memory:` connection is a SEPARATE database). Unique per test.
+/// A throwaway on-disk DB path under the OS temp dir. redb keeps a single file
+/// per database and takes a file lock on it, so a real path (not memory) is what
+/// the durable-store contract operates on. Unique per test.
 struct TempDb {
     dir: std::path::PathBuf,
 }
@@ -36,7 +38,6 @@ impl TempDb {
 
 impl Drop for TempDb {
     fn drop(&mut self) {
-        // Best-effort: also removes -wal/-shm siblings WAL leaves behind.
         let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
@@ -56,7 +57,9 @@ fn deploy_record_round_trips() {
     let read = store.deploy_record("gen-7").expect("read deploy");
     assert_eq!(read, Some(record));
 
-    // Unrecorded generation reads back as None, distinct from an error.
+    // Unrecorded generation reads back as None, distinct from an error — and,
+    // critically for redb, does NOT error on the (never-written) table because
+    // `open` creates it up front.
     assert_eq!(store.deploy_record("gen-99").expect("read missing"), None);
 }
 
@@ -113,7 +116,7 @@ fn port_assignment_round_trips_even_without_a_production_writer() {
         None
     );
 
-    // The bool round-trips both ways (INTEGER 0/1).
+    // The bool round-trips both ways.
     store
         .record_port_assignment(&PortAssignment {
             instance_id: "characters#1".to_string(),
@@ -129,22 +132,20 @@ fn port_assignment_round_trips_even_without_a_production_writer() {
     assert!(!read.alive);
 }
 
-/// THE headline contract test. Two threads, each opening its OWN connection to
-/// the SAME file DB, write DISJOINT rows CONCURRENTLY (released together off a
-/// barrier so their writes genuinely overlap). Under WAL + busy_timeout the
-/// second writer blocks on the write lock and then commits — both rows must be
-/// present, and NEITHER thread may have seen a `SQLITE_BUSY` (any error fails the
-/// test). This is precisely what whole-file JSON could not arbitrate: it had no
-/// lock to wait on, so one of two concurrent whole-document rewrites was lost.
+/// THE headline contract test. Two threads share ONE store (redb's `Database` is
+/// `Send + Sync`) and, released together off a barrier, write DISJOINT rows
+/// CONCURRENTLY — each in its own write transaction. redb serializes write
+/// transactions, so the second `begin_write` blocks on the first and then
+/// commits: both rows must be present, and NEITHER thread may have seen an error
+/// (any error fails the test). This is precisely what whole-file JSON could not
+/// arbitrate: it had no lock to wait on, so one of two concurrent whole-document
+/// rewrites was lost. (redb requires a single `Database` handle per file — this
+/// shared-handle model is the redb analogue of the old SQLite
+/// connection-per-writer + WAL contract.)
 #[test]
 fn two_writers_disjoint_rows_both_commit() {
     let db = TempDb::new("two-writers");
-    let path = db.path();
-
-    // Open once up front so the schema exists before either racing writer runs
-    // (both would create it idempotently anyway; this keeps the race purely
-    // about the two INSERTs contending on the write lock).
-    Store::open(&path).expect("pre-create schema");
+    let store = Arc::new(Store::open(&db.path()).expect("open shared store"));
 
     // A barrier so both threads issue their write at (as near as possible) the
     // same instant — maximizing genuine overlap on the write lock. Each does
@@ -153,11 +154,9 @@ fn two_writers_disjoint_rows_both_commit() {
     let writes_each = 50u32;
 
     let spawn_writer = |tag: &'static str, provider: &'static str| {
-        let path = path.clone();
+        let store = Arc::clone(&store);
         let barrier = Arc::clone(&barrier);
         thread::spawn(move || {
-            // Connection-per-writer: each thread owns its own !Sync connection.
-            let store = Store::open(&path).expect("open per-writer connection");
             barrier.wait();
             for i in 0..writes_each {
                 store
@@ -180,10 +179,9 @@ fn two_writers_disjoint_rows_both_commit() {
     b.join().expect("writer beta");
 
     // Every disjoint row from BOTH writers is present — no loss.
-    let reader = Store::open(&path).expect("open reader");
     for i in 0..writes_each {
         assert_eq!(
-            reader
+            store
                 .port_assignment(&format!("alpha#{i}"))
                 .expect("read alpha")
                 .map(|a| a.provider),
@@ -191,7 +189,7 @@ fn two_writers_disjoint_rows_both_commit() {
             "alpha row {i} lost",
         );
         assert_eq!(
-            reader
+            store
                 .port_assignment(&format!("beta#{i}"))
                 .expect("read beta")
                 .map(|a| a.provider),

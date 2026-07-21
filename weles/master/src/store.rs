@@ -1,8 +1,8 @@
-//! The master's DURABLE runtime store — a small SQLite DB (WAL mode) at
-//! `run/weles/state.db` for the runtime facts that are NOT reconcilable from an
-//! agent's live report and therefore must survive a master restart.
+//! The master's DURABLE runtime store — a small embedded key/value DB (`redb`)
+//! at `run/weles/state.db` for the runtime facts that are NOT reconcilable from
+//! an agent's live report and therefore must survive a master restart.
 //!
-//! # Why SQLite and not the JSON checkpoint
+//! # Why an embedded store and not the JSON checkpoint
 //!
 //! Soft live-fleet status (each service's `Status`/`Readiness`/pid) stays in
 //! [`crate::state`]'s whole-document `state.json`: it has EXACTLY ONE writer
@@ -16,36 +16,33 @@
 //! * `port_assignment` — agent-side minted ports (A4). The agent's tokio island
 //!   binds a free port at spawn and reports it UP; that is a SECOND writer racing
 //!   the supervisor's own checkpoint. Whole-file JSON loses one of two concurrent
-//!   whole-document rewrites (last-writer-wins clobber); SQLite arbitrates them.
+//!   whole-document rewrites (last-writer-wins clobber); a transactional embedded
+//!   store arbitrates them.
 //!
-//! # Concurrency contract — WAL + one connection per writer + busy_timeout
+//! # Concurrency contract — redb serializes write transactions
 //!
-//! Each writer opens its OWN [`Store`] (its own `rusqlite::Connection`) — a
-//! connection is `!Sync` and single-threaded by design, so it is never shared
-//! across threads. WAL mode ([`journal_mode=WAL`]) lets readers proceed while a
-//! writer holds the write lock, and SQLite still permits AT MOST ONE writer at a
-//! time. Two writers that overlap would, by default, make the second fail
-//! immediately with `SQLITE_BUSY`. We set a generous [`busy_timeout`] on every
-//! connection so the second writer BLOCKS until the first commits instead of
-//! failing — the disjoint rows both land, no loss. That "the second writer waits
-//! its turn and both commit" is the precise property whole-file JSON could not
-//! give (it had no lock to wait on — it simply overwrote), and it is the whole
-//! reason this store exists.
+//! `redb` (pure Rust — no C dependency, see the crate's `Cargo.toml` comment for
+//! why that matters to weles's cross-compile requirement) holds ONE
+//! [`redb::Database`] per file, and that handle is `Send + Sync`: it is shared
+//! across the process's writer threads rather than opened once per writer. redb
+//! SERIALIZES write transactions internally — a second [`Database::begin_write`]
+//! BLOCKS until the first commits — so two threads that write DISJOINT rows
+//! concurrently both commit with no loss. That "the second writer waits its turn
+//! and both commit" is the precise property whole-file JSON could not give (it
+//! had no lock to wait on — it simply overwrote), and it is the whole reason this
+//! store exists. It is the same guarantee the previous SQLite (WAL +
+//! `busy_timeout`) store gave, restated in redb's terms.
 
 use std::path::Path;
-use std::time::Duration;
 
 use anyhow::{Context, Result};
-use rusqlite::Connection;
+use redb::{Database, TableDefinition};
 
-/// How long a writer BLOCKS on SQLite's write lock before giving up with
-/// `SQLITE_BUSY`. Generous on purpose: writes here are tiny (a single small row)
-/// and rare (a deploy flip, an agent mint-report), so the only reason two would
-/// contend is genuine concurrency, and the losing writer should WAIT for the
-/// microseconds the winner holds the lock, never fail. This is the knob that
-/// turns "connection-per-writer" from a `SQLITE_BUSY` hazard into a clean
-/// serialize-and-both-commit.
-const BUSY_TIMEOUT: Duration = Duration::from_secs(10);
+/// The two persisted tables. Keys are the natural string identifier; values are
+/// the remaining fields serialized as a JSON tuple (redb stores opaque bytes, so
+/// serde_json is the seam that turns a typed row into a `&[u8]` value and back).
+const DEPLOY_HISTORY: TableDefinition<&str, &[u8]> = TableDefinition::new("deploy_history");
+const PORT_ASSIGNMENT: TableDefinition<&str, &[u8]> = TableDefinition::new("port_assignment");
 
 /// One recorded generation flip — provenance for `weles deploy`/`rollback`.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -78,98 +75,82 @@ pub struct PortAssignment {
     pub alive: bool,
 }
 
-/// A single-writer handle to the master's durable store. Hold one PER WRITER
-/// (per thread) — never share a `Store` across threads. Opening is cheap and the
-/// schema is created idempotently on every open, so a fresh connection for a
-/// short-lived writer is the intended usage.
+/// A handle to the master's durable store. `redb`'s [`Database`] is `Send + Sync`
+/// and serializes writers internally, so ONE `Store` is shared across the
+/// process's writer threads (wrap it in an [`std::sync::Arc`]) — unlike the old
+/// SQLite `!Sync` connection-per-writer model. Opening is cheap and the schema
+/// (both tables) is created idempotently on every open.
 pub struct Store {
-    conn: Connection,
+    db: Database,
 }
 
 impl Store {
-    /// Opens (creating if absent) the store at `path`, puts the DB in WAL mode,
-    /// arms the [`BUSY_TIMEOUT`], and ensures the schema exists. Idempotent:
-    /// every table is `CREATE TABLE IF NOT EXISTS`, so a second open over an
-    /// existing DB is a no-op on the schema. The parent directory must already
+    /// Opens (creating if absent) the store at `path` and ensures both tables
+    /// exist. redb creates a table lazily on its first write-txn open, so this
+    /// opens+commits both tables up front: a subsequent READ against a fresh DB
+    /// then returns `None` rather than erroring on an absent table, and the
+    /// write+commit round-trip proves the store is writable at open — redb's
+    /// analogue of the old WAL-mode assertion. The parent directory must already
     /// exist (weles's `run/weles` is scaffolded at layout discovery).
     pub fn open(path: &Path) -> Result<Self> {
-        let conn = Connection::open(path)
+        let db = Database::create(path)
             .with_context(|| format!("open master store {}", path.display()))?;
-        // WAL: readers never block the writer and vice versa; the write lock
-        // still serializes writers, which is exactly what we want. journal_mode
-        // returns the new mode as a result row, so read it via query_row rather
-        // than execute (which would error on the returned row).
-        let mode: String = conn
-            .query_row("PRAGMA journal_mode=WAL", [], |row| row.get(0))
-            .context("enable WAL journal mode")?;
-        anyhow::ensure!(
-            mode.eq_ignore_ascii_case("wal"),
-            "master store did not enter WAL mode (got {mode:?}) — refusing a store \
-             whose concurrent-writer contract is not in force",
-        );
-        // Block a contending writer instead of failing it with SQLITE_BUSY.
-        conn.busy_timeout(BUSY_TIMEOUT)
-            .context("arm busy_timeout on master store")?;
-        let store = Store { conn };
-        store.ensure_schema()?;
-        Ok(store)
+        let write = db.begin_write().context("begin master store init txn")?;
+        {
+            write
+                .open_table(DEPLOY_HISTORY)
+                .context("initialize deploy_history table")?;
+            write
+                .open_table(PORT_ASSIGNMENT)
+                .context("initialize port_assignment table")?;
+        }
+        write
+            .commit()
+            .context("commit master store init txn (store not writable)")?;
+        Ok(Store { db })
     }
 
-    fn ensure_schema(&self) -> Result<()> {
-        self.conn
-            .execute_batch(
-                "CREATE TABLE IF NOT EXISTS deploy_history (
-                     generation    TEXT PRIMARY KEY,
-                     sha_root       TEXT NOT NULL,
-                     deployed_unix  INTEGER NOT NULL
-                 );
-                 CREATE TABLE IF NOT EXISTS port_assignment (
-                     instance_id  TEXT PRIMARY KEY,
-                     provider     TEXT NOT NULL,
-                     port         INTEGER NOT NULL,
-                     alive        INTEGER NOT NULL
-                 );",
-            )
-            .context("create master store schema")?;
-        Ok(())
-    }
-
-    /// Records a generation flip. `generation` is the primary key: re-recording
-    /// the same generation (an idempotent redeploy of the same `gen-N`) replaces
-    /// the row rather than erroring, via `INSERT OR REPLACE`.
+    /// Records a generation flip. `generation` is the key: re-recording the same
+    /// generation (an idempotent redeploy of the same `gen-N`) overwrites the row
+    /// rather than erroring — redb's `insert` is an upsert.
     pub fn record_deploy(&self, record: &DeployRecord) -> Result<()> {
-        self.conn
-            .execute(
-                "INSERT OR REPLACE INTO deploy_history (generation, sha_root, deployed_unix)
-                 VALUES (?1, ?2, ?3)",
-                (&record.generation, &record.sha_root, record.deployed_unix),
-            )
-            .with_context(|| format!("record deploy history for {}", record.generation))?;
+        let value = serde_json::to_vec(&(&record.sha_root, record.deployed_unix))
+            .with_context(|| format!("encode deploy record for {}", record.generation))?;
+        let write = self.db.begin_write().context("begin deploy-history write")?;
+        {
+            let mut table = write
+                .open_table(DEPLOY_HISTORY)
+                .context("open deploy_history for write")?;
+            table
+                .insert(record.generation.as_str(), value.as_slice())
+                .with_context(|| format!("record deploy history for {}", record.generation))?;
+        }
+        write
+            .commit()
+            .with_context(|| format!("commit deploy history for {}", record.generation))?;
         Ok(())
     }
 
     /// Reads back a single generation's deploy record, or `None` if that
     /// generation was never recorded.
     pub fn deploy_record(&self, generation: &str) -> Result<Option<DeployRecord>> {
-        self.conn
-            .query_row(
-                "SELECT generation, sha_root, deployed_unix
-                 FROM deploy_history WHERE generation = ?1",
-                [generation],
-                |row| {
-                    Ok(DeployRecord {
-                        generation: row.get(0)?,
-                        sha_root: row.get(1)?,
-                        deployed_unix: row.get(2)?,
-                    })
-                },
-            )
-            .map(Some)
-            .or_else(|error| match error {
-                rusqlite::Error::QueryReturnedNoRows => Ok(None),
-                other => Err(other),
-            })
-            .with_context(|| format!("read deploy history for {generation}"))
+        let read = self.db.begin_read().context("begin deploy-history read")?;
+        let table = read
+            .open_table(DEPLOY_HISTORY)
+            .context("open deploy_history for read")?;
+        let Some(guard) = table
+            .get(generation)
+            .with_context(|| format!("read deploy history for {generation}"))?
+        else {
+            return Ok(None);
+        };
+        let (sha_root, deployed_unix): (String, i64) = serde_json::from_slice(guard.value())
+            .with_context(|| format!("decode deploy record for {generation}"))?;
+        Ok(Some(DeployRecord {
+            generation: generation.to_string(),
+            sha_root,
+            deployed_unix,
+        }))
     }
 
     /// Records (upserts) an agent-minted port binding, keyed by `instance_id`.
@@ -177,47 +158,48 @@ impl Store {
     /// **A4 writes this; A3 only defines it** (see [`PortAssignment`]). There is
     /// no production caller yet by design — do not invent one.
     pub fn record_port_assignment(&self, assignment: &PortAssignment) -> Result<()> {
-        self.conn
-            .execute(
-                "INSERT OR REPLACE INTO port_assignment (instance_id, provider, port, alive)
-                 VALUES (?1, ?2, ?3, ?4)",
-                (
-                    &assignment.instance_id,
-                    &assignment.provider,
-                    assignment.port,
-                    assignment.alive as i64,
-                ),
-            )
-            .with_context(|| {
-                format!("record port assignment for {}", assignment.instance_id)
-            })?;
+        let value =
+            serde_json::to_vec(&(&assignment.provider, assignment.port, assignment.alive))
+                .with_context(|| {
+                    format!("encode port assignment for {}", assignment.instance_id)
+                })?;
+        let write = self.db.begin_write().context("begin port-assignment write")?;
+        {
+            let mut table = write
+                .open_table(PORT_ASSIGNMENT)
+                .context("open port_assignment for write")?;
+            table
+                .insert(assignment.instance_id.as_str(), value.as_slice())
+                .with_context(|| {
+                    format!("record port assignment for {}", assignment.instance_id)
+                })?;
+        }
+        write.commit().with_context(|| {
+            format!("commit port assignment for {}", assignment.instance_id)
+        })?;
         Ok(())
     }
 
     /// Reads back one instance's port assignment, or `None` if unrecorded.
     pub fn port_assignment(&self, instance_id: &str) -> Result<Option<PortAssignment>> {
-        self.conn
-            .query_row(
-                "SELECT instance_id, provider, port, alive
-                 FROM port_assignment WHERE instance_id = ?1",
-                [instance_id],
-                |row| {
-                    let port: i64 = row.get(2)?;
-                    let alive: i64 = row.get(3)?;
-                    Ok(PortAssignment {
-                        instance_id: row.get(0)?,
-                        provider: row.get(1)?,
-                        port: port as u16,
-                        alive: alive != 0,
-                    })
-                },
-            )
-            .map(Some)
-            .or_else(|error| match error {
-                rusqlite::Error::QueryReturnedNoRows => Ok(None),
-                other => Err(other),
-            })
-            .with_context(|| format!("read port assignment for {instance_id}"))
+        let read = self.db.begin_read().context("begin port-assignment read")?;
+        let table = read
+            .open_table(PORT_ASSIGNMENT)
+            .context("open port_assignment for read")?;
+        let Some(guard) = table
+            .get(instance_id)
+            .with_context(|| format!("read port assignment for {instance_id}"))?
+        else {
+            return Ok(None);
+        };
+        let (provider, port, alive): (String, u16, bool) = serde_json::from_slice(guard.value())
+            .with_context(|| format!("decode port assignment for {instance_id}"))?;
+        Ok(Some(PortAssignment {
+            instance_id: instance_id.to_string(),
+            provider,
+            port,
+            alive,
+        }))
     }
 }
 

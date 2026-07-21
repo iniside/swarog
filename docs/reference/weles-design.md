@@ -294,6 +294,23 @@ check is today's instance of the same discipline).
 
 ## State: SQLite, runtime only
 
+> **Errata (2026-07-21): the store moved from SQLite (`rusqlite`, `bundled`) to
+> `redb` (pure Rust).** The prose below still reads "SQLite" per the archives
+> convention (historical docs are archives); this note is the correction that
+> reads against it. `bundled` SQLite statically links a C amalgamation, so
+> `libsqlite3-sys`'s build script runs `cc` for the target — which CANNOT
+> cross-compile from the macOS dev box (`x86_64-linux-gnu-gcc` absent), failing
+> the `supported-targets` verify stage and breaking weles's non-negotiable
+> cross-platform / one-static-binary / never-builds property. The REQUIREMENT was
+> **write concurrency** (see "The real driver" below), never SQLite specifically;
+> `redb` satisfies it in pure Rust — it serializes write transactions (a second
+> `begin_write` blocks until the first commits), giving the same "two disjoint
+> writers both commit, no loss" guarantee the old WAL + `busy_timeout` gave, with
+> zero C dependency and clean cross-compilation. One structural consequence: redb
+> holds a single `Send + Sync` `Database` per file shared across writer threads,
+> replacing SQLite's `!Sync` connection-per-writer model. (Store:
+> `weles/master/src/store.rs`.)
+
 Weles's own state is SQLite (`rusqlite`, `bundled` — embedded, no server,
 cross-platform, preserves the one-binary deploy). Scope is deliberately narrow:
 

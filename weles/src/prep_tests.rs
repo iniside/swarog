@@ -254,36 +254,44 @@ fn deploy_records_history_in_the_master_store() {
     deploy_fx(&layout, &src).expect("first deploy stages gen-1");
 
     // The flip is recorded in the durable store, readable back by generation.
-    let store = crate::store::Store::open(&layout.run_dir.join("state.db"))
-        .expect("open master store");
-    let record = store
-        .deploy_record("gen-1")
-        .expect("read deploy history")
-        .expect("gen-1 was recorded on the successful flip");
-    assert_eq!(record.generation, "gen-1");
-    assert_eq!(
-        record.sha_root.len(),
-        64,
-        "sha_root must be a hex SHA-256: {}",
+    // redb takes an EXCLUSIVE file lock (one `Database` per file), so this reader
+    // store is scoped and DROPPED before the next `deploy_fx` opens its own writer
+    // store on the same file — otherwise the deploy's open would fail to acquire
+    // the lock. (Production callers already open the store briefly and drop it.)
+    let store_path = layout.run_dir.join("state.db");
+    let sha_root = {
+        let store = crate::store::Store::open(&store_path).expect("open master store");
+        let record = store
+            .deploy_record("gen-1")
+            .expect("read deploy history")
+            .expect("gen-1 was recorded on the successful flip");
+        assert_eq!(record.generation, "gen-1");
+        assert_eq!(
+            record.sha_root.len(),
+            64,
+            "sha_root must be a hex SHA-256: {}",
+            record.sha_root
+        );
+        assert!(
+            record.sha_root.chars().all(|c| c.is_ascii_hexdigit()),
+            "sha_root must be hex: {}",
+            record.sha_root
+        );
+        assert!(record.deployed_unix > 0, "deployed_unix must be a real timestamp");
         record.sha_root
-    );
-    assert!(
-        record.sha_root.chars().all(|c| c.is_ascii_hexdigit()),
-        "sha_root must be hex: {}",
-        record.sha_root
-    );
-    assert!(record.deployed_unix > 0, "deployed_unix must be a real timestamp");
+    };
 
     // A second deploy of the SAME source bytes + fleet records gen-2 with the
     // SAME sha_root (the root hash reflects staged content, deterministically).
     deploy_fx(&layout, &src).expect("second deploy stages gen-2");
+    let store = crate::store::Store::open(&store_path).expect("reopen master store");
     let gen2 = store
         .deploy_record("gen-2")
         .expect("read gen-2 history")
         .expect("gen-2 recorded");
     assert_eq!(gen2.generation, "gen-2");
     assert_eq!(
-        gen2.sha_root, record.sha_root,
+        gen2.sha_root, sha_root,
         "identical staged bytes ⇒ identical root sha"
     );
 }

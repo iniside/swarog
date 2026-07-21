@@ -38,12 +38,18 @@ toml = { version = "1", default-features = false, features = [
 ] }
 
 # The durable master runtime store (src/store.rs): deploy history + minted-port
-# assignments in a small SQLite DB, WAL mode, one connection per writer. Pinned
-# LOCALLY, not via `.workspace = true` (there is no workspace `rusqlite` entry) —
-# the same zero-sharing narrow-pin discipline `weles` uses for `tokio`/`hyper`.
-# The `bundled` feature statically links SQLite's C amalgamation into the binary,
-# so the master needs NO system libsqlite3 at deploy time — it preserves weles's
-# one-binary-deploy / never-builds property (nothing to install on the target
-# host). This is master-side (platform-free) state, not agent platform I/O, so it
-# belongs in `weles-master`.
-rusqlite = { version = "0.32", features = ["bundled"] }
+# assignments in a small embedded DB. `redb` is a PURE-RUST embedded key/value
+# store — it serializes write transactions (a second `begin_write` blocks until
+# the first commits), giving the same "two disjoint writers both commit, no loss"
+# guarantee the old SQLite WAL + busy_timeout gave, with ZERO C dependency.
+# Pinned LOCALLY, not via `.workspace = true` (there is no workspace `redb`
+# entry) — the same zero-sharing narrow-pin discipline `weles` uses for
+# `tokio`/`hyper`. Pure Rust is the point: the previous `rusqlite` with the
+# `bundled` feature statically linked SQLite's C amalgamation, whose `cc` build
+# step CANNOT cross-compile from the macOS dev box (no `x86_64-linux-gnu-gcc`),
+# breaking weles's non-negotiable cross-platform / one-static-binary / never-
+# builds property (the `supported-targets` verify stage FAILED). redb needs no
+# `cc`, so it cross-compiles cleanly. This is master-side (platform-free) state,
+# not agent platform I/O, so it belongs in `weles-master`. (Errata:
+# docs/reference/weles-design.md, 2026-07-21.)
+redb = "2"
