@@ -961,15 +961,16 @@ impl Pool {
 #[async_trait]
 impl Caller for Pool {
     /// Refresh (throttled) ⇒ select a healthy instance round-robin ⇒ delegate to that
-    /// instance's own self-healing [`Reconnecting::call`] ⇒ on a PROVEN connection death of
+    /// instance's own self-healing [`Reconnecting::call`] ⇒ on a non-peer-answered failure of
     /// a `#[retry_safe]` read, fail over ONCE to a DIFFERENT instance.
     ///
-    /// **Two orthogonal authorities, mirrored from [`Reconnecting::call`] one level up:**
+    /// **Two orthogonal inputs — `retry_mode` is the WHETHER authority; the cursor is WHERE:**
     /// * `retry_mode` decides WHETHER a failure may be retried at all. It stays the sole
     ///   WHETHER authority — `opsapi::RetryMode`, never a new pool knob. `RetryMode::Never`
     ///   (a mutation) is NEVER retried onto another instance: a mid-call instance death may
     ///   have executed the mutation, so re-sending it to a peer risks a double-execute. The
-    ///   error is returned verbatim (the side effect ran AT MOST once).
+    ///   error is returned verbatim (the side effect ran AT MOST once). This gate is checked
+    ///   FIRST, so a mutation can never reach the failover regardless of the failure class.
     /// * the round-robin `cursor` decides WHERE a PERMITTED (`OnceAfterReconnect`) retry
     ///   lands. It is the legitimate SECOND input the cross-instance retry needs — it must
     ///   advance OFF the dead instance (`select_excluding`) or the replay hits the same
@@ -978,13 +979,36 @@ impl Caller for Pool {
     ///
     /// The cross-instance retry fires ONLY when ALL of:
     /// 1. `retry_mode == RetryMode::OnceAfterReconnect` (a read / `#[retry_safe]` op); AND
-    /// 2. the failure is a PROVEN CONNECTION-DEATH class — `!status.is_definitive_answer()`,
-    ///    the SAME authority `edge`/`Reconnecting` use to decide reset-vs-keep. A definitive
-    ///    answer (`NotFound` = `UnknownMethod`, the peer answered) means the op RAN on a
-    ///    HEALTHY instance; re-running it elsewhere would double-execute, so it is returned
-    ///    verbatim. (A domain error rides INSIDE the response envelope as `Ok(bytes)` at this
-    ///    boundary — it never reaches this gate.) AND
+    /// 2. the failure is a NON-PEER-ANSWERED error — `!status.is_definitive_answer()`, i.e.
+    ///    any status OTHER than `NotFound`. A definitive answer (`NotFound` = `UnknownMethod`,
+    ///    the peer demonstrably received and answered) means the op RAN on a reachable
+    ///    instance; re-running it elsewhere would double-execute, so it is returned verbatim.
+    ///    (A domain error rides INSIDE the response envelope as `Ok(bytes)` at this boundary —
+    ///    it never reaches this gate; the only `Err` statuses here are `NotFound` from
+    ///    `UnknownMethod` and `Unavailable` from every other edge fault — see
+    ///    `From<edge::Error> for opsapi::Error`.) AND
     /// 3. a DIFFERENT selectable instance exists (`select_excluding` off the dead addr).
+    ///
+    /// **This gate is BROADER than [`Reconnecting`]'s `ConnectionFatal` reset class — NOT the
+    /// same authority.** `Reconnecting` resets only on `FailureProvenance::ConnectionFatal`,
+    /// computed from the concrete `edge::Error::Connection` while the provenance is still
+    /// visible. That provenance is ERASED by `From<edge::Error>`: `edge::Error::Remote` (the
+    /// peer ANSWERED `ok:false` — a reached handler/dispatch error on an ALIVE instance) and
+    /// every StreamLocal fault (Io/Codec/Stream) BOTH collapse to `Unavailable`, exactly like
+    /// a true connection death. At the Pool boundary the type system cannot tell a
+    /// peer-answered `Unavailable` from a connection-death `Unavailable`, so this gate fails
+    /// over on the broader `!= NotFound` set — including cases where `Reconnecting` would NOT
+    /// have reset. That is SAFE, not a bug: the `retry_mode` check runs FIRST, so ONLY
+    /// idempotent `#[retry_safe]`/`OnceAfterReconnect` ops ever reach here; a wasted failover
+    /// on a deterministic peer-answered `Unavailable` is one extra call (a minor
+    /// inefficiency), never a correctness issue. Tightening to `Reconnecting`'s provenance
+    /// would require surfacing provenance across the `opsapi::Error` boundary — a larger
+    /// change with no correctness payoff, deliberately not done.
+    ///
+    /// **Version-skew nit:** a `#[retry_safe]` read to an OLD instance that lacks the method
+    /// returns `UnknownMethod → NotFound` (definitive) → NO failover, even if a
+    /// rolling-deployed instance J DOES serve it. Consistent with edge's documented
+    /// "unknown-method is not retryable" stance; mutation-safety is unaffected.
     ///
     /// The retry is BOUNDED to exactly one cross-instance attempt — J's result (success or
     /// error) is returned as-is; there is no third instance, no loop. [`Reconnecting`]'s own
@@ -1021,11 +1045,16 @@ impl Caller for Pool {
             Err(e) => e,
         };
 
-        // C3 cross-instance failover gate. WHETHER (retry_mode) — a mutation (`Never`) is
-        // returned verbatim, never re-sent (double-execute hazard). And only a PROVEN
-        // connection death (non-definitive answer) is a corpse worth failing over; a peer
-        // that answered (`is_definitive_answer`, e.g. UnknownMethod→NotFound) ran the op, so
-        // return it verbatim rather than re-running it elsewhere.
+        // C3 cross-instance failover gate. WHETHER (retry_mode), checked FIRST — a mutation
+        // (`Never`) is returned verbatim, never re-sent (double-execute hazard), so no
+        // failure class can carry it past here. Then fail over on any NON-peer-answered error
+        // (`!is_definitive_answer`, i.e. any status other than `NotFound`); a peer that
+        // answered (`UnknownMethod → NotFound`) ran the op, so return it verbatim rather than
+        // re-run it. NOTE: this `!= NotFound` set is BROADER than `Reconnecting`'s
+        // `ConnectionFatal` reset class — `Remote`/StreamLocal faults also map to
+        // `Unavailable` and are indistinguishable at this boundary — but it is SAFE because
+        // the `retry_mode` check above already excluded mutations; the extra failover on a
+        // peer-answered `Unavailable` is a minor inefficiency, not a correctness issue.
         if retry_mode != RetryMode::OnceAfterReconnect || first_err.status.is_definitive_answer()
         {
             return Err(first_err);
