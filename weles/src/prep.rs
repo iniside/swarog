@@ -550,6 +550,16 @@ pub fn deploy(layout: &Layout, src_dir: &Path, fleet_path: &Path) -> Result<()> 
     flip_current(&layout.bin_dir, &gen_name)?;
     println!("weles: deployed {gen_name}, current -> {gen_name}");
 
+    // Record the flip in the durable master store (deploy provenance). This runs
+    // AFTER the atomic `current` flip — history reflects generations that
+    // actually became live. `sha_root` folds every artifact's SHA (already in the
+    // manifest) into one deterministic root hash, so the recorded row pins the
+    // exact bytes this generation staged. A store failure here is surfaced (the
+    // flip already succeeded; history is provenance, and a silent drop would rot
+    // the record `rollback` reasons over).
+    record_deploy_history(layout, &gen_name, &manifest)
+        .context("record deploy history in the master store")?;
+
     // Retention protects, by NUMBER: the new current, the pre-flip current (the
     // generation a live `up` may have pinned across intervening deploys), and —
     // authoritatively — whatever generation a live, non-terminal supervisor
@@ -564,6 +574,39 @@ pub fn deploy(layout: &Layout, src_dir: &Path, fleet_path: &Path) -> Result<()> 
     }
     prune_stale_generations(&layout.bin_dir, &layout.run_dir, &protected);
     Ok(())
+}
+
+/// Records the just-flipped generation in the durable master store
+/// (`run/weles/state.db`). `sha_root` is a SHA-256 folded over every artifact's
+/// recorded hash (binaries in `deploy_packages` order — deterministic, sorted —
+/// then the stamped `fleet.toml`), so the row pins the exact byte-set this
+/// generation staged in one value. The store owns the SQLite/WAL concurrency
+/// contract; this is master-side state, hence in `weles-master`. The hashing
+/// lives HERE (the `weles` crate owns the `sha2` dep the store must not pull in).
+fn record_deploy_history(layout: &Layout, gen_name: &str, manifest: &GenerationManifest) -> Result<()> {
+    let mut hasher = Sha256::new();
+    for artifact in &manifest.artifacts {
+        hasher.update(artifact.file.as_bytes());
+        hasher.update(b"\0");
+        hasher.update(artifact.sha256.as_bytes());
+        hasher.update(b"\n");
+    }
+    hasher.update(manifest.fleet.file.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(manifest.fleet.sha256.as_bytes());
+    let sha_root = format!("{:x}", hasher.finalize());
+
+    let deployed_unix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs() as i64)
+        .unwrap_or(0);
+
+    let store = crate::store::Store::open(&layout.run_dir.join("state.db"))?;
+    store.record_deploy(&crate::store::DeployRecord {
+        generation: gen_name.to_string(),
+        sha_root,
+        deployed_unix,
+    })
 }
 
 /// `weles rollback [<target>]`: repoint `deploy/current` at an earlier staged

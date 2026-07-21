@@ -245,6 +245,50 @@ fn deploy_stages_gen_1_and_flips_current() {
 }
 
 #[test]
+fn deploy_records_history_in_the_master_store() {
+    let root = temp_dir("deploy-history");
+    let layout = deploy_layout(&root);
+    let src = temp_dir("deploy-history-src");
+    stage_full_source(&src, b"v1 source");
+
+    deploy_fx(&layout, &src).expect("first deploy stages gen-1");
+
+    // The flip is recorded in the durable store, readable back by generation.
+    let store = crate::store::Store::open(&layout.run_dir.join("state.db"))
+        .expect("open master store");
+    let record = store
+        .deploy_record("gen-1")
+        .expect("read deploy history")
+        .expect("gen-1 was recorded on the successful flip");
+    assert_eq!(record.generation, "gen-1");
+    assert_eq!(
+        record.sha_root.len(),
+        64,
+        "sha_root must be a hex SHA-256: {}",
+        record.sha_root
+    );
+    assert!(
+        record.sha_root.chars().all(|c| c.is_ascii_hexdigit()),
+        "sha_root must be hex: {}",
+        record.sha_root
+    );
+    assert!(record.deployed_unix > 0, "deployed_unix must be a real timestamp");
+
+    // A second deploy of the SAME source bytes + fleet records gen-2 with the
+    // SAME sha_root (the root hash reflects staged content, deterministically).
+    deploy_fx(&layout, &src).expect("second deploy stages gen-2");
+    let gen2 = store
+        .deploy_record("gen-2")
+        .expect("read gen-2 history")
+        .expect("gen-2 recorded");
+    assert_eq!(gen2.generation, "gen-2");
+    assert_eq!(
+        gen2.sha_root, record.sha_root,
+        "identical staged bytes ⇒ identical root sha"
+    );
+}
+
+#[test]
 fn second_deploy_creates_gen_2_and_repoints_current() {
     let root = temp_dir("deploy-gen2");
     let layout = deploy_layout(&root);

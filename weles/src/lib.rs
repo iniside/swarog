@@ -41,7 +41,7 @@ pub mod supervisor;
 // role boundary moved, the public surface did not. This is NOT a zero-sharing
 // violation: a weles-INTERNAL sub-crate is the sanctioned way to model the
 // future master/agent process split without splitting the process yet.
-pub use weles_master::{fleet_toml, manifest, state};
+pub use weles_master::{fleet_toml, manifest, state, store};
 
 /// Committed-fleet fixtures for THIS crate's tests. The `weles-master` crate has
 /// its own `#[cfg(test)]` copies (its manifest dir differs), and a `#[cfg(test)]`

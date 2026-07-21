@@ -36,3 +36,14 @@ toml = { version = "1", default-features = false, features = [
     "serde",
     "parse",
 ] }
+
+# The durable master runtime store (src/store.rs): deploy history + minted-port
+# assignments in a small SQLite DB, WAL mode, one connection per writer. Pinned
+# LOCALLY, not via `.workspace = true` (there is no workspace `rusqlite` entry) —
+# the same zero-sharing narrow-pin discipline `weles` uses for `tokio`/`hyper`.
+# The `bundled` feature statically links SQLite's C amalgamation into the binary,
+# so the master needs NO system libsqlite3 at deploy time — it preserves weles's
+# one-binary-deploy / never-builds property (nothing to install on the target
+# host). This is master-side (platform-free) state, not agent platform I/O, so it
+# belongs in `weles-master`.
+rusqlite = { version = "0.32", features = ["bundled"] }
