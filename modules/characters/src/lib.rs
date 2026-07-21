@@ -209,6 +209,21 @@ impl Module for Characters {
                 charactersrpc::player_rpc::register_server(server, svc);
             }),
         );
+
+        // Routing-as-data SERVE side (D1.5b): this module's `#[http]` op manifest as
+        // pure DATA, contributed UNCONDITIONALLY (topology-blind) — `app::run` drains
+        // `DESCRIBE_SLOT`, concats every module's manifest, and serves the union under
+        // the ONE reserved `__describe` op iff this process serves an edge. `player_rpc`
+        // carries the create/list/delete HTTP ops; `ownership_rpc` is wire-only (its
+        // `describe()` is empty) — concatenated so a future `#[http]` op on either
+        // contract flows through with no edit here.
+        ctx.contribute(
+            opsapi::DESCRIBE_SLOT,
+            opsapi::DescribeManifest::concat([
+                charactersrpc::player_rpc::describe(),
+                charactersrpc::ownership_rpc::describe(),
+            ]),
+        );
         Ok(())
     }
 }

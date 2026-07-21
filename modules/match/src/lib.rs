@@ -340,6 +340,13 @@ impl Module for MatchModule {
                 matchrpc::match_rpc::register_server(server, svc.clone());
             }),
         );
+
+        // Routing-as-data SERVE side (D1.5b): this module's `#[http]` op manifest as
+        // pure DATA, contributed UNCONDITIONALLY (topology-blind). `app::run` concats
+        // every module's manifest and serves the union under the ONE reserved
+        // `__describe` op iff this process serves an edge; `match_rpc` carries the
+        // `match.report` HTTP op.
+        ctx.contribute(opsapi::DESCRIBE_SLOT, matchrpc::match_rpc::describe());
         Ok(())
     }
 }

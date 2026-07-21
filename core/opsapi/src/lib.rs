@@ -427,6 +427,20 @@ pub const BINDING_SLOT: contrib::Slot<OpBinding> = contrib::Slot::new("ops.bindi
 /// Contribution slot for the gateway's in-process dispatch table ([`LocalOp`]).
 pub const LOCAL_SLOT: contrib::Slot<LocalOp> = contrib::Slot::new("ops.local");
 
+/// Contribution slot each `#[http]`-serving module contributes its own
+/// [`DescribeManifest`] to (its contracts' `describe()`, concatenated) UNCONDITIONALLY
+/// during `init` — the DATA half of routing-as-data's SERVE side. A module contributes
+/// pure DATA and never touches the edge [`crate::DESCRIBE_METHOD`] handler: `app::run`
+/// drains this slot, [`DescribeManifest::concat`]s every contribution, and registers
+/// the ONE reserved `__describe` op with the union — but ONLY on a process that serves
+/// an internal edge (the same gate as `edge::EDGE_SLOT`). Registering ONCE per process
+/// (not once per module) is what keeps `edge::Server::register_describe`'s
+/// duplicate-method PANIC from firing on any process co-hosting ≥2 `#[http]` modules,
+/// while a managed gateway (D2) still fetches the WHOLE process's `#[http]` surface from
+/// that single op. A module stays topology-blind: it never learns whether the edge is
+/// served. Wire-only modules contribute nothing (their `describe()` is empty).
+pub const DESCRIBE_SLOT: contrib::Slot<DescribeManifest> = contrib::Slot::new("ops.describe");
+
 /// Contribution slot the gateway reads to resolve a Remote op's peer edge address. A
 /// `remote::Stub` contributes one [`PeerAddr`] per provider it fronts; the gateway's
 /// route table collects them into a provider→address map so its `remote_caller` dials

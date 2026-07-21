@@ -306,6 +306,7 @@ dependencies = [
  "invalidation",
  "lifecycle",
  "metrics",
+ "opsapi",
  "rcgen",
  "reqwest",
  "rustls",

@@ -1375,6 +1375,87 @@ fn contributed_edge_registrations_are_applied_when_an_edge_server_exists() {
 }
 
 // ============================================================================
+// The DESCRIBE_SLOT drain (routing-as-data SERVE side, D1.5b): each `#[http]` module
+// contributes its own DescribeManifest; `run` registers the ONE reserved `__describe`
+// op serving their CONCAT — ONCE per edge-serving process, so a process co-hosting ≥2
+// `#[http]` modules never double-registers `__describe` and panics.
+// ============================================================================
+
+/// A minimal `#[http]` op manifest for a single method — only the fields the aggregation
+/// assertion reads matter; the rest are filler.
+fn describe_op(method: &str) -> opsapi::OpManifest {
+    opsapi::OpManifest {
+        method: method.into(),
+        verb: "GET".into(),
+        path: format!("/{method}"),
+        auth: opsapi::AuthReq::None,
+        success: 200,
+        retry_mode: opsapi::RetryMode::Never,
+        args: Vec::new(),
+    }
+}
+
+/// Two `#[http]` modules each contribute their manifest to `DESCRIBE_SLOT`;
+/// `register_process_describe` registers the reserved `__describe` op EXACTLY ONCE (no
+/// duplicate-method panic — the whole reason app aggregates DATA and registers once
+/// rather than each module calling `register_describe`) and the served manifest is the
+/// CONCAT of both (the whole process's HTTP surface, what a managed gateway fetches).
+#[test]
+fn describe_slot_registers_reserved_op_once_with_the_concat_of_all_modules() {
+    let ctx = Context::new();
+    // Module A (e.g. characters): two ops. Module B (e.g. match): one op.
+    ctx.contribute(
+        opsapi::DESCRIBE_SLOT,
+        opsapi::DescribeManifest {
+            ops: vec![describe_op("characters.create"), describe_op("characters.delete")],
+        },
+    );
+    ctx.contribute(
+        opsapi::DESCRIBE_SLOT,
+        opsapi::DescribeManifest { ops: vec![describe_op("match.report")] },
+    );
+
+    let mut server = edge::Server::new();
+    let registered = register_process_describe(&ctx, &mut server);
+
+    // Registered EXACTLY ONCE: `__describe` appears a single time in the served set and
+    // the call did not panic on a duplicate (a per-module registration WOULD panic here).
+    let describe_count = server
+        .methods()
+        .iter()
+        .filter(|m| *m == opsapi::DESCRIBE_METHOD)
+        .count();
+    assert_eq!(describe_count, 1, "the reserved describe op is registered exactly once");
+
+    // The served manifest AGGREGATES both modules' ops (concat, order-preserving).
+    let served: Vec<String> = registered.ops.iter().map(|o| o.method.clone()).collect();
+    assert_eq!(
+        served,
+        vec![
+            "characters.create".to_string(),
+            "characters.delete".to_string(),
+            "match.report".to_string()
+        ],
+        "the reserved op serves the WHOLE process's #[http] surface"
+    );
+}
+
+/// An edge-serving process with NO `#[http]` module (a wire-only svc) still registers
+/// `__describe` — once, with an empty manifest — so a managed gateway can dial it
+/// uniformly and get an authoritative empty route set instead of `UnknownMethod`.
+#[test]
+fn describe_slot_registers_an_empty_manifest_for_a_wire_only_process() {
+    let ctx = Context::new();
+    let mut server = edge::Server::new();
+    let registered = register_process_describe(&ctx, &mut server);
+    assert!(registered.ops.is_empty(), "no #[http] contributions → empty manifest");
+    assert!(
+        server.methods().iter().any(|m| m == opsapi::DESCRIBE_METHOD),
+        "the reserved op is still served (uniform edge surface)"
+    );
+}
+
+// ============================================================================
 // The LAYER_SLOT drain: modules contribute httpmw::HttpLayer in init; `run` applies
 // them AFTER rate limiting so the last-contributed layer is the OUTERMOST — the metrics
 // recorder wraps the limiter and records its 429s.

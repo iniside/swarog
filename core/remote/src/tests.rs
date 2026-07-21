@@ -1741,3 +1741,41 @@ async fn describe_surfaces_malformed_manifest_as_internal_error() {
     let err = crate::describe(&caller).await.unwrap_err();
     assert_eq!(err.status, opsapi::Status::Internal);
 }
+
+/// LIVE serve→fetch round-trip (routing-as-data SERVE side, D1.5b): a real edge server
+/// registers the reserved `__describe` op (exactly as `app::run` does on an edge-serving
+/// process) carrying a two-MODULE aggregate manifest, and `remote::describe` over a real
+/// `edge::Client` dials it and gets EVERY contributed op back. This is the end-to-end
+/// path D1's `DescribeCaller` could only fake in-process — proving a managed gateway (D2)
+/// dialing a peer's `__describe` really does receive that peer's whole `#[http]` surface.
+#[tokio::test]
+async fn describe_round_trips_over_a_live_edge_returning_every_op() {
+    let ca = edge::DevCA::generate().unwrap();
+
+    // The aggregate `app::run` would serve for a process co-hosting two `#[http]`
+    // modules — one op from each, in concat order.
+    let mut manifest = sample_manifest(); // match.report
+    manifest.ops.push(opsapi::OpManifest {
+        method: "characters.create".into(),
+        verb: "POST".into(),
+        path: "/characters".into(),
+        auth: opsapi::AuthReq::Player,
+        success: 201,
+        retry_mode: opsapi::RetryMode::Never,
+        args: Vec::new(),
+    });
+
+    let mut server = edge::Server::new();
+    server.register_describe(manifest.clone());
+    let running = server.listen("127.0.0.1:0".parse().unwrap(), &ca).unwrap();
+
+    let client = edge::Client::dial(running.local_addr(), &ca).await.unwrap();
+    let got = crate::describe(&client).await.unwrap();
+
+    // The fetched manifest is byte-for-byte the served one, and BOTH modules' ops are
+    // present — not just "a response arrived".
+    assert_eq!(got, manifest);
+    let methods: Vec<String> = got.ops.iter().map(|o| o.method.clone()).collect();
+    assert!(methods.contains(&"match.report".to_string()), "{methods:?}");
+    assert!(methods.contains(&"characters.create".to_string()), "{methods:?}");
+}

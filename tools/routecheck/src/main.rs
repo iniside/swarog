@@ -142,6 +142,14 @@ struct ProcessRoutes {
     /// Methods served on the internal edge: every contributed `EdgeReg` applied to
     /// a fresh `edge::Server` (no socket), read via `Server::methods()`.
     edge_methods: BTreeSet<String>,
+    /// Method set drained from `opsapi::DESCRIBE_SLOT` — the `#[http]` ops this process
+    /// would serve under the ONE reserved `__describe` op (routing-as-data SERVE side,
+    /// D1.5b). The forget-guard (`describe_completeness_findings`) diffs this against the
+    /// `#[http]` subset of `edge_methods` (what the process actually serves on its edge,
+    /// NOT the stub-polluted `op_methods`): a `#[http]` module that forgot
+    /// `ctx.contribute(DESCRIBE_SLOT, …)` still serves the op on its edge but leaves this
+    /// set missing it → a managed gateway (D2) would build a dead route for it.
+    describe_methods: BTreeSet<String>,
 }
 
 /// A stable, human-diffable rendering of one [`Operation`] — the unit of the
@@ -212,6 +220,18 @@ fn observe_profile(profile: &DeploymentProfile) -> anyhow::Result<Vec<ProcessRou
             BTreeSet::new()
         };
 
+        // The `#[http]` manifest this process would serve under the ONE reserved
+        // `__describe` op — the concat of every module's `DESCRIBE_SLOT` contribution,
+        // exactly what `app::run` serves on an edge-hosting process. Read from the SAME
+        // slot; the forget-guard below diffs it against `op_methods`.
+        let describe_methods: BTreeSet<String> = opsapi::DescribeManifest::concat(
+            ctx.contributions::<opsapi::DescribeManifest>(opsapi::DESCRIBE_SLOT),
+        )
+        .ops
+        .into_iter()
+        .map(|o| o.method)
+        .collect();
+
         out.push(ProcessRoutes {
             process: process_id,
             ops,
@@ -219,6 +239,7 @@ fn observe_profile(profile: &DeploymentProfile) -> anyhow::Result<Vec<ProcessRou
             bind_methods,
             local_methods,
             edge_methods,
+            describe_methods,
         });
     }
     Ok(out)
@@ -250,7 +271,48 @@ fn overlap_findings(label: &str, process: &str, ops: &[Operation]) -> Vec<String
     findings
 }
 
-/// Runs the four invariants over one env config's observations. `label` names the
+/// Invariant 5 (DESCRIBE-COMPLETE), the forget-guard for routing-as-data's SERVE side
+/// (D1.5b): every `#[http]` op a process SERVES on its internal edge (`served_http`) MUST
+/// appear in that process's `__describe` manifest (`describe_methods`, drained from
+/// `opsapi::DESCRIBE_SLOT`) — and vice versa.
+///
+/// `served_http` is `edge_methods ∩ global_http`, NOT the process's raw `op_methods`: a
+/// domain svc that holds a peer `remote::Stub` also gets that peer's HTTP route bindings
+/// contributed to `opsapi::SLOT` (inventory-svc fronts `characters.*` because it
+/// `require`s `characters::Ownership`), so `op_methods` is polluted by ops the process
+/// CONSUMES but does not serve. The ops a process actually serves on its edge — what a
+/// managed gateway dialing it would dispatch there — is the `#[http]` subset of
+/// `edge_methods`. A NEW `#[http]` module that forgot
+/// `ctx.contribute(opsapi::DESCRIBE_SLOT, …)` in its `init` still registers its edge
+/// handlers (via `EDGE_SLOT`), so `served_http` carries the method while
+/// `describe_methods` does not → a per-method FORGOT finding, fail-closed, BEFORE a
+/// managed gateway (D2) silently builds a dead route for it. The reverse diff (a describe
+/// entry the process does not actually serve) catches a stale/foreign manifest.
+fn describe_completeness_findings(
+    label: &str,
+    process: &str,
+    served_http: &BTreeSet<String>,
+    describe_methods: &BTreeSet<String>,
+) -> Vec<String> {
+    let mut findings = Vec::new();
+    for m in served_http.difference(describe_methods) {
+        findings.push(format!(
+            "[{label}] DESCRIBE-FORGOT: {process}: #[http] op {m:?} is served on this \
+             process's internal edge but ABSENT from its __describe manifest — its module \
+             forgot `ctx.contribute(opsapi::DESCRIBE_SLOT, …)` in `init`; a managed gateway \
+             (D2) would build a DEAD route (UnknownMethod → NotFound) for it"
+        ));
+    }
+    for m in describe_methods.difference(served_http) {
+        findings.push(format!(
+            "[{label}] DESCRIBE-EXTRA: {process}: __describe carries {m:?} but this process \
+             does NOT serve it on its internal edge — a stale or foreign describe entry"
+        ));
+    }
+    findings
+}
+
+/// Runs the invariants over one env config's observations. `label` names the
 /// config in every finding.
 fn check(label: &str, monolith: &[ProcessRoutes], split: &[ProcessRoutes]) -> Vec<String> {
     let mut findings = Vec::new();
@@ -339,6 +401,29 @@ fn check(label: &str, monolith: &[ProcessRoutes], split: &[ProcessRoutes]) -> Ve
     // hypothetical FRONT-PARITY bypass can't also hide an overlap.
     findings.extend(overlap_findings(label, server.process, &server.ops));
     findings.extend(overlap_findings(label, gateway.process, &gateway.ops));
+
+    // 5. DESCRIBE-COMPLETE — every edge-serving process serves its whole `#[http]`
+    // surface under the ONE reserved `__describe` op (routing-as-data SERVE side, the
+    // forget-guard). Checked ONLY on the SPLIT processes: the monolith and gateway-svc
+    // serve no internal edge, so their DESCRIBE_SLOT contributions are never registered
+    // (`app::run` gates on the edge, exactly as `edge_methods` is empty for them here) —
+    // asserting on them would flag inert data. The monolith's aggregation is proven by
+    // app's unit tests; here every real edge-serving svc must describe exactly what it
+    // serves. `global_http` (the set of #[http] methods) is the monolith front door's op
+    // set — the monolith fronts every #[http] op locally — used to filter each svc's
+    // served edge methods down to its HTTP subset (an svc's edge also carries wire-only
+    // and admin-fan-out methods, which `__describe` deliberately excludes).
+    let global_http = &server.op_methods;
+    for p in split.iter() {
+        let served_http: BTreeSet<String> =
+            p.edge_methods.intersection(global_http).cloned().collect();
+        findings.extend(describe_completeness_findings(
+            label,
+            p.process,
+            &served_http,
+            &p.describe_methods,
+        ));
+    }
 
     findings
 }

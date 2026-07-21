@@ -586,6 +586,36 @@ fn apply_edge_registrations(ctx: &Context, server: &mut edge::Server) -> usize {
     regs.len()
 }
 
+/// Registers the ONE reserved [`opsapi::DESCRIBE_METHOD`] op on this process's internal
+/// edge, serving the union of every module's [`opsapi::DESCRIBE_SLOT`] contribution
+/// ([`opsapi::DescribeManifest::concat`]) — the SERVE side of routing-as-data (D1.5b),
+/// so a managed gateway (D2) can fetch each peer's `#[http]` manifest at runtime instead
+/// of importing its `<name>rpc` glue at compile time. Returns the concatenated manifest
+/// it registered.
+///
+/// Called by [`run`] ONLY when this process serves an internal edge (the same gate as
+/// [`apply_edge_registrations`]), and EXACTLY ONCE per process — regardless of how many
+/// `#[http]` modules co-host here. That is the whole point of aggregating DATA in a slot
+/// and registering in `app` rather than letting each module call
+/// [`edge::Server::register_describe`] itself: the reserved `__describe` is a single wire
+/// name, and `register_describe` reuses [`edge::Server::handle`], which PANICS on a
+/// duplicate — so a per-module registration would be a loud boot failure on any process
+/// with ≥2 `#[http]` modules (today's monolith serves no edge, but a future multi-domain
+/// edge process must not become a landmine). One registration per process is
+/// collision-free by construction and still exposes the process's whole HTTP surface.
+///
+/// Registered UNCONDITIONALLY on an edge-serving process even when the manifest is empty
+/// (a wire-only svc): every edge peer then answers `__describe` uniformly, so a managed
+/// gateway can dial it on any peer and get an authoritative (possibly empty) route set
+/// rather than an `UnknownMethod → NotFound` it must special-case.
+fn register_process_describe(ctx: &Context, server: &mut edge::Server) -> opsapi::DescribeManifest {
+    let manifest = opsapi::DescribeManifest::concat(
+        ctx.contributions::<opsapi::DescribeManifest>(opsapi::DESCRIBE_SLOT),
+    );
+    server.register_describe(manifest.clone());
+    manifest
+}
+
 /// Applies every [`httpmw::HttpLayer`] contributed to [`httpmw::LAYER_SLOT`] onto `router`,
 /// in CONTRIBUTION ORDER (first contributed = innermost, last = outermost), returning the
 /// wrapped router. Called by [`run`] AFTER the merged router is rate-limited, so a
@@ -855,7 +885,19 @@ pub async fn run(
             // `edge::Server::handle` PANICS here on a duplicate wire method.
             let mut server = std::mem::take(&mut *shared.lock().unwrap());
             let applied = apply_edge_registrations(&ctx, &mut server);
-            tracing::info!(applied, "installed contributed edge registrations");
+            // The ONE reserved `__describe` op for this whole process (routing-as-data
+            // SERVE side, D1.5b) — registered here, once, AFTER every module's `init`
+            // has contributed to `opsapi::DESCRIBE_SLOT` and alongside the other edge
+            // registrations, so a duplicate-method collision (if `__describe` were ever
+            // registered twice) fires HERE with nothing started, same as every other
+            // edge registration. `register_describe` reuses `Server::handle`, so this is
+            // covered by the same panic-before-start reasoning documented above.
+            let described = register_process_describe(&ctx, &mut server);
+            tracing::info!(
+                applied,
+                describe_ops = described.ops.len(),
+                "installed contributed edge registrations + reserved describe() op"
+            );
             Some(server)
         }
         None => None,

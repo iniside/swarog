@@ -40,6 +40,56 @@ fn overlap_findings_clean_on_disjoint_routes() {
     assert!(overlap_findings("fixture", "test-process", &ops).is_empty());
 }
 
+/// Builds a method set from string literals — the unit both sides of the forget-guard
+/// diff over.
+fn methods(names: &[&str]) -> BTreeSet<String> {
+    names.iter().map(|s| (*s).to_string()).collect()
+}
+
+/// Invariant 5 (DESCRIBE-COMPLETE), the forget-guard: a `#[http]` module that fronts an
+/// op (it is in `op_methods`) but forgot `ctx.contribute(opsapi::DESCRIBE_SLOT, …)` (so
+/// the op is absent from `describe_methods`) fails with a per-method FORGOT finding — the
+/// exact D2-dead-route class this guard exists to catch BEFORE it ships.
+#[test]
+fn describe_guard_fails_a_http_module_that_forgot_to_contribute() {
+    let op = methods(&["characters.create", "characters.delete"]);
+    let described = methods(&["characters.create"]); // `delete` was NOT contributed
+    let findings =
+        describe_completeness_findings("fixture", "characters-svc", &op, &described);
+    assert_eq!(findings.len(), 1, "exactly one forgotten op: {findings:?}");
+    assert!(
+        findings[0].contains("DESCRIBE-FORGOT")
+            && findings[0].contains("characters.delete")
+            && findings[0].contains("characters-svc"),
+        "{}",
+        findings[0]
+    );
+}
+
+/// A process whose describe manifest EXACTLY covers its `#[http]` ops passes clean — the
+/// property every real edge-serving process must hold on a clean tree.
+#[test]
+fn describe_guard_clean_when_every_http_op_is_described() {
+    let op = methods(&["characters.create", "characters.delete", "characters.list"]);
+    assert!(describe_completeness_findings("fixture", "characters-svc", &op, &op).is_empty());
+}
+
+/// The reverse diff: a describe entry with no matching `#[http]` Operation (a stale or
+/// foreign manifest) fails with a DESCRIBE-EXTRA finding.
+#[test]
+fn describe_guard_fails_a_stale_describe_entry() {
+    let op = methods(&["characters.create"]);
+    let described = methods(&["characters.create", "characters.ghost"]);
+    let findings =
+        describe_completeness_findings("fixture", "characters-svc", &op, &described);
+    assert_eq!(findings.len(), 1, "exactly one stale entry: {findings:?}");
+    assert!(
+        findings[0].contains("DESCRIBE-EXTRA") && findings[0].contains("characters.ghost"),
+        "{}",
+        findings[0]
+    );
+}
+
 /// The check IS the test (archcheck/checkmodules self-test pattern): run the full
 /// two-config route-parity check over the real workspace module lists and assert a
 /// clean tree. This is what makes the invariant enforceable from `cargo test

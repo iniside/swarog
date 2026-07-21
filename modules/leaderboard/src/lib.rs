@@ -176,6 +176,13 @@ impl Module for LeaderboardModule {
                 leaderboardrpc::leaderboard_rpc::register_server(server, svc.clone());
             }),
         );
+
+        // Routing-as-data SERVE side (D1.5b): this module's `#[http]` op manifest as
+        // pure DATA, contributed UNCONDITIONALLY (topology-blind). `app::run` concats
+        // every module's manifest and serves the union under the ONE reserved
+        // `__describe` op iff this process serves an edge; `leaderboard_rpc` carries the
+        // `GET /leaderboard` HTTP op.
+        ctx.contribute(opsapi::DESCRIBE_SLOT, leaderboardrpc::leaderboard_rpc::describe());
         Ok(())
     }
 }
