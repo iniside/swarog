@@ -5,6 +5,7 @@ metadata:
   node_type: memory
   type: project
   originSessionId: 88cdd953-b406-40a0-8ab2-6c7eb07acece
+  modified: 2026-07-21T13:48:54.316Z
 ---
 
 `.claude/agents/` holds four specialized personas — three built 2026-07-13 from
@@ -33,6 +34,12 @@ gaps generic agents missed:
 - **core-reviewer** — class-keyed adversarial review routed by files-touched to the
   taxonomy classes; attacks the fix's OWN new seam. The reliable local "second
   independent reviewer" (Codex was flaky, ~70%). Use after any core/cross-seam diff.
+  **Recydywa (2026-07-21, weles replicas/routing plan):** dispatched the grumpy
+  Plan-Writing-Workflow step-5 reviewer to `general-purpose` — the hook blocked it.
+  Adversarial review of a PLAN (not only a code diff) ALSO goes to `core-reviewer`,
+  never `general-purpose`. The guardrail is explicit: "a code-diff or plan review sent
+  to general-purpose instead of core-reviewer" is a FAIL. Plan-review = `core-reviewer`,
+  `model:` ≥ author tier, effort embedded (doesn't inherit).
 - **proof-auditor** — audits the PROOF not the code (coverage-gap/false-pass/
   notapplicable — the verify-net class that ships bugs green). Use on diffs touching
   tests or verify stages, or that claim "proven".
