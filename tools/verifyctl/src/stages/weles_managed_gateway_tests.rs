@@ -31,8 +31,9 @@ fn healthy() -> Observed {
             origin_marker: Ok(true),
             // The swapped edge points at ports serving no QUIC, so the op MUST
             // fail — and a datagram must have arrived at BOTH resolved instances
-            // (the round-robin / replica shape: gateway-svc pooled over the whole
-            // resolved set instead of collapsing to the first).
+            // (SET-CONSUMPTION: gateway-svc built its Pool over the whole resolved
+            // set, a per-instance probe for each, instead of collapsing to the
+            // first — NOT request round-robin, which is C1's).
             leaderboard: Ok(502),
             edge_dialled: true,
             edge_second_dialled: true,
@@ -227,23 +228,26 @@ fn a_resolved_edge_address_that_nothing_dialled_is_a_finding_even_when_the_op_fa
 }
 
 #[test]
-fn a_gateway_that_did_not_round_robin_the_resolved_set_is_caught() {
+fn a_pool_not_built_over_the_second_resolved_instance_is_caught() {
     // THE C4 assertion: the fake agent answered leaderboard's edge with a SET of
-    // two stage-owned ports (the round-robin / replica shape). A managed gateway
-    // that pooled over the whole set dials BOTH; one that collapsed to the first
-    // instance (the `exactly_one` behaviour C2 replaced) leaves the second silent.
-    // So `edge_second_dialled = false` is the world where round-robin regressed to
-    // single-instance dispatch, and it must be a finding on its own — the first
+    // two stage-owned ports (the replica / multi-instance shape). A managed gateway
+    // that built its Pool over the whole set instantiates a per-instance probe for
+    // each and dials BOTH (request-independently); one that collapsed to the first
+    // instance (the `exactly_one` behaviour C2 replaced) never builds the second,
+    // so its port stays silent. So `edge_second_dialled = false` is the C2
+    // set-collapse regression, and it must be a finding on its own — the first
     // instance still being dialled makes it invisible to every OTHER assertion.
+    // This proves SET-CONSUMPTION (membership), not request round-robin — that is
+    // unit-proven in core/remote (C1).
     let mut observed = healthy();
     observed.swap.as_mut().unwrap().edge_second_dialled = false;
     let findings = findings(&observed);
     assert_eq!(findings.len(), 1, "{findings:?}");
     assert!(
-        findings[0].contains("did not distribute across the resolved instance SET"),
+        findings[0].contains("SECOND resolved instance"),
         "{findings:?}"
     );
-    assert!(findings[0].contains("round-robin"), "{findings:?}");
+    assert!(findings[0].contains("SET-CONSUMPTION"), "{findings:?}");
 }
 
 #[test]
@@ -367,9 +371,9 @@ fn the_fake_agent_answers_a_two_instance_set_through_the_real_client() {
     // The C4 core change: the fake agent resolves a provider to a SET, not a single
     // address, and the REAL client (`remote::resolve_peer`, the exact code
     // cmd/gateway-svc runs) reads the whole list back through weles's real encoder.
-    // This is what makes the round-robin swap a fair instrument: the two stage-owned
-    // ports the managed gateway pools over really do arrive over the wire, in order,
-    // and neither is the 9008 default.
+    // This is what makes the set-consumption swap a fair instrument: the two
+    // stage-owned ports the managed gateway builds its Pool over really do arrive
+    // over the wire, in order, and neither is the 9008 default.
     let agent = fake_agent(vec![(
         "leaderboard".to_string(),
         weles::manifest::AddrKind::Edge,

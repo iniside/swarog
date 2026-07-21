@@ -94,19 +94,33 @@
 //!    there. Neither the blank default nor a hypothetical `:8085` default could
 //!    produce it.
 //! 5. **the resolved `Edge` address is USED, and the whole resolved SET is
-//!    load-balanced (C4 round-robin)** — the agent answers `leaderboard`'s edge as
+//!    CONSUMED (C4 set-consumption)** — the agent answers `leaderboard`'s edge as
 //!    a SET of TWO ports the STAGE owns (no QUIC server on either). Three
 //!    observations: `/leaderboard` must NOT answer 200 (a 200 means it dialled
 //!    9008, the default, i.e. fetched-and-discarded), and a UDP datagram must
 //!    ARRIVE at BOTH ports (a positive: bytes went to the addresses the agent
 //!    chose — proof by construction, not by absence of errors). The SECOND
-//!    datagram is the round-robin proof: a managed gateway that consumed the whole
-//!    resolved set (the `remote::Pool` C2 built to replace `exactly_one`) spreads
-//!    across both instances, so a single-instance collapse leaves the second port
-//!    silent. NB: this is a DIAL-LEVEL distribution proof (the provider serves ops
-//!    over the QUIC edge, never HTTP, so a domain instance's `http_requests_total`
-//!    never moves for a routed op — see the C4 hand-off note); the strict
-//!    A,B,A,B cursor is unit-proven in `core/remote` (C1).
+//!    datagram is the SET-CONSUMPTION proof: a managed gateway that built its
+//!    `remote::Pool` over the whole resolved set (the shape C2 built to replace
+//!    `exactly_one`) instantiates a per-instance connection+probe for EVERY
+//!    resolved instance, and each probe dials its port IMMEDIATELY and
+//!    REQUEST-INDEPENDENTLY — so a single-instance collapse (a Pool built over one
+//!    address, not the resolved set) leaves the second port silent. This proves
+//!    membership/set-consumption, NOT that requests are round-robin-distributed:
+//!    a gateway that knew both instances but pinned every request to the first
+//!    would still probe the second and PASS this. Strict A,B,A,B request
+//!    distribution is unit-proven in `core/remote` (C1,
+//!    `pool_distributes_round_robin_across_two_instances`, probeless fake +
+//!    invocation counters). NB dial-level: the provider serves ops over the QUIC
+//!    edge, never HTTP, so a domain instance's `http_requests_total` never moves
+//!    for a routed op — see the C4 hand-off note.
+//!
+//!    RECORDED GAP: the LIVE single-instance-resolve → second-port-silent path is
+//!    caught structurally here (`edge_second_dialled == false`) but is NOT
+//!    separately driven by a test that resolves a 1-element set against the real
+//!    Pool — the C2 `exactly_one`-collapse this assertion guards is the real
+//!    target, and C1 pins request distribution. Not built (would add a whole
+//!    second live boot for a path the collapse-guard already covers).
 //!
 //! # Proving the gate can fail (a gate that cannot fail is theatre)
 //!
@@ -175,15 +189,6 @@ const SWAP_REQUEST_TIMEOUT: Duration = Duration::from_secs(45);
 /// datagram already sitting in the socket buffer is read immediately — this
 /// bounds only the case where NOTHING was ever sent.
 const EDGE_DIAL_WAIT: Duration = Duration::from_secs(5);
-
-/// How many `/leaderboard` requests the round-robin distribution probe drives
-/// through the managed front door. One would already dial BOTH resolved
-/// instances (a retry-safe read fails over off the first, and the per-instance
-/// probe fan-out dials each independently), so this is not a threshold — it is a
-/// burst that literally exercises the round-robin cursor across many calls, so a
-/// gateway that pinned every request to one instance is caught by more than a
-/// single selection.
-const ROUND_ROBIN_REQUESTS: usize = 12;
 
 /// The dev API key seeded by `APIKEYS_DEV_SEED=1` (which weles's manifest sets on
 /// apikeys-svc) whose policy covers the player-facing list — `/leaderboard`
@@ -440,12 +445,15 @@ pub(crate) struct SwapProbe {
     /// leaderboard's edge? The positive half: bytes went where the agent said.
     edge_dialled: bool,
     /// Did a datagram arrive at the SECOND port the fake agent named as
-    /// leaderboard's edge? The round-robin / replica half: the agent answered
+    /// leaderboard's edge? The SET-CONSUMPTION half: the agent answered
     /// leaderboard's edge with a SET of two stage-owned ports, and a managed
-    /// gateway that load-balanced across the whole resolved set dials this one
-    /// TOO. A single-instance pool (or an `exactly_one`-style collapse to the
-    /// first) leaves this at `false` — so this is what discriminates round-robin
-    /// distribution from single-instance dispatch.
+    /// gateway that built its `remote::Pool` over the whole resolved set
+    /// instantiates a per-instance connection+probe for EACH — and each probe
+    /// dials its port immediately, REQUEST-INDEPENDENTLY. A single-instance pool
+    /// (or an `exactly_one`-style collapse to the first) never builds the second
+    /// instance, so its port stays silent and this is `false`. It discriminates
+    /// set-consumption from a single-instance collapse — NOT request round-robin,
+    /// which is unit-proven in `core/remote` (C1).
     edge_second_dialled: bool,
 }
 
@@ -564,23 +572,26 @@ fn swap_findings(swap: &std::result::Result<SwapProbe, String>) -> Vec<String> {
                     .to_string(),
             );
         }
-        // The round-robin / replica half. The fake agent answered leaderboard's
-        // edge with a SET of TWO stage-owned ports (the shape C2 taught the managed
-        // route table to pool over instead of `exactly_one`-refusing). If the pool
-        // load-balances across the whole resolved set, BOTH ports see a datagram;
-        // if it kept only the first instance, this second one stays silent. So this
-        // is the assertion the single-instance path structurally could not pass —
-        // and it discriminates: with only one resolved address (or an
-        // `exactly_one`-style collapse) `edge_second_dialled` is `false`.
+        // The SET-CONSUMPTION half. The fake agent answered leaderboard's edge with
+        // a SET of TWO stage-owned ports (the shape C2 taught the managed route
+        // table to pool over instead of `exactly_one`-refusing). A Pool built over
+        // the whole set instantiates a per-instance connection+probe for each, and
+        // each probe dials its port request-independently, so BOTH ports see a
+        // datagram; if the set collapsed to one instance, the second is never built
+        // and stays silent. This proves membership, NOT request round-robin — a
+        // gateway that knew both instances but pinned every request to the first
+        // would still probe the second and pass here (distribution is C1's, unit-
+        // proven). `false` = the C2 `exactly_one`-collapse regression.
         if !swap.edge_second_dialled {
             findings.push(
-                "the managed route table did not distribute across the resolved instance SET: \
-                 the fake agent answered leaderboard's edge with TWO addresses this stage owns \
-                 (the round-robin / replica shape), a burst of requests went through the front \
-                 door, yet no datagram ever arrived at the SECOND. gateway-svc dispatched only \
-                 to the first resolved instance — the single-instance behaviour C2 replaced \
-                 with a round-robin `remote::Pool` — instead of spreading across both. A \
-                 single-instance pool would leave this at zero"
+                "no datagram reached the SECOND resolved instance — the managed `Pool` was NOT \
+                 built over it (the resolved set collapsed to one instance, the `exactly_one` \
+                 behaviour C2 replaced with a per-instance `remote::Pool`), so neither its \
+                 per-instance probe nor any routed request could reach it. The agent answered \
+                 leaderboard's edge with TWO stage-owned addresses; a Pool that consumed the \
+                 whole set instantiates a connection+probe for each and dials both. This is \
+                 SET-CONSUMPTION, not request distribution (strict round-robin is unit-proven \
+                 in core/remote, C1). A single-instance pool leaves this at zero"
                     .to_string(),
             );
         }
@@ -743,12 +754,15 @@ const ORIGIN_MARKER: &str = "weles-managed-gateway-swap-origin";
 /// * `admin`'s HTTP origin → a port this stage SERVES. The marker can only come
 ///   from there.
 /// * `leaderboard`'s EDGE → a SET of TWO ports this stage OWNS but serves no QUIC
-///   on (the round-robin / replica shape). So `/leaderboard` must fail (a 200
+///   on (the replica / multi-instance shape). So `/leaderboard` must fail (a 200
 ///   means the real 9008 was dialled, i.e. the default) AND a datagram must
 ///   arrive at BOTH — the used-vs-fetched proof (the resolved address was dialled)
-///   AND the round-robin proof (the managed route table's `remote::Pool` spread
-///   across the WHOLE resolved set, not just the first instance `exactly_one`
-///   would have kept).
+///   AND the SET-CONSUMPTION proof (the managed route table's `remote::Pool` was
+///   built over the WHOLE resolved set — a per-instance connection+probe for each,
+///   each probe dialing IMMEDIATELY and REQUEST-INDEPENDENTLY — not collapsed to
+///   the first instance `exactly_one` would have kept). This is membership, not
+///   request round-robin; the strict A,B,A,B cursor is unit-proven in
+///   `core/remote` (C1), not here.
 ///
 /// The other six answers are the REAL fleet's addresses, straight from weles's
 /// manifest — the gateway must boot and its key check must reach the real
@@ -857,25 +871,22 @@ fn swap_probe(input: &SwapInput) -> Result<SwapProbe> {
         }
         let origin_marker = body_of(&runtime, &client, &format!("{base}/admin/login"), &[])
             .map(|body| body.contains(ORIGIN_MARKER));
-        // Drive a burst of the op, THEN look for the datagrams: each read
-        // round-robin-selects one of the two resolved leaderboard instances and,
-        // being retry-safe, fails over to the OTHER, and the per-instance probe
-        // fan-out dials each on its own cadence — so a gateway that spread across
-        // the whole resolved set dials BOTH stage-owned ports. The dials happen
-        // while these requests are in flight (they fail at the edge's dial
+        // Drive ONE request, THEN look for the datagrams. The single request is
+        // what triggers the pool's first refresh, which builds a per-instance
+        // connection + probe for EVERY resolved instance; each probe then dials its
+        // port immediately and REQUEST-INDEPENDENTLY. So a gateway whose Pool was
+        // built over the whole resolved SET dials BOTH stage-owned ports off that
+        // one refresh — a burst of further requests would NOT witness anything more
+        // (it does not exercise distribution; C1 does, at the unit level). The
+        // dials happen while the request is in flight (it fails at the edge's dial
         // deadline), and UDP datagrams sit in the socket buffer until read — a
-        // happens-before, not a race with a clock. Every answer is the same (both
-        // instances are black holes, so the op fails identically), so the last one
-        // stands for all.
-        let mut leaderboard = Err(NOT_PROBED.into());
-        for _ in 0..ROUND_ROBIN_REQUESTS {
-            leaderboard = get(
-                &runtime,
-                &client,
-                &format!("{base}/leaderboard"),
-                &[("X-Api-Key", DEV_KEY)],
-            );
-        }
+        // happens-before, not a race with a clock.
+        let leaderboard = get(
+            &runtime,
+            &client,
+            &format!("{base}/leaderboard"),
+            &[("X-Api-Key", DEV_KEY)],
+        );
         let edge_dialled = edge.recv_from(&mut [0u8; 2048]).is_ok();
         let edge_second_dialled = edge_second.recv_from(&mut [0u8; 2048]).is_ok();
         Ok(SwapProbe {
