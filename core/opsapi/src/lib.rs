@@ -110,7 +110,12 @@ pub trait Caller: Send + Sync {
 
 /// Transport replay policy declared by RPC metadata. Missing metadata is fail-closed:
 /// calls are never replayed unless the capability author marks the method read-only.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+///
+/// `Serialize`/`Deserialize` are derived so the replay policy can ride inside the
+/// serializable [`OpManifest`] the reserved [`DESCRIBE_METHOD`] op carries — a
+/// data-driven gateway reconstructs the op's `retry_mode` faithfully rather than
+/// defaulting it (each variant encodes by its name, a self-consistent Rust-only wire).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum RetryMode {
     #[default]
     Never,
@@ -370,6 +375,13 @@ pub struct OpManifest {
     pub auth: AuthReq,
     /// HTTP status the gateway writes on a [`Status::Ok`] outcome (e.g. 201/200/204/202).
     pub success: u16,
+    /// Whether a transport may replay this operation after reconnecting — the SAME
+    /// value the `#[rpc]` macro emits into [`Operation::retry_mode`], from the SAME
+    /// `#[retry_safe]` marker. Carried here so a data-driven gateway reconstructing an
+    /// [`Operation`] from a runtime `describe()` preserves the op's replay semantics
+    /// (a `#[retry_safe]` read stays replayable) instead of defaulting to
+    /// [`RetryMode::Never`] and silently dropping the one-replay-after-reconnect.
+    pub retry_mode: RetryMode,
     /// Per-arg source mapping, in method-declaration order.
     pub args: Vec<ArgMapping>,
 }

@@ -121,6 +121,7 @@ fn describe_manifest_json_round_trips_both_arg_sources() {
                 path: "/match/report".into(),
                 auth: AuthReq::None,
                 success: 202,
+                retry_mode: RetryMode::OnceAfterReconnect,
                 args: vec![ArgMapping {
                     param: "report_id".into(),
                     wire_key: "ReportId".into(),
@@ -133,6 +134,7 @@ fn describe_manifest_json_round_trips_both_arg_sources() {
                 path: "/characters/{id}".into(),
                 auth: AuthReq::Player,
                 success: 204,
+                retry_mode: RetryMode::Never,
                 args: vec![ArgMapping {
                     param: "character_id".into(),
                     wire_key: "character_id".into(),
@@ -157,6 +159,7 @@ fn describe_manifest_concat_unions_ops_in_order() {
             path: "/characters".into(),
             auth: AuthReq::Player,
             success: 201,
+            retry_mode: RetryMode::Never,
             args: vec![],
         }],
     };
@@ -167,6 +170,7 @@ fn describe_manifest_concat_unions_ops_in_order() {
             path: "/characters".into(),
             auth: AuthReq::Player,
             success: 200,
+            retry_mode: RetryMode::OnceAfterReconnect,
             args: vec![],
         }],
     };

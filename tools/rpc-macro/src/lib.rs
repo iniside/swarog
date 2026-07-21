@@ -793,6 +793,14 @@ fn gen_manifest_literal(m: &MethodModel) -> TokenStream2 {
     let path = &b.path;
     let success = b.success;
     let auth = format_ident!("{}", b.auth);
+    // Same `m.retry_safe` authority `gen_operation_literal`/`gen_client_method`/
+    // `gen_wire_op_literal` read, so an op's describe `retry_mode` can never disagree
+    // with the `Operation` a co-hosted gateway routes over or the client's replay arg.
+    let retry_mode = if m.retry_safe {
+        quote! { ::opsapi::RetryMode::OnceAfterReconnect }
+    } else {
+        quote! { ::opsapi::RetryMode::Never }
+    };
     let arg_mappings = m.args.iter().map(gen_arg_mapping_literal);
     quote! {
         ::opsapi::OpManifest {
@@ -801,6 +809,7 @@ fn gen_manifest_literal(m: &MethodModel) -> TokenStream2 {
             path: #path.to_string(),
             auth: ::opsapi::AuthReq::#auth,
             success: #success,
+            retry_mode: #retry_mode,
             args: ::std::vec![ #(#arg_mappings),* ],
         }
     }

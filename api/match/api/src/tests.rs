@@ -4,7 +4,7 @@
 //! data-driven gateway rebuilds the exact wire request without importing `matchrpc`.
 
 use crate::match_rpc;
-use opsapi::{ArgSource, AuthReq};
+use opsapi::{ArgSource, AuthReq, RetryMode};
 
 /// `describe()` reflects `report`'s `#[http]` binding exactly, and its `body_names`
 /// renames surface as `wire_key`s distinct from the param names — the data a
@@ -38,6 +38,27 @@ fn describe_reflects_report_http_bind_with_body_names() {
         assert_eq!(a.wire_key, wire_key, "param {param}");
         assert_eq!(a.source, ArgSource::Body, "param {param}");
     }
+}
+
+/// `report` is `#[retry_safe]`, so its `describe()` manifest carries
+/// `RetryMode::OnceAfterReconnect` — the SAME value the routed `Operation` carries. This
+/// pins that a data-driven gateway rebuilding an `Operation` from `describe()` preserves
+/// the read/idempotent replay semantics instead of defaulting to `Never` and silently
+/// dropping the one-replay-after-reconnect an ambiguous result relies on.
+#[test]
+fn describe_carries_retry_safe_retry_mode() {
+    let manifest = match_rpc::describe();
+    let op = &manifest.ops[0];
+    assert_eq!(op.method, "match.report");
+    assert_eq!(op.retry_mode, RetryMode::OnceAfterReconnect);
+
+    // The manifest value is byte-identical to the routed `Operation`'s (one authority).
+    let routed = match_rpc::route_bindings();
+    let report = routed
+        .iter()
+        .find(|b| b.operation.method == "match.report")
+        .expect("report routed");
+    assert_eq!(op.retry_mode, report.operation.retry_mode);
 }
 
 /// The manifest's op set is EXACTLY the `#[http]` op set the gateway routes over

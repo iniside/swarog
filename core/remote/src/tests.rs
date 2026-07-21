@@ -1704,6 +1704,7 @@ fn sample_manifest() -> opsapi::DescribeManifest {
             path: "/match/report".into(),
             auth: opsapi::AuthReq::None,
             success: 202,
+            retry_mode: opsapi::RetryMode::OnceAfterReconnect,
             args: vec![opsapi::ArgMapping {
                 param: "report_id".into(),
                 wire_key: "ReportId".into(),

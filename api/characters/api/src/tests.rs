@@ -5,7 +5,7 @@
 //! gateway-routed.
 
 use crate::{ownership_rpc, player_rpc};
-use opsapi::{ArgSource, AuthReq};
+use opsapi::{ArgSource, AuthReq, RetryMode};
 
 /// `describe()` reflects `delete`'s path wildcard as an `ArgSource::Path` mapping: the
 /// arg is taken from the `{id}` wildcard and written into the wire request under the
@@ -48,6 +48,32 @@ fn describe_covers_all_player_http_ops() {
             .map(String::from)
             .collect()
     );
+}
+
+/// `describe()` carries each op's `retry_mode` faithfully: the `#[retry_safe]` read
+/// `list` (GET) surfaces `OnceAfterReconnect`, while the mutations `create` (POST) and
+/// `delete` (DELETE) stay fail-closed at `Never`. This pins that a data-driven gateway
+/// reconstructing an `Operation` from `describe()` neither drops a read's replay nor
+/// grants a mutation an unearned one — the retry_mode value the routed `Operation`
+/// carries, from the SAME `#[retry_safe]` marker.
+#[test]
+fn describe_carries_per_op_retry_mode() {
+    let by_method: std::collections::HashMap<String, RetryMode> = player_rpc::describe()
+        .ops
+        .into_iter()
+        .map(|o| (o.method, o.retry_mode))
+        .collect();
+    assert_eq!(by_method["characters.list"], RetryMode::OnceAfterReconnect);
+    assert_eq!(by_method["characters.create"], RetryMode::Never);
+    assert_eq!(by_method["characters.delete"], RetryMode::Never);
+
+    // Byte-identical to the routed `Operation`s (one authority — no describe/route drift).
+    for b in player_rpc::route_bindings() {
+        assert_eq!(
+            by_method[&b.operation.method], b.operation.retry_mode,
+            "method {}", b.operation.method
+        );
+    }
 }
 
 /// A WIRE-ONLY trait (`Ownership::owner_of`: no `#[http]`) produces an EMPTY manifest —

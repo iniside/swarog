@@ -323,6 +323,7 @@ fn register_describe_serves_the_reserved_op() {
             path: "/match/report".into(),
             auth: opsapi::AuthReq::None,
             success: 202,
+            retry_mode: opsapi::RetryMode::OnceAfterReconnect,
             args: vec![opsapi::ArgMapping {
                 param: "report_id".into(),
                 wire_key: "ReportId".into(),
