@@ -428,6 +428,108 @@ http_port = 8083
 }
 
 // ---------------------------------------------------------------------------
+// Replicated-provider Told-peer guard — a Told peer carries exactly ONE address
+// in one env var, and manifest::peer_addr resolves it FIRST-match, so a Told
+// reference to a provider two services provide would silently see only the
+// first replica. That misconfiguration must fail HERE (a replicated provider is
+// consumed with resolve = "asks", whose PeerAddrs returns all instances).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_told_peer_to_a_replicated_provider_is_rejected() {
+    // Two services provide "characters"; a THIRD Told-consumes it over HTTP
+    // (Http has no boot-order rule, so this reaches the multiplicity branch
+    // after validate_peers passes on the first-match provider).
+    let text = r#"
+[[service]]
+name = "characters-a"
+pkg = "characters-svc"
+provider = "characters"
+http_port = 8080
+
+[[service]]
+name = "characters-b"
+pkg = "characters-svc"
+provider = "characters"
+http_port = 8081
+
+[[service]]
+name = "consumer-svc"
+pkg = "consumer-svc"
+provider = "consumer"
+http_port = 8082
+
+[[service.peer]]
+env_key = "CHARACTERS_HTTP_ADDR"
+provider = "characters"
+kind = "http"
+"#;
+    let err = validate(&parsed(text)).expect_err("a Told peer to a 2-instance provider must fail");
+    let msg = chain(&err);
+    assert!(msg.contains("consumer-svc"), "names the consumer: {msg}");
+    assert!(msg.contains("CHARACTERS_HTTP_ADDR"), "names the peer env_key: {msg}");
+    assert!(msg.contains("characters"), "names the replicated provider: {msg}");
+    assert!(msg.contains('2'), "names the instance count: {msg}");
+    assert!(
+        msg.contains("resolve=\"asks\""),
+        "points at the fix (use asks for a replicated provider): {msg}"
+    );
+}
+
+#[test]
+fn asks_only_replicas_stay_legal() {
+    // Same two "characters" replicas, but the consumer ASKS (its PeerAddrs
+    // returns all instances) rather than being Told — so nothing silently
+    // resolves to the first replica, and the guard must NOT fire.
+    let text = r#"
+[[service]]
+name = "characters-a"
+pkg = "characters-svc"
+provider = "characters"
+http_port = 8080
+
+[[service]]
+name = "characters-b"
+pkg = "characters-svc"
+provider = "characters"
+http_port = 8081
+
+[[service]]
+name = "gateway-svc"
+pkg = "gateway-svc"
+provider = "gateway"
+http_port = 8082
+resolve = "asks"
+"#;
+    let fleet = parsed(text);
+    validate(&fleet).expect("a replicated provider consumed only via Asks is legal");
+}
+
+#[test]
+fn two_none_providers_are_not_a_replicated_provider() {
+    // provider = None on both (the monolith shape). Two Nones must NOT be
+    // counted as one shared provider — that would be a false positive. Distinct
+    // names/ports keep the other passes clean so only the None-skip is exercised.
+    let text = r#"
+[[service]]
+name = "server-a"
+pkg = "server"
+http_port = 8080
+
+[[service]]
+name = "server-b"
+pkg = "server"
+http_port = 8081
+"#;
+    let fleet = parsed(text);
+    assert!(
+        fleet.services.iter().all(|svc| svc.provider.is_none()),
+        "both are provider = None (monolith shape)"
+    );
+    validate(&fleet).expect("two None-provider services must not trip the replicated-provider guard");
+}
+
+// ---------------------------------------------------------------------------
 // The two SHIPPED fixtures must parse AND validate — they are the exact files
 // `weles up` boots and verifyctl's `weles-managed-gateway` loads, so a typo or
 // a boot-order/port mistake in either must fail HERE, not at a live rollout.

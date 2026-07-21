@@ -256,7 +256,45 @@ pub fn validate(fleet: &Fleet) -> Result<()> {
     validate_unique_ports(fleet)?;
     validate_unique_names(fleet)?;
     validate_peers(fleet)?;
+    validate_no_told_peer_to_replicated_provider(fleet)?;
     validate_placement(fleet)?;
+    Ok(())
+}
+
+/// (vi) NO Told peer may name a provider that MORE THAN ONE service provides.
+///     A Told peer carries exactly one address in one env var by design
+///     ([`manifest::peer_addr`] — the composed-env path — resolves the provider
+///     with a FIRST-match `find`, so a second replica of that provider is
+///     invisible to the consumer). The Asks path ([`manifest::PeerAddrs`])
+///     correctly returns ALL instances, so a replicated provider MUST be
+///     consumed with `resolve = "asks"`. This fires ONLY on an actual Told
+///     reference to a multi-instance provider: an Asks-only or unreferenced
+///     replicated provider stays legal (nothing silently resolves it wrong).
+///     `provider = None` (the monolith, or any un-provided service) is NOT
+///     counted — two `None` services are not a replicated provider.
+fn validate_no_told_peer_to_replicated_provider(fleet: &Fleet) -> Result<()> {
+    // provider name -> how many services provide it. Keyed on Some(name) ONLY:
+    // `None` is "provides nothing", never a shared provider key.
+    let mut counts: HashMap<&str, usize> = HashMap::new();
+    for svc in &fleet.services {
+        if let Some(provider) = &svc.provider {
+            *counts.entry(provider.as_str()).or_insert(0) += 1;
+        }
+    }
+
+    for svc in &fleet.services {
+        for (env_key, provider, _kind) in svc.addrs.told() {
+            let count = counts.get(provider.as_str()).copied().unwrap_or(0);
+            if count > 1 {
+                bail!(
+                    "service {:?}: Told peer {env_key:?} names provider {provider:?}, which \
+                     {count} services provide — a Told peer resolves to only the first; use \
+                     resolve=\"asks\" for a replicated provider",
+                    svc.name
+                );
+            }
+        }
+    }
     Ok(())
 }
 
