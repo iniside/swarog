@@ -53,7 +53,7 @@ use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use axum::extract::{ConnectInfo, Path, Query, Request, State};
 use axum::http::{header, HeaderMap, HeaderName, HeaderValue, StatusCode};
@@ -167,63 +167,15 @@ const EXPECTED_FIELD_PREFIX: &str = "_expected_";
 /// Stable operator-facing response for an optimistic-concurrency miss.
 const STALE_FORM_ERROR: &str = "This form is stale. Reload the page and try again.";
 
-/// Show-once reveal flash: TTL + entry cap. A reveal is minted by a NON-idempotent,
-/// non-CAS create (e.g. an API-key add), so the success page must NOT be a POST render
-/// a browser refresh would re-submit. Instead the value is stashed here and the POST
-/// 303s to a GET carrying a one-shot token — a refresh re-issues the (idempotent) GET,
-/// finds the token consumed, and renders no reveal. Bounded + short-lived: this is a
-/// single-operator dev portal, so a few minutes and a small cap suffice.
+/// How long a show-once reveal stays redeemable. A reveal is minted by a
+/// NON-idempotent, non-CAS create (e.g. an API-key add), so the success page must NOT
+/// be a POST render a browser refresh would re-submit. Instead the value is stashed in
+/// the shared `admin.reveals` table and the POST 303s to a GET carrying a one-shot
+/// token — a refresh re-issues the (idempotent) GET, finds the token consumed, and
+/// renders no reveal. Short-lived: this dev-portal flash lives only long enough to
+/// survive the PRG hop, and expired rows are pruned opportunistically on each stash.
+/// Enforced as a `created_at` predicate in SQL, not an in-process clock.
 const REVEAL_TTL: Duration = Duration::from_secs(300);
-const REVEAL_MAX_ENTRIES: usize = 256;
-
-/// The in-memory one-shot reveal store backing PRG-with-flash. Owned by [`AdminState`]
-/// — the admin module handles the POST in BOTH topologies (monolith + admin-svc), so no
-/// cross-process store is needed. Every access sweeps expired entries; an insert past
-/// [`REVEAL_MAX_ENTRIES`] evicts the soonest-expiring entry to stay bounded.
-#[derive(Default)]
-struct RevealStore {
-    entries: HashMap<String, RevealEntry>,
-}
-
-struct RevealEntry {
-    reveal: Vec<adminapi::RevealItem>,
-    expires_at: Instant,
-}
-
-impl RevealStore {
-    /// Stashes `reveal` under `token` with a fresh TTL, after sweeping expired entries
-    /// and (if still at the cap) evicting the soonest-to-expire.
-    fn insert(&mut self, token: String, reveal: Vec<adminapi::RevealItem>) {
-        let now = Instant::now();
-        self.entries.retain(|_, e| e.expires_at > now);
-        if self.entries.len() >= REVEAL_MAX_ENTRIES {
-            if let Some(evict) = self
-                .entries
-                .iter()
-                .min_by_key(|(_, e)| e.expires_at)
-                .map(|(k, _)| k.clone())
-            {
-                self.entries.remove(&evict);
-            }
-        }
-        self.entries.insert(
-            token,
-            RevealEntry {
-                reveal,
-                expires_at: now + REVEAL_TTL,
-            },
-        );
-    }
-
-    /// CONSUMES the reveal for `token` (one-shot): removes and returns it iff present
-    /// and unexpired. A second call for the same token — or a refresh after consumption
-    /// — returns `None`.
-    fn take(&mut self, token: &str) -> Option<Vec<adminapi::RevealItem>> {
-        let now = Instant::now();
-        self.entries.retain(|_, e| e.expires_at > now);
-        self.entries.remove(token).map(|e| e.reveal)
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Schema — owned by this module (migrate touches ONLY schema `admin`).
@@ -268,6 +220,20 @@ CREATE TABLE IF NOT EXISTS admin.sessions (
 	expires_at timestamptz NOT NULL
 );
 CREATE INDEX IF NOT EXISTS admin_sessions_expires_idx ON admin.sessions(expires_at);"#;
+
+/// Show-once reveal redemption store (Step B1b). Shared Postgres, NOT process memory,
+/// so the PRG follow-up GET can LB-route to ANY replica: `stash_reveal` INSERTs and
+/// `take_reveal` is a `DELETE ... RETURNING` (cross-replica exactly-once
+/// single-redemption, [`REVEAL_TTL`] as a `created_at` predicate). `reveal` holds the
+/// JSON-serialized `Vec<adminapi::RevealItem>` — a non-re-derivable secret shown
+/// exactly once, never persisted for re-display (the DELETE consumes it on first read).
+const REVEAL_DDL: &str = r#"
+CREATE TABLE IF NOT EXISTS admin.reveals (
+	token      text PRIMARY KEY,
+	reveal     text NOT NULL,
+	created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS admin_reveals_created_idx ON admin.reveals(created_at);"#;
 
 // ---------------------------------------------------------------------------
 // Module
@@ -371,6 +337,7 @@ impl Module for Admin {
         sqlx::raw_sql(SCHEMA_DDL).execute(pool).await?;
         sqlx::raw_sql(USERS_DDL).execute(pool).await?;
         sqlx::raw_sql(AUTH_DDL).execute(pool).await?;
+        sqlx::raw_sql(REVEAL_DDL).execute(pool).await?;
         Ok(())
     }
 
@@ -417,7 +384,6 @@ impl Module for Admin {
             login_limiter,
             login_attempt_gc_requests: AtomicU64::new(0),
             verifier: Arc::new(ArgonVerifier),
-            reveals: Arc::new(Mutex::new(RevealStore::default())),
         });
         ctx.mount(router(state));
         Ok(())
@@ -491,9 +457,6 @@ struct AdminState {
     /// bucket reclamation belongs exclusively to `IpLimiter`'s background reaper.
     login_attempt_gc_requests: AtomicU64,
     verifier: Arc<dyn PasswordVerifier>,
-    /// One-shot show-once reveal flash (PRG-with-flash): a successful create stashes its
-    /// reveal here and 303s to a token GET, so a POST-refresh can never re-mint.
-    reveals: Arc<Mutex<RevealStore>>,
 }
 
 trait PasswordVerifier: Send + Sync {
@@ -642,26 +605,6 @@ impl AdminState {
             .await?;
         tx.commit().await?;
         Ok(())
-    }
-
-    /// Stashes a show-once `reveal` and returns its one-shot token (for the PRG
-    /// redirect target `?reveal=<token>`).
-    fn stash_reveal(&self, reveal: Vec<adminapi::RevealItem>) -> String {
-        let token = new_token();
-        self.reveals
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .insert(token.clone(), reveal);
-        token
-    }
-
-    /// CONSUMES the reveal for `token` (removes it): `Some` exactly once, `None` on a
-    /// refresh/replay — the property that makes the flash safe against a POST re-submit.
-    fn take_reveal(&self, token: &str) -> Option<Vec<adminapi::RevealItem>> {
-        self.reveals
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .take(token)
     }
 
     async fn cleanup_login_attempts(&self) {
@@ -853,6 +796,74 @@ fn new_token() -> String {
     let mut b = [0u8; 32];
     rand::rngs::OsRng.fill_bytes(&mut b);
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b)
+}
+
+/// Stashes a show-once `reveal` under a fresh one-shot token in the shared
+/// `admin.reveals` table (INSERT), first opportunistically pruning expired rows
+/// (piggyback GC — no background task). A prune failure never fails the stash. The
+/// returned token targets the PRG redirect (`?reveal=<token>`); ANY replica can later
+/// redeem it — the redemption authority now lives where the state lives, not in a
+/// per-process map the follow-up GET might miss.
+async fn stash_reveal(
+    pool: &PgPool,
+    reveal: Vec<adminapi::RevealItem>,
+) -> anyhow::Result<String> {
+    prune_expired_reveals(pool).await;
+    let token = new_token();
+    let payload = serde_json::to_string(&reveal)?;
+    sqlx::query("INSERT INTO admin.reveals (token, reveal) VALUES ($1, $2)")
+        .bind(&token)
+        .bind(&payload)
+        .execute(pool)
+        .await?;
+    Ok(token)
+}
+
+/// CONSUMES the reveal for `token` via `DELETE ... RETURNING`: whichever replica runs
+/// the DELETE first wins the single row, the rest (or a refresh/replay) get zero rows
+/// → `None` — cross-replica exactly-once single-redemption. An expired row (older than
+/// [`REVEAL_TTL`]) fails the `WHERE` so nothing is deleted and `None` is returned. A
+/// store or deserialize error fails closed to `None`: the show-once secret is simply
+/// not shown — never double-served (it is not re-derivable, so a double-serve is the
+/// one outcome that must never happen).
+async fn take_reveal(pool: &PgPool, token: &str) -> Option<Vec<adminapi::RevealItem>> {
+    let redeemed = sqlx::query_scalar::<_, String>(&format!(
+        "DELETE FROM admin.reveals \
+         WHERE token = $1 AND created_at > now() - interval '{} seconds' \
+         RETURNING reveal",
+        REVEAL_TTL.as_secs()
+    ))
+    .bind(token)
+    .fetch_optional(pool)
+    .await;
+    match redeemed {
+        Ok(Some(json)) => match serde_json::from_str(&json) {
+            Ok(reveal) => Some(reveal),
+            Err(err) => {
+                tracing::error!(%err, "admin reveal: stored payload deserialize failed");
+                None
+            }
+        },
+        Ok(None) => None,
+        Err(err) => {
+            tracing::error!(%err, "admin reveal: redemption query failed");
+            None
+        }
+    }
+}
+
+/// Opportunistic GC of expired reveals (piggybacked on `stash_reveal`, no background
+/// task). Best-effort: a prune failure is logged, never fatal to the stash.
+async fn prune_expired_reveals(pool: &PgPool) {
+    if let Err(err) = sqlx::query(&format!(
+        "DELETE FROM admin.reveals WHERE created_at <= now() - interval '{} seconds'",
+        REVEAL_TTL.as_secs()
+    ))
+    .execute(pool)
+    .await
+    {
+        tracing::warn!(%err, "admin reveal: expired-row prune failed");
+    }
 }
 
 /// A PHC hash verified against for UNKNOWN usernames, so an unknown user costs the
@@ -1153,7 +1164,7 @@ async fn item(
     // (one-shot) and rendered once. A refresh of this GET re-issues without a live token
     // (already consumed) and shows no reveal — and, being a GET, mints nothing.
     if let Some(token) = params.get("reveal") {
-        if let Some(reveal) = st.take_reveal(token) {
+        if let Some(reveal) = take_reveal(&st.pool, token).await {
             page.reveal = reveal;
         }
     }
@@ -1243,7 +1254,7 @@ async fn item_post(
         let values = collect_submit_params(&form.fields, &form.hidden, &pairs, &single);
         return match submit(values).await {
             Ok(outcome) => match emit_form_submit(&st, cur, &slug, &items, &authed, &form.fields).await {
-                Ok(()) => render_after_submit(&st, &slug, outcome),
+                Ok(()) => render_after_submit(&st, &slug, outcome).await,
                 Err(resp) => resp,
             },
             Err(adminapi::SubmitError::Conflict) => {
@@ -1275,7 +1286,7 @@ async fn item_post(
         // of which process executed the mutation — no audit asymmetry, no reliance on the
         // provider emitting anything.
         Ok(outcome) => match emit_form_submit(&st, cur, &slug, &items, &authed, &form.fields).await {
-            Ok(()) => render_after_submit(&st, &slug, outcome),
+            Ok(()) => render_after_submit(&st, &slug, outcome).await,
             Err(resp) => resp,
         },
         // The peer never registered `admin.adminSubmit` (UnknownMethod → NotFound): the
@@ -1378,12 +1389,25 @@ async fn emit_form_submit(
 /// double-mint — a reveal is minted by a NON-idempotent create, so an inline 200 would
 /// let a browser refresh re-submit the identical body and mint a second one; a GET
 /// refresh (token already consumed) mints nothing.
-fn render_after_submit(st: &AdminState, slug: &str, outcome: adminapi::SubmitOutcome) -> Response {
+async fn render_after_submit(
+    st: &AdminState,
+    slug: &str,
+    outcome: adminapi::SubmitOutcome,
+) -> Response {
     if outcome.reveal.is_empty() {
         return see_other(&format!("/admin/{slug}"));
     }
-    let token = st.stash_reveal(outcome.reveal);
-    see_other(&format!("/admin/{slug}?reveal={token}"))
+    match stash_reveal(&st.pool, outcome.reveal).await {
+        Ok(token) => see_other(&format!("/admin/{slug}?reveal={token}")),
+        // The mutation already committed; only the show-once display failed to persist.
+        // Fall back to the plain redirect so the operator sees the updated list — the
+        // secret is lost (not re-derivable) but never double-served, and a duplicate
+        // create is avoided (a 500 here would invite a retry against a done mutation).
+        Err(err) => {
+            tracing::error!(%err, "admin reveal: stash failed; redirecting without reveal");
+            see_other(&format!("/admin/{slug}"))
+        }
+    }
 }
 
 /// Renders the stable stale-form card with HTTP 409. A template failure remains the

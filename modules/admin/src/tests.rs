@@ -40,7 +40,6 @@ fn state_from(ctx: &Context) -> AdminState {
         login_limiter: httpmw::IpLimiter::new(5.0, 20),
         login_attempt_gc_requests: AtomicU64::new(0),
         verifier: Arc::new(ArgonVerifier),
-        reveals: Arc::new(Mutex::new(RevealStore::default())),
     }
 }
 
@@ -1101,7 +1100,6 @@ async fn wired_with_verifier(
         login_limiter: httpmw::IpLimiter::new(1_000.0, 1_000),
         login_attempt_gc_requests: AtomicU64::new(0),
         verifier,
-        reveals: Arc::new(Mutex::new(RevealStore::default())),
     });
     (ctx, st)
 }
@@ -2206,7 +2204,6 @@ async fn login_ip_limiter_returns_exact_retry_after() {
         login_limiter: httpmw::IpLimiter::new(0.0, 1),
         login_attempt_gc_requests: AtomicU64::new(0),
         verifier: Arc::new(ArgonVerifier),
-        reveals: Arc::new(Mutex::new(RevealStore::default())),
     });
     let peer = "203.0.113.82:9999";
     assert_eq!(post_login(&st, peer, "ghost", "wrong").await.status(), StatusCode::UNAUTHORIZED);
@@ -2417,4 +2414,91 @@ async fn argon_permit_survives_login_cancellation_until_hash_completes() {
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     cleanup_ip(&pool, "203.0.113.97").await;
+}
+
+// ---- Show-once reveal redemption (B1b — replica-safe shared store) --------------
+// These pin the branch the in-memory `Mutex<HashMap>` got wrong under `replicas: 2`:
+// the reveal is STASHED on the POST replica and REDEEMED on whichever replica serves
+// the follow-up GET. Tokens are random per stash, so the assertions are token-scoped
+// and safe under parallel test execution.
+
+/// A show-once reveal payload: the label + non-re-derivable secret shown exactly once.
+fn sample_reveal() -> Vec<adminapi::RevealItem> {
+    vec![adminapi::RevealItem {
+        label: "API key".into(),
+        value: "ak_never_re_derivable".into(),
+    }]
+}
+
+/// Cross-replica exactly-once: a reveal stashed via one pool is redeemed via a SECOND,
+/// independent pool (the "other replica" the LB routed the GET to) — the POST→GET the
+/// per-process map dropped. The second redemption returns `None`: the non-re-derivable
+/// secret is served EXACTLY once, never twice.
+#[tokio::test]
+async fn reveal_redeems_once_across_replicas() {
+    let Some(pool_a) = test_pool().await else {
+        return;
+    };
+    ensure_schema(&pool_a).await;
+    let dsn = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string());
+    let pool_b = PgPool::connect(&dsn).await.unwrap(); // a distinct connection = the other replica
+
+    let reveal = sample_reveal();
+    let token = stash_reveal(&pool_a, reveal.clone()).await.unwrap();
+
+    // The follow-up GET lands on replica B — the in-memory store would have missed it.
+    assert_eq!(take_reveal(&pool_b, &token).await, Some(reveal));
+    // Single-redemption: a second take (either replica) serves nothing.
+    assert_eq!(take_reveal(&pool_b, &token).await, None);
+    assert_eq!(take_reveal(&pool_a, &token).await, None);
+}
+
+/// An expired row (backdated past [`REVEAL_TTL`]) is NOT redeemable — the TTL is the
+/// `created_at` predicate in the DELETE's `WHERE`, so the row is neither returned nor
+/// consumed.
+#[tokio::test]
+async fn reveal_expired_row_is_not_redeemable() {
+    let Some(pool) = test_pool().await else {
+        return;
+    };
+    ensure_schema(&pool).await;
+
+    let token = stash_reveal(&pool, sample_reveal()).await.unwrap();
+    sqlx::query(
+        "UPDATE admin.reveals SET created_at = now() - interval '400 seconds' WHERE token = $1",
+    )
+    .bind(&token)
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert_eq!(take_reveal(&pool, &token).await, None);
+}
+
+/// Piggyback prune: a `stash_reveal` sweeps rows already past the TTL first, so the
+/// live set stays bounded without a background task.
+#[tokio::test]
+async fn reveal_stash_prunes_expired_rows() {
+    let Some(pool) = test_pool().await else {
+        return;
+    };
+    ensure_schema(&pool).await;
+
+    let stale = stash_reveal(&pool, sample_reveal()).await.unwrap();
+    sqlx::query(
+        "UPDATE admin.reveals SET created_at = now() - interval '400 seconds' WHERE token = $1",
+    )
+    .bind(&stale)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // A later stash prunes anything past the TTL before inserting its own token.
+    let _fresh = stash_reveal(&pool, sample_reveal()).await.unwrap();
+
+    let remaining: i64 = sqlx::query_scalar("SELECT count(*) FROM admin.reveals WHERE token = $1")
+        .bind(&stale)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(remaining, 0, "expired row should have been pruned by the stash");
 }

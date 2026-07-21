@@ -30,6 +30,9 @@ axum-extra = { workspace = true }
 minijinja = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
+# Serializes the show-once reveal payload (`Vec<adminapi::RevealItem>`) to a JSON
+# string for the shared `admin.reveals` text column (replica-safe redemption store).
+serde_json = { workspace = true }
 sqlx = { workspace = true }
 tracing = { workspace = true }
 anyhow = { workspace = true }
