@@ -560,16 +560,34 @@ fn main() {
         }
     }
 
-    // --- 17: gateway stub coverage — every #[http( domain is stubbed in gateway-svc ---
-    // A domain that exposes player-facing HTTP ops must be reachable from the front door:
-    // in the split, gateway-svc dispatches those ops Remote through a `remote::Stub` keyed
-    // by the provider name. A domain with `#[http(` in its `api/<name>/api/src/lib.rs` but
-    // no `Stub::new("<name>", …)` in cmd/gateway-svc would 404 through the gateway in the
-    // split while working in the monolith — the classic split-only regression. Extra stubs
-    // (apikeys is stubbed for the API-key capability, not an HTTP domain) are fine; only a
-    // MISSING one is a gap. Textual complement to
-    // `checkmodules::tests::gateway_stubs_every_http_domain`, which builds the real module
-    // list and checks `Module::name()`.
+    // --- 17: gateway describe-fetch coverage — every #[http( domain is stubbed in gateway-svc ---
+    // A domain that exposes player-facing HTTP ops must be reachable from the front door.
+    // Since D2 (routing-as-data) the gateway builds its op route table NOT from a
+    // compile-time `<name>rpc` route import but from each peer's runtime `__describe`
+    // manifest. The `remote::Stub::new("<name>", …)` in cmd/gateway-svc no longer
+    // contributes the domain's ROUTES — it contributes that provider's PEER_SLOT address
+    // set, which is exactly what the describe fetch iterates: one PEER_SLOT entry per
+    // provider = one `__describe` call = that domain's routes lit up. A `#[http(` domain in
+    // `api/<name>/api/src/lib.rs` with no `Stub::new("<name>", …)` therefore contributes NO
+    // PEER_SLOT entry, the describe fetch never dials it, and it would 404 through the
+    // gateway in the split while working in the monolith — the classic split-only
+    // regression, unchanged in cost by the mechanism swap. Extra stubs (apikeys is stubbed
+    // for the API-key capability, not an HTTP domain) are fine; only a MISSING one is a gap.
+    //
+    // Coverage story (why this + one other guard is sufficient, no third needed): "no
+    // #[http] domain silently unreachable in the data-driven gateway" decomposes into two
+    // necessary conditions, each owned by exactly one static guard —
+    //   (1) the gateway FETCHES the domain's describe  ← THIS rule (a PEER_SLOT entry per
+    //       #[http( domain, so the describe pass reaches it), and its semantic complement
+    //       `checkmodules::tests::gateway_stubs_every_http_domain` (real module list);
+    //   (2) the fetched manifest is COMPLETE  ← routecheck invariant 5 (DESCRIBE-COMPLETE,
+    //       `describe_completeness_findings`): every #[http] op a svc serves on its edge is
+    //       in that svc's `__describe`, fail-closed if a module forgot DESCRIBE_SLOT.
+    // Fetch-coverage (1) × manifest-completeness (2) = every #[http] op of every #[http]
+    // domain reaches the route table. routecheck's SERVE-PARITY (invariant 3) + the
+    // DESCRIBE-EXTRA reverse diff are the further backstops that the served edge actually
+    // exists. Textual complement to `checkmodules::tests::gateway_stubs_every_http_domain`,
+    // which builds the real module list and checks `Module::name()`.
     let gateway_lib = std::fs::read_to_string(
         root.join("cmd").join("gateway-svc").join("src").join("lib.rs"),
     )
@@ -745,9 +763,11 @@ fn gateway_stubs_domain(gateway_lib: &str, name: &str) -> bool {
 }
 
 /// Rule 17: a violation per `#[http(`-bearing `http_domains` entry that has no
-/// `remote::Stub::new("<name>", …)` in `gateway_lib` (gateway-svc's lib.rs text). Extra
-/// stubs are fine — only a MISSING one is reported. Factored out so it is unit-testable
-/// without a filesystem walk.
+/// `remote::Stub::new("<name>", …)` in `gateway_lib` (gateway-svc's lib.rs text). The stub
+/// contributes that provider's PEER_SLOT address set — the entry the D2 describe fetch
+/// iterates — NOT the domain's routes (those come from `__describe`). Extra stubs are fine
+/// — only a MISSING one (no PEER_SLOT entry ⇒ no describe fetch ⇒ unreachable) is reported.
+/// Factored out so it is unit-testable without a filesystem walk.
 fn gateway_stub_coverage_violations(http_domains: &[String], gateway_lib: &str) -> Vec<String> {
     http_domains
         .iter()
@@ -756,8 +776,9 @@ fn gateway_stub_coverage_violations(http_domains: &[String], gateway_lib: &str) 
             format!(
                 "domain `{d}` exposes HTTP ops (`{HTTP_OP_MARKER}` in api/{d}/api/src/lib.rs) \
                  but cmd/gateway-svc/src/lib.rs has no `Stub::new(\"{d}\"` — add \
-                 remote::Stub::new(\"{d}\", ...) to cmd/gateway-svc/src/lib.rs so the gateway \
-                 dispatches its player-facing ops Remote in the split"
+                 remote::Stub::new(\"{d}\", ...) to cmd/gateway-svc/src/lib.rs so its PEER_SLOT \
+                 entry is present and the gateway's `__describe` fetch reaches it, lighting up \
+                 its player-facing routes Remote in the split"
             )
         })
         .collect()

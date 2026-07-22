@@ -105,17 +105,22 @@ fn each_svc_constructs_its_own_module() {
 }
 
 /// Step 6 (admin-hardening): every domain exposing player-facing HTTP ops (a `#[http(`
-/// attribute in `api/<name>/api/src/lib.rs`) MUST be reachable from the front door -- in
-/// the split, gateway-svc dispatches those ops Remote through a `remote::Stub` keyed by
-/// the provider name. A domain with `#[http(` but no stub in gateway-svc would 404
-/// through the gateway in the split while working in the monolith (the classic split-only
-/// regression). This is the SEMANTIC complement to archcheck's textual rule-17 tripwire:
-/// that one greps gateway-svc's lib.rs for `Stub::new("<name>"`; this one builds
-/// gateway-svc's REAL module list and asserts `Module::name()` (== the provider name a
-/// `remote::Stub` carries) covers every `#[http(`-bearing domain dir. The scan is the same
-/// lower-tech filesystem walk as `monolith_hosts_every_modules_dir`. Checked as a SUBSET
-/// (http domains ⊆ gateway names): extra stubs (apikeys, stubbed for the API-key
-/// capability) are fine -- only a gap fails.
+/// attribute in `api/<name>/api/src/lib.rs`) MUST be reachable from the front door. Since
+/// D2 (routing-as-data) gateway-svc builds its op route table from each peer's runtime
+/// `__describe` manifest, not a compile-time `<name>rpc` route import: the `remote::Stub`
+/// per provider contributes that provider's PEER_SLOT address set — the entry the describe
+/// fetch iterates — NOT the domain's routes. A domain with `#[http(` but no stub in
+/// gateway-svc therefore contributes no PEER_SLOT entry, the describe pass never dials it,
+/// and it would 404 through the gateway in the split while working in the monolith (the
+/// classic split-only regression, unchanged in cost by the mechanism swap). This is the
+/// SEMANTIC complement (the "describe-FETCH-coverage" half of the invariant; the
+/// "manifest-completeness" half is routecheck invariant 5, DESCRIBE-COMPLETE) to
+/// archcheck's textual rule-17 tripwire: that one greps gateway-svc's lib.rs for
+/// `Stub::new("<name>"`; this one builds gateway-svc's REAL module list and asserts
+/// `Module::name()` (== the provider name a `remote::Stub` carries) covers every
+/// `#[http(`-bearing domain dir. The scan is the same lower-tech filesystem walk as
+/// `monolith_hosts_every_modules_dir`. Checked as a SUBSET (http domains ⊆ gateway names):
+/// extra stubs (apikeys, stubbed for the API-key capability) are fine -- only a gap fails.
 #[test]
 fn gateway_stubs_every_http_domain() {
     let gateway_names: BTreeSet<String> = gateway_svc::modules(&checker_wiring(), None, None)
@@ -147,7 +152,8 @@ fn gateway_stubs_every_http_domain() {
         missing.is_empty(),
         "cmd/gateway-svc's modules() is missing a remote::Stub for {missing:?} from the \
          #[http(-bearing domains (gateway hosts {gateway_names:?}) -- add \
-         remote::Stub::new(\"<domain>\", ...) to cmd/gateway-svc/src/lib.rs so the gateway \
-         dispatches its player-facing ops Remote in the split"
+         remote::Stub::new(\"<domain>\", ...) to cmd/gateway-svc/src/lib.rs so its PEER_SLOT \
+         entry is present and the gateway's `__describe` fetch reaches it, lighting up its \
+         player-facing routes Remote in the split"
     );
 }
