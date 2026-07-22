@@ -1900,6 +1900,81 @@ async fn unchanged_describe_pass_preserves_the_installed_table() {
     );
 }
 
+/// C2 no-evict at the refresh boundary: when ONE provider's describe changes, an UNCHANGED
+/// provider must keep its EXACT warm dispatch pool (same `Arc` → same instances + round-robin
+/// cursor) across the swap. Without the provider-granular carry, `install_table` would drop
+/// every provider's pool whenever any peer changed — the eviction the primary path (a peer
+/// appearing at t+5s) would trigger against every already-warm peer.
+#[tokio::test]
+async fn unchanged_provider_keeps_its_warm_pool_across_another_providers_change() {
+    use std::sync::atomic::AtomicBool;
+
+    fn manifest_op(provider: &str) -> opsapi::OpManifest {
+        opsapi::OpManifest {
+            method: format!("{provider}.op"),
+            verb: "POST".into(),
+            path: format!("/{provider}"),
+            auth: AuthReq::None,
+            success: 200,
+            retry_mode: RetryMode::Never,
+            args: vec![],
+        }
+    }
+
+    let slots = Arc::new(Slots::new());
+    let front = Arc::new(
+        FrontDoor::new(slots, Arc::new(DevSessionVerifier::new()), demo_keys(), Vec::new())
+            .into_dynamic_routing(),
+    );
+
+    // charX is always up; charY is DOWN on pass 1, UP (a change) on pass 2.
+    let y_up = Arc::new(AtomicBool::new(false));
+    let fetch: DescribeFetcher = {
+        let y_up = y_up.clone();
+        Arc::new(move |provider: String, _addrs: Vec<String>| {
+            let y_up = y_up.clone();
+            Box::pin(async move {
+                match provider.as_str() {
+                    "charX" => Ok(opsapi::DescribeManifest { ops: vec![manifest_op("charX")] }),
+                    "charY" if y_up.load(Ordering::SeqCst) => {
+                        Ok(opsapi::DescribeManifest { ops: vec![manifest_op("charY")] })
+                    }
+                    _ => Err(opsapi::Error::unavailable("peer down")),
+                }
+            })
+        })
+    };
+    let peers = vec![
+        opsapi::PeerAddr { provider: "charX".into(), addrs: vec!["127.0.0.1:1".into()] },
+        opsapi::PeerAddr { provider: "charY".into(), addrs: vec!["127.0.0.1:2".into()] },
+    ];
+    let mut router = DescribeRouter::new(front.clone(), peers, fetch);
+
+    // Pass 1: only charX is routed. Warm charX's dispatch pool with a distinguishable caller
+    // (as a first dispatch to charX would have cached).
+    router.refresh_once().await.expect("first pass");
+    let installed = front.table();
+    let x_pool: Arc<dyn Caller> = Arc::new(RecordingCaller::default());
+    installed.remotes.lock().unwrap().insert("charX".into(), x_pool.clone());
+    assert!(installed.find_by_method("charY.op").is_none(), "charY down → no route yet");
+
+    // Pass 2: charY comes up (a change) → the table rebuilds and swaps.
+    y_up.store(true, Ordering::SeqCst);
+    router.refresh_once().await.expect("second pass rebuilds on charY's change");
+    let after = front.table();
+
+    // charX was UNCHANGED → its EXACT warm pool survives the swap (same Arc, cursor intact).
+    let x_after = after.cached_remote("charX").expect("charX's pool must be carried across");
+    assert!(
+        Arc::ptr_eq(&x_pool, &x_after),
+        "an unchanged provider keeps its exact warm pool/cursor across another provider's change"
+    );
+    // The change actually took effect: charY is now routed.
+    assert!(after.find_by_method("charY.op").is_some(), "charY's route is installed by the re-fetch");
+    // charY (newly-changed) has no carried pool — it dials lazily on its next request.
+    assert!(after.cached_remote("charY").is_none(), "a changed provider re-dials lazily");
+}
+
 /// A `TableCell::Slots` front door ignores `install_table` — the monolith/standalone table is
 /// immutable once built, so a stray dynamic swap cannot corrupt it.
 #[test]

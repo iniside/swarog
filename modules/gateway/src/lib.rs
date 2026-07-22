@@ -535,7 +535,9 @@ impl FrontDoor {
             return front_envelope(Status::Invalid, "malformed request payload");
         }
 
-        let table = self.table().clone();
+        // One table snapshot for the whole player call (match + dispatch); `table()` returns
+        // an owned `Arc`, so no `.clone()` is needed.
+        let table = self.table();
 
         // (2) Method match — miss means not player-reachable (the allow-list gate).
         let Some(route) = table.find_by_method(&method) else {
@@ -1129,7 +1131,15 @@ impl DescribeRouter {
     /// (logged, that peer keeps its prior routes / stays absent if never seen). A BUILD failure
     /// (a method collision across describe-contributed peers) is returned as `Err` so the
     /// synchronous first pass can fail startup loudly; the periodic loop logs it and keeps the
-    /// last good table (no swap).
+    /// last good table (no swap). Unchanged providers keep their warm dispatch pool + cursor
+    /// across the swap (see below) — a change to ONE peer never evicts the others (C2 no-evict
+    /// at the refresh boundary).
+    ///
+    /// KNOWN GAP (not bounded here): the fetch loop is SEQUENTIAL per peer, and the first pass
+    /// is awaited in `Gateway::start`, so a peer that accepts the QUIC connection then STALLS
+    /// its `__describe` response can delay startup up to `EDGE_STREAM_GRACE` (30s) per such
+    /// peer. Down peers fast-fail (connection refused), so this is low-probability on a dev
+    /// fleet; a per-pass/per-peer aggregate boot bound would harden it and is deferred.
     async fn refresh_once(&mut self) -> anyhow::Result<()> {
         for p in &self.peers {
             match (self.fetch)(p.provider.clone(), p.addrs.clone()).await {
@@ -1153,6 +1163,27 @@ impl DescribeRouter {
             return Ok(());
         }
         let table = build_describe_table(&self.last_known)?;
+        // C2 no-evict at the refresh boundary: `install_table` swaps the WHOLE table `Arc`, so a
+        // naive rebuild would drop EVERY provider's warm `remote::Pool` (and reset its round-
+        // robin cursor to 0) whenever ANY one provider's describe changes — the exact eviction
+        // the pool caching forbids, triggered by the feature's own primary path (peer B appears
+        // → its change must not cool peer A's pool). So harvest the currently-installed table's
+        // per-provider caller for every provider whose (addrs, manifest) is UNCHANGED and seed
+        // the new table's `remotes` with it — that Arc IS the live `Pool`, so its instances +
+        // cursor survive. Only a provider whose describe/addrs actually changed (re)dials, and
+        // then lazily on its next request. `flights` stay empty (transient dial coordination,
+        // self-GC); a provider never seen (`cached_remote` `None`) simply builds lazily as before.
+        if let Some(prev) = &self.last_built {
+            let installed = self.front.table();
+            let mut remotes = table.remotes.lock().unwrap();
+            for (provider, entry) in &self.last_known {
+                if prev.get(provider) == Some(entry) {
+                    if let Some(caller) = installed.cached_remote(provider) {
+                        remotes.insert(provider.clone(), caller);
+                    }
+                }
+            }
+        }
         self.front.install_table(Arc::new(table));
         self.last_built = Some(self.last_known.clone());
         Ok(())
@@ -1217,7 +1248,11 @@ async fn handle(front: Arc<FrontDoor>, peer: Option<SocketAddr>, req: Request) -
     let method = parts.method.as_str();
     let path = parts.uri.path();
 
-    let table = front.table().clone();
+    // Capture ONE table snapshot for the whole request — match AND dispatch run against the
+    // same `Arc`, so a describe re-fetch swapping the table mid-request can never dispatch an
+    // op matched in t1 against t2's pools/peers (no TOCTOU). `table()` returns an owned `Arc`,
+    // so no `.clone()` is needed.
+    let table = front.table();
 
     // (1) Match. A non-operation route is offered to the HTTP passthrough (Go's
     // reverse proxy: `/admin`, `/accounts/epic` are HTML/browser flows served by
@@ -1240,7 +1275,8 @@ async fn handle(front: Arc<FrontDoor>, peer: Option<SocketAddr>, req: Request) -
     // or `/characters/{id}`), which `metrics::record` reads in place of the absent
     // `MatchedPath` (the front door dispatches from an axum fallback).
     let pattern = op.path.clone();
-    let mut resp = dispatch_matched_op(&front, op, binding, path_args, parts.headers, body).await;
+    let mut resp =
+        dispatch_matched_op(&front, &table, op, binding, path_args, parts.headers, body).await;
     stamp_route_pattern(&mut resp, Some(pattern));
     resp
 }
@@ -1250,6 +1286,7 @@ async fn handle(front: Arc<FrontDoor>, peer: Option<SocketAddr>, req: Request) -
 /// EVERY outcome (including an early key/auth/decode failure) at one place.
 async fn dispatch_matched_op(
     front: &FrontDoor,
+    table: &RouteTable,
     op: Operation,
     binding: OpBinding,
     path_args: PathArgs,
@@ -1293,7 +1330,7 @@ async fn dispatch_matched_op(
     // (5) Dispatch on the topology-correct backend (Local in-process, else the Remote
     // peer over its self-healing round-robin pool — the pool recovers a dead instance
     // internally, so it is never evicted on a call error).
-    let wire_resp = match front.table().dispatch(&op, identity, wire_req).await {
+    let wire_resp = match table.dispatch(&op, identity, wire_req).await {
         Ok(r) => r,
         Err(e) => return op_error_response(&e),
     };
