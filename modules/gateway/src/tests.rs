@@ -1706,11 +1706,14 @@ fn fetched(
         .collect()
 }
 
+/// One recorded `RecordingCaller::call` — (method, identity, payload, retry_mode).
+type SeenCall = (String, Option<String>, Vec<u8>, RetryMode);
+
 /// A `Caller` that records everything it was handed (incl. `retry_mode`) so a test can
 /// prove a describe-built route reaches the transport seam with the right shape.
 #[derive(Default)]
 struct RecordingCaller {
-    seen: std::sync::Mutex<Option<(String, Option<String>, Vec<u8>, RetryMode)>>,
+    seen: std::sync::Mutex<Option<SeenCall>>,
 }
 
 #[async_trait::async_trait]
