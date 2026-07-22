@@ -1176,6 +1176,89 @@ async fn assertions(ctx: &Ctx, pool: &PgPool, p: &mut Proof) -> Result<()> {
         format!("code={mt6} rows={rows:?}"),
     );
 
+    // --- [D4] Routing-as-data live proof (Phase D payoff) --------------------------------
+    // gateway-svc boots in DESCRIBE-ROUTING mode: `cmd/gateway-svc` calls
+    // `Gateway::new().with_describe_routing()` and the compile-time `<name>rpc` route imports
+    // are REMOVED (the pure-HTTP providers are `Stub::describe_peer`, contributing ONLY their
+    // PEER_SLOT address set — zero route factories). So the ONLY source of an op route in this
+    // process is each peer's runtime `__describe` manifest, fetched over the mTLS edge in
+    // `Stub::start` and rebuilt on a 5s loop. Every HTTP-through-gateway assertion above (K1-K5,
+    // MT1-MT6, the leaderboard/characters/inventory/accounts reads) therefore ALREADY routes
+    // PURELY via describe by construction; these three name it explicitly and pin the two
+    // recorded contract properties.
+
+    // [D4-ROUTE] routing-as-data: an HTTP op reaches the RIGHT svc THROUGH gateway-svc under
+    // describe-routing. `POST /match/report` -> match-svc, whose durable side effect is a
+    // `match.matches` DB row written by the process that actually handled the request. The route
+    // (POST /match/report, 202, AuthNone, the `Winner`/`Loser`/`ReportId` body-name renames) was
+    // reconstructed from match-svc's `__describe` manifest — NO compile-time `matchrpc` route
+    // import exists in gateway-svc — so this row landing IS the describe-driven route reaching
+    // the right peer, not a hand-wired import.
+    let d4_rid = format!("d4-route-{suffix}");
+    let d4_code = report(ctx, &g, &d4_rid, &winner, &loser).await;
+    let d4_row: Option<i64> = sqlx::query_scalar("SELECT count(*) FROM match.matches WHERE report_id=$1")
+        .bind(&d4_rid)
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten();
+    p.check(
+        "[D4-ROUTE] describe-routed match.report reaches match-svc (DB row)",
+        d4_code == 202 && d4_row == Some(1),
+        format!("code={d4_code} rows={d4_row:?}"),
+    );
+
+    // [D4-DESCRIBE-404] purely-from-describe (no forward-everything fallback): a well-formed HTTP
+    // request to an op path present in NO peer's `__describe` must 404 at the front door — the
+    // gateway serves ONLY described routes, it is a describe-driven ROUTER, not a reverse proxy
+    // that blindly forwards. This is the LIVE complement to the unit-level fail-closed branch
+    // (`modules/gateway/src/tests.rs::peer_down_at_boot_is_routed_after_a_refetch`: a manifest
+    // OMITTING an op contributes NO route) and the collision-bail. The stronger decoy form (a
+    // REACHABLE peer serving a PARTIAL `__describe`) is DEFERRED: neither live harness makes it
+    // cheap — `weles-managed-gateway`'s fake peer is a bare UDP datagram sink (no real edge
+    // server, so it cannot answer a hand-crafted `__describe`), and a splitproof decoy would need
+    // a net-new mTLS edge-server binary serving a partial DescribeManifest. The
+    // omitted-op->not-routed branch is thus pinned by construction (imports removed) + that unit
+    // test + this live no-fallback 404.
+    let d4_404 = send_status_retrying_429(
+        ctx.http
+            .post(format!("{g}/match/undescribed-op-{suffix}"))
+            .header("X-Api-Key", "dev-key-server")
+            .json(&serde_json::json!({ "x": 1 })),
+    )
+    .await;
+    p.check(
+        "[D4-DESCRIBE-404] undescribed op path -> 404 (describe router, no proxy fallback)",
+        d4_404 == 404,
+        format!("code={d4_404}"),
+    );
+
+    // [D4-ILLTYPED] caveat (iv) pinned live (core/opsapi/src/databind.rs:40-52): a
+    // well-formed-but-ILL-TYPED body (`Winner` a JSON number where a String is expected) routes
+    // through the describe gateway, which holds NO field types (the `__describe` manifest carries
+    // each arg's SOURCE + wire key, never its Rust type), so it can only check the body is a JSON
+    // object. The type mismatch is therefore caught SVC-SIDE at `from_slice::<Request>` as a 5xx,
+    // NOT at the gateway as the 400 the typed monolith/local path gives for the same bytes.
+    // Assert the KEY property the caveat records: the front-door status is the svc-side class
+    // (5xx), NOT the gateway 400 — so the contract's topology-dependence is pinned rather than
+    // silently drifting.
+    let d4_ill = send_status_retrying_429(
+        ctx.http
+            .post(format!("{g}/match/report"))
+            .header("X-Api-Key", "dev-key-server")
+            .json(&serde_json::json!({
+                "ReportId": format!("d4-ill-{suffix}"),
+                "Winner": 123,
+                "Loser": "bob"
+            })),
+    )
+    .await;
+    p.check(
+        "[D4-ILLTYPED] ill-typed body -> svc-side 5xx, NOT gateway 400 (caveat iv)",
+        d4_ill >= 500 && d4_ill != 400,
+        format!("code={d4_ill} (describe gateway: svc-side 5xx; typed monolith would be 400)"),
+    );
+
     // --- Player QUIC front (P1-P6) over the edge lib (no playercli subprocess). ---
     if let Some(tok) = token.clone() {
         // [P1] create over QUIC -> Ok; capture the fresh character id for P2/P3.
@@ -2454,6 +2537,27 @@ async fn report(ctx: &Ctx, g: &str, rid: &str, winner: &str, loser: &str) -> u16
             Ok(r) => r.status().as_u16(),
             Err(_) => 0,
         };
+        if code == 429 {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            continue;
+        }
+        return code;
+    }
+    429
+}
+
+/// Send one built request, retrying only the gateway's always-on rate-limit 429 (20rps/burst
+/// 40) so a single-shot status assertion (D4-404/D4-ILLTYPED) reads the ROUTING outcome, not an
+/// incidental rate-limit collision. `RequestBuilder` is not `Clone`-cheap across a body, so this
+/// takes the builder once and re-clones it (the bodies here are tiny JSON, cheaply `try_clone`d);
+/// a non-clonable body would just send once. Returns `0` on a transport error.
+async fn send_status_retrying_429(req: reqwest::RequestBuilder) -> u16 {
+    for _ in 0..15 {
+        let attempt = match req.try_clone() {
+            Some(cloned) => cloned,
+            None => return req.send().await.map(|r| r.status().as_u16()).unwrap_or(0),
+        };
+        let code = attempt.send().await.map(|r| r.status().as_u16()).unwrap_or(0);
         if code == 429 {
             tokio::time::sleep(Duration::from_millis(300)).await;
             continue;
