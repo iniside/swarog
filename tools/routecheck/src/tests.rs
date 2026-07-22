@@ -68,13 +68,15 @@ fn describe_guard_fails_a_http_module_that_forgot_to_contribute() {
 
 /// Builds a `ProcessRoutes` fixture. `op_methods` doubles as `bind_methods`/
 /// `local_methods` so the integrity invariants stay quiet; the DESCRIBE-COMPLETE
-/// invariant reads `edge_methods` and `describe_methods` independently.
+/// invariant reads `edge_methods` and `describe_methods` independently; `describe_ops` (the
+/// full `Operation`s a domain svc's `__describe` carries) is the SPLIT side of FRONT-PARITY.
 fn proc_routes(
     process: &'static str,
     ops: Vec<Operation>,
     op_methods: &[&str],
     edge_methods: &[&str],
     describe_methods: &[&str],
+    describe_ops: Vec<Operation>,
 ) -> ProcessRoutes {
     ProcessRoutes {
         process,
@@ -84,6 +86,7 @@ fn proc_routes(
         local_methods: methods(op_methods),
         edge_methods: methods(edge_methods),
         describe_methods: methods(describe_methods),
+        describe_ops,
     }
 }
 
@@ -106,11 +109,13 @@ fn describe_guard_fires_through_the_real_served_http_computation() {
         &["x.foo"],
         &[],
         &["x.foo"],
+        vec![],
     );
     // Split: gateway-svc (required present by `check`) + a domain svc that SERVES `x.foo`
-    // on its edge but FORGOT to contribute it to DESCRIBE_SLOT.
-    let gateway = proc_routes("gateway-svc", vec![], &[], &[], &[]);
-    let forgetful = proc_routes("x-svc", vec![], &[], &["x.foo"], &[]);
+    // on its edge but FORGOT to contribute it to DESCRIBE_SLOT (so `describe_ops` is empty
+    // too — the gateway can't front it either).
+    let gateway = proc_routes("gateway-svc", vec![], &[], &[], &[], vec![]);
+    let forgetful = proc_routes("x-svc", vec![], &[], &["x.foo"], &[], vec![]);
 
     let findings = check("fixture", &[server], &[gateway, forgetful]);
     let forgot: Vec<&String> =
@@ -149,6 +154,73 @@ fn describe_guard_fails_a_stale_describe_entry() {
         "{}",
         findings[0]
     );
+}
+
+/// FRONT-PARITY still BITES on a monolith-only op under the D2 describe-union source: the
+/// monolith fronts `x.foo` but no split domain svc describes it (a conditional/forgotten
+/// contribution), so the describe-union lacks it → a FRONT-PARITY finding in the
+/// monolith-only direction. This is the never-monolith-only guard, proven on the D2 mechanism.
+#[test]
+fn front_parity_bites_a_monolith_op_absent_from_the_describe_union() {
+    let server = proc_routes(
+        "server",
+        vec![fixture_op("x.foo", "GET", "/x/foo")],
+        &["x.foo"],
+        &[],
+        &["x.foo"],
+        vec![],
+    );
+    let gateway = proc_routes("gateway-svc", vec![], &[], &[], &[], vec![]);
+    // The domain svc describes NOTHING → the describe-union lacks x.foo.
+    let x_svc = proc_routes("x-svc", vec![], &[], &[], &[], vec![]);
+
+    let findings = check("fixture", &[server], &[gateway, x_svc]);
+    let fp: Vec<&String> = findings.iter().filter(|f| f.contains("FRONT-PARITY")).collect();
+    assert_eq!(fp.len(), 1, "one FRONT-PARITY finding (monolith-only): {findings:?}");
+    assert!(
+        fp[0].contains("x.foo") && fp[0].contains("ABSENT from the split describe-union"),
+        "{}",
+        fp[0]
+    );
+}
+
+/// FRONT-PARITY still BITES the OTHER direction on the D2 source: a split domain svc
+/// describes `y.bar` that the monolith front does NOT front → a FRONT-PARITY finding in the
+/// split-only direction (a route the split would expose but the monolith wouldn't — a real
+/// topology drift). `x.foo` is fronted by both (matching op_key) and must NOT fire.
+#[test]
+fn front_parity_bites_a_describe_union_op_absent_from_the_monolith() {
+    let server = proc_routes(
+        "server",
+        vec![fixture_op("x.foo", "GET", "/x/foo")],
+        &["x.foo"],
+        &[],
+        &["x.foo"],
+        vec![],
+    );
+    let gateway = proc_routes("gateway-svc", vec![], &[], &[], &[], vec![]);
+    // x-svc describes BOTH x.foo (matches the monolith) and a rogue y.bar the monolith lacks.
+    let x_svc = proc_routes(
+        "x-svc",
+        vec![],
+        &[],
+        &["x.foo", "y.bar"],
+        &["x.foo", "y.bar"],
+        vec![
+            fixture_op("x.foo", "GET", "/x/foo"),
+            fixture_op("y.bar", "GET", "/y/bar"),
+        ],
+    );
+
+    let findings = check("fixture", &[server], &[gateway, x_svc]);
+    let fp: Vec<&String> = findings.iter().filter(|f| f.contains("FRONT-PARITY")).collect();
+    assert_eq!(fp.len(), 1, "one FRONT-PARITY finding (split-only): {findings:?}");
+    assert!(
+        fp[0].contains("y.bar") && fp[0].contains("ABSENT from the monolith"),
+        "{}",
+        fp[0]
+    );
+    assert!(!fp[0].contains("x.foo"), "the matched op must not fire: {}", fp[0]);
 }
 
 /// The check IS the test (archcheck/checkmodules self-test pattern): run the full

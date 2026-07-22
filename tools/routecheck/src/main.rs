@@ -17,12 +17,21 @@
 //!     fresh `edge::Server` (binds no socket) and read back via `Server::methods()`.
 //!
 //! ## The invariants (per env config)
-//! 1. **FRONT-PARITY** — `ops(monolith server) == ops(split gateway-svc)`, compared
-//!    as full `Operation` values (method/verb/path/auth/success/retry), symmetric
-//!    diff reported. This is the inventory-bug catcher: after the Step-1 rollout
-//!    every dev-gated op is contributed unconditionally (gated at the impl), so the
-//!    two front sets are equal BY CONSTRUCTION and any conditional contribution
-//!    reintroduced in either topology breaks this check.
+//! 1. **FRONT-PARITY** — `local_front_ops(monolith server) == describe_union(split domain
+//!    svcs)`, compared as full `Operation` values (method/verb/path/auth/success/retry_mode),
+//!    symmetric diff reported. The MONOLITH side is its locally-contributed front ops
+//!    (`opsapi::SLOT` at init, unchanged). The SPLIT side is the DESCRIBE-UNION under D2
+//!    routing-as-data: gateway-svc contributes NO `opsapi::SLOT` ops at register/init — it
+//!    builds its route table at START from each peer's runtime `__describe`, dials routecheck
+//!    never runs — so its static SLOT set is empty. The faithful split front set is instead
+//!    the union of every split domain svc's `__describe` manifest, each `OpManifest`
+//!    reconstructed to an `Operation` by `opsapi::databind::operation` — the SAME builder the
+//!    runtime gateway uses, so parity is compared against the ACTUAL operations it will front,
+//!    one authority, no drift. This is the inventory-bug catcher AND the never-monolith-only
+//!    guard: a dev-gated op must be contributed unconditionally (monolith) AND described by
+//!    its svc (split), so a conditional/forgotten contribution on EITHER side breaks parity in
+//!    the corresponding direction. (Invariants 3 SERVE-PARITY and 4 OVERLAP likewise read the
+//!    split front set from this describe-union, since that is what the D2 gateway fronts.)
 //! 2. **PER-PROCESS INTEGRITY** — in every process of both profiles, the method set
 //!    of contributed `Operation`s equals the method set of contributed `OpBinding`s
 //!    (an op without a binding is a silently skipped route); in the monolith, every
@@ -150,6 +159,13 @@ struct ProcessRoutes {
     /// `ctx.contribute(DESCRIBE_SLOT, …)` still serves the op on its edge but leaves this
     /// set missing it → a managed gateway (D2) would build a dead route for it.
     describe_methods: BTreeSet<String>,
+    /// Full `Operation`s reconstructed from this process's `DESCRIBE_SLOT` manifest via
+    /// `opsapi::databind::operation` — the SAME builder the D2 managed gateway uses to turn a
+    /// fetched `__describe` into its route table. The UNION of these over the split's domain
+    /// svcs is what the D2 gateway-svc actually fronts at runtime (its routes come from
+    /// describe at start, not from `opsapi::SLOT` at register/init — so `ops`/`op_methods` are
+    /// empty for gateway-svc), and is the SPLIT side of FRONT-PARITY under routing-as-data.
+    describe_ops: Vec<Operation>,
 }
 
 /// A stable, human-diffable rendering of one [`Operation`] — the unit of the
@@ -222,15 +238,18 @@ fn observe_profile(profile: &DeploymentProfile) -> anyhow::Result<Vec<ProcessRou
 
         // The `#[http]` manifest this process would serve under the ONE reserved
         // `__describe` op — the concat of every module's `DESCRIBE_SLOT` contribution,
-        // exactly what `app::run` serves on an edge-hosting process. Read from the SAME
-        // slot; the forget-guard below diffs it against `op_methods`.
-        let describe_methods: BTreeSet<String> = opsapi::DescribeManifest::concat(
+        // exactly what `app::run` serves on an edge-hosting process. From this ONE manifest we
+        // derive both the method set (the forget-guard diffs it against `op_methods`) and the
+        // full `Operation`s (`describe_ops`), reconstructed via the SAME `opsapi::databind`
+        // builder the D2 gateway uses — so FRONT-PARITY compares against the ACTUAL operations
+        // the runtime gateway will front, not a re-derivation that could drift.
+        let describe_manifest = opsapi::DescribeManifest::concat(
             ctx.contributions::<opsapi::DescribeManifest>(opsapi::DESCRIBE_SLOT),
-        )
-        .ops
-        .into_iter()
-        .map(|o| o.method)
-        .collect();
+        );
+        let describe_methods: BTreeSet<String> =
+            describe_manifest.ops.iter().map(|o| o.method.clone()).collect();
+        let describe_ops: Vec<Operation> =
+            describe_manifest.ops.iter().map(opsapi::databind::operation).collect();
 
         out.push(ProcessRoutes {
             process: process_id,
@@ -240,6 +259,7 @@ fn observe_profile(profile: &DeploymentProfile) -> anyhow::Result<Vec<ProcessRou
             local_methods,
             edge_methods,
             describe_methods,
+            describe_ops,
         });
     }
     Ok(out)
@@ -336,20 +356,41 @@ fn check(label: &str, monolith: &[ProcessRoutes], split: &[ProcessRoutes]) -> Ve
         return findings;
     }
 
-    // 1. FRONT-PARITY — full-value symmetric diff between the two front doors.
+    // The SPLIT front door's fronted-op set under D2 routing-as-data: the DESCRIBE-UNION —
+    // the union of every split DOMAIN svc's `__describe` manifest (each `OpManifest`
+    // reconstructed to an `Operation` by `opsapi::databind::operation`, the SAME builder the
+    // gateway's own describe router uses at start). gateway-svc contributes NO `opsapi::SLOT`
+    // ops at register/init (its route table is built at start from these very manifests), so
+    // `gateway.ops`/`gateway.op_methods` are empty — they are NOT the split front set here.
+    // The union is over `process != "gateway-svc"` (the domain svcs that serve `__describe`);
+    // gateway-svc itself serves none. This is exactly what the runtime split front door
+    // fronts, so it is the faithful SPLIT side of every front-door invariant below (1/3/4).
+    let split_front_ops: Vec<Operation> = split
+        .iter()
+        .filter(|p| p.process != "gateway-svc")
+        .flat_map(|p| p.describe_ops.iter().cloned())
+        .collect();
+    let split_front_methods: BTreeSet<String> =
+        split_front_ops.iter().map(|o| o.method.clone()).collect();
+
+    // 1. FRONT-PARITY — full-value symmetric diff: the monolith's LOCAL front ops
+    // (`server.ops`, contributed at init) vs the split's DESCRIBE-UNION front ops. Same op
+    // identity/verb/path/auth/success/retry compared as before; only the split side's SOURCE
+    // changed (register-time slots → runtime describe) to match how the D2 gateway routes.
     let mono_ops: BTreeSet<String> = server.ops.iter().map(op_key).collect();
-    let split_ops: BTreeSet<String> = gateway.ops.iter().map(op_key).collect();
+    let split_ops: BTreeSet<String> = split_front_ops.iter().map(op_key).collect();
     for missing in split_ops.difference(&mono_ops) {
         findings.push(format!(
-            "[{label}] FRONT-PARITY: op fronted by split gateway-svc but ABSENT from the \
-             monolith front door: {missing}"
+            "[{label}] FRONT-PARITY: op fronted by split gateway-svc (via a domain svc's \
+             __describe) but ABSENT from the monolith front door: {missing}"
         ));
     }
     for missing in mono_ops.difference(&split_ops) {
         findings.push(format!(
-            "[{label}] FRONT-PARITY: op fronted by the monolith but ABSENT from split \
-             gateway-svc (the inventory-dev-grant bug class — a conditional contribution \
-             or a missing stub route): {missing}"
+            "[{label}] FRONT-PARITY: op fronted by the monolith but ABSENT from the split \
+             describe-union (the inventory-dev-grant bug class — a conditional contribution, \
+             or a domain svc that forgot to describe the op so the gateway can't route it): \
+             {missing}"
         ));
     }
 
@@ -385,22 +426,29 @@ fn check(label: &str, monolith: &[ProcessRoutes], split: &[ProcessRoutes]) -> Ve
         .filter(|p| p.process != "gateway-svc")
         .flat_map(|p| p.edge_methods.iter())
         .collect();
-    for m in &gateway.op_methods {
+    // Under D2 the gateway fronts the describe-union (`split_front_methods`), not
+    // `gateway.op_methods` (empty). Iterate the real fronted set so this stays a live guard:
+    // a described-but-unserved method (an svc whose `__describe` lists a method its edge does
+    // not register) is caught here as well as by DESCRIBE-COMPLETE below.
+    for m in &split_front_methods {
         if !served.contains(m) {
             findings.push(format!(
-                "[{label}] SERVE-PARITY: gateway-svc fronts {m:?} but NO domain svc \
-                 registers it on its internal edge — the route would 404/503 in the split"
+                "[{label}] SERVE-PARITY: the split front door fronts {m:?} (via __describe) \
+                 but NO domain svc registers it on its internal edge — the route would \
+                 404/503 in the split"
             ));
         }
     }
 
     // 4. OVERLAP — the two real front doors (monolith "server", split "gateway-svc")
-    // must never contribute two same-verb, overlapping-path operations; see the
-    // module doc's invariant 4. Front-parity above already makes `server.ops` and
-    // `gateway.ops` equal on a clean tree, but each is checked independently so a
-    // hypothetical FRONT-PARITY bypass can't also hide an overlap.
+    // must never front two same-verb, overlapping-path operations; see the module doc's
+    // invariant 4. The monolith checks its local `server.ops`; the split checks its
+    // DESCRIBE-UNION (`split_front_ops`) — exactly the set the D2 gateway feeds to
+    // `RouteTable::build_from_parts`, which `bail!`s on overlap at start. So a describe-union
+    // overlap (two domain svcs describing colliding routes) is caught statically here, not
+    // only at boot. Each front is checked independently so a FRONT-PARITY bypass can't hide it.
     findings.extend(overlap_findings(label, server.process, &server.ops));
-    findings.extend(overlap_findings(label, gateway.process, &gateway.ops));
+    findings.extend(overlap_findings(label, gateway.process, &split_front_ops));
 
     // 5. DESCRIBE-COMPLETE — every edge-serving process serves its whole `#[http]`
     // surface under the ONE reserved `__describe` op (routing-as-data SERVE side, the
@@ -475,13 +523,18 @@ fn run_all() -> anyhow::Result<Vec<String>> {
                 .iter()
                 .find(|p| p.process == "server")
                 .map_or(0, |p| p.ops.len());
+            // The SPLIT front count under D2 is the describe-union size (what gateway-svc
+            // fronts at runtime), NOT gateway-svc's own `opsapi::SLOT` (empty at register/init).
             let gw_n = split
                 .iter()
-                .find(|p| p.process == "gateway-svc")
-                .map_or(0, |p| p.ops.len());
+                .filter(|p| p.process != "gateway-svc")
+                .flat_map(|p| p.describe_ops.iter())
+                .map(op_key)
+                .collect::<BTreeSet<_>>()
+                .len();
             println!(
-                "routecheck [{}]: monolith fronts {mono_n} ops, gateway-svc fronts {gw_n} \
-                 — {} finding(s)",
+                "routecheck [{}]: monolith fronts {mono_n} ops, split describe-union fronts \
+                 {gw_n} — {} finding(s)",
                 config.label(),
                 f.len()
             );
