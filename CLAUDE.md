@@ -627,9 +627,20 @@ Front-load the thinking. For any plan (plan mode / "write me a plan" / a
 4. **Structure as an ordered `Step 1 → Step 2 → …` sequence, NOT a catalog.** Each
    step states **(a) what** is touched (exact files/symbols), **(b) why now / order** —
    the dependency forcing it before the next, **(c) how** — non-mechanical moves
-   spelled out, **(d) dispatch tag** — `[inline]`/`[fable]`/`[opus]`/`[sonnet]`. A
+   spelled out, **(d) dispatch tag** — `[inline]`/`[fable]`/`[opus]`/`[sonnet]`/`[test-author]`. A
    catalog that leaves order/topology/per-step actions to "figure as you go" is
    **banned**; steps need not each compile, but every step MUST be written out.
+   - **Tests are their own step(s), never bundled into an implementation step —
+     MANDATORY.** If a change touches testable production code, the plan MUST carry
+     a **separate, later `[test-author]` step** for its tests, sequenced *after* the
+     implementation step it covers has landed and compiled. Banned: any step of the
+     shape "implement X **and** write its tests" — one agent holding both burns
+     tokens re-processing the whole implementation through the compile/test-fix loop
+     (see [[split-impl-and-tests]]). The test step names: which landed
+     commit/behaviour it covers, the previously-wrong branch each test must
+     exercise, and the at-risk topology (split, not just monolith). A plan that
+     touches testable production code with **no** test step is incomplete unless the
+     user explicitly waived tests.
 5. **Dispatch one grumpy senior-engineer reviewer** at session tier (separate context
    = the independent-reviewer boundary). **Ask the user the think-effort level first**
    (default / think / think hard / ultrathink) — effort does NOT inherit, so embed it
@@ -642,7 +653,7 @@ checklist): [docs/reference/plan-writing-workflow.md](docs/reference/plan-writin
 ## Implementation Mode — MANDATORY
 
 **Mixed dispatch — decided per plan step, not per session. Tags name a CONCRETE
-model, not a tier alias.** Four lanes, each set at plan-writing time (Plan Writing
+model, not a tier alias.** Five lanes, each set at plan-writing time (Plan Writing
 step 4d):
 
 - `[inline]` — main model writes in this context. **No independent review** —
@@ -655,14 +666,23 @@ step 4d):
   Opus, `[opus]` is also the top-tier lane** — same tier as inline but a separate
   context, the independent-reviewer boundary.
 - `[sonnet]` — Sonnet subagent. Mechanical: rename sweeps, scaffolding, N-similar
-  edits, applying a fully-specified step, compile fixes, tests from a pattern,
+  edits, applying a fully-specified step, compile fixes,
   config. **Never burn a higher tier on a rename.** Visual/UI design is never
-  `[sonnet]`.
+  `[sonnet]`. Tests are never `[sonnet]` — they go through `[test-author]`.
+- `[test-author]` — the `test-author` agent
+  (`.claude/agents/test-author.md`, `subagent_type: "test-author"`). **The ONLY
+  lane that writes tests** — a dedicated step, always separate from and after the
+  implementation it covers (never bundled — see Plan Writing step 4 and
+  [[split-impl-and-tests]]). It starts from a landed, compiling diff, so a test
+  following an existing pattern maps to `model:"sonnet"`; escalate to
+  `model:"opus"`/`"fable"` only when the harness/topology is novel (new splitproof
+  assertion, event-plane fixture). The plan step sets the `model:`.
 
 **Every code-writing Agent call passes an explicit `model:` matching its lane —
 NON-NEGOTIABLE** (there is no "inherit" path): `[fable]`→`model:"fable"`,
-`[opus]`→`model:"opus"`, `[sonnet]`→`model:"sonnet"` (listing-only research →
-`model:"haiku"`). Pre-flight every Agent call for the field. After a multi-subagent
+`[opus]`→`model:"opus"`, `[sonnet]`→`model:"sonnet"`, `[test-author]`→the
+`test-author` agent at its step's `model:` (default `"sonnet"`) (listing-only
+research → `model:"haiku"`). Pre-flight every Agent call for the field. After a multi-subagent
 rollout, before "done": `git log -<N> --format="%h %B" | grep "Co-Authored"` and
 confirm trailers match each lane (`[fable]`→Fable 5, `[opus]`→Opus 4.8,
 `[sonnet]`→Sonnet 4.6) — surface mismatches immediately.
