@@ -881,6 +881,21 @@ fn gateway_stubs_domain_matches_single_line() {
 }
 
 #[test]
+fn gateway_stubs_domain_matches_describe_peer_constructor() {
+    // The D2 peer-only stub (`Stub::describe_peer`, no factories) is equally valid PEER_SLOT
+    // coverage — it contributes exactly the peer entry the describe fetch iterates. Both
+    // single-line and rustfmt's multiline (name on the next line) forms must match.
+    assert!(super::gateway_stubs_domain(
+        "remote::Stub::describe_peer(\"characters\", &peer)",
+        "characters"
+    ));
+    let multiline = "Box::new(remote::Stub::describe_peer(\n    \"match\",\n    &peer,\n));";
+    assert!(super::gateway_stubs_domain(multiline, "match"));
+    // A domain stubbed ONLY via describe_peer is clean (no violation).
+    assert!(super::gateway_stub_coverage_violations(&strings(&["match"]), multiline).is_empty());
+}
+
+#[test]
 fn missing_gateway_stub_is_a_violation() {
     // `match` exposes HTTP ops but is not stubbed — one violation naming it + the fix path.
     let v = super::gateway_stub_coverage_violations(

@@ -71,20 +71,21 @@ pub fn modules(
         Box::new(gw),
         // `remote` is generic (Step 4): this composition root injects each provider's swap
         // closures explicitly, so `remote` never names a provider. Under D2, the pure-HTTP
-        // providers (characters/inventory/match/leaderboard) pass NO factories — their routes
-        // arrive via `__describe`; the stub still contributes its PEER_SLOT address set, which
-        // the describe fetch + dispatch both read. accounts/apikeys additionally provide their
-        // sync capability CLIENT (`provide_factories` — Sessions/Keys, NO routes, so they can't
-        // collide with the describe pass that supplies accounts's `#[http]` routes).
-        Box::new(remote::Stub::new(
+        // providers (characters/inventory/match/leaderboard) are `Stub::describe_peer` — NO
+        // factories (their routes arrive via `__describe`), just the PEER_SLOT address set the
+        // describe fetch + dispatch read. (`describe_peer` is the intentional peer-only
+        // constructor — legal with zero factories, unlike `Stub::new`, whose zero-factory bail
+        // stays a loud guard for an accidental forgotten `remote_factories()`.) accounts/apikeys
+        // keep `Stub::new` with `provide_factories` — they DO provide a sync capability CLIENT
+        // (Sessions/Keys, NO routes, so they can't collide with the describe pass that supplies
+        // accounts's `#[http]` routes).
+        Box::new(remote::Stub::describe_peer(
             "characters",
             edge_peer(wiring, edge_list_resolver, "characters", "127.0.0.1:9000"),
-            Vec::new(),
         )),
-        Box::new(remote::Stub::new(
+        Box::new(remote::Stub::describe_peer(
             "inventory",
             edge_peer(wiring, edge_list_resolver, "inventory", "127.0.0.1:9001"),
-            Vec::new(),
         )),
         Box::new(remote::Stub::new(
             "accounts",
@@ -96,15 +97,13 @@ pub fn modules(
             edge_peer(wiring, edge_list_resolver, "apikeys", "127.0.0.1:9009"),
             apikeysrpc::provide_factories(),
         )),
-        Box::new(remote::Stub::new(
+        Box::new(remote::Stub::describe_peer(
             "match",
             edge_peer(wiring, edge_list_resolver, "match", "127.0.0.1:9006"),
-            Vec::new(),
         )),
-        Box::new(remote::Stub::new(
+        Box::new(remote::Stub::describe_peer(
             "leaderboard",
             edge_peer(wiring, edge_list_resolver, "leaderboard", "127.0.0.1:9008"),
-            Vec::new(),
         )),
     ]
 }

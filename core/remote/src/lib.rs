@@ -1156,6 +1156,14 @@ pub struct Stub {
     /// composition root from the provider's `<name>rpc::remote_factories()` — `remote`
     /// never names the provider itself.
     factories: Vec<RemoteFactory>,
+    /// True for a [`Stub::describe_peer`] stub (D2 routing-as-data): it INTENTIONALLY holds
+    /// zero factories — it provides no capability client and contributes no route bindings,
+    /// existing only to land its `PeerAddr` in [`opsapi::PEER_SLOT`] so a co-hosted
+    /// describe-driven gateway fetches this peer's `__describe`. This flag is the sole thing
+    /// that distinguishes that intentional peer-only case from an ACCIDENTAL
+    /// `Stub::new(p, a, vec![])` (a composition root that forgot `remote_factories()`), which
+    /// stays a loud `register` wiring bug. Default `false`.
+    peer_only: bool,
 }
 
 /// The stub's capability caller + liveness machinery. Single vs pooled is the whole
@@ -1230,6 +1238,34 @@ impl Stub {
         peer: impl Into<PeerSource>,
         factories: Vec<RemoteFactory>,
     ) -> Stub {
+        Stub::assemble(provider, peer, factories, false)
+    }
+
+    /// A PEER-ONLY stub for the D2 routing-as-data front door: it provides NO capability
+    /// client and contributes NO route bindings — it exists solely to contribute this peer's
+    /// edge address to [`opsapi::PEER_SLOT`] (in `init`, exactly as [`Stub::new`] does), so a
+    /// co-hosted describe-driven gateway iterates it, calls the peer's `__describe`, and lights
+    /// up that domain's `#[http]` routes Remote from the fetched manifest — no compile-time
+    /// `<name>rpc` route import needed.
+    ///
+    /// LEGAL with zero factories, UNLIKE [`Stub::new`]: an empty factory list is the WHOLE
+    /// point here, not a wiring bug. [`Stub::new`]'s zero-factory `register` bail stays intact
+    /// for the accidental case (a root that forgot `remote_factories()`). The stub is otherwise
+    /// a full stub — it still runs the background reachability probe, so a describe front door's
+    /// `/readyz` reflects this peer, and its `register` is a no-op (nothing to provide).
+    pub fn describe_peer(provider: &str, peer: impl Into<PeerSource>) -> Stub {
+        Stub::assemble(provider, peer, Vec::new(), true)
+    }
+
+    /// Shared constructor body for [`Stub::new`] and [`Stub::describe_peer`]: builds the
+    /// backing from the [`PeerSource`] and stamps `peer_only` (the only difference between the
+    /// two — it exempts an intentionally factory-less describe stub from the `register` bail).
+    fn assemble(
+        provider: &str,
+        peer: impl Into<PeerSource>,
+        factories: Vec<RemoteFactory>,
+        peer_only: bool,
+    ) -> Stub {
         let (peer_addrs, backing) = match peer.into() {
             PeerSource::Single { boot_addr, resolver } => {
                 let backing = Backing::Single(SingleBacking {
@@ -1258,6 +1294,7 @@ impl Stub {
             peer_addrs,
             backing,
             factories,
+            peer_only,
         }
     }
 
@@ -1375,14 +1412,18 @@ impl Module for Stub {
     /// capability), so it contributes route bindings ONLY: a dead capability provide
     /// would be noise, add one only when a consumer appears.
     fn register(&self, ctx: &Context) -> anyhow::Result<()> {
-        // A stub with no factories provides nothing — a wiring bug (the composition
-        // root forgot to pass the provider's `remote_factories()`). Fail loudly rather
-        // than silently registering an inert module (this preserves the fail-loud
-        // guarantee the old per-provider `match`'s unknown-provider arm gave).
-        if self.factories.is_empty() {
+        // A stub with no factories provides nothing. For an ACCIDENTAL empty (the composition
+        // root forgot to pass the provider's `remote_factories()`) this is a wiring bug — fail
+        // loudly rather than silently registering an inert module (preserving the fail-loud
+        // guarantee the old per-provider `match`'s unknown-provider arm gave). A
+        // `Stub::describe_peer` stub (`peer_only`) INTENTIONALLY has zero factories — it lives
+        // to contribute its `PEER_SLOT` entry in `init` so a describe gateway fetches it — so it
+        // is exempt: register provides nothing and returns Ok, and `init` still runs.
+        if self.factories.is_empty() && !self.peer_only {
             anyhow::bail!(
                 "remote: Stub for provider {:?} was constructed with zero factories — \
-                 pass `<name>rpc::remote_factories()` into `Stub::new`",
+                 pass `<name>rpc::remote_factories()` into `Stub::new` (or use \
+                 `Stub::describe_peer` for an intentional peer-only D2 stub)",
                 self.provider
             );
         }

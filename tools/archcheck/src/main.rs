@@ -750,16 +750,20 @@ fn http_op_domains(api_root: &Path) -> Vec<String> {
 }
 
 /// True if `gateway_lib` (the text of `cmd/gateway-svc/src/lib.rs`) constructs a
-/// `remote::Stub` whose FIRST argument is the string literal `"<name>"`. rustfmt puts the
-/// stub name on the line AFTER `Stub::new(`, so a flat `contains("Stub::new(\"x\"")` would
-/// miss it — instead each `Stub::new(` site is inspected with leading whitespace (the
-/// newline included) trimmed off before matching the literal.
+/// `remote::Stub` whose FIRST argument is the string literal `"<name>"`. Both stub
+/// constructors count: `Stub::new(` (a capability/route stub) and `Stub::describe_peer(` (the
+/// D2 peer-only stub — provides nothing, contributes only the `PEER_SLOT` entry the describe
+/// fetch iterates). Either is sufficient PEER_SLOT coverage for a `#[http(` domain. rustfmt
+/// puts the stub name on the line AFTER the `(`, so a flat `contains` would miss it — each
+/// site is inspected with leading whitespace (the newline included) trimmed off before
+/// matching the literal.
 fn gateway_stubs_domain(gateway_lib: &str, name: &str) -> bool {
-    let marker = "Stub::new(";
     let needle = format!("\"{name}\"");
-    find_all(gateway_lib, marker)
-        .into_iter()
-        .any(|i| gateway_lib[i + marker.len()..].trim_start().starts_with(&needle))
+    ["Stub::new(", "Stub::describe_peer("].iter().any(|marker| {
+        find_all(gateway_lib, marker)
+            .into_iter()
+            .any(|i| gateway_lib[i + marker.len()..].trim_start().starts_with(&needle))
+    })
 }
 
 /// Rule 17: a violation per `#[http(`-bearing `http_domains` entry that has no

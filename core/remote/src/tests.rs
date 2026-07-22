@@ -626,15 +626,39 @@ fn stub_runs_every_injected_factory() {
     );
 }
 
-/// A stub with ZERO factories is a wiring bug (nothing to provide): `register` fails
-/// loudly rather than registering an inert module — preserving the fail-loud
-/// guarantee the old per-provider `match`'s unknown-provider arm gave.
+/// A stub with ZERO factories via `Stub::new` is a wiring bug (nothing to provide):
+/// `register` fails loudly rather than registering an inert module — preserving the fail-loud
+/// guarantee the old per-provider `match`'s unknown-provider arm gave. (The INTENTIONAL
+/// peer-only case has its own constructor — see `describe_peer_stub_registers_and_lands_in_peer_slot`.)
 #[test]
 fn stub_with_no_factories_fails_loud() {
     let ctx = Context::new();
     let stub = Stub::new("fake", "127.0.0.1:9000", Vec::new());
     let err = stub.register(&ctx).unwrap_err();
     assert!(err.to_string().contains("zero factories"), "{err}");
+}
+
+/// The D2 peer-only stub (`Stub::describe_peer`): `register` SUCCEEDS with zero factories
+/// (it is NOT the accidental-empty wiring bug — it provides nothing by design), and `init`
+/// STILL contributes the peer address to `PEER_SLOT` so a describe-driven gateway iterates it
+/// and fetches this peer's `__describe`. This is the at-risk path the D2 in-process tests
+/// missed: the previous `Stub::new(p, a, vec![])` wiring bailed at `register`, so gateway-svc
+/// never reached `init` and never landed its `PEER_SLOT` entries — a real boot failure.
+#[test]
+fn describe_peer_stub_registers_and_lands_in_peer_slot() {
+    let ctx = Context::new();
+    let stub = Stub::describe_peer("characters", "127.0.0.1:9000");
+    assert_eq!(stub.name(), "characters", "name is the provider name");
+    // register: no bail (peer-only), and it provides nothing.
+    stub.register(&ctx).expect("a peer-only stub's register must succeed with zero factories");
+    // init: the PEER_SLOT contribution still happens — the whole reason the stub exists.
+    stub.init(&ctx).expect("peer-only init");
+    let peers: Vec<opsapi::PeerAddr> = ctx.contributions(opsapi::PEER_SLOT);
+    let found = peers
+        .iter()
+        .find(|p| p.provider == "characters")
+        .expect("a peer-only stub must still contribute its PeerAddr to PEER_SLOT");
+    assert_eq!(found.addrs, vec!["127.0.0.1:9000".to_string()]);
 }
 
 // ---- The per-stub readiness probe (the `/readyz` contribution) -----------
