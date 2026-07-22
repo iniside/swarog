@@ -13,6 +13,15 @@ use super::*;
 /// `TcpStream` a bounded number of times for exactly those transient error
 /// kinds; a genuinely broken fixture still fails every attempt and the final
 /// attempt still panics loudly via `unwrap`/`expect`.
+///
+/// The same load can also produce an `Ok` short read: `read_to_end` returns
+/// having received an empty or partial response (early EOF before the fixture
+/// finished writing) — not an I/O error, so `is_transient` never sees it.
+/// Treat an incomplete response the same way: retry the whole exchange on a
+/// fresh connection. Only the FINAL attempt returns an incomplete response
+/// as-is, so a fixture that is genuinely broken (never completes a response)
+/// still fails loudly with the real bytes in the assertion message, instead of
+/// retrying forever or being masked into a false pass.
 const REQUEST_ATTEMPTS: u32 = 5;
 const REQUEST_RETRY_BACKOFF: Duration = Duration::from_millis(50);
 
@@ -24,6 +33,15 @@ fn is_transient(error: &std::io::Error) -> bool {
             | std::io::ErrorKind::ConnectionAborted
             | std::io::ErrorKind::ConnectionRefused
     )
+}
+
+/// A complete HTTP/1.1 response: non-empty, starts with the status line, and
+/// carries the header terminator (i.e. headers were fully received). This
+/// deliberately does not check the body length against `Content-Length` — the
+/// stage's own client (reqwest) owns that concern; this is only enough to
+/// distinguish "the fixture answered" from "the socket gave up mid-write".
+fn is_complete_response(response: &str) -> bool {
+    !response.is_empty() && response.starts_with("HTTP/1.1 ") && response.contains("\r\n\r\n")
 }
 
 fn try_request(port: u16, method: &str, path: &str, body: &[u8]) -> std::io::Result<String> {
@@ -43,8 +61,14 @@ fn try_request(port: u16, method: &str, path: &str, body: &[u8]) -> std::io::Res
 
 fn request(port: u16, method: &str, path: &str, body: &[u8]) -> String {
     let mut last_error = None;
+    let mut last_incomplete = None;
     for attempt in 0..REQUEST_ATTEMPTS {
         match try_request(port, method, path, body) {
+            Ok(response) if is_complete_response(&response) => return response,
+            Ok(response) if attempt + 1 < REQUEST_ATTEMPTS => {
+                last_incomplete = Some(response);
+                std::thread::sleep(REQUEST_RETRY_BACKOFF);
+            }
             Ok(response) => return response,
             Err(error) if attempt + 1 < REQUEST_ATTEMPTS && is_transient(&error) => {
                 last_error = Some(error);
@@ -56,7 +80,10 @@ fn request(port: u16, method: &str, path: &str, body: &[u8]) -> String {
             ),
         }
     }
-    unreachable!("loop above always returns or panics; last transient error: {last_error:?}")
+    unreachable!(
+        "loop above always returns or panics; last transient error: {last_error:?}; \
+         last incomplete response: {last_incomplete:?}"
+    )
 }
 
 #[test]
