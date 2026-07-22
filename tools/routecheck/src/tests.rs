@@ -223,6 +223,89 @@ fn front_parity_bites_a_describe_union_op_absent_from_the_monolith() {
     assert!(!fp[0].contains("x.foo"), "the matched op must not fire: {}", fp[0]);
 }
 
+/// SERVE-PARITY (inv 3) still BITES on the D2 describe-union source: a domain svc DESCRIBES
+/// `y.bar` (so it is in the split front set) but does NOT serve it on its edge
+/// (`edge_methods=[]`) → the gateway would build a route that 404/503s. Driven through the
+/// REAL `check()`. GOES RED under a revert of the repoint (`&split_front_methods` →
+/// `&gateway.op_methods`, empty under D2): the loop would iterate nothing, the
+/// described-but-unserved method would never be checked, and this assertion (exactly one
+/// SERVE-PARITY finding) would fail — pinning the repoint against silent disarm.
+#[test]
+fn serve_parity_bites_a_described_but_unserved_method() {
+    // Monolith fronts y.bar (so FRONT-PARITY is clean on it); the split describes it too.
+    let server = proc_routes(
+        "server",
+        vec![fixture_op("y.bar", "GET", "/y/bar")],
+        &["y.bar"],
+        &[],
+        &["y.bar"],
+        vec![],
+    );
+    let gateway = proc_routes("gateway-svc", vec![], &[], &[], &[], vec![]);
+    // x-svc DESCRIBES y.bar but serves NOTHING on its edge — described-but-unserved.
+    let x_svc = proc_routes(
+        "x-svc",
+        vec![],
+        &[],
+        &[], // edge_methods empty → y.bar is not served anywhere
+        &["y.bar"],
+        vec![fixture_op("y.bar", "GET", "/y/bar")],
+    );
+
+    let findings = check("fixture", &[server], &[gateway, x_svc]);
+    let serve: Vec<&String> = findings.iter().filter(|f| f.contains("SERVE-PARITY")).collect();
+    assert_eq!(serve.len(), 1, "one SERVE-PARITY finding (described-but-unserved): {findings:?}");
+    assert!(serve[0].contains("y.bar"), "{}", serve[0]);
+}
+
+/// OVERLAP (inv 4) still BITES on the D2 describe-union source, AND catches a CROSS-SVC
+/// collision (strictly stronger than the old single-process scan): two DIFFERENT domain svcs
+/// describe `GET /x/{id}` and `GET /x/me` — SHAPE-different but REQUEST-SET-overlapping, so
+/// the D2 gateway's `RouteTable::build_from_parts` would `bail!` at start. Driven through the
+/// REAL `check()`. GOES RED under a revert of the repoint (`&split_front_ops` → `&gateway.ops`,
+/// empty under D2): `overlap_findings` over an empty set returns nothing, the cross-svc
+/// collision is never scanned, and this assertion (exactly one OVERLAP) would fail.
+#[test]
+fn overlap_bites_a_cross_svc_describe_union_collision() {
+    // Monolith fronts a benign, non-overlapping op (keeps the harness non-vacuous AND avoids a
+    // monolith-side overlap, so the ONE OVERLAP finding is the cross-svc split one).
+    let server = proc_routes(
+        "server",
+        vec![fixture_op("z.ok", "GET", "/z")],
+        &["z.ok"],
+        &[],
+        &[],
+        vec![],
+    );
+    let gateway = proc_routes("gateway-svc", vec![], &[], &[], &[], vec![]);
+    // The overlapping pair lives across TWO svcs — neither svc overlaps with itself.
+    let svc_a = proc_routes(
+        "a-svc",
+        vec![],
+        &[],
+        &["x.byId"],
+        &["x.byId"],
+        vec![fixture_op("x.byId", "GET", "/x/{id}")],
+    );
+    let svc_b = proc_routes(
+        "b-svc",
+        vec![],
+        &[],
+        &["x.me"],
+        &["x.me"],
+        vec![fixture_op("x.me", "GET", "/x/me")],
+    );
+
+    let findings = check("fixture", &[server], &[gateway, svc_a, svc_b]);
+    let overlap: Vec<&String> = findings.iter().filter(|f| f.contains("OVERLAP")).collect();
+    assert_eq!(overlap.len(), 1, "one cross-svc OVERLAP finding: {findings:?}");
+    assert!(
+        overlap[0].contains("x.byId") && overlap[0].contains("x.me"),
+        "{}",
+        overlap[0]
+    );
+}
+
 /// The check IS the test (archcheck/checkmodules self-test pattern): run the full
 /// two-config route-parity check over the real workspace module lists and assert a
 /// clean tree. This is what makes the invariant enforceable from `cargo test

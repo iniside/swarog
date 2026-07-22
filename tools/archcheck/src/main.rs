@@ -779,10 +779,13 @@ fn gateway_stub_coverage_violations(http_domains: &[String], gateway_lib: &str) 
         .map(|d| {
             format!(
                 "domain `{d}` exposes HTTP ops (`{HTTP_OP_MARKER}` in api/{d}/api/src/lib.rs) \
-                 but cmd/gateway-svc/src/lib.rs has no `Stub::new(\"{d}\"` — add \
-                 remote::Stub::new(\"{d}\", ...) to cmd/gateway-svc/src/lib.rs so its PEER_SLOT \
-                 entry is present and the gateway's `__describe` fetch reaches it, lighting up \
-                 its player-facing routes Remote in the split"
+                 but cmd/gateway-svc/src/lib.rs has no `Stub::new(\"{d}\"` or \
+                 `Stub::describe_peer(\"{d}\"` — add `remote::Stub::describe_peer(\"{d}\", ...)` \
+                 (the D2 peer-only stub — routes come from `__describe`) or \
+                 `remote::Stub::new(\"{d}\", ...)` (if it also provides a sync capability) to \
+                 cmd/gateway-svc/src/lib.rs so its PEER_SLOT entry is present and the gateway's \
+                 `__describe` fetch reaches it, lighting up its player-facing routes Remote in \
+                 the split"
             )
         })
         .collect()
