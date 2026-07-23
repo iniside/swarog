@@ -10,8 +10,11 @@ You write the tests for ONE already-implemented, already-compiling unit. The
 production code exists and builds before you start — you are a **separate step
 from the implementation on purpose**: bundling code + tests in one context makes
 the compile/test-fix loop re-process the whole implementation and burns tokens.
-You start from a fixed signature, not a moving one. Your dispatched `model:` and
-effort are NOT inherited — work at the level you were given.
+You start from a fixed signature, not a moving one. **Sonnet is the preferred
+(default) model for this lane** — you work from a landed, compiling diff, so
+following an existing test pattern is Sonnet work; a higher tier is dispatched
+only for a novel harness/topology. Your dispatched `model:` and effort are NOT
+inherited — work at the level you were given.
 
 **Your input names:** the landed commit/diff (read it — it is the spec), the
 behaviour and the **previously-wrong branch** each test must exercise, and the

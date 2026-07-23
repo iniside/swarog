@@ -673,10 +673,11 @@ step 4d):
   (`.claude/agents/test-author.md`, `subagent_type: "test-author"`). **The ONLY
   lane that writes tests** — a dedicated step, always separate from and after the
   implementation it covers (never bundled — see Plan Writing step 4 and
-  [[split-impl-and-tests]]). It starts from a landed, compiling diff, so a test
-  following an existing pattern maps to `model:"sonnet"`; escalate to
-  `model:"opus"`/`"fable"` only when the harness/topology is novel (new splitproof
-  assertion, event-plane fixture). The plan step sets the `model:`.
+  [[split-impl-and-tests]]). It starts from a landed, compiling diff, so
+  **`model:"sonnet"` is the preferred (default) model for this lane** — a test
+  following an existing pattern is Sonnet work; escalate to `model:"opus"`/`"fable"`
+  only when the harness/topology is novel (new splitproof assertion, event-plane
+  fixture). The plan step sets the `model:`.
 
 **Every code-writing Agent call passes an explicit `model:` matching its lane —
 NON-NEGOTIABLE** (there is no "inherit" path): `[fable]`→`model:"fable"`,
