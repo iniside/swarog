@@ -164,6 +164,15 @@ edition = "2021"
 license = "MIT"
 publish = false
 
+# Dev-build debuginfo trimming — keeps target/ from ballooning (full debug=2 on
+# every dependency produced ~450 GB / 1M files). Own crates keep line tables for
+# readable panic backtraces (file:line); dependencies get none (never step-debugged).
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
 # Pinned once here, referenced by `.workspace = true` in each crate. Keeps the
 # leaf foundations on one coherent set of async/DB/serde versions.
 [workspace.dependencies]

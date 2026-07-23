@@ -5,7 +5,7 @@ metadata:
   node_type: memory
   type: feedback
   originSessionId: c652fcd6-7214-4c23-9374-4facf2b1c91e
-  modified: 2026-07-22T09:48:17.632Z
+  modified: 2026-07-23T11:02:04.795Z
 ---
 
 Tests get their **own** plan step, sequenced *after* the implementation step it
@@ -26,6 +26,8 @@ tests-in-separate-files, Fix-the-Authority rule 5 prove-the-failing-branch,
 `[test-author]` step is incomplete unless the user explicitly waived tests. The
 test step names: the landed commit/behaviour, the previously-wrong branch each
 test must exercise, and the at-risk topology (split via `tools/splitproof`, not
-just monolith). Test lane is never `[sonnet]` — it goes through `[test-author]`
-(which itself defaults to `model:"sonnet"`, escalated only for a novel
-harness/topology). Absolute rule, no carve-out for trivial single-branch proofs.
+just monolith). Test lane is never `[sonnet]` — it goes through `[test-author]`.
+**Sonnet is the preferred/default model for the test-author lane** (it works from
+a landed, compiling diff, so pattern-following test work is Sonnet work); escalate
+to opus/fable only for a novel harness/topology. Absolute rule, no carve-out for
+trivial single-branch proofs.
