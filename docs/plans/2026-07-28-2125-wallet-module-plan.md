@@ -70,9 +70,21 @@ beside the byte caps) bounds a single movement; the balance CHECK is
 `amount >= 0 AND amount <= 1_000_000_000_000_000`. Both are far below `i64::MAX ≈ 9.2e18`, so
 `amount + delta` can never overflow — a credit past the ceiling hits 23514, which is already
 mapped to 409, instead of 22003, which is not mapped at all. This matters most on the
-**delivery** path: a 22003 there would abort the delivery tx, fail the plane's checkpoint
-UPDATE with 25P02 and poison `wallet.player-registered.v1` — the exact "removed by
-construction" claim D9 makes, and the exact overflow class that already bit inventory once
+**delivery** path — and the mechanism there has **two arms, which earlier revisions of this
+plan conflated** (corrected after reading `core/asyncevents/src/worker.rs`):
+
+- the handler returns `Err` ⇒ the plane runs `ROLLBACK TO SAVEPOINT deliver`
+  (`worker.rs:257` sets it, `:288` uses it), records the failure, commits and backs off;
+  after 20 consecutive failures the subscription **pauses**. No 25P02 — the savepoint
+  restores the transaction.
+- the handler **swallows** the DB error and returns `Ok` — which is exactly what posture A
+  mandates for a data-quality problem — ⇒ the transaction is still aborted, so the plane's
+  checkpoint `UPDATE` (`worker.rs:268`) fails with **25P02** and the delivery step errors.
+
+Both outcomes are bad and the second is the nastier one, because it is what the mandated
+posture produces. That is precisely why the pre-check is required rather than optional: it
+is the only way to satisfy "never `Err` on a data problem" AND "never leave the delivery tx
+aborted" at the same time. Same overflow class that already bit inventory once
 (`modules/inventory/src/lib.rs:50-59`). `validate_movement` rejects
 `amount <= 0 || amount > MAX_MOVEMENT_AMOUNT` as `Invalid`, and D9's config read clamps
 against the same const.
@@ -89,7 +101,15 @@ the cast but no 22P02 arm a malformed id is a 500 instead of a 400.
 Every mutating call carries a REQUIRED `idempotency_key` (≤128 bytes, non-empty).
 `wallet.ledger` has `UNIQUE (idempotency_key)`. The movement logic runs as
 **`apply_on(conn, movement, sign)`** — see D8 — and never opens or closes a transaction
-itself:
+itself. **`apply_on` validates the movement itself (corrected after review):** the sign and
+range guard is the contract's central promise ("`amount` is ALWAYS POSITIVE — the direction
+is the method"), so it belongs in the authority, not in one of its two callers. An earlier
+draft put `validate_movement` only in the pool wrapper, reasoning that the delivery path
+must skip rather than `Err` — but D9's handler already pre-checks the amount **before**
+calling `apply_on`, so validating inside it costs the delivery path nothing and closes the
+hole where Step 8's admin `grant` with `amount = -500` would debit a balance and publish a
+negative delta on a grant. The wrapper's pre-call validation stays, as the
+reject-before-opening-a-transaction optimisation it always should have been:
 
 1. `INSERT INTO wallet.ledger (idempotency_key, player_id, currency, delta, reason, balance_after)
    VALUES ($1,$2::uuid,$3,$4,$5,0) ON CONFLICT (idempotency_key) DO NOTHING RETURNING id::text`
@@ -122,6 +142,17 @@ a balance for a movement it did not describe, with no error. Widening the tuple 
 contract text true: the key identifies the whole movement. A genuine wire replay carries an
 identical payload and still collapses to `Duplicate`; only an *edited* resubmit gets 409,
 which is correct — it is a different movement and deserves its own key.
+
+**The idempotency-key namespace is GLOBAL to the wallet, and the contract must say so
+(added after review).** `UNIQUE (idempotency_key)` carries no `player_id`, so a caller that
+mints one key per *business event* (`"season-3-payout-batch-7"`) and credits 200 players
+under it gets one `Applied` and 199 × 409 — 199 players silently unpaid. Keeping the
+constraint global is deliberate: a cross-player key collision is a caller bug and should
+surface loudly rather than be silently absorbed. But that only works if the contract states
+the scope, so `Movement::idempotency_key`'s doc must say the namespace is the whole wallet
+and callers key per `(player, business event)` — which D9's `starter:{player_id}` already
+does correctly. Do NOT quietly widen the constraint to `(player_id, idempotency_key)`; that
+changes what a Conflict means and would need its own recorded decision.
 
 **Why the ledger insert is first:** it is the dedup gate. If the balance moved first, a
 duplicate key would be detected only *after* double-spending.
@@ -427,11 +458,21 @@ CREATE TABLE IF NOT EXISTS wallet.ledger (
 CREATE INDEX IF NOT EXISTS ledger_player_seq_idx ON wallet.ledger(player_id, seq DESC);
 ```
 
-**Ordering is `seq`, not `at`.** `now()` is `transaction_timestamp()` — evaluated at tx
-start, while the balance row lock is taken later (D3 step 3). Two concurrent movements on
-one `(player, currency)` can commit with `at` in one order and `balance_after` in the other,
-so an `at`-ordered read of an append-only ledger would show a non-monotonic running balance.
-`bigserial` is assigned at insert; `at` is descriptive.
+**Ordering is `seq`, and `seq` MUST be stamped while the balance row lock is held (corrected
+after review).** `now()` is `transaction_timestamp()` — evaluated at tx start — so an
+`at`-ordered read of an append-only ledger can show a non-monotonic running balance. But a
+plain `bigserial` default does **not** fix that: it is assigned during the ledger INSERT
+(D3 step 1), which is a whole round trip **before** the balance lock (D3 step 3). Two
+concurrent credits can then interleave as: T1 inserts (`seq=1`), T2 inserts (`seq=2`), T2
+takes the lock (`balance_after=100`), T1 updates (`balance_after=200`) — and a
+`ORDER BY seq` read shows the running balance going *down* on a credit. So: stamp the
+ordering value in the **same statement that runs under the lock**, i.e. in
+`set_balance_after_tx` (`SET balance_after = $1, seq = nextval('wallet.ledger_seq_seq')`).
+The insert-time default is then a placeholder that is always overwritten before commit; the
+cost is one wasted sequence value per movement, which is nothing, and the gain is that
+ledger order equals balance-application order per `(player, currency)`. Shipping the index
+and this promise while implementing neither is the one thing that is not acceptable — the
+admin drill-down is an auditor's view of money.
 
 `store.rs` — house write/read split: **write methods take `&mut PgConnection`** (so the same
 method serves the pool tx AND Step 6's delivery tx), reads take `&self.pool`. Methods:
@@ -607,6 +648,15 @@ to mutate it mid-test). Dependencies injected through the **real registry key**.
 4. `concurrent_same_key_credits_apply_once` — `#[tokio::test(flavor = "multi_thread", worker_threads = 4)]`,
    two spawned credits with one key; exactly one ledger row, single-application balance. The
    in-tx re-verify arm (D3 step 2) the sequential test never reaches.
+4b. `apply_on_rejects_a_negative_or_zero_amount` — calls `Service::apply_on` **directly** on
+   a pool connection with `Movement { amount: -500, .. }` and `sign = +1`; asserts
+   `Status::Invalid`, zero `wallet.ledger` rows and an unchanged balance. A test that only
+   drives `credit`/`debit` never reaches this branch — and the branch is what stops Step 8's
+   admin `grant` form from debiting on a negative input.
+4c. `ledger_seq_order_matches_balance_order` — two `apply_on` calls on one
+   `(player, currency)` from two connections, interleaved so the second's ledger INSERT lands
+   before the first's balance update; asserts `SELECT balance_after … ORDER BY seq` is
+   non-decreasing for a credit-only sequence. Fails against an insert-time `bigserial`.
 5. `debit_beyond_balance_is_409_and_consumes_no_key` — the CHECK arm; asserts the error is
    `Status::Conflict` and **not** `Internal` (the aborted-tx trap), then that the **same key
    succeeds after a top-up**.
@@ -881,7 +931,10 @@ effort **think hard**.
    only consumer is the admin drill-down and its row shape (which columns, what ordering
    window) is decided by that view. Shipping it now would be an unused method plus an
    unused row struct behind `#[allow(dead_code)]`, guessed against a view that does not
-   exist. `currency_exists_tx` IS shipped in Step 2 as listed (with `#[allow(dead_code)]`
+   exist. **Step 8 must ship it with a hard limit**: unlike `list_balances`/`list_currencies`,
+   which are bounded by the operator-curated catalog, a player's ledger is caller-influenced
+   and unbounded (known gap 1), so deferring the method also defers its bound.
+   `currency_exists_tx` IS shipped in Step 2 as listed (with `#[allow(dead_code)]`
    until Step 6 calls it): unlike `recent_ledger` it has a fixed, zero-ambiguity shape and
    it is the statement that makes the delivery path abort-free, so it belongs beside the
    SQL it protects.
