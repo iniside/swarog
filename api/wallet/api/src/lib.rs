@@ -15,13 +15,15 @@
 //! `my_balances` / `list_currencies` on the player face.
 //!
 //! **Money never moves at a player's own request.** The mutating methods (`credit`,
-//! `debit`) live on the WIRE-ONLY `Wallet` capability — no `#[http]` binding, no caller
-//! `Identity` — so they are reachable ONLY from a peer process over the internal mTLS
-//! edge, never from a game client. `Player` is reads only.
+//! `debit`) carry no `#[http]` binding and no caller `Identity`, so they are reachable
+//! only by a TRUSTED CALLER — in-process through `registry::require` when the consumer is
+//! co-hosted, or from a peer process over the internal mTLS edge in a split — and never
+//! from a game client. Which of the two it is depends on the deployment, not on this
+//! contract: the registry swap is the only difference. `Player` is reads only.
 //!
-//! No consumer in this workspace calls `credit`/`debit` over the wire today, and that is
-//! expected: they exist for the first domain that spends or awards currency. Wallet's own
-//! admin surface does NOT go through them — the portal's remote write is
+//! No consumer in this workspace calls `credit`/`debit` yet, in either topology, and that
+//! is expected: they exist for the first domain that spends or awards currency. Wallet's
+//! own admin surface does NOT go through them — the portal's remote write is
 //! `admin.adminSubmit` into wallet's process, which reaches the same movement authority
 //! in-process.
 //!
@@ -98,10 +100,10 @@ pub const MAX_CURRENCY_CODE_BYTES: usize = 32;
 /// Byte cap on [`Movement::reason`] — the human-readable note written to the ledger row.
 pub const MAX_REASON_BYTES: usize = 256;
 
-/// Upper bound on a single [`Movement::amount`] (10^12 minor units). A movement outside
-/// `1 ..= MAX_MOVEMENT_AMOUNT` is rejected as `Status::Invalid` (400) BEFORE any SQL
-/// runs — the amount is the one numeric input a caller controls, so it is capped at the
-/// contract exactly like the three byte caps above.
+/// Upper bound on a single [`Movement::amount`] (10^12 minor units). On the CALLER-facing
+/// paths a movement outside `1 ..= MAX_MOVEMENT_AMOUNT` is rejected as `Status::Invalid`
+/// (400) BEFORE any SQL runs — the amount is the one numeric input a caller controls, so
+/// it is capped at the contract exactly like the three byte caps above.
 ///
 /// This is not tidiness, it is the reason a `bigint` overflow cannot happen. The balance
 /// update is `amount + $delta` in Postgres; an overflow there is **SQLSTATE 22003**,
@@ -117,6 +119,16 @@ pub const MAX_REASON_BYTES: usize = 256;
 /// The lower bound closes a second hole: the service applies a debit as `-amount`, and
 /// negating `i64::MIN` panics in a debug build (`1 * i64::MAX` and `-1 * i64::MAX` are
 /// both fine — `i64::MIN` is the input that overflows).
+///
+/// **One deliberate exception to the 400: the durable starter-grant path.** Its amount
+/// comes from an operator-editable `config` knob, not from a caller, so an out-of-range
+/// value is a property of the configuration rather than of the event — the handler logs a
+/// warning and returns `Ok(())`, granting nothing. An `Err` inside the delivery
+/// transaction would back off and eventually pause the subscription for every subsequent
+/// player, i.e. reach the very poisoning described above through the guard instead of
+/// through the overflow. So the same out-of-range value is a 400 on the caller-facing
+/// paths and a warn-and-skip on delivery. That asymmetry is the durable handler's
+/// never-poison posture, not an inconsistency.
 pub const MAX_MOVEMENT_AMOUNT: i64 = 1_000_000_000_000;
 
 /// The wallet module's SERVER-side capability: reading any player's balances and moving
