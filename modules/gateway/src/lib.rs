@@ -125,6 +125,14 @@ const DEFAULT_ADMISSION_BUDGET: Duration = Duration::from_millis(5000);
 /// (or a describe change) is picked up within seconds without restarting the front door, but
 /// not per-request. A core-leaf constant (never reads env — Hard Constraint 1/5); this is
 /// dev-fleet scaffolding, so a fixed value is sufficient.
+///
+/// SCOPE — what refreshes is each peer's MANIFEST, not the fleet. The per-provider peer
+/// ADDRESS SET is the BOOT snapshot `opsapi::PEER_SLOT` carries (contributed in `init`
+/// before any I/O, so it cannot re-resolve), exactly as for the slot-built C2 table — see
+/// the SHARED-VS-SEPARATE note on the dispatch pool. So "dynamic route table" means the
+/// OPS a known peer advertises can change while the process runs; a scale event that adds
+/// or moves an instance reaches HTTP dispatch on the next process boot. Deliberate for D2;
+/// a live route-table re-resolve is out of scope.
 const DESCRIBE_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Bound on ONE peer's `__describe` fetch inside a refresh pass ([`DescribeRouter::refresh_once`]).
@@ -1393,6 +1401,12 @@ type DescribeFetcher = Arc<dyn Fn(String, Vec<String>) -> DescribeFuture + Send 
 /// per provider over its address set and calls `remote::describe` on it. A persistent per-
 /// provider caller is what makes the "peer DOWN at boot, UP later" property work — the Pool
 /// reconnects internally, so a later refresh's describe succeeds without rebuilding anything.
+///
+/// SCOPE — "DOWN at boot, UP later" is about REACHABILITY of an address already known at
+/// boot, never about discovering a new one. The address set reaching this fetcher is the
+/// `opsapi::PEER_SLOT` boot snapshot (see [`DESCRIBE_REFRESH_INTERVAL`]), and the pool is
+/// keyed by provider and REUSED across passes — so a changed address set for an existing
+/// provider is not picked up either. Deliberate for D2; a live re-resolve is out of scope.
 fn production_describe_fetcher() -> DescribeFetcher {
     let callers: Arc<Mutex<HashMap<String, Arc<dyn Caller>>>> = Arc::new(Mutex::new(HashMap::new()));
     Arc::new(move |provider: String, addrs: Vec<String>| {

@@ -768,6 +768,14 @@ and the `weles-managed-gateway` verify stage now run on macOS.
   pool/selection/health is the real remaining work). Do NOT add a `host` field to
   `fleet.toml` — the address authority is the agent's resolve answer, not the
   manifest (see the 2026-07-21b single-host errata at the top of this file).
+  **Known gap (2026-07-28) — the replica path has no live single-run test.** Nothing
+  in the tree exercises `replicas: 2` → mint → `weles up` → `/resolve` returns TWO
+  addresses → the client spreads across both, in one run. The split-proof harness does
+  assert cross-instance behaviour, but its second instance is HAND-BUILT by the harness
+  (`tools/splitproof/src/main.rs`, the `replicas_exactly_once` area) and never goes
+  through weles minting or resolve — so it proves the module-side property, not weles'
+  replica path. This is deferred M2 scope, consistent with "Not in M1: replicas" below;
+  it is a missing proof, not a regression in shipped behaviour.
 - **Round-robin LB is not "a field change".** Re-resolution is cheap — `Stub`
   holds `peer_addr` as an unparsed `String` and parses at dial, so swapping the
   string for a resolver call is small. **Load balancing is not:** N live instances
