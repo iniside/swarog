@@ -5,14 +5,13 @@ metadata:
   node_type: memory
   type: project
   originSessionId: 88cdd953-b406-40a0-8ab2-6c7eb07acece
-  modified: 2026-07-22T09:48:06.042Z
+  modified: 2026-07-21T13:48:54.316Z
 ---
 
-`.claude/agents/` holds five specialized personas — three built 2026-07-13 from
+`.claude/agents/` holds four specialized personas — three built 2026-07-13 from
 [[core-failure-taxonomy]], plus **mockup-implementer** (2026-07-15, built after the
-mockup-fidelity failures in [[follow-uilayout-mockup-faithfully]]) and
-**test-author** (2026-07-22, ported from ArcGame — see [[split-impl-and-tests]]) —
-to close the gaps generic agents missed:
+mockup-fidelity failures in [[follow-uilayout-mockup-faithfully]]) — to close the
+gaps generic agents missed:
 
 - **core-implementer** — authority-first implementation of a fully-specified step/fix.
   Locate the deciding place BEFORE writing; STOP on hack-on-hack; prove the failing
@@ -23,9 +22,24 @@ to close the gaps generic agents missed:
   NEW standalone crates (weles platform containment counted), not only literal
   `core/*` paths; `general-purpose` agents are for research only, never a
   code-writing lane. "It's not core/" is not an exemption.
+  **Recydywa #2 (2026-07-17, macOS-port rollout):** dispatched a `[sonnet]`-tagged
+  code lane (a Postgres provisioning shell script) to `general-purpose`, rationalising
+  "docs/shell aren't core" — the exact banned exemption above. The operative rule,
+  no ambiguity left: a plan tag names the MODEL, never the agent type. `[sonnet]`
+  code lane = `core-implementer` with `model:"sonnet"`; `[opus]` = `core-implementer`
+  with `model:"opus"`. `core-implementer` accepts mechanical work too — the "NOT
+  mechanical rename sweeps" note is tier-economy guidance, NOT a route back to
+  `general-purpose`. There is NO code-writing lane that legitimately uses
+  `general-purpose`. Docs-only edits are the sole non-code exception.
 - **core-reviewer** — class-keyed adversarial review routed by files-touched to the
   taxonomy classes; attacks the fix's OWN new seam. The reliable local "second
   independent reviewer" (Codex was flaky, ~70%). Use after any core/cross-seam diff.
+  **Recydywa (2026-07-21, weles replicas/routing plan):** dispatched the grumpy
+  Plan-Writing-Workflow step-5 reviewer to `general-purpose` — the hook blocked it.
+  Adversarial review of a PLAN (not only a code diff) ALSO goes to `core-reviewer`,
+  never `general-purpose`. The guardrail is explicit: "a code-diff or plan review sent
+  to general-purpose instead of core-reviewer" is a FAIL. Plan-review = `core-reviewer`,
+  `model:` ≥ author tier, effort embedded (doesn't inherit).
 - **proof-auditor** — audits the PROOF not the code (coverage-gap/false-pass/
   notapplicable — the verify-net class that ships bugs green). Use on diffs touching
   tests or verify stages, or that claim "proven".
@@ -35,12 +49,6 @@ to close the gaps generic agents missed:
   mechanical. Orchestration lives in the `mockup-implementation` skill
   (`.claude/skills/mockup-implementation/SKILL.md`) — invoke it for any "make it
   look like the mockup" task.
-- **test-author** — the ONLY lane that writes tests, on a landed+compiling diff,
-  as a SEPARATE plan step after the impl it covers (never bundled). Proves each
-  test runs the previously-wrong branch on the at-risk topology (split via a
-  `tools/splitproof` assertion, not a monolith-only test); reports pass/fail
-  counts, no fix-everything-red loop. Default `model:"sonnet"`; escalate for a
-  novel harness. See [[split-impl-and-tests]].
 
 **Why:** the remediation showed double hostile review WORKED but was costly (46 commits);
 the real disease was authorless multi-commit chains (lock/lease 8x) + gates going green.
