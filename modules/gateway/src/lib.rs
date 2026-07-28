@@ -126,6 +126,71 @@ const DEFAULT_ADMISSION_BUDGET: Duration = Duration::from_millis(5000);
 /// dev-fleet scaffolding, so a fixed value is sufficient.
 const DESCRIBE_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 
+/// Grace given to the describe-refresh task to observe the stop signal before
+/// [`Gateway::stop`] aborts it. Reuses the 2s shape of `remote`'s `PROBE_STOP_GRACE`
+/// (the other module-owned background loop torn down this way).
+///
+/// INVARIANT (the WHOLE `stop`, not just this grace): `lifecycle::App` wraps each module in
+/// `timeout(MODULE_STOP_GRACE_MS, m.stop())` and DROPS the future on elapse, so the SUM of
+/// everything `Gateway::stop` awaits must stay strictly under it. `Gateway::stop` has exactly
+/// two sequential awaits, each separately bounded:
+///
+/// ```text
+///   DESCRIBE_STOP_GRACE  2000ms   (task join, then abort)
+/// + POOL_STOP_BUDGET     2000ms   (concurrent dispatch-pool teardown)
+/// = 4000ms  <  5000ms = MODULE_STOP_GRACE_MS (default)   → 1000ms headroom
+/// ```
+///
+/// Adding a third awaited step to `stop`, or raising either constant, requires re-checking
+/// that sum. If it exceeded the budget the app would abandon `stop` mid-flight — the very
+/// leak this ownership exists to close, plus (for pools) a teardown strictly worse than none
+/// at all (see [`RouteTable::stop_pools`]).
+///
+/// MID-PASS STOP: the loop's `select!` observes the stop signal only BETWEEN passes (at
+/// `ticker.tick()`), never inside `refresh_once` — the `biased;` there only guarantees the
+/// stop wins at that boundary, it cannot interrupt a pass already running. A stop fired
+/// mid-pass is therefore NOT graceful today: `refresh_once` is serial and unbounded per peer,
+/// so a peer that accepts the QUIC stream then stalls holds the pass up to `EDGE_STREAM_GRACE`
+/// (30s) and the task is force-ABORTED after this 2s grace (dropping whatever the pass was
+/// doing). That is why the per-peer fetch bound (added next, alongside
+/// `DESCRIBE_REFRESH_INTERVAL`) must stay well under this 2s: only then does the common case
+/// drain cooperatively instead of routinely force-aborting.
+///
+/// KNOWN GAP (repo-wide, unenforced convention — NOT closed here): the
+/// `< MODULE_STOP_GRACE_MS` invariant above is prose only. `core/app` parses that env var
+/// with no floor or clamp, so `MODULE_STOP_GRACE_MS=1000` inverts the relation: `App::stop`
+/// drops this whole `stop` future at 1s, before the inner 2s timeout fires, leaving the
+/// `JoinHandle` detached and never aborted — the original leak, restored by an env var. The
+/// same unenforced convention already exists at `modules/scheduler/src/lib.rs` (4s task
+/// grace) and `core/remote/src/lib.rs` (`PROBE_STOP_GRACE`), so the fix belongs in `core/app`
+/// (a floor on the parsed knob, or a published minimum) rather than in any one module.
+const DESCRIBE_STOP_GRACE: Duration = Duration::from_secs(2);
+
+/// Budget for tearing down ALL of the installed route table's dispatch `remote::Pool`s
+/// ([`RouteTable::stop_pools`]) — the second and last awaited step of [`Gateway::stop`]. See
+/// the arithmetic block on [`DESCRIBE_STOP_GRACE`]: 2000 + 2000 < 5000ms, the whole point
+/// being that `App::stop` must never be the thing that cancels this.
+///
+/// It is a WHOLE-fan-out budget, not per pool, which is why the fan-out is concurrent: a
+/// single `Pool::stop` can legitimately take ~2s (`remote`'s probe grace) and, with a
+/// half-open peer, up to `edge`'s 5s `DIAL_DEADLINE` on the connection close. Concurrency
+/// makes the fleet's provider count irrelevant to the budget; the timeout then bounds the
+/// worst straggler. A pool aborted by this budget loses only its graceful CONNECTION_CLOSE —
+/// the process is about to exit regardless.
+///
+/// KNOWN GAP (belongs in `core/remote`, deliberately NOT closed here): `Pool::stop` empties
+/// `instances` but sets no `stopped` fence, and `stop_pools` drains `pools` while leaving the
+/// same pool reachable in `remotes`. A dispatch arriving AFTER stop would therefore reach
+/// `Pool::call` → `refresh()`, re-resolve the constant address list, reconcile from empty and
+/// MINT fresh instances — new probe tasks, new QUIC dials — with no entry in `pools` and no
+/// owner able to stop them. This is unreachable today ONLY because of an ordering invariant
+/// owned by another crate: `app::run` fully returns from `serve_http` and `shutdown(grace)`s
+/// BOTH QUIC fronts BEFORE `ordered_teardown` calls any module's `stop`, so no request can be
+/// in flight here. The robust fix is a `stopped: AtomicBool` on `remote::Pool` checked in
+/// `refresh()`/`call()` (fail with the existing all-down error). `remote::Stub::stop` has the
+/// identical hole, so the fence belongs there, once, for both.
+const POOL_STOP_BUDGET: Duration = Duration::from_secs(2);
+
 // ---------------------------------------------------------------------------
 // Module
 // ---------------------------------------------------------------------------
@@ -176,6 +241,17 @@ pub struct Gateway {
     /// request). Interior-mutable because `Module` phases take `&self`; set exactly
     /// once in `init`, read in `start`.
     front_door: OnceLock<Arc<FrontDoor>>,
+    /// Stop signal for the D2 describe-refresh loop (`Some` only between `start` and
+    /// `stop`, and only on the describe-routing path). Interior-mutable because the
+    /// `Module` phases take `&self`; `stop` `take`s it, so a second `stop` is a no-op.
+    stop_tx: Mutex<Option<tokio::sync::watch::Sender<bool>>>,
+    /// Join handle of that same loop — the module OWNS the task it spawns (lifecycle
+    /// constraint 8), so `stop` joins it (or aborts it after [`DESCRIBE_STOP_GRACE`]),
+    /// ending the re-fetch and dropping the describe-FETCHER pools the task alone holds.
+    /// The DISPATCH pools are NOT covered by this handle — they belong to the installed
+    /// `RouteTable` behind the long-lived `FrontDoor`; `stop` releases those separately
+    /// through [`FrontDoor::stop_pools`].
+    task: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl Gateway {
@@ -192,6 +268,8 @@ impl Gateway {
             admission_budget: None,
             describe_routing: false,
             front_door: OnceLock::new(),
+            stop_tx: Mutex::new(None),
+            task: Mutex::new(None),
         }
     }
 
@@ -206,6 +284,8 @@ impl Gateway {
             admission_budget: None,
             describe_routing: false,
             front_door: OnceLock::new(),
+            stop_tx: Mutex::new(None),
+            task: Mutex::new(None),
         }
     }
 
@@ -343,11 +423,66 @@ impl Module for Gateway {
             let peers: Vec<opsapi::PeerAddr> = ctx.slots().contributions(opsapi::PEER_SLOT);
             let mut router = DescribeRouter::new(front_door, peers, production_describe_fetcher());
             router.refresh_once().await?;
-            router.spawn();
+            // Own the loop (lifecycle constraint 8): keep both the stop sender and the join
+            // handle so `stop` tears the task down instead of leaving it running past module
+            // teardown with the `Arc<FrontDoor>` + per-provider `Pool`s alive.
+            let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+            let task = router.spawn(stop_rx);
+            *self.stop_tx.lock().unwrap_or_else(|e| e.into_inner()) = Some(stop_tx);
+            *self.task.lock().unwrap_or_else(|e| e.into_inner()) = Some(task);
         } else {
             // Monolith/standalone: eager validation of the slot-built table (a collision is a
             // loud startup failure, not a first-request surprise). UNCHANGED.
             front_door.build_table()?;
+        }
+        Ok(())
+    }
+
+    /// Tears down BOTH background resources this module owns, in this order:
+    ///
+    /// 1. the D2 describe-refresh task (grace-then-abort, mirroring `remote::Stub::stop`):
+    ///    signal, join within [`DESCRIBE_STOP_GRACE`], else abort and await the abort so the
+    ///    task is not leaked;
+    /// 2. the currently-installed route table's per-provider dispatch `remote::Pool`s
+    ///    ([`FrontDoor::stop_pools`]) — each pool runs a probe task per instance plus a live
+    ///    QUIC connection, and NOTHING releases them during teardown: the `FrontDoor` (and
+    ///    through it the table and its pools) is retained by [`Gateway::front_door`], the
+    ///    mounted axum router, and the player-edge handler, all of which outlive `stop`. The
+    ///    Arcs do of course die when the process later returns from `main` — so what this
+    ///    step buys is not leak-avoidance but a graceful per-instance CONNECTION_CLOSE to
+    ///    each peer while there is still a runtime to send it on (see
+    ///    [`RouteTable::stop_pools`], and [`POOL_STOP_BUDGET`] for why it is bounded).
+    ///
+    /// The order matters: the refresh task must be down FIRST, or a pass in flight could
+    /// install a table whose adopted pools were just stopped. Both steps are bounded and
+    /// their sum is checked against `MODULE_STOP_GRACE_MS` — see [`DESCRIBE_STOP_GRACE`].
+    ///
+    /// Safe on every path where a resource was never created (monolith/standalone routing has
+    /// no task; a front door that never served has no pools; a start-unwind before `start`
+    /// ran has neither): the `Option::take`/`drain` guards leave nothing behind, so a second
+    /// `stop` is a no-op.
+    async fn stop(&self, _ctx: &Context) -> anyhow::Result<()> {
+        if let Some(tx) = self.stop_tx.lock().unwrap_or_else(|e| e.into_inner()).take() {
+            let _ = tx.send(true);
+        }
+        // Take the handle out into a local so the std guard is dropped BEFORE the await
+        // below (a `MutexGuard` is not `Send` and must never cross `.await`).
+        let task = self.task.lock().unwrap_or_else(|e| e.into_inner()).take();
+        if let Some(mut task) = task {
+            match tokio::time::timeout(DESCRIBE_STOP_GRACE, &mut task).await {
+                Ok(_) => {}
+                Err(_) => {
+                    // A stop fired mid-`refresh_once` cannot be observed until the pass ends
+                    // (see [`DESCRIBE_STOP_GRACE`]); force the task down rather than hold the
+                    // app's whole module-stop budget.
+                    task.abort();
+                    let _ = task.await; // await the abort so we don't leak the task
+                }
+            }
+        }
+        // Then the dispatch pools — only after the refresh task is provably down.
+        if let Some(front_door) = self.front_door.get() {
+            front_door.stop_pools().await;
         }
         Ok(())
     }
@@ -454,6 +589,26 @@ impl FrontDoor {
             // Managed describe gateway: whatever the last successful refresh installed (seeded
             // empty until the first fetch). Never held across an await — cloned out here.
             TableCell::Dynamic(cell) => cell.read().unwrap().clone(),
+        }
+    }
+
+    /// Gracefully stops the currently-materialized route table's dispatch pools
+    /// ([`RouteTable::stop_pools`]). Reads the cell WITHOUT materializing it: a `Slots` front
+    /// door that never served a request has no table (and thus no pools), and `stop` must not
+    /// build one — `table()`'s lazy build would run a collision `expect` during teardown.
+    async fn stop_pools(&self) {
+        // The RwLock guard is a temporary of this `let` statement, so it is dropped before
+        // the await below (the never-held-across-await rule). Poison-tolerant like the rest
+        // of the teardown path: a panic elsewhere must not turn this into a second panic that
+        // unwinds `App::stop` and skips every remaining module's teardown.
+        let table = match &self.table {
+            TableCell::Slots(cell) => cell.get().cloned(),
+            TableCell::Dynamic(cell) => {
+                Some(cell.read().unwrap_or_else(|e| e.into_inner()).clone())
+            }
+        };
+        if let Some(table) = table {
+            table.stop_pools().await;
         }
     }
 
@@ -730,11 +885,24 @@ struct RouteTable {
     /// Lazily-built per-provider callers (a self-healing `remote::Pool` over the instance
     /// set), shared across requests to that provider and PERMANENT for the process life —
     /// an entry is NEVER evicted on a call error (the pool recovers a dead instance
-    /// internally; see [`RouteTable::dispatch`]). Torn down only when the table drops.
+    /// internally; see [`RouteTable::dispatch`]). Torn down only at module `stop`
+    /// ([`RouteTable::stop_pools`], via the concrete handles in [`RouteTable::pools`]).
     /// A `std::sync::Mutex` locked only for synchronous get/insert/remove — never
     /// held across an await (the `keys.rs` cache rule), so a slow dial to one
     /// provider can never block cache hits for the others.
     remotes: Mutex<HashMap<String, Arc<dyn Caller>>>,
+    /// The TEARDOWN handle for the subset of [`RouteTable::remotes`] this module actually
+    /// minted (provider → the concrete `remote::Pool` behind the type-erased `Arc<dyn
+    /// Caller>`). `remotes` is deliberately type-erased (unit tests inject fake callers), so
+    /// the erased side cannot be stopped; a `Pool` is only cleaned up by its `Drop` safety
+    /// net (probe ABORT, no connection close) and only once its LAST `Arc` goes — which, for
+    /// the installed table, is long after module teardown (the `FrontDoor` is retained by
+    /// `Gateway::front_door`, the mounted axum router, and the player handler). Keeping the
+    /// concrete `Arc<remote::Pool>` here gives [`RouteTable::stop_pools`] the graceful
+    /// `Pool::stop` (probe grace-then-abort + connection close) the owning module calls.
+    /// Carried across a describe refresh together with its `remotes` entry
+    /// ([`RouteTable::adopt_remote`]) so a pool that survives rebuilds stays stoppable.
+    pools: Mutex<HashMap<String, Arc<remote::Pool>>>,
     /// Per-provider dial flights (the `keys.rs` singleflight shape): while one
     /// request dials a provider, concurrent requests to the SAME provider queue on
     /// that provider's flight mutex and re-check the cache after it; requests to
@@ -857,6 +1025,7 @@ impl RouteTable {
             invokers: Arc::new(invokers),
             peers,
             remotes: Mutex::new(HashMap::new()),
+            pools: Mutex::new(HashMap::new()),
             flights: Mutex::new(HashMap::new()),
         })
     }
@@ -891,7 +1060,8 @@ impl RouteTable {
     /// **No evict-on-error (C2).** The cached per-provider caller is a self-healing
     /// `remote::Pool` (per-instance `Reconnecting` reconnect + probe-fed skip-dead), so
     /// it is PERMANENT for the process life — built once by [`remote_caller`], torn down
-    /// only when the [`RouteTable`] drops (`remote::Pool`'s own `Drop`). A per-instance
+    /// only at module `stop` ([`RouteTable::stop_pools`]; `remote::Pool`'s own `Drop` is
+    /// merely the probe-abort safety net for a pool that is dropped instead). A per-instance
     /// or transient call error must NOT tear the whole pool down: doing so would defeat
     /// the pool's skip-dead (the aborted probe never completes to mark the dead instance
     /// non-selectable) and, worse, a fresh pool resets the round-robin cursor to 0 —
@@ -981,9 +1151,127 @@ impl RouteTable {
                 Box::pin(async move { Ok(addrs.clone()) })
             })
         };
-        let caller: Arc<dyn Caller> = Arc::new(remote::Pool::new(list));
-        self.remotes.lock().unwrap().insert(provider.to_string(), caller.clone());
-        Ok(caller)
+        Ok(self.insert_caller(provider, Arc::new(remote::Pool::new(list))))
+    }
+
+    /// Publishes a freshly-minted pool as BOTH this table's dispatch caller and its teardown
+    /// handle, returning the type-erased caller.
+    ///
+    /// ONE function on purpose: `remotes` (type-erased, dispatch) and `pools` (concrete,
+    /// teardown) are two maps under two independent locks, and the invariant "a pool visible
+    /// in `remotes` is stoppable via `pools`" is exactly what [`RouteTable::stop_pools`]
+    /// rests on. Two inserts at the call site would make that invariant depend on their
+    /// ORDER — publish `remotes` first and a concurrent [`RouteTable::adopt_remote`] (which
+    /// reads `remotes` first) can carry a live pool into the next table WITHOUT its teardown
+    /// handle, silently restoring the leak with no compile error and no test failure. Keeping
+    /// both inserts here means the order cannot be split by a later edit.
+    fn insert_caller(&self, provider: &str, pool: Arc<remote::Pool>) -> Arc<dyn Caller> {
+        let caller: Arc<dyn Caller> = pool.clone();
+        self.publish_caller(provider, Some(pool), caller.clone());
+        caller
+    }
+
+    /// The SINGLE publisher for both maps (see [`RouteTable::insert_caller`] for why the two
+    /// inserts must never be split across call sites). `pool` is `None` for a caller with no
+    /// teardown handle — the unit tests' fake `Caller`s, carried for dispatch only.
+    fn publish_caller(
+        &self,
+        provider: &str,
+        pool: Option<Arc<remote::Pool>>,
+        caller: Arc<dyn Caller>,
+    ) {
+        // Teardown handle FIRST, dispatch entry second: a reader that sees the caller in
+        // `remotes` always sees its pool in `pools` too.
+        if let Some(pool) = pool {
+            self.pools
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(provider.to_string(), pool);
+        }
+        self.remotes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(provider.to_string(), caller);
+    }
+
+    /// Adopts `provider`'s live caller from a previously-installed table — the C2 no-evict
+    /// carry-over at the describe-refresh boundary — together with its teardown handle when
+    /// the caller is a table-minted [`remote::Pool`]. Without the second half a pool that
+    /// survives rebuilds (the steady-state case) would be reachable for dispatch but
+    /// invisible to [`RouteTable::stop_pools`]. Returns `false` when the previous table never
+    /// built one (that provider simply dials lazily on its next request).
+    fn adopt_remote(&self, provider: &str, from: &RouteTable) -> bool {
+        let Some(caller) = from.cached_remote(provider) else {
+            return false;
+        };
+        // Bind out of each lock before taking the next — no guard is ever held across
+        // another table's lock (nor, here, across an await: this whole fn is synchronous).
+        let carried = from
+            .pools
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(provider)
+            .cloned();
+        // Republish through the single publisher (pool + caller, in that order) so the new
+        // table's two maps cannot disagree. `carried` is `None` for a non-pool `Caller` (the
+        // unit tests' fakes): carried for dispatch, nothing to tear down. The ORIGINAL
+        // `caller` object is moved across, not a re-erased clone, so identity is preserved.
+        self.publish_caller(provider, carried, caller);
+        true
+    }
+
+    /// Gracefully tears down every dispatch [`remote::Pool`] this table owns: per-instance
+    /// probe grace-then-abort + connection close (`Pool::stop`, the same call
+    /// `remote::Stub::stop` makes). Called by [`Gateway::stop`]. `drain`s, so a second call is
+    /// a no-op. Only the CURRENTLY-installed table's pools are covered; a pool superseded by
+    /// an earlier refresh (its provider's describe changed, so it was neither adopted nor
+    /// reachable) already had its last `Arc` dropped at that swap, where `Pool`'s `Drop`
+    /// aborted its probes.
+    ///
+    /// What this buys, precisely: NOT preventing an eternal leak — after `ordered_teardown`
+    /// the process returns from `main` and every `Arc` dies anyway — but a graceful
+    /// per-instance CONNECTION_CLOSE to each peer before exit, instead of peers discovering
+    /// the front door's death by timeout. Cancellation destroys exactly that value, which is
+    /// why the whole fan-out is bounded by [`POOL_STOP_BUDGET`] and runs CONCURRENTLY: serial
+    /// `Pool::stop` is unbounded in practice (each instance is `stop_probe`, up to `remote`'s
+    /// 2s probe grace, PLUS `Reconnecting::close` awaiting a tokio mutex that a dial holds for
+    /// up to `edge`'s 5s `DIAL_DEADLINE`), so ONE half-open peer among 11 providers would burn
+    /// the module's whole stop budget: `App::stop` would cancel this future, providers after
+    /// the stuck one would never be stopped at all, and the stuck one would be worse off than
+    /// unstopped — `Pool::stop` has already `mem::take`n its instances, so they sit in the
+    /// cancelled future's frame, invisible even to `Drop`'s probe-abort net.
+    async fn stop_pools(&self) {
+        // Drain into a local so the std guard is dropped BEFORE the awaits below.
+        let pools: Vec<Arc<remote::Pool>> = {
+            let mut guard = self.pools.lock().unwrap_or_else(|e| e.into_inner());
+            guard.drain().map(|(_, p)| p).collect()
+        };
+        if pools.is_empty() {
+            return;
+        }
+        let total = pools.len();
+        // `JoinSet` rather than a `futures` combinator: one slow pool no longer delays the
+        // others, and the set ABORTS every still-running stop when it drops at the end of this
+        // function — including the timeout path below — so nothing is left detached.
+        let mut set = tokio::task::JoinSet::new();
+        for pool in pools {
+            set.spawn(async move { pool.stop().await });
+        }
+        let mut done = 0usize;
+        let drain = async {
+            while set.join_next().await.is_some() {
+                done += 1;
+            }
+        };
+        if tokio::time::timeout(POOL_STOP_BUDGET, drain).await.is_err() {
+            tracing::warn!(
+                stopped = done,
+                total,
+                budget_ms = POOL_STOP_BUDGET.as_millis(),
+                "gateway: dispatch pool teardown exceeded its budget; aborting the rest \
+                 (peers will see the connection drop instead of a graceful close)"
+            );
+        }
     }
 
     /// Serves `provider`'s client from the cache. The lock is never held across an
@@ -1172,15 +1460,14 @@ impl DescribeRouter {
         // the new table's `remotes` with it — that Arc IS the live `Pool`, so its instances +
         // cursor survive. Only a provider whose describe/addrs actually changed (re)dials, and
         // then lazily on its next request. `flights` stay empty (transient dial coordination,
-        // self-GC); a provider never seen (`cached_remote` `None`) simply builds lazily as before.
+        // self-GC); a provider never seen (`adopt_remote` `false`) simply builds lazily as before.
+        // The adoption carries the pool's TEARDOWN handle across too, so a pool that survives
+        // rebuilds stays reachable for `Gateway::stop` (see [`RouteTable::adopt_remote`]).
         if let Some(prev) = &self.last_built {
             let installed = self.front.table();
-            let mut remotes = table.remotes.lock().unwrap();
             for (provider, entry) in &self.last_known {
                 if prev.get(provider) == Some(entry) {
-                    if let Some(caller) = installed.cached_remote(provider) {
-                        remotes.insert(provider.clone(), caller);
-                    }
+                    table.adopt_remote(provider, &installed);
                 }
             }
         }
@@ -1192,14 +1479,40 @@ impl DescribeRouter {
     /// Spawns the periodic re-fetch loop on the [`DESCRIBE_REFRESH_INTERVAL`] cadence. A build
     /// collision on a later pass is logged and skips the swap (keep-last) — it cannot retro-
     /// actively fail an already-serving process, but it never installs a corrupt table either.
-    fn spawn(mut self) {
+    ///
+    /// Returns the [`tokio::task::JoinHandle`] so the OWNING module (`Gateway`) can join or
+    /// abort it in `stop` — a detached task would keep re-fetching every peer's describe (and
+    /// keep its describe-FETCHER pools' connections + probe tasks alive, since those DO drop
+    /// with the task) past module teardown. The DISPATCH pools are a separate ownership
+    /// problem: they live in the installed `RouteTable`, which the `FrontDoor` — retained by
+    /// `Gateway::front_door`, the axum router and the player handler — keeps alive well past
+    /// this task, so `Gateway::stop` stops them explicitly via [`FrontDoor::stop_pools`].
+    /// `stop_rx` is observed only between passes; see [`DESCRIBE_STOP_GRACE`].
+    fn spawn(
+        mut self,
+        mut stop_rx: tokio::sync::watch::Receiver<bool>,
+    ) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(DESCRIBE_REFRESH_INTERVAL);
             // The first tick fires immediately; skip it — the synchronous `refresh_once` in
             // `Gateway::start` already ran one pass before serving began.
             ticker.tick().await;
             loop {
-                ticker.tick().await;
+                tokio::select! {
+                    // `biased`: stop ALWAYS wins a tie. `tokio::time::interval` defaults to
+                    // `MissedTickBehavior::Burst`, so after a pass longer than
+                    // `DESCRIBE_REFRESH_INTERVAL` the ticker is backlogged and `tick()` is
+                    // immediately ready on every loop entry; an unbiased `select!` picks
+                    // uniformly at random among ready branches, which would start ANOTHER
+                    // pass instead of stopping with probability ~0.5 — a nondeterministic
+                    // graceful stop that then force-aborts at `DESCRIBE_STOP_GRACE`.
+                    biased;
+                    // `changed()` also resolves (as `Err`) when the sender is dropped —
+                    // i.e. the owning `Gateway` is gone. Either way the loop must end,
+                    // so both outcomes break rather than spin on a closed channel.
+                    _ = stop_rx.changed() => break,
+                    _ = ticker.tick() => {}
+                }
                 if let Err(e) = self.refresh_once().await {
                     tracing::error!(
                         error = %e,
@@ -1207,7 +1520,7 @@ impl DescribeRouter {
                     );
                 }
             }
-        });
+        })
     }
 }
 
