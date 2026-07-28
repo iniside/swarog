@@ -115,6 +115,9 @@ members = [
     "api/audit/rpc",
     "api/scheduler/events",
     "api/scheduler/rpc",
+    "api/wallet/api",
+    "api/wallet/rpc",
+    "api/wallet/events",
     # Module implementations — private, reachable only from a cmd/ binary.
     "modules/config",
     "modules/apikeys",
@@ -309,6 +312,9 @@ ratingapi = { path = "api/rating/api" }
 ratingrpc = { path = "api/rating/rpc" }
 leaderboardapi = { path = "api/leaderboard/api" }
 leaderboardrpc = { path = "api/leaderboard/rpc" }
+walletapi = { path = "api/wallet/api" }
+walletrpc = { path = "api/wallet/rpc" }
+walletevents = { path = "api/wallet/events" }
 
 # ---- Generated ops catalog (neutral leaf data crate; imports nothing). ----
 opscatalog = { path = "opscatalog" }

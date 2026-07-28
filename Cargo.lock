@@ -4599,6 +4599,41 @@ dependencies = [
 ]
 
 [[package]]
+name = "walletapi"
+version = "0.1.0"
+dependencies = [
+ "adminapi",
+ "async-trait",
+ "opsapi",
+ "rpc-macro",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "walletevents"
+version = "0.1.0"
+dependencies = [
+ "bus",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "walletrpc"
+version = "0.1.0"
+dependencies = [
+ "adminrpc",
+ "async-trait",
+ "edge",
+ "opsapi",
+ "registry",
+ "rpc-macro",
+ "serde_json",
+ "walletapi",
+]
+
+[[package]]
 name = "want"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

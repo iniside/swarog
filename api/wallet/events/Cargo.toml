@@ -1,0 +1,17 @@
+[package]
+name = "walletevents"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The published event vocabulary of the wallet domain: the Changed payload + its
+# topic descriptor. The ONLY surface consumers (audit today) share with wallet;
+# nobody imports the wallet implementation. It rides the DURABLE plane
+# (bus::emit_tx, atomic with the ledger row + balance write), so the payload is
+# serde (the transport collapses it to JSON at the emit_tx/on_tx boundary). Imports
+# only the `bus` leaf.
+[dependencies]
+bus = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
