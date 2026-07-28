@@ -174,6 +174,22 @@ pattern).
   is why Step 4's per-peer timeout must stay well under 2s — so shutdown doesn't
   routinely force-abort. Note it where the const is defined.
 
+**ERRATA (2026-07-28, landed in `3311381`) — scope widened during review.** The step as
+planned closed only the describe-refresh task. Review found the commit's own doc claimed
+it also closed the DISPATCH pools, which was false: those live in `RouteTable.remotes`
+behind the long-lived `FrontDoor` (retained by `Gateway::front_door`, the axum router and
+the player handler), so their `probe_loop` tasks and QUIC connections outlived module
+`stop`. Fixed in the same rollout (sibling-sweep rule) rather than documented away:
+`RouteTable` gained `pools: Mutex<HashMap<String, Arc<remote::Pool>>>` published together
+with `remotes` through one `publish_caller` (order is load-bearing), `adopt_remote` carries
+the concrete handle across the C2 no-evict rebuild, and `stop_pools` tears them down
+CONCURRENTLY (`JoinSet`) under `POOL_STOP_BUDGET = 2s` — serial teardown could exceed
+`MODULE_STOP_GRACE_MS`, and cancellation there is strictly worse than no teardown (a
+`mem::take`n instance set is invisible even to `Pool::Drop`). Two known gaps recorded, not
+fixed: no floor on `MODULE_STOP_GRACE_MS` in `core/app`, and no `stopped` fence on
+`remote::Pool` (unreachable today only because `app::run` drains HTTP and both QUIC fronts
+before `ordered_teardown`; `remote::Stub::stop` has the identical hole).
+
 **(b) Why now / order:** before Step 4/5 because all three touch the same
 `DescribeRouter`/`build_describe_table` region of `modules/gateway/src/lib.rs`; doing
 them in one sequential lane avoids edit conflicts. Lifecycle ownership is the
@@ -208,6 +224,24 @@ that, just add the `stop_rx` param and the `select!`. The `Arc<FrontDoor>` + per
     kept anyway, it MUST satisfy that inequality; state it in a comment.
 - Delete the KNOWN-GAP comment (`:1138-1142`) — it is now closed; replace with a
   one-line note of the bound.
+
+**ERRATA (2026-07-28, landed in `41c3344`) — this step's constant rationale was WRONG
+and is reversed.** The plan derived `DESCRIBE_PEER_TIMEOUT` from an UPPER bound only
+("well under the 2s stop-abort") and missed the LOWER bound: the wrapped future is
+`remote::describe` → `Pool::call` → `Reconnecting::get()` → `edge::Client::dial`, which
+allows `DIAL_DEADLINE = 5s` (`core/edge/src/client.rs:34,82`), and `Reconnecting::get`
+caches the connection only on success (`core/remote/src/lib.rs:331-336`) — so a cancel
+at 1500ms DISCARDS the handshake instead of resuming it. A peer whose cold dial takes
+~1.8s (legitimate by edge's own budget) would never enter the boot table, and every op
+to it would 404 — the exact "silently dropping legitimately-slow-but-reachable peers"
+failure this step's own text warned about. Re-derived chain as landed:
+`DESCRIBE_PEER_TIMEOUT = 6000ms` (floor `DIAL_DEADLINE` 5000ms + ~1000ms describe RTT;
+ceiling `EDGE_STREAM_GRACE` 30s), `DESCRIBE_FETCH_CONCURRENCY = 16` (>= 11 providers ⇒
+ONE wave ⇒ pass bound = 6000ms). Accepted consequence, stated in code: the pass bound
+now EXCEEDS `DESCRIBE_STOP_GRACE` (2s), so a mid-pass stop force-aborts — bounded and
+leak-free (the `JoinSet` is a local of the pass future, and `last_known`/`install_table`
+are mutated only in the synchronous tail). `DESCRIBE_STOP_GRACE` was NOT raised:
+2000 + `POOL_STOP_BUDGET` 2000 < 5000 `MODULE_STOP_GRACE_MS` must hold.
 
 **(b) Why now / order:** after Step 3 — same file/region; the lifecycle ownership from
 Step 3 is in place so the bounded pass composes with a stoppable loop.
