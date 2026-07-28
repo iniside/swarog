@@ -126,6 +126,60 @@ const DEFAULT_ADMISSION_BUDGET: Duration = Duration::from_millis(5000);
 /// dev-fleet scaffolding, so a fixed value is sufficient.
 const DESCRIBE_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 
+/// Bound on ONE peer's `__describe` fetch inside a refresh pass ([`DescribeRouter::refresh_once`]).
+/// A peer that times out is treated exactly like a peer whose fetch ERRORED: keep-last (it retains
+/// its prior manifest, or stays absent if never seen), never a dropped route table.
+///
+/// This value is squeezed between a FLOOR and a CEILING, and the floor is the one that is easy
+/// to get wrong:
+///
+/// ```text
+///   5000ms  = edge's DIAL_DEADLINE      (cold-dial floor — see below)
+/// + ~1000ms   margin for the describe round-trip on the freshly-dialed connection
+/// = 6000ms  = DESCRIBE_PEER_TIMEOUT
+/// < 30000ms = edge's EDGE_STREAM_GRACE  (the server-side ceiling this exists to beat)
+/// ```
+///
+/// FLOOR — it must exceed a COLD DIAL plus one describe round-trip. The fetch it wraps is
+/// `remote::describe` → `Pool::call` → `Reconnecting::get()` → `edge::Client::dial`, and that
+/// dial is itself allowed 5s (`DIAL_DEADLINE`, `core/edge/src/client.rs:34,82` — `pub(crate)`,
+/// hence named by file:line rather than imported). `Reconnecting::get` caches the connection
+/// only on SUCCESS (`core/remote/src/lib.rs:331-336`), so cancelling mid-handshake DISCARDS the
+/// partial dial: the next pass starts from zero. A timeout below the dial budget therefore does
+/// not merely delay a slow peer, it can permanently EXCLUDE a reachable one — gateway and peers
+/// booting together, a legitimate ~2s QUIC+mTLS handshake, and every pass cancels it at the same
+/// point, so the provider never enters the table and every op to it 404s. The first pass is
+/// awaited in `Gateway::start` precisely so routes are ready before serving; silently dropping a
+/// reachable peer from THAT table is the worst outcome available here, strictly worse than
+/// waiting.
+///
+/// CEILING — the server bounds a stalled internal stream only at `edge`'s `EDGE_STREAM_GRACE`
+/// (30s) and `remote`'s client `describe` adds no timeout of its own (`edge::Client` bounds the
+/// DIAL, not the round-trip), so without this bound a half-alive peer holds the pass — and thus
+/// startup — for 30s. That is the defect this constant closes.
+///
+/// It does NOT sit under [`DESCRIBE_STOP_GRACE`] (2s), and deliberately so: a stop landing
+/// mid-pass force-aborts the task rather than draining it (bounded and safe — see that
+/// constant). Shutdown politeness loses to boot correctness, and the grace cannot be raised to
+/// chase this because it shares a budget with `POOL_STOP_BUDGET`.
+///
+/// NO separate whole-pass budget exists, deliberately. Per-peer timeout x bounded fan-out
+/// already bounds a pass to `ceil(N_peers / DESCRIBE_FETCH_CONCURRENCY) * DESCRIBE_PEER_TIMEOUT`
+/// — one wave, 6s, for any fleet within the concurrency below. A second, overall deadline would
+/// add an invariant nothing enforces — `PASS_BUDGET >= wave_count * DESCRIBE_PEER_TIMEOUT` —
+/// and the failure mode of getting it wrong is the same silent exclusion of a slow-but-
+/// REACHABLE peer described above. Do not "add the missing budget": raise the concurrency
+/// (fewer waves) instead.
+const DESCRIBE_PEER_TIMEOUT: Duration = Duration::from_secs(6);
+
+/// How many peers a refresh pass fetches CONCURRENTLY. Bounded rather than unbounded fan-out so
+/// a large fleet cannot open one QUIC dial per provider at once, and chosen `>=` the provider
+/// count (11 today) so a pass over the real fleet is ONE wave: the pass bound is
+/// `ceil(N / this) * DESCRIBE_PEER_TIMEOUT`, and with a per-peer timeout that must clear a 5s
+/// cold dial ([`DESCRIBE_PEER_TIMEOUT`]) a second wave would double an already-long boot pass.
+/// Growing the fleet past this number costs a wave; that is the only reason to change it.
+const DESCRIBE_FETCH_CONCURRENCY: usize = 16;
+
 /// Grace given to the describe-refresh task to observe the stop signal before
 /// [`Gateway::stop`] aborts it. Reuses the 2s shape of `remote`'s `PROBE_STOP_GRACE`
 /// (the other module-owned background loop torn down this way).
@@ -146,15 +200,22 @@ const DESCRIBE_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 /// leak this ownership exists to close, plus (for pools) a teardown strictly worse than none
 /// at all (see [`RouteTable::stop_pools`]).
 ///
-/// MID-PASS STOP: the loop's `select!` observes the stop signal only BETWEEN passes (at
-/// `ticker.tick()`), never inside `refresh_once` — the `biased;` there only guarantees the
-/// stop wins at that boundary, it cannot interrupt a pass already running. A stop fired
-/// mid-pass is therefore NOT graceful today: `refresh_once` is serial and unbounded per peer,
-/// so a peer that accepts the QUIC stream then stalls holds the pass up to `EDGE_STREAM_GRACE`
-/// (30s) and the task is force-ABORTED after this 2s grace (dropping whatever the pass was
-/// doing). That is why the per-peer fetch bound (added next, alongside
-/// `DESCRIBE_REFRESH_INTERVAL`) must stay well under this 2s: only then does the common case
-/// drain cooperatively instead of routinely force-aborting.
+/// MID-PASS STOP — the task is FORCE-ABORTED, by design, and that is fine. The loop's `select!`
+/// observes the stop signal only BETWEEN passes (at `ticker.tick()`); the `biased;` there only
+/// guarantees the stop wins at that boundary, it cannot interrupt a pass already running. A pass
+/// is bounded at `ceil(N_peers / DESCRIBE_FETCH_CONCURRENCY) * DESCRIBE_PEER_TIMEOUT` — one wave
+/// of 6s for the real fleet, since the concurrency is >= the provider count — which EXCEEDS this
+/// 2s grace. So a stop landing mid-pass hits the abort path rather than draining, and the grace
+/// is not raised to chase it (it shares `MODULE_STOP_GRACE_MS` with `POOL_STOP_BUDGET`, per the
+/// arithmetic above) because [`DESCRIBE_PEER_TIMEOUT`]'s floor — a cold QUIC dial — is a boot-
+/// correctness requirement that outranks shutdown politeness.
+///
+/// The abort is safe by construction and leaks nothing: the fetch tasks live in a `JoinSet`
+/// local to the pass future, so dropping that future aborts every in-flight fetch with it, and
+/// `refresh_once` mutates nothing observable (`last_known`, then `install_table`) until its
+/// synchronous tail after all fetches have been joined — there is no torn or half-installed
+/// table. What an abort costs is one partially-completed refresh of a process that is stopping
+/// anyway.
 ///
 /// KNOWN GAP (repo-wide, unenforced convention — NOT closed here): the
 /// `< MODULE_STOP_GRACE_MS` invariant above is prose only. `core/app` parses that env var
@@ -1338,7 +1399,13 @@ fn production_describe_fetcher() -> DescribeFetcher {
         Box::pin(async move {
             // Reuse this provider's caller across refreshes; build it once on first sight.
             let caller = {
-                let mut map = callers.lock().unwrap();
+                // Poison-TOLERANT (the convention elsewhere in this file), and load-bearing now
+                // that a pass fetches peers in PARALLEL TASKS: this closure is what runs in those
+                // tasks, so one panic under this guard would poison the mutex permanently, and a
+                // bare `unwrap()` would then panic EVERY later fetch task for EVERY provider —
+                // turning one bad peer into "all peers absent forever" while the process keeps
+                // serving and `/readyz` stays green. Keep-last would hide it indefinitely.
+                let mut map = callers.lock().unwrap_or_else(|e| e.into_inner());
                 map.entry(provider.clone())
                     .or_insert_with(|| {
                         let list: remote::PeerListResolver = {
@@ -1423,25 +1490,100 @@ impl DescribeRouter {
     /// across the swap (see below) — a change to ONE peer never evicts the others (C2 no-evict
     /// at the refresh boundary).
     ///
-    /// KNOWN GAP (not bounded here): the fetch loop is SEQUENTIAL per peer, and the first pass
-    /// is awaited in `Gateway::start`, so a peer that accepts the QUIC connection then STALLS
-    /// its `__describe` response can delay startup up to `EDGE_STREAM_GRACE` (30s) per such
-    /// peer. Down peers fast-fail (connection refused), so this is low-probability on a dev
-    /// fleet; a per-pass/per-peer aggregate boot bound would harden it and is deferred.
+    /// The pass is BOUNDED: each peer's fetch is capped at [`DESCRIBE_PEER_TIMEOUT`] and at most
+    /// [`DESCRIBE_FETCH_CONCURRENCY`] run at once, so the whole pass — including the one awaited
+    /// by `Gateway::start` — ends within `ceil(N_peers / CONCURRENCY) * DESCRIBE_PEER_TIMEOUT`
+    /// (ONE wave, 6s, for the 11-provider fleet), never the 30s `EDGE_STREAM_GRACE` a stalled
+    /// peer used to impose. The per-peer bound clears a cold QUIC dial rather than cutting into
+    /// it — see [`DESCRIBE_PEER_TIMEOUT`] for that floor, and for why there is no separate
+    /// whole-pass budget.
     async fn refresh_once(&mut self) -> anyhow::Result<()> {
-        for p in &self.peers {
-            match (self.fetch)(p.provider.clone(), p.addrs.clone()).await {
-                Ok(manifest) => {
-                    self.last_known
-                        .insert(p.provider.clone(), (p.addrs.clone(), manifest));
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        provider = %p.provider,
+        // Results land here indexed BY PEER POSITION, not by completion order, and are applied to
+        // `last_known` afterwards in `self.peers` order. Concurrency must not become an ordering
+        // input: if two `PeerAddr` contributions named the same provider, "who wins" would
+        // otherwise depend on which fetch happened to finish first (and the pass would be
+        // nondeterministic across runs). Applying in peer order keeps the serial semantics —
+        // last contribution for a provider wins — exactly as before.
+        let mut fetched: Vec<Option<opsapi::DescribeManifest>> =
+            (0..self.peers.len()).map(|_| None).collect();
+        // `JoinSet` (as in [`RouteTable::stop_pools`]) rather than a `futures` combinator: this
+        // crate has no `futures` dependency, and the set aborts every still-running fetch when it
+        // drops — so a `Gateway::stop` that force-aborts the loop mid-pass leaves nothing behind.
+        let mut set: tokio::task::JoinSet<(usize, Option<opsapi::DescribeManifest>)> =
+            tokio::task::JoinSet::new();
+        // Task id → peer index, so a panicking fetcher can still be reported by provider name
+        // (the panic payload takes the return value, index included, with it).
+        let mut ids: HashMap<tokio::task::Id, usize> = HashMap::new();
+        let mut next = 0usize;
+        while next < self.peers.len() || !set.is_empty() {
+            while next < self.peers.len() && set.len() < DESCRIBE_FETCH_CONCURRENCY {
+                let idx = next;
+                let p = &self.peers[idx];
+                let provider = p.provider.clone();
+                let addrs = p.addrs.clone();
+                let fetch = self.fetch.clone();
+                let handle = set.spawn(async move {
+                    // The bound lives HERE, in the pass owner: `remote::describe` has no timeout
+                    // of its own and the server side only gives up at `EDGE_STREAM_GRACE` (30s).
+                    let call = fetch(provider.clone(), addrs);
+                    match tokio::time::timeout(DESCRIBE_PEER_TIMEOUT, call).await {
+                        Ok(Ok(manifest)) => (idx, Some(manifest)),
+                        // ONE keep-last branch for both per-peer failure modes: an errored fetch
+                        // and a timed-out fetch are the same thing to the table — this peer is
+                        // ABSENT for this pass, so it keeps its prior manifest (or stays unseen).
+                        Ok(Err(e)) => {
+                            tracing::warn!(
+                                provider = %provider,
+                                error = %e,
+                                "gateway: describe fetch failed; keeping this peer's \
+                                 last-known routes"
+                            );
+                            (idx, None)
+                        }
+                        Err(_elapsed) => {
+                            tracing::warn!(
+                                provider = %provider,
+                                timeout_ms = DESCRIBE_PEER_TIMEOUT.as_millis(),
+                                "gateway: describe fetch timed out; keeping this peer's \
+                                 last-known routes"
+                            );
+                            (idx, None)
+                        }
+                    }
+                });
+                ids.insert(handle.id(), idx);
+                next += 1;
+            }
+            match set.join_next().await {
+                Some(Ok((idx, manifest))) => fetched[idx] = manifest,
+                Some(Err(e)) => {
+                    // A panicking fetcher is a per-peer failure like any other (keep-last), not a
+                    // reason to fail the pass — the injected fetcher is the only code that can
+                    // panic here, and one bad peer must not take the route table down.
+                    //
+                    // KNOWN GAP (readiness surface, deliberately NOT decided here): a REPEATED
+                    // task-level failure is a different animal from a repeated fetch error — it
+                    // means the pass machinery itself is broken, and keep-last hides it behind a
+                    // stale-but-plausible table with `/readyz` still green. Whether that deserves
+                    // a liveness signal (a readiness check, a counter) is a readiness-surface
+                    // decision beyond this bound; only the log records it today.
+                    let provider = ids
+                        .get(&e.id())
+                        .map(|i| self.peers[*i].provider.as_str())
+                        .unwrap_or("<unknown>");
+                    tracing::error!(
+                        provider = %provider,
                         error = %e,
-                        "gateway: describe fetch failed; keeping this peer's last-known routes"
+                        "gateway: describe fetch task failed; keeping this peer's last-known routes"
                     );
                 }
+                None => break,
+            }
+        }
+        for (idx, p) in self.peers.iter().enumerate() {
+            if let Some(manifest) = fetched[idx].take() {
+                self.last_known
+                    .insert(p.provider.clone(), (p.addrs.clone(), manifest));
             }
         }
         // Nothing changed since the installed table was built → keep it (and its permanent
