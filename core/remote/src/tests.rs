@@ -1724,6 +1724,12 @@ async fn retry_safe_failover_is_bounded_to_one_cross_instance_attempt() {
 enum WireOutcome {
     Fatal,
     Ok,
+    /// A peer ANSWER of the ill-typed-request-body class: the peer received the whole
+    /// envelope, ran its dispatch and replied `ok:false` with
+    /// `ResponseCode::InvalidRequest`. Built by handing the REAL `edge::Error` to the
+    /// REAL `map_edge_call_failure`, so the fixture cannot drift from the production
+    /// classification (provenance `PeerAnswer`, status `Invalid`).
+    InvalidRequest,
 }
 
 /// The shared, ORDERED execution ledger. Every wire execution appends `"<addr>#<n>"`
@@ -1792,6 +1798,14 @@ impl InstanceScript {
                 mapped: Error::unavailable(format!("{}: connection dead", self.addr)),
                 provenance: FailureProvenance::ConnectionFatal,
             }),
+            // The peer-answer class: through the production mapping, so `provenance`
+            // and `status` are whatever `core/remote` really derives from the edge error.
+            Some(WireOutcome::InvalidRequest) => {
+                Err(super::map_edge_call_failure(edge::Error::InvalidRequest(format!(
+                    "{}: edge: invalid request body: invalid type: integer `123`",
+                    self.addr
+                ))))
+            }
             None => panic!(
                 "composed retry budget grew: instance {} executed wire call #{n}, its script \
                  allowed only {} (ledger: {:?})",
@@ -2021,6 +2035,65 @@ async fn composed_mutation_executes_exactly_once_and_never_reaches_failover() {
         b.dials(),
         0,
         "the failover instance's transport was never even dialed — the WHETHER-gate \
+         returns before `Pool::call` selects a second instance"
+    );
+}
+
+/// The `Status::Invalid` short-circuit in `is_definitive_answer`, proven on the SAME
+/// per-instance ledger shape as the mutation test above: a `#[retry_safe]`
+/// (`OnceAfterReconnect`) op whose selected instance A answers
+/// `edge::Error::InvalidRequest` must total EXACTLY ONE wire execution — instance J
+/// ("B") is never called and never even dialed.
+///
+/// The once-wrong branch: before `Status::Invalid` joined `is_definitive_answer`, an
+/// `Invalid` fell into the failover set, so a single attacker-supplied ill-typed body on
+/// a retry-safe op bought up to 4 wire executions across the pool (`Pool` failover x each
+/// instance's `Reconnecting` replay) that could never succeed — the peer's verdict is
+/// deterministic in the request bytes.
+///
+/// Failover-unreachability is proven BY CONSTRUCTION: B is built with an EMPTY script, so
+/// one touch panics loudly, and its dial counter is asserted at 0. Timing: no clocks —
+/// `probe: None`, immediate resolver, synchronous dials.
+#[tokio::test]
+async fn composed_retry_safe_invalid_request_answers_once_and_never_reaches_failover() {
+    let book = ScriptBook::new(&[
+        ("A", &[WireOutcome::InvalidRequest]),
+        // B has NO budget: any wire execution on the failover instance is a panic.
+        ("B", &[]),
+    ]);
+    let pool = Pool::with_factory(list_of(&["A", "B"]), book.factory());
+
+    // `characters.ownerOf` with the retry-safe mode — the ONLY mode that can reach the
+    // failover gate at all, so this is the mode where the short-circuit matters.
+    let err = pool
+        .call("characters.ownerOf", None, b"{}", RetryMode::OnceAfterReconnect)
+        .await
+        .expect_err("a peer that answered 'I cannot decode this body' is a final answer");
+
+    assert_eq!(
+        err.status,
+        opsapi::Status::Invalid,
+        "the peer's answer is returned verbatim, not laundered into Unavailable"
+    );
+    assert_eq!(err.status.http(), 400);
+    assert_eq!(
+        book.seq(),
+        vec!["A#1"],
+        "exactly one wire execution: no Reconnecting replay (peer answer, not fatal) and \
+         no cross-instance failover (definitive answer)"
+    );
+
+    let a = book.instance("A");
+    assert_eq!(a.execs(), 1, "A answered once and is not re-asked the same question");
+    assert_eq!(a.dials(), 1, "no redial — a peer answer proves the connection is healthy");
+    assert_eq!(a.closes(), 0, "a healthy connection that answered must NOT be reset");
+
+    let b = book.instance("B");
+    assert_eq!(b.execs(), 0, "the failover instance ran NOTHING for a definitive answer");
+    assert_eq!(
+        b.dials(),
+        0,
+        "the failover instance's transport was never even opened — `is_definitive_answer` \
          returns before `Pool::call` selects a second instance"
     );
 }

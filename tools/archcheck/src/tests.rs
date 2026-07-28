@@ -1170,3 +1170,80 @@ fn module_to_events_dev_dependency_is_clean() {
         "module→events dev-dep must stay legal"
     );
 }
+
+// --- Rule 20: only core/edge + tools/rpc-macro may NAME edge::InvalidRequestBody -----
+//
+// The marker's whole correctness argument is "constructed at EXACTLY one site": it is
+// what turns a peer's handler failure into a client-facing 400 (and, on a `#[retry_safe]`
+// op, an instruction to the client to DROP the request instead of retrying). `edge` is a
+// dependency of every module and both the type and its field are `pub`, so a second
+// construction site is reachable from anywhere — hence a gate, not a convention.
+
+#[test]
+fn module_naming_the_marker_is_a_violation() {
+    let findings = super::invalid_request_body_violations(
+        "modules/inventory/src/lib.rs",
+        "Err(Box::new(edge::InvalidRequestBody(e)))",
+    );
+    assert_eq!(findings.len(), 1, "{findings:?}");
+    assert!(findings[0].contains("modules/inventory/src/lib.rs:1"), "{findings:?}");
+    assert!(findings[0].contains("InvalidRequestBody"), "{findings:?}");
+}
+
+#[test]
+fn cmd_root_and_other_tools_naming_the_marker_are_violations() {
+    for rel in [
+        "cmd/gateway-svc/src/lib.rs",
+        "tools/splitproof/src/main.rs",
+        "core/app/src/lib.rs",
+        "api/match/rpc/src/lib.rs",
+    ] {
+        let findings = super::invalid_request_body_violations(
+            rel,
+            "use edge::InvalidRequestBody as Forge;\nlet e = Forge(err);",
+        );
+        assert_eq!(
+            findings.len(),
+            1,
+            "{rel} must be flagged (the import-alias dodge included): {findings:?}"
+        );
+        assert!(findings[0].contains(&format!("{rel}:1")), "{findings:?}");
+    }
+}
+
+#[test]
+fn the_two_owner_crates_may_name_the_marker() {
+    assert_eq!(super::INVALID_REQUEST_BODY_OWNERS.len(), 2);
+    for (rel, text) in [
+        // core/edge defines it, matches on it, and (in its own tests) constructs it.
+        ("core/edge/src/server.rs", "pub struct InvalidRequestBody(pub serde_json::Error);"),
+        ("core/edge/src/invalid_request_tests.rs", "Err(Box::new(InvalidRequestBody(e)))"),
+        // tools/rpc-macro emits the ONE construction site into the generated adapter.
+        ("tools/rpc-macro/src/lib.rs", ".map_err(::edge::InvalidRequestBody)?"),
+    ] {
+        assert!(
+            super::invalid_request_body_violations(rel, text).is_empty(),
+            "owner {rel} was rejected"
+        );
+    }
+}
+
+#[test]
+fn a_comment_only_mention_of_the_marker_is_allowed_anywhere() {
+    let text = "\
+// The adapter wraps that failure in `edge::InvalidRequestBody` so it answers 400.
+    /// Never constructed here: see `edge::InvalidRequestBody`.
+let ok = 1;";
+    assert!(
+        super::invalid_request_body_violations("modules/match/src/lib.rs", text).is_empty(),
+        "prose must stay free to DOCUMENT the mechanism"
+    );
+    // ...but a real statement on the SAME file is still caught (the exemption is per
+    // line, not per file — a comment above the violation cannot launder it).
+    let findings = super::invalid_request_body_violations(
+        "modules/match/src/lib.rs",
+        "// see edge::InvalidRequestBody\nlet e = edge::InvalidRequestBody(err);",
+    );
+    assert_eq!(findings.len(), 1, "{findings:?}");
+    assert!(findings[0].contains("modules/match/src/lib.rs:2"), "{findings:?}");
+}

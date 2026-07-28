@@ -1233,15 +1233,23 @@ async fn assertions(ctx: &Ctx, pool: &PgPool, p: &mut Proof) -> Result<()> {
         format!("code={d4_404}"),
     );
 
-    // [D4-ILLTYPED] caveat (iv) pinned live (core/opsapi/src/databind.rs:40-52): a
+    // [D4-ILLTYPED] caveat (iv) pinned live (core/opsapi/src/databind.rs): a
     // well-formed-but-ILL-TYPED body (`Winner` a JSON number where a String is expected) routes
     // through the describe gateway, which holds NO field types (the `__describe` manifest carries
     // each arg's SOURCE + wire key, never its Rust type), so it can only check the body is a JSON
-    // object. The type mismatch is therefore caught SVC-SIDE at `from_slice::<Request>` as a 5xx,
-    // NOT at the gateway as the 400 the typed monolith/local path gives for the same bytes.
-    // Assert the KEY property the caveat records: the front-door status is the svc-side class
-    // (5xx), NOT the gateway 400 — so the contract's topology-dependence is pinned rather than
-    // silently drifting.
+    // object. The type mismatch is therefore caught SVC-SIDE, at match-svc's generated adapter
+    // `from_slice::<ReportRequest>` — but the CALLER-visible answer is now the SAME as the
+    // monolith's: that decode site wraps its failure in `edge::InvalidRequestBody`, match-svc's
+    // dispatch stamps `ResponseCode::InvalidRequest`, gateway-svc's edge client types it
+    // `edge::Error::InvalidRequest` and `From<edge::Error> for opsapi::Error` maps it to
+    // `Status::Invalid` => 400 (`Status::http()`). Only WHERE the body is caught is
+    // topology-dependent; WHAT the caller sees is not.
+    //
+    // This assertion was `>= 500 && != 400` — the pre-fix contract, where the ill-typed body
+    // came back to the front as `Unavailable`/503 while the monolith answered 400 for the same
+    // bytes. It is now the parity assertion: the ONE previously-wrong branch on the real
+    // gateway-svc -> match-svc split, which no monolith unit test can reach (the monolith never
+    // crosses the edge for this call).
     let d4_ill = send_status_retrying_429(
         ctx.http
             .post(format!("{g}/match/report"))
@@ -1254,9 +1262,9 @@ async fn assertions(ctx: &Ctx, pool: &PgPool, p: &mut Proof) -> Result<()> {
     )
     .await;
     p.check(
-        "[D4-ILLTYPED] ill-typed body -> svc-side 5xx, NOT gateway 400 (caveat iv)",
-        d4_ill >= 500 && d4_ill != 400,
-        format!("code={d4_ill} (describe gateway: svc-side 5xx; typed monolith would be 400)"),
+        "[D4-ILLTYPED] ill-typed body -> 400 across the split (monolith parity, caveat iv)",
+        d4_ill == 400,
+        format!("code={d4_ill} (want 400 = Status::Invalid.http(); pre-fix this was 503)"),
     );
 
     // --- Player QUIC front (P1-P6) over the edge lib (no playercli subprocess). ---
@@ -1282,6 +1290,24 @@ async fn assertions(ctx: &Ctx, pool: &PgPool, p: &mut Proof) -> Result<()> {
         p.check("[P5] wire-only method -> NotFound", status_or_err(&p5, "NotFound"), "");
         // [P6] per-connection rate-limit + refill.
         p.check("[P6] player rate-limit + refill", player_burst(ctx).await, "");
+        // [P7-ILLTYPED] the player twin of [D4-ILLTYPED]: the SAME 400 class over the
+        // player QUIC plane. `handle_player`'s well-formedness gate rejects only MALFORMED
+        // json (`from_slice::<&RawValue>`), so a well-formed body whose `name` is a JSON
+        // number passes the front, dispatches Remote to characters-svc, and fails at that
+        // svc's generated adapter decode — the `edge::InvalidRequestBody` site. The front
+        // renders the mapped `opsapi::Error` verbatim, so the envelope status must be
+        // `Invalid` (pre-fix: `Unavailable`). Not vacuous: [P1] proves the identical call
+        // with a well-typed `name` succeeds over this same connection path.
+        let p7 = player_call(ctx, Some(&tok), "characters.create", r#"{"name":123,"class":""}"#).await;
+        let p7_status = p7
+            .as_ref()
+            .ok()
+            .and_then(|v| v.get("status").and_then(|s| s.as_str()).map(String::from));
+        p.check(
+            "[P7-ILLTYPED] QUIC ill-typed body -> Invalid (400 class, not Unavailable)",
+            p7_status.as_deref() == Some("Invalid"),
+            format!("status={p7_status:?} err={:?}", p7.as_ref().err().map(|e| e.to_string())),
+        );
     }
 
     // --- Admin portal (session auth) + audit ledger, cross-process over QUIC. ---

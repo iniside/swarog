@@ -136,6 +136,10 @@ impl From<Error> for opsapi::Error {
 mod shutdown_tests;
 
 #[cfg(test)]
+#[path = "invalid_request_tests.rs"]
+mod invalid_request_tests;
+
+#[cfg(test)]
 mod e2e_tests {
     use super::*;
     use futures::future::BoxFuture;

@@ -204,6 +204,77 @@ async fn client_server_roundtrip_over_edge() {
 // but keep a hook so the intent (drop order) is explicit.
 fn client_close(_c: &sample_rpc::Client) {}
 
+/// THE ill-typed-body proof, driven through the REAL generated server adapter (no
+/// hand-rolled marker): a well-formed JSON body whose field has the wrong TYPE reaches
+/// `gen_server_adapter`'s `serde_json::from_slice::<OwnerOfRequest>` — the one site that
+/// wraps its failure in `edge::InvalidRequestBody` — over real edge QUIC.
+///
+/// Chain executed: adapter decode -> marker -> `Dispatch`'s downcast ->
+/// `ResponseCode::InvalidRequest` on the wire -> `edge::Client` types it
+/// `Error::InvalidRequest` -> `From<edge::Error> for opsapi::Error` -> `Status::Invalid`
+/// (400), which is exactly what the monolith's LOCAL invoker answers for the same bytes.
+/// Before the fix every step after the decode collapsed into `code: None` and the caller
+/// saw `Unavailable`/503 — a split-vs-monolith parity gap on a client-fault input.
+///
+/// The call goes through `opsapi::Caller` with raw bytes on purpose: the generated
+/// CLIENT would serialize a correctly-typed request, so only a raw caller can put an
+/// ill-typed body on the wire the way an untyped describe-routing gateway does.
+#[tokio::test]
+async fn ill_typed_request_body_through_generated_adapter_is_invalid_400() {
+    let ca = edge::DevCA::generate().unwrap();
+    let mut srv = edge::Server::new();
+    sample_rpc::register_server(&mut srv, Arc::new(SampleImpl));
+    let running = srv.listen("127.0.0.1:0".parse().unwrap(), &ca).unwrap();
+    let edge_client = edge::Client::dial(running.local_addr(), &ca).await.unwrap();
+
+    // Control: the SAME method with a correctly-typed body succeeds, so the 400 below
+    // is the body's type and nothing else about the fixture.
+    let ok = Caller::call(
+        &edge_client,
+        sample_rpc::METHOD_OWNER_OF,
+        None,
+        br#"{"character_id":"c1"}"#,
+        RetryMode::Never,
+    )
+    .await
+    .expect("a well-typed body is served normally");
+    assert!(String::from_utf8_lossy(&ok).contains("owner-of-c1"));
+
+    // Ill-typed: `character_id` is a JSON number where the generated request struct
+    // declares a String. Well-formed JSON, so no envelope/framing fault is involved.
+    let err = Caller::call(
+        &edge_client,
+        sample_rpc::METHOD_OWNER_OF,
+        None,
+        br#"{"character_id":123}"#,
+        RetryMode::Never,
+    )
+    .await
+    .expect_err("an ill-typed body cannot decode into the method's request struct");
+    assert_eq!(
+        err.status,
+        Status::Invalid,
+        "an ill-typed body must answer 400 across the edge (monolith parity), got {err:?}"
+    );
+    assert_eq!(err.status.http(), 400);
+
+    // ...and the adapter did not run the impl: the connection is healthy and the next
+    // well-typed call is served, proving the rejection was per-request, not a fault.
+    let ok = Caller::call(
+        &edge_client,
+        sample_rpc::METHOD_OWNER_OF,
+        None,
+        br#"{"character_id":"c2"}"#,
+        RetryMode::Never,
+    )
+    .await
+    .unwrap();
+    assert!(String::from_utf8_lossy(&ok).contains("owner-of-c2"));
+
+    edge_client.close();
+    running.close();
+}
+
 #[test]
 fn operations_expose_only_http_methods() {
     let ops = sample_rpc::operations(Arc::new(SampleImpl));

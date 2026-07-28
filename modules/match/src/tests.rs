@@ -479,6 +479,85 @@ async fn legacy_invalid_payload_replays_exactly_and_different_raw_payload_confli
     cleanup(&pool, &match_id).await;
 }
 
+/// F1: match must NEVER republish its dependency's status. `Service::read_mmr` folds
+/// EVERY rating failure into `Unavailable`; the case that made the fold load-bearing is
+/// `Invalid`, because the internal edge now maps a peer adapter's request-body decode
+/// failure to `Invalid`/400. A match-svc/rating-svc contract skew is a purely SERVER-side
+/// deploy fault, and `match.report` is `#[retry_safe]` with a `ReportId` idempotency key:
+/// a 400 tells the game client "this report is permanently malformed" and it DROPS the
+/// report — silent data loss where 503 would have said retry.
+///
+/// No database is touched: `read_mmr` is called directly on a service whose pool is a
+/// lazy handle to a dead DSN, so the fold is proven by construction (any DB access would
+/// hang/fail inside the timeout below rather than quietly pass).
+#[tokio::test]
+async fn read_mmr_folds_every_rating_status_into_unavailable() {
+    // Every status rating could conceivably answer with — including the two the edge
+    // now produces for a peer ANSWER (`Invalid` from an ill-typed body, `NotFound` from
+    // an unknown method) — must arrive at match's caller as Unavailable.
+    let statuses = [
+        Error::invalid("Winner: invalid type: integer `123`, expected a string"),
+        Error::not_found("edge: unknown method \"rating.mmr\""),
+        Error::internal("rating: database is down"),
+        Error::unavailable("edge: connection: closed"),
+        Error::forbidden("nope"),
+        Error::conflict("nope"),
+        Error::unauthorized("nope"),
+    ];
+    for failure in statuses {
+        let original = failure.status;
+        let reader = Arc::new(CountingReader {
+            calls: AtomicUsize::new(0),
+            failure: Some(failure),
+            first_call_barrier: None,
+        });
+        let svc = service_without_database(reader.clone());
+        let err = tokio::time::timeout(Duration::from_millis(500), svc.read_mmr("alice"))
+            .await
+            .expect("read_mmr must not touch the (dead) database")
+            .expect_err("the scripted rating failure must surface as an error");
+        assert_eq!(
+            err.status,
+            opsapi::Status::Unavailable,
+            "rating {original:?} must be folded, not republished as match's own verdict"
+        );
+        assert_eq!(err.msg, Service::RATING_UNAVAILABLE, "rating's internals must not leak");
+        assert_eq!(reader.calls.load(Ordering::SeqCst), 1, "the fold is on the real call path");
+    }
+}
+
+/// The same fold, proven THROUGH the public op: a fresh `ReportId` walks the whole
+/// `report` path (validate -> replay lookup -> `read_mmr`) and the rating `Invalid`
+/// surfaces to the caller as `Unavailable`/503, with no match row and no event written.
+/// Needs the DB for the replay lookup, so it SKIPs cleanly without Postgres — the
+/// DB-free `read_mmr` test above is the always-running proof of the same branch.
+#[tokio::test]
+async fn report_surfaces_unavailable_when_rating_answers_invalid() {
+    let Some(pool) = test_pool().await else { return };
+    let reader = Arc::new(CountingReader {
+        calls: AtomicUsize::new(0),
+        failure: Some(Error::invalid("Winner: invalid type: integer `123`")),
+        first_call_barrier: None,
+    });
+    let (_ctx, svc) = service_with_reader(&pool, reader.clone()).await;
+
+    let report_id = rid("rating-invalid");
+    let err = svc
+        .report(report_id.clone(), "alice".into(), "bob".into())
+        .await
+        .expect_err("a failing rating dependency must fail the report");
+    assert_eq!(
+        err.status,
+        opsapi::Status::Unavailable,
+        "a rating-side 400 must never become match.report's 400 (the client would drop \
+         the report instead of retrying it)"
+    );
+    assert_eq!(err.status.http(), 503);
+    assert_eq!(err.msg, Service::RATING_UNAVAILABLE);
+    assert_eq!(reader.calls.load(Ordering::SeqCst), 1, "the rating read was attempted");
+    assert_eq!(report_count(&pool, &report_id).await, 0, "no row on a failed rating read");
+}
+
 /// A process module set WITHOUT `rating` must fail `validate_requires` — match declares
 /// `requires(["rating"])`, and the missing sync dependency fails loud at startup
 /// (CLAUDE.md's hard constraint), never a silent nil-service at report time. No DB needed
