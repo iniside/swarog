@@ -534,6 +534,7 @@ dependencies = [
  "sqlx",
  "tokio",
  "tracing",
+ "walletevents",
 ]
 
 [[package]]
