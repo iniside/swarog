@@ -1,7 +1,10 @@
 # Feature tracker — closing the gaps from the BaaS analysis
 
-**Living document, updated in place** (no date prefix by design — it is the current
-state, not a dated snapshot). Source of the feature list:
+**Last update: 2026-07-28**
+
+**Living document, updated in place** (no date prefix in the filename — it is the
+current state, not a dated snapshot; the date above moves instead). Source of the
+feature list:
 [docs/reference/game-backend-feature-gaps.md](../reference/game-backend-feature-gaps.md)
 (analysis 2026-07-22). That doc is the *analysis* and is frozen; this doc is the
 *tracker* and moves.
@@ -10,6 +13,7 @@ Tracker opened: 2026-07-28.
 
 ## How to use this
 
+- **Bump "Last update" at the top on every edit.**
 - One row per feature from the gap matrix. **Never delete a row** — flip its status.
 - When a feature lands, set status ✅, fill **Module(s)** with the real crate names and
   **Landed** with the commit sha + date.
