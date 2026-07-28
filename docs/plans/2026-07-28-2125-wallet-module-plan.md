@@ -949,6 +949,35 @@ effort **think hard**.
 
 ## Errata from execution
 
+### Step 4 (`cmd/wallet-svc` + fleets) — four files the plan never listed, and one false command
+
+Landed `ef5a940`; `archcheck` went 2 violations → **0**, `requirecheck --strict` OK.
+
+1. **`cargo test -p weles fleet_toml` matches ZERO tests and reports green.** Both weles test
+   files live in the `weles-master` crate, so `-p weles` filters everything out and prints a
+   passing `0 passed` — a green SKIP wearing a PASS, the exact class this repo's taxonomy
+   records from the cargo-audit stage. The real commands are
+   **`cargo test -p weles-master fleet_toml`** and **`cargo test -p weles-master full_fleet_env_goldens`**.
+2. **`cmd/gateway-svc/src/addrs_tests.rs` is load-bearing and was unlisted.** A 9th `AddrSpec`
+   makes `FakeAgent::healthy()` panic on the unstubbed `("wallet", Edge)` question and breaks
+   the 8-element `asked` assertion. Same class as the `conformance/src/tests.rs:294` count that
+   rev 4 caught: a hardcoded fixture count that only the executing test can see.
+3. **`cmd/admin-svc/src/main.rs` needs `.with_peer("wallet", env_addr("WALLET_EDGE_ADDR", …))`.**
+   The plan listed only `lib.rs`; without the main edit the env var is inert and the process
+   silently uses the compiled default — correct in this fleet by coincidence, wrong the moment
+   a port moves.
+4. **`weles/fleet.monolith.toml` needs `WALLET_DEV_SEED = "1"`** (+ its golden row), since that
+   fixture is the faithful successor of processctl's monolith Development flavor.
+
+### Step 9 gets one more row, with its exact shape (handed over from Step 4)
+
+`tools/processctl/src/fleet_tests.rs::proof_fleet_is_the_canonical_twelve_service_snapshot`
+now fails with exactly one diff. Step 9 must insert
+`("wallet-svc", "wallet-svc", 8092, Some(9010), None, vec!["config-svc"])` after `inventory-svc`,
+append `"wallet-svc"` to the gateway and admin dependency vectors, and rename the test
+twelve → thirteen. `fleet_session_budget_is_enforced` passes, confirming D7's 85/87.
+
+
 ### Step 2 (`modules/wallet`) — two deviations, both deliberate
 
 1. **`recent_ledger` deferred to Step 8.** Step 2's store-method list names it, but its
