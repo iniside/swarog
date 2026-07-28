@@ -864,13 +864,44 @@ effort **think hard**.
 3. **Starter grant is single-currency and new-players-only.** Multi-currency is a later
    extension of the same knobs; back-filling existing players is the admin grant page (D9).
 4. **Player-QUIC allow-list untouched.** `wallet.myBalances` is HTTP-only for now.
-5. **`reason` is not part of the dup-same comparison.** A replay with the same key and a
-   different `reason` is a no-op recording the original reason. Deliberate — the key
-   identifies the movement — but a real asymmetry.
+5. ~~**`reason` is not part of the dup-same comparison.**~~ **RETRACTED by revision 4**
+   (item 2) and by the landed Step 2: `reason` IS part of the identity tuple, so a same-key
+   resubmit with an edited `reason` is a 409, not a silent no-op. This entry survived the
+   rev-3 → rev-4 edit describing the opposite of what ships; corrected when Step 2 landed.
 6. **Postgres session headroom is 85/87** (D7). The 13th DB-backed split process breaks the
    budget and will need `SPLIT_SERVICE_POOL_MAX` re-tuned.
 
 ---
+
+## Errata from execution
+
+### Step 2 (`modules/wallet`) — two deviations, both deliberate
+
+1. **`recent_ledger` deferred to Step 8.** Step 2's store-method list names it, but its
+   only consumer is the admin drill-down and its row shape (which columns, what ordering
+   window) is decided by that view. Shipping it now would be an unused method plus an
+   unused row struct behind `#[allow(dead_code)]`, guessed against a view that does not
+   exist. `currency_exists_tx` IS shipped in Step 2 as listed (with `#[allow(dead_code)]`
+   until Step 6 calls it): unlike `recent_ledger` it has a fixed, zero-ambiguity shape and
+   it is the statement that makes the delivery path abort-free, so it belongs beside the
+   SQL it protects.
+2. **The duplicate check compares player ids as UUIDs, not as bytes.** D3 step 2 says
+   "same `(player_id, currency, delta, reason)`". Every statement binds `$n::uuid`, so a
+   stored row and a resubmit that spell one id differently (uppercase / braced /
+   unhyphenated) are the SAME player to Postgres while differing byte-wise. A byte
+   comparison would answer 409 to a caller's own genuine replay — and a caller that reads
+   409 as "this key is taken" mints a FRESH key, which double-moves money. So
+   `service.rs`'s `player_id_eq` normalizes both sides the way `characters`/`inventory`
+   already normalize their lock keys (32 ascii-hex digits, case/hyphen/brace insensitive;
+   anything else falls back to a byte comparison). `currency`, `delta` and `reason` stay
+   exact. Step 5 test #3 should therefore also cover a differently-spelled-but-equal
+   player id resolving to `Duplicate`, not `Conflict`.
+
+Verified against the real local Postgres while implementing (DDL executed, each arm
+provoked): unknown currency = `23503` / `balances_currency_fkey`; a debit below zero AND
+a credit past the 10^15 ceiling both = `23514` / `balances_amount_check` (the ceiling is
+NOT 22003 — D2's premise confirmed); malformed player id = `22P02`; the second
+`ON CONFLICT (idempotency_key) DO NOTHING … RETURNING` returns zero rows.
 
 ## Revision history
 

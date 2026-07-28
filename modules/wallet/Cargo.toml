@@ -1,0 +1,30 @@
+[package]
+name = "wallet"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The wallet impl module: owns schema `wallet` (currency catalog, per-player balances,
+# append-only ledger), provides the wire-only `Wallet` + player-facing `Player`
+# capabilities, and emits `wallet.changed` on the DURABLE plane atomic with the
+# movement. An impl crate — no OTHER module imports it; consumers use `walletapi`
+# (traits) + `walletevents` (events). `walletrpc` is its OWN glue (sanctioned): the
+# edge register_server faces.
+[dependencies]
+bus = { workspace = true }
+lifecycle = { workspace = true }
+registry = { workspace = true }
+opsapi = { workspace = true }
+edge = { workspace = true }
+walletapi = { workspace = true }
+walletrpc = { workspace = true }
+walletevents = { workspace = true }
+# The config CONTRACT trait only (never `configrpc` glue — archcheck forbids a module
+# importing a foreign rpc crate). Backs the config-driven starter grant; in the split a
+# `remote::Stub` swaps a CachedConfig under the same registry key.
+configapi = { workspace = true }
+sqlx = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+async-trait = { workspace = true }

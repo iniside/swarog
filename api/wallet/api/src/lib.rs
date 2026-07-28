@@ -144,8 +144,10 @@ pub const MAX_MOVEMENT_AMOUNT: i64 = 1_000_000_000_000;
 #[rpc(prefix = "wallet")]
 #[async_trait]
 pub trait Wallet: Send + Sync {
-    /// Every non-zero balance the player holds. An unknown player is an empty `Vec`, not
-    /// an error — a player with no movements simply holds nothing.
+    /// EVERY balance row the player holds, including a currency debited back to zero —
+    /// the row survives, and filtering it out on the wire would hide state the ledger and
+    /// the admin drill-down both show. An unknown player is an empty `Vec`, not an error
+    /// — a player with no movements simply holds no rows.
     #[retry_safe]
     async fn balances(&self, player_id: String) -> Result<Vec<Balance>, Error>;
 

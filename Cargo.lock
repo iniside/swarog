@@ -4599,6 +4599,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "wallet"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "bus",
+ "configapi",
+ "edge",
+ "lifecycle",
+ "opsapi",
+ "registry",
+ "sqlx",
+ "tracing",
+ "walletapi",
+ "walletevents",
+ "walletrpc",
+]
+
+[[package]]
 name = "walletapi"
 version = "0.1.0"
 dependencies = [
