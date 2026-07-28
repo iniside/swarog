@@ -129,16 +129,24 @@ impl EpicOAuth {
     /// get zero rows → `None`. A missing binding never consumes a state (early
     /// `None`); a wrong binding or an expired row fails the `WHERE` so no row is
     /// deleted and the state survives (matches the pre-shared behavior). The 10-min
-    /// TTL is the `created_at` predicate. A store error fails closed to `None`
-    /// (surfaced by the caller as "invalid or expired state").
+    /// TTL is the `created_at` predicate. A `WHERE`-clause miss (unknown, expired,
+    /// wrong binding, already redeemed) is `Ok(None)` — legitimately bad input the
+    /// caller answers with 400. A genuine query error is `Err`: a transient store
+    /// condition the caller surfaces as 503, never as bad input.
     pub(crate) async fn take_state(
         &self,
         s: &str,
         browser_binding: Option<&str>,
-    ) -> Option<String> {
+    ) -> Result<Option<String>, sqlx::Error> {
         // A missing binding cookie can never consume a state.
-        let binding = browser_binding?;
-        let redeemed = sqlx::query_scalar::<_, String>(&format!(
+        let Some(binding) = browser_binding else {
+            return Ok(None);
+        };
+        // Deliberately NOT logged here: the terminal handler logs this error once as
+        // it renders the response, exactly as `new_state` above leaves its persistence
+        // failure to `handle_start`. Logging at both ends would make one store outage
+        // count twice in the ERROR rate.
+        sqlx::query_scalar::<_, String>(&format!(
             "DELETE FROM accounts.oauth_states \
              WHERE state = $1 AND browser_binding = $2 \
                AND created_at > now() - interval '{STATE_TTL_SQL}' \
@@ -147,14 +155,7 @@ impl EpicOAuth {
         .bind(s)
         .bind(binding)
         .fetch_optional(&self.pool)
-        .await;
-        match redeemed {
-            Ok(row) => row,
-            Err(err) => {
-                tracing::error!(%err, "epic oauth: state redemption query failed");
-                None
-            }
-        }
+        .await
     }
 
     /// Opportunistic GC of expired states (piggybacked on `new_state`, no background
@@ -347,8 +348,29 @@ async fn handle_callback(
         return (StatusCode::BAD_REQUEST, "missing code or state").into_response();
     }
     let browser_binding = jar.get(BINDING_COOKIE).map(|cookie| cookie.value());
-    let Some(session_token) = oauth.take_state(&state, browser_binding).await else {
-        return (StatusCode::BAD_REQUEST, "invalid or expired state").into_response();
+    let session_token = match oauth.take_state(&state, browser_binding).await {
+        Ok(Some(t)) => t,
+        // A `WHERE`-clause miss (unknown/expired/wrong-binding/already-redeemed) is
+        // genuinely bad input — 400, unchanged.
+        Ok(None) => {
+            return (StatusCode::BAD_REQUEST, "invalid or expired state").into_response();
+        }
+        // A store outage is transient/retryable, never the browser's fault: 503, the
+        // same precedent as the `new_state` persistence failure in `handle_start`.
+        //
+        // KNOWN GAP (deliberate, out of this step's scope): `handle_callback` renders
+        // the SAME condition — Postgres down — two ways depending on which query the
+        // outage hits. Here it is a 503 body; the LINK-flow `player_by_session` below
+        // answers `Redirect::to("/?epic=error")` on `Err`, reasoning that a browser
+        // callback cannot render a status body meaningfully. Both readings are
+        // defensible and the divergence predates this change; picking ONE
+        // failure-rendering policy for this handler is a separate decision, not a
+        // drive-by here.
+        Err(err) => {
+            tracing::error!(%err, "epic callback: state redemption failed");
+            return (StatusCode::SERVICE_UNAVAILABLE, "internal error, try again")
+                .into_response();
+        }
     };
 
     let id_token = match oauth.exchange_code(&code).await {

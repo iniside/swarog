@@ -1268,16 +1268,19 @@ async fn oauth_state_binding_is_non_consuming_and_single_use() {
     let binding = store::new_token();
     let s = oauth.new_state("tok".into(), binding.clone()).await.unwrap();
     // A missing binding never consumes; a wrong binding never consumes.
-    assert_eq!(oauth.take_state(&s, None).await, None);
-    assert_eq!(oauth.take_state(&s, Some("wrong")).await, None);
+    assert_eq!(oauth.take_state(&s, None).await.unwrap(), None);
+    assert_eq!(oauth.take_state(&s, Some("wrong")).await.unwrap(), None);
     // The legitimate browser still redeems (the two misses above did not burn it).
-    assert_eq!(oauth.take_state(&s, Some(&binding)).await, Some("tok".into()));
     assert_eq!(
-        oauth.take_state(&s, Some(&binding)).await,
+        oauth.take_state(&s, Some(&binding)).await.unwrap(),
+        Some("tok".into())
+    );
+    assert_eq!(
+        oauth.take_state(&s, Some(&binding)).await.unwrap(),
         None,
         "state must be single-use"
     );
-    assert_eq!(oauth.take_state("unknown", Some(&binding)).await, None);
+    assert_eq!(oauth.take_state("unknown", Some(&binding)).await.unwrap(), None);
 }
 
 /// The cross-replica property the old `Mutex<HashMap>` could NOT provide: a `state`
@@ -1311,18 +1314,18 @@ async fn oauth_state_redeems_exactly_once_across_replicas() {
     // Replica B (a DIFFERENT process/pool) redeems it — impossible under the old
     // in-memory map, which lived only in replica A.
     assert_eq!(
-        oauth_b.take_state(&state, Some(&binding)).await,
+        oauth_b.take_state(&state, Some(&binding)).await.unwrap(),
         Some("sess-xyz".into()),
         "the OTHER replica must redeem the shared-store state"
     );
     // A second redemption on EITHER replica now yields nothing (single-redemption).
     assert_eq!(
-        oauth_a.take_state(&state, Some(&binding)).await,
+        oauth_a.take_state(&state, Some(&binding)).await.unwrap(),
         None,
         "a second take on the minting replica must find the row already deleted"
     );
     assert_eq!(
-        oauth_b.take_state(&state, Some(&binding)).await,
+        oauth_b.take_state(&state, Some(&binding)).await.unwrap(),
         None,
         "a second take on the redeeming replica must find the row already deleted"
     );
@@ -1345,7 +1348,7 @@ async fn oauth_state_expired_row_is_not_redeemable() {
     let state = oauth.new_state("old".into(), binding.clone()).await.unwrap();
     expire_state(&pool, &state).await;
     assert_eq!(
-        oauth.take_state(&state, Some(&binding)).await,
+        oauth.take_state(&state, Some(&binding)).await.unwrap(),
         None,
         "an expired state must not redeem even with the correct binding"
     );
@@ -1488,8 +1491,14 @@ async fn oauth_start_reuses_hardened_binding_cookie_for_parallel_states() {
     assert_eq!(second_cookie.split(';').next().unwrap(), cookie_pair);
     let state_two = oauth_state_from_start(&second.json().await.unwrap());
     assert_ne!(state_one, state_two);
-    assert_eq!(oauth.take_state(&state_one, Some(&binding)).await, Some(String::new()));
-    assert_eq!(oauth.take_state(&state_two, Some(&binding)).await, Some(String::new()));
+    assert_eq!(
+        oauth.take_state(&state_one, Some(&binding)).await.unwrap(),
+        Some(String::new())
+    );
+    assert_eq!(
+        oauth.take_state(&state_two, Some(&binding)).await.unwrap(),
+        Some(String::new())
+    );
 
     let secure_oauth = oauth_fixture(
         pool.clone(),
@@ -1595,7 +1604,7 @@ async fn epic_start_valid_session_mints_link_state() {
     let binding = binding_from_set_cookie(&resp);
     let state = oauth_state_from_start(&resp.json().await.unwrap());
     assert_eq!(
-        oauth.take_state(&state, Some(&binding)).await,
+        oauth.take_state(&state, Some(&binding)).await.unwrap(),
         Some(sess.token.clone()),
         "a valid bearer must mint a LINK state carrying the caller's session token"
     );
@@ -1629,7 +1638,7 @@ async fn epic_start_no_bearer_mints_login_state() {
     let binding = binding_from_set_cookie(&resp);
     let state = oauth_state_from_start(&resp.json().await.unwrap());
     assert_eq!(
-        oauth.take_state(&state, Some(&binding)).await,
+        oauth.take_state(&state, Some(&binding)).await.unwrap(),
         Some(String::new()),
         "no bearer must mint a LOGIN state with an empty session token"
     );
