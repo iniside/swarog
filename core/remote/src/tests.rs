@@ -1695,6 +1695,336 @@ async fn retry_safe_failover_is_bounded_to_one_cross_instance_attempt() {
     );
 }
 
+// ---- The COMPOSED retry budget: a real `Reconnecting` UNDER a `Pool` ---------
+//
+// Every C3 test above injects a per-instance `FailoverCaller` that IGNORES `retry_mode`,
+// so the two-layer budget — `Reconnecting`'s per-connection redial+replay INSIDE the
+// pool's cross-instance failover — was asserted by nothing. These two tests build the
+// production composition (a real `Reconnecting` per instance, over a scripted fake
+// transport, under a real `Pool`) and pin the EXACT wire-execution sequence, per
+// instance.
+//
+// This documents the CURRENT behaviour as safe-by-composition; it is NOT a cap:
+// * `OnceAfterReconnect` (idempotent `#[retry_safe]` read) composes to at most FOUR wire
+//   executions — A initial + A replay, then B initial + B replay. Instance B keeps its
+//   OWN reconnect self-heal on the failover path deliberately; capping B to `Never` would
+//   regress a real recovery path, and N executions of an idempotent read are safe.
+// * `Never` (a mutation) composes to exactly ONE wire execution: the `retry_mode` gate in
+//   `Pool::call` is checked FIRST, so failover is unreachable, and `Reconnecting` does not
+//   replay either.
+//
+// Timing: the fixture contains NO timer at all — instances are built with `probe: None`
+// (no probe loop), the list resolver is ready immediately, and every dial completes
+// synchronously — so nothing races a clock and no paused-clock bookkeeping is needed.
+
+/// One scripted wire execution: a proven connection-fatal failure (the class
+/// `Reconnecting` resets+replays on and the pool fails over on), or a success echoing the
+/// instance addr.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum WireOutcome {
+    Fatal,
+    Ok,
+}
+
+/// The shared, ORDERED execution ledger. Every wire execution appends `"<addr>#<n>"`
+/// (`n` = that instance's own 1-based execution count), so a test asserts the exact
+/// interleaving WITH per-instance attribution — never a global count that could not tell
+/// "A twice then B twice" from "A four times".
+#[derive(Clone, Default)]
+struct WireLog {
+    entries: Arc<StdMutex<Vec<String>>>,
+}
+
+impl WireLog {
+    fn record(&self, addr: &str, n: usize) {
+        self.entries
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(format!("{addr}#{n}"));
+    }
+    fn seq(&self) -> Vec<String> {
+        self.entries.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+}
+
+/// One instance's scripted transport, SHARED by every connection its dialer hands out —
+/// so a `Reconnecting` replay on a FRESH connection still advances the SAME instance's
+/// script. Running past the script is a PANIC, not a silent success: an extra retry layer
+/// (or a widened budget) fails loudly at the exact instance that over-executed.
+struct InstanceScript {
+    addr: String,
+    log: WireLog,
+    budget: usize,
+    remaining: StdMutex<std::collections::VecDeque<WireOutcome>>,
+    execs: AtomicUsize,
+    dials: AtomicUsize,
+    closes: AtomicUsize,
+}
+
+impl InstanceScript {
+    fn new(addr: &str, log: WireLog, plan: Vec<WireOutcome>) -> InstanceScript {
+        InstanceScript {
+            addr: addr.to_string(),
+            log,
+            budget: plan.len(),
+            remaining: StdMutex::new(plan.into_iter().collect()),
+            execs: AtomicUsize::new(0),
+            dials: AtomicUsize::new(0),
+            closes: AtomicUsize::new(0),
+        }
+    }
+
+    /// Consumes the next scripted outcome, recording the execution first (so an
+    /// over-execution is visible in the ledger of the panic message too).
+    fn next_outcome(&self) -> Result<Vec<u8>, CallFailure> {
+        let n = self.execs.fetch_add(1, Ordering::SeqCst) + 1;
+        self.log.record(&self.addr, n);
+        let next = self
+            .remaining
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .pop_front();
+        match next {
+            Some(WireOutcome::Ok) => Ok(self.addr.clone().into_bytes()),
+            // The connection-death class: `ConnectionFatal` provenance (what `Reconnecting`
+            // resets + replays on) mapping to `Unavailable` (what the pool fails over on).
+            Some(WireOutcome::Fatal) => Err(CallFailure {
+                mapped: Error::unavailable(format!("{}: connection dead", self.addr)),
+                provenance: FailureProvenance::ConnectionFatal,
+            }),
+            None => panic!(
+                "composed retry budget grew: instance {} executed wire call #{n}, its script \
+                 allowed only {} (ledger: {:?})",
+                self.addr,
+                self.budget,
+                self.log.seq()
+            ),
+        }
+    }
+
+    fn execs(&self) -> usize {
+        self.execs.load(Ordering::SeqCst)
+    }
+    fn dials(&self) -> usize {
+        self.dials.load(Ordering::SeqCst)
+    }
+    fn closes(&self) -> usize {
+        self.closes.load(Ordering::SeqCst)
+    }
+}
+
+/// One connection handed out by [`ScriptedDialer`] — every connection of an instance
+/// shares that instance's script, so redials do not rewind it.
+struct ScriptedConn {
+    script: Arc<InstanceScript>,
+}
+
+#[async_trait]
+impl Conn for ScriptedConn {
+    async fn call(
+        &self,
+        _method: &str,
+        _identity: Option<&str>,
+        _payload: &[u8],
+    ) -> Result<Vec<u8>, CallFailure> {
+        self.script.next_outcome()
+    }
+    fn close(&self) {
+        self.script.closes.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+/// The instance's dialer: always dials successfully (a dial failure is a different
+/// branch, already covered), counting dials so a REDIAL is observed directly rather than
+/// inferred from a call count.
+struct ScriptedDialer {
+    script: Arc<InstanceScript>,
+}
+
+#[async_trait]
+impl Dialer for ScriptedDialer {
+    async fn dial(&self) -> Result<Arc<dyn Conn>, Error> {
+        self.script.dials.fetch_add(1, Ordering::SeqCst);
+        Ok(Arc::new(ScriptedConn {
+            script: self.script.clone(),
+        }))
+    }
+}
+
+/// Holds the per-addr scripts and hands the pool an [`InstanceFactory`] that builds a REAL
+/// `Reconnecting` per instance (the production composition — `edge_instance_factory` with
+/// the QUIC dialer swapped for the scripted one, and `probe: None` so no timer exists).
+/// Keeps each built script so a test can read that instance's exec/dial/close counters.
+#[derive(Clone)]
+struct ScriptBook {
+    log: WireLog,
+    plans: Arc<StdMutex<std::collections::HashMap<String, Vec<WireOutcome>>>>,
+    built: Arc<StdMutex<std::collections::HashMap<String, Arc<InstanceScript>>>>,
+}
+
+impl ScriptBook {
+    fn new(plans: &[(&str, &[WireOutcome])]) -> ScriptBook {
+        ScriptBook {
+            log: WireLog::default(),
+            plans: Arc::new(StdMutex::new(
+                plans
+                    .iter()
+                    .map(|(a, p)| (a.to_string(), p.to_vec()))
+                    .collect(),
+            )),
+            built: Arc::new(StdMutex::new(std::collections::HashMap::new())),
+        }
+    }
+
+    fn seq(&self) -> Vec<String> {
+        self.log.seq()
+    }
+
+    /// The built script for `addr` — an instance never built by the pool is itself a test
+    /// failure (the pool must hold both instances for the failover question to be real).
+    fn instance(&self, addr: &str) -> Arc<InstanceScript> {
+        self.built
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(addr)
+            .cloned()
+            .unwrap_or_else(|| panic!("the pool never built instance {addr}"))
+    }
+
+    fn factory(&self) -> InstanceFactory {
+        let book = self.clone();
+        Arc::new(move |addr: &str| {
+            let plan = book
+                .plans
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(addr)
+                .cloned()
+                .unwrap_or_default();
+            let script = Arc::new(InstanceScript::new(addr, book.log.clone(), plan));
+            book.built
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(addr.to_string(), script.clone());
+            // The REAL production caller: a `Reconnecting` owning its own connection cache
+            // and its own single redial+replay policy.
+            let recon = Arc::new(Reconnecting::new(ScriptedDialer {
+                script: script.clone(),
+            }));
+            let caller: Arc<dyn Caller> = recon.clone();
+            let health = Arc::new(InstanceHealth::seed());
+            // Healthy + freshly stamped: the failure is discovered at CALL time (a
+            // mid-request death), so selection reaches the instance and the retry decision
+            // is `call`'s gate, not `is_selectable`.
+            *health.verdict.lock().unwrap_or_else(|e| e.into_inner()) = Ok(());
+            health
+                .last_probe_at
+                .store(coarse_now_secs().max(1), Ordering::SeqCst);
+            let close: InstanceCloser = Arc::new(move || {
+                let recon = recon.clone();
+                Box::pin(async move { recon.close().await })
+            });
+            Instance {
+                addr: addr.to_string(),
+                caller,
+                health,
+                probe: None,
+                close,
+            }
+        })
+    }
+}
+
+/// THE composition test: a real `Reconnecting` per instance UNDER a real `Pool`, one
+/// `RetryMode::OnceAfterReconnect` (`#[retry_safe]`) op. Instance A dies fatally on its
+/// initial call AND on its own single replay; the pool then fails over to B, which dies
+/// fatally on first touch and heals on ITS OWN single redial+replay.
+///
+/// The pinned sequence is exactly `A#1, A#2, B#1, B#2` — the documented composed worst
+/// case of 4 wire executions for an idempotent op. It goes RED in both directions:
+/// * capping the failover call to `RetryMode::Never` (the DROPPED "fix" to the non-bug)
+///   removes `B#2` and turns the success into an error — B would lose its reconnect
+///   self-heal;
+/// * any additional retry layer over-runs a script and panics at the offending instance.
+#[tokio::test]
+async fn composed_retry_safe_op_runs_a_initial_plus_replay_then_b_initial_plus_replay() {
+    let book = ScriptBook::new(&[
+        // A: fatal on the initial call, fatal again on `Reconnecting`'s one replay.
+        ("A", &[WireOutcome::Fatal, WireOutcome::Fatal]),
+        // B: fatal on first touch, healed on `Reconnecting`'s one replay.
+        ("B", &[WireOutcome::Fatal, WireOutcome::Ok]),
+    ]);
+    let pool = Pool::with_factory(list_of(&["A", "B"]), book.factory());
+
+    let out = pool
+        .call("characters.ownerOf", None, b"{}", RetryMode::OnceAfterReconnect)
+        .await
+        .expect("B's OWN redial+replay must still heal the call on the failover path");
+
+    assert_eq!(out, b"B", "the answer came from the failover instance");
+    assert_eq!(
+        book.seq(),
+        vec!["A#1", "A#2", "B#1", "B#2"],
+        "exact composed sequence: A initial + A replay, then B initial + B replay"
+    );
+    assert_eq!(book.seq().len(), 4, "the documented composed worst case is 4 wire executions");
+
+    let a = book.instance("A");
+    assert_eq!(a.execs(), 2, "A: initial + its own single replay, never a third");
+    assert_eq!(a.dials(), 2, "A redialed exactly once (the replay used a FRESH conn)");
+    assert_eq!(a.closes(), 2, "both of A's fatally-failed conns were reset");
+
+    let b = book.instance("B");
+    assert_eq!(b.execs(), 2, "B: the pool's initial failover call + B's OWN replay");
+    assert_eq!(
+        b.dials(),
+        2,
+        "B redialed itself — the failover call retains `Reconnecting`'s self-heal (a cap \
+         to RetryMode::Never here would make this 1 and fail the call)"
+    );
+    assert_eq!(b.closes(), 1, "only B's first (dead) conn was reset; the healed one stays cached");
+}
+
+/// The WHETHER-gate (`Pool::call`, `retry_mode != OnceAfterReconnect` checked FIRST): a
+/// mutation whose instance dies fatally totals EXACTLY ONE wire execution — neither
+/// `Reconnecting`'s replay nor the pool's failover fires, so the side effect ran at most
+/// once.
+///
+/// Failover-unreachability is proven BY CONSTRUCTION, not by absence of errors: instance
+/// B is built with an EMPTY script, so any wire execution on B panics; B's dial counter is
+/// asserted at 0, so B's transport was never even opened.
+#[tokio::test]
+async fn composed_mutation_executes_exactly_once_and_never_reaches_failover() {
+    let book = ScriptBook::new(&[
+        ("A", &[WireOutcome::Fatal]),
+        // B has NO budget at all: one touch is a loud panic, not a quiet extra call.
+        ("B", &[]),
+    ]);
+    let pool = Pool::with_factory(list_of(&["A", "B"]), book.factory());
+
+    let err = pool
+        .call("characters.create", None, b"{}", RetryMode::Never)
+        .await
+        .expect_err("a mutation onto a dying instance returns the error verbatim");
+
+    assert_eq!(err.status, opsapi::Status::Unavailable);
+    assert_eq!(book.seq(), vec!["A#1"], "exactly one wire execution, on the selected instance");
+
+    let a = book.instance("A");
+    assert_eq!(a.execs(), 1, "a mutation is never replayed on its own connection");
+    assert_eq!(a.dials(), 1, "no redial for the aborted call (the NEXT request redials)");
+    assert_eq!(a.closes(), 1, "the dead conn is still reset — reset precedes the RetryMode gate");
+
+    let b = book.instance("B");
+    assert_eq!(b.execs(), 0, "the failover instance ran NOTHING for a mutation");
+    assert_eq!(
+        b.dials(),
+        0,
+        "the failover instance's transport was never even dialed — the WHETHER-gate \
+         returns before `Pool::call` selects a second instance"
+    );
+}
+
 // --- describe() client helper (routing-as-data, D1) -------------------------
 
 /// A fake `Caller` that records the method/identity/payload/retry it was called with

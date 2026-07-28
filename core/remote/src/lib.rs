@@ -1038,6 +1038,23 @@ impl Caller for Pool {
     /// error) is returned as-is; there is no third instance, no loop. [`Reconnecting`]'s own
     /// single-conn `RetryMode` semantics are UNCHANGED — this only adds the pool's outer,
     /// cross-instance failover on top of it.
+    ///
+    /// **Composed worst case — a tested promise, not an intention.** Each instance's caller
+    /// is itself a [`Reconnecting`] that may redial and replay ONCE on a proven
+    /// `ConnectionFatal`, so the two layers compose multiplicatively:
+    /// * `RetryMode::OnceAfterReconnect` (an idempotent `#[retry_safe]` read): **<= 4 wire
+    ///   executions** — instance I's initial call + I's replay, then instance J's initial
+    ///   call + J's replay. This is SAFE by composition, because the `retry_mode` gate above
+    ///   runs FIRST: only idempotent ops reach here, and N executions of an idempotent read
+    ///   are equivalent to one. J deliberately KEEPS its own reconnect self-heal — capping
+    ///   the failover call to `Never` would disable a real recovery path.
+    /// * `RetryMode::Never` (a mutation): **<= 1 wire execution** — the gate returns before
+    ///   any failover and [`Reconnecting`] does not replay, so the side effect ran at most
+    ///   once.
+    ///
+    /// Both bounds are pinned by exact per-instance sequence assertions in `tests.rs`
+    /// (`composed_retry_safe_op_runs_a_initial_plus_replay_then_b_initial_plus_replay`,
+    /// `composed_mutation_executes_exactly_once_and_never_reaches_failover`).
     async fn call(
         &self,
         method: &str,
