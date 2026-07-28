@@ -3,7 +3,7 @@
 *Sequence step 1 of the feature tracker ([docs/roadmap/feature-tracker.md](../roadmap/feature-tracker.md)).
 Closes P0#3 of [game-backend-feature-gaps.md](../reference/game-backend-feature-gaps.md).*
 
-*Revision 3 — adds the **optional starter grant** (Steps 6-7) at the user's call, and
+*Revision 4 — folds in the core-reviewer pass over the landed Step 1 (widened idempotency identity, movement + balance caps). Revision 3 added the **optional starter grant** (Steps 6-7) at the user's call, and
 folds it into the design at source (Step 2's service shape, Step 4's wiring) rather than
 bolting it on. Revision 2 applied the `core-reviewer` punch list; both sets of changes are
 itemised at the bottom.*
@@ -63,7 +63,20 @@ pre-check-then-write.
 `bigint`, never `int4`: an int4 overflow (22003) inside a delivery tx once poison-paused a
 subscription (`modules/inventory/src/lib.rs:50-59`).
 
-**Three** SQLSTATEs are interpreted: `23514` (insufficient funds → 409), `23503` (unknown
+**Both ends of the range are capped, and that is what keeps `bigint` overflow (22003) out of
+the delivery transaction (rev 4).** `MAX_MOVEMENT_AMOUNT = 1_000_000_000_000` (contract const,
+beside the byte caps) bounds a single movement; the balance CHECK is
+`amount >= 0 AND amount <= 1_000_000_000_000_000`. Both are far below `i64::MAX ≈ 9.2e18`, so
+`amount + delta` can never overflow — a credit past the ceiling hits 23514, which is already
+mapped to 409, instead of 22003, which is not mapped at all. This matters most on the
+**delivery** path: a 22003 there would abort the delivery tx, fail the plane's checkpoint
+UPDATE with 25P02 and poison `wallet.player-registered.v1` — the exact "removed by
+construction" claim D9 makes, and the exact overflow class that already bit inventory once
+(`modules/inventory/src/lib.rs:50-59`). `validate_movement` rejects
+`amount <= 0 || amount > MAX_MOVEMENT_AMOUNT` as `Invalid`, and D9's config read clamps
+against the same const.
+
+**Three** SQLSTATEs are interpreted: `23514` (insufficient funds **or** balance ceiling → 409), `23503` (unknown
 currency → 400), `22P02` (malformed player uuid → 400). The contract carries
 `player_id: String` while the columns are `uuid`, so **every statement casts `$n::uuid`**
 and the 22P02 arm exists — the house pattern at `modules/characters/src/store.rs:28` and
@@ -81,7 +94,7 @@ itself:
    VALUES ($1,$2::uuid,$3,$4,$5,0) ON CONFLICT (idempotency_key) DO NOTHING RETURNING id::text`
 2. `None` ⇒ the key is already used. Re-`SELECT player_id::text, currency, delta, balance_after
    FROM wallet.ledger WHERE idempotency_key = $1` **on the same connection**, then:
-   - same `(player_id, currency, delta)` → `Outcome::Duplicate(existing.balance_after)`;
+   - same `(player_id, currency, delta, reason)` → `Outcome::Duplicate(existing.balance_after)`;
    - different → `Outcome::Conflict`;
    - **no row** → `Error::internal("conflicting ledger row disappeared")` — the arm `match`
      also has (`modules/match/src/lib.rs:210`). Unreachable under READ COMMITTED; must not
@@ -99,6 +112,15 @@ method returns `i64`. If the replay re-read the *current* balance, a movement la
 between would make the replay return a different value than the original call — which is
 exactly what would invalidate D4. Returning the ledger row's own `balance_after` makes a
 replay observationally identical to the original.
+
+**Why `reason` is IN the comparison (rev 4).** The published contract doc says a duplicate
+key carrying "the same movement" replays and a different one is 409. Comparing only
+`(player_id, currency, delta)` would make `credit(K, 100, "promo")` followed by
+`credit(K, 100, "refund")` a silent success that records the FIRST reason — the caller gets
+a balance for a movement it did not describe, with no error. Widening the tuple keeps the
+contract text true: the key identifies the whole movement. A genuine wire replay carries an
+identical payload and still collapses to `Duplicate`; only an *edited* resubmit gets 409,
+which is correct — it is a different movement and deserves its own key.
 
 **Why the ledger insert is first:** it is the dedup gate. If the balance moved first, a
 duplicate key would be detected only *after* double-spending.
@@ -378,7 +400,8 @@ CREATE TABLE IF NOT EXISTS wallet.balances (
 	player_id  uuid   NOT NULL,
 	currency   text   NOT NULL REFERENCES wallet.currencies(code),
 	amount     bigint NOT NULL DEFAULT 0
-	           CONSTRAINT balances_amount_check CHECK (amount >= 0),
+	           CONSTRAINT balances_amount_check
+	           CHECK (amount >= 0 AND amount <= 1000000000000000),
 	updated_at timestamptz NOT NULL DEFAULT now(),
 	PRIMARY KEY (player_id, currency)
 );
@@ -561,7 +584,9 @@ to mutate it mid-test). Dependencies injected through the **real registry key**.
    key) → credit(K); the third call returns the **first** call's value, not the current
    balance, and there is still one row for K. **Licenses `#[retry_safe]` (D4)**; a
    "re-read current balance" implementation fails it.
-3. `duplicate_key_different_movement_is_409` — `Status::Conflict` + the message.
+3. `duplicate_key_different_movement_is_409` — `Status::Conflict` + the message. **Includes a
+   same-everything-but-`reason` case**, which pins rev 4's widened identity tuple: the narrow
+   `(player, currency, delta)` comparison would return a silent success here.
 4. `concurrent_same_key_credits_apply_once` — `#[tokio::test(flavor = "multi_thread", worker_threads = 4)]`,
    two spawned credits with one key; exactly one ledger row, single-application balance. The
    in-tx re-verify arm (D3 step 2) the sequential test never reaches.
@@ -574,7 +599,9 @@ to mutate it mid-test). Dependencies injected through the **real registry key**.
    `asyncevents::testing::events_count`.
 9. `event_append_failure_rolls_back_the_balance` — `asyncevents::testing::failing_transport()`;
    balance unchanged AND no ledger row survives.
-10. `validate_movement_rejects_oversized_fields` — no DB; the three byte caps.
+10. `validate_movement_rejects_oversized_fields` — no DB; the three byte caps **and the amount
+    bounds** (`0`, negative, `i64::MAX`, `MAX_MOVEMENT_AMOUNT + 1`). The `i64::MAX` case is the
+    one that would panic in debug on `sign * amount` without the cap.
 
 **(d) Dispatch.** `[test-author]`, `subagent_type: "test-author"`, `model:"sonnet"`,
 effort **think hard**.
@@ -615,6 +642,9 @@ ctx.bus().on_tx(
    `modules/inventory/src/projection.rs:65-71`. **No wallet-owned second cache** — the
    injected reader is already a replica-local cache kept fresh by the invalidation plane.
 2. `if currency.is_empty() || amount <= 0 { return Ok(()); }` — feature off, the default.
+   `amount > MAX_MOVEMENT_AMOUNT` → `warn!` + `Ok(())`, never `Err`: the knob is an
+   operator-editable string, so a fat-fingered `9223372036854775807` is a plausible input and
+   must not poison the subscription (D2).
 3. `if !store.currency_exists_tx(&mut *conn, &currency).await? { warn!(…); return Ok(()); }` —
    the pre-check that keeps the FK from ever firing inside the delivery tx (D9).
 4. `apply_on(conn, &Movement{ idempotency_key: format!("starter:{player_id}"), player_id,
@@ -650,6 +680,9 @@ Run with `--test-threads=1` per [[asyncevents-single-invocation-parallelism-dead
 2. `starter_grant_is_off_by_default` — the compiled defaults (`""`, `0`); assert **no** balance
    row and **no** ledger row. This is the "optional" half of the feature and the branch that
    would be wrong if the defaults ever became non-empty.
+3b. `starter_grant_skips_an_absurd_configured_amount_without_poisoning` — `starter_amount`
+   set to `i64::MAX`; assert no grant, no `Err`, and that a later registration still gets
+   granted once the knob is corrected. The overflow arm from D2.
 3. `starter_grant_skips_unknown_currency_without_poisoning` — config names a currency absent
    from `wallet.currencies`; assert no grant, **and** that a subsequent `player.registered`
    for a different player IS granted after the config is corrected on the mutable `FakeConfig`.
@@ -715,6 +748,8 @@ including data shape. Balances and ledger rows are **always real** — never inv
 | `tools/opscatalog-gen/src/main.rs` | `rpc_modules()` += **two** entries, one per trait module (`:66-81`, completeness-gated by `rpc_modules_from_fs()` at `:162`) |
 | `tools/csharp-client-gen/src/scrape.rs` | `PROVIDERS` += `"wallet"` and the `phase_a()` arm |
 | `modules/apikeys/src/lib.rs` | `DEV_CLIENT_POLICY` += `wallet.myBalances,wallet.listCurrencies`. **Not** `wallet.credit`/`wallet.debit` — wire/admin only. |
+| **`tools/conformance/src/tests.rs:294`** | `assert_eq!(discovered.len(), 18, …)` → **27**. Wallet adds 9 string leaves (`wallet.balances/player_id`, plus `movement.{idempotency_key,player_id,currency,reason}` on each of `wallet.credit`/`wallet.debit`). Missed in rev 3; it keeps the **blocking `test` stage** red. |
+| **`tools/topiccheck/src/tests.rs`** | `defined_topics_matches_every_define_site_on_disk` FS-scans `api/*/events` for `define(` — satisfied by the `defined_topics()` row above, listed here so the red test is expected, not a surprise. |
 | `tools/processctl/src/fleet_tests.rs` | assertion rows for wallet-svc's port/deps (incl. the `config-svc` dependency) |
 | `CLAUDE.md` | "Domain modules (**11** fortresses + gateway)" → 12; the port roster gains `wallet :8092/:9010`; the accounts bullet gains "wallet grants starter currency on `player.registered` when configured". `docs-current` checks links/retired commands/package references (`tools/verifyctl/src/stages/docs_current.rs:6-31`), **not** this. |
 | `docs/reference/public-api-baseline/` | `walletapi.txt`, `walletevents.txt` via `cargo run -p verifyctl -- --bless-public-api` |
@@ -815,6 +850,16 @@ effort **think hard**.
 ---
 
 ## Revision history
+
+### Revision 3 → 4 (`core-reviewer` pass over the landed Step 1, `9ccd243`)
+
+| # | Correction | Severity |
+|---|---|---|
+| 1 | **Step 9 was missing `tools/conformance/src/tests.rs:294`** (hardcoded `18` → `27`), so the plan as written left the BLOCKING `test` stage red. Added, together with the topiccheck FS-drift test, so the expected-red set is declared rather than discovered. | blocking |
+| 2 | **`reason` moved INTO the idempotency comparison** (D3 step 2). The contract doc already promised "the same movement"; the narrow `(player, currency, delta)` tuple would have made an edited-`reason` resubmit a silent success recording the original reason. Step 5 #3 grows the case that pins it. | high |
+| 3 | **`MAX_MOVEMENT_AMOUNT` + an upper bound on the balance CHECK** (D2). `amount` was the one uncapped field in a crate that caps its three strings; `sign * i64::MAX` panics in debug, and a `bigint` overflow (22003) is unmapped — on the delivery path it would abort the tx, fail the checkpoint with 25P02 and poison the starter-grant subscription, i.e. exactly what D9 claims is impossible. Both caps sit far below `i64::MAX`, so the overflow is now unreachable and the ceiling surfaces as an already-mapped 23514/409. Tests: Step 5 #10, Step 7 #3b. | high |
+| 4 | `walletapi` **drops the `adminapi` dependency** — wallet consumes accounts' extension point from `modules/wallet/src/admin.rs`, so the contract crate never names an `adminapi` symbol. The rev-3 rationale ("same edge `charactersapi` carries") did not apply: `charactersapi` carries it because it *declares* a point. | low |
+| 5 | Trait doc corrected: `credit`/`debit` are reachable from a peer process over the internal edge only. The admin portal reaches wallet through `admin.adminSubmit` → the local service, never through `wallet.credit`. | low |
 
 ### Revision 2 → 3 (starter grant, at the user's call)
 
