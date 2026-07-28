@@ -602,8 +602,14 @@ to mutate it mid-test). Dependencies injected through the **real registry key**.
 9. `event_append_failure_rolls_back_the_balance` — `asyncevents::testing::failing_transport()`;
    balance unchanged AND no ledger row survives.
 10. `validate_movement_rejects_oversized_fields` — no DB; the three byte caps **and the amount
-    bounds** (`0`, negative, `i64::MAX`, `MAX_MOVEMENT_AMOUNT + 1`). The `i64::MAX` case is the
-    one that would panic in debug on `sign * amount` without the cap.
+    bounds** (`0`, negative, `i64::MIN`, `i64::MAX`, `MAX_MOVEMENT_AMOUNT + 1`), each asserting
+    `Status::Invalid`.
+    **Correction (rev 4 follow-up):** an earlier draft of this step claimed `i64::MAX` panics
+    in debug on `sign * amount`. It does not — `-1 * i64::MAX` is representable. The value
+    that panics on negation is **`i64::MIN`**, so that is the panic case; `i64::MAX` and
+    `MAX_MOVEMENT_AMOUNT + 1` are ordinary bounds cases. Do not write a test asserting a panic
+    for `i64::MAX`. The sign-independent defect the cap really closes is on the Postgres side:
+    `amount + $delta` overflowing `bigint` → 22003 → the 25P02 poison chain (D2).
 
 **(d) Dispatch.** `[test-author]`, `subagent_type: "test-author"`, `model:"sonnet"`,
 effort **think hard**.
