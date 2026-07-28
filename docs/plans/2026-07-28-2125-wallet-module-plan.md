@@ -302,8 +302,9 @@ the subscription poisons on the very error we meant to tolerate. The pre-check p
 **(c) How.**
 
 `api/wallet/api/src/lib.rs` — deps exactly `opsapi`, `rpc-macro`, `async-trait`, `serde`,
-`serde_json`, plus `adminapi` (types-only, Step 8's extension entry). **Never**
-`tokio`/`sqlx`/`edge`/`remote` — `FORBIDDEN_API_DEPS` (`tools/archcheck/src/main.rs:91-94`).
+`serde_json`. **Never** `tokio`/`sqlx`/`edge`/`remote` — `FORBIDDEN_API_DEPS`
+(`tools/archcheck/src/main.rs:91-94`). **No `adminapi`** either (rev 4, item 4): wallet
+only CONSUMES accounts' extension point, from `modules/wallet/src/admin.rs`.
 
 ```rust
 pub struct Balance { pub currency: String, pub amount: i64 }
@@ -318,6 +319,7 @@ pub struct Movement {
 pub const MAX_IDEMPOTENCY_KEY_BYTES: usize = 128;
 pub const MAX_CURRENCY_CODE_BYTES: usize = 32;
 pub const MAX_REASON_BYTES: usize = 256;
+pub const MAX_MOVEMENT_AMOUNT: i64 = 1_000_000_000_000;   // rev 4, D2
 
 #[rpc(prefix = "wallet")]
 #[async_trait]

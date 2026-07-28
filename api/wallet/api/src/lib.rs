@@ -16,8 +16,14 @@
 //!
 //! **Money never moves at a player's own request.** The mutating methods (`credit`,
 //! `debit`) live on the WIRE-ONLY `Wallet` capability — no `#[http]` binding, no caller
-//! `Identity` — so they are reachable from a peer process over the internal mTLS edge
-//! and from the admin portal, never from a game client. `Player` is reads only.
+//! `Identity` — so they are reachable ONLY from a peer process over the internal mTLS
+//! edge, never from a game client. `Player` is reads only.
+//!
+//! No consumer in this workspace calls `credit`/`debit` over the wire today, and that is
+//! expected: they exist for the first domain that spends or awards currency. Wallet's own
+//! admin surface does NOT go through them — the portal's remote write is
+//! `admin.adminSubmit` into wallet's process, which reaches the same movement authority
+//! in-process.
 //!
 //! Domain CONSUMERS import this ONLY to name a trait for `registry::require` (rule 4's
 //! nominal-typing cost); they never import the `wallet` impl crate.
@@ -58,14 +64,26 @@ pub struct Currency {
 /// `idempotency_key` is REQUIRED (the `match::report` construction): the ledger holds a
 /// `UNIQUE` index on it, so a replay of the same key collapses to a no-op returning the
 /// ORIGINAL movement's resulting balance. That is precisely what licenses `#[retry_safe]`
-/// on the two mutating methods below (D4).
+/// on the two mutating methods below.
+///
+/// **The replayed-movement identity is the tuple
+/// `(player_id, currency, signed delta, reason)`** — every field except the key itself.
+/// A resubmit under the same key that differs in ANY of them, `reason` included, is a
+/// `Status::Conflict`, not a silent success: a `credit(K, 100, "promo")` followed by a
+/// `credit(K, 100, "refund")` must not return OK while the ledger records "promo". A
+/// genuine wire replay carries a byte-identical payload and still collapses to the
+/// no-op; only an EDITED resubmit is rejected, and it deserves its own key.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Movement {
     pub idempotency_key: String,
     pub player_id: String,
     pub currency: String,
-    /// Always positive; the direction is the method.
+    /// Always positive; the direction is the method. Bounded by
+    /// [`MAX_MOVEMENT_AMOUNT`] — see that const for why the ceiling is part of the
+    /// contract rather than a defensive nicety.
     pub amount: i64,
+    /// Free-form note written to the ledger row. Part of the movement's identity (see
+    /// the type docs), so it is NOT a cosmetic field.
     pub reason: String,
 }
 
@@ -80,16 +98,37 @@ pub const MAX_CURRENCY_CODE_BYTES: usize = 32;
 /// Byte cap on [`Movement::reason`] — the human-readable note written to the ledger row.
 pub const MAX_REASON_BYTES: usize = 256;
 
+/// Upper bound on a single [`Movement::amount`] (10^12 minor units). A movement outside
+/// `1 ..= MAX_MOVEMENT_AMOUNT` is rejected as `Status::Invalid` (400) BEFORE any SQL
+/// runs — the amount is the one numeric input a caller controls, so it is capped at the
+/// contract exactly like the three byte caps above.
+///
+/// This is not tidiness, it is the reason a `bigint` overflow cannot happen. The balance
+/// update is `amount + $delta` in Postgres; an overflow there is **SQLSTATE 22003**,
+/// which wallet interprets nowhere. On the pool path that is a confusing 500 instead of
+/// a 409. On the durable STARTER-GRANT path it is worse: 22003 aborts the delivery
+/// transaction, so the plane's checkpoint UPDATE then fails with 25P02 and poisons the
+/// subscription — the precise class that already bit inventory once, and the one the
+/// starter grant claims to have removed by construction. With this ceiling plus the
+/// balance CHECK's own upper bound of 10^15 (Step 2's schema), `balance + amount` stays
+/// ~9000x below `i64::MAX`, so the only way to exceed the ceiling is the CHECK
+/// violation 23514, which IS mapped — to the same 409 as insufficient funds.
+///
+/// The lower bound closes a second hole: the service applies a debit as `-amount`, and
+/// negating `i64::MIN` panics in a debug build (`1 * i64::MAX` and `-1 * i64::MAX` are
+/// both fine — `i64::MIN` is the input that overflows).
+pub const MAX_MOVEMENT_AMOUNT: i64 = 1_000_000_000_000;
+
 /// The wallet module's SERVER-side capability: reading any player's balances and moving
-/// money. WIRE-ONLY — no leading `Identity` (the caller is a trusted peer process or the
-/// admin portal, not a player) and no `#[http]` (not a gateway route; it rides the
-/// internal mTLS edge like `accounts.sessions`).
+/// money. WIRE-ONLY — no leading `Identity` (the caller is a trusted peer process, not a
+/// player) and no `#[http]` (not a gateway route; it rides the internal mTLS edge like
+/// `accounts.sessions`).
 ///
 /// `credit`/`debit` are `#[retry_safe]` — legal ONLY because every movement carries a
 /// required `idempotency_key` and a replay returns the ORIGINAL movement's
-/// `balance_after`, making the retry observationally identical to the first call (D4). If
-/// the key ever becomes optional, or the duplicate arm ever re-reads the LIVE balance,
-/// the attribute must come off in the same diff.
+/// `balance_after`, making the retry observationally identical to the first call. If the
+/// key ever becomes optional, or the duplicate arm ever re-reads the LIVE balance, the
+/// attribute must come off in the same diff.
 #[rpc(prefix = "wallet")]
 #[async_trait]
 pub trait Wallet: Send + Sync {
@@ -103,15 +142,22 @@ pub trait Wallet: Send + Sync {
     async fn currencies(&self) -> Result<Vec<Currency>, Error>;
 
     /// Adds `movement.amount` to the player's balance and appends the ledger row, in one
-    /// transaction. Returns the resulting balance. A duplicate `idempotency_key` carrying
-    /// the SAME movement returns the original call's resulting balance without moving
-    /// money; a duplicate key carrying a DIFFERENT movement is `Status::Conflict` (409).
+    /// transaction. Returns the resulting balance.
+    ///
+    /// A duplicate `idempotency_key` whose `(player_id, currency, signed delta, reason)`
+    /// matches the stored row returns THAT row's `balance_after` without moving money; a
+    /// duplicate key differing in any of those fields is `Status::Conflict` (409).
+    /// `amount` outside `1 ..= MAX_MOVEMENT_AMOUNT` is `Status::Invalid` (400); an
+    /// unknown currency is `Status::Invalid` (400); a credit that would push the balance
+    /// past its ceiling is `Status::Conflict` (409).
     #[retry_safe]
     async fn credit(&self, movement: Movement) -> Result<i64, Error>;
 
-    /// The mirror of [`Wallet::credit`], subtracting instead. A movement that would take
-    /// the balance below zero is rejected by the DB CHECK as `Status::Conflict` (409) and
-    /// consumes no idempotency key — the caller may retry after a top-up.
+    /// The mirror of [`Wallet::credit`], subtracting instead — same idempotency identity,
+    /// same `amount` bounds. A movement that would take the balance below zero is
+    /// rejected by the DB CHECK as `Status::Conflict` (409) and consumes no idempotency
+    /// key (the aborted transaction takes the ledger row with it), so the caller may
+    /// retry the SAME key after a top-up.
     #[retry_safe]
     async fn debit(&self, movement: Movement) -> Result<i64, Error>;
 }

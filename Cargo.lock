@@ -4602,7 +4602,6 @@ dependencies = [
 name = "walletapi"
 version = "0.1.0"
 dependencies = [
- "adminapi",
  "async-trait",
  "opsapi",
  "rpc-macro",

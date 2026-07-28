@@ -14,12 +14,14 @@ publish = false
 # edge-dependent glue. NO `edge`/`remote`/transport dependency (archcheck's
 # FORBIDDEN_API_DEPS) — a future consumer that needs `dyn Wallet` imports THIS crate
 # to name the trait (rule 4's nominal-typing cost), never the `wallet` impl crate.
+#
+# Deliberately NO `adminapi`: `charactersapi` carries that api→api edge because it
+# DECLARES extension points (`charactersapi::admin::*` consts) for contributors to
+# target. Wallet only CONSUMES a point accounts declares, and the `ExtensionEntry`
+# that does so is built in `modules/wallet/src/admin.rs`, which imports `adminapi`
+# directly — so this crate would never name an `adminapi` symbol.
 [dependencies]
 opsapi = { workspace = true }
-# TYPES-ONLY: the admin extension-point vocabulary, the same api→api edge
-# `charactersapi` carries. Reserved for wallet's admin surface; this crate names no
-# `adminapi` symbol yet (the wallet page and its extension entry land later).
-adminapi = { workspace = true }
 rpc-macro = { workspace = true }
 async-trait = { workspace = true }
 serde = { workspace = true }
