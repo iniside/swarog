@@ -990,6 +990,20 @@ turns the same two rows into `(4, 100), (5, 200)`. `pg_get_serial_sequence('wall
 `set_balance_after_tx` is correct — it is a string the compiler cannot check, so Step 5's
 4c is what keeps it honest.
 
+The follow-up review's two structural findings were likewise reproduced before being
+applied. **The `bigserial` sequence name is not guaranteed:** with a `ledger_seq_seq`
+already present in the schema, `CREATE TABLE … seq bigserial` resolves
+`pg_get_serial_sequence` to **`ledger_seq_seq1`**, and the squatted `ledger_seq_seq` stays
+at its initial value forever — so a hardcoded `nextval('wallet.ledger_seq_seq')` would have
+drawn the ledger's money ordering from an unrelated counter, with no error. The shipped
+statement asks the catalog instead. **The catalog cap is `octet_length`, not
+`char_length`:** `MAX_CURRENCY_CODE_BYTES` is a `str::len()` byte count, and a 20-character
+multibyte code is 40 octets — verified that both `repeat('a',33)` and `repeat('ż',20)` are
+rejected by `currencies_code_len_check`, so the by-construction argument holds for
+non-ASCII codes too. The re-stamp's real cost is also recorded at the site: because `seq`
+is covered by `ledger_player_seq_idx`, the UPDATE is now guaranteed NON-HOT (an extra index
+tuple per movement plus a dead one for vacuum), not merely "one wasted sequence value".
+
 One implementation detail beyond the punch list: with `validate_movement` inside
 `apply_on`, `delta` is `sign * m.amount` with no `checked_mul` (the amount is bounded to
 `1 ..= MAX_MOVEMENT_AMOUNT` one line above, so ±1 cannot overflow). `sign` stays `i64` per

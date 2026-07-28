@@ -50,11 +50,24 @@ use walletapi::{Player, Wallet};
 /// class that already bit inventory once.
 ///
 /// The FK to the catalog is NAMED so the 23503 → 400 mapping matches a constraint we own;
-/// it is an IN-MODULE FK, which is legal — no cross-module FK exists. Both mappings are
+/// it is an IN-MODULE FK, which is legal — no cross-module FK exists. Those mappings are
 /// COUPLED TO THESE NAMES, and `CREATE TABLE IF NOT EXISTS` never repairs a pre-existing
 /// table: a `wallet.balances` carrying differently-named constraints would silently turn
-/// every insufficient-funds into a 500. Renaming either constraint is therefore a
+/// every insufficient-funds into a 500. Renaming any constraint here is therefore a
 /// `DROP SCHEMA wallet CASCADE` + fresh boot, never an `ALTER`.
+///
+/// **`currencies_code_len_check` is what makes the durable grant's pre-checks exhaustive
+/// BY CONSTRUCTION.** `Service::apply_on` validates the movement itself, so ANY movement
+/// the starter-grant handler builds that `validate_movement` would reject becomes an
+/// `Err` on the delivery path — which posture A forbids. Without this CHECK the catalog
+/// could legitimately hold a 33-byte code: `currency_exists_tx` would answer `true` and
+/// the movement would then fail the contract's 32-byte cap. Capping the CATALOG makes a
+/// rejectable row impossible to store, which closes it for the durable grant, for the
+/// wire path (a 400 on a currency the catalog legitimately holds) and for the admin
+/// page at once — instead of teaching one handler to re-enumerate the validator's
+/// branches. It is `octet_length`, not `char_length`, because `MAX_CURRENCY_CODE_BYTES`
+/// is a `str::len()` BYTE count: a 20-character multibyte code is 40 octets and must be
+/// rejected here too, or the by-construction argument leaks.
 ///
 /// **The ledger is ordered by `seq`, not `at` — and `seq` is stamped under the balance
 /// row lock, not by the `bigserial` default.** `now()` is `transaction_timestamp()`,
@@ -76,7 +89,9 @@ const SCHEMA_DDL: &str = r#"
 CREATE SCHEMA IF NOT EXISTS wallet;
 
 CREATE TABLE IF NOT EXISTS wallet.currencies (
-	code         text PRIMARY KEY,
+	code         text PRIMARY KEY
+	             CONSTRAINT currencies_code_len_check
+	             CHECK (octet_length(code) <= 32),
 	display_name text        NOT NULL,
 	kind         text        NOT NULL DEFAULT 'soft',
 	decimals     int         NOT NULL DEFAULT 0,

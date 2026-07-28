@@ -159,8 +159,21 @@ impl Store {
     /// BEFORE the lock — so leaving `seq` at its default lets two concurrent credits
     /// order as (`seq=1`, balance 200), (`seq=2`, balance 100), i.e. an `ORDER BY seq`
     /// read of an append-only ledger showing the running balance going DOWN on a credit.
-    /// The insert-time value is therefore a placeholder, always overwritten before
-    /// commit; the cost is one wasted sequence value per movement.
+    /// The insert-time value is therefore a placeholder, always overwritten before commit.
+    ///
+    /// The sequence is named through `pg_get_serial_sequence`, never as a literal. The
+    /// name a `bigserial` derives is NOT guaranteed: Postgres deconflicts it, so a schema
+    /// that already contained a `ledger_seq_seq` would leave the column defaulting from
+    /// `ledger_seq_seq1` while a hardcoded `nextval('wallet.ledger_seq_seq')` drew from an
+    /// unrelated counter nothing else advances — no error, just silently wrong money
+    /// ordering. Asking the catalog also survives a future table/column rename, which
+    /// would otherwise be a runtime failure in the one statement on the money path.
+    ///
+    /// COST, stated honestly: `seq` is covered by `ledger_player_seq_idx (player_id, seq
+    /// DESC)`, so re-stamping it makes this a guaranteed NON-HOT update — an extra index
+    /// tuple per movement plus a dead one for vacuum, on the hottest write path (before
+    /// the fix the UPDATE could go HOT), plus one skipped sequence value. That is the
+    /// price of an ordering column that actually orders.
     pub(crate) async fn set_balance_after_tx(
         &self,
         conn: &mut PgConnection,
@@ -169,7 +182,8 @@ impl Store {
     ) -> Result<(), sqlx::Error> {
         sqlx::query(
             "UPDATE wallet.ledger \
-                SET balance_after = $1, seq = nextval('wallet.ledger_seq_seq') \
+                SET balance_after = $1, \
+                    seq = nextval(pg_get_serial_sequence('wallet.ledger', 'seq')) \
               WHERE id = $2::uuid",
         )
         .bind(balance_after)
@@ -251,6 +265,13 @@ impl Store {
 
     /// Upserts one catalog row. Used by the `WALLET_DEV_SEED` upsert (self-healing: a
     /// hand-edited dev row is restored on the next boot).
+    ///
+    /// A code longer than 32 octets is rejected by `currencies_code_len_check` as 23514.
+    /// Here that is a boot failure, which is right for a hardcoded dev code; a
+    /// CALLER-facing writer (the admin create-currency form) must map it to a 400 rather
+    /// than let it surface as a 500. Note the existing 23514 predicate is constraint-named
+    /// (`is_out_of_range` matches `balances_amount_check` only), so this new CHECK cannot
+    /// be mistaken for insufficient funds.
     pub(crate) async fn upsert_currency_tx(
         &self,
         conn: &mut PgConnection,

@@ -197,10 +197,16 @@ impl Service {
     /// wrapper still validates before opening a transaction, purely so a bad request is
     /// rejected without one.
     ///
-    /// This costs the DURABLE caller nothing: its posture-A pre-checks (amount in range,
-    /// currency present in the catalog) run BEFORE it calls, so this `Err` is unreachable
-    /// there. That ordering is a requirement of the delivery path, not a nicety — see the
-    /// note below.
+    /// The DURABLE caller must therefore be unable to build a movement this rejects, and
+    /// that has to hold BY CONSTRUCTION rather than by the handler re-enumerating the
+    /// branches below (re-enumeration is the duplicated authority this design exists to
+    /// avoid, and it silently rots: [`validate_movement`] has seven reject branches).
+    /// Four facts make every one of them unreachable for the starter grant: the catalog
+    /// cannot hold an oversized currency code (`currencies_code_len_check`), it cannot
+    /// hold an absent one (`currency_exists_tx` runs first), the handler clamps the
+    /// configured amount, and its `reason` / `idempotency_key` are compile-time-fixed
+    /// shapes. Ordering is therefore a CORRECTNESS constraint, not style: the amount
+    /// clamp and the catalog probe run BEFORE this call, never after.
     ///
     /// On an `Err` the caller's transaction may be ABORTED (23514 / 23503): the only
     /// legal next statement is the unwind. Do not read the balance to enrich the message
