@@ -50,24 +50,30 @@
 //!         `from_slice::<Request>` instead. WHERE it is caught still differs by topology;
 //!         WHAT the caller sees no longer does.
 //!
-//!         ERRATA (2026-07-28, reverses the previous text here). This used to be recorded
-//!         as an unfixable status gap — "NOT fixable without carrying field types in the
-//!         manifest; splitproof SHOULD pin the topology-dependence" — and described the
-//!         svc-side failure as `Status::Internal`/500. Both statements were wrong. The
-//!         status was traced to `Unavailable`/503, not `Internal`/500: the svc adapter's
-//!         decode error was type-erased into `edge::HandlerResult`, so the dispatch replied
-//!         `code: None` (`core/edge/src/server.rs`), the caller classified it as
-//!         `edge::Error::Remote` (`core/edge/src/client.rs`) and the `From<edge::Error>`
-//!         mapping (`core/edge/src/lib.rs`) turned that into `Error::unavailable`. And it
-//!         WAS fixable without field types in the manifest: the generated server adapter
-//!         now wraps ONLY its request-body decode failure in the typed
-//!         `edge::InvalidRequestBody` marker, the dispatch stamps
-//!         `edge::ResponseCode::InvalidRequest` for that marker alone, and the mapping
-//!         turns it into [`Error::invalid`] — a 400. The response-ENCODE failure (a SERVER
-//!         bug) and a corrupt request envelope (wire framing) stay code-less and remain
-//!         503. So an ill-typed body is a 400 at the front door in the monolith, through a
-//!         compile-time-glue gateway, AND through the describe-routing gateway; splitproof's
-//!         `[D4-ILLTYPED]` asserts that 400 instead of pinning a divergence.
+//! ### ERRATA on caveat (iv) — 2026-07-28, reverses the text that stood here
+//! Caveat (iv) used to record an unfixable STATUS gap: "NOT fixable without carrying field
+//! types in the manifest; splitproof SHOULD pin the topology-dependence", with the svc-side
+//! failure described as `Status::Internal`/500. Both statements were wrong.
+//!
+//! The status was `Unavailable`/503, not `Internal`/500: the svc adapter's decode error was
+//! type-erased into `edge::HandlerResult`, so the dispatch replied `code: None`
+//! (`core/edge/src/server.rs`), the caller classified it as `edge::Error::Remote`
+//! (`core/edge/src/client.rs`), and `From<edge::Error> for Error` (`core/edge/src/lib.rs`)
+//! turned that into `Error::unavailable`.
+//!
+//! And it WAS fixable without field types in the manifest. The generated server adapter now
+//! wraps ONLY its request-body decode failure in the typed `edge::InvalidRequestBody` marker,
+//! the dispatch stamps `edge::ResponseCode::InvalidRequest` for that marker alone, and the
+//! mapping turns it into [`Error::invalid`] — a 400. The response-ENCODE failure (a SERVER
+//! bug) and a corrupt request envelope (wire framing) stay code-less and remain 503. So an
+//! ill-typed body is a 400 at the front door in the monolith, through a compile-time-glue
+//! gateway, AND through the describe-routing gateway; splitproof's `[D4-ILLTYPED]` asserts
+//! that 400 instead of pinning a divergence.
+//!
+//! One residual local/remote divergence in this class is recorded, NOT fixed: a
+//! RESPONSE-ENCODE failure is `Internal`/500 locally and `Unavailable`/503 remotely. Both
+//! are 5xx, and encoding a `{status, err, value}` struct of already-typed values has no
+//! reachable failure mode, so it is not worth a second wire code.
 
 use std::sync::Arc;
 

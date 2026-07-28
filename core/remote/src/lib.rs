@@ -442,9 +442,14 @@ impl Dialer for EdgeDialer {
 fn map_edge_call_failure(failure: edge::Error) -> CallFailure {
     let provenance = match &failure {
         edge::Error::Connection(_) => FailureProvenance::ConnectionFatal,
-        edge::Error::Remote(_) | edge::Error::UnknownMethod(_) => {
-            FailureProvenance::PeerAnswer
-        }
+        // A peer ANSWER by construction: the peer received the whole envelope, ran
+        // its dispatch, and replied `ok:false` — `UnknownMethod` and `InvalidRequest`
+        // are simply its two typed reply codes. Listing them explicitly (rather than
+        // letting them fall into the `StreamLocal` catch-all) keeps this function's
+        // job — classify while the concrete edge cause is available — honest.
+        edge::Error::Remote(_)
+        | edge::Error::UnknownMethod(_)
+        | edge::Error::InvalidRequest(_) => FailureProvenance::PeerAnswer,
         _ => FailureProvenance::StreamLocal,
     };
     CallFailure {
@@ -1004,13 +1009,15 @@ impl Caller for Pool {
     /// The cross-instance retry fires ONLY when ALL of:
     /// 1. `retry_mode == RetryMode::OnceAfterReconnect` (a read / `#[retry_safe]` op); AND
     /// 2. the failure is a NON-PEER-ANSWERED error — `!status.is_definitive_answer()`, i.e.
-    ///    any status OTHER than `NotFound`. A definitive answer (`NotFound` = `UnknownMethod`,
-    ///    the peer demonstrably received and answered) means the op RAN on a reachable
-    ///    instance; re-running it elsewhere would double-execute, so it is returned verbatim.
+    ///    any status OTHER than `NotFound` or `Invalid`. A definitive answer (`NotFound` =
+    ///    `UnknownMethod`, `Invalid` = `InvalidRequest` — the peer demonstrably received and
+    ///    answered) means the op RAN on a reachable instance and its verdict is deterministic
+    ///    in the request bytes; re-running it elsewhere would double-execute (or, for
+    ///    `Invalid`, re-earn the identical rejection), so it is returned verbatim.
     ///    (A domain error rides INSIDE the response envelope as `Ok(bytes)` at this boundary —
     ///    it never reaches this gate; the only `Err` statuses here are `NotFound` from
-    ///    `UnknownMethod` and `Unavailable` from every other edge fault — see
-    ///    `From<edge::Error> for opsapi::Error`.) AND
+    ///    `UnknownMethod`, `Invalid` from `InvalidRequest`, and `Unavailable` from every other
+    ///    edge fault — see `From<edge::Error> for opsapi::Error`.) AND
     /// 3. a DIFFERENT selectable instance exists (`select_excluding` off the dead addr).
     ///
     /// **This gate is BROADER than [`Reconnecting`]'s `ConnectionFatal` reset class — NOT the
@@ -1031,8 +1038,12 @@ impl Caller for Pool {
     ///
     /// **Version-skew nit:** a `#[retry_safe]` read to an OLD instance that lacks the method
     /// returns `UnknownMethod → NotFound` (definitive) → NO failover, even if a
-    /// rolling-deployed instance J DOES serve it. Consistent with edge's documented
-    /// "unknown-method is not retryable" stance; mutation-safety is unaffected.
+    /// rolling-deployed instance J DOES serve it. The same holds for an OLD instance that
+    /// cannot decode a NEW request shape (`InvalidRequest → Invalid`). Consistent with edge's
+    /// documented "unknown-method is not retryable" stance, and the deliberate trade: masking
+    /// a skew by shopping the request around the pool is worse than surfacing it, and the
+    /// alternative costs up to 4 wire executions per attacker-supplied bad body.
+    /// Mutation-safety is unaffected either way.
     ///
     /// The retry is BOUNDED to exactly one cross-instance attempt — J's result (success or
     /// error) is returned as-is; there is no third instance, no loop. [`Reconnecting`]'s own
@@ -1089,9 +1100,10 @@ impl Caller for Pool {
         // C3 cross-instance failover gate. WHETHER (retry_mode), checked FIRST — a mutation
         // (`Never`) is returned verbatim, never re-sent (double-execute hazard), so no
         // failure class can carry it past here. Then fail over on any NON-peer-answered error
-        // (`!is_definitive_answer`, i.e. any status other than `NotFound`); a peer that
-        // answered (`UnknownMethod → NotFound`) ran the op, so return it verbatim rather than
-        // re-run it. NOTE: this `!= NotFound` set is BROADER than `Reconnecting`'s
+        // (`!is_definitive_answer`, i.e. any status other than `NotFound`/`Invalid`); a peer
+        // that answered (`UnknownMethod → NotFound`, `InvalidRequest → Invalid`) ran the op
+        // and its verdict is deterministic in the bytes, so return it verbatim rather than
+        // re-run it. NOTE: the remaining failover set is still BROADER than `Reconnecting`'s
         // `ConnectionFatal` reset class — `Remote`/StreamLocal faults also map to
         // `Unavailable` and are indistinguishable at this boundary — but it is SAFE because
         // the `retry_mode` check above already excluded mutations; the extra failover on a

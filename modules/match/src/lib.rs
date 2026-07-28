@@ -104,10 +104,35 @@ pub struct Service {
 impl Service {
     const REPORT_ID_CONFLICT: &'static str = "ReportId already used for a different match";
 
+    /// The message for a rating read that could not be completed. Deliberately says
+    /// nothing about WHY — the caller cannot act on rating's internals.
+    const RATING_UNAVAILABLE: &'static str = "rating service unavailable";
+
     fn rating(&self) -> &Arc<dyn MmrReader> {
         self.rating
             .get()
             .expect("match.init must resolve the rating MmrReader before report")
+    }
+
+    /// Reads one player's MMR from the (possibly remote) rating capability, folding
+    /// EVERY failure into `Unavailable` (503) — the pattern `inventory.list_character`
+    /// uses for its `Ownership` read.
+    ///
+    /// The fold is load-bearing, not tidiness. Propagating rating's `opsapi::Error`
+    /// verbatim makes a DEPENDENCY's status the front door's verdict on the CALLER's
+    /// request. Since the edge now classifies a peer adapter's request-body decode
+    /// failure as `Invalid` (400), a contract skew between match-svc and rating-svc —
+    /// a purely server-side deploy fault — would otherwise reach the game client as a
+    /// 400 on `match.report`. That op is `#[retry_safe]` with a `ReportId` idempotency
+    /// key, so a 400 tells the client its report is permanently malformed and to DROP
+    /// it: silent data loss from a server-side skew. 503 keeps the retry contract
+    /// truthful. Rating itself can only fail with `Internal` (a DB error — see
+    /// `modules/rating`), so no domain verdict is being swallowed here.
+    async fn read_mmr(&self, player_id: &str) -> Result<i64, Error> {
+        self.rating()
+            .mmr(player_id.to_string())
+            .await
+            .map_err(|_| Error::unavailable(Self::RATING_UNAVAILABLE))
     }
 
     /// Inserts a match row on the given connection (a tx, so the row + its durable
@@ -181,8 +206,9 @@ impl Match for Service {
     /// material with the values). Then the domain INSERT + the `match.finished` durable
     /// event append commit in ONE tx: the event is durable iff the match is. A duplicate `report_id`
     /// (the explicitly retry-safe RPC may replay after a lost response) inserts nothing, emits nothing, and
-    /// returns Ok — at-most-once effect per report. A rating transport failure surfaces
-    /// as an error (the sync dep is required).
+    /// returns Ok — at-most-once effect per report. The sync rating dep is required, and
+    /// ANY failure of it is `Unavailable` (503), never rating's own status (see
+    /// [`Service::read_mmr`]).
     async fn report(&self, report_id: String, winner: String, loser: String) -> Result<(), Error> {
         validate_report_id(&report_id)?;
         if let Some(existing) = self.existing_report(&report_id).await.map_err(internal)? {
@@ -190,8 +216,8 @@ impl Match for Service {
         }
         validate_new_participants(&winner, &loser)?;
 
-        let winner_mmr = self.rating().mmr(winner.clone()).await?;
-        let loser_mmr = self.rating().mmr(loser.clone()).await?;
+        let winner_mmr = self.read_mmr(&winner).await?;
+        let loser_mmr = self.read_mmr(&loser).await?;
         tracing::info!(%winner, winner_mmr, %loser, loser_mmr, "match reported");
 
         let mut tx = self.pool.begin().await.map_err(internal)?;

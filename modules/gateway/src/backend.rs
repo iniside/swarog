@@ -87,9 +87,16 @@ impl OperationBackend for RemoteBackend {
         identity: Identity,
         req: Vec<u8>,
     ) -> Result<Vec<u8>, Error> {
-        // `Caller::call` maps every edge-transport failure to Status::Unavailable; a
-        // completed op's DOMAIN status (404/403/…) rides inside the returned bytes and
-        // is decoded by the gateway's `encode`, exactly as on the Local path.
+        // The error returned here is a TRANSPORT failure, returned verbatim: a completed
+        // op's DOMAIN status (404/403/…) rides inside the returned bytes and is decoded by
+        // the gateway's `encode`, exactly as on the Local path. `Caller::call` maps most
+        // edge failures to `Unavailable`, but NOT all — `UnknownMethod → NotFound` (404) and
+        // `InvalidRequest → Invalid` (400, an ill-typed body the peer's adapter rejected,
+        // which the monolith answers 400 for too). Both are peer ANSWERS about the CALLER's
+        // request, which is why forwarding them verbatim is right HERE (the gateway is
+        // relaying that request, not depending on the peer). A domain module calling a
+        // capability is the opposite case and must fold its dependency's status instead of
+        // republishing it (see `modules/match`'s `read_mmr`).
         self.caller
             .call(&op.method, identity.player_id(), &req, op.retry_mode)
             .await

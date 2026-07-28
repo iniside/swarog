@@ -33,6 +33,17 @@ pub(crate) struct Request {
 /// Internal edge peers co-deploy from ONE commit, so `#[serde(default)]` on the
 /// carrying field is fixture-compat hygiene (an older on-disk fixture without the
 /// field still parses as `None`), NOT cross-version wire support.
+///
+/// FORWARD-COMPAT CAVEAT for anyone ADDING a variant here: there is no
+/// `#[serde(other)]` fallback, so an OLD peer that meets a NEW code fails to parse
+/// the WHOLE [`Response`] — the specific peer error degrades into an opaque
+/// `Error::Codec` (503) rather than its intended class. That is acceptable under the
+/// co-deploy stance (and a partially-restaged fleet is already broken), but note that
+/// [`Response`] is PUBLIC and shared with the player plane, so an un-restaged
+/// out-of-tree reader (playercli, the C# client fixture) is affected the same way.
+/// Adding `#[serde(other)] Unknown` would trade that for a silently unclassified
+/// code; if a future variant ever needs to survive skew, make that trade
+/// deliberately, once, here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ResponseCode {
     /// The peer's dispatch table has no handler for the requested method. Stamped

@@ -190,14 +190,22 @@ impl Status {
     /// transport failure and takes the reset path by default (fail-safe: resetting a
     /// healthy connection costs one redial; caching a dead one bricks the route).
     ///
-    /// Tied to the `From<edge::Error> for opsapi::Error` mapping in `core/edge`:
-    /// today `UnknownMethod` (the peer answered "no such method") maps to `NotFound`
-    /// and every other edge failure maps to `Unavailable`. If that mapping ever
-    /// grows a non-`Unavailable` status for a genuine transport fault, the default
-    /// (non-definitive → reset) path here catches it — the predicate classifies on
-    /// the ANSWER, never on `== Unavailable`.
+    /// Tied to the `From<edge::Error> for opsapi::Error` mapping in `core/edge`, which
+    /// produces exactly THREE statuses at this seam: `NotFound` (from
+    /// `edge::Error::UnknownMethod` — the peer answered "no such method"), `Invalid`
+    /// (from `edge::Error::InvalidRequest` — the peer's handler answered "I cannot
+    /// decode this body"), and `Unavailable` for every other edge failure. The first
+    /// two are peer ANSWERS by construction: the peer received the whole envelope, ran
+    /// its dispatch and replied `ok:false`. Both are also DETERMINISTIC in the request
+    /// bytes — re-sending the identical payload to a sibling instance reproduces the
+    /// rejection — so `Invalid` must short-circuit here or an attacker-supplied
+    /// ill-typed body would buy up to 4 wire executions across a pool
+    /// (`remote::Pool`'s cross-instance failover x each instance's reconnect replay).
+    /// If that mapping ever grows a non-`Unavailable` status for a genuine TRANSPORT
+    /// fault, the default (non-definitive → reset) path catches it — the predicate
+    /// classifies on the ANSWER, never on `== Unavailable`.
     pub fn is_definitive_answer(self) -> bool {
-        matches!(self, Status::NotFound)
+        matches!(self, Status::NotFound | Status::Invalid)
     }
 }
 

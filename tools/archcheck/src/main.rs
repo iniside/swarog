@@ -27,8 +27,14 @@
 //!      can dispatch those ops Remote in the split. Extra stubs are fine; a missing one
 //!      is a gap.
 //!
+//!   9. **the client-400 marker has one emitter** — only `core/edge` (which defines and
+//!      matches it) and `tools/rpc-macro` (which emits its ONE construction site) may
+//!      name `edge::InvalidRequestBody`. It is the type that turns a peer's handler
+//!      failure into a 400 at the front door, so a hand-written construction anywhere
+//!      else forges a client-fault verdict for a server-side fault.
+//!
 //! (The above is a curated summary; the numbered rule comments in `main()` are the full
-//! set, currently 1–17 plus the two svc-parity legs of rule 12.)
+//! set, currently 1–20 plus the two svc-parity legs of rule 12.)
 //!
 //! "Own" is defined by path prefix: `modules/<name>/` owns `api/<name>/rpc/`. It also
 //! greps `modules/` for a resurrected `Option<… edge::Server>` — the topology-leak
@@ -62,6 +68,21 @@ const SLOT_OWNER_FILES: [&str; 6] = [
 /// The `cmd/<dir>` crates permitted to host the front door: the dedicated front process
 /// and the monolith. Every other `cmd/*-svc` serves ops only over the internal edge.
 const FRONT_DOOR_HOSTS: [&str; 2] = ["gateway-svc", "server"];
+
+/// The typed marker whose whole correctness argument is "constructed at EXACTLY one
+/// site". `edge::InvalidRequestBody` turns a handler failure into a client-facing 400
+/// instead of a 503, and it is recognised by TYPE IDENTITY — so a second construction
+/// site is not a style nit, it is a hand-forged 400 for what may be a server-side
+/// fault (and, on a `#[retry_safe]` op, an instruction to the game client to DROP the
+/// request instead of retrying it). `edge` is a dependency of every module and the
+/// type is `pub` with a `pub` field, so the invariant needs a gate, not a convention.
+const INVALID_REQUEST_BODY_MARKER: &str = "InvalidRequestBody";
+
+/// The only two crates permitted to name [`INVALID_REQUEST_BODY_MARKER`]: `core/edge`
+/// defines it and matches on it; `tools/rpc-macro` emits the ONE construction site
+/// (the generated server adapter's request-payload decode). Prose may still discuss it
+/// anywhere — comment lines are exempt from the scan.
+const INVALID_REQUEST_BODY_OWNERS: [&str; 2] = ["core/edge/", "tools/rpc-macro/"];
 
 /// The DERIVED exception to the gateway-crate rule (Step 10): `tools/checkmodules`
 /// builds BOTH deployment profiles by importing the `cmd/gateway-svc`/`cmd/server`
@@ -415,6 +436,11 @@ fn main() {
     // parser, alias analysis, or broad `Slot::new` false positives.
     violations.extend(grep_non_owner_slot_constructors(&root_dir));
 
+    // --- 20: the client-400 marker is named only by its owner + its one emitter ---
+    // Same shape as rule 19 and for the same reason: an invariant whose whole value is
+    // "exactly one construction site" must be gated, not merely documented.
+    violations.extend(grep_foreign_invalid_request_body(&root_dir));
+
     // --- 6: every cmd/*-svc + the monolith main lists `metrics` ---------------
     // CLAUDE.md: "every main lists metrics::Metrics::new() for GET /metrics." The
     // durable-events plane is app-owned infrastructure, not a listed module, so there is
@@ -597,7 +623,7 @@ fn main() {
     }
 
     if violations.is_empty() {
-        println!("archcheck: OK — no module→module / module→foreign-rpc edges, shipping process graphs exclude `conformancecheck`, canonical typed slots are constructed only by owner files, single front door (only gateway-svc + server host `gateway`), no Option<edge::Server> in modules/, <name>api/<name>events crates stay transport-free, every cmd/*-svc + server lists `metrics`, no cross-schema FKs in modules/ DDL, no inline test modules in modules/, core/bus stays sqlx-free, no module runtime-deps `asyncevents`, no EVENTS_ env knobs read inside modules/, no retired push-plane tokens (EVENTS_*/\"/events\") in workspace source, no schema-qualified asyncevents.<table> access outside the plane, no module queries a foreign module's schema in SQL, every modules/<name> boots as cmd/<name>-svc (and its svc lib.rs constructs it), demos/* imported only by cmd/server, no core/* foundation deps a module or api/ crate, every #[http( domain is stubbed in cmd/gateway-svc");
+        println!("archcheck: OK — no module→module / module→foreign-rpc edges, shipping process graphs exclude `conformancecheck`, canonical typed slots are constructed only by owner files, single front door (only gateway-svc + server host `gateway`), no Option<edge::Server> in modules/, <name>api/<name>events crates stay transport-free, every cmd/*-svc + server lists `metrics`, no cross-schema FKs in modules/ DDL, no inline test modules in modules/, core/bus stays sqlx-free, no module runtime-deps `asyncevents`, no EVENTS_ env knobs read inside modules/, no retired push-plane tokens (EVENTS_*/\"/events\") in workspace source, no schema-qualified asyncevents.<table> access outside the plane, no module queries a foreign module's schema in SQL, every modules/<name> boots as cmd/<name>-svc (and its svc lib.rs constructs it), demos/* imported only by cmd/server, no core/* foundation deps a module or api/ crate, every #[http( domain is stubbed in cmd/gateway-svc, `edge::InvalidRequestBody` is named only by core/edge + tools/rpc-macro");
         return;
     }
     eprintln!("archcheck: FAIL — {} violation(s):", violations.len());
@@ -1262,6 +1288,48 @@ fn slot_constructor_violations(rel: &str, text: &str) -> Vec<String> {
             )
         })
         .collect()
+}
+
+/// The `edge::InvalidRequestBody` ban for ONE file (root-relative `rel` + its `text`),
+/// factored out so it is unit-testable without a filesystem walk. Owner crates
+/// ([`INVALID_REQUEST_BODY_OWNERS`]) are exempt wholesale. Comment lines are exempt so
+/// the mechanism can be DOCUMENTED anywhere it matters; everything else — a module, a
+/// `cmd` root, another tool — naming the type at all is a violation, which also covers
+/// the `use edge::InvalidRequestBody as X;` alias-then-construct dodge that a
+/// constructor-only tripwire would miss.
+fn invalid_request_body_violations(rel: &str, text: &str) -> Vec<String> {
+    if INVALID_REQUEST_BODY_OWNERS.iter().any(|owner| rel.starts_with(owner)) {
+        return Vec::new();
+    }
+    text.lines()
+        .enumerate()
+        .filter(|(_, line)| {
+            !line.trim_start().starts_with("//") && line.contains(INVALID_REQUEST_BODY_MARKER)
+        })
+        .map(|(line, _)| {
+            format!(
+                "{rel}:{}: names `edge::InvalidRequestBody` outside `core/edge` and \
+                 `tools/rpc-macro` — that marker is what turns a peer's handler failure into \
+                 a client-facing 400, and it is valid at exactly ONE construction site (the \
+                 generated server adapter's request-payload decode). A hand-written \
+                 construction forges a 400 for a possibly server-side fault; return an \
+                 ordinary error instead and let it stay a 5xx",
+                line + 1
+            )
+        })
+        .collect()
+}
+
+fn grep_foreign_invalid_request_body(root: &Path) -> Vec<String> {
+    let mut findings = Vec::new();
+    for path in workspace_rs_files(root, &[BAN_SELF_EXCLUDE]) {
+        let rel = workspace_rel(root, &path);
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        findings.extend(invalid_request_body_violations(&rel, &text));
+    }
+    findings
 }
 
 fn grep_non_owner_slot_constructors(root: &Path) -> Vec<String> {

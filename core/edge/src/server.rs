@@ -68,17 +68,26 @@ pub type HandlerResult = Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync
 /// `serde_json` failures (request-payload decode and response encode) would
 /// otherwise be indistinguishable here. The adapter wraps ONLY the request-decode
 /// failure in this marker (`rpc_macro::gen_server_adapter`); the response-encode
-/// failure — a SERVER bug — stays a bare boxed error and keeps its 5xx. Downcasting
-/// to `serde_json::Error` in the dispatch would match both and turn a genuine
-/// encode bug into a 400 at the front door; sniffing the error text would
-/// re-introduce the fragility the 2026-07-13 `UnknownMethod` remediation deleted
-/// (see [`crate::UNKNOWN_METHOD_PREFIX`]). Hence a dedicated type, constructed at
-/// exactly one site.
+/// failure — a SERVER bug — stays a bare boxed error and so keeps `code: None`
+/// (which this transport maps to `unavailable`/503; the LOCAL invoker calls the
+/// same class `internal`/500 — a residual, effectively unreachable divergence
+/// recorded in `opsapi::databind` caveat (iv)). Downcasting to `serde_json::Error`
+/// in the dispatch would match both sites and turn a genuine encode bug into a 400
+/// at the front door; sniffing the error text would re-introduce the fragility the
+/// 2026-07-13 `UnknownMethod` remediation deleted (see
+/// [`crate::UNKNOWN_METHOD_PREFIX`]). Hence a dedicated type, constructed at
+/// exactly one site (mechanically enforced: `archcheck` forbids naming this type
+/// outside `core/edge` and `tools/rpc-macro`).
 ///
-/// Recognised by IDENTITY only: an error that merely *wraps* or propagates one
-/// (e.g. a handler relaying an inner peer's failure) is not this type and stays a
-/// 5xx — the same no-re-stamping property [`crate::ResponseCode::UnknownMethod`]
-/// relies on.
+/// Recognised by IDENTITY only, and the recognition covers ONE hop. An error that
+/// merely wraps or byte-relays one is not this type, so it stays code-less/503 —
+/// the same no-re-stamping property [`crate::ResponseCode::UnknownMethod`] relies
+/// on. That is NOT true of a relay through a generated CLIENT: there the peer's
+/// `Invalid` arrives as an `opsapi::Error` riding the DOMAIN envelope, bypassing
+/// this marker entirely, and a caller that propagates it verbatim republishes its
+/// dependency's 400 as its own. A caller whose dependency failure is infrastructure
+/// must fold it (`modules/match`'s `read_mmr`, `modules/inventory`'s
+/// `list_character`).
 #[derive(Debug, thiserror::Error)]
 #[error("edge: invalid request body: {0}")]
 pub struct InvalidRequestBody(#[source] pub serde_json::Error);
