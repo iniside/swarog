@@ -663,7 +663,17 @@ fn gen_server_adapter(m: &MethodModel, qual: &TokenStream2) -> TokenStream2 {
                 move |__identity: ::core::option::Option<::std::string::String>, __payload: ::std::vec::Vec<u8>| {
                     let __impl = __impl.clone();
                     ::std::boxed::Box::pin(async move {
-                        let __req: #qual #req_name = ::serde_json::from_slice(&__payload)?;
+                        // The request-BODY decode is the CLIENT's fault: wrap it in
+                        // the typed `edge::InvalidRequestBody` marker so the peer's
+                        // dispatch can answer 400 (parity with the monolith's local
+                        // invoker, which maps this same failure to
+                        // `opsapi::Error::invalid`). `edge::HandlerResult` is
+                        // type-erased, so this marker is the ONLY thing that tells
+                        // it apart from the response ENCODE below — which is the
+                        // SERVER's fault and deliberately stays a bare boxed error
+                        // (=> unavailable/5xx).
+                        let __req: #qual #req_name = ::serde_json::from_slice(&__payload)
+                            .map_err(::edge::InvalidRequestBody)?;
                         let __id = ::opsapi::Identity::player(__identity.unwrap_or_default());
                         let __result = #call;
                         let __resp = match __result { #arms };

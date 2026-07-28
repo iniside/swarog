@@ -59,6 +59,30 @@ const MAX_EDGE_BIDI_STREAMS: u32 = 16;
 /// the operation `Status` rides INSIDE the payload envelope the `#[rpc]` layer emits).
 pub type HandlerResult = Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>>;
 
+/// The one typed marker [`HandlerResult`] recognises: the handler could not decode
+/// the request BODY into its method's typed payload — the CLIENT's fault, so the
+/// reply must classify as `invalid` (400) instead of the transport's default
+/// `unavailable` (503).
+///
+/// [`HandlerResult`] is type-erased, so a generated server adapter's two
+/// `serde_json` failures (request-payload decode and response encode) would
+/// otherwise be indistinguishable here. The adapter wraps ONLY the request-decode
+/// failure in this marker (`rpc_macro::gen_server_adapter`); the response-encode
+/// failure — a SERVER bug — stays a bare boxed error and keeps its 5xx. Downcasting
+/// to `serde_json::Error` in the dispatch would match both and turn a genuine
+/// encode bug into a 400 at the front door; sniffing the error text would
+/// re-introduce the fragility the 2026-07-13 `UnknownMethod` remediation deleted
+/// (see [`crate::UNKNOWN_METHOD_PREFIX`]). Hence a dedicated type, constructed at
+/// exactly one site.
+///
+/// Recognised by IDENTITY only: an error that merely *wraps* or propagates one
+/// (e.g. a handler relaying an inner peer's failure) is not this type and stays a
+/// 5xx — the same no-re-stamping property [`crate::ResponseCode::UnknownMethod`]
+/// relies on.
+#[derive(Debug, thiserror::Error)]
+#[error("edge: invalid request body: {0}")]
+pub struct InvalidRequestBody(#[source] pub serde_json::Error);
+
 /// A transport-agnostic RPC handler: raw request payload in, raw response payload
 /// out. Async because the domain impls it fronts are async.
 pub type Handler = Arc<dyn Fn(Vec<u8>) -> BoxFuture<'static, HandlerResult> + Send + Sync>;
@@ -509,6 +533,16 @@ impl Dispatch {
 
         match result {
             Ok(bytes) => ok_response(bytes),
+            // The ONE client-caused handler error: a generated adapter could not
+            // decode the request BODY into the method's typed payload. Stamped with
+            // the typed `ResponseCode::InvalidRequest` so the caller's opsapi
+            // boundary answers 400, matching what the monolith's local invoker
+            // returns for the same input. Recognised by the marker TYPE only, so a
+            // response-ENCODE failure (bare boxed error) falls through to the 5xx
+            // arm below.
+            Err(e) if e.downcast_ref::<InvalidRequestBody>().is_some() => {
+                invalid_request_response(&e.to_string())
+            }
             Err(e) => err_response(&e.to_string()),
         }
     }
@@ -644,9 +678,25 @@ pub(crate) fn ok_response(bytes: Vec<u8>) -> Response {
 
 /// An ordinary handler/dispatch error reply. `code` is deliberately `None`: only a
 /// genuine no-handler dispatch (never a handler that FAILED, even one propagating an
-/// inner peer's unknown-method text) may carry [`crate::ResponseCode::UnknownMethod`].
+/// inner peer's unknown-method text) may carry [`crate::ResponseCode::UnknownMethod`],
+/// and only a handler that failed with the [`InvalidRequestBody`] marker may carry
+/// [`crate::ResponseCode::InvalidRequest`]. Everything else — including a
+/// response-ENCODE failure and the malformed-ENVELOPE branch — stays code-less and
+/// therefore `unavailable`/5xx at the caller's opsapi boundary.
 pub(crate) fn err_response(msg: &str) -> Response {
     Response { ok: false, payload: None, error: Some(msg.to_string()), code: None }
+}
+
+/// The ill-typed-request-body reply: same shape as [`err_response`] but stamped with
+/// the typed [`crate::ResponseCode::InvalidRequest`], set at exactly one place (the
+/// dispatch arm that matched the [`InvalidRequestBody`] marker).
+pub(crate) fn invalid_request_response(msg: &str) -> Response {
+    Response {
+        ok: false,
+        payload: None,
+        error: Some(msg.to_string()),
+        code: Some(crate::ResponseCode::InvalidRequest),
+    }
 }
 
 /// The no-handler reply: same shape as [`err_response`] but stamped with the typed

@@ -40,6 +40,17 @@ pub enum ResponseCode {
     /// method table and never sets it.
     #[serde(rename = "unknown_method")]
     UnknownMethod,
+    /// The handler rejected the request BODY as undecodable for that method — the
+    /// CLIENT's fault, so the caller's opsapi boundary answers `invalid`/400 instead
+    /// of the transport's default `unavailable`/503, matching what the monolith's
+    /// local invoker returns for the same input. Stamped only by the internal
+    /// [`crate::server`] dispatch, and only for the typed
+    /// [`crate::InvalidRequestBody`] marker — never for a response-ENCODE failure
+    /// (a SERVER bug) and never for the malformed-ENVELOPE branch (wire corruption),
+    /// both of which stay code-less. The player plane has no method table and never
+    /// sets it.
+    #[serde(rename = "invalid_request")]
+    InvalidRequest,
 }
 
 /// The on-wire envelope for a single reply. `ok` distinguishes a successful

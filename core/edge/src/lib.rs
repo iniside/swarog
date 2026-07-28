@@ -33,7 +33,10 @@ pub use reg::{EdgeReg, EDGE_SLOT};
 pub use codec::{default_codec, Codec, JsonCodec};
 pub use frame::{frame_bytes, read_frame, read_frame_max, write_frame, MAX_FRAME};
 pub use player::{PlayerClient, PlayerHandler, PlayerRequest, PlayerRequestLimits, PlayerServer, MAX_PLAYER_FRAME};
-pub use server::{ForwardHandler, Handler, HandlerResult, IdentityHandler, RunningServer, Server};
+pub use server::{
+    ForwardHandler, Handler, HandlerResult, IdentityHandler, InvalidRequestBody, RunningServer,
+    Server,
+};
 pub use tls::{dev_ca_from_env, shared_dev_ca, DevCA, TrustAnchor, ALPN, PLAYER_ALPN};
 pub use wire::{Response, ResponseCode};
 
@@ -74,6 +77,18 @@ pub enum Error {
     /// has no method table and never produces this.
     #[error("{0}")]
     UnknownMethod(String),
+    /// The peer's handler could not decode the request BODY into the target method's
+    /// typed payload: detected via the response envelope's typed
+    /// [`ResponseCode::InvalidRequest`] field, which the peer's dispatch stamps only
+    /// for the [`InvalidRequestBody`] marker a generated server adapter puts on that
+    /// one decode site. Typed apart from [`Error::Remote`] so the opsapi mapping can
+    /// classify it as [`opsapi::Status::Invalid`] — the SAME 400 the monolith's local
+    /// invoker returns for the same body, closing the split/monolith parity gap.
+    /// A response-encode failure, a handler's own error and a corrupt request
+    /// envelope all stay code-less and remain [`Error::Remote`]/5xx. Internal plane
+    /// only — the player plane sets no codes.
+    #[error("{0}")]
+    InvalidRequest(String),
 }
 
 /// The human-readable prefix the internal [`Server`]'s dispatch puts on an unmatched
@@ -89,7 +104,11 @@ pub(crate) const UNKNOWN_METHOD_PREFIX: &str = "edge: unknown method";
 /// Maps an edge transport failure onto an [`opsapi::Error`] for the [`opsapi::Caller`]
 /// boundary. [`Error::UnknownMethod`] — the peer answered but serves no such method —
 /// maps to [`opsapi::Status::NotFound`] (non-retryable: the peer will keep not knowing
-/// the method). Every OTHER edge-level failure is [`opsapi::Status::Unavailable`]
+/// the method). [`Error::InvalidRequest`] — the peer's handler could not decode the
+/// request BODY — maps to [`opsapi::Status::Invalid`] (400), the same answer the
+/// monolith's local invoker gives for that body: without it an ill-typed body was a
+/// 503 in the split and a 400 in the monolith. Every OTHER edge-level failure is
+/// [`opsapi::Status::Unavailable`]
 /// (a peer-answered failure is NEVER replayed — `remote`'s provenance gate replays
 /// only connection-fatal failures, regardless of retry mode): the DOMAIN status of
 /// a completed operation rides
@@ -106,6 +125,7 @@ impl From<Error> for opsapi::Error {
     fn from(e: Error) -> Self {
         match e {
             Error::UnknownMethod(msg) => opsapi::Error::not_found(msg),
+            Error::InvalidRequest(msg) => opsapi::Error::invalid(msg),
             other => opsapi::Error::unavailable(other.to_string()),
         }
     }

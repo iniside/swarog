@@ -25,8 +25,10 @@
 //!         an op with a body arg we keep the PARSE (rather than relaying opaque bytes), so an
 //!         unparseable/non-object body is [`Error::invalid`] here — a 400 at the front door,
 //!         exactly where the typed decode raised it. This covers JSON WELL-FORMEDNESS only,
-//!         NOT field types (caveat (iv)). Relaying unparsed bytes would have pushed the
-//!         failure to the peer and surfaced it as a 503 instead.
+//!         NOT field types (caveat (iv)). Relaying unparsed bytes would instead push the
+//!         failure to the peer — and an UNPARSEABLE body cannot even be placed in the edge
+//!         request envelope (`raw_from_bytes` in `core/edge/src/client.rs` requires valid
+//!         JSON), so it would die caller-side as a 503; parsing here keeps it a 400.
 //!   (iii) **Empty-body default synthesis is resolved svc-side via serde defaults.** An
 //!         absent/empty body decodes to `{}`; every `<Method>Request` derives `Default` +
 //!         `#[serde(default)]`, so the svc zero-fills `{}` into `Request::default()` —
@@ -37,19 +39,35 @@
 //!         PATH-ONLY op (no body arg) NEVER parses the body — mirroring `gen_decode`'s
 //!         `has_body` gating, so a garbage body on `DELETE /characters/{id}` is IGNORED and
 //!         routes (204), never a spurious 400.
-//!   (iv)  **INHERENT type-validation gap: an ill-typed body is a svc-side 5xx, not a gateway
-//!         400.** The generated `gen_decode` deserializes the body INTO the typed `Request`
-//!         (`tools/rpc-macro/src/lib.rs`), so a TYPE-mismatched-but-well-formed body
-//!         (`{"Winner": 123}` where `winner: String`) is rejected AT THE GATEWAY as a 400.
-//!         This data-driven decode holds NO Rust types — [`OpManifest`] carries each arg's
-//!         SOURCE (body/path) and wire key but NOT its field type — so it can only check that
-//!         the body is a JSON object, never that fields are well-TYPED. An ill-typed body
-//!         therefore passes through and fails at the svc's `from_slice::<Request>` as a
-//!         `Status::Internal` (5xx), NOT at the gateway as a 400. Same request, DIFFERENT
-//!         front-door status by topology (monolith/local: 400; describe gateway: 5xx). This
-//!         is inherent to typeless routing and is NOT fixable without carrying field types in
-//!         the manifest; D4/splitproof SHOULD assert the ill-typed body's front-door status
-//!         so the contract's topology-dependence is pinned rather than silently drifting.
+//!   (iv)  **Type validation moves to the svc, but the front-door STATUS is now the same
+//!         400 in both topologies.** The generated `gen_decode` deserializes the body INTO
+//!         the typed `Request` (`tools/rpc-macro/src/lib.rs`), so a
+//!         TYPE-mismatched-but-well-formed body (`{"Winner": 123}` where `winner: String`)
+//!         is rejected AT THE GATEWAY as a 400. This data-driven decode holds NO Rust types
+//!         — [`OpManifest`] carries each arg's SOURCE (body/path) and wire key but NOT its
+//!         field type — so it can only check that the body is a JSON object, never that
+//!         fields are well-TYPED; the ill-typed body is relayed and rejected by the svc's
+//!         `from_slice::<Request>` instead. WHERE it is caught still differs by topology;
+//!         WHAT the caller sees no longer does.
+//!
+//!         ERRATA (2026-07-28, reverses the previous text here). This used to be recorded
+//!         as an unfixable status gap — "NOT fixable without carrying field types in the
+//!         manifest; splitproof SHOULD pin the topology-dependence" — and described the
+//!         svc-side failure as `Status::Internal`/500. Both statements were wrong. The
+//!         status was traced to `Unavailable`/503, not `Internal`/500: the svc adapter's
+//!         decode error was type-erased into `edge::HandlerResult`, so the dispatch replied
+//!         `code: None` (`core/edge/src/server.rs`), the caller classified it as
+//!         `edge::Error::Remote` (`core/edge/src/client.rs`) and the `From<edge::Error>`
+//!         mapping (`core/edge/src/lib.rs`) turned that into `Error::unavailable`. And it
+//!         WAS fixable without field types in the manifest: the generated server adapter
+//!         now wraps ONLY its request-body decode failure in the typed
+//!         `edge::InvalidRequestBody` marker, the dispatch stamps
+//!         `edge::ResponseCode::InvalidRequest` for that marker alone, and the mapping
+//!         turns it into [`Error::invalid`] — a 400. The response-ENCODE failure (a SERVER
+//!         bug) and a corrupt request envelope (wire framing) stay code-less and remain
+//!         503. So an ill-typed body is a 400 at the front door in the monolith, through a
+//!         compile-time-glue gateway, AND through the describe-routing gateway; splitproof's
+//!         `[D4-ILLTYPED]` asserts that 400 instead of pinning a divergence.
 
 use std::sync::Arc;
 

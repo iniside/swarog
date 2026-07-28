@@ -140,10 +140,15 @@ impl Client {
             // carries the same `UNKNOWN_METHOD_PREFIX` text) leaves the OUTER reply's
             // code `None`, so it stays `Remote` — the false positive the text sniff
             // used to produce. Internal plane only: `player.rs` never sets the code.
-            if resp.code == Some(crate::ResponseCode::UnknownMethod) {
-                return Err(Error::UnknownMethod(msg));
-            }
-            return Err(Error::Remote(msg));
+            return Err(match resp.code {
+                Some(crate::ResponseCode::UnknownMethod) => Error::UnknownMethod(msg),
+                // The peer's handler could not decode the request body (its typed
+                // `InvalidRequestBody` marker). A distinct code and a distinct
+                // variant from UnknownMethod — the two can never collide on the
+                // wire — so the opsapi mapping can answer 400 instead of 503.
+                Some(crate::ResponseCode::InvalidRequest) => Error::InvalidRequest(msg),
+                None => Error::Remote(msg),
+            });
         }
         Ok(resp.payload.map(|p| p.get().as_bytes().to_vec()).unwrap_or_default())
     }
