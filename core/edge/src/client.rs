@@ -31,6 +31,15 @@ pub(crate) const CLIENT_IDLE_TIMEOUT_MS: u32 = 30_000;
 /// blackholed route) waits out the full transport idle machinery; a caller holding
 /// a lock across the dial (the gateway's route table) would stall everyone. Elapse
 /// maps to [`Error::Connect`].
+///
+/// DOWNSTREAM FLOOR — raising this is NOT a local change. `modules/gateway`'s
+/// `DESCRIBE_PEER_TIMEOUT` must stay strictly ABOVE this value (it wraps a call that
+/// contains this dial, and `remote::Reconnecting::get` caches a connection only on
+/// SUCCESS, so a describe bound below the dial budget discards the partial handshake on
+/// every pass and permanently excludes a slow-but-REACHABLE peer). That relation is
+/// pinned by `gateway`'s `describe_peer_timeout_clears_the_edge_dial_deadline` test, which
+/// can only compare against a LITERAL 5s because this constant is `pub(crate)`: if you
+/// change the value here, change it there too — nothing else will fail.
 pub(crate) const DIAL_DEADLINE: Duration = Duration::from_secs(5);
 
 /// A QUIC RPC client over one persistent connection. Implements [`opsapi::Caller`],

@@ -1820,6 +1820,19 @@ fn describe_table_bails_on_duplicate_method_in_a_manifest() {
         .expect("a duplicate method in a describe manifest must bail")
         .to_string();
     assert!(err.contains("clash.op"), "the bail must name the colliding method: {err}");
+    // BRANCH-UNIQUE text (the collision guard in `build_from_parts`), not just the method id:
+    // the provider-prefix guard added in c437153 also names the offending method, so
+    // `contains("clash.op")` alone no longer pins WHICH branch fired — a fixture that drifted
+    // into tripping the prefix guard first would still be green while the collision branch went
+    // uncovered. `duplicate OpBinding` is emitted by `build_from_parts` and by nothing else.
+    assert!(
+        err.contains("duplicate OpBinding"),
+        "the COLLISION branch must be the one that fired, not the provider-prefix guard: {err}"
+    );
+    assert!(
+        !err.contains("may only advertise its own ops"),
+        "this fixture must not trip the provider-prefix guard: {err}"
+    );
 }
 
 /// The periodic-refresh property — the WHOLE point of Option A: a peer DOWN at boot
@@ -2002,5 +2015,999 @@ fn install_table_is_a_noop_on_a_slots_front_door() {
     assert!(
         front.table().find_by_method("demo.echo").is_some(),
         "the slots-built table is immutable; install_table is a no-op here"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// D2 describe routing: task ownership, bounded pass, provider-prefix guard
+//
+// TOPOLOGY. Everything below runs on the AT-RISK path — the managed/split describe
+// gateway (`Gateway::with_describe_routing` → `FrontDoor::into_dynamic_routing`,
+// `cmd/gateway-svc/src/lib.rs:56`). The monolith slot path never spawns the refresh
+// loop and never mints a dispatch pool, so a monolith-shaped fixture would prove
+// nothing here.
+//
+// WHY UNIT TESTS ARE THE ONLY PROOF for these branches. `tools/splitproof` DOES boot
+// gateway-svc in describe-routing mode and pins the happy path ([D4-ROUTE]/[D4-*]),
+// but it exercises none of the branches below: its peers are healthy (no per-peer
+// timeout, no panicking fetch, no foreign-prefix manifest), its fleet is 11 providers
+// — one fetch wave, the window never refills — and its ONE cooperative-shutdown
+// assertion ([W2], `tools/splitproof/src/main.rs:379-392`) runs against the MONOLITH,
+// whose slot path has no refresh task and no dispatch pools to tear down. So the
+// lifecycle/teardown, timeout, panic, refill and prefix branches have no harness
+// coverage at all; these tests are it.
+// ---------------------------------------------------------------------------
+
+/// A dynamic-routing front door — the describe/split topology every test in this section
+/// runs on (the shape `Gateway::init` builds when `describe_routing` is set).
+fn dynamic_front() -> Arc<FrontDoor> {
+    Arc::new(
+        FrontDoor::new(
+            Arc::new(Slots::new()),
+            Arc::new(DevSessionVerifier::new()),
+            demo_keys(),
+            Vec::new(),
+        )
+        .into_dynamic_routing(),
+    )
+}
+
+/// One well-formed manifest op OWNED by `provider`: method `<provider>.<op>` on
+/// `POST /<provider>/<op>` (so it satisfies the provider-prefix guard).
+fn describe_op(provider: &str, op: &str) -> opsapi::OpManifest {
+    describe_op_raw(&format!("{provider}.{op}"), &format!("/{provider}/{op}"))
+}
+
+/// A manifest op with an ARBITRARY method id — the seam the provider-prefix fixtures use
+/// to advertise a method the fetched peer does not own.
+fn describe_op_raw(method: &str, path: &str) -> opsapi::OpManifest {
+    opsapi::OpManifest {
+        method: method.into(),
+        verb: "POST".into(),
+        path: path.into(),
+        auth: AuthReq::None,
+        success: 200,
+        retry_mode: RetryMode::Never,
+        args: vec![],
+    }
+}
+
+/// A production `remote::Pool` over a constant address list — the CONCRETE type the route
+/// table mints and `RouteTable::pools` holds. Construction dials nothing; the instance set
+/// is empty until the first `call`.
+fn constant_pool(addrs: &[&str]) -> Arc<remote::Pool> {
+    let addrs: Vec<String> = addrs.iter().map(|s| s.to_string()).collect();
+    let list: remote::PeerListResolver = Arc::new(move || {
+        let addrs = addrs.clone();
+        Box::pin(async move { Ok(addrs.clone()) })
+    });
+    Arc::new(remote::Pool::new(list))
+}
+
+/// Drives one `call` on `pool` so its instance SET is resolved (the pool's `refresh` runs
+/// inside `call`). The address is deliberately unparseable, so the dial fails synchronously
+/// inside the dialer — no socket, no wall-clock dial deadline — while the instance survives.
+/// A resolved instance set is what makes "this pool was stopped" OBSERVABLE: `Pool::stop`
+/// `mem::take`s the instances, flipping `readyz` back to "no resolved instances yet".
+async fn pool_with_resolved_instances() -> Arc<remote::Pool> {
+    let pool = constant_pool(&["not-a-socket-addr"]);
+    let err = pool
+        .call("probe.op", None, b"{}", RetryMode::Never)
+        .await
+        .expect_err("an unparseable peer address cannot dial");
+    let _ = err;
+    assert!(
+        !pool_readyz_error(&pool).contains("no resolved instances yet"),
+        "fixture: the pool must have a resolved instance set before it is handed to a table"
+    );
+    pool
+}
+
+/// `Pool::readyz`'s error text — the public observable this section uses to tell a pool with
+/// a live instance set from one whose instances `Pool::stop` has taken.
+fn pool_readyz_error(pool: &remote::Pool) -> String {
+    pool.readyz().err().unwrap_or_default()
+}
+
+/// The number of domain fortresses the managed gateway fetches describe from: every
+/// `cmd/<name>-svc` ON DISK except the front door itself (`gateway-svc` hosts the gateway,
+/// it is not one of its peers).
+///
+/// DERIVED, never a literal — the same drift-check discipline `tools/splitproof`'s
+/// fleet preflight uses. A hardcoded `11` would keep `DESCRIBE_FETCH_CONCURRENCY >= 11` true
+/// forever while a 12th, 17th, 20th svc quietly pushed the boot pass into a second fetch
+/// wave: the invariant would break with nothing red. Reading the tree is exact here because
+/// `CARGO_MANIFEST_DIR` is this crate's source path, baked in at compile time; if the tree is
+/// gone the test FAILS loudly rather than skipping (a green SKIP would restore the same hole).
+fn domain_svc_count() -> usize {
+    let cmd = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../cmd");
+    let entries = std::fs::read_dir(&cmd).unwrap_or_else(|e| {
+        panic!(
+            "cannot enumerate {} to derive the fleet size: {e}\n\
+             (this path is baked in at COMPILE time — a missing dir usually means the test \
+             binary was built from a different checkout sharing this CARGO_TARGET_DIR; \
+             rebuild it before reading this as a product failure)",
+            cmd.display()
+        )
+    });
+    let count = entries
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().is_dir())
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter(|name| name.ends_with("-svc") && name != "gateway-svc")
+        .count();
+    assert!(count > 0, "no cmd/*-svc roots found under {} — the derivation is broken", cmd.display());
+    count
+}
+
+/// A guard MOVED into the refresh task through the fetcher closure. Its `Drop` runs only
+/// when the spawned task's future is dropped — i.e. only when the task has actually ENDED.
+/// This is the drop-flag the lifecycle proof rests on: "no further pass after stop" would be
+/// satisfied by a still-leaked task that simply is not ticked, and would prove nothing.
+struct TaskEnded(Arc<std::sync::atomic::AtomicBool>);
+
+impl Drop for TaskEnded {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+}
+
+/// (#1 LIFECYCLE) `Gateway::stop` JOINS the describe-refresh task — the leak 3311381 closed.
+///
+/// Before that commit `DescribeRouter::spawn` detached the loop with `tokio::spawn`, kept no
+/// handle and no stop signal, and `Gateway` had no `stop` at all: the loop (holding the
+/// `Arc<FrontDoor>` and its describe-fetcher pools) ran on past module teardown. The
+/// assertion is the DROP FLAG, not a pass count: it flips only when the task's future — which
+/// owns the `DescribeRouter`, which owns the sole `Arc` of the fetcher closure — is dropped,
+/// which happens only when the task ends. A detached-and-leaked task leaves it `false`.
+///
+/// The paused clock turns the second half into a binary: a task that had to be FORCE-ABORTED
+/// burns exactly `DESCRIBE_STOP_GRACE` of (virtual) time first, so `elapsed < grace` proves
+/// the loop observed the signal and drained cooperatively. No wall clock is raced.
+#[tokio::test(start_paused = true)]
+async fn stop_joins_the_describe_refresh_task_instead_of_leaking_it() {
+    use std::sync::atomic::AtomicBool;
+
+    let ended = Arc::new(AtomicBool::new(false));
+    // The fetcher closure is the ONLY owner of the guard, and the test keeps no clone of the
+    // `Arc<dyn Fn>` — so the flag tracks the task's lifetime and nothing else. No peers, so
+    // the closure is never called; it exists purely to carry the guard into the task.
+    let fetch: DescribeFetcher = {
+        let guard = TaskEnded(ended.clone());
+        Arc::new(move |_provider: String, _addrs: Vec<String>| {
+            let _ = &guard;
+            Box::pin(async { Ok(opsapi::DescribeManifest { ops: Vec::new() }) })
+        })
+    };
+    let router = DescribeRouter::new(dynamic_front(), Vec::new(), fetch);
+    let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+    let task = router.spawn(stop_rx);
+    assert!(
+        !ended.load(Ordering::SeqCst),
+        "fixture: the refresh task must still be alive before stop"
+    );
+
+    // The module owns the task exactly as `Gateway::start` leaves it.
+    let gw = Gateway::with_verifier(Arc::new(DevSessionVerifier::new()));
+    *gw.stop_tx.lock().unwrap() = Some(stop_tx);
+    *gw.task.lock().unwrap() = Some(task);
+
+    let ctx = Context::new();
+    let started = tokio::time::Instant::now();
+    gw.stop(&ctx).await.expect("stop must not fail");
+    let elapsed = started.elapsed();
+
+    assert!(
+        ended.load(Ordering::SeqCst),
+        "stop must JOIN the refresh task (its future dropped), not leave it detached"
+    );
+    assert!(
+        elapsed < DESCRIBE_STOP_GRACE,
+        "the loop must observe the stop signal and drain, not burn the whole grace and get \
+         aborted (took {elapsed:?} of the {DESCRIBE_STOP_GRACE:?} grace)"
+    );
+    // (#4) The ownership cells are emptied, so a second stop is a no-op rather than a panic.
+    assert!(gw.task.lock().unwrap().is_none(), "stop takes the join handle");
+    assert!(gw.stop_tx.lock().unwrap().is_none(), "stop takes the stop sender");
+    gw.stop(&ctx).await.expect("a second stop must be a no-op, not a panic");
+}
+
+/// (#1b LIFECYCLE) A stop landing MID-PASS force-ABORTS the refresh task after
+/// `DESCRIBE_STOP_GRACE` — and that is the NORMAL production path, not the exception.
+///
+/// The two landed commits compose into it: the loop observes the stop signal only BETWEEN
+/// passes (at `ticker.tick()`), and 41c3344 made a pass bounded at `DESCRIBE_PEER_TIMEOUT`
+/// (6s) — three times the 2s grace. So any stop that lands while a peer is slow takes THIS
+/// branch (`modules/gateway/src/lib.rs:536-542`), while the cooperative branch its sibling
+/// test pins is the lucky case. Untested, a `stop` that dropped the abort (or awaited the
+/// join forever) would blow `MODULE_STOP_GRACE_MS` and leave the task detached — the exact
+/// leak 3311381 exists to close, restored on the common path.
+///
+/// Fully deterministic on the paused clock: the peer's fetch never resolves, so once `stop`
+/// is awaited the runtime's earliest deadline is the 2s grace (the fetch's own 6s bound is
+/// later), and auto-advance fires it. `Arc::strong_count(&front) == 1` afterwards is the
+/// proof the task's future — which owns the only other `Arc<FrontDoor>` — is gone; the abort
+/// really completed rather than being fired and forgotten.
+#[tokio::test(start_paused = true)]
+async fn a_stop_landing_mid_pass_force_aborts_the_refresh_task() {
+    let front = dynamic_front();
+    let pass_started = Arc::new(tokio::sync::Notify::new());
+    let fetch: DescribeFetcher = {
+        let pass_started = pass_started.clone();
+        Arc::new(move |_provider: String, _addrs: Vec<String>| {
+            let pass_started = pass_started.clone();
+            Box::pin(async move {
+                // `notify_one` stores the permit, so the waiter cannot miss it.
+                pass_started.notify_one();
+                std::future::pending().await
+            })
+        })
+    };
+    let peers = vec![opsapi::PeerAddr {
+        provider: "stall".into(),
+        addrs: vec!["127.0.0.1:1".into()],
+    }];
+    // No synchronous first pass: the loop's own tick starts the pass this test stops inside.
+    let router = DescribeRouter::new(front.clone(), peers, fetch);
+    let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+    let task = router.spawn(stop_rx);
+
+    // Happens-before: the pass is provably IN FLIGHT (the fetcher ran and then parked forever).
+    tokio::time::timeout(Duration::from_secs(60), pass_started.notified())
+        .await
+        .expect("the periodic tick must start a pass");
+
+    let gw = Gateway::with_verifier(Arc::new(DevSessionVerifier::new()));
+    *gw.stop_tx.lock().unwrap() = Some(stop_tx);
+    *gw.task.lock().unwrap() = Some(task);
+
+    let started = tokio::time::Instant::now();
+    gw.stop(&Context::new())
+        .await
+        .expect("a mid-pass stop must still return Ok, not hang or error");
+    let elapsed = started.elapsed();
+
+    assert_eq!(
+        elapsed, DESCRIBE_STOP_GRACE,
+        "a mid-pass stop must wait exactly the grace and then ABORT — not return early \
+         (nothing joined) and not run past the module's stop budget"
+    );
+    assert_eq!(
+        Arc::strong_count(&front),
+        1,
+        "the aborted task's future must be dropped by the time stop returns — an abort that \
+         is fired and not awaited leaves the task (and this Arc) alive"
+    );
+}
+
+/// (#1c LIFECYCLE) The periodic loop's TICK arm actually runs a pass.
+///
+/// Every other test in this section drives `refresh_once` directly, and the lifecycle tests
+/// stop the loop before a tick ever fires — so "the table re-fetches every
+/// `DESCRIBE_REFRESH_INTERVAL`", the entire reason `spawn` exists (a peer DOWN at boot is
+/// routed once it comes up, with no restart), was asserted nowhere in-process. A mutation
+/// turning the `ticker.tick()` arm into a `break` survives the rest of the suite untouched.
+///
+/// The happens-before is the SECOND pass's fetch: a pass fetches before it installs, so
+/// observing pass 2 begin proves pass 1 completed its swap. The paused clock's auto-advance
+/// is what moves virtual time to each tick; the 60s guard is a later deadline, so it only
+/// fires if no tick ever comes.
+#[tokio::test(start_paused = true)]
+async fn the_refresh_loop_runs_a_pass_on_every_tick() {
+    let front = dynamic_front();
+    let passes = Arc::new(AtomicUsize::new(0));
+    let second_pass = Arc::new(tokio::sync::Notify::new());
+    let fetch: DescribeFetcher = {
+        let passes = passes.clone();
+        let second_pass = second_pass.clone();
+        Arc::new(move |provider: String, _addrs: Vec<String>| {
+            let n = passes.fetch_add(1, Ordering::SeqCst) + 1;
+            if n == 2 {
+                second_pass.notify_one();
+            }
+            Box::pin(async move {
+                Ok(opsapi::DescribeManifest { ops: vec![describe_op(&provider, "op")] })
+            })
+        })
+    };
+    let peers = vec![opsapi::PeerAddr {
+        provider: "late".into(),
+        addrs: vec!["127.0.0.1:1".into()],
+    }];
+    // Deliberately NO synchronous first pass — every fetch below comes from the tick arm.
+    let router = DescribeRouter::new(front.clone(), peers, fetch);
+    let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+    let task = router.spawn(stop_rx);
+    assert!(
+        front.table().find_by_method("late.op").is_none(),
+        "fixture: the dynamic table starts empty (fail-closed cold start)"
+    );
+
+    tokio::time::timeout(Duration::from_secs(60), second_pass.notified())
+        .await
+        .expect("the loop must keep ticking, not run once and stop");
+
+    assert!(
+        front.table().find_by_method("late.op").is_some(),
+        "the tick-driven pass must INSTALL its table — this is how a peer that was down at \
+         boot gets routed without a restart"
+    );
+    assert!(passes.load(Ordering::SeqCst) >= 2, "the loop ticks repeatedly, not once");
+
+    let gw = Gateway::with_verifier(Arc::new(DevSessionVerifier::new()));
+    *gw.stop_tx.lock().unwrap() = Some(stop_tx);
+    *gw.task.lock().unwrap() = Some(task);
+    gw.stop(&Context::new()).await.expect("stop must not fail");
+}
+
+/// (#2 LIFECYCLE) `adopt_remote` carries the CONCRETE `Arc<remote::Pool>` (the teardown
+/// handle), not only the type-erased `Arc<dyn Caller>` used for dispatch.
+///
+/// The pre-existing carry-over test injects a fake `Caller` into `remotes` only, so the
+/// `pools` half — the entire point of 3311381 — was unexercised: a regression that dropped
+/// the `pools` insert from `adopt_remote`/`publish_caller` would leave that test green while
+/// every pool surviving a refresh became invisible to `Gateway::stop`.
+#[test]
+fn adopt_remote_carries_the_concrete_pool_beside_the_erased_caller() {
+    let map = fetched(vec![("charX", vec!["127.0.0.1:1"], vec![describe_op("charX", "op")])]);
+    let old = build_describe_table(&map).expect("old table builds");
+    let new = build_describe_table(&map).expect("new table builds");
+
+    // Mint the pool through the SAME publisher the dispatch path uses (`insert_caller`).
+    let pool = constant_pool(&["127.0.0.1:1"]);
+    let caller = old.insert_caller("charX", pool.clone());
+
+    assert!(new.adopt_remote("charX", &old), "an unchanged provider is adopted");
+    let carried_caller = new.cached_remote("charX").expect("the dispatch entry is carried");
+    assert!(
+        Arc::ptr_eq(&carried_caller, &caller),
+        "the EXACT live caller crosses the refresh (instances + round-robin cursor intact)"
+    );
+    let carried_pool = new
+        .pools
+        .lock()
+        .unwrap()
+        .get("charX")
+        .cloned()
+        .expect("the TEARDOWN handle must cross the refresh too, or Gateway::stop cannot \
+                 reach a pool that survives rebuilds");
+    assert!(
+        Arc::ptr_eq(&carried_pool, &pool),
+        "the carried pools entry must be the SAME pool object, not a re-minted one"
+    );
+
+    // A caller with no pool behind it (the unit-test fakes) is carried for dispatch only —
+    // the `None` arm of `publish_caller`, which must not fabricate a teardown handle.
+    old.publish_caller("charY", None, Arc::new(RecordingCaller::default()));
+    assert!(new.adopt_remote("charY", &old), "a non-pool caller is still adopted");
+    assert!(
+        new.pools.lock().unwrap().get("charY").is_none(),
+        "a caller with no pool contributes nothing to tear down"
+    );
+    // A provider the previous table never dialed is not adopted (it dials lazily instead).
+    assert!(!new.adopt_remote("charZ", &old), "an unknown provider is not adopted");
+}
+
+/// (#3 LIFECYCLE) `Gateway::stop` stops the pool ADOPTED ACROSS a describe refresh — the
+/// carry-over path, which is the one that was silently broken, not the freshly-minted one.
+///
+/// charX is unchanged across both passes (so its pool is adopted); charY appears on pass 2,
+/// which is what forces the rebuild+swap. After `stop`: the installed table's `pools` map is
+/// drained AND the adopted pool itself reports an empty instance set — `Pool::stop`'s
+/// `mem::take` — which is the observable proof that THIS pool object is the one that was
+/// stopped, not merely dropped from a map.
+#[tokio::test]
+async fn gateway_stop_stops_the_pool_adopted_across_a_describe_refresh() {
+    use std::sync::atomic::AtomicBool;
+
+    let front = dynamic_front();
+    let y_up = Arc::new(AtomicBool::new(false));
+    let fetch: DescribeFetcher = {
+        let y_up = y_up.clone();
+        Arc::new(move |provider: String, _addrs: Vec<String>| {
+            let y_up = y_up.clone();
+            Box::pin(async move {
+                match provider.as_str() {
+                    "charX" => Ok(opsapi::DescribeManifest { ops: vec![describe_op("charX", "op")] }),
+                    "charY" if y_up.load(Ordering::SeqCst) => {
+                        Ok(opsapi::DescribeManifest { ops: vec![describe_op("charY", "op")] })
+                    }
+                    _ => Err(opsapi::Error::unavailable("peer down")),
+                }
+            })
+        })
+    };
+    let peers = vec![
+        opsapi::PeerAddr { provider: "charX".into(), addrs: vec!["127.0.0.1:1".into()] },
+        opsapi::PeerAddr { provider: "charY".into(), addrs: vec!["127.0.0.1:2".into()] },
+    ];
+    let mut router = DescribeRouter::new(front.clone(), peers, fetch);
+
+    // Pass 1 installs charX and warms its dispatch pool the way a first request would.
+    router.refresh_once().await.expect("first pass builds");
+    let pool = pool_with_resolved_instances().await;
+    front.table().insert_caller("charX", pool.clone());
+
+    // Pass 2: charY appears → rebuild + swap, charX's pool is ADOPTED across it.
+    y_up.store(true, Ordering::SeqCst);
+    router.refresh_once().await.expect("second pass rebuilds");
+    let after = front.table();
+    assert!(after.find_by_method("charY.op").is_some(), "fixture: the swap really happened");
+    let adopted = after.pools.lock().unwrap().get("charX").cloned().expect("pool adopted");
+    assert!(Arc::ptr_eq(&adopted, &pool), "fixture: the adopted pool is the warmed one");
+
+    let gw = Gateway::with_verifier(Arc::new(DevSessionVerifier::new()));
+    let _ = gw.front_door.set(front.clone());
+    gw.stop(&Context::new()).await.expect("stop must not fail");
+
+    assert!(
+        front.table().pools.lock().unwrap().is_empty(),
+        "stop must drain the installed table's teardown handles"
+    );
+    assert!(
+        pool_readyz_error(&pool).contains("no resolved instances yet"),
+        "the ADOPTED pool must be the one Pool::stop ran on (instances taken); got {:?}",
+        pool_readyz_error(&pool)
+    );
+}
+
+/// (#4 LIFECYCLE) `stop` on a `Slots` front door that never served a request must not
+/// MATERIALIZE the table, and must stay a no-op on a second call.
+///
+/// Proven by construction: the slots below carry a COLLIDING pair of operations, so
+/// `FrontDoor::table()`'s lazy `get_or_init(... .expect(...))` would PANIC if `stop` ever
+/// took that path. `stop_pools` reads the cell with `OnceLock::get` instead — the difference
+/// between a clean teardown and a panic that unwinds `App::stop` and skips every remaining
+/// module's teardown.
+#[tokio::test]
+async fn stop_never_materializes_an_unserved_slots_table_and_is_idempotent() {
+    let slots = Arc::new(Slots::new());
+    let first = demo_opset();
+    let second = demo_opset();
+    slots.contribute(opsapi::SLOT, first.operation);
+    slots.contribute(opsapi::BINDING_SLOT, first.binding);
+    slots.contribute(opsapi::SLOT, second.operation);
+    slots.contribute(opsapi::BINDING_SLOT, second.binding);
+    let front = front_door_with_keys(slots, demo_keys());
+    // The decoy is real: building this table fails, and `table()` would `expect` on it.
+    assert!(front.build_table().is_err(), "fixture: the slot contents must collide");
+
+    let gw = Gateway::with_verifier(Arc::new(DevSessionVerifier::new()));
+    let _ = gw.front_door.set(front.clone());
+    let ctx = Context::new();
+    gw.stop(&ctx).await.expect("stop on an unserved slots front door");
+    gw.stop(&ctx).await.expect("a second stop must be a no-op");
+
+    match &front.table {
+        TableCell::Slots(cell) => assert!(
+            cell.get().is_none(),
+            "stop must read the table cell WITHOUT building it (the build here would panic)"
+        ),
+        TableCell::Dynamic(_) => panic!("fixture: this must be a slots front door"),
+    }
+}
+
+/// (#5 LIFECYCLE) Dispatch-pool teardown is BOUNDED — it cannot outlive `POOL_STOP_BUDGET`.
+///
+/// The fixture makes the stops genuinely slow by construction: each pool points at a local
+/// UDP socket that is bound but never answers, so the QUIC handshake runs to `edge`'s 5s
+/// `DIAL_DEADLINE`, and `Reconnecting::close` — which `Pool::stop` awaits per instance — must
+/// wait on the tokio mutex that dial holds. An UNBOUNDED teardown of the three pools runs ~5s
+/// (measured); `stop_pools` must return at ~2s. That matters because `App::stop` wraps each
+/// module in `MODULE_STOP_GRACE_MS` (5s) and DROPS the future on elapse, and a cancelled
+/// `Pool::stop` is strictly worse than none (it has already `mem::take`n its instances, so
+/// they sit in the cancelled frame, invisible even to `Drop`'s probe-abort net).
+///
+/// WHAT THIS TEST CANNOT SEE — the fan-out being CONCURRENT. The bound is a
+/// `timeout(POOL_STOP_BUDGET, ..)` placed AROUND the whole drain, so a serial teardown that
+/// kept that timeout would also return at ~2s and stay green here. Distinguishing them needs
+/// pools whose stop takes a TUNABLE delay just over half the budget (N x delay > budget while
+/// concurrent < budget), and that is not constructible from this crate: `remote::Pool`'s
+/// factory-injectable constructor (`Pool::with_factory`, `core/remote/src/lib.rs:804`) is
+/// private to `remote`, so the only stop delays available here are ~0 (no in-flight dial) or
+/// ~`DIAL_DEADLINE` (one), never a middling one. Recorded as a known gap rather than papered
+/// over with a name the assertions do not earn.
+///
+/// ENVIRONMENT: the lower-bound assertion is the anti-vacuity guard — if these loopback peers
+/// ever stopped stalling the dial (a sandbox or firewall that fast-fails UDP to 127.0.0.1),
+/// this test goes RED on that bound. That is a FIXTURE failure, not a product bug; read the
+/// message before touching `stop_pools`.
+#[tokio::test]
+async fn dispatch_pool_teardown_is_bounded() {
+    // Bound, never read: the OS keeps the port open and queues the handshake packets, so the
+    // dial gets no response and no ICMP refusal — a stalled peer, entirely on loopback (no
+    // external network, so this behaves identically in a sandbox).
+    let mut black_holes = Vec::new();
+    let mut entries = Vec::new();
+    for _ in 0..3 {
+        let sock = std::net::UdpSocket::bind(("127.0.0.1", 0)).expect("bind a black-hole peer");
+        entries.push(sock.local_addr().expect("black-hole addr").to_string());
+        black_holes.push(sock);
+    }
+
+    let table = build_describe_table(&fetched(vec![(
+        "p0",
+        vec!["127.0.0.1:1"],
+        vec![describe_op("p0", "op")],
+    )]))
+    .expect("table builds");
+
+    let mut calls = Vec::new();
+    for (i, addr) in entries.iter().enumerate() {
+        let pool = constant_pool(&[addr.as_str()]);
+        // An in-flight call: it resolves the instance set, then holds the dial mutex for the
+        // whole 5s deadline — which is what makes this pool's `stop` slow.
+        let dialing = pool.clone();
+        calls.push(tokio::spawn(async move {
+            let _ = dialing.call("p.op", None, b"{}", RetryMode::Never).await;
+        }));
+        // Happens-before, not a sleep: wait until the pool has published its instance set.
+        let resolved = tokio::time::timeout(Duration::from_secs(5), async {
+            while pool_readyz_error(&pool).contains("no resolved instances yet") {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+        resolved.expect("fixture: the pool must resolve its instance set");
+        table.insert_caller(&format!("p{i}"), pool);
+    }
+
+    let started = tokio::time::Instant::now();
+    table.stop_pools().await;
+    let elapsed = started.elapsed();
+
+    assert!(
+        elapsed >= POOL_STOP_BUDGET,
+        "fixture check: the teardown was not actually stalled ({elapsed:?}), so this test \
+         would prove nothing about the bound — the black-hole peers must hang the dial"
+    );
+    assert!(
+        elapsed < POOL_STOP_BUDGET + Duration::from_secs(1),
+        "teardown must be bounded by POOL_STOP_BUDGET, not by the probe grace + dial \
+         deadline it waits on — took {elapsed:?}"
+    );
+    assert!(
+        table.pools.lock().unwrap().is_empty(),
+        "stop_pools drains its handles, so a second call is a no-op"
+    );
+    for c in calls {
+        c.abort();
+    }
+    drop(black_holes);
+}
+
+/// (#6 BOUNDED PASS) A peer that STALLS its describe is timed out into the keep-last branch
+/// while every other peer refreshes — the 41c3344 bound.
+///
+/// Before it, `refresh_once` awaited each peer serially with no timeout of its own
+/// (`remote::describe` adds none; the server only gives up at `edge`'s 30s
+/// `EDGE_STREAM_GRACE`), so this pass — the same call `Gateway::start` awaits — hung.
+/// Virtual clock only: the stalling fetch is `pending()` forever, so the pass ends exactly at
+/// `DESCRIBE_PEER_TIMEOUT` of paused-clock time and no wall clock is raced.
+#[tokio::test(start_paused = true)]
+async fn a_stalled_peer_times_out_into_keep_last_while_the_others_refresh() {
+    use std::sync::atomic::AtomicBool;
+
+    let front = dynamic_front();
+    let stalling = Arc::new(AtomicBool::new(false));
+    let live_grew = Arc::new(AtomicBool::new(false));
+    let fetch: DescribeFetcher = {
+        let stalling = stalling.clone();
+        let live_grew = live_grew.clone();
+        Arc::new(move |provider: String, _addrs: Vec<String>| {
+            let stalling = stalling.clone();
+            let live_grew = live_grew.clone();
+            match provider.as_str() {
+                "stall" if stalling.load(Ordering::SeqCst) => Box::pin(std::future::pending()),
+                "stall" => Box::pin(async {
+                    Ok(opsapi::DescribeManifest { ops: vec![describe_op("stall", "op")] })
+                }),
+                _ => Box::pin(async move {
+                    let mut ops = vec![describe_op("live", "op")];
+                    if live_grew.load(Ordering::SeqCst) {
+                        ops.push(describe_op("live", "extra"));
+                    }
+                    Ok(opsapi::DescribeManifest { ops })
+                }),
+            }
+        })
+    };
+    let peers = vec![
+        opsapi::PeerAddr { provider: "stall".into(), addrs: vec!["127.0.0.1:1".into()] },
+        opsapi::PeerAddr { provider: "live".into(), addrs: vec!["127.0.0.1:2".into()] },
+    ];
+    let mut router = DescribeRouter::new(front.clone(), peers, fetch);
+
+    router.refresh_once().await.expect("first pass builds");
+    let before = front.table();
+    assert!(before.find_by_method("stall.op").is_some(), "fixture: the stall peer was routed");
+
+    // Pass 2: `stall` hangs forever, `live` changes (so the pass must still rebuild + swap).
+    stalling.store(true, Ordering::SeqCst);
+    live_grew.store(true, Ordering::SeqCst);
+    let started = tokio::time::Instant::now();
+    // The hang guard is a VIRTUAL timer with 10x headroom: with the per-peer bound in place
+    // the inner 6s deadline always fires first, and without it this turns an unbounded pass
+    // into a clean failure instead of a hung test run.
+    tokio::time::timeout(Duration::from_secs(60), router.refresh_once())
+        .await
+        .expect("the pass must be bounded per peer, not by EDGE_STREAM_GRACE")
+        .expect("a stalled peer is keep-last, never a failed pass");
+    let elapsed = started.elapsed();
+
+    assert!(
+        elapsed >= DESCRIBE_PEER_TIMEOUT && elapsed < DESCRIBE_PEER_TIMEOUT + Duration::from_secs(1),
+        "the pass must end at the per-peer bound, not at EDGE_STREAM_GRACE (took {elapsed:?})"
+    );
+    let after = front.table();
+    assert!(
+        !Arc::ptr_eq(&before, &after),
+        "the live peer's change must still rebuild the table despite the stalled peer"
+    );
+    assert!(
+        after.find_by_method("stall.op").is_some(),
+        "a timed-out peer KEEPS its prior manifest — a timeout is not a route eviction"
+    );
+    assert!(after.find_by_method("live.op").is_some(), "the healthy peer's routes survive");
+    assert!(after.find_by_method("live.extra").is_some(), "the healthy peer really refreshed");
+}
+
+/// (#7 BOUNDED PASS) A PANICKING fetch task is keep-last for its peer; the pass and the loop
+/// survive and every other peer refreshes.
+///
+/// This is the `JoinSet` task-level `Err` arm added in 41c3344 — a branch that did not exist
+/// while the pass was a sequential `for` loop (a panic there unwound the pass, and with it the
+/// refresh task). Nothing else in the pass can produce a `JoinError`, so this fixture is the
+/// only way to execute it.
+#[tokio::test]
+async fn a_panicking_describe_fetch_is_keep_last_and_the_pass_survives() {
+    use std::sync::atomic::AtomicBool;
+
+    let front = dynamic_front();
+    let explode = Arc::new(AtomicBool::new(false));
+    let live_grew = Arc::new(AtomicBool::new(false));
+    let fetch: DescribeFetcher = {
+        let explode = explode.clone();
+        let live_grew = live_grew.clone();
+        Arc::new(move |provider: String, _addrs: Vec<String>| {
+            let explode = explode.clone();
+            let live_grew = live_grew.clone();
+            Box::pin(async move {
+                if provider == "boom" {
+                    if explode.load(Ordering::SeqCst) {
+                        panic!("gateway test: the injected describe fetcher exploded");
+                    }
+                    return Ok(opsapi::DescribeManifest { ops: vec![describe_op("boom", "op")] });
+                }
+                let mut ops = vec![describe_op("live", "op")];
+                if live_grew.load(Ordering::SeqCst) {
+                    ops.push(describe_op("live", "extra"));
+                }
+                Ok(opsapi::DescribeManifest { ops })
+            })
+        })
+    };
+    let peers = vec![
+        opsapi::PeerAddr { provider: "boom".into(), addrs: vec!["127.0.0.1:1".into()] },
+        opsapi::PeerAddr { provider: "live".into(), addrs: vec!["127.0.0.1:2".into()] },
+    ];
+    let mut router = DescribeRouter::new(front.clone(), peers, fetch);
+
+    router.refresh_once().await.expect("first pass builds");
+    assert!(front.table().find_by_method("boom.op").is_some(), "fixture: boom was routed");
+
+    explode.store(true, Ordering::SeqCst);
+    live_grew.store(true, Ordering::SeqCst);
+    router
+        .refresh_once()
+        .await
+        .expect("a panicking fetch task must not fail the pass");
+
+    let after = front.table();
+    assert!(
+        after.find_by_method("boom.op").is_some(),
+        "a panicking peer keeps its last-known routes, it does not drop the table"
+    );
+    assert!(after.find_by_method("live.extra").is_some(), "the other peers still refresh");
+
+    // And the pass is repeatable — the JoinSet arm did not poison the router.
+    explode.store(false, Ordering::SeqCst);
+    router.refresh_once().await.expect("the router recovers on the next pass");
+}
+
+/// (#8 BOUNDED PASS) The fetch window is CAPPED at `DESCRIBE_FETCH_CONCURRENCY` and REFILLS:
+/// with more peers than the window, every peer is still fetched.
+///
+/// Both halves are proven by construction, not by timing. Every fetch parks on a gate the
+/// TEST holds shut, so no fetch can complete and the window cannot refill while the test is
+/// looking: the number of fetches that ever STARTED is then exactly the window size. A
+/// smaller window never reaches 16 (the first wait fails); an absent/larger window spawns all
+/// 21 at once (the equality fails — the whole burst is spawned in one synchronous loop
+/// iteration before the first `join_next().await`, so the yields below are guaranteed to have
+/// polled them). Opening the gate then requires the window to refill 5 times over for the
+/// per-peer route assertions to hold.
+#[tokio::test]
+async fn a_pass_refills_the_fetch_window_and_never_exceeds_it() {
+    const EXTRA: usize = 5;
+    let total = DESCRIBE_FETCH_CONCURRENCY + EXTRA;
+
+    // 0 permits: a fetch that reaches this cannot finish until the test opens the gate.
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
+    let started = Arc::new(AtomicUsize::new(0));
+    let fetch: DescribeFetcher = {
+        let gate = gate.clone();
+        let started = started.clone();
+        Arc::new(move |provider: String, _addrs: Vec<String>| {
+            let gate = gate.clone();
+            let started = started.clone();
+            Box::pin(async move {
+                started.fetch_add(1, Ordering::SeqCst);
+                gate.acquire().await.expect("the gate is never closed").forget();
+                Ok(opsapi::DescribeManifest { ops: vec![describe_op(&provider, "op")] })
+            })
+        })
+    };
+    let peers: Vec<opsapi::PeerAddr> = (0..total)
+        .map(|i| opsapi::PeerAddr {
+            provider: format!("p{i:02}"),
+            addrs: vec![format!("127.0.0.1:{}", 9000 + i)],
+        })
+        .collect();
+    let front = dynamic_front();
+    let mut router = DescribeRouter::new(front.clone(), peers, fetch);
+    let pass = tokio::spawn(async move { router.refresh_once().await });
+
+    // Happens-before, not a sleep: wait until the window is FULL (hang guard has wide
+    // headroom — with a smaller window this wait is what fails).
+    tokio::time::timeout(Duration::from_secs(20), async {
+        while started.load(Ordering::SeqCst) < DESCRIBE_FETCH_CONCURRENCY {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the pass must reach DESCRIBE_FETCH_CONCURRENCY simultaneous fetches");
+    // Every task the pass spawned is runnable (all of them are parked on the gate only after
+    // being polled), so these yields drain the scheduler's queue.
+    for _ in 0..256 {
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(
+        started.load(Ordering::SeqCst),
+        DESCRIBE_FETCH_CONCURRENCY,
+        "no fetch can complete while the gate is shut, so no MORE than the window may have \
+         started — an unbounded fan-out would have started all {total}"
+    );
+
+    // Open the gate: finishing a fetch is the only thing that can free a window slot, so the
+    // remaining peers are proof that the window REFILLS.
+    gate.add_permits(total);
+    tokio::time::timeout(Duration::from_secs(20), pass)
+        .await
+        .expect("the pass must not hang")
+        .expect("the pass task must not panic")
+        .expect("the pass builds");
+
+    let table = front.table();
+    for i in 0..total {
+        let method = format!("p{i:02}.op");
+        assert!(
+            table.find_by_method(&method).is_some(),
+            "every peer must be fetched — the window has to refill after the first wave \
+             (missing {method})"
+        );
+    }
+}
+
+/// (#9 BOUNDED PASS) Two `PeerAddr` entries naming ONE provider apply in PEER ORDER — the
+/// LAST contribution wins — even when its fetch finishes FIRST.
+///
+/// The concurrent pass collects results by peer INDEX and applies them in `self.peers` order
+/// afterwards; 41c3344 claims that preserves the serial "last contribution wins" semantics but
+/// nothing proved it. The fixture inverts completion order against peer order (index 0 blocks
+/// until index 1 has finished), so an implementation that applied results in COMPLETION order
+/// would install the FIRST entry's manifest and fail here.
+#[tokio::test]
+async fn duplicate_provider_entries_apply_in_peer_order_not_completion_order() {
+    let second_done = Arc::new(tokio::sync::Notify::new());
+    let fetch: DescribeFetcher = {
+        let second_done = second_done.clone();
+        Arc::new(move |_provider: String, addrs: Vec<String>| {
+            let second_done = second_done.clone();
+            Box::pin(async move {
+                if addrs[0].ends_with(":2") {
+                    // `notify_one` STORES the permit, so the waiter below cannot miss it.
+                    second_done.notify_one();
+                    Ok(opsapi::DescribeManifest { ops: vec![describe_op("dup", "second")] })
+                } else {
+                    second_done.notified().await;
+                    Ok(opsapi::DescribeManifest { ops: vec![describe_op("dup", "first")] })
+                }
+            })
+        })
+    };
+    let peers = vec![
+        opsapi::PeerAddr { provider: "dup".into(), addrs: vec!["127.0.0.1:1".into()] },
+        opsapi::PeerAddr { provider: "dup".into(), addrs: vec!["127.0.0.1:2".into()] },
+    ];
+    let front = dynamic_front();
+    let mut router = DescribeRouter::new(front.clone(), peers, fetch);
+
+    tokio::time::timeout(Duration::from_secs(20), router.refresh_once())
+        .await
+        .expect("the pass must not hang")
+        .expect("the pass builds");
+
+    let table = front.table();
+    assert!(
+        table.find_by_method("dup.second").is_some(),
+        "the LAST peer entry for a provider must win, regardless of which fetch finished first"
+    );
+    assert!(
+        table.find_by_method("dup.first").is_none(),
+        "the earlier entry must have been overwritten, not merged"
+    );
+    assert_eq!(
+        table.peers.get("dup").map(Vec::as_slice),
+        Some(["127.0.0.1:2".to_string()].as_slice()),
+        "the winning entry's ADDRESS SET is the one the table dispatches over"
+    );
+}
+
+/// (#10 BOUNDED PASS) `DESCRIBE_PEER_TIMEOUT` must clear a COLD DIAL, or the bound silently
+/// excludes reachable peers instead of only stalled ones.
+///
+/// The floor is `edge`'s `DIAL_DEADLINE` (5s, `core/edge/src/client.rs:34` — `pub(crate)`,
+/// so it is named by file:line rather than imported, the same convention its own
+/// `client_tests::client_timing_invariants` pins it with). `Reconnecting::get` caches a
+/// connection only on SUCCESS (`core/remote/src/lib.rs:331-338`), so a timeout below the dial
+/// budget DISCARDS the partial handshake every pass: a peer whose QUIC+mTLS dial legitimately
+/// takes ~2s would never enter the table and every op to it would 404 forever. The ceiling is
+/// `edge`'s 30s `EDGE_STREAM_GRACE` — the server-side bound this constant exists to beat.
+#[test]
+fn describe_peer_timeout_clears_the_edge_dial_deadline() {
+    assert!(
+        DESCRIBE_PEER_TIMEOUT > Duration::from_secs(5),
+        "DESCRIBE_PEER_TIMEOUT ({DESCRIBE_PEER_TIMEOUT:?}) must exceed edge's 5s DIAL_DEADLINE \
+         (core/edge/src/client.rs:34) or a slow-but-REACHABLE peer is excluded on every pass"
+    );
+    assert!(
+        DESCRIBE_PEER_TIMEOUT < Duration::from_secs(30),
+        "DESCRIBE_PEER_TIMEOUT ({DESCRIBE_PEER_TIMEOUT:?}) must stay under edge's 30s \
+         EDGE_STREAM_GRACE — beating that server-side bound is why it exists"
+    );
+    let fleet_providers = domain_svc_count();
+    assert!(
+        DESCRIBE_FETCH_CONCURRENCY >= fleet_providers,
+        "the fetch window ({DESCRIBE_FETCH_CONCURRENCY}) must cover the {fleet_providers}-provider \
+         fleet in ONE wave, or a boot pass costs two DESCRIBE_PEER_TIMEOUTs"
+    );
+}
+
+/// (#11 PREFIX GUARD) A manifest advertising a method the fetched peer does not OWN fails the
+/// build (c437153) — including the dotless/empty-op shapes a naive equality-only guard misses.
+///
+/// Before that commit every advertised `OpManifest` became a route unconditionally, so
+/// `inventory` could mint a `characters.sneaky` route whose dispatch then resolved
+/// `provider_of` to a DIFFERENT peer — a route minted from an unvalidated claim. All four
+/// negative cases below returned `Ok` against pre-c437153 code, so this test fails on it.
+#[test]
+fn describe_table_bails_on_a_foreign_or_malformed_provider_prefix() {
+    // A well-formed manifest is the control: the guard must not reject the normal shape.
+    let good = fetched(vec![(
+        "inventory",
+        vec!["127.0.0.1:9001"],
+        vec![describe_op("inventory", "list")],
+    )]);
+    assert!(build_describe_table(&good).is_ok(), "a peer's OWN op must still build");
+
+    // (a) A FOREIGN prefix — the headline case. Verb/path do not collide with anything.
+    let foreign = fetched(vec![(
+        "inventory",
+        vec!["127.0.0.1:9001"],
+        vec![describe_op_raw("characters.sneaky", "/characters/sneaky")],
+    )]);
+    let err = build_describe_table(&foreign)
+        .err()
+        .expect("a foreign provider prefix must bail")
+        .to_string();
+    assert!(err.contains("inventory"), "the bail must name the fetched peer: {err}");
+    assert!(err.contains("characters.sneaky"), "the bail must name the method: {err}");
+
+    // (b) DOTLESS — `provider_of` returns the WHOLE method when there is no `.`, so it
+    // compares EQUAL to the provider: the disjunct an equality-only guard lets through, and
+    // the resulting route has no routable op suffix at all.
+    let dotless = fetched(vec![(
+        "inventory",
+        vec!["127.0.0.1:9001"],
+        vec![describe_op_raw("inventory", "/inventory")],
+    )]);
+    assert!(
+        build_describe_table(&dotless).is_err(),
+        "a dotless method compares equal to its provider and must still be rejected"
+    );
+
+    // (c) EMPTY op name — `"inventory."` also passes the equality check.
+    let empty_op = fetched(vec![(
+        "inventory",
+        vec!["127.0.0.1:9001"],
+        vec![describe_op_raw("inventory.", "/inventory/")],
+    )]);
+    assert!(
+        build_describe_table(&empty_op).is_err(),
+        "an empty op name leaves no routable method and must be rejected"
+    );
+
+    // (d) EMPTY provider key — it would otherwise match the empty prefix of `".op"`.
+    let empty_provider = fetched(vec![("", vec!["127.0.0.1:9001"], vec![describe_op_raw(".op", "/op")])]);
+    assert!(
+        build_describe_table(&empty_provider).is_err(),
+        "an empty provider key must be rejected outright"
+    );
+}
+
+/// (#13 PREFIX GUARD) A foreign-prefix pass FREEZES the installed table and the router
+/// RECOVERS on the next good pass — both halves of the documented fail-closed behaviour.
+///
+/// Pass 2's `Err` must not swap, drop, or half-install anything: the very same table `Arc`
+/// stays installed and keeps serving. Pass 3 (a good, CHANGED manifest) must rebuild — the
+/// freeze is not a latch, and a router that stayed stuck would silently serve a stale table
+/// forever behind a green `/readyz`.
+#[tokio::test]
+async fn a_foreign_prefix_pass_freezes_the_installed_table_and_recovers() {
+    use std::sync::atomic::AtomicUsize as Pass;
+
+    let front = dynamic_front();
+    let pass = Arc::new(Pass::new(0));
+    let fetch: DescribeFetcher = {
+        let pass = pass.clone();
+        Arc::new(move |_provider: String, _addrs: Vec<String>| {
+            let n = pass.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async move {
+                let ops = match n {
+                    0 => vec![describe_op("inventory", "list")],
+                    // Pass 2: a method this peer does not own.
+                    1 => vec![
+                        describe_op("inventory", "list"),
+                        describe_op_raw("characters.sneaky", "/characters/sneaky"),
+                    ],
+                    // Pass 3: good again, and CHANGED, so a healthy router must rebuild.
+                    _ => vec![describe_op("inventory", "list"), describe_op("inventory", "grant")],
+                };
+                Ok(opsapi::DescribeManifest { ops })
+            })
+        })
+    };
+    let peers = vec![opsapi::PeerAddr {
+        provider: "inventory".into(),
+        addrs: vec!["127.0.0.1:9001".into()],
+    }];
+    let mut router = DescribeRouter::new(front.clone(), peers, fetch);
+
+    router.refresh_once().await.expect("pass 1 builds");
+    let good = front.table();
+    assert!(good.find_by_method("inventory.list").is_some(), "fixture: pass 1 installed routes");
+
+    let err = router
+        .refresh_once()
+        .await
+        .expect_err("pass 2 must FAIL the build, not install a half-table")
+        .to_string();
+    assert!(err.contains("characters.sneaky"), "the bail names the offending method: {err}");
+    assert!(
+        Arc::ptr_eq(&good, &front.table()),
+        "a failed pass must leave the EXACT installed table in place (no swap, no drop)"
+    );
+
+    router.refresh_once().await.expect("pass 3 recovers");
+    let recovered = front.table();
+    assert!(
+        !Arc::ptr_eq(&good, &recovered),
+        "the freeze must not latch — a later good pass has to rebuild and swap"
+    );
+    assert!(recovered.find_by_method("inventory.grant").is_some(), "the new op is routed");
+    assert!(recovered.find_by_method("inventory.list").is_some(), "the old op survives");
+    assert!(
+        recovered.find_by_method("characters.sneaky").is_none(),
+        "the rejected method must never appear in an installed table"
     );
 }
