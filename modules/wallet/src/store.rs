@@ -151,25 +151,44 @@ impl Store {
     /// Step 4: stamps the ledger row with the balance the movement produced, so a replay
     /// of the same key can answer with the ORIGINAL movement's result instead of a live
     /// balance read (which is what would break `#[retry_safe]`).
+    ///
+    /// It ALSO stamps the ordering value `seq`, and that is the whole reason this
+    /// statement is where it is: it runs AFTER [`Store::apply_balance_tx`], i.e. while
+    /// the balance row lock is held, so `nextval` is drawn in balance-application order.
+    /// The `bigserial` default is assigned during the ledger INSERT — a full round trip
+    /// BEFORE the lock — so leaving `seq` at its default lets two concurrent credits
+    /// order as (`seq=1`, balance 200), (`seq=2`, balance 100), i.e. an `ORDER BY seq`
+    /// read of an append-only ledger showing the running balance going DOWN on a credit.
+    /// The insert-time value is therefore a placeholder, always overwritten before
+    /// commit; the cost is one wasted sequence value per movement.
     pub(crate) async fn set_balance_after_tx(
         &self,
         conn: &mut PgConnection,
         ledger_id: &str,
         balance_after: i64,
     ) -> Result<(), sqlx::Error> {
-        sqlx::query("UPDATE wallet.ledger SET balance_after = $1 WHERE id = $2::uuid")
-            .bind(balance_after)
-            .bind(ledger_id)
-            .execute(&mut *conn)
-            .await?;
+        sqlx::query(
+            "UPDATE wallet.ledger \
+                SET balance_after = $1, seq = nextval('wallet.ledger_seq_seq') \
+              WHERE id = $2::uuid",
+        )
+        .bind(balance_after)
+        .bind(ledger_id)
+        .execute(&mut *conn)
+        .await?;
         Ok(())
     }
 
     /// Catalog membership check on a HANDED connection. Its caller is the durable
-    /// starter-grant handler: letting the FK fire instead would abort the DELIVERY
-    /// transaction, so the plane's checkpoint UPDATE afterwards would fail with 25P02 and
-    /// poison the subscription — i.e. the pre-check is required for abort-freedom, not a
-    /// defensive nicety (same construction as inventory's `item_exists_exec`).
+    /// starter-grant handler, and the pre-check is REQUIRED there rather than defensive
+    /// (same construction as inventory's `item_exists_exec`). Letting the FK fire instead
+    /// aborts the DELIVERY transaction, and then neither thing the handler may do is
+    /// safe: posture A mandates swallowing a data-quality problem and returning `Ok`, but
+    /// an `Ok` on an aborted transaction makes the plane's checkpoint `UPDATE` fail with
+    /// 25P02 (`core/asyncevents/src/worker.rs:268`); returning `Err` instead is recovered
+    /// by the plane's `ROLLBACK TO SAVEPOINT deliver` (`:257`/`:288` — no 25P02) but backs
+    /// the subscription off and pauses it after 20 failures, for every subsequent player.
+    /// Not firing the FK at all is the only way to satisfy both.
     // The grant handler lands in the next step of this rollout; the probe is placed with
     // the rest of the SQL layer because it is what makes that path abort-free.
     #[allow(dead_code)]

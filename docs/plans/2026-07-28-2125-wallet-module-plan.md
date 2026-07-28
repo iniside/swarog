@@ -956,6 +956,22 @@ a credit past the 10^15 ceiling both = `23514` / `balances_amount_check` (the ce
 NOT 22003 — D2's premise confirmed); malformed player id = `22P02`; the second
 `ON CONFLICT (idempotency_key) DO NOTHING … RETURNING` returns zero rows.
 
+The `seq` correction was likewise reproduced before being applied: two ledger rows
+INSERTed first and their balances applied in the OPPOSITE order (the interleaving a lost
+race on the balance row lock produces) read back, under the insert-time `bigserial`, as
+`(seq=2, balance_after=200), (seq=3, balance_after=100)` — a credit-only sequence whose
+`ORDER BY seq` running balance DECREASES. Re-stamping `seq` in the under-lock statement
+turns the same two rows into `(4, 100), (5, 200)`. `pg_get_serial_sequence('wallet.ledger',
+'seq')` is `wallet.ledger_seq_seq`, so the hardcoded `nextval` name in
+`set_balance_after_tx` is correct — it is a string the compiler cannot check, so Step 5's
+4c is what keeps it honest.
+
+One implementation detail beyond the punch list: with `validate_movement` inside
+`apply_on`, `delta` is `sign * m.amount` with no `checked_mul` (the amount is bounded to
+`1 ..= MAX_MOVEMENT_AMOUNT` one line above, so ±1 cannot overflow). `sign` stays `i64` per
+D8, with a `debug_assert!(sign == 1 || sign == -1)` recording that it is a DIRECTION and
+that both call sites are in-crate.
+
 ## Revision history
 
 ### Revision 3 → 4 (`core-reviewer` pass over the landed Step 1, `9ccd243`)

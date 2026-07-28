@@ -77,6 +77,16 @@ pub struct Currency {
 /// no-op; only an EDITED resubmit is rejected, and it deserves its own key.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Movement {
+    /// **The key namespace is the WHOLE wallet, not one player.** The ledger's uniqueness
+    /// is `UNIQUE (idempotency_key)` with no `player_id` in it, so a caller that mints one
+    /// key per BUSINESS EVENT (`"season-3-payout-batch-7"`) and credits 200 players under
+    /// it gets one applied movement and 199 conflicts — 199 players silently unpaid. Key
+    /// per `(player, business event)`: `"season-3-payout-batch-7:{player_id}"`, the shape
+    /// the starter grant's own `starter:{player_id}` already uses.
+    ///
+    /// That the constraint is global is deliberate, not an oversight: a key reused across
+    /// two players is a caller bug, and it should surface as a loud `Status::Conflict`
+    /// rather than be silently absorbed by a per-player namespace.
     pub idempotency_key: String,
     pub player_id: String,
     pub currency: String,

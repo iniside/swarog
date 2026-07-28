@@ -45,15 +45,26 @@ use walletapi::{Player, Wallet};
 /// once a single movement is capped at `walletapi::MAX_MOVEMENT_AMOUNT`) is what keeps a
 /// `bigint` overflow — SQLSTATE 22003, which nothing maps — unreachable: a credit past
 /// the ceiling is the already-mapped 23514 instead. That matters most on the durable
-/// path, where an unmapped error would abort the delivery transaction, fail the plane's
-/// checkpoint with 25P02 and poison the subscription (the class that already bit
-/// inventory once). The FK to the catalog is NAMED so the 23503 → 400 mapping matches a
-/// constraint we own; it is an IN-MODULE FK, which is legal — no cross-module FK exists.
+/// path, where an unmapped DB error leaves the delivery transaction aborted and neither
+/// available posture is safe (see `Store::currency_exists_tx` for the two arms) — the
+/// class that already bit inventory once.
 ///
-/// **The ledger is ordered by `seq`, not `at`.** `now()` is `transaction_timestamp()`,
-/// evaluated at transaction start, while the balance row lock is taken later — so two
-/// concurrent movements on one `(player, currency)` can commit with `at` in one order and
-/// `balance_after` in the other. `bigserial` is assigned at insert; `at` is descriptive.
+/// The FK to the catalog is NAMED so the 23503 → 400 mapping matches a constraint we own;
+/// it is an IN-MODULE FK, which is legal — no cross-module FK exists. Both mappings are
+/// COUPLED TO THESE NAMES, and `CREATE TABLE IF NOT EXISTS` never repairs a pre-existing
+/// table: a `wallet.balances` carrying differently-named constraints would silently turn
+/// every insufficient-funds into a 500. Renaming either constraint is therefore a
+/// `DROP SCHEMA wallet CASCADE` + fresh boot, never an `ALTER`.
+///
+/// **The ledger is ordered by `seq`, not `at` — and `seq` is stamped under the balance
+/// row lock, not by the `bigserial` default.** `now()` is `transaction_timestamp()`,
+/// evaluated at transaction start, so `at` cannot order money. But a plain `bigserial`
+/// does not fix it either: it is assigned during the ledger INSERT, a full round trip
+/// BEFORE the balance lock, so two concurrent credits can order as (`seq=1`, balance 200),
+/// (`seq=2`, balance 100) — the running balance going DOWN on a credit, which is exactly
+/// the defect this column exists to prevent. The real ordering value is drawn in
+/// `Store::set_balance_after_tx`, the statement that runs while the lock is held; the
+/// default here is a placeholder, and `at` stays descriptive.
 ///
 /// KNOWN GAP (recorded, not fixed here): `wallet.ledger` is append-only and UNBOUNDED —
 /// there is no retention sweep. Reads stay fast (the `(player_id, seq DESC)` index bounds

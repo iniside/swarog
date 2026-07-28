@@ -32,14 +32,6 @@ pub(crate) const MALFORMED_PLAYER_ID: &str = "player_id is not a valid uuid";
 /// `unwrap` — if the isolation assumption ever changes, this must fail loudly.
 pub(crate) const LEDGER_ROW_DISAPPEARED: &str = "conflicting ledger row disappeared";
 
-/// A programming-error belt, not a validation path: `apply_on`'s callers validate the
-/// amount BEFORE calling (the wire wrappers through [`validate_movement`], the durable
-/// grant through its own posture-A clamp), so the multiplication can only overflow if a
-/// future caller skips both. `checked_mul` rather than `sign * amount` because negating
-/// `i64::MIN` panics in a debug build.
-pub(crate) const AMOUNT_OUT_OF_RANGE: &str =
-    "movement amount out of range — the caller must validate before apply_on";
-
 pub(crate) fn idempotency_key_within_cap(key: &str) -> bool {
     key.len() <= MAX_IDEMPOTENCY_KEY_BYTES
 }
@@ -52,13 +44,17 @@ pub(crate) fn reason_within_cap(reason: &str) -> bool {
     reason.len() <= MAX_REASON_BYTES
 }
 
-/// THE single movement-input policy. Every CALLER-FACING writer routes through it, so
-/// what a caller may ask for is decided in exactly one place.
+/// THE single movement-input policy, enforced INSIDE the movement authority
+/// ([`Service::apply_on`]) so no caller can route around it.
 ///
-/// The amount carries BOTH bounds (`1 ..= MAX_MOVEMENT_AMOUNT`), not just "> 0": the
-/// contract publishes that range, and the upper bound is what keeps a `bigint` overflow
-/// (22003, which nothing maps) out of the balance update — a credit past the ceiling
-/// surfaces as the already-mapped 23514/409 instead.
+/// The amount carries BOTH bounds (`1 ..= MAX_MOVEMENT_AMOUNT`), not just "> 0". The
+/// lower bound is the contract's central promise — "`amount` is ALWAYS POSITIVE, the
+/// direction is the method" — and it is load-bearing, not cosmetic: without it an admin
+/// `grant` form submitted with `-500` would DEBIT the balance and publish a negative
+/// delta on a `wallet.changed` whose `reason` says "grant", and a `0` would burn an
+/// idempotency key on a movement that moved nothing. The upper bound is what keeps a
+/// `bigint` overflow (22003, which nothing maps) out of the balance update — a credit
+/// past the ceiling surfaces as the already-mapped 23514/409 instead.
 pub(crate) fn validate_movement(m: &Movement) -> Result<(), Error> {
     if m.idempotency_key.is_empty() {
         return Err(Error::invalid("idempotency_key is required"));
@@ -194,24 +190,38 @@ impl Service {
     /// there is ONE authority with two callers, not two code paths for one money
     /// movement.
     ///
-    /// Callers MUST validate the movement first: the wire wrappers through
-    /// [`validate_movement`] (out of range ⇒ 400), the durable grant through its own
-    /// warn-and-skip clamp (out of range ⇒ no grant, never an `Err`, because an `Err`
-    /// inside a delivery transaction backs off and eventually pauses the subscription).
+    /// It VALIDATES the movement itself ([`validate_movement`], step 0). The sign and
+    /// range guard is the contract's central promise, so it belongs in the authority and
+    /// not in one of its two callers — otherwise every future caller (Step 8's admin
+    /// grant form reaches this in-process) has to remember to re-apply it. The pool
+    /// wrapper still validates before opening a transaction, purely so a bad request is
+    /// rejected without one.
+    ///
+    /// This costs the DURABLE caller nothing: its posture-A pre-checks (amount in range,
+    /// currency present in the catalog) run BEFORE it calls, so this `Err` is unreachable
+    /// there. That ordering is a requirement of the delivery path, not a nicety — see the
+    /// note below.
     ///
     /// On an `Err` the caller's transaction may be ABORTED (23514 / 23503): the only
     /// legal next statement is the unwind. Do not read the balance to enrich the message
-    /// — on that connection it would fail with 25P02 and turn a 409 into a 500.
+    /// — on that connection it would fail with 25P02 and turn a 409 into a 500. And on
+    /// the delivery path a caller must never GET here with an input that can abort the
+    /// transaction: posture A requires it to swallow a data-quality problem and return
+    /// `Ok`, and an `Ok` returned on an aborted transaction makes the plane's checkpoint
+    /// `UPDATE` fail with 25P02 (`core/asyncevents/src/worker.rs:268`).
     pub(crate) async fn apply_on(
         &self,
         conn: &mut PgConnection,
         m: &Movement,
         sign: i64,
     ) -> Result<Outcome, Error> {
-        let delta = m
-            .amount
-            .checked_mul(sign)
-            .ok_or_else(|| Error::internal(AMOUNT_OUT_OF_RANGE))?;
+        // 0. The input policy, inside the authority.
+        validate_movement(m)?;
+        // `sign` is a DIRECTION, and both call sites are in this crate; the movement is
+        // validated to `1 ..= MAX_MOVEMENT_AMOUNT` above, so `|delta|` is bounded by the
+        // same const and the multiplication cannot overflow.
+        debug_assert!(sign == 1 || sign == -1, "apply_on's sign is ±1");
+        let delta = sign * m.amount;
 
         // 1. Claim the key. The ledger insert is the dedup gate, so it runs BEFORE any
         //    money moves.
@@ -281,36 +291,39 @@ impl Service {
 
     /// The POOL-path wrapper around [`Service::apply_on`]: it owns the transaction and
     /// nothing else. `credit` and `debit` differ ONLY in the sign they pass.
+    ///
+    /// The pre-call [`validate_movement`] is an optimisation — it rejects a bad request
+    /// without opening a transaction — NOT the guard; the authority validates too.
+    ///
+    /// ONE rollback-failure policy across all three non-commit arms: unwind, and if the
+    /// unwind itself fails, log it and return the verdict already in hand. On every one of
+    /// them nothing was committed and no COMMIT is issued, so the caller's answer (the
+    /// stored balance, a 409, or the domain error) is true regardless of whether the
+    /// ROLLBACK reached the server — turning it into a 500 would report a movement as
+    /// broken when it merely did not happen. Only the COMMIT arm maps its failure to an
+    /// error, because there the outcome genuinely is unknown.
     async fn apply(&self, m: Movement, sign: i64) -> Result<i64, Error> {
         validate_movement(&m)?;
         let mut tx = self.store.pool.begin().await.map_err(internal)?;
-        match self.apply_on(&mut tx, &m, sign).await {
-            Ok(Outcome::Applied(balance)) => {
-                tx.commit().await.map_err(internal)?;
-                Ok(balance)
-            }
-            // A replay wrote nothing; roll back EXPLICITLY rather than letting the drop
-            // defer the ROLLBACK and hold the locks the INSERT/SELECT took.
-            Ok(Outcome::Duplicate(balance)) => {
-                tx.rollback().await.map_err(internal)?;
-                Ok(balance)
-            }
-            Ok(Outcome::Conflict) => {
-                tx.rollback().await.map_err(internal)?;
-                Err(Error::conflict(IDEMPOTENCY_CONFLICT))
-            }
-            Err(e) => {
-                // Aborted-transaction rule: after 23514/23503 EVERY further statement on
-                // this connection fails with 25P02, so the unwind is the only legal move
-                // — no balance read to enrich the message. The rollback's own failure is
-                // logged, not returned: the domain verdict already in hand (409/400) is
-                // the more useful answer.
-                if let Err(re) = tx.rollback().await {
-                    tracing::warn!(error = %re, "wallet: rollback after a rejected movement failed");
-                }
-                Err(e)
-            }
+        // Decide the answer AND the disposition in one exhaustive match, so no arm can
+        // drift into committing what it meant to unwind.
+        let (applied, result) = match self.apply_on(&mut tx, &m, sign).await {
+            Ok(Outcome::Applied(balance)) => (true, Ok(balance)),
+            Ok(Outcome::Duplicate(balance)) => (false, Ok(balance)),
+            Ok(Outcome::Conflict) => (false, Err(Error::conflict(IDEMPOTENCY_CONFLICT))),
+            Err(e) => (false, Err(e)),
+        };
+        if applied {
+            tx.commit().await.map_err(internal)?;
+        } else if let Err(e) = tx.rollback().await {
+            // Roll back EXPLICITLY rather than letting the drop defer the ROLLBACK and
+            // hold the locks the INSERT/SELECT took. Aborted-transaction rule: after
+            // 23514/23503 EVERY further statement on this connection fails with 25P02,
+            // so the unwind is the only legal move — never a balance read to enrich the
+            // message.
+            tracing::warn!(error = %e, "wallet: rollback after a non-applied movement failed");
         }
+        result
     }
 }
 
