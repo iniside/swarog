@@ -1283,6 +1283,117 @@ async fn oauth_state_binding_is_non_consuming_and_single_use() {
     assert_eq!(oauth.take_state("unknown", Some(&binding)).await.unwrap(), None);
 }
 
+/// Step 2 (949b21f follow-up) companion pair — the callback route must DISCRIMINATE
+/// a genuine store outage (503) from an ordinary bad/expired `state` (400); without
+/// both halves a "return 503 always" regression would pass either test alone.
+///
+/// This half: a state that was ALREADY redeemed once (so `take_state`'s `DELETE`
+/// genuinely ran and found zero rows the second time — not the early
+/// missing-binding-cookie `Ok(None)` at `epic_oauth.rs:141-143`, which the correct
+/// binding cookie below rules out) must still answer 400 — proving the `Ok(None)`
+/// arm (`epic_oauth.rs` `handle_callback` `Ok(None) =>` branch) is untouched by the
+/// 503 fix. Dropping the `Cookie` header would give an identical 400 without the
+/// `DELETE` ever running, so that shortcut can't stand in for this: the state is
+/// pre-redeemed via a direct `take_state` call (not by omitting the binding) so the
+/// `DELETE` observably executes and misses.
+#[tokio::test(flavor = "multi_thread")]
+async fn epic_callback_unknown_state_is_still_400() {
+    let Some(pool) = test_pool().await else { return };
+    ensure_schema(&pool).await;
+    let oauth = oauth_fixture(
+        pool.clone(),
+        "http://localhost/accounts/epic/callback",
+        "http://localhost/token",
+    );
+    let binding = store::new_token();
+    let state = oauth.new_state("tok".into(), binding.clone()).await.unwrap();
+    // Redeem it directly, once, BEFORE the callback ever sees it — the row is gone
+    // by the time the HTTP request below runs the SAME `DELETE ... RETURNING`, so
+    // that second run genuinely misses (single-use), rather than short-circuiting on
+    // the missing-binding-cookie early return.
+    assert_eq!(
+        oauth.take_state(&state, Some(&binding)).await.unwrap(),
+        Some("tok".into()),
+        "setup: the state must redeem once before the callback re-uses it"
+    );
+
+    let base = serve_oauth_router(oauth, lazy_service()).await;
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+
+    let resp = client
+        .get(format!("{base}/accounts/epic/callback?code=abc&state={state}"))
+        .header("Cookie", format!("epic_oauth_binding={binding}"))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(
+        resp.status().as_u16(),
+        400,
+        "a `WHERE`-clause miss (already-redeemed state) is bad input, not a store outage"
+    );
+    assert_eq!(resp.text().await.unwrap(), "invalid or expired state");
+}
+
+/// This half: a genuine query failure on `take_state`'s DELETE — an unreachable
+/// Postgres, NOT a missing row — must answer 503, never the 400 the pre-949b21f code
+/// gave by folding `Err` into `None`. This is the previously-wrong branch: reverting
+/// `epic_oauth.rs`'s `Err(err) => 503` arm back to `Err(_) => None` (the pre-fix
+/// shape) makes this test observe 400 and fail.
+///
+/// Deliberately DB-free (no `test_pool`/`ensure_schema`, no live Postgres at all):
+/// the dead pool's `DELETE` fails at the connection layer before ever evaluating a
+/// `WHERE` clause, so whether a `state` row — or a reachable database — exists
+/// anywhere is irrelevant to this branch. A real-Postgres fixture here would be
+/// decorative: on a machine/CI leg with no Postgres reachable, `test_pool()` would
+/// return `None` and the test would early-return, and the runner would still report
+/// `ok` while the 503 branch executed nothing (the exact class this repo was
+/// burned by once already — a cargo-audit network failure reported as a green
+/// SKIP). An arbitrary `state`/`binding` string keeps this test running everywhere.
+#[tokio::test(flavor = "multi_thread")]
+async fn epic_callback_state_store_error_is_503_not_400() {
+    let binding = store::new_token();
+    let state = store::new_token();
+
+    // An unroutable DSN behind a SHORT acquire_timeout, exactly the
+    // `dead_service_at` precedent above: sqlx retries ConnectionRefused as
+    // "server starting up" and would otherwise take the 30s default acquire
+    // deadline to surface as `Err`.
+    const DEAD_DSN: &str =
+        "postgres://gamebackend:gamebackend@127.0.0.1:1/epic-callback-store-error";
+    let dead_pool = sqlx::postgres::PgPoolOptions::new()
+        .acquire_timeout(Duration::from_millis(200))
+        .connect_lazy(DEAD_DSN)
+        .unwrap();
+    let dead_oauth = oauth_fixture(
+        dead_pool,
+        "http://localhost/accounts/epic/callback",
+        "http://localhost/token",
+    );
+    let base = serve_oauth_router(dead_oauth, lazy_service()).await;
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+
+    let resp = client
+        .get(format!("{base}/accounts/epic/callback?code=abc&state={state}"))
+        .header("Cookie", format!("epic_oauth_binding={binding}"))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(
+        resp.status().as_u16(),
+        503,
+        "a genuine state-store query failure must surface as 503, not the pre-fix 400"
+    );
+    assert_eq!(resp.text().await.unwrap(), "internal error, try again");
+}
+
 /// The cross-replica property the old `Mutex<HashMap>` could NOT provide: a `state`
 /// minted on ONE replica's pool is redeemable on a SECOND, independent pool
 /// (simulating the callback LB-routing to the other replica) — exactly once. This is
