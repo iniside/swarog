@@ -85,7 +85,7 @@ fn expected(pairs: &[(&str, &str)]) -> BTreeMap<OsString, OsString> {
 }
 
 /// ONE table-driven golden over the COMPLETE composed env (modulo the allowlist
-/// strip) for ALL 12 split services + the monolith — composed from the SHIPPED
+/// strip) for ALL 13 split services + the monolith — composed from the SHIPPED
 /// `fleet.split.toml` / `fleet.monolith.toml`, not a Rust table. Deliberately
 /// verbose: every expected map is written out in full, so ANY drifted key or
 /// value — added, removed, or changed — fails this test by name.
@@ -211,9 +211,21 @@ fn full_fleet_env_goldens() {
             ],
         ),
         (
+            "wallet-svc",
+            &[
+                ("PORT", ":8092"),
+                ("EDGE_ADDR", ":9010"),
+                ("DATABASE_POOL_MAX_CONNECTIONS", "3"),
+                ("EDGE_CA_CERT", CA_CERT),
+                ("EDGE_CA_KEY", CA_KEY),
+                ("CONFIG_EDGE_ADDR", "127.0.0.1:9002"),
+                ("WALLET_DEV_SEED", "1"),
+            ],
+        ),
+        (
             // Pure-transport front door (`Addrs::Asks`): no EDGE_ADDR of its own,
             // no pool cap, but it DOES carry the CA (dials every peer's edge) and
-            // gets ORCHESTRATOR_URL — none of the eight address keys it used to
+            // gets ORCHESTRATOR_URL — none of the address keys it used to
             // carry, only the URL it asks each of them for.
             "gateway-svc",
             &[
@@ -272,6 +284,7 @@ fn full_fleet_env_goldens() {
         ("APIKEYS_DEV_SEED", "1"),
         ("ACCOUNTS_DEV_AUTH", "1"),
         ("INVENTORY_DEV_GRANT", "1"),
+        ("WALLET_DEV_SEED", "1"),
         ("TLS_MODE", "off"),
         ("ADMIN_COOKIE_SECURE", "0"),
         ("TRUSTED_PROXY_CIDRS", "127.0.0.1/32"),

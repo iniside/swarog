@@ -36,3 +36,4 @@ scheduler-svc = { workspace = true }
 match-svc = { workspace = true }
 rating-svc = { workspace = true }
 leaderboard-svc = { workspace = true }
+wallet-svc = { workspace = true }

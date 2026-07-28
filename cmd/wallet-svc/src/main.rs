@@ -1,0 +1,55 @@
+//! `wallet-svc` — the wallet fortress process. It hosts ONLY wallet and stands up one
+//! shared QUIC edge server; the durable-events plane is app-owned (DB ⇒ plane), not a
+//! listed module. `wallet` contributes its `wallet.*` + player-op faces to
+//! `edge::EDGE_SLOT` (topology-blind), and `app::run` installs them on this server, so
+//! gateway-svc can dispatch the player reads Remote and admin-svc can fetch/submit its
+//! admin page over `admin.adminData`. `wallet.changed` is appended onto the shared
+//! durable log inside the movement tx; consumers (audit-svc) pull it with their own
+//! workers, and wallet's own `wallet.player-registered.v1` worker pulls accounts-svc's
+//! `player.registered` for the config-driven starter grant.
+//!
+//! It dials config-svc for wallet's `dyn Config` capability (the starter-grant knobs).
+//! That peer is mandatory, not decorative: `CachedConfig` is boot-fill-or-fail-startup,
+//! so this process cannot come up before config-svc — which is why the fleet declares
+//! `config-svc` as a hard dependency.
+//!
+//! It hosts NO gateway (FrontDoor) module: the single public front door lives only in
+//! gateway-svc and the monolith (`cmd/server`). It serves its ops ONLY over the internal
+//! mTLS edge; HTTP here is just the infra surface (`/healthz`, `/readyz`, `/metrics`),
+//! no typed ops.
+
+use std::sync::{Arc, Mutex};
+
+use lifecycle::ProcessWiring;
+
+/// Reads `env_key`, falling back to `default` when unset or blank — a NUMERIC
+/// `host:port` (Rust's `SocketAddr` needs a literal IP). The run scripts set the peer
+/// edge addresses.
+fn env_addr(env_key: &str, default: &str) -> String {
+    std::env::var(env_key)
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| default.to_string())
+}
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    tracing_subscriber::fmt().init();
+
+    // One shared QUIC edge server for the whole process. Modules contribute their
+    // RPC faces to `edge::EDGE_SLOT` during `init`; `app::run` applies the
+    // contributions onto this server after Build, then `listen`s it (a single UDP
+    // port serves every edge method). Standing this up is the composition root's
+    // legitimate topology knowledge — the modules never see it.
+    let edge_server = Arc::new(Mutex::new(edge::Server::new()));
+
+    // Dials config-svc for wallet's `dyn Config` capability (the starter-grant knobs).
+    // No accounts stub: without a gateway there is no bearer verifier to feed, so this
+    // process never dials accounts-svc; it still hosts no gateway (FrontDoor).
+    let wiring =
+        ProcessWiring::new().with_peer("config", env_addr("CONFIG_EDGE_ADDR", "127.0.0.1:9002"));
+    let mods = wallet_svc::modules(&wiring);
+
+    // No player front: wallet-svc is fronted by gateway-svc, never directly by players.
+    app::run(app::Config::from_env(), mods, Some(edge_server), None).await
+}

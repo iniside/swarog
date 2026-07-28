@@ -1,0 +1,35 @@
+[package]
+name = "wallet-svc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The wallet fortress process. Hosts wallet and stands up one shared QUIC edge server
+# (EDGE_ADDR, :9010 in the run scripts) so gateway-svc can dispatch the player reads
+# Remote and admin-svc can fetch/submit its admin page over `admin.adminData`. wallet
+# owns schema `wallet` + a durable subscription, so it needs a DB pool and thus hosts
+# the durable-events plane (app-owned, DB ⇒ plane). It fills wallet's `config`
+# dependency with a `remote::Stub` that dials config-svc, so it imports the `configrpc`
+# glue (passed into the stub) but NEVER the config IMPL crate — the characters-svc
+# shape. It hosts NO gateway (FrontDoor) — the single public front door lives only in
+# gateway-svc + the monolith, so no accounts stub is needed.
+[[bin]]
+name = "wallet-svc"
+path = "src/main.rs"
+
+[dependencies]
+app = { workspace = true }
+edge = { workspace = true }
+lifecycle = { workspace = true }
+metrics = { workspace = true }
+wallet = { workspace = true }
+remote = { workspace = true }
+# The config glue: this cmd/ root passes config's `remote_factories()` into the generic
+# `remote::Stub`. rule 5 sanctions cmd/* importing the glue; it still never names the
+# config IMPL crate.
+configrpc = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync"] }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

@@ -9,9 +9,9 @@
 //! `admin` (users / sessions / login_attempts — GameOps identity, argon2id session
 //! login, lockout, CSRF), and the DB brings the app-owned durable plane with it, so
 //! the portal's `admin.action` audit events append here like anywhere else. It still
-//! hosts NO edge server of its own — it only DIALS the seven peers (characters,
-//! inventory, config, accounts, audit, scheduler, apikeys) — and no `gateway` module:
-//! it fronts no typed ops (a browser reaches `/admin` through gateway-svc's HTTP
+//! hosts NO edge server of its own — it only DIALS the eight peers (characters,
+//! inventory, config, accounts, audit, scheduler, apikeys, wallet) — and no `gateway`
+//! module: it fronts no typed ops (a browser reaches `/admin` through gateway-svc's HTTP
 //! passthrough), so it needs no verifier/auth-once boundary. The admin module's own
 //! session gate (DB-backed, minted by `adminctl`/`install.sh`) guards the portal.
 //!
@@ -44,7 +44,8 @@ async fn main() -> anyhow::Result<()> {
         .with_peer("accounts", env_addr("ACCOUNTS_EDGE_ADDR", "127.0.0.1:9003"))
         .with_peer("audit", env_addr("AUDIT_EDGE_ADDR", "127.0.0.1:9004"))
         .with_peer("scheduler", env_addr("SCHEDULER_EDGE_ADDR", "127.0.0.1:9005"))
-        .with_peer("apikeys", env_addr("APIKEYS_EDGE_ADDR", "127.0.0.1:9009"));
+        .with_peer("apikeys", env_addr("APIKEYS_EDGE_ADDR", "127.0.0.1:9009"))
+        .with_peer("wallet", env_addr("WALLET_EDGE_ADDR", "127.0.0.1:9010"));
     let mods = admin_svc::modules(&wiring);
 
     // DB on (the admin module owns schema `admin`; DB ⇒ durable plane); still no

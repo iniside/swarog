@@ -5,7 +5,7 @@ use std::path::Path;
 /// Step 15 (G3): pins `split_process_modules()`'s hand-written process-name list to
 /// the filesystem set of `cmd/*-svc` directories. The compile-time `vec!` of
 /// `<name>_svc::modules(...)` calls can't be derived (each is a distinct crate
-/// import), so this is the drift tripwire: a 13th `cmd/<name>-svc` crate fails this
+/// import), so this is the drift tripwire: a 14th `cmd/<name>-svc` crate fails this
 /// test loudly until it's added to `split_process_modules()`. The verifyctl fortress
 /// build list is independently derived from the same directory set.
 #[test]
@@ -41,7 +41,7 @@ fn split_fleet_matches_cmd_dirs() {
 /// would mean `cmd/server` silently stopped booting a fortress. Checked as a SUBSET
 /// (dir names is a subset of monolith names), not equality: the monolith's list also
 /// carries core-infra (`metrics`) and could in future carry a stub that isn't a
-/// `modules/` dir at all -- those extras are fine, only a gap is not. All 12
+/// `modules/` dir at all -- those extras are fine, only a gap is not. All 13
 /// `Module::name()` strings match their `modules/` dir names verbatim today
 /// (including `match`: the crate is renamed `match_module` to dodge the Rust
 /// keyword, but `name()` still returns `"match"`), so this is keyed off `name()`,

@@ -160,6 +160,7 @@ members = [
     "cmd/match-svc",
     "cmd/rating-svc",
     "cmd/leaderboard-svc",
+    "cmd/wallet-svc",
 ]
 
 [workspace.package]
@@ -355,3 +356,4 @@ scheduler-svc = { path = "cmd/scheduler-svc" }
 match-svc = { path = "cmd/match-svc" }
 rating-svc = { path = "cmd/rating-svc" }
 leaderboard-svc = { path = "cmd/leaderboard-svc" }
+wallet-svc = { path = "cmd/wallet-svc" }

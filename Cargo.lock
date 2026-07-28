@@ -893,6 +893,7 @@ dependencies = [
  "rating-svc",
  "scheduler-svc",
  "server",
+ "wallet-svc",
 ]
 
 [[package]]
@@ -3694,6 +3695,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "wallet",
  "webui",
 ]
 
@@ -4616,6 +4618,23 @@ dependencies = [
  "walletapi",
  "walletevents",
  "walletrpc",
+]
+
+[[package]]
+name = "wallet-svc"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "app",
+ "configrpc",
+ "edge",
+ "lifecycle",
+ "metrics",
+ "remote",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "wallet",
 ]
 
 [[package]]

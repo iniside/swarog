@@ -764,7 +764,7 @@ const ORIGIN_MARKER: &str = "weles-managed-gateway-swap-origin";
 ///   request round-robin; the strict A,B,A,B cursor is unit-proven in
 ///   `core/remote` (C1), not here.
 ///
-/// The other six answers are the REAL fleet's addresses, straight from weles's
+/// The other seven answers are the REAL fleet's addresses, straight from weles's
 /// manifest — the gateway must boot and its key check must reach the real
 /// apikeys-svc, or `/leaderboard` would never get far enough to dial anything.
 ///

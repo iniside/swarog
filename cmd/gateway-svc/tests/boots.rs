@@ -14,7 +14,7 @@ use lifecycle::{Context, Module, ProcessWiring};
 /// lifecycle two-phase order), and assert:
 ///   1. every module's `register` SUCCEEDS (the zero-factory bail no longer fires on the
 ///      peer-only describe stubs), and
-///   2. each of the five `#[http]` providers contributed a `PEER_SLOT` entry — the entry the
+///   2. each of the six `#[http]` providers contributed a `PEER_SLOT` entry — the entry the
 ///      D2 describe fetch iterates to reach that peer's `__describe`.
 #[test]
 fn gateway_svc_module_set_boots_and_every_http_provider_lands_in_peer_slot() {
@@ -38,7 +38,7 @@ fn gateway_svc_module_set_boots_and_every_http_provider_lands_in_peer_slot() {
     let peers: Vec<opsapi::PeerAddr> = ctx.contributions(opsapi::PEER_SLOT);
     let providers: std::collections::BTreeSet<&str> =
         peers.iter().map(|p| p.provider.as_str()).collect();
-    for http_provider in ["characters", "inventory", "match", "leaderboard", "accounts"] {
+    for http_provider in ["characters", "inventory", "match", "leaderboard", "accounts", "wallet"] {
         assert!(
             providers.contains(http_provider),
             "the #[http] provider {http_provider:?} must contribute a PEER_SLOT entry so the \

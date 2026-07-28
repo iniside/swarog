@@ -28,7 +28,7 @@ use super::{addr_source_from_value, gateway_addrs, AddrSource, ResolvedAddrs};
 /// What the fake hands back for one question.
 type Answer = Result<Vec<String>, ResolveError>;
 
-/// The eight addresses the split fleet actually runs at — `weles::manifest`'s
+/// The nine addresses the split fleet actually runs at — `weles::manifest`'s
 /// ports, which is where BOTH modes' answers come from in a managed rollout (the
 /// composed env and the agent's `resolve` map are derived from the one port
 /// authority). Written once and fed to BOTH fakes, which is what makes the
@@ -40,6 +40,7 @@ const FLEET: &[(&str, &str)] = &[
     ("APIKEYS_EDGE_ADDR", "127.0.0.1:9009"),
     ("MATCH_EDGE_ADDR", "127.0.0.1:9006"),
     ("LEADERBOARD_EDGE_ADDR", "127.0.0.1:9008"),
+    ("WALLET_EDGE_ADDR", "127.0.0.1:9010"),
     ("ADMIN_HTTP_ADDR", "127.0.0.1:8085"),
     ("ACCOUNTS_HTTP_ADDR", "127.0.0.1:8084"),
 ];
@@ -87,7 +88,7 @@ fn decoy_env() -> impl Fn(&'static str) -> Option<String> {
 ///
 /// A scanned `Vec`, not a `HashMap`: `remote::AddrKind` is deliberately not
 /// `Hash`, and a fixture's convenience is no reason to widen a shipping type's
-/// derives. Eight entries do not need a data structure with an opinion.
+/// derives. Nine entries do not need a data structure with an opinion.
 struct FakeAgent {
     answers: Vec<((&'static str, AddrKind), Answer)>,
     asked: RefCell<Vec<(&'static str, AddrKind)>>,
@@ -103,13 +104,14 @@ impl FakeAgent {
             (("apikeys", AddrKind::Edge), Ok(vec![addr("APIKEYS_EDGE_ADDR")])),
             (("match", AddrKind::Edge), Ok(vec![addr("MATCH_EDGE_ADDR")])),
             (("leaderboard", AddrKind::Edge), Ok(vec![addr("LEADERBOARD_EDGE_ADDR")])),
+            (("wallet", AddrKind::Edge), Ok(vec![addr("WALLET_EDGE_ADDR")])),
             (("admin", AddrKind::Http), Ok(vec![addr("ADMIN_HTTP_ADDR")])),
             (("accounts", AddrKind::Http), Ok(vec![addr("ACCOUNTS_HTTP_ADDR")])),
         ];
         Self { answers, asked: RefCell::new(Vec::new()) }
     }
 
-    /// Replaces ONE answer — the failure under test — leaving the other seven
+    /// Replaces ONE answer — the failure under test — leaving the other eight
     /// healthy, so a fatal outcome is attributable to this answer and not to a
     /// fixture that answers nothing.
     fn with(mut self, provider: &'static str, kind: AddrKind, answer: Answer) -> Self {
@@ -214,7 +216,7 @@ fn a_blank_orchestrator_url_fails_startup_instead_of_falling_back() {
 // Standalone: byte-identical to before, and silent
 // ---------------------------------------------------------------------------
 
-/// Today's values, verbatim: the six edge defaults and the two BLANK passthrough
+/// Today's values, verbatim: the seven edge defaults and the two BLANK passthrough
 /// origins (`env_addr("ADMIN_HTTP_ADDR", "")` — a blank drops the prefix, leaving
 /// that route a 404).
 #[tokio::test]
@@ -228,6 +230,7 @@ async fn standalone_unset_env_is_todays_defaults() {
     assert_eq!(wiring.peer_set_or("apikeys", &["unset"]), vec!["127.0.0.1:9009"]);
     assert_eq!(wiring.peer_set_or("match", &["unset"]), vec!["127.0.0.1:9006"]);
     assert_eq!(wiring.peer_set_or("leaderboard", &["unset"]), vec!["127.0.0.1:9008"]);
+    assert_eq!(wiring.peer_set_or("wallet", &["unset"]), vec!["127.0.0.1:9010"]);
     assert_eq!(
         passthroughs(&addrs),
         vec![
@@ -269,23 +272,23 @@ async fn env_mode_asks_no_agent() {
 }
 
 // ---------------------------------------------------------------------------
-// Managed: the same eight pairs, learned from the agent
+// Managed: the same nine pairs, learned from the agent
 // ---------------------------------------------------------------------------
 
 /// THE equivalence: for one fleet, "told by env" and "asked the agent" produce
-/// the SAME eight pairs. That is the whole M1 claim at this seam — the plaster
+/// the SAME nine pairs. That is the whole M1 claim at this seam — the plaster
 /// changes where the answer comes from, and nothing else.
 #[tokio::test]
-async fn managed_resolves_the_same_eight_pairs_as_env() {
+async fn managed_resolves_the_same_nine_pairs_as_env() {
     let agent = FakeAgent::healthy();
     let from_agent = resolve_managed(&agent).await.unwrap();
     let from_env = resolve_env(FLEET).await;
 
     assert_eq!(from_agent, from_env, "managed and standalone must agree for the same fleet");
 
-    // ...and the questions were the right ones: eight, one per address, with
+    // ...and the questions were the right ones: nine, one per address, with
     // `accounts` asked twice as its TWO classes (edge 9003 + http 8084). A table
-    // that asked Http for an edge peer would still have produced eight pairs.
+    // that asked Http for an edge peer would still have produced nine pairs.
     assert_eq!(
         *agent.asked.borrow(),
         vec![
@@ -295,6 +298,7 @@ async fn managed_resolves_the_same_eight_pairs_as_env() {
             ("apikeys", AddrKind::Edge),
             ("match", AddrKind::Edge),
             ("leaderboard", AddrKind::Edge),
+            ("wallet", AddrKind::Edge),
             ("admin", AddrKind::Http),
             ("accounts", AddrKind::Http),
         ],

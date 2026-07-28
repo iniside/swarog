@@ -102,9 +102,9 @@ async fn main() -> anyhow::Result<()> {
     // root owns topology), never read inside the module: `/admin` → admin-svc,
     // `/accounts/epic` → the Epic web OAuth flow on accounts-svc.
     //
-    // WHERE those eight addresses come from is `addrs`'s one decision, made once:
+    // WHERE those nine addresses come from is `addrs`'s one decision, made once:
     // `ORCHESTRATOR_URL` set ⇒ managed (ask the local weles agent over
-    // `remote::resolve_peer`), unset ⇒ standalone (the eight env vars, byte-identical
+    // `remote::resolve_peer`), unset ⇒ standalone (the nine env vars, byte-identical
     // to before). The modes are disjoint — a managed boot never falls back to env —
     // and everything below this line is blind to which one ran: `ResolvedAddrs::to_wiring`
     // builds the same `ProcessWiring`, so `gateway_svc::modules` and its `Stub`s are

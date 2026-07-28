@@ -51,6 +51,7 @@ pub fn modules(
         Box::new(match_module::MatchModule::new()), // records matches (schema "match"); reads rating sync, emits match.finished durably
         Box::new(leaderboard::LeaderboardModule::new()), // win tally; owns schema "leaderboard", reacts to match.finished, serves GET /leaderboard
         Box::new(apikeys::ApiKeys::new()),       // API-key policy store: schema "apikeys", provides "apikeys.keys" for the gateway's key check
+        Box::new(wallet::WalletModule::new()),   // player currency balances + ledger: schema "wallet", reads config for the starter grant, emits wallet.changed
         Box::new(gw),                            // HTTP + player QUIC front, auth-once (real accounts sessions)
     ]
 }

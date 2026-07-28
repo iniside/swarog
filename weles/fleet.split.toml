@@ -1,4 +1,4 @@
-# The 12-process split fleet, as operator-authored strict data. This is the
+# The 13-process split fleet, as operator-authored strict data. This is the
 # file `weles up` boots after `weles deploy target/debug --fleet
 # weles/fleet.split.toml`, and the one verifyctl's `weles-managed-gateway`
 # stage loads. It is the faithful successor of the deleted Rust
@@ -136,6 +136,19 @@ env = { INVENTORY_DEV_GRANT = "1", DATABASE_POOL_MAX_CONNECTIONS = "3", EDGE_CA_
   env_key = "CHARACTERS_EDGE_ADDR"
   provider = "characters"
   kind = "edge"
+
+  [[service.peer]]
+  env_key = "CONFIG_EDGE_ADDR"
+  provider = "config"
+  kind = "edge"
+
+[[service]]
+name = "wallet-svc"
+pkg = "wallet-svc"
+provider = "wallet"
+http_port = 8092
+edge_port = 9010
+env = { WALLET_DEV_SEED = "1", DATABASE_POOL_MAX_CONNECTIONS = "3", EDGE_CA_CERT = "run/weles/edge-ca.crt", EDGE_CA_KEY = "run/weles/edge-ca.key" }
 
   [[service.peer]]
   env_key = "CONFIG_EDGE_ADDR"

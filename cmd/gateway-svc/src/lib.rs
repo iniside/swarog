@@ -105,5 +105,15 @@ pub fn modules(
             "leaderboard",
             edge_peer(wiring, edge_list_resolver, "leaderboard", "127.0.0.1:9008"),
         )),
+        // wallet is pure-HTTP from this front door's point of view: it exposes
+        // `GET /wallet/me` + `GET /wallet/currencies` (routes arriving via `__describe`)
+        // and the gateway consumes NO wallet capability of its own — nothing here
+        // `require`s `dyn Wallet`/`dyn Player`. So `describe_peer` (peer-only, zero
+        // factories), never `Stub::new`, whose zero-factory bail exists to catch a
+        // forgotten `provide_factories()` on a stub that WAS meant to provide one.
+        Box::new(remote::Stub::describe_peer(
+            "wallet",
+            edge_peer(wiring, edge_list_resolver, "wallet", "127.0.0.1:9010"),
+        )),
     ]
 }

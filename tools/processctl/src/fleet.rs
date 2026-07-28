@@ -72,7 +72,7 @@ pub(crate) const AE_TRANSIENT_POISON_SESSIONS: u32 = 2;
 const PLANE_DEDICATED_SESSIONS: u32 =
     AE_WORKERS + AE_WAKEUP_SESSIONS + INVALIDATION_LISTEN_SESSIONS;
 
-/// Per-DB-process pooled-connection cap in the SPLIT. Low by necessity: 11 DB-backed
+/// Per-DB-process pooled-connection cap in the SPLIT. Low by necessity: 12 DB-backed
 /// processes share one local Postgres, so each gets a small slice within
 /// [`PG_SESSION_BUDGET`]. Comfortably above core/app's migrate floor (2). The pool's
 /// concurrent users are the retention GC sweep, the metrics/invalidation poll refreshes,
@@ -508,6 +508,11 @@ pub fn game_backend_fleet_with_environment(
     );
     peer(&mut inventory.env, "CHARACTERS", 9000);
     peer(&mut inventory.env, "CONFIG", 9002);
+    // The `config-svc` dependency is real, not cosmetic: wallet's starter grant reads its
+    // knobs through the injected `dyn Config`, and the split's `CachedConfig` is
+    // boot-fill-or-fail-startup — wallet-svc cannot come up before config-svc.
+    let mut wallet = service("wallet-svc", 8092, Some(9010), vec!["config-svc"]);
+    peer(&mut wallet.env, "CONFIG", 9002);
 
     let mut gateway_env = environment.runtime_environment();
     gateway_env.insert("EDGE_CA_CERT".into(), cert.clone());
@@ -522,6 +527,7 @@ pub fn game_backend_fleet_with_environment(
         ("MATCH", 9006),
         ("LEADERBOARD", 9008),
         ("APIKEYS", 9009),
+        ("WALLET", 9010),
     ] {
         peer(&mut gateway_env, name, port);
     }
@@ -535,7 +541,7 @@ pub fn game_backend_fleet_with_environment(
         player_port: Some(9100),
         dependencies: vec![
             "characters-svc", "inventory-svc", "accounts-svc", "match-svc",
-            "leaderboard-svc", "apikeys-svc",
+            "leaderboard-svc", "apikeys-svc", "wallet-svc",
         ],
         env: gateway_env,
         overrideable_env: &[],
@@ -550,7 +556,7 @@ pub fn game_backend_fleet_with_environment(
         None,
         vec![
             "characters-svc", "inventory-svc", "config-svc", "accounts-svc", "audit-svc",
-            "scheduler-svc", "apikeys-svc",
+            "scheduler-svc", "apikeys-svc", "wallet-svc",
         ],
     );
     for (name, port) in [
@@ -561,6 +567,7 @@ pub fn game_backend_fleet_with_environment(
         ("AUDIT", 9004),
         ("SCHEDULER", 9005),
         ("APIKEYS", 9009),
+        ("WALLET", 9010),
     ] {
         peer(&mut admin.env, name, port);
     }
@@ -574,12 +581,16 @@ pub fn game_backend_fleet_with_environment(
     scheduler.overrideable_env = &["SCHEDULER_ENABLED"];
     inventory.overrideable_env = &["INVENTORY_DEV_GRANT"];
     admin.overrideable_env = &["ADMIN_COOKIE_SECURE", "TRUSTED_PROXY_CIDRS"];
+    wallet.overrideable_env = &["WALLET_DEV_SEED"];
 
     accounts.env.insert("ACCOUNTS_DEV_AUTH".into(), "1".into());
     apikeys.env.insert("APIKEYS_DEV_SEED".into(), "1".into());
     inventory.env.insert("INVENTORY_DEV_GRANT".into(), "1".into());
+    wallet.env.insert("WALLET_DEV_SEED".into(), "1".into());
 
-    for service in [&mut accounts, &mut apikeys, &mut scheduler, &mut inventory, &mut admin] {
+    for service in
+        [&mut accounts, &mut apikeys, &mut scheduler, &mut inventory, &mut admin, &mut wallet]
+    {
         for key in service.overrideable_env {
             if let Some(value) = environment.value(key) {
                 service.env.insert((*key).to_string(), value.to_string());
@@ -601,11 +612,12 @@ pub fn game_backend_fleet_with_environment(
             apikeys.env.insert("APIKEYS_DEV_SEED".into(), "1".into());
             scheduler.env.insert("SCHEDULER_ENABLED".into(), "1".into());
             inventory.env.insert("INVENTORY_DEV_GRANT".into(), "1".into());
+            wallet.env.insert("WALLET_DEV_SEED".into(), "1".into());
     }
 
     FleetSpec::new(vec![
         accounts, apikeys, audit, scheduler, rating, leaderboard, matches, config, characters,
-        inventory, gateway, admin,
+        inventory, wallet, gateway, admin,
     ])
     .expect("the built-in game backend fleet is internally valid")
 }
@@ -628,12 +640,13 @@ pub fn game_backend_monolith(
         ("APIKEYS_DEV_SEED", "1".into()),
         ("ACCOUNTS_DEV_AUTH", "1".into()),
         ("INVENTORY_DEV_GRANT", "1".into()),
+        ("WALLET_DEV_SEED", "1".into()),
         ("TLS_MODE", "off".into()),
         ("ADMIN_COOKIE_SECURE", "0".into()),
         ("TRUSTED_PROXY_CIDRS", "127.0.0.1/32".into()),
     ] { env.insert(key.into(), value); }
     let overrideable_env = &[
-        "APIKEYS_DEV_SEED", "ACCOUNTS_DEV_AUTH", "INVENTORY_DEV_GRANT",
+        "APIKEYS_DEV_SEED", "ACCOUNTS_DEV_AUTH", "INVENTORY_DEV_GRANT", "WALLET_DEV_SEED",
         "ADMIN_COOKIE_SECURE", "TRUSTED_PROXY_CIDRS",
     ];
     for key in overrideable_env {
@@ -646,6 +659,7 @@ pub fn game_backend_monolith(
         env.insert("ACCOUNTS_DEV_AUTH".into(), "1".into());
         env.insert("APIKEYS_DEV_SEED".into(), "1".into());
         env.insert("INVENTORY_DEV_GRANT".into(), "1".into());
+        env.insert("WALLET_DEV_SEED".into(), "1".into());
     }
     ServiceSpec {
         name: "monolith", executable_package: "server", http_port: 8080,
