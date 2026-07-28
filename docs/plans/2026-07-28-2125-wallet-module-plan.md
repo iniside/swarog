@@ -456,6 +456,14 @@ whole 22003 → 25P02 chain in D2 rests on the upper one), and the **`apply_on` 
 plus `Outcome` enum exactly as specified in D8** — written this way now, not refactored into
 it in Step 6. `credit`/`debit` are the pool-path wrappers.
 
+**`list_balances` returns EVERY row, including a zeroed one — and the contract doc must be
+corrected to match in this same diff.** `walletapi`'s `Wallet::balances` currently promises
+"every non-zero balance", which is a claim about code that does not exist yet: a debit down
+to zero leaves the row. Filtering `amount > 0` on the wire would hide state the DB holds and
+make `GET /wallet/me` disagree with the admin drill-down. So: no filter, and change that one
+word in `api/wallet/api/src/lib.rs` (`Wallet::balances` doc) to say every balance row, a
+player with no movements holding none.
+
 `impl Player for Service`: `my_balances(identity)` reads `identity.player_id()` — never a
 body field. The gateway verified the bearer and set `Identity::player(pid)` before dispatch
 (`modules/gateway/src/lib.rs:840-853`).
