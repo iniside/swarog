@@ -1790,12 +1790,17 @@ async fn describe_built_route_reaches_the_right_peer_with_full_op_shape() {
     );
 }
 
-/// The collision-`bail!` still fires over DESCRIBE-contributed entries: two peers whose
-/// manifests both declare the same method id is a peer-config bug that must not resolve to a
-/// silent last-write-wins hybrid — `build_from_parts` is the shared authority, so the bail is
+/// The collision-`bail!` still fires over DESCRIBE-contributed entries: a manifest declaring
+/// the same method id twice is a peer-config/codegen bug that must not resolve to a silent
+/// last-write-wins hybrid — `build_from_parts` is the shared authority, so the bail is
 /// identical to the slot-built path and re-checked on EVERY re-fetch.
+///
+/// The duplicate is WITHIN one peer's manifest on purpose: since `build_describe_table`
+/// rejects a method whose prefix is not the fetching peer, two DIFFERENT peers can no longer
+/// both legitimately reach the collision check with one method id — that shape now trips the
+/// provider-prefix guard first, so the collision branch is only reachable same-peer.
 #[test]
-fn describe_table_bails_on_duplicate_method_across_peers() {
+fn describe_table_bails_on_duplicate_method_in_a_manifest() {
     let clash = |verb: &str, path: &str| opsapi::OpManifest {
         method: "clash.op".into(),
         verb: verb.into(),
@@ -1805,13 +1810,14 @@ fn describe_table_bails_on_duplicate_method_across_peers() {
         retry_mode: RetryMode::Never,
         args: vec![],
     };
-    let map = fetched(vec![
-        ("p1", vec!["127.0.0.1:1"], vec![clash("GET", "/a")]),
-        ("p2", vec!["127.0.0.1:2"], vec![clash("GET", "/b")]),
-    ]);
+    let map = fetched(vec![(
+        "clash",
+        vec!["127.0.0.1:1"],
+        vec![clash("GET", "/a"), clash("GET", "/b")],
+    )]);
     let err = build_describe_table(&map)
         .err()
-        .expect("a duplicate method across describe peers must bail")
+        .expect("a duplicate method in a describe manifest must bail")
         .to_string();
     assert!(err.contains("clash.op"), "the bail must name the colliding method: {err}");
 }

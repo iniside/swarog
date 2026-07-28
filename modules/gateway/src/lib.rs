@@ -1429,6 +1429,16 @@ fn production_describe_fetcher() -> DescribeFetcher {
 /// provider contributes its address SET as a `PeerAddr`. `locals` is empty — every route here
 /// is Remote (dispatched to the owning peer). Returns the SAME collision `Err` as the
 /// slot-built path (via `build_from_parts`), so a duplicated method across peers is loud.
+///
+/// **Fail-closed on the provider prefix.** A manifest may only carry the fetched peer's OWN
+/// ops (`"<provider>.<op>"`); an entry under a foreign (or malformed) prefix `bail!`s the
+/// whole build rather than becoming a route dispatched to a peer that does not own it. Like
+/// the two collision guards in [`RouteTable::build_from_parts`], this runs on EVERY pass —
+/// including the first one awaited inside `Gateway::start` — so a misbehaving peer (or a
+/// codegen bug) takes the gateway down LOUDLY at boot instead of serving a half-table, and on
+/// a later pass fails that pass (the last good table stays installed, no swap). This is the
+/// BUILD side: a per-peer describe FETCH failure is still keep-last (see
+/// [`DescribeRouter::refresh_once`]) — only a manifest we DID receive can trip this.
 fn build_describe_table(
     fetched: &HashMap<String, (Vec<String>, opsapi::DescribeManifest)>,
 ) -> anyhow::Result<RouteTable> {
@@ -1437,6 +1447,27 @@ fn build_describe_table(
     let mut peer_addrs: Vec<opsapi::PeerAddr> = Vec::new();
     for (provider, (addrs, manifest)) in fetched {
         for m in &manifest.ops {
+            // The advertised owner (`provider_of` — the SAME split-on-first-`.` the dispatch
+            // path uses to pick the peer, so this validates exactly what routing will read)
+            // must be the peer we fetched from. `provider_of` returns the WHOLE method when
+            // there is no `.`, so an equal comparison alone would let a dotless method
+            // (`"inventory"` from peer `inventory`) or an empty op name (`"inventory."`)
+            // through with no routable suffix; requiring the method to be longer than
+            // `"<provider>."` rejects both. An empty provider key is rejected outright — it
+            // would otherwise compare equal to the empty prefix of a method like `".op"`.
+            let advertised = provider_of(&m.method);
+            if provider.is_empty()
+                || advertised != provider.as_str()
+                || m.method.len() <= provider.len() + 1
+            {
+                anyhow::bail!(
+                    "gateway: peer {:?} advertised method {:?} in its describe manifest — \
+                     a peer may only advertise its own ops (expected prefix {:?})",
+                    provider,
+                    m.method,
+                    format!("{provider}.")
+                );
+            }
             operations.push(opsapi::databind::operation(m));
             bindings.push(opsapi::databind::binding(m));
         }
