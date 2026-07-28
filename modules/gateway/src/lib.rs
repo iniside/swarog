@@ -65,9 +65,10 @@
 //! from each peer's runtime `__describe` manifest (`opsapi::databind` turns every
 //! `OpManifest` into an `Operation`+`OpBinding`), re-fetched on [`DESCRIBE_REFRESH_INTERVAL`]
 //! so a peer that was DOWN at boot is routed once it comes up. The first pass runs
-//! synchronously in `start` (routes ready before serving; a collision across
-//! describe-contributed peers fails startup loudly via the SAME `build_from_parts`
-//! authority), a describe FETCH failure is tolerated (error-keeps-last per peer). The
+//! synchronously in `start` (routes ready before serving; a BUILD rejection — a collision
+//! across describe-contributed peers via the SAME `build_from_parts` authority, or a peer
+//! advertising a method outside its own provider prefix — fails startup loudly), a describe
+//! FETCH failure is tolerated (error-keeps-last per peer). The
 //! module stays topology-blind — the composition root decides the mode, exactly as it
 //! decides [`Gateway::with_player_edge`]. The monolith/standalone path above is UNCHANGED.
 
@@ -1428,17 +1429,37 @@ fn production_describe_fetcher() -> DescribeFetcher {
 /// `OpManifest` becomes an `Operation` + `OpBinding` via `opsapi::databind`, and each fetched
 /// provider contributes its address SET as a `PeerAddr`. `locals` is empty — every route here
 /// is Remote (dispatched to the owning peer). Returns the SAME collision `Err` as the
-/// slot-built path (via `build_from_parts`), so a duplicated method across peers is loud.
+/// slot-built path (via `build_from_parts`), so a duplicated method is loud.
 ///
 /// **Fail-closed on the provider prefix.** A manifest may only carry the fetched peer's OWN
 /// ops (`"<provider>.<op>"`); an entry under a foreign (or malformed) prefix `bail!`s the
 /// whole build rather than becoming a route dispatched to a peer that does not own it. Like
 /// the two collision guards in [`RouteTable::build_from_parts`], this runs on EVERY pass —
 /// including the first one awaited inside `Gateway::start` — so a misbehaving peer (or a
-/// codegen bug) takes the gateway down LOUDLY at boot instead of serving a half-table, and on
-/// a later pass fails that pass (the last good table stays installed, no swap). This is the
-/// BUILD side: a per-peer describe FETCH failure is still keep-last (see
+/// codegen bug) takes the gateway down LOUDLY at boot instead of serving a half-table. This
+/// is the BUILD side: a per-peer describe FETCH failure is still keep-last (see
 /// [`DescribeRouter::refresh_once`]) — only a manifest we DID receive can trip this.
+///
+/// **What a rejection costs on a LATER pass: a FROZEN table, not a skipped swap.**
+/// `refresh_once` writes each successful fetch into `last_known` BEFORE building, so a
+/// rejected build leaves the bad manifest recorded while `last_built` never advances — the
+/// next pass therefore sees a change, rebuilds, and is rejected again, indefinitely. ONE peer
+/// emitting ONE foreign-prefix (or colliding) op freezes the WHOLE table for EVERY provider:
+/// a new `#[http]` op on a healthy peer never lights up and a peer that was down at boot
+/// never appears, while `/readyz` stays green (this module contributes no readiness check).
+/// It is at least loud — one `tracing::error!` per [`DESCRIBE_REFRESH_INTERVAL`] — and it
+/// self-clears the moment the peer stops advertising the bad entry. The guard is NOT
+/// downgraded for this: serving a route to a peer that does not own it is worse than a stale
+/// table. The mitigation belongs to the readiness surface already deferred in
+/// [`DescribeRouter::refresh_once`] (a repeated-failure liveness signal), not here.
+///
+/// **KNOWN GAP — this validates the METHOD-ID dimension only.** The rest of an `OpManifest`
+/// (`verb`/`path`/`auth`/`success`/`args`) is still trusted verbatim, so a buggy peer can
+/// advertise a correctly-prefixed `inventory.evil` bound `POST /accounts/login` with
+/// `AuthReq::None`; if `accounts` happens to be absent from `last_known` at that instant (down
+/// at boot — tolerated by design) no overlapping route trips `build_from_parts` and the front
+/// door serves an unauthenticated route on another provider's path. Closing that needs a
+/// path-ownership rule (which prefix may claim which URL space), which does not exist today.
 fn build_describe_table(
     fetched: &HashMap<String, (Vec<String>, opsapi::DescribeManifest)>,
 ) -> anyhow::Result<RouteTable> {
@@ -1514,10 +1535,13 @@ impl DescribeRouter {
 
     /// One re-fetch pass: fetch each peer's describe (keep-last on failure), rebuild the table
     /// from all last-known manifests, and swap it in. A describe FETCH failure is tolerated
-    /// (logged, that peer keeps its prior routes / stays absent if never seen). A BUILD failure
-    /// (a method collision across describe-contributed peers) is returned as `Err` so the
-    /// synchronous first pass can fail startup loudly; the periodic loop logs it and keeps the
-    /// last good table (no swap). Unchanged providers keep their warm dispatch pool + cursor
+    /// (logged, that peer keeps its prior routes / stays absent if never seen). A BUILD
+    /// rejection (a method collision, or a peer advertising a foreign provider prefix) is
+    /// returned as `Err` so the synchronous first pass can fail startup loudly; the periodic
+    /// loop logs it and keeps the last good table (no swap) — and, since the offending
+    /// manifest is already in `last_known` while `last_built` did not advance, keeps failing
+    /// every pass until that peer stops advertising it (the frozen-table cost spelled out in
+    /// [`build_describe_table`]). Unchanged providers keep their warm dispatch pool + cursor
     /// across the swap (see below) — a change to ONE peer never evicts the others (C2 no-evict
     /// at the refresh boundary).
     ///
@@ -1689,7 +1713,10 @@ impl DescribeRouter {
                 if let Err(e) = self.refresh_once().await {
                     tracing::error!(
                         error = %e,
-                        "gateway: describe route rebuild failed (collision); keeping last table"
+                        "gateway: describe route rebuild rejected (collision or foreign \
+                         provider prefix); the last table stays installed and every later \
+                         pass will fail the same way until the offending peer stops \
+                         advertising it — see build_describe_table"
                     );
                 }
             }
