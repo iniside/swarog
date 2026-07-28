@@ -1,6 +1,6 @@
 # Feature tracker — closing the gaps from the BaaS analysis
 
-**Last update: 2026-07-28**
+**Last update: 2026-07-28-2242**
 
 **Living document, updated in place** (no date prefix in the filename — it is the
 current state, not a dated snapshot; the date above moves instead). Source of the
@@ -13,7 +13,8 @@ Tracker opened: 2026-07-28.
 
 ## How to use this
 
-- **Bump "Last update" at the top on every edit.**
+- **Bump "Last update" at the top on every edit** — `YYYY-MM-DD-HHMM`, the same stamp
+  format the repo's plan/status filenames use.
 - One row per feature from the gap matrix. **Never delete a row** — flip its status.
 - When a feature lands, set status ✅, fill **Module(s)** with the real crate names and
   **Landed** with the commit sha + date.
@@ -36,7 +37,7 @@ Rationale in the decision notes below; the order deviates from the gap doc's own
 
 | # | Feature | Status | Plan doc |
 |:-:|---|:--:|---|
-| 1 | Virtual currency wallet + ledger | ❌ | — |
+| 1 | Virtual currency wallet + ledger | 📝 | [2026-07-28-2125-wallet-module-plan.md](../plans/2026-07-28-2125-wallet-module-plan.md) |
 | 2 | Auth providers: Google + Apple OIDC, guest/device, link/unlink | ❌ | — |
 | 3 | Notifications + player mail (in-app, durable) | ❌ | — |
 | 4 | Self-registration promoted to production (email verify, password reset) | ❌ | — |
@@ -105,7 +106,7 @@ Rationale in the decision notes below; the order deviates from the gap doc's own
 
 | Feature | Status | Module(s) | Landed | Notes |
 |---|:--:|---|---|---|
-| Virtual currency wallet + ledger | ❌ | — | — | **Seq #1.** New fortress: balances + append-only ledger, own schema, `WalletWriter` sync capability, `wallet.changed` durable event. |
+| Virtual currency wallet + ledger | 📝 | — | — | **Seq #1**, planned in [2026-07-28-2125-wallet-module-plan.md](../plans/2026-07-28-2125-wallet-module-plan.md) (11 steps). New fortress: balances + append-only ledger, own schema, `walletapi::Wallet` sync capability, `wallet.changed` durable event, and an **optional config-driven starter grant** on `player.registered` (off by default). |
 | Item catalog + player inventory | ⚠️ | inventory | pre-existing | Per-character holdings, static catalog; no stacks/instances model. |
 | Store / storefront (listings, pricing, discounts) | ❌ | — | — | Seq #7, depends on wallet. |
 | IAP receipt validation (Apple/Google/Steam) | ❌ | — | — | Seq #7. Only the simulated `INVENTORY_DEV_GRANT` route today. Needs outbound HTTP + `purchase.validated` durable event. |
@@ -161,3 +162,7 @@ Rationale in the decision notes below; the order deviates from the gap doc's own
   notifications → self-registration → seasons → Steam → store/IAP. Added the
   "outbound email channel" row (missing from the source analysis) as the hard
   prerequisite for production self-registration.
+- **2026-07-28** — Wallet (seq #1) planned: `docs/plans/2026-07-28-2125-wallet-module-plan.md`,
+  11 steps, revision 3. Scope grew by one deliberate item during planning — an **optional,
+  config-driven starter grant** on `player.registered`, off by compiled default — because a
+  registered player owning no balance row makes the economy inert the moment a store exists.
