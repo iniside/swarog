@@ -54,7 +54,8 @@ method names are chosen globally distinct:
 
 ### D2 — Amounts are `i64` minor units; balances are non-negative by DB CHECK
 
-`amount bigint NOT NULL CHECK (amount >= 0)` named `balances_amount_check`. Insufficient
+`amount bigint NOT NULL CHECK (amount >= 0 AND amount <= 1e15)` named `balances_amount_check`
+(both bounds — see below). Insufficient
 funds is **SQLSTATE 23514 with that exact constraint name** → `Error::conflict` → 409,
 matched as narrowly as inventory matches `holdings_quantity_check`
 (`modules/inventory/src/store.rs:17-21`). The DB is the authority; the service does not
@@ -270,6 +271,10 @@ subsequent player (`core/asyncevents/src/worker.rs:88`). So, mirroring
 `modules/inventory/src/projection.rs:115-129`:
 
 - amount ≤ 0 / empty currency → skip silently (feature off);
+- amount > `MAX_MOVEMENT_AMOUNT` → `warn!` + `Ok(())`. **The wire paths reject an out-of-range
+  amount as 400; this path must not** — an `Err` here is what poisons the subscription, so the
+  same value is a 400 on HTTP and a warn-and-skip on delivery. That asymmetry is posture A, not
+  an inconsistency;
 - currency **not present in `wallet.currencies`** → `warn!` + `Ok(())`;
 - `Outcome::Conflict` (the key exists with different values — should be impossible) →
   `warn!` + `Ok(())`.
@@ -445,7 +450,9 @@ fn is_invalid_uuid(e: &sqlx::Error) -> bool { /* 22P02 — cf. modules/character
 ```
 
 `service.rs` — `validate_movement(&Movement) -> Result<(), Error>` that **every** writer
-routes through (three byte caps, `amount > 0`, non-empty key), and the **`apply_on` authority
+routes through (three byte caps, `1 ..= walletapi::MAX_MOVEMENT_AMOUNT`, non-empty key — **both**
+bounds, not just the lower one; the published contract doc promises exactly this range and the
+whole 22003 → 25P02 chain in D2 rests on the upper one), and the **`apply_on` authority
 plus `Outcome` enum exactly as specified in D8** — written this way now, not refactored into
 it in Step 6. `credit`/`debit` are the pool-path wrappers.
 
@@ -865,7 +872,8 @@ effort **think hard**.
 |---|---|---|
 | 1 | **Step 9 was missing `tools/conformance/src/tests.rs:294`** (hardcoded `18` → `27`), so the plan as written left the BLOCKING `test` stage red. Added, together with the topiccheck FS-drift test, so the expected-red set is declared rather than discovered. | blocking |
 | 2 | **`reason` moved INTO the idempotency comparison** (D3 step 2). The contract doc already promised "the same movement"; the narrow `(player, currency, delta)` tuple would have made an edited-`reason` resubmit a silent success recording the original reason. Step 5 #3 grows the case that pins it. | high |
-| 3 | **`MAX_MOVEMENT_AMOUNT` + an upper bound on the balance CHECK** (D2). `amount` was the one uncapped field in a crate that caps its three strings; `sign * i64::MAX` panics in debug, and a `bigint` overflow (22003) is unmapped — on the delivery path it would abort the tx, fail the checkpoint with 25P02 and poison the starter-grant subscription, i.e. exactly what D9 claims is impossible. Both caps sit far below `i64::MAX`, so the overflow is now unreachable and the ceiling surfaces as an already-mapped 23514/409. Tests: Step 5 #10, Step 7 #3b. | high |
+| 3 | **`MAX_MOVEMENT_AMOUNT` + an upper bound on the balance CHECK** (D2). `amount` was the one uncapped field in a crate that caps its three strings; `sign * amount` panics in debug for `i64::MIN` (**not** for `i64::MAX` — an earlier draft of
+this row said otherwise and was wrong; retracted in `178206a`), and a `bigint` overflow (22003) is unmapped — on the delivery path it would abort the tx, fail the checkpoint with 25P02 and poison the starter-grant subscription, i.e. exactly what D9 claims is impossible. Both caps sit far below `i64::MAX`, so the overflow is now unreachable and the ceiling surfaces as an already-mapped 23514/409. Tests: Step 5 #10, Step 7 #3b. | high |
 | 4 | `walletapi` **drops the `adminapi` dependency** — wallet consumes accounts' extension point from `modules/wallet/src/admin.rs`, so the contract crate never names an `adminapi` symbol. The rev-3 rationale ("same edge `charactersapi` carries") did not apply: `charactersapi` carries it because it *declares* a point. | low |
 | 5 | Trait doc corrected: `credit`/`debit` are reachable from a peer process over the internal edge only. The admin portal reaches wallet through `admin.adminSubmit` → the local service, never through `wallet.credit`. | low |
 
