@@ -92,8 +92,8 @@ itself:
 
 1. `INSERT INTO wallet.ledger (idempotency_key, player_id, currency, delta, reason, balance_after)
    VALUES ($1,$2::uuid,$3,$4,$5,0) ON CONFLICT (idempotency_key) DO NOTHING RETURNING id::text`
-2. `None` ⇒ the key is already used. Re-`SELECT player_id::text, currency, delta, balance_after
-   FROM wallet.ledger WHERE idempotency_key = $1` **on the same connection**, then:
+2. `None` ⇒ the key is already used. Re-`SELECT player_id::text, currency, delta, reason,
+   balance_after FROM wallet.ledger WHERE idempotency_key = $1` **on the same connection**, then:
    - same `(player_id, currency, delta, reason)` → `Outcome::Duplicate(existing.balance_after)`;
    - different → `Outcome::Conflict`;
    - **no row** → `Error::internal("conflicting ledger row disappeared")` — the arm `match`
