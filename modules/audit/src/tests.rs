@@ -97,6 +97,7 @@ fn durable_topics_match_events() {
         configevents::CHANGED.topic(),
         matchevents::FINISHED.topic(),
         adminevents::ACTION.topic(),
+        walletevents::CHANGED.topic(),
     ]
     .into_iter()
     .collect();
