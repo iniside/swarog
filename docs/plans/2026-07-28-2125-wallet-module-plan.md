@@ -295,6 +295,20 @@ page, an explicit operator action rather than a surprise mass-credit. **This cho
 permanent for subscription id `wallet.player-registered.v1`** — `spec_hash` is immutable
 (`core/asyncevents/src/catalog.rs:98-108`), so changing it later requires a new id.
 
+**`apply_on` validates the movement itself, so the handler's pre-checks must be exhaustive
+BY CONSTRUCTION, not by enumeration (corrected after the Step 2 review).** Validation lives
+in the authority (D3), which means any movement the handler builds that `validate_movement`
+would reject becomes an `Err` on the delivery path — and posture A forbids that. Enumerating
+"check the amount and the currency" is not enough: `validate_movement` has seven reject
+branches, and the review found a live gap where a 33-byte catalog currency passed
+`currency_exists_tx` and then failed the contract's 32-byte cap. The closure is structural,
+not a longer checklist: the catalog DDL now carries `CHECK (octet_length(code) <= 32)`, so a
+row `validate_movement` would reject cannot exist; the amount is clamped by the handler; and
+`reason` + `idempotency_key` are compile-time-fixed strings (`"starter-grant"`,
+`"starter:{player_id}"`). With those four, every branch is unreachable by construction.
+**Ordering is therefore a correctness constraint, not style: the amount clamp and
+`currency_exists_tx` run BEFORE `apply_on`, never after.**
+
 **Posture A — the handler must never poison its subscription.** A bad config value or a
 missing currency is a property of the *config*, not of the event; returning `Err` would
 back off and, after 20 failures, pause `wallet.player-registered.v1` for **every**
@@ -428,7 +442,8 @@ grant (Step 6), no admin (Step 8), no tests (Step 5).
 ```sql
 CREATE SCHEMA IF NOT EXISTS wallet;
 CREATE TABLE IF NOT EXISTS wallet.currencies (
-	code         text PRIMARY KEY,
+	code         text PRIMARY KEY
+	             CONSTRAINT currencies_code_len_check CHECK (octet_length(code) <= 32),
 	display_name text        NOT NULL,
 	kind         text        NOT NULL DEFAULT 'soft',
 	decimals     int         NOT NULL DEFAULT 0,
@@ -648,6 +663,11 @@ to mutate it mid-test). Dependencies injected through the **real registry key**.
 4. `concurrent_same_key_credits_apply_once` — `#[tokio::test(flavor = "multi_thread", worker_threads = 4)]`,
    two spawned credits with one key; exactly one ledger row, single-application balance. The
    in-tx re-verify arm (D3 step 2) the sequential test never reaches.
+**Neither 4b nor 4c may be dropped or "simplified" by the test lane — they are the only
+things in the tree that will ever pin `41ebfa6`.** 4b must call `apply_on` DIRECTLY (driving
+`credit`/`debit` cannot reach the new step 0, because the wrapper validates first), and 4c
+must keep the two-connection interleaving.
+
 4b. `apply_on_rejects_a_negative_or_zero_amount` — calls `Service::apply_on` **directly** on
    a pool connection with `Movement { amount: -500, .. }` and `sign = +1`; asserts
    `Status::Invalid`, zero `wallet.ledger` rows and an unchanged balance. A test that only
@@ -753,6 +773,10 @@ Run with `--test-threads=1` per [[asyncevents-single-invocation-parallelism-dead
 2. `starter_grant_is_off_by_default` — the compiled defaults (`""`, `0`); assert **no** balance
    row and **no** ledger row. This is the "optional" half of the feature and the branch that
    would be wrong if the defaults ever became non-empty.
+3a. `catalog_rejects_an_oversized_currency_code` — INSERT a 33-byte code into
+   `wallet.currencies` and assert the DDL CHECK rejects it. This is the structural half of
+   the by-construction argument: without it a catalog row exists that `validate_movement`
+   would reject, and the grant handler `Err`s on the delivery path.
 3b. `starter_grant_skips_an_absurd_configured_amount_without_poisoning` — `starter_amount`
    set to `i64::MAX`; assert no grant, no `Err`, and that a later registration still gets
    granted once the knob is corrected. The overflow arm from D2.
