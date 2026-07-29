@@ -145,10 +145,6 @@ impl Store {
     /// a `bigserial` derives is not guaranteed (Postgres deconflicts it, so an existing
     /// `ledger_seq_seq` leaves the column defaulting from `ledger_seq_seq1`) and a hardcoded
     /// name would silently draw from an unrelated counter. It also survives a rename.
-    ///
-    /// COST: `seq` is covered by `ledger_player_seq_idx`, so re-stamping makes this a
-    /// guaranteed NON-HOT update — an extra index tuple per movement on the hottest write
-    /// path, plus one skipped sequence value.
     pub(crate) async fn set_balance_after_tx(
         &self,
         conn: &mut PgConnection,

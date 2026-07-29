@@ -46,9 +46,6 @@ use walletapi::{Player, Wallet};
 /// The ledger orders by `seq`, not `at`: `now()` is `transaction_timestamp()`, fixed at
 /// transaction start. The `bigserial` default is a placeholder — the real ordering value
 /// is drawn in `Store::set_balance_after_tx`, under the balance row lock.
-///
-/// KNOWN GAP (recorded, not fixed): `wallet.ledger` is unbounded — there is no retention
-/// sweep; the `(player_id, seq DESC)` index keeps reads fast, so the cost is disk.
 const SCHEMA_DDL: &str = r#"
 CREATE SCHEMA IF NOT EXISTS wallet;
 
