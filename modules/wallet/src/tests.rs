@@ -1,7 +1,10 @@
 use super::*;
+use crate::projection::{REASON, STARTER_AMOUNT, STARTER_CURRENCY};
+use bus::AnyTx;
 use opsapi::Status;
 use sqlx::PgPool;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 use std::time::Duration;
 use walletapi::{
     Movement, MAX_CURRENCY_CODE_BYTES, MAX_IDEMPOTENCY_KEY_BYTES, MAX_MOVEMENT_AMOUNT,
@@ -948,4 +951,611 @@ fn validate_movement_rejects_oversized_fields() {
     // The boundary itself must pass.
     let at_cap = Movement { amount: MAX_MOVEMENT_AMOUNT, ..base.clone() };
     assert!(validate_movement(&at_cap).is_ok());
+}
+
+// ---- 11: the optional starter grant on `player.registered` (Step 6) ---------
+//
+// POSTURE A is the property under test: `grant_starter` must never return `Err` for a
+// data-quality problem, because an `Err` backs the ONE subscription off and, after 20 of
+// them, pauses `wallet.player-registered.v1` for every subsequent player. So each skip
+// test carries a non-poisoning proof as well as a "nothing was granted" assertion — the
+// two together are what a poisoned handler cannot satisfy.
+
+/// The subscription id `WalletModule::init` registers — an immutable contract, so the
+/// tests name it by the same literal the module does rather than deriving it.
+const STARTER_SUB: &str = "wallet.player-registered.v1";
+
+/// A TEST-ONLY subscription id (never registered by shipping code — `topiccheck` scans
+/// module sources, and this one lives under `#[cfg(test)]`). Its handler always fails; it
+/// is the positive control for the non-poisoning assertions.
+const DECOY_SUB: &str = "wallet.tests.poison-decoy.v1";
+
+/// The starter tests share ONE durable subscription row (and reset its checkpoint), so
+/// they must not interleave — they serialize on this lock rather than relying on the
+/// caller having passed `--test-threads=1`.
+static STARTER_SUB_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// The two starter knobs behind interior mutability, so a test can change them BETWEEN
+/// two deliveries with no wallet-side refresh step — which is the whole claim of
+/// "no wallet-owned second cache" (D9).
+struct FakeConfig {
+    currency: Mutex<String>,
+    amount: Mutex<i64>,
+}
+
+impl FakeConfig {
+    fn new(currency: &str, amount: i64) -> Arc<FakeConfig> {
+        Arc::new(FakeConfig {
+            currency: Mutex::new(currency.into()),
+            amount: Mutex::new(amount),
+        })
+    }
+}
+
+impl Config for FakeConfig {
+    fn get_string(&self, ns: &str, key: &str, def: &str) -> String {
+        if ns == "wallet" && key == "starter_currency" {
+            self.currency.lock().unwrap().clone()
+        } else {
+            def.into()
+        }
+    }
+    fn get_bool(&self, _ns: &str, _key: &str, def: bool) -> bool {
+        def
+    }
+    fn get_int(&self, ns: &str, key: &str, def: i64) -> i64 {
+        if ns == "wallet" && key == "starter_amount" {
+            *self.amount.lock().unwrap()
+        } else {
+            def
+        }
+    }
+    fn get(&self, _ns: &str, _key: &str) -> Option<String> {
+        None
+    }
+}
+
+/// A config with NOTHING written: every getter answers the CALLER's compiled default,
+/// which is exactly what an operator who never wrote a `wallet/starter_*` row has. It
+/// exercises the defaults through the real read path instead of restating them.
+struct UnsetConfig;
+
+impl Config for UnsetConfig {
+    fn get_string(&self, _ns: &str, _key: &str, def: &str) -> String {
+        def.into()
+    }
+    fn get_bool(&self, _ns: &str, _key: &str, def: bool) -> bool {
+        def
+    }
+    fn get_int(&self, _ns: &str, _key: &str, def: i64) -> i64 {
+        def
+    }
+    fn get(&self, _ns: &str, _key: &str) -> Option<String> {
+        None
+    }
+}
+
+/// Drops the subscription's checkpoint row so the next `reconcile` re-materializes it at
+/// `AfterRegistration` = now. Without this a test inherits whatever cursor an earlier run
+/// left behind and replays every `player.registered` still in the shared log — foreign
+/// payloads this suite makes no claim about.
+async fn reset_starter_subscription(pool: &PgPool) {
+    sqlx::query("DELETE FROM asyncevents.subscriptions WHERE subscription_id = $1")
+        .bind(STARTER_SUB)
+        .execute(pool)
+        .await
+        .unwrap();
+}
+
+/// Wires the module the way `app::run` does — `register` THEN `init` — over a
+/// hand-driven durable transport. `init` is the piece the pool-path fixture (`wired`)
+/// deliberately skips, and it is what records the starter subscription.
+///
+/// The trailing `deliver_all` is ORDERING-CRITICAL, not a warm-up: `AfterRegistration`
+/// stamps the cursor with the RECONCILING transaction's xid, and reconcile happens inside
+/// `deliver_all`. Reconciling only after the test's `emit_tx` would place the checkpoint
+/// PAST the very event under test, and every one of these tests would pass vacuously with
+/// nothing ever delivered.
+async fn wired_for_delivery(
+    pool: &PgPool,
+    cfg: Arc<dyn Config>,
+) -> (Context, Arc<Service>, asyncevents::testing::TestTransport) {
+    ensure_schema(pool).await;
+    reset_starter_subscription(pool).await;
+    let transport = asyncevents::testing::transport(pool.clone());
+    let ctx = Context::with_db_and_transport(pool.clone(), transport.handle());
+    ctx.registry().provide::<dyn Config>(key("config", "reader"), cfg);
+    let w = WalletModule::new();
+    w.register(&ctx).unwrap();
+    w.init(&ctx).unwrap();
+    let drained = transport.deliver_all().await.unwrap();
+    assert_eq!(
+        drained, 0,
+        "a freshly reset AfterRegistration checkpoint must start with nothing eligible"
+    );
+    (ctx, w.svc(), transport)
+}
+
+/// Appends a durable `player.registered` in its own committed transaction — the shape
+/// accounts uses inside its registration store tx.
+async fn emit_registered(ctx: &Context, pool: &PgPool, player_id: &str) {
+    let mut tx = pool.begin().await.unwrap();
+    let registered = accountsevents::PlayerRegistered {
+        player_id: player_id.into(),
+        display_name: "Test Player".into(),
+        provider: "dev".into(),
+    };
+    ctx.bus()
+        .emit_tx(
+            AnyTx::new(&mut *tx),
+            &accountsevents::PLAYER_REGISTERED,
+            &registered,
+        )
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+}
+
+async fn balance_of(pool: &PgPool, player_id: &str, currency: &str) -> Option<i64> {
+    let row: Option<(i64,)> = sqlx::query_as(
+        "SELECT amount FROM wallet.balances WHERE player_id = $1::uuid AND currency = $2",
+    )
+    .bind(player_id)
+    .bind(currency)
+    .fetch_all(pool)
+    .await
+    .unwrap()
+    .into_iter()
+    .next();
+    row.map(|(amount,)| amount)
+}
+
+/// The ledger rows carrying the grant's DETERMINISTIC key — `starter:{player_id}` is what
+/// makes a redelivery collapse to `Outcome::Duplicate`, so the key is asserted by being
+/// the thing looked up, not by a separate equality.
+async fn starter_ledger_rows(pool: &PgPool, player_id: &str) -> Vec<(String, i64, i64, String)> {
+    sqlx::query_as(
+        "SELECT currency, delta, balance_after, reason FROM wallet.ledger \
+          WHERE idempotency_key = $1 ORDER BY seq",
+    )
+    .bind(format!("starter:{player_id}"))
+    .fetch_all(pool)
+    .await
+    .unwrap()
+}
+
+/// THE non-poisoning proof, direct form: a handler that returned `Err` leaves
+/// `consecutive_failures = 1` plus a `next_attempt_at` backoff here (`worker::record_failure`),
+/// and at 20 it flips `state` to `paused` — withholding the grant from every LATER player.
+/// "No grant happened" alone is satisfied by a poisoned handler; this is not.
+async fn assert_subscription_unpoisoned(pool: &PgPool) {
+    let (state, failures, last_error): (String, i32, Option<String>) = sqlx::query_as(
+        "SELECT state, consecutive_failures, last_error FROM asyncevents.subscriptions \
+          WHERE subscription_id = $1",
+    )
+    .bind(STARTER_SUB)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert_eq!(state, "active", "the starter subscription must still be active");
+    assert_eq!(
+        failures, 0,
+        "a data-quality verdict must return Ok(()), never Err; last_error = {last_error:?}"
+    );
+}
+
+/// A currency code that is NOT in the catalog (never inserted).
+async fn absent_currency(pool: &PgPool) -> String {
+    let (suffix,): (String,) = sqlx::query_as("SELECT substr(gen_random_uuid()::text, 1, 12)")
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    format!("x{suffix}")
+}
+
+// ---- 11.1: the happy path, over the REAL plane -----------------------------
+
+/// The one starter test driven by a real `asyncevents::Plane` — background pull workers,
+/// NOTIFY wake-up, the plane's own delivery sessions — rather than the hand-driven
+/// transport the skip tests use. It is the assertion that the subscription `init`
+/// registers is actually reachable by the shipped plane, not merely by a test driver;
+/// asserting only PRESENCE, it needs no barrier and cannot race.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn starter_grant_credits_a_new_player() {
+    let Some(pool) = test_pool().await else { return };
+    let _serialized = STARTER_SUB_LOCK.lock().await;
+    ensure_schema(&pool).await;
+    reset_starter_subscription(&pool).await;
+    let currency = unique_currency(&pool).await;
+    let pid = unique_player(&pool).await;
+
+    let dsn = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string());
+    let mut plane = asyncevents::Plane::new(pool.clone(), dsn).unwrap();
+    let ctx = Context::with_db_and_transport(pool.clone(), plane.transport());
+    ctx.registry().provide::<dyn Config>(
+        key("config", "reader"),
+        FakeConfig::new(&currency, 250) as Arc<dyn Config>,
+    );
+    let w = WalletModule::new();
+    w.register(&ctx).unwrap();
+    w.init(&ctx).unwrap();
+
+    // start() reconciles the AfterRegistration checkpoint; the emit must follow it.
+    plane.start().await.unwrap();
+    emit_registered(&ctx, &pool, &pid).await;
+
+    let mut granted = None;
+    for _ in 0..50 {
+        if let Some(balance) = balance_of(&pool, &pid, &currency).await {
+            granted = Some(balance);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    plane.stop().await;
+
+    assert_eq!(
+        granted,
+        Some(250),
+        "the plane's own pull workers must land the configured starter grant"
+    );
+    assert_eq!(
+        starter_ledger_rows(&pool, &pid).await,
+        vec![(currency.clone(), 250, 250, REASON.to_string())],
+        "exactly one ledger row, keyed starter:{pid}, at the configured amount"
+    );
+    assert_subscription_unpoisoned(&pool).await;
+
+    cleanup(&pool, &[&pid], &[&currency]).await;
+}
+
+// ---- 11.2: the feature is OFF unless configured ----------------------------
+
+/// The "optional" half. A config with nothing written makes `starter_spec` answer the
+/// compiled defaults, and the empty-currency/zero-amount arm must skip. Change either
+/// default to something non-empty and this is the test that goes red — the event IS
+/// delivered (`delivered == 1`), so a green run cannot be explained by "nothing ran".
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn starter_grant_is_off_by_default() {
+    let Some(pool) = test_pool().await else { return };
+    let _serialized = STARTER_SUB_LOCK.lock().await;
+    let (ctx, _svc, transport) = wired_for_delivery(&pool, Arc::new(UnsetConfig)).await;
+    let pid = unique_player(&pool).await;
+
+    emit_registered(&ctx, &pool, &pid).await;
+    assert_eq!(
+        transport.deliver_all().await.unwrap(),
+        1,
+        "the registration must be DELIVERED — a faulted delivery is never counted"
+    );
+
+    let balances: Vec<(String, i64)> =
+        sqlx::query_as("SELECT currency, amount FROM wallet.balances WHERE player_id = $1::uuid")
+            .bind(&pid)
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert!(
+        balances.is_empty(),
+        "the compiled defaults ({STARTER_CURRENCY:?}, {STARTER_AMOUNT}) must grant nothing, got {balances:?}"
+    );
+    assert!(
+        starter_ledger_rows(&pool, &pid).await.is_empty(),
+        "an unconfigured starter grant must not consume its idempotency key either"
+    );
+    assert_subscription_unpoisoned(&pool).await;
+
+    cleanup(&pool, &[&pid], &[]).await;
+}
+
+// ---- 11.3a: the STRUCTURAL half of the by-construction argument ------------
+
+/// The catalog's own CHECK, asserted directly. D9's claim that the handler needs no
+/// repeated `validate_movement` rests on a currency row longer than the contract's
+/// 32-byte cap being IMPOSSIBLE: such a row would pass `currency_exists_tx` and then be
+/// rejected by `validate_movement` inside `apply_on` — an `Err` on the delivery path,
+/// which is the one thing posture A forbids. Drop `currencies_code_len_check` and only
+/// this test notices.
+#[tokio::test]
+async fn catalog_rejects_an_oversized_currency_code() {
+    let Some(pool) = test_pool().await else { return };
+    ensure_schema(&pool).await;
+    let code = "c".repeat(MAX_CURRENCY_CODE_BYTES + 1);
+
+    let err = sqlx::query(
+        "INSERT INTO wallet.currencies (code, display_name, kind, decimals) \
+         VALUES ($1, $1, 'soft', 0)",
+    )
+    .bind(&code)
+    .execute(&pool)
+    .await
+    .expect_err("a currency code past the contract's byte cap must not be storable");
+    let db = err
+        .as_database_error()
+        .expect("a CHECK violation, not a client-side error");
+    assert_eq!(db.code().as_deref(), Some("23514"));
+    assert_eq!(
+        db.constraint(),
+        Some("currencies_code_len_check"),
+        "the rejection must come from the length CHECK, not some other constraint"
+    );
+
+    let (rows,): (i64,) = sqlx::query_as("SELECT count(*) FROM wallet.currencies WHERE code = $1")
+        .bind(&code)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(rows, 0, "no oversized catalog row may survive");
+}
+
+// ---- 11.3b: an absurd configured amount -----------------------------------
+
+/// `starter_amount = i64::MAX`. Without the `amount > MAX_MOVEMENT_AMOUNT` clamp this
+/// reaches `apply_on`, whose `validate_movement` answers `Invalid` — which the handler
+/// would surface as `Err`, faulting the subscription (D2's overflow arm is the reason the
+/// clamp exists at all). The proof is BOTH forms: `consecutive_failures = 0` after the
+/// skip, and a second, well-formed registration that still gets delivered and granted —
+/// which a backed-off subscription (`next_attempt_at` in the future) could not do.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn starter_grant_skips_an_absurd_configured_amount_without_poisoning() {
+    let Some(pool) = test_pool().await else { return };
+    let _serialized = STARTER_SUB_LOCK.lock().await;
+    let currency = unique_currency(&pool).await;
+    let cfg = FakeConfig::new(&currency, i64::MAX);
+    let (ctx, _svc, transport) = wired_for_delivery(&pool, cfg.clone() as Arc<dyn Config>).await;
+    let absurd = unique_player(&pool).await;
+    let sane = unique_player(&pool).await;
+
+    emit_registered(&ctx, &pool, &absurd).await;
+    assert_eq!(
+        transport.deliver_all().await.unwrap(),
+        1,
+        "an out-of-range starter_amount must still DELIVER the event (Ok), not fault it"
+    );
+    assert!(
+        balance_of(&pool, &absurd, &currency).await.is_none(),
+        "an out-of-range starter_amount must grant nothing"
+    );
+    assert!(starter_ledger_rows(&pool, &absurd).await.is_empty());
+    assert_subscription_unpoisoned(&pool).await;
+
+    *cfg.amount.lock().unwrap() = 40;
+    emit_registered(&ctx, &pool, &sane).await;
+    assert_eq!(
+        transport.deliver_all().await.unwrap(),
+        1,
+        "the NEXT player must still be delivered — a backed-off subscription delivers nothing"
+    );
+    assert_eq!(
+        balance_of(&pool, &sane, &currency).await,
+        Some(40),
+        "one player's bad config must not cost every later player their grant"
+    );
+
+    cleanup(&pool, &[&absurd, &sane], &[&currency]).await;
+}
+
+// ---- 11.3: a configured currency the catalog does not hold -----------------
+
+/// The `currency_exists_tx` pre-check. Letting the FK fire instead would abort the
+/// DELIVERY transaction, after which the plane's checkpoint `UPDATE` fails with 25P02 —
+/// so the subscription poisons on the very error posture A means to tolerate. Removing
+/// the pre-check leaves the "no grant" assertion below green and turns the two
+/// non-poisoning assertions red, which is the point of pairing them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn starter_grant_skips_unknown_currency_without_poisoning() {
+    let Some(pool) = test_pool().await else { return };
+    let _serialized = STARTER_SUB_LOCK.lock().await;
+    let absent = absent_currency(&pool).await;
+    let cfg = FakeConfig::new(&absent, 75);
+    let (ctx, _svc, transport) = wired_for_delivery(&pool, cfg.clone() as Arc<dyn Config>).await;
+    let early = unique_player(&pool).await;
+    let later = unique_player(&pool).await;
+
+    emit_registered(&ctx, &pool, &early).await;
+    assert_eq!(
+        transport.deliver_all().await.unwrap(),
+        1,
+        "an uncatalogued starter_currency must still DELIVER the event (Ok), not fault it"
+    );
+    assert!(
+        balance_of(&pool, &early, &absent).await.is_none(),
+        "an uncatalogued starter_currency must grant nothing"
+    );
+    assert!(starter_ledger_rows(&pool, &early).await.is_empty());
+    assert_subscription_unpoisoned(&pool).await;
+
+    let currency = unique_currency(&pool).await;
+    *cfg.currency.lock().unwrap() = currency.clone();
+    emit_registered(&ctx, &pool, &later).await;
+    assert_eq!(
+        transport.deliver_all().await.unwrap(),
+        1,
+        "the NEXT player must still be delivered — a backed-off subscription delivers nothing"
+    );
+    assert_eq!(
+        balance_of(&pool, &later, &currency).await,
+        Some(75),
+        "correcting the config must grant the next player, proving the skip cost no backoff"
+    );
+
+    cleanup(&pool, &[&early, &later], &[&currency]).await;
+}
+
+// ---- 11.4: at-least-once redelivery ---------------------------------------
+
+/// Two `player.registered` events for the SAME player — the at-least-once shape, driven
+/// end to end rather than by calling `grant_starter` twice by hand. The deterministic
+/// `starter:{player_id}` key must collapse the second into `Outcome::Duplicate`: one
+/// ledger row, a single-application balance, and NO second `wallet.changed` (a consumer
+/// of that topic would otherwise see a credit that never happened). Both deliveries are
+/// counted, so the duplicate is proven to have run and returned `Ok`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn starter_grant_is_idempotent_across_redelivery() {
+    let Some(pool) = test_pool().await else { return };
+    let _serialized = STARTER_SUB_LOCK.lock().await;
+    let currency = unique_currency(&pool).await;
+    let (ctx, _svc, transport) =
+        wired_for_delivery(&pool, FakeConfig::new(&currency, 120) as Arc<dyn Config>).await;
+    let pid = unique_player(&pool).await;
+
+    emit_registered(&ctx, &pool, &pid).await;
+    emit_registered(&ctx, &pool, &pid).await;
+    assert_eq!(
+        transport.deliver_all().await.unwrap(),
+        2,
+        "BOTH copies must be delivered Ok — a duplicate that Err'd would fault instead"
+    );
+
+    assert_eq!(
+        balance_of(&pool, &pid, &currency).await,
+        Some(120),
+        "the balance must reflect a SINGLE application of the starter grant"
+    );
+    assert_eq!(
+        starter_ledger_rows(&pool, &pid).await.len(),
+        1,
+        "the deterministic starter key must yield exactly one ledger row"
+    );
+    let changed = asyncevents::testing::events_count(&pool, "wallet.changed", "player_id", &pid)
+        .await
+        .unwrap();
+    assert_eq!(
+        changed, 1,
+        "the redelivery must not append a second wallet.changed"
+    );
+    assert_subscription_unpoisoned(&pool).await;
+
+    cleanup(&pool, &[&pid], &[&currency]).await;
+}
+
+// ---- 11.4b: the POSITIVE CONTROL for every non-poisoning assertion above ----
+
+/// A second, TEST-ONLY subscription on the same topic whose handler always returns `Err`,
+/// delivered in the same pass as wallet's. It is the decoy that proves the instrument:
+/// without it, `deliver_all() == 1` and `consecutive_failures == 0` are assertions nobody
+/// has shown can fail, and every skip test above would be "green by absence of errors".
+///
+/// It pins all three mechanics the skip tests rest on: a faulting handler is NOT counted
+/// by `deliver_all`, it DOES leave `consecutive_failures = 1` + a `last_error`, and it
+/// stops receiving on the next pass (the backoff that would withhold the grant from every
+/// later player). Wallet's own subscription runs alongside and is unaffected — the two
+/// checkpoints are independent, which is why one module's poison is one module's problem.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_faulting_handler_is_uncounted_backed_off_and_visible_in_the_catalog() {
+    let Some(pool) = test_pool().await else { return };
+    let _serialized = STARTER_SUB_LOCK.lock().await;
+    ensure_schema(&pool).await;
+    reset_starter_subscription(&pool).await;
+    let _ = sqlx::query("DELETE FROM asyncevents.subscriptions WHERE subscription_id = $1")
+        .bind(DECOY_SUB)
+        .execute(&pool)
+        .await;
+
+    let currency = unique_currency(&pool).await;
+    let transport = asyncevents::testing::transport(pool.clone());
+    let ctx = Context::with_db_and_transport(pool.clone(), transport.handle());
+    ctx.registry().provide::<dyn Config>(
+        key("config", "reader"),
+        FakeConfig::new(&currency, 60) as Arc<dyn Config>,
+    );
+    let w = WalletModule::new();
+    w.register(&ctx).unwrap();
+    w.init(&ctx).unwrap();
+    ctx.bus().on_tx(
+        bus::SubscriptionSpec {
+            id: DECOY_SUB,
+            start: bus::StartPosition::AfterRegistration,
+        },
+        &accountsevents::PLAYER_REGISTERED,
+        |_delivery, _e: accountsevents::PlayerRegistered| {
+            Box::pin(async move {
+                Err(bus::Error::transport(std::io::Error::other(
+                    "decoy handler: always fails",
+                )))
+            })
+        },
+    );
+    // Reconciles BOTH checkpoints before anything is emitted.
+    assert_eq!(transport.deliver_all().await.unwrap(), 0);
+
+    let first = unique_player(&pool).await;
+    emit_registered(&ctx, &pool, &first).await;
+    assert_eq!(
+        transport.deliver_all().await.unwrap(),
+        1,
+        "one event, two subscriptions: only wallet's Ok delivery is counted — the decoy's \
+         Err is not, which is exactly what `delivered == 1` asserts in the skip tests"
+    );
+    assert_eq!(balance_of(&pool, &first, &currency).await, Some(60));
+    assert_subscription_unpoisoned(&pool).await;
+
+    let (state, failures, last_error): (String, i32, Option<String>) = sqlx::query_as(
+        "SELECT state, consecutive_failures, last_error FROM asyncevents.subscriptions \
+          WHERE subscription_id = $1",
+    )
+    .bind(DECOY_SUB)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(state, "active", "one failure backs off, it does not pause yet");
+    assert_eq!(
+        failures, 1,
+        "a handler that returns Err DOES move consecutive_failures — so the `== 0` \
+         assertions above are not vacuous"
+    );
+    assert!(last_error.is_some(), "the failure is recorded, not swallowed");
+
+    let second = unique_player(&pool).await;
+    emit_registered(&ctx, &pool, &second).await;
+    assert_eq!(
+        transport.deliver_all().await.unwrap(),
+        1,
+        "the SECOND player reaches wallet but NOT the backed-off decoy — the mechanism \
+         that would have cost every later player their grant had the handler Err'd"
+    );
+    assert_eq!(balance_of(&pool, &second, &currency).await, Some(60));
+
+    let _ = sqlx::query("DELETE FROM asyncevents.subscriptions WHERE subscription_id = $1")
+        .bind(DECOY_SUB)
+        .execute(&pool)
+        .await;
+    cleanup(&pool, &[&first, &second], &[&currency]).await;
+}
+
+// ---- 11.5: the knobs are read live, per delivery ---------------------------
+
+/// The config is re-read on EVERY delivery — D9's "no wallet-owned second cache". A
+/// wallet-side snapshot taken at `init` (or memoized on first use) would grant the second
+/// player the FIRST player's amount, and only this test would notice.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn starter_grant_reflects_a_live_config_change() {
+    let Some(pool) = test_pool().await else { return };
+    let _serialized = STARTER_SUB_LOCK.lock().await;
+    let currency = unique_currency(&pool).await;
+    let cfg = FakeConfig::new(&currency, 100);
+    let (ctx, _svc, transport) = wired_for_delivery(&pool, cfg.clone() as Arc<dyn Config>).await;
+    let first = unique_player(&pool).await;
+    let second = unique_player(&pool).await;
+
+    emit_registered(&ctx, &pool, &first).await;
+    assert_eq!(transport.deliver_all().await.unwrap(), 1);
+    assert_eq!(balance_of(&pool, &first, &currency).await, Some(100));
+
+    *cfg.amount.lock().unwrap() = 300;
+    emit_registered(&ctx, &pool, &second).await;
+    assert_eq!(transport.deliver_all().await.unwrap(), 1);
+    assert_eq!(
+        balance_of(&pool, &second, &currency).await,
+        Some(300),
+        "the second grant must use the CURRENT config value, with no refresh step"
+    );
+    assert_eq!(
+        balance_of(&pool, &first, &currency).await,
+        Some(100),
+        "the config change must not retroactively touch the already-granted player"
+    );
+    assert_subscription_unpoisoned(&pool).await;
+
+    cleanup(&pool, &[&first, &second], &[&currency]).await;
 }
