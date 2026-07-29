@@ -10,6 +10,7 @@
 
 pub mod conformance;
 
+mod projection;
 mod service;
 mod store;
 
@@ -192,6 +193,28 @@ impl Module for WalletModule {
         // + `init` only, so a later resolution makes `requires(["config"])` unverifiable.
         let cfg = ctx.registry().require::<dyn Config>(&key("config", "reader"));
         let _ = svc.config.set(cfg);
+
+        // The optional starter grant, on the HANDED delivery conn so the credit, its ledger
+        // row, the `wallet.changed` append and the checkpoint commit as one unit in BOTH
+        // topologies. `AfterRegistration`, not `Genesis`: `player.registered` retains 7 days,
+        // so Genesis would promise a retroactive grant the log cannot deliver — and the id +
+        // start position are an IMMUTABLE contract (`spec_hash`), so changing either later is
+        // a new subscription id, never an edit.
+        let granter = svc.clone();
+        ctx.bus().on_tx(
+            bus::SubscriptionSpec {
+                id: "wallet.player-registered.v1",
+                start: bus::StartPosition::AfterRegistration,
+            },
+            &accountsevents::PLAYER_REGISTERED,
+            move |mut delivery, e: accountsevents::PlayerRegistered| {
+                let granter = granter.clone();
+                Box::pin(async move {
+                    let conn = delivery.tx.downcast::<sqlx::PgConnection>()?;
+                    granter.grant_starter(conn, &e.player_id).await
+                })
+            },
+        );
 
         for op in walletapi::player_rpc::operations(svc.clone()) {
             ctx.contribute(opsapi::SLOT, op.operation);
