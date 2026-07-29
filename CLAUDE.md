@@ -748,6 +748,37 @@ These six rules are encoded in the **`core-implementer`** agent
 (`.claude/agents/core-implementer.md`); dispatch it for authority-first work rather
 than restating them per prompt.
 
+## Comments — MANDATORY
+
+**Default is NO comment.** Write one only when it carries what the code can't show:
+a non-obvious invariant, a Postgres/tokio/sqlx gotcha, the reason for a workaround,
+or intent invisible from the signature (e.g. *why* a stop grace is bounded here, why
+this `emit_tx` must share the store tx). One line, present tense, describing **what
+the code does**. Doc comments (`///`) on a public contract surface (`api/*` traits,
+`core/*` public items) are the exception — they document the contract, and they are
+held to the same truth standard as the sections below.
+
+**Banned outright:**
+
+- **Changelog prose in code** — "removed X", "moved to Y", "this used to…", "now
+  handled in…", "(Step 3)". Change history belongs in the commit message and the
+  plan doc; in code it rots on the next commit and then lies.
+- **Paraphrase of the next line** — `// acquire the advisory lock` above
+  `pg_try_advisory_lock(...)`. Zero information, pure noise.
+- **Multi-line prose blocks** over a function/module restating the body.
+- **Comments asserting behaviour the code doesn't have** — a correctness defect, not
+  a nit (see [[prose-about-code-is-not-evidence]]: a lying doc comment already
+  produced three false claims in one session). Fix a false comment in the same
+  rollout you find it, never "later".
+
+**Why this is MANDATORY, not taste:** verbose comments hijack review. The one
+independent `core-reviewer` pass is the repo's real defect gate; every wording nit it
+spends its attention on is a correctness class it did not attack. Prose crowds out
+the failure-class list that makes the pass worth running.
+
+**Inverse check, applies to every review:** if a diff's findings are *only* about
+comments, that means there are too many comments — not that the diff is clean.
+
 ## Adversarial Subagent Review — MANDATORY
 
 Reviewing a subagent's (or my own) diff means **trying to break it**, not reading it
