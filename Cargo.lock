@@ -4607,6 +4607,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "asyncevents",
  "bus",
  "configapi",
  "edge",
@@ -4614,6 +4615,7 @@ dependencies = [
  "opsapi",
  "registry",
  "sqlx",
+ "tokio",
  "tracing",
  "walletapi",
  "walletevents",
