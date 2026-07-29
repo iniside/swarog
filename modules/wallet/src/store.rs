@@ -103,9 +103,16 @@ impl Store {
         ))
     }
 
-    /// Applies the SIGNED `delta`. A debit against a player with no row at all takes the
-    /// plain INSERT and is rejected by the CHECK exactly like an over-drawn existing row
-    /// (both 23514 → 409).
+    /// Applies the SIGNED `delta`, UPDATE first: Postgres evaluates a table CHECK against the
+    /// TENTATIVE INSERT row before it detects the conflict and routes to `DO UPDATE`, so an
+    /// upsert alone trips `balances_amount_check` on a negative `$3` whatever the balance is.
+    ///
+    /// The upsert survives as the zero-rows-matched fallback, keeping the missing-row
+    /// behaviour: a first-ever credit lands (two concurrent ones both miss the UPDATE, one
+    /// INSERTs and the other takes `DO UPDATE`, so neither is lost), an unknown currency is
+    /// 23503 → 400, and a debit against no row is 23514 → 409 like an over-drawn one. A debit
+    /// racing the FIRST-EVER credit for its `(player, currency)` is therefore 409 even if that
+    /// credit commits in between — no key is consumed, so the caller retries.
     ///
     /// No advisory lock: a single `amount + $delta` means the row lock serializes concurrent
     /// movements on one `(player, currency)` and the CHECK rejects the loser.
@@ -116,6 +123,20 @@ impl Store {
         currency: &str,
         delta: i64,
     ) -> Result<i64, sqlx::Error> {
+        let updated: Option<(i64,)> = sqlx::query_as(
+            "UPDATE wallet.balances SET amount = amount + $3, updated_at = now() \
+              WHERE player_id = $1::uuid AND currency = $2 \
+             RETURNING amount",
+        )
+        .bind(player_id)
+        .bind(currency)
+        .bind(delta)
+        .fetch_optional(&mut *conn)
+        .await?;
+        if let Some((amount,)) = updated {
+            return Ok(amount);
+        }
+
         let (amount,): (i64,) = sqlx::query_as(
             "INSERT INTO wallet.balances (player_id, currency, amount) VALUES ($1::uuid, $2, $3) \
              ON CONFLICT (player_id, currency) DO UPDATE \
