@@ -24,10 +24,20 @@ walletevents = { workspace = true }
 # importing a foreign rpc crate). Backs the config-driven starter grant; in the split a
 # `remote::Stub` swaps a CachedConfig under the same registry key.
 configapi = { workspace = true }
+# The admin CONTRACT (widgets + the AdminData/AdminSubmit traits) and the accounts api
+# crate for the `PLAYERS_ROW_MENU` extension-point const the "View Wallet" entry targets —
+# contract crates, importable by any module; neither impl is ever reached.
+adminapi = { workspace = true }
+accountsapi = { workspace = true }
+# The render-time idempotency keys the admin form round-trips (OsRng, not a clock).
+rand = { workspace = true }
 # The accounts EVENT contract only (an events crate is importable by any module): the
 # optional starter grant reacts to durable `player.registered`.
 accountsevents = { workspace = true }
 sqlx = { workspace = true }
+# The admin `RenderFn` is synchronous while the page's store reads are not: the local
+# render bridges through `block_in_place` on the multi-thread runtime.
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 async-trait = { workspace = true }

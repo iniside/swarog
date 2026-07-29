@@ -4605,7 +4605,9 @@ dependencies = [
 name = "wallet"
 version = "0.1.0"
 dependencies = [
+ "accountsapi",
  "accountsevents",
+ "adminapi",
  "anyhow",
  "async-trait",
  "asyncevents",
@@ -4614,6 +4616,7 @@ dependencies = [
  "edge",
  "lifecycle",
  "opsapi",
+ "rand 0.8.6",
  "registry",
  "sqlx",
  "tokio",

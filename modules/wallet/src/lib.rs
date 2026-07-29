@@ -10,6 +10,7 @@
 
 pub mod conformance;
 
+mod admin;
 mod projection;
 mod service;
 mod store;
@@ -222,13 +223,33 @@ impl Module for WalletModule {
             ctx.contribute(opsapi::LOCAL_SLOT, op.local);
         }
 
+        // The local "Wallet" page. The `RenderFn` is synchronous; `admin::admin_render`
+        // bridges to the async store reads via `block_in_place`. The extension entries ride
+        // the item as pure data — the same vec `admin_data` returns REMOTE.
+        let render_svc = svc.clone();
+        ctx.contribute(
+            adminapi::SLOT,
+            adminapi::Item::local(
+                admin::ADMIN_ITEM_ID,
+                admin::ADMIN_SECTION,
+                admin::ADMIN_LABEL,
+                Arc::new(move |params: &adminapi::Params| admin::admin_render(&render_svc, params)),
+            )
+            .with_extensions(admin::extension_entries()),
+        );
+
         // Contributed UNCONDITIONALLY — topology-blind: `app::run` applies it iff this
         // process serves an internal edge; in the monolith it is never applied.
         ctx.contribute(
             edge::EDGE_SLOT,
             edge::EdgeReg::new(move |server| {
                 walletrpc::wallet_rpc::register_server(server, svc.clone());
-                walletrpc::player_rpc::register_server(server, svc);
+                walletrpc::player_rpc::register_server(server, svc.clone());
+                // The admin fan-out READ face and, ALONGSIDE it, the opt-in WRITE face —
+                // both through this module's OWN glue crate's re-exports. The write face is
+                // what makes the Wallet page editable from a REMOTE admin process.
+                walletrpc::register_admin(server, svc.clone());
+                walletrpc::register_admin_submit(server, svc);
             }),
         );
 

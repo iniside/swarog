@@ -48,6 +48,32 @@ pub(crate) struct ExistingMovement {
     pub(crate) balance_after: i64,
 }
 
+/// One catalog row as the ADMIN page shows it. The contract read ([`Store::list_currencies`])
+/// returns `walletapi::Currency`, which carries no `created_at`; this projection adds it for
+/// the operator table and is never on the wire.
+pub(crate) struct CatalogEntry {
+    pub(crate) code: String,
+    pub(crate) display_name: String,
+    pub(crate) kind: String,
+    pub(crate) decimals: i32,
+    pub(crate) created_at: String,
+}
+
+/// One ledger row as the ADMIN drill-down shows it.
+pub(crate) struct LedgerEntry {
+    pub(crate) at: String,
+    pub(crate) currency: String,
+    pub(crate) delta: i64,
+    pub(crate) balance_after: i64,
+    pub(crate) reason: String,
+}
+
+/// The hard ceiling on a [`Store::recent_ledger`] page. Unlike the balance and catalog
+/// reads — bounded by the operator-curated currency list — a player's ledger grows with
+/// every movement, so the bound lives HERE, in the statement, and not in a caller that
+/// could forget it.
+pub(crate) const MAX_RECENT_LEDGER: i64 = 200;
+
 /// Every write takes `&mut PgConnection`, never the pool, so the one movement authority
 /// runs identically under a pool-owned transaction and under the event plane's HANDED
 /// delivery transaction; reads use the pool.
@@ -280,6 +306,69 @@ impl Store {
                 decimals,
             })
             .collect())
+    }
+
+    /// The admin catalog projection (see [`CatalogEntry`]).
+    pub(crate) async fn list_catalog(&self) -> Result<Vec<CatalogEntry>, sqlx::Error> {
+        let rows: Vec<(String, String, String, i32, String)> = sqlx::query_as(
+            "SELECT code, display_name, kind, decimals, created_at::text \
+               FROM wallet.currencies ORDER BY code",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(
+                |(code, display_name, kind, decimals, created_at)| CatalogEntry {
+                    code,
+                    display_name,
+                    kind,
+                    decimals,
+                    created_at,
+                },
+            )
+            .collect())
+    }
+
+    /// The newest movements for one player, in `seq` order — the column stamped under the
+    /// balance row lock, so this is the order money actually moved; `at` is descriptive
+    /// only (`clock_timestamp()` of the INSERT, a round trip before that lock).
+    ///
+    /// `limit` is CLAMPED to `1 ..= MAX_RECENT_LEDGER` rather than trusted: this is the one
+    /// wallet read whose size a caller influences.
+    ///
+    /// A malformed id is a miss (empty list), the same answer [`Store::list_balances`]
+    /// gives, so a drill-down on a bad uuid renders empty instead of a 500.
+    pub(crate) async fn recent_ledger(
+        &self,
+        player_id: &str,
+        limit: i64,
+    ) -> Result<Vec<LedgerEntry>, sqlx::Error> {
+        let res = sqlx::query_as::<_, (String, String, i64, i64, String)>(
+            "SELECT at::text, currency, delta, balance_after, reason \
+               FROM wallet.ledger WHERE player_id = $1::uuid \
+              ORDER BY seq DESC LIMIT $2",
+        )
+        .bind(player_id)
+        .bind(limit.clamp(1, MAX_RECENT_LEDGER))
+        .fetch_all(&self.pool)
+        .await;
+        match res {
+            Ok(rows) => Ok(rows
+                .into_iter()
+                .map(
+                    |(at, currency, delta, balance_after, reason)| LedgerEntry {
+                        at,
+                        currency,
+                        delta,
+                        balance_after,
+                        reason,
+                    },
+                )
+                .collect()),
+            Err(e) if is_invalid_uuid(&e) => Ok(Vec::new()),
+            Err(e) => Err(e),
+        }
     }
 
     /// Self-healing: a hand-edited dev row is restored on the next boot.
