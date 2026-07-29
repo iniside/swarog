@@ -880,7 +880,7 @@ mockup lane does not apply.
 
 | File | Edit |
 |---|---|
-| `tools/conformance/src/policy.rs` | `wallet()` entry + `entries()` row. `InputByteCaps` → `Stance::Applies` with the three real probes. `EnvValidation` → NA ("WALLET_DEV_SEED is a boolean presence-gate, not a parsed value"). `ArgonParity` → NA. Plus one `input_policies()` row per wire input **leaf** — the traversal recurses request DTOs (`input_inventory.rs:116-158`). Add `wallet` to the tool's Cargo.toml. |
+| `tools/conformance/src/policy.rs` | `wallet()` entry + `entries()` row. `InputByteCaps` → `Stance::Applies` with the three real probes — **but do not overclaim**: the Step-8 review found `display_name` and `kind` (and an unbounded `decimals`) reach SQL from a remote `admin.adminSubmit` with no cap in Rust and no column CHECK, and `Params` is a `HashMap<String,String>` the input-inventory traversal never reaches. This is a class shared with `modules/apikeys`'s form strings, not a wallet regression — record it as a `KnownGap` beside the `Applies` stance rather than letting a green stance imply the admin-submit seam is capped. `EnvValidation` → NA ("WALLET_DEV_SEED is a boolean presence-gate, not a parsed value"). `ArgonParity` → NA. Plus one `input_policies()` row per wire input **leaf** — the traversal recurses request DTOs (`input_inventory.rs:116-158`). Add `wallet` to the tool's Cargo.toml. |
 | **`tools/conformance/input-fields.golden.tsv`** | **Byte-compared, fails the BLOCKING conformance stage on any diff (`tools/conformance/src/main.rs:257-265`), and there is NO `--bless` writer — regenerate manually.** |
 | `tools/topiccheck/src/main.rs` | `defined_topics()` += `of(walletevents::CHANGED.contract())` — the authority that arms `--durability-strict` (D5) |
 | `tools/topiccheck/src/golden.rs` | `event_samples_by_crate()` += `("wallet", walletevents::golden_samples())`; `rpc_modules()` += the 5-tuple for `wallet_rpc` **and** `player_rpc` |
@@ -914,6 +914,21 @@ preflight fails on fleet drift and whose build depends on the C# fixture.
 and every tool inventory.
 
 **(c) How.**
+
+**Three landmines the Step-8 review found in this step's own instructions — read before writing:**
+- `admin_render` uses `tokio::task::block_in_place`, which **panics** on a current-thread
+  runtime. A plain `#[tokio::test]` that renders the form panics rather than fails. Use
+  `#[tokio::test(flavor = "multi_thread")]` (the `modules/apikeys/src/admin_tests.rs:47`
+  precedent) or call `admin_content_local` directly.
+- **`[WL6]` cannot key on a status code.** `render_error` returns **200** and so does the
+  internal-error path — 500 is unreachable from this page. Assert the exact message
+  (`save failed: movement rejected: insufficient funds or balance ceiling exceeded`) and the
+  unchanged balance. Do not add a "not 500" style check anywhere in the Wallet block; it
+  would pass vacuously.
+- `extract_form_fields` (`tools/splitproof/src/main.rs:224`) parses only `<input>`, so it
+  captures `_idem_grant` but NOT the `_action`/`currency` `<select>`s — supply those by hand,
+  as `[AD6b]` already does. `[WL4]` needs a **second GET** for a fresh key: reusing the first
+  key with a different amount is a 409, not accumulation.
 
 (i) `admin_double_submit_of_one_rendered_form_grants_once` in `modules/wallet/src/tests.rs` —
 render the form, take its hidden idempotency field, submit the **same** values twice through
@@ -990,7 +1005,18 @@ effort **think hard**.
    (item 2) and by the landed Step 2: `reason` IS part of the identity tuple, so a same-key
    resubmit with an edited `reason` is a 409, not a silent no-op. This entry survived the
    rev-3 → rev-4 edit describing the opposite of what ships; corrected when Step 2 landed.
-6. **Postgres session headroom is 85/87** (D7). The 13th DB-backed split process breaks the
+6. **A successful admin grant redirects to the bare catalog view**, dropping `?player=`, so the
+   operator never sees the balance or ledger row they just created — on the page that exists to
+   show them. The authority is `render_after_submit` in `modules/admin` (`see_other("/admin/{slug}")`
+   with no query), not wallet, so it is out of this rollout's scope. Recorded so it is not
+   rediscovered as a wallet bug.
+7. **A money movement made from the portal has no operator attribution.** `admin.action{form-submit}`
+   records field NAMES only (by design), and `AdminSubmit::admin_submit` carries no operator
+   identity across the edge by contract — so there is no join key between "who submitted a wallet
+   form" and "what moved". "Which operator granted 1,000,000 gold to X" is unanswerable from the
+   durable trail unless the operator types their name into `reason`. Contract-level; a decision,
+   not an oversight.
+8. **Postgres session headroom is 85/87** (D7). The 13th DB-backed split process breaks the
    budget and will need `SPLIT_SERVICE_POOL_MAX` re-tuned.
 
 ---
