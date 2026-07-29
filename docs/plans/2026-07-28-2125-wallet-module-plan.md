@@ -853,10 +853,24 @@ not a wire replay.
 declares `context_keys: &["id", "name"]` (`api/accounts/api/src/lib.rs:118-122`), so the link
 is **`?player={id}`**. `{player_id}` is not a declared key and `admincheck` would fail.
 
-**Fidelity:** the UI has an exact spec in `UILayout/GameOps Admin.dc.html`; translate 1:1
-including data shape. Balances and ledger rows are **always real** — never invent money.
+**There is NO mockup for this view — established 2026-07-30, and the dispatch lane changes
+because of it.** `UILayout/GameOps Admin.dc.html` names `Economy & Store` in the sidebar
+(line 68) but contains no designed content for it: the whole 753-line file renders one
+screen (Players + character menu + inventory modal). Revisions 1-4 of this plan said "the UI
+has an exact spec in UILayout; translate 1:1", which is simply false for this page.
 
-**(d) Dispatch.** `[opus]` — `mockup-implementer`, `model:"opus"`, effort **think hard**.
+Consequence: the page is **composed from the already-shipped `adminapi` widget vocabulary**
+(itself the translation of that mockup's visual language), adding no new widget, CSS or
+template construct. If the page needs a widget that does not exist, that is an additive
+contract change and gets its own decision — not an invention inside this step.
+
+Balances and ledger rows are **always real** — never invent money. This page has no data
+gaps at all, since wallet owns everything it displays.
+
+**(d) Dispatch.** `[opus]` — **`core-implementer`**, `model:"opus"`, effort **think hard**.
+Revisions 1-4 tagged this `mockup-implementer`; with no mockup to implement against, this is
+ordinary backend work (a module's `admin.rs`, a store read method, form dispatch) and the
+mockup lane does not apply.
 
 ---
 
