@@ -1382,6 +1382,55 @@ async fn starter_grant_skips_unknown_currency_without_poisoning() {
     cleanup(&pool, &[&early, &later], &[&currency]).await;
 }
 
+// ---- 11.3c: a player_id that is not uuid-shaped ----------------------------
+
+/// `is_uuid_text`'s pre-check (`e5df4f7`). Before it existed, this payload reached
+/// `apply_on`, whose `$1::uuid` cast on the ledger insert raised 22P02 — an `Err` on the
+/// delivery path, poisoning the subscription for every later player. `balance_of`'s own
+/// `$1::uuid` cast can't be reused here (it would panic on this input the same way the
+/// old handler code faulted), so the "no balance" check below casts the COLUMN to text
+/// instead of casting the parameter to uuid.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn starter_grant_skips_a_malformed_player_id_without_poisoning() {
+    let Some(pool) = test_pool().await else { return };
+    let _serialized = STARTER_SUB_LOCK.lock().await;
+    let currency = unique_currency(&pool).await;
+    let (ctx, _svc, transport) =
+        wired_for_delivery(&pool, FakeConfig::new(&currency, 90) as Arc<dyn Config>).await;
+    let malformed = "not-a-uuid";
+    let sane = unique_player(&pool).await;
+
+    emit_registered(&ctx, &pool, malformed).await;
+    assert_eq!(
+        transport.deliver_all().await.unwrap(),
+        1,
+        "a non-uuid player_id must still DELIVER the event (Ok), not fault it"
+    );
+    let (balances,): (i64,) =
+        sqlx::query_as("SELECT count(*) FROM wallet.balances WHERE player_id::text = $1")
+            .bind(malformed)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(balances, 0, "a non-uuid player_id must grant nothing");
+    assert!(starter_ledger_rows(&pool, malformed).await.is_empty());
+    assert_subscription_unpoisoned(&pool).await;
+
+    emit_registered(&ctx, &pool, &sane).await;
+    assert_eq!(
+        transport.deliver_all().await.unwrap(),
+        1,
+        "the NEXT player must still be delivered — a backed-off subscription delivers nothing"
+    );
+    assert_eq!(
+        balance_of(&pool, &sane, &currency).await,
+        Some(90),
+        "one malformed payload must not cost every later player their grant"
+    );
+
+    cleanup(&pool, &[&sane], &[&currency]).await;
+}
+
 // ---- 11.4: at-least-once redelivery ---------------------------------------
 
 /// Two `player.registered` events for the SAME player — the at-least-once shape, driven
