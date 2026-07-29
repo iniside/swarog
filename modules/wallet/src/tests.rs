@@ -46,7 +46,40 @@ async fn ensure_schema(pool: &PgPool) {
             let w = WalletModule::new();
             w.register(&ctx).unwrap();
             w.migrate(&ctx).await.unwrap();
+            sweep_stale_test_currencies(pool).await;
         })
+        .await;
+}
+
+/// One-shot, before any test in this binary creates a currency: removes leftover
+/// `unique_currency` rows (and their ledger/balance rows) from a run that was
+/// interrupted before its own `cleanup` ran. Scoped to THIS file's own naming shape
+/// (`t` + 12 hex/dash chars, the exact `unique_currency` pattern) and to rows old
+/// enough (2 minutes) that they cannot be the currently-running test binary's own —
+/// never a blanket sweep of `wallet.currencies`, which would drop another test's rows.
+async fn sweep_stale_test_currencies(pool: &PgPool) {
+    let stale: Vec<(String,)> = sqlx::query_as(
+        "SELECT code FROM wallet.currencies \
+          WHERE code ~ '^t[0-9a-f]{8}-[0-9a-f]{3}$' AND created_at < now() - interval '2 minutes'",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+    if stale.is_empty() {
+        return;
+    }
+    let codes: Vec<String> = stale.into_iter().map(|(c,)| c).collect();
+    let _ = sqlx::query("DELETE FROM wallet.ledger WHERE currency = ANY($1)")
+        .bind(&codes)
+        .execute(pool)
+        .await;
+    let _ = sqlx::query("DELETE FROM wallet.balances WHERE currency = ANY($1)")
+        .bind(&codes)
+        .execute(pool)
+        .await;
+    let _ = sqlx::query("DELETE FROM wallet.currencies WHERE code = ANY($1)")
+        .bind(&codes)
+        .execute(pool)
         .await;
 }
 
@@ -471,6 +504,60 @@ async fn debit_beyond_balance_is_409_and_consumes_no_key() {
     cleanup(&pool, &[&pid], &[&currency]).await;
 }
 
+// ---- 5b: the balance CHECK on the UPDATE path itself ------------------------
+
+/// A debit against an EXISTING balance row that would go negative. Test 5
+/// (`debit_beyond_balance_is_409_and_consumes_no_key`) debits a MISSING row, so its 409
+/// comes from the fallback INSERT's tentative-row CHECK (787a95b's named fallback path);
+/// this debit's UPDATE MATCHES the row directly, so its 409 comes from the CHECK on the
+/// RESULTING row of `Store::apply_balance_tx`'s own UPDATE statement — the branch a revert
+/// to the pre-787a95b single upsert would silently break while leaving test 5 green.
+#[tokio::test]
+async fn debit_below_zero_against_an_existing_row_is_409() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let currency = unique_currency(&pool).await;
+    let pid = unique_player(&pool).await;
+
+    svc.credit(movement(&unique_key("topup"), &pid, &currency, 100, "topup"))
+        .await
+        .unwrap();
+
+    let key = unique_key("overdraw-existing");
+    let m = movement(&key, &pid, &currency, 300, "overdraw-existing");
+    let err = svc.debit(m.clone()).await.unwrap_err();
+    assert_eq!(
+        err.status,
+        Status::Conflict,
+        "a debit that would take an EXISTING row negative must be Conflict (409)"
+    );
+
+    let (balance,): (i64,) = sqlx::query_as(
+        "SELECT amount FROM wallet.balances WHERE player_id = $1::uuid AND currency = $2",
+    )
+    .bind(&pid)
+    .bind(&currency)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(balance, 100, "the balance must be untouched by the rejected debit");
+
+    let (rows,): (i64,) = sqlx::query_as("SELECT count(*) FROM wallet.ledger WHERE idempotency_key = $1")
+        .bind(&key)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(rows, 0, "the rejected debit must not consume the idempotency key");
+
+    svc.credit(movement(&unique_key("topup2"), &pid, &currency, 300, "topup2"))
+        .await
+        .unwrap();
+    let balance = svc.debit(m).await.unwrap();
+    assert_eq!(balance, 100, "the same key must succeed once the balance covers it");
+
+    cleanup(&pool, &[&pid], &[&currency]).await;
+}
+
 // ---- 6: the FK arm (23503) -------------------------------------------------
 
 #[tokio::test]
@@ -486,6 +573,45 @@ async fn unknown_currency_is_400() {
     assert_eq!(err.status, Status::Invalid);
 
     cleanup(&pool, &[&pid], &[]).await;
+}
+
+// ---- 6b: the debit direction of the unknown-currency verdict ----------------
+
+/// Before c712936, a debit's missing-row UPDATE fell to the fallback INSERT, whose
+/// tentative negative row tripped `balances_amount_check` ahead of the FK trigger, so this
+/// exact input answered Conflict (409) where the contract (and the credit direction) promise
+/// Invalid (400). The KNOWN-currency debit below pins the OTHER half of the same branch —
+/// same "no balance row" starting point, differing ONLY in catalog membership — so the test
+/// distinguishes the two verdicts `Store::apply_balance_tx`'s catalog probe decides, rather
+/// than merely proving "an error happened".
+#[tokio::test]
+async fn debit_with_an_unknown_currency_is_400() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let pid = unique_player(&pool).await;
+
+    let err = svc
+        .debit(movement(&unique_key("debit-unknown-cur"), &pid, "no-such-currency", 10, "test"))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        err.status,
+        Status::Invalid,
+        "an unknown currency must be Invalid (400) in the debit direction too"
+    );
+
+    let currency = unique_currency(&pool).await;
+    let err = svc
+        .debit(movement(&unique_key("debit-known-no-row"), &pid, &currency, 10, "test"))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        err.status,
+        Status::Conflict,
+        "a KNOWN currency with no balance row is Conflict (409) — same input, differing only in catalog membership"
+    );
+
+    cleanup(&pool, &[&pid], &[&currency]).await;
 }
 
 // ---- 7: the malformed-uuid arm (22P02) -------------------------------------
