@@ -159,7 +159,7 @@ const SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
 /// intent from `control::serve`'s accept loop: report, wait, retry — FOREVER.
 ///
 /// Retrying forever is the point. An accept failure is an ambient, transient
-/// condition (weles spawns a 12-service fleet with stdio pipes right after this
+/// condition (weles spawns a 13-service fleet with stdio pipes right after this
 /// endpoint binds, so fd pressure is plausible here specifically) that clears in
 /// milliseconds. Giving up would delete the agent for the rest of the run over a
 /// condition that has already passed.

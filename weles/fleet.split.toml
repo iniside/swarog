@@ -209,3 +209,8 @@ env = { ADMIN_COOKIE_SECURE = "0", TRUSTED_PROXY_CIDRS = "127.0.0.1/32", DATABAS
   env_key = "APIKEYS_EDGE_ADDR"
   provider = "apikeys"
   kind = "edge"
+
+  [[service.peer]]
+  env_key = "WALLET_EDGE_ADDR"
+  provider = "wallet"
+  kind = "edge"

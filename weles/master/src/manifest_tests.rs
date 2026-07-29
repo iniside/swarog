@@ -251,6 +251,7 @@ fn full_fleet_env_goldens() {
                 ("AUDIT_EDGE_ADDR", "127.0.0.1:9004"),
                 ("SCHEDULER_EDGE_ADDR", "127.0.0.1:9005"),
                 ("APIKEYS_EDGE_ADDR", "127.0.0.1:9009"),
+                ("WALLET_EDGE_ADDR", "127.0.0.1:9010"),
                 ("ADMIN_COOKIE_SECURE", "0"),
                 ("TRUSTED_PROXY_CIDRS", "127.0.0.1/32"),
             ],

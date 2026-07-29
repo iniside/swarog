@@ -375,7 +375,7 @@ fn check_version(bytes: &[u8], what: &str) -> Result<()> {
 /// That ordering — `_lock` declared first in `run_up` and dropped LAST, after
 /// teardown, `control`, and the agent island — is an invariant held by REVIEW
 /// and by the comment at its declaration site. No type-system mechanism enforces
-/// it; releasing the rollout lock while 12 services still drain would compile.
+/// it; releasing the rollout lock while 13 services still drain would compile.
 #[derive(Debug)]
 pub struct BorrowedLease {
     _lock_file: File,
@@ -1059,7 +1059,7 @@ mod imp {
     /// `install_consumed_stdin`). The
     /// pipe is drained to EOF and stdin is then REPLACED by `NUL`: the
     /// credential must not be re-readable, and stdin must not be left dangling
-    /// for the 12-process fleet this supervisor is about to spawn. The `NUL`
+    /// for the 13-process fleet this supervisor is about to spawn. The `NUL`
     /// file is parked in a `OnceLock` because dropping it would close the very
     /// handle just installed as `STD_INPUT_HANDLE`.
     pub(super) fn consume_credential_stdin() -> std::io::Result<Vec<u8>> {

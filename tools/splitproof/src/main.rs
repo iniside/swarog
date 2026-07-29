@@ -2,7 +2,7 @@
 //!
 //! The shell harnesses are structurally fragile on Windows (PowerShell native-arg
 //! quote-stripping, MSYS `wait` hangs, winctrl exit-code false-throws). This harness
-//! removes the shell entirely: the 12-service fleet is spawned via `processctl`
+//! removes the shell entirely: the 13-service fleet is spawned via `processctl`
 //! with a TYPED env map and a kill-on-drop guard, health-checked over `reqwest`,
 //! DB-asserted via `sqlx`, and the player QUIC front driven through the `edge` crate as
 //! a library. No `curl.exe`, no `psql.exe`, no `playercli.exe`, no `winctrl`.
@@ -22,7 +22,9 @@ use processctl::{
     game_backend_fleet_with_environment, game_backend_monolith, rollout_lock_path, EnvironmentSnapshot, BorrowedLease, FleetFlavor,
     FleetInputs, FleetSpec, OutputDestination, OwnedChild, OwnedLease, ProcessGroupPolicy,
     RolloutLock, ServiceSpec, ShutdownOutcome, ShutdownPolicy, SpawnSpec, WorkspaceLayout,
+    SPLITPROOF_ASSERTION_POOL_MAX,
 };
+use sqlx::postgres::PgPoolOptions;
 use sqlx::{PgPool, Row};
 use splitproof::{fleet_liveness, Running};
 
@@ -549,7 +551,13 @@ async fn run(root: PathBuf, run_dir: PathBuf) -> Result<u32> {
     seed_admin(&ctx, "proofadmin", "proofpass")?;
     seed_admin(&ctx, "prooflock", "lockpass")?;
 
-    let pool = PgPool::connect(&ctx.db_url).await.context("connect DB")?;
+    // Capped, not sqlx's default 10: this pool is the itemized harness term in
+    // `processctl`'s Postgres session budget, so the cap and the budget line are one const.
+    let pool = PgPoolOptions::new()
+        .max_connections(SPLITPROOF_ASSERTION_POOL_MAX)
+        .connect(&ctx.db_url)
+        .await
+        .context("connect DB")?;
     reset_config_baseline(&pool).await?;
 
     // Boot the fleet; each guard lives in `fleet` so a `?` below drops them all (kill).
@@ -2194,9 +2202,11 @@ async fn replicas_exactly_once(
     const N: u32 = 20;
     const M: u32 = 10;
     // Distinct bind ports for the second instance — collide with nothing in the fleet
-    // (http 8080-8091, edge 9000-9009, player 9100). Same executable + same DATABASE_URL as
+    // (http 8080-8092, edge 9000-9010, player 9100). Same executable + same DATABASE_URL as
     // the base instance, so both run a durable worker holding the SAME subscription id; only
-    // the bind ports differ.
+    // the bind ports differ. Its Postgres sessions are charged to the budget as
+    // `processctl`'s `SPLITPROOF_REPLICA_SESSIONS` — the fleet model would otherwise miss
+    // this 13th DB-backed process entirely.
     const REPLICA_HTTP: u16 = 8190;
     const REPLICA_EDGE: u16 = 9108;
 

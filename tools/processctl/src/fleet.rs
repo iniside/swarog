@@ -18,6 +18,18 @@ pub const SERVICE_ENV_ALLOWLIST: &[&str] = &[
     "TEMP", "TMP", "TMPDIR", "USERPROFILE", "WINDIR",
 ];
 
+/// Cap on splitproof's own sqlx assertion pool, consumed BY the harness
+/// (`tools/splitproof`) so this reserve line is an enforced bound rather than a guess:
+/// sqlx's default cap is 10, which would silently outgrow the itemized estimate below.
+pub const SPLITPROOF_ASSERTION_POOL_MAX: u32 = 4;
+
+/// Sessions held by splitproof's `[REPLICAS]` phase, which runs a SECOND
+/// leaderboard-svc — cloned from the canonical spec, so it reserves exactly what any
+/// DB-backed split service does — alongside the whole fleet. It is deliberately not a
+/// fleet member (that would trip the fleet-drift preflight), so the budget must charge
+/// it here or the real peak is 13 DB-backed processes against a 12-process model.
+pub const SPLITPROOF_REPLICA_SESSIONS: u32 = SPLIT_SERVICE_POOL_MAX + PLANE_DEDICATED_SESSIONS;
+
 /// Sessions the local Postgres reserves for dev tooling running ALONGSIDE the fleet,
 /// carved out of the usable budget before the processes get any. This is a HEURISTIC
 /// reserve — an itemized estimate, deliberately not derivation machinery. The named
@@ -25,24 +37,33 @@ pub const SERVICE_ENV_ALLOWLIST: &[&str] = &[
 ///
 /// | item                                                     | sessions |
 /// |----------------------------------------------------------|----------|
-/// | splitproof's own sqlx assertion pool                     | ~4       |
+/// | splitproof's own sqlx assertion pool                     | 4 (= [`SPLITPROOF_ASSERTION_POOL_MAX`]) |
+/// | splitproof's `[REPLICAS]` second leaderboard-svc         | 6 (= [`SPLITPROOF_REPLICA_SESSIONS`]) |
 /// | devctl psql seeding / adminctl                           | 1        |
 /// | eventctl ad-hoc operator session                         | 1        |
 /// | asyncevents poison-recovery burst                        | 2 (= [`AE_TRANSIENT_POISON_SESSIONS`]) |
 /// | slack                                                    | 2        |
-/// | **total**                                                | **10**   |
+/// | **total**                                                | **16**   |
 ///
-/// The poison-burst term is the mirrored const itself, so that line of the estimate
-/// tracks the real mechanism; the other items are hand-estimated.
-const HARNESS_RESERVE: u32 = 4 + 1 + 1 + AE_TRANSIENT_POISON_SESSIONS + 2;
+/// The assertion-pool, replica and poison-burst terms are the consts the real mechanisms
+/// are built from, so those lines track behavior; the other items are hand-estimated.
+pub(crate) const HARNESS_RESERVE: u32 = SPLITPROOF_ASSERTION_POOL_MAX
+    + SPLITPROOF_REPLICA_SESSIONS
+    + 1
+    + 1
+    + AE_TRANSIENT_POISON_SESSIONS
+    + 2;
 
-/// Usable Postgres sessions the whole fleet + monolith must fit within. Assumes the
-/// local Postgres runs stock defaults: `max_connections = 100` minus
-/// `superuser_reserved_connections = 3` = 97 sessions for ordinary roles. BOTH are
-/// PG-side configurable — an operator who raised `max_connections` has strictly MORE
-/// headroom, so this is a conservative floor, not a hard platform limit. [`HARNESS_RESERVE`]
-/// is subtracted so the fleet is charged only its own share.
-pub const PG_SESSION_BUDGET: u32 = 97 - HARNESS_RESERVE;
+/// Postgres sessions available to ordinary roles on the dev cluster: stock
+/// `max_connections = 100` minus `superuser_reserved_connections = 3` (both verified
+/// against the local cluster, 2026-07-29). BOTH are PG-side configurable — an operator
+/// who raised `max_connections` has strictly MORE headroom, so this is a conservative
+/// floor, not a hard platform limit.
+pub(crate) const USABLE_PG_SESSIONS: u32 = 97;
+
+/// Usable Postgres sessions the whole fleet + monolith must fit within.
+/// [`HARNESS_RESERVE`] is subtracted so the fleet is charged only its own share.
+pub const PG_SESSION_BUDGET: u32 = USABLE_PG_SESSIONS - HARNESS_RESERVE;
 
 // Local `u32` mirrors of the plane/module session constants that own the real
 // mechanism. Kept as plain numbers so the RUNTIME fleet build carries no dependency on
@@ -73,14 +94,16 @@ const PLANE_DEDICATED_SESSIONS: u32 =
     AE_WORKERS + AE_WAKEUP_SESSIONS + INVALIDATION_LISTEN_SESSIONS;
 
 /// Per-DB-process pooled-connection cap in the SPLIT. Low by necessity: 12 DB-backed
-/// processes share one local Postgres, so each gets a small slice within
-/// [`PG_SESSION_BUDGET`]. Comfortably above core/app's migrate floor (2). The pool's
-/// concurrent users are the retention GC sweep, the metrics/invalidation poll refreshes,
-/// the `/readyz` DB ping, and the HTTP/edge handlers — under the sequential split-proof
-/// harness load these overlap only briefly, so 3 suffices; the failure mode of an
-/// undersized pool is acquire-wait LATENCY (a slow request/probe), never a correctness
-/// break, since every user waits on the pool rather than erroring.
-const SPLIT_SERVICE_POOL_MAX: u32 = 3;
+/// processes plus splitproof's `[REPLICAS]` 13th share one local Postgres, so each gets a
+/// small slice within [`PG_SESSION_BUDGET`]. This sits exactly AT core/app's migrate floor
+/// (`MIN_DB_POOL_MAX = 2`), which is sufficient because boot is sequential: the two-phase
+/// migrate holds the schema-lock connection plus at most ONE module connection, and HTTP
+/// serves only after `start`. The pool's concurrent users — the retention GC sweep, the
+/// metrics/invalidation poll refreshes, the `/readyz` DB ping, the HTTP/edge handlers —
+/// all wait on the pool rather than erroring, so an undersized pool costs acquire-wait
+/// LATENCY, never correctness. A module whose `migrate` needed two connections at once
+/// would need this raised (and the budget re-derived), not a local workaround.
+const SPLIT_SERVICE_POOL_MAX: u32 = 2;
 
 /// Pooled-connection cap for the MONOLITH — one process hosting every module + both
 /// planes, so it affords a larger pool than a single split peer.

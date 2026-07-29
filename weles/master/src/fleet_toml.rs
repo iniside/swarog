@@ -638,7 +638,7 @@ fn validate_peers(fleet: &Fleet) -> Result<()> {
     Ok(())
 }
 
-/// Loads `weles/fleet.split.toml` — the committed 12-process split fixture,
+/// Loads `weles/fleet.split.toml` — the committed 13-process split fixture,
 /// resolved from `CARGO_MANIFEST_DIR`'s PARENT so it is found regardless of the
 /// test's working directory. `weles-master`'s manifest dir is `weles/master`,
 /// so the committed fixtures (which live beside the `weles` crate, shared with

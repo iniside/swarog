@@ -452,7 +452,7 @@ fn peer_addr(fleet: &[ServiceDef], consumer: &str, provider: &str, kind: AddrKin
 /// answer, not a degradation: a monolith has no peers to resolve
 /// (`weles-design.md`, "the monolith satisfies this trivially"). A map built
 /// from `split_fleet()` regardless of topology would instead hand out addresses
-/// for twelve processes that are not running.
+/// for thirteen processes that are not running.
 ///
 /// # Shape
 ///
@@ -464,7 +464,7 @@ fn peer_addr(fleet: &[ServiceDef], consumer: &str, provider: &str, kind: AddrKin
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PeerAddrs {
     /// `(provider, kind, addr)`. A Vec, not a map: multiple instances of one
-    /// provider are the eventual shape, and at twelve services a scan is not a
+    /// provider are the eventual shape, and at thirteen services a scan is not a
     /// data structure worth having an opinion about.
     entries: Vec<(String, AddrKind, String)>,
 }

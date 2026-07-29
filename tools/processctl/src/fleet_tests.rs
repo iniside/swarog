@@ -52,7 +52,7 @@ fn inherited_windows_baseline_lookup_is_case_insensitive() {
 }
 
 #[test]
-fn proof_fleet_is_the_canonical_twelve_service_snapshot() {
+fn proof_fleet_is_the_canonical_thirteen_service_snapshot() {
     let fleet = game_backend_fleet(&inputs(), FleetFlavor::Proof);
     let snapshot: Vec<_> = fleet
         .services()
@@ -79,8 +79,9 @@ fn proof_fleet_is_the_canonical_twelve_service_snapshot() {
         ("config-svc", "config-svc", 8083, Some(9002), None, vec![]),
         ("characters-svc", "characters-svc", 8080, Some(9000), None, vec!["config-svc"]),
         ("inventory-svc", "inventory-svc", 8081, Some(9001), None, vec!["characters-svc", "config-svc"]),
-        ("gateway-svc", "gateway-svc", 8082, None, Some(9100), vec!["characters-svc", "inventory-svc", "accounts-svc", "match-svc", "leaderboard-svc", "apikeys-svc"]),
-        ("admin-svc", "admin-svc", 8085, None, None, vec!["characters-svc", "inventory-svc", "config-svc", "accounts-svc", "audit-svc", "scheduler-svc", "apikeys-svc"]),
+        ("wallet-svc", "wallet-svc", 8092, Some(9010), None, vec!["config-svc"]),
+        ("gateway-svc", "gateway-svc", 8082, None, Some(9100), vec!["characters-svc", "inventory-svc", "accounts-svc", "match-svc", "leaderboard-svc", "apikeys-svc", "wallet-svc"]),
+        ("admin-svc", "admin-svc", 8085, None, None, vec!["characters-svc", "inventory-svc", "config-svc", "accounts-svc", "audit-svc", "scheduler-svc", "apikeys-svc", "wallet-svc"]),
     ]);
 }
 
@@ -162,6 +163,24 @@ fn fleet_session_budget_is_enforced() {
         total <= crate::fleet::PG_SESSION_BUDGET,
         "proof fleet reserves {total} sessions, budget is {}",
         crate::fleet::PG_SESSION_BUDGET
+    );
+
+    // The real peak is not the fleet alone: splitproof runs its `[REPLICAS]` second
+    // leaderboard-svc and its own sqlx pool WHILE the whole fleet is up, so the fleet plus
+    // every itemized harness term must still fit the sessions Postgres actually offers.
+    assert!(
+        total + crate::fleet::HARNESS_RESERVE <= crate::fleet::USABLE_PG_SESSIONS,
+        "fleet {total} + harness reserve {} exceeds {} usable Postgres sessions",
+        crate::fleet::HARNESS_RESERVE,
+        crate::fleet::USABLE_PG_SESSIONS
+    );
+
+    // The replica term is the same reservation a DB-backed split service makes — a
+    // hand-tuned number here would stop tracking the process it stands for.
+    let leaderboard = fleet.service("leaderboard-svc").unwrap();
+    assert_eq!(
+        crate::fleet::SPLITPROOF_REPLICA_SESSIONS,
+        leaderboard.pool_budget.pool_max + leaderboard.pool_budget.dedicated
     );
 }
 
