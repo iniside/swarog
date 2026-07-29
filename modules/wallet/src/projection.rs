@@ -41,7 +41,7 @@ impl Service {
     /// would reject arrives as an `Err`; and letting the currency FK or the `$n::uuid` cast
     /// fire would abort the delivery transaction, after which even an `Ok` fails the plane's
     /// checkpoint `UPDATE` with 25P02. With the clamp below, the uuid check (which also bounds
-    /// the derived key at 43 of `MAX_IDEMPOTENCY_KEY_BYTES`), a catalog whose own
+    /// the derived key at 47 of `MAX_IDEMPOTENCY_KEY_BYTES`), a catalog whose own
     /// `currencies_code_len_check` caps a code at 32 octets, and fixed `reason` / key shapes,
     /// every one of those branches is unreachable BY CONSTRUCTION — which is why no
     /// `validate_movement` call is repeated here.
