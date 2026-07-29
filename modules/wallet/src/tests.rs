@@ -233,12 +233,29 @@ async fn duplicate_key_same_movement_returns_the_original_balance_after() {
         "a replay must return the ORIGINAL balance_after, not a re-read of the live balance"
     );
 
+    // Same key, same movement, but the player id spelled DIFFERENTLY (uppercase) —
+    // `service::player_id_eq` is what recognizes these as the SAME player rather than
+    // reporting `Conflict`, which would push the caller to mint a fresh key and move
+    // the money twice. Reducing `player_id_eq` to `a == b` fails ONLY this assertion.
+    let respelled = movement(&key, &pid.to_uppercase(), &currency, 100, "promo");
+    let replay_respelled = svc
+        .credit(respelled)
+        .await
+        .expect("a differently-spelled but equal player_id must still be recognized as the SAME replay");
+    assert_eq!(
+        replay_respelled, first,
+        "a respelled replay must return the ORIGINAL balance_after too"
+    );
+
     let (rows,): (i64,) = sqlx::query_as("SELECT count(*) FROM wallet.ledger WHERE idempotency_key = $1")
         .bind(&key)
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(rows, 1, "the replay must not write a second ledger row for the key");
+    assert_eq!(
+        rows, 1,
+        "neither replay (identical spelling nor respelled) may write a second ledger row for the key"
+    );
 
     cleanup(&pool, &[&pid], &[&currency]).await;
 }
@@ -290,7 +307,45 @@ async fn duplicate_key_different_movement_is_409() {
         .unwrap();
     assert_eq!(rows, 1, "the rejected resubmit must not overwrite or add a row");
 
-    cleanup(&pool, &[&pid], &[&currency]).await;
+    // Same player/amount/reason, DIFFERENT currency — `same_movement`'s `currency`
+    // conjunct. Deleting it would let this resubmit collapse into a `Duplicate`
+    // carrying the FIRST currency's stored balance, for a movement naming a second
+    // currency the caller never got an answer for.
+    let other_currency = unique_currency(&pool).await;
+    let key_currency = unique_key("dup-diff-currency");
+    svc.credit(movement(&key_currency, &pid, &currency, 100, "promo"))
+        .await
+        .unwrap();
+    let err = svc
+        .credit(movement(&key_currency, &pid, &other_currency, 100, "promo"))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        err.status,
+        Status::Conflict,
+        "same player/amount/reason but a DIFFERENT currency must still be a 409"
+    );
+
+    // Same currency/amount/reason, DIFFERENT player — `same_movement`'s `player_id`
+    // conjunct (via `player_id_eq`). Deleting it would let a key minted for one
+    // player collapse a second player's movement into a `Duplicate` carrying the
+    // FIRST player's balance.
+    let other_pid = unique_player(&pool).await;
+    let key_player = unique_key("dup-diff-player");
+    svc.credit(movement(&key_player, &pid, &currency, 100, "promo"))
+        .await
+        .unwrap();
+    let err = svc
+        .credit(movement(&key_player, &other_pid, &currency, 100, "promo"))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        err.status,
+        Status::Conflict,
+        "same currency/amount/reason but a DIFFERENT player must still be a 409"
+    );
+
+    cleanup(&pool, &[&pid, &other_pid], &[&currency, &other_currency]).await;
 }
 
 // ---- 4: concurrent replay hits the in-tx re-verify arm ---------------------
@@ -455,10 +510,73 @@ async fn ledger_seq_order_matches_balance_order() {
     .fetch_all(&pool)
     .await
     .unwrap();
-    assert_eq!(rows.len(), 2);
+    assert_eq!(
+        rows,
+        vec![(50,), (150,)],
+        "T2's row (balance_after=50) must sort BEFORE T1's (balance_after=150): T2 \
+         committed first despite T1 having inserted its ledger row first, got {rows:?}"
+    );
+
+    cleanup(&pool, &[&pid], &[&currency]).await;
+}
+
+// ---- 4d: two first-ever credits, the fallback INSERT's DO UPDATE arm -------
+
+/// Two first-ever credits for the SAME `(player, currency)` — no balance row exists
+/// before either starts — driven concurrently over TWO open transactions/connections
+/// via `tokio::join!` (structured, not a `tokio::spawn` race): both calls to the REAL
+/// `Store::apply_balance_tx` miss the UPDATE (neither row is visible to the other
+/// yet), so both reach the fallback `INSERT ... ON CONFLICT DO UPDATE`. Whichever
+/// commits first creates the row and returns its OWN delta; the other's INSERT blocks
+/// on that uncommitted row at the Postgres level and, once the winner commits,
+/// resolves through the `DO UPDATE` arm, returning the SUMMED total rather than being
+/// lost. This is the arm `Store::apply_balance_tx`'s own doc comment names ("two
+/// concurrent ones both miss the UPDATE ... neither is lost") and nothing else in the
+/// suite drives it — every other credit test targets either an EXISTING row or a
+/// single caller.
+#[tokio::test]
+async fn concurrent_first_ever_credits_both_land_via_do_update() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let currency = unique_currency(&pool).await;
+    let pid = unique_player(&pool).await;
+
+    let mut tx1 = pool.begin().await.unwrap();
+    let mut tx2 = pool.begin().await.unwrap();
+
+    let t1 = async {
+        let balance = svc.store.apply_balance_tx(&mut tx1, &pid, &currency, 30).await.unwrap();
+        tx1.commit().await.unwrap();
+        balance
+    };
+    let t2 = async {
+        let balance = svc.store.apply_balance_tx(&mut tx2, &pid, &currency, 70).await.unwrap();
+        tx2.commit().await.unwrap();
+        balance
+    };
+    let (b1, b2) = tokio::join!(t1, t2);
+
+    // One caller took the fresh-INSERT path (its OWN delta only); the other took the
+    // DO UPDATE arm (the SUMMED total) — whichever order Postgres resolved the lock
+    // in. Both other outcomes (either seeing only their own delta, or the row ending
+    // up short) are exactly the "lost update" this arm exists to prevent.
     assert!(
-        rows[0].0 <= rows[1].0,
-        "seq order must match balance-application order for a credit-only sequence, got {rows:?}"
+        (b1 == 30 && b2 == 100) || (b1 == 100 && b2 == 70),
+        "one caller must see its own delta (the fresh INSERT), the other the summed \
+         total (the DO UPDATE arm); got b1={b1} b2={b2}"
+    );
+
+    let (balance,): (i64,) = sqlx::query_as(
+        "SELECT amount FROM wallet.balances WHERE player_id = $1::uuid AND currency = $2",
+    )
+    .bind(&pid)
+    .bind(&currency)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        balance, 100,
+        "both concurrent first-ever credits must land in the row — neither lost"
     );
 
     cleanup(&pool, &[&pid], &[&currency]).await;
@@ -466,11 +584,14 @@ async fn ledger_seq_order_matches_balance_order() {
 
 // ---- 5: the balance CHECK, not the aborted-tx trap -------------------------
 
-/// The balance CHECK firing must surface as `Conflict` (409), never `Internal` — the
-/// aborted-transaction trap D3 warns against (any statement after 23514 on that
-/// connection fails 25P02, so a naive "read the balance to enrich the message" arm
-/// would turn this into a 500). No key is consumed, so the SAME key succeeds once
-/// the balance covers it.
+/// A debit against a MISSING balance row (no prior credit) for a KNOWN currency.
+/// Since c712936 this never reaches any CHECK constraint at all — a debit's
+/// missing-row UPDATE never falls to the fallback INSERT (`store.rs`'s own doc
+/// comment on `apply_balance_tx` says so explicitly). The 409 here is decided
+/// ENTIRELY in Rust by `apply_balance_tx`'s `currency_exists_tx` probe (known
+/// currency, no row => `BalanceError::OutOfRange`, mapped to `Conflict`) — proving
+/// that mapping is this test's job, not proving any CHECK fired. No key is
+/// consumed, so the SAME key succeeds once the balance covers it.
 #[tokio::test]
 async fn debit_beyond_balance_is_409_and_consumes_no_key() {
     let Some(pool) = test_pool().await else { return };
@@ -506,12 +627,14 @@ async fn debit_beyond_balance_is_409_and_consumes_no_key() {
 
 // ---- 5b: the balance CHECK on the UPDATE path itself ------------------------
 
-/// A debit against an EXISTING balance row that would go negative. Test 5
-/// (`debit_beyond_balance_is_409_and_consumes_no_key`) debits a MISSING row, so its 409
-/// comes from the fallback INSERT's tentative-row CHECK (787a95b's named fallback path);
-/// this debit's UPDATE MATCHES the row directly, so its 409 comes from the CHECK on the
-/// RESULTING row of `Store::apply_balance_tx`'s own UPDATE statement — the branch a revert
-/// to the pre-787a95b single upsert would silently break while leaving test 5 green.
+/// A debit against an EXISTING balance row that would go negative — decided by the
+/// CHECK on the RESULTING row of `Store::apply_balance_tx`'s own UPDATE statement.
+/// This is the ONLY test in the tree that pins `balances_amount_check`'s LOWER bound
+/// at all: drop the CHECK (or widen its lower bound) and only THIS test goes red.
+/// Test 5 (`debit_beyond_balance_is_409_and_consumes_no_key`) debits a MISSING row,
+/// and since c712936 that path's 409 is decided in Rust by `currency_exists_tx`,
+/// never by a CHECK — a debit no longer reaches the fallback INSERT at all, so test
+/// 5 would stay green under a dropped CHECK and proves nothing about it.
 #[tokio::test]
 async fn debit_below_zero_against_an_existing_row_is_409() {
     let Some(pool) = test_pool().await else { return };
@@ -558,6 +681,64 @@ async fn debit_below_zero_against_an_existing_row_is_409() {
     cleanup(&pool, &[&pid], &[&currency]).await;
 }
 
+// ---- 5c: the balance CHECK's upper bound, credit direction -----------------
+
+/// A credit against an EXISTING row already AT the `1e15` ceiling. Seeded by raw SQL
+/// (no caller-facing path can reach the ceiling in one movement — `MAX_MOVEMENT_AMOUNT`
+/// is 10^12), so this is the only test in the tree that drives `apply_balance_tx`'s
+/// UPDATE into the CHECK's UPPER bound rather than its lower one, which is the entire
+/// premise of the design's "a bigint overflow (22003) is unreachable" argument for the
+/// credit direction.
+#[tokio::test]
+async fn credit_past_the_ceiling_is_409() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let currency = unique_currency(&pool).await;
+    let pid = unique_player(&pool).await;
+
+    sqlx::query(
+        "INSERT INTO wallet.balances (player_id, currency, amount) VALUES ($1::uuid, $2, 1000000000000000)",
+    )
+    .bind(&pid)
+    .bind(&currency)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let key = unique_key("ceiling");
+    let err = svc
+        .credit(movement(&key, &pid, &currency, 1, "over-ceiling"))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        err.status,
+        Status::Conflict,
+        "a credit past balances_amount_check's ceiling must be Conflict (409), never Internal"
+    );
+
+    let (balance,): (i64,) = sqlx::query_as(
+        "SELECT amount FROM wallet.balances WHERE player_id = $1::uuid AND currency = $2",
+    )
+    .bind(&pid)
+    .bind(&currency)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        balance, 1_000_000_000_000_000,
+        "the balance must be untouched by the rejected credit"
+    );
+
+    let (rows,): (i64,) = sqlx::query_as("SELECT count(*) FROM wallet.ledger WHERE idempotency_key = $1")
+        .bind(&key)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(rows, 0, "a rejected credit must not consume the idempotency key");
+
+    cleanup(&pool, &[&pid], &[&currency]).await;
+}
+
 // ---- 6: the FK arm (23503) -------------------------------------------------
 
 #[tokio::test]
@@ -571,6 +752,7 @@ async fn unknown_currency_is_400() {
         .await
         .unwrap_err();
     assert_eq!(err.status, Status::Invalid);
+    assert_eq!(err.msg, UNKNOWN_CURRENCY);
 
     cleanup(&pool, &[&pid], &[]).await;
 }
@@ -599,6 +781,7 @@ async fn debit_with_an_unknown_currency_is_400() {
         Status::Invalid,
         "an unknown currency must be Invalid (400) in the debit direction too"
     );
+    assert_eq!(err.msg, UNKNOWN_CURRENCY);
 
     let currency = unique_currency(&pool).await;
     let err = svc
@@ -610,6 +793,7 @@ async fn debit_with_an_unknown_currency_is_400() {
         Status::Conflict,
         "a KNOWN currency with no balance row is Conflict (409) — same input, differing only in catalog membership"
     );
+    assert_eq!(err.msg, OUT_OF_RANGE);
 
     cleanup(&pool, &[&pid], &[&currency]).await;
 }
@@ -752,6 +936,38 @@ fn validate_movement_rejects_oversized_fields() {
         ..base.clone()
     };
     assert_eq!(validate_movement(&over_reason).unwrap_err().status, Status::Invalid);
+
+    // The three empty-field branches. `idempotency_key == ""` is the load-bearing one:
+    // remove that branch and two DIFFERENT movements sent with an empty key collide on
+    // the ledger's `UNIQUE (idempotency_key)`, so the second becomes a false
+    // `Duplicate`/409 instead of the `Invalid`/400 this pins.
+    let empty_key = Movement {
+        idempotency_key: "".into(),
+        ..base.clone()
+    };
+    assert_eq!(validate_movement(&empty_key).unwrap_err().status, Status::Invalid);
+
+    let empty_player = Movement {
+        player_id: "".into(),
+        ..base.clone()
+    };
+    assert_eq!(validate_movement(&empty_player).unwrap_err().status, Status::Invalid);
+
+    let whitespace_player = Movement {
+        player_id: "   ".into(),
+        ..base.clone()
+    };
+    assert_eq!(
+        validate_movement(&whitespace_player).unwrap_err().status,
+        Status::Invalid,
+        "a whitespace-only player_id must be rejected too (the check is on the trimmed value)"
+    );
+
+    let empty_currency = Movement {
+        currency: "".into(),
+        ..base.clone()
+    };
+    assert_eq!(validate_movement(&empty_currency).unwrap_err().status, Status::Invalid);
 
     for amount in [0, -1, i64::MIN, i64::MAX, MAX_MOVEMENT_AMOUNT + 1] {
         let m = Movement { amount, ..base.clone() };
