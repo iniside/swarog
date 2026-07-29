@@ -120,9 +120,37 @@ reject-before-opening-a-transaction optimisation it always should have been:
    - **no row** → `Error::internal("conflicting ledger row disappeared")` — the arm `match`
      also has (`modules/match/src/lib.rs:210`). Unreachable under READ COMMITTED; must not
      be an `unwrap`.
-3. `Some(id)` ⇒ `INSERT INTO wallet.balances (player_id, currency, amount) VALUES ($1::uuid,$2,$3)
-   ON CONFLICT (player_id, currency) DO UPDATE SET amount = wallet.balances.amount + $3,
-   updated_at = now() RETURNING amount` — a debit passes a negative `$3`.
+3. `Some(id)` ⇒ move the balance by the signed delta. **This step was specified wrong in
+   revisions 1-4 and the error shipped; corrected here after Step 5's tests caught it.**
+
+   The original shape was a single `INSERT … ON CONFLICT (player_id, currency) DO UPDATE SET
+   amount = wallet.balances.amount + $3 … RETURNING amount`, with "a debit passes a negative
+   `$3`". That is broken for **every** debit: Postgres validates the table's CHECK against the
+   **tentative INSERT row** before it detects the conflict and routes to `DO UPDATE`, so a
+   negative `$3` trips `balances_amount_check` regardless of the existing balance. Proven
+   directly — balance 100, debit 30, `ERROR: new row … violates check constraint
+   "balances_amount_check" DETAIL: Failing row contains (…, -30)`, while a plain `UPDATE`
+   yields 70. Three earlier passes missed it because every probe exercised a debit against a
+   *missing* row, where 23514 IS the right answer.
+
+   The corrected shape is UPDATE-first, INSERT-as-fallback:
+   ```sql
+   UPDATE wallet.balances SET amount = amount + $3, updated_at = now()
+    WHERE player_id = $1::uuid AND currency = $2
+    RETURNING amount
+   ```
+   and only when that reports zero rows:
+   ```sql
+   INSERT INTO wallet.balances (player_id, currency, amount) VALUES ($1::uuid,$2,$3)
+    ON CONFLICT (player_id, currency) DO UPDATE
+      SET amount = wallet.balances.amount + $3, updated_at = now()
+    RETURNING amount
+   ```
+   The UPDATE path evaluates the CHECK on the RESULTING row, which is the intended semantics:
+   insufficient funds and the ceiling both surface as 23514 → 409. The fallback keeps the
+   previously-correct missing-row behaviour, including 23503 → 400 for an unknown currency,
+   and stays race-safe for a credit (two concurrent first-ever credits both miss the UPDATE,
+   one INSERTs, the other takes `DO UPDATE`).
 4. `UPDATE wallet.ledger SET balance_after = $amount WHERE id = $id::uuid`
 5. `emit_tx(AnyTx::new(&mut *conn), &walletevents::CHANGED, &evt)` — **only on this branch**,
    never on the duplicate branch.
