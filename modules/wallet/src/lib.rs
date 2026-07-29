@@ -221,3 +221,6 @@ impl Module for WalletModule {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests;
