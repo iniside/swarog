@@ -36,13 +36,20 @@ impl Service {
     /// subsequent player — a fat-fingered config knob or an unseeded catalog must never cost
     /// that, because the fault is a property of the config, not of the event.
     ///
-    /// The two pre-checks are therefore ORDERING-CRITICAL, not defensive: [`Service::apply_on`]
-    /// validates the movement itself, so anything `validate_movement` would reject arrives as
-    /// an `Err`; and letting the currency FK fire would abort the delivery transaction, after
-    /// which even an `Ok` fails the plane's checkpoint `UPDATE` with 25P02. With the clamp
-    /// below, a catalog whose own `currencies_code_len_check` caps a code at 32 octets, and
-    /// fixed `reason` / key shapes, every one of those branches is unreachable BY
-    /// CONSTRUCTION — which is why no `validate_movement` call is repeated here.
+    /// The three pre-checks are therefore ORDERING-CRITICAL, not defensive:
+    /// [`Service::apply_on`] validates the movement itself, so anything `validate_movement`
+    /// would reject arrives as an `Err`; and letting the currency FK or the `$n::uuid` cast
+    /// fire would abort the delivery transaction, after which even an `Ok` fails the plane's
+    /// checkpoint `UPDATE` with 25P02. With the clamp below, the uuid check (which also bounds
+    /// the derived key at 43 of `MAX_IDEMPOTENCY_KEY_BYTES`), a catalog whose own
+    /// `currencies_code_len_check` caps a code at 32 octets, and fixed `reason` / key shapes,
+    /// every one of those branches is unreachable BY CONSTRUCTION — which is why no
+    /// `validate_movement` call is repeated here.
+    ///
+    /// `player_id` is the one input wallet does not mint, so its shape is checked HERE rather
+    /// than trusted from `accounts`: the wire paths must keep answering 400 for a malformed
+    /// id, but on this path a 400 is an `Err` is a fault, and one producer's bad payload would
+    /// cost every later player their grant.
     pub(crate) async fn grant_starter(
         &self,
         conn: &mut PgConnection,
@@ -57,6 +64,13 @@ impl Service {
                 amount,
                 max = MAX_MOVEMENT_AMOUNT,
                 "wallet: configured starter_amount out of range — granting nothing"
+            );
+            return Ok(());
+        }
+        if !crate::is_uuid_text(player_id) {
+            tracing::warn!(
+                player_id,
+                "wallet: player.registered carried a player_id that is not a uuid — granting nothing"
             );
             return Ok(());
         }

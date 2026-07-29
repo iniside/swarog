@@ -110,15 +110,40 @@ fn balance_error(e: BalanceError) -> Error {
 /// conflict invites the caller to mint a FRESH key, which double-moves money — hence the
 /// normalization: equal-to-`::uuid` inputs share 32 ascii-hex digits ignoring
 /// case/hyphens/braces, anything else falls back to a byte comparison.
-fn player_id_eq(a: &str, b: &str) -> bool {
-    fn hex32(s: &str) -> Option<Vec<u8>> {
-        let hex: Vec<u8> = s
-            .bytes()
-            .filter(u8::is_ascii_hexdigit)
-            .map(|b| b.to_ascii_lowercase())
-            .collect();
-        (hex.len() == 32).then_some(hex)
+fn hex32(s: &str) -> Option<Vec<u8>> {
+    let hex: Vec<u8> = s
+        .bytes()
+        .filter(u8::is_ascii_hexdigit)
+        .map(|b| b.to_ascii_lowercase())
+        .collect();
+    (hex.len() == 32).then_some(hex)
+}
+
+/// True iff `$n::uuid` parses `id`: [`hex32`]'s 32 digits and NOTHING else but hyphens
+/// where `uuid_in` tolerates one — on a two-byte boundary, never doubled, never trailing.
+/// Deliberately narrower than `uuid_in` (a braced spelling is rejected), because a caller
+/// that skips on `false` needs the accept set to be a SUBSET of what parses; `hex32` alone
+/// is not, since it normalizes for EQUALITY and so ignores stray characters.
+pub(crate) fn is_uuid_text(id: &str) -> bool {
+    if hex32(id).is_none() {
+        return false;
     }
+    let mut digits = 0usize;
+    let mut after_hyphen = false;
+    for b in id.bytes() {
+        if b.is_ascii_hexdigit() {
+            digits += 1;
+            after_hyphen = false;
+        } else if b == b'-' && !after_hyphen && digits.is_multiple_of(4) && (1..32).contains(&digits) {
+            after_hyphen = true;
+        } else {
+            return false;
+        }
+    }
+    true
+}
+
+fn player_id_eq(a: &str, b: &str) -> bool {
     match (hex32(a), hex32(b)) {
         (Some(x), Some(y)) => x == y,
         _ => a == b,
