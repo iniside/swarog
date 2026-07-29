@@ -10,7 +10,7 @@ use walletapi::{
     MAX_IDEMPOTENCY_KEY_BYTES, MAX_MOVEMENT_AMOUNT, MAX_REASON_BYTES,
 };
 
-use crate::{internal, ExistingMovement, Store};
+use crate::{internal, BalanceError, ExistingMovement, Store};
 
 /// The 409 for a duplicate `idempotency_key` describing a DIFFERENT movement.
 pub(crate) const IDEMPOTENCY_CONFLICT: &str =
@@ -91,6 +91,17 @@ fn movement_error(e: sqlx::Error) -> Error {
         Error::invalid(MALFORMED_PLAYER_ID)
     } else {
         internal(e)
+    }
+}
+
+/// The same verdicts as [`movement_error`], for the two the balance authority decides
+/// itself: the messages are shared, so a missing-row debit is indistinguishable from the
+/// SQLSTATE-carried answer to the caller.
+fn balance_error(e: BalanceError) -> Error {
+    match e {
+        BalanceError::UnknownCurrency => Error::invalid(UNKNOWN_CURRENCY),
+        BalanceError::OutOfRange => Error::conflict(OUT_OF_RANGE),
+        BalanceError::Sql(e) => movement_error(e),
     }
 }
 
@@ -221,7 +232,7 @@ impl Service {
             .store
             .apply_balance_tx(conn, &m.player_id, &m.currency, delta)
             .await
-            .map_err(movement_error)?;
+            .map_err(balance_error)?;
 
         self.store
             .set_balance_after_tx(conn, &ledger_id, balance)

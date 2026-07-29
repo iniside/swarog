@@ -25,6 +25,19 @@ pub(crate) fn is_invalid_uuid(e: &sqlx::Error) -> bool {
     matches!(e, sqlx::Error::Database(db) if db.code().as_deref() == Some("22P02"))
 }
 
+/// Why [`Store::apply_balance_tx`] refused the movement. The two named variants are the
+/// verdicts it decides ITSELF, on the missing-row debit path where no statement that could
+/// carry the right SQLSTATE ever runs; everything else is the DB's own answer.
+#[derive(Debug)]
+pub(crate) enum BalanceError {
+    /// The catalog does not hold the currency — the `is_unknown_currency` verdict (400).
+    UnknownCurrency,
+    /// The movement lands outside `balances_amount_check` — the `is_out_of_range`
+    /// verdict (409).
+    OutOfRange,
+    Sql(sqlx::Error),
+}
+
 /// The ledger row a duplicate `idempotency_key` collides with; `player_id` is the
 /// DB-canonical text of the stored uuid.
 pub(crate) struct ExistingMovement {
@@ -107,12 +120,20 @@ impl Store {
     /// TENTATIVE INSERT row before it detects the conflict and routes to `DO UPDATE`, so an
     /// upsert alone trips `balances_amount_check` on a negative `$3` whatever the balance is.
     ///
-    /// The upsert survives as the zero-rows-matched fallback, keeping the missing-row
-    /// behaviour: a first-ever credit lands (two concurrent ones both miss the UPDATE, one
-    /// INSERTs and the other takes `DO UPDATE`, so neither is lost), an unknown currency is
-    /// 23503 → 400, and a debit against no row is 23514 → 409 like an over-drawn one. A debit
-    /// racing the FIRST-EVER credit for its `(player, currency)` is therefore 409 even if that
-    /// credit commits in between — no key is consumed, so the caller retries.
+    /// The upsert survives as the zero-rows-matched fallback for a CREDIT, keeping the
+    /// missing-row behaviour: a first-ever credit lands (two concurrent ones both miss the
+    /// UPDATE, one INSERTs and the other takes `DO UPDATE`, so neither is lost) and an unknown
+    /// currency is 23503 → 400.
+    ///
+    /// A DEBIT never reaches that fallback: with no row the outcome is already decided, and
+    /// the tentative negative row trips `balances_amount_check` BEFORE the FK trigger runs, so
+    /// an unknown currency would answer 409 where the contract (and the credit direction)
+    /// promises 400. The catalog probe therefore decides both verdicts explicitly, and it runs
+    /// HERE — after an UPDATE that matched nothing and so left the caller's transaction
+    /// usable, never after a statement that could have aborted it into 25P02. A debit racing
+    /// the FIRST-EVER credit for its `(player, currency)` is still [`BalanceError::OutOfRange`]
+    /// (409) even if that credit commits in between — no key is consumed, so the caller
+    /// retries.
     ///
     /// No advisory lock: a single `amount + $delta` means the row lock serializes concurrent
     /// movements on one `(player, currency)` and the CHECK rejects the loser.
@@ -122,7 +143,7 @@ impl Store {
         player_id: &str,
         currency: &str,
         delta: i64,
-    ) -> Result<i64, sqlx::Error> {
+    ) -> Result<i64, BalanceError> {
         let updated: Option<(i64,)> = sqlx::query_as(
             "UPDATE wallet.balances SET amount = amount + $3, updated_at = now() \
               WHERE player_id = $1::uuid AND currency = $2 \
@@ -132,9 +153,22 @@ impl Store {
         .bind(currency)
         .bind(delta)
         .fetch_optional(&mut *conn)
-        .await?;
+        .await
+        .map_err(BalanceError::Sql)?;
         if let Some((amount,)) = updated {
             return Ok(amount);
+        }
+
+        if delta < 0 {
+            let known = self
+                .currency_exists_tx(conn, currency)
+                .await
+                .map_err(BalanceError::Sql)?;
+            return Err(if known {
+                BalanceError::OutOfRange
+            } else {
+                BalanceError::UnknownCurrency
+            });
         }
 
         let (amount,): (i64,) = sqlx::query_as(
@@ -147,7 +181,8 @@ impl Store {
         .bind(currency)
         .bind(delta)
         .fetch_one(&mut *conn)
-        .await?;
+        .await
+        .map_err(BalanceError::Sql)?;
         Ok(amount)
     }
 
@@ -185,14 +220,14 @@ impl Store {
         Ok(())
     }
 
-    /// Catalog membership check on a HANDED connection, for the durable starter-grant
-    /// handler: the pre-check is REQUIRED there, not defensive. Letting the FK fire aborts
-    /// the DELIVERY transaction, and then neither posture is safe — an `Ok` on an aborted
-    /// transaction fails the plane's checkpoint `UPDATE` with 25P02, and an `Err` (which the
-    /// plane's `ROLLBACK TO SAVEPOINT deliver` does recover) backs the subscription off and
-    /// pauses it for every subsequent player. Not firing the FK is the only way to satisfy
-    /// both; the handler itself lands with wallet's grant path.
-    #[allow(dead_code)]
+    /// Catalog membership check on a HANDED connection, used by [`Store::apply_balance_tx`]'s
+    /// missing-row debit and by the durable starter-grant handler: the pre-check is REQUIRED
+    /// there, not defensive. Letting the FK fire aborts the DELIVERY transaction, and then
+    /// neither posture is safe — an `Ok` on an aborted transaction fails the plane's
+    /// checkpoint `UPDATE` with 25P02, and an `Err` (which the plane's `ROLLBACK TO SAVEPOINT
+    /// deliver` does recover) backs the subscription off and pauses it for every subsequent
+    /// player. Not firing the FK is the only way to satisfy both; the handler itself lands
+    /// with wallet's grant path.
     pub(crate) async fn currency_exists_tx(
         &self,
         conn: &mut PgConnection,
