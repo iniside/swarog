@@ -12,14 +12,12 @@ use walletapi::{
 
 use crate::{internal, ExistingMovement, Store};
 
-/// The 409 for a duplicate `idempotency_key` describing a DIFFERENT movement. A const so
-/// a test can pin the branch rather than the wording.
+/// The 409 for a duplicate `idempotency_key` describing a DIFFERENT movement.
 pub(crate) const IDEMPOTENCY_CONFLICT: &str =
     "idempotency_key already records a different movement";
 
-/// The 409 for the balance CHECK. It covers BOTH ends of the range, because one
-/// constraint does: a debit below zero and a credit past the ceiling are the same
-/// "the balance would leave its legal range" verdict.
+/// The 409 for the balance CHECK, worded to cover BOTH ends because one constraint does:
+/// a debit below zero and a credit past the ceiling are the same verdict.
 pub(crate) const OUT_OF_RANGE: &str =
     "movement rejected: insufficient funds or balance ceiling exceeded";
 
@@ -27,9 +25,9 @@ pub(crate) const UNKNOWN_CURRENCY: &str = "unknown currency";
 
 pub(crate) const MALFORMED_PLAYER_ID: &str = "player_id is not a valid uuid";
 
-/// The unreachable-under-READ-COMMITTED arm of the duplicate branch (the arm `match`
-/// also carries): the INSERT lost the key, but the winning row is not visible. Never an
-/// `unwrap` — if the isolation assumption ever changes, this must fail loudly.
+/// The INSERT lost the key but the winning row is not visible — unreachable under READ
+/// COMMITTED, and an explicit arm rather than an `unwrap` so a changed isolation level
+/// fails loudly.
 pub(crate) const LEDGER_ROW_DISAPPEARED: &str = "conflicting ledger row disappeared";
 
 pub(crate) fn idempotency_key_within_cap(key: &str) -> bool {
@@ -44,17 +42,11 @@ pub(crate) fn reason_within_cap(reason: &str) -> bool {
     reason.len() <= MAX_REASON_BYTES
 }
 
-/// THE single movement-input policy, enforced INSIDE the movement authority
-/// ([`Service::apply_on`]) so no caller can route around it.
-///
-/// The amount carries BOTH bounds (`1 ..= MAX_MOVEMENT_AMOUNT`), not just "> 0". The
-/// lower bound is the contract's central promise — "`amount` is ALWAYS POSITIVE, the
-/// direction is the method" — and it is load-bearing, not cosmetic: without it an admin
-/// `grant` form submitted with `-500` would DEBIT the balance and publish a negative
-/// delta on a `wallet.changed` whose `reason` says "grant", and a `0` would burn an
-/// idempotency key on a movement that moved nothing. The upper bound is what keeps a
-/// `bigint` overflow (22003, which nothing maps) out of the balance update — a credit
-/// past the ceiling surfaces as the already-mapped 23514/409 instead.
+/// THE movement-input policy, enforced INSIDE the authority ([`Service::apply_on`]) so no
+/// caller can route around it. The amount's lower bound is the contract's positivity
+/// promise (a `-500` credit would DEBIT while publishing `reason = "grant"`, a `0` would
+/// burn an idempotency key); the upper bound keeps a `bigint` overflow (22003, which
+/// nothing maps) out of the balance update, leaving the mapped 23514/409.
 pub(crate) fn validate_movement(m: &Movement) -> Result<(), Error> {
     if m.idempotency_key.is_empty() {
         return Err(Error::invalid("idempotency_key is required"));
@@ -88,9 +80,8 @@ pub(crate) fn validate_movement(m: &Movement) -> Result<(), Error> {
     Ok(())
 }
 
-/// Maps the three interpreted SQLSTATEs of a movement statement. Anything else is a
-/// genuine 500 — the mapping is narrow on purpose (constraint-named where a constraint
-/// exists), so a future CHECK or FK never silently inherits a 409/400.
+/// Narrow on purpose — constraint-named where a constraint exists — so a future CHECK or
+/// FK never silently inherits a 409/400; anything else is a genuine 500.
 fn movement_error(e: sqlx::Error) -> Error {
     if crate::is_out_of_range(&e) {
         Error::conflict(OUT_OF_RANGE)
@@ -103,15 +94,11 @@ fn movement_error(e: sqlx::Error) -> Error {
     }
 }
 
-/// True iff two uuid spellings are the SAME uuid to Postgres. Every statement binds
-/// `$n::uuid`, so a stored row and a resubmit that spell one id differently
-/// (uppercase / braced / unhyphenated) are the same player — and the replay of a
-/// genuinely identical movement must not be reported as a conflict, because a caller
-/// that gets a 409 for its own retry is invited to mint a FRESH key, which double-moves
-/// money. Two inputs Postgres's `::uuid` treats as equal share the same 32 ascii-hex
-/// digits ignoring case/hyphens/braces; anything else falls back to a byte comparison.
-/// (The same normalization discipline as the `characters`/`inventory` lock keys; the
-/// fortress rule is why it is written out rather than shared.)
+/// True iff two spellings are the SAME uuid to Postgres (every statement binds `$n::uuid`,
+/// so uppercase / braced / unhyphenated forms are one player). A replay reported as a
+/// conflict invites the caller to mint a FRESH key, which double-moves money — hence the
+/// normalization: equal-to-`::uuid` inputs share 32 ascii-hex digits ignoring
+/// case/hyphens/braces, anything else falls back to a byte comparison.
 fn player_id_eq(a: &str, b: &str) -> bool {
     fn hex32(s: &str) -> Option<Vec<u8>> {
         let hex: Vec<u8> = s
@@ -127,12 +114,10 @@ fn player_id_eq(a: &str, b: &str) -> bool {
     }
 }
 
-/// The replayed-movement identity: the WHOLE movement minus the key —
-/// `(player_id, currency, signed delta, reason)`. `reason` is included deliberately: with
-/// the narrow `(player, currency, delta)` triple a `credit(K, 100, "promo")` followed by
-/// `credit(K, 100, "refund")` would be a silent success recording the FIRST reason, i.e.
-/// the caller gets a balance for a movement it did not describe. Only an EDITED resubmit
-/// is a conflict, and it deserves its own key.
+/// The replayed-movement identity is the WHOLE movement minus the key. `reason` is part of
+/// it deliberately: on the narrower `(player, currency, delta)` triple a
+/// `credit(K, 100, "promo")` then `credit(K, 100, "refund")` is a silent success recording
+/// the FIRST reason — a balance for a movement the caller did not describe.
 fn same_movement(existing: &ExistingMovement, m: &Movement, delta: i64) -> bool {
     existing.delta == delta
         && existing.currency == m.currency
@@ -140,8 +125,7 @@ fn same_movement(existing: &ExistingMovement, m: &Movement, delta: i64) -> bool 
         && player_id_eq(&existing.player_id, &m.player_id)
 }
 
-/// What [`Service::apply_on`] decided. The value in `Applied`/`Duplicate` is the
-/// balance the caller observes; `Duplicate` carries the ORIGINAL movement's stored
+/// The balance the caller observes; `Duplicate` carries the ORIGINAL movement's stored
 /// `balance_after`, never a fresh read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Outcome {
@@ -150,21 +134,13 @@ pub(crate) enum Outcome {
     Conflict,
 }
 
-// ============================================================================
-// Service — backs Wallet + Player (the registry capabilities + the generated edge
-// faces + the gateway's in-process invokers).
-// ============================================================================
-
 pub struct Service {
     pub(crate) store: Store,
     pub(crate) bus: Arc<Bus>,
-    /// The `config` reader backing the config-driven starter grant; resolved in `init`
-    /// (phase 2), never in `start` — `requirecheck` observes `register` + `init` only.
-    /// It is a replica-local cache kept fresh by the app-owned invalidation plane, so
+    /// The reader is itself a replica-local cache kept fresh by the invalidation plane, so
     /// wallet reads it directly and owns no second cache.
     pub(crate) config: OnceLock<Arc<dyn Config>>,
-    /// `WALLET_DEV_SEED`, resolved ONCE in `register` so the env read is the single
-    /// source of truth for every path that consults it.
+    /// `WALLET_DEV_SEED`, read ONCE in `register`.
     pub(crate) dev_seed: bool,
 }
 
@@ -178,59 +154,39 @@ impl Service {
         }
     }
 
-    /// **THE movement authority.** Runs the whole movement — dedup gate, balance update,
-    /// ledger stamp, durable append — on a CALLER-OWNED connection, and NEVER begins,
-    /// commits or rolls back: transaction control belongs to the caller.
+    /// **THE movement authority**, on a CALLER-OWNED connection: it NEVER begins, commits
+    /// or rolls back. That is what lets the pool paths ([`Service::credit`] /
+    /// [`Service::debit`]) and a durable handler — whose credit, ledger row,
+    /// `wallet.changed` append and subscription checkpoint must commit as one unit — share
+    /// one implementation instead of two ways to move money.
     ///
-    /// That ownership split is the point. The caller-facing paths ([`Service::credit`] /
-    /// [`Service::debit`]) own a pool transaction; the durable starter grant runs on the
-    /// event plane's HANDED delivery connection, where the credit, the ledger row, the
-    /// `wallet.changed` append AND the subscription checkpoint must commit as one unit —
-    /// a function that opened its own transaction could not serve that caller at all. So
-    /// there is ONE authority with two callers, not two code paths for one money
-    /// movement.
+    /// It validates the movement itself, so no caller can route around the sign/range
+    /// guard. A DURABLE caller must therefore be unable to build a movement this rejects,
+    /// BY CONSTRUCTION rather than by re-enumerating [`validate_movement`]'s branches: the
+    /// catalog cannot hold an oversized (`currencies_code_len_check`) or absent
+    /// (`currency_exists_tx`) currency code, and the handler clamps the configured amount
+    /// with fixed `reason`/`idempotency_key` shapes. Ordering is a CORRECTNESS constraint:
+    /// the clamp and the catalog probe run BEFORE this call, never after.
     ///
-    /// It VALIDATES the movement itself ([`validate_movement`], step 0). The sign and
-    /// range guard is the contract's central promise, so it belongs in the authority and
-    /// not in one of its two callers — otherwise every future caller (Step 8's admin
-    /// grant form reaches this in-process) has to remember to re-apply it. The pool
-    /// wrapper still validates before opening a transaction, purely so a bad request is
-    /// rejected without one.
-    ///
-    /// The DURABLE caller must therefore be unable to build a movement this rejects, and
-    /// that has to hold BY CONSTRUCTION rather than by the handler re-enumerating the
-    /// branches below (re-enumeration is the duplicated authority this design exists to
-    /// avoid, and it silently rots: [`validate_movement`] has seven reject branches).
-    /// Four facts make every one of them unreachable for the starter grant: the catalog
-    /// cannot hold an oversized currency code (`currencies_code_len_check`), it cannot
-    /// hold an absent one (`currency_exists_tx` runs first), the handler clamps the
-    /// configured amount, and its `reason` / `idempotency_key` are compile-time-fixed
-    /// shapes. Ordering is therefore a CORRECTNESS constraint, not style: the amount
-    /// clamp and the catalog probe run BEFORE this call, never after.
-    ///
-    /// On an `Err` the caller's transaction may be ABORTED (23514 / 23503): the only
-    /// legal next statement is the unwind. Do not read the balance to enrich the message
-    /// — on that connection it would fail with 25P02 and turn a 409 into a 500. And on
-    /// the delivery path a caller must never GET here with an input that can abort the
-    /// transaction: posture A requires it to swallow a data-quality problem and return
-    /// `Ok`, and an `Ok` returned on an aborted transaction makes the plane's checkpoint
-    /// `UPDATE` fail with 25P02 (`core/asyncevents/src/worker.rs:268`).
+    /// On an `Err` the caller's transaction may be ABORTED (23514 / 23503) — the only legal
+    /// next statement is the unwind, never a balance read to enrich the message (25P02 on
+    /// that connection would turn a 409 into a 500). A durable handler must never return
+    /// `Err` (it backs off and pauses its subscription), and its `Ok` on an aborted
+    /// transaction fails the plane's checkpoint `UPDATE` with 25P02 — hence the two
+    /// by-construction pre-checks above.
     pub(crate) async fn apply_on(
         &self,
         conn: &mut PgConnection,
         m: &Movement,
         sign: i64,
     ) -> Result<Outcome, Error> {
-        // 0. The input policy, inside the authority.
         validate_movement(m)?;
-        // `sign` is a DIRECTION, and both call sites are in this crate; the movement is
-        // validated to `1 ..= MAX_MOVEMENT_AMOUNT` above, so `|delta|` is bounded by the
-        // same const and the multiplication cannot overflow.
+        // `amount` is validated to `1 ..= MAX_MOVEMENT_AMOUNT` above, so with a ±1 sign the
+        // multiplication cannot overflow.
         debug_assert!(sign == 1 || sign == -1, "apply_on's sign is ±1");
         let delta = sign * m.amount;
 
-        // 1. Claim the key. The ledger insert is the dedup gate, so it runs BEFORE any
-        //    money moves.
+        // The ledger insert is the dedup gate, so it claims the key BEFORE money moves.
         let claimed = self
             .store
             .insert_ledger_tx(
@@ -244,8 +200,7 @@ impl Service {
             .await
             .map_err(movement_error)?;
 
-        // 2. The key was already used: re-read the winning row on THIS connection and
-        //    decide replay-vs-conflict from the whole movement.
+        // The key was already used: re-read the winning row on THIS connection.
         let Some((ledger_id, canonical_player_id)) = claimed else {
             let existing = self
                 .store
@@ -256,29 +211,26 @@ impl Service {
             if same_movement(&existing, m, delta) {
                 // The STORED `balance_after`, never a fresh read: a movement landing in
                 // between must not make the replay answer differently from the original
-                // call. That equivalence is the whole licence for `#[retry_safe]`.
+                // call — that equivalence is the licence for `#[retry_safe]`.
                 return Ok(Outcome::Duplicate(existing.balance_after));
             }
             return Ok(Outcome::Conflict);
         };
 
-        // 3. Move the money (a debit passes a negative delta).
         let balance = self
             .store
             .apply_balance_tx(conn, &m.player_id, &m.currency, delta)
             .await
             .map_err(movement_error)?;
 
-        // 4. Stamp the ledger row with what the movement produced.
         self.store
             .set_balance_after_tx(conn, &ledger_id, balance)
             .await
             .map_err(movement_error)?;
 
-        // 5. The durable append — ONLY on this branch. A replay moves no money, so it
-        //    publishes nothing. Emitted on the caller's connection, so the event is
-        //    durable iff the movement is. The player id is the DB-canonical spelling
-        //    from `RETURNING`, not the caller's argument.
+        // Emitted ONLY on this branch (a replay moves no money) and on the caller's
+        // connection, so the event is durable iff the movement is. The player id is the
+        // DB-canonical spelling from `RETURNING`, not the caller's argument.
         let evt = walletevents::Changed {
             player_id: canonical_player_id,
             currency: m.currency.clone(),
@@ -295,24 +247,19 @@ impl Service {
         Ok(Outcome::Applied(balance))
     }
 
-    /// The POOL-path wrapper around [`Service::apply_on`]: it owns the transaction and
-    /// nothing else. `credit` and `debit` differ ONLY in the sign they pass.
+    /// The POOL-path wrapper: it owns the transaction and nothing else. The pre-call
+    /// [`validate_movement`] only avoids opening one for a bad request — the authority is
+    /// what guards.
     ///
-    /// The pre-call [`validate_movement`] is an optimisation — it rejects a bad request
-    /// without opening a transaction — NOT the guard; the authority validates too.
-    ///
-    /// ONE rollback-failure policy across all three non-commit arms: unwind, and if the
-    /// unwind itself fails, log it and return the verdict already in hand. On every one of
-    /// them nothing was committed and no COMMIT is issued, so the caller's answer (the
-    /// stored balance, a 409, or the domain error) is true regardless of whether the
-    /// ROLLBACK reached the server — turning it into a 500 would report a movement as
-    /// broken when it merely did not happen. Only the COMMIT arm maps its failure to an
-    /// error, because there the outcome genuinely is unknown.
+    /// A failed unwind is logged, not returned: nothing was committed and no COMMIT was
+    /// issued on those arms, so the answer already in hand (a balance, a 409, a domain
+    /// error) is true whether or not the ROLLBACK reached the server. Only the COMMIT arm
+    /// maps its failure, because there the outcome genuinely is unknown.
     async fn apply(&self, m: Movement, sign: i64) -> Result<i64, Error> {
         validate_movement(&m)?;
         let mut tx = self.store.pool.begin().await.map_err(internal)?;
-        // Decide the answer AND the disposition in one exhaustive match, so no arm can
-        // drift into committing what it meant to unwind.
+        // Answer AND disposition from one exhaustive match, so no arm can drift into
+        // committing what it meant to unwind.
         let (applied, result) = match self.apply_on(&mut tx, &m, sign).await {
             Ok(Outcome::Applied(balance)) => (true, Ok(balance)),
             Ok(Outcome::Duplicate(balance)) => (false, Ok(balance)),
@@ -322,11 +269,9 @@ impl Service {
         if applied {
             tx.commit().await.map_err(internal)?;
         } else if let Err(e) = tx.rollback().await {
-            // Roll back EXPLICITLY rather than letting the drop defer the ROLLBACK and
-            // hold the locks the INSERT/SELECT took. Aborted-transaction rule: after
-            // 23514/23503 EVERY further statement on this connection fails with 25P02,
-            // so the unwind is the only legal move — never a balance read to enrich the
-            // message.
+            // EXPLICIT rollback: a dropped sqlx tx defers the ROLLBACK and holds the locks
+            // the INSERT/SELECT took. And after 23514/23503 every further statement on this
+            // connection fails with 25P02, so the unwind is the only legal move.
             tracing::warn!(error = %e, "wallet: rollback after a non-applied movement failed");
         }
         result
@@ -354,9 +299,8 @@ impl Wallet for Service {
 
 #[async_trait]
 impl Player for Service {
-    /// The caller's OWN balances: the player id comes from `identity` (the gateway set
-    /// it after verifying the bearer), NEVER from a body field — so a client cannot read
-    /// another player's wallet.
+    /// The player id comes from `identity` (gateway-verified), NEVER from a body field —
+    /// so a client cannot read another player's wallet.
     async fn my_balances(&self, identity: Identity) -> Result<Vec<Balance>, Error> {
         let player_id = identity
             .player_id()

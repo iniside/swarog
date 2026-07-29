@@ -1,38 +1,31 @@
 use sqlx::{PgConnection, PgPool};
 use walletapi::{Balance, Currency};
 
-/// True iff a store error is the balance CHECK firing (SQLSTATE 23514 on
-/// `balances_amount_check`). The constraint carries BOTH bounds, so this one predicate
-/// covers the two ways a movement can leave the legal range: a debit below zero
-/// (insufficient funds) and a credit past the 10^15 ceiling. Matched narrowly on the
-/// constraint name — the same discipline as inventory's `holdings_quantity_check` — so
-/// no unrelated future CHECK ever rides this 409 mapping.
+/// The balance CHECK firing: one constraint carries BOTH bounds, so this covers a debit
+/// below zero and a credit past the ceiling. Matched on the constraint NAME so no
+/// unrelated future CHECK rides this 409 mapping.
 pub(crate) fn is_out_of_range(e: &sqlx::Error) -> bool {
     e.as_database_error().is_some_and(|db| {
         db.code().as_deref() == Some("23514") && db.constraint() == Some("balances_amount_check")
     })
 }
 
-/// True iff a store error is the in-module FK from `balances.currency` to the currency
-/// catalog (SQLSTATE 23503 on the EXPLICITLY named `balances_currency_fkey`): the caller
-/// named a currency the catalog does not hold. Named in the DDL rather than left to
-/// Postgres's auto-naming so this match is on a constraint WE own.
+/// The caller named a currency the catalog does not hold. The FK is named EXPLICITLY in
+/// the DDL, rather than left to Postgres's auto-naming, so this matches a constraint we own.
 pub(crate) fn is_unknown_currency(e: &sqlx::Error) -> bool {
     e.as_database_error().is_some_and(|db| {
         db.code().as_deref() == Some("23503") && db.constraint() == Some("balances_currency_fkey")
     })
 }
 
-/// True for a Postgres "invalid text representation" (22P02) — the contract carries
-/// `player_id: String` while the columns are `uuid`, so every statement casts `$n::uuid`
-/// and a malformed id arrives as this SQLSTATE. Without the arm it would be a 500
-/// instead of a 400 (cf. `modules/characters/src/store.rs`'s `is_invalid_uuid`).
+/// "Invalid text representation": the contract carries `player_id: String` while the
+/// columns are `uuid`, so a malformed id arrives as this SQLSTATE from the `$n::uuid` cast
+/// — without the arm it is a 500 instead of a 400.
 pub(crate) fn is_invalid_uuid(e: &sqlx::Error) -> bool {
     matches!(e, sqlx::Error::Database(db) if db.code().as_deref() == Some("22P02"))
 }
 
-/// The ledger row a duplicate `idempotency_key` collides with, re-read on the SAME
-/// connection that lost the `ON CONFLICT DO NOTHING` race. `player_id` is the
+/// The ledger row a duplicate `idempotency_key` collides with; `player_id` is the
 /// DB-canonical text of the stored uuid.
 pub(crate) struct ExistingMovement {
     pub(crate) player_id: String,
@@ -42,29 +35,21 @@ pub(crate) struct ExistingMovement {
     pub(crate) balance_after: i64,
 }
 
-// ============================================================================
-// Store — the SQL layer. Every write takes `&mut PgConnection` (never the pool) so the
-// ONE movement authority runs identically under a pool-owned transaction and under the
-// event plane's HANDED delivery transaction; reads use the pool.
-// ============================================================================
-
+/// Every write takes `&mut PgConnection`, never the pool, so the one movement authority
+/// runs identically under a pool-owned transaction and under the event plane's HANDED
+/// delivery transaction; reads use the pool.
 pub(crate) struct Store {
     pub(crate) pool: PgPool,
 }
 
 impl Store {
-    /// Step 1 of a movement: claim the idempotency key by appending the ledger row.
-    /// `balance_after` is written as a placeholder `0` and corrected by
-    /// [`Store::set_balance_after_tx`] once the balance update returns the real value.
+    /// The dedup gate: it runs BEFORE the balance moves, because a duplicate key detected
+    /// afterwards is money already moved twice. `None` is that gate firing (the key was
+    /// used), not an error.
     ///
-    /// `None` means the key was already used — the caller must NOT treat that as an
-    /// error; it is the dedup gate firing. Returns `(ledger_id, canonical_player_id)`:
-    /// the player id comes back through `RETURNING player_id::text` so the emitted
-    /// `wallet.changed` carries the DB-canonical spelling rather than the caller's
-    /// (the same discipline as `characters`' create/delete emits).
-    ///
-    /// The ledger INSERT is deliberately FIRST. If the balance moved first, a duplicate
-    /// key would be detected only after the money had already moved twice.
+    /// `balance_after` is a placeholder `0` until [`Store::set_balance_after_tx`], and the
+    /// returned player id is the DB-canonical spelling, so the emitted `wallet.changed`
+    /// carries it rather than the caller's.
     pub(crate) async fn insert_ledger_tx(
         &self,
         conn: &mut PgConnection,
@@ -91,11 +76,10 @@ impl Store {
     }
 
     /// Re-reads the row that won the key, ON THE SAME CONNECTION as the losing INSERT.
-    /// Under READ COMMITTED (Postgres's default, and nothing here changes it) the INSERT
-    /// waited for the conflicting transaction to finish, and this statement takes a fresh
-    /// snapshot afterwards — so the committed row is visible. Under REPEATABLE READ it
-    /// would come back `None`, which is why the caller has an explicit arm for that
-    /// instead of an `unwrap`.
+    /// Under READ COMMITTED (the default, unchanged here) that INSERT waited for the
+    /// conflicting transaction and this statement takes a fresh snapshot afterwards, so the
+    /// row is visible; under REPEATABLE READ it would be `None` — hence the caller's
+    /// explicit arm instead of an `unwrap`.
     pub(crate) async fn existing_ledger_tx(
         &self,
         conn: &mut PgConnection,
@@ -119,14 +103,12 @@ impl Store {
         ))
     }
 
-    /// Step 3: moves the balance by the SIGNED `delta` and returns the resulting amount.
-    /// A debit passes a negative `delta`; a debit against a player with no row at all
-    /// attempts the plain INSERT and is rejected by the CHECK exactly like an
-    /// over-drawn existing row (both are 23514 → 409).
+    /// Applies the SIGNED `delta`. A debit against a player with no row at all takes the
+    /// plain INSERT and is rejected by the CHECK exactly like an over-drawn existing row
+    /// (both 23514 → 409).
     ///
-    /// No advisory lock: this is a single `amount + $delta`, so the row lock serializes
-    /// concurrent movements on one `(player, currency)` and the CHECK rejects the loser
-    /// — unlike characters' count-then-write cap gate, which needs one.
+    /// No advisory lock: a single `amount + $delta` means the row lock serializes concurrent
+    /// movements on one `(player, currency)` and the CHECK rejects the loser.
     pub(crate) async fn apply_balance_tx(
         &self,
         conn: &mut PgConnection,
@@ -148,32 +130,25 @@ impl Store {
         Ok(amount)
     }
 
-    /// Step 4: stamps the ledger row with the balance the movement produced, so a replay
-    /// of the same key can answer with the ORIGINAL movement's result instead of a live
-    /// balance read (which is what would break `#[retry_safe]`).
+    /// Stamps the balance the movement produced, so a replay of the key answers with the
+    /// ORIGINAL result instead of a live read — the latter is what would break
+    /// `#[retry_safe]`.
     ///
-    /// It ALSO stamps the ordering value `seq`, and that is the whole reason this
-    /// statement is where it is: it runs AFTER [`Store::apply_balance_tx`], i.e. while
-    /// the balance row lock is held, so `nextval` is drawn in balance-application order.
-    /// The `bigserial` default is assigned during the ledger INSERT — a full round trip
-    /// BEFORE the lock — so leaving `seq` at its default lets two concurrent credits
-    /// order as (`seq=1`, balance 200), (`seq=2`, balance 100), i.e. an `ORDER BY seq`
-    /// read of an append-only ledger showing the running balance going DOWN on a credit.
-    /// The insert-time value is therefore a placeholder, always overwritten before commit.
+    /// It ALSO stamps `seq`, and that is why the statement sits HERE: it runs after
+    /// [`Store::apply_balance_tx`], i.e. under the balance row lock, so `nextval` is drawn
+    /// in balance-application order. The `bigserial` default is assigned during the ledger
+    /// INSERT, a full round trip before that lock, so two concurrent credits could order as
+    /// (`seq=1`, balance 200), (`seq=2`, balance 100) — a running balance going DOWN on a
+    /// credit.
     ///
-    /// The sequence is named through `pg_get_serial_sequence`, never as a literal. The
-    /// name a `bigserial` derives is NOT guaranteed: Postgres deconflicts it, so a schema
-    /// that already contained a `ledger_seq_seq` would leave the column defaulting from
-    /// `ledger_seq_seq1` while a hardcoded `nextval('wallet.ledger_seq_seq')` drew from an
-    /// unrelated counter nothing else advances — no error, just silently wrong money
-    /// ordering. Asking the catalog also survives a future table/column rename, which
-    /// would otherwise be a runtime failure in the one statement on the money path.
+    /// The sequence is resolved through `pg_get_serial_sequence`, never a literal: the name
+    /// a `bigserial` derives is not guaranteed (Postgres deconflicts it, so an existing
+    /// `ledger_seq_seq` leaves the column defaulting from `ledger_seq_seq1`) and a hardcoded
+    /// name would silently draw from an unrelated counter. It also survives a rename.
     ///
-    /// COST, stated honestly: `seq` is covered by `ledger_player_seq_idx (player_id, seq
-    /// DESC)`, so re-stamping it makes this a guaranteed NON-HOT update — an extra index
-    /// tuple per movement plus a dead one for vacuum, on the hottest write path (before
-    /// the fix the UPDATE could go HOT), plus one skipped sequence value. That is the
-    /// price of an ordering column that actually orders.
+    /// COST: `seq` is covered by `ledger_player_seq_idx`, so re-stamping makes this a
+    /// guaranteed NON-HOT update — an extra index tuple per movement on the hottest write
+    /// path, plus one skipped sequence value.
     pub(crate) async fn set_balance_after_tx(
         &self,
         conn: &mut PgConnection,
@@ -193,18 +168,13 @@ impl Store {
         Ok(())
     }
 
-    /// Catalog membership check on a HANDED connection. Its caller is the durable
-    /// starter-grant handler, and the pre-check is REQUIRED there rather than defensive
-    /// (same construction as inventory's `item_exists_exec`). Letting the FK fire instead
-    /// aborts the DELIVERY transaction, and then neither thing the handler may do is
-    /// safe: posture A mandates swallowing a data-quality problem and returning `Ok`, but
-    /// an `Ok` on an aborted transaction makes the plane's checkpoint `UPDATE` fail with
-    /// 25P02 (`core/asyncevents/src/worker.rs:268`); returning `Err` instead is recovered
-    /// by the plane's `ROLLBACK TO SAVEPOINT deliver` (`:257`/`:288` — no 25P02) but backs
-    /// the subscription off and pauses it after 20 failures, for every subsequent player.
-    /// Not firing the FK at all is the only way to satisfy both.
-    // The grant handler lands in the next step of this rollout; the probe is placed with
-    // the rest of the SQL layer because it is what makes that path abort-free.
+    /// Catalog membership check on a HANDED connection, for the durable starter-grant
+    /// handler: the pre-check is REQUIRED there, not defensive. Letting the FK fire aborts
+    /// the DELIVERY transaction, and then neither posture is safe — an `Ok` on an aborted
+    /// transaction fails the plane's checkpoint `UPDATE` with 25P02, and an `Err` (which the
+    /// plane's `ROLLBACK TO SAVEPOINT deliver` does recover) backs the subscription off and
+    /// pauses it for every subsequent player. Not firing the FK is the only way to satisfy
+    /// both; the handler itself lands with wallet's grant path.
     #[allow(dead_code)]
     pub(crate) async fn currency_exists_tx(
         &self,
@@ -218,14 +188,12 @@ impl Store {
         Ok(row.is_some())
     }
 
-    /// EVERY balance row the player holds, including one debited back to zero — the row
-    /// survives a debit to zero and hiding it would make `GET /wallet/me` disagree with
-    /// the ledger and with the admin drill-down. A malformed id is a genuine miss (an
-    /// empty list), matching the contract's "an unknown player holds nothing".
+    /// EVERY row, including a currency debited back to zero: the row survives, and hiding
+    /// it would make `GET /wallet/me` disagree with the ledger. A malformed id is a miss
+    /// (empty list), matching the contract's "an unknown player holds nothing".
     ///
-    /// No cursor and no hard LIMIT, deliberately: unlike inventory's per-owner item set
-    /// this list is bounded by the operator-curated currency catalog, not by anything a
-    /// caller controls — so there is no surplus to silently truncate.
+    /// No cursor: the list is bounded by the operator-curated catalog, not by anything a
+    /// caller controls, so there is no surplus to silently truncate.
     pub(crate) async fn list_balances(&self, player_id: &str) -> Result<Vec<Balance>, sqlx::Error> {
         let res = sqlx::query_as::<_, (String, i64)>(
             "SELECT currency, amount FROM wallet.balances WHERE player_id = $1::uuid \
@@ -244,8 +212,7 @@ impl Store {
         }
     }
 
-    /// The whole currency catalog. Bounded by the operator-curated table, so no cursor
-    /// (see [`Store::list_balances`]).
+    /// No cursor, for the reason in [`Store::list_balances`].
     pub(crate) async fn list_currencies(&self) -> Result<Vec<Currency>, sqlx::Error> {
         let rows: Vec<(String, String, String, i32)> = sqlx::query_as(
             "SELECT code, display_name, kind, decimals FROM wallet.currencies ORDER BY code",
@@ -263,15 +230,12 @@ impl Store {
             .collect())
     }
 
-    /// Upserts one catalog row. Used by the `WALLET_DEV_SEED` upsert (self-healing: a
-    /// hand-edited dev row is restored on the next boot).
+    /// Self-healing: a hand-edited dev row is restored on the next boot.
     ///
-    /// A code longer than 32 octets is rejected by `currencies_code_len_check` as 23514.
-    /// Here that is a boot failure, which is right for a hardcoded dev code; a
-    /// CALLER-facing writer (the admin create-currency form) must map it to a 400 rather
-    /// than let it surface as a 500. Note the existing 23514 predicate is constraint-named
-    /// (`is_out_of_range` matches `balances_amount_check` only), so this new CHECK cannot
-    /// be mistaken for insufficient funds.
+    /// An over-long code is `currencies_code_len_check` as 23514 — a boot failure here,
+    /// which is right for a hardcoded dev code, but a CALLER-facing writer must map it to a
+    /// 400. It cannot be mistaken for insufficient funds: `is_out_of_range` is
+    /// constraint-named to `balances_amount_check`.
     pub(crate) async fn upsert_currency_tx(
         &self,
         conn: &mut PgConnection,
