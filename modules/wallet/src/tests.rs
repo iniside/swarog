@@ -46,40 +46,7 @@ async fn ensure_schema(pool: &PgPool) {
             let w = WalletModule::new();
             w.register(&ctx).unwrap();
             w.migrate(&ctx).await.unwrap();
-            sweep_stale_test_currencies(pool).await;
         })
-        .await;
-}
-
-/// One-shot, before any test in this binary creates a currency: removes leftover
-/// `unique_currency` rows (and their ledger/balance rows) from a run that was
-/// interrupted before its own `cleanup` ran. Scoped to THIS file's own naming shape
-/// (`t` + 12 hex/dash chars, the exact `unique_currency` pattern) and to rows old
-/// enough (2 minutes) that they cannot be the currently-running test binary's own —
-/// never a blanket sweep of `wallet.currencies`, which would drop another test's rows.
-async fn sweep_stale_test_currencies(pool: &PgPool) {
-    let stale: Vec<(String,)> = sqlx::query_as(
-        "SELECT code FROM wallet.currencies \
-          WHERE code ~ '^t[0-9a-f]{8}-[0-9a-f]{3}$' AND created_at < now() - interval '2 minutes'",
-    )
-    .fetch_all(pool)
-    .await
-    .unwrap_or_default();
-    if stale.is_empty() {
-        return;
-    }
-    let codes: Vec<String> = stale.into_iter().map(|(c,)| c).collect();
-    let _ = sqlx::query("DELETE FROM wallet.ledger WHERE currency = ANY($1)")
-        .bind(&codes)
-        .execute(pool)
-        .await;
-    let _ = sqlx::query("DELETE FROM wallet.balances WHERE currency = ANY($1)")
-        .bind(&codes)
-        .execute(pool)
-        .await;
-    let _ = sqlx::query("DELETE FROM wallet.currencies WHERE code = ANY($1)")
-        .bind(&codes)
-        .execute(pool)
         .await;
 }
 
