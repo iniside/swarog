@@ -931,7 +931,13 @@ via sqlx, `poll_count(pool, sql, cid, want)` — helpers verified at
 - `[WL4] second grant with a fresh key accumulates`.
 - `[WL5] wallet.changed reaches audit.log` — `poll_count` on
   `SELECT count(*) FROM audit.log WHERE topic='wallet.changed' AND payload->>'player_id'=$1`.
-- `[WL6] revoke beyond balance -> 409, balance unchanged`.
+- `[WL6] revoke beyond balance is rejected, balance unchanged` — **corrected after Step 8.**
+  The admin POST answers **200 with the verdict rendered** (`… insufficient funds or balance
+  ceiling exceeded`), not 409. Reason: the portal's `render_conflict` hard-codes a
+  reload-the-page message and drops the domain text, so mapping a balance problem there would
+  give the operator the wrong remedy; `SubmitError::Conflict` is reserved for an idempotency
+  conflict, where a fresh render minting a fresh key genuinely IS the remedy. Assert the
+  message and the unchanged balance, not the status code.
 - `[WL7] a newly registered player receives the configured starter grant` — **the config rows
   are written in the harness's pre-spawn setup**, before the fleet starts:
   `INSERT INTO config.settings (namespace,key,value) VALUES ('wallet','starter_currency','gold'),
@@ -990,6 +996,28 @@ effort **think hard**.
 ---
 
 ## Errata from execution
+
+### Step 8 (admin page) — six declared deviations
+
+Landed `bca2f30`. All six were reported rather than absorbed; the first three change what a
+later step should expect.
+
+1. **`Store::list_catalog` is a second backend addition.** The checklist sources the catalog's
+   `created_at`, but `walletapi::Currency` has no such field. An admin-only projection keeps
+   the published contract unchanged instead of widening it for one column.
+2. **Balances render as KPI tiles, not a table** — `adminapi::Content` carries exactly ONE
+   `table`, and the ledger is the row-shaped half. Both columns survive.
+3. **Insufficient funds is 200 + the verdict card, not 409** — see `[WL6]` above.
+4. `?player` accepts both `player:<uuid>` (what `{id}` actually interpolates to) and a bare
+   uuid; the link template stays exactly `wallet?player={id}` for admincheck.
+5. `decimals` is displayed, never applied — amounts render as raw minor units, per the
+   contract's "display hint only".
+6. Verdict classes flatten to `Error::invalid` on the wire, deliberately: `Error::conflict`
+   would make admin-svc render the reload message while the monolith renders the real one —
+   a topology divergence in operator-visible text.
+
+The hidden idempotency fields are minted per render from `OsRng`, not a clock: two grants
+rendered in the same tick must not collide into a silent "duplicate that already paid".
 
 ### Step 4 (`cmd/wallet-svc` + fleets) — four files the plan never listed, and one false command
 
