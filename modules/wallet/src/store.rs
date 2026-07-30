@@ -425,10 +425,10 @@ impl Store {
     /// The ONE catalog writer; `on_conflict` is the only thing the two callers decide
     /// differently, so a new catalog column cannot reach one intent and miss the other.
     ///
-    /// An over-long code is `currencies_code_len_check` as 23514, which the admin caller maps
-    /// to a 400 (`admin::catalog_rejection`) because it is operator input. It cannot be
-    /// mistaken for insufficient funds: `is_out_of_range` is constraint-named to
-    /// `balances_amount_check`.
+    /// An over-long `code`/`display_name`/`kind` or an out-of-range `decimals` is one of the
+    /// named `currencies_*` CHECKs as 23514, which the admin caller maps to a 400
+    /// (`admin::catalog_rejection`) because it is operator input. None can be mistaken for
+    /// insufficient funds: `is_out_of_range` is constraint-named to `balances_amount_check`.
     pub(crate) async fn write_currency_tx(
         &self,
         conn: &mut PgConnection,

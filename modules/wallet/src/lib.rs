@@ -40,10 +40,12 @@ use walletapi::{Player, Wallet};
 /// differently-named constraints turns every insufficient-funds into a 500. Renaming one
 /// is a `DROP SCHEMA wallet CASCADE` + fresh boot, never an `ALTER`.
 ///
-/// `currencies_code_len_check` is `octet_length`, not `char_length`, because
-/// `MAX_CURRENCY_CODE_BYTES` is a `str::len()` BYTE count — a 20-character multibyte code
-/// is 40 octets. Capping the CATALOG is what keeps a currency the catalog holds from
-/// failing the contract's cap inside the movement authority.
+/// The three `currencies_*_len_check`s are `octet_length`, not `char_length`, because their
+/// Rust twins are `str::len()` BYTE counts — a 20-character multibyte code is 40 octets.
+/// Capping the CATALOG is what keeps a currency the catalog holds from failing the
+/// contract's cap inside the movement authority; `display_name`/`kind`/`decimals` are
+/// operator input arriving from `admin.adminSubmit` in BOTH topologies, so the column CHECK
+/// is the class fail-safe under the Rust caps in `admin::CATALOG_CAPS`, not a second policy.
 ///
 /// The ledger orders by `seq`, not `at`: `now()` is `transaction_timestamp()`, fixed at
 /// transaction start. The `bigserial` default is a placeholder — the real ordering value
@@ -55,9 +57,15 @@ CREATE TABLE IF NOT EXISTS wallet.currencies (
 	code         text PRIMARY KEY
 	             CONSTRAINT currencies_code_len_check
 	             CHECK (octet_length(code) <= 32),
-	display_name text        NOT NULL,
-	kind         text        NOT NULL DEFAULT 'soft',
-	decimals     int         NOT NULL DEFAULT 0,
+	display_name text        NOT NULL
+	             CONSTRAINT currencies_display_name_len_check
+	             CHECK (octet_length(display_name) <= 64),
+	kind         text        NOT NULL DEFAULT 'soft'
+	             CONSTRAINT currencies_kind_len_check
+	             CHECK (octet_length(kind) <= 32),
+	decimals     int         NOT NULL DEFAULT 0
+	             CONSTRAINT currencies_decimals_range_check
+	             CHECK (decimals >= 0 AND decimals <= 18),
 	created_at   timestamptz NOT NULL DEFAULT now()
 );
 

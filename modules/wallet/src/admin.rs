@@ -502,20 +502,18 @@ pub(crate) async fn apply_submit(
             let decimals: i32 = decimals.parse().map_err(|_| {
                 Rejection::Rejected(format!("wallet: decimals {decimals:?} is not a whole number"))
             })?;
-            if decimals < 0 {
-                return Err(Rejection::Rejected(
-                    "wallet: decimals must be zero or more".into(),
-                ));
-            }
-            // The catalog's own byte cap, checked here so an over-long code names ITSELF in
-            // the message; `currencies_code_len_check` below is the class fail-safe, not a
-            // second policy.
-            if !crate::currency_code_within_cap(&code) {
+            // One range, worded exactly as `currencies_decimals_range_check`'s mapping words
+            // it, so the Rust verdict and the DB's fail-safe read identically.
+            if !(0..=crate::MAX_CURRENCY_DECIMALS).contains(&decimals) {
                 return Err(Rejection::Rejected(format!(
-                    "wallet: currency code exceeds {} bytes",
-                    walletapi::MAX_CURRENCY_CODE_BYTES
+                    "wallet: decimals must be within 0..={}",
+                    crate::MAX_CURRENCY_DECIMALS
                 )));
             }
+            // The catalog's own byte caps, checked here so an over-long value names the
+            // FIELD it came from; the matching column CHECK is the class fail-safe, not a
+            // second policy.
+            check_catalog_caps(&code, &display_name, &kind)?;
             let mut conn = svc
                 .store
                 .pool
@@ -552,17 +550,75 @@ pub(crate) async fn apply_submit(
     }
 }
 
-/// A catalog write's verdict. An over-long code is the named CHECK — operator input, so a
-/// 400-class rejection carrying the reason, never an internal error.
+/// One catalog text input: the operator-facing name, the byte ceiling checked in Rust, and
+/// the column CHECK that backstops it. ONE table feeds both [`check_catalog_caps`] and
+/// [`catalog_rejection`], so the Rust verdict and the DB's cannot word one limit two ways —
+/// and adding a catalog column cannot cap it in Rust while leaving the CHECK unmapped.
+struct CatalogCap {
+    label: &'static str,
+    max_bytes: usize,
+    constraint: &'static str,
+}
+
+const CATALOG_CAPS: &[CatalogCap] = &[
+    CatalogCap {
+        label: "currency code",
+        max_bytes: walletapi::MAX_CURRENCY_CODE_BYTES,
+        constraint: "currencies_code_len_check",
+    },
+    CatalogCap {
+        label: "display name",
+        max_bytes: crate::MAX_CURRENCY_DISPLAY_NAME_BYTES,
+        constraint: "currencies_display_name_len_check",
+    },
+    CatalogCap {
+        label: "kind",
+        max_bytes: crate::MAX_CURRENCY_KIND_BYTES,
+        constraint: "currencies_kind_len_check",
+    },
+];
+
+/// The `decimals` range CHECK, mapped like the byte caps: operator input, so a 400-class
+/// verdict naming the bound, never a 500.
+const DECIMALS_CONSTRAINT: &str = "currencies_decimals_range_check";
+
+fn over_cap(cap: &CatalogCap) -> Rejection {
+    Rejection::Rejected(format!(
+        "wallet: {} exceeds {} bytes",
+        cap.label, cap.max_bytes
+    ))
+}
+
+/// Rejects the first over-long catalog field, in `CATALOG_CAPS` order. Values are positional
+/// with the table (code, display name, kind).
+fn check_catalog_caps(code: &str, display_name: &str, kind: &str) -> Result<(), Rejection> {
+    for (cap, value) in CATALOG_CAPS.iter().zip([code, display_name, kind]) {
+        if value.len() > cap.max_bytes {
+            return Err(over_cap(cap));
+        }
+    }
+    Ok(())
+}
+
+/// A catalog write's verdict. An over-long field or an out-of-range `decimals` is a named
+/// CHECK — operator input, so a 400-class rejection carrying the reason, never an internal
+/// error. An unmapped 23514 stays `Internal`: it means a constraint nothing here knows about
+/// fired, which is a defect, not operator input.
 fn catalog_rejection(e: sqlx::Error) -> Rejection {
-    let over_long = e.as_database_error().is_some_and(|db| {
-        db.code().as_deref() == Some("23514") && db.constraint() == Some("currencies_code_len_check")
-    });
-    if over_long {
-        return Rejection::Rejected(format!(
-            "wallet: currency code exceeds {} bytes",
-            walletapi::MAX_CURRENCY_CODE_BYTES
-        ));
+    let constraint = e
+        .as_database_error()
+        .filter(|db| db.code().as_deref() == Some("23514"))
+        .and_then(|db| db.constraint());
+    if let Some(name) = constraint {
+        if name == DECIMALS_CONSTRAINT {
+            return Rejection::Rejected(format!(
+                "wallet: decimals must be within 0..={}",
+                crate::MAX_CURRENCY_DECIMALS
+            ));
+        }
+        if let Some(cap) = CATALOG_CAPS.iter().find(|c| c.constraint == name) {
+            return over_cap(cap);
+        }
     }
     Rejection::Internal(e.to_string())
 }
