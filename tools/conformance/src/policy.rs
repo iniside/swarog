@@ -41,7 +41,7 @@ pub fn entries() -> Vec<Entry> {
 
 pub fn input_policies() -> Vec<(InputKey, InputPolicy)> {
     use Exposure::{External, Wire};
-    use InputPolicy::{KnownGap, Opaque, Validated};
+    use InputPolicy::{Opaque, Validated};
 
     let key = |method: &str, field: &str, exposure| InputKey {
         wire_method: method.to_owned(),
@@ -60,7 +60,7 @@ pub fn input_policies() -> Vec<(InputKey, InputPolicy)> {
         (key("admin.adminData", "params.<value>", Wire), Opaque { rationale: "read-path lookup value only: providers pass it as a bound SQL parameter and an over-long value simply matches no row — nothing on this path writes it" }),
         (key("admin.adminSubmit", "id", Wire), Opaque { rationale: "the provider's own admin slug (adminapi::Item::id), selected by the portal from its resolved item set rather than parsed from operator text" }),
         (key("admin.adminSubmit", "params.<key>", Wire), Opaque { rationale: "admin::collect_submit_params allowlists every key from the form's own declared Field/HiddenField names plus the reserved _expected_ prefix, so the owning module authors the key set" }),
-        (key("admin.adminSubmit", "params.<value>", Wire), KnownGap { planned_cap: 4096, remediation: "each owning module must byte-check its declared form values before SQL, as wallet does via admin::CATALOG_CAPS + the currencies_*_len_check constraints; modules/apikeys' admin form writes role and key NAMES with no byte check (only store::MAX_POLICY_BYTES on the policy field), so an operator-posted name reaches apikeys SQL uncapped in both topologies" }),
+        (key("admin.adminSubmit", "params.<value>", Wire), Validated { cap: apikeys::conformance::MAX_POLICY_BYTES, basis: "every module exposing adminapi::AdminSubmit byte-checks its declared form values before SQL and maps the mirroring column CHECK's 23514 back to the same verdict: wallet via admin::CATALOG_CAPS + the currencies_*_len_check constraints (widest 64) and its validate_movement caps, apikeys via store::COLUMN_CAPS + the roles_/keys_*_len_check constraints — MAX_NAME_BYTES (128) on every role/key name and MAX_POLICY_BYTES (4096, the widest declared form value) on a role policy" }),
         (key("apikeys.lookupKey", "key", Wire), Validated { cap: apikeysapi::MAX_KEY_BYTES, basis: "gateway::RealKeyVerifier::lookup rejects a presented key over apikeysapi::MAX_KEY_BYTES before any store round-trip; secrets are server-generated, so there is no caller-supplied creation path to cap" }),
         (key("characters.create", "class", External), Validated { cap: 64, basis: "characters::class_within_cap validates the defaulted persisted class before SQL" }),
         (key("characters.create", "name", External), Validated { cap: 128, basis: "characters::name_within_cap validates the persisted name before SQL" }),
@@ -210,6 +210,11 @@ fn apikeys() -> Entry {
                         name: "apikeys role policy",
                         cap: apikeys::conformance::MAX_POLICY_BYTES,
                         probe: Arc::new(apikeys::conformance::conformance_policy_rejected),
+                    },
+                    CapCase {
+                        name: "apikeys role/key name",
+                        cap: apikeys::conformance::MAX_NAME_BYTES,
+                        probe: Arc::new(apikeys::conformance::conformance_name_rejected),
                     },
                 ])),
             ),

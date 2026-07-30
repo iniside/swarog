@@ -332,9 +332,10 @@ fn real_rpc_input_inventory_is_exactly_covered_and_matches_golden() {
     );
 }
 
-/// The field-level input-cap gaps are pinned to the exact reported set, so a NEW gap
-/// still fails here. `--deny-gaps` (the blocking conformance stage) rejects every entry
-/// in this list — it is a stop-the-line record, not a sanctioned exemption.
+/// The field-level input-cap gaps are pinned to the exact reported set — empty, since
+/// every discovered RPC request string now carries a Validated or Opaque stance. A NEW
+/// gap still fails here, and `--deny-gaps` (the blocking conformance stage) rejects every
+/// entry in this list: it is a stop-the-line record, not a sanctioned exemption.
 #[test]
 fn real_input_policy_gaps_are_exactly_the_reported_set() {
     let gaps = crate::policy::input_policies()
@@ -344,7 +345,8 @@ fn real_input_policy_gaps_are_exactly_the_reported_set() {
                 .then_some(crate::input_inventory::render_key(&key))
         })
         .collect::<Vec<_>>();
-    assert_eq!(gaps, ["admin.adminSubmit\tparams.<value>\twire"]);
+    let expected: [String; 0] = [];
+    assert_eq!(gaps, expected);
 }
 
 /// CapCase probes stay callable as plain data — a smoke check that the fixture

@@ -1,8 +1,8 @@
 //! Minimal factual probes consumed by `tools/conformance`.
 
-/// Re-exported so `tools/conformance` can state the cap by reference instead of a
-/// second literal — the store's `validate_policy` remains the sole definition site.
-pub use crate::store::MAX_POLICY_BYTES;
+/// Re-exported so `tools/conformance` can state the caps by reference instead of a
+/// second literal — the store's `COLUMN_CAPS` remains the sole definition site.
+pub use crate::store::{MAX_NAME_BYTES, MAX_POLICY_BYTES};
 
 /// A presented key longer than the shared byte cap is definitively rejected — the
 /// invariant [`apikeysapi::MAX_KEY_BYTES`] still guarantees. Secrets are now
@@ -26,4 +26,15 @@ pub fn conformance_key_rejected(len: usize) -> bool {
 #[doc(hidden)]
 pub fn conformance_policy_rejected(len: usize) -> bool {
     len > crate::store::MAX_POLICY_BYTES
+}
+
+/// A role or key NAME longer than the shared byte cap is definitively rejected — the
+/// invariant [`crate::store::MAX_NAME_BYTES`] guarantees. Names arrive from the admin
+/// configurator's `role_name`/`key_name`/`role_target`/`key_target`/`key_role` fields
+/// over `admin.adminSubmit` in BOTH topologies, and `store::validate_name` caps every
+/// writer that binds one — as an inserted value, an updated value, or a `WHERE`
+/// predicate. Stays TRUE for any over-cap length.
+#[doc(hidden)]
+pub fn conformance_name_rejected(len: usize) -> bool {
+    len > crate::store::MAX_NAME_BYTES
 }

@@ -1079,12 +1079,37 @@ unrepresentable gap, on the grounds that the input-field traversal could not rea
 `admin.adminSubmit  params.<value>  wire`, recorded as `InputPolicy::KnownGap` in
 `tools/conformance/src/policy.rs`.
 
-Consequence, deliberately not silenced: `--deny-gaps` rejects it, so the BLOCKING
-`conformance` verify stage is RED until each owning module byte-checks its declared form
-values before SQL. `modules/apikeys`' admin form is the one open case — role and key NAMES
-reach SQL with no cap (only `store::MAX_POLICY_BYTES` guards the policy field); wallet's
-catalog fields are already capped by `admin::CATALOG_CAPS` plus the `currencies_*_len_check`
+Consequence, deliberately not silenced: `--deny-gaps` rejected it, so the BLOCKING
+`conformance` verify stage was RED until each owning module byte-checked its declared form
+values before SQL. `modules/apikeys`' admin form was the one open case; wallet's catalog
+fields were already capped by `admin::CATALOG_CAPS` plus the `currencies_*_len_check`
 constraints.
+
+**Closed.** `modules/apikeys` now caps every operator-supplied form value at both levels,
+the wallet way: one `store::COLUMN_CAPS` table pairing each column's byte ceiling with the
+named CHECK that backstops it (`MAX_NAME_BYTES` 128 on a role/key name,
+`MAX_POLICY_BYTES` 4096 on a role policy; `roles_name_len_check`,
+`roles_policy_len_check`, `keys_name_len_check`), read by BOTH `store::validate_name`/
+`validate_policy` and `WriteError::from_db`'s 23514 → `Invalid` mapping. The correction to
+the gap's own text: the create paths were NOT uncapped — `create_role`/`create_key`
+already called `validate_name` (128) — the real uncovered surface was every OTHER writer
+(`set_role_policy`, `delete_role`, `revoke_key`, `set_key_role`, and `create_key`'s `role`
+argument), which bound operator-authored names as `WHERE`/`SET`/inserted values with no
+check at all, plus the total absence of column CHECKs. `params.<value>` is now
+`InputPolicy::Validated { cap: MAX_POLICY_BYTES }` and the gap set in
+`real_input_policy_gaps_are_exactly_the_reported_set` is empty.
+
+Same wipe consequence as wallet's: `CREATE TABLE IF NOT EXISTS` never adds a CHECK to a
+pre-existing table, so a box whose `apikeys` schema predates this needs `DROP SCHEMA
+apikeys CASCADE` + a fresh boot for the DB-level fail-safe to exist — never an `ALTER`.
+
+Still open, recorded rather than swept: `modules/apikeys/src/admin.rs`'s
+`to_submit_error` folds `WriteError::Invalid` and `WriteError::Db` into one
+`adminapi::SubmitError::Other`, so `submit_error_to_ops` renders an operator-input
+rejection as `opsapi::Status::Internal` on the REMOTE path (the message still reaches the
+operator's error card). Wallet avoids this with its own three-arm `Rejection` enum.
+Un-folding it means restructuring apikeys' whole submit dispatch to carry a wallet-shaped
+verdict, which is a different defect from the byte caps and is not attempted here.
 
 
 ### Step 8 (admin page) — six declared deviations
@@ -1270,9 +1295,9 @@ that both call sites are in-crate.
    `tools/conformance/src/policy.rs`'s comment was rewritten to say what is true now:
    the fields are capped but not REPRESENTABLE as an `InputKey`, because the traversal only
    walks `api/*/api` request DTOs.
-   **The sibling is NOT closed:** `modules/apikeys`'s admin form strings are the identical
-   uncovered surface (`Params` → SQL, no Rust cap, no column CHECK) with no record anywhere
-   — an explicit known gap as of this rollout.
+   **The sibling was NOT closed by this rollout; it is closed now** — see "the
+   admin-submit cap gap" errata above, which records how `modules/apikeys` was brought to
+   the same two-level stance and flipped the conformance record to `Validated`.
 3. **Schema change — a dev box needs a wipe.** `CREATE TABLE IF NOT EXISTS` never adds a
    CHECK to a pre-existing table, so a box whose `wallet` schema predates this commit keeps a
    catalog with NO column-level fail-safe while the Rust caps still reject over-long input.

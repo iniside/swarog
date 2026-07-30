@@ -69,51 +69,100 @@ pub(crate) fn generate_secret() -> Result<(String, String, String), WriteError> 
 /// The upper bound on a role's policy string. `roles.policy` is admin-writable
 /// (`create_role`/`set_role_policy` over `admin.adminSubmit`) and rides EVERY gateway key
 /// lookup response — `lookup` returns `r.policy`, which the gateway caches for 5s per key
-/// — so an unbounded policy would bloat each lookup + the cache. This bounds it the same
-/// way [`validate_name`] bounds the (hidden-field) name: a byte cap (`str::len()`). 4 KiB
-/// comfortably fits a comma-list of every real wire method (~12 today, ~30 bytes each)
-/// with large headroom for future ops and operator pre-authorization; it is purely an
-/// anti-bloat ceiling, not a functional limit anyone should hit.
+/// — so an unbounded policy would bloat each lookup + the cache. 4 KiB comfortably fits a
+/// comma-list of every real wire method (~14 today, ~30 bytes each) with large headroom
+/// for future ops and operator pre-authorization; it is purely an anti-bloat ceiling, not
+/// a functional limit anyone should hit.
 pub const MAX_POLICY_BYTES: usize = 4096;
 
-/// Loose policy validation (Decision 4): non-empty, either the literal `full` or a
-/// comma-separated list whose every entry is non-blank, AND within [`MAX_POLICY_BYTES`].
+/// The upper bound on a role or key NAME. Every name is operator-authored over
+/// `admin.adminSubmit` (both topologies), rides a hidden `_expected_*_rev_<name>` form
+/// field on every re-render, and is echoed in the admin table — 128 bytes is the same
+/// ceiling `accounts` puts on a display name, and no operator-chosen identifier needs
+/// more.
+pub const MAX_NAME_BYTES: usize = 128;
+
+/// One operator-supplied text column: the operator-facing name, the byte ceiling checked
+/// in Rust BEFORE the statement, and the named column CHECK that backstops it. ONE table
+/// feeds both the pre-checks and [`WriteError::from_db`]'s 23514 mapping, so the Rust
+/// verdict and the DB's cannot word one limit two ways — and adding an operator-writable
+/// column cannot cap it in Rust while leaving the CHECK unmapped.
+struct ColumnCap {
+    what: &'static str,
+    max_bytes: usize,
+    constraint: &'static str,
+}
+
+const ROLE_NAME: ColumnCap = ColumnCap {
+    what: "role name",
+    max_bytes: MAX_NAME_BYTES,
+    constraint: "roles_name_len_check",
+};
+const KEY_NAME: ColumnCap = ColumnCap {
+    what: "key name",
+    max_bytes: MAX_NAME_BYTES,
+    constraint: "keys_name_len_check",
+};
+const ROLE_POLICY: ColumnCap = ColumnCap {
+    what: "role policy",
+    max_bytes: MAX_POLICY_BYTES,
+    constraint: "roles_policy_len_check",
+};
+
+const COLUMN_CAPS: &[&ColumnCap] = &[&ROLE_NAME, &KEY_NAME, &ROLE_POLICY];
+
+impl ColumnCap {
+    /// The one over-cap verdict, worded identically whether Rust caught it or the column
+    /// CHECK did. `WriteError::Invalid` — operator input, never store trouble.
+    fn rejected(&self) -> WriteError {
+        WriteError::Invalid(format!(
+            "apikeys: {} exceeds the {}-byte cap",
+            self.what, self.max_bytes
+        ))
+    }
+
+    /// The cap check runs before any other rule so an over-long value is never echoed
+    /// back inside an error message.
+    fn check(&self, value: &str) -> Result<(), WriteError> {
+        if value.len() > self.max_bytes {
+            return Err(self.rejected());
+        }
+        Ok(())
+    }
+
+    fn by_constraint(name: &str) -> Option<&'static ColumnCap> {
+        COLUMN_CAPS.iter().copied().find(|cap| cap.constraint == name)
+    }
+}
+
+/// Loose policy validation (Decision 4): within [`MAX_POLICY_BYTES`], non-empty, and
+/// either the literal `full` or a comma-separated list whose every entry is non-blank.
 /// Deliberately NOT a strict method-name check — ops evolve, and an operator may
-/// pre-authorize a method no process serves yet (Step 7 turns this into a CheckboxGroup
-/// sourced from the ops catalog). The byte cap is an ADDITIONAL upper bound on the loose
-/// rule, not a replacement.
+/// pre-authorize a method no process serves yet. The byte cap is an ADDITIONAL upper
+/// bound on the loose rule, not a replacement.
 fn validate_policy(policy: &str) -> Result<(), WriteError> {
+    ROLE_POLICY.check(policy)?;
     if policy.trim().is_empty() || policy.split(',').any(|m| m.trim().is_empty()) {
         return Err(WriteError::Invalid(format!(
             "apikeys: invalid policy {policy:?} (must be `full` or a comma-separated method list)"
         )));
     }
-    if policy.len() > MAX_POLICY_BYTES {
-        return Err(WriteError::Invalid(format!(
-            "apikeys: policy is {} bytes, exceeding the {MAX_POLICY_BYTES}-byte cap — the policy \
-             rides every gateway key-lookup response and its 5s cache, so it must stay bounded",
-            policy.len()
-        )));
-    }
     Ok(())
 }
 
-/// A non-empty, trimmed name (roles + keys). Length is capped so a name can't bloat a
-/// hidden `_expected_*_rev_<name>` form field unreasonably.
-fn validate_name(what: &str, name: &str) -> Result<(), WriteError> {
+/// A capped, non-empty, trimmed name. Called by EVERY writer that binds a role or key
+/// name — as an inserted value, an updated value, or a `WHERE` predicate — so no
+/// operator-authored name reaches a statement unbounded.
+fn validate_name(cap: &ColumnCap, name: &str) -> Result<(), WriteError> {
+    cap.check(name)?;
     let trimmed = name.trim();
     if trimmed.is_empty() {
-        return Err(WriteError::Invalid(format!("apikeys: {what} name must not be blank")));
+        return Err(WriteError::Invalid(format!("apikeys: {} must not be blank", cap.what)));
     }
     if trimmed != name {
         return Err(WriteError::Invalid(format!(
-            "apikeys: {what} name {name:?} must not have leading/trailing whitespace"
-        )));
-    }
-    if name.len() > 128 {
-        return Err(WriteError::Invalid(format!(
-            "apikeys: {what} name is {} bytes, exceeding the 128-byte cap",
-            name.len()
+            "apikeys: {} {name:?} must not have leading/trailing whitespace",
+            cap.what
         )));
     }
     Ok(())
@@ -144,9 +193,19 @@ impl WriteError {
     /// still-referenced role), everything else is store trouble. The FK is the real
     /// authority against a create_key↔delete_role race — an `EXISTS` pre-check only buys a
     /// nicer message.
-    fn from_db(err: sqlx::Error, conflict_msg: impl Into<String>) -> WriteError {
+    ///
+    /// A `23514` naming one of [`COLUMN_CAPS`]' constraints is the same operator-input
+    /// verdict its Rust pre-check gives, so it is `Invalid`, never store trouble. An
+    /// UNMAPPED 23514 stays `Db`: a constraint nothing here knows about fired, which is a
+    /// defect rather than operator input.
+    pub(crate) fn from_db(err: sqlx::Error, conflict_msg: impl Into<String>) -> WriteError {
         if let sqlx::Error::Database(ref db) = err {
             match db.code().as_deref() {
+                Some("23514") => {
+                    if let Some(cap) = db.constraint().and_then(ColumnCap::by_constraint) {
+                        return cap.rejected();
+                    }
+                }
                 Some("23505") | Some("23503") => return WriteError::Conflict(conflict_msg.into()),
                 _ => {}
             }
@@ -219,7 +278,7 @@ impl Store {
 
     /// Creates a role. A duplicate name (PK) is a [`WriteError::Conflict`].
     pub async fn create_role(&self, name: &str, policy: &str) -> Result<(), WriteError> {
-        validate_name("role", name)?;
+        validate_name(&ROLE_NAME, name)?;
         validate_policy(policy)?;
         sqlx::query("INSERT INTO apikeys.roles (name, policy) VALUES ($1, $2)")
             .bind(name)
@@ -240,6 +299,7 @@ impl Store {
         expected_revision: i64,
         policy: &str,
     ) -> Result<(), WriteError> {
+        validate_name(&ROLE_NAME, name)?;
         validate_policy(policy)?;
         let affected = sqlx::query(
             "UPDATE apikeys.roles \
@@ -250,7 +310,13 @@ impl Store {
         .bind(name)
         .bind(expected_revision)
         .execute(&self.pool)
-        .await?
+        .await
+        .map_err(|e| {
+            WriteError::from_db(
+                e,
+                format!("apikeys: role {name:?} was changed or removed since the form was rendered"),
+            )
+        })?
         .rows_affected();
         if affected != 1 {
             return Err(WriteError::Conflict(format!(
@@ -265,6 +331,7 @@ impl Store {
     /// authority against a create_key↔delete_role race. A stale/absent revision is also a
     /// conflict.
     pub async fn delete_role(&self, name: &str, expected_revision: i64) -> Result<(), WriteError> {
+        validate_name(&ROLE_NAME, name)?;
         let affected = sqlx::query("DELETE FROM apikeys.roles WHERE name = $1 AND revision = $2")
             .bind(name)
             .bind(expected_revision)
@@ -312,7 +379,8 @@ impl Store {
     /// (PK) or a missing `role` (FK `23503`) is a [`WriteError::Conflict`] (finding #2:
     /// never a not-found); a digest collision (unique, astronomically unlikely) likewise.
     pub async fn create_key(&self, name: &str, role: &str) -> Result<(String, String), WriteError> {
-        validate_name("key", name)?;
+        validate_name(&KEY_NAME, name)?;
+        validate_name(&ROLE_NAME, role)?;
         let (secret, hash, prefix) = generate_secret()?;
         sqlx::query(
             "INSERT INTO apikeys.keys (name, secret_hash, prefix, role) VALUES ($1, $2, $3, $4)",
@@ -340,6 +408,8 @@ impl Store {
         expected_revision: i64,
         role: &str,
     ) -> Result<(), WriteError> {
+        validate_name(&KEY_NAME, name)?;
+        validate_name(&ROLE_NAME, role)?;
         let affected = sqlx::query(
             "UPDATE apikeys.keys \
                 SET role = $1, revision = revision + 1, updated_at = now() \
@@ -363,6 +433,7 @@ impl Store {
     /// CAS-revokes a key (sets `revoked_at`), after which [`Store::lookup`] returns `None`.
     /// A stale/absent revision is a [`WriteError::Conflict`].
     pub async fn revoke_key(&self, name: &str, expected_revision: i64) -> Result<(), WriteError> {
+        validate_name(&KEY_NAME, name)?;
         let affected = sqlx::query(
             "UPDATE apikeys.keys \
                 SET revoked_at = now(), revision = revision + 1, updated_at = now() \
