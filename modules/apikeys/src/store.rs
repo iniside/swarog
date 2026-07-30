@@ -93,7 +93,7 @@ pub(crate) struct ColumnCap {
     pub(crate) constraint: &'static str,
 }
 
-const ROLE_NAME: ColumnCap = ColumnCap {
+pub(crate) const ROLE_NAME: ColumnCap = ColumnCap {
     what: "role name",
     max_bytes: MAX_NAME_BYTES,
     constraint: "roles_name_len_check",
@@ -140,7 +140,7 @@ impl ColumnCap {
 /// Deliberately NOT a strict method-name check — ops evolve, and an operator may
 /// pre-authorize a method no process serves yet. The byte cap is an ADDITIONAL upper
 /// bound on the loose rule, not a replacement.
-fn validate_policy(policy: &str) -> Result<(), WriteError> {
+pub(crate) fn validate_policy(policy: &str) -> Result<(), WriteError> {
     ROLE_POLICY.check(policy)?;
     if policy.trim().is_empty() || policy.split(',').any(|m| m.trim().is_empty()) {
         return Err(WriteError::Invalid(format!(
@@ -153,7 +153,7 @@ fn validate_policy(policy: &str) -> Result<(), WriteError> {
 /// A capped, non-empty, trimmed name. Called by EVERY writer that binds a role or key
 /// name — as an inserted value, an updated value, or a `WHERE` predicate — so no
 /// operator-authored name reaches a statement unbounded.
-fn validate_name(cap: &ColumnCap, name: &str) -> Result<(), WriteError> {
+pub(crate) fn validate_name(cap: &ColumnCap, name: &str) -> Result<(), WriteError> {
     cap.check(name)?;
     let trimmed = name.trim();
     if trimmed.is_empty() {

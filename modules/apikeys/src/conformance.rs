@@ -17,24 +17,24 @@ pub fn conformance_key_rejected(len: usize) -> bool {
     len > apikeysapi::MAX_KEY_BYTES
 }
 
-/// A role's `policy` string longer than the shared byte cap is definitively rejected —
-/// the invariant [`crate::store::MAX_POLICY_BYTES`] guarantees. `roles.policy` is
-/// admin-writable via `admin.adminSubmit` (`create_role`/`set_role_policy`) and rides
-/// every gateway key-lookup response plus its 5s cache, so `store::validate_policy`
-/// caps it at admission — this probe mirrors that same authority, referencing the one
-/// constant rather than a second literal. Stays TRUE for any over-cap length.
+/// A role's `policy` string longer than the shared byte cap is definitively rejected.
+/// `roles.policy` is admin-writable via `admin.adminSubmit` (`create_role`/
+/// `set_role_policy`) and rides every gateway key-lookup response plus its 5s cache, so
+/// `store::validate_policy` caps it at admission — and this probe CALLS that function
+/// rather than restating its comparison, so tightening the rule to `>=` cannot leave the
+/// probe green (the `characters::conformance` pattern).
 #[doc(hidden)]
 pub fn conformance_policy_rejected(len: usize) -> bool {
-    len > crate::store::MAX_POLICY_BYTES
+    crate::store::validate_policy(&"a".repeat(len)).is_err()
 }
 
-/// A role or key NAME longer than the shared byte cap is definitively rejected — the
-/// invariant [`crate::store::MAX_NAME_BYTES`] guarantees. Names arrive from the admin
-/// configurator's `role_name`/`key_name`/`role_target`/`key_target`/`key_role` fields
-/// over `admin.adminSubmit` in BOTH topologies, and `store::validate_name` caps every
-/// writer that binds one — as an inserted value, an updated value, or a `WHERE`
-/// predicate. Stays TRUE for any over-cap length.
+/// A role or key NAME longer than the shared byte cap is definitively rejected. Names
+/// arrive from the admin configurator's `role_name`/`key_name`/`role_target`/
+/// `key_target`/`key_role` fields over `admin.adminSubmit` in BOTH topologies, and
+/// `store::validate_name` caps every writer that binds one — as an inserted value, an
+/// updated value, or a `WHERE` predicate. This probe calls that very function, on the
+/// same `ColumnCap` the role writers pass.
 #[doc(hidden)]
 pub fn conformance_name_rejected(len: usize) -> bool {
-    len > crate::store::MAX_NAME_BYTES
+    crate::store::validate_name(&crate::store::ROLE_NAME, &"a".repeat(len)).is_err()
 }
