@@ -1,6 +1,6 @@
 # Feature tracker — closing the gaps from the BaaS analysis
 
-**Last update: 2026-07-30-1930**
+**Last update: 2026-07-30-2215**
 
 **Living document, updated in place** (no date prefix in the filename — it is the
 current state, not a dated snapshot; the date above moves instead). Source of the
@@ -38,7 +38,8 @@ Rationale in the decision notes below; the order deviates from the gap doc's own
 | # | Feature | Status | Plan doc |
 |:-:|---|:--:|---|
 | 1 | Virtual currency wallet + ledger | ✅ | [2026-07-28-2125-wallet-module-plan.md](../plans/2026-07-28-2125-wallet-module-plan.md) |
-| 2 | Auth providers: Google + Apple OIDC, guest/device, link/unlink | ❌ | — |
+| 2a | Federated-provider seam + Google OIDC + guest/device | ❌ | — |
+| 2b | Apple OIDC + identity link/unlink | ❌ | — |
 | 3 | Notifications + player mail (in-app, durable) | ❌ | — |
 | 4 | Self-registration promoted to production (email verify, password reset) | ❌ | — |
 | 5 | Leaderboard seasons / reset / rotation | ❌ | — |
@@ -56,6 +57,11 @@ Rationale in the decision notes below; the order deviates from the gap doc's own
   configuration + Apple's signed-JWT client secret. Guest/device is a provider row with
   no verifier. Steam needs its own ticket verifier and outbound HTTP to Valve — separate
   rollout, separate error model.
+- **#2 split into 2a/2b (decided 2026-07-30)** — the original single row bundled four
+  items with unrelated risk profiles. 2a carries the *seam* plus the two cheap providers;
+  2b carries the only real cryptography (Apple's ES256 client-secret JWT) and the only
+  real policy work (link/unlink). Splitting keeps the public HTTP shape decision (below)
+  in one rollout instead of hostage to Apple's key handling.
 - **Notifications before self-registration** — self-registration needs email
   verification and password reset, and this backend has **no outbound mail channel at
   all**. That cost is not priced in the gap doc. Notifications is the place that channel
@@ -65,16 +71,50 @@ Rationale in the decision notes below; the order deviates from the gap doc's own
   "toy vs. real" tell, but seasons without rewards are half a feature. After wallet they
   cost the same and ship complete.
 
+### Open decisions — settle these BEFORE the #2a plan is written
+
+These are the questions a plan for #2 cannot leave to implementation. Recorded here so
+the sequence row stays a one-liner.
+
+1. **Per-provider method vs. one federated op.** Today the contract is a method per
+   provider: `login_epic(id_token)` (`api/accounts/api/src/lib.rs:93`), with
+   `Error::unavailable("epic provider not configured")` decided inside the service
+   (`modules/accounts/src/lib.rs:476`). Adding Google and Apple this way copies that
+   method three times, and Steam (seq #6) makes a fourth — a feature added by *editing*
+   existing code, against the repo's Open/Closed-by-new-code rule. The alternative is one
+   `login_federated(provider, credential)` op over an in-module verifier registry, so a
+   later provider is new code, not another arm of a match. This is a #2a decision, not a
+   #2b one: it changes the public HTTP surface, which is pinned by the `public-api`
+   baseline and the contract-golden stage, so reversing it later is a contract migration.
+   The store layer needs nothing either way — `accounts.identities` and
+   `Store::link_identity` (`modules/accounts/src/store.rs:182`) are already
+   provider-generic.
+2. **link/unlink policy.** Three rules the ops cannot infer: (a) unlinking the *last*
+   identity — refused, or does it orphan the player; (b) linking an identity already
+   bound to another player — `Conflict` (409), or an account merge (merge is its own
+   feature, and post-wallet it means merging *balances* — never the default); (c) whether
+   linking/unlinking emits a durable `player.identity-linked` event (audit has no sink for
+   one today, and its 7 ledger topics are enumerated in `modules/audit`).
+3. **Guest/device × the wallet starter grant.** Wallet (seq #1) grants currency on
+   `player.registered`. Anonymous accounts-on-demand make every dial a free grant, so #2a
+   must state the mitigation explicitly (throttled guest registration, or the grant firing
+   only on promotion to a real provider). Neither feature has this hole alone; the
+   combination creates it.
+4. **Session/refresh model stops being deferrable.** The "Session + refresh-token model"
+   row below is ⚠️ on its own merits, but guest/device makes the opaque 30-day session the
+   *only* device identity — losing it loses the account. Either pin the decision to #2a or
+   defer it deliberately with a reason; do not let it slide by omission.
+
 ---
 
 ## Identity & accounts
 
 | Feature | Status | Module(s) | Landed | Notes |
 |---|:--:|---|---|---|
-| Multi-provider auth (Steam/Apple/Google/Facebook/console) | ⚠️ | accounts | — | Epic OIDC + Epic web OAuth + dev password only. Seq #2 (Google/Apple), #6 (Steam). |
-| Anonymous / guest / device auth | ❌ | accounts | — | Seq #2. New provider row, no verifier needed. |
-| Account linking / unlinking | ⚠️ | accounts | — | `(provider, subject) → player_id` model already supports it; the link/unlink **ops** are missing. Seq #2. |
-| Session + refresh-token model | ⚠️ | accounts | — | Opaque 30-day DB sessions, no refresh token. |
+| Multi-provider auth (Steam/Apple/Google/Facebook/console) | ⚠️ | accounts | — | Epic OIDC + Epic web OAuth + dev password only. Seq #2a (seam + Google), #2b (Apple), #6 (Steam). The wire shape is per-provider today (`login_epic`) — open decision 1. |
+| Anonymous / guest / device auth | ❌ | accounts | — | Seq #2a. New provider row, no verifier needed — but see open decision 3 (interaction with the wallet starter grant). |
+| Account linking / unlinking | ⚠️ | accounts | — | `(provider, subject) → player_id` model already supports it and `Store::link_identity` exists; the link/unlink **ops** and the policy are missing. Seq #2b, open decision 2. |
+| Session + refresh-token model | ⚠️ | accounts | — | Opaque 30-day DB sessions, no refresh token. Guest/device (#2a) makes this the sole device identity — open decision 4. |
 | Self-registration (production-grade) | ⚠️ | accounts | — | `POST /accounts/register` + `/accounts/login` exist (`api/accounts/api/src/lib.rs:79,85`, argon2id) but gated behind `ACCOUNTS_DEV_AUTH` (default OFF). Missing: email verification, password reset, per-IP/per-account throttling, password policy, email-as-identity uniqueness, **and an outbound mail channel**. Seq #4, depends on #3. |
 | Account self-delete + GDPR export | ❌ | accounts | — | Only server-side prune today. |
 | User metadata / profile (display name, avatar, lang) | ❌ | — | — | Only `player_id` + identities. |
@@ -177,3 +217,11 @@ Rationale in the decision notes below; the order deviates from the gap doc's own
   service counts went red on the 13th process (`processctl`, `weles` ×2, `weles-master`,
   `devctl`); each is now either derived from the fleet or deleted as a restatement, so the
   14th module should not repeat it.
+- **2026-07-30** — Seq #2 **split into #2a** (federated-provider seam + Google + guest/device)
+  **and #2b** (Apple + link/unlink); the single row bundled four items with unrelated risk.
+  Four open decisions recorded above as prerequisites to writing the #2a plan — the one that
+  forces the split is decision 1: whether a provider stays a method on the wire
+  (`login_epic`, and then three more) or becomes an argument. That choice touches the
+  public-api baseline and contract-golden, so it belongs in the first rollout of the pair,
+  not the second. Decision 3 is a *new* gap created by seq #1 landing: guest auth plus the
+  wallet starter grant is a free-currency faucet that neither feature has alone.
