@@ -1103,6 +1103,19 @@ Same wipe consequence as wallet's: `CREATE TABLE IF NOT EXISTS` never adds a CHE
 pre-existing table, so a box whose `apikeys` schema predates this needs `DROP SCHEMA
 apikeys CASCADE` + a fresh boot for the DB-level fail-safe to exist — never an `ALTER`.
 
+**Two SEMANTIC CHANGES shipped with that commit** (named in `b815cf2`'s message; recorded
+here because the message is not the plan record):
+
+1. **The cap check runs BEFORE the blank/whitespace and policy-grammar rules.** Previously
+   a blank-name or invalid-policy verdict could be reached first and echo the offending
+   value inside its own error message; an over-long value is now rejected without ever
+   being quoted back.
+2. **A blank or whitespace-padded name on a `WHERE`-predicate path is `Invalid`, not
+   `Conflict`.** `delete_role`, `revoke_key` and `set_key_role` used to answer such input
+   with a domain-conflict verdict (they matched no row). Both are non-writes and the admin
+   path's `required()` cannot produce either input, so no operator-visible flow changes —
+   but the class an API consumer sees for that input did.
+
 Still open, recorded rather than swept: `modules/apikeys/src/admin.rs`'s
 `to_submit_error` folds `WriteError::Invalid` and `WriteError::Db` into one
 `adminapi::SubmitError::Other`, so `submit_error_to_ops` renders an operator-input
@@ -1110,6 +1123,42 @@ rejection as `opsapi::Status::Internal` on the REMOTE path (the message still re
 operator's error card). Wallet avoids this with its own three-arm `Rejection` enum.
 Un-folding it means restructuring apikeys' whole submit dispatch to carry a wallet-shaped
 verdict, which is a different defect from the byte caps and is not attempted here.
+
+### Post-execution: the gate-hardening rollout, and three gaps recorded rather than closed
+
+Landed after `b815cf2` as five commits over `tools/conformance`, `tools/archcheck`,
+`tools/checkmodules`, `modules/apikeys` and `modules/wallet`: total request-surface
+discovery (inline `mod`s and item-position macros), the opaque allowlist matched on the
+written path and self-checked against its declaring file, an executable half for the
+`admin.adminSubmit params.<value>` verdict (`checks::ADMIN_SUBMIT_MODULES` diffed against
+`modules/*/src`), the `#[http(` domain scans moved onto `contract_sources`, the byte caps
+pinned to their column CHECKs, and the apikeys probes routed through the real validators.
+
+Three gaps are RECORDED here, deliberately not fixed:
+
+1. **A container-level `#[serde(rename_all = "camelCase")]` on a request DTO would be
+   invisible.** `input_inventory::parse_struct` reads only per-FIELD `#[serde(rename =
+   "…")]`. A container-level rename would make the traversal record `foo_bar` while the
+   wire carries `fooBar` — the policy row and the golden would agree with each other on
+   the WRONG name, so every gate stays green while the cap claim points at a field name
+   nothing sends. Nothing in `api/` uses `rename_all` today; the fix is to fold the
+   container attribute into the field-name derivation, which is a case-conversion table
+   (`camelCase`/`snake_case`/`PascalCase`/`kebab-case`/`SCREAMING_SNAKE_CASE`) this rollout
+   did not want to guess at half-way.
+2. **`Vec<u8>` passes silently while `[u8; 32]` bails** — opposite treatment of two
+   equivalent shapes. `container_inner` unwraps `Vec<T>` and `u8` is in `SCALAR_TYPES`, so
+   a byte-vector request argument records nothing; the fixed-size array hits
+   `describe(Type::Array)` and is rejected. Neither carries caller TEXT, so no cap claim is
+   currently wrong — but the two answers should be the same answer, and today which one you
+   get depends on how the argument was spelled.
+3. **`apikeys::conformance::conformance_key_rejected` still restates its predicate**
+   (`len > apikeysapi::MAX_KEY_BYTES`) rather than calling the production check, unlike the
+   name/policy probes beside it. Its authority is `gateway::RealKeyVerifier::lookup`, in
+   another fortress that `apikeys` cannot import (fortress rule). Closing it means either
+   moving that CapCase into the `gateway` conformance entry — whose `InputByteCaps` stance
+   is currently `NotApplicable`, "field-level caps belong to operation owners" — or lifting
+   the length guard into `apikeysapi` beside the constant. Both are decisions about where
+   the presented-key guard lives, not about the probe.
 
 
 ### Step 8 (admin page) — six declared deviations
