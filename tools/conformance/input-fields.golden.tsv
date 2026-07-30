@@ -6,6 +6,11 @@ accounts.register	displayName	external
 accounts.register	email	external
 accounts.register	password	external
 accounts.verifySession	token	wire
+admin.adminData	params.<key>	wire
+admin.adminData	params.<value>	wire
+admin.adminSubmit	id	wire
+admin.adminSubmit	params.<key>	wire
+admin.adminSubmit	params.<value>	wire
 apikeys.lookupKey	key	wire
 characters.create	class	external
 characters.create	name	external

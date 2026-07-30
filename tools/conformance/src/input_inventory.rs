@@ -29,14 +29,43 @@ pub struct InputKey {
 }
 
 type StructFields = Vec<(String, Type)>;
-type Structs = BTreeMap<String, StructFields>;
+
+/// What the traversal knows about a named type declared in the API crate under scan.
+enum Shape {
+    /// A struct with named fields — traversed field by field.
+    Named(StructFields),
+    /// A tuple or unit struct: no field names exist to build an [`InputKey`] from, so
+    /// using one as a request argument is rejected rather than silently skipped.
+    Unnamed,
+    /// A `type X = ...;` alias, resolved to its target before any other decision.
+    Alias(Type),
+}
+
+type Types = BTreeMap<String, Shape>;
+
+/// Rust primitives, which by construction carry no caller-supplied text. This is a
+/// closed category, not a hand-maintained decision list.
+const SCALAR_TYPES: &[&str] = &[
+    "bool", "char", "f32", "f64", "i8", "i16", "i32", "i64", "i128", "isize", "u8", "u16", "u32",
+    "u64", "u128", "usize",
+];
+
+/// Named NON-primitive request types the traversal deliberately stops at, each with the
+/// reason it carries no caller-supplied string. Anything else is a hard failure, so a
+/// new foreign type cannot enter a contract's request surface unexamined.
+const OPAQUE_REQUEST_TYPES: &[(&str, &str)] = &[(
+    "Identity",
+    "opsapi::Identity is minted by the gateway from an already-verified session, never \
+     parsed from a caller-supplied request field",
+)];
+
+/// String-keyed map types: a caller-controlled bag of text with no declared field names,
+/// so both legs are recorded under the reserved `<key>`/`<value>` suffixes.
+const STRING_MAP_TYPES: &[&str] = &["BTreeMap", "HashMap"];
 
 pub fn discover(api_root: &Path) -> Result<BTreeSet<InputKey>> {
     let mut out = BTreeSet::new();
     for domain in sorted_dirs(api_root)? {
-        if domain.file_name().is_some_and(|name| name == "admin") {
-            continue;
-        }
         let src = domain.join("api/src");
         if !src.is_dir() {
             continue;
@@ -66,15 +95,16 @@ fn discover_sources(sources: &[String]) -> Result<BTreeSet<InputKey>> {
         .iter()
         .map(|source| syn::parse_file(source).context("parse API source"))
         .collect::<Result<Vec<_>>>()?;
-    let mut structs = Structs::new();
+    let mut types = Types::new();
     for file in &syntax {
         for item in &file.items {
-            if let Item::Struct(item) = item {
-                if let Some((name, fields)) = parse_struct(item)? {
-                    if structs.insert(name.clone(), fields).is_some() {
-                        bail!("ambiguous request DTO {name:?}: declared more than once in one API crate");
-                    }
-                }
+            let (name, shape) = match item {
+                Item::Struct(item) => (item.ident.to_string(), parse_struct(item)?),
+                Item::Type(item) => (item.ident.to_string(), Shape::Alias((*item.ty).clone())),
+                _ => continue,
+            };
+            if types.insert(name.clone(), shape).is_some() {
+                bail!("ambiguous request DTO {name:?}: declared more than once in one API crate");
             }
         }
     }
@@ -103,7 +133,7 @@ fn discover_sources(sources: &[String]) -> Result<BTreeSet<InputKey>> {
                         &wire_method,
                         &wire_name,
                         exposure,
-                        &structs,
+                        &types,
                         &mut BTreeSet::new(),
                         &mut out,
                     )?;
@@ -114,15 +144,23 @@ fn discover_sources(sources: &[String]) -> Result<BTreeSet<InputKey>> {
     Ok(out)
 }
 
+/// Walks one request argument (or nested field) and records every string it can carry.
+///
+/// TOTAL BY CONSTRUCTION: every arm either records a key, recurses, or `bail!`s. A type
+/// the traversal cannot resolve is a hard failure, never a silent skip — a skipped type
+/// means an unbounded caller string reaches storage with every conformance gate green.
 fn collect_type(
     ty: &Type,
     method: &str,
     field: &str,
     exposure: Exposure,
-    structs: &Structs,
+    types: &Types,
     visiting: &mut BTreeSet<String>,
     out: &mut BTreeSet<InputKey>,
 ) -> Result<()> {
+    if let Type::Reference(reference) = ty {
+        return collect_type(&reference.elem, method, field, exposure, types, visiting, out);
+    }
     if is_string(ty) {
         let key = InputKey {
             wire_method: method.to_owned(),
@@ -135,50 +173,136 @@ fn collect_type(
         return Ok(());
     }
     if let Some(inner) = container_inner(ty) {
-        return collect_type(inner, method, field, exposure, structs, visiting, out);
+        return collect_type(inner, method, field, exposure, types, visiting, out);
     }
     let Some(name) = type_name(ty) else {
-        return Ok(());
+        bail!(
+            "{method} request field {field:?} has {}, which the input inventory cannot \
+             traverse. Request arguments must be named types (see the accepted set in \
+             tools/conformance/src/input_inventory.rs).",
+            describe(ty)
+        );
     };
-    let Some(fields) = structs.get(&name) else {
-        return Ok(());
-    };
-    if !visiting.insert(name.clone()) {
-        bail!("recursive request DTO {name:?} is unsupported");
-    }
-    for (child, child_ty) in fields {
+    if let Some((key_ty, value_ty)) = string_map_args(ty) {
         collect_type(
-            child_ty,
+            key_ty,
             method,
-            &format!("{field}.{child}"),
+            &format!("{field}.<key>"),
             exposure,
-            structs,
+            types,
             visiting,
             out,
         )?;
+        return collect_type(
+            value_ty,
+            method,
+            &format!("{field}.<value>"),
+            exposure,
+            types,
+            visiting,
+            out,
+        );
     }
-    visiting.remove(&name);
-    Ok(())
+    if let Some(shape) = types.get(&name) {
+        if !visiting.insert(name.clone()) {
+            bail!("recursive request DTO {name:?} is unsupported");
+        }
+        match shape {
+            Shape::Alias(target) => {
+                collect_type(target, method, field, exposure, types, visiting, out)?;
+            }
+            Shape::Named(fields) => {
+                for (child, child_ty) in fields {
+                    collect_type(
+                        child_ty,
+                        method,
+                        &format!("{field}.{child}"),
+                        exposure,
+                        types,
+                        visiting,
+                        out,
+                    )?;
+                }
+            }
+            Shape::Unnamed => bail!(
+                "{method} request field {field:?} has type {name:?}, a tuple or unit struct: \
+                 its members have no wire field names, so no input policy can be attached to \
+                 them. Give it named fields."
+            ),
+        }
+        visiting.remove(&name);
+        return Ok(());
+    }
+    if SCALAR_TYPES.contains(&name.as_str()) {
+        return Ok(());
+    }
+    if OPAQUE_REQUEST_TYPES.iter().any(|(ty, _)| *ty == name) {
+        return Ok(());
+    }
+    bail!(
+        "{method} request field {field:?} has type {name:?}, which the input inventory \
+         cannot traverse: it is not a String, a container or string map of one, a DTO or \
+         alias declared in this API crate, a primitive scalar, or a listed opaque type. \
+         Either give it named String fields in its own api crate, or — if it genuinely \
+         carries no caller-supplied text — add it to OPAQUE_REQUEST_TYPES in \
+         tools/conformance/src/input_inventory.rs together with the reason."
+    );
 }
 
 fn container_inner(ty: &Type) -> Option<&Type> {
+    type_args(ty, &["Option", "Vec", "Box"])?.first().copied()
+}
+
+/// The `(K, V)` of a string-keyed map, for the map types the request surface may use.
+fn string_map_args(ty: &Type) -> Option<(&Type, &Type)> {
+    let args = type_args(ty, STRING_MAP_TYPES)?;
+    match args[..] {
+        [key, value] => Some((key, value)),
+        _ => None,
+    }
+}
+
+/// The angle-bracketed type arguments of `ty`, if its last path segment is one of `names`.
+fn type_args<'a>(ty: &'a Type, names: &[&str]) -> Option<Vec<&'a Type>> {
     let Type::Path(path) = ty else { return None };
     let segment = path.path.segments.last()?;
-    if matches!(segment.ident.to_string().as_str(), "Option" | "Vec" | "Box") {
-        let PathArguments::AngleBracketed(args) = &segment.arguments else {
-            return None;
-        };
-        args.args.iter().find_map(|arg| match arg {
-            GenericArgument::Type(ty) => Some(ty),
-            _ => None,
-        })
-    } else {
-        None
+    if !names.contains(&segment.ident.to_string().as_str()) {
+        return None;
+    }
+    let PathArguments::AngleBracketed(args) = &segment.arguments else {
+        return None;
+    };
+    Some(
+        args.args
+            .iter()
+            .filter_map(|arg| match arg {
+                GenericArgument::Type(ty) => Some(ty),
+                _ => None,
+            })
+            .collect(),
+    )
+}
+
+/// A human name for a type the traversal rejects, so the failure says WHAT it hit.
+fn describe(ty: &Type) -> &'static str {
+    match ty {
+        Type::Array(_) => "an array type",
+        Type::BareFn(_) => "a function-pointer type",
+        Type::Group(_) | Type::Paren(_) => "a grouped type",
+        Type::ImplTrait(_) => "an `impl Trait` type",
+        Type::Infer(_) => "an inferred (`_`) type",
+        Type::Macro(_) => "a macro-generated type",
+        Type::Never(_) => "the never (`!`) type",
+        Type::Ptr(_) => "a raw-pointer type",
+        Type::Slice(_) => "a slice type",
+        Type::TraitObject(_) => "a trait-object type",
+        Type::Tuple(_) => "a tuple type",
+        _ => "an unnamed type",
     }
 }
 
 fn is_string(ty: &Type) -> bool {
-    type_name(ty).as_deref() == Some("String")
+    matches!(type_name(ty).as_deref(), Some("String" | "str"))
 }
 
 fn type_name(ty: &Type) -> Option<String> {
@@ -186,9 +310,9 @@ fn type_name(ty: &Type) -> Option<String> {
     Some(path.path.segments.last()?.ident.to_string())
 }
 
-fn parse_struct(item: &ItemStruct) -> Result<Option<(String, StructFields)>> {
+fn parse_struct(item: &ItemStruct) -> Result<Shape> {
     let Fields::Named(named) = &item.fields else {
-        return Ok(None);
+        return Ok(Shape::Unnamed);
     };
     let mut fields = Vec::new();
     for field in &named.named {
@@ -198,7 +322,7 @@ fn parse_struct(item: &ItemStruct) -> Result<Option<(String, StructFields)>> {
             field.ty.clone(),
         ));
     }
-    Ok(Some((item.ident.to_string(), fields)))
+    Ok(Shape::Named(fields))
 }
 
 fn serde_rename(attrs: &[Attribute]) -> Result<Option<String>> {
@@ -293,56 +417,5 @@ pub fn policy_key_findings(discovered: &BTreeSet<InputKey>, policy: &[InputKey])
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn traverses_request_dtos_but_not_outputs() {
-        let source = r#"
-            #[derive(serde::Serialize)]
-            pub struct Request { #[serde(rename = "displayName")] pub display_name: String, pub tags: Vec<Option<String>> }
-            pub struct Output { pub secret: String }
-            #[rpc(prefix = "demo")]
-            pub trait Demo { #[http(verb="POST", path="/", auth="none", success=200)] async fn send(&self, request: Request) -> Result<Output, Error>; }
-        "#;
-        let keys = discover_sources(&[source.to_owned()]).unwrap();
-        assert_eq!(
-            keys.into_iter()
-                .map(|key| render_key(&key))
-                .collect::<Vec<_>>(),
-            [
-                "demo.send\trequest.displayName\texternal",
-                "demo.send\trequest.tags\texternal"
-            ]
-        );
-    }
-
-    #[test]
-    fn golden_omission_is_a_finding() {
-        assert!(!golden_findings("header\na\n", "header\n").is_empty());
-    }
-
-    #[test]
-    fn missing_or_orphan_or_duplicate_policy_is_a_finding() {
-        let a = InputKey {
-            wire_method: "demo.send".into(),
-            wire_field_name: "a".into(),
-            exposure: Exposure::External,
-        };
-        let b = InputKey {
-            wire_field_name: "b".into(),
-            ..a.clone()
-        };
-        let discovered = BTreeSet::from([a]);
-        let findings = policy_key_findings(&discovered, &[b.clone(), b]);
-        assert!(findings
-            .iter()
-            .any(|finding| finding.contains("missing input policy")));
-        assert!(findings
-            .iter()
-            .any(|finding| finding.contains("orphan input policy")));
-        assert!(findings
-            .iter()
-            .any(|finding| finding.contains("duplicate input policy")));
-    }
-}
+#[path = "input_inventory_tests.rs"]
+mod tests;

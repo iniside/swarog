@@ -1070,6 +1070,23 @@ effort **think hard**.
 
 ## Errata from execution
 
+### Post-execution: the admin-submit cap gap is now a tracked, BLOCKING gap
+
+Step 9's errata recorded `modules/apikeys`' uncapped admin-form strings as an
+unrepresentable gap, on the grounds that the input-field traversal could not reach the
+`adminSubmit` `Params` map. That traversal is now fail-closed and does reach it (the whole
+`admin` domain was skipped by name; the skip is gone), so the gap has a real key:
+`admin.adminSubmit  params.<value>  wire`, recorded as `InputPolicy::KnownGap` in
+`tools/conformance/src/policy.rs`.
+
+Consequence, deliberately not silenced: `--deny-gaps` rejects it, so the BLOCKING
+`conformance` verify stage is RED until each owning module byte-checks its declared form
+values before SQL. `modules/apikeys`' admin form is the one open case — role and key NAMES
+reach SQL with no cap (only `store::MAX_POLICY_BYTES` guards the policy field); wallet's
+catalog fields are already capped by `admin::CATALOG_CAPS` plus the `currencies_*_len_check`
+constraints.
+
+
 ### Step 8 (admin page) — six declared deviations
 
 Landed `bca2f30`. All six were reported rather than absorbed; the first three change what a

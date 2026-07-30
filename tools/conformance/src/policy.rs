@@ -41,7 +41,7 @@ pub fn entries() -> Vec<Entry> {
 
 pub fn input_policies() -> Vec<(InputKey, InputPolicy)> {
     use Exposure::{External, Wire};
-    use InputPolicy::{Opaque, Validated};
+    use InputPolicy::{KnownGap, Opaque, Validated};
 
     let key = |method: &str, field: &str, exposure| InputKey {
         wire_method: method.to_owned(),
@@ -56,6 +56,11 @@ pub fn input_policies() -> Vec<(InputKey, InputPolicy)> {
         (key("accounts.register", "email", External), Validated { cap: 320, basis: "accounts::email_within_cap is called by the production register path" }),
         (key("accounts.register", "password", External), Validated { cap: 1024, basis: "accounts::password_within_cap is called by the production register path" }),
         (key("accounts.verifySession", "token", Wire), Validated { cap: accountsapi::MAX_SESSION_TOKEN_BYTES, basis: "accounts::session_token_within_cap rejects before session SQL and gateway dispatch uses the same contract cap" }),
+        (key("admin.adminData", "params.<key>", Wire), Opaque { rationale: "the operator's flattened query string on a READ-only fan-out; each provider indexes it by a known name (adminapi::param) and ignores the rest, so an unrecognized key is never persisted or interpolated" }),
+        (key("admin.adminData", "params.<value>", Wire), Opaque { rationale: "read-path lookup value only: providers pass it as a bound SQL parameter and an over-long value simply matches no row — nothing on this path writes it" }),
+        (key("admin.adminSubmit", "id", Wire), Opaque { rationale: "the provider's own admin slug (adminapi::Item::id), selected by the portal from its resolved item set rather than parsed from operator text" }),
+        (key("admin.adminSubmit", "params.<key>", Wire), Opaque { rationale: "admin::collect_submit_params allowlists every key from the form's own declared Field/HiddenField names plus the reserved _expected_ prefix, so the owning module authors the key set" }),
+        (key("admin.adminSubmit", "params.<value>", Wire), KnownGap { planned_cap: 4096, remediation: "each owning module must byte-check its declared form values before SQL, as wallet does via admin::CATALOG_CAPS + the currencies_*_len_check constraints; modules/apikeys' admin form writes role and key NAMES with no byte check (only store::MAX_POLICY_BYTES on the policy field), so an operator-posted name reaches apikeys SQL uncapped in both topologies" }),
         (key("apikeys.lookupKey", "key", Wire), Validated { cap: apikeysapi::MAX_KEY_BYTES, basis: "gateway::RealKeyVerifier::lookup rejects a presented key over apikeysapi::MAX_KEY_BYTES before any store round-trip; secrets are server-generated, so there is no caller-supplied creation path to cap" }),
         (key("characters.create", "class", External), Validated { cap: 64, basis: "characters::class_within_cap validates the defaulted persisted class before SQL" }),
         (key("characters.create", "name", External), Validated { cap: 128, basis: "characters::name_within_cap validates the persisted name before SQL" }),
@@ -441,15 +446,11 @@ fn wallet() -> Entry {
                 Convention::InputByteCaps,
                 // Covers the three movement fields validate_movement enforces before ledger
                 // SQL (idempotency_key/currency/reason — player_id is Opaque, an unvalidated
-                // UUID). The admin-submit currency-catalog fields are capped too, just not
-                // REPRESENTABLE here: display_name/kind go through `admin::CATALOG_CAPS`
-                // backed by the `currencies_*_len_check` columns, and decimals is parsed as
-                // an i32 and range-checked against `currencies_decimals_range_check` — but
-                // the AdminSubmit `Params` is a `HashMap<String, String>` the input-inventory
-                // traversal (which only walks api/*/api request DTOs) never reaches, so there
-                // is no InputKey to attach a policy row to. `modules/apikeys`'s form strings
-                // are the same class and are still UNCAPPED — recorded in the wallet plan's
-                // Step 9 errata, not closed here.
+                // UUID). Wallet's admin-submit catalog fields are capped separately:
+                // display_name/kind through `admin::CATALOG_CAPS` backed by the
+                // `currencies_*_len_check` columns, decimals as a range-checked i32. The
+                // shared `admin.adminSubmit params.<value>` input key carries the
+                // cross-module stance for that class.
                 Stance::Applies(Fixture::InputByteCaps(vec![
                     CapCase {
                         name: "wallet movement idempotency key",
