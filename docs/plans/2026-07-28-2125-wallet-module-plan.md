@@ -1368,6 +1368,71 @@ that both call sites are in-crate.
    NOT copy apikeys' "self-healing upsert" wording, which `b912fa1` made false for wallet (the
    seed is insert-if-absent, so an operator's catalog edit survives a restart).
 
+### Step 11 review — the punch list closed (PASS with findings, none on the money path)
+
+The independent `core-reviewer` pass could not break the money path; its eight findings were
+all about what the tests and the prose CLAIM versus what they execute. Closed as follows.
+
+1. **The Rust catalog caps were unpinned, and two comments said otherwise.** Through
+   `apply_submit` nothing can separate `check_catalog_caps` from the column CHECKs:
+   `catalog_rejection` looks the fired constraint up in the SAME `CATALOG_CAPS` and formats it
+   with the SAME `over_cap`, and `every_catalog_cap_matches_its_check_constraint_in_the_ddl`
+   makes the two numbers equal by construction — so deleting the Rust calls leaves a
+   byte-identical message and every form assertion green. Closed with DIRECT unit tests
+   (`check_catalog_caps_names_each_field_at_one_byte_past_its_own_cap`,
+   `check_decimals_range_accepts_its_bounds_and_names_them_when_refusing`), which required
+   making both checks `pub(crate)` and lifting the inline `decimals` range block into
+   `admin::check_decimals_range` + a shared `over_decimals()` — the same
+   one-wording-two-levels shape `over_cap` already had. The two false claims (the
+   "drop the Rust caps and the test above goes red" comment in `tests.rs`, and the
+   conformance `admin.adminSubmit params.<value>` basis's "byte-checks … before SQL" for every
+   implementor) now state what is actually proven; the basis names which of its three claims
+   the gate decides (implementor list, caps exercised) and which it does not (that the cap
+   runs pre-SQL — that is each module's own tests' job).
+2. **Wallet's conformance probes tested the leaf predicate, not the enforcement point** — the
+   unswept sibling of `e3ddfef` (apikeys). All three now build a `Movement` with only the
+   field under test oversized and route through `validate_movement`, so deleting a `if !…`
+   branch from the validator turns the probe red.
+3. **`Wallet::debit`'s published doc stated a false mechanism.** Since the UPDATE-first
+   correction a debit against a MISSING balance row reaches no CHECK at all — the verdict is
+   `apply_balance_tx`'s own catalog probe after a zero-row UPDATE, and `Service::apply`'s
+   explicit `rollback()` is what discards the ledger row. Outcome (409, key free) unchanged;
+   the doc now states the outcome without the false mechanism, and `store::is_out_of_range`'s
+   doc no longer claims to cover every below-zero debit. A doc-only change to `walletapi`
+   needs NO `--bless-public-api`: the baseline is `cargo-public-api` item signatures and
+   carries no doc text.
+4. **`apply_on`'s doc contradicted the shipped posture.** `grant_starter` deliberately returns
+   `Err` (`bus::Error::transport`) and that is correct — `worker.rs` runs `ROLLBACK TO
+   SAVEPOINT deliver` on `Err`, the only safe answer once a statement may have aborted the tx.
+   The rule is "`Ok` for verdicts the handler decides itself before any statement, `Err` for
+   anything that may have aborted", which `projection.rs` already stated correctly.
+5. **`starter:` is now documented as a RESERVED key prefix** on `Movement::idempotency_key`.
+   The namespace is the whole wallet (D3), so a trusted wire caller sending
+   `starter:{player_id}` permanently pre-empts that player's grant, with no operator-visible
+   signal beyond a log line. No in-tree caller does this; it is a documented hazard, not a code
+   change.
+6. **`grant_starter`'s doc omitted its one REACHABLE `Err`.** Wallet is the first module to
+   `emit_tx` inside a delivery transaction, so `LogTransport::enqueue_tx`'s
+   `ensure_history_contract` (loud on policy drift) and `append_event` run on the handed
+   connection: a `wallet.changed` history-policy skew across a mixed-version fleet degrades the
+   STARTER-GRANT subscription, not merely a wire call. Recorded in the doc. RELATED, recorded
+   here only: the durable handler takes a `wallet.balances` row lock the interactive paths also
+   take, so a long pool-path movement on the same `(player, currency)` can push the handler
+   past `ASYNCEVENTS_HANDLER_TIMEOUT` (10s default); the plane terminates its own delivery
+   backend and recovers, so this is a latency/backoff property, not a correctness one.
+7. **Split-proof left the box granting 100 gold.** `seed_wallet_starter_config` writes
+   `wallet/starter_currency=gold` + `starter_amount=100` and never reverted them, while
+   `reset_config_baseline` right above it DELETEs `inventory/starter_item` precisely to restore
+   a compiled default. The knobs must exist PRE-SPAWN (`CachedConfig` is
+   boot-fill-or-fail-startup) and are needed by BOTH phases (`[WL7]` and `[WL7m]`), so the
+   cleanup runs after the whole proof phase: the phase moved into `proof_phase(...)` whose
+   `Result` is captured, `clear_wallet_starter_config` runs unconditionally, and only then is
+   the error propagated — so a fatal `?` mid-proof no longer leaves the rows behind either.
+8. **`[WL6]`'s LOCAL half was unexecuted.** Monolith parity re-ran only `[WL1m]/[WL2m]/[WL7m]`,
+   so a change to `Rejection::into_local` would ship green. `[WL6m]` now drives the same
+   grant → over-revoke pair through the monolith's in-process submit closure and asserts the
+   same verdict text and an unchanged balance.
+
 ## Revision history
 
 ### Revision 3 → 4 (`core-reviewer` pass over the landed Step 1, `9ccd243`)
