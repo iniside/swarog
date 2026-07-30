@@ -49,7 +49,8 @@ mod policy;
 mod tests;
 
 use checks::{
-    argon_parity_findings, completeness_findings, conv_label, drift_findings, eval_cap_probe,
+    admin_submit_findings, argon_parity_findings, completeness_findings, conv_label,
+    drift_findings, eval_cap_probe, input_policy_prose_findings,
 };
 use model::{ArgonParams, Convention, EnvCase, Fixture, InputPolicy, OutageClass, Stance};
 
@@ -100,6 +101,39 @@ fn crate_dirs(dir: &Path) -> Vec<String> {
         .filter(|e| e.path().is_dir() && e.path().join("Cargo.toml").is_file())
         .filter_map(|e| e.file_name().to_str().map(String::from))
         .collect()
+}
+
+/// The `modules/<name>` set whose sources declare an `adminapi::AdminSubmit` impl — the
+/// real source of truth [`checks::ADMIN_SUBMIT_MODULES`] is diffed against. Test files
+/// (`tests.rs`, `*_tests.rs` — the repo's only sanctioned test-file shapes) are excluded:
+/// a fixture impl is not a shipping form owner. A text scan, matching the other
+/// filesystem tripwires; `impl adminapi::AdminSubmit for` and a `use`-imported
+/// `impl AdminSubmit for` both match.
+fn admin_submit_impl_modules(modules_dir: &Path) -> Result<BTreeSet<String>, String> {
+    let mut found = BTreeSet::new();
+    for module in crate_dirs(modules_dir) {
+        let src = Path::new(modules_dir).join(&module).join("src");
+        if !src.is_dir() {
+            continue;
+        }
+        let files = rpc_contract_model::contract_sources(&src)
+            .map_err(|e| format!("list sources under {}: {e}", src.display()))?;
+        for file in files {
+            let text = std::fs::read_to_string(&file)
+                .map_err(|e| format!("read {}: {e}", file.display()))?;
+            let declares = text.lines().any(|line| {
+                let trimmed = line.trim_start();
+                !trimmed.starts_with("//")
+                    && trimmed.starts_with("impl")
+                    && trimmed.contains("AdminSubmit for ")
+            });
+            if declares {
+                found.insert(module.clone());
+                break;
+            }
+        }
+    }
+    Ok(found)
 }
 
 /// `modules/` at the workspace root, located relative to this crate
@@ -301,6 +335,16 @@ fn main() {
     let input_policy_drift = input_inventory::policy_key_findings(&discovered_inputs, &policy_keys);
     if !input_policy_drift.is_empty() {
         fail_phase("input policy drift", &input_policy_drift);
+    }
+    let prose = input_policy_prose_findings(&input_policies);
+    if !prose.is_empty() {
+        fail_phase("input policy prose", &prose);
+    }
+    let admin_submit_impls = admin_submit_impl_modules(&modules_dir())
+        .unwrap_or_else(|error| fail_phase("adminSubmit scan", &[error]));
+    let admin_submit = admin_submit_findings(&admin_submit_impls, &entries);
+    if !admin_submit.is_empty() {
+        fail_phase("adminSubmit drift", &admin_submit);
     }
     let actual_golden = input_inventory::render_golden(&discovered_inputs);
     let committed_golden =

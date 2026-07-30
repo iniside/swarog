@@ -6,7 +6,8 @@
 
 use std::collections::BTreeSet;
 
-use crate::model::{ArgonParams, Convention, Entry, Fixture, Stance};
+use crate::input_inventory::{render_key, InputKey};
+use crate::model::{ArgonParams, Convention, Entry, Fixture, InputPolicy, Stance};
 
 /// Core-infra modules hosted in every process that are NOT fortresses under
 /// `modules/` — they appear in `checkmodules::monolith_modules()` but carry no
@@ -94,6 +95,85 @@ pub fn drift_findings(
         ));
     }
     findings
+}
+
+/// The modules implementing `adminapi::AdminSubmit` today.
+///
+/// `admin.adminSubmit params.<value>` is one `InputKey` whose `Validated` basis is a claim
+/// about EVERY implementor, present and future. A third module implementing the trait with
+/// an uncapped form value produces NO new key (the map's `<value>` leg already exists), an
+/// unchanged golden, and could declare `InputByteCaps` `NotApplicable` with a non-blank
+/// reason — nothing would turn red. This hand list closes that the way the repo's other
+/// hand lists close theirs (`topiccheck`'s define-site diff,
+/// `checkmodules::split_fleet_matches_cmd_dirs`): it is diffed against `modules/*/src/**`
+/// before any assertion runs, and every module on it must carry an EXECUTABLE
+/// `Convention::InputByteCaps` fixture rather than a sentence.
+pub const ADMIN_SUBMIT_MODULES: &[&str] = &["apikeys", "wallet"];
+
+/// Phase 1b — the `AdminSubmit` drift tripwire. `on_disk` is the scanned set of modules
+/// implementing the trait; every difference from [`ADMIN_SUBMIT_MODULES`] is its own line
+/// with the concrete fix, and every listed module must back the shared `params.<value>`
+/// verdict with at least one `CapCase`.
+pub fn admin_submit_findings(on_disk: &BTreeSet<String>, entries: &[Entry]) -> Vec<String> {
+    let listed: BTreeSet<String> = ADMIN_SUBMIT_MODULES.iter().map(|m| m.to_string()).collect();
+    let mut findings = Vec::new();
+    for module in on_disk.difference(&listed) {
+        findings.push(format!(
+            "modules/{module} implements adminapi::AdminSubmit but is not in \
+             checks::ADMIN_SUBMIT_MODULES — the `admin.adminSubmit params.<value>` policy \
+             basis is a claim about every implementor. Add {module} to the list and give it \
+             an input-byte-caps CapCase covering its declared form values"
+        ));
+    }
+    for module in listed.difference(on_disk) {
+        findings.push(format!(
+            "checks::ADMIN_SUBMIT_MODULES lists {module}, which no longer implements \
+             adminapi::AdminSubmit under modules/{module}/src — remove the stale entry"
+        ));
+    }
+    for module in &listed {
+        let Some(entry) = entries.iter().find(|entry| entry.module == module) else {
+            findings.push(format!(
+                "checks::ADMIN_SUBMIT_MODULES lists {module}, which has no conformance entry"
+            ));
+            continue;
+        };
+        let cases = match entry.stance(Convention::InputByteCaps) {
+            Some(Stance::Applies(Fixture::InputByteCaps(cases))) => cases.len(),
+            _ => 0,
+        };
+        if cases == 0 {
+            findings.push(format!(
+                "{module} implements adminapi::AdminSubmit but declares no executable \
+                 input-byte-caps fixture — the `admin.adminSubmit params.<value>` basis \
+                 rests on its form values being capped, so a sentence is not enough"
+            ));
+        }
+    }
+    findings
+}
+
+/// Phase 1c — every input policy's prose must actually say something. A blank `basis` or
+/// `rationale` is the same silence the completeness matrix already rejects for
+/// `NotApplicable`'s `why`: these two verdicts are the ONLY thing standing between a
+/// discovered request string and a gate that says nothing about it.
+pub fn input_policy_prose_findings(policies: &[(InputKey, InputPolicy)]) -> Vec<String> {
+    policies
+        .iter()
+        .filter_map(|(key, policy)| {
+            let blank = match policy {
+                InputPolicy::Validated { basis, .. } => basis.trim().is_empty().then_some("basis"),
+                InputPolicy::Opaque { rationale } => {
+                    rationale.trim().is_empty().then_some("rationale")
+                }
+                InputPolicy::KnownGap { .. } => None,
+            }?;
+            Some(format!(
+                "{}: {blank} is empty — a reviewer-checkable sentence is required",
+                render_key(key)
+            ))
+        })
+        .collect()
 }
 
 /// Phase 2 — the completeness matrix. Every entry must declare exactly one

@@ -11,9 +11,10 @@ use crate::model::{
 };
 
 use crate::checks::{
-    argon_parity_findings, completeness_findings, drift_findings, eval_cap_probe,
-    CORE_INFRA_MODULES,
+    admin_submit_findings, argon_parity_findings, completeness_findings, drift_findings,
+    eval_cap_probe, input_policy_prose_findings, ADMIN_SUBMIT_MODULES, CORE_INFRA_MODULES,
 };
+use crate::input_inventory::{Exposure, InputKey};
 
 #[test]
 fn default_allows_gaps_but_deny_gaps_fails() {
@@ -117,11 +118,192 @@ fn drift_stale_entry_and_unregistered_module_each_get_lines() {
         .any(|f| f.starts_with("modules/bar on disk is not in the monolith module set")));
 }
 
-// ---- Phase 2: completeness matrix ---------------------------------------------
+// ---- Phase 1b: the adminSubmit drift tripwire ---------------------------------
 
 fn na(why: &'static str) -> Stance {
     Stance::NotApplicable { why }
 }
+
+fn caps_entry(module: &'static str, cases: usize) -> Entry {
+    let mut entry = full_entry(module);
+    entry.stances[1] = (
+        Convention::InputByteCaps,
+        Stance::Applies(Fixture::InputByteCaps(
+            (0..cases)
+                .map(|_| CapCase {
+                    name: "case",
+                    cap: 8,
+                    probe: Arc::new(|len| len > 8),
+                })
+                .collect(),
+        )),
+    );
+    entry
+}
+
+fn listed_entries(cases: usize) -> Vec<Entry> {
+    ADMIN_SUBMIT_MODULES
+        .iter()
+        .map(|module| caps_entry(module, cases))
+        .collect()
+}
+
+#[test]
+fn admin_submit_list_matching_disk_with_cap_cases_is_clean() {
+    let disk = set(ADMIN_SUBMIT_MODULES);
+    assert!(admin_submit_findings(&disk, &listed_entries(1)).is_empty());
+}
+
+/// The branch the tripwire exists for: a THIRD module implements `AdminSubmit`. It adds no
+/// `InputKey`, leaves the golden unchanged, and could declare `InputByteCaps` NotApplicable
+/// with a plausible reason — so without this the whole `params.<value>` verdict silently
+/// stops covering it.
+#[test]
+fn admin_submit_unlisted_implementor_fails_with_the_add_hint() {
+    let mut disk = set(ADMIN_SUBMIT_MODULES);
+    disk.insert("newthing".to_owned());
+    let findings = admin_submit_findings(&disk, &listed_entries(1));
+    assert_eq!(findings.len(), 1, "{findings:?}");
+    assert!(findings[0].contains("modules/newthing"), "{findings:?}");
+    assert!(findings[0].contains("ADMIN_SUBMIT_MODULES"), "{findings:?}");
+    assert!(findings[0].contains("CapCase"), "{findings:?}");
+}
+
+#[test]
+fn admin_submit_stale_listing_fails() {
+    let mut disk = set(ADMIN_SUBMIT_MODULES);
+    let dropped = disk.iter().next().cloned().expect("non-empty list");
+    disk.remove(&dropped);
+    let findings = admin_submit_findings(&disk, &listed_entries(1));
+    assert!(
+        findings
+            .iter()
+            .any(|f| f.contains(&dropped) && f.contains("remove the stale entry")),
+        "{findings:?}"
+    );
+}
+
+/// A listed implementor whose input-byte-caps stance is a SENTENCE, not an executable
+/// fixture — the exact shape a new module could use to pass while leaving its form values
+/// uncapped.
+#[test]
+fn admin_submit_listed_module_without_an_executable_fixture_fails() {
+    let disk = set(ADMIN_SUBMIT_MODULES);
+    let entries: Vec<Entry> = ADMIN_SUBMIT_MODULES
+        .iter()
+        .map(|module| {
+            let mut entry = caps_entry(module, 1);
+            entry.stances[1] = (Convention::InputByteCaps, na("looks fine to me"));
+            entry
+        })
+        .collect();
+    let findings = admin_submit_findings(&disk, &entries);
+    assert_eq!(findings.len(), ADMIN_SUBMIT_MODULES.len(), "{findings:?}");
+    assert!(
+        findings[0].contains("no executable input-byte-caps fixture"),
+        "{findings:?}"
+    );
+    // A zero-case fixture is the same silence wearing an Applies costume.
+    assert!(!admin_submit_findings(&disk, &listed_entries(0)).is_empty());
+}
+
+/// The scanning half, on a synthetic tree: it must see an impl in ANY source file (not
+/// just lib.rs), accept the `use`-imported spelling, and ignore both a test-file fixture
+/// and a commented-out line. A scanner that quietly returns nothing makes the whole
+/// tripwire vacuous.
+#[test]
+fn admin_submit_scan_finds_an_impl_in_any_source_but_not_a_test_file() {
+    let root = std::env::temp_dir().join(format!(
+        "conformance-adminsubmit-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    for (module, file, body) in [
+        (
+            "alpha",
+            "admin.rs",
+            "#[async_trait]\nimpl adminapi::AdminSubmit for Service {}\n",
+        ),
+        ("beta", "lib.rs", "impl AdminSubmit for Service {}\n"),
+        (
+            "gamma",
+            "tests.rs",
+            "impl adminapi::AdminSubmit for Fixture {}\n",
+        ),
+        (
+            "delta",
+            "lib.rs",
+            "// impl adminapi::AdminSubmit for Service {}\n",
+        ),
+    ] {
+        let src = root.join(module).join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(root.join(module).join("Cargo.toml"), "").unwrap();
+        std::fs::write(src.join(file), body).unwrap();
+    }
+    // gamma's only source is a test file, so it needs a real one to be a crate at all.
+    std::fs::write(root.join("gamma/src/lib.rs"), "pub struct Fixture;\n").unwrap();
+
+    let found = crate::admin_submit_impl_modules(&root).expect("scan");
+    assert_eq!(found, set(&["alpha", "beta"]), "{found:?}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// The hand list matches `modules/*/src` and every listed module backs the shared
+/// `admin.adminSubmit params.<value>` verdict with a real probe — the same preflight the
+/// binary runs, provable under `cargo test`.
+#[test]
+fn real_admin_submit_list_matches_disk_and_carries_cap_cases() {
+    let on_disk = crate::admin_submit_impl_modules(&crate::modules_dir())
+        .expect("scan modules/ for AdminSubmit impls");
+    assert!(
+        !on_disk.is_empty(),
+        "modules/ scan found no AdminSubmit impl — harness path bug"
+    );
+    let findings = admin_submit_findings(&on_disk, &crate::policy::entries());
+    assert!(findings.is_empty(), "adminSubmit findings: {findings:?}");
+}
+
+// ---- Phase 1c: input-policy prose ----------------------------------------------
+
+#[test]
+fn blank_basis_or_rationale_is_a_finding() {
+    let key = |field: &str| InputKey {
+        wire_method: "demo.send".into(),
+        wire_field_name: field.into(),
+        exposure: Exposure::External,
+    };
+    let policies = vec![
+        (
+            key("a"),
+            InputPolicy::Validated {
+                cap: 8,
+                basis: "   ",
+            },
+        ),
+        (key("b"), InputPolicy::Opaque { rationale: "" }),
+        (
+            key("c"),
+            InputPolicy::Validated {
+                cap: 8,
+                basis: "a real sentence",
+            },
+        ),
+    ];
+    let findings = input_policy_prose_findings(&policies);
+    assert_eq!(findings.len(), 2, "{findings:?}");
+    assert!(findings[0].contains("basis is empty"), "{findings:?}");
+    assert!(findings[1].contains("rationale is empty"), "{findings:?}");
+}
+
+#[test]
+fn real_input_policies_all_carry_prose() {
+    let findings = input_policy_prose_findings(&crate::policy::input_policies());
+    assert!(findings.is_empty(), "input policy prose: {findings:?}");
+}
+
+// ---- Phase 2: completeness matrix ---------------------------------------------
 
 fn full_entry(module: &'static str) -> Entry {
     Entry {
