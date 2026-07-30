@@ -2037,6 +2037,51 @@ async fn catalog_form_rejects_each_oversized_field_by_name() {
     cleanup(&pool, &[], &refs).await;
 }
 
+/// The property the direct unit tests cannot reach and the form test cannot separate: the
+/// Rust caps run BEFORE any SQL. Proven by construction on a CLOSED pool — `apply_submit`
+/// cannot even acquire a connection, so a verdict that still names the field's own ceiling
+/// can only have come from the Rust check, never from a column CHECK. The at-cap control
+/// below is what keeps this from being vacuous: with a legitimate value the same call is an
+/// `Internal` pool error, so the pool really is dead.
+#[tokio::test]
+async fn catalog_caps_reject_before_any_sql_runs() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let over_code = "c".repeat(MAX_CURRENCY_CODE_BYTES + 1);
+    pool.close().await;
+
+    let msg = rejection_text(
+        crate::admin::apply_submit(&svc, catalog_params(&over_code, "Name", "soft", "0"))
+            .await
+            .expect_err("an over-long code must be refused"),
+    );
+    assert!(
+        msg.contains("currency code") && msg.contains(&MAX_CURRENCY_CODE_BYTES.to_string()),
+        "with no reachable DB the verdict must still be the Rust cap's: {msg}"
+    );
+
+    let msg = rejection_text(
+        crate::admin::apply_submit(&svc, catalog_params("ok", "Name", "soft", "19"))
+            .await
+            .expect_err("decimals past the range must be refused"),
+    );
+    assert!(
+        msg.contains(&format!("0..={MAX_CURRENCY_DECIMALS}")),
+        "with no reachable DB the verdict must still be the Rust range's: {msg}"
+    );
+
+    let msg = rejection_text(
+        crate::admin::apply_submit(&svc, catalog_params("ok", "Name", "soft", "0"))
+            .await
+            .expect_err("the closed pool must fail a legitimate write"),
+    );
+    assert!(
+        msg.starts_with("internal:"),
+        "control: a within-cap write on a closed pool is an Internal error, so the two \
+         assertions above really did answer without SQL: {msg}"
+    );
+}
+
 /// The DB half, on its own: each catalog CHECK rejects a direct INSERT past its bound
 /// under the constraint name `admin::catalog_rejection` maps. This is the class fail-safe
 /// for every writer that does not go through the admin form — a raw `psql` INSERT, or a
