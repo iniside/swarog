@@ -664,9 +664,16 @@ fn edge_peer_order_violations(fleet: &[ServiceDef]) -> (Vec<String>, usize) {
 fn boot_order_respects_edge_peer_dependencies() {
     let (violations, checked) = edge_peer_order_violations(&split());
     assert!(violations.is_empty(), "boot order violates a declared edge peer:\n{violations:#?}");
-    // ELEVEN edge declarations: match(1) + characters(1) + inventory(2) +
-    // admin(7). gateway declares none (it asks).
-    assert_eq!(checked, 11, "expected 11 edge peer declarations across the fleet");
+    // Counted from the fleet by a different expression than the loop's, so the
+    // rule cannot go green over declarations its `continue` arms dropped, and no
+    // literal goes stale when a service is added. gateway declares none (it asks).
+    let declared = split()
+        .iter()
+        .flat_map(|svc| svc.addrs.told())
+        .filter(|(_, _, kind)| *kind == AddrKind::Edge)
+        .count();
+    assert!(declared > 0, "the fleet declares no edge peer at all");
+    assert_eq!(checked, declared, "every edge peer declaration must be examined");
 }
 
 /// The asymmetry the boot-order rule depends on: an `AddrKind::Http` peer is a
