@@ -66,9 +66,13 @@ Intentional baseline changes are explicit actions:
 ```sh
 cargo run -p verifyctl -- --bless-public-api
 cargo run -p verifyctl -- --bless-contract-golden
+cargo run -p verifyctl -- --bless-input-golden
 ```
 
-Both actions take the same rollout lease and replace baseline sets recoverably.
+All three actions take the same rollout lease and replace baseline sets recoverably.
+`--bless-input-golden` regenerates `tools/conformance/input-fields.golden.tsv` (the
+source-derived inventory of string-bearing RPC request fields) through
+`conformancecheck --write-input-golden`, which is that snapshot's only writer.
 
 ## What the compiler does and does not prove
 

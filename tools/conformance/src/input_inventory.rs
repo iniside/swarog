@@ -268,7 +268,7 @@ pub fn golden_findings(actual: &str, committed: &str) -> Vec<String> {
     if actual == committed {
         Vec::new()
     } else {
-        vec!["input inventory differs from tools/conformance/input-fields.golden.tsv — update policy and commit the regenerated snapshot".to_owned()]
+        vec!["input inventory differs from tools/conformance/input-fields.golden.tsv — update tools/conformance/src/policy.rs, then regenerate the snapshot with `cargo run -p verifyctl -- --bless-input-golden` and commit it".to_owned()]
     }
 }
 

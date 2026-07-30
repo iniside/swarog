@@ -49,6 +49,7 @@ pub fn execute(options: Options) -> Result<Exit> {
         return match options.action {
             Action::BlessPublicApi => stages::public_api::bless(&root),
             Action::BlessContractGolden => stages::contract_golden::bless(&root),
+            Action::BlessInputGolden => stages::conformance::bless(&root),
             Action::Verify | Action::Help => unreachable!("handled above"),
         };
     }

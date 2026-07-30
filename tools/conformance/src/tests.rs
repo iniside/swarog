@@ -20,9 +20,35 @@ fn default_allows_gaps_but_deny_gaps_fails() {
     assert!(!crate::deny_gaps_fails(false, 6));
     assert!(crate::deny_gaps_fails(true, 6));
     assert!(!crate::deny_gaps_fails(true, 0));
-    assert!(!crate::parse_deny_gaps(Vec::<String>::new()).unwrap());
-    assert!(crate::parse_deny_gaps(["--deny-gaps".to_owned()]).unwrap());
-    assert!(crate::parse_deny_gaps(["--unknown".to_owned()]).is_err());
+    assert_eq!(
+        crate::parse_args(Vec::<String>::new()).unwrap(),
+        crate::Mode::Check { deny_gaps: false }
+    );
+    assert_eq!(
+        crate::parse_args(["--deny-gaps".to_owned()]).unwrap(),
+        crate::Mode::Check { deny_gaps: true }
+    );
+    assert!(crate::parse_args(["--unknown".to_owned()]).is_err());
+}
+
+/// The golden has exactly one writer, and `--help` names it — the discoverable
+/// route to regenerating the snapshot must not be "read `render_golden`".
+#[test]
+fn write_input_golden_is_a_documented_mode_taking_a_path() {
+    assert_eq!(
+        crate::parse_args(["--write-input-golden".to_owned(), "out.tsv".to_owned()]).unwrap(),
+        crate::Mode::WriteInputGolden("out.tsv".into())
+    );
+    assert!(crate::parse_args(["--write-input-golden".to_owned()]).is_err());
+    assert!(crate::parse_args([
+        "--write-input-golden".to_owned(),
+        "out.tsv".to_owned(),
+        "--deny-gaps".to_owned()
+    ])
+    .is_err());
+    assert_eq!(crate::parse_args(["-h".to_owned()]).unwrap(), crate::Mode::Help);
+    assert!(crate::USAGE.contains("--write-input-golden"));
+    assert!(crate::USAGE.contains("--bless-input-golden"));
 }
 
 fn set(names: &[&str]) -> BTreeSet<String> {

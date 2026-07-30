@@ -12,6 +12,7 @@ pub enum Action {
     Verify,
     BlessPublicApi,
     BlessContractGolden,
+    BlessInputGolden,
     Help,
 }
 
@@ -47,15 +48,15 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Options> {
             }
             "--strict" => options.strict = true,
             "--no-install" => options.install = false,
-            "--bless-public-api" | "--bless-contract-golden" => {
+            "--bless-public-api" | "--bless-contract-golden" | "--bless-input-golden" => {
                 if action_seen {
                     bail!("bless actions are mutually exclusive");
                 }
                 action_seen = true;
-                options.action = if arg == "--bless-public-api" {
-                    Action::BlessPublicApi
-                } else {
-                    Action::BlessContractGolden
+                options.action = match arg.as_str() {
+                    "--bless-public-api" => Action::BlessPublicApi,
+                    "--bless-contract-golden" => Action::BlessContractGolden,
+                    _ => Action::BlessInputGolden,
                 };
             }
             "-h" | "--help" if !action_seen => options.action = Action::Help,
@@ -78,6 +79,7 @@ USAGE:
   verifyctl [--fast|--all|--slow] [--strict] [--no-install]
   verifyctl --bless-public-api
   verifyctl --bless-contract-golden
+  verifyctl --bless-input-golden
 
 --fast is the default. Bless actions are explicit, recoverable baseline updates.";
 
@@ -99,5 +101,16 @@ mod tests {
         ])
         .is_err());
         assert!(parse(["--bless-public-api".into(), "--strict".into()]).is_err());
+        assert_eq!(
+            parse(["--bless-input-golden".into()]).unwrap().action,
+            Action::BlessInputGolden
+        );
+        assert!(parse([
+            "--bless-input-golden".into(),
+            "--bless-contract-golden".into()
+        ])
+        .is_err());
+        assert!(parse(["--bless-input-golden".into(), "--all".into()]).is_err());
+        assert!(USAGE.contains("--bless-input-golden"));
     }
 }

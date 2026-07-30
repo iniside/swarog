@@ -210,37 +210,85 @@ fn fail_phase(phase: &str, findings: &[String]) -> ! {
     std::process::exit(1);
 }
 
-fn parse_deny_gaps(args: impl IntoIterator<Item = String>) -> Result<bool, String> {
+const USAGE: &str = "usage: conformancecheck [--deny-gaps]\n       conformancecheck \
+                     --write-input-golden <path>   (regenerates the input-field \
+                     inventory; wrapped by cargo run -p verifyctl -- --bless-input-golden)";
+
+#[derive(Debug, PartialEq, Eq)]
+enum Mode {
+    Check { deny_gaps: bool },
+    /// Renders the discovered inventory to `path` — the ONE writer for
+    /// `tools/conformance/input-fields.golden.tsv`, so a stale row is regenerated
+    /// rather than hand-transcribed from a failure message.
+    WriteInputGolden(PathBuf),
+    Help,
+}
+
+fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Mode, String> {
     let mut deny = false;
-    for arg in args {
+    let mut golden = None;
+    let mut args = args.into_iter();
+    while let Some(arg) = args.next() {
         match arg.as_str() {
             "--deny-gaps" => deny = true,
-            "-h" | "--help" => {
-                println!("usage: conformancecheck [--deny-gaps]");
-                std::process::exit(0);
+            "--write-input-golden" => {
+                let path = args
+                    .next()
+                    .ok_or_else(|| "--write-input-golden requires a path".to_owned())?;
+                golden = Some(PathBuf::from(path));
             }
+            "-h" | "--help" => return Ok(Mode::Help),
             _ => return Err(format!("unknown argument {arg:?}")),
         }
     }
-    Ok(deny)
+    match golden {
+        Some(_) if deny => Err("--write-input-golden does not take --deny-gaps".to_owned()),
+        Some(path) => Ok(Mode::WriteInputGolden(path)),
+        None => Ok(Mode::Check { deny_gaps: deny }),
+    }
 }
 
 fn deny_gaps_fails(deny_gaps: bool, gap_count: usize) -> bool {
     deny_gaps && gap_count != 0
 }
 
+fn discovered_inputs() -> BTreeSet<input_inventory::InputKey> {
+    input_inventory::discover(&input_inventory::api_root())
+        .unwrap_or_else(|error| fail_phase("input discovery", &[format!("{error:#}")]))
+}
+
+fn write_input_golden(path: &Path) {
+    let discovered = discovered_inputs();
+    let rendered = input_inventory::render_golden(&discovered);
+    if let Err(error) = std::fs::write(path, rendered) {
+        fail_phase(
+            "write input golden",
+            &[format!("write {}: {error}", path.display())],
+        );
+    }
+    println!(
+        "conformancecheck: wrote {} ({} fields)",
+        path.display(),
+        discovered.len()
+    );
+}
+
 fn main() {
-    let deny_gaps = parse_deny_gaps(std::env::args().skip(1)).unwrap_or_else(|error| {
-        eprintln!("conformancecheck: {error}\nusage: conformancecheck [--deny-gaps]");
-        std::process::exit(2);
-    });
+    let deny_gaps = match parse_args(std::env::args().skip(1)) {
+        Ok(Mode::Check { deny_gaps }) => deny_gaps,
+        Ok(Mode::WriteInputGolden(path)) => return write_input_golden(&path),
+        Ok(Mode::Help) => return println!("{USAGE}"),
+        Err(error) => {
+            eprintln!("conformancecheck: {error}\n{USAGE}");
+            std::process::exit(2);
+        }
+    };
     println!("conformancecheck: convention-conformance matrix (module × convention)\n");
 
     // ---- Phase 1: drift preflight (fail before anything else) ---------------
     let entries = policy::entries();
 
-    let discovered_inputs = input_inventory::discover(&input_inventory::api_root())
-        .unwrap_or_else(|error| fail_phase("input discovery", &[format!("{error:#}")]));
+    let discovered_inputs = discovered_inputs();
     let input_policies = policy::input_policies();
     let input_gap_count = input_policies
         .iter()

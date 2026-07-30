@@ -395,9 +395,10 @@ blocking failure:
 - SLOW (`--slow`): the blocking and advisory manifests plus `cargo mutants`;
   advisory failures remain non-blocking unless `--strict` is also present.
 
-Intentional baseline updates use `cargo run -p verifyctl -- --bless-public-api`
-or `cargo run -p verifyctl -- --bless-contract-golden`; each is a recoverable,
-lease-protected action.
+Intentional baseline updates use `cargo run -p verifyctl -- --bless-public-api`,
+`cargo run -p verifyctl -- --bless-contract-golden`, or
+`cargo run -p verifyctl -- --bless-input-golden` (the conformance input-field
+inventory); each is a recoverable, lease-protected action.
 
 ## Dev tooling scope — MANDATORY
 
