@@ -1,12 +1,13 @@
 //! Tests for the scraper (Step 2). Kept in a SEPARATE file per CLAUDE.md; wired from
 //! the crate root via `#[cfg(test)] #[path = "tests.rs"] mod tests;`.
 //!
-//! Three things are pinned:
+//! Four things are pinned:
 //!
 //! 1. the produced manifest matches the committed golden (the 14 methods, 8 DTOs,
 //!    `Status` variants) — the whole scrape end-to-end;
 //! 2. the drift gate fires on a route_bindings-without-signature mismatch;
-//! 3. the completeness gate fires on a #[http]-bearing provider missing from the list.
+//! 3. the completeness gate fires on a #[http]-bearing provider missing from the list;
+//! 4. a Rust scalar outside the type lattice bails naming the lattice, not a missing DTO.
 //!
 //! The gate functions are exercised directly with hand-built inputs (no need to mutate
 //! real crates).
@@ -17,7 +18,7 @@ use std::path::PathBuf;
 
 use crate::emit::{emit_client, emit_dtos, emit_status};
 use crate::model::{Manifest, TypeRef};
-use crate::scrape::{check_completeness, check_drift, parse_sources, scrape};
+use crate::scrape::{check_completeness, check_drift, map_type, parse_sources, scrape};
 
 /// The committed golden manifest — regenerate with
 /// `cargo run -p csharp-client-gen -- --emit-manifest testdata/manifest.golden.json`.
@@ -242,4 +243,32 @@ fn completeness_gate_fires_on_missing_provider() {
     let providers = ["characters", "inventory", "accounts", "match", "leaderboard"];
     let err = check_completeness(&http_traits, &providers).expect_err("must fire");
     assert!(err.contains("quests"), "err was: {err}");
+}
+
+// --- Gate 3: the type lattice ----------------------------------------------
+
+#[test]
+fn unmodelled_scalar_bails_naming_the_lattice_not_a_missing_dto() {
+    // `u32` is the shape of the next scalar a contract adds. Before the named arm it fell
+    // through to `TypeRef::Struct("u32")` and died much later in `collect_dtos` as
+    // `DTO "u32" referenced but no pub struct found`, sending the reader after a struct that
+    // was never meant to exist.
+    let ty: syn::Type = syn::parse_str("u32").expect("parses");
+    let err = map_type(&ty).expect_err("an unmodelled scalar must bail");
+    let msg = err.to_string();
+    assert!(msg.contains("u32"), "err was: {msg}");
+    assert!(
+        msg.contains("TypeRef") && msg.contains("cs_type"),
+        "the diagnostic must name the remedy (a TypeRef variant + its cs_type mapping); err was: {msg}"
+    );
+
+    // The recognised scalars stay recognised.
+    assert_eq!(
+        map_type(&syn::parse_str::<syn::Type>("i32").unwrap()).unwrap(),
+        TypeRef::I32
+    );
+    assert_eq!(
+        map_type(&syn::parse_str::<syn::Type>("Wallet").unwrap()).unwrap(),
+        TypeRef::Struct("Wallet".into())
+    );
 }

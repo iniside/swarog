@@ -384,9 +384,19 @@ fn serde_rename(attrs: &[Attribute]) -> Option<String> {
 // Type mapping + DTO recursion
 // ---------------------------------------------------------------------------
 
-/// Maps a `syn::Type` into the minimal [`TypeRef`] lattice. `String`/`i64`/`Vec<T>`/`()`
-/// are recognised; any other single-segment path is treated as a DTO `Struct(name)`.
-fn map_type(ty: &Type) -> Result<TypeRef> {
+/// The Rust scalars the [`TypeRef`] lattice does NOT model. They are named explicitly so a
+/// contract introducing one fails HERE, at the missing lattice variant, instead of falling
+/// through to `Struct(name)` and dying in `collect_dtos` as a missing-DTO error — which sends
+/// the reader hunting a struct that was never meant to exist.
+const UNMODELLED_SCALARS: &[&str] = &[
+    "bool", "char", "f32", "f64", "i8", "i16", "i128", "isize", "u8", "u16", "u32", "u64",
+    "u128", "usize",
+];
+
+/// Maps a `syn::Type` into the minimal [`TypeRef`] lattice. `String`/`i64`/`i32`/`Vec<T>`/`()`
+/// are recognised; any other single-segment path is treated as a DTO `Struct(name)`, except
+/// the [`UNMODELLED_SCALARS`], which bail naming the real remedy.
+pub(crate) fn map_type(ty: &Type) -> Result<TypeRef> {
     match ty {
         Type::Tuple(t) if t.elems.is_empty() => Ok(TypeRef::Unit),
         Type::Path(tp) => {
@@ -405,6 +415,12 @@ fn map_type(ty: &Type) -> Result<TypeRef> {
                         .ok_or_else(|| anyhow!("Vec without a type argument"))?;
                     Ok(TypeRef::Vec(Box::new(map_type(inner)?)))
                 }
+                other if UNMODELLED_SCALARS.contains(&other) => Err(anyhow!(
+                    "player surface uses the Rust scalar `{other}`, which the C# type lattice \
+                     does not model: add a `TypeRef` variant for it (src/model.rs), its \
+                     `cs_type` mapping (src/emit.rs) and a `map_type` arm here — it must NOT \
+                     fall through to a DTO struct"
+                )),
                 other => Ok(TypeRef::Struct(other.to_string())),
             }
         }
