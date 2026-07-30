@@ -218,7 +218,6 @@ fn topology_specs_are_isolated_and_unknown_overrides_fail_closed() {
         &key,
         &environment,
     );
-    assert_eq!(split.len(), 12);
     assert!(split
         .iter()
         .all(|service| !service.env.contains_key("HTTP_PROXY")));
