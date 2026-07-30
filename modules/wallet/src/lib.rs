@@ -173,14 +173,15 @@ impl Module for WalletModule {
         let svc = self.svc();
         if svc.dev_seed {
             tracing::warn!(
-                "WALLET_DEV_SEED is ON — upserting the dev currency catalog (`gold`, `gems`). \
-                 This is an explicit local-dev opt-in; keep it OFF (the fail-closed default) \
-                 in production, where the catalog is operator data."
+                "WALLET_DEV_SEED is ON — seeding the dev currency catalog (`gold`, `gems`) if \
+                 absent; an existing row keeps its operator-edited fields. This is an explicit \
+                 local-dev opt-in; keep it OFF (the fail-closed default) in production, where \
+                 the catalog is operator data."
             );
             let mut conn = pool.acquire().await?;
             for (code, display_name, kind, decimals) in DEV_SEED_CURRENCIES {
                 svc.store
-                    .upsert_currency_tx(&mut conn, code, display_name, kind, *decimals)
+                    .insert_currency_if_absent_tx(&mut conn, code, display_name, kind, *decimals)
                     .await?;
             }
         }

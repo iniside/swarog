@@ -1045,6 +1045,32 @@ later step should expect.
 The hidden idempotency fields are minted per render from `OsRng`, not a clock: two grants
 rendered in the same tick must not collide into a silent "duplicate that already paid".
 
+#### Step 8 follow-up — three review findings closed (`[opus]`, after `bca2f30`)
+
+Three findings deferred from the adversarial review of `bca2f30`, closed at their authorities.
+
+1. **The drill-down no longer truncates silently.** `Store::recent_ledger` selects
+   `limit + 1` (still clamped to `MAX_RECENT_LEDGER`) and returns `LedgerPage { rows,
+   truncated }`; the header note reads `newest N movement(s) — older rows not shown` or
+   `N movement(s) — full history`. Known gap 2 still stands — there is still no cursor — but
+   a partial page now says it is partial instead of reading as a complete audit trail.
+2. **The table shows the value it is sorted by.** `LedgerEntry` carries `seq` and it renders
+   as the leading mono column. `WHEN` stays, and the pair is now legible: `at` is
+   `clock_timestamp()` at the ledger INSERT, `seq` is stamped under the balance row lock, so
+   under concurrent movements the timestamps can disagree with the row order.
+3. **SEMANTIC CHANGE — `WALLET_DEV_SEED` no longer reverts operator catalog edits.** The
+   migrate path calls the new `Store::insert_currency_if_absent_tx` (`ON CONFLICT (code) DO
+   NOTHING`); `upsert_currency_tx` (`DO UPDATE`) is now the ADMIN form's writer only. Before
+   this change, renaming `Gold` on the admin page was silently undone by the next boot with
+   the flag on. **A dev-seeded currency's `display_name`/`kind`/`decimals` are therefore no
+   longer restored on boot** — the seed's job is that the dev codes EXIST so money can move,
+   not that wallet owns their presentation. Recovery for a genuinely mangled dev row is the
+   admin form (or dropping the row), not a restart. The doc comment claiming "Self-healing: a
+   hand-edited dev row is restored on the next boot" was false after the split and is gone.
+
+No `api/wallet/*` change; 26 wallet tests unchanged and green. `LedgerPage`/`truncated` and
+the `seq` column want assertions in the Step 10 `[test-author]` step.
+
 ### Step 4 (`cmd/wallet-svc` + fleets) — four files the plan never listed, and one false command
 
 Landed `ef5a940`; `archcheck` went 2 violations → **0**, `requirecheck --strict` OK.

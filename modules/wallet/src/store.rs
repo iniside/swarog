@@ -59,13 +59,24 @@ pub(crate) struct CatalogEntry {
     pub(crate) created_at: String,
 }
 
-/// One ledger row as the ADMIN drill-down shows it.
+/// One ledger row as the ADMIN drill-down shows it. `seq` rides along because it is the
+/// ORDER the table is sorted by; `at` can disagree with it under concurrency, and an
+/// operator auditing money needs the value the sort actually used.
 pub(crate) struct LedgerEntry {
+    pub(crate) seq: i64,
     pub(crate) at: String,
     pub(crate) currency: String,
     pub(crate) delta: i64,
     pub(crate) balance_after: i64,
     pub(crate) reason: String,
+}
+
+/// One page of [`Store::recent_ledger`]. The read decides `truncated` itself — it asks for
+/// one row PAST the limit — so no caller can mistake a full page for a whole history, which
+/// is what re-counting rows against a clamp it does not own would invite.
+pub(crate) struct LedgerPage {
+    pub(crate) rows: Vec<LedgerEntry>,
+    pub(crate) truncated: bool,
 }
 
 /// The hard ceiling on a [`Store::recent_ledger`] page. Unlike the balance and catalog
@@ -335,48 +346,88 @@ impl Store {
     /// only (`clock_timestamp()` of the INSERT, a round trip before that lock).
     ///
     /// `limit` is CLAMPED to `1 ..= MAX_RECENT_LEDGER` rather than trusted: this is the one
-    /// wallet read whose size a caller influences.
+    /// wallet read whose size a caller influences. The statement asks for `limit + 1` and
+    /// the surplus row is dropped, so the page carries whether older movements exist —
+    /// there is no cursor, and a page that cannot say it is partial reads as complete.
     ///
-    /// A malformed id is a miss (empty list), the same answer [`Store::list_balances`]
-    /// gives, so a drill-down on a bad uuid renders empty instead of a 500.
+    /// A malformed id is a miss (an empty, non-truncated page), the same answer
+    /// [`Store::list_balances`] gives, so a drill-down on a bad uuid renders empty instead
+    /// of a 500.
     pub(crate) async fn recent_ledger(
         &self,
         player_id: &str,
         limit: i64,
-    ) -> Result<Vec<LedgerEntry>, sqlx::Error> {
-        let res = sqlx::query_as::<_, (String, String, i64, i64, String)>(
-            "SELECT at::text, currency, delta, balance_after, reason \
+    ) -> Result<LedgerPage, sqlx::Error> {
+        let limit = limit.clamp(1, MAX_RECENT_LEDGER);
+        let res = sqlx::query_as::<_, (i64, String, String, i64, i64, String)>(
+            "SELECT seq, at::text, currency, delta, balance_after, reason \
                FROM wallet.ledger WHERE player_id = $1::uuid \
               ORDER BY seq DESC LIMIT $2",
         )
         .bind(player_id)
-        .bind(limit.clamp(1, MAX_RECENT_LEDGER))
+        .bind(limit + 1)
         .fetch_all(&self.pool)
         .await;
         match res {
-            Ok(rows) => Ok(rows
-                .into_iter()
-                .map(
-                    |(at, currency, delta, balance_after, reason)| LedgerEntry {
-                        at,
-                        currency,
-                        delta,
-                        balance_after,
-                        reason,
-                    },
-                )
-                .collect()),
-            Err(e) if is_invalid_uuid(&e) => Ok(Vec::new()),
+            Ok(mut rows) => {
+                let truncated = rows.len() as i64 > limit;
+                rows.truncate(limit as usize);
+                Ok(LedgerPage {
+                    rows: rows
+                        .into_iter()
+                        .map(|(seq, at, currency, delta, balance_after, reason)| LedgerEntry {
+                            seq,
+                            at,
+                            currency,
+                            delta,
+                            balance_after,
+                            reason,
+                        })
+                        .collect(),
+                    truncated,
+                })
+            }
+            Err(e) if is_invalid_uuid(&e) => Ok(LedgerPage {
+                rows: Vec::new(),
+                truncated: false,
+            }),
             Err(e) => Err(e),
         }
     }
 
-    /// Self-healing: a hand-edited dev row is restored on the next boot.
+    /// Seeds a code without touching a row that already exists: `WALLET_DEV_SEED`'s job is
+    /// that the dev codes EXIST so money can move, not that wallet owns their presentation.
+    /// An operator's rename on the admin page therefore survives the next boot.
+    pub(crate) async fn insert_currency_if_absent_tx(
+        &self,
+        conn: &mut PgConnection,
+        code: &str,
+        display_name: &str,
+        kind: &str,
+        decimals: i32,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "INSERT INTO wallet.currencies (code, display_name, kind, decimals) \
+             VALUES ($1, $2, $3, $4) \
+             ON CONFLICT (code) DO NOTHING",
+        )
+        .bind(code)
+        .bind(display_name)
+        .bind(kind)
+        .bind(decimals)
+        .execute(&mut *conn)
+        .await?;
+        Ok(())
+    }
+
+    /// The ADMIN form's catalog write: an existing code is OVERWRITTEN, because an operator
+    /// submitting a currency means to change it. The dev seed uses
+    /// [`Store::insert_currency_if_absent_tx`] instead, so a boot never reverts that edit.
     ///
-    /// An over-long code is `currencies_code_len_check` as 23514 — a boot failure here,
-    /// which is right for a hardcoded dev code, but a CALLER-facing writer must map it to a
-    /// 400. It cannot be mistaken for insufficient funds: `is_out_of_range` is
-    /// constraint-named to `balances_amount_check`.
+    /// An over-long code is `currencies_code_len_check` as 23514, which the caller maps to a
+    /// 400 (`admin::catalog_rejection`) because it is operator input. It cannot be mistaken
+    /// for insufficient funds: `is_out_of_range` is constraint-named to
+    /// `balances_amount_check`.
     pub(crate) async fn upsert_currency_tx(
         &self,
         conn: &mut PgConnection,

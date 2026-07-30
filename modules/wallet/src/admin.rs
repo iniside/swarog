@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 use walletapi::{Movement, Wallet};
 
-use crate::store::{CatalogEntry, LedgerEntry};
+use crate::store::{CatalogEntry, LedgerPage};
 use crate::{is_uuid_text, Service, IDEMPOTENCY_CONFLICT};
 
 pub(crate) const ADMIN_ITEM_ID: &str = "wallet";
@@ -32,7 +32,8 @@ pub(crate) const ADMIN_LABEL: &str = "Wallet";
 const PARAM_PLAYER: &str = "player";
 const PLAYER_REF_PREFIX: &str = "player:";
 
-/// How many ledger rows the drill-down asks for; the store clamps to its own hard ceiling.
+/// How many ledger rows the drill-down asks for; the store clamps to its own hard ceiling
+/// and reports whether older rows exist.
 const LEDGER_PAGE: i64 = 50;
 
 const ACTION_FIELD: &str = "_action";
@@ -146,7 +147,7 @@ fn player_content(
     player_id: &str,
     catalog: &[CatalogEntry],
     balances: &[walletapi::Balance],
-    ledger: &[LedgerEntry],
+    ledger: &LedgerPage,
 ) -> adminapi::Content {
     let short = short_uuid(player_id);
     let kpis = if balances.is_empty() {
@@ -167,18 +168,23 @@ fn player_content(
     };
 
     let mut table = adminapi::Table {
+        // SEQ leads because it is what the rows are ORDERED by — stamped under the balance
+        // row lock, so it is the order money moved; WHEN is the INSERT clock, a round trip
+        // earlier, and the two can disagree under concurrent movements.
         columns: vec![
+            "SEQ".into(),
             "WHEN".into(),
             "CURRENCY".into(),
             "DELTA".into(),
             "BALANCE AFTER".into(),
             "REASON".into(),
         ],
-        rows: Vec::with_capacity(ledger.len()),
+        rows: Vec::with_capacity(ledger.rows.len()),
         ..Default::default()
     };
-    for e in ledger {
+    for e in &ledger.rows {
         table.rows.push(vec![
+            adminapi::Cell::mono(e.seq.to_string()),
             adminapi::Cell::text(short_ts(&e.at)),
             adminapi::Cell::mono(&e.currency),
             adminapi::Cell {
@@ -199,7 +205,7 @@ fn player_content(
             avatar_color_key: palette(player_id),
             title: short.to_string(),
             subtitle_mono: format!("{PLAYER_REF_PREFIX}{player_id}"),
-            right_note: format!("{} movement(s) shown", ledger.len()),
+            right_note: ledger_note(ledger),
         }),
         kpis,
         table: Some(table),
@@ -589,6 +595,17 @@ impl adminapi::AdminSubmit for Service {
 // ============================================================================
 // Presentation helpers
 // ============================================================================
+
+/// The header note for a drill-down. A truncated page MUST say so: the page has no cursor,
+/// so a bare count beside a thousand-row history reads as the whole story.
+fn ledger_note(ledger: &LedgerPage) -> String {
+    let n = ledger.rows.len();
+    if ledger.truncated {
+        format!("newest {n} movement(s) — older rows not shown")
+    } else {
+        format!("{n} movement(s) — full history")
+    }
+}
 
 /// The catalog's display name for a held currency; the code itself when the catalog row is
 /// gone (a balance outlives nothing today — the FK holds — but the read is two statements,
