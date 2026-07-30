@@ -414,8 +414,8 @@ fn resolve_addrs(port: u16, provider: &str, kind: AddrKind) -> Vec<String> {
 ///
 /// So it is keyed on the PROVIDERS instead — every `(provider, kind)` the fleet
 /// has, derived from the port fields themselves. That set cannot shrink when a
-/// consumer changes how it learns an address, and it is strictly larger (22 vs
-/// 19). The comparand is each provider's OWN bind (`PORT` / `EDGE_ADDR`,
+/// consumer changes how it learns an address, and it is strictly larger than the
+/// 19 edges it replaced. The comparand is each provider's OWN bind (`PORT` / `EDGE_ADDR`,
 /// composed by a different expression than `service_addr`'s), which is the fact
 /// that actually matters and the one no consumer's env states anymore now that
 /// nobody is TOLD an `*_HTTP_ADDR`: *the agent must send callers to the address
@@ -469,8 +469,19 @@ fn resolve_answers_exactly_what_each_service_composes_as_its_own_bind() {
 
     // Fail-proof, and deliberately NOT just a count: a count alone is what let
     // the Http class vanish while the number merely got smaller and a human
-    // "restored" it. 12 http_ports + 10 edge_ports (admin and gateway have none).
-    assert_eq!(compared.len(), 22, "every address in the real split fleet must be compared");
+    // "restored" it. The expectation is derived from the fleet's own port fields,
+    // so adding a service cannot leave a stale literal behind; what guards the
+    // class is the two assertions below, not the number.
+    let expected: usize = fleet
+        .iter()
+        .filter(|def| def.provider.is_some())
+        .map(|def| 1 + usize::from(def.edge_port.is_some()))
+        .sum();
+    assert_eq!(
+        compared.len(),
+        expected,
+        "every address in the real split fleet must be compared"
+    );
     assert!(
         compared.iter().any(|(_, kind)| *kind == AddrKind::Edge),
         "the Edge class must never silently vanish from this proof"
@@ -625,7 +636,7 @@ fn under_the_monolith_every_resolve_404s() {
     // automatically asked for here.
     let split = split_fleet();
     let providers: Vec<&str> = split.iter().filter_map(|svc| svc.provider.as_deref()).collect();
-    assert_eq!(providers.len(), 12, "the split fleet's providers");
+    assert!(!providers.is_empty(), "the split fleet's providers");
     for provider in providers {
         for kind in [AddrKind::Edge, AddrKind::Http] {
             let (status, body) = post_resolve(port, provider, kind);
