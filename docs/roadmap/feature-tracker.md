@@ -1,6 +1,6 @@
 # Feature tracker — closing the gaps from the BaaS analysis
 
-**Last update: 2026-07-28-2242**
+**Last update: 2026-07-30-1930**
 
 **Living document, updated in place** (no date prefix in the filename — it is the
 current state, not a dated snapshot; the date above moves instead). Source of the
@@ -37,7 +37,7 @@ Rationale in the decision notes below; the order deviates from the gap doc's own
 
 | # | Feature | Status | Plan doc |
 |:-:|---|:--:|---|
-| 1 | Virtual currency wallet + ledger | 📝 | [2026-07-28-2125-wallet-module-plan.md](../plans/2026-07-28-2125-wallet-module-plan.md) |
+| 1 | Virtual currency wallet + ledger | ✅ | [2026-07-28-2125-wallet-module-plan.md](../plans/2026-07-28-2125-wallet-module-plan.md) |
 | 2 | Auth providers: Google + Apple OIDC, guest/device, link/unlink | ❌ | — |
 | 3 | Notifications + player mail (in-app, durable) | ❌ | — |
 | 4 | Self-registration promoted to production (email verify, password reset) | ❌ | — |
@@ -106,7 +106,7 @@ Rationale in the decision notes below; the order deviates from the gap doc's own
 
 | Feature | Status | Module(s) | Landed | Notes |
 |---|:--:|---|---|---|
-| Virtual currency wallet + ledger | 📝 | — | — | **Seq #1**, planned in [2026-07-28-2125-wallet-module-plan.md](../plans/2026-07-28-2125-wallet-module-plan.md) (11 steps). New fortress: balances + append-only ledger, own schema, `walletapi::Wallet` sync capability, `wallet.changed` durable event, and an **optional config-driven starter grant** on `player.registered` (off by default). |
+| Virtual currency wallet + ledger | ✅ | wallet, walletapi, walletevents, walletrpc, wallet-svc | `9ccd243`..`5804939`, 2026-07-30 | **Seq #1**, [plan](../plans/2026-07-28-2125-wallet-module-plan.md) (11 steps). 12th fortress: operator-owned currency catalog, per-player balances and an append-only ledger in schema `wallet`, one movement authority serving both a pool-owned and a handed delivery transaction. `walletapi::Wallet` (wire-only credit/debit, required idempotency key) + `walletapi::Player` (`GET /wallet/me`, `/wallet/currencies`). Durable `wallet.changed` → audit's 7th sink. Optional config-driven starter grant on `player.registered`, off by compiled default. Admin page under Economy & Store, remotely editable. Proven in both topologies: `[WL1]`-`[WL7]` + `[WL6m]` in split-proof. |
 | Item catalog + player inventory | ⚠️ | inventory | pre-existing | Per-character holdings, static catalog; no stacks/instances model. |
 | Store / storefront (listings, pricing, discounts) | ❌ | — | — | Seq #7, depends on wallet. |
 | IAP receipt validation (Apple/Google/Steam) | ❌ | — | — | Seq #7. Only the simulated `INVENTORY_DEV_GRANT` route today. Needs outbound HTTP + `purchase.validated` durable event. |
@@ -166,3 +166,14 @@ Rationale in the decision notes below; the order deviates from the gap doc's own
   11 steps, revision 3. Scope grew by one deliberate item during planning — an **optional,
   config-driven starter grant** on `player.registered`, off by compiled default — because a
   registered player owning no balance row makes the economy inert the moment a store exists.
+- **2026-07-30** — Wallet (seq #1) **landed**, all 11 steps, `cargo run -p verifyctl -- --all
+  --strict` green (the one SKIP is `csharp-client`, not applicable on this platform).
+  Two things worth carrying forward. First, the rollout's review passes turned up defects in
+  the **gates**, not the module: the conformance input traversal was fail-open (silently
+  dropping maps, enums, newtypes, aliases and the whole `admin` domain), which is how an
+  uncapped operator string could have reached SQL with every gate green — now fail-closed,
+  and closing it immediately exposed a real uncapped path in `modules/apikeys` that has since
+  been capped at both the Rust and the column-CHECK level. Second, five separate hand-written
+  service counts went red on the 13th process (`processctl`, `weles` ×2, `weles-master`,
+  `devctl`); each is now either derived from the fleet or deleted as a restatement, so the
+  14th module should not repeat it.
