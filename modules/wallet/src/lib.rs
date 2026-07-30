@@ -181,7 +181,14 @@ impl Module for WalletModule {
             let mut conn = pool.acquire().await?;
             for (code, display_name, kind, decimals) in DEV_SEED_CURRENCIES {
                 svc.store
-                    .insert_currency_if_absent_tx(&mut conn, code, display_name, kind, *decimals)
+                    .write_currency_tx(
+                        &mut conn,
+                        code,
+                        display_name,
+                        kind,
+                        *decimals,
+                        OnConflict::Skip,
+                    )
                     .await?;
             }
         }

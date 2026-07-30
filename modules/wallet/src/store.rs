@@ -59,6 +59,31 @@ pub(crate) struct CatalogEntry {
     pub(crate) created_at: String,
 }
 
+/// What [`Store::write_currency_tx`] does with a code the catalog already holds — the ONE
+/// place the seed's intent and the admin form's intent are decided apart. The clause is a
+/// fixed string per variant, never caller data.
+#[derive(Clone, Copy)]
+pub(crate) enum OnConflict {
+    /// The ADMIN form: an operator submitting a currency means to change it.
+    Overwrite,
+    /// The dev seed: guarantee the code EXISTS, leave an operator's edits alone.
+    Skip,
+}
+
+impl OnConflict {
+    fn clause(self) -> &'static str {
+        match self {
+            OnConflict::Overwrite => {
+                "ON CONFLICT (code) DO UPDATE \
+                    SET display_name = EXCLUDED.display_name, \
+                        kind = EXCLUDED.kind, \
+                        decimals = EXCLUDED.decimals"
+            }
+            OnConflict::Skip => "ON CONFLICT (code) DO NOTHING",
+        }
+    }
+}
+
 /// One ledger row as the ADMIN drill-down shows it. `seq` rides along because it is the
 /// ORDER the table is sorted by; `at` can disagree with it under concurrency, and an
 /// operator auditing money needs the value the sort actually used.
@@ -341,9 +366,11 @@ impl Store {
             .collect())
     }
 
-    /// The newest movements for one player, in `seq` order — the column stamped under the
-    /// balance row lock, so this is the order money actually moved; `at` is descriptive
-    /// only (`clock_timestamp()` of the INSERT, a round trip before that lock).
+    /// The newest movements for one player, in `seq` order — drawn under the balance row lock
+    /// of each movement's own `(player, currency)`, so it is the exact order money moved for
+    /// one pair and statement-execution order across currencies; `at` is descriptive only
+    /// (`clock_timestamp()` of the INSERT, a round trip before that lock). `seq` is monotonic
+    /// but GAPPED: the INSERT's `bigserial` default and any rolled-back movement burn values.
     ///
     /// `limit` is CLAMPED to `1 ..= MAX_RECENT_LEDGER` rather than trusted: this is the one
     /// wallet read whose size a caller influences. The statement asks for `limit + 1` and
@@ -395,61 +422,34 @@ impl Store {
         }
     }
 
-    /// Seeds a code without touching a row that already exists: `WALLET_DEV_SEED`'s job is
-    /// that the dev codes EXIST so money can move, not that wallet owns their presentation.
-    /// An operator's rename on the admin page therefore survives the next boot.
-    pub(crate) async fn insert_currency_if_absent_tx(
-        &self,
-        conn: &mut PgConnection,
-        code: &str,
-        display_name: &str,
-        kind: &str,
-        decimals: i32,
-    ) -> Result<(), sqlx::Error> {
-        sqlx::query(
-            "INSERT INTO wallet.currencies (code, display_name, kind, decimals) \
-             VALUES ($1, $2, $3, $4) \
-             ON CONFLICT (code) DO NOTHING",
-        )
-        .bind(code)
-        .bind(display_name)
-        .bind(kind)
-        .bind(decimals)
-        .execute(&mut *conn)
-        .await?;
-        Ok(())
-    }
-
-    /// The ADMIN form's catalog write: an existing code is OVERWRITTEN, because an operator
-    /// submitting a currency means to change it. The dev seed uses
-    /// [`Store::insert_currency_if_absent_tx`] instead, so a boot never reverts that edit.
+    /// The ONE catalog writer; `on_conflict` is the only thing the two callers decide
+    /// differently, so a new catalog column cannot reach one intent and miss the other.
     ///
-    /// An over-long code is `currencies_code_len_check` as 23514, which the caller maps to a
-    /// 400 (`admin::catalog_rejection`) because it is operator input. It cannot be mistaken
-    /// for insufficient funds: `is_out_of_range` is constraint-named to
+    /// An over-long code is `currencies_code_len_check` as 23514, which the admin caller maps
+    /// to a 400 (`admin::catalog_rejection`) because it is operator input. It cannot be
+    /// mistaken for insufficient funds: `is_out_of_range` is constraint-named to
     /// `balances_amount_check`.
-    pub(crate) async fn upsert_currency_tx(
+    pub(crate) async fn write_currency_tx(
         &self,
         conn: &mut PgConnection,
         code: &str,
         display_name: &str,
         kind: &str,
         decimals: i32,
+        on_conflict: OnConflict,
     ) -> Result<(), sqlx::Error> {
-        sqlx::query(
+        let stmt = format!(
             "INSERT INTO wallet.currencies (code, display_name, kind, decimals) \
-             VALUES ($1, $2, $3, $4) \
-             ON CONFLICT (code) DO UPDATE \
-                SET display_name = EXCLUDED.display_name, \
-                    kind = EXCLUDED.kind, \
-                    decimals = EXCLUDED.decimals",
-        )
-        .bind(code)
-        .bind(display_name)
-        .bind(kind)
-        .bind(decimals)
-        .execute(&mut *conn)
-        .await?;
+             VALUES ($1, $2, $3, $4) {}",
+            on_conflict.clause()
+        );
+        sqlx::query(&stmt)
+            .bind(code)
+            .bind(display_name)
+            .bind(kind)
+            .bind(decimals)
+            .execute(&mut *conn)
+            .await?;
         Ok(())
     }
 }

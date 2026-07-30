@@ -963,6 +963,34 @@ via sqlx, `poll_count(pool, sql, cid, want)` — helpers verified at
   delivery (accounts-svc emits → wallet-svc consumes), the config read, and the credit.
 - Monolith parity: re-run `[WL1]`/`[WL2]`/`[WL7]` on `cmd/server`.
 
+(iii) **The Step-8 follow-up (`d950791`) ships with NO execution path — five named module tests
+in `modules/wallet/src/tests.rs` close that.** Nothing in the workspace calls `recent_ledger`,
+constructs a `LedgerPage`, reads `truncated`, runs `ledger_note`/`player_content`, or takes the
+`OnConflict::Skip` branch (`WALLET_DEV_SEED` is unset in the test env), and both catalog
+statements are runtime-checked `sqlx::query`/`query_as` — so the tuple-arity change and the
+`limit + 1` boundary are pinned by nothing today. Binding `limit` instead of `limit + 1`, or
+`>=` instead of `>`, still passes 26/26.
+
+1. Exactly `LEDGER_PAGE` (50) ledger rows for one player → `truncated == false` and
+   `rows.len() == 50`. This is the arm that must NOT report truncation.
+2. `LEDGER_PAGE + 1` rows → `truncated == true`, `rows.len() == 50`, the window is the NEWEST
+   (`rows[0].seq > rows[49].seq`) and the dropped row is the OLDEST (its `seq` is absent from
+   `rows`). Kills both the off-by-one and a `LIMIT` that happened to keep the wrong end.
+3. `recent_ledger(pid, MAX_RECENT_LEDGER + 500)` against exactly `MAX_RECENT_LEDGER` rows →
+   `truncated == false`. The clamp must not manufacture truncation out of its own ceiling.
+4. **Seed idempotence — the branch F3 changed, which has no execution path today.**
+   `write_currency_tx(…, OnConflict::Skip)` → `UPDATE wallet.currencies SET display_name = …`
+   → run the seed write again → the edit SURVIVES; then `DELETE` the row and run the seed
+   write again → the row is RECREATED. An `OnConflict::Overwrite` regression fails the first
+   half; a seed reduced to a plain `INSERT` fails the second.
+5. The rendered drill-down's `SEQ` column is strictly DECREASING, and deliberately NOT asserted
+   contiguous — `seq` is monotonic-but-gapped by construction (see the comment at the table
+   site). Pins P1's intent against a future "fix" that renumbers the column to look contiguous.
+
+Every one of these mints its own currency via the existing `unique_currency` helper
+(`modules/wallet/src/tests.rs:83`). After F3 the dev-seeded rows are no longer converging
+fixture data — see the Step 8 follow-up errata.
+
 Idempotency (dup-same / dup-different) stays in Step 5 — a live fleet cannot deterministically
 drive the conflict arm, and a test that cannot distinguish fixed from unfixed is not a proof.
 
@@ -1059,17 +1087,41 @@ Three findings deferred from the adversarial review of `bca2f30`, closed at thei
    `clock_timestamp()` at the ledger INSERT, `seq` is stamped under the balance row lock, so
    under concurrent movements the timestamps can disagree with the row order.
 3. **SEMANTIC CHANGE — `WALLET_DEV_SEED` no longer reverts operator catalog edits.** The
-   migrate path calls the new `Store::insert_currency_if_absent_tx` (`ON CONFLICT (code) DO
-   NOTHING`); `upsert_currency_tx` (`DO UPDATE`) is now the ADMIN form's writer only. Before
-   this change, renaming `Gold` on the admin page was silently undone by the next boot with
-   the flag on. **A dev-seeded currency's `display_name`/`kind`/`decimals` are therefore no
-   longer restored on boot** — the seed's job is that the dev codes EXIST so money can move,
-   not that wallet owns their presentation. Recovery for a genuinely mangled dev row is the
-   admin form (or dropping the row), not a restart. The doc comment claiming "Self-healing: a
-   hand-edited dev row is restored on the next boot" was false after the split and is gone.
+   migrate path writes with `OnConflict::Skip` (`ON CONFLICT (code) DO NOTHING`); the ADMIN
+   form keeps `OnConflict::Overwrite` (`DO UPDATE`). Before this change, renaming `Gold` on
+   the admin page was silently undone by the next boot with the flag on. **A dev-seeded
+   currency's `display_name`/`kind`/`decimals` are therefore no longer restored on boot** —
+   the seed's job is that the dev codes EXIST so money can move, not that wallet owns their
+   presentation. Recovery for a genuinely mangled dev row is the admin form (or dropping the
+   row), not a restart. The doc comment claiming "Self-healing: a hand-edited dev row is
+   restored on the next boot" was false after the split and is gone.
 
-No `api/wallet/*` change; 26 wallet tests unchanged and green. `LedgerPage`/`truncated` and
-the `seq` column want assertions in the Step 10 `[test-author]` step.
+   **Fixture consequence.** That removed property is what made the local Postgres converge:
+   the wallet catalog now drifts PERMANENTLY once anyone uses the admin form. Wallet tests and
+   the `[WL*]` splitproof assertions must mint their own currency (the `unique_currency`
+   pattern, `modules/wallet/src/tests.rs:83`) and must never lean on a dev-seeded row's
+   `display_name`/`kind`/`decimals` — such an assertion passes on a fresh DB and fails on a
+   developer box where the form was used once. Only the EXISTENCE of `gold`/`gems` is still
+   guaranteed by the seed (`[WL1]` may keep asserting that).
+
+Reviewer punch list over `d950791`, closed in the follow-up commit:
+
+- **`seq` is monotonic but GAPPED** — the ledger INSERT's `bigserial` default is burned before
+  `set_balance_after_tx` draws the ordering value, and a rolled-back movement burns both. Four
+  movements can render `SEQ 4, 5, 9, 12` beside "4 movement(s) — full history", which reads as
+  five deleted rows in an append-only ledger. The raw value stays (surfacing it is the point of
+  F2); the comment at the table site now states that the guarantee is ordering, NOT contiguity.
+- **The lock claim was too broad.** `seq` is drawn under the balance row lock of the movement's
+  own `(player, currency)`, so it is the exact money order for one pair; the drill-down is
+  cross-currency, where it is statement-execution order. Corrected in `admin.rs` and in
+  `recent_ledger`'s doc.
+- **One catalog writer, not two.** `insert_currency_if_absent_tx`/`upsert_currency_tx`
+  duplicated the column list and bind order; they collapse into
+  `Store::write_currency_tx(…, OnConflict::{Overwrite, Skip})`, so a new catalog column cannot
+  reach one intent and miss the other.
+
+No `api/wallet/*` change; 26 wallet tests unchanged and green. The follow-up ships with NO
+execution path of its own — the five named cases in Step 10 (iii) are what pin it.
 
 ### Step 4 (`cmd/wallet-svc` + fleets) — four files the plan never listed, and one false command
 

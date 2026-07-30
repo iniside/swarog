@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 use walletapi::{Movement, Wallet};
 
-use crate::store::{CatalogEntry, LedgerPage};
+use crate::store::{CatalogEntry, LedgerPage, OnConflict};
 use crate::{is_uuid_text, Service, IDEMPOTENCY_CONFLICT};
 
 pub(crate) const ADMIN_ITEM_ID: &str = "wallet";
@@ -168,9 +168,13 @@ fn player_content(
     };
 
     let mut table = adminapi::Table {
-        // SEQ leads because it is what the rows are ORDERED by — stamped under the balance
-        // row lock, so it is the order money moved; WHEN is the INSERT clock, a round trip
-        // earlier, and the two can disagree under concurrent movements.
+        // SEQ leads because it is what the rows are ORDERED by. It is drawn under the balance
+        // row lock of the movement's OWN (player, currency), so it orders that pair exactly;
+        // across currencies it is statement-execution order. WHEN is the INSERT clock, a
+        // round trip earlier, so the two can disagree. The sequence is monotonic but GAPPED —
+        // the ledger INSERT burns a bigserial default before this value is drawn, and a
+        // rolled-back movement burns both — so a missing number is expected and is NOT a
+        // deleted row: the guarantee is ordering, not contiguity.
         columns: vec![
             "SEQ".into(),
             "WHEN".into(),
@@ -519,7 +523,14 @@ pub(crate) async fn apply_submit(
                 .await
                 .map_err(|e| Rejection::Internal(e.to_string()))?;
             svc.store
-                .upsert_currency_tx(&mut conn, &code, &display_name, &kind, decimals)
+                .write_currency_tx(
+                    &mut conn,
+                    &code,
+                    &display_name,
+                    &kind,
+                    decimals,
+                    OnConflict::Overwrite,
+                )
                 .await
                 .map_err(catalog_rejection)?;
             Ok(adminapi::SubmitOutcome::default())
