@@ -292,7 +292,7 @@ fn real_rpc_input_inventory_is_exactly_covered_and_matches_golden() {
     let discovered = crate::input_inventory::discover(&crate::input_inventory::api_root()).unwrap();
     assert_eq!(
         discovered.len(),
-        18,
+        27,
         "unexpected request string inventory: {discovered:?}"
     );
     let policies = crate::policy::input_policies();

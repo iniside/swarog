@@ -17,3 +17,12 @@ match.report	Loser	external
 match.report	ReportId	external
 match.report	Winner	external
 rating.mmr	player_id	wire
+wallet.balances	player_id	wire
+wallet.credit	movement.currency	wire
+wallet.credit	movement.idempotency_key	wire
+wallet.credit	movement.player_id	wire
+wallet.credit	movement.reason	wire
+wallet.debit	movement.currency	wire
+wallet.debit	movement.idempotency_key	wire
+wallet.debit	movement.player_id	wire
+wallet.debit	movement.reason	wire

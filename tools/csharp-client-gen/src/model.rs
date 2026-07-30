@@ -3,8 +3,8 @@
 //! Everything here is serde-serializable with a STABLE field order (structs serialize
 //! in declaration order; the vectors are sorted deterministically by the scraper), so
 //! `--emit-manifest` produces byte-stable JSON suitable for a committed golden and a
-//! future `git diff --exit-code` freshness gate. Kept deliberately minimal: 6 DTOs and
-//! 12 methods do not justify a richer type lattice.
+//! future `git diff --exit-code` freshness gate. Kept deliberately minimal: the player
+//! surface's DTOs and methods do not justify a richer type lattice.
 
 use serde::{Deserialize, Serialize};
 
@@ -17,6 +17,8 @@ pub enum TypeRef {
     String,
     /// A Rust `i64` → C# `long`.
     I64,
+    /// A Rust `i32` → C# `int`.
+    I32,
     /// A `Result<(), _>` return: no value rides the wire.
     Unit,
     /// A `Vec<T>` → C# `T[]`.

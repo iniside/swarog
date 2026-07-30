@@ -33,7 +33,7 @@ use crate::model::{ArgDef, DtoDef, FieldDef, Manifest, MethodDef, TypeRef};
 /// `#[rpc]` trait carrying `#[http]` methods — must be listed here AND wired into
 /// [`phase_a`]. Adding an `#[http]` method to an EXISTING provider needs no edit; adding
 /// a NEW provider module without editing this list is caught by the completeness gate.
-const PROVIDERS: &[&str] = &["characters", "inventory", "accounts", "match", "leaderboard"];
+const PROVIDERS: &[&str] = &["characters", "inventory", "accounts", "match", "leaderboard", "wallet"];
 
 /// Phase A: the authoritative reachable set + transport facts, straight from the
 /// generated `route_bindings()`. Each entry pairs a provider prefix with its route
@@ -46,6 +46,7 @@ fn phase_a() -> Vec<(&'static str, Vec<opsapi::RouteBinding>)> {
         ("accounts", accountsapi::auth_rpc::route_bindings()),
         ("match", matchapi::match_rpc::route_bindings()),
         ("leaderboard", leaderboardapi::leaderboard_rpc::route_bindings()),
+        ("wallet", walletapi::player_rpc::route_bindings()),
     ]
 }
 
@@ -398,6 +399,7 @@ fn map_type(ty: &Type) -> Result<TypeRef> {
             match name.as_str() {
                 "String" => Ok(TypeRef::String),
                 "i64" => Ok(TypeRef::I64),
+                "i32" => Ok(TypeRef::I32),
                 "Vec" => {
                     let inner = first_generic_type(&seg.arguments)
                         .ok_or_else(|| anyhow!("Vec without a type argument"))?;

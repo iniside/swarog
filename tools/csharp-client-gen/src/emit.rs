@@ -331,6 +331,7 @@ fn cs_type(ty: &TypeRef) -> String {
     match ty {
         TypeRef::String => "string".to_string(),
         TypeRef::I64 => "long".to_string(),
+        TypeRef::I32 => "int".to_string(),
         TypeRef::Struct(name) => name.clone(),
         TypeRef::Vec(inner) => format!("{}[]", cs_type(inner)),
         TypeRef::Unit => "void".to_string(),

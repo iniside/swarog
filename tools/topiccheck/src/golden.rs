@@ -192,6 +192,20 @@ fn rpc_modules() -> Vec<RpcModule> {
             ratingapi::mmr_reader_rpc::body_shapes(),
             ratingapi::mmr_reader_rpc::describe().ops,
         ),
+        (
+            "walletapi::wallet_rpc",
+            walletapi::wallet_rpc::route_bindings(),
+            walletapi::wallet_rpc::wire_ops(),
+            walletapi::wallet_rpc::body_shapes(),
+            walletapi::wallet_rpc::describe().ops,
+        ),
+        (
+            "walletapi::player_rpc",
+            walletapi::player_rpc::route_bindings(),
+            walletapi::player_rpc::wire_ops(),
+            walletapi::player_rpc::body_shapes(),
+            walletapi::player_rpc::describe().ops,
+        ),
     ]
 }
 
@@ -207,7 +221,7 @@ fn rpc_modules() -> Vec<RpcModule> {
 /// shape as a golden line AND compile-couples the optionality itself: a populated
 /// `Some(x)` alone serializes identically to a required `T`, so demoting `Option<T>` to
 /// `T` would leave the gate green over retained `null` JSON — the `None` literal makes
-/// that demotion a compile error instead. Today the only Option field across all 6
+/// that demotion a compile error instead. Today the only Option field across all 7
 /// events crates is `configevents::Changed.value` (two samples: update/Some,
 /// delete/None). The convention is ENFORCED mechanically by
 /// [`self_check_option_none_samples`] on the gate path.
@@ -227,6 +241,7 @@ fn event_samples_by_crate() -> Vec<CrateSamples> {
         ("match", matchevents::golden_samples()),
         ("scheduler", schedulerevents::golden_samples()),
         ("admin", adminevents::golden_samples()),
+        ("wallet", walletevents::golden_samples()),
     ]
 }
 

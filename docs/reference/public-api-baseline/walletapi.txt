@@ -1,0 +1,270 @@
+# cargo-public-api 0.52.0 -- regenerate via cargo run -p verifyctl -- --bless-public-api
+pub mod walletapi
+pub mod walletapi::player_rpc
+pub struct walletapi::player_rpc::ListCurrenciesRequest
+impl core::default::Default for walletapi::player_rpc::ListCurrenciesRequest
+pub fn walletapi::player_rpc::ListCurrenciesRequest::default() -> walletapi::player_rpc::ListCurrenciesRequest
+impl serde_core::ser::Serialize for walletapi::player_rpc::ListCurrenciesRequest
+pub fn walletapi::player_rpc::ListCurrenciesRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for walletapi::player_rpc::ListCurrenciesRequest where walletapi::player_rpc::ListCurrenciesRequest: core::default::Default
+pub fn walletapi::player_rpc::ListCurrenciesRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for walletapi::player_rpc::ListCurrenciesRequest
+impl core::marker::Send for walletapi::player_rpc::ListCurrenciesRequest
+impl core::marker::Sync for walletapi::player_rpc::ListCurrenciesRequest
+impl core::marker::Unpin for walletapi::player_rpc::ListCurrenciesRequest
+impl core::marker::UnsafeUnpin for walletapi::player_rpc::ListCurrenciesRequest
+impl core::panic::unwind_safe::RefUnwindSafe for walletapi::player_rpc::ListCurrenciesRequest
+impl core::panic::unwind_safe::UnwindSafe for walletapi::player_rpc::ListCurrenciesRequest
+pub struct walletapi::player_rpc::ListCurrenciesResponse
+pub walletapi::player_rpc::ListCurrenciesResponse::err: alloc::string::String
+pub walletapi::player_rpc::ListCurrenciesResponse::status: opsapi::Status
+pub walletapi::player_rpc::ListCurrenciesResponse::value: serde_json::value::Value
+impl serde_core::ser::Serialize for walletapi::player_rpc::ListCurrenciesResponse
+pub fn walletapi::player_rpc::ListCurrenciesResponse::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for walletapi::player_rpc::ListCurrenciesResponse
+pub fn walletapi::player_rpc::ListCurrenciesResponse::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for walletapi::player_rpc::ListCurrenciesResponse
+impl core::marker::Send for walletapi::player_rpc::ListCurrenciesResponse
+impl core::marker::Sync for walletapi::player_rpc::ListCurrenciesResponse
+impl core::marker::Unpin for walletapi::player_rpc::ListCurrenciesResponse
+impl core::marker::UnsafeUnpin for walletapi::player_rpc::ListCurrenciesResponse
+impl core::panic::unwind_safe::RefUnwindSafe for walletapi::player_rpc::ListCurrenciesResponse
+impl core::panic::unwind_safe::UnwindSafe for walletapi::player_rpc::ListCurrenciesResponse
+pub struct walletapi::player_rpc::MyBalancesRequest
+impl core::default::Default for walletapi::player_rpc::MyBalancesRequest
+pub fn walletapi::player_rpc::MyBalancesRequest::default() -> walletapi::player_rpc::MyBalancesRequest
+impl serde_core::ser::Serialize for walletapi::player_rpc::MyBalancesRequest
+pub fn walletapi::player_rpc::MyBalancesRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for walletapi::player_rpc::MyBalancesRequest where walletapi::player_rpc::MyBalancesRequest: core::default::Default
+pub fn walletapi::player_rpc::MyBalancesRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for walletapi::player_rpc::MyBalancesRequest
+impl core::marker::Send for walletapi::player_rpc::MyBalancesRequest
+impl core::marker::Sync for walletapi::player_rpc::MyBalancesRequest
+impl core::marker::Unpin for walletapi::player_rpc::MyBalancesRequest
+impl core::marker::UnsafeUnpin for walletapi::player_rpc::MyBalancesRequest
+impl core::panic::unwind_safe::RefUnwindSafe for walletapi::player_rpc::MyBalancesRequest
+impl core::panic::unwind_safe::UnwindSafe for walletapi::player_rpc::MyBalancesRequest
+pub struct walletapi::player_rpc::MyBalancesResponse
+pub walletapi::player_rpc::MyBalancesResponse::err: alloc::string::String
+pub walletapi::player_rpc::MyBalancesResponse::status: opsapi::Status
+pub walletapi::player_rpc::MyBalancesResponse::value: serde_json::value::Value
+impl serde_core::ser::Serialize for walletapi::player_rpc::MyBalancesResponse
+pub fn walletapi::player_rpc::MyBalancesResponse::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for walletapi::player_rpc::MyBalancesResponse
+pub fn walletapi::player_rpc::MyBalancesResponse::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for walletapi::player_rpc::MyBalancesResponse
+impl core::marker::Send for walletapi::player_rpc::MyBalancesResponse
+impl core::marker::Sync for walletapi::player_rpc::MyBalancesResponse
+impl core::marker::Unpin for walletapi::player_rpc::MyBalancesResponse
+impl core::marker::UnsafeUnpin for walletapi::player_rpc::MyBalancesResponse
+impl core::panic::unwind_safe::RefUnwindSafe for walletapi::player_rpc::MyBalancesResponse
+impl core::panic::unwind_safe::UnwindSafe for walletapi::player_rpc::MyBalancesResponse
+pub const walletapi::player_rpc::METHOD_LIST_CURRENCIES: &str
+pub const walletapi::player_rpc::METHOD_MY_BALANCES: &str
+pub fn walletapi::player_rpc::describe() -> opsapi::DescribeManifest
+pub fn walletapi::player_rpc::operations(alloc::sync::Arc<(dyn walletapi::Player + core::marker::Send + core::marker::Sync)>) -> alloc::vec::Vec<opsapi::OpSet>
+pub fn walletapi::player_rpc::route_bindings() -> alloc::vec::Vec<opsapi::RouteBinding>
+pub fn walletapi::player_rpc::wire_ops() -> alloc::vec::Vec<opsapi::WireOp>
+pub mod walletapi::wallet_rpc
+pub struct walletapi::wallet_rpc::BalancesRequest
+pub walletapi::wallet_rpc::BalancesRequest::player_id: alloc::string::String
+impl serde_core::ser::Serialize for walletapi::wallet_rpc::BalancesRequest
+pub fn walletapi::wallet_rpc::BalancesRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for walletapi::wallet_rpc::BalancesRequest
+pub fn walletapi::wallet_rpc::BalancesRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for walletapi::wallet_rpc::BalancesRequest
+impl core::marker::Send for walletapi::wallet_rpc::BalancesRequest
+impl core::marker::Sync for walletapi::wallet_rpc::BalancesRequest
+impl core::marker::Unpin for walletapi::wallet_rpc::BalancesRequest
+impl core::marker::UnsafeUnpin for walletapi::wallet_rpc::BalancesRequest
+impl core::panic::unwind_safe::RefUnwindSafe for walletapi::wallet_rpc::BalancesRequest
+impl core::panic::unwind_safe::UnwindSafe for walletapi::wallet_rpc::BalancesRequest
+pub struct walletapi::wallet_rpc::BalancesResponse
+pub walletapi::wallet_rpc::BalancesResponse::err: alloc::string::String
+pub walletapi::wallet_rpc::BalancesResponse::status: opsapi::Status
+pub walletapi::wallet_rpc::BalancesResponse::value: serde_json::value::Value
+impl serde_core::ser::Serialize for walletapi::wallet_rpc::BalancesResponse
+pub fn walletapi::wallet_rpc::BalancesResponse::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for walletapi::wallet_rpc::BalancesResponse
+pub fn walletapi::wallet_rpc::BalancesResponse::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for walletapi::wallet_rpc::BalancesResponse
+impl core::marker::Send for walletapi::wallet_rpc::BalancesResponse
+impl core::marker::Sync for walletapi::wallet_rpc::BalancesResponse
+impl core::marker::Unpin for walletapi::wallet_rpc::BalancesResponse
+impl core::marker::UnsafeUnpin for walletapi::wallet_rpc::BalancesResponse
+impl core::panic::unwind_safe::RefUnwindSafe for walletapi::wallet_rpc::BalancesResponse
+impl core::panic::unwind_safe::UnwindSafe for walletapi::wallet_rpc::BalancesResponse
+pub struct walletapi::wallet_rpc::CreditRequest
+pub walletapi::wallet_rpc::CreditRequest::movement: walletapi::Movement
+impl serde_core::ser::Serialize for walletapi::wallet_rpc::CreditRequest
+pub fn walletapi::wallet_rpc::CreditRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for walletapi::wallet_rpc::CreditRequest
+pub fn walletapi::wallet_rpc::CreditRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for walletapi::wallet_rpc::CreditRequest
+impl core::marker::Send for walletapi::wallet_rpc::CreditRequest
+impl core::marker::Sync for walletapi::wallet_rpc::CreditRequest
+impl core::marker::Unpin for walletapi::wallet_rpc::CreditRequest
+impl core::marker::UnsafeUnpin for walletapi::wallet_rpc::CreditRequest
+impl core::panic::unwind_safe::RefUnwindSafe for walletapi::wallet_rpc::CreditRequest
+impl core::panic::unwind_safe::UnwindSafe for walletapi::wallet_rpc::CreditRequest
+pub struct walletapi::wallet_rpc::CreditResponse
+pub walletapi::wallet_rpc::CreditResponse::err: alloc::string::String
+pub walletapi::wallet_rpc::CreditResponse::status: opsapi::Status
+pub walletapi::wallet_rpc::CreditResponse::value: serde_json::value::Value
+impl serde_core::ser::Serialize for walletapi::wallet_rpc::CreditResponse
+pub fn walletapi::wallet_rpc::CreditResponse::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for walletapi::wallet_rpc::CreditResponse
+pub fn walletapi::wallet_rpc::CreditResponse::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for walletapi::wallet_rpc::CreditResponse
+impl core::marker::Send for walletapi::wallet_rpc::CreditResponse
+impl core::marker::Sync for walletapi::wallet_rpc::CreditResponse
+impl core::marker::Unpin for walletapi::wallet_rpc::CreditResponse
+impl core::marker::UnsafeUnpin for walletapi::wallet_rpc::CreditResponse
+impl core::panic::unwind_safe::RefUnwindSafe for walletapi::wallet_rpc::CreditResponse
+impl core::panic::unwind_safe::UnwindSafe for walletapi::wallet_rpc::CreditResponse
+pub struct walletapi::wallet_rpc::CurrenciesRequest
+impl serde_core::ser::Serialize for walletapi::wallet_rpc::CurrenciesRequest
+pub fn walletapi::wallet_rpc::CurrenciesRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for walletapi::wallet_rpc::CurrenciesRequest
+pub fn walletapi::wallet_rpc::CurrenciesRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for walletapi::wallet_rpc::CurrenciesRequest
+impl core::marker::Send for walletapi::wallet_rpc::CurrenciesRequest
+impl core::marker::Sync for walletapi::wallet_rpc::CurrenciesRequest
+impl core::marker::Unpin for walletapi::wallet_rpc::CurrenciesRequest
+impl core::marker::UnsafeUnpin for walletapi::wallet_rpc::CurrenciesRequest
+impl core::panic::unwind_safe::RefUnwindSafe for walletapi::wallet_rpc::CurrenciesRequest
+impl core::panic::unwind_safe::UnwindSafe for walletapi::wallet_rpc::CurrenciesRequest
+pub struct walletapi::wallet_rpc::CurrenciesResponse
+pub walletapi::wallet_rpc::CurrenciesResponse::err: alloc::string::String
+pub walletapi::wallet_rpc::CurrenciesResponse::status: opsapi::Status
+pub walletapi::wallet_rpc::CurrenciesResponse::value: serde_json::value::Value
+impl serde_core::ser::Serialize for walletapi::wallet_rpc::CurrenciesResponse
+pub fn walletapi::wallet_rpc::CurrenciesResponse::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for walletapi::wallet_rpc::CurrenciesResponse
+pub fn walletapi::wallet_rpc::CurrenciesResponse::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for walletapi::wallet_rpc::CurrenciesResponse
+impl core::marker::Send for walletapi::wallet_rpc::CurrenciesResponse
+impl core::marker::Sync for walletapi::wallet_rpc::CurrenciesResponse
+impl core::marker::Unpin for walletapi::wallet_rpc::CurrenciesResponse
+impl core::marker::UnsafeUnpin for walletapi::wallet_rpc::CurrenciesResponse
+impl core::panic::unwind_safe::RefUnwindSafe for walletapi::wallet_rpc::CurrenciesResponse
+impl core::panic::unwind_safe::UnwindSafe for walletapi::wallet_rpc::CurrenciesResponse
+pub struct walletapi::wallet_rpc::DebitRequest
+pub walletapi::wallet_rpc::DebitRequest::movement: walletapi::Movement
+impl serde_core::ser::Serialize for walletapi::wallet_rpc::DebitRequest
+pub fn walletapi::wallet_rpc::DebitRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for walletapi::wallet_rpc::DebitRequest
+pub fn walletapi::wallet_rpc::DebitRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for walletapi::wallet_rpc::DebitRequest
+impl core::marker::Send for walletapi::wallet_rpc::DebitRequest
+impl core::marker::Sync for walletapi::wallet_rpc::DebitRequest
+impl core::marker::Unpin for walletapi::wallet_rpc::DebitRequest
+impl core::marker::UnsafeUnpin for walletapi::wallet_rpc::DebitRequest
+impl core::panic::unwind_safe::RefUnwindSafe for walletapi::wallet_rpc::DebitRequest
+impl core::panic::unwind_safe::UnwindSafe for walletapi::wallet_rpc::DebitRequest
+pub struct walletapi::wallet_rpc::DebitResponse
+pub walletapi::wallet_rpc::DebitResponse::err: alloc::string::String
+pub walletapi::wallet_rpc::DebitResponse::status: opsapi::Status
+pub walletapi::wallet_rpc::DebitResponse::value: serde_json::value::Value
+impl serde_core::ser::Serialize for walletapi::wallet_rpc::DebitResponse
+pub fn walletapi::wallet_rpc::DebitResponse::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for walletapi::wallet_rpc::DebitResponse
+pub fn walletapi::wallet_rpc::DebitResponse::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for walletapi::wallet_rpc::DebitResponse
+impl core::marker::Send for walletapi::wallet_rpc::DebitResponse
+impl core::marker::Sync for walletapi::wallet_rpc::DebitResponse
+impl core::marker::Unpin for walletapi::wallet_rpc::DebitResponse
+impl core::marker::UnsafeUnpin for walletapi::wallet_rpc::DebitResponse
+impl core::panic::unwind_safe::RefUnwindSafe for walletapi::wallet_rpc::DebitResponse
+impl core::panic::unwind_safe::UnwindSafe for walletapi::wallet_rpc::DebitResponse
+pub const walletapi::wallet_rpc::METHOD_BALANCES: &str
+pub const walletapi::wallet_rpc::METHOD_CREDIT: &str
+pub const walletapi::wallet_rpc::METHOD_CURRENCIES: &str
+pub const walletapi::wallet_rpc::METHOD_DEBIT: &str
+pub fn walletapi::wallet_rpc::describe() -> opsapi::DescribeManifest
+pub fn walletapi::wallet_rpc::operations(alloc::sync::Arc<(dyn walletapi::Wallet + core::marker::Send + core::marker::Sync)>) -> alloc::vec::Vec<opsapi::OpSet>
+pub fn walletapi::wallet_rpc::route_bindings() -> alloc::vec::Vec<opsapi::RouteBinding>
+pub fn walletapi::wallet_rpc::wire_ops() -> alloc::vec::Vec<opsapi::WireOp>
+pub struct walletapi::Balance
+pub walletapi::Balance::amount: i64
+pub walletapi::Balance::currency: alloc::string::String
+impl core::clone::Clone for walletapi::Balance
+pub fn walletapi::Balance::clone(&self) -> walletapi::Balance
+impl core::cmp::Eq for walletapi::Balance
+impl core::cmp::PartialEq for walletapi::Balance
+pub fn walletapi::Balance::eq(&self, &walletapi::Balance) -> bool
+impl core::fmt::Debug for walletapi::Balance
+pub fn walletapi::Balance::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for walletapi::Balance
+impl serde_core::ser::Serialize for walletapi::Balance
+pub fn walletapi::Balance::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for walletapi::Balance
+pub fn walletapi::Balance::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for walletapi::Balance
+impl core::marker::Send for walletapi::Balance
+impl core::marker::Sync for walletapi::Balance
+impl core::marker::Unpin for walletapi::Balance
+impl core::marker::UnsafeUnpin for walletapi::Balance
+impl core::panic::unwind_safe::RefUnwindSafe for walletapi::Balance
+impl core::panic::unwind_safe::UnwindSafe for walletapi::Balance
+pub struct walletapi::Currency
+pub walletapi::Currency::code: alloc::string::String
+pub walletapi::Currency::decimals: i32
+pub walletapi::Currency::display_name: alloc::string::String
+pub walletapi::Currency::kind: alloc::string::String
+impl core::clone::Clone for walletapi::Currency
+pub fn walletapi::Currency::clone(&self) -> walletapi::Currency
+impl core::cmp::Eq for walletapi::Currency
+impl core::cmp::PartialEq for walletapi::Currency
+pub fn walletapi::Currency::eq(&self, &walletapi::Currency) -> bool
+impl core::fmt::Debug for walletapi::Currency
+pub fn walletapi::Currency::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for walletapi::Currency
+impl serde_core::ser::Serialize for walletapi::Currency
+pub fn walletapi::Currency::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for walletapi::Currency
+pub fn walletapi::Currency::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for walletapi::Currency
+impl core::marker::Send for walletapi::Currency
+impl core::marker::Sync for walletapi::Currency
+impl core::marker::Unpin for walletapi::Currency
+impl core::marker::UnsafeUnpin for walletapi::Currency
+impl core::panic::unwind_safe::RefUnwindSafe for walletapi::Currency
+impl core::panic::unwind_safe::UnwindSafe for walletapi::Currency
+pub struct walletapi::Movement
+pub walletapi::Movement::amount: i64
+pub walletapi::Movement::currency: alloc::string::String
+pub walletapi::Movement::idempotency_key: alloc::string::String
+pub walletapi::Movement::player_id: alloc::string::String
+pub walletapi::Movement::reason: alloc::string::String
+impl core::clone::Clone for walletapi::Movement
+pub fn walletapi::Movement::clone(&self) -> walletapi::Movement
+impl core::cmp::Eq for walletapi::Movement
+impl core::cmp::PartialEq for walletapi::Movement
+pub fn walletapi::Movement::eq(&self, &walletapi::Movement) -> bool
+impl core::fmt::Debug for walletapi::Movement
+pub fn walletapi::Movement::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for walletapi::Movement
+impl serde_core::ser::Serialize for walletapi::Movement
+pub fn walletapi::Movement::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for walletapi::Movement
+pub fn walletapi::Movement::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for walletapi::Movement
+impl core::marker::Send for walletapi::Movement
+impl core::marker::Sync for walletapi::Movement
+impl core::marker::Unpin for walletapi::Movement
+impl core::marker::UnsafeUnpin for walletapi::Movement
+impl core::panic::unwind_safe::RefUnwindSafe for walletapi::Movement
+impl core::panic::unwind_safe::UnwindSafe for walletapi::Movement
+pub const walletapi::MAX_CURRENCY_CODE_BYTES: usize
+pub const walletapi::MAX_IDEMPOTENCY_KEY_BYTES: usize
+pub const walletapi::MAX_MOVEMENT_AMOUNT: i64
+pub const walletapi::MAX_REASON_BYTES: usize
+pub trait walletapi::Player: core::marker::Send + core::marker::Sync
+pub fn walletapi::Player::list_currencies<'life0, 'async_trait>(&'life0 self, opsapi::Identity) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<walletapi::Currency>, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn walletapi::Player::my_balances<'life0, 'async_trait>(&'life0 self, opsapi::Identity) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<walletapi::Balance>, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub trait walletapi::Wallet: core::marker::Send + core::marker::Sync
+pub fn walletapi::Wallet::balances<'life0, 'async_trait>(&'life0 self, alloc::string::String) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<walletapi::Balance>, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn walletapi::Wallet::credit<'life0, 'async_trait>(&'life0 self, walletapi::Movement) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<i64, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn walletapi::Wallet::currencies<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<walletapi::Currency>, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn walletapi::Wallet::debit<'life0, 'async_trait>(&'life0 self, walletapi::Movement) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<i64, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait

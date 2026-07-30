@@ -23,6 +23,7 @@ inventoryapi = { workspace = true }
 leaderboardapi = { workspace = true }
 matchapi = { workspace = true }
 ratingapi = { workspace = true }
+walletapi = { workspace = true }
 anyhow = { workspace = true }
 
 [dev-dependencies]

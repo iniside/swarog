@@ -196,6 +196,7 @@ fn defined_topics() -> Vec<Contract> {
         of(matchevents::FINISHED.contract()),
         of(schedulerevents::FIRED.contract()),
         of(adminevents::ACTION.contract()),
+        of(walletevents::CHANGED.contract()),
     ]
 }
 

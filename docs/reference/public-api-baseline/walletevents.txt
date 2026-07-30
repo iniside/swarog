@@ -1,0 +1,29 @@
+# cargo-public-api 0.52.0 -- regenerate via cargo run -p verifyctl -- --bless-public-api
+pub mod walletevents
+pub struct walletevents::Changed
+pub walletevents::Changed::balance_after: i64
+pub walletevents::Changed::currency: alloc::string::String
+pub walletevents::Changed::delta: i64
+pub walletevents::Changed::ledger_id: alloc::string::String
+pub walletevents::Changed::player_id: alloc::string::String
+pub walletevents::Changed::reason: alloc::string::String
+impl core::clone::Clone for walletevents::Changed
+pub fn walletevents::Changed::clone(&self) -> walletevents::Changed
+impl core::cmp::Eq for walletevents::Changed
+impl core::cmp::PartialEq for walletevents::Changed
+pub fn walletevents::Changed::eq(&self, &walletevents::Changed) -> bool
+impl core::fmt::Debug for walletevents::Changed
+pub fn walletevents::Changed::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for walletevents::Changed
+impl serde_core::ser::Serialize for walletevents::Changed
+pub fn walletevents::Changed::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for walletevents::Changed
+pub fn walletevents::Changed::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for walletevents::Changed
+impl core::marker::Send for walletevents::Changed
+impl core::marker::Sync for walletevents::Changed
+impl core::marker::Unpin for walletevents::Changed
+impl core::marker::UnsafeUnpin for walletevents::Changed
+impl core::panic::unwind_safe::RefUnwindSafe for walletevents::Changed
+impl core::panic::unwind_safe::UnwindSafe for walletevents::Changed
+pub static walletevents::CHANGED: std::sync::lazy_lock::LazyLock<bus::EventType<walletevents::Changed>>

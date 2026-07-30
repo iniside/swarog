@@ -14,4 +14,6 @@ pub const OPERATIONS: &[OpInfo] = &[
     OpInfo { method: "inventory.listMine", verb: "GET", path: "/inventory/me", auth: "player" },
     OpInfo { method: "leaderboard.topScores", verb: "GET", path: "/leaderboard", auth: "none" },
     OpInfo { method: "match.report", verb: "POST", path: "/match/report", auth: "none" },
+    OpInfo { method: "wallet.listCurrencies", verb: "GET", path: "/wallet/currencies", auth: "player" },
+    OpInfo { method: "wallet.myBalances", verb: "GET", path: "/wallet/me", auth: "player" },
 ];

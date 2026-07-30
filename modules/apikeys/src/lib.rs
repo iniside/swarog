@@ -87,7 +87,8 @@ fn internal<E: std::fmt::Display>(e: E) -> Error {
 const DEV_CLIENT_POLICY: &str = "accounts.register,accounts.login,accounts.loginEpic,accounts.me,\
 characters.create,characters.list,characters.delete,\
 inventory.grant,inventory.listMine,inventory.listCharacter,\
-leaderboard.topScores";
+leaderboard.topScores,\
+wallet.myBalances,wallet.listCurrencies";
 
 /// The well-known dev ROLES: `(name, policy)`. Seeded (FK order) BEFORE the keys.
 const DEV_SEED_ROLES: &[(&str, &str)] = &[

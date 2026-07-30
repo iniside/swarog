@@ -482,7 +482,7 @@ fn union_define_sites_panics_naming_both_files_on_a_cross_file_duplicate() {
 // --- The DEFINE set is exactly the seven domain contract topics ---------------
 
 #[test]
-fn defined_topics_are_the_seven_domain_topics_at_v1() {
+fn defined_topics_are_the_eight_domain_topics_at_v1() {
     let mut got: Vec<(String, u32)> = defined_topics()
         .into_iter()
         .map(|c| (c.topic, c.version))
@@ -498,6 +498,7 @@ fn defined_topics_are_the_seven_domain_topics_at_v1() {
             ("match.finished".to_string(), 1),
             ("player.registered".to_string(), 1),
             ("scheduler.fired".to_string(), 1),
+            ("wallet.changed".to_string(), 1),
         ]
     );
 }

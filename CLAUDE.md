@@ -197,7 +197,7 @@ never a silent last-writer-wins overwrite.
    pull from their checkpoint — the same code in monolith and split. `topiccheck`
    validates the subscription graph per deployment profile.
 
-## Domain modules (11 fortresses + gateway)
+## Domain modules (12 fortresses + gateway)
 
 - **accounts** — identity: one `player_id`, many identities (`provider`,`subject`),
   opaque DB sessions (30-day TTL). Dev/password auth (argon2id, `ACCOUNTS_DEV_AUTH`
@@ -208,6 +208,7 @@ never a silent last-writer-wins overwrite.
   Emits durable `player.registered`. The gateway's session verifier resolves
   `accountsapi::Sessions` — a process hosting a gateway without the accounts
   capability FAILS STARTUP unless `ACCOUNTS_DEV_AUTH=1` (dev verifier, loud warn).
+  `wallet` grants starter currency on `player.registered` when configured.
 - **characters / inventory** — the modularity reference case: plain-id relations,
   sync `Ownership` authz over the wire, starter-grant/wipe via durable
   `character.created/deleted`. `INVENTORY_DEV_GRANT` (explicit-only — default
@@ -296,6 +297,18 @@ never a silent last-writer-wins overwrite.
   (allow-all, loud warn). Admin page "API Keys" is a rich, remotely-editable
   configurator (role + key CRUD, typed fields, show-once secret reveal via
   `adminapi::AdminSubmit`/`admin.adminSubmit` — editable in both topologies).
+- **wallet** — virtual currency: an operator-owned catalog (`wallet.currencies`),
+  per-player balances (`wallet.balances`) and an append-only `wallet.ledger`, the
+  authority for every movement. `credit`/`debit` are wire-only (no `#[http]`, no
+  `Identity`) — a client can never move its own money; `Player::my_balances`/
+  `list_currencies` are the read-only player face. A movement's idempotency
+  identity is `(player_id, currency, signed delta, reason)` under a REQUIRED,
+  ledger-`UNIQUE` `idempotency_key`, licensing `#[retry_safe]` on `credit`/`debit`
+  the same way `match.report` licenses it on `ReportId`. An optional, config-driven
+  starter grant reacts to durable `player.registered` (`AfterRegistration`, since
+  the topic retains 7 days) and emits durable `wallet.changed` in the same
+  transaction as the balance update and ledger row. Admin page "Wallet" is a
+  remotely-editable configurator (create-currency/grant/revoke) under Economy.
 - **gateway** — the front-door module: HTTP ops routing (Local vs Remote purely by
   slot presence; peer addresses are injected by `cmd/*` via `remote::Stub` →
   `opsapi::PEER_SLOT` contributions — the gateway module itself never reads env),
@@ -447,9 +460,9 @@ The blocking **split-proof** stage uses the cross-platform Rust harness in
 :8080/:9000, inventory :8081/:9001, gateway :8082 + player-QUIC :9100, config
 :8083/:9002, accounts :8084/:9003, admin :8085, audit :8086/:9004, scheduler
 :8087/:9005, match :8088/:9006, rating :8089/:9007, leaderboard :8090/:9008,
-apikeys :8091/:9009. The fleet is spawned with a typed environment and owned
-process containment plus a kill-on-drop guard, health-checked over reqwest,
-DB-asserted via sqlx, and the player QUIC front
+apikeys :8091/:9009, wallet :8092/:9010. The fleet is spawned with a typed
+environment and owned process containment plus a kill-on-drop guard,
+health-checked over reqwest, DB-asserted via sqlx, and the player QUIC front
 driven through the `edge` crate as a library. It asserts the same named scenarios
 (register/login → real bearer, authz negatives, allow-list, cross-process starter-grant
 + DB-verified wipe, config live-reload, audit rows, scheduler exactly-once, leaderboard

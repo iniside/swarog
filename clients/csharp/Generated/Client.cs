@@ -81,6 +81,12 @@ public sealed record MatchReportRequest(
     [property: JsonPropertyName("Winner")] string Winner,
     [property: JsonPropertyName("Loser")] string Loser);
 
+/// <summary>Request for <c>wallet.listCurrencies</c> (no arguments — serializes to <c>{}</c>).</summary>
+public sealed record WalletListCurrenciesRequest();
+
+/// <summary>Request for <c>wallet.myBalances</c> (no arguments — serializes to <c>{}</c>).</summary>
+public sealed record WalletMyBalancesRequest();
+
 /// <summary>
 /// The generated, typed player client. Each method builds a request DTO (always a
 /// concrete object — a no-arg call serializes to <c>{}</c>, never <c>null</c>),
@@ -231,6 +237,30 @@ public sealed class GameBackendClient(IPlayerTransport transport)
         byte[] payload = JsonSerializer.SerializeToUtf8Bytes(request, JsonOpts);
         PlayerResponse resp = await transport.CallAsync("match.report", null, payload, ct).ConfigureAwait(false);
         Unwrap(resp);
+    }
+
+    /// <summary>Invokes <c>wallet.listCurrencies</c> (requires a bearer token).</summary>
+    public async Task<Currency[]> WalletListCurrenciesAsync(string token, CancellationToken ct = default)
+    {
+        var request = new WalletListCurrenciesRequest();
+        byte[] payload = JsonSerializer.SerializeToUtf8Bytes(request, JsonOpts);
+        PlayerResponse resp = await transport.CallAsync("wallet.listCurrencies", token, payload, ct).ConfigureAwait(false);
+        JsonNode envelope = Unwrap(resp);
+        JsonNode value = envelope["value"]
+            ?? throw new GameBackendTransportException("Ok response missing 'value'");
+        return value.Deserialize<Currency[]>(JsonOpts)!;
+    }
+
+    /// <summary>Invokes <c>wallet.myBalances</c> (requires a bearer token).</summary>
+    public async Task<Balance[]> WalletMyBalancesAsync(string token, CancellationToken ct = default)
+    {
+        var request = new WalletMyBalancesRequest();
+        byte[] payload = JsonSerializer.SerializeToUtf8Bytes(request, JsonOpts);
+        PlayerResponse resp = await transport.CallAsync("wallet.myBalances", token, payload, ct).ConfigureAwait(false);
+        JsonNode envelope = Unwrap(resp);
+        JsonNode value = envelope["value"]
+            ?? throw new GameBackendTransportException("Ok response missing 'value'");
+        return value.Deserialize<Balance[]>(JsonOpts)!;
     }
 
     /// <summary>Validates the transport flag and the domain status, returning the

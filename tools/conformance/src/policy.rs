@@ -35,6 +35,7 @@ pub fn entries() -> Vec<Entry> {
         match_module(),
         rating(),
         scheduler(),
+        wallet(),
     ]
 }
 
@@ -66,6 +67,15 @@ pub fn input_policies() -> Vec<(InputKey, InputPolicy)> {
         (key("match.report", "ReportId", External), Validated { cap: 128, basis: "match_module::validate_report_id is called before the replay lookup" }),
         (key("match.report", "Winner", External), Validated { cap: 128, basis: "match_module::validate_participant is called for every new winner before rating or SQL" }),
         (key("rating.mmr", "player_id", Wire), Opaque { rationale: "opaque player UUID passed between domain capabilities" }),
+        (key("wallet.balances", "player_id", Wire), Opaque { rationale: "opaque player UUID passed between domain capabilities" }),
+        (key("wallet.credit", "movement.idempotency_key", Wire), Validated { cap: walletapi::MAX_IDEMPOTENCY_KEY_BYTES, basis: "wallet::idempotency_key_within_cap runs inside validate_movement, called by every credit/debit before ledger SQL" }),
+        (key("wallet.credit", "movement.player_id", Wire), Opaque { rationale: "opaque player UUID passed between domain capabilities" }),
+        (key("wallet.credit", "movement.currency", Wire), Validated { cap: walletapi::MAX_CURRENCY_CODE_BYTES, basis: "wallet::currency_code_within_cap runs inside validate_movement, called by every credit/debit before ledger SQL" }),
+        (key("wallet.credit", "movement.reason", Wire), Validated { cap: walletapi::MAX_REASON_BYTES, basis: "wallet::reason_within_cap runs inside validate_movement, called by every credit/debit before ledger SQL" }),
+        (key("wallet.debit", "movement.idempotency_key", Wire), Validated { cap: walletapi::MAX_IDEMPOTENCY_KEY_BYTES, basis: "wallet::idempotency_key_within_cap runs inside validate_movement, called by every credit/debit before ledger SQL" }),
+        (key("wallet.debit", "movement.player_id", Wire), Opaque { rationale: "opaque player UUID passed between domain capabilities" }),
+        (key("wallet.debit", "movement.currency", Wire), Validated { cap: walletapi::MAX_CURRENCY_CODE_BYTES, basis: "wallet::currency_code_within_cap runs inside validate_movement, called by every credit/debit before ledger SQL" }),
+        (key("wallet.debit", "movement.reason", Wire), Validated { cap: walletapi::MAX_REASON_BYTES, basis: "wallet::reason_within_cap runs inside validate_movement, called by every credit/debit before ledger SQL" }),
     ]
 }
 
@@ -417,6 +427,57 @@ fn scheduler() -> Entry {
         "scheduler rows are operator data, not player-supplied free text",
         "scheduler has no credential verifier",
     )
+}
+
+fn wallet() -> Entry {
+    Entry {
+        module: "wallet",
+        stances: vec![
+            (
+                Convention::EnvValidation,
+                na("WALLET_DEV_SEED is a boolean presence-gate, not a parsed value"),
+            ),
+            (
+                Convention::InputByteCaps,
+                // Covers the three movement fields validate_movement enforces before ledger
+                // SQL (idempotency_key/currency/reason — player_id is Opaque, an unvalidated
+                // UUID). It does NOT cover the admin-submit currency-catalog fields
+                // (display_name, kind, an unbounded decimals) reached from a remote
+                // `admin.adminSubmit` with no cap in Rust and no column CHECK: the
+                // AdminSubmit `Params` is a `HashMap<String, String>` the input-inventory
+                // traversal (which only walks api/*/api request DTOs) never reaches, so
+                // there is no InputKey to attach a policy row to. This is the same class as
+                // `modules/apikeys`'s form strings, not a wallet regression — recorded here
+                // rather than letting this Applies stance imply the admin-submit seam is
+                // capped.
+                Stance::Applies(Fixture::InputByteCaps(vec![
+                    CapCase {
+                        name: "wallet movement idempotency key",
+                        cap: walletapi::MAX_IDEMPOTENCY_KEY_BYTES,
+                        probe: Arc::new(wallet::conformance::conformance_idempotency_key_rejected),
+                    },
+                    CapCase {
+                        name: "wallet movement currency code",
+                        cap: walletapi::MAX_CURRENCY_CODE_BYTES,
+                        probe: Arc::new(wallet::conformance::conformance_currency_code_rejected),
+                    },
+                    CapCase {
+                        name: "wallet movement reason",
+                        cap: walletapi::MAX_REASON_BYTES,
+                        probe: Arc::new(wallet::conformance::conformance_reason_rejected),
+                    },
+                ])),
+            ),
+            (
+                Convention::InfraOutage503,
+                na("wallet has no external credential verifier"),
+            ),
+            (
+                Convention::ArgonParity,
+                na("this module performs no password hashing"),
+            ),
+        ],
+    }
 }
 
 fn all_na(

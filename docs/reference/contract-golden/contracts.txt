@@ -44,6 +44,7 @@ event topic=config.changed version=1 history=min-retention:7d
 event topic=match.finished version=1 history=min-retention:7d
 event topic=player.registered version=1 history=min-retention:7d
 event topic=scheduler.fired version=1 history=min-retention:7d
+event topic=wallet.changed version=1 history=min-retention:30d
 payload topic=admin.action version=1 payload.action:string
 payload topic=admin.action version=1 payload.actor:string
 payload topic=admin.action version=1 payload.detail:string
@@ -67,6 +68,12 @@ payload topic=player.registered version=1 payload.display_name:string
 payload topic=player.registered version=1 payload.player_id:string
 payload topic=player.registered version=1 payload.provider:string
 payload topic=scheduler.fired version=1 payload.name:string
+payload topic=wallet.changed version=1 payload.balance_after:number
+payload topic=wallet.changed version=1 payload.currency:string
+payload topic=wallet.changed version=1 payload.delta:number
+payload topic=wallet.changed version=1 payload.ledger_id:string
+payload topic=wallet.changed version=1 payload.player_id:string
+payload topic=wallet.changed version=1 payload.reason:string
 rpc module=accountsapi::auth_rpc method=accounts.login verb=POST path=/accounts/login auth=None success=200 retry=Never
 rpc module=accountsapi::auth_rpc method=accounts.loginEpic verb=POST path=/accounts/login/epic auth=None success=200 retry=Never
 rpc module=accountsapi::auth_rpc method=accounts.me verb=GET path=/accounts/me auth=Player success=200 retry=OnceAfterReconnect
@@ -79,6 +86,8 @@ rpc module=inventoryapi::holdings_rpc method=inventory.listCharacter verb=GET pa
 rpc module=inventoryapi::holdings_rpc method=inventory.listMine verb=GET path=/inventory/me auth=Player success=200 retry=OnceAfterReconnect
 rpc module=leaderboardapi::leaderboard_rpc method=leaderboard.topScores verb=GET path=/leaderboard auth=None success=200 retry=OnceAfterReconnect
 rpc module=matchapi::match_rpc method=match.report verb=POST path=/match/report auth=None success=202 retry=OnceAfterReconnect
+rpc module=walletapi::player_rpc method=wallet.listCurrencies verb=GET path=/wallet/currencies auth=Player success=200 retry=OnceAfterReconnect
+rpc module=walletapi::player_rpc method=wallet.myBalances verb=GET path=/wallet/me auth=Player success=200 retry=OnceAfterReconnect
 rpc-arg module=accountsapi::auth_rpc method=accounts.login param=email wire_key=email source=body
 rpc-arg module=accountsapi::auth_rpc method=accounts.login param=password wire_key=password source=body
 rpc-arg module=accountsapi::auth_rpc method=accounts.loginEpic param=id_token wire_key=id_token source=body
@@ -113,6 +122,8 @@ rpc-body module=leaderboardapi::leaderboard_rpc method=leaderboard.topScores bod
 rpc-body module=matchapi::match_rpc method=match.report body.Loser:string
 rpc-body module=matchapi::match_rpc method=match.report body.ReportId:string
 rpc-body module=matchapi::match_rpc method=match.report body.Winner:string
+rpc-body module=walletapi::player_rpc method=wallet.listCurrencies body:object{}
+rpc-body module=walletapi::player_rpc method=wallet.myBalances body:object{}
 wire module=accountsapi::auth_rpc method=accounts.login retry=Never
 wire module=accountsapi::auth_rpc method=accounts.loginEpic retry=Never
 wire module=accountsapi::auth_rpc method=accounts.me retry=OnceAfterReconnect
@@ -132,3 +143,9 @@ wire module=inventoryapi::holdings_rpc method=inventory.listMine retry=OnceAfter
 wire module=leaderboardapi::leaderboard_rpc method=leaderboard.topScores retry=OnceAfterReconnect
 wire module=matchapi::match_rpc method=match.report retry=OnceAfterReconnect
 wire module=ratingapi::mmr_reader_rpc method=rating.mmr retry=OnceAfterReconnect
+wire module=walletapi::player_rpc method=wallet.listCurrencies retry=OnceAfterReconnect
+wire module=walletapi::player_rpc method=wallet.myBalances retry=OnceAfterReconnect
+wire module=walletapi::wallet_rpc method=wallet.balances retry=OnceAfterReconnect
+wire module=walletapi::wallet_rpc method=wallet.credit retry=OnceAfterReconnect
+wire module=walletapi::wallet_rpc method=wallet.currencies retry=OnceAfterReconnect
+wire module=walletapi::wallet_rpc method=wallet.debit retry=OnceAfterReconnect

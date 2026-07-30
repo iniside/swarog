@@ -17,6 +17,7 @@ inventoryapi = { workspace = true }
 accountsapi = { workspace = true }
 matchapi = { workspace = true }
 leaderboardapi = { workspace = true }
+walletapi = { workspace = true }
 opsapi = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

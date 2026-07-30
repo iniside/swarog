@@ -11,6 +11,11 @@ using System.Text.Json.Serialization;
 
 namespace GameBackend.Client.Generated;
 
+/// <summary>The <c>Balance</c> DTO.</summary>
+public sealed record Balance(
+    [property: JsonPropertyName("currency")] string Currency,
+    [property: JsonPropertyName("amount")] long Amount);
+
 /// <summary>The <c>Character</c> DTO.</summary>
 public sealed record Character(
     [property: JsonPropertyName("id")] string Id,
@@ -18,6 +23,13 @@ public sealed record Character(
     [property: JsonPropertyName("name")] string Name,
     [property: JsonPropertyName("class")] string Class,
     [property: JsonPropertyName("created_at")] string CreatedAt);
+
+/// <summary>The <c>Currency</c> DTO.</summary>
+public sealed record Currency(
+    [property: JsonPropertyName("code")] string Code,
+    [property: JsonPropertyName("display_name")] string DisplayName,
+    [property: JsonPropertyName("kind")] string Kind,
+    [property: JsonPropertyName("decimals")] int Decimals);
 
 /// <summary>The <c>Holding</c> DTO.</summary>
 public sealed record Holding(

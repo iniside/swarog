@@ -232,9 +232,52 @@
         }
       ],
       "ret": "Unit"
+    },
+    {
+      "provider": "wallet",
+      "wire_method": "wallet.listCurrencies",
+      "verb": "GET",
+      "path": "/wallet/currencies",
+      "auth": "player",
+      "success": 200,
+      "args": [],
+      "ret": {
+        "Vec": {
+          "Struct": "Currency"
+        }
+      }
+    },
+    {
+      "provider": "wallet",
+      "wire_method": "wallet.myBalances",
+      "verb": "GET",
+      "path": "/wallet/me",
+      "auth": "player",
+      "success": 200,
+      "args": [],
+      "ret": {
+        "Vec": {
+          "Struct": "Balance"
+        }
+      }
     }
   ],
   "dtos": [
+    {
+      "name": "Balance",
+      "fields": [
+        {
+          "name": "currency",
+          "wire_name": "currency",
+          "ty": "String"
+        },
+        {
+          "name": "amount",
+          "wire_name": "amount",
+          "ty": "I64"
+        }
+      ]
+    },
     {
       "name": "Character",
       "fields": [
@@ -262,6 +305,31 @@
           "name": "created_at",
           "wire_name": "created_at",
           "ty": "String"
+        }
+      ]
+    },
+    {
+      "name": "Currency",
+      "fields": [
+        {
+          "name": "code",
+          "wire_name": "code",
+          "ty": "String"
+        },
+        {
+          "name": "display_name",
+          "wire_name": "display_name",
+          "ty": "String"
+        },
+        {
+          "name": "kind",
+          "wire_name": "kind",
+          "ty": "String"
+        },
+        {
+          "name": "decimals",
+          "wire_name": "decimals",
+          "ty": "I32"
         }
       ]
     },

@@ -1024,6 +1024,8 @@ dependencies = [
  "sqlx",
  "syn",
  "tokio",
+ "wallet",
+ "walletapi",
 ]
 
 [[package]]
@@ -1154,6 +1156,7 @@ dependencies = [
  "serde",
  "serde_json",
  "syn",
+ "walletapi",
 ]
 
 [[package]]
@@ -2629,6 +2632,7 @@ dependencies = [
  "matchapi",
  "opsapi",
  "ratingapi",
+ "walletapi",
 ]
 
 [[package]]
@@ -4355,6 +4359,8 @@ dependencies = [
  "serde_json",
  "sqlx",
  "tokio",
+ "walletapi",
+ "walletevents",
 ]
 
 [[package]]
