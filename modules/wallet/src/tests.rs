@@ -1955,14 +1955,14 @@ async fn catalog_rows(pool: &PgPool, code: &str) -> i64 {
     rows
 }
 
-/// The Rust half of the catalog caps, per field and in BOTH directions: one byte past the
-/// cap is rejected with a message NAMING that field, and the cap itself is accepted.
-///
-/// The per-field message is what pins `CATALOG_CAPS`' positional `zip` with
-/// `[code, display_name, kind]`: inserting or reordering an entry without touching the
-/// value list would check a value against the WRONG ceiling and name the WRONG field, with
-/// no compile error — and the at-cap acceptances below would go red the moment a longer
-/// field were measured against a shorter field's bound.
+/// The SUBMIT PATH's verdict on the catalog caps, per field and in BOTH directions: one
+/// byte past the cap is rejected with a message NAMING that field and NO row is written,
+/// and the cap itself is accepted. It does not say WHICH level rejected — `catalog_rejection`
+/// maps every mirroring CHECK back through the same `CATALOG_CAPS` and the same `over_cap`,
+/// so the Rust caps and the column CHECKs are indistinguishable from here (that is the point
+/// of the DDL-equality test below, and the reason the direct `check_catalog_caps` test
+/// exists). What this pins is the path end to end: the field's own ceiling reaches the
+/// operator and the write does not land.
 #[tokio::test]
 async fn catalog_form_rejects_each_oversized_field_by_name() {
     let Some(pool) = test_pool().await else { return };
@@ -2039,8 +2039,10 @@ async fn catalog_form_rejects_each_oversized_field_by_name() {
 
 /// The DB half, on its own: each catalog CHECK rejects a direct INSERT past its bound
 /// under the constraint name `admin::catalog_rejection` maps. This is the class fail-safe
-/// for every writer that does not go through the admin form — drop the Rust caps and the
-/// test above goes red; drop the column CHECKs and only this one does.
+/// for every writer that does not go through the admin form — a raw `psql` INSERT, or a
+/// future writer that never calls `check_catalog_caps`. It cannot substitute for the Rust
+/// half and the Rust half cannot substitute for it: through `apply_submit` the two produce
+/// the SAME message, so only the direct calls below separate them.
 #[tokio::test]
 async fn catalog_columns_reject_oversized_values() {
     let Some(pool) = test_pool().await else { return };
@@ -2096,6 +2098,61 @@ async fn catalog_columns_reject_oversized_values() {
 // ---------------------------------------------------------------------------
 // The catalog cap table vs the DDL — pure, no Postgres.
 // ---------------------------------------------------------------------------
+
+/// The Rust caps as their OWN authority, called directly, both directions, per field. This
+/// is the only test that separates them from the column CHECKs: through `apply_submit` a
+/// deleted `check_catalog_caps` call still answers with a byte-identical message, because
+/// `catalog_rejection` looks the fired constraint up in the SAME `CATALOG_CAPS` and formats
+/// it with the SAME `over_cap` — so every form assertion stays green while the pre-SQL
+/// verdict is gone.
+///
+/// The per-field message also pins `CATALOG_CAPS`' positional `zip` with
+/// `[code, display_name, kind]`: reordering the table without touching the value list would
+/// measure a value against the WRONG ceiling and name the WRONG field with no compile error,
+/// and the at-cap acceptance catches the direction the rejection cannot.
+#[test]
+fn check_catalog_caps_names_each_field_at_one_byte_past_its_own_cap() {
+    for (index, cap) in crate::admin::CATALOG_CAPS.iter().enumerate() {
+        let mut values = ["c".to_string(), "n".to_string(), "k".to_string()];
+
+        values[index] = "x".repeat(cap.max_bytes + 1);
+        let msg = rejection_text(
+            crate::admin::check_catalog_caps(&values[0], &values[1], &values[2])
+                .expect_err(cap.label),
+        );
+        assert!(
+            msg.contains(cap.label) && msg.contains(&cap.max_bytes.to_string()),
+            "{}: the rejection must name the field and its own ceiling: {msg}",
+            cap.label
+        );
+
+        values[index] = "x".repeat(cap.max_bytes);
+        crate::admin::check_catalog_caps(&values[0], &values[1], &values[2])
+            .map_err(rejection_text)
+            .unwrap_or_else(|msg| panic!("{}: the cap itself is inclusive: {msg}", cap.label));
+    }
+}
+
+/// The `decimals` bound, called directly — the same separation argument as the byte caps:
+/// `currencies_decimals_range_check` maps back through `over_decimals`, so through
+/// `apply_submit` the two levels word the verdict identically.
+#[test]
+fn check_decimals_range_accepts_its_bounds_and_names_them_when_refusing() {
+    for accepted in [0, MAX_CURRENCY_DECIMALS] {
+        crate::admin::check_decimals_range(accepted)
+            .map_err(rejection_text)
+            .unwrap_or_else(|msg| panic!("decimals {accepted} is within the range: {msg}"));
+    }
+    for refused in [-1, MAX_CURRENCY_DECIMALS + 1] {
+        let msg = rejection_text(
+            crate::admin::check_decimals_range(refused).expect_err("outside the range"),
+        );
+        assert!(
+            msg.contains(&format!("0..={MAX_CURRENCY_DECIMALS}")),
+            "decimals {refused}: the rejection must name the range: {msg}"
+        );
+    }
+}
 
 /// The one whitespace-normalized `CONSTRAINT <name> CHECK (...)` clause `SCHEMA_DDL`
 /// declares, or a panic naming the missing constraint.

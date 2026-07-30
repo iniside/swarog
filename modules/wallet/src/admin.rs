@@ -502,17 +502,11 @@ pub(crate) async fn apply_submit(
             let decimals: i32 = decimals.parse().map_err(|_| {
                 Rejection::Rejected(format!("wallet: decimals {decimals:?} is not a whole number"))
             })?;
-            // One range, worded exactly as `currencies_decimals_range_check`'s mapping words
-            // it, so the Rust verdict and the DB's fail-safe read identically.
-            if !(0..=crate::MAX_CURRENCY_DECIMALS).contains(&decimals) {
-                return Err(Rejection::Rejected(format!(
-                    "wallet: decimals must be within 0..={}",
-                    crate::MAX_CURRENCY_DECIMALS
-                )));
-            }
-            // The catalog's own byte caps, checked here so an over-long value names the
-            // FIELD it came from; the matching column CHECK is the class fail-safe, not a
-            // second policy.
+            // Both input rules are refused BEFORE any SQL runs — no connection acquired, no
+            // round trip — and hold for a catalog whose column CHECKs a `CREATE TABLE IF NOT
+            // EXISTS` never repaired. The CHECKs backstop the same two limits through the
+            // SAME table below, so neither level can word a limit the other way.
+            check_decimals_range(decimals)?;
             check_catalog_caps(&code, &display_name, &kind)?;
             let mut conn = svc
                 .store
@@ -589,9 +583,28 @@ fn over_cap(cap: &CatalogCap) -> Rejection {
     ))
 }
 
+/// One wording for the `decimals` bound, shared by the Rust check and the CHECK's mapping.
+fn over_decimals() -> Rejection {
+    Rejection::Rejected(format!(
+        "wallet: decimals must be within 0..={}",
+        crate::MAX_CURRENCY_DECIMALS
+    ))
+}
+
+/// The `decimals` range, as a function so a test can execute this verdict directly: through
+/// [`apply_submit`] the column CHECK produces the identical message, which makes the two
+/// levels indistinguishable from outside.
+pub(crate) fn check_decimals_range(decimals: i32) -> Result<(), Rejection> {
+    if (0..=crate::MAX_CURRENCY_DECIMALS).contains(&decimals) {
+        Ok(())
+    } else {
+        Err(over_decimals())
+    }
+}
+
 /// Rejects the first over-long catalog field, in `CATALOG_CAPS` order. Values are positional
 /// with the table (code, display name, kind).
-fn check_catalog_caps(code: &str, display_name: &str, kind: &str) -> Result<(), Rejection> {
+pub(crate) fn check_catalog_caps(code: &str, display_name: &str, kind: &str) -> Result<(), Rejection> {
     for (cap, value) in CATALOG_CAPS.iter().zip([code, display_name, kind]) {
         if value.len() > cap.max_bytes {
             return Err(over_cap(cap));
@@ -611,10 +624,7 @@ fn catalog_rejection(e: sqlx::Error) -> Rejection {
         .and_then(|db| db.constraint());
     if let Some(name) = constraint {
         if name == DECIMALS_CONSTRAINT {
-            return Rejection::Rejected(format!(
-                "wallet: decimals must be within 0..={}",
-                crate::MAX_CURRENCY_DECIMALS
-            ));
+            return over_decimals();
         }
         if let Some(cap) = CATALOG_CAPS.iter().find(|c| c.constraint == name) {
             return over_cap(cap);
