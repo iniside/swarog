@@ -441,15 +441,15 @@ fn wallet() -> Entry {
                 Convention::InputByteCaps,
                 // Covers the three movement fields validate_movement enforces before ledger
                 // SQL (idempotency_key/currency/reason — player_id is Opaque, an unvalidated
-                // UUID). It does NOT cover the admin-submit currency-catalog fields
-                // (display_name, kind, an unbounded decimals) reached from a remote
-                // `admin.adminSubmit` with no cap in Rust and no column CHECK: the
-                // AdminSubmit `Params` is a `HashMap<String, String>` the input-inventory
-                // traversal (which only walks api/*/api request DTOs) never reaches, so
-                // there is no InputKey to attach a policy row to. This is the same class as
-                // `modules/apikeys`'s form strings, not a wallet regression — recorded here
-                // rather than letting this Applies stance imply the admin-submit seam is
-                // capped.
+                // UUID). The admin-submit currency-catalog fields are capped too, just not
+                // REPRESENTABLE here: display_name/kind go through `admin::CATALOG_CAPS`
+                // backed by the `currencies_*_len_check` columns, and decimals is parsed as
+                // an i32 and range-checked against `currencies_decimals_range_check` — but
+                // the AdminSubmit `Params` is a `HashMap<String, String>` the input-inventory
+                // traversal (which only walks api/*/api request DTOs) never reaches, so there
+                // is no InputKey to attach a policy row to. `modules/apikeys`'s form strings
+                // are the same class and are still UNCAPPED — recorded in the wallet plan's
+                // Step 9 errata, not closed here.
                 Stance::Applies(Fixture::InputByteCaps(vec![
                     CapCase {
                         name: "wallet movement idempotency key",

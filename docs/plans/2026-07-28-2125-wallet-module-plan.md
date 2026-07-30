@@ -991,6 +991,25 @@ Every one of these mints its own currency via the existing `unique_currency` hel
 (`modules/wallet/src/tests.rs:83`). After F3 the dev-seeded rows are no longer converging
 fixture data — see the Step 8 follow-up errata.
 
+(iv) **Added by the Step 9 review rollout** — two cases the landed code has no execution
+path for:
+
+6. **The dev key policy's NEGATIVE.** `modules/apikeys/src/lib.rs`'s `DEV_SEED_ROLES`
+   `dev-client` policy must contain `wallet.myBalances`/`wallet.listCurrencies` and must NOT
+   contain `wallet.credit` or `wallet.debit` — money must never be movable from a
+   player-facing key. The sibling guard for `match.report` already exists at
+   `modules/apikeys/src/tests.rs:26`; extend that test rather than writing a new one. A
+   positive-only assertion passes even if someone pastes the full method list in.
+7. **The catalog input caps** (closed in the same rollout — `admin::CATALOG_CAPS`,
+   `currencies_display_name_len_check` / `currencies_kind_len_check` /
+   `currencies_decimals_range_check`). Both levels, both directions:
+   `apply_submit` with a `display_name` of `MAX_CURRENCY_DISPLAY_NAME_BYTES + 1` bytes (and
+   the same for `kind`) → `Rejection::Rejected` whose message names THAT field, and no
+   catalog row written; `decimals = 19` → `Rejected`, `decimals = 18` → accepted. Then the
+   DB fail-safe on its own, in the shape of `catalog_rejects_an_oversized_currency_code`
+   (`tests.rs:1259`): a direct `INSERT` past each cap is `23514` under the matching named
+   constraint. Dropping either level must fail exactly one of these.
+
 Idempotency (dup-same / dup-different) stays in Step 5 — a live fleet cannot deterministically
 drive the conflict arm, and a test that cannot distinguish fixed from unfixed is not a proof.
 
@@ -1212,6 +1231,51 @@ One implementation detail beyond the punch list: with `validate_movement` inside
 `1 ..= MAX_MOVEMENT_AMOUNT` one line above, so ±1 cannot overflow). `sign` stays `i64` per
 D8, with a `debug_assert!(sign == 1 || sign == -1)` recording that it is a DIRECTION and
 that both call sites are in-crate.
+
+### Step 9 (tool inventories) — one impossible instruction, one unplanned generator change
+
+1. **The `KnownGap` this step ordered cannot exist.** Step 9's table told the implementer to
+   record the admin-submit gap "as a `KnownGap` beside the `Applies` stance". That is
+   structurally impossible: `Entry::stance()` is a `.find()` over `Convention::ALL`, so a
+   second `(InputByteCaps, KnownGap)` row for the same convention is dead code the tool never
+   reads — and `--deny-gaps` plus two unit tests assert the gap sets are EMPTY, so a gap
+   declared honestly would fail the blocking conformance stage. It landed as a comment on the
+   `Applies` stance instead, which is the only place the fact could be recorded.
+2. **The underlying gap is now CLOSED for wallet, so the question is moot here.** The review
+   rollout capped `display_name` and `kind` at both levels — `admin::CATALOG_CAPS` in Rust
+   (the message names the offending field) and the named
+   `currencies_display_name_len_check` / `currencies_kind_len_check` column CHECKs as the
+   class fail-safe — and bounded `decimals` to `0..=MAX_CURRENCY_DECIMALS` (18) in Rust with
+   `currencies_decimals_range_check` behind it. The caps are module-private
+   (`modules/wallet/src/service.rs`), NOT `walletapi`: no `#[rpc]` method carries these
+   fields — `Movement` is the whole caller-facing input shape — so publishing them would
+   advertise a caller obligation that does not exist, and no `--bless-public-api` was needed.
+   `tools/conformance/src/policy.rs`'s comment was rewritten to say what is true now:
+   the fields are capped but not REPRESENTABLE as an `InputKey`, because the traversal only
+   walks `api/*/api` request DTOs.
+   **The sibling is NOT closed:** `modules/apikeys`'s admin form strings are the identical
+   uncovered surface (`Params` → SQL, no Rust cap, no column CHECK) with no record anywhere
+   — an explicit known gap as of this rollout.
+3. **Schema change — a dev box needs a wipe.** `CREATE TABLE IF NOT EXISTS` never adds a
+   CHECK to a pre-existing table, so a box whose `wallet` schema predates this commit keeps a
+   catalog with NO column-level fail-safe while the Rust caps still reject over-long input.
+   The remedy is CLAUDE.md's wipe rule: `DROP SCHEMA wallet CASCADE` (or a full DB wipe) plus
+   a fresh boot — never an `ALTER`.
+4. **Unplanned generator change, recorded rather than smuggled.** Step 9's `csharp-client-gen`
+   row named only `PROVIDERS` and the `phase_a()` arm, but wallet's `Currency::decimals` is an
+   `i32`, which the type lattice did not model — so `TypeRef::I32` (+ its `cs_type` → `int`
+   mapping and `map_type` arm) landed inside an inventory step. The review rollout added the
+   diagnostic that omission cost: an unmodelled Rust scalar (`bool`, `u32`, `f64`, …) now
+   bails in `map_type` naming the real remedy (add a `TypeRef` variant + its `cs_type`
+   mapping) instead of falling through to `TypeRef::Struct` and dying much later in
+   `collect_dtos` as `DTO "u32" referenced but no pub struct found`. Pinned by
+   `unmodelled_scalar_bails_naming_the_lattice_not_a_missing_dto`.
+5. **`CLAUDE.md` prose the step should have swept, corrected here.** The audit bullet still
+   claimed "6 ledger topics … a 7th subscription for prune" after Step 3 made `wallet.changed`
+   the seventh sink (prune is the eighth), and `WALLET_DEV_SEED` appeared in no bullet at all
+   while every other dev opt-in is documented. Both fixed; the wallet bullet deliberately does
+   NOT copy apikeys' "self-healing upsert" wording, which `b912fa1` made false for wallet (the
+   seed is insert-if-absent, so an operator's catalog edit survives a restart).
 
 ## Revision history
 

@@ -252,8 +252,10 @@ never a silent last-writer-wins overwrite.
   `admin.adminData` (`adminrpc::admin_remote_factory`). Remote forms are read-only.
   admin-svc has a DB (schema `admin` + the durable plane) — no longer planeless.
 - **audit** — append-only ledger (`audit.log`), zero-coupling raw durable sinks for
-  all 6 ledger topics — six independent subscriptions (`audit.<topic-kebab>.v1`), each
-  with its own checkpoint, plus a 7th independent subscription for prune reacting
+  all 7 ledger topics (`character.created/deleted`, `player.registered`,
+  `config.changed`, `match.finished`, `admin.action`, `wallet.changed`) — seven
+  independent subscriptions (`audit.<topic-kebab>.v1`), each
+  with its own checkpoint, plus an 8th independent subscription for prune reacting
   to `scheduler.fired{audit-prune}`
   (`AUDIT_RETENTION_DAYS`, default 30).
 - **scheduler** — data-driven schedules (`scheduler.schedules`), 1s tick, per-name
@@ -307,7 +309,10 @@ never a silent last-writer-wins overwrite.
   the same way `match.report` licenses it on `ReportId`. An optional, config-driven
   starter grant reacts to durable `player.registered` (`AfterRegistration`, since
   the topic retains 7 days) and emits durable `wallet.changed` in the same
-  transaction as the balance update and ledger row. Admin page "Wallet" is a
+  transaction as the balance update and ledger row. Dev currencies `gold`/`gems`
+  seed ONLY when `WALLET_DEV_SEED` is explicitly truthy (explicit-only,
+  default OFF/fail-closed, loud warn when ON); the seed is insert-if-absent, so an
+  operator's catalog edit survives a restart. Admin page "Wallet" is a
   remotely-editable configurator (create-currency/grant/revoke) under Economy.
 - **gateway** — the front-door module: HTTP ops routing (Local vs Remote purely by
   slot presence; peer addresses are injected by `cmd/*` via `remote::Stub` →
@@ -485,7 +490,8 @@ topologies are supported compilation paths.
 Smoke test (monolith or through gateway-svc). The dev conveniences are explicit
 opt-ins/opt-outs (fail-closed defaults), so the monolith needs `APIKEYS_DEV_SEED=1`
 (dev API keys below), `ACCOUNTS_DEV_AUTH=1` + `INVENTORY_DEV_GRANT=1`
-(register/login + IAP grant), `ADMIN_COOKIE_SECURE=0` (session cookie over plain
+(register/login + IAP grant), `WALLET_DEV_SEED=1` (the `gold`/`gems` catalog),
+`ADMIN_COOKIE_SECURE=0` (session cookie over plain
 http) and a seeded admin user (`adminctl create-user`) —
 `cargo run -p devctl -- up monolith` sets/seeds all of these for you (dev portal
 creds `admin`/`admin`):
