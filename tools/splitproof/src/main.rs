@@ -410,6 +410,63 @@ async fn monolith_parity(ctx: &Ctx, pool: &PgPool, p: &mut Proof) -> Result<()> 
             format!("code={c}"),
         );
     }
+    // [WL6m] the LOCAL half of [WL6]. The two topologies reach `render_error` by different
+    // routes — LOCAL `Rejection::into_local` -> `SubmitError::Other(msg)`, REMOTE
+    // `into_ops` -> `Error::invalid(msg)` whose `Display` is the bare message — so parity is
+    // a property of two mappings, not of one. Same grant-then-over-revoke pair, same verdict
+    // text, same unchanged balance, driven through the monolith's in-process submit closure.
+    let wl6m_player: String = sqlx::query_scalar("SELECT gen_random_uuid()::text")
+        .fetch_one(pool)
+        .await?;
+    let (csrf, idem_grant, _) = wallet_form(&jar, &m).await?;
+    let wl6m_grant = jar
+        .post(format!("{m}/admin/wallet"))
+        .form(&[
+            ("_csrf", csrf.as_str()),
+            ("_idem_grant", idem_grant.as_str()),
+            ("_action", "grant"),
+            ("player_id", wl6m_player.as_str()),
+            ("currency", "gold"),
+            ("amount", "250"),
+            ("reason", "splitproof monolith grant"),
+        ])
+        .send()
+        .await?;
+    let wl6m_grant_code = wl6m_grant.status().as_u16();
+    let (csrf, _, idem_revoke) = wallet_form(&jar, &m).await?;
+    let wl6m = jar
+        .post(format!("{m}/admin/wallet"))
+        .form(&[
+            ("_csrf", csrf.as_str()),
+            ("_idem_revoke", idem_revoke.as_str()),
+            ("_action", "revoke"),
+            ("player_id", wl6m_player.as_str()),
+            ("currency", "gold"),
+            ("amount", "999999"),
+            ("reason", "splitproof monolith over-revoke"),
+        ])
+        .send()
+        .await?;
+    let wl6m_code = wl6m.status().as_u16();
+    let wl6m_body = wl6m.text().await.unwrap_or_default();
+    let wl6m_balance: Option<i64> = sqlx::query_scalar(
+        "SELECT amount FROM wallet.balances WHERE player_id::text=$1 AND currency='gold'",
+    )
+    .bind(&wl6m_player)
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten();
+    p.check(
+        "[WL6m] monolith over-revoke -> verdict card 'insufficient funds', balance unchanged at 250",
+        wl6m_grant_code == 303
+            && wl6m_code == 200
+            && wl6m_body
+                .contains("save failed: movement rejected: insufficient funds or balance ceiling exceeded")
+            && wl6m_balance == Some(250),
+        format!("grant={wl6m_grant_code} revoke={wl6m_code} balance={wl6m_balance:?}"),
+    );
+
     match register_capture(ctx, &m, &format!("wallet-mono-{suffix}@test.local")).await {
         Ok((pid, _)) => {
             let credited = poll_count(
@@ -639,6 +696,28 @@ async fn run(root: PathBuf, run_dir: PathBuf) -> Result<u32> {
     println!("[splitproof] fleet up: {}/{} processes healthy\n", fleet.len(), ctx.fleet.services().len());
 
     let mut p = Proof::default();
+    // The whole proof runs inside `proof_phase` so its result can be CAPTURED: the wallet
+    // starter-grant knobs are a config write this harness made, and they must be undone on
+    // the failure path too — a run that dies mid-proof otherwise leaves the box granting
+    // every later `devctl up monolith` registration 100 gold.
+    let phase = proof_phase(&ctx, &pool, fleet, &mut p).await;
+    clear_wallet_starter_config(&pool).await;
+
+    println!(
+        "\n[splitproof] {} passed, {} failed",
+        p.pass,
+        p.fail.len()
+    );
+    for f in &p.fail {
+        println!("  - FAILED: {f}");
+    }
+    phase?;
+    Ok(p.fail.len() as u32)
+}
+
+/// Every assertion phase, split + monolith parity, with the fleet's ownership moved in so it
+/// is killed (no orphans) whichever way this returns.
+async fn proof_phase(ctx: &Ctx, pool: &PgPool, mut fleet: Vec<Running>, p: &mut Proof) -> Result<()> {
     // [LV1] every child that cleared its readyz gate is still alive right after boot —
     // catches a stale listener on a service's port answering for a child that already
     // died (e.g. bind conflict surfacing only after the first successful accept).
@@ -648,21 +727,21 @@ async fn run(root: PathBuf, run_dir: PathBuf) -> Result<u32> {
         lv1_dead.is_empty(),
         if lv1_dead.is_empty() { "all processes alive".to_string() } else { lv1_dead.join("; ") },
     );
-    assertions(&ctx, &pool, &mut p).await?;
+    assertions(ctx, pool, p).await?;
 
     // [I-GATE] live security proof: the harness boots the whole fleet with
     // INVENTORY_DEV_GRANT=1 (see the centralized Proof fleet above), so
     // `assertions` structurally cannot see the split bypass Step 1 closed. Restart
     // ONLY inventory-svc without the flag and prove a fully-authed grant call now
     // 404s through the front door.
-    i_gate(&ctx, &mut fleet, &mut p).await?;
+    i_gate(ctx, &mut fleet, p).await?;
 
     // [RDY-DEAD] readiness-accuracy proof for the /readyz amplification fix: gateway-svc
     // holds a `remote::Stub` per fronted peer whose `/readyz` check reads a CACHED verdict
     // stamped by a BACKGROUND probe. Kill one peer (characters-svc), assert gateway
     // /readyz flips to 503 naming the dead stub from the probe alone, then respawn and
     // assert recovery — restoring the fleet before [LV2]/parity run.
-    rdy_dead(&ctx, &mut fleet, &mut p).await?;
+    rdy_dead(ctx, &mut fleet, p).await?;
 
     // [REPLICAS] durable-plane replica belt: boot a SECOND leaderboard-svc against the same
     // Postgres (both processes hold `leaderboard.match-finished.v1`), drive a batch of N
@@ -671,7 +750,7 @@ async fn run(root: PathBuf, run_dir: PathBuf) -> Result<u32> {
     // (a deterministic failover witness that #2 is a genuine delivering participant). The
     // deterministic lock/contention proof lives in worker_tests.rs:317; this is the e2e belt.
     // The second instance is scenario-local (never in the fleet); #1 is restored before [LV2].
-    replicas_exactly_once(&ctx, &pool, &mut fleet, &mut p).await?;
+    replicas_exactly_once(ctx, pool, &mut fleet, p).await?;
 
     // [LV2] fleet-wide liveness sweep immediately before the split fleet is torn down —
     // a service that died AFTER [LV1]'s post-boot check (e.g. mid-assertions) must not
@@ -687,20 +766,10 @@ async fn run(root: PathBuf, run_dir: PathBuf) -> Result<u32> {
     // the same player front, and re-prove a subset (never-monolith-only-features). ---
     drop(fleet);
     tokio::time::sleep(Duration::from_millis(800)).await;
-    if let Err(e) = monolith_parity(&ctx, &pool, &mut p).await {
+    if let Err(e) = monolith_parity(ctx, pool, p).await {
         p.check("[M0-M3b] monolith parity phase", false, format!("fatal: {e:#}"));
     }
-
-    println!(
-        "\n[splitproof] {} passed, {} failed",
-        p.pass,
-        p.fail.len()
-    );
-    for f in &p.fail {
-        println!("  - FAILED: {f}");
-    }
-    // fleet drops here → every child is killed (no orphans).
-    Ok(p.fail.len() as u32)
+    Ok(())
 }
 
 /// Build every fleet svc + the monolith + adminctl (cargo caches, so this is a fast
@@ -796,6 +865,50 @@ async fn seed_wallet_starter_config(pool: &PgPool) -> Result<(), sqlx::Error> {
     .execute(pool)
     .await
     .map(|_| ())
+}
+
+/// One render of the `/admin/wallet` form as `(csrf, idem_grant, idem_revoke)`.
+/// `extract_form_fields` parses `<input>` only, so it round-trips the render-time
+/// `_idem_grant`/`_idem_revoke` hidden keys and the session `_csrf` — but NOT the
+/// `_action`/`currency` `<select>`s, which are supplied by hand at POST time exactly as
+/// [AD6b] does. Shared by the split's [WL3]-[WL6] (a REMOTE form fetched over the edge) and
+/// the monolith's [WL6m] (the in-process render), which is what makes them the same proof of
+/// two different submit paths.
+async fn wallet_form(client: &reqwest::Client, base: &str) -> Result<(String, String, String)> {
+    let page = client
+        .get(format!("{base}/admin/wallet"))
+        .send()
+        .await?
+        .text()
+        .await
+        .unwrap_or_default();
+    let fields = extract_form_fields(&page);
+    let pick = |name: &str| {
+        fields
+            .iter()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v.clone())
+            .unwrap_or_default()
+    };
+    Ok((pick("_csrf"), pick("_idem_grant"), pick("_idem_revoke")))
+}
+
+/// Undoes [`seed_wallet_starter_config`], restoring wallet's COMPILED default (the grant is
+/// off unless configured) — the `reset_config_baseline` precedent: a proof run must leave the
+/// shared local Postgres as it found it, or every later `devctl up` registration silently
+/// receives 100 gold and the next "the grant is off by default" check reads as broken.
+/// Best-effort and never fatal: this runs on the failure path too, where a missing `config`
+/// schema is a possible reason the run failed in the first place.
+async fn clear_wallet_starter_config(pool: &PgPool) {
+    if let Err(e) = sqlx::query(
+        "DELETE FROM config.settings WHERE namespace='wallet' \
+           AND key IN ('starter_currency','starter_amount')",
+    )
+    .execute(pool)
+    .await
+    {
+        println!("[splitproof] WARN: could not clear the wallet starter knobs: {e}");
+    }
 }
 
 async fn assertions(ctx: &Ctx, pool: &PgPool, p: &mut Proof) -> Result<()> {
@@ -2027,29 +2140,6 @@ async fn assertions(ctx: &Ctx, pool: &PgPool, p: &mut Proof) -> Result<()> {
     let wl_player: String = sqlx::query_scalar("SELECT gen_random_uuid()::text")
         .fetch_one(pool)
         .await?;
-
-    // `extract_form_fields` parses `<input>` only, so it round-trips the render-time
-    // `_idem_grant`/`_idem_revoke` hidden keys and the session `_csrf` — but NOT the
-    // `_action`/`currency` `<select>`s, which are supplied by hand at POST time exactly as
-    // [AD6b] does.
-    async fn wallet_form(cfg: &reqwest::Client, g: &str) -> Result<(String, String, String)> {
-        let page = cfg
-            .get(format!("{g}/admin/wallet"))
-            .send()
-            .await?
-            .text()
-            .await
-            .unwrap_or_default();
-        let fields = extract_form_fields(&page);
-        let pick = |name: &str| {
-            fields
-                .iter()
-                .find(|(k, _)| k == name)
-                .map(|(_, v)| v.clone())
-                .unwrap_or_default()
-        };
-        Ok((pick("_csrf"), pick("_idem_grant"), pick("_idem_revoke")))
-    }
 
     // [WL3] THE cross-process mutating proof: the grant is applied by wallet-svc, in its own
     // process, from a form rendered and posted by admin-svc.
