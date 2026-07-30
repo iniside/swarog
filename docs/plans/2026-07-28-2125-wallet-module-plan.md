@@ -1388,7 +1388,11 @@ all about what the tests and the prose CLAIM versus what they execute. Closed as
    conformance `admin.adminSubmit params.<value>` basis's "byte-checks … before SQL" for every
    implementor) now state what is actually proven; the basis names which of its three claims
    the gate decides (implementor list, caps exercised) and which it does not (that the cap
-   runs pre-SQL — that is each module's own tests' job).
+   runs pre-SQL — that is each module's own tests' job). That last property is itself pinned
+   for wallet by `catalog_caps_reject_before_any_sql_runs`: on a CLOSED pool `apply_submit`
+   cannot acquire a connection, so a verdict naming the field's ceiling can only be the Rust
+   check's, and the within-cap control returns the `Internal` pool error so the fixture is
+   not vacuous.
 2. **Wallet's conformance probes tested the leaf predicate, not the enforcement point** — the
    unswept sibling of `e3ddfef` (apikeys). All three now build a `Movement` with only the
    field under test oversized and route through `validate_movement`, so deleting a `if !…`
