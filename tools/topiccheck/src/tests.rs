@@ -216,9 +216,9 @@ async fn current_tree_has_zero_unsubscribed_in_both_profiles() {
 
 /// Step 6b: `defined_topics()` (main.rs) is a hand-maintained list of statics -- this
 /// mirrors `checkmodules::split_fleet_matches_cmd_dirs`'s pattern (drift tripwire
-/// against the filesystem) so a NEW `api/<domain>/events/src/lib.rs` define site that
-/// nobody added to `defined_topics()` fails loudly here instead of silently never being
-/// checked by any profile. Comment-filtered text scan (skip lines whose trimmed content
+/// against the filesystem) so a NEW define site anywhere under `api/<domain>/events/src/`
+/// that nobody added to `defined_topics()` fails loudly here instead of silently never
+/// being checked by any profile. Comment-filtered text scan (skip lines whose trimmed content
 /// starts with `//`), same tolerance level as archcheck's text tripwires -- this is not
 /// a Rust parser, just a drift detector for the `(topic, version)` pair that follows each
 /// `define(` call.
@@ -356,13 +356,22 @@ fn defined_topics_matches_every_define_site_on_disk() {
         if !entry.file_type().expect("file type").is_dir() {
             continue;
         }
-        let lib = entry.path().join("events").join("src").join("lib.rs");
-        let Ok(text) = std::fs::read_to_string(&lib) else {
+        let src_dir = entry.path().join("events").join("src");
+        if !src_dir.is_dir() {
             continue; // domain has no events crate -- nothing to scan
-        };
-        files.push((lib.display().to_string(), text));
+        }
+        // Every source file, not just lib.rs: a `define(` moved into a sibling module
+        // would otherwise be invisible to this scan AND to `defined_topics()` at once,
+        // leaving the drift assert below green over a topic nothing checks.
+        for path in rpc_contract_model::contract_sources(&src_dir)
+            .unwrap_or_else(|e| panic!("failed to read {}: {e}", src_dir.display()))
+        {
+            let text = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
+            files.push((path.display().to_string(), text));
+        }
     }
-    assert!(!files.is_empty(), "expected at least one api/*/events/src/lib.rs to scan");
+    assert!(!files.is_empty(), "expected at least one api/*/events source file to scan");
     let from_fs = union_define_sites(files.iter().map(|(l, t)| (l.as_str(), t.as_str())));
 
     let from_defined: BTreeSet<(String, u32)> =
@@ -371,7 +380,7 @@ fn defined_topics_matches_every_define_site_on_disk() {
     assert_eq!(
         from_fs, from_defined,
         "tools/topiccheck::defined_topics() has drifted from the real `bus::define(` call \
-         sites under api/*/events/src/lib.rs (filesystem scan found {from_fs:?}, \
+         sites under api/*/events/src/ (filesystem scan found {from_fs:?}, \
          defined_topics() returns {from_defined:?}) -- add/remove the missing/orphaned \
          Contract in defined_topics() (tools/topiccheck/src/main.rs)"
     );

@@ -25,6 +25,9 @@ tokio = { workspace = true }
 async-trait = { workspace = true }
 anyhow = { workspace = true }
 serde_json = { workspace = true }
+# One shared answer to "which files make up a contract crate" (contract_sources), so the
+# define-site and #[rpc]-trait scans below cannot go blind on a crate split out of lib.rs.
+rpc-contract-model = { workspace = true }
 
 # The DEFINE sites — the canonical `bus::define` statics, referenced directly so a
 # renamed/removed topic breaks THIS tool at compile time (the intended coupling).

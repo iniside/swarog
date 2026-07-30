@@ -2632,6 +2632,7 @@ dependencies = [
  "matchapi",
  "opsapi",
  "ratingapi",
+ "rpc-contract-model",
  "walletapi",
 ]
 
@@ -4354,6 +4355,7 @@ dependencies = [
  "matchevents",
  "opsapi",
  "ratingapi",
+ "rpc-contract-model",
  "schedulerevents",
  "serde",
  "serde_json",

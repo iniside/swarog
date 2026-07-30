@@ -25,5 +25,6 @@ matchapi = { workspace = true }
 ratingapi = { workspace = true }
 walletapi = { workspace = true }
 anyhow = { workspace = true }
+rpc-contract-model = { workspace = true }
 
 [dev-dependencies]

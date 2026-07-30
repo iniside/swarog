@@ -159,16 +159,18 @@ fn to_snake(pascal: &str) -> String {
     out
 }
 
-/// Every `#[rpc]`-annotated trait under `api/*/api/src/lib.rs`, as `"<crate>::<snake>_rpc"`
-/// labels — the source of truth the [`rpc_modules`] hand-list must match.
+/// Every `#[rpc]`-annotated trait under `api/*/api/src/`, as `"<crate>::<snake>_rpc"`
+/// labels — the source of truth the [`rpc_modules`] hand-list must match. The file set
+/// comes from [`rpc_contract_model::contract_sources`], so a trait moved out of `lib.rs`
+/// into a sibling module is still seen.
 fn rpc_modules_from_fs() -> Result<BTreeSet<String>> {
     let api_root = workspace_root().join("api");
     let mut expected = BTreeSet::new();
     for entry in std::fs::read_dir(&api_root)? {
         let dir = entry?.path();
         let cargo = dir.join("api").join("Cargo.toml");
-        let lib = dir.join("api").join("src").join("lib.rs");
-        if !cargo.is_file() || !lib.is_file() {
+        let src_dir = dir.join("api").join("src");
+        if !cargo.is_file() || !src_dir.is_dir() {
             continue;
         }
         let crate_name = std::fs::read_to_string(&cargo)?
@@ -178,22 +180,29 @@ fn rpc_modules_from_fs() -> Result<BTreeSet<String>> {
             })
             .ok_or_else(|| anyhow::anyhow!("no `name = \"..\"` in {}", cargo.display()))?
             .replace('-', "_");
-        let src = std::fs::read_to_string(&lib)?;
-        let lines: Vec<&str> = src.lines().collect();
-        for (i, line) in lines.iter().enumerate() {
-            if !line.trim_start().starts_with("#[rpc(") {
-                continue;
-            }
-            let trait_name = lines[i + 1..].iter().find_map(|l| {
-                let t = l.trim_start();
-                t.strip_prefix("pub trait ")
-                    .map(|r| r.split(|c: char| !c.is_alphanumeric()).next().unwrap_or("").to_string())
-            });
-            match trait_name {
-                Some(t) if !t.is_empty() => {
-                    expected.insert(format!("{crate_name}::{}_rpc", to_snake(&t)));
+        for file in rpc_contract_model::contract_sources(&src_dir)? {
+            let src = std::fs::read_to_string(&file)?;
+            let lines: Vec<&str> = src.lines().collect();
+            for (i, line) in lines.iter().enumerate() {
+                if !line.trim_start().starts_with("#[rpc(") {
+                    continue;
                 }
-                _ => bail!("{}:{}: found `#[rpc(` with no following `pub trait`", lib.display(), i + 1),
+                let trait_name = lines[i + 1..].iter().find_map(|l| {
+                    let t = l.trim_start();
+                    t.strip_prefix("pub trait ").map(|r| {
+                        r.split(|c: char| !c.is_alphanumeric()).next().unwrap_or("").to_string()
+                    })
+                });
+                match trait_name {
+                    Some(t) if !t.is_empty() => {
+                        expected.insert(format!("{crate_name}::{}_rpc", to_snake(&t)));
+                    }
+                    _ => bail!(
+                        "{}:{}: found `#[rpc(` with no following `pub trait`",
+                        file.display(),
+                        i + 1
+                    ),
+                }
             }
         }
     }

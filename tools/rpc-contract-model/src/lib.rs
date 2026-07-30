@@ -5,6 +5,7 @@
 //! interpretation of RPC prefixes, methods, identity, retry and HTTP argument mapping.
 
 use std::collections::{BTreeMap, HashSet};
+use std::path::{Path, PathBuf};
 
 use syn::{
     parse::{Parse, ParseStream},
@@ -12,6 +13,40 @@ use syn::{
     FnArg, GenericArgument, Ident, ItemTrait, LitInt, LitStr, Pat, PathArguments, ReturnType,
     Signature, Token, TraitItem, Type,
 };
+
+/// Every `.rs` file that carries a contract crate's declarations, recursively under
+/// `src_dir` and sorted — the single answer the contract scanners share to "which
+/// files make up `api/<domain>/<api|events>`". Scanning only `src/lib.rs` would make
+/// a `mod topics;` split invisible to a scanner while the crate still compiles.
+///
+/// Test modules (`tests.rs`, `*_tests.rs` — the repo's only sanctioned test-file
+/// shapes) are excluded: the consumers are text/`syn` scans that cannot tell a
+/// fixture `#[rpc(` or `define(` inside a test from a real declaration.
+pub fn contract_sources(src_dir: &Path) -> std::io::Result<Vec<PathBuf>> {
+    let mut pending = vec![src_dir.to_path_buf()];
+    let mut files = Vec::new();
+    while let Some(dir) = pending.pop() {
+        for entry in std::fs::read_dir(&dir)? {
+            let path = entry?.path();
+            if path.is_dir() {
+                pending.push(path);
+            } else if is_contract_source(&path) {
+                files.push(path);
+            }
+        }
+    }
+    files.sort();
+    Ok(files)
+}
+
+fn is_contract_source(path: &Path) -> bool {
+    if path.extension().and_then(|ext| ext.to_str()) != Some("rs") {
+        return false;
+    }
+    path.file_stem()
+        .and_then(|stem| stem.to_str())
+        .is_some_and(|stem| stem != "tests" && !stem.ends_with("_tests"))
+}
 
 /// The parsed arguments of `#[rpc(prefix = "...")]`.
 pub struct RpcArgs {
@@ -380,3 +415,6 @@ fn result_ok_type(output: &ReturnType) -> syn::Result<Option<Type>> {
         Ok(Some(ok))
     }
 }
+
+#[cfg(test)]
+mod tests;

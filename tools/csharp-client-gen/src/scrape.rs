@@ -225,8 +225,10 @@ pub fn check_drift(runtime: &BTreeSet<String>, parsed: &BTreeSet<String>) -> Res
 // Phase B — parsing
 // ---------------------------------------------------------------------------
 
-/// Discovers `api/<name>/api/src/lib.rs` for every domain under `api/`, sorted.
-fn discover_api_lib_files(root: &Path) -> Result<Vec<PathBuf>> {
+/// Discovers every contract source under `api/<name>/api/src/` for every domain,
+/// sorted — via [`rpc_contract_model::contract_sources`], so a trait or DTO moved out
+/// of `lib.rs` into a sibling module is still scraped.
+fn discover_api_sources(root: &Path) -> Result<Vec<PathBuf>> {
     let api_dir = root.join("api");
     let mut files = Vec::new();
     for entry in std::fs::read_dir(&api_dir)
@@ -236,9 +238,12 @@ fn discover_api_lib_files(root: &Path) -> Result<Vec<PathBuf>> {
         if !entry.path().is_dir() {
             continue;
         }
-        let lib = entry.path().join("api").join("src").join("lib.rs");
-        if lib.is_file() {
-            files.push(lib);
+        let src_dir = entry.path().join("api").join("src");
+        if src_dir.is_dir() {
+            files.extend(
+                rpc_contract_model::contract_sources(&src_dir)
+                    .with_context(|| format!("read contract sources {}", src_dir.display()))?,
+            );
         }
     }
     files.sort();
@@ -251,7 +256,7 @@ fn discover_api_lib_files(root: &Path) -> Result<Vec<PathBuf>> {
 /// `(path, source)` pairs without touching the real `api/` tree).
 fn parse_all_api_crates(root: &Path) -> Result<Parsed> {
     let mut files = Vec::new();
-    for file in discover_api_lib_files(root)? {
+    for file in discover_api_sources(root)? {
         let src = std::fs::read_to_string(&file)
             .with_context(|| format!("read {}", file.display()))?;
         files.push((file, src));

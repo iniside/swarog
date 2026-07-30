@@ -41,7 +41,8 @@ pub fn discover(api_root: &Path) -> Result<BTreeSet<InputKey>> {
         if !src.is_dir() {
             continue;
         }
-        let files = rust_files(&src)?;
+        let files = rpc_contract_model::contract_sources(&src)
+            .with_context(|| format!("read contract sources {}", src.display()))?;
         let sources = files
             .iter()
             .map(|path| {
@@ -222,25 +223,6 @@ fn sorted_dirs(root: &Path) -> Result<Vec<PathBuf>> {
         .collect::<Vec<_>>();
     dirs.sort();
     Ok(dirs)
-}
-
-fn rust_files(root: &Path) -> Result<Vec<PathBuf>> {
-    let mut pending = vec![root.to_owned()];
-    let mut files = Vec::new();
-    while let Some(dir) = pending.pop() {
-        for entry in std::fs::read_dir(&dir)
-            .with_context(|| format!("read source directory {}", dir.display()))?
-        {
-            let path = entry?.path();
-            if path.is_dir() {
-                pending.push(path);
-            } else if path.extension().is_some_and(|ext| ext == "rs") {
-                files.push(path);
-            }
-        }
-    }
-    files.sort();
-    Ok(files)
 }
 
 fn lower_camel(snake: &str) -> String {
