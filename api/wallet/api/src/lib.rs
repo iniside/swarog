@@ -58,6 +58,12 @@ pub struct Movement {
     /// key per BUSINESS EVENT credited to 200 players is therefore 1 movement and 199
     /// unpaid: mint per `(player, business event)`,
     /// e.g. `"season-3-payout-batch-7:{player_id}"`.
+    ///
+    /// **`starter:` is RESERVED.** The module's durable starter grant mints
+    /// `starter:{player_id}`, and because the namespace is the whole wallet, a caller
+    /// sending that key first permanently pre-empts that player's grant — the grant then
+    /// sees a key recording a different movement and, deliberately, skips rather than
+    /// poisons its subscription. Never mint a key under this prefix.
     pub idempotency_key: String,
     pub player_id: String,
     pub currency: String,
@@ -123,9 +129,9 @@ pub trait Wallet: Send + Sync {
 
     /// The mirror of [`Wallet::credit`], subtracting instead — same idempotency identity,
     /// same `amount` bounds. A movement that would take the balance below zero is
-    /// rejected by the DB CHECK as `Status::Conflict` (409) and consumes no idempotency
-    /// key (the aborted transaction takes the ledger row with it), so the caller may
-    /// retry the SAME key after a top-up.
+    /// `Status::Conflict` (409) and consumes NO idempotency key — the ledger row it had
+    /// claimed is discarded with the rest of its transaction — so the caller may retry the
+    /// SAME key after a top-up.
     #[retry_safe]
     async fn debit(&self, movement: Movement) -> Result<i64, Error>;
 }

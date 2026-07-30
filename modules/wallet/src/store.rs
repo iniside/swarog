@@ -1,9 +1,12 @@
 use sqlx::{PgConnection, PgPool};
 use walletapi::{Balance, Currency};
 
-/// The balance CHECK firing: one constraint carries BOTH bounds, so this covers a debit
-/// below zero and a credit past the ceiling. Matched on the constraint NAME so no
-/// unrelated future CHECK rides this 409 mapping.
+/// The balance CHECK firing on a row a movement actually UPDATEs: one constraint carries
+/// BOTH bounds, so this covers a debit below zero against an EXISTING balance and a credit
+/// past the ceiling. It is not the whole 409 — a debit for a `(player, currency)` with no
+/// row reaches no CHECK at all; [`Store::apply_balance_tx`] decides that itself
+/// ([`BalanceError::OutOfRange`]), and both verdicts share one message. Matched on the
+/// constraint NAME so no unrelated future CHECK rides this 409 mapping.
 pub(crate) fn is_out_of_range(e: &sqlx::Error) -> bool {
     e.as_database_error().is_some_and(|db| {
         db.code().as_deref() == Some("23514") && db.constraint() == Some("balances_amount_check")

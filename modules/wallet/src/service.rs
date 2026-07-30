@@ -217,10 +217,13 @@ impl Service {
     ///
     /// On an `Err` the caller's transaction may be ABORTED (23514 / 23503) — the only legal
     /// next statement is the unwind, never a balance read to enrich the message (25P02 on
-    /// that connection would turn a 409 into a 500). A durable handler must never return
-    /// `Err` (it backs off and pauses its subscription), and its `Ok` on an aborted
-    /// transaction fails the plane's checkpoint `UPDATE` with 25P02 — hence the two
-    /// by-construction pre-checks above.
+    /// that connection would turn a 409 into a 500). A DURABLE caller must therefore
+    /// PROPAGATE that `Err`: the plane's `ROLLBACK TO SAVEPOINT deliver` is what makes the
+    /// connection usable again, while an `Ok` on an aborted transaction fails the plane's
+    /// checkpoint `UPDATE` with 25P02. `Ok` is for the verdicts a handler decides ITSELF,
+    /// before any statement of this call runs — which is what the by-construction
+    /// pre-checks above buy: they keep the reachable `Err` set down to genuine faults, so
+    /// the backoff a propagated `Err` costs is never spent on a data-quality problem.
     pub(crate) async fn apply_on(
         &self,
         conn: &mut PgConnection,

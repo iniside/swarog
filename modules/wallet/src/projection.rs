@@ -46,6 +46,16 @@ impl Service {
     /// every one of those branches is unreachable BY CONSTRUCTION — which is why no
     /// `validate_movement` call is repeated here.
     ///
+    /// One `Err` path survives that argument and is genuinely REACHABLE, because this is the
+    /// first module to `emit_tx` INSIDE a delivery transaction: [`Service::apply_on`] appends
+    /// `wallet.changed` on this same handed connection, and the plane's `enqueue_tx` runs
+    /// `ensure_history_contract` there — which FAILS LOUDLY when a stored `history_contracts`
+    /// row records a different policy than this process's code declares — before
+    /// `append_event`. Both are `Err`s the savepoint recovers, so the posture above holds; the
+    /// consequence to know is that a `wallet.changed` history-policy skew across a
+    /// mixed-version fleet degrades THIS subscription (backoff, then pause) rather than
+    /// failing one wire call.
+    ///
     /// `player_id` is the one input wallet does not mint, so its shape is checked HERE rather
     /// than trusted from `accounts`: the wire paths must keep answering 400 for a malformed
     /// id, but on this path a 400 is an `Err` is a fault, and one producer's bad payload would
