@@ -378,6 +378,57 @@ async fn monolith_parity(ctx: &Ctx, pool: &PgPool, p: &mut Proof) -> Result<()> 
         p.check("[M3b] local form-submit form present (_csrf)", false, "no _csrf field on apikeys page");
     }
 
+    // --- Wallet parity: the player reads and the durable starter grant, all Local. In the
+    // monolith wallet's ops are dispatched in-process and the `player.registered` producer
+    // and consumer share one process — the same code, the other topology.
+    if let Some(tok) = &mtoken {
+        let wl1 = ctx
+            .http
+            .get(format!("{m}/wallet/currencies"))
+            .header("X-Api-Key", "dev-key-client")
+            .header("Authorization", format!("Bearer {tok}"))
+            .send()
+            .await?;
+        let (c, body) = (wl1.status().as_u16(), wl1.text().await.unwrap_or_default());
+        p.check(
+            "[WL1m] monolith GET /wallet/currencies -> 200 + gold/gems",
+            c == 200 && body.contains("\"gold\"") && body.contains("\"gems\""),
+            format!("code={c}"),
+        );
+        let wl2 = ctx
+            .http
+            .get(format!("{m}/wallet/me"))
+            .header("X-Api-Key", "dev-key-client")
+            .header("Authorization", format!("Bearer {tok}"))
+            .send()
+            .await?;
+        let c = wl2.status().as_u16();
+        let body: serde_json::Value = wl2.json().await.unwrap_or(serde_json::Value::Null);
+        p.check(
+            "[WL2m] monolith GET /wallet/me (Bearer) -> 200 + balance array",
+            c == 200 && body.is_array(),
+            format!("code={c}"),
+        );
+    }
+    match register_capture(ctx, &m, &format!("wallet-mono-{suffix}@test.local")).await {
+        Ok((pid, _)) => {
+            let credited = poll_count(
+                pool,
+                "SELECT count(*) FROM wallet.balances \
+                  WHERE player_id::text=$1 AND currency='gold' AND amount=100",
+                &pid,
+                1,
+            )
+            .await;
+            p.check(
+                "[WL7m] monolith registration receives the configured starter grant",
+                credited,
+                format!("pid={pid}"),
+            );
+        }
+        Err(e) => p.check("[WL7m] monolith register for the starter grant", false, format!("{e:#}")),
+    }
+
     // [W2] graceful shutdown: a native Ctrl-Break (Windows) / SIGTERM (unix) must drain
     // in-flight work and exit 0 within the grace window — no force-kill. This is the
     // proof winctrl gave, now native (the app's shutdown_signal listens for ctrl_break).
@@ -559,6 +610,12 @@ async fn run(root: PathBuf, run_dir: PathBuf) -> Result<u32> {
         .await
         .context("connect DB")?;
     reset_config_baseline(&pool).await?;
+    // [WL7]'s starter-grant knobs, written BEFORE wallet-svc spawns: its `CachedConfig` is
+    // boot-fill-or-fail-startup, so a post-boot write would race an invalidation refresh
+    // against the registration under test. On a DB that has never booted the fleet the
+    // `config` schema does not exist yet, so the write is retried once config-svc has
+    // migrated it — still ahead of wallet-svc, which boots later in the canonical order.
+    let mut wallet_knobs_seeded = seed_wallet_starter_config(&pool).await.is_ok();
 
     // Boot the fleet; each guard lives in `fleet` so a `?` below drops them all (kill).
     let mut fleet: Vec<Running> = Vec::new();
@@ -572,6 +629,12 @@ async fn run(root: PathBuf, run_dir: PathBuf) -> Result<u32> {
         ctx.wait_healthy(svc, &mut running.child).await?;
         fleet.push(running);
         println!("[splitproof] {} healthy", svc.name);
+        if !wallet_knobs_seeded && svc.name == "config-svc" {
+            seed_wallet_starter_config(&pool)
+                .await
+                .context("seed the wallet starter-grant knobs")?;
+            wallet_knobs_seeded = true;
+        }
     }
     println!("[splitproof] fleet up: {}/{} processes healthy\n", fleet.len(), ctx.fleet.services().len());
 
@@ -720,6 +783,19 @@ async fn reset_config_baseline(pool: &PgPool) -> Result<()> {
         .execute(pool).await.ok(); // config schema may not exist yet on a fresh DB — best-effort.
     sqlx::query("DELETE FROM config.settings WHERE namespace='proof'").execute(pool).await.ok();
     Ok(())
+}
+
+/// The two `wallet` starter-grant knobs [WL7] depends on. Data, not env: the feature is
+/// off by compiled default and enabling it is a config write.
+async fn seed_wallet_starter_config(pool: &PgPool) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO config.settings (namespace, key, value) VALUES \
+             ('wallet','starter_currency','gold'), ('wallet','starter_amount','100') \
+         ON CONFLICT (namespace, key) DO UPDATE SET value = EXCLUDED.value",
+    )
+    .execute(pool)
+    .await
+    .map(|_| ())
 }
 
 async fn assertions(ctx: &Ctx, pool: &PgPool, p: &mut Proof) -> Result<()> {
@@ -1902,6 +1978,221 @@ async fn assertions(ctx: &Ctx, pool: &PgPool, p: &mut Proof) -> Result<()> {
         p.check("[SP0] plant throwaway player", false, "insert failed");
     }
 
+    // --- Wallet ---------------------------------------------------------------------
+    // [WL1]/[WL2] are the player-facing reads through gateway-svc (auth = "player", so a
+    // real bearer AND the player-facing api key). [WL3]-[WL6] drive the money path on the
+    // topology that is actually at risk: gateway-svc (/admin passthrough) -> admin-svc
+    // (session + CSRF, renders the REMOTE form fetched over the edge) -> `admin.adminSubmit`
+    // -> wallet-svc, which runs `apply_submit` store-local. [WL7] is the durable
+    // cross-process grant (accounts-svc emits -> wallet-svc consumes).
+    if let Some(tok) = &token {
+        // [WL1] the catalog. The dev seed guarantees the CODES `gold`/`gems` exist; their
+        // display_name/kind are operator data that permanently drifts once the admin form
+        // is used (the seed is insert-if-absent), so nothing here asserts them.
+        let wl1 = ctx
+            .http
+            .get(format!("{g}/wallet/currencies"))
+            .header("X-Api-Key", "dev-key-client")
+            .header("Authorization", format!("Bearer {tok}"))
+            .send()
+            .await?;
+        let (wl1_code, wl1_body) = (wl1.status().as_u16(), wl1.text().await.unwrap_or_default());
+        p.check(
+            "[WL1] GET /wallet/currencies -> 200 + seeded gold/gems",
+            wl1_code == 200 && wl1_body.contains("\"gold\"") && wl1_body.contains("\"gems\""),
+            format!("code={wl1_code}"),
+        );
+
+        // [WL2] the caller's OWN balances, keyed by the gateway-verified identity — never a
+        // body/query field, so a 200 carrying a JSON array is the whole contract here.
+        let wl2 = ctx
+            .http
+            .get(format!("{g}/wallet/me"))
+            .header("X-Api-Key", "dev-key-client")
+            .header("Authorization", format!("Bearer {tok}"))
+            .send()
+            .await?;
+        let wl2_code = wl2.status().as_u16();
+        let wl2_body: serde_json::Value = wl2.json().await.unwrap_or(serde_json::Value::Null);
+        p.check(
+            "[WL2] GET /wallet/me (Bearer) -> 200 + balance array",
+            wl2_code == 200 && wl2_body.is_array(),
+            format!("code={wl2_code} body={wl2_body}"),
+        );
+    }
+
+    // The admin money assertions use a SYNTHETIC player id (wallet keys balances by uuid and
+    // holds no FK to accounts): a registered player would ALSO receive [WL7]'s starter grant,
+    // and [WL5]'s event count would then no longer be exactly the grants made here.
+    let wl_player: String = sqlx::query_scalar("SELECT gen_random_uuid()::text")
+        .fetch_one(pool)
+        .await?;
+
+    // `extract_form_fields` parses `<input>` only, so it round-trips the render-time
+    // `_idem_grant`/`_idem_revoke` hidden keys and the session `_csrf` — but NOT the
+    // `_action`/`currency` `<select>`s, which are supplied by hand at POST time exactly as
+    // [AD6b] does.
+    async fn wallet_form(cfg: &reqwest::Client, g: &str) -> Result<(String, String, String)> {
+        let page = cfg
+            .get(format!("{g}/admin/wallet"))
+            .send()
+            .await?
+            .text()
+            .await
+            .unwrap_or_default();
+        let fields = extract_form_fields(&page);
+        let pick = |name: &str| {
+            fields
+                .iter()
+                .find(|(k, _)| k == name)
+                .map(|(_, v)| v.clone())
+                .unwrap_or_default()
+        };
+        Ok((pick("_csrf"), pick("_idem_grant"), pick("_idem_revoke")))
+    }
+
+    // [WL3] THE cross-process mutating proof: the grant is applied by wallet-svc, in its own
+    // process, from a form rendered and posted by admin-svc.
+    let (wl_csrf, wl_idem, _) = wallet_form(&cfg, &g).await?;
+    let wl3 = cfg
+        .post(format!("{g}/admin/wallet"))
+        .form(&[
+            ("_csrf", wl_csrf.as_str()),
+            ("_idem_grant", wl_idem.as_str()),
+            ("_action", "grant"),
+            ("player_id", wl_player.as_str()),
+            ("currency", "gold"),
+            ("amount", "250"),
+            ("reason", "splitproof grant"),
+        ])
+        .send()
+        .await?;
+    let wl3_code = wl3.status().as_u16();
+    let wl3_row = poll_count(
+        pool,
+        "SELECT count(*) FROM wallet.balances \
+          WHERE player_id::text=$1 AND currency='gold' AND amount=250",
+        &wl_player,
+        1,
+    )
+    .await;
+    p.check(
+        "[WL3] remote admin grant -> 303 + wallet.balances 250 (admin-svc -> wallet-svc)",
+        wl3_code == 303 && wl3_row,
+        format!("status={wl3_code} balance_row={wl3_row} pid={wl_player}"),
+    );
+
+    // [WL4] a SECOND grant accumulates — from a SECOND render, because the key is minted per
+    // render: replaying the first key with a different amount is the 409 arm, not a movement.
+    let (wl_csrf, wl_idem, _) = wallet_form(&cfg, &g).await?;
+    let wl4 = cfg
+        .post(format!("{g}/admin/wallet"))
+        .form(&[
+            ("_csrf", wl_csrf.as_str()),
+            ("_idem_grant", wl_idem.as_str()),
+            ("_action", "grant"),
+            ("player_id", wl_player.as_str()),
+            ("currency", "gold"),
+            ("amount", "150"),
+            ("reason", "splitproof top-up"),
+        ])
+        .send()
+        .await?;
+    let wl4_code = wl4.status().as_u16();
+    let wl4_row = poll_count(
+        pool,
+        "SELECT count(*) FROM wallet.balances \
+          WHERE player_id::text=$1 AND currency='gold' AND amount=400",
+        &wl_player,
+        1,
+    )
+    .await;
+    p.check(
+        "[WL4] second grant with a fresh key -> 303 + balance 400",
+        wl4_code == 303 && wl4_row,
+        format!("status={wl4_code} balance_row={wl4_row}"),
+    );
+
+    // [WL5] the durable side: both movements' `wallet.changed` reach audit's raw sink.
+    let wl5 = poll_count(
+        pool,
+        "SELECT count(*) FROM audit.log WHERE topic='wallet.changed' AND payload->>'player_id'=$1",
+        &wl_player,
+        2,
+    )
+    .await;
+    p.check("[WL5] wallet.changed reaches audit.log (2 movements)", wl5, "");
+
+    // [WL6] a revoke past the balance. The portal answers 200 WITH THE VERDICT RENDERED —
+    // `render_conflict` hard-codes a "reload the page" remedy and drops the domain text, so
+    // wallet reserves that arm for an idempotency conflict (where a fresh render IS the
+    // remedy) and lets a money verdict ride the error card. The proof is therefore the exact
+    // message plus an UNCHANGED balance; a status-code assertion would say nothing here.
+    let (wl_csrf, _, wl_idem_revoke) = wallet_form(&cfg, &g).await?;
+    let wl6 = cfg
+        .post(format!("{g}/admin/wallet"))
+        .form(&[
+            ("_csrf", wl_csrf.as_str()),
+            ("_idem_revoke", wl_idem_revoke.as_str()),
+            ("_action", "revoke"),
+            ("player_id", wl_player.as_str()),
+            ("currency", "gold"),
+            ("amount", "999999"),
+            ("reason", "splitproof over-revoke"),
+        ])
+        .send()
+        .await?;
+    let wl6_code = wl6.status().as_u16();
+    let wl6_body = wl6.text().await.unwrap_or_default();
+    let wl6_balance: Option<i64> = sqlx::query_scalar(
+        "SELECT amount FROM wallet.balances WHERE player_id::text=$1 AND currency='gold'",
+    )
+    .bind(&wl_player)
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten();
+    p.check(
+        "[WL6] over-revoke -> verdict card 'insufficient funds', balance unchanged at 400",
+        wl6_code == 200
+            && wl6_body
+                .contains("save failed: movement rejected: insufficient funds or balance ceiling exceeded")
+            && wl6_balance == Some(400),
+        format!("code={wl6_code} balance={wl6_balance:?}"),
+    );
+
+    // [WL7] the durable cross-process grant: accounts-svc emits `player.registered`,
+    // wallet-svc's subscription consumes it, reads the config knobs seeded pre-spawn and
+    // credits inside the DELIVERY transaction. One assertion, three seams.
+    let wl7_email = format!("wallet-{suffix}@test.local");
+    match register_capture(ctx, &g, &wl7_email).await {
+        Ok((wl7_pid, _)) => {
+            let credited = poll_count(
+                pool,
+                "SELECT count(*) FROM wallet.balances \
+                  WHERE player_id::text=$1 AND currency='gold' AND amount=100",
+                &wl7_pid,
+                1,
+            )
+            .await;
+            // The DETERMINISTIC key is what makes a redelivery a no-op, so it is asserted by
+            // being the thing looked up.
+            let keyed = poll_count(
+                pool,
+                "SELECT count(*) FROM wallet.ledger WHERE idempotency_key = 'starter:' || $1",
+                &wl7_pid,
+                1,
+            )
+            .await;
+            p.check(
+                "[WL7] a new registration receives the configured starter grant (100 gold)",
+                credited && keyed,
+                format!("pid={wl7_pid} credited={credited} keyed={keyed}"),
+            );
+        }
+        Err(e) => p.check("[WL7] register a player for the starter grant", false, format!("{e:#}")),
+    }
+
     // --- Metrics ---
     // [MX1] characters-svc /metrics -> 200 + http_requests_total (one recorded hit first).
     let characters_port = ctx.http_port("characters-svc");
@@ -2428,6 +2719,51 @@ async fn register_login(ctx: &Ctx, g: &str, email: &str) -> Result<String> {
         }
         let body: serde_json::Value = login.json().await.unwrap_or(serde_json::Value::Null);
         return body.get("token").and_then(|v| v.as_str()).map(str::to_string).context("no token from login");
+    }
+    bail!("login rate-limited out")
+}
+
+/// Register + login a player, returning `(player_id, bearer)`. [WL7] must DB-assert a
+/// grant keyed by the player id, which `register_login` (token only) cannot supply.
+/// Retries past the gateway's always-on 429 exactly as `register_login` does.
+async fn register_capture(ctx: &Ctx, base: &str, email: &str) -> Result<(String, String)> {
+    let mut player_id: Option<String> = None;
+    for _ in 0..15 {
+        let reg = ctx
+            .http
+            .post(format!("{base}/accounts/register"))
+            .header("X-Api-Key", "dev-key-client")
+            .json(&serde_json::json!({"email": email, "password": "pw", "displayName": "W"}))
+            .send()
+            .await?;
+        if reg.status().as_u16() == 429 {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            continue;
+        }
+        let body: serde_json::Value = reg.json().await.unwrap_or(serde_json::Value::Null);
+        player_id = body.get("player_id").and_then(|v| v.as_str()).map(str::to_string);
+        break;
+    }
+    let player_id = player_id.context("no player_id from register")?;
+    for _ in 0..15 {
+        let login = ctx
+            .http
+            .post(format!("{base}/accounts/login"))
+            .header("X-Api-Key", "dev-key-client")
+            .json(&serde_json::json!({"email": email, "password": "pw"}))
+            .send()
+            .await?;
+        if login.status().as_u16() == 429 {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            continue;
+        }
+        let body: serde_json::Value = login.json().await.unwrap_or(serde_json::Value::Null);
+        let token = body
+            .get("token")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .context("no token from login")?;
+        return Ok((player_id, token));
     }
     bail!("login rate-limited out")
 }

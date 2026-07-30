@@ -1608,3 +1608,487 @@ async fn starter_grant_reflects_a_live_config_change() {
 
     cleanup(&pool, &[&first, &second], &[&currency]).await;
 }
+
+// ---- 12: the admin page — the submit authority and the drill-down window ----
+
+/// An [`adminapi::Params`] from literal pairs — the map the portal hands `apply_submit`
+/// after allowlisting the rendered form's fields.
+fn params(pairs: &[(&str, &str)]) -> adminapi::Params {
+    pairs
+        .iter()
+        .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+        .collect()
+}
+
+/// [`crate::admin::Rejection`] carries no `Debug` (its two mappings ARE its surface), so
+/// the tests flatten it to the text an operator would read.
+fn rejection_text(r: crate::admin::Rejection) -> String {
+    match r {
+        crate::admin::Rejection::Stale => "stale".to_string(),
+        crate::admin::Rejection::Rejected(msg) => msg,
+        crate::admin::Rejection::Internal(msg) => format!("internal: {msg}"),
+    }
+}
+
+/// The rendered form's hidden value for `field` — the render-time idempotency key the
+/// browser echoes back on submit.
+fn hidden_value(content: &adminapi::Content, field: &str) -> String {
+    content
+        .form
+        .as_ref()
+        .expect("the wallet page renders an action form")
+        .hidden
+        .iter()
+        .find(|h| h.name == field)
+        .unwrap_or_else(|| panic!("no hidden {field:?} on the rendered form"))
+        .value
+        .clone()
+}
+
+/// THE double-submit proof: ONE rendered form, submitted twice with identical values —
+/// the browser resubmit (double-click, back-and-repost) that a submit-time key would turn
+/// into two distinct movements. The key is minted at RENDER time and echoed as a hidden
+/// field, so the second submit replays it and the movement authority collapses it to
+/// `Outcome::Duplicate`: one ledger row, one application of the amount.
+///
+/// `admin_render` (not `admin_content_local`) is driven deliberately — it is the shipping
+/// LOCAL path and its `block_in_place` bridge requires the multi-thread runtime, which a
+/// plain `#[tokio::test]` would turn into a panic rather than a failure.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn admin_double_submit_of_one_rendered_form_grants_once() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let currency = unique_currency(&pool).await;
+    let pid = unique_player(&pool).await;
+
+    let content = admin::admin_render(&svc, &params(&[("player", &pid)])).unwrap();
+    let key = hidden_value(&content, "_idem_grant");
+    assert!(key.starts_with("admin-grant-"), "key = {key}");
+
+    let submit = params(&[
+        ("_action", "grant"),
+        ("player_id", &pid),
+        ("currency", &currency),
+        ("amount", "250"),
+        ("reason", "proof grant"),
+        ("_idem_grant", &key),
+    ]);
+    for attempt in 1..=2 {
+        admin::apply_submit(&svc, submit.clone())
+            .await
+            .map_err(rejection_text)
+            .unwrap_or_else(|msg| panic!("submit #{attempt} rejected: {msg}"));
+    }
+
+    let (rows,): (i64,) = sqlx::query_as("SELECT count(*) FROM wallet.ledger WHERE idempotency_key = $1")
+        .bind(&key)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        rows, 1,
+        "a resubmit of ONE rendered form must replay its key, not mint a second movement"
+    );
+    assert_eq!(
+        balance_of(&pool, &pid, &currency).await,
+        Some(250),
+        "the amount must be applied exactly once"
+    );
+
+    cleanup(&pool, &[&pid], &[&currency]).await;
+}
+
+/// The page size the drill-down asks for. `recent_ledger`'s window arithmetic is
+/// limit-agnostic (`limit + 1`, then truncate), so the tests pass it explicitly rather
+/// than reaching for `admin`'s private const.
+const PAGE: i64 = 50;
+
+/// Seeds `n` ledger rows for one player in ONE statement — the code under test is
+/// [`Store::recent_ledger`]'s window, never the writer, and a single INSERT ... SELECT
+/// draws the `bigserial` default in `generate_series` order, so row `g = 1` is
+/// unambiguously the OLDEST.
+async fn seed_ledger(pool: &PgPool, pid: &str, prefix: &str, n: i64) {
+    sqlx::query(
+        "INSERT INTO wallet.ledger \
+             (idempotency_key, player_id, currency, delta, balance_after, reason) \
+         SELECT $1::text || '-' || g::text, $2::uuid, 'seed', 1, g, 'seed' \
+           FROM generate_series(1, $3) AS g",
+    )
+    .bind(prefix)
+    .bind(pid)
+    .bind(n)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+/// Exactly `limit` rows: the arm that must NOT claim truncation. `recent_ledger` asks for
+/// `limit + 1` and gets `limit`, so the surplus row is absent and the page is whole —
+/// binding `limit` instead of `limit + 1`, or comparing `>=` instead of `>`, reports a
+/// complete history as partial and only this assertion notices.
+#[tokio::test]
+async fn ledger_page_of_exactly_the_limit_is_not_truncated() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let pid = unique_player(&pool).await;
+    seed_ledger(&pool, &pid, &unique_key("page-exact"), PAGE).await;
+
+    let page = svc.store.recent_ledger(&pid, PAGE).await.unwrap();
+    assert_eq!(page.rows.len(), PAGE as usize);
+    assert!(
+        !page.truncated,
+        "a page holding the WHOLE history must not report older rows"
+    );
+
+    cleanup(&pool, &[&pid], &[]).await;
+}
+
+/// One row past the limit: truncation is reported, the page still carries exactly `limit`
+/// rows, the window is the NEWEST (`seq` descending), and the row dropped is the OLDEST.
+/// Together these kill both the off-by-one and a `LIMIT` that kept the wrong end of the
+/// history — a page that silently showed the oldest 50 of 51 movements reads as a complete
+/// audit trail while hiding the newest one.
+#[tokio::test]
+async fn ledger_page_past_the_limit_truncates_the_oldest_row() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let pid = unique_player(&pool).await;
+    seed_ledger(&pool, &pid, &unique_key("page-over"), PAGE + 1).await;
+
+    let (oldest,): (i64,) = sqlx::query_as("SELECT min(seq) FROM wallet.ledger WHERE player_id = $1::uuid")
+        .bind(&pid)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+    let page = svc.store.recent_ledger(&pid, PAGE).await.unwrap();
+    assert_eq!(page.rows.len(), PAGE as usize, "the surplus row must be dropped");
+    assert!(page.truncated, "a partial page MUST say it is partial");
+    assert!(
+        page.rows[0].seq > page.rows[PAGE as usize - 1].seq,
+        "the window is newest-first: {} .. {}",
+        page.rows[0].seq,
+        page.rows[PAGE as usize - 1].seq
+    );
+    assert!(
+        !page.rows.iter().any(|r| r.seq == oldest),
+        "the dropped row must be the OLDEST (seq {oldest}), never the newest"
+    );
+
+    cleanup(&pool, &[&pid], &[]).await;
+}
+
+/// A caller asking for far MORE than the hard ceiling, against exactly `MAX_RECENT_LEDGER`
+/// rows. The clamp lowers the request to the ceiling, and the ceiling is met exactly — so
+/// the page is whole. A clamp applied to `limit + 1` (or a `truncated` derived from the
+/// caller's original limit) would manufacture truncation out of its own bound and report a
+/// complete history as partial.
+#[tokio::test]
+async fn recent_ledger_clamp_does_not_manufacture_truncation() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let pid = unique_player(&pool).await;
+    seed_ledger(&pool, &pid, &unique_key("page-clamp"), MAX_RECENT_LEDGER).await;
+
+    let page = svc
+        .store
+        .recent_ledger(&pid, MAX_RECENT_LEDGER + 500)
+        .await
+        .unwrap();
+    assert_eq!(page.rows.len(), MAX_RECENT_LEDGER as usize);
+    assert!(
+        !page.truncated,
+        "meeting the hard ceiling exactly is a WHOLE history, not a truncated one"
+    );
+
+    cleanup(&pool, &[&pid], &[]).await;
+}
+
+/// The dev seed is insert-if-absent, and this drives the REAL `migrate` seed loop (a
+/// `Service` built with `dev_seed = true`, the module's own `svc` slot), not a hand-picked
+/// store call — so it pins the `OnConflict::Skip` argument at the shipping call site.
+/// An operator's edit to a seeded currency must SURVIVE the next boot with the flag on;
+/// before `b912fa1` the seed wrote `DO UPDATE` and silently reverted it.
+///
+/// The edit is read back BEFORE it is restored, so a failure cannot leave the shared dev
+/// catalog holding the sentinel.
+#[tokio::test]
+async fn dev_seed_migrate_preserves_an_operator_edit() {
+    let Some(pool) = test_pool().await else { return };
+    let (ctx, _svc) = wired(&pool).await;
+    let seeded = DEV_SEED_CURRENCIES[0].0;
+
+    let module = WalletModule::new();
+    module
+        .svc
+        .set(Arc::new(Service::new(pool.clone(), ctx.bus().clone(), true)))
+        .map_err(|_| ())
+        .unwrap();
+    module.migrate(&ctx).await.unwrap();
+
+    let (original,): (String,) =
+        sqlx::query_as("SELECT display_name FROM wallet.currencies WHERE code = $1")
+            .bind(seeded)
+            .fetch_one(&pool)
+            .await
+            .expect("the dev seed must have created the row");
+
+    let edited = format!("Edited by an operator {}", std::process::id());
+    sqlx::query("UPDATE wallet.currencies SET display_name = $2 WHERE code = $1")
+        .bind(seeded)
+        .bind(&edited)
+        .execute(&pool)
+        .await
+        .unwrap();
+    module.migrate(&ctx).await.unwrap();
+
+    let (after,): (String,) =
+        sqlx::query_as("SELECT display_name FROM wallet.currencies WHERE code = $1")
+            .bind(seeded)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    sqlx::query("UPDATE wallet.currencies SET display_name = $2 WHERE code = $1")
+        .bind(seeded)
+        .bind(&original)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        after, edited,
+        "a boot with WALLET_DEV_SEED on must not revert an operator's catalog edit"
+    );
+}
+
+/// The other half of the seed's contract: it still GUARANTEES the code exists. A row an
+/// operator deleted is recreated by the next seed write — a seed reduced to a plain
+/// `INSERT` (or one that gave up on conflicts entirely) fails here.
+#[tokio::test]
+async fn seed_write_recreates_a_deleted_currency() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let code = unique_currency(&pool).await;
+    let mut conn = svc.store.pool.acquire().await.unwrap();
+
+    sqlx::query("DELETE FROM wallet.currencies WHERE code = $1")
+        .bind(&code)
+        .execute(&pool)
+        .await
+        .unwrap();
+    svc.store
+        .write_currency_tx(&mut conn, &code, "Reseeded", "soft", 0, OnConflict::Skip)
+        .await
+        .unwrap();
+
+    let (rows,): (i64,) = sqlx::query_as("SELECT count(*) FROM wallet.currencies WHERE code = $1")
+        .bind(&code)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(rows, 1, "the seed must recreate a code an operator deleted");
+
+    drop(conn);
+    cleanup(&pool, &[], &[&code]).await;
+}
+
+/// The rendered `SEQ` column carries the RAW ordering value: strictly decreasing (newest
+/// first) and deliberately NOT contiguous. Contiguity is asserted FALSE by construction —
+/// every movement burns one sequence value on its ledger INSERT before drawing the real one
+/// under the balance row lock, so two sequential movements are at least two apart. A future
+/// "fix" that renumbers the column to look like a tidy 1,2,3 audit trail turns the gap
+/// assertion red, which is the point: the guarantee is ordering, not contiguity, and a
+/// renumbered column would invent a promise the ledger does not make.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rendered_ledger_seq_column_is_decreasing_and_gapped() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let currency = unique_currency(&pool).await;
+    let pid = unique_player(&pool).await;
+    for (amount, reason) in [(100, "first"), (50, "second"), (25, "third")] {
+        svc.credit(movement(&unique_key("seqcol"), &pid, &currency, amount, reason))
+            .await
+            .unwrap();
+    }
+
+    let content = admin::admin_render(&svc, &params(&[("player", &pid)])).unwrap();
+    let table = content.table.as_ref().expect("the drill-down renders the ledger table");
+    assert_eq!(table.columns[0], "SEQ", "SEQ leads — it is what the rows are ordered by");
+    let seqs: Vec<i64> = table
+        .rows
+        .iter()
+        .map(|r| r[0].text.parse::<i64>().expect("SEQ renders the raw value"))
+        .collect();
+    assert_eq!(seqs.len(), 3);
+    for pair in seqs.windows(2) {
+        assert!(
+            pair[0] > pair[1],
+            "SEQ must be strictly decreasing (newest first): {seqs:?}"
+        );
+        assert!(
+            pair[0] - pair[1] > 1,
+            "SEQ is monotonic but GAPPED — a contiguous column means the value was \
+             renumbered for looks: {seqs:?}"
+        );
+    }
+
+    cleanup(&pool, &[&pid], &[&currency]).await;
+}
+
+// ---- 13: the catalog's operator input, capped at BOTH levels ----------------
+
+fn catalog_params(code: &str, display_name: &str, kind: &str, decimals: &str) -> adminapi::Params {
+    params(&[
+        ("_action", "create-currency"),
+        ("code", code),
+        ("display_name", display_name),
+        ("kind", kind),
+        ("decimals", decimals),
+    ])
+}
+
+async fn catalog_rows(pool: &PgPool, code: &str) -> i64 {
+    let (rows,): (i64,) = sqlx::query_as("SELECT count(*) FROM wallet.currencies WHERE code = $1")
+        .bind(code)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    rows
+}
+
+/// The Rust half of the catalog caps, per field and in BOTH directions: one byte past the
+/// cap is rejected with a message NAMING that field, and the cap itself is accepted.
+///
+/// The per-field message is what pins `CATALOG_CAPS`' positional `zip` with
+/// `[code, display_name, kind]`: inserting or reordering an entry without touching the
+/// value list would check a value against the WRONG ceiling and name the WRONG field, with
+/// no compile error — and the at-cap acceptances below would go red the moment a longer
+/// field were measured against a shorter field's bound.
+#[tokio::test]
+async fn catalog_form_rejects_each_oversized_field_by_name() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let base = unique_currency(&pool).await;
+    let mut created = vec![base.clone()];
+
+    let over_code = "c".repeat(MAX_CURRENCY_CODE_BYTES + 1);
+    let msg = rejection_text(
+        crate::admin::apply_submit(&svc, catalog_params(&over_code, "Name", "soft", "0"))
+            .await
+            .expect_err("an over-long code must be refused"),
+    );
+    assert!(
+        msg.contains("currency code") && msg.contains(&MAX_CURRENCY_CODE_BYTES.to_string()),
+        "the rejection must name the offending field: {msg}"
+    );
+    assert_eq!(catalog_rows(&pool, &over_code).await, 0);
+
+    let over_name = "n".repeat(MAX_CURRENCY_DISPLAY_NAME_BYTES + 1);
+    let code_name = format!("{base}n");
+    let msg = rejection_text(
+        crate::admin::apply_submit(&svc, catalog_params(&code_name, &over_name, "soft", "0"))
+            .await
+            .expect_err("an over-long display name must be refused"),
+    );
+    assert!(
+        msg.contains("display name") && msg.contains(&MAX_CURRENCY_DISPLAY_NAME_BYTES.to_string()),
+        "the rejection must name the offending field: {msg}"
+    );
+    assert_eq!(catalog_rows(&pool, &code_name).await, 0);
+
+    let over_kind = "k".repeat(MAX_CURRENCY_KIND_BYTES + 1);
+    let code_kind = format!("{base}k");
+    let msg = rejection_text(
+        crate::admin::apply_submit(&svc, catalog_params(&code_kind, "Name", &over_kind, "0"))
+            .await
+            .expect_err("an over-long kind must be refused"),
+    );
+    assert!(
+        msg.contains("kind") && msg.contains(&MAX_CURRENCY_KIND_BYTES.to_string()),
+        "the rejection must name the offending field: {msg}"
+    );
+    assert_eq!(catalog_rows(&pool, &code_kind).await, 0);
+
+    let msg = rejection_text(
+        crate::admin::apply_submit(&svc, catalog_params(&base, "Name", "soft", "19"))
+            .await
+            .expect_err("decimals past the range must be refused"),
+    );
+    assert!(
+        msg.contains(&format!("0..={MAX_CURRENCY_DECIMALS}")),
+        "the rejection must name the range: {msg}"
+    );
+
+    // AT the cap, each field: the ceilings are inclusive, and a field measured against
+    // another field's (shorter) bound would fail exactly here.
+    let at_name = "n".repeat(MAX_CURRENCY_DISPLAY_NAME_BYTES);
+    let at_kind = "k".repeat(MAX_CURRENCY_KIND_BYTES);
+    let code_at = format!("{base}a");
+    crate::admin::apply_submit(
+        &svc,
+        catalog_params(&code_at, &at_name, &at_kind, &MAX_CURRENCY_DECIMALS.to_string()),
+    )
+    .await
+    .map_err(rejection_text)
+    .unwrap_or_else(|msg| panic!("at-cap catalog input must be accepted: {msg}"));
+    created.push(code_at.clone());
+    assert_eq!(catalog_rows(&pool, &code_at).await, 1);
+
+    let refs: Vec<&str> = created.iter().map(String::as_str).collect();
+    cleanup(&pool, &[], &refs).await;
+}
+
+/// The DB half, on its own: each catalog CHECK rejects a direct INSERT past its bound
+/// under the constraint name `admin::catalog_rejection` maps. This is the class fail-safe
+/// for every writer that does not go through the admin form — drop the Rust caps and the
+/// test above goes red; drop the column CHECKs and only this one does.
+#[tokio::test]
+async fn catalog_columns_reject_oversized_values() {
+    let Some(pool) = test_pool().await else { return };
+    ensure_schema(&pool).await;
+    let code = format!("t{}", std::process::id());
+
+    let cases: [(&str, String, i32, &str); 3] = [
+        (
+            "display_name",
+            "n".repeat(MAX_CURRENCY_DISPLAY_NAME_BYTES + 1),
+            0,
+            "currencies_display_name_len_check",
+        ),
+        (
+            "kind",
+            "k".repeat(MAX_CURRENCY_KIND_BYTES + 1),
+            0,
+            "currencies_kind_len_check",
+        ),
+        (
+            "decimals",
+            "ok".to_string(),
+            MAX_CURRENCY_DECIMALS + 1,
+            "currencies_decimals_range_check",
+        ),
+    ];
+    for (field, value, decimals, constraint) in cases {
+        let (display_name, kind) = match field {
+            "display_name" => (value.clone(), "soft".to_string()),
+            "kind" => ("Name".to_string(), value.clone()),
+            _ => ("Name".to_string(), "soft".to_string()),
+        };
+        let err = sqlx::query(
+            "INSERT INTO wallet.currencies (code, display_name, kind, decimals) \
+             VALUES ($1, $2, $3, $4)",
+        )
+        .bind(&code)
+        .bind(&display_name)
+        .bind(&kind)
+        .bind(decimals)
+        .execute(&pool)
+        .await
+        .unwrap_err();
+        let db = err
+            .as_database_error()
+            .unwrap_or_else(|| panic!("{field}: a CHECK violation, not a client-side error"));
+        assert_eq!(db.code().as_deref(), Some("23514"), "{field}");
+        assert_eq!(db.constraint(), Some(constraint), "{field}");
+    }
+    assert_eq!(catalog_rows(&pool, &code).await, 0, "no over-cap row may survive");
+}

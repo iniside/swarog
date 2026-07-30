@@ -27,6 +27,20 @@ fn dev_seed_role_and_key_contract() {
         "dev-client must NOT carry match.report (trusted-server op)"
     );
 
+    // Wallet's split: the two READS are player-facing, the two MOVEMENTS are not. A
+    // player-facing key that could reach `wallet.credit`/`wallet.debit` would let a client
+    // move its own money — the one thing the contract's "no player-facing mutation" rules
+    // out. Asserted as whole entries, in BOTH directions: a positive-only check stays green
+    // if someone pastes the full method list in.
+    assert!(client_policy.split(',').any(|m| m == "wallet.myBalances"));
+    assert!(client_policy.split(',').any(|m| m == "wallet.listCurrencies"));
+    for movement in ["wallet.credit", "wallet.debit"] {
+        assert!(
+            !client_policy.split(',').any(|m| m == movement),
+            "dev-client must NOT carry {movement} — money is never movable from a player key"
+        );
+    }
+
     let server_policy = DEV_SEED_ROLES
         .iter()
         .find(|(name, _)| *name == "dev-server")
