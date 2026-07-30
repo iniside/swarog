@@ -137,11 +137,22 @@ fn gateway_stubs_every_http_domain() {
                 return None;
             }
             let domain = entry.file_name().to_string_lossy().into_owned();
-            let lib = entry.path().join("api").join("src").join("lib.rs");
-            let text = std::fs::read_to_string(&lib).ok()?;
-            let has_http = text.lines().any(|line| {
-                let t = line.trim_start();
-                !t.starts_with("//") && t.contains("#[http(")
+            let src = entry.path().join("api").join("src");
+            if !src.is_dir() {
+                return None;
+            }
+            // EVERY contract source, not just lib.rs: a `#[http(` method moved into
+            // `src/ops.rs` would otherwise make this rule match zero targets for the
+            // domain and pass green over a domain unreachable in the split.
+            let sources = rpc_contract_model::contract_sources(&src)
+                .unwrap_or_else(|e| panic!("failed to list {}: {e}", src.display()));
+            let has_http = sources.iter().any(|path| {
+                let text = std::fs::read_to_string(path)
+                    .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
+                text.lines().any(|line| {
+                    let t = line.trim_start();
+                    !t.starts_with("//") && t.contains("#[http(")
+                })
             });
             has_http.then_some(domain)
         })

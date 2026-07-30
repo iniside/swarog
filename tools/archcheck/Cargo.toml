@@ -15,3 +15,6 @@ path = "src/main.rs"
 
 [dependencies]
 serde_json = { workspace = true }
+# For `contract_sources` only: the shared answer to "which files make up a contract
+# crate", so the `#[http(` domain scan cannot go blind on a `mod ops;` split.
+rpc-contract-model = { workspace = true }

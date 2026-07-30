@@ -934,9 +934,48 @@ fn http_op_domains_scans_api_dirs_and_skips_comments() {
         "// wire-only; no #[http( ops here\n#[rpc]\ntrait Mmr { fn get(); }\n",
     )
     .unwrap();
-    let domains = super::http_op_domains(&root);
+    let (domains, errors) = super::http_op_domains(&root);
     assert_eq!(domains, vec!["characters".to_string()], "{domains:?}");
+    assert!(errors.is_empty(), "{errors:?}");
     let _ = std::fs::remove_dir_all(&root);
+}
+
+/// The previously-wrong branch: a `#[http(` method that lives in a contract source OTHER
+/// than `lib.rs`. A lib.rs-only scan reported zero HTTP domains for it, so rule 17 matched
+/// nothing and passed green over a domain unreachable in the split. Test sources
+/// (`tests.rs`, `*_tests.rs`) stay excluded — `contract_sources` cannot tell a fixture
+/// `#[http(` from a real one.
+#[test]
+fn http_op_domains_sees_a_non_lib_contract_source_but_not_a_test_file() {
+    let root = unique_temp_dir();
+    std::fs::create_dir_all(root.join("foo/api/src")).unwrap();
+    std::fs::create_dir_all(root.join("bar/api/src")).unwrap();
+    std::fs::write(root.join("foo/api/src/lib.rs"), "pub mod ops;\n").unwrap();
+    std::fs::write(
+        root.join("foo/api/src/ops.rs"),
+        "#[rpc]\ntrait Foo {\n    #[http(post, \"/foo\")]\n    fn go();\n}\n",
+    )
+    .unwrap();
+    std::fs::write(root.join("bar/api/src/lib.rs"), "#[rpc]\ntrait Bar { fn go(); }\n").unwrap();
+    std::fs::write(
+        root.join("bar/api/src/tests.rs"),
+        "#[http(post, \"/fixture\")]\nfn fixture() {}\n",
+    )
+    .unwrap();
+    let (domains, errors) = super::http_op_domains(&root);
+    assert_eq!(domains, vec!["foo".to_string()], "{domains:?}");
+    assert!(errors.is_empty(), "{errors:?}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// An unreadable api root is an ERROR line, not a vacuously clean scan.
+#[test]
+fn http_op_domains_reports_an_unreadable_api_root() {
+    let root = unique_temp_dir().join("does-not-exist");
+    let (domains, errors) = super::http_op_domains(&root);
+    assert!(domains.is_empty(), "{domains:?}");
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert!(errors[0].contains("cannot read"), "{errors:?}");
 }
 
 // --- Rule 18: conformancecheck stays out of shipping dependency graphs --------

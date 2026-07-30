@@ -37,3 +37,8 @@ match-svc = { workspace = true }
 rating-svc = { workspace = true }
 leaderboard-svc = { workspace = true }
 wallet-svc = { workspace = true }
+
+[dev-dependencies]
+# `contract_sources` only — the shared "which files make up a contract crate" walker
+# the `#[http(` domain scan in tests.rs needs so a `mod ops;` split stays visible.
+rpc-contract-model = { workspace = true }

@@ -332,6 +332,7 @@ dependencies = [
 name = "archcheck"
 version = "0.1.0"
 dependencies = [
+ "rpc-contract-model",
  "serde_json",
 ]
 
@@ -891,6 +892,7 @@ dependencies = [
  "lifecycle",
  "match-svc",
  "rating-svc",
+ "rpc-contract-model",
  "scheduler-svc",
  "server",
  "wallet-svc",

@@ -618,7 +618,9 @@ fn main() {
         root.join("cmd").join("gateway-svc").join("src").join("lib.rs"),
     )
     .unwrap_or_default();
-    for line in gateway_stub_coverage_violations(&http_op_domains(&root.join("api")), &gateway_lib) {
+    let (http_domains, http_scan_errors) = http_op_domains(&root.join("api"));
+    violations.extend(http_scan_errors);
+    for line in gateway_stub_coverage_violations(&http_domains, &gateway_lib) {
         violations.push(line);
     }
 
@@ -750,29 +752,69 @@ fn svc_lib_references_module(lib_path: &Path, module: &str) -> bool {
     })
 }
 
-/// Every domain whose `api/<name>/api/src/lib.rs` declares at least one [`HTTP_OP_MARKER`]
-/// (`#[http(`) on a NON-comment line (boundary-checked, same style as the other grep
-/// tripwires) — i.e. the domain exposes player-facing HTTP ops. The domain name is the
-/// `api/<name>` DIR name, which IS the provider/stub name (see [`HTTP_OP_MARKER`]). A
-/// missing/unreadable lib.rs simply contributes no domain.
-fn http_op_domains(api_root: &Path) -> Vec<String> {
+/// Every domain whose contract crate declares at least one [`HTTP_OP_MARKER`] (`#[http(`)
+/// on a NON-comment line (boundary-checked, same style as the other grep tripwires) — i.e.
+/// the domain exposes player-facing HTTP ops. The domain name is the `api/<name>` DIR
+/// name, which IS the provider/stub name (see [`HTTP_OP_MARKER`]).
+///
+/// Scans EVERY contract source under `api/<name>/api/src` (`rpc_contract_model::
+/// contract_sources`, the walker the other contract scanners share), not just `lib.rs`:
+/// moving one `#[http(` method into `src/ops.rs` would otherwise make the domain's HTTP
+/// surface invisible here, so the "every `#[http(` domain needs a gateway stub" rule would
+/// match zero targets and pass green over a domain unreachable in the split.
+///
+/// Returns `(domains, errors)`. An unreadable source is an ERROR line, never a silently
+/// absent domain — a permission blip must not turn this rule vacuous.
+fn http_op_domains(api_root: &Path) -> (Vec<String>, Vec<String>) {
+    let mut domains = Vec::new();
+    let mut errors = Vec::new();
     let Ok(entries) = std::fs::read_dir(api_root) else {
-        return Vec::new();
+        errors.push(format!(
+            "cannot read {} — the `#[http(` domain scan (rule 17) cannot run",
+            api_root.display()
+        ));
+        return (domains, errors);
     };
-    entries
+    let mut dirs: Vec<_> = entries
         .flatten()
-        .filter(|e| e.path().is_dir())
-        .filter_map(|e| {
-            let domain = e.file_name().to_str().map(String::from)?;
-            let lib = e.path().join("api").join("src").join("lib.rs");
-            let text = std::fs::read_to_string(&lib).ok()?;
-            let has_http = text.lines().any(|line| {
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .collect();
+    dirs.sort();
+    for dir in dirs {
+        let Some(domain) = dir.file_name().and_then(|n| n.to_str()).map(String::from) else {
+            continue;
+        };
+        let src = dir.join("api").join("src");
+        if !src.is_dir() {
+            continue;
+        }
+        let sources = match rpc_contract_model::contract_sources(&src) {
+            Ok(sources) => sources,
+            Err(e) => {
+                errors.push(format!("cannot list contract sources under {}: {e}", src.display()));
+                continue;
+            }
+        };
+        let mut has_http = false;
+        for path in sources {
+            let text = match std::fs::read_to_string(&path) {
+                Ok(text) => text,
+                Err(e) => {
+                    errors.push(format!("cannot read contract source {}: {e}", path.display()));
+                    continue;
+                }
+            };
+            has_http |= text.lines().any(|line| {
                 let t = line.trim_start();
                 !t.starts_with("//") && contains_boundary_checked(line, HTTP_OP_MARKER)
             });
-            has_http.then_some(domain)
-        })
-        .collect()
+        }
+        if has_http {
+            domains.push(domain);
+        }
+    }
+    (domains, errors)
 }
 
 /// True if `gateway_lib` (the text of `cmd/gateway-svc/src/lib.rs`) constructs a
