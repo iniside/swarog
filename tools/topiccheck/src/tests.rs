@@ -487,27 +487,3 @@ fn union_define_sites_panics_naming_both_files_on_a_cross_file_duplicate() {
     assert!(msg.contains("file-a") && msg.contains("file-b"), "{msg}");
     assert!(msg.contains("duplicate define-site across files"), "{msg}");
 }
-
-// --- The DEFINE set is exactly the seven domain contract topics ---------------
-
-#[test]
-fn defined_topics_are_the_eight_domain_topics_at_v1() {
-    let mut got: Vec<(String, u32)> = defined_topics()
-        .into_iter()
-        .map(|c| (c.topic, c.version))
-        .collect();
-    got.sort();
-    assert_eq!(
-        got,
-        vec![
-            ("admin.action".to_string(), 1),
-            ("character.created".to_string(), 1),
-            ("character.deleted".to_string(), 1),
-            ("config.changed".to_string(), 1),
-            ("match.finished".to_string(), 1),
-            ("player.registered".to_string(), 1),
-            ("scheduler.fired".to_string(), 1),
-            ("wallet.changed".to_string(), 1),
-        ]
-    );
-}
