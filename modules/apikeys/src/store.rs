@@ -87,10 +87,10 @@ pub const MAX_NAME_BYTES: usize = 128;
 /// feeds both the pre-checks and [`WriteError::from_db`]'s 23514 mapping, so the Rust
 /// verdict and the DB's cannot word one limit two ways — and adding an operator-writable
 /// column cannot cap it in Rust while leaving the CHECK unmapped.
-struct ColumnCap {
-    what: &'static str,
-    max_bytes: usize,
-    constraint: &'static str,
+pub(crate) struct ColumnCap {
+    pub(crate) what: &'static str,
+    pub(crate) max_bytes: usize,
+    pub(crate) constraint: &'static str,
 }
 
 const ROLE_NAME: ColumnCap = ColumnCap {
@@ -109,7 +109,7 @@ const ROLE_POLICY: ColumnCap = ColumnCap {
     constraint: "roles_policy_len_check",
 };
 
-const COLUMN_CAPS: &[&ColumnCap] = &[&ROLE_NAME, &KEY_NAME, &ROLE_POLICY];
+pub(crate) const COLUMN_CAPS: &[&ColumnCap] = &[&ROLE_NAME, &KEY_NAME, &ROLE_POLICY];
 
 impl ColumnCap {
     /// The one over-cap verdict, worded identically whether Rust caught it or the column

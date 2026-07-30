@@ -2092,3 +2092,82 @@ async fn catalog_columns_reject_oversized_values() {
     }
     assert_eq!(catalog_rows(&pool, &code).await, 0, "no over-cap row may survive");
 }
+
+// ---------------------------------------------------------------------------
+// The catalog cap table vs the DDL — pure, no Postgres.
+// ---------------------------------------------------------------------------
+
+/// The one whitespace-normalized `CONSTRAINT <name> CHECK (...)` clause `SCHEMA_DDL`
+/// declares, or a panic naming the missing constraint.
+fn ddl_clause(constraint: &str) -> String {
+    let flat = SCHEMA_DDL.split_whitespace().collect::<Vec<_>>().join(" ");
+    let needle = format!("CONSTRAINT {constraint} ");
+    let start = flat.find(&needle).unwrap_or_else(|| {
+        panic!(
+            "SCHEMA_DDL declares no `CONSTRAINT {constraint}` — admin::CATALOG_CAPS names a \
+             constraint the schema never creates, so nothing backstops that column and a \
+             23514 could never map back to it"
+        )
+    });
+    let rest = &flat[start..];
+    let end = ["),", ");"]
+        .iter()
+        .filter_map(|terminator| rest.find(terminator))
+        .min()
+        .map(|index| index + 1)
+        .unwrap_or(rest.len());
+    rest[..end].to_owned()
+}
+
+/// Each catalog ceiling is stated in TWO languages — `admin::CATALOG_CAPS` in Rust and an
+/// `octet_length(...) <= N` CHECK in `SCHEMA_DDL`. Raise the const alone and a legitimate
+/// value passes Rust, dies on the column CHECK, and `catalog_rejection` maps the 23514 back
+/// through the SAME table, reporting the NEW number for the OLD limit — a lying message.
+/// Pure and always-runs, unlike the live-Postgres constraint test beside it, which is
+/// simply absent when the DB is.
+#[test]
+fn every_catalog_cap_matches_its_check_constraint_in_the_ddl() {
+    for cap in crate::admin::CATALOG_CAPS {
+        let clause = ddl_clause(cap.constraint);
+        assert!(
+            clause.ends_with(&format!("<= {})", cap.max_bytes)),
+            "{}: Rust caps the {} at {} bytes, but SCHEMA_DDL says `{clause}`",
+            cap.constraint,
+            cap.label,
+            cap.max_bytes
+        );
+        assert!(
+            clause.contains("octet_length("),
+            "{}: the CHECK must count OCTETS (the Rust twin is str::len), got `{clause}`",
+            cap.constraint
+        );
+    }
+}
+
+/// The reverse leg: a `*_len_check` in the DDL that no `CatalogCap` names would fire as an
+/// UNMAPPED 23514, which `catalog_rejection` deliberately keeps as `Internal` — operator
+/// input reported as a 500.
+#[test]
+fn every_len_check_in_the_ddl_is_mapped_by_a_catalog_cap() {
+    let flat = SCHEMA_DDL.split_whitespace().collect::<Vec<_>>().join(" ");
+    let declared: Vec<&str> = flat
+        .match_indices("CONSTRAINT ")
+        .map(|(index, marker)| {
+            flat[index + marker.len()..]
+                .split_whitespace()
+                .next()
+                .unwrap_or_default()
+        })
+        .filter(|name| name.ends_with("_len_check"))
+        .collect();
+    assert!(!declared.is_empty(), "SCHEMA_DDL declares no length CHECK");
+    for name in declared {
+        assert!(
+            crate::admin::CATALOG_CAPS
+                .iter()
+                .any(|cap| cap.constraint == name),
+            "SCHEMA_DDL declares `CONSTRAINT {name}` that admin::CATALOG_CAPS does not name — \
+             its 23514 stays an unmapped Internal error instead of the operator-input verdict"
+        );
+    }
+}

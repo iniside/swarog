@@ -554,13 +554,13 @@ pub(crate) async fn apply_submit(
 /// the column CHECK that backstops it. ONE table feeds both [`check_catalog_caps`] and
 /// [`catalog_rejection`], so the Rust verdict and the DB's cannot word one limit two ways —
 /// and adding a catalog column cannot cap it in Rust while leaving the CHECK unmapped.
-struct CatalogCap {
-    label: &'static str,
-    max_bytes: usize,
-    constraint: &'static str,
+pub(crate) struct CatalogCap {
+    pub(crate) label: &'static str,
+    pub(crate) max_bytes: usize,
+    pub(crate) constraint: &'static str,
 }
 
-const CATALOG_CAPS: &[CatalogCap] = &[
+pub(crate) const CATALOG_CAPS: &[CatalogCap] = &[
     CatalogCap {
         label: "currency code",
         max_bytes: walletapi::MAX_CURRENCY_CODE_BYTES,

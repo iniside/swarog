@@ -565,3 +565,82 @@ async fn seed_upsert_roles_and_keys_self_heal() {
 
     cleanup(&pool, &base).await;
 }
+
+// ---------------------------------------------------------------------------
+// The cap table vs the DDL — pure, no Postgres.
+// ---------------------------------------------------------------------------
+
+/// The one whitespace-normalized `CONSTRAINT <name> CHECK (...)` clause `SCHEMA_DDL`
+/// declares, or a panic naming the missing constraint.
+fn ddl_clause(constraint: &str) -> String {
+    let flat = SCHEMA_DDL.split_whitespace().collect::<Vec<_>>().join(" ");
+    let needle = format!("CONSTRAINT {constraint} ");
+    let start = flat.find(&needle).unwrap_or_else(|| {
+        panic!(
+            "SCHEMA_DDL declares no `CONSTRAINT {constraint}` — store::COLUMN_CAPS names a \
+             constraint the schema never creates, so nothing backstops that column and a \
+             23514 could never map back to it"
+        )
+    });
+    let rest = &flat[start..];
+    let end = ["),", ");"]
+        .iter()
+        .filter_map(|terminator| rest.find(terminator))
+        .min()
+        .map(|index| index + 1)
+        .unwrap_or(rest.len());
+    rest[..end].to_owned()
+}
+
+/// Each byte ceiling is stated in TWO languages — `store::COLUMN_CAPS` in Rust and an
+/// `octet_length(...) <= N` CHECK in `SCHEMA_DDL`. Raise the const alone and a legitimate
+/// value passes Rust, dies on the column CHECK, and `WriteError::from_db` maps the 23514
+/// back through the SAME table, reporting the NEW number for the OLD limit — a lying
+/// message. Pure and always-runs: the only other thing pinning the pair is a live-Postgres
+/// test, which is simply absent when the DB is.
+#[test]
+fn every_column_cap_matches_its_check_constraint_in_the_ddl() {
+    for cap in crate::store::COLUMN_CAPS {
+        let clause = ddl_clause(cap.constraint);
+        assert!(
+            clause.ends_with(&format!("<= {})", cap.max_bytes)),
+            "{}: Rust caps the {} at {} bytes, but SCHEMA_DDL says `{clause}`",
+            cap.constraint,
+            cap.what,
+            cap.max_bytes
+        );
+        assert!(
+            clause.contains("octet_length("),
+            "{}: the CHECK must count OCTETS (the Rust twin is str::len), got `{clause}`",
+            cap.constraint
+        );
+    }
+}
+
+/// The reverse leg: a `*_len_check` in the DDL that no `ColumnCap` names would fire as an
+/// UNMAPPED 23514, which `WriteError::from_db` deliberately keeps as `Db` — operator input
+/// reported as store trouble.
+#[test]
+fn every_len_check_in_the_ddl_is_mapped_by_a_column_cap() {
+    let flat = SCHEMA_DDL.split_whitespace().collect::<Vec<_>>().join(" ");
+    let declared: Vec<&str> = flat
+        .match_indices("CONSTRAINT ")
+        .map(|(index, marker)| {
+            flat[index + marker.len()..]
+                .split_whitespace()
+                .next()
+                .unwrap_or_default()
+        })
+        .filter(|name| name.ends_with("_len_check"))
+        .collect();
+    assert!(!declared.is_empty(), "SCHEMA_DDL declares no length CHECK");
+    for name in declared {
+        assert!(
+            crate::store::COLUMN_CAPS
+                .iter()
+                .any(|cap| cap.constraint == name),
+            "SCHEMA_DDL declares `CONSTRAINT {name}` that store::COLUMN_CAPS does not name — \
+             its 23514 stays an unmapped Db error instead of the operator-input verdict"
+        );
+    }
+}
