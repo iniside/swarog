@@ -327,6 +327,12 @@ fn main() {
         };
         println!("  {}\t{policy}", input_inventory::render_key(key));
     }
+    for opaque in input_inventory::OPAQUE_REQUEST_TYPES {
+        println!(
+            "  <traversal stops at {}> ({}): {}",
+            opaque.name, opaque.declared_in, opaque.why
+        );
+    }
     println!();
     let disk: BTreeSet<String> = crate_dirs(&modules_dir()).into_iter().collect();
     let entry_names: BTreeSet<String> = entries.iter().map(|e| e.module.to_string()).collect();

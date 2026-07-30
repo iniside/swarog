@@ -4,7 +4,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context as _, Result};
-use syn::{Attribute, Fields, GenericArgument, Item, ItemStruct, PathArguments, Type};
+use syn::{
+    Attribute, Fields, GenericArgument, Item, ItemStruct, ItemTrait, PathArguments, TraitItem, Type,
+};
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum Exposure {
@@ -50,14 +52,33 @@ const SCALAR_TYPES: &[&str] = &[
     "u64", "u128", "usize",
 ];
 
-/// Named NON-primitive request types the traversal deliberately stops at, each with the
-/// reason it carries no caller-supplied string. Anything else is a hard failure, so a
-/// new foreign type cannot enter a contract's request surface unexamined.
-const OPAQUE_REQUEST_TYPES: &[(&str, &str)] = &[(
-    "Identity",
-    "opsapi::Identity is minted by the gateway from an already-verified session, never \
-     parsed from a caller-supplied request field",
-)];
+/// One NON-primitive request type the traversal deliberately stops at.
+pub struct OpaqueType {
+    /// The type path EXACTLY as a contract writes it. Matched against the written path,
+    /// not the last segment, so a foreign `somecrate::Identity` is not allowlisted by
+    /// sharing a name with the listed type.
+    pub name: &'static str,
+    /// Workspace-relative file declaring the type — the source of truth the list's
+    /// self-check (`input_inventory_tests.rs`) parses, so an entry naming a renamed or
+    /// deleted type fails instead of quietly allowlisting nothing.
+    pub declared_in: &'static str,
+    /// Why a request argument of this type carries no caller-supplied text.
+    pub why: &'static str,
+}
+
+/// The NON-primitive request types the traversal stops at. Anything else is a hard
+/// failure, so a new foreign type cannot enter a contract's request surface unexamined.
+pub const OPAQUE_REQUEST_TYPES: &[OpaqueType] = &[OpaqueType {
+    name: "Identity",
+    declared_in: "core/opsapi/src/lib.rs",
+    why: "opsapi::Identity is set at exactly two trusted seams — the gateway front handler \
+          after bearer verification, and the generated edge-server adapter from the \
+          mTLS-authenticated request envelope's identity field — and never parsed from a \
+          caller-supplied request field. Its player_id IS written to storage by domain \
+          modules, so the property that matters is the provenance, not the destination; \
+          the wrapped string is unreachable as a request DTO field because the type has no \
+          public field at all",
+}];
 
 /// String-keyed map types: a caller-controlled bag of text with no declared field names,
 /// so both legs are recorded under the reserved `<key>`/`<value>` suffixes.
@@ -96,52 +117,128 @@ fn discover_sources(sources: &[String]) -> Result<BTreeSet<InputKey>> {
         .map(|source| syn::parse_file(source).context("parse API source"))
         .collect::<Result<Vec<_>>>()?;
     let mut types = Types::new();
+    let mut traits = Vec::new();
     for file in &syntax {
-        for item in &file.items {
-            let (name, shape) = match item {
-                Item::Struct(item) => (item.ident.to_string(), parse_struct(item)?),
-                Item::Type(item) => (item.ident.to_string(), Shape::Alias((*item.ty).clone())),
-                _ => continue,
-            };
-            if types.insert(name.clone(), shape).is_some() {
-                bail!("ambiguous request DTO {name:?}: declared more than once in one API crate");
-            }
-        }
+        walk_items(&file.items, &mut types, &mut traits)?;
     }
 
     let mut out = BTreeSet::new();
-    for file in &syntax {
-        for item in &file.items {
-            let Item::Trait(item) = item else { continue };
-            let Some(prefix) = rpc_contract_model::trait_prefix(item)? else {
-                continue;
+    for item in traits {
+        let Some(prefix) = rpc_contract_model::trait_prefix(item)? else {
+            continue;
+        };
+        for trait_item in &item.items {
+            if let TraitItem::Macro(mac) = trait_item {
+                bail!(
+                    "#[rpc] trait {:?} has a macro invocation {}! in its body, so its real \
+                     method set is not visible to the input inventory. Write the methods out.",
+                    item.ident.to_string(),
+                    path_string(&mac.mac.path)
+                );
+            }
+        }
+        let mut item = item.clone();
+        for method in rpc_contract_model::build_methods(&mut item)? {
+            let wire_method = format!("{prefix}.{}", lower_camel(&method.method_ident.to_string()));
+            let exposure = if method.http.is_some() {
+                Exposure::External
+            } else {
+                Exposure::Wire
             };
-            let mut item = item.clone();
-            for method in rpc_contract_model::build_methods(&mut item)? {
-                let wire_method =
-                    format!("{prefix}.{}", lower_camel(&method.method_ident.to_string()));
-                let exposure = if method.http.is_some() {
-                    Exposure::External
-                } else {
-                    Exposure::Wire
-                };
-                for arg in method.args {
-                    let arg_name = arg.ident.to_string();
-                    let wire_name = arg.rename.unwrap_or(arg_name);
-                    collect_type(
-                        &arg.ty,
-                        &wire_method,
-                        &wire_name,
-                        exposure,
-                        &types,
-                        &mut BTreeSet::new(),
-                        &mut out,
-                    )?;
-                }
+            for arg in method.args {
+                let arg_name = arg.ident.to_string();
+                let wire_name = arg.rename.unwrap_or(arg_name);
+                collect_type(
+                    &arg.ty,
+                    &wire_method,
+                    &wire_name,
+                    exposure,
+                    &types,
+                    &mut BTreeSet::new(),
+                    &mut out,
+                )?;
             }
         }
     }
     Ok(out)
+}
+
+/// Collects every declared request DTO and every trait, RECURSING into inline `mod`
+/// blocks.
+///
+/// TOTAL BY CONSTRUCTION, like [`collect_type`]: an item either contributes, is
+/// descended into, or is a shape that cannot declare a contract. A top-level-only walk
+/// makes an `#[rpc]` trait or request DTO inside `pub mod admin { … }` invisible — no
+/// key, no golden row, and every input gate green over an unexamined caller string.
+fn walk_items<'a>(
+    items: &'a [Item],
+    types: &mut Types,
+    traits: &mut Vec<&'a ItemTrait>,
+) -> Result<()> {
+    for item in items {
+        let (name, shape) = match item {
+            Item::Struct(item) => (item.ident.to_string(), parse_struct(item)?),
+            Item::Type(item) => (item.ident.to_string(), Shape::Alias((*item.ty).clone())),
+            Item::Trait(item) => {
+                traits.push(item);
+                continue;
+            }
+            Item::Mod(module) => {
+                // `#[cfg(test)]` mirrors rpc_contract_model::contract_sources' exclusion of
+                // tests.rs: a fixture contract inside a test module is not a real contract.
+                if !is_cfg_test(&module.attrs) {
+                    if let Some((_, inner)) = &module.content {
+                        walk_items(inner, types, traits)?;
+                    }
+                }
+                continue;
+            }
+            // An item-position macro INVOCATION can expand to a trait or a DTO the scan
+            // would never see. A `macro_rules!` DEFINITION (ident set) declares nothing by
+            // itself — every use of it is an invocation, caught here.
+            Item::Macro(mac) if mac.ident.is_none() => bail!(
+                "item-position macro invocation {}! in a contract source: it may expand to an \
+                 #[rpc] trait or a request DTO the input inventory cannot see. Write the \
+                 declaration out.",
+                path_string(&mac.mac.path)
+            ),
+            _ => continue,
+        };
+        if types.insert(name.clone(), shape).is_some() {
+            bail!("ambiguous request DTO {name:?}: declared more than once in one API crate");
+        }
+    }
+    Ok(())
+}
+
+fn is_cfg_test(attrs: &[Attribute]) -> bool {
+    attrs.iter().any(|attr| {
+        attr.path().is_ident("cfg") && {
+            let mut found = false;
+            let _ = attr.parse_nested_meta(|meta| {
+                found |= meta.path.is_ident("test");
+                Ok(())
+            });
+            found
+        }
+    })
+}
+
+/// A path rendered the way it is WRITTEN (`opsapi::Identity`), generic arguments
+/// dropped — the form [`OPAQUE_REQUEST_TYPES`] is matched against.
+fn path_string(path: &syn::Path) -> String {
+    let mut out = if path.leading_colon.is_some() {
+        "::".to_owned()
+    } else {
+        String::new()
+    };
+    for (index, segment) in path.segments.iter().enumerate() {
+        if index > 0 {
+            out.push_str("::");
+        }
+        out.push_str(&segment.ident.to_string());
+    }
+    out
 }
 
 /// Walks one request argument (or nested field) and records every string it can carry.
@@ -236,11 +333,15 @@ fn collect_type(
     if SCALAR_TYPES.contains(&name.as_str()) {
         return Ok(());
     }
-    if OPAQUE_REQUEST_TYPES.iter().any(|(ty, _)| *ty == name) {
+    let written = written_path(ty).unwrap_or_else(|| name.clone());
+    if OPAQUE_REQUEST_TYPES
+        .iter()
+        .any(|opaque| opaque.name == written)
+    {
         return Ok(());
     }
     bail!(
-        "{method} request field {field:?} has type {name:?}, which the input inventory \
+        "{method} request field {field:?} has type {written:?}, which the input inventory \
          cannot traverse: it is not a String, a container or string map of one, a DTO or \
          alias declared in this API crate, a primitive scalar, or a listed opaque type. \
          Either give it named String fields in its own api crate, or — if it genuinely \
@@ -308,6 +409,11 @@ fn is_string(ty: &Type) -> bool {
 fn type_name(ty: &Type) -> Option<String> {
     let Type::Path(path) = ty else { return None };
     Some(path.path.segments.last()?.ident.to_string())
+}
+
+fn written_path(ty: &Type) -> Option<String> {
+    let Type::Path(path) = ty else { return None };
+    path.qself.is_none().then(|| path_string(&path.path))
 }
 
 fn parse_struct(item: &ItemStruct) -> Result<Shape> {
