@@ -278,6 +278,17 @@ is the authority fix; Google is then pure addition.
 
 **(d) Dispatch:** `[opus]` — `subagent_type: "core-implementer"`, `model: "opus"`.
 
+> **Erratum from Step 1 (landed `38c1a7f`) — read before implementing.** Step 1's review
+> required `EPIC_ISSUER_PREFIX` to be validated, and the closure chosen was
+> `check_absolute_url` (parseable absolute URL + host). That rule **rejects
+> `accounts.google.com`**, the scheme-less legacy Google issuer this step puts in
+> `IssuerMatch::Exact`. So Step 3 cannot reuse `check_absolute_url` for issuers: each
+> `IssuerMatch` variant needs its own rule — `Prefix` keeps the absolute-URL floor (it
+> guards a `starts_with`, where a truncated value like `h` accepts every https issuer),
+> while `Exact` accepts a bare host form because an exact comparison cannot be widened by
+> truncation. The call site in `modules/accounts/src/providers.rs` carries a comment
+> pointing here.
+
 ---
 
 ## Step 4 — tests pinning the issuer/audience semantics `[test-author]`
