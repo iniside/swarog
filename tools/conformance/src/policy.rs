@@ -90,7 +90,26 @@ fn accounts() -> Entry {
         stances: vec![
             (
                 Convention::EnvValidation,
-                na("accounts env is presence-gates only; no parsed numeric value is silently defaulted at init"),
+                Stance::Applies(Fixture::EnvValidation(vec![
+                    // accounts::providers::ProviderConfig::from_vars is a validating
+                    // parse: the verifier constructors do no I/O at init, so a
+                    // malformed provider value can only be caught here or never. Each
+                    // case sets ONE variable and reaches a distinct branch — the URL
+                    // rule, the issuer floor, and the browser-flow endpoint rule that
+                    // must not be contingent on EPIC_CLIENT_SECRET being present.
+                    EnvCase {
+                        var: "EPIC_JWKS_URL",
+                        bad_value: "hunter2",
+                    },
+                    EnvCase {
+                        var: "EPIC_ISSUER_PREFIX",
+                        bad_value: "h",
+                    },
+                    EnvCase {
+                        var: "EPIC_AUTHORIZE_URL",
+                        bad_value: "hunter2",
+                    },
+                ])),
             ),
             (
                 Convention::InputByteCaps,

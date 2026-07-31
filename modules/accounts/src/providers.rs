@@ -20,11 +20,16 @@ use async_trait::async_trait;
 
 use crate::epic::{short_id, OidcVerifier};
 
+/// The `accounts.identities.provider` value for Epic — written once and referenced by
+/// the name list, the registry key and every `resolve` call, so a typo cannot leave a
+/// fully configured provider unresolvable.
+pub(crate) const EPIC: &str = "epic";
+
 /// Every provider name this build knows, configured or not — the naming authority,
 /// separate from the configured-verifier map so a typo and an unconfigured provider
 /// are distinguishable outcomes. A name is listed once the build can spell it, which
 /// is not the same as shipping it: `"apple"` is declared and has no verifier.
-pub(crate) const KNOWN_PROVIDERS: &[&str] = &["dev", "epic", "google", "guest", "apple"];
+pub(crate) const KNOWN_PROVIDERS: &[&str] = &["dev", EPIC, "google", "guest", "apple"];
 
 /// Why a credential failed verification — the taxonomy the caller maps to a status
 /// (mirrors the `verify_session` 503-not-401 precedent: an IdP outage must not
@@ -107,6 +112,46 @@ pub(crate) struct EpicConfig {
     pub(crate) client_id: String,
     pub(crate) jwks_url: String,
     pub(crate) verifier: Arc<OidcVerifier>,
+    /// `Some` iff the confidential client secret enables the browser redirect flow.
+    /// The endpoint VALUES are validated either way — see [`EpicOAuthConfig::new`].
+    pub(crate) oauth: Option<EpicOAuthConfig>,
+}
+
+/// The validated browser-flow half of Epic's configuration, handed to
+/// `epic_oauth::EpicOAuth` ready to use.
+#[derive(Clone)]
+pub(crate) struct EpicOAuthConfig {
+    pub(crate) client_secret: String,
+    pub(crate) redirect_uri: String,
+    pub(crate) authorize_url: String,
+    pub(crate) token_url: String,
+    /// Derived from the redirect URI's scheme at parse time: HTTPS sets `Secure` on
+    /// the binding cookie, the loopback-HTTP dev carve-out does not.
+    pub(crate) cookie_secure: bool,
+}
+
+impl EpicOAuthConfig {
+    /// The one rule for the three browser-flow endpoints. Validation deliberately does
+    /// NOT consult `client_secret`: a malformed URL is malformed whether or not the
+    /// flow is enabled, and a value whose validity depends on an unrelated variable is
+    /// a configuration trap.
+    pub(crate) fn new(
+        client_secret: String,
+        redirect_uri: String,
+        authorize_url: String,
+        token_url: String,
+    ) -> anyhow::Result<EpicOAuthConfig> {
+        let cookie_secure = check_redirect_uri("EPIC_REDIRECT_URI", &redirect_uri)?;
+        check_endpoint("EPIC_AUTHORIZE_URL", &authorize_url)?;
+        check_endpoint("EPIC_TOKEN_URL", &token_url)?;
+        Ok(EpicOAuthConfig {
+            client_secret,
+            redirect_uri,
+            authorize_url,
+            token_url,
+            cookie_secure,
+        })
+    }
 }
 
 /// The validated provider configuration: one entry per PRESENT provider. An absent
@@ -118,12 +163,20 @@ pub(crate) struct ProviderConfig {
 
 impl ProviderConfig {
     pub(crate) fn from_env() -> anyhow::Result<ProviderConfig> {
-        // `vars_os` + filter rather than `vars()`: the latter PANICS on any non-UTF-8
-        // entry anywhere in the process environment, which has nothing to do with
-        // provider configuration.
-        let vars = std::env::vars_os()
-            .filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)))
-            .collect();
+        // Reads exactly the keys the parse knows, never a whole-environ snapshot: the
+        // process env is mutated by `set_var` in test/verify harnesses, so the narrower
+        // the read the smaller the unsound window. A new provider extends
+        // `provider_env_keys`, which is what keeps this narrow as the list grows.
+        let mut vars = BTreeMap::new();
+        for key in provider_env_keys() {
+            let Some(raw) = std::env::var_os(key) else {
+                continue;
+            };
+            let value = raw
+                .into_string()
+                .map_err(|_| anyhow::anyhow!("invalid {key}: value is not valid UTF-8"))?;
+            vars.insert(key.to_string(), value);
+        }
         ProviderConfig::from_vars(&vars)
     }
 
@@ -140,7 +193,7 @@ impl ProviderConfig {
     pub(crate) fn providers(&self) -> Providers {
         let mut providers = Providers::default();
         if let Some(epic) = &self.epic {
-            providers.insert("epic", epic_credentials(epic.verifier.clone()));
+            providers.insert(EPIC, epic_credentials(epic.verifier.clone()));
         }
         providers
     }
@@ -169,34 +222,90 @@ pub(crate) fn epic_credentials(verifier: Arc<OidcVerifier>) -> Arc<dyn Credentia
     Arc::new(EpicCredentials { verifier })
 }
 
-/// The epic variables that decide PRESENCE. The OAuth-flow variables
-/// (`EPIC_CLIENT_SECRET`/`EPIC_REDIRECT_URI`/…) are not here: they configure the
-/// browser flow layered on top of a configured verifier, not the verifier itself.
-const EPIC_VARS: &[&str] = &["EPIC_CLIENT_ID", "EPIC_JWKS_URL", "EPIC_ISSUER_PREFIX"];
+/// Every variable the provider parse reads — the authority [`ProviderConfig::from_env`]
+/// collects. A new provider appends its own block here rather than widening the read
+/// back out to the whole environment.
+fn provider_env_keys() -> impl Iterator<Item = &'static str> {
+    EPIC_VARS.iter().copied()
+}
+
+/// Epic's whole environment surface. Presence of ANY of these means the operator is
+/// configuring epic — including the OAuth keys, so a malformed browser-flow endpoint
+/// is caught even when nothing else about epic is set.
+const EPIC_VARS: &[&str] = &[
+    "EPIC_CLIENT_ID",
+    "EPIC_JWKS_URL",
+    "EPIC_ISSUER_PREFIX",
+    "EPIC_CLIENT_SECRET",
+    "EPIC_REDIRECT_URI",
+    "EPIC_AUTHORIZE_URL",
+    "EPIC_TOKEN_URL",
+];
+
+/// The subset that configures the browser flow but cannot enable it — setting one
+/// without `EPIC_CLIENT_SECRET` is an operator asking for a flow that would never mount.
+const EPIC_OAUTH_VARS: &[&str] = &["EPIC_REDIRECT_URI", "EPIC_AUTHORIZE_URL", "EPIC_TOKEN_URL"];
 
 const EPIC_DEFAULT_JWKS_URL: &str =
     "https://api.epicgames.dev/epic/oauth/v1/.well-known/jwks.json";
 const EPIC_DEFAULT_ISSUER_PREFIX: &str = "https://api.epicgames.dev/epic/oauth/v1";
+const EPIC_DEFAULT_REDIRECT_URI: &str = "http://localhost:8080/accounts/epic/callback";
+const EPIC_DEFAULT_AUTHORIZE_URL: &str = "https://www.epicgames.com/id/authorize";
+const EPIC_DEFAULT_TOKEN_URL: &str = "https://api.epicgames.dev/epic/oauth/v1/token";
 
 fn epic_from_vars(vars: &BTreeMap<String, String>) -> anyhow::Result<Option<EpicConfig>> {
-    let Some(present) = EPIC_VARS.iter().find(|key| !var_or(vars, key, "").is_empty()) else {
+    let Some(present) = EPIC_VARS.iter().find(|key| vars.contains_key(**key)) else {
         return Ok(None);
     };
+    // A variable the operator SET is a variable the operator meant: an empty value is a
+    // misconfiguration, never a silent fall-back to the default.
+    for key in EPIC_VARS {
+        if vars.get(*key).is_some_and(String::is_empty) {
+            anyhow::bail!("invalid {key}: set but empty — unset it to leave it unconfigured");
+        }
+    }
+
+    // Per-FIELD validation FIRST, cross-field completeness second: a malformed value is
+    // rejected on its own merits, never contingent on which sibling happens to be set.
+    let jwks_url = var_or(vars, "EPIC_JWKS_URL", EPIC_DEFAULT_JWKS_URL);
+    check_endpoint("EPIC_JWKS_URL", &jwks_url)?;
+    // The issuer prefix is a token-acceptance guard, not an endpoint we dial: it is
+    // never fetched, so the scheme rule does not apply, but `epic.rs`'s `starts_with`
+    // check makes a truncated value (`h`) accept every https issuer — hence the
+    // absolute-URL floor. Step 3's `IssuerMatch` replaces this with a per-variant rule.
+    let issuer_prefix = var_or(vars, "EPIC_ISSUER_PREFIX", EPIC_DEFAULT_ISSUER_PREFIX);
+    check_absolute_url("EPIC_ISSUER_PREFIX", &issuer_prefix)?;
+    let oauth = EpicOAuthConfig::new(
+        var_or(vars, "EPIC_CLIENT_SECRET", ""),
+        var_or(vars, "EPIC_REDIRECT_URI", EPIC_DEFAULT_REDIRECT_URI),
+        var_or(vars, "EPIC_AUTHORIZE_URL", EPIC_DEFAULT_AUTHORIZE_URL),
+        var_or(vars, "EPIC_TOKEN_URL", EPIC_DEFAULT_TOKEN_URL),
+    )?;
+
     let client_id = var_or(vars, "EPIC_CLIENT_ID", "");
     if client_id.is_empty() {
         anyhow::bail!(
-            "{present} is set but EPIC_CLIENT_ID is empty — the epic provider needs its client id \
+            "{present} is set but EPIC_CLIENT_ID is not — the epic provider needs its client id \
              (the token audience)"
         );
     }
-    let jwks_url = var_or(vars, "EPIC_JWKS_URL", EPIC_DEFAULT_JWKS_URL);
-    check_endpoint("EPIC_JWKS_URL", &jwks_url)?;
-    let issuer_prefix = var_or(vars, "EPIC_ISSUER_PREFIX", EPIC_DEFAULT_ISSUER_PREFIX);
+    let oauth = if oauth.client_secret.is_empty() {
+        if let Some(key) = EPIC_OAUTH_VARS.iter().find(|key| vars.contains_key(**key)) {
+            anyhow::bail!(
+                "{key} is set but EPIC_CLIENT_SECRET is not — the epic web OAuth flow needs the \
+                 confidential client secret"
+            );
+        }
+        None
+    } else {
+        Some(oauth)
+    };
     let verifier = Arc::new(OidcVerifier::new(&jwks_url, &issuer_prefix, &client_id)?);
     Ok(Some(EpicConfig {
         client_id,
         jwks_url,
         verifier,
+        oauth,
     }))
 }
 
@@ -209,27 +318,56 @@ fn var_or(vars: &BTreeMap<String, String>, key: &str, def: &str) -> String {
     }
 }
 
-/// The transport rule for a provider endpoint we will dial: a parseable absolute URL
-/// with a host, HTTPS, or plain HTTP only against loopback (the local-dev carve-out
-/// `EpicOAuth::new` already applies to `EPIC_REDIRECT_URI`).
-pub(crate) fn check_endpoint(key: &str, raw: &str) -> anyhow::Result<()> {
+/// The floor every provider URL sits on: parseable as an absolute URL and carrying a
+/// host. Used alone for values that are MATCHED rather than dialed.
+fn check_absolute_url(key: &str, raw: &str) -> anyhow::Result<url::Url> {
     let url = url::Url::parse(raw).map_err(|err| anyhow::anyhow!("invalid {key}: {err}"))?;
     if url.host().is_none() {
         anyhow::bail!("invalid {key}: host is required");
     }
-    match url.scheme() {
-        "https" => Ok(()),
-        "http" if is_loopback(&url) => Ok(()),
+    Ok(url)
+}
+
+/// The transport rule for a URL a browser or this process will actually go to: the
+/// absolute-URL floor plus HTTPS, with plain HTTP allowed only against loopback (the
+/// local-dev carve-out). Returns whether the scheme is HTTPS, which is what the OAuth
+/// binding cookie's `Secure` flag keys off.
+pub(crate) fn check_endpoint(key: &str, raw: &str) -> anyhow::Result<bool> {
+    Ok(checked_endpoint(key, raw)?.1)
+}
+
+fn checked_endpoint(key: &str, raw: &str) -> anyhow::Result<(url::Url, bool)> {
+    let url = check_absolute_url(key, raw)?;
+    let secure = match url.scheme() {
+        "https" => true,
+        "http" if is_loopback(&url) => false,
         "http" => {
             anyhow::bail!("invalid {key}: HTTP is allowed only for localhost or a loopback IP")
         }
-        other => anyhow::bail!("invalid {key}: scheme must be HTTPS or loopback HTTP, got {other:?}"),
-    }
+        other => {
+            anyhow::bail!("invalid {key}: scheme must be HTTPS or loopback HTTP, got {other:?}")
+        }
+    };
+    Ok((url, secure))
 }
 
-/// Whether `url`'s host is loopback — the one authority for the plain-HTTP carve-out,
-/// shared by the JWKS endpoint check and the OAuth redirect-URI check.
-pub(crate) fn is_loopback(url: &url::Url) -> bool {
+/// The OAuth redirect URI: the endpoint rule plus the two constraints specific to a
+/// callback the IdP redirects a browser to — it must be exactly the route this module
+/// mounts, and a fragment would be dropped by the redirect anyway. Returns the
+/// binding cookie's `Secure` flag.
+fn check_redirect_uri(key: &str, raw: &str) -> anyhow::Result<bool> {
+    let (url, secure) = checked_endpoint(key, raw)?;
+    if url.path() != "/accounts/epic/callback" {
+        anyhow::bail!("invalid {key}: path must be /accounts/epic/callback");
+    }
+    if url.fragment().is_some() {
+        anyhow::bail!("invalid {key}: fragments are not allowed");
+    }
+    Ok(secure)
+}
+
+/// Whether `url`'s host is loopback — the one authority for the plain-HTTP carve-out.
+fn is_loopback(url: &url::Url) -> bool {
     match url.host() {
         Some(url::Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
         Some(url::Host::Ipv4(ip)) => ip.is_loopback(),

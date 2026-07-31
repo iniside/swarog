@@ -27,7 +27,7 @@ use base64::Engine as _;
 use sqlx::PgPool;
 
 use crate::epic::{short_id, OidcVerifier};
-use crate::providers::{check_endpoint, is_loopback};
+use crate::providers::EpicOAuthConfig;
 use crate::Service;
 
 /// How long an issued OAuth `state` stays redeemable (Go's `stateTTL`). Enforced as
@@ -53,53 +53,27 @@ pub(crate) struct EpicOAuth {
 }
 
 impl EpicOAuth {
-    #[allow(clippy::too_many_arguments)]
+    /// Takes an ALREADY-VALIDATED configuration: every URL rule (and the cookie's
+    /// `Secure` flag derived from the redirect scheme) belongs to
+    /// `providers::EpicOAuthConfig::new`, so there is exactly one spelling of it and
+    /// a value cannot be accepted here after being rejected there.
     pub fn new(
         client_id: String,
-        client_secret: String,
-        redirect_uri: String,
-        authorize_url: String,
-        token_url: String,
+        oauth: EpicOAuthConfig,
         verifier: Arc<OidcVerifier>,
         pool: PgPool,
     ) -> anyhow::Result<EpicOAuth> {
-        let parsed_redirect = url::Url::parse(&redirect_uri)
-            .map_err(|err| anyhow::anyhow!("invalid EPIC_REDIRECT_URI: {err}"))?;
-        if parsed_redirect.host().is_none() {
-            anyhow::bail!("invalid EPIC_REDIRECT_URI: host is required");
-        }
-        if parsed_redirect.path() != "/accounts/epic/callback" {
-            anyhow::bail!(
-                "invalid EPIC_REDIRECT_URI: path must be /accounts/epic/callback"
-            );
-        }
-        if parsed_redirect.fragment().is_some() {
-            anyhow::bail!("invalid EPIC_REDIRECT_URI: fragments are not allowed");
-        }
-        let cookie_secure = match parsed_redirect.scheme() {
-            "https" => true,
-            "http" if is_loopback(&parsed_redirect) => false,
-            "http" => anyhow::bail!(
-                "invalid EPIC_REDIRECT_URI: HTTP is allowed only for localhost or a loopback IP"
-            ),
-            _ => anyhow::bail!("invalid EPIC_REDIRECT_URI: scheme must be HTTPS or loopback HTTP"),
-        };
-        // The two endpoints this client DIALS/redirects to, held to the same transport
-        // rule as the JWKS endpoint — a typo here is otherwise a silently broken login.
-        check_endpoint("EPIC_AUTHORIZE_URL", &authorize_url)?;
-        check_endpoint("EPIC_TOKEN_URL", &token_url)?;
-
         Ok(EpicOAuth {
             client_id,
-            client_secret,
-            redirect_uri,
-            authorize_url,
-            token_url,
+            client_secret: oauth.client_secret,
+            redirect_uri: oauth.redirect_uri,
+            authorize_url: oauth.authorize_url,
+            token_url: oauth.token_url,
             verifier,
             http: reqwest::Client::builder()
                 .timeout(Duration::from_secs(10))
                 .build()?,
-            cookie_secure,
+            cookie_secure: oauth.cookie_secure,
             pool,
         })
     }

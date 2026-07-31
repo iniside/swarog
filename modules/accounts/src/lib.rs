@@ -484,9 +484,9 @@ impl accountsapi::Auth for Service {
         if !epic_id_token_within_cap(&id_token) {
             return Err(Error::invalid("id_token too long"));
         }
-        // "epic" is in `KNOWN_PROVIDERS`, so `Unknown` is unreachable here; both
+        // `EPIC` is in `KNOWN_PROVIDERS`, so `Unknown` is unreachable here; both
         // non-configured arms are the same honest answer.
-        let verifier = match self.resolve_provider("epic") {
+        let verifier = match self.resolve_provider(providers::EPIC) {
             Resolution::Configured(v) => v.clone(),
             Resolution::KnownButUnconfigured | Resolution::Unknown => {
                 return Err(Error::unavailable("epic provider not configured"))
@@ -504,7 +504,7 @@ impl accountsapi::Auth for Service {
             }
         };
         let (session, _created) = self
-            .external_login("epic", &verified.subject, &verified.display_name)
+            .external_login(providers::EPIC, &verified.subject, &verified.display_name)
             .await?;
         Ok(session)
     }
@@ -708,26 +708,19 @@ impl Module for Accounts {
         if let Some(epic) = &config.epic {
             tracing::info!(jwks = %epic.jwks_url, aud = %epic.client_id, "epic provider enabled");
 
-            // Web OAuth (authorize-code) needs the confidential client secret. These
-            // two routes are HTTP-NATIVE (a browser redirect flow with an external
-            // contract) — they are NOT operations; they mount on the shared router
-            // (Go's ctx.Mux ≙ ctx.mount).
-            let secret = std::env::var("EPIC_CLIENT_SECRET").unwrap_or_default();
-            if !secret.is_empty() {
-                let redirect = env_or(
-                    "EPIC_REDIRECT_URI",
-                    "http://localhost:8080/accounts/epic/callback",
-                );
-                let oauth = epic_oauth::EpicOAuth::new(
+            // Web OAuth (authorize-code), present iff the confidential client secret
+            // enabled it. These two routes are HTTP-NATIVE (a browser redirect flow
+            // with an external contract) — they are NOT operations; they mount on the
+            // shared router (Go's ctx.Mux ≙ ctx.mount).
+            if let Some(oauth) = &epic.oauth {
+                let redirect = oauth.redirect_uri.clone();
+                let flow = epic_oauth::EpicOAuth::new(
                     epic.client_id.clone(),
-                    secret,
-                    redirect.clone(),
-                    env_or("EPIC_AUTHORIZE_URL", "https://www.epicgames.com/id/authorize"),
-                    env_or("EPIC_TOKEN_URL", "https://api.epicgames.dev/epic/oauth/v1/token"),
+                    oauth.clone(),
                     epic.verifier.clone(),
                     svc.store.pool.clone(),
                 )?;
-                ctx.mount(epic_oauth::router(Arc::new(oauth), svc.clone()));
+                ctx.mount(epic_oauth::router(Arc::new(flow), svc.clone()));
                 tracing::info!(redirect = %redirect, "epic OAuth enabled");
             }
         }
@@ -834,13 +827,6 @@ fn env_bool(key: &str, default: bool) -> bool {
             v == "1" || v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("on")
         }
         _ => default,
-    }
-}
-
-fn env_or(key: &str, def: &str) -> String {
-    match std::env::var(key) {
-        Ok(v) if !v.is_empty() => v,
-        _ => def.to_string(),
     }
 }
 

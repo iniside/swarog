@@ -6,6 +6,7 @@ mod dev_auth_gate;
 mod prune;
 use crate::epic::OidcVerifier;
 use crate::password::verify_password;
+use crate::providers::EpicOAuthConfig;
 use rsa::pkcs8::EncodePrivateKey as _;
 use rsa::traits::PublicKeyParts as _;
 use sqlx::PgPool;
@@ -1032,10 +1033,7 @@ async fn epic_oauth_link_flow_end_to_end() {
     let oauth = Arc::new(
         epic_oauth::EpicOAuth::new(
             CLIENT_ID.into(),
-            "secret".into(),
-            "http://localhost/accounts/epic/callback".into(),
-            "http://localhost/authorize".into(),
-            token_url,
+            oauth_config("http://localhost/accounts/epic/callback", &token_url),
             verifier,
             pool.clone(),
         )
@@ -1120,10 +1118,7 @@ async fn epic_link_harness(
     let oauth = Arc::new(
         epic_oauth::EpicOAuth::new(
             CLIENT_ID.into(),
-            "secret".into(),
-            "http://localhost/accounts/epic/callback".into(),
-            "http://localhost/authorize".into(),
-            token_url,
+            oauth_config("http://localhost/accounts/epic/callback", &token_url),
             verifier,
             svc.store.pool.clone(),
         )
@@ -1477,10 +1472,7 @@ fn oauth_fixture(pool: PgPool, redirect_uri: &str, token_url: &str) -> Arc<epic_
     Arc::new(
         epic_oauth::EpicOAuth::new(
             "cid".into(),
-            "sec".into(),
-            redirect_uri.into(),
-            "http://localhost/authorize".into(),
-            token_url.into(),
+            oauth_config(redirect_uri, token_url),
             verifier,
             pool,
         )
@@ -1488,10 +1480,17 @@ fn oauth_fixture(pool: PgPool, redirect_uri: &str, token_url: &str) -> Arc<epic_
     )
 }
 
-/// A lazy pool over the default DSN — for OAuth fixtures whose test never reaches a
-/// state INSERT/redeem (redirect-URI validation, cookie shape, store-error branch).
-fn lazy_oauth_pool() -> PgPool {
-    PgPool::connect_lazy(DEFAULT_DSN).unwrap()
+/// A validated OAuth config for the fixtures — through the same
+/// `EpicOAuthConfig::new` authority production parses env into, so a fixture cannot
+/// carry a shape `from_vars` would reject.
+fn oauth_config(redirect_uri: &str, token_url: &str) -> EpicOAuthConfig {
+    EpicOAuthConfig::new(
+        "sec".into(),
+        redirect_uri.into(),
+        "http://localhost/authorize".into(),
+        token_url.into(),
+    )
+    .unwrap()
 }
 
 async fn serve_oauth_router(oauth: Arc<epic_oauth::EpicOAuth>, svc: Arc<Service>) -> String {
@@ -1514,19 +1513,14 @@ fn oauth_state_from_start(body: &serde_json::Value) -> String {
 
 #[tokio::test]
 async fn oauth_redirect_uri_validation_is_startup_scoped_and_representative() {
-    let verifier = Arc::new(OidcVerifier::new("http://localhost/jwks", "iss", "aud").unwrap());
-    // Validation runs entirely in `new`, before any query, so a lazy pool suffices
-    // (a Tokio context is still required to construct the pool handle).
-    let pool = lazy_oauth_pool();
+    // The rule lives in the config parse, not in `EpicOAuth::new` — one spelling,
+    // reached identically from `ProviderConfig::from_vars` and from a fixture.
     let build = |redirect: &str| {
-        epic_oauth::EpicOAuth::new(
-            "cid".into(),
+        EpicOAuthConfig::new(
             "sec".into(),
             redirect.into(),
             "http://localhost/authorize".into(),
             "http://localhost/token".into(),
-            verifier.clone(),
-            pool.clone(),
         )
     };
 
