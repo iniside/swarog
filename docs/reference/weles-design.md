@@ -11,7 +11,9 @@ generations, control endpoint, `rollout.lock` bit-compat. Pre-M1 hardening close
 and the `weles-managed-gateway` verify stage are live; the fleet definition moved
 to `fleet.toml` (2026-07-21). Single-host authorities hardened 2026-07-21 (runtime
 root resolution, placement annotation, Told/Asks replica validator) — see the
-two dated errata below. Decisions below were taken 2026-07-09..07-10 by Lukasz
+dated errata below, the last of which (2026-07-31) makes Weles API-first: a full
+management API, no UI of its own, the manifest still the source of truth.
+Decisions below were taken 2026-07-09..07-10 by Lukasz
 unless dated otherwise; they are settled, not open questions.
 
 ## Errata (2026-07-21) — fleet definition moved to `fleet.toml`
@@ -137,6 +139,65 @@ local agent"); the mTLS/CA transport plan ("## Transport: HTTPS + JSON + mTLS, n
 QUIC"); port-minting × master-down ("## Open design points"); M1's no-network-hop
 scope ("## Tokio: the runtime arrives WITH the HTTPS server").
 
+## Errata (2026-07-31) — API-first: a management API, no panel of Weles's own
+
+Decided 2026-07-31 by Lukasz. Weles ships **no UI at all** — not an admin panel,
+and not the "tiny own web UI later at most" that `## Discovery, and who knows
+what` allowed. Instead it exposes a **full management API**, and any panel is
+built on top of it, elsewhere. The first such consumer is planned as a Swaróg
+**domain fortress module** rendering a Weles page in the backend's admin portal.
+
+**Two entries in `## Rejected` change status.**
+- *A Weles page in the backend's `admin` module* — **reversed.** The zero-sharing
+  rule it cited is about CRATES, and that stays absolute in both directions: the
+  module depends on the wire API only, weles imports nothing from the workspace,
+  the backend imports nothing from weles. A wire consumer is the shape already
+  decided for the server-management module ("commands Weles over a wire API,
+  address injected by `cmd/*`, module stays topology-blind"); this is its sibling.
+- *A mutating admin panel as topology source of truth* — **stands in substance.**
+  The drift it rejected came from the panel holding desired state INSTEAD of the
+  manifest. The API writes the manifest itself, so there is still exactly one
+  representation of desired state and the where-did-this-value-come-from question
+  keeps its answer.
+
+**The API covers three things:** read (status, instances, health, logs,
+`resolve`), imperative ops (restart, drain, deploy a generation, up/down), and
+**CRUD over the fleet definition** — services, binaries, replicas, placement,
+peers, static env, `[[prepare]]`.
+
+**The manifest stays the truth.** CRUD reads and writes `fleet.toml`; redb stays
+runtime-only exactly as `## State` describes. Desired state never lives in the
+store, so there is nothing to reconcile and no import/export round trip.
+
+**Convention over configuration.** One canonical writable manifest at
+`<root>/fleet.toml` — a convention, not a configured path. `deploy` keeps
+stamping it into the generation, so a generation stays self-describing.
+
+**No concurrent editing.** One trusted local operator, one editor at a time: no
+CAS, no revision tokens, no conflict machinery. `run/rollout.lock` already
+serializes an edit against a rollout, which is the only overlap that matters.
+
+**Writes are format-preserving and pre-validated.** Parse-to-structs plus
+re-serialize would destroy operator comments and ordering, so the write path uses
+`toml_edit` (pure Rust — the C-free constraint holds). Every write runs
+`fleet_toml::validate` first and is rejected if it would not boot; strict parsing
+and the anti-magic rule gain from this rather than eroding.
+
+**Secrets are not special.** `fleet.toml` holds `DATABASE_URL` and secrets as
+literals, and whoever reaches the panel already reads that file. No masking, no
+write-only fields, no encryption — the one rule is that the API must not log
+them.
+
+**Artifacts.** The API accepts artifact upload and stages it into `deploy/`,
+which partially answers `## Open design points`' "How binaries reach a second
+machine". Weles still NEVER builds — this transports prebuilt binaries.
+Requirement: content hash per generation and atomic staging, so an interrupted
+upload cannot leave a bootable half-generation.
+
+**Open.** The panel module runs *under* Weles, so it can restart or delete the
+service hosting itself. Nomad has the same property; we have not decided whether
+to guard it, and the answer belongs to the panel plan, not here.
+
 ## Non-negotiables
 
 - **Native OS processes. No containers, no Docker, no Kubernetes.** Rust ships
@@ -257,6 +318,10 @@ Source of truth is the **git-versioned manifest** (the operator-authored
 where-did-this-value-come-from drift. Panel/CLI is read-only observability plus
 imperative ops (status/restart/deploy); CLI first, a tiny own web UI later at
 most — **never** a page in the backend's `admin` module (zero-sharing both ways).
+*(Superseded framing, 2026-07-31 errata: Weles ships no UI of its own at all, and
+a Weles page in the backend's `admin` module is now the planned consumer. The
+manifest-is-the-truth claim in this paragraph is what survives — the management
+API mutates desired state by writing `fleet.toml`, not by holding it.)*
 The only runtime-mutable desired state: future game-server `replicas`, via API
 from the server-management module — game-server management is a domain fortress
 under `modules/`, never generic Consul/etcd-style discovery infra (the services
@@ -671,8 +736,12 @@ and the `weles-managed-gateway` verify stage now run on macOS.
 - **Link-time auto-registration (linkme / inventory distributed slices) for
   gateway routes** — only moves the hand-maintained list from `lib.rs` to
   `Cargo.toml`; identical forget-risk.
-- **A Weles page in the backend's `admin` module** — zero-sharing both ways.
-- **A mutating admin panel as topology source of truth** — config drift.
+- ~~**A Weles page in the backend's `admin` module**~~ — **REVERSED by the
+  2026-07-31 errata.** Zero-sharing is a crate rule and still holds absolutely;
+  the page is a wire-API consumer, which was always allowed.
+- **A mutating admin panel as topology source of truth** — config drift. *(Still
+  stands after the 2026-07-31 errata: the management API mutates desired state by
+  writing `fleet.toml`, so the manifest remains the one source of truth.)*
 - **Folding Weles into `core/` or the module system.**
 - **QUIC for the control plane** — buys nothing at this volume, is hostile to a
   language-neutral contract, and its only real prize (reuse) would mean
