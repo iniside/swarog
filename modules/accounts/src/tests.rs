@@ -4,6 +4,7 @@ use base64::Engine as _;
 
 mod dev_auth_gate;
 mod prune;
+use crate::epic::OidcVerifier;
 use crate::password::verify_password;
 use rsa::pkcs8::EncodePrivateKey as _;
 use rsa::traits::PublicKeyParts as _;
@@ -217,7 +218,7 @@ fn lazy_service_with_pool(pool: PgPool, verifier: Arc<dyn PasswordVerifier>) -> 
         store: Store { pool },
         bus: Arc::new(Bus::new()),
         dev_auth: true,
-        epic: OnceLock::new(),
+        providers: OnceLock::new(),
         argon_permits: Arc::new(Semaphore::new(2)),
         login_slots: Arc::new(Semaphore::new(32)),
         verifier,
@@ -601,7 +602,7 @@ async fn wired_with_verifier(
         store: Store { pool: pool.clone() },
         bus: ctx.bus().clone(),
         dev_auth: true,
-        epic: OnceLock::new(),
+        providers: OnceLock::new(),
         argon_permits: Arc::new(Semaphore::new(2)),
         login_slots: Arc::new(Semaphore::new(32)),
         verifier,

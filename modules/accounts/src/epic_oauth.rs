@@ -25,9 +25,9 @@ use axum::{Json, Router};
 use axum_extra::extract::CookieJar;
 use base64::Engine as _;
 use sqlx::PgPool;
-use url::Host;
 
 use crate::epic::{short_id, OidcVerifier};
+use crate::providers::{check_endpoint, is_loopback};
 use crate::Service;
 
 /// How long an issued OAuth `state` stays redeemable (Go's `stateTTL`). Enforced as
@@ -84,6 +84,10 @@ impl EpicOAuth {
             ),
             _ => anyhow::bail!("invalid EPIC_REDIRECT_URI: scheme must be HTTPS or loopback HTTP"),
         };
+        // The two endpoints this client DIALS/redirects to, held to the same transport
+        // rule as the JWKS endpoint — a typo here is otherwise a silently broken login.
+        check_endpoint("EPIC_AUTHORIZE_URL", &authorize_url)?;
+        check_endpoint("EPIC_TOKEN_URL", &token_url)?;
 
         Ok(EpicOAuth {
             client_id,
@@ -213,15 +217,6 @@ impl EpicOAuth {
             anyhow::bail!("no id_token in token response (is the openid scope enabled for the app?)");
         }
         Ok(tr.id_token)
-    }
-}
-
-fn is_loopback(url: &url::Url) -> bool {
-    match url.host() {
-        Some(Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
-        Some(Host::Ipv4(ip)) => ip.is_loopback(),
-        Some(Host::Ipv6(ip)) => ip.is_loopback(),
-        None => false,
     }
 }
 

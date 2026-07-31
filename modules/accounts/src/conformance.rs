@@ -27,7 +27,7 @@ fn service_without_epic_provider() -> Service {
         },
         bus: Arc::new(bus::Bus::new()),
         dev_auth: false,
-        epic: OnceLock::new(),
+        providers: OnceLock::new(),
         argon_permits: Arc::new(Semaphore::new(2)),
         login_slots: Arc::new(Semaphore::new(32)),
         verifier: Arc::new(ArgonVerifier),

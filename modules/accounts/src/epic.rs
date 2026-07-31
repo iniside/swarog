@@ -18,6 +18,8 @@ use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
 use serde::Deserialize;
 use tokio::sync::{Mutex, RwLock};
 
+use crate::providers::VerifyError;
+
 /// The signature algorithms accepted — excludes `none` and every HMAC variant by
 /// construction (Go's `jwt.WithValidMethods({"RS256","ES256"})`).
 const ALLOWED_ALGS: [Algorithm; 2] = [Algorithm::RS256, Algorithm::ES256];
@@ -33,23 +35,6 @@ const MIN_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 /// hit is honoured only while the set is younger than this (the full-set swap on
 /// refetch is what actually drops the rotated kid).
 const JWKS_CACHE_TTL: Duration = Duration::from_secs(600);
-
-/// Why a token failed verification — the taxonomy the caller maps to a status
-/// (mirrors the `verify_session` 503-not-401 precedent: an IdP outage must not
-/// masquerade as bad credentials).
-#[derive(Debug, thiserror::Error)]
-pub(crate) enum VerifyError {
-    /// The token itself is demonstrably invalid: bad signature/alg/aud/iss/exp, or
-    /// a `kid` absent from a fresh (or fresh-enough, see the cooldown) key set.
-    /// Maps to Unauthorized (401).
-    #[error("token rejected: {0}")]
-    Rejected(#[source] anyhow::Error),
-    /// No verdict was reachable: the JWKS fetch failed (network/HTTP status) and no
-    /// cached key answers. Maps to Unavailable (503) — the caller's credentials may
-    /// be perfectly fine.
-    #[error("identity provider unavailable: {0}")]
-    Infra(#[source] anyhow::Error),
-}
 
 fn rejected(e: impl Into<anyhow::Error>) -> VerifyError {
     VerifyError::Rejected(e.into())

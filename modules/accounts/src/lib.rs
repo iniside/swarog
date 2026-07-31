@@ -28,6 +28,7 @@ mod epic;
 mod epic_oauth;
 mod ops;
 mod password;
+mod providers;
 mod store;
 
 use std::sync::{Arc, OnceLock};
@@ -41,8 +42,8 @@ use sqlx::PgConnection;
 
 use tokio::sync::Semaphore;
 
-use crate::epic::{short_id, OidcVerifier, VerifyError};
 use crate::password::{hash_password, ArgonVerifier, PasswordVerifier, DUMMY_HASH};
+use crate::providers::{ProviderConfig, Providers, Resolution, VerifyError};
 use crate::store::{Player, Store, StoreError};
 
 /// Input caps enforced before any expensive verifier, Argon2, RPC, or database work.
@@ -140,7 +141,7 @@ fn internal<E: std::fmt::Display>(e: E) -> Error {
 
 /// What other modules get from `require::<dyn Sessions>` / `require::<dyn Auth>`.
 /// Holds the store, the bus (for the atomic `player.registered` emit) and — once
-/// `init` configures the epic provider — the OIDC verifier.
+/// `init` has parsed the provider configuration — the credential verifiers.
 pub struct Service {
     pub(crate) store: Store,
     bus: Arc<Bus>,
@@ -153,10 +154,11 @@ pub struct Service {
     /// dev-CA cert cannot self-register/login when dev auth is off. `me` +
     /// `verify_session` are unaffected (needed by gateway/admin fan-out regardless).
     dev_auth: bool,
-    /// Set in `init` iff `EPIC_CLIENT_ID` is configured. The `loginEpic` op is
-    /// contributed unconditionally; when the provider is absent `login_epic` answers
-    /// a typed `Unavailable` (→ 503) on every path, edge calls included.
-    epic: OnceLock<Arc<OidcVerifier>>,
+    /// The credential verifiers this process configured, filled in `init` from the
+    /// validated [`ProviderConfig`]. The credential ops are contributed
+    /// unconditionally; a known provider with no verifier here answers a typed
+    /// `Unavailable` (→ 503) on every path, edge calls included.
+    providers: OnceLock<Arc<Providers>>,
     /// RAM cap on concurrent argon2 hashes (64 MiB each): at most 2 run at once,
     /// on `spawn_blocking` threads — never on an async worker (admin's pattern).
     argon_permits: Arc<Semaphore>,
@@ -168,6 +170,16 @@ pub struct Service {
 }
 
 impl Service {
+    /// Looks `name` up in this process's configured verifiers, falling back to the
+    /// empty registry when `init` never filled the cell — so an unwired service
+    /// answers exactly like one configured with no providers.
+    fn resolve_provider(&self, name: &str) -> Resolution<'_> {
+        match self.providers.get() {
+            Some(providers) => providers.resolve(name),
+            None => Providers::empty().resolve(name),
+        }
+    }
+
     async fn issue_session_tx(
         &self,
         conn: &mut PgConnection,
@@ -472,11 +484,16 @@ impl accountsapi::Auth for Service {
         if !epic_id_token_within_cap(&id_token) {
             return Err(Error::invalid("id_token too long"));
         }
-        let Some(epic) = self.epic.get() else {
-            return Err(Error::unavailable("epic provider not configured"));
+        // "epic" is in `KNOWN_PROVIDERS`, so `Unknown` is unreachable here; both
+        // non-configured arms are the same honest answer.
+        let verifier = match self.resolve_provider("epic") {
+            Resolution::Configured(v) => v.clone(),
+            Resolution::KnownButUnconfigured | Resolution::Unknown => {
+                return Err(Error::unavailable("epic provider not configured"))
+            }
         };
-        let subject = match epic.verify(&id_token).await {
-            Ok(s) => s,
+        let verified = match verifier.verify(&id_token).await {
+            Ok(v) => v,
             Err(VerifyError::Rejected(err)) => {
                 tracing::warn!(%err, "epic token rejected");
                 return Err(Error::unauthorized("invalid id_token"));
@@ -487,7 +504,7 @@ impl accountsapi::Auth for Service {
             }
         };
         let (session, _created) = self
-            .external_login("epic", &subject, &format!("epic:{}", short_id(&subject)))
+            .external_login("epic", &verified.subject, &verified.display_name)
             .await?;
         Ok(session)
     }
@@ -632,7 +649,7 @@ impl Module for Accounts {
             // truth for BOTH the (gated) HTTP op contributions and the service-level
             // guard on the edge Auth face (register/login).
             dev_auth: env_bool("ACCOUNTS_DEV_AUTH", false),
-            epic: OnceLock::new(),
+            providers: OnceLock::new(),
             // Pure construction (no I/O): the argon RAM cap, the login admission
             // bound and the real verifier — admin's shapes.
             argon_permits: Arc::new(Semaphore::new(2)),
@@ -661,8 +678,9 @@ impl Module for Accounts {
         Ok(())
     }
 
-    /// Only wires up — no I/O (#8). Reads the env gates, configures the epic
-    /// provider (JWKS fetch is LAZY, so construction is pure), mounts the OAuth
+    /// Only wires up — no I/O (#8). Reads the env gates, parses and validates the
+    /// credential providers (verifier construction is pure — the JWKS fetch is
+    /// LAZY — so a malformed value can only be caught here), mounts the OAuth
     /// browser routes, contributes the player operations (all unconditional — the
     /// dev/epic gating lives at the impl), the local admin
     /// item, and the generated Sessions + Auth RPC faces to the edge slot.
@@ -681,52 +699,41 @@ impl Module for Accounts {
             );
         }
 
-        // epic provider — the real federated path via Epic Account Services (OIDC).
-        // Enabled only when configured. Defaults point at EAS endpoints (web OAuth);
-        // sub is the Epic Account ID.
-        let client_id = std::env::var("EPIC_CLIENT_ID").unwrap_or_default();
-        if !client_id.is_empty() {
-            let jwks_url = env_or(
-                "EPIC_JWKS_URL",
-                "https://api.epicgames.dev/epic/oauth/v1/.well-known/jwks.json",
-            );
-            let issuer = env_or("EPIC_ISSUER_PREFIX", "https://api.epicgames.dev/epic/oauth/v1");
-            match OidcVerifier::new(&jwks_url, &issuer, &client_id) {
-                Err(err) => {
-                    tracing::error!(%err, "epic provider disabled: verifier construction failed");
-                }
-                Ok(v) => {
-                    let v = Arc::new(v);
-                    svc.epic
-                        .set(v.clone())
-                        .map_err(|_| anyhow::anyhow!("accounts.init ran twice"))?;
-                    tracing::info!(jwks = %jwks_url, aud = %client_id, "epic provider enabled");
+        // Federated credential providers, parsed and VALIDATED by the one typed
+        // authority. A present-but-malformed provider is an `Err` here and fails
+        // startup — the verifiers construct without I/O (#8), so nothing downstream
+        // can reject a bad endpoint; before this it silently enabled a provider that
+        // answered 503 on every token forever.
+        let config = ProviderConfig::from_env()?;
+        if let Some(epic) = &config.epic {
+            tracing::info!(jwks = %epic.jwks_url, aud = %epic.client_id, "epic provider enabled");
 
-                    // Web OAuth (authorize-code) needs the confidential client secret.
-                    // These two routes are HTTP-NATIVE (a browser redirect flow with an
-                    // external contract) — they are NOT operations; they mount on the
-                    // shared router (Go's ctx.Mux ≙ ctx.mount).
-                    let secret = std::env::var("EPIC_CLIENT_SECRET").unwrap_or_default();
-                    if !secret.is_empty() {
-                        let redirect = env_or(
-                            "EPIC_REDIRECT_URI",
-                            "http://localhost:8080/accounts/epic/callback",
-                        );
-                        let oauth = epic_oauth::EpicOAuth::new(
-                            client_id.clone(),
-                            secret,
-                            redirect.clone(),
-                            env_or("EPIC_AUTHORIZE_URL", "https://www.epicgames.com/id/authorize"),
-                            env_or("EPIC_TOKEN_URL", "https://api.epicgames.dev/epic/oauth/v1/token"),
-                            v,
-                            svc.store.pool.clone(),
-                        )?;
-                        ctx.mount(epic_oauth::router(Arc::new(oauth), svc.clone()));
-                        tracing::info!(redirect = %redirect, "epic OAuth enabled");
-                    }
-                }
+            // Web OAuth (authorize-code) needs the confidential client secret. These
+            // two routes are HTTP-NATIVE (a browser redirect flow with an external
+            // contract) — they are NOT operations; they mount on the shared router
+            // (Go's ctx.Mux ≙ ctx.mount).
+            let secret = std::env::var("EPIC_CLIENT_SECRET").unwrap_or_default();
+            if !secret.is_empty() {
+                let redirect = env_or(
+                    "EPIC_REDIRECT_URI",
+                    "http://localhost:8080/accounts/epic/callback",
+                );
+                let oauth = epic_oauth::EpicOAuth::new(
+                    epic.client_id.clone(),
+                    secret,
+                    redirect.clone(),
+                    env_or("EPIC_AUTHORIZE_URL", "https://www.epicgames.com/id/authorize"),
+                    env_or("EPIC_TOKEN_URL", "https://api.epicgames.dev/epic/oauth/v1/token"),
+                    epic.verifier.clone(),
+                    svc.store.pool.clone(),
+                )?;
+                ctx.mount(epic_oauth::router(Arc::new(oauth), svc.clone()));
+                tracing::info!(redirect = %redirect, "epic OAuth enabled");
             }
         }
+        svc.providers
+            .set(Arc::new(config.providers()))
+            .map_err(|_| anyhow::anyhow!("accounts.init ran twice"))?;
 
         // Player operations: the generated Auth OpSets, ALL contributed
         // unconditionally — the gating lives at the impl (register/login → NotFound

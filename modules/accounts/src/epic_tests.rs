@@ -13,8 +13,9 @@ use rsa::pkcs8::EncodePrivateKey as _;
 use rsa::traits::PublicKeyParts as _;
 use sqlx::PgPool;
 
-use crate::epic::{OidcVerifier, VerifyError};
+use crate::epic::OidcVerifier;
 use crate::password::ArgonVerifier;
+use crate::providers::{epic_credentials, Providers, VerifyError};
 use crate::store::Store;
 use crate::Service;
 
@@ -123,15 +124,17 @@ fn token_with_kid(enc: &jsonwebtoken::EncodingKey, kid: &str) -> String {
 /// A lazy-pool service with the epic provider configured — for the `login_epic`
 /// status-mapping tests (verify fails before any DB access).
 fn epic_service(verifier: OidcVerifier) -> Arc<Service> {
-    let epic = OnceLock::new();
-    epic.set(Arc::new(verifier)).ok().unwrap();
+    let mut registry = Providers::default();
+    registry.insert("epic", epic_credentials(Arc::new(verifier)));
+    let providers = OnceLock::new();
+    providers.set(Arc::new(registry)).ok().unwrap();
     Arc::new(Service {
         store: Store {
             pool: PgPool::connect_lazy(DSN).unwrap(),
         },
         bus: Arc::new(bus::Bus::new()),
         dev_auth: false,
-        epic,
+        providers,
         argon_permits: Arc::new(tokio::sync::Semaphore::new(2)),
         login_slots: Arc::new(tokio::sync::Semaphore::new(32)),
         verifier: Arc::new(ArgonVerifier),
