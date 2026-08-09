@@ -839,4 +839,6 @@ fn env_bool(key: &str, default: bool) -> bool {
 #[cfg(test)]
 mod epic_tests;
 #[cfg(test)]
+mod providers_tests;
+#[cfg(test)]
 mod tests;
