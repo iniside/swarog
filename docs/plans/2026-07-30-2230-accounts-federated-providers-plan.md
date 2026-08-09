@@ -275,6 +275,14 @@ is the authority fix; Google is then pure addition.
   it is a web-redirect-flow binding, and the web flow is a stated non-goal.
 - An empty `audiences` vector must be impossible: `from_vars` (Step 1) already rejects it,
   and `OidcVerifier::new` asserts it — an empty audience list in `jsonwebtoken` means "any".
+- **Fix `short_id`'s byte slice while this file is open** (`epic.rs:223`). It returns
+  `&s[..8]` for any subject longer than 8 **bytes**, so an IdP whose `sub` carries a
+  multibyte character straddling the 8th byte panics on the login path. Google is exactly
+  the provider that widens the space of real subject values, and this step is what
+  registers it — hence here, not "later". Cut on a character boundary
+  (`s.char_indices().nth(8).map_or(s, |(i, _)| &s[..i])`) and keep the byte-length
+  fast path if the signature stays `&str`. This is a pre-existing defect, not a Step-3
+  regression: name it as such in the commit message.
 
 **(d) Dispatch:** `[opus]` — `subagent_type: "core-implementer"`, `model: "opus"`.
 
@@ -297,7 +305,10 @@ is the authority fix; Google is then pure addition.
 the list); both Google issuer spellings accepted under `Exact`;
 `https://accounts.google.com.evil.test` **rejected** under `Exact`; the same string
 **accepted** under `Prefix` — pinning that the variant choice, not an accident, is what
-protects Google; Epic's single-prefix behaviour unchanged.
+protects Google; Epic's single-prefix behaviour unchanged. Plus `short_id`'s truncation
+branch, which nothing in the repo executes today: a subject longer than 8 bytes whose 8th
+byte falls inside a multibyte character must yield a shortened name rather than panic
+(the Step-3 fix), alongside the pass-through case for a subject at or under the threshold.
 
 **(b) Why now / order.** Step 3 decided the semantics; this step makes the decision
 executable, so a later "simplification" back to one shared prefix check fails a test rather
