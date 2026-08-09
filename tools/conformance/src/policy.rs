@@ -100,17 +100,17 @@ fn accounts() -> Entry {
                     EnvCase {
                         var: "EPIC_JWKS_URL",
                         bad_value: "hunter2",
-                        expect: Some("invalid EPIC_JWKS_URL"),
+                        expect: "invalid EPIC_JWKS_URL",
                     },
                     EnvCase {
                         var: "EPIC_ISSUER_PREFIX",
                         bad_value: "h",
-                        expect: Some("invalid EPIC_ISSUER_PREFIX"),
+                        expect: "invalid EPIC_ISSUER_PREFIX",
                     },
                     EnvCase {
                         var: "EPIC_AUTHORIZE_URL",
                         bad_value: "hunter2",
-                        expect: Some("invalid EPIC_AUTHORIZE_URL"),
+                        expect: "invalid EPIC_AUTHORIZE_URL",
                     },
                 ])),
             ),
@@ -262,12 +262,12 @@ fn audit() -> Entry {
                     EnvCase {
                         var: "AUDIT_RETENTION_DAYS",
                         bad_value: "0",
-                        expect: None,
+                        expect: "AUDIT_RETENTION_DAYS",
                     },
                     EnvCase {
                         var: "AUDIT_RETENTION_DAYS",
                         bad_value: "-3",
-                        expect: None,
+                        expect: "AUDIT_RETENTION_DAYS",
                     },
                 ])),
             ),

@@ -103,8 +103,6 @@ fn reject_set_but_empty_variable() {
     assert!(msg.contains("set but empty"), "message did not describe the empty-value rule: {msg}");
 }
 
-/// `38c1a7f` named this the regression it closed: an empty `EPIC_CLIENT_SECRET`
-/// used to silently disable the web flow instead of failing startup.
 #[test]
 fn reject_set_but_empty_client_secret() {
     let msg = err_msg(&[("EPIC_CLIENT_ID", "c"), ("EPIC_CLIENT_SECRET", "")]);

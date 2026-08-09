@@ -66,11 +66,9 @@ pub enum Fixture {
 pub struct EnvCase {
     pub var: &'static str,
     pub bad_value: &'static str,
-    /// The substring the boot error must contain. `None` falls back to the var
-    /// name itself — sound only when no OTHER branch's message could also contain
-    /// that name (a completeness bail naming `var` would make the var-name check
-    /// pass over a deleted per-field validation, see accounts's EPIC_* cases).
-    pub expect: Option<&'static str>,
+    /// The substring the boot error must contain — name the rule, not just the
+    /// variable, when another branch could also name the variable.
+    pub expect: &'static str,
 }
 
 #[derive(Clone)]
