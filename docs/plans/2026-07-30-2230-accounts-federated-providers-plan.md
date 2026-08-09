@@ -234,7 +234,8 @@ harness.
 
 ## Step 3 — issuer/audience semantics decided, then Google registered `[opus]`
 
-**(a) What.** `modules/accounts/src/epic.rs` — change the validation authority:
+**(a) What.** `modules/accounts/src/epic.rs`, renamed to `oidc.rs` as this step's first move
+(see (c)) — change the validation authority:
 
 ```rust
 pub(crate) enum IssuerMatch { Exact(Vec<String>), Prefix(String) }
@@ -263,9 +264,23 @@ is the authority fix; Google is then pure addition.
   is a real Google issuer value, which is why the exact variant holds a list). Epic keeps
   `Prefix` so its behaviour is byte-identical — the variant exists to preserve one provider's
   documented semantics, not as a general-purpose escape hatch.
-- Rename the file? **No.** `epic.rs` becomes misnamed but a rename churns six import sites
-  for zero behaviour; do it in #2b when Apple lands beside it, or not at all. Note it in
-  Step 16 rather than half-doing it.
+- **Rename `epic.rs` → `oidc.rs` FIRST, as the opening move of this step** (and
+  `epic_tests.rs` → `oidc_tests.rs` with it). Revision 2 said to defer this to #2b on the
+  grounds that "a rename churns six import sites for zero behaviour" — both halves are
+  wrong. The file contains **zero Epic-specific code**: every occurrence of "epic" in its
+  229 lines is a comment, and its own header already states "Epic is the first user, Google
+  (also OIDC) is the second". The import sites are four (`epic_oauth.rs:29`,
+  `providers.rs:21`, `providers_tests.rs:12`, `tests.rs:7`) plus the two `mod` lines in
+  `lib.rs:27,840`. And "zero behaviour" is the wrong measure: the cost of deferring is that
+  this step puts `IssuerMatch::Exact(["https://accounts.google.com", …])` inside a file
+  named after a different provider, which is a contradiction a reader must resolve before
+  trusting anything else in it. Renaming before Google lands is a four-line move; renaming
+  after is the same move plus an explanation of why it was ever otherwise.
+  While renaming, make the prose provider-neutral — the header, `Claims`'s "for Epic, the
+  account/product user id" (`epic.rs:56`), the `MIN_REFRESH_INTERVAL`/`JWKS_CACHE_TTL`
+  rotation notes, and `short_id`'s "`epic:<shortID>`" doc (`:222`), which is now the shape
+  `providers.rs` builds for BOTH providers. `epic_oauth.rs` keeps its name: it implements
+  Epic's browser redirect flow and is genuinely Epic-specific.
 - `Claims` (`epic.rs:60-66`) carries only `iss`/`sub`. Google's `email`/`email_verified`
   stay unextracted: display name is `google:{short_id(sub)}`, matching the Epic convention
   at `lib.rs:490`. Extracting email would create an identity-uniqueness question that
@@ -806,9 +821,9 @@ Verification: `cargo run -p verifyctl -- --all --strict`, **one rollout at a tim
 - `docs/roadmap/feature-tracker.md`: flip seq #2a, fill Module(s)/Landed, update the four
   Identity & accounts rows, add a change-log entry.
 - **Record the deliberate deviations as known gaps**, with reasons: accounts still parses env
-  inside the module rather than in `cmd/*`; `epic.rs` now hosts a provider-generic verifier
-  under an Epic-specific filename (rename deferred to #2b); `from_provider` is a constant in
-  #2a.
+  inside the module rather than in `cmd/*`; `from_provider` is a constant in #2a. The
+  Epic-specific-filename gap is **gone** — Step 3 renames `epic.rs` to `oidc.rs`; check that
+  no doc still points at the old path.
 
 **(b) Why now / order.** Last, because it describes what landed.
 
