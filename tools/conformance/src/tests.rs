@@ -314,6 +314,7 @@ fn full_entry(module: &'static str) -> Entry {
                 Stance::Applies(Fixture::EnvValidation(vec![EnvCase {
                     var: "X",
                     bad_value: "0",
+                    expect: None,
                 }])),
             ),
             (Convention::InputByteCaps, na("no player input")),
@@ -379,6 +380,7 @@ fn completeness_mismatched_fixture_variant_fails() {
         Stance::Applies(Fixture::EnvValidation(vec![EnvCase {
             var: "X",
             bad_value: "0",
+            expect: None,
         }])),
     );
     let findings = completeness_findings(&[e]);

@@ -200,13 +200,14 @@ fn run_env_case(case: &EnvCase) -> Option<String> {
             case.var, case.bad_value
         )),
         Err(e) => {
-            if e.chain().any(|cause| cause.to_string().contains(case.var)) {
+            let needle = case.expect.unwrap_or(case.var);
+            if e.chain().any(|cause| cause.to_string().contains(needle)) {
                 None
             } else {
                 Some(format!(
-                    "{}={:?}: App::build failed, but no error in the chain names the \
-                     variable — the operator can't tell what to fix (chain: {e:#})",
-                    case.var, case.bad_value
+                    "{}={:?}: App::build failed, but no error in the chain contains {:?} — \
+                     the operator can't tell what to fix (chain: {e:#})",
+                    case.var, case.bad_value, needle
                 ))
             }
         }

@@ -3,7 +3,6 @@
 //! env is read or mutated, so failing branches are provable with zero shared state.
 
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use base64::Engine as _;
@@ -38,7 +37,24 @@ fn minimal_valid_config_is_accepted() {
     let cfg = ProviderConfig::from_vars(&vars(&[("EPIC_CLIENT_ID", "client-1")])).unwrap();
     let epic = cfg.epic.expect("epic present when EPIC_CLIENT_ID is set");
     assert_eq!(epic.client_id, "client-1");
+    assert_eq!(
+        epic.jwks_url,
+        "https://api.epicgames.dev/epic/oauth/v1/.well-known/jwks.json"
+    );
     assert!(epic.oauth.is_none(), "no EPIC_CLIENT_SECRET => no oauth config");
+}
+
+#[test]
+fn defaulted_oauth_urls_are_the_documented_epic_endpoints() {
+    let cfg = ProviderConfig::from_vars(&vars(&[
+        ("EPIC_CLIENT_ID", "client-1"),
+        ("EPIC_CLIENT_SECRET", "shh"),
+    ]))
+    .unwrap();
+    let oauth = cfg.epic.unwrap().oauth.expect("client secret set => oauth present");
+    assert_eq!(oauth.redirect_uri, "http://localhost:8080/accounts/epic/callback");
+    assert_eq!(oauth.authorize_url, "https://www.epicgames.com/id/authorize");
+    assert_eq!(oauth.token_url, "https://api.epicgames.dev/epic/oauth/v1/token");
 }
 
 #[test]
@@ -87,6 +103,15 @@ fn reject_set_but_empty_variable() {
     assert!(msg.contains("set but empty"), "message did not describe the empty-value rule: {msg}");
 }
 
+/// `38c1a7f` named this the regression it closed: an empty `EPIC_CLIENT_SECRET`
+/// used to silently disable the web flow instead of failing startup.
+#[test]
+fn reject_set_but_empty_client_secret() {
+    let msg = err_msg(&[("EPIC_CLIENT_ID", "c"), ("EPIC_CLIENT_SECRET", "")]);
+    assert!(msg.contains("EPIC_CLIENT_SECRET"), "message did not name the offending var: {msg}");
+    assert!(msg.contains("set but empty"), "message did not describe the empty-value rule: {msg}");
+}
+
 #[test]
 fn reject_redirect_uri_wrong_path() {
     let msg = err_msg(&[
@@ -111,6 +136,69 @@ fn reject_redirect_uri_with_fragment() {
 fn reject_truncated_issuer_prefix() {
     let msg = err_msg(&[("EPIC_CLIENT_ID", "client-1"), ("EPIC_ISSUER_PREFIX", "h")]);
     assert!(msg.contains("EPIC_ISSUER_PREFIX"), "message did not name the offending var: {msg}");
+}
+
+#[test]
+fn reject_malformed_authorize_url() {
+    let msg = err_msg(&[
+        ("EPIC_CLIENT_ID", "client-1"),
+        ("EPIC_CLIENT_SECRET", "shh"),
+        ("EPIC_AUTHORIZE_URL", "hunter2"),
+    ]);
+    assert!(
+        msg.contains("invalid EPIC_AUTHORIZE_URL"),
+        "message did not name the offending var: {msg}"
+    );
+}
+
+#[test]
+fn reject_malformed_token_url() {
+    let msg = err_msg(&[
+        ("EPIC_CLIENT_ID", "client-1"),
+        ("EPIC_CLIENT_SECRET", "shh"),
+        ("EPIC_TOKEN_URL", "hunter2"),
+    ]);
+    assert!(
+        msg.contains("invalid EPIC_TOKEN_URL"),
+        "message did not name the offending var: {msg}"
+    );
+}
+
+/// Deleting `check_endpoint("EPIC_AUTHORIZE_URL", ...)` from `EpicOAuthConfig::new`
+/// would still produce an `Err` here (the missing-client-id completeness bail), so
+/// the `invalid ` prefix — not mere `is_err()` — is what proves the field check ran.
+#[test]
+fn malformed_authorize_url_fails_on_its_own_rule_even_without_client_id() {
+    let msg = err_msg(&[("EPIC_AUTHORIZE_URL", "hunter2")]);
+    assert!(
+        msg.contains("invalid EPIC_AUTHORIZE_URL"),
+        "expected the per-field authorize-url validation error, got: {msg}"
+    );
+    assert!(
+        !msg.contains("EPIC_CLIENT_ID"),
+        "field validation must win over the completeness bail, got: {msg}"
+    );
+}
+
+/// Same shape as the authorize-url ordering pin, for the token endpoint.
+#[test]
+fn malformed_token_url_fails_on_its_own_rule_even_without_client_id() {
+    let msg = err_msg(&[("EPIC_TOKEN_URL", "hunter2")]);
+    assert!(
+        msg.contains("invalid EPIC_TOKEN_URL"),
+        "expected the per-field token-url validation error, got: {msg}"
+    );
+    assert!(
+        !msg.contains("EPIC_CLIENT_ID"),
+        "field validation must win over the completeness bail, got: {msg}"
+    );
+}
+
+#[test]
+fn reject_issuer_prefix_without_a_host() {
+    let msg = err_msg(&[("EPIC_CLIENT_ID", "client-1"), ("EPIC_ISSUER_PREFIX", "file:///x")]);
+    assert!(msg.contains("EPIC_ISSUER_PREFIX"), "message did not name the offending var: {msg}");
+    assert!(msg.contains("host is required"), "message did not describe the host rule: {msg}");
 }
 
 #[test]
@@ -219,16 +307,12 @@ fn test_key(kid: &str) -> (jsonwebtoken::EncodingKey, String) {
     (enc, jwks)
 }
 
-async fn serve_counting_jwks(body: String) -> (String, Arc<AtomicUsize>) {
-    let hits = Arc::new(AtomicUsize::new(0));
-    let counter = hits.clone();
+async fn serve_jwks(body: String) -> String {
     let app = axum::Router::new().route(
         "/jwks",
         axum::routing::get(move || {
             let body = body.clone();
-            let counter = counter.clone();
             async move {
-                counter.fetch_add(1, Ordering::SeqCst);
                 (
                     axum::http::StatusCode::OK,
                     [(axum::http::header::CONTENT_TYPE, "application/json")],
@@ -242,10 +326,16 @@ async fn serve_counting_jwks(body: String) -> (String, Arc<AtomicUsize>) {
     tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
     });
-    (format!("http://{addr}/jwks"), hits)
+    format!("http://{addr}/jwks")
 }
 
-fn token_with_kid(enc: &jsonwebtoken::EncodingKey, issuer: &str, audience: &str, kid: &str) -> String {
+fn token_with_kid(
+    enc: &jsonwebtoken::EncodingKey,
+    issuer: &str,
+    audience: &str,
+    kid: &str,
+    subject: &str,
+) -> String {
     let exp = (std::time::SystemTime::now() + std::time::Duration::from_secs(3600))
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -253,7 +343,7 @@ fn token_with_kid(enc: &jsonwebtoken::EncodingKey, issuer: &str, audience: &str,
     let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);
     header.kid = Some(kid.to_string());
     let claims = serde_json::json!({
-        "iss": format!("{issuer}/x"), "aud": audience, "sub": "puid-1", "exp": exp,
+        "iss": format!("{issuer}/x"), "aud": audience, "sub": subject, "exp": exp,
     });
     jsonwebtoken::encode(&header, &claims, enc).unwrap()
 }
@@ -262,7 +352,7 @@ fn token_with_kid(enc: &jsonwebtoken::EncodingKey, issuer: &str, audience: &str,
 async fn resolved_verifier_from_from_vars_verifies_a_real_token() {
     let issuer = "https://issuer.example";
     let (enc, jwks) = test_key("real-kid");
-    let (jwks_url, _hits) = serve_counting_jwks(jwks).await;
+    let jwks_url = serve_jwks(jwks).await;
 
     let cfg = ProviderConfig::from_vars(&vars(&[
         ("EPIC_CLIENT_ID", "client-1"),
@@ -275,8 +365,9 @@ async fn resolved_verifier_from_from_vars_verifies_a_real_token() {
         panic!("expected Configured");
     };
 
-    let token = token_with_kid(&enc, issuer, "client-1", "real-kid");
+    let subject = "puid-account-1234567890";
+    let token = token_with_kid(&enc, issuer, "client-1", "real-kid", subject);
     let verified = verifier.verify(&token).await.unwrap();
-    assert_eq!(verified.subject, "puid-1");
-    assert_eq!(verified.display_name, format!("epic:{}", "puid-1"));
+    assert_eq!(verified.subject, subject);
+    assert_eq!(verified.display_name, format!("epic:{}", &subject[..8]));
 }
