@@ -19,7 +19,7 @@ use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
 use serde::Deserialize;
 use tokio::sync::{Mutex, RwLock};
 
-use crate::providers::VerifyError;
+use crate::providers::{check_absolute_url, VerifyError};
 
 /// The signature algorithms accepted — excludes `none` and every HMAC variant by
 /// construction (Go's `jwt.WithValidMethods({"RS256","ES256"})`).
@@ -51,13 +51,56 @@ struct Claims {
     sub: String,
 }
 
+/// How a provider's `iss` claim is accepted. The variant is a per-provider security
+/// decision, not a formatting preference: [`IssuerMatch::Prefix`] accepts every issuer
+/// STARTING WITH the value, so `https://accounts.google.com.evil.test` passes a
+/// `Prefix("https://accounts.google.com")` guard — a provider whose key set signs for
+/// host-shaped issuers must use [`IssuerMatch::Exact`]. The configuration parse builds
+/// these through [`IssuerMatch::prefix`] / [`IssuerMatch::exact`], which carry the
+/// per-variant validation rule.
+pub(crate) enum IssuerMatch {
+    Exact(Vec<String>),
+    Prefix(String),
+}
+
+impl IssuerMatch {
+    /// The prefix rule: an absolute URL with a host. The value guards a `starts_with`,
+    /// so a truncated one (`h`) would accept every https issuer — the floor is what
+    /// stops truncation from widening the guard.
+    pub(crate) fn prefix(key: &str, value: &str) -> anyhow::Result<IssuerMatch> {
+        check_absolute_url(key, value)?;
+        Ok(IssuerMatch::Prefix(value.to_string()))
+    }
+
+    /// The exact rule: a non-empty list of non-empty spellings. An exact comparison
+    /// cannot be widened by truncation, so the absolute-URL floor does NOT apply here —
+    /// a bare host (`accounts.google.com`) is a real issuer value for a provider that
+    /// emits both spellings. An empty list would match nothing at all.
+    pub(crate) fn exact(key: &str, values: &[&str]) -> anyhow::Result<IssuerMatch> {
+        if values.is_empty() {
+            anyhow::bail!("invalid {key}: no issuer values — nothing would ever verify");
+        }
+        if values.iter().any(|v| v.is_empty()) {
+            anyhow::bail!("invalid {key}: empty issuer value");
+        }
+        Ok(IssuerMatch::Exact(values.iter().map(|v| v.to_string()).collect()))
+    }
+
+    fn accepts(&self, iss: &str) -> bool {
+        match self {
+            IssuerMatch::Exact(values) => values.iter().any(|v| v == iss),
+            IssuerMatch::Prefix(prefix) => iss.starts_with(prefix),
+        }
+    }
+}
+
 /// Verifies an OpenID-Connect ID token against a provider's JWKS: signature checked
-/// against the fetched key set, alg ∈ {RS256, ES256}, `aud` == the configured
-/// audience, `iss` has the expected prefix, `exp` required and in the future,
-/// non-empty `sub` (the provider's own account identifier).
+/// against the fetched key set, alg ∈ {RS256, ES256}, `aud` ∈ the configured
+/// audiences, `iss` accepted by the configured [`IssuerMatch`], `exp` required and in
+/// the future, non-empty `sub` (the provider's own account identifier).
 pub(crate) struct OidcVerifier {
-    audience: String,
-    issuer_prefix: String,
+    audiences: Vec<String>,
+    issuer: IssuerMatch,
     jwks_url: String,
     http: reqwest::Client,
     /// The cached key set paired with the [`Instant`] it was fetched; `None` until
@@ -73,11 +116,21 @@ pub(crate) struct OidcVerifier {
 
 impl OidcVerifier {
     /// Pure construction — no I/O (the JWKS is fetched lazily). `http` failures at
-    /// client-build time are configuration errors surfaced at `init`.
-    pub fn new(jwks_url: &str, issuer_prefix: &str, audience: &str) -> anyhow::Result<OidcVerifier> {
+    /// client-build time are configuration errors surfaced at `init`. An empty
+    /// `audiences` is rejected here because `jsonwebtoken` reads an empty audience
+    /// list as "accept any `aud`" — the one input shape that silently disables a
+    /// check rather than failing closed.
+    pub fn new(
+        jwks_url: &str,
+        issuer: IssuerMatch,
+        audiences: Vec<String>,
+    ) -> anyhow::Result<OidcVerifier> {
+        if audiences.is_empty() {
+            anyhow::bail!("OIDC verifier for {jwks_url}: no audiences configured");
+        }
         Ok(OidcVerifier {
-            audience: audience.to_string(),
-            issuer_prefix: issuer_prefix.to_string(),
+            audiences,
+            issuer,
             jwks_url: jwks_url.to_string(),
             http: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(10))
@@ -175,13 +228,13 @@ impl OidcVerifier {
         let key = DecodingKey::from_jwk(&jwk).map_err(rejected)?;
 
         let mut validation = Validation::new(header.alg);
-        validation.set_audience(&[&self.audience]);
+        validation.set_audience(&self.audiences);
         // `exp` presence + freshness (Go's WithExpirationRequired); `aud` presence is
         // implied by set_audience.
         validation.set_required_spec_claims(&["exp", "aud"]);
         let data = decode::<Claims>(token, &key, &validation).map_err(rejected)?;
 
-        if !data.claims.iss.starts_with(&self.issuer_prefix) {
+        if !self.issuer.accepts(&data.claims.iss) {
             return Err(rejected(anyhow::anyhow!("unexpected issuer {:?}", data.claims.iss)));
         }
         if data.claims.sub.is_empty() {
@@ -223,7 +276,9 @@ fn find_key<'a>(set: &'a JwkSet, kid: Option<&str>) -> Option<&'a Jwk> {
 /// `<provider>:<shortID>` a first-sight login provisions (Go's `shortID`).
 pub(crate) fn short_id(s: &str) -> &str {
     if s.len() > 8 {
-        &s[..8]
+        // Cut on a CHARACTER boundary: a subject whose 8th byte lands inside a
+        // multibyte character would panic on a byte slice.
+        s.char_indices().nth(8).map_or(s, |(i, _)| &s[..i])
     } else {
         s
     }

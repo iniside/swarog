@@ -4,7 +4,7 @@ use base64::Engine as _;
 
 mod dev_auth_gate;
 mod prune;
-use crate::oidc::OidcVerifier;
+use crate::oidc::{IssuerMatch, OidcVerifier};
 use crate::password::verify_password;
 use crate::providers::EpicOAuthConfig;
 use rsa::pkcs8::EncodePrivateKey as _;
@@ -133,7 +133,12 @@ async fn oidc_verifier_accepts_valid_and_rejects_bad_claims() {
     const KID: &str = "test-key";
     let (enc, jwks) = test_key(KID);
     let url = serve_jwks(jwks).await;
-    let v = OidcVerifier::new(&url, "https://api.epicgames.dev", "client-123").unwrap();
+    let v = OidcVerifier::new(
+        &url,
+        IssuerMatch::Prefix("https://api.epicgames.dev".to_string()),
+        vec!["client-123".to_string()],
+    )
+    .unwrap();
     let exp = future_exp();
 
     // Valid token → the subject comes back.
@@ -168,7 +173,12 @@ async fn oidc_verifier_rejects_alg_none() {
     const KID: &str = "k";
     let (_enc, jwks) = test_key(KID);
     let url = serve_jwks(jwks).await;
-    let v = OidcVerifier::new(&url, "https://api.epicgames.dev", "client-123").unwrap();
+    let v = OidcVerifier::new(
+        &url,
+        IssuerMatch::Prefix("https://api.epicgames.dev".to_string()),
+        vec!["client-123".to_string()],
+    )
+    .unwrap();
 
     let b64 = |b: &[u8]| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b);
     let header = b64(br#"{"alg":"none","typ":"JWT"}"#);
@@ -1029,7 +1039,14 @@ async fn epic_oauth_link_flow_end_to_end() {
         axum::serve(listener, token_app).await.unwrap();
     });
 
-    let verifier = Arc::new(OidcVerifier::new(&jwks_url, ISSUER, CLIENT_ID).unwrap());
+    let verifier = Arc::new(
+        OidcVerifier::new(
+            &jwks_url,
+            IssuerMatch::Prefix(ISSUER.to_string()),
+            vec![CLIENT_ID.to_string()],
+        )
+        .unwrap(),
+    );
     let oauth = Arc::new(
         epic_oauth::EpicOAuth::new(
             CLIENT_ID.into(),
@@ -1114,7 +1131,14 @@ async fn epic_link_harness(
         axum::serve(listener, token_app).await.unwrap();
     });
 
-    let verifier = Arc::new(OidcVerifier::new(&jwks_url, ISSUER, CLIENT_ID).unwrap());
+    let verifier = Arc::new(
+        OidcVerifier::new(
+            &jwks_url,
+            IssuerMatch::Prefix(ISSUER.to_string()),
+            vec![CLIENT_ID.to_string()],
+        )
+        .unwrap(),
+    );
     let oauth = Arc::new(
         epic_oauth::EpicOAuth::new(
             CLIENT_ID.into(),
@@ -1468,7 +1492,14 @@ async fn oauth_state_expired_row_is_not_redeemable() {
 }
 
 fn oauth_fixture(pool: PgPool, redirect_uri: &str, token_url: &str) -> Arc<epic_oauth::EpicOAuth> {
-    let verifier = Arc::new(OidcVerifier::new("http://localhost/jwks", "iss", "aud").unwrap());
+    let verifier = Arc::new(
+        OidcVerifier::new(
+            "http://localhost/jwks",
+            IssuerMatch::Prefix("iss".to_string()),
+            vec!["aud".to_string()],
+        )
+        .unwrap(),
+    );
     Arc::new(
         epic_oauth::EpicOAuth::new(
             "cid".into(),

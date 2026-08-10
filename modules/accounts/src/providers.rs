@@ -18,18 +18,21 @@ use std::sync::{Arc, LazyLock};
 
 use async_trait::async_trait;
 
-use crate::oidc::{short_id, OidcVerifier};
+use crate::oidc::{short_id, IssuerMatch, OidcVerifier};
 
 /// The `accounts.identities.provider` value for Epic — written once and referenced by
 /// the name list, the registry key and every `resolve` call, so a typo cannot leave a
 /// fully configured provider unresolvable.
 pub(crate) const EPIC: &str = "epic";
 
+/// The `accounts.identities.provider` value for Google, the second OIDC provider.
+pub(crate) const GOOGLE: &str = "google";
+
 /// Every provider name this build knows, configured or not — the naming authority,
 /// separate from the configured-verifier map so a typo and an unconfigured provider
 /// are distinguishable outcomes. A name is listed once the build can spell it, which
 /// is not the same as shipping it: `"apple"` is declared and has no verifier.
-pub(crate) const KNOWN_PROVIDERS: &[&str] = &["dev", EPIC, "google", "guest", "apple"];
+pub(crate) const KNOWN_PROVIDERS: &[&str] = &["dev", EPIC, GOOGLE, "guest", "apple"];
 
 /// Why a credential failed verification — the taxonomy the caller maps to a status
 /// (mirrors the `verify_session` 503-not-401 precedent: an IdP outage must not
@@ -154,11 +157,21 @@ impl EpicOAuthConfig {
     }
 }
 
+/// Google's validated configuration. One real Google project issues separate client
+/// ids for its web/iOS/Android clients and all of them are valid audiences of the same
+/// user's id_token, which is why the audience is a list.
+pub(crate) struct GoogleConfig {
+    pub(crate) client_ids: Vec<String>,
+    pub(crate) jwks_url: String,
+    pub(crate) verifier: Arc<OidcVerifier>,
+}
+
 /// The validated provider configuration: one entry per PRESENT provider. An absent
 /// provider is simply missing; a present-but-malformed one is an `Err` from
 /// [`ProviderConfig::from_vars`], never a silently disabled entry.
 pub(crate) struct ProviderConfig {
     pub(crate) epic: Option<EpicConfig>,
+    pub(crate) google: Option<GoogleConfig>,
 }
 
 impl ProviderConfig {
@@ -185,6 +198,7 @@ impl ProviderConfig {
     pub(crate) fn from_vars(vars: &BTreeMap<String, String>) -> anyhow::Result<ProviderConfig> {
         Ok(ProviderConfig {
             epic: epic_from_vars(vars)?,
+            google: google_from_vars(vars)?,
         })
     }
 
@@ -193,40 +207,48 @@ impl ProviderConfig {
     pub(crate) fn providers(&self) -> Providers {
         let mut providers = Providers::default();
         if let Some(epic) = &self.epic {
-            providers.insert(EPIC, epic_credentials(epic.verifier.clone()));
+            providers.insert(EPIC, oidc_credentials(EPIC, epic.verifier.clone()));
+        }
+        if let Some(google) = &self.google {
+            providers.insert(GOOGLE, oidc_credentials(GOOGLE, google.verifier.clone()));
         }
         providers
     }
 }
 
-/// Epic's `CredentialVerifier` face: an OIDC id_token in, the Epic account id plus the
-/// `epic:<shortID>` first-sight display name out.
-struct EpicCredentials {
+/// Any OIDC provider's `CredentialVerifier` face: an id_token in, the provider's
+/// account id plus the `<provider>:<shortID>` first-sight display name out. The
+/// provider name is data, so a second OIDC provider is a registration, not a type.
+struct OidcCredentials {
+    provider: &'static str,
     verifier: Arc<OidcVerifier>,
 }
 
 #[async_trait]
-impl CredentialVerifier for EpicCredentials {
+impl CredentialVerifier for OidcCredentials {
     async fn verify(&self, credential: &str) -> Result<VerifiedSubject, VerifyError> {
         let subject = self.verifier.verify(credential).await?;
         Ok(VerifiedSubject {
-            display_name: format!("epic:{}", short_id(&subject)),
+            display_name: format!("{}:{}", self.provider, short_id(&subject)),
             subject,
         })
     }
 }
 
-/// Wraps a constructed OIDC verifier in Epic's credential face — shared by
+/// Wraps a constructed OIDC verifier in `provider`'s credential face — shared by
 /// [`ProviderConfig::providers`] and the tests that inject a fixture verifier.
-pub(crate) fn epic_credentials(verifier: Arc<OidcVerifier>) -> Arc<dyn CredentialVerifier> {
-    Arc::new(EpicCredentials { verifier })
+pub(crate) fn oidc_credentials(
+    provider: &'static str,
+    verifier: Arc<OidcVerifier>,
+) -> Arc<dyn CredentialVerifier> {
+    Arc::new(OidcCredentials { provider, verifier })
 }
 
 /// Every variable the provider parse reads — the authority [`ProviderConfig::from_env`]
 /// collects. A new provider appends its own block here rather than widening the read
 /// back out to the whole environment.
 fn provider_env_keys() -> impl Iterator<Item = &'static str> {
-    EPIC_VARS.iter().copied()
+    EPIC_VARS.iter().chain(GOOGLE_VARS).copied()
 }
 
 /// Epic's whole environment surface. Presence of ANY of these means the operator is
@@ -269,12 +291,14 @@ fn epic_from_vars(vars: &BTreeMap<String, String>) -> anyhow::Result<Option<Epic
     // rejected on its own merits, never contingent on which sibling happens to be set.
     let jwks_url = var_or(vars, "EPIC_JWKS_URL", EPIC_DEFAULT_JWKS_URL);
     check_endpoint("EPIC_JWKS_URL", &jwks_url)?;
-    // The issuer prefix is a token-acceptance guard, not an endpoint we dial: it is
-    // never fetched, so the scheme rule does not apply, but `oidc.rs`'s `starts_with`
-    // check makes a truncated value (`h`) accept every https issuer — hence the
-    // absolute-URL floor. Step 3's `IssuerMatch` replaces this with a per-variant rule.
-    let issuer_prefix = var_or(vars, "EPIC_ISSUER_PREFIX", EPIC_DEFAULT_ISSUER_PREFIX);
-    check_absolute_url("EPIC_ISSUER_PREFIX", &issuer_prefix)?;
+    // Validated HERE rather than at verifier construction below, so a malformed issuer
+    // is rejected on its own merits before the client-id completeness bail. The rule
+    // itself belongs to the variant: `IssuerMatch::prefix` carries the absolute-URL
+    // floor that `IssuerMatch::exact` deliberately does not.
+    let issuer = IssuerMatch::prefix(
+        "EPIC_ISSUER_PREFIX",
+        &var_or(vars, "EPIC_ISSUER_PREFIX", EPIC_DEFAULT_ISSUER_PREFIX),
+    )?;
     let oauth = EpicOAuthConfig::new(
         var_or(vars, "EPIC_CLIENT_SECRET", ""),
         var_or(vars, "EPIC_REDIRECT_URI", EPIC_DEFAULT_REDIRECT_URI),
@@ -300,13 +324,72 @@ fn epic_from_vars(vars: &BTreeMap<String, String>) -> anyhow::Result<Option<Epic
     } else {
         Some(oauth)
     };
-    let verifier = Arc::new(OidcVerifier::new(&jwks_url, &issuer_prefix, &client_id)?);
+    let verifier = Arc::new(OidcVerifier::new(&jwks_url, issuer, vec![client_id.clone()])?);
     Ok(Some(EpicConfig {
         client_id,
         jwks_url,
         verifier,
         oauth,
     }))
+}
+
+/// Google's whole environment surface. Presence of ANY of these means the operator is
+/// configuring google.
+const GOOGLE_VARS: &[&str] = &["GOOGLE_CLIENT_IDS", "GOOGLE_JWKS_URL"];
+
+const GOOGLE_DEFAULT_JWKS_URL: &str = "https://www.googleapis.com/oauth2/v3/certs";
+
+/// Google's issuer spellings, both of which appear in real id_tokens. NOT an operator
+/// knob: they are fixed protocol facts, and an env-widened issuer set would loosen the
+/// single guard that keeps `https://accounts.google.com.evil.test` out.
+const GOOGLE_ISSUERS: &[&str] = &["https://accounts.google.com", "accounts.google.com"];
+
+fn google_from_vars(vars: &BTreeMap<String, String>) -> anyhow::Result<Option<GoogleConfig>> {
+    let Some(present) = GOOGLE_VARS.iter().find(|key| vars.contains_key(**key)) else {
+        return Ok(None);
+    };
+    for key in GOOGLE_VARS {
+        if vars.get(*key).is_some_and(String::is_empty) {
+            anyhow::bail!("invalid {key}: set but empty — unset it to leave it unconfigured");
+        }
+    }
+
+    // Per-FIELD validation FIRST, cross-field completeness second (epic's order).
+    let jwks_url = var_or(vars, "GOOGLE_JWKS_URL", GOOGLE_DEFAULT_JWKS_URL);
+    check_endpoint("GOOGLE_JWKS_URL", &jwks_url)?;
+    let Some(raw_client_ids) = vars.get("GOOGLE_CLIENT_IDS") else {
+        anyhow::bail!(
+            "{present} is set but GOOGLE_CLIENT_IDS is not — the google provider needs its \
+             client id(s) (the token audiences)"
+        );
+    };
+    let client_ids = split_list("GOOGLE_CLIENT_IDS", raw_client_ids)?;
+
+    let verifier = Arc::new(OidcVerifier::new(
+        &jwks_url,
+        IssuerMatch::exact("GOOGLE_ISSUERS", GOOGLE_ISSUERS)?,
+        client_ids.clone(),
+    )?);
+    Ok(Some(GoogleConfig {
+        client_ids,
+        jwks_url,
+        verifier,
+    }))
+}
+
+/// Parses a comma-separated configuration list. An empty entry (`"a,,b"`, `"a, "`) is
+/// an `Err`: dropping it silently would shrink an audience list the operator believes
+/// they configured.
+fn split_list(key: &str, raw: &str) -> anyhow::Result<Vec<String>> {
+    let mut out = Vec::new();
+    for part in raw.split(',') {
+        let part = part.trim();
+        if part.is_empty() {
+            anyhow::bail!("invalid {key}: empty entry in the comma-separated list");
+        }
+        out.push(part.to_string());
+    }
+    Ok(out)
 }
 
 /// Mirrors the module's `env_or`: an absent OR empty value falls back to `def`, so
@@ -320,7 +403,7 @@ fn var_or(vars: &BTreeMap<String, String>, key: &str, def: &str) -> String {
 
 /// The floor every provider URL sits on: parseable as an absolute URL and carrying a
 /// host. Used alone for values that are MATCHED rather than dialed.
-fn check_absolute_url(key: &str, raw: &str) -> anyhow::Result<url::Url> {
+pub(crate) fn check_absolute_url(key: &str, raw: &str) -> anyhow::Result<url::Url> {
     let url = url::Url::parse(raw).map_err(|err| anyhow::anyhow!("invalid {key}: {err}"))?;
     if url.host().is_none() {
         anyhow::bail!("invalid {key}: host is required");

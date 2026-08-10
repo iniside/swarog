@@ -724,6 +724,13 @@ impl Module for Accounts {
                 tracing::info!(redirect = %redirect, "epic OAuth enabled");
             }
         }
+        if let Some(google) = &config.google {
+            tracing::info!(
+                jwks = %google.jwks_url,
+                aud = %google.client_ids.join(","),
+                "google provider enabled"
+            );
+        }
         svc.providers
             .set(Arc::new(config.providers()))
             .map_err(|_| anyhow::anyhow!("accounts.init ran twice"))?;

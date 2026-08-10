@@ -9,8 +9,8 @@ use base64::Engine as _;
 use rsa::pkcs8::EncodePrivateKey as _;
 use rsa::traits::PublicKeyParts as _;
 
-use crate::oidc::OidcVerifier;
-use crate::providers::{epic_credentials, ProviderConfig, Providers, Resolution};
+use crate::oidc::{IssuerMatch, OidcVerifier};
+use crate::providers::{oidc_credentials, ProviderConfig, Providers, Resolution};
 
 fn vars(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
     pairs
@@ -242,14 +242,14 @@ fn insert_panics_on_duplicate_name() {
     let verifier = Arc::new(
         OidcVerifier::new(
             "https://api.epicgames.dev/epic/oauth/v1/.well-known/jwks.json",
-            "https://api.epicgames.dev/epic/oauth/v1",
-            "client-1",
+            IssuerMatch::Prefix("https://api.epicgames.dev/epic/oauth/v1".to_string()),
+            vec!["client-1".to_string()],
         )
         .unwrap(),
     );
     let mut providers = Providers::default();
-    providers.insert("epic", epic_credentials(verifier.clone()));
-    providers.insert("epic", epic_credentials(verifier));
+    providers.insert("epic", oidc_credentials("epic", verifier.clone()));
+    providers.insert("epic", oidc_credentials("epic", verifier));
 }
 
 #[test]

@@ -13,9 +13,9 @@ use rsa::pkcs8::EncodePrivateKey as _;
 use rsa::traits::PublicKeyParts as _;
 use sqlx::PgPool;
 
-use crate::oidc::OidcVerifier;
+use crate::oidc::{IssuerMatch, OidcVerifier};
 use crate::password::ArgonVerifier;
-use crate::providers::{epic_credentials, Providers, VerifyError};
+use crate::providers::{oidc_credentials, Providers, VerifyError};
 use crate::store::Store;
 use crate::Service;
 
@@ -121,11 +121,21 @@ fn token_with_kid(enc: &jsonwebtoken::EncodingKey, kid: &str) -> String {
     jsonwebtoken::encode(&header, &claims, enc).unwrap()
 }
 
+/// The verifier under test: the fixture JWKS endpoint, issuer prefix and audience.
+fn verifier(url: &str) -> OidcVerifier {
+    OidcVerifier::new(
+        url,
+        IssuerMatch::Prefix(ISSUER.to_string()),
+        vec![CLIENT_ID.to_string()],
+    )
+    .unwrap()
+}
+
 /// A lazy-pool service with the epic provider configured — for the `login_epic`
 /// status-mapping tests (verify fails before any DB access).
 fn epic_service(verifier: OidcVerifier) -> Arc<Service> {
     let mut registry = Providers::default();
-    registry.insert("epic", epic_credentials(Arc::new(verifier)));
+    registry.insert("epic", oidc_credentials("epic", Arc::new(verifier)));
     let providers = OnceLock::new();
     providers.set(Arc::new(registry)).ok().unwrap();
     Arc::new(Service {
@@ -149,7 +159,7 @@ fn epic_service(verifier: OidcVerifier) -> Arc<Service> {
 async fn concurrent_unknown_kids_cost_one_jwks_fetch() {
     let (enc, jwks) = test_key("real-kid");
     let (url, hits) = serve_counting_jwks(200, jwks).await;
-    let v = Arc::new(OidcVerifier::new(&url, ISSUER, CLIENT_ID).unwrap());
+    let v = Arc::new(verifier(&url));
 
     let verifies: Vec<_> = (0..8)
         .map(|i| {
@@ -190,7 +200,7 @@ async fn concurrent_unknown_kids_cost_one_jwks_fetch() {
 async fn jwks_500_is_infra_and_maps_to_unavailable() {
     let (enc, _jwks) = test_key("k");
     let (url, hits) = serve_counting_jwks(500, "server error".into()).await;
-    let v = OidcVerifier::new(&url, ISSUER, CLIENT_ID).unwrap();
+    let v = verifier(&url);
 
     let err = v
         .verify(&token_with_kid(&enc, "k"))
@@ -208,7 +218,7 @@ async fn jwks_500_is_infra_and_maps_to_unavailable() {
     assert_eq!(hits.load(Ordering::SeqCst), 1, "a down IdP is not hammered during cooldown");
 
     // The service-level mapping: Infra → 503, not 401.
-    let svc = epic_service(OidcVerifier::new(&url, ISSUER, CLIENT_ID).unwrap());
+    let svc = epic_service(verifier(&url));
     let e = svc.login_epic(token_with_kid(&enc, "k")).await.unwrap_err();
     assert_eq!(
         e.status,
@@ -226,7 +236,7 @@ async fn stale_cache_refetches_and_rotated_out_kid_is_rejected() {
     let (enc1, jwks1) = test_key("kid-1");
     let (enc2, jwks2) = test_key("kid-2");
     let (url, hits, body) = serve_switchable_jwks(jwks1).await;
-    let v = OidcVerifier::new(&url, ISSUER, CLIENT_ID).unwrap();
+    let v = verifier(&url);
 
     // Warm the cache with the current key.
     assert_eq!(v.verify(&token_with_kid(&enc1, "kid-1")).await.unwrap(), "puid");
@@ -263,7 +273,7 @@ async fn stale_cache_refetches_and_rotated_out_kid_is_rejected() {
 async fn fresh_cache_hit_does_not_refetch() {
     let (enc, jwks) = test_key("kid-1");
     let (url, hits) = serve_counting_jwks(200, jwks).await;
-    let v = OidcVerifier::new(&url, ISSUER, CLIENT_ID).unwrap();
+    let v = verifier(&url);
 
     for _ in 0..3 {
         assert_eq!(v.verify(&token_with_kid(&enc, "kid-1")).await.unwrap(), "puid");
@@ -278,7 +288,7 @@ async fn fresh_cache_hit_does_not_refetch() {
 async fn stale_cache_under_cooldown_serves_stale_without_refetch() {
     let (enc, jwks) = test_key("kid-1");
     let (url, hits) = serve_counting_jwks(200, jwks).await;
-    let v = OidcVerifier::new(&url, ISSUER, CLIENT_ID).unwrap();
+    let v = verifier(&url);
 
     // Warm-up fetch stamps the refresh cooldown AND caches kid-1 fresh.
     assert_eq!(v.verify(&token_with_kid(&enc, "kid-1")).await.unwrap(), "puid");
@@ -303,7 +313,7 @@ async fn stale_cache_under_cooldown_serves_stale_without_refetch() {
 async fn rejected_token_maps_to_unauthorized() {
     let (enc, jwks) = test_key("real-kid");
     let (url, _hits) = serve_counting_jwks(200, jwks).await;
-    let svc = epic_service(OidcVerifier::new(&url, ISSUER, CLIENT_ID).unwrap());
+    let svc = epic_service(verifier(&url));
 
     let e = svc.login_epic(token_with_kid(&enc, "ghost")).await.unwrap_err();
     assert_eq!(e.status, opsapi::Status::Unauthorized);
