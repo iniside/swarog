@@ -428,6 +428,49 @@ fn issuer_match_constructor_asymmetry_from_the_step3_erratum() {
         IssuerMatch::exact("K", &["accounts.google.com"]).is_ok(),
         "exact must accept a bare host — truncation cannot widen an exact match"
     );
+    assert!(IssuerMatch::exact("K", &[]).is_err(), "exact must reject an empty issuer list");
+    assert!(IssuerMatch::exact("K", &[""]).is_err(), "exact must reject an empty issuer value");
+}
+
+/// Trailing slashes are trimmed at construction time, so a configured value with or
+/// without one is the SAME rule: both the bare (trimmed) issuer and a deeper path
+/// verify.
+#[tokio::test(flavor = "multi_thread")]
+async fn prefix_trims_a_configured_trailing_slash() {
+    let (enc, jwks) = test_key("k");
+    let (url, _hits) = serve_counting_jwks(200, jwks).await;
+    let issuer = IssuerMatch::prefix("issuer", "https://host/v1/").unwrap();
+    let v = OidcVerifier::new(&url, issuer, vec!["client".to_string()]).unwrap();
+
+    for iss in ["https://host/v1", "https://host/v1/x"] {
+        let token = token_with_claims(&enc, iss, "client", "sub-1", "k");
+        assert_eq!(
+            v.verify(&token).await.unwrap(),
+            "sub-1",
+            "trailing-slash-trimmed prefix must accept {iss}"
+        );
+    }
+}
+
+/// The empty-`rest` boundary arm without a dot in the lookalike: `hostage`
+/// continues `host` with `age`, not with `/`, so the string-prefix match must still
+/// be rejected even though nothing here looks like a subdomain suffix.
+#[tokio::test(flavor = "multi_thread")]
+async fn prefix_rejects_a_no_dot_string_prefix_without_a_path_boundary() {
+    let (enc, jwks) = test_key("k");
+    let (url, _hits) = serve_counting_jwks(200, jwks).await;
+    let issuer = IssuerMatch::prefix("issuer", "https://host").unwrap();
+    let v = OidcVerifier::new(&url, issuer, vec!["client".to_string()]).unwrap();
+
+    let token = token_with_claims(&enc, "https://hostage", "client", "sub-1", "k");
+    let err = v
+        .verify(&token)
+        .await
+        .expect_err("a string prefix without a path boundary must be rejected");
+    assert!(
+        matches!(&err, VerifyError::Rejected(e) if e.to_string().contains("unexpected issuer")),
+        "wrong rejection reason: {err}"
+    );
 }
 
 /// A token whose audience is the MIDDLE entry of a multi-audience list verifies
@@ -443,7 +486,11 @@ async fn verify_accepts_an_audience_from_the_middle_of_the_list() {
     assert_eq!(v.verify(&token).await.unwrap(), "sub-1");
 }
 
-/// A token whose audience is outside the configured list is rejected.
+/// A token whose audience is outside the configured list is rejected. This alone
+/// does not pin `set_audience`: `jsonwebtoken` reaches the same `InvalidAudience`
+/// on the `(Parsed(_), None)` arm, so it is the ACCEPT sibling above
+/// (`verify_accepts_an_audience_from_the_middle_of_the_list`) that is the real proof
+/// `set_audience` ran.
 #[tokio::test(flavor = "multi_thread")]
 async fn verify_rejects_an_audience_outside_the_list() {
     let (enc, jwks) = test_key("k");
@@ -457,6 +504,29 @@ async fn verify_rejects_an_audience_outside_the_list() {
         matches!(&err, VerifyError::Rejected(e) if e.to_string().contains("InvalidAudience")),
         "wrong rejection reason: {err}"
     );
+}
+
+/// `aud` as a JSON array reaches `jsonwebtoken`'s `Audience::Multiple` branch
+/// (`is_subset`), a different code path than the single-string `aud` every other
+/// test in this file uses.
+#[tokio::test(flavor = "multi_thread")]
+async fn verify_accepts_a_multi_valued_audience_array() {
+    let (enc, jwks) = test_key("k");
+    let (url, _hits) = serve_counting_jwks(200, jwks).await;
+    let audiences = vec!["aud-a".to_string(), "aud-b".to_string()];
+    let v = OidcVerifier::new(&url, IssuerMatch::prefix("issuer", ISSUER).unwrap(), audiences).unwrap();
+
+    let exp = (std::time::SystemTime::now() + std::time::Duration::from_secs(3600))
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);
+    header.kid = Some("k".to_string());
+    let claims = serde_json::json!({
+        "iss": format!("{ISSUER}/x"), "aud": ["aud-a", "aud-b"], "sub": "sub-1", "exp": exp,
+    });
+    let token = jsonwebtoken::encode(&header, &claims, &enc).unwrap();
+    assert_eq!(v.verify(&token).await.unwrap(), "sub-1");
 }
 
 /// The erratum's fail-CLOSED reasoning for empty audiences: `jsonwebtoken`'s
@@ -478,13 +548,9 @@ fn empty_audiences_is_rejected_as_a_verifier_that_could_never_verify() {
     assert!(err.contains("no audiences configured"), "wrong rejection reason: {err}");
 }
 
-/// The Step-3 fix: a subject longer than 8 bytes whose 8th byte falls INSIDE a
-/// multibyte character. `"aaaaaaa€xyz"` — 7 ASCII bytes then the euro sign's
-/// 3-byte UTF-8 encoding — put byte offset 8 (the old `&s[..8]` cut point) one
-/// byte into `€`, which panicked before the char-based cut. The plan's example
-/// string (`"aaaaaa€x"`) has exactly 8 characters and would pass through
-/// unchanged rather than demonstrate a cut, so this uses one extra character to
-/// keep the assertion non-trivial.
+/// A subject whose 8th BYTE falls inside a multibyte character:
+/// `"aaaaaaa€xyz"` is 7 ASCII bytes then the euro sign's 3-byte UTF-8 encoding, so
+/// byte offset 8 lands mid-`€` — the cut must be char-based, not byte-based.
 #[test]
 fn short_id_cuts_on_a_character_boundary_not_a_byte_boundary() {
     assert_eq!(short_id("aaaaaaa€xyz"), "aaaaaaa€");

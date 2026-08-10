@@ -10,7 +10,7 @@ use rsa::pkcs8::EncodePrivateKey as _;
 use rsa::traits::PublicKeyParts as _;
 
 use crate::oidc::{IssuerMatch, OidcVerifier};
-use crate::providers::{oidc_credentials, ProviderConfig, Providers, Resolution};
+use crate::providers::{oidc_credentials, ProviderConfig, Providers, Resolution, VerifyError};
 
 fn vars(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
     pairs
@@ -383,7 +383,10 @@ fn absent_google_yields_ok_with_no_entry() {
 #[test]
 fn reject_google_jwks_url_without_client_ids() {
     let msg = err_msg(&[("GOOGLE_JWKS_URL", "https://www.googleapis.com/oauth2/v3/certs")]);
-    assert!(msg.contains("GOOGLE_CLIENT_IDS"), "message did not name the missing var: {msg}");
+    assert!(
+        msg.contains("is set but GOOGLE_CLIENT_IDS is not"),
+        "message did not describe the missing-client-ids rule: {msg}"
+    );
 }
 
 #[test]
@@ -459,4 +462,139 @@ async fn resolved_google_verifier_from_from_vars_verifies_a_real_token() {
     let verified = verifier.verify(&token).await.unwrap();
     assert_eq!(verified.subject, subject);
     assert_eq!(verified.display_name, format!("google:{}", &subject[..8]));
+}
+
+/// The security claim through the PRODUCTION `from_vars -> providers() -> resolve`
+/// path, not a test-local `IssuerMatch`: a lookalike issuer that appends a suffix to
+/// the real one is rejected. Since `1b328e2` made `prefix` path-boundary-safe too,
+/// this specific lookalike no longer distinguishes `exact` from `prefix` (both
+/// reject it) — see `resolved_google_verifier_from_from_vars_rejects_a_google_subpath`
+/// below for the assertion that actually goes red under that rewire.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn resolved_google_verifier_from_from_vars_rejects_lookalike_issuer() {
+    let (enc, jwks) = test_key("g-kid");
+    let jwks_url = serve_jwks(jwks).await;
+
+    let cfg = ProviderConfig::from_vars(&vars(&[
+        ("GOOGLE_CLIENT_IDS", "web-client"),
+        ("GOOGLE_JWKS_URL", &jwks_url),
+    ]))
+    .unwrap();
+    let providers = cfg.providers();
+    let Resolution::Configured(verifier) = providers.resolve("google") else {
+        panic!("expected Configured, from_vars -> providers() did not register google");
+    };
+
+    let token = token_with_exact_claims(
+        &enc,
+        "https://accounts.google.com.evil.test",
+        "web-client",
+        "g-kid",
+        "sub-1",
+    );
+    let err = match verifier.verify(&token).await {
+        Ok(_) => panic!("lookalike issuer must be rejected"),
+        Err(e) => e,
+    };
+    assert!(
+        matches!(&err, VerifyError::Rejected(e) if e.to_string().contains("unexpected issuer")),
+        "wrong rejection reason: {err}"
+    );
+}
+
+/// The assertion that DOES go red if `google_from_vars` were ever rewired from
+/// `IssuerMatch::exact` to `IssuerMatch::prefix`: Google issues exactly the two
+/// listed spellings, never a subpath under `accounts.google.com` — `exact` rejects
+/// one, a path-boundary-safe `prefix` on the same base would ACCEPT it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn resolved_google_verifier_from_from_vars_rejects_a_google_subpath() {
+    let (enc, jwks) = test_key("g-kid");
+    let jwks_url = serve_jwks(jwks).await;
+
+    let cfg = ProviderConfig::from_vars(&vars(&[
+        ("GOOGLE_CLIENT_IDS", "web-client"),
+        ("GOOGLE_JWKS_URL", &jwks_url),
+    ]))
+    .unwrap();
+    let providers = cfg.providers();
+    let Resolution::Configured(verifier) = providers.resolve("google") else {
+        panic!("expected Configured, from_vars -> providers() did not register google");
+    };
+
+    let token = token_with_exact_claims(
+        &enc,
+        "https://accounts.google.com/not-a-real-path",
+        "web-client",
+        "g-kid",
+        "sub-1",
+    );
+    let err = match verifier.verify(&token).await {
+        Ok(_) => panic!("a subpath of the Google issuer is not one of the two exact spellings"),
+        Err(e) => e,
+    };
+    assert!(
+        matches!(&err, VerifyError::Rejected(e) if e.to_string().contains("unexpected issuer")),
+        "wrong rejection reason: {err}"
+    );
+}
+
+/// The legacy scheme-less Google issuer spelling, driven through the PRODUCTION
+/// `from_vars -> providers() -> resolve` path rather than a test-local literal list:
+/// this is the one test that goes red if `"accounts.google.com"` were ever dropped
+/// from `GOOGLE_ISSUERS`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn resolved_google_verifier_from_from_vars_accepts_the_scheme_less_spelling() {
+    let (enc, jwks) = test_key("g-kid");
+    let jwks_url = serve_jwks(jwks).await;
+
+    let cfg = ProviderConfig::from_vars(&vars(&[
+        ("GOOGLE_CLIENT_IDS", "web-client"),
+        ("GOOGLE_JWKS_URL", &jwks_url),
+    ]))
+    .unwrap();
+    let providers = cfg.providers();
+    let Resolution::Configured(verifier) = providers.resolve("google") else {
+        panic!("expected Configured, from_vars -> providers() did not register google");
+    };
+
+    let subject = "sub-legacy-1234567890";
+    let token = token_with_exact_claims(&enc, "accounts.google.com", "web-client", "g-kid", subject);
+    let verified = verifier.verify(&token).await.unwrap();
+    assert_eq!(verified.subject, subject);
+}
+
+/// The operator-override path end-to-end: a bare-host `EPIC_ISSUER_PREFIX` (no path
+/// component) still enforces the path-boundary rule where an operator can actually
+/// reach it, not just at the `IssuerMatch::prefix` constructor.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn resolved_epic_verifier_with_bare_host_issuer_prefix_rejects_lookalike() {
+    let (enc, jwks) = test_key("real-kid");
+    let jwks_url = serve_jwks(jwks).await;
+
+    let cfg = ProviderConfig::from_vars(&vars(&[
+        ("EPIC_CLIENT_ID", "client-1"),
+        ("EPIC_JWKS_URL", &jwks_url),
+        ("EPIC_ISSUER_PREFIX", "https://issuer.example"),
+    ]))
+    .unwrap();
+    let providers = cfg.providers();
+    let Resolution::Configured(verifier) = providers.resolve("epic") else {
+        panic!("expected Configured");
+    };
+
+    let token = token_with_exact_claims(
+        &enc,
+        "https://issuer.example.evil.test",
+        "client-1",
+        "real-kid",
+        "sub-1",
+    );
+    let err = match verifier.verify(&token).await {
+        Ok(_) => panic!("lookalike issuer must be rejected"),
+        Err(e) => e,
+    };
+    assert!(
+        matches!(&err, VerifyError::Rejected(e) if e.to_string().contains("unexpected issuer")),
+        "wrong rejection reason: {err}"
+    );
 }
