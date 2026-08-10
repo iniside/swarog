@@ -5,6 +5,7 @@ metadata:
   node_type: memory
   type: feedback
   originSessionId: 31c06266-64af-4bcb-82be-f14d3b988287
+  modified: 2026-08-10T22:54:32.216Z
 ---
 
 Three false assertions in ONE session (2026-07-16, weles M1 design), all from the same
@@ -23,6 +24,15 @@ root: I repeated prose that described code, without opening the code.
 3. "Agents are dumb spawn/kill/status executors" (from memory) — undersells the agent; the
    restart policy and local supervision live there, and that is weles's differentiator.
 
+4. (2026-08-11, accounts seq #2a Step 3) "An empty audience list in `jsonwebtoken` means
+   'any'." FALSE — `set_audience` stores `Some(set)` unconditionally and validation is
+   `!correct_aud.contains(aud)`, so an empty set rejects EVERY token: fail-closed, the
+   exact inverse. **New shape: the false sentence was in the PLAN I wrote, and the
+   implementing subagent copied it into a doc comment as the stated justification for a
+   security guard.** Prose about a THIRD-PARTY dependency is the same class as prose about
+   our own code — and a plan is not a citation just because I wrote it. Caught by the
+   adversarial review, verified by me in `~/.cargo/registry/.../validation.rs`.
+
 **Why:** prose drifts from code silently — nothing recompiles a comment. A false comment is
 worse than none, because it *stops* the next reader from checking. And I was the next reader.
 This is also why `docs/reference/weles-design.md` exists: a design that lives only in agent
@@ -31,7 +41,11 @@ decided wire-only contract).
 
 **How to apply:** when about to state how code behaves, ask "did I read the code, or read
 *about* the code?" A comment, status doc, plan, review verdict, or memory is a lead, not a
-citation — verify before repeating, and say which one you did. When a comment turns out to
+citation — verify before repeating, and say which one you did. **This binds hardest when
+writing a plan**: a claim I put in a plan gets executed by a subagent that treats it as
+settled, so an unverified sentence there becomes a comment in shipped code. Verify
+dependency behaviour against the vendored source (`~/.cargo/registry/src/...`) before
+asserting it in a plan, not after review catches it. When a comment turns out to
 be false, fix it in the same rollout (a lie that survives will be repeated by the next
 context). Corollary for reviews: the least-tested guards are often the ones the comments
 claim most confidently. Related: [[scope-claims-to-what-was-verified]],
