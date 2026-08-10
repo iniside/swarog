@@ -24,8 +24,8 @@
 
 mod admin;
 pub mod conformance;
-mod epic;
 mod epic_oauth;
+mod oidc;
 mod ops;
 mod password;
 mod providers;
@@ -837,7 +837,7 @@ fn env_bool(key: &str, default: bool) -> bool {
 // unreachable. In-crate so they can drive the private `Service`/`Store` directly.
 // ============================================================================
 #[cfg(test)]
-mod epic_tests;
+mod oidc_tests;
 #[cfg(test)]
 mod providers_tests;
 #[cfg(test)]

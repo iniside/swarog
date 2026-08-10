@@ -26,7 +26,7 @@ use axum_extra::extract::CookieJar;
 use base64::Engine as _;
 use sqlx::PgPool;
 
-use crate::epic::{short_id, OidcVerifier};
+use crate::oidc::{short_id, OidcVerifier};
 use crate::providers::EpicOAuthConfig;
 use crate::Service;
 

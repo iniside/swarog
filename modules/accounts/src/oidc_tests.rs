@@ -1,4 +1,4 @@
-//! JWKS singleflight/cooldown + error-taxonomy tests for `epic.rs`. All DB-free:
+//! JWKS singleflight/cooldown + error-taxonomy tests for `oidc.rs`. All DB-free:
 //! stub JWKS endpoints on `127.0.0.1:0` count their hits; tokens are self-minted
 //! RS256 JWTs (no live Epic). The `kid` header is ATTACKER-CONTROLLED input on an
 //! unauthenticated path, so the amplification bound (one fetch per cooldown, not
@@ -13,7 +13,7 @@ use rsa::pkcs8::EncodePrivateKey as _;
 use rsa::traits::PublicKeyParts as _;
 use sqlx::PgPool;
 
-use crate::epic::OidcVerifier;
+use crate::oidc::OidcVerifier;
 use crate::password::ArgonVerifier;
 use crate::providers::{epic_credentials, Providers, VerifyError};
 use crate::store::Store;

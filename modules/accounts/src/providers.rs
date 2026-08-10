@@ -18,7 +18,7 @@ use std::sync::{Arc, LazyLock};
 
 use async_trait::async_trait;
 
-use crate::epic::{short_id, OidcVerifier};
+use crate::oidc::{short_id, OidcVerifier};
 
 /// The `accounts.identities.provider` value for Epic — written once and referenced by
 /// the name list, the registry key and every `resolve` call, so a typo cannot leave a
@@ -270,7 +270,7 @@ fn epic_from_vars(vars: &BTreeMap<String, String>) -> anyhow::Result<Option<Epic
     let jwks_url = var_or(vars, "EPIC_JWKS_URL", EPIC_DEFAULT_JWKS_URL);
     check_endpoint("EPIC_JWKS_URL", &jwks_url)?;
     // The issuer prefix is a token-acceptance guard, not an endpoint we dial: it is
-    // never fetched, so the scheme rule does not apply, but `epic.rs`'s `starts_with`
+    // never fetched, so the scheme rule does not apply, but `oidc.rs`'s `starts_with`
     // check makes a truncated value (`h`) accept every https issuer — hence the
     // absolute-URL floor. Step 3's `IssuerMatch` replaces this with a per-variant rule.
     let issuer_prefix = var_or(vars, "EPIC_ISSUER_PREFIX", EPIC_DEFAULT_ISSUER_PREFIX);

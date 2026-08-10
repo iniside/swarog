@@ -9,7 +9,7 @@ use base64::Engine as _;
 use rsa::pkcs8::EncodePrivateKey as _;
 use rsa::traits::PublicKeyParts as _;
 
-use crate::epic::OidcVerifier;
+use crate::oidc::OidcVerifier;
 use crate::providers::{epic_credentials, ProviderConfig, Providers, Resolution};
 
 fn vars(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
@@ -283,7 +283,7 @@ fn resolve_configured_name_via_the_production_path() {
 // --- Epic end-to-end through the production `from_vars -> providers() -> resolve`
 // path: proves the parse yields a verifier that actually verifies, not merely one
 // that satisfies field validation. The JWKS/token helpers are duplicated from
-// `epic_tests.rs` (its helpers are private to that module, and that file already
+// `oidc_tests.rs` (its helpers are private to that module, and that file already
 // notes the same duplication for the same reason: staying self-contained).
 
 fn test_key(kid: &str) -> (jsonwebtoken::EncodingKey, String) {

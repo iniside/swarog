@@ -1,15 +1,16 @@
-//! The OIDC id_token verifier (port of Go's `modules/accounts/epic.go`). It is
-//! configured, not hardcoded: Epic is the first user, Google (also OIDC) is the
-//! known next one. The backend is a trusted VERIFIER — it never holds the user's
-//! credentials, only checks the IdP's signed token (the EOS Connect model).
+//! The OIDC id_token verifier (port of Go's `modules/accounts/epic.go`), shared by
+//! every OIDC provider: nothing here is provider-specific, the differences are the
+//! JWKS url, the issuer rule and the audiences handed to [`OidcVerifier::new`]. The
+//! backend is a trusted VERIFIER — it never holds the user's credentials, only
+//! checks the IdP's signed token (the EOS Connect model).
 //!
 //! Divergence from Go's shape (not semantics): Go's `keyfunc.NewDefault` fetched the
 //! JWKS eagerly inside `Init`; Rust `init` must do no I/O (constraint #8), so the
 //! JWKS is fetched LAZILY on first verify and cached with its fetch instant. A
 //! cached kid is accepted only while the set is younger than [`JWKS_CACHE_TTL`]
-//! (so a key Epic rotates out stops being accepted without a restart); a stale set,
-//! or a `kid` absent from the cached set, triggers one refetch (the keyfunc refresh
-//! behaviour), rate-bounded by [`MIN_REFRESH_INTERVAL`].
+//! (so a key the provider rotates out stops being accepted without a restart); a
+//! stale set, or a `kid` absent from the cached set, triggers one refetch (the
+//! keyfunc refresh behaviour), rate-bounded by [`MIN_REFRESH_INTERVAL`].
 
 use std::time::{Duration, Instant};
 
@@ -30,8 +31,8 @@ const ALLOWED_ALGS: [Algorithm; 2] = [Algorithm::RS256, Algorithm::ES256];
 const MIN_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 
 /// How long a cached JWKS answers `kid` lookups before it is treated as stale and a
-/// refetch is attempted. This bounds how long a key Epic has ROTATED OUT (e.g. after
-/// a compromise) stays accepted: at most `JWKS_CACHE_TTL` past the rotation, since a
+/// refetch is attempted. This bounds how long a key the provider has ROTATED OUT (e.g.
+/// after a compromise) stays accepted: at most `JWKS_CACHE_TTL` past the rotation, since a
 /// hit is honoured only while the set is younger than this (the full-set swap on
 /// refetch is what actually drops the rotated kid).
 const JWKS_CACHE_TTL: Duration = Duration::from_secs(600);
@@ -53,7 +54,7 @@ struct Claims {
 /// Verifies an OpenID-Connect ID token against a provider's JWKS: signature checked
 /// against the fetched key set, alg ∈ {RS256, ES256}, `aud` == the configured
 /// audience, `iss` has the expected prefix, `exp` required and in the future,
-/// non-empty `sub` (for Epic, the account/product user id).
+/// non-empty `sub` (the provider's own account identifier).
 pub(crate) struct OidcVerifier {
     audience: String,
     issuer_prefix: String,
@@ -219,7 +220,7 @@ fn find_key<'a>(set: &'a JwkSet, kid: Option<&str>) -> Option<&'a Jwk> {
 }
 
 /// The first 8 chars of an external subject — the placeholder display name
-/// `epic:<shortID>` a first-sight login provisions (Go's `shortID`).
+/// `<provider>:<shortID>` a first-sight login provisions (Go's `shortID`).
 pub(crate) fn short_id(s: &str) -> &str {
     if s.len() > 8 {
         &s[..8]

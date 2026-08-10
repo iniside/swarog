@@ -4,7 +4,7 @@ use base64::Engine as _;
 
 mod dev_auth_gate;
 mod prune;
-use crate::epic::OidcVerifier;
+use crate::oidc::OidcVerifier;
 use crate::password::verify_password;
 use crate::providers::EpicOAuthConfig;
 use rsa::pkcs8::EncodePrivateKey as _;
