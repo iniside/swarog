@@ -13,7 +13,7 @@ use rsa::pkcs8::EncodePrivateKey as _;
 use rsa::traits::PublicKeyParts as _;
 use sqlx::PgPool;
 
-use crate::oidc::{IssuerMatch, OidcVerifier};
+use crate::oidc::{short_id, IssuerMatch, OidcVerifier};
 use crate::password::ArgonVerifier;
 use crate::providers::{oidc_credentials, Providers, VerifyError};
 use crate::store::Store;
@@ -317,4 +317,177 @@ async fn rejected_token_maps_to_unauthorized() {
 
     let e = svc.login_epic(token_with_kid(&enc, "ghost")).await.unwrap_err();
     assert_eq!(e.status, opsapi::Status::Unauthorized);
+}
+
+// ============================================================================
+// Step 4 — issuer/audience semantics, short_id truncation
+// ============================================================================
+
+/// Full control over `iss`/`aud`/`sub`, unlike `token_with_kid` above which pins
+/// `ISSUER`/`CLIENT_ID` and always appends `/x` to the issuer — the exact-issuer
+/// cases below need the issuer string byte-for-byte as configured.
+fn token_with_claims(enc: &jsonwebtoken::EncodingKey, iss: &str, aud: &str, sub: &str, kid: &str) -> String {
+    let exp = (std::time::SystemTime::now() + std::time::Duration::from_secs(3600))
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);
+    header.kid = Some(kid.to_string());
+    let claims = serde_json::json!({"iss": iss, "aud": aud, "sub": sub, "exp": exp});
+    jsonwebtoken::encode(&header, &claims, enc).unwrap()
+}
+
+/// Both real Google issuer spellings — the scheme-ful and the legacy scheme-less
+/// form — must verify under `IssuerMatch::exact`.
+#[tokio::test(flavor = "multi_thread")]
+async fn exact_issuer_accepts_both_google_spellings() {
+    let (enc, jwks) = test_key("g-kid");
+    let (url, _hits) = serve_counting_jwks(200, jwks).await;
+    let issuer =
+        IssuerMatch::exact("issuer", &["https://accounts.google.com", "accounts.google.com"])
+            .unwrap();
+    let v = OidcVerifier::new(&url, issuer, vec!["client".to_string()]).unwrap();
+
+    for iss in ["https://accounts.google.com", "accounts.google.com"] {
+        let token = token_with_claims(&enc, iss, "client", "sub-1", "g-kid");
+        assert_eq!(v.verify(&token).await.unwrap(), "sub-1", "exact issuer {iss} must verify");
+    }
+}
+
+/// The headline regression this step closes: `exact` must reject a lookalike
+/// suffix that a `starts_with` prefix guard would have let through.
+#[tokio::test(flavor = "multi_thread")]
+async fn exact_issuer_rejects_lookalike_suffix() {
+    let (enc, jwks) = test_key("g-kid");
+    let (url, _hits) = serve_counting_jwks(200, jwks).await;
+    let issuer = IssuerMatch::exact("issuer", &["https://accounts.google.com"]).unwrap();
+    let v = OidcVerifier::new(&url, issuer, vec!["client".to_string()]).unwrap();
+
+    let token =
+        token_with_claims(&enc, "https://accounts.google.com.evil.test", "client", "sub-1", "g-kid");
+    let err = v.verify(&token).await.expect_err("lookalike issuer must be rejected under exact");
+    assert!(
+        matches!(&err, VerifyError::Rejected(e) if e.to_string().contains("unexpected issuer")),
+        "wrong rejection reason: {err}"
+    );
+}
+
+/// The same lookalike string IS accepted under `prefix` — deliberately, to
+/// document that the variant choice (not an accident) is what protects Google:
+/// a provider whose key set signs for host-shaped issuers must pick `exact`.
+#[tokio::test(flavor = "multi_thread")]
+async fn prefix_issuer_accepts_google_lookalike_by_design() {
+    let (enc, jwks) = test_key("g-kid");
+    let (url, _hits) = serve_counting_jwks(200, jwks).await;
+    let issuer = IssuerMatch::prefix("issuer", "https://accounts.google.com").unwrap();
+    let v = OidcVerifier::new(&url, issuer, vec!["client".to_string()]).unwrap();
+
+    let token =
+        token_with_claims(&enc, "https://accounts.google.com.evil.test", "client", "sub-1", "g-kid");
+    assert_eq!(v.verify(&token).await.unwrap(), "sub-1");
+}
+
+/// Epic's own `prefix` behaviour is unchanged by the generalization: an exact
+/// match on the prefix and a longer path under it both verify, and a foreign
+/// issuer is still rejected.
+#[tokio::test(flavor = "multi_thread")]
+async fn prefix_issuer_still_accepts_exact_and_suffixed_epic_issuer() {
+    let (enc, jwks) = test_key("k");
+    let (url, _hits) = serve_counting_jwks(200, jwks).await;
+    let v = verifier(&url);
+
+    for iss in [ISSUER, &format!("{ISSUER}/v2/token")] {
+        let token = token_with_claims(&enc, iss, CLIENT_ID, "sub-1", "k");
+        assert_eq!(v.verify(&token).await.unwrap(), "sub-1", "prefix must accept {iss}");
+    }
+
+    let token = token_with_claims(&enc, "https://not-eas.example", CLIENT_ID, "sub-1", "k");
+    let err = v.verify(&token).await.expect_err("foreign issuer must be rejected");
+    assert!(matches!(err, VerifyError::Rejected(_)));
+}
+
+/// The Step-1 erratum's asymmetry: `prefix` keeps the absolute-URL floor (a
+/// truncated value or a hostless URL is `Err`), while `exact` accepts a bare
+/// host — a truncated exact comparison cannot be widened, so the floor does not
+/// apply to it.
+#[test]
+fn issuer_match_constructor_asymmetry_from_the_step3_erratum() {
+    assert!(IssuerMatch::prefix("K", "h").is_err(), "prefix must keep the absolute-URL floor");
+    assert!(
+        IssuerMatch::prefix("K", "file:///x").is_err(),
+        "prefix must reject a hostless absolute URL"
+    );
+    assert!(
+        IssuerMatch::exact("K", &["accounts.google.com"]).is_ok(),
+        "exact must accept a bare host — truncation cannot widen an exact match"
+    );
+}
+
+/// A token whose audience is the MIDDLE entry of a multi-audience list verifies
+/// — pins the `audience: String` → `audiences: Vec<String>` generalization.
+#[tokio::test(flavor = "multi_thread")]
+async fn verify_accepts_an_audience_from_the_middle_of_the_list() {
+    let (enc, jwks) = test_key("k");
+    let (url, _hits) = serve_counting_jwks(200, jwks).await;
+    let audiences = vec!["aud-a".to_string(), "aud-b".to_string(), "aud-c".to_string()];
+    let v = OidcVerifier::new(&url, IssuerMatch::prefix("issuer", ISSUER).unwrap(), audiences).unwrap();
+
+    let token = token_with_claims(&enc, &format!("{ISSUER}/x"), "aud-b", "sub-1", "k");
+    assert_eq!(v.verify(&token).await.unwrap(), "sub-1");
+}
+
+/// A token whose audience is outside the configured list is rejected.
+#[tokio::test(flavor = "multi_thread")]
+async fn verify_rejects_an_audience_outside_the_list() {
+    let (enc, jwks) = test_key("k");
+    let (url, _hits) = serve_counting_jwks(200, jwks).await;
+    let audiences = vec!["aud-a".to_string(), "aud-b".to_string(), "aud-c".to_string()];
+    let v = OidcVerifier::new(&url, IssuerMatch::prefix("issuer", ISSUER).unwrap(), audiences).unwrap();
+
+    let token = token_with_claims(&enc, &format!("{ISSUER}/x"), "aud-z", "sub-1", "k");
+    let err = v.verify(&token).await.expect_err("out-of-list audience must be rejected");
+    assert!(
+        matches!(&err, VerifyError::Rejected(e) if e.to_string().contains("InvalidAudience")),
+        "wrong rejection reason: {err}"
+    );
+}
+
+/// The erratum's fail-CLOSED reasoning for empty audiences: `jsonwebtoken`'s
+/// `set_audience` stores `Some(set)` unconditionally and validation is
+/// `!correct_aud.contains(aud)`, so an EMPTY set matches no token — the guard
+/// exists because such a verifier could never verify anything, not because an
+/// empty list would mean "any" (the inverse claim already shipped once and was
+/// corrected).
+#[test]
+fn empty_audiences_is_rejected_as_a_verifier_that_could_never_verify() {
+    let err = match OidcVerifier::new(
+        "https://example.test/jwks",
+        IssuerMatch::prefix("issuer", ISSUER).unwrap(),
+        vec![],
+    ) {
+        Ok(_) => panic!("an empty audience set must be rejected at construction"),
+        Err(e) => e.to_string(),
+    };
+    assert!(err.contains("no audiences configured"), "wrong rejection reason: {err}");
+}
+
+/// The Step-3 fix: a subject longer than 8 bytes whose 8th byte falls INSIDE a
+/// multibyte character. `"aaaaaaa€xyz"` — 7 ASCII bytes then the euro sign's
+/// 3-byte UTF-8 encoding — put byte offset 8 (the old `&s[..8]` cut point) one
+/// byte into `€`, which panicked before the char-based cut. The plan's example
+/// string (`"aaaaaa€x"`) has exactly 8 characters and would pass through
+/// unchanged rather than demonstrate a cut, so this uses one extra character to
+/// keep the assertion non-trivial.
+#[test]
+fn short_id_cuts_on_a_character_boundary_not_a_byte_boundary() {
+    assert_eq!(short_id("aaaaaaa€xyz"), "aaaaaaa€");
+}
+
+/// Pass-through for a subject at or under the threshold; plain truncation for a
+/// longer all-ASCII subject.
+#[test]
+fn short_id_passthrough_and_plain_truncation() {
+    assert_eq!(short_id("abcdefgh"), "abcdefgh", "exactly 8 chars must pass through");
+    assert_eq!(short_id("abc"), "abc", "under 8 chars must pass through");
+    assert_eq!(short_id("abcdefghij"), "abcdefgh", "over 8 ASCII chars must cut at 8");
 }

@@ -369,3 +369,94 @@ async fn resolved_verifier_from_from_vars_verifies_a_real_token() {
     assert_eq!(verified.subject, subject);
     assert_eq!(verified.display_name, format!("epic:{}", &subject[..8]));
 }
+
+// --- Google config parse (Step 4). Reuses the `test_key`/`serve_jwks` fixtures
+// above; needs its own token helper because `token_with_kid` always appends
+// `/x` to the issuer, and Google's issuer is matched EXACTLY.
+
+#[test]
+fn absent_google_yields_ok_with_no_entry() {
+    let cfg = ProviderConfig::from_vars(&BTreeMap::new()).unwrap();
+    assert!(cfg.google.is_none());
+}
+
+#[test]
+fn reject_google_jwks_url_without_client_ids() {
+    let msg = err_msg(&[("GOOGLE_JWKS_URL", "https://www.googleapis.com/oauth2/v3/certs")]);
+    assert!(msg.contains("GOOGLE_CLIENT_IDS"), "message did not name the missing var: {msg}");
+}
+
+#[test]
+fn reject_google_client_ids_with_empty_entries() {
+    for raw in ["a,,b", "a, ", ",", " "] {
+        let msg = err_msg(&[("GOOGLE_CLIENT_IDS", raw)]);
+        assert!(msg.contains("GOOGLE_CLIENT_IDS"), "input {raw:?}: message did not name the var: {msg}");
+        assert!(
+            msg.contains("empty entry"),
+            "input {raw:?}: message did not describe the empty-entry rule: {msg}"
+        );
+    }
+}
+
+#[test]
+fn google_client_ids_trims_whitespace() {
+    let cfg = ProviderConfig::from_vars(&vars(&[("GOOGLE_CLIENT_IDS", " a , b ")])).unwrap();
+    let google = cfg.google.expect("google present when GOOGLE_CLIENT_IDS is set");
+    assert_eq!(google.client_ids, vec!["a".to_string(), "b".to_string()]);
+}
+
+#[test]
+fn reject_set_but_empty_google_var() {
+    let msg = err_msg(&[("GOOGLE_CLIENT_IDS", "")]);
+    assert!(msg.contains("GOOGLE_CLIENT_IDS"), "message did not name the offending var: {msg}");
+    assert!(msg.contains("set but empty"), "message did not describe the empty-value rule: {msg}");
+}
+
+/// Full control over `iss`/`aud`, unlike `token_with_kid` above which always
+/// appends `/x` to the issuer — Google's issuer is matched EXACTLY, so the
+/// token here must carry the real issuer spelling byte-for-byte.
+fn token_with_exact_claims(
+    enc: &jsonwebtoken::EncodingKey,
+    issuer: &str,
+    audience: &str,
+    kid: &str,
+    subject: &str,
+) -> String {
+    let exp = (std::time::SystemTime::now() + std::time::Duration::from_secs(3600))
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);
+    header.kid = Some(kid.to_string());
+    let claims = serde_json::json!({
+        "iss": issuer, "aud": audience, "sub": subject, "exp": exp,
+    });
+    jsonwebtoken::encode(&header, &claims, enc).unwrap()
+}
+
+/// The production path end-to-end, proving `oidc_credentials`' provider-name
+/// parameter is actually wired per-provider (`google:`, not left over as
+/// `epic:`) and that a real Google issuer spelling verifies against the
+/// hardcoded `GOOGLE_ISSUERS` constant.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn resolved_google_verifier_from_from_vars_verifies_a_real_token() {
+    let (enc, jwks) = test_key("g-kid");
+    let jwks_url = serve_jwks(jwks).await;
+
+    let cfg = ProviderConfig::from_vars(&vars(&[
+        ("GOOGLE_CLIENT_IDS", "web-client,ios-client"),
+        ("GOOGLE_JWKS_URL", &jwks_url),
+    ]))
+    .unwrap();
+    let providers = cfg.providers();
+    let Resolution::Configured(verifier) = providers.resolve("google") else {
+        panic!("expected Configured, from_vars -> providers() did not register google");
+    };
+
+    let subject = "sub-account-1234567890";
+    let token =
+        token_with_exact_claims(&enc, "https://accounts.google.com", "ios-client", "g-kid", subject);
+    let verified = verifier.verify(&token).await.unwrap();
+    assert_eq!(verified.subject, subject);
+    assert_eq!(verified.display_name, format!("google:{}", &subject[..8]));
+}
