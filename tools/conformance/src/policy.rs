@@ -112,13 +112,18 @@ fn accounts() -> Entry {
                         bad_value: "hunter2",
                         expect: "invalid EPIC_AUTHORIZE_URL",
                     },
-                    // The second OIDC provider's own parse: a provider that never
-                    // reaches `provider_env_keys` silently stays unconfigured, so this
-                    // case is also what proves google's block is READ at all.
+                    // The second OIDC provider's own parse, one case per variable: a
+                    // variable dropped from `provider_env_keys` is never collected by
+                    // `from_env`, and only its OWN case turns red.
                     EnvCase {
                         var: "GOOGLE_JWKS_URL",
                         bad_value: "hunter2",
                         expect: "invalid GOOGLE_JWKS_URL",
+                    },
+                    EnvCase {
+                        var: "GOOGLE_CLIENT_IDS",
+                        bad_value: ",",
+                        expect: "invalid GOOGLE_CLIENT_IDS",
                     },
                 ])),
             ),

@@ -52,8 +52,8 @@ Rationale in the decision notes below; the order deviates from the gap doc's own
   pass, and *rewarded* leaderboard seasons. Textbook fit for the transactional model
   (balances + append-only ledger in its own schema, `WalletWriter` sync capability,
   `wallet.changed` durable event). Nothing new in the plumbing.
-- **OIDC providers before Steam** — `OidcVerifier::new(jwks_url, issuer_prefix, audience)`
-  (`modules/accounts/src/epic.rs:91`) is already provider-generic, so Google/Apple are
+- **OIDC providers before Steam** — `OidcVerifier::new(jwks_url, issuer, audiences)`
+  (`modules/accounts/src/oidc.rs`) is already provider-generic, so Google/Apple are
   configuration + Apple's signed-JWT client secret. Guest/device is a provider row with
   no verifier. Steam needs its own ticket verifier and outbound HTTP to Valve — separate
   rollout, separate error model.

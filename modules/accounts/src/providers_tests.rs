@@ -242,7 +242,7 @@ fn insert_panics_on_duplicate_name() {
     let verifier = Arc::new(
         OidcVerifier::new(
             "https://api.epicgames.dev/epic/oauth/v1/.well-known/jwks.json",
-            IssuerMatch::Prefix("https://api.epicgames.dev/epic/oauth/v1".to_string()),
+            IssuerMatch::prefix("issuer", "https://api.epicgames.dev/epic/oauth/v1").unwrap(),
             vec!["client-1".to_string()],
         )
         .unwrap(),

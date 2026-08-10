@@ -51,14 +51,18 @@ struct Claims {
     sub: String,
 }
 
-/// How a provider's `iss` claim is accepted. The variant is a per-provider security
-/// decision, not a formatting preference: [`IssuerMatch::Prefix`] accepts every issuer
-/// STARTING WITH the value, so `https://accounts.google.com.evil.test` passes a
-/// `Prefix("https://accounts.google.com")` guard — a provider whose key set signs for
-/// host-shaped issuers must use [`IssuerMatch::Exact`]. The configuration parse builds
-/// these through [`IssuerMatch::prefix`] / [`IssuerMatch::exact`], which carry the
-/// per-variant validation rule.
-pub(crate) enum IssuerMatch {
+/// How a provider's `iss` claim is accepted. Which rule a provider gets is a security
+/// decision, not a formatting preference: a prefix accepts every issuer STARTING WITH
+/// the value, so `https://accounts.google.com.evil.test` passes a
+/// `prefix("https://accounts.google.com")` guard — a provider whose key set signs for
+/// host-shaped issuers must use [`IssuerMatch::exact`].
+///
+/// The inner match is PRIVATE so [`IssuerMatch::prefix`] / [`IssuerMatch::exact`] are
+/// the only way to build one: each carries its variant's validation rule, and a caller
+/// that could name the variant directly could skip that rule.
+pub(crate) struct IssuerMatch(Match);
+
+enum Match {
     Exact(Vec<String>),
     Prefix(String),
 }
@@ -69,7 +73,7 @@ impl IssuerMatch {
     /// stops truncation from widening the guard.
     pub(crate) fn prefix(key: &str, value: &str) -> anyhow::Result<IssuerMatch> {
         check_absolute_url(key, value)?;
-        Ok(IssuerMatch::Prefix(value.to_string()))
+        Ok(IssuerMatch(Match::Prefix(value.to_string())))
     }
 
     /// The exact rule: a non-empty list of non-empty spellings. An exact comparison
@@ -83,13 +87,15 @@ impl IssuerMatch {
         if values.iter().any(|v| v.is_empty()) {
             anyhow::bail!("invalid {key}: empty issuer value");
         }
-        Ok(IssuerMatch::Exact(values.iter().map(|v| v.to_string()).collect()))
+        Ok(IssuerMatch(Match::Exact(
+            values.iter().map(|v| v.to_string()).collect(),
+        )))
     }
 
     fn accepts(&self, iss: &str) -> bool {
-        match self {
-            IssuerMatch::Exact(values) => values.iter().any(|v| v == iss),
-            IssuerMatch::Prefix(prefix) => iss.starts_with(prefix),
+        match &self.0 {
+            Match::Exact(values) => values.iter().any(|v| v == iss),
+            Match::Prefix(prefix) => iss.starts_with(prefix),
         }
     }
 }
@@ -117,9 +123,10 @@ pub(crate) struct OidcVerifier {
 impl OidcVerifier {
     /// Pure construction — no I/O (the JWKS is fetched lazily). `http` failures at
     /// client-build time are configuration errors surfaced at `init`. An empty
-    /// `audiences` is rejected here because `jsonwebtoken` reads an empty audience
-    /// list as "accept any `aud`" — the one input shape that silently disables a
-    /// check rather than failing closed.
+    /// `audiences` is rejected here because `jsonwebtoken` matches `aud` against the
+    /// configured set, so an empty set rejects every token: the provider would be
+    /// enabled and unable to verify anything. That is a startup failure, not a
+    /// login-time mystery.
     pub fn new(
         jwks_url: &str,
         issuer: IssuerMatch,
@@ -275,11 +282,14 @@ fn find_key<'a>(set: &'a JwkSet, kid: Option<&str>) -> Option<&'a Jwk> {
 /// The first 8 chars of an external subject — the placeholder display name
 /// `<provider>:<shortID>` a first-sight login provisions (Go's `shortID`).
 pub(crate) fn short_id(s: &str) -> &str {
-    if s.len() > 8 {
-        // Cut on a CHARACTER boundary: a subject whose 8th byte lands inside a
-        // multibyte character would panic on a byte slice.
-        s.char_indices().nth(8).map_or(s, |(i, _)| &s[..i])
-    } else {
-        s
+    truncate(s, 8)
+}
+
+/// The crate's one string cut: `n` CHARACTERS, never bytes — a byte slice panics when
+/// the cut lands inside a multibyte character.
+pub(crate) fn truncate(s: &str, n: usize) -> &str {
+    match s.char_indices().nth(n) {
+        Some((i, _)) => &s[..i],
+        None => s,
     }
 }

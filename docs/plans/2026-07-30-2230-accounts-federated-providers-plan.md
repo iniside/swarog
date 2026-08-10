@@ -312,6 +312,18 @@ is the authority fix; Google is then pure addition.
 > truncation. The call site in `modules/accounts/src/providers.rs` carries a comment
 > pointing here.
 
+> **Erratum to Step 3(c), recorded while implementing (landed `724f560`).** The bullet
+> above says "an empty audience list in `jsonwebtoken` means 'any'". That is the
+> inverse of the truth, verified against `jsonwebtoken-9.3.1`: `set_audience` stores
+> `Some(set)` unconditionally (`validation.rs:137-139`) and validation is
+> `if !correct_aud.contains(&*aud) { InvalidAudience }` (`:318-321`), so an empty set
+> matches NO token and rejects everything. `OidcVerifier::new` still rejects an empty
+> `audiences` — but the reason is that the verifier would be enabled and unable to
+> verify anything, a startup failure rather than a login-time mystery, not that a check
+> would be silently disabled. Two consequences for Step 4: the empty-audiences test
+> asserts a fail-closed guard, not an open one, and `IssuerMatch`'s inner enum is now
+> PRIVATE behind `IssuerMatch::prefix`/`::exact`, so no test can name a variant.
+
 ---
 
 ## Step 4 — tests pinning the issuer/audience semantics `[test-author]`

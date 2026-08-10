@@ -125,7 +125,7 @@ fn token_with_kid(enc: &jsonwebtoken::EncodingKey, kid: &str) -> String {
 fn verifier(url: &str) -> OidcVerifier {
     OidcVerifier::new(
         url,
-        IssuerMatch::Prefix(ISSUER.to_string()),
+        IssuerMatch::prefix("issuer", ISSUER).unwrap(),
         vec![CLIENT_ID.to_string()],
     )
     .unwrap()

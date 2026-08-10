@@ -367,7 +367,7 @@ fn google_from_vars(vars: &BTreeMap<String, String>) -> anyhow::Result<Option<Go
 
     let verifier = Arc::new(OidcVerifier::new(
         &jwks_url,
-        IssuerMatch::exact("GOOGLE_ISSUERS", GOOGLE_ISSUERS)?,
+        IssuerMatch::exact("accounts::providers::GOOGLE_ISSUERS", GOOGLE_ISSUERS)?,
         client_ids.clone(),
     )?);
     Ok(Some(GoogleConfig {

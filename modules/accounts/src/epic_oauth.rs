@@ -26,7 +26,7 @@ use axum_extra::extract::CookieJar;
 use base64::Engine as _;
 use sqlx::PgPool;
 
-use crate::oidc::{short_id, OidcVerifier};
+use crate::oidc::{short_id, truncate, OidcVerifier};
 use crate::providers::EpicOAuthConfig;
 use crate::Service;
 
@@ -207,13 +207,6 @@ fn binding_set_cookie(binding: &str, secure: bool) -> axum::http::HeaderValue {
         "{BINDING_COOKIE}={binding}; HttpOnly; SameSite=Lax; Path=/accounts/epic; Max-Age=600{secure}"
     ))
     .expect("generated OAuth binding is ASCII")
-}
-
-fn truncate(s: &str, n: usize) -> &str {
-    match s.char_indices().nth(n) {
-        Some((i, _)) => &s[..i],
-        None => s,
-    }
 }
 
 /// The two HTTP-native routes, as an axum sub-router the module `ctx.mount`s:

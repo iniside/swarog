@@ -135,7 +135,7 @@ async fn oidc_verifier_accepts_valid_and_rejects_bad_claims() {
     let url = serve_jwks(jwks).await;
     let v = OidcVerifier::new(
         &url,
-        IssuerMatch::Prefix("https://api.epicgames.dev".to_string()),
+        IssuerMatch::prefix("issuer", "https://api.epicgames.dev").unwrap(),
         vec!["client-123".to_string()],
     )
     .unwrap();
@@ -175,7 +175,7 @@ async fn oidc_verifier_rejects_alg_none() {
     let url = serve_jwks(jwks).await;
     let v = OidcVerifier::new(
         &url,
-        IssuerMatch::Prefix("https://api.epicgames.dev".to_string()),
+        IssuerMatch::prefix("issuer", "https://api.epicgames.dev").unwrap(),
         vec!["client-123".to_string()],
     )
     .unwrap();
@@ -1042,7 +1042,7 @@ async fn epic_oauth_link_flow_end_to_end() {
     let verifier = Arc::new(
         OidcVerifier::new(
             &jwks_url,
-            IssuerMatch::Prefix(ISSUER.to_string()),
+            IssuerMatch::prefix("issuer", ISSUER).unwrap(),
             vec![CLIENT_ID.to_string()],
         )
         .unwrap(),
@@ -1134,7 +1134,7 @@ async fn epic_link_harness(
     let verifier = Arc::new(
         OidcVerifier::new(
             &jwks_url,
-            IssuerMatch::Prefix(ISSUER.to_string()),
+            IssuerMatch::prefix("issuer", ISSUER).unwrap(),
             vec![CLIENT_ID.to_string()],
         )
         .unwrap(),
@@ -1495,7 +1495,7 @@ fn oauth_fixture(pool: PgPool, redirect_uri: &str, token_url: &str) -> Arc<epic_
     let verifier = Arc::new(
         OidcVerifier::new(
             "http://localhost/jwks",
-            IssuerMatch::Prefix("iss".to_string()),
+            IssuerMatch::prefix("issuer", "https://issuer.example").unwrap(),
             vec!["aud".to_string()],
         )
         .unwrap(),
