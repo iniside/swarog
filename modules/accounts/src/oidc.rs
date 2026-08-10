@@ -51,11 +51,14 @@ struct Claims {
     sub: String,
 }
 
-/// How a provider's `iss` claim is accepted. Which rule a provider gets is a security
-/// decision, not a formatting preference: a prefix accepts every issuer STARTING WITH
-/// the value, so `https://accounts.google.com.evil.test` passes a
-/// `prefix("https://accounts.google.com")` guard — a provider whose key set signs for
-/// host-shaped issuers must use [`IssuerMatch::exact`].
+/// How a provider's `iss` claim is accepted. Both rules are lookalike-safe:
+/// [`IssuerMatch::prefix`] matches only at a PATH boundary, so
+/// `https://accounts.google.com.evil.test` fails a
+/// `prefix("https://accounts.google.com")` guard exactly as it fails an exact one.
+/// The variants differ in what they can EXPRESS: `prefix` covers a provider whose
+/// issuers live under one URL, [`IssuerMatch::exact`] a provider with a fixed list of
+/// spellings — including a scheme-less one, which the prefix rule's absolute-URL floor
+/// cannot carry.
 ///
 /// The inner match is PRIVATE so [`IssuerMatch::prefix`] / [`IssuerMatch::exact`] are
 /// the only way to build one: each carries its variant's validation rule, and a caller
@@ -68,12 +71,14 @@ enum Match {
 }
 
 impl IssuerMatch {
-    /// The prefix rule: an absolute URL with a host. The value guards a `starts_with`,
-    /// so a truncated one (`h`) would accept every https issuer — the floor is what
-    /// stops truncation from widening the guard.
+    /// The prefix rule: an absolute URL with a host, matched at a path boundary by
+    /// [`IssuerMatch::accepts`]. The absolute-URL floor is what stops a truncated value
+    /// (`h`) from accepting every https issuer. Trailing slashes are trimmed HERE, so
+    /// `https://host/v1/` and `https://host/v1` are one rule and neither spelling makes
+    /// the boundary reject the provider's own bare issuer.
     pub(crate) fn prefix(key: &str, value: &str) -> anyhow::Result<IssuerMatch> {
         check_absolute_url(key, value)?;
-        Ok(IssuerMatch(Match::Prefix(value.to_string())))
+        Ok(IssuerMatch(Match::Prefix(value.trim_end_matches('/').to_string())))
     }
 
     /// The exact rule: a non-empty list of non-empty spellings. An exact comparison
@@ -95,7 +100,9 @@ impl IssuerMatch {
     fn accepts(&self, iss: &str) -> bool {
         match &self.0 {
             Match::Exact(values) => values.iter().any(|v| v == iss),
-            Match::Prefix(prefix) => iss.starts_with(prefix),
+            Match::Prefix(prefix) => iss
+                .strip_prefix(prefix.as_str())
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with('/')),
         }
     }
 }

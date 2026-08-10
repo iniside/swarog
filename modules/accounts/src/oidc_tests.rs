@@ -354,8 +354,8 @@ async fn exact_issuer_accepts_both_google_spellings() {
     }
 }
 
-/// The headline regression this step closes: `exact` must reject a lookalike
-/// suffix that a `starts_with` prefix guard would have let through.
+/// The headline regression this step closes: `exact` must reject a lookalike host
+/// that appends a suffix to a legitimate issuer.
 #[tokio::test(flavor = "multi_thread")]
 async fn exact_issuer_rejects_lookalike_suffix() {
     let (enc, jwks) = test_key("g-kid");
@@ -372,11 +372,12 @@ async fn exact_issuer_rejects_lookalike_suffix() {
     );
 }
 
-/// The same lookalike string IS accepted under `prefix` — deliberately, to
-/// document that the variant choice (not an accident) is what protects Google:
-/// a provider whose key set signs for host-shaped issuers must pick `exact`.
+/// The same lookalike is rejected under `prefix` too — the rule matches at a path
+/// boundary, so a bare-host prefix cannot be widened into a neighbouring domain.
+/// Google's reason for `exact` is what `prefix` cannot EXPRESS: the scheme-less
+/// spelling `accounts.google.com`, which the absolute-URL floor rejects.
 #[tokio::test(flavor = "multi_thread")]
-async fn prefix_issuer_accepts_google_lookalike_by_design() {
+async fn prefix_issuer_rejects_google_lookalike_at_the_path_boundary() {
     let (enc, jwks) = test_key("g-kid");
     let (url, _hits) = serve_counting_jwks(200, jwks).await;
     let issuer = IssuerMatch::prefix("issuer", "https://accounts.google.com").unwrap();
@@ -384,14 +385,18 @@ async fn prefix_issuer_accepts_google_lookalike_by_design() {
 
     let token =
         token_with_claims(&enc, "https://accounts.google.com.evil.test", "client", "sub-1", "g-kid");
-    assert_eq!(v.verify(&token).await.unwrap(), "sub-1");
+    let err = v.verify(&token).await.expect_err("lookalike issuer must be rejected under prefix");
+    assert!(
+        matches!(&err, VerifyError::Rejected(e) if e.to_string().contains("unexpected issuer")),
+        "wrong rejection reason: {err}"
+    );
 }
 
-/// Epic's own `prefix` behaviour is unchanged by the generalization: an exact
-/// match on the prefix and a longer path under it both verify, and a foreign
-/// issuer is still rejected.
+/// `prefix` accepts at a path boundary: the configured value itself and any deeper
+/// path verify, while a host that merely STARTS WITH it — the lookalike shape — does
+/// not, and neither does a foreign issuer.
 #[tokio::test(flavor = "multi_thread")]
-async fn prefix_issuer_still_accepts_exact_and_suffixed_epic_issuer() {
+async fn prefix_issuer_accepts_the_issuer_and_its_paths_but_not_a_lookalike_host() {
     let (enc, jwks) = test_key("k");
     let (url, _hits) = serve_counting_jwks(200, jwks).await;
     let v = verifier(&url);
@@ -401,9 +406,11 @@ async fn prefix_issuer_still_accepts_exact_and_suffixed_epic_issuer() {
         assert_eq!(v.verify(&token).await.unwrap(), "sub-1", "prefix must accept {iss}");
     }
 
-    let token = token_with_claims(&enc, "https://not-eas.example", CLIENT_ID, "sub-1", "k");
-    let err = v.verify(&token).await.expect_err("foreign issuer must be rejected");
-    assert!(matches!(err, VerifyError::Rejected(_)));
+    for iss in ["https://not-eas.example", &format!("{ISSUER}.evil.test")] {
+        let token = token_with_claims(&enc, iss, CLIENT_ID, "sub-1", "k");
+        let err = v.verify(&token).await.expect_err("lookalike/foreign issuer must be rejected");
+        assert!(matches!(&err, VerifyError::Rejected(_)), "issuer {iss}: wrong error {err}");
+    }
 }
 
 /// The Step-1 erratum's asymmetry: `prefix` keeps the absolute-URL floor (a

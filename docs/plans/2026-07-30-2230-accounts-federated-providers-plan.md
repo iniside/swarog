@@ -324,6 +324,22 @@ is the authority fix; Google is then pure addition.
 > asserts a fail-closed guard, not an open one, and `IssuerMatch`'s inner enum is now
 > PRIVATE behind `IssuerMatch::prefix`/`::exact`, so no test can name a variant.
 
+> **Erratum to Step 3(c), from the proof audit of `d53537a`.** Step 3(c) says "Epic keeps
+> `Prefix` so its behaviour is byte-identical". That is no longer true, deliberately. The
+> audit found that `accepts`'s `iss.starts_with(prefix)` plus `IssuerMatch::prefix`'s
+> only rule (absolute URL with a host) makes a bare-host prefix accept a lookalike domain
+> — `https://api.epicgames.dev` accepts `https://api.epicgames.dev.evil.test`, the exact
+> shape `Exact` was introduced to stop for Google. Epic was safe only because
+> `EPIC_DEFAULT_ISSUER_PREFIX` happens to carry a path, and `EPIC_ISSUER_PREFIX` is
+> operator-overridable. `prefix` is now a **boundary** rule — `iss == prefix` or `iss`
+> continues with `/` — so a bare-host prefix is SAFE rather than merely discouraged, and
+> both variants reject the lookalike (Step 4's `Prefix`-accepts-evil assertion is
+> inverted; the reason Google still needs `exact` is the scheme-less spelling
+> `accounts.google.com`, which the absolute-URL floor cannot carry). `IssuerMatch::prefix`
+> also trims trailing slashes at parse time, so `https://host/v1/` and `https://host/v1`
+> are one rule. The narrowing of Epic's accepted issuer set is intended; every real Epic
+> issuer (the default prefix itself and any path under it) still verifies.
+
 ---
 
 ## Step 4 — tests pinning the issuer/audience semantics `[test-author]`
