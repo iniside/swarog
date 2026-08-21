@@ -1,6 +1,6 @@
 # Agent shared rules + runtime adapters
 
-Status: approved. Owner revision after v2: **do not thin `CLAUDE.md`
+Status: landed (inventory ticks 1–7 PASS). Owner revision after v2: **do not thin `CLAUDE.md`
 into a dual-runtime index**; **do not rename `core-reviewer`**. Hide
 `CLAUDE.md` from Cursor with `.cursorignore` (ArcGame). Persona
 `core-reviewer` is upgraded in place to the prosecutor contract (same
