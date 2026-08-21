@@ -823,30 +823,23 @@ surface — NOT for an ordinary fix that merely adds a unit test (`core-reviewer
 checks the negative test hits the failing branch). This is one independent pass, not a
 stack of mandatory review layers.
 
+Method lives in `.agents/shared/planning-dispatch.md` (**Adversarial Diff
+Review**) and `.claude/agents/core-reviewer.md`. Default verdict **REJECT**.
+Read `git diff` / `git show`, never the author's summary. Always-on class:
+old rail still alive. Binary PASS-with-class-list or a punch list (`class` ·
+`file:line` · failing scenario · what it should be). No "pass with
+reservations". One pass; round 2 is a fresh spawn; cap 2 rounds.
+
 For EVERY diff accepted from a subagent (and every `[inline]` fix before commit):
 
-1. **Review as the grumpy nitpicker who questions everything**: for each change ask
-   *what input, state, ordering, or partial failure makes this wrong* — not whether
-   it matches the plan step.
-2. **Attack the fix's OWN new seams first.** A fix creates new boundaries: a loop
-   that can partially fail, a constant that shadows a config knob, an error class
-   folded into success, a resource owned by the wrong scope. That's where the next
-   finding lives — check there before re-checking the original symptom.
-3. **Verify claims against code, never against the subagent's summary.** Open the
-   files. Read the negative-path test and confirm it exercises the *failing branch*
-   (the retention tests closed the whole pool, so the per-topic error branch was
-   never covered — a test existing is not a branch being tested).
-4. **State the fix's failure mode out loud.** If I cannot name what would make this
-   change wrong and which test pins that, the review is NOT done — say so instead of
-   accepting.
-5. **Bounce, don't polish.** Findings go back to the subagent as a punch list (or
-   are fixed in a reviewed follow-up) — never silently absorbed with an "acceptable"
-   shrug.
+1. Attack the fix's OWN new seams first.
+2. Verify claims against code, never a summary.
+3. State the fix's failure mode out loud. If you cannot name what would make
+   this wrong and which test pins that, the review is not done.
+4. Bounce, don't polish — punch list back to the implementer.
 
-A clean verdict is valid — but it must enumerate the classes attacked for the files
-touched; a clean bill with no class list is not done. One pass by a method different
-from the implementer's, then the verdict stands — do not loop reviews to manufacture
-findings (that recreates the very fix-on-fix carousel the agents exist to end).
+A clean verdict is valid only with the taxonomy classes attacked for the files
+touched.
 
 ## Agent memory backup — MANDATORY
 

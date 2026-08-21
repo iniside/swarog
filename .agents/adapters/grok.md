@@ -55,9 +55,11 @@ Project Grok agents live in `.grok/agents/`. Project Grok rules live in
   harness/topology.
 - `[review]` — `spawn_subagent` with `subagent_type: "core-reviewer"`
   written first, before `description` and before `prompt`;
-  `capability_mode: "read-only"`; `model` ≥ the author's tier
+  `capability_mode: "execute"` (shell for `git show` / `git diff`; the
+  persona must not edit); `model` ≥ the author's tier
   (`grok-4.6` if the author was `grok-4.6`, otherwise `grok-4.5`);
-  `isolation: "none"`.
+  `isolation: "none"`. Do not use `read-only` here — that mode has no
+  shell, so the reviewer cannot observe the commit.
 - Research / read-only — `spawn_subagent` with `subagent_type: "explore"`,
   `capability_mode: "read-only"`, `model: "grok-4.5"`. Listing-only uses
   the same type and model.
