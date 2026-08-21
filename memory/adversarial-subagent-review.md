@@ -5,13 +5,14 @@ metadata:
   node_type: memory
   type: feedback
   originSessionId: 88cdd953-b406-40a0-8ab2-6c7eb07acece
-  modified: 2026-07-28T20:01:27.472Z
 ---
 
 Reviewing a diff means attempting to BREAK it, not confirming it matches the plan step. The
-method is CLAUDE.md `## Adversarial Subagent Review — MANDATORY` (read it, don't restate it):
-route by class, attack the fix's own new seam first, verify against code not the summary,
-state the failure mode + pinning test, bounce as a punch list.
+method is `.agents/shared/planning-dispatch.md` **Adversarial Diff Review**
+and `.claude/agents/core-reviewer.md` (prosecutor, default REJECT, `git show`
+first, always-on old-rail class). Route by taxonomy class, attack the fix's
+own new seam first, verify against code not the summary, bounce as a punch
+list.
 
 **Why:** the 2026-07-12 external audit broke four accepted fixes exactly at the boundary
 each fix introduced (retention `Ok`-while-per-topic-fails `7ca0b51`, hardcoded 3h stall
@@ -51,14 +52,6 @@ poprawnego sub agenta". **Rule:** the pass is the REGISTERED specialized subagen
 the risk surface). If the specialized agent_type looks unavailable, that is a signal to
 check/enable it — NEVER a license to substitute general-purpose or inline. The boundary must
 exist BEFORE the commit, routed per-diff, not retrofitted after challenge ("it came back CLEAN
-anyway" is not the point). **Third recurrence 2026-07-28 (PLAN review):** dispatched the
-grumpy plan-reviewer as `general-purpose`; a repo PreToolUse guardrail blocked the call and
-Lukasz said "zly agent". The rule covers **plans, not only diffs** — Plan Writing step 5's
-reviewer IS the `core-reviewer` lane. Re-dispatched correctly and it returned 8 blocking/high
-findings on a money-path plan (a whole missed subsystem: the weles 12-process fixture with a
-hard `== 12` assertion; a `#[retry_safe]` justification that did not survive contact with
-`match::report` returning `()` vs ours returning `i64`). general-purpose would have read it for
-plausibility. **Reflex to build: "review" — of anything, diff or plan — types `core-reviewer`,
-never general-purpose.** Related: [[scope-claims-to-what-was-verified]],
+anyway" is not the point). Related: [[scope-claims-to-what-was-verified]],
 [[verify-the-at-risk-path-not-the-safe-one]], [[specialized-core-agents]],
 [[core-failure-taxonomy]].
