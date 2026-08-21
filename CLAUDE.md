@@ -1,5 +1,8 @@
 # CLAUDE.md
 
+Workflow substance also lives in `.agents/shared/`; this file is the Claude
+overlay (models, trailers, plan path, hook names).
+
 Guidance for working in this repo. A game backend in **Rust** (Cargo
 workspace), built as a serious architecture experiment — a **modular monolith with a
 proven split**: one repo, one
