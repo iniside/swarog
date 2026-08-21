@@ -1,6 +1,11 @@
 # Plan Writing Workflow
 
-Detail for the **Plan Writing Workflow — MANDATORY** rule in [AGENTS.md](../../AGENTS.md). The five-step skeleton stays in `AGENTS.md`; this file holds the full elaboration.
+Detail for the **Plan Writing Workflow — MANDATORY** rule in
+[`.agents/shared/planning-dispatch.md`](../../.agents/shared/planning-dispatch.md).
+The skeleton stays there; this file holds the full elaboration. Shared plan
+tags are `[inline]` / `[independent]` / `[mechanical]` / `[test-author]` /
+`[review]`. Claude plans may still write `[opus]` / `[fable]` / `[sonnet]`;
+adapters translate.
 
 Front-load the thinking. For any plan (plan mode / "write me a plan" / a `docs/plans/…-plan.md`), run the steps in order — no skipping for "it's small".
 
@@ -37,13 +42,18 @@ The plan body must be `Step 1 → Step 2 → …` where each step spells out, ex
   `registry::require` to a contract trait, contributing generated edge glue, and
   registering the module in `cmd/server/src/lib.rs` plus its service composition
   root).
-- **(d) dispatch tag** — `[inline]`, `[subagent-complex]`, or `[subagent-mechanical]` (see [implementation-mode.md](implementation-mode.md) for the heuristic).
+- **(d) dispatch tag** — `[inline]`, `[independent]`, `[mechanical]`,
+  `[test-author]`, or `[review]` (see [implementation-mode.md](implementation-mode.md)).
+  Claude may write `[opus]` / `[fable]` / `[sonnet]`; adapters translate.
 
 Steps do **NOT** each have to compile or pass tests in isolation — a step may leave the tree broken mid-rollout — but every step MUST be **written out**: a reader follows them top-to-bottom without inventing the order. Reference material (Context, Verified facts, file tables) is fine as supporting sections, but it does not replace the ordered steps — it feeds them.
 
-## Step 5 — Dispatch a grumpy senior-engineer reviewer
+## Step 5 — Dispatch `core-reviewer`
 
-One reviewer subagent at **session tier** (separate context — the independent-reviewer boundary is the point). **Ask the user the think-effort level first** (default / think / think hard / ultrathink) — effort does NOT inherit through the Agent tool, so embed the chosen level in the reviewer's prompt.
+Write `subagent_type: "core-reviewer"` first. Never a generic implementer or
+explore/plan type. Do not hand-author a persona. **Ask the think-effort
+level first** — it does not inherit; embed it in the prompt. Punch list,
+never a rewrite. Address it before showing the user, or note deferrals.
 
 It hunts logical holes, missing pieces (module `migrate`? separate-file unit test?
 a declared `requires()` capability that does not match the real synchronous

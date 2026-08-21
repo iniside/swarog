@@ -1,6 +1,7 @@
 # Platform notes
 
-Everything in `CLAUDE.md` / `AGENTS.md` is written platform-neutrally: the rules
+Everything in `.agents/shared/` (plus the thin `AGENTS.md` / Claude-specific
+`CLAUDE.md` overlays) is written platform-neutrally: the rules
 (one rollout at a time, fail-closed dev opt-ins, the fortress rule) are the same
 everywhere. This file holds the per-OS specifics — the concrete command spellings
 and the places where a platform actually differs in kind, not just in syntax.
