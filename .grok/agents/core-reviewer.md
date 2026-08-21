@@ -1,7 +1,9 @@
 ---
 name: core-reviewer
 description: ONE adversarial, class-keyed pass over a produced diff — the prosecutor-mode Adversarial Diff Review, run in a separate context so it can't skim like an inline review. Use as the independent review after EVERY task and EVERY commit (a subagent's diff, or the main model's own), routed by files-touched to this repo's failure taxonomy. Read-only; binary verdict (clean allowed, with its class list) + punch list. Also the review pass over a written PLAN before it is shown to the user. Complements architecture-review (seam law) and proof-auditor (test/gate soundness).
-tools: Read, Grep, Glob, Bash
+prompt_mode: full
+permission_mode: plan
+agents_md: true
 ---
 
 # Core Reviewer — one pass, prosecutor mode
