@@ -10,9 +10,9 @@ small":
    admin section (or a replacement) documents in its Context, per overlapping
    candidate: what it does, how it differs, and an explicit "why not extend /
    depend on X". Without that the plan is incomplete.
-1. Pick the research subagent count (bands 2–4 / 4–8 / 8–12) and dispatch.
-   Ask only when the task is big enough that the band genuinely changes
-   coverage. Pass an explicit model/tool choice from the active adapter.
+1. Pick the research subagent count (bands 2–4 / 4–8 / 8–12). Ask **every
+   time** a fan-out is picked — the count is task-specific. Pass an explicit
+   model/tool choice from the active adapter.
 2. Research three non-overlapping angles: API surface, API usages, and
    patterns. Synthesize in the main agent — never write off one subagent.
 3. Write concrete specifics: exact files, exact signatures, exact API calls,

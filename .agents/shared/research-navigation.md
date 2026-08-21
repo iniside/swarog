@@ -45,9 +45,10 @@ Fallback chain, in order — never skip to grep because it feels faster:
 4. **Grep/Glob** — only when nothing else fits, and a labelled lower bound.
    Once grep locates a symbol, re-escalate with the now-known file+symbol.
 
-Pick the research subagent count from the bands (2–4 / 4–8 / 8–12) and
-dispatch. Ask the user only when the task is big enough that the band
-genuinely changes coverage.
+Pick the research subagent count from the bands (2–4 / 4–8 / 8–12). Ask
+**every time** a fan-out is picked. The method question ("how should I
+research this?") is separate: ask that only when the method changes the
+answer (see Search Mode above).
 
 ## Research Never Overrules a Decision - MANDATORY
 
