@@ -80,6 +80,30 @@ fn new_subject() -> String {
     )
 }
 
+/// Whether `subject` has the shape [`new_subject`] mints: five lowercase-hex groups of
+/// 8-4-4-4-12. Pure and zero-I/O by construction, and checked BEFORE any SQL: the
+/// subject half of a ticket is the only caller-controlled value this provider binds
+/// raw, and Postgres rejecting it as a `text` parameter (a NUL byte is not
+/// representable) would arrive as a server error — i.e. an anonymous caller could
+/// choose to raise the `Infra` verdict that means "our IdP is down". A value this
+/// backend could never have minted is a rejected credential, decided here.
+///
+/// Shape only, not the v4 version/variant nibbles: rejecting everything outside the
+/// alphabet is what closes the defect, and every minted subject satisfies both.
+pub(crate) fn is_minted_subject(subject: &str) -> bool {
+    const GROUPS: [usize; 5] = [8, 4, 4, 4, 12];
+    let mut groups = subject.split('-');
+    for len in GROUPS {
+        let Some(group) = groups.next() else {
+            return false;
+        };
+        if group.len() != len || !group.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+            return false;
+        }
+    }
+    groups.next().is_none()
+}
+
 /// The guest provider's verification face. Unlike an OIDC provider it needs no
 /// configuration — its authority is this module's own store — so it is registered in
 /// every process that has the accounts schema.
@@ -97,15 +121,22 @@ impl CredentialVerifier for GuestCredentials {
         MAX_GUEST_CREDENTIAL_BYTES
     }
 
-    /// A malformed ticket, an unknown subject and a wrong secret are ONE answer
-    /// (`Rejected` → 401), and not merely by mapping three branches onto one error:
-    /// the subject and the digest are matched in a SINGLE query, so this code never
-    /// learns that a subject exists. There is no earlier return to leak one.
+    /// Of the tickets that REACH this verifier (`login_federated` decides an empty or
+    /// over-cap credential as `Invalid` → 400 before resolving anything), a
+    /// wrong-shaped ticket, an unknown subject and a wrong secret are ONE answer
+    /// (`Rejected` → 401) — and not merely by mapping branches onto one error: the
+    /// subject and the digest are matched in a SINGLE query, so this code never learns
+    /// that a subject exists. The shape check is not such a return either: it decides
+    /// only whether the value could be a subject this backend ever minted, which is
+    /// public knowledge about the format.
     async fn verify(&self, credential: &str) -> Result<VerifiedSubject, VerifyError> {
         let rejected = || VerifyError::Rejected(anyhow::anyhow!("invalid guest ticket"));
         let Some((subject, secret)) = credential.split_once('.') else {
             return Err(rejected());
         };
+        if !is_minted_subject(subject) {
+            return Err(rejected());
+        }
         let found = self
             .store
             .guest_identity_matches(subject, &secret_hash(secret))
