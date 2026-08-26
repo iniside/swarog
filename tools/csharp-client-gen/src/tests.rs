@@ -52,39 +52,45 @@ fn golden_covers_the_known_surface() {
     assert_eq!(m.dtos.len(), 8, "expected 8 reachable DTOs");
     assert_eq!(m.statuses.len(), 8, "expected 8 Status variants");
 
+    // Set EQUALITY, not inclusion: an added method that is counted and re-blessed
+    // would slip past a `contains` loop with no name ever read by a human.
     let wires: BTreeSet<&str> = m.methods.iter().map(|x| x.wire_method.as_str()).collect();
-    for expected in [
-        "accounts.register",
-        "accounts.login",
-        "accounts.loginFederated",
-        "accounts.me",
-        "characters.create",
-        "characters.list",
-        "characters.delete",
-        "inventory.listMine",
-        "inventory.listCharacter",
-        "inventory.grant",
-        "match.report",
-        "leaderboard.topScores",
-        "wallet.myBalances",
-        "wallet.listCurrencies",
-    ] {
-        assert!(wires.contains(expected), "missing wire method {expected}");
-    }
+    assert_eq!(
+        wires,
+        BTreeSet::from([
+            "accounts.register",
+            "accounts.login",
+            "accounts.loginFederated",
+            "accounts.me",
+            "characters.create",
+            "characters.list",
+            "characters.delete",
+            "inventory.listMine",
+            "inventory.listCharacter",
+            "inventory.grant",
+            "match.report",
+            "leaderboard.topScores",
+            "wallet.myBalances",
+            "wallet.listCurrencies",
+        ]),
+        "the generated wire-method surface drifted from the reviewed list"
+    );
 
     let dtos: BTreeSet<&str> = m.dtos.iter().map(|d| d.name.as_str()).collect();
-    for expected in [
-        "Session",
-        "IdentityRef",
-        "MeView",
-        "Character",
-        "Holding",
-        "Score",
-        "Balance",
-        "Currency",
-    ] {
-        assert!(dtos.contains(expected), "missing DTO {expected}");
-    }
+    assert_eq!(
+        dtos,
+        BTreeSet::from([
+            "Session",
+            "IdentityRef",
+            "MeView",
+            "Character",
+            "Holding",
+            "Score",
+            "Balance",
+            "Currency",
+        ]),
+        "the generated DTO surface drifted from the reviewed list"
+    );
 }
 
 #[test]
