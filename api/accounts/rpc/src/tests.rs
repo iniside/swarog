@@ -66,7 +66,7 @@ fn provide_factories_provides_sessions_without_contributing_routes() {
     );
 
     // (3) The Auth ops are NOT provided as a `dyn Auth` client here: the D2 front routes
-    // register/login/loginEpic/me over the edge from describe, never via a typed require.
+    // register/login/loginFederated/me over the edge from describe, never via a typed require.
     assert!(
         ctx.registry()
             .try_require::<dyn Auth>(&registry::key("accounts", "auth"))

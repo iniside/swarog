@@ -9,17 +9,19 @@ use accountsapi::Auth as _;
 use sqlx::PgPool;
 use tokio::sync::Semaphore;
 
+use crate::oidc::{IssuerMatch, OidcVerifier};
 use crate::password::ArgonVerifier;
+use crate::providers::{oidc_credentials, EPIC};
 use crate::store::Store;
 use crate::{
-    display_name_within_cap, email_within_cap, epic_id_token_within_cap,
-    password_within_cap, session_token_within_cap, Service,
+    credential_within_cap, display_name_within_cap, email_within_cap,
+    password_within_cap, provider_name_within_cap, session_token_within_cap, Service,
 };
 
 const DEFAULT_DSN: &str =
     "postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable";
 
-fn service_without_epic_provider() -> Service {
+fn service_without_providers() -> Service {
     let dsn = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string());
     Service {
         store: Store {
@@ -49,9 +51,27 @@ pub fn conformance_display_name_rejected(len: usize) -> bool {
     !display_name_within_cap(&"a".repeat(len))
 }
 
+/// The OIDC credential cap as a REQUEST meets it: through the resolved provider's
+/// own `max_credential_bytes`, not a constant restated here.
 #[doc(hidden)]
-pub fn conformance_epic_id_token_rejected(len: usize) -> bool {
-    !epic_id_token_within_cap(&"a".repeat(len))
+pub fn conformance_federated_credential_rejected(len: usize) -> bool {
+    let verifier = oidc_credentials(
+        EPIC,
+        Arc::new(
+            OidcVerifier::new(
+                "https://conformance.invalid/jwks",
+                IssuerMatch::prefix("issuer", "https://conformance.invalid").expect("valid issuer"),
+                vec!["conformance-client".to_string()],
+            )
+            .expect("valid verifier configuration"),
+        ),
+    );
+    !credential_within_cap(verifier.as_ref(), &"a".repeat(len))
+}
+
+#[doc(hidden)]
+pub fn conformance_provider_name_rejected(len: usize) -> bool {
+    !provider_name_within_cap(&"a".repeat(len))
 }
 
 #[doc(hidden)]
@@ -59,10 +79,13 @@ pub fn conformance_session_token_rejected(len: usize) -> bool {
     !session_token_within_cap(&"a".repeat(len))
 }
 
+/// `epic` is in `KNOWN_PROVIDERS`, so a service that configured nothing answers the
+/// KnownButUnconfigured arm — the 503 this case pins, distinct from the 400 an
+/// unknown name gets.
 #[doc(hidden)]
-pub async fn conformance_login_epic_without_provider(
+pub async fn conformance_login_federated_unconfigured_provider(
 ) -> Result<accountsapi::Session, opsapi::Error> {
-    service_without_epic_provider()
-        .login_epic("conformance.probe.jwt".into())
+    service_without_providers()
+        .login_federated(EPIC.to_string(), "conformance.probe.jwt".into())
         .await
 }

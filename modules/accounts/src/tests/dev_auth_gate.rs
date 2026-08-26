@@ -12,7 +12,7 @@
 // `use accountsapi::{Auth as _, Sessions as _}` (re-exported through this glob).
 use super::*;
 
-use accountsapi::auth_rpc::{METHOD_LOGIN, METHOD_LOGIN_EPIC, METHOD_ME, METHOD_REGISTER};
+use accountsapi::auth_rpc::{METHOD_LOGIN, METHOD_LOGIN_FEDERATED, METHOD_ME, METHOD_REGISTER};
 
 /// A service with the dev-auth gate forced on/off over a LAZY pool. The gate rejects
 /// register/login BEFORE any DB access, so the reject-path tests need no live DB.
@@ -74,9 +74,9 @@ async fn dev_auth_on_lets_methods_reach_normal_handling() {
 }
 
 /// Decision A's structural-parity invariant: ALL four Auth ops (register/login/
-/// loginEpic/me) are contributed to the gateway slots UNCONDITIONALLY — even with dev
-/// auth OFF and no epic provider configured — while the impl guards reject the gated
-/// methods (register/login → NotFound, loginEpic → Unavailable). This is what makes
+/// loginFederated/me) are contributed to the gateway slots UNCONDITIONALLY — even with
+/// dev auth OFF and no provider configured — while the impl guards reject the gated
+/// methods (register/login → NotFound, loginFederated → Unavailable). This is what makes
 /// the monolith and split front-door route sets equal by construction (routecheck's
 /// target invariant); the gate lives at the impl, never at the contribution site.
 #[tokio::test]
@@ -87,7 +87,7 @@ async fn ops_contributed_unconditionally_while_guard_rejects() {
     crate::ops::register_player_ops(&ctx, svc.clone());
 
     let ops: Vec<opsapi::Operation> = ctx.contributions(opsapi::SLOT);
-    for m in [METHOD_REGISTER, METHOD_LOGIN, METHOD_LOGIN_EPIC, METHOD_ME] {
+    for m in [METHOD_REGISTER, METHOD_LOGIN, METHOD_LOGIN_FEDERATED, METHOD_ME] {
         assert!(
             ops.iter().any(|o| o.method == m),
             "op {m} must be contributed even with its gate off (impl-side gating)"
@@ -113,7 +113,10 @@ async fn ops_contributed_unconditionally_while_guard_rejects() {
     assert_eq!(e.status, opsapi::Status::NotFound);
     let e = svc.login("a@x.io".into(), "pw".into()).await.unwrap_err();
     assert_eq!(e.status, opsapi::Status::NotFound);
-    let e = svc.login_epic("some-token".into()).await.unwrap_err();
+    let e = svc
+        .login_federated("epic".into(), "some-token".into())
+        .await
+        .unwrap_err();
     assert_eq!(
         e.status,
         opsapi::Status::Unavailable,

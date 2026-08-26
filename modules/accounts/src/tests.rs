@@ -281,21 +281,28 @@ async fn register_requires_email_and_password() {
 }
 
 #[tokio::test]
-async fn login_epic_requires_token_and_configured_provider() {
+async fn login_federated_requires_credential_and_configured_provider() {
     let svc = lazy_service();
-    let e = svc.login_epic(String::new()).await.unwrap_err();
-    assert_eq!(e.status, opsapi::Status::Invalid);
-    let over_cap = format!("{}a", "é".repeat(MAX_EPIC_ID_TOKEN_BYTES / 2));
-    assert_eq!(over_cap.len(), MAX_EPIC_ID_TOKEN_BYTES + 1);
-    let e = svc.login_epic(over_cap).await.unwrap_err();
+    let e = svc
+        .login_federated("epic".into(), "some.jwt.here".into())
+        .await
+        .unwrap_err();
+    assert_eq!(
+        e.status,
+        opsapi::Status::Unavailable,
+        "a known provider this process never configured is a deployment fact (503)"
+    );
+    let over_cap = format!("{}a", "é".repeat(MAX_PROVIDER_NAME_BYTES / 2));
+    assert_eq!(over_cap.len(), MAX_PROVIDER_NAME_BYTES + 1);
+    let e = svc
+        .login_federated(over_cap, "some.jwt.here".into())
+        .await
+        .unwrap_err();
     assert_eq!(
         e.status,
         opsapi::Status::Invalid,
-        "the byte cap must reject before provider/JWKS availability is consulted"
+        "the provider byte cap must reject before the registry lookup"
     );
-    // Provider not configured (epic OnceLock empty) → typed Unavailable, no panic.
-    let e = svc.login_epic("some.jwt.here".into()).await.unwrap_err();
-    assert_eq!(e.status, opsapi::Status::Unavailable);
 }
 
 #[tokio::test]
@@ -348,7 +355,7 @@ fn new_accounts_caps_count_utf8_bytes_at_boundary() {
     }
 
     assert_cap("display name", MAX_DISPLAY_NAME_BYTES, display_name_within_cap);
-    assert_cap("Epic id_token", MAX_EPIC_ID_TOKEN_BYTES, epic_id_token_within_cap);
+    assert_cap("provider name", MAX_PROVIDER_NAME_BYTES, provider_name_within_cap);
     assert_cap(
         "session token",
         accountsapi::MAX_SESSION_TOKEN_BYTES,

@@ -62,6 +62,12 @@ pub(crate) struct VerifiedSubject {
 /// I/O (JWKS fetch, secret comparison) and return the shared [`VerifyError`] taxonomy.
 #[async_trait]
 pub(crate) trait CredentialVerifier: Send + Sync {
+    /// The widest credential this provider will look at, in bytes. Deliberately has
+    /// no default body: a credential's size bound is a property of its shape (a JWT,
+    /// a short opaque ticket), so each provider states its own rather than inheriting
+    /// the one that happened to be written first.
+    fn max_credential_bytes(&self) -> usize;
+
     async fn verify(&self, credential: &str) -> Result<VerifiedSubject, VerifyError>;
 }
 
@@ -216,6 +222,11 @@ impl ProviderConfig {
     }
 }
 
+/// The widest id_token any OIDC provider here accepts. JWTs carrying claim-heavy
+/// payloads run into the low tens of KiB; the cap bounds base64/JSON work on an
+/// attacker-supplied string before a signature is ever checked.
+const MAX_OIDC_CREDENTIAL_BYTES: usize = 65_536;
+
 /// Any OIDC provider's `CredentialVerifier` face: an id_token in, the provider's
 /// account id plus the `<provider>:<shortID>` first-sight display name out. The
 /// provider name is data, so a second OIDC provider is a registration, not a type.
@@ -226,6 +237,10 @@ struct OidcCredentials {
 
 #[async_trait]
 impl CredentialVerifier for OidcCredentials {
+    fn max_credential_bytes(&self) -> usize {
+        MAX_OIDC_CREDENTIAL_BYTES
+    }
+
     async fn verify(&self, credential: &str) -> Result<VerifiedSubject, VerifyError> {
         let subject = self.verifier.verify(credential).await?;
         Ok(VerifiedSubject {

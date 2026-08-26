@@ -35,9 +35,10 @@ public sealed record AccountsLoginRequest(
     [property: JsonPropertyName("email")] string Email,
     [property: JsonPropertyName("password")] string Password);
 
-/// <summary>Request for <c>accounts.loginEpic</c>.</summary>
-public sealed record AccountsLoginEpicRequest(
-    [property: JsonPropertyName("id_token")] string IdToken);
+/// <summary>Request for <c>accounts.loginFederated</c>.</summary>
+public sealed record AccountsLoginFederatedRequest(
+    [property: JsonPropertyName("provider")] string Provider,
+    [property: JsonPropertyName("credential")] string Credential);
 
 /// <summary>Request for <c>accounts.me</c> (no arguments — serializes to <c>{}</c>).</summary>
 public sealed record AccountsMeRequest();
@@ -113,12 +114,12 @@ public sealed class GameBackendClient(IPlayerTransport transport)
         return value.Deserialize<Session>(JsonOpts)!;
     }
 
-    /// <summary>Invokes <c>accounts.loginEpic</c> (unauthenticated).</summary>
-    public async Task<Session> AccountsLoginEpicAsync(string idToken, CancellationToken ct = default)
+    /// <summary>Invokes <c>accounts.loginFederated</c> (unauthenticated).</summary>
+    public async Task<Session> AccountsLoginFederatedAsync(string provider, string credential, CancellationToken ct = default)
     {
-        var request = new AccountsLoginEpicRequest(idToken);
+        var request = new AccountsLoginFederatedRequest(provider, credential);
         byte[] payload = JsonSerializer.SerializeToUtf8Bytes(request, JsonOpts);
-        PlayerResponse resp = await transport.CallAsync("accounts.loginEpic", null, payload, ct).ConfigureAwait(false);
+        PlayerResponse resp = await transport.CallAsync("accounts.loginFederated", null, payload, ct).ConfigureAwait(false);
         JsonNode envelope = Unwrap(resp);
         JsonNode value = envelope["value"]
             ?? throw new GameBackendTransportException("Ok response missing 'value'");

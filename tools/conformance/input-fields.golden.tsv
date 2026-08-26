@@ -1,7 +1,8 @@
 wire_method	wire_field_name	exposure
 accounts.login	email	external
 accounts.login	password	external
-accounts.loginEpic	id_token	external
+accounts.loginFederated	credential	external
+accounts.loginFederated	provider	external
 accounts.register	displayName	external
 accounts.register	email	external
 accounts.register	password	external

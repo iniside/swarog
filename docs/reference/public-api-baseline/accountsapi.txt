@@ -3,36 +3,37 @@ pub mod accountsapi
 pub mod accountsapi::admin
 pub const accountsapi::admin::PLAYERS_ROW_MENU: adminapi::ExtensionPoint
 pub mod accountsapi::auth_rpc
-pub struct accountsapi::auth_rpc::LoginEpicRequest
-pub accountsapi::auth_rpc::LoginEpicRequest::id_token: alloc::string::String
-impl core::default::Default for accountsapi::auth_rpc::LoginEpicRequest
-pub fn accountsapi::auth_rpc::LoginEpicRequest::default() -> accountsapi::auth_rpc::LoginEpicRequest
-impl serde_core::ser::Serialize for accountsapi::auth_rpc::LoginEpicRequest
-pub fn accountsapi::auth_rpc::LoginEpicRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for accountsapi::auth_rpc::LoginEpicRequest where accountsapi::auth_rpc::LoginEpicRequest: core::default::Default
-pub fn accountsapi::auth_rpc::LoginEpicRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for accountsapi::auth_rpc::LoginEpicRequest
-impl core::marker::Send for accountsapi::auth_rpc::LoginEpicRequest
-impl core::marker::Sync for accountsapi::auth_rpc::LoginEpicRequest
-impl core::marker::Unpin for accountsapi::auth_rpc::LoginEpicRequest
-impl core::marker::UnsafeUnpin for accountsapi::auth_rpc::LoginEpicRequest
-impl core::panic::unwind_safe::RefUnwindSafe for accountsapi::auth_rpc::LoginEpicRequest
-impl core::panic::unwind_safe::UnwindSafe for accountsapi::auth_rpc::LoginEpicRequest
-pub struct accountsapi::auth_rpc::LoginEpicResponse
-pub accountsapi::auth_rpc::LoginEpicResponse::err: alloc::string::String
-pub accountsapi::auth_rpc::LoginEpicResponse::status: opsapi::Status
-pub accountsapi::auth_rpc::LoginEpicResponse::value: serde_json::value::Value
-impl serde_core::ser::Serialize for accountsapi::auth_rpc::LoginEpicResponse
-pub fn accountsapi::auth_rpc::LoginEpicResponse::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for accountsapi::auth_rpc::LoginEpicResponse
-pub fn accountsapi::auth_rpc::LoginEpicResponse::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for accountsapi::auth_rpc::LoginEpicResponse
-impl core::marker::Send for accountsapi::auth_rpc::LoginEpicResponse
-impl core::marker::Sync for accountsapi::auth_rpc::LoginEpicResponse
-impl core::marker::Unpin for accountsapi::auth_rpc::LoginEpicResponse
-impl core::marker::UnsafeUnpin for accountsapi::auth_rpc::LoginEpicResponse
-impl core::panic::unwind_safe::RefUnwindSafe for accountsapi::auth_rpc::LoginEpicResponse
-impl core::panic::unwind_safe::UnwindSafe for accountsapi::auth_rpc::LoginEpicResponse
+pub struct accountsapi::auth_rpc::LoginFederatedRequest
+pub accountsapi::auth_rpc::LoginFederatedRequest::credential: alloc::string::String
+pub accountsapi::auth_rpc::LoginFederatedRequest::provider: alloc::string::String
+impl core::default::Default for accountsapi::auth_rpc::LoginFederatedRequest
+pub fn accountsapi::auth_rpc::LoginFederatedRequest::default() -> accountsapi::auth_rpc::LoginFederatedRequest
+impl serde_core::ser::Serialize for accountsapi::auth_rpc::LoginFederatedRequest
+pub fn accountsapi::auth_rpc::LoginFederatedRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for accountsapi::auth_rpc::LoginFederatedRequest where accountsapi::auth_rpc::LoginFederatedRequest: core::default::Default
+pub fn accountsapi::auth_rpc::LoginFederatedRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for accountsapi::auth_rpc::LoginFederatedRequest
+impl core::marker::Send for accountsapi::auth_rpc::LoginFederatedRequest
+impl core::marker::Sync for accountsapi::auth_rpc::LoginFederatedRequest
+impl core::marker::Unpin for accountsapi::auth_rpc::LoginFederatedRequest
+impl core::marker::UnsafeUnpin for accountsapi::auth_rpc::LoginFederatedRequest
+impl core::panic::unwind_safe::RefUnwindSafe for accountsapi::auth_rpc::LoginFederatedRequest
+impl core::panic::unwind_safe::UnwindSafe for accountsapi::auth_rpc::LoginFederatedRequest
+pub struct accountsapi::auth_rpc::LoginFederatedResponse
+pub accountsapi::auth_rpc::LoginFederatedResponse::err: alloc::string::String
+pub accountsapi::auth_rpc::LoginFederatedResponse::status: opsapi::Status
+pub accountsapi::auth_rpc::LoginFederatedResponse::value: serde_json::value::Value
+impl serde_core::ser::Serialize for accountsapi::auth_rpc::LoginFederatedResponse
+pub fn accountsapi::auth_rpc::LoginFederatedResponse::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for accountsapi::auth_rpc::LoginFederatedResponse
+pub fn accountsapi::auth_rpc::LoginFederatedResponse::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for accountsapi::auth_rpc::LoginFederatedResponse
+impl core::marker::Send for accountsapi::auth_rpc::LoginFederatedResponse
+impl core::marker::Sync for accountsapi::auth_rpc::LoginFederatedResponse
+impl core::marker::Unpin for accountsapi::auth_rpc::LoginFederatedResponse
+impl core::marker::UnsafeUnpin for accountsapi::auth_rpc::LoginFederatedResponse
+impl core::panic::unwind_safe::RefUnwindSafe for accountsapi::auth_rpc::LoginFederatedResponse
+impl core::panic::unwind_safe::UnwindSafe for accountsapi::auth_rpc::LoginFederatedResponse
 pub struct accountsapi::auth_rpc::LoginRequest
 pub accountsapi::auth_rpc::LoginRequest::email: alloc::string::String
 pub accountsapi::auth_rpc::LoginRequest::password: alloc::string::String
@@ -126,7 +127,7 @@ impl core::marker::UnsafeUnpin for accountsapi::auth_rpc::RegisterResponse
 impl core::panic::unwind_safe::RefUnwindSafe for accountsapi::auth_rpc::RegisterResponse
 impl core::panic::unwind_safe::UnwindSafe for accountsapi::auth_rpc::RegisterResponse
 pub const accountsapi::auth_rpc::METHOD_LOGIN: &str
-pub const accountsapi::auth_rpc::METHOD_LOGIN_EPIC: &str
+pub const accountsapi::auth_rpc::METHOD_LOGIN_FEDERATED: &str
 pub const accountsapi::auth_rpc::METHOD_ME: &str
 pub const accountsapi::auth_rpc::METHOD_REGISTER: &str
 pub fn accountsapi::auth_rpc::describe() -> opsapi::DescribeManifest
@@ -243,7 +244,7 @@ impl core::panic::unwind_safe::UnwindSafe for accountsapi::Session
 pub const accountsapi::MAX_SESSION_TOKEN_BYTES: usize
 pub trait accountsapi::Auth: core::marker::Send + core::marker::Sync
 pub fn accountsapi::Auth::login<'life0, 'async_trait>(&'life0 self, alloc::string::String, alloc::string::String) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<accountsapi::Session, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub fn accountsapi::Auth::login_epic<'life0, 'async_trait>(&'life0 self, alloc::string::String) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<accountsapi::Session, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn accountsapi::Auth::login_federated<'life0, 'async_trait>(&'life0 self, alloc::string::String, alloc::string::String) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<accountsapi::Session, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn accountsapi::Auth::me<'life0, 'async_trait>(&'life0 self, opsapi::Identity) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<accountsapi::MeView, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn accountsapi::Auth::register<'life0, 'async_trait>(&'life0 self, alloc::string::String, alloc::string::String, alloc::string::String) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<accountsapi::Session, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub trait accountsapi::Sessions: core::marker::Send + core::marker::Sync

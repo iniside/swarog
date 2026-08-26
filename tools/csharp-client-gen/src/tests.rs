@@ -56,7 +56,7 @@ fn golden_covers_the_known_surface() {
     for expected in [
         "accounts.register",
         "accounts.login",
-        "accounts.loginEpic",
+        "accounts.loginFederated",
         "accounts.me",
         "characters.create",
         "characters.list",

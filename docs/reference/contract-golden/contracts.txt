@@ -75,7 +75,7 @@ payload topic=wallet.changed version=1 payload.ledger_id:string
 payload topic=wallet.changed version=1 payload.player_id:string
 payload topic=wallet.changed version=1 payload.reason:string
 rpc module=accountsapi::auth_rpc method=accounts.login verb=POST path=/accounts/login auth=None success=200 retry=Never
-rpc module=accountsapi::auth_rpc method=accounts.loginEpic verb=POST path=/accounts/login/epic auth=None success=200 retry=Never
+rpc module=accountsapi::auth_rpc method=accounts.loginFederated verb=POST path=/accounts/login/federated auth=None success=200 retry=Never
 rpc module=accountsapi::auth_rpc method=accounts.me verb=GET path=/accounts/me auth=Player success=200 retry=OnceAfterReconnect
 rpc module=accountsapi::auth_rpc method=accounts.register verb=POST path=/accounts/register auth=None success=201 retry=Never
 rpc module=charactersapi::player_rpc method=characters.create verb=POST path=/characters auth=Player success=201 retry=Never
@@ -90,7 +90,8 @@ rpc module=walletapi::player_rpc method=wallet.listCurrencies verb=GET path=/wal
 rpc module=walletapi::player_rpc method=wallet.myBalances verb=GET path=/wallet/me auth=Player success=200 retry=OnceAfterReconnect
 rpc-arg module=accountsapi::auth_rpc method=accounts.login param=email wire_key=email source=body
 rpc-arg module=accountsapi::auth_rpc method=accounts.login param=password wire_key=password source=body
-rpc-arg module=accountsapi::auth_rpc method=accounts.loginEpic param=id_token wire_key=id_token source=body
+rpc-arg module=accountsapi::auth_rpc method=accounts.loginFederated param=credential wire_key=credential source=body
+rpc-arg module=accountsapi::auth_rpc method=accounts.loginFederated param=provider wire_key=provider source=body
 rpc-arg module=accountsapi::auth_rpc method=accounts.register param=display_name wire_key=displayName source=body
 rpc-arg module=accountsapi::auth_rpc method=accounts.register param=email wire_key=email source=body
 rpc-arg module=accountsapi::auth_rpc method=accounts.register param=password wire_key=password source=body
@@ -105,7 +106,8 @@ rpc-arg module=matchapi::match_rpc method=match.report param=report_id wire_key=
 rpc-arg module=matchapi::match_rpc method=match.report param=winner wire_key=Winner source=body
 rpc-body module=accountsapi::auth_rpc method=accounts.login body.email:string
 rpc-body module=accountsapi::auth_rpc method=accounts.login body.password:string
-rpc-body module=accountsapi::auth_rpc method=accounts.loginEpic body.id_token:string
+rpc-body module=accountsapi::auth_rpc method=accounts.loginFederated body.credential:string
+rpc-body module=accountsapi::auth_rpc method=accounts.loginFederated body.provider:string
 rpc-body module=accountsapi::auth_rpc method=accounts.me body:object{}
 rpc-body module=accountsapi::auth_rpc method=accounts.register body.displayName:string
 rpc-body module=accountsapi::auth_rpc method=accounts.register body.email:string
@@ -125,7 +127,7 @@ rpc-body module=matchapi::match_rpc method=match.report body.Winner:string
 rpc-body module=walletapi::player_rpc method=wallet.listCurrencies body:object{}
 rpc-body module=walletapi::player_rpc method=wallet.myBalances body:object{}
 wire module=accountsapi::auth_rpc method=accounts.login retry=Never
-wire module=accountsapi::auth_rpc method=accounts.loginEpic retry=Never
+wire module=accountsapi::auth_rpc method=accounts.loginFederated retry=Never
 wire module=accountsapi::auth_rpc method=accounts.me retry=OnceAfterReconnect
 wire module=accountsapi::auth_rpc method=accounts.register retry=Never
 wire module=accountsapi::sessions_rpc method=accounts.verifySession retry=OnceAfterReconnect

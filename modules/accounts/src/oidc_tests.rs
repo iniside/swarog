@@ -131,7 +131,7 @@ fn verifier(url: &str) -> OidcVerifier {
     .unwrap()
 }
 
-/// A lazy-pool service with the epic provider configured — for the `login_epic`
+/// A lazy-pool service with the epic provider configured — for the `login_federated`
 /// status-mapping tests (verify fails before any DB access).
 fn epic_service(verifier: OidcVerifier) -> Arc<Service> {
     let mut registry = Providers::default();
@@ -192,7 +192,7 @@ async fn concurrent_unknown_kids_cost_one_jwks_fetch() {
 }
 
 /// A 500-answering JWKS endpoint is an INFRA failure (no verdict on the caller's
-/// token), and `login_epic` maps it to `Unavailable` (503) — never the 401 that
+/// token), and `login_federated` maps it to `Unavailable` (503) — never the 401 that
 /// would read as bad credentials (the `verify_session` 503-not-401 precedent).
 /// During the post-failure cooldown, with NO successful fetch ever, the outcome
 /// stays `Infra` — and the down IdP is not hammered.
@@ -219,7 +219,10 @@ async fn jwks_500_is_infra_and_maps_to_unavailable() {
 
     // The service-level mapping: Infra → 503, not 401.
     let svc = epic_service(verifier(&url));
-    let e = svc.login_epic(token_with_kid(&enc, "k")).await.unwrap_err();
+    let e = svc
+        .login_federated("epic".into(), token_with_kid(&enc, "k"))
+        .await
+        .unwrap_err();
     assert_eq!(
         e.status,
         opsapi::Status::Unavailable,
@@ -308,14 +311,17 @@ async fn stale_cache_under_cooldown_serves_stale_without_refetch() {
 }
 
 /// The Rejected side of the mapping: a demonstrably bad token (unknown kid after a
-/// fresh successful fetch) stays `Unauthorized` (401) through `login_epic`.
+/// fresh successful fetch) stays `Unauthorized` (401) through `login_federated`.
 #[tokio::test(flavor = "multi_thread")]
 async fn rejected_token_maps_to_unauthorized() {
     let (enc, jwks) = test_key("real-kid");
     let (url, _hits) = serve_counting_jwks(200, jwks).await;
     let svc = epic_service(verifier(&url));
 
-    let e = svc.login_epic(token_with_kid(&enc, "ghost")).await.unwrap_err();
+    let e = svc
+        .login_federated("epic".into(), token_with_kid(&enc, "ghost"))
+        .await
+        .unwrap_err();
     assert_eq!(e.status, opsapi::Status::Unauthorized);
 }
 

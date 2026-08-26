@@ -4,10 +4,11 @@
 //! LocalBackend and RemoteBackend consume the SAME wire envelopes.
 //!
 //! ALL four ops are contributed UNCONDITIONALLY — the monolith slot set and the
-//! split route set stay structurally equal by construction. The dev/epic gating
+//! split route set stay structurally equal by construction. The dev/provider gating
 //! lives at the IMPL, the single authority every exposure path traverses:
 //! `register`/`login` answer NotFound (→ 404) when `ACCOUNTS_DEV_AUTH` is off, and
-//! `loginEpic` answers Unavailable (→ 503) when the epic provider is not configured.
+//! `loginFederated` answers Unavailable (→ 503) for a known provider this deployment
+//! did not configure.
 
 use std::sync::Arc;
 

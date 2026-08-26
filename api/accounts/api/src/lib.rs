@@ -65,11 +65,11 @@ pub trait Sessions: Send + Sync {
 }
 
 /// The accounts module's player-facing capability: the operations that establish or
-/// read a player identity. `register`/`login`/`login_epic` are `auth = "none"` (they
-/// CREATE the session, so they take no caller identity); `me` is `auth = "player"` —
-/// it takes its caller identity as the leading `Identity` param (injected by the
-/// gateway after bearer verification), NEVER a body field. The `body_names` remap
-/// keeps Go's public body keys (`displayName`, `id_token`) byte-identical.
+/// read a player identity. `register`/`login`/`login_federated` are `auth = "none"`
+/// (they CREATE the session, so they take no caller identity); `me` is
+/// `auth = "player"` — it takes its caller identity as the leading `Identity` param
+/// (injected by the gateway after bearer verification), NEVER a body field. The
+/// `body_names` remap keeps Go's public body key `displayName` byte-identical.
 #[rpc(prefix = "accounts")]
 #[async_trait]
 pub trait Auth: Send + Sync {
@@ -85,12 +85,14 @@ pub trait Auth: Send + Sync {
     #[http(verb = "POST", path = "/accounts/login", auth = "none", success = 200)]
     async fn login(&self, email: String, password: String) -> Result<Session, Error>;
 
-    /// Epic (EOS Connect / OIDC) login: verifies an `id_token` and logs the player
-    /// in, provisioning on first sight (implicit registration, emitting
-    /// `player.registered` then). Missing id_token → `Invalid` (400); a rejected
-    /// token → `Unauthorized` (401). The public body key stays `id_token`. 200.
-    #[http(verb = "POST", path = "/accounts/login/epic", auth = "none", success = 200, body_names(id_token = "id_token"))]
-    async fn login_epic(&self, id_token: String) -> Result<Session, Error>;
+    /// Federated (external identity provider) login: verifies `credential` with the
+    /// named `provider` and logs the player in, provisioning on first sight (implicit
+    /// registration, emitting `player.registered` then). A provider name this build
+    /// does not know, an empty or over-long credential → `Invalid` (400); a provider
+    /// this build knows but this deployment did not configure, or an identity-provider
+    /// outage → `Unavailable` (503); a rejected credential → `Unauthorized` (401). 200.
+    #[http(verb = "POST", path = "/accounts/login/federated", auth = "none", success = 200)]
+    async fn login_federated(&self, provider: String, credential: String) -> Result<Session, Error>;
 
     /// The caller's own player + identities (identity injected by the gateway after
     /// bearer verification — the AuthPlayer trust boundary). 200.

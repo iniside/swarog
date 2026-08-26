@@ -12,7 +12,7 @@
 //!   - `accounts.sessions` ([`accountsapi::Sessions`]) — bearer → player_id, the
 //!     capability the gateway's auth-once verifier resolves (registry swap: local
 //!     here, an edge client from `accountsrpc::remote_factories()` in a split peer).
-//!   - `accounts.auth` ([`accountsapi::Auth`]) — register/login/loginEpic/me,
+//!   - `accounts.auth` ([`accountsapi::Auth`]) — register/login/loginFederated/me,
 //!     contributed as gateway operations (conditionally, per the env gates).
 //!   - Epic web OAuth — two HTTP-NATIVE browser routes (`POST /accounts/epic/start`,
 //!     `GET /accounts/epic/callback`) mounted on the shared router when
@@ -43,7 +43,9 @@ use sqlx::PgConnection;
 use tokio::sync::Semaphore;
 
 use crate::password::{hash_password, ArgonVerifier, PasswordVerifier, DUMMY_HASH};
-use crate::providers::{ProviderConfig, Providers, Resolution, VerifyError};
+use crate::providers::{
+    CredentialVerifier, ProviderConfig, Providers, Resolution, VerifyError,
+};
 use crate::store::{Player, Store, StoreError};
 
 /// Input caps enforced before any expensive verifier, Argon2, RPC, or database work.
@@ -54,7 +56,7 @@ use crate::store::{Player, Store, StoreError};
 const MAX_EMAIL_BYTES: usize = 320;
 const MAX_PASSWORD_BYTES: usize = 1024;
 const MAX_DISPLAY_NAME_BYTES: usize = 128;
-const MAX_EPIC_ID_TOKEN_BYTES: usize = 65_536;
+const MAX_PROVIDER_NAME_BYTES: usize = 64;
 
 /// The SHARED cap checks — the register/login handlers and factual conformance probes
 /// call these same pure fns, so the probe
@@ -73,8 +75,15 @@ pub(crate) fn display_name_within_cap(display_name: &str) -> bool {
     display_name.len() <= MAX_DISPLAY_NAME_BYTES
 }
 
-pub(crate) fn epic_id_token_within_cap(id_token: &str) -> bool {
-    id_token.len() <= MAX_EPIC_ID_TOKEN_BYTES
+pub(crate) fn provider_name_within_cap(provider: &str) -> bool {
+    provider.len() <= MAX_PROVIDER_NAME_BYTES
+}
+
+/// Whether `credential` fits the cap the RESOLVED provider states for its own
+/// credential shape — the single cap authority the handler and the conformance probe
+/// both traverse, so no second constant can drift from what a request meets.
+pub(crate) fn credential_within_cap(verifier: &dyn CredentialVerifier, credential: &str) -> bool {
+    credential.len() <= verifier.max_credential_bytes()
 }
 
 pub(crate) fn session_token_within_cap(token: &str) -> bool {
@@ -471,40 +480,50 @@ impl accountsapi::Auth for Service {
         self.issue_session(&p).await
     }
 
-    /// Epic (EOS Connect / OIDC) login (AuthNone): verifies the id_token and logs
-    /// the player in, provisioning on first sight (which emits `player.registered`
-    /// durably). Missing id_token → `Invalid` (400); a rejected token →
-    /// `Unauthorized` (401); a JWKS/IdP infrastructure failure → `Unavailable`
-    /// (503) — the `verify_session` 503-not-401 precedent: an IdP outage must not
-    /// read as bad credentials.
-    async fn login_epic(&self, id_token: String) -> Result<accountsapi::Session, Error> {
-        if id_token.is_empty() {
-            return Err(Error::invalid("id_token is required"));
+    /// Federated login (AuthNone): resolves `provider`, verifies `credential` with
+    /// it and logs the player in, provisioning on first sight (which emits
+    /// `player.registered` durably). An unknown provider name and an unconfigured
+    /// one are DIFFERENT answers — `Invalid` (400) is caller-supplied garbage,
+    /// `Unavailable` (503) is a deployment fact about this process. A rejected
+    /// credential is `Unauthorized` (401); an IdP infrastructure failure is 503, the
+    /// `verify_session` 503-not-401 precedent: an outage must not read as bad
+    /// credentials.
+    async fn login_federated(
+        &self,
+        provider: String,
+        credential: String,
+    ) -> Result<accountsapi::Session, Error> {
+        // Capped before the lookup: an unbounded caller string never becomes a
+        // registry key.
+        if !provider_name_within_cap(&provider) {
+            return Err(Error::invalid("provider too long"));
         }
-        if !epic_id_token_within_cap(&id_token) {
-            return Err(Error::invalid("id_token too long"));
-        }
-        // `EPIC` is in `KNOWN_PROVIDERS`, so `Unknown` is unreachable here; both
-        // non-configured arms are the same honest answer.
-        let verifier = match self.resolve_provider(providers::EPIC) {
+        let verifier = match self.resolve_provider(&provider) {
             Resolution::Configured(v) => v.clone(),
-            Resolution::KnownButUnconfigured | Resolution::Unknown => {
-                return Err(Error::unavailable("epic provider not configured"))
+            Resolution::KnownButUnconfigured => {
+                return Err(Error::unavailable("provider not configured"))
             }
+            Resolution::Unknown => return Err(Error::invalid("unknown provider")),
         };
-        let verified = match verifier.verify(&id_token).await {
+        if credential.is_empty() {
+            return Err(Error::invalid("credential is required"));
+        }
+        if !credential_within_cap(verifier.as_ref(), &credential) {
+            return Err(Error::invalid("credential too long"));
+        }
+        let verified = match verifier.verify(&credential).await {
             Ok(v) => v,
             Err(VerifyError::Rejected(err)) => {
-                tracing::warn!(%err, "epic token rejected");
-                return Err(Error::unauthorized("invalid id_token"));
+                tracing::warn!(%provider, %err, "federated credential rejected");
+                return Err(Error::unauthorized("invalid credential"));
             }
             Err(VerifyError::Infra(err)) => {
-                tracing::warn!(%err, "epic JWKS unavailable");
+                tracing::warn!(%provider, %err, "identity provider unavailable");
                 return Err(Error::unavailable("identity provider unavailable"));
             }
         };
         let (session, _created) = self
-            .external_login(providers::EPIC, &verified.subject, &verified.display_name)
+            .external_login(&provider, &verified.subject, &verified.display_name)
             .await?;
         Ok(session)
     }
@@ -737,7 +756,8 @@ impl Module for Accounts {
 
         // Player operations: the generated Auth OpSets, ALL contributed
         // unconditionally — the gating lives at the impl (register/login → NotFound
-        // when dev auth is off, loginEpic → Unavailable when epic is unconfigured),
+        // when dev auth is off, loginFederated → Unavailable for a known but
+        // unconfigured provider),
         // so the monolith and split front-door route sets are structurally equal.
         ops::register_player_ops(ctx, svc.clone());
 
@@ -777,8 +797,9 @@ impl Module for Accounts {
         // The whole Auth trait face is registered (the generated `register_server`
         // installs all methods at once), but the TRUST GATES live in the impl so the
         // edge face matches the HTTP ops exactly: `register`/`login` self-reject with
-        // NotFound when `dev_auth` is off, and `login_epic` answers `Unavailable`
-        // until `EPIC_CLIENT_ID` is configured. `me` (+ Sessions `verify_session` and
+        // NotFound when `dev_auth` is off, and `login_federated` answers
+        // `Unavailable` for a provider this deployment did not configure. `me` (+
+        // Sessions `verify_session` and
         // the admin face) stay unconditional — the gateway/admin fan-out need them.
         ctx.contribute(
             edge::EDGE_SLOT,
@@ -795,7 +816,7 @@ impl Module for Accounts {
         // pure DATA, contributed UNCONDITIONALLY (topology-blind). `app::run` concats
         // every module's manifest and serves the union under the ONE reserved
         // `__describe` op iff this process serves an edge. `auth_rpc` carries the
-        // register/login/loginEpic/me HTTP ops; `sessions_rpc` is wire-only (empty
+        // register/login/loginFederated/me HTTP ops; `sessions_rpc` is wire-only (empty
         // `describe()`) — concatenated so a future `#[http]` op on either flows through.
         ctx.contribute(
             opsapi::DESCRIBE_SLOT,

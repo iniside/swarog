@@ -51,7 +51,8 @@ pub fn input_policies() -> Vec<(InputKey, InputPolicy)> {
     vec![
         (key("accounts.login", "email", External), Validated { cap: 320, basis: "accounts::email_within_cap is called by the production login path" }),
         (key("accounts.login", "password", External), Validated { cap: 1024, basis: "accounts::password_within_cap is called by the production login path" }),
-        (key("accounts.loginEpic", "id_token", External), Validated { cap: 65_536, basis: "accounts::epic_id_token_within_cap is called before provider/JWKS work" }),
+        (key("accounts.loginFederated", "credential", External), Validated { cap: 65_536, basis: "the cap is the RESOLVED provider's own CredentialVerifier::max_credential_bytes, checked by accounts::credential_within_cap after the (already length-capped) provider name resolves in the registry and before any verifier, JWKS or database work" }),
+        (key("accounts.loginFederated", "provider", External), Validated { cap: 64, basis: "accounts::provider_name_within_cap runs first in login_federated, before the provider name is used as a registry lookup key" }),
         (key("accounts.register", "displayName", External), Validated { cap: 128, basis: "accounts::display_name_within_cap validates the effective persisted display before Argon or SQL" }),
         (key("accounts.register", "email", External), Validated { cap: 320, basis: "accounts::email_within_cap is called by the production register path" }),
         (key("accounts.register", "password", External), Validated { cap: 1024, basis: "accounts::password_within_cap is called by the production register path" }),
@@ -146,9 +147,16 @@ fn accounts() -> Entry {
                         probe: Arc::new(accounts::conformance::conformance_display_name_rejected),
                     },
                     CapCase {
-                        name: "accounts Epic ID token",
+                        name: "accounts federated OIDC credential",
                         cap: 65_536,
-                        probe: Arc::new(accounts::conformance::conformance_epic_id_token_rejected),
+                        probe: Arc::new(
+                            accounts::conformance::conformance_federated_credential_rejected,
+                        ),
+                    },
+                    CapCase {
+                        name: "accounts federated provider name",
+                        cap: 64,
+                        probe: Arc::new(accounts::conformance::conformance_provider_name_rejected),
                     },
                     CapCase {
                         name: "accounts session token",
@@ -160,10 +168,10 @@ fn accounts() -> Entry {
             (
                 Convention::InfraOutage503,
                 Stance::Applies(Fixture::InfraOutage503(vec![OutageCase {
-                    name: "accounts loginEpic with an unconfigured epic provider",
+                    name: "accounts loginFederated with a known but unconfigured provider",
                     probe: Arc::new(|| {
                         Box::pin(async {
-                            match accounts::conformance::conformance_login_epic_without_provider()
+                            match accounts::conformance::conformance_login_federated_unconfigured_provider()
                                 .await
                             {
                                 Err(error) if error.status.http() == 503 => {
@@ -175,7 +183,7 @@ fn accounts() -> Entry {
                                     error.status, error.msg
                                 )),
                                 Ok(_) => OutageClass::Other(
-                                    "login_epic succeeded with no provider configured".into(),
+                                    "login_federated succeeded with no provider configured".into(),
                                 ),
                             }
                         })

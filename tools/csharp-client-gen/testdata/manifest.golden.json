@@ -25,15 +25,20 @@
     },
     {
       "provider": "accounts",
-      "wire_method": "accounts.loginEpic",
+      "wire_method": "accounts.loginFederated",
       "verb": "POST",
-      "path": "/accounts/login/epic",
+      "path": "/accounts/login/federated",
       "auth": "none",
       "success": 200,
       "args": [
         {
-          "name": "id_token",
-          "wire_name": "id_token",
+          "name": "provider",
+          "wire_name": "provider",
+          "ty": "String"
+        },
+        {
+          "name": "credential",
+          "wire_name": "credential",
           "ty": "String"
         }
       ],
