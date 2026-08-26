@@ -87,10 +87,12 @@ pub trait Auth: Send + Sync {
 
     /// Federated (external identity provider) login: verifies `credential` with the
     /// named `provider` and logs the player in, provisioning on first sight (implicit
-    /// registration, emitting `player.registered` then). A provider name this build
-    /// does not know, an empty or over-long credential → `Invalid` (400); a provider
-    /// this build knows but this deployment did not configure, or an identity-provider
-    /// outage → `Unavailable` (503); a rejected credential → `Unauthorized` (401). 200.
+    /// registration, emitting `player.registered` then). An over-long provider name
+    /// (checked first, before the name is ever used as a lookup key), a provider name
+    /// this build cannot verify, an empty or over-long credential → `Invalid` (400); a
+    /// provider this build can verify but this deployment did not configure, or an
+    /// identity-provider outage → `Unavailable` (503); a rejected credential →
+    /// `Unauthorized` (401). 200.
     #[http(verb = "POST", path = "/accounts/login/federated", auth = "none", success = 200)]
     async fn login_federated(&self, provider: String, credential: String) -> Result<Session, Error>;
 

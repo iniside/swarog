@@ -51,8 +51,8 @@ pub fn input_policies() -> Vec<(InputKey, InputPolicy)> {
     vec![
         (key("accounts.login", "email", External), Validated { cap: 320, basis: "accounts::email_within_cap is called by the production login path" }),
         (key("accounts.login", "password", External), Validated { cap: 1024, basis: "accounts::password_within_cap is called by the production login path" }),
-        (key("accounts.loginFederated", "credential", External), Validated { cap: 65_536, basis: "the cap is the RESOLVED provider's own CredentialVerifier::max_credential_bytes, checked by accounts::credential_within_cap after the (already length-capped) provider name resolves in the registry and before any verifier, JWKS or database work" }),
-        (key("accounts.loginFederated", "provider", External), Validated { cap: 64, basis: "accounts::provider_name_within_cap runs first in login_federated, before the provider name is used as a registry lookup key" }),
+        (key("accounts.loginFederated", "credential", External), Validated { cap: accounts::conformance::MAX_OIDC_CREDENTIAL_BYTES, basis: "the cap is the RESOLVED provider's own CredentialVerifier::max_credential_bytes, checked by accounts::credential_within_cap after the (already length-capped) provider name resolves in the registry and before any verifier, JWKS or database work" }),
+        (key("accounts.loginFederated", "provider", External), Validated { cap: accounts::conformance::MAX_PROVIDER_NAME_BYTES, basis: "accounts::provider_name_within_cap runs first in login_federated, before the provider name is used as a registry lookup key" }),
         (key("accounts.register", "displayName", External), Validated { cap: 128, basis: "accounts::display_name_within_cap validates the effective persisted display before Argon or SQL" }),
         (key("accounts.register", "email", External), Validated { cap: 320, basis: "accounts::email_within_cap is called by the production register path" }),
         (key("accounts.register", "password", External), Validated { cap: 1024, basis: "accounts::password_within_cap is called by the production register path" }),
@@ -148,14 +148,14 @@ fn accounts() -> Entry {
                     },
                     CapCase {
                         name: "accounts federated OIDC credential",
-                        cap: 65_536,
+                        cap: accounts::conformance::MAX_OIDC_CREDENTIAL_BYTES,
                         probe: Arc::new(
                             accounts::conformance::conformance_federated_credential_rejected,
                         ),
                     },
                     CapCase {
                         name: "accounts federated provider name",
-                        cap: 64,
+                        cap: accounts::conformance::MAX_PROVIDER_NAME_BYTES,
                         probe: Arc::new(accounts::conformance::conformance_provider_name_rejected),
                     },
                     CapCase {

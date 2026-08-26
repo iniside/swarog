@@ -419,6 +419,26 @@ would ship an op that can only answer 503.
 **(d) Dispatch:** `[opus]` — `subagent_type: "core-implementer"`, `model: "opus"`.
 Gates: the Step-5 row of the gate table; `verifyctl --fast` before the commit.
 
+> **Erratum to Step 1's `KNOWN_PROVIDERS`, from the review of Step 5 (landed `d421578`,
+> fixed in the follow-up).** Step 1 wrote the list as
+> `&["dev", "epic", "google", "guest", "apple"]` — a ROADMAP. Step 5 made it reachable:
+> an unauthenticated `{"provider":"apple"}` answered **503 "provider not configured"**,
+> a retry-shaped status describing a fact no operator can change (no env key, no
+> constructor) and an oracle for what the roadmap contains. The list is now what this
+> build can construct a verifier for — `&[EPIC, GOOGLE]` — and a name joins it in the
+> same commit that ships its verifier. `"dev"` never joins: dev auth gates
+> `register`/`login`, a different op. The 400/503 split is unchanged and sharper:
+> `epic`/`google` with no env → 503 (a deployment fact an operator can fix), anything
+> else → 400 (this build genuinely cannot verify it).
+>
+> **Two later steps move with it.** Step 7 adds `"guest"` to `KNOWN_PROVIDERS` in the
+> same commit as its verifier. Step 15's `[A6]` bullet is void as written — it leans on
+> `"apple"` being known-but-unconfigured. Its replacement: leave `GOOGLE_*` unset in
+> `FleetFlavor::Proof` so `google` is the known-but-unconfigured name (`EPIC_*` stays
+> configured, so `[A6]`'s configured arm is unaffected). If Step 15 instead needs Google
+> configured, the 503 arm drops to conformance's `InfraOutage503` case, which already
+> pins it — decide there, do not reintroduce a nameless-verifier entry.
+
 ---
 
 ## Step 6 — tests for `login_federated` `[test-author]`
@@ -491,6 +511,18 @@ first so the *returning* guest needs no new code at all — it is one more regis
   `"<subject>.<secret>"`, split on the first `.` (the base64url alphabet contains no `.`).
 - **Unknown subject and wrong secret must be indistinguishable** — one 401, no oracle,
   matching the dev/password convention documented at `api/accounts/api/src/lib.rs:85-87`.
+- **`"guest"` joins `KNOWN_PROVIDERS` in THIS commit**, with its verifier — that is the
+  rule the Step-5 erratum above sets. Until then `login_federated("guest", …)` is a 400,
+  which is correct: this build cannot verify a guest credential.
+- **The conformance credential-cap row becomes per-provider here, and this step owns the
+  drift check.** `tools/conformance/src/policy.rs` declares ONE `cap` for
+  `accounts.loginFederated.credential` (today `accounts::conformance::MAX_OIDC_CREDENTIAL_BYTES`,
+  the only impl's answer). A guest credential is a short opaque ticket with a different
+  `max_credential_bytes`, so that row goes wrong for guest while the OIDC-bound `CapCase`
+  stays green and nothing notices. Add a check over every registered verifier's
+  `max_credential_bytes` — copy the shape of `ADMIN_SUBMIT_MODULES` in
+  `tools/conformance/src/checks.rs:134-152` (a list diffed against the real source before
+  any assertion runs, per-entry drift message). Recorded as Known risk 7 until it lands.
 - `create_guest` emits `player.registered` with `provider = "guest"` through the existing
   `emit_registered_tx` (`lib.rs:307`), in the same transaction as the player+identity
   insert. This is what Step 11 filters on — and it is also unauthenticated durable-log
@@ -927,6 +959,15 @@ Add **`proof-auditor`** to Steps **5, 7, 9, 13 and 15** — each edits a verify-
    the lost-response case is handled; a genuinely delayed retry (>30s) still revokes. Recovery
    is provider-specific: guest re-authenticates with its device secret, google/epic with a
    fresh ID token. Both paths exist, which is why the strict outer behaviour is acceptable.
+
+7. **`accounts.loginFederated.credential` has one declared cap for a polymorphic value.**
+   `CredentialVerifier::max_credential_bytes` has no default body, so each provider states
+   its own, but `tools/conformance/src/policy.rs` publishes a single number and a single
+   OIDC-bound `CapCase`. With exactly one impl today the row is true; the moment Step 7
+   registers a guest verifier with a shorter cap it is wrong for that provider and no gate
+   goes red. The per-verifier scan is deliberately NOT built now (it needs a second verifier
+   to be meaningful) — it is Step 7's work, spelled out in Step 7(c). Named here so it is
+   not mistaken for covered.
 
 ## Revision 2 changelog
 

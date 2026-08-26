@@ -56,7 +56,7 @@ use crate::store::{Player, Store, StoreError};
 const MAX_EMAIL_BYTES: usize = 320;
 const MAX_PASSWORD_BYTES: usize = 1024;
 const MAX_DISPLAY_NAME_BYTES: usize = 128;
-const MAX_PROVIDER_NAME_BYTES: usize = 64;
+pub const MAX_PROVIDER_NAME_BYTES: usize = 64;
 
 /// The SHARED cap checks — the register/login handlers and factual conformance probes
 /// call these same pure fns, so the probe

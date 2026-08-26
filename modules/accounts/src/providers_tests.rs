@@ -264,7 +264,7 @@ fn resolve_unknown_name_is_unknown() {
 #[test]
 fn resolve_known_but_unconfigured_name_is_known_but_unconfigured() {
     let providers = Providers::default();
-    match providers.resolve("apple") {
+    match providers.resolve("epic") {
         Resolution::KnownButUnconfigured => {}
         _ => panic!("expected KnownButUnconfigured"),
     }

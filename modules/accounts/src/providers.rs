@@ -1,8 +1,8 @@
 //! The credential-provider seam: one naming authority, one registry of configured
 //! verifiers, and one validating parse of the provider configuration.
 //!
-//! Three names, deliberately distinct: [`KNOWN_PROVIDERS`] is what this build knows
-//! how to spell, [`Providers`] is what this PROCESS actually configured, and
+//! Three names, deliberately distinct: [`KNOWN_PROVIDERS`] is what this build can
+//! construct a verifier for, [`Providers`] is what this PROCESS actually configured, and
 //! [`ProviderConfig`] is the validated parse that produces the second from the
 //! environment. Keeping the first two apart is what makes "you typed a provider that
 //! does not exist" and "that provider is not configured here" different answers
@@ -28,11 +28,13 @@ pub(crate) const EPIC: &str = "epic";
 /// The `accounts.identities.provider` value for Google, the second OIDC provider.
 pub(crate) const GOOGLE: &str = "google";
 
-/// Every provider name this build knows, configured or not — the naming authority,
-/// separate from the configured-verifier map so a typo and an unconfigured provider
-/// are distinguishable outcomes. A name is listed once the build can spell it, which
-/// is not the same as shipping it: `"apple"` is declared and has no verifier.
-pub(crate) const KNOWN_PROVIDERS: &[&str] = &["dev", EPIC, GOOGLE, "guest", "apple"];
+/// Every provider name this build can construct a verifier for, configured or not —
+/// the naming authority, separate from the configured-verifier map so a typo and an
+/// unconfigured provider are distinguishable outcomes. Membership means buildable,
+/// not planned: a name joins this list in the same commit that ships its verifier,
+/// so `KnownButUnconfigured` (503) always names something an operator can fix by
+/// configuring it.
+pub(crate) const KNOWN_PROVIDERS: &[&str] = &[EPIC, GOOGLE];
 
 /// Why a credential failed verification — the taxonomy the caller maps to a status
 /// (mirrors the `verify_session` 503-not-401 precedent: an IdP outage must not
@@ -225,7 +227,7 @@ impl ProviderConfig {
 /// The widest id_token any OIDC provider here accepts. JWTs carrying claim-heavy
 /// payloads run into the low tens of KiB; the cap bounds base64/JSON work on an
 /// attacker-supplied string before a signature is ever checked.
-const MAX_OIDC_CREDENTIAL_BYTES: usize = 65_536;
+pub const MAX_OIDC_CREDENTIAL_BYTES: usize = 65_536;
 
 /// Any OIDC provider's `CredentialVerifier` face: an id_token in, the provider's
 /// account id plus the `<provider>:<shortID>` first-sight display name out. The

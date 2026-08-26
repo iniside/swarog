@@ -18,6 +18,11 @@ use crate::{
     password_within_cap, provider_name_within_cap, session_token_within_cap, Service,
 };
 
+/// Re-exported so `tools/conformance` states these caps by reference instead of a
+/// second literal — the definition sites (`providers.rs`, `lib.rs`) stay the only ones.
+pub use crate::providers::MAX_OIDC_CREDENTIAL_BYTES;
+pub use crate::MAX_PROVIDER_NAME_BYTES;
+
 const DEFAULT_DSN: &str =
     "postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable";
 
@@ -51,8 +56,8 @@ pub fn conformance_display_name_rejected(len: usize) -> bool {
     !display_name_within_cap(&"a".repeat(len))
 }
 
-/// The OIDC credential cap as a REQUEST meets it: through the resolved provider's
-/// own `max_credential_bytes`, not a constant restated here.
+/// The OIDC credential cap traversed through a provider's own `max_credential_bytes`
+/// rather than a constant restated here.
 #[doc(hidden)]
 pub fn conformance_federated_credential_rejected(len: usize) -> bool {
     let verifier = oidc_credentials(
