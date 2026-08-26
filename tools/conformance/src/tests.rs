@@ -3,7 +3,7 @@
 //! `cargo test` runs threads in one binary, and env mutation across threads is
 //! the race the standalone single-threaded binary exists to avoid.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use crate::model::{
@@ -11,8 +11,9 @@ use crate::model::{
 };
 
 use crate::checks::{
-    admin_submit_findings, argon_parity_findings, completeness_findings, drift_findings,
-    eval_cap_probe, input_policy_prose_findings, ADMIN_SUBMIT_MODULES, CORE_INFRA_MODULES,
+    admin_submit_findings, argon_parity_findings, completeness_findings, credential_cap_findings,
+    drift_findings, eval_cap_probe, input_policy_prose_findings, ADMIN_SUBMIT_MODULES,
+    CORE_INFRA_MODULES,
 };
 use crate::input_inventory::{Exposure, InputKey};
 
@@ -263,6 +264,186 @@ fn real_admin_submit_list_matches_disk_and_carries_cap_cases() {
     );
     let findings = admin_submit_findings(&on_disk, &crate::policy::entries());
     assert!(findings.is_empty(), "adminSubmit findings: {findings:?}");
+}
+
+// ---- Phase 1b (credentials): the per-provider cap tripwire --------------------
+//
+// `credential_cap_findings` reads the production `checks::CREDENTIAL_CAPS` table
+// directly (it is not a parameter), so every fixture here is built to align with —
+// or deliberately diverge from — that fixed table rather than a synthetic one.
+
+fn cap_case(name: &'static str, cap: usize) -> CapCase {
+    CapCase { name, cap, probe: Arc::new(move |len| len > cap) }
+}
+
+/// The registry `checks::CREDENTIAL_CAPS` states today: `epic`/`google` at 65536,
+/// `guest` at 128.
+fn clean_registry() -> BTreeMap<String, usize> {
+    [("epic", 65_536), ("google", 65_536), ("guest", 128)]
+        .into_iter()
+        .map(|(name, cap)| (name.to_string(), cap))
+        .collect()
+}
+
+const CLEAN_KNOWN: &[&str] = &["epic", "google", "guest"];
+
+/// The accounts entry whose `InputByteCaps` cases execute every provider's cap under
+/// the exact case NAME `checks::CREDENTIAL_CAPS` links it to.
+fn clean_accounts_entry() -> Entry {
+    Entry {
+        module: "accounts",
+        stances: vec![(
+            Convention::InputByteCaps,
+            Stance::Applies(Fixture::InputByteCaps(vec![
+                cap_case("accounts federated epic credential", 65_536),
+                cap_case("accounts federated google credential", 65_536),
+                cap_case("accounts federated guest ticket", 128),
+            ])),
+        )],
+    }
+}
+
+/// registry == table == probed → clean.
+#[test]
+fn credential_cap_findings_all_three_sources_agree_is_clean() {
+    let findings =
+        credential_cap_findings(&clean_registry(), CLEAN_KNOWN, &[clean_accounts_entry()]);
+    assert!(findings.is_empty(), "{findings:?}");
+}
+
+/// The registry's own cap disagrees with the reviewed number in
+/// `checks::CREDENTIAL_CAPS` — a re-review finding naming both numbers.
+#[test]
+fn credential_cap_findings_registry_cap_mismatch_names_both_numbers() {
+    let mut registry = clean_registry();
+    registry.insert("guest".to_string(), 999);
+    let findings = credential_cap_findings(&registry, CLEAN_KNOWN, &[clean_accounts_entry()]);
+    assert!(
+        findings.iter().any(|f| f.contains("999") && f.contains("128") && f.contains("guest")),
+        "{findings:?}"
+    );
+}
+
+/// The production registry built a verifier `checks::CREDENTIAL_CAPS` does not
+/// list at all — the "add (...)" hint.
+#[test]
+fn credential_cap_findings_unlisted_registry_provider_gets_the_add_hint() {
+    let mut registry = clean_registry();
+    registry.insert("facebook".to_string(), 4096);
+    let known: Vec<&str> = CLEAN_KNOWN.iter().copied().chain(["facebook"]).collect();
+    let findings = credential_cap_findings(&registry, &known, &[clean_accounts_entry()]);
+    assert!(
+        findings.iter().any(|f| f.contains("facebook")
+            && f.contains("4096")
+            && f.contains("add (\"facebook\", 4096)")),
+        "{findings:?}"
+    );
+}
+
+/// `checks::CREDENTIAL_CAPS` names a provider the registry no longer builds —
+/// the "remove the stale entry" finding, isolated by dropping `guest` from both the
+/// registry AND `known` (so the missing-verifier finding does not also fire).
+#[test]
+fn credential_cap_findings_stale_table_entry_gets_the_remove_hint() {
+    let mut registry = clean_registry();
+    registry.remove("guest");
+    let known: Vec<&str> = CLEAN_KNOWN.iter().copied().filter(|n| *n != "guest").collect();
+    let entries = vec![Entry {
+        module: "accounts",
+        stances: vec![(
+            Convention::InputByteCaps,
+            Stance::Applies(Fixture::InputByteCaps(vec![
+                cap_case("accounts federated epic credential", 65_536),
+                cap_case("accounts federated google credential", 65_536),
+            ])),
+        )],
+    }];
+    let findings = credential_cap_findings(&registry, &known, &entries);
+    assert!(
+        findings
+            .iter()
+            .any(|f| f.contains("guest") && f.contains("remove the stale entry")),
+        "{findings:?}"
+    );
+}
+
+/// A `KNOWN_PROVIDERS` name the production registry never built a verifier for —
+/// the two-cause finding (fixture didn't configure it, or `providers()` never
+/// registers it).
+#[test]
+fn credential_cap_findings_known_but_unbuilt_provider_gets_the_two_cause_finding() {
+    let known: Vec<&str> = CLEAN_KNOWN.iter().copied().chain(["apple"]).collect();
+    let findings = credential_cap_findings(&clean_registry(), &known, &[clean_accounts_entry()]);
+    assert!(
+        findings.iter().any(|f| f.contains("apple")
+            && f.contains("does not configure apple")
+            && f.contains("never registers it")),
+        "{findings:?}"
+    );
+}
+
+/// THE regression this check exists to catch: matching a `CapCase` by cap NUMBER
+/// alone let a deleted guest fixture stay green behind an unrelated 128-byte case
+/// (`accounts session token`). Here `probed` carries a DIFFERENT case with the SAME
+/// cap and NO case named for guest — the finding must still fire. A number-only
+/// match would find `("accounts session token", 128)` and wrongly call guest's cap
+/// executed.
+#[test]
+fn credential_cap_findings_same_cap_different_name_does_not_satisfy_guest() {
+    let entries = vec![Entry {
+        module: "accounts",
+        stances: vec![(
+            Convention::InputByteCaps,
+            Stance::Applies(Fixture::InputByteCaps(vec![
+                cap_case("accounts federated epic credential", 65_536),
+                cap_case("accounts federated google credential", 65_536),
+                cap_case("accounts session token", 128),
+            ])),
+        )],
+    }];
+    let findings = credential_cap_findings(&clean_registry(), CLEAN_KNOWN, &entries);
+    assert!(
+        findings.iter().any(|f| f.contains("guest")
+            && f.contains("stated but never executed")
+            && f.contains("accounts federated guest ticket")),
+        "a name-blind match would wrongly treat guest's cap as executed: {findings:?}"
+    );
+}
+
+/// No accounts entry at all (also covers an `InputByteCaps` `NotApplicable`
+/// stance): `probed` must fall back to empty via `unwrap_or_default()`, not panic or
+/// silently skip the "stated but never executed" findings — every registered cap
+/// with a table entry gets one.
+#[test]
+fn credential_cap_findings_missing_accounts_entry_falls_back_to_empty_probed() {
+    let findings = credential_cap_findings(&clean_registry(), CLEAN_KNOWN, &[]);
+    for provider in ["epic", "google", "guest"] {
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.contains(provider) && f.contains("stated but never executed")),
+            "missing accounts entry must not silently swallow {provider}'s finding: {findings:?}"
+        );
+    }
+
+    let na_entry = Entry {
+        module: "accounts",
+        stances: vec![(Convention::InputByteCaps, na("no player input"))],
+    };
+    let findings_na = credential_cap_findings(&clean_registry(), CLEAN_KNOWN, &[na_entry]);
+    assert_eq!(findings, findings_na, "NotApplicable must behave the same as no entry");
+}
+
+/// The real table against the real production registry and the real accounts entry —
+/// the same preflight the binary runs, provable under `cargo test`.
+#[test]
+fn real_credential_cap_list_matches_registry_and_execution() {
+    let findings = credential_cap_findings(
+        &accounts::conformance::credential_caps(),
+        accounts::conformance::KNOWN_PROVIDERS,
+        &crate::policy::entries(),
+    );
+    assert!(findings.is_empty(), "credential cap findings: {findings:?}");
 }
 
 // ---- Phase 1c: input-policy prose ----------------------------------------------
