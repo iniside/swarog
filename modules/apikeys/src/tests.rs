@@ -69,6 +69,25 @@ fn dev_client_policy_entries_are_wire_methods() {
     }
 }
 
+/// Every entry names an operation that is actually served. The shape check above
+/// passes for any well-formed string, so a renamed op (`accounts.loginEpic` ->
+/// `accounts.loginFederated`) would leave this hand-maintained const stale with no
+/// gate red — the only symptom being a runtime 403 for `dev-key-client`.
+/// `opscatalog::OPERATIONS` is the codegen-freshness-gated method authority the
+/// role editor already uses (`admin::policy_method_options`).
+#[test]
+fn dev_client_policy_entries_exist_in_the_op_catalog() {
+    let catalog: std::collections::BTreeSet<&str> =
+        opscatalog::OPERATIONS.iter().map(|op| op.method).collect();
+    for m in DEV_CLIENT_POLICY.split(',') {
+        assert!(
+            catalog.contains(m),
+            "dev-client policy names {m:?}, which is not a served operation — \
+             DEV_CLIENT_POLICY drifted from opscatalog::OPERATIONS"
+        );
+    }
+}
+
 // ---- Integration: the Keys capability over the live store ------------------
 
 #[tokio::test]
