@@ -2,6 +2,18 @@
   "methods": [
     {
       "provider": "accounts",
+      "wire_method": "accounts.createGuest",
+      "verb": "POST",
+      "path": "/accounts/guest",
+      "auth": "none",
+      "success": 201,
+      "args": [],
+      "ret": {
+        "Struct": "GuestSession"
+      }
+    },
+    {
+      "provider": "accounts",
       "wire_method": "accounts.login",
       "verb": "POST",
       "path": "/accounts/login",
@@ -335,6 +347,36 @@
           "name": "decimals",
           "wire_name": "decimals",
           "ty": "I32"
+        }
+      ]
+    },
+    {
+      "name": "GuestSession",
+      "fields": [
+        {
+          "name": "player_id",
+          "wire_name": "player_id",
+          "ty": "String"
+        },
+        {
+          "name": "token",
+          "wire_name": "token",
+          "ty": "String"
+        },
+        {
+          "name": "refresh_token",
+          "wire_name": "refresh_token",
+          "ty": "String"
+        },
+        {
+          "name": "access_expires_in_secs",
+          "wire_name": "access_expires_in_secs",
+          "ty": "I64"
+        },
+        {
+          "name": "device_secret",
+          "wire_name": "device_secret",
+          "ty": "String"
         }
       ]
     },

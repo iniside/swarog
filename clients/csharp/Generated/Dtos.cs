@@ -31,6 +31,14 @@ public sealed record Currency(
     [property: JsonPropertyName("kind")] string Kind,
     [property: JsonPropertyName("decimals")] int Decimals);
 
+/// <summary>The <c>GuestSession</c> DTO.</summary>
+public sealed record GuestSession(
+    [property: JsonPropertyName("player_id")] string PlayerId,
+    [property: JsonPropertyName("token")] string Token,
+    [property: JsonPropertyName("refresh_token")] string RefreshToken,
+    [property: JsonPropertyName("access_expires_in_secs")] long AccessExpiresInSecs,
+    [property: JsonPropertyName("device_secret")] string DeviceSecret);
+
 /// <summary>The <c>Holding</c> DTO.</summary>
 public sealed record Holding(
     [property: JsonPropertyName("owner_type")] string OwnerType,

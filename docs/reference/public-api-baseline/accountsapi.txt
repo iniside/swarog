@@ -3,6 +3,35 @@ pub mod accountsapi
 pub mod accountsapi::admin
 pub const accountsapi::admin::PLAYERS_ROW_MENU: adminapi::ExtensionPoint
 pub mod accountsapi::auth_rpc
+pub struct accountsapi::auth_rpc::CreateGuestRequest
+impl core::default::Default for accountsapi::auth_rpc::CreateGuestRequest
+pub fn accountsapi::auth_rpc::CreateGuestRequest::default() -> accountsapi::auth_rpc::CreateGuestRequest
+impl serde_core::ser::Serialize for accountsapi::auth_rpc::CreateGuestRequest
+pub fn accountsapi::auth_rpc::CreateGuestRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for accountsapi::auth_rpc::CreateGuestRequest where accountsapi::auth_rpc::CreateGuestRequest: core::default::Default
+pub fn accountsapi::auth_rpc::CreateGuestRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for accountsapi::auth_rpc::CreateGuestRequest
+impl core::marker::Send for accountsapi::auth_rpc::CreateGuestRequest
+impl core::marker::Sync for accountsapi::auth_rpc::CreateGuestRequest
+impl core::marker::Unpin for accountsapi::auth_rpc::CreateGuestRequest
+impl core::marker::UnsafeUnpin for accountsapi::auth_rpc::CreateGuestRequest
+impl core::panic::unwind_safe::RefUnwindSafe for accountsapi::auth_rpc::CreateGuestRequest
+impl core::panic::unwind_safe::UnwindSafe for accountsapi::auth_rpc::CreateGuestRequest
+pub struct accountsapi::auth_rpc::CreateGuestResponse
+pub accountsapi::auth_rpc::CreateGuestResponse::err: alloc::string::String
+pub accountsapi::auth_rpc::CreateGuestResponse::status: opsapi::Status
+pub accountsapi::auth_rpc::CreateGuestResponse::value: serde_json::value::Value
+impl serde_core::ser::Serialize for accountsapi::auth_rpc::CreateGuestResponse
+pub fn accountsapi::auth_rpc::CreateGuestResponse::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for accountsapi::auth_rpc::CreateGuestResponse
+pub fn accountsapi::auth_rpc::CreateGuestResponse::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for accountsapi::auth_rpc::CreateGuestResponse
+impl core::marker::Send for accountsapi::auth_rpc::CreateGuestResponse
+impl core::marker::Sync for accountsapi::auth_rpc::CreateGuestResponse
+impl core::marker::Unpin for accountsapi::auth_rpc::CreateGuestResponse
+impl core::marker::UnsafeUnpin for accountsapi::auth_rpc::CreateGuestResponse
+impl core::panic::unwind_safe::RefUnwindSafe for accountsapi::auth_rpc::CreateGuestResponse
+impl core::panic::unwind_safe::UnwindSafe for accountsapi::auth_rpc::CreateGuestResponse
 pub struct accountsapi::auth_rpc::LoginFederatedRequest
 pub accountsapi::auth_rpc::LoginFederatedRequest::credential: alloc::string::String
 pub accountsapi::auth_rpc::LoginFederatedRequest::provider: alloc::string::String
@@ -126,6 +155,7 @@ impl core::marker::Unpin for accountsapi::auth_rpc::RegisterResponse
 impl core::marker::UnsafeUnpin for accountsapi::auth_rpc::RegisterResponse
 impl core::panic::unwind_safe::RefUnwindSafe for accountsapi::auth_rpc::RegisterResponse
 impl core::panic::unwind_safe::UnwindSafe for accountsapi::auth_rpc::RegisterResponse
+pub const accountsapi::auth_rpc::METHOD_CREATE_GUEST: &str
 pub const accountsapi::auth_rpc::METHOD_LOGIN: &str
 pub const accountsapi::auth_rpc::METHOD_LOGIN_FEDERATED: &str
 pub const accountsapi::auth_rpc::METHOD_ME: &str
@@ -168,6 +198,33 @@ pub fn accountsapi::sessions_rpc::describe() -> opsapi::DescribeManifest
 pub fn accountsapi::sessions_rpc::operations(alloc::sync::Arc<(dyn accountsapi::Sessions + core::marker::Send + core::marker::Sync)>) -> alloc::vec::Vec<opsapi::OpSet>
 pub fn accountsapi::sessions_rpc::route_bindings() -> alloc::vec::Vec<opsapi::RouteBinding>
 pub fn accountsapi::sessions_rpc::wire_ops() -> alloc::vec::Vec<opsapi::WireOp>
+pub struct accountsapi::GuestSession
+pub accountsapi::GuestSession::access_expires_in_secs: i64
+pub accountsapi::GuestSession::device_secret: alloc::string::String
+pub accountsapi::GuestSession::player_id: alloc::string::String
+pub accountsapi::GuestSession::refresh_token: alloc::string::String
+pub accountsapi::GuestSession::token: alloc::string::String
+impl core::clone::Clone for accountsapi::GuestSession
+pub fn accountsapi::GuestSession::clone(&self) -> accountsapi::GuestSession
+impl core::cmp::Eq for accountsapi::GuestSession
+impl core::cmp::PartialEq for accountsapi::GuestSession
+pub fn accountsapi::GuestSession::eq(&self, &accountsapi::GuestSession) -> bool
+impl core::default::Default for accountsapi::GuestSession
+pub fn accountsapi::GuestSession::default() -> accountsapi::GuestSession
+impl core::fmt::Debug for accountsapi::GuestSession
+pub fn accountsapi::GuestSession::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for accountsapi::GuestSession
+impl serde_core::ser::Serialize for accountsapi::GuestSession
+pub fn accountsapi::GuestSession::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for accountsapi::GuestSession
+pub fn accountsapi::GuestSession::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for accountsapi::GuestSession
+impl core::marker::Send for accountsapi::GuestSession
+impl core::marker::Sync for accountsapi::GuestSession
+impl core::marker::Unpin for accountsapi::GuestSession
+impl core::marker::UnsafeUnpin for accountsapi::GuestSession
+impl core::panic::unwind_safe::RefUnwindSafe for accountsapi::GuestSession
+impl core::panic::unwind_safe::UnwindSafe for accountsapi::GuestSession
 pub struct accountsapi::IdentityRef
 pub accountsapi::IdentityRef::provider: alloc::string::String
 pub accountsapi::IdentityRef::subject: alloc::string::String
@@ -243,6 +300,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for accountsapi::Session
 impl core::panic::unwind_safe::UnwindSafe for accountsapi::Session
 pub const accountsapi::MAX_SESSION_TOKEN_BYTES: usize
 pub trait accountsapi::Auth: core::marker::Send + core::marker::Sync
+pub fn accountsapi::Auth::create_guest<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<accountsapi::GuestSession, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn accountsapi::Auth::login<'life0, 'async_trait>(&'life0 self, alloc::string::String, alloc::string::String) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<accountsapi::Session, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn accountsapi::Auth::login_federated<'life0, 'async_trait>(&'life0 self, alloc::string::String, alloc::string::String) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<accountsapi::Session, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn accountsapi::Auth::me<'life0, 'async_trait>(&'life0 self, opsapi::Identity) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<accountsapi::MeView, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait

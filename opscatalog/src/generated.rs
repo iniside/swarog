@@ -2,6 +2,7 @@
 // Regenerate: cargo run -p opscatalog-gen (freshness-gated by verifyctl codegen-freshness).
 // Source: every #[http]-bound operation's route_bindings() across api/*/api, sorted by method.
 pub const OPERATIONS: &[OpInfo] = &[
+    OpInfo { method: "accounts.createGuest", verb: "POST", path: "/accounts/guest", auth: "none" },
     OpInfo { method: "accounts.login", verb: "POST", path: "/accounts/login", auth: "none" },
     OpInfo { method: "accounts.loginFederated", verb: "POST", path: "/accounts/login/federated", auth: "none" },
     OpInfo { method: "accounts.me", verb: "GET", path: "/accounts/me", auth: "player" },

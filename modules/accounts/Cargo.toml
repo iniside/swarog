@@ -47,6 +47,9 @@ jsonwebtoken = { workspace = true }
 rand = { workspace = true }
 base64 = { workspace = true }
 url = { workspace = true }
+# The guest/device provider stores a SHA-256 digest of a full-entropy machine-minted
+# secret — deterministic and cheap, deliberately not argon2id (see modules/accounts/src/guest.rs).
+sha2 = { workspace = true }
 
 [dev-dependencies]
 # The durable plane under test: registration emits player.registered via emit_tx,

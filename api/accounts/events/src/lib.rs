@@ -14,8 +14,9 @@ use std::sync::LazyLock;
 use bus::{define, EventType, HistoryPolicy};
 use serde::{Deserialize, Serialize};
 
-/// Fires the first time an identity provisions a NEW player — for any provider
-/// (`"dev"` today, `"epic"` for first-sight OIDC logins). It carries our
+/// Fires the first time an identity provisions a NEW player. `provider` is whichever
+/// credential provider provisioned it — the authority is accounts' own provider
+/// registry, so this doc deliberately does not enumerate the names. It carries our
 /// product-scoped player id, never a provider's external id. Evolve additively
 /// (constraint #6).
 ///

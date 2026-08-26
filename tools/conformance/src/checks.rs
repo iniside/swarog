@@ -4,7 +4,7 @@
 //! can prove the failure modes — including the negative proof that a forgotten
 //! module produces the expected per-entry drift error.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::input_inventory::{render_key, InputKey};
 use crate::model::{ArgonParams, Convention, Entry, Fixture, InputPolicy, Stance};
@@ -147,6 +147,101 @@ pub fn admin_submit_findings(on_disk: &BTreeSet<String>, entries: &[Entry]) -> V
                 "{module} implements adminapi::AdminSubmit but declares no executable \
                  input-byte-caps fixture — the `admin.adminSubmit params.<value>` basis \
                  rests on its form values being capped, so a sentence is not enough"
+            ));
+        }
+    }
+    findings
+}
+
+/// The reviewed per-provider credential caps of `accounts.loginFederated`.
+///
+/// The wire field `credential` is ONE `InputKey`, so its `Validated` row can state only
+/// one number — but the cap it names is `CredentialVerifier::max_credential_bytes`,
+/// which every provider answers for itself. Before `guest` there was one implementor
+/// and the row was accidentally exact; a second verifier with a shorter bound makes the
+/// row true only for the widest provider, and nothing in the OIDC-shaped `CapCase` would
+/// notice. This list is that missing notice: it is diffed against the registry accounts
+/// actually builds before any assertion runs, so a new provider, a changed bound, or a
+/// verifier the production construction stopped registering each names itself here.
+/// Each row is `(provider, cap, the CapCase that executes that cap)`. The third column
+/// is what keeps the link from being a coincidence: several unrelated accounts caps
+/// happen to be 128 bytes, so matching by NUMBER alone would let a deleted guest fixture
+/// stay green behind the session-token case.
+pub const CREDENTIAL_CAPS: &[(&str, usize, &str)] = &[
+    ("epic", 65_536, "accounts federated OIDC credential"),
+    ("google", 65_536, "accounts federated OIDC credential"),
+    ("guest", 128, "accounts federated guest ticket"),
+];
+
+/// Phase 1b (credentials) — the per-provider cap tripwire. `registry` is the cap map the
+/// production `ProviderConfig::from_vars -> providers` path yields, `known` is accounts'
+/// own `KNOWN_PROVIDERS`, and `entries` supplies accounts' executable cap fixtures. Four
+/// independent drifts, each its own line with the concrete fix.
+pub fn credential_cap_findings(
+    registry: &BTreeMap<String, usize>,
+    known: &[&str],
+    entries: &[Entry],
+) -> Vec<String> {
+    let listed: BTreeMap<&str, (usize, &str)> = CREDENTIAL_CAPS
+        .iter()
+        .map(|(provider, cap, case)| (*provider, (*cap, *case)))
+        .collect();
+    let mut findings = Vec::new();
+
+    for name in known {
+        if !registry.contains_key(*name) {
+            findings.push(format!(
+                "accounts::providers::KNOWN_PROVIDERS names {name}, but the production registry \
+                 built no verifier for it — either the fixture in \
+                 accounts::conformance::credential_caps does not configure {name}, or \
+                 ProviderConfig::providers never registers it. Neither leaves a checkable \
+                 credential cap for {name}"
+            ));
+        }
+    }
+    for (name, cap) in registry {
+        match listed.get(name.as_str()) {
+            None => findings.push(format!(
+                "accounts registers a {name} credential verifier with a {cap}-byte cap that \
+                 checks::CREDENTIAL_CAPS does not list — add (\"{name}\", {cap}) and give \
+                 accounts an input-byte-caps CapCase probing {name}'s own \
+                 max_credential_bytes"
+            )),
+            Some((listed_cap, _)) if listed_cap != cap => findings.push(format!(
+                "{name}'s credential cap is {cap} bytes in accounts but {listed_cap} in \
+                 checks::CREDENTIAL_CAPS — the accounts.loginFederated credential policy row \
+                 states the widest of these, so re-review the row before updating the list"
+            )),
+            Some(_) => {}
+        }
+    }
+    for name in listed.keys() {
+        if !registry.contains_key(*name) {
+            findings.push(format!(
+                "checks::CREDENTIAL_CAPS lists {name}, which the production registry no longer \
+                 builds a verifier for — remove the stale entry"
+            ));
+        }
+    }
+
+    let probed: BTreeSet<(&str, usize)> = entries
+        .iter()
+        .find(|entry| entry.module == "accounts")
+        .and_then(|entry| match entry.stance(Convention::InputByteCaps) {
+            Some(Stance::Applies(Fixture::InputByteCaps(cases))) => Some(cases),
+            _ => None,
+        })
+        .map(|cases| cases.iter().map(|case| (case.name, case.cap)).collect())
+        .unwrap_or_default();
+    for (name, cap) in registry {
+        let Some((_, case)) = listed.get(name.as_str()) else {
+            continue;
+        };
+        if !probed.contains(&(*case, *cap)) {
+            findings.push(format!(
+                "{name}'s {cap}-byte credential cap is stated but never executed — accounts \
+                 declares no input-byte-caps CapCase named \"{case}\" with cap {cap}, so \
+                 nothing proves credential_within_cap enforces {name}'s own bound"
             ));
         }
     }

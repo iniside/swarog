@@ -385,7 +385,7 @@ async fn handle_callback(
     // player.registered on first sight), mint a session, hand the token back via the
     // URL fragment for the page to pick up.
     let session = match svc
-        .external_login("epic", &subject, &format!("epic:{}", short_id(&subject)))
+        .external_login("epic", &subject, &format!("epic:{}", short_id(&subject)), None)
         .await
     {
         Ok((session, _created)) => session,

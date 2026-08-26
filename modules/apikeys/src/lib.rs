@@ -102,7 +102,8 @@ fn internal<E: std::fmt::Display>(e: E) -> Error {
 // `<prefix>.<lowerCamel(method)>`); the `dev-server` role is `full`. `match.report` is
 // deliberately ABSENT from `dev-client` — it is the trusted-server op, which gives the
 // harness a real negative case.
-const DEV_CLIENT_POLICY: &str = "accounts.register,accounts.login,accounts.loginFederated,accounts.me,\
+const DEV_CLIENT_POLICY: &str = "accounts.register,accounts.login,accounts.loginFederated,\
+accounts.createGuest,accounts.me,\
 characters.create,characters.list,characters.delete,\
 inventory.grant,inventory.listMine,inventory.listCharacter,\
 leaderboard.topScores,\

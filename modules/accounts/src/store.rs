@@ -141,6 +141,29 @@ impl Store {
         })
     }
 
+    /// Whether `subject` names a guest identity whose stored digest is exactly
+    /// `secret_hash`. Subject and digest are matched in ONE predicate on purpose: an
+    /// unknown subject and a wrong secret must be the same answer, and a lookup that
+    /// returned the row first would hand its caller the oracle. A SIBLING of
+    /// [`Store::password_identity`] rather than a widening of it — that one resolves a
+    /// dev/password identity by EMAIL, and a guest subject must never match it.
+    pub async fn guest_identity_matches(
+        &self,
+        subject: &str,
+        secret_hash: &str,
+    ) -> Result<bool, sqlx::Error> {
+        let row: Option<(i32,)> = sqlx::query_as(
+            "SELECT 1 FROM accounts.identities \
+              WHERE provider = $1 AND subject = $2 AND secret_hash = $3",
+        )
+        .bind(crate::providers::GUEST)
+        .bind(subject)
+        .bind(secret_hash)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.is_some())
+    }
+
     /// Takes the transaction-scoped writer lock for one external identity. Callers
     /// make this the first statement after BEGIN, then re-read under the lock.
     pub async fn lock_identity_tx(

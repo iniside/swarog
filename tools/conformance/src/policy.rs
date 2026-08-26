@@ -12,6 +12,16 @@ fn na(why: &'static str) -> Stance {
     Stance::NotApplicable { why }
 }
 
+/// The widest cap any registered credential verifier states — read from the registry
+/// accounts actually builds, never a literal, so the one policy row a single wire field
+/// permits cannot claim a number no provider accepts.
+fn widest_credential_cap() -> usize {
+    accounts::conformance::credential_caps()
+        .into_values()
+        .max()
+        .expect("accounts always registers at least the guest verifier")
+}
+
 fn argon(params: (u32, u32, u32, usize)) -> Fixture {
     Fixture::ArgonParity(ArgonParams {
         m_cost: params.0,
@@ -51,7 +61,7 @@ pub fn input_policies() -> Vec<(InputKey, InputPolicy)> {
     vec![
         (key("accounts.login", "email", External), Validated { cap: 320, basis: "accounts::email_within_cap is called by the production login path" }),
         (key("accounts.login", "password", External), Validated { cap: 1024, basis: "accounts::password_within_cap is called by the production login path" }),
-        (key("accounts.loginFederated", "credential", External), Validated { cap: accounts::conformance::MAX_OIDC_CREDENTIAL_BYTES, basis: "the cap is the RESOLVED provider's own CredentialVerifier::max_credential_bytes, checked by accounts::credential_within_cap after the (already length-capped) provider name resolves in the registry and before any verifier, JWKS or database work" }),
+        (key("accounts.loginFederated", "credential", External), Validated { cap: widest_credential_cap(), basis: "there is no single cap here: this ONE wire field carries every provider's credential and the bound applied is the RESOLVED provider's own CredentialVerifier::max_credential_bytes, checked by accounts::credential_within_cap after the (already length-capped) provider name resolves in the registry and before any verifier, JWKS or database work. The number stated is therefore the WIDEST registered provider's cap (an OIDC id_token's 65536); the tighter per-provider bounds — guest's 128-byte ticket today — are enforced identically and are the SUBJECT of checks::CREDENTIAL_CAPS, which is diffed against the registry accounts really builds before any assertion runs and requires each distinct cap to be executed by a CapCase below" }),
         (key("accounts.loginFederated", "provider", External), Validated { cap: accounts::conformance::MAX_PROVIDER_NAME_BYTES, basis: "accounts::provider_name_within_cap runs first in login_federated, before the provider name is used as a registry lookup key" }),
         (key("accounts.register", "displayName", External), Validated { cap: 128, basis: "accounts::display_name_within_cap validates the effective persisted display before Argon or SQL" }),
         (key("accounts.register", "email", External), Validated { cap: 320, basis: "accounts::email_within_cap is called by the production register path" }),
@@ -151,6 +161,13 @@ fn accounts() -> Entry {
                         cap: accounts::conformance::MAX_OIDC_CREDENTIAL_BYTES,
                         probe: Arc::new(
                             accounts::conformance::conformance_federated_credential_rejected,
+                        ),
+                    },
+                    CapCase {
+                        name: "accounts federated guest ticket",
+                        cap: accounts::conformance::MAX_GUEST_CREDENTIAL_BYTES,
+                        probe: Arc::new(
+                            accounts::conformance::conformance_guest_credential_rejected,
                         ),
                     },
                     CapCase {

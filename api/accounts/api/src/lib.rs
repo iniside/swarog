@@ -30,6 +30,25 @@ pub struct Session {
     pub token: String,
 }
 
+/// What [`Auth::create_guest`] returns: a provisioned player, its session, and the
+/// device ticket — the ONLY time the guest secret is ever readable. Nothing can
+/// re-derive it afterwards: only its digest is stored.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GuestSession {
+    pub player_id: String,
+    pub token: String,
+    /// Empty in this build: refresh tokens do not exist yet. The field is declared
+    /// from the start because a guest is the longest-lived client class and the only
+    /// one that cannot re-authenticate from an external identity provider, so its
+    /// response shape must not have to change to gain one.
+    pub refresh_token: String,
+    /// The lifetime of `token`, which today IS the session TTL (30 days).
+    pub access_expires_in_secs: i64,
+    /// The `"<subject>.<secret>"` ticket the device stores and replays through
+    /// `login_federated("guest", …)`. Revealed exactly once, here.
+    pub device_secret: String,
+}
+
 /// One credential mapping `(provider, subject) → player`. Go named this `Identity`;
 /// renamed here so it can never be confused with the macro's leading
 /// `opsapi::Identity` caller-identity convention. Serde field names are Go's JSON
@@ -65,8 +84,8 @@ pub trait Sessions: Send + Sync {
 }
 
 /// The accounts module's player-facing capability: the operations that establish or
-/// read a player identity. `register`/`login`/`login_federated` are `auth = "none"`
-/// (they CREATE the session, so they take no caller identity); `me` is
+/// read a player identity. `register`/`login`/`login_federated`/`create_guest` are
+/// `auth = "none"` (they CREATE the session, so they take no caller identity); `me` is
 /// `auth = "player"` — it takes its caller identity as the leading `Identity` param
 /// (injected by the gateway after bearer verification), NEVER a body field. The
 /// `body_names` remap keeps Go's public body key `displayName` byte-identical.
@@ -95,6 +114,15 @@ pub trait Auth: Send + Sync {
     /// `Unauthorized` (401). 200.
     #[http(verb = "POST", path = "/accounts/login/federated", auth = "none", success = 200)]
     async fn login_federated(&self, provider: String, credential: String) -> Result<Session, Error>;
+
+    /// Mints a brand-new guest player: provisions the player + its `guest` identity,
+    /// emits `player.registered` durably in the same transaction, mints a session and
+    /// reveals the device ticket EXACTLY ONCE (only its SHA-256 digest is stored, so
+    /// no later read can return it). Takes no input — a guest has nothing to present
+    /// yet; the returning device replays the ticket through
+    /// [`Auth::login_federated`] under the `"guest"` provider. 201.
+    #[http(verb = "POST", path = "/accounts/guest", auth = "none", success = 201)]
+    async fn create_guest(&self) -> Result<GuestSession, Error>;
 
     /// The caller's own player + identities (identity injected by the gateway after
     /// bearer verification — the AuthPlayer trust boundary). 200.

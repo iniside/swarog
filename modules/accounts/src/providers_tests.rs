@@ -19,6 +19,17 @@ fn vars(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
         .collect()
 }
 
+/// A pool handle for the registry construction. `connect_lazy` opens no connection but
+/// registers its idle reaper on the current Tokio runtime, so every caller is an async
+/// test; none of them reaches the store (the guest verifier is registered, never
+/// invoked here).
+fn lazy_pool() -> sqlx::PgPool {
+    sqlx::PgPool::connect_lazy(
+        "postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable",
+    )
+    .expect("lazy pool from a well-formed DSN")
+}
+
 fn err_msg(pairs: &[(&str, &str)]) -> String {
     match ProviderConfig::from_vars(&vars(pairs)) {
         Ok(_) => panic!("expected from_vars to reject {pairs:?}, got Ok"),
@@ -270,10 +281,10 @@ fn resolve_known_but_unconfigured_name_is_known_but_unconfigured() {
     }
 }
 
-#[test]
-fn resolve_configured_name_via_the_production_path() {
+#[tokio::test]
+async fn resolve_configured_name_via_the_production_path() {
     let cfg = ProviderConfig::from_vars(&vars(&[("EPIC_CLIENT_ID", "client-1")])).unwrap();
-    let providers = cfg.providers();
+    let providers = cfg.providers(&lazy_pool());
     match providers.resolve("epic") {
         Resolution::Configured(_) => {}
         _ => panic!("expected Configured, from_vars -> providers() did not register epic"),
@@ -358,7 +369,7 @@ async fn resolved_verifier_from_from_vars_verifies_a_real_token() {
         ("EPIC_ISSUER_PREFIX", issuer),
     ]))
     .unwrap();
-    let providers = cfg.providers();
+    let providers = cfg.providers(&lazy_pool());
     let Resolution::Configured(verifier) = providers.resolve("epic") else {
         panic!("expected Configured");
     };
@@ -451,7 +462,7 @@ async fn resolved_google_verifier_from_from_vars_verifies_a_real_token() {
         ("GOOGLE_JWKS_URL", &jwks_url),
     ]))
     .unwrap();
-    let providers = cfg.providers();
+    let providers = cfg.providers(&lazy_pool());
     let Resolution::Configured(verifier) = providers.resolve("google") else {
         panic!("expected Configured, from_vars -> providers() did not register google");
     };
@@ -480,7 +491,7 @@ async fn resolved_google_verifier_from_from_vars_rejects_lookalike_issuer() {
         ("GOOGLE_JWKS_URL", &jwks_url),
     ]))
     .unwrap();
-    let providers = cfg.providers();
+    let providers = cfg.providers(&lazy_pool());
     let Resolution::Configured(verifier) = providers.resolve("google") else {
         panic!("expected Configured, from_vars -> providers() did not register google");
     };
@@ -516,7 +527,7 @@ async fn resolved_google_verifier_from_from_vars_rejects_a_google_subpath() {
         ("GOOGLE_JWKS_URL", &jwks_url),
     ]))
     .unwrap();
-    let providers = cfg.providers();
+    let providers = cfg.providers(&lazy_pool());
     let Resolution::Configured(verifier) = providers.resolve("google") else {
         panic!("expected Configured, from_vars -> providers() did not register google");
     };
@@ -552,7 +563,7 @@ async fn resolved_google_verifier_from_from_vars_accepts_the_scheme_less_spellin
         ("GOOGLE_JWKS_URL", &jwks_url),
     ]))
     .unwrap();
-    let providers = cfg.providers();
+    let providers = cfg.providers(&lazy_pool());
     let Resolution::Configured(verifier) = providers.resolve("google") else {
         panic!("expected Configured, from_vars -> providers() did not register google");
     };
@@ -577,7 +588,7 @@ async fn resolved_epic_verifier_with_bare_host_issuer_prefix_rejects_lookalike()
         ("EPIC_ISSUER_PREFIX", "https://issuer.example"),
     ]))
     .unwrap();
-    let providers = cfg.providers();
+    let providers = cfg.providers(&lazy_pool());
     let Resolution::Configured(verifier) = providers.resolve("epic") else {
         panic!("expected Configured");
     };

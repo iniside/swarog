@@ -896,14 +896,14 @@ async fn external_login_is_idempotent_and_issues_each_session() {
     let sub = format!("puid-{}", suffix());
 
     let (first, created) = svc
-        .external_login("epic", &sub, "epic:new")
+        .external_login("epic", &sub, "epic:new", None)
         .await
         .unwrap();
     assert!(created, "first login must provision");
     assert_eq!(registered_events(&pool, &first.player_id).await, 1);
 
     let (again, created2) = svc
-        .external_login("epic", &sub, "epic:new")
+        .external_login("epic", &sub, "epic:new", None)
         .await
         .unwrap();
     assert!(!created2, "second login must not provision");
@@ -929,12 +929,12 @@ async fn concurrent_first_logins_create_one_player_event_and_two_sessions() {
     let first = {
         let svc = svc.clone();
         let sub = sub.clone();
-        tokio::spawn(async move { svc.external_login("epic", &sub, "Race first").await })
+        tokio::spawn(async move { svc.external_login("epic", &sub, "Race first", None).await })
     };
     let second = {
         let svc = svc.clone();
         let sub = sub.clone();
-        tokio::spawn(async move { svc.external_login("epic", &sub, "Race first").await })
+        tokio::spawn(async move { svc.external_login("epic", &sub, "Race first", None).await })
     };
     let both_waiting = wait_for_identity_lock_waiters(&pool, key, 2).await;
     gate.rollback().await.unwrap();
@@ -987,7 +987,7 @@ async fn link_racing_first_login_has_only_two_coherent_outcomes() {
     let login = {
         let svc = svc.clone();
         let sub = sub.clone();
-        tokio::spawn(async move { svc.external_login("epic", &sub, "External racer").await })
+        tokio::spawn(async move { svc.external_login("epic", &sub, "External racer", None).await })
     };
     let both_waiting = wait_for_identity_lock_waiters(&pool, key, 2).await;
     gate.rollback().await.unwrap();

@@ -30,6 +30,9 @@ public sealed class GameBackendStatusException(Status status, string? detail)
     public string? Detail { get; } = detail;
 }
 
+/// <summary>Request for <c>accounts.createGuest</c> (no arguments — serializes to <c>{}</c>).</summary>
+public sealed record AccountsCreateGuestRequest();
+
 /// <summary>Request for <c>accounts.login</c>.</summary>
 public sealed record AccountsLoginRequest(
     [property: JsonPropertyName("email")] string Email,
@@ -101,6 +104,18 @@ public sealed class GameBackendClient(IPlayerTransport transport)
     {
         Converters = { new JsonStringEnumConverter() },
     };
+
+    /// <summary>Invokes <c>accounts.createGuest</c> (unauthenticated).</summary>
+    public async Task<GuestSession> AccountsCreateGuestAsync(CancellationToken ct = default)
+    {
+        var request = new AccountsCreateGuestRequest();
+        byte[] payload = JsonSerializer.SerializeToUtf8Bytes(request, JsonOpts);
+        PlayerResponse resp = await transport.CallAsync("accounts.createGuest", null, payload, ct).ConfigureAwait(false);
+        JsonNode envelope = Unwrap(resp);
+        JsonNode value = envelope["value"]
+            ?? throw new GameBackendTransportException("Ok response missing 'value'");
+        return value.Deserialize<GuestSession>(JsonOpts)!;
+    }
 
     /// <summary>Invokes <c>accounts.login</c> (unauthenticated).</summary>
     public async Task<Session> AccountsLoginAsync(string email, string password, CancellationToken ct = default)

@@ -12,7 +12,8 @@
 //!   - `accounts.sessions` ([`accountsapi::Sessions`]) — bearer → player_id, the
 //!     capability the gateway's auth-once verifier resolves (registry swap: local
 //!     here, an edge client from `accountsrpc::remote_factories()` in a split peer).
-//!   - `accounts.auth` ([`accountsapi::Auth`]) — register/login/loginFederated/me,
+//!   - `accounts.auth` ([`accountsapi::Auth`]) — register/login/loginFederated/
+//!     createGuest/me,
 //!     contributed as gateway operations (conditionally, per the env gates).
 //!   - Epic web OAuth — two HTTP-NATIVE browser routes (`POST /accounts/epic/start`,
 //!     `GET /accounts/epic/callback`) mounted on the shared router when
@@ -25,6 +26,7 @@
 mod admin;
 pub mod conformance;
 mod epic_oauth;
+mod guest;
 mod oidc;
 mod ops;
 mod password;
@@ -44,7 +46,7 @@ use tokio::sync::Semaphore;
 
 use crate::password::{hash_password, ArgonVerifier, PasswordVerifier, DUMMY_HASH};
 use crate::providers::{
-    CredentialVerifier, ProviderConfig, Providers, Resolution, VerifyError,
+    CredentialVerifier, ProviderConfig, Providers, Resolution, VerifyError, GUEST,
 };
 use crate::store::{Player, Store, StoreError};
 
@@ -110,7 +112,7 @@ CREATE TABLE IF NOT EXISTS accounts.identities (
 	provider    text NOT NULL,
 	subject     text NOT NULL,
 	player_id   uuid NOT NULL REFERENCES accounts.players(id) ON DELETE CASCADE,
-	secret_hash text,                         -- only dev/password uses it
+	secret_hash text,                         -- dev/password: argon2id PHC; guest: SHA-256 digest
 	created_at  timestamptz NOT NULL DEFAULT now(),
 	PRIMARY KEY (provider, subject)
 );
@@ -263,6 +265,7 @@ impl Service {
         provider: &str,
         subject: &str,
         display_name: &str,
+        secret_hash: Option<&str>,
     ) -> Result<(accountsapi::Session, bool), Error> {
         let mut tx = self.store.pool.begin().await.map_err(internal)?;
         // First statement after BEGIN: every external identity writer shares it.
@@ -292,7 +295,7 @@ impl Service {
 
         let p = match self
             .store
-            .insert_player_with_identity_tx(&mut tx, provider, subject, display_name, None)
+            .insert_player_with_identity_tx(&mut tx, provider, subject, display_name, secret_hash)
             .await
         {
             Ok(p) => p,
@@ -523,9 +526,35 @@ impl accountsapi::Auth for Service {
             }
         };
         let (session, _created) = self
-            .external_login(&provider, &verified.subject, &verified.display_name)
+            .external_login(&provider, &verified.subject, &verified.display_name, None)
             .await?;
         Ok(session)
+    }
+
+    /// Mints a guest player (AuthNone): provisions player + `guest` identity, appends
+    /// `player.registered` durably and issues a session in ONE transaction — the same
+    /// provisioning path a first-sight federated login takes, differing only in that
+    /// this identity carries a secret digest. The ticket is returned here and nowhere
+    /// else: `guest::mint_ticket` is the only place the plaintext exists, and the
+    /// store keeps only its SHA-256 digest.
+    async fn create_guest(&self) -> Result<accountsapi::GuestSession, Error> {
+        let ticket = guest::mint_ticket();
+        let display_name = format!("{GUEST}:{}", oidc::short_id(&ticket.subject));
+        let (session, _created) = self
+            .external_login(
+                GUEST,
+                &ticket.subject,
+                &display_name,
+                Some(&ticket.secret_hash),
+            )
+            .await?;
+        Ok(accountsapi::GuestSession {
+            player_id: session.player_id,
+            token: session.token,
+            refresh_token: String::new(),
+            access_expires_in_secs: i64::from(store::SESSION_TTL_DAYS) * 86_400,
+            device_secret: ticket.credential,
+        })
     }
 
     /// The caller's own player + identities (player_id from `identity`, injected by
@@ -751,7 +780,7 @@ impl Module for Accounts {
             );
         }
         svc.providers
-            .set(Arc::new(config.providers()))
+            .set(Arc::new(config.providers(&svc.store.pool)))
             .map_err(|_| anyhow::anyhow!("accounts.init ran twice"))?;
 
         // Player operations: the generated Auth OpSets, ALL contributed

@@ -50,7 +50,7 @@ mod tests;
 
 use checks::{
     admin_submit_findings, argon_parity_findings, completeness_findings, conv_label,
-    drift_findings, eval_cap_probe, input_policy_prose_findings,
+    credential_cap_findings, drift_findings, eval_cap_probe, input_policy_prose_findings,
 };
 use model::{ArgonParams, Convention, EnvCase, Fixture, InputPolicy, OutageClass, Stance};
 
@@ -345,6 +345,14 @@ fn main() {
     let admin_submit = admin_submit_findings(&admin_submit_impls, &entries);
     if !admin_submit.is_empty() {
         fail_phase("adminSubmit drift", &admin_submit);
+    }
+    let credential_caps = credential_cap_findings(
+        &accounts::conformance::credential_caps(),
+        accounts::conformance::KNOWN_PROVIDERS,
+        &entries,
+    );
+    if !credential_caps.is_empty() {
+        fail_phase("credential cap drift", &credential_caps);
     }
     let actual_golden = input_inventory::render_golden(&discovered_inputs);
     let committed_golden =

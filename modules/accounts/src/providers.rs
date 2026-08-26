@@ -18,7 +18,9 @@ use std::sync::{Arc, LazyLock};
 
 use async_trait::async_trait;
 
+use crate::guest::guest_credentials;
 use crate::oidc::{short_id, IssuerMatch, OidcVerifier};
+use crate::store::Store;
 
 /// The `accounts.identities.provider` value for Epic — written once and referenced by
 /// the name list, the registry key and every `resolve` call, so a typo cannot leave a
@@ -28,13 +30,19 @@ pub(crate) const EPIC: &str = "epic";
 /// The `accounts.identities.provider` value for Google, the second OIDC provider.
 pub(crate) const GOOGLE: &str = "google";
 
+/// The `accounts.identities.provider` value for the guest/device provider — the one
+/// credential this backend mints itself instead of verifying against an IdP.
+pub(crate) const GUEST: &str = "guest";
+
 /// Every provider name this build can construct a verifier for, configured or not —
 /// the naming authority, separate from the configured-verifier map so a typo and an
 /// unconfigured provider are distinguishable outcomes. Membership means buildable,
 /// not planned: a name joins this list in the same commit that ships its verifier,
-/// so `KnownButUnconfigured` (503) always names something an operator can fix by
-/// configuring it.
-pub(crate) const KNOWN_PROVIDERS: &[&str] = &[EPIC, GOOGLE];
+/// so `KnownButUnconfigured` (503) always names something this deployment could have
+/// stood up: an unset OIDC configuration for `epic`/`google`, or — for `guest`, whose
+/// only dependency is this module's own store — a process whose registry was never
+/// built.
+pub(crate) const KNOWN_PROVIDERS: &[&str] = &[EPIC, GOOGLE, GUEST];
 
 /// Why a credential failed verification — the taxonomy the caller maps to a status
 /// (mirrors the `verify_session` 503-not-401 precedent: an IdP outage must not
@@ -105,6 +113,17 @@ impl Providers {
         if self.verifiers.insert(name.to_string(), verifier).is_some() {
             panic!("accounts: provider {name:?} registered twice — two configurations claim the same provider");
         }
+    }
+
+    /// Every registered provider's own credential cap, as the registry sees it — the
+    /// source the conformance tool diffs its per-provider list against, so a second
+    /// verifier with a different bound cannot hide behind the one policy row that
+    /// states the widest.
+    pub(crate) fn credential_caps(&self) -> BTreeMap<String, usize> {
+        self.verifiers
+            .iter()
+            .map(|(name, verifier)| (name.clone(), verifier.max_credential_bytes()))
+            .collect()
     }
 
     pub(crate) fn resolve(&self, name: &str) -> Resolution<'_> {
@@ -210,10 +229,14 @@ impl ProviderConfig {
         })
     }
 
-    /// The credential registry this configuration implies — exactly the present
-    /// providers, each behind its [`CredentialVerifier`] adapter.
-    pub(crate) fn providers(&self) -> Providers {
+    /// The credential registry this configuration implies: the present env-configured
+    /// providers, each behind its [`CredentialVerifier`] adapter, plus `guest` —
+    /// which has no configuration to be present or absent, only this module's own
+    /// store, so it is registered wherever the registry is built at all. One
+    /// construction site, so no path can end up with a partial registry.
+    pub(crate) fn providers(&self, pool: &sqlx::PgPool) -> Providers {
         let mut providers = Providers::default();
+        providers.insert(GUEST, guest_credentials(Store { pool: pool.clone() }));
         if let Some(epic) = &self.epic {
             providers.insert(EPIC, oidc_credentials(EPIC, epic.verifier.clone()));
         }
