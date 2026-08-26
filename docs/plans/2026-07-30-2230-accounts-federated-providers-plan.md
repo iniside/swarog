@@ -947,9 +947,20 @@ Add **`proof-auditor`** to Steps **5, 7, 9, 13 and 15** — each edits a verify-
 4. **Guest accounts are creatable without any credential.** `create_guest` is rate-limited
    only by gateway-svc's 20 rps/burst 40, and each call appends a durable `player.registered`
    to the **shared event log**, fanning out to audit's ledger subscription and wallet's. So
-   the cost is unauthenticated durable-log growth, not two table rows. Decision 3 removes the
-   *currency* incentive only. A per-IP guest-creation limit is a gateway-side concern and a
-   separate change — named here so it is not mistaken for covered.
+   the cost is unauthenticated durable-log growth, not two table rows.
+
+   **Corrected 2026-08-26 (post-Step-7 review):** the earlier wording — "Decision 3 removes
+   the *currency* incentive only" — described code that does not exist yet. At Step 7
+   `modules/wallet/src/lib.rs` subscribes to EVERY `player.registered` and calls
+   `grant_starter` unconditionally; the `provider == "guest"` filter is Step 11's work. So
+   **Steps 7→11 are an exposed interval**: in any deployment that configured a starter
+   currency, an anonymous `POST /accounts/guest` mints a player AND its starter currency.
+   The only thing containing it is the compiled default (`STARTER_CURRENCY=""`,
+   `STARTER_AMOUNT=0`), i.e. an operator who never configured the grant. Land Step 11
+   before configuring a starter grant on any deployment that exposes `create_guest`.
+
+   A per-IP guest-creation limit is a gateway-side concern and a separate change — named
+   here so it is not mistaken for covered.
 5. **Refresh adds a write path that did not exist.** Every client now POSTs `/accounts/refresh`
    roughly hourly (one UPDATE + two INSERTs), and consumed refresh rows are retained until
    expiry (~720 rows per active device over a 30-day family). This is the cost the "no session
@@ -968,6 +979,21 @@ Add **`proof-auditor`** to Steps **5, 7, 9, 13 and 15** — each edits a verify-
    goes red. The per-verifier scan is deliberately NOT built now (it needs a second verifier
    to be meaningful) — it is Step 7's work, spelled out in Step 7(c). Named here so it is
    not mistaken for covered.
+
+8. **Every guest login takes an accounts pool connection.** `login_federated("guest", …)`
+   resolves its verdict with a store query and, on first sight, a whole provisioning
+   transaction — no cache, no admission control of its own. A mint/login flood therefore
+   competes for the same pool that `verify_session` uses, degrading session verification to
+   acquire-timeout 503s for authenticated traffic. Same mitigation as risk 4 and the same
+   scope note: rate limiting belongs at the gateway, not in the accounts module, and is a
+   separate change.
+
+9. **`Store::password_identity` binds a caller-supplied email raw** (`accounts.identities`
+   lookup by `subject`), the class Step 7's review closed for the guest subject: a value
+   Postgres rejects as a `text` parameter surfaces as a store error rather than as invalid
+   credentials. It is pre-existing and reaches a different verdict (the dev/password path's
+   500, not the `Infra`→503 "identity provider unavailable" ops signal), so it was NOT
+   changed in the guest fix. Recorded as a known gap, not covered.
 
 ## Revision 2 changelog
 
