@@ -166,10 +166,12 @@ pub fn admin_submit_findings(on_disk: &BTreeSet<String>, entries: &[Entry]) -> V
 /// Each row is `(provider, cap, the CapCase that executes that cap)`. The third column
 /// is what keeps the link from being a coincidence: several unrelated accounts caps
 /// happen to be 128 bytes, so matching by NUMBER alone would let a deleted guest fixture
-/// stay green behind the session-token case.
+/// stay green behind the session-token case. The mapping is one CapCase per PROVIDER,
+/// never per number: epic and google share a bound today, and one shared case would
+/// execute whichever verifier the case happened to hold and leave the other unprobed.
 pub const CREDENTIAL_CAPS: &[(&str, usize, &str)] = &[
-    ("epic", 65_536, "accounts federated OIDC credential"),
-    ("google", 65_536, "accounts federated OIDC credential"),
+    ("epic", 65_536, "accounts federated epic credential"),
+    ("google", 65_536, "accounts federated google credential"),
     ("guest", 128, "accounts federated guest ticket"),
 ];
 

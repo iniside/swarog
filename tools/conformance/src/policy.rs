@@ -61,7 +61,7 @@ pub fn input_policies() -> Vec<(InputKey, InputPolicy)> {
     vec![
         (key("accounts.login", "email", External), Validated { cap: 320, basis: "accounts::email_within_cap is called by the production login path" }),
         (key("accounts.login", "password", External), Validated { cap: 1024, basis: "accounts::password_within_cap is called by the production login path" }),
-        (key("accounts.loginFederated", "credential", External), Validated { cap: widest_credential_cap(), basis: "there is no single cap here: this ONE wire field carries every provider's credential and the bound applied is the RESOLVED provider's own CredentialVerifier::max_credential_bytes, checked by accounts::credential_within_cap after the (already length-capped) provider name resolves in the registry and before any verifier, JWKS or database work. The number stated is therefore the WIDEST registered provider's cap (an OIDC id_token's 65536); the tighter per-provider bounds — guest's 128-byte ticket today — are enforced identically and are the SUBJECT of checks::CREDENTIAL_CAPS, which is diffed against the registry accounts really builds before any assertion runs and requires each distinct cap to be executed by a CapCase below" }),
+        (key("accounts.loginFederated", "credential", External), Validated { cap: widest_credential_cap(), basis: "there is no single cap here: this ONE wire field carries every provider's credential and the bound applied is the RESOLVED provider's own CredentialVerifier::max_credential_bytes, checked by accounts::credential_within_cap after the (already length-capped) provider name resolves in the registry and before any verifier, JWKS or database work. The number stated is the maximum of the cap map the registry accounts really builds, computed here rather than written down, so it cannot name a bound no provider states. The per-provider caps are the SUBJECT of checks::CREDENTIAL_CAPS, which is diffed against that same registry before any assertion runs and requires each provider's own cap to be executed by its own CapCase below" }),
         (key("accounts.loginFederated", "provider", External), Validated { cap: accounts::conformance::MAX_PROVIDER_NAME_BYTES, basis: "accounts::provider_name_within_cap runs first in login_federated, before the provider name is used as a registry lookup key" }),
         (key("accounts.register", "displayName", External), Validated { cap: 128, basis: "accounts::display_name_within_cap validates the effective persisted display before Argon or SQL" }),
         (key("accounts.register", "email", External), Validated { cap: 320, basis: "accounts::email_within_cap is called by the production register path" }),
@@ -157,10 +157,17 @@ fn accounts() -> Entry {
                         probe: Arc::new(accounts::conformance::conformance_display_name_rejected),
                     },
                     CapCase {
-                        name: "accounts federated OIDC credential",
+                        name: "accounts federated epic credential",
                         cap: accounts::conformance::MAX_OIDC_CREDENTIAL_BYTES,
                         probe: Arc::new(
-                            accounts::conformance::conformance_federated_credential_rejected,
+                            accounts::conformance::conformance_epic_credential_rejected,
+                        ),
+                    },
+                    CapCase {
+                        name: "accounts federated google credential",
+                        cap: accounts::conformance::MAX_OIDC_CREDENTIAL_BYTES,
+                        probe: Arc::new(
+                            accounts::conformance::conformance_google_credential_rejected,
                         ),
                     },
                     CapCase {

@@ -9,9 +9,8 @@ use accountsapi::Auth as _;
 use sqlx::PgPool;
 use tokio::sync::Semaphore;
 
-use crate::oidc::{IssuerMatch, OidcVerifier};
 use crate::password::ArgonVerifier;
-use crate::providers::{oidc_credentials, EPIC};
+use crate::providers::{Providers, Resolution, EPIC, GOOGLE, GUEST};
 use crate::store::Store;
 use crate::{
     credential_within_cap, display_name_within_cap, email_within_cap,
@@ -43,18 +42,71 @@ pub const KNOWN_PROVIDERS: &[&str] = crate::providers::KNOWN_PROVIDERS;
 /// The registry is built through the real `from_vars -> providers` path with a LAZY
 /// pool: `PgPool::connect_lazy` performs no I/O, and no verifier is invoked here.
 pub fn credential_caps() -> std::collections::BTreeMap<String, usize> {
-    let vars = [
+    with_registry(|providers| providers.credential_caps())
+}
+
+/// The environment the conformance registry is built from — one variable per provider
+/// family, the rest left to the parse's own defaults.
+///
+/// Hand-written, and therefore self-checked below: every key
+/// [`crate::providers::provider_env_keys`] names belongs to some provider's family
+/// (the segment before the first `_`), and a family with no fixture value here is a
+/// provider `ProviderConfig::providers` never registers — which would leave its
+/// verifier's cap unmeasured while every conformance assertion stayed green.
+fn fixture_vars() -> std::collections::BTreeMap<String, String> {
+    let vars: std::collections::BTreeMap<String, String> = [
         ("EPIC_CLIENT_ID", "conformance-epic-client"),
         ("GOOGLE_CLIENT_IDS", "conformance-google-client"),
     ]
     .into_iter()
     .map(|(k, v)| (k.to_string(), v.to_string()))
     .collect();
+    let families: std::collections::BTreeSet<&str> =
+        vars.keys().map(|key| env_family(key)).collect();
+    for key in crate::providers::provider_env_keys() {
+        assert!(
+            families.contains(env_family(key)),
+            "accounts::conformance::fixture_vars configures no value for the {} provider \
+             environment family (from {key}), so the conformance registry would never build \
+             its verifier and its credential cap would go unmeasured",
+            env_family(key)
+        );
+    }
+    vars
+}
+
+/// A provider environment variable's family: the segment before the first `_`
+/// (`EPIC_CLIENT_ID` -> `EPIC`), the grouping `EPIC_VARS`/`GOOGLE_VARS` already use.
+fn env_family(key: &str) -> &str {
+    key.split_once('_').map_or(key, |(family, _)| family)
+}
+
+/// Runs `f` with the registry the PRODUCTION `from_vars -> providers` path yields from
+/// [`fixture_vars`], on a lazy pool. No I/O: `PgPool::connect_lazy` opens no connection
+/// and no verifier is invoked here.
+fn with_registry<T>(f: impl FnOnce(&Providers) -> T) -> T {
+    let vars = fixture_vars();
     with_lazy_pool(|pool| {
-        crate::providers::ProviderConfig::from_vars(&vars)
+        let providers = crate::providers::ProviderConfig::from_vars(&vars)
             .expect("the conformance provider fixture must be a valid configuration")
-            .providers(pool)
-            .credential_caps()
+            .providers(pool);
+        f(&providers)
+    })
+}
+
+/// Whether `credential` of `len` bytes is rejected by the cap of the provider the real
+/// registry resolves under `provider` — the same `credential_within_cap` call
+/// `login_federated` makes on the verifier it resolved, never a hand-built one, so each
+/// CapCase executes exactly one provider's own bound.
+fn registry_credential_rejected(provider: &str, len: usize) -> bool {
+    with_registry(|providers| match providers.resolve(provider) {
+        Resolution::Configured(verifier) => {
+            !credential_within_cap(verifier.as_ref(), &"a".repeat(len))
+        }
+        _ => panic!(
+            "the conformance registry configured no {provider} verifier — its credential cap \
+             cannot be executed"
+        ),
     })
 }
 
@@ -105,33 +157,25 @@ pub fn conformance_display_name_rejected(len: usize) -> bool {
     !display_name_within_cap(&"a".repeat(len))
 }
 
-/// The OIDC credential cap traversed through a provider's own `max_credential_bytes`
-/// rather than a constant restated here.
+/// Epic's credential cap, executed through the verifier the production registry
+/// resolves for `epic`.
 #[doc(hidden)]
-pub fn conformance_federated_credential_rejected(len: usize) -> bool {
-    let verifier = oidc_credentials(
-        EPIC,
-        Arc::new(
-            OidcVerifier::new(
-                "https://conformance.invalid/jwks",
-                IssuerMatch::prefix("issuer", "https://conformance.invalid").expect("valid issuer"),
-                vec!["conformance-client".to_string()],
-            )
-            .expect("valid verifier configuration"),
-        ),
-    );
-    !credential_within_cap(verifier.as_ref(), &"a".repeat(len))
+pub fn conformance_epic_credential_rejected(len: usize) -> bool {
+    registry_credential_rejected(EPIC, len)
 }
 
-/// The GUEST credential cap traversed through the guest verifier's own
-/// `max_credential_bytes` — a different bound from the OIDC one, checked by the same
+/// Google's credential cap. Its own CapCase rather than epic's: the two happen to share
+/// a bound today, so a single shared case would leave one of them never executed.
+#[doc(hidden)]
+pub fn conformance_google_credential_rejected(len: usize) -> bool {
+    registry_credential_rejected(GOOGLE, len)
+}
+
+/// The guest credential cap — a different bound from the OIDC one, checked by the same
 /// `credential_within_cap` the handler calls.
 #[doc(hidden)]
 pub fn conformance_guest_credential_rejected(len: usize) -> bool {
-    with_lazy_pool(|pool| {
-        let verifier = crate::guest::guest_credentials(Store { pool: pool.clone() });
-        !credential_within_cap(verifier.as_ref(), &"a".repeat(len))
-    })
+    registry_credential_rejected(GUEST, len)
 }
 
 #[doc(hidden)]
