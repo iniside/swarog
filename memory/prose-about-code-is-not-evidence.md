@@ -5,7 +5,7 @@ metadata:
   node_type: memory
   type: feedback
   originSessionId: 31c06266-64af-4bcb-82be-f14d3b988287
-  modified: 2026-08-10T22:54:32.216Z
+  modified: 2026-08-26T00:00:00.000Z
 ---
 
 Three false assertions in ONE session (2026-07-16, weles M1 design), all from the same
@@ -32,6 +32,14 @@ root: I repeated prose that described code, without opening the code.
    security guard.** Prose about a THIRD-PARTY dependency is the same class as prose about
    our own code — and a plan is not a citation just because I wrote it. Caught by the
    adversarial review, verified by me in `~/.cargo/registry/.../validation.rs`.
+
+5. (2026-08-26, accounts seq #2a Steps 5-7) A gate's own DATA field can be unexecuted prose.
+   `tools/conformance`'s `InputPolicy::Validated { basis }` reads like a proof obligation; it
+   is consumed by a non-blank check and a `println!`, and is not in the diffed golden. An
+   auditor's receipt: a fully GREEN run in which the basis said "65536" and "guest's 128-byte
+   ticket" while the real widest cap was 999999. **New shape: prose inside a verification
+   tool, where the surrounding machinery makes it look executed.** Same session: deleting BOTH
+   cap guards from the production handler left every gate green and `cargo test` passing.
 
 **Why:** prose drifts from code silently — nothing recompiles a comment. A false comment is
 worse than none, because it *stops* the next reader from checking. And I was the next reader.
