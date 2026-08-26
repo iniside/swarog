@@ -14,11 +14,14 @@ use std::sync::LazyLock;
 use bus::{define, EventType, HistoryPolicy};
 use serde::{Deserialize, Serialize};
 
-/// Fires the first time an identity provisions a NEW player. `provider` is whichever
-/// credential provider provisioned it — the authority is accounts' own provider
-/// registry, so this doc deliberately does not enumerate the names. It carries our
-/// product-scoped player id, never a provider's external id. Evolve additively
-/// (constraint #6).
+/// Fires the first time an identity provisions a NEW player. `provider` is the
+/// `accounts.identities.provider` column value the provisioning path wrote — NOT the
+/// credential-verifier registry, which is a strictly narrower set: the federated paths
+/// write a registered provider name (`epic`, `google`, `guest` today), while
+/// dev/password registration writes `dev`, a provider no verifier exists for. A
+/// consumer filtering this field must treat accounts' provider-name constants as the
+/// authority, not the verifier registry. It carries our product-scoped player id, never
+/// a provider's external id. Evolve additively (constraint #6).
 ///
 /// `Serialize`/`Deserialize` are load-bearing: the durable transport collapses the
 /// payload to JSON at the `emit_tx`/`on_tx` boundary.

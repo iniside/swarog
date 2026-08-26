@@ -228,7 +228,7 @@ impl Service {
         let mut tx = self.store.pool.begin().await.map_err(internal)?;
         let p = match self
             .store
-            .insert_player_with_identity_tx(&mut tx, "dev", email, display, Some(hash))
+            .insert_player_with_identity_tx(&mut tx, providers::DEV, email, display, Some(hash))
             .await
         {
             Ok(p) => p,
@@ -242,7 +242,7 @@ impl Service {
                 return Err(internal(e));
             }
         };
-        if let Err(err) = self.emit_registered_tx(&mut tx, &p, "dev").await {
+        if let Err(err) = self.emit_registered_tx(&mut tx, &p, providers::DEV).await {
             tx.rollback().await.ok();
             return Err(err);
         }

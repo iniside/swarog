@@ -22,6 +22,13 @@ use crate::guest::guest_credentials;
 use crate::oidc::{short_id, IssuerMatch, OidcVerifier};
 use crate::store::Store;
 
+/// The `accounts.identities.provider` value for the built-in dev/password identities
+/// (`register`/`login`, `ACCOUNTS_DEV_AUTH`). It is a column-value authority ONLY: it
+/// deliberately does NOT join [`KNOWN_PROVIDERS`], which names the providers
+/// `login_federated` can resolve a [`CredentialVerifier`] for. Dev/password is a
+/// different op with no verifier, so `login_federated("dev", …)` stays a 400.
+pub(crate) const DEV: &str = "dev";
+
 /// The `accounts.identities.provider` value for Epic — written once and referenced by
 /// the name list, the registry key and every `resolve` call, so a typo cannot leave a
 /// fully configured provider unresolvable.
@@ -287,7 +294,7 @@ pub(crate) fn oidc_credentials(
 /// Every variable the provider parse reads — the authority [`ProviderConfig::from_env`]
 /// collects. A new provider appends its own block here rather than widening the read
 /// back out to the whole environment.
-fn provider_env_keys() -> impl Iterator<Item = &'static str> {
+pub(crate) fn provider_env_keys() -> impl Iterator<Item = &'static str> {
     EPIC_VARS.iter().chain(GOOGLE_VARS).copied()
 }
 

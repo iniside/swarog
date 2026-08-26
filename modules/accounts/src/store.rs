@@ -130,8 +130,9 @@ impl Store {
             "SELECT p.id::text, p.display_name, i.secret_hash \
                FROM accounts.identities i \
                JOIN accounts.players p ON p.id = i.player_id \
-              WHERE i.provider = 'dev' AND i.subject = $1",
+              WHERE i.provider = $1 AND i.subject = $2",
         )
+        .bind(crate::providers::DEV)
         .bind(email)
         .fetch_optional(&self.pool)
         .await?;
