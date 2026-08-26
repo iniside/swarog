@@ -245,6 +245,28 @@ A gate/conditional that is correct in the monolith but bypassed in the split, be
   public-api; treat any new `pub` from codegen as public-API-affecting by construction
   (`627c33e`).
 
+### 11. `old-rail` / `dual-path` / `migration-shim` — *the new thing landed, the old thing still runs*
+
+**What.** A step introduces a replacement (function, type, schema, event version,
+subscription, config key, instruction file, code path) and leaves the previous
+rail alive: dual-write, `if split` / `if monolith` in a module, a compatibility
+column, a second special-case beside an earlier fix, an alias file next to the
+new name, “kept so it compiles between steps”.
+
+**Attack.** Name what the step introduces. Name what must therefore be dead. Is
+the dead chain still in the tree (symbol, call sites, `use`, crate dep, SQL,
+env key, topic/subscription id, docs that still teach the old rail)? Are there
+now two runtime ways to do the same thing? Did delete stop at the entry point
+and leave the rest compiling? On a plan: does step (a) name what DIES, and is
+razing in the same step as the replacement (or earlier)? “We’ll remove it
+later” / “migrate” / “for backward compatibility” is this class — wipe is the
+strategy, not a data-migration bridge.
+
+**Authority.** `.agents/shared/core-rules.md` (no dual-write / no topology
+branch / wipe) and Fix the Authority rule 2 (no hack-on-hack). The
+`core-reviewer` always-on class runs this **before** the other classes on
+every plan and every diff.
+
 ---
 
 ## Cross-cutting review checklist — keyed to what the change touched
@@ -273,6 +295,10 @@ for the files in the diff. Route by what changed:
 - **Touches `modules/*` (domain)** → classes 2, 9, 5, and the long tail. Ask: is an env gate
   traced through edge + gateway routing, not just the monolith `if`? is this proven on split?
   is a cap duplicated across fortresses? render-then-submit without a concurrency token?
+- **Touches instruction files / `.agents/` / a replacement of a path** → class 11, then
+  5 and 8. Ask: what did this introduce, what must be dead, is the old rail still
+  loaded (second entry file, alias agent, dual lane vocabulary without an adapter
+  map)? Does a hand-maintained citation list still teach the fat heading?
 
 ---
 

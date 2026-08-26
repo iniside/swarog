@@ -1,16 +1,21 @@
 # Implementation Mode
 
-Detail for the **Implementation Mode — MANDATORY** rule in [AGENTS.md](../../AGENTS.md). Cross-cutting Agent-call rules (effort and navigation guidance do not inherit, concise prompts) live in [subagent-dispatch.md](subagent-dispatch.md). This file holds the lane heuristic, the implementation-specific dispatch shape, and refactor safety.
+Detail for the **Implementation Mode — MANDATORY** rule in
+[`.agents/shared/planning-dispatch.md`](../../.agents/shared/planning-dispatch.md).
+Cross-cutting Agent-call rules live in [subagent-dispatch.md](subagent-dispatch.md).
+This file holds the lane heuristic, the implementation-specific dispatch shape, and refactor safety.
 
 ## Lanes — execution shape, not provider or model
 
-Dispatch is decided **per plan step at plan-writing time**, not per session. Tags describe the execution and review shape. Durable plans must not encode provider-specific model families or versions.
+Dispatch is decided **per plan step at plan-writing time**, not per session. Tags describe the execution and review shape. Shared tags:
 
-- `[inline]` — main model writes in this context. **No independent review.** Reserved for genuine mid-edit judgment that **can't be handed off**: the decision depends on context the main model is holding live (an in-flight design it's actively shaping, a call that hinges on something it just read and can't cheaply re-pack into a subagent prompt). Default complex work to a subagent lane, not `[inline]`; choose `[inline]` only when the hand-off itself would lose the needed context.
-- `[subagent-complex]` — separate-context implementation for substantive or correctness-critical work: new API design, bus/registry seams, lifecycle ordering, cross-module behavior, security boundaries, and broad refactors. The main agent reviews the diff from outside the executing context.
-- `[subagent-mechanical]` — mechanical work: rename sweeps, scaffolding, N-similar edits, applying a fully specified step, compile fixes, tests from an existing pattern, JSON, and configuration.
+- `[inline]` — main agent. Closed dispatch-threshold list only, or a typo/compile fix in a file this turn already has open.
+- `[independent]` — top-tier separate context (`core-implementer`; visual/UI uses `mockup-implementer`).
+- `[mechanical]` — cheap implementation. Visual/UI never this. Tests never this.
+- `[test-author]` — only lane that writes tests; always a later step.
+- `[review]` — `core-reviewer` (read-only).
 
-Visual/UI design (the admin theme, layout, match-a-mockup work) is never `[subagent-mechanical]`.
+Claude plans may write `[opus]` / `[fable]` → `[independent]`, `[sonnet]` → `[mechanical]`. Adapters own the concrete model slugs.
 
 The user approves the tags together with the plan (call them out at ExitPlanMode) — that approval replaces the old blanket "inline or subagents?" question. Ask it only for untagged/ad-hoc work (no plan), and if any step is a subagent lane, also ask **"what effort level?"** (effort does NOT inherit — embed it in the prompt; see [subagent-dispatch.md](subagent-dispatch.md)). Mid-rollout, do not re-litigate a tag: a tagged step that turns out to need different handling gets a follow-up question, not a silent lane switch.
 

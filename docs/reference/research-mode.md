@@ -1,6 +1,11 @@
 # Research / Search Mode
 
-Detail for the **Research / Search Mode — MANDATORY** rule in [AGENTS.md](../../AGENTS.md). This file holds the method menu and research-specific dispatch shape. Cross-cutting effort/navigation/prompt rules live in [subagent-dispatch.md](subagent-dispatch.md).
+Detail for the **Research / Search Mode** rule in
+[`.agents/shared/research-navigation.md`](../../.agents/shared/research-navigation.md).
+This file holds the method menu and research-specific dispatch shape. Ask
+"how should I research this?" only when the method changes the answer. Ask
+the fan-out **count** every time a fan-out is picked. Cross-cutting
+effort/navigation/prompt rules live in [subagent-dispatch.md](subagent-dispatch.md).
 
 ## Why not just grep
 

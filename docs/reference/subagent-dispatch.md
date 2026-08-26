@@ -7,7 +7,7 @@ Cross-cutting invariants that apply to every subagent call, regardless of phase.
 
 ## The four invariants
 
-1. **Tags describe execution, not provider/model identity.** Use `[inline]`, `[subagent-complex]`, or `[subagent-mechanical]`. Choose the best available execution profile at dispatch time. Do not put provider-specific model names or versions in plans, prompts, tags, commits, or durable guidance.
+1. **Tags describe execution, not provider/model identity.** Use `[inline]`, `[independent]`, `[mechanical]`, `[test-author]`, or `[review]`. Runtime adapters map those to concrete tools and models (`.agents/adapters/`). Claude may write `[opus]` / `[fable]` / `[sonnet]`; adapters translate. Do not put provider-specific model names in durable plans.
 
 2. **Effort does not inherit.** Whatever effort level the work needs (default / think / think hard / ultrathink) must be embedded in the subagent's prompt. Ask the user when a subagent lane's effort was not fixed with the plan.
 

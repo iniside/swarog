@@ -3,10 +3,10 @@
 Start with the repository-level documents:
 
 - [README](../README.md) — architecture overview and current run/verify commands.
-- [AGENTS](../AGENTS.md) — authoritative repository constraints and working
-  agreements.
-- [CLAUDE](../CLAUDE.md) — the same project constraints plus Claude-specific
-  memory and review workflow.
+- [AGENTS](../AGENTS.md) — non-Claude entry; points at `.agents/shared/` and
+  the active runtime adapter.
+- [CLAUDE](../CLAUDE.md) — Claude overlay (models, trailers, plan path, hooks).
+  Cursor ignores this file via `.cursorignore`.
 
 ## Current reference
 

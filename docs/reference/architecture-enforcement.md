@@ -1,7 +1,8 @@
 # Architecture enforcement (Rust workspace)
 
 The architecture is enforced by Rust tools in the workspace and orchestrated by
-`verifyctl`. The source of truth for the rules is [AGENTS.md](../../AGENTS.md);
+`verifyctl`. The source of truth for the rules is
+[`.agents/shared/gamebackend.md`](../../.agents/shared/gamebackend.md);
 this page maps those rules to their executable gates.
 
 ## Run the gates

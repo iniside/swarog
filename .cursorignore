@@ -1,0 +1,5 @@
+# Claude Code instruction files. Cursor already loads AGENTS.md + .agents/;
+# CLAUDE.md duplicates that with Claude model names and would override the
+# Cursor adapter. Claude Code does not read this ignore file.
+CLAUDE.md
+**/CLAUDE.md

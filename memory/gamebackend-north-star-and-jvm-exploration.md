@@ -14,12 +14,15 @@ writing plugins; (2) plugins should be relatively easy to convert into independe
 100× that on one box).
 
 The seams (async event bus, sync service registry, per-module schema, **no cross-module FK**)
-make goal 2 a near-mechanical extraction: bus → broker, service interface → RPC, module schema
-→ own DB. **Tension to remember:** powerful *in-process* plugin systems (JVM classloaders /
-OSGi) actively fight goal 2 — they tempt direct cross-plugin calls that can't be cut along a
-network boundary. The coherent fit for BOTH goals is plugins that talk **only via bus +
-interface (network-shaped) from day one**; at the limit, out-of-process plugins over a wire
-protocol collapse goal 1 and goal 2 into one boundary.
+make goal 2 a near-mechanical **process** extraction: service interface → RPC (the registry
+swap), events on the shared log, module → `cmd/<name>-svc`. Persistence stays **one shared
+Postgres** on a powerful bare-metal box — decided, not a stepping stone to DB-per-service
+([[shared-postgres-is-the-model]]). The old "bus → broker, schema → own DB" reading of
+goal 2 is wrong. **Tension to remember:** powerful *in-process* plugin systems (JVM
+classloaders / OSGi) actively fight goal 2 — they tempt direct cross-plugin calls that
+can't be cut along a network boundary. The coherent fit for BOTH goals is plugins that
+talk **only via bus + interface (network-shaped) from day one**; at the limit,
+out-of-process plugins over a wire protocol collapse goal 1 and goal 2 into one boundary.
 
 (Historical: the goals were first explored in a framework-free Kotlin/JDK26 sketch at
 `experiments/jvm-kotlin-sketch/` before the Rust migration — [[decision-migrate-everything-to-rust]].

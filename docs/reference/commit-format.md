@@ -1,6 +1,7 @@
 # Commit Message Format
 
-Detail for the **Commit Message Format — MANDATORY** rule in [AGENTS.md](../../AGENTS.md). This file holds scope conventions and examples.
+Detail for the **Commit Message Format** rule in
+[`.agents/shared/core-rules.md`](../../.agents/shared/core-rules.md). This file holds scope conventions and examples.
 
 ## Conventional Commits
 
@@ -23,4 +24,7 @@ fix(match,rating): assert rating service to a local consumer interface
 
 ## Attribution trailers
 
-Do not require or invent model-specific `Co-Authored-By` trailers. If active tooling adds an attribution trailer, it must name the actual contributing tool or agent without a fabricated provider, model family, or version. Attribution is never a substitute for the required commit after each completed task or independently reviewable part.
+Concrete `Co-Authored-By` strings live in the active runtime adapter under
+`.agents/adapters/`. The trailer names the executing model/agent. Do not
+use a Claude trailer on a Grok/Cursor/Codex commit. Attribution is never a
+substitute for the required commit after each completed task.

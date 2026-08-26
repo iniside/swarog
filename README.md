@@ -84,7 +84,7 @@ public-API checks protect the surfaces that cross those boundaries.
 
 ## Domain modules
 
-11 fortresses plus the gateway:
+12 fortresses plus the gateway:
 
 - **accounts** — identity: one `player_id`, many identities, opaque DB sessions;
   dev/password auth, Epic OIDC verifier, Epic web OAuth link/login.
@@ -102,6 +102,8 @@ public-API checks protect the surfaces that cross those boundaries.
   a persistent MMR projection (restarts preserve MMR) + persistent leaderboard projection.
 - **apikeys** — per-key API access policy (anon/service-key model); the gateway
   requires an `X-Api-Key` on every op and enforces the key's policy.
+- **wallet** — virtual currency: operator catalog, per-player balances, ledger;
+  wire-only credit/debit; starter grant on `player.registered`.
 - **gateway** — the single public front door: HTTP op routing (local vs remote
   purely by slot presence), authenticated player-QUIC plane, passthroughs, rate
   limiting. Domain services never host it; they serve ops only over the internal
