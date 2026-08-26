@@ -15,7 +15,7 @@ use sqlx::PgPool;
 
 use crate::oidc::{short_id, IssuerMatch, OidcVerifier};
 use crate::password::ArgonVerifier;
-use crate::providers::{oidc_credentials, Providers, VerifyError};
+use crate::providers::{oidc_credentials, Providers, VerifyError, MAX_OIDC_CREDENTIAL_BYTES};
 use crate::store::Store;
 use crate::Service;
 
@@ -217,7 +217,10 @@ async fn jwks_500_is_infra_and_maps_to_unavailable() {
     );
     assert_eq!(hits.load(Ordering::SeqCst), 1, "a down IdP is not hammered during cooldown");
 
-    // The service-level mapping: Infra → 503, not 401.
+    // The service-level mapping: Infra → 503, not 401 — and its message must not
+    // collapse with the `KnownButUnconfigured` 503 arm (that arm never touches the
+    // JWKS endpoint at all, so a second fetch here is the discriminator).
+    let hits_before = hits.load(Ordering::SeqCst);
     let svc = epic_service(verifier(&url));
     let e = svc
         .login_federated("epic".into(), token_with_kid(&enc, "k"))
@@ -227,6 +230,57 @@ async fn jwks_500_is_infra_and_maps_to_unavailable() {
         e.status,
         opsapi::Status::Unavailable,
         "an IdP outage must answer 503, never 401 (bad-credentials)"
+    );
+    assert_eq!(
+        e.msg, "identity provider unavailable",
+        "must be distinguishable from the unconfigured-provider 503 arm"
+    );
+    assert!(
+        hits.load(Ordering::SeqCst) > hits_before,
+        "an IdP-outage 503 must have actually reached the JWKS endpoint"
+    );
+}
+
+/// G1: the credential byte cap runs BEFORE any verifier/JWKS work. Deleting
+/// `credential_within_cap`'s call site from `login_federated` would let this
+/// over-cap credential reach `verify()`, which decodes the JWT header and fetches
+/// the JWKS — the hit counter, not just the status, is what proves the guard ran
+/// first (a status-only assertion cannot tell "rejected early" from "rejected
+/// after a network round trip").
+#[tokio::test(flavor = "multi_thread")]
+async fn credential_over_cap_is_rejected_before_any_jwks_fetch() {
+    let (_enc, jwks) = test_key("k");
+    let (url, hits) = serve_counting_jwks(200, jwks).await;
+    let svc = epic_service(verifier(&url));
+
+    let over_cap = "a".repeat(MAX_OIDC_CREDENTIAL_BYTES + 1);
+    let e = svc.login_federated("epic".into(), over_cap).await.unwrap_err();
+    assert_eq!(e.status, opsapi::Status::Invalid);
+    assert_eq!(e.msg, "credential too long");
+    assert_eq!(
+        hits.load(Ordering::SeqCst),
+        0,
+        "an over-cap credential must never reach the JWKS endpoint"
+    );
+}
+
+/// Exercises `login_federated`'s companion guard: `credential.is_empty()` runs
+/// AFTER provider resolution, so proving it needs a CONFIGURED provider —
+/// `lazy_service()`'s empty registry answers 503 long before this branch and
+/// would make the test pass for the wrong reason.
+#[tokio::test(flavor = "multi_thread")]
+async fn empty_credential_on_configured_provider_is_invalid() {
+    let (_enc, jwks) = test_key("k");
+    let (url, hits) = serve_counting_jwks(200, jwks).await;
+    let svc = epic_service(verifier(&url));
+
+    let e = svc.login_federated("epic".into(), String::new()).await.unwrap_err();
+    assert_eq!(e.status, opsapi::Status::Invalid);
+    assert_eq!(e.msg, "credential is required");
+    assert_eq!(
+        hits.load(Ordering::SeqCst),
+        0,
+        "an empty credential must never reach the JWKS endpoint either"
     );
 }
 

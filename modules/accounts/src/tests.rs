@@ -292,6 +292,16 @@ async fn login_federated_requires_credential_and_configured_provider() {
         opsapi::Status::Unavailable,
         "a known provider this process never configured is a deployment fact (503)"
     );
+    assert_eq!(
+        e.msg, "provider not configured",
+        "must be distinguishable from the over-cap/unknown-name Invalid arms"
+    );
+
+    // A 65-byte garbage provider name is over the cap AND not in KNOWN_PROVIDERS, so
+    // both the cap guard and the fall-through registry lookup answer Status::Invalid —
+    // only the message tells them apart (G3: with the cap guard deleted this over-cap
+    // string still lands on `Unknown` → the same status, so a status-only assertion
+    // survives deleting the guard it claims to prove).
     let over_cap = format!("{}a", "é".repeat(MAX_PROVIDER_NAME_BYTES / 2));
     assert_eq!(over_cap.len(), MAX_PROVIDER_NAME_BYTES + 1);
     let e = svc
@@ -303,6 +313,43 @@ async fn login_federated_requires_credential_and_configured_provider() {
         opsapi::Status::Invalid,
         "the provider byte cap must reject before the registry lookup"
     );
+    assert_eq!(
+        e.msg, "provider too long",
+        "must be the cap guard, not the unrelated unknown-provider arm reaching the same status"
+    );
+}
+
+/// The `Unknown` arm: a provider name that fits the cap but is not in
+/// `KNOWN_PROVIDERS` must answer 400 with its own message — distinct from the
+/// `KnownButUnconfigured` 503 above, which the conformance `InfraOutage503` case
+/// (classifying solely on `http() == 503`) cannot tell apart on its own.
+#[tokio::test]
+async fn login_federated_unknown_provider_name_is_invalid() {
+    let svc = lazy_service();
+    let e = svc
+        .login_federated("not-a-real-provider".into(), "some.jwt.here".into())
+        .await
+        .unwrap_err();
+    assert_eq!(e.status, opsapi::Status::Invalid);
+    assert_eq!(e.msg, "unknown provider");
+}
+
+/// `f0996f6`'s behaviour change at the wire: `"apple"` was in `KNOWN_PROVIDERS`
+/// (503, a deployment fact) before that commit and answers `Unknown` (400, caller
+/// error) after — pins the narrowed list where it is actually observable.
+#[tokio::test]
+async fn login_federated_apple_is_unknown_not_unconfigured() {
+    let svc = lazy_service();
+    let e = svc
+        .login_federated("apple".into(), "some.jwt.here".into())
+        .await
+        .unwrap_err();
+    assert_eq!(
+        e.status,
+        opsapi::Status::Invalid,
+        "apple left KNOWN_PROVIDERS in f0996f6 — it must no longer read as a deployment fact"
+    );
+    assert_eq!(e.msg, "unknown provider");
 }
 
 #[tokio::test]
