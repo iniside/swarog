@@ -4,86 +4,26 @@
 use super::*;
 
 /// Speaks HTTP/1.1 to the fixture without reqwest, so the test does not depend
-/// on the same client the stage uses.
-///
-/// Under heavy parallel `cargo test` load the loopback socket can drop a
-/// connection mid-exchange (`BrokenPipe`/`ConnectionReset`/etc) even though the
-/// fixture served it correctly — that's a transient race in the test's own
-/// client socket, not a fixture defect. Retry the whole exchange on a fresh
-/// `TcpStream` a bounded number of times for exactly those transient error
-/// kinds; a genuinely broken fixture still fails every attempt and the final
-/// attempt still panics loudly via `unwrap`/`expect`.
-///
-/// The same load can also produce an `Ok` short read: `read_to_end` returns
-/// having received an empty or partial response (early EOF before the fixture
-/// finished writing) — not an I/O error, so `is_transient` never sees it.
-/// Treat an incomplete response the same way: retry the whole exchange on a
-/// fresh connection. Only the FINAL attempt returns an incomplete response
-/// as-is, so a fixture that is genuinely broken (never completes a response)
-/// still fails loudly with the real bytes in the assertion message, instead of
-/// retrying forever or being masked into a false pass.
-const REQUEST_ATTEMPTS: u32 = 5;
-const REQUEST_RETRY_BACKOFF: Duration = Duration::from_millis(50);
-
-fn is_transient(error: &std::io::Error) -> bool {
-    matches!(
-        error.kind(),
-        std::io::ErrorKind::BrokenPipe
-            | std::io::ErrorKind::ConnectionReset
-            | std::io::ErrorKind::ConnectionAborted
-            | std::io::ErrorKind::ConnectionRefused
-    )
-}
-
-/// A complete HTTP/1.1 response: non-empty, starts with the status line, and
-/// carries the header terminator (i.e. headers were fully received). This
-/// deliberately does not check the body length against `Content-Length` — the
-/// stage's own client (reqwest) owns that concern; this is only enough to
-/// distinguish "the fixture answered" from "the socket gave up mid-write".
-fn is_complete_response(response: &str) -> bool {
-    !response.is_empty() && response.starts_with("HTTP/1.1 ") && response.contains("\r\n\r\n")
-}
-
-fn try_request(port: u16, method: &str, path: &str, body: &[u8]) -> std::io::Result<String> {
-    let mut stream = TcpStream::connect(("127.0.0.1", port))?;
-    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+/// on the same client the stage uses. One exchange, no retries: every failure
+/// here is the fixture's, and it must be loud.
+fn request(port: u16, method: &str, path: &str, body: &[u8]) -> String {
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect to the fixture");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
     write!(
         stream,
         "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: {}\r\n\r\n",
         body.len()
-    )?;
-    stream.write_all(body)?;
-    stream.flush()?;
-    let mut buffer = Vec::new();
-    stream.read_to_end(&mut buffer)?;
-    Ok(String::from_utf8_lossy(&buffer).into_owned())
-}
-
-fn request(port: u16, method: &str, path: &str, body: &[u8]) -> String {
-    let mut last_error = None;
-    let mut last_incomplete = None;
-    for attempt in 0..REQUEST_ATTEMPTS {
-        match try_request(port, method, path, body) {
-            Ok(response) if is_complete_response(&response) => return response,
-            Ok(response) if attempt + 1 < REQUEST_ATTEMPTS => {
-                last_incomplete = Some(response);
-                std::thread::sleep(REQUEST_RETRY_BACKOFF);
-            }
-            Ok(response) => return response,
-            Err(error) if attempt + 1 < REQUEST_ATTEMPTS && is_transient(&error) => {
-                last_error = Some(error);
-                std::thread::sleep(REQUEST_RETRY_BACKOFF);
-            }
-            Err(error) => panic!(
-                "request to the fixture failed after {} attempt(s): {error}",
-                attempt + 1
-            ),
-        }
-    }
-    unreachable!(
-        "loop above always returns or panics; last transient error: {last_error:?}; \
-         last incomplete response: {last_incomplete:?}"
     )
+    .expect("write the request head");
+    stream.write_all(body).expect("write the request body");
+    stream.flush().unwrap();
+    let mut buffer = Vec::new();
+    stream
+        .read_to_end(&mut buffer)
+        .expect("read the fixture's answer");
+    String::from_utf8_lossy(&buffer).into_owned()
 }
 
 #[test]
