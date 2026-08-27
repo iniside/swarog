@@ -116,6 +116,9 @@ impl Drop for FakeHttp {
 }
 
 fn serve_one(stream: TcpStream, handler: &impl Fn(&str, &[u8]) -> Answer) -> Result<()> {
+    // macOS/BSD hand back an accepted socket that INHERITED the listener's
+    // O_NONBLOCK (Linux does not), and a read timeout is meaningless on one.
+    stream.set_nonblocking(false)?;
     stream.set_read_timeout(Some(READ_TIMEOUT))?;
     stream.set_write_timeout(Some(READ_TIMEOUT))?;
     let mut reader = BufReader::new(stream);

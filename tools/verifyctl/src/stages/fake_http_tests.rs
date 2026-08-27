@@ -145,3 +145,46 @@ fn dropping_it_releases_the_port() {
     // The join in Drop has already happened, so the bind must succeed now.
     TcpListener::bind(("127.0.0.1", port)).expect("the fixture's port must be free after drop");
 }
+
+#[test]
+fn it_answers_a_client_that_connects_before_it_writes() {
+    // The failure this pins is a race the fixture usually wins, so the client
+    // loses it on purpose: it connects and holds its bytes back, which leaves
+    // the fixture's first read facing an empty socket — the one state where an
+    // accepted-but-still-non-blocking stream reports EAGAIN instead of waiting.
+    // The client not having written IS the happens-before here; the sleep only
+    // gives the accept loop's poll room to have gotten there.
+    let served = Arc::new(std::sync::Mutex::new(0u32));
+    let counter = Arc::clone(&served);
+    let fixture = FakeHttp::start(move |route, _| {
+        *counter.lock().unwrap() += 1;
+        assert_eq!(route, "POST /resolve");
+        (200, br#"{"ok":true}"#.to_vec())
+    })
+    .unwrap();
+
+    let mut stream = TcpStream::connect(("127.0.0.1", fixture.port())).expect("connect");
+    // Hang guard with headroom, not a timing assertion: a fixture that never
+    // answers fails the test instead of parking the run forever.
+    stream
+        .set_read_timeout(Some(Duration::from_secs(30)))
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(500));
+
+    let body = br#"{"provider":"admin"}"#;
+    write!(
+        stream,
+        "POST /resolve HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: {}\r\n\r\n",
+        body.len()
+    )
+    .unwrap();
+    stream.write_all(body).unwrap();
+    stream.flush().unwrap();
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response).expect("read the answer");
+    let response = String::from_utf8_lossy(&response);
+
+    assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
+    assert!(response.ends_with(r#"{"ok":true}"#), "{response}");
+    assert_eq!(*served.lock().unwrap(), 1);
+}
