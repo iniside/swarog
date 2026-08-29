@@ -16,7 +16,7 @@
 //! durable), and the transport hands the raw JSON and runs the ledger insert inside its
 //! per-`(event_id,"audit")` delivery tx (effect + checkpoint commit together) —
 //! exactly-once in BOTH topologies. The
-//! producers already emit all seven durably by their respective steps (characters today;
+//! producers already emit all eight durably by their respective steps (characters today;
 //! config Step 5; accounts Step 6; match Step 10; wallet Step 3 of the wallet-module plan
 //! — `match.finished` and `wallet.changed` each have a real producer: the owning module
 //! emit_tx's it atomic with its own domain write, landing it in the shared event log, and

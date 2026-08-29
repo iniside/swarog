@@ -22,29 +22,17 @@ use crate::guest::guest_credentials;
 use crate::oidc::{short_id, IssuerMatch, OidcVerifier};
 use crate::store::Store;
 
-/// The `accounts.identities.provider` value for the built-in dev/password identities
-/// (`register`/`login`, `ACCOUNTS_DEV_AUTH`). It is a column-value authority ONLY: it
-/// deliberately does NOT join [`KNOWN_PROVIDERS`], which names the providers
-/// `login_federated` can resolve a [`CredentialVerifier`] for. Dev/password is a
-/// different op with no verifier, so `login_federated("dev", …)` stays a 400.
-pub(crate) const DEV: &str = "dev";
-
-/// The `accounts.identities.provider` value for Epic — written once and referenced by
-/// the name list, the registry key and every `resolve` call, so a typo cannot leave a
-/// fully configured provider unresolvable.
-pub(crate) const EPIC: &str = "epic";
-
-/// The `accounts.identities.provider` value for Google, the second OIDC provider.
-pub(crate) const GOOGLE: &str = "google";
-
-/// The `accounts.identities.provider` value for the guest/device provider — the one
-/// credential this backend mints itself instead of verifying against an IdP.
-pub(crate) const GUEST: &str = "guest";
+/// The provider names, re-exported from the contract crate so this module and every
+/// event consumer read ONE symbol. [`DEV`] deliberately does NOT join
+/// [`KNOWN_PROVIDERS`], which names the providers `login_federated` can resolve a
+/// [`CredentialVerifier`] for: dev/password is a different op with no verifier, so
+/// `login_federated("dev", …)` stays a 400.
+pub(crate) use accountsevents::providers::{DEV, EPIC, GOOGLE, GUEST};
 
 /// Every provider name this build can construct a verifier for, configured or not —
-/// the naming authority, separate from the configured-verifier map so a typo and an
-/// unconfigured provider are distinguishable outcomes. Membership means buildable,
-/// not planned: a name joins this list in the same commit that ships its verifier,
+/// the verifier-registry authority, separate from the configured-verifier map so a
+/// typo and an unconfigured provider are distinguishable outcomes. Membership means
+/// buildable, not planned: a name joins this list in the same commit that ships its verifier,
 /// so `KnownButUnconfigured` (503) always names something this deployment could have
 /// stood up: an unset OIDC configuration for `epic`/`google`, or — for `guest`, whose
 /// only dependency is this module's own store — a process whose registry was never

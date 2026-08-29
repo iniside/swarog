@@ -887,12 +887,15 @@ Verification: `cargo run -p verifyctl -- --all --strict`, **one rollout at a tim
   `modules/accounts/src/lib.rs:770-778`, `api/accounts/events/src/lib.rs:17-19` (enumerates
   `"dev"`/`"epic"` only), `cmd/accounts-svc/src/main.rs:9-12`,
   `demos/webui/src/lib.rs:4,23-24`.
-- **`CLAUDE.md` and `AGENTS.md` both** (`docs-current` parses both — `tools/verifyctl/src/stages/docs_current.rs:6`
-  `ROOT_DOCUMENTS`): the **accounts** paragraph (providers, session model, new ops), the
-  **audit** paragraph (7 ledger topics → 8; "an 8th independent subscription" → 9th), and the
-  **wallet** paragraph ("reacts to durable `player.registered`" → and `player.promoted`).
-  `docs-current` validates paths, not counts, so none of these fail a gate — they simply
-  become lying prose.
+- **`CLAUDE.md` and `.agents/shared/gamebackend.md` both**: the **accounts** paragraph
+  (providers, session model, new ops), the **audit** paragraph (7 ledger topics → 8;
+  "an 8th independent subscription" → 9th), and the **wallet** paragraph ("reacts to
+  durable `player.registered`" → and `player.promoted`). The stale audit/wallet prose
+  lives at `CLAUDE.md:258-263` and `.agents/shared/gamebackend.md:278-285`; `AGENTS.md`
+  is an index that delegates to `.agents/shared/gamebackend.md` and contains none of
+  these strings, so editing it is a no-op. `docs-current` (`tools/verifyctl/src/stages/docs_current.rs:6`
+  `ROOT_DOCUMENTS`) parses `CLAUDE.md`/`AGENTS.md` and validates paths, not counts, so
+  none of these fail a gate — they simply become lying prose.
 - `docs/roadmap/feature-tracker.md`: flip seq #2a, fill Module(s)/Landed, update the four
   Identity & accounts rows, add a change-log entry.
 - **Record the deliberate deviations as known gaps**, with reasons: accounts still parses env

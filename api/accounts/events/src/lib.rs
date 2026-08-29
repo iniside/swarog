@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 /// credential-verifier registry, which is a strictly narrower set: the federated paths
 /// write a registered provider name (`epic`, `google`, `guest` today), while
 /// dev/password registration writes `dev`, a provider no verifier exists for. A
-/// consumer filtering this field must treat accounts' provider-name constants as the
+/// consumer filtering this field must compare it against [`providers`], the naming
 /// authority, not the verifier registry. It carries our product-scoped player id, never
 /// a provider's external id. Evolve additively (constraint #6).
 ///
@@ -64,6 +64,24 @@ pub struct PlayerPromoted {
 /// was down.
 pub static PLAYER_PROMOTED: LazyLock<EventType<PlayerPromoted>> =
     LazyLock::new(|| define("player.promoted", 1, HistoryPolicy::MinRetention { days: 7 }));
+
+/// The `provider` vocabulary of [`PlayerRegistered::provider`] and
+/// [`PlayerPromoted`] — the `accounts.identities.provider` column values the
+/// provisioning paths write. A consumer filtering the field names one of these
+/// constants instead of its own literal, so a rename moves both sides in one compile
+/// (`schedulerevents::schedule_names`' convention).
+///
+/// This is the naming authority, NOT the credential-verifier registry: [`DEV`] is
+/// written by dev/password registration, an op with no verifier, and that narrower
+/// registry stays private to the accounts module.
+pub mod providers {
+    /// The anonymous device identity this backend mints itself — the one provider
+    /// value that means "not an authenticated human yet".
+    pub const GUEST: &str = "guest";
+    pub const DEV: &str = "dev";
+    pub const EPIC: &str = "epic";
+    pub const GOOGLE: &str = "google";
+}
 
 /// Fully-POPULATED wire sample for the contract-golden fingerprint (Step 5): every
 /// field set so serde's actual JSON keys land in the golden. `contract-golden`

@@ -31,7 +31,7 @@ fn rpc_module_hand_list_matches_filesystem() {
     self_check_rpc_list(&labels).expect("rpc_modules() hand-list must match api/*/api");
 }
 
-/// The golden must cover all six kinds: at least one `event` line (seven topics
+/// The golden must cover all six kinds: at least one `event` line (nine topics
 /// today), one `rpc` line (the HTTP-bound operations), one `wire` line (every method's
 /// retry semantics, incl. wire-only), one `payload` line (a populated durable-event
 /// wire shape), one `rpc-body` line (an http-bound request body shape), and one

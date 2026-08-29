@@ -100,13 +100,6 @@ const DEV_SEED_CURRENCIES: &[(&str, &str, &str, i32)] = &[
     ("gems", "Gems", "hard", 0),
 ];
 
-/// The `accounts.identities.provider` value of an anonymous device identity. Duplicated
-/// as a literal because accounts' `providers::GUEST` is `pub(crate)` in the impl crate
-/// and the fortress rule forbids reaching for it; `accountsevents::PlayerRegistered`
-/// documents these provider names as the authority, so a rename there must be mirrored
-/// here.
-const GUEST_PROVIDER: &str = "guest";
-
 pub(crate) fn internal<E: std::fmt::Display>(e: E) -> opsapi::Error {
     opsapi::Error::internal(e.to_string())
 }
@@ -239,7 +232,7 @@ impl Module for WalletModule {
             move |mut delivery, e: accountsevents::PlayerRegistered| {
                 let granter = granter.clone();
                 Box::pin(async move {
-                    if e.provider == GUEST_PROVIDER {
+                    if e.provider == accountsevents::providers::GUEST {
                         return Ok(());
                     }
                     let conn = delivery.tx.downcast::<sqlx::PgConnection>()?;
