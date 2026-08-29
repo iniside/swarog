@@ -1119,13 +1119,34 @@ async fn concurrent_links_of_different_providers_emit_exactly_one_promotion() {
     gate.rollback().await.unwrap();
     let (epic_result, google_result) = (epic_link.await.unwrap(), google_link.await.unwrap());
     let promoted = promoted_events(&pool, &guest.player_id).await;
+    let to_provider: String = sqlx::query_scalar(
+        "SELECT payload->>'to_provider' FROM asyncevents.events \
+          WHERE topic = 'player.promoted' AND payload->>'player_id' = $1",
+    )
+    .bind(&guest.player_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let expected_sub = if to_provider == "epic" { &epic_sub } else { &google_sub };
+    let matches_row: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM accounts.identities \
+          WHERE provider = $1 AND subject = $2 AND player_id = $3::uuid)",
+    )
+    .bind(&to_provider)
+    .bind(expected_sub)
+    .bind(&guest.player_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
 
     cleanup_player(&pool, &guest.player_id).await;
 
+    assert_eq!(promoted, 1, "two racing different-provider links must emit exactly one promotion");
     assert!(both_waiting, "both links must block on the exact player key");
     assert!(epic_result.is_ok(), "different-provider links must not conflict: {epic_result:?}");
     assert!(google_result.is_ok(), "different-provider links must not conflict: {google_result:?}");
-    assert_eq!(promoted, 1, "two racing different-provider links must emit exactly one promotion");
+    assert!(matches!(to_provider.as_str(), "epic" | "google"), "unexpected to_provider: {to_provider}");
+    assert!(matches_row, "promoted to_provider must match an existing identity row");
 }
 
 /// Forces the failure at the append itself ([`asyncevents::testing::failing_transport`]),
@@ -1158,6 +1179,11 @@ async fn link_identity_rolls_back_row_and_event_when_append_fails() {
     cleanup_player(&pool, &guest.player_id).await;
 
     assert_eq!(err.status, opsapi::Status::Internal);
+    assert!(
+        err.msg.contains("injected durable-append failure"),
+        "error must name the append as the failure site, got: {}",
+        err.msg
+    );
     assert_eq!(identity_rows, 0, "identity insert must roll back with the failed append");
     assert_eq!(promoted, 0, "no promotion event may survive the rollback");
 }
@@ -1199,8 +1225,9 @@ async fn link_identity_conflict_on_foreign_identity_writes_and_emits_nothing() {
 }
 
 /// Re-linking the identity a player already owns is idempotent
-/// ([`store::LinkOutcome::AlreadyLinked`]) and must not emit a second promotion for a
-/// promotion the first link already recorded.
+/// ([`store::LinkOutcome::AlreadyLinked`]). The second call's `!had_real` is what
+/// suppresses its emit here — the first link's row now makes `had_real` true —
+/// not `outcome == Linked`, which the second call never satisfies either.
 #[tokio::test]
 async fn relinking_same_identity_is_idempotent_with_no_second_promotion() {
     let Some(pool) = test_pool().await else { return };
@@ -1246,6 +1273,28 @@ async fn guest_linking_real_provider_emits_promotion_with_correct_providers() {
 
     assert_eq!(from_provider, "guest");
     assert_eq!(to_provider, "epic");
+}
+
+/// A guest linking a SECOND guest identity satisfies `outcome == Linked && !had_real`
+/// (guest is excluded from `has_real_identity_tx`, so a guest-only player always
+/// reads `had_real == false`) — only `provider != GUEST` stops this from promoting
+/// a guest to itself. `player.promoted` is durable and 7-day-retained, and a
+/// starter-grant consumer keys off it, so a bogus guest-to-guest promotion is a
+/// self-serve currency exploit, not just a bookkeeping wart.
+#[tokio::test]
+async fn guest_linking_second_guest_identity_emits_no_promotion() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let guest = svc.create_guest().await.unwrap();
+    let sub = format!("guest-relink-{}", suffix());
+
+    let outcome = svc.link_identity(&guest.player_id, GUEST, &sub).await.unwrap();
+    let promoted = promoted_events(&pool, &guest.player_id).await;
+
+    cleanup_player(&pool, &guest.player_id).await;
+
+    assert_eq!(outcome, store::LinkOutcome::Linked);
+    assert_eq!(promoted, 0, "linking a second guest identity must never promote");
 }
 
 /// A player that already holds a non-guest identity (here `dev`, from `register`)
