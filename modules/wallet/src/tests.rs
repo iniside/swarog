@@ -970,6 +970,10 @@ const STARTER_SUB: &str = "wallet.player-registered.v1";
 /// is the positive control for the non-poisoning assertions.
 const DECOY_SUB: &str = "wallet.tests.poison-decoy.v1";
 
+/// The subscription id `WalletModule::init` registers on `player.promoted` (Step 11) —
+/// same immutable-contract convention as `STARTER_SUB`.
+const PROMOTED_SUB: &str = "wallet.player-promoted.v1";
+
 /// The starter tests share ONE durable subscription row (and reset its checkpoint), so
 /// they must not interleave — they serialize on this lock rather than relying on the
 /// caller having passed `--test-threads=1`.
@@ -1047,6 +1051,15 @@ async fn reset_starter_subscription(pool: &PgPool) {
         .unwrap();
 }
 
+/// Same purpose as [`reset_starter_subscription`], for the `player.promoted` subscription.
+async fn reset_promoted_subscription(pool: &PgPool) {
+    sqlx::query("DELETE FROM asyncevents.subscriptions WHERE subscription_id = $1")
+        .bind(PROMOTED_SUB)
+        .execute(pool)
+        .await
+        .unwrap();
+}
+
 /// Wires the module the way `app::run` does — `register` THEN `init` — over a
 /// hand-driven durable transport. `init` is the piece the pool-path fixture (`wired`)
 /// deliberately skips, and it is what records the starter subscription.
@@ -1076,14 +1089,45 @@ async fn wired_for_delivery(
     (ctx, w.svc(), transport)
 }
 
+/// Like [`wired_for_delivery`], but for the Step 11 tests that exercise BOTH
+/// subscriptions `WalletModule::init` registers: resets `STARTER_SUB` AND
+/// `PROMOTED_SUB` so neither inherits a checkpoint an earlier test in this binary
+/// left behind.
+async fn wired_for_dual_delivery(
+    pool: &PgPool,
+    cfg: Arc<dyn Config>,
+) -> (Context, Arc<Service>, asyncevents::testing::TestTransport) {
+    ensure_schema(pool).await;
+    reset_starter_subscription(pool).await;
+    reset_promoted_subscription(pool).await;
+    let transport = asyncevents::testing::transport(pool.clone());
+    let ctx = Context::with_db_and_transport(pool.clone(), transport.handle());
+    ctx.registry().provide::<dyn Config>(key("config", "reader"), cfg);
+    let w = WalletModule::new();
+    w.register(&ctx).unwrap();
+    w.init(&ctx).unwrap();
+    let drained = transport.deliver_all().await.unwrap();
+    assert_eq!(
+        drained, 0,
+        "a freshly reset AfterRegistration checkpoint must start with nothing eligible"
+    );
+    (ctx, w.svc(), transport)
+}
+
 /// Appends a durable `player.registered` in its own committed transaction — the shape
 /// accounts uses inside its registration store tx.
 async fn emit_registered(ctx: &Context, pool: &PgPool, player_id: &str) {
+    emit_registered_as(ctx, pool, player_id, "dev").await;
+}
+
+/// [`emit_registered`] with an explicit `provider`, for the Step 11 guest-skip /
+/// real-provider-still-granted tests.
+async fn emit_registered_as(ctx: &Context, pool: &PgPool, player_id: &str, provider: &str) {
     let mut tx = pool.begin().await.unwrap();
     let registered = accountsevents::PlayerRegistered {
         player_id: player_id.into(),
         display_name: "Test Player".into(),
-        provider: "dev".into(),
+        provider: provider.into(),
     };
     ctx.bus()
         .emit_tx(
@@ -1091,6 +1135,28 @@ async fn emit_registered(ctx: &Context, pool: &PgPool, player_id: &str) {
             &accountsevents::PLAYER_REGISTERED,
             &registered,
         )
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+}
+
+/// Appends a durable `player.promoted` in its own committed transaction — the Step 11
+/// counterpart of [`emit_registered_as`].
+async fn emit_promoted(
+    ctx: &Context,
+    pool: &PgPool,
+    player_id: &str,
+    from_provider: &str,
+    to_provider: &str,
+) {
+    let mut tx = pool.begin().await.unwrap();
+    let promoted = accountsevents::PlayerPromoted {
+        player_id: player_id.into(),
+        from_provider: from_provider.into(),
+        to_provider: to_provider.into(),
+    };
+    ctx.bus()
+        .emit_tx(AnyTx::new(&mut *tx), &accountsevents::PLAYER_PROMOTED, &promoted)
         .await
         .unwrap();
     tx.commit().await.unwrap();
@@ -1129,19 +1195,48 @@ async fn starter_ledger_rows(pool: &PgPool, player_id: &str) -> Vec<(String, i64
 /// and at 20 it flips `state` to `paused` — withholding the grant from every LATER player.
 /// "No grant happened" alone is satisfied by a poisoned handler; this is not.
 async fn assert_subscription_unpoisoned(pool: &PgPool) {
+    assert_named_subscription_unpoisoned(pool, STARTER_SUB).await;
+}
+
+/// Same proof as [`assert_subscription_unpoisoned`], for the `player.promoted`
+/// subscription (Step 11).
+async fn assert_promoted_subscription_unpoisoned(pool: &PgPool) {
+    assert_named_subscription_unpoisoned(pool, PROMOTED_SUB).await;
+}
+
+async fn assert_named_subscription_unpoisoned(pool: &PgPool, subscription_id: &str) {
     let (state, failures, last_error): (String, i32, Option<String>) = sqlx::query_as(
         "SELECT state, consecutive_failures, last_error FROM asyncevents.subscriptions \
           WHERE subscription_id = $1",
     )
-    .bind(STARTER_SUB)
+    .bind(subscription_id)
     .fetch_one(pool)
     .await
     .unwrap();
-    assert_eq!(state, "active", "the starter subscription must still be active");
+    assert_eq!(state, "active", "{subscription_id} must still be active");
     assert_eq!(
         failures, 0,
         "a data-quality verdict must return Ok(()), never Err; last_error = {last_error:?}"
     );
+}
+
+/// Bounded, no-sleep settle proof for the two-subscription tests: re-drives the
+/// hand-driven transport (never a real clock) until `settle_player`'s own starter
+/// ledger row is persisted, so a LATER "zero rows" assertion for a different player
+/// runs only after delivery has demonstrably completed a pass over BOTH
+/// subscriptions — never a vacuous negative against an unsettled system.
+async fn deliver_until_settled(
+    transport: &asyncevents::testing::TestTransport,
+    pool: &PgPool,
+    settle_player: &str,
+) {
+    for _ in 0..20 {
+        transport.deliver_all().await.unwrap();
+        if !starter_ledger_rows(pool, settle_player).await.is_empty() {
+            return;
+        }
+    }
+    panic!("settle_player {settle_player}'s starter ledger row never appeared — delivery did not settle");
 }
 
 /// A currency code that is NOT in the catalog (never inserted).
@@ -1607,6 +1702,220 @@ async fn starter_grant_reflects_a_live_config_change() {
     assert_subscription_unpoisoned(&pool).await;
 
     cleanup(&pool, &[&first, &second], &[&currency]).await;
+}
+
+// ---- 11.6: the grant's moved trigger (Step 11 — guest skip / promotion) ----
+//
+// `wallet.player-registered.v1` now skips a `guest` provider; a new
+// `wallet.player-promoted.v1` calls the same `grant_starter` on `player.promoted`.
+// Both use the deterministic `starter:{player_id}` key.
+
+/// The branch decision 3 exists for: a GUEST registration must grant nothing, proven
+/// AFTER delivery has demonstrably run — not by an assertion that merely hasn't seen
+/// anything happen yet. Deleting the `e.provider == accountsevents::providers::GUEST`
+/// skip in `WalletModule::init` is exactly what turns this red: the guest player would
+/// then carry a `starter:{guest}` ledger row.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn guest_registration_grants_nothing_even_after_delivery_settles() {
+    let Some(pool) = test_pool().await else { return };
+    let _serialized = STARTER_SUB_LOCK.lock().await;
+    let currency = unique_currency(&pool).await;
+    let (ctx, _svc, transport) =
+        wired_for_dual_delivery(&pool, FakeConfig::new(&currency, 200) as Arc<dyn Config>).await;
+    let guest = unique_player(&pool).await;
+    // A DIFFERENT player, promoted rather than registered — its own ledger row is the
+    // settle-proof that delivery ran a full pass over both subscriptions before the
+    // guest's "zero rows" is asserted below.
+    let settle_witness = unique_player(&pool).await;
+
+    emit_registered_as(&ctx, &pool, &guest, accountsevents::providers::GUEST).await;
+    emit_promoted(
+        &ctx,
+        &pool,
+        &settle_witness,
+        accountsevents::providers::GUEST,
+        accountsevents::providers::EPIC,
+    )
+    .await;
+    deliver_until_settled(&transport, &pool, &settle_witness).await;
+
+    assert!(
+        balance_of(&pool, &guest, &currency).await.is_none(),
+        "a guest registration must grant nothing"
+    );
+    assert!(
+        starter_ledger_rows(&pool, &guest).await.is_empty(),
+        "a guest registration must not consume the starter:{guest} idempotency key either"
+    );
+    assert_subscription_unpoisoned(&pool).await;
+
+    cleanup(&pool, &[&guest, &settle_witness], &[&currency]).await;
+}
+
+/// `player.promoted` grants exactly one ledger row at the configured amount — the new
+/// subscription this step adds. Deleting the `wallet.player-promoted.v1` handler (or its
+/// `grant_starter` call) is what turns this red.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn promotion_grants_the_starter_amount() {
+    let Some(pool) = test_pool().await else { return };
+    let _serialized = STARTER_SUB_LOCK.lock().await;
+    let currency = unique_currency(&pool).await;
+    let (ctx, _svc, transport) =
+        wired_for_dual_delivery(&pool, FakeConfig::new(&currency, 300) as Arc<dyn Config>).await;
+    let pid = unique_player(&pool).await;
+
+    emit_promoted(
+        &ctx,
+        &pool,
+        &pid,
+        accountsevents::providers::GUEST,
+        accountsevents::providers::EPIC,
+    )
+    .await;
+    assert_eq!(
+        transport.deliver_all().await.unwrap(),
+        1,
+        "the promotion must be delivered Ok"
+    );
+
+    assert_eq!(balance_of(&pool, &pid, &currency).await, Some(300));
+    assert_eq!(
+        starter_ledger_rows(&pool, &pid).await,
+        vec![(currency.clone(), 300, 300, REASON.to_string())],
+        "exactly one ledger row, keyed starter:{pid}"
+    );
+    assert_promoted_subscription_unpoisoned(&pool).await;
+
+    cleanup(&pool, &[&pid], &[&currency]).await;
+}
+
+/// The regression this step most risks: a DIRECT registration with a real (non-guest)
+/// provider must still be granted at registration — moving the grant wholly onto
+/// promotion would silently stop granting every normal registration. Making the
+/// registration handler skip every provider (not just `guest`) is what turns this red.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn direct_registration_with_a_real_provider_is_still_granted() {
+    let Some(pool) = test_pool().await else { return };
+    let _serialized = STARTER_SUB_LOCK.lock().await;
+    let currency = unique_currency(&pool).await;
+    let (ctx, _svc, transport) =
+        wired_for_dual_delivery(&pool, FakeConfig::new(&currency, 150) as Arc<dyn Config>).await;
+    let pid = unique_player(&pool).await;
+
+    emit_registered_as(&ctx, &pool, &pid, accountsevents::providers::EPIC).await;
+    assert_eq!(
+        transport.deliver_all().await.unwrap(),
+        1,
+        "a real-provider registration must be delivered Ok"
+    );
+
+    assert_eq!(balance_of(&pool, &pid, &currency).await, Some(150));
+    assert_eq!(
+        starter_ledger_rows(&pool, &pid).await,
+        vec![(currency.clone(), 150, 150, REASON.to_string())],
+        "exactly one ledger row, keyed starter:{pid}"
+    );
+    assert_subscription_unpoisoned(&pool).await;
+
+    cleanup(&pool, &[&pid], &[&currency]).await;
+}
+
+/// A player who registers as a guest (skipped, no grant) and is later promoted (granted)
+/// ends the full lifecycle with exactly one ledger row. NOTE on what this pins and what
+/// it does not: because the guest leg never calls `grant_starter` at all, this alone does
+/// NOT prove the shared key collapses two live grant attempts — that is
+/// [`the_starter_key_is_shared_across_both_subscriptions`] below. This test pins the
+/// ordinary end-to-end lifecycle: it goes red if either subscription stops firing for
+/// this player (e.g. a checkpoint left past the promotion event).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_player_who_registers_as_guest_then_gets_promoted_is_granted_once() {
+    let Some(pool) = test_pool().await else { return };
+    let _serialized = STARTER_SUB_LOCK.lock().await;
+    let currency = unique_currency(&pool).await;
+    let (ctx, _svc, transport) =
+        wired_for_dual_delivery(&pool, FakeConfig::new(&currency, 80) as Arc<dyn Config>).await;
+    let pid = unique_player(&pool).await;
+
+    emit_registered_as(&ctx, &pool, &pid, accountsevents::providers::GUEST).await;
+    emit_promoted(
+        &ctx,
+        &pool,
+        &pid,
+        accountsevents::providers::GUEST,
+        accountsevents::providers::GOOGLE,
+    )
+    .await;
+    assert_eq!(
+        transport.deliver_all().await.unwrap(),
+        2,
+        "both the guest registration and the promotion must be delivered Ok"
+    );
+
+    assert_eq!(balance_of(&pool, &pid, &currency).await, Some(80));
+    assert_eq!(
+        starter_ledger_rows(&pool, &pid).await.len(),
+        1,
+        "the full guest-then-promoted lifecycle must leave exactly one ledger row"
+    );
+    assert_subscription_unpoisoned(&pool).await;
+    assert_promoted_subscription_unpoisoned(&pool).await;
+
+    cleanup(&pool, &[&pid], &[&currency]).await;
+}
+
+/// The genuine by-construction proof of the shared `starter:{player_id}` key: a
+/// real-provider registration (grants via `wallet.player-registered.v1`) followed by a
+/// promotion for the SAME player (grants again via `wallet.player-promoted.v1`) must
+/// collapse to one ledger row and one `wallet.changed` — the second `grant_starter` call
+/// hits `Outcome::Duplicate`. Changing the promoted handler's key derivation (e.g. to
+/// `format!("promo:{player_id}")` instead of reusing `starter:{player_id}`) is what turns
+/// this red: it would double-credit the player instead of collapsing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_starter_key_is_shared_across_both_subscriptions() {
+    let Some(pool) = test_pool().await else { return };
+    let _serialized = STARTER_SUB_LOCK.lock().await;
+    let currency = unique_currency(&pool).await;
+    let (ctx, _svc, transport) =
+        wired_for_dual_delivery(&pool, FakeConfig::new(&currency, 55) as Arc<dyn Config>).await;
+    let pid = unique_player(&pool).await;
+
+    emit_registered_as(&ctx, &pool, &pid, accountsevents::providers::EPIC).await;
+    emit_promoted(
+        &ctx,
+        &pool,
+        &pid,
+        accountsevents::providers::GUEST,
+        accountsevents::providers::EPIC,
+    )
+    .await;
+    assert_eq!(
+        transport.deliver_all().await.unwrap(),
+        2,
+        "both deliveries must succeed — a second grant attempt is a Duplicate no-op, not an Err"
+    );
+
+    assert_eq!(
+        balance_of(&pool, &pid, &currency).await,
+        Some(55),
+        "the SECOND grant_starter call must collapse via the shared starter:{pid} key, not \
+         double-credit"
+    );
+    assert_eq!(
+        starter_ledger_rows(&pool, &pid).await.len(),
+        1,
+        "one ledger row despite two grant_starter invocations from two different subscriptions"
+    );
+    let changed = asyncevents::testing::events_count(&pool, "wallet.changed", "player_id", &pid)
+        .await
+        .unwrap();
+    assert_eq!(
+        changed, 1,
+        "the redundant promotion delivery must not append a second wallet.changed"
+    );
+    assert_subscription_unpoisoned(&pool).await;
+    assert_promoted_subscription_unpoisoned(&pool).await;
+
+    cleanup(&pool, &[&pid], &[&currency]).await;
 }
 
 // ---- 12: the admin page — the submit authority and the drill-down window ----

@@ -291,6 +291,36 @@ async fn resolve_configured_name_via_the_production_path() {
     }
 }
 
+/// `KNOWN_PROVIDERS`' exact membership, plus a build proof for each name: the registry
+/// built through the production `from_vars -> providers()` path must resolve a verifier
+/// for every name it lists. Adding a second anonymous provider here (e.g. `device`)
+/// without teaching wallet's guest starter-grant filter
+/// (`e.provider == accountsevents::providers::GUEST`) about it would silently re-open the
+/// anonymous starter-grant mint — this is the accounts-side tripwire for that class of
+/// change; it goes red the moment `KNOWN_PROVIDERS` gains or loses an entry.
+#[tokio::test]
+async fn known_providers_is_exactly_epic_google_guest_and_each_resolves_a_verifier() {
+    assert_eq!(
+        crate::providers::KNOWN_PROVIDERS,
+        &[crate::providers::EPIC, crate::providers::GOOGLE, crate::providers::GUEST],
+        "KNOWN_PROVIDERS drifted — a new entry here needs a matching decision at every \
+         anonymous-provider consumer (wallet's guest starter-grant filter)"
+    );
+
+    let cfg = ProviderConfig::from_vars(&vars(&[
+        ("EPIC_CLIENT_ID", "client-1"),
+        ("GOOGLE_CLIENT_IDS", "web-client"),
+    ]))
+    .unwrap();
+    let providers = cfg.providers(&lazy_pool());
+    for name in crate::providers::KNOWN_PROVIDERS {
+        match providers.resolve(name) {
+            Resolution::Configured(_) => {}
+            _ => panic!("KNOWN_PROVIDERS names {name:?} but the registry built no verifier for it"),
+        }
+    }
+}
+
 // --- Epic end-to-end through the production `from_vars -> providers() -> resolve`
 // path: proves the parse yields a verifier that actually verifies, not merely one
 // that satisfies field validation. The JWKS/token helpers are duplicated from
