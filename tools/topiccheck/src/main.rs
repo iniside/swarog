@@ -67,14 +67,16 @@ const DEFAULT_DSN: &str =
 /// durable subscriber yet ("emitting now, consumer comes later"). Adding a topic here is
 /// the explicit, diff-reviewed decision to ship a sinkless event; a defined topic NOT
 /// listed here and unsubscribed in a profile is a SEAM violation that fails
-/// `--durability-strict`. An entry that is subscribed in EVERY profile is itself a seam
-/// finding ([`stale_allowances`]), so an allowance cannot outlive its reason.
+/// `--durability-strict`. [`stale_allowances`] retires an entry only once a subscriber
+/// ARRIVES in every profile: it catches a RETIRED reason, never an ABANDONED one, so an
+/// allowance whose planned consumer never ships stays green indefinitely.
 ///
-/// KNOWN GAP: this allow-list keys on the topic string only, not `(topic, version)`. Fine
-/// while it is empty, but if a multi-version topic (e.g. an additive v2 alongside a still-
-/// live v1) ever needs a version-scoped sinkless allowance, this must become tuple-keyed
-/// (`&[(&str, u32)]`) — a topic-only entry would silently allow EVERY version of that topic
-/// unsubscribed, not just the intended one.
+/// KNOWN GAP: this allow-list keys on the topic string only, not `(topic, version)`. With
+/// `player.promoted` listed, an additive `define("player.promoted", 2, …)` would ship a
+/// whole second contract version with no subscriber in either profile and topiccheck would
+/// stay green — `unsubscribed` matches the allowance on the topic string ignoring version,
+/// and `stale_allowances` needs a subscriber in every profile. A version-scoped allowance
+/// requires a tuple key (`&[(&str, u32)]`).
 const ALLOW_UNSUBSCRIBED: &[&str] = &[
     // accounts emits player.promoted on a guest's first real link; wallet's starter
     // grant is its consumer and subscribes in the next step. Removed then — the

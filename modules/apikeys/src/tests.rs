@@ -88,6 +88,59 @@ fn dev_client_policy_entries_exist_in_the_op_catalog() {
     }
 }
 
+/// Player-facing ops deliberately OUTSIDE the dev-client role, each with the reason the
+/// reverse containment below demands instead of a silent omission.
+const DEV_CLIENT_EXCLUDED: &[(&str, &str)] = &[(
+    "match.report",
+    "the trusted-server op: dev-key-client must be DENIED it, which is the split-proof \
+     harness's real api-key negative case (K-series)",
+)];
+
+/// The converse of the containment above, and the drift this module could not otherwise
+/// see: a NEW `#[http]` op is reachable through the gateway the moment it is contributed
+/// (the player allow-list is derived from ops, not hand-listed), so forgetting it in
+/// `DEV_CLIENT_POLICY` leaves every gate green and only a runtime 403 for
+/// `dev-key-client` in both topologies. Every catalog op must be either in the policy or
+/// in [`DEV_CLIENT_EXCLUDED`] with its rationale.
+#[test]
+fn player_facing_catalog_ops_are_all_in_the_dev_client_policy() {
+    let policy: std::collections::BTreeSet<&str> = DEV_CLIENT_POLICY.split(',').collect();
+    let excluded: std::collections::BTreeSet<&str> =
+        DEV_CLIENT_EXCLUDED.iter().map(|(m, _)| *m).collect();
+    for op in opscatalog::OPERATIONS {
+        assert!(
+            matches!(op.auth, "none" | "player"),
+            "{} carries auth {:?}, an identity class this test has never reviewed against \
+             the dev-client role — decide whether dev-key-client should reach it",
+            op.method,
+            op.auth
+        );
+        if excluded.contains(op.method) {
+            assert!(
+                !policy.contains(op.method),
+                "{} is listed in DEV_CLIENT_EXCLUDED yet present in DEV_CLIENT_POLICY",
+                op.method
+            );
+            continue;
+        }
+        assert!(
+            policy.contains(op.method),
+            "{} is a player-facing operation the gateway dispatches, but DEV_CLIENT_POLICY \
+             does not grant it — add it, or add it to DEV_CLIENT_EXCLUDED with the reason",
+            op.method
+        );
+    }
+    let catalog: std::collections::BTreeSet<&str> =
+        opscatalog::OPERATIONS.iter().map(|op| op.method).collect();
+    for (method, _) in DEV_CLIENT_EXCLUDED {
+        assert!(
+            catalog.contains(method),
+            "DEV_CLIENT_EXCLUDED names {method:?}, which is no longer a served operation — \
+             remove the stale exception"
+        );
+    }
+}
+
 // ---- Integration: the Keys capability over the live store ------------------
 
 #[tokio::test]

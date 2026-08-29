@@ -6,6 +6,7 @@
 use std::sync::{Arc, OnceLock};
 
 use accountsapi::Auth as _;
+use opsapi::Identity;
 use sqlx::PgPool;
 use tokio::sync::Semaphore;
 
@@ -140,6 +141,74 @@ fn service_without_providers() -> Service {
         login_slots: Arc::new(Semaphore::new(32)),
         verifier: Arc::new(ArgonVerifier),
     }
+}
+
+/// [`service_without_providers`] with the registry the PRODUCTION `from_vars ->
+/// providers` path yields, so `guest` resolves `Configured` and the `link` credential
+/// probe reaches the resolved verifier's own cap instead of stopping at the
+/// KnownButUnconfigured arm.
+fn service_with_providers() -> Service {
+    let svc = service_without_providers();
+    let providers = crate::providers::ProviderConfig::from_vars(&fixture_vars())
+        .expect("the conformance provider fixture must be a valid configuration")
+        .providers(&svc.store.pool);
+    assert!(
+        svc.providers.set(Arc::new(providers)).is_ok(),
+        "the conformance service's provider cell must be fresh"
+    );
+    svc
+}
+
+/// Whether the REAL `accountsapi::Auth::link` op answers `msg` (400-class) for
+/// `(provider, credential)`. Drives the op itself, not the helpers under it: the caps
+/// `link` states live in `verify_credential`, which `link_identity` — the entry point
+/// every accounts test calls — sits BELOW, so a probe on the helper would stay green
+/// with the op's guards deleted.
+///
+/// The service is built inside the runtime context (`PgPool::connect_lazy` registers an
+/// idle reaper) but `block_on` runs outside it, and is dropped before the runtime.
+/// No case here reaches a store call: an over-cap value is decided by the guard, and the
+/// at-cap value is decided by an unknown provider name / a wrong-shaped guest ticket.
+fn link_answers(svc: impl FnOnce() -> Service, provider: &str, credential: &str, msg: &str) -> bool {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("current-thread runtime");
+    let svc = {
+        let _guard = rt.enter();
+        svc()
+    };
+    let outcome = rt.block_on(svc.link(
+        Identity::player("conformance-link-probe"),
+        provider.to_string(),
+        credential.to_string(),
+    ));
+    matches!(outcome, Err(error) if error.status.http() == 400 && error.msg == msg)
+}
+
+/// The provider-name cap of `accounts.link`, executed through the op.
+#[doc(hidden)]
+pub fn conformance_link_provider_rejected(len: usize) -> bool {
+    link_answers(
+        service_without_providers,
+        &"a".repeat(len),
+        "conformance.probe.ticket",
+        "provider too long",
+    )
+}
+
+/// The credential cap of `accounts.link`, executed through the op against the guest
+/// verifier the production registry resolves — the cap is per-provider, so this states
+/// guest's own bound. An at-cap value carries no `.` and is `Rejected` by shape, so the
+/// case stays zero-I/O.
+#[doc(hidden)]
+pub fn conformance_link_credential_rejected(len: usize) -> bool {
+    link_answers(
+        service_with_providers,
+        GUEST,
+        &"a".repeat(len),
+        "credential too long",
+    )
 }
 
 #[doc(hidden)]

@@ -631,6 +631,11 @@ tree, and — because a stale allowance was previously invisible — adds a `sta
 seam check: an allow-listed topic that has a durable subscriber in EVERY profile now fails,
 which forces the entry's removal in Step 11.
 
+Known gap (recorded, not fixed): the allowance has no expiry. `stale_allowances` fires only
+once a consumer ARRIVES in every profile, so an abandoned or descoped Step 11 leaves
+`player.promoted` permanently sinkless AND permanently green. The mitigation is the plan's
+existing mandate to land 9 and 11 back-to-back, not a new mechanism.
+
 ---
 
 ## Step 10 — tests for link + promotion `[test-author]`

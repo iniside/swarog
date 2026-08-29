@@ -191,15 +191,15 @@ fn allowlist_suppresses_unsubscribed() {
 
 /// Integration-shaped: drive the REAL wiring (`observe`) for both deployment
 /// profiles and assert the current tree has ZERO unsubscribed defined topics
-/// outside `ALLOW_UNSUBSCRIBED` — every other defined contract has a live durable
-/// subscriber in both Monolith and Split. Now that
-/// unsubscribed folds into `any_seam`, this is the assertion that
-/// `--durability-strict` (the fortress gate) exits 0 on this tree. Mirrors
-/// `main`'s harness setup: no auth env (Admin::init no longer reads any), and a
-/// tokio runtime for the in-process `Bus::on` spawns during `init`.
+/// outside `ALLOW_UNSUBSCRIBED` and ZERO stale allowances — both sources `main`
+/// folds into `any_seam`, so this is the assertion that `--durability-strict`
+/// (the fortress gate) exits 0 on this tree. Mirrors `main`'s harness setup: no
+/// auth env (Admin::init no longer reads any), and a tokio runtime for the
+/// in-process `Bus::on` spawns during `init`.
 #[tokio::test]
 async fn current_tree_has_zero_unsubscribed_in_both_profiles() {
     let defined = defined_topics();
+    let mut per_profile: Vec<SubscribedKeys> = Vec::new();
     for (label, profile) in [
         ("Monolith", DeploymentProfile::Monolith),
         ("Split", DeploymentProfile::Split),
@@ -209,7 +209,35 @@ async fn current_tree_has_zero_unsubscribed_in_both_profiles() {
             obs.subs.iter().map(|s| (s.topic.clone(), s.version)).collect();
         let unsub = unsubscribed(&defined, &subscribed, ALLOW_UNSUBSCRIBED);
         assert!(unsub.is_empty(), "profile {label}: unexpected unsubscribed topics {unsub:?}");
+        per_profile.push(subscribed);
     }
+    let stale = stale_allowances(ALLOW_UNSUBSCRIBED, &per_profile);
+    assert!(stale.is_empty(), "ALLOW_UNSUBSCRIBED entries with a subscriber everywhere: {stale:?}");
+}
+
+// --- Check 5b: stale allowances (seam) ---------------------------------------
+
+#[test]
+fn allowance_subscribed_in_every_profile_is_stale() {
+    let per_profile = vec![contracts(&[("t", 1)]), contracts(&[("t", 1)])];
+    assert_eq!(stale_allowances(&["t"], &per_profile), vec!["t".to_string()]);
+}
+
+#[test]
+fn allowance_subscribed_in_only_one_profile_is_not_stale() {
+    let per_profile = vec![contracts(&[("t", 1)]), contracts(&[])];
+    assert!(stale_allowances(&["t"], &per_profile).is_empty());
+}
+
+#[test]
+fn no_observed_profiles_yields_no_stale_allowance() {
+    assert!(stale_allowances(&["t"], &[]).is_empty());
+}
+
+#[test]
+fn allowance_with_no_subscriber_anywhere_is_not_stale() {
+    let per_profile = vec![contracts(&[("other", 1)]), contracts(&[("other", 1)])];
+    assert!(stale_allowances(&["t"], &per_profile).is_empty());
 }
 
 // --- Define-site self-check: defined_topics() matches every `bus::define(` call ----
