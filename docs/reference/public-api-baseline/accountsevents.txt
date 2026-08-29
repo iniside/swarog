@@ -1,5 +1,28 @@
 # cargo-public-api 0.52.0 -- regenerate via cargo run -p verifyctl -- --bless-public-api
 pub mod accountsevents
+pub struct accountsevents::PlayerPromoted
+pub accountsevents::PlayerPromoted::from_provider: alloc::string::String
+pub accountsevents::PlayerPromoted::player_id: alloc::string::String
+pub accountsevents::PlayerPromoted::to_provider: alloc::string::String
+impl core::clone::Clone for accountsevents::PlayerPromoted
+pub fn accountsevents::PlayerPromoted::clone(&self) -> accountsevents::PlayerPromoted
+impl core::cmp::Eq for accountsevents::PlayerPromoted
+impl core::cmp::PartialEq for accountsevents::PlayerPromoted
+pub fn accountsevents::PlayerPromoted::eq(&self, &accountsevents::PlayerPromoted) -> bool
+impl core::fmt::Debug for accountsevents::PlayerPromoted
+pub fn accountsevents::PlayerPromoted::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for accountsevents::PlayerPromoted
+impl serde_core::ser::Serialize for accountsevents::PlayerPromoted
+pub fn accountsevents::PlayerPromoted::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for accountsevents::PlayerPromoted
+pub fn accountsevents::PlayerPromoted::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for accountsevents::PlayerPromoted
+impl core::marker::Send for accountsevents::PlayerPromoted
+impl core::marker::Sync for accountsevents::PlayerPromoted
+impl core::marker::Unpin for accountsevents::PlayerPromoted
+impl core::marker::UnsafeUnpin for accountsevents::PlayerPromoted
+impl core::panic::unwind_safe::RefUnwindSafe for accountsevents::PlayerPromoted
+impl core::panic::unwind_safe::UnwindSafe for accountsevents::PlayerPromoted
 pub struct accountsevents::PlayerRegistered
 pub accountsevents::PlayerRegistered::display_name: alloc::string::String
 pub accountsevents::PlayerRegistered::player_id: alloc::string::String
@@ -23,4 +46,5 @@ impl core::marker::Unpin for accountsevents::PlayerRegistered
 impl core::marker::UnsafeUnpin for accountsevents::PlayerRegistered
 impl core::panic::unwind_safe::RefUnwindSafe for accountsevents::PlayerRegistered
 impl core::panic::unwind_safe::UnwindSafe for accountsevents::PlayerRegistered
+pub static accountsevents::PLAYER_PROMOTED: std::sync::lazy_lock::LazyLock<bus::EventType<accountsevents::PlayerPromoted>>
 pub static accountsevents::PLAYER_REGISTERED: std::sync::lazy_lock::LazyLock<bus::EventType<accountsevents::PlayerRegistered>>

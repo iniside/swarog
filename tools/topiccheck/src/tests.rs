@@ -190,9 +190,9 @@ fn allowlist_suppresses_unsubscribed() {
 }
 
 /// Integration-shaped: drive the REAL wiring (`observe`) for both deployment
-/// profiles and assert the current tree has ZERO unsubscribed defined topics —
-/// i.e. `ALLOW_UNSUBSCRIBED` is legitimately empty because every defined contract
-/// has a live durable subscriber in both Monolith and Split. Now that
+/// profiles and assert the current tree has ZERO unsubscribed defined topics
+/// outside `ALLOW_UNSUBSCRIBED` — every other defined contract has a live durable
+/// subscriber in both Monolith and Split. Now that
 /// unsubscribed folds into `any_seam`, this is the assertion that
 /// `--durability-strict` (the fortress gate) exits 0 on this tree. Mirrors
 /// `main`'s harness setup: no auth env (Admin::init no longer reads any), and a

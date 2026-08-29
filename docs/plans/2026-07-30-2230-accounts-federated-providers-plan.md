@@ -621,6 +621,16 @@ fortress stage's `--durability-strict`) reports the new topic as unsubscribed un
 the *blocking* reds in this window are the codegen/golden set, not topiccheck. Land 9 and
 11 back-to-back regardless.
 
+**Errata (Step 9 as landed).** The "advisory only" reading was wrong for the BLOCKING
+fortress stage: it invokes topiccheck with `--durability-strict`, where an unsubscribed
+defined topic is a SEAM failure, and `topiccheck`'s own
+`current_tree_has_zero_unsubscribed_in_both_profiles` test fails on it too. Step 9 therefore
+adds `player.promoted` to topiccheck's `ALLOW_UNSUBSCRIBED` (the sanctioned-sinkless
+registry, exactly the "emitting now, consumer comes later" case) instead of committing a red
+tree, and — because a stale allowance was previously invisible — adds a `stale_allowances`
+seam check: an allow-listed topic that has a durable subscriber in EVERY profile now fails,
+which forces the entry's removal in Step 11.
+
 ---
 
 ## Step 10 — tests for link + promotion `[test-author]`

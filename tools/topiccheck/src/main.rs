@@ -67,15 +67,20 @@ const DEFAULT_DSN: &str =
 /// durable subscriber yet ("emitting now, consumer comes later"). Adding a topic here is
 /// the explicit, diff-reviewed decision to ship a sinkless event; a defined topic NOT
 /// listed here and unsubscribed in a profile is a SEAM violation that fails
-/// `--durability-strict`. Empty today: every one of the six defined topics has a live
-/// durable subscriber in both profiles.
+/// `--durability-strict`. An entry that is subscribed in EVERY profile is itself a seam
+/// finding ([`stale_allowances`]), so an allowance cannot outlive its reason.
 ///
 /// KNOWN GAP: this allow-list keys on the topic string only, not `(topic, version)`. Fine
 /// while it is empty, but if a multi-version topic (e.g. an additive v2 alongside a still-
 /// live v1) ever needs a version-scoped sinkless allowance, this must become tuple-keyed
 /// (`&[(&str, u32)]`) — a topic-only entry would silently allow EVERY version of that topic
 /// unsubscribed, not just the intended one.
-const ALLOW_UNSUBSCRIBED: &[&str] = &[];
+const ALLOW_UNSUBSCRIBED: &[&str] = &[
+    // accounts emits player.promoted on a guest's first real link; wallet's starter
+    // grant is its consumer and subscribes in the next step. Removed then — the
+    // stale-allowance check fails until it is.
+    "player.promoted",
+];
 
 /// Defined (contract) topics legitimately subscribed same-module on the in-process plane
 /// (plain `on()`). Empty today — the clean tree has zero in-process subscriptions to any
@@ -190,6 +195,7 @@ fn defined_topics() -> Vec<Contract> {
     }
     vec![
         of(accountsevents::PLAYER_REGISTERED.contract()),
+        of(accountsevents::PLAYER_PROMOTED.contract()),
         of(charactersevents::CREATED.contract()),
         of(charactersevents::DELETED.contract()),
         of(configevents::CHANGED.contract()),
@@ -343,6 +349,27 @@ fn unsubscribed(
         .collect()
 }
 
+/// One profile's durable subscription keys — every `(topic, version)` some process in
+/// that profile subscribes.
+type SubscribedKeys = BTreeSet<(String, u32)>;
+
+/// Allowances that outlived their reason: a topic in `allow` that HAS a durable
+/// subscriber in every profile. Keyed on the topic string like the allow-list itself,
+/// and requiring EVERY profile so a monolith-only subscriber does not retire an
+/// allowance the split still needs.
+fn stale_allowances(allow: &[&str], per_profile: &[SubscribedKeys]) -> Vec<String> {
+    allow
+        .iter()
+        .filter(|topic| {
+            !per_profile.is_empty()
+                && per_profile
+                    .iter()
+                    .all(|subscribed| subscribed.iter().any(|(t, _)| t == **topic))
+        })
+        .map(|t| (*t).to_string())
+        .collect()
+}
+
 /// Builds every process of `profile` with a recording transport + lazy pool, runs the
 /// two no-I/O lifecycle phases, and returns the durable subscriptions (tagged with their
 /// hosting process) plus the union of in-process topics.
@@ -397,9 +424,13 @@ fn observe(profile: &DeploymentProfile) -> anyhow::Result<Observation> {
 
 /// Runs every check for one profile, prints its report table + findings, and returns
 /// `(seam_findings, advisory_findings)` counts folded into the two exit buckets.
-fn run_profile(name: &str, profile: &DeploymentProfile, defined: &[Contract]) -> anyhow::Result<(bool, bool)> {
+fn run_profile(
+    name: &str,
+    profile: &DeploymentProfile,
+    defined: &[Contract],
+) -> anyhow::Result<(bool, bool, SubscribedKeys)> {
     let obs = observe(profile)?;
-    let subscribed: BTreeSet<(String, u32)> =
+    let subscribed: SubscribedKeys =
         obs.subs.iter().map(|s| (s.topic.clone(), s.version)).collect();
 
     let versions = version_findings(defined, &obs.subs);
@@ -495,7 +526,7 @@ fn run_profile(name: &str, profile: &DeploymentProfile, defined: &[Contract]) ->
     // No advisory-bucket findings exist today (unsubscribed became a seam); the tuple's
     // second slot stays wired so `--strict` keeps gating any advisory added later.
     let advisory = false;
-    Ok((seam, advisory))
+    Ok((seam, advisory, subscribed))
 }
 
 #[tokio::main]
@@ -533,19 +564,34 @@ async fn main() -> anyhow::Result<()> {
 
     let mut any_seam = false;
     let mut any_advisory = false;
+    let mut per_profile = Vec::new();
     for (name, profile) in [
         ("Monolith", DeploymentProfile::Monolith),
         ("Split", DeploymentProfile::Split),
     ] {
-        let (seam, advisory) = run_profile(name, &profile, &defined)?;
+        let (seam, advisory, subscribed) = run_profile(name, &profile, &defined)?;
         any_seam |= seam;
         any_advisory |= advisory;
+        per_profile.push(subscribed);
+    }
+
+    let stale = stale_allowances(ALLOW_UNSUBSCRIBED, &per_profile);
+    if !stale.is_empty() {
+        any_seam = true;
+        eprintln!(
+            "topiccheck: STALE ALLOWANCE (SEAM) — topic(s) in ALLOW_UNSUBSCRIBED now have a \
+             durable subscriber in every profile; remove the entry:"
+        );
+        for t in &stale {
+            eprintln!("  - {t}");
+        }
     }
 
     if !any_seam && !any_advisory {
         println!(
-            "topiccheck: OK — all {} defined topics are subscribed durably, single-hosted, and \
-             version-matched in both profiles",
+            "topiccheck: OK — all {} defined topics are single-hosted and version-matched in \
+             both profiles, and every topic outside ALLOW_UNSUBSCRIBED is subscribed durably \
+             in both",
             defined.len()
         );
     }

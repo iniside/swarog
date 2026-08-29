@@ -41,6 +41,30 @@ pub struct PlayerRegistered {
 pub static PLAYER_REGISTERED: LazyLock<EventType<PlayerRegistered>> =
     LazyLock::new(|| define("player.registered", 1, HistoryPolicy::MinRetention { days: 7 }));
 
+/// Fires when a player that held ONLY guest identities gains its first non-guest
+/// identity — the promotion a consumer treats as "this player became real". Emitted
+/// in the same transaction as the identity row, so it is durable iff the link is.
+///
+/// `from_provider` is the constant `"guest"`: guest is the only promotable state this
+/// build ships, and the emit condition is "had no non-guest identity", which today can
+/// only mean guest-only. A second promotable origin would carry its own name here.
+/// `to_provider` is the `accounts.identities.provider` value just linked.
+///
+/// `Serialize`/`Deserialize` are load-bearing: the durable transport collapses the
+/// payload to JSON at the `emit_tx`/`on_tx` boundary.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlayerPromoted {
+    pub player_id: String,
+    pub from_provider: String,
+    pub to_provider: String,
+}
+
+/// The `player.promoted` topic. Retained 7 days like `player.registered`, so a
+/// consumer subscribing `AfterRegistration` sees a promotion that happened while it
+/// was down.
+pub static PLAYER_PROMOTED: LazyLock<EventType<PlayerPromoted>> =
+    LazyLock::new(|| define("player.promoted", 1, HistoryPolicy::MinRetention { days: 7 }));
+
 /// Fully-POPULATED wire sample for the contract-golden fingerprint (Step 5): every
 /// field set so serde's actual JSON keys land in the golden. `contract-golden`
 /// flattens this into `payload.<key>:<type>` lines; a silent `#[serde(rename)]` or a
@@ -48,14 +72,26 @@ pub static PLAYER_REGISTERED: LazyLock<EventType<PlayerRegistered>> =
 /// JSON.
 #[doc(hidden)]
 pub fn golden_samples() -> Vec<(&'static str, u32, serde_json::Value)> {
-    vec![(
-        "player.registered",
-        1,
-        serde_json::to_value(PlayerRegistered {
-            player_id: "player-1".to_string(),
-            display_name: "Aria".to_string(),
-            provider: "dev".to_string(),
-        })
-        .expect("PlayerRegistered serializes to json"),
-    )]
+    vec![
+        (
+            "player.registered",
+            1,
+            serde_json::to_value(PlayerRegistered {
+                player_id: "player-1".to_string(),
+                display_name: "Aria".to_string(),
+                provider: "dev".to_string(),
+            })
+            .expect("PlayerRegistered serializes to json"),
+        ),
+        (
+            "player.promoted",
+            1,
+            serde_json::to_value(PlayerPromoted {
+                player_id: "player-1".to_string(),
+                from_provider: "guest".to_string(),
+                to_provider: "epic".to_string(),
+            })
+            .expect("PlayerPromoted serializes to json"),
+        ),
+    ]
 }

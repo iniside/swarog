@@ -3,7 +3,7 @@
 //!
 //! Four things are pinned:
 //!
-//! 1. the produced manifest matches the committed golden (the 15 methods, 9 DTOs,
+//! 1. the produced manifest matches the committed golden (the 16 methods, 9 DTOs,
 //!    `Status` variants) — the whole scrape end-to-end;
 //! 2. the drift gate fires on a route_bindings-without-signature mismatch;
 //! 3. the completeness gate fires on a #[http]-bearing provider missing from the list;
@@ -45,10 +45,10 @@ fn manifest_matches_golden() {
 
 #[test]
 fn golden_covers_the_known_surface() {
-    // A structural sanity check independent of the string golden: exactly the 15
+    // A structural sanity check independent of the string golden: exactly the 16
     // player-reachable methods and the 9 reachable DTOs.
     let m: Manifest = serde_json::from_str(GOLDEN).unwrap();
-    assert_eq!(m.methods.len(), 15, "expected 15 #[http] methods");
+    assert_eq!(m.methods.len(), 16, "expected 16 #[http] methods");
     assert_eq!(m.dtos.len(), 9, "expected 9 reachable DTOs");
     assert_eq!(m.statuses.len(), 8, "expected 8 Status variants");
 
@@ -63,6 +63,7 @@ fn golden_covers_the_known_surface() {
             "accounts.loginFederated",
             "accounts.createGuest",
             "accounts.me",
+            "accounts.link",
             "characters.create",
             "characters.list",
             "characters.delete",

@@ -85,8 +85,9 @@ pub trait Sessions: Send + Sync {
 
 /// The accounts module's player-facing capability: the operations that establish or
 /// read a player identity. `register`/`login`/`login_federated`/`create_guest` are
-/// `auth = "none"` (they CREATE the session, so they take no caller identity); `me` is
-/// `auth = "player"` — it takes its caller identity as the leading `Identity` param
+/// `auth = "none"` (they CREATE the session, so they take no caller identity); `me` and
+/// `link` are
+/// `auth = "player"` — they take their caller identity as the leading `Identity` param
 /// (injected by the gateway after bearer verification), NEVER a body field. The
 /// `body_names` remap keeps Go's public body key `displayName` byte-identical.
 #[rpc(prefix = "accounts")]
@@ -129,6 +130,18 @@ pub trait Auth: Send + Sync {
     #[http(verb = "GET", path = "/accounts/me", auth = "player", success = 200)]
     #[retry_safe]
     async fn me(&self, identity: Identity) -> Result<MeView, Error>;
+
+    /// Attaches a second credential to the CALLING player (identity injected by the
+    /// gateway after bearer verification): the credential is verified through the same
+    /// provider registry, guard order and per-provider byte caps as
+    /// [`Auth::login_federated`], so the same 400/401/503 answers apply. Re-linking an
+    /// identity the caller already owns is an idempotent success; an identity owned by
+    /// ANOTHER player is `Conflict` (409) — accounts are never merged. A guest player
+    /// gaining its first non-guest identity emits `player.promoted` durably, in the
+    /// transaction that writes the identity. Answers with the caller's refreshed
+    /// view. 200.
+    #[http(verb = "POST", path = "/accounts/link", auth = "player", success = 200)]
+    async fn link(&self, identity: Identity, provider: String, credential: String) -> Result<MeView, Error>;
 }
 
 // The admin fan-out capability now lives in the cross-cutting `adminapi::AdminData`

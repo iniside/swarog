@@ -59,6 +59,31 @@ pub(crate) fn identity_lock_key(provider: &str, subject: &str) -> i64 {
     hash as i64
 }
 
+/// Domain-separated stable FNV-1a key for serializing every writer of one PLAYER's
+/// identity set. Distinct from [`identity_lock_key`] on purpose: that one serializes
+/// writers of a single `(provider, subject)`, which two links of DIFFERENT providers
+/// to the same player never share — only this key makes them mutually exclusive.
+pub(crate) fn player_lock_key(player_id: &str) -> i64 {
+    const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut hash = OFFSET_BASIS;
+    for byte in b"accounts.player.v1\0".iter().chain(player_id.as_bytes()) {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(PRIME);
+    }
+    hash as i64
+}
+
+/// What a link attempt did to `accounts.identities`, so the caller decides whether
+/// anything happened without asking the database a second time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LinkOutcome {
+    /// The identity row was inserted by this call.
+    Linked,
+    /// The identity already belonged to this player; nothing was written.
+    AlreadyLinked,
+}
+
 /// A fresh opaque bearer token: 32 random bytes, base64url without padding — Go's
 /// `newToken` byte-for-byte (43 chars).
 pub(crate) fn new_token() -> String {
@@ -200,38 +225,71 @@ impl Store {
         Ok(row.map(|(id, display_name)| Player { id, display_name }))
     }
 
-    /// Attaches an already-verified external identity in its own transaction, sharing
-    /// the SAME writer lock as first-login. Same-owner re-link is idempotent; another
-    /// owner is [`StoreError::Taken`].
-    pub async fn link_identity(
+    /// Takes the transaction-scoped writer lock for one PLAYER's identity set. A
+    /// caller that takes this AND [`Store::lock_identity_tx`] takes this one FIRST.
+    pub async fn lock_player_tx(
         &self,
+        conn: &mut PgConnection,
+        player_id: &str,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query("SELECT pg_advisory_xact_lock($1)")
+            .bind(player_lock_key(player_id))
+            .execute(&mut *conn)
+            .await?;
+        Ok(())
+    }
+
+    /// Whether `player_id` already holds an identity from a provider other than
+    /// `guest`, on the caller's locked transaction. Read BEFORE the link insert:
+    /// after it, the answer would include the row being written.
+    pub async fn has_real_identity_tx(
+        &self,
+        conn: &mut PgConnection,
+        player_id: &str,
+    ) -> Result<bool, sqlx::Error> {
+        let row: Option<(i32,)> = sqlx::query_as(
+            "SELECT 1 FROM accounts.identities \
+              WHERE player_id = $1::uuid AND provider <> $2 LIMIT 1",
+        )
+        .bind(player_id)
+        .bind(crate::providers::GUEST)
+        .fetch_optional(&mut *conn)
+        .await?;
+        Ok(row.is_some())
+    }
+
+    /// Attaches an already-verified external identity ON THE CALLER'S transaction,
+    /// under the locks the caller took. Same-owner re-link writes nothing
+    /// ([`LinkOutcome::AlreadyLinked`]); another owner is [`StoreError::Taken`].
+    pub async fn link_identity_tx(
+        &self,
+        conn: &mut PgConnection,
         player_id: &str,
         provider: &str,
         subject: &str,
-    ) -> Result<(), StoreError> {
-        let mut tx = self.pool.begin().await?;
-        self.lock_identity_tx(&mut tx, provider, subject).await?;
+    ) -> Result<LinkOutcome, StoreError> {
         if let Some(owner) = self
-            .player_by_identity_tx(&mut tx, provider, subject)
+            .player_by_identity_tx(&mut *conn, provider, subject)
             .await?
         {
             if owner.id == player_id {
-                tx.commit().await?;
-                return Ok(());
+                return Ok(LinkOutcome::AlreadyLinked);
             }
-            tx.rollback().await?;
             return Err(StoreError::Taken);
         }
-        sqlx::query(
+        let res = sqlx::query(
             "INSERT INTO accounts.identities (provider, subject, player_id) VALUES ($1, $2, $3::uuid)",
         )
         .bind(provider)
         .bind(subject)
         .bind(player_id)
-        .execute(&mut *tx)
-        .await?;
-        tx.commit().await?;
-        Ok(())
+        .execute(&mut *conn)
+        .await;
+        match res {
+            Ok(_) => Ok(LinkOutcome::Linked),
+            Err(e) if is_unique_violation(&e) => Err(StoreError::Taken),
+            Err(e) => Err(e.into()),
+        }
     }
 
     /// Inserts a caller-provided session token ON THE GIVEN CONNECTION, so session

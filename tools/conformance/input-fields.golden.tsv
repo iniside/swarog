@@ -1,4 +1,6 @@
 wire_method	wire_field_name	exposure
+accounts.link	credential	external
+accounts.link	provider	external
 accounts.login	email	external
 accounts.login	password	external
 accounts.loginFederated	credential	external

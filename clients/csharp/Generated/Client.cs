@@ -33,6 +33,11 @@ public sealed class GameBackendStatusException(Status status, string? detail)
 /// <summary>Request for <c>accounts.createGuest</c> (no arguments — serializes to <c>{}</c>).</summary>
 public sealed record AccountsCreateGuestRequest();
 
+/// <summary>Request for <c>accounts.link</c>.</summary>
+public sealed record AccountsLinkRequest(
+    [property: JsonPropertyName("provider")] string Provider,
+    [property: JsonPropertyName("credential")] string Credential);
+
 /// <summary>Request for <c>accounts.login</c>.</summary>
 public sealed record AccountsLoginRequest(
     [property: JsonPropertyName("email")] string Email,
@@ -115,6 +120,18 @@ public sealed class GameBackendClient(IPlayerTransport transport)
         JsonNode value = envelope["value"]
             ?? throw new GameBackendTransportException("Ok response missing 'value'");
         return value.Deserialize<GuestSession>(JsonOpts)!;
+    }
+
+    /// <summary>Invokes <c>accounts.link</c> (requires a bearer token).</summary>
+    public async Task<MeView> AccountsLinkAsync(string token, string provider, string credential, CancellationToken ct = default)
+    {
+        var request = new AccountsLinkRequest(provider, credential);
+        byte[] payload = JsonSerializer.SerializeToUtf8Bytes(request, JsonOpts);
+        PlayerResponse resp = await transport.CallAsync("accounts.link", token, payload, ct).ConfigureAwait(false);
+        JsonNode envelope = Unwrap(resp);
+        JsonNode value = envelope["value"]
+            ?? throw new GameBackendTransportException("Ok response missing 'value'");
+        return value.Deserialize<MeView>(JsonOpts)!;
     }
 
     /// <summary>Invokes <c>accounts.login</c> (unauthenticated).</summary>

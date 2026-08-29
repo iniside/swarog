@@ -367,9 +367,9 @@ async fn handle_callback(
                 return Redirect::to("/?epic=error").into_response();
             }
         };
-        match svc.store.link_identity(&p.id, "epic", &subject).await {
-            Ok(()) => {}
-            Err(crate::store::StoreError::Taken) => {
+        match svc.link_identity(&p.id, crate::providers::EPIC, &subject).await {
+            Ok(_) => {}
+            Err(err) if err.status == opsapi::Status::Conflict => {
                 tracing::warn!(player_id = %p.id, "epic link: identity already linked to a different player");
                 return Redirect::to("/?epic=error").into_response();
             }
@@ -385,7 +385,12 @@ async fn handle_callback(
     // player.registered on first sight), mint a session, hand the token back via the
     // URL fragment for the page to pick up.
     let session = match svc
-        .external_login("epic", &subject, &format!("epic:{}", short_id(&subject)), None)
+        .external_login(
+            crate::providers::EPIC,
+            &subject,
+            &format!("epic:{}", short_id(&subject)),
+            None,
+        )
         .await
     {
         Ok((session, _created)) => session,

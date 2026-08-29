@@ -14,6 +14,29 @@
     },
     {
       "provider": "accounts",
+      "wire_method": "accounts.link",
+      "verb": "POST",
+      "path": "/accounts/link",
+      "auth": "player",
+      "success": 200,
+      "args": [
+        {
+          "name": "provider",
+          "wire_name": "provider",
+          "ty": "String"
+        },
+        {
+          "name": "credential",
+          "wire_name": "credential",
+          "ty": "String"
+        }
+      ],
+      "ret": {
+        "Struct": "MeView"
+      }
+    },
+    {
+      "provider": "accounts",
       "wire_method": "accounts.login",
       "verb": "POST",
       "path": "/accounts/login",

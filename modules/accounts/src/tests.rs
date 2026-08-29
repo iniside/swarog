@@ -983,7 +983,7 @@ async fn link_racing_first_login_has_only_two_coherent_outcomes() {
         let svc = svc.clone();
         let owner_id = owner.player_id.clone();
         let sub = sub.clone();
-        tokio::spawn(async move { svc.store.link_identity(&owner_id, "epic", &sub).await })
+        tokio::spawn(async move { svc.link_identity(&owner_id, "epic", &sub).await })
     };
     let login = {
         let svc = svc.clone();
@@ -1010,13 +1010,13 @@ async fn link_racing_first_login_has_only_two_coherent_outcomes() {
 
     assert!(both_waiting, "link and first-login must block on the exact same key");
     match link {
-        Ok(()) => {
+        Ok(_) => {
             assert!(!created, "link winner must make login adopt its owner");
             assert_eq!(login_session.player_id, owner.player_id);
             assert_eq!(identity_owner, owner.player_id);
         }
-        Err(StoreError::Taken) => {
-            assert!(created, "login winner must provision before link observes Taken");
+        Err(err) if err.status == opsapi::Status::Conflict => {
+            assert!(created, "login winner must provision before link observes the conflict");
             assert_ne!(login_session.player_id, owner.player_id);
             assert_eq!(identity_owner, login_session.player_id);
         }
@@ -1037,12 +1037,11 @@ async fn link_identity_attaches_and_rejects_duplicates() {
         .unwrap();
     let sub = format!("epicacct-{}", suffix());
 
-    svc.store.link_identity(&sess.player_id, "epic", &sub).await.unwrap();
+    svc.link_identity(&sess.player_id, "epic", &sub).await.unwrap();
     let ids = svc.store.identities_of(&sess.player_id).await.unwrap();
     assert!(ids.iter().any(|i| i.provider == "epic" && i.subject == sub));
 
     svc
-        .store
         .link_identity(&sess.player_id, "epic", &sub)
         .await
         .unwrap();
@@ -1050,8 +1049,8 @@ async fn link_identity_attaches_and_rejects_duplicates() {
         .register(format!("other-{}@test.local", suffix()), "pw".into(), "Other".into())
         .await
         .unwrap();
-    let err = svc.store.link_identity(&other.player_id, "epic", &sub).await.unwrap_err();
-    assert!(matches!(err, StoreError::Taken));
+    let err = svc.link_identity(&other.player_id, "epic", &sub).await.unwrap_err();
+    assert_eq!(err.status, opsapi::Status::Conflict);
 
     cleanup_player(&pool, &sess.player_id).await;
     cleanup_player(&pool, &other.player_id).await;
@@ -1235,7 +1234,7 @@ async fn epic_link_cross_player_collision_is_error() {
         .register(format!("a-{}@test.local", suffix()), "pw".into(), "A".into())
         .await
         .unwrap();
-    svc.store.link_identity(&a.player_id, "epic", &epic_acct).await.unwrap();
+    svc.link_identity(&a.player_id, "epic", &epic_acct).await.unwrap();
 
     // Player B, logged in, tries to link the SAME Epic account.
     let b = svc
@@ -1284,7 +1283,7 @@ async fn epic_link_same_player_is_idempotent() {
         .register(format!("a-{}@test.local", suffix()), "pw".into(), "A".into())
         .await
         .unwrap();
-    svc.store.link_identity(&a.player_id, "epic", &epic_acct).await.unwrap();
+    svc.link_identity(&a.player_id, "epic", &epic_acct).await.unwrap();
 
     let (client, base, oauth) = epic_link_harness(svc.clone(), &epic_acct).await;
     let binding = store::new_token();

@@ -13,7 +13,7 @@
 //!     capability the gateway's auth-once verifier resolves (registry swap: local
 //!     here, an edge client from `accountsrpc::remote_factories()` in a split peer).
 //!   - `accounts.auth` ([`accountsapi::Auth`]) — register/login/loginFederated/
-//!     createGuest/me,
+//!     createGuest/me/link,
 //!     contributed as gateway operations (conditionally, per the env gates).
 //!   - Epic web OAuth — two HTTP-NATIVE browser routes (`POST /accounts/epic/start`,
 //!     `GET /accounts/epic/callback`) mounted on the shared router when
@@ -46,9 +46,9 @@ use tokio::sync::Semaphore;
 
 use crate::password::{hash_password, ArgonVerifier, PasswordVerifier, DUMMY_HASH};
 use crate::providers::{
-    CredentialVerifier, ProviderConfig, Providers, Resolution, VerifyError, GUEST,
+    CredentialVerifier, ProviderConfig, Providers, Resolution, VerifiedSubject, VerifyError, GUEST,
 };
-use crate::store::{Player, Store, StoreError};
+use crate::store::{LinkOutcome, Player, Store, StoreError};
 
 /// Input caps enforced before any expensive verifier, Argon2, RPC, or database work.
 /// Email follows RFC 5321's total-address maximum; password is capped at 1 KiB
@@ -326,6 +326,144 @@ impl Service {
         Ok((session, true))
     }
 
+    /// Resolves `provider` and verifies `credential` with it — the single guard
+    /// ORDER every credential path traverses: the name cap before the name is ever a
+    /// registry key, then the RESOLVED provider's own credential cap before any
+    /// verifier, JWKS or store work, then the rejected-vs-unavailable split that keeps
+    /// an IdP outage from reading as bad credentials.
+    async fn verify_credential(
+        &self,
+        provider: &str,
+        credential: &str,
+    ) -> Result<VerifiedSubject, Error> {
+        if !provider_name_within_cap(provider) {
+            return Err(Error::invalid("provider too long"));
+        }
+        let verifier = match self.resolve_provider(provider) {
+            Resolution::Configured(v) => v.clone(),
+            Resolution::KnownButUnconfigured => {
+                return Err(Error::unavailable("provider not configured"))
+            }
+            Resolution::Unknown => return Err(Error::invalid("unknown provider")),
+        };
+        if credential.is_empty() {
+            return Err(Error::invalid("credential is required"));
+        }
+        if !credential_within_cap(verifier.as_ref(), credential) {
+            return Err(Error::invalid("credential too long"));
+        }
+        match verifier.verify(credential).await {
+            Ok(v) => Ok(v),
+            Err(VerifyError::Rejected(err)) => {
+                tracing::warn!(%provider, %err, "federated credential rejected");
+                Err(Error::unauthorized("invalid credential"))
+            }
+            Err(VerifyError::Infra(err)) => {
+                tracing::warn!(%provider, %err, "identity provider unavailable");
+                Err(Error::unavailable("identity provider unavailable"))
+            }
+        }
+    }
+
+    /// Attaches an already-verified identity to an EXISTING player: the single
+    /// tx-owning, lock-taking, emit-owning authority for linking (the `link` op and
+    /// the Epic web-OAuth callback both come here; neither opens a transaction).
+    ///
+    /// Lock ORDER is part of the contract: the PLAYER lock first, the identity lock
+    /// second. The identity lock alone serializes writers of one `(provider,
+    /// subject)`, which two links of different providers to the same player never
+    /// share — without the player lock both would read "no non-guest identity" under
+    /// READ COMMITTED and both would emit `player.promoted`. Any future site taking
+    /// both takes them in this order (`external_login` takes only the identity lock,
+    /// since it creates a player rather than mutating one).
+    ///
+    /// The promotion decision is made HERE, from state read under those locks before
+    /// the insert, and its event rides the same transaction as the identity row.
+    pub(crate) async fn link_identity(
+        &self,
+        player_id: &str,
+        provider: &str,
+        subject: &str,
+    ) -> Result<LinkOutcome, Error> {
+        let mut tx = self.store.pool.begin().await.map_err(internal)?;
+        self.store
+            .lock_player_tx(&mut tx, player_id)
+            .await
+            .map_err(internal)?;
+        self.store
+            .lock_identity_tx(&mut tx, provider, subject)
+            .await
+            .map_err(internal)?;
+        let had_real = match self.store.has_real_identity_tx(&mut tx, player_id).await {
+            Ok(had_real) => had_real,
+            Err(e) => {
+                tx.rollback().await.ok();
+                return Err(internal(e));
+            }
+        };
+        let outcome = match self
+            .store
+            .link_identity_tx(&mut tx, player_id, provider, subject)
+            .await
+        {
+            Ok(outcome) => outcome,
+            Err(StoreError::Taken) => {
+                tx.rollback().await.ok();
+                return Err(Error::conflict("identity already linked to another player"));
+            }
+            Err(StoreError::Db(e)) => {
+                tx.rollback().await.ok();
+                return Err(internal(e));
+            }
+        };
+        if outcome == LinkOutcome::Linked && !had_real && provider != GUEST {
+            if let Err(err) = self.emit_promoted_tx(&mut tx, player_id, provider).await {
+                tx.rollback().await.ok();
+                return Err(err);
+            }
+        }
+        tx.commit().await.map_err(internal)?;
+        Ok(outcome)
+    }
+
+    /// Appends the `player.promoted` durable event on the caller's tx.
+    async fn emit_promoted_tx(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        player_id: &str,
+        to_provider: &str,
+    ) -> Result<(), Error> {
+        self.bus
+            .emit_tx(
+                AnyTx::new(&mut **tx),
+                &accountsevents::PLAYER_PROMOTED,
+                &accountsevents::PlayerPromoted {
+                    player_id: player_id.to_string(),
+                    from_provider: GUEST.to_string(),
+                    to_provider: to_provider.to_string(),
+                },
+            )
+            .await
+            .map_err(internal)
+    }
+
+    /// The `{player_id, display_name, identities}` view of one player — shared by
+    /// `me` and `link` so both answer with the same read.
+    async fn me_view(&self, player_id: &str) -> Result<accountsapi::MeView, Error> {
+        let p = self
+            .store
+            .get_player(player_id)
+            .await
+            .map_err(internal)?
+            .ok_or_else(|| Error::not_found("player not found"))?;
+        let identities = self.store.identities_of(player_id).await.map_err(internal)?;
+        Ok(accountsapi::MeView {
+            player_id: p.id,
+            display_name: p.display_name,
+            identities,
+        })
+    }
+
     /// Appends the `player.registered` durable event (`emit_tx`) on the caller's
     /// tx — the durable rule: the event commits iff the registration does.
     async fn emit_registered_tx(
@@ -496,35 +634,7 @@ impl accountsapi::Auth for Service {
         provider: String,
         credential: String,
     ) -> Result<accountsapi::Session, Error> {
-        // Capped before the lookup: an unbounded caller string never becomes a
-        // registry key.
-        if !provider_name_within_cap(&provider) {
-            return Err(Error::invalid("provider too long"));
-        }
-        let verifier = match self.resolve_provider(&provider) {
-            Resolution::Configured(v) => v.clone(),
-            Resolution::KnownButUnconfigured => {
-                return Err(Error::unavailable("provider not configured"))
-            }
-            Resolution::Unknown => return Err(Error::invalid("unknown provider")),
-        };
-        if credential.is_empty() {
-            return Err(Error::invalid("credential is required"));
-        }
-        if !credential_within_cap(verifier.as_ref(), &credential) {
-            return Err(Error::invalid("credential too long"));
-        }
-        let verified = match verifier.verify(&credential).await {
-            Ok(v) => v,
-            Err(VerifyError::Rejected(err)) => {
-                tracing::warn!(%provider, %err, "federated credential rejected");
-                return Err(Error::unauthorized("invalid credential"));
-            }
-            Err(VerifyError::Infra(err)) => {
-                tracing::warn!(%provider, %err, "identity provider unavailable");
-                return Err(Error::unavailable("identity provider unavailable"));
-            }
-        };
+        let verified = self.verify_credential(&provider, &credential).await?;
         let (session, _created) = self
             .external_login(&provider, &verified.subject, &verified.display_name, None)
             .await?;
@@ -566,18 +676,27 @@ impl accountsapi::Auth for Service {
         let pid = identity
             .player_id()
             .ok_or_else(|| Error::invalid("missing player identity"))?;
-        let p = self
-            .store
-            .get_player(pid)
-            .await
-            .map_err(internal)?
-            .ok_or_else(|| Error::not_found("player not found"))?;
-        let identities = self.store.identities_of(pid).await.map_err(internal)?;
-        Ok(accountsapi::MeView {
-            player_id: p.id,
-            display_name: p.display_name,
-            identities,
-        })
+        self.me_view(pid).await
+    }
+
+    /// Attaches a second credential to the CALLING player: verifies `credential`
+    /// through the same provider registry and guard order as
+    /// [`accountsapi::Auth::login_federated`], then links the resulting subject and
+    /// answers with the caller's refreshed view. Re-linking an identity the caller
+    /// already owns is an idempotent success; an identity owned by another player is
+    /// `Conflict` (409) — accounts are never merged here.
+    async fn link(
+        &self,
+        identity: Identity,
+        provider: String,
+        credential: String,
+    ) -> Result<accountsapi::MeView, Error> {
+        let pid = identity
+            .player_id()
+            .ok_or_else(|| Error::invalid("missing player identity"))?;
+        let verified = self.verify_credential(&provider, &credential).await?;
+        self.link_identity(pid, &provider, &verified.subject).await?;
+        self.me_view(pid).await
     }
 }
 
