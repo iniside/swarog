@@ -100,6 +100,13 @@ const DEV_SEED_CURRENCIES: &[(&str, &str, &str, i32)] = &[
     ("gems", "Gems", "hard", 0),
 ];
 
+/// The `accounts.identities.provider` value of an anonymous device identity. Duplicated
+/// as a literal because accounts' `providers::GUEST` is `pub(crate)` in the impl crate
+/// and the fortress rule forbids reaching for it; `accountsevents::PlayerRegistered`
+/// documents these provider names as the authority, so a rename there must be mirrored
+/// here.
+const GUEST_PROVIDER: &str = "guest";
+
 pub(crate) fn internal<E: std::fmt::Display>(e: E) -> opsapi::Error {
     opsapi::Error::internal(e.to_string())
 }
@@ -217,6 +224,11 @@ impl Module for WalletModule {
         // so Genesis would promise a retroactive grant the log cannot deliver — and the id +
         // start position are an IMMUTABLE contract (`spec_hash`), so changing either later is
         // a new subscription id, never an edit.
+        //
+        // A guest is not granted at registration but at promotion, so BOTH topics feed
+        // `grant_starter`. A player traversing both paths is safe by construction, not by
+        // ordering: the key is `starter:{player_id}` either way, so the second delivery is an
+        // `Outcome::Duplicate` no-op.
         let granter = svc.clone();
         ctx.bus().on_tx(
             bus::SubscriptionSpec {
@@ -226,6 +238,25 @@ impl Module for WalletModule {
             &accountsevents::PLAYER_REGISTERED,
             move |mut delivery, e: accountsevents::PlayerRegistered| {
                 let granter = granter.clone();
+                Box::pin(async move {
+                    if e.provider == GUEST_PROVIDER {
+                        return Ok(());
+                    }
+                    let conn = delivery.tx.downcast::<sqlx::PgConnection>()?;
+                    granter.grant_starter(conn, &e.player_id).await
+                })
+            },
+        );
+
+        let promotion_granter = svc.clone();
+        ctx.bus().on_tx(
+            bus::SubscriptionSpec {
+                id: "wallet.player-promoted.v1",
+                start: bus::StartPosition::AfterRegistration,
+            },
+            &accountsevents::PLAYER_PROMOTED,
+            move |mut delivery, e: accountsevents::PlayerPromoted| {
+                let granter = promotion_granter.clone();
                 Box::pin(async move {
                     let conn = delivery.tx.downcast::<sqlx::PgConnection>()?;
                     granter.grant_starter(conn, &e.player_id).await

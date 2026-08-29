@@ -31,10 +31,10 @@ impl Service {
     /// HANDED delivery transaction (never the pool), so the balance, the ledger row, the
     /// `wallet.changed` append and the subscription checkpoint commit as one unit.
     ///
-    /// **Every data-quality verdict returns `Ok(())`.** An `Err` here backs the subscription
-    /// off and, after 20 consecutive failures, PAUSES `wallet.player-registered.v1` for every
-    /// subsequent player — a fat-fingered config knob or an unseeded catalog must never cost
-    /// that, because the fault is a property of the config, not of the event.
+    /// **Every data-quality verdict returns `Ok(())`.** An `Err` here backs the delivering
+    /// subscription off and, after 20 consecutive failures, PAUSES it for every subsequent
+    /// player — a fat-fingered config knob or an unseeded catalog must never cost that,
+    /// because the fault is a property of the config, not of the event.
     ///
     /// The three pre-checks are therefore ORDERING-CRITICAL, not defensive:
     /// [`Service::apply_on`] validates the movement itself, so anything `validate_movement`
@@ -80,7 +80,8 @@ impl Service {
         if !crate::is_uuid_text(player_id) {
             tracing::warn!(
                 player_id,
-                "wallet: player.registered carried a player_id that is not a uuid — granting nothing"
+                "wallet: starter-grant event carried a player_id that is not a uuid — granting \
+                 nothing"
             );
             return Ok(());
         }

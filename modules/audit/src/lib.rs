@@ -47,6 +47,7 @@ const DURABLE_TOPICS: &[&str] = &[
     "character.created",
     "character.deleted",
     "player.registered",
+    "player.promoted",
     "config.changed",
     "match.finished",
     "admin.action",
@@ -54,13 +55,14 @@ const DURABLE_TOPICS: &[&str] = &[
 ];
 
 /// The per-topic subscription ids, zipped positionally with [`DURABLE_TOPICS`]:
-/// seven independent consumer-owned checkpoints replace the old single shared
+/// one independent consumer-owned checkpoint per topic replaces the old single shared
 /// `"audit"` subscriber name, so one topic's delivery failure never stalls
 /// another's cursor. The anti-drift test pins the zip (equal length, id ↔ topic).
 const DURABLE_SPEC_IDS: &[&str] = &[
     "audit.character-created.v1",
     "audit.character-deleted.v1",
     "audit.player-registered.v1",
+    "audit.player-promoted.v1",
     "audit.config-changed.v1",
     "audit.match-finished.v1",
     "audit.admin-action.v1",

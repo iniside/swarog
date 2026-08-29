@@ -3,7 +3,7 @@
 //! deployment profile (Monolith AND Split, from `checkmodules`) it builds every
 //! process's module set with a recording durable-events transport, runs the two no-I/O
 //! lifecycle phases (`register` → `init`), and validates the durable subscriptions that
-//! actually got wired against the six defined contract topics.
+//! actually got wired against the defined contract topics.
 //!
 //! ## Why a runtime harness (not a `linkme`/annotation scheme)
 //! A hand-written `subscribes!("x")` annotation can drift from the real `on_tx` call and
@@ -71,18 +71,13 @@ const DEFAULT_DSN: &str =
 /// ARRIVES in every profile: it catches a RETIRED reason, never an ABANDONED one, so an
 /// allowance whose planned consumer never ships stays green indefinitely.
 ///
-/// KNOWN GAP: this allow-list keys on the topic string only, not `(topic, version)`. With
-/// `player.promoted` listed, an additive `define("player.promoted", 2, …)` would ship a
-/// whole second contract version with no subscriber in either profile and topiccheck would
-/// stay green — `unsubscribed` matches the allowance on the topic string ignoring version,
-/// and `stale_allowances` needs a subscriber in every profile. A version-scoped allowance
-/// requires a tuple key (`&[(&str, u32)]`).
-const ALLOW_UNSUBSCRIBED: &[&str] = &[
-    // accounts emits player.promoted on a guest's first real link; wallet's starter
-    // grant is its consumer and subscribes in the next step. Removed then — the
-    // stale-allowance check fails until it is.
-    "player.promoted",
-];
+/// KNOWN GAP: this allow-list keys on the topic string only, not `(topic, version)`. Fine
+/// while empty; a listed topic would also cover an additive `define(topic, 2, …)`, shipping
+/// a whole second contract version sinkless in both profiles while topiccheck stays green —
+/// `unsubscribed` matches the allowance ignoring version, and `stale_allowances` needs a
+/// subscriber in every profile. A version-scoped allowance requires a tuple key
+/// (`&[(&str, u32)]`).
+const ALLOW_UNSUBSCRIBED: &[&str] = &[];
 
 /// Defined (contract) topics legitimately subscribed same-module on the in-process plane
 /// (plain `on()`). Empty today — the clean tree has zero in-process subscriptions to any

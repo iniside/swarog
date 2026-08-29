@@ -94,6 +94,7 @@ fn durable_topics_match_events() {
         charactersevents::CREATED.topic(),
         charactersevents::DELETED.topic(),
         accountsevents::PLAYER_REGISTERED.topic(),
+        accountsevents::PLAYER_PROMOTED.topic(),
         configevents::CHANGED.topic(),
         matchevents::FINISHED.topic(),
         adminevents::ACTION.topic(),
