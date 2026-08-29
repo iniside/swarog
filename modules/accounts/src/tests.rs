@@ -697,6 +697,30 @@ async fn registered_events(pool: &PgPool, player_id: &str) -> i64 {
         .unwrap()
 }
 
+async fn promoted_events(pool: &PgPool, player_id: &str) -> i64 {
+    asyncevents::testing::events_count(pool, "player.promoted", "player_id", player_id)
+        .await
+        .unwrap()
+}
+
+/// A `Service` whose bus append always fails ([`asyncevents::testing::failing_transport`]),
+/// sharing the live pool so its writes land in the same rows a normal `wired` service
+/// would use. Built fresh per test rather than swapping `wired`'s bus, so the setup
+/// (guest/player provisioning) still goes through a working bus.
+async fn wired_with_failing_bus(pool: &PgPool) -> Arc<Service> {
+    ensure_schema(pool).await;
+    let ctx = Context::with_db_and_transport(pool.clone(), asyncevents::testing::failing_transport());
+    Arc::new(Service {
+        store: Store { pool: pool.clone() },
+        bus: ctx.bus().clone(),
+        dev_auth: true,
+        providers: OnceLock::new(),
+        argon_permits: Arc::new(Semaphore::new(2)),
+        login_slots: Arc::new(Semaphore::new(32)),
+        verifier: Arc::new(ArgonVerifier),
+    })
+}
+
 /// Wait until `expected` real backends are blocked on this exact one-bigint
 /// advisory key. PostgreSQL exposes bigint keys as high/low unsigned OID halves
 /// with `objsubid = 1`; checking both halves avoids observing an unrelated lock.
@@ -1054,6 +1078,195 @@ async fn link_identity_attaches_and_rejects_duplicates() {
 
     cleanup_player(&pool, &sess.player_id).await;
     cleanup_player(&pool, &other.player_id).await;
+}
+
+// ============================================================================
+// Step 10 — `Service::link_identity`'s promotion authority: the player lock,
+// the pre-insert `had_real` read, and the same-tx `player.promoted` emit.
+// ============================================================================
+
+/// The race Step 9 exists for: `identity_lock_key` is `(provider, subject)`-scoped, so
+/// two links of DIFFERENT providers to the same guest never share it — before the
+/// player lock, both readers would see "no real identity" under READ COMMITTED and
+/// both would emit. Gates on `player_lock_key`, mirroring
+/// `link_racing_first_login_has_only_two_coherent_outcomes`'s gate on
+/// `identity_lock_key`, and asserts a count of exactly one after both tasks commit —
+/// no sleep, no timing assumption.
+#[tokio::test(flavor = "multi_thread")]
+async fn concurrent_links_of_different_providers_emit_exactly_one_promotion() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let guest = svc.create_guest().await.unwrap();
+    let key = store::player_lock_key(&guest.player_id);
+    let mut gate = pool.begin().await.unwrap();
+    svc.store.lock_player_tx(&mut gate, &guest.player_id).await.unwrap();
+
+    let epic_sub = format!("promo-epic-{}", suffix());
+    let google_sub = format!("promo-google-{}", suffix());
+    let epic_link = {
+        let svc = svc.clone();
+        let pid = guest.player_id.clone();
+        let sub = epic_sub.clone();
+        tokio::spawn(async move { svc.link_identity(&pid, "epic", &sub).await })
+    };
+    let google_link = {
+        let svc = svc.clone();
+        let pid = guest.player_id.clone();
+        let sub = google_sub.clone();
+        tokio::spawn(async move { svc.link_identity(&pid, "google", &sub).await })
+    };
+    let both_waiting = wait_for_identity_lock_waiters(&pool, key, 2).await;
+    gate.rollback().await.unwrap();
+    let (epic_result, google_result) = (epic_link.await.unwrap(), google_link.await.unwrap());
+    let promoted = promoted_events(&pool, &guest.player_id).await;
+
+    cleanup_player(&pool, &guest.player_id).await;
+
+    assert!(both_waiting, "both links must block on the exact player key");
+    assert!(epic_result.is_ok(), "different-provider links must not conflict: {epic_result:?}");
+    assert!(google_result.is_ok(), "different-provider links must not conflict: {google_result:?}");
+    assert_eq!(promoted, 1, "two racing different-provider links must emit exactly one promotion");
+}
+
+/// Forces the failure at the append itself ([`asyncevents::testing::failing_transport`]),
+/// which runs AFTER `link_identity_tx`'s insert and BEFORE `tx.commit()` — the exact
+/// window the emit lives in. If the emit ever moved outside the transaction, the
+/// identity insert would already be committed by the time this failure fires and
+/// `identity_rows` would read 1, not 0.
+#[tokio::test]
+async fn link_identity_rolls_back_row_and_event_when_append_fails() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let guest = svc.create_guest().await.unwrap();
+    let failing_svc = wired_with_failing_bus(&pool).await;
+    let sub = format!("epic-fail-{}", suffix());
+
+    let err = failing_svc
+        .link_identity(&guest.player_id, "epic", &sub)
+        .await
+        .unwrap_err();
+
+    let identity_rows: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM accounts.identities WHERE provider = 'epic' AND subject = $1",
+    )
+    .bind(&sub)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let promoted = promoted_events(&pool, &guest.player_id).await;
+
+    cleanup_player(&pool, &guest.player_id).await;
+
+    assert_eq!(err.status, opsapi::Status::Internal);
+    assert_eq!(identity_rows, 0, "identity insert must roll back with the failed append");
+    assert_eq!(promoted, 0, "no promotion event may survive the rollback");
+}
+
+/// A foreign identity is rejected before any write: the challenger gets neither the
+/// identity row nor a promotion, and the original owner keeps it.
+#[tokio::test]
+async fn link_identity_conflict_on_foreign_identity_writes_and_emits_nothing() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let owner = svc
+        .register(format!("owner-{}@test.local", suffix()), "pw".into(), "Owner".into())
+        .await
+        .unwrap();
+    let sub = format!("epic-taken-{}", suffix());
+    svc.link_identity(&owner.player_id, "epic", &sub).await.unwrap();
+    let challenger = svc.create_guest().await.unwrap();
+
+    let err = svc
+        .link_identity(&challenger.player_id, "epic", &sub)
+        .await
+        .unwrap_err();
+
+    let identity_owner: String = sqlx::query_scalar(
+        "SELECT player_id::text FROM accounts.identities WHERE provider = 'epic' AND subject = $1",
+    )
+    .bind(&sub)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let promoted = promoted_events(&pool, &challenger.player_id).await;
+
+    cleanup_player(&pool, &owner.player_id).await;
+    cleanup_player(&pool, &challenger.player_id).await;
+
+    assert_eq!(err.status, opsapi::Status::Conflict);
+    assert_eq!(identity_owner, owner.player_id, "the identity must still belong to its original owner");
+    assert_eq!(promoted, 0, "a rejected challenger link must never promote");
+}
+
+/// Re-linking the identity a player already owns is idempotent
+/// ([`store::LinkOutcome::AlreadyLinked`]) and must not emit a second promotion for a
+/// promotion the first link already recorded.
+#[tokio::test]
+async fn relinking_same_identity_is_idempotent_with_no_second_promotion() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let guest = svc.create_guest().await.unwrap();
+    let sub = format!("epic-relink-{}", suffix());
+
+    let first = svc.link_identity(&guest.player_id, "epic", &sub).await.unwrap();
+    assert_eq!(first, store::LinkOutcome::Linked);
+    assert_eq!(promoted_events(&pool, &guest.player_id).await, 1);
+
+    let second = svc.link_identity(&guest.player_id, "epic", &sub).await.unwrap();
+    let promoted = promoted_events(&pool, &guest.player_id).await;
+
+    cleanup_player(&pool, &guest.player_id).await;
+
+    assert_eq!(second, store::LinkOutcome::AlreadyLinked);
+    assert_eq!(promoted, 1, "re-linking the same identity must not emit a second promotion");
+}
+
+/// A guest gaining its first real identity emits exactly one `player.promoted`, with
+/// `from_provider` fixed at `"guest"` and `to_provider` the provider just linked.
+#[tokio::test]
+async fn guest_linking_real_provider_emits_promotion_with_correct_providers() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let guest = svc.create_guest().await.unwrap();
+    let sub = format!("epic-promote-{}", suffix());
+
+    svc.link_identity(&guest.player_id, "epic", &sub).await.unwrap();
+
+    assert_eq!(promoted_events(&pool, &guest.player_id).await, 1);
+    let (from_provider, to_provider): (String, String) = sqlx::query_as(
+        "SELECT payload->>'from_provider', payload->>'to_provider' FROM asyncevents.events \
+          WHERE topic = 'player.promoted' AND payload->>'player_id' = $1",
+    )
+    .bind(&guest.player_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    cleanup_player(&pool, &guest.player_id).await;
+
+    assert_eq!(from_provider, "guest");
+    assert_eq!(to_provider, "epic");
+}
+
+/// A player that already holds a non-guest identity (here `dev`, from `register`)
+/// links a second real provider without triggering a re-promotion.
+#[tokio::test]
+async fn non_guest_player_linking_second_provider_emits_nothing() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let owner = svc
+        .register(format!("second-{}@test.local", suffix()), "pw".into(), "Second".into())
+        .await
+        .unwrap();
+    let sub = format!("google-second-{}", suffix());
+
+    let outcome = svc.link_identity(&owner.player_id, "google", &sub).await.unwrap();
+    let promoted = promoted_events(&pool, &owner.player_id).await;
+
+    cleanup_player(&pool, &owner.player_id).await;
+
+    assert_eq!(outcome, store::LinkOutcome::Linked);
+    assert_eq!(promoted, 0, "a player with an existing real identity must never re-promote");
 }
 
 /// Drives the whole Epic OAuth LINK flow against a mock Epic (local JWKS + local
