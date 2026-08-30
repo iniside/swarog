@@ -814,8 +814,10 @@ Gates: the Step-13 row of the gate table.
 kills the family and every access session of that family — and leaves other families of the
 same player alive**; replay **inside** the grace window returns the successor and kills
 nothing; expired refresh → 401; unknown refresh → the same 401; two concurrent refreshes →
-exactly one success; a rolled-back rotation leaves the original usable; a family cannot
-outlive its original 30-day expiry.
+**exactly one rotation** (exactly one row in `accounts.refresh_tokens` has `replaced_by` set,
+both callers return the identical `refresh_token`, both return 200, and the two `token`
+values differ — two access sessions, one family); a rolled-back rotation leaves the original
+usable; a family cannot outlive its original 30-day expiry.
 
 **(b) Why now / order.** Reuse detection is the only reason to prefer rotation over a long
 opaque session, and the family scoping is the only thing separating "revoke a stolen token"
@@ -823,8 +825,9 @@ from "log the user out everywhere". Both need executed proofs.
 
 **(c) How.** The two-families test is the one that would pass with the naive
 `WHERE player_id = $1` kill and must not: mint two families for one player, replay in one,
-assert the other still verifies. Concurrency asserts outcomes, not timing — two rotations,
-exactly one `Ok`, never a sleep. Expiry is forced by writing `expires_at` in the past.
+assert the other still verifies. Concurrency asserts outcomes, not timing — two dials, one
+rotation, never a sleep; both callers return 200, so counting `Ok`s proves nothing. Expiry is
+forced by writing `expires_at` in the past.
 
 **(d) Dispatch:** `[test-author]`, `model: "sonnet"`.
 
@@ -888,8 +891,9 @@ Verification: `cargo run -p verifyctl -- --all --strict`, **one rollout at a tim
   `"dev"`/`"epic"` only), `cmd/accounts-svc/src/main.rs:9-12`,
   `demos/webui/src/lib.rs:4,23-24`.
 - **`CLAUDE.md` and `.agents/shared/gamebackend.md` both**: the **accounts** paragraph
-  (providers, session model, new ops), the **audit** paragraph (7 ledger topics → 8;
-  "an 8th independent subscription" → 9th), and the **wallet** paragraph ("reacts to
+  (providers, session model — the 30-day claim at `CLAUDE.md:206` /
+  `.agents/shared/gamebackend.md:220` is false after Step 13 — and new ops), the **audit**
+  paragraph (7 ledger topics → 8; "an 8th independent subscription" → 9th), and the **wallet** paragraph ("reacts to
   durable `player.registered`" → and `player.promoted`). The stale audit/wallet prose
   lives at `CLAUDE.md:258-263` and `.agents/shared/gamebackend.md:278-285`; `AGENTS.md`
   is an index that delegates to `.agents/shared/gamebackend.md` and contains none of
@@ -897,7 +901,15 @@ Verification: `cargo run -p verifyctl -- --all --strict`, **one rollout at a tim
   `ROOT_DOCUMENTS`) parses `CLAUDE.md`/`AGENTS.md` and validates paths, not counts, so
   none of these fail a gate — they simply become lying prose.
 - `docs/roadmap/feature-tracker.md`: flip seq #2a, fill Module(s)/Landed, update the four
-  Identity & accounts rows, add a change-log entry.
+  Identity & accounts rows, add a change-log entry. The 30-day session prose at `:104,117`
+  is falsified by Step 13 and must move to 60-minute access tokens + rotating refresh
+  families.
+- **`docs/reference/game-backend-feature-gaps.md:58,77`** — falsified by Step 13 and named
+  here explicitly, because this is a mechanical lane and an unnamed file is never found:
+  `:58` (`"opaque 30-day sessions"`) becomes short access tokens (60 min) plus rotating
+  30-day refresh-token families; `:77`'s `Us` cell moves off `⚠️ opaque 30-day, no refresh`.
+  `docs-current` reads `docs/reference/*.md` for **paths**, not claims, so no gate catches
+  either line.
 - **Record the deliberate deviations as known gaps**, with reasons: accounts still parses env
   inside the module rather than in `cmd/*`; `from_provider` is a constant in #2a. The
   Epic-specific-filename gap is **gone** — Step 3 renames `epic.rs` to `oidc.rs`; check that
