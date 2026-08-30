@@ -18,6 +18,57 @@ pub const SERVICE_ENV_ALLOWLIST: &[&str] = &[
     "TEMP", "TMP", "TMPDIR", "USERPROFILE", "WINDIR",
 ];
 
+/// The accounts credential-provider configuration an operator may hand a fleet.
+/// `runtime_environment` is allowlist-filtered, so a value absent from this list is a
+/// value `EPIC_*`/`GOOGLE_*` in the operator's shell can never reach accounts with.
+const ACCOUNTS_OVERRIDEABLE_ENV: &[&str] = &[
+    "ACCOUNTS_DEV_AUTH",
+    "EPIC_CLIENT_ID", "EPIC_JWKS_URL", "EPIC_ISSUER_PREFIX", "EPIC_CLIENT_SECRET",
+    "EPIC_REDIRECT_URI", "EPIC_AUTHORIZE_URL", "EPIC_TOKEN_URL",
+    "GOOGLE_CLIENT_IDS", "GOOGLE_JWKS_URL",
+];
+
+/// The monolith's twin of [`ACCOUNTS_OVERRIDEABLE_ENV`] plus the process-wide knobs:
+/// one process hosts accounts, so the provider keys are read from the same env map.
+const MONOLITH_OVERRIDEABLE_ENV: &[&str] = &[
+    "APIKEYS_DEV_SEED", "ACCOUNTS_DEV_AUTH", "INVENTORY_DEV_GRANT", "WALLET_DEV_SEED",
+    "ADMIN_COOKIE_SECURE", "TRUSTED_PROXY_CIDRS",
+    "EPIC_CLIENT_ID", "EPIC_JWKS_URL", "EPIC_ISSUER_PREFIX", "EPIC_CLIENT_SECRET",
+    "EPIC_REDIRECT_URI", "EPIC_AUTHORIZE_URL", "EPIC_TOKEN_URL",
+    "GOOGLE_CLIENT_IDS", "GOOGLE_JWKS_URL",
+];
+
+/// Provider keys the `Proof` overlay CLEARS before pinning its own. `google` is the
+/// split-proof fleet's deliberately unconfigured provider: it is the only way to execute
+/// the `KnownButUnconfigured` 503 arm that separates "no such provider" (400) from "not
+/// configured here" (503), so an ambient `GOOGLE_CLIENT_IDS` would silently delete an
+/// assertion rather than fail one.
+const PROOF_UNCONFIGURED_PROVIDER_ENV: &[&str] = &["GOOGLE_CLIENT_IDS", "GOOGLE_JWKS_URL"];
+
+/// The loopback OIDC fixture `tools/splitproof` stands up so a FEDERATED credential is
+/// mintable without a live identity provider, and the `epic` configuration the `Proof`
+/// flavor points at it. Declared here because the fleet env and the harness's signer must
+/// agree; the origin is written ONCE and the JWKS url and the bind port are both derived
+/// from it, so no edit can point the fleet and the fixture at different places.
+macro_rules! proof_oidc_origin {
+    () => {
+        "http://127.0.0.1:8099"
+    };
+}
+
+pub const PROOF_OIDC_ISSUER: &str = proof_oidc_origin!();
+pub const PROOF_OIDC_JWKS_URL: &str = concat!(proof_oidc_origin!(), "/jwks");
+pub const PROOF_OIDC_CLIENT_ID: &str = "splitproof-epic-client";
+
+/// The port [`PROOF_OIDC_ISSUER`] names, for the harness to bind.
+pub fn proof_oidc_port() -> u16 {
+    PROOF_OIDC_ISSUER
+        .rsplit(':')
+        .next()
+        .and_then(|port| port.parse().ok())
+        .expect("PROOF_OIDC_ISSUER carries an explicit port")
+}
+
 /// Cap on splitproof's own sqlx assertion pool, consumed BY the harness
 /// (`tools/splitproof`) so this reserve line is an enforced bound rather than a guess:
 /// sqlx's default cap is 10, which would silently outgrow the itemized estimate below.
@@ -599,7 +650,7 @@ pub fn game_backend_fleet_with_environment(
         .env
         .insert("TRUSTED_PROXY_CIDRS".into(), "127.0.0.1/32".into());
 
-    accounts.overrideable_env = &["ACCOUNTS_DEV_AUTH"];
+    accounts.overrideable_env = ACCOUNTS_OVERRIDEABLE_ENV;
     apikeys.overrideable_env = &["APIKEYS_DEV_SEED"];
     scheduler.overrideable_env = &["SCHEDULER_ENABLED"];
     inventory.overrideable_env = &["INVENTORY_DEV_GRANT"];
@@ -622,8 +673,19 @@ pub fn game_backend_fleet_with_environment(
     }
 
     if flavor == FleetFlavor::Proof {
+            for key in PROOF_UNCONFIGURED_PROVIDER_ENV {
+                accounts.env.remove(*key);
+            }
             accounts.env.insert("ACCOUNTS_DEV_AUTH".into(), "1".into());
-            accounts.env.insert("EPIC_CLIENT_ID".into(), "test".into());
+            accounts
+                .env
+                .insert("EPIC_CLIENT_ID".into(), PROOF_OIDC_CLIENT_ID.into());
+            accounts
+                .env
+                .insert("EPIC_JWKS_URL".into(), PROOF_OIDC_JWKS_URL.into());
+            accounts
+                .env
+                .insert("EPIC_ISSUER_PREFIX".into(), PROOF_OIDC_ISSUER.into());
             accounts.env.insert("EPIC_CLIENT_SECRET".into(), "test".into());
             accounts.env.insert(
                 "EPIC_REDIRECT_URI".into(),
@@ -668,10 +730,7 @@ pub fn game_backend_monolith(
         ("ADMIN_COOKIE_SECURE", "0".into()),
         ("TRUSTED_PROXY_CIDRS", "127.0.0.1/32".into()),
     ] { env.insert(key.into(), value); }
-    let overrideable_env = &[
-        "APIKEYS_DEV_SEED", "ACCOUNTS_DEV_AUTH", "INVENTORY_DEV_GRANT", "WALLET_DEV_SEED",
-        "ADMIN_COOKIE_SECURE", "TRUSTED_PROXY_CIDRS",
-    ];
+    let overrideable_env = MONOLITH_OVERRIDEABLE_ENV;
     for key in overrideable_env {
         if let Some(value) = environment.value(key) {
             env.insert((*key).to_string(), value.to_string());
@@ -679,7 +738,13 @@ pub fn game_backend_monolith(
     }
     if flavor == FleetFlavor::Proof {
         // Proof-only overlay is intentionally last and cannot be weakened by ambient state.
+        for key in PROOF_UNCONFIGURED_PROVIDER_ENV {
+            env.remove(*key);
+        }
         env.insert("ACCOUNTS_DEV_AUTH".into(), "1".into());
+        env.insert("EPIC_CLIENT_ID".into(), PROOF_OIDC_CLIENT_ID.into());
+        env.insert("EPIC_JWKS_URL".into(), PROOF_OIDC_JWKS_URL.into());
+        env.insert("EPIC_ISSUER_PREFIX".into(), PROOF_OIDC_ISSUER.into());
         env.insert("APIKEYS_DEV_SEED".into(), "1".into());
         env.insert("INVENTORY_DEV_GRANT".into(), "1".into());
         env.insert("WALLET_DEV_SEED".into(), "1".into());

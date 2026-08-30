@@ -28,6 +28,10 @@ use sqlx::postgres::PgPoolOptions;
 use sqlx::{PgPool, Row};
 use splitproof::{fleet_liveness, Running};
 
+use crate::idp::Idp;
+
+mod idp;
+
 #[cfg(test)]
 mod tests;
 
@@ -240,7 +244,7 @@ fn extract_form_fields(html: &str) -> Vec<(String, String)> {
 
 /// Monolith-parity phase: boot cmd/server (all modules Local) on the split's player
 /// front and re-prove register/QUIC/auth/admin work identically (M0-M3b).
-async fn monolith_parity(ctx: &Ctx, pool: &PgPool, p: &mut Proof) -> Result<()> {
+async fn monolith_parity(ctx: &Ctx, pool: &PgPool, idp: &Idp, p: &mut Proof) -> Result<()> {
     println!("\n[splitproof] === MONOLITH PARITY (cmd/server, all Local) ===");
     sqlx::query("DELETE FROM admin.sessions").execute(pool).await.ok();
     sqlx::query("DELETE FROM admin.login_attempts").execute(pool).await.ok();
@@ -486,6 +490,8 @@ async fn monolith_parity(ctx: &Ctx, pool: &PgPool, p: &mut Proof) -> Result<()> 
         Err(e) => p.check("[WL7m] monolith register for the starter grant", false, format!("{e:#}")),
     }
 
+    federated_assertions(ctx, pool, &m, idp, p, "m").await?;
+
     // [W2] graceful shutdown: a native Ctrl-Break (Windows) / SIGTERM (unix) must drain
     // in-flight work and exit 0 within the grace window — no force-kill. This is the
     // proof winctrl gave, now native (the app's shutdown_signal listens for ctrl_break).
@@ -674,6 +680,11 @@ async fn run(root: PathBuf, run_dir: PathBuf) -> Result<u32> {
     // migrated it — still ahead of wallet-svc, which boots later in the canonical order.
     let mut wallet_knobs_seeded = seed_wallet_starter_config(&pool).await.is_ok();
 
+    // The loopback identity provider, up BEFORE any accounts process: its JWKS url is
+    // baked into the Proof fleet's `epic` configuration, and the first federated verify
+    // fetches it. Dropped with `run`, so the split and the monolith share one key.
+    let idp = Idp::start().await.context("start the loopback OIDC fixture")?;
+
     // Boot the fleet; each guard lives in `fleet` so a `?` below drops them all (kill).
     let mut fleet: Vec<Running> = Vec::new();
     for svc in ctx.fleet.services() {
@@ -700,7 +711,7 @@ async fn run(root: PathBuf, run_dir: PathBuf) -> Result<u32> {
     // starter-grant knobs are a config write this harness made, and they must be undone on
     // the failure path too — a run that dies mid-proof otherwise leaves the box granting
     // every later `devctl up monolith` registration 100 gold.
-    let phase = proof_phase(&ctx, &pool, fleet, &mut p).await;
+    let phase = proof_phase(&ctx, &pool, &idp, fleet, &mut p).await;
     clear_wallet_starter_config(&pool).await;
 
     println!(
@@ -717,7 +728,13 @@ async fn run(root: PathBuf, run_dir: PathBuf) -> Result<u32> {
 
 /// Every assertion phase, split + monolith parity, with the fleet's ownership moved in so it
 /// is killed (no orphans) whichever way this returns.
-async fn proof_phase(ctx: &Ctx, pool: &PgPool, mut fleet: Vec<Running>, p: &mut Proof) -> Result<()> {
+async fn proof_phase(
+    ctx: &Ctx,
+    pool: &PgPool,
+    idp: &Idp,
+    mut fleet: Vec<Running>,
+    p: &mut Proof,
+) -> Result<()> {
     // [LV1] every child that cleared its readyz gate is still alive right after boot —
     // catches a stale listener on a service's port answering for a child that already
     // died (e.g. bind conflict surfacing only after the first successful accept).
@@ -727,7 +744,7 @@ async fn proof_phase(ctx: &Ctx, pool: &PgPool, mut fleet: Vec<Running>, p: &mut 
         lv1_dead.is_empty(),
         if lv1_dead.is_empty() { "all processes alive".to_string() } else { lv1_dead.join("; ") },
     );
-    assertions(ctx, pool, p).await?;
+    assertions(ctx, pool, idp, p).await?;
 
     // [I-GATE] live security proof: the harness boots the whole fleet with
     // INVENTORY_DEV_GRANT=1 (see the centralized Proof fleet above), so
@@ -766,7 +783,7 @@ async fn proof_phase(ctx: &Ctx, pool: &PgPool, mut fleet: Vec<Running>, p: &mut 
     // the same player front, and re-prove a subset (never-monolith-only-features). ---
     drop(fleet);
     tokio::time::sleep(Duration::from_millis(800)).await;
-    if let Err(e) = monolith_parity(ctx, pool, p).await {
+    if let Err(e) = monolith_parity(ctx, pool, idp, p).await {
         p.check("[M0-M3b] monolith parity phase", false, format!("fatal: {e:#}"));
     }
     Ok(())
@@ -911,7 +928,7 @@ async fn clear_wallet_starter_config(pool: &PgPool) {
     }
 }
 
-async fn assertions(ctx: &Ctx, pool: &PgPool, p: &mut Proof) -> Result<()> {
+async fn assertions(ctx: &Ctx, pool: &PgPool, idp: &Idp, p: &mut Proof) -> Result<()> {
     let g = format!("http://127.0.0.1:{}", ctx.http_port("gateway-svc"));
     let suffix = std::process::id();
 
@@ -2283,6 +2300,11 @@ async fn assertions(ctx: &Ctx, pool: &PgPool, p: &mut Proof) -> Result<()> {
         Err(e) => p.check("[WL7] register a player for the starter grant", false, format!("{e:#}")),
     }
 
+    // --- Federated providers, guest promotion and refresh rotation, through gateway-svc
+    // (G -> accounts-svc over the mTLS edge; the promotion's durable event crosses to
+    // audit-svc and wallet-svc). Re-run verbatim against the monolith below.
+    federated_assertions(ctx, pool, &g, idp, p, "").await?;
+
     // --- Metrics ---
     // [MX1] characters-svc /metrics -> 200 + http_requests_total (one recorded hit first).
     let characters_port = ctx.http_port("characters-svc");
@@ -2939,6 +2961,361 @@ async fn poll_inventory_has(ctx: &Ctx, g: &str, token: &str, cid: &str, needle: 
 }
 
 /// Poll a scalar count query until it equals `want`.
+/// One `create_guest` answer, kept whole because [A7], [A8], [WL8] and [A9] each need a
+/// different field of it.
+struct Guest {
+    player_id: String,
+    token: String,
+    refresh_token: String,
+    device_secret: String,
+}
+
+/// POST json through a front door, retrying only past the always-on 429 (the same bound
+/// `register_capture` uses), and answer `(status, body)`. The body is `Null` when the
+/// response is not json, so a caller asserts a status without unwrapping.
+async fn post_json(
+    ctx: &Ctx,
+    url: &str,
+    body: serde_json::Value,
+) -> Result<(u16, serde_json::Value)> {
+    for _ in 0..15 {
+        let r = ctx
+            .http
+            .post(url)
+            .header("X-Api-Key", "dev-key-client")
+            .json(&body)
+            .send()
+            .await?;
+        let code = r.status().as_u16();
+        if code == 429 {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            continue;
+        }
+        let parsed: serde_json::Value = r.json().await.unwrap_or(serde_json::Value::Null);
+        return Ok((code, parsed));
+    }
+    bail!("{url} rate-limited out")
+}
+
+/// The status `login_federated` answers for one `(provider, credential)` pair — the
+/// three-way provider resolution ([A6]) reduced to the number a client sees.
+async fn federated_status(ctx: &Ctx, base: &str, provider: &str, credential: &str) -> Result<u16> {
+    let (code, _) = post_json(
+        ctx,
+        &format!("{base}/accounts/login/federated"),
+        serde_json::json!({"provider": provider, "credential": credential}),
+    )
+    .await?;
+    Ok(code)
+}
+
+async fn create_guest(ctx: &Ctx, base: &str) -> Result<(u16, Guest)> {
+    let (code, body) = post_json(ctx, &format!("{base}/accounts/guest"), serde_json::json!({})).await?;
+    let pick = |k: &str| body.get(k).and_then(|v| v.as_str()).unwrap_or_default().to_string();
+    Ok((
+        code,
+        Guest {
+            player_id: pick("player_id"),
+            token: pick("token"),
+            refresh_token: pick("refresh_token"),
+            device_secret: pick("device_secret"),
+        },
+    ))
+}
+
+/// Attach a verified identity to the CALLING player through the Step 9 `link` op — the
+/// only production link path this harness can drive (the Epic web flow is a browser
+/// redirect nobody here follows). Bearer + player api key, `register_capture`'s 429 retry.
+async fn link_identity(
+    ctx: &Ctx,
+    base: &str,
+    bearer: &str,
+    provider: &str,
+    credential: &str,
+) -> Result<(u16, serde_json::Value)> {
+    for _ in 0..15 {
+        let r = ctx
+            .http
+            .post(format!("{base}/accounts/link"))
+            .header("X-Api-Key", "dev-key-client")
+            .header("Authorization", format!("Bearer {bearer}"))
+            .json(&serde_json::json!({"provider": provider, "credential": credential}))
+            .send()
+            .await?;
+        let code = r.status().as_u16();
+        if code == 429 {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            continue;
+        }
+        let body: serde_json::Value = r.json().await.unwrap_or(serde_json::Value::Null);
+        return Ok((code, body));
+    }
+    bail!("accounts.link rate-limited out")
+}
+
+/// Recursively finds the first string-valued `name` field — the player envelope nests the
+/// op's answer under a status wrapper (`find_id`'s shape, generalized to any key).
+fn find_str(v: &serde_json::Value, name: &str) -> Option<String> {
+    match v {
+        serde_json::Value::Object(m) => {
+            if let Some(found) = m.get(name).and_then(|x| x.as_str()) {
+                return Some(found.to_string());
+            }
+            m.values().find_map(|child| find_str(child, name))
+        }
+        serde_json::Value::Array(a) => a.iter().find_map(|child| find_str(child, name)),
+        _ => None,
+    }
+}
+
+/// Runs `calls` over ONE player-QUIC connection. [P8] spends five calls, and dialling per
+/// call would charge the per-IP CONNECTION bucket (burst 20) that [P1]-[P7] already drew
+/// on; one connection charges the request bucket only.
+async fn player_session(ctx: &Ctx, calls: &[(&str, String)]) -> Result<Vec<serde_json::Value>> {
+    let ca = ctx.ca_cert.to_str().context("CA cert path not UTF-8")?;
+    let trust = DevCA::load_cert_only(ca).map_err(|e| anyhow::anyhow!("load CA: {e}"))?;
+    let addr = format!("127.0.0.1:{}", ctx.player_port()).parse().context("player addr")?;
+    let client = PlayerClient::dial(addr, &trust)
+        .await
+        .map_err(|e| anyhow::anyhow!("dial: {e}"))?;
+    let mut out = Vec::new();
+    for (method, payload) in calls {
+        let mut answer = serde_json::Value::Null;
+        for _ in 0..10 {
+            match client.call(method, None, Some("dev-key-client"), payload.as_bytes()).await {
+                Ok(resp) => {
+                    answer = serde_json::from_slice(&resp).unwrap_or(serde_json::Value::Null);
+                    break;
+                }
+                Err(e) if e.to_string().contains("rate limit") => {
+                    tokio::time::sleep(Duration::from_millis(400)).await;
+                }
+                Err(e) => bail!("player call {method}: {e}"),
+            }
+        }
+        out.push(answer);
+    }
+    Ok(out)
+}
+
+fn envelope_status(v: &serde_json::Value) -> Option<&str> {
+    v.get("status").and_then(|s| s.as_str())
+}
+
+/// The federated-provider, guest, promotion and refresh proofs, driven through whatever
+/// front `base` names so the split (gateway-svc → accounts-svc over the mTLS edge) and the
+/// monolith (all Local) execute the IDENTICAL assertions. `m` is the parity suffix — `""`
+/// in the split, `"m"` in the monolith — and is the only difference between the two runs.
+async fn federated_assertions(
+    ctx: &Ctx,
+    pool: &PgPool,
+    base: &str,
+    idp: &Idp,
+    p: &mut Proof,
+    m: &str,
+) -> Result<()> {
+    let suffix = format!("{}{m}", std::process::id());
+
+    // [A6] the three-way provider resolution, as a client sees it. `google` is in
+    // KNOWN_PROVIDERS and this fleet deliberately leaves it unconfigured (the Proof
+    // overlay clears GOOGLE_* precisely so this arm exists), so it must answer 503, not
+    // the 400 an unbuildable name earns.
+    let a6_unconfigured = federated_status(ctx, base, "google", "irrelevant").await?;
+    let a6_unknown = federated_status(ctx, base, "nope", "irrelevant").await?;
+    p.check(
+        &format!("[A6{m}] login_federated google -> 503 (known, unconfigured), nope -> 400"),
+        a6_unconfigured == 503 && a6_unknown == 400,
+        format!("google={a6_unconfigured} nope={a6_unknown}"),
+    );
+
+    // [A7] the guest device: minted server-side, its ticket revealed once and replayable
+    // as a credential under the `guest` provider.
+    let (guest_code, guest) = create_guest(ctx, base).await?;
+    let a7_login = federated_status(ctx, base, "guest", &guest.device_secret).await?;
+    p.check(
+        &format!("[A7{m}] create_guest -> 201 + device secret; login_federated guest -> 200"),
+        guest_code == 201
+            && !guest.player_id.is_empty()
+            && !guest.device_secret.is_empty()
+            && !guest.refresh_token.is_empty()
+            && a7_login == 200,
+        format!("create={guest_code} pid={} login={a7_login}", guest.player_id),
+    );
+
+    // [WL8] first half. The guest's `player.registered` must reach wallet's subscription
+    // and credit NOTHING — a negative only worth asserting once the event has actually
+    // been consumed, so the wait is on that subscription's cursor passing the event, never
+    // on a sleep.
+    let registered_consumed = poll_count(
+        pool,
+        "SELECT count(*) FROM asyncevents.subscriptions s, asyncevents.events e \
+          WHERE s.subscription_id='wallet.player-registered.v1' \
+            AND e.topic='player.registered' AND e.payload->>'player_id'=$1 \
+            AND (s.cursor_generation, s.cursor_xid, s.cursor_tie) \
+                >= (e.generation, e.producer_xid, e.tie_breaker)",
+        &guest.player_id,
+        1,
+    )
+    .await;
+    let ledger_before: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM wallet.ledger WHERE idempotency_key = 'starter:' || $1",
+    )
+    .bind(&guest.player_id)
+    .fetch_one(pool)
+    .await?;
+
+    // [A8] the promotion. A guest gaining its FIRST non-guest identity emits durable
+    // `player.promoted` inside the link transaction; audit's raw sink records it from the
+    // shared log — in the split, written by accounts-svc and read by audit-svc.
+    let a8_credential = idp.token(&format!("epic-{suffix}"))?;
+    let (link_code, _) = link_identity(ctx, base, &guest.token, "epic", &a8_credential).await?;
+    let promoted = poll_count(
+        pool,
+        "SELECT count(*) FROM audit.log WHERE topic='player.promoted' \
+           AND payload->>'player_id'=$1",
+        &guest.player_id,
+        1,
+    )
+    .await;
+    p.check(
+        &format!("[A8{m}] guest links a real identity -> player.promoted reaches audit.log"),
+        link_code == 200 && promoted,
+        format!("link={link_code} pid={} promoted={promoted}", guest.player_id),
+    );
+
+    // [WL8] second half: the promotion — not the registration — is what grants, and the
+    // deterministic `starter:<player_id>` key means the count is exactly one even though
+    // BOTH subscriptions have now seen this player.
+    let granted = poll_count(
+        pool,
+        "SELECT count(*) FROM wallet.ledger WHERE idempotency_key = 'starter:' || $1",
+        &guest.player_id,
+        1,
+    )
+    .await;
+    p.check(
+        &format!("[WL8{m}] guest registration credits nothing; promotion credits exactly one starter row"),
+        registered_consumed && ledger_before == 0 && granted,
+        format!(
+            "consumed={registered_consumed} before={ledger_before} after_promotion_is_one={granted}"
+        ),
+    );
+
+    // [A9] refresh rotation, the grace window and the family kill, on a player of its own
+    // so no other login shares its family. The out-of-grace replay is produced by AGEING
+    // the consumed row in SQL — the window is 30s and a harness that slept through it
+    // would be asserting the clock, not the branch.
+    let (_, a9_reg) = post_json(
+        ctx,
+        &format!("{base}/accounts/register"),
+        serde_json::json!({
+            "email": format!("refresh-{suffix}@test.local"),
+            "password": "pw",
+            "displayName": "R"
+        }),
+    )
+    .await?;
+    let a9_pid = a9_reg.get("player_id").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+    let r0 = a9_reg.get("refresh_token").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+    let refresh_url = format!("{base}/accounts/refresh");
+
+    let (c1, s1) = post_json(ctx, &refresh_url, serde_json::json!({"refresh_token": r0})).await?;
+    let r1 = s1.get("refresh_token").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+    let t1 = s1.get("token").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+    let rotated = c1 == 200 && !r1.is_empty() && r1 != r0;
+
+    // The positive control that isolates the ONE variable [A9] changes: the same consumed
+    // token, replayed IN the window, is the lost-response case — 200 with the recorded
+    // successor handed back and nothing revoked.
+    let (c2, s2) = post_json(ctx, &refresh_url, serde_json::json!({"refresh_token": r0})).await?;
+    let grace = c2 == 200 && s2.get("refresh_token").and_then(|v| v.as_str()) == Some(r1.as_str());
+
+    sqlx::query("UPDATE accounts.refresh_tokens SET used_at = now() - interval '10 minutes' WHERE token = $1")
+        .bind(&r0)
+        .execute(pool)
+        .await?;
+
+    let (c3, _) = post_json(ctx, &refresh_url, serde_json::json!({"refresh_token": r0})).await?;
+    // The family kill commits on the 401 path, so it is observable from OUTSIDE: the
+    // successor no longer refreshes, the access token minted at rotation no longer
+    // authenticates, and the family's rows are gone.
+    let (c4, _) = post_json(ctx, &refresh_url, serde_json::json!({"refresh_token": r1})).await?;
+    let me_code = ctx
+        .http
+        .get(format!("{base}/accounts/me"))
+        .header("X-Api-Key", "dev-key-client")
+        .header("Authorization", format!("Bearer {t1}"))
+        .send()
+        .await?
+        .status()
+        .as_u16();
+    let surviving: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM accounts.refresh_tokens WHERE player_id::text = $1",
+    )
+    .bind(&a9_pid)
+    .fetch_one(pool)
+    .await?;
+    p.check(
+        &format!("[A9{m}] refresh rotates; in-grace replay 200; late replay -> 401 + family dead"),
+        rotated && grace && c3 == 401 && c4 == 401 && me_code == 401 && surviving == 0,
+        format!(
+            "rotate={c1} grace={c2}/{grace} late={c3} successor={c4} me={me_code} \
+             surviving_refresh_rows={surviving}"
+        ),
+    );
+
+    // [P8] the same auth ops on the player-QUIC plane. All four are `auth = "none"`, so
+    // they are reachable WITHOUT a bearer — the plane's api-key gate still applies — and
+    // the provider resolution renders as the envelope statuses the HTTP front maps to
+    // 503/400.
+    let p8_guest_call = ("accounts.createGuest", "{}".to_string());
+    let p8 = player_session(ctx, &[p8_guest_call]).await?;
+    let p8_secret = p8.first().and_then(|v| find_str(v, "device_secret")).unwrap_or_default();
+    let p8_refresh = p8.first().and_then(|v| find_str(v, "refresh_token")).unwrap_or_default();
+    let p8_rest = player_session(
+        ctx,
+        &[
+            (
+                "accounts.loginFederated",
+                serde_json::json!({"provider": "guest", "credential": p8_secret}).to_string(),
+            ),
+            (
+                "accounts.loginFederated",
+                serde_json::json!({"provider": "google", "credential": "irrelevant"}).to_string(),
+            ),
+            (
+                "accounts.loginFederated",
+                serde_json::json!({"provider": "nope", "credential": "irrelevant"}).to_string(),
+            ),
+            (
+                "accounts.refresh",
+                serde_json::json!({"refresh_token": p8_refresh}).to_string(),
+            ),
+        ],
+    )
+    .await?;
+    let statuses: Vec<Option<&str>> = p8
+        .iter()
+        .chain(p8_rest.iter())
+        .map(envelope_status)
+        .collect();
+    p.check(
+        &format!("[P8{m}] QUIC createGuest/loginFederated/refresh -> Ok, Ok, Unavailable, Invalid, Ok"),
+        !p8_secret.is_empty()
+            && statuses
+                == vec![
+                    Some("Ok"),
+                    Some("Ok"),
+                    Some("Unavailable"),
+                    Some("Invalid"),
+                    Some("Ok"),
+                ],
+        format!("secret={} statuses={statuses:?}", !p8_secret.is_empty()),
+    );
+
+    Ok(())
+}
+
 async fn poll_count(pool: &PgPool, sql: &str, cid: &str, want: i64) -> bool {
     for _ in 0..30 {
         let n: Option<i64> = sqlx::query_scalar(sql).bind(cid).fetch_optional(pool).await.ok().flatten();

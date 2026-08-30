@@ -24,6 +24,14 @@ reqwest = { workspace = true, features = ["cookies"] }
 # modules/apikeys/src/store.rs::secret_hash (URL_SAFE_NO_PAD, NOT hex).
 sha2 = { workspace = true }
 base64 = { workspace = true }
+# The loopback OIDC fixture ([A8]/[WL8]): promotion needs a NON-guest identity, and the
+# only production link path is a verified id_token — so the harness generates an RSA key,
+# serves its JWKS at `PROOF_OIDC_JWKS_URL` and mints RS256 tokens the Proof fleet's `epic`
+# provider accepts. No live identity provider is ever contacted.
+axum = { workspace = true }
+jsonwebtoken = { workspace = true }
+rand = { workspace = true }
+rsa = { version = "0.9", features = ["pem"] }
 
 # The fleet-liveness tests drive processctl's production spawn path, which on unix
 # re-execs `current_exe --__processctl-guardian-v1`; only a `harness = false`

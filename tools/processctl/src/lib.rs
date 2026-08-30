@@ -83,6 +83,7 @@ pub use fleet::{
     build_environment, game_backend_fleet, game_backend_fleet_with_environment,
     game_backend_monolith, runtime_environment, EnvironmentSnapshot, FleetError, FleetFlavor,
     FleetInputs, FleetSpec, PoolBudget, ServiceSpec, BUILD_ENV_ALLOWLIST, PG_SESSION_BUDGET,
+    proof_oidc_port, PROOF_OIDC_CLIENT_ID, PROOF_OIDC_ISSUER, PROOF_OIDC_JWKS_URL,
     SERVICE_ENV_ALLOWLIST, SPLITPROOF_ASSERTION_POOL_MAX, SPLITPROOF_REPLICA_SESSIONS,
 };
 pub use layout::WorkspaceLayout;

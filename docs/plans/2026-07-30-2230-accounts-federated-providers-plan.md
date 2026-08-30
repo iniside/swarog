@@ -878,6 +878,41 @@ stops being a claim. `[WL8]`'s negative half is the executed proof of decision 3
 Verification: `cargo run -p verifyctl -- --all --strict`, **one rollout at a time**
 (`/safe-verification` first; no second Cargo command while it runs).
 
+### Step 15 erratum (2026-08-30, recorded at implementation)
+
+Three deviations from (a)/(c) above, all forced by decisions that landed in Steps 5, 9
+and 13 after this step was written.
+
+1. **`"apple"` is gone; `google` is the unconfigured provider.** (c) built `[A6]`'s 503
+   arm on `"apple"` — "in `KNOWN_PROVIDERS` with no verifier until #2b". Step 5's own
+   erratum narrowed `KNOWN_PROVIDERS` to `&[EPIC, GOOGLE, GUEST]` precisely because a
+   name with no verifier gave an anonymous caller a permanent, operator-unfixable 503;
+   membership now means *buildable*, and `modules/accounts/src/tests.rs` pins the list.
+   So the 503 arm is built from a genuinely known provider this fleet leaves
+   unconfigured: `FleetFlavor::Proof` configures `epic` and deliberately does NOT
+   configure `google`. `login_federated("google", …)` → 503, `login_federated("nope", …)`
+   → 400. `PROOF_UNCONFIGURED_PROVIDER_ENV` in `tools/processctl/src/fleet.rs` CLEARS
+   `GOOGLE_*` in the Proof overlay, so an ambient `GOOGLE_CLIENT_IDS` cannot silently
+   delete the assertion. This is the opposite of (a)'s "Step 15 adds Google" prose.
+2. **`[A8]`/`[WL8]` need a loopback identity provider, which (c) did not anticipate.**
+   Promotion requires linking a NON-guest identity (`link_identity`'s emit condition is
+   `!had_real && provider != GUEST`), and every non-guest provider verifies a signed
+   id_token. The `link` op helper alone is therefore not sufficient — there is no
+   credential to hand it. `tools/splitproof/src/idp.rs` generates one RSA key per run,
+   serves its JWKS at `PROOF_OIDC_JWKS_URL` (`http://127.0.0.1:8099/jwks`) and mints RS256
+   tokens; the Proof fleet
+   points `EPIC_JWKS_URL`/`EPIC_ISSUER_PREFIX`/`EPIC_CLIENT_ID` at it (split accounts-svc
+   AND the monolith). No live identity provider is contacted.
+3. **There is no guest env, and the weles mirror is a no-op.** (a) asked for "typed env
+   for the guest and Google provider configuration". `guest` has no configuration at all
+   — `ProviderConfig::providers` registers it wherever the registry is built — and
+   `google` is deliberately unset per (1). The fleet delta is therefore
+   `overrideable_env` (the `EPIC_*`/`GOOGLE_*` keys, which the allowlist-filtered
+   `runtime_environment` otherwise makes unreachable for `devctl` too) plus the Proof
+   overlay. Neither touches the Development flavor's `env`, which is what
+   `weles/fleet.monolith.toml` / `weles/fleet.split.toml` mirror, so those files are
+   unchanged.
+
 ---
 
 ## Step 16 — docs, tracker, and the false-comment sweep `[sonnet]`

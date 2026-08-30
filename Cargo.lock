@@ -3847,10 +3847,14 @@ name = "splitproof"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "axum",
  "base64",
  "edge",
+ "jsonwebtoken",
  "processctl",
+ "rand 0.8.6",
  "reqwest",
+ "rsa",
  "serde_json",
  "sha2",
  "sqlx",
