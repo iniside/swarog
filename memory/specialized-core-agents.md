@@ -43,6 +43,14 @@ to close the gaps generic agents missed:
   `tools/splitproof` assertion, not a monolith-only test); reports pass/fail
   counts, no fix-everything-red loop. Default `model:"sonnet"`; escalate for a
   novel harness. See [[split-impl-and-tests]].
+- **docs-writer** (2026-08-31) — the ONLY lane that writes documentation or
+  comment prose: root guidance, `docs/reference`, `docs/roadmap`, plan errata,
+  Rust doc-comments. Runs LAST, against landed code; deletes false prose as much
+  as it adds true prose. Added because the guardrail hook refused
+  core-implementer for doc work three times in one rollout and its other roles
+  are read-only or UI-only, so the docs step was being done inline with no lane
+  and no review. It immediately caught a false op count I had committed as a
+  "fix" — see [[grep-counts-are-lower-bounds]]. Default `model:"sonnet"`.
 
 **Why:** the remediation showed double hostile review WORKED but was costly (46 commits);
 the real disease was authorless multi-commit chains (lock/lease 8x) + gates going green.
