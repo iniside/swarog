@@ -86,8 +86,10 @@ public-API checks protect the surfaces that cross those boundaries.
 
 12 fortresses plus the gateway:
 
-- **accounts** — identity: one `player_id`, many identities, opaque DB sessions;
-  dev/password auth, Epic OIDC verifier, Epic web OAuth link/login.
+- **accounts** — identity: one `player_id`, many identities, 60-minute access tokens
+  plus rotating 30-day refresh-token families with reuse detection; federated login
+  (`login_federated`) over a provider registry (Epic, Google, guest), dev/password
+  auth, Epic web OAuth link/login, `POST /accounts/link`.
 - **characters / inventory** — the modularity reference case: plain-id relations,
   synchronous ownership authz over the wire, starter-grant/wipe via durable events.
 - **config** — DB-backed knobs with LISTEN/NOTIFY live reload; remote consumers get
@@ -103,7 +105,8 @@ public-API checks protect the surfaces that cross those boundaries.
 - **apikeys** — per-key API access policy (anon/service-key model); the gateway
   requires an `X-Api-Key` on every op and enforces the key's policy.
 - **wallet** — virtual currency: operator catalog, per-player balances, ledger;
-  wire-only credit/debit; starter grant on `player.registered`.
+  wire-only credit/debit; starter grant on `player.promoted` and non-guest
+  `player.registered`.
 - **gateway** — the single public front door: HTTP op routing (local vs remote
   purely by slot presence), authenticated player-QUIC plane, passthroughs, rate
   limiting. Domain services never host it; they serve ops only over the internal

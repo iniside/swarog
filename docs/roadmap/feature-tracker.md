@@ -1,6 +1,6 @@
 # Feature tracker — closing the gaps from the BaaS analysis
 
-**Last update: 2026-07-30-2215**
+**Last update: 2026-08-30-2333**
 
 **Living document, updated in place** (no date prefix in the filename — it is the
 current state, not a dated snapshot; the date above moves instead). Source of the
@@ -71,10 +71,11 @@ Rationale in the decision notes below; the order deviates from the gap doc's own
   "toy vs. real" tell, but seasons without rewards are half a feature. After wallet they
   cost the same and ship complete.
 
-### Open decisions — settle these BEFORE the #2a plan is written
+### Open decisions — settled by seq #2a (landed 2026-08-30)
 
-These are the questions a plan for #2 cannot leave to implementation. Recorded here so
-the sequence row stays a one-liner.
+These were the questions a plan for #2 could not leave to implementation; recorded
+here so the sequence row stayed a one-liner while they were still open. All four are
+now resolved — see the Identity & accounts table below for the landed shape.
 
 1. **Per-provider method vs. one federated op.** Today the contract is a method per
    provider: `login_epic(id_token)` (`api/accounts/api/src/lib.rs:93`), with
@@ -89,21 +90,33 @@ the sequence row stays a one-liner.
    The store layer needs nothing either way — `accounts.identities` and
    `Store::link_identity` (`modules/accounts/src/store.rs:182`) are already
    provider-generic.
+   **Settled:** one federated op, `login_federated(provider, credential)` — `login_epic`
+   is gone.
 2. **link/unlink policy.** Three rules the ops cannot infer: (a) unlinking the *last*
    identity — refused, or does it orphan the player; (b) linking an identity already
    bound to another player — `Conflict` (409), or an account merge (merge is its own
    feature, and post-wallet it means merging *balances* — never the default); (c) whether
    linking/unlinking emits a durable `player.identity-linked` event (audit has no sink for
    one today, and its 7 ledger topics are enumerated in `modules/audit`).
+   **Settled for link, deferred for unlink:** `POST /accounts/link` ships — a foreign
+   identity is (b) `Conflict` (409), no merge; no `player.identity-linked` event, since
+   (c) linking now emits durable `player.promoted` instead when it's a guest's first
+   non-guest identity. (a) unlink itself does not exist yet — carried to seq #2b. Audit
+   is 8 ledger topics as of this rollout (`player.promoted` joined the set), not 7.
 3. **Guest/device × the wallet starter grant.** Wallet (seq #1) grants currency on
    `player.registered`. Anonymous accounts-on-demand make every dial a free grant, so #2a
    must state the mitigation explicitly (throttled guest registration, or the grant firing
    only on promotion to a real provider). Neither feature has this hole alone; the
    combination creates it.
+   **Settled:** the starter grant moved onto `player.promoted` (plus non-guest
+   `player.registered`) — a guest is granted only once it gains a real identity, never on
+   guest creation itself.
 4. **Session/refresh model stops being deferrable.** The "Session + refresh-token model"
    row below is ⚠️ on its own merits, but guest/device makes the opaque 30-day session the
    *only* device identity — losing it loses the account. Either pin the decision to #2a or
    defer it deliberately with a reason; do not let it slide by omission.
+   **Settled:** pinned to #2a — 60-minute access tokens plus rotating 30-day refresh-token
+   families, reuse detection, a 30s grace window, and family-scoped revocation.
 
 ---
 

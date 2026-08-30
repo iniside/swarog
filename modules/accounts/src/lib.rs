@@ -14,8 +14,8 @@
 //!     capability the gateway's auth-once verifier resolves (registry swap: local
 //!     here, an edge client from `accountsrpc::remote_factories()` in a split peer).
 //!   - `accounts.auth` ([`accountsapi::Auth`]) — register/login/loginFederated/
-//!     createGuest/refresh/me/link,
-//!     contributed as gateway operations (conditionally, per the env gates).
+//!     createGuest/refresh/me/link, all seven contributed as gateway operations
+//!     UNCONDITIONALLY — the dev/provider gating lives at the impl (see `ops.rs`).
 //!   - Epic web OAuth — two HTTP-NATIVE browser routes (`POST /accounts/epic/start`,
 //!     `GET /accounts/epic/callback`) mounted on the shared router when
 //!     `EPIC_CLIENT_SECRET` is configured.

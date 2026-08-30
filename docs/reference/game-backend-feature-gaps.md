@@ -14,8 +14,9 @@ implementation plan — no sequencing, no per-step design.*
 
 ## TL;DR
 
-We are, functionally, a **competitive-match backend**: accounts (Epic + dev),
-characters, lite inventory, match-report → rating/MMR → single wins-leaderboard, plus a
+We are, functionally, a **competitive-match backend**: accounts (Epic + Google OIDC +
+guest + dev), characters, lite inventory, match-report → rating/MMR →
+single wins-leaderboard, plus a
 strong **platform layer** (durable event bus, split topology, api-key policy, admin
 portal with remote fan-out, config live-reload, scheduler, metrics, TLS/ACME).
 
@@ -71,7 +72,7 @@ Legend: ✅ has it · ⚠️ partial · ❌ absent · — out of scope for that 
 ### Identity & accounts
 | Feature | Nakama | PlayFab | Pragma | Beamable | Us |
 |---|:--:|:--:|:--:|:--:|:--:|
-| Multi-provider auth (Steam/Apple/Google/Facebook/console) | ✅ | ✅ | ✅ | ✅ | ⚠️ Epic + dev only |
+| Multi-provider auth (Steam/Apple/Google/Facebook/console) | ✅ | ✅ | ✅ | ✅ | ⚠️ Epic + Google OIDC only |
 | Anonymous / guest / device auth | ✅ | ✅ | ⚠️ | ✅ | ✅ `create_guest` + device ticket |
 | Account linking / unlinking (cross-platform one account) | ✅ | ✅ | ✅ | ✅ | ⚠️ `POST /accounts/link` ships; no unlink op |
 | Session + refresh-token model | ✅ | ✅ | ✅ | ✅ | ✅ 60-min access + rotating 30-day refresh families, reuse detection |
@@ -176,13 +177,13 @@ Each item: **what it is · who has it · why it matters · architectural fit (wh
    *Size:* medium.
 
 5. **More auth providers + guest/anonymous.**
-   All four ship many; we ship Epic + dev.
-   *Why:* Steam/Apple/Google + anonymous-guest are the minimum a studio expects; guest is
-   nearly free and huge for onboarding funnels.
-   *Fit:* extend `accounts` — we **already have a generic `OidcVerifier`**, so Google/Apple
-   (OIDC) are incremental; anonymous/device is a trivial new provider row; Steam needs its
-   own ticket verifier. Add account link/unlink ops while here.
-   *Size:* small (OIDC/guest) to medium (Steam).
+   All four ship many; we ship Epic + Google (OIDC) + guest + dev — Google/guest landed
+   seq #2a, over one `login_federated(provider, credential)` op and a verifier registry.
+   *Why:* Steam/Apple are still missing; unlink (only link shipped) is the remaining gap.
+   *Fit:* extend `accounts` — Apple (OIDC + signed-JWT client secret) is incremental over
+   the existing `OidcVerifier`; Steam needs its own ticket verifier. Add the unlink op
+   while here.
+   *Size:* small (Apple) to medium (Steam).
 
 ### P1 — high value, medium lift
 

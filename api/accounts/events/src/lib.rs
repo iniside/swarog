@@ -32,9 +32,8 @@ pub struct PlayerRegistered {
     pub provider: String,
 }
 
-/// The `player.registered` topic. Not yet consumed by any module (Go carried a
-/// `topiccheck:allow-unsubscribed` for the same reason — match/rating wiring is a
-/// later step; audit subscribes in Step 8).
+/// The `player.registered` topic. Consumed by `audit` (the raw ledger sink) and by
+/// `wallet` (the non-guest starter grant).
 ///
 /// `bus::define` is not `const`, so the descriptor is a `LazyLock` static; callers
 /// pass it as `&*accountsevents::PLAYER_REGISTERED`.
