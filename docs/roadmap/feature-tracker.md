@@ -38,7 +38,7 @@ Rationale in the decision notes below; the order deviates from the gap doc's own
 | # | Feature | Status | Plan doc |
 |:-:|---|:--:|---|
 | 1 | Virtual currency wallet + ledger | ✅ | [2026-07-28-2125-wallet-module-plan.md](../plans/2026-07-28-2125-wallet-module-plan.md) |
-| 2a | Federated-provider seam + Google OIDC + guest/device | ❌ | — |
+| 2a | Federated-provider seam + Google OIDC + guest/device | ✅ | [2026-07-30-2230-accounts-federated-providers-plan.md](../plans/2026-07-30-2230-accounts-federated-providers-plan.md) |
 | 2b | Apple OIDC + identity link/unlink | ❌ | — |
 | 3 | Notifications + player mail (in-app, durable) | ❌ | — |
 | 4 | Self-registration promoted to production (email verify, password reset) | ❌ | — |
@@ -111,13 +111,22 @@ the sequence row stays a one-liner.
 
 | Feature | Status | Module(s) | Landed | Notes |
 |---|:--:|---|---|---|
-| Multi-provider auth (Steam/Apple/Google/Facebook/console) | ⚠️ | accounts | — | Epic OIDC + Epic web OAuth + dev password only. Seq #2a (seam + Google), #2b (Apple), #6 (Steam). The wire shape is per-provider today (`login_epic`) — open decision 1. |
-| Anonymous / guest / device auth | ❌ | accounts | — | Seq #2a. New provider row, no verifier needed — but see open decision 3 (interaction with the wallet starter grant). |
-| Account linking / unlinking | ⚠️ | accounts | — | `(provider, subject) → player_id` model already supports it and `Store::link_identity` exists; the link/unlink **ops** and the policy are missing. Seq #2b, open decision 2. |
-| Session + refresh-token model | ⚠️ | accounts | — | Opaque 30-day DB sessions, no refresh token. Guest/device (#2a) makes this the sole device identity — open decision 4. |
+| Multi-provider auth (Steam/Apple/Google/Facebook/console) | ⚠️ | accounts | 2026-08-30 | Epic + Google OIDC, guest/device, dev password. One wire shape for all of them — `login_federated(provider, credential)` over a verifier registry; `login_epic` is gone. Seq #2a landed; #2b (Apple), #6 (Steam) remain — each is a new verifier, not a new op. |
+| Anonymous / guest / device auth | ✅ | accounts | 2026-08-30 | `POST /accounts/guest` mints a player + a show-once device ticket; replayed through `login_federated("guest", …)`. Open decision 3 resolved by moving the wallet starter grant onto `player.promoted` — a guest is granted only when it gains a real identity. |
+| Account linking / unlinking | ⚠️ | accounts | 2026-08-30 | `POST /accounts/link` ships (verified credential → identity attached to the caller's player; a foreign identity is 409, no merge). **Unlink is still missing** — seq #2b. |
+| Session + refresh-token model | ✅ | accounts | 2026-08-30 | 60-minute opaque access tokens + rotating 30-day refresh-token families: reuse detection, a 30s grace window for a lost response, family-scoped revocation (never all the player's devices), and a hard family life a rotation cannot extend. Open decision 4 resolved inside #2a. |
 | Self-registration (production-grade) | ⚠️ | accounts | — | `POST /accounts/register` + `/accounts/login` exist (`api/accounts/api/src/lib.rs:79,85`, argon2id) but gated behind `ACCOUNTS_DEV_AUTH` (default OFF). Missing: email verification, password reset, per-IP/per-account throttling, password policy, email-as-identity uniqueness, **and an outbound mail channel**. Seq #4, depends on #3. |
 | Account self-delete + GDPR export | ❌ | accounts | — | Only server-side prune today. |
 | User metadata / profile (display name, avatar, lang) | ❌ | — | — | Only `player_id` + identities. |
+
+**Known gaps carried out of seq #2a** (deliberate, not oversights): `accounts` still parses
+its provider environment inside the module rather than in `cmd/*`, so it is the one module
+that reads env outside a composition root; `player.promoted`'s `from_provider` is the
+constant `"guest"` because guest is the only promotable origin this release ships; the
+proof fleet leaves Google deliberately unconfigured so a *known but unconfigured* provider
+(503) stays distinguishable from an unknown one (400); and `unlink` does not exist — a
+foreign identity is a 409 with no merge, because merging accounts post-wallet means merging
+balances and is its own feature.
 | Ban / moderation / trust | ❌ | accounts + admin | — | P1#12. Ban state gates session verify; admin page via extension points. |
 
 ## Social
@@ -197,6 +206,23 @@ the sequence row stays a one-liner.
 ---
 
 ## Change log
+
+- **2026-08-30** — Federated providers (seq #2a) **landed**, all 16 steps, split-proof
+  124/124 across both topologies. `login_epic` became
+  `login_federated(provider, credential)` over a verifier registry (`epic`, `google`,
+  `guest`); `create_guest` + `POST /accounts/link` + durable `player.promoted` complete the
+  anonymous→real lifecycle; sessions split into 60-minute access tokens and rotating 30-day
+  refresh families. Three things worth carrying forward. First, **open decision 3 was real**:
+  guest registration plus an unconditional starter grant is a free-currency mint, closed by
+  moving the grant onto `player.promoted` and pinning the guest-skip with an executed test —
+  the guard clause it depends on was reachable from the wire and unpinned by all 124 accounts
+  tests until then. Second, the gates lied again in the same way they did during #1: a proof
+  audit deleted **both** input-cap guards from the production `link` handler and
+  `conformancecheck` still printed `OK: 13 modules × 4 conventions`, because
+  `InputPolicy::Validated { basis }` is prose nothing executes — now backed by CapCases that
+  drive the real op. Third, `KNOWN_PROVIDERS` was narrowed to what the build can actually
+  construct a verifier for: listing a *planned* provider handed anonymous callers a permanent,
+  operator-unfixable 503.
 
 - **2026-07-28** — Tracker opened. Sequence agreed: wallet → OIDC providers/guest →
   notifications → self-registration → seasons → Steam → store/IAP. Added the

@@ -39,7 +39,7 @@ pub use adminrpc::register_admin;
 ///     accounts-svc (closing the `DevSessionVerifier` trust hole in the split),
 ///   - `accounts.auth` — the [`Auth`] client, PLUS the auth ops'
 ///     `route_bindings()` into the gateway slots (no `LOCAL_SLOT` — no in-process
-///     invoker exists, so the front dispatches register/login/loginFederated/me remotely).
+///     invoker exists, so the front dispatches every `Auth` op remotely).
 pub fn remote_factories() -> Vec<remote::RemoteFactory> {
     vec![
         Box::new(|ctx, caller| sessions_rpc::provide_remote(ctx.registry(), caller)),
@@ -64,7 +64,7 @@ pub fn remote_factories() -> Vec<remote::RemoteFactory> {
 /// runtime `describe()`, so a factory that ALSO re-contributed the auth ops' static
 /// routes to [`opsapi::SLOT`]/[`opsapi::BINDING_SLOT`] would collide with that describe
 /// pass (`RouteTable::build` bails on a duplicate provider/method). The `Auth` ops
-/// (register/login/loginFederated/me) are therefore NEITHER provided as a `dyn Auth` client
+/// are therefore NEITHER provided as a `dyn Auth` client
 /// NOR route-contributed here — the D2 front routes them over the edge from the describe
 /// manifest, never via a typed capability `require`. Non-describe consumers keep using
 /// [`remote_factories`] (provide + routes); this is ADDITIVE, not a replacement. (As of D2

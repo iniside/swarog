@@ -1,7 +1,7 @@
 //! `webui` — a UI-ONLY dev demo module (port of Go's `modules/webui`). It serves a
 //! single embedded single-page app at the EXACT path `GET /`: dev login/register,
 //! then "Link Epic", exercising the accounts HTTP surface
-//! (`/accounts/register|login|me`, `/accounts/epic/start|callback`) from a browser
+//! (`/accounts/register|login|me|refresh`, `/accounts/epic/start|callback`) from a browser
 //! so the account-linking flow is visible without a separate client.
 //!
 //! No state, no `Requires`, no schema, no events — just one static route mounted on
@@ -19,11 +19,10 @@ use lifecycle::{Context, Module};
 #[cfg(test)]
 mod tests;
 
-/// The embedded demo page (copied verbatim from Go's `modules/webui/index.html`).
-/// Its `fetch()` calls target `/accounts/register`, `/accounts/login`,
-/// `/accounts/me`, and `/accounts/epic/start` — all live, byte-identical routes on
-/// today's Rust `accountsapi::Auth` HTTP surface, so no path/body-key adjustment
-/// was needed.
+/// The embedded demo page, derived from Go's `modules/webui/index.html` and since
+/// extended with the refresh-token flow. Its `fetch()` calls target
+/// `/accounts/register`, `/accounts/login`, `/accounts/me`, `/accounts/refresh` and
+/// `/accounts/epic/start` — all live routes on today's `accountsapi::Auth` surface.
 const INDEX_HTML: &str = include_str!("index.html");
 
 async fn index() -> impl IntoResponse {

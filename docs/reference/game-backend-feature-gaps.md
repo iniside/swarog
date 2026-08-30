@@ -55,7 +55,7 @@ are *marketed features* elsewhere:
 | Config live-reload (DB knobs, monotonic revision, NOTIFY) | Nakama/Satori feature-flags & remote config (we have the delivery half, not targeting) |
 | Scheduler (data-driven, replica-safe exactly-once) | Nakama leaderboard/tournament reset schedules, PlayFab Scheduled Tasks |
 | Metrics endpoint + record layer | Nakama Prometheus metrics, Pragma monitoring |
-| accounts: Epic OIDC + Epic web OAuth, opaque 30-day sessions | one of many providers each platform ships |
+| accounts: federated providers (Epic/Google OIDC, guest device), Epic web OAuth, account linking, 60-min access tokens + rotating 30-day refresh families | one of many providers each platform ships |
 
 **Key leverage insight:** scheduler, event bus, config-live-reload, and admin extension
 points are exactly the primitives the missing features need. That's why the P0/P1 lists
@@ -72,9 +72,9 @@ Legend: ✅ has it · ⚠️ partial · ❌ absent · — out of scope for that 
 | Feature | Nakama | PlayFab | Pragma | Beamable | Us |
 |---|:--:|:--:|:--:|:--:|:--:|
 | Multi-provider auth (Steam/Apple/Google/Facebook/console) | ✅ | ✅ | ✅ | ✅ | ⚠️ Epic + dev only |
-| Anonymous / guest / device auth | ✅ | ✅ | ⚠️ | ✅ | ❌ |
-| Account linking / unlinking (cross-platform one account) | ✅ | ✅ | ✅ | ✅ | ⚠️ model supports it, no link/unlink ops |
-| Session + refresh-token model | ✅ | ✅ | ✅ | ✅ | ⚠️ opaque 30-day, no refresh |
+| Anonymous / guest / device auth | ✅ | ✅ | ⚠️ | ✅ | ✅ `create_guest` + device ticket |
+| Account linking / unlinking (cross-platform one account) | ✅ | ✅ | ✅ | ✅ | ⚠️ `POST /accounts/link` ships; no unlink op |
+| Session + refresh-token model | ✅ | ✅ | ✅ | ✅ | ✅ 60-min access + rotating 30-day refresh families, reuse detection |
 | Account self-delete + GDPR export | ✅ | ✅ | ✅ | — | ❌ (only server-side prune) |
 | User metadata / profile fields (display name, avatar, lang) | ✅ | ✅ | ✅ | ✅ | ❌ (only player_id + identities) |
 | Ban / moderation / trust | ✅ | ✅ | ✅ | — | ❌ |

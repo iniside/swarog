@@ -3,7 +3,7 @@
 //! all GENERATED from `accountsapi::Auth` + its `#[http]` bindings, so the gateway's
 //! LocalBackend and RemoteBackend consume the SAME wire envelopes.
 //!
-//! ALL six ops are contributed UNCONDITIONALLY — the monolith slot set and the
+//! ALL nine ops are contributed UNCONDITIONALLY — the monolith slot set and the
 //! split route set stay structurally equal by construction. The dev/provider gating
 //! lives at the IMPL, the single authority every exposure path traverses:
 //! `register`/`login` answer NotFound (→ 404) when `ACCOUNTS_DEV_AUTH` is off, and

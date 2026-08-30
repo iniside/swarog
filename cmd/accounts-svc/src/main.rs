@@ -6,7 +6,8 @@
 //! the mutually-authenticated edge.
 //!
 //! It hosts NO gateway (FrontDoor) module: the single public front door lives only in
-//! gateway-svc + the monolith. The typed auth ops (`/accounts/register|login|me`) are
+//! gateway-svc + the monolith. The typed auth ops (register, login, federated login,
+//! guest, link, refresh, me) are
 //! fronted by gateway-svc, which dispatches them Remote to this process's edge. What this
 //! process DOES serve on its own HTTP port are the Epic web-OAuth browser routes
 //! (`POST /accounts/epic/start`, `GET /accounts/epic/callback`) — the accounts module

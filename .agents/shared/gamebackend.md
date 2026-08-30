@@ -217,16 +217,30 @@ last-writer-wins overwrite.
 ## Domain modules (12 fortresses + gateway)
 
 - **accounts** — identity: one `player_id`, many identities
-  (`provider`,`subject`), opaque DB sessions (30-day TTL). Dev/password auth
+  (`provider`,`subject`), opaque DB sessions: 60-minute access tokens plus
+  rotating 30-day refresh-token families (`POST /accounts/refresh`) with reuse
+  detection, a 30s grace window for a lost response, and a family-scoped kill —
+  a replay outside the window revokes that family only, never the player's
+  other devices. Dev/password auth
   (argon2id, `ACCOUNTS_DEV_AUTH` explicit-only — default OFF/fail-closed,
   loud warn when ON; the `devctl` and split-proof development profiles set
   `ACCOUNTS_DEV_AUTH=1`), Epic OIDC verifier (`EPIC_CLIENT_ID`, JWKS,
   RS256/ES256), Epic web OAuth link/login (`EPIC_CLIENT_SECRET`,
-  `/accounts/epic/start|callback`). Emits durable `player.registered`. The
+  `/accounts/epic/start|callback`). Federated login is one op —
+  `login_federated(provider, credential)` over the provider registry (`epic`,
+  `google`, `guest`); `KNOWN_PROVIDERS` means *buildable*, so an unknown name is
+  400 and a known-but-unconfigured one is 503. `create_guest` mints an anonymous
+  player + a one-time device ticket replayed through `login_federated("guest",
+  …)`; `POST /accounts/link` attaches a verified identity to the caller's
+  player, and a guest gaining its first non-guest identity emits durable
+  `player.promoted`. Provider name constants are the contract's
+  (`accountsevents::providers`), re-exported by the impl. Emits durable
+  `player.registered`. The
   gateway's session verifier resolves `accountsapi::Sessions` — a process
   hosting a gateway without the accounts capability FAILS STARTUP unless
   `ACCOUNTS_DEV_AUTH=1` (dev verifier, loud warn). `wallet` grants starter
-  currency on `player.registered` when configured.
+  currency on `player.promoted` (and on non-guest `player.registered`) when
+  configured.
 - **characters / inventory** — the modularity reference case: plain-id
   relations, sync `Ownership` authz over the wire, starter-grant/wipe via
   durable `character.created/deleted`. `INVENTORY_DEV_GRANT` (explicit-only —
@@ -276,10 +290,10 @@ last-writer-wins overwrite.
   (`adminrpc::admin_remote_factory`). Remote forms are read-only. admin-svc
   has a DB (schema `admin` + the durable plane) — no longer planeless.
 - **audit** — append-only ledger (`audit.log`), zero-coupling raw durable
-  sinks for all 7 ledger topics (`character.created/deleted`,
-  `player.registered`, `config.changed`, `match.finished`, `admin.action`,
-  `wallet.changed`) — seven independent subscriptions
-  (`audit.<topic-kebab>.v1`), each with its own checkpoint, plus an 8th
+  sinks for all 8 ledger topics (`character.created/deleted`,
+  `player.registered`, `player.promoted`, `config.changed`, `match.finished`,
+  `admin.action`, `wallet.changed`) — eight independent subscriptions
+  (`audit.<topic-kebab>.v1`), each with its own checkpoint, plus a 9th
   independent subscription for prune reacting to
   `scheduler.fired{audit-prune}` (`AUDIT_RETENTION_DAYS`, default 30).
 - **scheduler** — data-driven schedules (`scheduler.schedules`), 1s tick,
@@ -335,10 +349,13 @@ last-writer-wins overwrite.
   `(player_id, currency, signed delta, reason)` under a REQUIRED,
   ledger-`UNIQUE` `idempotency_key`, licensing `#[retry_safe]` on
   `credit`/`debit` the same way `match.report` licenses it on `ReportId`. An
-  optional, config-driven starter grant reacts to durable
-  `player.registered` (`AfterRegistration`, since the topic retains 7 days)
-  and emits durable `wallet.changed` in the same transaction as the balance
-  update and ledger row. Dev currencies `gold`/`gems` seed ONLY when
+  optional, config-driven starter grant reacts to durable `player.promoted`
+  and to non-guest `player.registered` (`AfterRegistration`, since the topics
+  retain 7 days) — two subscriptions sharing one `starter:{player_id}` key, so
+  a guest who registers and is later promoted is granted exactly once, and a
+  guest who never promotes is never granted. It emits durable `wallet.changed`
+  in the same transaction as the balance update and ledger row. Dev currencies
+  `gold`/`gems` seed ONLY when
   `WALLET_DEV_SEED` is explicitly truthy (explicit-only, default
   OFF/fail-closed, loud warn when ON); the seed is insert-if-absent, so an
   operator's catalog edit survives a restart. Admin page "Wallet" is a
