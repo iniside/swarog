@@ -207,8 +207,9 @@ balances and is its own feature.
 
 ## Change log
 
-- **2026-08-30** — Federated providers (seq #2a) **landed**, all 16 steps, split-proof
-  124/124 across both topologies. `login_epic` became
+- **2026-08-30** — Federated providers (seq #2a) **landed**, all 16 steps,
+  `cargo run -p verifyctl -- --fast` 15/15 blocking stages green and split-proof 124/124
+  across both topologies. `login_epic` became
   `login_federated(provider, credential)` over a verifier registry (`epic`, `google`,
   `guest`); `create_guest` + `POST /accounts/link` + durable `player.promoted` complete the
   anonymous→real lifecycle; sessions split into 60-minute access tokens and rotating 30-day
