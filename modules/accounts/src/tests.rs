@@ -5,6 +5,7 @@ use base64::Engine as _;
 mod dev_auth_gate;
 mod guest;
 mod prune;
+mod refresh;
 use crate::oidc::{IssuerMatch, OidcVerifier};
 use crate::password::verify_password;
 use crate::providers::EpicOAuthConfig;
