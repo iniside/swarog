@@ -708,7 +708,8 @@ step 4d):
 - `[sonnet]` — Sonnet subagent. Mechanical: rename sweeps, scaffolding, N-similar
   edits, applying a fully-specified step, compile fixes,
   config. **Never burn a higher tier on a rename.** Visual/UI design is never
-  `[sonnet]`. Tests are never `[sonnet]` — they go through `[test-author]`.
+  `[sonnet]`. Tests are never `[sonnet]` — they go through `[test-author]`, and
+  documentation/comment prose is never `[sonnet]` — it goes through `[docs]`.
 - `[test-author]` — the `test-author` agent
   (`.claude/agents/test-author.md`, `subagent_type: "test-author"`). **The ONLY
   lane that writes tests** — a dedicated step, always separate from and after the
@@ -718,11 +719,20 @@ step 4d):
   following an existing pattern is Sonnet work; escalate to `model:"opus"`/`"fable"`
   only when the harness/topology is novel (new splitproof assertion, event-plane
   fixture). The plan step sets the `model:`.
+- `[docs]` — the `docs-writer` agent (`.claude/agents/docs-writer.md`,
+  `subagent_type: "docs-writer"`). **The ONLY lane that writes documentation or
+  comment prose** — root guidance, `docs/reference`, `docs/roadmap`, plan errata,
+  and Rust doc-comments. It runs last, against landed code, and its job is as much
+  DELETING false prose as adding true prose (a comment asserting behaviour the code
+  lacks is a correctness defect). `model:"sonnet"` is the default; escalate only when
+  the doc must judge what a seam *means*. A plan's docs step names the exact files —
+  an unnamed file is never found.
 
 **Every code-writing Agent call passes an explicit `model:` matching its lane —
 NON-NEGOTIABLE** (there is no "inherit" path): `[fable]`→`model:"fable"`,
 `[opus]`→`model:"opus"`, `[sonnet]`→`model:"sonnet"`, `[test-author]`→the
-`test-author` agent at its step's `model:` (default `"sonnet"`) (listing-only
+`test-author` agent at its step's `model:` (default `"sonnet"`), `[docs]`→the
+`docs-writer` agent at its step's `model:` (default `"sonnet"`) (listing-only
 research → `model:"haiku"`). Pre-flight every Agent call for the field. After a multi-subagent
 rollout, before "done": `git log -<N> --format="%h %B" | grep "Co-Authored"` and
 confirm trailers match each lane (`[fable]`→Fable 5, `[opus]`→Opus 4.8,
