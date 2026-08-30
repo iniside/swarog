@@ -54,8 +54,9 @@ pub fn golden_samples() -> Vec<(&'static str, u32, serde_json::Value)> {
 /// reference one symbol.
 pub mod schedule_names {
     pub const AUDIT_PRUNE: &str = "audit-prune";
-    /// The daily cadence on which `accounts` prunes expired sessions
-    /// (`accounts.sessions` where `expires_at <= now()`). The scheduler seeds this
-    /// schedule (86400s); accounts reacts to `scheduler.fired{name}` matching it.
+    /// The daily cadence on which `accounts` prunes its expired token rows
+    /// (`accounts.sessions` and `accounts.refresh_tokens` where
+    /// `expires_at <= now()`). The scheduler seeds this schedule (86400s); accounts
+    /// reacts to `scheduler.fired{name}` matching it.
     pub const SESSIONS_PRUNE: &str = "accounts-sessions-prune";
 }

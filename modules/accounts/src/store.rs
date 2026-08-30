@@ -7,8 +7,27 @@ use base64::Engine as _;
 use rand::RngCore as _;
 use sqlx::{PgConnection, PgPool};
 
-/// Session lifetime — Go's `sessionTTL = 30 * 24 * time.Hour`, applied in SQL.
-pub(crate) const SESSION_TTL_DAYS: i32 = 30;
+/// Access-session lifetime, applied in SQL. Short on purpose: a leaked bearer dies
+/// within the hour and the client renews through its rotating refresh token.
+pub(crate) const ACCESS_TTL_MINUTES: i32 = 60;
+
+/// The HARD life of a refresh family, applied in SQL when a family is born. A rotation
+/// never extends it — see [`Store::insert_refresh_successor_tx`].
+pub(crate) const REFRESH_TTL_DAYS: i32 = 30;
+
+/// How long after its rotation a consumed refresh token still answers with the
+/// successor it recorded instead of being treated as theft. The failure this covers is
+/// a client that rotated and lost the RESPONSE (mobile handoff, a 429 from the
+/// gateway's rate limiter), not two racing dials. `f64` because Postgres'
+/// `make_interval(secs => …)` takes double precision.
+pub(crate) const REFRESH_GRACE_SECONDS: f64 = 30.0;
+
+/// The lifetime the API reports for a freshly minted access token, derived from the
+/// SAME constant the INSERT applies so the number a client schedules against cannot
+/// drift from the number the row expires by.
+pub(crate) fn access_expires_in_secs() -> i64 {
+    i64::from(ACCESS_TTL_MINUTES) * 60
+}
 
 /// The product-scoped identity row (`accounts.players`). Module-private: the wire
 /// types (`Session`/`MeView`) live in `accountsapi`.
@@ -90,6 +109,77 @@ pub(crate) fn new_token() -> String {
     let mut b = [0u8; 32];
     rand::rngs::OsRng.fill_bytes(&mut b);
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b)
+}
+
+/// The stored facts about one presented refresh token, read after a rotation attempt
+/// declined it. Booleans are evaluated by Postgres against the SAME `now()` the failed
+/// UPDATE used, so the classification cannot disagree with the predicate that produced
+/// it.
+pub(crate) struct RefreshRow {
+    pub player_id: String,
+    pub family_id: String,
+    /// The successor recorded when this token was consumed.
+    pub replaced_by: Option<String>,
+    pub used: bool,
+    pub used_within_grace: bool,
+    pub expired: bool,
+}
+
+/// What a presented refresh token earns. The ONE decision every refresh outcome comes
+/// from — deliberately pure, so the theft branch is executable without a database.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum RefreshVerdict {
+    /// The token was live and unused: it is now consumed in favour of `successor`.
+    Rotate { player_id: String, family_id: String },
+    /// A consumed token presented within the grace window — the lost-response case.
+    /// The recorded successor is handed back; nothing is revoked.
+    GraceReplay {
+        player_id: String,
+        family_id: String,
+        successor: String,
+    },
+    /// A consumed token presented too late to be a lost response: a stolen credential.
+    /// The family dies and the caller still gets the plain 401.
+    Revoke { family_id: String },
+    /// Unknown or expired — 401, and nothing to revoke.
+    Deny,
+}
+
+/// Classifies one presentation from the rotation attempt's outcome and the row behind
+/// it. `rotated` is [`Store::rotate_refresh_tx`]'s return, `row` is
+/// [`Store::refresh_row_tx`]'s, read on the same transaction.
+///
+/// Every ambiguous state falls through to [`RefreshVerdict::Deny`]: a row that is
+/// neither used nor expired yet refused to rotate, and a consumed row with no recorded
+/// successor, are both states a single-transaction rotation cannot produce, so the
+/// answer is the fail-closed one rather than a guess that hands out a session.
+pub(crate) fn classify_presentation(
+    rotated: Option<(String, String)>,
+    row: Option<RefreshRow>,
+) -> RefreshVerdict {
+    if let Some((player_id, family_id)) = rotated {
+        return RefreshVerdict::Rotate {
+            player_id,
+            family_id,
+        };
+    }
+    let Some(row) = row else {
+        return RefreshVerdict::Deny;
+    };
+    if row.expired || !row.used {
+        return RefreshVerdict::Deny;
+    }
+    match row.replaced_by {
+        Some(successor) if row.used_within_grace => RefreshVerdict::GraceReplay {
+            player_id: row.player_id,
+            family_id: row.family_id,
+            successor,
+        },
+        Some(_) => RefreshVerdict::Revoke {
+            family_id: row.family_id,
+        },
+        None => RefreshVerdict::Deny,
+    }
 }
 
 /// A player plus the read-only bits the admin portal shows (Go's `PlayerRow`).
@@ -292,23 +382,149 @@ impl Store {
         }
     }
 
-    /// Inserts a caller-provided session token ON THE GIVEN CONNECTION, so session
+    /// Inserts a caller-provided access token ON THE GIVEN CONNECTION, so session
     /// issuance can commit atomically with registration or stand alone in a thin tx.
+    /// `family_id` ties the session to the refresh family it was minted under: it is
+    /// what makes revocation scopeable to one compromised login instead of every
+    /// device the player owns.
     pub async fn insert_session_tx(
         &self,
         conn: &mut PgConnection,
         player_id: &str,
         token: &str,
+        family_id: &str,
     ) -> Result<(), sqlx::Error> {
         sqlx::query(
-            "INSERT INTO accounts.sessions (token, player_id, expires_at) \
-             VALUES ($1, $2::uuid, now() + make_interval(days => $3))",
+            "INSERT INTO accounts.sessions (token, player_id, family_id, expires_at) \
+             VALUES ($1, $2::uuid, $3::uuid, now() + make_interval(mins => $4))",
         )
         .bind(token)
         .bind(player_id)
-        .bind(SESSION_TTL_DAYS)
+        .bind(family_id)
+        .bind(ACCESS_TTL_MINUTES)
         .execute(&mut *conn)
         .await?;
+        Ok(())
+    }
+
+    /// Starts a NEW refresh family on the caller's tx: the row Postgres mints the
+    /// `family_id` for, and the only place a 30-day expiry is ever written.
+    pub async fn insert_refresh_family_tx(
+        &self,
+        conn: &mut PgConnection,
+        token: &str,
+        player_id: &str,
+    ) -> Result<String, sqlx::Error> {
+        let (family_id,): (String,) = sqlx::query_as(
+            "INSERT INTO accounts.refresh_tokens (token, player_id, family_id, expires_at) \
+             VALUES ($1, $2::uuid, gen_random_uuid(), now() + make_interval(days => $3)) \
+             RETURNING family_id::text",
+        )
+        .bind(token)
+        .bind(player_id)
+        .bind(REFRESH_TTL_DAYS)
+        .fetch_one(&mut *conn)
+        .await?;
+        Ok(family_id)
+    }
+
+    /// Consumes `token` and records `successor` as its replacement, returning the
+    /// `(player_id, family_id)` it belonged to. Zero rows — an absent, expired or
+    /// ALREADY CONSUMED token — is `Ok(None)`, which the caller resolves by re-reading
+    /// the row in this same transaction ([`Store::refresh_row_tx`]).
+    ///
+    /// The predicate is the whole concurrency story: two dials with the same token
+    /// serialize on this row, and only the one that finds `used_at IS NULL` rotates.
+    pub async fn rotate_refresh_tx(
+        &self,
+        conn: &mut PgConnection,
+        token: &str,
+        successor: &str,
+    ) -> Result<Option<(String, String)>, sqlx::Error> {
+        sqlx::query_as(
+            "UPDATE accounts.refresh_tokens \
+                SET used_at = now(), replaced_by = $2 \
+              WHERE token = $1 AND used_at IS NULL AND expires_at > now() \
+             RETURNING player_id::text, family_id::text",
+        )
+        .bind(token)
+        .bind(successor)
+        .fetch_optional(&mut *conn)
+        .await
+    }
+
+    /// Inserts the successor of an already-consumed `parent` on the caller's tx. The
+    /// player, the family AND the expiry are copied from the parent row rather than
+    /// passed in, so a rotation cannot slide the family's hard 30-day bound forward —
+    /// a family that renewed its own expiry would never expire at all. A vanished
+    /// parent inserts nothing and surfaces as `RowNotFound`.
+    pub async fn insert_refresh_successor_tx(
+        &self,
+        conn: &mut PgConnection,
+        token: &str,
+        parent: &str,
+    ) -> Result<(), sqlx::Error> {
+        let _: (String,) = sqlx::query_as(
+            "INSERT INTO accounts.refresh_tokens (token, player_id, family_id, expires_at) \
+             SELECT $1, player_id, family_id, expires_at \
+               FROM accounts.refresh_tokens WHERE token = $2 \
+             RETURNING token",
+        )
+        .bind(token)
+        .bind(parent)
+        .fetch_one(&mut *conn)
+        .await?;
+        Ok(())
+    }
+
+    /// The facts a failed rotation is classified from, read on the SAME transaction as
+    /// the failed UPDATE so no other writer can move the row in between.
+    pub async fn refresh_row_tx(
+        &self,
+        conn: &mut PgConnection,
+        token: &str,
+    ) -> Result<Option<RefreshRow>, sqlx::Error> {
+        let row: Option<(String, String, Option<String>, bool, bool, bool)> = sqlx::query_as(
+            "SELECT player_id::text, family_id::text, replaced_by, \
+                    used_at IS NOT NULL, \
+                    coalesce(used_at > now() - make_interval(secs => $2), false), \
+                    expires_at <= now() \
+               FROM accounts.refresh_tokens WHERE token = $1",
+        )
+        .bind(token)
+        .bind(REFRESH_GRACE_SECONDS)
+        .fetch_optional(&mut *conn)
+        .await?;
+        Ok(row.map(
+            |(player_id, family_id, replaced_by, used, used_within_grace, expired)| RefreshRow {
+                player_id,
+                family_id,
+                replaced_by,
+                used,
+                used_within_grace,
+                expired,
+            },
+        ))
+    }
+
+    /// Revokes one refresh FAMILY on the caller's tx: every access session and every
+    /// refresh token descended from that login, and nothing belonging to the player's
+    /// other logins. Deletion, not a flag: with the rows gone every token of the family
+    /// answers as unknown, so a replay can never resurrect the family through the grace
+    /// window.
+    pub async fn kill_family_tx(
+        &self,
+        conn: &mut PgConnection,
+        family_id: &str,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query("DELETE FROM accounts.refresh_tokens WHERE family_id = $1::uuid")
+            .bind(family_id)
+            .execute(&mut *conn)
+            .await?;
+        sqlx::query("DELETE FROM accounts.sessions WHERE family_id = $1::uuid")
+            .bind(family_id)
+            .execute(&mut *conn)
+            .await?;
         Ok(())
     }
 
@@ -340,6 +556,21 @@ impl Store {
         conn: &mut PgConnection,
     ) -> Result<u64, sqlx::Error> {
         let res = sqlx::query("DELETE FROM accounts.sessions WHERE expires_at <= now()")
+            .execute(&mut *conn)
+            .await?;
+        Ok(res.rows_affected())
+    }
+
+    /// Deletes every EXPIRED refresh token on the delivery tx, the sibling retention of
+    /// [`Store::prune_expired_sessions`] for the table rotation grows. Only
+    /// `expires_at <= now()` — a CONSUMED row is the reuse detector and is retained for
+    /// its family's whole life; an expired one can no longer produce any verdict but
+    /// `Deny`, so removing it changes no answer.
+    pub async fn prune_expired_refresh_tokens(
+        &self,
+        conn: &mut PgConnection,
+    ) -> Result<u64, sqlx::Error> {
+        let res = sqlx::query("DELETE FROM accounts.refresh_tokens WHERE expires_at <= now()")
             .execute(&mut *conn)
             .await?;
         Ok(res.rows_affected())

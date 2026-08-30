@@ -45,10 +45,10 @@ fn manifest_matches_golden() {
 
 #[test]
 fn golden_covers_the_known_surface() {
-    // A structural sanity check independent of the string golden: exactly the 16
+    // A structural sanity check independent of the string golden: exactly the 17
     // player-reachable methods and the 9 reachable DTOs.
     let m: Manifest = serde_json::from_str(GOLDEN).unwrap();
-    assert_eq!(m.methods.len(), 16, "expected 16 #[http] methods");
+    assert_eq!(m.methods.len(), 17, "expected 17 #[http] methods");
     assert_eq!(m.dtos.len(), 9, "expected 9 reachable DTOs");
     assert_eq!(m.statuses.len(), 8, "expected 8 Status variants");
 
@@ -62,6 +62,7 @@ fn golden_covers_the_known_surface() {
             "accounts.login",
             "accounts.loginFederated",
             "accounts.createGuest",
+            "accounts.refresh",
             "accounts.me",
             "accounts.link",
             "characters.create",

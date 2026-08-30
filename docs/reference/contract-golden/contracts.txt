@@ -83,6 +83,7 @@ rpc module=accountsapi::auth_rpc method=accounts.link verb=POST path=/accounts/l
 rpc module=accountsapi::auth_rpc method=accounts.login verb=POST path=/accounts/login auth=None success=200 retry=Never
 rpc module=accountsapi::auth_rpc method=accounts.loginFederated verb=POST path=/accounts/login/federated auth=None success=200 retry=Never
 rpc module=accountsapi::auth_rpc method=accounts.me verb=GET path=/accounts/me auth=Player success=200 retry=OnceAfterReconnect
+rpc module=accountsapi::auth_rpc method=accounts.refresh verb=POST path=/accounts/refresh auth=None success=200 retry=Never
 rpc module=accountsapi::auth_rpc method=accounts.register verb=POST path=/accounts/register auth=None success=201 retry=Never
 rpc module=charactersapi::player_rpc method=characters.create verb=POST path=/characters auth=Player success=201 retry=Never
 rpc module=charactersapi::player_rpc method=characters.delete verb=DELETE path=/characters/{id} auth=Player success=204 retry=Never
@@ -100,6 +101,7 @@ rpc-arg module=accountsapi::auth_rpc method=accounts.login param=email wire_key=
 rpc-arg module=accountsapi::auth_rpc method=accounts.login param=password wire_key=password source=body
 rpc-arg module=accountsapi::auth_rpc method=accounts.loginFederated param=credential wire_key=credential source=body
 rpc-arg module=accountsapi::auth_rpc method=accounts.loginFederated param=provider wire_key=provider source=body
+rpc-arg module=accountsapi::auth_rpc method=accounts.refresh param=refresh_token wire_key=refresh_token source=body
 rpc-arg module=accountsapi::auth_rpc method=accounts.register param=display_name wire_key=displayName source=body
 rpc-arg module=accountsapi::auth_rpc method=accounts.register param=email wire_key=email source=body
 rpc-arg module=accountsapi::auth_rpc method=accounts.register param=password wire_key=password source=body
@@ -120,6 +122,7 @@ rpc-body module=accountsapi::auth_rpc method=accounts.login body.password:string
 rpc-body module=accountsapi::auth_rpc method=accounts.loginFederated body.credential:string
 rpc-body module=accountsapi::auth_rpc method=accounts.loginFederated body.provider:string
 rpc-body module=accountsapi::auth_rpc method=accounts.me body:object{}
+rpc-body module=accountsapi::auth_rpc method=accounts.refresh body.refresh_token:string
 rpc-body module=accountsapi::auth_rpc method=accounts.register body.displayName:string
 rpc-body module=accountsapi::auth_rpc method=accounts.register body.email:string
 rpc-body module=accountsapi::auth_rpc method=accounts.register body.password:string
@@ -142,6 +145,7 @@ wire module=accountsapi::auth_rpc method=accounts.link retry=Never
 wire module=accountsapi::auth_rpc method=accounts.login retry=Never
 wire module=accountsapi::auth_rpc method=accounts.loginFederated retry=Never
 wire module=accountsapi::auth_rpc method=accounts.me retry=OnceAfterReconnect
+wire module=accountsapi::auth_rpc method=accounts.refresh retry=Never
 wire module=accountsapi::auth_rpc method=accounts.register retry=Never
 wire module=accountsapi::sessions_rpc method=accounts.verifySession retry=OnceAfterReconnect
 wire module=adminapi::admin_data_rpc method=admin.adminData retry=OnceAfterReconnect

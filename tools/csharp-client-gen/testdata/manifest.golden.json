@@ -95,6 +95,24 @@
     },
     {
       "provider": "accounts",
+      "wire_method": "accounts.refresh",
+      "verb": "POST",
+      "path": "/accounts/refresh",
+      "auth": "none",
+      "success": 200,
+      "args": [
+        {
+          "name": "refresh_token",
+          "wire_name": "refresh_token",
+          "ty": "String"
+        }
+      ],
+      "ret": {
+        "Struct": "Session"
+      }
+    },
+    {
+      "provider": "accounts",
       "wire_method": "accounts.register",
       "verb": "POST",
       "path": "/accounts/register",
@@ -499,6 +517,16 @@
           "name": "token",
           "wire_name": "token",
           "ty": "String"
+        },
+        {
+          "name": "refresh_token",
+          "wire_name": "refresh_token",
+          "ty": "String"
+        },
+        {
+          "name": "access_expires_in_secs",
+          "wire_name": "access_expires_in_secs",
+          "ty": "I64"
         }
       ]
     }

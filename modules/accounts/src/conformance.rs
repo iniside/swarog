@@ -130,10 +130,12 @@ const DEFAULT_DSN: &str =
 
 fn service_without_providers() -> Service {
     let dsn = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string());
+    service_on(PgPool::connect_lazy(&dsn).expect("lazy pool from a well-formed DSN"))
+}
+
+fn service_on(pool: PgPool) -> Service {
     Service {
-        store: Store {
-            pool: PgPool::connect_lazy(&dsn).expect("lazy pool from a well-formed DSN"),
-        },
+        store: Store { pool },
         bus: Arc::new(bus::Bus::new()),
         dev_auth: false,
         providers: OnceLock::new(),
@@ -246,6 +248,41 @@ pub fn conformance_google_credential_rejected(len: usize) -> bool {
 pub fn conformance_guest_credential_rejected(len: usize) -> bool {
     registry_credential_rejected(GUEST, len)
 }
+
+/// Whether `accountsapi::Auth::refresh` answers 401 for a refresh token of `len` bytes,
+/// driven through the op on a pool that CANNOT connect.
+///
+/// The dead pool is what makes the cap executable. `refresh` has no cheap second
+/// rejection: an at-cap token is unknown, and an unknown token is also a 401 — so on a
+/// live pool this probe would answer identically with the guard deleted. Against a pool
+/// whose only connection attempt fails, the 401 can be produced ONLY before the store is
+/// touched: at the cap the probe reaches the rotation and gets Internal (false, as
+/// required), over the cap it is rejected by the guard (true). Delete the guard and the
+/// over-cap case becomes Internal too, turning this case red.
+#[doc(hidden)]
+pub fn conformance_refresh_token_rejected(len: usize) -> bool {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("current-thread runtime");
+    let svc = {
+        let _guard = rt.enter();
+        service_on(dead_pool())
+    };
+    let outcome = rt.block_on(svc.refresh("a".repeat(len)));
+    matches!(outcome, Err(error) if error.status == opsapi::Status::Unauthorized)
+}
+
+/// A pool pointed at a port nothing listens on, with the acquire wait bounded so the
+/// at-cap case fails fast instead of sitting out sqlx's 30-second default.
+fn dead_pool() -> PgPool {
+    sqlx::postgres::PgPoolOptions::new()
+        .acquire_timeout(std::time::Duration::from_millis(250))
+        .connect_lazy(DEAD_DSN)
+        .expect("lazy pool from a well-formed DSN")
+}
+
+const DEAD_DSN: &str = "postgres://gamebackend:gamebackend@127.0.0.1:1/gamebackend?sslmode=disable";
 
 #[doc(hidden)]
 pub fn conformance_provider_name_rejected(len: usize) -> bool {

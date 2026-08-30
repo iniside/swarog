@@ -16,18 +16,28 @@ use opsapi::{Error, Identity};
 use rpc_macro::rpc;
 use serde::{Deserialize, Serialize};
 
-/// Maximum accepted opaque session-token size in bytes. Accounts mints 43-byte
-/// base64url tokens; the wider cap leaves format headroom while bounding lookup and
-/// internal-RPC work from attacker-controlled input at every topology's auth boundary.
+/// Maximum accepted opaque token size in bytes, for BOTH token kinds accounts mints:
+/// the access token a bearer presents and the refresh token [`Auth::refresh`] rotates
+/// (one mint function, 43-byte base64url). The wider cap leaves format headroom while
+/// bounding lookup and internal-RPC work from attacker-controlled input at every
+/// topology's auth boundary.
 pub const MAX_SESSION_TOKEN_BYTES: usize = 128;
 
-/// The result of a successful register/login: the caller's product-scoped
-/// `player_id` plus the opaque bearer token minted for it. The serde field names
-/// are the public HTTP response shape (`{player_id, token}`), unchanged from Go.
+/// The result of a successful register/login/refresh: the caller's product-scoped
+/// `player_id`, the short-lived opaque bearer token minted for it, and the refresh
+/// token that renews it. The serde field names are the public HTTP response shape
+/// (`{player_id, token, refresh_token, access_expires_in_secs}`).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Session {
     pub player_id: String,
     pub token: String,
+    /// The single-use refresh token: presenting it to [`Auth::refresh`] consumes it
+    /// and yields its successor. It outlives `token` and belongs to a family whose
+    /// expiry a rotation never extends.
+    pub refresh_token: String,
+    /// The lifetime of `token` — far shorter than the refresh token's, which is the
+    /// point of the split.
+    pub access_expires_in_secs: i64,
 }
 
 /// What [`Auth::create_guest`] returns: a provisioned player, its session, and the
@@ -37,12 +47,11 @@ pub struct Session {
 pub struct GuestSession {
     pub player_id: String,
     pub token: String,
-    /// Empty in this build: refresh tokens do not exist yet. The field is declared
-    /// from the start because a guest is the longest-lived client class and the only
-    /// one that cannot re-authenticate from an external identity provider, so its
-    /// response shape must not have to change to gain one.
+    /// The device's refresh token, rotated through [`Auth::refresh`] exactly like a
+    /// [`Session`]'s. It matters most here: a guest is the longest-lived client class
+    /// and the only one that cannot re-authenticate from an external identity provider.
     pub refresh_token: String,
-    /// The lifetime of `token`, which today IS the session TTL (30 days).
+    /// The lifetime of `token`, not of the refresh family behind it.
     pub access_expires_in_secs: i64,
     /// The `"<subject>.<secret>"` ticket the device stores and replays through
     /// `login_federated("guest", …)`. Revealed exactly once, here.
@@ -84,8 +93,9 @@ pub trait Sessions: Send + Sync {
 }
 
 /// The accounts module's player-facing capability: the operations that establish or
-/// read a player identity. `register`/`login`/`login_federated`/`create_guest` are
-/// `auth = "none"` (they CREATE the session, so they take no caller identity); `me` and
+/// read a player identity. `register`/`login`/`login_federated`/`create_guest`/`refresh`
+/// are `auth = "none"` (they CREATE or RENEW the session, so they take no caller
+/// identity — `refresh` authenticates by the refresh token in its body); `me` and
 /// `link` are
 /// `auth = "player"` — they take their caller identity as the leading `Identity` param
 /// (injected by the gateway after bearer verification), NEVER a body field. The
@@ -124,6 +134,15 @@ pub trait Auth: Send + Sync {
     /// [`Auth::login_federated`] under the `"guest"` provider. 201.
     #[http(verb = "POST", path = "/accounts/guest", auth = "none", success = 201)]
     async fn create_guest(&self) -> Result<GuestSession, Error>;
+
+    /// Rotates a refresh token: consumes the presented one and answers with its
+    /// successor plus a freshly minted access token. Unknown, expired, and replayed
+    /// tokens are one indistinguishable `Unauthorized` (401) — a replay outside the
+    /// grace window ALSO revokes the whole token family (every access session and
+    /// refresh token descended from that login), since a consumed token presented
+    /// late is a stolen credential. 200.
+    #[http(verb = "POST", path = "/accounts/refresh", auth = "none", success = 200)]
+    async fn refresh(&self, refresh_token: String) -> Result<Session, Error>;
 
     /// The caller's own player + identities (identity injected by the gateway after
     /// bearer verification — the AuthPlayer trust boundary). 200.

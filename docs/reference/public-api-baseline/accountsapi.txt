@@ -154,6 +154,36 @@ impl core::marker::Unpin for accountsapi::auth_rpc::MeResponse
 impl core::marker::UnsafeUnpin for accountsapi::auth_rpc::MeResponse
 impl core::panic::unwind_safe::RefUnwindSafe for accountsapi::auth_rpc::MeResponse
 impl core::panic::unwind_safe::UnwindSafe for accountsapi::auth_rpc::MeResponse
+pub struct accountsapi::auth_rpc::RefreshRequest
+pub accountsapi::auth_rpc::RefreshRequest::refresh_token: alloc::string::String
+impl core::default::Default for accountsapi::auth_rpc::RefreshRequest
+pub fn accountsapi::auth_rpc::RefreshRequest::default() -> accountsapi::auth_rpc::RefreshRequest
+impl serde_core::ser::Serialize for accountsapi::auth_rpc::RefreshRequest
+pub fn accountsapi::auth_rpc::RefreshRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for accountsapi::auth_rpc::RefreshRequest where accountsapi::auth_rpc::RefreshRequest: core::default::Default
+pub fn accountsapi::auth_rpc::RefreshRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for accountsapi::auth_rpc::RefreshRequest
+impl core::marker::Send for accountsapi::auth_rpc::RefreshRequest
+impl core::marker::Sync for accountsapi::auth_rpc::RefreshRequest
+impl core::marker::Unpin for accountsapi::auth_rpc::RefreshRequest
+impl core::marker::UnsafeUnpin for accountsapi::auth_rpc::RefreshRequest
+impl core::panic::unwind_safe::RefUnwindSafe for accountsapi::auth_rpc::RefreshRequest
+impl core::panic::unwind_safe::UnwindSafe for accountsapi::auth_rpc::RefreshRequest
+pub struct accountsapi::auth_rpc::RefreshResponse
+pub accountsapi::auth_rpc::RefreshResponse::err: alloc::string::String
+pub accountsapi::auth_rpc::RefreshResponse::status: opsapi::Status
+pub accountsapi::auth_rpc::RefreshResponse::value: serde_json::value::Value
+impl serde_core::ser::Serialize for accountsapi::auth_rpc::RefreshResponse
+pub fn accountsapi::auth_rpc::RefreshResponse::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for accountsapi::auth_rpc::RefreshResponse
+pub fn accountsapi::auth_rpc::RefreshResponse::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for accountsapi::auth_rpc::RefreshResponse
+impl core::marker::Send for accountsapi::auth_rpc::RefreshResponse
+impl core::marker::Sync for accountsapi::auth_rpc::RefreshResponse
+impl core::marker::Unpin for accountsapi::auth_rpc::RefreshResponse
+impl core::marker::UnsafeUnpin for accountsapi::auth_rpc::RefreshResponse
+impl core::panic::unwind_safe::RefUnwindSafe for accountsapi::auth_rpc::RefreshResponse
+impl core::panic::unwind_safe::UnwindSafe for accountsapi::auth_rpc::RefreshResponse
 pub struct accountsapi::auth_rpc::RegisterRequest
 pub accountsapi::auth_rpc::RegisterRequest::display_name: alloc::string::String
 pub accountsapi::auth_rpc::RegisterRequest::email: alloc::string::String
@@ -191,6 +221,7 @@ pub const accountsapi::auth_rpc::METHOD_LINK: &str
 pub const accountsapi::auth_rpc::METHOD_LOGIN: &str
 pub const accountsapi::auth_rpc::METHOD_LOGIN_FEDERATED: &str
 pub const accountsapi::auth_rpc::METHOD_ME: &str
+pub const accountsapi::auth_rpc::METHOD_REFRESH: &str
 pub const accountsapi::auth_rpc::METHOD_REGISTER: &str
 pub fn accountsapi::auth_rpc::describe() -> opsapi::DescribeManifest
 pub fn accountsapi::auth_rpc::operations(alloc::sync::Arc<(dyn accountsapi::Auth + core::marker::Send + core::marker::Sync)>) -> alloc::vec::Vec<opsapi::OpSet>
@@ -307,7 +338,9 @@ impl core::marker::UnsafeUnpin for accountsapi::MeView
 impl core::panic::unwind_safe::RefUnwindSafe for accountsapi::MeView
 impl core::panic::unwind_safe::UnwindSafe for accountsapi::MeView
 pub struct accountsapi::Session
+pub accountsapi::Session::access_expires_in_secs: i64
 pub accountsapi::Session::player_id: alloc::string::String
+pub accountsapi::Session::refresh_token: alloc::string::String
 pub accountsapi::Session::token: alloc::string::String
 impl core::clone::Clone for accountsapi::Session
 pub fn accountsapi::Session::clone(&self) -> accountsapi::Session
@@ -337,6 +370,7 @@ pub fn accountsapi::Auth::link<'life0, 'async_trait>(&'life0 self, opsapi::Ident
 pub fn accountsapi::Auth::login<'life0, 'async_trait>(&'life0 self, alloc::string::String, alloc::string::String) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<accountsapi::Session, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn accountsapi::Auth::login_federated<'life0, 'async_trait>(&'life0 self, alloc::string::String, alloc::string::String) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<accountsapi::Session, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn accountsapi::Auth::me<'life0, 'async_trait>(&'life0 self, opsapi::Identity) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<accountsapi::MeView, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn accountsapi::Auth::refresh<'life0, 'async_trait>(&'life0 self, alloc::string::String) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<accountsapi::Session, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn accountsapi::Auth::register<'life0, 'async_trait>(&'life0 self, alloc::string::String, alloc::string::String, alloc::string::String) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<accountsapi::Session, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub trait accountsapi::Sessions: core::marker::Send + core::marker::Sync
 pub fn accountsapi::Sessions::verify_session<'life0, 'async_trait>(&'life0 self, alloc::string::String) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<alloc::string::String>, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait

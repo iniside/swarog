@@ -103,7 +103,7 @@ fn internal<E: std::fmt::Display>(e: E) -> Error {
 // deliberately ABSENT from `dev-client` — it is the trusted-server op, which gives the
 // harness a real negative case.
 const DEV_CLIENT_POLICY: &str = "accounts.register,accounts.login,accounts.loginFederated,\
-accounts.createGuest,accounts.me,accounts.link,\
+accounts.createGuest,accounts.refresh,accounts.me,accounts.link,\
 characters.create,characters.list,characters.delete,\
 inventory.grant,inventory.listMine,inventory.listCharacter,\
 leaderboard.topScores,\

@@ -83,8 +83,34 @@
 
 <script>
 const TOKEN = "gb_token";
+const REFRESH = "gb_refresh";
 const $ = (id) => document.getElementById(id);
 const token = () => localStorage.getItem(TOKEN);
+
+function store(session) {
+  localStorage.setItem(TOKEN, session.token);
+  localStorage.setItem(REFRESH, session.refresh_token || "");
+}
+
+function forget() {
+  localStorage.removeItem(TOKEN);
+  localStorage.removeItem(REFRESH);
+}
+
+// Trades the stored refresh token for a new pair. The old refresh token is consumed
+// server-side, so the answer must be stored or it is lost.
+async function renew() {
+  const rt = localStorage.getItem(REFRESH);
+  if (!rt) return false;
+  const r = await fetch("/accounts/refresh", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Api-Key": "dev-key-client" },
+    body: JSON.stringify({ refresh_token: rt }),
+  });
+  if (!r.ok) { forget(); return false; }
+  store(await r.json());
+  return true;
+}
 
 function toast(msg, ok) {
   const t = $("toast");
@@ -105,8 +131,7 @@ async function register() {
     email: $("email").value, password: $("password").value, displayName: $("email").value.split("@")[0],
   })});
   if (!r.ok) return toast("Register failed: " + (await r.text()).trim(), false);
-  const j = await r.json();
-  localStorage.setItem(TOKEN, j.token);
+  store(await r.json());
   await refresh();
 }
 
@@ -115,12 +140,11 @@ async function login() {
     email: $("email").value, password: $("password").value,
   })});
   if (!r.ok) return toast("Login failed: " + (await r.text()).trim(), false);
-  const j = await r.json();
-  localStorage.setItem(TOKEN, j.token);
+  store(await r.json());
   await refresh();
 }
 
-function logout() { localStorage.removeItem(TOKEN); refresh(); }
+function logout() { forget(); refresh(); }
 
 async function linkEpic() {
   const r = await api("/accounts/epic/start", { method: "POST" });
@@ -129,7 +153,7 @@ async function linkEpic() {
   window.location = j.authorize_url; // off to Epic; comes back to /accounts/epic/callback
 }
 
-async function refresh() {
+async function refresh(renewed) {
   const t = token();
   if (!t) {
     $("auth").style.display = "";
@@ -137,7 +161,13 @@ async function refresh() {
     return;
   }
   const r = await api("/accounts/me");
-  if (!r.ok) { localStorage.removeItem(TOKEN); return refresh(); }
+  if (!r.ok) {
+    // One renewal attempt per render: the retry flag stops a rotating-but-still-401
+    // server from looping the page through the whole refresh family.
+    if (!renewed && await renew()) return refresh(true);
+    forget();
+    return refresh(true);
+  }
   const me = await r.json();
   $("pid").textContent = me.player_id;
   $("dname").textContent = me.display_name;
@@ -151,7 +181,10 @@ async function refresh() {
 // link-result messages from the callback redirect (?epic=linked|error).
 (function init() {
   if (location.hash.startsWith("#token=")) {
-    localStorage.setItem(TOKEN, decodeURIComponent(location.hash.slice(7)));
+    const handed = new URLSearchParams(location.hash.slice(1));
+    if (handed.get("token")) {
+      store({ token: handed.get("token"), refresh_token: handed.get("refresh") });
+    }
     history.replaceState(null, "", location.pathname);
   }
   const params = new URLSearchParams(location.search);

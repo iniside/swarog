@@ -5,6 +5,7 @@ accounts.login	email	external
 accounts.login	password	external
 accounts.loginFederated	credential	external
 accounts.loginFederated	provider	external
+accounts.refresh	refresh_token	external
 accounts.register	displayName	external
 accounts.register	email	external
 accounts.register	password	external

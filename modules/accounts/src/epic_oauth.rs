@@ -382,8 +382,9 @@ async fn handle_callback(
     }
 
     // LOGIN flow: find or create a player for this Epic identity (durable
-    // player.registered on first sight), mint a session, hand the token back via the
-    // URL fragment for the page to pick up.
+    // player.registered on first sight), mint a session, hand BOTH tokens back via the
+    // URL fragment for the page to pick up — the access token alone would strand the
+    // browser at its 60-minute expiry with nothing to renew from.
     let session = match svc
         .external_login(
             crate::providers::EPIC,
@@ -399,7 +400,11 @@ async fn handle_callback(
             return Redirect::to("/?epic=error").into_response();
         }
     };
-    Redirect::to(&format!("/#token={}", session.token)).into_response()
+    Redirect::to(&format!(
+        "/#token={}&refresh={}",
+        session.token, session.refresh_token
+    ))
+    .into_response()
 }
 
 /// Extracts the token from an `Authorization: Bearer <token>` header, or `None`.

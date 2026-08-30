@@ -66,4 +66,6 @@ public sealed record Score(
 /// <summary>The <c>Session</c> DTO.</summary>
 public sealed record Session(
     [property: JsonPropertyName("player_id")] string PlayerId,
-    [property: JsonPropertyName("token")] string Token);
+    [property: JsonPropertyName("token")] string Token,
+    [property: JsonPropertyName("refresh_token")] string RefreshToken,
+    [property: JsonPropertyName("access_expires_in_secs")] long AccessExpiresInSecs);

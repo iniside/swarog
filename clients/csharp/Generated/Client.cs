@@ -51,6 +51,10 @@ public sealed record AccountsLoginFederatedRequest(
 /// <summary>Request for <c>accounts.me</c> (no arguments — serializes to <c>{}</c>).</summary>
 public sealed record AccountsMeRequest();
 
+/// <summary>Request for <c>accounts.refresh</c>.</summary>
+public sealed record AccountsRefreshRequest(
+    [property: JsonPropertyName("refresh_token")] string RefreshToken);
+
 /// <summary>Request for <c>accounts.register</c>.</summary>
 public sealed record AccountsRegisterRequest(
     [property: JsonPropertyName("email")] string Email,
@@ -168,6 +172,18 @@ public sealed class GameBackendClient(IPlayerTransport transport)
         JsonNode value = envelope["value"]
             ?? throw new GameBackendTransportException("Ok response missing 'value'");
         return value.Deserialize<MeView>(JsonOpts)!;
+    }
+
+    /// <summary>Invokes <c>accounts.refresh</c> (unauthenticated).</summary>
+    public async Task<Session> AccountsRefreshAsync(string refreshToken, CancellationToken ct = default)
+    {
+        var request = new AccountsRefreshRequest(refreshToken);
+        byte[] payload = JsonSerializer.SerializeToUtf8Bytes(request, JsonOpts);
+        PlayerResponse resp = await transport.CallAsync("accounts.refresh", null, payload, ct).ConfigureAwait(false);
+        JsonNode envelope = Unwrap(resp);
+        JsonNode value = envelope["value"]
+            ?? throw new GameBackendTransportException("Ok response missing 'value'");
+        return value.Deserialize<Session>(JsonOpts)!;
     }
 
     /// <summary>Invokes <c>accounts.register</c> (unauthenticated).</summary>

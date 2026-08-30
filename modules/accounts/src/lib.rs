@@ -6,14 +6,15 @@
 //! the run/split-proof scripts set `ACCOUNTS_DEV_AUTH=1` for local dev). One
 //! product-scoped `player_id`, many credential providers over it
 //! (`identities(provider, subject) → player_id`), opaque DB-backed `sessions`
-//! (30-day TTL, 32-byte base64url tokens).
+//! (60-minute access tokens, 32-byte base64url) renewed by rotating refresh tokens
+//! whose family lives at most 30 days.
 //!
 //! Capabilities (all topology-blind — the module never knows the process layout):
 //!   - `accounts.sessions` ([`accountsapi::Sessions`]) — bearer → player_id, the
 //!     capability the gateway's auth-once verifier resolves (registry swap: local
 //!     here, an edge client from `accountsrpc::remote_factories()` in a split peer).
 //!   - `accounts.auth` ([`accountsapi::Auth`]) — register/login/loginFederated/
-//!     createGuest/me/link,
+//!     createGuest/refresh/me/link,
 //!     contributed as gateway operations (conditionally, per the env gates).
 //!   - Epic web OAuth — two HTTP-NATIVE browser routes (`POST /accounts/epic/start`,
 //!     `GET /accounts/epic/callback`) mounted on the shared router when
@@ -124,8 +125,27 @@ CREATE TABLE IF NOT EXISTS accounts.sessions (
 	created_at timestamptz NOT NULL DEFAULT now(),
 	expires_at timestamptz NOT NULL
 );
+-- The refresh family this access token was minted under: what scopes a revocation to
+-- one compromised login instead of every device the player owns.
+ALTER TABLE accounts.sessions ADD COLUMN IF NOT EXISTS family_id uuid;
 CREATE INDEX IF NOT EXISTS sessions_player_idx ON accounts.sessions(player_id);
 CREATE INDEX IF NOT EXISTS sessions_expires_idx ON accounts.sessions(expires_at);
+CREATE INDEX IF NOT EXISTS sessions_family_idx ON accounts.sessions(family_id);
+
+-- Rotating refresh tokens. A consumed row is KEPT (until it expires) with the successor
+-- it minted: it is the only record that can tell a replay from an unknown token.
+CREATE TABLE IF NOT EXISTS accounts.refresh_tokens (
+	token       text PRIMARY KEY,
+	player_id   uuid        NOT NULL REFERENCES accounts.players(id) ON DELETE CASCADE,
+	family_id   uuid        NOT NULL,
+	issued_at   timestamptz NOT NULL DEFAULT now(),
+	expires_at  timestamptz NOT NULL,
+	used_at     timestamptz,
+	replaced_by text
+);
+CREATE INDEX IF NOT EXISTS refresh_family_idx ON accounts.refresh_tokens(family_id);
+CREATE INDEX IF NOT EXISTS refresh_player_idx ON accounts.refresh_tokens(player_id);
+CREATE INDEX IF NOT EXISTS refresh_expires_idx ON accounts.refresh_tokens(expires_at);
 
 -- Epic web-OAuth in-flight redemption store (Step B1). Shared, NOT process memory,
 -- so the /accounts/epic/callback can LB-route to ANY replica: new_state INSERTs and
@@ -191,19 +211,30 @@ impl Service {
         }
     }
 
+    /// Mints one login: a new refresh FAMILY and the first access token inside it, on
+    /// the caller's transaction. Both rows commit with whatever else that transaction
+    /// carries (the player row, the `player.registered` append).
     async fn issue_session_tx(
         &self,
         conn: &mut PgConnection,
         p: &Player,
         token: String,
     ) -> Result<accountsapi::Session, Error> {
+        let refresh_token = store::new_token();
+        let family_id = self
+            .store
+            .insert_refresh_family_tx(conn, &refresh_token, &p.id)
+            .await
+            .map_err(internal)?;
         self.store
-            .insert_session_tx(conn, &p.id, &token)
+            .insert_session_tx(conn, &p.id, &token, &family_id)
             .await
             .map_err(internal)?;
         Ok(accountsapi::Session {
             player_id: p.id.clone(),
             token,
+            refresh_token,
+            access_expires_in_secs: store::access_expires_in_secs(),
         })
     }
 
@@ -464,6 +495,46 @@ impl Service {
         })
     }
 
+    /// Writes the successor refresh row and the access session of a successful
+    /// rotation, on the tx that consumed the presented token.
+    async fn complete_rotation_tx(
+        &self,
+        conn: &mut PgConnection,
+        player_id: &str,
+        family_id: &str,
+        consumed: &str,
+        successor: String,
+    ) -> Result<accountsapi::Session, Error> {
+        self.store
+            .insert_refresh_successor_tx(conn, &successor, consumed)
+            .await
+            .map_err(internal)?;
+        self.issue_access_in_family_tx(conn, player_id, family_id, successor)
+            .await
+    }
+
+    /// Mints one access token inside an EXISTING family — the half a grace replay
+    /// repeats without rotating anything.
+    async fn issue_access_in_family_tx(
+        &self,
+        conn: &mut PgConnection,
+        player_id: &str,
+        family_id: &str,
+        refresh_token: String,
+    ) -> Result<accountsapi::Session, Error> {
+        let token = store::new_token();
+        self.store
+            .insert_session_tx(conn, player_id, &token, family_id)
+            .await
+            .map_err(internal)?;
+        Ok(accountsapi::Session {
+            player_id: player_id.to_string(),
+            token,
+            refresh_token,
+            access_expires_in_secs: store::access_expires_in_secs(),
+        })
+    }
+
     /// Appends the `player.registered` durable event (`emit_tx`) on the caller's
     /// tx — the durable rule: the event commits iff the registration does.
     async fn emit_registered_tx(
@@ -661,10 +732,86 @@ impl accountsapi::Auth for Service {
         Ok(accountsapi::GuestSession {
             player_id: session.player_id,
             token: session.token,
-            refresh_token: String::new(),
-            access_expires_in_secs: i64::from(store::SESSION_TTL_DAYS) * 86_400,
+            refresh_token: session.refresh_token,
+            access_expires_in_secs: session.access_expires_in_secs,
             device_secret: ticket.credential,
         })
+    }
+
+    /// Rotates a refresh token (AuthNone): consumes the presented one, mints its
+    /// successor and a fresh access session, and answers with both. The rotation, the
+    /// successor row and the access row share ONE transaction — a crash mid-way leaves
+    /// the presented token unconsumed rather than consumed with no successor.
+    ///
+    /// Unknown, expired and replayed tokens are the SAME `Unauthorized` — the answer
+    /// never tells a holder which of the three it is holding. A replay outside the grace
+    /// window additionally revokes the family, and that revocation COMMITS before the
+    /// 401 is returned.
+    async fn refresh(&self, refresh_token: String) -> Result<accountsapi::Session, Error> {
+        if !session_token_within_cap(&refresh_token) {
+            return Err(Error::unauthorized("invalid refresh token"));
+        }
+        let successor = store::new_token();
+        let mut tx = self.store.pool.begin().await.map_err(internal)?;
+        let rotated = match self
+            .store
+            .rotate_refresh_tx(&mut tx, &refresh_token, &successor)
+            .await
+        {
+            Ok(rotated) => rotated,
+            Err(e) => {
+                tx.rollback().await.ok();
+                return Err(internal(e));
+            }
+        };
+        // Read on the SAME transaction as the failed UPDATE (and skipped entirely when
+        // it succeeded — the row is already ours).
+        let row = if rotated.is_some() {
+            None
+        } else {
+            match self.store.refresh_row_tx(&mut tx, &refresh_token).await {
+                Ok(row) => row,
+                Err(e) => {
+                    tx.rollback().await.ok();
+                    return Err(internal(e));
+                }
+            }
+        };
+        let outcome = match store::classify_presentation(rotated, row) {
+            store::RefreshVerdict::Rotate {
+                player_id,
+                family_id,
+            } => self
+                .complete_rotation_tx(&mut tx, &player_id, &family_id, &refresh_token, successor)
+                .await,
+            store::RefreshVerdict::GraceReplay {
+                player_id,
+                family_id,
+                successor,
+            } => self
+                .issue_access_in_family_tx(&mut tx, &player_id, &family_id, successor)
+                .await,
+            store::RefreshVerdict::Revoke { family_id } => {
+                tracing::warn!(
+                    %family_id,
+                    "consumed refresh token replayed outside the grace window — revoking the token family"
+                );
+                match self.store.kill_family_tx(&mut tx, &family_id).await {
+                    Ok(()) => Err(Error::unauthorized("invalid refresh token")),
+                    Err(e) => Err(internal(e)),
+                }
+            }
+            store::RefreshVerdict::Deny => Err(Error::unauthorized("invalid refresh token")),
+        };
+        // A revoked family must persist, so the tx commits on the 401 path too; only a
+        // 5xx (a store failure mid-verdict) discards the work.
+        match &outcome {
+            Err(err) if err.status == opsapi::Status::Internal => {
+                tx.rollback().await.ok();
+            }
+            _ => tx.commit().await.map_err(internal)?,
+        }
+        outcome
     }
 
     /// The caller's own player + identities (player_id from `identity`, injected by
@@ -701,9 +848,10 @@ impl accountsapi::Auth for Service {
 }
 
 // ============================================================================
-// Durable prune reaction — sessions grow unboundedly (INSERT-only, TTL filtered on
-// read), so accounts reacts to the seeded daily `accounts-sessions-prune` schedule and
-// deletes expired rows on the DELIVERY tx (exactly-once with the checkpoint advance).
+// Durable prune reaction — sessions and refresh tokens grow unboundedly (INSERT-only,
+// TTL filtered on read), so accounts reacts to the seeded daily
+// `accounts-sessions-prune` schedule and deletes expired rows of BOTH tables on the
+// DELIVERY tx (exactly-once with the checkpoint advance).
 // Copied from audit's prune: subscribe raw by the CONTRACT descriptor's topic const, no
 // `schedulerevents::Fired` payload-type import — the handler parses only `name`.
 // ============================================================================
@@ -750,6 +898,11 @@ impl TxHandler for PruneHandler {
             self.svc
                 .store
                 .prune_expired_sessions(conn)
+                .await
+                .map_err(BusError::transport)?;
+            self.svc
+                .store
+                .prune_expired_refresh_tokens(conn)
                 .await
                 .map_err(BusError::transport)?;
             Ok(())
