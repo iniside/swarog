@@ -106,13 +106,14 @@ impl FakeAgent {
             (("match", AddrKind::Edge), Ok(vec![addr("MATCH_EDGE_ADDR")])),
             (("leaderboard", AddrKind::Edge), Ok(vec![addr("LEADERBOARD_EDGE_ADDR")])),
             (("wallet", AddrKind::Edge), Ok(vec![addr("WALLET_EDGE_ADDR")])),
+            (("notifications", AddrKind::Edge), Ok(vec![addr("NOTIFICATIONS_EDGE_ADDR")])),
             (("admin", AddrKind::Http), Ok(vec![addr("ADMIN_HTTP_ADDR")])),
             (("accounts", AddrKind::Http), Ok(vec![addr("ACCOUNTS_HTTP_ADDR")])),
         ];
         Self { answers, asked: RefCell::new(Vec::new()) }
     }
 
-    /// Replaces ONE answer — the failure under test — leaving the other eight
+    /// Replaces ONE answer — the failure under test — leaving the others
     /// healthy, so a fatal outcome is attributable to this answer and not to a
     /// fixture that answers nothing.
     fn with(mut self, provider: &'static str, kind: AddrKind, answer: Answer) -> Self {
