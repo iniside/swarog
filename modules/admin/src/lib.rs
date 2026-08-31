@@ -798,19 +798,21 @@ fn new_token() -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b)
 }
 
-/// Stashes a show-once `reveal` under a fresh one-shot token in the shared
-/// `admin.reveals` table (INSERT), first opportunistically pruning expired rows
-/// (piggyback GC — no background task). A prune failure never fails the stash. The
-/// returned token targets the PRG redirect (`?reveal=<token>`); ANY replica can later
-/// redeem it — the redemption authority now lives where the state lives, not in a
-/// per-process map the follow-up GET might miss.
-async fn stash_reveal(
+/// Stashes a submit [`adminapi::SubmitOutcome`] — its show-once `reveal` values and its
+/// plain `notice` line — under a fresh one-shot token in the shared `admin.reveals` table
+/// (INSERT), first opportunistically pruning expired rows (piggyback GC — no background
+/// task). A prune failure never fails the stash. The returned token targets the PRG
+/// redirect (`?reveal=<token>`); ANY replica can later redeem it — the redemption
+/// authority lives where the state lives, not in a per-process map the follow-up GET
+/// might miss. The column is named `reveal` for the values it was built to carry; it
+/// holds the whole outcome, because a notice needs the same one-shot handoff.
+async fn stash_outcome(
     pool: &PgPool,
-    reveal: Vec<adminapi::RevealItem>,
+    outcome: &adminapi::SubmitOutcome,
 ) -> anyhow::Result<String> {
     prune_expired_reveals(pool).await;
     let token = new_token();
-    let payload = serde_json::to_string(&reveal)?;
+    let payload = serde_json::to_string(outcome)?;
     sqlx::query("INSERT INTO admin.reveals (token, reveal) VALUES ($1, $2)")
         .bind(&token)
         .bind(&payload)
@@ -819,14 +821,14 @@ async fn stash_reveal(
     Ok(token)
 }
 
-/// CONSUMES the reveal for `token` via `DELETE ... RETURNING`: whichever replica runs
+/// CONSUMES the outcome for `token` via `DELETE ... RETURNING`: whichever replica runs
 /// the DELETE first wins the single row, the rest (or a refresh/replay) get zero rows
 /// → `None` — cross-replica exactly-once single-redemption. An expired row (older than
 /// [`REVEAL_TTL`]) fails the `WHERE` so nothing is deleted and `None` is returned. A
 /// store or deserialize error fails closed to `None`: the show-once secret is simply
 /// not shown — never double-served (it is not re-derivable, so a double-serve is the
 /// one outcome that must never happen).
-async fn take_reveal(pool: &PgPool, token: &str) -> Option<Vec<adminapi::RevealItem>> {
+async fn take_outcome(pool: &PgPool, token: &str) -> Option<adminapi::SubmitOutcome> {
     let redeemed = sqlx::query_scalar::<_, String>(&format!(
         "DELETE FROM admin.reveals \
          WHERE token = $1 AND created_at > now() - interval '{} seconds' \
@@ -838,7 +840,7 @@ async fn take_reveal(pool: &PgPool, token: &str) -> Option<Vec<adminapi::RevealI
     .await;
     match redeemed {
         Ok(Some(json)) => match serde_json::from_str(&json) {
-            Ok(reveal) => Some(reveal),
+            Ok(outcome) => Some(outcome),
             Err(err) => {
                 tracing::error!(%err, "admin reveal: stored payload deserialize failed");
                 None
@@ -1164,8 +1166,9 @@ async fn item(
     // (one-shot) and rendered once. A refresh of this GET re-issues without a live token
     // (already consumed) and shows no reveal — and, being a GET, mints nothing.
     if let Some(token) = params.get("reveal") {
-        if let Some(reveal) = take_reveal(&st.pool, token).await {
-            page.reveal = reveal;
+        if let Some(outcome) = take_outcome(&st.pool, token).await {
+            page.reveal = outcome.reveal;
+            page.notice = outcome.notice.unwrap_or_default();
         }
     }
     // The crumb gains the entity name when the owner rendered a ContextHeader
@@ -1394,10 +1397,10 @@ async fn render_after_submit(
     slug: &str,
     outcome: adminapi::SubmitOutcome,
 ) -> Response {
-    if outcome.reveal.is_empty() {
+    if outcome.reveal.is_empty() && outcome.notice.is_none() {
         return see_other(&format!("/admin/{slug}"));
     }
-    match stash_reveal(&st.pool, outcome.reveal).await {
+    match stash_outcome(&st.pool, &outcome).await {
         Ok(token) => see_other(&format!("/admin/{slug}?reveal={token}")),
         // The mutation already committed; only the show-once display failed to persist.
         // Fall back to the plain redirect so the operator sees the updated list — the
@@ -1515,7 +1518,7 @@ async fn resolve_items(st: &AdminState, params: &adminapi::Params) -> Vec<Resolv
             (it.section.clone(), it.label.clone(), None, it.extensions.clone())
         };
 
-        let mut base = slugify(&label);
+        let mut base = adminapi::slug(&label);
         if base.is_empty() {
             base = "item".into();
         }
@@ -1886,6 +1889,7 @@ fn build_page_view(
         modal_footer,
         form,
         reveal: Vec::new(),
+        notice: String::new(),
     }
 }
 
@@ -1943,20 +1947,6 @@ fn build_groups(items: &[Resolved], active: &str) -> Vec<NavGroup> {
         });
     }
     groups
-}
-
-/// Lowercases `s`, keeps `[a-z0-9]`, maps space/`-`/`_`→`-`, drops other runes, and
-/// trims leading/trailing `-` (Go's `slugify`, byte-for-byte on the ASCII cases).
-fn slugify(s: &str) -> String {
-    let mut b = String::new();
-    for r in s.to_lowercase().chars() {
-        if r.is_ascii_lowercase() || r.is_ascii_digit() {
-            b.push(r);
-        } else if r == ' ' || r == '-' || r == '_' {
-            b.push('-');
-        }
-    }
-    b.trim_matches('-').to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -2107,11 +2097,14 @@ struct PageView {
     modal_footer: Vec<MenuEntryView>,
     form: Option<adminapi::Form>,
     /// SHOW-ONCE values surfaced right after a successful submit (e.g. a freshly minted
-    /// API-key secret). Rendered inline — never persisted, never re-derivable — which is
-    /// why a submit that carries a reveal renders the page INLINE (200) instead of the
-    /// usual 303 redirect (a redirect would drop these values). Empty on every plain page.
+    /// API-key secret), redeemed once from the one-shot flash store by the PRG follow-up
+    /// GET. Empty on every plain page.
     #[serde(default)]
     reveal: Vec<adminapi::RevealItem>,
+    /// A plain, non-secret result line from the same flash redemption (e.g. how many rows
+    /// a bulk action moved). Empty on every plain page.
+    #[serde(default)]
+    notice: String,
 }
 
 #[derive(Serialize)]
@@ -2132,7 +2125,7 @@ struct PageData {
 }
 
 // ============================================================================
-// Tests. Pure helpers (slugify, build_groups, resolve_items, templates) run with
+// Tests. Pure helpers (adminapi::slug, build_groups, resolve_items, templates) run with
 // no DB; the session/lockout/CSRF/durable-emit matrix targets the local Postgres
 // (the test DB) and SKIPs cleanly when it is unreachable.
 // ============================================================================

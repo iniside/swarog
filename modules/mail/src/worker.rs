@@ -8,15 +8,19 @@
 //!
 //! ## Why a claim burns an attempt up front
 //! There is deliberately no `sending` state (see [`crate::SCHEMA_DDL`]). The claim is a
-//! COMMITTED update that bumps `attempts` and pushes `next_attempt_at` out by
-//! [`claim_lease`], so a process that dies mid-send leaves the row due again when the
-//! lease expires, at the cost of one burnt attempt — fail-closed toward parking rather
+//! COMMITTED update that bumps `attempts` and `generation` and pushes `next_attempt_at`
+//! out by [`claim_lease`], so a process that dies mid-send leaves the row due again when
+//! the lease expires, at the cost of one burnt attempt — fail-closed toward parking rather
 //! than toward an unbounded resend loop. The lease is 3x the send budget, and
 //! [`write_budget`] spends the remainder, so on a healthy pass the status write lands
 //! inside the lease whenever `MAIL_SEND_TIMEOUT_MS >= ACQUIRE_DEADLINE`. Below that the
-//! checkout floor wins and a re-claim can overlap a send in flight: the CAS keeps the row
-//! state correct (the loser's write matches nothing and is counted), at the cost of a
-//! duplicate delivery — which is the at-least-once contract, not a new failure mode.
+//! checkout floor wins and a re-claim can overlap a send in flight. What keeps the row
+//! correct then is the `generation` leg of the status write's CAS, and only because that
+//! counter is MONOTONE: the superseded attempt's write matches nothing and is counted.
+//! `attempts` cannot serve as that leg — an operator requeue resets it to 0, so an older
+//! attempt's value becomes reachable again after one fresh claim and its write would flip
+//! a row that is being delivered right now to `sent`. The cost of the overlap is a
+//! duplicate delivery, which is the at-least-once contract, not a new failure mode.
 //!
 //! ## Why the pool connection is not held across a send
 //! A split service's pool is 2 connections (`SPLIT_SERVICE_POOL_MAX`). Holding one idle
@@ -290,7 +294,7 @@ pub(crate) struct Drain {
 /// `SET` would leak into the next borrower of this pooled connection. The checkout itself
 /// is bounded by [`ACQUIRE_DEADLINE`]: dropping a PENDING checkout carries no session
 /// state, so cancelling it is safe.
-async fn bounded_tx(
+pub(crate) async fn bounded_tx(
     pool: &PgPool,
     budget: Duration,
 ) -> anyhow::Result<Transaction<'static, Postgres>> {

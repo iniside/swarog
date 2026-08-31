@@ -38,7 +38,7 @@ pub(crate) fn extension_entries() -> Vec<adminapi::ExtensionEntry> {
         point: accountsapi::admin::PLAYERS_ROW_MENU.id.into(),
         label: "View Characters".into(),
         icon: "characters".into(),
-        link: format!("{ADMIN_ITEM_ID}?owner={{id}}&owner_name={{name}}"),
+        link: format!("{}?owner={{id}}&owner_name={{name}}", adminapi::slug(ADMIN_LABEL)),
         present: adminapi::Present::Navigate,
         priority: 0,
     }]
@@ -196,7 +196,7 @@ fn character_card(idx: usize, c: &Character) -> adminapi::Card {
             adminapi::MenuEntry {
                 label: "View".into(),
                 icon: "view".into(),
-                link: Some(format!("{ADMIN_ITEM_ID}?owner={{id}}")),
+                link: Some(format!("{}?owner={{id}}", adminapi::slug(ADMIN_LABEL))),
                 present: adminapi::Present::Modal,
                 ..Default::default()
             },

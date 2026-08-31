@@ -437,6 +437,7 @@ pub(crate) async fn apply_submit(
             let (secret, _prefix) = svc.create_key(name, role).await.map_err(to_submit_error)?;
             Ok(adminapi::SubmitOutcome {
                 reveal: vec![adminapi::RevealItem { label: "secret".into(), value: secret }],
+                ..Default::default()
             })
         }
         ACTION_SET_KEY_ROLE => {

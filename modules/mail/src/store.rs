@@ -236,10 +236,15 @@ pub(crate) struct Claimed {
     pub(crate) subject: String,
     pub(crate) body: String,
     pub(crate) kind: String,
-    /// The attempt count the claim WROTE. Every status write CASes on it, so a second
-    /// claim of the same row (the lease expired while this attempt was in flight) makes
-    /// the loser's write match zero rows instead of overwriting the winner's.
+    /// The attempt count the claim WROTE — the input to [`crate::worker::disposition`],
+    /// and NOT a CAS leg: [`Store::requeue_parked_tx`] resets it to 0, which makes an
+    /// older attempt's value reachable again.
     pub(crate) attempts: i32,
+    /// The MONOTONE claim counter the claim wrote. Every status write CASes on it, so a
+    /// write from a superseded attempt (the lease expired mid-send and another claim, or
+    /// an operator requeue, moved the row on) matches zero rows instead of overwriting
+    /// the winner's.
+    pub(crate) generation: i32,
 }
 
 /// The row write one send attempt implies. Computed by [`crate::worker::disposition`]
@@ -283,7 +288,7 @@ impl Store {
         conn: &mut PgConnection,
         lease_secs: f64,
     ) -> Result<Option<Claimed>, sqlx::Error> {
-        let row: Option<(String, String, String, String, String, i32)> = sqlx::query_as(
+        let row: Option<(String, String, String, String, String, i32, i32)> = sqlx::query_as(
             "WITH due AS ( \
                  SELECT id FROM mail.outbox \
                   WHERE state = 'pending' AND next_attempt_at <= now() \
@@ -293,35 +298,42 @@ impl Store {
              ) \
              UPDATE mail.outbox m \
                 SET attempts = m.attempts + 1, \
+                    generation = m.generation + 1, \
                     next_attempt_at = now() + make_interval(secs => $1), \
                     updated_at = now() \
                FROM due \
               WHERE m.id = due.id \
-             RETURNING m.id::text, m.recipient, m.subject, m.body, m.kind, m.attempts",
+             RETURNING m.id::text, m.recipient, m.subject, m.body, m.kind, m.attempts, \
+                       m.generation",
         )
         .bind(lease_secs)
         .fetch_optional(&mut *conn)
         .await?;
         Ok(
-            row.map(|(id, recipient, subject, body, kind, attempts)| Claimed {
+            row.map(|(id, recipient, subject, body, kind, attempts, generation)| Claimed {
                 id,
                 recipient,
                 subject,
                 body,
                 kind,
                 attempts,
+                generation,
             }),
         )
     }
 
-    /// Writes one attempt's outcome, CAS-guarded on `(id, state = 'pending', attempts)`.
+    /// Writes one attempt's outcome, CAS-guarded on `(id, state = 'pending', generation)`.
     ///
     /// BOTH legs are load-bearing. The `state` leg is what stops an operator `cancel` that
     /// landed during the SMTP dialogue from being silently overwritten back to `sent`; the
-    /// `attempts` leg is the ABA guard against a second claim of the same row (the lease
+    /// `generation` leg is the ABA guard against a second claim of the same row (the lease
     /// expired mid-attempt) — `core/asyncevents/src/worker.rs`'s `record_failure` uses the
-    /// same pairing for the same reason. Returns the rows matched: `0` is a CAS MISS, a
-    /// named outcome the caller counts, never an error.
+    /// same pairing for the same reason. It CASes on `generation` rather than on
+    /// `attempts` because an operator requeue resets `attempts` to 0: a superseded
+    /// attempt's value then becomes reachable again, and its write would flip a row that
+    /// another attempt is delivering right now to `sent` — blanking the body of a message
+    /// still in flight. Returns the rows matched: `0` is a CAS MISS, a named outcome the
+    /// caller counts, never an error.
     pub(crate) async fn finish_tx(
         &self,
         conn: &mut PgConnection,
@@ -334,18 +346,18 @@ impl Store {
                 "UPDATE mail.outbox \
                     SET state = 'sent', sent_at = now(), provider = $3, last_error = NULL, \
                         body = '', updated_at = now() \
-                  WHERE id = $1::uuid AND state = 'pending' AND attempts = $2",
+                  WHERE id = $1::uuid AND state = 'pending' AND generation = $2",
             )
             .bind(&row.id)
-            .bind(row.attempts)
+            .bind(row.generation)
             .bind(provider),
             Disposition::Parked { last_error } => sqlx::query(
                 "UPDATE mail.outbox \
                     SET state = 'parked', provider = $3, last_error = $4, updated_at = now() \
-                  WHERE id = $1::uuid AND state = 'pending' AND attempts = $2",
+                  WHERE id = $1::uuid AND state = 'pending' AND generation = $2",
             )
             .bind(&row.id)
-            .bind(row.attempts)
+            .bind(row.generation)
             .bind(provider)
             .bind(last_error),
             Disposition::Retry {
@@ -355,10 +367,10 @@ impl Store {
                 "UPDATE mail.outbox \
                     SET next_attempt_at = now() + make_interval(secs => $3), provider = $4, \
                         last_error = $5, updated_at = now() \
-                  WHERE id = $1::uuid AND state = 'pending' AND attempts = $2",
+                  WHERE id = $1::uuid AND state = 'pending' AND generation = $2",
             )
             .bind(&row.id)
-            .bind(row.attempts)
+            .bind(row.generation)
             .bind(backoff_secs)
             .bind(provider)
             .bind(last_error),
@@ -391,16 +403,19 @@ impl Store {
     }
 }
 
-/// The four whole-table counts the operator page shows, in ONE round-trip. `count(*)
-/// FILTER` over four disjoint predicates reads every row: no index serves it. Retention
-/// bounds the `sent`/`cancelled` rows it walks, but nothing prunes `parked`, so a backlog
-/// left parked is what this scan eventually costs.
+/// The four counts the operator page shows, in ONE round-trip. Each is its own scalar
+/// subquery over a PARTIAL index (`mail_outbox_due_idx`, `mail_outbox_parked_idx`,
+/// `mail_outbox_sent_idx`), never one `count(*) FILTER` pass: the filtered form reads
+/// every row, and this page exists precisely for the backlog nothing prunes — parked rows
+/// are outside the retention sweep's `state IN ('sent','cancelled')` predicate.
 pub(crate) struct OutboxStats {
     pub(crate) pending: i64,
     pub(crate) parked: i64,
     pub(crate) sent_24h: i64,
-    /// Seconds since the oldest pending row was enqueued; `None` when nothing is pending.
-    pub(crate) oldest_pending_secs: Option<f64>,
+    /// How overdue the head of the pending queue is, in seconds, clamped at zero — the
+    /// same figure [`Store::gauges_tx`] exports, read off the same index. `min(created_at)`
+    /// would be the more literal "oldest", and would cost a heap fetch per pending row.
+    pub(crate) oldest_pending_overdue_secs: f64,
 }
 
 /// One listed outbox row. `body` is DELIBERATELY absent: a rendered body is a
@@ -422,14 +437,14 @@ impl Store {
         &self,
         conn: &mut PgConnection,
     ) -> Result<OutboxStats, sqlx::Error> {
-        let (pending, parked, sent_24h, oldest): (i64, i64, i64, Option<f64>) = sqlx::query_as(
-            "SELECT count(*) FILTER (WHERE state = 'pending'), \
-                    count(*) FILTER (WHERE state = 'parked'), \
-                    count(*) FILTER (WHERE state = 'sent' \
-                                       AND sent_at >= now() - interval '24 hours'), \
-                    EXTRACT(EPOCH FROM (now() - min(created_at) \
-                            FILTER (WHERE state = 'pending')))::float8 \
-               FROM mail.outbox",
+        let (pending, parked, sent_24h, overdue): (i64, i64, i64, f64) = sqlx::query_as(
+            "SELECT \
+               (SELECT count(*) FROM mail.outbox WHERE state = 'pending'), \
+               (SELECT count(*) FROM mail.outbox WHERE state = 'parked'), \
+               (SELECT count(*) FROM mail.outbox \
+                 WHERE state = 'sent' AND sent_at >= now() - interval '24 hours'), \
+               (SELECT COALESCE(GREATEST(0, EXTRACT(EPOCH FROM (now() - min(next_attempt_at)))), 0)::float8 \
+                  FROM mail.outbox WHERE state = 'pending')",
         )
         .fetch_one(&mut *conn)
         .await?;
@@ -437,7 +452,7 @@ impl Store {
             pending,
             parked,
             sent_24h,
-            oldest_pending_secs: oldest,
+            oldest_pending_overdue_secs: overdue,
         })
     }
 
@@ -494,6 +509,11 @@ impl Store {
     /// no longer exists. `last_error` SURVIVES: it is the only record of why the row
     /// parked, and the next attempt overwrites it anyway.
     ///
+    /// The bumped `generation` is what makes resetting `attempts` safe. This statement
+    /// hands a row back to the drain, so any attempt still in flight from before it parked
+    /// must lose its status write; without the bump that attempt's `attempts` value is
+    /// reachable again after one fresh claim.
+    ///
     /// The `state = 'parked'` leg is the whole guard: a row that moved (cancelled, or
     /// requeued by another operator) matches zero rows, which the caller reports as a
     /// stale form rather than silently resetting a row it never showed.
@@ -504,8 +524,8 @@ impl Store {
     ) -> Result<u64, sqlx::Error> {
         let done = sqlx::query(
             "UPDATE mail.outbox \
-                SET state = 'pending', attempts = 0, next_attempt_at = now(), \
-                    updated_at = now() \
+                SET state = 'pending', attempts = 0, generation = generation + 1, \
+                    next_attempt_at = now(), updated_at = now() \
               WHERE id = $1::uuid AND state = 'parked'",
         )
         .bind(id)
@@ -517,12 +537,17 @@ impl Store {
     /// The same move across parked rows, oldest first, bounded by `limit`. `SKIP LOCKED`
     /// so a concurrent operator's submit is not waited on: the two requeue disjoint sets
     /// and each reports what it actually moved.
+    ///
+    /// Returns `(moved, still_parked)`. The remaining count is read in the SAME
+    /// transaction, AFTER the update, so it sees this statement's own effect — `moved`
+    /// alone answers nothing, since `SKIP LOCKED` and a concurrent submit can leave rows
+    /// parked well below `limit`.
     pub(crate) async fn requeue_all_parked_tx(
         &self,
         conn: &mut PgConnection,
         limit: i64,
-    ) -> Result<u64, sqlx::Error> {
-        let done = sqlx::query(
+    ) -> Result<(i64, i64), sqlx::Error> {
+        let moved = sqlx::query(
             "WITH batch AS ( \
                  SELECT id FROM mail.outbox \
                   WHERE state = 'parked' \
@@ -531,15 +556,20 @@ impl Store {
                   FOR UPDATE SKIP LOCKED \
              ) \
              UPDATE mail.outbox m \
-                SET state = 'pending', attempts = 0, next_attempt_at = now(), \
-                    updated_at = now() \
+                SET state = 'pending', attempts = 0, generation = generation + 1, \
+                    next_attempt_at = now(), updated_at = now() \
                FROM batch \
               WHERE m.id = batch.id",
         )
         .bind(limit)
         .execute(&mut *conn)
-        .await?;
-        Ok(done.rows_affected())
+        .await?
+        .rows_affected() as i64;
+        let (still_parked,): (i64,) =
+            sqlx::query_as("SELECT count(*) FROM mail.outbox WHERE state = 'parked'")
+                .fetch_one(&mut *conn)
+                .await?;
+        Ok((moved, still_parked))
     }
 
     /// Takes one pending row out of the drain's reach. BEST EFFORT against an attempt

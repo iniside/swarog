@@ -1,4 +1,4 @@
-//! Admin portal tests. The pure helpers (`slugify`, `resolve_items`, `build_groups`,
+//! Admin portal tests. The pure helpers (`adminapi::slug`, `resolve_items`, `build_groups`,
 //! templates) run with no DB, no network (LOCAL renders + REMOTE fetches are plain
 //! closures). The session-auth matrix — login/lockout/CSRF/logout/cookie flags plus
 //! the durable `admin.action` emits — targets the local Postgres (the test DB) and
@@ -174,10 +174,10 @@ fn remote_item_data_with_form(id: &str, label: &str) -> adminapi::ItemData {
     }
 }
 
-// ---- slugify ----------------------------------------------------------------
+// ---- adminapi::slug ---------------------------------------------------------
 
 #[test]
-fn slugify_cases() {
+fn adminapi_slug_cases() {
     let cases = [
         ("Game Content", "game-content"),
         ("Players", "players"),
@@ -190,7 +190,7 @@ fn slugify_cases() {
         ("Zone42", "zone42"),
     ];
     for (input, want) in cases {
-        assert_eq!(slugify(input), want, "slugify({input:?})");
+        assert_eq!(adminapi::slug(input), want, "adminapi::slug({input:?})");
     }
 }
 
@@ -1518,7 +1518,7 @@ async fn csrf_rejects_before_editability_and_gates_local_submit() {
 
     // A remote (read-only by construction) item + a local editable form.
     let remote_label = uniq("Remote Panel");
-    let remote_slug = slugify(&remote_label);
+    let remote_slug = adminapi::slug(&remote_label);
     ctx.contribute(
         adminapi::SLOT,
         remote_item(
@@ -1536,7 +1536,7 @@ async fn csrf_rejects_before_editability_and_gates_local_submit() {
     let submitted: Arc<Mutex<Vec<adminapi::Params>>> = Arc::new(Mutex::new(Vec::new()));
     let sink = submitted.clone();
     let local_label = uniq("Local Form");
-    let local_slug = slugify(&local_label);
+    let local_slug = adminapi::slug(&local_label);
     let submit: adminapi::SubmitFn = Arc::new(move |values: adminapi::Params| {
         let sink = sink.clone();
         Box::pin(async move {
@@ -1670,7 +1670,7 @@ async fn remote_submit_not_found_is_405_and_csrf_gates_before_edge() {
 
     let calls: Arc<Mutex<Vec<adminapi::Params>>> = Arc::new(Mutex::new(Vec::new()));
     let label = uniq("Remote Writable");
-    let slug = slugify(&label);
+    let slug = adminapi::slug(&label);
     ctx.contribute(
         adminapi::SLOT,
         remote_writable_item(
@@ -1743,7 +1743,7 @@ async fn remote_submit_joins_checkboxes_and_flashes_reveal_via_redirect() {
 
     let calls: Arc<Mutex<Vec<adminapi::Params>>> = Arc::new(Mutex::new(Vec::new()));
     let label = uniq("Remote Reveal");
-    let slug = slugify(&label);
+    let slug = adminapi::slug(&label);
     let data = adminapi::ItemData {
         id: "apikeys".into(),
         section: "S".into(),
@@ -1788,6 +1788,7 @@ async fn remote_submit_joins_checkboxes_and_flashes_reveal_via_redirect() {
                     label: "secret".into(),
                     value: "ak_once".into(),
                 }],
+                ..Default::default()
             }),
             calls.clone(),
         ),
@@ -1917,7 +1918,7 @@ async fn stale_hidden_evidence_round_trips_to_conflict_without_audit() {
 
     let render_authority = authority.clone();
     let label = uniq("Stale Form");
-    let slug = slugify(&label);
+    let slug = adminapi::slug(&label);
     ctx.contribute(
         adminapi::SLOT,
         adminapi::Item::local(
@@ -2029,7 +2030,7 @@ async fn admin_open_bypasses_sessions_and_csrf() {
     let submitted: Arc<Mutex<Vec<adminapi::Params>>> = Arc::new(Mutex::new(Vec::new()));
     let sink = submitted.clone();
     let label = uniq("Open Form");
-    let slug = slugify(&label);
+    let slug = adminapi::slug(&label);
     let submit: adminapi::SubmitFn = Arc::new(move |values: adminapi::Params| {
         let sink = sink.clone();
         Box::pin(async move {
@@ -2422,12 +2423,16 @@ async fn argon_permit_survives_login_cancellation_until_hash_completes() {
 // the follow-up GET. Tokens are random per stash, so the assertions are token-scoped
 // and safe under parallel test execution.
 
-/// A show-once reveal payload: the label + non-re-derivable secret shown exactly once.
-fn sample_reveal() -> Vec<adminapi::RevealItem> {
-    vec![adminapi::RevealItem {
-        label: "API key".into(),
-        value: "ak_never_re_derivable".into(),
-    }]
+/// A submit outcome carrying a show-once reveal: the label + non-re-derivable secret
+/// shown exactly once.
+fn sample_outcome() -> adminapi::SubmitOutcome {
+    adminapi::SubmitOutcome {
+        reveal: vec![adminapi::RevealItem {
+            label: "API key".into(),
+            value: "ak_never_re_derivable".into(),
+        }],
+        ..Default::default()
+    }
 }
 
 /// Cross-replica exactly-once: a reveal stashed via one pool is redeemed via a SECOND,
@@ -2443,14 +2448,14 @@ async fn reveal_redeems_once_across_replicas() {
     let dsn = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string());
     let pool_b = PgPool::connect(&dsn).await.unwrap(); // a distinct connection = the other replica
 
-    let reveal = sample_reveal();
-    let token = stash_reveal(&pool_a, reveal.clone()).await.unwrap();
+    let outcome = sample_outcome();
+    let token = stash_outcome(&pool_a, &outcome).await.unwrap();
 
     // The follow-up GET lands on replica B — the in-memory store would have missed it.
-    assert_eq!(take_reveal(&pool_b, &token).await, Some(reveal));
+    assert_eq!(take_outcome(&pool_b, &token).await, Some(outcome));
     // Single-redemption: a second take (either replica) serves nothing.
-    assert_eq!(take_reveal(&pool_b, &token).await, None);
-    assert_eq!(take_reveal(&pool_a, &token).await, None);
+    assert_eq!(take_outcome(&pool_b, &token).await, None);
+    assert_eq!(take_outcome(&pool_a, &token).await, None);
 }
 
 /// An expired row (backdated past [`REVEAL_TTL`]) is NOT redeemable — the TTL is the
@@ -2463,7 +2468,7 @@ async fn reveal_expired_row_is_not_redeemable() {
     };
     ensure_schema(&pool).await;
 
-    let token = stash_reveal(&pool, sample_reveal()).await.unwrap();
+    let token = stash_outcome(&pool, &sample_outcome()).await.unwrap();
     sqlx::query(
         "UPDATE admin.reveals SET created_at = now() - interval '400 seconds' WHERE token = $1",
     )
@@ -2471,7 +2476,7 @@ async fn reveal_expired_row_is_not_redeemable() {
     .execute(&pool)
     .await
     .unwrap();
-    assert_eq!(take_reveal(&pool, &token).await, None);
+    assert_eq!(take_outcome(&pool, &token).await, None);
 }
 
 /// Piggyback prune: a `stash_reveal` sweeps rows already past the TTL first, so the
@@ -2483,7 +2488,7 @@ async fn reveal_stash_prunes_expired_rows() {
     };
     ensure_schema(&pool).await;
 
-    let stale = stash_reveal(&pool, sample_reveal()).await.unwrap();
+    let stale = stash_outcome(&pool, &sample_outcome()).await.unwrap();
     sqlx::query(
         "UPDATE admin.reveals SET created_at = now() - interval '400 seconds' WHERE token = $1",
     )
@@ -2493,7 +2498,7 @@ async fn reveal_stash_prunes_expired_rows() {
     .unwrap();
 
     // A later stash prunes anything past the TTL before inserting its own token.
-    let _fresh = stash_reveal(&pool, sample_reveal()).await.unwrap();
+    let _fresh = stash_outcome(&pool, &sample_outcome()).await.unwrap();
 
     let remaining: i64 = sqlx::query_scalar("SELECT count(*) FROM admin.reveals WHERE token = $1")
         .bind(&stale)

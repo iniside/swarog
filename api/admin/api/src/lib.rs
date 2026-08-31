@@ -86,6 +86,26 @@ pub trait AdminSubmit: Send + Sync {
     async fn admin_submit(&self, id: String, params: Params) -> Result<SubmitOutcome, Error>;
 }
 
+/// The route a contributed [`Item`] answers on: `/admin/<slug(label)>`. THE authority —
+/// the admin portal derives every page's route with this function, never from
+/// [`Item::id`], so a module building a self-link or an [`ExtensionEntry::link`] must
+/// build it from HERE. A link built from the item id 404s the moment the two differ, and
+/// they differ silently: nothing forces an id to match its label.
+///
+/// Lowercases, keeps `[a-z0-9]`, maps space/`-`/`_` to `-`, drops other runes, and trims
+/// leading/trailing `-`.
+pub fn slug(label: &str) -> String {
+    let mut b = String::new();
+    for r in label.to_lowercase().chars() {
+        if r.is_ascii_lowercase() || r.is_ascii_digit() {
+            b.push(r);
+        } else if r == ' ' || r == '-' || r == '_' {
+            b.push('-');
+        }
+    }
+    b.trim_matches('-').to_string()
+}
+
 /// A request's flattened query parameters (first value per key), handed to a LOCAL
 /// item's [`Item::render`]. The Rust stand-in for what Go carries on `context.Context`
 /// via `WithParams`/`Params`, so a render can switch on a drill-down parameter (e.g.
@@ -145,12 +165,23 @@ pub enum SubmitError {
 /// The successful result of a [`SubmitFn`] (or a remote [`AdminSubmit::admin_submit`]).
 /// Ordinarily EMPTY (`SubmitOutcome::default()`); a form that MINTS a one-time secret
 /// (e.g. a freshly generated API key) returns it in `reveal` so the admin can show it
-/// EXACTLY ONCE after the POST — the value is never re-derivable from a later read. An
-/// empty `reveal` means "nothing to show; redirect as before".
+/// EXACTLY ONCE after the POST — the value is never re-derivable from a later read.
+///
+/// [`SubmitOutcome::notice`] is the NON-secret companion: a plain result line for a write
+/// whose outcome the reloaded page cannot state by itself (how many rows a bulk action
+/// moved, and how many it left). It exists so such a result never has to ride `reveal`,
+/// whose chrome tells the operator the value is secret, unstored and unrepeatable — three
+/// claims that are false for a count, and one row in the admin's one-shot store per press.
+///
+/// Both empty means "nothing to show; redirect as before".
 #[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct SubmitOutcome {
     #[serde(default)]
     pub reveal: Vec<RevealItem>,
+    /// A one-line, non-secret result banner. Additive over the wire (`#[serde(default)]`),
+    /// so a peer predating the field still deserialises.
+    #[serde(default)]
+    pub notice: Option<String>,
 }
 
 /// One show-once value surfaced by a [`SubmitOutcome`]: an operator-facing `label` and
@@ -734,6 +765,7 @@ mod tests {
                 label: "secret".into(),
                 value: "ak_generated_secret_value".into(),
             }],
+            ..Default::default()
         };
         let back: SubmitOutcome =
             serde_json::from_str(&serde_json::to_string(&outcome).unwrap()).unwrap();

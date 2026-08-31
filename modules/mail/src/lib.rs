@@ -48,12 +48,19 @@ pub use service::Service;
 /// lease expires, at the cost of one burnt attempt — fail-closed toward parking rather
 /// than toward an unbounded resend loop.
 ///
-/// Each index has a named consumer: `mail_outbox_due_idx` serves the drain's claim,
-/// `mail_outbox_parked_idx` the parked-count gauge and the bulk requeue, and
-/// `mail_outbox_recent_idx` both the admin page's keyset listing and the retention sweep's
-/// `created_at` range predicate — btrees scan in either direction, so the DESC index
-/// serves the ascending sweep too, and a sweep running inside a delivery transaction
-/// cannot afford a seq scan.
+/// `generation` is the row's MONOTONE claim counter and the only ABA guard a status write
+/// may CAS on. Every transition that hands the row back to the drain — the claim and the
+/// operator requeue — bumps it, and nothing ever lowers it, so a write from a superseded
+/// attempt can never match. `attempts` cannot serve this: the requeue resets it to 0, which
+/// makes an older attempt's value reachable again.
+///
+/// Each index has a named consumer: `mail_outbox_due_idx` serves the drain's claim and the
+/// operator page's pending count and queue-head age, `mail_outbox_parked_idx` the
+/// parked-count gauge, the bulk requeue and the page's parked count, `mail_outbox_sent_idx`
+/// the page's 24h-delivered count, and `mail_outbox_recent_idx` both the page's capped
+/// listing and the retention sweep's `created_at` range predicate — btrees scan in either
+/// direction, so the DESC index serves the ascending sweep too, and a sweep running inside
+/// a delivery transaction cannot afford a seq scan.
 const SCHEMA_DDL: &str = r#"
 CREATE SCHEMA IF NOT EXISTS mail;
 
@@ -66,6 +73,7 @@ CREATE TABLE IF NOT EXISTS mail.outbox (
 	kind            text        NOT NULL,
 	state           text        NOT NULL DEFAULT 'pending',
 	attempts        int         NOT NULL DEFAULT 0,
+	generation      int         NOT NULL DEFAULT 0,
 	next_attempt_at timestamptz NOT NULL DEFAULT now(),
 	last_error      text,
 	provider        text,
@@ -86,6 +94,9 @@ CREATE INDEX IF NOT EXISTS mail_outbox_due_idx
 
 CREATE INDEX IF NOT EXISTS mail_outbox_parked_idx
 	ON mail.outbox (created_at) WHERE state = 'parked';
+
+CREATE INDEX IF NOT EXISTS mail_outbox_sent_idx
+	ON mail.outbox (sent_at) WHERE state = 'sent';
 
 CREATE INDEX IF NOT EXISTS mail_outbox_recent_idx
 	ON mail.outbox (created_at DESC, id DESC);"#;

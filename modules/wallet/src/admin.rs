@@ -69,7 +69,7 @@ pub(crate) fn extension_entries() -> Vec<adminapi::ExtensionEntry> {
         point: accountsapi::admin::PLAYERS_ROW_MENU.id.into(),
         label: "View Wallet".into(),
         icon: "wallet".into(),
-        link: format!("{ADMIN_ITEM_ID}?{PARAM_PLAYER}={{id}}"),
+        link: format!("{}?{PARAM_PLAYER}={{id}}", adminapi::slug(ADMIN_LABEL)),
         present: adminapi::Present::Navigate,
         priority: 0,
     }]

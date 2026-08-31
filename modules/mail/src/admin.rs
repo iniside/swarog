@@ -17,7 +17,7 @@
 
 use std::sync::Arc;
 
-use crate::service::NewMail;
+use crate::service::{is_test_key, NewMail, TEST_KEY_HEX, TEST_KEY_PREFIX};
 use crate::store::{
     Enqueued, OutboxListRow, OutboxStats, STATES, STATE_CANCELLED, STATE_PARKED, STATE_PENDING,
     STATE_SENT,
@@ -25,11 +25,6 @@ use crate::store::{
 use crate::Service;
 
 pub(crate) const ADMIN_ITEM_ID: &str = "mail";
-/// The URL this page answers on. The portal derives a page's slug from `slugify(LABEL)`,
-/// NOT from the item id (`admin::resolve_items`), so every self-link must be built from
-/// THIS — a link built from the id 404s whenever the two differ, and that they agree here
-/// is exactly what would make the mistake invisible.
-pub(crate) const ADMIN_SLUG: &str = "mail";
 pub(crate) const ADMIN_SECTION: &str = "Platform";
 pub(crate) const ADMIN_LABEL: &str = "Mail";
 
@@ -64,11 +59,8 @@ const TEST_TO_FIELD: &str = "test_to";
 /// double-click would enqueue the test message twice — the exact defect the key prevents.
 const IDEM_TEST_FIELD: &str = "_idem_test";
 
-/// The test send's key space, disjoint from any producer's by this prefix.
-const TEST_KEY_PREFIX: &str = "admin-send-test-";
-const TEST_KEY_HEX: usize = 32;
-
-/// The test message's `kind`, distinct from every producer's so the table says who sent it.
+/// The `kind` an operator test send carries, so the table can name it. Producers choose
+/// their own `kind` freely, so this names the sender by convention, not by reservation.
 const KIND_ADMIN_TEST: &str = "admin.test";
 const TEST_SUBJECT: &str = "GameOps test message";
 const TEST_BODY: &str = "This message was sent from the GameOps admin portal to prove the \
@@ -151,11 +143,8 @@ fn outbox_content(
             kpi("SENT 24H", stats.sent_24h.to_string(), "delivered to a relay"),
             kpi(
                 "OLDEST PENDING",
-                match stats.oldest_pending_secs {
-                    Some(secs) => age(secs),
-                    None => "—".into(),
-                },
-                "since it was enqueued",
+                age(stats.oldest_pending_overdue_secs),
+                "overdue at the head of the queue",
             ),
         ],
         table: Some(table),
@@ -259,9 +248,9 @@ fn option(value: &str, label: &str) -> adminapi::FieldOption {
     }
 }
 
-/// A fresh test-send key, in the exact shape [`is_test_key`] admits. `OsRng`, not a clock:
-/// two test sends rendered within one clock tick must not collide into a silent
-/// "duplicate" that enqueues only the first.
+/// A fresh test-send key, in the exact shape [`crate::service::is_test_key`] admits.
+/// `OsRng`, not a clock: two test sends rendered within one clock tick must not collide
+/// into a silent "duplicate" that enqueues only the first.
 fn mint_test_key() -> String {
     use rand::RngCore;
     let mut bytes = [0u8; TEST_KEY_HEX / 2];
@@ -271,13 +260,6 @@ fn mint_test_key() -> String {
         hex.push_str(&format!("{b:02x}"));
     }
     format!("{TEST_KEY_PREFIX}{hex}")
-}
-
-fn is_test_key(key: &str) -> bool {
-    match key.strip_prefix(TEST_KEY_PREFIX) {
-        Some(hex) => hex.len() == TEST_KEY_HEX && hex.bytes().all(|b| b.is_ascii_hexdigit()),
-        None => false,
-    }
 }
 
 /// The canonical uuid spelling the row selector renders. Checked before any statement so a
@@ -431,15 +413,13 @@ pub(crate) async fn apply_submit(
             }
         }
         ACTION_REQUEUE_ALL => {
-            let moved = svc
+            let (moved, still_parked) = svc
                 .requeue_all_parked(MAX_BULK_REQUEUE)
                 .await
                 .map_err(service_rejection)?;
             Ok(adminapi::SubmitOutcome {
-                reveal: vec![adminapi::RevealItem {
-                    label: "requeued".into(),
-                    value: bulk_report(moved),
-                }],
+                notice: Some(bulk_report(moved, still_parked)),
+                ..Default::default()
             })
         }
         ACTION_CANCEL => {
@@ -463,7 +443,9 @@ pub(crate) async fn apply_submit(
                 .await
                 .map_err(service_rejection)?;
             match enqueued {
-                Enqueued::Inserted(_) | Enqueued::Duplicate => Ok(adminapi::SubmitOutcome::default()),
+                Enqueued::Inserted(_) | Enqueued::Duplicate => {
+                    Ok(adminapi::SubmitOutcome::default())
+                }
                 // This form's key was minted for THIS message, so a different message
                 // already holding it means the form is not the one that was rendered.
                 Enqueued::Conflict => Err(Rejection::Stale),
@@ -476,15 +458,15 @@ pub(crate) async fn apply_submit(
     }
 }
 
-/// What one bulk requeue moved. Hitting the cap is reported as such: parked rows remain,
-/// and the operator's next move is another submit.
-fn bulk_report(moved: u64) -> String {
-    if moved >= MAX_BULK_REQUEUE as u64 {
-        return format!(
-            "{moved} rows — the per-submit cap; parked rows may remain, submit again"
-        );
+/// What one bulk requeue moved, reported against what it LEFT — not against the cap.
+/// `SKIP LOCKED` and a concurrent operator can end a submit well below `MAX_BULK_REQUEUE`
+/// with parked rows still there, so the cap answers nothing; the remaining count is the
+/// only figure that tells the operator whether to submit again.
+fn bulk_report(moved: i64, still_parked: i64) -> String {
+    if still_parked > 0 {
+        return format!("Requeued {moved} parked message(s); {still_parked} still parked.");
     }
-    format!("{moved} rows")
+    format!("Requeued {moved} parked message(s); none left parked.")
 }
 
 #[async_trait::async_trait]
@@ -547,8 +529,10 @@ fn page_note(state: Option<&str>, truncated: bool) -> String {
     }
 }
 
-/// The state chip, doubling as the filter link (built from [`ADMIN_SLUG`], the portal's
-/// route, never from the item id).
+/// The state chip, doubling as the filter link. The target is DERIVED with
+/// `adminapi::slug` — the same authority the portal routes on — never from the item id and
+/// never from a hand-written copy of the label: renaming the label then moves the page and
+/// its links together instead of 404ing every chip.
 fn state_cell(state: &str) -> adminapi::Cell {
     let badge = match state {
         STATE_PENDING => "blue",
@@ -560,7 +544,7 @@ fn state_cell(state: &str) -> adminapi::Cell {
     adminapi::Cell {
         text: state.into(),
         badge: badge.into(),
-        link: format!("{ADMIN_SLUG}?{PARAM_STATE}={state}"),
+        link: format!("{}?{PARAM_STATE}={state}", adminapi::slug(ADMIN_LABEL)),
         ..Default::default()
     }
 }

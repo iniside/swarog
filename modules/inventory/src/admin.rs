@@ -43,7 +43,7 @@ pub(crate) fn extension_entries() -> Vec<adminapi::ExtensionEntry> {
         point: point.into(),
         label: "View Inventory".into(),
         icon: "inventory".into(),
-        link: format!("{ADMIN_ITEM_ID}?owner={{id}}&owner_name={{name}}"),
+        link: format!("{}?owner={{id}}&owner_name={{name}}", adminapi::slug(ADMIN_LABEL)),
         present,
         priority: 10,
     };
@@ -97,7 +97,12 @@ async fn admin_owners_list(store: &Store) -> anyhow::Result<adminapi::Content> {
             adminapi::Cell {
                 text: o.owner_id.clone(),
                 mono: true,
-                link: format!("{ADMIN_ITEM_ID}?owner={}:{}", o.owner_type, o.owner_id),
+                link: format!(
+                    "{}?owner={}:{}",
+                    adminapi::slug(ADMIN_LABEL),
+                    o.owner_type,
+                    o.owner_id
+                ),
                 ..Default::default()
             },
             adminapi::Cell::text(o.items.to_string()),
