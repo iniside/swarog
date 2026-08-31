@@ -667,3 +667,37 @@ failure — it does not hand the handler two distinguishable outcomes — so a d
 handler must itself map an input rejection to `Ok(())` rather than propagate it,
 which would otherwise back off and pause the subscription in violation of the rule
 Step 3 already states.
+
+A third adversarial review of Step 3's landed implementation found the prune diverges
+from the plan and one omission in its schema:
+
+11. **The prune deviates from the approved Step 3 text.** Step 3 says the prune
+    follows `modules/audit`'s shape. What shipped is a budget-bounded LOOP of
+    watermarked batched deletes: a single unbounded DELETE seq-scanned the table
+    (audit ships a supporting index this plan did not call for), and a fixed
+    per-fire cap meant retention never kept up at any realistic inflow, since
+    audit's batch precedent (`modules/admin`'s `login_attempts`) is driven by
+    inflow while this fires once a day.
+12. **A new index was added** that the plan's schema block did not have:
+    `notifications_created_at_idx ON notifications.messages (created_at)`,
+    matching audit's `log_at_idx`, without which the prune predicate cannot
+    range-scan.
+13. **`retention_days_from_env` is stricter than its siblings.** Only an unset
+    variable takes the compiled default; present-but-unusable (empty, whitespace,
+    non-UTF-8, unparseable, out of `1..=3650`) fails startup. This matches
+    `core/asyncevents`'s convention and DIVERGES from `modules/audit`'s `env_int`,
+    which silently falls back on an unparseable value and has no ceiling. Record
+    audit as a known laggard sibling — deliberately NOT fixed in this rollout.
+14. **`PRUNE_BUDGET` is a wall-clock constant coupled by convention, not by
+    construction.** A review adjudicated the bare constant CORRECT: the module
+    must not read a plane env var, and `bus::Delivery` carries no deadline to
+    derive one from, so binding it by construction would mean changing
+    `Delivery` — a core change outside this plan. The operator constraint
+    (`ASYNCEVENTS_HANDLER_TIMEOUT` > 5s) is documented at the constant. Nothing in
+    the tree sets that env today.
+15. **Measurement discrepancy, unresolved.** Two independent measurements of the
+    pre-watermark loop (200k rows, one transaction) disagreed by ~35x and neither
+    party could explain it; a third figure was withdrawn as a timer artifact. The
+    watermark shape was faster under every fixture and the mechanism was
+    confirmed, so the decision did not turn on the magnitude — but no performance
+    number from this step should be quoted as established.

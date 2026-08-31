@@ -38,8 +38,7 @@ pub(crate) const RETENTION_ENV: &str = "NOTIFICATIONS_RETENTION_DAYS";
 /// highest `created_at`. That watermark is load-bearing, not an optimisation: every batch
 /// runs inside the ONE still-open delivery transaction, where the tuples this transaction
 /// already deleted are neither killable nor prunable from the index, so a watermark-less
-/// scan re-walks all `256 x (k-1)` of them and the loop goes quadratic (measured on this
-/// box: 200k rows in 76.2s without it, 0.83s with it).
+/// scan re-walks all `256 x (k-1)` of them and the loop goes quadratic.
 pub(crate) const PRUNE_BATCH: i64 = 256;
 
 /// The whole sweep's wall-clock budget. Exhausting it ends the fire with the batches so far
