@@ -115,5 +115,14 @@ pub fn modules(
             "wallet",
             edge_peer(wiring, edge_list_resolver, "wallet", "127.0.0.1:9010"),
         )),
+        // notifications is pure-HTTP from this front door's point of view (list/
+        // mark_read/delete, routes arriving via `__describe`); the gateway consumes
+        // no notifications capability of its own. `describe_peer`, never `Stub::new`
+        // — `notificationsrpc` deliberately exposes no `remote_factories()`, and
+        // `Stub::new` with an empty factory list `anyhow::bail!`s in `register`.
+        Box::new(remote::Stub::describe_peer(
+            "notifications",
+            edge_peer(wiring, edge_list_resolver, "notifications", "127.0.0.1:9011"),
+        )),
     ]
 }

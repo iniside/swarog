@@ -1,0 +1,30 @@
+[package]
+name = "notifications-svc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The notifications fortress process. Hosts notifications and stands up one shared
+# QUIC edge server (EDGE_ADDR, :9011 in the run scripts) so gateway-svc can dispatch
+# the player ops Remote and admin-svc can fetch/submit its admin page over
+# `admin.adminSubmit`. notifications owns schema `notifications` + three durable
+# subscriptions (wallet.changed, player.promoted, scheduler.fired-prune), so it needs
+# a DB pool and thus hosts the durable-events plane (app-owned, DB ⇒ plane). It
+# dials NO peer: `requires()` is empty (retention is `NOTIFICATIONS_RETENTION_DAYS`,
+# not a synchronous capability), so it hosts no `remote::Stub` beyond what `metrics`
+# brings. It hosts NO gateway (FrontDoor) — the single public front door lives only
+# in gateway-svc + the monolith.
+[[bin]]
+name = "notifications-svc"
+path = "src/main.rs"
+
+[dependencies]
+app = { workspace = true }
+edge = { workspace = true }
+lifecycle = { workspace = true }
+metrics = { workspace = true }
+notifications = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+anyhow = { workspace = true }
+tracing-subscriber = { workspace = true }

@@ -892,6 +892,7 @@ dependencies = [
  "leaderboard-svc",
  "lifecycle",
  "match-svc",
+ "notifications-svc",
  "rating-svc",
  "rpc-contract-model",
  "scheduler-svc",
@@ -2541,6 +2542,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "notifications-svc"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "app",
+ "edge",
+ "lifecycle",
+ "metrics",
+ "notifications",
+ "tokio",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "notificationsapi"
 version = "0.1.0"
 dependencies = [
@@ -3751,6 +3766,7 @@ dependencies = [
  "lifecycle",
  "match_module",
  "metrics",
+ "notifications",
  "rating",
  "scheduler",
  "tokio",

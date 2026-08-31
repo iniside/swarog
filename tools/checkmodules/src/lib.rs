@@ -48,6 +48,7 @@ fn split_process_modules() -> Vec<(&'static str, Vec<Box<dyn Module>>)> {
         ("rating-svc", rating_svc::modules(&w)),
         ("leaderboard-svc", leaderboard_svc::modules(&w)),
         ("wallet-svc", wallet_svc::modules(&w)),
+        ("notifications-svc", notifications_svc::modules(&w)),
     ]
 }
 
