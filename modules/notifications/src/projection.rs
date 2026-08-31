@@ -32,16 +32,26 @@ pub(crate) const DEFAULT_RETENTION_DAYS: i32 = 30;
 
 pub(crate) const RETENTION_ENV: &str = "NOTIFICATIONS_RETENTION_DAYS";
 
-/// Rows per statement. The sweep LOOPS these until a short batch, so the batching bounds
-/// each statement without capping the fire: a cap would leave retention permanently behind
-/// any inflow above one batch per day, since this schedule fires once every 86400s.
+/// Rows per statement. The sweep LOOPS batches until a short one — a per-fire CAP would
+/// leave retention permanently behind any inflow above one batch per day, since this
+/// schedule fires once every 86400s — and each batch resumes from the previous batch's
+/// highest `created_at`. That watermark is load-bearing, not an optimisation: every batch
+/// runs inside the ONE still-open delivery transaction, where the tuples this transaction
+/// already deleted are neither killable nor prunable from the index, so a watermark-less
+/// scan re-walks all `256 x (k-1)` of them and the loop goes quadratic (measured on this
+/// box: 200k rows in 76.2s without it, 0.83s with it).
 pub(crate) const PRUNE_BATCH: i64 = 256;
 
-/// The whole sweep's wall-clock budget, comfortably under the default 10s
-/// `ASYNCEVENTS_HANDLER_TIMEOUT`. Exhausting it ends the fire with the batches so far
-/// KEPT (they commit with the checkpoint); a handler that instead ran into the timeout
-/// would have its whole delivery rolled back to the plane's savepoint and make no
-/// progress at all, on every retry, until the subscription paused.
+/// The whole sweep's wall-clock budget. Exhausting it ends the fire with the batches so far
+/// KEPT — they commit with the checkpoint, and the next fire resumes from there.
+///
+/// It is a bare constant because a module may not read the plane's env and `bus::Delivery`
+/// carries no deadline to derive one from; the operator constraint that comes with it is
+/// that `ASYNCEVENTS_HANDLER_TIMEOUT` must stay above 5s (its default is 10s, and nothing
+/// in the tree sets it). Below that the sweep is killed rather than budgeted: the plane
+/// `pg_terminate_backend`s the delivery backend, so the transaction dies with it and EVERY
+/// batch of that fire is lost — no savepoint rollback is involved — and 20 such fires
+/// (`PAUSE_AFTER`, i.e. 20 days on a daily schedule) pause the subscription.
 pub(crate) const PRUNE_BUDGET: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Ten years: far past any inbox policy, and far inside the timestamp range `make_interval`
@@ -58,7 +68,11 @@ pub(crate) const MAX_RETENTION_DAYS: i32 = 3650;
 pub(crate) fn retention_days_from_env() -> anyhow::Result<i32> {
     let raw = match std::env::var(RETENTION_ENV) {
         Ok(v) => v,
-        Err(_) => return Ok(DEFAULT_RETENTION_DAYS),
+        Err(std::env::VarError::NotPresent) => return Ok(DEFAULT_RETENTION_DAYS),
+        Err(std::env::VarError::NotUnicode(v)) => anyhow::bail!(
+            "notifications: {RETENTION_ENV} is not valid unicode ({v:?}); unset it for the \
+             default {DEFAULT_RETENTION_DAYS}"
+        ),
     };
     let trimmed = raw.trim();
     let days: i32 = trimmed.parse().map_err(|_| {
@@ -105,7 +119,8 @@ async fn deliver_or_skip(
 }
 
 /// The DURABLE path's id policy, stricter than the column's tolerant `$n::uuid` cast: only
-/// the canonical hyphenated spelling is delivered, because a 22P02 aborts the plane's
+/// the canonical 36-character hyphenated spelling (hex digits either case) is delivered,
+/// because a 22P02 aborts the plane's
 /// delivery transaction and the checkpoint `UPDATE` that follows an `Ok(())` would then fail
 /// with 25P02 — a skip here has to cost no statement at all. Producers mint canonical ids, so
 /// a payload that fails this is a producer bug, logged and dropped rather than replayed
@@ -216,23 +231,35 @@ impl TxHandler for PruneHandler {
                 self.retention_days
             );
             let started = std::time::Instant::now();
+            // The scan floor, carried across batches as text because the workspace's sqlx
+            // has no date/time feature; `-infinity` is the first batch's "no floor".
+            let mut watermark = "-infinity".to_string();
             loop {
-                let deleted = sqlx::query(
+                let (deleted, high): (i64, Option<String>) = sqlx::query_as(
                     "WITH stale AS ( \
                        SELECT ctid FROM notifications.messages \
                         WHERE created_at < now() - make_interval(days => $1) \
+                          AND created_at >= $3::timestamptz \
                         ORDER BY created_at LIMIT $2 FOR UPDATE SKIP LOCKED \
+                     ), del AS ( \
+                       DELETE FROM notifications.messages m USING stale \
+                        WHERE m.ctid = stale.ctid RETURNING m.created_at \
                      ) \
-                     DELETE FROM notifications.messages m USING stale WHERE m.ctid = stale.ctid",
+                     SELECT count(*)::bigint, max(created_at)::text FROM del",
                 )
                 .bind(self.retention_days)
                 .bind(PRUNE_BATCH)
-                .execute(&mut *conn)
+                .bind(&watermark)
+                .fetch_one(&mut *conn)
                 .await
-                .map_err(BusError::transport)?
-                .rows_affected();
-                if deleted < PRUNE_BATCH as u64 {
+                .map_err(BusError::transport)?;
+                if deleted < PRUNE_BATCH {
                     return Ok(());
+                }
+                // `>=`, never `>`: rows sharing the batch's highest `created_at` may still be
+                // pending, and they are already deleted, so re-scanning them costs one batch.
+                if let Some(high) = high {
+                    watermark = high;
                 }
                 if started.elapsed() >= PRUNE_BUDGET {
                     tracing::warn!(
