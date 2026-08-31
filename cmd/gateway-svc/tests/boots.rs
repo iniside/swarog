@@ -14,8 +14,10 @@ use lifecycle::{Context, Module, ProcessWiring};
 /// lifecycle two-phase order), and assert:
 ///   1. every module's `register` SUCCEEDS (the zero-factory bail no longer fires on the
 ///      peer-only describe stubs), and
-///   2. each of the six `#[http]` providers contributed a `PEER_SLOT` entry — the entry the
-///      D2 describe fetch iterates to reach that peer's `__describe`.
+///   2. every `#[http]` provider contributed a `PEER_SLOT` entry — the entry the D2 describe
+///      fetch iterates to reach that peer's `__describe`. The provider set is DERIVED from
+///      `opscatalog::OPERATIONS` (itself generated from `api/*/api` and freshness-gated), so a
+///      new provider joins this assertion by existing, not by being remembered here.
 #[test]
 fn gateway_svc_module_set_boots_and_every_http_provider_lands_in_peer_slot() {
     let wiring = ProcessWiring::new();
@@ -38,7 +40,19 @@ fn gateway_svc_module_set_boots_and_every_http_provider_lands_in_peer_slot() {
     let peers: Vec<opsapi::PeerAddr> = ctx.contributions(opsapi::PEER_SLOT);
     let providers: std::collections::BTreeSet<&str> =
         peers.iter().map(|p| p.provider.as_str()).collect();
-    for http_provider in ["characters", "inventory", "match", "leaderboard", "accounts", "wallet"] {
+    // PEER_SLOT is a superset of the `#[http]` set — capability-only stubs (apikeys, config)
+    // contribute an entry without owning a route — so this is containment over a DERIVED set,
+    // never equality against a literal.
+    let http_providers: std::collections::BTreeSet<&str> = opscatalog::OPERATIONS
+        .iter()
+        .filter_map(|op| op.method.split_once('.').map(|(provider, _)| provider))
+        .collect();
+    assert!(
+        !http_providers.is_empty(),
+        "opscatalog::OPERATIONS yielded no providers; the derivation is broken and this \
+         assertion would pass vacuously"
+    );
+    for http_provider in &http_providers {
         assert!(
             providers.contains(http_provider),
             "the #[http] provider {http_provider:?} must contribute a PEER_SLOT entry so the \

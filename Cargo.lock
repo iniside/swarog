@@ -1600,6 +1600,7 @@ dependencies = [
  "lifecycle",
  "metrics",
  "opsapi",
+ "opscatalog",
  "registry",
  "remote",
  "rustls",

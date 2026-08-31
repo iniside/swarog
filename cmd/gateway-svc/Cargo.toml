@@ -49,3 +49,6 @@ charactersrpc = { workspace = true }
 inventoryrpc = { workspace = true }
 opsapi = { workspace = true }
 registry = { workspace = true }
+# `boots.rs` derives the `#[http]` provider set from this generated table instead of a
+# hand-written literal, so a new provider cannot be forgotten out of the assertion.
+opscatalog = { workspace = true }
