@@ -2516,7 +2516,9 @@ dependencies = [
 name = "notifications"
 version = "0.1.0"
 dependencies = [
+ "accountsapi",
  "accountsevents",
+ "adminapi",
  "anyhow",
  "async-trait",
  "base64",
@@ -2527,11 +2529,13 @@ dependencies = [
  "notificationsapi",
  "notificationsrpc",
  "opsapi",
+ "rand 0.8.6",
  "registry",
  "schedulerevents",
  "serde",
  "serde_json",
  "sqlx",
+ "tokio",
  "tracing",
  "walletevents",
 ]

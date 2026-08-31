@@ -139,8 +139,11 @@ pub(crate) fn resolve_limit(limit: i64) -> Result<i64, Error> {
     Ok(limit.min(MAX_PAGE_LIMIT))
 }
 
-/// One inbox row about to be written. `source_event_id` is the durable `event_id` that
-/// produced it, or EMPTY for operator mail — see [`Store::insert_tx`] for what that changes.
+/// One inbox row about to be written. `source_event_id` is the row's DEDUP identity, which
+/// is the durable `event_id` for the fan-in and the admin form's render-time
+/// `admin-send-mail-<hex>` key for operator mail; EMPTY opts out of dedup entirely — see
+/// [`Store::insert_tx`]. The two key spaces are kept disjoint by that prefix, which
+/// `admin::rendered_key` requires, so a posted key can never pre-empt a real event's row.
 pub struct NewNotification<'a> {
     pub player_id: &'a str,
     pub kind: &'a str,
@@ -220,6 +223,16 @@ impl Service {
                 }
             })?;
         Ok(id.is_some())
+    }
+
+    /// Operator mail: the SAME [`Service::deliver_on`] policy, run on a pool connection, so
+    /// the admin form cannot acquire an input rule the durable fan-in does not have.
+    ///
+    /// `false` is the dedup index answering that this form's render-time key already produced
+    /// a row — a double-submit sends once.
+    pub async fn send_operator_mail(&self, n: &NewNotification<'_>) -> Result<bool, Error> {
+        let mut conn = self.store.pool.acquire().await.map_err(internal)?;
+        self.deliver_on(&mut conn, n).await
     }
 }
 

@@ -6,6 +6,7 @@
 //! pool-owned transaction) and the durable fan-in (the event plane's handed delivery
 //! transaction) share one implementation and one input policy.
 
+mod admin;
 mod projection;
 mod service;
 mod store;
@@ -27,10 +28,13 @@ use registry::key;
 /// class fail-safe UNDER those caps, not a second policy, and a bump on one side without
 /// the other turns a 400 into an unmapped 23514 (a 500).
 ///
-/// The partial unique index on `source_event_id` is a BELT: durable delivery is already
-/// exactly-once for a `TransactionalPg` consumer, so its job is to make an operator
-/// re-drive (`eventctl`) idempotent rather than duplicate a player's inbox. It is partial
-/// because operator mail carries no source event and NULLs would otherwise collide.
+/// The unique index on `source_event_id` is the ONE dedup authority both write paths share:
+/// durable delivery is already exactly-once for a `TransactionalPg` consumer, so its job
+/// there is to make an operator re-drive (`eventctl`) idempotent rather than duplicate a
+/// player's inbox, and operator mail rides the same column under the render-time
+/// `admin-send-mail-` key prefix that keeps the two key spaces disjoint. It is PARTIAL so
+/// that an absent key (NULL) opts a row out of dedup instead of colliding with every other
+/// keyless row.
 ///
 /// `notifications_created_at_idx` exists for the retention sweep alone: `created_at` is not
 /// the leading column of the inbox index, so without it the daily prune seq-scans the whole
@@ -168,12 +172,32 @@ impl Module for NotificationsModule {
             ctx.contribute(opsapi::LOCAL_SLOT, op.local);
         }
 
+        // The local "Inbox" page. The `RenderFn` is synchronous; `admin::admin_render` bridges
+        // to the async store reads via `block_in_place`. The extension entries ride the item
+        // as pure data — the same vec `admin_data` returns REMOTE.
+        let render_svc = svc.clone();
+        ctx.contribute(
+            adminapi::SLOT,
+            adminapi::Item::local(
+                admin::ADMIN_ITEM_ID,
+                admin::ADMIN_SECTION,
+                admin::ADMIN_LABEL,
+                Arc::new(move |params: &adminapi::Params| admin::admin_render(&render_svc, params)),
+            )
+            .with_extensions(admin::extension_entries()),
+        );
+
         // Contributed UNCONDITIONALLY — topology-blind: `app::run` applies it iff this
         // process serves an internal edge; in the monolith it is never applied.
         ctx.contribute(
             edge::EDGE_SLOT,
             edge::EdgeReg::new(move |server| {
                 notificationsrpc::player_rpc::register_server(server, svc.clone());
+                // The admin fan-out READ face and, ALONGSIDE it, the opt-in WRITE face — both
+                // through this module's OWN glue crate's re-exports. The write face is what
+                // makes the Inbox page editable from a REMOTE admin process.
+                notificationsrpc::register_admin(server, svc.clone());
+                notificationsrpc::register_admin_submit(server, svc.clone());
             }),
         );
 

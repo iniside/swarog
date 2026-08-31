@@ -20,6 +20,13 @@ edge = { workspace = true }
 notificationsapi = { workspace = true }
 notificationsrpc = { workspace = true }
 bus = { workspace = true }
+# The admin CONTRACT (widgets + the AdminData/AdminSubmit traits) and the accounts api crate
+# for the `PLAYERS_ROW_MENU` extension-point const the "View Inbox" entry targets — contract
+# crates, importable by any module; neither impl is ever reached.
+adminapi = { workspace = true }
+accountsapi = { workspace = true }
+# The render-time dedup key the admin form round-trips (OsRng, not a clock).
+rand = { workspace = true }
 sqlx = { workspace = true }
 # The two fan-in EVENT contracts and the scheduler one (events crates are importable by any
 # module; the impl crates are not).
@@ -34,3 +41,6 @@ tracing = { workspace = true }
 base64 = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
+# The admin `RenderFn` is synchronous while the page's store reads are not: the local render
+# bridges through `block_in_place` on the multi-thread runtime.
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }

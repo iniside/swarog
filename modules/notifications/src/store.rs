@@ -32,6 +32,14 @@ fn row_to_notification(row: Row) -> Notification {
     }
 }
 
+/// One row of the OPERATOR's cross-player view: a message plus the player it addresses.
+/// `player_id` is not part of [`COLS`] because a player's own inbox never needs to be told
+/// whose it is.
+pub(crate) struct InboxRow {
+    pub(crate) player_id: String,
+    pub(crate) message: Notification,
+}
+
 /// Every write takes `&mut PgConnection`, never the pool, so one implementation serves a
 /// pool-owned transaction and the event plane's HANDED delivery transaction alike; reads
 /// use the pool.
@@ -177,5 +185,55 @@ impl Store {
         .bind(source_event_id)
         .fetch_optional(&mut *conn)
         .await
+    }
+
+    /// The newest messages across every player, for the operator overview. Ordered like the
+    /// per-player page so the two views agree on what "newest" means, and unpaged: the
+    /// operator drills into one player rather than walking the whole table.
+    pub(crate) async fn recent(&self, limit: i64) -> Result<Vec<InboxRow>, sqlx::Error> {
+        let rows = sqlx::query_as::<_, (String, String, String, String, String, String, String)>(
+            &format!(
+                "SELECT player_id::text, {COLS} FROM notifications.messages \
+                  ORDER BY created_at DESC, id DESC LIMIT $1"
+            ),
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|(player_id, id, kind, title, body, created_at, read_at)| InboxRow {
+                player_id,
+                message: row_to_notification((id, kind, title, body, created_at, read_at)),
+            })
+            .collect())
+    }
+
+    /// `(messages, unread, players)` over the whole table.
+    pub(crate) async fn stats(&self) -> Result<(i64, i64, i64), sqlx::Error> {
+        sqlx::query_as::<_, (i64, i64, i64)>(
+            "SELECT count(*), count(*) FILTER (WHERE read_at IS NULL), count(DISTINCT player_id) \
+               FROM notifications.messages",
+        )
+        .fetch_one(&self.pool)
+        .await
+    }
+
+    /// `(messages, unread)` for one player. A `player_id` the cast rejects is an EMPTY inbox,
+    /// matching [`Store::page_by_player`] — the two halves of the drill-down must not
+    /// disagree about whether the player exists.
+    pub(crate) async fn player_stats(&self, player_id: &str) -> Result<(i64, i64), sqlx::Error> {
+        let res = sqlx::query_as::<_, (i64, i64)>(
+            "SELECT count(*), count(*) FILTER (WHERE read_at IS NULL) \
+               FROM notifications.messages WHERE player_id = $1::uuid",
+        )
+        .bind(player_id)
+        .fetch_one(&self.pool)
+        .await;
+        match res {
+            Ok(pair) => Ok(pair),
+            Err(e) if is_invalid_uuid(&e) => Ok((0, 0)),
+            Err(e) => Err(e),
+        }
     }
 }
