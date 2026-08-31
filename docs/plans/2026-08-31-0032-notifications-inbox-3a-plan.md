@@ -701,3 +701,53 @@ from the plan and one omission in its schema:
     watermark shape was faster under every fixture and the mechanism was
     confirmed, so the decision did not turn on the magnitude — but no performance
     number from this step should be quoted as established.
+
+A fourth adversarial review of Step 4's landed implementation (admin page + operator
+mail) found the following:
+
+16. **The plan specified a broken link.** Step 4(c) says the extension entry links
+    `notifications?player={id}`. That 404s: the admin portal resolves a page's URL
+    from `slugify(label)`, not from the item id (`modules/admin/src/lib.rs`,
+    `resolve_items` → `let mut base = slugify(&label)`; the routes match that slug).
+    `ADMIN_LABEL` is `"Inbox"` ⇒ slug `inbox`. What shipped is an `ADMIN_SLUG` const
+    used by both link sites. The precedent misled: wallet/characters/inventory have
+    labels whose slug coincides with their id, and apikeys ("API Keys" → `api-keys`)
+    never links to itself, so nothing in the tree had exercised the divergence. Note
+    that NO gate can see this — `admincheck` validates only the contribution side
+    (point id, present↔kind, `{key}` ⊆ `context_keys`, label collisions).
+17. **`ADMIN_SLUG` has no mechanical pin.** `slugify` is private to `modules/admin`,
+    and notifications importing admin would be a module→module edge `archcheck`
+    rejects, so no in-crate assertion can pin it. It is correct today and no other
+    admin item slugs to `inbox`, but a future second "Inbox" would silently become
+    `inbox-2` and re-404 every self-link. **Step 8/9 requirement:** prove the link
+    with a real request (`GET /admin/inbox?player=<uuid>` → 200 and the rendered
+    Players row-menu href), not a const assertion.
+18. **The operator idempotency key shares `source_event_id` with durable dedup.**
+    Adjudicated correct: `asyncevents.append_event` takes no caller-supplied id and
+    `event_id` is a bare `gen_random_uuid()::text`, so the required
+    `admin-send-mail-` prefix makes the two namespaces disjoint; a second column
+    would be a second dedup rail. Conditions that shipped with it: the submit path
+    requires the exact 48-byte minted shape, `validate_new` caps the column at 128
+    bytes for the fan-in half and now also rejects an empty key, and the whole
+    insert authority is `pub(crate)`.
+19. **A resubmitted, edited form no longer reports success.** `send_operator_mail`
+    returns `Sent::{Appended, Duplicate, KeyReused}`; on a conflict it re-reads and
+    compares `(player_id, kind, title, body)` — identical ⇒ success no-op, different
+    ⇒ `Rejection::Stale` (409 "reload"), matching wallet's `IDEMPOTENCY_CONFLICT`
+    precedent. Before this, `ON CONFLICT DO NOTHING` silently discarded an
+    operator's correction and the portal rendered success.
+20. **`Store::stats` was dropped.** Whole-table `count(*)`/`count(DISTINCT
+    player_id)` ran on every portal request (the portal fetches every remote item's
+    `admin_data` per request), against a table sized for millions. The overview now
+    derives truncation from a `PAGE + 1` fetch and reports page-scoped KPIs; counts
+    survive only on the drill-down, where `notifications_inbox_idx` leads with
+    `player_id`.
+21. **Step 7 constraint:** the `InputByteCaps` fixture must carry at least one real
+    `CapCase` — a `NotApplicable` stance leaves `conformancecheck` red — and should
+    probe the dedup-key cap alongside title/body/kind/cursor. **Step 8 constraint:**
+    `admin_render` uses `block_in_place`, so its tests need
+    `#[tokio::test(flavor = "multi_thread")]`.
+22. **Known gap, another module's file:** `modules/admin/src/admin.html.tmpl`'s
+    `menu_icon` macro has no arm for the `"mail"` icon key, so the row-menu entry
+    renders label-only. Wallet's `"wallet"` key has the same gap. Not swept in this
+    rollout.
