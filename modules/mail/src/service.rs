@@ -1,8 +1,12 @@
 use opsapi::Error;
-use sqlx::PgConnection;
+use sqlx::pool::PoolConnection;
+use sqlx::{PgConnection, PgPool, Postgres};
 
 use crate::address::parse_address;
-use crate::store::{cap_from_db_error, Enqueued, Store, BODY, IDEMPOTENCY_KEY, KIND, SUBJECT};
+use crate::store::{
+    cap_from_db_error, Enqueued, OutboxListRow, OutboxStats, Store, BODY, IDEMPOTENCY_KEY, KIND,
+    SUBJECT,
+};
 
 /// One request to enqueue, borrowed from whichever caller raised it — a durable payload or
 /// an operator form.
@@ -52,17 +56,30 @@ pub(crate) fn validate_new(m: &NewMail<'_>) -> Result<(), Error> {
 
 pub struct Service {
     pub(crate) store: Store,
-}
-
-impl Default for Service {
-    fn default() -> Self {
-        Service::new()
-    }
+    /// The operator page's own connection source. The durable ingress never touches it —
+    /// that path runs on the delivery transaction it is handed — so this pool serves only
+    /// the pool-owned reads and writes of the admin surface.
+    pool: PgPool,
 }
 
 impl Service {
-    pub fn new() -> Service {
-        Service { store: Store }
+    pub fn new(pool: PgPool) -> Service {
+        Service { store: Store, pool }
+    }
+
+    /// A pool checkout under the drain's own bound. Unbounded here would be worse than a
+    /// slow page: the LOCAL render runs inside `block_in_place`, so a checkout that never
+    /// completes pins a runtime worker thread for as long as the operator's request lives.
+    async fn conn(&self) -> Result<PoolConnection<Postgres>, Error> {
+        tokio::time::timeout(crate::worker::ACQUIRE_DEADLINE, self.pool.acquire())
+            .await
+            .map_err(|_| {
+                Error::internal(format!(
+                    "mail: pool checkout timed out after {}s",
+                    crate::worker::ACQUIRE_DEADLINE.as_secs()
+                ))
+            })?
+            .map_err(crate::internal)
     }
 
     /// The single enqueue authority. It runs on a CALLER-OWNED connection and never begins,
@@ -91,5 +108,64 @@ impl Service {
             }
             crate::internal(e)
         })
+    }
+}
+
+/// The operator surface's data access. Every method runs on a pool connection and returns
+/// [`Error`]: `Status::Internal` is infrastructure, anything else is the operator's input —
+/// the split `crate::admin` maps onto its own verdicts.
+impl Service {
+    pub(crate) async fn outbox_stats(&self) -> Result<OutboxStats, Error> {
+        let mut conn = self.conn().await?;
+        self.store
+            .stats_tx(&mut conn)
+            .await
+            .map_err(crate::internal)
+    }
+
+    pub(crate) async fn recent_outbox(
+        &self,
+        state: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<OutboxListRow>, Error> {
+        let mut conn = self.conn().await?;
+        self.store
+            .recent_tx(&mut conn, state, limit)
+            .await
+            .map_err(crate::internal)
+    }
+
+    /// Rows moved — `0` means the row was not parked when the statement ran, which the
+    /// caller reports as a stale form rather than as success.
+    pub(crate) async fn requeue_parked(&self, id: &str) -> Result<u64, Error> {
+        let mut conn = self.conn().await?;
+        self.store
+            .requeue_parked_tx(&mut conn, id)
+            .await
+            .map_err(crate::internal)
+    }
+
+    pub(crate) async fn requeue_all_parked(&self, limit: i64) -> Result<u64, Error> {
+        let mut conn = self.conn().await?;
+        self.store
+            .requeue_all_parked_tx(&mut conn, limit)
+            .await
+            .map_err(crate::internal)
+    }
+
+    pub(crate) async fn cancel_pending(&self, id: &str) -> Result<u64, Error> {
+        let mut conn = self.conn().await?;
+        self.store
+            .cancel_pending_tx(&mut conn, id)
+            .await
+            .map_err(crate::internal)
+    }
+
+    /// An operator's test message through the SAME [`Service::enqueue_on`] authority, run
+    /// on a pool connection: the admin form cannot acquire an input rule — or an
+    /// idempotency semantic — the durable ingress does not have.
+    pub(crate) async fn enqueue_from_admin(&self, m: &NewMail<'_>) -> Result<Enqueued, Error> {
+        let mut conn = self.conn().await?;
+        self.enqueue_on(&mut conn, m).await
     }
 }

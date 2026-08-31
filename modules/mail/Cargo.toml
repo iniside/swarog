@@ -31,6 +31,16 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 # The no-provider `/readyz` check: a process accepting mail it cannot deliver is not ready.
 httpmw = { workspace = true }
+# The internal mTLS edge: the module contributes its admin faces to `EDGE_SLOT`
+# unconditionally and never learns whether this process serves one.
+edge = { workspace = true }
+# The admin CONTRACT (widgets + the AdminData/AdminSubmit traits) — a contract crate,
+# importable by any module. `mailrpc` is this module's OWN glue: the cross-cutting admin
+# fan-out's server-side register_admin/register_admin_submit.
+adminapi = { workspace = true }
+mailrpc = { workspace = true }
+# The render-time idempotency key the admin test-send form round-trips (OsRng, not a clock).
+rand = { workspace = true }
 # The enqueue counters ride core/metrics' private registry, so they appear on the same
 # GET /metrics as every plane counter.
 metrics = { workspace = true }

@@ -10,6 +10,14 @@ use crate::service::NewMail;
 
 /// The delivered state — one of the four `mail_outbox_state_check` names.
 pub(crate) const STATE_SENT: &str = "sent";
+pub(crate) const STATE_PENDING: &str = "pending";
+pub(crate) const STATE_PARKED: &str = "parked";
+pub(crate) const STATE_CANCELLED: &str = "cancelled";
+
+/// The `mail_outbox_state_check` vocabulary as data, for the operator page's state filter:
+/// a value outside this list is refused before it reaches a statement, so a filter can
+/// never widen what the column admits.
+pub(crate) const STATES: &[&str] = &[STATE_PENDING, STATE_SENT, STATE_PARKED, STATE_CANCELLED];
 
 /// Ceiling on the operator-visible `last_error`. A relay's response or an error chain is
 /// unbounded; the column is not indexed and nobody reads past the first line.
@@ -380,5 +388,182 @@ impl Store {
             parked,
             oldest_pending_overdue_secs: overdue,
         })
+    }
+}
+
+/// The four whole-table counts the operator page shows, in ONE round-trip. `count(*)
+/// FILTER` over four disjoint predicates reads every row: no index serves it. Retention
+/// bounds the `sent`/`cancelled` rows it walks, but nothing prunes `parked`, so a backlog
+/// left parked is what this scan eventually costs.
+pub(crate) struct OutboxStats {
+    pub(crate) pending: i64,
+    pub(crate) parked: i64,
+    pub(crate) sent_24h: i64,
+    /// Seconds since the oldest pending row was enqueued; `None` when nothing is pending.
+    pub(crate) oldest_pending_secs: Option<f64>,
+}
+
+/// One listed outbox row. `body` is DELIBERATELY absent: a rendered body is a
+/// verification link or a reset token, and an operator table is a screen, a screenshot and
+/// a browser cache — the column the drain blanks on `sent` must not be re-exposed for
+/// every other state.
+pub(crate) struct OutboxListRow {
+    pub(crate) id: String,
+    pub(crate) created_at: String,
+    pub(crate) recipient: String,
+    pub(crate) kind: String,
+    pub(crate) state: String,
+    pub(crate) attempts: i32,
+    pub(crate) last_error: String,
+}
+
+impl Store {
+    pub(crate) async fn stats_tx(
+        &self,
+        conn: &mut PgConnection,
+    ) -> Result<OutboxStats, sqlx::Error> {
+        let (pending, parked, sent_24h, oldest): (i64, i64, i64, Option<f64>) = sqlx::query_as(
+            "SELECT count(*) FILTER (WHERE state = 'pending'), \
+                    count(*) FILTER (WHERE state = 'parked'), \
+                    count(*) FILTER (WHERE state = 'sent' \
+                                       AND sent_at >= now() - interval '24 hours'), \
+                    EXTRACT(EPOCH FROM (now() - min(created_at) \
+                            FILTER (WHERE state = 'pending')))::float8 \
+               FROM mail.outbox",
+        )
+        .fetch_one(&mut *conn)
+        .await?;
+        Ok(OutboxStats {
+            pending,
+            parked,
+            sent_24h,
+            oldest_pending_secs: oldest,
+        })
+    }
+
+    /// The newest rows, optionally narrowed to one `state`. Both orderings are
+    /// `mail_outbox_recent_idx`'s key; the caller asks for one row past its page to learn
+    /// whether older rows exist.
+    pub(crate) async fn recent_tx(
+        &self,
+        conn: &mut PgConnection,
+        state: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<OutboxListRow>, sqlx::Error> {
+        const COLUMNS: &str = "SELECT id::text, \
+             to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), \
+             recipient, kind, state, attempts, COALESCE(last_error, '') \
+             FROM mail.outbox ";
+        let rows: Vec<(String, String, String, String, String, i32, String)> = match state {
+            Some(state) => {
+                sqlx::query_as(&format!(
+                    "{COLUMNS} WHERE state = $1 ORDER BY created_at DESC, id DESC LIMIT $2"
+                ))
+                .bind(state)
+                .bind(limit)
+                .fetch_all(&mut *conn)
+                .await?
+            }
+            None => {
+                sqlx::query_as(&format!(
+                    "{COLUMNS} ORDER BY created_at DESC, id DESC LIMIT $1"
+                ))
+                .bind(limit)
+                .fetch_all(&mut *conn)
+                .await?
+            }
+        };
+        Ok(rows
+            .into_iter()
+            .map(
+                |(id, created_at, recipient, kind, state, attempts, last_error)| OutboxListRow {
+                    id,
+                    created_at,
+                    recipient,
+                    kind,
+                    state,
+                    attempts,
+                    last_error,
+                },
+            )
+            .collect())
+    }
+
+    /// Returns ONE parked row to the drain. `attempts = 0` restarts the ladder — the
+    /// operator fixed what parked it, so the burnt attempts describe a configuration that
+    /// no longer exists. `last_error` SURVIVES: it is the only record of why the row
+    /// parked, and the next attempt overwrites it anyway.
+    ///
+    /// The `state = 'parked'` leg is the whole guard: a row that moved (cancelled, or
+    /// requeued by another operator) matches zero rows, which the caller reports as a
+    /// stale form rather than silently resetting a row it never showed.
+    pub(crate) async fn requeue_parked_tx(
+        &self,
+        conn: &mut PgConnection,
+        id: &str,
+    ) -> Result<u64, sqlx::Error> {
+        let done = sqlx::query(
+            "UPDATE mail.outbox \
+                SET state = 'pending', attempts = 0, next_attempt_at = now(), \
+                    updated_at = now() \
+              WHERE id = $1::uuid AND state = 'parked'",
+        )
+        .bind(id)
+        .execute(&mut *conn)
+        .await?;
+        Ok(done.rows_affected())
+    }
+
+    /// The same move across parked rows, oldest first, bounded by `limit`. `SKIP LOCKED`
+    /// so a concurrent operator's submit is not waited on: the two requeue disjoint sets
+    /// and each reports what it actually moved.
+    pub(crate) async fn requeue_all_parked_tx(
+        &self,
+        conn: &mut PgConnection,
+        limit: i64,
+    ) -> Result<u64, sqlx::Error> {
+        let done = sqlx::query(
+            "WITH batch AS ( \
+                 SELECT id FROM mail.outbox \
+                  WHERE state = 'parked' \
+                  ORDER BY created_at \
+                  LIMIT $1 \
+                  FOR UPDATE SKIP LOCKED \
+             ) \
+             UPDATE mail.outbox m \
+                SET state = 'pending', attempts = 0, next_attempt_at = now(), \
+                    updated_at = now() \
+               FROM batch \
+              WHERE m.id = batch.id",
+        )
+        .bind(limit)
+        .execute(&mut *conn)
+        .await?;
+        Ok(done.rows_affected())
+    }
+
+    /// Takes one pending row out of the drain's reach. BEST EFFORT against an attempt
+    /// already in flight: the row may be leased right now, and the relay may already have
+    /// accepted the message — but [`Store::finish_tx`]'s `state = 'pending'` CAS leg means
+    /// that in-flight attempt cannot write `sent` back over this cancel.
+    ///
+    /// `body` is NOT blanked. `sent` is the only state [`body_is_comparable`] excludes
+    /// from the duplicate-vs-conflict comparison, so blanking a cancelled row would make a
+    /// durable replay of that request compare `"" != body`, answer `Conflict`, and drop
+    /// the message while reporting the operator's own cancel as a producer bug.
+    pub(crate) async fn cancel_pending_tx(
+        &self,
+        conn: &mut PgConnection,
+        id: &str,
+    ) -> Result<u64, sqlx::Error> {
+        let done = sqlx::query(
+            "UPDATE mail.outbox \
+                SET state = 'cancelled', updated_at = now() \
+              WHERE id = $1::uuid AND state = 'pending'",
+        )
+        .bind(id)
+        .execute(&mut *conn)
+        .await?;
+        Ok(done.rows_affected())
     }
 }

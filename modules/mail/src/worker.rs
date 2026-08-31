@@ -57,7 +57,7 @@ const DRAIN_DEADLINE: Duration = Duration::from_secs(30);
 /// Bound on OBTAINING a pool connection. Dropping a pending checkout carries no session
 /// state, so cancelling it is safe — unlike cancelling in-flight work, which the session
 /// `statement_timeout` bounds instead.
-const ACQUIRE_DEADLINE: Duration = Duration::from_secs(5);
+pub(crate) const ACQUIRE_DEADLINE: Duration = Duration::from_secs(5);
 
 /// How long `stop` waits for the loop to exit before ABORTING it. Deliberately under
 /// `core/app`'s 5s `MODULE_STOP_GRACE_MS`, so this module resolves before the lifecycle
