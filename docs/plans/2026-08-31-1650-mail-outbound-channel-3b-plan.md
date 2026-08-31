@@ -1173,3 +1173,39 @@ names its peers by count is correct and Step 7 already carried it.
    classification, the argon posture (asserted, though independently verified true), the
    non-length input rules, the smtp config arm, or the enqueue authority's own key
    re-check. Recorded so the headline is never read as more than it is.
+33. **Step 9 — `[ML2]` was vacuous for the exact hazard the module documents.** Asserting
+   that the conflict counter *moved* rather than that it moved by exactly one let the
+   realistic dedup regression through: `Duplicate` misclassified as `Conflict` still leaves
+   one row, the original subject, and a moved counter — while dropping the message and
+   telling the operator their own row was a producer bug, which is what
+   `store.rs:127-134`'s doc comment warns about. Closed sleep-free by appending a fourth
+   event under a fresh key and polling its row as the happens-after signal, then asserting
+   `== floor + 1`. Proven by making `classify_existing` answer `Conflict` for an identical
+   replay: `rows` and `subject_kept` stayed true, only the exact count went red.
+34. **Step 9 — the harness fixture could have been satisfied by a stale row.** The nonce was
+   `std::process::id()`, which recycles, and the `splitproof-` cleanup DELETE was
+   `.ok()`-swallowed, so a failed clear was silent. Together that was the one channel where
+   a leftover row from an aborted run could satisfy `[ML1]` with no event consumed. Now a
+   random `OsRng` nonce and a `?`-propagated delete that also sweeps the
+   `admin-send-test-` rows `[ML4]` had been accumulating unbounded.
+35. **Step 9 — `[ML6]` added: mail's prune had no cross-process assertion** while `audit`
+   and `notifications` both have one. It needed no new machinery (`scheduler.schedules`
+   already seeds `mail-prune`, and `[SP2]`'s force-`last_fired` shape transfers), and its
+   fixture asserts both halves in one statement — a 400-day-old `sent` row must go and a
+   fresh one must stay — so an inverted date predicate or a handler ignoring `fired.name`
+   cannot pass on the deletion alone. It is split-only by construction: the monolith fleet
+   sets no `SCHEDULER_ENABLED`, so there is no tick to drive in the parity pass.
+36. **Discovered outside the plan: `[MT2]` proved a value by reading a truncated
+   projection.** `leaderboard.scores` has grown to 102 rows over ~54 historical harness
+   runs with nothing pruning it, and `/leaderboard` serves `LIMIT 100`, so a freshly
+   reported champion at `wins=1` ranked 102 and became invisible to an assertion that
+   substring-matched the HTTP page. The rollout's runs consumed the last headroom of a
+   pre-existing defect rather than causing it. Fixed at the authority: `[MT2]`/`[MT4]` now
+   read the row through sqlx, and the routing half became its own named `[MT2-ROUTE]`
+   asserting 200 and a well-formed list through the front door. Proven by pointing the read
+   at a never-reported player — the two value assertions went red while `[MT2-ROUTE]`
+   stayed green, which is the separation working.
+37. **Known gap, product-side, recorded not fixed: `leaderboard` has no retention.**
+   `audit`, `notifications` and now `mail` all prune on a `scheduler.fired` subscription;
+   `leaderboard` has no such subscription and no retention path at all. Its table grows
+   without bound. That is a decision to take on its own, not inside this rollout.
