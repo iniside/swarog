@@ -30,11 +30,40 @@ pub(crate) const PRUNE_SCHEDULE_NAME: &str = schedulerevents::schedule_names::NO
 
 pub(crate) const DEFAULT_RETENTION_DAYS: i32 = 30;
 
-pub(crate) fn env_int(key: &str, def: i32) -> i32 {
-    std::env::var(key)
-        .ok()
-        .and_then(|v| v.trim().parse::<i32>().ok())
-        .unwrap_or(def)
+pub(crate) const RETENTION_ENV: &str = "NOTIFICATIONS_RETENTION_DAYS";
+
+/// One fire deletes at most this many rows, so the sweep cannot outgrow
+/// `ASYNCEVENTS_HANDLER_TIMEOUT` on a large inbox: a timed-out delete makes no partial
+/// progress, so an unbounded one would time out identically on every retry until the
+/// subscription pauses and retention stops running altogether.
+pub(crate) const PRUNE_BATCH: i64 = 256;
+
+/// A PRESENT but unusable value fails startup rather than silently falling back — the
+/// `ASYNCEVENTS_HANDLER_TIMEOUT` convention. An operator writing `90d` means 90 days, and
+/// booting at the compiled 30 would prune inboxes a third of the way in with nobody told.
+/// Only unset (or empty) is the default.
+pub(crate) fn retention_days_from_env() -> anyhow::Result<i32> {
+    let raw = match std::env::var(RETENTION_ENV) {
+        Ok(v) => v,
+        Err(_) => return Ok(DEFAULT_RETENTION_DAYS),
+    };
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Ok(DEFAULT_RETENTION_DAYS);
+    }
+    let days: i32 = raw.parse().map_err(|_| {
+        anyhow::anyhow!(
+            "notifications: {RETENTION_ENV} must be a whole number of days (got {raw:?}); \
+             unset it for the default {DEFAULT_RETENTION_DAYS}"
+        )
+    })?;
+    if days <= 0 {
+        anyhow::bail!(
+            "notifications: {RETENTION_ENV} must be > 0 (got {days}) — a non-positive \
+             retention would delete every inbox; unset it for the default {DEFAULT_RETENTION_DAYS}"
+        );
+    }
+    Ok(days)
 }
 
 /// The delivery-path insert: it runs on the plane's HANDED transaction, so the row and the
@@ -43,13 +72,14 @@ pub(crate) fn env_int(key: &str, def: i32) -> i32 {
 /// A `Status::Invalid` verdict is ONE message's data quality and answers `Ok(())`: an `Err`
 /// backs the subscription off and eventually PAUSES it, taking every player's inbox offline
 /// over one bad payload. Anything else is infrastructure and propagates so the plane retries.
-///
-/// The caller must have shape-checked `player_id` first — see [`deliverable_player_id`].
 async fn deliver_or_skip(
     svc: &Service,
     conn: &mut PgConnection,
     n: &NewNotification<'_>,
 ) -> Result<(), BusError> {
+    if !deliverable_player_id(n.player_id) {
+        return Ok(());
+    }
     match svc.deliver_on(conn, n).await {
         Ok(_) => Ok(()),
         Err(e) if e.status == opsapi::Status::Invalid => {
@@ -66,9 +96,8 @@ async fn deliver_or_skip(
 
 /// A `player_id` the `$n::uuid` cast would reject must be caught BEFORE the insert runs: a
 /// 22P02 aborts the plane's delivery transaction, and the checkpoint `UPDATE` that follows an
-/// `Ok(())` would then fail with 25P02 — the rejection has to cost no statement at all.
-/// (`Service::deliver_on`'s own 22P02 arm stays the wire paths' answer, where a tolerant cast
-/// is deliberate.)
+/// `Ok(())` would then fail with 25P02 — the rejection has to cost no statement at all. So
+/// `Service::deliver_on`'s own 22P02 arm is unreachable from here.
 fn deliverable_player_id(player_id: &str) -> bool {
     if is_uuid_text(player_id) {
         return true;
@@ -102,7 +131,7 @@ pub(crate) fn on_wallet_changed<'a>(
     e: walletevents::Changed,
 ) -> BoxFuture<'a, Result<(), BusError>> {
     Box::pin(async move {
-        if e.delta <= 0 || !deliverable_player_id(&e.player_id) {
+        if e.delta <= 0 {
             return Ok(());
         }
         let event_id = delivery.event_id;
@@ -128,9 +157,6 @@ pub(crate) fn on_player_promoted<'a>(
     e: accountsevents::PlayerPromoted,
 ) -> BoxFuture<'a, Result<(), BusError>> {
     Box::pin(async move {
-        if !deliverable_player_id(&e.player_id) {
-            return Ok(());
-        }
         let event_id = delivery.event_id;
         let conn = delivery.tx.downcast::<PgConnection>()?;
         deliver_or_skip(
@@ -177,10 +203,15 @@ impl TxHandler for PruneHandler {
                 self.retention_days
             );
             sqlx::query(
-                "DELETE FROM notifications.messages \
-                  WHERE created_at < now() - make_interval(days => $1)",
+                "WITH stale AS ( \
+                   SELECT ctid FROM notifications.messages \
+                    WHERE created_at < now() - make_interval(days => $1) \
+                    ORDER BY created_at LIMIT $2 FOR UPDATE SKIP LOCKED \
+                 ) \
+                 DELETE FROM notifications.messages m USING stale WHERE m.ctid = stale.ctid",
             )
             .bind(self.retention_days)
+            .bind(PRUNE_BATCH)
             .execute(&mut *conn)
             .await
             .map_err(BusError::transport)?;

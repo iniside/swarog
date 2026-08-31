@@ -32,6 +32,10 @@ use registry::key;
 /// re-drive (`eventctl`) idempotent rather than duplicate a player's inbox. It is partial
 /// because operator mail carries no source event and NULLs would otherwise collide.
 ///
+/// `notifications_created_at_idx` exists for the retention sweep alone: `created_at` is not
+/// the leading column of the inbox index, so without it the daily prune seq-scans the whole
+/// table inside a delivery transaction bounded by `ASYNCEVENTS_HANDLER_TIMEOUT`.
+///
 /// `player_id` is a plain id column (no cross-module FK) but a `uuid`, matching every other
 /// module that carries one, and every statement binds `$n::uuid`: that folds an uppercase,
 /// braced or unhyphenated spelling onto ONE player, so an operator pasting a Windows-style
@@ -58,7 +62,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS notifications_source_event_idx
 	ON notifications.messages (source_event_id) WHERE source_event_id IS NOT NULL;
 
 CREATE INDEX IF NOT EXISTS notifications_inbox_idx
-	ON notifications.messages (player_id, created_at DESC, id DESC);"#;
+	ON notifications.messages (player_id, created_at DESC, id DESC);
+
+CREATE INDEX IF NOT EXISTS notifications_created_at_idx
+	ON notifications.messages (created_at);"#;
 
 pub(crate) fn internal<E: std::fmt::Display>(e: E) -> opsapi::Error {
     opsapi::Error::internal(e.to_string())
@@ -126,19 +133,7 @@ impl Module for NotificationsModule {
     }
 
     fn init(&self, ctx: &Context) -> anyhow::Result<()> {
-        // Validated before anything else so a typo stops the process: a non-positive
-        // retention would delete every player's inbox on the next prune tick.
-        let retention_days = projection::env_int(
-            "NOTIFICATIONS_RETENTION_DAYS",
-            projection::DEFAULT_RETENTION_DAYS,
-        );
-        if retention_days <= 0 {
-            anyhow::bail!(
-                "notifications: NOTIFICATIONS_RETENTION_DAYS must be > 0 (got {retention_days}) \
-                 — a non-positive retention would delete every inbox; unset it for the default {}",
-                projection::DEFAULT_RETENTION_DAYS
-            );
-        }
+        let retention_days = projection::retention_days_from_env()?;
         let svc = self.svc();
 
         // Three INDEPENDENT subscriptions, each with its own checkpoint (audit's shape): one
