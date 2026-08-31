@@ -244,16 +244,15 @@ CREATE INDEX IF NOT EXISTS mail_outbox_parked_idx
     ON mail.outbox (created_at) WHERE state = 'parked';
 CREATE INDEX IF NOT EXISTS mail_outbox_recent_idx
     ON mail.outbox (created_at DESC, id DESC);
-CREATE INDEX IF NOT EXISTS mail_outbox_created_at_idx
-    ON mail.outbox (created_at);
 ```
 
-Four indexes, each with a named consumer, because 3a's errata #12 records what a missing
+Three indexes, each with a named consumer, because 3a's errata #12 records what a missing
 supporting index costs (seq scan → handler timeout → unbounded retry):
 `mail_outbox_due_idx` serves the claim; `mail_outbox_parked_idx` serves the parked-count
 gauge and the bulk requeue; `mail_outbox_recent_idx` serves the admin page's keyset
-listing; `mail_outbox_created_at_idx` serves the retention sweep's range predicate
-(audit's `log_at_idx` is the precedent).
+listing **and** the retention sweep's `created_at < $1` range predicate, since Postgres
+scans a btree in either direction and a separate ascending index would be maintenance
+cost with no reader of its own.
 
 The five byte caps are duplicated between `mailevents::MAX_*_BYTES` and the SQL CHECKs.
 Couple them the way `apikeys` does — a `COLUMN_CAPS` table in `store.rs` pairing each
@@ -435,8 +434,10 @@ with no `cmd/<name>-svc` root.
   keeping schema `mail` replays up to 7 days of retained requests, which the outbox's
   `idempotency_key` absorbs — only because `mail` survived. Validate the payload **before
   any statement runs in the delivery transaction**: an invalid payload after a failed
-  statement would hit 25P02 on the checkpoint UPDATE and abort the whole worker pass,
-  starving every other subscription. Invalid payload ⇒ log, `mail_enqueue_rejected_total`,
+  statement would hit 25P02 on the checkpoint UPDATE, which returns through `?` BEFORE
+  `record_failure` — so the subscription records no failure, gets no backoff and never
+  pauses: it re-delivers the same event on every pass forever, making no progress, while
+  `/readyz` stays green because passes keep completing. Invalid payload ⇒ log, `mail_enqueue_rejected_total`,
   `Ok(())`. `Enqueued::Conflict` ⇒ `mail_enqueue_conflicts_total`, `Ok(())` (a producer
   bug must not pause the plane). Infrastructure error ⇒ `Err`, so the plane backs off and
   pauses.
@@ -503,6 +504,12 @@ driver to be reachable from.
   body is a password-reset link or a verification token, and a `sent` row keeps it for
   `MAIL_RETENTION_DAYS` (30) otherwise. A delivered secret stops being archived the
   moment it is delivered; a `parked` row keeps its body because it still has to be sent.
+  **Blank it on `sent` and on NO other state.** `store::body_is_comparable` reads exactly
+  that: it drops `body` from the duplicate-vs-conflict comparison only for a `sent` row,
+  so blanking a `cancelled` row — equally defensible on secret-residency grounds, since a
+  cancelled reset link is still a secret — would make a durable replay of that request
+  compare `"" != body`, return `Conflict`, drop the message, and report the operator's own
+  cancel as a producer bug.
   `SendError::Rejected`: `state='parked'` with `last_error`. `SendError::Infra`: stay
   `pending` with `next_attempt_at = now() + backoff_secs(attempts)`, parking once
   `attempts >= MAIL_MAX_ATTEMPTS`. Every arm CAS-guarded on
@@ -734,7 +741,14 @@ keeps this lane cheap.
   back, then run the success write — the row must stay `cancelled` and
   `mail_send_cas_misses_total` must move. Without the `state` leg this test flips a
   cancelled row to `sent`, which is the defect it exists to pin.
-- `Enqueued::Duplicate` vs `Enqueued::Conflict` on the same key.
+- `Enqueued::Duplicate` vs `Enqueued::Conflict` on the same key, and the `sent` carve-out
+  in `classify_existing` (pure, zero-I/O): a `sent` row with a differing body is
+  `Duplicate`, a `parked` or `cancelled` row with a differing body is `Conflict`. The
+  second assertion is what pins Step 4's blank-on-`sent`-only contract.
+- The preflight verdicts Step 1 left uncovered: `processctl::check_pg_session_floor` at,
+  below and above the threshold with the rendered message naming both the `ALTER SYSTEM`
+  line and the restart, plus `weles::pgfloor::{check_pg_session_floor,
+  fleet_session_reservation, fleet_dsn}` driven through their injected env closure.
 - Parking: `SendError::Rejected` parks on attempt 1; `Infra` parks only at
   `MAIL_MAX_ATTEMPTS`, proven with a fake sender counting calls.
 - Prune: deletes `sent`/`cancelled` past retention, **leaves `parked` untouched**, and the
@@ -945,3 +959,23 @@ names its peers by count is correct and Step 7 already carried it.
    doc-comment fix to `api/wallet/events/src/lib.rs` was swept into a `docs(plans)` commit.
    The commit boundary rule is per unit of work; staging by path is the fix, and history
    was left alone rather than rewritten for tidiness.
+12. **Step 3 — the 25P02 consequence in this plan was wrong, and the module copied it.**
+   The plan said a failed checkpoint UPDATE "aborts the whole worker pass, starving every
+   other subscription". `core/asyncevents/src/worker.rs:437-446` catches the `Err`, logs
+   it, and breaks only THAT subscription's quantum; the loop over subscriptions continues.
+   The real consequence is stronger and is what the text now says: the success arm returns
+   through `?` before `record_failure`, so nothing is recorded, nothing backs off, nothing
+   pauses, and the event hot-loops forever with `/readyz` green. Third instance in this
+   rollout of a plan asserting plane behaviour without reading the authority — the ordering
+   requirement was right for the wrong stated reason.
+13. **Step 3 deviations, recorded here rather than only in a commit message.** The provider
+   registry is a `ProviderKind` enum, not a name→sender map with `Providers::insert`'s
+   panic-on-duplicate (one configured provider per process makes a duplicate
+   unrepresentable; `KNOWN_PROVIDERS` and `from_name` are the two lists that can now drift,
+   pinned by Step 10's "every known name builds a sender"); `mail_env_keys()` is a private
+   `MAIL_VARS` const, because a `pub fn` with no caller is surface without an authority;
+   `MAIL_FROM` set without `MAIL_PROVIDER` is a startup failure (accounts'
+   `EPIC_REDIRECT_URI`-without-secret precedent), a row the env table did not have.
+14. **Step 3 — `mail_outbox_created_at_idx` was redundant on arrival.** The plan mandated
+   four indexes; `mail_outbox_recent_idx (created_at DESC, id DESC)` already serves the
+   retention sweep's range predicate. Dropped, and the schema block above corrected.
