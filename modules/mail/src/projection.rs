@@ -8,23 +8,18 @@ use sqlx::PgConnection;
 use crate::service::{NewMail, Service};
 use crate::store::Enqueued;
 
-/// The consumer-owned subscription id — a durable contract (renaming it abandons the
-/// checkpoint).
-///
-/// `Genesis`: the topic is born in this rollout, so no retained history can predate the
-/// subscription, and `Genesis` then also covers a request appended between the contract's
-/// registration and the first subscribe. It has one interaction with the
-/// wipe-is-the-migration rule worth knowing before an operator does it: dropping schema
-/// `asyncevents` while keeping schema `mail` replays the retained requests, which the
-/// outbox's `idempotency_key` absorbs — only because `mail` survived.
+/// The consumer-owned subscription id — a durable contract; renaming it abandons the
+/// checkpoint. `Genesis` is safe because the topic is born with this subscription (no
+/// retained history can predate it) and it covers a request appended between the
+/// contract's registration and the first subscribe.
 pub(crate) const SEND_REQUESTED_SUB: bus::SubscriptionSpec = bus::SubscriptionSpec {
     id: "mail.send-requested.v1",
     start: bus::StartPosition::Genesis,
 };
 
-/// Requests refused on data quality. A live-but-ineffective ingress never fails a
-/// readiness check — every rejection answers `Ok(())` and advances the checkpoint — so
-/// this counter is the only place a producer emitting unusable requests becomes visible.
+/// Requests refused on data quality. Every rejection answers `Ok(())` and advances the
+/// checkpoint, so no readiness check ever reflects them — this counter is the only place a
+/// producer emitting unusable requests becomes visible.
 pub(crate) fn enqueue_rejected() -> &'static IntCounter {
     static C: OnceLock<IntCounter> = OnceLock::new();
     C.get_or_init(|| {
@@ -38,7 +33,7 @@ pub(crate) fn enqueue_rejected() -> &'static IntCounter {
     })
 }
 
-/// Requests whose `idempotency_key` already held a DIFFERENT message — a producer bug, and
+/// Requests whose `idempotency_key` already held a DIFFERENT message: a producer bug, and
 /// a message that was never enqueued.
 pub(crate) fn enqueue_conflicts() -> &'static IntCounter {
     static C: OnceLock<IntCounter> = OnceLock::new();
@@ -54,10 +49,8 @@ pub(crate) fn enqueue_conflicts() -> &'static IntCounter {
     })
 }
 
-/// The three delivery arms, in the one place they are decided.
-///
 /// Both refusals answer `Ok(())`: an `Err` backs the subscription off and eventually
-/// PAUSES it, which takes the whole outbound channel down over one bad payload or one
+/// PAUSES it, taking the whole outbound channel down over one bad payload or one
 /// producer's reused key. Only infrastructure propagates.
 pub(crate) async fn enqueue_or_skip(
     svc: &Service,

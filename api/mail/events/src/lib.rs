@@ -18,6 +18,13 @@
 //! not an archival window. A future template-reference field would remove the plaintext
 //! from this payload but push every sender's data shape into the transport — the coupling
 //! this crate exists to avoid — so it is deferred, not silently assumed away.
+//!
+//! That mitigation costs one property of THIS contract, not of any one implementation:
+//! once a delivered request's body has been dropped, a later event reusing its
+//! `idempotency_key` with genuinely different content is indistinguishable from a replay
+//! of the delivered one and is discarded as such, with nothing reported. Reusing one key
+//! for two different messages is a producer bug in every case; after delivery it is a
+//! silent one, so a producer must mint a fresh key per message rather than per attempt.
 
 use std::sync::LazyLock;
 

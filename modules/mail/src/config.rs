@@ -11,8 +11,7 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use mailevents::MAX_ADDRESS_BYTES;
-
+use crate::address::check_address;
 use crate::providers::{ProviderKind, KNOWN_PROVIDERS};
 
 pub const PROVIDER_ENV: &str = "MAIL_PROVIDER";
@@ -117,23 +116,11 @@ fn checked_provider(raw: &str) -> anyhow::Result<ProviderKind> {
     })
 }
 
-/// The envelope-sender rule. The control-character refusal is the load-bearing half: a
-/// `From` carrying CR or LF injects arbitrary headers into every message this process
-/// sends, and this is the only place the value is validated before it reaches a relay.
+/// The envelope sender, held to the SAME shape rule as the recipient it will be sent
+/// alongside ([`crate::address::check_address`]) — one policy, two callers.
 fn checked_address(key: &str, raw: &str) -> anyhow::Result<String> {
     let value = raw.trim();
-    if value.is_empty() {
-        anyhow::bail!("invalid {key}: an address is required");
-    }
-    if value.len() > MAX_ADDRESS_BYTES {
-        anyhow::bail!("invalid {key}: exceeds {MAX_ADDRESS_BYTES} bytes");
-    }
-    if value.chars().any(char::is_control) {
-        anyhow::bail!("invalid {key}: control characters are not allowed in an address");
-    }
-    if !value.contains('@') {
-        anyhow::bail!("invalid {key}: {value:?} is not an address (no '@')");
-    }
+    check_address(value).map_err(|reason| anyhow::anyhow!("invalid {key}: {reason}"))?;
     Ok(value.to_string())
 }
 

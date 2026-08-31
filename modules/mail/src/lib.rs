@@ -12,6 +12,7 @@
 //! distributed transaction with the relay, and the reason a link this channel carries must
 //! be safe to follow twice.
 
+mod address;
 pub mod config;
 mod projection;
 pub mod providers;
@@ -42,10 +43,11 @@ pub use service::Service;
 /// than toward an unbounded resend loop.
 ///
 /// Each index has a named consumer: `mail_outbox_due_idx` serves the drain's claim,
-/// `mail_outbox_parked_idx` the parked-count gauge and the bulk requeue,
-/// `mail_outbox_recent_idx` the admin page's keyset listing, and
-/// `mail_outbox_created_at_idx` the retention sweep's range predicate — a sweep running
-/// inside a delivery transaction cannot afford a seq scan.
+/// `mail_outbox_parked_idx` the parked-count gauge and the bulk requeue, and
+/// `mail_outbox_recent_idx` both the admin page's keyset listing and the retention sweep's
+/// `created_at` range predicate — btrees scan in either direction, so the DESC index
+/// serves the ascending sweep too, and a sweep running inside a delivery transaction
+/// cannot afford a seq scan.
 const SCHEMA_DDL: &str = r#"
 CREATE SCHEMA IF NOT EXISTS mail;
 
@@ -80,10 +82,7 @@ CREATE INDEX IF NOT EXISTS mail_outbox_parked_idx
 	ON mail.outbox (created_at) WHERE state = 'parked';
 
 CREATE INDEX IF NOT EXISTS mail_outbox_recent_idx
-	ON mail.outbox (created_at DESC, id DESC);
-
-CREATE INDEX IF NOT EXISTS mail_outbox_created_at_idx
-	ON mail.outbox (created_at);"#;
+	ON mail.outbox (created_at DESC, id DESC);"#;
 
 /// The `/readyz` verdict of a process that accepts mail it can never deliver. A boot
 /// warning that scrolled past is not a signal: with no provider the channel still enqueues
@@ -147,12 +146,13 @@ impl Module for MailModule {
     /// misconfigured provider is a startup failure rather than a per-message error the
     /// drain discovers hours later. Reading env is not I/O; nothing here dials anything.
     fn register(&self, ctx: &Context) -> anyhow::Result<()> {
-        let pool = ctx
-            .db()
-            .ok_or_else(|| anyhow::anyhow!("mail requires a DB pool"))?
-            .clone();
+        // Fail at BUILD rather than at the first migrate statement: a process that lists
+        // mail without a DB has no outbox to write to.
+        if ctx.db().is_none() {
+            anyhow::bail!("mail requires a DB pool");
+        }
         self.svc
-            .set(Arc::new(Service::new(pool)))
+            .set(Arc::new(Service::new()))
             .map_err(|_| anyhow::anyhow!("mail.register ran twice"))?;
         self.cfg
             .set(Arc::new(MailConfig::from_env()?))
