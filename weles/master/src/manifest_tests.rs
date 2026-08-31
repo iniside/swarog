@@ -310,6 +310,8 @@ fn full_fleet_env_goldens() {
         ("ACCOUNTS_DEV_AUTH", "1"),
         ("INVENTORY_DEV_GRANT", "1"),
         ("WALLET_DEV_SEED", "1"),
+        ("MAIL_PROVIDER", "log"),
+        ("MAIL_FROM", "dev@localhost"),
         ("TLS_MODE", "off"),
         ("ADMIN_COOKIE_SECURE", "0"),
         ("TRUSTED_PROXY_CIDRS", "127.0.0.1/32"),
