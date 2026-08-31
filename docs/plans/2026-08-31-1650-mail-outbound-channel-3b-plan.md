@@ -452,6 +452,34 @@ with no `cmd/<name>-svc` root.
 **(d) Dispatch.** `[opus]` — core-implementer, effort *think hard*. Authority-first: the
 25P02 ordering and the conflict discrimination are expensive to retrofit.
 
+## Step 3b — register the topic with the two gates that scan for it  `[sonnet]`
+
+**(a) What.** `tools/topiccheck/src/main.rs` (`defined_topics()`),
+`tools/topiccheck/src/golden.rs` (`event_samples_by_crate()`), `tools/topiccheck/Cargo.toml`.
+
+**(b) Why now — this is the step the plan originally misplaced.** The moment Step 2 added
+a `define(` site, `defined_topics_matches_every_define_site_on_disk` went red and the
+workspace test suite with it: the scan finds every `define(` on disk and requires the
+hand-maintained `defined_topics()` list to match. Registering it at Step 8, as revision 2
+had it, leaves a blocking stage red across five steps. It cannot move any earlier either —
+pulling it into Step 2 cascades into a missing golden sample and an `ALLOW_UNSUBSCRIBED`
+entry for a topic nothing subscribes to yet, and that allowance would then be stale the
+moment Step 3 lands, which `stale_allowances` fails on. Step 3 adds the subscription, so
+this is the first point where the topic is both defined and subscribed and no allowance is
+needed.
+
+**(c) How.** Add `mailevents::SEND_REQUESTED` to `defined_topics()` — a hand-enumerated
+list whose own doc calls itself "the one conscious edit point" — and `mail` to
+`event_samples_by_crate()`, whose samples `golden.rs:402,437` require for every defined
+`(topic, version)`. Do **not** add an `ALLOW_UNSUBSCRIBED` entry: the subscription exists
+as of Step 3, and a sanctioned-sinkless allowance for a topic that has a sink is exactly
+what `stale_allowances` rejects. Verify with `cargo test -p topiccheck` green and
+`cargo run -p topiccheck -- --durability-strict` exiting 0.
+
+**(d) Dispatch.** `[sonnet]` — two named list entries in two named files. The judgment-
+bearing gate work (conformance's `ADMIN_SUBMIT_MODULES`, the `mail()` policy entry, the
+CapCase probes) stays in Step 8, where the admin page it describes exists.
+
 ## Step 4 — the drain worker and the SMTP sender  `[opus]`
 
 **(a) What.** `modules/mail/src/worker.rs` and `modules/mail/src/smtp.rs`, the `smtp` arm
@@ -623,9 +651,7 @@ decision left open. The judgment-bearing registrations were split out into Step 
 
 ## Step 8 — the verification gates  `[opus]`
 
-**(a) What.** `tools/topiccheck/src/main.rs` (`defined_topics()`),
-`tools/topiccheck/src/golden.rs` (`event_samples_by_crate()`),
-`tools/topiccheck/Cargo.toml`; `tools/conformance/src/checks.rs`
+**(a) What.** `tools/conformance/src/checks.rs`
 (`ADMIN_SUBMIT_MODULES`), `tools/conformance/src/policy.rs` (the `mail()` entry and the
 `basis` prose at `policy.rs:78`), and `modules/mail/src/conformance.rs`.
 
@@ -634,13 +660,6 @@ each requires a judgment the mechanical lane should not make. Separating them fr
 is what keeps that step `[sonnet]`.
 
 **(c) How.**
-- `defined_topics()` (`tools/topiccheck/src/main.rs:185-204`) is a hand-enumerated list
-  whose doc calls itself "the one conscious edit point"; add
-  `mailevents::SEND_REQUESTED`. Without it, both profiles report *"subscribes UNDEFINED
-  topic mail.send_requested"* and `--durability-strict` fails the blocking fortress stage.
-- `event_samples_by_crate()` (`golden.rs:244-251`) is a second hand-list; add `mail`.
-  `golden.rs:402,437` requires every defined `(topic, version)` to have at least one
-  golden sample, so a miss fails the blocking contract-golden stage.
 - `ADMIN_SUBMIT_MODULES` (`tools/conformance/src/checks.rs:111`) is diffed against
   `modules/*/src` **before any assertion runs** (`checks.rs:118-137`); Step 6 makes `mail`
   a fourth implementor, so a miss is a drift failure. Add it, and update the `basis` prose
@@ -914,3 +933,15 @@ names its peers by count is correct and Step 7 already carried it.
    `define(` line, so a wrapped call turns a blocking stage red with a message about a
    missing string literal. Not a rule the plan knew; recorded here for the next contract
    crate.
+10. **The plan misplaced the topiccheck registration by five steps.** Revision 2 put
+   `defined_topics()` and the contract golden in Step 8. Adding a `define(` site in Step 2
+   turns `defined_topics_matches_every_define_site_on_disk` — and with it the blocking
+   workspace test stage — red immediately, and it stays red until that registration lands.
+   **New Step 3b** carries it, placed at the first point where the topic is both defined
+   and subscribed so no `ALLOW_UNSUBSCRIBED` entry (which `stale_allowances` would then
+   reject) is needed. The tree is knowingly red between Step 2 and Step 3b.
+11. **Process defect, mine:** the plan-errata commit `4287b92` was made with `git add -A`
+   while a subagent was concurrently editing the tree, so an unrelated (correct, reviewed)
+   doc-comment fix to `api/wallet/events/src/lib.rs` was swept into a `docs(plans)` commit.
+   The commit boundary rule is per unit of work; staging by path is the fix, and history
+   was left alone rather than rewritten for tidiness.
