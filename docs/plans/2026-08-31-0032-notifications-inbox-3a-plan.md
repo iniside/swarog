@@ -158,16 +158,16 @@ Deliberate choices, each with its reason:
 CREATE SCHEMA IF NOT EXISTS notifications;
 CREATE TABLE IF NOT EXISTS notifications.messages (
     id             uuid        PRIMARY KEY,
-    player_id      text        NOT NULL,
+    player_id      uuid        NOT NULL,
     kind           text        NOT NULL,
     title          text        NOT NULL,
     body           text        NOT NULL,
     created_at     timestamptz NOT NULL DEFAULT now(),
     read_at        timestamptz,
     source_event_id text,
-    CONSTRAINT notifications_title_len CHECK (octet_length(title) <= 200),
-    CONSTRAINT notifications_body_len  CHECK (octet_length(body)  <= 4000),
-    CONSTRAINT notifications_kind_len  CHECK (octet_length(kind)  <= 64)
+    CONSTRAINT notifications_title_len_check CHECK (octet_length(title) <= 200),
+    CONSTRAINT notifications_body_len_check  CHECK (octet_length(body)  <= 4000),
+    CONSTRAINT notifications_kind_len_check  CHECK (octet_length(kind)  <= 64)
 );
 CREATE UNIQUE INDEX IF NOT EXISTS notifications_source_event_idx
     ON notifications.messages (source_event_id) WHERE source_event_id IS NOT NULL;
@@ -175,12 +175,18 @@ CREATE INDEX IF NOT EXISTS notifications_inbox_idx
     ON notifications.messages (player_id, created_at DESC, id DESC);
 ```
 
-The CHECK constraint names end in `_len` because both precedent modules' anti-drift
-tests filter on that suffix (Step 8). `octet_length`, not `char_length`, so the CHECK
+The CHECK constraint names end in `_len_check` because both precedent modules'
+anti-drift tests filter on that suffix (Step 8). `octet_length`, not `char_length`, so the CHECK
 matches Rust's `str::len()` — wallet's convention. The partial unique index on `source_event_id` is a **belt**: durable
 delivery is already exactly-once for a `TransactionalPg` consumer, but the index is
 what makes an operator re-drive (`eventctl`) safe rather than duplicating a player's
-inbox. `player_id` is a plain id column — no cross-module FK.
+inbox. `player_id` is a plain id column — no cross-module FK — and it is `uuid`, not
+`text`: every sibling that keys on a player (`accounts.players.id`,
+`wallet.balances`/`ledger`, `characters.characters`, `inventory.holdings`) is `uuid`
+with a bound `::uuid` param, which folds uppercase/braced/unhyphenated spellings of one
+id into a single value, so an operator-entered id in Step 4's send-mail form cannot
+silently create a row its owner can never see, and a genuine typo becomes a loud
+22P02 instead of an orphan row.
 
 **Cursor:** keyset on `(created_at DESC, id DESC)`, encoded opaque as base64url of
 `"{created_at_rfc3339}|{uuid}"`, capped at `MAX_CURSOR_BYTES`. A malformed or
@@ -294,7 +300,12 @@ opposite of the belt this index is for. Without the repeated `WHERE` clause, Pos
 refuses to infer a *partial* unique index at runtime ("no unique or exclusion constraint
 matching the ON CONFLICT specification"). **A data-quality rejection returns `Ok(())`, not `Err`** (wallet's precedent):
 a `wallet.changed` with `delta <= 0` is skipped, and skipping must not back off and
-pause the subscription. The scheduler edit is the one deliberate touch to an existing
+pause the subscription. Step 2's shared insert path (`Service::deliver_on`) returns
+`Err` for BOTH an input rejection and an infra failure — it does not hand the
+handler two distinguishable outcomes — so a durable handler here must inspect the
+`Err` and map an input rejection (`opsapi::Status::Invalid`) to `Ok(())` itself
+rather than propagate it; propagating it would back off and pause the subscription,
+which is exactly the failure this rule forbids. The scheduler edit is the one deliberate touch to an existing
 module and follows the established `audit-prune` seam exactly — the name is a shared
 const in `schedulerevents`, the seed is an idempotent bootstrap row in scheduler's DDL,
 and the linking test lives in **scheduler's own** `src/tests.rs`
@@ -471,7 +482,7 @@ each test must execute the branch, not sit near it:
   the second delivery returns `Ok(())` with the subscription still unpaused**. The
   row-count assertion alone would pass against the broken `Err`-on-23505 shape that
   takes every player's inbox offline; the liveness half is the point.
-- **cap ↔ DDL anti-drift, both directions** — every `_len` CHECK in `SCHEMA_DDL` maps
+- **cap ↔ DDL anti-drift, both directions** — every `_len_check` CHECK in `SCHEMA_DDL` maps
   to a `notificationsapi::MAX_*_BYTES` const and vice versa, copying
   `modules/wallet/src/tests.rs`'s `every_len_check_in_the_ddl_is_mapped_by_a_catalog_cap`
   and its apikeys twin. Without it: bump `MAX_BODY_BYTES` to 8000 in the api crate, the
@@ -622,3 +633,37 @@ plan itself (not in the diff, which followed the plan correctly):
    `## Steps` naming the tree red from Step 1 through Step 6 as a sanctioned broken
    intermediate build, so `verifyctl` before Step 6 is expected to fail and is not a
    signal to fix anything early.
+
+A second adversarial review of Step 2's landed implementation found two more factual
+errors in this plan itself:
+
+9. **The plan's own constraint names contradicted the suffix it named as load-bearing.**
+   The schema block named the CHECK constraints `notifications_title_len` /
+   `_body_len` / `_kind_len`, but the very next paragraph said "the `_len` suffix
+   matters — Step 8's anti-drift test filters on it." Both precedent anti-drift tests
+   actually filter on `_len_check`
+   (`modules/wallet/src/tests.rs:2572`, `modules/apikeys/src/store_tests.rs:634`), and
+   both precedent DDLs name their constraints `*_len_check`
+   (`modules/wallet/src/lib.rs:58,61,64`; `modules/apikeys/src/lib.rs:72,75,84`).
+   Renamed the three constraints to `notifications_title_len_check` /
+   `_body_len_check` / `_kind_len_check` and corrected the prose and the Step 8
+   bullet to match.
+10. **`player_id` was declared `text`, not `uuid`.** Every sibling module that keys on
+    a player uses `uuid` with a bound `::uuid` param — `accounts.players.id`
+    (`modules/accounts/src/lib.rs:107`), `wallet.balances`/`wallet.ledger`
+    (`modules/wallet/src/lib.rs:73,87`), `characters.characters`
+    (`modules/characters/src/lib.rs:56`), `inventory.holdings`
+    (`modules/inventory/src/lib.rs:76`). Changed the column to `player_id uuid NOT
+    NULL` and added the reason to the schema prose: `::uuid` folds distinct
+    spellings of one id into a single value, so an operator-entered id in Step 4's
+    send-mail form can't silently create a row its owner can never see, and a typo
+    becomes a loud `22P02` instead of an orphan row. This does not contradict the
+    existing "plain id column — no cross-module FK" point: characters, inventory and
+    wallet are all `uuid` with no FK.
+
+Also recorded, not an error: Step 3(c) now states that Step 2's shared insert path
+(`Service::deliver_on`) returns `Err` for both an input rejection and an infra
+failure — it does not hand the handler two distinguishable outcomes — so a durable
+handler must itself map an input rejection to `Ok(())` rather than propagate it,
+which would otherwise back off and pause the subscription in violation of the rule
+Step 3 already states.
