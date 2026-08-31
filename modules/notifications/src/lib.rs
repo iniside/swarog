@@ -31,23 +31,26 @@ use registry::key;
 /// re-drive (`eventctl`) idempotent rather than duplicate a player's inbox. It is partial
 /// because operator mail carries no source event and NULLs would otherwise collide.
 ///
-/// `player_id` is a plain `text` id column — no cross-module FK, and no `::uuid` cast, so
-/// the identity's own spelling is the key.
+/// `player_id` is a plain id column (no cross-module FK) but a `uuid`, matching every other
+/// module that carries one, and every statement binds `$n::uuid`: that folds an uppercase,
+/// braced or unhyphenated spelling onto ONE player, so an operator pasting a Windows-style
+/// `{ABC…}` id from the send-mail form addresses the inbox its owner reads instead of
+/// writing a row nobody can ever see. A genuine typo is then a loud 22P02, not silence.
 const SCHEMA_DDL: &str = r#"
 CREATE SCHEMA IF NOT EXISTS notifications;
 
 CREATE TABLE IF NOT EXISTS notifications.messages (
 	id              uuid        PRIMARY KEY,
-	player_id       text        NOT NULL,
+	player_id       uuid        NOT NULL,
 	kind            text        NOT NULL,
 	title           text        NOT NULL,
 	body            text        NOT NULL,
 	created_at      timestamptz NOT NULL DEFAULT now(),
 	read_at         timestamptz,
 	source_event_id text,
-	CONSTRAINT notifications_title_len CHECK (octet_length(title) <= 200),
-	CONSTRAINT notifications_body_len  CHECK (octet_length(body)  <= 4000),
-	CONSTRAINT notifications_kind_len  CHECK (octet_length(kind)  <= 64)
+	CONSTRAINT notifications_title_len_check CHECK (octet_length(title) <= 200),
+	CONSTRAINT notifications_body_len_check  CHECK (octet_length(body)  <= 4000),
+	CONSTRAINT notifications_kind_len_check  CHECK (octet_length(kind)  <= 64)
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS notifications_source_event_idx

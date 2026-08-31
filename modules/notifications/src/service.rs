@@ -16,23 +16,59 @@ pub(crate) const NOT_FOUND: &str = "notification not found";
 
 pub(crate) const MALFORMED_CURSOR: &str = "cursor is malformed";
 
+pub(crate) const MALFORMED_PLAYER_ID: &str = "player_id is not a valid uuid";
+
 const B64: base64::engine::general_purpose::GeneralPurpose =
     base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
 /// `N` stands for one ascii digit; every other byte must match literally. The shape is the
-/// one `store::COLS` renders, so a cursor this rejects is one this module never minted.
+/// one `store::COLS` renders.
 const CURSOR_TIME_SHAPE: &str = "NNNN-NN-NNTNN:NN:NN.NNNNNNZ";
 
-fn is_cursor_time(s: &str) -> bool {
-    s.len() == CURSOR_TIME_SHAPE.len()
-        && s.bytes()
-            .zip(CURSOR_TIME_SHAPE.bytes())
-            .all(|(c, p)| if p == b'N' { c.is_ascii_digit() } else { c == p })
+fn field(s: &str, from: usize, to: usize) -> u32 {
+    s[from..to].parse().unwrap_or_default()
 }
 
-/// True iff `$n::uuid` parses `s`, in the canonical hyphenated spelling `RETURNING id::text`
-/// produces. Deliberately narrower than `uuid_in` (no braces, no bare 32 digits): the codec
-/// only ever has to accept what it encoded.
+fn days_in_month(year: u32, month: u32) -> u32 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) => 29,
+        2 => 28,
+        _ => 0,
+    }
+}
+
+/// The CODEC is the sole authority on what `list` will let reach `$2::timestamptz`, so the
+/// calendar is checked HERE and the statement has no timestamp arm to map: a digit-SHAPED
+/// but impossible instant (`2026-13-45`, `2026-02-30`, hour 25, year 0000) is `Status::Invalid`
+/// like any other malformed cursor, where letting it through would raise 22008 in Postgres
+/// and answer 500 — contradicting the contract's own promise on `Player::list`.
+///
+/// Accepting a value does NOT mean this module minted it (an attacker can encode any real
+/// instant); it means the keyset is well-formed, which is all a keyset predicate needs.
+fn is_cursor_time(s: &str) -> bool {
+    let shaped = s.len() == CURSOR_TIME_SHAPE.len()
+        && s.bytes()
+            .zip(CURSOR_TIME_SHAPE.bytes())
+            .all(|(c, p)| if p == b'N' { c.is_ascii_digit() } else { c == p });
+    if !shaped {
+        return false;
+    }
+    let (year, month, day) = (field(s, 0, 4), field(s, 5, 7), field(s, 8, 10));
+    let (hour, minute, second) = (field(s, 11, 13), field(s, 14, 16), field(s, 17, 19));
+    year >= 1
+        && (1..=12).contains(&month)
+        && day >= 1
+        && day <= days_in_month(year, month)
+        && hour <= 23
+        && minute <= 59
+        && second <= 59
+}
+
+/// True iff `s` is the canonical hyphenated 36-character uuid `RETURNING id::text` produces.
+/// Narrower than `uuid_in`, which also parses braced, unhyphenated and mixed-case spellings:
+/// the codec only ever has to accept what it encoded.
 fn is_uuid_text(s: &str) -> bool {
     let b = s.as_bytes();
     b.len() == 36
@@ -162,6 +198,12 @@ impl Service {
     /// `false` is the dedup index answering "this event already produced a row" — a normal
     /// outcome, not an error, because a handler that returned `Err` here would back off and
     /// pause the whole subscription.
+    ///
+    /// The two error classes are DISTINGUISHED by status and a durable caller must treat them
+    /// differently: `Status::Invalid` is a data-quality rejection of ONE message (a cap, an
+    /// empty field, a `player_id` the DB cannot parse) and a handler must answer `Ok(())` to
+    /// it, since pausing every player's inbox over one bad payload is worse than skipping it;
+    /// anything else is infrastructure and must propagate so the plane retries.
     pub async fn deliver_on(
         &self,
         conn: &mut PgConnection,
@@ -172,7 +214,13 @@ impl Service {
             .store
             .insert_tx(conn, n.player_id, n.kind, n.title, n.body, n.source_event_id)
             .await
-            .map_err(internal)?;
+            .map_err(|e| {
+                if crate::is_invalid_uuid(&e) {
+                    Error::invalid(MALFORMED_PLAYER_ID)
+                } else {
+                    internal(e)
+                }
+            })?;
         Ok(id.is_some())
     }
 }

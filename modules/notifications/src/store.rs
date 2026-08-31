@@ -1,11 +1,12 @@
 use notificationsapi::Notification;
 use sqlx::{PgConnection, PgPool};
 
-/// "Invalid text representation": the contract carries `notification_id: String` while the
-/// column is `uuid`, so a malformed id arrives as this SQLSTATE from the `$n::uuid` cast.
-/// Every read/write treats it as "no such row" rather than propagating a 500 — the id is
-/// caller input on a path whose only two answers are 204 and 404.
-fn is_invalid_uuid(e: &sqlx::Error) -> bool {
+/// "Invalid text representation": both id columns are `uuid` while the contract and the
+/// event payloads carry `String`, so a malformed id arrives as this SQLSTATE from the
+/// `$n::uuid` cast rather than as a match failure. Every statement treats it as "no such
+/// row" — a `notification_id` path arg has only 204 and 404 to answer with, and an
+/// unparseable `player_id` owns nothing.
+pub(crate) fn is_invalid_uuid(e: &sqlx::Error) -> bool {
     matches!(e, sqlx::Error::Database(db) if db.code().as_deref() == Some("22P02"))
 }
 
@@ -46,17 +47,24 @@ impl Store {
     ///
     /// The caller asks for `limit + 1`: the surplus row is how the page decides whether a
     /// `next_cursor` exists, with no second COUNT over a table that grows per player.
+    ///
+    /// A `player_id` that is not a uuid is an EMPTY inbox, not a 500 (wallet's
+    /// `list_balances` convention): a dev/non-uuid identity owns no rows, which is the same
+    /// answer the statement would give if it could run. `$2`/`$3` cannot raise a cast error —
+    /// [`crate::service::decode_cursor`] admits only a real calendar timestamp and the
+    /// canonical uuid spelling — so this arm can only be `$1`.
     pub(crate) async fn page_by_player(
         &self,
         player_id: &str,
         after: Option<(&str, &str)>,
         limit: i64,
     ) -> Result<Vec<Notification>, sqlx::Error> {
-        let rows: Vec<Row> = match after {
+        let res = match after {
             Some((created_at, id)) => {
-                sqlx::query_as(&format!(
+                sqlx::query_as::<_, Row>(&format!(
                     "SELECT {COLS} FROM notifications.messages \
-                      WHERE player_id = $1 AND (created_at, id) < ($2::timestamptz, $3::uuid) \
+                      WHERE player_id = $1::uuid \
+                        AND (created_at, id) < ($2::timestamptz, $3::uuid) \
                       ORDER BY created_at DESC, id DESC LIMIT $4"
                 ))
                 .bind(player_id)
@@ -64,20 +72,24 @@ impl Store {
                 .bind(id)
                 .bind(limit)
                 .fetch_all(&self.pool)
-                .await?
+                .await
             }
             None => {
-                sqlx::query_as(&format!(
-                    "SELECT {COLS} FROM notifications.messages WHERE player_id = $1 \
+                sqlx::query_as::<_, Row>(&format!(
+                    "SELECT {COLS} FROM notifications.messages WHERE player_id = $1::uuid \
                       ORDER BY created_at DESC, id DESC LIMIT $2"
                 ))
                 .bind(player_id)
                 .bind(limit)
                 .fetch_all(&self.pool)
-                .await?
+                .await
             }
         };
-        Ok(rows.into_iter().map(row_to_notification).collect())
+        match res {
+            Ok(rows) => Ok(rows.into_iter().map(row_to_notification).collect()),
+            Err(e) if is_invalid_uuid(&e) => Ok(Vec::new()),
+            Err(e) => Err(e),
+        }
     }
 
     /// `COALESCE(read_at, now())` keeps the FIRST read timestamp, so a replay answers with
@@ -94,7 +106,7 @@ impl Store {
     ) -> Result<bool, sqlx::Error> {
         let res = sqlx::query_scalar::<_, i32>(
             "UPDATE notifications.messages SET read_at = COALESCE(read_at, now()) \
-              WHERE id = $1::uuid AND player_id = $2 RETURNING 1",
+              WHERE id = $1::uuid AND player_id = $2::uuid RETURNING 1",
         )
         .bind(id)
         .bind(player_id)
@@ -115,8 +127,8 @@ impl Store {
         player_id: &str,
     ) -> Result<bool, sqlx::Error> {
         let res = sqlx::query_scalar::<_, i32>(
-            "DELETE FROM notifications.messages WHERE id = $1::uuid AND player_id = $2 \
-             RETURNING 1",
+            "DELETE FROM notifications.messages \
+              WHERE id = $1::uuid AND player_id = $2::uuid RETURNING 1",
         )
         .bind(id)
         .bind(player_id)
@@ -139,7 +151,9 @@ impl Store {
     /// PARTIAL unique index without it.
     ///
     /// An empty `source_event_id` is stored as NULL (operator mail), which the partial index
-    /// ignores — two hand-sent messages are two rows, as they should be.
+    /// ignores — two hand-sent messages are two rows, as they should be. A `player_id` that
+    /// is not a uuid is 22P02 here, NOT a silently-written row; the caller
+    /// ([`crate::service::Service::deliver_on`]) turns it into a data-quality rejection.
     pub(crate) async fn insert_tx(
         &self,
         conn: &mut PgConnection,
@@ -152,7 +166,7 @@ impl Store {
         sqlx::query_scalar(
             "INSERT INTO notifications.messages \
                  (id, player_id, kind, title, body, source_event_id) \
-             VALUES (gen_random_uuid(), $1, $2, $3, $4, NULLIF($5, '')) \
+             VALUES (gen_random_uuid(), $1::uuid, $2, $3, $4, NULLIF($5, '')) \
              ON CONFLICT (source_event_id) WHERE source_event_id IS NOT NULL DO NOTHING \
              RETURNING id::text",
         )
