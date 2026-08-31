@@ -820,8 +820,12 @@ through).
 **(a) What.** `docs/roadmap/feature-tracker.md` (row 44 → landed with the real commit
 range; **row 203's "owned by the notifications module" corrected**; a dated decisions-log
 entry recording the new-fortress decision, the consumer-defined command topic, and the
-session-budget raise), `README.md` (14 fortresses), `CLAUDE.md` (the module list and a
-`mail` entry), and this plan's errata section. `docs/reference/platform-notes.md` is
+session-budget raise), `README.md` (14 fortresses), `CLAUDE.md` (the module list, a `mail`
+entry, **and the split-proof port sentence at `CLAUDE.md:508`**),
+**`.agents/shared/gamebackend.md:217,541,627`** (which mirrors all three claims this
+rollout falsifies — the fortress count, the module list, and the split-proof port list),
+and this plan's errata section. An unnamed file is never found, which is why each is
+named with its line. `docs/reference/platform-notes.md` is
 **Step 1's** responsibility, not this step's.
 
 **(b) Why now.** Last, against landed code, so nothing here is a prediction.
@@ -1118,6 +1122,26 @@ names its peers by count is correct and Step 7 already carried it.
    corrected the three "14 process" comments the plan named, but the same literal survives
    in `weles/master/src/fleet_toml.rs:641`, `weles/master/src/manifest.rs:455,467`,
    `weles/src/agentapi.rs:162`, `weles/src/agentapi_tests.rs:288,621,626`,
-   `weles/src/lib.rs:57` and `weles/src/lock.rs:378,1062`. Left deliberately rather than
-   swelling an implementation step into a prose sweep — but named here so it is not
-   discovered later as a silent twin.
+   `weles/src/lib.rs:57` and `weles/src/lock.rs:378,1062`. **Deferral reversed after
+   review**: several sit in files Step 7 itself edited, and one is three lines below a test
+   the step renamed to `…fifteen_service_snapshot`, which makes them twins of the defect
+   just fixed rather than a separate documentation task. Swept in Step 7.
+28. **Step 7 — the Proof overlay stopped resisting ambient env.** `MAIL_PROVIDER` and
+   `MAIL_FROM` were inserted before the `overrideable_env` loop and added to the
+   overrideable lists, but the `FleetFlavor::Proof` branch re-pins the other dev switches
+   and did not re-pin these — while `fleet.rs:912` asserts the overlay "cannot be weakened
+   by ambient state". An operator with `MAIL_PROVIDER=smtp` exported would have booted the
+   blocking split-proof stage against a real relay and, with one reachable, sent real
+   outbound mail from a verification run. Re-pinned in both Proof branches.
+29. **Step 7 — the weles-managed-gateway shutdown budget was exactly consumed.**
+   `FLEET_SHUTDOWN.graceful_timeout = 150s` is derived in its own comment as 14 services x
+   the 5s+5s sequential stop budget. The fifteenth service makes the worst case exactly
+   150s, so a fleet whose services ignore SIGTERM is force-killed mid-teardown and may be
+   orphaned against the shared Postgres. Recomputed, and derived from the fleet length so
+   the next service cannot silently eat it.
+30. **The acceptance gate cannot pass on this machine until the cluster is raised.** With
+   `mail-svc` the split reserves 85 and split-proof adds `HARNESS_RESERVE` for 101, against
+   97 usable at `max_connections = 100`; `weles up` on the split fixture needs 98. All
+   three refuse before spawning anything, with the correct remedy. `devctl up split` (85)
+   and `up monolith` (25) still admit. The raise is Step 1's documented operator action and
+   is due before Step 9.
