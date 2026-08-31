@@ -1,0 +1,29 @@
+[package]
+name = "mail"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The mail impl module: owns schema `mail` (the outbound outbox) and consumes the
+# `mail.send_requested` command topic it also defines — the deliberate deviation
+# recorded in `mailevents`' crate doc. It provides NO sync capability (there is no
+# `mailapi`): a sender appends the durable event and never waits for a relay.
+# An impl crate — no OTHER module imports it.
+[dependencies]
+lifecycle = { workspace = true }
+bus = { workspace = true }
+opsapi = { workspace = true }
+mailevents = { workspace = true }
+sqlx = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+futures = { workspace = true }
+# The no-provider `/readyz` check: a process accepting mail it cannot deliver is not ready.
+httpmw = { workspace = true }
+# The enqueue counters ride core/metrics' private registry, so they appear on the same
+# GET /metrics as every plane counter.
+metrics = { workspace = true }
+prometheus = { workspace = true }
