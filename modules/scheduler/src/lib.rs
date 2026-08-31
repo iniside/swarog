@@ -137,15 +137,16 @@ const ADMIN_LABEL: &str = "Schedules";
 /// the anti-drift test pins its value in all three strings.
 const INTERVAL_SECONDS_CEILING: i64 = 9_223_372_036_854;
 
-/// Creates this module's OWN schema and seeds the bootstrap row — full logical
+/// Creates this module's OWN schema and seeds the bootstrap rows — full logical
 /// isolation (#10). Idempotent. Verbatim from Go's `schemaDDL` (with `interval_seconds`
 /// widened to `bigint`). `last_fired` defaults to the epoch so a fresh schedule is
 /// immediately due on the first tick. Adding a schedule is normally a runtime data
-/// INSERT, not a code change; the one seeded row (the audit prune cadence) lets the
-/// wired-up system do something out of the box — the producer knowing the consumer's
-/// name (`audit-prune`) is coupling-through-a-string, now pushed to a shared contract
-/// constant (`schedulerevents::schedule_names::AUDIT_PRUNE`) rather than eliminated:
-/// `seeded_schedule_names_are_contract` (`tests.rs`) links this literal to that const.
+/// INSERT, not a code change; the seeded rows (audit/accounts-sessions/notifications/mail
+/// prune cadences) let each wired-up consumer do something out of the box — the producer
+/// knowing each consumer's name (e.g. `audit-prune`) is coupling-through-a-string, now
+/// pushed to shared contract constants (`schedulerevents::schedule_names::*`) rather than
+/// eliminated: `seeded_schedule_names_are_contract` (`tests.rs`) links each literal to its
+/// const.
 /// A `LazyLock<String>` (not a `&str` const) so the CHECK's upper bound is
 /// interpolated from [`INTERVAL_SECONDS_CEILING`] instead of hand-duplicated. The
 /// named `schedules_interval_bounds` CHECK is the authority preventing an
@@ -169,6 +170,9 @@ INSERT INTO scheduler.schedules (name, interval_seconds)
 	ON CONFLICT (name) DO NOTHING;
 INSERT INTO scheduler.schedules (name, interval_seconds)
 	VALUES ('notifications-prune', 86400)
+	ON CONFLICT (name) DO NOTHING;
+INSERT INTO scheduler.schedules (name, interval_seconds)
+	VALUES ('mail-prune', 86400)
 	ON CONFLICT (name) DO NOTHING;"#
     )
 });

@@ -24,6 +24,7 @@ pub const SMTP_PORT_ENV: &str = "MAIL_SMTP_PORT";
 pub const SMTP_USERNAME_ENV: &str = "MAIL_SMTP_USERNAME";
 pub const SMTP_PASSWORD_ENV: &str = "MAIL_SMTP_PASSWORD";
 pub const SMTP_TLS_ENV: &str = "MAIL_SMTP_TLS";
+pub const RETENTION_ENV: &str = "MAIL_RETENTION_DAYS";
 
 /// Every variable that belongs to the `smtp` provider. Read as a group so a provider that
 /// is not `smtp` can refuse them as a group.
@@ -48,6 +49,7 @@ const MAIL_VARS: &[&str] = &[
     SMTP_USERNAME_ENV,
     SMTP_PASSWORD_ENV,
     SMTP_TLS_ENV,
+    RETENTION_ENV,
 ];
 
 pub const DEFAULT_SEND_TIMEOUT_MS: u64 = 10_000;
@@ -63,6 +65,12 @@ pub const MAX_SEND_TIMEOUT_MS: u64 = crate::worker::BACKOFF_MAX_SECS * 1_000;
 pub const DEFAULT_MAX_ATTEMPTS: i32 = 20;
 pub const MAX_MAX_ATTEMPTS: i32 = 1_000;
 pub const DEFAULT_SMTP_PORT: u16 = 587;
+pub const DEFAULT_RETENTION_DAYS: i32 = 30;
+/// Ten years: far past any retention policy and far inside the range `make_interval` can
+/// subtract from `now()`. Without this ceiling an out-of-range value passes startup and
+/// then raises `22008` on every prune fire, moving the present-but-unusable failure from
+/// boot (where it stops the process) to the plane (where it pauses the subscription).
+pub const MAX_RETENTION_DAYS: i32 = 3_650;
 
 /// A configured provider and the envelope address it sends as. The two travel together
 /// because neither is usable alone: a provider with no `From` cannot address a message,
@@ -82,6 +90,7 @@ pub struct MailConfig {
     pub provider: Option<ProviderSettings>,
     pub send_timeout: Duration,
     pub max_attempts: i32,
+    pub retention_days: i32,
 }
 
 impl MailConfig {
@@ -113,6 +122,7 @@ impl MailConfig {
 
         let send_timeout = Duration::from_millis(parse_send_timeout_ms(vars.get(SEND_TIMEOUT_ENV))?);
         let max_attempts = parse_max_attempts(vars.get(MAX_ATTEMPTS_ENV))?;
+        let retention_days = parse_retention_days(vars.get(RETENTION_ENV))?;
         let from = match vars.get(FROM_ENV) {
             Some(raw) => Some(checked_address(FROM_ENV, raw)?),
             None => None,
@@ -158,6 +168,7 @@ impl MailConfig {
             provider,
             send_timeout,
             max_attempts,
+            retention_days,
         })
     }
 }
@@ -296,4 +307,27 @@ fn parse_max_attempts(raw: Option<&String>) -> anyhow::Result<i32> {
         );
     }
     Ok(attempts)
+}
+
+/// ONLY an unset variable takes the compiled default (the `ASYNCEVENTS_HANDLER_TIMEOUT` /
+/// `NOTIFICATIONS_RETENTION_DAYS` convention). `MAIL_RETENTION_DAYS=${DAYS}` with the outer
+/// variable unset expands to empty, and defaulting a present-but-empty value would prune a
+/// 90-day retention policy two thirds early with nobody told.
+fn parse_retention_days(raw: Option<&String>) -> anyhow::Result<i32> {
+    let Some(raw) = raw else {
+        return Ok(DEFAULT_RETENTION_DAYS);
+    };
+    let days: i32 = raw.trim().parse().map_err(|_| {
+        anyhow::anyhow!(
+            "invalid {RETENTION_ENV}: must be a whole number of days (got {raw:?}); unset it \
+             for the default {DEFAULT_RETENTION_DAYS}"
+        )
+    })?;
+    if !(1..=MAX_RETENTION_DAYS).contains(&days) {
+        anyhow::bail!(
+            "invalid {RETENTION_ENV}: must be between 1 and {MAX_RETENTION_DAYS} (got \
+             {days}); unset it for the default {DEFAULT_RETENTION_DAYS}"
+        );
+    }
+    Ok(days)
 }

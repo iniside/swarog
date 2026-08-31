@@ -1,6 +1,6 @@
 use std::sync::{Arc, OnceLock};
 
-use bus::{Delivery, Error as BusError};
+use bus::{Delivery, Error as BusError, TxHandler};
 use futures::future::BoxFuture;
 use prometheus::IntCounter;
 use sqlx::PgConnection;
@@ -101,4 +101,107 @@ pub(crate) fn on_send_requested<'a>(
         let conn = delivery.tx.downcast::<PgConnection>()?;
         enqueue_or_skip(&svc, conn, &m).await
     })
+}
+
+/// The retention sweep's consumer-owned subscription id — a durable contract; renaming it
+/// abandons the checkpoint. `Genesis` because the sweep must run on a boot that has never
+/// subscribed before, the same reasoning as `notifications.prune-on-scheduler.v1`.
+pub(crate) const PRUNE_SUB: bus::SubscriptionSpec = bus::SubscriptionSpec {
+    id: "mail.prune-on-scheduler.v1",
+    start: bus::StartPosition::Genesis,
+};
+
+pub(crate) const PRUNE_SCHEDULE_NAME: &str = schedulerevents::schedule_names::MAIL_PRUNE;
+
+/// Rows per statement. The sweep LOOPS batches until a short one — a per-fire CAP would
+/// leave retention permanently behind any inflow above one batch per day, since this
+/// schedule fires once every 86400s — and each batch resumes from the previous batch's
+/// highest `created_at`. That watermark is load-bearing, not an optimisation: every batch
+/// runs inside the ONE still-open delivery transaction, where the tuples this transaction
+/// already deleted are neither killable nor prunable from the index, so a watermark-less
+/// scan re-walks all `256 x (k-1)` of them and the loop goes quadratic.
+pub(crate) const PRUNE_BATCH: i64 = 256;
+
+/// The whole sweep's wall-clock budget. Exhausting it ends the fire with the batches so far
+/// KEPT — they commit with the checkpoint, and the next fire resumes from there.
+///
+/// It is a bare constant because a module may not read the plane's env and `bus::Delivery`
+/// carries no deadline to derive one from; the operator constraint that comes with it is
+/// that `ASYNCEVENTS_HANDLER_TIMEOUT` must stay above 5s (its default is 10s, and nothing
+/// in the tree sets it). Below that the sweep is killed rather than budgeted: the plane
+/// `pg_terminate_backend`s the delivery backend, so the transaction dies with it and EVERY
+/// batch of that fire is lost — no savepoint rollback is involved — and 20 such fires
+/// (`PAUSE_AFTER`, i.e. 20 days on a daily schedule) pause the subscription.
+pub(crate) const PRUNE_BUDGET: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Just the `name` of a `scheduler.fired` payload: the prune subscribes by the contract's
+/// topic const without importing the producer's payload type (audit's zero-coupling shape).
+#[derive(serde::Deserialize)]
+struct FiredName {
+    name: String,
+}
+
+pub(crate) struct PruneHandler {
+    pub(crate) retention_days: i32,
+}
+
+impl TxHandler for PruneHandler {
+    fn call<'a>(
+        &'a self,
+        mut delivery: Delivery<'a>,
+        payload: Vec<u8>,
+    ) -> BoxFuture<'a, Result<(), BusError>> {
+        Box::pin(async move {
+            let conn = delivery.tx.downcast::<PgConnection>()?;
+            let fired: FiredName = serde_json::from_slice(&payload).map_err(BusError::from)?;
+            if fired.name != PRUNE_SCHEDULE_NAME {
+                return Ok(());
+            }
+            debug_assert!(
+                self.retention_days > 0,
+                "PruneHandler constructed with non-positive retention_days: {}",
+                self.retention_days
+            );
+            let started = std::time::Instant::now();
+            // The scan floor, carried across batches as text because the workspace's sqlx
+            // has no date/time feature; `-infinity` is the first batch's "no floor".
+            let mut watermark = "-infinity".to_string();
+            loop {
+                let (deleted, high): (i64, Option<String>) = sqlx::query_as(
+                    "WITH stale AS ( \
+                       SELECT ctid FROM mail.outbox \
+                        WHERE state IN ('sent','cancelled') \
+                          AND created_at < now() - make_interval(days => $1) \
+                          AND created_at >= $3::timestamptz \
+                        ORDER BY created_at LIMIT $2 FOR UPDATE SKIP LOCKED \
+                     ), del AS ( \
+                       DELETE FROM mail.outbox m USING stale \
+                        WHERE m.ctid = stale.ctid RETURNING m.created_at \
+                     ) \
+                     SELECT count(*)::bigint, max(created_at)::text FROM del",
+                )
+                .bind(self.retention_days)
+                .bind(PRUNE_BATCH)
+                .bind(&watermark)
+                .fetch_one(&mut *conn)
+                .await
+                .map_err(BusError::transport)?;
+                if deleted < PRUNE_BATCH {
+                    return Ok(());
+                }
+                // `>=`, never `>`: rows sharing the batch's highest `created_at` may still be
+                // pending, and they are already deleted, so re-scanning them costs one batch.
+                if let Some(high) = high {
+                    watermark = high;
+                }
+                if started.elapsed() >= PRUNE_BUDGET {
+                    tracing::warn!(
+                        elapsed_ms = started.elapsed().as_millis() as u64,
+                        "mail: retention sweep hit its budget — resuming next fire"
+                    );
+                    return Ok(());
+                }
+            }
+        })
+    }
 }

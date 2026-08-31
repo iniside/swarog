@@ -63,4 +63,8 @@ pub mod schedule_names {
     /// `NOTIFICATIONS_RETENTION_DAYS`. The scheduler seeds this schedule (86400s);
     /// notifications reacts to `scheduler.fired{name}` matching it.
     pub const NOTIFICATIONS_PRUNE: &str = "notifications-prune";
+    /// The daily cadence on which `mail` prunes `sent`/`cancelled` outbox rows past
+    /// `MAIL_RETENTION_DAYS`. The scheduler seeds this schedule (86400s); mail reacts to
+    /// `scheduler.fired{name}` matching it.
+    pub const MAIL_PRUNE: &str = "mail-prune";
 }

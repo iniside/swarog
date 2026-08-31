@@ -215,6 +215,12 @@ impl Module for MailModule {
             },
         );
 
+        let prune: Arc<dyn bus::TxHandler> = Arc::new(projection::PruneHandler {
+            retention_days: self.cfg().retention_days,
+        });
+        ctx.bus()
+            .on_tx_raw(projection::PRUNE_SUB, schedulerevents::FIRED.topic(), prune);
+
         // The two arms of ONE `/readyz` check, mutually exclusive by construction: an
         // unconfigured channel is permanently not-ready, a configured one reports its
         // drain's health.

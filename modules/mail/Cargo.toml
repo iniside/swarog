@@ -15,6 +15,9 @@ lifecycle = { workspace = true }
 bus = { workspace = true }
 opsapi = { workspace = true }
 mailevents = { workspace = true }
+# The retention sweep's zero-coupling subscription to `scheduler.fired` (audit's shape:
+# subscribe by the contract topic const, without importing a sync capability).
+schedulerevents = { workspace = true }
 sqlx = { workspace = true }
 # The drain loop: a spawned task, a watch stop channel, and every DB/send bound.
 tokio = { workspace = true }
@@ -23,6 +26,9 @@ async-trait = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 futures = { workspace = true }
+# Deserializes just the `name` field of a `scheduler.fired` payload for the prune sweep.
+serde = { workspace = true }
+serde_json = { workspace = true }
 # The no-provider `/readyz` check: a process accepting mail it cannot deliver is not ready.
 httpmw = { workspace = true }
 # The enqueue counters ride core/metrics' private registry, so they appear on the same
