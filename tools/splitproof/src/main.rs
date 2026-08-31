@@ -1991,8 +1991,29 @@ async fn assertions(ctx: &Ctx, pool: &PgPool, idp: &Idp, p: &mut Proof) -> Resul
     // [MT1] report -> 202 (AuthNone, capitalized body keys; emits durable match.finished).
     let mt1 = report(ctx, &g, &mt1_rid, &winner, &loser).await;
     p.check("[MT1] match.report -> 202", mt1 == 202, format!("code={mt1}"));
-    // [MT2] leaderboard shows winner wins=1 (I->K durable + upsert; G routes Remote to K).
-    p.check("[MT2] leaderboard winner wins=1", poll_leaderboard_wins(ctx, &g, &winner, 1).await, "");
+    // [MT2] the durable projection landed: winner's `leaderboard.scores` row is wins=1
+    // (I->K durable + upsert), asserted on the row itself so the truncated top-100 page can
+    // never mask it. The Remote-routing half is [MT2-ROUTE].
+    p.check("[MT2] leaderboard winner wins=1", poll_leaderboard_wins(pool, &winner, 1).await, "");
+    // [MT2-ROUTE] G routes the public read Remote to leaderboard-svc: `GET /leaderboard`
+    // answers 200 through the front door with a well-formed, non-empty `[{player,wins}]` list
+    // ([MT2] just proved at least one row exists, so an empty list is a routing/projection
+    // failure, not a vacuous pass).
+    let (lb_code, lb_body) = leaderboard_top(ctx, &g).await;
+    let lb_wellformed = serde_json::from_str::<Vec<serde_json::Value>>(&lb_body)
+        .map(|rows| {
+            !rows.is_empty()
+                && rows.iter().all(|r| {
+                    r.get("player").and_then(|v| v.as_str()).is_some()
+                        && r.get("wins").and_then(|v| v.as_i64()).is_some()
+                })
+        })
+        .unwrap_or(false);
+    p.check(
+        "[MT2-ROUTE] GET /leaderboard -> 200 well-formed list through G (Remote to K)",
+        lb_code == 200 && lb_wellformed,
+        format!("code={lb_code} body={}", lb_body.chars().take(160).collect::<String>()),
+    );
     // [MT3] audit recorded match.finished (I->F durable, exactly-once).
     let mt3 = poll_count(
         pool,
@@ -2006,7 +2027,7 @@ async fn assertions(ctx: &Ctx, pool: &PgPool, idp: &Idp, p: &mut Proof) -> Resul
     let mt4 = report(ctx, &g, &mt4_rid, &winner, &loser).await;
     p.check(
         "[MT4] second report -> wins=2",
-        mt4 == 202 && poll_leaderboard_wins(ctx, &g, &winner, 2).await,
+        mt4 == 202 && poll_leaderboard_wins(pool, &winner, 2).await,
         format!("code={mt4}"),
     );
     // [MT5] rating projection persisted (winner +15+15=1030, loser -15-15=970).
@@ -4438,10 +4459,19 @@ async fn send_status_retrying_429(req: reqwest::RequestBuilder) -> u16 {
     429
 }
 
-/// Poll the leaderboard (through G) until `winner` shows exactly `wins` wins.
-async fn poll_leaderboard_wins(ctx: &Ctx, g: &str, winner: &str, wins: u32) -> bool {
-    let needle = format!("\"player\":\"{winner}\",\"wins\":{wins}");
-    for _ in 0..30 {
+/// Poll `leaderboard.scores` until `winner`'s row holds exactly `wins`. Reads the ROW, not
+/// the `GET /leaderboard` top-100 projection: that list is truncated (`LIMIT 100`) and the
+/// table is never pruned, so a freshly reported champion at wins=1 can be a real, correct row
+/// that is simply outside the served page. Bounded and fail-closed — a value that never lands
+/// returns `false` rather than waiting.
+async fn poll_leaderboard_wins(pool: &PgPool, winner: &str, wins: i64) -> bool {
+    poll_count(pool, "SELECT wins FROM leaderboard.scores WHERE player=$1", winner, wins).await
+}
+
+/// `GET /leaderboard` through G, retrying only the always-on rate-limit 429. Returns the
+/// status and body.
+async fn leaderboard_top(ctx: &Ctx, g: &str) -> (u16, String) {
+    for _ in 0..15 {
         if let Ok(r) = ctx
             .http
             .get(format!("{g}/leaderboard"))
@@ -4449,13 +4479,16 @@ async fn poll_leaderboard_wins(ctx: &Ctx, g: &str, winner: &str, wins: u32) -> b
             .send()
             .await
         {
-            if r.text().await.unwrap_or_default().contains(&needle) {
-                return true;
+            let code = r.status().as_u16();
+            if code == 429 {
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                continue;
             }
+            return (code, r.text().await.unwrap_or_default());
         }
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
     }
-    false
+    (429, String::new())
 }
 
 /// Fire `n` concurrent GETs at `url` (optional api key) and return how many got 429.
