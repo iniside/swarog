@@ -5,7 +5,7 @@ metadata:
   node_type: memory
   type: feedback
   originSessionId: 31c06266-64af-4bcb-82be-f14d3b988287
-  modified: 2026-08-26T00:00:00.000Z
+  modified: 2026-08-31T00:00:00.000Z
 ---
 
 Three false assertions in ONE session (2026-07-16, weles M1 design), all from the same
@@ -40,6 +40,18 @@ root: I repeated prose that described code, without opening the code.
    ticket" while the real widest cap was 999999. **New shape: prose inside a verification
    tool, where the surrounding machinery makes it look executed.** Same session: deleting BOTH
    cap guards from the production handler left every gate green and `cargo test` passing.
+
+6. (2026-08-31, mail seq #3b Steps 2-3) **Three in one rollout, all in the plan I wrote.**
+   `HistoryPolicy::Days(7)` — no such variant (`MinRetention { days }` / `KeepForever`).
+   Step 1's "compare against `USABLE_PG_SESSIONS + 3`" — would have refused a monolith
+   rollout that fits. And the load-bearing one: "a failed checkpoint UPDATE aborts the whole
+   worker pass, starving every other subscription" — `core/asyncevents/src/worker.rs:437-446`
+   catches the `Err` and breaks only THAT subscription's quantum. The requirement (validate
+   before any statement) was right; the stated reason was invented. The real consequence is
+   stronger — the success arm returns before `record_failure`, so nothing backs off or
+   pauses and the event hot-loops forever with `/readyz` green. **The implementing subagent
+   copied the false sentence into a code comment as the step's justification, exactly as in
+   #4.** Caught by review, verified by me in the worker source.
 
 **Why:** prose drifts from code silently — nothing recompiles a comment. A false comment is
 worse than none, because it *stops* the next reader from checking. And I was the next reader.
