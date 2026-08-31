@@ -1032,3 +1032,31 @@ names its peers by count is correct and Step 7 already carried it.
    resolver-2 unifies it workspace-wide, so the clause was false before `lettre` arrived.
    Corrected in the same rollout: `with_protocol_versions(&[&TLS13])` is the sole
    authority, and it is intact.
+17. **Step 4 — the plan's per-I/O-step timeout does not exist in `lettre`.** Step 4(c) said
+   to "bound connect and each I/O step rather than assuming one whole-request deadline
+   covers it", and the first implementation asserted in a module doc that the transport did
+   so. It does not: lettre's tokio transport applies its `timeout` around each candidate
+   address's TCP connect and nowhere else (`client/async_net.rs`'s `connect_tokio1`); the
+   per-socket read/write timeouts exist only on its blocking transport, so DNS, the TLS
+   handshake, the banner, EHLO, STARTTLS, AUTH and MAIL/RCPT/DATA are unbounded. The
+   drain's aggregate `MAIL_SEND_TIMEOUT_MS` is the sole bound on the dialogue, and the
+   connect bound is still set because lettre applies it PER RESOLVED ADDRESS. The plan's
+   citation of `modules/gateway/src/proxy.rs` was also inverted — that file records the
+   opposite decision, rejecting a whole-request timeout for a streaming body.
+18. **Step 4 — the `3 × send_timeout` lease did not actually cover the attempt.** Asking
+   whether the lease argument survived finding 17 exposed a fourth defect: the status
+   write's budget was taken from what remained of the *pass*, so the worst case was
+   `send_timeout + ACQUIRE_DEADLINE + pass_budget` = 45s against a 30s lease. `write_budget`
+   is now derived from the lease itself, so `send_timeout + ACQUIRE_DEADLINE + write_budget`
+   is exactly `3 × send_timeout` for every `send_timeout >= ACQUIRE_DEADLINE` (5s). Below
+   that floor a re-claim can overlap an in-flight send; the CAS keeps the row correct and
+   the cost is a duplicate delivery — the documented at-least-once contract, not a new
+   failure mode. The module header states the condition rather than an unconditional claim.
+19. **Step 4 — `MAIL_SEND_TIMEOUT_MS` needed a ceiling, and it is derived.**
+   `MAX_SEND_TIMEOUT_MS = BACKOFF_MAX_SECS * 1000` (300 000 ms), with `BACKOFF_MAX_SECS`
+   changed from `f64` to an integer so the link is real rather than two matching literals:
+   an attempt allowed to outlast the longest gap the retry ladder ever waits inverts the
+   ladder and stops `MAIL_MAX_ATTEMPTS` bounding anything. Separately the
+   `SET LOCAL statement_timeout` argument is clamped to `1..=i32::MAX`, so an out-of-range
+   budget can never be *why* a statement fails — without both, a large value made every
+   pass error before claiming a row while `stall_max` kept `/readyz` green for weeks.
