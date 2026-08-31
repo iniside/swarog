@@ -28,7 +28,7 @@ use super::{addr_source_from_value, gateway_addrs, AddrSource, ResolvedAddrs};
 /// What the fake hands back for one question.
 type Answer = Result<Vec<String>, ResolveError>;
 
-/// The nine addresses the split fleet actually runs at — `weles::manifest`'s
+/// The ten addresses the split fleet actually runs at — `weles::manifest`'s
 /// ports, which is where BOTH modes' answers come from in a managed rollout (the
 /// composed env and the agent's `resolve` map are derived from the one port
 /// authority). Written once and fed to BOTH fakes, which is what makes the
@@ -41,6 +41,7 @@ const FLEET: &[(&str, &str)] = &[
     ("MATCH_EDGE_ADDR", "127.0.0.1:9006"),
     ("LEADERBOARD_EDGE_ADDR", "127.0.0.1:9008"),
     ("WALLET_EDGE_ADDR", "127.0.0.1:9010"),
+    ("NOTIFICATIONS_EDGE_ADDR", "127.0.0.1:9011"),
     ("ADMIN_HTTP_ADDR", "127.0.0.1:8085"),
     ("ACCOUNTS_HTTP_ADDR", "127.0.0.1:8084"),
 ];
@@ -272,23 +273,23 @@ async fn env_mode_asks_no_agent() {
 }
 
 // ---------------------------------------------------------------------------
-// Managed: the same nine pairs, learned from the agent
+// Managed: the same ten pairs, learned from the agent
 // ---------------------------------------------------------------------------
 
 /// THE equivalence: for one fleet, "told by env" and "asked the agent" produce
-/// the SAME nine pairs. That is the whole M1 claim at this seam — the plaster
+/// the SAME ten pairs. That is the whole M1 claim at this seam — the plaster
 /// changes where the answer comes from, and nothing else.
 #[tokio::test]
-async fn managed_resolves_the_same_nine_pairs_as_env() {
+async fn managed_resolves_the_same_ten_pairs_as_env() {
     let agent = FakeAgent::healthy();
     let from_agent = resolve_managed(&agent).await.unwrap();
     let from_env = resolve_env(FLEET).await;
 
     assert_eq!(from_agent, from_env, "managed and standalone must agree for the same fleet");
 
-    // ...and the questions were the right ones: nine, one per address, with
+    // ...and the questions were the right ones: ten, one per address, with
     // `accounts` asked twice as its TWO classes (edge 9003 + http 8084). A table
-    // that asked Http for an edge peer would still have produced nine pairs.
+    // that asked Http for an edge peer would still have produced ten pairs.
     assert_eq!(
         *agent.asked.borrow(),
         vec![
@@ -299,6 +300,7 @@ async fn managed_resolves_the_same_nine_pairs_as_env() {
             ("match", AddrKind::Edge),
             ("leaderboard", AddrKind::Edge),
             ("wallet", AddrKind::Edge),
+            ("notifications", AddrKind::Edge),
             ("admin", AddrKind::Http),
             ("accounts", AddrKind::Http),
         ],

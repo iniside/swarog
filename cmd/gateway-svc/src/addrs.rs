@@ -1,8 +1,8 @@
-//! Where this front door's nine addresses come from — the ONE deterministic
+//! Where this front door's ten addresses come from — the ONE deterministic
 //! decision this process makes at start.
 //!
 //! ```text
-//! ORCHESTRATOR_URL unset ⇒ standalone: read the nine env vars (as always).
+//! ORCHESTRATOR_URL unset ⇒ standalone: read the ten env vars (as always).
 //! ORCHESTRATOR_URL set   ⇒ managed:    ask the local agent (`remote::resolve_peer`).
 //! ```
 //!
@@ -19,7 +19,7 @@
 //!
 //! # The failure policy is PER CLASS, and branches on the CODE — never on prose
 //!
-//! The nine addresses are two classes ([`AddrClass`]), and "unresolvable" does
+//! The ten addresses are two classes ([`AddrClass`]), and "unresolvable" does
 //! not mean the same thing to both:
 //!
 //! * An **edge peer** with no address ⇒ this process DIES. There is no benign
@@ -110,7 +110,7 @@ impl AddrClass {
     }
 }
 
-/// One of the nine addresses: its env key (standalone), the provider short name
+/// One of the ten addresses: its env key (standalone), the provider short name
 /// the agent knows it by (managed), its class, and its standalone default.
 struct AddrSpec {
     env_key: &'static str,
@@ -181,6 +181,15 @@ const ADDR_SPECS: &[AddrSpec] = &[
         class: AddrClass::Edge,
         env_default: "127.0.0.1:9010",
     },
+    // notifications' player ops (list/mark_read/delete) front here Remote over the
+    // mTLS edge; like the other pure-HTTP providers its routes arrive through
+    // `__describe`, so this table supplies only the address.
+    AddrSpec {
+        env_key: "NOTIFICATIONS_EDGE_ADDR",
+        provider: "notifications",
+        class: AddrClass::Edge,
+        env_default: "127.0.0.1:9011",
+    },
     // The two passthrough ORIGINS: `/admin` → admin-svc, `/accounts/epic` → the
     // Epic web OAuth flow on accounts-svc. A blank default drops the prefix (the
     // proxy table skips empties), so an unset var leaves that route a 404 — the
@@ -201,12 +210,12 @@ const ADDR_SPECS: &[AddrSpec] = &[
     },
 ];
 
-/// The decided source of the nine addresses. Two variants, no third: there is
+/// The decided source of the ten addresses. Two variants, no third: there is
 /// no "managed with an env fallback", because the type that would express it is
 /// the bug (see the module doc).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum AddrSource {
-    /// Standalone: the nine env vars, exactly as before weles existed.
+    /// Standalone: the ten env vars, exactly as before weles existed.
     Env,
     /// Managed: ask the agent at this URL.
     Agent(String),
@@ -236,7 +245,7 @@ pub(crate) fn addr_source_from_env() -> Result<AddrSource> {
 /// Set-but-BLANK fails startup loudly rather than falling back to standalone —
 /// unlike the address vars below it, where blank means "unset" and the answer is
 /// a documented default. This var does not select a value, it selects the
-/// AUTHORITY for nine values; inferring "standalone" from a blank one is the
+/// AUTHORITY for ten values; inferring "standalone" from a blank one is the
 /// silent-fallback this whole file exists to refuse, and the operator who
 /// exported an empty `ORCHESTRATOR_URL` meant to be managed.
 fn addr_source_from_value(raw: Option<&str>) -> Result<AddrSource> {
@@ -252,7 +261,7 @@ fn addr_source_from_value(raw: Option<&str>) -> Result<AddrSource> {
     }
 }
 
-/// The nine `(env key → address)` pairs, whatever they were resolved FROM.
+/// The ten `(env key → address)` pairs, whatever they were resolved FROM.
 ///
 /// Its own type, deliberately, rather than `ProcessWiring`: this is the value the
 /// two modes must agree on, so it needs `PartialEq`/`Debug` to be compared in a
@@ -305,7 +314,7 @@ impl ResolvedAddrs {
     }
 }
 
-/// Resolves all nine addresses from `source`.
+/// Resolves all ten addresses from `source`.
 ///
 /// Both effects are injected, which is what makes this file's claims provable:
 /// `env_lookup` is `std::env::var` in production, and `ask_agent` is
