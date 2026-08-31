@@ -11,6 +11,8 @@ pub mod conformance;
 mod projection;
 mod service;
 mod store;
+#[cfg(test)]
+mod tests;
 
 use store::*;
 
