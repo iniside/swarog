@@ -456,7 +456,8 @@ with no `cmd/<name>-svc` root.
 ## Step 3b — register the topic with the two gates that scan for it  `[sonnet]`
 
 **(a) What.** `tools/topiccheck/src/main.rs` (`defined_topics()`),
-`tools/topiccheck/src/golden.rs` (`event_samples_by_crate()`), `tools/topiccheck/Cargo.toml`.
+`tools/topiccheck/src/golden.rs` (`event_samples_by_crate()`), `tools/topiccheck/Cargo.toml`,
+`cmd/server/{Cargo.toml,src/lib.rs}`, and `tools/checkmodules/{Cargo.toml,src/lib.rs}`.
 
 **(b) Why now — this is the step the plan originally misplaced.** The moment Step 2 added
 a `define(` site, `defined_topics_matches_every_define_site_on_disk` went red and the
@@ -469,7 +470,13 @@ moment Step 3 lands, which `stale_allowances` fails on. Step 3 adds the subscrip
 this is the first point where the topic is both defined and subscribed and no allowance is
 needed.
 
-**(c) How.** Add `mailevents::SEND_REQUESTED` to `defined_topics()` — a hand-enumerated
+**(c) How.** Register `mail` in the monolith's module list (`cmd/server/src/lib.rs`) and
+`mail-svc` in `tools/checkmodules`' Split profile FIRST — `topiccheck::observe()` builds
+each profile's module set from those two lists, so a subscription that exists in
+`modules/mail/src/projection.rs` is invisible to the gate until the module is in a boot
+list, and the topic reports `UNSUBSCRIBED (SEAM)` in both profiles. Nothing in those two
+registrations depends on the fleet, the ports or the admin page. Then add
+`mailevents::SEND_REQUESTED` to `defined_topics()` — a hand-enumerated
 list whose own doc calls itself "the one conscious edit point" — and `mail` to
 `event_samples_by_crate()`, whose samples `golden.rs:402,437` require for every defined
 `(topic, version)`. Do **not** add an `ALLOW_UNSUBSCRIBED` entry: the subscription exists
@@ -477,7 +484,12 @@ as of Step 3, and a sanctioned-sinkless allowance for a topic that has a sink is
 what `stale_allowances` rejects. Verify with `cargo test -p topiccheck` green and
 `cargo run -p topiccheck -- --durability-strict` exiting 0.
 
-**(d) Dispatch.** `[sonnet]` — two named list entries in two named files. The judgment-
+One consequence, expected and owned by Step 7: with `mail` in the monolith's list, a
+manually booted `cmd/server` reports `/readyz` red until the dev fleet env carries
+`MAIL_PROVIDER=log` and `MAIL_FROM`, because the no-provider readiness check is permanent
+by design. Do not add a default provider or make the check conditional to hide it.
+
+**(d) Dispatch.** `[sonnet]` — four named list entries in four named files. The judgment-
 bearing gate work (conformance's `ADMIN_SUBMIT_MODULES`, the `mail()` policy entry, the
 CapCase probes) stays in Step 8, where the admin page it describes exists.
 
@@ -617,8 +629,7 @@ indistinguishable from `UnknownMethod` and which silently degrades the page to r
 
 ## Step 7 — fleet and topology registration  `[sonnet]`
 
-**(a) What.** `cmd/server/{Cargo.toml,src/lib.rs}`; `tools/checkmodules/{Cargo.toml,src/lib.rs}`;
-`tools/processctl/src/fleet.rs` + `fleet_tests.rs`; `cmd/admin-svc/src/{lib.rs,main.rs}`;
+**(a) What.** `tools/processctl/src/fleet.rs` + `fleet_tests.rs`; `cmd/admin-svc/src/{lib.rs,main.rs}`;
 `weles/fleet.split.toml`; `weles/master/src/{fleet_toml_tests.rs,manifest_tests.rs}`;
 and the three stale-count comments named below.
 
@@ -979,3 +990,14 @@ names its peers by count is correct and Step 7 already carried it.
 14. **Step 3 — `mail_outbox_created_at_idx` was redundant on arrival.** The plan mandated
    four indexes; `mail_outbox_recent_idx (created_at DESC, id DESC)` already serves the
    retention sweep's range predicate. Dropped, and the schema block above corrected.
+15. **Step 3b was mis-scoped: a subscription is invisible to `topiccheck` until its module
+   is in a boot list.** The step registered the topic in `defined_topics()` and the contract
+   golden, which closed the define-site scan, but `topiccheck::observe()` builds each
+   profile's module set from `checkmodules::monolith_modules()` (which calls
+   `server::modules`) and `split_process_modules()` — neither of which knew about `mail` —
+   so `mail.send_requested` reported `UNSUBSCRIBED (SEAM)` in both profiles and
+   `--durability-strict` still exited 1. The `cmd/server` and `checkmodules` registrations
+   moved from Step 7 into Step 3b; the fleet, ports, weles and admin-svc registrations
+   stayed in Step 7. The implementing agent found this by tracing rather than reaching for
+   the `ALLOW_UNSUBSCRIBED` entry the step forbade, which would have been a stale allowance
+   the moment Step 7 landed.
