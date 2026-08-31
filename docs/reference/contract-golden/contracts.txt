@@ -41,6 +41,7 @@ event topic=admin.action version=1 history=min-retention:30d
 event topic=character.created version=1 history=min-retention:7d
 event topic=character.deleted version=1 history=min-retention:7d
 event topic=config.changed version=1 history=min-retention:7d
+event topic=mail.send_requested version=1 history=min-retention:1d
 event topic=match.finished version=1 history=min-retention:7d
 event topic=player.promoted version=1 history=min-retention:7d
 event topic=player.registered version=1 history=min-retention:7d
@@ -62,6 +63,11 @@ payload topic=config.changed version=1 payload.operation:string
 payload topic=config.changed version=1 payload.revision:number
 payload topic=config.changed version=1 payload.value:null
 payload topic=config.changed version=1 payload.value:string
+payload topic=mail.send_requested version=1 payload.body:string
+payload topic=mail.send_requested version=1 payload.idempotency_key:string
+payload topic=mail.send_requested version=1 payload.kind:string
+payload topic=mail.send_requested version=1 payload.subject:string
+payload topic=mail.send_requested version=1 payload.to:string
 payload topic=match.finished version=1 payload.loser:string
 payload topic=match.finished version=1 payload.match_id:string
 payload topic=match.finished version=1 payload.winner:string

@@ -4484,6 +4484,7 @@ dependencies = [
  "inventoryapi",
  "leaderboardapi",
  "lifecycle",
+ "mailevents",
  "matchapi",
  "matchevents",
  "notificationsapi",

@@ -249,6 +249,7 @@ fn event_samples_by_crate() -> Vec<CrateSamples> {
         ("scheduler", schedulerevents::golden_samples()),
         ("admin", adminevents::golden_samples()),
         ("wallet", walletevents::golden_samples()),
+        ("mail", mailevents::golden_samples()),
     ]
 }
 
