@@ -14,10 +14,11 @@ use serde::{Deserialize, Serialize};
 /// money. `delta` is signed (negative for a debit) and `ledger_id` points at the
 /// `wallet.ledger` row that is the authority for the movement.
 ///
-/// Evolve additively (constraint #6): add fields or a `ChangedV2`, never reshape — the
-/// retained durable JSON is the contract. No `Option<…>` field, deliberately: every field
-/// is always meaningful, and contract-golden requires a second `None`-populated sample for
-/// any optional one.
+/// Evolve additively (constraint #6): a new field needs `#[serde(default)]` or must be
+/// `Option` (owing a second `None`-populated golden sample) — a retained pre-change event
+/// has no key for it, so a bare required field fails `decode` and pauses every
+/// subscription on this topic. Anything that can't satisfy that is a `ChangedV2`, not a
+/// field add.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Changed {
     pub player_id: String,

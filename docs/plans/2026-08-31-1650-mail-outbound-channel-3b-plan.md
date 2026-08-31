@@ -470,7 +470,11 @@ driver to be reachable from.
   row at a time so budget exhaustion never strands over-claimed rows; each send bounded
   independently by `MAIL_SEND_TIMEOUT_MS`. On exhaustion, log and end the pass — leased
   rows are simply due again.
-- Success: `state='sent', sent_at=now(), provider=$p, last_error=NULL`.
+- Success: `state='sent', sent_at=now(), provider=$p, last_error=NULL, body=''`.
+  **Blanking the body on success is a security requirement, not tidiness**: a rendered
+  body is a password-reset link or a verification token, and a `sent` row keeps it for
+  `MAIL_RETENTION_DAYS` (30) otherwise. A delivered secret stops being archived the
+  moment it is delivered; a `parked` row keeps its body because it still has to be sent.
   `SendError::Rejected`: `state='parked'` with `last_error`. `SendError::Infra`: stay
   `pending` with `next_attempt_at = now() + backoff_secs(attempts)`, parking once
   `attempts >= MAIL_MAX_ATTEMPTS`. Every arm CAS-guarded on
@@ -891,3 +895,22 @@ names its peers by count is correct and Step 7 already carried it.
    reported `46 passed; 1 failed` without naming the test; five subsequent runs were 47/47.
    The suite forks and holds `flock`s and carries an explicit `fork_flock_serial` guard for
    that interaction. Not reproduced, not diagnosed, recorded rather than called clean.
+
+7. **Step 2 — the durable payload carries a secret, and the topic's retention was too
+   long.** `SendRequested.body` holds the rendered message, which for seq #4 is a
+   password-reset link. It lands in `asyncevents.events`, and `tools/eventctl` prints a
+   poison event's `payload:` verbatim to stderr. Landed as `MinRetention { days: 1 }`
+   (minimum secret residency — retention is checkpoint-coupled, so a longer window buys
+   nothing for delivery), with the rendered-body shape kept deliberately (a template
+   reference would put every sender's data shape inside the transport) and recorded in
+   the crate doc as a named accepted risk. **Step 4 was amended** to blank `body` when a
+   row reaches `sent`.
+8. **Step 2 — `providers::{LOG, SMTP}` did not belong in the events crate.** No field of
+   `SendRequested` holds a provider name, so the constants would have entered
+   `mailevents`' public-api baseline and made an internal config rename a BREAKING diff.
+   They move to `modules/mail/src/providers.rs` in Step 3, beside `KNOWN_PROVIDERS`.
+9. **Step 2 — `define(` must be a single line.** `tools/topiccheck/src/tests.rs:281`
+   scans the tree for `define("topic", …)` and PANICS when the literal is not on the
+   `define(` line, so a wrapped call turns a blocking stage red with a message about a
+   missing string literal. Not a rule the plan knew; recorded here for the next contract
+   crate.
