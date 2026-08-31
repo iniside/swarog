@@ -132,7 +132,7 @@ Deliberate choices, each with its reason:
   arg or a `bool` field makes `cargo run -p csharp-client-gen` `bail!` — inside the
   **blocking** `codegen-freshness` stage. `limit: i64` follows `inventory.grant`'s
   `qty: i64`; unread is the empty `read_at`, not a `bool`. A negative `limit` is
-  `InvalidArgument`.
+  `opsapi::Status::Invalid`.
 - **No `Option<T>` in any wire arg.** Empty `cursor` means first page; `limit == 0`
   means `DEFAULT_PAGE_LIMIT`; `limit > MAX_PAGE_LIMIT` clamps. This follows
   `charactersapi::Player::create`'s empty-`class`-defaults-in-the-impl precedent and
@@ -184,7 +184,7 @@ inbox. `player_id` is a plain id column — no cross-module FK.
 
 **Cursor:** keyset on `(created_at DESC, id DESC)`, encoded opaque as base64url of
 `"{created_at_rfc3339}|{uuid}"`, capped at `MAX_CURSOR_BYTES`. A malformed or
-over-length cursor is `Status::InvalidArgument` (400), never a silent reset to page 1 —
+over-length cursor is `opsapi::Status::Invalid` (400), never a silent reset to page 1 —
 a silent reset makes a paging bug invisible. Keyset, not OFFSET, because rows are
 deleted underneath a paging client.
 
@@ -194,6 +194,18 @@ deleted underneath a paging client.
 
 Every step names its files. Tests are their own steps, after the implementation they
 cover has landed and compiled ([[split-impl-and-tests]]).
+
+**Note on build state, Steps 1–6:** three blocking stages key off `api/<name>/api`
+**on disk**, not off the module or the svc — `fortress`/`archcheck` rule 17
+(`http_op_domains`, `tools/archcheck/src/main.rs:768-816`), `contract-golden`'s
+`self_check_rpc_list` (`tools/topiccheck/src/golden.rs:513-534`), and
+`codegen-freshness`'s `check_completeness` (`tools/csharp-client-gen/src/scrape.rs:183-201`)
+plus its own `self_check_rpc_list` in `tools/opscatalog-gen/src/main.rs`. All three go
+red the moment Step 1 lands `notificationsapi`'s `#[http(` methods, not when Step 5
+adds the svc or Step 6 wires the hand-maintained lists. This is a **sanctioned broken
+intermediate build**: the tree is red on these three blocking stages from Step 1 until
+Step 6 completes, and running `verifyctl` in between is expected to fail and is not a
+signal to fix anything early.
 
 ### Step 1 — contract crates `notificationsapi` + `notificationsrpc`  `[opus]`
 
@@ -243,7 +255,7 @@ split), and owns the keyset query:
 (404), never `Forbidden` — a 403 tells the caller the id exists, which is an
 enumeration oracle over another player's inbox. `mark_read` uses
 `SET read_at = COALESCE(read_at, now())`. The cursor codec (encode/decode, byte cap,
-`InvalidArgument` on malformed) lives here as a pure function, so Step 8 can test it
+`Status::Invalid` on malformed) lives here as a pure function, so Step 8 can test it
 with no I/O.
 **(d) Lane:** `[opus]` — the authz filter and the keyset predicate are the two places
 this module can be silently wrong.
@@ -333,8 +345,10 @@ something about every implementor while naming only wallet and apikeys.
 (`admin_stub("notifications", wiring, "127.0.0.1:9011")`);
 `tools/checkmodules/{Cargo.toml,src/lib.rs}` (Split-profile entry); root `Cargo.toml`.
 **(b) Why now:** the fortress rule and `archcheck` rule 12 make the svc mandatory the
-moment `modules/notifications` exists; `archcheck` rule 17 additionally fails the build
-because the api crate now contains `#[http(` with no gateway stub.
+moment `modules/notifications` exists (Step 2). `archcheck` rule 17 has been failing
+the build since Step 1 — it scans `api/<name>/api/src` directly and does not wait for
+the svc — so this step is what STOPS it failing, by finally adding the gateway stub,
+not what starts it.
 **(c) How:** `lib.rs` is `modules(wiring: &ProcessWiring) -> Vec<Box<dyn Module>>`
 returning `metrics::Metrics::new()` + `NotificationsModule::new()` and **no** other
 stub (nothing is consumed). The gateway entry is
@@ -360,8 +374,11 @@ and the regenerated `opscatalog/src/generated.rs`; `tools/topiccheck/src/golden.
 (`rpc_modules()`); `tools/csharp-client-gen/src/scrape.rs` (`PROVIDERS` at `:36`,
 `phase_a()` at `:42-51`, + Cargo dep) and the committed `clients/csharp/Generated`
 tree; `docs/reference/contract-golden/` via `--bless-contract-golden`.
-**(b) Why now:** every one of these fails the build or a blocking verify stage as soon
-as Step 5 lands, and they are independent of the module's logic.
+**(b) Why now:** `contract-golden` and `codegen-freshness` have been failing since
+Step 1 (both key off `api/<name>/api` on disk, not off the svc); the `processctl`
+fleet entry and its fleet-drift preflight are the ones that specifically require
+Step 5's `cmd/notifications-svc` to exist on disk first. All of them are independent
+of the module's logic.
 **(c) How:** ports **8093 / 9011** (next free after wallet's 8092/9010);
 `let notifications = service("notifications-svc", 8093, Some(9011), vec![]);` — no
 dependencies, since `requires()` is empty; `overrideable_env = &["NOTIFICATIONS_RETENTION_DAYS"]`.
@@ -437,8 +454,8 @@ hashing).
 can start from a real diff.
 **(c) How:** cover the branches that were previously wrong or are newly at risk —
 each test must execute the branch, not sit near it:
-- **cursor codec** — round-trip; malformed base64 → `InvalidArgument`; over-`MAX_CURSOR_BYTES`
-  → `InvalidArgument`; and explicitly **not** a silent reset to page 1.
+- **cursor codec** — round-trip; malformed base64 → `Status::Invalid`; over-`MAX_CURSOR_BYTES`
+  → `Status::Invalid`; and explicitly **not** a silent reset to page 1.
 - **keyset paging** — insert N rows with colliding `created_at`, page through with
   `limit` smaller than N, assert every row is seen exactly once and `next_cursor` is
   empty only on the last page (the tie-break on `id` is the part that breaks first).
@@ -584,3 +601,24 @@ non-`String` scalar body arg, a struct return, `#[retry_safe]` on a POST), the
 `Option`-free claim, route-overlap against `routecheck`, the keyset predicate and its
 index, `AfterRegistration` semantics and both topics' retention, `admincheck` needing
 no edit, and the public-api baseline's disk discovery.
+
+An adversarial review of Step 1's landed diff found two more factual errors in this
+plan itself (not in the diff, which followed the plan correctly):
+
+7. **`opsapi::Status::InvalidArgument` does not exist.** The real variant is
+   `opsapi::Status::Invalid` (`core/opsapi/src/lib.rs:154`, mapped to HTTP 400 at
+   `:178`). Every occurrence in this plan (the `MAX_CURSOR_BYTES`/negative-`limit`
+   prose and the Step 8 test description) is corrected to `opsapi::Status::Invalid`.
+8. **Steps 5(b) and 6(b) misdated when the tree goes red, by four steps.** Both said
+   the blocking gates fail "as soon as Step 5 lands." In fact three blocking stages —
+   `fortress`/`archcheck` rule 17 (`http_op_domains`,
+   `tools/archcheck/src/main.rs:768-816`), `contract-golden`'s `self_check_rpc_list`
+   (`tools/topiccheck/src/golden.rs:513-534`), and `codegen-freshness`'s
+   `check_completeness` (`tools/csharp-client-gen/src/scrape.rs:183-201`) plus its own
+   `self_check_rpc_list` in `tools/opscatalog-gen/src/main.rs` — key off
+   `api/<name>/api` **on disk**, so they go red the moment Step 1 lands
+   `notificationsapi`'s `#[http(` methods, three steps before the svc (Step 5) even
+   exists. Corrected the wording in both steps and added a note at the top of
+   `## Steps` naming the tree red from Step 1 through Step 6 as a sanctioned broken
+   intermediate build, so `verifyctl` before Step 6 is expected to fail and is not a
+   signal to fix anything early.
