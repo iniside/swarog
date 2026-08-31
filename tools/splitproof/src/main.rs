@@ -1164,19 +1164,18 @@ async fn counter_value(ctx: &Ctx, base: &str, name: &str) -> Option<f64> {
     Some(0.0)
 }
 
-/// Polls `name` until it rises above `floor`, answering the observed value. The counter is
-/// incremented by the DELIVERY of an event this harness appended, so this is the
-/// happens-after signal for that delivery — never a sleep.
-async fn poll_counter_above(ctx: &Ctx, base: &str, name: &str, floor: f64) -> Option<f64> {
-    for _ in 0..30 {
-        if let Some(v) = counter_value(ctx, base, name).await {
-            if v > floor {
-                return Some(v);
-            }
-        }
-        tokio::time::sleep(Duration::from_millis(500)).await;
+/// A per-pass random nonce, NOT the pid: pids recycle, and an outbox row left behind by an
+/// aborted run under a recycled pid could otherwise satisfy [ML1] with no event consumed at
+/// all.
+fn mail_nonce(tag: &str) -> String {
+    use rand::RngCore;
+    let mut bytes = [0u8; 8];
+    rand::rngs::OsRng.fill_bytes(&mut bytes);
+    let mut hex = String::with_capacity(16);
+    for b in bytes {
+        hex.push_str(&format!("{b:02x}"));
     }
-    counter_value(ctx, base, name).await
+    format!("{hex}{tag}")
 }
 
 /// The `_csrf` + render-minted `_idem_test` pair from one render of the Mail page. The test
@@ -1217,16 +1216,21 @@ async fn mail_assertions(
     jar: &reqwest::Client,
     tag: &str,
 ) -> Result<()> {
-    let nonce = format!("{}{tag}", std::process::id());
-    // Every `splitproof-` key is this harness's by construction, so clearing ALL of them —
-    // not just this nonce's — is what makes the outbox's own state a fixture rather than an
-    // input: a recycled pid cannot let a previous run's row stand in for this one's, and
-    // [ML4b]'s whole-table bulk verb cannot inherit a parked row from a run that failed
-    // before requeuing it.
-    sqlx::query("DELETE FROM mail.outbox WHERE idempotency_key LIKE 'splitproof-%'")
-        .execute(pool)
-        .await
-        .ok();
+    let nonce = mail_nonce(tag);
+    // Every `splitproof-` key and every `admin-send-test-` key is this harness's by
+    // construction, so clearing ALL of them — not just this pass's — is what makes the
+    // outbox's own state a fixture rather than an input: [ML4b]'s whole-table bulk verb
+    // cannot inherit a parked row from a run that failed before requeuing it, and the
+    // operator test sends do not accumulate across runs. The error PROPAGATES: a swallowed
+    // clear is the one way a stale row could be mistaken for this pass's proof.
+    sqlx::query(
+        "DELETE FROM mail.outbox \
+          WHERE idempotency_key LIKE 'splitproof-%' \
+             OR idempotency_key LIKE 'admin-send-test-%'",
+    )
+    .execute(pool)
+    .await
+    .context("clear the harness-owned mail.outbox rows")?;
 
     // [ML1] THE cross-process proof of the durable ingress. The event is appended by THIS
     // process through the plane's own writer; mail-svc — which the harness never calls —
@@ -1309,11 +1313,36 @@ async fn mail_assertions(
         "splitproof.dedup",
     )
     .await?;
-    let ml2_after = match ml2_before {
-        Some(floor) => poll_counter_above(ctx, metrics, "mail_enqueue_conflicts_total", floor).await,
-        None => None,
+    // A FOURTH event under a fresh key fences the three above: delivery is ordered per
+    // subscription, so its outbox row existing means all three were already applied and the
+    // conflict counter is FINAL. That is what licenses the exact `floor + 1` — and the
+    // exact count is the assertion, because the realistic dedup regression is the inverse
+    // of a silent insert: an identical replay misclassified as a `Conflict` drops the
+    // message while blaming the producer, and it leaves `rows`, the kept subject and a
+    // merely-`moved` counter all looking correct.
+    let ml2_fence_key = format!("splitproof-ml2fence-{nonce}");
+    append_send_requested(
+        pool,
+        &ml2_fence_key,
+        &format!("ml2fence-{nonce}@example.com"),
+        &format!("Split-proof dedup fence {nonce}"),
+        "splitproof.dedup",
+    )
+    .await?;
+    let ml2_fenced = poll_count(
+        pool,
+        "SELECT count(*) FROM mail.outbox WHERE idempotency_key = $1",
+        &ml2_fence_key,
+        1,
+    )
+    .await;
+    let ml2_after = if ml2_fenced {
+        counter_value(ctx, metrics, "mail_enqueue_conflicts_total").await
+    } else {
+        None
     };
-    let ml2_moved = matches!((ml2_before, ml2_after), (Some(b), Some(a)) if a > b);
+    let ml2_moved =
+        matches!((ml2_before, ml2_after), (Some(b), Some(a)) if (a - b - 1.0).abs() < 0.5);
     let ml2_rows: i64 =
         sqlx::query_scalar("SELECT count(*) FROM mail.outbox WHERE idempotency_key = $1")
             .bind(&ml2_key)
@@ -1330,11 +1359,12 @@ async fn mail_assertions(
     p.check(
         &format!(
             "[ML2{tag}] one key, three events -> exactly one outbox row; the edited replay \
-             is counted, never stored"
+             is counted exactly once, the identical ones not at all"
         ),
         ml2_rows == 1 && ml2_subject_kept.as_deref() == Some(ml2_subject.as_str()) && ml2_moved,
         format!(
-            "rows={ml2_rows} subject_kept={} conflicts={ml2_before:?}->{ml2_after:?}",
+            "rows={ml2_rows} subject_kept={} fenced={ml2_fenced} \
+             conflicts={ml2_before:?}->{ml2_after:?}",
             ml2_subject_kept.as_deref() == Some(ml2_subject.as_str())
         ),
     );
@@ -1388,9 +1418,11 @@ async fn mail_assertions(
     // is a `SubmitOutcome::notice` — a channel that exists nowhere else and whose whole
     // path is at risk in the split: the count is computed in mail-svc, crosses the edge in
     // the submit response, is stashed one-shot by admin-svc and is rendered by the
-    // FOLLOW-UP GET of the post-redirect-get. A parked row is SEEDED (the drain never parks
-    // under the `log` provider, so the recovery verb would otherwise be asserted against an
-    // empty set and report "0"), and the row's own state proves the requeue re-entered
+    // FOLLOW-UP GET of the post-redirect-get. The parked row is SEEDED, and that is a
+    // stated limit: the drain's whole failure half — backoff, `attempts` growth, the
+    // generation CAS, `max_attempts` -> parked, `last_error` truncation — is unproven
+    // pending the module's unit tests, which can drive a failing `Sender`. What IS proven
+    // here is the operator's recovery verb: the row's own state shows the requeue re-entered
     // delivery instead of only reporting that it had.
     let ml4b_key = format!("splitproof-ml4park-{nonce}");
     sqlx::query(
@@ -1439,8 +1471,11 @@ async fn mail_assertions(
     } else {
         String::new()
     };
-    let ml4b_reported = ml4b_parked >= 1
-        && ml4b_notice.contains(&format!("Requeued {ml4b_parked} parked message(s)"));
+    // The remaining-count clause is asserted, not just the moved count: it is the half that
+    // tells an operator to submit again after `SKIP LOCKED` left rows behind, and a
+    // `contains` of the moved count alone is satisfied by either branch of `bulk_report`.
+    let ml4b_expected = format!("Requeued {ml4b_parked} parked message(s); none left parked.");
+    let ml4b_reported = ml4b_parked >= 1 && ml4b_notice.contains(&ml4b_expected);
     let ml4b_state: Option<String> =
         sqlx::query_scalar("SELECT state FROM mail.outbox WHERE idempotency_key = $1")
             .bind(&ml4b_key)
@@ -1461,6 +1496,64 @@ async fn mail_assertions(
         ),
     );
 
+    Ok(())
+}
+
+/// `[ML6]` — the retention sweep across processes: scheduler-svc appends
+/// `scheduler.fired{mail-prune}`, mail-svc pulls it on its OWN subscription and deletes
+/// inside the delivery transaction. Same shape as [SP2]'s session prune, driven with the
+/// machinery already here (force `last_fired` to the epoch, poll the row out) — no new
+/// fixture.
+///
+/// Split-only, deliberately rather than by omission: the monolith's Proof environment sets
+/// no `SCHEDULER_ENABLED` (the fleet sets it on scheduler-svc alone), so there is no tick
+/// to drive in the parity pass.
+///
+/// BOTH halves are asserted. A fresh `sent` row seeded in the same statement must SURVIVE:
+/// a sweep with an inverted date predicate, or one that ignored the fired name and ran on
+/// every schedule, deletes the stale row exactly as a working one does and would pass on
+/// the first half alone.
+async fn mail_prune_assertion(pool: &PgPool, p: &mut Proof) -> Result<()> {
+    let nonce = mail_nonce("prune");
+    let stale_key = format!("splitproof-ml6stale-{nonce}");
+    let fresh_key = format!("splitproof-ml6fresh-{nonce}");
+    sqlx::query(
+        "INSERT INTO mail.outbox (idempotency_key, recipient, subject, body, kind, state, \
+                                  provider, sent_at, created_at) \
+         VALUES ($1, 'ml6@example.com', 'Split-proof stale', '', 'splitproof.retention', \
+                 'sent', 'log', now() - interval '400 days', now() - interval '400 days'), \
+                ($2, 'ml6@example.com', 'Split-proof fresh', '', 'splitproof.retention', \
+                 'sent', 'log', now(), now())",
+    )
+    .bind(&stale_key)
+    .bind(&fresh_key)
+    .execute(pool)
+    .await
+    .context("seed the mail retention fixtures")?;
+    sqlx::query(
+        "UPDATE scheduler.schedules SET last_fired = to_timestamp(0) WHERE name = 'mail-prune'",
+    )
+    .execute(pool)
+    .await
+    .context("force the mail-prune schedule due")?;
+    let swept = poll_count(
+        pool,
+        "SELECT count(*) FROM mail.outbox WHERE idempotency_key = $1",
+        &stale_key,
+        0,
+    )
+    .await;
+    let kept: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM mail.outbox WHERE idempotency_key = $1")
+            .bind(&fresh_key)
+            .fetch_one(pool)
+            .await
+            .unwrap_or(-1);
+    p.check(
+        "[ML6] scheduler-svc mail-prune -> mail-svc sweeps the stale sent row, keeps the fresh one",
+        swept && kept == 1,
+        format!("swept={swept} kept={kept}"),
+    );
     Ok(())
 }
 
@@ -3237,6 +3330,7 @@ async fn assertions(ctx: &Ctx, pool: &PgPool, idp: &Idp, p: &mut Proof) -> Resul
         "",
     )
     .await?;
+    mail_prune_assertion(pool, p).await?;
 
     // --- Federated providers, guest promotion and refresh rotation, through gateway-svc
     // (G -> accounts-svc over the mTLS edge; the promotion's durable event crosses to
