@@ -189,8 +189,9 @@ impl TxHandler for PruneHandler {
                 if deleted < PRUNE_BATCH {
                     return Ok(());
                 }
-                // `>=`, never `>`: rows sharing the batch's highest `created_at` may still be
-                // pending, and they are already deleted, so re-scanning them costs one batch.
+                // `>=`, never `>`: rows sharing the batch's highest `created_at` may not all
+                // have fit in this batch; the ones that did are already deleted, so
+                // re-scanning the tie costs one batch, never a quadratic re-walk.
                 if let Some(high) = high {
                     watermark = high;
                 }
