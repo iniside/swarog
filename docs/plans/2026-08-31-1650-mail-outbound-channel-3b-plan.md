@@ -1067,3 +1067,41 @@ names its peers by count is correct and Step 7 already carried it.
    `mailevents`. Step 5's `mail-prune` schedule name is a const in `schedulerevents`, so
    `docs/reference/public-api-baseline/schedulerevents.txt` also changes. Corrected in
    Step 12's text.
+21. **Step 6 — the operator's requeue broke the status-write CAS.** `attempts` was the ABA
+   leg and works only while it is monotone per row; requeue reset it to `0`, so the next
+   claim returned a value a *previous* attempt on that row already held. A stale write from
+   an attempt two claims old then matched, flipped the row to `sent` and blanked `body`
+   while the genuinely in-flight delivery CAS-missed — a duplicate send plus a lying `sent`
+   row. Closed with a monotone `generation int` bumped by the claim and by both requeue
+   statements, CAS'd on `(id, state='pending', generation)`. `updated_at` was rejected as
+   the leg because this workspace's `sqlx` carries no date/time feature — every timestamp
+   crosses as `to_char(...)` text, so the leg would compare a re-parsed round-trip and a
+   formatting change would silently degrade it to always-miss.
+22. **Step 6 — the page's reads were unbounded inside a non-cancellable `block_in_place`.**
+   Only the checkout was bounded; the statement was not, while the module already owned
+   `worker::bounded_tx` (bounded checkout **plus** `SET LOCAL statement_timeout`) twenty
+   lines away. On the page's own reason to exist — a relay that parked 400 000 rows — the
+   whole-table `count(*) FILTER` ran inside a closure `HTTP_REQUEST_TIMEOUT_MS` cannot
+   preempt, so the 408 returned while a runtime worker stayed pinned, once per render and
+   again per POST. The second helper is deleted, every page read is one bounded
+   transaction, and the KPIs are index-served.
+23. **Step 6 — `ADMIN_SLUG` was a fourth hand-written copy of a derived value.** The portal
+   routes on `slugify(LABEL)`; four modules each kept their own literal, correct only
+   because id and slug happened to coincide. `adminapi::slug` is now the exported authority,
+   `modules/admin`'s private copy is deleted, and `characters`, `inventory`, `wallet` and
+   `mail` build their links from it. `notifications`' const stays, deliberately: it is the
+   one pinned by an executed test rather than by coincidence.
+24. **Step 6 — three smaller deviations, recorded rather than buried.** The bulk-requeue
+   count first rode `SubmitOutcome::reveal`, whose portal chrome reads "shown once … cannot
+   be shown again" — false in both clauses for an operational count, and it wrote a row to
+   `admin.reveals` per submit; replaced by an additive `SubmitOutcome::notice`, reported
+   against what the submit LEFT ("N requeued; M still parked", both read in one
+   transaction) rather than against the cap. The `OLDEST PENDING` card now reports how
+   overdue the head of the queue is rather than the oldest enqueue age, because
+   `min(next_attempt_at)` rides `mail_outbox_due_idx` while `min(created_at)` would cost a
+   heap fetch per pending row. And the outbox gained `generation` plus
+   `mail_outbox_sent_idx`, so any environment that booted Steps 3–5 needs
+   `DROP SCHEMA mail CASCADE` — wipe is the migration strategy.
+25. **Owed at Step 12, beyond the two baselines already recorded:**
+   `docs/reference/public-api-baseline/adminapi.txt` — `adminapi` gained `pub fn slug` and
+   `SubmitOutcome::notice`, both ADDITIVE.
