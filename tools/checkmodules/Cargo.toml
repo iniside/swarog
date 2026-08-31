@@ -38,6 +38,7 @@ rating-svc = { workspace = true }
 leaderboard-svc = { workspace = true }
 wallet-svc = { workspace = true }
 notifications-svc = { workspace = true }
+mail-svc = { workspace = true }
 
 [dev-dependencies]
 # `contract_sources` only — the shared "which files make up a contract crate" walker

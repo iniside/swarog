@@ -53,6 +53,7 @@ pub fn modules(
         Box::new(apikeys::ApiKeys::new()),       // API-key policy store: schema "apikeys", provides "apikeys.keys" for the gateway's key check
         Box::new(wallet::WalletModule::new()),   // player currency balances + ledger: schema "wallet", reads config for the starter grant, emits wallet.changed
         Box::new(notifications::NotificationsModule::new()), // per-player in-app inbox: schema "notifications", fans in wallet.changed + player.promoted, prunes on scheduler.fired
+        Box::new(mail::MailModule::new()), // outbound email: schema "mail", consumes mail.send_requested durably
         Box::new(gw),                            // HTTP + player QUIC front, auth-once (real accounts sessions)
     ]
 }
