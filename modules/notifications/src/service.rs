@@ -66,9 +66,7 @@ fn is_cursor_time(s: &str) -> bool {
         && second <= 59
 }
 
-/// True iff `s` is the canonical hyphenated 36-character uuid `RETURNING id::text` produces.
-/// Narrower than `uuid_in`, which also parses braced, unhyphenated and mixed-case spellings:
-/// the codec only ever has to accept what it encoded.
+/// True iff `s` is the canonical hyphenated 36-character layout, hex digits case-insensitive.
 fn is_uuid_text(s: &str) -> bool {
     let b = s.as_bytes();
     b.len() == 36
@@ -152,8 +150,8 @@ pub struct NewNotification<'a> {
 }
 
 /// THE input policy, enforced INSIDE the insert authority so no caller — operator form or
-/// durable handler — can route around it. The byte caps mirror the `notifications_*_len`
-/// column CHECKs: without them a 23514 that nothing maps reaches the operator as a 500.
+/// durable handler — can route around it. The byte caps mirror the table's column CHECKs:
+/// without them a 23514 that nothing maps reaches the operator as a 500.
 fn validate_new(n: &NewNotification<'_>) -> Result<(), Error> {
     if n.player_id.trim().is_empty() {
         return Err(Error::invalid("player_id is required"));

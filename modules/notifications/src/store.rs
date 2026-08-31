@@ -3,9 +3,9 @@ use sqlx::{PgConnection, PgPool};
 
 /// "Invalid text representation": both id columns are `uuid` while the contract and the
 /// event payloads carry `String`, so a malformed id arrives as this SQLSTATE from the
-/// `$n::uuid` cast rather than as a match failure. Every statement treats it as "no such
-/// row" — a `notification_id` path arg has only 204 and 404 to answer with, and an
-/// unparseable `player_id` owns nothing.
+/// `$n::uuid` cast rather than as a match failure. Reads and the two owned mutations
+/// answer "no such row"; `insert_tx` instead propagates it, and its caller answers
+/// `Status::Invalid`.
 pub(crate) fn is_invalid_uuid(e: &sqlx::Error) -> bool {
     matches!(e, sqlx::Error::Database(db) if db.code().as_deref() == Some("22P02"))
 }

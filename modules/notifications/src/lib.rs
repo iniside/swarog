@@ -20,11 +20,11 @@ use lifecycle::{Context, Module};
 use notificationsapi::Player;
 use registry::key;
 
-/// The three `_len` CHECKs are `octet_length`, not `char_length`, because their Rust twins
+/// The column CHECKs below are `octet_length`, not `char_length`, because their Rust twins
 /// (`notificationsapi::MAX_*_BYTES`, enforced in [`Service::deliver_on`]) are `str::len()`
-/// BYTE counts — a 200-character multibyte title is more than 200 octets. The column CHECK
-/// is the class fail-safe UNDER those caps, not a second policy, and a bump on one side
-/// without the other turns a 400 into an unmapped 23514 (a 500).
+/// BYTE counts — a 200-character multibyte title is more than 200 octets. The CHECK is the
+/// class fail-safe UNDER those caps, not a second policy, and a bump on one side without
+/// the other turns a 400 into an unmapped 23514 (a 500).
 ///
 /// The partial unique index on `source_event_id` is a BELT: durable delivery is already
 /// exactly-once for a `TransactionalPg` consumer, so its job is to make an operator
