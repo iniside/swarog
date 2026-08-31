@@ -161,8 +161,9 @@ impl Store {
     /// Both writers supply a key — the fan-in its `event_id`, the operator form its minted
     /// one — so two hand-sent messages are two rows because two renders mint two keys, not
     /// because either is keyless. `NULLIF` survives as the class fail-safe under
-    /// [`crate::service::validate_new`]: a keyless row opts out of dedup rather than
-    /// colliding with every other keyless row. A `player_id` that is not a uuid is 22P02
+    /// [`crate::service::validate_new`], which REFUSES a keyless write: a NULL here would
+    /// opt its row out of the partial index and dedup nothing at all. A `player_id` that is
+    /// not a uuid is 22P02
     /// here, NOT a silently-written row; the caller
     /// ([`crate::service::Service::deliver_on`]) turns it into a data-quality rejection.
     pub(crate) async fn insert_tx(

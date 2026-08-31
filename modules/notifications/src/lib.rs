@@ -13,7 +13,7 @@ mod store;
 
 use store::*;
 
-pub use service::{NewNotification, Service};
+pub use service::Service;
 
 use std::sync::{Arc, OnceLock};
 
@@ -34,8 +34,8 @@ use registry::key;
 /// player's inbox, and operator mail rides the same column under the render-time
 /// `admin-send-mail-` key prefix that keeps the two key spaces disjoint — a prefix a
 /// `gen_random_uuid()::text` `event_id` cannot contain. It is PARTIAL as the class fail-safe
-/// under `service::validate_new`, which admits no keyless write today: were one ever made, a
-/// NULL opts that row out of dedup instead of colliding with every other keyless row.
+/// under `service::validate_new`, which REFUSES a keyless write: a NULL here would opt its
+/// row out of dedup entirely, so an operator re-drive would append a second copy.
 ///
 /// `notifications_created_at_idx` exists for the retention sweep alone: `created_at` is not
 /// the leading column of the inbox index, so without it the daily prune seq-scans the whole

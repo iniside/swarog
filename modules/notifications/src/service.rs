@@ -175,20 +175,21 @@ pub(crate) fn resolve_limit(limit: i64) -> Result<i64, Error> {
 
 /// One inbox row about to be written. `source_event_id` is the row's DEDUP identity, which
 /// is the durable `event_id` for the fan-in and the admin form's render-time
-/// `admin-send-mail-<hex>` key for operator mail; EMPTY opts out of dedup entirely — see
-/// [`Store::insert_tx`]. The two key spaces are kept disjoint by that prefix, which
+/// `admin-send-mail-<hex>` key for operator mail. It is REQUIRED — [`validate_new`] refuses
+/// an empty one, because a keyless row deduplicates nothing. The two key spaces are kept
+/// disjoint by that prefix, which
 /// [`Service::send_operator_mail`] requires of every operator send, so no caller of the
 /// operator entry can pre-empt a real event's row.
-pub struct NewNotification<'a> {
-    pub player_id: &'a str,
-    pub kind: &'a str,
-    pub title: &'a str,
-    pub body: &'a str,
-    pub source_event_id: &'a str,
+pub(crate) struct NewNotification<'a> {
+    pub(crate) player_id: &'a str,
+    pub(crate) kind: &'a str,
+    pub(crate) title: &'a str,
+    pub(crate) body: &'a str,
+    pub(crate) source_event_id: &'a str,
 }
 
 /// What the dedup index did with one operator send.
-pub enum Sent {
+pub(crate) enum Sent {
     /// Appended.
     Appended,
     /// This key already produced an IDENTICAL message — the double-submit the key exists for.
@@ -222,6 +223,12 @@ fn validate_new(n: &NewNotification<'_>) -> Result<(), Error> {
         return Err(Error::invalid(format!(
             "body exceeds {MAX_BODY_BYTES} bytes"
         )));
+    }
+    // A keyless row is stored as NULL, which the PARTIAL unique index skips — so it would
+    // dedup nothing and an operator re-drive would append a second copy into a player's
+    // inbox. Refused here rather than left to each caller to remember.
+    if n.source_event_id.trim().is_empty() {
+        return Err(Error::invalid("dedup key is required"));
     }
     // The one cap with no column CHECK under it: `source_event_id` is a btree INDEX key, so
     // an over-long value is 54000 (an unmappable 500), not a 23514 this module could word.
@@ -258,7 +265,7 @@ impl Service {
     /// empty field, a `player_id` the DB cannot parse) and a handler must answer `Ok(())` to
     /// it, since pausing every player's inbox over one bad payload is worse than skipping it;
     /// anything else is infrastructure and must propagate so the plane retries.
-    pub async fn deliver_on(
+    pub(crate) async fn deliver_on(
         &self,
         conn: &mut PgConnection,
         n: &NewNotification<'_>,
@@ -281,16 +288,17 @@ impl Service {
     /// Operator mail: the SAME [`Service::deliver_on`] policy, run on a pool connection, so
     /// the admin form cannot acquire an input rule the durable fan-in does not have.
     ///
-    /// The key's shape is enforced HERE, not at the form: this is the pub entry point, so
-    /// refusing anything but an operator key is what stops any caller from claiming a row in
-    /// the durable half of the shared dedup column and silently suppressing that event's
-    /// notification.
+    /// The key's shape is enforced HERE, not at the form: this is the only operator entry to
+    /// the insert authority (neither it nor [`Service::deliver_on`] leaves the crate —
+    /// `Service` escapes only as `dyn Player`), so refusing anything but an operator key is
+    /// what stops any caller from claiming a row in the durable half of the shared dedup
+    /// column and silently suppressing that event's notification.
     ///
     /// A key that already holds a row is NOT reported as sent on its own: `ON CONFLICT DO
     /// NOTHING` collapses "the same form submitted twice" and "an edited form resubmitted
     /// under its old key" into one outcome, and only the first may answer success — the
     /// second discarded an operator's correction.
-    pub async fn send_operator_mail(&self, n: &NewNotification<'_>) -> Result<Sent, Error> {
+    pub(crate) async fn send_operator_mail(&self, n: &NewNotification<'_>) -> Result<Sent, Error> {
         if !is_operator_dedup_key(n.source_event_id) {
             return Err(Error::invalid(MALFORMED_DEDUP_KEY));
         }
@@ -298,8 +306,10 @@ impl Service {
         if self.deliver_on(&mut conn, n).await? {
             return Ok(Sent::Appended);
         }
-        // The row the key holds may since have been pruned or deleted by its owner; the key
-        // is spent either way, so "cannot be confirmed identical" is stale, never sent.
+        // Two cases reach here: the row under this key carries a DIFFERENT message (an
+        // edited form resubmitted under its old key), or it vanished between the conflicting
+        // insert and this read. Neither may read as sent. Once a delete or a prune has
+        // COMMITTED the key holds nothing, so a resubmit re-inserts and never gets here.
         let same = self
             .store
             .matches_tx(
